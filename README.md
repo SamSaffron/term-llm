@@ -47,6 +47,44 @@ term-llm "your request here"
 
 Use arrow keys to select a command, Enter to execute. Select "something else..." to refine your request.
 
+## Shell Integration (Recommended)
+
+Commands run by term-llm don't appear in your shell history. To fix this, add a shell function that uses `--print-only` mode.
+
+### Zsh
+
+Add to `~/.zshrc`:
+
+```zsh
+tl() {
+  local cmd=$(term-llm --print-only "$@")
+  if [[ -n "$cmd" ]]; then
+    print -s "$cmd"  # add to history
+    eval "$cmd"
+  fi
+}
+```
+
+### Bash
+
+Add to `~/.bashrc`:
+
+```bash
+tl() {
+  local cmd=$(term-llm --print-only "$@")
+  if [[ -n "$cmd" ]]; then
+    history -s "$cmd"  # add to history
+    eval "$cmd"
+  fi
+}
+```
+
+Then use `tl` instead of `term-llm`:
+
+```bash
+tl "find large files"
+```
+
 ## Configuration
 
 ```bash

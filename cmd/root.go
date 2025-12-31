@@ -16,6 +16,7 @@ import (
 )
 
 var configFlag string
+var printOnly bool
 
 var rootCmd = &cobra.Command{
 	Use:   "term-llm [request]",
@@ -34,6 +35,7 @@ Examples:
 
 func init() {
 	rootCmd.Flags().StringVar(&configFlag, "config", "", "Config operation: 'show' or 'edit'")
+	rootCmd.Flags().BoolVarP(&printOnly, "print-only", "p", false, "Print selected command instead of executing")
 }
 
 func Execute() {
@@ -111,6 +113,14 @@ func run(cmd *cobra.Command, args []string) error {
 			// Append refinement to original request
 			userInput = fmt.Sprintf("%s (%s)", userInput, refinement)
 			continue
+		}
+
+		// Print-only mode: just output the command for shell integration
+		if printOnly {
+			if selected != "" {
+				fmt.Println(selected)
+			}
+			return nil
 		}
 
 		// Execute the selected command
