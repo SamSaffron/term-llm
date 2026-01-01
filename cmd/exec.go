@@ -142,6 +142,9 @@ func runExec(cmd *cobra.Command, args []string) error {
 		// Interactive mode: show selection UI (with help support via 'h' key)
 		selected, err := ui.SelectCommand(suggestions, shell, provider)
 		if err != nil {
+			if err.Error() == "cancelled" {
+				return nil
+			}
 			return fmt.Errorf("selection cancelled: %w", err)
 		}
 
