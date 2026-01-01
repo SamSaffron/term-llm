@@ -75,6 +75,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	// Build request
 	req := llm.AskRequest{
 		Question:     question,
+		Instructions: cfg.Ask.Instructions,
 		EnableSearch: askSearch,
 		Debug:        askDebug,
 	}

@@ -14,7 +14,7 @@
 - `go build` builds the `term-llm` binary in the repo root.
 - `go install github.com/samsaffron/term-llm@latest` installs the latest release from upstream.
 - `term-llm "your request"` runs the CLI once built or installed.
-- `term-llm --config show` prints current config; `term-llm --config edit` opens it for editing.
+- `term-llm config` prints current config; `term-llm config edit` opens it for editing.
 
 ## Configuration & Secrets
 - Config lives at `~/.config/term-llm/config.yaml` (or `~/Library/Application Support/term-llm/` on macOS).

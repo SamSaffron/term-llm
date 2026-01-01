@@ -32,10 +32,15 @@ func (p *OpenAIProvider) Name() string {
 }
 
 func (p *OpenAIProvider) SuggestCommands(ctx context.Context, req SuggestRequest) ([]CommandSuggestion, error) {
+	numSuggestions := req.NumSuggestions
+	if numSuggestions <= 0 {
+		numSuggestions = 3
+	}
+
 	// Define the function tool for structured output
 	functionTool := responses.ToolParamOfFunction(
 		"suggest_commands",
-		prompt.JSONSchema(),
+		prompt.SuggestSchema(numSuggestions),
 		true,
 	)
 	functionTool.OfFunction.Description = openai.String("Suggest shell commands based on user input")
@@ -48,8 +53,8 @@ func (p *OpenAIProvider) SuggestCommands(ctx context.Context, req SuggestRequest
 		tools = []responses.ToolUnionParam{webSearchTool, functionTool}
 	}
 
-	systemPrompt := prompt.SystemPrompt(req.Shell, req.SystemContext, req.EnableSearch)
-	userPrompt := prompt.UserPrompt(req.UserInput)
+	systemPrompt := prompt.SuggestSystemPrompt(req.Shell, req.Instructions, numSuggestions, req.EnableSearch)
+	userPrompt := prompt.SuggestUserPrompt(req.UserInput)
 
 	if req.Debug {
 		fmt.Fprintln(os.Stderr, "=== DEBUG: OpenAI Request ===")

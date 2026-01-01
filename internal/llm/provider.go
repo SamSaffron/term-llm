@@ -34,17 +34,19 @@ type Provider interface {
 // AskRequest contains parameters for asking a question
 type AskRequest struct {
 	Question     string
+	Instructions string // Custom system prompt
 	EnableSearch bool
 	Debug        bool
 }
 
 // SuggestRequest contains all parameters for a suggestion request
 type SuggestRequest struct {
-	UserInput     string
-	Shell         string
-	SystemContext string
-	EnableSearch  bool
-	Debug         bool
+	UserInput      string
+	Shell          string
+	Instructions   string // Custom user instructions/context
+	NumSuggestions int    // Number of suggestions to request (default 3)
+	EnableSearch   bool
+	Debug          bool
 }
 
 // NewProvider creates a new LLM provider based on the config

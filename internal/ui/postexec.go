@@ -5,22 +5,25 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/glamour/styles"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/reflow/wordwrap"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/prompt"
 	"golang.org/x/term"
 )
 
-// ShowCommandHelp renders the full-screen help for a command
+// ShowCommandHelp renders scrollable help for a command
 func ShowCommandHelp(command, shell string, provider llm.Provider) error {
 	ctx := context.Background()
 
 	// Build the help prompt
-	helpPrompt := prompt.CommandHelpPrompt(command, shell)
+	helpPrompt := prompt.HelpPrompt(command, shell)
 
 	req := llm.AskRequest{
 		Question:     helpPrompt,
@@ -28,144 +31,166 @@ func ShowCommandHelp(command, shell string, provider llm.Provider) error {
 		Debug:        false,
 	}
 
-	// Stream response and render with full-screen markdown
-	output := make(chan string)
-	errChan := make(chan error, 1)
-
-	go func() {
-		errChan <- provider.StreamResponse(ctx, req, output)
-	}()
-
-	// Render the streamed content
-	err := streamHelpWithGlamour(output)
-	if err != nil {
-		return err
-	}
-
-	return <-errChan
-}
-
-// streamHelpWithGlamour renders markdown help in alternate screen buffer (modal)
-// Writes to /dev/tty to avoid interfering with stdout capture in shell integration
-func streamHelpWithGlamour(output <-chan string) error {
-	// Open TTY for all output (bypasses stdout capture)
+	// Get TTY for shell integration
 	tty, err := getTTY()
 	if err != nil {
-		// Fallback: just drain the channel if no TTY
-		for range output {
-		}
-		return nil
+		return fmt.Errorf("cannot open TTY: %w", err)
 	}
 	defer tty.Close()
 
-	var content strings.Builder
-	lastRendered := ""
-	gotFirstChunk := false
-	spinnerDone := make(chan struct{})
-	termWidth := getHelpTerminalWidth()
+	width, height := getTerminalSize()
 
-	// Enter alternate screen buffer
-	fmt.Fprint(tty, "\033[?1049h") // Enter alternate screen
-	fmt.Fprint(tty, "\033[H")      // Move cursor to top-left
-	defer fmt.Fprint(tty, "\033[?1049l") // Exit alternate screen
+	// Create the model
+	m := newHelpModel(width, height)
 
-	// Start spinner
+	// Create program with TTY
+	p := tea.NewProgram(m,
+		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
+		tea.WithInput(tty),
+		tea.WithOutput(tty),
+	)
+
+	// Stream content in background, sending chunks to the program
 	go func() {
-		frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-		i := 0
-		ticker := time.NewTicker(80 * time.Millisecond)
-		defer ticker.Stop()
+		output := make(chan string)
+		errChan := make(chan error, 1)
 
-		fmt.Fprintf(tty, "%s Generating help...", frames[i])
-		for {
-			select {
-			case <-spinnerDone:
-				return
-			case <-ticker.C:
-				i = (i + 1) % len(frames)
-				fmt.Fprintf(tty, "\r%s Generating help...", frames[i])
-			}
+		go func() {
+			errChan <- provider.StreamResponse(ctx, req, output)
+		}()
+
+		for chunk := range output {
+			p.Send(contentMsg(chunk))
+		}
+
+		if err := <-errChan; err != nil {
+			p.Send(errorMsg{err})
+		} else {
+			p.Send(doneMsg{})
 		}
 	}()
 
-	// Stream and render content
-	for chunk := range output {
-		if !gotFirstChunk {
-			gotFirstChunk = true
-			close(spinnerDone)
-			time.Sleep(10 * time.Millisecond)
-		}
-
-		content.WriteString(chunk)
-
-		// Re-render when we get a newline
-		if strings.Contains(chunk, "\n") {
-			rendered, err := renderHelpMarkdown(content.String(), termWidth)
-			if err != nil {
-				rendered = content.String()
-			}
-
-			if rendered != lastRendered {
-				fmt.Fprint(tty, "\033[H\033[J") // Clear and redraw
-				fmt.Fprint(tty, rendered)
-				lastRendered = rendered
-			}
-		}
-	}
-
-	// Stop spinner if we never got content
-	if !gotFirstChunk {
-		close(spinnerDone)
-	}
-
-	// Final render with footer
-	finalContent := content.String()
-	if finalContent != "" {
-		rendered, err := renderHelpMarkdown(finalContent, termWidth)
-		if err != nil {
-			rendered = finalContent
-		}
-		fmt.Fprint(tty, "\033[H\033[J")
-		fmt.Fprint(tty, rendered)
-
-		// Add footer hint
-		fmt.Fprintf(tty, "\n\033[90mPress any key to exit...\033[0m")
-	}
-
-	// Wait for any key before exiting alternate screen
-	waitForAnyKey()
-	return nil
+	_, err = p.Run()
+	return err
 }
 
-// waitForAnyKey waits for user to press any key
-func waitForAnyKey() {
-	tty, err := getTTY()
-	if err != nil {
-		return
-	}
-	defer tty.Close()
+// Messages
+type contentMsg string
+type doneMsg struct{}
+type errorMsg struct{ err error }
 
-	oldState, err := term.MakeRaw(int(tty.Fd()))
-	if err != nil {
-		return
-	}
-	defer term.Restore(int(tty.Fd()), oldState)
-
-	buf := make([]byte, 1)
-	tty.Read(buf)
+// helpModel is the bubbletea model for streaming help
+type helpModel struct {
+	viewport   viewport.Model
+	spinner    spinner.Model
+	content    *strings.Builder // pointer to avoid copy issues
+	rendered   string
+	width      int
+	height     int
+	loading    bool
+	err        error
 }
 
-// getHelpTerminalWidth returns terminal width or a default
-func getHelpTerminalWidth() int {
-	width, _, err := term.GetSize(int(os.Stdout.Fd()))
-	if err != nil || width <= 0 {
-		return 80 // default
+func newHelpModel(width, height int) helpModel {
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+
+	vp := viewport.New(width, height-1) // -1 for footer
+
+	return helpModel{
+		viewport: vp,
+		spinner:  sp,
+		content:  &strings.Builder{},
+		width:    width,
+		height:   height,
+		loading:  true,
 	}
-	return width
 }
 
-// renderHelpMarkdown renders markdown content using glamour
-func renderHelpMarkdown(content string, width int) (string, error) {
+func (m helpModel) Init() tea.Cmd {
+	return m.spinner.Tick
+}
+
+func (m helpModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "q", "Q", "esc", "enter":
+			return m, tea.Quit
+		case "ctrl+c":
+			return m, tea.Quit
+		}
+
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		m.viewport.Width = msg.Width
+		m.viewport.Height = msg.Height - 1
+		// Re-render content for new width
+		if m.content.Len() > 0 {
+			m.rendered = renderMarkdown(m.content.String(), m.width)
+			m.viewport.SetContent(m.rendered)
+		}
+
+	case contentMsg:
+		m.content.WriteString(string(msg))
+		// Re-render and update viewport
+		m.rendered = renderMarkdown(m.content.String(), m.width)
+		m.viewport.SetContent(m.rendered)
+		// Auto-scroll to bottom while streaming
+		m.viewport.GotoBottom()
+
+	case doneMsg:
+		m.loading = false
+
+	case errorMsg:
+		m.loading = false
+		m.err = msg.err
+
+	case spinner.TickMsg:
+		if m.loading {
+			var cmd tea.Cmd
+			m.spinner, cmd = m.spinner.Update(msg)
+			cmds = append(cmds, cmd)
+		}
+	}
+
+	// Update viewport for scrolling
+	var vpCmd tea.Cmd
+	m.viewport, vpCmd = m.viewport.Update(msg)
+	cmds = append(cmds, vpCmd)
+
+	return m, tea.Batch(cmds...)
+}
+
+func (m helpModel) View() string {
+	var footer string
+
+	if m.err != nil {
+		footer = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("196")).
+			Render(fmt.Sprintf("Error: %v • q to exit", m.err))
+	} else if m.loading && m.content.Len() == 0 {
+		footer = m.spinner.View() + " Generating help..."
+	} else if m.loading {
+		footer = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("241")).
+			Render("↑/↓ scroll • streaming...")
+	} else {
+		footer = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("241")).
+			Render("↑/↓ scroll • q/Esc/Enter to exit")
+	}
+
+	return m.viewport.View() + "\n" + footer
+}
+
+// renderMarkdown renders content with glamour
+func renderMarkdown(content string, width int) string {
 	style := styles.DraculaStyleConfig
 	style.Document.Margin = uintPtr(0)
 	style.Document.BlockPrefix = ""
@@ -177,12 +202,12 @@ func renderHelpMarkdown(content string, width int) (string, error) {
 		glamour.WithWordWrap(width),
 	)
 	if err != nil {
-		return "", err
+		return content
 	}
 
 	rendered, err := renderer.Render(content)
 	if err != nil {
-		return "", err
+		return content
 	}
 
 	result := strings.TrimSpace(rendered)
@@ -190,8 +215,19 @@ func renderHelpMarkdown(content string, width int) (string, error) {
 		result += "\n"
 	}
 
-	// Ensure text is wrapped to terminal width
-	return wordwrap.String(result, width), nil
+	return wordwrap.String(result, width)
+}
+
+// getTerminalSize returns terminal width and height
+func getTerminalSize() (int, int) {
+	width, height, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil || width <= 0 {
+		width = 80
+	}
+	if err != nil || height <= 0 {
+		height = 24
+	}
+	return width, height
 }
 
 func uintPtr(v uint) *uint {

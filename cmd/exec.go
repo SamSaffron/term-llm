@@ -75,17 +75,17 @@ func runExec(cmd *cobra.Command, args []string) error {
 
 	// Detect shell
 	shell := detectShell()
-	systemContext := cfg.SystemContext
 
 	// Main loop for refinement
 	for {
 		// Build request
 		req := llm.SuggestRequest{
-			UserInput:     userInput,
-			Shell:         shell,
-			SystemContext: systemContext,
-			EnableSearch:  execSearch,
-			Debug:         execDebug,
+			UserInput:      userInput,
+			Shell:          shell,
+			Instructions:   cfg.Exec.Instructions,
+			NumSuggestions: cfg.Exec.Suggestions,
+			EnableSearch:   execSearch,
+			Debug:          execDebug,
 		}
 
 		// Get suggestions from LLM with spinner

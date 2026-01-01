@@ -11,10 +11,20 @@ import (
 )
 
 type Config struct {
-	Provider      string          `mapstructure:"provider"`
-	SystemContext string          `mapstructure:"system_context"`
-	Anthropic     AnthropicConfig `mapstructure:"anthropic"`
-	OpenAI        OpenAIConfig    `mapstructure:"openai"`
+	Provider  string          `mapstructure:"provider"`
+	Exec      ExecConfig      `mapstructure:"exec"`
+	Ask       AskConfig       `mapstructure:"ask"`
+	Anthropic AnthropicConfig `mapstructure:"anthropic"`
+	OpenAI    OpenAIConfig    `mapstructure:"openai"`
+}
+
+type ExecConfig struct {
+	Suggestions  int    `mapstructure:"suggestions"`  // Number of command suggestions (default 3)
+	Instructions string `mapstructure:"instructions"` // Custom context for suggestions
+}
+
+type AskConfig struct {
+	Instructions string `mapstructure:"instructions"` // Custom system prompt for ask
 }
 
 type AnthropicConfig struct {
@@ -45,6 +55,7 @@ func Load() (*Config, error) {
 
 	// Set defaults
 	viper.SetDefault("provider", "anthropic")
+	viper.SetDefault("exec.suggestions", 3)
 	viper.SetDefault("anthropic.model", "claude-sonnet-4-5")
 	viper.SetDefault("openai.model", "gpt-5.2")
 
@@ -161,16 +172,24 @@ func Save(cfg *Config) error {
 
 	content := fmt.Sprintf(`provider: %s
 
-# Custom context added to the system prompt (e.g., OS details, preferences)
-system_context: |
-  %s
+exec:
+  suggestions: %d
+  # Custom instructions for command suggestions (e.g., OS details, tool preferences)
+  # instructions: |
+  #   I use Arch Linux with zsh.
+  #   Prefer ripgrep over grep, fd over find.
+
+ask:
+  # Custom system prompt for ask command
+  # instructions: |
+  #   Be concise. I'm an experienced developer.
 
 anthropic:
   model: %s
 
 openai:
   model: %s
-`, cfg.Provider, cfg.SystemContext, cfg.Anthropic.Model, cfg.OpenAI.Model)
+`, cfg.Provider, cfg.Exec.Suggestions, cfg.Anthropic.Model, cfg.OpenAI.Model)
 
 	return os.WriteFile(path, []byte(content), 0600)
 }

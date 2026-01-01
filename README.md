@@ -60,7 +60,7 @@ export OPENAI_API_KEY=your-key
 term-llm exec "your request here"
 ```
 
-Use arrow keys to select a command, Enter to execute. Select "something else..." to refine your request.
+Use arrow keys to select a command, Enter to execute, or press `h` for detailed help on the highlighted command. Select "something else..." to refine your request.
 
 ### Flags
 
@@ -80,6 +80,10 @@ term-llm exec "compress folder" --auto-pick     # auto-execute best
 term-llm exec "find large files" -n 3           # show max 3 options
 term-llm exec "install latest node" -s          # with web search
 term-llm exec "disk usage" -p                   # print only
+
+# Ask a question
+term-llm ask "What is the difference between TCP and UDP?"
+term-llm ask "latest node.js version" -s       # with web search
 ```
 
 ## Shell Integration (Recommended)
@@ -135,10 +139,15 @@ Config is stored at `~/.config/term-llm/config.yaml`:
 ```yaml
 provider: anthropic  # or "openai"
 
-# Custom context added to system prompt
-system_context: |
-  I use Arch Linux with zsh.
-  I prefer ripgrep over grep, fd over find.
+exec:
+  suggestions: 3  # number of command suggestions
+  instructions: |
+    I use Arch Linux with zsh.
+    I prefer ripgrep over grep, fd over find.
+
+ask:
+  instructions: |
+    Be concise. I'm an experienced developer.
 
 anthropic:
   model: claude-sonnet-4-5

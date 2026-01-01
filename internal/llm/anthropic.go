@@ -36,6 +36,11 @@ func (p *AnthropicProvider) SuggestCommands(ctx context.Context, req SuggestRequ
 }
 
 func (p *AnthropicProvider) suggestWithoutSearch(ctx context.Context, req SuggestRequest) ([]CommandSuggestion, error) {
+	numSuggestions := req.NumSuggestions
+	if numSuggestions <= 0 {
+		numSuggestions = 3
+	}
+
 	inputSchema := anthropic.ToolInputSchemaParam{
 		Type: "object",
 		Properties: map[string]interface{}{
@@ -61,8 +66,8 @@ func (p *AnthropicProvider) suggestWithoutSearch(ctx context.Context, req Sugges
 					},
 					"required": []string{"command", "explanation", "likelihood"},
 				},
-				"minItems": 3,
-				"maxItems": 3,
+				"minItems": numSuggestions,
+				"maxItems": numSuggestions,
 			},
 		},
 		Required: []string{"suggestions"},
@@ -71,8 +76,8 @@ func (p *AnthropicProvider) suggestWithoutSearch(ctx context.Context, req Sugges
 	tool := anthropic.ToolUnionParamOfTool(inputSchema, "suggest_commands")
 	tool.OfTool.Description = anthropic.String("Suggest shell commands based on user input")
 
-	systemPrompt := prompt.SystemPrompt(req.Shell, req.SystemContext, false)
-	userPrompt := prompt.UserPrompt(req.UserInput)
+	systemPrompt := prompt.SuggestSystemPrompt(req.Shell, req.Instructions, numSuggestions, false)
+	userPrompt := prompt.SuggestUserPrompt(req.UserInput)
 
 	if req.Debug {
 		fmt.Fprintln(os.Stderr, "=== DEBUG: Anthropic Request ===")
@@ -116,6 +121,11 @@ func (p *AnthropicProvider) suggestWithoutSearch(ctx context.Context, req Sugges
 }
 
 func (p *AnthropicProvider) suggestWithSearch(ctx context.Context, req SuggestRequest) ([]CommandSuggestion, error) {
+	numSuggestions := req.NumSuggestions
+	if numSuggestions <= 0 {
+		numSuggestions = 3
+	}
+
 	inputSchema := anthropic.BetaToolInputSchemaParam{
 		Type: "object",
 		Properties: map[string]interface{}{
@@ -141,8 +151,8 @@ func (p *AnthropicProvider) suggestWithSearch(ctx context.Context, req SuggestRe
 					},
 					"required": []string{"command", "explanation", "likelihood"},
 				},
-				"minItems": 3,
-				"maxItems": 3,
+				"minItems": numSuggestions,
+				"maxItems": numSuggestions,
 			},
 		},
 		Required: []string{"suggestions"},
@@ -162,8 +172,8 @@ func (p *AnthropicProvider) suggestWithSearch(ctx context.Context, req SuggestRe
 		},
 	}
 
-	systemPrompt := prompt.SystemPrompt(req.Shell, req.SystemContext, true)
-	userPrompt := prompt.UserPrompt(req.UserInput)
+	systemPrompt := prompt.SuggestSystemPrompt(req.Shell, req.Instructions, numSuggestions, true)
+	userPrompt := prompt.SuggestUserPrompt(req.UserInput)
 
 	if req.Debug {
 		fmt.Fprintln(os.Stderr, "=== DEBUG: Anthropic Request (with search) ===")
@@ -261,13 +271,22 @@ func (p *AnthropicProvider) StreamResponse(ctx context.Context, req AskRequest, 
 }
 
 func (p *AnthropicProvider) streamWithoutSearch(ctx context.Context, req AskRequest, output chan<- string) error {
-	stream := p.client.Messages.NewStreaming(ctx, anthropic.MessageNewParams{
+	params := anthropic.MessageNewParams{
 		Model:     anthropic.Model(p.model),
 		MaxTokens: 4096,
 		Messages: []anthropic.MessageParam{
 			anthropic.NewUserMessage(anthropic.NewTextBlock(req.Question)),
 		},
-	})
+	}
+
+	// Add system prompt if instructions provided
+	if req.Instructions != "" {
+		params.System = []anthropic.TextBlockParam{
+			{Text: req.Instructions},
+		}
+	}
+
+	stream := p.client.Messages.NewStreaming(ctx, params)
 
 	for stream.Next() {
 		event := stream.Current()
@@ -290,7 +309,7 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req AskRequest
 		},
 	}
 
-	stream := p.client.Beta.Messages.NewStreaming(ctx, anthropic.BetaMessageNewParams{
+	params := anthropic.BetaMessageNewParams{
 		Model:     anthropic.Model(p.model),
 		MaxTokens: 4096,
 		Betas:     []anthropic.AnthropicBeta{"web-search-2025-03-05"},
@@ -298,7 +317,16 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req AskRequest
 			anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(req.Question)),
 		},
 		Tools: []anthropic.BetaToolUnionParam{webSearchTool},
-	})
+	}
+
+	// Add system prompt if instructions provided
+	if req.Instructions != "" {
+		params.System = []anthropic.BetaTextBlockParam{
+			{Text: req.Instructions},
+		}
+	}
+
+	stream := p.client.Beta.Messages.NewStreaming(ctx, params)
 
 	for stream.Next() {
 		event := stream.Current()

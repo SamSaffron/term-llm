@@ -61,6 +61,11 @@ func (p *CodexProvider) Name() string {
 }
 
 func (p *CodexProvider) SuggestCommands(ctx context.Context, req SuggestRequest) ([]CommandSuggestion, error) {
+	numSuggestions := req.NumSuggestions
+	if numSuggestions <= 0 {
+		numSuggestions = 3
+	}
+
 	// Fetch Codex instructions from GitHub (required by ChatGPT backend)
 	// NOTE: Instructions must be EXACTLY the Codex instructions - no modifications allowed
 	codexInstructions, err := p.getCodexInstructions()
@@ -83,12 +88,12 @@ func (p *CodexProvider) SuggestCommands(ctx context.Context, req SuggestRequest)
 		"name":        "suggest_commands",
 		"description": "Suggest shell commands based on user input",
 		"strict":      true,
-		"parameters":  prompt.JSONSchema(),
+		"parameters":  prompt.SuggestSchema(numSuggestions),
 	})
 
 	// Combine system context with user prompt (instructions must stay unchanged)
-	systemPrompt := prompt.SystemPrompt(req.Shell, req.SystemContext, req.EnableSearch)
-	userPrompt := prompt.UserPrompt(req.UserInput)
+	systemPrompt := prompt.SuggestSystemPrompt(req.Shell, req.Instructions, numSuggestions, req.EnableSearch)
+	userPrompt := prompt.SuggestUserPrompt(req.UserInput)
 	combinedPrompt := systemPrompt + "\n\n" + userPrompt
 
 	if req.Debug {
