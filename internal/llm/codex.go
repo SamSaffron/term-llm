@@ -429,3 +429,111 @@ func (p *CodexProvider) saveCacheMeta(path, tag string) {
 		os.WriteFile(path, data, 0644)
 	}
 }
+
+func (p *CodexProvider) StreamResponse(ctx context.Context, req AskRequest, output chan<- string) error {
+	defer close(output)
+
+	// Fetch Codex instructions from GitHub (required by ChatGPT backend)
+	codexInstructions, err := p.getCodexInstructions()
+	if err != nil {
+		return fmt.Errorf("failed to get Codex instructions: %w", err)
+	}
+
+	if req.Debug {
+		fmt.Fprintln(os.Stderr, "=== DEBUG: Codex Stream Request ===")
+		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
+		fmt.Fprintf(os.Stderr, "Question: %s\n", req.Question)
+		fmt.Fprintf(os.Stderr, "Search: %v\n", req.EnableSearch)
+		fmt.Fprintln(os.Stderr, "===================================")
+	}
+
+	// Build request body
+	reqBody := map[string]interface{}{
+		"model":        p.model,
+		"instructions": codexInstructions,
+		"input":        p.buildInput(req.Question),
+		"stream":       true,
+		"store":        false,
+	}
+
+	// Add web search tool if enabled
+	if req.EnableSearch {
+		reqBody["tools"] = []interface{}{
+			map[string]interface{}{"type": "web_search"},
+		}
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", chatGPTResponsesURL, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Set required headers
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+p.accessToken)
+	httpReq.Header.Set("ChatGPT-Account-ID", p.accountID)
+	httpReq.Header.Set("OpenAI-Beta", "responses=experimental")
+	httpReq.Header.Set("originator", "codex_cli_rs")
+	httpReq.Header.Set("Accept", "text/event-stream")
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API error (%d): %s", resp.StatusCode, string(respBody))
+	}
+
+	// Read SSE stream and send text deltas
+	buf := make([]byte, 4096)
+	var pending string
+	for {
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			pending += string(buf[:n])
+			// Process complete lines
+			for {
+				idx := strings.Index(pending, "\n")
+				if idx < 0 {
+					break
+				}
+				line := pending[:idx]
+				pending = pending[idx+1:]
+
+				if !strings.HasPrefix(line, "data: ") {
+					continue
+				}
+				jsonData := strings.TrimPrefix(line, "data: ")
+				if jsonData == "" || jsonData == "[DONE]" {
+					continue
+				}
+
+				var event struct {
+					Type  string `json:"type"`
+					Delta string `json:"delta"`
+				}
+				if json.Unmarshal([]byte(jsonData), &event) == nil {
+					if event.Type == "response.output_text.delta" && event.Delta != "" {
+						output <- event.Delta
+					}
+				}
+			}
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("stream read error: %w", err)
+		}
+	}
+
+	return nil
+}

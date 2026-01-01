@@ -116,3 +116,42 @@ func (p *OpenAIProvider) SuggestCommands(ctx context.Context, req SuggestRequest
 
 	return nil, fmt.Errorf("no suggest_commands function call in response")
 }
+
+func (p *OpenAIProvider) StreamResponse(ctx context.Context, req AskRequest, output chan<- string) error {
+	defer close(output)
+
+	if req.Debug {
+		fmt.Fprintln(os.Stderr, "=== DEBUG: OpenAI Stream Request ===")
+		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
+		fmt.Fprintf(os.Stderr, "Question: %s\n", req.Question)
+		fmt.Fprintf(os.Stderr, "Search: %v\n", req.EnableSearch)
+		fmt.Fprintln(os.Stderr, "====================================")
+	}
+
+	params := responses.ResponseNewParams{
+		Model: shared.ResponsesModel(p.model),
+		Input: responses.ResponseNewParamsInputUnion{
+			OfString: openai.String(req.Question),
+		},
+	}
+
+	if req.EnableSearch {
+		webSearchTool := responses.ToolParamOfWebSearchPreview(responses.WebSearchToolTypeWebSearchPreview)
+		params.Tools = []responses.ToolUnionParam{webSearchTool}
+	}
+
+	stream := p.client.Responses.NewStreaming(ctx, params)
+
+	for stream.Next() {
+		event := stream.Current()
+		if event.Type == "response.output_text.delta" && event.Text != "" {
+			output <- event.Text
+		}
+	}
+
+	if err := stream.Err(); err != nil {
+		return fmt.Errorf("openai streaming error: %w", err)
+	}
+
+	return nil
+}

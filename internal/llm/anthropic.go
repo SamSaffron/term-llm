@@ -242,3 +242,74 @@ func (p *AnthropicProvider) extractBetaSuggestions(content []anthropic.BetaConte
 	}
 	return nil, fmt.Errorf("no suggest_commands tool use in response")
 }
+
+func (p *AnthropicProvider) StreamResponse(ctx context.Context, req AskRequest, output chan<- string) error {
+	defer close(output)
+
+	if req.Debug {
+		fmt.Fprintln(os.Stderr, "=== DEBUG: Anthropic Stream Request ===")
+		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
+		fmt.Fprintf(os.Stderr, "Question: %s\n", req.Question)
+		fmt.Fprintf(os.Stderr, "Search: %v\n", req.EnableSearch)
+		fmt.Fprintln(os.Stderr, "=======================================")
+	}
+
+	if req.EnableSearch {
+		return p.streamWithSearch(ctx, req, output)
+	}
+	return p.streamWithoutSearch(ctx, req, output)
+}
+
+func (p *AnthropicProvider) streamWithoutSearch(ctx context.Context, req AskRequest, output chan<- string) error {
+	stream := p.client.Messages.NewStreaming(ctx, anthropic.MessageNewParams{
+		Model:     anthropic.Model(p.model),
+		MaxTokens: 4096,
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock(req.Question)),
+		},
+	})
+
+	for stream.Next() {
+		event := stream.Current()
+		if event.Type == "content_block_delta" && event.Delta.Text != "" {
+			output <- event.Delta.Text
+		}
+	}
+
+	if err := stream.Err(); err != nil {
+		return fmt.Errorf("anthropic streaming error: %w", err)
+	}
+
+	return nil
+}
+
+func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req AskRequest, output chan<- string) error {
+	webSearchTool := anthropic.BetaToolUnionParam{
+		OfWebSearchTool20250305: &anthropic.BetaWebSearchTool20250305Param{
+			MaxUses: anthropic.Int(5),
+		},
+	}
+
+	stream := p.client.Beta.Messages.NewStreaming(ctx, anthropic.BetaMessageNewParams{
+		Model:     anthropic.Model(p.model),
+		MaxTokens: 4096,
+		Betas:     []anthropic.AnthropicBeta{"web-search-2025-03-05"},
+		Messages: []anthropic.BetaMessageParam{
+			anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(req.Question)),
+		},
+		Tools: []anthropic.BetaToolUnionParam{webSearchTool},
+	})
+
+	for stream.Next() {
+		event := stream.Current()
+		if event.Type == "content_block_delta" && event.Delta.Text != "" {
+			output <- event.Delta.Text
+		}
+	}
+
+	if err := stream.Err(); err != nil {
+		return fmt.Errorf("anthropic streaming error: %w", err)
+	}
+
+	return nil
+}

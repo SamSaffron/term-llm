@@ -4,6 +4,10 @@
 - `main.go` is the CLI entry point.
 - `cmd/` holds command wiring and top-level CLI helpers.
 - `internal/config/`, `internal/llm/`, `internal/prompt/`, and `internal/ui/` contain the core implementation.
+- `internal/llm/` has a clean `Provider` interface with three implementations:
+  - `anthropic.go` – Anthropic API (Claude)
+  - `openai.go` – Standard OpenAI API
+  - `codex.go` – ChatGPT backend via Codex OAuth
 - `term-llm` is the built binary when compiled locally.
 
 ## Build, Test, and Development Commands
@@ -13,8 +17,10 @@
 - `term-llm --config show` prints current config; `term-llm --config edit` opens it for editing.
 
 ## Configuration & Secrets
-- Config lives at `~/.config/term-llm/config.yaml`.
+- Config lives at `~/.config/term-llm/config.yaml` (or `~/Library/Application Support/term-llm/` on macOS).
 - Set provider keys via environment variables: `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`.
+- Alternatively, use Codex OAuth credentials from `~/.codex/auth.json` (auto-detected if present).
+- For Claude, credentials can be read from the Claude Code keychain.
 - Do not commit API keys or local config changes.
 
 ## Coding Style & Naming Conventions

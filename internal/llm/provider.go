@@ -26,6 +26,16 @@ type Provider interface {
 
 	// SuggestCommands generates command suggestions based on user input
 	SuggestCommands(ctx context.Context, req SuggestRequest) ([]CommandSuggestion, error)
+
+	// StreamResponse streams a text response for the ask command
+	StreamResponse(ctx context.Context, req AskRequest, output chan<- string) error
+}
+
+// AskRequest contains parameters for asking a question
+type AskRequest struct {
+	Question     string
+	EnableSearch bool
+	Debug        bool
 }
 
 // SuggestRequest contains all parameters for a suggestion request
