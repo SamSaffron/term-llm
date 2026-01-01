@@ -19,7 +19,7 @@
 - `term-llm config` prints current config; `term-llm config edit` opens it for editing.
 
 ## Configuration & Secrets
-- Config lives at `~/.config/term-llm/config.yaml` (or `~/Library/Application Support/term-llm/` on macOS).
+- Config lives at `~/.config/term-llm/config.yaml` (or `$XDG_CONFIG_HOME/term-llm/` if set).
 - Set provider keys via environment variables: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY`.
 - Alternatively, use OAuth credentials from companion CLIs:
   - Codex OAuth credentials from `~/.codex/auth.json`

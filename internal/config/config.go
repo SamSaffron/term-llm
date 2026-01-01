@@ -64,12 +64,10 @@ type GeminiConfig struct {
 }
 
 func Load() (*Config, error) {
-	configDir, err := os.UserConfigDir()
+	configPath, err := getConfigDir()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get config dir: %w", err)
 	}
-
-	configPath := filepath.Join(configDir, "term-llm")
 
 	viper.SetConfigName("config")
 	viper.SetConfigType("yaml")
@@ -180,13 +178,26 @@ func expandEnv(s string) string {
 	return s
 }
 
-// GetConfigPath returns the path where the config file should be located
-func GetConfigPath() (string, error) {
-	configDir, err := os.UserConfigDir()
+// getConfigDir returns the XDG config directory for term-llm.
+// Uses $XDG_CONFIG_HOME if set, otherwise ~/.config
+func getConfigDir() (string, error) {
+	if xdgHome := os.Getenv("XDG_CONFIG_HOME"); xdgHome != "" {
+		return filepath.Join(xdgHome, "term-llm"), nil
+	}
+	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(configDir, "term-llm", "config.yaml"), nil
+	return filepath.Join(homeDir, ".config", "term-llm"), nil
+}
+
+// GetConfigPath returns the path where the config file should be located
+func GetConfigPath() (string, error) {
+	configDir, err := getConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(configDir, "config.yaml"), nil
 }
 
 // Exists returns true if a config file exists
