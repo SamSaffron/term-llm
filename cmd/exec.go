@@ -76,6 +76,12 @@ func runExec(cmd *cobra.Command, args []string) error {
 	// Detect shell
 	shell := detectShell()
 
+	// Determine number of suggestions: use -n flag if set, otherwise config default
+	numSuggestions := cfg.Exec.Suggestions
+	if execMaxOpts > 0 {
+		numSuggestions = execMaxOpts
+	}
+
 	// Main loop for refinement
 	for {
 		// Build request
@@ -83,7 +89,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 			UserInput:      userInput,
 			Shell:          shell,
 			Instructions:   cfg.Exec.Instructions,
-			NumSuggestions: cfg.Exec.Suggestions,
+			NumSuggestions: numSuggestions,
 			EnableSearch:   execSearch,
 			Debug:          execDebug,
 		}
