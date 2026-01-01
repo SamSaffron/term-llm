@@ -13,11 +13,25 @@ $ term-llm exec "find all go files modified today"
 
 ## Installation
 
+### One-liner (recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh
+```
+
+Or with options:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh -s -- --version v0.1.0 --install-dir ~/bin
+```
+
+### Go install
+
 ```bash
 go install github.com/samsaffron/term-llm@latest
 ```
 
-Or build from source:
+### Build from source
 
 ```bash
 git clone https://github.com/samsaffron/term-llm
@@ -139,6 +153,18 @@ term-llm config        # Show current config
 term-llm config edit   # Edit config file
 term-llm config path   # Print config file path
 ```
+
+## Version & Updates
+
+term-llm automatically checks for updates once per day and notifies you when a new version is available.
+
+```bash
+term-llm version       # Show version info
+term-llm upgrade       # Upgrade to latest version
+term-llm upgrade --version v0.2.0  # Install specific version
+```
+
+To disable update checks, set `TERM_LLM_SKIP_UPDATE_CHECK=1`.
 
 Config is stored at `~/.config/term-llm/config.yaml`:
 

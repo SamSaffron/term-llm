@@ -1,0 +1,52 @@
+# Build configuration
+builds:
+  - id: term-llm
+    binary: term-llm
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    main: ./main.go
+    ldflags:
+      - -s -w
+      - -X github.com/samsaffron/term-llm/cmd.Version={{.Version}}
+      - -X github.com/samsaffron/term-llm/cmd.Commit={{.Commit}}
+      - -X github.com/samsaffron/term-llm/cmd.Date={{.Date}}
+
+# Archive configuration
+archives:
+  - id: default
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - README.md
+      - LICENSE
+
+# Release configuration
+release:
+  github:
+    owner: samsaffron
+    name: term-llm
+  name_template: "Release {{ .Tag }}"
+  draft: false
+  prerelease: false
+
+# Checksum configuration
+checksum:
+  name_template: 'checksums.txt'
+
+# Snapshots configuration
+snapshot:
+  name_template: "{{ .Tag }}-next"
+
+# Changelog configuration
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'

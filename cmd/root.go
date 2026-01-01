@@ -6,8 +6,13 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/ui"
+	"github.com/samsaffron/term-llm/internal/update"
 	"github.com/spf13/cobra"
 )
+
+func init() {
+	update.SetupUpdateChecks(rootCmd, Version)
+}
 
 var rootCmd = &cobra.Command{
 	Use:   "term-llm",

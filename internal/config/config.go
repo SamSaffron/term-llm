@@ -64,7 +64,7 @@ type GeminiConfig struct {
 }
 
 func Load() (*Config, error) {
-	configPath, err := getConfigDir()
+	configPath, err := GetConfigDir()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get config dir: %w", err)
 	}
@@ -178,9 +178,9 @@ func expandEnv(s string) string {
 	return s
 }
 
-// getConfigDir returns the XDG config directory for term-llm.
+// GetConfigDir returns the XDG config directory for term-llm.
 // Uses $XDG_CONFIG_HOME if set, otherwise ~/.config
-func getConfigDir() (string, error) {
+func GetConfigDir() (string, error) {
 	if xdgHome := os.Getenv("XDG_CONFIG_HOME"); xdgHome != "" {
 		return filepath.Join(xdgHome, "term-llm"), nil
 	}
@@ -193,7 +193,7 @@ func getConfigDir() (string, error) {
 
 // GetConfigPath returns the path where the config file should be located
 func GetConfigPath() (string, error) {
-	configDir, err := getConfigDir()
+	configDir, err := GetConfigDir()
 	if err != nil {
 		return "", err
 	}
