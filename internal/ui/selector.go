@@ -302,9 +302,9 @@ func RunSetupWizard() (*config.Config, error) {
 	tty, ttyErr := getTTY()
 	if ttyErr == nil {
 		defer tty.Close()
-		fmt.Fprintln(tty, "Welcome to term-llm! Let's get you set up.\n")
+		fmt.Fprint(tty, "Welcome to term-llm! Let's get you set up.\n\n")
 	} else {
-		fmt.Fprintln(os.Stderr, "Welcome to term-llm! Let's get you set up.\n")
+		fmt.Fprint(os.Stderr, "Welcome to term-llm! Let's get you set up.\n\n")
 	}
 
 	var provider string

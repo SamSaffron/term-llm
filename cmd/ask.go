@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/glamour/ansi"
 	"github.com/charmbracelet/glamour/styles"
-	"github.com/muesli/reflow/wordwrap"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -141,88 +141,120 @@ func getTerminalWidth() int {
 	return width
 }
 
-// streamWithGlamour renders markdown incrementally as content streams in (line-by-line, no clearing)
-func streamWithGlamour(output <-chan string) error {
-	var content strings.Builder
-	var printedLines int
-	gotFirstChunk := false
-	spinnerDone := make(chan struct{})
-	termWidth := getTerminalWidth()
-
-	// Start spinner
-	go func() {
-		frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-		i := 0
-		ticker := time.NewTicker(80 * time.Millisecond)
-		defer ticker.Stop()
-
-		fmt.Printf("%s Thinking...", frames[i])
-		for {
-			select {
-			case <-spinnerDone:
-				// Clear spinner line
-				fmt.Print("\r\033[K")
-				return
-			case <-ticker.C:
-				i = (i + 1) % len(frames)
-				fmt.Printf("\r%s Thinking...", frames[i])
-			}
-		}
-	}()
-
-	for chunk := range output {
-		if !gotFirstChunk {
-			gotFirstChunk = true
-			close(spinnerDone)
-			time.Sleep(10 * time.Millisecond)
-		}
-
-		content.WriteString(chunk)
-
-		// When we get a newline, render and print new lines only
-		if strings.Contains(chunk, "\n") {
-			rendered, err := renderMarkdown(content.String(), termWidth)
-			if err != nil {
-				rendered = content.String()
-			}
-
-			// Split into lines and print only new ones
-			lines := strings.Split(rendered, "\n")
-			for i := printedLines; i < len(lines); i++ {
-				if i < len(lines)-1 { // Don't print the last partial line
-					fmt.Println(lines[i])
-					printedLines++
-				}
-			}
-		}
-	}
-
-	// Stop spinner if we never got content
-	if !gotFirstChunk {
-		close(spinnerDone)
-	}
-
-	// Final render - print any remaining lines
-	finalContent := content.String()
-	if finalContent != "" {
-		rendered, err := renderMarkdown(finalContent, termWidth)
-		if err != nil {
-			rendered = finalContent
-		}
-
-		lines := strings.Split(rendered, "\n")
-		for i := printedLines; i < len(lines); i++ {
-			line := lines[i]
-			if line != "" || i < len(lines)-1 {
-				fmt.Println(line)
-			}
-		}
-	}
-
-	return nil
+// askStreamModel is a bubbletea model for streaming ask responses
+type askStreamModel struct {
+	spinner  spinner.Model
+	styles   *ui.Styles
+	content  *strings.Builder
+	rendered string
+	width    int
+	loading  bool
 }
 
-// renderMarkdown renders markdown content using glamour with word wrapping
+type askContentMsg string
+type askDoneMsg struct{}
+
+func newAskStreamModel() askStreamModel {
+	width := getTerminalWidth()
+	styles := ui.DefaultStyles()
+
+	s := spinner.New()
+	s.Spinner = spinner.Dot
+	s.Style = styles.Spinner
+
+	return askStreamModel{
+		spinner: s,
+		styles:  styles,
+		content: &strings.Builder{},
+		width:   width,
+		loading: true,
+	}
+}
+
+func (m askStreamModel) Init() tea.Cmd {
+	return m.spinner.Tick
+}
+
+func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		if msg.String() == "ctrl+c" || msg.String() == "esc" {
+			return m, tea.Quit
+		}
+
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		if m.content.Len() > 0 {
+			m.rendered = m.render()
+		}
+
+	case askContentMsg:
+		m.loading = false
+		m.content.WriteString(string(msg))
+		m.rendered = m.render()
+
+	case askDoneMsg:
+		m.loading = false
+		return m, tea.Quit
+
+	case spinner.TickMsg:
+		if m.loading {
+			var cmd tea.Cmd
+			m.spinner, cmd = m.spinner.Update(msg)
+			return m, cmd
+		}
+	}
+
+	return m, nil
+}
+
+func (m askStreamModel) render() string {
+	content := m.content.String()
+	if content == "" {
+		return ""
+	}
+
+	rendered, err := renderMarkdown(content, m.width)
+	if err != nil {
+		return content
+	}
+	return rendered
+}
+
+func (m askStreamModel) View() string {
+	if m.loading {
+		return m.spinner.View() + " Thinking... " + m.styles.Muted.Render("(esc to cancel)")
+	}
+
+	if m.rendered == "" {
+		return ""
+	}
+
+	return m.rendered
+}
+
+// streamWithGlamour renders markdown beautifully as content streams in
+func streamWithGlamour(output <-chan string) error {
+	model := newAskStreamModel()
+
+	// Create program - use inline mode so output stays in terminal
+	p := tea.NewProgram(model,
+		tea.WithoutSignalHandler(),
+	)
+
+	// Stream content in background
+	go func() {
+		for chunk := range output {
+			p.Send(askContentMsg(chunk))
+		}
+		p.Send(askDoneMsg{})
+	}()
+
+	_, err := p.Run()
+	return err
+}
+
+// renderMarkdown renders markdown content using glamour
 func renderMarkdown(content string, width int) (string, error) {
 	style := styles.DraculaStyleConfig
 	style.Document.Margin = uintPtr(0)
@@ -243,13 +275,9 @@ func renderMarkdown(content string, width int) (string, error) {
 		return "", err
 	}
 
-	result := strings.TrimSpace(rendered)
-	if result != "" && !strings.HasSuffix(result, "\n") {
-		result += "\n"
-	}
-
-	// Ensure text is wrapped to terminal width
-	return wordwrap.String(result, width), nil
+	// Don't apply wordwrap - glamour already handles wrapping,
+	// and wordwrap breaks ANSI escape codes
+	return strings.TrimSpace(rendered), nil
 }
 
 func uintPtr(v uint) *uint {

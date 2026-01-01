@@ -11,7 +11,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/glamour/styles"
-	"github.com/muesli/reflow/wordwrap"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/prompt"
 	"golang.org/x/term"
@@ -212,7 +211,9 @@ func renderMarkdown(content string, width int) string {
 		result += "\n"
 	}
 
-	return wordwrap.String(result, width)
+	// Don't apply wordwrap - glamour already handles wrapping,
+	// and wordwrap breaks ANSI escape codes
+	return result
 }
 
 // getTerminalSize returns terminal width and height
