@@ -83,6 +83,10 @@ func NewProvider(cfg *config.Config) (Provider, error) {
 		}
 		return NewGeminiProvider(cfg.Gemini.APIKey, cfg.Gemini.Model, false), nil
 
+	case "zen":
+		// OpenCode Zen - free tier works without API key
+		return NewZenProvider(cfg.Zen.APIKey, cfg.Zen.Model), nil
+
 	default:
 		return nil, fmt.Errorf("unknown provider: %s", cfg.Provider)
 	}

@@ -41,7 +41,7 @@ go build
 
 ## Setup
 
-On first run, term-llm will prompt you to choose a provider (Anthropic, OpenAI, or Gemini).
+On first run, term-llm will prompt you to choose a provider (Anthropic, OpenAI, Gemini, or Zen).
 
 ### Option 1: Use existing CLI credentials (recommended)
 
@@ -74,6 +74,26 @@ export OPENAI_API_KEY=your-key
 export GEMINI_API_KEY=your-key
 ```
 
+### Option 3: Use OpenCode Zen (free tier available)
+
+[OpenCode Zen](https://opencode.ai) provides free access to GLM 4.7 and other models. No API key required for free tier, or set `ZEN_API_KEY` for paid models:
+
+```yaml
+# In ~/.config/term-llm/config.yaml
+provider: zen
+
+zen:
+  model: glm-4.7-free  # default model (free)
+  # api_key: optional - leave empty for free tier, or set for paid models
+```
+
+Or use the `--provider` flag:
+
+```bash
+term-llm exec --provider zen "list files"
+term-llm ask --provider zen "explain git rebase"
+```
+
 ## Usage
 
 ```bash
@@ -86,6 +106,7 @@ Use arrow keys to select a command, Enter to execute, or press `h` for detailed 
 
 | Flag | Short | Description |
 |------|-------|-------------|
+| `--provider` | | Override provider (anthropic, openai, gemini, zen) |
 | `--auto-pick` | `-a` | Auto-execute the best suggestion without prompting |
 | `--max N` | `-n N` | Limit to N options in the selection UI |
 | `--search` | `-s` | Enable web search for current information |
@@ -100,10 +121,12 @@ term-llm exec "compress folder" --auto-pick     # auto-execute best
 term-llm exec "find large files" -n 3           # show max 3 options
 term-llm exec "install latest node" -s          # with web search
 term-llm exec "disk usage" -p                   # print only
+term-llm exec --provider zen "git status"       # use specific provider
 
 # Ask a question
 term-llm ask "What is the difference between TCP and UDP?"
-term-llm ask "latest node.js version" -s       # with web search
+term-llm ask "latest node.js version" -s        # with web search
+term-llm ask --provider zen "explain docker"    # use specific provider
 ```
 
 ## Shell Integration (Recommended)
@@ -169,7 +192,7 @@ To disable update checks, set `TERM_LLM_SKIP_UPDATE_CHECK=1`.
 Config is stored at `~/.config/term-llm/config.yaml`:
 
 ```yaml
-provider: anthropic  # or "openai" or "gemini"
+provider: anthropic  # anthropic, openai, gemini, or zen
 
 exec:
   suggestions: 3  # number of command suggestions
@@ -192,18 +215,23 @@ openai:
 gemini:
   model: gemini-3-flash-preview
   credentials: gemini-cli  # or "api_key" (default)
+
+zen:
+  model: glm-4.7-free
+  # api_key is optional - leave empty for free tier
 ```
 
 ### Credentials
 
 Each provider supports a `credentials` field:
 
-| Value | Description |
-|-------|-------------|
-| `api_key` | Use environment variable (default) |
-| `claude` | Use Claude Code credentials (Anthropic) |
-| `codex` | Use Codex CLI credentials (OpenAI) |
-| `gemini-cli` | Use gemini-cli OAuth credentials (Gemini) |
+| Provider | Value | Description |
+|----------|-------|-------------|
+| All | `api_key` | Use environment variable (default) |
+| Anthropic | `claude` | Use Claude Code credentials |
+| OpenAI | `codex` | Use Codex CLI credentials |
+| Gemini | `gemini-cli` | Use gemini-cli OAuth credentials |
+| Zen | `api_key` | Optional: empty for free tier, or set `ZEN_API_KEY` for paid models |
 
 **Claude Code** (`credentials: claude`):
 - **macOS**: System keychain (via `security` command)

@@ -19,9 +19,10 @@ import (
 )
 
 var (
-	askDebug  bool
-	askSearch bool
-	askText   bool
+	askDebug    bool
+	askSearch   bool
+	askText     bool
+	askProvider string
 )
 
 var askCmd = &cobra.Command{
@@ -43,6 +44,10 @@ func init() {
 	askCmd.Flags().BoolVarP(&askSearch, "search", "s", false, "Enable web search for current information")
 	askCmd.Flags().BoolVarP(&askDebug, "debug", "d", false, "Show debug information")
 	askCmd.Flags().BoolVarP(&askText, "text", "t", false, "Output plain text instead of rendered markdown")
+	askCmd.Flags().StringVar(&askProvider, "provider", "", "Override provider (anthropic, openai, gemini, zen)")
+	askCmd.RegisterFlagCompletionFunc("provider", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return []string{"anthropic", "openai", "gemini", "zen"}, cobra.ShellCompDirectiveNoFileComp
+	})
 	rootCmd.AddCommand(askCmd)
 }
 
@@ -64,6 +69,11 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to load config: %w", err)
 		}
+	}
+
+	// Override provider if flag is set
+	if askProvider != "" {
+		cfg.Provider = askProvider
 	}
 
 	// Initialize theme from config

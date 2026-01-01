@@ -18,6 +18,7 @@ var (
 	execDebug     bool
 	execAutoPick  bool
 	execMaxOpts   int
+	execProvider  string
 )
 
 var execCmd = &cobra.Command{
@@ -44,6 +45,10 @@ func init() {
 	execCmd.Flags().BoolVarP(&execDebug, "debug", "d", false, "Show full LLM request and response")
 	execCmd.Flags().BoolVarP(&execAutoPick, "auto-pick", "a", false, "Auto-execute the best suggestion without prompting")
 	execCmd.Flags().IntVarP(&execMaxOpts, "max", "n", 0, "Maximum number of options to show (0 = no limit)")
+	execCmd.Flags().StringVar(&execProvider, "provider", "", "Override provider (anthropic, openai, gemini, zen)")
+	execCmd.RegisterFlagCompletionFunc("provider", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return []string{"anthropic", "openai", "gemini", "zen"}, cobra.ShellCompDirectiveNoFileComp
+	})
 	rootCmd.AddCommand(execCmd)
 }
 
@@ -65,6 +70,11 @@ func runExec(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to load config: %w", err)
 		}
+	}
+
+	// Override provider if flag is set
+	if execProvider != "" {
+		cfg.Provider = execProvider
 	}
 
 	// Initialize theme from config

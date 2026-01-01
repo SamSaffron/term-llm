@@ -102,6 +102,10 @@ func configShow(cmd *cobra.Command, args []string) error {
 	}
 	printCredentialStatus("gemini", cfg.Gemini.Credentials, geminiKey, "GEMINI_API_KEY")
 
+	fmt.Printf("\nzen:\n")
+	fmt.Printf("  model: %s\n", cfg.Zen.Model)
+	printZenCredentialStatus(cfg.Zen.APIKey)
+
 	return nil
 }
 
@@ -131,6 +135,16 @@ func printCredentialStatus(provider, credType, apiKey, envVar string) {
 		} else {
 			fmt.Printf("  credentials: api_key [NOT SET - export %s]\n", envVar)
 		}
+	}
+}
+
+// printZenCredentialStatus shows the OpenCode Zen credential status
+// Zen has free tier access, so empty API key is valid
+func printZenCredentialStatus(apiKey string) {
+	if apiKey != "" {
+		fmt.Printf("  credentials: api_key [set via ZEN_API_KEY]\n")
+	} else {
+		fmt.Printf("  credentials: [free tier - no API key required]\n")
 	}
 }
 
@@ -203,7 +217,7 @@ func defaultConfigContent() string {
 	return `# term-llm configuration
 # Run 'term-llm config edit' to modify
 
-provider: anthropic  # anthropic, openai, or gemini
+provider: anthropic  # anthropic, openai, gemini, or zen
 
 # exec command settings
 exec:
@@ -246,6 +260,12 @@ gemini:
   # credentials: api_key or gemini-cli
   #   api_key: uses GEMINI_API_KEY env var (default)
   #   gemini-cli: uses gemini-cli OAuth (requires 'gemini' CLI)
+
+zen:
+  model: glm-4.7-free
+  # OpenCode Zen - free tier access to GLM 4.7 and other models
+  # api_key is optional - leave empty for free tier access
+  # Set ZEN_API_KEY env var if you have a paid API key
 `
 }
 

@@ -18,6 +18,7 @@ type Config struct {
 	Anthropic AnthropicConfig `mapstructure:"anthropic"`
 	OpenAI    OpenAIConfig    `mapstructure:"openai"`
 	Gemini    GeminiConfig    `mapstructure:"gemini"`
+	Zen       ZenConfig       `mapstructure:"zen"`
 }
 
 // ThemeConfig allows customization of UI colors
@@ -63,6 +64,14 @@ type GeminiConfig struct {
 	OAuthCreds *credentials.GeminiOAuthCredentials
 }
 
+// ZenConfig configures the OpenCode Zen provider
+// Zen provides free access to models like GLM 4.7 via opencode.ai
+// API key is optional - leave empty for free tier access
+type ZenConfig struct {
+	APIKey string `mapstructure:"api_key"` // Optional: leave empty for free tier
+	Model  string `mapstructure:"model"`
+}
+
 func Load() (*Config, error) {
 	configPath, err := GetConfigDir()
 	if err != nil {
@@ -80,6 +89,7 @@ func Load() (*Config, error) {
 	viper.SetDefault("anthropic.model", "claude-sonnet-4-5")
 	viper.SetDefault("openai.model", "gpt-5.2")
 	viper.SetDefault("gemini.model", "gemini-3-flash-preview")
+	viper.SetDefault("zen.model", "glm-4.7-free")
 
 	// Read config file (optional - won't error if missing)
 	if err := viper.ReadInConfig(); err != nil {
@@ -103,6 +113,7 @@ func Load() (*Config, error) {
 	if err := resolveGeminiCredentials(&cfg.Gemini); err != nil {
 		return nil, fmt.Errorf("gemini credentials: %w", err)
 	}
+	resolveZenCredentials(&cfg.Zen)
 
 	return &cfg, nil
 }
@@ -164,6 +175,16 @@ func resolveGeminiCredentials(cfg *GeminiConfig) error {
 		}
 	}
 	return nil
+}
+
+// resolveZenCredentials resolves OpenCode Zen API credentials
+// API key is optional - empty means free tier access
+func resolveZenCredentials(cfg *ZenConfig) {
+	cfg.APIKey = expandEnv(cfg.APIKey)
+	if cfg.APIKey == "" {
+		cfg.APIKey = os.Getenv("ZEN_API_KEY")
+	}
+	// Empty API key is valid - Zen offers free tier access
 }
 
 // expandEnv expands ${VAR} or $VAR in a string
@@ -250,7 +271,12 @@ openai:
 
 gemini:
   model: %s
-`, cfg.Provider, cfg.Exec.Suggestions, cfg.Anthropic.Model, cfg.OpenAI.Model, cfg.Gemini.Model)
+
+zen:
+  model: %s
+  # api_key: optional - leave empty for free tier access
+  # Set ZEN_API_KEY env var or add api_key here if you have one
+`, cfg.Provider, cfg.Exec.Suggestions, cfg.Anthropic.Model, cfg.OpenAI.Model, cfg.Gemini.Model, cfg.Zen.Model)
 
 	return os.WriteFile(path, []byte(content), 0600)
 }
