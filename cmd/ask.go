@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/glamour/ansi"
 	"github.com/charmbracelet/glamour/styles"
+	"github.com/muesli/reflow/wordwrap"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -93,7 +93,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}()
 
 	if useGlamour {
-		err = streamWithBubbleTea(output)
+		err = streamWithGlamour(output)
 	} else {
 		err = streamPlainText(output)
 	}
@@ -119,128 +119,150 @@ func streamPlainText(output <-chan string) error {
 	return nil
 }
 
-// askModel is the bubbletea model for streaming with glamour
-type askModel struct {
-	spinner    spinner.Model
-	content    *strings.Builder
-	output     <-chan string
-	done       bool
-	finalView  string
-	hasContent bool
-}
-
-// chunkMsg carries a streaming chunk
-type chunkMsg string
-
-// doneMsg signals streaming is complete
-type doneMsg struct{}
-
-func newAskModel(output <-chan string) askModel {
-	s := spinner.New()
-	s.Spinner = spinner.Dot
-	return askModel{
-		spinner: s,
-		content: &strings.Builder{},
-		output:  output,
+// getTerminalWidth returns the terminal width or a default
+func getTerminalWidth() int {
+	width, _, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil || width <= 0 {
+		return 80 // default
 	}
+	return width
 }
 
-func (m askModel) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, waitForChunk(m.output))
-}
-
-// waitForChunk reads from the channel and sends chunks as messages
-func waitForChunk(output <-chan string) tea.Cmd {
-	return func() tea.Msg {
-		chunk, ok := <-output
-		if !ok {
-			return doneMsg{}
+// countTerminalLines counts how many terminal lines a string occupies
+// accounting for line wrapping at the given width
+func countTerminalLines(s string, termWidth int) int {
+	lines := strings.Split(s, "\n")
+	count := 0
+	for _, line := range lines {
+		if line == "" {
+			count++
+			continue
 		}
-		return chunkMsg(chunk)
+		// Use reflow's ansi-aware width calculation
+		visibleWidth := printableWidth(line)
+		if visibleWidth == 0 {
+			count++
+		} else {
+			// How many terminal lines does this line wrap to?
+			count += (visibleWidth + termWidth - 1) / termWidth
+		}
 	}
+	return count
 }
 
-func (m askModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		if msg.String() == "ctrl+c" || msg.String() == "q" {
-			return m, tea.Quit
+// printableWidth returns the visible width of a string (ignoring ANSI codes)
+func printableWidth(s string) int {
+	width := 0
+	inEscape := false
+	for _, r := range s {
+		if r == '\x1b' {
+			inEscape = true
+			continue
 		}
+		if inEscape {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+				inEscape = false
+			}
+			continue
+		}
+		width++
+	}
+	return width
+}
 
-	case spinner.TickMsg:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		return m, cmd
+// streamWithGlamour renders markdown incrementally as content streams in
+func streamWithGlamour(output <-chan string) error {
+	var content strings.Builder
+	lastRendered := ""
+	gotFirstChunk := false
+	spinnerDone := make(chan struct{})
+	termWidth := getTerminalWidth()
+	altScreenExited := false
 
-	case chunkMsg:
-		m.content.WriteString(string(msg))
-		m.hasContent = true
-		// Continue reading chunks
-		return m, waitForChunk(m.output)
+	// Enter alternate screen buffer to avoid eating shell history
+	fmt.Print("\033[?1049h") // Enter alternate screen
+	fmt.Print("\033[H")      // Move cursor to top-left
+	defer func() {
+		if !altScreenExited {
+			fmt.Print("\033[?1049l") // Exit alternate screen
+		}
+	}()
 
-	case doneMsg:
-		m.done = true
-		// Render final content
-		if m.content.Len() > 0 {
-			rendered, err := renderMarkdown(m.content.String())
-			if err != nil {
-				m.finalView = m.content.String()
-			} else {
-				m.finalView = rendered
+	// Start spinner
+	go func() {
+		frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+		i := 0
+		ticker := time.NewTicker(80 * time.Millisecond)
+		defer ticker.Stop()
+
+		fmt.Printf("%s Thinking...", frames[i])
+		for {
+			select {
+			case <-spinnerDone:
+				return
+			case <-ticker.C:
+				i = (i + 1) % len(frames)
+				fmt.Printf("\r%s Thinking...", frames[i])
 			}
 		}
-		return m, tea.Quit
-	}
+	}()
 
-	return m, nil
-}
-
-func (m askModel) View() string {
-	if m.done {
-		return m.finalView
-	}
-
-	if !m.hasContent {
-		return m.spinner.View() + " Thinking..."
-	}
-
-	// Render current content with glamour
-	rendered, err := renderMarkdown(m.content.String())
-	if err != nil {
-		return m.content.String()
-	}
-	return rendered
-}
-
-// streamWithBubbleTea uses bubbletea for proper terminal handling
-func streamWithBubbleTea(output <-chan string) error {
-	// Open TTY for input
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
-	if err != nil {
-		// Fallback to simple streaming if no TTY
-		return streamPlainTextFromChan(output)
-	}
-	defer tty.Close()
-
-	model := newAskModel(output)
-	p := tea.NewProgram(model, tea.WithInput(tty), tea.WithOutput(os.Stdout))
-
-	_, err = p.Run()
-	return err
-}
-
-// streamPlainTextFromChan is a fallback for non-TTY
-func streamPlainTextFromChan(output <-chan string) error {
 	for chunk := range output {
-		fmt.Print(chunk)
+		if !gotFirstChunk {
+			gotFirstChunk = true
+			close(spinnerDone)
+			time.Sleep(10 * time.Millisecond)
+		}
+
+		content.WriteString(chunk)
+
+		// Re-render when we get a newline (complete line)
+		if strings.Contains(chunk, "\n") {
+			currentContent := content.String()
+			rendered, err := renderMarkdown(currentContent, termWidth)
+			if err != nil {
+				rendered = currentContent
+			}
+
+			// Only update if content changed
+			if rendered != lastRendered {
+				// Clear screen and redraw from top
+				fmt.Print("\033[H\033[J") // Home + clear screen
+				fmt.Print(rendered)
+				lastRendered = rendered
+			}
+		}
 	}
-	fmt.Println()
+
+	// Stop spinner if we never got content
+	if !gotFirstChunk {
+		close(spinnerDone)
+	}
+
+	// Final render - store it for after we exit alternate screen
+	var finalOutput string
+	finalContent := content.String()
+	if finalContent != "" {
+		rendered, err := renderMarkdown(finalContent, termWidth)
+		if err != nil {
+			finalOutput = finalContent
+		} else {
+			finalOutput = rendered
+		}
+	}
+
+	// Exit alternate screen then print final result to main screen
+	fmt.Print("\033[?1049l")
+	altScreenExited = true
+	if finalOutput != "" {
+		fmt.Print(finalOutput)
+	}
+
 	return nil
 }
 
-// renderMarkdown renders markdown content using glamour with no padding
-func renderMarkdown(content string) (string, error) {
-	// Start with Dracula style (good dark theme) and remove margins
+// renderMarkdown renders markdown content using glamour with word wrapping
+func renderMarkdown(content string, width int) (string, error) {
 	style := styles.DraculaStyleConfig
 	style.Document.Margin = uintPtr(0)
 	style.Document.BlockPrefix = ""
@@ -249,7 +271,7 @@ func renderMarkdown(content string) (string, error) {
 
 	renderer, err := glamour.NewTermRenderer(
 		glamour.WithStyles(style),
-		glamour.WithWordWrap(0),
+		glamour.WithWordWrap(width),
 	)
 	if err != nil {
 		return "", err
@@ -260,8 +282,13 @@ func renderMarkdown(content string) (string, error) {
 		return "", err
 	}
 
-	// Trim leading/trailing whitespace that glamour adds
-	return strings.TrimSpace(rendered) + "\n", nil
+	result := strings.TrimSpace(rendered)
+	if result != "" && !strings.HasSuffix(result, "\n") {
+		result += "\n"
+	}
+
+	// Ensure text is wrapped to terminal width
+	return wordwrap.String(result, width), nil
 }
 
 func uintPtr(v uint) *uint {
