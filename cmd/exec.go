@@ -61,9 +61,7 @@ func init() {
 	execCmd.Flags().IntVarP(&execMaxOpts, "max", "n", 0, "Maximum number of options to show (0 = no limit)")
 	execCmd.Flags().StringVar(&execProvider, "provider", "", "Override provider, optionally with model (e.g., openai:gpt-4o)")
 	execCmd.Flags().StringArrayVarP(&execFiles, "file", "f", nil, "File(s) to include as context (supports globs, 'clipboard')")
-	execCmd.RegisterFlagCompletionFunc("provider", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return []string{"anthropic", "openai", "gemini", "zen"}, cobra.ShellCompDirectiveNoFileComp
-	})
+	execCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion)
 	rootCmd.AddCommand(execCmd)
 }
 

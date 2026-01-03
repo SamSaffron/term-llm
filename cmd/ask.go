@@ -51,9 +51,7 @@ func init() {
 	askCmd.Flags().BoolVarP(&askText, "text", "t", false, "Output plain text instead of rendered markdown")
 	askCmd.Flags().StringVar(&askProvider, "provider", "", "Override provider, optionally with model (e.g., openai:gpt-4o)")
 	askCmd.Flags().StringArrayVarP(&askFiles, "file", "f", nil, "File(s) to include as context (supports globs, 'clipboard')")
-	askCmd.RegisterFlagCompletionFunc("provider", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return []string{"anthropic", "openai", "gemini", "zen"}, cobra.ShellCompDirectiveNoFileComp
-	})
+	askCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion)
 	rootCmd.AddCommand(askCmd)
 }
 

@@ -55,9 +55,7 @@ func init() {
 	editCmd.Flags().BoolVarP(&editDebug, "debug", "d", false, "Show debug information")
 	editCmd.Flags().BoolVar(&editPerEdit, "per-edit", false, "Prompt for each edit separately instead of consolidating per file")
 	editCmd.MarkFlagRequired("file")
-	editCmd.RegisterFlagCompletionFunc("provider", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return []string{"anthropic", "openai", "gemini", "zen"}, cobra.ShellCompDirectiveNoFileComp
-	})
+	editCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion)
 	rootCmd.AddCommand(editCmd)
 }
 

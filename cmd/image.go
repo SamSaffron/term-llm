@@ -55,9 +55,7 @@ func init() {
 	imageCmd.Flags().BoolVar(&imageNoSave, "no-save", false, "Don't save to default location (use with -o)")
 	imageCmd.Flags().BoolVarP(&imageDebug, "debug", "d", false, "Show debug information")
 
-	imageCmd.RegisterFlagCompletionFunc("provider", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return []string{"gemini", "openai", "flux"}, cobra.ShellCompDirectiveNoFileComp
-	})
+	imageCmd.RegisterFlagCompletionFunc("provider", ImageProviderFlagCompletion)
 
 	rootCmd.AddCommand(imageCmd)
 }
