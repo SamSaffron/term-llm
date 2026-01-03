@@ -32,12 +32,11 @@ Rules:
 3. Prefer common tools that are likely to be installed
 4. Order suggestions from most likely to be useful to least
 5. Keep explanations brief (under 50 words)
+6. You MUST call the suggest_commands tool to provide your suggestions - do not respond with plain text
 `, numSuggestions)
 
 	if enableSearch {
-		base += `
-6. You have access to web search. Use it to find current documentation, latest versions, or up-to-date syntax when relevant
-7. After searching (if needed), call the suggest_commands tool with your suggestions`
+		base += `7. You have access to web search. Use it to find current documentation, latest versions, or up-to-date syntax when relevant`
 	}
 
 	return base

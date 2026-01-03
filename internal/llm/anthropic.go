@@ -114,11 +114,11 @@ func (p *AnthropicProvider) suggestWithoutSearch(ctx context.Context, req Sugges
 		Messages: []anthropic.MessageParam{
 			anthropic.NewUserMessage(anthropic.NewTextBlock(userPrompt)),
 		},
-		Tools:      []anthropic.ToolUnionParam{tool},
-		ToolChoice: anthropic.ToolChoiceParamOfTool("suggest_commands"),
+		Tools: []anthropic.ToolUnionParam{tool},
 	}
 
 	// Add extended thinking if enabled
+	// Note: Cannot force tool_choice when thinking is enabled, so we rely on prompt guidance
 	if p.thinkingBudget > 0 {
 		params.MaxTokens = 16000
 		params.Thinking = anthropic.ThinkingConfigParamUnion{
@@ -126,6 +126,9 @@ func (p *AnthropicProvider) suggestWithoutSearch(ctx context.Context, req Sugges
 				BudgetTokens: p.thinkingBudget,
 			},
 		}
+	} else {
+		// Only force tool choice when thinking is disabled
+		params.ToolChoice = anthropic.ToolChoiceParamOfTool("suggest_commands")
 	}
 
 	message, err := p.client.Messages.New(ctx, params)
@@ -438,11 +441,11 @@ func (p *AnthropicProvider) GetEdits(ctx context.Context, systemPrompt, userProm
 		Messages: []anthropic.MessageParam{
 			anthropic.NewUserMessage(anthropic.NewTextBlock(userPrompt)),
 		},
-		Tools:      []anthropic.ToolUnionParam{tool},
-		ToolChoice: anthropic.ToolChoiceUnionParam{OfAny: &anthropic.ToolChoiceAnyParam{}},
+		Tools: []anthropic.ToolUnionParam{tool},
 	}
 
 	// Add extended thinking if enabled
+	// Note: Cannot force tool_choice when thinking is enabled, so we rely on prompt guidance
 	if p.thinkingBudget > 0 {
 		params.MaxTokens = 16000
 		params.Thinking = anthropic.ThinkingConfigParamUnion{
@@ -450,6 +453,9 @@ func (p *AnthropicProvider) GetEdits(ctx context.Context, systemPrompt, userProm
 				BudgetTokens: p.thinkingBudget,
 			},
 		}
+	} else {
+		// Only force tool choice when thinking is disabled
+		params.ToolChoice = anthropic.ToolChoiceUnionParam{OfAny: &anthropic.ToolChoiceAnyParam{}}
 	}
 
 	message, err := p.client.Messages.New(ctx, params)
