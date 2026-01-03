@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/samsaffron/term-llm/cmd/udiff"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -158,11 +159,8 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Check if provider supports edit tool
-	editProv, ok := provider.(llm.EditToolProvider)
-	if !ok {
-		return fmt.Errorf("provider %s does not support edit tool", provider.Name())
-	}
+	// Determine if we should use unified diff format
+	useUnifiedDiff := shouldUseUnifiedDiff(cfg)
 
 	// Parse file specs and read files
 	var files []input.FileContent
@@ -206,15 +204,33 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no files found")
 	}
 
-	// Build prompts
-	systemPrompt := buildEditSystemPrompt(cfg.Edit.Instructions, specs)
-	userPrompt := buildEditUserPrompt(request, files, specs)
-
 	// Track file contents for applying edits
 	fileContents := make(map[string]string)
 	for _, f := range files {
 		fileContents[f.Path] = f.Content
 	}
+
+	// Build prompts based on diff format
+	userPrompt := buildEditUserPrompt(request, files, specs)
+
+	if useUnifiedDiff {
+		// Check if provider supports unified diff
+		udiffProv, ok := provider.(llm.UnifiedDiffProvider)
+		if !ok {
+			return fmt.Errorf("provider %s does not support unified diff format", provider.Name())
+		}
+
+		systemPrompt := buildUnifiedDiffSystemPrompt(cfg.Edit.Instructions, specs)
+		return processUnifiedDiff(ctx, udiffProv, systemPrompt, userPrompt, fileContents, specs)
+	}
+
+	// Use replace (multi-edit) format
+	editProv, ok := provider.(llm.EditToolProvider)
+	if !ok {
+		return fmt.Errorf("provider %s does not support edit tool", provider.Name())
+	}
+
+	systemPrompt := buildEditSystemPrompt(cfg.Edit.Instructions, specs)
 
 	// Get all edits from LLM with spinner
 	edits, err := ui.RunEditWithSpinner(ctx, editProv, systemPrompt, userPrompt, editDebug)
@@ -605,5 +621,257 @@ func validateGuardForReplace(content string, match editMatch, spec FileSpec) err
 		return fmt.Errorf("edit ends at line %d, but guard ends at %d", endLineNum, spec.EndLine)
 	}
 
+	return nil
+}
+
+// shouldUseUnifiedDiff determines if unified diff format should be used based on config
+func shouldUseUnifiedDiff(cfg *config.Config) bool {
+	switch cfg.Edit.DiffFormat {
+	case "udiff":
+		return true
+	case "replace":
+		return false
+	default: // "auto" or empty
+		// Use unified diff for Codex models
+		model := getActiveModel(cfg)
+		return llm.IsCodexModel(model)
+	}
+}
+
+// getActiveModel returns the model name for the active provider
+func getActiveModel(cfg *config.Config) string {
+	switch cfg.Provider {
+	case "anthropic":
+		return cfg.Anthropic.Model
+	case "openai":
+		return cfg.OpenAI.Model
+	case "gemini":
+		return cfg.Gemini.Model
+	case "zen":
+		return cfg.Zen.Model
+	default:
+		return ""
+	}
+}
+
+// buildUnifiedDiffSystemPrompt builds a system prompt for unified diff format
+func buildUnifiedDiffSystemPrompt(instructions string, specs []FileSpec) string {
+	cwd, _ := os.Getwd()
+	base := fmt.Sprintf(`You are an expert code editor. Use the unified_diff tool to make changes to files.
+
+Context:
+- Operating System: %s
+- Architecture: %s
+- Current Directory: %s`, runtime.GOOS, runtime.GOARCH, cwd)
+
+	if instructions != "" {
+		base += fmt.Sprintf("\n- User Context: %s", instructions)
+	}
+
+	base += `
+
+UNIFIED DIFF FORMAT:
+
+--- path/to/file
++++ path/to/file
+@@ context to locate (e.g., func ProcessData) @@
+ context line (space prefix = unchanged, used to find location)
+-line being removed
++line being added
+
+LINE PREFIXES:
+- Space " " = context line (unchanged, anchors position)
+- Minus "-" = line being removed from original
+- Plus "+"  = line being added in replacement
+
+ELISION (-...) FOR LARGE REPLACEMENTS:
+When replacing 10+ lines, use -... instead of listing every removed line:
+
+--- file.go
++++ file.go
+@@ func BigFunction @@
+-func BigFunction() error {
+-...
+-}
++func BigFunction() error {
++    return simplifiedImpl()
++}
+
+CRITICAL: After -... you MUST have an end anchor (the -} above) so we know where elision stops.
+The -... matches everything between -func BigFunction()... and -}.
+
+SMALL CHANGES - LIST ALL LINES:
+For changes under 10 lines, list each line explicitly:
+
+--- file.go
++++ file.go
+@@ func SmallFunc @@
+ func SmallFunc() {
+-    oldLine1()
+-    oldLine2()
++    newLine1()
++    newLine2()
+ }
+
+ADDING NEW CODE (no - lines needed):
+
+--- file.go
++++ file.go
+@@ func Existing @@
+ func Existing() {
+     keepThis()
++    addedLine()
+ }
+
+MULTIPLE FILES: Use separate --- +++ blocks for each file.`
+
+	// Add guard info
+	for _, spec := range specs {
+		if spec.HasGuard {
+			base += fmt.Sprintf("\n\nIMPORTANT: For %s, only modify lines %d-%d.",
+				spec.Path, spec.StartLine, spec.EndLine)
+		}
+	}
+
+	return base
+}
+
+// processUnifiedDiff handles the unified diff flow
+func processUnifiedDiff(ctx context.Context, provider llm.UnifiedDiffProvider, systemPrompt, userPrompt string, fileContents map[string]string, specs []FileSpec) error {
+	// Get unified diff from LLM with spinner
+	diffStr, err := ui.RunUnifiedDiffWithSpinner(ctx, provider, systemPrompt, userPrompt, editDebug)
+	if err != nil {
+		if err.Error() == "cancelled" {
+			return nil
+		}
+		return fmt.Errorf("edit failed: %w", err)
+	}
+
+	if diffStr == "" {
+		fmt.Println("No edits proposed")
+		return nil
+	}
+
+	// Parse the unified diff
+	fileDiffs, err := udiff.Parse(diffStr)
+	if err != nil {
+		return fmt.Errorf("failed to parse diff: %w", err)
+	}
+
+	if len(fileDiffs) == 0 {
+		fmt.Println("No edits proposed")
+		return nil
+	}
+
+	// Apply diffs and show results
+	return processUnifiedDiffResults(fileDiffs, fileContents, specs)
+}
+
+// processUnifiedDiffResults applies parsed unified diffs and prompts for approval
+func processUnifiedDiffResults(fileDiffs []udiff.FileDiff, fileContents map[string]string, specs []FileSpec) error {
+	type fileResult struct {
+		path       string
+		oldContent string
+		newContent string
+		err        error
+	}
+
+	results := make([]fileResult, 0, len(fileDiffs))
+
+	for _, fd := range fileDiffs {
+		// Normalize path to absolute
+		normalizedPath := absPath(fd.Path)
+
+		oldContent, ok := fileContents[normalizedPath]
+		if !ok {
+			// Try without normalization (in case LLM used relative path)
+			for path, content := range fileContents {
+				if strings.HasSuffix(path, "/"+fd.Path) || path == fd.Path {
+					normalizedPath = path
+					oldContent = content
+					ok = true
+					break
+				}
+			}
+		}
+
+		if !ok {
+			ui.ShowEditSkipped(fd.Path, "file not in context")
+			continue
+		}
+
+		newContent, err := udiff.Apply(oldContent, fd.Hunks)
+		if err != nil {
+			results = append(results, fileResult{
+				path: normalizedPath,
+				err:  err,
+			})
+			continue
+		}
+
+		results = append(results, fileResult{
+			path:       normalizedPath,
+			oldContent: oldContent,
+			newContent: newContent,
+		})
+	}
+
+	// Calculate global max width for consistent diff display
+	globalWidth := 0
+	for _, r := range results {
+		if r.err == nil && r.oldContent != r.newContent {
+			w := ui.CalcDiffWidth(r.oldContent, r.newContent)
+			if w > globalWidth {
+				globalWidth = w
+			}
+		}
+	}
+
+	// Display and apply
+	var applied, skipped int
+	first := true
+
+	for _, r := range results {
+		if r.err != nil {
+			ui.ShowEditSkipped(r.path, r.err.Error())
+			skipped++
+			continue
+		}
+
+		if r.oldContent == r.newContent {
+			continue
+		}
+
+		if !first {
+			fmt.Println()
+		}
+		first = false
+
+		// Show diff
+		ui.PrintCompactDiff(r.path, r.oldContent, r.newContent, globalWidth)
+
+		if editDryRun {
+			continue
+		}
+
+		if !ui.PromptApplyEdit() {
+			skipped++
+			continue
+		}
+
+		if err := os.WriteFile(r.path, []byte(r.newContent), 0644); err != nil {
+			fmt.Printf("  error: %s\n", err.Error())
+			skipped++
+			continue
+		}
+
+		applied++
+	}
+
+	if !editDryRun && applied+skipped > 3 {
+		fmt.Printf("\n%d files updated, %d skipped\n", applied, skipped)
+	}
+
+	fmt.Println()
 	return nil
 }

@@ -8,6 +8,7 @@ A Swiss Army knife for your terminal—AI-powered commands, answers, and images 
 
 - **Command suggestions**: Natural language → executable shell commands
 - **Ask questions**: Get answers with optional web search
+- **File editing**: Edit code with AI assistance (supports line ranges)
 - **File context**: Include files, clipboard, or stdin as context (`-f`)
 - **Image generation**: Create and edit images (Gemini, OpenAI, Flux)
 - **Multiple providers**: Anthropic, OpenAI, Gemini, Zen (free tier)
@@ -151,6 +152,11 @@ term-llm ask -f code.go "explain this code"     # with file context
 term-llm ask -f clipboard "what is this?"       # from clipboard
 cat README.md | term-llm ask "summarize this"   # pipe stdin
 
+# Edit files
+term-llm edit "add error handling" -f main.go
+term-llm edit "refactor loop" -f utils.go:20-40  # only lines 20-40
+term-llm edit "add tests" -f "*.go" --dry-run    # preview changes
+
 # Generate images
 term-llm image "a sunset over mountains"
 term-llm image "logo design" --provider flux    # use specific provider
@@ -209,6 +215,70 @@ term-llm image "landscape" --no-display         # don't show in terminal
 | Flux | flux-2-pro / flux-kontext-pro | `BFL_API_KEY` | `image.flux.api_key` |
 
 Image providers use their own credentials, separate from text providers. This allows using different API keys or accounts for text vs image generation.
+
+## File Editing
+
+Edit files using natural language instructions:
+
+```bash
+term-llm edit "add error handling" --file main.go
+term-llm edit "refactor to use interfaces" --file "*.go"
+term-llm edit "fix the bug" --file utils.go:45-60     # only lines 45-60
+```
+
+### Edit Flags
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--file` | `-f` | File(s) to edit (required, supports globs) |
+| `--dry-run` | | Preview changes without applying |
+| `--provider` | | Override provider (e.g., `openai:gpt-5.2-codex`) |
+| `--per-edit` | | Prompt for each edit separately |
+| `--debug` | `-d` | Show debug information |
+
+### Line Range Syntax
+
+Restrict edits to specific line ranges:
+
+```bash
+term-llm edit "fix this" --file main.go:11-22    # lines 11 to 22
+term-llm edit "fix this" --file main.go:11-      # line 11 to end
+term-llm edit "fix this" --file main.go:-22      # start to line 22
+```
+
+### Diff Format
+
+term-llm supports two edit strategies:
+
+| Format | Description | Best For |
+|--------|-------------|----------|
+| `replace` | Multiple parallel find/replace tool calls | Most models (default) |
+| `udiff` | Single unified diff with elision support | Codex models, large refactors |
+
+The `udiff` format uses unified diff syntax with `-...` elision to efficiently replace large code blocks without listing every line:
+
+```diff
+--- file.go
++++ file.go
+@@ func BigFunction @@
+-func BigFunction() error {
+-...
+-}
++func BigFunction() error {
++    return newImpl()
++}
+```
+
+Configure in `~/.config/term-llm/config.yaml`:
+
+```yaml
+edit:
+  diff_format: auto  # auto, udiff, or replace
+```
+
+- `auto` (default): Uses `udiff` for Codex models, `replace` for others
+- `udiff`: Always use unified diff format
+- `replace`: Always use multiple find/replace calls
 
 ## Shell Integration (Recommended)
 
@@ -290,8 +360,9 @@ ask:
     Be concise. I'm an experienced developer.
 
 edit:
-  # provider: anthropic
-  # model: claude-opus-4  # use a smarter model for code edits
+  # provider: openai
+  # model: gpt-5.2-codex  # Codex models are optimized for code edits
+  diff_format: auto  # auto, udiff, or replace
 
 anthropic:
   model: claude-sonnet-4-5

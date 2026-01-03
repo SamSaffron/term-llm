@@ -190,9 +190,9 @@ func TestWrapLine(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := wrapLine(tt.line, tt.maxWidth)
+			result := wrapLine(tt.line, tt.maxWidth, 0)
 			if !reflect.DeepEqual(result, tt.expected) {
-				t.Errorf("wrapLine(%q, %d) = %v, want %v", tt.line, tt.maxWidth, result, tt.expected)
+				t.Errorf("wrapLine(%q, %d, 0) = %v, want %v", tt.line, tt.maxWidth, result, tt.expected)
 			}
 		})
 	}

@@ -693,3 +693,130 @@ func (p *CodexProvider) GetEdits(ctx context.Context, systemPrompt, userPrompt s
 
 	return edits, nil
 }
+
+// GetUnifiedDiff calls the LLM with the unified_diff tool and returns the diff string.
+// This is more efficient for Codex models which are fine-tuned for single tool calls.
+func (p *CodexProvider) GetUnifiedDiff(ctx context.Context, systemPrompt, userPrompt string, debug bool) (string, error) {
+	// Fetch Codex instructions from GitHub (required by ChatGPT backend)
+	codexInstructions, err := p.getCodexInstructions()
+	if err != nil {
+		return "", fmt.Errorf("failed to get Codex instructions: %w", err)
+	}
+
+	// Build unified diff tool using centralized schema
+	diffTool := map[string]interface{}{
+		"type":        "function",
+		"name":        "unified_diff",
+		"description": prompt.UnifiedDiffDescription,
+		"strict":      true,
+		"parameters":  prompt.UnifiedDiffSchema(),
+	}
+
+	// Combine system and user prompts
+	combinedPrompt := systemPrompt + "\n\n" + userPrompt
+
+	if debug {
+		fmt.Fprintln(os.Stderr, "=== DEBUG: Codex UnifiedDiff Request ===")
+		fmt.Fprintf(os.Stderr, "System: %s\n", systemPrompt)
+		fmt.Fprintf(os.Stderr, "User: %s\n", userPrompt)
+		fmt.Fprintln(os.Stderr, "========================================")
+	}
+
+	// Build request body - single tool call (no parallel)
+	reqBody := map[string]interface{}{
+		"model":               p.model,
+		"instructions":        codexInstructions,
+		"input":               p.buildInput(combinedPrompt),
+		"tools":               []interface{}{diffTool},
+		"tool_choice":         "auto",
+		"parallel_tool_calls": false, // Single tool call for Codex models
+		"stream":              true,
+		"store":               false,
+		"include":             []string{},
+	}
+
+	// Add reasoning effort if set
+	if p.effort != "" {
+		reqBody["reasoning"] = map[string]interface{}{
+			"effort": p.effort,
+		}
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", chatGPTResponsesURL, bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Set required headers
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+p.accessToken)
+	httpReq.Header.Set("ChatGPT-Account-ID", p.accountID)
+	httpReq.Header.Set("OpenAI-Beta", "responses=experimental")
+	httpReq.Header.Set("originator", "codex_cli_rs")
+	httpReq.Header.Set("Accept", "text/event-stream")
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("API error (%d): %s", resp.StatusCode, string(respBody))
+	}
+
+	// Parse SSE response
+	result, err := p.parseSSEResponse(respBody)
+	if err != nil {
+		return "", err
+	}
+
+	if debug {
+		fmt.Fprintln(os.Stderr, "=== DEBUG: Codex UnifiedDiff Response ===")
+		fmt.Fprintf(os.Stderr, "Status: %s\n", result.Status)
+		for i, item := range result.Output {
+			fmt.Fprintf(os.Stderr, "Output %d: type=%s", i, item.Type)
+			if item.Name != "" {
+				fmt.Fprintf(os.Stderr, " name=%s", item.Name)
+			}
+			fmt.Fprintln(os.Stderr)
+		}
+		fmt.Fprintln(os.Stderr, "=========================================")
+	}
+
+	// Print any text output first
+	for _, item := range result.Output {
+		if item.Type == "message" {
+			for _, c := range item.Content {
+				if c.Type == "output_text" && c.Text != "" {
+					fmt.Println(c.Text)
+				}
+			}
+		}
+	}
+
+	// Find the unified_diff function call
+	for _, item := range result.Output {
+		if item.Type == "function_call" && item.Name == "unified_diff" {
+			var diffResult struct {
+				Diff string `json:"diff"`
+			}
+			if err := json.Unmarshal([]byte(item.Arguments), &diffResult); err != nil {
+				return "", fmt.Errorf("failed to parse diff result: %w", err)
+			}
+			return diffResult.Diff, nil
+		}
+	}
+
+	return "", fmt.Errorf("no unified_diff function call in response")
+}

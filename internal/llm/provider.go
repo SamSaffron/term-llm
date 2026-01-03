@@ -67,6 +67,19 @@ type EditToolProvider interface {
 	GetEdits(ctx context.Context, systemPrompt, userPrompt string, debug bool) ([]EditToolCall, error)
 }
 
+// UnifiedDiffProvider is an optional interface for providers that support unified diff format.
+// This is more efficient for models fine-tuned on single tool calls (e.g., Codex models).
+type UnifiedDiffProvider interface {
+	GetUnifiedDiff(ctx context.Context, systemPrompt, userPrompt string, debug bool) (string, error)
+}
+
+// IsCodexModel returns true if the model name indicates a Codex model
+// which works better with unified diff format (single tool call).
+func IsCodexModel(model string) bool {
+	model = strings.ToLower(model)
+	return strings.Contains(model, "codex")
+}
+
 // ParseProviderModel parses "provider:model" or just "provider" from a flag value.
 // Returns (provider, model, error). Model will be empty if not specified.
 func ParseProviderModel(s string) (string, string, error) {

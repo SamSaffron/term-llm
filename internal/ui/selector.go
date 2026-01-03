@@ -221,6 +221,107 @@ func RunEditWithSpinner(ctx context.Context, provider llm.EditToolProvider, syst
 	return m.result.edits, m.result.err
 }
 
+// udiffResultMsg is sent when the unified diff request completes
+type udiffResultMsg struct {
+	diff string
+	err  error
+}
+
+// udiffSpinnerModel is a bubbletea model that shows a spinner while waiting for unified diff
+type udiffSpinnerModel struct {
+	spinner   spinner.Model
+	cancel    context.CancelFunc
+	cancelled bool
+	result    *udiffResultMsg
+	styles    *Styles
+}
+
+func newUdiffSpinnerModel(cancel context.CancelFunc, tty *os.File) udiffSpinnerModel {
+	styles := NewStyles(tty)
+	s := spinner.New()
+	s.Spinner = spinner.Dot
+	s.Style = styles.Spinner
+	return udiffSpinnerModel{
+		spinner: s,
+		cancel:  cancel,
+		styles:  styles,
+	}
+}
+
+func (m udiffSpinnerModel) Init() tea.Cmd {
+	return m.spinner.Tick
+}
+
+func (m udiffSpinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		if msg.Type == tea.KeyEscape {
+			m.cancelled = true
+			m.cancel()
+			return m, tea.Quit
+		}
+	case udiffResultMsg:
+		m.result = &msg
+		return m, tea.Quit
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
+	}
+	return m, nil
+}
+
+func (m udiffSpinnerModel) View() string {
+	return m.spinner.View() + " Thinking... " + m.styles.Muted.Render("(esc to cancel)")
+}
+
+// RunUnifiedDiffWithSpinner shows a spinner while executing the unified diff request
+// Returns the diff string, or error if cancelled or failed
+func RunUnifiedDiffWithSpinner(ctx context.Context, provider llm.UnifiedDiffProvider, systemPrompt, userPrompt string, debug bool) (string, error) {
+	// Create cancellable context
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Get tty for proper rendering
+	tty, ttyErr := getTTY()
+	if ttyErr != nil {
+		// Fallback: no spinner, just run directly
+		return provider.GetUnifiedDiff(ctx, systemPrompt, userPrompt, debug)
+	}
+	defer tty.Close()
+
+	// In debug mode, skip spinner so output isn't garbled
+	if debug {
+		return provider.GetUnifiedDiff(ctx, systemPrompt, userPrompt, debug)
+	}
+
+	// Create and run spinner
+	model := newUdiffSpinnerModel(cancel, tty)
+	p := tea.NewProgram(model, tea.WithInput(tty), tea.WithOutput(tty))
+
+	// Start unified diff request in background and send result to program
+	go func() {
+		diff, err := provider.GetUnifiedDiff(ctx, systemPrompt, userPrompt, debug)
+		p.Send(udiffResultMsg{diff: diff, err: err})
+	}()
+
+	finalModel, err := p.Run()
+	if err != nil {
+		return "", err
+	}
+
+	m := finalModel.(udiffSpinnerModel)
+	if m.cancelled {
+		return "", fmt.Errorf("cancelled")
+	}
+
+	if m.result == nil {
+		return "", fmt.Errorf("no result received")
+	}
+
+	return m.result.diff, m.result.err
+}
+
 // selectModel is a bubbletea model for command selection with help support
 type selectModel struct {
 	suggestions []llm.CommandSuggestion

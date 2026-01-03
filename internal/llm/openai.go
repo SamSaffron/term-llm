@@ -231,6 +231,80 @@ func (p *OpenAIProvider) GetEdits(ctx context.Context, systemPrompt, userPrompt 
 	return edits, nil
 }
 
+// GetUnifiedDiff calls the LLM with the unified_diff tool and returns the diff string.
+// This is more efficient for Codex models which are fine-tuned for single tool calls.
+func (p *OpenAIProvider) GetUnifiedDiff(ctx context.Context, systemPrompt, userPrompt string, debug bool) (string, error) {
+	// Define the unified diff tool using centralized schema
+	diffTool := responses.ToolParamOfFunction("unified_diff", prompt.UnifiedDiffSchema(), true)
+	diffTool.OfFunction.Description = openai.String(prompt.UnifiedDiffDescription)
+
+	if debug {
+		fmt.Fprintln(os.Stderr, "=== DEBUG: OpenAI UnifiedDiff Request ===")
+		fmt.Fprintf(os.Stderr, "System: %s\n", systemPrompt)
+		fmt.Fprintf(os.Stderr, "User: %s\n", userPrompt)
+		fmt.Fprintln(os.Stderr, "=========================================")
+	}
+
+	params := responses.ResponseNewParams{
+		Model:        shared.ResponsesModel(p.model),
+		Instructions: openai.String(systemPrompt),
+		Input: responses.ResponseNewParamsInputUnion{
+			OfString: openai.String(userPrompt),
+		},
+		Tools: []responses.ToolUnionParam{diffTool},
+	}
+
+	// Add reasoning effort if set
+	if p.effort != "" {
+		params.Reasoning = shared.ReasoningParam{
+			Effort: shared.ReasoningEffort(p.effort),
+		}
+	}
+
+	resp, err := p.client.Responses.New(ctx, params)
+	if err != nil {
+		return "", fmt.Errorf("openai API error: %w", err)
+	}
+
+	if debug {
+		fmt.Fprintln(os.Stderr, "=== DEBUG: OpenAI UnifiedDiff Response ===")
+		fmt.Fprintf(os.Stderr, "Status: %s\n", resp.Status)
+		for i, item := range resp.Output {
+			fmt.Fprintf(os.Stderr, "Output %d: type=%s\n", i, item.Type)
+			if item.Type == "function_call" {
+				fmt.Fprintf(os.Stderr, "  Function: %s\n", item.Name)
+			}
+		}
+		fmt.Fprintln(os.Stderr, "==========================================")
+	}
+
+	// Print any text output first
+	for _, item := range resp.Output {
+		if item.Type == "message" {
+			for _, content := range item.Content {
+				if content.Type == "output_text" && content.Text != "" {
+					fmt.Println(content.Text)
+				}
+			}
+		}
+	}
+
+	// Find the unified_diff function call
+	for _, item := range resp.Output {
+		if item.Type == "function_call" && item.Name == "unified_diff" {
+			var diffResult struct {
+				Diff string `json:"diff"`
+			}
+			if err := json.Unmarshal([]byte(item.Arguments), &diffResult); err != nil {
+				return "", fmt.Errorf("failed to parse diff result: %w", err)
+			}
+			return diffResult.Diff, nil
+		}
+	}
+
+	return "", fmt.Errorf("no unified_diff function call in response")
+}
+
 func (p *OpenAIProvider) StreamResponse(ctx context.Context, req AskRequest, output chan<- string) error {
 	defer close(output)
 

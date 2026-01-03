@@ -56,6 +56,7 @@ type EditConfig struct {
 	ShowLineNumbers bool   `mapstructure:"show_line_numbers"` // Show line numbers in diff
 	ContextLines    int    `mapstructure:"context_lines"`     // Lines of context in diff
 	Editor          string `mapstructure:"editor"`            // Override $EDITOR
+	DiffFormat      string `mapstructure:"diff_format"`       // "auto", "udiff", or "replace" (default: auto)
 }
 
 type AnthropicConfig struct {
@@ -132,6 +133,7 @@ func Load() (*Config, error) {
 	viper.SetDefault("edit.model", "gpt-5.2-codex-medium")
 	viper.SetDefault("edit.show_line_numbers", true)
 	viper.SetDefault("edit.context_lines", 3)
+	viper.SetDefault("edit.diff_format", "auto") // auto, udiff, or replace
 	viper.SetDefault("anthropic.model", "claude-sonnet-4-5")
 	viper.SetDefault("openai.model", "gpt-5.2")
 	viper.SetDefault("gemini.model", "gemini-3-flash-preview")

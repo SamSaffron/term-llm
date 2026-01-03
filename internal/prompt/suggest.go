@@ -83,6 +83,48 @@ func EditSchema() map[string]interface{} {
 	}
 }
 
+// UnifiedDiffDescription is the description for the unified diff tool
+const UnifiedDiffDescription = `Apply file edits using unified diff format. Output a single diff containing all changes.
+
+Format:
+--- path/to/file
++++ path/to/file
+@@ context to locate (e.g., func Name) @@
+ context line (unchanged, space prefix)
+-line to remove
++line to add
+
+Elision (-...) for replacing large blocks:
+-func Example() {
+-...
+-}
++func Example() { return nil }
+
+The -... matches everything between the start anchor (-func Example...) and end anchor (-}).
+IMPORTANT: After -... you MUST include an end anchor (another - line) so we know where elision stops.
+
+Rules:
+1. @@ headers help locate changes - use function/class names, not line numbers
+2. Context lines (space prefix) anchor the position - must match file exactly
+3. Use -... ONLY when replacing 10+ lines; for small changes list all - lines explicitly
+4. After -... always include the closing line (e.g., -}) as the end anchor
+5. Multiple files: use separate --- +++ blocks for each file`
+
+// UnifiedDiffSchema returns the JSON schema for the unified diff tool
+func UnifiedDiffSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"diff": map[string]interface{}{
+				"type":        "string",
+				"description": "Unified diff with all changes. Format: --- and +++ for paths, @@ for context headers, space prefix for context lines, - for removals, + for additions. Use -... to elide large removed blocks (must have end anchor after).",
+			},
+		},
+		"required":             []string{"diff"},
+		"additionalProperties": false,
+	}
+}
+
 // SuggestSchema returns the JSON schema for structured output
 func SuggestSchema(numSuggestions int) map[string]interface{} {
 	return map[string]interface{}{
