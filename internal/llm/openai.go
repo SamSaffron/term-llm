@@ -122,6 +122,94 @@ func (p *OpenAIProvider) SuggestCommands(ctx context.Context, req SuggestRequest
 	return nil, fmt.Errorf("no suggest_commands function call in response")
 }
 
+// GetEdits calls the LLM with the edit tool and returns all proposed edits
+func (p *OpenAIProvider) GetEdits(ctx context.Context, systemPrompt, userPrompt string, debug bool) ([]EditToolCall, error) {
+	// Define the edit tool schema
+	editSchema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"file_path": map[string]interface{}{
+				"type":        "string",
+				"description": "Path to the file to edit",
+			},
+			"old_string": map[string]interface{}{
+				"type":        "string",
+				"description": "The exact text to find and replace. Include enough context to be unique.",
+			},
+			"new_string": map[string]interface{}{
+				"type":        "string",
+				"description": "The text to replace old_string with",
+			},
+		},
+		"required":             []string{"file_path", "old_string", "new_string"},
+		"additionalProperties": false,
+	}
+
+	editTool := responses.ToolParamOfFunction("edit", editSchema, true)
+	editTool.OfFunction.Description = openai.String("Edit a file by replacing old_string with new_string. Use multiple tool calls for multiple edits.")
+
+	if debug {
+		fmt.Fprintln(os.Stderr, "=== DEBUG: OpenAI Edit Request ===")
+		fmt.Fprintf(os.Stderr, "System: %s\n", systemPrompt)
+		fmt.Fprintf(os.Stderr, "User: %s\n", userPrompt)
+		fmt.Fprintln(os.Stderr, "==================================")
+	}
+
+	resp, err := p.client.Responses.New(ctx, responses.ResponseNewParams{
+		Model:        shared.ResponsesModel(p.model),
+		Instructions: openai.String(systemPrompt),
+		Input: responses.ResponseNewParamsInputUnion{
+			OfString: openai.String(userPrompt),
+		},
+		Tools: []responses.ToolUnionParam{editTool},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("openai API error: %w", err)
+	}
+
+	if debug {
+		fmt.Fprintln(os.Stderr, "=== DEBUG: OpenAI Edit Response ===")
+		fmt.Fprintf(os.Stderr, "Status: %s\n", resp.Status)
+		for i, item := range resp.Output {
+			fmt.Fprintf(os.Stderr, "Output %d: type=%s\n", i, item.Type)
+			if item.Type == "function_call" {
+				fmt.Fprintf(os.Stderr, "  Function: %s\n", item.Name)
+				fmt.Fprintf(os.Stderr, "  Arguments: %s\n", item.Arguments)
+			}
+		}
+		fmt.Fprintln(os.Stderr, "===================================")
+	}
+
+	// Print any text output first
+	for _, item := range resp.Output {
+		if item.Type == "message" {
+			for _, content := range item.Content {
+				if content.Type == "output_text" && content.Text != "" {
+					fmt.Println(content.Text)
+				}
+			}
+		}
+	}
+
+	// Collect all edits from function calls
+	var edits []EditToolCall
+	for _, item := range resp.Output {
+		if item.Type != "function_call" || item.Name != "edit" {
+			continue
+		}
+
+		var editCall EditToolCall
+		if err := json.Unmarshal([]byte(item.Arguments), &editCall); err != nil {
+			fmt.Fprintf(os.Stderr, "Error parsing edit: %v\n", err)
+			continue
+		}
+
+		edits = append(edits, editCall)
+	}
+
+	return edits, nil
+}
+
 func (p *OpenAIProvider) StreamResponse(ctx context.Context, req AskRequest, output chan<- string) error {
 	defer close(output)
 

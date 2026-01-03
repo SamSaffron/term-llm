@@ -54,6 +54,18 @@ type SuggestRequest struct {
 	Stdin          string              // Content piped via stdin
 }
 
+// EditToolCall represents a single edit tool call (find/replace)
+type EditToolCall struct {
+	FilePath  string `json:"file_path"`
+	OldString string `json:"old_string"`
+	NewString string `json:"new_string"`
+}
+
+// EditToolProvider is an optional interface for providers that support the edit tool
+type EditToolProvider interface {
+	GetEdits(ctx context.Context, systemPrompt, userPrompt string, debug bool) ([]EditToolCall, error)
+}
+
 // NewProvider creates a new LLM provider based on the config
 func NewProvider(cfg *config.Config) (Provider, error) {
 	switch cfg.Provider {

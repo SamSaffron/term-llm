@@ -14,6 +14,7 @@ type Config struct {
 	Provider  string          `mapstructure:"provider"`
 	Exec      ExecConfig      `mapstructure:"exec"`
 	Ask       AskConfig       `mapstructure:"ask"`
+	Edit      EditConfig      `mapstructure:"edit"`
 	Image     ImageConfig     `mapstructure:"image"`
 	Theme     ThemeConfig     `mapstructure:"theme"`
 	Anthropic AnthropicConfig `mapstructure:"anthropic"`
@@ -42,6 +43,13 @@ type ExecConfig struct {
 
 type AskConfig struct {
 	Instructions string `mapstructure:"instructions"` // Custom system prompt for ask
+}
+
+type EditConfig struct {
+	Instructions    string `mapstructure:"instructions"`      // Custom instructions for edits
+	ShowLineNumbers bool   `mapstructure:"show_line_numbers"` // Show line numbers in diff
+	ContextLines    int    `mapstructure:"context_lines"`     // Lines of context in diff
+	Editor          string `mapstructure:"editor"`            // Override $EDITOR
 }
 
 type AnthropicConfig struct {
@@ -114,6 +122,8 @@ func Load() (*Config, error) {
 	// Set defaults
 	viper.SetDefault("provider", "anthropic")
 	viper.SetDefault("exec.suggestions", 3)
+	viper.SetDefault("edit.show_line_numbers", true)
+	viper.SetDefault("edit.context_lines", 3)
 	viper.SetDefault("anthropic.model", "claude-sonnet-4-5")
 	viper.SetDefault("openai.model", "gpt-5.2")
 	viper.SetDefault("gemini.model", "gemini-3-flash-preview")

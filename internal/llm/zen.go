@@ -222,6 +222,133 @@ func (p *ZenProvider) SuggestCommands(ctx context.Context, req SuggestRequest) (
 	return nil, fmt.Errorf("no suggest_commands function call in response")
 }
 
+// GetEdits calls the LLM with the edit tool and returns all proposed edits
+func (p *ZenProvider) GetEdits(ctx context.Context, systemPrompt, userPrompt string, debug bool) ([]EditToolCall, error) {
+	// Define the edit tool schema
+	editSchema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"file_path": map[string]interface{}{
+				"type":        "string",
+				"description": "Path to the file to edit",
+			},
+			"old_string": map[string]interface{}{
+				"type":        "string",
+				"description": "The exact text to find and replace. Include enough context to be unique.",
+			},
+			"new_string": map[string]interface{}{
+				"type":        "string",
+				"description": "The text to replace old_string with",
+			},
+		},
+		"required":             []string{"file_path", "old_string", "new_string"},
+		"additionalProperties": false,
+	}
+
+	schema, err := json.Marshal(editSchema)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal schema: %w", err)
+	}
+
+	if debug {
+		fmt.Fprintln(os.Stderr, "=== DEBUG: OpenCode Zen Edit Request ===")
+		fmt.Fprintf(os.Stderr, "System: %s\n", systemPrompt)
+		fmt.Fprintf(os.Stderr, "User: %s\n", userPrompt)
+		fmt.Fprintln(os.Stderr, "=========================================")
+	}
+
+	chatReq := zenChatRequest{
+		Model: p.model,
+		Messages: []zenMessage{
+			{Role: "system", Content: systemPrompt},
+			{Role: "user", Content: userPrompt},
+		},
+		Tools: []zenTool{
+			{
+				Type: "function",
+				Function: zenFunction{
+					Name:        "edit",
+					Description: "Edit a file by replacing old_string with new_string. Use multiple tool calls for multiple edits.",
+					Parameters:  schema,
+				},
+			},
+		},
+	}
+
+	resp, err := p.makeRequest(ctx, chatReq)
+	if err != nil {
+		return nil, fmt.Errorf("zen API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("zen API error (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var chatResp zenChatResponse
+	if err := json.Unmarshal(body, &chatResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w\nBody: %s", err, string(body))
+	}
+
+	if chatResp.Error != nil {
+		return nil, fmt.Errorf("zen API error: %s", chatResp.Error.Message)
+	}
+
+	if debug {
+		fmt.Fprintln(os.Stderr, "=== DEBUG: OpenCode Zen Edit Response ===")
+		fmt.Fprintf(os.Stderr, "Model: %s\n", chatResp.Model)
+		if len(chatResp.Choices) > 0 && chatResp.Choices[0].Message != nil {
+			msg := chatResp.Choices[0].Message
+			if len(msg.ToolCalls) > 0 {
+				for _, tc := range msg.ToolCalls {
+					fmt.Fprintf(os.Stderr, "Function: %s\n", tc.Function.Name)
+					fmt.Fprintf(os.Stderr, "Arguments: %s\n", tc.Function.Arguments)
+				}
+			} else if msg.Content != "" {
+				fmt.Fprintf(os.Stderr, "Content: %s\n", msg.Content)
+			}
+		}
+		fmt.Fprintln(os.Stderr, "==========================================")
+	}
+
+	if len(chatResp.Choices) == 0 {
+		return nil, fmt.Errorf("no choices in response")
+	}
+
+	msg := chatResp.Choices[0].Message
+	if msg == nil {
+		return nil, fmt.Errorf("no message in response")
+	}
+
+	// Print any text content first
+	if msg.Content != "" {
+		fmt.Println(msg.Content)
+	}
+
+	// Collect all edits from tool calls
+	var edits []EditToolCall
+	for _, tc := range msg.ToolCalls {
+		if tc.Function.Name != "edit" {
+			continue
+		}
+
+		var editCall EditToolCall
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &editCall); err != nil {
+			fmt.Fprintf(os.Stderr, "Error parsing edit: %v\n", err)
+			continue
+		}
+
+		edits = append(edits, editCall)
+	}
+
+	return edits, nil
+}
+
 func (p *ZenProvider) StreamResponse(ctx context.Context, req AskRequest, output chan<- string) error {
 	defer close(output)
 

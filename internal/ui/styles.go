@@ -23,21 +23,29 @@ type Theme struct {
 	Spinner    lipgloss.Color // loading spinner
 	Border     lipgloss.Color // borders and dividers
 	Background lipgloss.Color // background (if needed)
+
+	// Diff backgrounds
+	DiffAddBg     lipgloss.Color // background for added lines
+	DiffRemoveBg  lipgloss.Color // background for removed lines
+	DiffContextBg lipgloss.Color // background for context lines
 }
 
 // DefaultTheme returns the default color theme
 func DefaultTheme() *Theme {
 	return &Theme{
-		Primary:    lipgloss.Color("10"),  // bright green
-		Secondary:  lipgloss.Color("4"),   // blue
-		Success:    lipgloss.Color("10"),  // bright green
-		Error:      lipgloss.Color("9"),   // bright red
-		Warning:    lipgloss.Color("11"),  // yellow
-		Muted:      lipgloss.Color("245"), // light grey
-		Text:       lipgloss.Color("15"),  // white
-		Spinner:    lipgloss.Color("205"), // pink/magenta
-		Border:     lipgloss.Color("240"), // grey border
-		Background: lipgloss.Color(""),    // default/transparent
+		Primary:       lipgloss.Color("10"),      // bright green
+		Secondary:     lipgloss.Color("4"),       // blue
+		Success:       lipgloss.Color("10"),      // bright green
+		Error:         lipgloss.Color("9"),       // bright red
+		Warning:       lipgloss.Color("11"),      // yellow
+		Muted:         lipgloss.Color("245"),     // light grey
+		Text:          lipgloss.Color("15"),      // white
+		Spinner:       lipgloss.Color("205"),     // pink/magenta
+		Border:        lipgloss.Color("240"),     // grey border
+		Background:    lipgloss.Color(""),        // default/transparent
+		DiffAddBg:     lipgloss.Color("#1a2f1a"), // dark green tint
+		DiffRemoveBg:  lipgloss.Color("#2f1a1a"), // dark red tint
+		DiffContextBg: lipgloss.Color("#1a1a1a"), // dark gray
 	}
 }
 
@@ -136,6 +144,12 @@ type Styles struct {
 	Spinner lipgloss.Style
 	Command lipgloss.Style
 	Footer  lipgloss.Style
+
+	// Diff styles
+	DiffAdd     lipgloss.Style // Added lines (+)
+	DiffRemove  lipgloss.Style // Removed lines (-)
+	DiffContext lipgloss.Style // Context lines (unchanged)
+	DiffHeader  lipgloss.Style // Diff header (@@ ... @@)
 }
 
 // NewStyles creates a new Styles instance for the given output
@@ -194,6 +208,22 @@ func NewStyledWithTheme(output *os.File, theme *Theme) *Styles {
 
 		Footer: r.NewStyle().
 			Foreground(theme.Muted),
+
+		DiffAdd: r.NewStyle().
+			Foreground(theme.Success).
+			Background(theme.DiffAddBg),
+
+		DiffRemove: r.NewStyle().
+			Foreground(theme.Error).
+			Background(theme.DiffRemoveBg),
+
+		DiffContext: r.NewStyle().
+			Foreground(theme.Muted).
+			Background(theme.DiffContextBg),
+
+		DiffHeader: r.NewStyle().
+			Foreground(theme.Secondary).
+			Bold(true),
 	}
 }
 

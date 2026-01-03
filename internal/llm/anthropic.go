@@ -345,3 +345,90 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req AskRequest
 
 	return nil
 }
+
+// GetEdits calls the LLM once with the edit tool and returns all proposed edits
+func (p *AnthropicProvider) GetEdits(ctx context.Context, systemPrompt, userPrompt string, debug bool) ([]EditToolCall, error) {
+	// Define the edit tool - simple find/replace like Gemini's
+	inputSchema := anthropic.ToolInputSchemaParam{
+		Type: "object",
+		Properties: map[string]interface{}{
+			"file_path": map[string]interface{}{
+				"type":        "string",
+				"description": "Path to the file to edit",
+			},
+			"old_string": map[string]interface{}{
+				"type":        "string",
+				"description": "The exact text to find and replace. Include enough context to be unique.",
+			},
+			"new_string": map[string]interface{}{
+				"type":        "string",
+				"description": "The text to replace old_string with",
+			},
+		},
+		Required: []string{"file_path", "old_string", "new_string"},
+	}
+
+	tool := anthropic.ToolUnionParamOfTool(inputSchema, "edit")
+	tool.OfTool.Description = anthropic.String("Edit a file by replacing old_string with new_string. Use multiple tool calls for multiple edits.")
+
+	if debug {
+		fmt.Fprintln(os.Stderr, "=== DEBUG: Anthropic Edit Request ===")
+		fmt.Fprintf(os.Stderr, "System: %s\n", systemPrompt)
+		fmt.Fprintf(os.Stderr, "User: %s\n", userPrompt)
+		fmt.Fprintln(os.Stderr, "=====================================")
+	}
+
+	message, err := p.client.Messages.New(ctx, anthropic.MessageNewParams{
+		Model:     anthropic.Model(p.model),
+		MaxTokens: 4096,
+		System: []anthropic.TextBlockParam{
+			{Text: systemPrompt},
+		},
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock(userPrompt)),
+		},
+		Tools:      []anthropic.ToolUnionParam{tool},
+		ToolChoice: anthropic.ToolChoiceUnionParam{OfAny: &anthropic.ToolChoiceAnyParam{}},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("anthropic API error: %w", err)
+	}
+
+	if debug {
+		fmt.Fprintln(os.Stderr, "=== DEBUG: Anthropic Edit Response ===")
+		fmt.Fprintf(os.Stderr, "Stop reason: %s\n", message.StopReason)
+		for i, block := range message.Content {
+			fmt.Fprintf(os.Stderr, "Block %d: type=%s\n", i, block.Type)
+			if block.Type == "tool_use" {
+				fmt.Fprintf(os.Stderr, "  Tool: %s\n", block.Name)
+				fmt.Fprintf(os.Stderr, "  Input: %s\n", block.JSON.Input.Raw())
+			}
+		}
+		fmt.Fprintln(os.Stderr, "======================================")
+	}
+
+	// Print any text output first
+	for _, block := range message.Content {
+		if block.Type == "text" && block.Text != "" {
+			fmt.Println(block.Text)
+		}
+	}
+
+	// Collect all edits
+	var edits []EditToolCall
+	for _, block := range message.Content {
+		if block.Type != "tool_use" || block.Name != "edit" {
+			continue
+		}
+
+		var editCall EditToolCall
+		if err := json.Unmarshal([]byte(block.JSON.Input.Raw()), &editCall); err != nil {
+			fmt.Fprintf(os.Stderr, "Error parsing edit: %v\n", err)
+			continue
+		}
+
+		edits = append(edits, editCall)
+	}
+
+	return edits, nil
+}
