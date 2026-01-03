@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"golang.org/x/term"
 )
 
 const SomethingElse = "__something_else__"
@@ -227,16 +228,25 @@ type selectModel struct {
 	selected    string
 	cancelled   bool
 	showHelp    bool // signal to show help for current selection
+	done        bool // command was selected (not "something else")
 	styles      *Styles
 	tty         *os.File
+	width       int
 }
 
 func newSelectModel(suggestions []llm.CommandSuggestion, tty *os.File) selectModel {
+	width := 80
+	if tty != nil {
+		if w, _, err := term.GetSize(int(tty.Fd())); err == nil && w > 0 {
+			width = w
+		}
+	}
 	return selectModel{
 		suggestions: suggestions,
 		cursor:      0,
 		styles:      NewStyles(tty),
 		tty:         tty,
+		width:       width,
 	}
 }
 
@@ -246,6 +256,8 @@ func (m selectModel) Init() tea.Cmd {
 
 func (m selectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "up", "k":
@@ -261,6 +273,7 @@ func (m selectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.selected = SomethingElse
 			} else {
 				m.selected = m.suggestions[m.cursor].Command
+				m.done = true
 			}
 			return m, tea.Quit
 		case "h", "H":
@@ -277,6 +290,33 @@ func (m selectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// wrapText wraps text to fit within maxWidth, with indent on each line
+func wrapText(text string, maxWidth int, indent string) string {
+	availWidth := maxWidth - len(indent)
+	if availWidth <= 10 {
+		availWidth = 10
+	}
+
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return ""
+	}
+
+	var lines []string
+	currentLine := words[0]
+	for _, word := range words[1:] {
+		if len(currentLine)+1+len(word) <= availWidth {
+			currentLine += " " + word
+		} else {
+			lines = append(lines, indent+currentLine)
+			currentLine = word
+		}
+	}
+	lines = append(lines, indent+currentLine)
+
+	return strings.Join(lines, "\n")
+}
+
 func (m selectModel) View() string {
 	var b strings.Builder
 
@@ -291,24 +331,37 @@ func (m selectModel) View() string {
 		}
 
 		b.WriteString(cursor)
-		b.WriteString(m.styles.Command.Render(s.Command))
-		b.WriteString("\n  ")
-		b.WriteString(m.styles.Muted.Render(s.Explanation))
+		wrappedCmd := wrapText(s.Command, m.width, "  ")
+		// First line already has cursor, so trim the indent
+		wrappedCmd = strings.TrimPrefix(wrappedCmd, "  ")
+		b.WriteString(m.styles.Command.Render(wrappedCmd))
+		b.WriteString("\n")
+		wrappedDesc := wrapText(s.Explanation, m.width, "  ")
+		b.WriteString(m.styles.Muted.Render(wrappedDesc))
 		b.WriteString("\n")
 		if i < len(m.suggestions)-1 {
 			b.WriteString("\n")
 		}
 	}
 
-	// "something else" option
-	b.WriteString("\n")
-	cursor := "  "
-	if m.cursor == len(m.suggestions) {
-		cursor = m.styles.Highlighted.Render("> ")
+	// "something else" option (hidden when done)
+	if !m.done {
+		b.WriteString("\n")
+		cursor := "  "
+		if m.cursor == len(m.suggestions) {
+			cursor = m.styles.Highlighted.Render("> ")
+		}
+		b.WriteString(cursor)
+		b.WriteString(m.styles.Muted.Render("something else..."))
+		b.WriteString("\n")
 	}
-	b.WriteString(cursor)
-	b.WriteString(m.styles.Muted.Render("something else..."))
-	b.WriteString("\n")
+
+	// Show command being executed when done
+	if m.done {
+		b.WriteString("\n$ ")
+		b.WriteString(m.selected)
+		b.WriteString("\n")
+	}
 
 	return b.String()
 }
