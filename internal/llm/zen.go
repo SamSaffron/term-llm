@@ -44,9 +44,9 @@ type zenChatRequest struct {
 }
 
 type zenMessage struct {
-	Role       string        `json:"role"`
-	Content    string        `json:"content,omitempty"`
-	ToolCalls  []zenToolCall `json:"tool_calls,omitempty"`
+	Role      string        `json:"role"`
+	Content   string        `json:"content,omitempty"`
+	ToolCalls []zenToolCall `json:"tool_calls,omitempty"`
 }
 
 type zenTool struct {
@@ -224,28 +224,8 @@ func (p *ZenProvider) SuggestCommands(ctx context.Context, req SuggestRequest) (
 
 // GetEdits calls the LLM with the edit tool and returns all proposed edits
 func (p *ZenProvider) GetEdits(ctx context.Context, systemPrompt, userPrompt string, debug bool) ([]EditToolCall, error) {
-	// Define the edit tool schema
-	editSchema := map[string]interface{}{
-		"type": "object",
-		"properties": map[string]interface{}{
-			"file_path": map[string]interface{}{
-				"type":        "string",
-				"description": "Path to the file to edit",
-			},
-			"old_string": map[string]interface{}{
-				"type":        "string",
-				"description": "The exact text to find and replace. Include enough context to be unique.",
-			},
-			"new_string": map[string]interface{}{
-				"type":        "string",
-				"description": "The text to replace old_string with",
-			},
-		},
-		"required":             []string{"file_path", "old_string", "new_string"},
-		"additionalProperties": false,
-	}
-
-	schema, err := json.Marshal(editSchema)
+	// Define the edit tool using centralized schema
+	schema, err := json.Marshal(prompt.EditSchema())
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal schema: %w", err)
 	}
@@ -268,7 +248,7 @@ func (p *ZenProvider) GetEdits(ctx context.Context, systemPrompt, userPrompt str
 				Type: "function",
 				Function: zenFunction{
 					Name:        "edit",
-					Description: "Edit a file by replacing old_string with new_string. Use multiple tool calls for multiple edits.",
+					Description: prompt.EditDescription,
 					Parameters:  schema,
 				},
 			},

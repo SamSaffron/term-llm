@@ -124,29 +124,9 @@ func (p *OpenAIProvider) SuggestCommands(ctx context.Context, req SuggestRequest
 
 // GetEdits calls the LLM with the edit tool and returns all proposed edits
 func (p *OpenAIProvider) GetEdits(ctx context.Context, systemPrompt, userPrompt string, debug bool) ([]EditToolCall, error) {
-	// Define the edit tool schema
-	editSchema := map[string]interface{}{
-		"type": "object",
-		"properties": map[string]interface{}{
-			"file_path": map[string]interface{}{
-				"type":        "string",
-				"description": "Path to the file to edit",
-			},
-			"old_string": map[string]interface{}{
-				"type":        "string",
-				"description": "The exact text to find and replace. Include enough context to be unique.",
-			},
-			"new_string": map[string]interface{}{
-				"type":        "string",
-				"description": "The text to replace old_string with",
-			},
-		},
-		"required":             []string{"file_path", "old_string", "new_string"},
-		"additionalProperties": false,
-	}
-
-	editTool := responses.ToolParamOfFunction("edit", editSchema, true)
-	editTool.OfFunction.Description = openai.String("Edit a file by replacing old_string with new_string. Use multiple tool calls for multiple edits.")
+	// Define the edit tool using centralized schema
+	editTool := responses.ToolParamOfFunction("edit", prompt.EditSchema(), true)
+	editTool.OfFunction.Description = openai.String(prompt.EditDescription)
 
 	if debug {
 		fmt.Fprintln(os.Stderr, "=== DEBUG: OpenAI Edit Request ===")

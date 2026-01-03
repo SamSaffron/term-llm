@@ -62,8 +62,8 @@ func init() {
 // FileSpec represents a file with optional line range guard
 type FileSpec struct {
 	Path      string
-	StartLine int  // 1-indexed, 0 means from beginning
-	EndLine   int  // 1-indexed, 0 means to end
+	StartLine int // 1-indexed, 0 means from beginning
+	EndLine   int // 1-indexed, 0 means to end
 	HasGuard  bool
 }
 
@@ -185,7 +185,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 
 	// Build prompts
 	systemPrompt := buildEditSystemPrompt(cfg.Edit.Instructions, specs)
-	userPrompt := buildEditUserPrompt(request, files)
+	userPrompt := buildEditUserPrompt(request, files, specs)
 
 	// Track file contents for applying edits
 	fileContents := make(map[string]string)
@@ -259,27 +259,30 @@ func processEditsConsolidated(edits []llm.EditToolCall, fileContents map[string]
 				continue
 			}
 
-			if !strings.Contains(currentContent, edit.OldString) {
-				cf.skipReasons = append(cf.skipReasons, fmt.Sprintf("old_string not found: %.40s...", edit.OldString))
-				continue
-			}
-
-			// Check guard
-			guardErr := ""
-			for _, spec := range specs {
-				if spec.Path == path && spec.HasGuard {
-					if err := validateGuardForReplace(currentContent, edit, spec); err != nil {
-						guardErr = err.Error()
-						break
-					}
+			// Find the matching spec to check for guards
+			var matchSpec *FileSpec
+			for i := range specs {
+				if specs[i].Path == path {
+					matchSpec = &specs[i]
+					break
 				}
 			}
-			if guardErr != "" {
-				cf.skipReasons = append(cf.skipReasons, guardErr)
+
+			var match editMatch
+			var err error
+			if matchSpec != nil && matchSpec.HasGuard {
+				// Use guard-scoped matching
+				match, err = findEditMatchWithGuard(currentContent, edit.OldString, matchSpec.StartLine, matchSpec.EndLine)
+			} else {
+				// No guard, search full content
+				match, err = findEditMatch(currentContent, edit.OldString)
+			}
+			if err != nil {
+				cf.skipReasons = append(cf.skipReasons, err.Error())
 				continue
 			}
 
-			currentContent = strings.Replace(currentContent, edit.OldString, edit.NewString, 1)
+			currentContent = applyEditMatch(currentContent, match, edit.NewString)
 			cf.editCount++
 		}
 
@@ -376,27 +379,33 @@ func processEditsIndividually(edits []llm.EditToolCall, fileContents map[string]
 			continue
 		}
 
-		if !strings.Contains(content, editCall.OldString) {
+		// Find the matching spec to check for guards
+		var matchSpec *FileSpec
+		for i := range specs {
+			if specs[i].Path == editCall.FilePath {
+				matchSpec = &specs[i]
+				break
+			}
+		}
+
+		var match editMatch
+		var err error
+		if matchSpec != nil && matchSpec.HasGuard {
+			// Use guard-scoped matching
+			match, err = findEditMatchWithGuard(content, editCall.OldString, matchSpec.StartLine, matchSpec.EndLine)
+		} else {
+			// No guard, search full content
+			match, err = findEditMatch(content, editCall.OldString)
+		}
+		if err != nil {
 			pe.skip = true
-			pe.skipReason = "old_string not found"
+			pe.skipReason = err.Error()
 			processed = append(processed, pe)
 			continue
 		}
 
-		for _, spec := range specs {
-			if spec.Path == editCall.FilePath && spec.HasGuard {
-				if err := validateGuardForReplace(content, editCall, spec); err != nil {
-					pe.skip = true
-					pe.skipReason = err.Error()
-					break
-				}
-			}
-		}
-
-		if !pe.skip {
-			pe.oldContent = content
-			pe.newContent = strings.Replace(content, editCall.OldString, editCall.NewString, 1)
-		}
+		pe.oldContent = content
+		pe.newContent = applyEditMatch(content, match, editCall.NewString)
 		processed = append(processed, pe)
 	}
 
@@ -464,27 +473,33 @@ Context:
 		base += fmt.Sprintf("\n- User Context: %s", instructions)
 	}
 
-	base += `
+	base += fmt.Sprintf(`
 
 Rules:
 1. Make minimal, focused changes
 2. Preserve existing code style
 3. Use the edit tool for each change - you can call it multiple times
 4. The edit tool does find/replace: old_string must match exactly
-5. Include enough context in old_string to be unique`
+5. You may include the literal token %s in old_string to match any sequence of characters (including newlines)
+6. Include enough context in old_string (especially around %s) to be unique`, editWildcardToken, editWildcardToken)
 
 	// Add guard info
+	hasGuards := false
 	for _, spec := range specs {
 		if spec.HasGuard {
-			base += fmt.Sprintf("\n\nIMPORTANT: For %s, only modify lines %d-%d.",
+			hasGuards = true
+			base += fmt.Sprintf("\n\nIMPORTANT: For %s, only modify lines %d-%d. The <editable-region> block shows the exact content you may edit with line numbers.",
 				spec.Path, spec.StartLine, spec.EndLine)
 		}
+	}
+	if hasGuards {
+		base += "\n\nYour old_string MUST match text within the editable region. Use the line numbers in <editable-region> to ensure your edit is within bounds."
 	}
 
 	return base
 }
 
-func buildEditUserPrompt(request string, files []input.FileContent) string {
+func buildEditUserPrompt(request string, files []input.FileContent, specs []FileSpec) string {
 	var sb strings.Builder
 
 	sb.WriteString("Files:\n\n")
@@ -497,20 +512,59 @@ func buildEditUserPrompt(request string, files []input.FileContent) string {
 		sb.WriteString("</file>\n\n")
 	}
 
+	// Add editable region blocks for guarded files
+	for _, spec := range specs {
+		if spec.HasGuard {
+			// Find the matching file content
+			for _, f := range files {
+				if f.Path == spec.Path {
+					excerpt := extractLineRange(f.Content, spec.StartLine, spec.EndLine)
+					sb.WriteString(fmt.Sprintf("<editable-region path=\"%s\" lines=\"%d-%d\">\n",
+						spec.Path, spec.StartLine, spec.EndLine))
+					sb.WriteString(excerpt)
+					if !strings.HasSuffix(excerpt, "\n") {
+						sb.WriteString("\n")
+					}
+					sb.WriteString("</editable-region>\n\n")
+					break
+				}
+			}
+		}
+	}
+
 	sb.WriteString(fmt.Sprintf("Request: %s", request))
 	return sb.String()
 }
 
-func validateGuardForReplace(content string, editCall llm.EditToolCall, spec FileSpec) error {
-	// Find where old_string appears
-	idx := strings.Index(content, editCall.OldString)
-	if idx < 0 {
-		return fmt.Errorf("old_string not found")
+// extractLineRange extracts lines startLine to endLine (1-indexed, inclusive) from content
+func extractLineRange(content string, startLine, endLine int) string {
+	lines := strings.Split(content, "\n")
+
+	// Adjust for 0-based indexing
+	start := startLine - 1
+	if start < 0 {
+		start = 0
+	}
+	end := endLine
+	if end <= 0 || end > len(lines) {
+		end = len(lines)
+	}
+	if start >= len(lines) {
+		return ""
 	}
 
+	// Build output with line numbers
+	var sb strings.Builder
+	for i := start; i < end; i++ {
+		sb.WriteString(fmt.Sprintf("%d: %s\n", i+1, lines[i]))
+	}
+	return strings.TrimSuffix(sb.String(), "\n")
+}
+
+func validateGuardForReplace(content string, match editMatch, spec FileSpec) error {
 	// Count lines before
-	lineNum := strings.Count(content[:idx], "\n") + 1
-	endLineNum := lineNum + strings.Count(editCall.OldString, "\n")
+	lineNum := strings.Count(content[:match.start], "\n") + 1
+	endLineNum := lineNum + strings.Count(match.text, "\n")
 
 	// Check if within guard
 	if spec.StartLine > 0 && lineNum < spec.StartLine {

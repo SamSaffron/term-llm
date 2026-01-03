@@ -57,6 +57,32 @@ func SuggestUserPrompt(userInput string, files []input.FileContent, stdin string
 	return result
 }
 
+// EditDescription is the description for the edit tool
+const EditDescription = "Edit a file by replacing old_string with new_string. You may include the literal token <<<elided>>> in old_string to match any sequence of characters (including newlines). Use multiple tool calls for multiple edits."
+
+// EditSchema returns the JSON schema for the edit tool
+func EditSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"file_path": map[string]interface{}{
+				"type":        "string",
+				"description": "Path to the file to edit",
+			},
+			"old_string": map[string]interface{}{
+				"type":        "string",
+				"description": "The exact text to find and replace. Include enough context to be unique. You may include the literal token <<<elided>>> to match any sequence of characters (including newlines).",
+			},
+			"new_string": map[string]interface{}{
+				"type":        "string",
+				"description": "The text to replace old_string with",
+			},
+		},
+		"required":             []string{"file_path", "old_string", "new_string"},
+		"additionalProperties": false,
+	}
+}
+
 // SuggestSchema returns the JSON schema for structured output
 func SuggestSchema(numSuggestions int) map[string]interface{} {
 	return map[string]interface{}{

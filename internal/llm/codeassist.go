@@ -384,33 +384,7 @@ func (p *CodeAssistProvider) suggestWithSearch(ctx context.Context, req SuggestR
 		},
 		"generationConfig": map[string]interface{}{
 			"responseMimeType": "application/json",
-			"responseSchema": map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"suggestions": map[string]interface{}{
-						"type": "array",
-						"items": map[string]interface{}{
-							"type": "object",
-							"properties": map[string]interface{}{
-								"command": map[string]interface{}{
-									"type":        "string",
-									"description": "The shell command to execute",
-								},
-								"explanation": map[string]interface{}{
-									"type":        "string",
-									"description": "Brief explanation of what the command does",
-								},
-								"likelihood": map[string]interface{}{
-									"type":        "integer",
-									"description": "How likely this command matches user intent (1=unlikely, 10=very likely)",
-								},
-							},
-							"required": []string{"command", "explanation", "likelihood"},
-						},
-					},
-				},
-				"required": []string{"suggestions"},
-			},
+			"responseSchema":   prompt.SuggestSchema(numSuggestions),
 		},
 	}
 
@@ -522,33 +496,7 @@ func (p *CodeAssistProvider) suggestWithoutSearch(ctx context.Context, req Sugge
 		},
 		"generationConfig": map[string]interface{}{
 			"responseMimeType": "application/json",
-			"responseSchema": map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"suggestions": map[string]interface{}{
-						"type": "array",
-						"items": map[string]interface{}{
-							"type": "object",
-							"properties": map[string]interface{}{
-								"command": map[string]interface{}{
-									"type":        "string",
-									"description": "The shell command to execute",
-								},
-								"explanation": map[string]interface{}{
-									"type":        "string",
-									"description": "Brief explanation of what the command does",
-								},
-								"likelihood": map[string]interface{}{
-									"type":        "integer",
-									"description": "How likely this command matches user intent (1=unlikely, 10=very likely)",
-								},
-							},
-							"required": []string{"command", "explanation", "likelihood"},
-						},
-					},
-				},
-				"required": []string{"suggestions"},
-			},
+			"responseSchema":   prompt.SuggestSchema(numSuggestions),
 		},
 	}
 

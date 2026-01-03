@@ -348,28 +348,16 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req AskRequest
 
 // GetEdits calls the LLM once with the edit tool and returns all proposed edits
 func (p *AnthropicProvider) GetEdits(ctx context.Context, systemPrompt, userPrompt string, debug bool) ([]EditToolCall, error) {
-	// Define the edit tool - simple find/replace like Gemini's
+	// Define the edit tool using centralized schema
+	schema := prompt.EditSchema()
 	inputSchema := anthropic.ToolInputSchemaParam{
-		Type: "object",
-		Properties: map[string]interface{}{
-			"file_path": map[string]interface{}{
-				"type":        "string",
-				"description": "Path to the file to edit",
-			},
-			"old_string": map[string]interface{}{
-				"type":        "string",
-				"description": "The exact text to find and replace. Include enough context to be unique.",
-			},
-			"new_string": map[string]interface{}{
-				"type":        "string",
-				"description": "The text to replace old_string with",
-			},
-		},
-		Required: []string{"file_path", "old_string", "new_string"},
+		Type:       "object",
+		Properties: schema["properties"],
+		Required:   schema["required"].([]string),
 	}
 
 	tool := anthropic.ToolUnionParamOfTool(inputSchema, "edit")
-	tool.OfTool.Description = anthropic.String("Edit a file by replacing old_string with new_string. Use multiple tool calls for multiple edits.")
+	tool.OfTool.Description = anthropic.String(prompt.EditDescription)
 
 	if debug {
 		fmt.Fprintln(os.Stderr, "=== DEBUG: Anthropic Edit Request ===")
