@@ -45,7 +45,7 @@ var ImageProviderModels = map[string][]string{
 
 // GetProviderNames returns valid provider names for LLM
 func GetProviderNames() []string {
-	return []string{"anthropic", "openai", "gemini", "zen"}
+	return []string{"anthropic", "openai", "gemini", "zen", "ollama", "lmstudio", "openai-compat"}
 }
 
 // GetImageProviderNames returns valid provider names for image generation
