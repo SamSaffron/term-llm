@@ -153,8 +153,7 @@ func Load() (*Config, error) {
 	// Set defaults
 	viper.SetDefault("provider", "anthropic")
 	viper.SetDefault("exec.suggestions", 3)
-	viper.SetDefault("edit.provider", "openai")
-	viper.SetDefault("edit.model", "gpt-5.2-codex-medium")
+	// edit.provider and edit.model default to empty, inheriting from main provider
 	viper.SetDefault("edit.show_line_numbers", true)
 	viper.SetDefault("edit.context_lines", 3)
 	viper.SetDefault("edit.diff_format", "auto") // auto, udiff, or replace
