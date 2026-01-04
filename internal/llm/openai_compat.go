@@ -405,6 +405,110 @@ func (p *OpenAICompatProvider) GetEdits(ctx context.Context, systemPrompt, userP
 	return edits, nil
 }
 
+// GetUnifiedDiff calls the LLM with the unified_diff tool and returns the diff string.
+func (p *OpenAICompatProvider) GetUnifiedDiff(ctx context.Context, systemPrompt, userPrompt string, debug bool) (string, error) {
+	// Define the unified diff tool using centralized schema
+	schema, err := json.Marshal(prompt.UnifiedDiffSchema())
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal schema: %w", err)
+	}
+
+	if debug {
+		fmt.Fprintf(os.Stderr, "=== DEBUG: %s UnifiedDiff Request ===\n", p.name)
+		fmt.Fprintf(os.Stderr, "System: %s\n", systemPrompt)
+		fmt.Fprintf(os.Stderr, "User: %s\n", userPrompt)
+		fmt.Fprintln(os.Stderr, "=========================================")
+	}
+
+	chatReq := oaiChatRequest{
+		Model: p.model,
+		Messages: []oaiMessage{
+			{Role: "system", Content: systemPrompt},
+			{Role: "user", Content: userPrompt},
+		},
+		Tools: []oaiTool{
+			{
+				Type: "function",
+				Function: oaiFunction{
+					Name:        "unified_diff",
+					Description: prompt.UnifiedDiffDescription,
+					Parameters:  schema,
+				},
+			},
+		},
+	}
+
+	resp, err := p.makeChatRequest(ctx, chatReq)
+	if err != nil {
+		return "", fmt.Errorf("%s API request failed: %w", p.name, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("%s API error (status %d): %s", p.name, resp.StatusCode, string(body))
+	}
+
+	var chatResp oaiChatResponse
+	if err := json.Unmarshal(body, &chatResp); err != nil {
+		return "", fmt.Errorf("failed to parse response: %w\nBody: %s", err, string(body))
+	}
+
+	if chatResp.Error != nil {
+		return "", fmt.Errorf("%s API error: %s", p.name, chatResp.Error.Message)
+	}
+
+	if debug {
+		fmt.Fprintf(os.Stderr, "=== DEBUG: %s UnifiedDiff Response ===\n", p.name)
+		fmt.Fprintf(os.Stderr, "Model: %s\n", chatResp.Model)
+		if len(chatResp.Choices) > 0 && chatResp.Choices[0].Message != nil {
+			msg := chatResp.Choices[0].Message
+			if len(msg.ToolCalls) > 0 {
+				for _, tc := range msg.ToolCalls {
+					fmt.Fprintf(os.Stderr, "Function: %s\n", tc.Function.Name)
+					fmt.Fprintf(os.Stderr, "Arguments: %s\n", tc.Function.Arguments)
+				}
+			} else if msg.Content != "" {
+				fmt.Fprintf(os.Stderr, "Content: %s\n", msg.Content)
+			}
+		}
+		fmt.Fprintln(os.Stderr, "==========================================")
+	}
+
+	if len(chatResp.Choices) == 0 {
+		return "", fmt.Errorf("no choices in response")
+	}
+
+	msg := chatResp.Choices[0].Message
+	if msg == nil {
+		return "", fmt.Errorf("no message in response")
+	}
+
+	// Print any text content first
+	if msg.Content != "" {
+		fmt.Println(msg.Content)
+	}
+
+	// Find the unified_diff function call
+	for _, tc := range msg.ToolCalls {
+		if tc.Function.Name == "unified_diff" {
+			var result struct {
+				Diff string `json:"diff"`
+			}
+			if err := json.Unmarshal([]byte(tc.Function.Arguments), &result); err != nil {
+				return "", fmt.Errorf("failed to parse unified_diff response: %w", err)
+			}
+			return result.Diff, nil
+		}
+	}
+
+	return "", fmt.Errorf("no unified_diff function call in response")
+}
+
 func (p *OpenAICompatProvider) StreamResponse(ctx context.Context, req AskRequest, output chan<- string) error {
 	defer close(output)
 

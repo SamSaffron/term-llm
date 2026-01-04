@@ -520,3 +520,88 @@ func (p *AnthropicProvider) GetEdits(ctx context.Context, systemPrompt, userProm
 
 	return edits, nil
 }
+
+// GetUnifiedDiff calls the LLM with the unified_diff tool and returns the diff string.
+func (p *AnthropicProvider) GetUnifiedDiff(ctx context.Context, systemPrompt, userPrompt string, debug bool) (string, error) {
+	// Define the unified diff tool using centralized schema
+	schema := prompt.UnifiedDiffSchema()
+	inputSchema := anthropic.ToolInputSchemaParam{
+		Type:       "object",
+		Properties: schema["properties"],
+		Required:   schema["required"].([]string),
+	}
+
+	tool := anthropic.ToolUnionParamOfTool(inputSchema, "unified_diff")
+	tool.OfTool.Description = anthropic.String(prompt.UnifiedDiffDescription)
+
+	if debug {
+		fmt.Fprintln(os.Stderr, "=== DEBUG: Anthropic UnifiedDiff Request ===")
+		fmt.Fprintf(os.Stderr, "System: %s\n", systemPrompt)
+		fmt.Fprintf(os.Stderr, "User: %s\n", userPrompt)
+		fmt.Fprintln(os.Stderr, "=============================================")
+	}
+
+	params := anthropic.MessageNewParams{
+		Model:     anthropic.Model(p.model),
+		MaxTokens: 4096,
+		System: []anthropic.TextBlockParam{
+			{Text: systemPrompt},
+		},
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock(userPrompt)),
+		},
+		Tools: []anthropic.ToolUnionParam{tool},
+	}
+
+	// Add extended thinking if enabled
+	if p.thinkingBudget > 0 {
+		params.MaxTokens = 16000
+		params.Thinking = anthropic.ThinkingConfigParamUnion{
+			OfEnabled: &anthropic.ThinkingConfigEnabledParam{
+				BudgetTokens: p.thinkingBudget,
+			},
+		}
+	} else {
+		params.ToolChoice = anthropic.ToolChoiceUnionParam{OfAny: &anthropic.ToolChoiceAnyParam{}}
+	}
+
+	message, err := p.client.Messages.New(ctx, params)
+	if err != nil {
+		return "", fmt.Errorf("anthropic API error: %w", err)
+	}
+
+	if debug {
+		fmt.Fprintln(os.Stderr, "=== DEBUG: Anthropic UnifiedDiff Response ===")
+		fmt.Fprintf(os.Stderr, "Stop reason: %s\n", message.StopReason)
+		for i, block := range message.Content {
+			fmt.Fprintf(os.Stderr, "Block %d: type=%s\n", i, block.Type)
+			if block.Type == "tool_use" {
+				fmt.Fprintf(os.Stderr, "  Tool: %s\n", block.Name)
+				fmt.Fprintf(os.Stderr, "  Input: %s\n", block.JSON.Input.Raw())
+			}
+		}
+		fmt.Fprintln(os.Stderr, "==============================================")
+	}
+
+	// Print any text output first
+	for _, block := range message.Content {
+		if block.Type == "text" && block.Text != "" {
+			fmt.Println(block.Text)
+		}
+	}
+
+	// Find the unified_diff tool call
+	for _, block := range message.Content {
+		if block.Type == "tool_use" && block.Name == "unified_diff" {
+			var result struct {
+				Diff string `json:"diff"`
+			}
+			if err := json.Unmarshal([]byte(block.JSON.Input.Raw()), &result); err != nil {
+				return "", fmt.Errorf("failed to parse unified_diff response: %w", err)
+			}
+			return result.Diff, nil
+		}
+	}
+
+	return "", fmt.Errorf("no unified_diff function call in response")
+}
