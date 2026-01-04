@@ -244,9 +244,9 @@ func PrintCompactDiff(filePath, oldContent, newContent string, padWidth int) {
 	}
 
 	// printWrapped prints a line with wrapping and syntax highlighting
+	// We wrap first, then highlight each segment so ANSI codes don't get split
 	printWrapped := func(lineNum int, marker, content string, bg [3]int) {
-		highlighted := highlightLine(content, bg)
-		wrapped := wrapLine(highlighted, contentWidth, prefixWidth)
+		wrapped := wrapLine(content, contentWidth, prefixWidth)
 		// Color for line number and marker based on diff type
 		var prefixColor string
 		switch marker {
@@ -259,13 +259,22 @@ func PrintCompactDiff(filePath, oldContent, newContent string, padWidth int) {
 		}
 		useBg := hasBg(bg)
 		for i, segment := range wrapped {
+			// Strip continuation indent for highlighting, then re-add it
+			textToHighlight := segment
+			continuationIndent := ""
+			if i > 0 && strings.HasPrefix(segment, "  ") {
+				textToHighlight = segment[2:]
+				continuationIndent = "  "
+			}
+			highlighted := continuationIndent + highlightLine(textToHighlight, bg)
+
 			var prefix string
 			if i == 0 {
 				prefix = fmt.Sprintf("%s%s%*d%s ", bgCode(bg), prefixColor, lineNumWidth, lineNum, marker)
 			} else {
 				prefix = fmt.Sprintf("%s%s%s%s ", bgCode(bg), prefixColor, strings.Repeat(" ", lineNumWidth), marker)
 			}
-			line := prefix + segment
+			line := prefix + highlighted
 			// Only pad with background for changed lines
 			if useBg {
 				displayLen := ANSILen(line)
