@@ -52,7 +52,13 @@ func NewAnthropicProvider(apiKey, model string) *AnthropicProvider {
 	actualModel, thinkingBudget := parseModelThinking(model)
 	var client anthropic.Client
 	if apiKey != "" {
-		client = anthropic.NewClient(option.WithAPIKey(apiKey))
+		// OAuth tokens (from Claude Code) start with "sk-ant-oat" and need Bearer auth
+		// Standard API keys start with "sk-ant-api" and use x-api-key header
+		if strings.HasPrefix(apiKey, "sk-ant-oat") {
+			client = anthropic.NewClient(option.WithAuthToken(apiKey))
+		} else {
+			client = anthropic.NewClient(option.WithAPIKey(apiKey))
+		}
 	} else {
 		client = anthropic.NewClient()
 	}
