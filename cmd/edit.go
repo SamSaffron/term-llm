@@ -543,39 +543,97 @@ func processEditsIndividually(edits []llm.EditToolCall, fileContents map[string]
 	return nil
 }
 
-func collectEdits(ctx context.Context, engine *llm.Engine, req llm.Request) ([]llm.EditToolCall, error) {
-	stream, err := engine.Stream(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	defer stream.Close()
+const (
+	maxEditLoops     = 6
+	editPendingReply = "Edit received and queued for user review. Continue with any remaining edits, or stop if all edits have been provided."
+	stopEditHint     = "All edits should now be complete. Do not call any more tools."
+)
 
-	var edits []llm.EditToolCall
-	for {
-		event, err := stream.Recv()
-		if err == io.EOF {
-			break
+func collectEdits(ctx context.Context, engine *llm.Engine, req llm.Request) ([]llm.EditToolCall, error) {
+	var allEdits []llm.EditToolCall
+
+	for attempt := 0; attempt < maxEditLoops; attempt++ {
+		// On last attempt, hint to stop
+		if attempt == maxEditLoops-1 {
+			req.Messages = append(req.Messages, llm.SystemText(stopEditHint))
 		}
+
+		stream, err := engine.Stream(ctx, req)
 		if err != nil {
 			return nil, err
 		}
-		if event.Type == llm.EventError && event.Err != nil {
-			return nil, event.Err
-		}
-		if event.Type == llm.EventToolCall && event.Tool != nil && event.Tool.Name == llm.EditToolName {
-			llm.DebugToolCall(req.Debug, *event.Tool)
-			edit, err := llm.ParseEditToolCall(*event.Tool)
+
+		var iterationEdits []llm.EditToolCall
+		var toolCalls []llm.ToolCall
+		for {
+			event, err := stream.Recv()
+			if err == io.EOF {
+				break
+			}
 			if err != nil {
+				stream.Close()
 				return nil, err
 			}
-			edits = append(edits, edit)
+			if event.Type == llm.EventError && event.Err != nil {
+				stream.Close()
+				return nil, event.Err
+			}
+			if event.Type == llm.EventToolCall && event.Tool != nil && event.Tool.Name == llm.EditToolName {
+				llm.DebugToolCall(req.Debug, *event.Tool)
+				edit, err := llm.ParseEditToolCall(*event.Tool)
+				if err != nil {
+					stream.Close()
+					return nil, err
+				}
+				iterationEdits = append(iterationEdits, edit)
+				toolCalls = append(toolCalls, *event.Tool)
+			}
 		}
+		stream.Close()
+
+		// No edits this iteration - we're done
+		if len(iterationEdits) == 0 {
+			break
+		}
+
+		allEdits = append(allEdits, iterationEdits...)
+
+		// Build tool call message and results for next iteration
+		toolCalls = ensureToolCallIDs(toolCalls)
+		assistantParts := make([]llm.Part, 0, len(toolCalls))
+		for i := range toolCalls {
+			assistantParts = append(assistantParts, llm.Part{
+				Type:     llm.PartToolCall,
+				ToolCall: &toolCalls[i],
+			})
+		}
+		req.Messages = append(req.Messages, llm.Message{
+			Role:  llm.RoleAssistant,
+			Parts: assistantParts,
+		})
+
+		// Send "pending" results back
+		for _, call := range toolCalls {
+			req.Messages = append(req.Messages, llm.ToolResultMessage(call.ID, call.Name, editPendingReply))
+		}
+
+		// Switch to auto tool choice after first iteration to allow model to stop
+		req.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
 	}
 
-	if len(edits) == 0 {
+	if len(allEdits) == 0 {
 		return nil, fmt.Errorf("no edits returned")
 	}
-	return edits, nil
+	return allEdits, nil
+}
+
+func ensureToolCallIDs(calls []llm.ToolCall) []llm.ToolCall {
+	for i := range calls {
+		if strings.TrimSpace(calls[i].ID) == "" {
+			calls[i].ID = fmt.Sprintf("edit-%d", i+1)
+		}
+	}
+	return calls
 }
 
 func validateGuardForReplace(content string, match editMatch, spec FileSpec) error {
@@ -680,40 +738,83 @@ func processUnifiedDiff(ctx context.Context, engine *llm.Engine, systemPrompt, u
 }
 
 func collectUnifiedDiff(ctx context.Context, engine *llm.Engine, req llm.Request) (string, error) {
-	stream, err := engine.Stream(ctx, req)
-	if err != nil {
-		return "", err
-	}
-	defer stream.Close()
+	var allDiffs []string
 
-	var diffs []string
-	for {
-		event, err := stream.Recv()
-		if err == io.EOF {
-			break
+	for attempt := 0; attempt < maxEditLoops; attempt++ {
+		// On last attempt, hint to stop
+		if attempt == maxEditLoops-1 {
+			req.Messages = append(req.Messages, llm.SystemText(stopEditHint))
 		}
+
+		stream, err := engine.Stream(ctx, req)
 		if err != nil {
 			return "", err
 		}
-		if event.Type == llm.EventError && event.Err != nil {
-			return "", event.Err
-		}
-		if event.Type == llm.EventToolCall && event.Tool != nil && event.Tool.Name == llm.UnifiedDiffToolName {
-			llm.DebugToolCall(req.Debug, *event.Tool)
-			diff, err := llm.ParseUnifiedDiff(*event.Tool)
+
+		var iterationDiffs []string
+		var toolCalls []llm.ToolCall
+		for {
+			event, err := stream.Recv()
+			if err == io.EOF {
+				break
+			}
 			if err != nil {
+				stream.Close()
 				return "", err
 			}
-			if strings.TrimSpace(diff) != "" {
-				diffs = append(diffs, diff)
+			if event.Type == llm.EventError && event.Err != nil {
+				stream.Close()
+				return "", event.Err
+			}
+			if event.Type == llm.EventToolCall && event.Tool != nil && event.Tool.Name == llm.UnifiedDiffToolName {
+				llm.DebugToolCall(req.Debug, *event.Tool)
+				diff, err := llm.ParseUnifiedDiff(*event.Tool)
+				if err != nil {
+					stream.Close()
+					return "", err
+				}
+				if strings.TrimSpace(diff) != "" {
+					iterationDiffs = append(iterationDiffs, diff)
+					toolCalls = append(toolCalls, *event.Tool)
+				}
 			}
 		}
+		stream.Close()
+
+		// No diffs this iteration - we're done
+		if len(iterationDiffs) == 0 {
+			break
+		}
+
+		allDiffs = append(allDiffs, iterationDiffs...)
+
+		// Build tool call message and results for next iteration
+		toolCalls = ensureToolCallIDs(toolCalls)
+		assistantParts := make([]llm.Part, 0, len(toolCalls))
+		for i := range toolCalls {
+			assistantParts = append(assistantParts, llm.Part{
+				Type:     llm.PartToolCall,
+				ToolCall: &toolCalls[i],
+			})
+		}
+		req.Messages = append(req.Messages, llm.Message{
+			Role:  llm.RoleAssistant,
+			Parts: assistantParts,
+		})
+
+		// Send "pending" results back
+		for _, call := range toolCalls {
+			req.Messages = append(req.Messages, llm.ToolResultMessage(call.ID, call.Name, editPendingReply))
+		}
+
+		// Switch to auto tool choice after first iteration to allow model to stop
+		req.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
 	}
 
-	if len(diffs) == 0 {
+	if len(allDiffs) == 0 {
 		return "", fmt.Errorf("no unified diff returned")
 	}
-	return strings.Join(diffs, "\n"), nil
+	return strings.Join(allDiffs, "\n"), nil
 }
 
 // processUnifiedDiffResults applies parsed unified diffs and prompts for approval
