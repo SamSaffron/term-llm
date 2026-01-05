@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -228,6 +229,11 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	engine := llm.NewEngine(provider, defaultToolRegistry())
+
+	if !provider.Capabilities().ToolCalls {
+		return fmt.Errorf("provider %s does not support tool calls", provider.Name())
+	}
 
 	// Determine if we should use unified diff format
 	useUnifiedDiff := shouldUseUnifiedDiff(cfg)
@@ -286,26 +292,34 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	userPrompt := prompt.EditUserPrompt(request, files, promptSpecs)
 
 	if useUnifiedDiff {
-		// Check if provider supports unified diff
-		udiffProv, ok := provider.(llm.UnifiedDiffProvider)
-		if !ok {
-			return fmt.Errorf("provider %s does not support unified diff format", provider.Name())
-		}
-
 		systemPrompt := prompt.UnifiedDiffSystemPrompt(cfg.Edit.Instructions, promptSpecs)
-		return processUnifiedDiff(ctx, udiffProv, systemPrompt, userPrompt, fileContents, specs)
+		return processUnifiedDiff(ctx, engine, systemPrompt, userPrompt, fileContents, specs)
 	}
 
 	// Use replace (multi-edit) format
-	editProv, ok := provider.(llm.EditToolProvider)
-	if !ok {
-		return fmt.Errorf("provider %s does not support edit tool", provider.Name())
-	}
-
 	systemPrompt := prompt.EditSystemPrompt(cfg.Edit.Instructions, promptSpecs, editWildcardToken)
 
 	// Get all edits from LLM with spinner
-	edits, err := ui.RunEditWithSpinner(ctx, editProv, systemPrompt, userPrompt, editDebug)
+	debugMode := editDebug || debugRaw
+	req := llm.Request{
+		Messages: []llm.Message{
+			llm.SystemText(systemPrompt),
+			llm.UserText(userPrompt),
+		},
+		Tools: []llm.ToolSpec{
+			llm.EditToolSpec(),
+		},
+		ToolChoice: llm.ToolChoice{
+			Mode: llm.ToolChoiceName,
+			Name: llm.EditToolName,
+		},
+		ParallelToolCalls: true,
+		Debug:             debugMode,
+		DebugRaw:          debugRaw,
+	}
+	result, err := ui.RunWithSpinner(ctx, debugMode, func(ctx context.Context) (any, error) {
+		return collectEdits(ctx, engine, req)
+	})
 	if err != nil {
 		if err.Error() == "cancelled" {
 			return nil
@@ -313,6 +327,10 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("edit failed: %w", err)
 	}
 
+	edits, ok := result.([]llm.EditToolCall)
+	if !ok {
+		return fmt.Errorf("unexpected edits result")
+	}
 	if len(edits) == 0 {
 		fmt.Println("No edits proposed")
 		return nil
@@ -521,6 +539,40 @@ func processEditsIndividually(edits []llm.EditToolCall, fileContents map[string]
 	return nil
 }
 
+func collectEdits(ctx context.Context, engine *llm.Engine, req llm.Request) ([]llm.EditToolCall, error) {
+	stream, err := engine.Stream(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	defer stream.Close()
+
+	var edits []llm.EditToolCall
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		if event.Type == llm.EventError && event.Err != nil {
+			return nil, event.Err
+		}
+		if event.Type == llm.EventToolCall && event.Tool != nil && event.Tool.Name == llm.EditToolName {
+			llm.DebugToolCall(req.Debug, *event.Tool)
+			edit, err := llm.ParseEditToolCall(*event.Tool)
+			if err != nil {
+				return nil, err
+			}
+			edits = append(edits, edit)
+		}
+	}
+
+	if len(edits) == 0 {
+		return nil, fmt.Errorf("no edits returned")
+	}
+	return edits, nil
+}
 
 func validateGuardForReplace(content string, match editMatch, spec FileSpec) error {
 	// Count lines before
@@ -559,6 +611,8 @@ func getActiveModel(cfg *config.Config) string {
 		return cfg.Anthropic.Model
 	case "openai":
 		return cfg.OpenAI.Model
+	case "openrouter":
+		return cfg.OpenRouter.Model
 	case "gemini":
 		return cfg.Gemini.Model
 	case "zen":
@@ -568,11 +622,28 @@ func getActiveModel(cfg *config.Config) string {
 	}
 }
 
-
 // processUnifiedDiff handles the unified diff flow
-func processUnifiedDiff(ctx context.Context, provider llm.UnifiedDiffProvider, systemPrompt, userPrompt string, fileContents map[string]string, specs []FileSpec) error {
-	// Get unified diff from LLM with spinner
-	diffStr, err := ui.RunUnifiedDiffWithSpinner(ctx, provider, systemPrompt, userPrompt, editDebug)
+func processUnifiedDiff(ctx context.Context, engine *llm.Engine, systemPrompt, userPrompt string, fileContents map[string]string, specs []FileSpec) error {
+	debugMode := editDebug || debugRaw
+	req := llm.Request{
+		Messages: []llm.Message{
+			llm.SystemText(systemPrompt),
+			llm.UserText(userPrompt),
+		},
+		Tools: []llm.ToolSpec{
+			llm.UnifiedDiffToolSpec(),
+		},
+		ToolChoice: llm.ToolChoice{
+			Mode: llm.ToolChoiceName,
+			Name: llm.UnifiedDiffToolName,
+		},
+		ParallelToolCalls: false,
+		Debug:             debugMode,
+		DebugRaw:          debugRaw,
+	}
+	result, err := ui.RunWithSpinner(ctx, debugMode, func(ctx context.Context) (any, error) {
+		return collectUnifiedDiff(ctx, engine, req)
+	})
 	if err != nil {
 		if err.Error() == "cancelled" {
 			return nil
@@ -580,6 +651,10 @@ func processUnifiedDiff(ctx context.Context, provider llm.UnifiedDiffProvider, s
 		return fmt.Errorf("edit failed: %w", err)
 	}
 
+	diffStr, ok := result.(string)
+	if !ok {
+		return fmt.Errorf("unexpected unified diff result")
+	}
 	if diffStr == "" {
 		fmt.Println("No edits proposed")
 		return nil
@@ -598,6 +673,43 @@ func processUnifiedDiff(ctx context.Context, provider llm.UnifiedDiffProvider, s
 
 	// Apply diffs and show results
 	return processUnifiedDiffResults(fileDiffs, fileContents, specs)
+}
+
+func collectUnifiedDiff(ctx context.Context, engine *llm.Engine, req llm.Request) (string, error) {
+	stream, err := engine.Stream(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	defer stream.Close()
+
+	var diffs []string
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", err
+		}
+		if event.Type == llm.EventError && event.Err != nil {
+			return "", event.Err
+		}
+		if event.Type == llm.EventToolCall && event.Tool != nil && event.Tool.Name == llm.UnifiedDiffToolName {
+			llm.DebugToolCall(req.Debug, *event.Tool)
+			diff, err := llm.ParseUnifiedDiff(*event.Tool)
+			if err != nil {
+				return "", err
+			}
+			if strings.TrimSpace(diff) != "" {
+				diffs = append(diffs, diff)
+			}
+		}
+	}
+
+	if len(diffs) == 0 {
+		return "", fmt.Errorf("no unified diff returned")
+	}
+	return strings.Join(diffs, "\n"), nil
 }
 
 // processUnifiedDiffResults applies parsed unified diffs and prompts for approval

@@ -119,58 +119,9 @@ func runWithSpinner(ctx context.Context, debug bool, run func(context.Context) (
 	return m.result.value, m.result.err
 }
 
-// RunWithSpinner shows a spinner while executing the LLM request
-// Returns suggestions, or error if cancelled or failed
-func RunWithSpinner(ctx context.Context, provider llm.Provider, req llm.SuggestRequest) ([]llm.CommandSuggestion, error) {
-	result, err := runWithSpinner(ctx, req.Debug, func(ctx context.Context) (any, error) {
-		return provider.SuggestCommands(ctx, req)
-	})
-	if result == nil {
-		return nil, err
-	}
-
-	suggestions, ok := result.([]llm.CommandSuggestion)
-	if !ok {
-		return nil, fmt.Errorf("unexpected result type")
-	}
-
-	return suggestions, err
-}
-
-// RunEditWithSpinner shows a spinner while executing the edit request
-// Returns edits, or error if cancelled or failed
-func RunEditWithSpinner(ctx context.Context, provider llm.EditToolProvider, systemPrompt, userPrompt string, debug bool) ([]llm.EditToolCall, error) {
-	result, err := runWithSpinner(ctx, debug, func(ctx context.Context) (any, error) {
-		return provider.GetEdits(ctx, systemPrompt, userPrompt, debug)
-	})
-	if result == nil {
-		return nil, err
-	}
-
-	edits, ok := result.([]llm.EditToolCall)
-	if !ok {
-		return nil, fmt.Errorf("unexpected result type")
-	}
-
-	return edits, err
-}
-
-// RunUnifiedDiffWithSpinner shows a spinner while executing the unified diff request
-// Returns the diff string, or error if cancelled or failed
-func RunUnifiedDiffWithSpinner(ctx context.Context, provider llm.UnifiedDiffProvider, systemPrompt, userPrompt string, debug bool) (string, error) {
-	result, err := runWithSpinner(ctx, debug, func(ctx context.Context) (any, error) {
-		return provider.GetUnifiedDiff(ctx, systemPrompt, userPrompt, debug)
-	})
-	if result == nil {
-		return "", err
-	}
-
-	diff, ok := result.(string)
-	if !ok {
-		return "", fmt.Errorf("unexpected result type")
-	}
-
-	return diff, err
+// RunWithSpinner shows a spinner while executing the provided function.
+func RunWithSpinner(ctx context.Context, debug bool, run func(context.Context) (any, error)) (any, error) {
+	return runWithSpinner(ctx, debug, run)
 }
 
 // selectModel is a bubbletea model for command selection with help support
@@ -320,9 +271,9 @@ func (m selectModel) View() string {
 
 // SelectCommand presents the user with a list of command suggestions and returns the selected one.
 // Returns the selected command or SomethingElse if user wants to refine their request.
-// If provider is non-nil and user presses 'h', shows help for the highlighted command.
+// If engine is non-nil and user presses 'h', shows help for the highlighted command.
 // allowNonTTY permits a non-interactive fallback when no TTY is available.
-func SelectCommand(suggestions []llm.CommandSuggestion, shell string, provider llm.Provider, allowNonTTY bool) (string, error) {
+func SelectCommand(suggestions []llm.CommandSuggestion, shell string, engine *llm.Engine, allowNonTTY bool) (string, error) {
 	for {
 		// Get tty for proper rendering
 		tty, ttyErr := getTTY()
@@ -353,10 +304,10 @@ func SelectCommand(suggestions []llm.CommandSuggestion, shell string, provider l
 			return "", fmt.Errorf("cancelled")
 		}
 
-		if m.showHelp && provider != nil {
+		if m.showHelp && engine != nil {
 			// Show help for the selected command
 			cmd := m.suggestions[m.cursor].Command
-			if err := ShowCommandHelp(cmd, shell, provider); err != nil {
+			if err := ShowCommandHelp(cmd, shell, engine); err != nil {
 				// Log error but continue with selection
 				ShowError(fmt.Sprintf("help failed: %v", err))
 			}
@@ -425,6 +376,7 @@ func RunSetupWizard() (*config.Config, error) {
 				Options(
 					huh.NewOption("Anthropic (Claude)", "anthropic"),
 					huh.NewOption("OpenAI", "openai"),
+					huh.NewOption("OpenRouter", "openrouter"),
 				).
 				Value(&provider),
 		),
@@ -450,6 +402,9 @@ func RunSetupWizard() (*config.Config, error) {
 	case "openai":
 		envVar = "OPENAI_API_KEY"
 		apiKey = os.Getenv(envVar)
+	case "openrouter":
+		envVar = "OPENROUTER_API_KEY"
+		apiKey = os.Getenv(envVar)
 	}
 
 	if apiKey == "" {
@@ -463,6 +418,11 @@ func RunSetupWizard() (*config.Config, error) {
 		},
 		OpenAI: config.OpenAIConfig{
 			Model: "gpt-5.2",
+		},
+		OpenRouter: config.OpenRouterConfig{
+			Model:    "x-ai/grok-code-fast-1",
+			AppURL:   "https://github.com/samsaffron/term-llm",
+			AppTitle: "term-llm",
 		},
 	}
 

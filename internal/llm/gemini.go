@@ -6,11 +6,10 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/samsaffron/term-llm/internal/prompt"
 	"google.golang.org/genai"
 )
 
-// GeminiProvider implements Provider using the Google Gemini API
+// GeminiProvider implements Provider using the Google Gemini API.
 type GeminiProvider struct {
 	apiKey string
 	model  string
@@ -27,397 +26,137 @@ func (p *GeminiProvider) Name() string {
 	return fmt.Sprintf("Gemini (%s)", p.model)
 }
 
+func (p *GeminiProvider) Capabilities() Capabilities {
+	return Capabilities{
+		NativeSearch: true,
+		ToolCalls:    true,
+	}
+}
+
 func (p *GeminiProvider) newClient(ctx context.Context) (*genai.Client, error) {
-	return genai.NewClient(ctx, &genai.ClientConfig{
-		APIKey:  p.apiKey,
-		Backend: genai.BackendGeminiAPI,
-	})
+	return genai.NewClient(ctx, &genai.ClientConfig{APIKey: p.apiKey})
 }
 
-func (p *GeminiProvider) SuggestCommands(ctx context.Context, req SuggestRequest) ([]CommandSuggestion, error) {
-	if req.EnableSearch {
-		return p.suggestWithSearch(ctx, req)
-	}
-	return p.suggestWithoutSearch(ctx, req)
-}
+func (p *GeminiProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
+		client, err := p.newClient(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to create gemini client: %w", err)
+		}
 
-// performSearch performs a Google Search query and returns the search context
-func (p *GeminiProvider) performSearch(ctx context.Context, query string, debug bool) (string, error) {
-	client, err := p.newClient(ctx)
-	if err != nil {
-		return "", fmt.Errorf("failed to create gemini client: %w", err)
-	}
+		system, user := flattenSystemUser(req.Messages)
+		if user == "" {
+			return fmt.Errorf("no user content provided")
+		}
 
-	searchConfig := &genai.GenerateContentConfig{
-		Tools: []*genai.Tool{
-			{GoogleSearch: &genai.GoogleSearch{}},
-		},
-	}
+		config := &genai.GenerateContentConfig{}
+		if system != "" {
+			config.SystemInstruction = genai.NewContentFromText(system, genai.RoleUser)
+		}
 
-	searchPrompt := fmt.Sprintf("Search for current information about: %s\n\nProvide a concise summary of the most relevant and up-to-date information found.", query)
+		if req.Search {
+			config.Tools = append(config.Tools, &genai.Tool{GoogleSearch: &genai.GoogleSearch{}})
+		}
 
-	if debug {
-		fmt.Fprintln(os.Stderr, "=== DEBUG: Gemini Search Request ===")
-		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
-		fmt.Fprintf(os.Stderr, "Query: %s\n", query)
-		fmt.Fprintln(os.Stderr, "=====================================")
-	}
+		if len(req.Tools) > 0 {
+			config.Tools = append(config.Tools, buildGeminiTools(req.Tools)...)
+			config.ToolConfig = &genai.ToolConfig{
+				FunctionCallingConfig: &genai.FunctionCallingConfig{
+					Mode: genai.FunctionCallingConfigModeAny,
+				},
+			}
+		}
 
-	resp, err := client.Models.GenerateContent(ctx, p.model, genai.Text(searchPrompt), searchConfig)
-	if err != nil {
-		return "", fmt.Errorf("search API error: %w", err)
-	}
-
-	searchResult := resp.Text()
-
-	if debug {
-		fmt.Fprintln(os.Stderr, "=== DEBUG: Gemini Search Response ===")
-		fmt.Fprintf(os.Stderr, "Result: %s\n", searchResult)
-		fmt.Fprintln(os.Stderr, "======================================")
-	}
-
-	return searchResult, nil
-}
-
-func (p *GeminiProvider) suggestWithSearch(ctx context.Context, req SuggestRequest) ([]CommandSuggestion, error) {
-	// Phase 1: Perform search to get current information
-	searchContext, err := p.performSearch(ctx, req.UserInput, req.Debug)
-	if err != nil {
-		// If search fails, fall back to suggestions without search
 		if req.Debug {
-			fmt.Fprintf(os.Stderr, "Search failed, falling back: %v\n", err)
+			fmt.Fprintln(os.Stderr, "=== DEBUG: Gemini Stream Request ===")
+			fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
+			fmt.Fprintf(os.Stderr, "System: %s\n", truncate(system, 200))
+			fmt.Fprintf(os.Stderr, "User: %s\n", truncate(user, 200))
+			fmt.Fprintf(os.Stderr, "Tools: %d\n", len(req.Tools))
+			fmt.Fprintln(os.Stderr, "====================================")
 		}
-		return p.suggestWithoutSearch(ctx, req)
-	}
 
-	// Phase 2: Generate suggestions with search context
-	client, err := p.newClient(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create gemini client: %w", err)
-	}
-
-	numSuggestions := req.NumSuggestions
-	if numSuggestions <= 0 {
-		numSuggestions = 3
-	}
-
-	suggestTool := geminiSuggestTool(numSuggestions)
-
-	systemPrompt := prompt.SuggestSystemPrompt(req.Shell, req.Instructions, numSuggestions, true)
-
-	// Include search results in the user prompt
-	userPrompt := prompt.SuggestUserPrompt(req.UserInput, req.Files, req.Stdin)
-	if searchContext != "" {
-		userPrompt = fmt.Sprintf("%s\n\n<search_results>\n%s\n</search_results>", userPrompt, searchContext)
-	}
-
-	config := &genai.GenerateContentConfig{
-		SystemInstruction: genai.NewContentFromText(systemPrompt, genai.RoleUser),
-		Tools:             []*genai.Tool{suggestTool},
-		ToolConfig: &genai.ToolConfig{
-			FunctionCallingConfig: &genai.FunctionCallingConfig{
-				Mode:                 genai.FunctionCallingConfigModeAny,
-				AllowedFunctionNames: []string{suggestCommandsToolName},
-			},
-		},
-	}
-
-	if req.Debug {
-		fmt.Fprintln(os.Stderr, "=== DEBUG: Gemini Request (with search) ===")
-		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
-		fmt.Fprintf(os.Stderr, "Tools: suggest_commands\n")
-		fmt.Fprintf(os.Stderr, "System:\n%s\n", systemPrompt)
-		fmt.Fprintf(os.Stderr, "User:\n%s\n", userPrompt)
-		fmt.Fprintln(os.Stderr, "============================================")
-	}
-
-	resp, err := client.Models.GenerateContent(ctx, p.model, genai.Text(userPrompt), config)
-	if err != nil {
-		return nil, fmt.Errorf("gemini API error: %w", err)
-	}
-
-	if req.Debug {
-		fmt.Fprintln(os.Stderr, "=== DEBUG: Gemini Response (with search) ===")
-		p.debugPrintResponse(resp)
-		fmt.Fprintln(os.Stderr, "=============================================")
-	}
-
-	return p.extractSuggestions(resp)
-}
-
-func (p *GeminiProvider) suggestWithoutSearch(ctx context.Context, req SuggestRequest) ([]CommandSuggestion, error) {
-	client, err := p.newClient(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create gemini client: %w", err)
-	}
-
-	numSuggestions := req.NumSuggestions
-	if numSuggestions <= 0 {
-		numSuggestions = 3
-	}
-
-	suggestTool := geminiSuggestTool(numSuggestions)
-
-	systemPrompt := prompt.SuggestSystemPrompt(req.Shell, req.Instructions, numSuggestions, false)
-	userPrompt := prompt.SuggestUserPrompt(req.UserInput, req.Files, req.Stdin)
-
-	config := &genai.GenerateContentConfig{
-		SystemInstruction: genai.NewContentFromText(systemPrompt, genai.RoleUser),
-		Tools:             []*genai.Tool{suggestTool},
-		ToolConfig: &genai.ToolConfig{
-			FunctionCallingConfig: &genai.FunctionCallingConfig{
-				Mode:                 genai.FunctionCallingConfigModeAny,
-				AllowedFunctionNames: []string{suggestCommandsToolName},
-			},
-		},
-	}
-
-	if req.Debug {
-		fmt.Fprintln(os.Stderr, "=== DEBUG: Gemini Request ===")
-		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
-		fmt.Fprintf(os.Stderr, "Tools: suggest_commands\n")
-		fmt.Fprintf(os.Stderr, "System:\n%s\n", systemPrompt)
-		fmt.Fprintf(os.Stderr, "User:\n%s\n", userPrompt)
-		fmt.Fprintln(os.Stderr, "==============================")
-	}
-
-	resp, err := client.Models.GenerateContent(ctx, p.model, genai.Text(userPrompt), config)
-	if err != nil {
-		return nil, fmt.Errorf("gemini API error: %w", err)
-	}
-
-	if req.Debug {
-		fmt.Fprintln(os.Stderr, "=== DEBUG: Gemini Response ===")
-		p.debugPrintResponse(resp)
-		fmt.Fprintln(os.Stderr, "===============================")
-	}
-
-	return p.extractSuggestions(resp)
-}
-
-func (p *GeminiProvider) debugPrintResponse(resp *genai.GenerateContentResponse) {
-	for _, fc := range resp.FunctionCalls() {
-		fmt.Fprintf(os.Stderr, "Function: %s\n", fc.Name)
-		argsJSON, _ := json.Marshal(fc.Args)
-		fmt.Fprintf(os.Stderr, "Arguments:\n%s\n", string(argsJSON))
-	}
-	if text := resp.Text(); text != "" {
-		fmt.Fprintf(os.Stderr, "Text: %s\n", text)
-	}
-}
-
-func (p *GeminiProvider) extractSuggestions(resp *genai.GenerateContentResponse) ([]CommandSuggestion, error) {
-	for _, fc := range resp.FunctionCalls() {
-		if fc.Name == suggestCommandsToolName {
-			// Extract suggestions from the function call arguments
-			suggestionsRaw, ok := fc.Args["suggestions"]
-			if !ok {
-				return nil, fmt.Errorf("no suggestions in function call response")
-			}
-
-			// Convert to JSON and back to parse into our struct
-			jsonBytes, err := json.Marshal(suggestionsRaw)
+		if len(req.Tools) > 0 {
+			resp, err := client.Models.GenerateContent(ctx, chooseModel(req.Model, p.model), genai.Text(user), config)
 			if err != nil {
-				return nil, fmt.Errorf("failed to marshal suggestions: %w", err)
+				return fmt.Errorf("gemini API error: %w", err)
 			}
-
-			var suggestions []CommandSuggestion
-			if err := json.Unmarshal(jsonBytes, &suggestions); err != nil {
-				return nil, fmt.Errorf("failed to parse suggestions: %w", err)
+			for _, fc := range resp.FunctionCalls() {
+				argsJSON, _ := jsonMarshal(fc.Args)
+				events <- Event{Type: EventToolCall, Tool: &ToolCall{ID: "", Name: fc.Name, Arguments: argsJSON}}
 			}
-
-			return suggestions, nil
-		}
-	}
-	return nil, fmt.Errorf("no function call in response")
-}
-
-func (p *GeminiProvider) StreamResponse(ctx context.Context, req AskRequest, output chan<- string) error {
-	defer close(output)
-
-	if req.EnableSearch {
-		return p.streamWithSearch(ctx, req, output)
-	}
-	return p.streamWithoutSearch(ctx, req, output)
-}
-
-func (p *GeminiProvider) streamWithoutSearch(ctx context.Context, req AskRequest, output chan<- string) error {
-	client, err := p.newClient(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create gemini client: %w", err)
-	}
-
-	userMessage := prompt.AskUserPrompt(req.Question, req.Files, req.Stdin)
-
-	config := &genai.GenerateContentConfig{}
-
-	// Add system prompt if instructions provided
-	if req.Instructions != "" {
-		config.SystemInstruction = genai.NewContentFromText(req.Instructions, genai.RoleUser)
-	}
-
-	if req.Debug {
-		fmt.Fprintln(os.Stderr, "=== DEBUG: Gemini Stream Request ===")
-		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
-		fmt.Fprintf(os.Stderr, "Question: %s\n", req.Question)
-		fmt.Fprintln(os.Stderr, "=====================================")
-	}
-
-	for resp, err := range client.Models.GenerateContentStream(ctx, p.model, genai.Text(userMessage), config) {
-		if err != nil {
-			return fmt.Errorf("gemini streaming error: %w", err)
-		}
-		if text := resp.Text(); text != "" {
-			output <- text
-		}
-	}
-
-	return nil
-}
-
-func (p *GeminiProvider) streamWithSearch(ctx context.Context, req AskRequest, output chan<- string) error {
-	client, err := p.newClient(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create gemini client: %w", err)
-	}
-
-	userMessage := prompt.AskUserPrompt(req.Question, req.Files, req.Stdin)
-
-	config := &genai.GenerateContentConfig{
-		Tools: []*genai.Tool{
-			{GoogleSearch: &genai.GoogleSearch{}},
-		},
-	}
-
-	// Add system prompt if instructions provided
-	if req.Instructions != "" {
-		config.SystemInstruction = genai.NewContentFromText(req.Instructions, genai.RoleUser)
-	}
-
-	if req.Debug {
-		fmt.Fprintln(os.Stderr, "=== DEBUG: Gemini Stream Request (with search) ===")
-		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
-		fmt.Fprintf(os.Stderr, "Question: %s\n", req.Question)
-		fmt.Fprintln(os.Stderr, "===================================================")
-	}
-
-	var sources []string
-	for resp, err := range client.Models.GenerateContentStream(ctx, p.model, genai.Text(userMessage), config) {
-		if err != nil {
-			return fmt.Errorf("gemini streaming error: %w", err)
-		}
-		if text := resp.Text(); text != "" {
-			output <- text
+			events <- Event{Type: EventDone}
+			return nil
 		}
 
-		// Collect grounding sources
-		for _, cand := range resp.Candidates {
-			if cand.GroundingMetadata != nil && cand.GroundingMetadata.GroundingChunks != nil {
-				for _, chunk := range cand.GroundingMetadata.GroundingChunks {
-					if chunk.Web != nil && chunk.Web.URI != "" {
-						title := chunk.Web.Title
-						if title == "" {
-							title = "Source"
-						}
-						source := fmt.Sprintf("[%s](%s)", title, chunk.Web.URI)
-						// Avoid duplicates
-						found := false
-						for _, s := range sources {
-							if s == source {
-								found = true
-								break
+		var sources []string
+		for resp, err := range client.Models.GenerateContentStream(ctx, chooseModel(req.Model, p.model), genai.Text(user), config) {
+			if err != nil {
+				return fmt.Errorf("gemini streaming error: %w", err)
+			}
+			if text := resp.Text(); text != "" {
+				events <- Event{Type: EventTextDelta, Text: text}
+			}
+			if req.Search {
+				for _, cand := range resp.Candidates {
+					if cand.GroundingMetadata != nil && cand.GroundingMetadata.GroundingChunks != nil {
+						for _, chunk := range cand.GroundingMetadata.GroundingChunks {
+							if chunk.Web != nil && chunk.Web.URI != "" {
+								title := chunk.Web.Title
+								if title == "" {
+									title = "Source"
+								}
+								source := fmt.Sprintf("[%s](%s)", title, chunk.Web.URI)
+								if !containsString(sources, source) {
+									sources = append(sources, source)
+								}
 							}
-						}
-						if !found {
-							sources = append(sources, source)
 						}
 					}
 				}
 			}
 		}
-	}
 
-	// Output sources at the end
-	if len(sources) > 0 {
-		output <- "\n\n**Sources:**\n"
-		for _, source := range sources {
-			output <- "- " + source + "\n"
+		if len(sources) > 0 {
+			events <- Event{Type: EventTextDelta, Text: "\n\n**Sources:**\n"}
+			for _, source := range sources {
+				events <- Event{Type: EventTextDelta, Text: "- " + source + "\n"}
+			}
 		}
-	}
-
-	return nil
+		events <- Event{Type: EventDone}
+		return nil
+	}), nil
 }
 
-// CallWithTool makes an API call with a single tool and returns raw results.
-// Implements ToolCallProvider interface.
-func (p *GeminiProvider) CallWithTool(ctx context.Context, req ToolCallRequest) (*ToolCallResult, error) {
-	client, err := p.newClient(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create gemini client: %w", err)
+func buildGeminiTools(specs []ToolSpec) []*genai.Tool {
+	if len(specs) == 0 {
+		return nil
 	}
-
-	// Build the tool declaration
-	tool := &genai.Tool{
-		FunctionDeclarations: []*genai.FunctionDeclaration{
-			{
-				Name:        req.ToolName,
-				Description: req.ToolDesc,
-				Parameters:  schemaToGenai(req.ToolSchema),
+	tools := make([]*genai.Tool, 0, len(specs))
+	for _, spec := range specs {
+		tools = append(tools, &genai.Tool{
+			FunctionDeclarations: []*genai.FunctionDeclaration{
+				{
+					Name:        spec.Name,
+					Description: spec.Description,
+					Parameters:  schemaToGenai(spec.Schema),
+				},
 			},
-		},
-	}
-
-	config := &genai.GenerateContentConfig{
-		SystemInstruction: genai.NewContentFromText(req.SystemPrompt, genai.RoleUser),
-		Tools:             []*genai.Tool{tool},
-		ToolConfig: &genai.ToolConfig{
-			FunctionCallingConfig: &genai.FunctionCallingConfig{
-				Mode: genai.FunctionCallingConfigModeAny,
-			},
-		},
-	}
-
-	if req.Debug {
-		fmt.Fprintf(os.Stderr, "=== DEBUG: Gemini %s Request ===\n", req.ToolName)
-		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
-		fmt.Fprintf(os.Stderr, "System:\n%s\n", req.SystemPrompt)
-		fmt.Fprintf(os.Stderr, "User:\n%s\n", req.UserPrompt)
-		fmt.Fprintln(os.Stderr, "=================================")
-	}
-
-	resp, err := client.Models.GenerateContent(ctx, p.model, genai.Text(req.UserPrompt), config)
-	if err != nil {
-		return nil, fmt.Errorf("gemini API error: %w", err)
-	}
-
-	if req.Debug {
-		fmt.Fprintf(os.Stderr, "=== DEBUG: Gemini %s Response ===\n", req.ToolName)
-		p.debugPrintResponse(resp)
-		fmt.Fprintln(os.Stderr, "==================================")
-	}
-
-	// Extract results from response
-	result := &ToolCallResult{}
-	if text := resp.Text(); text != "" {
-		result.TextOutput = text
-	}
-	for _, fc := range resp.FunctionCalls() {
-		argsJSON, _ := json.Marshal(fc.Args)
-		result.ToolCalls = append(result.ToolCalls, ToolCallArguments{
-			Name:      fc.Name,
-			Arguments: argsJSON,
 		})
 	}
-
-	return result, nil
+	return tools
 }
 
-// GetEdits calls the LLM with the edit tool and returns all proposed edits.
-func (p *GeminiProvider) GetEdits(ctx context.Context, systemPrompt, userPrompt string, debug bool) ([]EditToolCall, error) {
-	return GetEditsFromProvider(ctx, p, systemPrompt, userPrompt, debug)
+func containsString(values []string, target string) bool {
+	for _, v := range values {
+		if v == target {
+			return true
+		}
+	}
+	return false
 }
 
-// GetUnifiedDiff calls the LLM with the unified_diff tool and returns the diff string.
-func (p *GeminiProvider) GetUnifiedDiff(ctx context.Context, systemPrompt, userPrompt string, debug bool) (string, error) {
-	return GetUnifiedDiffFromProvider(ctx, p, systemPrompt, userPrompt, debug)
+func jsonMarshal(v any) (json.RawMessage, error) {
+	b, err := json.Marshal(v)
+	return json.RawMessage(b), err
 }

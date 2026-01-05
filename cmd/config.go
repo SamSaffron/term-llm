@@ -93,6 +93,12 @@ func configShow(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  model: %s\n", cfg.OpenAI.Model)
 	printCredentialStatus("openai", cfg.OpenAI.Credentials, cfg.OpenAI.APIKey, "OPENAI_API_KEY")
 
+	fmt.Printf("\nopenrouter:\n")
+	fmt.Printf("  model: %s\n", cfg.OpenRouter.Model)
+	fmt.Printf("  app_url: %s\n", cfg.OpenRouter.AppURL)
+	fmt.Printf("  app_title: %s\n", cfg.OpenRouter.AppTitle)
+	printCredentialStatus("openrouter", "", cfg.OpenRouter.APIKey, "OPENROUTER_API_KEY")
+
 	fmt.Printf("\ngemini:\n")
 	fmt.Printf("  model: %s\n", cfg.Gemini.Model)
 	// For gemini-cli, check OAuthCreds instead of APIKey
@@ -253,7 +259,7 @@ func defaultConfigContent() string {
 	return `# term-llm configuration
 # Run 'term-llm config edit' to modify
 
-provider: anthropic  # anthropic, openai, gemini, zen, ollama, lmstudio, or openai-compat
+provider: anthropic  # anthropic, openai, openrouter, gemini, zen, ollama, lmstudio, or openai-compat
 
 # exec command settings
 exec:
@@ -299,6 +305,13 @@ openai:
   # credentials: api_key or codex
   #   api_key: uses OPENAI_API_KEY env var (default)
   #   codex: uses Codex credentials (requires 'codex' CLI)
+
+openrouter:
+  model: x-ai/grok-code-fast-1
+  # api_key: uses OPENROUTER_API_KEY env var
+  # OpenRouter attribution headers (optional but recommended)
+  app_url: https://github.com/samsaffron/term-llm
+  app_title: term-llm
 
 gemini:
   model: gemini-3-flash-preview

@@ -1,13 +1,16 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/prompt"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/spf13/cobra"
@@ -85,6 +88,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	engine := llm.NewEngine(provider, defaultToolRegistry())
 
 	// Detect shell
 	shell := detectShell()
@@ -111,22 +115,33 @@ func runExec(cmd *cobra.Command, args []string) error {
 		numSuggestions = execMaxOpts
 	}
 
+	debugMode := execDebug || debugRaw
+
 	// Main loop for refinement
 	for {
-		// Build request
-		req := llm.SuggestRequest{
-			UserInput:      userInput,
-			Shell:          shell,
-			Instructions:   cfg.Exec.Instructions,
-			NumSuggestions: numSuggestions,
-			EnableSearch:   execSearch,
-			Debug:          execDebug,
-			Files:          files,
-			Stdin:          stdinContent,
+		systemPrompt := prompt.SuggestSystemPrompt(shell, cfg.Exec.Instructions, numSuggestions, execSearch)
+		userPrompt := prompt.SuggestUserPrompt(userInput, files, stdinContent)
+		req := llm.Request{
+			Messages: []llm.Message{
+				llm.SystemText(systemPrompt),
+				llm.UserText(userPrompt),
+			},
+			Tools: []llm.ToolSpec{
+				llm.SuggestCommandsToolSpec(numSuggestions),
+			},
+			ToolChoice: llm.ToolChoice{
+				Mode: llm.ToolChoiceName,
+				Name: llm.SuggestCommandsToolName,
+			},
+			ParallelToolCalls: true,
+			Search:            execSearch,
+			Debug:             debugMode,
+			DebugRaw:          debugRaw,
 		}
 
-		// Get suggestions from LLM with spinner
-		suggestions, err := ui.RunWithSpinner(ctx, provider, req)
+		result, err := ui.RunWithSpinner(ctx, debugMode, func(ctx context.Context) (any, error) {
+			return collectSuggestions(ctx, engine, req)
+		})
 		if err != nil {
 			if err.Error() == "cancelled" {
 				return nil
@@ -134,8 +149,9 @@ func runExec(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("failed to get suggestions: %w", err)
 		}
 
-		if len(suggestions) == 0 {
-			return fmt.Errorf("no suggestions returned")
+		suggestions, ok := result.([]llm.CommandSuggestion)
+		if !ok {
+			return fmt.Errorf("unexpected suggestions result")
 		}
 
 		// Sort by likelihood (highest first)
@@ -163,7 +179,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 
 		// Interactive mode: show selection UI (with help support via 'h' key)
 		allowNonTTY := execPrintOnly || envEnabled(allowNonTTYEnv)
-		selected, err := ui.SelectCommand(suggestions, shell, provider, allowNonTTY)
+		selected, err := ui.SelectCommand(suggestions, shell, engine, allowNonTTY)
 		if err != nil {
 			if err.Error() == "cancelled" {
 				return nil
@@ -196,6 +212,41 @@ func runExec(cmd *cobra.Command, args []string) error {
 		// Execute the selected command
 		return executeCommand(selected, shell)
 	}
+}
+
+func collectSuggestions(ctx context.Context, engine *llm.Engine, req llm.Request) ([]llm.CommandSuggestion, error) {
+	stream, err := engine.Stream(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	defer stream.Close()
+
+	var suggestions []llm.CommandSuggestion
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		if event.Type == llm.EventError && event.Err != nil {
+			return nil, event.Err
+		}
+		if event.Type == llm.EventToolCall && event.Tool != nil && event.Tool.Name == llm.SuggestCommandsToolName {
+			llm.DebugToolCall(req.Debug, *event.Tool)
+			parsed, err := llm.ParseCommandSuggestions(*event.Tool)
+			if err != nil {
+				return nil, err
+			}
+			suggestions = append(suggestions, parsed...)
+		}
+	}
+
+	if len(suggestions) == 0 {
+		return nil, fmt.Errorf("no suggestions returned")
+	}
+	return suggestions, nil
 }
 
 func envEnabled(name string) bool {

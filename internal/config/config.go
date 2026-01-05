@@ -19,6 +19,7 @@ type Config struct {
 	Theme        ThemeConfig        `mapstructure:"theme"`
 	Anthropic    AnthropicConfig    `mapstructure:"anthropic"`
 	OpenAI       OpenAIConfig       `mapstructure:"openai"`
+	OpenRouter   OpenRouterConfig   `mapstructure:"openrouter"`
 	Gemini       GeminiConfig       `mapstructure:"gemini"`
 	Zen          ZenConfig          `mapstructure:"zen"`
 	Ollama       OllamaConfig       `mapstructure:"ollama"`
@@ -73,6 +74,13 @@ type OpenAIConfig struct {
 	Model       string `mapstructure:"model"`
 	Credentials string `mapstructure:"credentials"` // "api_key" (default) or "codex"
 	AccountID   string // Populated at runtime when using Codex OAuth credentials
+}
+
+type OpenRouterConfig struct {
+	APIKey   string `mapstructure:"api_key"`
+	Model    string `mapstructure:"model"`
+	AppURL   string `mapstructure:"app_url"`
+	AppTitle string `mapstructure:"app_title"`
 }
 
 type GeminiConfig struct {
@@ -159,6 +167,9 @@ func Load() (*Config, error) {
 	viper.SetDefault("edit.diff_format", "auto") // auto, udiff, or replace
 	viper.SetDefault("anthropic.model", "claude-sonnet-4-5")
 	viper.SetDefault("openai.model", "gpt-5.2")
+	viper.SetDefault("openrouter.model", "x-ai/grok-code-fast-1")
+	viper.SetDefault("openrouter.app_url", "https://github.com/samsaffron/term-llm")
+	viper.SetDefault("openrouter.app_title", "term-llm")
 	viper.SetDefault("gemini.model", "gemini-3-flash-preview")
 	viper.SetDefault("zen.model", "glm-4.7-free")
 	// OpenAI-compatible provider defaults
@@ -191,6 +202,7 @@ func Load() (*Config, error) {
 	if err := resolveOpenAICredentials(&cfg.OpenAI); err != nil {
 		return nil, fmt.Errorf("openai credentials: %w", err)
 	}
+	resolveOpenRouterCredentials(&cfg.OpenRouter)
 	if err := resolveGeminiCredentials(&cfg.Gemini); err != nil {
 		return nil, fmt.Errorf("gemini credentials: %w", err)
 	}
@@ -216,6 +228,8 @@ func (c *Config) ApplyOverrides(provider, model string) {
 			c.Anthropic.Model = model
 		case "openai":
 			c.OpenAI.Model = model
+		case "openrouter":
+			c.OpenRouter.Model = model
 		case "gemini":
 			c.Gemini.Model = model
 		case "zen":
@@ -267,6 +281,16 @@ func resolveOpenAICredentials(cfg *OpenAIConfig) error {
 		}
 	}
 	return nil
+}
+
+// resolveOpenRouterCredentials resolves OpenRouter API credentials
+func resolveOpenRouterCredentials(cfg *OpenRouterConfig) {
+	cfg.APIKey = expandEnv(cfg.APIKey)
+	if cfg.APIKey == "" {
+		cfg.APIKey = os.Getenv("OPENROUTER_API_KEY")
+	}
+	cfg.AppURL = expandEnv(cfg.AppURL)
+	cfg.AppTitle = expandEnv(cfg.AppTitle)
 }
 
 // resolveGeminiCredentials resolves Gemini API credentials
@@ -428,6 +452,11 @@ anthropic:
 openai:
   model: %s
 
+openrouter:
+  model: %s
+  app_url: %s
+  app_title: %s
+
 gemini:
   model: %s
 
@@ -435,7 +464,7 @@ zen:
   model: %s
   # api_key: optional - leave empty for free tier access
   # Set ZEN_API_KEY env var or add api_key here if you have one
-`, cfg.Provider, cfg.Exec.Suggestions, cfg.Anthropic.Model, cfg.OpenAI.Model, cfg.Gemini.Model, cfg.Zen.Model)
+`, cfg.Provider, cfg.Exec.Suggestions, cfg.Anthropic.Model, cfg.OpenAI.Model, cfg.OpenRouter.Model, cfg.OpenRouter.AppURL, cfg.OpenRouter.AppTitle, cfg.Gemini.Model, cfg.Zen.Model)
 
 	return os.WriteFile(path, []byte(content), 0600)
 }

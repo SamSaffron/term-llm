@@ -12,6 +12,7 @@ func TestParseProviderModel(t *testing.T) {
 	}{
 		{name: "provider only", input: "gemini", wantProvider: "gemini"},
 		{name: "provider with model", input: "openai:gpt-4o", wantProvider: "openai", wantModel: "gpt-4o"},
+		{name: "openrouter with model", input: "openrouter:x-ai/grok-code-fast-1", wantProvider: "openrouter", wantModel: "x-ai/grok-code-fast-1"},
 		{name: "openai compat with model", input: "openai-compat:mixtral", wantProvider: "openai-compat", wantModel: "mixtral"},
 		{name: "invalid provider", input: "unknown:model", wantErr: true},
 	}

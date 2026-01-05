@@ -11,7 +11,7 @@ A Swiss Army knife for your terminal—AI-powered commands, answers, and images 
 - **File editing**: Edit code with AI assistance (supports line ranges)
 - **File context**: Include files, clipboard, or stdin as context (`-f`)
 - **Image generation**: Create and edit images (Gemini, OpenAI, Flux)
-- **Multiple providers**: Anthropic, OpenAI, Gemini, Zen (free tier), Ollama, LM Studio
+- **Multiple providers**: Anthropic, OpenAI, OpenRouter, Gemini, Zen (free tier), Ollama, LM Studio
 - **Local LLMs**: Run with Ollama, LM Studio, or any OpenAI-compatible server
 - **Credential reuse**: Works with Claude Code, Codex, gemini-cli credentials
 
@@ -54,7 +54,7 @@ go build
 
 ## Setup
 
-On first run, term-llm will prompt you to choose a provider (Anthropic, OpenAI, Gemini, Zen, Ollama, or LM Studio).
+On first run, term-llm will prompt you to choose a provider (Anthropic, OpenAI, OpenRouter, Gemini, Zen, Ollama, or LM Studio).
 
 ### Option 1: Use existing CLI credentials (recommended)
 
@@ -83,11 +83,28 @@ export ANTHROPIC_API_KEY=your-key
 # For OpenAI
 export OPENAI_API_KEY=your-key
 
+# For OpenRouter
+export OPENROUTER_API_KEY=your-key
+
 # For Gemini
 export GEMINI_API_KEY=your-key
 ```
 
-### Option 3: Use OpenCode Zen (free tier available)
+### Option 3: Use OpenRouter
+
+[OpenRouter](https://openrouter.ai) provides a unified OpenAI-compatible API across many models. term-llm sends attribution headers by default.
+
+```yaml
+# In ~/.config/term-llm/config.yaml
+provider: openrouter
+
+openrouter:
+  model: x-ai/grok-code-fast-1
+  app_url: https://github.com/samsaffron/term-llm
+  app_title: term-llm
+```
+
+### Option 4: Use OpenCode Zen (free tier available)
 
 [OpenCode Zen](https://opencode.ai) provides free access to GLM 4.7 and other models. No API key required for free tier, or set `ZEN_API_KEY` for paid models:
 
@@ -113,12 +130,13 @@ List available models from any supported provider:
 
 ```bash
 term-llm models --provider anthropic  # List Anthropic models
+term-llm models --provider openrouter # List OpenRouter models
 term-llm models --provider ollama     # List local Ollama models
 term-llm models --provider lmstudio   # List local LM Studio models
 term-llm models --json                # Output as JSON
 ```
 
-### Option 4: Use local LLMs (Ollama, LM Studio)
+### Option 5: Use local LLMs (Ollama, LM Studio)
 
 Run models locally with [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai):
 
@@ -391,7 +409,7 @@ To disable update checks, set `TERM_LLM_SKIP_UPDATE_CHECK=1`.
 Config is stored at `~/.config/term-llm/config.yaml`:
 
 ```yaml
-provider: anthropic  # anthropic, openai, gemini, zen, ollama, lmstudio, or openai-compat
+provider: anthropic  # anthropic, openai, openrouter, gemini, zen, ollama, lmstudio, or openai-compat
 
 exec:
   suggestions: 3  # number of command suggestions
@@ -419,6 +437,11 @@ anthropic:
 openai:
   model: gpt-5.2
   credentials: codex  # or "api_key" (default)
+
+openrouter:
+  model: x-ai/grok-code-fast-1
+  app_url: https://github.com/samsaffron/term-llm
+  app_title: term-llm
 
 gemini:
   model: gemini-3-flash-preview

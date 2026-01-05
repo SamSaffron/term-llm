@@ -22,6 +22,9 @@ var ProviderModels = map[string][]string{
 		"gpt-5.2-codex-xhigh",
 		"gpt-4.1",
 	},
+	"openrouter": {
+		"x-ai/grok-code-fast-1",
+	},
 	"gemini": {
 		"gemini-3-pro-preview",
 		"gemini-3-flash-preview",
@@ -45,7 +48,7 @@ var ImageProviderModels = map[string][]string{
 
 // GetProviderNames returns valid provider names for LLM
 func GetProviderNames() []string {
-	return []string{"anthropic", "openai", "gemini", "zen", "ollama", "lmstudio", "openai-compat"}
+	return []string{"anthropic", "openai", "openrouter", "gemini", "zen", "ollama", "lmstudio", "openai-compat"}
 }
 
 // GetImageProviderNames returns valid provider names for image generation

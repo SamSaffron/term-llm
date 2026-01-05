@@ -12,6 +12,7 @@ import (
 
 func init() {
 	update.SetupUpdateChecks(rootCmd, Version)
+	rootCmd.PersistentFlags().BoolVar(&debugRaw, "debug-raw", false, "Emit raw debug logs with timestamps")
 }
 
 var rootCmd = &cobra.Command{
@@ -28,6 +29,8 @@ Examples:
   term-llm config completion zsh        # shell completions`,
 	CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 }
+
+var debugRaw bool
 
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {

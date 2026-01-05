@@ -8,10 +8,10 @@ import (
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/samsaffron/term-llm/internal/prompt"
+	"github.com/anthropics/anthropic-sdk-go/shared/constant"
 )
 
-// ListModels returns available models from Anthropic
+// ListModels returns available models from Anthropic.
 func (p *AnthropicProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	page, err := p.client.Models.List(ctx, anthropic.ModelListParams{})
 	if err != nil {
@@ -30,14 +30,14 @@ func (p *AnthropicProvider) ListModels(ctx context.Context) ([]ModelInfo, error)
 	return models, nil
 }
 
-// AnthropicProvider implements Provider using the Anthropic API
+// AnthropicProvider implements Provider using the Anthropic API.
 type AnthropicProvider struct {
 	client         *anthropic.Client
 	model          string
 	thinkingBudget int64 // 0 = disabled, >0 = enabled with budget
 }
 
-// parseModelThinking extracts -thinking suffix from model name
+// parseModelThinking extracts -thinking suffix from model name.
 // "claude-sonnet-4-5-thinking" -> ("claude-sonnet-4-5", 10000)
 // "claude-sonnet-4-5" -> ("claude-sonnet-4-5", 0)
 func parseModelThinking(model string) (string, int64) {
@@ -64,386 +64,365 @@ func (p *AnthropicProvider) Name() string {
 	return fmt.Sprintf("Anthropic (%s)", p.model)
 }
 
-func (p *AnthropicProvider) SuggestCommands(ctx context.Context, req SuggestRequest) ([]CommandSuggestion, error) {
-	if req.EnableSearch {
-		return p.suggestWithSearch(ctx, req)
+func (p *AnthropicProvider) Capabilities() Capabilities {
+	return Capabilities{
+		NativeSearch: true,
+		ToolCalls:    true,
 	}
-	return p.suggestWithoutSearch(ctx, req)
 }
 
-func (p *AnthropicProvider) suggestWithoutSearch(ctx context.Context, req SuggestRequest) ([]CommandSuggestion, error) {
-	numSuggestions := req.NumSuggestions
-	if numSuggestions <= 0 {
-		numSuggestions = 3
+func (p *AnthropicProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	if req.Search {
+		return p.streamWithSearch(ctx, req)
 	}
+	return p.streamStandard(ctx, req)
+}
 
-	tool := anthropicSuggestTool(numSuggestions)
+func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (Stream, error) {
+	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
+		system, messages := buildAnthropicMessages(req.Messages)
 
-	systemPrompt := prompt.SuggestSystemPrompt(req.Shell, req.Instructions, numSuggestions, false)
-	userPrompt := prompt.SuggestUserPrompt(req.UserInput, req.Files, req.Stdin)
-
-	if req.Debug {
-		fmt.Fprintln(os.Stderr, "=== DEBUG: Anthropic Request ===")
-		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
-		fmt.Fprintf(os.Stderr, "Tools: suggest_commands\n")
-		fmt.Fprintf(os.Stderr, "System:\n%s\n", systemPrompt)
-		fmt.Fprintf(os.Stderr, "User:\n%s\n", userPrompt)
-		fmt.Fprintln(os.Stderr, "================================")
-	}
-
-	params := anthropic.MessageNewParams{
-		Model:     anthropic.Model(p.model),
-		MaxTokens: 1024,
-		System: []anthropic.TextBlockParam{
-			{Text: systemPrompt},
-		},
-		Messages: []anthropic.MessageParam{
-			anthropic.NewUserMessage(anthropic.NewTextBlock(userPrompt)),
-		},
-		Tools: []anthropic.ToolUnionParam{tool},
-	}
-
-	// Add extended thinking if enabled
-	// Note: Cannot force tool_choice when thinking is enabled, so we rely on prompt guidance
-	if p.thinkingBudget > 0 {
-		params.MaxTokens = 16000
-		params.Thinking = anthropic.ThinkingConfigParamUnion{
-			OfEnabled: &anthropic.ThinkingConfigEnabledParam{
-				BudgetTokens: p.thinkingBudget,
-			},
+		params := anthropic.MessageNewParams{
+			Model:     anthropic.Model(chooseModel(req.Model, p.model)),
+			MaxTokens: maxTokens(req.MaxOutputTokens, 4096),
+			Messages:  messages,
 		}
-	} else {
-		// Only force tool choice when thinking is disabled
-		params.ToolChoice = anthropic.ToolChoiceParamOfTool(suggestCommandsToolName)
-	}
-
-	message, err := p.client.Messages.New(ctx, params)
-	if err != nil {
-		return nil, fmt.Errorf("anthropic API error: %w", err)
-	}
-
-	if req.Debug {
-		fmt.Fprintln(os.Stderr, "=== DEBUG: Anthropic Response ===")
-		for _, block := range message.Content {
-			if block.Type == "tool_use" {
-				fmt.Fprintf(os.Stderr, "Tool: %s\n", block.Name)
-				fmt.Fprintf(os.Stderr, "Arguments:\n%s\n", block.JSON.Input.Raw())
-			} else if block.Type == "text" {
-				fmt.Fprintf(os.Stderr, "Text: %s\n", block.Text)
+		if system != "" {
+			params.System = []anthropic.TextBlockParam{{Text: system}}
+		}
+		if len(req.Tools) > 0 {
+			params.Tools = buildAnthropicTools(req.Tools)
+			if p.thinkingBudget == 0 {
+				params.ToolChoice = buildAnthropicToolChoice(req.ToolChoice, req.ParallelToolCalls)
 			}
 		}
-		fmt.Fprintln(os.Stderr, "=================================")
-	}
 
-	return p.extractSuggestions(message.Content)
-}
-
-func (p *AnthropicProvider) suggestWithSearch(ctx context.Context, req SuggestRequest) ([]CommandSuggestion, error) {
-	numSuggestions := req.NumSuggestions
-	if numSuggestions <= 0 {
-		numSuggestions = 3
-	}
-
-	suggestTool := anthropicSuggestToolBeta(numSuggestions)
-
-	webSearchTool := anthropic.BetaToolUnionParam{
-		OfWebSearchTool20250305: &anthropic.BetaWebSearchTool20250305Param{
-			MaxUses: anthropic.Int(3),
-		},
-	}
-
-	systemPrompt := prompt.SuggestSystemPrompt(req.Shell, req.Instructions, numSuggestions, true)
-	userPrompt := prompt.SuggestUserPrompt(req.UserInput, req.Files, req.Stdin)
-
-	if req.Debug {
-		fmt.Fprintln(os.Stderr, "=== DEBUG: Anthropic Request (with search) ===")
-		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
-		fmt.Fprintln(os.Stderr, "Tools: web_search, suggest_commands")
-		fmt.Fprintf(os.Stderr, "System:\n%s\n", systemPrompt)
-		fmt.Fprintf(os.Stderr, "User:\n%s\n", userPrompt)
-		fmt.Fprintln(os.Stderr, "===============================================")
-	}
-
-	params := anthropic.BetaMessageNewParams{
-		Model:     anthropic.Model(p.model),
-		MaxTokens: 4096,
-		Betas:     []anthropic.AnthropicBeta{"web-search-2025-03-05"},
-		System: []anthropic.BetaTextBlockParam{
-			{Text: systemPrompt},
-		},
-		Messages: []anthropic.BetaMessageParam{
-			anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(userPrompt)),
-		},
-		Tools: []anthropic.BetaToolUnionParam{webSearchTool, suggestTool},
-	}
-
-	// Add extended thinking if enabled
-	if p.thinkingBudget > 0 {
-		params.MaxTokens = 16000
-		params.Thinking = anthropic.BetaThinkingConfigParamUnion{
-			OfEnabled: &anthropic.BetaThinkingConfigEnabledParam{
-				BudgetTokens: p.thinkingBudget,
-			},
+		if p.thinkingBudget > 0 {
+			params.MaxTokens = maxTokens(req.MaxOutputTokens, 16000)
+			params.Thinking = anthropic.ThinkingConfigParamUnion{
+				OfEnabled: &anthropic.ThinkingConfigEnabledParam{
+					BudgetTokens: p.thinkingBudget,
+				},
+			}
 		}
-	}
 
-	message, err := p.client.Beta.Messages.New(ctx, params)
-	if err != nil {
-		return nil, fmt.Errorf("anthropic API error: %w", err)
-	}
+		if req.Debug {
+			fmt.Fprintln(os.Stderr, "=== DEBUG: Anthropic Stream Request ===")
+			fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
+			fmt.Fprintf(os.Stderr, "System: %s\n", truncate(system, 200))
+			fmt.Fprintf(os.Stderr, "Messages: %d\n", len(messages))
+			fmt.Fprintf(os.Stderr, "Tools: %d\n", len(req.Tools))
+			fmt.Fprintln(os.Stderr, "======================================")
+		}
 
-	if req.Debug {
-		fmt.Fprintln(os.Stderr, "=== DEBUG: Anthropic Response (with search) ===")
-		fmt.Fprintf(os.Stderr, "Stop reason: %s\n", message.StopReason)
-		for i, block := range message.Content {
-			fmt.Fprintf(os.Stderr, "Block %d: type=%s\n", i, block.Type)
-			switch block.Type {
-			case "tool_use":
-				fmt.Fprintf(os.Stderr, "  Tool: %s\n", block.Name)
-				fmt.Fprintf(os.Stderr, "  Arguments:\n%s\n", block.JSON.Input.Raw())
-			case "text":
-				fmt.Fprintf(os.Stderr, "  Text: %s\n", block.Text)
-			case "web_search_tool_result":
-				fmt.Fprintf(os.Stderr, "  Search ID: %s\n", block.ToolUseID)
-			case "server_tool_use":
-				fmt.Fprintf(os.Stderr, "  Server Tool: %s (id=%s)\n", block.Name, block.ID)
-			default:
-				if rawJSON, err := json.Marshal(block); err == nil {
-					fmt.Fprintf(os.Stderr, "  Raw: %s\n", string(rawJSON))
+		stream := p.client.Messages.NewStreaming(ctx, params)
+		for stream.Next() {
+			event := stream.Current()
+			switch event.Type {
+			case "content_block_delta":
+				if event.Delta.Text != "" {
+					events <- Event{Type: EventTextDelta, Text: event.Delta.Text}
+				}
+			case "content_block_start":
+				if toolCall, ok := anthropicToolCall(event.ContentBlock); ok {
+					events <- Event{Type: EventToolCall, Tool: &toolCall}
 				}
 			}
 		}
-		fmt.Fprintln(os.Stderr, "================================================")
-	}
-
-	return p.extractBetaSuggestions(message.Content)
-}
-
-func (p *AnthropicProvider) extractSuggestions(content []anthropic.ContentBlockUnion) ([]CommandSuggestion, error) {
-	for _, block := range content {
-		if block.Type == "tool_use" {
-			var resp suggestionsResponse
-			if err := json.Unmarshal([]byte(block.JSON.Input.Raw()), &resp); err != nil {
-				return nil, fmt.Errorf("failed to parse response: %w", err)
-			}
-			return resp.Suggestions, nil
+		if err := stream.Err(); err != nil {
+			return fmt.Errorf("anthropic streaming error: %w", err)
 		}
-	}
-	return nil, fmt.Errorf("no tool use in response")
+		events <- Event{Type: EventDone}
+		return nil
+	}), nil
 }
 
-func (p *AnthropicProvider) extractBetaSuggestions(content []anthropic.BetaContentBlockUnion) ([]CommandSuggestion, error) {
-	for _, block := range content {
-		if block.Type == "tool_use" && block.Name == suggestCommandsToolName {
-			var resp suggestionsResponse
-			if err := json.Unmarshal([]byte(block.JSON.Input.Raw()), &resp); err != nil {
-				return nil, fmt.Errorf("failed to parse response: %w", err)
-			}
-			return resp.Suggestions, nil
-		}
-	}
-	return nil, fmt.Errorf("no suggest_commands tool use in response")
-}
+func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (Stream, error) {
+	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
+		system, messages := buildAnthropicBetaMessages(req.Messages)
 
-func (p *AnthropicProvider) StreamResponse(ctx context.Context, req AskRequest, output chan<- string) error {
-	defer close(output)
-
-	if req.Debug {
-		fmt.Fprintln(os.Stderr, "=== DEBUG: Anthropic Stream Request ===")
-		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
-		fmt.Fprintf(os.Stderr, "Question: %s\n", req.Question)
-		fmt.Fprintf(os.Stderr, "Search: %v\n", req.EnableSearch)
-		fmt.Fprintln(os.Stderr, "=======================================")
-	}
-
-	if req.EnableSearch {
-		return p.streamWithSearch(ctx, req, output)
-	}
-	return p.streamWithoutSearch(ctx, req, output)
-}
-
-func (p *AnthropicProvider) streamWithoutSearch(ctx context.Context, req AskRequest, output chan<- string) error {
-	userMessage := prompt.AskUserPrompt(req.Question, req.Files, req.Stdin)
-
-	params := anthropic.MessageNewParams{
-		Model:     anthropic.Model(p.model),
-		MaxTokens: 4096,
-		Messages: []anthropic.MessageParam{
-			anthropic.NewUserMessage(anthropic.NewTextBlock(userMessage)),
-		},
-	}
-
-	// Add system prompt if instructions provided
-	if req.Instructions != "" {
-		params.System = []anthropic.TextBlockParam{
-			{Text: req.Instructions},
-		}
-	}
-
-	// Add extended thinking if enabled
-	if p.thinkingBudget > 0 {
-		params.MaxTokens = 16000
-		params.Thinking = anthropic.ThinkingConfigParamUnion{
-			OfEnabled: &anthropic.ThinkingConfigEnabledParam{
-				BudgetTokens: p.thinkingBudget,
+		tools := buildAnthropicBetaTools(req.Tools)
+		webSearchTool := anthropic.BetaToolUnionParam{
+			OfWebSearchTool20250305: &anthropic.BetaWebSearchTool20250305Param{
+				MaxUses: anthropic.Int(5),
 			},
 		}
-	}
+		tools = append([]anthropic.BetaToolUnionParam{webSearchTool}, tools...)
 
-	stream := p.client.Messages.NewStreaming(ctx, params)
-
-	for stream.Next() {
-		event := stream.Current()
-		// Skip thinking blocks - only output text
-		if event.Type == "content_block_delta" && event.Delta.Text != "" {
-			output <- event.Delta.Text
+		params := anthropic.BetaMessageNewParams{
+			Model:     anthropic.Model(chooseModel(req.Model, p.model)),
+			MaxTokens: maxTokens(req.MaxOutputTokens, 4096),
+			Betas:     []anthropic.AnthropicBeta{"web-search-2025-03-05"},
+			Messages:  messages,
+			Tools:     tools,
 		}
-	}
-
-	if err := stream.Err(); err != nil {
-		return fmt.Errorf("anthropic streaming error: %w", err)
-	}
-
-	return nil
-}
-
-func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req AskRequest, output chan<- string) error {
-	userMessage := prompt.AskUserPrompt(req.Question, req.Files, req.Stdin)
-
-	webSearchTool := anthropic.BetaToolUnionParam{
-		OfWebSearchTool20250305: &anthropic.BetaWebSearchTool20250305Param{
-			MaxUses: anthropic.Int(5),
-		},
-	}
-
-	params := anthropic.BetaMessageNewParams{
-		Model:     anthropic.Model(p.model),
-		MaxTokens: 4096,
-		Betas:     []anthropic.AnthropicBeta{"web-search-2025-03-05"},
-		Messages: []anthropic.BetaMessageParam{
-			anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(userMessage)),
-		},
-		Tools: []anthropic.BetaToolUnionParam{webSearchTool},
-	}
-
-	// Add system prompt if instructions provided
-	if req.Instructions != "" {
-		params.System = []anthropic.BetaTextBlockParam{
-			{Text: req.Instructions},
+		if system != "" {
+			params.System = []anthropic.BetaTextBlockParam{{Text: system}}
 		}
-	}
-
-	// Add extended thinking if enabled
-	if p.thinkingBudget > 0 {
-		params.MaxTokens = 16000
-		params.Thinking = anthropic.BetaThinkingConfigParamUnion{
-			OfEnabled: &anthropic.BetaThinkingConfigEnabledParam{
-				BudgetTokens: p.thinkingBudget,
-			},
+		if len(req.Tools) > 0 && p.thinkingBudget == 0 {
+			params.ToolChoice = buildAnthropicBetaToolChoice(req.ToolChoice, req.ParallelToolCalls)
 		}
-	}
 
-	stream := p.client.Beta.Messages.NewStreaming(ctx, params)
-
-	for stream.Next() {
-		event := stream.Current()
-		// Skip thinking blocks - only output text
-		if event.Type == "content_block_delta" && event.Delta.Text != "" {
-			output <- event.Delta.Text
-		}
-	}
-
-	if err := stream.Err(); err != nil {
-		return fmt.Errorf("anthropic streaming error: %w", err)
-	}
-
-	return nil
-}
-
-// CallWithTool makes an API call with a single tool and returns raw results.
-// Implements ToolCallProvider interface.
-func (p *AnthropicProvider) CallWithTool(ctx context.Context, req ToolCallRequest) (*ToolCallResult, error) {
-	inputSchema := anthropic.ToolInputSchemaParam{
-		Type:       "object",
-		Properties: req.ToolSchema["properties"],
-		Required:   req.ToolSchema["required"].([]string),
-	}
-
-	tool := anthropic.ToolUnionParamOfTool(inputSchema, req.ToolName)
-	tool.OfTool.Description = anthropic.String(req.ToolDesc)
-
-	if req.Debug {
-		fmt.Fprintf(os.Stderr, "=== DEBUG: Anthropic %s Request ===\n", req.ToolName)
-		fmt.Fprintf(os.Stderr, "System: %s\n", req.SystemPrompt)
-		fmt.Fprintf(os.Stderr, "User: %s\n", req.UserPrompt)
-		fmt.Fprintln(os.Stderr, "=====================================")
-	}
-
-	params := anthropic.MessageNewParams{
-		Model:     anthropic.Model(p.model),
-		MaxTokens: 4096,
-		System: []anthropic.TextBlockParam{
-			{Text: req.SystemPrompt},
-		},
-		Messages: []anthropic.MessageParam{
-			anthropic.NewUserMessage(anthropic.NewTextBlock(req.UserPrompt)),
-		},
-		Tools: []anthropic.ToolUnionParam{tool},
-	}
-
-	// Add extended thinking if enabled
-	// Note: Cannot force tool_choice when thinking is enabled, so we rely on prompt guidance
-	if p.thinkingBudget > 0 {
-		params.MaxTokens = 16000
-		params.Thinking = anthropic.ThinkingConfigParamUnion{
-			OfEnabled: &anthropic.ThinkingConfigEnabledParam{
-				BudgetTokens: p.thinkingBudget,
-			},
-		}
-	} else {
-		// Only force tool choice when thinking is disabled
-		params.ToolChoice = anthropic.ToolChoiceUnionParam{OfAny: &anthropic.ToolChoiceAnyParam{}}
-	}
-
-	message, err := p.client.Messages.New(ctx, params)
-	if err != nil {
-		return nil, fmt.Errorf("anthropic API error: %w", err)
-	}
-
-	if req.Debug {
-		fmt.Fprintf(os.Stderr, "=== DEBUG: Anthropic %s Response ===\n", req.ToolName)
-		fmt.Fprintf(os.Stderr, "Stop reason: %s\n", message.StopReason)
-		for i, block := range message.Content {
-			fmt.Fprintf(os.Stderr, "Block %d: type=%s\n", i, block.Type)
-			if block.Type == "tool_use" {
-				fmt.Fprintf(os.Stderr, "  Tool: %s\n", block.Name)
-				fmt.Fprintf(os.Stderr, "  Input: %s\n", block.JSON.Input.Raw())
+		if p.thinkingBudget > 0 {
+			params.MaxTokens = maxTokens(req.MaxOutputTokens, 16000)
+			params.Thinking = anthropic.BetaThinkingConfigParamUnion{
+				OfEnabled: &anthropic.BetaThinkingConfigEnabledParam{
+					BudgetTokens: p.thinkingBudget,
+				},
 			}
 		}
-		fmt.Fprintln(os.Stderr, "======================================")
-	}
 
-	result := &ToolCallResult{}
-	for _, block := range message.Content {
-		if block.Type == "text" && block.Text != "" {
-			result.TextOutput += block.Text + "\n"
-		} else if block.Type == "tool_use" {
-			result.ToolCalls = append(result.ToolCalls, ToolCallArguments{
-				Name:      block.Name,
-				Arguments: json.RawMessage(block.JSON.Input.Raw()),
-			})
+		if req.Debug {
+			fmt.Fprintln(os.Stderr, "=== DEBUG: Anthropic Stream Request (search) ===")
+			fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
+			fmt.Fprintf(os.Stderr, "System: %s\n", truncate(system, 200))
+			fmt.Fprintf(os.Stderr, "Messages: %d\n", len(messages))
+			fmt.Fprintf(os.Stderr, "Tools: %d\n", len(tools))
+			fmt.Fprintln(os.Stderr, "================================================")
+		}
+
+		stream := p.client.Beta.Messages.NewStreaming(ctx, params)
+		for stream.Next() {
+			event := stream.Current()
+			switch event.Type {
+			case "content_block_delta":
+				if event.Delta.Text != "" {
+					events <- Event{Type: EventTextDelta, Text: event.Delta.Text}
+				}
+			case "content_block_start":
+				if toolCall, ok := anthropicBetaToolCall(event.ContentBlock); ok {
+					events <- Event{Type: EventToolCall, Tool: &toolCall}
+				}
+			}
+		}
+		if err := stream.Err(); err != nil {
+			return fmt.Errorf("anthropic streaming error: %w", err)
+		}
+		events <- Event{Type: EventDone}
+		return nil
+	}), nil
+}
+
+func buildAnthropicMessages(messages []Message) (string, []anthropic.MessageParam) {
+	var systemParts []string
+	var out []anthropic.MessageParam
+
+	for _, msg := range messages {
+		switch msg.Role {
+		case RoleSystem:
+			systemParts = append(systemParts, collectTextParts(msg.Parts))
+		case RoleUser:
+			blocks := buildAnthropicBlocks(msg.Parts, false)
+			if len(blocks) > 0 {
+				out = append(out, anthropic.NewUserMessage(blocks...))
+			}
+		case RoleAssistant:
+			blocks := buildAnthropicBlocks(msg.Parts, true)
+			if len(blocks) > 0 {
+				out = append(out, anthropic.NewAssistantMessage(blocks...))
+			}
+		case RoleTool:
+			blocks := buildAnthropicBlocks(msg.Parts, false)
+			if len(blocks) > 0 {
+				out = append(out, anthropic.NewUserMessage(blocks...))
+			}
 		}
 	}
 
-	return result, nil
+	return strings.Join(systemParts, "\n\n"), out
 }
 
-// GetEdits calls the LLM with the edit tool and returns all proposed edits.
-func (p *AnthropicProvider) GetEdits(ctx context.Context, systemPrompt, userPrompt string, debug bool) ([]EditToolCall, error) {
-	return GetEditsFromProvider(ctx, p, systemPrompt, userPrompt, debug)
+func buildAnthropicBetaMessages(messages []Message) (string, []anthropic.BetaMessageParam) {
+	var systemParts []string
+	var out []anthropic.BetaMessageParam
+
+	for _, msg := range messages {
+		switch msg.Role {
+		case RoleSystem:
+			systemParts = append(systemParts, collectTextParts(msg.Parts))
+		case RoleUser:
+			blocks := buildAnthropicBetaBlocks(msg.Parts, false)
+			if len(blocks) > 0 {
+				out = append(out, anthropic.NewBetaUserMessage(blocks...))
+			}
+		case RoleAssistant:
+			blocks := buildAnthropicBetaBlocks(msg.Parts, true)
+			if len(blocks) > 0 {
+				out = append(out, anthropic.BetaMessageParam{
+					Role:    anthropic.BetaMessageParamRoleAssistant,
+					Content: blocks,
+				})
+			}
+		case RoleTool:
+			blocks := buildAnthropicBetaBlocks(msg.Parts, false)
+			if len(blocks) > 0 {
+				out = append(out, anthropic.NewBetaUserMessage(blocks...))
+			}
+		}
+	}
+
+	return strings.Join(systemParts, "\n\n"), out
 }
 
-// GetUnifiedDiff calls the LLM with the unified_diff tool and returns the diff string.
-func (p *AnthropicProvider) GetUnifiedDiff(ctx context.Context, systemPrompt, userPrompt string, debug bool) (string, error) {
-	return GetUnifiedDiffFromProvider(ctx, p, systemPrompt, userPrompt, debug)
+func buildAnthropicBlocks(parts []Part, allowToolUse bool) []anthropic.ContentBlockParamUnion {
+	blocks := make([]anthropic.ContentBlockParamUnion, 0, len(parts))
+	for _, part := range parts {
+		switch part.Type {
+		case PartText:
+			if part.Text != "" {
+				blocks = append(blocks, anthropic.NewTextBlock(part.Text))
+			}
+		case PartToolCall:
+			if allowToolUse && part.ToolCall != nil {
+				blocks = append(blocks, anthropic.NewToolUseBlock(part.ToolCall.ID, part.ToolCall.Arguments, part.ToolCall.Name))
+			}
+		case PartToolResult:
+			if part.ToolResult != nil {
+				blocks = append(blocks, anthropic.NewToolResultBlock(part.ToolResult.ID, part.ToolResult.Content, false))
+			}
+		}
+	}
+	return blocks
+}
+
+func buildAnthropicBetaBlocks(parts []Part, allowToolUse bool) []anthropic.BetaContentBlockParamUnion {
+	blocks := make([]anthropic.BetaContentBlockParamUnion, 0, len(parts))
+	for _, part := range parts {
+		switch part.Type {
+		case PartText:
+			if part.Text != "" {
+				blocks = append(blocks, anthropic.NewBetaTextBlock(part.Text))
+			}
+		case PartToolCall:
+			if allowToolUse && part.ToolCall != nil {
+				blocks = append(blocks, anthropic.NewBetaToolUseBlock(part.ToolCall.ID, part.ToolCall.Arguments, part.ToolCall.Name))
+			}
+		case PartToolResult:
+			if part.ToolResult != nil {
+				blocks = append(blocks, betaToolResultBlock(part.ToolResult.ID, part.ToolResult.Content))
+			}
+		}
+	}
+	return blocks
+}
+
+func betaToolResultBlock(id, content string) anthropic.BetaContentBlockParamUnion {
+	block := anthropic.BetaToolResultBlockParam{
+		ToolUseID: id,
+		Content: []anthropic.BetaToolResultBlockParamContentUnion{{
+			OfText: &anthropic.BetaTextBlockParam{Text: content},
+		}},
+	}
+	return anthropic.BetaContentBlockParamUnion{OfToolResult: &block}
+}
+
+func buildAnthropicTools(specs []ToolSpec) []anthropic.ToolUnionParam {
+	if len(specs) == 0 {
+		return nil
+	}
+	tools := make([]anthropic.ToolUnionParam, 0, len(specs))
+	for _, spec := range specs {
+		inputSchema := anthropic.ToolInputSchemaParam{
+			Type:       constant.Object("object"),
+			Properties: spec.Schema["properties"],
+			Required:   schemaRequired(spec.Schema),
+		}
+		tool := anthropic.ToolUnionParamOfTool(inputSchema, spec.Name)
+		if spec.Description != "" {
+			tool.OfTool.Description = anthropic.String(spec.Description)
+		}
+		tools = append(tools, tool)
+	}
+	return tools
+}
+
+func buildAnthropicBetaTools(specs []ToolSpec) []anthropic.BetaToolUnionParam {
+	if len(specs) == 0 {
+		return nil
+	}
+	tools := make([]anthropic.BetaToolUnionParam, 0, len(specs))
+	for _, spec := range specs {
+		inputSchema := anthropic.BetaToolInputSchemaParam{
+			Type:       constant.Object("object"),
+			Properties: spec.Schema["properties"],
+			Required:   schemaRequired(spec.Schema),
+		}
+		tool := anthropic.BetaToolUnionParam{
+			OfTool: &anthropic.BetaToolParam{
+				Name:        spec.Name,
+				Description: anthropic.String(spec.Description),
+				InputSchema: inputSchema,
+			},
+		}
+		tools = append(tools, tool)
+	}
+	return tools
+}
+
+func buildAnthropicToolChoice(choice ToolChoice, parallel bool) anthropic.ToolChoiceUnionParam {
+	disableParallel := !parallel
+	switch choice.Mode {
+	case ToolChoiceNone:
+		none := anthropic.NewToolChoiceNoneParam()
+		return anthropic.ToolChoiceUnionParam{OfNone: &none}
+	case ToolChoiceRequired:
+		return anthropic.ToolChoiceUnionParam{OfAny: &anthropic.ToolChoiceAnyParam{}}
+	case ToolChoiceName:
+		return anthropic.ToolChoiceParamOfTool(choice.Name)
+	default:
+		return anthropic.ToolChoiceUnionParam{OfAuto: &anthropic.ToolChoiceAutoParam{DisableParallelToolUse: anthropic.Bool(disableParallel)}}
+	}
+}
+
+func buildAnthropicBetaToolChoice(choice ToolChoice, parallel bool) anthropic.BetaToolChoiceUnionParam {
+	disableParallel := !parallel
+	switch choice.Mode {
+	case ToolChoiceNone:
+		none := anthropic.NewBetaToolChoiceNoneParam()
+		return anthropic.BetaToolChoiceUnionParam{OfNone: &none}
+	case ToolChoiceRequired:
+		return anthropic.BetaToolChoiceUnionParam{OfAny: &anthropic.BetaToolChoiceAnyParam{}}
+	case ToolChoiceName:
+		return anthropic.BetaToolChoiceParamOfTool(choice.Name)
+	default:
+		return anthropic.BetaToolChoiceUnionParam{OfAuto: &anthropic.BetaToolChoiceAutoParam{DisableParallelToolUse: anthropic.Bool(disableParallel)}}
+	}
+}
+
+func anthropicToolCall(block anthropic.ContentBlockStartEventContentBlockUnion) (ToolCall, bool) {
+	if variant, ok := block.AsAny().(anthropic.ToolUseBlock); ok {
+		return ToolCall{ID: variant.ID, Name: variant.Name, Arguments: toolInputToRaw(variant.Input)}, true
+	}
+	return ToolCall{}, false
+}
+
+func anthropicBetaToolCall(block anthropic.BetaRawContentBlockStartEventContentBlockUnion) (ToolCall, bool) {
+	if variant, ok := block.AsAny().(anthropic.BetaToolUseBlock); ok {
+		return ToolCall{ID: variant.ID, Name: variant.Name, Arguments: toolInputToRaw(variant.Input)}, true
+	}
+	return ToolCall{}, false
+}
+
+func toolInputToRaw(input any) json.RawMessage {
+	switch v := input.(type) {
+	case json.RawMessage:
+		return v
+	case []byte:
+		return json.RawMessage(v)
+	case string:
+		return json.RawMessage(v)
+	default:
+		data, err := json.Marshal(v)
+		if err != nil {
+			return nil
+		}
+		return json.RawMessage(data)
+	}
+}
+
+func maxTokens(requested, fallback int) int64 {
+	if requested > 0 {
+		return int64(requested)
+	}
+	return int64(fallback)
 }

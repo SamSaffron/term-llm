@@ -27,6 +27,7 @@ are available. Useful for finding model names to configure.
 Examples:
   term-llm models                       # list models from current provider
   term-llm models --provider anthropic  # list models from Anthropic
+  term-llm models --provider openrouter # list models from OpenRouter
   term-llm models --provider ollama     # list models from Ollama
   term-llm models --provider lmstudio   # list models from LM Studio
   term-llm models --json                # output as JSON`,
@@ -35,7 +36,7 @@ Examples:
 
 func init() {
 	rootCmd.AddCommand(modelsCmd)
-	modelsCmd.Flags().StringVarP(&modelsProvider, "provider", "p", "", "Provider to list models from (anthropic, ollama, lmstudio, openai-compat)")
+	modelsCmd.Flags().StringVarP(&modelsProvider, "provider", "p", "", "Provider to list models from (anthropic, openrouter, ollama, lmstudio, openai-compat)")
 	modelsCmd.Flags().BoolVar(&modelsJSON, "json", false, "Output as JSON")
 }
 
@@ -59,6 +60,7 @@ func runModels(cmd *cobra.Command, args []string) error {
 	// Validate provider supports model listing
 	supportedProviders := map[string]bool{
 		"anthropic":     true,
+		"openrouter":    true,
 		"ollama":        true,
 		"lmstudio":      true,
 		"openai-compat": true,
@@ -66,7 +68,7 @@ func runModels(cmd *cobra.Command, args []string) error {
 
 	if !supportedProviders[provider] {
 		return fmt.Errorf("provider '%s' does not support model listing.\n"+
-			"Model listing is supported for: anthropic, ollama, lmstudio, openai-compat", provider)
+			"Model listing is supported for: anthropic, openrouter, ollama, lmstudio, openai-compat", provider)
 	}
 
 	// Create provider to query models
@@ -77,6 +79,11 @@ func runModels(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("anthropic API key not configured. Set ANTHROPIC_API_KEY or configure credentials")
 		}
 		lister = llm.NewAnthropicProvider(cfg.Anthropic.APIKey, cfg.Anthropic.Model)
+	case "openrouter":
+		if cfg.OpenRouter.APIKey == "" {
+			return fmt.Errorf("openrouter API key not configured. Set OPENROUTER_API_KEY or configure api_key")
+		}
+		lister = llm.NewOpenRouterProvider(cfg.OpenRouter.APIKey, "", cfg.OpenRouter.AppURL, cfg.OpenRouter.AppTitle)
 	case "ollama":
 		baseURL := cfg.Ollama.BaseURL
 		if baseURL == "" {

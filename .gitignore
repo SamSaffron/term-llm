@@ -1,3 +1,4 @@
 term-llm
 .claude/settings.local.json
 .cache/*
+.gocache/*

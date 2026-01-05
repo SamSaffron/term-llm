@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/charmbracelet/glamour/styles"
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/prompt"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/spf13/cobra"
@@ -76,6 +78,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	engine := llm.NewEngine(provider, defaultToolRegistry())
 
 	// Read files if provided
 	var files []input.FileContent
@@ -92,27 +95,58 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to read stdin: %w", err)
 	}
 
-	// Build request
-	req := llm.AskRequest{
-		Question:     question,
-		Instructions: cfg.Ask.Instructions,
-		EnableSearch: askSearch,
-		Debug:        askDebug,
-		Files:        files,
-		Stdin:        stdinContent,
+	userPrompt := prompt.AskUserPrompt(question, files, stdinContent)
+	messages := []llm.Message{}
+	if cfg.Ask.Instructions != "" {
+		messages = append(messages, llm.SystemText(cfg.Ask.Instructions))
+	}
+	messages = append(messages, llm.UserText(userPrompt))
+
+	debugMode := askDebug || debugRaw
+	req := llm.Request{
+		Messages: messages,
+		Search:   askSearch,
+		Debug:    debugMode,
+		DebugRaw: debugRaw,
 	}
 
 	// Check if we're in a TTY and can use glamour
 	isTTY := term.IsTerminal(int(os.Stdout.Fd()))
-	useGlamour := !askText && isTTY
+	useGlamour := !askText && isTTY && !debugRaw
 
 	// Create channel for streaming output
 	output := make(chan string)
 
-	// Start streaming in goroutine
 	errChan := make(chan error, 1)
 	go func() {
-		errChan <- provider.StreamResponse(ctx, req, output)
+		stream, err := engine.Stream(ctx, req)
+		if err != nil {
+			errChan <- err
+			close(output)
+			return
+		}
+		defer stream.Close()
+		for {
+			event, err := stream.Recv()
+			if err == io.EOF {
+				close(output)
+				errChan <- nil
+				return
+			}
+			if err != nil {
+				errChan <- err
+				close(output)
+				return
+			}
+			if event.Type == llm.EventError && event.Err != nil {
+				errChan <- event.Err
+				close(output)
+				return
+			}
+			if event.Type == llm.EventTextDelta && event.Text != "" {
+				output <- event.Text
+			}
+		}
 	}()
 
 	if useGlamour {
@@ -125,7 +159,6 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Check for streaming errors
 	if err := <-errChan; err != nil {
 		return fmt.Errorf("streaming failed: %w", err)
 	}

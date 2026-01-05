@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -17,16 +18,18 @@ import (
 )
 
 // ShowCommandHelp renders scrollable help for a command
-func ShowCommandHelp(command, shell string, provider llm.Provider) error {
+func ShowCommandHelp(command, shell string, engine *llm.Engine) error {
 	ctx := context.Background()
 
 	// Build the help prompt
 	helpPrompt := prompt.HelpPrompt(command, shell)
 
-	req := llm.AskRequest{
-		Question:     helpPrompt,
-		EnableSearch: false,
-		Debug:        false,
+	req := llm.Request{
+		Messages: []llm.Message{
+			llm.UserText(helpPrompt),
+		},
+		Search: false,
+		Debug:  false,
 	}
 
 	// Get TTY for shell integration
@@ -52,21 +55,30 @@ func ShowCommandHelp(command, shell string, provider llm.Provider) error {
 
 	// Stream content in background, sending chunks to the program
 	go func() {
-		output := make(chan string)
-		errChan := make(chan error, 1)
-
-		go func() {
-			errChan <- provider.StreamResponse(ctx, req, output)
-		}()
-
-		for chunk := range output {
-			p.Send(contentMsg(chunk))
-		}
-
-		if err := <-errChan; err != nil {
+		stream, err := engine.Stream(ctx, req)
+		if err != nil {
 			p.Send(errorMsg{err})
-		} else {
-			p.Send(doneMsg{})
+			return
+		}
+		defer stream.Close()
+
+		for {
+			event, err := stream.Recv()
+			if err == io.EOF {
+				p.Send(doneMsg{})
+				return
+			}
+			if err != nil {
+				p.Send(errorMsg{err})
+				return
+			}
+			if event.Type == llm.EventError && event.Err != nil {
+				p.Send(errorMsg{event.Err})
+				return
+			}
+			if event.Type == llm.EventTextDelta && event.Text != "" {
+				p.Send(contentMsg(event.Text))
+			}
 		}
 	}()
 

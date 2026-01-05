@@ -9,29 +9,25 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
-
-	"github.com/samsaffron/term-llm/internal/prompt"
 )
 
 // OpenAICompatProvider implements Provider for OpenAI-compatible APIs
-// Used by Ollama, LM Studio, and other compatible servers
+// Used by Ollama, LM Studio, and other compatible servers.
 type OpenAICompatProvider struct {
 	baseURL string
 	apiKey  string // Optional, most servers ignore it
 	model   string
 	name    string // Display name: "Ollama", "LM Studio", etc.
-}
-
-// truncate shortens a string for debug output
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
+	headers map[string]string
 }
 
 func NewOpenAICompatProvider(baseURL, apiKey, model, name string) *OpenAICompatProvider {
+	return NewOpenAICompatProviderWithHeaders(baseURL, apiKey, model, name, nil)
+}
+
+func NewOpenAICompatProviderWithHeaders(baseURL, apiKey, model, name string, headers map[string]string) *OpenAICompatProvider {
 	// Ensure baseURL doesn't have trailing slash
 	baseURL = strings.TrimSuffix(baseURL, "/")
 	return &OpenAICompatProvider{
@@ -39,6 +35,7 @@ func NewOpenAICompatProvider(baseURL, apiKey, model, name string) *OpenAICompatP
 		apiKey:  apiKey,
 		model:   model,
 		name:    name,
+		headers: headers,
 	}
 }
 
@@ -46,18 +43,32 @@ func (p *OpenAICompatProvider) Name() string {
 	return fmt.Sprintf("%s (%s)", p.name, p.model)
 }
 
+func (p *OpenAICompatProvider) Capabilities() Capabilities {
+	return Capabilities{
+		NativeSearch: false,
+		ToolCalls:    true,
+	}
+}
+
 // OpenAI-compatible request/response structures
+// Tool choice can be string ("none"/"auto") or object.
 type oaiChatRequest struct {
-	Model    string       `json:"model"`
-	Messages []oaiMessage `json:"messages"`
-	Tools    []oaiTool    `json:"tools,omitempty"`
-	Stream   bool         `json:"stream,omitempty"`
+	Model             string       `json:"model"`
+	Messages          []oaiMessage `json:"messages"`
+	Tools             []oaiTool    `json:"tools,omitempty"`
+	ToolChoice        interface{}  `json:"tool_choice,omitempty"`
+	ParallelToolCalls *bool        `json:"parallel_tool_calls,omitempty"`
+	Temperature       *float64     `json:"temperature,omitempty"`
+	TopP              *float64     `json:"top_p,omitempty"`
+	MaxTokens         *int         `json:"max_tokens,omitempty"`
+	Stream            bool         `json:"stream,omitempty"`
 }
 
 type oaiMessage struct {
-	Role      string        `json:"role"`
-	Content   string        `json:"content,omitempty"`
-	ToolCalls []oaiToolCall `json:"tool_calls,omitempty"`
+	Role       string        `json:"role"`
+	Content    string        `json:"content,omitempty"`
+	ToolCalls  []oaiToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string        `json:"tool_call_id,omitempty"`
 }
 
 type oaiTool struct {
@@ -72,12 +83,13 @@ type oaiFunction struct {
 }
 
 type oaiToolCall struct {
-	ID       string `json:"id"`
-	Type     string `json:"type"`
+	Index    int    `json:"index,omitempty"`
+	ID       string `json:"id,omitempty"`
+	Type     string `json:"type,omitempty"`
 	Function struct {
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
-	} `json:"function"`
+		Name      string `json:"name,omitempty"`
+		Arguments string `json:"arguments,omitempty"`
+	} `json:"function,omitempty"`
 }
 
 type oaiChatResponse struct {
@@ -119,14 +131,6 @@ type oaiModel struct {
 	OwnedBy string `json:"owned_by"`
 }
 
-// ModelInfo represents a model available from a provider
-type ModelInfo struct {
-	ID          string
-	DisplayName string // Human-readable name (Anthropic)
-	Created     int64
-	OwnedBy     string
-}
-
 func (p *OpenAICompatProvider) makeRequest(ctx context.Context, method, endpoint string, body []byte) (*http.Response, error) {
 	url := p.baseURL + endpoint
 
@@ -144,6 +148,12 @@ func (p *OpenAICompatProvider) makeRequest(ctx context.Context, method, endpoint
 	if p.apiKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
 	}
+	for key, value := range p.headers {
+		if value == "" {
+			continue
+		}
+		httpReq.Header.Set(key, value)
+	}
 
 	return http.DefaultClient.Do(httpReq)
 }
@@ -156,7 +166,7 @@ func (p *OpenAICompatProvider) makeChatRequest(ctx context.Context, req oaiChatR
 	return p.makeRequest(ctx, "POST", "/chat/completions", body)
 }
 
-// ListModels returns available models from the server
+// ListModels returns available models from the server.
 func (p *OpenAICompatProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	resp, err := p.makeRequest(ctx, "GET", "/models", nil)
 	if err != nil {
@@ -190,312 +200,293 @@ func (p *OpenAICompatProvider) ListModels(ctx context.Context) ([]ModelInfo, err
 	return models, nil
 }
 
-func (p *OpenAICompatProvider) SuggestCommands(ctx context.Context, req SuggestRequest) ([]CommandSuggestion, error) {
-	numSuggestions := req.NumSuggestions
-	if numSuggestions <= 0 {
-		numSuggestions = 3
-	}
+func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
+		messages := buildCompatMessages(req.Messages)
+		if len(messages) == 0 {
+			return fmt.Errorf("no messages provided")
+		}
 
-	// Define the function schema for structured output
-	schemaMap := prompt.SuggestSchema(numSuggestions)
-	schema, err := json.Marshal(schemaMap)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal schema: %w", err)
-	}
+		tools, err := buildCompatTools(req.Tools)
+		if err != nil {
+			return err
+		}
 
-	systemPrompt := prompt.SuggestSystemPrompt(req.Shell, req.Instructions, numSuggestions, req.EnableSearch)
-	userPrompt := prompt.SuggestUserPrompt(req.UserInput, req.Files, req.Stdin)
+		chatReq := oaiChatRequest{
+			Model:    chooseModel(req.Model, p.model),
+			Messages: messages,
+			Tools:    tools,
+			Stream:   true,
+		}
 
-	chatReq := oaiChatRequest{
-		Model: p.model,
-		Messages: []oaiMessage{
-			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: userPrompt},
-		},
-		Tools: []oaiTool{
-			{
-				Type: "function",
-				Function: oaiFunction{
-					Name:        suggestCommandsToolName,
-					Description: suggestToolDescription(false),
-					Parameters:  schema,
-				},
-			},
-		},
-	}
+		if req.ToolChoice.Mode != "" {
+			chatReq.ToolChoice = buildCompatToolChoice(req.ToolChoice)
+		}
+		if req.ParallelToolCalls {
+			chatReq.ParallelToolCalls = boolPtr(true)
+		}
+		if req.Temperature > 0 {
+			v := float64(req.Temperature)
+			chatReq.Temperature = &v
+		}
+		if req.TopP > 0 {
+			v := float64(req.TopP)
+			chatReq.TopP = &v
+		}
+		if req.MaxOutputTokens > 0 {
+			v := req.MaxOutputTokens
+			chatReq.MaxTokens = &v
+		}
 
-	if req.Debug {
-		fmt.Fprintf(os.Stderr, "=== DEBUG: %s Request ===\n", p.name)
-		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
-		fmt.Fprintf(os.Stderr, "URL: %s/chat/completions\n", p.baseURL)
-		fmt.Fprintf(os.Stderr, "Tools: suggest_commands\n")
-		fmt.Fprintf(os.Stderr, "System:\n%s\n", systemPrompt)
-		fmt.Fprintf(os.Stderr, "User:\n%s\n", userPrompt)
-		fmt.Fprintln(os.Stderr, "====================================")
-	}
+		if req.Debug {
+			fmt.Fprintf(os.Stderr, "=== DEBUG: %s Stream Request ===\n", p.name)
+			fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
+			fmt.Fprintf(os.Stderr, "URL: %s/chat/completions\n", p.baseURL)
+			fmt.Fprintf(os.Stderr, "Messages: %d\n", len(messages))
+			fmt.Fprintf(os.Stderr, "Tools: %d\n", len(tools))
+			fmt.Fprintln(os.Stderr, "===================================")
+		}
 
-	resp, err := p.makeChatRequest(ctx, chatReq)
-	if err != nil {
-		return nil, fmt.Errorf("%s API request failed: %w", p.name, err)
-	}
-	defer resp.Body.Close()
+		resp, err := p.makeChatRequest(ctx, chatReq)
+		if err != nil {
+			return fmt.Errorf("%s API request failed: %w", p.name, err)
+		}
+		defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
+		if resp.StatusCode != 200 {
+			body, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("%s API error (status %d): %s", p.name, resp.StatusCode, string(body))
+		}
 
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("%s API error (status %d): %s", p.name, resp.StatusCode, string(body))
-	}
+		scanner := bufio.NewScanner(resp.Body)
+		buf := make([]byte, 0, 64*1024)
+		scanner.Buffer(buf, 1024*1024)
 
-	var chatResp oaiChatResponse
-	if err := json.Unmarshal(body, &chatResp); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w\nBody: %s", err, string(body))
-	}
+		toolState := newCompatToolState()
+		var lastUsage *Usage
+		var lastEventType string
 
-	if chatResp.Error != nil {
-		return nil, fmt.Errorf("%s API error: %s", p.name, chatResp.Error.Message)
-	}
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.HasPrefix(line, "event: ") {
+				lastEventType = strings.TrimPrefix(line, "event: ")
+				continue
+			}
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			data := strings.TrimPrefix(line, "data: ")
+			if data == "[DONE]" {
+				break
+			}
 
-	if req.Debug {
-		fmt.Fprintf(os.Stderr, "=== DEBUG: %s Response ===\n", p.name)
-		fmt.Fprintf(os.Stderr, "Model: %s\n", chatResp.Model)
-		if len(chatResp.Choices) > 0 && chatResp.Choices[0].Message != nil {
-			msg := chatResp.Choices[0].Message
-			if len(msg.ToolCalls) > 0 {
-				for _, tc := range msg.ToolCalls {
-					fmt.Fprintf(os.Stderr, "Function: %s\n", tc.Function.Name)
-					fmt.Fprintf(os.Stderr, "Arguments: %s\n", tc.Function.Arguments)
+			var chatResp oaiChatResponse
+			if err := json.Unmarshal([]byte(data), &chatResp); err != nil {
+				continue
+			}
+
+			if lastEventType == "error" || chatResp.Error != nil {
+				errMsg := "unknown error"
+				if chatResp.Error != nil {
+					errMsg = chatResp.Error.Message
 				}
-			} else if msg.Content != "" {
-				fmt.Fprintf(os.Stderr, "Content: %s\n", msg.Content)
+				return fmt.Errorf("%s API error: %s", p.name, errMsg)
 			}
-		}
-		fmt.Fprintln(os.Stderr, "=====================================")
-	}
 
-	if len(chatResp.Choices) == 0 {
-		return nil, fmt.Errorf("no choices in response")
-	}
-
-	msg := chatResp.Choices[0].Message
-	if msg == nil {
-		return nil, fmt.Errorf("no message in response")
-	}
-
-	// Extract suggestions from tool call
-	for _, tc := range msg.ToolCalls {
-		if tc.Function.Name == suggestCommandsToolName {
-			var result suggestionsResponse
-			if err := json.Unmarshal([]byte(tc.Function.Arguments), &result); err != nil {
-				return nil, fmt.Errorf("failed to parse suggestions: %w", err)
+			if chatResp.Usage != nil {
+				lastUsage = &Usage{
+					InputTokens:  chatResp.Usage.PromptTokens,
+					OutputTokens: chatResp.Usage.CompletionTokens,
+				}
 			}
-			return result.Suggestions, nil
-		}
-	}
 
-	return nil, fmt.Errorf("no suggest_commands function call in response")
+			for _, choice := range chatResp.Choices {
+				if choice.Delta != nil {
+					if choice.Delta.Content != "" {
+						events <- Event{Type: EventTextDelta, Text: choice.Delta.Content}
+					}
+					if len(choice.Delta.ToolCalls) > 0 {
+						toolState.Add(choice.Delta.ToolCalls)
+					}
+				}
+			}
+
+			lastEventType = ""
+		}
+
+		if err := scanner.Err(); err != nil {
+			return fmt.Errorf("%s streaming error: %w", p.name, err)
+		}
+
+		for _, call := range toolState.Calls() {
+			events <- Event{Type: EventToolCall, Tool: &call}
+		}
+		if lastUsage != nil {
+			events <- Event{Type: EventUsage, Use: lastUsage}
+		}
+		events <- Event{Type: EventDone}
+		return nil
+	}), nil
 }
 
-// CallWithTool makes an API call with a single tool and returns raw results.
-// Implements ToolCallProvider interface.
-func (p *OpenAICompatProvider) CallWithTool(ctx context.Context, req ToolCallRequest) (*ToolCallResult, error) {
-	schema, err := json.Marshal(req.ToolSchema)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal schema: %w", err)
-	}
-
-	if req.Debug {
-		fmt.Fprintf(os.Stderr, "=== DEBUG: %s %s Request ===\n", p.name, req.ToolName)
-		fmt.Fprintf(os.Stderr, "System: %s\n", req.SystemPrompt)
-		fmt.Fprintf(os.Stderr, "User: %s\n", req.UserPrompt)
-		fmt.Fprintln(os.Stderr, "=========================================")
-	}
-
-	chatReq := oaiChatRequest{
-		Model: p.model,
-		Messages: []oaiMessage{
-			{Role: "system", Content: req.SystemPrompt},
-			{Role: "user", Content: req.UserPrompt},
-		},
-		Tools: []oaiTool{
-			{
-				Type: "function",
-				Function: oaiFunction{
-					Name:        req.ToolName,
-					Description: req.ToolDesc,
-					Parameters:  schema,
-				},
-			},
-		},
-	}
-
-	resp, err := p.makeChatRequest(ctx, chatReq)
-	if err != nil {
-		return nil, fmt.Errorf("%s API request failed: %w", p.name, err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("%s API error (status %d): %s", p.name, resp.StatusCode, string(body))
-	}
-
-	var chatResp oaiChatResponse
-	if err := json.Unmarshal(body, &chatResp); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w\nBody: %s", err, string(body))
-	}
-
-	if chatResp.Error != nil {
-		return nil, fmt.Errorf("%s API error: %s", p.name, chatResp.Error.Message)
-	}
-
-	if req.Debug {
-		fmt.Fprintf(os.Stderr, "=== DEBUG: %s %s Response ===\n", p.name, req.ToolName)
-		fmt.Fprintf(os.Stderr, "Model: %s\n", chatResp.Model)
-		if len(chatResp.Choices) > 0 && chatResp.Choices[0].Message != nil {
-			msg := chatResp.Choices[0].Message
-			if len(msg.ToolCalls) > 0 {
-				for _, tc := range msg.ToolCalls {
-					fmt.Fprintf(os.Stderr, "Function: %s\n", tc.Function.Name)
-					fmt.Fprintf(os.Stderr, "Arguments: %s\n", tc.Function.Arguments)
+func buildCompatMessages(messages []Message) []oaiMessage {
+	var result []oaiMessage
+	for _, msg := range messages {
+		switch msg.Role {
+		case RoleSystem, RoleUser, RoleAssistant:
+			text, toolCalls := splitParts(msg.Parts)
+			if msg.Role == RoleAssistant && len(toolCalls) > 0 {
+				result = append(result, oaiMessage{
+					Role:      "assistant",
+					Content:   text,
+					ToolCalls: toolCalls,
+				})
+				continue
+			}
+			if text == "" {
+				continue
+			}
+			role := string(msg.Role)
+			result = append(result, oaiMessage{Role: role, Content: text})
+		case RoleTool:
+			for _, part := range msg.Parts {
+				if part.Type != PartToolResult || part.ToolResult == nil {
+					continue
 				}
-			} else if msg.Content != "" {
-				fmt.Fprintf(os.Stderr, "Content: %s\n", msg.Content)
+				result = append(result, oaiMessage{
+					Role:       "tool",
+					Content:    part.ToolResult.Content,
+					ToolCallID: part.ToolResult.ID,
+				})
 			}
 		}
-		fmt.Fprintln(os.Stderr, "==========================================")
 	}
+	return result
+}
 
-	if len(chatResp.Choices) == 0 {
-		return nil, fmt.Errorf("no choices in response")
+func splitParts(parts []Part) (string, []oaiToolCall) {
+	var textParts []string
+	var toolCalls []oaiToolCall
+	for _, part := range parts {
+		switch part.Type {
+		case PartText:
+			if part.Text != "" {
+				textParts = append(textParts, part.Text)
+			}
+		case PartToolCall:
+			if part.ToolCall == nil {
+				continue
+			}
+			toolCalls = append(toolCalls, oaiToolCall{
+				ID:   part.ToolCall.ID,
+				Type: "function",
+				Function: struct {
+					Name      string `json:"name,omitempty"`
+					Arguments string `json:"arguments,omitempty"`
+				}{
+					Name:      part.ToolCall.Name,
+					Arguments: string(part.ToolCall.Arguments),
+				},
+			})
+		}
 	}
+	return strings.Join(textParts, ""), toolCalls
+}
 
-	msg := chatResp.Choices[0].Message
-	if msg == nil {
-		return nil, fmt.Errorf("no message in response")
+func buildCompatTools(specs []ToolSpec) ([]oaiTool, error) {
+	if len(specs) == 0 {
+		return nil, nil
 	}
-
-	result := &ToolCallResult{TextOutput: msg.Content}
-	for _, tc := range msg.ToolCalls {
-		result.ToolCalls = append(result.ToolCalls, ToolCallArguments{
-			Name:      tc.Function.Name,
-			Arguments: json.RawMessage(tc.Function.Arguments),
+	tools := make([]oaiTool, 0, len(specs))
+	for _, spec := range specs {
+		schema, err := json.Marshal(spec.Schema)
+		if err != nil {
+			return nil, fmt.Errorf("marshal tool schema %s: %w", spec.Name, err)
+		}
+		tools = append(tools, oaiTool{
+			Type: "function",
+			Function: oaiFunction{
+				Name:        spec.Name,
+				Description: spec.Description,
+				Parameters:  schema,
+			},
 		})
 	}
-
-	return result, nil
+	return tools, nil
 }
 
-// GetEdits calls the LLM with the edit tool and returns all proposed edits.
-func (p *OpenAICompatProvider) GetEdits(ctx context.Context, systemPrompt, userPrompt string, debug bool) ([]EditToolCall, error) {
-	return GetEditsFromProvider(ctx, p, systemPrompt, userPrompt, debug)
+func buildCompatToolChoice(choice ToolChoice) interface{} {
+	switch choice.Mode {
+	case ToolChoiceNone:
+		return "none"
+	case ToolChoiceRequired, ToolChoiceAuto:
+		return "auto"
+	case ToolChoiceName:
+		return map[string]interface{}{
+			"type":     "function",
+			"function": map[string]string{"name": choice.Name},
+		}
+	default:
+		return nil
+	}
 }
 
-// GetUnifiedDiff calls the LLM with the unified_diff tool and returns the diff string.
-func (p *OpenAICompatProvider) GetUnifiedDiff(ctx context.Context, systemPrompt, userPrompt string, debug bool) (string, error) {
-	return GetUnifiedDiffFromProvider(ctx, p, systemPrompt, userPrompt, debug)
+type compatToolState struct {
+	byIndex map[int]*toolCallState
+	order   []int
 }
 
-func (p *OpenAICompatProvider) StreamResponse(ctx context.Context, req AskRequest, output chan<- string) error {
-	defer close(output)
+type toolCallState struct {
+	id   string
+	name string
+	args strings.Builder
+}
 
-	userMessage := prompt.AskUserPrompt(req.Question, req.Files, req.Stdin)
+func newCompatToolState() *compatToolState {
+	return &compatToolState{byIndex: make(map[int]*toolCallState)}
+}
 
-	if req.Debug {
-		fmt.Fprintf(os.Stderr, "=== DEBUG: %s Stream Request ===\n", p.name)
-		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
-		fmt.Fprintf(os.Stderr, "URL: %s/chat/completions\n", p.baseURL)
-		fmt.Fprintf(os.Stderr, "Question: %s\n", req.Question)
-		fmt.Fprintf(os.Stderr, "Files: %d\n", len(req.Files))
-		fmt.Fprintf(os.Stderr, "User message length: %d chars\n", len(userMessage))
-		fmt.Fprintln(os.Stderr, "===========================================")
-	}
-
-	messages := []oaiMessage{
-		{Role: "user", Content: userMessage},
-	}
-
-	if req.Instructions != "" {
-		messages = []oaiMessage{
-			{Role: "system", Content: req.Instructions},
-			{Role: "user", Content: userMessage},
+func (s *compatToolState) Add(calls []oaiToolCall) {
+	for _, call := range calls {
+		idx := call.Index
+		state, ok := s.byIndex[idx]
+		if !ok {
+			state = &toolCallState{}
+			s.byIndex[idx] = state
+			s.order = append(s.order, idx)
+		}
+		if call.ID != "" {
+			state.id = call.ID
+		}
+		if call.Function.Name != "" {
+			state.name = call.Function.Name
+		}
+		if call.Function.Arguments != "" {
+			state.args.WriteString(call.Function.Arguments)
 		}
 	}
+}
 
-	chatReq := oaiChatRequest{
-		Model:    p.model,
-		Messages: messages,
-		Stream:   true,
+func (s *compatToolState) Calls() []ToolCall {
+	if len(s.order) == 0 {
+		return nil
 	}
-
-	resp, err := p.makeChatRequest(ctx, chatReq)
-	if err != nil {
-		return fmt.Errorf("%s API request failed: %w", p.name, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("%s API error (status %d): %s", p.name, resp.StatusCode, string(body))
-	}
-
-	scanner := bufio.NewScanner(resp.Body)
-	// Increase buffer for large responses
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
-
-	var lastEventType string
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		// Track SSE event type (some servers send "event: error" before error data)
-		if strings.HasPrefix(line, "event: ") {
-			lastEventType = strings.TrimPrefix(line, "event: ")
+	sort.Ints(s.order)
+	calls := make([]ToolCall, 0, len(s.order))
+	for _, idx := range s.order {
+		state := s.byIndex[idx]
+		if state == nil {
 			continue
 		}
-
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-
-		data := strings.TrimPrefix(line, "data: ")
-		if data == "[DONE]" {
-			break
-		}
-
-		var chatResp oaiChatResponse
-		if err := json.Unmarshal([]byte(data), &chatResp); err != nil {
-			continue
-		}
-
-		// Check for error in response (either from event type or error field)
-		if lastEventType == "error" || chatResp.Error != nil {
-			errMsg := "unknown error"
-			if chatResp.Error != nil {
-				errMsg = chatResp.Error.Message
-			}
-			return fmt.Errorf("%s API error: %s", p.name, errMsg)
-		}
-
-		if len(chatResp.Choices) > 0 && chatResp.Choices[0].Delta != nil {
-			content := chatResp.Choices[0].Delta.Content
-			if content != "" {
-				output <- content
-			}
-		}
-
-		lastEventType = "" // Reset after processing data
+		calls = append(calls, ToolCall{
+			ID:        state.id,
+			Name:      state.name,
+			Arguments: json.RawMessage(state.args.String()),
+		})
 	}
+	return calls
+}
 
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("%s streaming error: %w", p.name, err)
-	}
-
-	return nil
+func boolPtr(v bool) *bool {
+	return &v
 }

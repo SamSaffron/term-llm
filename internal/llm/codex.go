@@ -12,8 +12,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/samsaffron/term-llm/internal/prompt"
 )
 
 const chatGPTResponsesURL = "https://chatgpt.com/backend-api/codex/responses"
@@ -29,8 +27,8 @@ var codexPromptFiles = map[string]string{
 
 // instructionsCache caches Codex instructions in memory with TTL
 var (
-	instructionsCache   = make(map[string]cachedInstructions)
-	instructionsCacheMu sync.RWMutex
+	instructionsCache    = make(map[string]cachedInstructions)
+	instructionsCacheMu  sync.RWMutex
 	instructionsCacheTTL = 15 * time.Minute
 )
 
@@ -39,7 +37,7 @@ type cachedInstructions struct {
 	fetchedAt time.Time
 }
 
-// CodexProvider implements Provider using the ChatGPT backend API with Codex OAuth
+// CodexProvider implements Provider using the ChatGPT backend API with Codex OAuth.
 type CodexProvider struct {
 	accessToken string
 	accountID   string
@@ -66,158 +64,147 @@ func (p *CodexProvider) Name() string {
 	return fmt.Sprintf("Codex (%s)", p.model)
 }
 
-func (p *CodexProvider) SuggestCommands(ctx context.Context, req SuggestRequest) ([]CommandSuggestion, error) {
-	numSuggestions := req.NumSuggestions
-	if numSuggestions <= 0 {
-		numSuggestions = 3
-	}
+func (p *CodexProvider) Capabilities() Capabilities {
+	return Capabilities{NativeSearch: true, ToolCalls: true}
+}
 
-	// Fetch Codex instructions from GitHub (required by ChatGPT backend)
-	// NOTE: Instructions must be EXACTLY the Codex instructions - no modifications allowed
-	codexInstructions, err := p.getCodexInstructions()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get Codex instructions: %w", err)
-	}
-
-	// Build tools list
-	tools := []interface{}{}
-
-	// Add web search tool if enabled (must come before function tools)
-	if req.EnableSearch {
-		tools = append(tools, map[string]interface{}{"type": "web_search"})
-	}
-
-	// Add suggest_commands function tool
-	// ChatGPT backend uses flat format (name at top level, not nested in function)
-	tools = append(tools, map[string]interface{}{
-		"type":        "function",
-		"name":        suggestCommandsToolName,
-		"description": suggestToolDescription(false),
-		"strict":      true,
-		"parameters":  prompt.SuggestSchema(numSuggestions),
-	})
-
-	// Combine system context with user prompt (instructions must stay unchanged)
-	systemPrompt := prompt.SuggestSystemPrompt(req.Shell, req.Instructions, numSuggestions, req.EnableSearch)
-	userPrompt := prompt.SuggestUserPrompt(req.UserInput, req.Files, req.Stdin)
-	combinedPrompt := systemPrompt + "\n\n" + userPrompt
-
-	if req.Debug {
-		fmt.Fprintln(os.Stderr, "=== DEBUG: Codex Request ===")
-		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
-		fmt.Fprintf(os.Stderr, "Backend: ChatGPT (chatgpt.com/backend-api/codex)\n")
-		fmt.Fprintf(os.Stderr, "Codex instructions: %d chars\n", len(codexInstructions))
-		if req.EnableSearch {
-			fmt.Fprintln(os.Stderr, "Tools: web_search, suggest_commands")
-		} else {
-			fmt.Fprintln(os.Stderr, "Tools: suggest_commands")
+func (p *CodexProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
+		codexInstructions, err := p.getCodexInstructions()
+		if err != nil {
+			return fmt.Errorf("failed to get Codex instructions: %w", err)
 		}
-		fmt.Fprintf(os.Stderr, "Combined prompt:\n%s\n", combinedPrompt)
-		fmt.Fprintln(os.Stderr, "============================")
-	}
 
-	// Build request body
-	reqBody := map[string]interface{}{
-		"model":               p.model,
-		"instructions":        codexInstructions,
-		"input":               p.buildInput(combinedPrompt),
-		"tools":               tools,
-		"tool_choice":         "auto",
-		"parallel_tool_calls": true,
-		"stream":              true,
-		"store":               false,
-		"include":             []string{},
-	}
-
-	// Add reasoning effort if set
-	if p.effort != "" {
-		reqBody["reasoning"] = map[string]interface{}{
-			"effort": p.effort,
+		system, user := flattenSystemUser(req.Messages)
+		combinedPrompt := strings.TrimSpace(strings.Join([]string{system, user}, "\n\n"))
+		if combinedPrompt == "" {
+			return fmt.Errorf("no prompt content provided")
 		}
-	}
 
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
+		tools := []interface{}{}
+		if req.Search {
+			tools = append(tools, map[string]interface{}{"type": "web_search"})
+		}
+		for _, spec := range req.Tools {
+			tools = append(tools, map[string]interface{}{
+				"type":        "function",
+				"name":        spec.Name,
+				"description": spec.Description,
+				"strict":      true,
+				"parameters":  spec.Schema,
+			})
+		}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", chatGPTResponsesURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
+		reqBody := map[string]interface{}{
+			"model":               chooseModel(req.Model, p.model),
+			"instructions":        codexInstructions,
+			"input":               p.buildInput(combinedPrompt),
+			"tools":               tools,
+			"tool_choice":         "auto",
+			"parallel_tool_calls": req.ParallelToolCalls,
+			"stream":              true,
+			"store":               false,
+			"include":             []string{},
+		}
 
-	// Set required headers
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+p.accessToken)
-	httpReq.Header.Set("ChatGPT-Account-ID", p.accountID)
-	httpReq.Header.Set("OpenAI-Beta", "responses=experimental")
-	httpReq.Header.Set("originator", "codex_cli_rs")
-	httpReq.Header.Set("Accept", "text/event-stream")
-
-	resp, err := p.client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(respBody))
-	}
-
-	// Parse SSE response
-	result, err := p.parseSSEResponse(respBody)
-	if err != nil {
-		return nil, err
-	}
-
-	if req.Debug {
-		fmt.Fprintln(os.Stderr, "=== DEBUG: Codex Response ===")
-		fmt.Fprintf(os.Stderr, "Status: %s\n", result.Status)
-		fmt.Fprintf(os.Stderr, "Output items: %d\n", len(result.Output))
-		for i, item := range result.Output {
-			fmt.Fprintf(os.Stderr, "Output %d: type=%s", i, item.Type)
-			if item.Name != "" {
-				fmt.Fprintf(os.Stderr, " name=%s", item.Name)
-			}
-			if item.ID != "" {
-				fmt.Fprintf(os.Stderr, " id=%s", item.ID)
-			}
-			fmt.Fprintln(os.Stderr)
-			if item.Type == "function_call" && item.Arguments != "" {
-				fmt.Fprintf(os.Stderr, "  Arguments: %s\n", item.Arguments)
+		if p.effort != "" {
+			reqBody["reasoning"] = map[string]interface{}{
+				"effort": p.effort,
 			}
 		}
-		fmt.Fprintln(os.Stderr, "=============================")
-	}
 
-	// Find the function call output
-	for _, item := range result.Output {
-		if item.Type == "function_call" && item.Name == suggestCommandsToolName {
-			var suggestions suggestionsResponse
-			if err := json.Unmarshal([]byte(item.Arguments), &suggestions); err != nil {
-				return nil, fmt.Errorf("failed to parse response: %w", err)
-			}
-			return suggestions.Suggestions, nil
+		body, err := json.Marshal(reqBody)
+		if err != nil {
+			return fmt.Errorf("failed to marshal request: %w", err)
 		}
-	}
 
-	// Check for text response (model didn't call the function)
-	for _, item := range result.Output {
-		if item.Type == "message" {
-			for _, c := range item.Content {
-				if c.Type == "output_text" && c.Text != "" {
-					return nil, fmt.Errorf("model returned text instead of function call: %s", c.Text)
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", chatGPTResponsesURL, bytes.NewReader(body))
+		if err != nil {
+			return fmt.Errorf("failed to create request: %w", err)
+		}
+
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+p.accessToken)
+		httpReq.Header.Set("ChatGPT-Account-ID", p.accountID)
+		httpReq.Header.Set("OpenAI-Beta", "responses=experimental")
+		httpReq.Header.Set("originator", "codex_cli_rs")
+		httpReq.Header.Set("Accept", "text/event-stream")
+
+		resp, err := p.client.Do(httpReq)
+		if err != nil {
+			return fmt.Errorf("request failed: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			respBody, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("API error (%d): %s", resp.StatusCode, string(respBody))
+		}
+
+		if len(req.Tools) > 0 {
+			respBody, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return fmt.Errorf("failed to read response: %w", err)
+			}
+			parsed, err := p.parseSSEResponse(respBody)
+			if err != nil {
+				return err
+			}
+			for _, item := range parsed.Output {
+				if item.Type == "function_call" {
+					events <- Event{Type: EventToolCall, Tool: &ToolCall{
+						ID:        item.ID,
+						Name:      item.Name,
+						Arguments: json.RawMessage(item.Arguments),
+					}}
 				}
 			}
+			events <- Event{Type: EventDone}
+			return nil
 		}
-	}
 
-	return nil, fmt.Errorf("no suggest_commands function call in response")
+		buf := make([]byte, 4096)
+		var pending string
+		for {
+			n, err := resp.Body.Read(buf)
+			if n > 0 {
+				pending += string(buf[:n])
+				for {
+					idx := strings.Index(pending, "\n")
+					if idx < 0 {
+						break
+					}
+					line := pending[:idx]
+					pending = pending[idx+1:]
+					if !strings.HasPrefix(line, "data: ") {
+						continue
+					}
+					jsonData := strings.TrimPrefix(line, "data: ")
+					if jsonData == "" || jsonData == "[DONE]" {
+						continue
+					}
+					var event struct {
+						Type  string `json:"type"`
+						Delta string `json:"delta"`
+					}
+					if json.Unmarshal([]byte(jsonData), &event) == nil {
+						if event.Type == "response.output_text.delta" && event.Delta != "" {
+							events <- Event{Type: EventTextDelta, Text: event.Delta}
+						}
+					}
+				}
+			}
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return fmt.Errorf("stream read error: %w", err)
+			}
+		}
+
+		events <- Event{Type: EventDone}
+		return nil
+	}), nil
 }
 
 func (p *CodexProvider) buildInput(userPrompt string) []map[string]interface{} {
@@ -266,16 +253,12 @@ func (p *CodexProvider) parseSSEResponse(data []byte) (*codexResponse, error) {
 			continue
 		}
 
-		var event struct {
-			Type     string         `json:"type"`
-			Response *codexResponse `json:"response"`
-		}
-		if err := json.Unmarshal([]byte(jsonData), &event); err != nil {
+		var response codexResponse
+		if err := json.Unmarshal([]byte(jsonData), &response); err != nil {
 			continue
 		}
-
-		if event.Response != nil {
-			lastResponse = event.Response
+		if response.ID != "" {
+			lastResponse = &response
 		}
 	}
 
@@ -285,50 +268,20 @@ func (p *CodexProvider) parseSSEResponse(data []byte) (*codexResponse, error) {
 	return lastResponse, nil
 }
 
-// Codex instructions fetching with caching
-
 func (p *CodexProvider) getCodexInstructions() (string, error) {
 	family := p.getModelFamily()
 
-	// Check memory cache first
 	instructionsCacheMu.RLock()
-	if cached, ok := instructionsCache[family]; ok && time.Since(cached.fetchedAt) < instructionsCacheTTL {
-		instructionsCacheMu.RUnlock()
-		return cached.content, nil
-	}
+	cached, found := instructionsCache[family]
 	instructionsCacheMu.RUnlock()
 
-	// Check disk cache
-	cacheDir, _ := os.UserCacheDir()
-	cacheFile := filepath.Join(cacheDir, "term-llm", "codex-instructions-"+family+".md")
-	cacheMetaFile := filepath.Join(cacheDir, "term-llm", "codex-instructions-"+family+"-meta.json")
-
-	var cachedTag string
-	if metaBytes, err := os.ReadFile(cacheMetaFile); err == nil {
-		var meta struct {
-			Tag         string `json:"tag"`
-			LastChecked int64  `json:"lastChecked"`
-		}
-		if json.Unmarshal(metaBytes, &meta) == nil {
-			// If cache is recent, use it
-			if time.Since(time.Unix(0, meta.LastChecked)) < instructionsCacheTTL {
-				if content, err := os.ReadFile(cacheFile); err == nil {
-					p.cacheInstructions(family, string(content))
-					return string(content), nil
-				}
-			}
-			cachedTag = meta.Tag
-		}
+	if found && time.Since(cached.fetchedAt) < instructionsCacheTTL {
+		return cached.content, nil
 	}
 
-	// Fetch from GitHub
-	tag, err := p.getLatestReleaseTag()
-	if err != nil {
-		// Try using cached version if available
-		if content, err := os.ReadFile(cacheFile); err == nil {
-			return string(content), nil
-		}
-		return "", fmt.Errorf("failed to get release tag: %w", err)
+	cacheDir := filepath.Join(os.TempDir(), "term-llm-codex")
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create cache dir: %w", err)
 	}
 
 	promptFile, ok := codexPromptFiles[family]
@@ -336,43 +289,43 @@ func (p *CodexProvider) getCodexInstructions() (string, error) {
 		promptFile = codexPromptFiles["gpt-5.1"]
 	}
 
-	// If tag hasn't changed and we have cached content, use it
-	if tag == cachedTag {
-		if content, err := os.ReadFile(cacheFile); err == nil {
-			p.saveCacheMeta(cacheMetaFile, tag)
-			p.cacheInstructions(family, string(content))
-			return string(content), nil
+	cachedPath := filepath.Join(cacheDir, promptFile)
+	metaPath := cachedPath + ".meta"
+
+	if data, err := os.ReadFile(cachedPath); err == nil {
+		if info, err := os.Stat(metaPath); err == nil {
+			if time.Since(info.ModTime()) < instructionsCacheTTL {
+				content := string(data)
+				p.cacheInstructions(family, content)
+				return content, nil
+			}
 		}
 	}
 
-	url := fmt.Sprintf("https://raw.githubusercontent.com/openai/codex/%s/codex-rs/core/%s", tag, promptFile)
-	resp, err := http.Get(url)
-	if err != nil {
-		if content, err := os.ReadFile(cacheFile); err == nil {
-			return string(content), nil
-		}
-		return "", fmt.Errorf("failed to fetch instructions: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		if content, err := os.ReadFile(cacheFile); err == nil {
-			return string(content), nil
-		}
-		return "", fmt.Errorf("GitHub returned status %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
+	latestTag, err := p.getLatestReleaseTag()
 	if err != nil {
 		return "", err
 	}
 
-	content := string(body)
+	url := fmt.Sprintf("https://raw.githubusercontent.com/openai/codex/%s/codex-rs/core/%s", latestTag, promptFile)
+	resp, err := http.Get(url)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch instructions: %w", err)
+	}
+	defer resp.Body.Close()
 
-	// Save to disk cache
-	if err := os.MkdirAll(filepath.Dir(cacheFile), 0755); err == nil {
-		os.WriteFile(cacheFile, body, 0644)
-		p.saveCacheMeta(cacheMetaFile, tag)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to fetch instructions: %s", resp.Status)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read instructions: %w", err)
+	}
+
+	content := string(body)
+	if err := os.WriteFile(cachedPath, body, 0644); err == nil {
+		p.saveCacheMeta(metaPath, latestTag)
 	}
 
 	p.cacheInstructions(family, content)
@@ -381,52 +334,42 @@ func (p *CodexProvider) getCodexInstructions() (string, error) {
 
 func (p *CodexProvider) getModelFamily() string {
 	model := strings.ToLower(p.model)
-	if strings.Contains(model, "gpt-5.2-codex") || strings.Contains(model, "gpt 5.2 codex") {
+	switch {
+	case strings.Contains(model, "codex"):
 		return "gpt-5.2-codex"
-	}
-	if strings.Contains(model, "codex-max") {
-		return "codex-max"
-	}
-	if strings.Contains(model, "codex") || strings.HasPrefix(model, "codex-") {
-		return "codex"
-	}
-	if strings.Contains(model, "gpt-5.2") {
+	case strings.Contains(model, "gpt-5.2"):
 		return "gpt-5.2"
+	case strings.Contains(model, "gpt-5.1"):
+		return "gpt-5.1"
+	default:
+		return "gpt-5.1"
 	}
-	return "gpt-5.1"
 }
 
 func (p *CodexProvider) getLatestReleaseTag() (string, error) {
-	// Try GitHub API first
 	resp, err := http.Get("https://api.github.com/repos/openai/codex/releases/latest")
-	if err == nil && resp.StatusCode == 200 {
-		defer resp.Body.Close()
-		var release struct {
-			TagName string `json:"tag_name"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&release); err == nil && release.TagName != "" {
-			return release.TagName, nil
-		}
-	}
-
-	// Fallback: follow redirect from releases/latest
-	client := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	resp, err = client.Get("https://github.com/openai/codex/releases/latest")
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to fetch latest release: %w", err)
 	}
 	defer resp.Body.Close()
 
-	location := resp.Header.Get("Location")
-	if location != "" {
-		parts := strings.Split(location, "/tag/")
-		if len(parts) == 2 {
-			return parts[1], nil
-		}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to fetch latest release: %s", resp.Status)
+	}
+
+	var data struct {
+		TagName string `json:"tag_name"`
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response: %w", err)
+	}
+	if err := json.Unmarshal(body, &data); err != nil {
+		return "", fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if data.TagName != "" {
+		return data.TagName, nil
 	}
 
 	return "", fmt.Errorf("could not determine latest release tag")
@@ -449,247 +392,4 @@ func (p *CodexProvider) saveCacheMeta(path, tag string) {
 	if data, err := json.Marshal(meta); err == nil {
 		os.WriteFile(path, data, 0644)
 	}
-}
-
-func (p *CodexProvider) StreamResponse(ctx context.Context, req AskRequest, output chan<- string) error {
-	defer close(output)
-
-	// Fetch Codex instructions from GitHub (required by ChatGPT backend)
-	codexInstructions, err := p.getCodexInstructions()
-	if err != nil {
-		return fmt.Errorf("failed to get Codex instructions: %w", err)
-	}
-
-	userMessage := prompt.AskUserPrompt(req.Question, req.Files, req.Stdin)
-
-	if req.Debug {
-		fmt.Fprintln(os.Stderr, "=== DEBUG: Codex Stream Request ===")
-		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
-		fmt.Fprintf(os.Stderr, "Question: %s\n", req.Question)
-		fmt.Fprintf(os.Stderr, "Search: %v\n", req.EnableSearch)
-		fmt.Fprintln(os.Stderr, "===================================")
-	}
-
-	// Build request body
-	reqBody := map[string]interface{}{
-		"model":        p.model,
-		"instructions": codexInstructions,
-		"input":        p.buildInput(userMessage),
-		"stream":       true,
-		"store":        false,
-	}
-
-	// Add web search tool if enabled
-	if req.EnableSearch {
-		reqBody["tools"] = []interface{}{
-			map[string]interface{}{"type": "web_search"},
-		}
-	}
-
-	// Add reasoning effort if set
-	if p.effort != "" {
-		reqBody["reasoning"] = map[string]interface{}{
-			"effort": p.effort,
-		}
-	}
-
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", chatGPTResponsesURL, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Set required headers
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+p.accessToken)
-	httpReq.Header.Set("ChatGPT-Account-ID", p.accountID)
-	httpReq.Header.Set("OpenAI-Beta", "responses=experimental")
-	httpReq.Header.Set("originator", "codex_cli_rs")
-	httpReq.Header.Set("Accept", "text/event-stream")
-
-	resp, err := p.client.Do(httpReq)
-	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("API error (%d): %s", resp.StatusCode, string(respBody))
-	}
-
-	// Read SSE stream and send text deltas
-	buf := make([]byte, 4096)
-	var pending string
-	for {
-		n, err := resp.Body.Read(buf)
-		if n > 0 {
-			pending += string(buf[:n])
-			// Process complete lines
-			for {
-				idx := strings.Index(pending, "\n")
-				if idx < 0 {
-					break
-				}
-				line := pending[:idx]
-				pending = pending[idx+1:]
-
-				if !strings.HasPrefix(line, "data: ") {
-					continue
-				}
-				jsonData := strings.TrimPrefix(line, "data: ")
-				if jsonData == "" || jsonData == "[DONE]" {
-					continue
-				}
-
-				var event struct {
-					Type  string `json:"type"`
-					Delta string `json:"delta"`
-				}
-				if json.Unmarshal([]byte(jsonData), &event) == nil {
-					if event.Type == "response.output_text.delta" && event.Delta != "" {
-						output <- event.Delta
-					}
-				}
-			}
-		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("stream read error: %w", err)
-		}
-	}
-
-	return nil
-}
-
-// CallWithTool makes an API call with a single tool and returns raw results.
-// Implements ToolCallProvider interface.
-func (p *CodexProvider) CallWithTool(ctx context.Context, req ToolCallRequest) (*ToolCallResult, error) {
-	// Fetch Codex instructions from GitHub (required by ChatGPT backend)
-	codexInstructions, err := p.getCodexInstructions()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get Codex instructions: %w", err)
-	}
-
-	tool := map[string]interface{}{
-		"type":        "function",
-		"name":        req.ToolName,
-		"description": req.ToolDesc,
-		"strict":      true,
-		"parameters":  req.ToolSchema,
-	}
-
-	combinedPrompt := req.SystemPrompt + "\n\n" + req.UserPrompt
-
-	if req.Debug {
-		fmt.Fprintf(os.Stderr, "=== DEBUG: Codex %s Request ===\n", req.ToolName)
-		fmt.Fprintf(os.Stderr, "System: %s\n", req.SystemPrompt)
-		fmt.Fprintf(os.Stderr, "User: %s\n", req.UserPrompt)
-		fmt.Fprintln(os.Stderr, "=================================")
-	}
-
-	reqBody := map[string]interface{}{
-		"model":               p.model,
-		"instructions":        codexInstructions,
-		"input":               p.buildInput(combinedPrompt),
-		"tools":               []interface{}{tool},
-		"tool_choice":         "auto",
-		"parallel_tool_calls": req.ParallelToolCalls,
-		"stream":              true,
-		"store":               false,
-		"include":             []string{},
-	}
-
-	if p.effort != "" {
-		reqBody["reasoning"] = map[string]interface{}{
-			"effort": p.effort,
-		}
-	}
-
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", chatGPTResponsesURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+p.accessToken)
-	httpReq.Header.Set("ChatGPT-Account-ID", p.accountID)
-	httpReq.Header.Set("OpenAI-Beta", "responses=experimental")
-	httpReq.Header.Set("originator", "codex_cli_rs")
-	httpReq.Header.Set("Accept", "text/event-stream")
-
-	resp, err := p.client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(respBody))
-	}
-
-	sseResult, err := p.parseSSEResponse(respBody)
-	if err != nil {
-		return nil, err
-	}
-
-	if req.Debug {
-		fmt.Fprintf(os.Stderr, "=== DEBUG: Codex %s Response ===\n", req.ToolName)
-		fmt.Fprintf(os.Stderr, "Status: %s\n", sseResult.Status)
-		for i, item := range sseResult.Output {
-			fmt.Fprintf(os.Stderr, "Output %d: type=%s", i, item.Type)
-			if item.Name != "" {
-				fmt.Fprintf(os.Stderr, " name=%s", item.Name)
-			}
-			fmt.Fprintln(os.Stderr)
-			if item.Type == "function_call" && item.Arguments != "" {
-				fmt.Fprintf(os.Stderr, "  Arguments: %s\n", item.Arguments)
-			}
-		}
-		fmt.Fprintln(os.Stderr, "==================================")
-	}
-
-	result := &ToolCallResult{}
-	for _, item := range sseResult.Output {
-		if item.Type == "message" {
-			for _, c := range item.Content {
-				if c.Type == "output_text" && c.Text != "" {
-					result.TextOutput += c.Text + "\n"
-				}
-			}
-		} else if item.Type == "function_call" {
-			result.ToolCalls = append(result.ToolCalls, ToolCallArguments{
-				Name:      item.Name,
-				Arguments: json.RawMessage(item.Arguments),
-			})
-		}
-	}
-
-	return result, nil
-}
-
-// GetEdits calls the LLM with the edit tool and returns all proposed edits.
-func (p *CodexProvider) GetEdits(ctx context.Context, systemPrompt, userPrompt string, debug bool) ([]EditToolCall, error) {
-	return GetEditsFromProvider(ctx, p, systemPrompt, userPrompt, debug)
-}
-
-// GetUnifiedDiff calls the LLM with the unified_diff tool and returns the diff string.
-func (p *CodexProvider) GetUnifiedDiff(ctx context.Context, systemPrompt, userPrompt string, debug bool) (string, error) {
-	return GetUnifiedDiffFromProvider(ctx, p, systemPrompt, userPrompt, debug)
 }
