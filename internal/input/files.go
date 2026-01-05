@@ -114,7 +114,7 @@ func ReadStdin() (string, error) {
 	return string(data), nil
 }
 
-// FormatFilesXML formats file contents as XML for inclusion in prompts
+// FormatFilesXML formats file contents with prompt-safe delimiters.
 func FormatFilesXML(files []FileContent, stdin string) string {
 	if len(files) == 0 && stdin == "" {
 		return ""
@@ -123,11 +123,23 @@ func FormatFilesXML(files []FileContent, stdin string) string {
 	var sb strings.Builder
 
 	for _, f := range files {
-		sb.WriteString(fmt.Sprintf("<file path=%q>\n%s\n</file>\n", f.Path, f.Content))
+		sb.WriteString("<<<<< FILE: ")
+		sb.WriteString(f.Path)
+		sb.WriteString(" >>>>>\n")
+		sb.WriteString(f.Content)
+		if !strings.HasSuffix(f.Content, "\n") {
+			sb.WriteString("\n")
+		}
+		sb.WriteString("<<<<< END FILE >>>>>\n")
 	}
 
 	if stdin != "" {
-		sb.WriteString(fmt.Sprintf("<stdin>\n%s\n</stdin>\n", stdin))
+		sb.WriteString("<<<<< STDIN >>>>>\n")
+		sb.WriteString(stdin)
+		if !strings.HasSuffix(stdin, "\n") {
+			sb.WriteString("\n")
+		}
+		sb.WriteString("<<<<< END STDIN >>>>>\n")
 	}
 
 	return strings.TrimSuffix(sb.String(), "\n")

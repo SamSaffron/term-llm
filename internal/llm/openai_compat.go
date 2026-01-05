@@ -428,7 +428,9 @@ func buildCompatToolChoice(choice ToolChoice) interface{} {
 	switch choice.Mode {
 	case ToolChoiceNone:
 		return "none"
-	case ToolChoiceRequired, ToolChoiceAuto:
+	case ToolChoiceRequired:
+		return "required"
+	case ToolChoiceAuto:
 		return "auto"
 	case ToolChoiceName:
 		return map[string]interface{}{

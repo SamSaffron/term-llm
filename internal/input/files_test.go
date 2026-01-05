@@ -78,9 +78,9 @@ func TestFormatFilesXML(t *testing.T) {
 			{Path: "test.txt", Content: "hello world"},
 		}
 		result := FormatFilesXML(files, "")
-		expected := `<file path="test.txt">
+		expected := `<<<<< FILE: test.txt >>>>>
 hello world
-</file>`
+<<<<< END FILE >>>>>`
 		if result != expected {
 			t.Errorf("expected:\n%s\ngot:\n%s", expected, result)
 		}
@@ -96,16 +96,16 @@ hello world
 			t.Error("expected non-empty result")
 		}
 		// Check both files are present
-		if !contains(result, `<file path="a.txt">`) || !contains(result, `<file path="b.txt">`) {
-			t.Errorf("result missing file tags: %s", result)
+		if !contains(result, "<<<<< FILE: a.txt >>>>>") || !contains(result, "<<<<< FILE: b.txt >>>>>") {
+			t.Errorf("result missing file markers: %s", result)
 		}
 	})
 
 	t.Run("with stdin", func(t *testing.T) {
 		result := FormatFilesXML(nil, "stdin content")
-		expected := `<stdin>
+		expected := `<<<<< STDIN >>>>>
 stdin content
-</stdin>`
+<<<<< END STDIN >>>>>`
 		if result != expected {
 			t.Errorf("expected:\n%s\ngot:\n%s", expected, result)
 		}
@@ -116,11 +116,11 @@ stdin content
 			{Path: "test.txt", Content: "file content"},
 		}
 		result := FormatFilesXML(files, "stdin content")
-		if !contains(result, `<file path="test.txt">`) {
-			t.Error("missing file tag")
+		if !contains(result, "<<<<< FILE: test.txt >>>>>") {
+			t.Error("missing file marker")
 		}
-		if !contains(result, "<stdin>") {
-			t.Error("missing stdin tag")
+		if !contains(result, "<<<<< STDIN >>>>>") {
+			t.Error("missing stdin marker")
 		}
 	})
 

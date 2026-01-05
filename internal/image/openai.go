@@ -11,13 +11,19 @@ import (
 	"net/http"
 	"net/textproto"
 	"path/filepath"
+	"time"
 )
 
 const (
 	openaiGenerateEndpoint = "https://api.openai.com/v1/images/generations"
 	openaiEditEndpoint     = "https://api.openai.com/v1/images/edits"
 	openaiModel            = "gpt-image-1"
+	openaiHTTPTimeout      = 10 * time.Minute
 )
+
+var openaiHTTPClient = &http.Client{
+	Timeout: openaiHTTPTimeout,
+}
 
 // OpenAIProvider implements ImageProvider using OpenAI's API
 type OpenAIProvider struct {
@@ -104,8 +110,7 @@ func (p *OpenAIProvider) Edit(ctx context.Context, req EditRequest) (*ImageResul
 }
 
 func (p *OpenAIProvider) doRequest(httpReq *http.Request) (*ImageResult, error) {
-	client := &http.Client{}
-	resp, err := client.Do(httpReq)
+	resp, err := openaiHTTPClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -147,11 +152,19 @@ func (p *OpenAIProvider) doRequest(httpReq *http.Request) (*ImageResult, error) 
 
 	// Fall back to URL
 	if apiResp.Data[0].URL != "" {
-		resp, err := http.Get(apiResp.Data[0].URL)
+		fetchReq, err := http.NewRequestWithContext(httpReq.Context(), "GET", apiResp.Data[0].URL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create image URL request: %w", err)
+		}
+		resp, err := openaiHTTPClient.Do(fetchReq)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch image URL: %w", err)
 		}
 		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			return nil, fmt.Errorf("image URL returned status %d: %s", resp.StatusCode, string(body))
+		}
 		imageData, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read image from URL: %w", err)

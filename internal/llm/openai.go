@@ -62,8 +62,8 @@ func (p *OpenAIProvider) Capabilities() Capabilities {
 
 func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
-		system, user := flattenSystemUser(req.Messages)
-		if user == "" {
+		system, inputItems := buildOpenAIInput(req.Messages)
+		if len(inputItems) == 0 {
 			return fmt.Errorf("no user content provided")
 		}
 
@@ -79,7 +79,7 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 		params := responses.ResponseNewParams{
 			Model: shared.ResponsesModel(chooseModel(req.Model, p.model)),
 			Input: responses.ResponseNewParamsInputUnion{
-				OfString: openai.String(user),
+				OfInputItemList: inputItems,
 			},
 			Tools: tools,
 		}
@@ -108,23 +108,22 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 		}
 
 		if req.Debug {
+			userPreview := collectRoleText(req.Messages, RoleUser)
 			fmt.Fprintln(os.Stderr, "=== DEBUG: OpenAI Stream Request ===")
 			fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
 			fmt.Fprintf(os.Stderr, "System: %s\n", truncate(system, 200))
-			fmt.Fprintf(os.Stderr, "User: %s\n", truncate(user, 200))
+			fmt.Fprintf(os.Stderr, "User: %s\n", truncate(userPreview, 200))
+			fmt.Fprintf(os.Stderr, "Input Items: %d\n", len(inputItems))
 			fmt.Fprintf(os.Stderr, "Tools: %d\n", len(tools))
 			fmt.Fprintln(os.Stderr, "===================================")
 		}
 
-		if len(req.Tools) > 0 {
+		if len(tools) > 0 {
 			resp, err := p.client.Responses.New(ctx, params)
 			if err != nil {
 				return fmt.Errorf("openai API error: %w", err)
 			}
-			toolCalls := collectOpenAIToolCalls(resp)
-			for _, call := range toolCalls {
-				events <- Event{Type: EventToolCall, Tool: &call}
-			}
+			emitOpenAIResponseOutput(events, resp)
 			events <- Event{Type: EventDone}
 			return nil
 		}
@@ -172,18 +171,121 @@ func buildOpenAIToolChoice(choice ToolChoice) responses.ResponseNewParamsToolCho
 	}
 }
 
-func collectOpenAIToolCalls(resp *responses.Response) []ToolCall {
-	var calls []ToolCall
+func buildOpenAIInput(messages []Message) (string, responses.ResponseInputParam) {
+	var systemParts []string
+	inputItems := make(responses.ResponseInputParam, 0, len(messages))
+
+	for _, msg := range messages {
+		switch msg.Role {
+		case RoleSystem:
+			if text := collectTextParts(msg.Parts); text != "" {
+				systemParts = append(systemParts, text)
+			}
+		case RoleUser:
+			inputItems = append(inputItems, buildOpenAIMessageItems(responses.EasyInputMessageRoleUser, msg.Parts)...)
+		case RoleAssistant:
+			inputItems = append(inputItems, buildOpenAIMessageItems(responses.EasyInputMessageRoleAssistant, msg.Parts)...)
+		case RoleTool:
+			for _, part := range msg.Parts {
+				if part.Type != PartToolResult || part.ToolResult == nil {
+					continue
+				}
+				callID := strings.TrimSpace(part.ToolResult.ID)
+				if callID == "" {
+					continue
+				}
+				inputItems = append(inputItems, responses.ResponseInputItemParamOfFunctionCallOutput(callID, part.ToolResult.Content))
+			}
+		}
+	}
+
+	return strings.Join(systemParts, "\n\n"), inputItems
+}
+
+func buildOpenAIMessageItems(role responses.EasyInputMessageRole, parts []Part) []responses.ResponseInputItemUnionParam {
+	var items []responses.ResponseInputItemUnionParam
+	var textBuf strings.Builder
+
+	flushText := func() {
+		if textBuf.Len() == 0 {
+			return
+		}
+		items = append(items, responses.ResponseInputItemParamOfMessage(textBuf.String(), role))
+		textBuf.Reset()
+	}
+
+	for _, part := range parts {
+		switch part.Type {
+		case PartText:
+			if part.Text != "" {
+				textBuf.WriteString(part.Text)
+			}
+		case PartToolCall:
+			if part.ToolCall == nil {
+				continue
+			}
+			flushText()
+			callID := strings.TrimSpace(part.ToolCall.ID)
+			if callID == "" {
+				continue
+			}
+			args := strings.TrimSpace(string(part.ToolCall.Arguments))
+			if args == "" {
+				args = "{}"
+			}
+			items = append(items, responses.ResponseInputItemParamOfFunctionCall(args, callID, part.ToolCall.Name))
+		}
+	}
+
+	flushText()
+	return items
+}
+
+func emitOpenAIResponseOutput(events chan<- Event, resp *responses.Response) {
 	for _, item := range resp.Output {
-		if item.Type != "function_call" {
+		switch item.Type {
+		case "message":
+			for _, content := range item.Content {
+				switch content.Type {
+				case "output_text":
+					if content.Text != "" {
+						events <- Event{Type: EventTextDelta, Text: content.Text}
+					}
+				case "refusal":
+					if content.Refusal != "" {
+						events <- Event{Type: EventTextDelta, Text: content.Refusal}
+					}
+				}
+			}
+		case "function_call":
+			callID := strings.TrimSpace(item.ID)
+			if callID == "" {
+				callID = strings.TrimSpace(item.CallID)
+			}
+			args := strings.TrimSpace(item.Arguments)
+			var raw json.RawMessage
+			if args != "" {
+				raw = json.RawMessage(args)
+			}
+			call := ToolCall{
+				ID:        callID,
+				Name:      item.Name,
+				Arguments: raw,
+			}
+			events <- Event{Type: EventToolCall, Tool: &call}
+		}
+	}
+}
+
+func collectRoleText(messages []Message, role Role) string {
+	var parts []string
+	for _, msg := range messages {
+		if msg.Role != role {
 			continue
 		}
-		args := json.RawMessage(item.Arguments)
-		calls = append(calls, ToolCall{
-			ID:        item.ID,
-			Name:      item.Name,
-			Arguments: args,
-		})
+		if text := collectTextParts(msg.Parts); text != "" {
+			parts = append(parts, text)
+		}
 	}
-	return calls
+	return strings.Join(parts, "\n\n")
 }

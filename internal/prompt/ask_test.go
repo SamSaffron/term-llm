@@ -21,8 +21,8 @@ func TestAskUserPrompt(t *testing.T) {
 			{Path: "main.go", Content: "package main\n\nfunc main() {}"},
 		}
 		result := AskUserPrompt("Explain this code", files, "")
-		if !strings.Contains(result, `<file path="main.go">`) {
-			t.Error("missing file tag")
+		if !strings.Contains(result, "<<<<< FILE: main.go >>>>>") {
+			t.Error("missing file marker")
 		}
 		if !strings.Contains(result, "package main") {
 			t.Error("missing file content")
@@ -38,11 +38,11 @@ func TestAskUserPrompt(t *testing.T) {
 			{Path: "b.txt", Content: "bbb"},
 		}
 		result := AskUserPrompt("Compare these files", files, "")
-		if !strings.Contains(result, `<file path="a.txt">`) {
-			t.Error("missing first file tag")
+		if !strings.Contains(result, "<<<<< FILE: a.txt >>>>>") {
+			t.Error("missing first file marker")
 		}
-		if !strings.Contains(result, `<file path="b.txt">`) {
-			t.Error("missing second file tag")
+		if !strings.Contains(result, "<<<<< FILE: b.txt >>>>>") {
+			t.Error("missing second file marker")
 		}
 		if !strings.Contains(result, "Compare these files") {
 			t.Error("missing question")
@@ -51,8 +51,8 @@ func TestAskUserPrompt(t *testing.T) {
 
 	t.Run("question with stdin", func(t *testing.T) {
 		result := AskUserPrompt("What is this?", nil, "some piped content")
-		if !strings.Contains(result, "<stdin>") {
-			t.Error("missing stdin tag")
+		if !strings.Contains(result, "<<<<< STDIN >>>>>") {
+			t.Error("missing stdin marker")
 		}
 		if !strings.Contains(result, "some piped content") {
 			t.Error("missing stdin content")
@@ -67,11 +67,11 @@ func TestAskUserPrompt(t *testing.T) {
 			{Path: "code.py", Content: "print('hello')"},
 		}
 		result := AskUserPrompt("Analyze this", files, "context info")
-		if !strings.Contains(result, `<file path="code.py">`) {
-			t.Error("missing file tag")
+		if !strings.Contains(result, "<<<<< FILE: code.py >>>>>") {
+			t.Error("missing file marker")
 		}
-		if !strings.Contains(result, "<stdin>") {
-			t.Error("missing stdin tag")
+		if !strings.Contains(result, "<<<<< STDIN >>>>>") {
+			t.Error("missing stdin marker")
 		}
 		if !strings.Contains(result, "Analyze this") {
 			t.Error("missing question")
@@ -84,7 +84,7 @@ func TestAskUserPrompt(t *testing.T) {
 		}
 		result := AskUserPrompt("question", files, "")
 		// File content should come before the question
-		fileIdx := strings.Index(result, "<file")
+		fileIdx := strings.Index(result, "<<<<< FILE:")
 		questionIdx := strings.Index(result, "question")
 		if fileIdx > questionIdx {
 			t.Error("file content should come before the question")

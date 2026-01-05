@@ -21,8 +21,8 @@ func TestSuggestUserPrompt(t *testing.T) {
 			{Path: "test.go", Content: "package main"},
 		}
 		result := SuggestUserPrompt("explain this", files, "")
-		if !strings.Contains(result, `<file path="test.go">`) {
-			t.Error("missing file tag")
+		if !strings.Contains(result, "<<<<< FILE: test.go >>>>>") {
+			t.Error("missing file marker")
 		}
 		if !strings.Contains(result, "package main") {
 			t.Error("missing file content")
@@ -38,18 +38,18 @@ func TestSuggestUserPrompt(t *testing.T) {
 			{Path: "b.go", Content: "bbb"},
 		}
 		result := SuggestUserPrompt("compare", files, "")
-		if !strings.Contains(result, `<file path="a.go">`) {
-			t.Error("missing first file tag")
+		if !strings.Contains(result, "<<<<< FILE: a.go >>>>>") {
+			t.Error("missing first file marker")
 		}
-		if !strings.Contains(result, `<file path="b.go">`) {
-			t.Error("missing second file tag")
+		if !strings.Contains(result, "<<<<< FILE: b.go >>>>>") {
+			t.Error("missing second file marker")
 		}
 	})
 
 	t.Run("prompt with stdin", func(t *testing.T) {
 		result := SuggestUserPrompt("analyze", nil, "piped data")
-		if !strings.Contains(result, "<stdin>") {
-			t.Error("missing stdin tag")
+		if !strings.Contains(result, "<<<<< STDIN >>>>>") {
+			t.Error("missing stdin marker")
 		}
 		if !strings.Contains(result, "piped data") {
 			t.Error("missing stdin content")
@@ -64,11 +64,11 @@ func TestSuggestUserPrompt(t *testing.T) {
 			{Path: "code.go", Content: "code"},
 		}
 		result := SuggestUserPrompt("review", files, "context")
-		if !strings.Contains(result, `<file path="code.go">`) {
-			t.Error("missing file tag")
+		if !strings.Contains(result, "<<<<< FILE: code.go >>>>>") {
+			t.Error("missing file marker")
 		}
-		if !strings.Contains(result, "<stdin>") {
-			t.Error("missing stdin tag")
+		if !strings.Contains(result, "<<<<< STDIN >>>>>") {
+			t.Error("missing stdin marker")
 		}
 		if !strings.Contains(result, "I want to: review") {
 			t.Error("missing user request")

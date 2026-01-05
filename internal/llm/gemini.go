@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"google.golang.org/genai"
 )
@@ -44,8 +45,8 @@ func (p *GeminiProvider) Stream(ctx context.Context, req Request) (Stream, error
 			return fmt.Errorf("failed to create gemini client: %w", err)
 		}
 
-		system, user := flattenSystemUser(req.Messages)
-		if user == "" {
+		system, contents := buildGeminiContents(req.Messages)
+		if len(contents) == 0 {
 			return fmt.Errorf("no user content provided")
 		}
 
@@ -60,24 +61,22 @@ func (p *GeminiProvider) Stream(ctx context.Context, req Request) (Stream, error
 
 		if len(req.Tools) > 0 {
 			config.Tools = append(config.Tools, buildGeminiTools(req.Tools)...)
-			config.ToolConfig = &genai.ToolConfig{
-				FunctionCallingConfig: &genai.FunctionCallingConfig{
-					Mode: genai.FunctionCallingConfigModeAny,
-				},
-			}
+			config.ToolConfig = buildGeminiToolConfig(req.ToolChoice)
 		}
 
 		if req.Debug {
+			userPreview := collectGeminiUserPreview(contents)
 			fmt.Fprintln(os.Stderr, "=== DEBUG: Gemini Stream Request ===")
 			fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
 			fmt.Fprintf(os.Stderr, "System: %s\n", truncate(system, 200))
-			fmt.Fprintf(os.Stderr, "User: %s\n", truncate(user, 200))
+			fmt.Fprintf(os.Stderr, "User: %s\n", truncate(userPreview, 200))
+			fmt.Fprintf(os.Stderr, "Input Items: %d\n", len(contents))
 			fmt.Fprintf(os.Stderr, "Tools: %d\n", len(req.Tools))
 			fmt.Fprintln(os.Stderr, "====================================")
 		}
 
 		if len(req.Tools) > 0 {
-			resp, err := client.Models.GenerateContent(ctx, chooseModel(req.Model, p.model), genai.Text(user), config)
+			resp, err := client.Models.GenerateContent(ctx, chooseModel(req.Model, p.model), contents, config)
 			if err != nil {
 				return fmt.Errorf("gemini API error: %w", err)
 			}
@@ -90,7 +89,7 @@ func (p *GeminiProvider) Stream(ctx context.Context, req Request) (Stream, error
 		}
 
 		var sources []string
-		for resp, err := range client.Models.GenerateContentStream(ctx, chooseModel(req.Model, p.model), genai.Text(user), config) {
+		for resp, err := range client.Models.GenerateContentStream(ctx, chooseModel(req.Model, p.model), contents, config) {
 			if err != nil {
 				return fmt.Errorf("gemini streaming error: %w", err)
 			}
@@ -159,4 +158,144 @@ func containsString(values []string, target string) bool {
 func jsonMarshal(v any) (json.RawMessage, error) {
 	b, err := json.Marshal(v)
 	return json.RawMessage(b), err
+}
+
+func buildGeminiContents(messages []Message) (string, []*genai.Content) {
+	var systemParts []string
+	contents := make([]*genai.Content, 0, len(messages))
+
+	for _, msg := range messages {
+		switch msg.Role {
+		case RoleSystem:
+			if text := collectTextParts(msg.Parts); text != "" {
+				systemParts = append(systemParts, text)
+			}
+		case RoleUser:
+			content := buildGeminiContent(genai.RoleUser, msg.Parts)
+			if content != nil {
+				contents = append(contents, content)
+			}
+		case RoleAssistant:
+			content := buildGeminiContent(genai.RoleModel, msg.Parts)
+			if content != nil {
+				contents = append(contents, content)
+			}
+		case RoleTool:
+			content := buildGeminiToolResultContent(msg.Parts)
+			if content != nil {
+				contents = append(contents, content)
+			}
+		}
+	}
+
+	return strings.Join(systemParts, "\n\n"), contents
+}
+
+func buildGeminiContent(role string, parts []Part) *genai.Content {
+	content := &genai.Content{Role: role}
+	for _, part := range parts {
+		switch part.Type {
+		case PartText:
+			if part.Text != "" {
+				content.Parts = append(content.Parts, &genai.Part{Text: part.Text})
+			}
+		case PartToolCall:
+			if part.ToolCall == nil {
+				continue
+			}
+			args := toolArgsToMap(part.ToolCall.Arguments)
+			content.Parts = append(content.Parts, &genai.Part{
+				FunctionCall: &genai.FunctionCall{
+					ID:   part.ToolCall.ID,
+					Name: part.ToolCall.Name,
+					Args: args,
+				},
+			})
+		}
+	}
+	if len(content.Parts) == 0 {
+		return nil
+	}
+	return content
+}
+
+func buildGeminiToolResultContent(parts []Part) *genai.Content {
+	content := &genai.Content{Role: genai.RoleUser}
+	for _, part := range parts {
+		switch part.Type {
+		case PartText:
+			if part.Text != "" {
+				content.Parts = append(content.Parts, &genai.Part{Text: part.Text})
+			}
+		case PartToolResult:
+			if part.ToolResult == nil {
+				continue
+			}
+			content.Parts = append(content.Parts, &genai.Part{
+				FunctionResponse: &genai.FunctionResponse{
+					ID:       part.ToolResult.ID,
+					Name:     part.ToolResult.Name,
+					Response: map[string]any{"output": part.ToolResult.Content},
+				},
+			})
+		}
+	}
+	if len(content.Parts) == 0 {
+		return nil
+	}
+	return content
+}
+
+func toolArgsToMap(raw json.RawMessage) map[string]any {
+	if len(raw) == 0 {
+		return nil
+	}
+	var args map[string]any
+	if err := json.Unmarshal(raw, &args); err == nil {
+		return args
+	}
+	return map[string]any{"_raw": string(raw)}
+}
+
+func buildGeminiToolConfig(choice ToolChoice) *genai.ToolConfig {
+	mode := genai.FunctionCallingConfigModeAuto
+	var allowed []string
+
+	switch choice.Mode {
+	case ToolChoiceNone:
+		mode = genai.FunctionCallingConfigModeNone
+	case ToolChoiceRequired:
+		mode = genai.FunctionCallingConfigModeAny
+	case ToolChoiceName:
+		if strings.TrimSpace(choice.Name) != "" {
+			mode = genai.FunctionCallingConfigModeAny
+			allowed = []string{choice.Name}
+		}
+	case ToolChoiceAuto:
+		mode = genai.FunctionCallingConfigModeAuto
+	}
+
+	cfg := &genai.ToolConfig{
+		FunctionCallingConfig: &genai.FunctionCallingConfig{
+			Mode:                 mode,
+			AllowedFunctionNames: allowed,
+		},
+	}
+
+	return cfg
+}
+
+func collectGeminiUserPreview(contents []*genai.Content) string {
+	var parts []string
+	for _, content := range contents {
+		if content.Role != genai.RoleUser {
+			continue
+		}
+		for _, part := range content.Parts {
+			if part.Text != "" {
+				parts = append(parts, part.Text)
+			}
+		}
+	}
+	return strings.Join(parts, "\n\n")
 }
