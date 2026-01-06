@@ -186,7 +186,7 @@ Use arrow keys to select a command, Enter to execute, or press `h` for detailed 
 | `--file` | `-f` | File(s) to include as context (supports globs, line ranges, 'clipboard') |
 | `--auto-pick` | `-a` | Auto-execute the best suggestion without prompting |
 | `--max N` | `-n N` | Limit to N options in the selection UI |
-| `--search` | `-s` | Enable web search for current information (DuckDuckGo fallback if needed) |
+| `--search` | `-s` | Enable web search for current information (DuckDuckGo, returns up to 20 results) |
 | `--print-only` | `-p` | Print the command instead of executing it |
 | `--debug` | `-d` | Show provider debug information |
 | `--debug-raw` | | Emit raw debug logs with timestamps (tool calls/results, raw requests) |

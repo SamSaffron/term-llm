@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -26,6 +27,12 @@ type spinnerResultMsg struct {
 	err   error
 }
 
+// progressUpdateMsg carries a progress update to the spinner.
+type progressUpdateMsg ProgressUpdate
+
+// tickMsg triggers a refresh of the elapsed time display.
+type tickMsg time.Time
+
 // spinnerModel is the bubbletea model for the loading spinner
 type spinnerModel struct {
 	spinner   spinner.Model
@@ -33,22 +40,56 @@ type spinnerModel struct {
 	cancelled bool
 	result    *spinnerResultMsg
 	styles    *Styles
+
+	// Progress tracking
+	startTime    time.Time
+	outputTokens int
+	status       string
+	progress     <-chan ProgressUpdate
+	milestones   []string
 }
 
-func newSpinnerModel(cancel context.CancelFunc, tty *os.File) spinnerModel {
+func newSpinnerModel(cancel context.CancelFunc, tty *os.File, progress <-chan ProgressUpdate) spinnerModel {
 	styles := NewStyles(tty)
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = styles.Spinner
 	return spinnerModel{
-		spinner: s,
-		cancel:  cancel,
-		styles:  styles,
+		spinner:   s,
+		cancel:    cancel,
+		styles:    styles,
+		startTime: time.Now(),
+		progress:  progress,
 	}
 }
 
 func (m spinnerModel) Init() tea.Cmd {
-	return m.spinner.Tick
+	cmds := []tea.Cmd{m.spinner.Tick, m.tickEvery()}
+	if m.progress != nil {
+		cmds = append(cmds, m.listenProgress())
+	}
+	return tea.Batch(cmds...)
+}
+
+// tickEvery returns a command that sends a tick every 100ms for elapsed time updates.
+func (m spinnerModel) tickEvery() tea.Cmd {
+	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
+		return tickMsg(t)
+	})
+}
+
+// listenProgress returns a command that waits for the next progress update.
+func (m spinnerModel) listenProgress() tea.Cmd {
+	return func() tea.Msg {
+		if m.progress == nil {
+			return nil
+		}
+		update, ok := <-m.progress
+		if !ok {
+			return nil // channel closed
+		}
+		return progressUpdateMsg(update)
+	}
 }
 
 func (m spinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -66,15 +107,62 @@ func (m spinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
+	case tickMsg:
+		// Refresh for elapsed time - continue ticking
+		return m, m.tickEvery()
+	case progressUpdateMsg:
+		// Update tokens/status
+		if msg.OutputTokens > 0 {
+			m.outputTokens = msg.OutputTokens
+		}
+		if msg.Status != "" {
+			m.status = msg.Status
+		}
+		if msg.Milestone != "" {
+			m.milestones = append(m.milestones, msg.Milestone)
+		}
+		// Continue listening for more progress
+		return m, m.listenProgress()
 	}
 	return m, nil
 }
 
 func (m spinnerModel) View() string {
-	return m.spinner.View() + " Thinking... " + m.styles.Muted.Render("(esc to cancel)")
+	var b strings.Builder
+
+	// Print completed milestones above spinner
+	for _, ms := range m.milestones {
+		b.WriteString(ms)
+		b.WriteString("\n")
+	}
+
+	// Spinner with dynamic status
+	b.WriteString(m.spinner.View())
+	b.WriteString(" Thinking...")
+
+	// Output tokens (if available)
+	if m.outputTokens > 0 {
+		b.WriteString(fmt.Sprintf(" %d tokens |", m.outputTokens))
+	}
+
+	// Elapsed time
+	elapsed := time.Since(m.startTime)
+	b.WriteString(fmt.Sprintf(" %.1fs", elapsed.Seconds()))
+
+	// Current status (if set)
+	if m.status != "" {
+		b.WriteString(" | ")
+		b.WriteString(m.status)
+	}
+
+	// Cancel hint
+	b.WriteString(" ")
+	b.WriteString(m.styles.Muted.Render("(esc to cancel)"))
+
+	return b.String()
 }
 
-func runWithSpinner(ctx context.Context, debug bool, run func(context.Context) (any, error)) (any, error) {
+func runWithSpinnerInternal(ctx context.Context, debug bool, progress <-chan ProgressUpdate, run func(context.Context) (any, error)) (any, error) {
 	// Create cancellable context
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -93,7 +181,7 @@ func runWithSpinner(ctx context.Context, debug bool, run func(context.Context) (
 	}
 
 	// Create and run spinner
-	model := newSpinnerModel(cancel, tty)
+	model := newSpinnerModel(cancel, tty, progress)
 	p := tea.NewProgram(model, tea.WithInput(tty), tea.WithOutput(tty), tea.WithoutSignalHandler())
 
 	// Start request in background and send result to program
@@ -119,9 +207,19 @@ func runWithSpinner(ctx context.Context, debug bool, run func(context.Context) (
 	return m.result.value, m.result.err
 }
 
+func runWithSpinner(ctx context.Context, debug bool, run func(context.Context) (any, error)) (any, error) {
+	return runWithSpinnerInternal(ctx, debug, nil, run)
+}
+
 // RunWithSpinner shows a spinner while executing the provided function.
 func RunWithSpinner(ctx context.Context, debug bool, run func(context.Context) (any, error)) (any, error) {
 	return runWithSpinner(ctx, debug, run)
+}
+
+// RunWithSpinnerProgress shows a spinner with progress updates while executing the provided function.
+// The progress channel can receive updates with token counts, status messages, and milestones.
+func RunWithSpinnerProgress(ctx context.Context, debug bool, progress <-chan ProgressUpdate, run func(context.Context) (any, error)) (any, error) {
+	return runWithSpinnerInternal(ctx, debug, progress, run)
 }
 
 // selectModel is a bubbletea model for command selection with help support

@@ -262,6 +262,9 @@ func runStreamEdit(ctx context.Context, cfg *config.Config, provider llm.Provide
 		}
 	}
 
+	// Create progress channel for spinner updates
+	progressCh := make(chan ui.ProgressUpdate, 10)
+
 	// Create executor config
 	execConfig := edit.ExecutorConfig{
 		FileContents: fileContents,
@@ -272,10 +275,20 @@ func runStreamEdit(ctx context.Context, cfg *config.Config, provider llm.Provide
 			if editDebug {
 				fmt.Printf("Editing: %s\n", path)
 			}
+			// Send status update to spinner
+			select {
+			case progressCh <- ui.ProgressUpdate{Status: "editing " + filepath.Base(path)}:
+			default:
+			}
 		},
 		OnSearchMatch: func(path string, level edit.MatchLevel) {
 			if editDebug {
 				fmt.Printf("  Search matched (%s)\n", level)
+			}
+			// Send milestone to spinner
+			select {
+			case progressCh <- ui.ProgressUpdate{Milestone: fmt.Sprintf("✓ Found edit for %s", filepath.Base(path))}:
+			default:
 			}
 		},
 		OnSearchFail: func(path string, search string, err error) {
@@ -287,6 +300,25 @@ func runStreamEdit(ctx context.Context, cfg *config.Config, provider llm.Provide
 					fmt.Printf("    First line: %s\n", truncateStr(lines[0], 60))
 					fmt.Printf("    Last line:  %s\n", truncateStr(lines[len(lines)-1], 60))
 				}
+			}
+			// Send failure milestone to spinner
+			select {
+			case progressCh <- ui.ProgressUpdate{Milestone: fmt.Sprintf("✗ Edit failed for %s, retrying...", filepath.Base(path))}:
+			default:
+			}
+		},
+		OnProgress: func(msg string) {
+			// Send retry progress to spinner
+			select {
+			case progressCh <- ui.ProgressUpdate{Milestone: "⟳ " + msg}:
+			default:
+			}
+		},
+		OnTokens: func(outputTokens int) {
+			// Send token update to spinner
+			select {
+			case progressCh <- ui.ProgressUpdate{OutputTokens: outputTokens}:
+			default:
 			}
 		},
 		// About text is stored and shown on demand via (i)nfo
@@ -329,13 +361,14 @@ func runStreamEdit(ctx context.Context, cfg *config.Config, provider llm.Provide
 		llm.UserText(userPrompt),
 	}
 
-	// Execute with spinner
+	// Execute with spinner (with progress updates)
 	debugMode := editDebug
 	type execResult struct {
 		results   []edit.EditResult
 		aboutText string
 	}
-	result, err := ui.RunWithSpinner(ctx, debugMode || debugRaw, func(ctx context.Context) (any, error) {
+	result, err := ui.RunWithSpinnerProgress(ctx, debugMode || debugRaw, progressCh, func(ctx context.Context) (any, error) {
+		defer close(progressCh)
 		results, aboutText, err := executor.Execute(ctx, messages)
 		if err != nil {
 			return nil, err

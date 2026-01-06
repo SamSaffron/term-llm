@@ -75,6 +75,9 @@ type ExecutorConfig struct {
 	// OnAbout is called when the about section is received.
 	OnAbout func(content string)
 
+	// OnTokens is called with output token count updates during streaming.
+	OnTokens func(outputTokens int)
+
 	// Debug enables debug output.
 	Debug bool
 
@@ -457,6 +460,11 @@ func (e *StreamEditExecutor) executeOnce(ctx context.Context, messages []llm.Mes
 				case llm.EventToolCall:
 					if event.Tool != nil {
 						toolCalls = append(toolCalls, *event.Tool)
+					}
+
+				case llm.EventUsage:
+					if e.config.OnTokens != nil && event.Use != nil {
+						e.config.OnTokens(event.Use.OutputTokens)
 					}
 
 				case llm.EventError:

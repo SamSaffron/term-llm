@@ -31,7 +31,7 @@ func (t *WebSearchTool) Execute(ctx context.Context, args json.RawMessage) (stri
 		return "", fmt.Errorf("parse web_search args: %w", err)
 	}
 	if payload.MaxResults <= 0 {
-		payload.MaxResults = 5
+		payload.MaxResults = 20
 	}
 	results, err := t.searcher.Search(ctx, payload.Query, payload.MaxResults)
 	if err != nil {
