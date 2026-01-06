@@ -100,16 +100,6 @@ func toPromptSpecs(specs []FileSpec) []prompt.EditSpec {
 }
 
 func applyDiffEntries(entries []diffEntry, dryRun bool, opts diffApplyOptions) (int, int) {
-	globalWidth := 0
-	for _, entry := range entries {
-		if entry.oldContent != entry.newContent {
-			w := ui.CalcDiffWidth(entry.oldContent, entry.newContent)
-			if w > globalWidth {
-				globalWidth = w
-			}
-		}
-	}
-
 	var applied, skipped int
 	firstDiff := true
 	printed := false
@@ -138,7 +128,7 @@ func applyDiffEntries(entries []diffEntry, dryRun bool, opts diffApplyOptions) (
 		}
 		firstDiff = false
 
-		ui.PrintCompactDiff(entry.path, entry.oldContent, entry.newContent, globalWidth)
+		ui.PrintUnifiedDiff(entry.path, entry.oldContent, entry.newContent)
 		printed = true
 
 		if dryRun {
@@ -437,21 +427,12 @@ func runStreamEdit(ctx context.Context, cfg *config.Config, provider llm.Provide
 		return nil
 	}
 
-	// Calculate global width for consistent diff display
-	globalWidth := 0
-	for _, r := range changedResults {
-		w := ui.CalcDiffWidth(r.OldContent, r.NewContent)
-		if w > globalWidth {
-			globalWidth = w
-		}
-	}
-
 	// Show all diffs first
 	for i, r := range changedResults {
 		if i > 0 {
 			fmt.Println()
 		}
-		ui.PrintCompactDiff(r.Path, r.OldContent, r.NewContent, globalWidth)
+		ui.PrintUnifiedDiff(r.Path, r.OldContent, r.NewContent)
 	}
 
 	// Dry run - no approval needed

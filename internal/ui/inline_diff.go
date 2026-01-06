@@ -166,8 +166,8 @@ func splitAtDisplayWidthPreferBreak(s string, width int, startCol int) (before, 
 // Background colors for diff lines (RGB values for true color)
 // These are very subtle tints - almost black with a slight color hint
 var (
-	diffAddBg    = [3]int{26, 47, 26} // dark green tint #1a2f1a
-	diffRemoveBg = [3]int{47, 26, 26} // dark red tint #2f1a1a
+	diffAddBg    = [3]int{30, 60, 30} // dark green tint
+	diffRemoveBg = [3]int{60, 30, 30} // dark red tint
 	diffNoBg     = [3]int{-1, -1, -1} // sentinel for no background (context lines)
 )
 

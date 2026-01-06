@@ -441,6 +441,8 @@ func (p *CodeAssistProvider) Stream(ctx context.Context, req Request) (Stream, e
 		var sources []groundingSource
 
 		scanner := bufio.NewScanner(resp.Body)
+		buf := make([]byte, 0, 64*1024)
+		scanner.Buffer(buf, 1024*1024) // 1MB max line size
 		firstChunkLogged := false
 		for scanner.Scan() {
 			line := scanner.Text()

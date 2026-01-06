@@ -10,10 +10,11 @@ import (
 type MatchLevel int
 
 const (
-	MatchExact        MatchLevel = iota // Direct string match
-	MatchStripped                       // Whitespace-normalized match
-	MatchNonContiguous                  // Match with ... elision markers
-	MatchFuzzy                          // Levenshtein similarity match
+	MatchExact         MatchLevel = iota // Direct string match
+	MatchStripped                        // Whitespace-normalized match
+	MatchBlankFiltered                   // Match with blank lines filtered out
+	MatchNonContiguous                   // Match with ... elision markers
+	MatchFuzzy                           // Levenshtein similarity match
 )
 
 func (m MatchLevel) String() string {
@@ -22,6 +23,8 @@ func (m MatchLevel) String() string {
 		return "exact"
 	case MatchStripped:
 		return "stripped"
+	case MatchBlankFiltered:
+		return "blank-filtered"
 	case MatchNonContiguous:
 		return "non-contiguous"
 	case MatchFuzzy:
@@ -67,14 +70,19 @@ func FindMatch(content, search string) (MatchResult, error) {
 		return result, nil
 	}
 
-	// Level 3: Non-contiguous (with ... markers)
+	// Level 3: Blank-filtered (ignore extra blank lines from LLM)
+	if result, ok := findBlankFilteredMatch(content, search); ok {
+		return result, nil
+	}
+
+	// Level 4: Non-contiguous (with ... markers)
 	if strings.Contains(search, elisionMarker) {
 		if result, ok := findNonContiguousMatch(content, search); ok {
 			return result, nil
 		}
 	}
 
-	// Level 4: Fuzzy (Levenshtein similarity)
+	// Level 5: Fuzzy (Levenshtein similarity)
 	if result, ok := findFuzzyMatch(content, search); ok {
 		return result, nil
 	}
@@ -152,6 +160,83 @@ func findStrippedMatch(content, search string) (MatchResult, bool) {
 
 			return MatchResult{
 				Level:    MatchStripped,
+				Start:    start,
+				End:      end,
+				Original: content[start:end],
+			}, true
+		}
+	}
+
+	return MatchResult{}, false
+}
+
+// findBlankFilteredMatch matches by filtering out empty/blank lines.
+// This handles cases where LLMs add extra blank lines that don't exist in the file.
+func findBlankFilteredMatch(content, search string) (MatchResult, bool) {
+	contentLines := strings.Split(content, "\n")
+	searchLines := strings.Split(search, "\n")
+
+	// Filter out blank lines from search
+	var nonBlankSearch []string
+	for _, line := range searchLines {
+		if strings.TrimSpace(line) != "" {
+			nonBlankSearch = append(nonBlankSearch, strings.TrimSpace(line))
+		}
+	}
+
+	if len(nonBlankSearch) == 0 {
+		return MatchResult{}, false
+	}
+
+	// Find indices of non-blank lines in content
+	type lineInfo struct {
+		idx     int    // original index
+		trimmed string // trimmed content
+	}
+	var nonBlankContent []lineInfo
+	for i, line := range contentLines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			nonBlankContent = append(nonBlankContent, lineInfo{idx: i, trimmed: trimmed})
+		}
+	}
+
+	if len(nonBlankContent) < len(nonBlankSearch) {
+		return MatchResult{}, false
+	}
+
+	// Try to find matching sequence of non-blank lines
+	for i := 0; i <= len(nonBlankContent)-len(nonBlankSearch); i++ {
+		match := true
+		for j := 0; j < len(nonBlankSearch); j++ {
+			if nonBlankContent[i+j].trimmed != nonBlankSearch[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			// Found match - calculate byte range from first to last matched line
+			firstLineIdx := nonBlankContent[i].idx
+			lastLineIdx := nonBlankContent[i+len(nonBlankSearch)-1].idx
+
+			start := 0
+			for k := 0; k < firstLineIdx; k++ {
+				start += len(contentLines[k]) + 1 // +1 for newline
+			}
+			end := start
+			for k := firstLineIdx; k <= lastLineIdx; k++ {
+				end += len(contentLines[k])
+				if k < len(contentLines)-1 {
+					end++ // newline
+				}
+			}
+			// Include trailing newline if search had one
+			if strings.HasSuffix(search, "\n") && end < len(content) {
+				end++
+			}
+
+			return MatchResult{
+				Level:    MatchBlankFiltered,
 				Start:    start,
 				End:      end,
 				Original: content[start:end],

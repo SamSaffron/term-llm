@@ -163,6 +163,14 @@ func (p *StreamParser) Finish() error {
 		p.lineBuffer = p.lineBuffer[1:]
 	}
 
+	// Handle incomplete states - flush any pending content
+	if p.state == StateInAbout {
+		// LLM didn't output [/ABOUT] - flush what we have
+		if p.callbacks.OnAboutComplete != nil && p.aboutContent.Len() > 0 {
+			p.callbacks.OnAboutComplete(strings.TrimSpace(p.aboutContent.String()))
+		}
+	}
+
 	return nil
 }
 
@@ -319,6 +327,21 @@ func (p *StreamParser) processInFile(line, trimmed string) error {
 			})
 		}
 		p.state = StateIdle
+		return nil
+	}
+
+	// Handle [ABOUT] appearing without [/FILE] (LLM forgot to close file block)
+	if trimmed == "[ABOUT]" {
+		// Complete the file block first
+		if p.callbacks.OnFileComplete != nil {
+			p.callbacks.OnFileComplete(FileEdit{
+				Path:   p.currentFile,
+				Format: p.currentFormat,
+			})
+		}
+		// Then enter about state
+		p.aboutContent.Reset()
+		p.state = StateInAbout
 		return nil
 	}
 

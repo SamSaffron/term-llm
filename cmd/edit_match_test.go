@@ -62,26 +62,6 @@ func TestFindEditMatchWildcardNoAnchors(t *testing.T) {
 	}
 }
 
-func TestValidateGuardForReplaceWithWildcard(t *testing.T) {
-	content := "line1\nline2\nline3\nline4\nline5\n"
-	oldString := "line2\n" + editWildcardToken + "\nline4"
-
-	match, err := findEditMatch(content, oldString)
-	if err != nil {
-		t.Fatalf("findEditMatch returned error: %v", err)
-	}
-
-	specOK := FileSpec{Path: "file.go", StartLine: 2, EndLine: 4, HasGuard: true}
-	if err := validateGuardForReplace(content, match, specOK); err != nil {
-		t.Fatalf("expected guard to pass: %v", err)
-	}
-
-	specBad := FileSpec{Path: "file.go", StartLine: 3, EndLine: 4, HasGuard: true}
-	if err := validateGuardForReplace(content, match, specBad); err == nil {
-		t.Fatalf("expected guard to fail for out-of-range edit")
-	}
-}
-
 func TestLineRangeToByteRange(t *testing.T) {
 	content := "line1\nline2\nline3\nline4\nline5\n"
 

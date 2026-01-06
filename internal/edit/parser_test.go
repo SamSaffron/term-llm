@@ -353,3 +353,53 @@ func TestParserState_String(t *testing.T) {
 		}
 	}
 }
+
+func TestStreamParser_IncompleteAbout(t *testing.T) {
+	// Test that ABOUT content is flushed even without [/ABOUT] closing tag
+	// This happens when LLM doesn't output the closing tag
+	var aboutContent string
+
+	callbacks := ParserCallbacks{
+		OnSearchReady: func(path, search string) error {
+			return nil
+		},
+		OnAboutComplete: func(content string) {
+			aboutContent = content
+		},
+	}
+
+	parser := NewStreamParser(callbacks)
+
+	// Feed input WITHOUT closing [/ABOUT]
+	input := `[FILE: test.go]
+<<<<<<< SEARCH
+old
+=======
+new
+>>>>>>> REPLACE
+[/FILE]
+
+[ABOUT]
+This is the about text
+that spans multiple lines
+`
+
+	if err := parser.Feed(input); err != nil {
+		t.Fatalf("Feed error: %v", err)
+	}
+
+	// Before Finish, about content should be empty (not yet flushed)
+	if aboutContent != "" {
+		t.Errorf("expected empty about content before Finish, got %q", aboutContent)
+	}
+
+	if err := parser.Finish(); err != nil {
+		t.Fatalf("Finish error: %v", err)
+	}
+
+	// After Finish, incomplete about should be flushed
+	expected := "This is the about text\nthat spans multiple lines"
+	if aboutContent != expected {
+		t.Errorf("expected about %q, got %q", expected, aboutContent)
+	}
+}
