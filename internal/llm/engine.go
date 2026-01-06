@@ -35,7 +35,7 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	}
 
 	if req.DebugRaw {
-		DebugRawRequest(req.DebugRaw, e.provider.Name(), req, "Request")
+		DebugRawRequest(req.DebugRaw, e.provider.Name(), e.provider.Credential(), req, "Request")
 	}
 	stream, err := e.provider.Stream(ctx, req)
 	if err != nil {
@@ -62,7 +62,7 @@ func (e *Engine) applyExternalSearch(ctx context.Context, req Request) (Request,
 	searchReq.DebugRaw = req.DebugRaw
 
 	if searchReq.DebugRaw {
-		DebugRawRequest(searchReq.DebugRaw, e.provider.Name(), searchReq, "Request (search tool call)")
+		DebugRawRequest(searchReq.DebugRaw, e.provider.Name(), e.provider.Credential(), searchReq, "Request (search tool call)")
 	}
 
 	stream, err := e.provider.Stream(ctx, searchReq)
@@ -124,7 +124,7 @@ func collectToolCalls(stream Stream, debugRaw bool) ([]ToolCall, error) {
 func (e *Engine) streamWithExternalSearch(ctx context.Context, req Request) (Stream, error) {
 	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
 		if req.DebugRaw {
-			DebugRawRequest(req.DebugRaw, e.provider.Name(), req, "Request (initial)")
+			DebugRawRequest(req.DebugRaw, e.provider.Name(), e.provider.Credential(), req, "Request (initial)")
 		}
 		debugSection(req.Debug, "External Search", "provider lacks native search; using web_search tool")
 		DebugRawSection(req.DebugRaw, "External Search", "provider lacks native search; using web_search tool")
@@ -135,7 +135,7 @@ func (e *Engine) streamWithExternalSearch(ctx context.Context, req Request) (Str
 		}
 		req = updated
 		if req.DebugRaw {
-			DebugRawRequest(req.DebugRaw, e.provider.Name(), req, "Request (with search results)")
+			DebugRawRequest(req.DebugRaw, e.provider.Name(), e.provider.Credential(), req, "Request (with search results)")
 		}
 
 		for attempt := 0; attempt < maxExternalSearchLoops; attempt++ {
@@ -207,7 +207,7 @@ func (e *Engine) streamWithExternalSearch(ctx context.Context, req Request) (Str
 			req.Messages = append(req.Messages, toolResults...)
 
 			if req.DebugRaw {
-				DebugRawRequest(req.DebugRaw, e.provider.Name(), req, fmt.Sprintf("Request (search loop %d)", attempt+1))
+				DebugRawRequest(req.DebugRaw, e.provider.Name(), e.provider.Credential(), req, fmt.Sprintf("Request (search loop %d)", attempt+1))
 			}
 		}
 

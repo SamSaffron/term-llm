@@ -27,6 +27,10 @@ func (p *GeminiProvider) Name() string {
 	return fmt.Sprintf("Gemini (%s)", p.model)
 }
 
+func (p *GeminiProvider) Credential() string {
+	return "api_key"
+}
+
 func (p *GeminiProvider) Capabilities() Capabilities {
 	return Capabilities{
 		NativeSearch: true,

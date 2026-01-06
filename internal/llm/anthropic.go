@@ -35,7 +35,8 @@ func (p *AnthropicProvider) ListModels(ctx context.Context) ([]ModelInfo, error)
 type AnthropicProvider struct {
 	client         *anthropic.Client
 	model          string
-	thinkingBudget int64 // 0 = disabled, >0 = enabled with budget
+	thinkingBudget int64  // 0 = disabled, >0 = enabled with budget
+	credential     string // "claude-code" or "api_key"
 }
 
 // parseModelThinking extracts -thinking suffix from model name.
@@ -51,21 +52,26 @@ func parseModelThinking(model string) (string, int64) {
 func NewAnthropicProvider(apiKey, model string) *AnthropicProvider {
 	actualModel, thinkingBudget := parseModelThinking(model)
 	var client anthropic.Client
+	var credential string
 	if apiKey != "" {
 		// OAuth tokens (from Claude Code) start with "sk-ant-oat" and need Bearer auth
 		// Standard API keys start with "sk-ant-api" and use x-api-key header
 		if strings.HasPrefix(apiKey, "sk-ant-oat") {
 			client = anthropic.NewClient(option.WithAuthToken(apiKey))
+			credential = "claude"
 		} else {
 			client = anthropic.NewClient(option.WithAPIKey(apiKey))
+			credential = "api_key"
 		}
 	} else {
 		client = anthropic.NewClient()
+		credential = "env"
 	}
 	return &AnthropicProvider{
 		client:         &client,
 		model:          actualModel,
 		thinkingBudget: thinkingBudget,
+		credential:     credential,
 	}
 }
 
@@ -74,6 +80,10 @@ func (p *AnthropicProvider) Name() string {
 		return fmt.Sprintf("Anthropic (%s, thinking=%dk)", p.model, p.thinkingBudget/1000)
 	}
 	return fmt.Sprintf("Anthropic (%s)", p.model)
+}
+
+func (p *AnthropicProvider) Credential() string {
+	return p.credential
 }
 
 func (p *AnthropicProvider) Capabilities() Capabilities {

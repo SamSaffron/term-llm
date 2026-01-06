@@ -53,6 +53,10 @@ func (p *OpenAIProvider) Name() string {
 	return fmt.Sprintf("OpenAI (%s)", p.model)
 }
 
+func (p *OpenAIProvider) Credential() string {
+	return "api_key"
+}
+
 func (p *OpenAIProvider) Capabilities() Capabilities {
 	return Capabilities{
 		NativeSearch: true,
@@ -76,8 +80,16 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 			tools = append([]responses.ToolUnionParam{webSearchTool}, tools...)
 		}
 
+		// Strip effort suffix from req.Model if present, use it if no provider-level effort set
+		reqModel, reqEffort := parseModelEffort(req.Model)
+		model := chooseModel(reqModel, p.model)
+		effort := p.effort
+		if effort == "" && reqEffort != "" {
+			effort = reqEffort
+		}
+
 		params := responses.ResponseNewParams{
-			Model: shared.ResponsesModel(chooseModel(req.Model, p.model)),
+			Model: shared.ResponsesModel(model),
 			Input: responses.ResponseNewParamsInputUnion{
 				OfInputItemList: inputItems,
 			},
@@ -98,9 +110,9 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 		if req.TopP > 0 {
 			params.TopP = openai.Float(float64(req.TopP))
 		}
-		if p.effort != "" {
+		if effort != "" {
 			params.Reasoning = shared.ReasoningParam{
-				Effort: shared.ReasoningEffort(p.effort),
+				Effort: shared.ReasoningEffort(effort),
 			}
 		}
 		if req.ToolChoice.Mode != "" {

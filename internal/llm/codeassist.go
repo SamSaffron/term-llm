@@ -279,6 +279,10 @@ func (p *CodeAssistProvider) Name() string {
 	return fmt.Sprintf("Gemini Code Assist (%s)", p.model)
 }
 
+func (p *CodeAssistProvider) Credential() string {
+	return "gemini-cli"
+}
+
 func (p *CodeAssistProvider) Capabilities() Capabilities {
 	return Capabilities{
 		NativeSearch: true,

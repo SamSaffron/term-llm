@@ -2,6 +2,7 @@ package udiff
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -83,11 +84,24 @@ func applyHunk(lines []string, hunk Hunk) ([]string, error) {
 	// Find the starting position using the @@ context header
 	startPos := 0
 	if hunk.Context != "" {
-		pos := findContext(lines, hunk.Context, 0)
-		if pos < 0 {
-			return nil, fmt.Errorf("context not found: %q", hunk.Context)
+		// Try to parse standard unified diff line numbers: "-N,M +N,M" or "-N +N"
+		if lineNum := parseLineNumber(hunk.Context); lineNum > 0 {
+			// Convert 1-indexed to 0-indexed
+			startPos = lineNum - 1
+			if startPos >= len(lines) {
+				startPos = len(lines) - 1
+			}
+			if startPos < 0 {
+				startPos = 0
+			}
+		} else {
+			// Try context-based matching (e.g., "func Name")
+			pos := findContext(lines, hunk.Context, 0)
+			if pos < 0 {
+				return nil, fmt.Errorf("context not found: %q", hunk.Context)
+			}
+			startPos = pos
 		}
-		startPos = pos
 	}
 
 	// Build old and new line sequences from the hunk
@@ -164,6 +178,35 @@ func extractSequences(hunkLines []Line) (old, new []string, hasElision bool, eli
 	return
 }
 
+// parseLineNumber extracts the starting line number from standard unified diff format.
+// Handles formats like "-5,12 +5,12" or "-5 +5" and returns the first number (5).
+// Returns 0 if the format doesn't match.
+func parseLineNumber(context string) int {
+	context = strings.TrimSpace(context)
+	// Look for pattern: -N,M or -N at the start
+	if !strings.HasPrefix(context, "-") {
+		return 0
+	}
+	// Extract the number after the minus
+	rest := context[1:]
+	var numStr string
+	for _, c := range rest {
+		if c >= '0' && c <= '9' {
+			numStr += string(c)
+		} else {
+			break
+		}
+	}
+	if numStr == "" {
+		return 0
+	}
+	num, err := strconv.Atoi(numStr)
+	if err != nil {
+		return 0
+	}
+	return num
+}
+
 // findContext finds a line containing the context string, starting from pos.
 // Returns -1 if not found.
 func findContext(lines []string, context string, pos int) int {
@@ -199,25 +242,51 @@ func findMatch(lines []string, oldSeq []string, startPos int, hasElision bool, e
 }
 
 // findExactMatch finds an exact sequence match (with fuzzy and similarity fallbacks).
+// First tries from startPos, then falls back to searching from beginning of file.
 func findExactMatch(lines []string, oldSeq []string, startPos int) (int, int, error) {
-	// Try exact match first
+	// Try exact match first from startPos
 	for i := startPos; i <= len(lines)-len(oldSeq); i++ {
 		if matchSequence(lines[i:], oldSeq, false) {
 			return i, i + len(oldSeq), nil
 		}
 	}
 
-	// Try fuzzy match (trimmed whitespace)
+	// Try fuzzy match (trimmed whitespace) from startPos
 	for i := startPos; i <= len(lines)-len(oldSeq); i++ {
 		if matchSequence(lines[i:], oldSeq, true) {
 			return i, i + len(oldSeq), nil
 		}
 	}
 
-	// Try similarity-based matching (Levenshtein)
+	// Try similarity-based matching (Levenshtein) from startPos
 	for i := startPos; i <= len(lines)-len(oldSeq); i++ {
 		if matchSequenceSimilar(lines[i:], oldSeq) {
 			return i, i + len(oldSeq), nil
+		}
+	}
+
+	// If startPos > 0, try searching from the beginning of the file
+	// (LLM may have gotten line numbers wrong)
+	if startPos > 0 {
+		// Try exact match from beginning
+		for i := 0; i < startPos && i <= len(lines)-len(oldSeq); i++ {
+			if matchSequence(lines[i:], oldSeq, false) {
+				return i, i + len(oldSeq), nil
+			}
+		}
+
+		// Try fuzzy match from beginning
+		for i := 0; i < startPos && i <= len(lines)-len(oldSeq); i++ {
+			if matchSequence(lines[i:], oldSeq, true) {
+				return i, i + len(oldSeq), nil
+			}
+		}
+
+		// Try similarity from beginning
+		for i := 0; i < startPos && i <= len(lines)-len(oldSeq); i++ {
+			if matchSequenceSimilar(lines[i:], oldSeq) {
+				return i, i + len(oldSeq), nil
+			}
 		}
 	}
 
@@ -402,11 +471,14 @@ func matchSequence(content []string, pattern []string, fuzzy bool) bool {
 	return true
 }
 
-// similarityThreshold is the minimum similarity ratio for fuzzy matching.
-const similarityThreshold = 0.8
+// Similarity thresholds for fuzzy matching.
+const (
+	similarityThresholdAvg  = 0.8  // Average similarity required across all lines
+	similarityThresholdLine = 0.5  // Per-line minimum (more lenient for context lines)
+)
 
 // matchSequenceSimilar checks if lines match pattern using similarity scoring.
-// Returns true if average similarity across all lines exceeds threshold.
+// Returns true if average similarity exceeds threshold and no line is too different.
 func matchSequenceSimilar(content []string, pattern []string) bool {
 	if len(content) < len(pattern) {
 		return false
@@ -415,15 +487,15 @@ func matchSequenceSimilar(content []string, pattern []string) bool {
 	totalSim := 0.0
 	for i, p := range pattern {
 		sim := lineSimilarity(content[i], p)
-		if sim < similarityThreshold {
-			return false // Early exit if any line is too different
+		if sim < similarityThresholdLine {
+			return false // Early exit if any line is way too different
 		}
 		totalSim += sim
 	}
 
 	// Check average similarity
 	avgSim := totalSim / float64(len(pattern))
-	return avgSim >= similarityThreshold
+	return avgSim >= similarityThresholdAvg
 }
 
 // lineSimilarity computes similarity ratio between two strings (0.0 to 1.0).

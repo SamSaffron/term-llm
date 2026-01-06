@@ -36,6 +36,10 @@ func (p *fakeProvider) Name() string {
 	return "fake"
 }
 
+func (p *fakeProvider) Credential() string {
+	return "test"
+}
+
 func (p *fakeProvider) Capabilities() Capabilities {
 	return Capabilities{
 		NativeSearch: false,

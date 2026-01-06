@@ -3,15 +3,14 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 
-	"github.com/samsaffron/term-llm/cmd/udiff"
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/edit"
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/prompt"
@@ -21,11 +20,11 @@ import (
 )
 
 var (
-	editDryRun   bool
-	editDebug    bool
-	editProvider string
-	editFiles    []string
-	editPerEdit  bool
+	editDryRun    bool
+	editDebug     bool
+	editProvider  string
+	editFiles     []string
+	editDiffFormat string
 )
 
 var editCmd = &cobra.Command{
@@ -55,7 +54,7 @@ func init() {
 	editCmd.Flags().BoolVar(&editDryRun, "dry-run", false, "Show what would change without applying")
 	editCmd.Flags().StringVar(&editProvider, "provider", "", "Override provider, optionally with model (e.g., openai:gpt-4o)")
 	editCmd.Flags().BoolVarP(&editDebug, "debug", "d", false, "Show debug information")
-	editCmd.Flags().BoolVar(&editPerEdit, "per-edit", false, "Prompt for each edit separately instead of consolidating per file")
+	editCmd.Flags().StringVar(&editDiffFormat, "diff-format", "", "Force diff format: 'udiff' or 'replace' (default: auto)")
 	if err := editCmd.MarkFlagRequired("file"); err != nil {
 		panic(fmt.Sprintf("failed to mark file flag required: %v", err))
 	}
@@ -233,14 +232,6 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	engine := llm.NewEngine(provider, defaultToolRegistry())
-
-	if !provider.Capabilities().ToolCalls {
-		return fmt.Errorf("provider %s does not support tool calls", provider.Name())
-	}
-
-	// Determine if we should use unified diff format
-	useUnifiedDiff := shouldUseUnifiedDiff(cfg)
 
 	// Parse file specs and read files
 	var files []input.FileContent
@@ -284,386 +275,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no files found")
 	}
 
-	// Track file contents for applying edits
-	fileContents := make(map[string]string)
-	for _, f := range files {
-		fileContents[f.Path] = f.Content
-	}
-
-	promptSpecs := toPromptSpecs(specs)
-
-	// Build prompts based on diff format
-	userPrompt := prompt.EditUserPrompt(request, files, promptSpecs)
-
-	if useUnifiedDiff {
-		systemPrompt := prompt.UnifiedDiffSystemPrompt(cfg.Edit.Instructions, promptSpecs)
-		return processUnifiedDiff(ctx, engine, systemPrompt, userPrompt, fileContents, specs)
-	}
-
-	// Use replace (multi-edit) format
-	systemPrompt := prompt.EditSystemPrompt(cfg.Edit.Instructions, promptSpecs, editWildcardToken)
-
-	// Get all edits from LLM with spinner
-	debugMode := editDebug
-	req := llm.Request{
-		Messages: []llm.Message{
-			llm.SystemText(systemPrompt),
-			llm.UserText(userPrompt),
-		},
-		Tools: []llm.ToolSpec{
-			llm.EditToolSpec(),
-		},
-		ToolChoice: llm.ToolChoice{
-			Mode: llm.ToolChoiceName,
-			Name: llm.EditToolName,
-		},
-		ParallelToolCalls: true,
-		Debug:             debugMode,
-		DebugRaw:          debugRaw,
-	}
-	result, err := ui.RunWithSpinner(ctx, debugMode || debugRaw, func(ctx context.Context) (any, error) {
-		return collectEdits(ctx, engine, req)
-	})
-	if err != nil {
-		if err.Error() == "cancelled" {
-			return nil
-		}
-		return fmt.Errorf("edit failed: %w", err)
-	}
-
-	edits, ok := result.([]llm.EditToolCall)
-	if !ok {
-		return fmt.Errorf("unexpected edits result")
-	}
-	if len(edits) == 0 {
-		fmt.Println("No edits proposed")
-		return nil
-	}
-
-	if editPerEdit {
-		return processEditsIndividually(edits, fileContents, specs)
-	}
-	return processEditsConsolidated(edits, fileContents, specs)
-}
-
-// processEditsConsolidated groups all edits by file and shows one diff per file
-func processEditsConsolidated(edits []llm.EditToolCall, fileContents map[string]string, specs []FileSpec) error {
-	// Group edits by file, preserving order
-	type fileEdits struct {
-		path   string
-		edits  []llm.EditToolCall
-		errors []string
-	}
-	fileOrder := []string{}
-	editsByFile := make(map[string]*fileEdits)
-
-	for _, edit := range edits {
-		// Normalize LLM's path to absolute for consistent lookup
-		normalizedPath := absPath(edit.FilePath)
-		if _, exists := editsByFile[normalizedPath]; !exists {
-			fileOrder = append(fileOrder, normalizedPath)
-			editsByFile[normalizedPath] = &fileEdits{path: normalizedPath}
-		}
-		editsByFile[normalizedPath].edits = append(editsByFile[normalizedPath].edits, edit)
-	}
-
-	// Process each file: apply all edits sequentially to compute final content
-	type consolidatedFile struct {
-		path        string
-		oldContent  string
-		newContent  string
-		editCount   int
-		skipReasons []string
-	}
-	consolidated := make([]consolidatedFile, 0, len(fileOrder))
-
-	for _, path := range fileOrder {
-		fe := editsByFile[path]
-		cf := consolidatedFile{path: path}
-
-		originalContent, ok := fileContents[path]
-		if !ok {
-			cf.skipReasons = append(cf.skipReasons, "file not in context")
-			consolidated = append(consolidated, cf)
-			continue
-		}
-
-		cf.oldContent = originalContent
-		currentContent := originalContent
-
-		for _, edit := range fe.edits {
-			// Skip no-op edits
-			if edit.OldString == edit.NewString {
-				continue
-			}
-
-			// Find the matching spec to check for guards
-			var matchSpec *FileSpec
-			for i := range specs {
-				if specs[i].Path == path {
-					matchSpec = &specs[i]
-					break
-				}
-			}
-
-			var match editMatch
-			var err error
-			if matchSpec != nil && matchSpec.HasGuard {
-				// Use guard-scoped matching
-				match, err = findEditMatchWithGuard(currentContent, edit.OldString, matchSpec.StartLine, matchSpec.EndLine)
-			} else {
-				// No guard, search full content
-				match, err = findEditMatch(currentContent, edit.OldString)
-			}
-			if err != nil {
-				cf.skipReasons = append(cf.skipReasons, err.Error())
-				continue
-			}
-
-			currentContent = applyEditMatch(currentContent, match, edit.NewString)
-			cf.editCount++
-		}
-
-		cf.newContent = currentContent
-		consolidated = append(consolidated, cf)
-	}
-
-	entries := make([]diffEntry, 0, len(consolidated))
-	for _, cf := range consolidated {
-		entries = append(entries, diffEntry{
-			path:        cf.path,
-			oldContent:  cf.oldContent,
-			newContent:  cf.newContent,
-			skipReasons: cf.skipReasons,
-		})
-	}
-
-	applied, skipped := applyDiffEntries(entries, editDryRun, diffApplyOptions{})
-
-	if !editDryRun && applied+skipped > 3 {
-		fmt.Printf("\n%d files updated, %d skipped\n", applied, skipped)
-	}
-
-	fmt.Println()
-	return nil
-}
-
-// processEditsIndividually handles each edit separately (legacy behavior)
-func processEditsIndividually(edits []llm.EditToolCall, fileContents map[string]string, specs []FileSpec) error {
-	type processedEdit struct {
-		edit       llm.EditToolCall
-		oldContent string
-		newContent string
-		skip       bool
-		skipReason string
-	}
-	processed := make([]processedEdit, 0, len(edits))
-
-	for _, editCall := range edits {
-		pe := processedEdit{edit: editCall}
-		// Normalize LLM's path to absolute for consistent lookup
-		normalizedPath := absPath(editCall.FilePath)
-
-		// Skip no-op edits
-		if editCall.OldString == editCall.NewString {
-			pe.skip = true
-			pe.skipReason = "no change"
-			processed = append(processed, pe)
-			continue
-		}
-
-		content, ok := fileContents[normalizedPath]
-		if !ok {
-			pe.skip = true
-			pe.skipReason = "file not in context"
-			processed = append(processed, pe)
-			continue
-		}
-
-		// Find the matching spec to check for guards
-		var matchSpec *FileSpec
-		for i := range specs {
-			if specs[i].Path == normalizedPath {
-				matchSpec = &specs[i]
-				break
-			}
-		}
-
-		var match editMatch
-		var err error
-		if matchSpec != nil && matchSpec.HasGuard {
-			// Use guard-scoped matching
-			match, err = findEditMatchWithGuard(content, editCall.OldString, matchSpec.StartLine, matchSpec.EndLine)
-		} else {
-			// No guard, search full content
-			match, err = findEditMatch(content, editCall.OldString)
-		}
-		if err != nil {
-			pe.skip = true
-			pe.skipReason = err.Error()
-			processed = append(processed, pe)
-			continue
-		}
-
-		pe.oldContent = content
-		pe.newContent = applyEditMatch(content, match, editCall.NewString)
-		processed = append(processed, pe)
-	}
-
-	entries := make([]diffEntry, 0, len(processed))
-	for _, pe := range processed {
-		if pe.skip {
-			entries = append(entries, diffEntry{
-				path:              pe.edit.FilePath,
-				skipReasons:       []string{pe.skipReason},
-				countSkipIfNoDiff: true,
-			})
-			continue
-		}
-
-		writePath := absPath(pe.edit.FilePath)
-		entries = append(entries, diffEntry{
-			path:       pe.edit.FilePath,
-			writePath:  writePath,
-			oldContent: pe.oldContent,
-			newContent: pe.newContent,
-			onApplied: func(path, newContent string) {
-				fileContents[path] = newContent
-			},
-		})
-	}
-
-	applied, skipped := applyDiffEntries(entries, editDryRun, diffApplyOptions{separatorOnAnyOutput: true})
-
-	if !editDryRun && applied+skipped > 5 {
-		fmt.Printf("\n%d applied, %d skipped\n", applied, skipped)
-	}
-
-	fmt.Println()
-	return nil
-}
-
-const (
-	maxEditLoops     = 6
-	editPendingReply = "Edit received and queued for user review. Continue with any remaining edits, or stop if all edits have been provided."
-	stopEditHint     = "All edits should now be complete. Do not call any more tools."
-)
-
-func collectEdits(ctx context.Context, engine *llm.Engine, req llm.Request) ([]llm.EditToolCall, error) {
-	var allEdits []llm.EditToolCall
-
-	for attempt := 0; attempt < maxEditLoops; attempt++ {
-		// On last attempt, hint to stop
-		if attempt == maxEditLoops-1 {
-			req.Messages = append(req.Messages, llm.SystemText(stopEditHint))
-		}
-
-		stream, err := engine.Stream(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-
-		var iterationEdits []llm.EditToolCall
-		var toolCalls []llm.ToolCall
-		for {
-			event, err := stream.Recv()
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				stream.Close()
-				return nil, err
-			}
-			if event.Type == llm.EventError && event.Err != nil {
-				stream.Close()
-				return nil, event.Err
-			}
-			if event.Type == llm.EventToolCall && event.Tool != nil && event.Tool.Name == llm.EditToolName {
-				llm.DebugToolCall(req.Debug, *event.Tool)
-				edit, err := llm.ParseEditToolCall(*event.Tool)
-				if err != nil {
-					stream.Close()
-					return nil, err
-				}
-				iterationEdits = append(iterationEdits, edit)
-				toolCalls = append(toolCalls, *event.Tool)
-			}
-		}
-		stream.Close()
-
-		// No edits this iteration - we're done
-		if len(iterationEdits) == 0 {
-			break
-		}
-
-		allEdits = append(allEdits, iterationEdits...)
-
-		// Build tool call message and results for next iteration
-		toolCalls = ensureToolCallIDs(toolCalls)
-		assistantParts := make([]llm.Part, 0, len(toolCalls))
-		for i := range toolCalls {
-			assistantParts = append(assistantParts, llm.Part{
-				Type:     llm.PartToolCall,
-				ToolCall: &toolCalls[i],
-			})
-		}
-		req.Messages = append(req.Messages, llm.Message{
-			Role:  llm.RoleAssistant,
-			Parts: assistantParts,
-		})
-
-		// Send "pending" results back
-		for _, call := range toolCalls {
-			req.Messages = append(req.Messages, llm.ToolResultMessage(call.ID, call.Name, editPendingReply))
-		}
-
-		// Switch to auto tool choice after first iteration to allow model to stop
-		req.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
-	}
-
-	if len(allEdits) == 0 {
-		return nil, fmt.Errorf("no edits returned")
-	}
-	return allEdits, nil
-}
-
-func ensureToolCallIDs(calls []llm.ToolCall) []llm.ToolCall {
-	for i := range calls {
-		if strings.TrimSpace(calls[i].ID) == "" {
-			calls[i].ID = fmt.Sprintf("edit-%d", i+1)
-		}
-	}
-	return calls
-}
-
-func validateGuardForReplace(content string, match editMatch, spec FileSpec) error {
-	// Count lines before
-	lineNum := strings.Count(content[:match.start], "\n") + 1
-	endLineNum := lineNum + strings.Count(match.text, "\n")
-
-	// Check if within guard
-	if spec.StartLine > 0 && lineNum < spec.StartLine {
-		return fmt.Errorf("edit starts at line %d, but guard starts at %d", lineNum, spec.StartLine)
-	}
-	if spec.EndLine > 0 && endLineNum > spec.EndLine {
-		return fmt.Errorf("edit ends at line %d, but guard ends at %d", endLineNum, spec.EndLine)
-	}
-
-	return nil
-}
-
-// shouldUseUnifiedDiff determines if unified diff format should be used based on config
-func shouldUseUnifiedDiff(cfg *config.Config) bool {
-	switch cfg.Edit.DiffFormat {
-	case "udiff":
-		return true
-	case "replace":
-		return false
-	default: // "auto" or empty
-		// Use unified diff for Codex models
-		model := getActiveModel(cfg)
-		return llm.IsCodexModel(model)
-	}
+	return runStreamEdit(ctx, cfg, provider, request, files, specs)
 }
 
 // getActiveModel returns the model name for the active provider
@@ -684,27 +296,90 @@ func getActiveModel(cfg *config.Config) string {
 	}
 }
 
-// processUnifiedDiff handles the unified diff flow
-func processUnifiedDiff(ctx context.Context, engine *llm.Engine, systemPrompt, userPrompt string, fileContents map[string]string, specs []FileSpec) error {
+// runStreamEdit runs the streaming edit flow (one-shot, no tools)
+func runStreamEdit(ctx context.Context, cfg *config.Config, provider llm.Provider, request string, files []input.FileContent, specs []FileSpec) error {
+	// Build file contents map
+	fileContents := make(map[string]string)
+	for _, f := range files {
+		fileContents[f.Path] = f.Content
+	}
+
+	// Build guards map
+	guards := make(map[string][2]int)
+	for _, spec := range specs {
+		if spec.HasGuard {
+			guards[spec.Path] = [2]int{spec.StartLine, spec.EndLine}
+		}
+	}
+
+	// Create executor config
+	execConfig := edit.ExecutorConfig{
+		FileContents: fileContents,
+		Guards:       guards,
+		Debug:        editDebug,
+		DebugRaw:     debugRaw,
+		OnFileStart: func(path string) {
+			if editDebug {
+				fmt.Printf("Editing: %s\n", path)
+			}
+		},
+		OnSearchMatch: func(path string, level edit.MatchLevel) {
+			if editDebug {
+				fmt.Printf("  Search matched (%s)\n", level)
+			}
+		},
+		OnSearchFail: func(path string, search string, err error) {
+			// Only log in debug mode - retries will handle silently
+			if editDebug {
+				fmt.Printf("  Search failed: %s\n", err)
+				lines := strings.Split(search, "\n")
+				if len(lines) > 3 {
+					fmt.Printf("    First line: %s\n", truncateStr(lines[0], 60))
+					fmt.Printf("    Last line:  %s\n", truncateStr(lines[len(lines)-1], 60))
+				}
+			}
+		},
+		// About text is stored and shown on demand via (i)nfo
+	}
+
+	// Get model from config
+	model := getActiveModel(cfg)
+
+	// Create executor
+	executor := edit.NewStreamEditExecutor(provider, model, execConfig)
+
+	// Determine diff format: flag > config > auto-detect by model
+	diffFormat := editDiffFormat
+	if diffFormat == "" {
+		diffFormat = cfg.Edit.DiffFormat
+	}
+	if diffFormat == "" {
+		diffFormat = "auto"
+	}
+
+	// Build prompts
+	promptSpecs := toPromptSpecs(specs)
+	useUnifiedDiff := prompt.ShouldUseUnifiedDiff(model, diffFormat)
+	systemPrompt := prompt.StreamEditSystemPrompt(cfg.Edit.Instructions, promptSpecs, model, diffFormat)
+	userPrompt := prompt.StreamEditUserPrompt(request, files, promptSpecs, useUnifiedDiff)
+
+	messages := []llm.Message{
+		llm.SystemText(systemPrompt),
+		llm.UserText(userPrompt),
+	}
+
+	// Execute with spinner
 	debugMode := editDebug
-	req := llm.Request{
-		Messages: []llm.Message{
-			llm.SystemText(systemPrompt),
-			llm.UserText(userPrompt),
-		},
-		Tools: []llm.ToolSpec{
-			llm.UnifiedDiffToolSpec(),
-		},
-		ToolChoice: llm.ToolChoice{
-			Mode: llm.ToolChoiceName,
-			Name: llm.UnifiedDiffToolName,
-		},
-		ParallelToolCalls: false,
-		Debug:             debugMode,
-		DebugRaw:          debugRaw,
+	type execResult struct {
+		results   []edit.EditResult
+		aboutText string
 	}
 	result, err := ui.RunWithSpinner(ctx, debugMode || debugRaw, func(ctx context.Context) (any, error) {
-		return collectUnifiedDiff(ctx, engine, req)
+		results, aboutText, err := executor.Execute(ctx, messages)
+		if err != nil {
+			return nil, err
+		}
+		return execResult{results: results, aboutText: aboutText}, nil
 	})
 	if err != nil {
 		if err.Error() == "cancelled" {
@@ -713,171 +388,113 @@ func processUnifiedDiff(ctx context.Context, engine *llm.Engine, systemPrompt, u
 		return fmt.Errorf("edit failed: %w", err)
 	}
 
-	diffStr, ok := result.(string)
+	execRes, ok := result.(execResult)
 	if !ok {
-		return fmt.Errorf("unexpected unified diff result")
+		return fmt.Errorf("unexpected result type")
 	}
-	if diffStr == "" {
+	results := execRes.results
+
+	if len(results) == 0 {
 		fmt.Println("No edits proposed")
 		return nil
 	}
 
-	// Parse the unified diff
-	fileDiffs, err := udiff.Parse(diffStr)
-	if err != nil {
-		return fmt.Errorf("failed to parse diff: %w", err)
-	}
-
-	if len(fileDiffs) == 0 {
-		fmt.Println("No edits proposed")
-		return nil
-	}
-
-	// Apply diffs and show results
-	return processUnifiedDiffResults(fileDiffs, fileContents, specs)
-}
-
-func collectUnifiedDiff(ctx context.Context, engine *llm.Engine, req llm.Request) (string, error) {
-	var allDiffs []string
-
-	for attempt := 0; attempt < maxEditLoops; attempt++ {
-		// On last attempt, hint to stop
-		if attempt == maxEditLoops-1 {
-			req.Messages = append(req.Messages, llm.SystemText(stopEditHint))
-		}
-
-		stream, err := engine.Stream(ctx, req)
-		if err != nil {
-			return "", err
-		}
-
-		var iterationDiffs []string
-		var toolCalls []llm.ToolCall
-		for {
-			event, err := stream.Recv()
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				stream.Close()
-				return "", err
-			}
-			if event.Type == llm.EventError && event.Err != nil {
-				stream.Close()
-				return "", event.Err
-			}
-			if event.Type == llm.EventToolCall && event.Tool != nil && event.Tool.Name == llm.UnifiedDiffToolName {
-				llm.DebugToolCall(req.Debug, *event.Tool)
-				diff, err := llm.ParseUnifiedDiff(*event.Tool)
-				if err != nil {
-					stream.Close()
-					return "", err
-				}
-				if strings.TrimSpace(diff) != "" {
-					iterationDiffs = append(iterationDiffs, diff)
-					toolCalls = append(toolCalls, *event.Tool)
-				}
-			}
-		}
-		stream.Close()
-
-		// No diffs this iteration - we're done
-		if len(iterationDiffs) == 0 {
-			break
-		}
-
-		allDiffs = append(allDiffs, iterationDiffs...)
-
-		// Build tool call message and results for next iteration
-		toolCalls = ensureToolCallIDs(toolCalls)
-		assistantParts := make([]llm.Part, 0, len(toolCalls))
-		for i := range toolCalls {
-			assistantParts = append(assistantParts, llm.Part{
-				Type:     llm.PartToolCall,
-				ToolCall: &toolCalls[i],
-			})
-		}
-		req.Messages = append(req.Messages, llm.Message{
-			Role:  llm.RoleAssistant,
-			Parts: assistantParts,
-		})
-
-		// Send "pending" results back
-		for _, call := range toolCalls {
-			req.Messages = append(req.Messages, llm.ToolResultMessage(call.ID, call.Name, editPendingReply))
-		}
-
-		// Switch to auto tool choice after first iteration to allow model to stop
-		req.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
-	}
-
-	if len(allDiffs) == 0 {
-		return "", fmt.Errorf("no unified diff returned")
-	}
-	return strings.Join(allDiffs, "\n"), nil
-}
-
-// processUnifiedDiffResults applies parsed unified diffs and prompts for approval
-func processUnifiedDiffResults(fileDiffs []udiff.FileDiff, fileContents map[string]string, specs []FileSpec) error {
-	type fileResult struct {
-		path       string
-		oldContent string
-		newContent string
-		warnings   []string // Warnings for hunks that failed to apply
-	}
-
-	results := make([]fileResult, 0, len(fileDiffs))
-
-	for _, fd := range fileDiffs {
-		// Normalize path to absolute
-		normalizedPath := absPath(fd.Path)
-
-		oldContent, ok := fileContents[normalizedPath]
-		if !ok {
-			// Try without normalization (in case LLM used relative path)
-			for path, content := range fileContents {
-				if strings.HasSuffix(path, "/"+fd.Path) || path == fd.Path {
-					normalizedPath = path
-					oldContent = content
-					ok = true
-					break
-				}
-			}
-		}
-
-		if !ok {
-			ui.ShowEditSkipped(fd.Path, "file not in context")
+	// Consolidate results by file - use final state for each file
+	// Results are cumulative, so last result for each file has final content
+	fileResults := make(map[string]edit.EditResult)
+	var fileOrder []string
+	for _, r := range results {
+		if r.Error != nil {
 			continue
 		}
-
-		// Use ApplyWithWarnings to skip failed hunks gracefully
-		applyResult := udiff.ApplyWithWarnings(oldContent, fd.Hunks)
-
-		results = append(results, fileResult{
-			path:       normalizedPath,
-			oldContent: oldContent,
-			newContent: applyResult.Content,
-			warnings:   applyResult.Warnings,
-		})
+		if _, seen := fileResults[r.Path]; !seen {
+			fileOrder = append(fileOrder, r.Path)
+			// First result for this file - get original content
+			fileResults[r.Path] = edit.EditResult{
+				Path:       r.Path,
+				OldContent: fileContents[r.Path], // Original from disk
+				NewContent: r.NewContent,
+			}
+		} else {
+			// Update with latest content
+			existing := fileResults[r.Path]
+			existing.NewContent = r.NewContent
+			fileResults[r.Path] = existing
+		}
 	}
 
-	entries := make([]diffEntry, 0, len(results))
-	for _, r := range results {
-		entries = append(entries, diffEntry{
-			path:              r.path,
-			oldContent:        r.oldContent,
-			newContent:        r.newContent,
-			skipReasons:       r.warnings,
-			countSkipIfNoDiff: len(r.warnings) > 0,
-		})
+	// Filter to only files with actual changes
+	var changedResults []edit.EditResult
+	for _, path := range fileOrder {
+		r := fileResults[path]
+		if r.OldContent != r.NewContent {
+			changedResults = append(changedResults, r)
+		}
 	}
 
-	applied, skipped := applyDiffEntries(entries, editDryRun, diffApplyOptions{})
-
-	if !editDryRun && applied+skipped > 3 {
-		fmt.Printf("\n%d files updated, %d skipped\n", applied, skipped)
+	if len(changedResults) == 0 {
+		fmt.Println("No edits proposed")
+		return nil
 	}
 
-	fmt.Println()
-	return nil
+	// Calculate global width for consistent diff display
+	globalWidth := 0
+	for _, r := range changedResults {
+		w := ui.CalcDiffWidth(r.OldContent, r.NewContent)
+		if w > globalWidth {
+			globalWidth = w
+		}
+	}
+
+	// Show all diffs first
+	for i, r := range changedResults {
+		if i > 0 {
+			fmt.Println()
+		}
+		ui.PrintCompactDiff(r.Path, r.OldContent, r.NewContent, globalWidth)
+	}
+
+	// Dry run - no approval needed
+	if editDryRun {
+		fmt.Println()
+		return nil
+	}
+
+	// Batch approval with info option
+	hasInfo := execRes.aboutText != ""
+	reprompt := false
+	for {
+		approval := ui.PromptBatchApproval(hasInfo, reprompt)
+		switch approval {
+		case ui.EditApprovalInfo:
+			ui.ShowEditInfo(execRes.aboutText)
+			reprompt = true
+			continue // loop back to prompt
+		case ui.EditApprovalNo:
+			fmt.Println()
+			return nil
+		case ui.EditApprovalYes:
+			// Apply all changes
+			var applied int
+			for _, r := range changedResults {
+				if err := os.WriteFile(r.Path, []byte(r.NewContent), 0644); err != nil {
+					fmt.Printf("  error writing %s: %s\n", r.Path, err.Error())
+					continue
+				}
+				applied++
+			}
+			if len(changedResults) > 1 {
+				fmt.Printf("%d files updated\n", applied)
+			}
+			fmt.Println()
+			return nil
+		}
+	}
+}
+
+func truncateStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen-3] + "..."
 }

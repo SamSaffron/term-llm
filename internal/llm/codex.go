@@ -70,6 +70,10 @@ func (p *CodexProvider) Name() string {
 	return fmt.Sprintf("Codex (%s)", p.model)
 }
 
+func (p *CodexProvider) Credential() string {
+	return "codex"
+}
+
 func (p *CodexProvider) Capabilities() Capabilities {
 	return Capabilities{NativeSearch: true, ToolCalls: true}
 }
@@ -101,8 +105,16 @@ func (p *CodexProvider) Stream(ctx context.Context, req Request) (Stream, error)
 			})
 		}
 
+		// Strip effort suffix from req.Model if present, use it if no provider-level effort set
+		reqModel, reqEffort := parseModelEffort(req.Model)
+		model := chooseModel(reqModel, p.model)
+		effort := p.effort
+		if effort == "" && reqEffort != "" {
+			effort = reqEffort
+		}
+
 		reqBody := map[string]interface{}{
-			"model":               chooseModel(req.Model, p.model),
+			"model":               model,
 			"instructions":        codexInstructions,
 			"input":               p.buildInput(combinedPrompt),
 			"tools":               tools,
@@ -113,9 +125,9 @@ func (p *CodexProvider) Stream(ctx context.Context, req Request) (Stream, error)
 			"include":             []string{},
 		}
 
-		if p.effort != "" {
+		if effort != "" {
 			reqBody["reasoning"] = map[string]interface{}{
-				"effort": p.effort,
+				"effort": effort,
 			}
 		}
 

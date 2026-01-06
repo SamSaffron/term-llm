@@ -52,6 +52,13 @@ func (p *OpenAICompatProvider) Name() string {
 	return fmt.Sprintf("%s (%s)", p.name, p.model)
 }
 
+func (p *OpenAICompatProvider) Credential() string {
+	if p.apiKey == "" {
+		return "free"
+	}
+	return "api_key"
+}
+
 func (p *OpenAICompatProvider) Capabilities() Capabilities {
 	return Capabilities{
 		NativeSearch: false,

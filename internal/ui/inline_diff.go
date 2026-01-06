@@ -7,6 +7,10 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/glamour/styles"
 	"golang.org/x/term"
 )
 
@@ -530,3 +534,178 @@ func PromptApplyEdit() bool {
 
 	return applied
 }
+
+// EditApprovalResult represents the result of batch approval prompt
+type EditApprovalResult int
+
+const (
+	EditApprovalYes  EditApprovalResult = iota // Apply all changes
+	EditApprovalNo                             // Skip all changes
+	EditApprovalInfo                           // Show info/about text
+)
+
+// PromptBatchApproval asks user to approve all changes with option to see info
+// Returns EditApprovalYes, EditApprovalNo, or EditApprovalInfo
+// If reprompt is true, clears the line before showing prompt (used after returning from info)
+func PromptBatchApproval(hasInfo bool, reprompt bool) EditApprovalResult {
+	styles := DefaultStyles()
+
+	// Clear line if reprompting after info
+	if reprompt {
+		fmt.Print("\r\033[K")
+	}
+
+	// Show prompt with or without info option
+	if hasInfo {
+		fmt.Print("Apply? " + styles.Muted.Render("(Y/n/i)") + " ")
+	} else {
+		fmt.Print("Apply? " + styles.Muted.Render("(Y/n)") + " ")
+	}
+
+	// Set terminal to raw mode to read single keypress
+	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		fmt.Println()
+		return EditApprovalYes // default yes on error
+	}
+	defer term.Restore(int(os.Stdin.Fd()), oldState)
+
+	b := make([]byte, 1)
+	os.Stdin.Read(b)
+
+	switch b[0] {
+	case 'i', 'I':
+		if hasInfo {
+			// Don't print anything - we'll reprompt after info view
+			return EditApprovalInfo
+		}
+		// No info available, treat as yes
+		fmt.Println("Y")
+		return EditApprovalYes
+	case 'n', 'N':
+		fmt.Println("n")
+		return EditApprovalNo
+	default:
+		// Enter, y, Y, or anything else = yes
+		fmt.Println("Y")
+		return EditApprovalYes
+	}
+}
+
+// ShowEditInfo displays the about/info text in a fullscreen pager
+func ShowEditInfo(aboutText string) {
+	width, height := getTerminalSize()
+
+	// Create the model
+	m := newInfoModel(aboutText, width, height)
+
+	// Get TTY for terminal control
+	tty, err := getTTY()
+	if err != nil {
+		// Fallback to simple display
+		fmt.Println()
+		fmt.Println(aboutText)
+		fmt.Println()
+		return
+	}
+	defer tty.Close()
+
+	// Create program with alternate screen
+	p := tea.NewProgram(m,
+		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
+		tea.WithInput(tty),
+		tea.WithOutput(tty),
+		tea.WithoutSignalHandler(),
+	)
+
+	p.Run()
+}
+
+// infoModel is the bubbletea model for fullscreen info display
+type infoModel struct {
+	viewport viewport.Model
+	styles   *Styles
+	width    int
+	height   int
+}
+
+func newInfoModel(content string, width, height int) infoModel {
+	styles := DefaultStyles()
+
+	vp := viewport.New(width, height-1) // -1 for footer
+
+	// Render markdown content
+	rendered := renderInfoMarkdown(content, width)
+	vp.SetContent(rendered)
+
+	return infoModel{
+		viewport: vp,
+		styles:   styles,
+		width:    width,
+		height:   height,
+	}
+}
+
+func (m infoModel) Init() tea.Cmd {
+	return nil
+}
+
+func (m infoModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "q", "Q", "esc", "enter", "i", "I":
+			return m, tea.Quit
+		case "ctrl+c":
+			return m, tea.Quit
+		}
+
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		m.viewport.Width = msg.Width
+		m.viewport.Height = msg.Height - 1
+	}
+
+	// Update viewport for scrolling
+	var cmd tea.Cmd
+	m.viewport, cmd = m.viewport.Update(msg)
+
+	return m, cmd
+}
+
+func (m infoModel) View() string {
+	footer := m.styles.Footer.Render("↑/↓ scroll • q/Esc/Enter to exit")
+	return m.viewport.View() + "\n" + footer
+}
+
+// renderInfoMarkdown renders content with glamour for info display
+func renderInfoMarkdown(content string, width int) string {
+	style := styles.DraculaStyleConfig
+	style.Document.Margin = uintPtr(0)
+	style.Document.BlockPrefix = ""
+	style.Document.BlockSuffix = ""
+	style.CodeBlock.Margin = uintPtr(0)
+
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithStyles(style),
+		glamour.WithWordWrap(width-2), // slight margin
+	)
+	if err != nil {
+		return content
+	}
+
+	rendered, err := renderer.Render(content)
+	if err != nil {
+		return content
+	}
+
+	result := strings.TrimSpace(rendered)
+	if result != "" && !strings.HasSuffix(result, "\n") {
+		result += "\n"
+	}
+
+	return result
+}
+

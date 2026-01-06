@@ -8,6 +8,7 @@ import (
 // Provider streams model output events for a request.
 type Provider interface {
 	Name() string
+	Credential() string // Returns credential type for debugging (e.g., "api_key", "codex", "claude-code")
 	Capabilities() Capabilities
 	Stream(ctx context.Context, req Request) (Stream, error)
 }

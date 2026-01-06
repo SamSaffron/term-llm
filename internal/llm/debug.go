@@ -36,13 +36,14 @@ func DebugToolResult(enabled bool, id, name, content string) {
 }
 
 // DebugRawRequest prints the raw request with all message parts in debug mode.
-func DebugRawRequest(enabled bool, providerName string, req Request, label string) {
+func DebugRawRequest(enabled bool, providerName, credential string, req Request, label string) {
 	if !enabled {
 		return
 	}
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "provider: %s\n", providerName)
+	fmt.Fprintf(&b, "credential: %s\n", credential)
 	if req.Model != "" {
 		fmt.Fprintf(&b, "model: %s\n", req.Model)
 	}

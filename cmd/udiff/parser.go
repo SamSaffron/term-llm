@@ -96,6 +96,11 @@ func Parse(diff string) ([]FileDiff, error) {
 			currentHunk = nil
 			i++
 
+			// Skip empty lines between --- and +++
+			for i < len(lines) && strings.TrimSpace(lines[i]) == "" {
+				i++
+			}
+
 			// Expect +++ line next
 			if i < len(lines) && strings.HasPrefix(lines[i], "+++ ") {
 				// Verify paths match (ignoring a/ b/ prefixes)
