@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -28,10 +29,16 @@ func NewEngine(provider Provider, tools *ToolRegistry) *Engine {
 	}
 }
 
-// Stream returns a stream, applying external search when needed.
+// Stream returns a stream, applying external tools when needed.
 func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
-	if req.Search && !e.provider.Capabilities().NativeSearch {
-		return e.streamWithExternalSearch(ctx, req)
+	if req.Search {
+		caps := e.provider.Capabilities()
+		needsExternalSearch := !caps.NativeWebSearch
+		needsExternalFetch := !caps.NativeWebFetch
+
+		if needsExternalSearch || needsExternalFetch {
+			return e.streamWithExternalTools(ctx, req, needsExternalSearch, needsExternalFetch)
+		}
 	}
 
 	if req.DebugRaw {
@@ -126,36 +133,54 @@ func collectToolCalls(stream Stream, debugRaw bool) ([]ToolCall, error) {
 	return calls, nil
 }
 
-func (e *Engine) streamWithExternalSearch(ctx context.Context, req Request) (Stream, error) {
+func (e *Engine) streamWithExternalTools(ctx context.Context, req Request, addSearch, addFetch bool) (Stream, error) {
 	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
 		if req.DebugRaw {
 			DebugRawRequest(req.DebugRaw, e.provider.Name(), e.provider.Credential(), req, "Request (initial)")
 		}
-		debugSection(req.Debug, "External Search", "provider lacks native search; using web_search tool")
-		DebugRawSection(req.DebugRaw, "External Search", "provider lacks native search; using web_search tool")
 
-		updated, err := e.applyExternalSearch(ctx, req, events)
-		if err != nil {
-			return err
+		// Build list of external tools to add
+		var externalTools []ToolSpec
+		var externalToolNames []string
+		if addSearch {
+			if t, ok := e.tools.Get(WebSearchToolName); ok {
+				externalTools = append(externalTools, t.Spec())
+				externalToolNames = append(externalToolNames, WebSearchToolName)
+			}
 		}
-		req = updated
+		if addFetch {
+			if t, ok := e.tools.Get(ReadURLToolName); ok {
+				externalTools = append(externalTools, t.Spec())
+				externalToolNames = append(externalToolNames, ReadURLToolName)
+			}
+		}
 
-		// Back to thinking - LLM will process search results
-		events <- Event{Type: EventToolExecStart, ToolName: ""}
+		debugMsg := fmt.Sprintf("adding external tools: %v", externalToolNames)
+		debugSection(req.Debug, "External Tools", debugMsg)
+		DebugRawSection(req.DebugRaw, "External Tools", debugMsg)
 
-		// Provide both search tools for follow-up requests
-		var searchTools []ToolSpec
-		if searchTool, ok := e.tools.Get(WebSearchToolName); ok {
-			searchTools = append(searchTools, searchTool.Spec())
+		// If we need external search, force an initial search call
+		if addSearch {
+			updated, err := e.applyExternalSearch(ctx, req, events)
+			if err != nil {
+				return err
+			}
+			req = updated
+
+			// Back to thinking - LLM will process search results
+			events <- Event{Type: EventToolExecStart, ToolName: ""}
 		}
-		if readTool, ok := e.tools.Get(ReadURLToolName); ok {
-			searchTools = append(searchTools, readTool.Spec())
-		}
-		req.Tools = searchTools
+
+		// Add external tools for follow-up requests
+		req.Tools = append(req.Tools, externalTools...)
 		req.ToolChoice = ToolChoice{Mode: ToolChoiceAuto}
 
 		if req.DebugRaw {
-			DebugRawRequest(req.DebugRaw, e.provider.Name(), e.provider.Credential(), req, "Request (with search results)")
+			label := "Request (with external tools)"
+			if addSearch {
+				label = "Request (with search results)"
+			}
+			DebugRawRequest(req.DebugRaw, e.provider.Name(), e.provider.Credential(), req, label)
 		}
 
 		for attempt := 0; attempt < maxExternalSearchLoops; attempt++ {
@@ -168,7 +193,7 @@ func (e *Engine) streamWithExternalSearch(ctx context.Context, req Request) (Str
 				return err
 			}
 
-			var buffered []Event
+			// Stream events in real-time, only collect tool calls
 			var toolCalls []ToolCall
 			for {
 				event, err := stream.Recv()
@@ -188,58 +213,60 @@ func (e *Engine) streamWithExternalSearch(ctx context.Context, req Request) (Str
 				}
 				if event.Type == EventToolCall && event.Tool != nil {
 					toolCalls = append(toolCalls, *event.Tool)
+					continue // Don't forward tool calls yet
 				}
-				buffered = append(buffered, event)
+				if event.Type == EventDone {
+					continue // Don't forward done yet
+				}
+				// Forward all other events in real-time (text, tool exec progress, etc.)
+				events <- event
 			}
 			stream.Close()
 
-			searchCalls, otherCalls := splitSearchCalls(toolCalls)
-			if len(searchCalls) == 0 {
-				for _, event := range buffered {
-					if event.Type == EventDone {
-						continue
-					}
-					events <- event
-				}
+			// Split calls into our external tools vs other tools
+			ourCalls, otherCalls := splitExternalToolCalls(toolCalls, externalToolNames)
+			if len(ourCalls) == 0 {
+				// No external tool calls - done
 				events <- Event{Type: EventDone}
 				return nil
 			}
 
 			if len(otherCalls) > 0 {
-				return fmt.Errorf("mixed tool calls during external search")
+				return fmt.Errorf("mixed tool calls during external tool execution")
 			}
 
 			if attempt == maxExternalSearchLoops-1 {
-				return fmt.Errorf("external search exceeded max tool call loops (%d)", maxExternalSearchLoops)
+				return fmt.Errorf("external tools exceeded max loops (%d)", maxExternalSearchLoops)
 			}
 
-			searchCalls = ensureToolCallIDs(searchCalls)
-			for _, call := range searchCalls {
+			ourCalls = ensureToolCallIDs(ourCalls)
+			for _, call := range ourCalls {
 				DebugToolCall(req.Debug, call)
 			}
 
 			// Notify which tool is starting (for each call)
-			for _, call := range searchCalls {
-				events <- Event{Type: EventToolExecStart, ToolName: call.Name}
+			for _, call := range ourCalls {
+				info := extractToolInfo(call)
+				events <- Event{Type: EventToolExecStart, ToolName: call.Name, ToolInfo: info}
 			}
 
-			toolResults, err := e.executeToolCalls(ctx, searchCalls, req.Debug, req.DebugRaw)
+			toolResults, err := e.executeToolCalls(ctx, ourCalls, req.Debug, req.DebugRaw)
 			if err != nil {
 				return err
 			}
 
-			req.Messages = append(req.Messages, toolCallMessage(searchCalls))
+			req.Messages = append(req.Messages, toolCallMessage(ourCalls))
 			req.Messages = append(req.Messages, toolResults...)
 
-			// Back to thinking - LLM will process search results
+			// Back to thinking - LLM will process results
 			events <- Event{Type: EventToolExecStart, ToolName: ""}
 
 			if req.DebugRaw {
-				DebugRawRequest(req.DebugRaw, e.provider.Name(), e.provider.Credential(), req, fmt.Sprintf("Request (search loop %d)", attempt+1))
+				DebugRawRequest(req.DebugRaw, e.provider.Name(), e.provider.Credential(), req, fmt.Sprintf("Request (external tools loop %d)", attempt+1))
 			}
 		}
 
-		return fmt.Errorf("external search loop ended unexpectedly")
+		return fmt.Errorf("external tools loop ended unexpectedly")
 	}), nil
 }
 
@@ -285,15 +312,36 @@ func ensureToolCallIDs(calls []ToolCall) []ToolCall {
 	return calls
 }
 
-func splitSearchCalls(calls []ToolCall) ([]ToolCall, []ToolCall) {
-	var searchCalls []ToolCall
+func splitExternalToolCalls(calls []ToolCall, externalToolNames []string) ([]ToolCall, []ToolCall) {
+	var ourCalls []ToolCall
 	var otherCalls []ToolCall
 	for _, call := range calls {
-		if call.Name == WebSearchToolName || call.Name == ReadURLToolName {
-			searchCalls = append(searchCalls, call)
+		isExternal := false
+		for _, name := range externalToolNames {
+			if call.Name == name {
+				isExternal = true
+				break
+			}
+		}
+		if isExternal {
+			ourCalls = append(ourCalls, call)
 		} else {
 			otherCalls = append(otherCalls, call)
 		}
 	}
-	return searchCalls, otherCalls
+	return ourCalls, otherCalls
+}
+
+// extractToolInfo extracts display info from a tool call (e.g., URL for read_url)
+func extractToolInfo(call ToolCall) string {
+	if call.Name != ReadURLToolName {
+		return ""
+	}
+	var args struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(call.Arguments, &args); err != nil {
+		return ""
+	}
+	return args.URL
 }

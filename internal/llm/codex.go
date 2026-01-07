@@ -75,7 +75,11 @@ func (p *CodexProvider) Credential() string {
 }
 
 func (p *CodexProvider) Capabilities() Capabilities {
-	return Capabilities{NativeSearch: true, ToolCalls: true}
+	return Capabilities{
+		NativeWebSearch: true,
+		NativeWebFetch:  false, // No native URL fetch
+		ToolCalls:       true,
+	}
 }
 
 func (p *CodexProvider) Stream(ctx context.Context, req Request) (Stream, error) {
@@ -159,25 +163,8 @@ func (p *CodexProvider) Stream(ctx context.Context, req Request) (Stream, error)
 			return fmt.Errorf("API error (%d): %s", resp.StatusCode, string(respBody))
 		}
 
-		if len(req.Tools) > 0 {
-			respBody, err := io.ReadAll(resp.Body)
-			if err != nil {
-				return fmt.Errorf("failed to read response: %w", err)
-			}
-			if req.DebugRaw {
-				DebugRawSection(req.DebugRaw, "Codex SSE Raw", strings.TrimSpace(string(respBody)))
-			}
-			toolCalls, err := parseCodexToolCallsFromSSE(respBody)
-			if err != nil {
-				return err
-			}
-			for _, call := range toolCalls {
-				events <- Event{Type: EventToolCall, Tool: &call}
-			}
-			events <- Event{Type: EventDone}
-			return nil
-		}
-
+		// Stream and handle both text and tool calls
+		acc := newCodexToolAccumulator()
 		buf := make([]byte, 4096)
 		var pending string
 		for {
@@ -191,21 +178,72 @@ func (p *CodexProvider) Stream(ctx context.Context, req Request) (Stream, error)
 					}
 					line := pending[:idx]
 					pending = pending[idx+1:]
-					if !strings.HasPrefix(line, "data: ") {
+					if !strings.HasPrefix(line, "data:") {
 						continue
 					}
-					jsonData := strings.TrimPrefix(line, "data: ")
+					jsonData := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 					if jsonData == "" || jsonData == "[DONE]" {
 						continue
 					}
-					var event struct {
-						Type  string `json:"type"`
-						Delta string `json:"delta"`
+					if req.DebugRaw {
+						DebugRawSection(req.DebugRaw, "Codex SSE Line", jsonData)
 					}
-					if json.Unmarshal([]byte(jsonData), &event) == nil {
-						if event.Type == "response.output_text.delta" && event.Delta != "" {
+
+					var event codexSSEEvent
+					if json.Unmarshal([]byte(jsonData), &event) != nil {
+						continue
+					}
+
+					switch event.Type {
+					case "response.output_text.delta":
+						if event.Delta != "" {
 							events <- Event{Type: EventTextDelta, Text: event.Delta}
 						}
+					case "response.output_item.added":
+						switch event.Item.Type {
+						case "web_search_call":
+							events <- Event{Type: EventToolExecStart, ToolName: "web_search"}
+						case "function_call":
+							id := event.Item.ID
+							if id == "" {
+								id = event.Item.CallID
+							}
+							call := ToolCall{
+								ID:        id,
+								Name:      event.Item.Name,
+								Arguments: json.RawMessage(event.Item.Arguments),
+							}
+							acc.setCall(call)
+							if event.Item.Arguments != "" {
+								acc.setArgs(id, event.Item.Arguments)
+							}
+						}
+					case "response.output_item.done":
+						switch event.Item.Type {
+						case "web_search_call":
+							// Search done, back to thinking
+							events <- Event{Type: EventToolExecStart, ToolName: ""}
+						case "function_call":
+							id := event.Item.ID
+							if id == "" {
+								id = event.Item.CallID
+							}
+							call := ToolCall{
+								ID:        id,
+								Name:      event.Item.Name,
+								Arguments: json.RawMessage(event.Item.Arguments),
+							}
+							acc.setCall(call)
+							if event.Item.Arguments != "" {
+								acc.setArgs(id, event.Item.Arguments)
+							}
+						}
+					case "response.function_call_arguments.delta":
+						acc.ensureCall(event.ItemID)
+						acc.appendArgs(event.ItemID, event.Delta)
+					case "response.function_call_arguments.done":
+						acc.ensureCall(event.ItemID)
+						acc.setArgs(event.ItemID, event.Arguments)
 					}
 				}
 			}
@@ -215,6 +253,11 @@ func (p *CodexProvider) Stream(ctx context.Context, req Request) (Stream, error)
 			if err != nil {
 				return fmt.Errorf("stream read error: %w", err)
 			}
+		}
+
+		// Emit any tool calls that were accumulated
+		for _, call := range acc.finalize() {
+			events <- Event{Type: EventToolCall, Tool: &call}
 		}
 
 		events <- Event{Type: EventDone}

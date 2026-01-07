@@ -285,8 +285,9 @@ func (p *CodeAssistProvider) Credential() string {
 
 func (p *CodeAssistProvider) Capabilities() Capabilities {
 	return Capabilities{
-		NativeSearch: true,
-		ToolCalls:    true,
+		NativeWebSearch: true,
+		NativeWebFetch:  false, // No native URL fetch (Gemini-based)
+		ToolCalls:       true,
 	}
 }
 

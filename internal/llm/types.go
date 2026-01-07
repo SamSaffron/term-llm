@@ -15,8 +15,9 @@ type Provider interface {
 
 // Capabilities describe optional provider features.
 type Capabilities struct {
-	NativeSearch bool
-	ToolCalls    bool
+	NativeWebSearch bool // Provider has native web search capability
+	NativeWebFetch  bool // Provider has native URL fetch capability
+	ToolCalls       bool
 }
 
 // Stream yields events until io.EOF.
@@ -129,6 +130,7 @@ type Event struct {
 	Text     string
 	Tool     *ToolCall
 	ToolName string // For EventToolExecStart: name of tool being executed
+	ToolInfo string // For EventToolExecStart: additional info (e.g., URL being fetched)
 	Use      *Usage
 	Err      error
 }

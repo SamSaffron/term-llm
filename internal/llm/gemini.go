@@ -33,8 +33,9 @@ func (p *GeminiProvider) Credential() string {
 
 func (p *GeminiProvider) Capabilities() Capabilities {
 	return Capabilities{
-		NativeSearch: true,
-		ToolCalls:    true,
+		NativeWebSearch: true,
+		NativeWebFetch:  false, // No native URL fetch
+		ToolCalls:       true,
 	}
 }
 

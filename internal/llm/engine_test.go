@@ -42,8 +42,9 @@ func (p *fakeProvider) Credential() string {
 
 func (p *fakeProvider) Capabilities() Capabilities {
 	return Capabilities{
-		NativeSearch: false,
-		ToolCalls:    true,
+		NativeWebSearch: false,
+		NativeWebFetch:  false,
+		ToolCalls:       true,
 	}
 }
 
@@ -193,7 +194,7 @@ func TestEngineExternalSearchStopsAfterMaxLoops(t *testing.T) {
 		}
 	}
 
-	if gotErr == nil || !strings.Contains(gotErr.Error(), "external search exceeded max tool call loops") {
+	if gotErr == nil || !strings.Contains(gotErr.Error(), "external tools exceeded max loops") {
 		t.Fatalf("expected max loop error, got %v", gotErr)
 	}
 

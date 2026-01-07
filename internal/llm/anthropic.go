@@ -88,8 +88,9 @@ func (p *AnthropicProvider) Credential() string {
 
 func (p *AnthropicProvider) Capabilities() Capabilities {
 	return Capabilities{
-		NativeSearch: true,
-		ToolCalls:    true,
+		NativeWebSearch: true,
+		NativeWebFetch:  true,
+		ToolCalls:       true,
 	}
 }
 
@@ -182,12 +183,17 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 				MaxUses: anthropic.Int(5),
 			},
 		}
-		tools = append([]anthropic.BetaToolUnionParam{webSearchTool}, tools...)
+		webFetchTool := anthropic.BetaToolUnionParam{
+			OfWebFetchTool20250910: &anthropic.BetaWebFetchTool20250910Param{
+				MaxUses: anthropic.Int(3),
+			},
+		}
+		tools = append([]anthropic.BetaToolUnionParam{webSearchTool, webFetchTool}, tools...)
 
 		params := anthropic.BetaMessageNewParams{
 			Model:     anthropic.Model(chooseModel(req.Model, p.model)),
 			MaxTokens: maxTokens(req.MaxOutputTokens, 4096),
-			Betas:     []anthropic.AnthropicBeta{"web-search-2025-03-05"},
+			Betas:     []anthropic.AnthropicBeta{"web-search-2025-03-05", "web-fetch-2025-09-10"},
 			Messages:  messages,
 			Tools:     tools,
 		}
@@ -212,9 +218,12 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 			fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
 			fmt.Fprintf(os.Stderr, "System: %s\n", truncate(system, 200))
 			fmt.Fprintf(os.Stderr, "Messages: %d\n", len(messages))
-			fmt.Fprintf(os.Stderr, "Tools: %d\n", len(tools))
+			fmt.Fprintf(os.Stderr, "Tools: %d (includes web_search, web_fetch)\n", len(tools))
 			fmt.Fprintln(os.Stderr, "================================================")
 		}
+
+		// Track if we're in a server tool use block (web_search, etc.)
+		inServerTool := false
 
 		stream := p.client.Beta.Messages.NewStreaming(ctx, params)
 		for stream.Next() {
@@ -228,11 +237,23 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 					}
 				case anthropic.BetaTextDelta:
 					if delta.Text != "" {
+						// If we were in a server tool, signal back to thinking/responding
+						if inServerTool {
+							inServerTool = false
+							events <- Event{Type: EventToolExecStart, ToolName: ""}
+						}
 						events <- Event{Type: EventTextDelta, Text: delta.Text}
 					}
 				}
 			case anthropic.BetaRawContentBlockStartEvent:
-				if toolCall, ok := anthropicBetaToolCall(variant.ContentBlock); ok {
+				blockType := variant.ContentBlock.Type
+				if blockType == "server_tool_use" {
+					// Server tool (web_search, etc.) is starting
+					serverTool := variant.ContentBlock.AsServerToolUse()
+					toolName := string(serverTool.Name)
+					inServerTool = true
+					events <- Event{Type: EventToolExecStart, ToolName: toolName}
+				} else if toolCall, ok := anthropicBetaToolCall(variant.ContentBlock); ok {
 					accumulator.Start(variant.Index, toolCall)
 				}
 			case anthropic.BetaRawContentBlockStopEvent:

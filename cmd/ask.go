@@ -114,10 +114,11 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	debugMode := askDebug
 	req := llm.Request{
-		Messages: messages,
-		Search:   askSearch,
-		Debug:    debugMode,
-		DebugRaw: debugRaw,
+		Messages:          messages,
+		Search:            askSearch,
+		ParallelToolCalls: true,
+		Debug:             debugMode,
+		DebugRaw:          debugRaw,
 	}
 
 	// Check if we're in a TTY and can use glamour
@@ -128,7 +129,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	output := make(chan string)
 
 	// Channel for tool events (for phase updates)
-	toolEvents := make(chan string, 10)
+	toolEvents := make(chan toolEvent, 10)
 
 	errChan := make(chan error, 1)
 	go func() {
@@ -162,7 +163,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			}
 			if event.Type == llm.EventToolExecStart {
 				select {
-				case toolEvents <- event.ToolName:
+				case toolEvents <- toolEvent{Name: event.ToolName, Info: event.ToolInfo}:
 				default:
 				}
 			}
@@ -189,8 +190,14 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// toolEvent represents a tool execution event with name and additional info
+type toolEvent struct {
+	Name string // Tool name (e.g., "web_search", "read_url")
+	Info string // Additional info (e.g., URL being fetched)
+}
+
 // streamPlainText streams text directly without formatting
-func streamPlainText(ctx context.Context, output <-chan string, toolEvents <-chan string) error {
+func streamPlainText(ctx context.Context, output <-chan string, toolEvents <-chan toolEvent) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -216,6 +223,21 @@ func getTerminalWidth() int {
 	return width
 }
 
+// truncateURL shortens a URL for display, keeping the domain and path start
+func truncateURL(url string, maxLen int) string {
+	if len(url) <= maxLen {
+		return url
+	}
+	// Remove protocol prefix for cleaner display
+	display := strings.TrimPrefix(url, "https://")
+	display = strings.TrimPrefix(display, "http://")
+	if len(display) <= maxLen {
+		return display
+	}
+	// Truncate with ellipsis
+	return display[:maxLen-3] + "..."
+}
+
 // askStreamModel is a bubbletea model for streaming ask responses
 type askStreamModel struct {
 	spinner     spinner.Model
@@ -226,6 +248,7 @@ type askStreamModel struct {
 	width       int
 	loading     bool
 	phase       string    // Current phase: "Thinking", "Responding"
+	toolPhase   string    // Phase during tool execution (after content started), empty when not in tool
 	startTime   time.Time // For elapsed time display
 }
 
@@ -233,7 +256,10 @@ type askContentMsg string
 type askDoneMsg struct{}
 type askCancelledMsg struct{}
 type askTickMsg time.Time
-type askToolStartMsg string // Tool name being executed
+type askToolStartMsg struct {
+	Name string // Tool name being executed
+	Info string // Additional info (e.g., URL)
+}
 
 func newAskStreamModel() askStreamModel {
 	width := getTerminalWidth()
@@ -279,6 +305,11 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case askContentMsg:
+		// If we were in tool phase, add newlines to separate
+		if m.toolPhase != "" {
+			m.content.WriteString("\n\n")
+			m.toolPhase = ""
+		}
 		m.loading = false
 		m.phase = "Responding"
 		m.content.WriteString(string(msg))
@@ -296,26 +327,40 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case askTickMsg:
 		// Continue ticking for elapsed time updates
-		if m.loading {
+		if m.loading || m.toolPhase != "" {
 			return m, m.tickEvery()
 		}
 
 	case askToolStartMsg:
 		// Tool execution starting/ending - update phase
-		toolName := string(msg)
-		if toolName == "" {
+		var newPhase string
+		if msg.Name == "" {
 			// Empty tool name means back to thinking
-			m.phase = "Thinking"
-		} else if toolName == llm.WebSearchToolName {
-			m.phase = "Searching"
-		} else if toolName == llm.ReadURLToolName {
-			m.phase = "Reading"
+			newPhase = "Thinking"
+		} else if msg.Name == llm.WebSearchToolName {
+			newPhase = "Searching"
+		} else if msg.Name == llm.ReadURLToolName {
+			if msg.Info != "" {
+				// Show truncated URL in dim style
+				url := truncateURL(msg.Info, 50)
+				newPhase = fmt.Sprintf("Reading \x1b[2m%s\x1b[0m", url)
+			} else {
+				newPhase = "Reading"
+			}
 		} else {
-			m.phase = "Running " + toolName
+			newPhase = "Running " + msg.Name
 		}
 
+		// If content has already started streaming, use toolPhase to show spinner at end
+		if !m.loading {
+			m.toolPhase = newPhase
+			// Return a command to keep spinner animating
+			return m, m.spinner.Tick
+		}
+		m.phase = newPhase
+
 	case spinner.TickMsg:
-		if m.loading {
+		if m.loading || m.toolPhase != "" {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			return m, cmd
@@ -348,11 +393,17 @@ func (m askStreamModel) View() string {
 		return ""
 	}
 
+	// If in tool phase, append spinner at end of content
+	if m.toolPhase != "" {
+		elapsed := time.Since(m.startTime)
+		return m.rendered + fmt.Sprintf("\n%s %s... %.0fs", m.spinner.View(), m.toolPhase, elapsed.Seconds())
+	}
+
 	return m.rendered
 }
 
 // streamWithGlamour renders markdown beautifully as content streams in
-func streamWithGlamour(ctx context.Context, output <-chan string, toolEvents <-chan string) error {
+func streamWithGlamour(ctx context.Context, output <-chan string, toolEvents <-chan toolEvent) error {
 	model := newAskStreamModel()
 
 	// Create program - use inline mode so output stays in terminal
@@ -367,9 +418,9 @@ func streamWithGlamour(ctx context.Context, output <-chan string, toolEvents <-c
 			case <-ctx.Done():
 				p.Send(askCancelledMsg{})
 				return
-			case toolName, ok := <-toolEvents:
+			case ev, ok := <-toolEvents:
 				if ok {
-					p.Send(askToolStartMsg(toolName))
+					p.Send(askToolStartMsg{Name: ev.Name, Info: ev.Info})
 				}
 			case chunk, ok := <-output:
 				if !ok {
