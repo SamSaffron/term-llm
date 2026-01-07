@@ -258,6 +258,17 @@ func collectSuggestions(ctx context.Context, engine *llm.Engine, req llm.Request
 			continue
 		}
 
+		// Handle retry events (rate limit backoff)
+		if event.Type == llm.EventRetry {
+			status := fmt.Sprintf("Rate limited (%d/%d), waiting %.0fs...",
+				event.RetryAttempt, event.RetryMaxAttempts, event.RetryWaitSecs)
+			select {
+			case progressCh <- ui.ProgressUpdate{Status: status}:
+			default:
+			}
+			continue
+		}
+
 		// Send phase update on first event
 		if !sentFirstToken {
 			sentFirstToken = true

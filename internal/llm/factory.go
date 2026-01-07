@@ -39,7 +39,18 @@ func ParseProviderModel(s string) (string, string, error) {
 }
 
 // NewProvider creates a new LLM provider based on the config.
+// Providers are wrapped with automatic retry for rate limits (429) and transient errors.
 func NewProvider(cfg *config.Config) (Provider, error) {
+	provider, err := newProviderInternal(cfg)
+	if err != nil {
+		return nil, err
+	}
+	// Wrap with retry logic (enabled by default)
+	return WrapWithRetry(provider, DefaultRetryConfig()), nil
+}
+
+// newProviderInternal creates the underlying provider without retry wrapper.
+func newProviderInternal(cfg *config.Config) (Provider, error) {
 	switch cfg.Provider {
 	case "anthropic":
 		return NewAnthropicProvider(cfg.Anthropic.APIKey, cfg.Anthropic.Model), nil

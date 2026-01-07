@@ -167,6 +167,17 @@ func runAsk(cmd *cobra.Command, args []string) error {
 				default:
 				}
 			}
+			if event.Type == llm.EventRetry {
+				select {
+				case toolEvents <- toolEvent{
+					IsRetry:          true,
+					RetryAttempt:     event.RetryAttempt,
+					RetryMaxAttempts: event.RetryMaxAttempts,
+					RetryWaitSecs:    event.RetryWaitSecs,
+				}:
+				default:
+				}
+			}
 			if event.Type == llm.EventTextDelta && event.Text != "" {
 				output <- event.Text
 			}
@@ -194,6 +205,11 @@ func runAsk(cmd *cobra.Command, args []string) error {
 type toolEvent struct {
 	Name string // Tool name (e.g., "web_search", "read_url")
 	Info string // Additional info (e.g., URL being fetched)
+	// Retry fields (when IsRetry is true)
+	IsRetry          bool
+	RetryAttempt     int
+	RetryMaxAttempts int
+	RetryWaitSecs    float64
 }
 
 // streamPlainText streams text directly without formatting
@@ -202,8 +218,12 @@ func streamPlainText(ctx context.Context, output <-chan string, toolEvents <-cha
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-toolEvents:
-			// Ignore tool events in plain text mode
+		case ev := <-toolEvents:
+			// Show retry status in plain text mode
+			if ev.IsRetry {
+				fmt.Fprintf(os.Stderr, "\rRate limited (%d/%d), waiting %.0fs...\n",
+					ev.RetryAttempt, ev.RetryMaxAttempts, ev.RetryWaitSecs)
+			}
 		case chunk, ok := <-output:
 			if !ok {
 				fmt.Println()
@@ -249,6 +269,7 @@ type askStreamModel struct {
 	loading     bool
 	phase       string    // Current phase: "Thinking", "Responding"
 	toolPhase   string    // Phase during tool execution (after content started), empty when not in tool
+	retryStatus string    // Retry status (e.g., "Rate limited (2/5), waiting 5s...")
 	startTime   time.Time // For elapsed time display
 }
 
@@ -259,6 +280,11 @@ type askTickMsg time.Time
 type askToolStartMsg struct {
 	Name string // Tool name being executed
 	Info string // Additional info (e.g., URL)
+}
+type askRetryMsg struct {
+	Attempt     int
+	MaxAttempts int
+	WaitSecs    float64
 }
 
 func newAskStreamModel() askStreamModel {
@@ -331,7 +357,15 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.tickEvery()
 		}
 
+	case askRetryMsg:
+		// Rate limit retry - update status
+		m.retryStatus = fmt.Sprintf("Rate limited (%d/%d), waiting %.0fs...",
+			msg.Attempt, msg.MaxAttempts, msg.WaitSecs)
+		return m, m.tickEvery()
+
 	case askToolStartMsg:
+		// Clear retry status when tool starts
+		m.retryStatus = ""
 		// Tool execution starting/ending - update phase
 		var newPhase string
 		if msg.Name == "" {
@@ -386,7 +420,12 @@ func (m askStreamModel) render() string {
 func (m askStreamModel) View() string {
 	if m.loading {
 		elapsed := time.Since(m.startTime)
-		return fmt.Sprintf("%s %s... %.0fs %s", m.spinner.View(), m.phase, elapsed.Seconds(), m.styles.Muted.Render("(esc to cancel)"))
+		view := fmt.Sprintf("%s %s... %.0fs", m.spinner.View(), m.phase, elapsed.Seconds())
+		if m.retryStatus != "" {
+			view += " | " + m.retryStatus
+		}
+		view += " " + m.styles.Muted.Render("(esc to cancel)")
+		return view
 	}
 
 	if m.rendered == "" {
@@ -420,7 +459,15 @@ func streamWithGlamour(ctx context.Context, output <-chan string, toolEvents <-c
 				return
 			case ev, ok := <-toolEvents:
 				if ok {
-					p.Send(askToolStartMsg{Name: ev.Name, Info: ev.Info})
+					if ev.IsRetry {
+						p.Send(askRetryMsg{
+							Attempt:     ev.RetryAttempt,
+							MaxAttempts: ev.RetryMaxAttempts,
+							WaitSecs:    ev.RetryWaitSecs,
+						})
+					} else {
+						p.Send(askToolStartMsg{Name: ev.Name, Info: ev.Info})
+					}
 				}
 			case chunk, ok := <-output:
 				if !ok {

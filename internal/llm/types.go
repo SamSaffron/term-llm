@@ -122,6 +122,7 @@ const (
 	EventUsage         EventType = "usage"
 	EventDone          EventType = "done"
 	EventError         EventType = "error"
+	EventRetry         EventType = "retry" // Emitted when retrying after rate limit
 )
 
 // Event represents a streamed output update.
@@ -133,6 +134,10 @@ type Event struct {
 	ToolInfo string // For EventToolExecStart: additional info (e.g., URL being fetched)
 	Use      *Usage
 	Err      error
+	// Retry fields (for EventRetry)
+	RetryAttempt     int
+	RetryMaxAttempts int
+	RetryWaitSecs    float64
 }
 
 // Usage captures token usage if available.
