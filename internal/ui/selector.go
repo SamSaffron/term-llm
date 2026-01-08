@@ -141,28 +141,15 @@ func (m spinnerModel) View() string {
 		b.WriteString("\n")
 	}
 
-	// Spinner with dynamic phase
-	b.WriteString(m.spinner.View())
-	b.WriteString(" " + m.phase + "...")
-
-	// Output tokens (if available)
-	if m.outputTokens > 0 {
-		b.WriteString(fmt.Sprintf(" %d tokens |", m.outputTokens))
-	}
-
-	// Elapsed time
-	elapsed := time.Since(m.startTime)
-	b.WriteString(fmt.Sprintf(" %.1fs", elapsed.Seconds()))
-
-	// Current status (if set)
-	if m.status != "" {
-		b.WriteString(" | ")
-		b.WriteString(m.status)
-	}
-
-	// Cancel hint
-	b.WriteString(" ")
-	b.WriteString(m.styles.Muted.Render("(esc to cancel)"))
+	// Streaming indicator
+	b.WriteString(StreamingIndicator{
+		Spinner:    m.spinner.View(),
+		Phase:      m.phase,
+		Elapsed:    time.Since(m.startTime),
+		Tokens:     m.outputTokens,
+		Status:     m.status,
+		ShowCancel: true,
+	}.Render(m.styles))
 
 	return b.String()
 }

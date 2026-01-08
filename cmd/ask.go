@@ -419,13 +419,13 @@ func (m askStreamModel) render() string {
 
 func (m askStreamModel) View() string {
 	if m.loading {
-		elapsed := time.Since(m.startTime)
-		view := fmt.Sprintf("%s %s... %.0fs", m.spinner.View(), m.phase, elapsed.Seconds())
-		if m.retryStatus != "" {
-			view += " | " + m.retryStatus
-		}
-		view += " " + m.styles.Muted.Render("(esc to cancel)")
-		return view
+		return ui.StreamingIndicator{
+			Spinner:    m.spinner.View(),
+			Phase:      m.phase,
+			Elapsed:    time.Since(m.startTime),
+			Status:     m.retryStatus,
+			ShowCancel: true,
+		}.Render(m.styles)
 	}
 
 	if m.rendered == "" {
@@ -434,8 +434,12 @@ func (m askStreamModel) View() string {
 
 	// If in tool phase, append spinner at end of content
 	if m.toolPhase != "" {
-		elapsed := time.Since(m.startTime)
-		return m.rendered + fmt.Sprintf("\n%s %s... %.0fs", m.spinner.View(), m.toolPhase, elapsed.Seconds())
+		return m.rendered + "\n" + ui.StreamingIndicator{
+			Spinner:    m.spinner.View(),
+			Phase:      m.toolPhase,
+			Elapsed:    time.Since(m.startTime),
+			ShowCancel: false,
+		}.Render(m.styles)
 	}
 
 	return m.rendered

@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/samsaffron/term-llm/internal/image"
 	"github.com/samsaffron/term-llm/internal/signal"
+	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -194,6 +195,7 @@ type imageSpinnerModel struct {
 	start    time.Time
 	provider image.ImageProvider
 	generate func() (*image.ImageResult, error)
+	styles   *ui.Styles
 }
 
 type imageResultMsg struct {
@@ -237,8 +239,12 @@ func (m imageSpinnerModel) View() string {
 	if m.done {
 		return ""
 	}
-	elapsed := time.Since(m.start).Truncate(time.Second)
-	return fmt.Sprintf("%s %s (%s)...\n", m.spinner.View(), m.message, elapsed)
+	return ui.StreamingIndicator{
+		Spinner:    m.spinner.View(),
+		Phase:      m.message,
+		Elapsed:    time.Since(m.start),
+		ShowCancel: true,
+	}.Render(m.styles) + "\n"
 }
 
 func runImageWithSpinner(ctx context.Context, provider image.ImageProvider, generate func() (*image.ImageResult, error), message string) (*image.ImageResult, error) {
@@ -252,6 +258,7 @@ func runImageWithSpinner(ctx context.Context, provider image.ImageProvider, gene
 		start:    time.Now(),
 		provider: provider,
 		generate: generate,
+		styles:   ui.DefaultStyles(),
 	}
 
 	// Try to open /dev/tty for terminal input

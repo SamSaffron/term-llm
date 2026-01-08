@@ -12,6 +12,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/mattn/go-runewidth v0.0.16
 	github.com/openai/openai-go v1.12.0
+	github.com/sahilm/fuzzy v0.1.1
 	github.com/shogoki/gotextdiff v1.22.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
