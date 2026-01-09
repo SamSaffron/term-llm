@@ -18,15 +18,17 @@ import (
 )
 
 var (
-	execPrintOnly bool
-	execSearch    bool
-	execDebug     bool
-	execAutoPick  bool
-	execMaxOpts   int
-	execProvider  string
-	execFiles     []string
-	execMCP       string
-	execMaxTurns  int
+	execPrintOnly       bool
+	execSearch          bool
+	execDebug           bool
+	execAutoPick        bool
+	execMaxOpts         int
+	execProvider        string
+	execFiles           []string
+	execMCP             string
+	execMaxTurns        int
+	execNativeSearch    bool
+	execNoNativeSearch  bool
 )
 
 const (
@@ -68,6 +70,8 @@ func init() {
 	execCmd.Flags().StringArrayVarP(&execFiles, "file", "f", nil, "File(s) to include as context (supports globs, 'clipboard')")
 	execCmd.Flags().StringVar(&execMCP, "mcp", "", "Enable MCP server(s), comma-separated (e.g., playwright,filesystem)")
 	execCmd.Flags().IntVar(&execMaxTurns, "max-turns", 20, "Max agentic turns for tool execution")
+	execCmd.Flags().BoolVar(&execNativeSearch, "native-search", false, "Use provider's native search (override config)")
+	execCmd.Flags().BoolVar(&execNoNativeSearch, "no-native-search", false, "Use external search tools instead of provider's native search")
 	if err := execCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion); err != nil {
 		panic(fmt.Sprintf("failed to register provider completion: %v", err))
 	}
@@ -155,11 +159,12 @@ func runExec(cmd *cobra.Command, args []string) error {
 				Mode: llm.ToolChoiceName,
 				Name: llm.SuggestCommandsToolName,
 			},
-			ParallelToolCalls: true,
-			Search:            execSearch,
-			MaxTurns:          execMaxTurns,
-			Debug:             debugMode,
-			DebugRaw:          debugRaw,
+			ParallelToolCalls:   true,
+			Search:              execSearch,
+			ForceExternalSearch: resolveForceExternalSearch(cfg, execNativeSearch, execNoNativeSearch),
+			MaxTurns:            execMaxTurns,
+			Debug:               debugMode,
+			DebugRaw:            debugRaw,
 		}
 
 		// Create progress channel for spinner updates

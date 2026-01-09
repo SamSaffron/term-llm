@@ -25,11 +25,12 @@ var defaultHTTPClient = &http.Client{
 // OpenAICompatProvider implements Provider for OpenAI-compatible APIs
 // Used by Ollama, LM Studio, and other compatible servers.
 type OpenAICompatProvider struct {
-	baseURL string
-	apiKey  string // Optional, most servers ignore it
-	model   string
-	name    string // Display name: "Ollama", "LM Studio", etc.
-	headers map[string]string
+	baseURL     string            // Base URL - /chat/completions is appended
+	chatURL     string            // Full chat URL - used as-is (optional, overrides baseURL)
+	apiKey      string            // Optional, most servers ignore it
+	model       string
+	name        string            // Display name: "Ollama", "LM Studio", etc.
+	headers     map[string]string
 }
 
 func NewOpenAICompatProvider(baseURL, apiKey, model, name string) *OpenAICompatProvider {
@@ -37,10 +38,28 @@ func NewOpenAICompatProvider(baseURL, apiKey, model, name string) *OpenAICompatP
 }
 
 func NewOpenAICompatProviderWithHeaders(baseURL, apiKey, model, name string, headers map[string]string) *OpenAICompatProvider {
-	// Ensure baseURL doesn't have trailing slash
-	baseURL = strings.TrimSuffix(baseURL, "/")
+	return NewOpenAICompatProviderFull(baseURL, "", apiKey, model, name, headers)
+}
+
+// NewOpenAICompatProviderFull creates a provider with full control over URLs.
+// If chatURL is provided, it's used directly for chat completions (no path appending).
+// If only baseURL is provided, /chat/completions is appended.
+// baseURL is normalized to strip /chat/completions if accidentally included.
+func NewOpenAICompatProviderFull(baseURL, chatURL, apiKey, model, name string, headers map[string]string) *OpenAICompatProvider {
+	// Normalize baseURL - strip trailing slash and common endpoint paths
+	// This allows users to paste the full URL from documentation
+	if baseURL != "" {
+		baseURL = strings.TrimSuffix(baseURL, "/")
+		baseURL = strings.TrimSuffix(baseURL, "/chat/completions")
+		baseURL = strings.TrimSuffix(baseURL, "/") // In case URL was .../v1/chat/completions
+	}
+	// Normalize chatURL - just strip trailing slash
+	if chatURL != "" {
+		chatURL = strings.TrimSuffix(chatURL, "/")
+	}
 	return &OpenAICompatProvider{
 		baseURL: baseURL,
+		chatURL: chatURL,
 		apiKey:  apiKey,
 		model:   model,
 		name:    name,
@@ -180,7 +199,36 @@ func (p *OpenAICompatProvider) makeChatRequest(ctx context.Context, req oaiChatR
 	if err != nil {
 		return nil, err
 	}
+	// Use chatURL directly if set, otherwise use baseURL + endpoint
+	if p.chatURL != "" {
+		return p.makeRequestToURL(ctx, "POST", p.chatURL, body)
+	}
 	return p.makeRequest(ctx, "POST", "/chat/completions", body)
+}
+
+func (p *OpenAICompatProvider) makeRequestToURL(ctx context.Context, method, url string, body []byte) (*http.Response, error) {
+	var bodyReader io.Reader
+	if body != nil {
+		bodyReader = bytes.NewReader(body)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
+	if err != nil {
+		return nil, err
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	if p.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
+	for key, value := range p.headers {
+		if value == "" {
+			continue
+		}
+		httpReq.Header.Set(key, value)
+	}
+
+	return defaultHTTPClient.Do(httpReq)
 }
 
 // ListModels returns available models from the server.

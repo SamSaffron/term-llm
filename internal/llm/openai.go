@@ -137,19 +137,27 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 				return fmt.Errorf("openai API error: %w", err)
 			}
 			emitOpenAIResponseOutput(events, resp)
+			emitOpenAIUsage(events, resp)
 			events <- Event{Type: EventDone}
 			return nil
 		}
 
+		var lastResp *responses.Response
 		stream := p.client.Responses.NewStreaming(ctx, params)
 		for stream.Next() {
 			event := stream.Current()
 			if event.Type == "response.output_text.delta" && event.Text != "" {
 				events <- Event{Type: EventTextDelta, Text: event.Text}
 			}
+			if event.Type == "response.completed" {
+				lastResp = &event.Response
+			}
 		}
 		if err := stream.Err(); err != nil {
 			return fmt.Errorf("openai streaming error: %w", err)
+		}
+		if lastResp != nil {
+			emitOpenAIUsage(events, lastResp)
 		}
 		events <- Event{Type: EventDone}
 		return nil
@@ -357,6 +365,15 @@ func buildOpenAIMessageItems(role responses.EasyInputMessageRole, parts []Part) 
 
 	flushText()
 	return items
+}
+
+func emitOpenAIUsage(events chan<- Event, resp *responses.Response) {
+	if resp.Usage.OutputTokens > 0 {
+		events <- Event{Type: EventUsage, Use: &Usage{
+			InputTokens:  int(resp.Usage.InputTokens),
+			OutputTokens: int(resp.Usage.OutputTokens),
+		}}
+	}
 }
 
 func emitOpenAIResponseOutput(events chan<- Event, resp *responses.Response) {

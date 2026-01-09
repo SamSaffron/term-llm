@@ -34,6 +34,7 @@ type Request struct {
 	ToolChoice        ToolChoice
 	ParallelToolCalls bool
 	Search            bool
+	ForceExternalSearch bool // If true, use external search even if provider supports native
 	ReasoningEffort   string
 	MaxOutputTokens   int
 	Temperature       float32

@@ -10,22 +10,79 @@ import (
 	"github.com/spf13/viper"
 )
 
+// ProviderType defines the supported provider implementations
+type ProviderType string
+
+const (
+	ProviderTypeAnthropic    ProviderType = "anthropic"
+	ProviderTypeOpenAI       ProviderType = "openai"
+	ProviderTypeGemini       ProviderType = "gemini"
+	ProviderTypeOpenRouter   ProviderType = "openrouter"
+	ProviderTypeZen          ProviderType = "zen"
+	ProviderTypeOpenAICompat ProviderType = "openai_compatible"
+)
+
+// builtInProviderTypes maps known provider names to their types
+var builtInProviderTypes = map[string]ProviderType{
+	"anthropic":  ProviderTypeAnthropic,
+	"openai":     ProviderTypeOpenAI,
+	"gemini":     ProviderTypeGemini,
+	"openrouter": ProviderTypeOpenRouter,
+	"zen":        ProviderTypeZen,
+}
+
+// InferProviderType returns the provider type for a given provider name
+// Explicit type takes precedence, then built-in names, then defaults to openai_compatible
+func InferProviderType(name string, explicit ProviderType) ProviderType {
+	if explicit != "" {
+		return explicit
+	}
+	if t, ok := builtInProviderTypes[name]; ok {
+		return t
+	}
+	return ProviderTypeOpenAICompat
+}
+
+// ProviderConfig is a unified configuration for any provider
+type ProviderConfig struct {
+	// Type of provider - inferred from key name for built-ins, required for custom
+	Type ProviderType `mapstructure:"type"`
+
+	// Common fields
+	APIKey      string `mapstructure:"api_key"`
+	Model       string `mapstructure:"model"`
+	Credentials string `mapstructure:"credentials"` // "api_key", "claude", "codex", "gemini-cli"
+
+	// Search behavior - nil means auto (use native if available)
+	UseNativeSearch *bool `mapstructure:"use_native_search"`
+
+	// OpenAI-compatible specific
+	BaseURL string `mapstructure:"base_url"` // Base URL - /chat/completions is appended
+	URL     string `mapstructure:"url"`      // Full URL - used as-is without appending endpoint
+
+	// OpenRouter specific
+	AppURL   string `mapstructure:"app_url"`
+	AppTitle string `mapstructure:"app_title"`
+
+	// Runtime fields (populated after credential resolution)
+	ResolvedAPIKey string                              `mapstructure:"-"`
+	AccountID      string                              `mapstructure:"-"`
+	OAuthCreds     *credentials.GeminiOAuthCredentials `mapstructure:"-"`
+	ResolvedURL    string                              `mapstructure:"-"` // Resolved URL (after srv:// lookup)
+
+	// Lazy resolution tracking - these are resolved on-demand before inference
+	needsLazyResolution bool `mapstructure:"-"`
+}
+
 type Config struct {
-	Provider     string             `mapstructure:"provider"`
-	Diagnostics  DiagnosticsConfig  `mapstructure:"diagnostics"`
-	Exec         ExecConfig         `mapstructure:"exec"`
-	Ask          AskConfig          `mapstructure:"ask"`
-	Edit         EditConfig         `mapstructure:"edit"`
-	Image        ImageConfig        `mapstructure:"image"`
-	Theme        ThemeConfig        `mapstructure:"theme"`
-	Anthropic    AnthropicConfig    `mapstructure:"anthropic"`
-	OpenAI       OpenAIConfig       `mapstructure:"openai"`
-	OpenRouter   OpenRouterConfig   `mapstructure:"openrouter"`
-	Gemini       GeminiConfig       `mapstructure:"gemini"`
-	Zen          ZenConfig          `mapstructure:"zen"`
-	Ollama       OllamaConfig       `mapstructure:"ollama"`
-	LMStudio     LMStudioConfig     `mapstructure:"lmstudio"`
-	OpenAICompat OpenAICompatConfig `mapstructure:"openai-compat"`
+	DefaultProvider string                    `mapstructure:"default_provider"`
+	Providers       map[string]ProviderConfig `mapstructure:"providers"`
+	Diagnostics     DiagnosticsConfig         `mapstructure:"diagnostics"`
+	Exec            ExecConfig                `mapstructure:"exec"`
+	Ask             AskConfig                 `mapstructure:"ask"`
+	Edit            EditConfig                `mapstructure:"edit"`
+	Image           ImageConfig               `mapstructure:"image"`
+	Theme           ThemeConfig               `mapstructure:"theme"`
 }
 
 // DiagnosticsConfig configures diagnostic data collection
@@ -71,62 +128,6 @@ type EditConfig struct {
 	DiffFormat      string `mapstructure:"diff_format"`       // "auto", "udiff", or "replace" (default: auto)
 }
 
-type AnthropicConfig struct {
-	APIKey      string `mapstructure:"api_key"`
-	Model       string `mapstructure:"model"`
-	Credentials string `mapstructure:"credentials"` // "api_key" (default) or "claude"
-}
-
-type OpenAIConfig struct {
-	APIKey      string `mapstructure:"api_key"`
-	Model       string `mapstructure:"model"`
-	Credentials string `mapstructure:"credentials"` // "api_key" (default) or "codex"
-	AccountID   string // Populated at runtime when using Codex OAuth credentials
-}
-
-type OpenRouterConfig struct {
-	APIKey   string `mapstructure:"api_key"`
-	Model    string `mapstructure:"model"`
-	AppURL   string `mapstructure:"app_url"`
-	AppTitle string `mapstructure:"app_title"`
-}
-
-type GeminiConfig struct {
-	APIKey      string `mapstructure:"api_key"`
-	Model       string `mapstructure:"model"`
-	Credentials string `mapstructure:"credentials"` // "api_key" (default) or "gemini-cli"
-	// OAuth credentials populated at runtime when using gemini-cli
-	OAuthCreds *credentials.GeminiOAuthCredentials
-}
-
-// ZenConfig configures the OpenCode Zen provider
-// Zen provides free access to models like GLM 4.7 via opencode.ai
-// API key is optional - leave empty for free tier access
-type ZenConfig struct {
-	APIKey string `mapstructure:"api_key"` // Optional: leave empty for free tier
-	Model  string `mapstructure:"model"`
-}
-
-// OllamaConfig configures the Ollama provider (OpenAI-compatible)
-type OllamaConfig struct {
-	BaseURL string `mapstructure:"base_url"` // Default: http://localhost:11434/v1
-	Model   string `mapstructure:"model"`
-	APIKey  string `mapstructure:"api_key"` // Optional, Ollama ignores it
-}
-
-// LMStudioConfig configures the LM Studio provider (OpenAI-compatible)
-type LMStudioConfig struct {
-	BaseURL string `mapstructure:"base_url"` // Default: http://localhost:1234/v1
-	Model   string `mapstructure:"model"`
-	APIKey  string `mapstructure:"api_key"` // Optional, LM Studio ignores it
-}
-
-// OpenAICompatConfig configures a generic OpenAI-compatible server
-type OpenAICompatConfig struct {
-	BaseURL string `mapstructure:"base_url"` // Required - no default
-	Model   string `mapstructure:"model"`
-	APIKey  string `mapstructure:"api_key"` // Optional
-}
 
 // ImageConfig configures image generation settings
 type ImageConfig struct {
@@ -167,23 +168,19 @@ func Load() (*Config, error) {
 	viper.AddConfigPath(".")
 
 	// Set defaults
-	viper.SetDefault("provider", "anthropic")
+	viper.SetDefault("default_provider", "anthropic")
 	viper.SetDefault("exec.suggestions", 3)
-	// edit.provider and edit.model default to empty, inheriting from main provider
 	viper.SetDefault("edit.show_line_numbers", true)
 	viper.SetDefault("edit.context_lines", 3)
-	viper.SetDefault("edit.diff_format", "auto") // auto, udiff, or replace
-	viper.SetDefault("anthropic.model", "claude-sonnet-4-5")
-	viper.SetDefault("openai.model", "gpt-5.2")
-	viper.SetDefault("openrouter.model", "x-ai/grok-code-fast-1")
-	viper.SetDefault("openrouter.app_url", "https://github.com/samsaffron/term-llm")
-	viper.SetDefault("openrouter.app_title", "term-llm")
-	viper.SetDefault("gemini.model", "gemini-3-flash-preview")
-	viper.SetDefault("zen.model", "glm-4.7-free")
-	// OpenAI-compatible provider defaults
-	viper.SetDefault("ollama.base_url", "http://localhost:11434/v1")
-	viper.SetDefault("lmstudio.base_url", "http://localhost:1234/v1")
-	// openai-compat has no base_url default - it's required
+	viper.SetDefault("edit.diff_format", "auto")
+	// Provider defaults
+	viper.SetDefault("providers.anthropic.model", "claude-sonnet-4-5")
+	viper.SetDefault("providers.openai.model", "gpt-5.2")
+	viper.SetDefault("providers.openrouter.model", "x-ai/grok-code-fast-1")
+	viper.SetDefault("providers.openrouter.app_url", "https://github.com/samsaffron/term-llm")
+	viper.SetDefault("providers.openrouter.app_title", "term-llm")
+	viper.SetDefault("providers.gemini.model", "gemini-3-flash-preview")
+	viper.SetDefault("providers.zen.model", "glm-4.7-free")
 	// Image defaults
 	viper.SetDefault("image.provider", "gemini")
 	viper.SetDefault("image.output_dir", "~/Pictures/term-llm")
@@ -203,21 +200,19 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
-	// Resolve API keys based on credentials setting
-	if err := resolveAnthropicCredentials(&cfg.Anthropic); err != nil {
-		return nil, fmt.Errorf("anthropic credentials: %w", err)
+	// Initialize providers map if nil
+	if cfg.Providers == nil {
+		cfg.Providers = make(map[string]ProviderConfig)
 	}
-	if err := resolveOpenAICredentials(&cfg.OpenAI); err != nil {
-		return nil, fmt.Errorf("openai credentials: %w", err)
+
+	// Resolve credentials for all providers
+	for name, providerCfg := range cfg.Providers {
+		if err := resolveProviderCredentials(name, &providerCfg); err != nil {
+			return nil, fmt.Errorf("%s credentials: %w", name, err)
+		}
+		cfg.Providers[name] = providerCfg
 	}
-	resolveOpenRouterCredentials(&cfg.OpenRouter)
-	if err := resolveGeminiCredentials(&cfg.Gemini); err != nil {
-		return nil, fmt.Errorf("gemini credentials: %w", err)
-	}
-	resolveZenCredentials(&cfg.Zen)
-	resolveOllamaCredentials(&cfg.Ollama)
-	resolveLMStudioCredentials(&cfg.LMStudio)
-	resolveOpenAICompatCredentials(&cfg.OpenAICompat)
+
 	resolveImageCredentials(&cfg.Image)
 
 	return &cfg, nil
@@ -228,133 +223,169 @@ func Load() (*Config, error) {
 // If model is non-empty, it overrides the model for the active provider.
 func (c *Config) ApplyOverrides(provider, model string) {
 	if provider != "" {
-		c.Provider = provider
+		c.DefaultProvider = provider
 	}
-	if model != "" {
-		switch c.Provider {
-		case "anthropic":
-			c.Anthropic.Model = model
-		case "openai":
-			c.OpenAI.Model = model
-		case "openrouter":
-			c.OpenRouter.Model = model
-		case "gemini":
-			c.Gemini.Model = model
-		case "zen":
-			c.Zen.Model = model
-		case "ollama":
-			c.Ollama.Model = model
-		case "lmstudio":
-			c.LMStudio.Model = model
-		case "openai-compat":
-			c.OpenAICompat.Model = model
+	if model != "" && c.DefaultProvider != "" {
+		if cfg, ok := c.Providers[c.DefaultProvider]; ok {
+			cfg.Model = model
+			c.Providers[c.DefaultProvider] = cfg
 		}
 	}
 }
 
-// resolveAnthropicCredentials resolves Anthropic API credentials
-func resolveAnthropicCredentials(cfg *AnthropicConfig) error {
-	switch cfg.Credentials {
-	case "claude":
-		token, err := credentials.GetClaudeToken()
-		if err != nil {
-			return err
-		}
-		cfg.APIKey = token
-	default:
-		// Default: "api_key" - use config value or environment variable
-		cfg.APIKey = expandEnv(cfg.APIKey)
-		if cfg.APIKey == "" {
-			cfg.APIKey = os.Getenv("ANTHROPIC_API_KEY")
-		}
+// GetProviderConfig returns the config for the specified provider name.
+// Returns nil if the provider is not configured.
+func (c *Config) GetProviderConfig(name string) *ProviderConfig {
+	if cfg, ok := c.Providers[name]; ok {
+		return &cfg
 	}
 	return nil
 }
 
-// resolveOpenAICredentials resolves OpenAI API credentials
-func resolveOpenAICredentials(cfg *OpenAIConfig) error {
-	switch cfg.Credentials {
-	case "codex":
-		creds, err := credentials.GetCodexCredentials()
-		if err != nil {
-			return err
-		}
-		cfg.APIKey = creds.AccessToken
-		cfg.AccountID = creds.AccountID
-	default:
-		// Default: "api_key" - use config value or environment variable
-		cfg.APIKey = expandEnv(cfg.APIKey)
-		if cfg.APIKey == "" {
-			cfg.APIKey = os.Getenv("OPENAI_API_KEY")
-		}
-	}
-	return nil
+// GetActiveProviderConfig returns the config for the default provider.
+// Returns nil if the default provider is not configured.
+func (c *Config) GetActiveProviderConfig() *ProviderConfig {
+	return c.GetProviderConfig(c.DefaultProvider)
 }
 
-// resolveOpenRouterCredentials resolves OpenRouter API credentials
-func resolveOpenRouterCredentials(cfg *OpenRouterConfig) {
-	cfg.APIKey = expandEnv(cfg.APIKey)
-	if cfg.APIKey == "" {
-		cfg.APIKey = os.Getenv("OPENROUTER_API_KEY")
+// needsLazyResolve checks if a value requires expensive resolution (1Password, commands, SRV)
+func needsLazyResolve(value string) bool {
+	return strings.HasPrefix(value, "op://") ||
+		strings.HasPrefix(value, "srv://") ||
+		(strings.HasPrefix(value, "$(") && strings.HasSuffix(value, ")"))
+}
+
+// resolveProviderCredentials resolves credentials for a provider based on its type.
+// Expensive operations (op://, srv://, $()) are deferred - call ResolveForInference() before use.
+func resolveProviderCredentials(name string, cfg *ProviderConfig) error {
+	providerType := InferProviderType(name, cfg.Type)
+
+	// Check if URL fields need lazy resolution
+	if needsLazyResolve(cfg.BaseURL) || needsLazyResolve(cfg.URL) {
+		cfg.needsLazyResolution = true
+	} else {
+		// Resolve URL fields immediately (only env var expansion)
+		cfg.BaseURL = expandEnv(cfg.BaseURL)
+		cfg.URL = expandEnv(cfg.URL)
 	}
+
+	// Expand environment variables in other fields
 	cfg.AppURL = expandEnv(cfg.AppURL)
 	cfg.AppTitle = expandEnv(cfg.AppTitle)
-}
 
-// resolveGeminiCredentials resolves Gemini API credentials
-func resolveGeminiCredentials(cfg *GeminiConfig) error {
-	switch cfg.Credentials {
-	case "gemini-cli":
-		// Load OAuth credentials from gemini-cli
-		creds, err := credentials.GetGeminiOAuthCredentials()
-		if err != nil {
-			return err
+	// Check if api_key uses magic syntax (op://, $(), etc.)
+	// If so, defer resolution until inference time
+	if cfg.APIKey != "" && needsLazyResolve(cfg.APIKey) {
+		cfg.needsLazyResolution = true
+		return nil
+	}
+
+	// Provider-specific credential resolution (non-lazy)
+	switch providerType {
+	case ProviderTypeAnthropic:
+		switch cfg.Credentials {
+		case "claude":
+			token, err := credentials.GetClaudeToken()
+			if err != nil {
+				return err
+			}
+			cfg.ResolvedAPIKey = token
+		default:
+			cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
+			if cfg.ResolvedAPIKey == "" {
+				cfg.ResolvedAPIKey = os.Getenv("ANTHROPIC_API_KEY")
+			}
 		}
-		cfg.OAuthCreds = creds
-	default:
-		// Default: "api_key" - use config value or environment variable
-		cfg.APIKey = expandEnv(cfg.APIKey)
-		if cfg.APIKey == "" {
-			cfg.APIKey = os.Getenv("GEMINI_API_KEY")
+
+	case ProviderTypeOpenAI:
+		switch cfg.Credentials {
+		case "codex":
+			creds, err := credentials.GetCodexCredentials()
+			if err != nil {
+				return err
+			}
+			cfg.ResolvedAPIKey = creds.AccessToken
+			cfg.AccountID = creds.AccountID
+		default:
+			cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
+			if cfg.ResolvedAPIKey == "" {
+				cfg.ResolvedAPIKey = os.Getenv("OPENAI_API_KEY")
+			}
+		}
+
+	case ProviderTypeGemini:
+		switch cfg.Credentials {
+		case "gemini-cli":
+			creds, err := credentials.GetGeminiOAuthCredentials()
+			if err != nil {
+				return err
+			}
+			cfg.OAuthCreds = creds
+		default:
+			cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
+			if cfg.ResolvedAPIKey == "" {
+				cfg.ResolvedAPIKey = os.Getenv("GEMINI_API_KEY")
+			}
+		}
+
+	case ProviderTypeOpenRouter:
+		cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
+		if cfg.ResolvedAPIKey == "" {
+			cfg.ResolvedAPIKey = os.Getenv("OPENROUTER_API_KEY")
+		}
+
+	case ProviderTypeZen:
+		cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
+		if cfg.ResolvedAPIKey == "" {
+			cfg.ResolvedAPIKey = os.Getenv("ZEN_API_KEY")
+		}
+		// Empty API key is valid for free tier
+
+	case ProviderTypeOpenAICompat:
+		cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
+		if cfg.ResolvedAPIKey == "" {
+			// Try provider-specific env var (e.g., CEREBRAS_API_KEY for "cerebras")
+			envName := strings.ToUpper(name) + "_API_KEY"
+			cfg.ResolvedAPIKey = os.Getenv(envName)
 		}
 	}
+
 	return nil
 }
 
-// resolveZenCredentials resolves OpenCode Zen API credentials
-// API key is optional - empty means free tier access
-func resolveZenCredentials(cfg *ZenConfig) {
-	cfg.APIKey = expandEnv(cfg.APIKey)
-	if cfg.APIKey == "" {
-		cfg.APIKey = os.Getenv("ZEN_API_KEY")
+// ResolveForInference performs lazy resolution of expensive config values (op://, srv://, $()).
+// Call this before creating a provider for inference.
+func (cfg *ProviderConfig) ResolveForInference() error {
+	if !cfg.needsLazyResolution {
+		return nil
 	}
-	// Empty API key is valid - Zen offers free tier access
-}
 
-// resolveOllamaCredentials resolves Ollama credentials
-// API key is optional - Ollama ignores it
-func resolveOllamaCredentials(cfg *OllamaConfig) {
-	cfg.APIKey = expandEnv(cfg.APIKey)
-	if cfg.APIKey == "" {
-		cfg.APIKey = os.Getenv("OLLAMA_API_KEY")
+	var err error
+
+	// Resolve URL fields
+	if needsLazyResolve(cfg.BaseURL) {
+		cfg.ResolvedURL, err = ResolveValue(cfg.BaseURL)
+		if err != nil {
+			return fmt.Errorf("base_url: %w", err)
+		}
 	}
-	cfg.BaseURL = expandEnv(cfg.BaseURL)
-}
-
-// resolveLMStudioCredentials resolves LM Studio credentials
-// API key is optional - LM Studio ignores it
-func resolveLMStudioCredentials(cfg *LMStudioConfig) {
-	cfg.APIKey = expandEnv(cfg.APIKey)
-	if cfg.APIKey == "" {
-		cfg.APIKey = os.Getenv("LMSTUDIO_API_KEY")
+	if needsLazyResolve(cfg.URL) {
+		cfg.ResolvedURL, err = ResolveValue(cfg.URL)
+		if err != nil {
+			return fmt.Errorf("url: %w", err)
+		}
 	}
-	cfg.BaseURL = expandEnv(cfg.BaseURL)
-}
 
-// resolveOpenAICompatCredentials resolves generic OpenAI-compatible credentials
-func resolveOpenAICompatCredentials(cfg *OpenAICompatConfig) {
-	cfg.APIKey = expandEnv(cfg.APIKey)
-	cfg.BaseURL = expandEnv(cfg.BaseURL)
+	// Resolve API key
+	if needsLazyResolve(cfg.APIKey) {
+		cfg.ResolvedAPIKey, err = ResolveValue(cfg.APIKey)
+		if err != nil {
+			return fmt.Errorf("api_key: %w", err)
+		}
+	}
+
+	cfg.needsLazyResolution = false
+	return nil
 }
 
 // resolveImageCredentials resolves API credentials for all image providers
@@ -453,39 +484,34 @@ func Save(cfg *Config) error {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
-	content := fmt.Sprintf(`provider: %s
+	// Build providers section
+	var providers strings.Builder
+	providers.WriteString("providers:\n")
+	for name, p := range cfg.Providers {
+		providers.WriteString(fmt.Sprintf("  %s:\n", name))
+		if p.Type != "" {
+			providers.WriteString(fmt.Sprintf("    type: %s\n", p.Type))
+		}
+		if p.Model != "" {
+			providers.WriteString(fmt.Sprintf("    model: %s\n", p.Model))
+		}
+		if p.BaseURL != "" {
+			providers.WriteString(fmt.Sprintf("    base_url: %s\n", p.BaseURL))
+		}
+		if p.AppURL != "" {
+			providers.WriteString(fmt.Sprintf("    app_url: %s\n", p.AppURL))
+		}
+		if p.AppTitle != "" {
+			providers.WriteString(fmt.Sprintf("    app_title: %s\n", p.AppTitle))
+		}
+	}
+
+	content := fmt.Sprintf(`default_provider: %s
 
 exec:
   suggestions: %d
-  # Custom instructions for command suggestions (e.g., OS details, tool preferences)
-  # instructions: |
-  #   I use Arch Linux with zsh.
-  #   Prefer ripgrep over grep, fd over find.
 
-ask:
-  # Custom system prompt for ask command
-  # instructions: |
-  #   Be concise. I'm an experienced developer.
-
-anthropic:
-  model: %s
-
-openai:
-  model: %s
-
-openrouter:
-  model: %s
-  app_url: %s
-  app_title: %s
-
-gemini:
-  model: %s
-
-zen:
-  model: %s
-  # api_key: optional - leave empty for free tier access
-  # Set ZEN_API_KEY env var or add api_key here if you have one
-`, cfg.Provider, cfg.Exec.Suggestions, cfg.Anthropic.Model, cfg.OpenAI.Model, cfg.OpenRouter.Model, cfg.OpenRouter.AppURL, cfg.OpenRouter.AppTitle, cfg.Gemini.Model, cfg.Zen.Model)
+%s`, cfg.DefaultProvider, cfg.Exec.Suggestions, providers.String())
 
 	return os.WriteFile(path, []byte(content), 0600)
 }

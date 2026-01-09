@@ -34,7 +34,7 @@
   - Codex OAuth credentials from `~/.codex/auth.json`
   - Claude Code credentials from system keychain
   - gemini-cli OAuth credentials from `~/.gemini/oauth_creds.json`
-- OpenCode Zen (`provider: zen`) works without an API key (free tier), or set `ZEN_API_KEY` for paid models.
+- OpenCode Zen (`default_provider: zen`) works without an API key (free tier), or set `ZEN_API_KEY` for paid models.
 - Use `--provider` flag to override provider for testing: `term-llm exec --provider zen "list files"`
 - Do not commit API keys or local config changes.
 

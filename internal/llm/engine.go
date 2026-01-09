@@ -56,7 +56,7 @@ func (e *Engine) Tools() *ToolRegistry {
 func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	if req.Search {
 		caps := e.provider.Capabilities()
-		needsExternalSearch := !caps.NativeWebSearch
+		needsExternalSearch := !caps.NativeWebSearch || req.ForceExternalSearch
 		// Only add external fetch if we're also using external search.
 		// Native search (e.g., Gemini GoogleSearch) can't be combined with function calling.
 		needsExternalFetch := needsExternalSearch && !caps.NativeWebFetch

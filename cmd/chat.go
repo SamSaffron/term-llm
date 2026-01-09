@@ -14,11 +14,13 @@ import (
 )
 
 var (
-	chatDebug    bool
-	chatSearch   bool
-	chatProvider string
-	chatMCP      string
-	chatMaxTurns int
+	chatDebug           bool
+	chatSearch          bool
+	chatProvider        string
+	chatMCP             string
+	chatMaxTurns        int
+	chatNativeSearch    bool
+	chatNoNativeSearch  bool
 )
 
 var chatCmd = &cobra.Command{
@@ -57,6 +59,8 @@ func init() {
 	chatCmd.Flags().StringVar(&chatProvider, "provider", "", "Override provider, optionally with model (e.g., openai:gpt-4o)")
 	chatCmd.Flags().StringVar(&chatMCP, "mcp", "", "Enable MCP server(s), comma-separated (e.g., playwright,filesystem)")
 	chatCmd.Flags().IntVar(&chatMaxTurns, "max-turns", 200, "Max agentic turns for tool execution")
+	chatCmd.Flags().BoolVar(&chatNativeSearch, "native-search", false, "Use provider's native search (override config)")
+	chatCmd.Flags().BoolVar(&chatNoNativeSearch, "no-native-search", false, "Use external search tools instead of provider's native search")
 	if err := chatCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion); err != nil {
 		panic(fmt.Sprintf("failed to register provider completion: %v", err))
 	}
@@ -112,8 +116,11 @@ func runChat(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Resolve force external search setting from config and flags
+	forceExternalSearch := resolveForceExternalSearch(cfg, chatNativeSearch, chatNoNativeSearch)
+
 	// Create chat model
-	model := chat.New(cfg, provider, engine, modelName, mcpManager, chatMaxTurns)
+	model := chat.New(cfg, provider, engine, modelName, mcpManager, chatMaxTurns, forceExternalSearch)
 
 	// Set initial search state from flag
 	if chatSearch {
@@ -138,24 +145,8 @@ func runChat(cmd *cobra.Command, args []string) error {
 
 // getModelName extracts the model name from config based on provider
 func getModelName(cfg *config.Config) string {
-	switch cfg.Provider {
-	case "anthropic":
-		return cfg.Anthropic.Model
-	case "openai":
-		return cfg.OpenAI.Model
-	case "openrouter":
-		return cfg.OpenRouter.Model
-	case "gemini":
-		return cfg.Gemini.Model
-	case "zen":
-		return cfg.Zen.Model
-	case "ollama":
-		return cfg.Ollama.Model
-	case "lmstudio":
-		return cfg.LMStudio.Model
-	case "openai-compat":
-		return cfg.OpenAICompat.Model
-	default:
-		return "unknown"
+	if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
+		return providerCfg.Model
 	}
+	return "unknown"
 }

@@ -1,8 +1,13 @@
 package llm
 
-import "strings"
+import (
+	"sort"
+	"strings"
 
-// ProviderModels contains the curated list of common models per LLM provider
+	"github.com/samsaffron/term-llm/internal/config"
+)
+
+// ProviderModels contains the curated list of common models per LLM provider type
 var ProviderModels = map[string][]string{
 	"anthropic": {
 		// Claude 4.5 (current)
@@ -48,9 +53,35 @@ var ImageProviderModels = map[string][]string{
 	"flux":   {"flux-2-pro", "flux-kontext-pro", "flux-2-max"},
 }
 
-// GetProviderNames returns valid provider names for LLM
-func GetProviderNames() []string {
-	return []string{"anthropic", "openai", "openrouter", "gemini", "zen", "ollama", "lmstudio", "openai-compat"}
+// GetBuiltInProviderNames returns the built-in provider type names
+func GetBuiltInProviderNames() []string {
+	return []string{"anthropic", "openai", "openrouter", "gemini", "zen"}
+}
+
+// GetProviderNames returns valid provider names from config plus built-in types.
+// If cfg is nil, returns only built-in provider names.
+func GetProviderNames(cfg *config.Config) []string {
+	names := make(map[string]bool)
+
+	// Add built-in provider names
+	for _, name := range GetBuiltInProviderNames() {
+		names[name] = true
+	}
+
+	// Add configured provider names
+	if cfg != nil {
+		for name := range cfg.Providers {
+			names[name] = true
+		}
+	}
+
+	// Convert to sorted slice
+	result := make([]string, 0, len(names))
+	for name := range names {
+		result = append(result, name)
+	}
+	sort.Strings(result)
+	return result
 }
 
 // GetImageProviderNames returns valid provider names for image generation
@@ -59,8 +90,9 @@ func GetImageProviderNames() []string {
 }
 
 // GetProviderCompletions returns completions for the --provider flag
-// It handles both provider-only and provider:model completion scenarios
-func GetProviderCompletions(toComplete string, isImage bool) []string {
+// It handles both provider-only and provider:model completion scenarios.
+// For LLM providers, pass a config to include custom provider names.
+func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config) []string {
 	var providerNames []string
 	var modelMap map[string][]string
 
@@ -68,7 +100,7 @@ func GetProviderCompletions(toComplete string, isImage bool) []string {
 		providerNames = GetImageProviderNames()
 		modelMap = ImageProviderModels
 	} else {
-		providerNames = GetProviderNames()
+		providerNames = GetProviderNames(cfg)
 		modelMap = ProviderModels
 	}
 
@@ -78,10 +110,16 @@ func GetProviderCompletions(toComplete string, isImage bool) []string {
 		provider := parts[0]
 		modelPrefix := parts[1]
 
-		// Get models for this provider
-		models, ok := modelMap[provider]
+		// Get models for this provider type
+		// For custom providers, infer the type and use that type's models
+		providerType := string(config.InferProviderType(provider, ""))
+		models, ok := modelMap[providerType]
 		if !ok {
-			return nil
+			// Fallback to provider name directly
+			models, ok = modelMap[provider]
+			if !ok {
+				return nil
+			}
 		}
 
 		// Filter by prefix and return as provider:model

@@ -35,7 +35,7 @@ func applyProviderOverrides(cfg *config.Config, provider, model, providerFlag st
 		return nil
 	}
 
-	overrideProvider, overrideModel, err := llm.ParseProviderModel(providerFlag)
+	overrideProvider, overrideModel, err := llm.ParseProviderModel(providerFlag, cfg)
 	if err != nil {
 		return err
 	}
@@ -54,4 +54,27 @@ func initThemeFromConfig(cfg *config.Config) {
 		Text:      cfg.Theme.Text,
 		Spinner:   cfg.Theme.Spinner,
 	})
+}
+
+// resolveForceExternalSearch determines whether to force external search based on
+// CLI flags and provider config. Flag values take precedence over config.
+// nativeSearchFlag: true if --native-search was explicitly set
+// noNativeSearchFlag: true if --no-native-search was explicitly set
+func resolveForceExternalSearch(cfg *config.Config, nativeSearchFlag, noNativeSearchFlag bool) bool {
+	// CLI flags take precedence
+	if noNativeSearchFlag {
+		return true // force external
+	}
+	if nativeSearchFlag {
+		return false // force native
+	}
+
+	// Fall back to config
+	providerCfg := cfg.GetActiveProviderConfig()
+	if providerCfg != nil && providerCfg.UseNativeSearch != nil {
+		return !*providerCfg.UseNativeSearch // if UseNativeSearch is false, force external
+	}
+
+	// Default: use native if provider supports it (don't force external)
+	return false
 }

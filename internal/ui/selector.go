@@ -502,17 +502,25 @@ func RunSetupWizard() (*config.Config, error) {
 	}
 
 	cfg := &config.Config{
-		Provider: provider,
-		Anthropic: config.AnthropicConfig{
-			Model: "claude-sonnet-4-5",
-		},
-		OpenAI: config.OpenAIConfig{
-			Model: "gpt-5.2",
-		},
-		OpenRouter: config.OpenRouterConfig{
-			Model:    "x-ai/grok-code-fast-1",
-			AppURL:   "https://github.com/samsaffron/term-llm",
-			AppTitle: "term-llm",
+		DefaultProvider: provider,
+		Providers: map[string]config.ProviderConfig{
+			"anthropic": {
+				Model: "claude-sonnet-4-5",
+			},
+			"openai": {
+				Model: "gpt-5.2",
+			},
+			"openrouter": {
+				Model:    "x-ai/grok-code-fast-1",
+				AppURL:   "https://github.com/samsaffron/term-llm",
+				AppTitle: "term-llm",
+			},
+			"gemini": {
+				Model: "gemini-3-flash-preview",
+			},
+			"zen": {
+				Model: "glm-4.7-free",
+			},
 		},
 	}
 

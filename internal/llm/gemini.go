@@ -153,15 +153,18 @@ func (p *GeminiProvider) Stream(ctx context.Context, req Request) (Stream, error
 				argsJSON, _ := jsonMarshal(fc.Args)
 				events <- Event{Type: EventToolCall, Tool: &ToolCall{ID: "", Name: fc.Name, Arguments: argsJSON}}
 			}
+			emitGeminiUsage(events, resp)
 			events <- Event{Type: EventDone}
 			return nil
 		}
 
 		var sources []string
+		var lastResp *genai.GenerateContentResponse
 		for resp, err := range client.Models.GenerateContentStream(ctx, chooseModel(req.Model, p.model), contents, config) {
 			if err != nil {
 				return fmt.Errorf("gemini streaming error: %w", err)
 			}
+			lastResp = resp
 			if text := resp.Text(); text != "" {
 				events <- Event{Type: EventTextDelta, Text: text}
 			}
@@ -191,9 +194,22 @@ func (p *GeminiProvider) Stream(ctx context.Context, req Request) (Stream, error
 				events <- Event{Type: EventTextDelta, Text: "- " + source + "\n"}
 			}
 		}
+		emitGeminiUsage(events, lastResp)
 		events <- Event{Type: EventDone}
 		return nil
 	}), nil
+}
+
+func emitGeminiUsage(events chan<- Event, resp *genai.GenerateContentResponse) {
+	if resp == nil || resp.UsageMetadata == nil {
+		return
+	}
+	if resp.UsageMetadata.TotalTokenCount > 0 {
+		events <- Event{Type: EventUsage, Use: &Usage{
+			InputTokens:  int(resp.UsageMetadata.PromptTokenCount),
+			OutputTokens: int(resp.UsageMetadata.CandidatesTokenCount),
+		}}
+	}
 }
 
 func buildGeminiTools(specs []ToolSpec) []*genai.Tool {

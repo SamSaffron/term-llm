@@ -3,6 +3,7 @@ package cmd
 import (
 	"strings"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/spf13/cobra"
@@ -10,7 +11,9 @@ import (
 
 // ProviderFlagCompletion handles --provider flag completion for LLM commands
 func ProviderFlagCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-	completions := llm.GetProviderCompletions(toComplete, false)
+	// Try to load config for custom provider completions; nil is OK if it fails
+	cfg, _ := config.Load()
+	completions := llm.GetProviderCompletions(toComplete, false, cfg)
 
 	// If completing provider name (no colon), don't add space so user can type ":"
 	if !strings.Contains(toComplete, ":") {
@@ -21,7 +24,7 @@ func ProviderFlagCompletion(cmd *cobra.Command, args []string, toComplete string
 
 // ImageProviderFlagCompletion handles --provider flag completion for image commands
 func ImageProviderFlagCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-	completions := llm.GetProviderCompletions(toComplete, true)
+	completions := llm.GetProviderCompletions(toComplete, true, nil)
 
 	// If completing provider name (no colon), don't add space so user can type ":"
 	if !strings.Contains(toComplete, ":") {

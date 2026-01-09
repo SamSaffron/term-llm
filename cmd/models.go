@@ -52,55 +52,49 @@ func runModels(cmd *cobra.Command, args []string) error {
 	}
 
 	// Determine which provider to query
-	provider := modelsProvider
-	if provider == "" {
-		provider = cfg.Provider
+	providerName := modelsProvider
+	if providerName == "" {
+		providerName = cfg.DefaultProvider
 	}
+
+	// Get provider config
+	providerCfg, ok := cfg.Providers[providerName]
+	if !ok {
+		return fmt.Errorf("provider '%s' is not configured", providerName)
+	}
+
+	providerType := config.InferProviderType(providerName, providerCfg.Type)
 
 	// Validate provider supports model listing
-	supportedProviders := map[string]bool{
-		"anthropic":     true,
-		"openrouter":    true,
-		"ollama":        true,
-		"lmstudio":      true,
-		"openai-compat": true,
+	supportedTypes := map[config.ProviderType]bool{
+		config.ProviderTypeAnthropic:    true,
+		config.ProviderTypeOpenRouter:   true,
+		config.ProviderTypeOpenAICompat: true,
 	}
 
-	if !supportedProviders[provider] {
-		return fmt.Errorf("provider '%s' does not support model listing.\n"+
-			"Model listing is supported for: anthropic, openrouter, ollama, lmstudio, openai-compat", provider)
+	if !supportedTypes[providerType] {
+		return fmt.Errorf("provider '%s' (type: %s) does not support model listing.\n"+
+			"Model listing is supported for: anthropic, openrouter, and openai_compatible providers", providerName, providerType)
 	}
 
 	// Create provider to query models
 	var lister ModelLister
-	switch provider {
-	case "anthropic":
-		if cfg.Anthropic.APIKey == "" {
+	switch providerType {
+	case config.ProviderTypeAnthropic:
+		if providerCfg.ResolvedAPIKey == "" {
 			return fmt.Errorf("anthropic API key not configured. Set ANTHROPIC_API_KEY or configure credentials")
 		}
-		lister = llm.NewAnthropicProvider(cfg.Anthropic.APIKey, cfg.Anthropic.Model)
-	case "openrouter":
-		if cfg.OpenRouter.APIKey == "" {
+		lister = llm.NewAnthropicProvider(providerCfg.ResolvedAPIKey, providerCfg.Model)
+	case config.ProviderTypeOpenRouter:
+		if providerCfg.ResolvedAPIKey == "" {
 			return fmt.Errorf("openrouter API key not configured. Set OPENROUTER_API_KEY or configure api_key")
 		}
-		lister = llm.NewOpenRouterProvider(cfg.OpenRouter.APIKey, "", cfg.OpenRouter.AppURL, cfg.OpenRouter.AppTitle)
-	case "ollama":
-		baseURL := cfg.Ollama.BaseURL
-		if baseURL == "" {
-			baseURL = "http://localhost:11434/v1"
+		lister = llm.NewOpenRouterProvider(providerCfg.ResolvedAPIKey, "", providerCfg.AppURL, providerCfg.AppTitle)
+	case config.ProviderTypeOpenAICompat:
+		if providerCfg.BaseURL == "" {
+			return fmt.Errorf("provider '%s' requires base_url to be configured", providerName)
 		}
-		lister = llm.NewOpenAICompatProvider(baseURL, cfg.Ollama.APIKey, "", "Ollama")
-	case "lmstudio":
-		baseURL := cfg.LMStudio.BaseURL
-		if baseURL == "" {
-			baseURL = "http://localhost:1234/v1"
-		}
-		lister = llm.NewOpenAICompatProvider(baseURL, cfg.LMStudio.APIKey, "", "LM Studio")
-	case "openai-compat":
-		if cfg.OpenAICompat.BaseURL == "" {
-			return fmt.Errorf("openai-compat requires base_url to be configured")
-		}
-		lister = llm.NewOpenAICompatProvider(cfg.OpenAICompat.BaseURL, cfg.OpenAICompat.APIKey, "", "OpenAI-Compatible")
+		lister = llm.NewOpenAICompatProvider(providerCfg.BaseURL, providerCfg.ResolvedAPIKey, "", providerName)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -113,7 +107,7 @@ func runModels(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("cannot connect to %s server.\n"+
 				"Make sure the server is running and accessible.\n\n"+
 				"For Ollama: run 'ollama serve'\n"+
-				"For LM Studio: start LM Studio and enable the server", provider)
+				"For LM Studio: start LM Studio and enable the server", providerName)
 		}
 		return fmt.Errorf("failed to list models: %w", err)
 	}
@@ -130,7 +124,7 @@ func runModels(cmd *cobra.Command, args []string) error {
 	}
 
 	// Pretty print
-	fmt.Printf("Available models from %s:\n\n", provider)
+	fmt.Printf("Available models from %s:\n\n", providerName)
 	for _, m := range models {
 		if m.DisplayName != "" {
 			fmt.Printf("  %s (%s)\n", m.ID, m.DisplayName)
@@ -144,7 +138,7 @@ func runModels(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("\nTo use a model, add to your config:\n")
-	fmt.Printf("  %s:\n", provider)
+	fmt.Printf("  providers:\n    %s:\n", providerName)
 	fmt.Printf("    model: <model-name>\n")
 
 	return nil

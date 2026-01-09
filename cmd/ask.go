@@ -24,13 +24,15 @@ import (
 )
 
 var (
-	askDebug    bool
-	askSearch   bool
-	askText     bool
-	askProvider string
-	askFiles    []string
-	askMCP      string
-	askMaxTurns int
+	askDebug          bool
+	askSearch         bool
+	askText           bool
+	askProvider       string
+	askFiles          []string
+	askMCP            string
+	askMaxTurns       int
+	askNativeSearch   bool
+	askNoNativeSearch bool
 )
 
 var askCmd = &cobra.Command{
@@ -66,6 +68,8 @@ func init() {
 	askCmd.Flags().StringArrayVarP(&askFiles, "file", "f", nil, "File(s) to include as context (supports globs, line ranges like file.go:10-20, 'clipboard')")
 	askCmd.Flags().StringVar(&askMCP, "mcp", "", "Enable MCP server(s), comma-separated (e.g., playwright,filesystem)")
 	askCmd.Flags().IntVar(&askMaxTurns, "max-turns", 20, "Max agentic turns for tool execution")
+	askCmd.Flags().BoolVar(&askNativeSearch, "native-search", false, "Use provider's native search (override config)")
+	askCmd.Flags().BoolVar(&askNoNativeSearch, "no-native-search", false, "Use external search tools instead of provider's native search")
 	if err := askCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion); err != nil {
 		panic(fmt.Sprintf("failed to register provider completion: %v", err))
 	}
@@ -134,12 +138,13 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	debugMode := askDebug
 	req := llm.Request{
-		Messages:          messages,
-		Search:            askSearch,
-		ParallelToolCalls: true,
-		MaxTurns:          askMaxTurns,
-		Debug:             debugMode,
-		DebugRaw:          debugRaw,
+		Messages:            messages,
+		Search:              askSearch,
+		ForceExternalSearch: resolveForceExternalSearch(cfg, askNativeSearch, askNoNativeSearch),
+		ParallelToolCalls:   true,
+		MaxTurns:            askMaxTurns,
+		Debug:               debugMode,
+		DebugRaw:            debugRaw,
 	}
 
 	// Add MCP tools to request if any are registered
@@ -205,6 +210,16 @@ func runAsk(cmd *cobra.Command, args []string) error {
 				default:
 				}
 			}
+			if event.Type == llm.EventUsage && event.Use != nil {
+				select {
+				case toolEvents <- toolEvent{
+					IsUsage:      true,
+					InputTokens:  event.Use.InputTokens,
+					OutputTokens: event.Use.OutputTokens,
+				}:
+				default:
+				}
+			}
 			if event.Type == llm.EventTextDelta && event.Text != "" {
 				output <- event.Text
 			}
@@ -237,6 +252,10 @@ type toolEvent struct {
 	RetryAttempt     int
 	RetryMaxAttempts int
 	RetryWaitSecs    float64
+	// Usage fields (when IsUsage is true)
+	IsUsage      bool
+	InputTokens  int
+	OutputTokens int
 }
 
 // streamPlainText streams text directly without formatting
@@ -298,11 +317,16 @@ type askStreamModel struct {
 	toolPhase   string    // Phase during tool execution (after content started), empty when not in tool
 	retryStatus string    // Retry status (e.g., "Rate limited (2/5), waiting 5s...")
 	startTime   time.Time // For elapsed time display
+	totalTokens int       // Total tokens (input + output) used
 }
 
 type askContentMsg string
 type askDoneMsg struct{}
 type askCancelledMsg struct{}
+type askUsageMsg struct {
+	InputTokens  int
+	OutputTokens int
+}
 type askTickMsg time.Time
 type askToolStartMsg struct {
 	Name string // Tool name being executed
@@ -378,6 +402,9 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case askCancelledMsg:
 		return m, tea.Quit
 
+	case askUsageMsg:
+		m.totalTokens = msg.InputTokens + msg.OutputTokens
+
 	case askTickMsg:
 		// Continue ticking for elapsed time updates
 		if m.loading || m.toolPhase != "" {
@@ -450,6 +477,7 @@ func (m askStreamModel) View() string {
 			Spinner:    m.spinner.View(),
 			Phase:      m.phase,
 			Elapsed:    time.Since(m.startTime),
+			Tokens:     m.totalTokens,
 			Status:     m.retryStatus,
 			ShowCancel: true,
 		}.Render(m.styles)
@@ -465,6 +493,7 @@ func (m askStreamModel) View() string {
 			Spinner:    m.spinner.View(),
 			Phase:      m.toolPhase,
 			Elapsed:    time.Since(m.startTime),
+			Tokens:     m.totalTokens,
 			ShowCancel: false,
 		}.Render(m.styles)
 	}
@@ -495,6 +524,11 @@ func streamWithGlamour(ctx context.Context, output <-chan string, toolEvents <-c
 							Attempt:     ev.RetryAttempt,
 							MaxAttempts: ev.RetryMaxAttempts,
 							WaitSecs:    ev.RetryWaitSecs,
+						})
+					} else if ev.IsUsage {
+						p.Send(askUsageMsg{
+							InputTokens:  ev.InputTokens,
+							OutputTokens: ev.OutputTokens,
 						})
 					} else {
 						p.Send(askToolStartMsg{Name: ev.Name, Info: ev.Info})

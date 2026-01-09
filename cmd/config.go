@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/spf13/cobra"
@@ -84,46 +86,64 @@ func configShow(cmd *cobra.Command, args []string) error {
 		fmt.Printf("# %s\n\n", configPath)
 	}
 
-	fmt.Printf("provider: %s\n\n", cfg.Provider)
-	fmt.Printf("anthropic:\n")
-	fmt.Printf("  model: %s\n", cfg.Anthropic.Model)
-	printCredentialStatus("anthropic", cfg.Anthropic.Credentials, cfg.Anthropic.APIKey, "ANTHROPIC_API_KEY")
+	fmt.Printf("default_provider: %s\n\n", cfg.DefaultProvider)
+	fmt.Printf("providers:\n")
 
-	fmt.Printf("\nopenai:\n")
-	fmt.Printf("  model: %s\n", cfg.OpenAI.Model)
-	printCredentialStatus("openai", cfg.OpenAI.Credentials, cfg.OpenAI.APIKey, "OPENAI_API_KEY")
-
-	fmt.Printf("\nopenrouter:\n")
-	fmt.Printf("  model: %s\n", cfg.OpenRouter.Model)
-	fmt.Printf("  app_url: %s\n", cfg.OpenRouter.AppURL)
-	fmt.Printf("  app_title: %s\n", cfg.OpenRouter.AppTitle)
-	printCredentialStatus("openrouter", "", cfg.OpenRouter.APIKey, "OPENROUTER_API_KEY")
-
-	fmt.Printf("\ngemini:\n")
-	fmt.Printf("  model: %s\n", cfg.Gemini.Model)
-	// For gemini-cli, check OAuthCreds instead of APIKey
-	geminiKey := cfg.Gemini.APIKey
-	if cfg.Gemini.Credentials == "gemini-cli" && cfg.Gemini.OAuthCreds != nil {
-		geminiKey = "oauth" // non-empty to indicate success
+	// Sort provider names for consistent output
+	providerNames := make([]string, 0, len(cfg.Providers))
+	for name := range cfg.Providers {
+		providerNames = append(providerNames, name)
 	}
-	printCredentialStatus("gemini", cfg.Gemini.Credentials, geminiKey, "GEMINI_API_KEY")
+	sort.Strings(providerNames)
 
-	fmt.Printf("\nzen:\n")
-	fmt.Printf("  model: %s\n", cfg.Zen.Model)
-	printZenCredentialStatus(cfg.Zen.APIKey)
+	for _, name := range providerNames {
+		p := cfg.Providers[name]
+		fmt.Printf("  %s:\n", name)
+		if p.Type != "" {
+			fmt.Printf("    type: %s\n", p.Type)
+		}
+		if p.Model != "" {
+			fmt.Printf("    model: %s\n", p.Model)
+		}
+		if p.BaseURL != "" {
+			fmt.Printf("    base_url: %s\n", p.BaseURL)
+		}
+		if p.AppURL != "" {
+			fmt.Printf("    app_url: %s\n", p.AppURL)
+		}
+		if p.AppTitle != "" {
+			fmt.Printf("    app_title: %s\n", p.AppTitle)
+		}
 
-	fmt.Printf("\nollama:\n")
-	fmt.Printf("  base_url: %s\n", cfg.Ollama.BaseURL)
-	fmt.Printf("  model: %s\n", cfg.Ollama.Model)
-
-	fmt.Printf("\nlmstudio:\n")
-	fmt.Printf("  base_url: %s\n", cfg.LMStudio.BaseURL)
-	fmt.Printf("  model: %s\n", cfg.LMStudio.Model)
-
-	if cfg.OpenAICompat.BaseURL != "" {
-		fmt.Printf("\nopenai-compat:\n")
-		fmt.Printf("  base_url: %s\n", cfg.OpenAICompat.BaseURL)
-		fmt.Printf("  model: %s\n", cfg.OpenAICompat.Model)
+		// Show credential status based on provider type
+		providerType := config.InferProviderType(name, p.Type)
+		switch providerType {
+		case config.ProviderTypeAnthropic:
+			printCredentialStatus("anthropic", p.Credentials, p.ResolvedAPIKey, "ANTHROPIC_API_KEY")
+		case config.ProviderTypeOpenAI:
+			printCredentialStatus("openai", p.Credentials, p.ResolvedAPIKey, "OPENAI_API_KEY")
+		case config.ProviderTypeGemini:
+			key := p.ResolvedAPIKey
+			if p.Credentials == "gemini-cli" && p.OAuthCreds != nil {
+				key = "oauth"
+			}
+			printCredentialStatus("gemini", p.Credentials, key, "GEMINI_API_KEY")
+		case config.ProviderTypeOpenRouter:
+			printCredentialStatus("openrouter", "", p.ResolvedAPIKey, "OPENROUTER_API_KEY")
+		case config.ProviderTypeZen:
+			printZenCredentialStatus(p.ResolvedAPIKey)
+		case config.ProviderTypeOpenAICompat:
+			envVar := strings.ToUpper(name) + "_API_KEY"
+			if p.ResolvedAPIKey != "" {
+				fmt.Printf("    credentials: api_key [set]\n")
+			} else if strings.HasPrefix(p.APIKey, "op://") {
+				fmt.Printf("    credentials: api_key [set via 1password]\n")
+			} else if strings.HasPrefix(p.APIKey, "$(") {
+				fmt.Printf("    credentials: api_key [set via command]\n")
+			} else {
+				fmt.Printf("    credentials: api_key [NOT SET - export %s]\n", envVar)
+			}
+		}
 	}
 
 	fmt.Printf("\nimage:\n")
@@ -259,86 +279,76 @@ func defaultConfigContent() string {
 	return `# term-llm configuration
 # Run 'term-llm config edit' to modify
 
-provider: anthropic  # anthropic, openai, openrouter, gemini, zen, ollama, lmstudio, or openai-compat
+default_provider: anthropic
 
-# exec command settings
+providers:
+  # Built-in providers - type is inferred from the key name
+  anthropic:
+    model: claude-sonnet-4-5
+    # credentials: api_key (default) or claude (Claude Code OAuth)
+
+  openai:
+    model: gpt-5.2
+    # credentials: api_key (default) or codex (Codex CLI OAuth)
+
+  gemini:
+    model: gemini-3-flash-preview
+    # credentials: api_key (default) or gemini-cli (gemini-cli OAuth)
+
+  openrouter:
+    model: x-ai/grok-code-fast-1
+    app_url: https://github.com/samsaffron/term-llm
+    app_title: term-llm
+
+  zen:
+    model: glm-4.7-free
+    # api_key optional - free tier access via opencode.ai
+
+  # Local LLM providers (require explicit type)
+  # ollama:
+  #   type: openai_compatible
+  #   base_url: http://localhost:11434/v1
+  #   model: llama3.2:latest
+
+  # lmstudio:
+  #   type: openai_compatible
+  #   base_url: http://localhost:1234/v1
+  #   model: deepseek-coder-v2
+
+  # Custom OpenAI-compatible endpoints
+  # cerebras:
+  #   type: openai_compatible
+  #   base_url: https://api.cerebras.ai/v1
+  #   model: llama-4-scout-17b
+  #   api_key: ${CEREBRAS_API_KEY}
+
+  # groq:
+  #   type: openai_compatible
+  #   base_url: https://api.groq.com/openai/v1
+  #   model: llama-3.3-70b-versatile
+  #   api_key: ${GROQ_API_KEY}
+
+# Per-command overrides
 exec:
-  suggestions: 3  # number of command suggestions to show
+  suggestions: 3
   # provider: anthropic    # override provider for exec only
   # model: claude-opus-4   # override model for exec only
   # instructions: |
-  #   Custom context for command suggestions, e.g.:
-  #   - I use macOS with zsh
-  #   - Prefer ripgrep over grep, fd over find
-  #   - Always use --color=auto for grep
+  #   Custom context for command suggestions
 
-# ask command settings
 ask:
   # provider: openai       # override provider for ask only
-  # model: gpt-4o          # override model for ask only
-  # instructions: |
-  #   Custom system prompt for ask command, e.g.:
-  #   - Be concise, I'm an experienced developer
-  #   - Prefer practical examples over theory
+  # model: gpt-4o
 
-# edit command settings
 edit:
   # provider: anthropic    # override provider for edit only
-  # model: claude-opus-4   # override model for edit only
 
 # UI theme colors (ANSI 0-255 or hex #RRGGBB)
 # theme:
-#   primary: "10"     # commands, highlights (default: bright green)
-#   muted: "245"      # explanations, footers (default: light grey)
-#   spinner: "205"    # loading spinner (default: pink)
-#   error: "9"        # error messages (default: bright red)
-
-# Provider configurations
-anthropic:
-  model: claude-sonnet-4-5
-  # credentials: api_key or claude
-  #   api_key: uses ANTHROPIC_API_KEY env var (default)
-  #   claude: uses Claude Code credentials (requires 'claude' CLI)
-
-openai:
-  model: gpt-5.2
-  # credentials: api_key or codex
-  #   api_key: uses OPENAI_API_KEY env var (default)
-  #   codex: uses Codex credentials (requires 'codex' CLI)
-
-openrouter:
-  model: x-ai/grok-code-fast-1
-  # api_key: uses OPENROUTER_API_KEY env var
-  # OpenRouter attribution headers (optional but recommended)
-  app_url: https://github.com/samsaffron/term-llm
-  app_title: term-llm
-
-gemini:
-  model: gemini-3-flash-preview
-  # credentials: api_key or gemini-cli
-  #   api_key: uses GEMINI_API_KEY env var (default)
-  #   gemini-cli: uses gemini-cli OAuth (requires 'gemini' CLI)
-
-zen:
-  model: glm-4.7-free
-  # OpenCode Zen - free tier access to GLM 4.7 and other models
-  # api_key is optional - leave empty for free tier access
-  # Set ZEN_API_KEY env var if you have a paid API key
-
-# Local LLM providers (OpenAI-compatible)
-# Run 'term-llm models --provider ollama' to list available models
-# ollama:
-#   model: llama3.2:latest
-#   base_url: http://localhost:11434/v1  # default
-
-# lmstudio:
-#   model: deepseek-coder-v2
-#   base_url: http://localhost:1234/v1   # default
-
-# Generic OpenAI-compatible endpoint (for custom servers)
-# openai-compat:
-#   base_url: http://your-server:8080/v1  # required
-#   model: mixtral-8x7b
+#   primary: "10"     # commands, highlights
+#   muted: "245"      # explanations, footers
+#   spinner: "205"    # loading spinner
+#   error: "9"        # error messages
 
 # Image generation settings
 image:

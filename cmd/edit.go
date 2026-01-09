@@ -232,20 +232,10 @@ func runEdit(cmd *cobra.Command, args []string) error {
 
 // getActiveModel returns the model name for the active provider
 func getActiveModel(cfg *config.Config) string {
-	switch cfg.Provider {
-	case "anthropic":
-		return cfg.Anthropic.Model
-	case "openai":
-		return cfg.OpenAI.Model
-	case "openrouter":
-		return cfg.OpenRouter.Model
-	case "gemini":
-		return cfg.Gemini.Model
-	case "zen":
-		return cfg.Zen.Model
-	default:
-		return ""
+	if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
+		return providerCfg.Model
 	}
+	return ""
 }
 
 // runStreamEdit runs the streaming edit flow (one-shot, no tools)

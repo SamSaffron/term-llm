@@ -6,6 +6,25 @@ import (
 	"time"
 )
 
+// formatTokenCount formats a token count in compact form: 1, 999, 1.5k, 12.3k, 1.1M
+func formatTokenCount(n int) string {
+	if n < 1000 {
+		return fmt.Sprintf("%d", n)
+	}
+	if n < 1000000 {
+		k := float64(n) / 1000
+		if k < 10 {
+			return fmt.Sprintf("%.1fk", k)
+		}
+		return fmt.Sprintf("%.0fk", k)
+	}
+	m := float64(n) / 1000000
+	if m < 10 {
+		return fmt.Sprintf("%.1fM", m)
+	}
+	return fmt.Sprintf("%.0fM", m)
+}
+
 // ProgressUpdate represents a progress update during long-running operations.
 type ProgressUpdate struct {
 	// OutputTokens is the number of tokens generated so far.
@@ -43,7 +62,7 @@ func (s StreamingIndicator) Render(styles *Styles) string {
 	b.WriteString("...")
 
 	if s.Tokens > 0 {
-		b.WriteString(fmt.Sprintf(" %d tokens |", s.Tokens))
+		b.WriteString(fmt.Sprintf(" %s tokens |", formatTokenCount(s.Tokens)))
 	}
 
 	b.WriteString(fmt.Sprintf(" %.1fs", s.Elapsed.Seconds()))

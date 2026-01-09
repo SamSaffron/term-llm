@@ -139,6 +139,7 @@ func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (St
 			fmt.Fprintln(os.Stderr, "======================================")
 		}
 
+		var lastUsage *Usage
 		stream := p.client.Messages.NewStreaming(ctx, params)
 		for stream.Next() {
 			event := stream.Current()
@@ -162,10 +163,20 @@ func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (St
 				if toolCall, ok := accumulator.Finish(variant.Index); ok {
 					events <- Event{Type: EventToolCall, Tool: &toolCall}
 				}
+			case anthropic.MessageDeltaEvent:
+				if variant.Usage.OutputTokens > 0 {
+					lastUsage = &Usage{
+						InputTokens:  int(variant.Usage.InputTokens),
+						OutputTokens: int(variant.Usage.OutputTokens),
+					}
+				}
 			}
 		}
 		if err := stream.Err(); err != nil {
 			return fmt.Errorf("anthropic streaming error: %w", err)
+		}
+		if lastUsage != nil {
+			events <- Event{Type: EventUsage, Use: lastUsage}
 		}
 		events <- Event{Type: EventDone}
 		return nil
@@ -224,6 +235,7 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 
 		// Track if we're in a server tool use block (web_search, etc.)
 		inServerTool := false
+		var lastUsage *Usage
 
 		stream := p.client.Beta.Messages.NewStreaming(ctx, params)
 		for stream.Next() {
@@ -260,10 +272,20 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 				if toolCall, ok := accumulator.Finish(variant.Index); ok {
 					events <- Event{Type: EventToolCall, Tool: &toolCall}
 				}
+			case anthropic.BetaRawMessageDeltaEvent:
+				if variant.Usage.OutputTokens > 0 {
+					lastUsage = &Usage{
+						InputTokens:  int(variant.Usage.InputTokens),
+						OutputTokens: int(variant.Usage.OutputTokens),
+					}
+				}
 			}
 		}
 		if err := stream.Err(); err != nil {
 			return fmt.Errorf("anthropic streaming error: %w", err)
+		}
+		if lastUsage != nil {
+			events <- Event{Type: EventUsage, Use: lastUsage}
 		}
 		events <- Event{Type: EventDone}
 		return nil

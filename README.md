@@ -62,14 +62,15 @@ If you have [Claude Code](https://claude.ai/code), [Codex](https://github.com/op
 
 ```yaml
 # In ~/.config/term-llm/config.yaml
-anthropic:
-  credentials: claude      # uses Claude Code credentials
+providers:
+  anthropic:
+    credentials: claude      # uses Claude Code credentials
 
-openai:
-  credentials: codex       # uses Codex credentials
+  openai:
+    credentials: codex       # uses Codex credentials
 
-gemini:
-  credentials: gemini-cli  # uses gemini-cli OAuth credentials
+  gemini:
+    credentials: gemini-cli  # uses gemini-cli OAuth credentials
 ```
 
 ### Option 2: Use API key
@@ -96,12 +97,13 @@ export GEMINI_API_KEY=your-key
 
 ```yaml
 # In ~/.config/term-llm/config.yaml
-provider: openrouter
+default_provider: openrouter
 
-openrouter:
-  model: x-ai/grok-code-fast-1
-  app_url: https://github.com/samsaffron/term-llm
-  app_title: term-llm
+providers:
+  openrouter:
+    model: x-ai/grok-code-fast-1
+    app_url: https://github.com/samsaffron/term-llm
+    app_title: term-llm
 ```
 
 ### Option 4: Use OpenCode Zen (free tier available)
@@ -110,11 +112,12 @@ openrouter:
 
 ```yaml
 # In ~/.config/term-llm/config.yaml
-provider: zen
+default_provider: zen
 
-zen:
-  model: glm-4.7-free  # default model (free)
-  # api_key: optional - leave empty for free tier, or set for paid models
+providers:
+  zen:
+    model: glm-4.7-free  # default model (free)
+    # api_key: optional - leave empty for free tier, or set for paid models
 ```
 
 Or use the `--provider` flag:
@@ -149,26 +152,35 @@ term-llm models --provider lmstudio
 ```
 
 ```yaml
-provider: ollama  # or lmstudio
+default_provider: ollama
 
-ollama:
-  model: llama3.2:latest
-  # base_url: http://localhost:11434/v1  # default
+providers:
+  ollama:
+    type: openai_compatible
+    base_url: http://localhost:11434/v1
+    model: llama3.2:latest
 
-lmstudio:
-  model: deepseek-coder-v2
-  # base_url: http://localhost:1234/v1   # default
+  lmstudio:
+    type: openai_compatible
+    base_url: http://localhost:1234/v1
+    model: deepseek-coder-v2
 ```
 
 For other OpenAI-compatible servers (vLLM, text-generation-inference, etc.):
 
 ```yaml
-provider: openai-compat
-
-openai-compat:
-  base_url: http://your-server:8080/v1  # required
-  model: mixtral-8x7b
+providers:
+  my-server:
+    type: openai_compatible
+    base_url: http://your-server:8080/v1
+    model: mixtral-8x7b
 ```
+
+OpenAI-compatible providers support two URL options:
+- `base_url`: Base URL (e.g., `https://api.cerebras.ai/v1`) - `/chat/completions` is appended automatically
+- `url`: Full URL (e.g., `https://api.cerebras.ai/v1/chat/completions`) - used as-is without appending
+
+Use `url` when your endpoint doesn't follow the standard `/chat/completions` path, or to paste URLs directly from API documentation.
 
 ## Usage
 
@@ -187,6 +199,8 @@ Use arrow keys to select a command, Enter to execute, or press `h` for detailed 
 | `--auto-pick` | `-a` | Auto-execute the best suggestion without prompting |
 | `--max N` | `-n N` | Limit to N options in the selection UI |
 | `--search` | `-s` | Enable web search (DuckDuckGo) and page reading ([Jina AI Reader](https://jina.ai/reader/)) |
+| `--native-search` | | Use provider's native search (override config) |
+| `--no-native-search` | | Force external search tools instead of native |
 | `--print-only` | `-p` | Print the command instead of executing it |
 | `--debug` | `-d` | Show provider debug information |
 | `--debug-raw` | | Emit raw debug logs with timestamps (tool calls/results, raw requests) |
@@ -422,7 +436,45 @@ To disable update checks, set `TERM_LLM_SKIP_UPDATE_CHECK=1`.
 Config is stored at `~/.config/term-llm/config.yaml`:
 
 ```yaml
-provider: anthropic  # anthropic, openai, openrouter, gemini, zen, ollama, lmstudio, or openai-compat
+default_provider: anthropic
+
+providers:
+  # Built-in providers - type is inferred from the key name
+  anthropic:
+    model: claude-sonnet-4-5
+    credentials: claude  # or "api_key" (default)
+
+  openai:
+    model: gpt-5.2
+    credentials: codex  # or "api_key" (default)
+
+  openrouter:
+    model: x-ai/grok-code-fast-1
+    app_url: https://github.com/samsaffron/term-llm
+    app_title: term-llm
+
+  gemini:
+    model: gemini-3-flash-preview
+    credentials: gemini-cli  # or "api_key" (default)
+
+  zen:
+    model: glm-4.7-free
+    # api_key is optional - leave empty for free tier
+
+  # Local LLM providers (require explicit type)
+  # Run 'term-llm models --provider ollama' to list available models
+  # ollama:
+  #   type: openai_compatible
+  #   base_url: http://localhost:11434/v1
+  #   model: llama3.2:latest
+
+  # Custom OpenAI-compatible endpoints
+  # cerebras:
+  #   type: openai_compatible
+  #   base_url: https://api.cerebras.ai/v1  # /chat/completions appended automatically
+  #   # url: https://api.cerebras.ai/v1/chat/completions  # alternative: full URL, used as-is
+  #   model: llama-4-scout-17b
+  #   api_key: ${CEREBRAS_API_KEY}
 
 exec:
   suggestions: 3  # number of command suggestions
@@ -442,41 +494,6 @@ edit:
   # provider: openai
   # model: gpt-5.2-codex  # Codex models are optimized for code edits
   diff_format: auto  # auto, udiff, or replace
-
-anthropic:
-  model: claude-sonnet-4-5
-  credentials: claude  # or "api_key" (default)
-
-openai:
-  model: gpt-5.2
-  credentials: codex  # or "api_key" (default)
-
-openrouter:
-  model: x-ai/grok-code-fast-1
-  app_url: https://github.com/samsaffron/term-llm
-  app_title: term-llm
-
-gemini:
-  model: gemini-3-flash-preview
-  credentials: gemini-cli  # or "api_key" (default)
-
-zen:
-  model: glm-4.7-free
-  # api_key is optional - leave empty for free tier
-
-# Local LLM providers (OpenAI-compatible)
-# Run 'term-llm models --provider ollama' to list available models
-ollama:
-  model: llama3.2:latest
-  # base_url: http://localhost:11434/v1  # default
-
-lmstudio:
-  model: deepseek-coder-v2
-  # base_url: http://localhost:1234/v1   # default
-
-# openai-compat:
-#   base_url: http://your-server:8080/v1  # required
-#   model: mixtral-8x7b
 
 image:
   provider: gemini  # gemini, openai, or flux
@@ -500,7 +517,15 @@ image:
 Each command (exec, ask, edit) can have its own provider and model, overriding the global default:
 
 ```yaml
-provider: anthropic  # global default
+default_provider: anthropic  # global default
+
+providers:
+  anthropic:
+    model: claude-sonnet-4-5
+  openai:
+    model: gpt-5.2
+  zen:
+    model: glm-4.7-free
 
 exec:
   provider: zen       # exec uses Zen (free)
@@ -517,7 +542,7 @@ edit:
 **Precedence** (highest to lowest):
 1. CLI flag: `--provider openai:gpt-4o`
 2. Per-command config: `exec.provider` / `exec.model`
-3. Global config: `provider` + `<provider>.model`
+3. Global config: `default_provider` + `providers.<name>.model`
 
 ### Reasoning Effort (OpenAI)
 
@@ -530,8 +555,9 @@ term-llm exec --provider openai:gpt-5.2-low "quick task"         # faster/cheape
 
 Or in config:
 ```yaml
-openai:
-  model: gpt-5.2-high  # effort parsed from suffix
+providers:
+  openai:
+    model: gpt-5.2-high  # effort parsed from suffix
 ```
 
 | Effort | Description |
@@ -551,11 +577,41 @@ term-llm ask --provider anthropic:claude-sonnet-4-5-thinking "complex question"
 
 Or in config:
 ```yaml
-anthropic:
-  model: claude-sonnet-4-5-thinking  # enables 10k token thinking budget
+providers:
+  anthropic:
+    model: claude-sonnet-4-5-thinking  # enables 10k token thinking budget
 ```
 
 Extended thinking allows Claude to reason through complex problems before responding. The thinking process uses ~10,000 tokens and is not shown in the output.
+
+### Web Search
+
+When using `-s`/`--search`, some providers (Anthropic, OpenAI, Gemini) have native web search built-in. Others use external tools (DuckDuckGo + Jina Reader).
+
+You can force external search even for providers with native support—useful for consistency, debugging, or when native search doesn't work well for your use case.
+
+**CLI flags:**
+```bash
+term-llm ask "latest news" -s --no-native-search  # Force external search tools
+term-llm ask "latest news" -s --native-search     # Force native (override config)
+```
+
+**Per-provider config:**
+```yaml
+providers:
+  gemini:
+    model: gemini-2.5-flash
+    use_native_search: false  # Always use external search for this provider
+
+  anthropic:
+    model: claude-sonnet-4-5
+    # use_native_search: true  # Default: use native if available
+```
+
+**Priority** (highest to lowest):
+1. CLI flag: `--native-search` or `--no-native-search`
+2. Provider config: `use_native_search: false`
+3. Default: use native search if provider supports it
 
 ### Credentials
 
@@ -579,6 +635,83 @@ Each provider supports a `credentials` field:
 **gemini-cli** (`credentials: gemini-cli`):
 - Reads OAuth credentials from `~/.gemini/oauth_creds.json`
 - Uses Google Code Assist API (same backend as gemini-cli)
+
+### Dynamic Configuration
+
+For advanced setups, term-llm supports dynamic resolution of API keys and URLs using special prefixes. These are resolved lazily—only when actually making an API call, not when loading config.
+
+#### 1Password Integration (`op://`)
+
+Retrieve API keys from 1Password using secret references:
+
+```yaml
+providers:
+  my-provider:
+    type: openai_compatible
+    base_url: https://api.example.com/v1
+    api_key: "op://Private/My API Key/credential"
+```
+
+For multiple 1Password accounts, use the `?account=` query parameter:
+
+```yaml
+providers:
+  work-llm:
+    type: openai_compatible
+    base_url: https://llm.company.com/v1
+    api_key: "op://Engineering/LLM Service/api_key?account=company.1password.com"
+```
+
+This requires the [1Password CLI](https://developer.1password.com/docs/cli/) (`op`) to be installed and signed in.
+
+#### DNS SRV Records (`srv://`)
+
+Discover server endpoints dynamically via DNS SRV records:
+
+```yaml
+providers:
+  internal-llm:
+    type: openai_compatible
+    url: "srv://_llm._tcp.internal.company.com/v1/chat/completions"
+    api_key: ${LLM_API_KEY}
+```
+
+The SRV record is resolved to `https://host:port/path`. This is useful for:
+- Load-balanced services with multiple backends
+- Internal services with dynamic IPs
+- Kubernetes services exposed via external-dns
+
+#### Shell Commands (`$()`)
+
+Execute arbitrary shell commands to get values:
+
+```yaml
+providers:
+  vault-backed:
+    type: openai_compatible
+    base_url: https://api.example.com/v1
+    api_key: "$(vault kv get -field=api_key secret/llm)"
+
+  aws-secrets:
+    type: openai_compatible
+    base_url: https://api.example.com/v1
+    api_key: "$(aws secretsmanager get-secret-value --secret-id llm-key --query SecretString --output text)"
+```
+
+#### Combined Example
+
+Using SRV discovery with 1Password credentials:
+
+```yaml
+providers:
+  production-llm:
+    type: openai_compatible
+    model: "Qwen/Qwen3-30B-A3B"
+    url: "srv://_vllm._tcp.ml.company.com/v1/chat/completions"
+    api_key: "op://Infrastructure/vLLM Cluster/credential?account=company.1password.com"
+```
+
+When you run `term-llm config`, these show as `[set via 1password]` or `[set via command]` without actually resolving the values (no 1Password prompt until you make an API call).
 
 ### Diagnostics
 

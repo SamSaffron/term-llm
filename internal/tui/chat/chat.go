@@ -59,8 +59,9 @@ type Model struct {
 	modelName    string
 
 	// Pending message context
-	files         []FileAttachment // Attached files for next message
-	searchEnabled bool             // Web search toggle
+	files               []FileAttachment // Attached files for next message
+	searchEnabled       bool             // Web search toggle
+	forceExternalSearch bool             // Force external search tools even if provider supports native
 
 	// MCP (Model Context Protocol)
 	mcpManager *mcp.Manager
@@ -106,7 +107,7 @@ type (
 )
 
 // New creates a new chat model
-func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelName string, mcpManager *mcp.Manager, maxTurns int) *Model {
+func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool) *Model {
 	// Get terminal size
 	width := 80
 	height := 24
@@ -156,25 +157,26 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 	dialog.SetSize(width, height)
 
 	return &Model{
-		width:        width,
-		height:       height,
-		textarea:     ta,
-		spinner:      s,
-		styles:       styles,
-		keyMap:       DefaultKeyMap(),
-		session:      session,
-		provider:     provider,
-		engine:       engine,
-		config:       cfg,
-		providerName: provider.Name(),
-		modelName:    modelName,
-		phase:        "Thinking",
-		viewportRows: height - 8, // Reserve space for input and status
-		completions:  completions,
-		dialog:       dialog,
-		approvedDirs: approvedDirs,
-		mcpManager:   mcpManager,
-		maxTurns:     maxTurns,
+		width:               width,
+		height:              height,
+		textarea:            ta,
+		spinner:             s,
+		styles:              styles,
+		keyMap:              DefaultKeyMap(),
+		session:             session,
+		provider:            provider,
+		engine:              engine,
+		config:              cfg,
+		providerName:        provider.Name(),
+		modelName:           modelName,
+		phase:               "Thinking",
+		viewportRows:        height - 8, // Reserve space for input and status
+		completions:         completions,
+		dialog:              dialog,
+		approvedDirs:        approvedDirs,
+		mcpManager:          mcpManager,
+		maxTurns:            maxTurns,
+		forceExternalSearch: forceExternalSearch,
 	}
 }
 
@@ -840,11 +842,12 @@ func (m *Model) startStream(content string) tea.Cmd {
 		}
 
 		req := llm.Request{
-			Messages:          messages,
-			Tools:             tools,
-			Search:            m.searchEnabled,
-			ParallelToolCalls: true,
-			MaxTurns:          m.maxTurns,
+			Messages:            messages,
+			Tools:               tools,
+			Search:              m.searchEnabled,
+			ForceExternalSearch: m.forceExternalSearch,
+			ParallelToolCalls:   true,
+			MaxTurns:            m.maxTurns,
 		}
 
 		// Start streaming in background
@@ -1716,30 +1719,24 @@ func (m *Model) switchModel(providerModel string) (tea.Model, tea.Cmd) {
 	modelName := parts[1]
 
 	// Update config temporarily
-	oldProvider := m.config.Provider
-	m.config.Provider = providerName
+	oldProvider := m.config.DefaultProvider
+	m.config.DefaultProvider = providerName
 
-	// Set model in the appropriate provider config
-	switch providerName {
-	case "anthropic":
-		m.config.Anthropic.Model = modelName
-	case "openai":
-		m.config.OpenAI.Model = modelName
-	case "gemini":
-		m.config.Gemini.Model = modelName
-	case "zen":
-		m.config.Zen.Model = modelName
-	case "ollama":
-		m.config.Ollama.Model = modelName
-	case "openrouter":
-		m.config.OpenRouter.Model = modelName
+	// Set model in the provider config
+	if providerCfg, ok := m.config.Providers[providerName]; ok {
+		providerCfg.Model = modelName
+		m.config.Providers[providerName] = providerCfg
+	} else {
+		// Provider not configured
+		m.config.DefaultProvider = oldProvider
+		return m.showSystemMessage(fmt.Sprintf("Provider %s is not configured", providerName))
 	}
 
 	// Create new provider
 	provider, err := llm.NewProvider(m.config)
 	if err != nil {
 		// Restore old provider
-		m.config.Provider = oldProvider
+		m.config.DefaultProvider = oldProvider
 		return m.showSystemMessage(fmt.Sprintf("Failed to switch model: %v", err))
 	}
 
