@@ -57,9 +57,10 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	if req.Search {
 		caps := e.provider.Capabilities()
 		needsExternalSearch := !caps.NativeWebSearch || req.ForceExternalSearch
-		// Only add external fetch if we're also using external search.
-		// Native search (e.g., Gemini GoogleSearch) can't be combined with function calling.
-		needsExternalFetch := needsExternalSearch && !caps.NativeWebFetch
+		// Add external fetch if using external search and either:
+		// 1. Provider lacks native fetch, OR
+		// 2. We're forcing external search (--no-native-search)
+		needsExternalFetch := needsExternalSearch && (!caps.NativeWebFetch || req.ForceExternalSearch)
 
 		if needsExternalSearch || needsExternalFetch {
 			return e.streamWithExternalTools(ctx, req, needsExternalSearch, needsExternalFetch)
