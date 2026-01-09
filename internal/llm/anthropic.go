@@ -211,8 +211,14 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 		if system != "" {
 			params.System = []anthropic.BetaTextBlockParam{{Text: system}}
 		}
+		// In search mode, use auto tool choice so model can call web_search first
+		// The model will call the user's requested tool after searching
 		if len(req.Tools) > 0 && p.thinkingBudget == 0 {
-			params.ToolChoice = buildAnthropicBetaToolChoice(req.ToolChoice, req.ParallelToolCalls)
+			params.ToolChoice = anthropic.BetaToolChoiceUnionParam{
+				OfAuto: &anthropic.BetaToolChoiceAutoParam{
+					DisableParallelToolUse: anthropic.Bool(!req.ParallelToolCalls),
+				},
+			}
 		}
 
 		if p.thinkingBudget > 0 {

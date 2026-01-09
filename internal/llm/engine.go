@@ -273,7 +273,10 @@ func (e *Engine) streamWithExternalTools(ctx context.Context, req Request, addSe
 			// Split calls into our external tools vs other tools
 			ourCalls, otherCalls := splitExternalToolCalls(toolCalls, externalToolNames)
 			if len(ourCalls) == 0 {
-				// No external tool calls - done
+				// No external tool calls - forward any other tool calls and done
+				for i := range otherCalls {
+					events <- Event{Type: EventToolCall, Tool: &otherCalls[i]}
+				}
 				events <- Event{Type: EventDone}
 				return nil
 			}
