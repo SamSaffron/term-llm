@@ -11,7 +11,7 @@ A Swiss Army knife for your terminal—AI-powered commands, answers, and images 
 - **File editing**: Edit code with AI assistance (supports line ranges)
 - **File context**: Include files, clipboard, stdin, or line ranges as context (`-f`)
 - **Image generation**: Create and edit images (Gemini, OpenAI, Flux)
-- **Multiple providers**: Anthropic, OpenAI, OpenRouter, Gemini, Zen (free tier), Ollama, LM Studio
+- **Multiple providers**: Anthropic, OpenAI, OpenRouter, Gemini, Zen (free tier), Claude CLI, Ollama, LM Studio
 - **Local LLMs**: Run with Ollama, LM Studio, or any OpenAI-compatible server
 - **Credential reuse**: Works with Claude Code, Codex, gemini-cli credentials
 
@@ -175,6 +175,34 @@ providers:
     base_url: http://your-server:8080/v1
     model: mixtral-8x7b
 ```
+
+### Option 6: Use Claude CLI (claude-bin)
+
+If you have [Claude Code](https://claude.ai/code) installed and logged in, you can use the `claude-bin` provider to run inference through the Claude CLI binary. This requires no API key - it uses Claude Code's existing authentication.
+
+```bash
+# Use directly via --provider flag (no config needed)
+term-llm ask --provider claude-bin "explain this code"
+term-llm ask --provider claude-bin:haiku "quick question"  # use haiku model
+term-llm ask --provider claude-bin -s "latest news"        # with native web search
+
+# Or configure as default
+```
+
+```yaml
+# In ~/.config/term-llm/config.yaml
+default_provider: claude-bin
+
+providers:
+  claude-bin:
+    model: sonnet  # opus, sonnet, or haiku
+```
+
+**Features:**
+- No API key required - uses Claude Code's OAuth authentication
+- Native web search support with `-s` flag
+- Model selection: `opus`, `sonnet` (default), `haiku`
+- Works immediately if Claude Code is installed and logged in
 
 OpenAI-compatible providers support two URL options:
 - `base_url`: Base URL (e.g., `https://api.cerebras.ai/v1`) - `/chat/completions` is appended automatically
