@@ -84,6 +84,7 @@ type Config struct {
 	Ask             AskConfig                 `mapstructure:"ask"`
 	Edit            EditConfig                `mapstructure:"edit"`
 	Image           ImageConfig               `mapstructure:"image"`
+	Search          SearchConfig              `mapstructure:"search"`
 	Theme           ThemeConfig               `mapstructure:"theme"`
 }
 
@@ -158,6 +159,30 @@ type ImageFluxConfig struct {
 	Model  string `mapstructure:"model"` // flux-2-pro for generation, flux-kontext-pro for editing
 }
 
+// SearchConfig configures web search providers
+type SearchConfig struct {
+	Provider string             `mapstructure:"provider"` // exa, brave, google, duckduckgo (default)
+	Exa      SearchExaConfig    `mapstructure:"exa"`
+	Brave    SearchBraveConfig  `mapstructure:"brave"`
+	Google   SearchGoogleConfig `mapstructure:"google"`
+}
+
+// SearchExaConfig configures Exa search
+type SearchExaConfig struct {
+	APIKey string `mapstructure:"api_key"`
+}
+
+// SearchBraveConfig configures Brave search
+type SearchBraveConfig struct {
+	APIKey string `mapstructure:"api_key"`
+}
+
+// SearchGoogleConfig configures Google Custom Search
+type SearchGoogleConfig struct {
+	APIKey string `mapstructure:"api_key"`
+	CX     string `mapstructure:"cx"` // Custom Search Engine ID
+}
+
 func Load() (*Config, error) {
 	configPath, err := GetConfigDir()
 	if err != nil {
@@ -189,6 +214,8 @@ func Load() (*Config, error) {
 	viper.SetDefault("image.gemini.model", "gemini-2.5-flash-image")
 	viper.SetDefault("image.openai.model", "gpt-image-1")
 	viper.SetDefault("image.flux.model", "flux-2-pro")
+	// Search defaults
+	viper.SetDefault("search.provider", "duckduckgo")
 
 	// Read config file (optional - won't error if missing)
 	if err := viper.ReadInConfig(); err != nil {
@@ -216,6 +243,7 @@ func Load() (*Config, error) {
 	}
 
 	resolveImageCredentials(&cfg.Image)
+	resolveSearchCredentials(&cfg.Search)
 
 	return &cfg, nil
 }
@@ -408,6 +436,31 @@ func resolveImageCredentials(cfg *ImageConfig) {
 	cfg.Flux.APIKey = expandEnv(cfg.Flux.APIKey)
 	if cfg.Flux.APIKey == "" {
 		cfg.Flux.APIKey = os.Getenv("BFL_API_KEY")
+	}
+}
+
+// resolveSearchCredentials resolves API credentials for all search providers
+func resolveSearchCredentials(cfg *SearchConfig) {
+	// Exa credentials
+	cfg.Exa.APIKey = expandEnv(cfg.Exa.APIKey)
+	if cfg.Exa.APIKey == "" {
+		cfg.Exa.APIKey = os.Getenv("EXA_API_KEY")
+	}
+
+	// Brave credentials
+	cfg.Brave.APIKey = expandEnv(cfg.Brave.APIKey)
+	if cfg.Brave.APIKey == "" {
+		cfg.Brave.APIKey = os.Getenv("BRAVE_API_KEY")
+	}
+
+	// Google credentials
+	cfg.Google.APIKey = expandEnv(cfg.Google.APIKey)
+	if cfg.Google.APIKey == "" {
+		cfg.Google.APIKey = os.Getenv("GOOGLE_SEARCH_API_KEY")
+	}
+	cfg.Google.CX = expandEnv(cfg.Google.CX)
+	if cfg.Google.CX == "" {
+		cfg.Google.CX = os.Getenv("GOOGLE_SEARCH_CX")
 	}
 }
 

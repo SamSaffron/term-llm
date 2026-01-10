@@ -90,7 +90,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	engine := llm.NewEngine(provider, defaultToolRegistry())
+	engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
 
 	// Determine model name
 	modelName := getModelName(cfg)

@@ -79,17 +79,22 @@ func (t *ReadURLTool) Execute(ctx context.Context, args json.RawMessage) (string
 
 	resp, err := t.client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("fetch URL: %w", err)
+		return fmt.Sprintf("Error fetching URL: %v", err), nil
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("fetch failed: HTTP %d", resp.StatusCode)
+		// Return HTTP errors as content so LLM can handle gracefully
+		statusText := http.StatusText(resp.StatusCode)
+		if statusText == "" {
+			statusText = "Unknown"
+		}
+		return fmt.Sprintf("Error: HTTP %d %s - Unable to fetch this URL.", resp.StatusCode, statusText), nil
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("read response: %w", err)
+		return fmt.Sprintf("Error reading response: %v", err), nil
 	}
 
 	content := string(body)

@@ -167,6 +167,20 @@ func configShow(cmd *cobra.Command, args []string) error {
 	fmt.Printf("    model: %s\n", cfg.Image.Flux.Model)
 	printImageCredentialStatus("flux", cfg.Image.Flux.APIKey, "BFL_API_KEY")
 
+	fmt.Printf("\nsearch:\n")
+	fmt.Printf("  provider: %s\n", cfg.Search.Provider)
+	fmt.Printf("  exa:\n")
+	printSearchCredentialStatus(cfg.Search.Exa.APIKey, "EXA_API_KEY")
+	fmt.Printf("  brave:\n")
+	printSearchCredentialStatus(cfg.Search.Brave.APIKey, "BRAVE_API_KEY")
+	fmt.Printf("  google:\n")
+	printSearchCredentialStatus(cfg.Search.Google.APIKey, "GOOGLE_SEARCH_API_KEY")
+	if cfg.Search.Google.CX != "" {
+		fmt.Printf("    cx: [set]\n")
+	} else {
+		fmt.Printf("    cx: [NOT SET - export GOOGLE_SEARCH_CX]\n")
+	}
+
 	return nil
 }
 
@@ -211,6 +225,15 @@ func printZenCredentialStatus(apiKey string) {
 
 // printImageCredentialStatus shows credential status for image providers
 func printImageCredentialStatus(provider, apiKey, envVar string) {
+	if apiKey != "" {
+		fmt.Printf("    credentials: api_key [set via %s]\n", envVar)
+	} else {
+		fmt.Printf("    credentials: api_key [NOT SET - export %s]\n", envVar)
+	}
+}
+
+// printSearchCredentialStatus shows credential status for search providers
+func printSearchCredentialStatus(apiKey, envVar string) {
 	if apiKey != "" {
 		fmt.Printf("    credentials: api_key [set via %s]\n", envVar)
 	} else {

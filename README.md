@@ -226,7 +226,7 @@ Use arrow keys to select a command, Enter to execute, or press `h` for detailed 
 | `--file` | `-f` | File(s) to include as context (supports globs, line ranges, 'clipboard') |
 | `--auto-pick` | `-a` | Auto-execute the best suggestion without prompting |
 | `--max N` | `-n N` | Limit to N options in the selection UI |
-| `--search` | `-s` | Enable web search (DuckDuckGo) and page reading ([Jina AI Reader](https://jina.ai/reader/)) |
+| `--search` | `-s` | Enable web search (configurable: Exa, Brave, Google, DuckDuckGo) and page reading |
 | `--native-search` | | Use provider's native search (override config) |
 | `--no-native-search` | | Force external search tools instead of native |
 | `--print-only` | `-p` | Print the command instead of executing it |
@@ -538,6 +538,19 @@ image:
   flux:
     api_key: ${BFL_API_KEY}
     # model: flux-2-pro
+
+search:
+  provider: duckduckgo  # exa, brave, google, or duckduckgo (default)
+
+  # exa:
+  #   api_key: ${EXA_API_KEY}
+
+  # brave:
+  #   api_key: ${BRAVE_API_KEY}
+
+  # google:
+  #   api_key: ${GOOGLE_SEARCH_API_KEY}
+  #   cx: ${GOOGLE_SEARCH_CX}
 ```
 
 ### Per-Command Provider/Model
@@ -614,7 +627,7 @@ Extended thinking allows Claude to reason through complex problems before respon
 
 ### Web Search
 
-When using `-s`/`--search`, some providers (Anthropic, OpenAI, Gemini) have native web search built-in. Others use external tools (DuckDuckGo + Jina Reader).
+When using `-s`/`--search`, some providers (Anthropic, OpenAI, Gemini) have native web search built-in. Others use external tools (configurable search provider + [Jina Reader](https://jina.ai/reader/)).
 
 You can force external search even for providers with native support—useful for consistency, debugging, or when native search doesn't work well for your use case.
 
@@ -640,6 +653,35 @@ providers:
 1. CLI flag: `--native-search` or `--no-native-search`
 2. Provider config: `use_native_search: false`
 3. Default: use native search if provider supports it
+
+### Search Providers
+
+When using external search (non-native), you can choose from multiple search providers:
+
+| Provider | Environment Variable | Description |
+|----------|---------------------|-------------|
+| DuckDuckGo (default) | — | Free, no API key required |
+| [Exa](https://exa.ai) | `EXA_API_KEY` | AI-native semantic search |
+| [Brave](https://brave.com/search/api/) | `BRAVE_API_KEY` | Independent index, privacy-focused |
+| [Google](https://developers.google.com/custom-search) | `GOOGLE_SEARCH_API_KEY` + `GOOGLE_SEARCH_CX` | Google Custom Search |
+
+**Configure in `~/.config/term-llm/config.yaml`:**
+```yaml
+search:
+  provider: exa  # exa, brave, google, or duckduckgo (default)
+
+  exa:
+    api_key: ${EXA_API_KEY}
+
+  brave:
+    api_key: ${BRAVE_API_KEY}
+
+  google:
+    api_key: ${GOOGLE_SEARCH_API_KEY}
+    cx: ${GOOGLE_SEARCH_CX}  # Custom Search Engine ID
+```
+
+Run `term-llm config` to see which search providers have credentials configured.
 
 ### Credentials
 

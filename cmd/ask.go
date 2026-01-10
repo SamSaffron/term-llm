@@ -100,7 +100,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	engine := llm.NewEngine(provider, defaultToolRegistry())
+	engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
 
 	// Initialize MCP servers if --mcp flag is set
 	var mcpManager *mcp.Manager
