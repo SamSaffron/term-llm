@@ -197,7 +197,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
 		mcpManager, err = enableMCPServersWithFeedback(ctx, editMCP, engine, cmd.ErrOrStderr())
 		if err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %v\n", err)
+			return err
 		}
 		if mcpManager != nil {
 			defer mcpManager.StopAll()

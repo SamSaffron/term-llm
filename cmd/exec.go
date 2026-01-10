@@ -109,7 +109,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 	if execMCP != "" {
 		mcpManager, err = enableMCPServersWithFeedback(ctx, execMCP, engine, cmd.ErrOrStderr())
 		if err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %v\n", err)
+			return err
 		}
 		if mcpManager != nil {
 			defer mcpManager.StopAll()

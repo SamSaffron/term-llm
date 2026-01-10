@@ -107,7 +107,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	if askMCP != "" {
 		mcpManager, err = enableMCPServersWithFeedback(ctx, askMCP, engine, cmd.ErrOrStderr())
 		if err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %v\n", err)
+			return err
 		}
 		if mcpManager != nil {
 			defer mcpManager.StopAll()
@@ -603,7 +603,7 @@ func uintPtr(v uint) *uint {
 }
 
 // enableMCPServersWithFeedback initializes MCP servers with user feedback.
-// Returns the manager (caller must call StopAll) or nil if setup failed.
+// Returns the manager (caller must call StopAll) or error if setup failed.
 func enableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *llm.Engine, errWriter io.Writer) (*mcp.Manager, error) {
 	serverNames := parseServerList(mcpFlag)
 	if len(serverNames) == 0 {
@@ -615,14 +615,41 @@ func enableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *l
 		return nil, fmt.Errorf("failed to load MCP config: %w", err)
 	}
 
+	// Validate all servers exist before starting any
+	available := mcpManager.AvailableServers()
+	availableSet := make(map[string]bool)
+	for _, s := range available {
+		availableSet[s] = true
+	}
+
+	var missing []string
+	for _, name := range serverNames {
+		if !availableSet[name] {
+			missing = append(missing, name)
+		}
+	}
+
+	if len(missing) > 0 {
+		if len(missing) == 1 {
+			return nil, fmt.Errorf("MCP server '%s' not configured. Add it with: term-llm mcp add %s", missing[0], missing[0])
+		}
+		return nil, fmt.Errorf("MCP servers not configured: %s. Add them with: term-llm mcp add <name>", strings.Join(missing, ", "))
+	}
+
 	// Show starting message
 	fmt.Fprintf(errWriter, "Starting MCP: %s", strings.Join(serverNames, ", "))
 
 	// Enable all servers (async)
+	var enableErrors []string
 	for _, server := range serverNames {
 		if err := mcpManager.Enable(ctx, server); err != nil {
-			fmt.Fprintf(errWriter, "\nWarning: failed to enable MCP server '%s': %v", server, err)
+			enableErrors = append(enableErrors, fmt.Sprintf("%s: %v", server, err))
 		}
+	}
+
+	if len(enableErrors) > 0 {
+		fmt.Fprintf(errWriter, "\n")
+		return nil, fmt.Errorf("failed to start MCP servers: %s", strings.Join(enableErrors, "; "))
 	}
 
 	// Wait for servers with spinner animation
@@ -648,6 +675,24 @@ func enableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *l
 		time.Sleep(80 * time.Millisecond)
 	}
 
+	// Check for failed servers
+	var failedServers []string
+	for _, name := range serverNames {
+		status, err := mcpManager.ServerStatus(name)
+		if status == mcp.StatusFailed {
+			errMsg := "unknown error"
+			if err != nil {
+				errMsg = err.Error()
+			}
+			failedServers = append(failedServers, fmt.Sprintf("%s (%s)", name, errMsg))
+		}
+	}
+
+	if len(failedServers) > 0 {
+		fmt.Fprintf(errWriter, "\n")
+		return nil, fmt.Errorf("MCP servers failed to start: %s", strings.Join(failedServers, "; "))
+	}
+
 	// Register MCP tools
 	mcp.RegisterMCPTools(mcpManager, engine.Tools())
 	tools := mcpManager.AllTools()
@@ -656,7 +701,8 @@ func enableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *l
 	if len(tools) > 0 {
 		fmt.Fprintf(errWriter, "\r✓ MCP ready: %d tools from %s\n", len(tools), strings.Join(serverNames, ", "))
 	} else {
-		fmt.Fprintf(errWriter, "\r⚠ MCP: no tools available from %s\n", strings.Join(serverNames, ", "))
+		fmt.Fprintf(errWriter, "\n")
+		return nil, fmt.Errorf("MCP servers started but no tools available from: %s", strings.Join(serverNames, ", "))
 	}
 
 	return mcpManager, nil

@@ -343,13 +343,25 @@ func mcpAddURL(urlStr string) error {
 	return nil
 }
 
-// mcpAddFromRegistry adds an MCP server from the registry.
+// mcpAddFromRegistry adds an MCP server from bundled list or registry.
 func mcpAddFromRegistry(name string) error {
+	nameLower := strings.ToLower(name)
+
+	// First, check bundled servers (curated list takes priority)
+	for _, bundled := range mcp.GetBundledServers() {
+		if strings.ToLower(bundled.Name) == nameLower ||
+			strings.ToLower(bundled.Package) == nameLower ||
+			strings.HasSuffix(strings.ToLower(bundled.Package), "/"+nameLower) {
+			return addBundledServer(bundled)
+		}
+	}
+
+	// Not in bundled list, search the registry
 	registry := mcp.NewRegistryClient()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	fmt.Printf("Searching for '%s'...\n", name)
+	fmt.Printf("Searching registry for '%s'...\n", name)
 
 	result, err := registry.Search(ctx, mcp.SearchOptions{
 		Query: name,
@@ -421,6 +433,41 @@ func mcpAddFromRegistry(name string) error {
 			}
 		}
 	}
+
+	// Load and update config
+	cfg, err := mcp.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	if _, exists := cfg.Servers[localName]; exists {
+		return fmt.Errorf("server '%s' already exists in config", localName)
+	}
+
+	cfg.AddServer(localName, serverConfig)
+	if err := cfg.Save(); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+
+	path, _ := mcp.DefaultConfigPath()
+	fmt.Printf("Added '%s' to %s\n", localName, path)
+	fmt.Println()
+	fmt.Printf("Test it with: term-llm mcp test %s\n", localName)
+	fmt.Printf("Use with: term-llm [ask|exec|edit|chat] --mcp %s ...\n", localName)
+
+	return nil
+}
+
+// addBundledServer adds a server from the bundled list.
+func addBundledServer(bundled mcp.BundledServer) error {
+	fmt.Printf("Found: %s (bundled)\n", bundled.Name)
+	if bundled.Description != "" {
+		fmt.Printf("  %s\n", bundled.Description)
+	}
+	fmt.Println()
+
+	serverConfig := bundled.ToServerConfig()
+	localName := bundled.Name
 
 	// Load and update config
 	cfg, err := mcp.LoadConfig()
