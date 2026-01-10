@@ -175,7 +175,12 @@ providers:
     type: openai_compatible
     base_url: http://your-server:8080/v1
     model: mixtral-8x7b
+    models:  # optional: list models for shell autocomplete
+      - mixtral-8x7b
+      - llama-3-70b
 ```
+
+The `models` list enables tab completion for `--provider my-server:<TAB>`. The configured `model` is always included in completions.
 
 ### Option 6: Use Claude CLI (claude-bin)
 
@@ -606,6 +611,10 @@ providers:
   #   # url: https://api.cerebras.ai/v1/chat/completions  # alternative: full URL, used as-is
   #   model: llama-4-scout-17b
   #   api_key: ${CEREBRAS_API_KEY}
+  #   models:  # optional: enable autocomplete for --provider cerebras:<TAB>
+  #     - llama-4-scout-17b-16e-instruct
+  #     - llama-4-maverick-17b-128e-instruct
+  #     - qwen-3-32b
 
 exec:
   suggestions: 3  # number of command suggestions

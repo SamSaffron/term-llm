@@ -51,9 +51,10 @@ type ProviderConfig struct {
 	Type ProviderType `mapstructure:"type"`
 
 	// Common fields
-	APIKey      string `mapstructure:"api_key"`
-	Model       string `mapstructure:"model"`
-	Credentials string `mapstructure:"credentials"` // "api_key", "claude", "codex", "gemini-cli"
+	APIKey      string   `mapstructure:"api_key"`
+	Model       string   `mapstructure:"model"`
+	Models      []string `mapstructure:"models"` // Available models for autocomplete
+	Credentials string   `mapstructure:"credentials"` // "api_key", "claude", "codex", "gemini-cli"
 
 	// Search behavior - nil means auto (use native if available)
 	UseNativeSearch *bool `mapstructure:"use_native_search"`

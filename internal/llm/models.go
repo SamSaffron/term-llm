@@ -115,14 +115,44 @@ func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config)
 		provider := parts[0]
 		modelPrefix := parts[1]
 
-		// Get models for this provider type
-		// For custom providers, infer the type and use that type's models
-		providerType := string(config.InferProviderType(provider, ""))
-		models, ok := modelMap[providerType]
-		if !ok {
-			// Fallback to provider name directly
-			models, ok = modelMap[provider]
+		// Get models for completion
+		var models []string
+
+		// Check if config has a models list for this provider
+		var configModels []string
+		var configModel string
+		if cfg != nil {
+			if providerCfg, ok := cfg.Providers[provider]; ok {
+				configModels = providerCfg.Models
+				configModel = providerCfg.Model
+			}
+		}
+
+		if len(configModels) > 0 {
+			// Use config-defined models list, plus configured model (deduped)
+			seen := make(map[string]bool)
+			if configModel != "" {
+				models = append(models, configModel)
+				seen[configModel] = true
+			}
+			for _, m := range configModels {
+				if !seen[m] {
+					models = append(models, m)
+					seen[m] = true
+				}
+			}
+		} else {
+			// Fall back to hardcoded model map
+			providerType := string(config.InferProviderType(provider, ""))
+			var ok bool
+			models, ok = modelMap[providerType]
 			if !ok {
+				models, ok = modelMap[provider]
+			}
+			// If no hardcoded list but we have a configured model, use that
+			if !ok && configModel != "" {
+				models = []string{configModel}
+			} else if !ok {
 				return nil
 			}
 		}
