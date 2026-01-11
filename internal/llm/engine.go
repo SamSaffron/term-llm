@@ -176,6 +176,10 @@ func (e *Engine) streamWithExternalTools(ctx context.Context, req Request, addSe
 			DebugRawRequest(req.DebugRaw, e.provider.Name(), e.provider.Credential(), req, "Request (initial)")
 		}
 
+		// Save original tool choice to restore after external tools complete
+		originalToolChoice := req.ToolChoice
+		restoredToolChoice := false
+
 		// Build list of external tools to add
 		var externalTools []ToolSpec
 		var externalToolNames []string
@@ -192,10 +196,13 @@ func (e *Engine) streamWithExternalTools(ctx context.Context, req Request, addSe
 			}
 		}
 
-		// Also include any tools already in the request (e.g., MCP tools) as external tools
-		// so they get executed in the agentic loop
+		// Also include any registered tools from the request (e.g., MCP tools) as external tools
+		// so they get executed in the agentic loop. Unregistered tools (like suggest_commands)
+		// are passthrough tools that should be forwarded as events, not executed.
 		for _, tool := range req.Tools {
-			externalToolNames = append(externalToolNames, tool.Name)
+			if _, ok := e.tools.Get(tool.Name); ok {
+				externalToolNames = append(externalToolNames, tool.Name)
+			}
 		}
 
 		debugMsg := fmt.Sprintf("adding external tools: %v", externalToolNames)
@@ -279,7 +286,23 @@ func (e *Engine) streamWithExternalTools(ctx context.Context, req Request, addSe
 			// Split calls into our external tools vs other tools
 			ourCalls, otherCalls := splitExternalToolCalls(toolCalls, externalToolNames)
 			if len(ourCalls) == 0 {
-				// No external tool calls - forward any other tool calls and done
+				// No external tool calls - check if we got the expected forced tool
+				hasExpectedTool := originalToolChoice.Mode != ToolChoiceName // no forced tool expected
+				for _, call := range otherCalls {
+					if call.Name == originalToolChoice.Name {
+						hasExpectedTool = true
+						break
+					}
+				}
+
+				// If we expected a forced tool but didn't get it, restore and retry once
+				if !hasExpectedTool && !restoredToolChoice {
+					req.ToolChoice = originalToolChoice
+					restoredToolChoice = true
+					continue // Try again with forced tool choice
+				}
+
+				// Forward any other tool calls and done
 				for i := range otherCalls {
 					events <- Event{Type: EventToolCall, Tool: &otherCalls[i]}
 				}
