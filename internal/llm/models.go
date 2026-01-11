@@ -141,19 +141,32 @@ func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config)
 					seen[m] = true
 				}
 			}
-		} else {
-			// Fall back to hardcoded model map
+			} else {
 			providerType := string(config.InferProviderType(provider, ""))
-			var ok bool
-			models, ok = modelMap[providerType]
-			if !ok {
-				models, ok = modelMap[provider]
-			}
-			// If no hardcoded list but we have a configured model, use that
-			if !ok && configModel != "" {
-				models = []string{configModel}
-			} else if !ok {
-				return nil
+
+			if providerType == "openrouter" || provider == "openrouter" {
+				var apiKey string
+				if cfg != nil {
+					if providerCfg, ok := cfg.Providers[provider]; ok {
+						apiKey = providerCfg.ResolvedAPIKey
+					}
+				}
+				if cachedModels := GetCachedOpenRouterModels(apiKey); len(cachedModels) > 0 {
+					models = cachedModels
+				} else {
+					models = modelMap["openrouter"]
+				}
+			} else {
+				var ok bool
+				models, ok = modelMap[providerType]
+				if !ok {
+					models, ok = modelMap[provider]
+				}
+				if !ok && configModel != "" {
+					models = []string{configModel}
+				} else if !ok {
+					return nil
+				}
 			}
 		}
 

@@ -101,6 +101,9 @@ func runModels(cmd *cobra.Command, args []string) error {
 	defer cancel()
 
 	models, err := lister.ListModels(ctx)
+	if err == nil && providerType == config.ProviderTypeOpenRouter {
+		llm.RefreshOpenRouterCacheSync(providerCfg.ResolvedAPIKey, models)
+	}
 	if err != nil {
 		// Provide helpful error messages for common issues
 		if strings.Contains(err.Error(), "connection refused") {
