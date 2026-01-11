@@ -162,10 +162,11 @@ type ImageFluxConfig struct {
 
 // SearchConfig configures web search providers
 type SearchConfig struct {
-	Provider string             `mapstructure:"provider"` // exa, brave, google, duckduckgo (default)
-	Exa      SearchExaConfig    `mapstructure:"exa"`
-	Brave    SearchBraveConfig  `mapstructure:"brave"`
-	Google   SearchGoogleConfig `mapstructure:"google"`
+	Provider      string             `mapstructure:"provider"`       // exa, brave, google, duckduckgo (default)
+	ForceExternal bool               `mapstructure:"force_external"` // force external search for all providers
+	Exa           SearchExaConfig    `mapstructure:"exa"`
+	Brave         SearchBraveConfig  `mapstructure:"brave"`
+	Google        SearchGoogleConfig `mapstructure:"google"`
 }
 
 // SearchExaConfig configures Exa search
@@ -217,6 +218,7 @@ func Load() (*Config, error) {
 	viper.SetDefault("image.flux.model", "flux-2-pro")
 	// Search defaults
 	viper.SetDefault("search.provider", "duckduckgo")
+	viper.SetDefault("search.force_external", false)
 
 	// Read config file (optional - won't error if missing)
 	if err := viper.ReadInConfig(); err != nil {

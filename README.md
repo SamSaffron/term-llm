@@ -749,6 +749,12 @@ term-llm ask "latest news" -s --no-native-search  # Force external search tools
 term-llm ask "latest news" -s --native-search     # Force native (override config)
 ```
 
+**Global config** (applies to all providers):
+```yaml
+search:
+  force_external: true  # Never use native search, always use external tools
+```
+
 **Per-provider config:**
 ```yaml
 providers:
@@ -763,8 +769,9 @@ providers:
 
 **Priority** (highest to lowest):
 1. CLI flag: `--native-search` or `--no-native-search`
-2. Provider config: `use_native_search: false`
-3. Default: use native search if provider supports it
+2. Global config: `search.force_external: true`
+3. Provider config: `use_native_search: false`
+4. Default: use native search if provider supports it
 
 ### Search Providers
 

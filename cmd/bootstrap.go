@@ -57,7 +57,8 @@ func initThemeFromConfig(cfg *config.Config) {
 }
 
 // resolveForceExternalSearch determines whether to force external search based on
-// CLI flags and provider config. Flag values take precedence over config.
+// CLI flags, global search config, and provider config.
+// Precedence: CLI flags > global search.force_external > per-provider use_native_search > default
 // nativeSearchFlag: true if --native-search was explicitly set
 // noNativeSearchFlag: true if --no-native-search was explicitly set
 func resolveForceExternalSearch(cfg *config.Config, nativeSearchFlag, noNativeSearchFlag bool) bool {
@@ -69,7 +70,12 @@ func resolveForceExternalSearch(cfg *config.Config, nativeSearchFlag, noNativeSe
 		return false // force native
 	}
 
-	// Fall back to config
+	// Global search config override
+	if cfg.Search.ForceExternal {
+		return true
+	}
+
+	// Fall back to per-provider config
 	providerCfg := cfg.GetActiveProviderConfig()
 	if providerCfg != nil && providerCfg.UseNativeSearch != nil {
 		return !*providerCfg.UseNativeSearch // if UseNativeSearch is false, force external
