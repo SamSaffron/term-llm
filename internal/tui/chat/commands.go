@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sahilm/fuzzy"
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/mcp"
 )
 
@@ -368,7 +369,7 @@ func (m *Model) cmdQuit() (tea.Model, tea.Cmd) {
 func (m *Model) cmdModel(args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
 		// Show model picker dialog
-		m.dialog.ShowModelPicker(m.modelName, GetAvailableProviders())
+		m.dialog.ShowModelPicker(m.modelName, GetAvailableProviders(m.config))
 		m.textarea.SetValue("")
 		return m, nil
 	}
@@ -382,7 +383,7 @@ func (m *Model) cmdModel(args []string) (tea.Model, tea.Cmd) {
 	}
 
 	// Try fuzzy matching across all providers
-	match := fuzzyMatchModel(modelArg)
+	match := fuzzyMatchModel(modelArg, m.config)
 	if match != "" {
 		return m.switchModel(match)
 	}
@@ -393,7 +394,7 @@ func (m *Model) cmdModel(args []string) (tea.Model, tea.Cmd) {
 
 // fuzzyMatchModel finds the best matching model for a query
 // Returns "provider:model" or empty string if no good match
-func fuzzyMatchModel(query string) string {
+func fuzzyMatchModel(query string, cfg *config.Config) string {
 	query = strings.ToLower(query)
 
 	// Build list of all provider:model combinations
@@ -403,7 +404,7 @@ func fuzzyMatchModel(query string) string {
 		combined string
 	}
 	var allModels []modelEntry
-	for _, provider := range GetAvailableProviders() {
+	for _, provider := range GetAvailableProviders(cfg) {
 		for _, model := range provider.Models {
 			allModels = append(allModels, modelEntry{
 				provider: provider.Name,

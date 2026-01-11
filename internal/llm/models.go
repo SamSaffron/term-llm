@@ -39,9 +39,9 @@ var ProviderModels = map[string][]string{
 		"gemini-2.5-flash-lite",
 	},
 	"zen": {
+		"minimax-m2.1-free",
 		"glm-4.7-free",
 		"grok-code",
-		"minimax-m2.1-free",
 		"big-pickle",
 		"gpt-5-nano",
 	},

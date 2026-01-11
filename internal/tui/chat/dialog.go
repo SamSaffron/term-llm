@@ -6,6 +6,8 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -280,7 +282,7 @@ func (d *DialogModel) Update(msg tea.Msg) (*DialogModel, tea.Cmd) {
 			if d.cursor < listLen-1 {
 				d.cursor++
 			}
-		case key.Matches(msg, key.NewBinding(key.WithKeys("esc", "q"))):
+		case key.Matches(msg, key.NewBinding(key.WithKeys("esc", "q", "ctrl+c"))):
 			d.Close()
 		}
 	}
@@ -310,23 +312,7 @@ func (d *DialogModel) View() string {
 
 // viewModelPicker renders completions-style model picker
 func (d *DialogModel) viewModelPicker() string {
-	if len(d.filtered) == 0 {
-		return ""
-	}
-
 	theme := d.styles.Theme()
-	maxVisible := 12
-
-	// Calculate visible window based on cursor position
-	startIdx := 0
-	if d.cursor >= maxVisible {
-		startIdx = d.cursor - maxVisible + 1
-	}
-	endIdx := startIdx + maxVisible
-	if endIdx > len(d.filtered) {
-		endIdx = len(d.filtered)
-	}
-	items := d.filtered[startIdx:endIdx]
 
 	// Styles (matching completions)
 	borderStyle := lipgloss.NewStyle().
@@ -346,6 +332,35 @@ func (d *DialogModel) viewModelPicker() string {
 
 	// Build content
 	var b strings.Builder
+
+	// Show filter input at top
+	b.WriteString(mutedStyle.Render("filter: "))
+	if d.query != "" {
+		b.WriteString(d.query)
+	}
+	b.WriteString("█") // cursor
+	b.WriteString("\n")
+
+	// Handle empty filter results
+	if len(d.filtered) == 0 {
+		if d.query != "" {
+			b.WriteString(mutedStyle.Render("no matches"))
+		}
+		return borderStyle.Render(b.String())
+	}
+
+	maxVisible := 12
+
+	// Calculate visible window based on cursor position
+	startIdx := 0
+	if d.cursor >= maxVisible {
+		startIdx = d.cursor - maxVisible + 1
+	}
+	endIdx := startIdx + maxVisible
+	if endIdx > len(d.filtered) {
+		endIdx = len(d.filtered)
+	}
+	items := d.filtered[startIdx:endIdx]
 
 	for i, item := range items {
 		actualIdx := startIdx + i
@@ -587,51 +602,62 @@ type ProviderInfo struct {
 	Models []string
 }
 
-// ProviderModels contains common models per provider (imported from llm package logic)
-var providerModels = map[string][]string{
-	"anthropic": {
-		"claude-sonnet-4-5",
-		"claude-sonnet-4-5-thinking",
-		"claude-opus-4-5",
-		"claude-opus-4-5-thinking",
-		"claude-haiku-4-5",
-	},
-	"openai": {
-		"gpt-5.2",
-		"gpt-5.2-high",
-		"gpt-5.2-codex",
-		"gpt-4.1",
-	},
-	"gemini": {
-		"gemini-3-pro-preview",
-		"gemini-3-flash-preview",
-		"gemini-2.5-flash",
-	},
-	"zen": {
-		"glm-4.7-free",
-		"grok-code",
-		"minimax-m2.1-free",
-	},
-	"ollama": {
-		"llama3",
-		"codellama",
-		"mistral",
-	},
-}
-
 // GetAvailableProviders returns providers with their models in consistent order
-func GetAvailableProviders() []ProviderInfo {
-	// Define provider order for consistent results
-	providerOrder := []string{"anthropic", "openai", "gemini", "zen", "ollama"}
-
+// If cfg is provided, custom configured providers are also included
+func GetAvailableProviders(cfg *config.Config) []ProviderInfo {
 	var providers []ProviderInfo
-	for _, name := range providerOrder {
-		if models, ok := providerModels[name]; ok {
+	seen := make(map[string]bool)
+
+	// Add built-in providers first, merging any configured model
+	for _, name := range llm.GetBuiltInProviderNames() {
+		if models, ok := llm.ProviderModels[name]; ok {
+			modelList := make([]string, len(models))
+			copy(modelList, models)
+
+			// If config has a model for this provider, prepend it if not already present
+			if cfg != nil {
+				if providerCfg, ok := cfg.Providers[name]; ok && providerCfg.Model != "" {
+					found := false
+					for _, m := range modelList {
+						if m == providerCfg.Model {
+							found = true
+							break
+						}
+					}
+					if !found {
+						modelList = append([]string{providerCfg.Model}, modelList...)
+					}
+				}
+			}
+
 			providers = append(providers, ProviderInfo{
 				Name:   name,
-				Models: models,
+				Models: modelList,
 			})
+			seen[name] = true
 		}
 	}
+
+	// Add custom configured providers from config
+	if cfg != nil {
+		for name, providerCfg := range cfg.Providers {
+			if seen[name] {
+				continue
+			}
+			var models []string
+			if len(providerCfg.Models) > 0 {
+				models = providerCfg.Models
+			} else if providerCfg.Model != "" {
+				models = []string{providerCfg.Model}
+			}
+			if len(models) > 0 {
+				providers = append(providers, ProviderInfo{
+					Name:   name,
+					Models: models,
+				})
+			}
+		}
+	}
+
 	return providers
 }

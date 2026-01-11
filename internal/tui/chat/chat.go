@@ -346,7 +346,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					return m.switchModel(selected.ID)
 				}
 				return m, nil
-			case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+			case key.Matches(msg, key.NewBinding(key.WithKeys("esc", "ctrl+c"))):
 				m.dialog.Close()
 				return m, nil
 			case key.Matches(msg, key.NewBinding(key.WithKeys("up", "ctrl+p"))):
@@ -395,7 +395,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					m.dialog.SetCursor(cursor)
 				}
 				return m, nil
-			case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+			case key.Matches(msg, key.NewBinding(key.WithKeys("esc", "ctrl+c"))):
 				m.dialog.Close()
 				return m, nil
 			case key.Matches(msg, key.NewBinding(key.WithKeys("up", "k", "ctrl+p"))):
@@ -568,7 +568,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Handle model picker (Ctrl+L)
 	if key.Matches(msg, m.keyMap.SwitchModel) {
-		m.dialog.ShowModelPicker(m.modelName, GetAvailableProviders())
+		m.dialog.ShowModelPicker(m.modelName, GetAvailableProviders(m.config))
 		return m, nil
 	}
 
