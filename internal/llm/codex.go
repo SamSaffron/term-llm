@@ -165,6 +165,7 @@ func (p *CodexProvider) Stream(ctx context.Context, req Request) (Stream, error)
 
 		// Stream and handle both text and tool calls
 		acc := newCodexToolAccumulator()
+		var lastUsage *Usage
 		buf := make([]byte, 4096)
 		var pending string
 		for {
@@ -244,6 +245,14 @@ func (p *CodexProvider) Stream(ctx context.Context, req Request) (Stream, error)
 					case "response.function_call_arguments.done":
 						acc.ensureCall(event.ItemID)
 						acc.setArgs(event.ItemID, event.Arguments)
+					case "response.completed":
+						if event.Response.Usage.OutputTokens > 0 {
+							lastUsage = &Usage{
+								InputTokens:       event.Response.Usage.InputTokens,
+								OutputTokens:      event.Response.Usage.OutputTokens,
+								CachedInputTokens: event.Response.Usage.InputTokensDetails.CachedTokens,
+							}
+						}
 					}
 				}
 			}
@@ -260,6 +269,9 @@ func (p *CodexProvider) Stream(ctx context.Context, req Request) (Stream, error)
 			events <- Event{Type: EventToolCall, Tool: &call}
 		}
 
+		if lastUsage != nil {
+			events <- Event{Type: EventUsage, Use: lastUsage}
+		}
 		events <- Event{Type: EventDone}
 		return nil
 	}), nil
@@ -335,9 +347,18 @@ type codexSSEEvent struct {
 		Name      string `json:"name"`
 		Arguments string `json:"arguments"`
 	} `json:"item"`
-	ItemID    string `json:"item_id"`
-	Delta     string `json:"delta"`
+	ItemID   string `json:"item_id"`
+	Delta    string `json:"delta"`
 	Arguments string `json:"arguments"`
+	Response struct {
+		Usage struct {
+			InputTokens        int `json:"input_tokens"`
+			OutputTokens       int `json:"output_tokens"`
+			InputTokensDetails struct {
+				CachedTokens int `json:"cached_tokens"`
+			} `json:"input_tokens_details"`
+		} `json:"usage"`
+	} `json:"response"`
 }
 
 type codexToolAccumulator struct {

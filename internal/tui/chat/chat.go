@@ -98,6 +98,7 @@ type streamEvent struct {
 	tokens       int
 	inputTokens  int
 	outputTokens int
+	cachedTokens int
 	done         bool
 	err          error
 	retryStatus  string
@@ -243,7 +244,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.stats.ToolEnd()
 		}
 		if msg.inputTokens > 0 || msg.outputTokens > 0 {
-			m.stats.AddUsage(msg.inputTokens, msg.outputTokens)
+			m.stats.AddUsage(msg.inputTokens, msg.outputTokens, msg.cachedTokens)
 		}
 
 		if msg.chunk != "" {
@@ -942,7 +943,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 				case llm.EventUsage:
 					if event.Use != nil {
 						totalTokens = event.Use.OutputTokens
-						m.streamChan <- streamEvent{inputTokens: event.Use.InputTokens, outputTokens: event.Use.OutputTokens}
+						m.streamChan <- streamEvent{inputTokens: event.Use.InputTokens, outputTokens: event.Use.OutputTokens, cachedTokens: event.Use.CachedInputTokens}
 					}
 				}
 			}

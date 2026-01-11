@@ -7,11 +7,12 @@ import (
 
 // SessionStats tracks statistics for a session.
 type SessionStats struct {
-	StartTime     time.Time
-	InputTokens   int
-	OutputTokens  int
-	ToolCallCount int
-	TurnCount     int // For multi-turn sessions (chat)
+	StartTime         time.Time
+	InputTokens       int
+	OutputTokens      int
+	CachedInputTokens int // Tokens read from cache
+	ToolCallCount     int
+	TurnCount         int // For multi-turn sessions (chat)
 
 	// Time tracking
 	LLMTime       time.Duration
@@ -30,9 +31,10 @@ func NewSessionStats() *SessionStats {
 }
 
 // AddUsage adds token usage to the stats.
-func (s *SessionStats) AddUsage(input, output int) {
+func (s *SessionStats) AddUsage(input, output, cached int) {
 	s.InputTokens += input
 	s.OutputTokens += output
+	s.CachedInputTokens += cached
 }
 
 // ToolStart marks the start of a tool execution.
@@ -78,10 +80,18 @@ func (s *SessionStats) AddTurn() {
 func (s SessionStats) Render() string {
 	total := time.Since(s.StartTime)
 
-	// Format tokens
-	tokensStr := fmt.Sprintf("%s in / %s out",
-		formatTokenCount(s.InputTokens),
-		formatTokenCount(s.OutputTokens))
+	// Format tokens with optional cache info
+	var tokensStr string
+	if s.CachedInputTokens > 0 {
+		tokensStr = fmt.Sprintf("%s in (%s cached) / %s out",
+			formatTokenCount(s.InputTokens),
+			formatTokenCount(s.CachedInputTokens),
+			formatTokenCount(s.OutputTokens))
+	} else {
+		tokensStr = fmt.Sprintf("%s in / %s out",
+			formatTokenCount(s.InputTokens),
+			formatTokenCount(s.OutputTokens))
+	}
 
 	// Format time breakdown
 	var timeStr string

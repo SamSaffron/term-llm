@@ -145,8 +145,9 @@ type Event struct {
 
 // Usage captures token usage if available.
 type Usage struct {
-	InputTokens  int
-	OutputTokens int
+	InputTokens       int
+	OutputTokens      int
+	CachedInputTokens int // Tokens read from cache
 }
 
 // CommandSuggestion represents a single command suggestion from the LLM.

@@ -315,7 +315,7 @@ func collectSuggestions(ctx context.Context, engine *llm.Engine, req llm.Request
 
 		// Track usage for stats
 		if event.Type == llm.EventUsage && event.Use != nil {
-			stats.AddUsage(event.Use.InputTokens, event.Use.OutputTokens)
+			stats.AddUsage(event.Use.InputTokens, event.Use.OutputTokens, event.Use.CachedInputTokens)
 			continue
 		}
 

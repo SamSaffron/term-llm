@@ -370,8 +370,9 @@ func buildOpenAIMessageItems(role responses.EasyInputMessageRole, parts []Part) 
 func emitOpenAIUsage(events chan<- Event, resp *responses.Response) {
 	if resp.Usage.OutputTokens > 0 {
 		events <- Event{Type: EventUsage, Use: &Usage{
-			InputTokens:  int(resp.Usage.InputTokens),
-			OutputTokens: int(resp.Usage.OutputTokens),
+			InputTokens:       int(resp.Usage.InputTokens),
+			OutputTokens:      int(resp.Usage.OutputTokens),
+			CachedInputTokens: int(resp.Usage.InputTokensDetails.CachedTokens),
 		}}
 	}
 }

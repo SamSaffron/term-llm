@@ -145,9 +145,12 @@ type oaiChoice struct {
 }
 
 type oaiUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens        int `json:"prompt_tokens"`
+	CompletionTokens    int `json:"completion_tokens"`
+	TotalTokens         int `json:"total_tokens"`
+	PromptTokensDetails struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
 }
 
 type oaiAPIError struct {
@@ -366,8 +369,9 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 
 			if chatResp.Usage != nil {
 				lastUsage = &Usage{
-					InputTokens:  chatResp.Usage.PromptTokens,
-					OutputTokens: chatResp.Usage.CompletionTokens,
+					InputTokens:       chatResp.Usage.PromptTokens,
+					OutputTokens:      chatResp.Usage.CompletionTokens,
+					CachedInputTokens: chatResp.Usage.PromptTokensDetails.CachedTokens,
 				}
 			}
 

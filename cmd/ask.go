@@ -219,7 +219,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 				}
 			}
 			if event.Type == llm.EventUsage && event.Use != nil {
-				stats.AddUsage(event.Use.InputTokens, event.Use.OutputTokens)
+				stats.AddUsage(event.Use.InputTokens, event.Use.OutputTokens, event.Use.CachedInputTokens)
 				select {
 				case toolEvents <- toolEvent{
 					IsUsage:      true,
