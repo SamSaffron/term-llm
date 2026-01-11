@@ -274,7 +274,7 @@ term-llm ask --debug-raw "latest zig release"   # raw debug logs with timestamps
 term-llm edit "add error handling" -f main.go
 term-llm edit "refactor loop" -f utils.go:20-40  # only lines 20-40
 term-llm edit "add tests" -f "*.go" --dry-run    # preview changes
-term-llm edit --debug-raw "fix typos" -f README.md
+term-llm edit "use the API" -f main.go -c api/client.go  # with context
 
 # Generate images
 term-llm image "a sunset over mountains"
@@ -347,6 +347,7 @@ Edit files using natural language instructions:
 term-llm edit "add error handling" --file main.go
 term-llm edit "refactor to use interfaces" --file "*.go"
 term-llm edit "fix the bug" --file utils.go:45-60     # only lines 45-60
+term-llm edit "use the API" -f main.go -c api/client.go  # with context files
 ```
 
 ### Edit Flags
@@ -354,10 +355,28 @@ term-llm edit "fix the bug" --file utils.go:45-60     # only lines 45-60
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--file` | `-f` | File(s) to edit (required, supports globs) |
+| `--context` | `-c` | Read-only reference file(s) (supports globs, 'clipboard') |
 | `--dry-run` | | Preview changes without applying |
 | `--provider` | | Override provider (e.g., `openai:gpt-5.2-codex`) |
 | `--per-edit` | | Prompt for each edit separately |
 | `--debug` | `-d` | Show debug information |
+
+### Context Files
+
+Use `--context`/`-c` to include reference files that inform the edit but won't be modified:
+
+```bash
+term-llm edit "refactor to use the client" -f handler.go -c api/client.go -c types.go
+```
+
+Context files are shown to the AI as read-only references. This is useful when your edit depends on types, interfaces, or patterns defined elsewhere.
+
+You can also pipe stdin as context, which is handy for git diffs:
+
+```bash
+git diff | term-llm edit "apply these changes" -f main.go
+git show HEAD~1 | term-llm edit "undo this change" -f handler.go
+```
 
 ### Line Range Syntax
 

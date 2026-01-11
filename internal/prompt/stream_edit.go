@@ -161,7 +161,7 @@ Brief summary.
 
 // StreamEditUserPrompt builds the user prompt with file context.
 // useUnifiedDiff determines which format instruction to include.
-func StreamEditUserPrompt(request string, files []input.FileContent, specs []EditSpec, useUnifiedDiff bool) string {
+func StreamEditUserPrompt(request string, files []input.FileContent, specs []EditSpec, contextFiles []input.FileContent, stdinContent string, useUnifiedDiff bool) string {
 	var sb strings.Builder
 
 	sb.WriteString("Files to edit:\n\n")
@@ -191,6 +191,30 @@ func StreamEditUserPrompt(request string, files []input.FileContent, specs []Edi
 				}
 			}
 		}
+	}
+
+	// Add read-only context files
+	if len(contextFiles) > 0 {
+		sb.WriteString("Reference files (read-only, do not edit):\n\n")
+		for _, f := range contextFiles {
+			sb.WriteString(fmt.Sprintf("[CONTEXT: %s]\n", f.Path))
+			sb.WriteString(f.Content)
+			if !strings.HasSuffix(f.Content, "\n") {
+				sb.WriteString("\n")
+			}
+			sb.WriteString("[/CONTEXT]\n\n")
+		}
+	}
+
+	// Add stdin content as context (e.g., piped git diff)
+	if stdinContent != "" {
+		sb.WriteString("Piped input (read-only context):\n\n")
+		sb.WriteString("[STDIN]\n")
+		sb.WriteString(stdinContent)
+		if !strings.HasSuffix(stdinContent, "\n") {
+			sb.WriteString("\n")
+		}
+		sb.WriteString("[/STDIN]\n\n")
 	}
 
 	sb.WriteString(fmt.Sprintf("Request: %s\n\n", request))
@@ -233,7 +257,7 @@ and surrounding context are already provided. Most edits won't need extra contex
 // StreamEditUserPromptLazy builds a user prompt with lazy context loading.
 // For large guarded files, only the editable region + padding is included.
 // The LLM can use read_context tool to fetch more if needed.
-func StreamEditUserPromptLazy(request string, files []input.FileContent, specs []EditSpec, useUnifiedDiff bool) string {
+func StreamEditUserPromptLazy(request string, files []input.FileContent, specs []EditSpec, contextFiles []input.FileContent, stdinContent string, useUnifiedDiff bool) string {
 	var sb strings.Builder
 
 	sb.WriteString("Files to edit:\n\n")
@@ -286,6 +310,30 @@ func StreamEditUserPromptLazy(request string, files []input.FileContent, specs [
 				sb.WriteString(fmt.Sprintf("Editable region: lines %d-%d\n\n", guard.StartLine, guard.EndLine))
 			}
 		}
+	}
+
+	// Add read-only context files
+	if len(contextFiles) > 0 {
+		sb.WriteString("Reference files (read-only, do not edit):\n\n")
+		for _, f := range contextFiles {
+			sb.WriteString(fmt.Sprintf("[CONTEXT: %s]\n", f.Path))
+			sb.WriteString(f.Content)
+			if !strings.HasSuffix(f.Content, "\n") {
+				sb.WriteString("\n")
+			}
+			sb.WriteString("[/CONTEXT]\n\n")
+		}
+	}
+
+	// Add stdin content as context (e.g., piped git diff)
+	if stdinContent != "" {
+		sb.WriteString("Piped input (read-only context):\n\n")
+		sb.WriteString("[STDIN]\n")
+		sb.WriteString(stdinContent)
+		if !strings.HasSuffix(stdinContent, "\n") {
+			sb.WriteString("\n")
+		}
+		sb.WriteString("[/STDIN]\n\n")
 	}
 
 	sb.WriteString(fmt.Sprintf("Request: %s\n\n", request))

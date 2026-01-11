@@ -25,6 +25,7 @@ var (
 	editDebug      bool
 	editProvider   string
 	editFiles      []string
+	editContext    []string
 	editDiffFormat string
 	editMCP        string
 )
@@ -41,18 +42,24 @@ Examples:
   term-llm edit "add error handling" --file main.go
   term-llm edit "refactor to use interfaces" --file "*.go"
   term-llm edit "fix the loop" --file utils.go:45-60
+  term-llm edit "use the API client" -f main.go -c api/client.go
 
 Line range syntax:
   main.go       - Edit entire file (no guard)
   main.go:11-22 - Only lines 11-22 can be modified
   main.go:11-   - Lines 11 to end of file
-  main.go:-22   - Lines 1-22`,
+  main.go:-22   - Lines 1-22
+
+Context files:
+  Use --context/-c to include read-only reference files that inform the edit
+  but won't be modified themselves.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: runEdit,
 }
 
 func init() {
 	editCmd.Flags().StringArrayVarP(&editFiles, "file", "f", nil, "File(s) to edit (required, supports line ranges like file.go:10-20)")
+	editCmd.Flags().StringArrayVarP(&editContext, "context", "c", nil, "File(s) to include as read-only context (supports globs, 'clipboard')")
 	editCmd.Flags().BoolVar(&editDryRun, "dry-run", false, "Show what would change without applying")
 	editCmd.Flags().StringVar(&editProvider, "provider", "", "Override provider, optionally with model (e.g., openai:gpt-4o)")
 	editCmd.Flags().BoolVarP(&editDebug, "debug", "d", false, "Show debug information")
@@ -246,7 +253,22 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no files found")
 	}
 
-	return runStreamEdit(ctx, cfg, provider, request, files, specs)
+	// Read context files if provided
+	var contextFiles []input.FileContent
+	if len(editContext) > 0 {
+		contextFiles, err = input.ReadFiles(editContext)
+		if err != nil {
+			return fmt.Errorf("failed to read context files: %w", err)
+		}
+	}
+
+	// Read stdin as additional context (useful for piping git diffs, etc.)
+	stdinContent, err := input.ReadStdin()
+	if err != nil {
+		return fmt.Errorf("failed to read stdin: %w", err)
+	}
+
+	return runStreamEdit(ctx, cfg, provider, request, files, specs, contextFiles, stdinContent)
 }
 
 // getActiveModel returns the model name for the active provider
@@ -258,7 +280,7 @@ func getActiveModel(cfg *config.Config) string {
 }
 
 // runStreamEdit runs the streaming edit flow (one-shot, no tools)
-func runStreamEdit(ctx context.Context, cfg *config.Config, provider llm.Provider, request string, files []input.FileContent, specs []input.FileSpec) error {
+func runStreamEdit(ctx context.Context, cfg *config.Config, provider llm.Provider, request string, files []input.FileContent, specs []input.FileSpec, contextFiles []input.FileContent, stdinContent string) error {
 	// Build file contents map
 	fileContents := make(map[string]string)
 	for _, f := range files {
@@ -412,12 +434,12 @@ func runStreamEdit(ctx context.Context, cfg *config.Config, provider llm.Provide
 	if useLazyContext {
 		// Lazy context mode: only send editable region + padding, LLM can request more
 		systemPrompt = prompt.StreamEditSystemPromptLazy(cfg.Edit.Instructions, promptSpecs, model, diffFormat)
-		userPrompt = prompt.StreamEditUserPromptLazy(request, files, promptSpecs, useUnifiedDiff)
+		userPrompt = prompt.StreamEditUserPromptLazy(request, files, promptSpecs, contextFiles, stdinContent, useUnifiedDiff)
 		execConfig.LazyContext = true
 	} else {
 		// Full context mode: send entire file
 		systemPrompt = prompt.StreamEditSystemPrompt(cfg.Edit.Instructions, promptSpecs, model, diffFormat)
-		userPrompt = prompt.StreamEditUserPrompt(request, files, promptSpecs, useUnifiedDiff)
+		userPrompt = prompt.StreamEditUserPrompt(request, files, promptSpecs, contextFiles, stdinContent, useUnifiedDiff)
 	}
 
 	messages := []llm.Message{
@@ -533,7 +555,7 @@ func runStreamEdit(ctx context.Context, cfg *config.Config, provider llm.Provide
 				applied++
 			}
 			if len(changedResults) > 1 {
-				fmt.Printf("%d files updated\n", applied)
+				fmt.Printf("\n%d files updated\n", applied)
 			}
 			fmt.Println()
 			return nil
