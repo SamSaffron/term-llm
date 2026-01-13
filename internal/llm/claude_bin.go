@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -39,8 +40,8 @@ func (p *ClaudeBinProvider) Credential() string {
 
 func (p *ClaudeBinProvider) Capabilities() Capabilities {
 	return Capabilities{
-		NativeWebSearch: true,
-		NativeWebFetch:  true,
+		NativeWebSearch: false, // Use term-llm's external tools instead
+		NativeWebFetch:  false,
 		ToolCalls:       true,
 	}
 }
@@ -48,13 +49,21 @@ func (p *ClaudeBinProvider) Capabilities() Capabilities {
 func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
 		// Build the command arguments
-		args := p.buildArgs(req)
+		args, cleanup := p.buildArgs(req)
+		if cleanup != nil {
+			defer cleanup()
+		}
 
 		// Build the prompt from messages
-		prompt := p.buildPrompt(req.Messages)
+		systemPrompt, userPrompt := p.buildPrompt(req.Messages)
 
-		// Add prompt as positional argument
-		args = append(args, "--", prompt)
+		// Add system prompt if present
+		if systemPrompt != "" {
+			args = append(args, "--system-prompt", systemPrompt)
+		}
+
+		// Add user prompt as positional argument
+		args = append(args, "--", userPrompt)
 
 		if req.Debug {
 			fmt.Fprintln(os.Stderr, "=== DEBUG: Claude CLI Command ===")
@@ -107,7 +116,20 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 					}
 				}
 
+			case "stream_event":
+				// Handle streaming text deltas
+				var streamEvent claudeStreamEvent
+				if err := json.Unmarshal([]byte(line), &streamEvent); err != nil {
+					continue
+				}
+				if streamEvent.Event.Type == "content_block_delta" &&
+					streamEvent.Event.Delta.Type == "text_delta" &&
+					streamEvent.Event.Delta.Text != "" {
+					events <- Event{Type: EventTextDelta, Text: streamEvent.Event.Delta.Text}
+				}
+
 			case "assistant":
+				// Only handle tool_use here - text is streamed via stream_event
 				var assistantMsg claudeAssistantMessage
 				if err := json.Unmarshal([]byte(line), &assistantMsg); err != nil {
 					continue
@@ -115,10 +137,6 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 
 				for _, content := range assistantMsg.Message.Content {
 					switch content.Type {
-					case "text":
-						if content.Text != "" {
-							events <- Event{Type: EventTextDelta, Text: content.Text}
-						}
 					case "tool_use":
 						// Convert to term-llm tool call format
 						toolCall := ToolCall{
@@ -165,20 +183,19 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 }
 
 // buildArgs constructs the command line arguments for the claude binary.
-func (p *ClaudeBinProvider) buildArgs(req Request) []string {
+// Returns args and a cleanup function to remove temp files.
+func (p *ClaudeBinProvider) buildArgs(req Request) ([]string, func()) {
 	args := []string{
 		"--print",
 		"--output-format", "stream-json",
+		"--include-partial-messages", // Stream text as it arrives
 		"--verbose",
+		"--strict-mcp-config", // Ignore Claude's configured MCPs
+		"--dangerously-skip-permissions", // Allow MCP tool execution
 	}
 
-	// For native search, allow more turns so claude can execute the search
-	// For other tool calls, limit to 1 turn so term-llm can handle execution
-	if req.Search && !req.ForceExternalSearch {
-		args = append(args, "--max-turns", "5") // Allow search execution
-	} else {
-		args = append(args, "--max-turns", "1") // Single turn - let term-llm handle tool execution
-	}
+	// Always limit to 1 turn - term-llm handles tool execution loop
+	args = append(args, "--max-turns", "1")
 
 	// Model selection
 	model := chooseModel(req.Model, p.model)
@@ -186,18 +203,18 @@ func (p *ClaudeBinProvider) buildArgs(req Request) []string {
 		args = append(args, "--model", mapModelToClaudeArg(model))
 	}
 
-	// Tool configuration
+	// Disable all built-in tools - we use MCP for custom tools
+	args = append(args, "--tools", "")
+
+	var cleanup func()
+
+	// If we have tools, create MCP config to expose them
 	if len(req.Tools) > 0 {
-		toolNames := mapToolsToClaudeNames(req.Tools, req.Search)
-		if len(toolNames) > 0 {
-			args = append(args, "--tools", strings.Join(toolNames, ","))
+		mcpConfig, cleanupFn := p.createMCPConfig(req.Tools)
+		if mcpConfig != "" {
+			args = append(args, "--mcp-config", mcpConfig)
+			cleanup = cleanupFn
 		}
-	} else if req.Search {
-		// If search is requested but no tools, add just WebSearch
-		args = append(args, "--tools", "WebSearch")
-	} else {
-		// No tools requested - disable all
-		args = append(args, "--tools", "")
 	}
 
 	// Session resume for multi-turn conversations
@@ -205,11 +222,70 @@ func (p *ClaudeBinProvider) buildArgs(req Request) []string {
 		args = append(args, "--resume", p.sessionID)
 	}
 
-	return args
+	return args, cleanup
 }
 
-// buildPrompt constructs a prompt string from term-llm messages.
-func (p *ClaudeBinProvider) buildPrompt(messages []Message) string {
+// createMCPConfig creates a temporary MCP config file for the given tools.
+// Returns the config file path and a cleanup function.
+func (p *ClaudeBinProvider) createMCPConfig(tools []ToolSpec) (string, func()) {
+	// Get the path to term-llm binary
+	execPath, err := os.Executable()
+	if err != nil {
+		return "", nil
+	}
+
+	// Build tool definitions JSON
+	type toolDef struct {
+		Name        string         `json:"name"`
+		Description string         `json:"description"`
+		Schema      map[string]any `json:"schema"`
+	}
+	var toolDefs []toolDef
+	for _, t := range tools {
+		toolDefs = append(toolDefs, toolDef{
+			Name:        t.Name,
+			Description: t.Description,
+			Schema:      t.Schema,
+		})
+	}
+
+	toolsJSON, err := json.Marshal(toolDefs)
+	if err != nil {
+		return "", nil
+	}
+
+	// Create MCP config
+	mcpConfig := map[string]any{
+		"mcpServers": map[string]any{
+			"term-llm": map[string]any{
+				"command": execPath,
+				"args":    []string{"mcp-server", "--tools-json", string(toolsJSON)},
+			},
+		},
+	}
+
+	configJSON, err := json.Marshal(mcpConfig)
+	if err != nil {
+		return "", nil
+	}
+
+	// Write to temp file
+	tmpDir := os.TempDir()
+	configPath := filepath.Join(tmpDir, fmt.Sprintf("term-llm-mcp-%d.json", os.Getpid()))
+	if err := os.WriteFile(configPath, configJSON, 0600); err != nil {
+		return "", nil
+	}
+
+	cleanup := func() {
+		os.Remove(configPath)
+	}
+
+	return configPath, cleanup
+}
+
+// buildPrompt constructs a prompt string and system prompt from term-llm messages.
+// Returns (systemPrompt, userPrompt).
+func (p *ClaudeBinProvider) buildPrompt(messages []Message) (string, string) {
 	var systemParts []string
 	var conversationParts []string
 
@@ -245,21 +321,10 @@ func (p *ClaudeBinProvider) buildPrompt(messages []Message) string {
 		}
 	}
 
-	// Build final prompt
-	var prompt strings.Builder
+	systemPrompt := strings.TrimSpace(strings.Join(systemParts, "\n\n"))
+	userPrompt := strings.TrimSpace(strings.Join(conversationParts, "\n\n"))
 
-	// Add system context if present
-	if len(systemParts) > 0 {
-		prompt.WriteString(strings.Join(systemParts, "\n\n"))
-		prompt.WriteString("\n\n")
-	}
-
-	// Add conversation history
-	if len(conversationParts) > 0 {
-		prompt.WriteString(strings.Join(conversationParts, "\n\n"))
-	}
-
-	return strings.TrimSpace(prompt.String())
+	return systemPrompt, userPrompt
 }
 
 // mapModelToClaudeArg converts a model name to claude CLI argument.
@@ -275,64 +340,11 @@ func mapModelToClaudeArg(model string) string {
 	return "sonnet"
 }
 
-// mapToolsToClaudeNames converts term-llm tool specs to claude tool names.
-func mapToolsToClaudeNames(tools []ToolSpec, includeSearch bool) []string {
-	claudeToolMap := map[string]string{
-		"read_file":   "Read",
-		"write_file":  "Write",
-		"edit_file":   "Edit",
-		"execute":     "Bash",
-		"glob":        "Glob",
-		"grep":        "Grep",
-		"web_search":  "WebSearch",
-		"web_fetch":   "WebFetch",
-		"todo_write":  "TodoWrite",
-		"ask_user":    "AskUserQuestion",
-		"notebook":    "NotebookEdit",
-	}
-
-	seen := make(map[string]bool)
-	var names []string
-
-	for _, tool := range tools {
-		// Try mapping, otherwise use the name directly (claude might have it)
-		claudeName := tool.Name
-		if mapped, ok := claudeToolMap[strings.ToLower(tool.Name)]; ok {
-			claudeName = mapped
-		}
-		if !seen[claudeName] {
-			seen[claudeName] = true
-			names = append(names, claudeName)
-		}
-	}
-
-	// Add WebSearch if search is requested and not already included
-	if includeSearch && !seen["WebSearch"] {
-		names = append(names, "WebSearch")
-	}
-
-	return names
-}
-
 // mapClaudeToolName converts claude tool names back to term-llm names.
+// MCP tools are namespaced as mcp__term-llm__<tool>.
 func mapClaudeToolName(claudeName string) string {
-	// Map claude names to term-llm names
-	reverseMap := map[string]string{
-		"Read":            "read_file",
-		"Write":           "write_file",
-		"Edit":            "edit_file",
-		"Bash":            "execute",
-		"Glob":            "glob",
-		"Grep":            "grep",
-		"WebSearch":       "web_search",
-		"WebFetch":        "web_fetch",
-		"TodoWrite":       "todo_write",
-		"AskUserQuestion": "ask_user",
-		"NotebookEdit":    "notebook",
-	}
-
-	if mapped, ok := reverseMap[claudeName]; ok {
-		return mapped
+	if strings.HasPrefix(claudeName, "mcp__term-llm__") {
+		return strings.TrimPrefix(claudeName, "mcp__term-llm__")
 	}
 	return claudeName
 }
@@ -369,4 +381,15 @@ type claudeResultMessage struct {
 		CacheReadInputTokens int `json:"cache_read_input_tokens"`
 	} `json:"usage"`
 	TotalCostUSD float64 `json:"total_cost_usd"`
+}
+
+type claudeStreamEvent struct {
+	Type  string `json:"type"`
+	Event struct {
+		Type  string `json:"type"`
+		Delta struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"delta"`
+	} `json:"event"`
 }

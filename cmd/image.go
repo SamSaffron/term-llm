@@ -81,8 +81,8 @@ func runImage(cmd *cobra.Command, args []string) error {
 	ctx, stop := signal.NotifyContext()
 	defer stop()
 
-	// Load config
-	cfg, err := loadConfig()
+	// Load config (requires setup wizard if no config exists)
+	cfg, err := loadConfigWithSetup()
 	if err != nil {
 		return err
 	}

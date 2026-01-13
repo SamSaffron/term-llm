@@ -30,6 +30,7 @@ require (
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/aymerick/douceur v0.2.0 // indirect
+	github.com/bmatcuk/doublestar/v4 v4.9.2 // indirect
 	github.com/catppuccin/go v0.3.0 // indirect
 	github.com/charmbracelet/colorprofile v0.2.3-0.20250311203215-f60798e515dc // indirect
 	github.com/charmbracelet/x/ansi v0.9.3 // indirect
@@ -45,6 +46,7 @@ require (
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
+	github.com/gobwas/glob v0.2.3 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/jsonschema-go v0.3.0 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
@@ -85,6 +87,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.38.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/crypto v0.46.0 // indirect
+	golang.org/x/image v0.34.0 // indirect
 	golang.org/x/oauth2 v0.32.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect

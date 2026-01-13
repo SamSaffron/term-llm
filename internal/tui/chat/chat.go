@@ -914,27 +914,13 @@ func (m *Model) startStream(content string) tea.Cmd {
 						m.streamChan <- streamEvent{chunk: event.Text}
 					}
 				case llm.EventToolExecStart:
-					var phase string
 					if event.ToolName == "" {
 						// Empty tool name = back to thinking
 						m.streamChan <- streamEvent{toolEnd: true}
-					} else if event.ToolName == llm.WebSearchToolName || event.ToolName == "WebSearch" {
-						if event.ToolInfo != "" {
-							phase = fmt.Sprintf("Searching: %s", event.ToolInfo)
-						} else {
-							phase = "Searching"
-						}
-						m.streamChan <- streamEvent{phase: phase, webSearch: true, toolStart: true}
-					} else if event.ToolName == llm.ReadURLToolName {
-						if event.ToolInfo != "" {
-							phase = fmt.Sprintf("Reading %s", truncateURL(event.ToolInfo, 40))
-						} else {
-							phase = "Reading"
-						}
-						m.streamChan <- streamEvent{phase: phase, toolStart: true}
 					} else {
-						phase = "Running " + event.ToolName
-						m.streamChan <- streamEvent{phase: phase, toolStart: true}
+						phase := ui.FormatToolPhase(event.ToolName, event.ToolInfo).Active
+						isSearch := event.ToolName == llm.WebSearchToolName || event.ToolName == "WebSearch"
+						m.streamChan <- streamEvent{phase: phase, webSearch: isSearch, toolStart: true}
 					}
 				case llm.EventRetry:
 					status := fmt.Sprintf("Rate limited (%d/%d), waiting %.0fs...",
@@ -972,21 +958,6 @@ func (m *Model) listenForStreamEventsSync() tea.Msg {
 		return streamEventMsg{done: true}
 	}
 	return streamEventMsg(event)
-}
-
-// truncateURL shortens a URL for display
-func truncateURL(url string, maxLen int) string {
-	if len(url) <= maxLen {
-		return url
-	}
-	// Remove protocol prefix for cleaner display
-	display := strings.TrimPrefix(url, "https://")
-	display = strings.TrimPrefix(display, "http://")
-	if len(display) <= maxLen {
-		return display
-	}
-	// Truncate with ellipsis
-	return display[:maxLen-3] + "..."
 }
 
 func (m *Model) buildMessages() []llm.Message {

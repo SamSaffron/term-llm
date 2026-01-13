@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,12 +13,15 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/glamour/ansi"
+	"github.com/charmbracelet/huh"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/glamour/styles"
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/prompt"
 	"github.com/samsaffron/term-llm/internal/signal"
+	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -33,6 +37,11 @@ var (
 	askMaxTurns       int
 	askNativeSearch   bool
 	askNoNativeSearch bool
+	// Tool flags
+	askTools      string
+	askReadDirs   []string
+	askWriteDirs  []string
+	askShellAllow []string
 )
 
 var askCmd = &cobra.Command{
@@ -70,11 +79,19 @@ func init() {
 	askCmd.Flags().IntVar(&askMaxTurns, "max-turns", 20, "Max agentic turns for tool execution")
 	askCmd.Flags().BoolVar(&askNativeSearch, "native-search", false, "Use provider's native search (override config)")
 	askCmd.Flags().BoolVar(&askNoNativeSearch, "no-native-search", false, "Use external search tools instead of provider's native search")
+	// Tool flags
+	askCmd.Flags().StringVar(&askTools, "tools", "", "Enable local tools (comma-separated: read,write,edit,shell,grep,find,view,image)")
+	askCmd.Flags().StringArrayVar(&askReadDirs, "read-dir", nil, "Directories for read/grep/find/view tools (repeatable)")
+	askCmd.Flags().StringArrayVar(&askWriteDirs, "write-dir", nil, "Directories for write/edit tools (repeatable)")
+	askCmd.Flags().StringArrayVar(&askShellAllow, "shell-allow", nil, "Shell command patterns to allow (repeatable, glob syntax)")
 	if err := askCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion); err != nil {
 		panic(fmt.Sprintf("failed to register provider completion: %v", err))
 	}
 	if err := askCmd.RegisterFlagCompletionFunc("mcp", MCPFlagCompletion); err != nil {
 		panic(fmt.Sprintf("failed to register mcp completion: %v", err))
+	}
+	if err := askCmd.RegisterFlagCompletionFunc("tools", ToolsFlagCompletion); err != nil {
+		panic(fmt.Sprintf("failed to register tools completion: %v", err))
 	}
 	rootCmd.AddCommand(askCmd)
 }
@@ -101,6 +118,21 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
+
+	// Initialize local tools if --tools flag is set
+	var toolMgr *tools.ToolManager
+	if askTools != "" {
+		toolConfig := buildToolConfig(askTools, askReadDirs, askWriteDirs, askShellAllow, cfg)
+		if errs := toolConfig.Validate(); len(errs) > 0 {
+			return fmt.Errorf("invalid tool config: %v", errs[0])
+		}
+		toolMgr, err = tools.NewToolManager(&toolConfig, cfg)
+		if err != nil {
+			return fmt.Errorf("failed to initialize tools: %w", err)
+		}
+		// PromptFunc is set in streamWithGlamour to use bubbletea UI
+		toolMgr.SetupEngine(engine)
+	}
 
 	// Initialize MCP servers if --mcp flag is set
 	var mcpManager *mcp.Manager
@@ -147,8 +179,8 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		DebugRaw:            debugRaw,
 	}
 
-	// Add MCP tools to request if any are registered
-	if mcpManager != nil {
+	// Add tools to request if any are registered (local or MCP)
+	if toolMgr != nil || mcpManager != nil {
 		req.Tools = engine.Tools().AllSpecs()
 		req.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
 	}
@@ -165,6 +197,28 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	// Track session stats
 	stats := ui.NewSessionStats()
+
+	// For glamour mode, create the tea.Program and set PromptFunc BEFORE starting the stream
+	// This avoids a race condition where tool execution starts before PromptFunc is set
+	var teaProgram *tea.Program
+	if useGlamour && toolMgr != nil {
+		model := newAskStreamModel()
+		teaProgram = tea.NewProgram(model, tea.WithoutSignalHandler())
+		toolMgr.ApprovalMgr.PromptFunc = func(req *tools.ApprovalRequest) (tools.ConfirmOutcome, string) {
+			responseCh := make(chan bool, 1)
+			teaProgram.Send(askApprovalRequestMsg{
+				Description: req.Description,
+				ToolName:    req.ToolName,
+				ToolInfo:    req.ToolInfo,
+				ResponseCh:  responseCh,
+			})
+			approved := <-responseCh
+			if approved {
+				return tools.ProceedAlways, req.Path
+			}
+			return tools.Cancel, ""
+		}
+	}
 
 	errChan := make(chan error, 1)
 	go func() {
@@ -236,7 +290,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}()
 
 	if useGlamour {
-		err = streamWithGlamour(ctx, output, toolEvents)
+		err = streamWithGlamour(ctx, output, toolEvents, teaProgram)
 	} else {
 		err = streamPlainText(ctx, output, toolEvents)
 	}
@@ -246,6 +300,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 
 	if err := <-errChan; err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil
+		}
 		return fmt.Errorf("streaming failed: %w", err)
 	}
 
@@ -274,22 +331,71 @@ type toolEvent struct {
 
 // streamPlainText streams text directly without formatting
 func streamPlainText(ctx context.Context, output <-chan string, toolEvents <-chan toolEvent) error {
+	var pendingTools []string
+	printedAny := false
+	lastEndedWithNewline := true
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case ev := <-toolEvents:
+		case ev, ok := <-toolEvents:
+			if !ok {
+				toolEvents = nil
+				continue
+			}
 			// Show retry status in plain text mode
 			if ev.IsRetry {
 				fmt.Fprintf(os.Stderr, "\rRate limited (%d/%d), waiting %.0fs...\n",
 					ev.RetryAttempt, ev.RetryMaxAttempts, ev.RetryWaitSecs)
+				continue
+			}
+			if ev.IsUsage {
+				continue
+			}
+			if ev.Name == "" {
+				if len(pendingTools) > 0 {
+					if printedAny && !lastEndedWithNewline {
+						fmt.Print("\n")
+					}
+					if printedAny {
+						fmt.Print("\n")
+					}
+					for _, tool := range pendingTools {
+						fmt.Printf("• %s ✓\n", tool)
+					}
+					fmt.Print("\n")
+					pendingTools = nil
+					printedAny = true
+					lastEndedWithNewline = true
+				}
+				continue
+			}
+			_, toolDesc := toolDisplay(ev.Name, ev.Info)
+			if toolDesc != "" {
+				pendingTools = append(pendingTools, toolDesc)
 			}
 		case chunk, ok := <-output:
 			if !ok {
+				if len(pendingTools) > 0 {
+					if printedAny && !lastEndedWithNewline {
+						fmt.Print("\n")
+					}
+					if printedAny {
+						fmt.Print("\n")
+					}
+					for _, tool := range pendingTools {
+						fmt.Printf("• %s ✓\n", tool)
+					}
+					fmt.Print("\n")
+				}
 				fmt.Println()
 				return nil
 			}
 			fmt.Print(chunk)
+			printedAny = true
+			if len(chunk) > 0 {
+				lastEndedWithNewline = strings.HasSuffix(chunk, "\n")
+			}
 		}
 	}
 }
@@ -303,35 +409,47 @@ func getTerminalWidth() int {
 	return width
 }
 
-// truncateURL shortens a URL for display, keeping the domain and path start
-func truncateURL(url string, maxLen int) string {
-	if len(url) <= maxLen {
-		return url
+func toolDisplay(name, info string) (string, string) {
+	phase := ui.FormatToolPhase(name, info)
+	return phase.Active, phase.Completed
+}
+
+func appendToolLog(content *strings.Builder, tools []string) {
+	if len(tools) == 0 {
+		return
 	}
-	// Remove protocol prefix for cleaner display
-	display := strings.TrimPrefix(url, "https://")
-	display = strings.TrimPrefix(display, "http://")
-	if len(display) <= maxLen {
-		return display
+	if content.Len() > 0 {
+		content.WriteString("\n\n")
 	}
-	// Truncate with ellipsis
-	return display[:maxLen-3] + "..."
+	for _, tool := range tools {
+		content.WriteString("- ")
+		content.WriteString(tool)
+		content.WriteString(" ✓\n")
+	}
+	content.WriteString("\n")
 }
 
 // askStreamModel is a bubbletea model for streaming ask responses
 type askStreamModel struct {
-	spinner     spinner.Model
-	styles      *ui.Styles
-	content     *strings.Builder
-	rendered    string
-	finalOutput string // stored for printing after tea exits
-	width       int
-	loading     bool
-	phase       string    // Current phase: "Thinking", "Responding"
-	toolPhase   string    // Phase during tool execution (after content started), empty when not in tool
-	retryStatus string    // Retry status (e.g., "Rate limited (2/5), waiting 5s...")
-	startTime   time.Time // For elapsed time display
-	totalTokens int       // Total tokens (input + output) used
+	spinner      spinner.Model
+	styles       *ui.Styles
+	content      *strings.Builder
+	rendered     string
+	finalOutput  string // stored for printing after tea exits
+	width        int
+	loading      bool
+	phase        string    // Current phase: "Thinking", "Responding"
+	toolPhase    string    // Phase during tool execution (after content started), empty when not in tool
+	pendingTools []string  // Tools started in the current batch
+	retryStatus  string    // Retry status (e.g., "Rate limited (2/5), waiting 5s...")
+	startTime    time.Time // For elapsed time display
+	totalTokens  int       // Total tokens (input + output) used
+
+	// Approval prompt state (using huh form)
+	approvalForm       *huh.Form
+	approvalDesc       string
+	approvalToolInfo   string       // Info for the tool that triggered approval (to avoid duplicates)
+	approvalResponseCh chan<- bool  // channel to send y/n response back to tool
 }
 
 type askContentMsg string
@@ -350,6 +468,12 @@ type askRetryMsg struct {
 	Attempt     int
 	MaxAttempts int
 	WaitSecs    float64
+}
+type askApprovalRequestMsg struct {
+	Description string
+	ToolName    string
+	ToolInfo    string
+	ResponseCh  chan<- bool
 }
 
 func newAskStreamModel() askStreamModel {
@@ -383,6 +507,83 @@ func (m askStreamModel) tickEvery() tea.Cmd {
 }
 
 func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Handle tool start messages even while approval form is active
+	// This ensures parallel tool executions are tracked in pendingTools
+	if toolMsg, ok := msg.(askToolStartMsg); ok && m.approvalForm != nil {
+		// Don't process the "tools complete" signal (Name == "") during approval
+		// Just accumulate named tools for later logging
+		if toolMsg.Name != "" {
+			// Skip the tool that triggered approval (already tracked in toolPhase)
+			if toolMsg.Info != m.approvalToolInfo {
+				_, toolDesc := toolDisplay(toolMsg.Name, toolMsg.Info)
+				if toolDesc != "" {
+					m.pendingTools = append(m.pendingTools, toolDesc)
+				}
+			}
+		}
+		// Don't return - let the message also go to the form (for spinner updates, etc.)
+	}
+
+	// If approval form is active, delegate to it
+	if m.approvalForm != nil {
+		form, cmd := m.approvalForm.Update(msg)
+		if f, ok := form.(*huh.Form); ok {
+			m.approvalForm = f
+		}
+
+		// Check if form completed
+		if m.approvalForm.State == huh.StateCompleted {
+			approved := m.approvalForm.GetBool("confirm")
+			// Log all pending tools (including the one that triggered approval)
+			if m.content.Len() > 0 {
+				m.content.WriteString("\n\n")
+			}
+			if approved {
+				// Log the tool that triggered approval first (use toolPhase which has Completed form)
+				if m.toolPhase != "" {
+					m.content.WriteString("- ")
+					m.content.WriteString(m.toolPhase)
+					m.content.WriteString(" ✓\n")
+				}
+				// Log any additional parallel tools that started during approval
+				for _, tool := range m.pendingTools {
+					m.content.WriteString("- ")
+					m.content.WriteString(tool)
+					m.content.WriteString(" ✓\n")
+				}
+			} else {
+				m.content.WriteString("- ✗ ")
+				m.content.WriteString(m.approvalDesc)
+				m.content.WriteString("\n")
+			}
+			m.pendingTools = nil // Clear pending tools after logging
+			m.rendered = m.render()
+
+			// Send response
+			if m.approvalResponseCh != nil {
+				m.approvalResponseCh <- approved
+			}
+			m.approvalForm = nil
+			m.approvalResponseCh = nil
+			m.approvalDesc = ""
+			m.approvalToolInfo = ""
+			return m, m.spinner.Tick
+		}
+
+		// Check if form was aborted (esc/ctrl+c)
+		if m.approvalForm.State == huh.StateAborted {
+			if m.approvalResponseCh != nil {
+				m.approvalResponseCh <- false
+			}
+			m.approvalForm = nil
+			m.approvalResponseCh = nil
+			m.approvalDesc = ""
+			return m, tea.Quit
+		}
+
+		return m, cmd
+	}
+
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" || msg.String() == "esc" {
@@ -408,7 +609,6 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case askDoneMsg:
 		m.loading = false
-		// Store final output for printing after tea exits, clear view
 		m.finalOutput = m.rendered
 		m.rendered = ""
 		return m, tea.Quit
@@ -434,36 +634,53 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case askToolStartMsg:
 		// Clear retry status when tool starts
 		m.retryStatus = ""
-		// Tool execution starting/ending - update phase
-		var newPhase string
 		if msg.Name == "" {
-			// Empty tool name means back to thinking
-			newPhase = "Thinking"
-		} else if msg.Name == llm.WebSearchToolName || msg.Name == "WebSearch" {
-			if msg.Info != "" {
-				newPhase = fmt.Sprintf("Searching: \x1b[2m%s\x1b[0m", msg.Info)
-			} else {
-				newPhase = "Searching"
+			if len(m.pendingTools) > 0 {
+				appendToolLog(m.content, m.pendingTools)
+				m.pendingTools = nil
+				m.rendered = m.render()
 			}
-		} else if msg.Name == llm.ReadURLToolName {
-			if msg.Info != "" {
-				// Show truncated URL in dim style
-				url := truncateURL(msg.Info, 50)
-				newPhase = fmt.Sprintf("Reading \x1b[2m%s\x1b[0m", url)
-			} else {
-				newPhase = "Reading"
-			}
-		} else {
-			newPhase = "Running " + msg.Name
+			m.toolPhase = ""
+			m.phase = "Thinking"
+			m.loading = true // Show thinking spinner while waiting for LLM response
+			return m, m.spinner.Tick
+		}
+
+		newPhase, toolDesc := toolDisplay(msg.Name, msg.Info)
+		if toolDesc != "" {
+			m.pendingTools = append(m.pendingTools, toolDesc)
 		}
 
 		// If content has already started streaming, use toolPhase to show spinner at end
 		if !m.loading {
 			m.toolPhase = newPhase
-			// Return a command to keep spinner animating
-			return m, m.spinner.Tick
+		} else {
+			m.phase = newPhase
 		}
-		m.phase = newPhase
+		// Return a command to keep spinner animating
+		return m, m.spinner.Tick
+
+	case askApprovalRequestMsg:
+		m.approvalDesc = msg.Description
+		m.approvalResponseCh = msg.ResponseCh
+		m.approvalToolInfo = msg.ToolInfo // Store to deduplicate pending tools
+		// Store tool phase for after approval completes (use Completed form for consistency)
+		if msg.ToolName != "" {
+			phase := ui.FormatToolPhase(msg.ToolName, msg.ToolInfo)
+			m.toolPhase = phase.Completed
+		}
+		// Form title is just the approval question - no tool phase
+		m.approvalForm = huh.NewForm(
+			huh.NewGroup(
+				huh.NewConfirm().
+					Key("confirm").
+					Title(msg.Description).
+					Affirmative("Yes").
+					Negative("No").
+					WithButtonAlignment(lipgloss.Left),
+			),
+		).WithShowHelp(false).WithShowErrors(false)
+		return m, m.approvalForm.Init()
 
 	case spinner.TickMsg:
 		if m.loading || m.toolPhase != "" {
@@ -490,8 +707,19 @@ func (m askStreamModel) render() string {
 }
 
 func (m askStreamModel) View() string {
+	// If approval form is active, show rendered content + form (no spinner/time during approval)
+	if m.approvalForm != nil {
+		var view strings.Builder
+		if m.rendered != "" {
+			view.WriteString(m.rendered)
+			view.WriteString("\n\n")
+		}
+		view.WriteString(m.approvalForm.View())
+		return view.String()
+	}
+
 	if m.loading {
-		return ui.StreamingIndicator{
+		indicator := ui.StreamingIndicator{
 			Spinner:    m.spinner.View(),
 			Phase:      m.phase,
 			Elapsed:    time.Since(m.startTime),
@@ -499,76 +727,100 @@ func (m askStreamModel) View() string {
 			Status:     m.retryStatus,
 			ShowCancel: true,
 		}.Render(m.styles)
+		if m.rendered != "" {
+			return m.rendered + "\n" + indicator
+		}
+		return indicator
+	}
+
+	// If in tool phase, show spinner (even if no content yet)
+	if m.toolPhase != "" {
+		indicator := ui.StreamingIndicator{
+			Spinner:    m.spinner.View(),
+			Phase:      m.toolPhase,
+			Elapsed:    time.Since(m.startTime),
+			Tokens:     m.totalTokens,
+			ShowCancel: true,
+		}.Render(m.styles)
+		if m.rendered != "" {
+			return m.rendered + "\n" + indicator
+		}
+		return indicator
 	}
 
 	if m.rendered == "" {
 		return ""
 	}
 
-	// If in tool phase, append spinner at end of content
-	if m.toolPhase != "" {
-		return m.rendered + "\n" + ui.StreamingIndicator{
-			Spinner:    m.spinner.View(),
-			Phase:      m.toolPhase,
-			Elapsed:    time.Since(m.startTime),
-			Tokens:     m.totalTokens,
-			ShowCancel: false,
-		}.Render(m.styles)
-	}
-
 	return m.rendered
 }
 
 // streamWithGlamour renders markdown beautifully as content streams in
-func streamWithGlamour(ctx context.Context, output <-chan string, toolEvents <-chan toolEvent) error {
-	model := newAskStreamModel()
-
-	// Create program - use inline mode so output stays in terminal
-	p := tea.NewProgram(model,
-		tea.WithoutSignalHandler(),
-	)
-
-	// Stream content in background, respecting context cancellation
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				p.Send(askCancelledMsg{})
-				return
-			case ev, ok := <-toolEvents:
-				if ok {
-					if ev.IsRetry {
-						p.Send(askRetryMsg{
-							Attempt:     ev.RetryAttempt,
-							MaxAttempts: ev.RetryMaxAttempts,
-							WaitSecs:    ev.RetryWaitSecs,
-						})
-					} else if ev.IsUsage {
-						p.Send(askUsageMsg{
-							InputTokens:  ev.InputTokens,
-							OutputTokens: ev.OutputTokens,
-						})
-					} else {
-						p.Send(askToolStartMsg{Name: ev.Name, Info: ev.Info})
-					}
-				}
-			case chunk, ok := <-output:
-				if !ok {
-					p.Send(askDoneMsg{})
-					return
-				}
-				p.Send(askContentMsg(chunk))
-			}
-		}
-	}()
-
-	finalModel, err := p.Run()
-
-	// Print final output after tea cleanup to ensure it persists
-	if m, ok := finalModel.(askStreamModel); ok && m.finalOutput != "" {
-		fmt.Println(m.finalOutput)
+// If p is nil, creates a new tea.Program; otherwise uses the provided one.
+func streamWithGlamour(ctx context.Context, output <-chan string, toolEvents <-chan toolEvent, p *tea.Program) error {
+	// Create program if not provided (when no tools are used)
+	if p == nil {
+		model := newAskStreamModel()
+		p = tea.NewProgram(model, tea.WithoutSignalHandler())
 	}
 
+	programDone := make(chan error, 1)
+	var finalModel askStreamModel
+	go func() {
+		fm, err := p.Run()
+		if m, ok := fm.(askStreamModel); ok {
+			finalModel = m
+		}
+		programDone <- err
+	}()
+
+	for output != nil || toolEvents != nil {
+		select {
+		case <-ctx.Done():
+			p.Send(askCancelledMsg{})
+			output = nil
+			toolEvents = nil
+
+		case ev, ok := <-toolEvents:
+			if !ok {
+				toolEvents = nil
+				continue
+			}
+			if ev.IsRetry {
+				p.Send(askRetryMsg{
+					Attempt:     ev.RetryAttempt,
+					MaxAttempts: ev.RetryMaxAttempts,
+					WaitSecs:    ev.RetryWaitSecs,
+				})
+				continue
+			}
+			if ev.IsUsage {
+				p.Send(askUsageMsg{
+					InputTokens:  ev.InputTokens,
+					OutputTokens: ev.OutputTokens,
+				})
+				continue
+			}
+			if ev.Name == "" {
+				p.Send(askToolStartMsg{Name: "", Info: ""})
+				continue
+			}
+			p.Send(askToolStartMsg{Name: ev.Name, Info: ev.Info})
+
+		case chunk, ok := <-output:
+			if !ok {
+				p.Send(askDoneMsg{})
+				output = nil
+				continue
+			}
+			p.Send(askContentMsg(chunk))
+		}
+	}
+
+	err := <-programDone
+	if finalModel.finalOutput != "" {
+		fmt.Println(finalModel.finalOutput)
+	}
 	return err
 }
 

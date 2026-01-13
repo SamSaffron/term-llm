@@ -170,6 +170,9 @@ type ModelInfo struct {
 	DisplayName string
 	Created     int64
 	OwnedBy     string
+	// Pricing per 1M tokens (0 = free, -1 = unknown)
+	InputPrice  float64
+	OutputPrice float64
 }
 
 func SystemText(text string) Message {

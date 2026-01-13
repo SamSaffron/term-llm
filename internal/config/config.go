@@ -53,8 +53,8 @@ type ProviderConfig struct {
 	// Common fields
 	APIKey      string   `mapstructure:"api_key"`
 	Model       string   `mapstructure:"model"`
-	Models      []string `mapstructure:"models"` // Available models for autocomplete
-	Credentials string   `mapstructure:"credentials"` // "api_key", "claude", "codex", "gemini-cli"
+	Models      []string `mapstructure:"models"`      // Available models for autocomplete
+	Credentials string   `mapstructure:"credentials"` // "api_key", "codex", "gemini-cli"
 
 	// Search behavior - nil means auto (use native if available)
 	UseNativeSearch *bool `mapstructure:"use_native_search"`
@@ -87,6 +87,19 @@ type Config struct {
 	Image           ImageConfig               `mapstructure:"image"`
 	Search          SearchConfig              `mapstructure:"search"`
 	Theme           ThemeConfig               `mapstructure:"theme"`
+	Tools           ToolsConfig               `mapstructure:"tools"`
+}
+
+// ToolsConfig configures the local tool system
+type ToolsConfig struct {
+	Enabled         []string `mapstructure:"enabled"`            // Enabled tool names (CLI names)
+	ReadDirs        []string `mapstructure:"read_dirs"`          // Directories for read operations
+	WriteDirs       []string `mapstructure:"write_dirs"`         // Directories for write operations
+	ShellAllow      []string `mapstructure:"shell_allow"`        // Shell command patterns
+	ShellAutoRun    bool     `mapstructure:"shell_auto_run"`     // Auto-approve matching shell
+	ShellAutoRunEnv string   `mapstructure:"shell_auto_run_env"` // Env var required for auto-run
+	ShellNonTTYEnv  string   `mapstructure:"shell_non_tty_env"`  // Env var for non-TTY execution
+	ImageProvider   string   `mapstructure:"image_provider"`     // Override for image provider
 }
 
 // DiagnosticsConfig configures diagnostic data collection
@@ -131,7 +144,6 @@ type EditConfig struct {
 	Editor          string `mapstructure:"editor"`            // Override $EDITOR
 	DiffFormat      string `mapstructure:"diff_format"`       // "auto", "udiff", or "replace" (default: auto)
 }
-
 
 // ImageConfig configures image generation settings
 type ImageConfig struct {
@@ -216,7 +228,7 @@ func Load() (*Config, error) {
 	viper.SetDefault("providers.openrouter.app_url", "https://github.com/samsaffron/term-llm")
 	viper.SetDefault("providers.openrouter.app_title", "term-llm")
 	viper.SetDefault("providers.gemini.model", "gemini-3-flash-preview")
-	viper.SetDefault("providers.zen.model", "glm-4.7-free")
+	viper.SetDefault("providers.zen.model", "minimax-m2.1-free")
 	// Image defaults
 	viper.SetDefault("image.provider", "gemini")
 	viper.SetDefault("image.output_dir", "~/Pictures/term-llm")
@@ -227,6 +239,14 @@ func Load() (*Config, error) {
 	// Search defaults
 	viper.SetDefault("search.provider", "duckduckgo")
 	viper.SetDefault("search.force_external", false)
+	// Tools defaults
+	viper.SetDefault("tools.enabled", []string{})
+	viper.SetDefault("tools.read_dirs", []string{})
+	viper.SetDefault("tools.write_dirs", []string{})
+	viper.SetDefault("tools.shell_allow", []string{})
+	viper.SetDefault("tools.shell_auto_run", false)
+	viper.SetDefault("tools.shell_auto_run_env", "TERM_LLM_ALLOW_AUTORUN")
+	viper.SetDefault("tools.shell_non_tty_env", "TERM_LLM_ALLOW_NON_TTY")
 
 	// Read config file (optional - won't error if missing)
 	if err := viper.ReadInConfig(); err != nil {
@@ -324,18 +344,9 @@ func resolveProviderCredentials(name string, cfg *ProviderConfig) error {
 	// Provider-specific credential resolution (non-lazy)
 	switch providerType {
 	case ProviderTypeAnthropic:
-		switch cfg.Credentials {
-		case "claude":
-			token, err := credentials.GetClaudeToken()
-			if err != nil {
-				return err
-			}
-			cfg.ResolvedAPIKey = token
-		default:
-			cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
-			if cfg.ResolvedAPIKey == "" {
-				cfg.ResolvedAPIKey = os.Getenv("ANTHROPIC_API_KEY")
-			}
+		cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
+		if cfg.ResolvedAPIKey == "" {
+			cfg.ResolvedAPIKey = os.Getenv("ANTHROPIC_API_KEY")
 		}
 
 	case ProviderTypeOpenAI:

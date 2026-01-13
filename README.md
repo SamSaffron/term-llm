@@ -14,7 +14,7 @@ A Swiss Army knife for your terminal—AI-powered commands, answers, and images 
 - **MCP servers**: Extend with external tools via [Model Context Protocol](https://modelcontextprotocol.io)
 - **Multiple providers**: Anthropic, OpenAI, OpenRouter, Gemini, Zen (free tier), Claude CLI, Ollama, LM Studio
 - **Local LLMs**: Run with Ollama, LM Studio, or any OpenAI-compatible server
-- **Credential reuse**: Works with Claude Code, Codex, gemini-cli credentials
+- **Credential reuse**: Works with Codex, gemini-cli credentials
 
 ```
 $ term-llm exec "find all go files modified today"
@@ -59,14 +59,11 @@ On first run, term-llm will prompt you to choose a provider (Anthropic, OpenAI, 
 
 ### Option 1: Use existing CLI credentials (recommended)
 
-If you have [Claude Code](https://claude.ai/code), [Codex](https://github.com/openai/codex), or [gemini-cli](https://github.com/google-gemini/gemini-cli) installed and logged in, term-llm can use those credentials:
+If you have [Codex](https://github.com/openai/codex) or [gemini-cli](https://github.com/google-gemini/gemini-cli) installed and logged in, term-llm can use those credentials:
 
 ```yaml
 # In ~/.config/term-llm/config.yaml
 providers:
-  anthropic:
-    credentials: claude      # uses Claude Code credentials
-
   openai:
     credentials: codex       # uses Codex credentials
 
@@ -182,15 +179,16 @@ providers:
 
 The `models` list enables tab completion for `--provider my-server:<TAB>`. The configured `model` is always included in completions.
 
-### Option 6: Use Claude CLI (claude-bin)
+### Option 6: Use Claude Code (claude-bin)
 
-If you have [Claude Code](https://claude.ai/code) installed and logged in, you can use the `claude-bin` provider to run inference through the Claude CLI binary. This requires no API key - it uses Claude Code's existing authentication.
+If you have [Claude Code](https://claude.ai/code) installed and logged in, you can use the `claude-bin` provider to run completions via the [Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk). This requires no API key - it uses Claude Code's existing authentication.
 
 ```bash
 # Use directly via --provider flag (no config needed)
 term-llm ask --provider claude-bin "explain this code"
 term-llm ask --provider claude-bin:haiku "quick question"  # use haiku model
-term-llm ask --provider claude-bin -s "latest news"        # with native web search
+term-llm exec --provider claude-bin "list files"           # command suggestions
+term-llm ask --provider claude-bin -s "latest news"        # with web search
 
 # Or configure as default
 ```
@@ -206,7 +204,7 @@ providers:
 
 **Features:**
 - No API key required - uses Claude Code's OAuth authentication
-- Native web search support with `-s` flag
+- Full tool support via MCP (exec, search, edit all work)
 - Model selection: `opus`, `sonnet` (default), `haiku`
 - Works immediately if Claude Code is installed and logged in
 
@@ -597,7 +595,6 @@ providers:
   # Built-in providers - type is inferred from the key name
   anthropic:
     model: claude-sonnet-4-5
-    credentials: claude  # or "api_key" (default)
 
   openai:
     model: gpt-5.2
@@ -828,14 +825,9 @@ Each provider supports a `credentials` field:
 | Provider | Value | Description |
 |----------|-------|-------------|
 | All | `api_key` | Use environment variable (default) |
-| Anthropic | `claude` | Use Claude Code credentials |
 | OpenAI | `codex` | Use Codex CLI credentials |
 | Gemini | `gemini-cli` | Use gemini-cli OAuth credentials |
 | Zen | `api_key` | Optional: empty for free tier, or set `ZEN_API_KEY` for paid models |
-
-**Claude Code** (`credentials: claude`):
-- **macOS**: System keychain (via `security` command)
-- **Linux**: `~/.claude/.credentials.json`
 
 **Codex** (`credentials: codex`):
 - Reads from `~/.codex/auth.json`

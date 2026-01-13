@@ -9,6 +9,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/signal"
+	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/tui/chat"
 	"github.com/spf13/cobra"
 )
@@ -21,6 +22,11 @@ var (
 	chatMaxTurns        int
 	chatNativeSearch    bool
 	chatNoNativeSearch  bool
+	// Tool flags
+	chatTools      string
+	chatReadDirs   []string
+	chatWriteDirs  []string
+	chatShellAllow []string
 )
 
 var chatCmd = &cobra.Command{
@@ -61,11 +67,19 @@ func init() {
 	chatCmd.Flags().IntVar(&chatMaxTurns, "max-turns", 200, "Max agentic turns for tool execution")
 	chatCmd.Flags().BoolVar(&chatNativeSearch, "native-search", false, "Use provider's native search (override config)")
 	chatCmd.Flags().BoolVar(&chatNoNativeSearch, "no-native-search", false, "Use external search tools instead of provider's native search")
+	// Tool flags
+	chatCmd.Flags().StringVar(&chatTools, "tools", "", "Enable local tools (comma-separated: read,write,edit,shell,grep,find,view,image)")
+	chatCmd.Flags().StringArrayVar(&chatReadDirs, "read-dir", nil, "Directories for read/grep/find/view tools (repeatable)")
+	chatCmd.Flags().StringArrayVar(&chatWriteDirs, "write-dir", nil, "Directories for write/edit tools (repeatable)")
+	chatCmd.Flags().StringArrayVar(&chatShellAllow, "shell-allow", nil, "Shell command patterns to allow (repeatable, glob syntax)")
 	if err := chatCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion); err != nil {
 		panic(fmt.Sprintf("failed to register provider completion: %v", err))
 	}
 	if err := chatCmd.RegisterFlagCompletionFunc("mcp", MCPFlagCompletion); err != nil {
 		panic(fmt.Sprintf("failed to register mcp completion: %v", err))
+	}
+	if err := chatCmd.RegisterFlagCompletionFunc("tools", ToolsFlagCompletion); err != nil {
+		panic(fmt.Sprintf("failed to register tools completion: %v", err))
 	}
 	rootCmd.AddCommand(chatCmd)
 }
@@ -91,6 +105,20 @@ func runChat(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
+
+	// Initialize local tools if --tools flag is set
+	if chatTools != "" {
+		toolConfig := buildToolConfig(chatTools, chatReadDirs, chatWriteDirs, chatShellAllow, cfg)
+		if errs := toolConfig.Validate(); len(errs) > 0 {
+			return fmt.Errorf("invalid tool config: %v", errs[0])
+		}
+		toolMgr, err := tools.NewToolManager(&toolConfig, cfg)
+		if err != nil {
+			return fmt.Errorf("failed to initialize tools: %w", err)
+		}
+		toolMgr.ApprovalMgr.PromptFunc = tools.HuhApprovalPrompt
+		toolMgr.SetupEngine(engine)
+	}
 
 	// Determine model name
 	modelName := getModelName(cfg)

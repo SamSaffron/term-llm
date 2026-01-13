@@ -30,6 +30,11 @@ func (t *MCPTool) Spec() llm.ToolSpec {
 	}
 }
 
+// Preview returns empty string for MCP tools - the engine falls back to extractToolInfo().
+func (t *MCPTool) Preview(args json.RawMessage) string {
+	return ""
+}
+
 // Execute invokes the tool on the MCP server.
 func (t *MCPTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	return t.manager.CallTool(ctx, t.toolSpec.Name, args)

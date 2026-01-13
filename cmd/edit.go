@@ -16,6 +16,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/prompt"
 	"github.com/samsaffron/term-llm/internal/signal"
+	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -28,6 +29,11 @@ var (
 	editContext    []string
 	editDiffFormat string
 	editMCP        string
+	// Tool flags
+	editTools      string
+	editReadDirs   []string
+	editWriteDirs  []string
+	editShellAllow []string
 )
 
 var editCmd = &cobra.Command{
@@ -65,6 +71,11 @@ func init() {
 	editCmd.Flags().BoolVarP(&editDebug, "debug", "d", false, "Show debug information")
 	editCmd.Flags().StringVar(&editDiffFormat, "diff-format", "", "Force diff format: 'udiff' or 'replace' (default: auto)")
 	editCmd.Flags().StringVar(&editMCP, "mcp", "", "Enable MCP server(s), comma-separated (e.g., playwright,filesystem)")
+	// Tool flags
+	editCmd.Flags().StringVar(&editTools, "tools", "", "Enable local tools (comma-separated: read,write,edit,shell,grep,find,view,image)")
+	editCmd.Flags().StringArrayVar(&editReadDirs, "read-dir", nil, "Directories for read/grep/find/view tools (repeatable)")
+	editCmd.Flags().StringArrayVar(&editWriteDirs, "write-dir", nil, "Directories for write/edit tools (repeatable)")
+	editCmd.Flags().StringArrayVar(&editShellAllow, "shell-allow", nil, "Shell command patterns to allow (repeatable, glob syntax)")
 	if err := editCmd.MarkFlagRequired("file"); err != nil {
 		panic(fmt.Sprintf("failed to mark file flag required: %v", err))
 	}
@@ -73,6 +84,9 @@ func init() {
 	}
 	if err := editCmd.RegisterFlagCompletionFunc("mcp", MCPFlagCompletion); err != nil {
 		panic(fmt.Sprintf("failed to register mcp completion: %v", err))
+	}
+	if err := editCmd.RegisterFlagCompletionFunc("tools", ToolsFlagCompletion); err != nil {
+		panic(fmt.Sprintf("failed to register tools completion: %v", err))
 	}
 	rootCmd.AddCommand(editCmd)
 }
@@ -196,6 +210,21 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	provider, err := llm.NewProvider(cfg)
 	if err != nil {
 		return err
+	}
+
+	// Initialize local tools if --tools flag is set
+	if editTools != "" {
+		engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
+		toolConfig := buildToolConfig(editTools, editReadDirs, editWriteDirs, editShellAllow, cfg)
+		if errs := toolConfig.Validate(); len(errs) > 0 {
+			return fmt.Errorf("invalid tool config: %v", errs[0])
+		}
+		toolMgr, err := tools.NewToolManager(&toolConfig, cfg)
+		if err != nil {
+			return fmt.Errorf("failed to initialize tools: %w", err)
+		}
+		toolMgr.ApprovalMgr.PromptFunc = tools.HuhApprovalPrompt
+		toolMgr.SetupEngine(engine)
 	}
 
 	// Initialize MCP servers if --mcp flag is set

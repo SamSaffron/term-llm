@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -318,13 +319,30 @@ func buildGeminiToolResultContent(parts []Part) *genai.Content {
 			if part.ToolResult == nil {
 				continue
 			}
+			// Check for embedded image data in tool result
+			mimeType, base64Data, textContent := parseToolResultImageData(part.ToolResult.Content)
+
+			// Add the function response with text content only
 			content.Parts = append(content.Parts, &genai.Part{
 				FunctionResponse: &genai.FunctionResponse{
 					ID:       part.ToolResult.ID,
 					Name:     part.ToolResult.Name,
-					Response: map[string]any{"output": part.ToolResult.Content},
+					Response: map[string]any{"output": textContent},
 				},
 			})
+
+			// If image data was found, add it as inline data
+			if base64Data != "" {
+				imageData, err := base64.StdEncoding.DecodeString(base64Data)
+				if err == nil {
+					content.Parts = append(content.Parts, &genai.Part{
+						InlineData: &genai.Blob{
+							MIMEType: mimeType,
+							Data:     imageData,
+						},
+					})
+				}
+			}
 		}
 	}
 	if len(content.Parts) == 0 {

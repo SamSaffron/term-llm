@@ -133,12 +133,6 @@ func configShow(cmd *cobra.Command, args []string) error {
 
 func printCredentialStatus(provider, credType, apiKey, envVar string) {
 	switch credType {
-	case "claude":
-		if apiKey != "" {
-			fmt.Printf("  credentials: claude [OK]\n")
-		} else {
-			fmt.Printf("  credentials: claude [FAILED - run 'claude' to login]\n")
-		}
 	case "codex":
 		if apiKey != "" {
 			fmt.Printf("  credentials: codex [OK]\n")
@@ -299,7 +293,7 @@ providers:
   # Built-in providers - type is inferred from the key name
   anthropic:
     model: claude-sonnet-4-5
-    # credentials: api_key (default) or claude (Claude Code OAuth)
+    # credentials: api_key (default)
 
   openai:
     model: gpt-5.2

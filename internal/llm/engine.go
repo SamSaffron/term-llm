@@ -131,7 +131,7 @@ func (e *Engine) applyExternalSearch(ctx context.Context, req Request, events ch
 	// Notify which tools are starting (after LLM returned tool call, before execution)
 	if events != nil {
 		for _, call := range toolCalls {
-			info := extractToolInfo(call)
+			info := e.getToolPreview(call)
 			events <- Event{Type: EventToolExecStart, ToolName: call.Name, ToolInfo: info}
 		}
 	}
@@ -325,7 +325,7 @@ func (e *Engine) streamWithExternalTools(ctx context.Context, req Request, addSe
 
 			// Notify which tool is starting (for each call)
 			for _, call := range ourCalls {
-				info := extractToolInfo(call)
+				info := e.getToolPreview(call)
 				events <- Event{Type: EventToolExecStart, ToolName: call.Name, ToolInfo: info}
 			}
 
@@ -419,6 +419,17 @@ func splitExternalToolCalls(calls []ToolCall, externalToolNames []string) ([]Too
 	return ourCalls, otherCalls
 }
 
+// getToolPreview returns a preview string for a tool call.
+// Uses tool.Preview() for registered tools, falls back to extractToolInfo for others.
+func (e *Engine) getToolPreview(call ToolCall) string {
+	if tool, ok := e.tools.Get(call.Name); ok {
+		if preview := tool.Preview(call.Arguments); preview != "" {
+			return preview
+		}
+	}
+	return extractToolInfo(call)
+}
+
 // extractToolInfo extracts display info from a tool call (e.g., URL for read_url, query for web_search)
 func extractToolInfo(call ToolCall) string {
 	if len(call.Arguments) == 0 {
@@ -440,14 +451,26 @@ func extractToolInfo(call ToolCall) string {
 			return query
 		}
 	case "read_file":
-		if path, ok := args["file_path"].(string); ok {
-			return path
+		path, _ := args["file_path"].(string)
+		if path == "" {
+			return ""
 		}
+		// Include line range if specified
+		startLine, hasStart := args["start_line"].(float64)
+		endLine, hasEnd := args["end_line"].(float64)
+		if hasStart && hasEnd {
+			return fmt.Sprintf("%s:%d-%d", path, int(startLine), int(endLine))
+		} else if hasStart {
+			return fmt.Sprintf("%s:%d-", path, int(startLine))
+		} else if hasEnd {
+			return fmt.Sprintf("%s:1-%d", path, int(endLine))
+		}
+		return path
 	case "write_file", "edit_file":
 		if path, ok := args["file_path"].(string); ok {
 			return path
 		}
-	case "execute":
+	case "execute", "shell":
 		if cmd, ok := args["command"].(string); ok {
 			// Truncate long commands
 			if len(cmd) > 50 {
@@ -456,13 +479,31 @@ func extractToolInfo(call ToolCall) string {
 			return cmd
 		}
 	case "glob":
-		if pattern, ok := args["pattern"].(string); ok {
-			return pattern
+		pattern, _ := args["pattern"].(string)
+		path, _ := args["path"].(string)
+		if pattern != "" && path != "" {
+			return fmt.Sprintf("%s in %s", pattern, path)
 		}
+		return pattern
 	case "grep":
-		if pattern, ok := args["pattern"].(string); ok {
-			return pattern
+		pattern, _ := args["pattern"].(string)
+		path, _ := args["path"].(string)
+		include, _ := args["include"].(string)
+		if pattern == "" {
+			return ""
 		}
+		// Truncate long patterns
+		if len(pattern) > 30 {
+			pattern = pattern[:27] + "..."
+		}
+		result := fmt.Sprintf("/%s/", pattern)
+		if path != "" {
+			result += " in " + path
+		}
+		if include != "" {
+			result += " (" + include + ")"
+		}
+		return result
 	}
 
 	return ""
@@ -557,7 +598,8 @@ func (e *Engine) streamWithToolExecution(ctx context.Context, req Request) (Stre
 
 			// Notify which tool is starting (for each call)
 			for _, call := range registeredCalls {
-				events <- Event{Type: EventToolExecStart, ToolName: call.Name}
+				info := e.getToolPreview(call)
+				events <- Event{Type: EventToolExecStart, ToolName: call.Name, ToolInfo: info}
 			}
 
 			// Execute registered tool calls

@@ -24,6 +24,8 @@
 - `term-llm "your request"` runs the CLI once built or installed.
 - `term-llm config` prints current config; `term-llm config edit` opens it for editing.
 - `term-llm image "prompt"` generates an image; `term-llm image "edit" -i input.png` edits an existing image; `-i clipboard` edits from clipboard.
+- Other common commands: `term-llm ask`, `term-llm chat`, `term-llm edit`, `term-llm exec`, `term-llm tools`, `term-llm mcp`, `term-llm models`, `term-llm completion`, `term-llm upgrade`.
+- Go toolchain: `go.mod` specifies `go 1.25.5`; use a compatible toolchain.
 
 ## Configuration & Secrets
 - Config lives at `~/.config/term-llm/config.yaml` (or `$XDG_CONFIG_HOME/term-llm/` if set).
@@ -32,11 +34,25 @@
 - Environment variables `GEMINI_API_KEY`, `OPENAI_API_KEY`, `BFL_API_KEY` are used as fallbacks for image provider keys.
 - Alternatively, use OAuth credentials from companion CLIs:
   - Codex OAuth credentials from `~/.codex/auth.json`
-  - Claude Code credentials from system keychain
   - gemini-cli OAuth credentials from `~/.gemini/oauth_creds.json`
 - OpenCode Zen (`default_provider: zen`) works without an API key (free tier), or set `ZEN_API_KEY` for paid models.
 - Use `--provider` flag to override provider for testing: `term-llm exec --provider zen "list files"`
 - Do not commit API keys or local config changes.
+- OpenRouter uses `OPENROUTER_API_KEY`; OpenAI-compatible providers can be configured with `base_url` + `model`.
+- Local providers: Ollama/LM Studio are OpenAI-compatible (see `internal/llm/openai_compat.go`).
+- Claude CLI (`claude-bin`) uses the local Claude Code credentials (no API key).
+
+## Search & MCP
+- Web search tools live in `internal/search/` (Brave, Google, DuckDuckGo); keys/config are required per provider.
+- MCP client/server wiring is in `internal/mcp/`; `term-llm mcp` manages servers and tools.
+
+## Tools & Permissions
+- Tool registry and approval flow are in `internal/tools/` (read/write/edit/shell, etc.).
+- When adding tools, wire them through the registry and ensure permission checks in `internal/tools/permissions.go`.
+
+## Edit & TUI Architecture
+- Edit parsing/matching/execution is in `internal/edit/`; keep parsing rules small and explicit.
+- TUI layout, styles, and screen logic are in `internal/tui/` and `internal/ui/`.
 
 ## Coding Style & Naming Conventions
 - Go formatting is standard `gofmt`; keep imports grouped by gofmt defaults.
@@ -44,11 +60,64 @@
 - Prefer small, focused functions and explicit error handling.
 
 ## Testing Guidelines
-- No repository tests are currently present; add `*_test.go` files alongside the packages they cover.
-- Use `go test ./...` for package-level test runs once tests exist.
-- Name tests with `TestXxx` and include table-driven tests where appropriate.
+
+### Test-Driven Development (TDD)
+- **Always write a failing test first**, then fix the code to make it pass.
+- When fixing bugs, first write a test that reproduces the bug, then fix it.
+- Use `go test ./...` to run all tests.
+
+### Testing Infrastructure
+- `internal/llm/mock_provider.go` – MockProvider for scripted LLM responses
+- `internal/testutil/` – Test harness and helpers:
+  - `harness.go` – EngineHarness for engine-level testing
+  - `screen.go` – Screen capture for TUI state verification
+  - `mock_tool.go` – MockTool with invocation tracking
+  - `assertions.go` – Test assertions (AssertContains, StripANSI, etc.)
+
+### Writing Tests
+```go
+func TestFeature(t *testing.T) {
+    h := testutil.NewEngineHarness()
+    h.EnableScreenCapture()
+
+    // Script mock provider responses
+    h.Provider.AddToolCall("call_1", "tool_name", map[string]string{"arg": "value"})
+    h.Provider.AddTextResponse("Expected response")
+
+    // Add mock tools
+    mockTool := h.AddMockTool("tool_name", "tool result")
+
+    // Run and verify
+    output, err := h.Run(ctx, llm.Request{...})
+    require.NoError(t, err)
+    testutil.AssertContains(t, output, "Expected response")
+
+    // Verify tool was called
+    if mockTool.InvocationCount() != 1 {
+        t.Error("tool not called")
+    }
+
+    // Debug screen state
+    if testutil.DebugScreensEnabled() {
+        h.DumpScreen()
+    }
+}
+```
+
+### Screen State Testing
+- Use `simulateXxxScreen()` functions to define expected screen states
+- Test what should NOT appear (spinners, times) as well as what SHOULD
+- Run with `DEBUG_SCREENS=1 go test -v` to see captured screens
+- Run with `SAVE_FRAMES=1 go test` to save frame files for inspection
+
+### Test Naming
+- Name tests with `TestXxx` prefix
+- Use table-driven tests for multiple cases
+- Name screen state tests descriptively: `TestApprovalScreen_NoSpinnerOrTime`
+- Integration tests may require network/credentials; keep them isolated and skip when not configured.
 
 ## Commit & Pull Request Guidelines
 - Commit messages in history are short, imperative, and unprefixed (e.g., “added shell integration for history”).
 - Keep commits focused; avoid mixing unrelated changes.
 - PRs should include a clear description, steps to validate (commands run), and any config or UX changes.
+- Release/update logic lives in `internal/update/` and `scripts/release.sh`; keep user-facing versioning consistent.

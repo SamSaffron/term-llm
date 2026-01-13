@@ -22,6 +22,16 @@ func (t *WebSearchTool) Spec() ToolSpec {
 	return WebSearchToolSpec()
 }
 
+func (t *WebSearchTool) Preview(args json.RawMessage) string {
+	var payload struct {
+		Query string `json:"query"`
+	}
+	if err := json.Unmarshal(args, &payload); err != nil || payload.Query == "" {
+		return ""
+	}
+	return payload.Query
+}
+
 func (t *WebSearchTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	var payload struct {
 		Query      string `json:"query"`

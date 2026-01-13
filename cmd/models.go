@@ -46,9 +46,9 @@ type ModelLister interface {
 }
 
 func runModels(cmd *cobra.Command, args []string) error {
-	cfg, err := config.Load()
+	cfg, err := loadConfigWithSetup()
 	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+		return err
 	}
 
 	// Determine which provider to query
@@ -70,11 +70,12 @@ func runModels(cmd *cobra.Command, args []string) error {
 		config.ProviderTypeAnthropic:    true,
 		config.ProviderTypeOpenRouter:   true,
 		config.ProviderTypeOpenAICompat: true,
+		config.ProviderTypeZen:          true,
 	}
 
 	if !supportedTypes[providerType] {
 		return fmt.Errorf("provider '%s' (type: %s) does not support model listing.\n"+
-			"Model listing is supported for: anthropic, openrouter, and openai_compatible providers", providerName, providerType)
+			"Model listing is supported for: anthropic, openrouter, zen, and openai_compatible providers", providerName, providerType)
 	}
 
 	// Create provider to query models
@@ -95,6 +96,8 @@ func runModels(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("provider '%s' requires base_url to be configured", providerName)
 		}
 		lister = llm.NewOpenAICompatProvider(providerCfg.BaseURL, providerCfg.ResolvedAPIKey, "", providerName)
+	case config.ProviderTypeZen:
+		lister = llm.NewZenProvider(providerCfg.ResolvedAPIKey, "")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -130,14 +133,18 @@ func runModels(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Available models from %s:\n\n", providerName)
 	for _, m := range models {
 		if m.DisplayName != "" {
-			fmt.Printf("  %s (%s)\n", m.ID, m.DisplayName)
+			fmt.Printf("  %s (%s)", m.ID, m.DisplayName)
 		} else {
-			fmt.Printf("  %s\n", m.ID)
+			fmt.Printf("  %s", m.ID)
 		}
-		if m.Created > 0 {
-			t := time.Unix(m.Created, 0)
-			fmt.Printf("    Released: %s\n", t.Format("2006-01-02"))
+
+		// Show pricing info if available
+		if m.InputPrice == 0 && m.OutputPrice == 0 {
+			fmt.Printf(" [FREE]")
+		} else if m.InputPrice > 0 || m.OutputPrice > 0 {
+			fmt.Printf(" [$%.2f/$%.2f per 1M tokens]", m.InputPrice, m.OutputPrice)
 		}
+		fmt.Println()
 	}
 
 	fmt.Printf("\nTo use a model, add to your config:\n")

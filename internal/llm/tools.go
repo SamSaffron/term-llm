@@ -23,6 +23,10 @@ const (
 type Tool interface {
 	Spec() ToolSpec
 	Execute(ctx context.Context, args json.RawMessage) (string, error)
+	// Preview returns a human-readable description of what the tool will do,
+	// shown to the user before execution starts (e.g., "Generating image: a cat").
+	// Returns empty string if no preview is available.
+	Preview(args json.RawMessage) string
 }
 
 // ToolRegistry stores tools by name for execution.

@@ -320,7 +320,23 @@ func buildOpenAIInput(messages []Message) (string, responses.ResponseInputParam)
 				if callID == "" {
 					continue
 				}
-				inputItems = append(inputItems, responses.ResponseInputItemParamOfFunctionCallOutput(callID, part.ToolResult.Content))
+				// Check for embedded image data in tool result
+				mimeType, base64Data, textContent := parseToolResultImageData(part.ToolResult.Content)
+
+				// Send the text-only tool result
+				inputItems = append(inputItems, responses.ResponseInputItemParamOfFunctionCallOutput(callID, textContent))
+
+				// If image data was found, add a user message with the image
+				if base64Data != "" {
+					dataURL := fmt.Sprintf("data:%s;base64,%s", mimeType, base64Data)
+					imageContent := responses.ResponseInputMessageContentListParam{
+						{OfInputImage: &responses.ResponseInputImageParam{
+							ImageURL: openai.String(dataURL),
+							Detail:   responses.ResponseInputImageDetailAuto,
+						}},
+					}
+					inputItems = append(inputItems, responses.ResponseInputItemParamOfInputMessage(imageContent, "user"))
+				}
 			}
 		}
 	}

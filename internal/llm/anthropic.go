@@ -54,15 +54,8 @@ func NewAnthropicProvider(apiKey, model string) *AnthropicProvider {
 	var client anthropic.Client
 	var credential string
 	if apiKey != "" {
-		// OAuth tokens (from Claude Code) start with "sk-ant-oat" and need Bearer auth
-		// Standard API keys start with "sk-ant-api" and use x-api-key header
-		if strings.HasPrefix(apiKey, "sk-ant-oat") {
-			client = anthropic.NewClient(option.WithAuthToken(apiKey))
-			credential = "claude"
-		} else {
-			client = anthropic.NewClient(option.WithAPIKey(apiKey))
-			credential = "api_key"
-		}
+		client = anthropic.NewClient(option.WithAPIKey(apiKey))
+		credential = "api_key"
 	} else {
 		client = anthropic.NewClient()
 		credential = "env"
@@ -373,7 +366,7 @@ func buildAnthropicBlocks(parts []Part, allowToolUse bool) []anthropic.ContentBl
 			}
 		case PartToolResult:
 			if part.ToolResult != nil {
-				blocks = append(blocks, anthropic.NewToolResultBlock(part.ToolResult.ID, part.ToolResult.Content, part.ToolResult.IsError))
+				blocks = append(blocks, toolResultBlock(part.ToolResult.ID, part.ToolResult.Content, part.ToolResult.IsError))
 			}
 		}
 	}
@@ -402,14 +395,119 @@ func buildAnthropicBetaBlocks(parts []Part, allowToolUse bool) []anthropic.BetaC
 }
 
 func betaToolResultBlock(id, content string, isError bool) anthropic.BetaContentBlockParamUnion {
+	// Check for embedded image data
+	mimeType, base64Data, textContent := parseToolResultImageData(content)
+
+	var contentBlocks []anthropic.BetaToolResultBlockParamContentUnion
+
+	// Add text content (without the image marker)
+	if textContent != "" {
+		contentBlocks = append(contentBlocks, anthropic.BetaToolResultBlockParamContentUnion{
+			OfText: &anthropic.BetaTextBlockParam{Text: textContent},
+		})
+	}
+
+	// Add image content if present
+	if base64Data != "" {
+		contentBlocks = append(contentBlocks, anthropic.BetaToolResultBlockParamContentUnion{
+			OfImage: &anthropic.BetaImageBlockParam{
+				Source: anthropic.BetaImageBlockParamSourceUnion{
+					OfBase64: &anthropic.BetaBase64ImageSourceParam{
+						Data:      base64Data,
+						MediaType: anthropic.BetaBase64ImageSourceMediaType(mimeType),
+					},
+				},
+			},
+		})
+	}
+
+	// Fallback if no content blocks were created
+	if len(contentBlocks) == 0 {
+		contentBlocks = append(contentBlocks, anthropic.BetaToolResultBlockParamContentUnion{
+			OfText: &anthropic.BetaTextBlockParam{Text: content},
+		})
+	}
+
 	block := anthropic.BetaToolResultBlockParam{
 		ToolUseID: id,
 		IsError:   anthropic.Bool(isError),
-		Content: []anthropic.BetaToolResultBlockParamContentUnion{{
-			OfText: &anthropic.BetaTextBlockParam{Text: content},
-		}},
+		Content:   contentBlocks,
 	}
 	return anthropic.BetaContentBlockParamUnion{OfToolResult: &block}
+}
+
+// toolResultBlock creates a non-beta tool result block with image support.
+func toolResultBlock(id, content string, isError bool) anthropic.ContentBlockParamUnion {
+	// Check for embedded image data
+	mimeType, base64Data, textContent := parseToolResultImageData(content)
+
+	var contentBlocks []anthropic.ToolResultBlockParamContentUnion
+
+	// Add text content (without the image marker)
+	if textContent != "" {
+		contentBlocks = append(contentBlocks, anthropic.ToolResultBlockParamContentUnion{
+			OfText: &anthropic.TextBlockParam{Text: textContent},
+		})
+	}
+
+	// Add image content if present
+	if base64Data != "" {
+		contentBlocks = append(contentBlocks, anthropic.ToolResultBlockParamContentUnion{
+			OfImage: &anthropic.ImageBlockParam{
+				Source: anthropic.ImageBlockParamSourceUnion{
+					OfBase64: &anthropic.Base64ImageSourceParam{
+						Data:      base64Data,
+						MediaType: anthropic.Base64ImageSourceMediaType(mimeType),
+					},
+				},
+			},
+		})
+	}
+
+	// Fallback if no content blocks were created
+	if len(contentBlocks) == 0 {
+		contentBlocks = append(contentBlocks, anthropic.ToolResultBlockParamContentUnion{
+			OfText: &anthropic.TextBlockParam{Text: content},
+		})
+	}
+
+	block := anthropic.ToolResultBlockParam{
+		ToolUseID: id,
+		IsError:   anthropic.Bool(isError),
+		Content:   contentBlocks,
+	}
+	return anthropic.ContentBlockParamUnion{OfToolResult: &block}
+}
+
+// parseToolResultImageData extracts image data from a tool result.
+// Returns mime type, base64 data, and the text content with the image marker removed.
+func parseToolResultImageData(content string) (mimeType, base64Data, textContent string) {
+	const prefix = "[IMAGE_DATA:"
+	const suffix = "]"
+
+	start := strings.Index(content, prefix)
+	if start == -1 {
+		return "", "", content
+	}
+
+	end := strings.Index(content[start:], suffix)
+	if end == -1 {
+		return "", "", content
+	}
+
+	// Extract the image data portion
+	imageMarker := content[start : start+end+1]
+	data := content[start+len(prefix) : start+end]
+	parts := strings.SplitN(data, ":", 2)
+	if len(parts) != 2 {
+		return "", "", content
+	}
+
+	// Remove the image marker from text content
+	textContent = strings.Replace(content, imageMarker, "", 1)
+	textContent = strings.TrimSpace(textContent)
+
+	return parts[0], parts[1], textContent
 }
 
 func buildAnthropicTools(specs []ToolSpec) []anthropic.ToolUnionParam {

@@ -68,6 +68,10 @@ func (t *countingSearchTool) Execute(ctx context.Context, args json.RawMessage) 
 	return fmt.Sprintf("result %d", t.calls), nil
 }
 
+func (t *countingSearchTool) Preview(args json.RawMessage) string {
+	return ""
+}
+
 func TestEngineExternalSearchLoopsUntilNoToolCalls(t *testing.T) {
 	tool := &countingSearchTool{}
 	registry := NewToolRegistry()

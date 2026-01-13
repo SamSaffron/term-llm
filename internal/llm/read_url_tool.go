@@ -32,6 +32,16 @@ func (t *ReadURLTool) Spec() ToolSpec {
 	return ReadURLToolSpec()
 }
 
+func (t *ReadURLTool) Preview(args json.RawMessage) string {
+	var payload struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(args, &payload); err != nil || payload.URL == "" {
+		return ""
+	}
+	return payload.URL
+}
+
 // ReadURLToolSpec returns the tool spec for reading web pages.
 func ReadURLToolSpec() ToolSpec {
 	return ToolSpec{

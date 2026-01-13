@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -446,6 +448,98 @@ func ShowCommand(cmd string) {
 	fmt.Fprintln(os.Stderr, cmd)
 }
 
+// providerOption represents a provider choice in the setup wizard
+type providerOption struct {
+	name      string
+	value     string
+	available bool
+	hint      string // Shows how to enable if not available
+}
+
+// detectAvailableProviders checks which providers have credentials configured
+func detectAvailableProviders() []providerOption {
+	options := []providerOption{
+		{
+			name:      "Anthropic (Claude API)",
+			value:     "anthropic",
+			available: os.Getenv("ANTHROPIC_API_KEY") != "",
+			hint:      "Set ANTHROPIC_API_KEY",
+		},
+		{
+			name:      "Claude Code (claude-bin)",
+			value:     "claude-bin",
+			available: isClaudeBinaryAvailable(),
+			hint:      "Install Claude Code CLI",
+		},
+		{
+			name:      "OpenAI (API key)",
+			value:     "openai",
+			available: os.Getenv("OPENAI_API_KEY") != "",
+			hint:      "Set OPENAI_API_KEY",
+		},
+		{
+			name:      "OpenAI (Codex OAuth)",
+			value:     "codex",
+			available: isCodexOAuthAvailable(),
+			hint:      "Run 'codex login'",
+		},
+		{
+			name:      "Gemini (API key)",
+			value:     "gemini",
+			available: os.Getenv("GEMINI_API_KEY") != "",
+			hint:      "Set GEMINI_API_KEY",
+		},
+		{
+			name:      "Gemini Code Assist (gemini-cli OAuth)",
+			value:     "codeassist",
+			available: isGeminiOAuthAvailable(),
+			hint:      "Run 'gemini' to login",
+		},
+		{
+			name:      "OpenRouter",
+			value:     "openrouter",
+			available: os.Getenv("OPENROUTER_API_KEY") != "",
+			hint:      "Set OPENROUTER_API_KEY",
+		},
+		{
+			name:      "Zen (free, no key required)",
+			value:     "zen",
+			available: true, // Always available
+			hint:      "",
+		},
+	}
+
+	return options
+}
+
+// isClaudeBinaryAvailable checks if the claude CLI is in PATH
+func isClaudeBinaryAvailable() bool {
+	_, err := exec.LookPath("claude")
+	return err == nil
+}
+
+// isCodexOAuthAvailable checks if Codex OAuth credentials exist
+func isCodexOAuthAvailable() bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	authPath := filepath.Join(home, ".codex", "auth.json")
+	_, err = os.Stat(authPath)
+	return err == nil
+}
+
+// isGeminiOAuthAvailable checks if gemini-cli OAuth credentials exist
+func isGeminiOAuthAvailable() bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	credPath := filepath.Join(home, ".gemini", "oauth_creds.json")
+	_, err = os.Stat(credPath)
+	return err == nil
+}
+
 // RunSetupWizard runs the first-time setup wizard and returns the config
 func RunSetupWizard() (*config.Config, error) {
 	// Use /dev/tty for output to bypass redirections
@@ -457,17 +551,37 @@ func RunSetupWizard() (*config.Config, error) {
 		fmt.Fprint(os.Stderr, "Welcome to term-llm! Let's get you set up.\n\n")
 	}
 
+	// Detect available providers
+	providers := detectAvailableProviders()
+
+	// Build options list - available providers first, then unavailable
+	var huhOptions []huh.Option[string]
+	var availableOptions []huh.Option[string]
+	var unavailableOptions []huh.Option[string]
+
+	for _, p := range providers {
+		label := p.name
+		if p.available {
+			label = p.name + " ✓"
+			availableOptions = append(availableOptions, huh.NewOption(label, p.value))
+		} else {
+			label = p.name + " (" + p.hint + ")"
+			unavailableOptions = append(unavailableOptions, huh.NewOption(label, p.value))
+		}
+	}
+
+	// Available first, then unavailable
+	huhOptions = append(huhOptions, availableOptions...)
+	huhOptions = append(huhOptions, unavailableOptions...)
+
 	var provider string
 
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[string]().
 				Title("Which LLM provider do you want to use?").
-				Options(
-					huh.NewOption("Anthropic (Claude)", "anthropic"),
-					huh.NewOption("OpenAI", "openai"),
-					huh.NewOption("OpenRouter", "openrouter"),
-				).
+				Description("Providers marked ✓ are ready to use").
+				Options(huhOptions...).
 				Value(&provider),
 		),
 	)
@@ -482,23 +596,17 @@ func RunSetupWizard() (*config.Config, error) {
 		return nil, err
 	}
 
-	// Check for env var
-	var envVar string
-	var apiKey string
-	switch provider {
-	case "anthropic":
-		envVar = "ANTHROPIC_API_KEY"
-		apiKey = os.Getenv(envVar)
-	case "openai":
-		envVar = "OPENAI_API_KEY"
-		apiKey = os.Getenv(envVar)
-	case "openrouter":
-		envVar = "OPENROUTER_API_KEY"
-		apiKey = os.Getenv(envVar)
+	// Check if provider is available
+	var selectedProvider *providerOption
+	for i := range providers {
+		if providers[i].value == provider {
+			selectedProvider = &providers[i]
+			break
+		}
 	}
 
-	if apiKey == "" {
-		return nil, fmt.Errorf("%s environment variable is not set\n\nPlease set it:\n  export %s=your-api-key", envVar, envVar)
+	if selectedProvider != nil && !selectedProvider.available {
+		return nil, fmt.Errorf("provider %s is not configured\n\n%s", selectedProvider.name, selectedProvider.hint)
 	}
 
 	cfg := &config.Config{
@@ -510,6 +618,12 @@ func RunSetupWizard() (*config.Config, error) {
 			"openai": {
 				Model: "gpt-5.2",
 			},
+			"codex": {
+				Model: "gpt-5.2",
+			},
+			"claude-bin": {
+				Model: "sonnet",
+			},
 			"openrouter": {
 				Model:    "x-ai/grok-code-fast-1",
 				AppURL:   "https://github.com/samsaffron/term-llm",
@@ -517,6 +631,9 @@ func RunSetupWizard() (*config.Config, error) {
 			},
 			"gemini": {
 				Model: "gemini-3-flash-preview",
+			},
+			"codeassist": {
+				Model: "gemini-2.5-pro",
 			},
 			"zen": {
 				Model: "glm-4.7-free",

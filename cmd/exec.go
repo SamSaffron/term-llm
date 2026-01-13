@@ -13,6 +13,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/prompt"
 	"github.com/samsaffron/term-llm/internal/signal"
+	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -29,6 +30,11 @@ var (
 	execMaxTurns        int
 	execNativeSearch    bool
 	execNoNativeSearch  bool
+	// Tool flags
+	execTools      string
+	execReadDirs   []string
+	execWriteDirs  []string
+	execShellAllow []string
 )
 
 const (
@@ -72,11 +78,19 @@ func init() {
 	execCmd.Flags().IntVar(&execMaxTurns, "max-turns", 20, "Max agentic turns for tool execution")
 	execCmd.Flags().BoolVar(&execNativeSearch, "native-search", false, "Use provider's native search (override config)")
 	execCmd.Flags().BoolVar(&execNoNativeSearch, "no-native-search", false, "Use external search tools instead of provider's native search")
+	// Tool flags
+	execCmd.Flags().StringVar(&execTools, "tools", "", "Enable local tools (comma-separated: read,write,edit,shell,grep,find,view,image)")
+	execCmd.Flags().StringArrayVar(&execReadDirs, "read-dir", nil, "Directories for read/grep/find/view tools (repeatable)")
+	execCmd.Flags().StringArrayVar(&execWriteDirs, "write-dir", nil, "Directories for write/edit tools (repeatable)")
+	execCmd.Flags().StringArrayVar(&execShellAllow, "shell-allow", nil, "Shell command patterns to allow (repeatable, glob syntax)")
 	if err := execCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion); err != nil {
 		panic(fmt.Sprintf("failed to register provider completion: %v", err))
 	}
 	if err := execCmd.RegisterFlagCompletionFunc("mcp", MCPFlagCompletion); err != nil {
 		panic(fmt.Sprintf("failed to register mcp completion: %v", err))
+	}
+	if err := execCmd.RegisterFlagCompletionFunc("tools", ToolsFlagCompletion); err != nil {
+		panic(fmt.Sprintf("failed to register tools completion: %v", err))
 	}
 	rootCmd.AddCommand(execCmd)
 }
@@ -103,6 +117,20 @@ func runExec(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
+
+	// Initialize local tools if --tools flag is set
+	if execTools != "" {
+		toolConfig := buildToolConfig(execTools, execReadDirs, execWriteDirs, execShellAllow, cfg)
+		if errs := toolConfig.Validate(); len(errs) > 0 {
+			return fmt.Errorf("invalid tool config: %v", errs[0])
+		}
+		toolMgr, err := tools.NewToolManager(&toolConfig, cfg)
+		if err != nil {
+			return fmt.Errorf("failed to initialize tools: %w", err)
+		}
+		toolMgr.ApprovalMgr.PromptFunc = tools.HuhApprovalPrompt
+		toolMgr.SetupEngine(engine)
+	}
 
 	// Initialize MCP servers if --mcp flag is set
 	var mcpManager *mcp.Manager
@@ -284,16 +312,8 @@ func collectSuggestions(ctx context.Context, engine *llm.Engine, req llm.Request
 			if event.ToolName == "" {
 				// Empty tool name means back to thinking
 				phase = "Thinking"
-			} else if event.ToolName == llm.WebSearchToolName || event.ToolName == "WebSearch" {
-				if event.ToolInfo != "" {
-					phase = fmt.Sprintf("Searching: %s", event.ToolInfo)
-				} else {
-					phase = "Searching"
-				}
-			} else if event.ToolName == llm.ReadURLToolName {
-				phase = "Reading"
 			} else {
-				phase = "Running " + event.ToolName
+				phase = ui.FormatToolPhase(event.ToolName, event.ToolInfo).Active
 			}
 			select {
 			case progressCh <- ui.ProgressUpdate{Phase: phase}:
