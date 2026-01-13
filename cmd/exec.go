@@ -218,22 +218,19 @@ func runExec(cmd *cobra.Command, args []string) error {
 		// Create progress channel for spinner updates
 		progressCh := make(chan ui.ProgressUpdate, 10)
 
-		// Use approval hooks when tools are enabled to pause spinner during prompts
-		var result any
+		// Set up approval hooks when tools are enabled to pause spinner during prompts
+		var approvalHooks ui.ApprovalHookSetup
 		if len(localToolSpecs) > 0 {
-			result, err = ui.RunWithSpinnerProgressAndHooks(ctx, debugMode || debugRaw, progressCh, func(ctx context.Context) (any, error) {
-				defer close(progressCh)
-				return collectSuggestions(ctx, engine, req, progressCh, stats)
-			}, func(pause, resume func()) {
+			approvalHooks = func(pause, resume func()) {
 				tools.SetApprovalHooks(pause, resume)
-			})
-			tools.ClearApprovalHooks()
-		} else {
-			result, err = ui.RunWithSpinnerProgress(ctx, debugMode || debugRaw, progressCh, func(ctx context.Context) (any, error) {
-				defer close(progressCh)
-				return collectSuggestions(ctx, engine, req, progressCh, stats)
-			})
+			}
 		}
+
+		result, err := ui.RunWithSpinnerProgressAndHooks(ctx, debugMode || debugRaw, progressCh, func(ctx context.Context) (any, error) {
+			defer close(progressCh)
+			return collectSuggestions(ctx, engine, req, progressCh, stats)
+		}, approvalHooks)
+		tools.ClearApprovalHooks() // Safe to call even if hooks weren't set
 		if err != nil {
 			if err.Error() == "cancelled" {
 				return nil

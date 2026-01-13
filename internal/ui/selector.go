@@ -215,8 +215,14 @@ func runWithSpinnerInternalWithHooks(ctx context.Context, debug bool, progress <
 	// Set up approval hooks if provided
 	if setupHooks != nil {
 		setupHooks(
-			func() { p.Send(spinnerPauseMsg{}) },
-			func() { p.Send(spinnerResumeMsg{}) },
+			func() {
+				p.Send(spinnerPauseMsg{})
+				p.ReleaseTerminal() // Let huh form take over terminal
+			},
+			func() {
+				p.RestoreTerminal() // Take back terminal control
+				p.Send(spinnerResumeMsg{})
+			},
 		)
 	}
 
