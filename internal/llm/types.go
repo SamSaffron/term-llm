@@ -123,6 +123,7 @@ const (
 	EventTextDelta     EventType = "text_delta"
 	EventToolCall      EventType = "tool_call"
 	EventToolExecStart EventType = "tool_exec_start" // Emitted when tool execution begins
+	EventToolExecEnd   EventType = "tool_exec_end"   // Emitted when tool execution completes
 	EventUsage         EventType = "usage"
 	EventDone          EventType = "done"
 	EventError         EventType = "error"
@@ -131,13 +132,14 @@ const (
 
 // Event represents a streamed output update.
 type Event struct {
-	Type     EventType
-	Text     string
-	Tool     *ToolCall
-	ToolName string // For EventToolExecStart: name of tool being executed
-	ToolInfo string // For EventToolExecStart: additional info (e.g., URL being fetched)
-	Use      *Usage
-	Err      error
+	Type        EventType
+	Text        string
+	Tool        *ToolCall
+	ToolName    string // For EventToolExecStart/End: name of tool being executed
+	ToolInfo    string // For EventToolExecStart/End: additional info (e.g., URL being fetched)
+	ToolSuccess bool   // For EventToolExecEnd: whether tool execution succeeded
+	Use         *Usage
+	Err         error
 	// Retry fields (for EventRetry)
 	RetryAttempt     int
 	RetryMaxAttempts int

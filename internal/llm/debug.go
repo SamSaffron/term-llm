@@ -167,6 +167,16 @@ func DebugRawEvent(enabled bool, event Event) {
 			info = event.ToolName + ": " + event.ToolInfo
 		}
 		DebugRawSection(enabled, "Event Tool Exec Start", info)
+	case EventToolExecEnd:
+		status := "success"
+		if !event.ToolSuccess {
+			status = "error"
+		}
+		info := fmt.Sprintf("%s (%s)", event.ToolName, status)
+		if event.ToolInfo != "" {
+			info = fmt.Sprintf("%s: %s (%s)", event.ToolName, event.ToolInfo, status)
+		}
+		DebugRawSection(enabled, "Event Tool Exec End", info)
 	case EventDone:
 		DebugRawSection(enabled, "Event Done", "")
 	case EventError:

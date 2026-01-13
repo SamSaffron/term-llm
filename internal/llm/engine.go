@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 )
 
@@ -136,7 +137,7 @@ func (e *Engine) applyExternalSearch(ctx context.Context, req Request, events ch
 		}
 	}
 
-	toolResults, err := e.executeToolCalls(ctx, toolCalls, req.Debug, req.DebugRaw)
+	toolResults, err := e.executeToolCalls(ctx, toolCalls, events, req.Debug, req.DebugRaw)
 	if err != nil {
 		return Request{}, err
 	}
@@ -216,9 +217,7 @@ func (e *Engine) streamWithExternalTools(ctx context.Context, req Request, addSe
 				return err
 			}
 			req = updated
-
-			// Back to thinking - LLM will process search results
-			events <- Event{Type: EventToolExecStart, ToolName: ""}
+			// EventToolExecEnd events already emitted by executeToolCalls
 		}
 
 		// Add external tools for follow-up requests
@@ -333,16 +332,13 @@ func (e *Engine) streamWithExternalTools(ctx context.Context, req Request, addSe
 				events <- Event{Type: EventToolExecStart, ToolName: call.Name, ToolInfo: info}
 			}
 
-			toolResults, err := e.executeToolCalls(ctx, ourCalls, req.Debug, req.DebugRaw)
+			toolResults, err := e.executeToolCalls(ctx, ourCalls, events, req.Debug, req.DebugRaw)
 			if err != nil {
 				return err
 			}
 
 			req.Messages = append(req.Messages, toolCallMessage(ourCalls))
 			req.Messages = append(req.Messages, toolResults...)
-
-			// Back to thinking - LLM will process results
-			events <- Event{Type: EventToolExecStart, ToolName: ""}
 
 			if req.DebugRaw {
 				DebugRawRequest(req.DebugRaw, e.provider.Name(), e.provider.Credential(), req, fmt.Sprintf("Request (external tools loop %d)", attempt+1))
@@ -353,7 +349,7 @@ func (e *Engine) streamWithExternalTools(ctx context.Context, req Request, addSe
 	}), nil
 }
 
-func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, debug bool, debugRaw bool) ([]Message, error) {
+func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, events chan<- Event, debug bool, debugRaw bool) ([]Message, error) {
 	results := make([]Message, 0, len(calls))
 	for _, call := range calls {
 		tool, ok := e.tools.Get(call.Name)
@@ -362,19 +358,32 @@ func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, debug b
 			errMsg := fmt.Sprintf("Error: tool not registered: %s", call.Name)
 			DebugToolResult(debug, call.ID, call.Name, errMsg)
 			results = append(results, ToolErrorMessage(call.ID, call.Name, errMsg))
+			// Emit tool end event with error
+			if events != nil {
+				events <- Event{Type: EventToolExecEnd, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false}
+			}
 			continue
 		}
 		output, err := tool.Execute(ctx, call.Arguments)
+		info := e.getToolPreview(call)
 		if err != nil {
 			// Return error result to LLM instead of failing the stream
 			errMsg := fmt.Sprintf("Error: %v", err)
 			DebugToolResult(debug, call.ID, call.Name, errMsg)
 			results = append(results, ToolErrorMessage(call.ID, call.Name, errMsg))
+			// Emit tool end event with error
+			if events != nil {
+				events <- Event{Type: EventToolExecEnd, ToolName: call.Name, ToolInfo: info, ToolSuccess: false}
+			}
 			continue
 		}
 		DebugToolResult(debug, call.ID, call.Name, output)
 		DebugRawToolResult(debugRaw, call.ID, call.Name, output)
 		results = append(results, ToolResultMessage(call.ID, call.Name, output))
+		// Emit tool end event with success
+		if events != nil {
+			events <- Event{Type: EventToolExecEnd, ToolName: call.Name, ToolInfo: info, ToolSuccess: true}
+		}
 	}
 	return results, nil
 }
@@ -434,7 +443,85 @@ func (e *Engine) getToolPreview(call ToolCall) string {
 	return extractToolInfo(call)
 }
 
-// extractToolInfo extracts display info from a tool call (e.g., URL for read_url, query for web_search)
+// formatToolArgs formats tool arguments for display.
+// Single param: (value), Multiple params: (key:val, key2:val2)
+// Truncates long values and limits to maxParams shown.
+func formatToolArgs(args map[string]any, maxLen, maxParams int) string {
+	if len(args) == 0 {
+		return ""
+	}
+
+	// Collect displayable args (skip complex types and empty values)
+	type argPair struct {
+		key string
+		val string
+	}
+	var pairs []argPair
+
+	for k, v := range args {
+		var valStr string
+		switch val := v.(type) {
+		case string:
+			if val == "" {
+				continue
+			}
+			valStr = val
+		case float64:
+			if val == float64(int(val)) {
+				valStr = fmt.Sprintf("%d", int(val))
+			} else {
+				valStr = fmt.Sprintf("%g", val)
+			}
+		case bool:
+			valStr = fmt.Sprintf("%v", val)
+		default:
+			// Skip complex types (maps, slices, nil)
+			continue
+		}
+
+		// Truncate long string values
+		if len(valStr) > 200 {
+			valStr = valStr[:197] + "..."
+		}
+		pairs = append(pairs, argPair{key: k, val: valStr})
+	}
+
+	if len(pairs) == 0 {
+		return ""
+	}
+
+	// Sort for consistent output
+	sort.Slice(pairs, func(i, j int) bool {
+		return pairs[i].key < pairs[j].key
+	})
+
+	// Build output
+	var result string
+	if len(pairs) == 1 {
+		// Single param: just show value
+		result = "(" + pairs[0].val + ")"
+	} else {
+		// Multiple params: show key:value pairs
+		var parts []string
+		for i, p := range pairs {
+			if i >= maxParams {
+				parts = append(parts, "...")
+				break
+			}
+			parts = append(parts, p.key+":"+p.val)
+		}
+		result = "(" + strings.Join(parts, ", ") + ")"
+	}
+
+	// Truncate if too long
+	if len(result) > maxLen {
+		result = result[:maxLen-4] + "...)"
+	}
+
+	return result
+}
+
+// extractToolInfo extracts display info from a tool call for unified display.
 func extractToolInfo(call ToolCall) string {
 	if len(call.Arguments) == 0 {
 		return ""
@@ -445,72 +532,7 @@ func extractToolInfo(call ToolCall) string {
 		return ""
 	}
 
-	switch call.Name {
-	case ReadURLToolName, "web_fetch":
-		if url, ok := args["url"].(string); ok {
-			return url
-		}
-	case "web_search":
-		if query, ok := args["query"].(string); ok {
-			return query
-		}
-	case "read_file":
-		path, _ := args["file_path"].(string)
-		if path == "" {
-			return ""
-		}
-		// Include line range if specified
-		startLine, hasStart := args["start_line"].(float64)
-		endLine, hasEnd := args["end_line"].(float64)
-		if hasStart && hasEnd {
-			return fmt.Sprintf("%s:%d-%d", path, int(startLine), int(endLine))
-		} else if hasStart {
-			return fmt.Sprintf("%s:%d-", path, int(startLine))
-		} else if hasEnd {
-			return fmt.Sprintf("%s:1-%d", path, int(endLine))
-		}
-		return path
-	case "write_file", "edit_file":
-		if path, ok := args["file_path"].(string); ok {
-			return path
-		}
-	case "execute", "shell":
-		if cmd, ok := args["command"].(string); ok {
-			// Truncate long commands
-			if len(cmd) > 50 {
-				return cmd[:47] + "..."
-			}
-			return cmd
-		}
-	case "glob":
-		pattern, _ := args["pattern"].(string)
-		path, _ := args["path"].(string)
-		if pattern != "" && path != "" {
-			return fmt.Sprintf("%s in %s", pattern, path)
-		}
-		return pattern
-	case "grep":
-		pattern, _ := args["pattern"].(string)
-		path, _ := args["path"].(string)
-		include, _ := args["include"].(string)
-		if pattern == "" {
-			return ""
-		}
-		// Truncate long patterns
-		if len(pattern) > 30 {
-			pattern = pattern[:27] + "..."
-		}
-		result := fmt.Sprintf("/%s/", pattern)
-		if path != "" {
-			result += " in " + path
-		}
-		if include != "" {
-			result += " (" + include + ")"
-		}
-		return result
-	}
-
-	return ""
+	return formatToolArgs(args, 500, 5)
 }
 
 // streamWithToolExecution handles arbitrary tool calls (e.g., MCP tools).
@@ -611,7 +633,7 @@ func (e *Engine) streamWithToolExecution(ctx context.Context, req Request) (Stre
 			}
 
 			// Execute registered tool calls
-			toolResults, err := e.executeToolCalls(ctx, registeredCalls, req.Debug, req.DebugRaw)
+			toolResults, err := e.executeToolCalls(ctx, registeredCalls, events, req.Debug, req.DebugRaw)
 			if err != nil {
 				return fmt.Errorf("tool execution: %w", err)
 			}
@@ -619,9 +641,6 @@ func (e *Engine) streamWithToolExecution(ctx context.Context, req Request) (Stre
 			// Append tool call message and results to conversation (only registered calls)
 			req.Messages = append(req.Messages, toolCallMessage(registeredCalls))
 			req.Messages = append(req.Messages, toolResults...)
-
-			// Back to thinking - LLM will process results
-			events <- Event{Type: EventToolExecStart, ToolName: ""}
 
 			if req.DebugRaw {
 				DebugRawRequest(req.DebugRaw, e.provider.Name(), e.provider.Credential(), req, fmt.Sprintf("Request (tool loop %d)", attempt+1))

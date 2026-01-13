@@ -103,8 +103,11 @@ type streamEvent struct {
 	err          error
 	retryStatus  string
 	webSearch    bool
-	toolStart    bool // Tool execution started
-	toolEnd      bool // Tool execution ended (back to thinking)
+	toolStart    bool   // Tool execution started
+	toolEnd      bool   // Tool execution completed
+	toolName     string // For tool start/end events
+	toolInfo     string // For tool start/end events
+	toolSuccess  bool   // For tool end: whether it succeeded
 }
 
 // Messages for tea.Program
@@ -242,6 +245,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.toolEnd {
 			m.stats.ToolEnd()
+			// Print tool completion status inline
+			phase := ui.FormatToolPhase(msg.toolName, msg.toolInfo)
+			if msg.toolSuccess {
+				cmds = append(cmds, tea.Println(ui.SuccessCircle()+" "+phase.Completed))
+			} else {
+				cmds = append(cmds, tea.Println(ui.ErrorCircle()+" "+phase.Completed))
+			}
+			// Back to thinking phase
+			m.phase = "Thinking"
 		}
 		if msg.inputTokens > 0 || msg.outputTokens > 0 {
 			m.stats.AddUsage(msg.inputTokens, msg.outputTokens, msg.cachedTokens)
@@ -253,7 +265,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.retryStatus = ""
 		}
 
-		if msg.phase != "" {
+		if msg.phase != "" && !msg.toolEnd {
 			m.phase = msg.phase
 			m.retryStatus = ""
 		}
@@ -914,13 +926,21 @@ func (m *Model) startStream(content string) tea.Cmd {
 						m.streamChan <- streamEvent{chunk: event.Text}
 					}
 				case llm.EventToolExecStart:
-					if event.ToolName == "" {
-						// Empty tool name = back to thinking
-						m.streamChan <- streamEvent{toolEnd: true}
-					} else {
-						phase := ui.FormatToolPhase(event.ToolName, event.ToolInfo).Active
-						isSearch := event.ToolName == llm.WebSearchToolName || event.ToolName == "WebSearch"
-						m.streamChan <- streamEvent{phase: phase, webSearch: isSearch, toolStart: true}
+					phase := ui.FormatToolPhase(event.ToolName, event.ToolInfo).Active
+					isSearch := event.ToolName == llm.WebSearchToolName || event.ToolName == "WebSearch"
+					m.streamChan <- streamEvent{
+						phase:     phase,
+						webSearch: isSearch,
+						toolStart: true,
+						toolName:  event.ToolName,
+						toolInfo:  event.ToolInfo,
+					}
+				case llm.EventToolExecEnd:
+					m.streamChan <- streamEvent{
+						toolEnd:     true,
+						toolName:    event.ToolName,
+						toolInfo:    event.ToolInfo,
+						toolSuccess: event.ToolSuccess,
 					}
 				case llm.EventRetry:
 					status := fmt.Sprintf("Rate limited (%d/%d), waiting %.0fs...",

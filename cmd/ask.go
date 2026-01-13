@@ -251,13 +251,21 @@ func runAsk(cmd *cobra.Command, args []string) error {
 				return
 			}
 			if event.Type == llm.EventToolExecStart {
-				if event.ToolName != "" {
-					stats.ToolStart()
-				} else {
-					stats.ToolEnd()
-				}
+				stats.ToolStart()
 				select {
 				case toolEvents <- toolEvent{Name: event.ToolName, Info: event.ToolInfo}:
+				default:
+				}
+			}
+			if event.Type == llm.EventToolExecEnd {
+				stats.ToolEnd()
+				select {
+				case toolEvents <- toolEvent{
+					Name:        event.ToolName,
+					Info:        event.ToolInfo,
+					IsToolEnd:   true,
+					ToolSuccess: event.ToolSuccess,
+				}:
 				default:
 				}
 			}
@@ -318,6 +326,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 type toolEvent struct {
 	Name string // Tool name (e.g., "web_search", "read_url")
 	Info string // Additional info (e.g., URL being fetched)
+	// Tool end fields (when IsToolEnd is true)
+	IsToolEnd   bool
+	ToolSuccess bool
 	// Retry fields (when IsRetry is true)
 	IsRetry          bool
 	RetryAttempt     int
@@ -331,9 +342,41 @@ type toolEvent struct {
 
 // streamPlainText streams text directly without formatting
 func streamPlainText(ctx context.Context, output <-chan string, toolEvents <-chan toolEvent) error {
-	var pendingTools []string
+	// Track pending tools with their status
+	type toolEntry struct {
+		name    string
+		info    string
+		success bool
+		done    bool
+	}
+	var tools []toolEntry
 	printedAny := false
 	lastEndedWithNewline := true
+
+	printTools := func() {
+		if len(tools) == 0 {
+			return
+		}
+		if printedAny && !lastEndedWithNewline {
+			fmt.Print("\n")
+		}
+		if printedAny {
+			fmt.Print("\n")
+		}
+		for _, t := range tools {
+			phase := ui.FormatToolPhase(t.name, t.info)
+			if t.success {
+				fmt.Printf("%s %s\n", ui.SuccessCircle(), phase.Completed)
+			} else {
+				fmt.Printf("%s %s\n", ui.ErrorCircle(), phase.Completed)
+			}
+		}
+		fmt.Print("\n")
+		tools = nil
+		printedAny = true
+		lastEndedWithNewline = true
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -352,41 +395,34 @@ func streamPlainText(ctx context.Context, output <-chan string, toolEvents <-cha
 			if ev.IsUsage {
 				continue
 			}
-			if ev.Name == "" {
-				if len(pendingTools) > 0 {
-					if printedAny && !lastEndedWithNewline {
-						fmt.Print("\n")
+			if ev.IsToolEnd {
+				// Find and update the tool entry
+				for i := range tools {
+					if tools[i].name == ev.Name && !tools[i].done {
+						tools[i].success = ev.ToolSuccess
+						tools[i].done = true
+						break
 					}
-					if printedAny {
-						fmt.Print("\n")
+				}
+				// Check if all tools are done
+				allDone := true
+				for _, t := range tools {
+					if !t.done {
+						allDone = false
+						break
 					}
-					for _, tool := range pendingTools {
-						fmt.Printf("• %s ✓\n", tool)
-					}
-					fmt.Print("\n")
-					pendingTools = nil
-					printedAny = true
-					lastEndedWithNewline = true
+				}
+				if allDone && len(tools) > 0 {
+					printTools()
 				}
 				continue
 			}
-			_, toolDesc := toolDisplay(ev.Name, ev.Info)
-			if toolDesc != "" {
-				pendingTools = append(pendingTools, toolDesc)
-			}
+			// Tool start - add to pending
+			tools = append(tools, toolEntry{name: ev.Name, info: ev.Info})
 		case chunk, ok := <-output:
 			if !ok {
-				if len(pendingTools) > 0 {
-					if printedAny && !lastEndedWithNewline {
-						fmt.Print("\n")
-					}
-					if printedAny {
-						fmt.Print("\n")
-					}
-					for _, tool := range pendingTools {
-						fmt.Printf("• %s ✓\n", tool)
-					}
-					fmt.Print("\n")
+				if len(tools) > 0 {
+					printTools()
 				}
 				fmt.Println()
 				return nil
@@ -409,47 +445,32 @@ func getTerminalWidth() int {
 	return width
 }
 
-func toolDisplay(name, info string) (string, string) {
-	phase := ui.FormatToolPhase(name, info)
-	return phase.Active, phase.Completed
-}
-
-func appendToolLog(content *strings.Builder, tools []string) {
-	if len(tools) == 0 {
-		return
-	}
-	if content.Len() > 0 {
-		content.WriteString("\n\n")
-	}
-	for _, tool := range tools {
-		content.WriteString("- ")
-		content.WriteString(tool)
-		content.WriteString(" ✓\n")
-	}
-	content.WriteString("\n")
-}
-
 // askStreamModel is a bubbletea model for streaming ask responses
 type askStreamModel struct {
-	spinner      spinner.Model
-	styles       *ui.Styles
-	content      *strings.Builder
-	rendered     string
-	finalOutput  string // stored for printing after tea exits
-	width        int
-	loading      bool
-	phase        string    // Current phase: "Thinking", "Responding"
-	toolPhase    string    // Phase during tool execution (after content started), empty when not in tool
-	pendingTools []string  // Tools started in the current batch
-	retryStatus  string    // Retry status (e.g., "Rate limited (2/5), waiting 5s...")
-	startTime    time.Time // For elapsed time display
-	totalTokens  int       // Total tokens (input + output) used
+	spinner spinner.Model
+	styles  *ui.Styles
+	width   int
+
+	// Segment-based content model
+	segments []ui.Segment // All segments in the stream (text + tools)
+
+	// State flags
+	thinking bool // True only when waiting for LLM response (not during tools or streaming)
+
+	// Wave animation for pending tools
+	wavePos    int
+	wavePaused bool
+
+	// Status display
+	retryStatus string    // Retry status (e.g., "Rate limited (2/5), waiting 5s...")
+	startTime   time.Time // For elapsed time display
+	totalTokens int       // Total tokens (input + output) used
 
 	// Approval prompt state (using huh form)
 	approvalForm       *huh.Form
 	approvalDesc       string
-	approvalToolInfo   string       // Info for the tool that triggered approval (to avoid duplicates)
-	approvalResponseCh chan<- bool  // channel to send y/n response back to tool
+	approvalToolInfo   string      // Info for the tool that triggered approval (to avoid duplicates)
+	approvalResponseCh chan<- bool // channel to send y/n response back to tool
 }
 
 type askContentMsg string
@@ -464,6 +485,11 @@ type askToolStartMsg struct {
 	Name string // Tool name being executed
 	Info string // Additional info (e.g., URL)
 }
+type askToolEndMsg struct {
+	Name    string // Tool name that completed
+	Info    string // Additional info
+	Success bool   // Whether the tool succeeded
+}
 type askRetryMsg struct {
 	Attempt     int
 	MaxAttempts int
@@ -475,6 +501,8 @@ type askApprovalRequestMsg struct {
 	ToolInfo    string
 	ResponseCh  chan<- bool
 }
+type askWaveTickMsg struct{}
+type askWavePauseMsg struct{}
 
 func newAskStreamModel() askStreamModel {
 	width := getTerminalWidth()
@@ -487,10 +515,8 @@ func newAskStreamModel() askStreamModel {
 	return askStreamModel{
 		spinner:   s,
 		styles:    styles,
-		content:   &strings.Builder{},
 		width:     width,
-		loading:   true,
-		phase:     "Thinking",
+		thinking:  true,
 		startTime: time.Now(),
 	}
 }
@@ -508,20 +534,16 @@ func (m askStreamModel) tickEvery() tea.Cmd {
 
 func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Handle tool start messages even while approval form is active
-	// This ensures parallel tool executions are tracked in pendingTools
 	if toolMsg, ok := msg.(askToolStartMsg); ok && m.approvalForm != nil {
-		// Don't process the "tools complete" signal (Name == "") during approval
-		// Just accumulate named tools for later logging
-		if toolMsg.Name != "" {
-			// Skip the tool that triggered approval (already tracked in toolPhase)
-			if toolMsg.Info != m.approvalToolInfo {
-				_, toolDesc := toolDisplay(toolMsg.Name, toolMsg.Info)
-				if toolDesc != "" {
-					m.pendingTools = append(m.pendingTools, toolDesc)
-				}
-			}
+		// Add tool segment as pending during approval
+		if toolMsg.Info != m.approvalToolInfo {
+			m.segments = append(m.segments, ui.Segment{
+				Type:       ui.SegmentTool,
+				ToolName:   toolMsg.Name,
+				ToolInfo:   toolMsg.Info,
+				ToolStatus: ui.ToolPending,
+			})
 		}
-		// Don't return - let the message also go to the form (for spinner updates, etc.)
 	}
 
 	// If approval form is active, delegate to it
@@ -534,30 +556,19 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Check if form completed
 		if m.approvalForm.State == huh.StateCompleted {
 			approved := m.approvalForm.GetBool("confirm")
-			// Log all pending tools (including the one that triggered approval)
-			if m.content.Len() > 0 {
-				m.content.WriteString("\n\n")
-			}
-			if approved {
-				// Log the tool that triggered approval first (use toolPhase which has Completed form)
-				if m.toolPhase != "" {
-					m.content.WriteString("- ")
-					m.content.WriteString(m.toolPhase)
-					m.content.WriteString(" ✓\n")
+			// Update the tool segment that triggered approval
+			for i := len(m.segments) - 1; i >= 0; i-- {
+				if m.segments[i].Type == ui.SegmentTool &&
+					m.segments[i].ToolStatus == ui.ToolPending &&
+					m.segments[i].ToolInfo == m.approvalToolInfo {
+					if approved {
+						m.segments[i].ToolStatus = ui.ToolSuccess
+					} else {
+						m.segments[i].ToolStatus = ui.ToolError
+					}
+					break
 				}
-				// Log any additional parallel tools that started during approval
-				for _, tool := range m.pendingTools {
-					m.content.WriteString("- ")
-					m.content.WriteString(tool)
-					m.content.WriteString(" ✓\n")
-				}
-			} else {
-				m.content.WriteString("- ✗ ")
-				m.content.WriteString(m.approvalDesc)
-				m.content.WriteString("\n")
 			}
-			m.pendingTools = nil // Clear pending tools after logging
-			m.rendered = m.render()
 
 			// Send response
 			if m.approvalResponseCh != nil {
@@ -592,25 +603,44 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
-		if m.content.Len() > 0 {
-			m.rendered = m.render()
+		// Re-render text segments with new width
+		for i := range m.segments {
+			if m.segments[i].Type == ui.SegmentText && m.segments[i].Complete {
+				rendered, err := renderMarkdown(m.segments[i].Text, m.width)
+				if err == nil {
+					m.segments[i].Rendered = rendered
+				}
+			}
 		}
 
 	case askContentMsg:
-		// If we were in tool phase, add newlines to separate
-		if m.toolPhase != "" {
-			m.content.WriteString("\n\n")
-			m.toolPhase = ""
+		m.thinking = false
+		text := string(msg)
+
+		// Find or create current text segment
+		var currentSeg *ui.Segment
+		if len(m.segments) > 0 && m.segments[len(m.segments)-1].Type == ui.SegmentText && !m.segments[len(m.segments)-1].Complete {
+			currentSeg = &m.segments[len(m.segments)-1]
+		} else {
+			m.segments = append(m.segments, ui.Segment{Type: ui.SegmentText})
+			currentSeg = &m.segments[len(m.segments)-1]
 		}
-		m.loading = false
-		m.phase = "Responding"
-		m.content.WriteString(string(msg))
-		m.rendered = m.render()
+		currentSeg.Text += text
 
 	case askDoneMsg:
-		m.loading = false
-		m.finalOutput = m.rendered
-		m.rendered = ""
+		m.thinking = false
+		// Mark all text segments as complete and render
+		for i := range m.segments {
+			if m.segments[i].Type == ui.SegmentText && !m.segments[i].Complete {
+				m.segments[i].Complete = true
+				if m.segments[i].Text != "" {
+					rendered, err := renderMarkdown(m.segments[i].Text, m.width)
+					if err == nil {
+						m.segments[i].Rendered = rendered
+					}
+				}
+			}
+		}
 		return m, tea.Quit
 
 	case askCancelledMsg:
@@ -620,56 +650,110 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.totalTokens = msg.InputTokens + msg.OutputTokens
 
 	case askTickMsg:
-		// Continue ticking for elapsed time updates
-		if m.loading || m.toolPhase != "" {
+		// Continue ticking for elapsed time updates during thinking
+		if m.thinking {
 			return m, m.tickEvery()
 		}
 
 	case askRetryMsg:
-		// Rate limit retry - update status
 		m.retryStatus = fmt.Sprintf("Rate limited (%d/%d), waiting %.0fs...",
 			msg.Attempt, msg.MaxAttempts, msg.WaitSecs)
 		return m, m.tickEvery()
 
 	case askToolStartMsg:
-		// Clear retry status when tool starts
 		m.retryStatus = ""
-		if msg.Name == "" {
-			if len(m.pendingTools) > 0 {
-				appendToolLog(m.content, m.pendingTools)
-				m.pendingTools = nil
-				m.rendered = m.render()
+		m.thinking = false
+		// Check if we already have a pending segment for this tool+info (avoid duplicates)
+		alreadyPending := false
+		for i := len(m.segments) - 1; i >= 0; i-- {
+			seg := m.segments[i]
+			if seg.Type == ui.SegmentTool &&
+				seg.ToolStatus == ui.ToolPending &&
+				seg.ToolName == msg.Name &&
+				seg.ToolInfo == msg.Info {
+				alreadyPending = true
+				break
 			}
-			m.toolPhase = ""
-			m.phase = "Thinking"
-			m.loading = true // Show thinking spinner while waiting for LLM response
+		}
+		if !alreadyPending {
+			// Add new tool segment as pending
+			m.segments = append(m.segments, ui.Segment{
+				Type:       ui.SegmentTool,
+				ToolName:   msg.Name,
+				ToolInfo:   msg.Info,
+				ToolStatus: ui.ToolPending,
+			})
+		}
+		// Start wave animation
+		m.wavePos = 0
+		m.wavePaused = false
+		return m, tea.Tick(50*time.Millisecond, func(t time.Time) tea.Msg {
+			return askWaveTickMsg{}
+		})
+
+	case askToolEndMsg:
+		// Update the matching pending tool to success/error
+		// Match on both name AND info to handle parallel calls to same tool
+		for i := len(m.segments) - 1; i >= 0; i-- {
+			if m.segments[i].Type == ui.SegmentTool &&
+				m.segments[i].ToolStatus == ui.ToolPending &&
+				m.segments[i].ToolName == msg.Name &&
+				m.segments[i].ToolInfo == msg.Info {
+				if msg.Success {
+					m.segments[i].ToolStatus = ui.ToolSuccess
+				} else {
+					m.segments[i].ToolStatus = ui.ToolError
+				}
+				break
+			}
+		}
+		// If no more pending tools, go back to thinking
+		if !ui.HasPendingTool(m.segments) {
+			m.thinking = true
 			return m, m.spinner.Tick
 		}
 
-		newPhase, toolDesc := toolDisplay(msg.Name, msg.Info)
-		if toolDesc != "" {
-			m.pendingTools = append(m.pendingTools, toolDesc)
+	case askWaveTickMsg:
+		// Update wave animation for pending tools
+		if ui.HasPendingTool(m.segments) && !m.wavePaused {
+			toolTextLen := ui.GetPendingToolTextLen(m.segments)
+			m.wavePos++
+			if m.wavePos >= toolTextLen {
+				// Wave complete, start pause
+				m.wavePaused = true
+				m.wavePos = -1
+				return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+					return askWavePauseMsg{}
+				})
+			}
+			return m, tea.Tick(50*time.Millisecond, func(t time.Time) tea.Msg {
+				return askWaveTickMsg{}
+			})
 		}
 
-		// If content has already started streaming, use toolPhase to show spinner at end
-		if !m.loading {
-			m.toolPhase = newPhase
-		} else {
-			m.phase = newPhase
+	case askWavePauseMsg:
+		// Pause complete, restart wave
+		if ui.HasPendingTool(m.segments) {
+			m.wavePaused = false
+			m.wavePos = 0
+			return m, tea.Tick(50*time.Millisecond, func(t time.Time) tea.Msg {
+				return askWaveTickMsg{}
+			})
 		}
-		// Return a command to keep spinner animating
-		return m, m.spinner.Tick
 
 	case askApprovalRequestMsg:
 		m.approvalDesc = msg.Description
 		m.approvalResponseCh = msg.ResponseCh
-		m.approvalToolInfo = msg.ToolInfo // Store to deduplicate pending tools
-		// Store tool phase for after approval completes (use Completed form for consistency)
-		if msg.ToolName != "" {
-			phase := ui.FormatToolPhase(msg.ToolName, msg.ToolInfo)
-			m.toolPhase = phase.Completed
-		}
-		// Form title is just the approval question - no tool phase
+		m.approvalToolInfo = msg.ToolInfo
+
+		// Add tool segment as pending
+		m.segments = append(m.segments, ui.Segment{
+			Type:       ui.SegmentTool,
+			ToolName:   msg.ToolName,
+			ToolInfo:   msg.ToolInfo,
+			ToolStatus: ui.ToolPending,
+		})
+
 		m.approvalForm = huh.NewForm(
 			huh.NewGroup(
 				huh.NewConfirm().
@@ -683,7 +767,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.approvalForm.Init()
 
 	case spinner.TickMsg:
-		if m.loading || m.toolPhase != "" {
+		if m.thinking {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			return m, cmd
@@ -693,66 +777,58 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m askStreamModel) render() string {
-	content := m.content.String()
-	if content == "" {
-		return ""
+// renderSegments renders all segments with proper spacing
+func (m askStreamModel) renderSegments() string {
+	renderMd := func(text string, width int) string {
+		rendered, err := renderMarkdown(text, width)
+		if err != nil {
+			return text
+		}
+		return rendered
 	}
-
-	rendered, err := renderMarkdown(content, m.width)
-	if err != nil {
-		return content
-	}
-	return rendered
+	return ui.RenderSegments(m.segments, m.width, m.wavePos, renderMd)
 }
 
 func (m askStreamModel) View() string {
-	// If approval form is active, show rendered content + form (no spinner/time during approval)
-	if m.approvalForm != nil {
-		var view strings.Builder
-		if m.rendered != "" {
-			view.WriteString(m.rendered)
-			view.WriteString("\n\n")
-		}
-		view.WriteString(m.approvalForm.View())
-		return view.String()
+	var b strings.Builder
+
+	// Render all segments
+	content := m.renderSegments()
+	if content != "" {
+		b.WriteString(content)
 	}
 
-	if m.loading {
+	// If approval form is active, show it after content (no spinner during approval)
+	if m.approvalForm != nil {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(m.approvalForm.View())
+		return b.String()
+	}
+
+	// Show thinking spinner (only when waiting for LLM response)
+	if m.thinking {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
 		indicator := ui.StreamingIndicator{
 			Spinner:    m.spinner.View(),
-			Phase:      m.phase,
+			Phase:      "Thinking",
 			Elapsed:    time.Since(m.startTime),
 			Tokens:     m.totalTokens,
 			Status:     m.retryStatus,
 			ShowCancel: true,
 		}.Render(m.styles)
-		if m.rendered != "" {
-			return m.rendered + "\n" + indicator
-		}
-		return indicator
+		b.WriteString(indicator)
 	}
 
-	// If in tool phase, show spinner (even if no content yet)
-	if m.toolPhase != "" {
-		indicator := ui.StreamingIndicator{
-			Spinner:    m.spinner.View(),
-			Phase:      m.toolPhase,
-			Elapsed:    time.Since(m.startTime),
-			Tokens:     m.totalTokens,
-			ShowCancel: true,
-		}.Render(m.styles)
-		if m.rendered != "" {
-			return m.rendered + "\n" + indicator
-		}
-		return indicator
+	// Ensure trailing newline so final line isn't cut off
+	if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n") {
+		b.WriteString("\n")
 	}
 
-	if m.rendered == "" {
-		return ""
-	}
-
-	return m.rendered
+	return b.String()
 }
 
 // streamWithGlamour renders markdown beautifully as content streams in
@@ -765,12 +841,8 @@ func streamWithGlamour(ctx context.Context, output <-chan string, toolEvents <-c
 	}
 
 	programDone := make(chan error, 1)
-	var finalModel askStreamModel
 	go func() {
-		fm, err := p.Run()
-		if m, ok := fm.(askStreamModel); ok {
-			finalModel = m
-		}
+		_, err := p.Run()
 		programDone <- err
 	}()
 
@@ -801,8 +873,12 @@ func streamWithGlamour(ctx context.Context, output <-chan string, toolEvents <-c
 				})
 				continue
 			}
-			if ev.Name == "" {
-				p.Send(askToolStartMsg{Name: "", Info: ""})
+			if ev.IsToolEnd {
+				p.Send(askToolEndMsg{
+					Name:    ev.Name,
+					Info:    ev.Info,
+					Success: ev.ToolSuccess,
+				})
 				continue
 			}
 			p.Send(askToolStartMsg{Name: ev.Name, Info: ev.Info})
@@ -818,9 +894,7 @@ func streamWithGlamour(ctx context.Context, output <-chan string, toolEvents <-c
 	}
 
 	err := <-programDone
-	if finalModel.finalOutput != "" {
-		fmt.Println(finalModel.finalOutput)
-	}
+	// Note: Don't print finalOutput here - bubbletea's final View() already persists on screen
 	return err
 }
 
@@ -951,7 +1025,7 @@ func enableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *l
 
 	// Show result
 	if len(tools) > 0 {
-		fmt.Fprintf(errWriter, "\r✓ MCP ready: %d tools from %s\n", len(tools), strings.Join(serverNames, ", "))
+		fmt.Fprintf(errWriter, "\r✓ MCP ready: %d tools from %s\n\n", len(tools), strings.Join(serverNames, ", "))
 	} else {
 		fmt.Fprintf(errWriter, "\n")
 		return nil, fmt.Errorf("MCP servers started but no tools available from: %s", strings.Join(serverNames, ", "))

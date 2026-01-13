@@ -222,8 +222,8 @@ func (p *CodexProvider) Stream(ctx context.Context, req Request) (Stream, error)
 					case "response.output_item.done":
 						switch event.Item.Type {
 						case "web_search_call":
-							// Search done, back to thinking
-							events <- Event{Type: EventToolExecStart, ToolName: ""}
+							// Search done
+							events <- Event{Type: EventToolExecEnd, ToolName: "web_search", ToolSuccess: true}
 						case "function_call":
 							id := event.Item.ID
 							if id == "" {

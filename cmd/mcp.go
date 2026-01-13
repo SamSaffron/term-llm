@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -513,6 +514,52 @@ func mcpRemove(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// formatSchemaParams extracts parameter names from a JSON schema.
+// Returns format: (param1*, param2*, param3) where * indicates required.
+// Limits to maxParams, showing "..." if more exist.
+func formatSchemaParams(schema map[string]any, maxParams int) string {
+	props, ok := schema["properties"].(map[string]any)
+	if !ok || len(props) == 0 {
+		return ""
+	}
+
+	// Get required params as a set
+	requiredSet := make(map[string]bool)
+	if req, ok := schema["required"].([]any); ok {
+		for _, r := range req {
+			if s, ok := r.(string); ok {
+				requiredSet[s] = true
+			}
+		}
+	}
+
+	// Collect and sort param names
+	var names []string
+	for name := range props {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	// Build output with required markers
+	var parts []string
+	for i, name := range names {
+		if i >= maxParams {
+			parts = append(parts, "...")
+			break
+		}
+		if requiredSet[name] {
+			parts = append(parts, name+"*")
+		} else {
+			parts = append(parts, name)
+		}
+	}
+
+	if len(parts) == 0 {
+		return ""
+	}
+	return "(" + strings.Join(parts, ", ") + ")"
+}
+
 func mcpTest(cmd *cobra.Command, args []string) error {
 	name := args[0]
 
@@ -554,7 +601,8 @@ func mcpTest(cmd *cobra.Command, args []string) error {
 	tools := client.Tools()
 	fmt.Printf("\nAvailable tools (%d):\n", len(tools))
 	for _, t := range tools {
-		fmt.Printf("  - %s\n", t.Name)
+		params := formatSchemaParams(t.Schema, 5)
+		fmt.Printf("  - %s%s\n", t.Name, params)
 		if t.Description != "" {
 			desc := t.Description
 			if len(desc) > 60 {

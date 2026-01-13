@@ -232,8 +232,8 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 			fmt.Fprintln(os.Stderr, "================================================")
 		}
 
-		// Track if we're in a server tool use block (web_search, etc.)
-		inServerTool := false
+		// Track current server tool use block (web_search, etc.)
+		currentServerTool := ""
 		var lastUsage *Usage
 
 		stream := p.client.Beta.Messages.NewStreaming(ctx, params)
@@ -248,10 +248,10 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 					}
 				case anthropic.BetaTextDelta:
 					if delta.Text != "" {
-						// If we were in a server tool, signal back to thinking/responding
-						if inServerTool {
-							inServerTool = false
-							events <- Event{Type: EventToolExecStart, ToolName: ""}
+						// If we were in a server tool, emit tool end event
+						if currentServerTool != "" {
+							events <- Event{Type: EventToolExecEnd, ToolName: currentServerTool, ToolSuccess: true}
+							currentServerTool = ""
 						}
 						events <- Event{Type: EventTextDelta, Text: delta.Text}
 					}
@@ -262,7 +262,7 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 					// Server tool (web_search, etc.) is starting
 					serverTool := variant.ContentBlock.AsServerToolUse()
 					toolName := string(serverTool.Name)
-					inServerTool = true
+					currentServerTool = toolName
 					events <- Event{Type: EventToolExecStart, ToolName: toolName}
 				} else if toolCall, ok := anthropicBetaToolCall(variant.ContentBlock); ok {
 					accumulator.Start(variant.Index, toolCall)
