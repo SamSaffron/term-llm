@@ -434,9 +434,14 @@ func splitExternalToolCalls(calls []ToolCall, externalToolNames []string) ([]Too
 
 // getToolPreview returns a preview string for a tool call.
 // Uses tool.Preview() for registered tools, falls back to extractToolInfo for others.
+// All previews are wrapped in parentheses for consistent display.
 func (e *Engine) getToolPreview(call ToolCall) string {
 	if tool, ok := e.tools.Get(call.Name); ok {
 		if preview := tool.Preview(call.Arguments); preview != "" {
+			// Wrap in parens if not already
+			if !strings.HasPrefix(preview, "(") {
+				return "(" + preview + ")"
+			}
 			return preview
 		}
 	}
