@@ -452,7 +452,8 @@ type askStreamModel struct {
 	width   int
 
 	// Segment-based content model
-	segments []ui.Segment // All segments in the stream (text + tools)
+	segments     []ui.Segment // All segments in the stream (text + tools)
+	printedLines int          // Number of lines already printed to scrollback
 
 	// State flags
 	thinking bool // True only when waiting for LLM response (not during tools or streaming)
@@ -530,6 +531,32 @@ func (m askStreamModel) tickEvery() tea.Cmd {
 	return tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
 		return askTickMsg(t)
 	})
+}
+
+// maxViewLines is the maximum number of lines to keep in View().
+// Content beyond this is printed to scrollback to prevent scroll issues.
+const maxViewLines = 8
+
+// maybeFlushToScrollback checks if content exceeds maxViewLines and prints
+// excess to scrollback, keeping View() small to avoid terminal scroll issues.
+func (m *askStreamModel) maybeFlushToScrollback() tea.Cmd {
+	// Render current content
+	content := m.renderSegments()
+	totalLines := strings.Count(content, "\n")
+
+	// If content exceeds threshold, print excess to scrollback
+	if totalLines > maxViewLines+m.printedLines {
+		// Find split point - print all but last maxViewLines
+		lines := strings.Split(content, "\n")
+		splitAt := len(lines) - maxViewLines
+		if splitAt > m.printedLines {
+			// Print lines from printedLines to splitAt
+			toPrint := strings.Join(lines[m.printedLines:splitAt], "\n")
+			m.printedLines = splitAt
+			return tea.Println(toPrint)
+		}
+	}
+	return nil
 }
 
 func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -627,6 +654,11 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		currentSeg.Text += text
 
+		// Flush excess content to scrollback to keep View() small
+		if cmd := m.maybeFlushToScrollback(); cmd != nil {
+			return m, cmd
+		}
+
 	case askDoneMsg:
 		m.thinking = false
 		// Mark all text segments as complete and render
@@ -639,6 +671,18 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.segments[i].Rendered = rendered
 					}
 				}
+			}
+		}
+
+		// Print any remaining content to scrollback before quitting
+		content := m.renderSegments()
+		if content != "" {
+			lines := strings.Split(content, "\n")
+			if m.printedLines < len(lines) {
+				remaining := strings.Join(lines[m.printedLines:], "\n")
+				// Mark all lines as printed so View() returns empty
+				m.printedLines = len(lines)
+				return m, tea.Sequence(tea.Println(remaining), tea.Quit)
 			}
 		}
 		return m, tea.Quit
@@ -794,6 +838,17 @@ func (m askStreamModel) View() string {
 
 	// Render all segments
 	content := m.renderSegments()
+
+	// Only show content after what's been printed to scrollback
+	if m.printedLines > 0 && content != "" {
+		lines := strings.Split(content, "\n")
+		if m.printedLines < len(lines) {
+			content = strings.Join(lines[m.printedLines:], "\n")
+		} else {
+			content = ""
+		}
+	}
+
 	if content != "" {
 		b.WriteString(content)
 	}
