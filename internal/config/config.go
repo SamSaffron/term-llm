@@ -589,12 +589,21 @@ func Save(cfg *Config) error {
 		}
 	}
 
+	// Build image section if provider is set
+	var imageSection string
+	if cfg.Image.Provider != "" {
+		imageSection = fmt.Sprintf(`
+image:
+  provider: %s
+`, cfg.Image.Provider)
+	}
+
 	content := fmt.Sprintf(`default_provider: %s
 
 exec:
   suggestions: %d
-
-%s`, cfg.DefaultProvider, cfg.Exec.Suggestions, providers.String())
+%s
+%s`, cfg.DefaultProvider, cfg.Exec.Suggestions, imageSection, providers.String())
 
 	return os.WriteFile(path, []byte(content), 0600)
 }

@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/samsaffron/term-llm/internal/exitcode"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/samsaffron/term-llm/internal/update"
 	"github.com/spf13/cobra"
@@ -36,6 +37,9 @@ var showStats bool
 
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
+		if exitErr, ok := err.(exitcode.ExitError); ok {
+			os.Exit(exitErr.Code)
+		}
 		os.Exit(1)
 	}
 }

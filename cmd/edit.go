@@ -11,6 +11,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/diagnostics"
 	"github.com/samsaffron/term-llm/internal/edit"
+	"github.com/samsaffron/term-llm/internal/exitcode"
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
@@ -492,7 +493,7 @@ func runStreamEdit(ctx context.Context, cfg *config.Config, provider llm.Provide
 	})
 	if err != nil {
 		if err.Error() == "cancelled" {
-			return nil
+			return exitcode.Cancel()
 		}
 		return fmt.Errorf("edit failed: %w", err)
 	}
@@ -505,7 +506,7 @@ func runStreamEdit(ctx context.Context, cfg *config.Config, provider llm.Provide
 
 	if len(results) == 0 {
 		fmt.Println("No edits proposed")
-		return nil
+		return exitcode.NoEdits("no edits proposed")
 	}
 
 	// Consolidate results by file - use final state for each file
@@ -543,7 +544,7 @@ func runStreamEdit(ctx context.Context, cfg *config.Config, provider llm.Provide
 
 	if len(changedResults) == 0 {
 		fmt.Println("No edits proposed")
-		return nil
+		return exitcode.NoEdits("no changes")
 	}
 
 	// Show all diffs first
@@ -572,7 +573,7 @@ func runStreamEdit(ctx context.Context, cfg *config.Config, provider llm.Provide
 			continue // loop back to prompt
 		case ui.EditApprovalNo:
 			fmt.Println()
-			return nil
+			return exitcode.Declined("user declined edits")
 		case ui.EditApprovalYes:
 			// Apply all changes
 			var applied int
