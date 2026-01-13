@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
@@ -136,28 +137,28 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 		height = h
 	}
 
-	// Create textarea with minimal styling for inline REPL
-	ta := textarea.New()
-	ta.Placeholder = ""
-	ta.Prompt = ""                               // No prompt prefix (we add our own "> ")
-	ta.ShowLineNumbers = false
-	ta.CharLimit = 0                             // No limit
-	ta.SetWidth(width - 4)
-	ta.SetHeight(1)                              // Start with single line
-	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	ta.FocusedStyle.Base = lipgloss.NewStyle()
-	ta.FocusedStyle.Placeholder = lipgloss.NewStyle()
-	ta.FocusedStyle.EndOfBuffer = lipgloss.NewStyle()
-	ta.FocusedStyle.Prompt = lipgloss.NewStyle()
-	ta.BlurredStyle = ta.FocusedStyle
-	ta.Focus()
-
 	// Create spinner
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 
 	styles := ui.DefaultStyles()
 	s.Style = styles.Spinner
+
+	// Create textarea with minimal styling for inline REPL
+	ta := textarea.New()
+	ta.Placeholder = "Type a message..."
+	ta.Prompt = "❯ "
+	ta.ShowLineNumbers = false
+	ta.CharLimit = 0                             // No limit
+	ta.SetWidth(width)
+	ta.SetHeight(1)                              // Start with single line
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	ta.FocusedStyle.Base = lipgloss.NewStyle()
+	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(styles.Theme().Muted)
+	ta.FocusedStyle.EndOfBuffer = lipgloss.NewStyle()
+	ta.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(styles.Theme().Primary).Bold(true)
+	ta.BlurredStyle = ta.FocusedStyle
+	ta.Focus()
 
 	// Always start with a fresh session
 	// Users can load previous sessions with /load command
@@ -221,7 +222,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.viewportRows = m.height - 8
-		m.textarea.SetWidth(m.width - 2)
+		m.textarea.SetWidth(m.width)
 		m.completions.SetSize(m.width, m.height)
 		m.dialog.SetSize(m.width, m.height)
 		return m, nil
@@ -329,8 +330,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			// Flush completed segments (chronological order)
-			if cmd := m.maybeFlushToScrollback(); cmd != nil {
-				cmds = append(cmds, cmd)
+			if m.scrollOffset == 0 {
+				if cmd := m.maybeFlushToScrollback(); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
 			}
 		}
 		if msg.inputTokens > 0 || msg.outputTokens > 0 {
@@ -354,8 +357,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.retryStatus = ""
 
 			// Flush excess content if needed
-			if cmd := m.maybeFlushToScrollback(); cmd != nil {
-				cmds = append(cmds, cmd)
+			if m.scrollOffset == 0 {
+				if cmd := m.maybeFlushToScrollback(); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
 			}
 		}
 
@@ -729,7 +734,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Handle newline (must be before Send since shift+enter contains enter)
 	if key.Matches(msg, m.keyMap.Newline) || key.Matches(msg, m.keyMap.NewlineAlt) {
-		m.textarea.SetValue(m.textarea.Value() + "\n")
+		m.textarea.InsertString("\n")
 		m.updateTextareaHeight()
 		return m, nil
 	}
@@ -1144,6 +1149,12 @@ func (m *Model) View() string {
 
 	var b strings.Builder
 
+	// History (if scrolling)
+	if m.scrollOffset > 0 {
+		b.WriteString(m.renderHistory())
+		b.WriteString("\n")
+	}
+
 	// Streaming response (if active)
 	if m.streaming {
 		b.WriteString(m.renderStreamingInline())
@@ -1212,9 +1223,6 @@ func (m *Model) maybeFlushToScrollback() tea.Cmd {
 func (m *Model) renderStreamingInline() string {
 	var b strings.Builder
 
-	// Breathing room
-	b.WriteString("\n")
-
 	// Split segments into completed (permanently printed) and active (shown during streaming)
 	var completed []ui.Segment
 	var active []ui.Segment
@@ -1277,9 +1285,6 @@ func (m *Model) renderInputInline() string {
 
 	var b strings.Builder
 
-	// Breathing room before prompt
-	b.WriteString("\n")
-
 	// Show attached files if any
 	if len(m.files) > 0 {
 		var fileNames []string
@@ -1293,7 +1298,6 @@ func (m *Model) renderInputInline() string {
 	}
 
 	// Input prompt
-	b.WriteString("❯ ")
 	b.WriteString(m.textarea.View())
 	b.WriteString("\n")
 
@@ -1308,23 +1312,40 @@ func (m *Model) updateTextareaHeight() {
 	content := m.textarea.Value()
 	textareaWidth := m.textarea.Width()
 	if textareaWidth <= 0 {
-		textareaWidth = m.width - 4
+		textareaWidth = m.width
+	}
+
+	// Account for prompt "❯ " (2 cells)
+	effectiveWidth := textareaWidth - 2
+	if effectiveWidth <= 0 {
+		effectiveWidth = 1
 	}
 
 	// Count visual lines (accounting for word wrap)
 	visualLines := 0
-	for _, line := range strings.Split(content, "\n") {
-		lineLen := len([]rune(line))
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		lineLen := runewidth.StringWidth(line)
 		if lineLen == 0 {
 			visualLines++
 		} else {
-			visualLines += (lineLen + textareaWidth - 1) / textareaWidth
+			visualLines += (lineLen + effectiveWidth - 1) / effectiveWidth
 		}
 	}
 
 	if visualLines < 1 {
 		visualLines = 1
 	}
+
+	// Limit height to about 1/3 of the screen or at least 5 lines
+	maxHeight := m.height / 3
+	if maxHeight < 5 {
+		maxHeight = 5
+	}
+	if visualLines > maxHeight {
+		visualLines = maxHeight
+	}
+
 	m.textarea.SetHeight(visualLines)
 }
 
@@ -1776,15 +1797,15 @@ func (m *Model) renderInput() string {
 	}
 
 	// Input prompt
-	prompt := lipgloss.NewStyle().Foreground(theme.Primary).Bold(true).Render("❯ ")
-
 	if m.streaming {
+		theme := m.styles.Theme()
+		prompt := lipgloss.NewStyle().Foreground(theme.Primary).Bold(true).Render("❯ ")
 		// Show disabled state during streaming
 		return filesLine + prompt + lipgloss.NewStyle().Foreground(theme.Muted).Render("Waiting for response...") +
 			"  " + lipgloss.NewStyle().Foreground(theme.Muted).Render("[Esc to cancel]")
 	}
 
-	return filesLine + prompt + m.textarea.View()
+	return filesLine + m.textarea.View()
 }
 
 func (m *Model) renderStatusBar() string {
@@ -1827,7 +1848,7 @@ func (m *Model) renderStatusBar() string {
 		// Typing
 		hints = []string{
 			keyStyle.Render("Enter") + " send",
-			keyStyle.Render("Ctrl+J") + " newline",
+			keyStyle.Render("Shift+Enter") + " newline",
 			keyStyle.Render("Esc") + " clear",
 		}
 	}
@@ -1924,7 +1945,6 @@ func (m *Model) attachFile(path string) (tea.Model, tea.Cmd) {
 	}
 
 	m.files = append(m.files, *attachment)
-	m.textarea.SetValue("")
 	return m.showSystemMessage(fmt.Sprintf("Attached: %s (%s)", attachment.Name, FormatFileSize(attachment.Size)))
 }
 
@@ -2005,7 +2025,6 @@ func (m *Model) attachFiles(pattern string) (tea.Model, tea.Cmd) {
 		return m.showSystemMessage("No new files attached (all may already be attached or unreadable).")
 	}
 
-	m.textarea.SetValue("")
 	if len(attached) == 1 {
 		return m.showSystemMessage(fmt.Sprintf("Attached: %s (%s)", attached[0], FormatFileSize(totalSize)))
 	}

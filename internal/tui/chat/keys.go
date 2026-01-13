@@ -65,7 +65,7 @@ func DefaultKeyMap() KeyMap {
 			key.WithHelp("ctrl+j", "newline"),
 		),
 		NewlineAlt: key.NewBinding(
-			key.WithKeys("alt+enter"),
+			key.WithKeys("alt+enter", "shift+enter"),
 			key.WithHelp("alt+enter", "newline"),
 		),
 		ClearLine: key.NewBinding(
