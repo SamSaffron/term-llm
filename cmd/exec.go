@@ -266,9 +266,9 @@ func runExec(cmd *cobra.Command, args []string) error {
 			return executeCommand(command, shell)
 		}
 
-		// Interactive mode: show selection UI (with help support via 'h' key)
+		// Interactive mode: show selection UI (with help support via 'i' key)
 		allowNonTTY := execPrintOnly || envEnabled(allowNonTTYEnv)
-		selected, err := ui.SelectCommand(suggestions, shell, engine, allowNonTTY)
+		selected, refinement, err := ui.SelectCommand(suggestions, shell, engine, allowNonTTY)
 		if err != nil {
 			if err.Error() == "cancelled" {
 				return nil
@@ -276,12 +276,8 @@ func runExec(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("selection cancelled: %w", err)
 		}
 
-		// Handle "something else" option
+		// Handle "something else" option - refinement is already collected inline
 		if selected == ui.SomethingElse {
-			refinement, err := ui.GetRefinement()
-			if err != nil {
-				return fmt.Errorf("refinement cancelled: %w", err)
-			}
 			if refinement == "" {
 				continue
 			}

@@ -7,9 +7,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"golang.org/x/term"
 )
@@ -282,6 +285,8 @@ type selectModel struct {
 	styles      *Styles
 	tty         *os.File
 	width       int
+	textInput   textinput.Model
+	refinement  string // user's refinement text when "something else" is used
 }
 
 func newSelectModel(suggestions []llm.CommandSuggestion, tty *os.File) selectModel {
@@ -291,12 +296,34 @@ func newSelectModel(suggestions []llm.CommandSuggestion, tty *os.File) selectMod
 			width = w
 		}
 	}
+
+	styles := NewStyles(tty)
+
+	// Create a renderer bound to the TTY for proper color output
+	renderer := lipgloss.NewRenderer(tty)
+
+	// Colors matching the theme
+	mutedColor := styles.theme.Muted
+
+	ti := textinput.New()
+	ti.Placeholder = "What else should I know?"
+	ti.CharLimit = 500
+	ti.Width = min(60, width-10)
+	ti.Prompt = ""
+	// Use renderer-bound styles so colors work correctly with the TTY
+	ti.PromptStyle = renderer.NewStyle()
+	ti.TextStyle = renderer.NewStyle() // Use terminal's default text color
+	ti.PlaceholderStyle = renderer.NewStyle().Foreground(mutedColor)
+	ti.Cursor.Style = renderer.NewStyle() // Use terminal's default cursor
+	ti.Cursor.SetMode(cursor.CursorBlink)
+
 	return selectModel{
 		suggestions: suggestions,
 		cursor:      0,
-		styles:      NewStyles(tty),
+		styles:      styles,
 		tty:         tty,
 		width:       width,
+		textInput:   ti,
 	}
 }
 
@@ -304,37 +331,81 @@ func (m selectModel) Init() tea.Cmd {
 	return nil
 }
 
+func (m selectModel) isOnSomethingElse() bool {
+	return m.cursor == len(m.suggestions)
+}
+
 func (m selectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		m.textInput.Width = min(60, m.width-10)
 	case tea.KeyMsg:
+		// When on "something else", handle text input
+		if m.isOnSomethingElse() {
+			switch msg.String() {
+			case "enter":
+				text := strings.TrimSpace(m.textInput.Value())
+				if text != "" {
+					m.refinement = text
+					m.selected = SomethingElse
+					return m, tea.Quit
+				}
+				return m, nil
+			case "up", "k":
+				// Move up from "something else"
+				if m.cursor > 0 {
+					m.cursor--
+					m.textInput.Blur()
+				}
+				return m, nil
+			case "esc", "ctrl+c":
+				m.cancelled = true
+				return m, tea.Quit
+			}
+			// Pass other keys to text input
+			var cmd tea.Cmd
+			m.textInput, cmd = m.textInput.Update(msg)
+			return m, cmd
+		}
+
+		// Normal navigation when not on "something else"
 		switch msg.String() {
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
 			}
 		case "down", "j":
-			if m.cursor < len(m.suggestions) { // +1 for "something else"
+			if m.cursor < len(m.suggestions) {
 				m.cursor++
+				// Focus text input when moving to "something else"
+				if m.isOnSomethingElse() {
+					cmd := m.textInput.Focus()
+					// Ensure we return the focus command (which includes blink)
+					if cmd != nil {
+						return m, cmd
+					}
+					// Fallback: explicitly start blink if Focus() returned nil
+					return m, textinput.Blink
+				}
 			}
 		case "enter":
-			if m.cursor == len(m.suggestions) {
-				m.selected = SomethingElse
-			} else {
-				m.selected = m.suggestions[m.cursor].Command
-				m.done = true
-			}
+			m.selected = m.suggestions[m.cursor].Command
+			m.done = true
 			return m, tea.Quit
 		case "i", "I":
-			// Only show info for actual commands, not "something else"
-			if m.cursor < len(m.suggestions) {
-				m.showHelp = true
-				return m, tea.Quit
-			}
+			m.showHelp = true
+			return m, tea.Quit
 		case "esc", "q", "ctrl+c":
 			m.cancelled = true
 			return m, tea.Quit
+		}
+	default:
+		// Pass cursor blink and other messages to the textinput when focused
+		if m.isOnSomethingElse() {
+			var cmd tea.Cmd
+			m.textInput, cmd = m.textInput.Update(msg)
+			return m, cmd
 		}
 	}
 	return m, nil
@@ -394,15 +465,16 @@ func (m selectModel) View() string {
 		}
 	}
 
-	// "something else" option (hidden when done)
+	// "something else" option with inline text input (hidden when done)
 	if !m.done {
 		b.WriteString("\n")
-		cursor := "  "
-		if m.cursor == len(m.suggestions) {
-			cursor = m.styles.Highlighted.Render("> ")
+		if m.isOnSomethingElse() {
+			b.WriteString("  ")
+			b.WriteString(m.textInput.View())
+		} else {
+			b.WriteString("  ")
+			b.WriteString(m.styles.Muted.Render("something else..."))
 		}
-		b.WriteString(cursor)
-		b.WriteString(m.styles.Muted.Render("something else..."))
 		b.WriteString("\n")
 	}
 
@@ -418,21 +490,22 @@ func (m selectModel) View() string {
 
 // SelectCommand presents the user with a list of command suggestions and returns the selected one.
 // Returns the selected command or SomethingElse if user wants to refine their request.
-// If engine is non-nil and user presses 'h', shows help for the highlighted command.
+// When SomethingElse is returned, the second return value contains the user's refinement text.
+// If engine is non-nil and user presses 'i', shows help for the highlighted command.
 // allowNonTTY permits a non-interactive fallback when no TTY is available.
-func SelectCommand(suggestions []llm.CommandSuggestion, shell string, engine *llm.Engine, allowNonTTY bool) (string, error) {
+func SelectCommand(suggestions []llm.CommandSuggestion, shell string, engine *llm.Engine, allowNonTTY bool) (selected string, refinement string, err error) {
 	for {
 		// Get tty for proper rendering
 		tty, ttyErr := getTTY()
 		if ttyErr != nil {
 			if !allowNonTTY {
-				return "", fmt.Errorf("no TTY available (set TERM_LLM_ALLOW_NON_TTY=1 to allow non-interactive selection)")
+				return "", "", fmt.Errorf("no TTY available (set TERM_LLM_ALLOW_NON_TTY=1 to allow non-interactive selection)")
 			}
 			// Fallback to simple first option if no TTY
 			if len(suggestions) > 0 {
-				return suggestions[0].Command, nil
+				return suggestions[0].Command, "", nil
 			}
-			return "", fmt.Errorf("no TTY available")
+			return "", "", fmt.Errorf("no TTY available")
 		}
 
 		model := newSelectModel(suggestions, tty)
@@ -442,13 +515,13 @@ func SelectCommand(suggestions []llm.CommandSuggestion, shell string, engine *ll
 		tty.Close()
 
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 
 		m := finalModel.(selectModel)
 
 		if m.cancelled {
-			return "", fmt.Errorf("cancelled")
+			return "", "", fmt.Errorf("cancelled")
 		}
 
 		if m.showHelp && engine != nil {
@@ -462,7 +535,7 @@ func SelectCommand(suggestions []llm.CommandSuggestion, shell string, engine *ll
 			continue
 		}
 
-		return m.selected, nil
+		return m.selected, m.refinement, nil
 	}
 }
 
