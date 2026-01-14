@@ -84,6 +84,8 @@ func (r *LocalToolRegistry) registerTool(cliName string) error {
 		tool = NewViewImageTool(r.approval)
 	case ImageGenerateToolName:
 		tool = NewImageGenerateTool(r.approval, r.appConfig, r.config.ImageProvider)
+	case AskUserToolName:
+		tool = NewAskUserTool()
 	default:
 		return NewToolErrorf(ErrInvalidParams, "unimplemented tool: %s", specName)
 	}

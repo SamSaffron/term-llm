@@ -218,6 +218,17 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			}
 			return tools.Cancel, ""
 		}
+		// Set up ask_user hooks to pause/resume the TUI during the interactive UI
+		tools.SetAskUserHooks(
+			func() {
+				// Flush content to scrollback before releasing terminal
+				done := make(chan struct{})
+				teaProgram.Send(askFlushBeforeAskUserMsg{Done: done})
+				<-done // Wait for flush to complete
+				teaProgram.ReleaseTerminal()
+			},
+			func() { teaProgram.RestoreTerminal() },
+		)
 	}
 
 	errChan := make(chan error, 1)
@@ -252,6 +263,10 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			}
 			if event.Type == llm.EventToolExecStart {
 				stats.ToolStart()
+				// Skip tool indicator for ask_user - it has its own UI
+				if event.ToolName == tools.AskUserToolName {
+					continue
+				}
 				select {
 				case toolEvents <- toolEvent{Name: event.ToolName, Info: event.ToolInfo}:
 				default:
@@ -259,6 +274,10 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			}
 			if event.Type == llm.EventToolExecEnd {
 				stats.ToolEnd()
+				// Skip tool indicator for ask_user - it has its own UI
+				if event.ToolName == tools.AskUserToolName {
+					continue
+				}
 				select {
 				case toolEvents <- toolEvent{
 					Name:        event.ToolName,
@@ -311,6 +330,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	} else {
 		err = streamPlainText(ctx, output, toolEvents)
 	}
+	tools.ClearAskUserHooks() // Safe to call even if hooks weren't set
 
 	if err != nil {
 		return err
@@ -463,16 +483,12 @@ type askStreamModel struct {
 	styles  *ui.Styles
 	width   int
 
-	// Segment-based content model
-	segments     []ui.Segment // All segments in the stream (text + tools)
-	printedLines int          // Number of lines already printed to scrollback
+	// Tool and segment tracking (shared component)
+	tracker      *ui.ToolTracker
+	printedLines int // Number of lines already printed to scrollback
 
 	// State flags
 	thinking bool // True only when waiting for LLM response (not during tools or streaming)
-
-	// Wave animation for pending tools
-	wavePos    int
-	wavePaused bool
 
 	// Status display
 	retryStatus string    // Retry status (e.g., "Rate limited (2/5), waiting 5s...")
@@ -510,14 +526,17 @@ type askRetryMsg struct {
 	WaitSecs    float64
 }
 type askPhaseMsg string
+type askFlushBeforeAskUserMsg struct {
+	Done chan<- struct{} // Signal when flush is complete
+}
 type askApprovalRequestMsg struct {
 	Description string
 	ToolName    string
 	ToolInfo    string
 	ResponseCh  chan<- bool
 }
-type askWaveTickMsg struct{}
-type askWavePauseMsg struct{}
+
+// Use ui.WaveTickMsg and ui.WavePauseMsg from the shared ToolTracker
 
 func newAskStreamModel() askStreamModel {
 	width := getTerminalWidth()
@@ -531,6 +550,7 @@ func newAskStreamModel() askStreamModel {
 		spinner:   s,
 		styles:    styles,
 		width:     width,
+		tracker:   ui.NewToolTracker(),
 		thinking:  true,
 		startTime: time.Now(),
 	}
@@ -555,12 +575,7 @@ const maxViewLines = 8
 // excess to scrollback, keeping View() small to avoid terminal scroll issues.
 func (m *askStreamModel) maybeFlushToScrollback() tea.Cmd {
 	// Render current completed content
-	var completed []ui.Segment
-	for _, s := range m.segments {
-		if !(s.Type == ui.SegmentTool && s.ToolStatus == ui.ToolPending) {
-			completed = append(completed, s)
-		}
-	}
+	completed := m.tracker.CompletedSegments()
 	content := ui.RenderSegments(completed, m.width, -1, renderMd)
 	totalLines := strings.Count(content, "\n")
 
@@ -582,14 +597,8 @@ func (m *askStreamModel) maybeFlushToScrollback() tea.Cmd {
 func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Handle tool start messages even while approval form is active
 	if toolMsg, ok := msg.(askToolStartMsg); ok && m.approvalForm != nil {
-		// Add tool segment as pending during approval
-		if toolMsg.Info != m.approvalToolInfo {
-			m.segments = append(m.segments, ui.Segment{
-				Type:       ui.SegmentTool,
-				ToolName:   toolMsg.Name,
-				ToolInfo:   toolMsg.Info,
-				ToolStatus: ui.ToolPending,
-			})
+		if m.tracker.HandleToolStart(toolMsg.Name, toolMsg.Info) {
+			// New segment added, but don't start wave yet (approval form is active)
 		}
 	}
 
@@ -603,21 +612,8 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Check if form completed
 		if m.approvalForm.State == huh.StateCompleted {
 			approved := m.approvalForm.GetBool("confirm")
-			// Update the tool segment that triggered approval
-			for i := len(m.segments) - 1; i >= 0; i-- {
-				if m.segments[i].Type == ui.SegmentTool &&
-					m.segments[i].ToolStatus == ui.ToolPending &&
-					m.segments[i].ToolInfo == m.approvalToolInfo {
-					if approved {
-						m.segments[i].ToolStatus = ui.ToolSuccess
-					} else {
-						m.segments[i].ToolStatus = ui.ToolError
-					}
-					break
-				}
-			}
-
-			// Send response
+			// Send response - the tool segment will be updated by askToolEndMsg
+			// when the tool actually completes (not when approval is granted)
 			if m.approvalResponseCh != nil {
 				m.approvalResponseCh <- approved
 			}
@@ -625,6 +621,10 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.approvalResponseCh = nil
 			m.approvalDesc = ""
 			m.approvalToolInfo = ""
+			// If there are pending tools, restart wave animation
+			if m.tracker.HasPending() {
+				return m, m.tracker.StartWave()
+			}
 			return m, m.spinner.Tick
 		}
 
@@ -651,28 +651,18 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		// Re-render text segments with new width
-		for i := range m.segments {
-			if m.segments[i].Type == ui.SegmentText && m.segments[i].Complete {
-				rendered, err := renderMarkdown(m.segments[i].Text, m.width)
+		for i := range m.tracker.Segments {
+			if m.tracker.Segments[i].Type == ui.SegmentText && m.tracker.Segments[i].Complete {
+				rendered, err := renderMarkdown(m.tracker.Segments[i].Text, m.width)
 				if err == nil {
-					m.segments[i].Rendered = rendered
+					m.tracker.Segments[i].Rendered = rendered
 				}
 			}
 		}
 
 	case askContentMsg:
 		m.thinking = false
-		text := string(msg)
-
-		// Find or create current text segment
-		var currentSeg *ui.Segment
-		if len(m.segments) > 0 && m.segments[len(m.segments)-1].Type == ui.SegmentText && !m.segments[len(m.segments)-1].Complete {
-			currentSeg = &m.segments[len(m.segments)-1]
-		} else {
-			m.segments = append(m.segments, ui.Segment{Type: ui.SegmentText})
-			currentSeg = &m.segments[len(m.segments)-1]
-		}
-		currentSeg.Text += text
+		m.tracker.AddTextSegment(string(msg))
 
 		// Flush excess content to scrollback to keep View() small
 		if cmd := m.maybeFlushToScrollback(); cmd != nil {
@@ -682,25 +672,13 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case askDoneMsg:
 		m.thinking = false
 		// Mark all text segments as complete and render
-		for i := range m.segments {
-			if m.segments[i].Type == ui.SegmentText && !m.segments[i].Complete {
-				m.segments[i].Complete = true
-				if m.segments[i].Text != "" {
-					rendered, err := renderMarkdown(m.segments[i].Text, m.width)
-					if err == nil {
-						m.segments[i].Rendered = rendered
-					}
-				}
-			}
-		}
+		m.tracker.CompleteTextSegments(func(text string) string {
+			rendered, _ := renderMarkdown(text, m.width)
+			return rendered
+		})
 
 		// Print any remaining content to scrollback before quitting
-		var completed []ui.Segment
-		for _, s := range m.segments {
-			if !(s.Type == ui.SegmentTool && s.ToolStatus == ui.ToolPending) {
-				completed = append(completed, s)
-			}
-		}
+		completed := m.tracker.CompletedSegments()
 		content := ui.RenderSegments(completed, m.width, -1, renderMd)
 
 		if content != "" {
@@ -735,74 +713,55 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.phase = string(msg)
 		return m, nil
 
+	case askFlushBeforeAskUserMsg:
+		// Flush all completed content to scrollback before ask_user takes over terminal
+		completed := m.tracker.CompletedSegments()
+		content := ui.RenderSegments(completed, m.width, -1, renderMd)
+
+		var cmds []tea.Cmd
+		if content != "" {
+			lines := strings.Split(content, "\n")
+			if m.printedLines < len(lines) {
+				toPrint := strings.Join(lines[m.printedLines:], "\n")
+				m.printedLines = len(lines)
+				cmds = append(cmds, tea.Println(toPrint))
+			}
+		}
+
+		// Signal that flush is complete (use a command to ensure tea.Println finishes first)
+		cmds = append(cmds, func() tea.Msg {
+			close(msg.Done)
+			return nil
+		})
+		return m, tea.Sequence(cmds...)
+
 	case askToolStartMsg:
 		m.retryStatus = ""
 		m.thinking = false
-		// Check if we already have a pending segment for this tool+info (avoid duplicates)
-		alreadyPending := false
-		for i := len(m.segments) - 1; i >= 0; i-- {
-			seg := m.segments[i]
-			if seg.Type == ui.SegmentTool &&
-				seg.ToolStatus == ui.ToolPending &&
-				seg.ToolName == msg.Name &&
-				seg.ToolInfo == msg.Info {
-				alreadyPending = true
-				break
-			}
+		if m.tracker.HandleToolStart(msg.Name, msg.Info) {
+			// New segment added, start wave animation
+			return m, m.tracker.StartWave()
 		}
-		if !alreadyPending {
-			// Add new tool segment as pending
-			m.segments = append(m.segments, ui.Segment{
-				Type:       ui.SegmentTool,
-				ToolName:   msg.Name,
-				ToolInfo:   msg.Info,
-				ToolStatus: ui.ToolPending,
-			})
-		}
-		// Start wave animation
-		m.wavePos = 0
-		m.wavePaused = false
-		return m, tea.Tick(50*time.Millisecond, func(t time.Time) tea.Msg {
-			return askWaveTickMsg{}
-		})
+		// Already have pending segment for this tool, just restart wave
+		return m, m.tracker.StartWave()
 
 	case askToolEndMsg:
-		// Update the matching pending tool to success/error
-		// Match on both name AND info to handle parallel calls to same tool
-		m.segments = ui.UpdateToolStatus(m.segments, msg.Name, msg.Info, msg.Success)
+		m.tracker.HandleToolEnd(msg.Name, msg.Success)
 
 		// If no more pending tools, go back to thinking
-		if !ui.HasPendingTool(m.segments) {
+		if !m.tracker.HasPending() {
 			m.thinking = true
 			return m, m.spinner.Tick
 		}
 
-	case askWaveTickMsg:
-		// Update wave animation for pending tools
-		if ui.HasPendingTool(m.segments) && !m.wavePaused {
-			toolTextLen := ui.GetPendingToolTextLen(m.segments)
-			m.wavePos++
-			if m.wavePos >= toolTextLen {
-				// Wave complete, start pause
-				m.wavePaused = true
-				m.wavePos = -1
-				return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
-					return askWavePauseMsg{}
-				})
-			}
-			return m, tea.Tick(50*time.Millisecond, func(t time.Time) tea.Msg {
-				return askWaveTickMsg{}
-			})
+	case ui.WaveTickMsg:
+		if cmd := m.tracker.HandleWaveTick(); cmd != nil {
+			return m, cmd
 		}
 
-	case askWavePauseMsg:
-		// Pause complete, restart wave
-		if ui.HasPendingTool(m.segments) {
-			m.wavePaused = false
-			m.wavePos = 0
-			return m, tea.Tick(50*time.Millisecond, func(t time.Time) tea.Msg {
-				return askWaveTickMsg{}
-			})
+	case ui.WavePauseMsg:
+		if cmd := m.tracker.HandleWavePause(); cmd != nil {
+			return m, cmd
 		}
 
 	case askApprovalRequestMsg:
@@ -810,13 +769,8 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.approvalResponseCh = msg.ResponseCh
 		m.approvalToolInfo = msg.ToolInfo
 
-		// Add tool segment as pending
-		m.segments = append(m.segments, ui.Segment{
-			Type:       ui.SegmentTool,
-			ToolName:   msg.ToolName,
-			ToolInfo:   msg.ToolInfo,
-			ToolStatus: ui.ToolPending,
-		})
+		// Don't add a new segment - the tool already has a pending segment from askToolStartMsg.
+		// The approval is part of that tool's execution, not a separate operation.
 
 		m.approvalForm = huh.NewForm(
 			huh.NewGroup(
@@ -852,16 +806,9 @@ func renderMd(text string, width int) string {
 func (m askStreamModel) View() string {
 	var b strings.Builder
 
-	// Split segments into completed (permanently printed) and active (shown during streaming)
-	var completed []ui.Segment
-	var active []ui.Segment
-	for _, s := range m.segments {
-		if s.Type == ui.SegmentTool && s.ToolStatus == ui.ToolPending {
-			active = append(active, s)
-		} else {
-			completed = append(completed, s)
-		}
-	}
+	// Get segments from tracker
+	completed := m.tracker.CompletedSegments()
+	active := m.tracker.ActiveSegments()
 
 	// Render completed segments
 	content := ui.RenderSegments(completed, m.width, -1, renderMd)
@@ -911,7 +858,7 @@ func (m askStreamModel) View() string {
 			Status:     m.retryStatus,
 			ShowCancel: true,
 			Segments:   active,
-			WavePos:    m.wavePos,
+			WavePos:    m.tracker.WavePos,
 		}.Render(m.styles)
 		b.WriteString(indicator)
 	}

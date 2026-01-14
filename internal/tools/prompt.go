@@ -15,9 +15,16 @@ import (
 // ApprovalUIHooks allows the TUI to coordinate with approval prompts.
 // Set these callbacks before running the ask command to pause/resume the UI.
 var (
-	approvalMu       sync.Mutex
-	OnApprovalStart  func() // Called before showing prompt (pause TUI)
-	OnApprovalEnd    func() // Called after prompt answered (resume TUI)
+	approvalMu      sync.Mutex
+	OnApprovalStart func() // Called before showing prompt (pause TUI)
+	OnApprovalEnd   func() // Called after prompt answered (resume TUI)
+)
+
+// AskUserUIHooks allows the TUI to coordinate with ask_user tool prompts.
+var (
+	askUserMu      sync.Mutex
+	OnAskUserStart func() // Called before showing ask_user UI (pause TUI)
+	OnAskUserEnd   func() // Called after ask_user UI answered (resume TUI)
 )
 
 // SetApprovalHooks sets callbacks for TUI coordination during approval prompts.
@@ -34,6 +41,22 @@ func ClearApprovalHooks() {
 	defer approvalMu.Unlock()
 	OnApprovalStart = nil
 	OnApprovalEnd = nil
+}
+
+// SetAskUserHooks sets callbacks for TUI coordination during ask_user prompts.
+func SetAskUserHooks(onStart, onEnd func()) {
+	askUserMu.Lock()
+	defer askUserMu.Unlock()
+	OnAskUserStart = onStart
+	OnAskUserEnd = onEnd
+}
+
+// ClearAskUserHooks removes the ask_user hooks.
+func ClearAskUserHooks() {
+	askUserMu.Lock()
+	defer askUserMu.Unlock()
+	OnAskUserStart = nil
+	OnAskUserEnd = nil
 }
 
 // TTYApprovalPrompt prompts the user for directory access approval via /dev/tty.

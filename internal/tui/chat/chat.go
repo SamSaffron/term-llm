@@ -49,10 +49,8 @@ type Model struct {
 	webSearchUsed    bool
 	retryStatus      string
 	streamCancelFunc context.CancelFunc
-	segments         []ui.Segment // Active stream segments (text and tools)
-	wavePos          int          // Position for tool wave animation
-	wavePaused       bool         // Whether wave animation is paused
-	printedLines     int          // Number of lines already printed to scrollback
+	tracker          *ui.ToolTracker // Tool and segment tracking (shared component)
+	printedLines     int             // Number of lines already printed to scrollback
 
 	// Streaming channels
 	streamChan chan streamEvent
@@ -119,13 +117,13 @@ type streamEvent struct {
 
 // Messages for tea.Program
 type (
-	streamEventMsg    streamEvent
-	sessionSavedMsg   struct{}
-	sessionLoadedMsg  struct{ session *Session }
-	tickMsg           time.Time
-	waveTickMsg       struct{}
-	wavePauseMsg      struct{}
+	streamEventMsg   streamEvent
+	sessionSavedMsg  struct{}
+	sessionLoadedMsg struct{ session *Session }
+	tickMsg          time.Time
 )
+
+// Use ui.WaveTickMsg and ui.WavePauseMsg from the shared ToolTracker
 
 // New creates a new chat model
 func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, searchEnabled bool, localTools []string, showStats bool) *Model {
@@ -192,6 +190,7 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 		modelName:           modelName,
 		phase:               "Thinking",
 		viewportRows:        height - 8, // Reserve space for input and status
+		tracker:             ui.NewToolTracker(),
 		completions:         completions,
 		dialog:              dialog,
 		approvedDirs:        approvedDirs,
@@ -242,30 +241,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.tickEvery())
 		}
 
-	case waveTickMsg:
-		if ui.HasPendingTool(m.segments) && !m.wavePaused {
-			toolTextLen := ui.GetPendingToolTextLen(m.segments)
-			m.wavePos++
-			if m.wavePos >= toolTextLen {
-				m.wavePaused = true
-				m.wavePos = -1
-				cmds = append(cmds, tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
-					return wavePauseMsg{}
-				}))
-			} else {
-				cmds = append(cmds, tea.Tick(50*time.Millisecond, func(t time.Time) tea.Msg {
-					return waveTickMsg{}
-				}))
+	case ui.WaveTickMsg:
+		if m.tracker != nil {
+			if cmd := m.tracker.HandleWaveTick(); cmd != nil {
+				cmds = append(cmds, cmd)
 			}
 		}
 
-	case wavePauseMsg:
-		if ui.HasPendingTool(m.segments) {
-			m.wavePaused = false
-			m.wavePos = 0
-			cmds = append(cmds, tea.Tick(50*time.Millisecond, func(t time.Time) tea.Msg {
-				return waveTickMsg{}
-			}))
+	case ui.WavePauseMsg:
+		if m.tracker != nil {
+			if cmd := m.tracker.HandleWavePause(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		}
 
 	case streamEventMsg:
@@ -280,59 +267,36 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.toolStart {
 			m.stats.ToolStart()
 
-			// Check if we already have a pending segment for this tool+info (avoid duplicates)
-			alreadyPending := false
-			for i := len(m.segments) - 1; i >= 0; i-- {
-				seg := m.segments[i]
-				if seg.Type == ui.SegmentTool &&
-					seg.ToolStatus == ui.ToolPending &&
-					seg.ToolName == msg.toolName &&
-					seg.ToolInfo == msg.toolInfo {
-					alreadyPending = true
-					break
-				}
-			}
-
-			if !alreadyPending {
-				// Mark current text segment as complete before starting tool
-				if len(m.segments) > 0 && m.segments[len(m.segments)-1].Type == ui.SegmentText && !m.segments[len(m.segments)-1].Complete {
-					last := &m.segments[len(m.segments)-1]
-					last.Complete = true
-					if last.Text != "" {
-						last.Rendered = m.renderMarkdown(last.Text)
-					}
-				}
-
-				// Add tool segment as pending
-				m.segments = append(m.segments, ui.Segment{
-					Type:       ui.SegmentTool,
-					ToolName:   msg.toolName,
-					ToolInfo:   msg.toolInfo,
-					ToolStatus: ui.ToolPending,
+			// Mark current text segment as complete before starting tool
+			if m.tracker != nil {
+				m.tracker.MarkCurrentTextComplete(func(text string) string {
+					return m.renderMarkdown(text)
 				})
-			}
-
-			// Start wave animation if not already running
-			if !m.wavePaused && m.wavePos == 0 {
-				cmds = append(cmds, tea.Tick(50*time.Millisecond, func(t time.Time) tea.Msg {
-					return waveTickMsg{}
-				}))
+				if m.tracker.HandleToolStart(msg.toolName, msg.toolInfo) {
+					// New segment added, start wave animation
+					cmds = append(cmds, m.tracker.StartWave())
+				} else {
+					// Already have pending segment, just restart wave
+					cmds = append(cmds, m.tracker.StartWave())
+				}
 			}
 		}
 		if msg.toolEnd {
 			m.stats.ToolEnd()
 			// Update segment status
-			m.segments = ui.UpdateToolStatus(m.segments, msg.toolName, msg.toolInfo, msg.toolSuccess)
+			if m.tracker != nil {
+				m.tracker.HandleToolEnd(msg.toolName, msg.toolSuccess)
 
-			// Back to thinking phase if no more pending tools
-			if !ui.HasPendingTool(m.segments) {
-				m.phase = "Thinking"
-			}
+				// Back to thinking phase if no more pending tools
+				if !m.tracker.HasPending() {
+					m.phase = "Thinking"
+				}
 
-			// Flush completed segments (chronological order)
-			if m.scrollOffset == 0 {
-				if cmd := m.maybeFlushToScrollback(); cmd != nil {
-					cmds = append(cmds, cmd)
+				// Flush completed segments (chronological order)
+				if m.scrollOffset == 0 {
+					if cmd := m.maybeFlushToScrollback(); cmd != nil {
+						cmds = append(cmds, cmd)
+					}
 				}
 			}
 		}
@@ -344,14 +308,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.currentResponse.WriteString(msg.chunk)
 
 			// Update segments for chronological rendering
-			var currentSeg *ui.Segment
-			if len(m.segments) > 0 && m.segments[len(m.segments)-1].Type == ui.SegmentText && !m.segments[len(m.segments)-1].Complete {
-				currentSeg = &m.segments[len(m.segments)-1]
-			} else {
-				m.segments = append(m.segments, ui.Segment{Type: ui.SegmentText})
-				currentSeg = &m.segments[len(m.segments)-1]
+			if m.tracker != nil {
+				m.tracker.AddTextSegment(msg.chunk)
 			}
-			currentSeg.Text += msg.chunk
 
 			m.phase = "Responding"
 			m.retryStatus = ""
@@ -386,29 +345,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.stats.AddTurn()
 
 			// Mark all text segments as complete and render
-			for i := range m.segments {
-				if m.segments[i].Type == ui.SegmentText && !m.segments[i].Complete {
-					m.segments[i].Complete = true
-					if m.segments[i].Text != "" {
-						m.segments[i].Rendered = m.renderMarkdown(m.segments[i].Text)
+			if m.tracker != nil {
+				m.tracker.CompleteTextSegments(func(text string) string {
+					return m.renderMarkdown(text)
+				})
+
+				// Print any remaining content to scrollback (chronological order)
+				completed := m.tracker.CompletedSegments()
+				content := ui.RenderSegments(completed, m.width, -1, m.renderMd)
+
+				if content != "" {
+					lines := strings.Split(content, "\n")
+					if m.printedLines < len(lines) {
+						remaining := strings.Join(lines[m.printedLines:], "\n")
+						cmds = append(cmds, tea.Println(remaining))
 					}
-				}
-			}
-
-			// Print any remaining content to scrollback (chronological order)
-			var completed []ui.Segment
-			for _, s := range m.segments {
-				if !(s.Type == ui.SegmentTool && s.ToolStatus == ui.ToolPending) {
-					completed = append(completed, s)
-				}
-			}
-			content := ui.RenderSegments(completed, m.width, -1, m.renderMd)
-
-			if content != "" {
-				lines := strings.Split(content, "\n")
-				if m.printedLines < len(lines) {
-					remaining := strings.Join(lines[m.printedLines:], "\n")
-					cmds = append(cmds, tea.Println(remaining))
 				}
 			}
 			cmds = append(cmds, tea.Println("")) // blank line
@@ -430,9 +381,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.currentTokens = 0
 			m.webSearchUsed = false
 			m.retryStatus = ""
-			m.segments = nil
-			m.wavePos = 0
-			m.wavePaused = false
+			m.tracker = ui.NewToolTracker() // Reset tracker
 			m.printedLines = 0
 
 			// Auto-save session
@@ -995,11 +944,11 @@ func (m *Model) startStream(content string) tea.Cmd {
 		messages := m.buildMessages()
 
 		// Collect MCP tools if available and register them with the engine
-		var tools []llm.ToolSpec
+		var reqTools []llm.ToolSpec
 		if m.mcpManager != nil {
 			mcpTools := m.mcpManager.AllTools()
 			for _, t := range mcpTools {
-				tools = append(tools, llm.ToolSpec{
+				reqTools = append(reqTools, llm.ToolSpec{
 					Name:        t.Name,
 					Description: t.Description,
 					Schema:      t.Schema,
@@ -1011,7 +960,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 
 		req := llm.Request{
 			Messages:            messages,
-			Tools:               tools,
+			Tools:               reqTools,
 			Search:              m.searchEnabled,
 			ForceExternalSearch: m.forceExternalSearch,
 			ParallelToolCalls:   true,
@@ -1052,6 +1001,10 @@ func (m *Model) startStream(content string) tea.Cmd {
 						m.streamChan <- streamEvent{chunk: event.Text}
 					}
 				case llm.EventToolExecStart:
+					// Skip tool indicator for ask_user - it has its own UI
+					if event.ToolName == tools.AskUserToolName {
+						continue
+					}
 					phase := ui.FormatToolPhase(event.ToolName, event.ToolInfo).Active
 					isSearch := event.ToolName == llm.WebSearchToolName || event.ToolName == "WebSearch"
 					m.streamChan <- streamEvent{
@@ -1062,6 +1015,10 @@ func (m *Model) startStream(content string) tea.Cmd {
 						toolInfo:  event.ToolInfo,
 					}
 				case llm.EventToolExecEnd:
+					// Skip tool indicator for ask_user - it has its own UI
+					if event.ToolName == tools.AskUserToolName {
+						continue
+					}
 					m.streamChan <- streamEvent{
 						toolEnd:     true,
 						toolName:    event.ToolName,
@@ -1192,13 +1149,12 @@ func (m *Model) renderMd(text string, width int) string {
 // maybeFlushToScrollback checks if content exceeds maxViewLines and prints
 // excess to scrollback, keeping View() small to avoid terminal scroll issues.
 func (m *Model) maybeFlushToScrollback() tea.Cmd {
-	// Render current completed content
-	var completed []ui.Segment
-	for _, s := range m.segments {
-		if !(s.Type == ui.SegmentTool && s.ToolStatus == ui.ToolPending) {
-			completed = append(completed, s)
-		}
+	if m.tracker == nil {
+		return nil
 	}
+
+	// Render current completed content
+	completed := m.tracker.CompletedSegments()
 	content := ui.RenderSegments(completed, m.width, -1, m.renderMd)
 	totalLines := strings.Count(content, "\n")
 
@@ -1223,15 +1179,11 @@ func (m *Model) maybeFlushToScrollback() tea.Cmd {
 func (m *Model) renderStreamingInline() string {
 	var b strings.Builder
 
-	// Split segments into completed (permanently printed) and active (shown during streaming)
-	var completed []ui.Segment
-	var active []ui.Segment
-	for _, s := range m.segments {
-		if s.Type == ui.SegmentTool && s.ToolStatus == ui.ToolPending {
-			active = append(active, s)
-		} else {
-			completed = append(completed, s)
-		}
+	// Get segments from tracker
+	var completed, active []ui.Segment
+	if m.tracker != nil {
+		completed = m.tracker.CompletedSegments()
+		active = m.tracker.ActiveSegments()
 	}
 
 	// Render completed segments
@@ -1253,6 +1205,10 @@ func (m *Model) renderStreamingInline() string {
 	}
 
 	// Always show the indicator with current phase
+	wavePos := 0
+	if m.tracker != nil {
+		wavePos = m.tracker.WavePos
+	}
 	indicator := ui.StreamingIndicator{
 		Spinner:    m.spinner.View(),
 		Phase:      m.phase,
@@ -1260,7 +1216,7 @@ func (m *Model) renderStreamingInline() string {
 		Tokens:     m.currentTokens,
 		ShowCancel: true,
 		Segments:   active,
-		WavePos:    m.wavePos,
+		WavePos:    wavePos,
 	}
 	b.WriteString(indicator.Render(m.styles))
 	b.WriteString("\n")

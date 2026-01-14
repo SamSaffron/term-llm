@@ -110,11 +110,17 @@ func RenderToolSegment(seg *Segment, wavePos int) string {
 		phase := FormatToolPhase(seg.ToolName, seg.ToolInfo)
 		return PendingCircle() + " " + RenderWaveText(phase.Active, wavePos)
 	case ToolSuccess:
-		// Tool name normal, params slightly muted
-		return SuccessCircle() + " " + seg.ToolName + paramStyle.Render(seg.ToolInfo)
+		// Tool name normal, params slightly muted (with space before info if present)
+		if seg.ToolInfo != "" {
+			return SuccessCircle() + " " + seg.ToolName + " " + paramStyle.Render(seg.ToolInfo)
+		}
+		return SuccessCircle() + " " + seg.ToolName
 	case ToolError:
-		// Tool name normal, params slightly muted
-		return ErrorCircle() + " " + seg.ToolName + paramStyle.Render(seg.ToolInfo)
+		// Tool name normal, params slightly muted (with space before info if present)
+		if seg.ToolInfo != "" {
+			return ErrorCircle() + " " + seg.ToolName + " " + paramStyle.Render(seg.ToolInfo)
+		}
+		return ErrorCircle() + " " + seg.ToolName
 	}
 	return ""
 }
@@ -180,13 +186,14 @@ func GetPendingToolTextLen(segments []Segment) int {
 	return 0
 }
 
-// UpdateToolStatus updates the status of a pending tool matching the given name and info
+// UpdateToolStatus updates the status of a pending tool matching the given name.
+// We match by name only (not info) because a single tool execution may have multiple
+// events with different info values (e.g., during permission approvals).
 func UpdateToolStatus(segments []Segment, toolName, toolInfo string, success bool) []Segment {
 	for i := len(segments) - 1; i >= 0; i-- {
 		if segments[i].Type == SegmentTool &&
 			segments[i].ToolStatus == ToolPending &&
-			segments[i].ToolName == toolName &&
-			segments[i].ToolInfo == toolInfo {
+			segments[i].ToolName == toolName {
 			if success {
 				segments[i].ToolStatus = ToolSuccess
 			} else {

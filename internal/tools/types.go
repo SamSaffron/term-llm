@@ -10,11 +10,12 @@ import (
 type ToolKind string
 
 const (
-	KindRead    ToolKind = "read"
-	KindEdit    ToolKind = "edit"
-	KindSearch  ToolKind = "search"
-	KindExecute ToolKind = "execute"
-	KindImage   ToolKind = "image"
+	KindRead        ToolKind = "read"
+	KindEdit        ToolKind = "edit"
+	KindSearch      ToolKind = "search"
+	KindExecute     ToolKind = "execute"
+	KindImage       ToolKind = "image"
+	KindInteractive ToolKind = "interactive"
 )
 
 // MutatorKinds are tool kinds that can modify the filesystem.
@@ -110,26 +111,28 @@ type ToolMetadata struct {
 
 // Tool specification names
 const (
-	ReadFileToolName     = "read_file"
-	WriteFileToolName    = "write_file"
-	EditFileToolName     = "edit_file"
-	ShellToolName        = "shell"
-	GrepToolName         = "grep"
-	GlobToolName         = "glob"
-	ViewImageToolName    = "view_image"
+	ReadFileToolName      = "read_file"
+	WriteFileToolName     = "write_file"
+	EditFileToolName      = "edit_file"
+	ShellToolName         = "shell"
+	GrepToolName          = "grep"
+	GlobToolName          = "glob"
+	ViewImageToolName     = "view_image"
 	ImageGenerateToolName = "image_generate"
+	AskUserToolName       = "ask_user"
 )
 
 // CLI name to spec name mapping
 var ToolNameMapping = map[string]string{
-	"read":  ReadFileToolName,
-	"write": WriteFileToolName,
-	"edit":  EditFileToolName,
-	"shell": ShellToolName,
-	"grep":  GrepToolName,
-	"find":  GlobToolName,
-	"view":  ViewImageToolName,
-	"image": ImageGenerateToolName,
+	"read":     ReadFileToolName,
+	"write":    WriteFileToolName,
+	"edit":     EditFileToolName,
+	"shell":    ShellToolName,
+	"grep":     GrepToolName,
+	"find":     GlobToolName,
+	"view":     ViewImageToolName,
+	"image":    ImageGenerateToolName,
+	"ask_user": AskUserToolName,
 }
 
 // SpecToCliName returns the CLI name for a tool spec name.
@@ -142,11 +145,12 @@ var SpecToCliName = map[string]string{
 	GlobToolName:          "find",
 	ViewImageToolName:     "view",
 	ImageGenerateToolName: "image",
+	AskUserToolName:       "ask_user",
 }
 
 // AllToolNames returns all valid CLI tool names.
 func AllToolNames() []string {
-	return []string{"read", "write", "edit", "shell", "grep", "find", "view", "image"}
+	return []string{"read", "write", "edit", "shell", "grep", "find", "view", "image", "ask_user"}
 }
 
 // ValidToolName checks if a name is a valid CLI tool name.
@@ -168,6 +172,8 @@ func GetToolKind(specName string) ToolKind {
 		return KindExecute
 	case ImageGenerateToolName:
 		return KindImage
+	case AskUserToolName:
+		return KindInteractive
 	default:
 		return ""
 	}

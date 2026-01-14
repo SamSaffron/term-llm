@@ -71,22 +71,14 @@ func (s StreamingIndicator) Render(styles *Styles) string {
 		b.WriteString("...")
 	}
 
-	// Always show stats/meta if present
-	hasContent := len(s.Segments) > 0 || s.Spinner != ""
-
-	if hasContent {
-		if len(s.Segments) > 0 {
-			b.WriteString(" |")
-		} else {
-			b.WriteString(" ")
+	// Show tokens and time during spinner phase only (not during tool execution)
+	if len(s.Segments) == 0 {
+		b.WriteString(" ")
+		if s.Tokens > 0 {
+			b.WriteString(fmt.Sprintf("%s tokens | ", formatTokenCount(s.Tokens)))
 		}
+		b.WriteString(fmt.Sprintf("%.1fs", s.Elapsed.Seconds()))
 	}
-
-	if s.Tokens > 0 {
-		b.WriteString(fmt.Sprintf(" %s tokens |", formatTokenCount(s.Tokens)))
-	}
-
-	b.WriteString(fmt.Sprintf(" %.1fs", s.Elapsed.Seconds()))
 
 	if s.Status != "" {
 		b.WriteString(" | ")

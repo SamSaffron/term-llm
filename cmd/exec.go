@@ -223,6 +223,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 		if len(localToolSpecs) > 0 {
 			approvalHooks = func(pause, resume func()) {
 				tools.SetApprovalHooks(pause, resume)
+				tools.SetAskUserHooks(pause, resume)
 			}
 		}
 
@@ -231,6 +232,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 			return collectSuggestions(ctx, engine, req, progressCh, stats)
 		}, approvalHooks)
 		tools.ClearApprovalHooks() // Safe to call even if hooks weren't set
+		tools.ClearAskUserHooks()  // Safe to call even if hooks weren't set
 		if err != nil {
 			if err.Error() == "cancelled" {
 				return nil
@@ -323,6 +325,10 @@ func collectSuggestions(ctx context.Context, engine *llm.Engine, req llm.Request
 				stats.ToolStart()
 			} else {
 				stats.ToolEnd()
+			}
+			// Skip phase update for ask_user - it has its own UI
+			if event.ToolName == tools.AskUserToolName {
+				continue
 			}
 			var phase string
 			if event.ToolName == "" {
