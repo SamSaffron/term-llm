@@ -36,10 +36,11 @@ var (
 	askNativeSearch   bool
 	askNoNativeSearch bool
 	// Tool flags
-	askTools      string
-	askReadDirs   []string
-	askWriteDirs  []string
-	askShellAllow []string
+	askTools         string
+	askReadDirs      []string
+	askWriteDirs     []string
+	askShellAllow    []string
+	askSystemMessage string
 )
 
 var askCmd = &cobra.Command{
@@ -82,6 +83,7 @@ func init() {
 	askCmd.Flags().StringArrayVar(&askReadDirs, "read-dir", nil, "Directories for read/grep/find/view tools (repeatable)")
 	askCmd.Flags().StringArrayVar(&askWriteDirs, "write-dir", nil, "Directories for write/edit tools (repeatable)")
 	askCmd.Flags().StringArrayVar(&askShellAllow, "shell-allow", nil, "Shell command patterns to allow (repeatable, glob syntax)")
+	askCmd.Flags().StringVarP(&askSystemMessage, "system-message", "m", "", "System message/instructions for the LLM (overrides config)")
 	if err := askCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion); err != nil {
 		panic(fmt.Sprintf("failed to register provider completion: %v", err))
 	}
@@ -161,8 +163,12 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	userPrompt := prompt.AskUserPrompt(question, files, stdinContent)
 	messages := []llm.Message{}
-	if cfg.Ask.Instructions != "" {
-		messages = append(messages, llm.SystemText(cfg.Ask.Instructions))
+	instructions := cfg.Ask.Instructions
+	if askSystemMessage != "" {
+		instructions = askSystemMessage
+	}
+	if instructions != "" {
+		messages = append(messages, llm.SystemText(instructions))
 	}
 	messages = append(messages, llm.UserText(userPrompt))
 
@@ -682,11 +688,10 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case askDoneMsg:
 		m.thinking = false
-		// Mark all text segments as complete and render
-		m.tracker.CompleteTextSegments(func(text string) string {
-			rendered, _ := renderMarkdown(text, m.width)
-			return rendered
-		})
+		// Mark all text segments as complete but don't pre-render.
+		// This ensures RenderSegments uses the same renderMarkdown path
+		// as streaming, keeping line counts consistent for scrollback tracking.
+		m.tracker.CompleteTextSegments(nil)
 
 		// Print any remaining content to scrollback before quitting
 		completed := m.tracker.CompletedSegments()

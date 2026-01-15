@@ -31,10 +31,11 @@ var (
 	editDiffFormat string
 	editMCP        string
 	// Tool flags
-	editTools      string
-	editReadDirs   []string
-	editWriteDirs  []string
-	editShellAllow []string
+	editTools         string
+	editReadDirs      []string
+	editWriteDirs     []string
+	editShellAllow    []string
+	editSystemMessage string
 )
 
 var editCmd = &cobra.Command{
@@ -78,6 +79,7 @@ func init() {
 	editCmd.Flags().StringArrayVar(&editReadDirs, "read-dir", nil, "Directories for read/grep/find/view tools (repeatable)")
 	editCmd.Flags().StringArrayVar(&editWriteDirs, "write-dir", nil, "Directories for write/edit tools (repeatable)")
 	editCmd.Flags().StringArrayVar(&editShellAllow, "shell-allow", nil, "Shell command patterns to allow (repeatable, glob syntax)")
+	editCmd.Flags().StringVarP(&editSystemMessage, "system-message", "m", "", "System message/instructions for the LLM (overrides config)")
 	if err := editCmd.MarkFlagRequired("file"); err != nil {
 		panic(fmt.Sprintf("failed to mark file flag required: %v", err))
 	}
@@ -204,6 +206,11 @@ func runEdit(cmd *cobra.Command, args []string) error {
 
 	if err := applyProviderOverrides(cfg, cfg.Edit.Provider, cfg.Edit.Model, editProvider); err != nil {
 		return err
+	}
+
+	// Override instructions if flag is set
+	if editSystemMessage != "" {
+		cfg.Edit.Instructions = editSystemMessage
 	}
 
 	initThemeFromConfig(cfg)

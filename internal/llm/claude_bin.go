@@ -55,14 +55,17 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 			defer cleanup()
 		}
 
+		// Always extract system prompt from full messages (it should persist across turns)
+		systemPrompt := p.extractSystemPrompt(req.Messages)
+
 		// When resuming a session, only send new messages (claude CLI has the rest)
 		messagesToSend := req.Messages
 		if p.sessionID != "" && p.messagesSent > 0 && p.messagesSent < len(req.Messages) {
 			messagesToSend = req.Messages[p.messagesSent:]
 		}
 
-		// Build the prompt from messages
-		systemPrompt, userPrompt := p.buildPrompt(messagesToSend)
+		// Build the conversation prompt from messages to send
+		userPrompt := p.buildConversationPrompt(messagesToSend)
 
 		// Add system prompt if present
 		if systemPrompt != "" {
@@ -287,16 +290,29 @@ func (p *ClaudeBinProvider) createMCPConfig(tools []ToolSpec) (string, func()) {
 	return configPath, cleanup
 }
 
-// buildPrompt constructs a prompt string and system prompt from term-llm messages.
-// Returns (systemPrompt, userPrompt).
-func (p *ClaudeBinProvider) buildPrompt(messages []Message) (string, string) {
+// extractSystemPrompt extracts system messages from the full message list.
+// This should always be called with the complete messages to ensure the system
+// prompt persists across turns in multi-turn conversations.
+func (p *ClaudeBinProvider) extractSystemPrompt(messages []Message) string {
 	var systemParts []string
+	for _, msg := range messages {
+		if msg.Role == RoleSystem {
+			systemParts = append(systemParts, collectTextParts(msg.Parts))
+		}
+	}
+	return strings.TrimSpace(strings.Join(systemParts, "\n\n"))
+}
+
+// buildConversationPrompt constructs the conversation prompt from messages.
+// This can be called with a subset of messages when resuming a session.
+func (p *ClaudeBinProvider) buildConversationPrompt(messages []Message) string {
 	var conversationParts []string
 
 	for _, msg := range messages {
 		switch msg.Role {
 		case RoleSystem:
-			systemParts = append(systemParts, collectTextParts(msg.Parts))
+			// System messages handled separately by extractSystemPrompt
+			continue
 		case RoleUser:
 			text := collectTextParts(msg.Parts)
 			if text != "" {
@@ -325,10 +341,7 @@ func (p *ClaudeBinProvider) buildPrompt(messages []Message) (string, string) {
 		}
 	}
 
-	systemPrompt := strings.TrimSpace(strings.Join(systemParts, "\n\n"))
-	userPrompt := strings.TrimSpace(strings.Join(conversationParts, "\n\n"))
-
-	return systemPrompt, userPrompt
+	return strings.TrimSpace(strings.Join(conversationParts, "\n\n"))
 }
 
 // mapModelToClaudeArg converts a model name to claude CLI argument.

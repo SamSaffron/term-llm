@@ -23,10 +23,11 @@ var (
 	chatNativeSearch    bool
 	chatNoNativeSearch  bool
 	// Tool flags
-	chatTools      string
-	chatReadDirs   []string
-	chatWriteDirs  []string
-	chatShellAllow []string
+	chatTools         string
+	chatReadDirs      []string
+	chatWriteDirs     []string
+	chatShellAllow    []string
+	chatSystemMessage string
 )
 
 var chatCmd = &cobra.Command{
@@ -72,6 +73,7 @@ func init() {
 	chatCmd.Flags().StringArrayVar(&chatReadDirs, "read-dir", nil, "Directories for read/grep/find/view tools (repeatable)")
 	chatCmd.Flags().StringArrayVar(&chatWriteDirs, "write-dir", nil, "Directories for write/edit tools (repeatable)")
 	chatCmd.Flags().StringArrayVar(&chatShellAllow, "shell-allow", nil, "Shell command patterns to allow (repeatable, glob syntax)")
+	chatCmd.Flags().StringVarP(&chatSystemMessage, "system-message", "m", "", "System message/instructions for the LLM (overrides config)")
 	if err := chatCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion); err != nil {
 		panic(fmt.Sprintf("failed to register provider completion: %v", err))
 	}
@@ -95,6 +97,11 @@ func runChat(cmd *cobra.Command, args []string) error {
 
 	if err := applyProviderOverrides(cfg, cfg.Chat.Provider, cfg.Chat.Model, chatProvider); err != nil {
 		return err
+	}
+
+	// Override instructions if flag is set
+	if chatSystemMessage != "" {
+		cfg.Chat.Instructions = chatSystemMessage
 	}
 
 	initThemeFromConfig(cfg)

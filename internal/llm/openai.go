@@ -84,7 +84,7 @@ func (p *OpenAIProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 
 func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
-		system, inputItems := buildOpenAIInput(req.Messages)
+		inputItems := buildOpenAIInput(req.Messages)
 		if len(inputItems) == 0 {
 			return fmt.Errorf("no user content provided")
 		}
@@ -113,9 +113,6 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 			},
 			Tools: tools,
 		}
-		if system != "" {
-			params.Instructions = openai.String(system)
-		}
 		if req.ParallelToolCalls {
 			params.ParallelToolCalls = openai.Bool(true)
 		}
@@ -138,10 +135,11 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 		}
 
 		if req.Debug {
+			systemPreview := collectRoleText(req.Messages, RoleSystem)
 			userPreview := collectRoleText(req.Messages, RoleUser)
 			fmt.Fprintln(os.Stderr, "=== DEBUG: OpenAI Stream Request ===")
 			fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
-			fmt.Fprintf(os.Stderr, "System: %s\n", truncate(system, 200))
+			fmt.Fprintf(os.Stderr, "Developer: %s\n", truncate(systemPreview, 200))
 			fmt.Fprintf(os.Stderr, "User: %s\n", truncate(userPreview, 200))
 			fmt.Fprintf(os.Stderr, "Input Items: %d\n", len(inputItems))
 			fmt.Fprintf(os.Stderr, "Tools: %d\n", len(tools))
@@ -314,16 +312,14 @@ func buildOpenAIToolChoice(choice ToolChoice) responses.ResponseNewParamsToolCho
 	}
 }
 
-func buildOpenAIInput(messages []Message) (string, responses.ResponseInputParam) {
-	var systemParts []string
+func buildOpenAIInput(messages []Message) responses.ResponseInputParam {
 	inputItems := make(responses.ResponseInputParam, 0, len(messages))
 
 	for _, msg := range messages {
 		switch msg.Role {
 		case RoleSystem:
-			if text := collectTextParts(msg.Parts); text != "" {
-				systemParts = append(systemParts, text)
-			}
+			// Use developer role for system messages in Responses API
+			inputItems = append(inputItems, buildOpenAIMessageItems(responses.EasyInputMessageRoleDeveloper, msg.Parts)...)
 		case RoleUser:
 			inputItems = append(inputItems, buildOpenAIMessageItems(responses.EasyInputMessageRoleUser, msg.Parts)...)
 		case RoleAssistant:
@@ -358,7 +354,7 @@ func buildOpenAIInput(messages []Message) (string, responses.ResponseInputParam)
 		}
 	}
 
-	return strings.Join(systemParts, "\n\n"), inputItems
+	return inputItems
 }
 
 func buildOpenAIMessageItems(role responses.EasyInputMessageRole, parts []Part) []responses.ResponseInputItemUnionParam {

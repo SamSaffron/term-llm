@@ -31,10 +31,11 @@ var (
 	execNativeSearch    bool
 	execNoNativeSearch  bool
 	// Tool flags
-	execTools      string
-	execReadDirs   []string
-	execWriteDirs  []string
-	execShellAllow []string
+	execTools         string
+	execReadDirs      []string
+	execWriteDirs     []string
+	execShellAllow    []string
+	execSystemMessage string
 )
 
 const (
@@ -83,6 +84,7 @@ func init() {
 	execCmd.Flags().StringArrayVar(&execReadDirs, "read-dir", nil, "Directories for read/grep/find/view tools (repeatable)")
 	execCmd.Flags().StringArrayVar(&execWriteDirs, "write-dir", nil, "Directories for write/edit tools (repeatable)")
 	execCmd.Flags().StringArrayVar(&execShellAllow, "shell-allow", nil, "Shell command patterns to allow (repeatable, glob syntax)")
+	execCmd.Flags().StringVarP(&execSystemMessage, "system-message", "m", "", "System message/instructions for the LLM (overrides config)")
 	if err := execCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion); err != nil {
 		panic(fmt.Sprintf("failed to register provider completion: %v", err))
 	}
@@ -183,8 +185,12 @@ func runExec(cmd *cobra.Command, args []string) error {
 	}()
 
 	// Main loop for refinement
+	instructions := cfg.Exec.Instructions
+	if execSystemMessage != "" {
+		instructions = execSystemMessage
+	}
 	for {
-		systemPrompt := prompt.SuggestSystemPrompt(shell, cfg.Exec.Instructions, numSuggestions, execSearch)
+		systemPrompt := prompt.SuggestSystemPrompt(shell, instructions, numSuggestions, execSearch)
 		userPrompt := prompt.SuggestUserPrompt(userInput, files, stdinContent)
 		// Build tools list: suggest_commands + any local tools
 		reqTools := []llm.ToolSpec{llm.SuggestCommandsToolSpec(numSuggestions)}
