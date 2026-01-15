@@ -223,7 +223,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.textarea.SetWidth(m.width)
 		m.completions.SetSize(m.width, m.height)
 		m.dialog.SetSize(m.width, m.height)
-		return m, nil
+
+		// Reprint history to scrollback after clearing screen
+		if len(m.session.Messages) > 0 {
+			history := m.renderHistory()
+			return m, tea.Sequence(tea.ClearScreen, tea.Println(history))
+		}
+		return m, tea.ClearScreen
 
 	case tea.KeyMsg:
 		return m.handleKeyMsg(msg)
@@ -1178,6 +1184,9 @@ func (m *Model) maybeFlushToScrollback() tea.Cmd {
 func (m *Model) renderStreamingInline() string {
 	var b strings.Builder
 
+	// Extra newline after user's message for visual separation
+	b.WriteString("\n")
+
 	// Get segments from tracker
 	var completed, active []ui.Segment
 	if m.tracker != nil {
@@ -1209,13 +1218,15 @@ func (m *Model) renderStreamingInline() string {
 		wavePos = m.tracker.WavePos
 	}
 	indicator := ui.StreamingIndicator{
-		Spinner:    m.spinner.View(),
-		Phase:      m.phase,
-		Elapsed:    time.Since(m.streamStartTime),
-		Tokens:     m.currentTokens,
-		ShowCancel: true,
-		Segments:   active,
-		WavePos:    wavePos,
+		Spinner:        m.spinner.View(),
+		Phase:          m.phase,
+		Elapsed:        time.Since(m.streamStartTime),
+		Tokens:         m.currentTokens,
+		ShowCancel:     true,
+		Segments:       active,
+		WavePos:        wavePos,
+		Width:          m.width,
+		RenderMarkdown: m.renderMd,
 	}
 	b.WriteString(indicator.Render(m.styles))
 	b.WriteString("\n")
@@ -1240,8 +1251,13 @@ func (m *Model) renderInputInline() string {
 
 	var b strings.Builder
 
+	// Separator line above input (no extra newline - content already has one)
+	separator := lipgloss.NewStyle().Foreground(theme.Muted).Render(strings.Repeat("─", m.width))
+	b.WriteString(separator)
+
 	// Show attached files if any
 	if len(m.files) > 0 {
+		b.WriteString("\n")
 		var fileNames []string
 		for _, f := range m.files {
 			fileNames = append(fileNames, f.Name)
@@ -1249,11 +1265,15 @@ func (m *Model) renderInputInline() string {
 		filesInfo := lipgloss.NewStyle().Foreground(theme.Secondary).Render(
 			fmt.Sprintf("[with: %s]", strings.Join(fileNames, ", ")))
 		b.WriteString(filesInfo)
-		b.WriteString("\n")
 	}
 
 	// Input prompt
+	b.WriteString("\n")
 	b.WriteString(m.textarea.View())
+	b.WriteString("\n")
+
+	// Separator line below input
+	b.WriteString(separator)
 	b.WriteString("\n")
 
 	// Status line

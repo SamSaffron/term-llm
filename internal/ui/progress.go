@@ -44,14 +44,16 @@ type ProgressUpdate struct {
 
 // StreamingIndicator renders a consistent streaming status line
 type StreamingIndicator struct {
-	Spinner    string        // spinner.View() output
-	Phase      string        // "Thinking", "Searching", etc.
-	Elapsed    time.Duration
-	Tokens     int          // 0 = don't show
-	Status     string       // optional status (e.g., "editing main.go")
-	ShowCancel bool         // show "(esc to cancel)"
-	Segments   []Segment    // active tool segments for wave animation
-	WavePos    int          // current wave position
+	Spinner        string                       // spinner.View() output
+	Phase          string                       // "Thinking", "Searching", etc.
+	Elapsed        time.Duration
+	Tokens         int                          // 0 = don't show
+	Status         string                       // optional status (e.g., "editing main.go")
+	ShowCancel     bool                         // show "(esc to cancel)"
+	Segments       []Segment                    // active tool segments for wave animation
+	WavePos        int                          // current wave position
+	Width          int                          // terminal width for markdown rendering
+	RenderMarkdown func(string, int) string     // markdown renderer for text segments
 }
 
 // Render returns the formatted streaming indicator string
@@ -60,7 +62,7 @@ func (s StreamingIndicator) Render(styles *Styles) string {
 
 	// Render active tools if any
 	if len(s.Segments) > 0 {
-		b.WriteString(RenderSegments(s.Segments, 0, s.WavePos, nil))
+		b.WriteString(RenderSegments(s.Segments, s.Width, s.WavePos, s.RenderMarkdown))
 		// When tools are active, we don't show the spinner/phase line
 		// as the wave animation provides the progress feedback.
 	} else {

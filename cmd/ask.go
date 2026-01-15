@@ -862,14 +862,16 @@ func (m askStreamModel) View() string {
 		}
 
 		indicator := ui.StreamingIndicator{
-			Spinner:    m.spinner.View(),
-			Phase:      phase,
-			Elapsed:    time.Since(m.startTime),
-			Tokens:     m.totalTokens,
-			Status:     m.retryStatus,
-			ShowCancel: true,
-			Segments:   active,
-			WavePos:    m.tracker.WavePos,
+			Spinner:        m.spinner.View(),
+			Phase:          phase,
+			Elapsed:        time.Since(m.startTime),
+			Tokens:         m.totalTokens,
+			Status:         m.retryStatus,
+			ShowCancel:     true,
+			Segments:       active,
+			WavePos:        m.tracker.WavePos,
+			Width:          m.width,
+			RenderMarkdown: renderMd,
 		}.Render(m.styles)
 		b.WriteString(indicator)
 	}
