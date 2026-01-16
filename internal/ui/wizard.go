@@ -40,12 +40,6 @@ func detectAvailableProviders() []providerOption {
 			hint:      "set OPENAI_API_KEY",
 		},
 		{
-			name:      "OpenAI Codex - ~/.codex/auth.json",
-			value:     "codex",
-			available: isCodexOAuthAvailable(),
-			hint:      "run 'codex login'",
-		},
-		{
 			name:      "Gemini - GEMINI_API_KEY",
 			value:     "gemini",
 			available: os.Getenv("GEMINI_API_KEY") != "",
@@ -77,17 +71,6 @@ func detectAvailableProviders() []providerOption {
 // isClaudeBinaryAvailable checks if the claude CLI is in PATH
 func isClaudeBinaryAvailable() bool {
 	_, err := exec.LookPath("claude")
-	return err == nil
-}
-
-// isCodexOAuthAvailable checks if Codex OAuth credentials exist
-func isCodexOAuthAvailable() bool {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return false
-	}
-	authPath := filepath.Join(home, ".codex", "auth.json")
-	_, err = os.Stat(authPath)
 	return err == nil
 }
 
@@ -292,9 +275,6 @@ func RunSetupWizard() (*config.Config, error) {
 				Model: "claude-sonnet-4-5",
 			},
 			"openai": {
-				Model: "gpt-5.2",
-			},
-			"codex": {
 				Model: "gpt-5.2",
 			},
 			"claude-bin": {

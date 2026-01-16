@@ -5,7 +5,6 @@ import "time"
 // Provider constants for identifying data sources
 const (
 	ProviderClaudeCode = "claude-code"
-	ProviderCodex      = "codex"
 	ProviderGeminiCLI  = "gemini-cli"
 	ProviderTermLLM    = "term-llm"
 )

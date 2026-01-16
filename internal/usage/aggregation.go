@@ -190,9 +190,6 @@ func LoadAllUsage() LoadResult {
 	claude := LoadClaudeUsage()
 	result.Merge(claude)
 
-	codex := LoadCodexUsage()
-	result.Merge(codex)
-
 	gemini := LoadGeminiUsage()
 	result.Merge(gemini)
 

@@ -53,13 +53,6 @@ var builtinProviderMeta = map[string]struct {
 		supportsListModels: true,
 		description:        "OpenAI Responses API",
 	},
-	"codex": {
-		credential:         "oauth",
-		envVar:             "",
-		requiresKey:        false,
-		supportsListModels: false,
-		description:        "OpenAI via Codex OAuth (~/.codex/auth.json)",
-	},
 	"chatgpt": {
 		credential:         "oauth",
 		envVar:             "",

@@ -33,30 +33,8 @@ var ProviderModels = map[string][]string{
 		"gpt-5-nano",
 		"o3-mini",
 	},
-	"codex": {
-		// gpt-5.2-codex with reasoning effort variants
-		"gpt-5.2-codex",
-		"gpt-5.2-codex-low",
-		"gpt-5.2-codex-medium",
-		"gpt-5.2-codex-high",
-		"gpt-5.2-codex-xhigh",
-		// gpt-5.2 base
-		"gpt-5.2",
-		"gpt-5.2-low",
-		"gpt-5.2-medium",
-		"gpt-5.2-high",
-		"gpt-5.2-xhigh",
-		// Older models
-		"gpt-5.1-codex-max",
-		"gpt-5.1-codex",
-		"gpt-5.1-codex-mini",
-		"gpt-5.1",
-		"gpt-5-codex",
-		"gpt-5-codex-mini",
-		"gpt-5",
-	},
 	"chatgpt": {
-		// Same models as codex - uses ChatGPT backend API
+		// Uses ChatGPT backend API with native OAuth
 		"gpt-5.2-codex",
 		"gpt-5.2-codex-low",
 		"gpt-5.2-codex-medium",
@@ -136,7 +114,7 @@ var ImageProviderModels = map[string][]string{
 
 // GetBuiltInProviderNames returns the built-in provider type names
 func GetBuiltInProviderNames() []string {
-	return []string{"anthropic", "openai", "codex", "chatgpt", "openrouter", "gemini", "gemini-cli", "zen", "claude-bin", "xai"}
+	return []string{"anthropic", "openai", "chatgpt", "openrouter", "gemini", "gemini-cli", "zen", "claude-bin", "xai"}
 }
 
 // GetProviderNames returns valid provider names from config plus built-in types.

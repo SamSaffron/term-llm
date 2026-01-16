@@ -18,8 +18,7 @@ func ShouldUseUnifiedDiff(model, diffFormat string) bool {
 	case "replace":
 		return false
 	default: // "auto" or empty
-		// Auto-detect: use unified diff for codex models
-		return strings.Contains(strings.ToLower(model), "codex")
+		return false
 	}
 }
 

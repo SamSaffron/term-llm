@@ -133,12 +133,6 @@ func configShow(cmd *cobra.Command, args []string) error {
 
 func printCredentialStatus(provider, credType, apiKey, envVar string) {
 	switch credType {
-	case "codex":
-		if apiKey != "" {
-			fmt.Printf("  credentials: codex [OK]\n")
-		} else {
-			fmt.Printf("  credentials: codex [FAILED - run 'codex login']\n")
-		}
 	case "gemini-cli":
 		if apiKey != "" {
 			fmt.Printf("  credentials: gemini-cli [OK]\n")
@@ -297,7 +291,6 @@ providers:
 
   openai:
     model: gpt-5.2
-    # credentials: api_key (default) or codex (Codex CLI OAuth)
 
   gemini:
     model: gemini-3-flash-preview
@@ -841,8 +834,6 @@ func configValueCompletions(key, toComplete string) []string {
 			switch providerType {
 			case config.ProviderTypeAnthropic:
 				creds = []string{"api_key", "claude"}
-			case config.ProviderTypeOpenAI:
-				creds = []string{"api_key", "codex"}
 			case config.ProviderTypeGemini:
 				creds = []string{"api_key", "gemini-cli"}
 			default:

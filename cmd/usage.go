@@ -87,8 +87,6 @@ func runUsage(cmd *cobra.Command, args []string) error {
 	switch usageProvider {
 	case "claude-code", "claude":
 		providerFilter = usage.ProviderClaudeCode
-	case "codex":
-		providerFilter = usage.ProviderCodex
 	case "gemini-cli", "gemini":
 		providerFilter = usage.ProviderGeminiCLI
 	case "term-llm":
@@ -96,7 +94,7 @@ func runUsage(cmd *cobra.Command, args []string) error {
 	case "", "all":
 		providerFilter = ""
 	default:
-		return fmt.Errorf("unknown provider: %s (use claude-code, codex, gemini-cli, or term-llm)", usageProvider)
+		return fmt.Errorf("unknown provider: %s (use claude-code, gemini-cli, or term-llm)", usageProvider)
 	}
 
 	// Filter entries
@@ -405,8 +403,6 @@ func formatProviderName(provider string) string {
 	switch provider {
 	case usage.ProviderClaudeCode:
 		return "Claude Code"
-	case usage.ProviderCodex:
-		return "Codex"
 	case usage.ProviderGeminiCLI:
 		return "Gemini CLI"
 	case usage.ProviderTermLLM:

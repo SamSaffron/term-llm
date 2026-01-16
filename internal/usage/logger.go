@@ -108,8 +108,6 @@ func GetTrackedExternallyBy(providerName string) string {
 	switch providerName {
 	case "claude-bin":
 		return ProviderClaudeCode
-	case "codex":
-		return ProviderCodex
 	case "gemini-cli":
 		return ProviderGeminiCLI
 	default:

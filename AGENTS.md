@@ -7,7 +7,7 @@
 - `internal/llm/` has a clean `Provider` interface with implementations:
   - `anthropic.go` – Anthropic API (Claude)
   - `openai.go` – OpenAI Responses API (API key auth, OPENAI_API_KEY)
-  - `codex.go` – OpenAI Responses API via Codex OAuth (~/.codex/auth.json)
+  - `chatgpt.go` – ChatGPT via native OAuth (ChatGPT Plus/Pro subscription)
   - `gemini.go` – Google Gemini API (consumer API key)
   - `gemini_cli.go` – Google Code Assist API (gemini-cli OAuth)
   - `zen.go` – OpenCode Zen API (free tier, no API key required)
@@ -33,7 +33,6 @@
 - Image providers have separate config under `image.{gemini,openai,flux}` with their own `api_key` settings.
 - Environment variables `GEMINI_API_KEY`, `OPENAI_API_KEY`, `BFL_API_KEY` are used as fallbacks for image provider keys.
 - Alternatively, use OAuth credentials from companion CLIs:
-  - Codex OAuth credentials from `~/.codex/auth.json`
   - gemini-cli OAuth credentials from `~/.gemini/oauth_creds.json`
 - OpenCode Zen (`default_provider: zen`) works without an API key (free tier), or set `ZEN_API_KEY` for paid models.
 - Use `--provider` flag to override provider for testing: `term-llm exec --provider zen "list files"`

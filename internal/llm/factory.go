@@ -9,12 +9,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/credentials"
 )
 
-// IsCodexModel returns true if the model name indicates a Codex model.
-func IsCodexModel(model string) bool {
-	model = strings.ToLower(model)
-	return strings.Contains(model, "codex")
-}
-
 // ParseProviderModel parses "provider:model" or just "provider" from a flag value.
 // Returns (provider, model, error). Model will be empty if not specified.
 // For the new config format, we validate against configured providers or built-in types.
@@ -91,14 +85,6 @@ func NewProviderByName(cfg *config.Config, name string, model string) (Provider,
 			}
 			provider := NewGeminiProvider(apiKey, model)
 			return WrapWithRetry(provider, DefaultRetryConfig()), nil
-		case config.ProviderTypeCodex:
-			// codex uses OAuth credentials from ~/.codex/auth.json
-			creds, err := credentials.GetCodexCredentials()
-			if err != nil {
-				return nil, fmt.Errorf("provider codex: %w", err)
-			}
-			provider := NewCodexProvider(creds.AccessToken, model, creds.AccountID)
-			return WrapWithRetry(provider, DefaultRetryConfig()), nil
 		case config.ProviderTypeChatGPT:
 			// chatgpt uses native OAuth with interactive authentication
 			provider, err := NewChatGPTProvider(model)
@@ -151,13 +137,6 @@ func newProviderInternal(cfg *config.Config) (Provider, error) {
 				return nil, fmt.Errorf("provider %q requires XAI_API_KEY environment variable or explicit config", cfg.DefaultProvider)
 			}
 			return NewXAIProvider(apiKey, ""), nil
-		case config.ProviderTypeCodex:
-			// codex uses OAuth credentials from ~/.codex/auth.json
-			creds, err := credentials.GetCodexCredentials()
-			if err != nil {
-				return nil, fmt.Errorf("provider codex: %w", err)
-			}
-			return NewCodexProvider(creds.AccessToken, "", creds.AccountID), nil
 		case config.ProviderTypeChatGPT:
 			// chatgpt uses native OAuth with interactive authentication
 			return NewChatGPTProvider("")
@@ -197,20 +176,6 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 
 	case config.ProviderTypeOpenAI:
 		return NewOpenAIProvider(cfg.ResolvedAPIKey, cfg.Model), nil
-
-	case config.ProviderTypeCodex:
-		// Fetch credentials from ~/.codex/auth.json if not explicitly configured
-		apiKey := cfg.ResolvedAPIKey
-		accountID := cfg.AccountID
-		if apiKey == "" {
-			creds, err := credentials.GetCodexCredentials()
-			if err != nil {
-				return nil, fmt.Errorf("codex: %w", err)
-			}
-			apiKey = creds.AccessToken
-			accountID = creds.AccountID
-		}
-		return NewCodexProvider(apiKey, cfg.Model, accountID), nil
 
 	case config.ProviderTypeChatGPT:
 		// ChatGPT uses native OAuth with interactive authentication

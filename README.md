@@ -13,7 +13,7 @@ A Swiss Army knife for your terminal—AI-powered commands, answers, and images 
 - **File context**: Include files, clipboard, stdin, or line ranges as context (`-f`)
 - **Image generation**: Create and edit images (Gemini, OpenAI, xAI, Flux)
 - **MCP servers**: Extend with external tools via [Model Context Protocol](https://modelcontextprotocol.io)
-- **Multiple providers**: Anthropic, OpenAI, Codex, xAI (Grok), OpenRouter, Gemini, Gemini CLI, Zen (free tier), Claude Code (claude-bin), Ollama, LM Studio
+- **Multiple providers**: Anthropic, OpenAI, ChatGPT, xAI (Grok), OpenRouter, Gemini, Gemini CLI, Zen (free tier), Claude Code (claude-bin), Ollama, LM Studio
 - **Local LLMs**: Run with Ollama, LM Studio, or any OpenAI-compatible server
 - **Free tier available**: Try it out with Zen (no API key required)
 
@@ -56,7 +56,7 @@ go build
 
 ## Setup
 
-On first run, term-llm will prompt you to choose a provider (Anthropic, OpenAI, Codex, xAI, OpenRouter, Gemini, Gemini CLI, Zen, Claude Code (claude-bin), Ollama, or LM Studio).
+On first run, term-llm will prompt you to choose a provider (Anthropic, OpenAI, ChatGPT, xAI, OpenRouter, Gemini, Gemini CLI, Zen, Claude Code (claude-bin), Ollama, or LM Studio).
 
 ### Option 1: Try it free with Zen
 
@@ -95,7 +95,27 @@ export OPENROUTER_API_KEY=your-key
 export GEMINI_API_KEY=your-key
 ```
 
-### Option 3: Use xAI (Grok)
+### Option 3: Use ChatGPT (Plus/Pro subscription)
+
+If you have a ChatGPT Plus or Pro subscription, you can use the `chatgpt` provider with native OAuth authentication:
+
+```bash
+term-llm ask --provider chatgpt "explain this code"
+term-llm ask --provider chatgpt:gpt-5.2-codex "code question"
+```
+
+On first use, you'll be prompted to authenticate via browser. Credentials are stored locally and refreshed automatically.
+
+```yaml
+# In ~/.config/term-llm/config.yaml
+default_provider: chatgpt
+
+providers:
+  chatgpt:
+    model: gpt-5.2-codex
+```
+
+### Option 4: Use xAI (Grok)
 
 [xAI](https://x.ai) provides access to Grok models with native web search and X (Twitter) search capabilities.
 
@@ -128,7 +148,7 @@ term-llm ask --provider xai:grok-4-1-fast-reasoning "solve this step by step"
 term-llm ask --provider xai:grok-code-fast-1 "review this code"
 ```
 
-### Option 4: Use OpenRouter
+### Option 5: Use OpenRouter
 
 [OpenRouter](https://openrouter.ai) provides a unified OpenAI-compatible API across many models. term-llm sends attribution headers by default.
 
@@ -155,7 +175,19 @@ term-llm models --provider lmstudio   # List local LM Studio models
 term-llm models --json                # Output as JSON
 ```
 
-### Option 5: Use local LLMs (Ollama, LM Studio)
+### Provider Discovery
+
+List all available LLM providers and their configuration status:
+
+```bash
+term-llm providers                 # List all providers
+term-llm providers --configured    # Only show configured providers
+term-llm providers --builtin       # Only show built-in providers
+term-llm providers anthropic       # Show details for specific provider
+term-llm providers --json          # JSON output
+```
+
+### Option 6: Use local LLMs (Ollama, LM Studio)
 
 Run models locally with [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai):
 
@@ -197,7 +229,7 @@ providers:
 
 The `models` list enables tab completion for `--provider my-server:<TAB>`. The configured `model` is always included in completions.
 
-### Option 6: Use Claude Code (claude-bin)
+### Option 7: Use Claude Code (claude-bin)
 
 If you have [Claude Code](https://claude.ai/code) installed and logged in, you can use the `claude-bin` provider to run completions via the [Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk). This requires no API key - it uses Claude Code's existing authentication.
 
@@ -226,14 +258,11 @@ providers:
 - Model selection: `opus`, `sonnet` (default), `haiku`
 - Works immediately if Claude Code is installed and logged in
 
-### Option 7: Use existing CLI credentials
+### Option 8: Use existing CLI credentials (gemini-cli)
 
-If you have [Codex](https://github.com/openai/codex) or [gemini-cli](https://github.com/google-gemini/gemini-cli) installed and logged in, term-llm can use those credentials directly:
+If you have [gemini-cli](https://github.com/google-gemini/gemini-cli) installed and logged in, term-llm can use those credentials directly:
 
 ```bash
-# Use Codex credentials (no config needed)
-term-llm ask --provider codex "explain this code"
-
 # Use gemini-cli credentials (no config needed)
 term-llm ask --provider gemini-cli "explain this code"
 ```
@@ -242,9 +271,6 @@ Or configure as default:
 
 ```yaml
 # In ~/.config/term-llm/config.yaml
-default_provider: codex      # uses ~/.codex/auth.json
-
-# Or for Gemini CLI:
 default_provider: gemini-cli  # uses ~/.gemini/oauth_creds.json
 ```
 
@@ -268,6 +294,30 @@ Use `term-llm chat` for a persistent session.
 term-llm chat
 ```
 
+### Chat Keyboard Shortcuts
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Send message |
+| `Shift+Enter` | Insert newline |
+| `Ctrl+C` | Quit |
+| `Ctrl+K` | Clear conversation |
+| `Ctrl+S` | Toggle web search |
+| `Ctrl+P` | Command palette |
+| `Ctrl+M` | Toggle MCP servers |
+| `Esc` | Cancel streaming |
+
+### Chat Slash Commands
+
+| Command | Description |
+|---------|-------------|
+| `/help` | Show help |
+| `/clear` | Clear conversation |
+| `/model` | Show current model |
+| `/search` | Toggle web search |
+| `/mcp` | Manage MCP servers |
+| `/quit` | Exit chat |
+
 ### Flags
 
 | Flag | Short | Description |
@@ -282,6 +332,9 @@ term-llm chat
 | `--print-only` | `-p` | Print the command instead of executing it |
 | `--debug` | `-d` | Show provider debug information |
 | `--debug-raw` | | Emit raw debug logs with timestamps (tool calls/results, raw requests) |
+| `--system-message` | `-m` | Custom system message/instructions |
+| `--stats` | | Show session statistics (time, tokens, tool calls) |
+| `--max-turns` | | Max agentic turns for tool execution (default: 20 for exec, 200 for chat) |
 
 ### Examples
 
@@ -382,6 +435,7 @@ term-llm image "landscape" --no-display         # don't show in terminal
 | OpenAI | gpt-image-1 | `OPENAI_API_KEY` | `image.openai.api_key` |
 | xAI | grok-2-image-1212 | `XAI_API_KEY` | `image.xai.api_key` |
 | Flux | flux-2-pro / flux-kontext-pro | `BFL_API_KEY` | `image.flux.api_key` |
+| OpenRouter | various | `OPENROUTER_API_KEY` | `image.openrouter.api_key` |
 
 Image providers use their own credentials, separate from text providers. This allows using different API keys or accounts for text vs image generation.
 
@@ -576,6 +630,49 @@ MCP servers are stored in `~/.config/term-llm/mcp.json`:
 
 HTTP transport uses [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports) (MCP spec 2025-03-26).
 
+## Built-in Tools
+
+term-llm includes built-in tools for file operations and shell access. Enable them with the `--tools` flag:
+
+```bash
+term-llm chat --tools read,shell,grep    # Enable specific tools
+term-llm exec --tools read,write,edit,shell,grep,find,view  # Multiple tools
+```
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `read` | Read file contents (with line ranges) |
+| `write` | Create/overwrite files |
+| `edit` | Edit existing files |
+| `shell` | Execute shell commands |
+| `grep` | Search file contents (uses ripgrep) |
+| `find` | Find files by glob pattern |
+| `view` | Display images in terminal |
+| `image` | Generate images via configured provider |
+| `ask_user` | Prompt user for input |
+
+### Tool Permissions
+
+Control which directories and commands tools can access:
+
+```bash
+# Allow read access to specific directories
+term-llm chat --tools read,grep --read-dir /home/user/projects
+
+# Allow write access to specific directories
+term-llm chat --tools read,write,edit --read-dir . --write-dir ./src
+
+# Allow specific shell commands (glob patterns)
+term-llm chat --tools shell --shell-allow "git *" --shell-allow "npm test"
+```
+
+When a tool needs access outside approved directories, term-llm prompts for approval with options:
+- **Proceed once**: Allow this specific action
+- **Proceed always**: Allow for this session (memory only)
+- **Proceed always + save**: Allow permanently (saved to config)
+
 ## Shell Integration (Recommended)
 
 Commands run by term-llm don't appear in your shell history. To fix this, add a shell function that uses `--print-only` mode.
@@ -635,6 +732,21 @@ term-llm upgrade --version v0.2.0  # Install specific version
 ```
 
 To disable update checks, set `TERM_LLM_SKIP_UPDATE_CHECK=1`.
+
+## Usage Tracking
+
+View token usage and costs from local CLI tools:
+
+```bash
+term-llm usage                           # Show all usage
+term-llm usage --provider claude-code    # Filter by provider
+term-llm usage --provider term-llm       # term-llm usage only
+term-llm usage --since 20250101          # From specific date
+term-llm usage --breakdown               # Per-model breakdown
+term-llm usage --json                    # JSON output
+```
+
+Supported sources: Claude Code, Gemini CLI, and term-llm's own usage logs.
 
 Config is stored at `~/.config/term-llm/config.yaml`:
 
@@ -707,7 +819,7 @@ edit:
   diff_format: auto  # auto, udiff, or replace
 
 image:
-  provider: gemini  # gemini, openai, xai, or flux
+  provider: gemini  # gemini, openai, xai, flux, or openrouter
   output_dir: ~/Pictures/term-llm
 
   gemini:
@@ -725,6 +837,10 @@ image:
   flux:
     api_key: ${BFL_API_KEY}
     # model: flux-2-pro
+
+  openrouter:
+    api_key: ${OPENROUTER_API_KEY}
+    # model: google/gemini-2.5-flash-image
 
 search:
   provider: duckduckgo  # exa, brave, google, or duckduckgo (default)
@@ -885,17 +1001,17 @@ Most providers use API keys via environment variables. Some providers use OAuth 
 |----------|-------------------|-------------|
 | `anthropic` | `ANTHROPIC_API_KEY` | Anthropic API key |
 | `openai` | `OPENAI_API_KEY` | OpenAI API key |
+| `chatgpt` | `~/.config/term-llm/chatgpt_creds.json` | ChatGPT Plus/Pro OAuth |
 | `gemini` | `GEMINI_API_KEY` | Google AI Studio API key |
 | `gemini-cli` | `~/.gemini/oauth_creds.json` | gemini-cli OAuth (Google Code Assist) |
-| `codex` | `~/.codex/auth.json` | Codex CLI OAuth |
 | `xai` | `XAI_API_KEY` | xAI API key |
 | `openrouter` | `OPENROUTER_API_KEY` | OpenRouter API key |
 | `zen` | `ZEN_API_KEY` (optional) | Empty for free tier |
 
-**Codex** and **Gemini CLI** work without any configuration if you have the respective CLI tools installed and logged in:
+**ChatGPT** and **Gemini CLI** work without any API key if you have a subscription or the CLI installed and logged in:
 
 ```bash
-term-llm ask --provider codex "question"      # uses ~/.codex/auth.json
+term-llm ask --provider chatgpt "question"    # uses ChatGPT Plus/Pro subscription
 term-llm ask --provider gemini-cli "question" # uses ~/.gemini/oauth_creds.json
 ```
 

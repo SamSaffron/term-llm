@@ -16,7 +16,6 @@ type ProviderType string
 const (
 	ProviderTypeAnthropic    ProviderType = "anthropic"
 	ProviderTypeOpenAI       ProviderType = "openai"
-	ProviderTypeCodex        ProviderType = "codex"
 	ProviderTypeChatGPT      ProviderType = "chatgpt"
 	ProviderTypeGemini       ProviderType = "gemini"
 	ProviderTypeGeminiCLI    ProviderType = "gemini-cli"
@@ -31,7 +30,6 @@ const (
 var builtInProviderTypes = map[string]ProviderType{
 	"anthropic":  ProviderTypeAnthropic,
 	"openai":     ProviderTypeOpenAI,
-	"codex":      ProviderTypeCodex,
 	"chatgpt":    ProviderTypeChatGPT,
 	"gemini":     ProviderTypeGemini,
 	"gemini-cli": ProviderTypeGeminiCLI,
@@ -398,14 +396,6 @@ func resolveProviderCredentials(name string, cfg *ProviderConfig) error {
 		if cfg.ResolvedAPIKey == "" {
 			cfg.ResolvedAPIKey = os.Getenv("OPENAI_API_KEY")
 		}
-
-	case ProviderTypeCodex:
-		creds, err := credentials.GetCodexCredentials()
-		if err != nil {
-			return err
-		}
-		cfg.ResolvedAPIKey = creds.AccessToken
-		cfg.AccountID = creds.AccountID
 
 	case ProviderTypeGemini:
 		cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
