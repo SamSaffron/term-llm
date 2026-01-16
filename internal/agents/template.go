@@ -35,6 +35,9 @@ type TemplateContext struct {
 
 	// System
 	OS string // Operating system
+
+	// Agent context
+	ResourceDir string // Directory containing agent resources (for builtin agents)
 }
 
 // NewTemplateContext creates a context with current environment values.
@@ -89,6 +92,12 @@ func (c TemplateContext) WithFiles(files []string) TemplateContext {
 	return c
 }
 
+// WithResourceDir sets the resource directory for an agent.
+func (c TemplateContext) WithResourceDir(resourceDir string) TemplateContext {
+	c.ResourceDir = resourceDir
+	return c
+}
+
 // ExpandTemplate replaces {{variable}} placeholders with values from context.
 func ExpandTemplate(text string, ctx TemplateContext) string {
 	// Match {{variable}} patterns
@@ -125,6 +134,8 @@ func ExpandTemplate(text string, ctx TemplateContext) string {
 			return ctx.FileCount
 		case "os":
 			return ctx.OS
+		case "resource_dir":
+			return ctx.ResourceDir
 		default:
 			// Unknown variables are left as-is
 			return match

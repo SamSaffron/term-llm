@@ -181,7 +181,7 @@ func runAgentsList(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Println()
-	fmt.Println("Use with: term-llm ask --agent <name> ...")
+	fmt.Println("Use with: term-llm ask --agent <name> ... or term-llm chat --agent <name>")
 	return nil
 }
 

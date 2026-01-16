@@ -82,6 +82,8 @@ func (r *LocalToolRegistry) registerTool(cliName string) error {
 		tool = NewGlobTool(r.approval)
 	case ViewImageToolName:
 		tool = NewViewImageTool(r.approval)
+	case ShowImageToolName:
+		tool = NewShowImageTool(r.approval)
 	case ImageGenerateToolName:
 		tool = NewImageGenerateTool(r.approval, r.appConfig, r.config.ImageProvider)
 	case AskUserToolName:

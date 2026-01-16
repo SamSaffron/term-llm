@@ -18,7 +18,7 @@ import (
 )
 
 var (
-	imageInput       string
+	imageInputs      []string
 	imageProvider    string
 	imageOutput      string
 	imageNoDisplay   bool
@@ -37,19 +37,23 @@ By default:
   - Displays via icat (if available)
   - Copies to clipboard
 
+Multi-image editing (Gemini, OpenRouter only):
+  Use -i multiple times to combine or work with multiple images.
+
 Examples:
   term-llm image "a robot cat on a rainbow"
   term-llm image "make it purple" -i photo.png
-  term-llm image "add a hat" -i clipboard        # edit from clipboard
+  term-llm image "add a hat" -i clipboard           # edit from clipboard
+  term-llm image "combine these" -i a.png -i b.png  # multi-image (Gemini/OpenRouter)
   term-llm image "sunset over mountains" --provider flux
   term-llm image "logo design" -o ./output.png --no-display
-  echo "a sunset" | term-llm image                # prompt from stdin`,
+  echo "a sunset" | term-llm image                  # prompt from stdin`,
 	Args: cobra.ArbitraryArgs,
 	RunE: runImage,
 }
 
 func init() {
-	imageCmd.Flags().StringVarP(&imageInput, "input", "i", "", "Input image to edit")
+	imageCmd.Flags().StringArrayVarP(&imageInputs, "input", "i", nil, "Input image(s) to edit (can be specified multiple times)")
 	imageCmd.Flags().StringVar(&imageProvider, "provider", "", "Override provider (gemini, openai, flux, openrouter)")
 	imageCmd.Flags().StringVarP(&imageOutput, "output", "o", "", "Custom output path")
 	imageCmd.Flags().BoolVar(&imageNoDisplay, "no-display", false, "Skip terminal display")
@@ -103,43 +107,56 @@ func runImage(cmd *cobra.Command, args []string) error {
 
 	var result *image.ImageResult
 
-	if imageInput != "" {
+	if len(imageInputs) > 0 {
 		// Edit mode
 		if !provider.SupportsEdit() {
 			return fmt.Errorf("provider %s does not support image editing", provider.Name())
 		}
 
-		var inputData []byte
-		var inputPath string
+		// Check multi-image support
+		if len(imageInputs) > 1 && !provider.SupportsMultiImage() {
+			return fmt.Errorf("provider %s does not support multiple input images", provider.Name())
+		}
 
-		if imageInput == "clipboard" {
-			// Read from clipboard
-			inputData, err = image.ReadFromClipboard()
-			if err != nil {
-				return fmt.Errorf("failed to read from clipboard: %w", err)
+		// Read all input images
+		var inputImages []image.InputImage
+		for _, inputPath := range imageInputs {
+			var inputData []byte
+			var resolvedPath string
+
+			if inputPath == "clipboard" {
+				// Read from clipboard
+				inputData, err = image.ReadFromClipboard()
+				if err != nil {
+					return fmt.Errorf("failed to read from clipboard: %w", err)
+				}
+				resolvedPath = "clipboard.png" // for MIME type detection
+				if imageDebug {
+					fmt.Fprintf(os.Stderr, "Input image: clipboard (%d bytes)\n", len(inputData))
+				}
+			} else {
+				// Read from file
+				inputData, err = os.ReadFile(inputPath)
+				if err != nil {
+					return fmt.Errorf("failed to read input image %s: %w", inputPath, err)
+				}
+				resolvedPath = inputPath
+				if imageDebug {
+					fmt.Fprintf(os.Stderr, "Input image: %s (%d bytes)\n", inputPath, len(inputData))
+				}
 			}
-			inputPath = "clipboard.png" // for MIME type detection
-			if imageDebug {
-				fmt.Fprintf(os.Stderr, "Input image: clipboard (%d bytes)\n", len(inputData))
-			}
-		} else {
-			// Read from file
-			inputData, err = os.ReadFile(imageInput)
-			if err != nil {
-				return fmt.Errorf("failed to read input image: %w", err)
-			}
-			inputPath = imageInput
-			if imageDebug {
-				fmt.Fprintf(os.Stderr, "Input image: %s (%d bytes)\n", imageInput, len(inputData))
-			}
+
+			inputImages = append(inputImages, image.InputImage{
+				Data: inputData,
+				Path: resolvedPath,
+			})
 		}
 
 		result, err = runImageWithSpinner(ctx, provider, func() (*image.ImageResult, error) {
 			return provider.Edit(ctx, image.EditRequest{
-				Prompt:     prompt,
-				InputImage: inputData,
-				InputPath:  inputPath,
-				Debug:      imageDebug,
+				Prompt:      prompt,
+				InputImages: inputImages,
+				Debug:       imageDebug,
 			})
 		}, "Editing image")
 		if err != nil {

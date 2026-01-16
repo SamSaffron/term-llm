@@ -45,6 +45,10 @@ func (p *XAIProvider) SupportsEdit() bool {
 	return false // xAI doesn't support image editing
 }
 
+func (p *XAIProvider) SupportsMultiImage() bool {
+	return false
+}
+
 func (p *XAIProvider) Generate(ctx context.Context, req GenerateRequest) (*ImageResult, error) {
 	genReq := xaiGenerateRequest{
 		Model:          p.model,

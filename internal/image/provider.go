@@ -20,12 +20,17 @@ type GenerateRequest struct {
 	Debug  bool
 }
 
+// InputImage represents a single input image for editing
+type InputImage struct {
+	Data []byte // Image data
+	Path string // Path for MIME type detection
+}
+
 // EditRequest contains parameters for image editing
 type EditRequest struct {
-	Prompt     string
-	InputImage []byte // Input image data
-	InputPath  string // Path for MIME type detection
-	Debug      bool
+	Prompt      string
+	InputImages []InputImage // Input images for editing (supports multiple for some providers)
+	Debug       bool
 }
 
 // ImageProvider is the interface for image generation providers
@@ -41,6 +46,9 @@ type ImageProvider interface {
 
 	// SupportsEdit returns true if the provider supports image editing
 	SupportsEdit() bool
+
+	// SupportsMultiImage returns true if the provider supports multiple input images
+	SupportsMultiImage() bool
 }
 
 // NewImageProvider creates an image provider based on config

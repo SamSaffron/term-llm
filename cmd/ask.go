@@ -260,6 +260,14 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	if agent != nil && agent.SystemPrompt != "" {
 		// Expand template variables in agent system prompt
 		templateCtx := agents.NewTemplateContext().WithFiles(askFiles)
+
+		// Extract resources for builtin agents and set resource_dir
+		if agents.IsBuiltinAgent(agent.Name) {
+			if resourceDir, err := agents.ExtractBuiltinResources(agent.Name); err == nil {
+				templateCtx = templateCtx.WithResourceDir(resourceDir)
+			}
+		}
+
 		instructions = agents.ExpandTemplate(agent.SystemPrompt, templateCtx)
 	}
 	if askSystemMessage != "" {

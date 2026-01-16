@@ -41,6 +41,10 @@ func (p *FluxProvider) SupportsEdit() bool {
 	return true
 }
 
+func (p *FluxProvider) SupportsMultiImage() bool {
+	return false
+}
+
 func (p *FluxProvider) Generate(ctx context.Context, req GenerateRequest) (*ImageResult, error) {
 	genReq := fluxGenerateRequest{
 		Prompt:      req.Prompt,
@@ -62,9 +66,19 @@ func (p *FluxProvider) Generate(ctx context.Context, req GenerateRequest) (*Imag
 }
 
 func (p *FluxProvider) Edit(ctx context.Context, req EditRequest) (*ImageResult, error) {
+	// Flux only supports single image editing
+	if len(req.InputImages) == 0 {
+		return nil, fmt.Errorf("no input image provided")
+	}
+	if len(req.InputImages) > 1 {
+		return nil, fmt.Errorf("Flux only supports single image editing, got %d images", len(req.InputImages))
+	}
+
+	inputImg := req.InputImages[0]
+
 	// Create data URI for input image
-	mimeType := getMimeType(req.InputPath)
-	dataURI := fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(req.InputImage))
+	mimeType := getMimeType(inputImg.Path)
+	dataURI := fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(inputImg.Data))
 
 	editReq := fluxKontextRequest{
 		Prompt:       req.Prompt,

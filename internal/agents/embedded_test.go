@@ -65,6 +65,7 @@ func TestIsBuiltinAgent(t *testing.T) {
 		name     string
 		expected bool
 	}{
+		{"artist", true},
 		{"codebase", true},
 		{"commit", true},
 		{"editor", true},
@@ -95,6 +96,7 @@ func TestBuiltinAgentConfigs(t *testing.T) {
 		expectedAutoRun    bool
 		expectedHasScripts bool
 	}{
+		{"artist", true, 50, true, true, false},
 		{"codebase", true, 50, true, true, true},
 		{"commit", true, 200, true, true, true},
 		{"editor", true, 200, false, false, false},
@@ -139,11 +141,12 @@ func TestBuiltinAgentConfigs(t *testing.T) {
 func TestGetBuiltinAgentNames(t *testing.T) {
 	names := GetBuiltinAgentNames()
 
-	if len(names) != 6 {
-		t.Errorf("len(GetBuiltinAgentNames()) = %d, want 6", len(names))
+	if len(names) != 7 {
+		t.Errorf("len(GetBuiltinAgentNames()) = %d, want 7", len(names))
 	}
 
 	expected := map[string]bool{
+		"artist":     true,
 		"codebase":   true,
 		"commit":     true,
 		"editor":     true,

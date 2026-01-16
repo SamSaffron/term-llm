@@ -35,6 +35,10 @@ func (p *OpenRouterProvider) SupportsEdit() bool {
 	return true
 }
 
+func (p *OpenRouterProvider) SupportsMultiImage() bool {
+	return true
+}
+
 func (p *OpenRouterProvider) Generate(ctx context.Context, req GenerateRequest) (*ImageResult, error) {
 	content := []orMessageContent{
 		{Type: "text", Text: req.Prompt},
@@ -43,18 +47,22 @@ func (p *OpenRouterProvider) Generate(ctx context.Context, req GenerateRequest) 
 }
 
 func (p *OpenRouterProvider) Edit(ctx context.Context, req EditRequest) (*ImageResult, error) {
-	mimeType := getMimeType(req.InputPath)
-	dataURL := fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(req.InputImage))
+	var content []orMessageContent
 
-	content := []orMessageContent{
-		{
+	// Add all input images first
+	for _, img := range req.InputImages {
+		mimeType := getMimeType(img.Path)
+		dataURL := fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(img.Data))
+		content = append(content, orMessageContent{
 			Type: "image_url",
 			ImageURL: &orImageURL{
 				URL: dataURL,
 			},
-		},
-		{Type: "text", Text: req.Prompt},
+		})
 	}
+
+	// Add the prompt as the final content
+	content = append(content, orMessageContent{Type: "text", Text: req.Prompt})
 	return p.doRequest(ctx, content, req.Debug)
 }
 

@@ -72,16 +72,24 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 			args = append(args, "--system-prompt", systemPrompt)
 		}
 
-		// Add user prompt as positional argument
-		args = append(args, "--", userPrompt)
+		// Note: We pass the prompt via stdin instead of command line args
+		// to avoid "argument list too long" errors with large tool results (e.g., base64 images)
 
 		if req.Debug {
 			fmt.Fprintln(os.Stderr, "=== DEBUG: Claude CLI Command ===")
 			fmt.Fprintf(os.Stderr, "claude %s\n", strings.Join(args, " "))
+			fmt.Fprintf(os.Stderr, "Prompt length: %d bytes (via stdin)\n", len(userPrompt))
 			fmt.Fprintln(os.Stderr, "=================================")
 		}
 
 		cmd := exec.CommandContext(ctx, "claude", args...)
+
+		// Set up stdin pipe for the prompt
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			return fmt.Errorf("failed to get stdin pipe: %w", err)
+		}
+
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
 			return fmt.Errorf("failed to get stdout pipe: %w", err)
@@ -90,6 +98,12 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 		if err := cmd.Start(); err != nil {
 			return fmt.Errorf("failed to start claude: %w", err)
 		}
+
+		// Write prompt to stdin and close
+		go func() {
+			defer stdin.Close()
+			stdin.Write([]byte(userPrompt))
+		}()
 
 		scanner := bufio.NewScanner(stdout)
 		// Increase buffer size for large JSON messages
@@ -334,8 +348,10 @@ func (p *ClaudeBinProvider) buildConversationPrompt(messages []Message) string {
 			// Format tool results
 			for _, part := range msg.Parts {
 				if part.Type == PartToolResult && part.ToolResult != nil {
+					// Process content to handle embedded images
+					content := p.processToolResultContent(part.ToolResult.Content)
 					conversationParts = append(conversationParts,
-						fmt.Sprintf("Tool result (%s): %s", part.ToolResult.Name, part.ToolResult.Content))
+						fmt.Sprintf("Tool result (%s): %s", part.ToolResult.Name, content))
 				}
 			}
 		}
@@ -364,6 +380,30 @@ func mapClaudeToolName(claudeName string) string {
 		return strings.TrimPrefix(claudeName, "mcp__term-llm__")
 	}
 	return claudeName
+}
+
+// processToolResultContent handles embedded image data in tool results.
+// It strips [IMAGE_DATA:mime:base64] markers since Claude CLI can read images
+// natively from the file path that's already in the text part of the result.
+func (p *ClaudeBinProvider) processToolResultContent(content string) string {
+	const prefix = "[IMAGE_DATA:"
+	const suffix = "]"
+
+	start := strings.Index(content, prefix)
+	if start == -1 {
+		return content
+	}
+
+	end := strings.Index(content[start:], suffix)
+	if end == -1 {
+		return content
+	}
+
+	// Strip the image data marker - the file path is already in the text
+	// (e.g., "Image loaded: /path/to/file.png") and Claude CLI can read it natively
+	imageMarker := content[start : start+end+1]
+	result := strings.Replace(content, imageMarker, "[Image data stripped - Claude can read the file path above]", 1)
+	return strings.TrimSpace(result)
 }
 
 // JSON message types from claude CLI output

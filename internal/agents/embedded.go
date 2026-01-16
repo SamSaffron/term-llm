@@ -3,17 +3,20 @@ package agents
 import (
 	"embed"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
-//go:embed builtin/*/agent.yaml builtin/*/system.md
+//go:embed builtin/*/*.yaml builtin/*/*.md
 var builtinFS embed.FS
 
 // builtinAgentNames lists all built-in agent names.
 var builtinAgentNames = []string{
+	"artist",
 	"codebase",
 	"commit",
 	"editor",
@@ -95,4 +98,71 @@ func copyBuiltinAgent(name, destDir, newName string) error {
 	}
 
 	return nil
+}
+
+// GetBuiltinResourceDir returns the cache directory where builtin agent resources are extracted.
+// Uses $XDG_CACHE_HOME if set, otherwise ~/.cache
+func GetBuiltinResourceDir() (string, error) {
+	var cacheDir string
+	if xdgCache := os.Getenv("XDG_CACHE_HOME"); xdgCache != "" {
+		cacheDir = xdgCache
+	} else {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		cacheDir = filepath.Join(homeDir, ".cache")
+	}
+	return filepath.Join(cacheDir, "term-llm", "agents"), nil
+}
+
+// ExtractBuiltinResources extracts additional resource files for a builtin agent to the cache directory.
+// This extracts all .md files except system.md (which is loaded into the agent struct).
+func ExtractBuiltinResources(name string) (string, error) {
+	if !IsBuiltinAgent(name) {
+		return "", fmt.Errorf("not a builtin agent: %s", name)
+	}
+
+	resourceDir, err := GetBuiltinResourceDir()
+	if err != nil {
+		return "", err
+	}
+
+	agentDir := filepath.Join(resourceDir, name)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		return "", fmt.Errorf("create resource dir: %w", err)
+	}
+
+	// Read all files in the agent's builtin directory
+	entries, err := fs.ReadDir(builtinFS, fmt.Sprintf("builtin/%s", name))
+	if err != nil {
+		return "", fmt.Errorf("read builtin dir: %w", err)
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		filename := entry.Name()
+		// Skip agent.yaml and system.md (these are handled separately)
+		if filename == "agent.yaml" || filename == "system.md" {
+			continue
+		}
+		// Only extract .md files
+		if !strings.HasSuffix(filename, ".md") {
+			continue
+		}
+
+		content, err := builtinFS.ReadFile(fmt.Sprintf("builtin/%s/%s", name, filename))
+		if err != nil {
+			continue
+		}
+
+		destPath := filepath.Join(agentDir, filename)
+		if err := os.WriteFile(destPath, content, 0644); err != nil {
+			return "", fmt.Errorf("write %s: %w", filename, err)
+		}
+	}
+
+	return agentDir, nil
 }

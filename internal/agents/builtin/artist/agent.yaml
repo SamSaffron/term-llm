@@ -1,0 +1,11 @@
+name: artist
+description: "Image generation and editing expert"
+
+tools:
+  enabled: [image, view, read, find, grep, shell, ask_user]
+
+shell:
+  allow: ["file *", "ls *", "identify *"]
+  auto_run: true
+
+max_turns: 50

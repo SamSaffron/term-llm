@@ -8,19 +8,20 @@ import (
 
 func TestExpandTemplate(t *testing.T) {
 	ctx := TemplateContext{
-		Date:      "2026-01-16",
-		DateTime:  "2026-01-16 14:30:00",
-		Time:      "14:30",
-		Year:      "2026",
-		Cwd:       "/home/user/project",
-		CwdName:   "project",
-		Home:      "/home/user",
-		User:      "testuser",
-		GitBranch: "main",
-		GitRepo:   "term-llm",
-		Files:     "main.go, utils.go",
-		FileCount: "2",
-		OS:        "linux",
+		Date:        "2026-01-16",
+		DateTime:    "2026-01-16 14:30:00",
+		Time:        "14:30",
+		Year:        "2026",
+		Cwd:         "/home/user/project",
+		CwdName:     "project",
+		Home:        "/home/user",
+		User:        "testuser",
+		GitBranch:   "main",
+		GitRepo:     "term-llm",
+		Files:       "main.go, utils.go",
+		FileCount:   "2",
+		OS:          "linux",
+		ResourceDir: "/home/user/.cache/term-llm/agents/artist",
 	}
 
 	tests := []struct {
@@ -50,8 +51,13 @@ func TestExpandTemplate(t *testing.T) {
 		},
 		{
 			name:     "all variables",
-			template: "{{date}} {{datetime}} {{time}} {{year}} {{cwd}} {{cwd_name}} {{home}} {{user}} {{git_branch}} {{git_repo}} {{files}} {{file_count}} {{os}}",
-			expected: "2026-01-16 2026-01-16 14:30:00 14:30 2026 /home/user/project project /home/user testuser main term-llm main.go, utils.go 2 linux",
+			template: "{{date}} {{datetime}} {{time}} {{year}} {{cwd}} {{cwd_name}} {{home}} {{user}} {{git_branch}} {{git_repo}} {{files}} {{file_count}} {{os}} {{resource_dir}}",
+			expected: "2026-01-16 2026-01-16 14:30:00 14:30 2026 /home/user/project project /home/user testuser main term-llm main.go, utils.go 2 linux /home/user/.cache/term-llm/agents/artist",
+		},
+		{
+			name:     "resource_dir variable",
+			template: "Read styles at {{resource_dir}}/styles.md",
+			expected: "Read styles at /home/user/.cache/term-llm/agents/artist/styles.md",
 		},
 		{
 			name:     "adjacent variables",

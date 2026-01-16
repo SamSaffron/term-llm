@@ -31,10 +31,13 @@ func NewImageGenerateTool(approval *ApprovalManager, cfg *config.Config, provide
 
 // ImageGenerateArgs are the arguments for image_generate.
 type ImageGenerateArgs struct {
-	Prompt      string `json:"prompt"`
-	InputImage  string `json:"input_image,omitempty"`  // Path for editing/variation
-	AspectRatio string `json:"aspect_ratio,omitempty"` // e.g., "16:9", "4:3"
-	OutputPath  string `json:"output_path,omitempty"`  // Save location
+	Prompt          string   `json:"prompt"`
+	InputImage      string   `json:"input_image,omitempty"`       // Single path for editing/variation (backward compat)
+	InputImages     []string `json:"input_images,omitempty"`      // Multiple paths for multi-image editing
+	AspectRatio     string   `json:"aspect_ratio,omitempty"`      // e.g., "16:9", "4:3"
+	OutputPath      string   `json:"output_path,omitempty"`       // Save location
+	ShowImage       *bool    `json:"show_image,omitempty"`        // Display via icat (default: true)
+	CopyToClipboard *bool    `json:"copy_to_clipboard,omitempty"` // Copy to clipboard (default: true)
 }
 
 func (t *ImageGenerateTool) Spec() llm.ToolSpec {
@@ -50,7 +53,12 @@ func (t *ImageGenerateTool) Spec() llm.ToolSpec {
 				},
 				"input_image": map[string]interface{}{
 					"type":        "string",
-					"description": "Path to input image for editing/variation (optional)",
+					"description": "Path to input image for editing/variation (optional, for single image)",
+				},
+				"input_images": map[string]interface{}{
+					"type":        "array",
+					"items":       map[string]interface{}{"type": "string"},
+					"description": "Paths to multiple input images for multi-image editing (optional, supported by Gemini and OpenRouter)",
 				},
 				"aspect_ratio": map[string]interface{}{
 					"type":        "string",
@@ -60,6 +68,16 @@ func (t *ImageGenerateTool) Spec() llm.ToolSpec {
 				"output_path": map[string]interface{}{
 					"type":        "string",
 					"description": "Path to save the generated image (defaults to temp file)",
+				},
+				"show_image": map[string]interface{}{
+					"type":        "boolean",
+					"description": "Display generated image via terminal (icat) (default: true)",
+					"default":     true,
+				},
+				"copy_to_clipboard": map[string]interface{}{
+					"type":        "boolean",
+					"description": "Copy generated image to system clipboard (default: true)",
+					"default":     true,
 				},
 			},
 			"required":             []string{"prompt"},
@@ -120,19 +138,28 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 
 	var result *image.ImageResult
 
-	// Check if this is an edit or generation
+	// Consolidate input_image and input_images into a single slice
+	var inputPaths []string
 	if a.InputImage != "" {
-		// Check read permissions for input image via approval manager
+		inputPaths = append(inputPaths, a.InputImage)
+	}
+	inputPaths = append(inputPaths, a.InputImages...)
+
+	// Check if this is an edit or generation
+	if len(inputPaths) > 0 {
+		// Check read permissions for all input images via approval manager
 		if t.approval != nil {
-			outcome, err := t.approval.CheckPathApproval(ImageGenerateToolName, a.InputImage, a.InputImage, false)
-			if err != nil {
-				if toolErr, ok := err.(*ToolError); ok {
-					return formatToolError(toolErr), nil
+			for _, inputPath := range inputPaths {
+				outcome, err := t.approval.CheckPathApproval(ImageGenerateToolName, inputPath, inputPath, false)
+				if err != nil {
+					if toolErr, ok := err.(*ToolError); ok {
+						return formatToolError(toolErr), nil
+					}
+					return formatToolError(NewToolError(ErrPermissionDenied, err.Error())), nil
 				}
-				return formatToolError(NewToolError(ErrPermissionDenied, err.Error())), nil
-			}
-			if outcome == Cancel {
-				return formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", a.InputImage)), nil
+				if outcome == Cancel {
+					return formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", inputPath)), nil
+				}
 			}
 		}
 
@@ -141,20 +168,31 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 			return formatToolError(NewToolErrorf(ErrImageGenFailed, "provider %s does not support image editing", provider.Name())), nil
 		}
 
-		// Read input image
-		inputData, err := os.ReadFile(a.InputImage)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return formatToolError(NewToolError(ErrFileNotFound, a.InputImage)), nil
+		// Check if multi-image is supported when multiple images provided
+		if len(inputPaths) > 1 && !provider.SupportsMultiImage() {
+			return formatToolError(NewToolErrorf(ErrImageGenFailed, "provider %s does not support multiple input images", provider.Name())), nil
+		}
+
+		// Read all input images
+		var inputImages []image.InputImage
+		for _, inputPath := range inputPaths {
+			inputData, err := os.ReadFile(inputPath)
+			if err != nil {
+				if os.IsNotExist(err) {
+					return formatToolError(NewToolError(ErrFileNotFound, inputPath)), nil
+				}
+				return formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to read input image: %v", err)), nil
 			}
-			return formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to read input image: %v", err)), nil
+			inputImages = append(inputImages, image.InputImage{
+				Data: inputData,
+				Path: inputPath,
+			})
 		}
 
 		// Edit image
 		result, err = provider.Edit(ctx, image.EditRequest{
-			Prompt:     a.Prompt,
-			InputImage: inputData,
-			InputPath:  a.InputImage,
+			Prompt:      a.Prompt,
+			InputImages: inputImages,
 		})
 		if err != nil {
 			return formatToolError(NewToolErrorf(ErrImageGenFailed, "image edit failed: %v", err)), nil
@@ -197,6 +235,18 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 	// Get image dimensions (approximate from data size)
 	width, height := estimateImageDimensions(result.Data)
 
+	// Display image via icat if requested (default: true)
+	showImage := a.ShowImage == nil || *a.ShowImage
+	if showImage {
+		image.DisplayImage(outputPath)
+	}
+
+	// Copy to clipboard if requested (default: true)
+	copyClipboard := a.CopyToClipboard == nil || *a.CopyToClipboard
+	if copyClipboard {
+		image.CopyToClipboard(outputPath, result.Data)
+	}
+
 	// Build result
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Generated image saved to: %s\n", outputPath))
@@ -206,7 +256,13 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 	if width > 0 && height > 0 {
 		sb.WriteString(fmt.Sprintf("Dimensions: ~%dx%d\n", width, height))
 	}
-	sb.WriteString(fmt.Sprintf("Provider: %s", provider.Name()))
+	sb.WriteString(fmt.Sprintf("Provider: %s\n", provider.Name()))
+	if showImage {
+		sb.WriteString("Displayed: yes\n")
+	}
+	if copyClipboard {
+		sb.WriteString("Copied to clipboard: yes")
+	}
 
 	return sb.String(), nil
 }

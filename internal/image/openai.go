@@ -42,6 +42,10 @@ func (p *OpenAIProvider) SupportsEdit() bool {
 	return true
 }
 
+func (p *OpenAIProvider) SupportsMultiImage() bool {
+	return false
+}
+
 func (p *OpenAIProvider) Generate(ctx context.Context, req GenerateRequest) (*ImageResult, error) {
 	genReq := openaiGenerateRequest{
 		Model:        openaiModel,
@@ -69,20 +73,30 @@ func (p *OpenAIProvider) Generate(ctx context.Context, req GenerateRequest) (*Im
 }
 
 func (p *OpenAIProvider) Edit(ctx context.Context, req EditRequest) (*ImageResult, error) {
+	// OpenAI only supports single image editing
+	if len(req.InputImages) == 0 {
+		return nil, fmt.Errorf("no input image provided")
+	}
+	if len(req.InputImages) > 1 {
+		return nil, fmt.Errorf("OpenAI only supports single image editing, got %d images", len(req.InputImages))
+	}
+
+	inputImg := req.InputImages[0]
+
 	// Build multipart form
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 
 	// Add image file with proper mime type
-	mimeType := getMimeType(req.InputPath)
+	mimeType := getMimeType(inputImg.Path)
 	h := make(textproto.MIMEHeader)
-	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="image[]"; filename="%s"`, filepath.Base(req.InputPath)))
+	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="image[]"; filename="%s"`, filepath.Base(inputImg.Path)))
 	h.Set("Content-Type", mimeType)
 	part, err := writer.CreatePart(h)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create form file: %w", err)
 	}
-	if _, err := part.Write(req.InputImage); err != nil {
+	if _, err := part.Write(inputImg.Data); err != nil {
 		return nil, fmt.Errorf("failed to write image data: %w", err)
 	}
 

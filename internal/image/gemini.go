@@ -31,22 +31,31 @@ func (p *GeminiProvider) SupportsEdit() bool {
 	return true
 }
 
+func (p *GeminiProvider) SupportsMultiImage() bool {
+	return true
+}
+
 func (p *GeminiProvider) Generate(ctx context.Context, req GenerateRequest) (*ImageResult, error) {
 	parts := []geminiPart{{Text: req.Prompt}}
 	return p.doRequest(ctx, parts, req.Debug)
 }
 
 func (p *GeminiProvider) Edit(ctx context.Context, req EditRequest) (*ImageResult, error) {
-	mimeType := getMimeType(req.InputPath)
-	parts := []geminiPart{
-		{
+	var parts []geminiPart
+
+	// Add all input images as parts
+	for _, img := range req.InputImages {
+		mimeType := getMimeType(img.Path)
+		parts = append(parts, geminiPart{
 			InlineData: &geminiInlineData{
 				MimeType: mimeType,
-				Data:     base64.StdEncoding.EncodeToString(req.InputImage),
+				Data:     base64.StdEncoding.EncodeToString(img.Data),
 			},
-		},
-		{Text: req.Prompt},
+		})
 	}
+
+	// Add the prompt as the final part
+	parts = append(parts, geminiPart{Text: req.Prompt})
 	return p.doRequest(ctx, parts, req.Debug)
 }
 

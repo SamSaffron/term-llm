@@ -118,21 +118,23 @@ const (
 	GrepToolName          = "grep"
 	GlobToolName          = "glob"
 	ViewImageToolName     = "view_image"
+	ShowImageToolName     = "show_image"
 	ImageGenerateToolName = "image_generate"
 	AskUserToolName       = "ask_user"
 )
 
 // CLI name to spec name mapping
 var ToolNameMapping = map[string]string{
-	"read":     ReadFileToolName,
-	"write":    WriteFileToolName,
-	"edit":     EditFileToolName,
-	"shell":    ShellToolName,
-	"grep":     GrepToolName,
-	"find":     GlobToolName,
-	"view":     ViewImageToolName,
-	"image":    ImageGenerateToolName,
-	"ask_user": AskUserToolName,
+	"read":       ReadFileToolName,
+	"write":      WriteFileToolName,
+	"edit":       EditFileToolName,
+	"shell":      ShellToolName,
+	"grep":       GrepToolName,
+	"find":       GlobToolName,
+	"view":       ViewImageToolName,
+	"show_image": ShowImageToolName,
+	"image":      ImageGenerateToolName,
+	"ask_user":   AskUserToolName,
 }
 
 // SpecToCliName returns the CLI name for a tool spec name.
@@ -144,13 +146,14 @@ var SpecToCliName = map[string]string{
 	GrepToolName:          "grep",
 	GlobToolName:          "find",
 	ViewImageToolName:     "view",
+	ShowImageToolName:     "show_image",
 	ImageGenerateToolName: "image",
 	AskUserToolName:       "ask_user",
 }
 
 // AllToolNames returns all valid CLI tool names.
 func AllToolNames() []string {
-	return []string{"read", "write", "edit", "shell", "grep", "find", "view", "image", "ask_user"}
+	return []string{"read", "write", "edit", "shell", "grep", "find", "view", "show_image", "image", "ask_user"}
 }
 
 // ValidToolName checks if a name is a valid CLI tool name.
@@ -170,7 +173,7 @@ func GetToolKind(specName string) ToolKind {
 		return KindSearch
 	case ShellToolName:
 		return KindExecute
-	case ImageGenerateToolName:
+	case ImageGenerateToolName, ShowImageToolName:
 		return KindImage
 	case AskUserToolName:
 		return KindInteractive

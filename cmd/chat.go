@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
@@ -28,6 +29,8 @@ var (
 	chatWriteDirs     []string
 	chatShellAllow    []string
 	chatSystemMessage string
+	// Agent flag
+	chatAgent string
 )
 
 var chatCmd = &cobra.Command{
@@ -40,6 +43,12 @@ Examples:
   term-llm chat -s                        # with web search enabled
   term-llm chat --provider zen            # use specific provider
   term-llm chat --mcp playwright          # with MCP server(s) enabled
+  term-llm chat --agent reviewer          # with agent configuration
+
+Agent examples:
+  term-llm chat --agent reviewer          # code review session
+  term-llm chat -a editor                 # code editing session
+  term-llm chat -a researcher             # research session
 
 Keyboard shortcuts:
   Enter        - Send message
@@ -74,6 +83,7 @@ func init() {
 	chatCmd.Flags().StringArrayVar(&chatWriteDirs, "write-dir", nil, "Directories for write/edit tools (repeatable)")
 	chatCmd.Flags().StringArrayVar(&chatShellAllow, "shell-allow", nil, "Shell command patterns to allow (repeatable, glob syntax)")
 	chatCmd.Flags().StringVarP(&chatSystemMessage, "system-message", "m", "", "System message/instructions for the LLM (overrides config)")
+	chatCmd.Flags().StringVarP(&chatAgent, "agent", "a", "", "Use an agent (named configuration bundle)")
 	if err := chatCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion); err != nil {
 		panic(fmt.Sprintf("failed to register provider completion: %v", err))
 	}
@@ -82,6 +92,9 @@ func init() {
 	}
 	if err := chatCmd.RegisterFlagCompletionFunc("tools", ToolsFlagCompletion); err != nil {
 		panic(fmt.Sprintf("failed to register tools completion: %v", err))
+	}
+	if err := chatCmd.RegisterFlagCompletionFunc("agent", AgentFlagCompletion); err != nil {
+		panic(fmt.Sprintf("failed to register agent completion: %v", err))
 	}
 	rootCmd.AddCommand(chatCmd)
 }
@@ -95,13 +108,36 @@ func runChat(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if err := applyProviderOverrides(cfg, cfg.Chat.Provider, cfg.Chat.Model, chatProvider); err != nil {
-		return err
+	// Load agent if specified
+	var agent *agents.Agent
+	if chatAgent != "" {
+		registry, err := agents.NewRegistry(agents.RegistryConfig{
+			UseBuiltin:  cfg.Agents.UseBuiltin,
+			SearchPaths: cfg.Agents.SearchPaths,
+		})
+		if err != nil {
+			return fmt.Errorf("create agent registry: %w", err)
+		}
+
+		agent, err = registry.Get(chatAgent)
+		if err != nil {
+			return fmt.Errorf("load agent: %w", err)
+		}
+
+		if err := agent.Validate(); err != nil {
+			return fmt.Errorf("invalid agent: %w", err)
+		}
 	}
 
-	// Override instructions if flag is set
-	if chatSystemMessage != "" {
-		cfg.Chat.Instructions = chatSystemMessage
+	// Apply provider overrides: CLI > agent > config
+	agentProvider := ""
+	agentModel := ""
+	if agent != nil {
+		agentProvider = agent.Provider
+		agentModel = agent.Model
+	}
+	if err := applyProviderOverridesWithAgent(cfg, cfg.Chat.Provider, cfg.Chat.Model, chatProvider, agentProvider, agentModel); err != nil {
+		return err
 	}
 
 	initThemeFromConfig(cfg)
@@ -112,18 +148,64 @@ func runChat(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Use max turns from flag if set, otherwise from config
+	// Determine max turns: CLI > agent > config
 	maxTurns := chatMaxTurns
-	if !cmd.Flags().Changed("max-turns") && cfg.Chat.MaxTurns > 0 {
-		maxTurns = cfg.Chat.MaxTurns
+	if !cmd.Flags().Changed("max-turns") {
+		if agent != nil && agent.MaxTurns > 0 {
+			maxTurns = agent.MaxTurns
+		} else if cfg.Chat.MaxTurns > 0 {
+			maxTurns = cfg.Chat.MaxTurns
+		}
 	}
 
 	engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
 
-	// Initialize local tools if --tools flag is set
+	// Determine tool settings: CLI > agent > none
+	effectiveTools := chatTools
+	effectiveReadDirs := chatReadDirs
+	effectiveWriteDirs := chatWriteDirs
+	effectiveShellAllow := chatShellAllow
+	shellAutoRun := false
+	var scriptCommands []string
+
+	if agent != nil && effectiveTools == "" {
+		// Use agent tool settings
+		if agent.HasEnabledList() {
+			effectiveTools = strings.Join(agent.Tools.Enabled, ",")
+		} else if agent.HasDisabledList() {
+			// Get all tools and exclude disabled ones
+			allTools := tools.AllToolNames()
+			enabledTools := agent.GetEnabledTools(allTools)
+			effectiveTools = strings.Join(enabledTools, ",")
+		}
+
+		// Agent-specific tool settings
+		if len(agent.Read.Dirs) > 0 {
+			effectiveReadDirs = agent.Read.Dirs
+		}
+		if len(agent.Shell.Allow) > 0 {
+			effectiveShellAllow = agent.Shell.Allow
+		}
+		shellAutoRun = agent.Shell.AutoRun
+
+		// Extract script commands from agent
+		if len(agent.Shell.Scripts) > 0 {
+			for _, script := range agent.Shell.Scripts {
+				scriptCommands = append(scriptCommands, script)
+			}
+		}
+	}
+
+	// Initialize local tools if we have any
 	var enabledLocalTools []string
-	if chatTools != "" {
-		toolConfig := buildToolConfig(chatTools, chatReadDirs, chatWriteDirs, chatShellAllow, cfg)
+	if effectiveTools != "" {
+		toolConfig := buildToolConfig(effectiveTools, effectiveReadDirs, effectiveWriteDirs, effectiveShellAllow, cfg)
+		if shellAutoRun {
+			toolConfig.ShellAutoRun = true
+		}
+		if len(scriptCommands) > 0 {
+			toolConfig.ScriptCommands = append(toolConfig.ScriptCommands, scriptCommands...)
+		}
 		if errs := toolConfig.Validate(); len(errs) > 0 {
 			return fmt.Errorf("invalid tool config: %v", errs[0])
 		}
@@ -136,6 +218,26 @@ func runChat(cmd *cobra.Command, args []string) error {
 		toolMgr.SetupEngine(engine)
 	}
 
+	// Determine system instructions: CLI > agent > config
+	instructions := cfg.Chat.Instructions
+	if agent != nil && agent.SystemPrompt != "" {
+		// Expand template variables in agent system prompt
+		templateCtx := agents.NewTemplateContext()
+
+		// Extract resources for builtin agents and set resource_dir
+		if agents.IsBuiltinAgent(agent.Name) {
+			if resourceDir, err := agents.ExtractBuiltinResources(agent.Name); err == nil {
+				templateCtx = templateCtx.WithResourceDir(resourceDir)
+			}
+		}
+
+		instructions = agents.ExpandTemplate(agent.SystemPrompt, templateCtx)
+	}
+	if chatSystemMessage != "" {
+		instructions = chatSystemMessage
+	}
+	cfg.Chat.Instructions = instructions
+
 	// Determine model name
 	modelName := getModelName(cfg)
 
@@ -146,9 +248,18 @@ func runChat(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to load MCP config: %v\n", err)
 	}
 
-	// Enable MCP servers from --mcp flag
-	if chatMCP != "" {
-		servers := strings.Split(chatMCP, ",")
+	// Determine MCP servers: CLI > agent
+	effectiveMCP := chatMCP
+	if agent != nil && effectiveMCP == "" {
+		mcpServers := agent.GetMCPServerNames()
+		if len(mcpServers) > 0 {
+			effectiveMCP = strings.Join(mcpServers, ",")
+		}
+	}
+
+	// Enable MCP servers
+	if effectiveMCP != "" {
+		servers := strings.Split(effectiveMCP, ",")
 		for _, server := range servers {
 			server = strings.TrimSpace(server)
 			if server == "" {
