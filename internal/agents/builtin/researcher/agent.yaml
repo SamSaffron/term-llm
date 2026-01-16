@@ -1,0 +1,7 @@
+name: researcher
+description: "Information gathering with web search"
+
+tools:
+  enabled: [read, find, grep]
+
+max_turns: 200

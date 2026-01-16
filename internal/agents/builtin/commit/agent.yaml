@@ -1,0 +1,14 @@
+name: commit
+description: "Write git commit messages"
+
+tools:
+  enabled: [shell, read]
+
+shell:
+  allow: ["git diff *", "git log *", "git status", "git show *"]
+  auto_run: true
+  scripts:
+    git-status: "git status --porcelain=v1"
+    git-diff-staged: "git diff --cached --stat && echo '---' && git diff --cached"
+
+max_turns: 200

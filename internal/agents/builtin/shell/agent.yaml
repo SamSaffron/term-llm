@@ -1,0 +1,10 @@
+name: shell
+description: "Shell command helper"
+
+tools:
+  enabled: [shell, read]
+
+shell:
+  auto_run: false
+
+max_turns: 200

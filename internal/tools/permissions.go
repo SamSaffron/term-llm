@@ -10,9 +10,10 @@ import (
 
 // ToolPermissions manages allowlists for tool access.
 type ToolPermissions struct {
-	ReadDirs   []string // Directories for read/grep/glob/view
-	WriteDirs  []string // Directories for write/edit
-	ShellAllow []string // Shell command patterns (glob syntax)
+	ReadDirs       []string // Directories for read/grep/glob/view
+	WriteDirs      []string // Directories for write/edit
+	ShellAllow     []string // Shell command patterns (glob syntax)
+	ScriptCommands []string // Exact script commands (auto-approved)
 
 	// Compiled patterns for shell commands
 	shellPatterns []glob.Glob
@@ -21,9 +22,10 @@ type ToolPermissions struct {
 // NewToolPermissions creates a new ToolPermissions instance.
 func NewToolPermissions() *ToolPermissions {
 	return &ToolPermissions{
-		ReadDirs:   []string{},
-		WriteDirs:  []string{},
-		ShellAllow: []string{},
+		ReadDirs:       []string{},
+		WriteDirs:      []string{},
+		ShellAllow:     []string{},
+		ScriptCommands: []string{},
 	}
 }
 
@@ -76,6 +78,21 @@ func (p *ToolPermissions) AddShellPattern(pattern string) error {
 	return nil
 }
 
+// AddScriptCommand adds an exact script command to the allowlist.
+func (p *ToolPermissions) AddScriptCommand(command string) {
+	cmd := strings.TrimSpace(command)
+	if cmd == "" {
+		return
+	}
+	// Avoid duplicates
+	for _, existing := range p.ScriptCommands {
+		if existing == cmd {
+			return
+		}
+	}
+	p.ScriptCommands = append(p.ScriptCommands, cmd)
+}
+
 // CompileShellPatterns pre-compiles all shell patterns.
 func (p *ToolPermissions) CompileShellPatterns() error {
 	p.shellPatterns = make([]glob.Glob, 0, len(p.ShellAllow))
@@ -107,8 +124,16 @@ func (p *ToolPermissions) IsPathAllowedForWrite(path string) (bool, error) {
 	return p.isPathInDirs(resolved, p.WriteDirs), nil
 }
 
-// IsShellCommandAllowed checks if a shell command matches any allowlist pattern.
+// IsShellCommandAllowed checks if a shell command matches any allowlist pattern or script.
 func (p *ToolPermissions) IsShellCommandAllowed(command string) bool {
+	// Check exact script matches first
+	trimmedCmd := strings.TrimSpace(command)
+	for _, script := range p.ScriptCommands {
+		if trimmedCmd == script {
+			return true
+		}
+	}
+
 	// Ensure patterns are compiled
 	if len(p.shellPatterns) == 0 && len(p.ShellAllow) > 0 {
 		_ = p.CompileShellPatterns()

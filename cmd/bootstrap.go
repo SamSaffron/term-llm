@@ -43,6 +43,34 @@ func applyProviderOverrides(cfg *config.Config, provider, model, providerFlag st
 	return nil
 }
 
+// applyProviderOverridesWithAgent applies provider overrides with agent settings.
+// Priority: CLI flag > agent settings > command-specific config > global config
+func applyProviderOverridesWithAgent(cfg *config.Config, cmdProvider, cmdModel, providerFlag, agentProvider, agentModel string) error {
+	// Start with command-specific config (e.g., ask.provider, ask.model)
+	cfg.ApplyOverrides(cmdProvider, cmdModel)
+
+	// Apply agent settings if present (lower priority than CLI)
+	if providerFlag == "" {
+		if agentProvider != "" {
+			cfg.ApplyOverrides(agentProvider, "")
+		}
+		if agentModel != "" {
+			cfg.ApplyOverrides("", agentModel)
+		}
+	}
+
+	// CLI flag has highest priority
+	if providerFlag != "" {
+		overrideProvider, overrideModel, err := llm.ParseProviderModel(providerFlag, cfg)
+		if err != nil {
+			return err
+		}
+		cfg.ApplyOverrides(overrideProvider, overrideModel)
+	}
+
+	return nil
+}
+
 func initThemeFromConfig(cfg *config.Config) {
 	ui.InitTheme(ui.ThemeConfig{
 		Primary:   cfg.Theme.Primary,

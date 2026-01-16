@@ -144,6 +144,11 @@ func isRetryable(err error) bool {
 		return false
 	}
 
+	// Check for RateLimitError - only retry if it's a short wait
+	if rle, ok := err.(*RateLimitError); ok {
+		return !rle.IsLongWait()
+	}
+
 	errStr := strings.ToLower(err.Error())
 
 	// HTTP status codes and rate limit messages
@@ -177,6 +182,16 @@ var retryAfterRegex = regexp.MustCompile(`(?i)retry[- ]?after[:\s]+(\d+)`)
 
 // calculateBackoff computes the wait duration for a retry attempt.
 func (r *RetryProvider) calculateBackoff(attempt int, err error) time.Duration {
+	// Check for RateLimitError with explicit RetryAfter
+	if rle, ok := err.(*RateLimitError); ok && rle.RetryAfter > 0 {
+		wait := rle.RetryAfter
+		// Cap at max backoff for automatic retries
+		if wait > r.config.MaxBackoff {
+			wait = r.config.MaxBackoff
+		}
+		return wait
+	}
+
 	// Try to parse Retry-After from error message
 	if err != nil {
 		if matches := retryAfterRegex.FindStringSubmatch(err.Error()); len(matches) > 1 {

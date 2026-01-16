@@ -21,7 +21,7 @@ func TestApprovalScreen_ActualRender(t *testing.T) {
 	description := "Allow read access to directory: /tmp/play/cats"
 
 	// Add a pending tool segment (as askApprovalRequestMsg handler does)
-	model.segments = append(model.segments, ui.Segment{
+	model.tracker.Segments = append(model.tracker.Segments, ui.Segment{
 		Type:       ui.SegmentTool,
 		ToolName:   toolName,
 		ToolInfo:   toolInfo,
@@ -86,7 +86,7 @@ func TestAfterApproval_ToolSuccess(t *testing.T) {
 	model := newAskStreamModel()
 
 	// Simulate: tool completed successfully
-	model.segments = append(model.segments, ui.Segment{
+	model.tracker.Segments = append(model.tracker.Segments, ui.Segment{
 		Type:       ui.SegmentTool,
 		ToolName:   "view_image",
 		ToolInfo:   "(wow.png)",
@@ -105,9 +105,9 @@ func TestAfterApproval_ToolSuccess(t *testing.T) {
 		t.Errorf("should show success circle, got:\n%s", rendered)
 	}
 
-	// Should show unified format: "view_image(wow.png)"
-	if !strings.Contains(plain, "view_image(wow.png)") {
-		t.Errorf("should show completed tool text 'view_image(wow.png)', got:\n%s", plain)
+	// Should show unified format: "view_image (wow.png)"
+	if !strings.Contains(plain, "view_image (wow.png)") {
+		t.Errorf("should show completed tool text 'view_image (wow.png)', got:\n%s", plain)
 	}
 
 	// Should show thinking spinner (waiting for LLM)
@@ -121,7 +121,7 @@ func TestAfterApproval_ToolError(t *testing.T) {
 	model := newAskStreamModel()
 
 	// Simulate: tool failed
-	model.segments = append(model.segments, ui.Segment{
+	model.tracker.Segments = append(model.tracker.Segments, ui.Segment{
 		Type:       ui.SegmentTool,
 		ToolName:   "view_image",
 		ToolInfo:   "(wow.png)",
@@ -146,14 +146,14 @@ func TestPendingTool_ShowsWaveAnimation(t *testing.T) {
 	model := newAskStreamModel()
 
 	// Simulate: tool is pending
-	model.segments = append(model.segments, ui.Segment{
+	model.tracker.Segments = append(model.tracker.Segments, ui.Segment{
 		Type:       ui.SegmentTool,
 		ToolName:   "view_image",
 		ToolInfo:   "(wow.png)",
 		ToolStatus: ui.ToolPending,
 	})
-	model.thinking = false // Not thinking, tool is running
-	model.wavePos = 5      // Mid-wave animation
+	model.thinking = false    // Not thinking, tool is running
+	model.tracker.WavePos = 5 // Mid-wave animation
 
 	// Render
 	rendered := model.View()
@@ -208,7 +208,7 @@ func TestTextStreaming(t *testing.T) {
 	model := newAskStreamModel()
 
 	// Simulate: text has been streamed
-	model.segments = append(model.segments, ui.Segment{
+	model.tracker.Segments = append(model.tracker.Segments, ui.Segment{
 		Type:     ui.SegmentText,
 		Text:     "Hello, this is a test response.",
 		Complete: true,
@@ -237,7 +237,7 @@ func TestMultipleSegments(t *testing.T) {
 	model := newAskStreamModel()
 
 	// Simulate: text -> tool -> text
-	model.segments = []ui.Segment{
+	model.tracker.Segments = []ui.Segment{
 		{
 			Type:     ui.SegmentText,
 			Text:     "Let me check that file.",
@@ -268,7 +268,7 @@ func TestMultipleSegments(t *testing.T) {
 	if !strings.Contains(plain, "Let me check that file") {
 		t.Errorf("should show first text segment, got:\n%s", plain)
 	}
-	if !strings.Contains(plain, "read_file(test.go)") {
+	if !strings.Contains(plain, "read_file (test.go)") {
 		t.Errorf("should show tool segment, got:\n%s", plain)
 	}
 	if !strings.Contains(plain, "Here is what I found") {

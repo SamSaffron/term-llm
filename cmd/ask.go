@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
@@ -41,6 +42,8 @@ var (
 	askWriteDirs     []string
 	askShellAllow    []string
 	askSystemMessage string
+	// Agent flag
+	askAgent string
 )
 
 var askCmd = &cobra.Command{
@@ -58,6 +61,11 @@ Examples:
   term-llm ask -f code.go:10-50 "Explain this function"
   term-llm ask -f clipboard "What is this?"
   cat error.log | term-llm ask "What went wrong?"
+
+Agent examples:
+  term-llm ask --agent reviewer "Review this code" -f main.go
+  term-llm ask -a commit "Write a commit message"
+  term-llm ask -a editor "Add error handling to this function" -f utils.go
 
 Line range syntax for files:
   main.go       - Include entire file
@@ -84,6 +92,7 @@ func init() {
 	askCmd.Flags().StringArrayVar(&askWriteDirs, "write-dir", nil, "Directories for write/edit tools (repeatable)")
 	askCmd.Flags().StringArrayVar(&askShellAllow, "shell-allow", nil, "Shell command patterns to allow (repeatable, glob syntax)")
 	askCmd.Flags().StringVarP(&askSystemMessage, "system-message", "m", "", "System message/instructions for the LLM (overrides config)")
+	askCmd.Flags().StringVarP(&askAgent, "agent", "a", "", "Use an agent (named configuration bundle)")
 	if err := askCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion); err != nil {
 		panic(fmt.Sprintf("failed to register provider completion: %v", err))
 	}
@@ -92,6 +101,9 @@ func init() {
 	}
 	if err := askCmd.RegisterFlagCompletionFunc("tools", ToolsFlagCompletion); err != nil {
 		panic(fmt.Sprintf("failed to register tools completion: %v", err))
+	}
+	if err := askCmd.RegisterFlagCompletionFunc("agent", AgentFlagCompletion); err != nil {
+		panic(fmt.Sprintf("failed to register agent completion: %v", err))
 	}
 	rootCmd.AddCommand(askCmd)
 }
@@ -106,7 +118,35 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if err := applyProviderOverrides(cfg, cfg.Ask.Provider, cfg.Ask.Model, askProvider); err != nil {
+	// Load agent if specified
+	var agent *agents.Agent
+	if askAgent != "" {
+		registry, err := agents.NewRegistry(agents.RegistryConfig{
+			UseBuiltin:  cfg.Agents.UseBuiltin,
+			SearchPaths: cfg.Agents.SearchPaths,
+		})
+		if err != nil {
+			return fmt.Errorf("create agent registry: %w", err)
+		}
+
+		agent, err = registry.Get(askAgent)
+		if err != nil {
+			return fmt.Errorf("load agent: %w", err)
+		}
+
+		if err := agent.Validate(); err != nil {
+			return fmt.Errorf("invalid agent: %w", err)
+		}
+	}
+
+	// Apply provider overrides: CLI > agent > config
+	agentProvider := ""
+	agentModel := ""
+	if agent != nil {
+		agentProvider = agent.Provider
+		agentModel = agent.Model
+	}
+	if err := applyProviderOverridesWithAgent(cfg, cfg.Ask.Provider, cfg.Ask.Model, askProvider, agentProvider, agentModel); err != nil {
 		return err
 	}
 
@@ -119,10 +159,52 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 	engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
 
-	// Initialize local tools if --tools flag is set
+	// Determine tool settings: CLI > agent > none
+	effectiveTools := askTools
+	effectiveReadDirs := askReadDirs
+	effectiveWriteDirs := askWriteDirs
+	effectiveShellAllow := askShellAllow
+	shellAutoRun := false
+	var scriptCommands []string
+
+	if agent != nil && effectiveTools == "" {
+		// Use agent tool settings
+		if agent.HasEnabledList() {
+			effectiveTools = strings.Join(agent.Tools.Enabled, ",")
+		} else if agent.HasDisabledList() {
+			// Get all tools and exclude disabled ones
+			allTools := tools.AllToolNames()
+			enabledTools := agent.GetEnabledTools(allTools)
+			effectiveTools = strings.Join(enabledTools, ",")
+		}
+
+		// Agent-specific tool settings
+		if len(agent.Read.Dirs) > 0 {
+			effectiveReadDirs = agent.Read.Dirs
+		}
+		if len(agent.Shell.Allow) > 0 {
+			effectiveShellAllow = agent.Shell.Allow
+		}
+		shellAutoRun = agent.Shell.AutoRun
+
+		// Extract script commands from agent
+		if len(agent.Shell.Scripts) > 0 {
+			for _, script := range agent.Shell.Scripts {
+				scriptCommands = append(scriptCommands, script)
+			}
+		}
+	}
+
+	// Initialize local tools if we have any
 	var toolMgr *tools.ToolManager
-	if askTools != "" {
-		toolConfig := buildToolConfig(askTools, askReadDirs, askWriteDirs, askShellAllow, cfg)
+	if effectiveTools != "" {
+		toolConfig := buildToolConfig(effectiveTools, effectiveReadDirs, effectiveWriteDirs, effectiveShellAllow, cfg)
+		if shellAutoRun {
+			toolConfig.ShellAutoRun = true
+		}
+		if len(scriptCommands) > 0 {
+			toolConfig.ScriptCommands = append(toolConfig.ScriptCommands, scriptCommands...)
+		}
 		if errs := toolConfig.Validate(); len(errs) > 0 {
 			return fmt.Errorf("invalid tool config: %v", errs[0])
 		}
@@ -134,10 +216,19 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		toolMgr.SetupEngine(engine)
 	}
 
-	// Initialize MCP servers if --mcp flag is set
+	// Determine MCP servers: CLI > agent
+	effectiveMCP := askMCP
+	if agent != nil && effectiveMCP == "" {
+		mcpServers := agent.GetMCPServerNames()
+		if len(mcpServers) > 0 {
+			effectiveMCP = strings.Join(mcpServers, ",")
+		}
+	}
+
+	// Initialize MCP servers if any
 	var mcpManager *mcp.Manager
-	if askMCP != "" {
-		mcpManager, err = enableMCPServersWithFeedback(ctx, askMCP, engine, cmd.ErrOrStderr())
+	if effectiveMCP != "" {
+		mcpManager, err = enableMCPServersWithFeedback(ctx, effectiveMCP, engine, cmd.ErrOrStderr())
 		if err != nil {
 			return err
 		}
@@ -163,7 +254,14 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	userPrompt := prompt.AskUserPrompt(question, files, stdinContent)
 	messages := []llm.Message{}
+
+	// Determine system instructions: CLI > agent > config
 	instructions := cfg.Ask.Instructions
+	if agent != nil && agent.SystemPrompt != "" {
+		// Expand template variables in agent system prompt
+		templateCtx := agents.NewTemplateContext().WithFiles(askFiles)
+		instructions = agents.ExpandTemplate(agent.SystemPrompt, templateCtx)
+	}
 	if askSystemMessage != "" {
 		instructions = askSystemMessage
 	}
@@ -172,13 +270,19 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 	messages = append(messages, llm.UserText(userPrompt))
 
+	// Determine max turns: CLI default check > agent > CLI default
+	effectiveMaxTurns := askMaxTurns
+	if agent != nil && agent.MaxTurns > 0 && !cmd.Flags().Changed("max-turns") {
+		effectiveMaxTurns = agent.MaxTurns
+	}
+
 	debugMode := askDebug
 	req := llm.Request{
 		Messages:            messages,
 		Search:              askSearch,
 		ForceExternalSearch: resolveForceExternalSearch(cfg, askNativeSearch, askNoNativeSearch),
 		ParallelToolCalls:   true,
-		MaxTurns:            askMaxTurns,
+		MaxTurns:            effectiveMaxTurns,
 		Debug:               debugMode,
 		DebugRaw:            debugRaw,
 	}

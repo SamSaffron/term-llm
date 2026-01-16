@@ -95,6 +95,13 @@ type Config struct {
 	Search          SearchConfig              `mapstructure:"search"`
 	Theme           ThemeConfig               `mapstructure:"theme"`
 	Tools           ToolsConfig               `mapstructure:"tools"`
+	Agents          AgentsConfig              `mapstructure:"agents"`
+}
+
+// AgentsConfig configures the agent system
+type AgentsConfig struct {
+	UseBuiltin  bool     `mapstructure:"use_builtin"`  // Enable built-in agents (default true)
+	SearchPaths []string `mapstructure:"search_paths"` // Additional directories to search for agents
 }
 
 // ToolsConfig configures the local tool system
@@ -274,6 +281,9 @@ func Load() (*Config, error) {
 	viper.SetDefault("tools.shell_auto_run", false)
 	viper.SetDefault("tools.shell_auto_run_env", "TERM_LLM_ALLOW_AUTORUN")
 	viper.SetDefault("tools.shell_non_tty_env", "TERM_LLM_ALLOW_NON_TTY")
+	// Agents defaults
+	viper.SetDefault("agents.use_builtin", true)
+	viper.SetDefault("agents.search_paths", []string{})
 
 	// Read config file (optional - won't error if missing)
 	if err := viper.ReadInConfig(); err != nil {

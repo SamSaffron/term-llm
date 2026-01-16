@@ -244,6 +244,12 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 				}
 				DebugRawSection(req.DebugRaw, "ChatGPT Error Response", debugInfo.String())
 			}
+
+			// Handle rate limits with a friendly message
+			if resp.StatusCode == http.StatusTooManyRequests {
+				return parseChatGPTRateLimitError(respBody, resp.Header)
+			}
+
 			return fmt.Errorf("API error (%d): %s", resp.StatusCode, string(respBody))
 		}
 
@@ -551,4 +557,129 @@ func (a *chatGPTToolAccumulator) finalize() []ToolCall {
 		out = append(out, call)
 	}
 	return out
+}
+
+// chatGPTRateLimitResponse represents the error response from ChatGPT rate limits
+type chatGPTRateLimitResponse struct {
+	Error struct {
+		Type         string `json:"type"`
+		Message      string `json:"message"`
+		PlanType     string `json:"plan_type"`
+		ResetsAt     int64  `json:"resets_at"`
+		ResetsInSecs int    `json:"resets_in_seconds"`
+	} `json:"error"`
+}
+
+// RateLimitError represents a rate limit error with retry information.
+type RateLimitError struct {
+	Message       string
+	RetryAfter    time.Duration
+	PlanType      string
+	PrimaryUsed   int
+	SecondaryUsed int
+}
+
+func (e *RateLimitError) Error() string {
+	return e.Message
+}
+
+// IsLongWait returns true if the retry wait is too long for automatic retry.
+func (e *RateLimitError) IsLongWait() bool {
+	return e.RetryAfter > 2*time.Minute
+}
+
+// parseChatGPTRateLimitError parses a 429 response and returns a RateLimitError.
+// For short waits, the retry logic can use RetryAfter to wait and retry.
+// For long waits, it gives a clear message about when to try again.
+func parseChatGPTRateLimitError(body []byte, headers http.Header) error {
+	var resp chatGPTRateLimitResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		// Couldn't parse, return generic error
+		return fmt.Errorf("rate limit exceeded (429): %s", string(body))
+	}
+
+	resetsIn := resp.Error.ResetsInSecs
+
+	// Also check headers for reset time (more reliable)
+	if headerSecs := headers.Get("X-Codex-Primary-Reset-After-Seconds"); headerSecs != "" {
+		if secs, err := parseIntHeader(headerSecs); err == nil && secs > 0 {
+			resetsIn = secs
+		}
+	}
+
+	// Get usage percentages from headers for context
+	primaryUsed, _ := parseIntHeader(headers.Get("X-Codex-Primary-Used-Percent"))
+	secondaryUsed, _ := parseIntHeader(headers.Get("X-Codex-Secondary-Used-Percent"))
+
+	// Format the reset time in a human-readable way
+	resetTime := formatDuration(time.Duration(resetsIn) * time.Second)
+
+	// Build informative error message
+	var msg strings.Builder
+	msg.WriteString("ChatGPT usage limit reached")
+
+	if resp.Error.PlanType != "" {
+		msg.WriteString(fmt.Sprintf(" (%s plan)", resp.Error.PlanType))
+	}
+	msg.WriteString(". ")
+
+	msg.WriteString(fmt.Sprintf("Resets in %s", resetTime))
+
+	if primaryUsed > 0 || secondaryUsed > 0 {
+		msg.WriteString(" (usage: ")
+		if primaryUsed > 0 {
+			msg.WriteString(fmt.Sprintf("primary %d%%", primaryUsed))
+		}
+		if secondaryUsed > 0 {
+			if primaryUsed > 0 {
+				msg.WriteString(", ")
+			}
+			msg.WriteString(fmt.Sprintf("weekly %d%%", secondaryUsed))
+		}
+		msg.WriteString(")")
+	}
+
+	retryAfter := time.Duration(resetsIn) * time.Second
+
+	// For short waits, include Retry-After hint for the retry logic
+	if resetsIn > 0 && resetsIn <= 120 {
+		msg.WriteString(fmt.Sprintf(". Retry-After: %d", resetsIn))
+	}
+
+	return &RateLimitError{
+		Message:       msg.String(),
+		RetryAfter:    retryAfter,
+		PlanType:      resp.Error.PlanType,
+		PrimaryUsed:   primaryUsed,
+		SecondaryUsed: secondaryUsed,
+	}
+}
+
+// parseIntHeader safely parses an integer from a header value
+func parseIntHeader(s string) (int, error) {
+	s = strings.TrimSpace(s)
+	var val int
+	_, err := fmt.Sscanf(s, "%d", &val)
+	return val, err
+}
+
+// formatDuration formats a duration in a human-readable way
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%d seconds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		mins := int(d.Minutes())
+		secs := int(d.Seconds()) % 60
+		if secs > 0 {
+			return fmt.Sprintf("%dm %ds", mins, secs)
+		}
+		return fmt.Sprintf("%d minutes", mins)
+	}
+	hours := int(d.Hours())
+	mins := int(d.Minutes()) % 60
+	if mins > 0 {
+		return fmt.Sprintf("%dh %dm", hours, mins)
+	}
+	return fmt.Sprintf("%d hours", hours)
 }

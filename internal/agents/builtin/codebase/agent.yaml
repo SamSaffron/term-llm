@@ -1,0 +1,15 @@
+name: codebase
+description: "Answer questions about source code repositories"
+
+tools:
+  enabled: [read, find, grep, shell]
+
+shell:
+  allow: ["git log *", "git show *", "git blame *", "git branch *", "git tag *", "git ls-files *"]
+  auto_run: true
+  scripts:
+    git-structure: "git ls-files | head -200"
+    git-recent: "git log --oneline -20"
+    git-branches: "git branch -a --list"
+
+max_turns: 50

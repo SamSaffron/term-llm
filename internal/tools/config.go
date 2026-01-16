@@ -15,6 +15,7 @@ type ToolConfig struct {
 	ReadDirs        []string `mapstructure:"read_dirs"`          // Directories for read operations
 	WriteDirs       []string `mapstructure:"write_dirs"`         // Directories for write operations
 	ShellAllow      []string `mapstructure:"shell_allow"`        // Shell command patterns
+	ScriptCommands  []string `mapstructure:"script_commands"`    // Exact script commands (auto-approved)
 	ShellAutoRun    bool     `mapstructure:"shell_auto_run"`     // Auto-approve matching shell
 	ShellAutoRunEnv string   `mapstructure:"shell_auto_run_env"` // Env var required for auto-run
 	ShellNonTTYEnv  string   `mapstructure:"shell_non_tty_env"`  // Env var for non-TTY execution
@@ -28,6 +29,7 @@ func DefaultToolConfig() ToolConfig {
 		ReadDirs:        []string{},
 		WriteDirs:       []string{},
 		ShellAllow:      []string{},
+		ScriptCommands:  []string{},
 		ShellAutoRun:    false,
 		ShellAutoRunEnv: "TERM_LLM_ALLOW_AUTORUN",
 		ShellNonTTYEnv:  "TERM_LLM_ALLOW_NON_TTY",
@@ -50,6 +52,9 @@ func (c ToolConfig) Merge(other ToolConfig) ToolConfig {
 	}
 	if len(other.ShellAllow) > 0 {
 		result.ShellAllow = append(result.ShellAllow, other.ShellAllow...)
+	}
+	if len(other.ScriptCommands) > 0 {
+		result.ScriptCommands = append(result.ScriptCommands, other.ScriptCommands...)
 	}
 	if other.ShellAutoRun {
 		result.ShellAutoRun = true
@@ -183,6 +188,10 @@ func (c *ToolConfig) BuildPermissions() (*ToolPermissions, error) {
 		if err := perms.AddShellPattern(pattern); err != nil {
 			return nil, err
 		}
+	}
+
+	for _, script := range c.ScriptCommands {
+		perms.AddScriptCommand(script)
 	}
 
 	return perms, nil

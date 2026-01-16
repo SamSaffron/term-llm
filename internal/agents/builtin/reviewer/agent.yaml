@@ -1,0 +1,15 @@
+name: reviewer
+description: "Code review assistant (read-only)"
+
+tools:
+  enabled: [read, find, grep, shell]
+
+shell:
+  allow: ["git diff *", "git log *", "git status", "git show *", "git blame *"]
+  auto_run: true
+  scripts:
+    git-changes: "git status --porcelain=v1 && echo '---' && git diff --stat && echo '---' && git diff"
+    git-staged: "git diff --cached --stat && echo '---' && git diff --cached"
+    git-recent: "git log --oneline -20"
+
+max_turns: 200

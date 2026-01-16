@@ -1,0 +1,7 @@
+name: editor
+description: "File editing assistant"
+
+tools:
+  enabled: [read, write, edit, find, grep]
+
+max_turns: 200
