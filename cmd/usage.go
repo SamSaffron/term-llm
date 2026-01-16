@@ -13,17 +13,18 @@ import (
 )
 
 var (
-	usageProvider  string
-	usageSince     string
-	usageUntil     string
-	usageJSON      bool
-	usageBreakdown bool
+	usageProvider        string
+	usageSince           string
+	usageUntil           string
+	usageJSON            bool
+	usageBreakdown       bool
+	usageIncludeExternal bool
 )
 
 var usageCmd = &cobra.Command{
 	Use:   "usage",
 	Short: "Show token usage and costs from local CLI tools",
-	Long: `Show token usage and costs from Claude Code, Codex CLI, and Gemini CLI.
+	Long: `Show token usage and costs from Claude Code, Codex CLI, Gemini CLI, and term-llm.
 
 This command reads local usage data stored by these CLI tools and displays
 aggregated statistics including token counts and estimated costs.
@@ -31,6 +32,7 @@ aggregated statistics including token counts and estimated costs.
 Examples:
   term-llm usage                              # show last 7 days
   term-llm usage --provider claude-code       # filter to Claude Code only
+  term-llm usage --provider term-llm          # show term-llm direct API usage
   term-llm usage --since 20250101             # from Jan 1, 2025
   term-llm usage --json                       # output as JSON
   term-llm usage --breakdown                  # show per-model breakdown`,
@@ -39,11 +41,12 @@ Examples:
 
 func init() {
 	rootCmd.AddCommand(usageCmd)
-	usageCmd.Flags().StringVarP(&usageProvider, "provider", "p", "", "Filter by provider (claude-code, codex, gemini-cli, or all)")
+	usageCmd.Flags().StringVarP(&usageProvider, "provider", "p", "", "Filter by provider (claude-code, codex, gemini-cli, term-llm, or all)")
 	usageCmd.Flags().StringVar(&usageSince, "since", "", "Start date (YYYYMMDD)")
 	usageCmd.Flags().StringVar(&usageUntil, "until", "", "End date (YYYYMMDD)")
 	usageCmd.Flags().BoolVar(&usageJSON, "json", false, "Output as JSON")
 	usageCmd.Flags().BoolVar(&usageBreakdown, "breakdown", false, "Show per-model breakdown")
+	usageCmd.Flags().BoolVar(&usageIncludeExternal, "include-external", false, "Include externally-tracked term-llm usage (claude-bin, codex, gemini-cli calls)")
 }
 
 func runUsage(cmd *cobra.Command, args []string) error {
@@ -88,17 +91,20 @@ func runUsage(cmd *cobra.Command, args []string) error {
 		providerFilter = usage.ProviderCodex
 	case "gemini-cli", "gemini":
 		providerFilter = usage.ProviderGeminiCLI
+	case "term-llm":
+		providerFilter = usage.ProviderTermLLM
 	case "", "all":
 		providerFilter = ""
 	default:
-		return fmt.Errorf("unknown provider: %s (use claude-code, codex, or gemini-cli)", usageProvider)
+		return fmt.Errorf("unknown provider: %s (use claude-code, codex, gemini-cli, or term-llm)", usageProvider)
 	}
 
 	// Filter entries
 	filtered := result.Filter(usage.FilterOptions{
-		Since:    since,
-		Until:    until,
-		Provider: providerFilter,
+		Since:           since,
+		Until:           until,
+		Provider:        providerFilter,
+		IncludeExternal: usageIncludeExternal,
 	})
 
 	if len(filtered) == 0 {
@@ -117,6 +123,11 @@ func runUsage(cmd *cobra.Command, args []string) error {
 	// Aggregate by day
 	daily := usage.AggregateDaily(filtered)
 	totals := usage.CalculateTotals(daily)
+
+	// Auto-enable breakdown when filtering to term-llm (model info is more useful than "term-llm")
+	if providerFilter == usage.ProviderTermLLM && !usageBreakdown {
+		usageBreakdown = true
+	}
 
 	if usageJSON {
 		return outputJSON(daily, totals)
@@ -398,6 +409,8 @@ func formatProviderName(provider string) string {
 		return "Codex"
 	case usage.ProviderGeminiCLI:
 		return "Gemini CLI"
+	case usage.ProviderTermLLM:
+		return "term-llm"
 	default:
 		return provider
 	}

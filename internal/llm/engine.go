@@ -7,6 +7,9 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
+
+	"github.com/samsaffron/term-llm/internal/usage"
 )
 
 const (
@@ -104,9 +107,10 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 
 	if useLoop {
 		req.Tools = append(req.Tools, externalTools...)
-		return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
+		stream := newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
 			return e.runLoop(ctx, req, events, isExternalSearch)
-		}), nil
+		})
+		return wrapLoggingStream(stream, e.provider.Name(), req.Model), nil
 	}
 
 	// 3. Simple stream (no tools or no provider support for tools)
@@ -114,7 +118,8 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	if err != nil {
 		return nil, err
 	}
-	return WrapDebugStream(req.DebugRaw, stream), nil
+	stream = WrapDebugStream(req.DebugRaw, stream)
+	return wrapLoggingStream(stream, e.provider.Name(), req.Model), nil
 }
 
 func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event, isExternalSearch bool) error {
@@ -489,4 +494,79 @@ func extractToolInfo(call ToolCall) string {
 	}
 
 	return formatToolArgs(args, 500, 5)
+}
+
+// loggingStream wraps a stream to accumulate usage and log it on completion
+type loggingStream struct {
+	inner           Stream
+	logger          *usage.Logger
+	providerName    string
+	model           string
+	trackedExternal string // "claude-code", "codex", "gemini-cli", or "" for direct API
+
+	// Accumulated usage (multiple EventUsage events in agentic loops)
+	totalInput      int
+	totalOutput     int
+	totalCacheRead  int
+	totalCacheWrite int
+	logged          bool // Prevent double-logging
+}
+
+func (s *loggingStream) Recv() (Event, error) {
+	event, err := s.inner.Recv()
+
+	// Accumulate usage from each EventUsage
+	if err == nil && event.Type == EventUsage && event.Use != nil {
+		s.totalInput += event.Use.InputTokens
+		s.totalOutput += event.Use.OutputTokens
+		s.totalCacheRead += event.Use.CachedInputTokens
+	}
+
+	// Log on EOF (stream complete) or EventDone
+	if (err == io.EOF || (err == nil && event.Type == EventDone)) && !s.logged {
+		s.flush()
+	}
+
+	return event, err
+}
+
+func (s *loggingStream) Close() error {
+	// Also flush on explicit close (in case EOF wasn't received)
+	if !s.logged {
+		s.flush()
+	}
+	return s.inner.Close()
+}
+
+func (s *loggingStream) flush() {
+	if s.totalInput == 0 && s.totalOutput == 0 {
+		return // Nothing to log
+	}
+	s.logged = true
+	_ = s.logger.Log(usage.LogEntry{
+		Timestamp:           time.Now(),
+		Model:               s.model,
+		Provider:            s.providerName,
+		InputTokens:         s.totalInput,
+		OutputTokens:        s.totalOutput,
+		CacheReadTokens:     s.totalCacheRead,
+		CacheWriteTokens:    s.totalCacheWrite,
+		TrackedExternallyBy: s.trackedExternal,
+	})
+}
+
+// wrapLoggingStream wraps a stream with usage logging
+func wrapLoggingStream(inner Stream, providerName, model string) Stream {
+	// If model is empty, use providerName as the model identifier
+	// This helps identify what was used when providers auto-select models
+	if model == "" {
+		model = providerName
+	}
+	return &loggingStream{
+		inner:           inner,
+		logger:          usage.DefaultLogger(),
+		providerName:    providerName,
+		model:           model,
+		trackedExternal: usage.GetTrackedExternallyBy(providerName),
+	}
 }

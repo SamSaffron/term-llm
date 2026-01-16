@@ -196,6 +196,9 @@ func LoadAllUsage() LoadResult {
 	gemini := LoadGeminiUsage()
 	result.Merge(gemini)
 
+	termllm := LoadTermLLMUsage()
+	result.Merge(termllm)
+
 	// Sort all entries by timestamp
 	sort.Slice(result.Entries, func(i, j int) bool {
 		return result.Entries[i].Timestamp.Before(result.Entries[j].Timestamp)
