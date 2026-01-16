@@ -28,21 +28,21 @@ type Stream interface {
 
 // Request represents a single model turn.
 type Request struct {
-	Model             string
-	Messages          []Message
-	Tools             []ToolSpec
-	ToolChoice        ToolChoice
-	LastTurnToolChoice *ToolChoice // If set, force this tool choice on the last agentic turn
-	ParallelToolCalls bool
-	Search            bool
+	Model               string
+	Messages            []Message
+	Tools               []ToolSpec
+	ToolChoice          ToolChoice
+	LastTurnToolChoice  *ToolChoice // If set, force this tool choice on the last agentic turn
+	ParallelToolCalls   bool
+	Search              bool
 	ForceExternalSearch bool // If true, use external search even if provider supports native
-	ReasoningEffort   string
-	MaxOutputTokens   int
-	Temperature       float32
-	TopP              float32
-	MaxTurns          int // Max agentic turns for tool execution (0 = use default)
-	Debug             bool
-	DebugRaw          bool
+	ReasoningEffort     string
+	MaxOutputTokens     int
+	Temperature         float32
+	TopP                float32
+	MaxTurns            int // Max agentic turns for tool execution (0 = use default)
+	Debug               bool
+	DebugRaw            bool
 }
 
 // Role identifies a message role.
@@ -103,10 +103,10 @@ type ToolChoice struct {
 
 // ToolCall is a model-requested tool invocation.
 type ToolCall struct {
-	ID             string
-	Name           string
-	Arguments      json.RawMessage
-	ThoughtSig     []byte // Gemini 3 thought signature (must be passed back in result)
+	ID         string
+	Name       string
+	Arguments  json.RawMessage
+	ThoughtSig []byte // Gemini 3 thought signature (must be passed back in result)
 }
 
 // ToolResult is the output from executing a tool call.
@@ -127,7 +127,7 @@ const (
 	EventToolExecStart EventType = "tool_exec_start" // Emitted when tool execution begins
 	EventToolExecEnd   EventType = "tool_exec_end"   // Emitted when tool execution completes
 	EventUsage         EventType = "usage"
-	EventPhase         EventType = "phase"         // Emitted for high-level phase changes (Thinking, Searching, etc.)
+	EventPhase         EventType = "phase" // Emitted for high-level phase changes (Thinking, Searching, etc.)
 	EventDone          EventType = "done"
 	EventError         EventType = "error"
 	EventRetry         EventType = "retry" // Emitted when retrying after rate limit

@@ -99,6 +99,13 @@ func NewProviderByName(cfg *config.Config, name string, model string) (Provider,
 			}
 			provider := NewCodexProvider(creds.AccessToken, model, creds.AccountID)
 			return WrapWithRetry(provider, DefaultRetryConfig()), nil
+		case config.ProviderTypeChatGPT:
+			// chatgpt uses native OAuth with interactive authentication
+			provider, err := NewChatGPTProvider(model)
+			if err != nil {
+				return nil, fmt.Errorf("provider chatgpt: %w", err)
+			}
+			return WrapWithRetry(provider, DefaultRetryConfig()), nil
 		case config.ProviderTypeGeminiCLI:
 			// gemini-cli uses OAuth credentials from ~/.gemini/oauth_creds.json
 			creds, err := credentials.GetGeminiOAuthCredentials()
@@ -151,6 +158,9 @@ func newProviderInternal(cfg *config.Config) (Provider, error) {
 				return nil, fmt.Errorf("provider codex: %w", err)
 			}
 			return NewCodexProvider(creds.AccessToken, "", creds.AccountID), nil
+		case config.ProviderTypeChatGPT:
+			// chatgpt uses native OAuth with interactive authentication
+			return NewChatGPTProvider("")
 		case config.ProviderTypeGemini:
 			// gemini can use GEMINI_API_KEY env var
 			apiKey := os.Getenv("GEMINI_API_KEY")
@@ -201,6 +211,10 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 			accountID = creds.AccountID
 		}
 		return NewCodexProvider(apiKey, cfg.Model, accountID), nil
+
+	case config.ProviderTypeChatGPT:
+		// ChatGPT uses native OAuth with interactive authentication
+		return NewChatGPTProvider(cfg.Model)
 
 	case config.ProviderTypeOpenRouter:
 		return NewOpenRouterProvider(cfg.ResolvedAPIKey, cfg.Model, cfg.AppURL, cfg.AppTitle), nil

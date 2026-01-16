@@ -46,10 +46,10 @@ func TestExtractLines(t *testing.T) {
 	content := "line1\nline2\nline3\nline4\nline5"
 
 	tests := []struct {
-		name      string
-		start     int
-		end       int
-		want      string
+		name  string
+		start int
+		end   int
+		want  string
 	}{
 		{name: "full content", start: 0, end: 0, want: "line1\nline2\nline3\nline4\nline5"},
 		{name: "lines 2-4", start: 2, end: 4, want: "line2\nline3\nline4"},

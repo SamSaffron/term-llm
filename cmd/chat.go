@@ -15,13 +15,13 @@ import (
 )
 
 var (
-	chatDebug           bool
-	chatSearch          bool
-	chatProvider        string
-	chatMCP             string
-	chatMaxTurns        int
-	chatNativeSearch    bool
-	chatNoNativeSearch  bool
+	chatDebug          bool
+	chatSearch         bool
+	chatProvider       string
+	chatMCP            string
+	chatMaxTurns       int
+	chatNativeSearch   bool
+	chatNoNativeSearch bool
 	// Tool flags
 	chatTools         string
 	chatReadDirs      []string

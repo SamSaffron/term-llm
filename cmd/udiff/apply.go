@@ -473,8 +473,8 @@ func matchSequence(content []string, pattern []string, fuzzy bool) bool {
 
 // Similarity thresholds for fuzzy matching.
 const (
-	similarityThresholdAvg  = 0.8  // Average similarity required across all lines
-	similarityThresholdLine = 0.5  // Per-line minimum (more lenient for context lines)
+	similarityThresholdAvg  = 0.8 // Average similarity required across all lines
+	similarityThresholdLine = 0.5 // Per-line minimum (more lenient for context lines)
 )
 
 // matchSequenceSimilar checks if lines match pattern using similarity scoring.

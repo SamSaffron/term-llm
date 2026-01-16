@@ -10,11 +10,11 @@ func TestParseProviderModel(t *testing.T) {
 	// Create a config with some custom providers
 	cfg := &config.Config{
 		Providers: map[string]config.ProviderConfig{
-			"anthropic": {Model: "claude-sonnet-4-5"},
-			"openai":    {Model: "gpt-5.2"},
-			"gemini":    {Model: "gemini-3-flash-preview"},
+			"anthropic":  {Model: "claude-sonnet-4-5"},
+			"openai":     {Model: "gpt-5.2"},
+			"gemini":     {Model: "gemini-3-flash-preview"},
 			"openrouter": {Model: "x-ai/grok-code-fast-1"},
-			"zen":       {Model: "glm-4.7-free"},
+			"zen":        {Model: "glm-4.7-free"},
 			"cerebras": {
 				Type:    config.ProviderTypeOpenAICompat,
 				BaseURL: "https://api.cerebras.ai/v1",

@@ -125,9 +125,9 @@ func (p *FluxProvider) submitRequest(ctx context.Context, endpoint string, reqBo
 
 func (p *FluxProvider) pollAndDownload(ctx context.Context, pollingURL string) (*ImageResult, error) {
 	const (
-		maxAttempts      = 60          // Maximum number of poll attempts
-		initialBackoff   = time.Second // Start with 1 second
-		maxBackoff       = 5 * time.Second
+		maxAttempts       = 60          // Maximum number of poll attempts
+		initialBackoff    = time.Second // Start with 1 second
+		maxBackoff        = 5 * time.Second
 		backoffMultiplier = 1.5
 	)
 

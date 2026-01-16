@@ -10,9 +10,9 @@ import (
 
 // ToolPermissions manages allowlists for tool access.
 type ToolPermissions struct {
-	ReadDirs    []string // Directories for read/grep/glob/view
-	WriteDirs   []string // Directories for write/edit
-	ShellAllow  []string // Shell command patterns (glob syntax)
+	ReadDirs   []string // Directories for read/grep/glob/view
+	WriteDirs  []string // Directories for write/edit
+	ShellAllow []string // Shell command patterns (glob syntax)
 
 	// Compiled patterns for shell commands
 	shellPatterns []glob.Glob
@@ -255,14 +255,14 @@ func ExtractCommandPrefix(cmd string) string {
 
 	// Known multi-word commands
 	multiWord := map[string]bool{
-		"git":    true,
-		"npm":    true,
-		"go":     true,
-		"docker": true,
-		"cargo":  true,
-		"yarn":   true,
-		"pnpm":   true,
-		"make":   true,
+		"git":     true,
+		"npm":     true,
+		"go":      true,
+		"docker":  true,
+		"cargo":   true,
+		"yarn":    true,
+		"pnpm":    true,
+		"make":    true,
 		"kubectl": true,
 	}
 

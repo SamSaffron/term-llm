@@ -9,8 +9,8 @@ import (
 )
 
 const (
-	geminiBaseDir = ".gemini"
-	geminiTmpDir  = "tmp"
+	geminiBaseDir  = ".gemini"
+	geminiTmpDir   = "tmp"
 	geminiChatsDir = "chats"
 )
 

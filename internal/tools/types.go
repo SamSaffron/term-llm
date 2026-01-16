@@ -25,10 +25,10 @@ var MutatorKinds = []ToolKind{KindEdit, KindExecute}
 type ConfirmOutcome string
 
 const (
-	ProceedOnce          ConfirmOutcome = "once"         // Single approval
-	ProceedAlways        ConfirmOutcome = "always"       // Session-scoped approval
-	ProceedAlwaysAndSave ConfirmOutcome = "always_save"  // Persist to config
-	Cancel               ConfirmOutcome = "cancel"       // User denied
+	ProceedOnce          ConfirmOutcome = "once"        // Single approval
+	ProceedAlways        ConfirmOutcome = "always"      // Session-scoped approval
+	ProceedAlwaysAndSave ConfirmOutcome = "always_save" // Persist to config
+	Cancel               ConfirmOutcome = "cancel"      // User denied
 )
 
 // ToolErrorType provides structured errors for agent retry logic.
@@ -85,11 +85,11 @@ type Attachment struct {
 // ToolPayload is an optional JSON payload for tools that need display/metadata.
 // This is encoded in ToolResult.Content when UI metadata is required.
 type ToolPayload struct {
-	Output      string            `json:"output"`
-	Display     *ToolDisplay      `json:"display,omitempty"`
-	Metadata    map[string]any    `json:"metadata,omitempty"`
-	Attachments []Attachment      `json:"attachments,omitempty"`
-	Error       *ToolError        `json:"error,omitempty"`
+	Output      string         `json:"output"`
+	Display     *ToolDisplay   `json:"display,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
+	Attachments []Attachment   `json:"attachments,omitempty"`
+	Error       *ToolError     `json:"error,omitempty"`
 }
 
 // ToJSON encodes the payload as JSON for use in ToolResult.Content.

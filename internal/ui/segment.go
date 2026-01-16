@@ -36,7 +36,7 @@ type Segment struct {
 
 // Tool status indicator colors using raw ANSI for reliable true color
 const (
-	pendingCircleANSI = "\033[38;5;245m\u25cb\033[0m" // gray hollow circle
+	pendingCircleANSI = "\033[38;5;245m\u25cb\033[0m"        // gray hollow circle
 	workingCircleANSI = "\033[38;2;255;165;0m\u25cf\033[0m"  // orange filled circle for active tools
 	successCircleANSI = "\033[38;2;79;185;101m\u25cf\033[0m" // #4FB965 green filled circle
 	errorCircleANSI   = "\033[38;2;239;68;68m\u25cf\033[0m"  // #ef4444 red filled circle

@@ -708,4 +708,3 @@ func renderInfoMarkdown(content string, width int) string {
 
 	return result
 }
-

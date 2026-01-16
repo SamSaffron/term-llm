@@ -351,10 +351,10 @@ type codexSSEEvent struct {
 		Name      string `json:"name"`
 		Arguments string `json:"arguments"`
 	} `json:"item"`
-	ItemID   string `json:"item_id"`
-	Delta    string `json:"delta"`
+	ItemID    string `json:"item_id"`
+	Delta     string `json:"delta"`
 	Arguments string `json:"arguments"`
-	Response struct {
+	Response  struct {
 		Usage struct {
 			InputTokens        int `json:"input_tokens"`
 			OutputTokens       int `json:"output_tokens"`

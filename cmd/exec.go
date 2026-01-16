@@ -19,17 +19,17 @@ import (
 )
 
 var (
-	execPrintOnly       bool
-	execSearch          bool
-	execDebug           bool
-	execAutoPick        bool
-	execMaxOpts         int
-	execProvider        string
-	execFiles           []string
-	execMCP             string
-	execMaxTurns        int
-	execNativeSearch    bool
-	execNoNativeSearch  bool
+	execPrintOnly      bool
+	execSearch         bool
+	execDebug          bool
+	execAutoPick       bool
+	execMaxOpts        int
+	execProvider       string
+	execFiles          []string
+	execMCP            string
+	execMaxTurns       int
+	execNativeSearch   bool
+	execNoNativeSearch bool
 	// Tool flags
 	execTools         string
 	execReadDirs      []string
@@ -210,9 +210,9 @@ func runExec(cmd *cobra.Command, args []string) error {
 				llm.SystemText(systemPrompt),
 				llm.UserText(userPrompt),
 			},
-			Tools:              reqTools,
-			ToolChoice:         toolChoice,
-			LastTurnToolChoice: lastTurnToolChoice,
+			Tools:               reqTools,
+			ToolChoice:          toolChoice,
+			LastTurnToolChoice:  lastTurnToolChoice,
 			ParallelToolCalls:   true,
 			Search:              execSearch,
 			ForceExternalSearch: resolveForceExternalSearch(cfg, execNativeSearch, execNoNativeSearch),

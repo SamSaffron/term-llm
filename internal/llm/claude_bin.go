@@ -197,7 +197,7 @@ func (p *ClaudeBinProvider) buildArgs(req Request) ([]string, func()) {
 		"--output-format", "stream-json",
 		"--include-partial-messages", // Stream text as it arrives
 		"--verbose",
-		"--strict-mcp-config", // Ignore Claude's configured MCPs
+		"--strict-mcp-config",            // Ignore Claude's configured MCPs
 		"--dangerously-skip-permissions", // Allow MCP tool execution
 	}
 

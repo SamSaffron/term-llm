@@ -18,12 +18,12 @@ type RetryContext struct {
 
 // RetryDiagnostic contains full context for diagnostic logging when a retry occurs.
 type RetryDiagnostic struct {
-	AttemptNumber int          // Which retry attempt (1-indexed)
+	AttemptNumber int           // Which retry attempt (1-indexed)
 	RetryContext  *RetryContext // The context that triggered the retry
-	SystemPrompt  string       // The system prompt sent to the LLM
-	UserPrompt    string       // The user prompt sent to the LLM
-	Provider      string       // Provider name (e.g., "Anthropic (claude-sonnet-4-5)")
-	Model         string       // Model name
+	SystemPrompt  string        // The system prompt sent to the LLM
+	UserPrompt    string        // The user prompt sent to the LLM
+	Provider      string        // Provider name (e.g., "Anthropic (claude-sonnet-4-5)")
+	Model         string        // Model name
 }
 
 // BuildRetryPrompt creates a prompt to help the LLM retry after a failed edit.

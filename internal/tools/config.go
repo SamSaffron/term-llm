@@ -11,14 +11,14 @@ import (
 
 // ToolConfig holds configuration for the local tool system.
 type ToolConfig struct {
-	Enabled          []string `mapstructure:"enabled"`           // Enabled tool names (CLI names)
-	ReadDirs         []string `mapstructure:"read_dirs"`         // Directories for read operations
-	WriteDirs        []string `mapstructure:"write_dirs"`        // Directories for write operations
-	ShellAllow       []string `mapstructure:"shell_allow"`       // Shell command patterns
-	ShellAutoRun     bool     `mapstructure:"shell_auto_run"`    // Auto-approve matching shell
-	ShellAutoRunEnv  string   `mapstructure:"shell_auto_run_env"` // Env var required for auto-run
-	ShellNonTTYEnv   string   `mapstructure:"shell_non_tty_env"` // Env var for non-TTY execution
-	ImageProvider    string   `mapstructure:"image_provider"`    // Override for image provider
+	Enabled         []string `mapstructure:"enabled"`            // Enabled tool names (CLI names)
+	ReadDirs        []string `mapstructure:"read_dirs"`          // Directories for read operations
+	WriteDirs       []string `mapstructure:"write_dirs"`         // Directories for write operations
+	ShellAllow      []string `mapstructure:"shell_allow"`        // Shell command patterns
+	ShellAutoRun    bool     `mapstructure:"shell_auto_run"`     // Auto-approve matching shell
+	ShellAutoRunEnv string   `mapstructure:"shell_auto_run_env"` // Env var required for auto-run
+	ShellNonTTYEnv  string   `mapstructure:"shell_non_tty_env"`  // Env var for non-TTY execution
+	ImageProvider   string   `mapstructure:"image_provider"`     // Override for image provider
 }
 
 // DefaultToolConfig returns sensible defaults for tool configuration.
@@ -205,9 +205,9 @@ func NewToolConfigFromFields(enabled, readDirs, writeDirs, shellAllow []string, 
 
 // OutputLimits defines limits for tool output.
 type OutputLimits struct {
-	MaxLines      int   // Max lines for read_file (default 2000)
-	MaxBytes      int64 // Max bytes per tool output (default 50KB)
-	MaxResults    int   // Max results for grep/glob (default 100/200)
+	MaxLines       int   // Max lines for read_file (default 2000)
+	MaxBytes       int64 // Max bytes per tool output (default 50KB)
+	MaxResults     int   // Max results for grep/glob (default 100/200)
 	CumulativeSoft int64 // Soft cumulative limit per turn (default 100KB)
 	CumulativeHard int64 // Hard cumulative limit per turn (default 200KB)
 }
@@ -215,10 +215,10 @@ type OutputLimits struct {
 // DefaultOutputLimits returns the default output limits.
 func DefaultOutputLimits() OutputLimits {
 	return OutputLimits{
-		MaxLines:      2000,
-		MaxBytes:      50 * 1024,      // 50KB
-		MaxResults:    100,
-		CumulativeSoft: 100 * 1024,    // 100KB
-		CumulativeHard: 200 * 1024,    // 200KB
+		MaxLines:       2000,
+		MaxBytes:       50 * 1024, // 50KB
+		MaxResults:     100,
+		CumulativeSoft: 100 * 1024, // 100KB
+		CumulativeHard: 200 * 1024, // 200KB
 	}
 }

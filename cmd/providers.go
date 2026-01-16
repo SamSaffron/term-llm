@@ -20,87 +20,94 @@ var (
 
 // ProviderInfo describes a provider for external consumption
 type ProviderInfo struct {
-	Name              string   `json:"name"`
-	Type              string   `json:"type"`
-	Credential        string   `json:"credential"`         // "api_key", "oauth", "none"
-	EnvVar            string   `json:"env_var,omitempty"`  // Environment variable for API key
-	RequiresKey       bool     `json:"requires_key"`       // Whether API key is required
-	SupportsListModels bool    `json:"supports_list_models"`
-	Models            []string `json:"models,omitempty"`   // Curated model list
-	Configured        bool     `json:"configured"`         // Whether provider is in user config
-	IsBuiltin         bool     `json:"is_builtin"`         // Whether this is a built-in provider
+	Name               string   `json:"name"`
+	Type               string   `json:"type"`
+	Credential         string   `json:"credential"`        // "api_key", "oauth", "none"
+	EnvVar             string   `json:"env_var,omitempty"` // Environment variable for API key
+	RequiresKey        bool     `json:"requires_key"`      // Whether API key is required
+	SupportsListModels bool     `json:"supports_list_models"`
+	Models             []string `json:"models,omitempty"` // Curated model list
+	Configured         bool     `json:"configured"`       // Whether provider is in user config
+	IsBuiltin          bool     `json:"is_builtin"`       // Whether this is a built-in provider
 }
 
 // builtinProviderMeta contains metadata about built-in providers
 var builtinProviderMeta = map[string]struct {
-	credential        string
-	envVar            string
-	requiresKey       bool
+	credential         string
+	envVar             string
+	requiresKey        bool
 	supportsListModels bool
-	description       string
+	description        string
 }{
 	"anthropic": {
-		credential:        "api_key",
-		envVar:            "ANTHROPIC_API_KEY",
-		requiresKey:       true,
+		credential:         "api_key",
+		envVar:             "ANTHROPIC_API_KEY",
+		requiresKey:        true,
 		supportsListModels: true,
-		description:       "Anthropic API (Claude models)",
+		description:        "Anthropic API (Claude models)",
 	},
 	"openai": {
-		credential:        "api_key",
-		envVar:            "OPENAI_API_KEY",
-		requiresKey:       true,
+		credential:         "api_key",
+		envVar:             "OPENAI_API_KEY",
+		requiresKey:        true,
 		supportsListModels: true,
-		description:       "OpenAI Responses API",
+		description:        "OpenAI Responses API",
 	},
 	"codex": {
-		credential:        "oauth",
-		envVar:            "",
-		requiresKey:       false,
+		credential:         "oauth",
+		envVar:             "",
+		requiresKey:        false,
 		supportsListModels: false,
-		description:       "OpenAI via Codex OAuth (~/.codex/auth.json)",
+		description:        "OpenAI via Codex OAuth (~/.codex/auth.json)",
+	},
+	"chatgpt": {
+		credential:         "oauth",
+		envVar:             "",
+		requiresKey:        false,
+		supportsListModels: false,
+		description:        "ChatGPT via native OAuth (ChatGPT Plus/Pro subscription)",
 	},
 	"gemini": {
-		credential:        "api_key",
-		envVar:            "GEMINI_API_KEY",
-		requiresKey:       true,
+		credential:         "api_key",
+		envVar:             "GEMINI_API_KEY",
+		requiresKey:        true,
 		supportsListModels: false,
-		description:       "Google Gemini API (consumer API key)",
+		description:        "Google Gemini API (consumer API key)",
 	},
 	"gemini-cli": {
-		credential:        "oauth",
-		envVar:            "",
-		requiresKey:       false,
+		credential:         "oauth",
+		envVar:             "",
+		requiresKey:        false,
 		supportsListModels: false,
-		description:       "Google Code Assist API (gemini-cli OAuth)",
+		description:        "Google Code Assist API (gemini-cli OAuth)",
 	},
 	"openrouter": {
-		credential:        "api_key",
-		envVar:            "OPENROUTER_API_KEY",
-		requiresKey:       true,
+		credential:         "api_key",
+		envVar:             "OPENROUTER_API_KEY",
+		requiresKey:        true,
 		supportsListModels: true,
-		description:       "OpenRouter API (access to many providers)",
+		description:        "OpenRouter API (access to many providers)",
 	},
 	"zen": {
-		credential:        "api_key",
-		envVar:            "ZEN_API_KEY",
-		requiresKey:       false,
+		credential:         "api_key",
+		envVar:             "ZEN_API_KEY",
+		requiresKey:        false,
 		supportsListModels: true,
-		description:       "OpenCode Zen API (free tier available)",
+		description:        "OpenCode Zen API (free tier available)",
 	},
 	"claude-bin": {
-		credential:        "none",
-		envVar:            "",
-		requiresKey:       false,
+		credential:         "none",
+		envVar:             "",
+		requiresKey:        false,
 		supportsListModels: false,
-		description:       "Local Claude Code credentials (claude-bin CLI)",
+		description:        "Local Claude Code credentials (claude-bin CLI)",
 	},
 	"xai": {
-		credential:        "api_key",
-		envVar:            "XAI_API_KEY",
-		requiresKey:       true,
+		credential:         "api_key",
+		envVar:             "XAI_API_KEY",
+		requiresKey:        true,
 		supportsListModels: true,
-		description:       "xAI API (Grok models)",
+		description:        "xAI API (Grok models)",
 	},
 }
 
@@ -169,14 +176,14 @@ func buildProviderList(cfg *config.Config) []ProviderInfo {
 	for _, name := range builtinNames {
 		meta := builtinProviderMeta[name]
 		info := ProviderInfo{
-			Name:              name,
-			Type:              name,
-			Credential:        meta.credential,
-			EnvVar:            meta.envVar,
-			RequiresKey:       meta.requiresKey,
+			Name:               name,
+			Type:               name,
+			Credential:         meta.credential,
+			EnvVar:             meta.envVar,
+			RequiresKey:        meta.requiresKey,
 			SupportsListModels: meta.supportsListModels,
-			Models:            llm.ProviderModels[name],
-			IsBuiltin:         true,
+			Models:             llm.ProviderModels[name],
+			IsBuiltin:          true,
 		}
 
 		// Check if configured
@@ -203,13 +210,13 @@ func buildProviderList(cfg *config.Config) []ProviderInfo {
 
 			provType := string(config.InferProviderType(name, provCfg.Type))
 			info := ProviderInfo{
-				Name:              name,
-				Type:              provType,
-				Credential:        "api_key",
-				RequiresKey:       true,
+				Name:               name,
+				Type:               provType,
+				Credential:         "api_key",
+				RequiresKey:        true,
 				SupportsListModels: provType == "openai_compatible",
-				Configured:        true,
-				IsBuiltin:         false,
+				Configured:         true,
+				IsBuiltin:          false,
 			}
 
 			// Get models from config or provider type

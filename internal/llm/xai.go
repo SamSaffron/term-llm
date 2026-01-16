@@ -405,11 +405,11 @@ type xaiResponsesTool struct {
 }
 
 type xaiResponsesEvent struct {
-	Type     string                   `json:"type"`
-	Delta    string                   `json:"delta,omitempty"`
-	Item     *xaiResponsesItem        `json:"item,omitempty"`
-	Response *xaiResponsesCompletion  `json:"response,omitempty"`
-	Error    string                   `json:"error,omitempty"`
+	Type     string                  `json:"type"`
+	Delta    string                  `json:"delta,omitempty"`
+	Item     *xaiResponsesItem       `json:"item,omitempty"`
+	Response *xaiResponsesCompletion `json:"response,omitempty"`
+	Error    string                  `json:"error,omitempty"`
 }
 
 type xaiResponsesItem struct {

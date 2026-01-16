@@ -118,7 +118,7 @@ func (p *GeminiProvider) doRequest(ctx context.Context, parts []geminiPart, debu
 
 // Gemini API types
 type geminiRequest struct {
-	Contents         []geminiContent         `json:"contents"`
+	Contents         []geminiContent        `json:"contents"`
 	GenerationConfig geminiGenerationConfig `json:"generationConfig"`
 }
 

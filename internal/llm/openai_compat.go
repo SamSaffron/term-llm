@@ -26,12 +26,12 @@ var defaultHTTPClient = &http.Client{
 // OpenAICompatProvider implements Provider for OpenAI-compatible APIs
 // Used by Ollama, LM Studio, and other compatible servers.
 type OpenAICompatProvider struct {
-	baseURL     string            // Base URL - /chat/completions is appended
-	chatURL     string            // Full chat URL - used as-is (optional, overrides baseURL)
-	apiKey      string            // Optional, most servers ignore it
-	model       string
-	name        string            // Display name: "Ollama", "LM Studio", etc.
-	headers     map[string]string
+	baseURL string // Base URL - /chat/completions is appended
+	chatURL string // Full chat URL - used as-is (optional, overrides baseURL)
+	apiKey  string // Optional, most servers ignore it
+	model   string
+	name    string // Display name: "Ollama", "LM Studio", etc.
+	headers map[string]string
 }
 
 func NewOpenAICompatProvider(baseURL, apiKey, model, name string) *OpenAICompatProvider {

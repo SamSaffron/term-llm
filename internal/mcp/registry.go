@@ -34,12 +34,12 @@ func NewRegistryClient() *RegistryClient {
 
 // RegistryServer represents a server from the registry.
 type RegistryServer struct {
-	Name        string            `json:"name"`
-	Description string            `json:"description"`
-	Version     string            `json:"version"`
-	Repository  *RepositoryInfo   `json:"repository,omitempty"`
-	Packages    []PackageInfo     `json:"packages,omitempty"`
-	Meta        *RegistryMeta     `json:"_meta,omitempty"`
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Version     string          `json:"version"`
+	Repository  *RepositoryInfo `json:"repository,omitempty"`
+	Packages    []PackageInfo   `json:"packages,omitempty"`
+	Meta        *RegistryMeta   `json:"_meta,omitempty"`
 }
 
 // RepositoryInfo contains source repository information.
@@ -51,13 +51,13 @@ type RepositoryInfo struct {
 
 // PackageInfo describes how to install/run a server.
 type PackageInfo struct {
-	RegistryType    string           `json:"registryType"` // npm, pypi, oci
-	RegistryBaseURL string           `json:"registryBaseUrl,omitempty"`
-	Identifier      string           `json:"identifier"`
-	Version         string           `json:"version"`
-	Transport       *TransportInfo   `json:"transport,omitempty"`
-	Arguments       []ArgumentInfo   `json:"packageArguments,omitempty"`
-	RuntimeArgs     []ArgumentInfo   `json:"runtimeArguments,omitempty"`
+	RegistryType    string         `json:"registryType"` // npm, pypi, oci
+	RegistryBaseURL string         `json:"registryBaseUrl,omitempty"`
+	Identifier      string         `json:"identifier"`
+	Version         string         `json:"version"`
+	Transport       *TransportInfo `json:"transport,omitempty"`
+	Arguments       []ArgumentInfo `json:"packageArguments,omitempty"`
+	RuntimeArgs     []ArgumentInfo `json:"runtimeArguments,omitempty"`
 }
 
 // TransportInfo describes the transport type.
@@ -70,8 +70,8 @@ type TransportInfo struct {
 type ArgumentInfo struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
-	Type        string `json:"type"`     // positional, named
-	Format      string `json:"format"`   // string, number
+	Type        string `json:"type"`   // positional, named
+	Format      string `json:"format"` // string, number
 	IsRequired  bool   `json:"isRequired"`
 	Default     string `json:"default,omitempty"`
 }

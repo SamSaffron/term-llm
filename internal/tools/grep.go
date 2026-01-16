@@ -51,18 +51,18 @@ type rgMatchData struct {
 	Lines struct {
 		Text string `json:"text"`
 	} `json:"lines"`
-	LineNumber   int `json:"line_number"`
+	LineNumber     int `json:"line_number"`
 	AbsoluteOffset int `json:"absolute_offset"`
 }
 
 // executeRipgrep runs ripgrep and returns matches.
 func (t *GrepTool) executeRipgrep(ctx context.Context, pattern, searchPath, include string, maxResults int) ([]GrepMatch, error) {
 	args := []string{
-		"--json",           // JSON output for parsing
+		"--json",                                // JSON output for parsing
 		"--max-count", strconv.Itoa(maxResults), // Limit per file
-		"--context", "3",   // Context lines
-		"--hidden",         // Search hidden files but...
-		"--glob", "!.git",  // ...exclude .git
+		"--context", "3", // Context lines
+		"--hidden",        // Search hidden files but...
+		"--glob", "!.git", // ...exclude .git
 	}
 
 	if include != "" {

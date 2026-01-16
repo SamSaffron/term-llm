@@ -164,8 +164,8 @@ type orMessage struct {
 }
 
 type orMessageContent struct {
-	Type     string     `json:"type"`
-	Text     string     `json:"text,omitempty"`
+	Type     string      `json:"type"`
+	Text     string      `json:"text,omitempty"`
 	ImageURL *orImageURL `json:"image_url,omitempty"`
 }
 

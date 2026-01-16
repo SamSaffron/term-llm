@@ -72,8 +72,8 @@ type Model struct {
 	maxTurns   int
 
 	// Directory approval
-	approvedDirs       *ApprovedDirs
-	pendingFilePath    string // File waiting for directory approval
+	approvedDirs    *ApprovedDirs
+	pendingFilePath string // File waiting for directory approval
 
 	// History scroll
 	scrollOffset int
@@ -146,9 +146,9 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 	ta.Placeholder = "Type a message..."
 	ta.Prompt = "❯ "
 	ta.ShowLineNumbers = false
-	ta.CharLimit = 0                             // No limit
+	ta.CharLimit = 0 // No limit
 	ta.SetWidth(width)
-	ta.SetHeight(1)                              // Start with single line
+	ta.SetHeight(1) // Start with single line
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	ta.FocusedStyle.Base = lipgloss.NewStyle()
 	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(styles.Theme().Muted)

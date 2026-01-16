@@ -482,7 +482,7 @@ func TestApplyWhitespaceTolerance(t *testing.T) {
 		Context: "func Foo",
 		Lines: []Line{
 			{Type: Context, Content: "func Foo() {"},
-			{Type: Remove, Content: "  bar()"},   // 2 spaces instead of 4
+			{Type: Remove, Content: "  bar()"}, // 2 spaces instead of 4
 			{Type: Add, Content: "    baz()"},
 			{Type: Context, Content: "}"},
 		},

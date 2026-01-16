@@ -10,10 +10,10 @@ import (
 )
 
 const (
-	codexHomeEnv          = "CODEX_HOME"
-	codexDefaultDir       = ".codex"
-	codexSessionSubdir    = "sessions"
-	codexFallbackModel    = "gpt-5"
+	codexHomeEnv       = "CODEX_HOME"
+	codexDefaultDir    = ".codex"
+	codexSessionSubdir = "sessions"
+	codexFallbackModel = "gpt-5"
 )
 
 // codexEntry represents an entry in a Codex JSONL file
@@ -32,11 +32,11 @@ type codexTurnContext struct {
 type codexTokenPayload struct {
 	Type string `json:"type"`
 	Info struct {
-		Model         string           `json:"model"`
-		ModelName     string           `json:"model_name"`
+		Model           string         `json:"model"`
+		ModelName       string         `json:"model_name"`
 		LastTokenUsage  *codexRawUsage `json:"last_token_usage"`
 		TotalTokenUsage *codexRawUsage `json:"total_token_usage"`
-		Metadata      struct {
+		Metadata        struct {
 			Model string `json:"model"`
 		} `json:"metadata"`
 	} `json:"info"`
@@ -196,14 +196,14 @@ func loadCodexFile(path string, sessionID string) ([]UsageEntry, []error) {
 			}
 
 			entries = append(entries, UsageEntry{
-				Timestamp:        ts,
-				SessionID:        sessionID,
-				Model:            currentModel,
-				InputTokens:      delta.InputTokens,
-				OutputTokens:     delta.OutputTokens,
-				CacheReadTokens:  delta.CachedInputTokens,
-				ReasoningTokens:  delta.ReasoningOutputTokens,
-				Provider:         ProviderCodex,
+				Timestamp:       ts,
+				SessionID:       sessionID,
+				Model:           currentModel,
+				InputTokens:     delta.InputTokens,
+				OutputTokens:    delta.OutputTokens,
+				CacheReadTokens: delta.CachedInputTokens,
+				ReasoningTokens: delta.ReasoningOutputTokens,
+				Provider:        ProviderCodex,
 			})
 		}
 	}

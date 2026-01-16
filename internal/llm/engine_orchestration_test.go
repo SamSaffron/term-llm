@@ -117,7 +117,7 @@ func TestEngineOrchestration_ExternalSearch(t *testing.T) {
 
 	provider := NewMockProvider("test")
 	provider.WithCapabilities(Capabilities{ToolCalls: true, NativeWebSearch: false})
-	
+
 	// Turn 0: applyExternalSearch calls provider to get tool calls
 	provider.AddToolCall("search-1", WebSearchToolName, map[string]any{"query": "zig"})
 	// Turn 1: loop starts, provider returns text based on search results
@@ -186,7 +186,7 @@ func TestEngineOrchestration_MaxTurns(t *testing.T) {
 	if gotErr == nil || !strings.Contains(gotErr.Error(), "exceeded max turns") {
 		t.Errorf("Expected max turns error, got %v", gotErr)
 	}
-	
+
 	if len(provider.Requests) != 3 {
 		t.Errorf("Expected 3 provider calls (MaxTurns), got %d", len(provider.Requests))
 	}
@@ -236,10 +236,10 @@ func TestEngineOrchestration_ExternalSearchMixedCalls(t *testing.T) {
 
 	provider := NewMockProvider("test")
 	provider.WithCapabilities(Capabilities{ToolCalls: true, NativeWebSearch: false})
-	
+
 	// Turn 0: applyExternalSearch returns just search
 	provider.AddToolCall("search-1", WebSearchToolName, map[string]any{"query": "zig"})
-	
+
 	// Turn 1: loop returns BOTH search AND an unregistered tool
 	provider.AddTurn(MockTurn{
 		ToolCalls: []ToolCall{

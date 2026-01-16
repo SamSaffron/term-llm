@@ -27,18 +27,18 @@ func NewEditFileTool(approval *ApprovalManager) *EditFileTool {
 // - Mode 1 (Delegated): instructions + optional line_range
 // - Mode 2 (Direct): old_text + new_text
 type EditFileArgs struct {
-	FilePath     string `json:"file_path"`
+	FilePath string `json:"file_path"`
 	// Mode 1: Delegated edit (natural language)
 	Instructions string `json:"instructions,omitempty"`
 	LineRange    string `json:"line_range,omitempty"` // e.g., "10-20"
 	// Mode 2: Direct edit (deterministic)
-	OldText      string `json:"old_text,omitempty"`
-	NewText      string `json:"new_text,omitempty"`
+	OldText string `json:"old_text,omitempty"`
+	NewText string `json:"new_text,omitempty"`
 }
 
 func (t *EditFileTool) Spec() llm.ToolSpec {
 	return llm.ToolSpec{
-		Name:        EditFileToolName,
+		Name: EditFileToolName,
 		Description: `Edit a file. Two modes available:
 1. Direct edit: provide old_text and new_text for deterministic string replacement with 5-level matching
 2. The literal token <<<elided>>> in old_text matches any sequence of characters (including newlines)

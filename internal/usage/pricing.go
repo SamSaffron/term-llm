@@ -20,23 +20,23 @@ const (
 
 // ModelPricing contains pricing information for a model
 type ModelPricing struct {
-	InputCostPerToken              float64 `json:"input_cost_per_token"`
-	OutputCostPerToken             float64 `json:"output_cost_per_token"`
-	CacheCreationInputTokenCost    float64 `json:"cache_creation_input_token_cost"`
-	CacheReadInputTokenCost        float64 `json:"cache_read_input_token_cost"`
-	InputCostPerTokenAbove200k     float64 `json:"input_cost_per_token_above_200k_tokens"`
-	OutputCostPerTokenAbove200k    float64 `json:"output_cost_per_token_above_200k_tokens"`
-	CacheCreationCostAbove200k     float64 `json:"cache_creation_input_token_cost_above_200k_tokens"`
-	CacheReadCostAbove200k         float64 `json:"cache_read_input_token_cost_above_200k_tokens"`
+	InputCostPerToken           float64 `json:"input_cost_per_token"`
+	OutputCostPerToken          float64 `json:"output_cost_per_token"`
+	CacheCreationInputTokenCost float64 `json:"cache_creation_input_token_cost"`
+	CacheReadInputTokenCost     float64 `json:"cache_read_input_token_cost"`
+	InputCostPerTokenAbove200k  float64 `json:"input_cost_per_token_above_200k_tokens"`
+	OutputCostPerTokenAbove200k float64 `json:"output_cost_per_token_above_200k_tokens"`
+	CacheCreationCostAbove200k  float64 `json:"cache_creation_input_token_cost_above_200k_tokens"`
+	CacheReadCostAbove200k      float64 `json:"cache_read_input_token_cost_above_200k_tokens"`
 }
 
 // PricingFetcher fetches and caches model pricing from LiteLLM
 type PricingFetcher struct {
-	mu           sync.RWMutex
-	cache        map[string]ModelPricing
-	lastFetch    time.Time
-	cacheDir     string
-	httpClient   *http.Client
+	mu         sync.RWMutex
+	cache      map[string]ModelPricing
+	lastFetch  time.Time
+	cacheDir   string
+	httpClient *http.Client
 }
 
 // NewPricingFetcher creates a new pricing fetcher

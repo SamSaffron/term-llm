@@ -56,6 +56,7 @@
 
 ## Coding Style & Naming Conventions
 - Go formatting is standard `gofmt`; keep imports grouped by gofmt defaults.
+- **Always run `gofmt -w .` after making changes** to ensure consistent formatting.
 - Use idiomatic Go names (CamelCase for exported, mixedCaps for unexported).
 - Prefer small, focused functions and explicit error handling.
 

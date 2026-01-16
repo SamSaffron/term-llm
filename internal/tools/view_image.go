@@ -38,10 +38,10 @@ type ViewImageArgs struct {
 }
 
 const (
-	maxImageSize    = 5 * 1024 * 1024  // 5MB - Anthropic API limit
-	maxDimension    = 1568             // Anthropic recommended max for optimal performance
-	maxAbsDimension = 8000             // Anthropic absolute max
-	jpegQuality     = 85               // JPEG quality for re-encoding
+	maxImageSize    = 5 * 1024 * 1024 // 5MB - Anthropic API limit
+	maxDimension    = 1568            // Anthropic recommended max for optimal performance
+	maxAbsDimension = 8000            // Anthropic absolute max
+	jpegQuality     = 85              // JPEG quality for re-encoding
 )
 
 var supportedImageFormats = map[string]string{

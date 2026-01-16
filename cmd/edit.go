@@ -193,7 +193,6 @@ func absPath(path string) string {
 	return abs
 }
 
-
 func runEdit(cmd *cobra.Command, args []string) error {
 	request := strings.Join(args, " ")
 	ctx, stop := signal.NotifyContext()

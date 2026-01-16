@@ -143,15 +143,15 @@ type jsonOutput struct {
 }
 
 type jsonDailyUsage struct {
-	Date             string             `json:"date"`
-	InputTokens      int                `json:"inputTokens"`
-	OutputTokens     int                `json:"outputTokens"`
-	CacheWriteTokens int                `json:"cacheWriteTokens"`
-	CacheReadTokens  int                `json:"cacheReadTokens"`
-	ReasoningTokens  int                `json:"reasoningTokens"`
-	TotalTokens      int                `json:"totalTokens"`
-	TotalCost        float64            `json:"totalCost"`
-	ModelsUsed       []string           `json:"modelsUsed"`
+	Date             string               `json:"date"`
+	InputTokens      int                  `json:"inputTokens"`
+	OutputTokens     int                  `json:"outputTokens"`
+	CacheWriteTokens int                  `json:"cacheWriteTokens"`
+	CacheReadTokens  int                  `json:"cacheReadTokens"`
+	ReasoningTokens  int                  `json:"reasoningTokens"`
+	TotalTokens      int                  `json:"totalTokens"`
+	TotalCost        float64              `json:"totalCost"`
+	ModelsUsed       []string             `json:"modelsUsed"`
 	Breakdown        []jsonModelBreakdown `json:"breakdown,omitempty"`
 }
 

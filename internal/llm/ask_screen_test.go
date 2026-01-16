@@ -160,7 +160,7 @@ func TestAskViewImage_AllScreenStates(t *testing.T) {
 
 	// State 1: Initial thinking
 	fmt.Println("--- State 1: Initial Thinking ---")
-	fmt.Println(simulateThinkingScreen(0*time.Second))
+	fmt.Println(simulateThinkingScreen(0 * time.Second))
 	fmt.Println()
 
 	// State 2: LLM decided to call view_image, approval prompt shown

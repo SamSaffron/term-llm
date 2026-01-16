@@ -196,10 +196,10 @@ type TUIHarness struct {
 	output *bytes.Buffer
 
 	// Approval automation
-	approvalQueue   []ApprovalAction
-	approvalIndex   int
-	approvalChan    chan ApprovalRequest
-	responseChan    chan ApprovalResponseMsg
+	approvalQueue []ApprovalAction
+	approvalIndex int
+	approvalChan  chan ApprovalRequest
+	responseChan  chan ApprovalResponseMsg
 
 	// Timing
 	timeout time.Duration

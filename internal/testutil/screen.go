@@ -20,9 +20,9 @@ type Frame struct {
 
 // ScreenCapture stores captured screen frames.
 type ScreenCapture struct {
-	mu       sync.Mutex
-	frames   []Frame
-	enabled  bool
+	mu        sync.Mutex
+	frames    []Frame
+	enabled   bool
 	startTime time.Time
 }
 

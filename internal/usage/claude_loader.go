@@ -16,9 +16,9 @@ const (
 
 // claudeEntry represents a single entry in a Claude Code JSONL file
 type claudeEntry struct {
-	Timestamp string `json:"timestamp"`
-	SessionID string `json:"sessionId"`
-	RequestID string `json:"requestId"`
+	Timestamp string  `json:"timestamp"`
+	SessionID string  `json:"sessionId"`
+	RequestID string  `json:"requestId"`
 	CostUSD   float64 `json:"costUSD"`
 	Message   struct {
 		ID    string `json:"id"`

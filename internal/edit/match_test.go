@@ -208,9 +208,9 @@ func TestLevenshteinDistance(t *testing.T) {
 
 func TestLineSimilarity(t *testing.T) {
 	tests := []struct {
-		a, b    string
-		minSim  float64
-		maxSim  float64
+		a, b   string
+		minSim float64
+		maxSim float64
 	}{
 		{"hello", "hello", 1.0, 1.0},
 		{"hello", "helo", 0.7, 0.9},

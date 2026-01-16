@@ -162,8 +162,8 @@ func (r *LocalToolRegistry) AddShellPattern(pattern string) error {
 
 // ToolManager provides a high-level interface for tool management in commands.
 type ToolManager struct {
-	Registry       *LocalToolRegistry
-	ApprovalMgr    *ApprovalManager
+	Registry    *LocalToolRegistry
+	ApprovalMgr *ApprovalManager
 }
 
 // NewToolManager creates a new tool manager from config.

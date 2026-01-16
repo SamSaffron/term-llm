@@ -29,12 +29,12 @@ func (f Format) String() string {
 type ParserState int
 
 const (
-	StateIdle            ParserState = iota // Looking for [FILE:] or [ABOUT]
-	StateInFile                             // Inside [FILE:], detecting format
-	StateInSearch                           // Accumulating search content
-	StateInReplace                          // Accumulating replace content
-	StateInDiff                             // Accumulating unified diff content
-	StateInAbout                            // Inside [ABOUT] block
+	StateIdle      ParserState = iota // Looking for [FILE:] or [ABOUT]
+	StateInFile                       // Inside [FILE:], detecting format
+	StateInSearch                     // Accumulating search content
+	StateInReplace                    // Accumulating replace content
+	StateInDiff                       // Accumulating unified diff content
+	StateInAbout                      // Inside [ABOUT] block
 )
 
 func (s ParserState) String() string {

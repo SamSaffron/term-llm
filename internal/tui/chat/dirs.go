@@ -193,8 +193,8 @@ func GetParentOptions(path string) []string {
 
 // DirApprovalRequest represents a pending directory approval request
 type DirApprovalRequest struct {
-	Path       string   // The file path that triggered the request
-	Options    []string // Directory options to approve
-	OnApprove  func(dir string)
-	OnDeny     func()
+	Path      string   // The file path that triggered the request
+	Options   []string // Directory options to approve
+	OnApprove func(dir string)
+	OnDeny    func()
 }

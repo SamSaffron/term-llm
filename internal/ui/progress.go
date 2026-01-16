@@ -44,16 +44,16 @@ type ProgressUpdate struct {
 
 // StreamingIndicator renders a consistent streaming status line
 type StreamingIndicator struct {
-	Spinner        string                       // spinner.View() output
-	Phase          string                       // "Thinking", "Searching", etc.
+	Spinner        string // spinner.View() output
+	Phase          string // "Thinking", "Searching", etc.
 	Elapsed        time.Duration
-	Tokens         int                          // 0 = don't show
-	Status         string                       // optional status (e.g., "editing main.go")
-	ShowCancel     bool                         // show "(esc to cancel)"
-	Segments       []Segment                    // active tool segments for wave animation
-	WavePos        int                          // current wave position
-	Width          int                          // terminal width for markdown rendering
-	RenderMarkdown func(string, int) string     // markdown renderer for text segments
+	Tokens         int                      // 0 = don't show
+	Status         string                   // optional status (e.g., "editing main.go")
+	ShowCancel     bool                     // show "(esc to cancel)"
+	Segments       []Segment                // active tool segments for wave animation
+	WavePos        int                      // current wave position
+	Width          int                      // terminal width for markdown rendering
+	RenderMarkdown func(string, int) string // markdown renderer for text segments
 }
 
 // Render returns the formatted streaming indicator string

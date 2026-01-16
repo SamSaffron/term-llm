@@ -32,7 +32,7 @@ func (e UsageEntry) TotalTokens() int {
 
 // DailyUsage represents aggregated usage for a single day
 type DailyUsage struct {
-	Date             string   // YYYY-MM-DD format
+	Date             string // YYYY-MM-DD format
 	InputTokens      int
 	OutputTokens     int
 	CacheWriteTokens int
@@ -61,9 +61,9 @@ type ModelBreakdown struct {
 
 // LoadResult contains the result of loading usage data from a provider
 type LoadResult struct {
-	Entries           []UsageEntry
+	Entries            []UsageEntry
 	MissingDirectories []string
-	Errors            []error
+	Errors             []error
 }
 
 // Merge combines another LoadResult into this one

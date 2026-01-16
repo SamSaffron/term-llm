@@ -88,4 +88,3 @@ func TestTextInputRendering(t *testing.T) {
 		}
 	})
 }
-
