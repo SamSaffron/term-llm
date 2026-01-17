@@ -13,6 +13,7 @@ type SessionStats struct {
 	CachedInputTokens int // Tokens read from cache
 	ToolCallCount     int
 	TurnCount         int // For multi-turn sessions (chat)
+	LLMCallCount      int // Number of LLM API calls made
 
 	// Time tracking
 	LLMTime       time.Duration
@@ -30,11 +31,12 @@ func NewSessionStats() *SessionStats {
 	}
 }
 
-// AddUsage adds token usage to the stats.
+// AddUsage adds token usage to the stats and increments the LLM call count.
 func (s *SessionStats) AddUsage(input, output, cached int) {
 	s.InputTokens += input
 	s.OutputTokens += output
 	s.CachedInputTokens += cached
+	s.LLMCallCount++
 }
 
 // ToolStart marks the start of a tool execution.
@@ -103,11 +105,11 @@ func (s SessionStats) Render() string {
 	}
 
 	if s.TurnCount > 0 {
-		// Multi-turn format: Stats: 34.5s | 3 turns | 1.2k in / 4.5k out | 5 tools
-		return fmt.Sprintf("Stats: %s | %d turns | %s | %d tools",
-			timeStr, s.TurnCount, tokensStr, s.ToolCallCount)
+		// Multi-turn format: Stats: 34.5s | 3 turns | 1.2k in / 4.5k out | 5 tools | 3 llm calls
+		return fmt.Sprintf("Stats: %s | %d turns | %s | %d tools | %d llm calls",
+			timeStr, s.TurnCount, tokensStr, s.ToolCallCount, s.LLMCallCount)
 	}
 
-	return fmt.Sprintf("Stats: %s | %s | %d tools",
-		timeStr, tokensStr, s.ToolCallCount)
+	return fmt.Sprintf("Stats: %s | %s | %d tools | %d llm calls",
+		timeStr, tokensStr, s.ToolCallCount, s.LLMCallCount)
 }

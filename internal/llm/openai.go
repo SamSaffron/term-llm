@@ -2,22 +2,21 @@ package llm
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
-	"github.com/openai/openai-go/responses"
-	"github.com/openai/openai-go/shared"
 )
 
 // OpenAIProvider implements Provider using the standard OpenAI API.
 type OpenAIProvider struct {
-	client *openai.Client
-	model  string
-	effort string // reasoning effort: "low", "medium", "high", "xhigh", or ""
+	client          *openai.Client // Used for ListModels
+	apiKey          string
+	model           string
+	effort          string           // reasoning effort: "low", "medium", "high", "xhigh", or ""
+	responsesClient *ResponsesClient // Shared client for Responses API with server state
 }
 
 // parseModelEffort extracts effort suffix from model name.
@@ -41,6 +40,7 @@ func NewOpenAIProvider(apiKey, model string) *OpenAIProvider {
 	client := openai.NewClient(option.WithAPIKey(apiKey))
 	return &OpenAIProvider{
 		client: &client,
+		apiKey: apiKey,
 		model:  actualModel,
 		effort: effort,
 	}
@@ -83,117 +83,79 @@ func (p *OpenAIProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 }
 
 func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error) {
-	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
-		inputItems := buildOpenAIInput(req.Messages)
-		if len(inputItems) == 0 {
-			return fmt.Errorf("no user content provided")
+	// Reuse client to maintain server state across requests
+	if p.responsesClient == nil {
+		p.responsesClient = &ResponsesClient{
+			BaseURL:       "https://api.openai.com/v1/responses",
+			GetAuthHeader: func() string { return "Bearer " + p.apiKey },
+			HTTPClient:    defaultHTTPClient,
 		}
+	}
 
-		tools, err := buildOpenAITools(req.Tools)
-		if err != nil {
-			return err
-		}
-		if req.Search {
-			webSearchTool := responses.ToolParamOfWebSearchPreview(responses.WebSearchToolTypeWebSearchPreview)
-			tools = append([]responses.ToolUnionParam{webSearchTool}, tools...)
-		}
+	// Strip effort suffix from req.Model if present, use it if no provider-level effort set
+	reqModel, reqEffort := parseModelEffort(req.Model)
+	model := chooseModel(reqModel, p.model)
+	effort := p.effort
+	if effort == "" && reqEffort != "" {
+		effort = reqEffort
+	}
 
-		// Strip effort suffix from req.Model if present, use it if no provider-level effort set
-		reqModel, reqEffort := parseModelEffort(req.Model)
-		model := chooseModel(reqModel, p.model)
-		effort := p.effort
-		if effort == "" && reqEffort != "" {
-			effort = reqEffort
-		}
+	// Build tools - add web search tool first if requested
+	tools := BuildResponsesTools(req.Tools)
+	if req.Search {
+		webSearchTool := ResponsesWebSearchTool{Type: "web_search_preview"}
+		tools = append([]any{webSearchTool}, tools...)
+	}
 
-		params := responses.ResponseNewParams{
-			Model: shared.ResponsesModel(model),
-			Input: responses.ResponseNewParamsInputUnion{
-				OfInputItemList: inputItems,
-			},
-			Tools: tools,
-		}
-		if req.ParallelToolCalls {
-			params.ParallelToolCalls = openai.Bool(true)
-		}
-		if req.MaxOutputTokens > 0 {
-			params.MaxOutputTokens = openai.Int(int64(req.MaxOutputTokens))
-		}
-		if req.Temperature > 0 {
-			params.Temperature = openai.Float(float64(req.Temperature))
-		}
-		if req.TopP > 0 {
-			params.TopP = openai.Float(float64(req.TopP))
-		}
-		if effort != "" {
-			params.Reasoning = shared.ReasoningParam{
-				Effort: shared.ReasoningEffort(effort),
-			}
-		}
-		if req.ToolChoice.Mode != "" {
-			params.ToolChoice = buildOpenAIToolChoice(req.ToolChoice)
-		}
+	responsesReq := ResponsesRequest{
+		Model:  model,
+		Input:  BuildResponsesInput(req.Messages),
+		Tools:  tools,
+		Stream: true,
+	}
 
-		if req.Debug {
-			systemPreview := collectRoleText(req.Messages, RoleSystem)
-			userPreview := collectRoleText(req.Messages, RoleUser)
-			fmt.Fprintln(os.Stderr, "=== DEBUG: OpenAI Stream Request ===")
-			fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
-			fmt.Fprintf(os.Stderr, "Developer: %s\n", truncate(systemPreview, 200))
-			fmt.Fprintf(os.Stderr, "User: %s\n", truncate(userPreview, 200))
-			fmt.Fprintf(os.Stderr, "Input Items: %d\n", len(inputItems))
-			fmt.Fprintf(os.Stderr, "Tools: %d\n", len(tools))
-			fmt.Fprintln(os.Stderr, "===================================")
-		}
+	if req.ToolChoice.Mode != "" {
+		responsesReq.ToolChoice = BuildResponsesToolChoice(req.ToolChoice)
+	}
+	if req.ParallelToolCalls {
+		responsesReq.ParallelToolCalls = boolPtr(true)
+	}
+	if req.Temperature > 0 {
+		v := float64(req.Temperature)
+		responsesReq.Temperature = &v
+	}
+	if req.TopP > 0 {
+		v := float64(req.TopP)
+		responsesReq.TopP = &v
+	}
+	if req.MaxOutputTokens > 0 {
+		responsesReq.MaxOutputTokens = req.MaxOutputTokens
+	}
+	if effort != "" {
+		responsesReq.Reasoning = &ResponsesReasoning{Effort: effort}
+	}
 
-		if len(tools) > 0 {
-			resp, err := p.client.Responses.New(ctx, params)
-			if err != nil {
-				return fmt.Errorf("openai API error: %w", err)
-			}
-			emitOpenAIResponseOutput(events, resp)
-			emitOpenAIUsage(events, resp)
-			events <- Event{Type: EventDone}
-			return nil
-		}
+	if req.Debug {
+		systemPreview := collectRoleText(req.Messages, RoleSystem)
+		userPreview := collectRoleText(req.Messages, RoleUser)
+		fmt.Fprintln(os.Stderr, "=== DEBUG: OpenAI Stream Request ===")
+		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
+		fmt.Fprintf(os.Stderr, "Developer: %s\n", truncate(systemPreview, 200))
+		fmt.Fprintf(os.Stderr, "User: %s\n", truncate(userPreview, 200))
+		fmt.Fprintf(os.Stderr, "Input Items: %d\n", len(responsesReq.Input))
+		fmt.Fprintf(os.Stderr, "Tools: %d\n", len(tools))
+		fmt.Fprintln(os.Stderr, "===================================")
+	}
 
-		var lastResp *responses.Response
-		stream := p.client.Responses.NewStreaming(ctx, params)
-		for stream.Next() {
-			event := stream.Current()
-			if event.Type == "response.output_text.delta" && event.Delta.OfString != "" {
-				events <- Event{Type: EventTextDelta, Text: event.Delta.OfString}
-			}
-			if event.Type == "response.completed" {
-				lastResp = &event.Response
-			}
-		}
-		if err := stream.Err(); err != nil {
-			return fmt.Errorf("openai streaming error: %w", err)
-		}
-		if lastResp != nil {
-			emitOpenAIUsage(events, lastResp)
-		}
-		events <- Event{Type: EventDone}
-		return nil
-	}), nil
+	return p.responsesClient.Stream(ctx, responsesReq, req.DebugRaw)
 }
 
-func buildOpenAITools(specs []ToolSpec) ([]responses.ToolUnionParam, error) {
-	if len(specs) == 0 {
-		return nil, nil
+// ResetConversation clears server state for the Responses API client.
+// Called on /clear or new conversation.
+func (p *OpenAIProvider) ResetConversation() {
+	if p.responsesClient != nil {
+		p.responsesClient.ResetConversation()
 	}
-	tools := make([]responses.ToolUnionParam, 0, len(specs))
-	for _, spec := range specs {
-		// Normalize schema for OpenAI's strict requirements
-		schema := normalizeSchemaForOpenAI(spec.Schema)
-		tool := responses.ToolParamOfFunction(spec.Name, schema, true)
-		if spec.Description != "" {
-			tool.OfFunction.Description = openai.String(spec.Description)
-		}
-		tools = append(tools, tool)
-	}
-	return tools, nil
 }
 
 // normalizeSchemaForOpenAI ensures schema meets OpenAI's strict requirements:
@@ -297,149 +259,6 @@ func normalizeSchemaRecursive(schema map[string]interface{}) map[string]interfac
 	}
 
 	return schema
-}
-
-func buildOpenAIToolChoice(choice ToolChoice) responses.ResponseNewParamsToolChoiceUnion {
-	switch choice.Mode {
-	case ToolChoiceNone:
-		return responses.ResponseNewParamsToolChoiceUnion{OfToolChoiceMode: openai.Opt(responses.ToolChoiceOptionsNone)}
-	case ToolChoiceRequired:
-		return responses.ResponseNewParamsToolChoiceUnion{OfToolChoiceMode: openai.Opt(responses.ToolChoiceOptionsRequired)}
-	case ToolChoiceName:
-		return responses.ResponseNewParamsToolChoiceUnion{OfFunctionTool: &responses.ToolChoiceFunctionParam{Name: choice.Name}}
-	default:
-		return responses.ResponseNewParamsToolChoiceUnion{OfToolChoiceMode: openai.Opt(responses.ToolChoiceOptionsAuto)}
-	}
-}
-
-func buildOpenAIInput(messages []Message) responses.ResponseInputParam {
-	inputItems := make(responses.ResponseInputParam, 0, len(messages))
-
-	for _, msg := range messages {
-		switch msg.Role {
-		case RoleSystem:
-			// Use developer role for system messages in Responses API
-			inputItems = append(inputItems, buildOpenAIMessageItems(responses.EasyInputMessageRoleDeveloper, msg.Parts)...)
-		case RoleUser:
-			inputItems = append(inputItems, buildOpenAIMessageItems(responses.EasyInputMessageRoleUser, msg.Parts)...)
-		case RoleAssistant:
-			inputItems = append(inputItems, buildOpenAIMessageItems(responses.EasyInputMessageRoleAssistant, msg.Parts)...)
-		case RoleTool:
-			for _, part := range msg.Parts {
-				if part.Type != PartToolResult || part.ToolResult == nil {
-					continue
-				}
-				callID := strings.TrimSpace(part.ToolResult.ID)
-				if callID == "" {
-					continue
-				}
-				// Check for embedded image data in tool result
-				mimeType, base64Data, textContent := parseToolResultImageData(part.ToolResult.Content)
-
-				// Send the text-only tool result
-				inputItems = append(inputItems, responses.ResponseInputItemParamOfFunctionCallOutput(callID, textContent))
-
-				// If image data was found, add a user message with the image
-				if base64Data != "" {
-					dataURL := fmt.Sprintf("data:%s;base64,%s", mimeType, base64Data)
-					imageContent := responses.ResponseInputMessageContentListParam{
-						{OfInputImage: &responses.ResponseInputImageParam{
-							ImageURL: openai.String(dataURL),
-							Detail:   responses.ResponseInputImageDetailAuto,
-						}},
-					}
-					inputItems = append(inputItems, responses.ResponseInputItemParamOfInputMessage(imageContent, "user"))
-				}
-			}
-		}
-	}
-
-	return inputItems
-}
-
-func buildOpenAIMessageItems(role responses.EasyInputMessageRole, parts []Part) []responses.ResponseInputItemUnionParam {
-	var items []responses.ResponseInputItemUnionParam
-	var textBuf strings.Builder
-
-	flushText := func() {
-		if textBuf.Len() == 0 {
-			return
-		}
-		items = append(items, responses.ResponseInputItemParamOfMessage(textBuf.String(), role))
-		textBuf.Reset()
-	}
-
-	for _, part := range parts {
-		switch part.Type {
-		case PartText:
-			if part.Text != "" {
-				textBuf.WriteString(part.Text)
-			}
-		case PartToolCall:
-			if part.ToolCall == nil {
-				continue
-			}
-			flushText()
-			callID := strings.TrimSpace(part.ToolCall.ID)
-			if callID == "" {
-				continue
-			}
-			args := strings.TrimSpace(string(part.ToolCall.Arguments))
-			if args == "" {
-				args = "{}"
-			}
-			items = append(items, responses.ResponseInputItemParamOfFunctionCall(args, callID, part.ToolCall.Name))
-		}
-	}
-
-	flushText()
-	return items
-}
-
-func emitOpenAIUsage(events chan<- Event, resp *responses.Response) {
-	if resp.Usage.OutputTokens > 0 {
-		events <- Event{Type: EventUsage, Use: &Usage{
-			InputTokens:       int(resp.Usage.InputTokens),
-			OutputTokens:      int(resp.Usage.OutputTokens),
-			CachedInputTokens: int(resp.Usage.InputTokensDetails.CachedTokens),
-		}}
-	}
-}
-
-func emitOpenAIResponseOutput(events chan<- Event, resp *responses.Response) {
-	for _, item := range resp.Output {
-		switch item.Type {
-		case "message":
-			for _, content := range item.Content {
-				switch content.Type {
-				case "output_text":
-					if content.Text != "" {
-						events <- Event{Type: EventTextDelta, Text: content.Text}
-					}
-				case "refusal":
-					if content.Refusal != "" {
-						events <- Event{Type: EventTextDelta, Text: content.Refusal}
-					}
-				}
-			}
-		case "function_call":
-			callID := strings.TrimSpace(item.ID)
-			if callID == "" {
-				callID = strings.TrimSpace(item.CallID)
-			}
-			args := strings.TrimSpace(item.Arguments)
-			var raw json.RawMessage
-			if args != "" {
-				raw = json.RawMessage(args)
-			}
-			call := ToolCall{
-				ID:        callID,
-				Name:      item.Name,
-				Arguments: raw,
-			}
-			events <- Event{Type: EventToolCall, Tool: &call}
-		}
-	}
 }
 
 func collectRoleText(messages []Message, role Role) string {

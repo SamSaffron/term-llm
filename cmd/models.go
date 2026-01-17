@@ -36,7 +36,7 @@ Examples:
 
 func init() {
 	rootCmd.AddCommand(modelsCmd)
-	modelsCmd.Flags().StringVarP(&modelsProvider, "provider", "p", "", "Provider to list models from (anthropic, openrouter, xai, ollama, lmstudio, openai-compat)")
+	modelsCmd.Flags().StringVarP(&modelsProvider, "provider", "p", "", "Provider to list models from (anthropic, copilot, openrouter, xai, zen, ollama, lmstudio, openai-compat)")
 	modelsCmd.Flags().BoolVar(&modelsJSON, "json", false, "Output as JSON")
 	modelsCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion)
 }
@@ -60,25 +60,37 @@ func runModels(cmd *cobra.Command, args []string) error {
 
 	// Get provider config - handle built-in providers that may not be explicitly configured
 	providerCfg, ok := cfg.Providers[providerName]
-	providerType := config.InferProviderType(providerName, providerCfg.Type)
 
-	// For built-in providers without explicit config, check if they have a static model list
-	if !ok {
-		// Check if it's a built-in provider with a static model list
-		if staticModels, hasStatic := llm.ProviderModels[providerName]; hasStatic {
-			return printStaticModels(providerName, staticModels)
-		}
-		return fmt.Errorf("provider '%s' is not configured", providerName)
+	// Infer provider type - only use config type if provider is configured
+	var providerType config.ProviderType
+	if ok {
+		providerType = config.InferProviderType(providerName, providerCfg.Type)
+	} else {
+		providerType = config.InferProviderType(providerName, "")
 	}
 
-	// Validate provider supports model listing
+	// Providers that support dynamic model listing
 	supportedTypes := map[config.ProviderType]bool{
 		config.ProviderTypeAnthropic:    true,
 		config.ProviderTypeOpenAI:       true,
+		config.ProviderTypeCopilot:      true,
 		config.ProviderTypeOpenRouter:   true,
 		config.ProviderTypeOpenAICompat: true,
 		config.ProviderTypeZen:          true,
 		config.ProviderTypeXAI:          true,
+	}
+
+	// For built-in providers without explicit config, check if they support dynamic listing
+	// or fall back to static model list
+	if !ok {
+		// Copilot can work without config (uses OAuth)
+		if providerType == config.ProviderTypeCopilot {
+			// Continue to dynamic listing below
+		} else if staticModels, hasStatic := llm.ProviderModels[providerName]; hasStatic {
+			return printStaticModels(providerName, staticModels)
+		} else {
+			return fmt.Errorf("provider '%s' is not configured", providerName)
+		}
 	}
 
 	if !supportedTypes[providerType] {
@@ -87,7 +99,7 @@ func runModels(cmd *cobra.Command, args []string) error {
 			return printStaticModels(providerName, staticModels)
 		}
 		return fmt.Errorf("provider '%s' (type: %s) does not support model listing.\n"+
-			"Model listing is supported for: anthropic, openrouter, xai, zen, and openai_compatible providers", providerName, providerType)
+			"Model listing is supported for: anthropic, openrouter, xai, zen, copilot, and openai_compatible providers", providerName, providerType)
 	}
 
 	// Create provider to query models
@@ -103,6 +115,17 @@ func runModels(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("openai API key not configured. Set OPENAI_API_KEY or configure api_key")
 		}
 		lister = llm.NewOpenAIProvider(providerCfg.ResolvedAPIKey, providerCfg.Model)
+	case config.ProviderTypeCopilot:
+		// Copilot uses OAuth - create provider which will prompt for auth if needed
+		model := ""
+		if ok {
+			model = providerCfg.Model
+		}
+		provider, err := llm.NewCopilotProvider(model)
+		if err != nil {
+			return fmt.Errorf("copilot provider: %w", err)
+		}
+		lister = provider
 	case config.ProviderTypeOpenRouter:
 		if providerCfg.ResolvedAPIKey == "" {
 			return fmt.Errorf("openrouter API key not configured. Set OPENROUTER_API_KEY or configure api_key")
@@ -126,7 +149,12 @@ func runModels(cmd *cobra.Command, args []string) error {
 		lister = llm.NewXAIProvider(apiKey, providerCfg.Model)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Copilot may need interactive device auth (up to 5 minutes)
+	timeout := 10 * time.Second
+	if providerType == config.ProviderTypeCopilot {
+		timeout = 6 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	models, err := lister.ListModels(ctx)

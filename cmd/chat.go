@@ -72,31 +72,20 @@ Slash commands:
 }
 
 func init() {
-	chatCmd.Flags().BoolVarP(&chatSearch, "search", "s", false, "Enable web search")
-	chatCmd.Flags().BoolVarP(&chatDebug, "debug", "d", false, "Show debug information")
-	chatCmd.Flags().StringVar(&chatProvider, "provider", "", "Override provider, optionally with model (e.g., openai:gpt-4o)")
-	chatCmd.Flags().StringVar(&chatMCP, "mcp", "", "Enable MCP server(s), comma-separated (e.g., playwright,filesystem)")
-	chatCmd.Flags().IntVar(&chatMaxTurns, "max-turns", 200, "Max agentic turns for tool execution")
-	chatCmd.Flags().BoolVar(&chatNativeSearch, "native-search", false, "Use provider's native search (override config)")
-	chatCmd.Flags().BoolVar(&chatNoNativeSearch, "no-native-search", false, "Use external search tools instead of provider's native search")
-	// Tool flags
-	chatCmd.Flags().StringVar(&chatTools, "tools", "", "Enable local tools (comma-separated, or 'all' for everything: read,write,edit,shell,grep,find,view,image)")
-	chatCmd.Flags().StringArrayVar(&chatReadDirs, "read-dir", nil, "Directories for read/grep/find/view tools (repeatable)")
-	chatCmd.Flags().StringArrayVar(&chatWriteDirs, "write-dir", nil, "Directories for write/edit tools (repeatable)")
-	chatCmd.Flags().StringArrayVar(&chatShellAllow, "shell-allow", nil, "Shell command patterns to allow (repeatable, glob syntax)")
-	chatCmd.Flags().StringVarP(&chatSystemMessage, "system-message", "m", "", "System message/instructions for the LLM (overrides config)")
-	chatCmd.Flags().StringVarP(&chatAgent, "agent", "a", "", "Use an agent (named configuration bundle)")
-	if err := chatCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion); err != nil {
-		panic(fmt.Sprintf("failed to register provider completion: %v", err))
-	}
-	if err := chatCmd.RegisterFlagCompletionFunc("mcp", MCPFlagCompletion); err != nil {
-		panic(fmt.Sprintf("failed to register mcp completion: %v", err))
-	}
+	// Common flags shared across commands
+	AddProviderFlag(chatCmd, &chatProvider)
+	AddDebugFlag(chatCmd, &chatDebug)
+	AddSearchFlag(chatCmd, &chatSearch)
+	AddNativeSearchFlags(chatCmd, &chatNativeSearch, &chatNoNativeSearch)
+	AddMCPFlag(chatCmd, &chatMCP)
+	AddMaxTurnsFlag(chatCmd, &chatMaxTurns, 200) // chat has higher default
+	AddToolFlags(chatCmd, &chatTools, &chatReadDirs, &chatWriteDirs, &chatShellAllow)
+	AddSystemMessageFlag(chatCmd, &chatSystemMessage)
+	AddAgentFlag(chatCmd, &chatAgent)
+
+	// Additional completions
 	if err := chatCmd.RegisterFlagCompletionFunc("tools", ToolsFlagCompletion); err != nil {
 		panic(fmt.Sprintf("failed to register tools completion: %v", err))
-	}
-	if err := chatCmd.RegisterFlagCompletionFunc("agent", AgentFlagCompletion); err != nil {
-		panic(fmt.Sprintf("failed to register agent completion: %v", err))
 	}
 	rootCmd.AddCommand(chatCmd)
 }

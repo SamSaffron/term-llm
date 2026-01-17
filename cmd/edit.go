@@ -67,28 +67,24 @@ Context files:
 }
 
 func init() {
+	// Edit-specific flags
 	editCmd.Flags().StringArrayVarP(&editFiles, "file", "f", nil, "File(s) to edit (required, supports line ranges like file.go:10-20)")
 	editCmd.Flags().StringArrayVarP(&editContext, "context", "c", nil, "File(s) to include as read-only context (supports globs, 'clipboard')")
 	editCmd.Flags().BoolVar(&editDryRun, "dry-run", false, "Show what would change without applying")
-	editCmd.Flags().StringVar(&editProvider, "provider", "", "Override provider, optionally with model (e.g., openai:gpt-4o)")
-	editCmd.Flags().BoolVarP(&editDebug, "debug", "d", false, "Show debug information")
 	editCmd.Flags().StringVar(&editDiffFormat, "diff-format", "", "Force diff format: 'udiff' or 'replace' (default: auto)")
-	editCmd.Flags().StringVar(&editMCP, "mcp", "", "Enable MCP server(s), comma-separated (e.g., playwright,filesystem)")
-	// Tool flags
-	editCmd.Flags().StringVar(&editTools, "tools", "", "Enable local tools (comma-separated, or 'all'; excludes edit/write to avoid conflicts)")
-	editCmd.Flags().StringArrayVar(&editReadDirs, "read-dir", nil, "Directories for read/grep/find/view tools (repeatable)")
-	editCmd.Flags().StringArrayVar(&editWriteDirs, "write-dir", nil, "Directories for write/edit tools (repeatable)")
-	editCmd.Flags().StringArrayVar(&editShellAllow, "shell-allow", nil, "Shell command patterns to allow (repeatable, glob syntax)")
-	editCmd.Flags().StringVarP(&editSystemMessage, "system-message", "m", "", "System message/instructions for the LLM (overrides config)")
+
+	// Common flags shared across commands
+	AddProviderFlag(editCmd, &editProvider)
+	AddDebugFlag(editCmd, &editDebug)
+	AddMCPFlag(editCmd, &editMCP)
+	AddToolFlags(editCmd, &editTools, &editReadDirs, &editWriteDirs, &editShellAllow)
+	AddSystemMessageFlag(editCmd, &editSystemMessage)
+
 	if err := editCmd.MarkFlagRequired("file"); err != nil {
 		panic(fmt.Sprintf("failed to mark file flag required: %v", err))
 	}
-	if err := editCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion); err != nil {
-		panic(fmt.Sprintf("failed to register provider completion: %v", err))
-	}
-	if err := editCmd.RegisterFlagCompletionFunc("mcp", MCPFlagCompletion); err != nil {
-		panic(fmt.Sprintf("failed to register mcp completion: %v", err))
-	}
+
+	// Additional completions
 	if err := editCmd.RegisterFlagCompletionFunc("tools", ToolsFlagCompletion); err != nil {
 		panic(fmt.Sprintf("failed to register tools completion: %v", err))
 	}

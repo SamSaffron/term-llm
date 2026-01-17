@@ -79,32 +79,23 @@ Line range syntax for files:
 }
 
 func init() {
-	askCmd.Flags().BoolVarP(&askSearch, "search", "s", false, "Enable web search for current information")
-	askCmd.Flags().BoolVarP(&askDebug, "debug", "d", false, "Show debug information")
+	// Common flags shared across commands
+	AddProviderFlag(askCmd, &askProvider)
+	AddDebugFlag(askCmd, &askDebug)
+	AddSearchFlag(askCmd, &askSearch)
+	AddNativeSearchFlags(askCmd, &askNativeSearch, &askNoNativeSearch)
+	AddMCPFlag(askCmd, &askMCP)
+	AddMaxTurnsFlag(askCmd, &askMaxTurns, 20)
+	AddToolFlags(askCmd, &askTools, &askReadDirs, &askWriteDirs, &askShellAllow)
+	AddSystemMessageFlag(askCmd, &askSystemMessage)
+	AddFileFlag(askCmd, &askFiles, "File(s) to include as context (supports globs, line ranges like file.go:10-20, 'clipboard')")
+	AddAgentFlag(askCmd, &askAgent)
+
+	// Ask-specific flags
 	askCmd.Flags().BoolVarP(&askText, "text", "t", false, "Output plain text instead of rendered markdown")
-	askCmd.Flags().StringVar(&askProvider, "provider", "", "Override provider, optionally with model (e.g., openai:gpt-4o)")
-	askCmd.Flags().StringArrayVarP(&askFiles, "file", "f", nil, "File(s) to include as context (supports globs, line ranges like file.go:10-20, 'clipboard')")
-	askCmd.Flags().StringVar(&askMCP, "mcp", "", "Enable MCP server(s), comma-separated (e.g., playwright,filesystem)")
-	askCmd.Flags().IntVar(&askMaxTurns, "max-turns", 20, "Max agentic turns for tool execution")
-	askCmd.Flags().BoolVar(&askNativeSearch, "native-search", false, "Use provider's native search (override config)")
-	askCmd.Flags().BoolVar(&askNoNativeSearch, "no-native-search", false, "Use external search tools instead of provider's native search")
-	// Tool flags
-	askCmd.Flags().StringVar(&askTools, "tools", "", "Enable local tools (comma-separated, or 'all' for everything: read,write,edit,shell,grep,find,view,image)")
-	askCmd.Flags().StringArrayVar(&askReadDirs, "read-dir", nil, "Directories for read/grep/find/view tools (repeatable)")
-	askCmd.Flags().StringArrayVar(&askWriteDirs, "write-dir", nil, "Directories for write/edit tools (repeatable)")
-	askCmd.Flags().StringArrayVar(&askShellAllow, "shell-allow", nil, "Shell command patterns to allow (repeatable, glob syntax)")
-	askCmd.Flags().StringVarP(&askSystemMessage, "system-message", "m", "", "System message/instructions for the LLM (overrides config)")
-	askCmd.Flags().StringVarP(&askAgent, "agent", "a", "", "Use an agent (named configuration bundle)")
-	if err := askCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion); err != nil {
-		panic(fmt.Sprintf("failed to register provider completion: %v", err))
-	}
-	if err := askCmd.RegisterFlagCompletionFunc("mcp", MCPFlagCompletion); err != nil {
-		panic(fmt.Sprintf("failed to register mcp completion: %v", err))
-	}
+
+	// Additional completions
 	if err := askCmd.RegisterFlagCompletionFunc("tools", ToolsFlagCompletion); err != nil {
-		panic(fmt.Sprintf("failed to register tools completion: %v", err))
-	}
-	if err := askCmd.RegisterFlagCompletionFunc("agent", AgentFlagCompletion); err != nil {
 		panic(fmt.Sprintf("failed to register agent completion: %v", err))
 	}
 	rootCmd.AddCommand(askCmd)

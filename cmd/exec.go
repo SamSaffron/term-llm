@@ -68,29 +68,23 @@ Examples:
 }
 
 func init() {
-	execCmd.Flags().BoolVarP(&execPrintOnly, "print-only", "p", false, "Print command instead of executing")
-	execCmd.Flags().BoolVarP(&execSearch, "search", "s", false, "Enable web search for current information")
-	execCmd.Flags().BoolVarP(&execDebug, "debug", "d", false, "Show full LLM request and response")
+	// Common flags shared across commands
+	AddProviderFlag(execCmd, &execProvider)
+	AddDebugFlag(execCmd, &execDebug)
+	AddSearchFlag(execCmd, &execSearch)
+	AddNativeSearchFlags(execCmd, &execNativeSearch, &execNoNativeSearch)
+	AddMCPFlag(execCmd, &execMCP)
+	AddMaxTurnsFlag(execCmd, &execMaxTurns, 20)
+	AddToolFlags(execCmd, &execTools, &execReadDirs, &execWriteDirs, &execShellAllow)
+	AddSystemMessageFlag(execCmd, &execSystemMessage)
+	AddFileFlag(execCmd, &execFiles, "File(s) to include as context (supports globs, 'clipboard')")
+
+	// Exec-specific flags
+	execCmd.Flags().BoolVar(&execPrintOnly, "print-only", false, "Print command instead of executing")
 	execCmd.Flags().BoolVarP(&execAutoPick, "auto-pick", "a", false, "Auto-execute the best suggestion without prompting")
 	execCmd.Flags().IntVarP(&execMaxOpts, "max", "n", 0, "Maximum number of options to show (0 = no limit)")
-	execCmd.Flags().StringVar(&execProvider, "provider", "", "Override provider, optionally with model (e.g., openai:gpt-4o)")
-	execCmd.Flags().StringArrayVarP(&execFiles, "file", "f", nil, "File(s) to include as context (supports globs, 'clipboard')")
-	execCmd.Flags().StringVar(&execMCP, "mcp", "", "Enable MCP server(s), comma-separated (e.g., playwright,filesystem)")
-	execCmd.Flags().IntVar(&execMaxTurns, "max-turns", 20, "Max agentic turns for tool execution")
-	execCmd.Flags().BoolVar(&execNativeSearch, "native-search", false, "Use provider's native search (override config)")
-	execCmd.Flags().BoolVar(&execNoNativeSearch, "no-native-search", false, "Use external search tools instead of provider's native search")
-	// Tool flags
-	execCmd.Flags().StringVar(&execTools, "tools", "", "Enable local tools (comma-separated, or 'all' for everything: read,write,edit,shell,grep,find,view,image)")
-	execCmd.Flags().StringArrayVar(&execReadDirs, "read-dir", nil, "Directories for read/grep/find/view tools (repeatable)")
-	execCmd.Flags().StringArrayVar(&execWriteDirs, "write-dir", nil, "Directories for write/edit tools (repeatable)")
-	execCmd.Flags().StringArrayVar(&execShellAllow, "shell-allow", nil, "Shell command patterns to allow (repeatable, glob syntax)")
-	execCmd.Flags().StringVarP(&execSystemMessage, "system-message", "m", "", "System message/instructions for the LLM (overrides config)")
-	if err := execCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion); err != nil {
-		panic(fmt.Sprintf("failed to register provider completion: %v", err))
-	}
-	if err := execCmd.RegisterFlagCompletionFunc("mcp", MCPFlagCompletion); err != nil {
-		panic(fmt.Sprintf("failed to register mcp completion: %v", err))
-	}
+
+	// Additional completions
 	if err := execCmd.RegisterFlagCompletionFunc("tools", ToolsFlagCompletion); err != nil {
 		panic(fmt.Sprintf("failed to register tools completion: %v", err))
 	}

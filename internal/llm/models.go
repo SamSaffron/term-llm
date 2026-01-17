@@ -53,6 +53,32 @@ var ProviderModels = map[string][]string{
 		"gpt-5-codex-mini",
 		"gpt-5",
 	},
+	"copilot": {
+		// Uses GitHub Copilot API with device code OAuth
+		// Run 'term-llm models --provider copilot' for live list
+		// gpt-4.1 is free (no premium requests)
+		"gpt-4.1",
+		// OpenAI Codex models
+		"gpt-5.2-codex",
+		"gpt-5.1-codex",
+		"gpt-5.1-codex-max",
+		"gpt-5.1-codex-mini",
+		// OpenAI standard
+		"gpt-5.2",
+		"gpt-5.1",
+		"gpt-5-mini",
+		// Anthropic Claude
+		"claude-opus-4.5",
+		"claude-sonnet-4.5",
+		"claude-sonnet-4",
+		"claude-haiku-4.5",
+		// Google Gemini
+		"gemini-3-pro",
+		"gemini-3-flash",
+		// Other
+		"grok-code-fast-1",
+		"raptor-mini",
+	},
 	"openrouter": {
 		"x-ai/grok-code-fast-1",
 	},
@@ -114,7 +140,7 @@ var ImageProviderModels = map[string][]string{
 
 // GetBuiltInProviderNames returns the built-in provider type names
 func GetBuiltInProviderNames() []string {
-	return []string{"anthropic", "openai", "chatgpt", "openrouter", "gemini", "gemini-cli", "zen", "claude-bin", "xai"}
+	return []string{"anthropic", "openai", "chatgpt", "copilot", "openrouter", "gemini", "gemini-cli", "zen", "claude-bin", "xai"}
 }
 
 // GetProviderNames returns valid provider names from config plus built-in types.

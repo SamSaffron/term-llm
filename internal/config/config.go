@@ -17,6 +17,7 @@ const (
 	ProviderTypeAnthropic    ProviderType = "anthropic"
 	ProviderTypeOpenAI       ProviderType = "openai"
 	ProviderTypeChatGPT      ProviderType = "chatgpt"
+	ProviderTypeCopilot      ProviderType = "copilot"
 	ProviderTypeGemini       ProviderType = "gemini"
 	ProviderTypeGeminiCLI    ProviderType = "gemini-cli"
 	ProviderTypeOpenRouter   ProviderType = "openrouter"
@@ -31,6 +32,7 @@ var builtInProviderTypes = map[string]ProviderType{
 	"anthropic":  ProviderTypeAnthropic,
 	"openai":     ProviderTypeOpenAI,
 	"chatgpt":    ProviderTypeChatGPT,
+	"copilot":    ProviderTypeCopilot,
 	"gemini":     ProviderTypeGemini,
 	"gemini-cli": ProviderTypeGeminiCLI,
 	"openrouter": ProviderTypeOpenRouter,

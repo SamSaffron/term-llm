@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/usage"
 	"github.com/spf13/cobra"
 )
@@ -29,9 +31,12 @@ var usageCmd = &cobra.Command{
 This command reads local usage data stored by these CLI tools and displays
 aggregated statistics including token counts and estimated costs.
 
+For GitHub Copilot, it fetches quota information from the GitHub API.
+
 Examples:
   term-llm usage                              # show last 7 days
   term-llm usage --provider claude-code       # filter to Claude Code only
+  term-llm usage --provider copilot           # show GitHub Copilot quota
   term-llm usage --provider term-llm          # show term-llm direct API usage
   term-llm usage --since 20250101             # from Jan 1, 2025
   term-llm usage --json                       # output as JSON
@@ -41,7 +46,7 @@ Examples:
 
 func init() {
 	rootCmd.AddCommand(usageCmd)
-	usageCmd.Flags().StringVarP(&usageProvider, "provider", "p", "", "Filter by provider (claude-code, codex, gemini-cli, term-llm, or all)")
+	usageCmd.Flags().StringVarP(&usageProvider, "provider", "p", "", "Filter by provider (claude-code, copilot, gemini-cli, term-llm, or all)")
 	usageCmd.Flags().StringVar(&usageSince, "since", "", "Start date (YYYYMMDD)")
 	usageCmd.Flags().StringVar(&usageUntil, "until", "", "End date (YYYYMMDD)")
 	usageCmd.Flags().BoolVar(&usageJSON, "json", false, "Output as JSON")
@@ -50,6 +55,11 @@ func init() {
 }
 
 func runUsage(cmd *cobra.Command, args []string) error {
+	// Special handling for copilot - fetch from GitHub API
+	if usageProvider == "copilot" {
+		return runCopilotUsage()
+	}
+
 	// Load all usage data
 	result := usage.LoadAllUsage()
 
@@ -94,7 +104,7 @@ func runUsage(cmd *cobra.Command, args []string) error {
 	case "", "all":
 		providerFilter = ""
 	default:
-		return fmt.Errorf("unknown provider: %s (use claude-code, gemini-cli, or term-llm)", usageProvider)
+		return fmt.Errorf("unknown provider: %s (use claude-code, copilot, gemini-cli, or term-llm)", usageProvider)
 	}
 
 	// Filter entries
@@ -410,4 +420,93 @@ func formatProviderName(provider string) string {
 	default:
 		return provider
 	}
+}
+
+// runCopilotUsage fetches and displays GitHub Copilot usage from the API
+func runCopilotUsage() error {
+	// Create provider (will prompt for auth if needed)
+	provider, err := llm.NewCopilotProvider("")
+	if err != nil {
+		return fmt.Errorf("copilot provider: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	usageData, err := provider.GetUsage(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to fetch usage: %w", err)
+	}
+
+	if usageJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(usageData)
+	}
+
+	// Pretty print
+	fmt.Printf("GitHub Copilot Usage (%s plan)\n", usageData.Plan)
+	fmt.Println(strings.Repeat("─", 50))
+
+	// Premium requests (main quota)
+	if q := usageData.PremiumChat; q != nil {
+		fmt.Println("\nPremium Requests:")
+		if q.Unlimited {
+			fmt.Println("  Unlimited")
+		} else {
+			printQuotaBar(q)
+		}
+	}
+
+	// Chat quota (if separate)
+	if q := usageData.Chat; q != nil && usageData.PremiumChat == nil {
+		fmt.Println("\nChat:")
+		if q.Unlimited {
+			fmt.Println("  Unlimited")
+		} else {
+			printQuotaBar(q)
+		}
+	}
+
+	// Completions quota (if present)
+	if q := usageData.Completions; q != nil {
+		fmt.Println("\nCompletions:")
+		if q.Unlimited {
+			fmt.Println("  Unlimited")
+		} else {
+			printQuotaBar(q)
+		}
+	}
+
+	// Reset date
+	if !usageData.ResetDate.IsZero() {
+		now := time.Now()
+		daysUntilReset := int(usageData.ResetDate.Sub(now).Hours() / 24)
+		if daysUntilReset < 0 {
+			daysUntilReset = 0
+		}
+		fmt.Printf("\nResets: %s (%d days)\n", usageData.ResetDate.Format("Jan 2, 2006"), daysUntilReset)
+	}
+
+	return nil
+}
+
+// printQuotaBar prints a visual progress bar for quota usage
+func printQuotaBar(q *llm.CopilotQuota) {
+	used := q.Used
+	total := q.Entitlement
+	remaining := q.Remaining
+	pctUsed := 100.0 - q.PercentRemaining
+
+	// Progress bar
+	barWidth := 30
+	filledWidth := int(float64(barWidth) * pctUsed / 100)
+	if filledWidth > barWidth {
+		filledWidth = barWidth
+	}
+
+	bar := strings.Repeat("█", filledWidth) + strings.Repeat("░", barWidth-filledWidth)
+
+	fmt.Printf("  %s  %.1f%%\n", bar, pctUsed)
+	fmt.Printf("  Used: %d / %d  (Remaining: %d)\n", used, total, remaining)
 }
