@@ -235,13 +235,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event, 
 			DebugToolCall(req.Debug, call)
 			info := e.getToolPreview(call)
 
-			// Emit high-level phase change for specific tools
 			if events != nil {
-				if call.Name == WebSearchToolName {
-					events <- Event{Type: EventPhase, Text: "Searching"}
-				} else if call.Name == ReadURLToolName {
-					events <- Event{Type: EventPhase, Text: "Reading"}
-				}
 				events <- Event{Type: EventToolExecStart, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info}
 			}
 		}
@@ -302,11 +296,6 @@ func (e *Engine) applyExternalSearch(ctx context.Context, req Request, events ch
 	// Notify start
 	for _, call := range toolCalls {
 		if events != nil {
-			if call.Name == WebSearchToolName {
-				events <- Event{Type: EventPhase, Text: "Searching"}
-			} else if call.Name == ReadURLToolName {
-				events <- Event{Type: EventPhase, Text: "Reading"}
-			}
 			events <- Event{Type: EventToolExecStart, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call)}
 		}
 	}

@@ -981,11 +981,7 @@ func (m askStreamModel) View() string {
 		}
 		phase := m.phase
 		if phase == "" {
-			if m.tracker.IsIdle(time.Second) {
-				phase = "Thinking"
-			} else {
-				phase = "Working"
-			}
+			phase = "Thinking"
 		}
 
 		indicator := ui.StreamingIndicator{

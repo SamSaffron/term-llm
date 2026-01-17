@@ -279,7 +279,6 @@ func (p *XAIProvider) streamWithSearch(ctx context.Context, req Request) (Stream
 				if event.Item != nil && (event.Item.Type == "web_search_call" || event.Item.Type == "x_search_call") {
 					if !searchStarted {
 						searchStarted = true
-						events <- Event{Type: EventPhase, Text: "Searching"}
 						events <- Event{Type: EventToolExecStart, ToolName: event.Item.Type}
 					}
 				}

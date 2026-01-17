@@ -347,9 +347,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.currentTokens = msg.tokens
 			duration := time.Since(m.streamStartTime)
 
-			// Track turn for stats
-			m.stats.AddTurn()
-
 			// Mark all text segments as complete and render
 			if m.tracker != nil {
 				m.tracker.CompleteTextSegments(func(text string) string {
@@ -624,7 +621,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.quitting = true
 		// Print stats if enabled
-		if m.showStats && m.stats.TurnCount > 0 {
+		if m.showStats && m.stats.LLMCallCount > 0 {
 			m.stats.Finalize()
 			return m, tea.Sequence(tea.Println(m.stats.Render()), tea.Quit)
 		}

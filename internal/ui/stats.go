@@ -12,7 +12,6 @@ type SessionStats struct {
 	OutputTokens      int
 	CachedInputTokens int // Tokens read from cache
 	ToolCallCount     int
-	TurnCount         int // For multi-turn sessions (chat)
 	LLMCallCount      int // Number of LLM API calls made
 
 	// Time tracking
@@ -73,11 +72,6 @@ func (s *SessionStats) Finalize() {
 	s.lastEventTime = now
 }
 
-// AddTurn increments the turn count.
-func (s *SessionStats) AddTurn() {
-	s.TurnCount++
-}
-
 // Render returns the stats as a compact single-line string.
 func (s SessionStats) Render() string {
 	total := time.Since(s.StartTime)
@@ -102,12 +96,6 @@ func (s SessionStats) Render() string {
 			total.Seconds(), s.LLMTime.Seconds(), s.ToolTime.Seconds())
 	} else {
 		timeStr = fmt.Sprintf("%.1fs", total.Seconds())
-	}
-
-	if s.TurnCount > 0 {
-		// Multi-turn format: Stats: 34.5s | 3 turns | 1.2k in / 4.5k out | 5 tools | 3 llm calls
-		return fmt.Sprintf("Stats: %s | %d turns | %s | %d tools | %d llm calls",
-			timeStr, s.TurnCount, tokensStr, s.ToolCallCount, s.LLMCallCount)
 	}
 
 	return fmt.Sprintf("Stats: %s | %s | %d tools | %d llm calls",
