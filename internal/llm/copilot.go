@@ -55,6 +55,7 @@ var copilotHTTPClient = &http.Client{
 type CopilotProvider struct {
 	creds              *credentials.CopilotCredentials
 	model              string
+	effort             string           // reasoning effort: "low", "medium", "high", "xhigh", or ""
 	apiBaseURL         string           // Set from token exchange (business vs individual)
 	sessionToken       string           // Copilot session token (different from OAuth token)
 	sessionTokenExpiry time.Time        // When the session token expires
@@ -67,6 +68,7 @@ func NewCopilotProvider(model string) (*CopilotProvider, error) {
 	if model == "" {
 		model = copilotDefaultModel
 	}
+	actualModel, effort := parseModelEffort(model)
 
 	// Try to load existing credentials
 	creds, err := credentials.GetCopilotCredentials()
@@ -88,8 +90,9 @@ func NewCopilotProvider(model string) (*CopilotProvider, error) {
 	}
 
 	return &CopilotProvider{
-		creds: creds,
-		model: model,
+		creds:  creds,
+		model:  actualModel,
+		effort: effort,
 	}, nil
 }
 
@@ -99,9 +102,11 @@ func NewCopilotProviderWithCreds(creds *credentials.CopilotCredentials, model st
 	if model == "" {
 		model = copilotDefaultModel
 	}
+	actualModel, effort := parseModelEffort(model)
 	return &CopilotProvider{
-		creds: creds,
-		model: model,
+		creds:  creds,
+		model:  actualModel,
+		effort: effort,
 	}
 }
 
@@ -144,6 +149,9 @@ func promptForCopilotAuth() (*credentials.CopilotCredentials, error) {
 }
 
 func (p *CopilotProvider) Name() string {
+	if p.effort != "" {
+		return fmt.Sprintf("GitHub Copilot (%s, effort=%s)", p.model, p.effort)
+	}
 	return fmt.Sprintf("GitHub Copilot (%s)", p.model)
 }
 
@@ -450,9 +458,13 @@ func (p *CopilotProvider) streamResponses(ctx context.Context, req Request, mode
 	if req.MaxOutputTokens > 0 {
 		responsesReq.MaxOutputTokens = req.MaxOutputTokens
 	}
-	// Handle reasoning effort if specified
+	// Handle reasoning effort - prefer request-level, fall back to provider-level
+	effort := p.effort
 	if req.ReasoningEffort != "" {
-		responsesReq.Reasoning = &ResponsesReasoning{Effort: req.ReasoningEffort}
+		effort = req.ReasoningEffort
+	}
+	if effort != "" {
+		responsesReq.Reasoning = &ResponsesReasoning{Effort: effort}
 	}
 
 	return p.responsesClient.Stream(ctx, responsesReq, req.DebugRaw)

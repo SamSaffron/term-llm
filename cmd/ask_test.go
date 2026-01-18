@@ -3,6 +3,8 @@ package cmd
 import (
 	"strings"
 	"testing"
+
+	"github.com/samsaffron/term-llm/internal/ui"
 )
 
 // Test content similar to the Ruby release notes
@@ -28,7 +30,7 @@ func TestMarkdownRendering(t *testing.T) {
 	width := 80
 
 	// Test full render
-	fullRender, err := renderMarkdown(testMarkdown, width)
+	fullRender, err := ui.RenderMarkdownWithError(testMarkdown, width)
 	if err != nil {
 		t.Fatalf("Failed to render full markdown: %v", err)
 	}
@@ -53,7 +55,7 @@ func TestIncrementalRendering(t *testing.T) {
 
 		// Only render when we get a newline (like the real code does)
 		if strings.Contains(chunk, "\n") {
-			rendered, err := renderMarkdown(content.String(), width)
+			rendered, err := ui.RenderMarkdownWithError(content.String(), width)
 			if err != nil {
 				t.Fatalf("Render failed at chunk %d: %v", i, err)
 			}
@@ -70,7 +72,7 @@ func TestIncrementalRendering(t *testing.T) {
 	}
 
 	// Final render
-	finalRendered, _ := renderMarkdown(content.String(), width)
+	finalRendered, _ := ui.RenderMarkdownWithError(content.String(), width)
 	lines := strings.Split(finalRendered, "\n")
 	for i := printedLines; i < len(lines); i++ {
 		line := lines[i]
@@ -81,7 +83,7 @@ func TestIncrementalRendering(t *testing.T) {
 	}
 
 	// Compare with full render
-	fullRender, _ := renderMarkdown(testMarkdown, width)
+	fullRender, _ := ui.RenderMarkdownWithError(testMarkdown, width)
 
 	t.Logf("Incremental output:\n%s", allOutput.String())
 	t.Logf("Full render:\n%s", fullRender)

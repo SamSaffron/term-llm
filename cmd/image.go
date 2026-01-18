@@ -280,7 +280,7 @@ func (m imageSpinnerModel) View() string {
 	}.Render(m.styles) + "\n"
 }
 
-func runImageWithSpinner(ctx context.Context, provider image.ImageProvider, generate func() (*image.ImageResult, error), message string) (*image.ImageResult, error) {
+func runImageWithSpinner(_ context.Context, provider image.ImageProvider, generate func() (*image.ImageResult, error), message string) (*image.ImageResult, error) {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))

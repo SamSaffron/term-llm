@@ -26,8 +26,9 @@ type TemplateContext struct {
 	User    string // Username
 
 	// Git info (empty if not a git repo)
-	GitBranch string // Current branch
-	GitRepo   string // Repository name
+	GitBranch   string // Current branch
+	GitRepo     string // Repository name
+	GitDiffStat string // Output of git diff --stat (staged + unstaged)
 
 	// File context (from -f flags)
 	Files     string // Comma-separated file names
@@ -41,7 +42,21 @@ type TemplateContext struct {
 }
 
 // NewTemplateContext creates a context with current environment values.
+// Deprecated: Use NewTemplateContextForTemplate instead to avoid expensive operations
+// when template variables are not used.
 func NewTemplateContext() TemplateContext {
+	return newTemplateContext(true)
+}
+
+// NewTemplateContextForTemplate creates a context, only computing expensive values
+// (like git_diff_stat) if they are actually used in the template.
+func NewTemplateContextForTemplate(template string) TemplateContext {
+	needsGitDiffStat := strings.Contains(template, "{{git_diff_stat}}")
+	return newTemplateContext(needsGitDiffStat)
+}
+
+// newTemplateContext creates a context with optional expensive computations.
+func newTemplateContext(computeGitDiffStat bool) TemplateContext {
 	now := time.Now()
 
 	ctx := TemplateContext{
@@ -71,6 +86,11 @@ func NewTemplateContext() TemplateContext {
 	// Git info
 	ctx.GitBranch = getGitBranch()
 	ctx.GitRepo = getGitRepoName()
+
+	// Only compute git diff stat if needed (expensive: runs two git commands)
+	if computeGitDiffStat {
+		ctx.GitDiffStat = getGitDiffStat()
+	}
 
 	return ctx
 }
@@ -128,6 +148,8 @@ func ExpandTemplate(text string, ctx TemplateContext) string {
 			return ctx.GitBranch
 		case "git_repo":
 			return ctx.GitRepo
+		case "git_diff_stat":
+			return ctx.GitDiffStat
 		case "files":
 			return ctx.Files
 		case "file_count":
@@ -161,6 +183,31 @@ func getGitRepoName() string {
 		return ""
 	}
 	return filepath.Base(strings.TrimSpace(string(output)))
+}
+
+// getGitDiffStat returns a summary of changed files and line counts.
+// Combines both staged and unstaged changes.
+func getGitDiffStat() string {
+	// Get unstaged changes (--no-color prevents ANSI codes from leaking into prompts)
+	cmd := exec.Command("git", "diff", "--stat", "--stat-width=80", "--no-color")
+	unstaged, _ := cmd.Output()
+
+	// Get staged changes
+	cmd = exec.Command("git", "diff", "--cached", "--stat", "--stat-width=80", "--no-color")
+	staged, _ := cmd.Output()
+
+	var result strings.Builder
+	if len(staged) > 0 {
+		result.WriteString("Staged changes:\n")
+		result.Write(staged)
+	}
+	if len(unstaged) > 0 {
+		if result.Len() > 0 {
+			result.WriteString("\nUnstaged changes:\n")
+		}
+		result.Write(unstaged)
+	}
+	return strings.TrimSpace(result.String())
 }
 
 // itoa is a simple int to string conversion.

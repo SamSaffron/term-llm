@@ -1,7 +1,10 @@
 package cmd
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -111,4 +114,44 @@ func resolveForceExternalSearch(cfg *config.Config, nativeSearchFlag, noNativeSe
 
 	// Default: use native if provider supports it (don't force external)
 	return false
+}
+
+// createDebugLogger creates a debug logger if debug_logs is enabled in config.
+// Returns nil if debug logging is disabled.
+// Returns an error if debug logging is enabled but logger creation fails.
+// The caller is responsible for calling Close() on the returned logger when done.
+func createDebugLogger(cfg *config.Config) (*llm.DebugLogger, error) {
+	if !cfg.DebugLogs.Enabled {
+		return nil, nil
+	}
+
+	// Use configured dir or default
+	dir := cfg.DebugLogs.Dir
+	if dir == "" {
+		dir = config.GetDebugLogsDir()
+	}
+
+	// Generate session ID: timestamp + random suffix for uniqueness
+	sessionID := generateSessionID()
+
+	logger, err := llm.NewDebugLogger(dir, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create debug logger: %w", err)
+	}
+
+	return logger, nil
+}
+
+// generateSessionID creates a unique session identifier using timestamp and random bytes.
+// Format: 2006-01-02T15-04-05-abc123
+func generateSessionID() string {
+	timestamp := time.Now().Format("2006-01-02T15-04-05")
+	suffix := make([]byte, 3)
+	if _, err := rand.Read(suffix); err != nil {
+		// Fallback to timestamp only if random fails.
+		// crypto/rand failures are rare and usually indicate serious system issues,
+		// but debug logging is non-critical so we gracefully degrade.
+		return timestamp
+	}
+	return fmt.Sprintf("%s-%s", timestamp, hex.EncodeToString(suffix))
 }

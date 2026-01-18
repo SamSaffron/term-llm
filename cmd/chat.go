@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
@@ -106,32 +105,29 @@ func runChat(cmd *cobra.Command, args []string) error {
 	}
 
 	// Load agent if specified
-	var agent *agents.Agent
-	if chatAgent != "" {
-		registry, err := agents.NewRegistry(agents.RegistryConfig{
-			UseBuiltin:  cfg.Agents.UseBuiltin,
-			SearchPaths: cfg.Agents.SearchPaths,
-		})
-		if err != nil {
-			return fmt.Errorf("create agent registry: %w", err)
-		}
-
-		agent, err = registry.Get(chatAgent)
-		if err != nil {
-			return fmt.Errorf("load agent: %w", err)
-		}
-
-		if err := agent.Validate(); err != nil {
-			return fmt.Errorf("invalid agent: %w", err)
-		}
+	agent, err := LoadAgent(chatAgent, cfg)
+	if err != nil {
+		return err
 	}
 
-	// Apply provider overrides: CLI > agent > config
-	agentProvider := ""
-	agentModel := ""
+	// Resolve all settings: CLI > agent > config
+	settings := ResolveSettings(cfg, agent, CLIFlags{
+		Provider:      chatProvider,
+		Tools:         chatTools,
+		ReadDirs:      chatReadDirs,
+		WriteDirs:     chatWriteDirs,
+		ShellAllow:    chatShellAllow,
+		MCP:           chatMCP,
+		SystemMessage: chatSystemMessage,
+		MaxTurns:      chatMaxTurns,
+		MaxTurnsSet:   cmd.Flags().Changed("max-turns"),
+		Search:        chatSearch,
+	}, cfg.Chat.Provider, cfg.Chat.Model, cfg.Chat.Instructions, cfg.Chat.MaxTurns, 200)
+
+	// Apply provider overrides
+	agentProvider, agentModel := "", ""
 	if agent != nil {
-		agentProvider = agent.Provider
-		agentModel = agent.Model
+		agentProvider, agentModel = agent.Provider, agent.Model
 	}
 	if err := applyProviderOverridesWithAgent(cfg, cfg.Chat.Provider, cfg.Chat.Model, chatProvider, agentProvider, agentModel); err != nil {
 		return err
@@ -139,101 +135,39 @@ func runChat(cmd *cobra.Command, args []string) error {
 
 	initThemeFromConfig(cfg)
 
-	// Create LLM provider
+	// Create LLM provider and engine
 	provider, err := llm.NewProvider(cfg)
 	if err != nil {
 		return err
 	}
-
-	// Determine max turns: CLI > agent > config
-	maxTurns := chatMaxTurns
-	if !cmd.Flags().Changed("max-turns") {
-		if agent != nil && agent.MaxTurns > 0 {
-			maxTurns = agent.MaxTurns
-		} else if cfg.Chat.MaxTurns > 0 {
-			maxTurns = cfg.Chat.MaxTurns
-		}
-	}
-
 	engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
 
-	// Determine tool settings: CLI > agent > none
-	effectiveTools := chatTools
-	effectiveReadDirs := chatReadDirs
-	effectiveWriteDirs := chatWriteDirs
-	effectiveShellAllow := chatShellAllow
-	shellAutoRun := false
-	var scriptCommands []string
-
-	if agent != nil && effectiveTools == "" {
-		// Use agent tool settings
-		if agent.HasEnabledList() {
-			effectiveTools = strings.Join(agent.Tools.Enabled, ",")
-		} else if agent.HasDisabledList() {
-			// Get all tools and exclude disabled ones
-			allTools := tools.AllToolNames()
-			enabledTools := agent.GetEnabledTools(allTools)
-			effectiveTools = strings.Join(enabledTools, ",")
-		}
-
-		// Agent-specific tool settings
-		if len(agent.Read.Dirs) > 0 {
-			effectiveReadDirs = agent.Read.Dirs
-		}
-		if len(agent.Shell.Allow) > 0 {
-			effectiveShellAllow = agent.Shell.Allow
-		}
-		shellAutoRun = agent.Shell.AutoRun
-
-		// Extract script commands from agent
-		if len(agent.Shell.Scripts) > 0 {
-			for _, script := range agent.Shell.Scripts {
-				scriptCommands = append(scriptCommands, script)
-			}
-		}
+	// Set up debug logger if enabled.
+	// We close the logger manually after MCP cleanup (not via defer) because
+	// MCP servers may still log during shutdown, and the TUI blocks until exit.
+	debugLogger, debugLoggerErr := createDebugLogger(cfg)
+	if debugLoggerErr != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v\n", debugLoggerErr)
+	}
+	if debugLogger != nil {
+		engine.SetDebugLogger(debugLogger)
 	}
 
-	// Initialize local tools if we have any
-	var enabledLocalTools []string
-	if effectiveTools != "" {
-		toolConfig := buildToolConfig(effectiveTools, effectiveReadDirs, effectiveWriteDirs, effectiveShellAllow, cfg)
-		if shellAutoRun {
-			toolConfig.ShellAutoRun = true
+	// Initialize tools if enabled
+	enabledLocalTools := tools.ParseToolsFlag(settings.Tools)
+	toolMgr, err := settings.SetupToolManager(cfg, engine)
+	if err != nil {
+		if debugLogger != nil {
+			debugLogger.Close()
 		}
-		if len(scriptCommands) > 0 {
-			toolConfig.ScriptCommands = append(toolConfig.ScriptCommands, scriptCommands...)
-		}
-		if errs := toolConfig.Validate(); len(errs) > 0 {
-			return fmt.Errorf("invalid tool config: %v", errs[0])
-		}
-		enabledLocalTools = toolConfig.Enabled
-		toolMgr, err := tools.NewToolManager(&toolConfig, cfg)
-		if err != nil {
-			return fmt.Errorf("failed to initialize tools: %w", err)
-		}
+		return err
+	}
+	if toolMgr != nil {
 		toolMgr.ApprovalMgr.PromptFunc = tools.HuhApprovalPrompt
-		toolMgr.SetupEngine(engine)
 	}
 
-	// Determine system instructions: CLI > agent > config
-	instructions := cfg.Chat.Instructions
-	if agent != nil && agent.SystemPrompt != "" {
-		// Expand template variables in agent system prompt
-		templateCtx := agents.NewTemplateContext()
-
-		// Extract resources for builtin agents and set resource_dir
-		if agents.IsBuiltinAgent(agent.Name) {
-			if resourceDir, err := agents.ExtractBuiltinResources(agent.Name); err == nil {
-				templateCtx = templateCtx.WithResourceDir(resourceDir)
-			}
-		}
-
-		instructions = agents.ExpandTemplate(agent.SystemPrompt, templateCtx)
-	}
-	if chatSystemMessage != "" {
-		instructions = chatSystemMessage
-	}
-	cfg.Chat.Instructions = instructions
+	// Store resolved instructions in config for chat TUI
+	cfg.Chat.Instructions = settings.SystemPrompt
 
 	// Determine model name
 	modelName := getModelName(cfg)
@@ -245,18 +179,9 @@ func runChat(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to load MCP config: %v\n", err)
 	}
 
-	// Determine MCP servers: CLI > agent
-	effectiveMCP := chatMCP
-	if agent != nil && effectiveMCP == "" {
-		mcpServers := agent.GetMCPServerNames()
-		if len(mcpServers) > 0 {
-			effectiveMCP = strings.Join(mcpServers, ",")
-		}
-	}
-
 	// Enable MCP servers
-	if effectiveMCP != "" {
-		servers := strings.Split(effectiveMCP, ",")
+	if settings.MCP != "" {
+		servers := strings.Split(settings.MCP, ",")
 		for _, server := range servers {
 			server = strings.TrimSpace(server)
 			if server == "" {
@@ -268,17 +193,11 @@ func runChat(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Resolve force external search setting from config and flags
+	// Resolve force external search setting
 	forceExternalSearch := resolveForceExternalSearch(cfg, chatNativeSearch, chatNoNativeSearch)
 
-	// Determine effective search: CLI flag or agent setting
-	effectiveSearch := chatSearch
-	if agent != nil && agent.Search {
-		effectiveSearch = true
-	}
-
 	// Create chat model
-	model := chat.New(cfg, provider, engine, modelName, mcpManager, maxTurns, forceExternalSearch, effectiveSearch, enabledLocalTools, showStats)
+	model := chat.New(cfg, provider, engine, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, showStats)
 
 	// Run the TUI (inline mode - no alt screen)
 	p := tea.NewProgram(model)
@@ -286,6 +205,11 @@ func runChat(cmd *cobra.Command, args []string) error {
 
 	// Cleanup MCP servers
 	mcpManager.StopAll()
+
+	// Close debug logger
+	if debugLogger != nil {
+		debugLogger.Close()
+	}
 
 	if err != nil {
 		return fmt.Errorf("failed to run chat: %w", err)

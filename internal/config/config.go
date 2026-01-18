@@ -89,6 +89,7 @@ type Config struct {
 	DefaultProvider string                    `mapstructure:"default_provider"`
 	Providers       map[string]ProviderConfig `mapstructure:"providers"`
 	Diagnostics     DiagnosticsConfig         `mapstructure:"diagnostics"`
+	DebugLogs       DebugLogsConfig           `mapstructure:"debug_logs"`
 	Exec            ExecConfig                `mapstructure:"exec"`
 	Ask             AskConfig                 `mapstructure:"ask"`
 	Chat            ChatConfig                `mapstructure:"chat"`
@@ -122,6 +123,12 @@ type ToolsConfig struct {
 type DiagnosticsConfig struct {
 	Enabled bool   `mapstructure:"enabled"` // Enable diagnostic data collection
 	Dir     string `mapstructure:"dir"`     // Override default directory
+}
+
+// DebugLogsConfig configures debug logging of LLM requests and responses
+type DebugLogsConfig struct {
+	Enabled bool   `mapstructure:"enabled"` // Enable debug logging
+	Dir     string `mapstructure:"dir"`     // Override default directory (defaults to ~/.local/share/term-llm/debug/)
 }
 
 // ThemeConfig allows customization of UI colors
@@ -591,6 +598,19 @@ func GetDiagnosticsDir() string {
 		return filepath.Join(".", "term-llm-diagnostics") // fallback
 	}
 	return filepath.Join(homeDir, ".local", "share", "term-llm", "diagnostics")
+}
+
+// GetDebugLogsDir returns the XDG data directory for term-llm debug logs.
+// Uses $XDG_DATA_HOME if set, otherwise ~/.local/share
+func GetDebugLogsDir() string {
+	if xdgData := os.Getenv("XDG_DATA_HOME"); xdgData != "" {
+		return filepath.Join(xdgData, "term-llm", "debug")
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".", "term-llm-debug") // fallback
+	}
+	return filepath.Join(homeDir, ".local", "share", "term-llm", "debug")
 }
 
 // Exists returns true if a config file exists

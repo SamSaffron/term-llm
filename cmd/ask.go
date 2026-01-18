@@ -11,7 +11,6 @@ import (
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/samsaffron/term-llm/internal/agents"
@@ -158,6 +157,16 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 	engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
 
+	// Set up debug logger if enabled
+	debugLogger, err := createDebugLogger(cfg)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v\n", err)
+	}
+	if debugLogger != nil {
+		engine.SetDebugLogger(debugLogger)
+		defer debugLogger.Close()
+	}
+
 	// Determine tool settings: CLI > agent > none
 	effectiveTools := askTools
 	effectiveReadDirs := askReadDirs
@@ -258,7 +267,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	instructions := cfg.Ask.Instructions
 	if agent != nil && agent.SystemPrompt != "" {
 		// Expand template variables in agent system prompt
-		templateCtx := agents.NewTemplateContext().WithFiles(askFiles)
+		// Use NewTemplateContextForTemplate to avoid expensive git operations
+		// when the template doesn't use them
+		templateCtx := agents.NewTemplateContextForTemplate(agent.SystemPrompt).WithFiles(askFiles)
 
 		// Extract resources for builtin agents and set resource_dir
 		if agents.IsBuiltinAgent(agent.Name) {
@@ -323,14 +334,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	isTTY := term.IsTerminal(int(os.Stdout.Fd()))
 	useGlamour := !askText && isTTY && !debugRaw
 
-	// Create channel for streaming output
-	output := make(chan string)
-
-	// Channel for tool events (for phase updates)
-	toolEvents := make(chan toolEvent, 10)
-
-	// Track session stats
-	stats := ui.NewSessionStats()
+	// Create stream adapter for unified event handling with proper buffering
+	adapter := ui.NewStreamAdapter(ui.DefaultStreamBufferSize)
+	adapter.ToolNameFilter = tools.AskUserToolName // Skip ask_user tool (has its own UI)
 
 	// For glamour mode, create the tea.Program and set PromptFunc BEFORE starting the stream
 	// This avoids a race condition where tool execution starts before PromptFunc is set
@@ -370,100 +376,18 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		stream, err := engine.Stream(ctx, req)
 		if err != nil {
 			errChan <- err
-			close(output)
-			close(toolEvents)
 			return
 		}
 		defer stream.Close()
-		for {
-			event, err := stream.Recv()
-			if err == io.EOF {
-				close(output)
-				close(toolEvents)
-				errChan <- nil
-				return
-			}
-			if err != nil {
-				errChan <- err
-				close(output)
-				close(toolEvents)
-				return
-			}
-			if event.Type == llm.EventError && event.Err != nil {
-				errChan <- event.Err
-				close(output)
-				close(toolEvents)
-				return
-			}
-			if event.Type == llm.EventToolExecStart {
-				stats.ToolStart()
-				// Skip tool indicator for ask_user - it has its own UI
-				if event.ToolName == tools.AskUserToolName {
-					continue
-				}
-				select {
-				case toolEvents <- toolEvent{CallID: event.ToolCallID, Name: event.ToolName, Info: event.ToolInfo}:
-				default:
-				}
-			}
-			if event.Type == llm.EventToolExecEnd {
-				stats.ToolEnd()
-				// Skip tool indicator for ask_user - it has its own UI
-				if event.ToolName == tools.AskUserToolName {
-					continue
-				}
-				select {
-				case toolEvents <- toolEvent{
-					CallID:      event.ToolCallID,
-					Name:        event.ToolName,
-					Info:        event.ToolInfo,
-					IsToolEnd:   true,
-					ToolSuccess: event.ToolSuccess,
-				}:
-				default:
-				}
-			}
-			if event.Type == llm.EventRetry {
-				select {
-				case toolEvents <- toolEvent{
-					IsRetry:          true,
-					RetryAttempt:     event.RetryAttempt,
-					RetryMaxAttempts: event.RetryMaxAttempts,
-					RetryWaitSecs:    event.RetryWaitSecs,
-				}:
-				default:
-				}
-			}
-			if event.Type == llm.EventUsage && event.Use != nil {
-				stats.AddUsage(event.Use.InputTokens, event.Use.OutputTokens, event.Use.CachedInputTokens)
-				select {
-				case toolEvents <- toolEvent{
-					IsUsage:      true,
-					InputTokens:  event.Use.InputTokens,
-					OutputTokens: event.Use.OutputTokens,
-				}:
-				default:
-				}
-			}
-			if event.Type == llm.EventPhase && event.Text != "" {
-				select {
-				case toolEvents <- toolEvent{
-					IsPhase: true,
-					Phase:   event.Text,
-				}:
-				default:
-				}
-			}
-			if event.Type == llm.EventTextDelta && event.Text != "" {
-				output <- event.Text
-			}
-		}
+		// ProcessStream handles all events and closes the channel when done
+		adapter.ProcessStream(ctx, stream)
+		errChan <- nil
 	}()
 
 	if useGlamour {
-		err = streamWithGlamour(ctx, output, toolEvents, teaProgram)
+		err = streamWithGlamour(ctx, adapter.Events(), teaProgram)
 	} else {
-		err = streamPlainText(ctx, output, toolEvents)
+		err = streamPlainText(ctx, adapter.Events())
 	}
 	tools.ClearAskUserHooks() // Safe to call even if hooks weren't set
 
@@ -479,50 +403,29 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 
 	if showStats {
-		stats.Finalize()
-		fmt.Fprintln(cmd.ErrOrStderr(), stats.Render())
+		adapter.Stats().Finalize()
+		fmt.Fprintln(cmd.ErrOrStderr(), adapter.Stats().Render())
 	}
 
 	return nil
 }
 
-// toolEvent represents a tool execution event with name and additional info
-type toolEvent struct {
-	CallID string // Unique ID for this tool invocation
-	Name   string // Tool name (e.g., "web_search", "read_url")
-	Info   string // Additional info (e.g., URL being fetched)
-	// Tool end fields (when IsToolEnd is true)
-	IsToolEnd   bool
-	ToolSuccess bool
-	// Retry fields (when IsRetry is true)
-	IsRetry          bool
-	RetryAttempt     int
-	RetryMaxAttempts int
-	RetryWaitSecs    float64
-	// Usage fields (when IsUsage is true)
-	IsUsage      bool
-	InputTokens  int
-	OutputTokens int
-	// Phase fields (when IsPhase is true)
-	IsPhase bool
-	Phase   string
-}
-
 // streamPlainText streams text directly without formatting
-func streamPlainText(ctx context.Context, output <-chan string, toolEvents <-chan toolEvent) error {
+func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent) error {
 	// Track pending tools with their status
 	type toolEntry struct {
+		callID  string
 		name    string
 		info    string
 		success bool
 		done    bool
 	}
-	var tools []toolEntry
+	var pendingTools []toolEntry
 	printedAny := false
 	lastEndedWithNewline := true
 
 	printTools := func() {
-		if len(tools) == 0 {
+		if len(pendingTools) == 0 {
 			return
 		}
 		if printedAny && !lastEndedWithNewline {
@@ -531,7 +434,7 @@ func streamPlainText(ctx context.Context, output <-chan string, toolEvents <-cha
 		if printedAny {
 			fmt.Print("\n")
 		}
-		for _, t := range tools {
+		for _, t := range pendingTools {
 			phase := ui.FormatToolPhase(t.name, t.info)
 			if t.success {
 				fmt.Printf("%s %s\n", ui.SuccessCircle(), phase.Completed)
@@ -540,7 +443,7 @@ func streamPlainText(ctx context.Context, output <-chan string, toolEvents <-cha
 			}
 		}
 		fmt.Print("\n")
-		tools = nil
+		pendingTools = nil
 		printedAny = true
 		lastEndedWithNewline = true
 	}
@@ -549,56 +452,72 @@ func streamPlainText(ctx context.Context, output <-chan string, toolEvents <-cha
 		select {
 		case <-ctx.Done():
 			return nil
-		case ev, ok := <-toolEvents:
+		case ev, ok := <-events:
 			if !ok {
-				toolEvents = nil
-				continue
-			}
-			// Show retry status in plain text mode
-			if ev.IsRetry {
-				fmt.Fprintf(os.Stderr, "\rRate limited (%d/%d), waiting %.0fs...\n",
-					ev.RetryAttempt, ev.RetryMaxAttempts, ev.RetryWaitSecs)
-				continue
-			}
-			if ev.IsUsage {
-				continue
-			}
-			if ev.IsToolEnd {
-				// Find and update the tool entry
-				for i := range tools {
-					if tools[i].name == ev.Name && !tools[i].done {
-						tools[i].success = ev.ToolSuccess
-						tools[i].done = true
-						break
-					}
-				}
-				// Check if all tools are done
-				allDone := true
-				for _, t := range tools {
-					if !t.done {
-						allDone = false
-						break
-					}
-				}
-				if allDone && len(tools) > 0 {
-					printTools()
-				}
-				continue
-			}
-			// Tool start - add to pending
-			tools = append(tools, toolEntry{name: ev.Name, info: ev.Info})
-		case chunk, ok := <-output:
-			if !ok {
-				if len(tools) > 0 {
+				if len(pendingTools) > 0 {
 					printTools()
 				}
 				fmt.Println()
 				return nil
 			}
-			fmt.Print(chunk)
-			printedAny = true
-			if len(chunk) > 0 {
-				lastEndedWithNewline = strings.HasSuffix(chunk, "\n")
+
+			switch ev.Type {
+			case ui.StreamEventRetry:
+				fmt.Fprintf(os.Stderr, "\rRate limited (%d/%d), waiting %.0fs...\n",
+					ev.RetryAttempt, ev.RetryMax, ev.RetryWait)
+
+			case ui.StreamEventUsage:
+				// Skip usage events in plain text mode
+				continue
+
+			case ui.StreamEventPhase:
+				// Skip phase events in plain text mode
+				continue
+
+			case ui.StreamEventToolEnd:
+				// Find and update the tool entry by callID
+				for i := range pendingTools {
+					if pendingTools[i].callID == ev.ToolCallID && !pendingTools[i].done {
+						pendingTools[i].success = ev.ToolSuccess
+						pendingTools[i].done = true
+						break
+					}
+				}
+				// Check if all tools are done
+				allDone := true
+				for _, t := range pendingTools {
+					if !t.done {
+						allDone = false
+						break
+					}
+				}
+				if allDone && len(pendingTools) > 0 {
+					printTools()
+				}
+
+			case ui.StreamEventToolStart:
+				pendingTools = append(pendingTools, toolEntry{
+					callID: ev.ToolCallID,
+					name:   ev.ToolName,
+					info:   ev.ToolInfo,
+				})
+
+			case ui.StreamEventText:
+				fmt.Print(ev.Text)
+				printedAny = true
+				if len(ev.Text) > 0 {
+					lastEndedWithNewline = strings.HasSuffix(ev.Text, "\n")
+				}
+
+			case ui.StreamEventDone:
+				if len(pendingTools) > 0 {
+					printTools()
+				}
+				fmt.Println()
+				return nil
+
+			case ui.StreamEventError:
+				return ev.Err
 			}
 		}
 	}
@@ -709,23 +628,12 @@ const maxViewLines = 8
 // maybeFlushToScrollback checks if content exceeds maxViewLines and prints
 // excess to scrollback, keeping View() small to avoid terminal scroll issues.
 func (m *askStreamModel) maybeFlushToScrollback() tea.Cmd {
-	// Render current completed content
-	completed := m.tracker.CompletedSegments()
-	content := ui.RenderSegments(completed, m.width, -1, renderMd)
-	totalLines := strings.Count(content, "\n")
-
-	// If content exceeds threshold, print excess to scrollback
-	if totalLines > maxViewLines+m.printedLines {
-		// Find split point - print all but last maxViewLines
-		lines := strings.Split(content, "\n")
-		splitAt := len(lines) - maxViewLines
-		if splitAt > m.printedLines {
-			// Print lines from printedLines to splitAt
-			toPrint := strings.Join(lines[m.printedLines:splitAt], "\n")
-			m.printedLines = splitAt
-			return tea.Println(toPrint)
-		}
+	result := m.tracker.FlushToScrollback(m.width, m.printedLines, maxViewLines, renderMd)
+	if result.ToPrint != "" {
+		m.printedLines = result.NewPrintedLines
+		return tea.Println(result.ToPrint)
 	}
+	m.printedLines = result.NewPrintedLines
 	return nil
 }
 
@@ -788,10 +696,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Re-render text segments with new width
 		for i := range m.tracker.Segments {
 			if m.tracker.Segments[i].Type == ui.SegmentText && m.tracker.Segments[i].Complete {
-				rendered, err := renderMarkdown(m.tracker.Segments[i].Text, m.width)
-				if err == nil {
-					m.tracker.Segments[i].Rendered = rendered
-				}
+				m.tracker.Segments[i].Rendered = ui.RenderMarkdown(m.tracker.Segments[i].Text, m.width)
 			}
 		}
 
@@ -920,9 +825,10 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.approvalForm.Init()
 
 	case spinner.TickMsg:
-		// Update spinner when idle (no activity for >1s and no pending tools)
+		// Always maintain the tick chain to keep spinner animating
+		// The idle check in View() controls visibility, not animation
 		// Don't update spinner when done
-		if !m.done && m.tracker.IsIdle(time.Second) {
+		if !m.done {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			return m, cmd
@@ -933,11 +839,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func renderMd(text string, width int) string {
-	if text == "" {
-		return ""
-	}
-	rendered, _ := renderMarkdown(text, width)
-	return rendered
+	return ui.RenderMarkdown(text, width)
 }
 
 func (m askStreamModel) View() string {
@@ -1009,7 +911,7 @@ func (m askStreamModel) View() string {
 
 // streamWithGlamour renders markdown beautifully as content streams in
 // If p is nil, creates a new tea.Program; otherwise uses the provided one.
-func streamWithGlamour(ctx context.Context, output <-chan string, toolEvents <-chan toolEvent, p *tea.Program) error {
+func streamWithGlamour(ctx context.Context, events <-chan ui.StreamEvent, p *tea.Program) error {
 	// Create program if not provided (when no tools are used)
 	if p == nil {
 		model := newAskStreamModel()
@@ -1022,86 +924,72 @@ func streamWithGlamour(ctx context.Context, output <-chan string, toolEvents <-c
 		programDone <- err
 	}()
 
-	for output != nil || toolEvents != nil {
+	var streamErr error
+	for events != nil {
 		select {
 		case <-ctx.Done():
 			p.Send(askCancelledMsg{})
-			output = nil
-			toolEvents = nil
+			events = nil
 
-		case ev, ok := <-toolEvents:
+		case ev, ok := <-events:
 			if !ok {
-				toolEvents = nil
+				events = nil
 				continue
 			}
-			if ev.IsRetry {
+
+			switch ev.Type {
+			case ui.StreamEventRetry:
 				p.Send(askRetryMsg{
 					Attempt:     ev.RetryAttempt,
-					MaxAttempts: ev.RetryMaxAttempts,
-					WaitSecs:    ev.RetryWaitSecs,
+					MaxAttempts: ev.RetryMax,
+					WaitSecs:    ev.RetryWait,
 				})
-				continue
-			}
-			if ev.IsUsage {
+
+			case ui.StreamEventUsage:
 				p.Send(askUsageMsg{
 					InputTokens:  ev.InputTokens,
 					OutputTokens: ev.OutputTokens,
 				})
-				continue
-			}
-			if ev.IsPhase {
+
+			case ui.StreamEventPhase:
 				p.Send(askPhaseMsg(ev.Phase))
-				continue
-			}
-			if ev.IsToolEnd {
+
+			case ui.StreamEventToolEnd:
 				p.Send(askToolEndMsg{
-					CallID:  ev.CallID,
+					CallID:  ev.ToolCallID,
 					Success: ev.ToolSuccess,
 				})
-				continue
-			}
-			p.Send(askToolStartMsg{CallID: ev.CallID, Name: ev.Name, Info: ev.Info})
 
-		case chunk, ok := <-output:
-			if !ok {
+			case ui.StreamEventToolStart:
+				p.Send(askToolStartMsg{
+					CallID: ev.ToolCallID,
+					Name:   ev.ToolName,
+					Info:   ev.ToolInfo,
+				})
+
+			case ui.StreamEventText:
+				p.Send(askContentMsg(ev.Text))
+
+			case ui.StreamEventDone:
 				p.Send(askDoneMsg{})
-				output = nil
-				continue
+				events = nil
+
+			case ui.StreamEventError:
+				if ev.Err != nil {
+					streamErr = ev.Err
+					p.Send(askCancelledMsg{})
+					events = nil
+				}
 			}
-			p.Send(askContentMsg(chunk))
 		}
 	}
 
 	err := <-programDone
 	// Note: Don't print finalOutput here - bubbletea's final View() already persists on screen
+	if streamErr != nil {
+		return streamErr
+	}
 	return err
-}
-
-// renderMarkdown renders markdown content using glamour
-func renderMarkdown(content string, width int) (string, error) {
-	style := ui.GlamourStyle()
-	margin := uint(0)
-	style.Document.Margin = &margin
-	style.Document.BlockPrefix = ""
-	style.Document.BlockSuffix = ""
-	style.CodeBlock.Margin = &margin
-
-	renderer, err := glamour.NewTermRenderer(
-		glamour.WithStyles(style),
-		glamour.WithWordWrap(width),
-	)
-	if err != nil {
-		return "", err
-	}
-
-	rendered, err := renderer.Render(content)
-	if err != nil {
-		return "", err
-	}
-
-	// Don't apply wordwrap - glamour already handles wrapping,
-	// and wordwrap breaks ANSI escape codes
-	return strings.TrimSpace(rendered), nil
 }
 
 // enableMCPServersWithFeedback initializes MCP servers with user feedback.
@@ -1213,7 +1101,7 @@ func enableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *l
 // parseServerList splits comma-separated server names and trims whitespace.
 func parseServerList(mcpFlag string) []string {
 	var servers []string
-	for _, s := range strings.Split(mcpFlag, ",") {
+	for s := range strings.SplitSeq(mcpFlag, ",") {
 		s = strings.TrimSpace(s)
 		if s != "" {
 			servers = append(servers, s)

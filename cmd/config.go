@@ -131,51 +131,6 @@ func configShow(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func printCredentialStatus(provider, credType, apiKey, envVar string) {
-	switch credType {
-	case "gemini-cli":
-		if apiKey != "" {
-			fmt.Printf("  credentials: gemini-cli [OK]\n")
-		} else {
-			fmt.Printf("  credentials: gemini-cli [FAILED - run 'gemini' to configure]\n")
-		}
-	default:
-		if apiKey != "" {
-			fmt.Printf("  credentials: api_key [set via %s]\n", envVar)
-		} else {
-			fmt.Printf("  credentials: api_key [NOT SET - export %s]\n", envVar)
-		}
-	}
-}
-
-// printZenCredentialStatus shows the OpenCode Zen credential status
-// Zen has free tier access, so empty API key is valid
-func printZenCredentialStatus(apiKey string) {
-	if apiKey != "" {
-		fmt.Printf("  credentials: api_key [set via ZEN_API_KEY]\n")
-	} else {
-		fmt.Printf("  credentials: [free tier - no API key required]\n")
-	}
-}
-
-// printImageCredentialStatus shows credential status for image providers
-func printImageCredentialStatus(provider, apiKey, envVar string) {
-	if apiKey != "" {
-		fmt.Printf("    credentials: api_key [set via %s]\n", envVar)
-	} else {
-		fmt.Printf("    credentials: api_key [NOT SET - export %s]\n", envVar)
-	}
-}
-
-// printSearchCredentialStatus shows credential status for search providers
-func printSearchCredentialStatus(apiKey, envVar string) {
-	if apiKey != "" {
-		fmt.Printf("    credentials: api_key [set via %s]\n", envVar)
-	} else {
-		fmt.Printf("    credentials: api_key [NOT SET - export %s]\n", envVar)
-	}
-}
-
 func configEdit(cmd *cobra.Command, args []string) error {
 	configPath, err := config.GetConfigPath()
 	if err != nil {
@@ -350,6 +305,11 @@ edit:
 #   muted: "245"      # explanations, footers
 #   spinner: "205"    # loading spinner
 #   error: "9"        # error messages
+
+# Debug logging (for troubleshooting LLM requests)
+# debug_logs:
+#   enabled: false
+#   dir: ~/.local/share/term-llm/debug/
 
 # Image generation settings
 image:

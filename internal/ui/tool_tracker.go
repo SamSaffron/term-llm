@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -195,4 +196,111 @@ func (t *ToolTracker) MarkCurrentTextComplete(renderFunc func(string) string) {
 			}
 		}
 	}
+}
+
+// FlushToScrollbackResult contains the result of a scrollback flush operation.
+type FlushToScrollbackResult struct {
+	// ToPrint is the content to print to scrollback (empty if nothing to flush)
+	ToPrint string
+	// NewPrintedLines is the updated count of lines printed to scrollback
+	NewPrintedLines int
+}
+
+// FlushToScrollback checks if content exceeds maxViewLines and returns content
+// to print to scrollback, keeping View() small to avoid terminal scroll issues.
+// Returns the content to print (if any) and the new printedLines value.
+//
+// Parameters:
+//   - width: terminal width for rendering
+//   - printedLines: number of lines already printed to scrollback
+//   - maxViewLines: maximum lines to keep in View()
+//   - renderMd: markdown render function (text, width) -> rendered
+func (t *ToolTracker) FlushToScrollback(
+	width int,
+	printedLines int,
+	maxViewLines int,
+	renderMd func(string, int) string,
+) FlushToScrollbackResult {
+	// Render current completed content
+	completed := t.CompletedSegments()
+	content := RenderSegments(completed, width, -1, renderMd)
+	totalLines := countLines(content)
+
+	// If content exceeds threshold, calculate what to print
+	if totalLines > maxViewLines+printedLines {
+		lines := splitLines(content)
+		splitAt := len(lines) - maxViewLines
+		if splitAt > printedLines {
+			toPrint := joinLines(lines[printedLines:splitAt])
+			return FlushToScrollbackResult{
+				ToPrint:         toPrint,
+				NewPrintedLines: splitAt,
+			}
+		}
+	}
+
+	return FlushToScrollbackResult{
+		NewPrintedLines: printedLines,
+	}
+}
+
+// FlushAllRemaining returns any remaining content that hasn't been printed to scrollback.
+// Use this at the end of streaming to ensure all content is visible.
+func (t *ToolTracker) FlushAllRemaining(
+	width int,
+	printedLines int,
+	renderMd func(string, int) string,
+) FlushToScrollbackResult {
+	completed := t.CompletedSegments()
+	content := RenderSegments(completed, width, -1, renderMd)
+
+	if content != "" {
+		lines := splitLines(content)
+		if printedLines < len(lines) {
+			remaining := joinLines(lines[printedLines:])
+			return FlushToScrollbackResult{
+				ToPrint:         remaining,
+				NewPrintedLines: len(lines),
+			}
+		}
+	}
+
+	return FlushToScrollbackResult{
+		NewPrintedLines: printedLines,
+	}
+}
+
+// countLines counts the number of newlines in content
+func countLines(content string) int {
+	count := 0
+	for _, c := range content {
+		if c == '\n' {
+			count++
+		}
+	}
+	return count
+}
+
+// splitLines splits content by newlines (similar to strings.Split but handles edge cases)
+func splitLines(content string) []string {
+	if content == "" {
+		return nil
+	}
+	var lines []string
+	start := 0
+	for i, c := range content {
+		if c == '\n' {
+			lines = append(lines, content[start:i])
+			start = i + 1
+		}
+	}
+	if start < len(content) {
+		lines = append(lines, content[start:])
+	}
+	return lines
+}
+
+// joinLines joins lines with newlines
+func joinLines(lines []string) string {
+	return strings.Join(lines, "\n")
 }

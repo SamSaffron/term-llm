@@ -91,20 +91,6 @@ func init() {
 	rootCmd.AddCommand(editCmd)
 }
 
-type diffEntry struct {
-	path              string
-	writePath         string
-	oldContent        string
-	newContent        string
-	skipReasons       []string
-	countSkipIfNoDiff bool
-	onApplied         func(path, newContent string)
-}
-
-type diffApplyOptions struct {
-	separatorOnAnyOutput bool
-}
-
 func toPromptSpecs(specs []input.FileSpec) []prompt.EditSpec {
 	result := make([]prompt.EditSpec, 0, len(specs))
 	for _, spec := range specs {
@@ -116,68 +102,6 @@ func toPromptSpecs(specs []input.FileSpec) []prompt.EditSpec {
 		})
 	}
 	return result
-}
-
-func applyDiffEntries(entries []diffEntry, dryRun bool, opts diffApplyOptions) (int, int) {
-	var applied, skipped int
-	firstDiff := true
-	printed := false
-
-	for _, entry := range entries {
-		for _, reason := range entry.skipReasons {
-			ui.ShowEditSkipped(entry.path, reason)
-		}
-		if len(entry.skipReasons) > 0 {
-			printed = true
-		}
-
-		if entry.oldContent == entry.newContent {
-			if entry.countSkipIfNoDiff && len(entry.skipReasons) > 0 {
-				skipped++
-			}
-			continue
-		}
-
-		if opts.separatorOnAnyOutput {
-			if printed {
-				fmt.Println()
-			}
-		} else if !firstDiff {
-			fmt.Println()
-		}
-		firstDiff = false
-
-		ui.PrintUnifiedDiff(entry.path, entry.oldContent, entry.newContent)
-		printed = true
-
-		if dryRun {
-			continue
-		}
-
-		if !ui.PromptApplyEdit() {
-			skipped++
-			continue
-		}
-
-		writePath := entry.writePath
-		if writePath == "" {
-			writePath = entry.path
-		}
-
-		if err := os.WriteFile(writePath, []byte(entry.newContent), 0644); err != nil {
-			fmt.Printf("  error: %s\n", err.Error())
-			skipped++
-			continue
-		}
-
-		if entry.onApplied != nil {
-			entry.onApplied(writePath, entry.newContent)
-		}
-
-		applied++
-	}
-
-	return applied, skipped
 }
 
 // absPath converts a path to absolute, returning the original if conversion fails

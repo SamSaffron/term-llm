@@ -114,6 +114,16 @@ func runExec(cmd *cobra.Command, args []string) error {
 	}
 	engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
 
+	// Set up debug logger if enabled
+	debugLogger, err := createDebugLogger(cfg)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v\n", err)
+	}
+	if debugLogger != nil {
+		engine.SetDebugLogger(debugLogger)
+		defer debugLogger.Close()
+	}
+
 	// Initialize local tools if --tools flag is set
 	var localToolSpecs []llm.ToolSpec
 	if execTools != "" {

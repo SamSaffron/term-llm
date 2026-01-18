@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"time"
@@ -52,7 +51,7 @@ type Model struct {
 	printedLines     int             // Number of lines already printed to scrollback
 
 	// Streaming channels
-	streamChan chan streamEvent
+	streamChan <-chan ui.StreamEvent
 
 	// LLM context
 	provider     llm.Provider
@@ -95,29 +94,13 @@ type Model struct {
 	stats     *ui.SessionStats
 }
 
-// streamEvent represents an event from the streaming goroutine
-type streamEvent struct {
-	chunk        string
-	phase        string
-	tokens       int
-	inputTokens  int
-	outputTokens int
-	cachedTokens int
-	done         bool
-	err          error
-	retryStatus  string
-	webSearch    bool
-	toolStart    bool   // Tool execution started
-	toolEnd      bool   // Tool execution completed
-	toolCallID   string // Unique ID for this tool invocation
-	toolName     string // For tool start/end events
-	toolInfo     string // For tool start/end events
-	toolSuccess  bool   // For tool end: whether it succeeded
+// streamEventMsg wraps ui.StreamEvent for bubbletea
+type streamEventMsg struct {
+	event ui.StreamEvent
 }
 
 // Messages for tea.Program
 type (
-	streamEventMsg   streamEvent
 	sessionSavedMsg  struct{}
 	sessionLoadedMsg struct{ session *Session }
 	tickMsg          time.Time
@@ -262,15 +245,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case streamEventMsg:
-		if msg.err != nil {
-			m.streaming = false
-			m.err = msg.err
-			m.textarea.Focus()
-			return m, nil
-		}
+		ev := msg.event
 
-		// Track stats
-		if msg.toolStart {
+		switch ev.Type {
+		case ui.StreamEventError:
+			if ev.Err != nil {
+				m.streaming = false
+				m.err = ev.Err
+				m.textarea.Focus()
+				return m, nil
+			}
+
+		case ui.StreamEventToolStart:
 			m.stats.ToolStart()
 
 			// Mark current text segment as complete before starting tool
@@ -278,7 +264,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.tracker.MarkCurrentTextComplete(func(text string) string {
 					return m.renderMarkdown(text)
 				})
-				if m.tracker.HandleToolStart(msg.toolCallID, msg.toolName, msg.toolInfo) {
+				if m.tracker.HandleToolStart(ev.ToolCallID, ev.ToolName, ev.ToolInfo) {
 					// New segment added, start wave animation
 					cmds = append(cmds, m.tracker.StartWave())
 				} else {
@@ -286,12 +272,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					cmds = append(cmds, m.tracker.StartWave())
 				}
 			}
-		}
-		if msg.toolEnd {
+
+			// Check for web search
+			if ev.ToolName == llm.WebSearchToolName || ev.ToolName == "WebSearch" {
+				m.webSearchUsed = true
+			}
+
+		case ui.StreamEventToolEnd:
 			m.stats.ToolEnd()
 			// Update segment status
 			if m.tracker != nil {
-				m.tracker.HandleToolEnd(msg.toolCallID, msg.toolSuccess)
+				m.tracker.HandleToolEnd(ev.ToolCallID, ev.ToolSuccess)
 
 				// Back to thinking phase if no more pending tools
 				if !m.tracker.HasPending() {
@@ -305,17 +296,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
-		}
-		if msg.inputTokens > 0 || msg.outputTokens > 0 {
-			m.stats.AddUsage(msg.inputTokens, msg.outputTokens, msg.cachedTokens)
-		}
 
-		if msg.chunk != "" {
-			m.currentResponse.WriteString(msg.chunk)
+		case ui.StreamEventUsage:
+			if ev.InputTokens > 0 || ev.OutputTokens > 0 {
+				m.stats.AddUsage(ev.InputTokens, ev.OutputTokens, ev.CachedTokens)
+			}
+
+		case ui.StreamEventText:
+			m.currentResponse.WriteString(ev.Text)
 
 			// Update segments for chronological rendering
 			if m.tracker != nil {
-				m.tracker.AddTextSegment(msg.chunk)
+				m.tracker.AddTextSegment(ev.Text)
 			}
 
 			m.phase = "Responding"
@@ -327,24 +319,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					cmds = append(cmds, cmd)
 				}
 			}
-		}
 
-		if msg.phase != "" && !msg.toolEnd {
-			m.phase = msg.phase
+		case ui.StreamEventPhase:
+			m.phase = ev.Phase
 			m.retryStatus = ""
-		}
 
-		if msg.retryStatus != "" {
-			m.retryStatus = msg.retryStatus
-		}
+		case ui.StreamEventRetry:
+			m.retryStatus = fmt.Sprintf("Rate limited (%d/%d), waiting %.0fs...",
+				ev.RetryAttempt, ev.RetryMax, ev.RetryWait)
 
-		if msg.webSearch {
-			m.webSearchUsed = true
-		}
-
-		if msg.done {
+		case ui.StreamEventDone:
 			m.streaming = false
-			m.currentTokens = msg.tokens
+			m.currentTokens = ev.Tokens
 			duration := time.Since(m.streamStartTime)
 
 			// Mark all text segments as complete and render
@@ -353,17 +339,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m.renderMarkdown(text)
 				})
 
-				// Print any remaining content to scrollback (chronological order)
-				completed := m.tracker.CompletedSegments()
-				content := ui.RenderSegments(completed, m.width, -1, m.renderMd)
-
-				if content != "" {
-					lines := strings.Split(content, "\n")
-					if m.printedLines < len(lines) {
-						remaining := strings.Join(lines[m.printedLines:], "\n")
-						cmds = append(cmds, tea.Println(remaining))
-					}
+				// Print any remaining content to scrollback using FlushAllRemaining
+				result := m.tracker.FlushAllRemaining(m.width, m.printedLines, m.renderMd)
+				if result.ToPrint != "" {
+					cmds = append(cmds, tea.Println(result.ToPrint))
 				}
+				m.printedLines = result.NewPrintedLines
 			}
 			cmds = append(cmds, tea.Println("")) // blank line
 
@@ -392,8 +373,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			// Re-enable textarea
 			m.textarea.Focus()
-		} else {
-			// Continue listening for more events
+		}
+
+		// Continue listening for more events unless we're done or got an error
+		if ev.Type != ui.StreamEventDone && ev.Type != ui.StreamEventError {
 			cmds = append(cmds, m.listenForStreamEvents())
 		}
 
@@ -940,8 +923,10 @@ func (m *Model) startStream(content string) tea.Cmd {
 		ctx, cancel := context.WithCancel(context.Background())
 		m.streamCancelFunc = cancel
 
-		// Create channel for streaming events
-		m.streamChan = make(chan streamEvent, 100)
+		// Create stream adapter for unified event handling with proper buffering
+		adapter := ui.NewStreamAdapter(ui.DefaultStreamBufferSize)
+		adapter.ToolNameFilter = tools.AskUserToolName // Skip ask_user tool (has its own UI)
+		m.streamChan = adapter.Events()
 
 		// Build messages from conversation history
 		messages := m.buildMessages()
@@ -961,6 +946,16 @@ func (m *Model) startStream(content string) tea.Cmd {
 			}
 		}
 
+		// Add local tools (read, write, shell, etc.) if enabled
+		// These are already registered in the engine, we just need their specs
+		if len(m.localTools) > 0 {
+			for _, toolName := range m.localTools {
+				if tool, ok := m.engine.Tools().Get(toolName); ok {
+					reqTools = append(reqTools, tool.Spec())
+				}
+			}
+		}
+
 		req := llm.Request{
 			Messages:            messages,
 			Tools:               reqTools,
@@ -970,77 +965,16 @@ func (m *Model) startStream(content string) tea.Cmd {
 			MaxTurns:            m.maxTurns,
 		}
 
-		// Start streaming in background
+		// Start streaming in background - adapter handles all event conversion
 		go func() {
-			defer close(m.streamChan)
-
 			stream, err := m.engine.Stream(ctx, req)
 			if err != nil {
-				m.streamChan <- streamEvent{err: err}
+				adapter.EmitErrorAndClose(err)
 				return
 			}
 			defer stream.Close()
-
-			var totalTokens int
-			for {
-				event, err := stream.Recv()
-				if err == io.EOF {
-					m.streamChan <- streamEvent{done: true, tokens: totalTokens}
-					return
-				}
-				if err != nil {
-					// Check if context was cancelled
-					if ctx.Err() != nil {
-						m.streamChan <- streamEvent{done: true, tokens: totalTokens}
-						return
-					}
-					m.streamChan <- streamEvent{err: err}
-					return
-				}
-
-				switch event.Type {
-				case llm.EventTextDelta:
-					if event.Text != "" {
-						m.streamChan <- streamEvent{chunk: event.Text}
-					}
-				case llm.EventToolExecStart:
-					// Skip tool indicator for ask_user - it has its own UI
-					if event.ToolName == tools.AskUserToolName {
-						continue
-					}
-					phase := ui.FormatToolPhase(event.ToolName, event.ToolInfo).Active
-					isSearch := event.ToolName == llm.WebSearchToolName || event.ToolName == "WebSearch"
-					m.streamChan <- streamEvent{
-						phase:      phase,
-						webSearch:  isSearch,
-						toolStart:  true,
-						toolCallID: event.ToolCallID,
-						toolName:   event.ToolName,
-						toolInfo:   event.ToolInfo,
-					}
-				case llm.EventToolExecEnd:
-					// Skip tool indicator for ask_user - it has its own UI
-					if event.ToolName == tools.AskUserToolName {
-						continue
-					}
-					m.streamChan <- streamEvent{
-						toolEnd:     true,
-						toolCallID:  event.ToolCallID,
-						toolName:    event.ToolName,
-						toolInfo:    event.ToolInfo,
-						toolSuccess: event.ToolSuccess,
-					}
-				case llm.EventRetry:
-					status := fmt.Sprintf("Rate limited (%d/%d), waiting %.0fs...",
-						event.RetryAttempt, event.RetryMaxAttempts, event.RetryWaitSecs)
-					m.streamChan <- streamEvent{retryStatus: status}
-				case llm.EventUsage:
-					if event.Use != nil {
-						totalTokens = event.Use.OutputTokens
-						m.streamChan <- streamEvent{inputTokens: event.Use.InputTokens, outputTokens: event.Use.OutputTokens, cachedTokens: event.Use.CachedInputTokens}
-					}
-				}
-			}
+			// ProcessStream handles all events and closes the channel when done
+			adapter.ProcessStream(ctx, stream)
 		}()
 
 		// Return initial listen command
@@ -1058,14 +992,14 @@ func (m *Model) listenForStreamEvents() tea.Cmd {
 // listenForStreamEventsSync synchronously waits for the next stream event
 func (m *Model) listenForStreamEventsSync() tea.Msg {
 	if m.streamChan == nil {
-		return streamEventMsg{done: true}
+		return streamEventMsg{event: ui.DoneEvent(0)}
 	}
 
 	event, ok := <-m.streamChan
 	if !ok {
-		return streamEventMsg{done: true}
+		return streamEventMsg{event: ui.DoneEvent(0)}
 	}
-	return streamEventMsg(event)
+	return streamEventMsg{event: event}
 }
 
 func (m *Model) buildMessages() []llm.Message {
@@ -1151,6 +1085,10 @@ func (m *Model) renderMd(text string, width int) string {
 	return m.renderMarkdown(text)
 }
 
+// maxViewLines is the maximum number of lines to keep in View().
+// Content beyond this is printed to scrollback to prevent scroll issues.
+const maxViewLines = 8
+
 // maybeFlushToScrollback checks if content exceeds maxViewLines and prints
 // excess to scrollback, keeping View() small to avoid terminal scroll issues.
 func (m *Model) maybeFlushToScrollback() tea.Cmd {
@@ -1158,25 +1096,12 @@ func (m *Model) maybeFlushToScrollback() tea.Cmd {
 		return nil
 	}
 
-	// Render current completed content
-	completed := m.tracker.CompletedSegments()
-	content := ui.RenderSegments(completed, m.width, -1, m.renderMd)
-	totalLines := strings.Count(content, "\n")
-
-	// If content exceeds threshold, print excess to scrollback
-	// Use same threshold as ask command (8 lines)
-	const maxViewLines = 8
-	if totalLines > maxViewLines+m.printedLines {
-		// Find split point - print all but last maxViewLines
-		lines := strings.Split(content, "\n")
-		splitAt := len(lines) - maxViewLines
-		if splitAt > m.printedLines {
-			// Print lines from printedLines to splitAt
-			toPrint := strings.Join(lines[m.printedLines:splitAt], "\n")
-			m.printedLines = splitAt
-			return tea.Println(toPrint)
-		}
+	result := m.tracker.FlushToScrollback(m.width, m.printedLines, maxViewLines, m.renderMd)
+	if result.ToPrint != "" {
+		m.printedLines = result.NewPrintedLines
+		return tea.Println(result.ToPrint)
 	}
+	m.printedLines = result.NewPrintedLines
 	return nil
 }
 

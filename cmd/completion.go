@@ -154,6 +154,20 @@ func ToolsFlagCompletion(cmd *cobra.Command, args []string, toComplete string) (
 	return completions, cobra.ShellCompDirectiveNoFileComp | cobra.ShellCompDirectiveNoSpace
 }
 
+// UsageProviderFlagCompletion handles --provider flag completion for the usage command.
+// Returns the specific providers that the usage command supports.
+func UsageProviderFlagCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	// Include aliases (claude, gemini) that are accepted by the usage command
+	providers := []string{"claude-code", "claude", "copilot", "gemini-cli", "gemini", "term-llm", "all"}
+	var completions []string
+	for _, p := range providers {
+		if strings.HasPrefix(p, toComplete) {
+			completions = append(completions, p)
+		}
+	}
+	return completions, cobra.ShellCompDirectiveNoFileComp
+}
+
 // ExtractAgentFromArgs checks args for @agent-name syntax and returns the agent name
 // and filtered args. Returns empty string if no @agent found.
 func ExtractAgentFromArgs(args []string) (agentName string, filteredArgs []string) {

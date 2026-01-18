@@ -27,8 +27,9 @@ func getMaxTurns(req Request) int {
 
 // Engine orchestrates provider calls and external tool execution.
 type Engine struct {
-	provider Provider
-	tools    *ToolRegistry
+	provider    Provider
+	tools       *ToolRegistry
+	debugLogger *DebugLogger
 }
 
 func NewEngine(provider Provider, tools *ToolRegistry) *Engine {
@@ -54,6 +55,11 @@ func (e *Engine) UnregisterTool(name string) {
 // Tools returns the engine's tool registry.
 func (e *Engine) Tools() *ToolRegistry {
 	return e.tools
+}
+
+// SetDebugLogger sets the debug logger for this engine.
+func (e *Engine) SetDebugLogger(logger *DebugLogger) {
+	e.debugLogger = logger
 }
 
 // Stream returns a stream, applying external tools when needed.
@@ -107,19 +113,32 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 
 	if useLoop {
 		req.Tools = append(req.Tools, externalTools...)
+
+		// Log request after tool injection so debug logs reflect actual tools sent
+		if e.debugLogger != nil {
+			e.debugLogger.LogRequest(e.provider.Name(), req.Model, req)
+		}
+
 		stream := newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
 			return e.runLoop(ctx, req, events, isExternalSearch)
 		})
-		return wrapLoggingStream(stream, e.provider.Name(), req.Model), nil
+		stream = wrapLoggingStream(stream, e.provider.Name(), req.Model)
+		return e.wrapDebugLoggingStream(stream), nil
 	}
 
 	// 3. Simple stream (no tools or no provider support for tools)
+	// Log request for non-agentic requests too
+	if e.debugLogger != nil {
+		e.debugLogger.LogRequest(e.provider.Name(), req.Model, req)
+	}
+
 	stream, err := e.provider.Stream(ctx, req)
 	if err != nil {
 		return nil, err
 	}
 	stream = WrapDebugStream(req.DebugRaw, stream)
-	return wrapLoggingStream(stream, e.provider.Name(), req.Model), nil
+	stream = wrapLoggingStream(stream, e.provider.Name(), req.Model)
+	return e.wrapDebugLoggingStream(stream), nil
 }
 
 func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event, isExternalSearch bool) error {
@@ -147,6 +166,13 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event, 
 			// Ensure we are in Auto mode for follow-up turns in the loop
 			// unless we are in the very first turn of a non-search request
 			req.ToolChoice = ToolChoice{Mode: ToolChoiceAuto}
+		}
+
+		// Log per-turn request state
+		// For attempt 0: captures state after applyExternalSearch modifications
+		// For attempt > 0: captures tool results appended in previous turn
+		if e.debugLogger != nil {
+			e.debugLogger.LogTurnRequest(attempt, e.provider.Name(), req.Model, req)
 		}
 
 		if req.DebugRaw {
@@ -558,4 +584,33 @@ func wrapLoggingStream(inner Stream, providerName, model string) Stream {
 		model:           model,
 		trackedExternal: usage.GetTrackedExternallyBy(providerName),
 	}
+}
+
+// wrapDebugLoggingStream wraps a stream with debug logging if enabled
+func (e *Engine) wrapDebugLoggingStream(inner Stream) Stream {
+	if e.debugLogger == nil {
+		return inner
+	}
+	return &debugLoggingStream{
+		inner:  inner,
+		logger: e.debugLogger,
+	}
+}
+
+// debugLoggingStream wraps a stream to log events for debugging
+type debugLoggingStream struct {
+	inner  Stream
+	logger *DebugLogger
+}
+
+func (s *debugLoggingStream) Recv() (Event, error) {
+	event, err := s.inner.Recv()
+	if err == nil {
+		s.logger.LogEvent(event)
+	}
+	return event, err
+}
+
+func (s *debugLoggingStream) Close() error {
+	return s.inner.Close()
 }

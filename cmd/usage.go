@@ -52,6 +52,9 @@ func init() {
 	usageCmd.Flags().BoolVar(&usageJSON, "json", false, "Output as JSON")
 	usageCmd.Flags().BoolVar(&usageBreakdown, "breakdown", false, "Show per-model breakdown")
 	usageCmd.Flags().BoolVar(&usageIncludeExternal, "include-external", false, "Include externally-tracked term-llm usage (claude-bin, codex, gemini-cli calls)")
+	if err := usageCmd.RegisterFlagCompletionFunc("provider", UsageProviderFlagCompletion); err != nil {
+		panic("failed to register provider completion: " + err.Error())
+	}
 }
 
 func runUsage(cmd *cobra.Command, args []string) error {
@@ -359,18 +362,6 @@ func formatCost(cost float64) string {
 	return fmt.Sprintf("$%.2f", cost)
 }
 
-// truncateModels returns the first n models with shortened names
-func truncateModels(models []string, n int) []string {
-	result := make([]string, 0, min(len(models), n))
-	for i, m := range models {
-		if i >= n {
-			break
-		}
-		result = append(result, shortenModelName(m))
-	}
-	return result
-}
-
 // shortenModelName shortens common model names
 func shortenModelName(name string) string {
 	// Remove common prefixes
@@ -398,14 +389,6 @@ func shortenModelName(name string) string {
 	}
 
 	return name
-}
-
-// truncateString truncates a string to n characters
-func truncateString(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n-3] + "..."
 }
 
 // formatProviderName returns a human-friendly provider name
@@ -481,10 +464,7 @@ func runCopilotUsage() error {
 	// Reset date
 	if !usageData.ResetDate.IsZero() {
 		now := time.Now()
-		daysUntilReset := int(usageData.ResetDate.Sub(now).Hours() / 24)
-		if daysUntilReset < 0 {
-			daysUntilReset = 0
-		}
+		daysUntilReset := max(int(usageData.ResetDate.Sub(now).Hours()/24), 0)
 		fmt.Printf("\nResets: %s (%d days)\n", usageData.ResetDate.Format("Jan 2, 2006"), daysUntilReset)
 	}
 
@@ -500,10 +480,7 @@ func printQuotaBar(q *llm.CopilotQuota) {
 
 	// Progress bar
 	barWidth := 30
-	filledWidth := int(float64(barWidth) * pctUsed / 100)
-	if filledWidth > barWidth {
-		filledWidth = barWidth
-	}
+	filledWidth := min(int(float64(barWidth)*pctUsed/100), barWidth)
 
 	bar := strings.Repeat("█", filledWidth) + strings.Repeat("░", barWidth-filledWidth)
 
