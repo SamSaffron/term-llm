@@ -212,3 +212,21 @@ func (s *SessionSettings) SetupToolManager(cfg *config.Config, engine *llm.Engin
 	toolMgr.SetupEngine(engine)
 	return toolMgr, nil
 }
+
+// WireSpawnAgentRunner sets up the spawn_agent runner if the tool is enabled.
+// This should be called after SetupToolManager.
+func WireSpawnAgentRunner(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool) error {
+	if toolMgr == nil {
+		return nil
+	}
+	spawnTool := toolMgr.GetSpawnAgentTool()
+	if spawnTool == nil {
+		return nil
+	}
+	runner, err := NewSpawnAgentRunner(cfg, yoloMode)
+	if err != nil {
+		return fmt.Errorf("setup spawn_agent: %w", err)
+	}
+	spawnTool.SetRunner(runner)
+	return nil
+}

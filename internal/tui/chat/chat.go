@@ -53,6 +53,9 @@ type Model struct {
 	// Streaming channels
 	streamChan <-chan ui.StreamEvent
 
+	// External UI state
+	pausedForExternalUI bool // True when paused for ask_user or approval prompts
+
 	// LLM context
 	provider     llm.Provider
 	engine       *llm.Engine
@@ -111,6 +114,15 @@ type (
 type FlushBeforeAskUserMsg struct {
 	Done chan<- struct{} // Signal when flush is complete
 }
+
+// FlushBeforeApprovalMsg signals the TUI to flush content to scrollback
+// before releasing the terminal for approval prompts.
+type FlushBeforeApprovalMsg struct {
+	Done chan<- struct{} // Signal when flush is complete
+}
+
+// ResumeFromExternalUIMsg signals that external UI (ask_user/approval) is done
+type ResumeFromExternalUIMsg struct{}
 
 // Use ui.WaveTickMsg and ui.WavePauseMsg from the shared ToolTracker
 
@@ -400,6 +412,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.showSystemMessage("Copied last response to clipboard.")
 
 	case FlushBeforeAskUserMsg:
+		// Set flag to suppress spinner in View() while external UI is active
+		m.pausedForExternalUI = true
+
 		// Flush all completed content to scrollback before ask_user takes over terminal
 		if m.tracker != nil {
 			// Mark current text as complete
@@ -424,6 +439,40 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Nothing to flush, signal done immediately
 		close(msg.Done)
 		return m, nil
+
+	case FlushBeforeApprovalMsg:
+		// Set flag to suppress spinner in View() while approval UI is active
+		m.pausedForExternalUI = true
+
+		// Flush all completed content to scrollback before approval takes over terminal
+		if m.tracker != nil {
+			// Mark current text as complete
+			m.tracker.MarkCurrentTextComplete(func(text string) string {
+				return m.renderMarkdown(text)
+			})
+
+			// Flush all remaining content
+			result := m.tracker.FlushAllRemaining(m.width, m.printedLines, m.renderMd)
+			if result.ToPrint != "" {
+				m.printedLines = result.NewPrintedLines
+				// Signal that flush is complete after the print finishes
+				return m, tea.Sequence(
+					tea.Println(result.ToPrint),
+					func() tea.Msg {
+						close(msg.Done)
+						return nil
+					},
+				)
+			}
+		}
+		// Nothing to flush, signal done immediately
+		close(msg.Done)
+		return m, nil
+
+	case ResumeFromExternalUIMsg:
+		// Resume from external UI (ask_user or approval)
+		m.pausedForExternalUI = false
+		return m, m.spinner.Tick
 	}
 
 	// Update textarea if not streaming
@@ -1169,29 +1218,31 @@ func (m *Model) renderStreamingInline() string {
 		b.WriteString("\n")
 	}
 
-	// Always show the indicator with current phase
-	wavePos := 0
-	if m.tracker != nil {
-		wavePos = m.tracker.WavePos
-	}
-	indicator := ui.StreamingIndicator{
-		Spinner:        m.spinner.View(),
-		Phase:          m.phase,
-		Elapsed:        time.Since(m.streamStartTime),
-		Tokens:         m.currentTokens,
-		ShowCancel:     true,
-		Segments:       active,
-		WavePos:        wavePos,
-		Width:          m.width,
-		RenderMarkdown: m.renderMd,
-	}
-	b.WriteString(indicator.Render(m.styles))
-	b.WriteString("\n")
-
-	// Retry status if present (shown as warning on separate line)
-	if m.retryStatus != "" {
-		b.WriteString(lipgloss.NewStyle().Foreground(m.styles.Theme().Warning).Render("⚠ " + m.retryStatus))
+	// Show the indicator with current phase, unless paused for external UI
+	if !m.pausedForExternalUI {
+		wavePos := 0
+		if m.tracker != nil {
+			wavePos = m.tracker.WavePos
+		}
+		indicator := ui.StreamingIndicator{
+			Spinner:        m.spinner.View(),
+			Phase:          m.phase,
+			Elapsed:        time.Since(m.streamStartTime),
+			Tokens:         m.currentTokens,
+			ShowCancel:     true,
+			Segments:       active,
+			WavePos:        wavePos,
+			Width:          m.width,
+			RenderMarkdown: m.renderMd,
+		}
+		b.WriteString(indicator.Render(m.styles))
 		b.WriteString("\n")
+
+		// Retry status if present (shown as warning on separate line)
+		if m.retryStatus != "" {
+			b.WriteString(lipgloss.NewStyle().Foreground(m.styles.Theme().Warning).Render("⚠ " + m.retryStatus))
+			b.WriteString("\n")
+		}
 	}
 
 	return b.String()

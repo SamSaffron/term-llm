@@ -87,6 +87,9 @@ func (r *LocalToolRegistry) registerTool(specName string) error {
 		tool = NewImageGenerateTool(r.approval, r.appConfig, r.config.ImageProvider)
 	case AskUserToolName:
 		tool = NewAskUserTool()
+	case SpawnAgentToolName:
+		// SpawnAgentTool requires a runner to be set later via SetRunner
+		tool = NewSpawnAgentTool(r.config.Spawn, 0)
 	default:
 		return NewToolErrorf(ErrInvalidParams, "unimplemented tool: %s", specName)
 	}
@@ -195,4 +198,21 @@ func (m *ToolManager) SetupEngine(engine *llm.Engine) {
 // GetSpecs returns all tool specs for the request.
 func (m *ToolManager) GetSpecs() []llm.ToolSpec {
 	return m.Registry.GetSpecs()
+}
+
+// GetSpawnAgentTool returns the spawn_agent tool if enabled, for runner configuration.
+func (m *ToolManager) GetSpawnAgentTool() *SpawnAgentTool {
+	return m.Registry.GetSpawnAgentTool()
+}
+
+// GetSpawnAgentTool returns the spawn_agent tool if enabled.
+func (r *LocalToolRegistry) GetSpawnAgentTool() *SpawnAgentTool {
+	tool, ok := r.tools[SpawnAgentToolName]
+	if !ok {
+		return nil
+	}
+	if spawnTool, ok := tool.(*SpawnAgentTool); ok {
+		return spawnTool
+	}
+	return nil
 }

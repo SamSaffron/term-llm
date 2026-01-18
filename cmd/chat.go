@@ -164,6 +164,14 @@ func runChat(cmd *cobra.Command, args []string) error {
 	}
 	if toolMgr != nil {
 		// PromptUIFunc will be set up below after tea.Program is created
+
+		// Wire spawn_agent runner if enabled
+		if err := WireSpawnAgentRunner(cfg, toolMgr, false); err != nil {
+			if debugLogger != nil {
+				debugLogger.Close()
+			}
+			return err
+		}
 	}
 
 	// Store resolved instructions in config for chat TUI
@@ -205,9 +213,17 @@ func runChat(cmd *cobra.Command, args []string) error {
 	// Set up the improved approval UI with git-aware heuristics
 	if toolMgr != nil {
 		toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (tools.ApprovalResult, error) {
-			// Pause the TUI first
+			// Flush content and suppress spinner before releasing terminal
+			done := make(chan struct{})
+			p.Send(chat.FlushBeforeApprovalMsg{Done: done})
+			<-done
+
+			// Pause the TUI
 			p.ReleaseTerminal()
-			defer p.RestoreTerminal()
+			defer func() {
+				p.RestoreTerminal()
+				p.Send(chat.ResumeFromExternalUIMsg{})
+			}()
 
 			// Run the appropriate approval UI
 			if isShell {
@@ -223,6 +239,12 @@ func runChat(cmd *cobra.Command, args []string) error {
 		p.Send(chat.FlushBeforeAskUserMsg{Done: done})
 		<-done
 	})
+	// Wrap end hook to also send resume message after terminal is restored
+	originalEnd := end
+	end = func() {
+		originalEnd()
+		p.Send(chat.ResumeFromExternalUIMsg{})
+	}
 	tools.SetAskUserHooks(start, end)
 	defer tools.ClearAskUserHooks()
 

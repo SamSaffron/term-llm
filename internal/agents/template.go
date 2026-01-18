@@ -39,24 +39,30 @@ type TemplateContext struct {
 
 	// Agent context
 	ResourceDir string // Directory containing agent resources (for builtin agents)
+
+	// Project agent instructions (dynamically discovered)
+	// Searches in priority order: AGENTS.md, CLAUDE.md, .github/copilot-instructions.md,
+	// .cursor/rules, CONTRIBUTING.md - returns first found
+	Agents string
 }
 
 // NewTemplateContext creates a context with current environment values.
 // Deprecated: Use NewTemplateContextForTemplate instead to avoid expensive operations
 // when template variables are not used.
 func NewTemplateContext() TemplateContext {
-	return newTemplateContext(true)
+	return newTemplateContext(true, true)
 }
 
 // NewTemplateContextForTemplate creates a context, only computing expensive values
-// (like git_diff_stat) if they are actually used in the template.
+// (like git_diff_stat, agents) if they are actually used in the template.
 func NewTemplateContextForTemplate(template string) TemplateContext {
 	needsGitDiffStat := strings.Contains(template, "{{git_diff_stat}}")
-	return newTemplateContext(needsGitDiffStat)
+	needsAgents := strings.Contains(template, "{{agents}}")
+	return newTemplateContext(needsGitDiffStat, needsAgents)
 }
 
 // newTemplateContext creates a context with optional expensive computations.
-func newTemplateContext(computeGitDiffStat bool) TemplateContext {
+func newTemplateContext(computeGitDiffStat, computeAgents bool) TemplateContext {
 	now := time.Now()
 
 	ctx := TemplateContext{
@@ -90,6 +96,11 @@ func newTemplateContext(computeGitDiffStat bool) TemplateContext {
 	// Only compute git diff stat if needed (expensive: runs two git commands)
 	if computeGitDiffStat {
 		ctx.GitDiffStat = getGitDiffStat()
+	}
+
+	// Only discover agent instructions if needed (reads files from disk)
+	if computeAgents {
+		ctx.Agents = discoverAgentInstructions()
 	}
 
 	return ctx
@@ -158,6 +169,8 @@ func ExpandTemplate(text string, ctx TemplateContext) string {
 			return ctx.OS
 		case "resource_dir":
 			return ctx.ResourceDir
+		case "agents":
+			return ctx.Agents
 		default:
 			// Unknown variables are left as-is
 			return match
@@ -229,4 +242,73 @@ func itoa(n int) string {
 		digits = append([]byte{'-'}, digits...)
 	}
 	return string(digits)
+}
+
+// agentInstructionFiles lists files to search for in priority order.
+// Returns content from the first file found.
+var agentInstructionFiles = []string{
+	"AGENTS.md",                       // Emerging standard (Linux Foundation)
+	"CLAUDE.md",                       // Claude Code specific
+	".github/copilot-instructions.md", // GitHub Copilot
+	".cursor/rules",                   // Cursor
+	"CONTRIBUTING.md",                 // General contribution guidelines
+	".github/CONTRIBUTING.md",         // GitHub-style location
+}
+
+// discoverAgentInstructions searches for project agent instruction files.
+// First checks the current directory, then walks up to the git root (if any).
+// Returns the content of the first file found, with a header indicating the source.
+// Returns empty string if no files are found.
+func discoverAgentInstructions() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+
+	// Build list of directories to search: cwd first, then walk up to git root
+	dirsToSearch := []string{cwd}
+
+	// Find git root if we're in a repo
+	gitRoot := findGitRoot(cwd)
+	if gitRoot != "" && gitRoot != cwd {
+		// Walk up from cwd to git root, adding each directory
+		dir := filepath.Dir(cwd)
+		for dir != gitRoot && strings.HasPrefix(dir, gitRoot) {
+			dirsToSearch = append(dirsToSearch, dir)
+			dir = filepath.Dir(dir)
+		}
+		// Add git root last
+		dirsToSearch = append(dirsToSearch, gitRoot)
+	}
+
+	// Search each directory for instruction files
+	for _, dir := range dirsToSearch {
+		for _, filename := range agentInstructionFiles {
+			path := filepath.Join(dir, filename)
+			content, err := os.ReadFile(path)
+			if err == nil && len(content) > 0 {
+				// Return with a header indicating the source
+				relPath := filename
+				if dir != cwd {
+					if rel, err := filepath.Rel(cwd, path); err == nil {
+						relPath = rel
+					}
+				}
+				return "# Project Instructions (from " + relPath + ")\n\n" + string(content)
+			}
+		}
+	}
+
+	return "" // No agent instruction files found
+}
+
+// findGitRoot returns the git repository root for the given path, or empty string if not in a repo.
+func findGitRoot(path string) string {
+	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	cmd.Dir = path
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
 }

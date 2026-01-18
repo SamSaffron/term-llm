@@ -16,6 +16,7 @@ const (
 	KindExecute     ToolKind = "execute"
 	KindImage       ToolKind = "image"
 	KindInteractive ToolKind = "interactive"
+	KindAgent       ToolKind = "agent" // For spawn_agent tool
 )
 
 // MutatorKinds are tool kinds that can modify the filesystem.
@@ -121,6 +122,7 @@ const (
 	ShowImageToolName     = "show_image"
 	ImageGenerateToolName = "image_generate"
 	AskUserToolName       = "ask_user"
+	SpawnAgentToolName    = "spawn_agent"
 )
 
 // AllToolNames returns all valid tool spec names.
@@ -136,6 +138,7 @@ func AllToolNames() []string {
 		ShowImageToolName,
 		ImageGenerateToolName,
 		AskUserToolName,
+		SpawnAgentToolName,
 	}
 }
 
@@ -151,6 +154,7 @@ var validToolNames = map[string]bool{
 	ShowImageToolName:     true,
 	ImageGenerateToolName: true,
 	AskUserToolName:       true,
+	SpawnAgentToolName:    true,
 }
 
 // ValidToolName checks if a name is a valid tool spec name.
@@ -173,6 +177,8 @@ func GetToolKind(specName string) ToolKind {
 		return KindImage
 	case AskUserToolName:
 		return KindInteractive
+	case SpawnAgentToolName:
+		return KindAgent
 	default:
 		return ""
 	}

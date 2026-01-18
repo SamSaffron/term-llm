@@ -63,9 +63,26 @@ mcp:
 **system.md** - System prompt with optional template variables:
 - `{{date}}`, `{{datetime}}`, `{{time}}`, `{{year}}`
 - `{{cwd}}`, `{{cwd_name}}`, `{{home}}`, `{{user}}`
-- `{{git_branch}}`, `{{git_repo}}`
+- `{{git_branch}}`, `{{git_repo}}`, `{{git_diff_stat}}`
 - `{{files}}`, `{{file_count}}` (from -f flags)
 - `{{os}}`, `{{resource_dir}}`
+- `{{agents}}` - Auto-discovers project instructions (AGENTS.md, CLAUDE.md, etc.)
+
+**The `{{agents}}` variable** searches in priority order and returns the first found:
+1. AGENTS.md (emerging standard)
+2. CLAUDE.md (Claude-specific)
+3. .github/copilot-instructions.md
+4. .cursor/rules
+5. CONTRIBUTING.md
+
+**Additional .md files** - Include reference material:
+```yaml
+# In agent.yaml
+include:
+  - reference.md      # Appended to system.md
+  - guidelines.md     # Multiple files supported
+```
+Files are loaded from the agent directory and appended after system.md with `---` separators.
 
 ## Available Tools for Agents
 

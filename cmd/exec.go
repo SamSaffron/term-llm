@@ -36,6 +36,8 @@ var (
 	execWriteDirs     []string
 	execShellAllow    []string
 	execSystemMessage string
+	// Yolo mode
+	execYolo bool
 )
 
 const (
@@ -83,6 +85,7 @@ func init() {
 	execCmd.Flags().BoolVar(&execPrintOnly, "print-only", false, "Print command instead of executing")
 	execCmd.Flags().BoolVarP(&execAutoPick, "auto-pick", "a", false, "Auto-execute the best suggestion without prompting")
 	execCmd.Flags().IntVarP(&execMaxOpts, "max", "n", 0, "Maximum number of options to show (0 = no limit)")
+	AddYoloFlag(execCmd, &execYolo)
 
 	// Additional completions
 	if err := execCmd.RegisterFlagCompletionFunc("tools", ToolsFlagCompletion); err != nil {
@@ -135,9 +138,18 @@ func runExec(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to initialize tools: %w", err)
 		}
+		// Enable yolo mode if flag is set
+		if execYolo {
+			toolMgr.ApprovalMgr.SetYoloMode(true)
+		}
 		toolMgr.ApprovalMgr.PromptFunc = tools.HuhApprovalPrompt
 		toolMgr.SetupEngine(engine)
 		localToolSpecs = toolMgr.GetSpecs()
+
+		// Wire spawn_agent runner if enabled
+		if err := WireSpawnAgentRunner(cfg, toolMgr, execYolo); err != nil {
+			return err
+		}
 	}
 
 	// Initialize MCP servers if --mcp flag is set

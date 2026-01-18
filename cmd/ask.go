@@ -43,6 +43,8 @@ var (
 	askSystemMessage string
 	// Agent flag
 	askAgent string
+	// Yolo mode
+	askYolo bool
 )
 
 var askCmd = &cobra.Command{
@@ -92,6 +94,7 @@ func init() {
 
 	// Ask-specific flags
 	askCmd.Flags().BoolVarP(&askText, "text", "t", false, "Output plain text instead of rendered markdown")
+	AddYoloFlag(askCmd, &askYolo)
 
 	// Additional completions
 	if err := askCmd.RegisterFlagCompletionFunc("tools", ToolsFlagCompletion); err != nil {
@@ -220,8 +223,17 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to initialize tools: %w", err)
 		}
+		// Enable yolo mode if flag is set
+		if askYolo {
+			toolMgr.ApprovalMgr.SetYoloMode(true)
+		}
 		// PromptFunc is set in streamWithGlamour to use bubbletea UI
 		toolMgr.SetupEngine(engine)
+
+		// Wire spawn_agent runner if enabled
+		if err := WireSpawnAgentRunner(cfg, toolMgr, askYolo); err != nil {
+			return err
+		}
 	}
 
 	// Determine MCP servers: CLI > agent
@@ -347,9 +359,17 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 		// Set up the improved approval UI with git-aware heuristics
 		toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (tools.ApprovalResult, error) {
-			// Pause the TUI first
+			// Flush content and suppress spinner before releasing terminal
+			done := make(chan struct{})
+			teaProgram.Send(askFlushBeforeApprovalMsg{Done: done})
+			<-done
+
+			// Pause the TUI
 			teaProgram.ReleaseTerminal()
-			defer teaProgram.RestoreTerminal()
+			defer func() {
+				teaProgram.RestoreTerminal()
+				teaProgram.Send(askResumeFromExternalUIMsg{})
+			}()
 
 			// Run the appropriate approval UI
 			if isShell {
@@ -364,6 +384,12 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			teaProgram.Send(askFlushBeforeAskUserMsg{Done: done})
 			<-done // Wait for flush to complete
 		})
+		// Wrap end hook to also send resume message after terminal is restored
+		originalEnd := end
+		end = func() {
+			originalEnd()
+			teaProgram.Send(askResumeFromExternalUIMsg{})
+		}
 		tools.SetAskUserHooks(start, end)
 	} else if toolMgr != nil {
 		// Non-TUI mode: set up approval UI directly (no tea.Program to pause)
@@ -555,6 +581,9 @@ type askStreamModel struct {
 	totalTokens int       // Total tokens (input + output) used
 	phase       string    // Current engine phase (Thinking, Searching, etc.)
 
+	// External UI state
+	pausedForExternalUI bool // True when paused for ask_user or approval prompts
+
 	// Approval prompt state (using huh form)
 	approvalForm       *huh.Form
 	approvalDesc       string
@@ -588,6 +617,10 @@ type askPhaseMsg string
 type askFlushBeforeAskUserMsg struct {
 	Done chan<- struct{} // Signal when flush is complete
 }
+type askFlushBeforeApprovalMsg struct {
+	Done chan<- struct{} // Signal when flush is complete
+}
+type askResumeFromExternalUIMsg struct{}
 type askApprovalRequestMsg struct {
 	Description string
 	ToolName    string
@@ -760,6 +793,9 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case askFlushBeforeAskUserMsg:
+		// Set flag to suppress spinner in View() while external UI is active
+		m.pausedForExternalUI = true
+
 		// Flush all completed content to scrollback before ask_user takes over terminal
 		completed := m.tracker.CompletedSegments()
 		content := ui.RenderSegments(completed, m.width, -1, renderMd)
@@ -780,6 +816,36 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return nil
 		})
 		return m, tea.Sequence(cmds...)
+
+	case askFlushBeforeApprovalMsg:
+		// Set flag to suppress spinner in View() while approval UI is active
+		m.pausedForExternalUI = true
+
+		// Flush all completed content to scrollback before approval takes over terminal
+		completed := m.tracker.CompletedSegments()
+		content := ui.RenderSegments(completed, m.width, -1, renderMd)
+
+		var cmds []tea.Cmd
+		if content != "" {
+			lines := ui.SplitLines(content)
+			if m.printedLines < len(lines) {
+				toPrint := ui.JoinLines(lines[m.printedLines:])
+				m.printedLines = len(lines)
+				cmds = append(cmds, tea.Println(toPrint))
+			}
+		}
+
+		// Signal that flush is complete (use a command to ensure tea.Println finishes first)
+		cmds = append(cmds, func() tea.Msg {
+			close(msg.Done)
+			return nil
+		})
+		return m, tea.Sequence(cmds...)
+
+	case askResumeFromExternalUIMsg:
+		// Resume from external UI (ask_user or approval)
+		m.pausedForExternalUI = false
+		return m, m.spinner.Tick
 
 	case askToolStartMsg:
 		m.retryStatus = ""
@@ -880,8 +946,8 @@ func (m askStreamModel) View() string {
 	}
 
 	// Show spinner when idle (no activity for >1s) or when tools are active
-	// Don't show spinner when done - we're about to quit
-	if !m.done && (len(active) > 0 || m.tracker.IsIdle(time.Second)) {
+	// Don't show spinner when done or paused for external UI (ask_user/approval)
+	if !m.done && !m.pausedForExternalUI && (len(active) > 0 || m.tracker.IsIdle(time.Second)) {
 		if b.Len() > 0 {
 			b.WriteString("\n\n")
 		}

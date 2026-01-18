@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"golang.org/x/term"
 )
 
 // ApprovalCache provides session-scoped caching for tool+path decisions.
@@ -178,6 +180,15 @@ type ApprovalManager struct {
 	projectCache map[string]*ProjectApprovals // repo root -> approvals
 	projectMu    sync.Mutex
 
+	// promptMu serializes interactive approval prompts.
+	// When tools execute in parallel, multiple may need approval simultaneously.
+	// This mutex ensures only one prompt is shown at a time to avoid UI conflicts.
+	promptMu sync.Mutex
+
+	// YoloMode when true, auto-approves all tool executions without prompting.
+	// Intended for CI/container environments where interactive approval isn't possible.
+	YoloMode bool
+
 	// Callback for prompting user (set by TUI or CLI)
 	// Legacy callback - will be replaced by PromptUIFunc
 	PromptFunc func(req *ApprovalRequest) (ConfirmOutcome, string)
@@ -196,6 +207,16 @@ func NewApprovalManager(perms *ToolPermissions) *ApprovalManager {
 		shellCache:   NewShellApprovalCache(),
 		permissions:  perms,
 		projectCache: make(map[string]*ProjectApprovals),
+	}
+}
+
+// SetYoloMode enables or disables yolo mode and prints a warning when enabled.
+// Yolo mode auto-approves all tool executions without prompting.
+func (m *ApprovalManager) SetYoloMode(enabled bool) {
+	m.YoloMode = enabled
+	if enabled && term.IsTerminal(int(os.Stderr.Fd())) {
+		fmt.Fprintf(os.Stderr, "⚠️  WARNING: Yolo mode enabled - all tool operations will be auto-approved without prompting.\n")
+		fmt.Fprintf(os.Stderr, "   This includes shell commands and file modifications. Use only in trusted environments.\n")
 	}
 }
 
@@ -227,6 +248,11 @@ func (m *ApprovalManager) getProjectApprovals(path string) *ProjectApprovals {
 // for one tool allows all tools to access files within it.
 // toolInfo is optional context for display (e.g., filename being accessed).
 func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isWrite bool) (ConfirmOutcome, error) {
+	// 0. Yolo mode - auto-approve everything
+	if m.YoloMode {
+		return ProceedOnce, nil
+	}
+
 	// 1. Check pre-approved allowlist first (--read-dir / --write-dir flags)
 	var allowed bool
 	var err error
@@ -261,7 +287,11 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 		return ProceedAlways, nil
 	}
 
-	// 4. Need to prompt user - try new UI first, then fall back to legacy
+	// 4. Need to prompt user - serialize prompts to avoid UI conflicts
+	m.promptMu.Lock()
+	defer m.promptMu.Unlock()
+
+	// Try new UI first, then fall back to legacy
 	if m.PromptUIFunc != nil {
 		result, err := m.PromptUIFunc(absPath, isWrite, false)
 		if err != nil {
@@ -373,6 +403,11 @@ func getDirectoryForApproval(path string) string {
 
 // CheckShellApproval checks if a shell command is approved.
 func (m *ApprovalManager) CheckShellApproval(command string) (ConfirmOutcome, error) {
+	// Yolo mode - auto-approve everything
+	if m.YoloMode {
+		return ProceedOnce, nil
+	}
+
 	// Check pre-approved patterns
 	if m.permissions.IsShellCommandAllowed(command) {
 		return ProceedOnce, nil
@@ -392,7 +427,11 @@ func (m *ApprovalManager) CheckShellApproval(command string) (ConfirmOutcome, er
 		return ProceedAlways, nil
 	}
 
-	// Need to prompt - try new UI first, then fall back to legacy
+	// Need to prompt - serialize prompts to avoid UI conflicts
+	m.promptMu.Lock()
+	defer m.promptMu.Unlock()
+
+	// Try new UI first, then fall back to legacy
 	if m.PromptUIFunc != nil {
 		result, err := m.PromptUIFunc(command, false, true)
 		if err != nil {

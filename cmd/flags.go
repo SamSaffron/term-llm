@@ -62,7 +62,7 @@ func AddMaxTurnsFlag(cmd *cobra.Command, dest *int, defaultValue int) {
 
 // AddToolFlags adds tool-related flags (--tools, --read-dir, --write-dir, --shell-allow)
 func AddToolFlags(cmd *cobra.Command, tools *string, readDirs, writeDirs, shellAllow *[]string) {
-	cmd.Flags().StringVar(tools, "tools", "", "Enable local tools (comma-separated, or 'all'): read_file,write_file,edit_file,shell,grep,glob,view_image,show_image,image_generate,ask_user")
+	cmd.Flags().StringVar(tools, "tools", "", "Enable local tools (comma-separated, or 'all'): read_file,write_file,edit_file,shell,grep,glob,view_image,show_image,image_generate,ask_user,spawn_agent")
 	cmd.Flags().StringArrayVar(readDirs, "read-dir", nil, "Directories for read_file/grep/glob/view_image tools (repeatable)")
 	cmd.Flags().StringArrayVar(writeDirs, "write-dir", nil, "Directories for write_file/edit_file tools (repeatable)")
 	cmd.Flags().StringArrayVar(shellAllow, "shell-allow", nil, "Shell command patterns to allow (repeatable, glob syntax)")
@@ -84,4 +84,9 @@ func AddAgentFlag(cmd *cobra.Command, dest *string) {
 	if err := cmd.RegisterFlagCompletionFunc("agent", AgentFlagCompletion); err != nil {
 		panic("failed to register agent completion: " + err.Error())
 	}
+}
+
+// AddYoloFlag adds the --yolo flag for auto-approving all tool operations
+func AddYoloFlag(cmd *cobra.Command, dest *bool) {
+	cmd.Flags().BoolVar(dest, "yolo", false, "Auto-approve all tool operations (for CI/container use, bypasses all prompts)")
 }

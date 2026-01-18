@@ -36,6 +36,8 @@ var (
 	editWriteDirs     []string
 	editShellAllow    []string
 	editSystemMessage string
+	// Yolo mode
+	editYolo bool
 )
 
 var editCmd = &cobra.Command{
@@ -79,6 +81,7 @@ func init() {
 	AddMCPFlag(editCmd, &editMCP)
 	AddToolFlags(editCmd, &editTools, &editReadDirs, &editWriteDirs, &editShellAllow)
 	AddSystemMessageFlag(editCmd, &editSystemMessage)
+	AddYoloFlag(editCmd, &editYolo)
 
 	if err := editCmd.MarkFlagRequired("file"); err != nil {
 		panic(fmt.Sprintf("failed to mark file flag required: %v", err))
@@ -156,6 +159,10 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to initialize tools: %w", err)
 		}
+		// Enable yolo mode if flag is set
+		if editYolo {
+			toolMgr.ApprovalMgr.SetYoloMode(true)
+		}
 		// Set up the improved approval UI with git-aware heuristics
 		toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (tools.ApprovalResult, error) {
 			if isShell {
@@ -164,6 +171,11 @@ func runEdit(cmd *cobra.Command, args []string) error {
 			return tools.RunFileApprovalUI(path, isWrite)
 		}
 		toolMgr.SetupEngine(engine)
+
+		// Wire spawn_agent runner if enabled
+		if err := WireSpawnAgentRunner(cfg, toolMgr, editYolo); err != nil {
+			return err
+		}
 	}
 
 	// Initialize MCP servers if --mcp flag is set

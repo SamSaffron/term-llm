@@ -7,6 +7,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/usage"
@@ -257,38 +258,82 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 	return fmt.Errorf("agentic loop ended unexpectedly")
 }
 
+// executeToolCalls executes multiple tool calls, potentially in parallel.
+// Note: When executing in parallel, EventToolExecStart/EventToolExecEnd events
+// are emitted from concurrent goroutines. While the channel is thread-safe, events
+// may arrive in non-deterministic order. Consumers should use ToolCallID to correlate
+// start/end events rather than relying on ordering.
 func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, events chan<- Event, debug bool, debugRaw bool) ([]Message, error) {
-	results := make([]Message, 0, len(calls))
-	for _, call := range calls {
-		tool, ok := e.tools.Get(call.Name)
-		if !ok {
-			errMsg := fmt.Sprintf("Error: tool not registered: %s", call.Name)
-			DebugToolResult(debug, call.ID, call.Name, errMsg)
-			results = append(results, ToolErrorMessage(call.ID, call.Name, errMsg, call.ThoughtSig))
-			if events != nil {
-				events <- Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false}
-			}
-			continue
-		}
-		output, err := tool.Execute(ctx, call.Arguments)
-		info := e.getToolPreview(call)
-		if err != nil {
-			errMsg := fmt.Sprintf("Error: %v", err)
-			DebugToolResult(debug, call.ID, call.Name, errMsg)
-			results = append(results, ToolErrorMessage(call.ID, call.Name, errMsg, call.ThoughtSig))
-			if events != nil {
-				events <- Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info, ToolSuccess: false}
-			}
-			continue
-		}
-		DebugToolResult(debug, call.ID, call.Name, output)
-		DebugRawToolResult(debugRaw, call.ID, call.Name, output)
-		results = append(results, ToolResultMessage(call.ID, call.Name, output, call.ThoughtSig))
-		if events != nil {
-			events <- Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info, ToolSuccess: true}
-		}
+	// Fast path: single call, no concurrency overhead
+	if len(calls) == 1 {
+		return e.executeSingleToolCall(ctx, calls[0], events, debug, debugRaw)
 	}
+
+	// Parallel execution for multiple calls (events may arrive out of order)
+	type toolResult struct {
+		index   int
+		message Message
+	}
+
+	var wg sync.WaitGroup
+	resultChan := make(chan toolResult, len(calls))
+
+	for i, call := range calls {
+		wg.Add(1)
+		go func(idx int, c ToolCall) {
+			defer wg.Done()
+			msgs, _ := e.executeSingleToolCall(ctx, c, events, debug, debugRaw)
+			if len(msgs) > 0 {
+				resultChan <- toolResult{index: idx, message: msgs[0]}
+			}
+		}(i, call)
+	}
+
+	// Close channel when all goroutines complete
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// Collect results and maintain original order
+	results := make([]Message, len(calls))
+	for r := range resultChan {
+		results[r.index] = r.message
+	}
+
 	return results, nil
+}
+
+// executeSingleToolCall executes a single tool call and returns the result message.
+func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, events chan<- Event, debug bool, debugRaw bool) ([]Message, error) {
+	tool, ok := e.tools.Get(call.Name)
+	if !ok {
+		errMsg := fmt.Sprintf("Error: tool not registered: %s", call.Name)
+		DebugToolResult(debug, call.ID, call.Name, errMsg)
+		if events != nil {
+			events <- Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false}
+		}
+		return []Message{ToolErrorMessage(call.ID, call.Name, errMsg, call.ThoughtSig)}, nil
+	}
+
+	output, err := tool.Execute(ctx, call.Arguments)
+	info := e.getToolPreview(call)
+
+	if err != nil {
+		errMsg := fmt.Sprintf("Error: %v", err)
+		DebugToolResult(debug, call.ID, call.Name, errMsg)
+		if events != nil {
+			events <- Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info, ToolSuccess: false}
+		}
+		return []Message{ToolErrorMessage(call.ID, call.Name, errMsg, call.ThoughtSig)}, nil
+	}
+
+	DebugToolResult(debug, call.ID, call.Name, output)
+	DebugRawToolResult(debugRaw, call.ID, call.Name, output)
+	if events != nil {
+		events <- Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info, ToolSuccess: true}
+	}
+	return []Message{ToolResultMessage(call.ID, call.Name, output, call.ThoughtSig)}, nil
 }
 
 func toolCallMessage(calls []ToolCall) Message {

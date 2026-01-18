@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 type sliceStream struct {
@@ -250,4 +252,126 @@ func hasSystemText(messages []Message, text string) bool {
 		}
 	}
 	return false
+}
+
+// delayingTool simulates a slow tool that takes a specified duration
+type delayingTool struct {
+	delay        time.Duration
+	calls        int32
+	startTimes   []time.Time
+	endTimes     []time.Time
+	mu           sync.Mutex
+	concurrentAt int32 // Peak concurrent executions
+	current      int32 // Current concurrent executions
+}
+
+func (t *delayingTool) Spec() ToolSpec {
+	return ToolSpec{
+		Name:        "delay_tool",
+		Description: "A tool that delays",
+		Schema:      map[string]any{"type": "object"},
+	}
+}
+
+func (t *delayingTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+	t.mu.Lock()
+	t.current++
+	if t.current > t.concurrentAt {
+		t.concurrentAt = t.current
+	}
+	t.startTimes = append(t.startTimes, time.Now())
+	t.calls++
+	t.mu.Unlock()
+
+	time.Sleep(t.delay)
+
+	t.mu.Lock()
+	t.endTimes = append(t.endTimes, time.Now())
+	t.current--
+	t.mu.Unlock()
+
+	return "done", nil
+}
+
+func (t *delayingTool) Preview(args json.RawMessage) string {
+	return ""
+}
+
+func TestEngineParallelToolExecution(t *testing.T) {
+	// Create a tool that takes 100ms to execute
+	tool := &delayingTool{delay: 100 * time.Millisecond}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				// Request 3 parallel tool calls
+				return []Event{
+					{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "delay_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventToolCall, Tool: &ToolCall{ID: "call-2", Name: "delay_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventToolCall, Tool: &ToolCall{ID: "call-3", Name: "delay_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventDone},
+				}
+			default:
+				return []Event{
+					{Type: EventTextDelta, Text: "done"},
+					{Type: EventDone},
+				}
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	req := Request{
+		Messages:          []Message{UserText("run tools")},
+		Tools:             []ToolSpec{tool.Spec()},
+		ParallelToolCalls: true,
+		ToolChoice:        ToolChoice{Mode: ToolChoiceAuto},
+	}
+
+	start := time.Now()
+	stream, err := engine.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+		if event.Type == EventError && event.Err != nil {
+			t.Fatalf("event error: %v", event.Err)
+		}
+	}
+	elapsed := time.Since(start)
+
+	// Verify all 3 tools were called
+	if tool.calls != 3 {
+		t.Errorf("expected 3 tool calls, got %d", tool.calls)
+	}
+
+	// Verify parallel execution: if sequential, it would take ~300ms
+	// If parallel, it should take ~100ms (with some overhead)
+	// We check that the peak concurrency was > 1
+	if tool.concurrentAt < 2 {
+		t.Errorf("expected concurrent execution (peak concurrent: %d), tools may have run sequentially", tool.concurrentAt)
+	}
+
+	// Also verify total time - should be significantly less than 3x delay
+	// With true parallelism: ~100ms + overhead
+	// Sequential would be: ~300ms
+	// Use a generous threshold (500ms) to avoid flaky tests on slow CI systems
+	maxExpected := 500 * time.Millisecond
+	if elapsed > maxExpected {
+		t.Errorf("parallel execution took too long: %v (max expected: %v)", elapsed, maxExpected)
+	}
+
+	t.Logf("Parallel execution: peak concurrent=%d, elapsed=%v", tool.concurrentAt, elapsed)
 }

@@ -11,15 +11,16 @@ import (
 
 // ToolConfig holds configuration for the local tool system.
 type ToolConfig struct {
-	Enabled         []string `mapstructure:"enabled"`            // Enabled tool spec names
-	ReadDirs        []string `mapstructure:"read_dirs"`          // Directories for read operations
-	WriteDirs       []string `mapstructure:"write_dirs"`         // Directories for write operations
-	ShellAllow      []string `mapstructure:"shell_allow"`        // Shell command patterns
-	ScriptCommands  []string `mapstructure:"script_commands"`    // Exact script commands (auto-approved)
-	ShellAutoRun    bool     `mapstructure:"shell_auto_run"`     // Auto-approve matching shell
-	ShellAutoRunEnv string   `mapstructure:"shell_auto_run_env"` // Env var required for auto-run
-	ShellNonTTYEnv  string   `mapstructure:"shell_non_tty_env"`  // Env var for non-TTY execution
-	ImageProvider   string   `mapstructure:"image_provider"`     // Override for image provider
+	Enabled         []string    `mapstructure:"enabled"`            // Enabled tool spec names
+	ReadDirs        []string    `mapstructure:"read_dirs"`          // Directories for read operations
+	WriteDirs       []string    `mapstructure:"write_dirs"`         // Directories for write operations
+	ShellAllow      []string    `mapstructure:"shell_allow"`        // Shell command patterns
+	ScriptCommands  []string    `mapstructure:"script_commands"`    // Exact script commands (auto-approved)
+	ShellAutoRun    bool        `mapstructure:"shell_auto_run"`     // Auto-approve matching shell
+	ShellAutoRunEnv string      `mapstructure:"shell_auto_run_env"` // Env var required for auto-run
+	ShellNonTTYEnv  string      `mapstructure:"shell_non_tty_env"`  // Env var for non-TTY execution
+	ImageProvider   string      `mapstructure:"image_provider"`     // Override for image provider
+	Spawn           SpawnConfig `mapstructure:"spawn"`              // Spawn agent configuration
 }
 
 // DefaultToolConfig returns sensible defaults for tool configuration.
@@ -34,6 +35,7 @@ func DefaultToolConfig() ToolConfig {
 		ShellAutoRunEnv: "TERM_LLM_ALLOW_AUTORUN",
 		ShellNonTTYEnv:  "TERM_LLM_ALLOW_NON_TTY",
 		ImageProvider:   "",
+		Spawn:           DefaultSpawnConfig(),
 	}
 }
 
@@ -67,6 +69,20 @@ func (c ToolConfig) Merge(other ToolConfig) ToolConfig {
 	}
 	if other.ImageProvider != "" {
 		result.ImageProvider = other.ImageProvider
+	}
+
+	// Merge spawn config
+	if other.Spawn.MaxParallel > 0 {
+		result.Spawn.MaxParallel = other.Spawn.MaxParallel
+	}
+	if other.Spawn.MaxDepth > 0 {
+		result.Spawn.MaxDepth = other.Spawn.MaxDepth
+	}
+	if other.Spawn.DefaultTimeout > 0 {
+		result.Spawn.DefaultTimeout = other.Spawn.DefaultTimeout
+	}
+	if len(other.Spawn.AllowedAgents) > 0 {
+		result.Spawn.AllowedAgents = other.Spawn.AllowedAgents
 	}
 
 	return result

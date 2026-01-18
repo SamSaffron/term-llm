@@ -27,15 +27,20 @@ type Agent struct {
 	// Tool-specific settings
 	Shell ShellConfig `yaml:"shell,omitempty"`
 	Read  ReadConfig  `yaml:"read,omitempty"`
+	Spawn SpawnConfig `yaml:"spawn,omitempty"`
 
 	// Behavior
 	MaxTurns int  `yaml:"max_turns,omitempty"`
 	Search   bool `yaml:"search,omitempty"` // Enable web search tools
 
+	// Include additional .md files in the system prompt
+	// Files are loaded from the agent directory and appended after system.md
+	Include []string `yaml:"include,omitempty"`
+
 	// MCP servers to auto-connect
 	MCP []MCPConfig `yaml:"mcp,omitempty"`
 
-	// System prompt (loaded from system.md)
+	// System prompt (loaded from system.md + included files)
 	SystemPrompt string `yaml:"-"`
 
 	// Source info
@@ -86,6 +91,14 @@ type ReadConfig struct {
 	Dirs []string `yaml:"dirs,omitempty"`
 }
 
+// SpawnConfig configures spawn_agent behavior for this agent.
+type SpawnConfig struct {
+	MaxParallel    int      `yaml:"max_parallel,omitempty"`   // Max concurrent sub-agents (default 3)
+	MaxDepth       int      `yaml:"max_depth,omitempty"`      // Max nesting level (default 2)
+	DefaultTimeout int      `yaml:"timeout,omitempty"`        // Default timeout in seconds (default 300)
+	AllowedAgents  []string `yaml:"allowed_agents,omitempty"` // Optional whitelist of allowed agents
+}
+
 // MCPConfig specifies an MCP server to connect.
 type MCPConfig struct {
 	Name    string `yaml:"name"`
@@ -110,6 +123,38 @@ func LoadFromDir(dir string, source AgentSource) (*Agent, error) {
 	systemPath := filepath.Join(dir, "system.md")
 	if systemData, err := os.ReadFile(systemPath); err == nil {
 		agent.SystemPrompt = string(systemData)
+	}
+
+	// Load and append included files
+	for _, include := range agent.Include {
+		includePath := filepath.Join(dir, include)
+		// Security: validate that the resolved path stays within the agent directory
+		// to prevent path traversal attacks via "../" in include paths
+		absInclude, err := filepath.Abs(includePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to resolve include path %q: %v\n", include, err)
+			continue
+		}
+		absDir, err := filepath.Abs(dir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to resolve agent directory: %v\n", err)
+			continue
+		}
+		if !strings.HasPrefix(absInclude, absDir+string(filepath.Separator)) && absInclude != absDir {
+			fmt.Fprintf(os.Stderr, "warning: include path %q escapes agent directory, skipping\n", include)
+			continue
+		}
+		if includeData, err := os.ReadFile(includePath); err == nil {
+			// Add separator and include content
+			agent.SystemPrompt += "\n\n---\n\n"
+			agent.SystemPrompt += string(includeData)
+		} else if !os.IsNotExist(err) {
+			// Log non-existence errors (permission issues, etc.)
+			fmt.Fprintf(os.Stderr, "warning: failed to read include %q: %v\n", include, err)
+		} else {
+			// Log missing includes as a debug hint
+			fmt.Fprintf(os.Stderr, "warning: agent include file not found: %s\n", includePath)
+		}
 	}
 
 	// Set source info
