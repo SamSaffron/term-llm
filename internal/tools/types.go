@@ -126,7 +126,8 @@ const (
 	SpawnAgentToolName    = "spawn_agent"
 )
 
-// AllToolNames returns all valid tool spec names.
+// AllToolNames returns all standard tool spec names that can be registered directly.
+// Note: activate_skill is excluded as it requires a skills registry and is registered separately.
 func AllToolNames() []string {
 	return []string{
 		ReadFileToolName,
@@ -140,11 +141,11 @@ func AllToolNames() []string {
 		ImageGenerateToolName,
 		AskUserToolName,
 		SpawnAgentToolName,
-		ActivateSkillToolName,
 	}
 }
 
 // validToolNames is a set of valid tool spec names for fast lookup.
+// Note: activate_skill is excluded as it requires a skills registry and is registered separately.
 var validToolNames = map[string]bool{
 	ReadFileToolName:      true,
 	WriteFileToolName:     true,
@@ -157,7 +158,6 @@ var validToolNames = map[string]bool{
 	ImageGenerateToolName: true,
 	AskUserToolName:       true,
 	SpawnAgentToolName:    true,
-	ActivateSkillToolName: true,
 }
 
 // ValidToolName checks if a name is a valid tool spec name.
