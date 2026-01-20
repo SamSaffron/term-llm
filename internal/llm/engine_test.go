@@ -375,3 +375,81 @@ func TestEngineParallelToolExecution(t *testing.T) {
 
 	t.Logf("Parallel execution: peak concurrent=%d, elapsed=%v", tool.concurrentAt, elapsed)
 }
+
+// namedTool is a simple tool with a configurable name for testing
+type namedTool struct {
+	name string
+}
+
+func (t *namedTool) Spec() ToolSpec {
+	return ToolSpec{Name: t.name, Description: "test tool"}
+}
+
+func (t *namedTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+	return "ok", nil
+}
+
+func (t *namedTool) Preview(args json.RawMessage) string {
+	return ""
+}
+
+// TestEngineAllowedToolsEnforcement verifies that the engine blocks tools not in the allowed list.
+func TestEngineAllowedToolsEnforcement(t *testing.T) {
+	// Create tools with different names
+	toolA := &namedTool{name: "tool_a"}
+	toolB := &namedTool{name: "tool_b"}
+
+	// Create engine with both tools
+	registry := NewToolRegistry()
+	registry.Register(toolA)
+	registry.Register(toolB)
+
+	provider := &fakeProvider{}
+	engine := NewEngine(provider, registry)
+
+	// Test 1: No filter - both tools should work
+	if !engine.IsToolAllowed("tool_a") {
+		t.Error("tool_a should be allowed with no filter")
+	}
+	if !engine.IsToolAllowed("tool_b") {
+		t.Error("tool_b should be allowed with no filter")
+	}
+
+	// Test 2: Set filter - only tool_a allowed
+	engine.SetAllowedTools([]string{"tool_a"})
+
+	if !engine.IsToolAllowed("tool_a") {
+		t.Error("tool_a should be allowed when in filter")
+	}
+	if engine.IsToolAllowed("tool_b") {
+		t.Error("tool_b should NOT be allowed when not in filter")
+	}
+
+	// Test 3: Try to set a tool that doesn't exist - should be ignored
+	engine.SetAllowedTools([]string{"nonexistent_tool", "tool_a"})
+	if !engine.IsToolAllowed("tool_a") {
+		t.Error("tool_a should still be allowed")
+	}
+	// nonexistent_tool isn't registered, so the filter should only contain tool_a
+
+	// Test 4: Clear filter - all tools allowed again
+	engine.ClearAllowedTools()
+
+	if !engine.IsToolAllowed("tool_a") {
+		t.Error("tool_a should be allowed after clearing filter")
+	}
+	if !engine.IsToolAllowed("tool_b") {
+		t.Error("tool_b should be allowed after clearing filter")
+	}
+
+	// Test 5: Empty slice clears filter
+	engine.SetAllowedTools([]string{"tool_a"})
+	engine.SetAllowedTools([]string{})
+
+	if !engine.IsToolAllowed("tool_a") {
+		t.Error("tool_a should be allowed after setting empty filter")
+	}
+	if !engine.IsToolAllowed("tool_b") {
+		t.Error("tool_b should be allowed after setting empty filter")
+	}
+}

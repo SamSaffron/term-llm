@@ -38,6 +38,8 @@ var (
 	execSystemMessage string
 	// Yolo mode
 	execYolo bool
+	// Skills flag
+	execSkills string
 )
 
 const (
@@ -86,6 +88,7 @@ func init() {
 	execCmd.Flags().BoolVarP(&execAutoPick, "auto-pick", "a", false, "Auto-execute the best suggestion without prompting")
 	execCmd.Flags().IntVarP(&execMaxOpts, "max", "n", 0, "Maximum number of options to show (0 = no limit)")
 	AddYoloFlag(execCmd, &execYolo)
+	AddSkillsFlag(execCmd, &execSkills)
 
 	// Additional completions
 	if err := execCmd.RegisterFlagCompletionFunc("tools", ToolsFlagCompletion); err != nil {

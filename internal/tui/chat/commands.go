@@ -116,6 +116,12 @@ func AllCommands() []Command {
 				{Name: "status", Description: "Show server status"},
 			},
 		},
+		{
+			Name:        "skills",
+			Aliases:     []string{"sk"},
+			Description: "Show available skills",
+			Usage:       "/skills",
+		},
 	}
 }
 
@@ -304,6 +310,8 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 		return m.cmdDirs(args)
 	case "mcp":
 		return m.cmdMcp(args)
+	case "skills":
+		return m.cmdSkills()
 	default:
 		return m.showSystemMessage(fmt.Sprintf("Command /%s is not yet implemented.", cmd.Name))
 	}
@@ -1101,6 +1109,36 @@ func (m *Model) showBundledServersList() (tea.Model, tea.Cmd) {
 	}
 
 	b.WriteString("Use `/mcp add <name>` to add a server.\n")
+
+	m.textarea.SetValue("")
+	return m.showSystemMessage(b.String())
+}
+
+func (m *Model) cmdSkills() (tea.Model, tea.Cmd) {
+	var b strings.Builder
+	b.WriteString("## Skills System\n\n")
+	b.WriteString("Skills are reusable prompt templates that can be activated to help with specific tasks.\n\n")
+
+	b.WriteString("**How to use skills:**\n")
+	b.WriteString("- Ask the AI to use a specific skill: \"use the code-review skill\"\n")
+	b.WriteString("- The AI can also activate skills automatically when relevant\n")
+	b.WriteString("- Skills are loaded from: `~/.config/term-llm/skills/`, `.skills/`, and project directories\n\n")
+
+	b.WriteString("**Manage skills with CLI:**\n")
+	b.WriteString("- `term-llm skills list` - List available skills\n")
+	b.WriteString("- `term-llm skills new <name>` - Create a new skill\n")
+	b.WriteString("- `term-llm skills show <name>` - View skill details\n")
+	b.WriteString("- `term-llm skills edit <name>` - Edit an existing skill\n\n")
+
+	b.WriteString("**Create skills:**\n")
+	b.WriteString("Skills are defined in SKILL.md files with YAML frontmatter:\n\n")
+	b.WriteString("```yaml\n")
+	b.WriteString("---\n")
+	b.WriteString("name: my-skill\n")
+	b.WriteString("description: A helpful skill\n")
+	b.WriteString("---\n")
+	b.WriteString("Instructions for the AI when this skill is activated...\n")
+	b.WriteString("```\n")
 
 	m.textarea.SetValue("")
 	return m.showSystemMessage(b.String())

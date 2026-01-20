@@ -38,6 +38,8 @@ var (
 	editSystemMessage string
 	// Yolo mode
 	editYolo bool
+	// Skills flag
+	editSkills string
 )
 
 var editCmd = &cobra.Command{
@@ -82,6 +84,7 @@ func init() {
 	AddToolFlags(editCmd, &editTools, &editReadDirs, &editWriteDirs, &editShellAllow)
 	AddSystemMessageFlag(editCmd, &editSystemMessage)
 	AddYoloFlag(editCmd, &editYolo)
+	AddSkillsFlag(editCmd, &editSkills)
 
 	if err := editCmd.MarkFlagRequired("file"); err != nil {
 		panic(fmt.Sprintf("failed to mark file flag required: %v", err))

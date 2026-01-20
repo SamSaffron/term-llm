@@ -21,6 +21,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/prompt"
 	"github.com/samsaffron/term-llm/internal/signal"
+	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/spf13/cobra"
@@ -47,6 +48,8 @@ var (
 	askAgent string
 	// Yolo mode
 	askYolo bool
+	// Skills flag
+	askSkills string
 )
 
 var askCmd = &cobra.Command{
@@ -98,6 +101,7 @@ func init() {
 	// Ask-specific flags
 	askCmd.Flags().BoolVarP(&askText, "text", "t", false, "Output plain text instead of rendered markdown")
 	AddYoloFlag(askCmd, &askYolo)
+	AddSkillsFlag(askCmd, &askSkills)
 
 	// Additional completions
 	if err := askCmd.RegisterFlagCompletionFunc("tools", ToolsFlagCompletion); err != nil {
@@ -184,6 +188,16 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		defer debugLogger.Close()
 	}
 
+	// Initialize skills system
+	var skillsSetup *skills.Setup
+	skillsCfg := applySkillsFlag(&cfg.Skills, askSkills)
+	if skillsCfg.Mode != "none" {
+		skillsSetup, err = skills.NewSetup(skillsCfg)
+		if err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: skills initialization failed: %v\n", err)
+		}
+	}
+
 	// Determine tool settings: CLI > agent > none
 	effectiveTools := askTools
 	effectiveReadDirs := askReadDirs
@@ -260,6 +274,18 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		if err := WireSpawnAgentRunner(cfg, toolMgr, askYolo); err != nil {
 			return err
 		}
+
+		// Register activate_skill tool if skills are available
+		if skillsSetup != nil && skillsSetup.Registry != nil {
+			skillTool := toolMgr.Registry.RegisterSkillTool(skillsSetup.Registry)
+			if skillTool != nil {
+				// Set up allowed-tools enforcement callback
+				skillTool.SetOnActivated(func(allowedTools []string) {
+					engine.SetAllowedTools(allowedTools)
+				})
+				engine.Tools().Register(skillTool)
+			}
+		}
 	}
 
 	// Determine MCP servers: CLI > agent
@@ -321,6 +347,16 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	if askSystemMessage != "" {
 		instructions = askSystemMessage
 	}
+
+	// Inject skills metadata if available and not already in AGENTS.md
+	if skillsSetup != nil && skillsSetup.HasSkillsXML() && !skills.CheckAgentsMdForSkills() {
+		if instructions != "" {
+			instructions = instructions + "\n\n" + skillsSetup.XML
+		} else {
+			instructions = skillsSetup.XML
+		}
+	}
+
 	if instructions != "" {
 		messages = append(messages, llm.SystemText(instructions))
 	}

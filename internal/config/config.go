@@ -99,12 +99,46 @@ type Config struct {
 	Theme           ThemeConfig               `mapstructure:"theme"`
 	Tools           ToolsConfig               `mapstructure:"tools"`
 	Agents          AgentsConfig              `mapstructure:"agents"`
+	Skills          SkillsConfig              `mapstructure:"skills"`
+	AgentsMd        AgentsMdConfig            `mapstructure:"agents_md"`
 }
 
 // AgentsConfig configures the agent system
 type AgentsConfig struct {
 	UseBuiltin  bool     `mapstructure:"use_builtin"`  // Enable built-in agents (default true)
 	SearchPaths []string `mapstructure:"search_paths"` // Additional directories to search for agents
+}
+
+// SkillsConfig configures the Agent Skills system
+type SkillsConfig struct {
+	Mode                 string `mapstructure:"mode"`                   // auto, none, explicit
+	AutoInvoke           bool   `mapstructure:"auto_invoke"`            // Allow model-driven activation
+	MetadataBudgetTokens int    `mapstructure:"metadata_budget_tokens"` // Max tokens for skill metadata
+	MaxActive            int    `mapstructure:"max_active"`             // Max skills in metadata injection
+
+	SearchPaths  []string `mapstructure:"search_paths"`  // Additional skill directories
+	ExcludePaths []string `mapstructure:"exclude_paths"` // Exclude paths from discovery
+
+	IncludeProjectSkills  bool `mapstructure:"include_project_skills"`  // Discover from project-local paths
+	IncludeCodexPaths     bool `mapstructure:"include_codex_paths"`     // Include ~/.codex/skills etc
+	IncludeClaudePaths    bool `mapstructure:"include_claude_paths"`    // Include ~/.claude/skills etc
+	IncludeGeminiPaths    bool `mapstructure:"include_gemini_paths"`    // Include ~/.gemini/skills etc
+	IncludeUniversalPaths bool `mapstructure:"include_universal_paths"` // Include .skills/ etc
+
+	AlwaysEnabled []string `mapstructure:"always_enabled"` // Always include in metadata
+	NeverAuto     []string `mapstructure:"never_auto"`     // Must be explicit activation
+	Disabled      []string `mapstructure:"disabled"`       // Do not load
+
+	UseBuiltin bool `mapstructure:"use_builtin"` // Use built-in skills
+
+	// SkillsMP.com browsing configuration
+	APIKey              string   `mapstructure:"api_key"`               // SkillsMP API key (or use SKILLSMP_API_KEY env)
+	DefaultInstallPaths []string `mapstructure:"default_install_paths"` // Default install destinations: term-llm, local, claude, codex, gemini
+}
+
+// AgentsMdConfig configures optional AGENTS.md loading
+type AgentsMdConfig struct {
+	Enabled bool `mapstructure:"enabled"` // Load AGENTS.md into system prompt
 }
 
 // ToolsConfig configures the local tool system
@@ -293,6 +327,24 @@ func Load() (*Config, error) {
 	// Agents defaults
 	viper.SetDefault("agents.use_builtin", true)
 	viper.SetDefault("agents.search_paths", []string{})
+	// Skills defaults
+	viper.SetDefault("skills.mode", "auto")
+	viper.SetDefault("skills.auto_invoke", true)
+	viper.SetDefault("skills.metadata_budget_tokens", 8000)
+	viper.SetDefault("skills.max_active", 8)
+	viper.SetDefault("skills.search_paths", []string{})
+	viper.SetDefault("skills.exclude_paths", []string{})
+	viper.SetDefault("skills.include_project_skills", false)
+	viper.SetDefault("skills.include_codex_paths", true)
+	viper.SetDefault("skills.include_claude_paths", true)
+	viper.SetDefault("skills.include_gemini_paths", true)
+	viper.SetDefault("skills.include_universal_paths", true)
+	viper.SetDefault("skills.always_enabled", []string{})
+	viper.SetDefault("skills.never_auto", []string{})
+	viper.SetDefault("skills.disabled", []string{})
+	viper.SetDefault("skills.use_builtin", true)
+	// AGENTS.md defaults
+	viper.SetDefault("agents_md.enabled", false)
 
 	// Read config file (optional - won't error if missing)
 	if err := viper.ReadInConfig(); err != nil {

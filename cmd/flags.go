@@ -1,6 +1,9 @@
 package cmd
 
 import (
+	"strings"
+
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -89,4 +92,81 @@ func AddAgentFlag(cmd *cobra.Command, dest *string) {
 // AddYoloFlag adds the --yolo flag for auto-approving all tool operations
 func AddYoloFlag(cmd *cobra.Command, dest *bool) {
 	cmd.Flags().BoolVar(dest, "yolo", false, "Auto-approve all tool operations (for CI/container use, bypasses all prompts)")
+}
+
+// AddSkillsFlag adds the --skills flag with completion
+// Values: "none" to disable, skill names (comma-separated), or skill,+ for explicit + auto
+func AddSkillsFlag(cmd *cobra.Command, dest *string) {
+	cmd.Flags().StringVar(dest, "skills", "", "Skills mode: 'none' to disable, skill names (comma-separated), or 'skill,+' for explicit + auto")
+	if err := cmd.RegisterFlagCompletionFunc("skills", SkillsFlagCompletion); err != nil {
+		panic("failed to register skills completion: " + err.Error())
+	}
+}
+
+// SkillsFlagCompletion provides shell completion for the --skills flag.
+func SkillsFlagCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	// Return special values first
+	completions := []string{"all", "none"}
+
+	// Add skill names from registry
+	names, directive := SkillFlagCompletion(cmd, args, toComplete)
+	completions = append(completions, names...)
+
+	return completions, directive
+}
+
+// applySkillsFlag applies the --skills flag value to modify skills config.
+// Returns the modified config (or original if flag is empty).
+//
+// Flag values:
+//   - "" (empty): use config defaults
+//   - "none": disable skills entirely
+//   - "all" or "*": enable all skills with auto mode
+//   - "skill1,skill2": explicit skills only (disables auto-discovery for injection)
+//   - "skill1,+": explicit skills + auto-discovery
+func applySkillsFlag(cfg *config.SkillsConfig, flag string) *config.SkillsConfig {
+	if flag == "" {
+		return cfg
+	}
+
+	// Create a copy to avoid modifying the original
+	result := *cfg
+
+	switch strings.TrimSpace(flag) {
+	case "none":
+		result.Mode = "none"
+		return &result
+	case "all", "*":
+		// Enable all skills with auto mode
+		result.Mode = "auto"
+		result.AutoInvoke = true
+		return &result
+	}
+
+	// Parse comma-separated skill names
+	var skills []string
+	hasPlus := false
+
+	for _, part := range strings.Split(flag, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if part == "+" {
+			hasPlus = true
+		} else {
+			skills = append(skills, part)
+		}
+	}
+
+	// Set mode and skills
+	if len(skills) > 0 {
+		result.Mode = "explicit"
+		result.AlwaysEnabled = skills
+		// When explicit skills are specified, auto-invoke is disabled
+		// unless "+" is included to also include auto-discovered skills
+		result.AutoInvoke = hasPlus
+	}
+
+	return &result
 }

@@ -3,6 +3,7 @@ package tools
 import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/skills"
 )
 
 // LocalToolRegistry manages local tools and their registration with the engine.
@@ -233,6 +234,26 @@ func (r *LocalToolRegistry) GetOutputTool(name string) *SetOutputTool {
 	}
 	if outputTool, ok := tool.(*SetOutputTool); ok {
 		return outputTool
+	}
+	return nil
+}
+
+// RegisterSkillTool registers the activate_skill tool with the given registry.
+// This must be called after the skills registry is created.
+func (r *LocalToolRegistry) RegisterSkillTool(skillRegistry *skills.Registry) *ActivateSkillTool {
+	tool := NewActivateSkillTool(skillRegistry, r.approval)
+	r.tools[ActivateSkillToolName] = tool
+	return tool
+}
+
+// GetSkillTool returns the activate_skill tool if registered.
+func (r *LocalToolRegistry) GetSkillTool() *ActivateSkillTool {
+	tool, ok := r.tools[ActivateSkillToolName]
+	if !ok {
+		return nil
+	}
+	if skillTool, ok := tool.(*ActivateSkillTool); ok {
+		return skillTool
 	}
 	return nil
 }

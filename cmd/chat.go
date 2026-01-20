@@ -9,6 +9,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/signal"
+	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/tui/chat"
 	"github.com/spf13/cobra"
@@ -30,6 +31,8 @@ var (
 	chatSystemMessage string
 	// Agent flag
 	chatAgent string
+	// Skills flag
+	chatSkills string
 )
 
 var chatCmd = &cobra.Command{
@@ -65,6 +68,7 @@ Slash commands:
   /model       - Show current model
   /search      - Toggle web search
   /mcp         - Manage MCP servers
+  /skills      - List available skills
   /quit        - Exit chat`,
 	RunE:              runChat,
 	ValidArgsFunction: AtAgentCompletion,
@@ -81,6 +85,7 @@ func init() {
 	AddToolFlags(chatCmd, &chatTools, &chatReadDirs, &chatWriteDirs, &chatShellAllow)
 	AddSystemMessageFlag(chatCmd, &chatSystemMessage)
 	AddAgentFlag(chatCmd, &chatAgent)
+	AddSkillsFlag(chatCmd, &chatSkills)
 
 	// Additional completions
 	if err := chatCmd.RegisterFlagCompletionFunc("tools", ToolsFlagCompletion); err != nil {
@@ -175,8 +180,39 @@ func runChat(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Initialize skills system
+	var skillsSetup *skills.Setup
+	skillsCfg := applySkillsFlag(&cfg.Skills, chatSkills)
+	if skillsCfg.Mode != "none" {
+		skillsSetup, err = skills.NewSetup(skillsCfg)
+		if err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: skills initialization failed: %v\n", err)
+		}
+	}
+
+	// Register activate_skill tool if skills and tools are available
+	if skillsSetup != nil && skillsSetup.Registry != nil && toolMgr != nil {
+		skillTool := toolMgr.Registry.RegisterSkillTool(skillsSetup.Registry)
+		if skillTool != nil {
+			// Set up allowed-tools enforcement callback
+			skillTool.SetOnActivated(func(allowedTools []string) {
+				engine.SetAllowedTools(allowedTools)
+			})
+			engine.Tools().Register(skillTool)
+		}
+	}
+
 	// Store resolved instructions in config for chat TUI
 	cfg.Chat.Instructions = settings.SystemPrompt
+
+	// Inject skills metadata if available and not already in AGENTS.md
+	if skillsSetup != nil && skillsSetup.HasSkillsXML() && !skills.CheckAgentsMdForSkills() {
+		if cfg.Chat.Instructions != "" {
+			cfg.Chat.Instructions = cfg.Chat.Instructions + "\n\n" + skillsSetup.XML
+		} else {
+			cfg.Chat.Instructions = skillsSetup.XML
+		}
+	}
 
 	// Determine model name
 	modelName := getModelName(cfg)

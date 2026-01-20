@@ -31,6 +31,12 @@ type Engine struct {
 	provider    Provider
 	tools       *ToolRegistry
 	debugLogger *DebugLogger
+
+	// allowedTools filters which tools can be executed.
+	// If nil or empty, all tools are allowed. When set, only listed tools can run.
+	// Used by skills with allowed-tools to restrict tool access.
+	allowedTools map[string]bool
+	allowedMu    sync.RWMutex
 }
 
 func NewEngine(provider Provider, tools *ToolRegistry) *Engine {
@@ -61,6 +67,47 @@ func (e *Engine) Tools() *ToolRegistry {
 // SetDebugLogger sets the debug logger for this engine.
 func (e *Engine) SetDebugLogger(logger *DebugLogger) {
 	e.debugLogger = logger
+}
+
+// SetAllowedTools sets the list of tools that can be executed.
+// When set, only tools in this list can run; all others are blocked.
+// Pass nil or empty slice to allow all tools.
+// The list is intersected with registered tools (can't allow unregistered tools).
+func (e *Engine) SetAllowedTools(tools []string) {
+	e.allowedMu.Lock()
+	defer e.allowedMu.Unlock()
+
+	if len(tools) == 0 {
+		e.allowedTools = nil
+		return
+	}
+
+	e.allowedTools = make(map[string]bool, len(tools))
+	for _, name := range tools {
+		// Only add if tool is registered (intersection with available tools)
+		if _, ok := e.tools.Get(name); ok {
+			e.allowedTools[name] = true
+		}
+	}
+}
+
+// ClearAllowedTools removes the tool filter, allowing all registered tools.
+func (e *Engine) ClearAllowedTools() {
+	e.allowedMu.Lock()
+	defer e.allowedMu.Unlock()
+	e.allowedTools = nil
+}
+
+// IsToolAllowed checks if a tool can be executed under current restrictions.
+func (e *Engine) IsToolAllowed(name string) bool {
+	e.allowedMu.RLock()
+	defer e.allowedMu.RUnlock()
+
+	// No filter means all tools are allowed
+	if e.allowedTools == nil {
+		return true
+	}
+	return e.allowedTools[name]
 }
 
 // Stream returns a stream, applying external tools when needed.
@@ -309,6 +356,16 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, event
 	tool, ok := e.tools.Get(call.Name)
 	if !ok {
 		errMsg := fmt.Sprintf("Error: tool not registered: %s", call.Name)
+		DebugToolResult(debug, call.ID, call.Name, errMsg)
+		if events != nil {
+			events <- Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false}
+		}
+		return []Message{ToolErrorMessage(call.ID, call.Name, errMsg, call.ThoughtSig)}, nil
+	}
+
+	// Check if tool is allowed under current skill restrictions
+	if !e.IsToolAllowed(call.Name) {
+		errMsg := fmt.Sprintf("Error: tool '%s' is not in the active skill's allowed-tools list", call.Name)
 		DebugToolResult(debug, call.ID, call.Name, errMsg)
 		if events != nil {
 			events <- Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false}
