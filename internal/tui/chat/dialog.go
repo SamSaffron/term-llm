@@ -110,19 +110,16 @@ func (d *DialogModel) ShowModelPicker(currentModel string, providers []ProviderI
 	}
 }
 
-// ShowSessionList opens the session list dialog
-func (d *DialogModel) ShowSessionList(sessions []string, currentSession string) {
+// ShowSessionList opens the session list dialog.
+// items should have ID=full session ID, Label=display name.
+func (d *DialogModel) ShowSessionList(items []DialogItem, currentSessionID string) {
 	d.dialogType = DialogSessionList
 	d.title = "Load Session"
 	d.cursor = 0
 	d.items = nil
 
-	for _, name := range sessions {
-		item := DialogItem{
-			ID:       name,
-			Label:    name,
-			Selected: name == currentSession,
-		}
+	for _, item := range items {
+		item.Selected = item.ID == currentSessionID
 		d.items = append(d.items, item)
 		if item.Selected {
 			d.cursor = len(d.items) - 1

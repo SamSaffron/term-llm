@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -8,6 +9,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -33,6 +35,8 @@ var (
 	chatAgent string
 	// Skills flag
 	chatSkills string
+	// Session resume flag
+	chatResume string
 )
 
 var chatCmd = &cobra.Command{
@@ -87,6 +91,10 @@ func init() {
 	AddAgentFlag(chatCmd, &chatAgent)
 	AddSkillsFlag(chatCmd, &chatSkills)
 
+	// Session resume flag - NoOptDefVal allows --resume without a value
+	chatCmd.Flags().StringVarP(&chatResume, "resume", "r", "", "Resume session (empty for most recent, or session ID)")
+	chatCmd.Flags().Lookup("resume").NoOptDefVal = " " // space means "flag was passed without value"
+
 	// Additional completions
 	if err := chatCmd.RegisterFlagCompletionFunc("tools", ToolsFlagCompletion); err != nil {
 		panic(fmt.Sprintf("failed to register tools completion: %v", err))
@@ -130,6 +138,68 @@ func runChat(cmd *cobra.Command, args []string) error {
 		Search:        chatSearch,
 	}, cfg.Chat.Provider, cfg.Chat.Model, cfg.Chat.Instructions, cfg.Chat.MaxTurns, 200)
 
+	// Initialize session store EARLY so --resume can override settings before tool/MCP setup
+	var store session.Store
+	if cfg.Sessions.Enabled {
+		var storeErr error
+		store, storeErr = session.NewStore(session.Config{
+			Enabled:    cfg.Sessions.Enabled,
+			MaxAgeDays: cfg.Sessions.MaxAgeDays,
+			MaxCount:   cfg.Sessions.MaxCount,
+		})
+		if storeErr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to initialize session store: %v\n", storeErr)
+			// Continue with nil store (no persistence)
+		} else {
+			defer store.Close()
+		}
+	}
+
+	// Handle --resume flag BEFORE tool/MCP setup so session settings take effect
+	var sess *session.Session
+	if cmd.Flags().Changed("resume") {
+		if store == nil {
+			return fmt.Errorf("session storage is disabled; cannot resume")
+		}
+		resumeID := strings.TrimSpace(chatResume)
+		if resumeID == "" {
+			// Resume most recent session
+			sess, err = store.GetCurrent(context.Background())
+			if err != nil || sess == nil {
+				summaries, listErr := store.List(context.Background(), session.ListOptions{Limit: 1})
+				if listErr == nil && len(summaries) > 0 {
+					sess, _ = store.Get(context.Background(), summaries[0].ID)
+				}
+			}
+			if sess == nil {
+				return fmt.Errorf("no session to resume")
+			}
+		} else {
+			sess, err = store.Get(context.Background(), resumeID)
+			if err != nil {
+				return fmt.Errorf("failed to load session: %w", err)
+			}
+			if sess == nil {
+				return fmt.Errorf("session '%s' not found", resumeID)
+			}
+		}
+
+		// Update current session marker so --resume without ID targets this session
+		_ = store.SetCurrent(context.Background(), sess.ID)
+
+		// Apply session settings for flags not explicitly set on CLI
+		// (unconditionally - session may have had search/tools/MCP disabled)
+		if !cmd.Flags().Changed("search") {
+			settings.Search = sess.Search
+		}
+		if !cmd.Flags().Changed("tools") {
+			settings.Tools = sess.Tools
+		}
+		if !cmd.Flags().Changed("mcp") {
+			settings.MCP = sess.MCP
+		}
+	}
+
 	// Apply provider overrides
 	agentProvider, agentModel := "", ""
 	if agent != nil {
@@ -159,7 +229,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 		engine.SetDebugLogger(debugLogger)
 	}
 
-	// Initialize tools if enabled
+	// Initialize tools if enabled (using possibly-updated settings from resume)
 	enabledLocalTools := tools.ParseToolsFlag(settings.Tools)
 	toolMgr, err := settings.SetupToolManager(cfg, engine)
 	if err != nil {
@@ -242,7 +312,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 	forceExternalSearch := resolveForceExternalSearch(cfg, chatNativeSearch, chatNoNativeSearch)
 
 	// Create chat model
-	model := chat.New(cfg, provider, engine, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, showStats, initialText)
+	model := chat.New(cfg, provider, engine, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, showStats, initialText, store, sess)
 
 	// Run the TUI (inline mode - no alt screen)
 	p := tea.NewProgram(model)

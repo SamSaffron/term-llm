@@ -90,6 +90,7 @@ type Config struct {
 	Providers       map[string]ProviderConfig `mapstructure:"providers"`
 	Diagnostics     DiagnosticsConfig         `mapstructure:"diagnostics"`
 	DebugLogs       DebugLogsConfig           `mapstructure:"debug_logs"`
+	Sessions        SessionsConfig            `mapstructure:"sessions"`
 	Exec            ExecConfig                `mapstructure:"exec"`
 	Ask             AskConfig                 `mapstructure:"ask"`
 	Chat            ChatConfig                `mapstructure:"chat"`
@@ -150,6 +151,13 @@ type DiagnosticsConfig struct {
 type DebugLogsConfig struct {
 	Enabled bool   `mapstructure:"enabled"` // Enable debug logging
 	Dir     string `mapstructure:"dir"`     // Override default directory (defaults to ~/.local/share/term-llm/debug/)
+}
+
+// SessionsConfig configures session storage
+type SessionsConfig struct {
+	Enabled    bool `mapstructure:"enabled"`      // Master switch - set to false to disable all session storage
+	MaxAgeDays int  `mapstructure:"max_age_days"` // Auto-delete sessions older than N days (0=never)
+	MaxCount   int  `mapstructure:"max_count"`    // Keep at most N sessions, delete oldest (0=unlimited)
 }
 
 // ThemeConfig allows customization of UI colors
@@ -627,6 +635,12 @@ var KnownKeys = map[string]bool{
 	"debug_logs.enabled": true,
 	"debug_logs.dir":     true,
 
+	// Sessions
+	"sessions":              true,
+	"sessions.enabled":      true,
+	"sessions.max_age_days": true,
+	"sessions.max_count":    true,
+
 	// Exec
 	"exec.provider":     true,
 	"exec.model":        true,
@@ -770,6 +784,9 @@ func GetDefaults() map[string]any {
 		"tools.shell_auto_run":           false,
 		"tools.shell_auto_run_env":       "TERM_LLM_ALLOW_AUTORUN",
 		"tools.shell_non_tty_env":        "TERM_LLM_ALLOW_NON_TTY",
+		"sessions.enabled":               true,
+		"sessions.max_age_days":          0,
+		"sessions.max_count":             0,
 		"agents.use_builtin":             true,
 		"agents.search_paths":            []string{},
 		"skills.enabled":                 false,

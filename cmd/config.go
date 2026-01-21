@@ -250,6 +250,10 @@ func printAnnotatedConfig(defaults map[string]any, rawKeys, unknownKeys map[stri
 			keys: []string{"enabled"},
 		},
 		{
+			name: "sessions",
+			keys: []string{"enabled", "max_age_days", "max_count"},
+		},
+		{
 			name: "diagnostics",
 			keys: []string{"enabled", "dir"},
 		},
@@ -807,6 +811,12 @@ edit:
 # debug_logs:
 #   enabled: false
 #   dir: ~/.local/share/term-llm/debug/
+
+# Session storage (enabled by default)
+# sessions:
+#   enabled: true       # Master switch - set to false to disable storage
+#   max_age_days: 0     # Auto-delete sessions older than N days (0=never)
+#   max_count: 0        # Keep at most N sessions (0=unlimited)
 
 # Image generation settings
 image:

@@ -18,6 +18,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"golang.org/x/term"
@@ -35,8 +36,10 @@ type Model struct {
 	styles   *ui.Styles
 	keyMap   KeyMap
 
-	// Conversation state
-	session   *Session
+	// Session state
+	store     session.Store     // Session storage backend
+	sess      *session.Session  // Current session
+	messages  []session.Message // In-memory messages for current session
 	streaming bool
 	phase     string // "Thinking", "Searching", "Reading", "Responding"
 
@@ -68,6 +71,8 @@ type Model struct {
 	searchEnabled       bool             // Web search toggle
 	forceExternalSearch bool             // Force external search tools even if provider supports native
 	localTools          []string         // Names of enabled local tools (read, write, etc.)
+	toolsStr            string           // Original tools setting (for session persistence)
+	mcpStr              string           // Original MCP setting (for session persistence)
 
 	// MCP (Model Context Protocol)
 	mcpManager *mcp.Manager
@@ -105,8 +110,11 @@ type streamEventMsg struct {
 // Messages for tea.Program
 type (
 	sessionSavedMsg  struct{}
-	sessionLoadedMsg struct{ session *Session }
-	tickMsg          time.Time
+	sessionLoadedMsg struct {
+		sess     *session.Session
+		messages []session.Message
+	}
+	tickMsg time.Time
 )
 
 // FlushBeforeAskUserMsg signals the TUI to flush content to scrollback
@@ -127,7 +135,7 @@ type ResumeFromExternalUIMsg struct{}
 // Use ui.WaveTickMsg and ui.WavePauseMsg from the shared ToolTracker
 
 // New creates a new chat model
-func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, searchEnabled bool, localTools []string, showStats bool, initialText string) *Model {
+func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session) *Model {
 	// Get terminal size
 	width := 80
 	height := 24
@@ -164,9 +172,38 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 		ta.SetValue(initialText)
 	}
 
-	// Always start with a fresh session
-	// Users can load previous sessions with /load command
-	session := NewSession(provider.Name(), modelName)
+	// Use provided session or create a new one
+	if sess == nil {
+		sess = &session.Session{
+			ID:        session.NewID(),
+			Provider:  provider.Name(),
+			Model:     modelName,
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+			Search:    searchEnabled,
+			Tools:     toolsStr,
+			MCP:       mcpStr,
+		}
+		// Get current working directory
+		if cwd, err := os.Getwd(); err == nil {
+			sess.CWD = cwd
+		}
+		// Persist new session
+		if store != nil {
+			ctx := context.Background()
+			_ = store.Create(ctx, sess)
+			_ = store.SetCurrent(ctx, sess.ID)
+		}
+	}
+
+	// Load existing messages if resuming
+	var messages []session.Message
+	if store != nil && sess.ID != "" {
+		ctx := context.Background()
+		if loadedMsgs, err := store.GetMessages(ctx, sess.ID, 0, 0); err == nil {
+			messages = loadedMsgs
+		}
+	}
 
 	// Load approved directories
 	approvedDirs, _ := LoadApprovedDirs()
@@ -188,7 +225,9 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 		spinner:             s,
 		styles:              styles,
 		keyMap:              DefaultKeyMap(),
-		session:             session,
+		store:               store,
+		sess:                sess,
+		messages:            messages,
 		provider:            provider,
 		engine:              engine,
 		config:              cfg,
@@ -205,6 +244,8 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 		forceExternalSearch: forceExternalSearch,
 		searchEnabled:       searchEnabled,
 		localTools:          localTools,
+		toolsStr:            toolsStr,
+		mcpStr:              mcpStr,
 		showStats:           showStats,
 		stats:               ui.NewSessionStats(),
 	}
@@ -232,7 +273,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dialog.SetSize(m.width, m.height)
 
 		// Reprint history to scrollback after clearing screen
-		if len(m.session.Messages) > 0 {
+		if len(m.messages) > 0 {
 			history := m.renderHistory()
 			return m, tea.Sequence(tea.ClearScreen, tea.Println(history))
 		}
@@ -378,14 +419,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Get the response content for the session
 			responseContent := m.currentResponse.String()
 
-			// Create assistant message
-			assistantMsg := NewAssistantMessage(
-				responseContent,
-				m.currentTokens,
-				duration.Milliseconds(),
-				m.webSearchUsed,
-			)
-			m.session.Messages = append(m.session.Messages, assistantMsg)
+			// Create assistant message and store it
+			assistantMsg := &session.Message{
+				SessionID:   m.sess.ID,
+				Role:        llm.RoleAssistant,
+				Parts:       []llm.Part{{Type: llm.PartText, Text: responseContent}},
+				TextContent: responseContent,
+				DurationMs:  duration.Milliseconds(),
+				CreatedAt:   time.Now(),
+				Sequence:    len(m.messages),
+			}
+			m.messages = append(m.messages, *assistantMsg)
+			if m.store != nil {
+				_ = m.store.AddMessage(context.Background(), m.sess.ID, assistantMsg)
+			}
 
 			// Reset streaming state
 			m.currentResponse.Reset()
@@ -411,9 +458,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Session saved successfully, nothing to do
 
 	case sessionLoadedMsg:
-		if msg.session != nil {
-			m.session = msg.session
+		if msg.sess != nil {
+			m.sess = msg.sess
+			m.messages = msg.messages
 			m.scrollOffset = 0
+			if m.store != nil {
+				_ = m.store.SetCurrent(context.Background(), m.sess.ID)
+			}
 		}
 
 	case clipboardCopiedMsg:
@@ -876,16 +927,16 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Handle web toggle
+	// Handle web toggle (Ctrl+S)
 	if key.Matches(msg, m.keyMap.ToggleWeb) {
-		m.searchEnabled = !m.searchEnabled
+		m.toggleSearch()
 		return m, nil
 	}
 
 	// Handle vim-style navigation when input is empty
 	if m.textarea.Value() == "" {
 		// Calculate total content height for scrolling
-		totalMessages := len(m.session.Messages)
+		totalMessages := len(m.messages)
 
 		// j - scroll down (show older messages, increase offset)
 		if key.Matches(msg, m.keyMap.ScrollDown) {
@@ -981,9 +1032,24 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 		fullContent += filesContent.String()
 	}
 
-	// Create user message with full content (including files) for replay/history
-	userMsg := NewUserMessage(fullContent, fileNames)
-	m.session.Messages = append(m.session.Messages, userMsg)
+	// Create user message and store it
+	userMsg := &session.Message{
+		SessionID:   m.sess.ID,
+		Role:        llm.RoleUser,
+		Parts:       []llm.Part{{Type: llm.PartText, Text: fullContent}},
+		TextContent: fullContent,
+		CreatedAt:   time.Now(),
+		Sequence:    len(m.messages),
+	}
+	m.messages = append(m.messages, *userMsg)
+	if m.store != nil {
+		_ = m.store.AddMessage(context.Background(), m.sess.ID, userMsg)
+		// Update session summary from first user message
+		if m.sess.Summary == "" {
+			m.sess.Summary = session.TruncateSummary(content)
+			_ = m.store.Update(context.Background(), m.sess)
+		}
+	}
 
 	// Print user message permanently to scrollback (inline mode)
 	theme := m.styles.Theme()
@@ -1110,15 +1176,9 @@ func (m *Model) buildMessages() []llm.Message {
 		messages = append(messages, llm.SystemText(m.config.Chat.Instructions))
 	}
 
-	// Add conversation history
-	// Note: User messages already contain file contents if files were attached
-	for _, msg := range m.session.Messages {
-		switch msg.Role {
-		case RoleUser:
-			messages = append(messages, llm.UserText(msg.Content))
-		case RoleAssistant:
-			messages = append(messages, llm.AssistantText(msg.Content))
-		}
+	// Add conversation history - convert session messages to llm messages
+	for _, msg := range m.messages {
+		messages = append(messages, msg.ToLLMMessage())
 	}
 
 	return messages
@@ -1132,7 +1192,8 @@ func (m *Model) tickEvery() tea.Cmd {
 
 func (m *Model) saveSessionCmd() tea.Cmd {
 	return func() tea.Msg {
-		_ = SaveCurrentSession(m.session)
+		// Sessions are now auto-saved via the store
+		// This is kept for compatibility but does nothing
 		return sessionSavedMsg{}
 	}
 }
@@ -1388,7 +1449,7 @@ func (m *Model) renderStatusLine() string {
 			} else {
 				parts = append(parts, mutedStyle.Render("mcp:off"))
 			}
-		} else if len(m.session.Messages) == 0 {
+		} else if len(m.messages) == 0 {
 			// Show hint for new users on empty conversation
 			parts = append(parts, mutedStyle.Render("Ctrl+T:mcp"))
 		}
@@ -1400,7 +1461,7 @@ func (m *Model) renderStatusLine() string {
 	}
 
 	// Help tip (only show when no messages yet)
-	if len(m.session.Messages) == 0 {
+	if len(m.messages) == 0 {
 		parts = append(parts, "/help for commands")
 	}
 
@@ -1546,7 +1607,7 @@ func (m *Model) getTerminalTitle() string {
 		return fmt.Sprintf("term-llm · %s... (%.0fs)", m.phase, elapsed.Seconds())
 	}
 
-	msgCount := len(m.session.Messages)
+	msgCount := len(m.messages)
 	if msgCount == 0 {
 		return "term-llm chat"
 	}
@@ -1644,7 +1705,7 @@ func (m *Model) renderHR() string {
 }
 
 func (m *Model) renderHistory() string {
-	if len(m.session.Messages) == 0 {
+	if len(m.messages) == 0 {
 		return lipgloss.NewStyle().Foreground(m.styles.Theme().Muted).Render("No messages yet. Type your question and press Enter.\n\n")
 	}
 
@@ -1653,7 +1714,7 @@ func (m *Model) renderHistory() string {
 
 	// Determine which messages to show based on scroll offset
 	// scrollOffset=0 means show all (bottom), higher values scroll up
-	messages := m.session.Messages
+	messages := m.messages
 	endIdx := len(messages)
 	if m.scrollOffset > 0 {
 		endIdx = len(messages) - m.scrollOffset
@@ -1673,29 +1734,20 @@ func (m *Model) renderHistory() string {
 	promptStyle := lipgloss.NewStyle().Foreground(theme.Primary).Bold(true)
 
 	for _, msg := range visibleMessages {
-		if msg.Role == RoleUser {
+		if msg.Role == llm.RoleUser {
 			// User message: ❯ content
 			b.WriteString(promptStyle.Render("❯") + " ")
 
-			// Extract content before file attachments
-			displayContent := msg.Content
-			if len(msg.Files) > 0 {
-				if idx := strings.Index(displayContent, "\n\n---\n**Attached files:**"); idx != -1 {
-					displayContent = strings.TrimSpace(displayContent[:idx])
-				}
+			// Extract content before file attachments for display
+			displayContent := msg.TextContent
+			if idx := strings.Index(displayContent, "\n\n---\n**Attached files:**"); idx != -1 {
+				displayContent = strings.TrimSpace(displayContent[:idx])
 			}
 			b.WriteString(displayContent)
-
-			// Show file indicator
-			if len(msg.Files) > 0 {
-				b.WriteString("\n")
-				b.WriteString(lipgloss.NewStyle().Foreground(theme.Muted).Render(
-					fmt.Sprintf("[with: %s]", strings.Join(msg.Files, ", "))))
-			}
 			b.WriteString("\n")
 		} else {
 			// Assistant message: just the rendered content
-			rendered := m.renderMarkdown(msg.Content)
+			rendered := m.renderMarkdown(msg.TextContent)
 			b.WriteString(rendered)
 			b.WriteString("\n")
 		}
@@ -2008,9 +2060,9 @@ func (m *Model) clearFiles() {
 // copyLastResponse copies the last assistant response to clipboard
 func (m *Model) copyLastResponse() (tea.Model, tea.Cmd) {
 	// Find last assistant message
-	for i := len(m.session.Messages) - 1; i >= 0; i-- {
-		if m.session.Messages[i].Role == RoleAssistant {
-			content := m.session.Messages[i].Content
+	for i := len(m.messages) - 1; i >= 0; i-- {
+		if m.messages[i].Role == llm.RoleAssistant {
+			content := m.messages[i].TextContent
 			// Try to copy to clipboard using OSC 52 escape sequence
 			// This works in most modern terminals
 			return m, tea.Batch(

@@ -20,6 +20,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/prompt"
+	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -50,6 +51,8 @@ var (
 	askYolo bool
 	// Skills flag
 	askSkills string
+	// Session resume flag
+	askResume string
 )
 
 var askCmd = &cobra.Command{
@@ -102,6 +105,10 @@ func init() {
 	askCmd.Flags().BoolVarP(&askText, "text", "t", false, "Output plain text instead of rendered markdown")
 	AddYoloFlag(askCmd, &askYolo)
 	AddSkillsFlag(askCmd, &askSkills)
+
+	// Session resume flag - NoOptDefVal allows --resume without a value
+	askCmd.Flags().StringVarP(&askResume, "resume", "r", "", "Continue a session (empty for most recent, or session ID)")
+	askCmd.Flags().Lookup("resume").NoOptDefVal = " " // space means "flag was passed without value"
 
 	// Additional completions
 	if err := askCmd.RegisterFlagCompletionFunc("tools", ToolsFlagCompletion); err != nil {
@@ -198,23 +205,27 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Determine tool settings: CLI > agent > none
+	// Determine initial settings: CLI > agent > none
 	effectiveTools := askTools
 	effectiveReadDirs := askReadDirs
 	effectiveWriteDirs := askWriteDirs
 	effectiveShellAllow := askShellAllow
+	effectiveMCP := askMCP
+	effectiveSearch := askSearch
 	shellAutoRun := false
 	var scriptCommands []string
 
-	if agent != nil && effectiveTools == "" {
-		// Use agent tool settings
-		if agent.HasEnabledList() {
-			effectiveTools = strings.Join(agent.Tools.Enabled, ",")
-		} else if agent.HasDisabledList() {
-			// Get all tools and exclude disabled ones
-			allTools := tools.AllToolNames()
-			enabledTools := agent.GetEnabledTools(allTools)
-			effectiveTools = strings.Join(enabledTools, ",")
+	if agent != nil {
+		// Use agent tool settings if CLI didn't specify
+		if effectiveTools == "" {
+			if agent.HasEnabledList() {
+				effectiveTools = strings.Join(agent.Tools.Enabled, ",")
+			} else if agent.HasDisabledList() {
+				// Get all tools and exclude disabled ones
+				allTools := tools.AllToolNames()
+				enabledTools := agent.GetEnabledTools(allTools)
+				effectiveTools = strings.Join(enabledTools, ",")
+			}
 		}
 
 		// Agent-specific tool settings
@@ -231,6 +242,82 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			for _, script := range agent.Shell.Scripts {
 				scriptCommands = append(scriptCommands, script)
 			}
+		}
+
+		// Agent MCP servers
+		if effectiveMCP == "" {
+			mcpServers := agent.GetMCPServerNames()
+			if len(mcpServers) > 0 {
+				effectiveMCP = strings.Join(mcpServers, ",")
+			}
+		}
+
+		// Agent search setting
+		if agent.Search {
+			effectiveSearch = true
+		}
+	}
+
+	// Initialize session store and handle --resume BEFORE tool/MCP initialization
+	// so that session settings can override effectiveTools, effectiveMCP, etc.
+	var store session.Store
+	var sess *session.Session
+	var sessionMessages []llm.Message
+	if cfg.Sessions.Enabled {
+		var storeErr error
+		store, storeErr = session.NewStore(session.Config{
+			Enabled:    cfg.Sessions.Enabled,
+			MaxAgeDays: cfg.Sessions.MaxAgeDays,
+			MaxCount:   cfg.Sessions.MaxCount,
+		})
+		if storeErr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: session store unavailable: %v\n", storeErr)
+		} else {
+			defer store.Close()
+		}
+	}
+
+	// Handle --resume flag - apply session settings before tool/MCP setup
+	resuming := cmd.Flags().Changed("resume")
+	if resuming {
+		if store == nil {
+			return fmt.Errorf("session storage is disabled; cannot resume")
+		}
+		resumeID := strings.TrimSpace(askResume)
+		if resumeID == "" {
+			sess, _ = store.GetCurrent(ctx)
+			if sess == nil {
+				summaries, _ := store.List(ctx, session.ListOptions{Limit: 1})
+				if len(summaries) > 0 {
+					sess, _ = store.Get(ctx, summaries[0].ID)
+				}
+			}
+		} else {
+			sess, _ = store.Get(ctx, resumeID)
+		}
+		if sess == nil {
+			return fmt.Errorf("no session to resume")
+		}
+
+		// Update current session marker so --resume without ID targets this session
+		_ = store.SetCurrent(ctx, sess.ID)
+
+		// Apply session settings for flags not explicitly set on CLI
+		// (unconditionally - session may have had search/tools/MCP disabled)
+		if !cmd.Flags().Changed("search") {
+			effectiveSearch = sess.Search
+		}
+		if !cmd.Flags().Changed("tools") {
+			effectiveTools = sess.Tools
+		}
+		if !cmd.Flags().Changed("mcp") {
+			effectiveMCP = sess.MCP
+		}
+
+		// Load session history
+		sessionMsgs, _ := store.GetMessages(ctx, sess.ID, 0, 0)
+		for _, msg := range sessionMsgs {
+			sessionMessages = append(sessionMessages, msg.ToLLMMessage())
 		}
 	}
 
@@ -288,16 +375,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Determine MCP servers: CLI > agent
-	effectiveMCP := askMCP
-	if agent != nil && effectiveMCP == "" {
-		mcpServers := agent.GetMCPServerNames()
-		if len(mcpServers) > 0 {
-			effectiveMCP = strings.Join(mcpServers, ",")
-		}
-	}
-
-	// Initialize MCP servers if any
+	// Initialize MCP servers if any (after session settings are applied)
 	var mcpManager *mcp.Manager
 	if effectiveMCP != "" {
 		mcpManager, err = enableMCPServersWithFeedback(ctx, effectiveMCP, engine, cmd.ErrOrStderr())
@@ -325,7 +403,28 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 
 	userPrompt := prompt.AskUserPrompt(question, files, stdinContent)
-	messages := []llm.Message{}
+
+	// Create new session if not resuming
+	if !resuming && store != nil {
+		modelName := "unknown"
+		if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
+			modelName = providerCfg.Model
+		}
+		sess = &session.Session{
+			ID:        session.NewID(),
+			Provider:  provider.Name(),
+			Model:     modelName,
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+			Search:    effectiveSearch,
+			Tools:     effectiveTools,
+			MCP:       effectiveMCP,
+		}
+		if cwd, cwdErr := os.Getwd(); cwdErr == nil {
+			sess.CWD = cwd
+		}
+		_ = store.Create(ctx, sess)
+	}
 
 	// Determine system instructions: CLI > agent > config
 	instructions := cfg.Ask.Instructions
@@ -357,21 +456,28 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if instructions != "" {
+	// Build messages in correct order: system -> history -> new user
+	// Providers expect system message first
+	var messages []llm.Message
+
+	// Check if session history already starts with a system message
+	historyHasSystem := len(sessionMessages) > 0 && sessionMessages[0].Role == llm.RoleSystem
+
+	if instructions != "" && !historyHasSystem {
+		// Add system message first (only if not already in history)
 		messages = append(messages, llm.SystemText(instructions))
 	}
+
+	// Add session history (if resuming)
+	messages = append(messages, sessionMessages...)
+
+	// Add new user message
 	messages = append(messages, llm.UserText(userPrompt))
 
 	// Determine max turns: CLI default check > agent > CLI default
 	effectiveMaxTurns := askMaxTurns
 	if agent != nil && agent.MaxTurns > 0 && !cmd.Flags().Changed("max-turns") {
 		effectiveMaxTurns = agent.MaxTurns
-	}
-
-	// Determine effective search: CLI flag or agent setting
-	effectiveSearch := askSearch
-	if agent != nil && agent.Search {
-		effectiveSearch = true
 	}
 
 	debugMode := askDebug
@@ -475,10 +581,11 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		errChan <- nil
 	}()
 
-	// Set up text collection for output capture (commit_editmsg or on_complete fallback)
+	// Set up text collection for output capture (commit_editmsg, on_complete, or session save)
 	var collector *textCollector
 	events := adapter.Events()
-	if agent != nil && (agent.Output == "commit_editmsg" || agent.OnComplete != "") {
+	needsCollector := (agent != nil && (agent.Output == "commit_editmsg" || agent.OnComplete != "")) || (store != nil && sess != nil)
+	if needsCollector {
 		collector = &textCollector{}
 		events = collector.wrapEvents(events)
 	}
@@ -499,6 +606,48 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 		return fmt.Errorf("streaming failed: %w", err)
+	}
+
+	// Save to session
+	if store != nil && sess != nil {
+		// Get current message count for sequence
+		existingMsgs, _ := store.GetMessages(ctx, sess.ID, 0, 0)
+		seq := len(existingMsgs)
+
+		// Save user message
+		userMsg := &session.Message{
+			SessionID:   sess.ID,
+			Role:        llm.RoleUser,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: userPrompt}},
+			TextContent: userPrompt,
+			CreatedAt:   time.Now(),
+			Sequence:    seq,
+		}
+		_ = store.AddMessage(ctx, sess.ID, userMsg)
+
+		// Update session summary from first user message
+		if sess.Summary == "" {
+			sess.Summary = session.TruncateSummary(question)
+			_ = store.Update(ctx, sess)
+		}
+
+		// Save assistant message
+		var responseText string
+		if collector != nil {
+			responseText = collector.Text()
+		}
+		if responseText != "" {
+			assistantMsg := &session.Message{
+				SessionID:   sess.ID,
+				Role:        llm.RoleAssistant,
+				Parts:       []llm.Part{{Type: llm.PartText, Text: responseText}},
+				TextContent: responseText,
+				CreatedAt:   time.Now(),
+				Sequence:    seq + 1,
+			}
+			_ = store.AddMessage(ctx, sess.ID, assistantMsg)
+		}
+		_ = store.SetCurrent(ctx, sess.ID)
 	}
 
 	// Run on_complete handler if configured

@@ -10,7 +10,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sahilm/fuzzy"
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/samsaffron/term-llm/internal/session"
 )
 
 // Command represents a slash command
@@ -75,7 +77,7 @@ func AllCommands() []Command {
 		{
 			Name:        "load",
 			Description: "Load a saved session",
-			Usage:       "/load <name>",
+			Usage:       "/load <id>",
 		},
 		{
 			Name:        "sessions",
@@ -358,15 +360,34 @@ func (m *Model) cmdHelp() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
-	m.session.Messages = []ChatMessage{}
+	// Create a new session to clear the conversation
+	// This preserves the old session in history while starting fresh
+	m.sess = &session.Session{
+		ID:        session.NewID(),
+		Provider:  m.providerName,
+		Model:     m.modelName,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Search:    m.searchEnabled,
+		Tools:     m.toolsStr,
+		MCP:       m.mcpStr,
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		m.sess.CWD = cwd
+	}
+
+	// Persist new session
+	if m.store != nil {
+		ctx := context.Background()
+		_ = m.store.Create(ctx, m.sess)
+		_ = m.store.SetCurrent(ctx, m.sess.ID)
+	}
+
+	m.messages = nil
 	m.scrollOffset = 0
 	m.textarea.SetValue("")
 
-	// Print confirmation and save session
-	return m, tea.Batch(
-		tea.Println("Conversation cleared."),
-		m.saveSessionCmd(),
-	)
+	return m, tea.Println("Conversation cleared (new session started).")
 }
 
 func (m *Model) cmdQuit() (tea.Model, tea.Cmd) {
@@ -454,9 +475,24 @@ func fuzzyMatchModel(query string, cfg *config.Config) string {
 	return ""
 }
 
-func (m *Model) cmdSearch() (tea.Model, tea.Cmd) {
+// toggleSearch toggles web search and persists to session.
+// Called by both Ctrl+S and /search command.
+func (m *Model) toggleSearch() {
 	m.searchEnabled = !m.searchEnabled
+
+	// Persist to session
+	if m.sess != nil {
+		m.sess.Search = m.searchEnabled
+		if m.store != nil {
+			_ = m.store.Update(context.Background(), m.sess)
+		}
+	}
+}
+
+func (m *Model) cmdSearch() (tea.Model, tea.Cmd) {
+	m.toggleSearch()
 	m.textarea.SetValue("")
+
 	status := "disabled"
 	if m.searchEnabled {
 		status = "enabled"
@@ -465,15 +501,30 @@ func (m *Model) cmdSearch() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
-	// Save current session first if it has messages
-	if len(m.session.Messages) > 0 {
-		_ = SaveCurrentSession(m.session)
+	// Create new session with current settings
+	m.sess = &session.Session{
+		ID:        session.NewID(),
+		Provider:  m.providerName,
+		Model:     m.modelName,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Search:    m.searchEnabled,
+		Tools:     m.toolsStr,
+		MCP:       m.mcpStr,
 	}
-
-	// Create new session
-	m.session = NewSession(m.providerName, m.modelName)
+	if cwd, err := os.Getwd(); err == nil {
+		m.sess.CWD = cwd
+	}
+	m.messages = nil
 	m.scrollOffset = 0
 	m.textarea.SetValue("")
+
+	// Persist to store
+	if m.store != nil {
+		ctx := context.Background()
+		_ = m.store.Create(ctx, m.sess)
+		_ = m.store.SetCurrent(ctx, m.sess.ID)
+	}
 
 	return m.showSystemMessage("Started new session.")
 }
@@ -484,11 +535,11 @@ func (m *Model) cmdSave(args []string) (tea.Model, tea.Cmd) {
 		name = strings.Join(args, "-")
 	} else {
 		// Generate name from first message or timestamp
-		if len(m.session.Messages) > 0 {
+		if len(m.messages) > 0 {
 			// Use first few words of first user message
-			for _, msg := range m.session.Messages {
-				if msg.Role == RoleUser {
-					words := strings.Fields(msg.Content)
+			for _, msg := range m.messages {
+				if msg.Role == llm.RoleUser {
+					words := strings.Fields(msg.TextContent)
 					if len(words) > 5 {
 						words = words[:5]
 					}
@@ -510,8 +561,13 @@ func (m *Model) cmdSave(args []string) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	m.session.Name = name
-	if err := SaveSession(m.session, name+".json"); err != nil {
+	if m.store == nil {
+		m.textarea.SetValue("")
+		return m.showSystemMessage("Session storage is disabled. Enable it in config with `sessions.enabled: true`.")
+	}
+
+	m.sess.Name = name
+	if err := m.store.Update(context.Background(), m.sess); err != nil {
 		return m.showSystemMessage(fmt.Sprintf("Failed to save session: %v", err))
 	}
 
@@ -520,55 +576,97 @@ func (m *Model) cmdSave(args []string) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) cmdLoad(args []string) (tea.Model, tea.Cmd) {
+	if m.store == nil {
+		return m.showSystemMessage("Session storage is disabled.")
+	}
+
+	ctx := context.Background()
 	if len(args) == 0 {
 		// Show session list dialog
-		sessions, err := ListSessions()
-		if err != nil || len(sessions) == 0 {
+		summaries, err := m.store.List(ctx, session.ListOptions{Limit: 20})
+		if err != nil || len(summaries) == 0 {
 			return m.showSystemMessage("No saved sessions found.\nUse `/save [name]` to save the current session.")
 		}
-		m.dialog.ShowSessionList(sessions, m.session.Name)
+		// Convert to DialogItem slice with full IDs
+		var items []DialogItem
+		for _, s := range summaries {
+			label := s.Name
+			if label == "" {
+				label = session.ShortID(s.ID)
+			}
+			items = append(items, DialogItem{
+				ID:    s.ID, // Full session ID for lookup
+				Label: label,
+			})
+		}
+		currentID := ""
+		if m.sess != nil {
+			currentID = m.sess.ID
+		}
+		m.dialog.ShowSessionList(items, currentID)
 		m.textarea.SetValue("")
 		return m, nil
 	}
 
-	name := args[0]
-	session, err := LoadSession(name + ".json")
+	// Load by session ID or name
+	sessionID := args[0]
+	sess, err := m.store.Get(ctx, sessionID)
 	if err != nil {
 		return m.showSystemMessage(fmt.Sprintf("Failed to load session: %v", err))
 	}
-	if session == nil {
-		return m.showSystemMessage(fmt.Sprintf("Session '%s' not found.", name))
+	if sess == nil {
+		return m.showSystemMessage(fmt.Sprintf("Session '%s' not found.", sessionID))
 	}
 
-	m.session = session
+	messages, _ := m.store.GetMessages(ctx, sess.ID, 0, 0)
+	m.sess = sess
+	m.messages = messages
 	m.scrollOffset = 0
 	m.textarea.SetValue("")
-	return m.showSystemMessage(fmt.Sprintf("Loaded session '%s' (%d messages).", name, len(session.Messages)))
+	_ = m.store.SetCurrent(ctx, sess.ID)
+
+	name := sess.Name
+	if name == "" {
+		name = session.ShortID(sess.ID)
+	}
+	return m.showSystemMessage(fmt.Sprintf("Loaded session '%s' (%d messages).", name, len(messages)))
 }
 
 func (m *Model) cmdSessions() (tea.Model, tea.Cmd) {
-	sessions, err := ListSessions()
+	if m.store == nil {
+		return m.showSystemMessage("Session storage is disabled.")
+	}
+
+	summaries, err := m.store.List(context.Background(), session.ListOptions{Limit: 20})
 	if err != nil {
 		return m.showSystemMessage(fmt.Sprintf("Failed to list sessions: %v", err))
 	}
 
-	if len(sessions) == 0 {
+	if len(summaries) == 0 {
 		return m.showSystemMessage("No saved sessions found.\nUse `/save [name]` to save the current session.")
 	}
 
 	var b strings.Builder
-	b.WriteString("## Saved Sessions\n\n")
-	for _, name := range sessions {
-		b.WriteString(fmt.Sprintf("- `%s`\n", name))
+	b.WriteString("## Recent Sessions\n\n")
+	for _, s := range summaries {
+		name := s.Name
+		if name == "" {
+			name = session.ShortID(s.ID)
+		}
+		summary := s.Summary
+		if len(summary) > 50 {
+			summary = summary[:47] + "..."
+		}
+		b.WriteString(fmt.Sprintf("- `%s` (%s) - %d msgs - %s\n", name, s.Provider, s.MessageCount, summary))
 	}
-	b.WriteString("\nUse `/load <name>` to load a session.")
+	b.WriteString("\nUse `/load <id>` to load a session.")
 
 	m.textarea.SetValue("")
 	return m.showSystemMessage(b.String())
 }
 
 func (m *Model) cmdExport(args []string) (tea.Model, tea.Cmd) {
-	if len(m.session.Messages) == 0 {
+	if len(m.messages) == 0 {
 		return m.showSystemMessage("No messages to export.")
 	}
 
@@ -589,46 +687,32 @@ func (m *Model) cmdExport(args []string) (tea.Model, tea.Cmd) {
 	b.WriteString("# Chat Export\n\n")
 	b.WriteString(fmt.Sprintf("**Model:** %s (%s)\n", m.modelName, m.providerName))
 	b.WriteString(fmt.Sprintf("**Exported:** %s\n", time.Now().Format("2006-01-02 15:04:05")))
-	if m.session.Name != "" {
-		b.WriteString(fmt.Sprintf("**Session:** %s\n", m.session.Name))
+	if m.sess.Name != "" {
+		b.WriteString(fmt.Sprintf("**Session:** %s\n", m.sess.Name))
 	}
 	b.WriteString("\n---\n\n")
 
 	// Messages
-	for _, msg := range m.session.Messages {
+	for _, msg := range m.messages {
 		// Role header
-		if msg.Role == RoleUser {
+		if msg.Role == llm.RoleUser {
 			b.WriteString("## ❯\n\n")
 		} else {
 			b.WriteString("## 🤖 Assistant")
 			if msg.DurationMs > 0 {
-				b.WriteString(fmt.Sprintf(" *(%.1fs", float64(msg.DurationMs)/1000))
-				if msg.Tokens > 0 {
-					b.WriteString(fmt.Sprintf(", %d tokens", msg.Tokens))
-				}
-				if msg.WebSearch {
-					b.WriteString(", web search")
-				}
-				b.WriteString(")*")
+				b.WriteString(fmt.Sprintf(" *(%.1fs)*", float64(msg.DurationMs)/1000))
 			}
 			b.WriteString("\n\n")
 		}
 
 		// Content - for user messages, extract just the text (not file contents)
-		content := msg.Content
-		if msg.Role == RoleUser && len(msg.Files) > 0 {
+		content := msg.TextContent
+		if msg.Role == llm.RoleUser {
 			if idx := strings.Index(content, "\n\n---\n**Attached files:**"); idx != -1 {
 				content = strings.TrimSpace(content[:idx])
 			}
-			b.WriteString(content)
-			b.WriteString("\n\n")
-			b.WriteString("**Attached files:** ")
-			b.WriteString(strings.Join(msg.Files, ", "))
-			b.WriteString("\n")
-		} else {
-			b.WriteString(content)
 		}
-
+		b.WriteString(content)
 		b.WriteString("\n---\n\n")
 	}
 
@@ -638,7 +722,7 @@ func (m *Model) cmdExport(args []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.textarea.SetValue("")
-	return m.showSystemMessage(fmt.Sprintf("Exported %d messages to `%s`", len(m.session.Messages), outputPath))
+	return m.showSystemMessage(fmt.Sprintf("Exported %d messages to `%s`", len(m.messages), outputPath))
 }
 
 func (m *Model) cmdSystem(args []string) (tea.Model, tea.Cmd) {
