@@ -106,8 +106,35 @@ type Config struct {
 
 // AgentsConfig configures the agent system
 type AgentsConfig struct {
-	UseBuiltin  bool     `mapstructure:"use_builtin"`  // Enable built-in agents (default true)
-	SearchPaths []string `mapstructure:"search_paths"` // Additional directories to search for agents
+	UseBuiltin  bool                       `mapstructure:"use_builtin"`  // Enable built-in agents (default true)
+	SearchPaths []string                   `mapstructure:"search_paths"` // Additional directories to search for agents
+	Preferences map[string]AgentPreference `mapstructure:"preferences"`  // Per-agent preference overrides
+}
+
+// AgentPreference allows overriding agent settings via config.yaml.
+// All fields are optional - only set fields override the agent's defaults.
+type AgentPreference struct {
+	// Model preferences
+	Provider string `mapstructure:"provider,omitempty" yaml:"provider,omitempty"`
+	Model    string `mapstructure:"model,omitempty" yaml:"model,omitempty"`
+
+	// Tool configuration
+	ToolsEnabled  []string `mapstructure:"tools_enabled,omitempty" yaml:"tools_enabled,omitempty"`
+	ToolsDisabled []string `mapstructure:"tools_disabled,omitempty" yaml:"tools_disabled,omitempty"`
+
+	// Shell settings
+	ShellAllow   []string `mapstructure:"shell_allow,omitempty" yaml:"shell_allow,omitempty"`
+	ShellAutoRun *bool    `mapstructure:"shell_auto_run,omitempty" yaml:"shell_auto_run,omitempty"`
+
+	// Spawn settings
+	SpawnMaxParallel   *int     `mapstructure:"spawn_max_parallel,omitempty" yaml:"spawn_max_parallel,omitempty"`
+	SpawnMaxDepth      *int     `mapstructure:"spawn_max_depth,omitempty" yaml:"spawn_max_depth,omitempty"`
+	SpawnTimeout       *int     `mapstructure:"spawn_timeout,omitempty" yaml:"spawn_timeout,omitempty"`
+	SpawnAllowedAgents []string `mapstructure:"spawn_allowed_agents,omitempty" yaml:"spawn_allowed_agents,omitempty"`
+
+	// Behavior
+	MaxTurns *int  `mapstructure:"max_turns,omitempty" yaml:"max_turns,omitempty"`
+	Search   *bool `mapstructure:"search,omitempty" yaml:"search,omitempty"`
 }
 
 // SkillsConfig configures the Agent Skills system
@@ -553,6 +580,18 @@ func resolveSearchCredentials(cfg *SearchConfig) {
 	}
 }
 
+// ParseProviderModel splits "provider:model" into separate parts.
+// Returns (provider, model). Model will be empty if not specified.
+// This is a simple version that doesn't validate against configured providers.
+func ParseProviderModel(s string) (provider, model string) {
+	parts := strings.SplitN(s, ":", 2)
+	provider = strings.TrimSpace(parts[0])
+	if len(parts) == 2 {
+		model = strings.TrimSpace(parts[1])
+	}
+	return provider, model
+}
+
 // expandEnv expands ${VAR} or $VAR in a string
 func expandEnv(s string) string {
 	if strings.HasPrefix(s, "${") && strings.HasSuffix(s, "}") {
@@ -729,6 +768,7 @@ var KnownKeys = map[string]bool{
 	// Agents
 	"agents.use_builtin":  true,
 	"agents.search_paths": true,
+	"agents.preferences":  true,
 
 	// Skills
 	"skills.enabled":                 true,
@@ -810,8 +850,25 @@ func GetDefaults() map[string]any {
 	}
 }
 
+// KnownAgentPreferenceKeys contains valid keys for agent preference configurations
+var KnownAgentPreferenceKeys = map[string]bool{
+	"provider":             true,
+	"model":                true,
+	"tools_enabled":        true,
+	"tools_disabled":       true,
+	"shell_allow":          true,
+	"shell_auto_run":       true,
+	"spawn_max_parallel":   true,
+	"spawn_max_depth":      true,
+	"spawn_timeout":        true,
+	"spawn_allowed_agents": true,
+	"max_turns":            true,
+	"search":               true,
+}
+
 // IsKnownKey checks if a key path is a known configuration key
 // For provider keys (providers.*), validates the sub-keys
+// For agent preference keys (agents.preferences.*), validates the sub-keys
 func IsKnownKey(keyPath string) bool {
 	// Check direct match
 	if KnownKeys[keyPath] {
@@ -828,6 +885,19 @@ func IsKnownKey(keyPath string) bool {
 		if len(parts) == 3 {
 			// providers.<name>.<key> - check if <key> is valid
 			return KnownProviderKeys[parts[2]]
+		}
+	}
+
+	// Check for agents.preferences.* pattern
+	if strings.HasPrefix(keyPath, "agents.preferences.") {
+		parts := strings.SplitN(keyPath, ".", 4)
+		if len(parts) == 3 {
+			// agents.preferences.<agent-name> is always valid
+			return true
+		}
+		if len(parts) == 4 {
+			// agents.preferences.<agent-name>.<key> - check if <key> is valid
+			return KnownAgentPreferenceKeys[parts[3]]
 		}
 	}
 
@@ -901,4 +971,140 @@ exec:
 %s`, cfg.DefaultProvider, cfg.Exec.Suggestions, imageSection, providers.String())
 
 	return os.WriteFile(path, []byte(content), 0600)
+}
+
+// SetAgentPreference sets a preference for a specific agent.
+// Uses viper to merge with existing config.
+// Supports "provider:model" format for the provider key (e.g., "chatgpt:gpt-5.2-codex").
+// Returns a list of keys that were set (may be multiple for provider:model format).
+func SetAgentPreference(agentName, key, value string) ([]string, error) {
+	// Validate the key
+	if !KnownAgentPreferenceKeys[key] {
+		return nil, fmt.Errorf("unknown agent preference key: %s", key)
+	}
+
+	configPath, err := GetConfigPath()
+	if err != nil {
+		return nil, err
+	}
+
+	// Ensure config directory exists
+	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+		return nil, fmt.Errorf("create config dir: %w", err)
+	}
+
+	// Load existing config using a separate viper instance
+	v := viper.New()
+	v.SetConfigFile(configPath)
+	v.SetConfigType("yaml")
+
+	// Try to read existing config (ignore if doesn't exist)
+	_ = v.ReadInConfig()
+
+	var keysSet []string
+
+	// Handle provider:model format
+	if key == "provider" && strings.Contains(value, ":") {
+		provider, model := ParseProviderModel(value)
+
+		providerKey := fmt.Sprintf("agents.preferences.%s.provider", agentName)
+		modelKey := fmt.Sprintf("agents.preferences.%s.model", agentName)
+
+		v.Set(providerKey, provider)
+		v.Set(modelKey, model)
+		keysSet = append(keysSet, "provider", "model")
+	} else {
+		// Set the preference
+		viperKey := fmt.Sprintf("agents.preferences.%s.%s", agentName, key)
+
+		// Parse value based on key type
+		switch key {
+		case "max_turns", "spawn_max_parallel", "spawn_max_depth", "spawn_timeout":
+			// Integer values
+			var intVal int
+			if _, err := fmt.Sscanf(value, "%d", &intVal); err != nil {
+				return nil, fmt.Errorf("invalid integer value for %s: %s", key, value)
+			}
+			if intVal < 0 {
+				return nil, fmt.Errorf("negative value not allowed for %s: %d", key, intVal)
+			}
+			v.Set(viperKey, intVal)
+		case "search", "shell_auto_run":
+			// Boolean values (case-insensitive)
+			lowerVal := strings.ToLower(value)
+			boolVal := lowerVal == "true" || value == "1" || lowerVal == "yes"
+			v.Set(viperKey, boolVal)
+		case "tools_enabled", "tools_disabled", "shell_allow", "spawn_allowed_agents":
+			// Array values (comma-separated)
+			if value == "" {
+				v.Set(viperKey, []string{})
+			} else {
+				parts := strings.Split(value, ",")
+				for i := range parts {
+					parts[i] = strings.TrimSpace(parts[i])
+				}
+				v.Set(viperKey, parts)
+			}
+		default:
+			// String values
+			v.Set(viperKey, value)
+		}
+		keysSet = append(keysSet, key)
+	}
+
+	return keysSet, v.WriteConfig()
+}
+
+// GetAgentPreference returns the preferences for a specific agent.
+func GetAgentPreference(agentName string) (AgentPreference, bool) {
+	cfg, err := Load()
+	if err != nil {
+		return AgentPreference{}, false
+	}
+
+	if cfg.Agents.Preferences == nil {
+		return AgentPreference{}, false
+	}
+
+	pref, ok := cfg.Agents.Preferences[agentName]
+	return pref, ok
+}
+
+// ClearAgentPreferences removes all preferences for a specific agent.
+func ClearAgentPreferences(agentName string) error {
+	configPath, err := GetConfigPath()
+	if err != nil {
+		return err
+	}
+
+	// Load existing config
+	v := viper.New()
+	v.SetConfigFile(configPath)
+	v.SetConfigType("yaml")
+
+	if err := v.ReadInConfig(); err != nil {
+		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
+			return nil // Nothing to clear
+		}
+		return err
+	}
+
+	// Get all preferences
+	prefs := v.GetStringMap("agents.preferences")
+	if prefs == nil {
+		return nil // Nothing to clear
+	}
+
+	// Remove this agent's preferences
+	delete(prefs, agentName)
+
+	// Set the updated preferences map
+	if len(prefs) == 0 {
+		// Remove the entire preferences section if empty
+		v.Set("agents.preferences", nil)
+	} else {
+		v.Set("agents.preferences", prefs)
+	}
+
+	return v.WriteConfig()
 }

@@ -67,6 +67,9 @@ func LoadAgent(agentName string, cfg *config.Config) (*agents.Agent, error) {
 		return nil, fmt.Errorf("create agent registry: %w", err)
 	}
 
+	// Apply agent preferences from config
+	registry.SetPreferences(cfg.Agents.Preferences)
+
 	agent, err := registry.Get(agentName)
 	if err != nil {
 		return nil, fmt.Errorf("load agent: %w", err)

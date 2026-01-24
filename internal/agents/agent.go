@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"gopkg.in/yaml.v3"
 )
 
@@ -300,4 +301,56 @@ func (a *Agent) Validate() error {
 	}
 
 	return nil
+}
+
+// Merge applies preferences on top of the agent's existing configuration.
+// Non-zero/non-nil values in pref override the agent's defaults.
+func (a *Agent) Merge(pref config.AgentPreference) {
+	// Model preferences
+	if pref.Provider != "" {
+		a.Provider = pref.Provider
+	}
+	if pref.Model != "" {
+		a.Model = pref.Model
+	}
+
+	// Tool configuration - replace entire lists if set
+	if len(pref.ToolsEnabled) > 0 {
+		a.Tools.Enabled = pref.ToolsEnabled
+		a.Tools.Disabled = nil // Clear disabled if enabled is set
+	}
+	if len(pref.ToolsDisabled) > 0 {
+		a.Tools.Disabled = pref.ToolsDisabled
+		a.Tools.Enabled = nil // Clear enabled if disabled is set
+	}
+
+	// Shell settings - append allow patterns, replace auto_run
+	if len(pref.ShellAllow) > 0 {
+		a.Shell.Allow = append(a.Shell.Allow, pref.ShellAllow...)
+	}
+	if pref.ShellAutoRun != nil {
+		a.Shell.AutoRun = *pref.ShellAutoRun
+	}
+
+	// Spawn settings
+	if pref.SpawnMaxParallel != nil {
+		a.Spawn.MaxParallel = *pref.SpawnMaxParallel
+	}
+	if pref.SpawnMaxDepth != nil {
+		a.Spawn.MaxDepth = *pref.SpawnMaxDepth
+	}
+	if pref.SpawnTimeout != nil {
+		a.Spawn.DefaultTimeout = *pref.SpawnTimeout
+	}
+	if len(pref.SpawnAllowedAgents) > 0 {
+		a.Spawn.AllowedAgents = pref.SpawnAllowedAgents
+	}
+
+	// Behavior
+	if pref.MaxTurns != nil {
+		a.MaxTurns = *pref.MaxTurns
+	}
+	if pref.Search != nil {
+		a.Search = *pref.Search
+	}
 }

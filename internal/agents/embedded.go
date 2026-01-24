@@ -16,11 +16,13 @@ var builtinFS embed.FS
 
 // builtinAgentNames lists all built-in agent names.
 var builtinAgentNames = []string{
+	"active-review",
 	"agent-builder",
 	"artist",
 	"changelog",
 	"codebase",
 	"commit-message",
+	"developer",
 	"editor",
 	"file-organizer",
 	"researcher",

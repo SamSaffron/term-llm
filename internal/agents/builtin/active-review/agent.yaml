@@ -1,0 +1,15 @@
+name: active-review
+description: "Review code and implement fixes using sub-agents"
+
+tools:
+  enabled: [spawn_agent, read_file, glob, grep]
+
+spawn:
+  allowed_agents:
+    - reviewer
+    - developer
+  max_parallel: 1
+  max_depth: 2
+  timeout: 600
+
+max_turns: 50

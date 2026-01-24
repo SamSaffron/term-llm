@@ -1,0 +1,26 @@
+name: developer
+description: "Implement code changes, fixes, and features"
+
+tools:
+  enabled: [read_file, write_file, edit_file, glob, grep, shell]
+
+shell:
+  allow:
+    - "go build*"
+    - "go test*"
+    - "go run*"
+    - "go fmt*"
+    - "npm *"
+    - "yarn *"
+    - "pnpm *"
+    - "git diff*"
+    - "git status"
+    - "git log*"
+    - "cargo build*"
+    - "cargo test*"
+    - "cargo fmt*"
+    - "python *"
+    - "pytest*"
+    - "make *"
+
+max_turns: 30

@@ -144,6 +144,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("create agent registry: %w", err)
 		}
 
+		// Apply agent preferences from config
+		registry.SetPreferences(cfg.Agents.Preferences)
+
 		agent, err = registry.Get(askAgent)
 		if err != nil {
 			return fmt.Errorf("load agent: %w", err)

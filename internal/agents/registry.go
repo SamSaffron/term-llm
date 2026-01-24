@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+
+	"github.com/samsaffron/term-llm/internal/config"
 )
 
 // Registry manages agent discovery and resolution.
@@ -17,6 +19,9 @@ type Registry struct {
 
 	// Cache of discovered agents (name -> agent)
 	cache map[string]*Agent
+
+	// Preferences to apply on top of agent configs
+	preferences map[string]config.AgentPreference
 }
 
 type searchPath struct {
@@ -71,36 +76,70 @@ func NewRegistry(cfg RegistryConfig) (*Registry, error) {
 	return r, nil
 }
 
+// SetPreferences sets the preference overrides to apply to agents.
+// Call this after creating the registry to configure agent preferences.
+// This also invalidates the cache for any agents that have preferences set,
+// ensuring the new preferences are applied on next Get().
+func (r *Registry) SetPreferences(prefs map[string]config.AgentPreference) {
+	// Invalidate cache for agents with changed preferences
+	if r.preferences != nil || prefs != nil {
+		for name := range r.cache {
+			// Check if this agent has preferences in either old or new set
+			_, hadPref := r.preferences[name]
+			_, hasPref := prefs[name]
+			if hadPref || hasPref {
+				delete(r.cache, name)
+			}
+		}
+	}
+	r.preferences = prefs
+}
+
 // Get retrieves an agent by name.
 // Resolution order: local > user > search paths > builtin
+// Preferences are applied on top of the loaded agent config.
 func (r *Registry) Get(name string) (*Agent, error) {
 	// Check cache first
 	if agent, ok := r.cache[name]; ok {
 		return agent, nil
 	}
 
+	var agent *Agent
+	var err error
+
 	// Search filesystem paths
 	for _, sp := range r.searchPaths {
 		agentDir := filepath.Join(sp.path, name)
 		if isAgentDir(agentDir) {
-			agent, err := LoadFromDir(agentDir, sp.source)
+			agent, err = LoadFromDir(agentDir, sp.source)
 			if err != nil {
 				return nil, fmt.Errorf("load agent %s: %w", name, err)
 			}
-			r.cache[name] = agent
-			return agent, nil
+			break
 		}
 	}
 
-	// Check built-in agents
-	if r.useBuiltin {
-		if agent, err := getBuiltinAgent(name); err == nil {
-			r.cache[name] = agent
-			return agent, nil
+	// Check built-in agents if not found in filesystem
+	if agent == nil && r.useBuiltin {
+		agent, err = getBuiltinAgent(name)
+		if err != nil {
+			return nil, fmt.Errorf("agent not found: %s", name)
 		}
 	}
 
-	return nil, fmt.Errorf("agent not found: %s", name)
+	if agent == nil {
+		return nil, fmt.Errorf("agent not found: %s", name)
+	}
+
+	// Apply preferences on top of agent config
+	if r.preferences != nil {
+		if pref, ok := r.preferences[name]; ok {
+			agent.Merge(pref)
+		}
+	}
+
+	r.cache[name] = agent
+	return agent, nil
 }
 
 // List returns all available agents.

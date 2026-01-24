@@ -30,6 +30,9 @@ func NewSpawnAgentRunner(cfg *config.Config, yoloMode bool) (*SpawnAgentRunner, 
 		return nil, fmt.Errorf("create agent registry: %w", err)
 	}
 
+	// Apply agent preferences from config
+	registry.SetPreferences(cfg.Agents.Preferences)
+
 	return &SpawnAgentRunner{
 		cfg:      cfg,
 		registry: registry,

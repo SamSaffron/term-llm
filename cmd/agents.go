@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/agents"
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -89,6 +90,53 @@ var agentsPathCmd = &cobra.Command{
 	RunE:  runAgentsPath,
 }
 
+var agentsPrefSetCmd = &cobra.Command{
+	Use:   "set <agent> key=value [key=value...]",
+	Short: "Set preferences for an agent",
+	Long: `Set preferences that override agent settings.
+
+Preferences are stored in your config file and applied on top of
+the agent's built-in configuration. This lets you customize agents
+without copying them.
+
+Valid preference keys:
+  provider, model           - Override LLM provider/model
+  max_turns                 - Override max conversation turns
+  search                    - Enable/disable web search (true/false)
+  tools_enabled             - Comma-separated list of enabled tools
+  tools_disabled            - Comma-separated list of disabled tools
+  shell_allow               - Comma-separated shell patterns to allow
+  shell_auto_run            - Auto-approve shell commands (true/false)
+  spawn_max_parallel        - Max parallel sub-agents
+  spawn_max_depth           - Max spawn nesting depth
+  spawn_timeout             - Spawn timeout in seconds
+  spawn_allowed_agents      - Comma-separated list of allowed agents
+
+Examples:
+  term-llm agents set reviewer provider=gemini model=gemini-2.5-pro
+  term-llm agents set developer max_turns=50
+  term-llm agents set codebase search=true`,
+	Args:              cobra.MinimumNArgs(2),
+	RunE:              runAgentsPrefSet,
+	ValidArgsFunction: agentPrefSetCompletion,
+}
+
+var agentsPrefGetCmd = &cobra.Command{
+	Use:               "get <agent>",
+	Short:             "Show preferences for an agent",
+	Args:              cobra.ExactArgs(1),
+	RunE:              runAgentsPrefGet,
+	ValidArgsFunction: agentNameCompletion,
+}
+
+var agentsPrefClearCmd = &cobra.Command{
+	Use:               "clear <agent>",
+	Short:             "Clear all preferences for an agent",
+	Args:              cobra.ExactArgs(1),
+	RunE:              runAgentsPrefClear,
+	ValidArgsFunction: agentNameCompletion,
+}
+
 func init() {
 	agentsCmd.Flags().BoolVar(&agentsBuiltin, "builtin", false, "Show only built-in agents")
 	agentsCmd.Flags().BoolVar(&agentsLocal, "local", false, "Show only project-local agents")
@@ -102,6 +150,9 @@ func init() {
 	agentsCmd.AddCommand(agentsEditCmd)
 	agentsCmd.AddCommand(agentsCopyCmd)
 	agentsCmd.AddCommand(agentsPathCmd)
+	agentsCmd.AddCommand(agentsPrefSetCmd)
+	agentsCmd.AddCommand(agentsPrefGetCmd)
+	agentsCmd.AddCommand(agentsPrefClearCmd)
 }
 
 func runAgentsList(cmd *cobra.Command, args []string) error {
@@ -117,6 +168,7 @@ func runAgentsList(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("create registry: %w", err)
 	}
+	registry.SetPreferences(cfg.Agents.Preferences)
 
 	var agentList []*agents.Agent
 
@@ -242,6 +294,7 @@ func runAgentsShow(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("create registry: %w", err)
 	}
+	registry.SetPreferences(cfg.Agents.Preferences)
 
 	agent, err := registry.Get(name)
 	if err != nil {
@@ -356,6 +409,7 @@ func runAgentsEdit(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("create registry: %w", err)
 	}
+	registry.SetPreferences(cfg.Agents.Preferences)
 
 	agent, err := registry.Get(name)
 	if err != nil {
@@ -404,6 +458,7 @@ func runAgentsCopy(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("create registry: %w", err)
 	}
+	registry.SetPreferences(cfg.Agents.Preferences)
 
 	srcAgent, err := registry.Get(srcName)
 	if err != nil {
@@ -484,6 +539,7 @@ func agentNameCompletion(cmd *cobra.Command, args []string, toComplete string) (
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveError
 	}
+	registry.SetPreferences(cfg.Agents.Preferences)
 
 	agentList, err := registry.List()
 	if err != nil {
@@ -503,4 +559,152 @@ func agentNameCompletion(cmd *cobra.Command, args []string, toComplete string) (
 // AgentFlagCompletion provides shell completion for the --agent flag.
 func AgentFlagCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	return agentNameCompletion(cmd, nil, toComplete)
+}
+
+// agentPrefSetCompletion provides completion for "agents set <agent> key=value"
+func agentPrefSetCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	// First arg: agent name
+	if len(args) == 0 {
+		return agentNameCompletion(cmd, args, toComplete)
+	}
+
+	// Subsequent args: preference keys
+	prefKeys := []string{
+		"provider=",
+		"model=",
+		"max_turns=",
+		"search=",
+		"tools_enabled=",
+		"tools_disabled=",
+		"shell_allow=",
+		"shell_auto_run=",
+		"spawn_max_parallel=",
+		"spawn_max_depth=",
+		"spawn_timeout=",
+		"spawn_allowed_agents=",
+	}
+
+	var completions []string
+	for _, key := range prefKeys {
+		if strings.HasPrefix(key, toComplete) {
+			completions = append(completions, key)
+		}
+	}
+
+	return completions, cobra.ShellCompDirectiveNoSpace
+}
+
+func runAgentsPrefSet(cmd *cobra.Command, args []string) error {
+	agentName := args[0]
+	keyValues := args[1:]
+
+	// Validate that the agent exists (warn if not)
+	cfg, err := loadConfigWithSetup()
+	if err == nil {
+		registry, err := agents.NewRegistry(agents.RegistryConfig{
+			UseBuiltin:  cfg.Agents.UseBuiltin,
+			SearchPaths: cfg.Agents.SearchPaths,
+		})
+		if err == nil {
+			if _, err := registry.Get(agentName); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: agent '%s' does not exist\n", agentName)
+			}
+		}
+	}
+
+	for _, kv := range keyValues {
+		parts := strings.SplitN(kv, "=", 2)
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid key=value pair: %s", kv)
+		}
+		key, value := parts[0], parts[1]
+
+		keysSet, err := config.SetAgentPreference(agentName, key, value)
+		if err != nil {
+			return fmt.Errorf("set %s: %w", key, err)
+		}
+
+		// Report what was set (may be multiple for provider:model format)
+		if len(keysSet) > 1 {
+			// provider:model format was used
+			provider, model := config.ParseProviderModel(value)
+			fmt.Printf("Set %s.provider = %s\n", agentName, provider)
+			fmt.Printf("Set %s.model = %s\n", agentName, model)
+		} else {
+			fmt.Printf("Set %s.%s = %s\n", agentName, key, value)
+		}
+	}
+
+	return nil
+}
+
+func runAgentsPrefGet(cmd *cobra.Command, args []string) error {
+	agentName := args[0]
+
+	pref, found := config.GetAgentPreference(agentName)
+	if !found {
+		fmt.Printf("No preferences set for agent '%s'\n", agentName)
+		return nil
+	}
+
+	fmt.Printf("Preferences for '%s':\n", agentName)
+
+	// Model preferences
+	if pref.Provider != "" {
+		fmt.Printf("  provider: %s\n", pref.Provider)
+	}
+	if pref.Model != "" {
+		fmt.Printf("  model: %s\n", pref.Model)
+	}
+
+	// Tool configuration
+	if len(pref.ToolsEnabled) > 0 {
+		fmt.Printf("  tools_enabled: %s\n", strings.Join(pref.ToolsEnabled, ", "))
+	}
+	if len(pref.ToolsDisabled) > 0 {
+		fmt.Printf("  tools_disabled: %s\n", strings.Join(pref.ToolsDisabled, ", "))
+	}
+
+	// Shell settings
+	if len(pref.ShellAllow) > 0 {
+		fmt.Printf("  shell_allow: %s\n", strings.Join(pref.ShellAllow, ", "))
+	}
+	if pref.ShellAutoRun != nil {
+		fmt.Printf("  shell_auto_run: %v\n", *pref.ShellAutoRun)
+	}
+
+	// Spawn settings
+	if pref.SpawnMaxParallel != nil {
+		fmt.Printf("  spawn_max_parallel: %d\n", *pref.SpawnMaxParallel)
+	}
+	if pref.SpawnMaxDepth != nil {
+		fmt.Printf("  spawn_max_depth: %d\n", *pref.SpawnMaxDepth)
+	}
+	if pref.SpawnTimeout != nil {
+		fmt.Printf("  spawn_timeout: %d\n", *pref.SpawnTimeout)
+	}
+	if len(pref.SpawnAllowedAgents) > 0 {
+		fmt.Printf("  spawn_allowed_agents: %s\n", strings.Join(pref.SpawnAllowedAgents, ", "))
+	}
+
+	// Behavior
+	if pref.MaxTurns != nil {
+		fmt.Printf("  max_turns: %d\n", *pref.MaxTurns)
+	}
+	if pref.Search != nil {
+		fmt.Printf("  search: %v\n", *pref.Search)
+	}
+
+	return nil
+}
+
+func runAgentsPrefClear(cmd *cobra.Command, args []string) error {
+	agentName := args[0]
+
+	if err := config.ClearAgentPreferences(agentName); err != nil {
+		return fmt.Errorf("clear preferences: %w", err)
+	}
+
+	fmt.Printf("Cleared preferences for '%s'\n", agentName)
+	return nil
 }
