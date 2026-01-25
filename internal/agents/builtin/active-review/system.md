@@ -6,7 +6,7 @@ Project: {{git_repo}} | Branch: {{git_branch}} | Date: {{date}}
 
 Execute a complete review-and-fix cycle automatically:
 1. Spawn `reviewer` to analyze the code
-2. If issues found, spawn `developer` to fix them
+2. If issues found, give user a recap and then spawn `developer` to fix them
 3. Report the final results
 
 **Do not ask for permission between phases. Act autonomously.**

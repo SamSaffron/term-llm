@@ -230,7 +230,8 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 
 	subagentTracker := ui.NewSubagentTracker()
 	// Set main provider/model for subagent comparison
-	subagentTracker.SetMainProviderModel(provider.Name(), modelName)
+	// Use cfg.DefaultProvider (e.g. "chatgpt") for cleaner display
+	subagentTracker.SetMainProviderModel(cfg.DefaultProvider, modelName)
 
 	return &Model{
 		width:               width,
@@ -245,7 +246,7 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 		provider:            provider,
 		engine:              engine,
 		config:              cfg,
-		providerName:        provider.Name(),
+		providerName:        cfg.DefaultProvider,
 		modelName:           modelName,
 		phase:               "Thinking",
 		viewportRows:        height - 8, // Reserve space for input and status
@@ -1581,13 +1582,12 @@ func (m *Model) renderStatusLine() string {
 
 	var parts []string
 
-	// Provider and model - avoid duplication if provider already contains model info
+	// Provider:model format (e.g. "chatgpt:gpt-5.2-codex")
 	model := shortenModelName(m.modelName)
-	if strings.Contains(m.providerName, "(") {
-		// Provider already has model info in parens, just use it
+	if model == "" {
 		parts = append(parts, m.providerName)
 	} else {
-		parts = append(parts, fmt.Sprintf("%s (%s)", m.providerName, model))
+		parts = append(parts, fmt.Sprintf("%s:%s", m.providerName, model))
 	}
 
 	// Web search status
@@ -2153,10 +2153,10 @@ func (m *Model) switchModel(providerModel string) (tea.Model, tea.Cmd) {
 	m.provider = provider
 	// Preserve existing tool registry when creating new engine
 	m.engine = llm.NewEngine(provider, m.engine.Tools())
-	m.providerName = provider.Name() // Use provider.Name() to include effort info
+	m.providerName = providerName
 	m.modelName = modelName
 
-	return m.showSystemMessage(fmt.Sprintf("Switched to %s (%s)", providerName, modelName))
+	return m.showSystemMessage(fmt.Sprintf("Switched to %s:%s", providerName, modelName))
 }
 
 // attachFiles attaches multiple files from a glob pattern

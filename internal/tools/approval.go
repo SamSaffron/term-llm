@@ -197,6 +197,12 @@ type ApprovalManager struct {
 	// Takes path/command, isWrite (for files), and returns ApprovalResult
 	// If nil, falls back to PromptFunc
 	PromptUIFunc func(path string, isWrite bool, isShell bool) (ApprovalResult, error)
+
+	// Parent manager for inheriting session approvals and prompt function.
+	// When set, this manager will check parent's caches and use parent's
+	// PromptUIFunc if local is nil. This enables sub-agents to inherit
+	// the parent session's approvals and prompting capability.
+	parent *ApprovalManager
 }
 
 // NewApprovalManager creates a new ApprovalManager.
@@ -208,6 +214,38 @@ func NewApprovalManager(perms *ToolPermissions) *ApprovalManager {
 		permissions:  perms,
 		projectCache: make(map[string]*ProjectApprovals),
 	}
+}
+
+// SetParent sets the parent ApprovalManager for inheritance.
+// When set, this manager will check parent's session caches (dirCache, shellCache)
+// and use parent's PromptUIFunc if local is nil.
+// Also shares the parent's promptMu to serialize prompts across all sub-agents.
+// Returns an error if setting parent would create a cycle.
+func (m *ApprovalManager) SetParent(parent *ApprovalManager) error {
+	// Check for self-reference
+	if parent == m {
+		return fmt.Errorf("cannot set approval manager as its own parent")
+	}
+
+	// Check for cycles by walking up the parent chain
+	for p := parent; p != nil; p = p.parent {
+		if p == m {
+			return fmt.Errorf("cannot set parent: would create a cycle")
+		}
+	}
+
+	m.parent = parent
+	return nil
+}
+
+// PromptLock returns the mutex used to serialize prompts.
+// When a parent is set, returns the parent's lock to ensure all
+// sub-agents share the same serialization.
+func (m *ApprovalManager) PromptLock() *sync.Mutex {
+	if m.parent != nil {
+		return m.parent.PromptLock()
+	}
+	return &m.promptMu
 }
 
 // SetYoloMode enables or disables yolo mode and prints a warning when enabled.
@@ -276,6 +314,18 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 		return ProceedAlways, nil
 	}
 
+	// 2a. Check parent's session cache (inherited approvals)
+	if m.parent != nil && m.parent.dirCache.IsPathInApprovedDir(path) {
+		return ProceedAlways, nil
+	}
+
+	// 2b. Check parent's tool+path specific cache (inherited approvals)
+	if m.parent != nil {
+		if outcome, ok := m.parent.cache.Get(toolName, path); ok {
+			return outcome, nil
+		}
+	}
+
 	// 3. Check project-level approvals (persisted)
 	absPath, err := filepath.Abs(path)
 	if err != nil {
@@ -288,20 +338,30 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 	}
 
 	// 4. Need to prompt user - serialize prompts to avoid UI conflicts
-	m.promptMu.Lock()
-	defer m.promptMu.Unlock()
+	// Use shared lock (via PromptLock()) to prevent concurrent prompts across parent/child managers
+	promptLock := m.PromptLock()
+	promptLock.Lock()
+	defer promptLock.Unlock()
 
-	// Try new UI first, then fall back to legacy
-	if m.PromptUIFunc != nil {
-		result, err := m.PromptUIFunc(absPath, isWrite, false)
+	// Try new UI first (local, then parent), then fall back to legacy
+	promptUIFunc := m.PromptUIFunc
+	if promptUIFunc == nil && m.parent != nil {
+		promptUIFunc = m.parent.PromptUIFunc
+	}
+	if promptUIFunc != nil {
+		result, err := promptUIFunc(absPath, isWrite, false)
 		if err != nil {
 			return Cancel, err
 		}
 		return m.handleFileApprovalResult(result, absPath, isWrite, projectApprovals)
 	}
 
-	// Fall back to legacy PromptFunc
-	if m.PromptFunc == nil {
+	// Fall back to legacy PromptFunc (local, then parent)
+	promptFunc := m.PromptFunc
+	if promptFunc == nil && m.parent != nil {
+		promptFunc = m.parent.PromptFunc
+	}
+	if promptFunc == nil {
 		return Cancel, NewToolError(ErrPermissionDenied, "path not in allowlist and no TTY for approval")
 	}
 
@@ -323,7 +383,7 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 		ToolInfo:    toolInfo,
 	}
 
-	outcome, _ := m.PromptFunc(req)
+	outcome, _ := promptFunc(req)
 
 	if outcome == ProceedAlways || outcome == ProceedAlwaysAndSave {
 		m.dirCache.Set(absDir, outcome)
@@ -420,6 +480,15 @@ func (m *ApprovalManager) CheckShellApproval(command string) (ConfirmOutcome, er
 		}
 	}
 
+	// Check parent's session-approved patterns (inherited approvals)
+	if m.parent != nil {
+		for _, pattern := range m.parent.shellCache.GetPatterns() {
+			if matchPattern(pattern, command) {
+				return ProceedAlways, nil
+			}
+		}
+	}
+
 	// Check project-level approvals (persisted)
 	cwd, _ := os.Getwd()
 	projectApprovals := m.getProjectApprovals(cwd)
@@ -428,20 +497,30 @@ func (m *ApprovalManager) CheckShellApproval(command string) (ConfirmOutcome, er
 	}
 
 	// Need to prompt - serialize prompts to avoid UI conflicts
-	m.promptMu.Lock()
-	defer m.promptMu.Unlock()
+	// Use shared lock (via PromptLock()) to prevent concurrent prompts across parent/child managers
+	promptLock := m.PromptLock()
+	promptLock.Lock()
+	defer promptLock.Unlock()
 
-	// Try new UI first, then fall back to legacy
-	if m.PromptUIFunc != nil {
-		result, err := m.PromptUIFunc(command, false, true)
+	// Try new UI first (local, then parent), then fall back to legacy
+	promptUIFunc := m.PromptUIFunc
+	if promptUIFunc == nil && m.parent != nil {
+		promptUIFunc = m.parent.PromptUIFunc
+	}
+	if promptUIFunc != nil {
+		result, err := promptUIFunc(command, false, true)
 		if err != nil {
 			return Cancel, err
 		}
 		return m.handleShellApprovalResult(result, command, projectApprovals)
 	}
 
-	// Fall back to legacy PromptFunc
-	if m.PromptFunc == nil {
+	// Fall back to legacy PromptFunc (local, then parent)
+	promptFunc := m.PromptFunc
+	if promptFunc == nil && m.parent != nil {
+		promptFunc = m.parent.PromptFunc
+	}
+	if promptFunc == nil {
 		return Cancel, NewToolError(ErrPermissionDenied, "command not in allowlist and no TTY for approval")
 	}
 
@@ -452,7 +531,7 @@ func (m *ApprovalManager) CheckShellApproval(command string) (ConfirmOutcome, er
 		ToolInfo:    command,
 	}
 
-	outcome, pattern := m.PromptFunc(req)
+	outcome, pattern := promptFunc(req)
 
 	if outcome == ProceedAlways || outcome == ProceedAlwaysAndSave {
 		// Cache the command or pattern for future use

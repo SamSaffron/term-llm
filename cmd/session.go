@@ -229,6 +229,8 @@ func (s *SessionSettings) SetupToolManager(cfg *config.Config, engine *llm.Engin
 
 // WireSpawnAgentRunner sets up the spawn_agent runner if the tool is enabled.
 // This should be called after SetupToolManager.
+// The toolMgr's ApprovalMgr is passed to sub-agents so they inherit session approvals
+// and can use the parent's prompt function for interactive approvals.
 func WireSpawnAgentRunner(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool) error {
 	if toolMgr == nil {
 		return nil
@@ -237,7 +239,7 @@ func WireSpawnAgentRunner(cfg *config.Config, toolMgr *tools.ToolManager, yoloMo
 	if spawnTool == nil {
 		return nil
 	}
-	runner, err := NewSpawnAgentRunner(cfg, yoloMode)
+	runner, err := NewSpawnAgentRunner(cfg, yoloMode, toolMgr.ApprovalMgr)
 	if err != nil {
 		return fmt.Errorf("setup spawn_agent: %w", err)
 	}

@@ -558,12 +558,12 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		model := newAskStreamModel()
 
 		// Set main provider/model for subagent comparison
-		mainProviderName := provider.Name()
+		// Use cfg.DefaultProvider (e.g. "chatgpt") for cleaner display
 		mainModelName := ""
 		if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
 			mainModelName = providerCfg.Model
 		}
-		model.subagentTracker.SetMainProviderModel(mainProviderName, mainModelName)
+		model.subagentTracker.SetMainProviderModel(cfg.DefaultProvider, mainModelName)
 
 		teaProgram = tea.NewProgram(model, tea.WithoutSignalHandler())
 

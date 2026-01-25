@@ -15,13 +15,15 @@ import (
 // SpawnAgentRunner implements the tools.SpawnAgentRunner interface.
 // It loads and runs sub-agents for the spawn_agent tool.
 type SpawnAgentRunner struct {
-	cfg      *config.Config
-	registry *agents.Registry
-	yoloMode bool // Auto-approve all tool operations in sub-agents
+	cfg               *config.Config
+	registry          *agents.Registry
+	yoloMode          bool // Auto-approve all tool operations in sub-agents
+	parentApprovalMgr *tools.ApprovalManager
 }
 
 // NewSpawnAgentRunner creates a new SpawnAgentRunner.
-func NewSpawnAgentRunner(cfg *config.Config, yoloMode bool) (*SpawnAgentRunner, error) {
+// parentApprovalMgr enables sub-agents to inherit parent's session approvals and prompting.
+func NewSpawnAgentRunner(cfg *config.Config, yoloMode bool, parentApprovalMgr *tools.ApprovalManager) (*SpawnAgentRunner, error) {
 	registry, err := agents.NewRegistry(agents.RegistryConfig{
 		UseBuiltin:  cfg.Agents.UseBuiltin,
 		SearchPaths: cfg.Agents.SearchPaths,
@@ -34,9 +36,10 @@ func NewSpawnAgentRunner(cfg *config.Config, yoloMode bool) (*SpawnAgentRunner, 
 	registry.SetPreferences(cfg.Agents.Preferences)
 
 	return &SpawnAgentRunner{
-		cfg:      cfg,
-		registry: registry,
-		yoloMode: yoloMode,
+		cfg:               cfg,
+		registry:          registry,
+		yoloMode:          yoloMode,
+		parentApprovalMgr: parentApprovalMgr,
 	}, nil
 }
 
@@ -159,7 +162,9 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 	}
 
 	// Get provider name and model for the init event
-	providerName := provider.Name()
+	// Use cfg.DefaultProvider (e.g. "chatgpt") instead of provider.Name() (e.g. "ChatGPT (model)")
+	// for cleaner display in subagent status line
+	providerName := cfg.DefaultProvider
 	modelName := agent.Model
 	if modelName == "" {
 		if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
@@ -229,17 +234,25 @@ func (r *SpawnAgentRunner) setupAgentTools(cfg *config.Config, engine *llm.Engin
 		toolMgr.ApprovalMgr.SetYoloMode(true)
 	}
 
+	// Inherit parent's session approvals and prompting capability
+	if r.parentApprovalMgr != nil {
+		if err := toolMgr.ApprovalMgr.SetParent(r.parentApprovalMgr); err != nil {
+			return nil, fmt.Errorf("failed to set parent approval manager: %w", err)
+		}
+	}
+
 	toolMgr.SetupEngine(engine)
 
 	// Wire up spawn_agent runner for nested agents (with incremented depth)
 	if spawnTool := toolMgr.GetSpawnAgentTool(); spawnTool != nil {
 		// Set the depth for this nested spawn tool
 		spawnTool.SetDepth(depth)
-		// Create a new runner with the same config
+		// Create a new runner - this sub-agent's ApprovalMgr becomes the parent for nested agents
 		childRunner := &SpawnAgentRunner{
-			cfg:      r.cfg,
-			registry: r.registry,
-			yoloMode: r.yoloMode,
+			cfg:               r.cfg,
+			registry:          r.registry,
+			yoloMode:          r.yoloMode,
+			parentApprovalMgr: toolMgr.ApprovalMgr,
 		}
 		spawnTool.SetRunner(childRunner)
 	}
