@@ -86,7 +86,9 @@ func (s *Segment) GetText() string {
 			return s.TextSnapshot
 		}
 		// Snapshot is stale - update it (should rarely happen, AddTextSegment updates it)
-		s.TextSnapshot = s.TextBuilder.String()
+		// IMPORTANT: Clone to prevent corruption from subsequent WriteString calls
+		// (strings.Builder.String() shares memory with internal buffer)
+		s.TextSnapshot = strings.Clone(s.TextBuilder.String())
 		s.TextSnapshotLen = s.TextBuilder.Len()
 		return s.TextSnapshot
 	}

@@ -173,3 +173,52 @@ func containsHelper(s, substr string) bool {
 	}
 	return false
 }
+
+func TestWrapLineWithTabs(t *testing.T) {
+	tests := []struct {
+		name     string
+		line     string
+		maxWidth int
+		want     []string
+	}{
+		{
+			name:     "tab converted to spaces",
+			line:     "\t\"fmt\"",
+			maxWidth: 80,
+			want:     []string{"  \"fmt\""},
+		},
+		{
+			name:     "multiple tabs",
+			line:     "\t\tcode",
+			maxWidth: 80,
+			want:     []string{"    code"},
+		},
+		{
+			name:     "tab in middle",
+			line:     "key\tvalue",
+			maxWidth: 80,
+			want:     []string{"key  value"},
+		},
+		{
+			name:     "no tabs unchanged",
+			line:     "  indented",
+			maxWidth: 80,
+			want:     []string{"  indented"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := wrapLine(tt.line, tt.maxWidth)
+			if len(got) != len(tt.want) {
+				t.Errorf("wrapLine() returned %d lines, want %d", len(got), len(tt.want))
+				return
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("wrapLine()[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}

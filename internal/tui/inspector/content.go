@@ -230,6 +230,11 @@ func (r *ContentRenderer) renderBoxWithItem(header string, headerStyle lipgloss.
 
 // wrapLine wraps a single line to fit within maxWidth
 func wrapLine(line string, maxWidth int) []string {
+	// Convert tabs to spaces first - lipgloss.Width counts tabs as 1,
+	// but terminals render them as multiple columns (typically 8).
+	// Use 2 spaces per tab for compact display.
+	line = strings.ReplaceAll(line, "\t", "  ")
+
 	if maxWidth <= 0 {
 		return []string{line}
 	}

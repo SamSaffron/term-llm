@@ -34,8 +34,8 @@ Here's some Go code:
 package main
 
 import (
-	"fmt"
-	"time"
+  "fmt"
+  "time"
 )
 
 func main() {

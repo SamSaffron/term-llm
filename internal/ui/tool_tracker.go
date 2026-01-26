@@ -185,8 +185,13 @@ func (t *ToolTracker) AddTextSegment(text string) bool {
 			// calling TextBuilder.String() on every render tick.
 			// The snapshot update is O(n) but happens once per append rather
 			// than potentially multiple times per render cycle.
+			//
+			// IMPORTANT: We must clone the string because strings.Builder.String()
+			// returns a string that shares memory with the internal buffer.
+			// Subsequent WriteString calls can corrupt the previously returned
+			// string if the buffer has enough capacity (no reallocation).
 			currentLen := last.TextBuilder.Len()
-			last.TextSnapshot = last.TextBuilder.String()
+			last.TextSnapshot = strings.Clone(last.TextBuilder.String())
 			last.TextSnapshotLen = currentLen
 
 			// Update safe boundary periodically (every ~100 chars since last check)
