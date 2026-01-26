@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -24,6 +25,7 @@ type SpawnAgentResult struct {
 	Error     string `json:"error,omitempty"`
 	Type      string `json:"type,omitempty"` // Error type for structured handling
 	Duration  int64  `json:"duration_ms,omitempty"`
+	SessionID string `json:"session_id,omitempty"` // Child session ID for inspector integration
 }
 
 // SubagentEventType identifies the type of subagent event.
@@ -58,18 +60,24 @@ type SubagentEvent struct {
 // callID is the tool call ID of the spawn_agent call.
 type SubagentEventCallback func(callID string, event SubagentEvent)
 
+// SpawnAgentRunResult contains the output from a sub-agent run.
+type SpawnAgentRunResult struct {
+	Output    string // Text output from the agent
+	SessionID string // Child session ID for inspector integration (empty if session tracking disabled)
+}
+
 // SpawnAgentRunner is the interface for running sub-agents.
 // This is set by the cmd package to avoid circular imports.
 type SpawnAgentRunner interface {
 	// RunAgent runs a sub-agent and returns its text output.
 	// ctx is used for cancellation, agentName is the agent to load,
 	// prompt is the task, and depth is the current nesting level.
-	RunAgent(ctx context.Context, agentName string, prompt string, depth int) (string, error)
+	RunAgent(ctx context.Context, agentName string, prompt string, depth int) (SpawnAgentRunResult, error)
 
 	// RunAgentWithCallback runs a sub-agent with an event callback for progress reporting.
 	// callID is used to correlate events with the parent's spawn_agent tool call.
 	RunAgentWithCallback(ctx context.Context, agentName string, prompt string, depth int,
-		callID string, cb SubagentEventCallback) (string, error)
+		callID string, cb SubagentEventCallback) (SpawnAgentRunResult, error)
 }
 
 // SpawnConfig configures spawn_agent behavior.
@@ -260,7 +268,7 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (str
 
 	// Run the sub-agent (with callback if available)
 	start := time.Now()
-	var output string
+	var runResult SpawnAgentRunResult
 	var err error
 
 	// Get callback and call ID for event bubbling
@@ -269,19 +277,21 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (str
 
 	if cb != nil && callID != "" {
 		// Use callback version for progress reporting
-		output, err = runner.RunAgentWithCallback(childCtx, a.AgentName, a.Prompt, t.depth+1, callID, cb)
+		runResult, err = runner.RunAgentWithCallback(childCtx, a.AgentName, a.Prompt, t.depth+1, callID, cb)
 	} else {
 		// Fall back to simple version
-		output, err = runner.RunAgent(childCtx, a.AgentName, a.Prompt, t.depth+1)
+		runResult, err = runner.RunAgent(childCtx, a.AgentName, a.Prompt, t.depth+1)
 	}
 	duration := time.Since(start).Milliseconds()
 
 	if err != nil {
-		// Check for specific error types
-		if ctx.Err() == context.DeadlineExceeded || childCtx.Err() == context.DeadlineExceeded {
+		// Check for specific error types - check the error itself first, then context state
+		if errors.Is(err, context.DeadlineExceeded) ||
+			ctx.Err() == context.DeadlineExceeded || childCtx.Err() == context.DeadlineExceeded {
 			return t.formatErrorWithDuration(ErrTimeout, fmt.Sprintf("agent '%s' timed out after %d seconds", a.AgentName, timeout), duration), nil
 		}
-		if ctx.Err() == context.Canceled || childCtx.Err() == context.Canceled {
+		if errors.Is(err, context.Canceled) ||
+			ctx.Err() == context.Canceled || childCtx.Err() == context.Canceled {
 			return t.formatErrorWithDuration(ErrExecutionFailed, "agent execution cancelled", duration), nil
 		}
 		return t.formatErrorWithDuration(ErrExecutionFailed, fmt.Sprintf("agent execution failed: %v", err), duration), nil
@@ -290,8 +300,9 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (str
 	// Return success result
 	result := SpawnAgentResult{
 		AgentName: a.AgentName,
-		Output:    output,
+		Output:    runResult.Output,
 		Duration:  duration,
+		SessionID: runResult.SessionID,
 	}
 	data, _ := json.Marshal(result)
 	return string(data), nil

@@ -2,8 +2,18 @@ package ui
 
 import (
 	"strings"
+	"sync"
 
 	"github.com/charmbracelet/glamour"
+)
+
+// Package-level renderer cache to avoid expensive recreation during streaming
+var (
+	mdRendererCache struct {
+		sync.Mutex
+		renderer *glamour.TermRenderer
+		width    int
+	}
 )
 
 // RenderMarkdown renders markdown content using glamour with standard styling.
@@ -24,6 +34,19 @@ func RenderMarkdown(content string, width int) string {
 // RenderMarkdownWithError renders markdown content and returns any errors.
 // Use this variant when error handling is needed.
 func RenderMarkdownWithError(content string, width int) (string, error) {
+	mdRendererCache.Lock()
+	defer mdRendererCache.Unlock()
+
+	// Reuse cached renderer if width matches
+	if mdRendererCache.renderer != nil && mdRendererCache.width == width {
+		rendered, err := mdRendererCache.renderer.Render(content)
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(rendered), nil
+	}
+
+	// Create new renderer and cache it
 	style := GlamourStyle()
 	margin := uint(0)
 	style.Document.Margin = &margin
@@ -38,6 +61,9 @@ func RenderMarkdownWithError(content string, width int) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
+	mdRendererCache.renderer = renderer
+	mdRendererCache.width = width
 
 	rendered, err := renderer.Render(content)
 	if err != nil {

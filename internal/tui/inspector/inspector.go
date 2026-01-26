@@ -25,26 +25,41 @@ type Model struct {
 	contentLines []string // Pre-rendered content split into lines
 	totalLines   int
 
+	// Item tracking for truncation/expand
+	items         []ContentItem   // All content items (messages, tool calls, tool results)
+	expandedItems map[string]bool // IDs of items that should be expanded
+	itemAtLine    []int           // line number -> item index (-1 if no item at that line)
+
 	// Scroll state
 	scrollY int
 
 	// Components
 	styles *ui.Styles
 	keyMap KeyMap
+
+	// Session store for fetching subagent messages
+	store session.Store
 }
 
 // New creates a new inspector model
 func New(messages []session.Message, width, height int, styles *ui.Styles) *Model {
+	return NewWithStore(messages, width, height, styles, nil)
+}
+
+// NewWithStore creates a new inspector model with a session store for subagent message fetching
+func NewWithStore(messages []session.Message, width, height int, styles *ui.Styles, store session.Store) *Model {
 	if styles == nil {
 		styles = ui.DefaultStyles()
 	}
 
 	m := &Model{
-		width:    width,
-		height:   height,
-		messages: messages,
-		styles:   styles,
-		keyMap:   DefaultKeyMap(),
+		width:         width,
+		height:        height,
+		messages:      messages,
+		styles:        styles,
+		keyMap:        DefaultKeyMap(),
+		expandedItems: make(map[string]bool),
+		store:         store,
 	}
 
 	m.renderContent()
@@ -53,10 +68,22 @@ func New(messages []session.Message, width, height int, styles *ui.Styles) *Mode
 
 // renderContent renders all messages and splits into lines
 func (m *Model) renderContent() {
-	renderer := NewContentRenderer(m.width-2, m.styles) // -2 for padding
-	content := renderer.RenderMessages(m.messages)
+	renderer := NewContentRenderer(m.width-2, m.styles, m.expandedItems, m.store) // -2 for padding
+	content, items := renderer.RenderMessages(m.messages)
 	m.contentLines = strings.Split(content, "\n")
 	m.totalLines = len(m.contentLines)
+	m.items = items
+
+	// Build line -> item index lookup
+	m.itemAtLine = make([]int, m.totalLines)
+	for i := range m.itemAtLine {
+		m.itemAtLine[i] = -1 // No item at this line by default
+	}
+	for idx, item := range m.items {
+		for line := item.StartLine; line < item.EndLine && line < m.totalLines; line++ {
+			m.itemAtLine[line] = idx
+		}
+	}
 }
 
 // Init initializes the model
@@ -116,9 +143,82 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (*Model, tea.Cmd) {
 
 	case key.Matches(msg, m.keyMap.GoToBottom):
 		m.scrollY = m.maxScroll()
+
+	case key.Matches(msg, m.keyMap.ExpandVisible):
+		m.toggleVisibleItems()
 	}
 
 	return m, nil
+}
+
+// toggleVisibleItems toggles expand/collapse for items visible in the viewport.
+// If any visible items are truncated, expand them. Otherwise, collapse all expanded items.
+func (m *Model) toggleVisibleItems() {
+	if len(m.items) == 0 || len(m.itemAtLine) == 0 {
+		return
+	}
+
+	// Find items visible in current viewport
+	vpHeight := m.viewportHeight()
+	startLine := m.scrollY
+	endLine := m.scrollY + vpHeight
+	if endLine > m.totalLines {
+		endLine = m.totalLines
+	}
+
+	// Collect visible items and check their state
+	seen := make(map[int]bool)
+	var visibleItemIDs []string
+	hasCollapsed := false
+
+	for line := startLine; line < endLine; line++ {
+		if line >= len(m.itemAtLine) {
+			break
+		}
+		itemIdx := m.itemAtLine[line]
+		if itemIdx < 0 || seen[itemIdx] {
+			continue
+		}
+		seen[itemIdx] = true
+
+		item := m.items[itemIdx]
+		visibleItemIDs = append(visibleItemIDs, item.ID)
+		// Check if this item is truncated (could be expanded)
+		if item.IsTruncated && !m.expandedItems[item.ID] {
+			hasCollapsed = true
+		}
+	}
+
+	if len(visibleItemIDs) == 0 {
+		return
+	}
+
+	changed := false
+	if hasCollapsed {
+		// Expand all truncated visible items
+		for _, id := range visibleItemIDs {
+			if !m.expandedItems[id] {
+				m.expandedItems[id] = true
+				changed = true
+			}
+		}
+	} else {
+		// Collapse all expanded visible items
+		for _, id := range visibleItemIDs {
+			if m.expandedItems[id] {
+				delete(m.expandedItems, id)
+				changed = true
+			}
+		}
+	}
+
+	// Re-render if we changed anything
+	if changed {
+		oldScrollY := m.scrollY
+		m.renderContent()
+		m.scrollY = oldScrollY
+		m.clampScroll()
+	}
 }
 
 // viewportHeight returns the available height for content
@@ -201,9 +301,8 @@ func (m *Model) View() string {
 	b.WriteString("\n")
 
 	// Footer with scroll info and help
-	footerStyle := lipgloss.NewStyle().
-		Foreground(theme.Muted).
-		Width(m.width)
+	// Note: We don't use lipgloss Width() style here because we manually
+	// pad to avoid issues with ANSI escape codes and double-width handling
 
 	// Scroll indicator
 	scrollInfo := ""
@@ -215,17 +314,18 @@ func (m *Model) View() string {
 		scrollInfo = fmt.Sprintf("%d-%d/%d (%d%%)", m.scrollY+1, endIdx, m.totalLines, pct)
 	}
 
-	// Help text
-	helpStyle := lipgloss.NewStyle().Foreground(theme.Muted)
-	help := helpStyle.Render("q:close  j/k:scroll  g/G:top/bottom")
+	// Help text (plain, no styling that could interfere with width calc)
+	help := "q:close  j/k:scroll  g/G:top/bottom  e:toggle"
 
-	// Combine footer
-	padding := m.width - lipgloss.Width(scrollInfo) - lipgloss.Width(help)
+	// Combine footer with manual padding
+	padding := m.width - len(scrollInfo) - len(help)
 	if padding < 1 {
 		padding = 1
 	}
 	footer := scrollInfo + strings.Repeat(" ", padding) + help
 
+	// Apply muted color to entire footer
+	footerStyle := lipgloss.NewStyle().Foreground(theme.Muted)
 	b.WriteString(footerStyle.Render(footer))
 
 	return b.String()

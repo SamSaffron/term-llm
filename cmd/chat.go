@@ -142,25 +142,8 @@ func runChat(cmd *cobra.Command, args []string) error {
 	}, cfg.Chat.Provider, cfg.Chat.Model, cfg.Chat.Instructions, cfg.Chat.MaxTurns, 200)
 
 	// Initialize session store EARLY so --resume can override settings before tool/MCP setup
-	var store session.Store
-	if cfg.Sessions.Enabled {
-		var storeErr error
-		store, storeErr = session.NewStore(session.Config{
-			Enabled:    cfg.Sessions.Enabled,
-			MaxAgeDays: cfg.Sessions.MaxAgeDays,
-			MaxCount:   cfg.Sessions.MaxCount,
-		})
-		if storeErr != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to initialize session store: %v\n", storeErr)
-			// Continue with nil store (no persistence)
-		} else {
-			defer store.Close()
-			// Wrap store with logging to surface persistence errors
-			store = session.NewLoggingStore(store, func(format string, args ...any) {
-				fmt.Fprintf(cmd.ErrOrStderr(), "warning: "+format+"\n", args...)
-			})
-		}
-	}
+	store, storeCleanup := InitSessionStore(cfg, cmd.ErrOrStderr())
+	defer storeCleanup()
 
 	// Handle --resume flag BEFORE tool/MCP setup so session settings take effect
 	var sess *session.Session
@@ -253,8 +236,12 @@ func runChat(cmd *cobra.Command, args []string) error {
 
 		// PromptUIFunc will be set up below after tea.Program is created
 
-		// Wire spawn_agent runner if enabled
-		if err := WireSpawnAgentRunner(cfg, toolMgr, chatYolo); err != nil {
+		// Wire spawn_agent runner if enabled (with session tracking)
+		var parentSessionID string
+		if sess != nil {
+			parentSessionID = sess.ID
+		}
+		if err := WireSpawnAgentRunnerWithStore(cfg, toolMgr, chatYolo, store, parentSessionID); err != nil {
 			if debugLogger != nil {
 				debugLogger.Close()
 			}
@@ -263,14 +250,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initialize skills system
-	var skillsSetup *skills.Setup
-	skillsCfg := applySkillsFlag(&cfg.Skills, chatSkills)
-	if skillsCfg.Enabled {
-		skillsSetup, err = skills.NewSetup(skillsCfg)
-		if err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: skills initialization failed: %v\n", err)
-		}
-	}
+	skillsSetup := SetupSkills(&cfg.Skills, chatSkills, cmd.ErrOrStderr())
 
 	// Register activate_skill tool if skills and tools are available
 	if skillsSetup != nil && skillsSetup.Registry != nil && toolMgr != nil {

@@ -1245,6 +1245,6 @@ func (m *Model) cmdInspect() (tea.Model, tea.Cmd) {
 	}
 
 	m.inspectorMode = true
-	m.inspectorModel = inspector.New(m.messages, m.width, m.height, m.styles)
+	m.inspectorModel = inspector.NewWithStore(m.messages, m.width, m.height, m.styles, m.store)
 	return m, tea.EnterAltScreen
 }

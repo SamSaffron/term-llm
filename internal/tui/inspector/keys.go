@@ -4,15 +4,16 @@ import "github.com/charmbracelet/bubbles/key"
 
 // KeyMap defines keybindings for the inspector
 type KeyMap struct {
-	Quit         key.Binding
-	ScrollUp     key.Binding
-	ScrollDown   key.Binding
-	PageUp       key.Binding
-	PageDown     key.Binding
-	HalfPageUp   key.Binding
-	HalfPageDown key.Binding
-	GoToTop      key.Binding
-	GoToBottom   key.Binding
+	Quit          key.Binding
+	ScrollUp      key.Binding
+	ScrollDown    key.Binding
+	PageUp        key.Binding
+	PageDown      key.Binding
+	HalfPageUp    key.Binding
+	HalfPageDown  key.Binding
+	GoToTop       key.Binding
+	GoToBottom    key.Binding
+	ExpandVisible key.Binding
 }
 
 // DefaultKeyMap returns the default keybindings for the inspector
@@ -54,6 +55,10 @@ func DefaultKeyMap() KeyMap {
 			key.WithKeys("G"),
 			key.WithHelp("G", "go to bottom"),
 		),
+		ExpandVisible: key.NewBinding(
+			key.WithKeys("e"),
+			key.WithHelp("e", "toggle expand"),
+		),
 	}
 }
 
@@ -67,6 +72,6 @@ func (k KeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.ScrollUp, k.ScrollDown, k.PageUp, k.PageDown},
 		{k.HalfPageUp, k.HalfPageDown, k.GoToTop, k.GoToBottom},
-		{k.Quit},
+		{k.ExpandVisible, k.Quit},
 	}
 }

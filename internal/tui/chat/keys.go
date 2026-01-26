@@ -6,7 +6,6 @@ import "github.com/charmbracelet/bubbles/key"
 type KeyMap struct {
 	// Global
 	Quit     key.Binding
-	Help     key.Binding
 	Commands key.Binding
 
 	// Editor
@@ -21,13 +20,8 @@ type KeyMap struct {
 	Tab         key.Binding
 
 	// History navigation
-	ScrollUp   key.Binding
-	ScrollDown key.Binding
-	PageUp     key.Binding
-	PageDown   key.Binding
-	GoToTop    key.Binding
-	GoToBottom key.Binding
-	Copy       key.Binding
+	PageUp   key.Binding
+	PageDown key.Binding
 
 	// Shortcuts
 	SwitchModel key.Binding
@@ -46,10 +40,6 @@ func DefaultKeyMap() KeyMap {
 		Quit: key.NewBinding(
 			key.WithKeys("ctrl+c"),
 			key.WithHelp("ctrl+c", "quit"),
-		),
-		Help: key.NewBinding(
-			key.WithKeys("?"),
-			key.WithHelp("?", "help"),
 		),
 		Commands: key.NewBinding(
 			key.WithKeys("ctrl+p"),
@@ -95,14 +85,6 @@ func DefaultKeyMap() KeyMap {
 		),
 
 		// History navigation
-		ScrollUp: key.NewBinding(
-			key.WithKeys("k"),
-			key.WithHelp("k", "scroll up"),
-		),
-		ScrollDown: key.NewBinding(
-			key.WithKeys("j"),
-			key.WithHelp("j", "scroll down"),
-		),
 		PageUp: key.NewBinding(
 			key.WithKeys("pgup"),
 			key.WithHelp("pgup", "page up"),
@@ -110,18 +92,6 @@ func DefaultKeyMap() KeyMap {
 		PageDown: key.NewBinding(
 			key.WithKeys("pgdown"),
 			key.WithHelp("pgdown", "page down"),
-		),
-		GoToTop: key.NewBinding(
-			key.WithKeys("g"),
-			key.WithHelp("g", "go to top"),
-		),
-		GoToBottom: key.NewBinding(
-			key.WithKeys("G"),
-			key.WithHelp("G", "go to bottom"),
-		),
-		Copy: key.NewBinding(
-			key.WithKeys("y"),
-			key.WithHelp("y", "copy"),
 		),
 
 		// Shortcuts

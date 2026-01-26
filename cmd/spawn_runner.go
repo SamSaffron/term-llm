@@ -4,11 +4,15 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -19,11 +23,20 @@ type SpawnAgentRunner struct {
 	registry          *agents.Registry
 	yoloMode          bool // Auto-approve all tool operations in sub-agents
 	parentApprovalMgr *tools.ApprovalManager
+	store             session.Store // Session store for tracking subagent turns
+	parentSessionID   string        // Parent session ID for child session linking
+	warnFunc          func(format string, args ...any)
 }
 
 // NewSpawnAgentRunner creates a new SpawnAgentRunner.
 // parentApprovalMgr enables sub-agents to inherit parent's session approvals and prompting.
 func NewSpawnAgentRunner(cfg *config.Config, yoloMode bool, parentApprovalMgr *tools.ApprovalManager) (*SpawnAgentRunner, error) {
+	return NewSpawnAgentRunnerWithStore(cfg, yoloMode, parentApprovalMgr, nil, "")
+}
+
+// NewSpawnAgentRunnerWithStore creates a new SpawnAgentRunner with session tracking.
+// store is used to save subagent turns, parentSessionID links child sessions to parent.
+func NewSpawnAgentRunnerWithStore(cfg *config.Config, yoloMode bool, parentApprovalMgr *tools.ApprovalManager, store session.Store, parentSessionID string) (*SpawnAgentRunner, error) {
 	registry, err := agents.NewRegistry(agents.RegistryConfig{
 		UseBuiltin:  cfg.Agents.UseBuiltin,
 		SearchPaths: cfg.Agents.SearchPaths,
@@ -40,32 +53,51 @@ func NewSpawnAgentRunner(cfg *config.Config, yoloMode bool, parentApprovalMgr *t
 		registry:          registry,
 		yoloMode:          yoloMode,
 		parentApprovalMgr: parentApprovalMgr,
+		store:             store,
+		parentSessionID:   parentSessionID,
 	}, nil
+}
+
+// SetWarnFunc sets a function to be called when non-fatal warnings occur
+// (e.g., session persistence failures). If not set, warnings are logged via log.Printf.
+func (r *SpawnAgentRunner) SetWarnFunc(fn func(format string, args ...any)) {
+	r.warnFunc = fn
+}
+
+// warn logs a warning using warnFunc if set, otherwise uses log.Printf.
+func (r *SpawnAgentRunner) warn(format string, args ...any) {
+	if r.warnFunc != nil {
+		r.warnFunc(format, args...)
+	} else {
+		log.Printf("Warning: "+format, args...)
+	}
 }
 
 // RunAgent loads and runs a sub-agent with the given prompt.
 // It returns the text output from the agent.
-func (r *SpawnAgentRunner) RunAgent(ctx context.Context, agentName string, prompt string, depth int) (string, error) {
+func (r *SpawnAgentRunner) RunAgent(ctx context.Context, agentName string, prompt string, depth int) (tools.SpawnAgentRunResult, error) {
 	return r.runAgentInternal(ctx, agentName, prompt, depth, "", nil)
 }
 
 // RunAgentWithCallback loads and runs a sub-agent with an event callback for progress reporting.
 func (r *SpawnAgentRunner) RunAgentWithCallback(ctx context.Context, agentName string, prompt string, depth int,
-	callID string, cb tools.SubagentEventCallback) (string, error) {
+	callID string, cb tools.SubagentEventCallback) (tools.SpawnAgentRunResult, error) {
 	return r.runAgentInternal(ctx, agentName, prompt, depth, callID, cb)
 }
 
 // runAgentInternal is the shared implementation for running sub-agents.
 func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName string, prompt string, depth int,
-	callID string, cb tools.SubagentEventCallback) (string, error) {
+	callID string, cb tools.SubagentEventCallback) (tools.SpawnAgentRunResult, error) {
+	emptyResult := tools.SpawnAgentRunResult{}
+
 	// Load the agent
 	agent, err := r.registry.Get(agentName)
 	if err != nil {
-		return "", fmt.Errorf("load agent '%s': %w", agentName, err)
+		return emptyResult, fmt.Errorf("load agent '%s': %w", agentName, err)
 	}
 
 	if err := agent.Validate(); err != nil {
-		return "", fmt.Errorf("invalid agent '%s': %w", agentName, err)
+		return emptyResult, fmt.Errorf("invalid agent '%s': %w", agentName, err)
 	}
 
 	// Create a copy of config for potential provider overrides
@@ -115,22 +147,77 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 	// Create provider
 	provider, err := llm.NewProvider(cfg)
 	if err != nil {
-		return "", fmt.Errorf("create provider: %w", err)
+		return emptyResult, fmt.Errorf("create provider: %w", err)
+	}
+
+	// Get provider name and model for session tracking
+	providerName := cfg.DefaultProvider
+	modelName := agent.Model
+	if modelName == "" {
+		if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
+			modelName = providerCfg.Model
+		}
+	}
+
+	// Create child session if store is available (before engine setup so nested agents can reference it)
+	var childSessionID string
+	if r.store != nil {
+		childSession := &session.Session{
+			ID:         session.NewID(),
+			ParentID:   r.parentSessionID,
+			IsSubagent: true,
+			Provider:   providerName,
+			Model:      modelName,
+			Summary:    fmt.Sprintf("@%s: %s", agentName, session.TruncateSummary(prompt)),
+			CreatedAt:  time.Now(),
+			UpdatedAt:  time.Now(),
+			Status:     session.StatusActive,
+		}
+		if cwd, err := os.Getwd(); err == nil {
+			childSession.CWD = cwd
+		}
+		if err := r.store.Create(ctx, childSession); err != nil {
+			r.warn("session Create failed: %v", err)
+		} else {
+			childSessionID = childSession.ID
+
+			// Save initial user prompt as first message
+			userMsg := session.NewMessage(childSessionID, llm.UserText(prompt), -1)
+			if err := r.store.AddMessage(ctx, childSessionID, userMsg); err != nil {
+				r.warn("session AddMessage failed: %v", err)
+			}
+		}
 	}
 
 	// Create engine with default tool registry
 	engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
 
-	// Set up tools from agent config
-	toolMgr, err := r.setupAgentTools(cfg, engine, agent, depth)
+	// Set up tools from agent config (pass child session ID for nested agents)
+	toolMgr, err := r.setupAgentTools(cfg, engine, agent, depth, childSessionID)
 	if err != nil {
-		return "", fmt.Errorf("setup tools: %w", err)
+		return emptyResult, fmt.Errorf("setup tools: %w", err)
+	}
+
+	// Set up turn callback to save messages incrementally (after tools setup)
+	if r.store != nil && childSessionID != "" {
+		engine.SetTurnCompletedCallback(func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
+			for _, msg := range turnMessages {
+				sessionMsg := session.NewMessage(childSessionID, msg, -1)
+				if err := r.store.AddMessage(ctx, childSessionID, sessionMsg); err != nil {
+					r.warn("session AddMessage failed: %v", err)
+				}
+			}
+			if err := r.store.UpdateMetrics(ctx, childSessionID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens); err != nil {
+				r.warn("session UpdateMetrics failed: %v", err)
+			}
+			return nil
+		})
 	}
 
 	// Build system prompt
 	systemPrompt := ""
 	if agent.SystemPrompt != "" {
-		templateCtx := agents.NewTemplateContext()
+		templateCtx := agents.NewTemplateContextForTemplate(agent.SystemPrompt)
 		if agents.IsBuiltinAgent(agent.Name) {
 			if resourceDir, err := agents.ExtractBuiltinResources(agent.Name); err == nil {
 				templateCtx = templateCtx.WithResourceDir(resourceDir)
@@ -185,23 +272,31 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 		req.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
 	}
 
-	// Get provider name and model for the init event
-	// Use cfg.DefaultProvider (e.g. "chatgpt") instead of provider.Name() (e.g. "ChatGPT (model)")
-	// for cleaner display in subagent status line
-	providerName := cfg.DefaultProvider
-	modelName := agent.Model
-	if modelName == "" {
-		if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
-			modelName = providerCfg.Model
+	// Run the agent and collect output
+	output, err := r.runAndCollectWithCallback(ctx, engine, req, callID, cb, providerName, modelName)
+	if err != nil {
+		// Update session status on error
+		if r.store != nil && childSessionID != "" {
+			if statusErr := r.store.UpdateStatus(ctx, childSessionID, session.StatusError); statusErr != nil {
+				r.warn("session UpdateStatus failed: %v", statusErr)
+			}
+		}
+		return tools.SpawnAgentRunResult{Output: output, SessionID: childSessionID}, err
+	}
+
+	// Update session status on completion
+	if r.store != nil && childSessionID != "" {
+		if statusErr := r.store.UpdateStatus(ctx, childSessionID, session.StatusComplete); statusErr != nil {
+			r.warn("session UpdateStatus failed: %v", statusErr)
 		}
 	}
 
-	// Run the agent and collect output
-	return r.runAndCollectWithCallback(ctx, engine, req, callID, cb, providerName, modelName)
+	return tools.SpawnAgentRunResult{Output: output, SessionID: childSessionID}, nil
 }
 
 // setupAgentTools sets up tools based on agent configuration.
-func (r *SpawnAgentRunner) setupAgentTools(cfg *config.Config, engine *llm.Engine, agent *agents.Agent, depth int) (*tools.ToolManager, error) {
+// childSessionID is the session ID for this agent run, used as parent for nested agents.
+func (r *SpawnAgentRunner) setupAgentTools(cfg *config.Config, engine *llm.Engine, agent *agents.Agent, depth int, childSessionID string) (*tools.ToolManager, error) {
 	// Determine which tools to enable
 	var enabledTools string
 	if agent.HasEnabledList() {
@@ -272,11 +367,15 @@ func (r *SpawnAgentRunner) setupAgentTools(cfg *config.Config, engine *llm.Engin
 		// Set the depth for this nested spawn tool
 		spawnTool.SetDepth(depth)
 		// Create a new runner - this sub-agent's ApprovalMgr becomes the parent for nested agents
+		// Pass store and childSessionID so nested agents can track their sessions
 		childRunner := &SpawnAgentRunner{
 			cfg:               r.cfg,
 			registry:          r.registry,
 			yoloMode:          r.yoloMode,
 			parentApprovalMgr: toolMgr.ApprovalMgr,
+			store:             r.store,
+			parentSessionID:   childSessionID, // This agent's session becomes parent for nested agents
+			warnFunc:          r.warnFunc,
 		}
 		spawnTool.SetRunner(childRunner)
 	}

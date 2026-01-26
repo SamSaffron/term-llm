@@ -20,16 +20,17 @@ const (
 
 // Session represents a chat session stored in the database.
 type Session struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name,omitempty"`
-	Summary   string    `json:"summary,omitempty"` // First user message or auto-generated
-	Provider  string    `json:"provider"`
-	Model     string    `json:"model"`
-	CWD       string    `json:"cwd,omitempty"` // Working directory at session start
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Archived  bool      `json:"archived,omitempty"`
-	ParentID  string    `json:"parent_id,omitempty"` // For session branching
+	ID         string    `json:"id"`
+	Name       string    `json:"name,omitempty"`
+	Summary    string    `json:"summary,omitempty"` // First user message or auto-generated
+	Provider   string    `json:"provider"`
+	Model      string    `json:"model"`
+	CWD        string    `json:"cwd,omitempty"` // Working directory at session start
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+	Archived   bool      `json:"archived,omitempty"`
+	ParentID   string    `json:"parent_id,omitempty"`   // For session branching
+	IsSubagent bool      `json:"is_subagent,omitempty"` // True if this is a subagent session
 
 	// Session settings (restored on resume unless overridden)
 	Search bool   `json:"search,omitempty"` // Web search enabled

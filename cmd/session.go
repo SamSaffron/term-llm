@@ -2,12 +2,15 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -158,11 +161,11 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 	// System prompt: CLI > agent > config
 	if cli.SystemMessage != "" {
 		// Expand template variables in CLI system message
-		templateCtx := agents.NewTemplateContext().WithFiles(cli.Files)
+		templateCtx := agents.NewTemplateContextForTemplate(cli.SystemMessage).WithFiles(cli.Files)
 		s.SystemPrompt = agents.ExpandTemplate(cli.SystemMessage, templateCtx)
 	} else if agent != nil && agent.SystemPrompt != "" {
 		// Expand template variables
-		templateCtx := agents.NewTemplateContext().WithFiles(cli.Files)
+		templateCtx := agents.NewTemplateContextForTemplate(agent.SystemPrompt).WithFiles(cli.Files)
 		if agents.IsBuiltinAgent(agent.Name) {
 			if resourceDir, err := agents.ExtractBuiltinResources(agent.Name); err == nil {
 				templateCtx = templateCtx.WithResourceDir(resourceDir)
@@ -178,7 +181,7 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 		}
 	} else {
 		// Expand template variables in config instructions
-		templateCtx := agents.NewTemplateContext().WithFiles(cli.Files)
+		templateCtx := agents.NewTemplateContextForTemplate(configInstructions).WithFiles(cli.Files)
 		s.SystemPrompt = agents.ExpandTemplate(configInstructions, templateCtx)
 	}
 
@@ -232,6 +235,12 @@ func (s *SessionSettings) SetupToolManager(cfg *config.Config, engine *llm.Engin
 // The toolMgr's ApprovalMgr is passed to sub-agents so they inherit session approvals
 // and can use the parent's prompt function for interactive approvals.
 func WireSpawnAgentRunner(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool) error {
+	return WireSpawnAgentRunnerWithStore(cfg, toolMgr, yoloMode, nil, "")
+}
+
+// WireSpawnAgentRunnerWithStore sets up the spawn_agent runner with session tracking.
+// store is used to save subagent turns, parentSessionID links child sessions to parent.
+func WireSpawnAgentRunnerWithStore(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool, store session.Store, parentSessionID string) error {
 	if toolMgr == nil {
 		return nil
 	}
@@ -239,10 +248,59 @@ func WireSpawnAgentRunner(cfg *config.Config, toolMgr *tools.ToolManager, yoloMo
 	if spawnTool == nil {
 		return nil
 	}
-	runner, err := NewSpawnAgentRunner(cfg, yoloMode, toolMgr.ApprovalMgr)
+	runner, err := NewSpawnAgentRunnerWithStore(cfg, yoloMode, toolMgr.ApprovalMgr, store, parentSessionID)
 	if err != nil {
 		return fmt.Errorf("setup spawn_agent: %w", err)
 	}
 	spawnTool.SetRunner(runner)
 	return nil
+}
+
+// InitSessionStore creates a session store if enabled in config.
+// Returns the store (may be nil if disabled) and a cleanup function.
+// The cleanup function is always safe to call (handles nil store).
+// Warnings are written to errWriter.
+func InitSessionStore(cfg *config.Config, errWriter io.Writer) (session.Store, func()) {
+	if !cfg.Sessions.Enabled {
+		return nil, func() {}
+	}
+
+	store, err := session.NewStore(session.Config{
+		Enabled:    cfg.Sessions.Enabled,
+		MaxAgeDays: cfg.Sessions.MaxAgeDays,
+		MaxCount:   cfg.Sessions.MaxCount,
+	})
+	if err != nil {
+		fmt.Fprintf(errWriter, "warning: session store unavailable: %v\n", err)
+		return nil, func() {}
+	}
+
+	// Wrap store with logging to surface persistence errors
+	store = session.NewLoggingStore(store, func(format string, args ...any) {
+		fmt.Fprintf(errWriter, "warning: "+format+"\n", args...)
+	})
+
+	cleanup := func() {
+		if store != nil {
+			store.Close()
+		}
+	}
+
+	return store, cleanup
+}
+
+// SetupSkills initializes the skills system if enabled.
+// Returns the setup (may be nil) and logs warnings to errWriter on errors.
+func SetupSkills(cfg *config.SkillsConfig, skillsFlag string, errWriter io.Writer) *skills.Setup {
+	skillsCfg := applySkillsFlag(cfg, skillsFlag)
+	if !skillsCfg.Enabled {
+		return nil
+	}
+
+	setup, err := skills.NewSetup(skillsCfg)
+	if err != nil {
+		fmt.Fprintf(errWriter, "warning: skills initialization failed: %v\n", err)
+		return nil
+	}
+	return setup
 }

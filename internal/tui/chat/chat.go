@@ -109,6 +109,12 @@ type Model struct {
 	// Inspector mode
 	inspectorMode  bool
 	inspectorModel *inspector.Model
+
+	// Cached glamour renderer (avoids expensive recreation during streaming)
+	rendererCache struct {
+		renderer *glamour.TermRenderer
+		width    int
+	}
 }
 
 // streamEventMsg wraps ui.StreamEvent for bubbletea
@@ -718,6 +724,7 @@ func (m *Model) updateInspectorMode(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Exit inspector mode
 		m.inspectorMode = false
 		m.inspectorModel = nil
+		m.textarea.Focus()
 		return m, tea.ExitAltScreen
 
 	default:
@@ -982,7 +989,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Only open inspector if we have messages
 		if len(m.messages) > 0 {
 			m.inspectorMode = true
-			m.inspectorModel = inspector.New(m.messages, m.width, m.height, m.styles)
+			m.inspectorModel = inspector.NewWithStore(m.messages, m.width, m.height, m.styles, m.store)
 			return m, tea.EnterAltScreen
 		}
 		return m, nil
@@ -1142,77 +1149,26 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Handle vim-style navigation when input is empty
-	if m.textarea.Value() == "" {
-		// Calculate total content height for scrolling
+	// Page up/down for scrolling
+	if key.Matches(msg, m.keyMap.PageUp) {
 		totalMessages := len(m.messages)
-
-		// j - scroll down (show older messages, increase offset)
-		if key.Matches(msg, m.keyMap.ScrollDown) {
-			if m.scrollOffset > 0 {
-				m.scrollOffset--
-			}
-			return m, nil
+		maxScroll := totalMessages - 1
+		if maxScroll < 0 {
+			maxScroll = 0
 		}
-
-		// k - scroll up (show newer messages, decrease offset from bottom)
-		if key.Matches(msg, m.keyMap.ScrollUp) {
-			maxScroll := totalMessages - 1
-			if maxScroll < 0 {
-				maxScroll = 0
-			}
-			if m.scrollOffset < maxScroll {
-				m.scrollOffset++
-			}
-			return m, nil
-		}
-
-		// G - go to bottom (most recent)
-		if key.Matches(msg, m.keyMap.GoToBottom) {
-			m.scrollOffset = 0
-			return m, nil
-		}
-
-		// g - go to top (oldest)
-		if key.Matches(msg, m.keyMap.GoToTop) {
-			maxScroll := totalMessages - 1
-			if maxScroll < 0 {
-				maxScroll = 0
-			}
+		m.scrollOffset += 5
+		if m.scrollOffset > maxScroll {
 			m.scrollOffset = maxScroll
-			return m, nil
 		}
+		return m, nil
+	}
 
-		// Page up/down
-		if key.Matches(msg, m.keyMap.PageUp) {
-			maxScroll := totalMessages - 1
-			if maxScroll < 0 {
-				maxScroll = 0
-			}
-			m.scrollOffset += 5
-			if m.scrollOffset > maxScroll {
-				m.scrollOffset = maxScroll
-			}
-			return m, nil
+	if key.Matches(msg, m.keyMap.PageDown) {
+		m.scrollOffset -= 5
+		if m.scrollOffset < 0 {
+			m.scrollOffset = 0
 		}
-
-		if key.Matches(msg, m.keyMap.PageDown) {
-			m.scrollOffset -= 5
-			if m.scrollOffset < 0 {
-				m.scrollOffset = 0
-			}
-			return m, nil
-		}
-
-		// y - copy last assistant response to clipboard
-		if key.Matches(msg, m.keyMap.Copy) {
-			return m.copyLastResponse()
-		}
-
-		// ? - show help
-		if key.Matches(msg, m.keyMap.Help) {
-			return m.cmdHelp()
-		}
+		return m, nil
 	}
 
 	// Update textarea for other keys
@@ -2156,6 +2112,18 @@ func (m *Model) renderMarkdown(content string) string {
 		return ""
 	}
 
+	targetWidth := m.width - 2
+
+	// Reuse cached renderer if width matches
+	if m.rendererCache.renderer != nil && m.rendererCache.width == targetWidth {
+		rendered, err := m.rendererCache.renderer.Render(content)
+		if err != nil {
+			return content
+		}
+		return strings.TrimSpace(rendered)
+	}
+
+	// Create new renderer and cache it
 	style := ui.GlamourStyle()
 	margin := uint(0)
 	style.Document.Margin = &margin
@@ -2165,11 +2133,14 @@ func (m *Model) renderMarkdown(content string) string {
 
 	renderer, err := glamour.NewTermRenderer(
 		glamour.WithStyles(style),
-		glamour.WithWordWrap(m.width-2),
+		glamour.WithWordWrap(targetWidth),
 	)
 	if err != nil {
 		return content
 	}
+
+	m.rendererCache.renderer = renderer
+	m.rendererCache.width = targetWidth
 
 	rendered, err := renderer.Render(content)
 	if err != nil {

@@ -15,7 +15,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
@@ -135,27 +134,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 
 	// Load agent if specified
-	var agent *agents.Agent
-	if askAgent != "" {
-		registry, err := agents.NewRegistry(agents.RegistryConfig{
-			UseBuiltin:  cfg.Agents.UseBuiltin,
-			SearchPaths: cfg.Agents.SearchPaths,
-		})
-		if err != nil {
-			return fmt.Errorf("create agent registry: %w", err)
-		}
-
-		// Apply agent preferences from config
-		registry.SetPreferences(cfg.Agents.Preferences)
-
-		agent, err = registry.Get(askAgent)
-		if err != nil {
-			return fmt.Errorf("load agent: %w", err)
-		}
-
-		if err := agent.Validate(); err != nil {
-			return fmt.Errorf("invalid agent: %w", err)
-		}
+	agent, err := LoadAgent(askAgent, cfg)
+	if err != nil {
+		return err
 	}
 
 	// Handle default prompt for agents invoked without a message
@@ -200,90 +181,29 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initialize skills system
-	var skillsSetup *skills.Setup
-	skillsCfg := applySkillsFlag(&cfg.Skills, askSkills)
-	if skillsCfg.Enabled {
-		skillsSetup, err = skills.NewSetup(skillsCfg)
-		if err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: skills initialization failed: %v\n", err)
-		}
-	}
+	skillsSetup := SetupSkills(&cfg.Skills, askSkills, cmd.ErrOrStderr())
 
-	// Determine initial settings: CLI > agent > none
-	effectiveTools := askTools
-	effectiveReadDirs := askReadDirs
-	effectiveWriteDirs := askWriteDirs
-	effectiveShellAllow := askShellAllow
-	effectiveMCP := askMCP
-	effectiveSearch := askSearch
-	shellAutoRun := false
-	var scriptCommands []string
-
-	if agent != nil {
-		// Use agent tool settings if CLI didn't specify
-		if effectiveTools == "" {
-			if agent.HasEnabledList() {
-				effectiveTools = strings.Join(agent.Tools.Enabled, ",")
-			} else if agent.HasDisabledList() {
-				// Get all tools and exclude disabled ones
-				allTools := tools.AllToolNames()
-				enabledTools := agent.GetEnabledTools(allTools)
-				effectiveTools = strings.Join(enabledTools, ",")
-			}
-		}
-
-		// Agent-specific tool settings
-		if len(agent.Read.Dirs) > 0 {
-			effectiveReadDirs = agent.Read.Dirs
-		}
-		if len(agent.Shell.Allow) > 0 {
-			effectiveShellAllow = agent.Shell.Allow
-		}
-		shellAutoRun = agent.Shell.AutoRun
-
-		// Extract script commands from agent
-		if len(agent.Shell.Scripts) > 0 {
-			for _, script := range agent.Shell.Scripts {
-				scriptCommands = append(scriptCommands, script)
-			}
-		}
-
-		// Agent MCP servers
-		if effectiveMCP == "" {
-			mcpServers := agent.GetMCPServerNames()
-			if len(mcpServers) > 0 {
-				effectiveMCP = strings.Join(mcpServers, ",")
-			}
-		}
-
-		// Agent search setting
-		if agent.Search {
-			effectiveSearch = true
-		}
-	}
+	// Resolve all settings: CLI > agent > config
+	settings := ResolveSettings(cfg, agent, CLIFlags{
+		Provider:      askProvider,
+		Tools:         askTools,
+		ReadDirs:      askReadDirs,
+		WriteDirs:     askWriteDirs,
+		ShellAllow:    askShellAllow,
+		MCP:           askMCP,
+		SystemMessage: askSystemMessage,
+		MaxTurns:      askMaxTurns,
+		MaxTurnsSet:   cmd.Flags().Changed("max-turns"),
+		Search:        askSearch,
+		Files:         askFiles,
+	}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 20)
 
 	// Initialize session store and handle --resume BEFORE tool/MCP initialization
-	// so that session settings can override effectiveTools, effectiveMCP, etc.
-	var store session.Store
+	// so that session settings can override settings.Tools, settings.MCP, etc.
+	store, storeCleanup := InitSessionStore(cfg, cmd.ErrOrStderr())
+	defer storeCleanup()
 	var sess *session.Session
 	var sessionMessages []llm.Message
-	if cfg.Sessions.Enabled {
-		var storeErr error
-		store, storeErr = session.NewStore(session.Config{
-			Enabled:    cfg.Sessions.Enabled,
-			MaxAgeDays: cfg.Sessions.MaxAgeDays,
-			MaxCount:   cfg.Sessions.MaxCount,
-		})
-		if storeErr != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: session store unavailable: %v\n", storeErr)
-		} else {
-			defer store.Close()
-			// Wrap store with logging to surface persistence errors
-			store = session.NewLoggingStore(store, func(format string, args ...any) {
-				fmt.Fprintf(cmd.ErrOrStderr(), "warning: "+format+"\n", args...)
-			})
-		}
-	}
 
 	// Handle --resume flag - apply session settings before tool/MCP setup
 	resuming := cmd.Flags().Changed("resume")
@@ -315,13 +235,13 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		// Apply session settings for flags not explicitly set on CLI
 		// (unconditionally - session may have had search/tools/MCP disabled)
 		if !cmd.Flags().Changed("search") {
-			effectiveSearch = sess.Search
+			settings.Search = sess.Search
 		}
 		if !cmd.Flags().Changed("tools") {
-			effectiveTools = sess.Tools
+			settings.Tools = sess.Tools
 		}
 		if !cmd.Flags().Changed("mcp") {
-			effectiveMCP = sess.MCP
+			settings.MCP = sess.MCP
 		}
 
 		// Load session history
@@ -332,23 +252,12 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initialize local tools if we have any
-	var toolMgr *tools.ToolManager
+	toolMgr, err := settings.SetupToolManager(cfg, engine)
+	if err != nil {
+		return err
+	}
 	var outputTool *tools.SetOutputTool
-	if effectiveTools != "" {
-		toolConfig := buildToolConfig(effectiveTools, effectiveReadDirs, effectiveWriteDirs, effectiveShellAllow, cfg)
-		if shellAutoRun {
-			toolConfig.ShellAutoRun = true
-		}
-		if len(scriptCommands) > 0 {
-			toolConfig.ScriptCommands = append(toolConfig.ScriptCommands, scriptCommands...)
-		}
-		if errs := toolConfig.Validate(); len(errs) > 0 {
-			return fmt.Errorf("invalid tool config: %v", errs[0])
-		}
-		toolMgr, err = tools.NewToolManager(&toolConfig, cfg)
-		if err != nil {
-			return fmt.Errorf("failed to initialize tools: %w", err)
-		}
+	if toolMgr != nil {
 		// Enable yolo mode if flag is set
 		if askYolo {
 			toolMgr.ApprovalMgr.SetYoloMode(true)
@@ -356,19 +265,22 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 		// Register output tool if agent configures one
 		if agent != nil && agent.OutputTool.IsConfigured() {
-			cfg := agent.OutputTool
-			param := cfg.Param
+			agentCfg := agent.OutputTool
+			param := agentCfg.Param
 			if param == "" {
 				param = "content" // default
 			}
-			outputTool = toolMgr.Registry.RegisterOutputTool(cfg.Name, param, cfg.Description)
+			outputTool = toolMgr.Registry.RegisterOutputTool(agentCfg.Name, param, agentCfg.Description)
 		}
 
 		// PromptFunc is set in streamWithGlamour to use bubbletea UI
-		toolMgr.SetupEngine(engine)
 
-		// Wire spawn_agent runner if enabled
-		if err := WireSpawnAgentRunner(cfg, toolMgr, askYolo); err != nil {
+		// Wire spawn_agent runner if enabled (with session tracking)
+		var parentSessionID string
+		if sess != nil {
+			parentSessionID = sess.ID
+		}
+		if err := WireSpawnAgentRunnerWithStore(cfg, toolMgr, askYolo, store, parentSessionID); err != nil {
 			return err
 		}
 
@@ -387,7 +299,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	// Initialize MCP servers if any (after session settings are applied)
 	var mcpManager *mcp.Manager
-	if effectiveMCP != "" {
+	if settings.MCP != "" {
 		mcpOpts := &MCPOptions{
 			Provider: provider,
 			YoloMode: askYolo,
@@ -395,7 +307,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
 			mcpOpts.Model = providerCfg.Model
 		}
-		mcpManager, err = enableMCPServersWithFeedback(ctx, effectiveMCP, engine, cmd.ErrOrStderr(), mcpOpts)
+		mcpManager, err = enableMCPServersWithFeedback(ctx, settings.MCP, engine, cmd.ErrOrStderr(), mcpOpts)
 		if err != nil {
 			return err
 		}
@@ -433,9 +345,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			Model:     modelName,
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
-			Search:    effectiveSearch,
-			Tools:     effectiveTools,
-			MCP:       effectiveMCP,
+			Search:    settings.Search,
+			Tools:     settings.Tools,
+			MCP:       settings.MCP,
 			Status:    session.StatusActive,
 		}
 		if cwd, cwdErr := os.Getwd(); cwdErr == nil {
@@ -446,41 +358,8 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	// Sequence numbers are now auto-allocated by the store (pass Sequence: -1)
 
-	// Determine system instructions: CLI > agent > config
-	// Expand template variables in config instructions
-	templateCtx := agents.NewTemplateContextForTemplate(cfg.Ask.Instructions).WithFiles(askFiles)
-	instructions := agents.ExpandTemplate(cfg.Ask.Instructions, templateCtx)
-	if agent != nil && agent.SystemPrompt != "" {
-		// Expand template variables in agent system prompt
-		// Use NewTemplateContextForTemplate to avoid expensive git operations
-		// when the template doesn't use them
-		templateCtx := agents.NewTemplateContextForTemplate(agent.SystemPrompt).WithFiles(askFiles)
-
-		// Extract resources for builtin agents and set resource_dir
-		if agents.IsBuiltinAgent(agent.Name) {
-			if resourceDir, err := agents.ExtractBuiltinResources(agent.Name); err == nil {
-				templateCtx = templateCtx.WithResourceDir(resourceDir)
-			}
-		}
-
-		instructions = agents.ExpandTemplate(agent.SystemPrompt, templateCtx)
-	}
-	if askSystemMessage != "" {
-		// Expand template variables in CLI system message
-		cliTemplateCtx := agents.NewTemplateContextForTemplate(askSystemMessage).WithFiles(askFiles)
-		instructions = agents.ExpandTemplate(askSystemMessage, cliTemplateCtx)
-	}
-
-	// Append project instructions if agent requests them (auto-detected or explicit)
-	if agent != nil && agent.ShouldLoadProjectInstructions() {
-		if projectInstructions := agents.DiscoverProjectInstructions(); projectInstructions != "" {
-			if instructions != "" {
-				instructions += "\n\n---\n\n" + projectInstructions
-			} else {
-				instructions = projectInstructions
-			}
-		}
-	}
+	// Use system prompt from resolved settings (already expanded)
+	instructions := settings.SystemPrompt
 
 	// Inject skills metadata if available and not already in AGENTS.md
 	if skillsSetup != nil && skillsSetup.HasSkillsXML() && !skills.CheckAgentsMdForSkills() {
@@ -509,19 +388,13 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	// Add new user message
 	messages = append(messages, llm.UserText(userPrompt))
 
-	// Determine max turns: CLI default check > agent > CLI default
-	effectiveMaxTurns := askMaxTurns
-	if agent != nil && agent.MaxTurns > 0 && !cmd.Flags().Changed("max-turns") {
-		effectiveMaxTurns = agent.MaxTurns
-	}
-
 	debugMode := askDebug
 	req := llm.Request{
 		Messages:            messages,
-		Search:              effectiveSearch,
+		Search:              settings.Search,
 		ForceExternalSearch: resolveForceExternalSearch(cfg, askNativeSearch, askNoNativeSearch),
 		ParallelToolCalls:   true,
-		MaxTurns:            effectiveMaxTurns,
+		MaxTurns:            settings.MaxTurns,
 		Debug:               debugMode,
 		DebugRaw:            debugRaw,
 	}
@@ -531,7 +404,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		allSpecs := engine.Tools().AllSpecs()
 		// Filter out search tools unless search is enabled
 		// (Engine adds them automatically when req.Search is true)
-		if !effectiveSearch {
+		if !settings.Search {
 			var filtered []llm.ToolSpec
 			for _, spec := range allSpecs {
 				if spec.Name != llm.WebSearchToolName && spec.Name != llm.ReadURLToolName {
@@ -1091,7 +964,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if len(messages) > 0 {
 				m.inspectorMode = true
-				m.inspectorModel = inspector.New(messages, m.width, m.height, m.styles)
+				m.inspectorModel = inspector.NewWithStore(messages, m.width, m.height, m.styles, m.store)
 				return m, tea.EnterAltScreen
 			}
 		}
