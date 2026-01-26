@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"time"
+
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -59,6 +61,10 @@ func HandleSubagentProgress(tracker *ToolTracker, subagentTracker *SubagentTrack
 		subagentTracker.HandleUsage(callID, event.InputTokens, event.OutputTokens)
 	case tools.SubagentEventDone:
 		subagentTracker.MarkDone(callID)
+		// Store completion time so elapsed timer freezes
+		if seg := FindSegmentByCallID(tracker, callID); seg != nil {
+			seg.SubagentEndTime = time.Now()
+		}
 	}
 
 	// Update the spawn_agent segment's stats for display

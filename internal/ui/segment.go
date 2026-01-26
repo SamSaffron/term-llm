@@ -32,7 +32,7 @@ const (
 // Segment represents a discrete unit in the response stream (text or tool)
 type Segment struct {
 	Type       SegmentType
-	Text       string     // For text segments: markdown content
+	Text       string     // For text segments: markdown content (finalized on completion)
 	Rendered   string     // For text segments: cached rendered markdown
 	ToolCallID string     // For tool segments: unique ID for this invocation
 	ToolName   string     // For tool segments
@@ -44,6 +44,13 @@ type Segment struct {
 	DiffOld    string     // For diff segments: old content
 	DiffNew    string     // For diff segments: new content
 	Flushed    bool       // True if this segment has been printed to scrollback
+
+	// Streaming text accumulation (O(1) append instead of O(n) string concat)
+	TextBuilder *strings.Builder // Used during streaming; nil when Complete
+
+	// Text snapshot cache - updated on append to avoid repeated String() calls
+	TextSnapshot    string // Cached result of TextBuilder.String()
+	TextSnapshotLen int    // Length when snapshot was taken (0 = invalid)
 
 	// Incremental rendering cache (streaming optimization)
 	SafePos      int    // Byte position of last safe markdown boundary
@@ -57,6 +64,7 @@ type Segment struct {
 	SubagentModel       string         // Model name if different from parent
 	SubagentPreview     []string       // Preview lines (active tools + last few text lines)
 	SubagentStartTime   time.Time      // Start time for elapsed time display
+	SubagentEndTime     time.Time      // When subagent completed (zero if still running)
 	SubagentDiffs       []SubagentDiff // Diffs from subagent's edit_file calls
 }
 
@@ -65,6 +73,24 @@ type SubagentDiff struct {
 	Path string
 	Old  string
 	New  string
+}
+
+// GetText returns the current text content of a segment.
+// During streaming, it uses the cached TextSnapshot; after completion, it reads from Text.
+// The snapshot is updated by AddTextSegment when content changes, avoiding
+// repeated O(n) String() allocations on every render tick.
+func (s *Segment) GetText() string {
+	if s.TextBuilder != nil {
+		// Return cached snapshot if valid (length matches current builder length)
+		if s.TextSnapshotLen == s.TextBuilder.Len() {
+			return s.TextSnapshot
+		}
+		// Snapshot is stale - update it (should rarely happen, AddTextSegment updates it)
+		s.TextSnapshot = s.TextBuilder.String()
+		s.TextSnapshotLen = s.TextBuilder.Len()
+		return s.TextSnapshot
+	}
+	return s.Text
 }
 
 // Tool status indicator colors using raw ANSI for reliable true color
@@ -142,7 +168,7 @@ func RenderToolSegment(seg *Segment, wavePos int) string {
 	case ToolPending:
 		// spawn_agent tools with progress show stats instead of wave animation
 		if seg.ToolName == "spawn_agent" && seg.SubagentHasProgress {
-			return PendingCircle() + " " + renderSpawnAgentStats(seg.ToolInfo, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentStartTime, seg.SubagentProvider, seg.SubagentModel)
+			return PendingCircle() + " " + renderSpawnAgentStats(seg.ToolInfo, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentStartTime, seg.SubagentEndTime, seg.SubagentProvider, seg.SubagentModel)
 		}
 		// Wave animation for other pending tools
 		phase := FormatToolPhase(seg.ToolName, seg.ToolInfo)
@@ -150,7 +176,7 @@ func RenderToolSegment(seg *Segment, wavePos int) string {
 	case ToolSuccess:
 		// spawn_agent shows final stats on success
 		if seg.ToolName == "spawn_agent" && seg.SubagentHasProgress {
-			return SuccessCircle() + " " + renderSpawnAgentStats(seg.ToolInfo, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentStartTime, seg.SubagentProvider, seg.SubagentModel)
+			return SuccessCircle() + " " + renderSpawnAgentStats(seg.ToolInfo, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentStartTime, seg.SubagentEndTime, seg.SubagentProvider, seg.SubagentModel)
 		}
 		// Tool name normal, params slightly muted (with space before info if present)
 		if seg.ToolInfo != "" {
@@ -160,7 +186,7 @@ func RenderToolSegment(seg *Segment, wavePos int) string {
 	case ToolError:
 		// spawn_agent shows stats even on error
 		if seg.ToolName == "spawn_agent" && seg.SubagentHasProgress {
-			return ErrorCircle() + " " + renderSpawnAgentStats(seg.ToolInfo, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentStartTime, seg.SubagentProvider, seg.SubagentModel)
+			return ErrorCircle() + " " + renderSpawnAgentStats(seg.ToolInfo, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentStartTime, seg.SubagentEndTime, seg.SubagentProvider, seg.SubagentModel)
 		}
 		// Tool name normal, params slightly muted (with space before info if present)
 		if seg.ToolInfo != "" {
@@ -173,7 +199,7 @@ func RenderToolSegment(seg *Segment, wavePos int) string {
 
 // renderSpawnAgentStats renders the stats line for a spawn_agent tool.
 // Format: @agentName  N calls · X.Xk tokens · 12s [provider:model]
-func renderSpawnAgentStats(agentName string, toolCalls, totalTokens int, startTime time.Time, provider, model string) string {
+func renderSpawnAgentStats(agentName string, toolCalls, totalTokens int, startTime, endTime time.Time, provider, model string) string {
 	var b strings.Builder
 
 	// Extract just the agent name from toolInfo (format: "@name: prompt..." or "name")
@@ -185,7 +211,7 @@ func renderSpawnAgentStats(agentName string, toolCalls, totalTokens int, startTi
 		b.WriteString("agent")
 	}
 	b.WriteString("  ")
-	b.WriteString(paramStyle.Render(formatSpawnAgentStats(toolCalls, totalTokens, startTime)))
+	b.WriteString(paramStyle.Render(formatSpawnAgentStats(toolCalls, totalTokens, startTime, endTime)))
 
 	// Show provider:model if set (indicates different from parent)
 	if provider != "" || model != "" {
@@ -257,10 +283,12 @@ func shortenModelName(model string) string {
 }
 
 // formatSpawnAgentStats formats tool count, tokens, and elapsed time as "N calls · X.Xk tokens · 12s"
-func formatSpawnAgentStats(toolCalls, totalTokens int, startTime time.Time) string {
+// If endTime is non-zero, elapsed time is frozen at endTime - startTime.
+func formatSpawnAgentStats(toolCalls, totalTokens int, startTime, endTime time.Time) string {
 	if toolCalls == 0 && totalTokens == 0 {
 		if !startTime.IsZero() {
-			return "starting… · " + formatElapsed(time.Since(startTime))
+			elapsed := calcElapsed(startTime, endTime)
+			return "starting… · " + formatElapsed(elapsed)
 		}
 		return "starting..."
 	}
@@ -270,9 +298,18 @@ func formatSpawnAgentStats(toolCalls, totalTokens int, startTime time.Time) stri
 	}
 	result := formatToolCount(toolCalls) + " " + calls + " · " + formatTokensCompact(totalTokens) + " tokens"
 	if !startTime.IsZero() {
-		result += " · " + formatElapsed(time.Since(startTime))
+		elapsed := calcElapsed(startTime, endTime)
+		result += " · " + formatElapsed(elapsed)
 	}
 	return result
+}
+
+// calcElapsed calculates elapsed time, freezing at endTime if set.
+func calcElapsed(startTime, endTime time.Time) time.Duration {
+	if !endTime.IsZero() {
+		return endTime.Sub(startTime)
+	}
+	return time.Since(startTime)
 }
 
 // formatElapsed formats a duration in a compact human-readable form.
@@ -346,7 +383,8 @@ func renderAskUserResult(text string) string {
 // renderMarkdown should be a function that renders markdown content.
 // includeImages controls whether image segments are rendered - should be false
 // for View() (called constantly) and true for scrollback flush (one-time).
-func RenderSegments(segments []Segment, width int, wavePos int, renderMarkdown func(string, int) string, includeImages bool) string {
+// Accepts []*Segment so mutations (like SafeRendered caching) persist to originals.
+func RenderSegments(segments []*Segment, width int, wavePos int, renderMarkdown func(string, int) string, includeImages bool) string {
 	var b strings.Builder
 
 	for i, seg := range segments {
@@ -395,27 +433,45 @@ func RenderSegments(segments []Segment, width int, wavePos int, renderMarkdown f
 		switch seg.Type {
 		case SegmentText:
 			if seg.Complete && seg.Rendered != "" {
+				// Completed segment with cached render
 				b.WriteString(seg.Rendered)
-			} else if seg.Text != "" && renderMarkdown != nil {
-				// Incremental rendering: render safe prefix once, only re-render suffix
-				if seg.SafePos > 0 {
-					// Populate cache if empty
-					if segments[i].SafeRendered == "" {
-						segments[i].SafeRendered = renderMarkdown(seg.Text[:seg.SafePos], width)
-					}
-					b.WriteString(segments[i].SafeRendered)
-					// Render the unsafe suffix
-					if seg.SafePos < len(seg.Text) {
-						b.WriteString(renderMarkdown(seg.Text[seg.SafePos:], width))
-					}
-				} else {
-					b.WriteString(renderMarkdown(seg.Text, width))
+			} else {
+				// Get text from TextBuilder (streaming) or Text (completed)
+				text := seg.GetText()
+				if text == "" {
+					break
 				}
-			} else if seg.Text != "" {
-				b.WriteString(seg.Text)
+
+				if !seg.Complete {
+					// STREAMING: Skip expensive Glamour rendering entirely.
+					// Use plain text with only safe boundary caching for prefix.
+					if seg.SafePos > 0 && seg.SafeRendered != "" {
+						// Write cached rendered prefix
+						b.WriteString(seg.SafeRendered)
+						// Write remaining text as plain (no Glamour)
+						if seg.SafePos < len(text) {
+							b.WriteString(text[seg.SafePos:])
+						}
+					} else if seg.SafePos > 0 && renderMarkdown != nil {
+						// First time seeing this safe boundary - render and cache it
+						seg.SafeRendered = renderMarkdown(text[:seg.SafePos], width)
+						b.WriteString(seg.SafeRendered)
+						if seg.SafePos < len(text) {
+							b.WriteString(text[seg.SafePos:])
+						}
+					} else {
+						// No safe boundary yet - just output plain text
+						b.WriteString(text)
+					}
+				} else if renderMarkdown != nil {
+					// COMPLETED but no cached Rendered: render with Glamour
+					b.WriteString(renderMarkdown(text, width))
+				} else {
+					b.WriteString(text)
+				}
 			}
 		case SegmentTool:
-			b.WriteString(RenderToolSegment(&seg, wavePos))
+			b.WriteString(RenderToolSegment(seg, wavePos))
 			// Render subagent preview lines beneath spawn_agent tools
 			if seg.ToolName == "spawn_agent" && len(seg.SubagentPreview) > 0 {
 				for _, line := range seg.SubagentPreview {

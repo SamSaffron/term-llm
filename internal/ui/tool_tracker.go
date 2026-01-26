@@ -130,25 +130,27 @@ func (t *ToolTracker) waveTickCmd() tea.Cmd {
 }
 
 // ActiveSegments returns only the pending tool segments (for rendering).
-func (t *ToolTracker) ActiveSegments() []Segment {
-	var active []Segment
-	for _, s := range t.Segments {
-		if s.Type == SegmentTool && s.ToolStatus == ToolPending {
-			active = append(active, s)
+// Returns pointers so mutations (like SafeRendered caching) persist.
+func (t *ToolTracker) ActiveSegments() []*Segment {
+	var active []*Segment
+	for i := range t.Segments {
+		if t.Segments[i].Type == SegmentTool && t.Segments[i].ToolStatus == ToolPending {
+			active = append(active, &t.Segments[i])
 		}
 	}
 	return active
 }
 
 // CompletedSegments returns all non-pending, non-flushed segments (for View() rendering).
-func (t *ToolTracker) CompletedSegments() []Segment {
-	var completed []Segment
-	for _, s := range t.Segments {
-		if s.Flushed {
+// Returns pointers so mutations (like SafeRendered caching) persist.
+func (t *ToolTracker) CompletedSegments() []*Segment {
+	var completed []*Segment
+	for i := range t.Segments {
+		if t.Segments[i].Flushed {
 			continue
 		}
-		if !(s.Type == SegmentTool && s.ToolStatus == ToolPending) {
-			completed = append(completed, s)
+		if !(t.Segments[i].Type == SegmentTool && t.Segments[i].ToolStatus == ToolPending) {
+			completed = append(completed, &t.Segments[i])
 		}
 	}
 	return completed
@@ -169,10 +171,29 @@ func (t *ToolTracker) AddTextSegment(text string) bool {
 	if len(t.Segments) > 0 {
 		last := &t.Segments[len(t.Segments)-1]
 		if last.Type == SegmentText && !last.Complete {
-			last.Text += text
+			// Use TextBuilder for O(1) append instead of O(n) string concat
+			if last.TextBuilder == nil {
+				// Migrate existing Text to TextBuilder (first append after segment creation)
+				last.TextBuilder = &strings.Builder{}
+				last.TextBuilder.WriteString(last.Text)
+				last.Text = "" // Clear to avoid confusion
+			}
+			last.TextBuilder.WriteString(text)
+
+			// Always update snapshot immediately after WriteString.
+			// This ensures GetText() can return the cached snapshot without
+			// calling TextBuilder.String() on every render tick.
+			// The snapshot update is O(n) but happens once per append rather
+			// than potentially multiple times per render cycle.
+			currentLen := last.TextBuilder.Len()
+			last.TextSnapshot = last.TextBuilder.String()
+			last.TextSnapshotLen = currentLen
+
 			// Update safe boundary periodically (every ~100 chars since last check)
-			if len(last.Text)-last.SafePos > 100 {
-				newSafe := FindSafeBoundary(last.Text)
+			// Use incremental scanning for O(delta) instead of O(n) complexity
+			if currentLen-last.SafePos > 100 {
+				// Use incremental boundary finder that only scans from last SafePos
+				newSafe := FindSafeBoundaryIncremental(last.TextSnapshot, last.SafePos)
 				if newSafe > last.SafePos {
 					last.SafePos = newSafe
 					last.SafeRendered = "" // Will be populated on next render
@@ -182,10 +203,14 @@ func (t *ToolTracker) AddTextSegment(text string) bool {
 		}
 	}
 
-	// Create new text segment
+	// Create new text segment with TextBuilder for streaming
+	builder := &strings.Builder{}
+	builder.WriteString(text)
 	t.Segments = append(t.Segments, Segment{
-		Type: SegmentText,
-		Text: text,
+		Type:            SegmentText,
+		TextBuilder:     builder,
+		TextSnapshot:    text,
+		TextSnapshotLen: len(text),
 	})
 	return true
 }
@@ -194,6 +219,11 @@ func (t *ToolTracker) AddTextSegment(text string) bool {
 func (t *ToolTracker) CompleteTextSegments(renderFunc func(string) string) {
 	for i := range t.Segments {
 		if t.Segments[i].Type == SegmentText && !t.Segments[i].Complete {
+			// Finalize TextBuilder to Text
+			if t.Segments[i].TextBuilder != nil {
+				t.Segments[i].Text = t.Segments[i].TextBuilder.String()
+				t.Segments[i].TextBuilder = nil
+			}
 			t.Segments[i].Complete = true
 			if t.Segments[i].Text != "" && renderFunc != nil {
 				t.Segments[i].Rendered = renderFunc(t.Segments[i].Text)
@@ -207,6 +237,11 @@ func (t *ToolTracker) MarkCurrentTextComplete(renderFunc func(string) string) {
 	if len(t.Segments) > 0 {
 		last := &t.Segments[len(t.Segments)-1]
 		if last.Type == SegmentText && !last.Complete {
+			// Finalize TextBuilder to Text
+			if last.TextBuilder != nil {
+				last.Text = last.TextBuilder.String()
+				last.TextBuilder = nil
+			}
 			last.Complete = true
 			if last.Text != "" && renderFunc != nil {
 				last.Rendered = renderFunc(last.Text)
@@ -309,7 +344,7 @@ func (t *ToolTracker) FlushToScrollback(
 	}
 
 	// Collect segments to flush (all unflushed completed segments except the last few)
-	var toFlush []Segment
+	var toFlush []*Segment
 	unflushedSeen := 0
 	for i := range t.Segments {
 		seg := &t.Segments[i]
@@ -324,7 +359,7 @@ func (t *ToolTracker) FlushToScrollback(
 		// Flush if: it's an image/diff OR we have more than minKeep unflushed segments
 		shouldFlush := seg.Type == SegmentImage || seg.Type == SegmentDiff || unflushedSeen <= unflushedCount-minKeep
 		if shouldFlush {
-			toFlush = append(toFlush, *seg)
+			toFlush = append(toFlush, seg)
 			seg.Flushed = true
 		}
 	}
@@ -349,7 +384,7 @@ func (t *ToolTracker) FlushAllRemaining(
 	renderMd func(string, int) string,
 ) FlushToScrollbackResult {
 	// Collect all unflushed completed segments
-	var toFlush []Segment
+	var toFlush []*Segment
 	for i := range t.Segments {
 		seg := &t.Segments[i]
 		if seg.Flushed {
@@ -359,7 +394,7 @@ func (t *ToolTracker) FlushAllRemaining(
 		if isPending {
 			continue
 		}
-		toFlush = append(toFlush, *seg)
+		toFlush = append(toFlush, seg)
 		seg.Flushed = true
 	}
 
@@ -383,7 +418,7 @@ func (t *ToolTracker) FlushBeforeExternalUI(
 	renderMd func(string, int) string,
 ) FlushToScrollbackResult {
 	// Flush all but the last segment (keep some context visible)
-	var toFlush []Segment
+	var toFlush []*Segment
 	unflushedCompleted := 0
 
 	// First count unflushed completed segments
@@ -408,7 +443,7 @@ func (t *ToolTracker) FlushBeforeExternalUI(
 		seen++
 		// Keep the last segment unflushed for context
 		if seen < unflushedCompleted {
-			toFlush = append(toFlush, *seg)
+			toFlush = append(toFlush, seg)
 			seg.Flushed = true
 		}
 	}

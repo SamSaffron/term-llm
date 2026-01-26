@@ -50,7 +50,8 @@ type StreamingIndicator struct {
 	Tokens         int                      // 0 = don't show
 	Status         string                   // optional status (e.g., "editing main.go")
 	ShowCancel     bool                     // show "(esc to cancel)"
-	Segments       []Segment                // active tool segments for wave animation
+	HideProgress   bool                     // hide spinner/phase/tokens/time (shown in status line instead)
+	Segments       []*Segment               // active tool segments for wave animation
 	WavePos        int                      // current wave position
 	Width          int                      // terminal width for markdown rendering
 	RenderMarkdown func(string, int) string // markdown renderer for text segments
@@ -65,7 +66,7 @@ func (s StreamingIndicator) Render(styles *Styles) string {
 		b.WriteString(RenderSegments(s.Segments, s.Width, s.WavePos, s.RenderMarkdown, false))
 		// When tools are active, we don't show the spinner/phase line
 		// as the wave animation provides the progress feedback.
-	} else {
+	} else if !s.HideProgress {
 		// No active tools, show the standard spinner and phase
 		b.WriteString(s.Spinner)
 		b.WriteString(" ")
@@ -74,7 +75,7 @@ func (s StreamingIndicator) Render(styles *Styles) string {
 	}
 
 	// Show tokens and time during spinner phase only (not during tool execution)
-	if len(s.Segments) == 0 {
+	if len(s.Segments) == 0 && !s.HideProgress {
 		b.WriteString(" ")
 		if s.Tokens > 0 {
 			b.WriteString(fmt.Sprintf("%s tokens | ", formatTokenCount(s.Tokens)))
@@ -83,11 +84,13 @@ func (s StreamingIndicator) Render(styles *Styles) string {
 	}
 
 	if s.Status != "" {
-		b.WriteString(" | ")
+		if b.Len() > 0 {
+			b.WriteString(" | ")
+		}
 		b.WriteString(s.Status)
 	}
 
-	if s.ShowCancel {
+	if s.ShowCancel && !s.HideProgress {
 		b.WriteString(" ")
 		b.WriteString(styles.Muted.Render("(esc to cancel)"))
 	}

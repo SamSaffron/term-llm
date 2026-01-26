@@ -36,7 +36,12 @@ func TestAddExternalUIResult(t *testing.T) {
 	}
 
 	// When rendering, it should NOT go through markdown renderer
-	rendered := RenderSegments(tracker.Segments, 80, -1, func(s string, w int) string {
+	// Convert to []*Segment for RenderSegments
+	segments := make([]*Segment, len(tracker.Segments))
+	for i := range tracker.Segments {
+		segments[i] = &tracker.Segments[i]
+	}
+	rendered := RenderSegments(segments, 80, -1, func(s string, w int) string {
 		// This markdown renderer should NOT be called for ask_user results
 		return "MARKDOWN_PROCESSED:" + s
 	}, true)

@@ -23,6 +23,11 @@ func ParseProviderModel(s string, cfg *config.Config) (string, string, error) {
 		model = strings.TrimSpace(parts[1])
 	}
 
+	// Allow hidden debug provider (not in built-in list)
+	if provider == "debug" {
+		return provider, model, nil
+	}
+
 	// Check if provider is configured or is a built-in type
 	if cfg != nil {
 		if _, ok := cfg.Providers[provider]; ok {
@@ -56,6 +61,12 @@ func NewProvider(cfg *config.Config) (Provider, error) {
 // If the provider is a built-in type but not explicitly configured,
 // it will be created with default settings.
 func NewProviderByName(cfg *config.Config, name string, model string) (Provider, error) {
+	// Handle hidden debug provider first
+	if name == "debug" {
+		provider := NewDebugProvider(model)
+		return WrapWithRetry(provider, DefaultRetryConfig()), nil
+	}
+
 	providerCfg, ok := cfg.Providers[name]
 	if !ok {
 		// Check if it's a built-in provider type that can work without config
@@ -126,6 +137,11 @@ func NewProviderByName(cfg *config.Config, name string, model string) (Provider,
 
 // newProviderInternal creates the underlying provider without retry wrapper.
 func newProviderInternal(cfg *config.Config) (Provider, error) {
+	// Handle hidden debug provider first
+	if cfg.DefaultProvider == "debug" {
+		return NewDebugProvider(""), nil
+	}
+
 	providerCfg, ok := cfg.Providers[cfg.DefaultProvider]
 	if !ok {
 		// Check if it's a built-in provider type that can work without config

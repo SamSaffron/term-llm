@@ -115,6 +115,20 @@ type Model struct {
 	altScreen bool
 	viewport  viewport.Model // Scrollable viewport for alt screen mode
 
+	// Render cache for alt screen mode (avoids re-rendering unchanged content)
+	viewCache struct {
+		historyContent      string // Cached rendered history
+		historyMsgCount     int    // Number of messages when cache was built
+		historyWidth        int    // Width when cache was built
+		historyScrollOffset int    // Scroll offset when cache was built
+		historyValid        bool   // Whether cache has been populated
+		lastViewport        string // Last content set to viewport
+		lastViewportView    string // Cached viewport.View() output
+		lastYOffset         int    // Viewport Y offset when view was cached
+		lastVPWidth         int    // Viewport width when view was cached
+		lastVPHeight        int    // Viewport height when view was cached
+	}
+
 	// Cached glamour renderer (avoids expensive recreation during streaming)
 	rendererCache struct {
 		renderer *glamour.TermRenderer
@@ -1090,9 +1104,17 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Don't process other keys while streaming
+	// During streaming: allow typing but block send
 	if m.streaming {
-		return m, nil
+		// Block send key
+		if key.Matches(msg, m.keyMap.Send) {
+			return m, nil
+		}
+		// Allow textarea to receive input
+		var cmd tea.Cmd
+		m.textarea, cmd = m.textarea.Update(msg)
+		m.updateTextareaHeight()
+		return m, cmd
 	}
 
 	// Handle command palette (Ctrl+P)
@@ -1331,7 +1353,6 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	m.textarea.SetValue("")
 	m.textarea.SetHeight(1)
 	m.files = nil
-	m.textarea.Blur()
 
 	// Start streaming
 	m.streaming = true
@@ -1558,25 +1579,60 @@ func (m *Model) View() string {
 func (m *Model) viewAltScreen() string {
 	var b strings.Builder
 
-	// Build scrollable content (history + streaming response)
-	var content strings.Builder
+	// Build scrollable content with caching to avoid re-rendering unchanged content
 
-	// Render history
-	content.WriteString(m.renderHistory())
-
-	// Render streaming response if active
-	if m.streaming {
-		content.WriteString(m.renderStreamingInline())
+	// Check if history cache is valid
+	historyValid := m.viewCache.historyValid &&
+		m.viewCache.historyMsgCount == len(m.messages) &&
+		m.viewCache.historyWidth == m.width &&
+		m.viewCache.historyScrollOffset == m.scrollOffset
+	if !historyValid {
+		m.viewCache.historyContent = m.renderHistory()
+		m.viewCache.historyMsgCount = len(m.messages)
+		m.viewCache.historyWidth = m.width
+		m.viewCache.historyScrollOffset = m.scrollOffset
+		m.viewCache.historyValid = true
 	}
 
-	// Update viewport content and auto-scroll to bottom when streaming
-	m.viewport.SetContent(content.String())
+	// Build combined content
+	var contentStr string
 	if m.streaming {
-		m.viewport.GotoBottom()
+		// During streaming, combine history + streaming content
+		streamingContent := m.renderStreamingInline()
+		contentStr = m.viewCache.historyContent + streamingContent
+	} else {
+		contentStr = m.viewCache.historyContent
+	}
+
+	// Only call SetContent if content actually changed (expensive operation)
+	contentChanged := contentStr != m.viewCache.lastViewport
+	if contentChanged {
+		// Check if user is at bottom BEFORE setting content (which changes maxYOffset)
+		wasAtBottom := m.viewport.AtBottom()
+		m.viewport.SetContent(contentStr)
+		m.viewCache.lastViewport = contentStr
+		// Only auto-scroll to bottom if user was already at bottom
+		// This allows users to scroll up and read during streaming
+		// GotoBottom() is expensive as it calls visibleLines() internally
+		if m.streaming && wasAtBottom {
+			m.viewport.GotoBottom()
+		}
+	}
+
+	// Cache viewport.View() output - only regenerate if content, scroll position, or size changed
+	// Check YOffset after GotoBottom() since it modifies the offset
+	yOffsetChanged := m.viewport.YOffset != m.viewCache.lastYOffset
+	sizeChanged := m.viewport.Width != m.viewCache.lastVPWidth || m.viewport.Height != m.viewCache.lastVPHeight
+	needViewRender := contentChanged || yOffsetChanged || sizeChanged || m.viewCache.lastViewportView == ""
+	if needViewRender {
+		m.viewCache.lastViewportView = m.viewport.View()
+		m.viewCache.lastYOffset = m.viewport.YOffset
+		m.viewCache.lastVPWidth = m.viewport.Width
+		m.viewCache.lastVPHeight = m.viewport.Height
 	}
 
 	// Render viewport (scrollable area)
-	b.WriteString(m.viewport.View())
+	b.WriteString(m.viewCache.lastViewportView)
 	b.WriteString("\n")
 
 	// Completions popup (if visible) - overlaid on content
@@ -1628,7 +1684,7 @@ func (m *Model) renderStreamingInline() string {
 	var b strings.Builder
 
 	// Get segments from tracker (excludes flushed segments)
-	var completed, active []ui.Segment
+	var completed, active []*ui.Segment
 	if m.tracker != nil {
 		completed = m.tracker.CompletedSegments()
 		active = m.tracker.ActiveSegments()
@@ -1654,6 +1710,7 @@ func (m *Model) renderStreamingInline() string {
 			Elapsed:        time.Since(m.streamStartTime),
 			Tokens:         m.currentTokens,
 			ShowCancel:     true,
+			HideProgress:   true, // progress shown in status line instead
 			Segments:       active,
 			WavePos:        wavePos,
 			Width:          m.width,
@@ -1675,11 +1732,6 @@ func (m *Model) renderStreamingInline() string {
 // renderInputInline renders the input prompt for inline mode
 func (m *Model) renderInputInline() string {
 	theme := m.styles.Theme()
-
-	// During streaming, don't show input prompt (streaming indicator is shown instead)
-	if m.streaming {
-		return ""
-	}
 
 	var b strings.Builder
 
@@ -1760,63 +1812,120 @@ func (m *Model) updateTextareaHeight() {
 func (m *Model) renderStatusLine() string {
 	theme := m.styles.Theme()
 	mutedStyle := lipgloss.NewStyle().Foreground(theme.Muted)
+	successStyle := lipgloss.NewStyle().Foreground(theme.Success)
 
-	var parts []string
+	const sep = " · "
+
+	// Build fixed parts first (these are always shown as-is)
+	var fixedParts []string
 
 	// Provider:model format (e.g. "chatgpt:gpt-5.2-codex")
 	model := shortenModelName(m.modelName)
 	if model == "" {
-		parts = append(parts, m.providerName)
+		fixedParts = append(fixedParts, m.providerName)
 	} else {
-		parts = append(parts, fmt.Sprintf("%s:%s", m.providerName, model))
+		fixedParts = append(fixedParts, fmt.Sprintf("%s:%s", m.providerName, model))
 	}
 
 	// Web search status
 	if m.searchEnabled {
-		parts = append(parts, lipgloss.NewStyle().Foreground(theme.Success).Render("web:on"))
+		fixedParts = append(fixedParts, successStyle.Render("web:on"))
 	}
 
-	// Local tools status
-	if len(m.localTools) > 0 {
-		toolsStr := strings.Join(m.localTools, ",")
-		if len(m.localTools) == len(tools.AllToolNames()) {
-			toolsStr = "all"
+	// File count if any
+	if len(m.files) > 0 {
+		fixedParts = append(fixedParts, fmt.Sprintf("%d file(s)", len(m.files)))
+	}
+
+	// During streaming, add progress info
+	var streamingPart string
+	if m.streaming {
+		elapsed := time.Since(m.streamStartTime)
+		progressParts := []string{m.spinner.View() + " " + m.phase}
+		if m.currentTokens > 0 {
+			progressParts = append(progressParts, fmt.Sprintf("%d tok", m.currentTokens))
 		}
-		parts = append(parts, lipgloss.NewStyle().Foreground(theme.Success).Render("tools:"+toolsStr))
+		progressParts = append(progressParts, fmt.Sprintf("%.1fs", elapsed.Seconds()))
+		streamingPart = strings.Join(progressParts, " ")
 	}
 
-	// MCP server status
+	// Calculate used width from fixed parts
+	// Use lipgloss.Width which properly strips ANSI escape sequences
+	fixedWidth := 0
+	for i, p := range fixedParts {
+		fixedWidth += lipgloss.Width(p)
+		if i > 0 {
+			fixedWidth += len(sep)
+		}
+	}
+	if streamingPart != "" {
+		fixedWidth += len(sep) + lipgloss.Width(streamingPart)
+	}
+
+	// Calculate available width for tools and mcp
+	availableWidth := m.width - fixedWidth
+
+	// Build tools string - use full names if they fit, otherwise abbreviate
+	var toolsPart string
+	if len(m.localTools) > 0 {
+		if len(m.localTools) == len(tools.AllToolNames()) {
+			toolsPart = successStyle.Render("tools:all")
+		} else {
+			fullTools := "tools:" + strings.Join(m.localTools, ",")
+			shortTools := fmt.Sprintf("tools:%d", len(m.localTools))
+			// Account for separator
+			needed := len(sep) + len(fullTools)
+			if needed <= availableWidth {
+				toolsPart = successStyle.Render(fullTools)
+			} else {
+				toolsPart = successStyle.Render(shortTools)
+			}
+		}
+	}
+
+	// Build mcp string - use full names if they fit, otherwise abbreviate
+	var mcpPart string
 	if m.mcpManager != nil {
 		available := m.mcpManager.AvailableServers()
 		if len(available) > 0 {
 			enabled := m.mcpManager.EnabledServers()
 			if len(enabled) > 0 {
-				parts = append(parts, lipgloss.NewStyle().Foreground(theme.Success).Render("mcp:"+strings.Join(enabled, ",")))
+				fullMcp := "mcp:" + strings.Join(enabled, ",")
+				shortMcp := fmt.Sprintf("mcp:%d", len(enabled))
+				// Account for separator and tools part
+				usedByTools := 0
+				if toolsPart != "" {
+					usedByTools = len(sep) + runewidth.StringWidth(toolsPart)
+				}
+				needed := len(sep) + len(fullMcp)
+				if needed <= availableWidth-usedByTools {
+					mcpPart = successStyle.Render(fullMcp)
+				} else {
+					mcpPart = successStyle.Render(shortMcp)
+				}
 			} else {
-				parts = append(parts, mutedStyle.Render("mcp:off"))
+				mcpPart = mutedStyle.Render("mcp:off")
 			}
 		} else if len(m.messages) == 0 {
 			// Show hint for new users on empty conversation
-			parts = append(parts, mutedStyle.Render("Ctrl+T:mcp"))
+			mcpPart = mutedStyle.Render("Ctrl+T:mcp")
 		}
 	}
 
-	// File count if any
-	if len(m.files) > 0 {
-		parts = append(parts, fmt.Sprintf("%d file(s)", len(m.files)))
+	// Combine all parts
+	var parts []string
+	parts = append(parts, fixedParts...)
+	if toolsPart != "" {
+		parts = append(parts, toolsPart)
+	}
+	if mcpPart != "" {
+		parts = append(parts, mcpPart)
+	}
+	if streamingPart != "" {
+		parts = append(parts, streamingPart)
 	}
 
-	// Inspector hint (only show when we have messages)
-	if len(m.messages) > 0 {
-		parts = append(parts, mutedStyle.Render("^O:inspect"))
-	}
-
-	// Help tip (only show when no messages yet)
-	if len(m.messages) == 0 {
-		parts = append(parts, "/help for commands")
-	}
-
-	return mutedStyle.Render(strings.Join(parts, " · "))
+	return mutedStyle.Render(strings.Join(parts, sep))
 }
 
 // mcpFindServerMatch finds the best matching server name for tab completion

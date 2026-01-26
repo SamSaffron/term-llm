@@ -327,7 +327,8 @@ func runChat(cmd *cobra.Command, args []string) error {
 	if toolMgr != nil {
 		if spawnTool := toolMgr.GetSpawnAgentTool(); spawnTool != nil {
 			spawnTool.SetEventCallback(func(callID string, event tools.SubagentEvent) {
-				p.Send(chat.SubagentProgressMsg{CallID: callID, Event: event})
+				// Use goroutine to avoid blocking subagent execution if TUI message channel backs up
+				go p.Send(chat.SubagentProgressMsg{CallID: callID, Event: event})
 			})
 		}
 	}

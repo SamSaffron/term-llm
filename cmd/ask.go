@@ -446,7 +446,8 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		// Set up spawn_agent event callback for subagent progress visibility
 		if spawnTool := toolMgr.GetSpawnAgentTool(); spawnTool != nil {
 			spawnTool.SetEventCallback(func(callID string, event tools.SubagentEvent) {
-				teaProgram.Send(askSubagentProgressMsg{CallID: callID, Event: event})
+				// Use goroutine to avoid blocking subagent execution if TUI message channel backs up
+				go teaProgram.Send(askSubagentProgressMsg{CallID: callID, Event: event})
 			})
 		}
 
@@ -799,6 +800,11 @@ type askStreamModel struct {
 	// Inspector mode
 	inspectorMode  bool
 	inspectorModel *inspector.Model
+
+	// View caching (performance optimization - Issue 4)
+	// Avoids rebuilding content on every spinner tick
+	contentDirty  bool   // True when new content arrived, needs re-render
+	cachedContent string // Cached rendered content from last dirty=true render
 }
 
 type askContentMsg string
@@ -890,6 +896,8 @@ const maxViewLines = 8
 func (m *askStreamModel) maybeFlushToScrollback() tea.Cmd {
 	result := m.tracker.FlushToScrollback(m.width, 0, maxViewLines, renderMd)
 	if result.ToPrint != "" {
+		m.cachedContent = "" // Invalidate cache since segments were flushed
+		m.contentDirty = true
 		return tea.Println(result.ToPrint)
 	}
 	return nil
@@ -972,15 +980,23 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		// Re-render text segments with new width
+		m.cachedContent = ""  // Invalidate cache
+		m.contentDirty = true // Width changed, need to re-render
+		// Invalidate cached markdown renderings since they are width-dependent
 		for i := range m.tracker.Segments {
-			if m.tracker.Segments[i].Type == ui.SegmentText && m.tracker.Segments[i].Complete {
-				m.tracker.Segments[i].Rendered = ui.RenderMarkdown(m.tracker.Segments[i].Text, m.width)
+			if m.tracker.Segments[i].Type == ui.SegmentText {
+				m.tracker.Segments[i].Rendered = ""
+				// Also clear streaming cache for in-progress segments
+				// so next render recalculates with new width
+				m.tracker.Segments[i].SafeRendered = ""
+				m.tracker.Segments[i].SafePos = 0
 			}
 		}
 
 	case askContentMsg:
 		m.tracker.AddTextSegment(string(msg))
+		m.cachedContent = ""  // Invalidate cache
+		m.contentDirty = true // Mark content as needing re-render
 
 		// Flush excess content to scrollback to keep View() small
 		if cmd := m.maybeFlushToScrollback(); cmd != nil {
@@ -1089,6 +1105,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case askToolStartMsg:
 		m.retryStatus = ""
+		m.contentDirty = true // Tool state changed
 		if m.tracker.HandleToolStart(msg.CallID, msg.Name, msg.Info) {
 			// New segment added, start wave animation (but not for ask_user which has its own UI)
 			if msg.Name != tools.AskUserToolName {
@@ -1103,6 +1120,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case askToolEndMsg:
+		m.contentDirty = true // Tool state changed
 		m.tracker.HandleToolEnd(msg.CallID, msg.Success)
 
 		// Remove from subagent tracker when spawn_agent completes
@@ -1158,6 +1176,14 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Update cached content when dirty (must be done in Update, not View)
+	// View() uses a value receiver so mutations are discarded by Bubble Tea
+	if m.contentDirty {
+		completed := m.tracker.CompletedSegments()
+		m.cachedContent = ui.RenderSegments(completed, m.width, -1, renderMd, false)
+		m.contentDirty = false
+	}
+
 	return m, nil
 }
 
@@ -1201,6 +1227,14 @@ func (m askStreamModel) updateInspectorMode(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Update cached content when dirty (must be done in Update, not View)
+	// View() uses a value receiver so mutations are discarded by Bubble Tea
+	if m.contentDirty {
+		completed := m.tracker.CompletedSegments()
+		m.cachedContent = ui.RenderSegments(completed, m.width, -1, renderMd, false)
+		m.contentDirty = false
+	}
+
 	return m, nil
 }
 
@@ -1216,9 +1250,13 @@ func (m askStreamModel) View() string {
 	completed := m.tracker.CompletedSegments()
 	active := m.tracker.ActiveSegments()
 
-	// Render completed segments (segment-based tracking handles what's already flushed)
-	content := ui.RenderSegments(completed, m.width, -1, renderMd, false)
-
+	// Use cached content (updated in Update() when contentDirty was true)
+	// Fall back to rendering on-demand if cache is empty but we have segments
+	// (handles tests that call View() directly without Update())
+	content := m.cachedContent
+	if content == "" && len(completed) > 0 {
+		content = ui.RenderSegments(completed, m.width, -1, renderMd, false)
+	}
 	if content != "" {
 		b.WriteString(content)
 	}
