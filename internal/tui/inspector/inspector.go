@@ -7,12 +7,20 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
 // CloseMsg signals that the inspector should be closed
 type CloseMsg struct{}
+
+// Config holds optional configuration for the inspector
+type Config struct {
+	ProviderName string
+	ModelName    string
+	ToolSpecs    []llm.ToolSpec
+}
 
 // Model is the conversation inspector model
 type Model struct {
@@ -39,6 +47,11 @@ type Model struct {
 
 	// Session store for fetching subagent messages
 	store session.Store
+
+	// Optional configuration
+	providerName string
+	modelName    string
+	toolSpecs    []llm.ToolSpec
 }
 
 // New creates a new inspector model
@@ -48,6 +61,11 @@ func New(messages []session.Message, width, height int, styles *ui.Styles) *Mode
 
 // NewWithStore creates a new inspector model with a session store for subagent message fetching
 func NewWithStore(messages []session.Message, width, height int, styles *ui.Styles, store session.Store) *Model {
+	return NewWithConfig(messages, width, height, styles, store, nil)
+}
+
+// NewWithConfig creates a new inspector model with full configuration
+func NewWithConfig(messages []session.Message, width, height int, styles *ui.Styles, store session.Store, cfg *Config) *Model {
 	if styles == nil {
 		styles = ui.DefaultStyles()
 	}
@@ -62,13 +80,20 @@ func NewWithStore(messages []session.Message, width, height int, styles *ui.Styl
 		store:         store,
 	}
 
+	// Apply config if provided
+	if cfg != nil {
+		m.providerName = cfg.ProviderName
+		m.modelName = cfg.ModelName
+		m.toolSpecs = cfg.ToolSpecs
+	}
+
 	m.renderContent()
 	return m
 }
 
 // renderContent renders all messages and splits into lines
 func (m *Model) renderContent() {
-	renderer := NewContentRenderer(m.width-2, m.styles, m.expandedItems, m.store) // -2 for padding
+	renderer := NewContentRenderer(m.width-2, m.styles, m.expandedItems, m.store, m.providerName, m.modelName, m.toolSpecs) // -2 for padding
 	content, items := renderer.RenderMessages(m.messages)
 	m.contentLines = strings.Split(content, "\n")
 	m.totalLines = len(m.contentLines)

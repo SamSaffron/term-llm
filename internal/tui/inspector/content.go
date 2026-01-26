@@ -27,23 +27,177 @@ type ContentItem struct {
 
 // ContentRenderer handles rendering of conversation messages
 type ContentRenderer struct {
-	width       int
-	styles      *ui.Styles
-	expandedIDs map[string]bool // IDs of items that should be expanded (not truncated)
-	store       session.Store   // Session store for fetching subagent messages
+	width        int
+	styles       *ui.Styles
+	expandedIDs  map[string]bool // IDs of items that should be expanded (not truncated)
+	store        session.Store   // Session store for fetching subagent messages
+	providerName string
+	modelName    string
+	toolSpecs    []llm.ToolSpec
 }
 
 // NewContentRenderer creates a new content renderer
-func NewContentRenderer(width int, styles *ui.Styles, expandedIDs map[string]bool, store session.Store) *ContentRenderer {
+func NewContentRenderer(width int, styles *ui.Styles, expandedIDs map[string]bool, store session.Store, providerName, modelName string, toolSpecs []llm.ToolSpec) *ContentRenderer {
 	if expandedIDs == nil {
 		expandedIDs = make(map[string]bool)
 	}
 	return &ContentRenderer{
-		width:       width,
-		styles:      styles,
-		expandedIDs: expandedIDs,
-		store:       store,
+		width:        width,
+		styles:       styles,
+		expandedIDs:  expandedIDs,
+		store:        store,
+		providerName: providerName,
+		modelName:    modelName,
+		toolSpecs:    toolSpecs,
 	}
+}
+
+// renderHeader renders the model information and system message section
+func (r *ContentRenderer) renderHeader(messages []session.Message) (string, []ContentItem, int) {
+	theme := r.styles.Theme()
+	var b strings.Builder
+	var items []ContentItem
+	currentLine := 0
+
+	// Model Information section (only if we have provider/model info)
+	if r.providerName != "" || r.modelName != "" {
+		headerStyle := lipgloss.NewStyle().Bold(true).Foreground(theme.Primary)
+		labelStyle := lipgloss.NewStyle().Foreground(theme.Muted)
+		valueStyle := lipgloss.NewStyle().Foreground(theme.Text)
+
+		b.WriteString(headerStyle.Render("Model Information"))
+		b.WriteString("\n")
+		currentLine++
+
+		if r.providerName != "" {
+			b.WriteString(labelStyle.Render("  Provider: "))
+			b.WriteString(valueStyle.Render(r.providerName))
+			b.WriteString("\n")
+			currentLine++
+		}
+		if r.modelName != "" {
+			b.WriteString(labelStyle.Render("  Model: "))
+			b.WriteString(valueStyle.Render(r.modelName))
+			b.WriteString("\n")
+			currentLine++
+		}
+		b.WriteString("\n")
+		currentLine++
+	}
+
+	// System Message section - extract first system message
+	var systemMsg *session.Message
+	for i := range messages {
+		if messages[i].Role == llm.RoleSystem {
+			systemMsg = &messages[i]
+			break
+		}
+	}
+
+	if systemMsg != nil {
+		headerStyle := lipgloss.NewStyle().Bold(true).Foreground(theme.Warning)
+		b.WriteString(headerStyle.Render("System Prompt"))
+		b.WriteString("\n")
+		currentLine++
+
+		// Render system message content in a box
+		content := r.renderTextContent(*systemMsg)
+		boxContent, item := r.renderBoxWithItem("System", lipgloss.NewStyle().Foreground(theme.Warning).Bold(true), content, "system-msg", "message", currentLine)
+		b.WriteString(boxContent)
+		if item != nil {
+			items = append(items, *item)
+			// Use the item's EndLine for accurate line tracking (accounts for bottom border without newline)
+			currentLine = item.EndLine
+		} else {
+			// Fallback: count newlines + 1 for bottom border
+			currentLine += strings.Count(boxContent, "\n") + 1
+		}
+		b.WriteString("\n")
+		currentLine++
+	}
+
+	return b.String(), items, currentLine
+}
+
+// renderToolDefinitions renders the tool definitions section
+func (r *ContentRenderer) renderToolDefinitions() (string, []ContentItem, int) {
+	if len(r.toolSpecs) == 0 {
+		return "", nil, 0
+	}
+
+	theme := r.styles.Theme()
+	var b strings.Builder
+	var items []ContentItem
+	currentLine := 0
+
+	// Section header
+	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(theme.Secondary)
+	b.WriteString(headerStyle.Render(fmt.Sprintf("Tool Definitions (%d tools)", len(r.toolSpecs))))
+	b.WriteString("\n")
+	currentLine++
+
+	// List each tool
+	nameStyle := lipgloss.NewStyle().Bold(true).Foreground(theme.Primary)
+	descStyle := lipgloss.NewStyle().Foreground(theme.Muted)
+	borderStyle := lipgloss.NewStyle().Foreground(theme.Border)
+	schemaStyle := lipgloss.NewStyle().Foreground(theme.Text)
+
+	for i, tool := range r.toolSpecs {
+		itemID := fmt.Sprintf("tool-def-%d", i)
+		itemStartLine := currentLine
+
+		// Tool name
+		b.WriteString(borderStyle.Render("  • "))
+		b.WriteString(nameStyle.Render(tool.Name))
+
+		// Truncate description to ~100 chars
+		desc := tool.Description
+		if len(desc) > 100 {
+			desc = desc[:97] + "..."
+		}
+		if desc != "" {
+			b.WriteString(descStyle.Render(" - " + desc))
+		}
+
+		hasSchema := len(tool.Schema) > 0
+		isExpanded := r.expandedIDs[itemID]
+
+		// Show expand hint if schema exists but not expanded
+		if hasSchema && !isExpanded {
+			b.WriteString(descStyle.Render(" [press 'e' to show schema]"))
+		}
+		b.WriteString("\n")
+		currentLine++
+
+		// Render schema if expanded
+		if hasSchema && isExpanded {
+			schemaJSON, err := json.MarshalIndent(tool.Schema, "", "  ")
+			if err == nil {
+				schemaLines := strings.Split(string(schemaJSON), "\n")
+				for _, line := range schemaLines {
+					b.WriteString(borderStyle.Render("      "))
+					b.WriteString(schemaStyle.Render(line))
+					b.WriteString("\n")
+					currentLine++
+				}
+			}
+		}
+
+		// Track as expandable item for schema viewing
+		items = append(items, ContentItem{
+			ID:          itemID,
+			ItemType:    "tool_definition",
+			StartLine:   itemStartLine,
+			EndLine:     currentLine,
+			IsTruncated: hasSchema && !isExpanded, // Only truncated if has schema and not expanded
+			TotalLines:  currentLine - itemStartLine,
+		})
+	}
+
+	b.WriteString("\n")
+	currentLine++
+
+	return b.String(), items, currentLine
 }
 
 // RenderMessages renders all messages into a string and returns content items for truncation tracking
@@ -52,32 +206,70 @@ func (r *ContentRenderer) RenderMessages(messages []session.Message) (string, []
 	var items []ContentItem
 	currentLine := 0
 
+	// Render header (model info + system message)
+	header, headerItems, headerLines := r.renderHeader(messages)
+	if header != "" {
+		b.WriteString(header)
+		items = append(items, headerItems...)
+		currentLine += headerLines
+	}
+
+	// Render tool definitions
+	toolDefs, toolItems, toolLines := r.renderToolDefinitions()
+	if toolDefs != "" {
+		b.WriteString(toolDefs)
+		items = append(items, toolItems...)
+		currentLine += toolLines
+	}
+
+	// Add separator before conversation if we have header content
+	if header != "" || toolDefs != "" {
+		theme := r.styles.Theme()
+		headerStyle := lipgloss.NewStyle().Bold(true).Foreground(theme.Text)
+		b.WriteString(headerStyle.Render("Conversation"))
+		b.WriteString("\n")
+		currentLine++
+		b.WriteString(lipgloss.NewStyle().Foreground(theme.Border).Render(strings.Repeat("─", r.width)))
+		b.WriteString("\n")
+		currentLine++
+	}
+
+	// Render messages (skip system messages since shown in header)
+	firstMsg := true
 	for i, msg := range messages {
-		if i > 0 {
+		// Skip system messages - they're shown in the header
+		if msg.Role == llm.RoleSystem {
+			continue
+		}
+
+		if !firstMsg {
 			b.WriteString("\n")
 			currentLine++
 		}
+		firstMsg = false
 
 		msgID := fmt.Sprintf("msg-%d", i)
-		content, msgItems := r.renderMessageWithItems(msg, msgID, currentLine)
+		content, msgItems, lineCount := r.renderMessageWithItems(msg, msgID, currentLine)
 		b.WriteString(content)
 		items = append(items, msgItems...)
-		currentLine += strings.Count(content, "\n")
+		currentLine += lineCount
 	}
 	return b.String(), items
 }
 
 // renderMessage renders a single message with its parts (backward compat, no item tracking)
 func (r *ContentRenderer) renderMessage(msg session.Message) string {
-	content, _ := r.renderMessageWithItems(msg, "", 0)
+	content, _, _ := r.renderMessageWithItems(msg, "", 0)
 	return content
 }
 
-// renderMessageWithItems renders a single message and tracks content items for truncation
-func (r *ContentRenderer) renderMessageWithItems(msg session.Message, msgID string, startLine int) (string, []ContentItem) {
+// renderMessageWithItems renders a single message and tracks content items for truncation.
+// Returns the rendered content, content items, and the number of lines rendered.
+func (r *ContentRenderer) renderMessageWithItems(msg session.Message, msgID string, startLine int) (string, []ContentItem, int) {
 	theme := r.styles.Theme()
 	var b strings.Builder
 	var items []ContentItem
+	lineCount := 0
 
 	// Role header
 	roleStyle := lipgloss.NewStyle().Bold(true)
@@ -88,6 +280,7 @@ func (r *ContentRenderer) renderMessageWithItems(msg session.Message, msgID stri
 		b.WriteString(content)
 		if item != nil {
 			items = append(items, *item)
+			lineCount = item.EndLine - startLine
 		}
 	case llm.RoleAssistant:
 		roleStyle = roleStyle.Foreground(theme.Secondary)
@@ -96,6 +289,7 @@ func (r *ContentRenderer) renderMessageWithItems(msg session.Message, msgID stri
 		b.WriteString(boxContent)
 		if item != nil {
 			items = append(items, *item)
+			lineCount = item.EndLine - startLine
 		}
 		items = append(items, assistantItems...)
 	case llm.RoleSystem:
@@ -104,14 +298,22 @@ func (r *ContentRenderer) renderMessageWithItems(msg session.Message, msgID stri
 		b.WriteString(content)
 		if item != nil {
 			items = append(items, *item)
+			lineCount = item.EndLine - startLine
 		}
 	case llm.RoleTool:
 		content, toolItems := r.renderToolResultsWithItems(msg, msgID, startLine)
 		b.WriteString(content)
 		items = append(items, toolItems...)
+		// For tool results, compute line count from items or fall back to newline count + 1
+		if len(toolItems) > 0 {
+			lastItem := toolItems[len(toolItems)-1]
+			lineCount = lastItem.EndLine - startLine
+		} else {
+			lineCount = strings.Count(content, "\n") + 1
+		}
 	}
 
-	return b.String(), items
+	return b.String(), items, lineCount
 }
 
 // renderBox creates a box around content with a header
@@ -211,6 +413,8 @@ func (r *ContentRenderer) renderBoxWithItem(header string, headerStyle lipgloss.
 	borderWidth := max(r.width, 2)
 	bottomBorder := lipgloss.NewStyle().Foreground(borderColor).Render("╰" + strings.Repeat("─", borderWidth-2) + "╯")
 	b.WriteString(bottomBorder)
+	// Note: no newline after bottom border, but it still occupies a visual line
+	lineCount++ // Count the bottom border as a line for accurate line tracking
 
 	// Create content item if we have an ID
 	var item *ContentItem

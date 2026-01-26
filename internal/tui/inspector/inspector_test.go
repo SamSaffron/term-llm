@@ -222,3 +222,198 @@ func TestWrapLineWithTabs(t *testing.T) {
 		})
 	}
 }
+
+func TestNewWithConfig(t *testing.T) {
+	messages := []session.Message{
+		{
+			ID:          1,
+			SessionID:   "test-session",
+			Role:        llm.RoleUser,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: "Hello"}},
+			TextContent: "Hello",
+			CreatedAt:   time.Now(),
+			Sequence:    0,
+		},
+	}
+
+	cfg := &Config{
+		ProviderName: "anthropic",
+		ModelName:    "claude-3-opus",
+		ToolSpecs: []llm.ToolSpec{
+			{Name: "read_file", Description: "Read a file from disk"},
+			{Name: "write_file", Description: "Write content to a file"},
+		},
+	}
+
+	m := NewWithConfig(messages, 80, 24, ui.DefaultStyles(), nil, cfg)
+
+	if m == nil {
+		t.Fatal("NewWithConfig returned nil")
+	}
+
+	if m.providerName != "anthropic" {
+		t.Errorf("expected providerName 'anthropic', got %q", m.providerName)
+	}
+
+	if m.modelName != "claude-3-opus" {
+		t.Errorf("expected modelName 'claude-3-opus', got %q", m.modelName)
+	}
+
+	if len(m.toolSpecs) != 2 {
+		t.Errorf("expected 2 toolSpecs, got %d", len(m.toolSpecs))
+	}
+}
+
+func TestNewWithConfigNil(t *testing.T) {
+	messages := []session.Message{
+		{
+			ID:          1,
+			SessionID:   "test-session",
+			Role:        llm.RoleUser,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: "Hello"}},
+			TextContent: "Hello",
+			CreatedAt:   time.Now(),
+			Sequence:    0,
+		},
+	}
+
+	// Test with nil config - should work like NewWithStore
+	m := NewWithConfig(messages, 80, 24, ui.DefaultStyles(), nil, nil)
+
+	if m == nil {
+		t.Fatal("NewWithConfig with nil config returned nil")
+	}
+
+	if m.providerName != "" {
+		t.Errorf("expected empty providerName with nil config, got %q", m.providerName)
+	}
+
+	if m.modelName != "" {
+		t.Errorf("expected empty modelName with nil config, got %q", m.modelName)
+	}
+
+	if len(m.toolSpecs) != 0 {
+		t.Errorf("expected 0 toolSpecs with nil config, got %d", len(m.toolSpecs))
+	}
+}
+
+func TestViewWithModelInfo(t *testing.T) {
+	messages := []session.Message{
+		{
+			ID:          1,
+			SessionID:   "test-session",
+			Role:        llm.RoleUser,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: "Hello"}},
+			TextContent: "Hello",
+			CreatedAt:   time.Now(),
+			Sequence:    0,
+		},
+	}
+
+	cfg := &Config{
+		ProviderName: "anthropic",
+		ModelName:    "claude-3-opus",
+	}
+
+	m := NewWithConfig(messages, 80, 24, ui.DefaultStyles(), nil, cfg)
+	view := m.View()
+
+	// Check for model info section
+	if !contains(view, "Model Information") {
+		t.Error("View() should contain 'Model Information' header when config has provider/model")
+	}
+
+	if !contains(view, "anthropic") {
+		t.Error("View() should contain provider name")
+	}
+
+	if !contains(view, "claude-3-opus") {
+		t.Error("View() should contain model name")
+	}
+}
+
+func TestViewWithToolDefinitions(t *testing.T) {
+	messages := []session.Message{
+		{
+			ID:          1,
+			SessionID:   "test-session",
+			Role:        llm.RoleUser,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: "Hello"}},
+			TextContent: "Hello",
+			CreatedAt:   time.Now(),
+			Sequence:    0,
+		},
+	}
+
+	cfg := &Config{
+		ToolSpecs: []llm.ToolSpec{
+			{Name: "read_file", Description: "Read a file from disk"},
+			{Name: "write_file", Description: "Write content to a file"},
+		},
+	}
+
+	m := NewWithConfig(messages, 80, 24, ui.DefaultStyles(), nil, cfg)
+	view := m.View()
+
+	// Check for tool definitions section
+	if !contains(view, "Tool Definitions") {
+		t.Error("View() should contain 'Tool Definitions' header when tools are configured")
+	}
+
+	if !contains(view, "2 tools") {
+		t.Error("View() should show tool count")
+	}
+
+	if !contains(view, "read_file") {
+		t.Error("View() should contain tool name 'read_file'")
+	}
+
+	if !contains(view, "write_file") {
+		t.Error("View() should contain tool name 'write_file'")
+	}
+}
+
+func TestViewWithSystemMessage(t *testing.T) {
+	messages := []session.Message{
+		{
+			ID:          1,
+			SessionID:   "test-session",
+			Role:        llm.RoleSystem,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: "You are a helpful assistant."}},
+			TextContent: "You are a helpful assistant.",
+			CreatedAt:   time.Now(),
+			Sequence:    0,
+		},
+		{
+			ID:          2,
+			SessionID:   "test-session",
+			Role:        llm.RoleUser,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: "Hello"}},
+			TextContent: "Hello",
+			CreatedAt:   time.Now(),
+			Sequence:    1,
+		},
+	}
+
+	cfg := &Config{
+		ProviderName: "anthropic",
+		ModelName:    "claude-3-opus",
+	}
+
+	m := NewWithConfig(messages, 80, 24, ui.DefaultStyles(), nil, cfg)
+	view := m.View()
+
+	// Check for system prompt section
+	if !contains(view, "System Prompt") {
+		t.Error("View() should contain 'System Prompt' header when system message exists")
+	}
+
+	if !contains(view, "helpful assistant") {
+		t.Error("View() should contain system message content")
+	}
+
+	// Check for conversation header
+	if !contains(view, "Conversation") {
+		t.Error("View() should contain 'Conversation' header when there's header content")
+	}
+}

@@ -1088,8 +1088,32 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if key.Matches(msg, m.keyMap.Inspector) {
 		// Only open inspector if we have messages
 		if len(m.messages) > 0 {
+			// Collect tool specs for the inspector
+			var toolSpecs []llm.ToolSpec
+			if m.mcpManager != nil {
+				for _, t := range m.mcpManager.AllTools() {
+					toolSpecs = append(toolSpecs, llm.ToolSpec{
+						Name:        t.Name,
+						Description: t.Description,
+						Schema:      t.Schema,
+					})
+				}
+			}
+			if len(m.localTools) > 0 {
+				for _, specName := range m.localTools {
+					if tool, ok := m.engine.Tools().Get(specName); ok {
+						toolSpecs = append(toolSpecs, tool.Spec())
+					}
+				}
+			}
+
+			cfg := &inspector.Config{
+				ProviderName: m.providerName,
+				ModelName:    m.modelName,
+				ToolSpecs:    toolSpecs,
+			}
 			m.inspectorMode = true
-			m.inspectorModel = inspector.NewWithStore(m.messages, m.width, m.height, m.styles, m.store)
+			m.inspectorModel = inspector.NewWithConfig(m.messages, m.width, m.height, m.styles, m.store, cfg)
 			// Only enter alt screen if chat isn't already in alt screen mode
 			if !m.altScreen {
 				return m, tea.EnterAltScreen

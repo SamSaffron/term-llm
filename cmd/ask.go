@@ -271,6 +271,8 @@ func runAsk(cmd *cobra.Command, args []string) error {
 				param = "content" // default
 			}
 			outputTool = toolMgr.Registry.RegisterOutputTool(agentCfg.Name, param, agentCfg.Description)
+			// Re-register tools with engine after output tool was added
+			toolMgr.SetupEngine(engine)
 		}
 
 		// PromptFunc is set in streamWithGlamour to use bubbletea UI

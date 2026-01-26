@@ -236,6 +236,17 @@ func runChat(cmd *cobra.Command, args []string) error {
 			toolMgr.ApprovalMgr.SetYoloMode(true)
 		}
 
+		// Register output tool if agent configures one
+		if agent != nil && agent.OutputTool.IsConfigured() {
+			agentCfg := agent.OutputTool
+			param := agentCfg.Param
+			if param == "" {
+				param = "content"
+			}
+			toolMgr.Registry.RegisterOutputTool(agentCfg.Name, param, agentCfg.Description)
+			toolMgr.SetupEngine(engine)
+		}
+
 		// PromptUIFunc will be set up below after tea.Program is created
 
 		// Wire spawn_agent runner if enabled (with session tracking)
