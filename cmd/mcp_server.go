@@ -21,9 +21,13 @@ var mcpServerCmd = &cobra.Command{
 	Hidden: true, // Internal command, not for direct user use
 	Long: `Run term-llm as an MCP server over stdio.
 
-This command is used internally by the claude-bin provider to expose
-custom tools to Claude CLI. It reads tool definitions from --tools-json
-and handles tool calls via the MCP protocol.`,
+DEPRECATED: This command is deprecated. The claude-bin provider now uses
+an in-process HTTP MCP server instead of spawning a subprocess. This command
+remains available for external MCP clients that want to connect via stdio.
+
+This command reads tool definitions from --tools-json and handles tool calls
+via the MCP protocol. Note: Tools are not actually executed - this server
+only returns tool call information for the caller to handle.`,
 	RunE: runMCPServer,
 }
 

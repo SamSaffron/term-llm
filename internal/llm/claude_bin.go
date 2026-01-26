@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
+
+	"github.com/samsaffron/term-llm/internal/mcphttp"
 )
 
 // ClaudeBinProvider implements Provider using the claude CLI binary.
@@ -18,6 +20,7 @@ type ClaudeBinProvider struct {
 	model        string
 	sessionID    string // For session continuity with --resume
 	messagesSent int    // Track messages already in session to avoid re-sending
+	toolExecutor mcphttp.ToolExecutor
 }
 
 // NewClaudeBinProvider creates a new provider that uses the claude binary.
@@ -25,6 +28,12 @@ func NewClaudeBinProvider(model string) *ClaudeBinProvider {
 	return &ClaudeBinProvider{
 		model: model,
 	}
+}
+
+// SetToolExecutor sets the function used to execute tools.
+// This must be called before Stream() if tools are needed.
+func (p *ClaudeBinProvider) SetToolExecutor(executor mcphttp.ToolExecutor) {
+	p.toolExecutor = executor
 }
 
 func (p *ClaudeBinProvider) Name() string {
@@ -50,7 +59,7 @@ func (p *ClaudeBinProvider) Capabilities() Capabilities {
 func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
 		// Build the command arguments
-		args, cleanup := p.buildArgs(req)
+		args, cleanup := p.buildArgs(ctx, req)
 		if cleanup != nil {
 			defer cleanup()
 		}
@@ -204,8 +213,8 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 }
 
 // buildArgs constructs the command line arguments for the claude binary.
-// Returns args and a cleanup function to remove temp files.
-func (p *ClaudeBinProvider) buildArgs(req Request) ([]string, func()) {
+// Returns args and a cleanup function to stop HTTP server and remove temp files.
+func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request) ([]string, func()) {
 	args := []string{
 		"--print",
 		"--output-format", "stream-json",
@@ -230,12 +239,16 @@ func (p *ClaudeBinProvider) buildArgs(req Request) ([]string, func()) {
 
 	var cleanup func()
 
-	// If we have tools, create MCP config to expose them
+	// If we have tools and a tool executor, start HTTP MCP server
 	if len(req.Tools) > 0 {
-		mcpConfig, cleanupFn := p.createMCPConfig(req.Tools)
-		if mcpConfig != "" {
-			args = append(args, "--mcp-config", mcpConfig)
-			cleanup = cleanupFn
+		if p.toolExecutor == nil {
+			slog.Warn("tools requested but no tool executor configured", "tool_count", len(req.Tools))
+		} else {
+			mcpConfig, cleanupFn := p.createHTTPMCPConfig(ctx, req.Tools)
+			if mcpConfig != "" {
+				args = append(args, "--mcp-config", mcpConfig)
+				cleanup = cleanupFn
+			}
 		}
 	}
 
@@ -247,58 +260,65 @@ func (p *ClaudeBinProvider) buildArgs(req Request) ([]string, func()) {
 	return args, cleanup
 }
 
-// createMCPConfig creates a temporary MCP config file for the given tools.
-// Returns the config file path and a cleanup function.
-func (p *ClaudeBinProvider) createMCPConfig(tools []ToolSpec) (string, func()) {
-	// Get the path to term-llm binary
-	execPath, err := os.Executable()
-	if err != nil {
-		return "", nil
-	}
-
-	// Build tool definitions JSON
-	type toolDef struct {
-		Name        string         `json:"name"`
-		Description string         `json:"description"`
-		Schema      map[string]any `json:"schema"`
-	}
-	var toolDefs []toolDef
-	for _, t := range tools {
-		toolDefs = append(toolDefs, toolDef{
+// createHTTPMCPConfig starts an HTTP MCP server and creates a config file pointing to it.
+// Returns the config file path and a cleanup function that stops the server.
+func (p *ClaudeBinProvider) createHTTPMCPConfig(ctx context.Context, tools []ToolSpec) (string, func()) {
+	// Convert llm.ToolSpec to mcphttp.ToolSpec
+	mcpTools := make([]mcphttp.ToolSpec, len(tools))
+	for i, t := range tools {
+		mcpTools[i] = mcphttp.ToolSpec{
 			Name:        t.Name,
 			Description: t.Description,
 			Schema:      t.Schema,
-		})
+		}
 	}
 
-	toolsJSON, err := json.Marshal(toolDefs)
+	// Create and start HTTP server
+	server := mcphttp.NewServer(p.toolExecutor)
+	url, token, err := server.Start(ctx, mcpTools)
 	if err != nil {
 		return "", nil
 	}
 
-	// Create MCP config
+	// Create MCP config with HTTP URL
 	mcpConfig := map[string]any{
 		"mcpServers": map[string]any{
 			"term-llm": map[string]any{
-				"command": execPath,
-				"args":    []string{"mcp-server", "--tools-json", string(toolsJSON)},
+				"url": url,
+				"headers": map[string]string{
+					"Authorization": "Bearer " + token,
+				},
 			},
 		},
 	}
 
 	configJSON, err := json.Marshal(mcpConfig)
 	if err != nil {
+		server.Stop(ctx)
 		return "", nil
 	}
 
-	// Write to temp file
-	tmpDir := os.TempDir()
-	configPath := filepath.Join(tmpDir, fmt.Sprintf("term-llm-mcp-%d.json", os.Getpid()))
-	if err := os.WriteFile(configPath, configJSON, 0600); err != nil {
+	// Write to temp file using os.CreateTemp to avoid symlink attacks
+	tmpFile, err := os.CreateTemp("", "term-llm-mcp-*.json")
+	if err != nil {
+		server.Stop(ctx)
+		return "", nil
+	}
+	configPath := tmpFile.Name()
+	if _, err := tmpFile.Write(configJSON); err != nil {
+		tmpFile.Close()
+		os.Remove(configPath)
+		server.Stop(ctx)
+		return "", nil
+	}
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(configPath)
+		server.Stop(ctx)
 		return "", nil
 	}
 
 	cleanup := func() {
+		server.Stop(context.Background())
 		os.Remove(configPath)
 	}
 
