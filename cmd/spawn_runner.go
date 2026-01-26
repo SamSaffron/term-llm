@@ -73,8 +73,28 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 
 	// Apply provider overrides from agent
 	if agent.Provider != "" || agent.Model != "" {
-		// Make a shallow copy to avoid modifying the original
+		// Deep copy to avoid modifying the original config (which may be shared
+		// by other sub-agents or the parent). This is critical because ProviderConfig
+		// contains pointer fields (UseNativeSearch, OAuthCreds) and slices (Models)
+		// that would be shared in a shallow copy.
 		cfgCopy := *cfg
+		cfgCopy.Providers = make(map[string]config.ProviderConfig, len(cfg.Providers))
+		for k, v := range cfg.Providers {
+			// Deep copy slice fields
+			if v.Models != nil {
+				v.Models = append([]string(nil), v.Models...)
+			}
+			// Deep copy pointer fields
+			if v.UseNativeSearch != nil {
+				tmp := *v.UseNativeSearch
+				v.UseNativeSearch = &tmp
+			}
+			if v.OAuthCreds != nil {
+				credsCopy := *v.OAuthCreds
+				v.OAuthCreds = &credsCopy
+			}
+			cfgCopy.Providers[k] = v
+		}
 		cfg = &cfgCopy
 
 		if agent.Provider != "" {
@@ -82,8 +102,12 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 		}
 		if agent.Model != "" {
 			// Set model on the active provider config
-			if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
+			// We must copy the provider config struct and reassign it to the map
+			// to avoid mutating the original (GetActiveProviderConfig returns a
+			// pointer to a copy, but we need to update the map entry).
+			if providerCfg, ok := cfg.Providers[cfg.DefaultProvider]; ok {
 				providerCfg.Model = agent.Model
+				cfg.Providers[cfg.DefaultProvider] = providerCfg
 			}
 		}
 	}
@@ -291,7 +315,9 @@ func (r *SpawnAgentRunner) runAndCollectWithCallback(
 			if cb != nil && callID != "" {
 				cb(callID, tools.SubagentEvent{Type: tools.SubagentEventDone})
 			}
-			return "", err
+			// Return partial output alongside the error to aid debugging.
+			// The caller can check output.String() for any content collected before the failure.
+			return output.String(), err
 		}
 
 		switch event.Type {
@@ -310,10 +336,18 @@ func (r *SpawnAgentRunner) runAndCollectWithCallback(
 			}
 		case llm.EventToolExecEnd:
 			if cb != nil && callID != "" {
+				// Only forward ToolOutput for tools that emit markers (edit_file, image tools).
+				// This prevents memory/UI bloat from large outputs (read_file, shell) when
+				// multiple sub-agents run in parallel.
+				toolOutput := ""
+				if toolEmitsMarkers(event.ToolName) {
+					toolOutput = event.ToolOutput
+				}
 				cb(callID, tools.SubagentEvent{
-					Type:     tools.SubagentEventToolEnd,
-					ToolName: event.ToolName,
-					Success:  event.ToolSuccess,
+					Type:       tools.SubagentEventToolEnd,
+					ToolName:   event.ToolName,
+					ToolOutput: toolOutput,
+					Success:    event.ToolSuccess,
 				})
 			}
 		case llm.EventPhase:
@@ -344,4 +378,16 @@ func (r *SpawnAgentRunner) runAndCollectWithCallback(
 	}
 
 	return output.String(), nil
+}
+
+// toolEmitsMarkers returns true for tools whose output may contain markers
+// that the UI needs to parse (e.g., __DIFF__, __IMAGE__). Only these tools
+// have their output forwarded to the parent to avoid memory bloat.
+func toolEmitsMarkers(toolName string) bool {
+	switch toolName {
+	case tools.EditFileToolName, tools.ShowImageToolName, tools.ImageGenerateToolName:
+		return true
+	default:
+		return false
+	}
 }

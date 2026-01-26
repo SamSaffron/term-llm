@@ -45,6 +45,7 @@ type SubagentEvent struct {
 	Text         string            // for "text" events
 	ToolName     string            // for tool events
 	ToolInfo     string            // for tool events
+	ToolOutput   string            // for "tool_end" events - contains tool output for marker parsing
 	Success      bool              // for "tool_end" events
 	Phase        string            // for "phase" events
 	InputTokens  int               // for "usage" events
@@ -226,13 +227,19 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (str
 		return t.formatError(ErrExecutionFailed, "spawn_agent runner not configured"), nil
 	}
 
-	// Determine timeout
+	// Determine timeout.
+	// The timeout is clamped to [10, 600] seconds to match the tool schema constraints.
+	// Values <= 0 use the default; values outside the range are clamped to the bounds.
 	timeout := t.config.DefaultTimeout
 	if a.Timeout > 0 {
 		timeout = a.Timeout
-		if timeout > 600 {
-			timeout = 600 // Cap at 10 minutes
-		}
+	}
+	// Clamp to schema bounds regardless of source (config default or explicit)
+	if timeout < 10 {
+		timeout = 10 // Schema minimum
+	}
+	if timeout > 600 {
+		timeout = 600 // Cap at 10 minutes
 	}
 
 	// Acquire semaphore (blocks if at max concurrency)
@@ -240,7 +247,11 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (str
 	case t.semaphore <- struct{}{}:
 		defer func() { <-t.semaphore }()
 	case <-ctx.Done():
-		return t.formatError(ErrTimeout, "context cancelled while waiting for agent slot"), nil
+		// Distinguish between deadline exceeded (timeout) and manual cancellation
+		if ctx.Err() == context.DeadlineExceeded {
+			return t.formatError(ErrTimeout, "context deadline exceeded while waiting for agent slot"), nil
+		}
+		return t.formatError(ErrExecutionFailed, "context cancelled while waiting for agent slot"), nil
 	}
 
 	// Create child context with timeout

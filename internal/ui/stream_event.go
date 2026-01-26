@@ -13,6 +13,7 @@ const (
 	StreamEventDone
 	StreamEventError
 	StreamEventImage // Image produced by tool
+	StreamEventDiff  // Diff from edit tool
 )
 
 // StreamEvent represents a unified event from the LLM stream.
@@ -49,6 +50,11 @@ type StreamEvent struct {
 
 	// Image (for StreamEventImage)
 	ImagePath string
+
+	// Diff (for StreamEventDiff)
+	DiffPath string
+	DiffOld  string
+	DiffNew  string
 }
 
 // TextEvent creates a text delta event
@@ -130,5 +136,15 @@ func ImageEvent(path string) StreamEvent {
 	return StreamEvent{
 		Type:      StreamEventImage,
 		ImagePath: path,
+	}
+}
+
+// DiffEvent creates a diff event from edit tool
+func DiffEvent(path, old, new string) StreamEvent {
+	return StreamEvent{
+		Type:     StreamEventDiff,
+		DiffPath: path,
+		DiffOld:  old,
+		DiffNew:  new,
 	}
 }

@@ -2,11 +2,13 @@ package tools
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 
+	"github.com/samsaffron/term-llm/internal/diff"
 	"github.com/samsaffron/term-llm/internal/edit"
 	"github.com/samsaffron/term-llm/internal/llm"
 )
@@ -167,6 +169,18 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (s
 	newLines := countLines(a.NewText)
 	if oldLines != newLines {
 		sb.WriteString(fmt.Sprintf("\nLines: %d -> %d", oldLines, newLines))
+	}
+
+	// Emit diff marker for streaming display (skip if content is too large)
+	if len(result.Original) < diff.MaxDiffSize && len(a.NewText) < diff.MaxDiffSize {
+		diffData := struct {
+			File string `json:"f"`
+			Old  string `json:"o"`
+			New  string `json:"n"`
+		}{a.FilePath, result.Original, a.NewText}
+		if encoded, err := json.Marshal(diffData); err == nil {
+			sb.WriteString("\n__DIFF__:" + base64.StdEncoding.EncodeToString(encoded))
+		}
 	}
 
 	return sb.String(), nil

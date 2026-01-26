@@ -81,7 +81,7 @@ func TestBuildSubagentPreview_CompletedToolsError(t *testing.T) {
 	}
 }
 
-func TestBuildSubagentPreview_ActivePrioritizedOverCompleted(t *testing.T) {
+func TestBuildSubagentPreview_ChronologicalOrder(t *testing.T) {
 	p := &SubagentProgress{
 		ActiveTools: []ToolSegment{
 			{Name: "Grep", Info: "searching"},
@@ -96,18 +96,27 @@ func TestBuildSubagentPreview_ActivePrioritizedOverCompleted(t *testing.T) {
 	if len(result) != 4 {
 		t.Fatalf("expected 4 lines, got %d", len(result))
 	}
-	// First line should be active tool with working circle
-	if !strings.Contains(result[0], WorkingCircle()) {
-		t.Errorf("expected active tool first with working circle: %s", result[0])
-	}
-	if !strings.Contains(result[0], "Grep") {
-		t.Errorf("expected Grep in first line: %s", result[0])
-	}
-	// Remaining lines should be completed tools with success circle
-	for i := 1; i < 4; i++ {
+	// Completed tools should come first in chronological order
+	for i := 0; i < 3; i++ {
 		if !strings.Contains(result[i], SuccessCircle()) {
 			t.Errorf("expected success circle in completed tool line %d: %s", i, result[i])
 		}
+	}
+	if !strings.Contains(result[0], "file1.go") {
+		t.Errorf("expected file1.go in first line: %s", result[0])
+	}
+	if !strings.Contains(result[1], "file2.go") {
+		t.Errorf("expected file2.go in second line: %s", result[1])
+	}
+	if !strings.Contains(result[2], "file3.go") {
+		t.Errorf("expected file3.go in third line: %s", result[2])
+	}
+	// Active tool should come last (most recent)
+	if !strings.Contains(result[3], WorkingCircle()) {
+		t.Errorf("expected active tool last with working circle: %s", result[3])
+	}
+	if !strings.Contains(result[3], "Grep") {
+		t.Errorf("expected Grep in last line: %s", result[3])
 	}
 }
 

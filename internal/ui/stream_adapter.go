@@ -2,10 +2,14 @@ package ui
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"io"
 	"strings"
 
+	"github.com/samsaffron/term-llm/internal/diff"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 // DefaultStreamBufferSize is the default buffer size for the event channel.
@@ -101,6 +105,12 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 				for _, imagePath := range parseImageMarkers(event.ToolOutput) {
 					a.events <- ImageEvent(imagePath)
 				}
+				// Parse diff markers from edit_file tool output and emit diff events
+				if event.ToolName == tools.EditFileToolName {
+					for _, d := range parseDiffMarkers(event.ToolOutput) {
+						a.events <- DiffEvent(d.File, d.Old, d.New)
+					}
+				}
 			}
 
 		case llm.EventRetry:
@@ -134,4 +144,45 @@ func parseImageMarkers(output string) []string {
 		}
 	}
 	return images
+}
+
+// diffData represents the JSON structure in __DIFF__: markers
+type diffData struct {
+	File string `json:"f"`
+	Old  string `json:"o"`
+	New  string `json:"n"`
+}
+
+// parseDiffMarkers extracts diff data from tool output that contain __DIFF__: markers
+// Format: __DIFF__:<base64-encoded JSON>
+func parseDiffMarkers(output string) []diffData {
+	var diffs []diffData
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "__DIFF__:") {
+			encoded := strings.TrimPrefix(line, "__DIFF__:")
+			encoded = strings.TrimSpace(encoded)
+			if encoded == "" {
+				continue
+			}
+			// Check decoded size before allocating (prevent large buffer allocation)
+			decodedLen := base64.StdEncoding.DecodedLen(len(encoded))
+			if decodedLen > diff.MaxDiffSize {
+				continue
+			}
+			// Decode base64
+			decoded, err := base64.StdEncoding.DecodeString(encoded)
+			if err != nil {
+				continue
+			}
+			// Parse JSON
+			var d diffData
+			if err := json.Unmarshal(decoded, &d); err != nil {
+				continue
+			}
+			if d.File != "" {
+				diffs = append(diffs, d)
+			}
+		}
+	}
+	return diffs
 }

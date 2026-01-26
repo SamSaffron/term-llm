@@ -40,6 +40,19 @@ func HandleSubagentProgress(tracker *ToolTracker, subagentTracker *SubagentTrack
 		subagentTracker.HandleToolStart(callID, event.ToolName, event.ToolInfo)
 	case tools.SubagentEventToolEnd:
 		subagentTracker.HandleToolEnd(callID, event.ToolName, event.Success)
+		// Parse markers from tool output (images, diffs)
+		if event.ToolOutput != "" {
+			// Images still go to main tracker (they're standalone)
+			for _, imagePath := range parseImageMarkers(event.ToolOutput) {
+				tracker.AddImageSegment(imagePath)
+			}
+			// Diffs go to the spawn_agent segment itself (so they render within the subagent block)
+			if event.ToolName == tools.EditFileToolName {
+				for _, d := range parseDiffMarkers(event.ToolOutput) {
+					addDiffToSpawnAgentSegment(tracker, callID, d.File, d.Old, d.New)
+				}
+			}
+		}
 	case tools.SubagentEventPhase:
 		subagentTracker.HandlePhase(callID, event.Phase)
 	case tools.SubagentEventUsage:
@@ -86,7 +99,8 @@ func UpdateSegmentFromSubagentProgress(tracker *ToolTracker, callID string, p *S
 	}
 }
 
-// BuildSubagentPreview builds preview lines for a subagent: active tools, completed tools, + text lines.
+// BuildSubagentPreview builds preview lines for a subagent in chronological order.
+// Shows completed tools first (oldest first), then active tools (most recent).
 // maxLines is the total number of lines to show.
 func BuildSubagentPreview(p *SubagentProgress, maxLines int) []string {
 	if p == nil {
@@ -95,7 +109,22 @@ func BuildSubagentPreview(p *SubagentProgress, maxLines int) []string {
 
 	var preview []string
 
-	// 1. Active tools first (currently running)
+	// 1. Completed tools first (chronological order - oldest first)
+	for _, tool := range p.CompletedTools {
+		var circle string
+		if tool.Success {
+			circle = SuccessCircle()
+		} else {
+			circle = ErrorCircle()
+		}
+		line := circle + " " + tool.Name
+		if tool.Info != "" {
+			line += " " + tool.Info
+		}
+		preview = append(preview, line)
+	}
+
+	// 2. Active tools after (they are the most recent)
 	for _, tool := range p.ActiveTools {
 		line := WorkingCircle() + " " + tool.Name
 		if tool.Info != "" {
@@ -104,38 +133,11 @@ func BuildSubagentPreview(p *SubagentProgress, maxLines int) []string {
 		preview = append(preview, line)
 	}
 
-	// 2. Recently completed tools (show what just finished)
-	remaining := maxLines - len(preview)
-	if remaining > 0 && len(p.CompletedTools) > 0 {
-		start := 0
-		if len(p.CompletedTools) > remaining {
-			start = len(p.CompletedTools) - remaining
-		}
-		for _, tool := range p.CompletedTools[start:] {
-			var circle string
-			if tool.Success {
-				circle = SuccessCircle()
-			} else {
-				circle = ErrorCircle()
-			}
-			line := circle + " " + tool.Name
-			if tool.Info != "" {
-				line += " " + tool.Info
-			}
-			preview = append(preview, line)
-		}
-	}
-
 	// 3. Text lines only if no tools shown
-	remaining = maxLines - len(preview)
-	if remaining > 0 && len(preview) == 0 {
+	if len(preview) == 0 {
 		textLines := p.GetPreviewLines()
 		if len(textLines) > 0 {
-			start := 0
-			if len(textLines) > remaining {
-				start = len(textLines) - remaining
-			}
-			for _, line := range textLines[start:] {
+			for _, line := range textLines {
 				if line != "" {
 					preview = append(preview, line)
 				}
@@ -143,10 +145,27 @@ func BuildSubagentPreview(p *SubagentProgress, maxLines int) []string {
 		}
 	}
 
-	// Limit to maxLines
+	// Limit to maxLines (keep the LAST N lines - most recent)
 	if len(preview) > maxLines {
-		preview = preview[:maxLines]
+		preview = preview[len(preview)-maxLines:]
 	}
 
 	return preview
+}
+
+// addDiffToSpawnAgentSegment adds a diff to the spawn_agent segment for display after the preview.
+func addDiffToSpawnAgentSegment(tracker *ToolTracker, callID string, path, old, new string) {
+	if tracker == nil || path == "" {
+		return
+	}
+	for i := range tracker.Segments {
+		if tracker.Segments[i].ToolCallID == callID && tracker.Segments[i].ToolName == "spawn_agent" {
+			tracker.Segments[i].SubagentDiffs = append(tracker.Segments[i].SubagentDiffs, SubagentDiff{
+				Path: path,
+				Old:  old,
+				New:  new,
+			})
+			break
+		}
+	}
 }

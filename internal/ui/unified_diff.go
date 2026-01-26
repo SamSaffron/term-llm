@@ -140,3 +140,155 @@ func printUnifiedDiffInternal(filePath, oldContent, newContent string, multiFile
 func HasDiff(oldContent, newContent string) bool {
 	return oldContent != newContent
 }
+
+// maxDiffLines is the maximum number of diff lines to render inline
+const maxDiffLines = 50
+
+// RenderDiffSegment renders a unified diff as a string for inline display.
+// Returns empty string if no changes or on error.
+// The width parameter is for future use (wrapping long lines).
+func RenderDiffSegment(filePath, oldContent, newContent string, width int) string {
+	if oldContent == newContent {
+		return ""
+	}
+
+	styles := DefaultStyles()
+	var b strings.Builder
+
+	// Print header
+	b.WriteString(fmt.Sprintf("%s %s\n", styles.Bold.Render("Edit:"), filePath))
+
+	// Generate unified diff using gotextdiff
+	diffBytes := diff.Diff(filePath, []byte(oldContent), filePath, []byte(newContent))
+	if len(diffBytes) == 0 {
+		return ""
+	}
+
+	diffText := string(diffBytes)
+
+	// Create highlighter for syntax highlighting
+	highlighter := NewHighlighter(filePath)
+
+	// Calculate line number width based on file sizes
+	oldLines := strings.Count(oldContent, "\n") + 1
+	newLines := strings.Count(newContent, "\n") + 1
+	maxLine := oldLines
+	if newLines > maxLine {
+		maxLine = newLines
+	}
+	lineNumWidth := len(strconv.Itoa(maxLine))
+	if lineNumWidth < 3 {
+		lineNumWidth = 3
+	}
+
+	// Track current line numbers
+	var oldLineNum, newLineNum int
+	var deletionOffset int // Tracks position within a deletion block
+	hunkCount := 0
+	renderedLines := 0
+	truncated := false
+
+	// Regex to parse hunk header: @@ -start,count +start,count @@
+	hunkRe := regexp.MustCompile(`^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@`)
+
+	// Parse and colorize the diff
+	lines := strings.Split(diffText, "\n")
+	for _, line := range lines {
+		// Skip the "diff" line and --- / +++ headers
+		if strings.HasPrefix(line, "diff ") ||
+			strings.HasPrefix(line, "--- ") ||
+			strings.HasPrefix(line, "+++ ") {
+			continue
+		}
+
+		if len(line) == 0 {
+			continue
+		}
+
+		// Check if we've hit the line limit
+		if renderedLines >= maxDiffLines {
+			truncated = true
+			break
+		}
+
+		prefix := line[0]
+		content := ""
+		if len(line) > 1 {
+			content = line[1:]
+		}
+
+		switch prefix {
+		case '@':
+			// Parse hunk header to get starting line numbers
+			if matches := hunkRe.FindStringSubmatch(line); matches != nil {
+				oldLineNum, _ = strconv.Atoi(matches[1])
+				newLineNum, _ = strconv.Atoi(matches[2])
+			}
+			// Show "..." separator between hunks (not before first one)
+			if hunkCount > 0 {
+				b.WriteString(fmt.Sprintf("\x1b[38;2;100;100;100m%s\x1b[0m\n", strings.Repeat(" ", lineNumWidth)+"  ..."))
+				renderedLines++
+			}
+			hunkCount++
+
+		case '-':
+			// Removed line - red background, show old file line number
+			highlighted := content
+			if highlighter != nil {
+				highlighted = highlighter.HighlightLineWithBg(content, diffRemoveBg)
+			} else {
+				highlighted = fmt.Sprintf("\x1b[48;2;%d;%d;%dm%s\x1b[0m", diffRemoveBg[0], diffRemoveBg[1], diffRemoveBg[2], content)
+			}
+			b.WriteString(fmt.Sprintf("\x1b[38;2;160;80;80m%*d- \x1b[0m%s\n", lineNumWidth, oldLineNum, highlighted))
+			oldLineNum++
+			deletionOffset++
+			renderedLines++
+
+		case '+':
+			// Added line - green background with new line number
+			deletionOffset = 0 // Reset deletion offset when we see additions
+			highlighted := content
+			if highlighter != nil {
+				highlighted = highlighter.HighlightLineWithBg(content, diffAddBg)
+			} else {
+				highlighted = fmt.Sprintf("\x1b[48;2;%d;%d;%dm%s\x1b[0m", diffAddBg[0], diffAddBg[1], diffAddBg[2], content)
+			}
+			b.WriteString(fmt.Sprintf("\x1b[38;2;80;160;80m%*d+ \x1b[0m%s\n", lineNumWidth, newLineNum, highlighted))
+			newLineNum++
+			renderedLines++
+
+		case ' ':
+			// Context line - no background, show line number in grey
+			deletionOffset = 0 // Reset deletion offset when we see context
+			highlighted := content
+			if highlighter != nil {
+				highlighted = highlighter.HighlightLine(content)
+			}
+			b.WriteString(fmt.Sprintf("\x1b[38;2;100;100;100m%*d  \x1b[0m%s\n", lineNumWidth, newLineNum, highlighted))
+			oldLineNum++
+			newLineNum++
+			renderedLines++
+
+		default:
+			// Preserve special diff metadata lines (e.g., "\ No newline at end of file")
+			b.WriteString(fmt.Sprintf("\x1b[38;2;100;100;100m%s  %s\x1b[0m\n", strings.Repeat(" ", lineNumWidth), line))
+			renderedLines++
+		}
+	}
+
+	// Show truncation notice if we hit the limit
+	if truncated {
+		remaining := 0
+		for _, line := range lines {
+			if len(line) > 0 && (line[0] == '+' || line[0] == '-' || line[0] == ' ') {
+				remaining++
+			}
+		}
+		remaining -= renderedLines
+		if remaining > 0 {
+			b.WriteString(fmt.Sprintf("\x1b[38;2;100;100;100m[... %d more lines ...]\x1b[0m\n", remaining))
+		}
+	}
+
+	return b.String()
+}

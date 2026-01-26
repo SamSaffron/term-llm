@@ -229,6 +229,21 @@ func (t *ToolTracker) AddImageSegment(path string) {
 	})
 }
 
+// AddDiffSegment adds a diff segment for inline display.
+func (t *ToolTracker) AddDiffSegment(path, old, new string) {
+	if path == "" {
+		return
+	}
+	t.RecordActivity()
+	t.Segments = append(t.Segments, Segment{
+		Type:     SegmentDiff,
+		DiffPath: path,
+		DiffOld:  old,
+		DiffNew:  new,
+		Complete: true,
+	})
+}
+
 // FlushToScrollbackResult contains the result of a scrollback flush operation.
 type FlushToScrollbackResult struct {
 	// ToPrint is the content to print to scrollback (empty if nothing to flush)
@@ -262,19 +277,19 @@ func (t *ToolTracker) FlushToScrollback(
 	}
 
 	// Keep at least 1 segment unflushed for View() (or maxViewLines worth)
-	// But always flush images immediately since they need to go to scrollback
+	// But always flush images and diffs immediately since they need to go to scrollback
 	minKeep := 1
 	if unflushedCount <= minKeep {
-		// Check if there's an image that needs flushing
-		hasUnflushedImage := false
+		// Check if there's an image or diff that needs flushing
+		hasUnflushedSpecial := false
 		for i := range t.Segments {
 			seg := &t.Segments[i]
-			if seg.Type == SegmentImage && !seg.Flushed {
-				hasUnflushedImage = true
+			if (seg.Type == SegmentImage || seg.Type == SegmentDiff) && !seg.Flushed {
+				hasUnflushedSpecial = true
 				break
 			}
 		}
-		if !hasUnflushedImage {
+		if !hasUnflushedSpecial {
 			return FlushToScrollbackResult{NewPrintedLines: 0}
 		}
 	}
@@ -292,8 +307,8 @@ func (t *ToolTracker) FlushToScrollback(
 			continue
 		}
 		unflushedSeen++
-		// Flush if: it's an image OR we have more than minKeep unflushed segments
-		shouldFlush := seg.Type == SegmentImage || unflushedSeen <= unflushedCount-minKeep
+		// Flush if: it's an image/diff OR we have more than minKeep unflushed segments
+		shouldFlush := seg.Type == SegmentImage || seg.Type == SegmentDiff || unflushedSeen <= unflushedCount-minKeep
 		if shouldFlush {
 			toFlush = append(toFlush, *seg)
 			seg.Flushed = true

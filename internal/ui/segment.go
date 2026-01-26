@@ -17,6 +17,7 @@ const (
 	SegmentTool
 	SegmentAskUserResult // For ask_user answers (plain text, styled at render time)
 	SegmentImage         // For inline image display
+	SegmentDiff          // For inline diff display from edit tool
 )
 
 // ToolStatus represents the execution state of a tool
@@ -39,16 +40,27 @@ type Segment struct {
 	ToolStatus ToolStatus // For tool segments
 	Complete   bool       // For text segments: whether streaming is complete
 	ImagePath  string     // For image segments: path to image file
+	DiffPath   string     // For diff segments: file path
+	DiffOld    string     // For diff segments: old content
+	DiffNew    string     // For diff segments: new content
 	Flushed    bool       // True if this segment has been printed to scrollback
 
 	// Subagent stats (for spawn_agent tools only)
-	SubagentToolCalls   int       // Number of tool calls made by subagent
-	SubagentTotalTokens int       // Total tokens used by subagent
-	SubagentHasProgress bool      // True if we have progress from this subagent
-	SubagentProvider    string    // Provider name if different from parent
-	SubagentModel       string    // Model name if different from parent
-	SubagentPreview     []string  // Preview lines (active tools + last few text lines)
-	SubagentStartTime   time.Time // Start time for elapsed time display
+	SubagentToolCalls   int            // Number of tool calls made by subagent
+	SubagentTotalTokens int            // Total tokens used by subagent
+	SubagentHasProgress bool           // True if we have progress from this subagent
+	SubagentProvider    string         // Provider name if different from parent
+	SubagentModel       string         // Model name if different from parent
+	SubagentPreview     []string       // Preview lines (active tools + last few text lines)
+	SubagentStartTime   time.Time      // Start time for elapsed time display
+	SubagentDiffs       []SubagentDiff // Diffs from subagent's edit_file calls
+}
+
+// SubagentDiff holds diff info from a subagent's edit_file call
+type SubagentDiff struct {
+	Path string
+	Old  string
+	New  string
 }
 
 // Tool status indicator colors using raw ANSI for reliable true color
@@ -358,6 +370,22 @@ func RenderSegments(segments []Segment, width int, wavePos int, renderMarkdown f
 			if prev.Type == SegmentText && seg.Type == SegmentImage {
 				b.WriteString("\n\n")
 			}
+			// Blank line between tools/ask_user results and diffs
+			if prevIsTool && seg.Type == SegmentDiff {
+				b.WriteString("\n\n")
+			}
+			// Blank line between text and diffs
+			if prev.Type == SegmentText && seg.Type == SegmentDiff {
+				b.WriteString("\n\n")
+			}
+			// Blank line between diffs and text
+			if prev.Type == SegmentDiff && seg.Type == SegmentText {
+				b.WriteString("\n\n")
+			}
+			// Blank line between diffs and tools
+			if prev.Type == SegmentDiff && currIsTool {
+				b.WriteString("\n\n")
+			}
 		}
 
 		switch seg.Type {
@@ -378,6 +406,15 @@ func RenderSegments(segments []Segment, width int, wavePos int, renderMarkdown f
 					b.WriteString(line)
 				}
 			}
+			// Render subagent diffs after preview (still within spawn_agent block)
+			if seg.ToolName == "spawn_agent" && len(seg.SubagentDiffs) > 0 {
+				for _, diff := range seg.SubagentDiffs {
+					b.WriteString("\n")
+					if rendered := RenderDiffSegment(diff.Path, diff.Old, diff.New, width); rendered != "" {
+						b.WriteString(rendered)
+					}
+				}
+			}
 		case SegmentAskUserResult:
 			b.WriteString(renderAskUserResult(seg.Text))
 		case SegmentImage:
@@ -387,6 +424,11 @@ func RenderSegments(segments []Segment, width int, wavePos int, renderMarkdown f
 					b.WriteString(rendered)
 					b.WriteString("\r\n")
 				}
+			}
+		case SegmentDiff:
+			// Render diffs inline (always render, not gated like images)
+			if rendered := RenderDiffSegment(seg.DiffPath, seg.DiffOld, seg.DiffNew, width); rendered != "" {
+				b.WriteString(rendered)
 			}
 		}
 	}
