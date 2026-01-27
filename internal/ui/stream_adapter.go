@@ -22,6 +22,9 @@ const DefaultStreamBufferSize = 100
 type StreamAdapter struct {
 	events chan StreamEvent
 	stats  *SessionStats
+
+	seenToolStarts map[string]struct{}
+	seenToolEnds   map[string]struct{}
 }
 
 // NewStreamAdapter creates a new StreamAdapter with the specified buffer size.
@@ -31,8 +34,10 @@ func NewStreamAdapter(bufSize int) *StreamAdapter {
 		bufSize = DefaultStreamBufferSize
 	}
 	return &StreamAdapter{
-		events: make(chan StreamEvent, bufSize),
-		stats:  NewSessionStats(),
+		events:         make(chan StreamEvent, bufSize),
+		stats:          NewSessionStats(),
+		seenToolStarts: make(map[string]struct{}),
+		seenToolEnds:   make(map[string]struct{}),
 	}
 }
 
@@ -93,10 +98,22 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 			}
 
 		case llm.EventToolExecStart:
+			if event.ToolCallID != "" {
+				if _, ok := a.seenToolStarts[event.ToolCallID]; ok {
+					continue
+				}
+				a.seenToolStarts[event.ToolCallID] = struct{}{}
+			}
 			a.stats.ToolStart()
 			a.events <- ToolStartEvent(event.ToolCallID, event.ToolName, event.ToolInfo)
 
 		case llm.EventToolExecEnd:
+			if event.ToolCallID != "" {
+				if _, ok := a.seenToolEnds[event.ToolCallID]; ok {
+					continue
+				}
+				a.seenToolEnds[event.ToolCallID] = struct{}{}
+			}
 			a.stats.ToolEnd()
 			a.events <- ToolEndEvent(event.ToolCallID, event.ToolName, event.ToolInfo, event.ToolSuccess)
 

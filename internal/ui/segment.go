@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/samsaffron/term-llm/internal/llm"
 )
 
 // SegmentType identifies the type of stream segment
@@ -197,6 +198,19 @@ func RenderToolSegment(seg *Segment, wavePos int) string {
 		return ErrorCircle() + " " + seg.ToolName
 	}
 	return ""
+}
+
+// RenderToolCallFromPart renders a historical tool call from an llm.ToolCall.
+// Uses success styling since historical calls have completed.
+func RenderToolCallFromPart(tc *llm.ToolCall) string {
+	if tc == nil {
+		return ""
+	}
+	info := llm.ExtractToolInfo(*tc)
+	if info != "" {
+		return SuccessCircle() + " " + tc.Name + " " + paramStyle.Render(info)
+	}
+	return SuccessCircle() + " " + tc.Name
 }
 
 // renderSpawnAgentStats renders the stats line for a spawn_agent tool.

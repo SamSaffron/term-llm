@@ -69,3 +69,8 @@ func (t *SetOutputTool) Value() string {
 func (t *SetOutputTool) Name() string {
 	return t.name
 }
+
+// IsFinishingTool returns true because output tools signal agent completion.
+func (t *SetOutputTool) IsFinishingTool() bool {
+	return true
+}

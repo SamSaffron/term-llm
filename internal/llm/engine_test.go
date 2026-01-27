@@ -74,6 +74,27 @@ func (t *countingSearchTool) Preview(args json.RawMessage) string {
 	return ""
 }
 
+type countingTool struct {
+	calls int
+}
+
+func (t *countingTool) Spec() ToolSpec {
+	return ToolSpec{
+		Name:        "count_tool",
+		Description: "Counts executions",
+		Schema:      map[string]any{"type": "object"},
+	}
+}
+
+func (t *countingTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+	t.calls++
+	return "ok", nil
+}
+
+func (t *countingTool) Preview(args json.RawMessage) string {
+	return ""
+}
+
 func TestEngineExternalSearchLoopsUntilNoToolCalls(t *testing.T) {
 	tool := &countingSearchTool{}
 	registry := NewToolRegistry()
@@ -157,6 +178,60 @@ func TestEngineExternalSearchLoopsUntilNoToolCalls(t *testing.T) {
 	}
 	if countToolCalls(last.Messages) != 2 {
 		t.Fatalf("expected 2 tool calls in final request")
+	}
+}
+
+func TestEngineDedupesToolCallsByID(t *testing.T) {
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				return []Event{
+					{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "count_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "count_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventDone},
+				}
+			default:
+				return []Event{
+					{Type: EventTextDelta, Text: "done"},
+					{Type: EventDone},
+				}
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	req := Request{
+		Messages:   []Message{UserText("run tool")},
+		Tools:      []ToolSpec{tool.Spec()},
+		ToolChoice: ToolChoice{Mode: ToolChoiceAuto},
+	}
+
+	stream, err := engine.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+		if event.Type == EventError && event.Err != nil {
+			t.Fatalf("event error: %v", event.Err)
+		}
+	}
+
+	if tool.calls != 1 {
+		t.Fatalf("expected 1 tool execution, got %d", tool.calls)
 	}
 }
 

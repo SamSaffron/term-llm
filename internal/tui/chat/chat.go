@@ -2256,9 +2256,30 @@ func (m *Model) renderHistory() string {
 			b.WriteString(displayContent)
 			b.WriteString("\n")
 		} else {
-			// Assistant message: just the rendered content
-			rendered := m.renderMarkdown(msg.TextContent)
-			b.WriteString(rendered)
+			// Assistant message: render all parts (text + tool calls)
+			hasContent := false
+			for _, part := range msg.Parts {
+				switch part.Type {
+				case llm.PartText:
+					if part.Text != "" {
+						rendered := m.renderMarkdown(part.Text)
+						b.WriteString(rendered)
+						hasContent = true
+					}
+				case llm.PartToolCall:
+					if part.ToolCall != nil {
+						b.WriteString(ui.RenderToolCallFromPart(part.ToolCall))
+						b.WriteString("\n")
+						hasContent = true
+					}
+					// Skip PartToolResult - they're in user messages and verbose
+				}
+			}
+			// Fallback: if no parts rendered, use TextContent (for backward compatibility)
+			if !hasContent && msg.TextContent != "" {
+				rendered := m.renderMarkdown(msg.TextContent)
+				b.WriteString(rendered)
+			}
 			b.WriteString("\n")
 		}
 	}

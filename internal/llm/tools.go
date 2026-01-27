@@ -29,6 +29,13 @@ type Tool interface {
 	Preview(args json.RawMessage) string
 }
 
+// FinishingTool is an optional interface for tools that signal agent completion.
+// When a finishing tool is executed, the agentic loop should stop after this turn.
+// Example: output capture tools like set_commit_message.
+type FinishingTool interface {
+	IsFinishingTool() bool
+}
+
 // ToolRegistry stores tools by name for execution.
 type ToolRegistry struct {
 	tools map[string]Tool
@@ -45,6 +52,18 @@ func (r *ToolRegistry) Register(tool Tool) {
 func (r *ToolRegistry) Get(name string) (Tool, bool) {
 	tool, ok := r.tools[name]
 	return tool, ok
+}
+
+// IsFinishingTool returns true if the named tool is a finishing tool.
+func (r *ToolRegistry) IsFinishingTool(name string) bool {
+	tool, ok := r.tools[name]
+	if !ok {
+		return false
+	}
+	if ft, ok := tool.(FinishingTool); ok {
+		return ft.IsFinishingTool()
+	}
+	return false
 }
 
 func (r *ToolRegistry) Unregister(name string) {

@@ -343,6 +343,10 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 		var toolCalls []ToolCall
 		var textBuilder strings.Builder
 		var turnMetrics TurnMetrics
+		var syncToolsExecuted bool     // Track if tools were executed via sync path (MCP)
+		var finishingToolExecuted bool // Track if a finishing tool was executed (agent done)
+		var syncToolCalls []ToolCall   // Track sync tool calls for message building
+		var syncToolResults []Message  // Track sync tool results for message building
 		for {
 			event, err := stream.Recv()
 			if err == io.EOF {
@@ -372,7 +376,19 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 				// Check if this is a synchronous tool execution request (from claude_bin MCP)
 				if event.ToolResponse != nil {
 					// Handle synchronous execution: emit events to TUI and send result back
-					e.handleSyncToolExecution(ctx, event, events, req.Debug, req.DebugRaw)
+					call, result, execErr := e.handleSyncToolExecution(ctx, event, events, req.Debug, req.DebugRaw)
+					syncToolsExecuted = true
+					syncToolCalls = append(syncToolCalls, call)
+					// Build result message for this tool call
+					if execErr != nil {
+						syncToolResults = append(syncToolResults, ToolErrorMessage(call.ID, call.Name, execErr.Error(), nil))
+					} else {
+						syncToolResults = append(syncToolResults, ToolResultMessage(call.ID, call.Name, result, nil))
+					}
+					// Check if this was a finishing tool (signals agent completion)
+					if e.tools.IsFinishingTool(event.Tool.Name) {
+						finishingToolExecuted = true
+					}
 					continue
 				}
 				// Normal async collection for other providers
@@ -389,7 +405,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 		// Search is only performed once (either pre-emptively or in first turn)
 		req.Search = false
 
-		if len(toolCalls) == 0 {
+		if len(toolCalls) == 0 && !syncToolsExecuted {
 			// No tools called - check if we should restore original tool choice and retry once
 			if originalToolChoice.Mode == ToolChoiceName && !restoredToolChoice {
 				req.ToolChoice = originalToolChoice
@@ -408,7 +424,34 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			return nil
 		}
 
+		// If only sync tools were executed (MCP path), decide whether to continue
+		if len(toolCalls) == 0 && syncToolsExecuted {
+			// Build assistant message with text and sync tool calls
+			// This is needed so claude-bin gets proper context when resuming
+			assistantMsg := buildAssistantMessage(textBuilder.String(), syncToolCalls)
+			req.Messages = append(req.Messages, assistantMsg)
+			req.Messages = append(req.Messages, syncToolResults...)
+
+			// Call turn completed callback for incremental persistence
+			if callback != nil {
+				turnMetrics.ToolCalls = len(syncToolCalls)
+				turnMessages := []Message{assistantMsg}
+				turnMessages = append(turnMessages, syncToolResults...)
+				_ = callback(ctx, attempt, turnMessages, turnMetrics)
+			}
+
+			// If a finishing tool was executed, we're done (agent completed its task)
+			if finishingToolExecuted {
+				events <- Event{Type: EventDone}
+				return nil
+			}
+
+			// Continue the loop - provider will receive updated messages on next turn
+			continue
+		}
+
 		toolCalls = ensureToolCallIDs(toolCalls)
+		toolCalls = dedupeToolCalls(toolCalls)
 
 		// Split into registered (to execute) and unregistered (to passthrough)
 		var registered, unregistered []ToolCall
@@ -590,7 +633,8 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, event
 // handleSyncToolExecution handles synchronous tool execution for providers like claude_bin.
 // It emits EventToolExecStart/End to the outer channel (for TUI) and sends the result
 // back to the provider via the response channel.
-func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, events chan<- Event, debug bool, debugRaw bool) {
+// Returns the tool call, result string, and any error that occurred during execution.
+func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, events chan<- Event, debug bool, debugRaw bool) (ToolCall, string, error) {
 	call := event.Tool
 	callID := event.ToolCallID
 	if callID == "" {
@@ -662,6 +706,11 @@ func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, event
 	case <-ctx.Done():
 		// Best-effort: abandon send if context canceled
 	}
+
+	// Ensure call has the proper ID (may have been generated)
+	returnCall := *call
+	returnCall.ID = callID
+	return returnCall, result, err
 }
 
 func ensureToolCallIDs(calls []ToolCall) []ToolCall {
@@ -671,6 +720,27 @@ func ensureToolCallIDs(calls []ToolCall) []ToolCall {
 		}
 	}
 	return calls
+}
+
+func dedupeToolCalls(calls []ToolCall) []ToolCall {
+	if len(calls) < 2 {
+		return calls
+	}
+	seen := make(map[string]struct{}, len(calls))
+	out := make([]ToolCall, 0, len(calls))
+	for _, call := range calls {
+		id := strings.TrimSpace(call.ID)
+		if id == "" {
+			out = append(out, call)
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, call)
+	}
+	return out
 }
 
 // getToolPreview returns a preview string for a tool call.
@@ -683,7 +753,7 @@ func (e *Engine) getToolPreview(call ToolCall) string {
 			return preview
 		}
 	}
-	return extractToolInfo(call)
+	return ExtractToolInfo(call)
 }
 
 func formatToolArgs(args map[string]any, maxLen, maxParams int) string {
@@ -753,7 +823,9 @@ func formatToolArgs(args map[string]any, maxLen, maxParams int) string {
 	return result
 }
 
-func extractToolInfo(call ToolCall) string {
+// ExtractToolInfo extracts a preview string from tool call arguments.
+// Used for displaying tool calls in the UI (e.g., "(path:main.go)" for read_file).
+func ExtractToolInfo(call ToolCall) string {
 	if len(call.Arguments) == 0 {
 		return ""
 	}

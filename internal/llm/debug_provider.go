@@ -2,7 +2,12 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -192,55 +197,141 @@ func (d *DebugProvider) Credential() string {
 	return "none"
 }
 
-// Capabilities returns the provider capabilities (no special capabilities).
+// Capabilities returns the provider capabilities.
 func (d *DebugProvider) Capabilities() Capabilities {
-	return Capabilities{}
+	return Capabilities{ToolCalls: true}
 }
 
-// Stream starts streaming the debug markdown content.
+// Stream starts streaming content based on the request.
+// If tools are provided and the prompt matches a command pattern, emits a tool call.
+// If tool results are present, emits completion text.
+// Otherwise, streams the debug markdown content.
 func (d *DebugProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	return newEventStream(ctx, func(ctx context.Context, ch chan<- Event) error {
-		text := debugMarkdown
-		chunkSize := d.preset.ChunkSize
-		delay := d.preset.Delay
+		// If tool results are present, stream completion text
+		if hasToolResults(req.Messages) {
+			return d.streamCompletionText(ctx, ch)
+		}
 
-		for len(text) > 0 {
-			// Calculate chunk boundary
-			end := chunkSize
-			if end > len(text) {
-				end = len(text)
-			}
+		// Parse prompt for tool command(s)
+		prompt := getLastUserPrompt(req.Messages)
 
-			chunk := text[:end]
-			text = text[end:]
+		// Check for sleep prefix (e.g., "sleep 5 read README.md")
+		prompt = parseSleepPrefix(ctx, prompt)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case ch <- Event{Type: EventTextDelta, Text: chunk}:
-			}
-
-			if delay > 0 && len(text) > 0 {
+		if calls := parseCommand(prompt, req.Tools); len(calls) > 0 {
+			for _, call := range calls {
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
-				case <-time.After(delay):
+				case ch <- Event{Type: EventToolCall, Tool: call}:
 				}
 			}
+			// Emit usage
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case ch <- Event{Type: EventUsage, Use: &Usage{
+				InputTokens:  len(prompt) / 4,
+				OutputTokens: 10 * len(calls),
+			}}:
+			}
+			return nil
 		}
 
-		// Emit usage stats
+		// Fall back to debug markdown
+		return d.streamDebugMarkdown(ctx, ch)
+	}), nil
+}
+
+// streamDebugMarkdown streams the standard debug markdown content.
+func (d *DebugProvider) streamDebugMarkdown(ctx context.Context, ch chan<- Event) error {
+	text := debugMarkdown
+	chunkSize := d.preset.ChunkSize
+	delay := d.preset.Delay
+
+	for len(text) > 0 {
+		// Calculate chunk boundary
+		end := chunkSize
+		if end > len(text) {
+			end = len(text)
+		}
+
+		chunk := text[:end]
+		text = text[end:]
+
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case ch <- Event{Type: EventUsage, Use: &Usage{
-			InputTokens:  10,
-			OutputTokens: len(debugMarkdown) / 4, // Approximate tokens
-		}}:
+		case ch <- Event{Type: EventTextDelta, Text: chunk}:
 		}
 
-		return nil
-	}), nil
+		if delay > 0 && len(text) > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+	}
+
+	// Emit usage stats
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case ch <- Event{Type: EventUsage, Use: &Usage{
+		InputTokens:  10,
+		OutputTokens: len(debugMarkdown) / 4, // Approximate tokens
+	}}:
+	}
+
+	return nil
+}
+
+// streamCompletionText streams a simple completion message after tool execution.
+func (d *DebugProvider) streamCompletionText(ctx context.Context, ch chan<- Event) error {
+	text := "Debug: Tool execution completed successfully."
+	chunkSize := d.preset.ChunkSize
+	delay := d.preset.Delay
+
+	for len(text) > 0 {
+		end := chunkSize
+		if end > len(text) {
+			end = len(text)
+		}
+
+		chunk := text[:end]
+		text = text[end:]
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case ch <- Event{Type: EventTextDelta, Text: chunk}:
+		}
+
+		if delay > 0 && len(text) > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+	}
+
+	// Emit usage
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case ch <- Event{Type: EventUsage, Use: &Usage{
+		InputTokens:  50,
+		OutputTokens: 10,
+	}}:
+	}
+
+	return nil
 }
 
 // GetDebugPresets returns a copy of available presets for testing.
@@ -255,4 +346,176 @@ func GetDebugPresets() map[string]debugPreset {
 // parseDebugVariant extracts the variant from a model string like "fast" or "".
 func parseDebugVariant(model string) string {
 	return strings.TrimSpace(model)
+}
+
+// debugCallID generates unique tool call IDs for the debug provider.
+var debugCallID atomic.Uint64
+
+func nextDebugCallID() string {
+	return fmt.Sprintf("debug-call-%d", debugCallID.Add(1))
+}
+
+// hasToolResults checks if any message contains tool results.
+func hasToolResults(msgs []Message) bool {
+	for _, msg := range msgs {
+		if msg.Role == RoleTool {
+			return true
+		}
+		for _, part := range msg.Parts {
+			if part.Type == PartToolResult {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// getLastUserPrompt extracts the text from the last user message.
+func getLastUserPrompt(msgs []Message) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == RoleUser {
+			for _, part := range msgs[i].Parts {
+				if part.Type == PartText && part.Text != "" {
+					return part.Text
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// sleepRegex matches a "sleep N" prefix (e.g., "sleep 5 read README.md").
+var sleepRegex = regexp.MustCompile(`^sleep\s+(\d+)\s+`)
+
+// parseSleepPrefix checks for a "sleep N" prefix, sleeps if present, and returns the remaining prompt.
+func parseSleepPrefix(ctx context.Context, prompt string) string {
+	if match := sleepRegex.FindStringSubmatch(prompt); match != nil {
+		if secs, err := strconv.Atoi(match[1]); err == nil && secs > 0 && secs <= 60 {
+			select {
+			case <-ctx.Done():
+				return ""
+			case <-time.After(time.Duration(secs) * time.Second):
+			}
+			return strings.TrimSpace(prompt[len(match[0]):])
+		}
+	}
+	return prompt
+}
+
+// multiplierRegex matches a trailing "xN" multiplier (e.g., "x3", "x5").
+var multiplierRegex = regexp.MustCompile(`\s+x(\d+)$`)
+
+// parseCommand parses the prompt into tool calls if it matches a known pattern.
+// Supports a trailing "xN" suffix to generate N parallel tool calls (e.g., "read README.md x3").
+// Returns nil if no match or if the required tool is not available.
+func parseCommand(prompt string, tools []ToolSpec) []*ToolCall {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return nil
+	}
+
+	// Check for multiplier suffix (e.g., "x3")
+	multiplier := 1
+	if match := multiplierRegex.FindStringSubmatch(prompt); match != nil {
+		if n, err := strconv.Atoi(match[1]); err == nil && n > 0 && n <= 20 {
+			multiplier = n
+			prompt = strings.TrimSpace(prompt[:len(prompt)-len(match[0])])
+		}
+	}
+
+	// Build a set of available tool names
+	toolSet := make(map[string]bool)
+	for _, t := range tools {
+		toolSet[t.Name] = true
+	}
+
+	parts := strings.Fields(prompt)
+	if len(parts) == 0 {
+		return nil
+	}
+
+	cmd := strings.ToLower(parts[0])
+	args := parts[1:]
+
+	// makeCall creates a single tool call with the given name and arguments
+	makeCall := func(name string, argsMap map[string]string) *ToolCall {
+		argsJSON, _ := json.Marshal(argsMap)
+		return &ToolCall{
+			ID:        nextDebugCallID(),
+			Name:      name,
+			Arguments: argsJSON,
+		}
+	}
+
+	// Generate the base tool call arguments based on command
+	var toolName string
+	var argsMap map[string]string
+
+	switch cmd {
+	case "read":
+		if !toolSet["read_file"] || len(args) < 1 {
+			return nil
+		}
+		// Support comma-separated files: "read README.md,AGENTS.md,foo.go"
+		files := strings.Split(args[0], ",")
+		if len(files) > 1 {
+			calls := make([]*ToolCall, 0, len(files)*multiplier)
+			for _, file := range files {
+				file = strings.TrimSpace(file)
+				if file == "" {
+					continue
+				}
+				for j := 0; j < multiplier; j++ {
+					calls = append(calls, makeCall("read_file", map[string]string{"file_path": file}))
+				}
+			}
+			return calls
+		}
+		toolName = "read_file"
+		argsMap = map[string]string{"file_path": args[0]}
+
+	case "write":
+		if !toolSet["write_file"] || len(args) < 2 {
+			return nil
+		}
+		toolName = "write_file"
+		argsMap = map[string]string{
+			"file_path": args[0],
+			"content":   strings.Join(args[1:], " "),
+		}
+
+	case "grep":
+		if !toolSet["grep"] || len(args) < 1 {
+			return nil
+		}
+		toolName = "grep"
+		argsMap = map[string]string{"pattern": args[0]}
+		if len(args) >= 2 {
+			argsMap["path"] = args[1]
+		}
+
+	case "glob":
+		if !toolSet["glob"] || len(args) < 1 {
+			return nil
+		}
+		toolName = "glob"
+		argsMap = map[string]string{"pattern": args[0]}
+
+	case "shell":
+		if !toolSet["shell"] || len(args) < 1 {
+			return nil
+		}
+		toolName = "shell"
+		argsMap = map[string]string{"command": strings.Join(args, " ")}
+
+	default:
+		return nil
+	}
+
+	// Generate multiplier number of calls
+	calls := make([]*ToolCall, multiplier)
+	for i := range calls {
+		calls[i] = makeCall(toolName, argsMap)
+	}
+	return calls
 }

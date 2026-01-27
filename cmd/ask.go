@@ -642,6 +642,8 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent) error {
 		done    bool
 	}
 	var pendingTools []toolEntry
+	seenToolStarts := make(map[string]bool) // Track seen tool starts to prevent duplicates
+	seenToolEnds := make(map[string]bool)   // Track seen tool ends to prevent duplicates
 	printedAny := false
 	lastEndedWithNewline := true
 
@@ -696,6 +698,13 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent) error {
 				continue
 
 			case ui.StreamEventToolEnd:
+				// Skip duplicate tool end events (only dedupe when ToolCallID is not empty)
+				if ev.ToolCallID != "" {
+					if seenToolEnds[ev.ToolCallID] {
+						continue
+					}
+					seenToolEnds[ev.ToolCallID] = true
+				}
 				// Find and update the tool entry by callID
 				for i := range pendingTools {
 					if pendingTools[i].callID == ev.ToolCallID && !pendingTools[i].done {
@@ -717,6 +726,13 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent) error {
 				}
 
 			case ui.StreamEventToolStart:
+				// Skip duplicate tool start events (only dedupe when ToolCallID is not empty)
+				if ev.ToolCallID != "" {
+					if seenToolStarts[ev.ToolCallID] {
+						continue
+					}
+					seenToolStarts[ev.ToolCallID] = true
+				}
 				pendingTools = append(pendingTools, toolEntry{
 					callID: ev.ToolCallID,
 					name:   ev.ToolName,
@@ -1008,14 +1024,13 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case askDoneMsg:
 		m.done = true // Prevent spinner from showing in final View()
 
-		// Mark all text segments as complete
-		m.tracker.CompleteTextSegments(nil)
-
-		// Flush any remaining content to scrollback before quitting
-		result := m.tracker.FlushAllRemaining(m.width, 0, renderMd)
-		if result.ToPrint != "" {
-			return m, tea.Sequence(tea.Println(result.ToPrint), tea.Quit)
-		}
+		// Mark all text segments as complete and render markdown for final view
+		m.tracker.CompleteTextSegments(func(text string) string {
+			return renderMd(text, m.width)
+		})
+		completed := m.tracker.CompletedSegments()
+		m.cachedContent = ui.RenderSegments(completed, m.width, -1, renderMd, false)
+		m.contentDirty = false
 		return m, tea.Quit
 
 	case askCancelledMsg:
@@ -1122,11 +1137,19 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case askToolEndMsg:
-		m.contentDirty = true // Tool state changed
 		m.tracker.HandleToolEnd(msg.CallID, msg.Success)
 
 		// Remove from subagent tracker when spawn_agent completes
 		m.subagentTracker.Remove(msg.CallID)
+
+		// Immediately rebuild cache with the completed tool to prevent stale renders
+		completed := m.tracker.CompletedSegments()
+		m.cachedContent = ui.RenderSegments(completed, m.width, -1, renderMd, false)
+
+		// Flush completed tool to scrollback immediately to prevent duplicate rendering
+		if cmd := m.maybeFlushToScrollback(); cmd != nil {
+			return m, cmd
+		}
 
 		// If no more pending tools, start spinner for idle state
 		if !m.tracker.HasPending() {

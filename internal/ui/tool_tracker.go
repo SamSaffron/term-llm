@@ -48,12 +48,11 @@ func (t *ToolTracker) IsIdle(d time.Duration) bool {
 func (t *ToolTracker) HandleToolStart(callID, toolName, toolInfo string) bool {
 	t.RecordActivity()
 
-	// Check if we already have a pending segment for this call ID
+	// Check if we already have a segment for this call ID (any status)
+	// This prevents duplicate segments if duplicate events arrive
 	for i := len(t.Segments) - 1; i >= 0; i-- {
 		seg := t.Segments[i]
-		if seg.Type == SegmentTool &&
-			seg.ToolStatus == ToolPending &&
-			seg.ToolCallID == callID {
+		if seg.Type == SegmentTool && seg.ToolCallID == callID {
 			return false
 		}
 	}

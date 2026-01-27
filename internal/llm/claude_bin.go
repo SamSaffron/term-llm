@@ -189,25 +189,9 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 				}
 
 			case "assistant":
-				// Only handle tool_use here - text is streamed via stream_event
-				var assistantMsg claudeAssistantMessage
-				if err := json.Unmarshal([]byte(line), &assistantMsg); err != nil {
-					continue
-				}
-
-				for _, content := range assistantMsg.Message.Content {
-					switch content.Type {
-					case "tool_use":
-						// Convert to term-llm tool call format
-						toolCall := ToolCall{
-							ID:        content.ID,
-							Name:      mapClaudeToolName(content.Name),
-							Arguments: content.Input,
-						}
-
-						events <- Event{Type: EventToolCall, Tool: &toolCall}
-					}
-				}
+				// Tool execution is handled via MCP HTTP path (wrappedExecutor).
+				// The "assistant" message is output BEFORE claude calls MCP,
+				// so we can't use it for tracking. Just ignore it - MCP handles everything.
 
 			case "result":
 				var resultMsg claudeResultMessage
@@ -335,7 +319,6 @@ func (p *ClaudeBinProvider) createHTTPMCPConfig(ctx context.Context, tools []Too
 			Type:         EventToolCall,
 			ToolCallID:   callID,
 			ToolName:     name,
-			ToolInfo:     formatMCPToolArgs(args),
 			Tool:         &ToolCall{ID: callID, Name: name, Arguments: args},
 			ToolResponse: responseChan,
 		}
@@ -516,18 +499,6 @@ func (p *ClaudeBinProvider) processToolResultContent(content string) string {
 	imageMarker := content[start : start+end+1]
 	result := strings.Replace(content, imageMarker, "[Image data stripped - Claude can read the file path above]", 1)
 	return strings.TrimSpace(result)
-}
-
-// formatMCPToolArgs creates a preview string for MCP tool arguments.
-func formatMCPToolArgs(args json.RawMessage) string {
-	if len(args) == 0 {
-		return ""
-	}
-	var m map[string]any
-	if err := json.Unmarshal(args, &m); err != nil {
-		return ""
-	}
-	return formatToolArgs(m, 200, 3)
 }
 
 // JSON message types from claude CLI output

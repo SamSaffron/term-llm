@@ -110,6 +110,46 @@ func TestIncrementalRendering(t *testing.T) {
 	}
 }
 
+func TestAskDoneRendersMarkdown(t *testing.T) {
+	model := newAskStreamModel()
+	model.width = 80
+
+	updated, _ := model.Update(askContentMsg("**bold**"))
+	model = updated.(askStreamModel)
+
+	updated, _ = model.Update(askDoneMsg{})
+	model = updated.(askStreamModel)
+
+	view := model.View()
+	if strings.Contains(view, "**") {
+		t.Fatalf("expected markdown to be rendered on completion, got raw view: %q", view)
+	}
+	if !strings.Contains(view, "bold") {
+		t.Fatalf("expected rendered view to contain content, got: %q", view)
+	}
+}
+
+func TestAskDoneDoesNotFlushSegments(t *testing.T) {
+	model := newAskStreamModel()
+	model.width = 80
+
+	updated, _ := model.Update(askToolStartMsg{CallID: "call-1", Name: "shell", Info: "(git status)"})
+	model = updated.(askStreamModel)
+
+	updated, _ = model.Update(askToolEndMsg{CallID: "call-1", Success: true})
+	model = updated.(askStreamModel)
+
+	updated, _ = model.Update(askDoneMsg{})
+	model = updated.(askStreamModel)
+
+	if len(model.tracker.Segments) == 0 {
+		t.Fatal("expected tool segment to be tracked")
+	}
+	if model.tracker.Segments[0].Flushed {
+		t.Fatalf("expected segments to remain unflushed on done to avoid duplicate scrollback output")
+	}
+}
+
 // simulateStreaming splits content into chunks like an LLM would stream it
 func simulateStreaming(content string) []string {
 	var chunks []string
