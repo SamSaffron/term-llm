@@ -849,6 +849,11 @@ type askRetryMsg struct {
 }
 type askPhaseMsg string
 type askImageMsg string // Image path to display
+type askDiffMsg struct {
+	Path string
+	Old  string
+	New  string
+}
 type askFlushBeforeAskUserMsg struct {
 	Done chan<- struct{} // Signal when flush is complete
 }
@@ -1062,6 +1067,15 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.tracker.AddImageSegment(string(msg))
 
 		// Flush to scrollback so image appears
+		if cmd := m.maybeFlushToScrollback(); cmd != nil {
+			return m, cmd
+		}
+		return m, nil
+
+	case askDiffMsg:
+		// Add diff segment for inline display
+		m.tracker.AddDiffSegment(msg.Path, msg.Old, msg.New)
+		// Flush to scrollback so diff appears
 		if cmd := m.maybeFlushToScrollback(); cmd != nil {
 			return m, cmd
 		}
@@ -1394,6 +1408,13 @@ func streamWithGlamour(ctx context.Context, events <-chan ui.StreamEvent, p *tea
 
 			case ui.StreamEventImage:
 				p.Send(askImageMsg(ev.ImagePath))
+
+			case ui.StreamEventDiff:
+				p.Send(askDiffMsg{
+					Path: ev.DiffPath,
+					Old:  ev.DiffOld,
+					New:  ev.DiffNew,
+				})
 
 			case ui.StreamEventDone:
 				p.Send(askDoneMsg{})

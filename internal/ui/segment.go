@@ -32,19 +32,21 @@ const (
 
 // Segment represents a discrete unit in the response stream (text or tool)
 type Segment struct {
-	Type       SegmentType
-	Text       string     // For text segments: markdown content (finalized on completion)
-	Rendered   string     // For text segments: cached rendered markdown
-	ToolCallID string     // For tool segments: unique ID for this invocation
-	ToolName   string     // For tool segments
-	ToolInfo   string     // For tool segments: additional context
-	ToolStatus ToolStatus // For tool segments
-	Complete   bool       // For text segments: whether streaming is complete
-	ImagePath  string     // For image segments: path to image file
-	DiffPath   string     // For diff segments: file path
-	DiffOld    string     // For diff segments: old content
-	DiffNew    string     // For diff segments: new content
-	Flushed    bool       // True if this segment has been printed to scrollback
+	Type         SegmentType
+	Text         string     // For text segments: markdown content (finalized on completion)
+	Rendered     string     // For text segments: cached rendered markdown
+	ToolCallID   string     // For tool segments: unique ID for this invocation
+	ToolName     string     // For tool segments
+	ToolInfo     string     // For tool segments: additional context
+	ToolStatus   ToolStatus // For tool segments
+	Complete     bool       // For text segments: whether streaming is complete
+	ImagePath    string     // For image segments: path to image file
+	DiffPath     string     // For diff segments: file path
+	DiffOld      string     // For diff segments: old content
+	DiffNew      string     // For diff segments: new content
+	DiffRendered string     // For diff segments: cached rendered output
+	DiffWidth    int        // For diff segments: width when rendered (for cache invalidation)
+	Flushed      bool       // True if this segment has been printed to scrollback
 
 	// Streaming text accumulation (O(1) append instead of O(n) string concat)
 	TextBuilder *strings.Builder // Used during streaming; nil when Complete
@@ -71,9 +73,11 @@ type Segment struct {
 
 // SubagentDiff holds diff info from a subagent's edit_file call
 type SubagentDiff struct {
-	Path string
-	Old  string
-	New  string
+	Path     string
+	Old      string
+	New      string
+	Rendered string // Cached rendered output
+	Width    int    // Width when rendered (for cache invalidation)
 }
 
 // GetText returns the current text content of a segment.
@@ -497,9 +501,15 @@ func RenderSegments(segments []*Segment, width int, wavePos int, renderMarkdown 
 			}
 			// Render subagent diffs after preview (still within spawn_agent block)
 			if seg.ToolName == "spawn_agent" && len(seg.SubagentDiffs) > 0 {
-				for _, diff := range seg.SubagentDiffs {
+				for i := range seg.SubagentDiffs {
+					diff := &seg.SubagentDiffs[i]
 					b.WriteString("\n")
-					if rendered := RenderDiffSegment(diff.Path, diff.Old, diff.New, width); rendered != "" {
+					// Use cached render if available and width matches
+					if diff.Rendered != "" && diff.Width == width {
+						b.WriteString(diff.Rendered)
+					} else if rendered := RenderDiffSegment(diff.Path, diff.Old, diff.New, width); rendered != "" {
+						diff.Rendered = rendered
+						diff.Width = width
 						b.WriteString(rendered)
 					}
 				}
@@ -515,8 +525,14 @@ func RenderSegments(segments []*Segment, width int, wavePos int, renderMarkdown 
 				}
 			}
 		case SegmentDiff:
-			// Render diffs inline (always render, not gated like images)
-			if rendered := RenderDiffSegment(seg.DiffPath, seg.DiffOld, seg.DiffNew, width); rendered != "" {
+			// Render diffs inline with caching (diff computation is expensive)
+			if seg.DiffRendered != "" && seg.DiffWidth == width {
+				// Use cached render
+				b.WriteString(seg.DiffRendered)
+			} else if rendered := RenderDiffSegment(seg.DiffPath, seg.DiffOld, seg.DiffNew, width); rendered != "" {
+				// Cache the render
+				seg.DiffRendered = rendered
+				seg.DiffWidth = width
 				b.WriteString(rendered)
 			}
 		}

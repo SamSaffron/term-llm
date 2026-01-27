@@ -127,6 +127,9 @@ type Model struct {
 		lastYOffset         int    // Viewport Y offset when view was cached
 		lastVPWidth         int    // Viewport width when view was cached
 		lastVPHeight        int    // Viewport height when view was cached
+		// completedStream holds rendered streaming content (diffs, tools) that should
+		// persist after streaming ends. Cleared when a new prompt is sent.
+		completedStream string
 	}
 
 	// Cached glamour renderer (avoids expensive recreation during streaming)
@@ -341,8 +344,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.tracker.Segments[i].Rendered = ""
 				m.tracker.Segments[i].SafeRendered = ""
 				m.tracker.Segments[i].SafePos = 0
+				// Also clear diff caches (Issue 2: diff render cache invalidation)
+				m.tracker.Segments[i].DiffRendered = ""
+				m.tracker.Segments[i].DiffWidth = 0
+				// Clear subagent diff caches
+				for j := range m.tracker.Segments[i].SubagentDiffs {
+					m.tracker.Segments[i].SubagentDiffs[j].Rendered = ""
+					m.tracker.Segments[i].SubagentDiffs[j].Width = 0
+				}
 			}
 		}
+
+		// Invalidate completed stream cache since it's width-dependent (Issue 1)
+		m.viewCache.completedStream = ""
 
 		// Resize viewport for alt screen mode
 		// Reserve space for input area (textarea + separators + status)
@@ -601,9 +615,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m.renderMarkdown(text)
 				})
 
-				// In alt screen mode, View() renders everything, so no need to flush
-				// In inline mode, print any remaining content to scrollback
-				if !m.altScreen {
+				if m.altScreen {
+					// In alt screen mode, save the rendered streaming content so it
+					// persists after the tracker is reset. This preserves diffs/tools.
+					completed := m.tracker.CompletedSegments()
+					m.viewCache.completedStream = ui.RenderSegments(completed, m.width, -1, m.renderMd, false)
+				} else {
+					// In inline mode, print remaining content to scrollback
 					result := m.tracker.FlushAllRemaining(m.width, 0, m.renderMd)
 					if result.ToPrint != "" {
 						cmds = append(cmds, tea.Println(result.ToPrint))
@@ -1410,6 +1428,7 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	m.streamStartTime = time.Now()
 	m.currentResponse.Reset()
 	m.webSearchUsed = false
+	m.viewCache.completedStream = "" // Clear previous response's diffs/tools
 	if m.smoothBuffer != nil {
 		m.smoothBuffer.Reset()
 	}
@@ -1651,7 +1670,9 @@ func (m *Model) viewAltScreen() string {
 		streamingContent := m.renderStreamingInline()
 		contentStr = m.viewCache.historyContent + streamingContent
 	} else {
-		contentStr = m.viewCache.historyContent
+		// Include any completed streaming content (diffs, tools) that was saved
+		// when the last stream ended. This persists until a new prompt is sent.
+		contentStr = m.viewCache.historyContent + m.viewCache.completedStream
 	}
 
 	// Only call SetContent if content actually changed (expensive operation)
