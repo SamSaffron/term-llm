@@ -352,8 +352,8 @@ func (m selectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, tea.Quit
 				}
 				return m, nil
-			case "up", "k":
-				// Move up from "something else"
+			case "up":
+				// Move up from "something else" (only arrow key, not 'k' which should type)
 				if m.cursor > 0 {
 					m.cursor--
 					m.textInput.Blur()

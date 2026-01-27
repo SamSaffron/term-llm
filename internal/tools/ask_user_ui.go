@@ -325,8 +325,8 @@ func (m *AskUserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m.advanceToNext()
 				}
 				return m, nil
-			case "up", "k":
-				// Move up from custom option
+			case "up":
+				// Move up from custom option (only arrow key, not 'k' which should type)
 				q := m.questions[m.currentTab]
 				m.cursor = len(q.Options) - 1
 				m.textInput.Blur()
@@ -438,8 +438,8 @@ func (m *AskUserModel) UpdateEmbedded(msg tea.Msg) tea.Cmd {
 					return m.advanceToNextEmbedded()
 				}
 				return nil
-			case "up", "k":
-				// Move up from custom option
+			case "up":
+				// Move up from custom option (only arrow key, not 'k' which should type)
 				q := m.questions[m.currentTab]
 				m.cursor = len(q.Options) - 1
 				m.textInput.Blur()
