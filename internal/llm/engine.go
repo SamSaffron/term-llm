@@ -56,14 +56,33 @@ type Engine struct {
 	callbackMu      sync.RWMutex
 }
 
+// ToolExecutorSetter is an optional interface for providers that need
+// tool execution wired up externally (e.g., claude-bin with HTTP MCP).
+type ToolExecutorSetter interface {
+	SetToolExecutor(func(ctx context.Context, name string, args json.RawMessage) (string, error))
+}
+
 func NewEngine(provider Provider, tools *ToolRegistry) *Engine {
 	if tools == nil {
 		tools = NewToolRegistry()
 	}
-	return &Engine{
+	e := &Engine{
 		provider: provider,
 		tools:    tools,
 	}
+
+	// Wire up tool executor for providers that need it (e.g., claude-bin HTTP MCP)
+	if setter, ok := provider.(ToolExecutorSetter); ok {
+		setter.SetToolExecutor(func(ctx context.Context, name string, args json.RawMessage) (string, error) {
+			tool, ok := e.tools.Get(name)
+			if !ok {
+				return "", fmt.Errorf("tool not found: %s", name)
+			}
+			return tool.Execute(ctx, args)
+		})
+	}
+
+	return e
 }
 
 // RegisterTool adds a tool to the engine's registry.
@@ -350,6 +369,13 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 				textBuilder.WriteString(event.Text)
 			}
 			if event.Type == EventToolCall && event.Tool != nil {
+				// Check if this is a synchronous tool execution request (from claude_bin MCP)
+				if event.ToolResponse != nil {
+					// Handle synchronous execution: emit events to TUI and send result back
+					e.handleSyncToolExecution(ctx, event, events, req.Debug, req.DebugRaw)
+					continue
+				}
+				// Normal async collection for other providers
 				toolCalls = append(toolCalls, *event.Tool)
 				continue
 			}
@@ -559,6 +585,83 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, event
 		events <- Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info, ToolSuccess: true, ToolOutput: output}
 	}
 	return []Message{ToolResultMessage(call.ID, call.Name, output, call.ThoughtSig)}, nil
+}
+
+// handleSyncToolExecution handles synchronous tool execution for providers like claude_bin.
+// It emits EventToolExecStart/End to the outer channel (for TUI) and sends the result
+// back to the provider via the response channel.
+func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, events chan<- Event, debug bool, debugRaw bool) {
+	call := event.Tool
+	callID := event.ToolCallID
+	if callID == "" {
+		callID = call.ID
+	}
+
+	// Get tool preview info
+	info := e.getToolPreview(*call)
+	if event.ToolInfo != "" {
+		info = event.ToolInfo
+	}
+
+	// Emit start event to TUI (non-blocking to avoid deadlock if consumer is slow)
+	if events != nil {
+		select {
+		case events <- Event{
+			Type:       EventToolExecStart,
+			ToolCallID: callID,
+			ToolName:   call.Name,
+			ToolInfo:   info,
+		}:
+		default:
+			// Event dropped due to slow consumer
+		}
+	}
+
+	// Look up and execute the tool
+	tool, ok := e.tools.Get(call.Name)
+	var result string
+	var err error
+
+	if !ok {
+		err = fmt.Errorf("tool not found: %s", call.Name)
+	} else if !e.IsToolAllowed(call.Name) {
+		err = fmt.Errorf("tool '%s' is not in the active skill's allowed-tools list", call.Name)
+	} else {
+		toolCtx := ContextWithCallID(ctx, callID)
+		result, err = tool.Execute(toolCtx, call.Arguments)
+	}
+
+	// Debug logging
+	if err != nil {
+		DebugToolResult(debug, callID, call.Name, fmt.Sprintf("Error: %v", err))
+	} else {
+		DebugToolResult(debug, callID, call.Name, result)
+		DebugRawToolResult(debugRaw, callID, call.Name, result)
+	}
+
+	// Emit end event to TUI (non-blocking to avoid deadlock if consumer is slow)
+	if events != nil {
+		select {
+		case events <- Event{
+			Type:        EventToolExecEnd,
+			ToolCallID:  callID,
+			ToolName:    call.Name,
+			ToolInfo:    info,
+			ToolSuccess: err == nil,
+			ToolOutput:  result,
+		}:
+		default:
+			// Event dropped due to slow consumer
+		}
+	}
+
+	// Send result back to provider (claude_bin MCP handler)
+	// Use select to avoid blocking if context is canceled and receiver has exited
+	select {
+	case event.ToolResponse <- ToolExecutionResponse{Result: result, Err: err}:
+	case <-ctx.Done():
+		// Best-effort: abandon send if context canceled
+	}
 }
 
 func ensureToolCallIDs(calls []ToolCall) []ToolCall {

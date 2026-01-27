@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"math"
 	"math/rand"
@@ -48,6 +49,15 @@ func (r *RetryProvider) Credential() string {
 
 func (r *RetryProvider) Capabilities() Capabilities {
 	return r.inner.Capabilities()
+}
+
+// SetToolExecutor forwards to the inner provider if it implements ToolExecutorSetter.
+// This ensures providers like ClaudeBinProvider can receive their tool executor
+// even when wrapped with retry logic.
+func (r *RetryProvider) SetToolExecutor(executor func(ctx context.Context, name string, args json.RawMessage) (string, error)) {
+	if setter, ok := r.inner.(ToolExecutorSetter); ok {
+		setter.SetToolExecutor(executor)
+	}
 }
 
 func (r *RetryProvider) Stream(ctx context.Context, req Request) (Stream, error) {

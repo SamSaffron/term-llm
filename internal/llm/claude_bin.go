@@ -9,13 +9,21 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 
 	"github.com/samsaffron/term-llm/internal/mcphttp"
 )
 
+// mcpCallCounter generates unique IDs for MCP tool calls
+var mcpCallCounter atomic.Int64
+
 // ClaudeBinProvider implements Provider using the claude CLI binary.
 // This provider shells out to the claude command for inference,
 // using Claude Code's existing authentication.
+//
+// Note: This provider is NOT safe for concurrent use. Each Stream() call
+// modifies shared state (sessionID, messagesSent). Create separate instances
+// for concurrent streams.
 type ClaudeBinProvider struct {
 	model        string
 	sessionID    string // For session continuity with --resume
@@ -32,7 +40,9 @@ func NewClaudeBinProvider(model string) *ClaudeBinProvider {
 
 // SetToolExecutor sets the function used to execute tools.
 // This must be called before Stream() if tools are needed.
-func (p *ClaudeBinProvider) SetToolExecutor(executor mcphttp.ToolExecutor) {
+// Note: The signature uses an anonymous function type (not mcphttp.ToolExecutor)
+// to satisfy the ToolExecutorSetter interface in engine.go.
+func (p *ClaudeBinProvider) SetToolExecutor(executor func(ctx context.Context, name string, args json.RawMessage) (string, error)) {
 	p.toolExecutor = executor
 }
 
@@ -58,8 +68,8 @@ func (p *ClaudeBinProvider) Capabilities() Capabilities {
 
 func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
-		// Build the command arguments
-		args, cleanup := p.buildArgs(ctx, req)
+		// Build the command arguments, passing events channel for tool execution routing
+		args, cleanup := p.buildArgs(ctx, req, events)
 		if cleanup != nil {
 			defer cleanup()
 		}
@@ -84,7 +94,8 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 		// Note: We pass the prompt via stdin instead of command line args
 		// to avoid "argument list too long" errors with large tool results (e.g., base64 images)
 
-		if req.Debug {
+		debug := req.Debug || req.DebugRaw
+		if debug {
 			fmt.Fprintln(os.Stderr, "=== DEBUG: Claude CLI Command ===")
 			fmt.Fprintf(os.Stderr, "claude %s\n", strings.Join(args, " "))
 			fmt.Fprintf(os.Stderr, "Prompt length: %d bytes (via stdin)\n", len(userPrompt))
@@ -104,9 +115,25 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 			return fmt.Errorf("failed to get stdout pipe: %w", err)
 		}
 
+		stderr, err := cmd.StderrPipe()
+		if err != nil {
+			return fmt.Errorf("failed to get stderr pipe: %w", err)
+		}
+
 		if err := cmd.Start(); err != nil {
 			return fmt.Errorf("failed to start claude: %w", err)
 		}
+
+		// Log stderr in background (claude CLI outputs progress/errors here)
+		go func() {
+			stderrScanner := bufio.NewScanner(stderr)
+			for stderrScanner.Scan() {
+				line := stderrScanner.Text()
+				if debug {
+					fmt.Fprintf(os.Stderr, "[claude stderr] %s\n", line)
+				}
+			}
+		}()
 
 		// Write prompt to stdin and close
 		go func() {
@@ -131,7 +158,7 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 				Type string `json:"type"`
 			}
 			if err := json.Unmarshal([]byte(line), &baseMsg); err != nil {
-				if req.Debug {
+				if debug {
 					fmt.Fprintf(os.Stderr, "Failed to parse JSON: %s\n", line[:min(100, len(line))])
 				}
 				continue
@@ -143,7 +170,7 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 				var sysMsg claudeSystemMessage
 				if err := json.Unmarshal([]byte(line), &sysMsg); err == nil {
 					p.sessionID = sysMsg.SessionID
-					if req.Debug {
+					if debug {
 						fmt.Fprintf(os.Stderr, "Session: %s, Model: %s, Tools: %v\n",
 							sysMsg.SessionID, sysMsg.Model, sysMsg.Tools)
 					}
@@ -214,7 +241,8 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 
 // buildArgs constructs the command line arguments for the claude binary.
 // Returns args and a cleanup function to stop HTTP server and remove temp files.
-func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request) ([]string, func()) {
+// The events channel is passed to the MCP server for routing tool execution events.
+func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request, events chan<- Event) ([]string, func()) {
 	args := []string{
 		"--print",
 		"--output-format", "stream-json",
@@ -240,14 +268,23 @@ func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request) ([]strin
 	var cleanup func()
 
 	// If we have tools and a tool executor, start HTTP MCP server
+	debug := req.Debug || req.DebugRaw
 	if len(req.Tools) > 0 {
 		if p.toolExecutor == nil {
 			slog.Warn("tools requested but no tool executor configured", "tool_count", len(req.Tools))
 		} else {
-			mcpConfig, cleanupFn := p.createHTTPMCPConfig(ctx, req.Tools)
+			if debug {
+				fmt.Fprintf(os.Stderr, "[claude-bin] Starting HTTP MCP server for %d tools\n", len(req.Tools))
+			}
+			mcpConfig, cleanupFn := p.createHTTPMCPConfig(ctx, req.Tools, events, debug)
 			if mcpConfig != "" {
+				if debug {
+					fmt.Fprintf(os.Stderr, "[claude-bin] MCP config created: %s\n", mcpConfig)
+				}
 				args = append(args, "--mcp-config", mcpConfig)
 				cleanup = cleanupFn
+			} else if debug {
+				fmt.Fprintf(os.Stderr, "[claude-bin] ERROR: MCP config creation failed\n")
 			}
 		}
 	}
@@ -262,7 +299,8 @@ func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request) ([]strin
 
 // createHTTPMCPConfig starts an HTTP MCP server and creates a config file pointing to it.
 // Returns the config file path and a cleanup function that stops the server.
-func (p *ClaudeBinProvider) createHTTPMCPConfig(ctx context.Context, tools []ToolSpec) (string, func()) {
+// The events channel is used for routing tool execution events back to the engine.
+func (p *ClaudeBinProvider) createHTTPMCPConfig(ctx context.Context, tools []ToolSpec, events chan<- Event, debug bool) (string, func()) {
 	// Convert llm.ToolSpec to mcphttp.ToolSpec
 	mcpTools := make([]mcphttp.ToolSpec, len(tools))
 	for i, t := range tools {
@@ -271,20 +309,73 @@ func (p *ClaudeBinProvider) createHTTPMCPConfig(ctx context.Context, tools []Too
 			Description: t.Description,
 			Schema:      t.Schema,
 		}
+		if debug {
+			fmt.Fprintf(os.Stderr, "[claude-bin] Registering tool: %s\n", t.Name)
+		}
+	}
+
+	// Create a wrapper executor that routes tool calls through the engine
+	// by emitting EventToolCall with a response channel and waiting for the result.
+	// Note: events is captured from the function parameter, making this safe for concurrent streams.
+	wrappedExecutor := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
+		// If no events channel, fall back to direct execution
+		if events == nil {
+			return p.toolExecutor(ctx, name, args)
+		}
+
+		// Generate a unique call ID for this execution
+		callID := fmt.Sprintf("mcp-%s-%d", name, mcpCallCounter.Add(1))
+
+		// Create response channel for synchronous execution
+		responseChan := make(chan ToolExecutionResponse, 1)
+
+		// Emit EventToolCall with response channel - engine will execute and respond
+		// Use select to avoid blocking forever if the engine loop has exited
+		event := Event{
+			Type:         EventToolCall,
+			ToolCallID:   callID,
+			ToolName:     name,
+			ToolInfo:     formatMCPToolArgs(args),
+			Tool:         &ToolCall{ID: callID, Name: name, Arguments: args},
+			ToolResponse: responseChan,
+		}
+		select {
+		case events <- event:
+			// Event sent successfully
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+
+		// Wait for engine to execute and return result
+		select {
+		case response := <-responseChan:
+			return response.Result, response.Err
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
 	}
 
 	// Create and start HTTP server
-	server := mcphttp.NewServer(p.toolExecutor)
+	server := mcphttp.NewServer(wrappedExecutor)
+	server.SetDebug(debug)
 	url, token, err := server.Start(ctx, mcpTools)
 	if err != nil {
+		if debug {
+			fmt.Fprintf(os.Stderr, "[claude-bin] Failed to start MCP server: %v\n", err)
+		}
 		return "", nil
+	}
+	if debug {
+		fmt.Fprintf(os.Stderr, "[claude-bin] MCP server started at %s\n", url)
 	}
 
 	// Create MCP config with HTTP URL
+	// Note: "type": "http" is required for Claude Code to use HTTP transport
 	mcpConfig := map[string]any{
 		"mcpServers": map[string]any{
 			"term-llm": map[string]any{
-				"url": url,
+				"type": "http",
+				"url":  url,
 				"headers": map[string]string{
 					"Authorization": "Bearer " + token,
 				},
@@ -425,6 +516,18 @@ func (p *ClaudeBinProvider) processToolResultContent(content string) string {
 	imageMarker := content[start : start+end+1]
 	result := strings.Replace(content, imageMarker, "[Image data stripped - Claude can read the file path above]", 1)
 	return strings.TrimSpace(result)
+}
+
+// formatMCPToolArgs creates a preview string for MCP tool arguments.
+func formatMCPToolArgs(args json.RawMessage) string {
+	if len(args) == 0 {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal(args, &m); err != nil {
+		return ""
+	}
+	return formatToolArgs(m, 200, 3)
 }
 
 // JSON message types from claude CLI output

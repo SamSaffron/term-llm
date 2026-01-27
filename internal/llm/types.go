@@ -156,6 +156,13 @@ const (
 	EventRetry         EventType = "retry" // Emitted when retrying after rate limit
 )
 
+// ToolExecutionResponse holds the result of a synchronous tool execution.
+// Used by claude_bin provider to receive results from the engine.
+type ToolExecutionResponse struct {
+	Result string
+	Err    error
+}
+
 // Event represents a streamed output update.
 type Event struct {
 	Type        EventType
@@ -172,6 +179,9 @@ type Event struct {
 	RetryAttempt     int
 	RetryMaxAttempts int
 	RetryWaitSecs    float64
+	// ToolResponse is set when a provider needs synchronous tool execution (claude_bin MCP).
+	// The engine will execute the tool and send the result back on this channel.
+	ToolResponse chan<- ToolExecutionResponse
 }
 
 // Usage captures token usage if available.

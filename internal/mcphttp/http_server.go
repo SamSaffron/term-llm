@@ -3,15 +3,19 @@
 package mcphttp
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -33,6 +37,7 @@ type Server struct {
 	listener  net.Listener
 	authToken string
 	executor  ToolExecutor
+	debug     bool
 
 	mu      sync.Mutex
 	running bool
@@ -44,6 +49,11 @@ func NewServer(executor ToolExecutor) *Server {
 	return &Server{
 		executor: executor,
 	}
+}
+
+// SetDebug enables debug logging for HTTP requests.
+func (s *Server) SetDebug(debug bool) {
+	s.debug = debug
 }
 
 // Start starts the HTTP server on a random available port.
@@ -122,12 +132,13 @@ func (s *Server) Start(ctx context.Context, tools []ToolSpec) (url, token string
 	mcpHandler := mcp.NewStreamableHTTPHandler(
 		func(r *http.Request) *mcp.Server { return mcpServer },
 		&mcp.StreamableHTTPOptions{
-			Stateless: true, // No session state needed
+			Stateless: true, // Stateless mode - each request is independent
 		},
 	)
 
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", s.authMiddleware(mcpHandler))
+	// Chain: logging -> auth -> mcp handler
+	mux.Handle("/mcp", s.loggingMiddleware(s.authMiddleware(mcpHandler)))
 
 	s.server = &http.Server{Handler: mux}
 	s.running = true
@@ -172,12 +183,72 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		expectedAuth := "Bearer " + s.authToken
 
 		if authHeader != expectedAuth {
+			if s.debug {
+				fmt.Fprintf(os.Stderr, "[mcp-http] %s Unauthorized request from %s (got auth: %q)\n",
+					time.Now().Format("15:04:05.000"), r.RemoteAddr, authHeader[:min(20, len(authHeader))])
+			}
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// loggingMiddleware logs HTTP requests when debug is enabled.
+func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.debug {
+			// Read and restore body for logging, limiting to 8KB to avoid memory issues
+			const maxDebugBodySize = 8 * 1024
+			var bodyPreview string
+			if r.Body != nil {
+				// Use LimitReader to cap the amount we read for debugging
+				limitedReader := io.LimitReader(r.Body, maxDebugBodySize+1)
+				bodyBytes, err := io.ReadAll(limitedReader)
+				if err == nil {
+					// Restore full body for actual request processing
+					// Note: if body was larger than limit, we've only read part of it
+					r.Body = io.NopCloser(io.MultiReader(
+						bytes.NewReader(bodyBytes),
+						r.Body, // remaining unread bytes
+					))
+					if len(bodyBytes) > maxDebugBodySize {
+						bodyPreview = string(bodyBytes[:500]) + "... (truncated, body > 8KB)"
+					} else if len(bodyBytes) > 500 {
+						bodyPreview = string(bodyBytes[:500]) + "..."
+					} else {
+						bodyPreview = string(bodyBytes)
+					}
+				}
+			}
+			fmt.Fprintf(os.Stderr, "[mcp-http] %s %s %s from %s\n",
+				time.Now().Format("15:04:05.000"), r.Method, r.URL.Path, r.RemoteAddr)
+			if bodyPreview != "" {
+				fmt.Fprintf(os.Stderr, "[mcp-http] Request body: %s\n", bodyPreview)
+			}
+		}
+
+		// Wrap response writer to capture status
+		wrapped := &responseLogger{ResponseWriter: w, status: 200}
+		next.ServeHTTP(wrapped, r)
+
+		if s.debug {
+			fmt.Fprintf(os.Stderr, "[mcp-http] %s Response status: %d\n",
+				time.Now().Format("15:04:05.000"), wrapped.status)
+		}
+	})
+}
+
+// responseLogger wraps http.ResponseWriter to capture the status code.
+type responseLogger struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *responseLogger) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
 }
 
 // Stop gracefully stops the HTTP server.

@@ -5,12 +5,19 @@ import (
 	"io"
 	"regexp"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alecthomas/chroma/v2/styles"
 	"github.com/mattn/go-runewidth"
+)
+
+// highlighterCache caches highlighters by file path to avoid expensive lexer matching
+var (
+	highlighterCache   = make(map[string]*Highlighter)
+	highlighterCacheMu sync.RWMutex
 )
 
 // Highlighter handles syntax highlighting for diff display
@@ -21,9 +28,23 @@ type Highlighter struct {
 
 // NewHighlighter creates a highlighter for the given file path.
 // Returns nil if the language is not recognized.
+// Results are cached since lexers.Match is expensive (iterates all ~500 lexers).
 func NewHighlighter(filePath string) *Highlighter {
+	// Check cache first (fast path with read lock)
+	highlighterCacheMu.RLock()
+	if h, ok := highlighterCache[filePath]; ok {
+		highlighterCacheMu.RUnlock()
+		return h
+	}
+	highlighterCacheMu.RUnlock()
+
+	// Cache miss - do expensive lexer matching
 	lexer := lexers.Match(filePath)
 	if lexer == nil {
+		// Cache nil result too to avoid repeated lookups
+		highlighterCacheMu.Lock()
+		highlighterCache[filePath] = nil
+		highlighterCacheMu.Unlock()
 		return nil
 	}
 	lexer = chroma.Coalesce(lexer)
@@ -34,10 +55,17 @@ func NewHighlighter(filePath string) *Highlighter {
 		style = styles.Fallback
 	}
 
-	return &Highlighter{
+	h := &Highlighter{
 		lexer: lexer,
 		style: style,
 	}
+
+	// Store in cache
+	highlighterCacheMu.Lock()
+	highlighterCache[filePath] = h
+	highlighterCacheMu.Unlock()
+
+	return h
 }
 
 // HighlightLine applies syntax highlighting to a line without a background color.

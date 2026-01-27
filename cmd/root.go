@@ -1,13 +1,18 @@
 package cmd
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"runtime"
 	"runtime/pprof"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/exitcode"
+	pprofserver "github.com/samsaffron/term-llm/internal/pprof"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/samsaffron/term-llm/internal/update"
 	"github.com/spf13/cobra"
@@ -19,6 +24,8 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&showStats, "stats", false, "Show session statistics (time, tokens, tool calls)")
 	rootCmd.PersistentFlags().StringVar(&cpuProfile, "cpuprofile", "", "Write CPU profile to file")
 	rootCmd.PersistentFlags().StringVar(&memProfile, "memprofile", "", "Write memory profile to file")
+	rootCmd.PersistentFlags().StringVar(&pprofFlag, "pprof", "", "Start pprof debug server (optionally specify port)")
+	rootCmd.PersistentFlags().Lookup("pprof").NoOptDefVal = "0"
 }
 
 var rootCmd = &cobra.Command{
@@ -47,6 +54,8 @@ var showStats bool
 var cpuProfile string
 var memProfile string
 var cpuProfileFile *os.File
+var pprofFlag string
+var pprofServer *pprofserver.Server
 
 func startProfiling() error {
 	if cpuProfile != "" {
@@ -59,6 +68,67 @@ func startProfiling() error {
 			f.Close()
 			return err
 		}
+	}
+
+	// Check flag first, then env var for pprof server
+	port, err := resolvePprofPort()
+	if err != nil {
+		return err
+	}
+	if port >= 0 {
+		pprofServer = pprofserver.NewServer()
+		actualPort, err := pprofServer.Start(port)
+		if err != nil {
+			return err
+		}
+		pprofserver.PrintUsage(os.Stderr, actualPort)
+	}
+
+	return nil
+}
+
+// resolvePprofPort returns the port for the pprof server.
+// Returns -1 if pprof should not be started.
+// Returns 0 for random port, or a specific port number.
+// Returns an error for invalid port values.
+func resolvePprofPort() (int, error) {
+	// Check flag first (--pprof or --pprof=PORT)
+	if pprofFlag != "" {
+		port, err := strconv.Atoi(pprofFlag)
+		if err != nil {
+			return 0, fmt.Errorf("invalid --pprof value %q: must be a port number", pprofFlag)
+		}
+		if err := validatePort(port); err != nil {
+			return 0, fmt.Errorf("invalid --pprof port: %w", err)
+		}
+		return port, nil
+	}
+
+	// Check environment variable
+	if envPort := os.Getenv("TERM_LLM_PPROF"); envPort != "" {
+		// Treat "1" or "true" as "enable with random port"
+		if envPort == "1" || strings.EqualFold(envPort, "true") {
+			return 0, nil
+		}
+		// Otherwise parse as explicit port number
+		port, err := strconv.Atoi(envPort)
+		if err != nil {
+			return 0, fmt.Errorf("invalid TERM_LLM_PPROF value %q: must be a port number, '1', or 'true'", envPort)
+		}
+		if err := validatePort(port); err != nil {
+			return 0, fmt.Errorf("invalid TERM_LLM_PPROF port: %w", err)
+		}
+		return port, nil
+	}
+
+	return -1, nil // pprof disabled
+}
+
+// validatePort checks that a port number is valid.
+// Port 0 means "random port", ports 1-65535 are valid explicit ports.
+func validatePort(port int) error {
+	if port < 0 || port > 65535 {
+		return fmt.Errorf("port %d out of range (must be 0-65535)", port)
 	}
 	return nil
 }
@@ -77,6 +147,14 @@ func stopProfiling() error {
 		runtime.GC()
 		if err := pprof.WriteHeapProfile(f); err != nil {
 			return err
+		}
+	}
+	if pprofServer != nil {
+		// Use a timeout context to avoid hanging on shutdown
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := pprofServer.Stop(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: pprof server shutdown error: %v\n", err)
 		}
 	}
 	return nil

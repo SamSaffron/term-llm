@@ -355,6 +355,11 @@ func collectSuggestions(ctx context.Context, engine *llm.Engine, req llm.Request
 		if event.Type == llm.EventToolExecStart {
 			if event.ToolName != "" {
 				stats.ToolStart()
+				// In debug mode, spinner is disabled so output to stderr directly
+				phase := ui.FormatToolPhase(event.ToolName, event.ToolInfo).Active
+				if req.Debug || req.DebugRaw {
+					fmt.Fprintf(os.Stderr, "  > %s\n", phase)
+				}
 			} else {
 				stats.ToolEnd()
 			}
@@ -374,6 +379,18 @@ func collectSuggestions(ctx context.Context, engine *llm.Engine, req llm.Request
 			default:
 			}
 			continue
+		}
+
+		// Handle tool execution end events in debug mode
+		if event.Type == llm.EventToolExecEnd && (req.Debug || req.DebugRaw) {
+			if event.ToolName != "" {
+				phase := ui.FormatToolPhase(event.ToolName, event.ToolInfo)
+				if event.ToolSuccess {
+					fmt.Fprintf(os.Stderr, "  %s %s\n", ui.SuccessCircle(), phase.Completed)
+				} else {
+					fmt.Fprintf(os.Stderr, "  %s %s\n", ui.ErrorCircle(), phase.Completed)
+				}
+			}
 		}
 
 		// Handle retry events (rate limit backoff)
