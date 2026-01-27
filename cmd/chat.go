@@ -349,16 +349,21 @@ func runChat(cmd *cobra.Command, args []string) error {
 		toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (tools.ApprovalResult, error) {
 			// In alt screen mode, use inline approval UI
 			if useAltScreen {
-				doneCh := make(chan tools.ApprovalResult)
+				// Use buffered channel to prevent goroutine leak if TUI exits before responding
+				doneCh := make(chan tools.ApprovalResult, 1)
 				p.Send(chat.ApprovalRequestMsg{
 					Path:    path,
 					IsWrite: isWrite,
 					IsShell: isShell,
 					DoneCh:  doneCh,
 				})
-				// Block until user responds
-				result := <-doneCh
-				return result, nil
+				// Block until user responds or context is cancelled
+				select {
+				case result := <-doneCh:
+					return result, nil
+				case <-ctx.Done():
+					return tools.ApprovalResult{Choice: tools.ApprovalChoiceDeny}, fmt.Errorf("cancelled: %w", ctx.Err())
+				}
 			}
 
 			// Inline mode: use external UI with terminal release
@@ -385,17 +390,22 @@ func runChat(cmd *cobra.Command, args []string) error {
 	if useAltScreen {
 		// In alt screen mode, use inline rendering
 		tools.SetAskUserUIFunc(func(questions []tools.AskUserQuestion) ([]tools.AskUserAnswer, error) {
-			doneCh := make(chan []tools.AskUserAnswer)
+			// Use buffered channel to prevent goroutine leak if TUI exits before responding
+			doneCh := make(chan []tools.AskUserAnswer, 1)
 			p.Send(chat.AskUserRequestMsg{
 				Questions: questions,
 				DoneCh:    doneCh,
 			})
-			// Block until user responds
-			answers := <-doneCh
-			if answers == nil {
-				return nil, fmt.Errorf("cancelled by user")
+			// Block until user responds or context is cancelled
+			select {
+			case answers := <-doneCh:
+				if answers == nil {
+					return nil, fmt.Errorf("cancelled by user")
+				}
+				return answers, nil
+			case <-ctx.Done():
+				return nil, fmt.Errorf("cancelled: %w", ctx.Err())
 			}
-			return answers, nil
 		})
 		defer tools.ClearAskUserUIFunc()
 	} else {
