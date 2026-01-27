@@ -120,8 +120,9 @@ type Model struct {
 	inspectorModel *inspector.Model
 
 	// Alt screen mode (full-screen rendering)
-	altScreen bool
-	viewport  viewport.Model // Scrollable viewport for alt screen mode
+	altScreen      bool
+	viewport       viewport.Model // Scrollable viewport for alt screen mode
+	scrollToBottom bool           // Flag to scroll to bottom after response completes
 
 	// Render cache for alt screen mode (avoids re-rendering unchanged content)
 	viewCache struct {
@@ -635,6 +636,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			m.streaming = false
+
+			// Flag to scroll to bottom after response completes (alt screen mode)
+			if m.altScreen {
+				m.scrollToBottom = true
+			}
 
 			// Clear turn callback
 			m.engine.SetTurnCompletedCallback(nil)
@@ -1542,6 +1548,7 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	m.phase = "Thinking"
 	m.streamStartTime = time.Now()
 	m.currentResponse.Reset()
+	m.err = nil // Clear any previous error
 	m.webSearchUsed = false
 	m.viewCache.completedStream = "" // Clear previous response's diffs/tools
 	if m.smoothBuffer != nil {
@@ -1741,6 +1748,12 @@ func (m *Model) View() string {
 		b.WriteString(m.renderStreamingInline())
 	}
 
+	// Error display (if error occurred and not streaming)
+	if m.err != nil && !m.streaming {
+		b.WriteString(m.renderError())
+		b.WriteString("\n\n")
+	}
+
 	// Completions popup (if visible)
 	if m.completions.IsVisible() {
 		b.WriteString(m.completions.View())
@@ -1795,6 +1808,11 @@ func (m *Model) viewAltScreen() string {
 		// Include any completed streaming content (diffs, tools) that was saved
 		// when the last stream ended. This persists until a new prompt is sent.
 		contentStr = m.viewCache.historyContent + m.viewCache.completedStream
+
+		// Display error if one occurred
+		if m.err != nil {
+			contentStr += "\n" + m.renderError() + "\n"
+		}
 	}
 
 	// Only call SetContent if content actually changed (expensive operation)
@@ -1810,6 +1828,12 @@ func (m *Model) viewAltScreen() string {
 		if m.streaming && wasAtBottom {
 			m.viewport.GotoBottom()
 		}
+	}
+
+	// Scroll to bottom after response completes (regardless of previous scroll position)
+	if m.scrollToBottom {
+		m.viewport.GotoBottom()
+		m.scrollToBottom = false
 	}
 
 	// Cache viewport.View() output - only regenerate if content, scroll position, or size changed
@@ -1958,6 +1982,22 @@ func (m *Model) renderInputInline() string {
 	b.WriteString(m.renderStatusLine())
 
 	return b.String()
+}
+
+// renderError renders the error message when m.err is set
+func (m *Model) renderError() string {
+	if m.err == nil {
+		return ""
+	}
+
+	// User cancellation gets a softer message
+	if errors.Is(m.err, context.Canceled) {
+		return m.styles.Muted.Render("(cancelled)")
+	}
+
+	// API errors: red circle + red error text
+	errMsg := m.err.Error()
+	return ui.ErrorCircle() + " " + m.styles.Error.Render("Error: "+errMsg)
 }
 
 // updateTextareaHeight adjusts textarea height based on content lines including wrapping
@@ -2393,20 +2433,26 @@ func (m *Model) renderHistory() string {
 		b.WriteString("\n\n")
 	}
 
-	promptStyle := lipgloss.NewStyle().Foreground(theme.Primary).Bold(true)
+	promptStyle := lipgloss.NewStyle().
+		Foreground(theme.Primary).
+		Bold(true).
+		Background(theme.UserMsgBg)
+	userMsgStyle := lipgloss.NewStyle().Background(theme.UserMsgBg)
 
 	for _, msg := range visibleMessages {
 		if msg.Role == llm.RoleUser {
-			// User message: ❯ content
-			b.WriteString(promptStyle.Render("❯") + " ")
+			// User message: ❯ content (with background)
+			// Render prompt and content separately to avoid ANSI nesting issues
+			b.WriteString(promptStyle.Render("❯ "))
 
 			// Extract content before file attachments for display
 			displayContent := msg.TextContent
 			if idx := strings.Index(displayContent, "\n\n---\n**Attached files:**"); idx != -1 {
 				displayContent = strings.TrimSpace(displayContent[:idx])
 			}
-			b.WriteString(displayContent)
-			b.WriteString("\n")
+
+			b.WriteString(userMsgStyle.Render(displayContent))
+			b.WriteString("\n\n")
 		} else {
 			// Assistant message: render all parts (text + tool calls)
 			hasContent := false

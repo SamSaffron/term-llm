@@ -29,6 +29,9 @@ type Theme struct {
 	DiffAddBg     lipgloss.Color // background for added lines
 	DiffRemoveBg  lipgloss.Color // background for removed lines
 	DiffContextBg lipgloss.Color // background for context lines
+
+	// Message backgrounds
+	UserMsgBg lipgloss.Color // background for user messages in chat
 }
 
 // DefaultTheme returns the default color theme (gruvbox)
@@ -47,6 +50,7 @@ func DefaultTheme() *Theme {
 		DiffAddBg:     lipgloss.Color("#1d2021"), // gruvbox dark bg with green tint
 		DiffRemoveBg:  lipgloss.Color("#1d2021"), // gruvbox dark bg with red tint
 		DiffContextBg: lipgloss.Color("#1d2021"), // gruvbox dark bg
+		UserMsgBg:     lipgloss.Color("#3c3836"), // gruvbox dark gray (subtle bg)
 	}
 }
 
@@ -60,6 +64,7 @@ type ThemeConfig struct {
 	Muted     string
 	Text      string
 	Spinner   string
+	UserMsgBg string
 }
 
 // ThemeFromConfig creates a theme with config overrides applied
@@ -91,6 +96,9 @@ func ThemeFromConfig(cfg ThemeConfig) *Theme {
 	}
 	if cfg.Spinner != "" {
 		theme.Spinner = lipgloss.Color(cfg.Spinner)
+	}
+	if cfg.UserMsgBg != "" {
+		theme.UserMsgBg = lipgloss.Color(cfg.UserMsgBg)
 	}
 
 	return theme
