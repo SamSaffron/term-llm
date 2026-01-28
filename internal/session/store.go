@@ -12,6 +12,7 @@ type Store interface {
 	// Session CRUD
 	Create(ctx context.Context, s *Session) error
 	Get(ctx context.Context, id string) (*Session, error)
+	GetByPrefix(ctx context.Context, prefix string) (*Session, error)
 	Update(ctx context.Context, s *Session) error
 	Delete(ctx context.Context, id string) error
 

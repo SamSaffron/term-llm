@@ -457,6 +457,57 @@ func (s *SQLiteStore) Get(ctx context.Context, id string) (*Session, error) {
 	return &sess, nil
 }
 
+// GetByPrefix retrieves a session by exact ID or by short ID prefix match.
+// If an exact match is found, it is returned. Otherwise, the short ID is expanded
+// to a SQL LIKE pattern and the most recent matching session is returned.
+func (s *SQLiteStore) GetByPrefix(ctx context.Context, prefix string) (*Session, error) {
+	// First try exact match
+	sess, err := s.Get(ctx, prefix)
+	if err != nil {
+		return nil, err
+	}
+	if sess != nil {
+		return sess, nil
+	}
+
+	// Try prefix match using expanded short ID
+	pattern := ExpandShortID(prefix)
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, name, summary, provider, model, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
+		       user_turns, llm_turns, tool_calls, input_tokens, output_tokens, status, tags
+		FROM sessions WHERE id LIKE ? ORDER BY created_at DESC LIMIT 1`, pattern)
+
+	var prefixSess Session
+	var parentID, tools, mcp, status, tags sql.NullString
+	err = row.Scan(&prefixSess.ID, &prefixSess.Name, &prefixSess.Summary, &prefixSess.Provider, &prefixSess.Model,
+		&prefixSess.CWD, &prefixSess.CreatedAt, &prefixSess.UpdatedAt, &prefixSess.Archived, &parentID,
+		&prefixSess.Search, &tools, &mcp,
+		&prefixSess.UserTurns, &prefixSess.LLMTurns, &prefixSess.ToolCalls, &prefixSess.InputTokens, &prefixSess.OutputTokens,
+		&status, &tags)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scan session: %w", err)
+	}
+	if parentID.Valid {
+		prefixSess.ParentID = parentID.String
+	}
+	if tools.Valid {
+		prefixSess.Tools = tools.String
+	}
+	if mcp.Valid {
+		prefixSess.MCP = mcp.String
+	}
+	if status.Valid {
+		prefixSess.Status = SessionStatus(status.String)
+	}
+	if tags.Valid {
+		prefixSess.Tags = tags.String
+	}
+	return &prefixSess, nil
+}
+
 // Update modifies an existing session.
 func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	sess.UpdatedAt = time.Now()

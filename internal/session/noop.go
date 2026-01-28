@@ -17,6 +17,10 @@ func (s *NoopStore) Get(ctx context.Context, id string) (*Session, error) {
 	return nil, nil
 }
 
+func (s *NoopStore) GetByPrefix(ctx context.Context, prefix string) (*Session, error) {
+	return nil, nil
+}
+
 func (s *NoopStore) Update(ctx context.Context, sess *Session) error {
 	return nil
 }

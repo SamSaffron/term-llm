@@ -288,7 +288,7 @@ func runSessionsShow(cmd *cobra.Command, args []string) error {
 	defer store.Close()
 
 	ctx := context.Background()
-	sess, err := store.Get(ctx, args[0])
+	sess, err := store.GetByPrefix(ctx, args[0])
 	if err != nil {
 		return fmt.Errorf("failed to get session: %w", err)
 	}
@@ -370,11 +370,20 @@ func runSessionsDelete(cmd *cobra.Command, args []string) error {
 	defer store.Close()
 
 	ctx := context.Background()
-	if err := store.Delete(ctx, args[0]); err != nil {
+	// Look up session by prefix first to get full ID
+	sess, err := store.GetByPrefix(ctx, args[0])
+	if err != nil {
+		return fmt.Errorf("failed to get session: %w", err)
+	}
+	if sess == nil {
+		return fmt.Errorf("session '%s' not found", args[0])
+	}
+
+	if err := store.Delete(ctx, sess.ID); err != nil {
 		return fmt.Errorf("failed to delete session: %w", err)
 	}
 
-	fmt.Printf("Deleted session: %s\n", args[0])
+	fmt.Printf("Deleted session: %s\n", session.ShortID(sess.ID))
 	return nil
 }
 
@@ -386,7 +395,7 @@ func runSessionsExport(cmd *cobra.Command, args []string) error {
 	defer store.Close()
 
 	ctx := context.Background()
-	sess, err := store.Get(ctx, args[0])
+	sess, err := store.GetByPrefix(ctx, args[0])
 	if err != nil {
 		return fmt.Errorf("failed to get session: %w", err)
 	}
@@ -509,7 +518,7 @@ func runSessionsName(cmd *cobra.Command, args []string) error {
 	defer store.Close()
 
 	ctx := context.Background()
-	sess, err := store.Get(ctx, args[0])
+	sess, err := store.GetByPrefix(ctx, args[0])
 	if err != nil {
 		return fmt.Errorf("failed to get session: %w", err)
 	}
@@ -534,7 +543,7 @@ func runSessionsTag(cmd *cobra.Command, args []string) error {
 	defer store.Close()
 
 	ctx := context.Background()
-	sess, err := store.Get(ctx, args[0])
+	sess, err := store.GetByPrefix(ctx, args[0])
 	if err != nil {
 		return fmt.Errorf("failed to get session: %w", err)
 	}
@@ -580,7 +589,7 @@ func runSessionsUntag(cmd *cobra.Command, args []string) error {
 	defer store.Close()
 
 	ctx := context.Background()
-	sess, err := store.Get(ctx, args[0])
+	sess, err := store.GetByPrefix(ctx, args[0])
 	if err != nil {
 		return fmt.Errorf("failed to get session: %w", err)
 	}

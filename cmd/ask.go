@@ -221,7 +221,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 				}
 			}
 		} else {
-			sess, _ = store.Get(ctx, resumeID)
+			sess, _ = store.GetByPrefix(ctx, resumeID)
 		}
 		if sess == nil {
 			return fmt.Errorf("no session to resume")

@@ -167,7 +167,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 				return fmt.Errorf("no session to resume")
 			}
 		} else {
-			sess, err = store.Get(context.Background(), resumeID)
+			sess, err = store.GetByPrefix(context.Background(), resumeID)
 			if err != nil {
 				return fmt.Errorf("failed to load session: %w", err)
 			}

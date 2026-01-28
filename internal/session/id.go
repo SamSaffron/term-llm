@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -41,4 +42,19 @@ func ShortID(id string) string {
 	}
 	// Skip first 2 chars (century), take YYMMDD-HHMM
 	return id[2:8] + "-" + id[9:13]
+}
+
+// ExpandShortID converts a short ID to a SQL LIKE pattern for prefix matching.
+// Example: "240115-1430" -> "20240115-1430%"
+func ExpandShortID(shortID string) string {
+	// If already looks like a full ID (starts with 20), use as-is
+	if strings.HasPrefix(shortID, "20") && len(shortID) >= 15 {
+		return shortID
+	}
+	// Short ID format: YYMMDD-HHMM (11 chars)
+	if len(shortID) == 11 && shortID[6] == '-' {
+		return "20" + shortID[:6] + "-" + shortID[7:] + "%"
+	}
+	// Partial match - just append wildcard
+	return shortID + "%"
 }
