@@ -936,6 +936,10 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Handle tool start messages even while approval form is active
 	if toolMsg, ok := msg.(askToolStartMsg); ok && m.approvalForm != nil {
+		// Mark current text segment as complete before starting tool
+		m.tracker.MarkCurrentTextComplete(func(text string) string {
+			return renderMd(text, m.width)
+		})
 		if m.tracker.HandleToolStart(toolMsg.CallID, toolMsg.Name, toolMsg.Info) {
 			// New segment added, but don't start wave yet (approval form is active)
 		}
@@ -1153,6 +1157,13 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case askToolStartMsg:
 		m.retryStatus = ""
 		m.contentDirty = true // Tool state changed
+
+		// Mark current text segment as complete before starting tool
+		// This preserves interleaving order: text -> tool -> text
+		m.tracker.MarkCurrentTextComplete(func(text string) string {
+			return renderMd(text, m.width)
+		})
+
 		if m.tracker.HandleToolStart(msg.CallID, msg.Name, msg.Info) {
 			// New segment added, start wave animation (but not for ask_user which has its own UI)
 			if msg.Name != tools.AskUserToolName {

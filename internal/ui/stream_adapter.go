@@ -97,7 +97,31 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 				a.events <- TextEvent(event.Text)
 			}
 
+		case llm.EventToolCall:
+			// Tool call announced during streaming - preserves interleaving order
+			if event.Tool != nil {
+				toolCallID := event.ToolCallID
+				if toolCallID == "" {
+					toolCallID = event.Tool.ID
+				}
+				// Skip if already seen (prevents double-counting with EventToolExecStart).
+				// If toolCallID is empty, don't dedupe - treat each call as unique.
+				if toolCallID != "" {
+					if _, ok := a.seenToolStarts[toolCallID]; ok {
+						continue
+					}
+					a.seenToolStarts[toolCallID] = struct{}{}
+				}
+				toolInfo := event.ToolInfo
+				if toolInfo == "" {
+					toolInfo = llm.ExtractToolInfo(*event.Tool)
+				}
+				a.stats.ToolStart()
+				a.events <- ToolStartEvent(toolCallID, event.Tool.Name, toolInfo)
+			}
+
 		case llm.EventToolExecStart:
+			// Skip if already seen. If toolCallID is empty, don't dedupe - treat as unique.
 			if event.ToolCallID != "" {
 				if _, ok := a.seenToolStarts[event.ToolCallID]; ok {
 					continue
@@ -108,6 +132,7 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 			a.events <- ToolStartEvent(event.ToolCallID, event.ToolName, event.ToolInfo)
 
 		case llm.EventToolExecEnd:
+			// Skip if already seen. If toolCallID is empty, don't dedupe - treat as unique.
 			if event.ToolCallID != "" {
 				if _, ok := a.seenToolEnds[event.ToolCallID]; ok {
 					continue

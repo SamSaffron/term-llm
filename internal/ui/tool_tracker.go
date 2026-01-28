@@ -140,17 +140,21 @@ func (t *ToolTracker) ActiveSegments() []*Segment {
 	return active
 }
 
-// CompletedSegments returns all non-pending, non-flushed segments (for View() rendering).
-// Returns pointers so mutations (like SafeRendered caching) persist.
+// CompletedSegments returns non-pending, non-flushed segments up to (but not past) the first pending tool.
+// This preserves interleaving order: text before a pending tool is shown, but text after it is held back
+// until the tool completes. Returns pointers so mutations (like SafeRendered caching) persist.
 func (t *ToolTracker) CompletedSegments() []*Segment {
 	var completed []*Segment
 	for i := range t.Segments {
-		if t.Segments[i].Flushed {
+		seg := &t.Segments[i]
+		if seg.Flushed {
 			continue
 		}
-		if !(t.Segments[i].Type == SegmentTool && t.Segments[i].ToolStatus == ToolPending) {
-			completed = append(completed, &t.Segments[i])
+		// Stop at the first pending tool - don't include segments after it
+		if seg.Type == SegmentTool && seg.ToolStatus == ToolPending {
+			break
 		}
+		completed = append(completed, seg)
 	}
 	return completed
 }

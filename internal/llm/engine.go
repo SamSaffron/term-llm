@@ -422,6 +422,25 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 				}
 				// Normal async collection for other providers
 				toolCalls = append(toolCalls, *event.Tool)
+
+				// Forward to TUI so it can track interleaving order.
+				// Prefer event.ToolCallID (some providers set this), fall back to Tool.ID,
+				// and generate a stable ID if both are empty to avoid dedupe collisions.
+				toolCallID := event.ToolCallID
+				if toolCallID == "" && event.Tool != nil {
+					toolCallID = event.Tool.ID
+				}
+				if toolCallID == "" {
+					toolCallID = fmt.Sprintf("stream-toolcall-%d", len(toolCalls))
+				}
+				info := e.getToolPreview(*event.Tool)
+				events <- Event{
+					Type:       EventToolCall,
+					ToolCallID: toolCallID,
+					ToolName:   event.Tool.Name,
+					Tool:       event.Tool,
+					ToolInfo:   info,
+				}
 				continue
 			}
 			if event.Type == EventDone {
@@ -492,11 +511,9 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			}
 		}
 
-		// Forward unregistered tool calls as events
+		// Debug log unregistered tool calls (already forwarded during streaming)
 		for i := range unregistered {
-			call := unregistered[i]
-			DebugToolCall(req.Debug, call)
-			events <- Event{Type: EventToolCall, Tool: &call}
+			DebugToolCall(req.Debug, unregistered[i])
 		}
 
 		// If nothing to execute, we are done

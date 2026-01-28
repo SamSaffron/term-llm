@@ -159,8 +159,9 @@ func TestEngineExternalSearchLoopsUntilNoToolCalls(t *testing.T) {
 	if gotErr != nil {
 		t.Fatalf("unexpected stream error: %v", gotErr)
 	}
-	if toolEvents != 0 {
-		t.Fatalf("unexpected tool call events: %d", toolEvents)
+	// EventToolCall events are now emitted for all tool calls to preserve interleaving order
+	if toolEvents != 2 {
+		t.Fatalf("expected 2 tool call events, got %d", toolEvents)
 	}
 	if text.String() != "final answer" {
 		t.Fatalf("unexpected text: %q", text.String())
@@ -587,5 +588,93 @@ func TestBuildAssistantMessage_ReasoningOnlyCreatesTextPart(t *testing.T) {
 	}
 	if part.ReasoningContent != "Some reasoning content" {
 		t.Errorf("expected reasoning content, got %q", part.ReasoningContent)
+	}
+}
+
+func TestEngineEmitsToolCallAndExecStartForEachTool(t *testing.T) {
+	// This test verifies that the engine emits both EventToolCall (during streaming)
+	// and EventToolExecStart (at execution time) for each tool, with matching IDs.
+	// The UI layer should deduplicate these.
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				return []Event{
+					{Type: EventToolCall, Tool: &ToolCall{ID: "call-A", Name: "count_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventToolCall, Tool: &ToolCall{ID: "call-B", Name: "count_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventDone},
+				}
+			default:
+				return []Event{
+					{Type: EventTextDelta, Text: "done"},
+					{Type: EventDone},
+				}
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	req := Request{
+		Messages: []Message{UserText("test")},
+		Tools:    []ToolSpec{tool.Spec()},
+	}
+
+	stream, err := engine.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	toolCallEvents := make(map[string]int) // ID -> count
+	toolExecStartEvents := make(map[string]int)
+	toolExecEndEvents := make(map[string]int)
+
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+		switch event.Type {
+		case EventToolCall:
+			toolCallEvents[event.ToolCallID]++
+		case EventToolExecStart:
+			toolExecStartEvents[event.ToolCallID]++
+		case EventToolExecEnd:
+			toolExecEndEvents[event.ToolCallID]++
+		}
+	}
+
+	// Should have 2 unique tools (call-A and call-B)
+	if len(toolCallEvents) != 2 {
+		t.Errorf("expected 2 unique EventToolCall IDs, got %d: %v", len(toolCallEvents), toolCallEvents)
+	}
+	if len(toolExecStartEvents) != 2 {
+		t.Errorf("expected 2 unique EventToolExecStart IDs, got %d: %v", len(toolExecStartEvents), toolExecStartEvents)
+	}
+
+	// Each ID should appear exactly once in each event type
+	for id, count := range toolCallEvents {
+		if count != 1 {
+			t.Errorf("EventToolCall ID %q appeared %d times, expected 1", id, count)
+		}
+	}
+	for id, count := range toolExecStartEvents {
+		if count != 1 {
+			t.Errorf("EventToolExecStart ID %q appeared %d times, expected 1", id, count)
+		}
+	}
+
+	// The IDs from EventToolCall should match those from EventToolExecStart
+	for id := range toolCallEvents {
+		if _, ok := toolExecStartEvents[id]; !ok {
+			t.Errorf("EventToolCall ID %q has no matching EventToolExecStart", id)
+		}
 	}
 }

@@ -291,10 +291,19 @@ func TestEngineOrchestration_ExternalSearchMixedCalls(t *testing.T) {
 		t.Errorf("Did not expect error for mixed calls, got: %v", gotErr)
 	}
 
-	// Unregistered tool calls should be passed through as events
-	if len(unregisteredToolCalls) != 1 {
-		t.Errorf("Expected 1 unregistered tool call event, got %d", len(unregisteredToolCalls))
-	} else if unregisteredToolCalls[0].Name != "suggest_something" {
-		t.Errorf("Expected suggest_something tool call, got %s", unregisteredToolCalls[0].Name)
+	// All tool calls are now passed through as events to preserve interleaving order
+	// We expect 2 events: 1 registered (web_search) + 1 unregistered (suggest_something)
+	if len(unregisteredToolCalls) != 2 {
+		t.Errorf("Expected 2 tool call events, got %d", len(unregisteredToolCalls))
+	}
+	// Verify unregistered tool call is present
+	var foundUnregistered bool
+	for _, call := range unregisteredToolCalls {
+		if call.Name == "suggest_something" {
+			foundUnregistered = true
+		}
+	}
+	if !foundUnregistered {
+		t.Errorf("Expected suggest_something tool call to be present")
 	}
 }

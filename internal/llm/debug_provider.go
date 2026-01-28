@@ -222,6 +222,12 @@ func (d *DebugProvider) Stream(ctx context.Context, req Request) (Stream, error)
 			return ctx.Err()
 		}
 
+		// Try DSL sequence first (comma-separated actions)
+		if actions := parseSequenceDSL(prompt, req.Tools); len(actions) > 0 {
+			return d.streamActionSequence(ctx, ch, actions)
+		}
+
+		// Try single command
 		if calls := parseCommand(prompt, req.Tools); len(calls) > 0 {
 			for _, call := range calls {
 				select {
@@ -334,6 +340,63 @@ func (d *DebugProvider) streamCompletionText(ctx context.Context, ch chan<- Even
 	return nil
 }
 
+// streamActionSequence streams a sequence of interleaved text and tool calls.
+func (d *DebugProvider) streamActionSequence(ctx context.Context, ch chan<- Event, actions []debugAction) error {
+	chunkSize := d.preset.ChunkSize
+	delay := d.preset.Delay
+	var totalTextLen, toolCount int
+
+	for _, action := range actions {
+		switch action.Type {
+		case actionText:
+			totalTextLen += len(action.Text)
+			text := action.Text
+			for len(text) > 0 {
+				end := chunkSize
+				if end > len(text) {
+					end = len(text)
+				}
+				chunk := text[:end]
+				text = text[end:]
+
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case ch <- Event{Type: EventTextDelta, Text: chunk}:
+				}
+
+				if delay > 0 && len(text) > 0 {
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-time.After(delay):
+					}
+				}
+			}
+
+		case actionTool:
+			toolCount++
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case ch <- Event{Type: EventToolCall, Tool: action.ToolCall}:
+			}
+		}
+	}
+
+	// Emit usage stats
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case ch <- Event{Type: EventUsage, Use: &Usage{
+		InputTokens:  10,
+		OutputTokens: totalTextLen/4 + toolCount*10,
+	}}:
+	}
+
+	return nil
+}
+
 // GetDebugPresets returns a copy of available presets for testing.
 func GetDebugPresets() map[string]debugPreset {
 	result := make(map[string]debugPreset)
@@ -346,6 +409,82 @@ func GetDebugPresets() map[string]debugPreset {
 // parseDebugVariant extracts the variant from a model string like "fast" or "".
 func parseDebugVariant(model string) string {
 	return strings.TrimSpace(model)
+}
+
+// debugActionType distinguishes text streaming from tool calls in DSL sequences.
+type debugActionType int
+
+const (
+	actionText debugActionType = iota
+	actionTool
+)
+
+// debugAction represents a single action in a DSL sequence.
+type debugAction struct {
+	Type     debugActionType
+	Text     string    // for actionText: the text to stream
+	ToolCall *ToolCall // for actionTool: the tool call to emit
+}
+
+// markdownLengthRegex matches "markdown" or "markdown*N" where N is the length.
+var markdownLengthRegex = regexp.MustCompile(`^markdown(?:\*(\d+))?$`)
+
+// parseSequenceDSL parses a comma-separated DSL prompt into a sequence of actions.
+// Example: "markdown*50,read README.md,glob **/*.go,markdown*200"
+// Returns nil if the prompt doesn't look like a DSL sequence.
+func parseSequenceDSL(prompt string, tools []ToolSpec) []debugAction {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" || !strings.Contains(prompt, ",") {
+		return nil
+	}
+
+	// NOTE: Simple comma split - tool arguments containing commas will be split unexpectedly.
+	// This is a known limitation; escape sequences are not supported.
+	segments := strings.Split(prompt, ",")
+	var actions []debugAction
+
+	for _, seg := range segments {
+		seg = strings.TrimSpace(seg)
+		if seg == "" {
+			continue
+		}
+
+		// Check for markdown segment (with optional length)
+		if match := markdownLengthRegex.FindStringSubmatch(strings.ToLower(seg)); match != nil {
+			length := 50 // default length
+			if match[1] != "" {
+				if n, err := strconv.Atoi(match[1]); err == nil && n > 0 {
+					length = n
+					if length > len(debugMarkdown) {
+						length = len(debugMarkdown)
+					}
+				}
+			}
+			actions = append(actions, debugAction{
+				Type: actionText,
+				Text: debugMarkdown[:length],
+			})
+			continue
+		}
+
+		// Try to parse as a tool command
+		if calls := parseCommand(seg, tools); len(calls) > 0 {
+			for _, call := range calls {
+				actions = append(actions, debugAction{
+					Type:     actionTool,
+					ToolCall: call,
+				})
+			}
+		}
+		// Invalid segments are silently skipped
+	}
+
+	// Only return if we have at least one action
+	if len(actions) == 0 {
+		return nil
+	}
+
+	return actions
 }
 
 // debugCallID generates unique tool call IDs for the debug provider.
