@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     summary TEXT,
     provider TEXT NOT NULL,
     model TEXT NOT NULL,
+    mode TEXT DEFAULT 'chat',
     cwd TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -55,6 +56,7 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_mode ON sessions(mode);
 CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, sequence);
 
 -- Metadata table for current session tracking
@@ -97,7 +99,12 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("create data directory: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", dbPath+"?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)")
+	// Configure SQLite for concurrent access:
+	// - foreign_keys: Enforce referential integrity
+	// - journal_mode(WAL): Write-Ahead Logging for better concurrency
+	// - busy_timeout(5000): Wait up to 5 seconds when database is locked
+	// - synchronous(NORMAL): Balanced durability/performance for WAL mode
+	db, err := sql.Open("sqlite", dbPath+"?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)")
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
@@ -123,7 +130,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 3
+const schemaVersion = 4
 
 // migration represents a schema migration.
 type migration struct {
@@ -266,6 +273,24 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		// Migration 4: Add session mode column
+		// Distinguishes chat, ask, plan, and exec sessions
+		version:     4,
+		description: "add session mode column",
+		up: func(db *sql.DB) error {
+			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN mode TEXT DEFAULT 'chat'")
+			if err != nil && !isDuplicateColumnError(err) {
+				return err
+			}
+			// Add index for mode filtering
+			_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_sessions_mode ON sessions(mode)`)
+			if err != nil {
+				return fmt.Errorf("create mode index: %w", err)
+			}
+			return nil
+		},
+	},
 }
 
 // initSchema initializes the database schema and runs any pending migrations.
@@ -403,16 +428,22 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 	if sess.Status == "" {
 		sess.Status = StatusActive
 	}
+	if sess.Mode == "" {
+		sess.Mode = ModeChat
+	}
 
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO sessions (id, name, summary, provider, model, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
-		                      user_turns, llm_turns, tool_calls, input_tokens, output_tokens, status, tags)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sess.ID, sess.Name, sess.Summary, sess.Provider, sess.Model, sess.CWD,
-		sess.CreatedAt, sess.UpdatedAt, sess.Archived, nullString(sess.ParentID),
-		sess.Search, nullString(sess.Tools), nullString(sess.MCP),
-		sess.UserTurns, sess.LLMTurns, sess.ToolCalls, sess.InputTokens, sess.OutputTokens,
-		string(sess.Status), nullString(sess.Tags))
+	err := retryOnBusy(5, func() error {
+		_, err := s.db.ExecContext(ctx, `
+			INSERT INTO sessions (id, name, summary, provider, model, mode, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
+			                      user_turns, llm_turns, tool_calls, input_tokens, output_tokens, status, tags)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			sess.ID, sess.Name, sess.Summary, sess.Provider, sess.Model, string(sess.Mode), sess.CWD,
+			sess.CreatedAt, sess.UpdatedAt, sess.Archived, nullString(sess.ParentID),
+			sess.Search, nullString(sess.Tools), nullString(sess.MCP),
+			sess.UserTurns, sess.LLMTurns, sess.ToolCalls, sess.InputTokens, sess.OutputTokens,
+			string(sess.Status), nullString(sess.Tags))
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("insert session: %w", err)
 	}
@@ -422,13 +453,13 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 // Get retrieves a session by ID.
 func (s *SQLiteStore) Get(ctx context.Context, id string) (*Session, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, name, summary, provider, model, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
+		SELECT id, name, summary, provider, model, mode, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
 		       user_turns, llm_turns, tool_calls, input_tokens, output_tokens, status, tags
 		FROM sessions WHERE id = ?`, id)
 
 	var sess Session
-	var parentID, tools, mcp, status, tags sql.NullString
-	err := row.Scan(&sess.ID, &sess.Name, &sess.Summary, &sess.Provider, &sess.Model,
+	var mode, parentID, tools, mcp, status, tags sql.NullString
+	err := row.Scan(&sess.ID, &sess.Name, &sess.Summary, &sess.Provider, &sess.Model, &mode,
 		&sess.CWD, &sess.CreatedAt, &sess.UpdatedAt, &sess.Archived, &parentID,
 		&sess.Search, &tools, &mcp,
 		&sess.UserTurns, &sess.LLMTurns, &sess.ToolCalls, &sess.InputTokens, &sess.OutputTokens,
@@ -438,6 +469,9 @@ func (s *SQLiteStore) Get(ctx context.Context, id string) (*Session, error) {
 	}
 	if err != nil {
 		return nil, fmt.Errorf("scan session: %w", err)
+	}
+	if mode.Valid {
+		sess.Mode = SessionMode(mode.String)
 	}
 	if parentID.Valid {
 		sess.ParentID = parentID.String
@@ -473,13 +507,13 @@ func (s *SQLiteStore) GetByPrefix(ctx context.Context, prefix string) (*Session,
 	// Try prefix match using expanded short ID
 	pattern := ExpandShortID(prefix)
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, name, summary, provider, model, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
+		SELECT id, name, summary, provider, model, mode, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
 		       user_turns, llm_turns, tool_calls, input_tokens, output_tokens, status, tags
 		FROM sessions WHERE id LIKE ? ORDER BY created_at DESC LIMIT 1`, pattern)
 
 	var prefixSess Session
-	var parentID, tools, mcp, status, tags sql.NullString
-	err = row.Scan(&prefixSess.ID, &prefixSess.Name, &prefixSess.Summary, &prefixSess.Provider, &prefixSess.Model,
+	var mode, parentID, tools, mcp, status, tags sql.NullString
+	err = row.Scan(&prefixSess.ID, &prefixSess.Name, &prefixSess.Summary, &prefixSess.Provider, &prefixSess.Model, &mode,
 		&prefixSess.CWD, &prefixSess.CreatedAt, &prefixSess.UpdatedAt, &prefixSess.Archived, &parentID,
 		&prefixSess.Search, &tools, &mcp,
 		&prefixSess.UserTurns, &prefixSess.LLMTurns, &prefixSess.ToolCalls, &prefixSess.InputTokens, &prefixSess.OutputTokens,
@@ -489,6 +523,9 @@ func (s *SQLiteStore) GetByPrefix(ctx context.Context, prefix string) (*Session,
 	}
 	if err != nil {
 		return nil, fmt.Errorf("scan session: %w", err)
+	}
+	if mode.Valid {
+		prefixSess.Mode = SessionMode(mode.String)
 	}
 	if parentID.Valid {
 		prefixSess.ParentID = parentID.String
@@ -512,12 +549,12 @@ func (s *SQLiteStore) GetByPrefix(ctx context.Context, prefix string) (*Session,
 func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	sess.UpdatedAt = time.Now()
 	result, err := s.db.ExecContext(ctx, `
-		UPDATE sessions SET name = ?, summary = ?, provider = ?, model = ?, cwd = ?,
+		UPDATE sessions SET name = ?, summary = ?, provider = ?, model = ?, mode = ?, cwd = ?,
 		       updated_at = ?, archived = ?, parent_id = ?, search = ?, tools = ?, mcp = ?,
 		       user_turns = ?, llm_turns = ?, tool_calls = ?, input_tokens = ?, output_tokens = ?,
 		       status = ?, tags = ?
 		WHERE id = ?`,
-		sess.Name, sess.Summary, sess.Provider, sess.Model, sess.CWD,
+		sess.Name, sess.Summary, sess.Provider, sess.Model, string(sess.Mode), sess.CWD,
 		sess.UpdatedAt, sess.Archived, nullString(sess.ParentID),
 		sess.Search, nullString(sess.Tools), nullString(sess.MCP),
 		sess.UserTurns, sess.LLMTurns, sess.ToolCalls, sess.InputTokens, sess.OutputTokens,
@@ -534,34 +571,40 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 
 // UpdateMetrics updates just the metrics fields (used for incremental saves).
 func (s *SQLiteStore) UpdateMetrics(ctx context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens int) error {
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE sessions SET
-		       llm_turns = llm_turns + ?,
-		       tool_calls = tool_calls + ?,
-		       input_tokens = input_tokens + ?,
-		       output_tokens = output_tokens + ?,
-		       updated_at = ?
-		WHERE id = ?`,
-		llmTurns, toolCalls, inputTokens, outputTokens, time.Now(), id)
-	return err
+	return retryOnBusy(5, func() error {
+		_, err := s.db.ExecContext(ctx, `
+			UPDATE sessions SET
+			       llm_turns = llm_turns + ?,
+			       tool_calls = tool_calls + ?,
+			       input_tokens = input_tokens + ?,
+			       output_tokens = output_tokens + ?,
+			       updated_at = ?
+			WHERE id = ?`,
+			llmTurns, toolCalls, inputTokens, outputTokens, time.Now(), id)
+		return err
+	})
 }
 
 // UpdateStatus updates just the session status.
 func (s *SQLiteStore) UpdateStatus(ctx context.Context, id string, status SessionStatus) error {
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE sessions SET status = ?, updated_at = ?
-		WHERE id = ?`,
-		string(status), time.Now(), id)
-	return err
+	return retryOnBusy(5, func() error {
+		_, err := s.db.ExecContext(ctx, `
+			UPDATE sessions SET status = ?, updated_at = ?
+			WHERE id = ?`,
+			string(status), time.Now(), id)
+		return err
+	})
 }
 
 // IncrementUserTurns increments the user turn count.
 func (s *SQLiteStore) IncrementUserTurns(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE sessions SET user_turns = user_turns + 1, updated_at = ?
-		WHERE id = ?`,
-		time.Now(), id)
-	return err
+	return retryOnBusy(5, func() error {
+		_, err := s.db.ExecContext(ctx, `
+			UPDATE sessions SET user_turns = user_turns + 1, updated_at = ?
+			WHERE id = ?`,
+			time.Now(), id)
+		return err
+	})
 }
 
 // Delete removes a session and its messages.
@@ -581,7 +624,7 @@ func (s *SQLiteStore) Delete(ctx context.Context, id string) error {
 // List returns sessions matching the options.
 func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSummary, error) {
 	query := `
-		SELECT s.id, s.name, s.summary, s.provider, s.model, s.created_at, s.updated_at,
+		SELECT s.id, s.name, s.summary, s.provider, s.model, s.mode, s.created_at, s.updated_at,
 		       (SELECT COUNT(*) FROM messages WHERE session_id = s.id) as message_count,
 		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.output_tokens, s.status, s.tags
 		FROM sessions s
@@ -595,6 +638,10 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	if opts.Model != "" {
 		query += " AND s.model = ?"
 		args = append(args, opts.Model)
+	}
+	if opts.Mode != "" {
+		query += " AND s.mode = ?"
+		args = append(args, string(opts.Mode))
 	}
 	if opts.Status != "" {
 		query += " AND s.status = ?"
@@ -629,13 +676,16 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	var results []SessionSummary
 	for rows.Next() {
 		var sum SessionSummary
-		var status, tags sql.NullString
-		err := rows.Scan(&sum.ID, &sum.Name, &sum.Summary, &sum.Provider, &sum.Model,
+		var mode, status, tags sql.NullString
+		err := rows.Scan(&sum.ID, &sum.Name, &sum.Summary, &sum.Provider, &sum.Model, &mode,
 			&sum.CreatedAt, &sum.UpdatedAt, &sum.MessageCount,
 			&sum.UserTurns, &sum.LLMTurns, &sum.ToolCalls, &sum.InputTokens, &sum.OutputTokens,
 			&status, &tags)
 		if err != nil {
 			return nil, fmt.Errorf("scan session summary: %w", err)
+		}
+		if mode.Valid {
+			sum.Mode = SessionMode(mode.String)
 		}
 		if status.Valid {
 			sum.Status = SessionStatus(status.String)
@@ -694,53 +744,59 @@ func (s *SQLiteStore) AddMessage(ctx context.Context, sessionID string, msg *Mes
 		return fmt.Errorf("serialize parts: %w", err)
 	}
 
-	// Use transaction for atomic sequence allocation
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	defer tx.Rollback()
+	// Track whether we need to auto-allocate sequence
+	autoSequence := msg.Sequence < 0
 
-	// Auto-allocate sequence if not specified (Sequence < 0)
-	if msg.Sequence < 0 {
-		var maxSeq sql.NullInt64
-		err = tx.QueryRowContext(ctx,
-			`SELECT MAX(sequence) FROM messages WHERE session_id = ?`,
-			sessionID).Scan(&maxSeq)
+	// Retry the entire transaction on SQLITE_BUSY
+	return retryOnBusy(5, func() error {
+		// Use transaction for atomic sequence allocation
+		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
-			return fmt.Errorf("get max sequence: %w", err)
+			return fmt.Errorf("begin transaction: %w", err)
 		}
-		if maxSeq.Valid {
-			msg.Sequence = int(maxSeq.Int64) + 1
-		} else {
-			msg.Sequence = 0
+		defer tx.Rollback()
+
+		// Auto-allocate sequence if not specified (Sequence < 0)
+		if autoSequence {
+			var maxSeq sql.NullInt64
+			err = tx.QueryRowContext(ctx,
+				`SELECT MAX(sequence) FROM messages WHERE session_id = ?`,
+				sessionID).Scan(&maxSeq)
+			if err != nil {
+				return fmt.Errorf("get max sequence: %w", err)
+			}
+			if maxSeq.Valid {
+				msg.Sequence = int(maxSeq.Int64) + 1
+			} else {
+				msg.Sequence = 0
+			}
 		}
-	}
 
-	result, err := tx.ExecContext(ctx, `
-		INSERT INTO messages (session_id, role, parts, text_content, duration_ms, created_at, sequence)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		sessionID, string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.CreatedAt, msg.Sequence)
-	if err != nil {
-		return fmt.Errorf("insert message: %w", err)
-	}
+		result, err := tx.ExecContext(ctx, `
+			INSERT INTO messages (session_id, role, parts, text_content, duration_ms, created_at, sequence)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			sessionID, string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.CreatedAt, msg.Sequence)
+		if err != nil {
+			return fmt.Errorf("insert message: %w", err)
+		}
 
-	// Get the inserted ID
-	id, _ := result.LastInsertId()
-	msg.ID = id
+		// Get the inserted ID
+		id, _ := result.LastInsertId()
+		msg.ID = id
 
-	// Update session's updated_at
-	_, err = tx.ExecContext(ctx, "UPDATE sessions SET updated_at = ? WHERE id = ?",
-		time.Now(), sessionID)
-	if err != nil {
-		return fmt.Errorf("update session timestamp: %w", err)
-	}
+		// Update session's updated_at
+		_, err = tx.ExecContext(ctx, "UPDATE sessions SET updated_at = ? WHERE id = ?",
+			time.Now(), sessionID)
+		if err != nil {
+			return fmt.Errorf("update session timestamp: %w", err)
+		}
 
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
-	}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit transaction: %w", err)
+		}
 
-	return nil
+		return nil
+	})
 }
 
 // GetMessages retrieves messages for a session.
@@ -824,4 +880,29 @@ func nullString(s string) sql.NullString {
 		return sql.NullString{}
 	}
 	return sql.NullString{String: s, Valid: true}
+}
+
+// isBusyError checks if an error is a SQLite BUSY error
+func isBusyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "SQLITE_BUSY") ||
+		strings.Contains(errStr, "database is locked")
+}
+
+// retryOnBusy retries an operation with exponential backoff on SQLITE_BUSY errors.
+// This provides additional resilience beyond the busy_timeout pragma for high-contention scenarios.
+func retryOnBusy(maxRetries int, op func() error) error {
+	var err error
+	for i := 0; i < maxRetries; i++ {
+		err = op()
+		if err == nil || !isBusyError(err) {
+			return err
+		}
+		// Exponential backoff: 10ms, 20ms, 40ms, 80ms, 160ms
+		time.Sleep(time.Duration(10*(1<<i)) * time.Millisecond)
+	}
+	return err
 }

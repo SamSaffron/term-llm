@@ -18,19 +18,30 @@ const (
 	StatusInterrupted SessionStatus = "interrupted" // Session was cancelled by user
 )
 
+// SessionMode represents the type/context of a session.
+type SessionMode string
+
+const (
+	ModeChat SessionMode = "chat" // Interactive chat TUI
+	ModeAsk  SessionMode = "ask"  // One-shot ask command
+	ModePlan SessionMode = "plan" // Collaborative planning TUI
+	ModeExec SessionMode = "exec" // Command suggestion/execution
+)
+
 // Session represents a chat session stored in the database.
 type Session struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name,omitempty"`
-	Summary    string    `json:"summary,omitempty"` // First user message or auto-generated
-	Provider   string    `json:"provider"`
-	Model      string    `json:"model"`
-	CWD        string    `json:"cwd,omitempty"` // Working directory at session start
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
-	Archived   bool      `json:"archived,omitempty"`
-	ParentID   string    `json:"parent_id,omitempty"`   // For session branching
-	IsSubagent bool      `json:"is_subagent,omitempty"` // True if this is a subagent session
+	ID         string      `json:"id"`
+	Name       string      `json:"name,omitempty"`
+	Summary    string      `json:"summary,omitempty"` // First user message or auto-generated
+	Provider   string      `json:"provider"`
+	Model      string      `json:"model"`
+	Mode       SessionMode `json:"mode,omitempty"` // Session mode (chat, ask, plan, exec)
+	CWD        string      `json:"cwd,omitempty"`  // Working directory at session start
+	CreatedAt  time.Time   `json:"created_at"`
+	UpdatedAt  time.Time   `json:"updated_at"`
+	Archived   bool        `json:"archived,omitempty"`
+	ParentID   string      `json:"parent_id,omitempty"`   // For session branching
+	IsSubagent bool        `json:"is_subagent,omitempty"` // True if this is a subagent session
 
 	// Session settings (restored on resume unless overridden)
 	Search bool   `json:"search,omitempty"` // Web search enabled
@@ -68,6 +79,7 @@ type SessionSummary struct {
 	Summary      string        `json:"summary,omitempty"`
 	Provider     string        `json:"provider"`
 	Model        string        `json:"model"`
+	Mode         SessionMode   `json:"mode,omitempty"`
 	MessageCount int           `json:"message_count"`
 	UserTurns    int           `json:"user_turns,omitempty"`
 	LLMTurns     int           `json:"llm_turns,omitempty"`
@@ -84,6 +96,7 @@ type SessionSummary struct {
 type ListOptions struct {
 	Provider string        // Filter by provider
 	Model    string        // Filter by model
+	Mode     SessionMode   // Filter by mode (chat, ask, plan, exec)
 	Status   SessionStatus // Filter by status
 	Tag      string        // Filter by tag (substring match)
 	Limit    int           // Max results (0 = use default)

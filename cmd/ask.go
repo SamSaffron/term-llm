@@ -345,6 +345,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			ID:        session.NewID(),
 			Provider:  provider.Name(),
 			Model:     modelName,
+			Mode:      session.ModeAsk,
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
 			Search:    settings.Search,
@@ -519,17 +520,26 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			_ = store.Update(ctx, sess)
 		}
 
-		// Set up turn callback for incremental message saving
-		engine.SetTurnCompletedCallback(func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
+		// Set up response callback to save assistant message immediately (before tool execution)
+		// This ensures the message is persisted even if tool execution fails/crashes
+		engine.SetResponseCompletedCallback(func(ctx context.Context, turnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
 			// Calculate duration from stream start
 			durationMs := time.Since(streamStartTime).Milliseconds()
 
-			// Save each message from this turn (sequence auto-allocated)
+			sessionMsg := session.NewMessage(sess.ID, assistantMsg, -1)
+			sessionMsg.DurationMs = durationMs
+			_ = store.AddMessage(ctx, sess.ID, sessionMsg)
+			return nil
+		})
+
+		// Set up turn callback for tool result messages and metrics
+		engine.SetTurnCompletedCallback(func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
+			// Save messages (tool results, or assistant message when no tools were executed)
 			for _, msg := range turnMessages {
 				sessionMsg := session.NewMessage(sess.ID, msg, -1)
-				// Set duration on assistant messages only
+				// Set duration for assistant messages (when responseCallback didn't run)
 				if msg.Role == llm.RoleAssistant {
-					sessionMsg.DurationMs = durationMs
+					sessionMsg.DurationMs = time.Since(streamStartTime).Milliseconds()
 				}
 				_ = store.AddMessage(ctx, sess.ID, sessionMsg)
 			}
@@ -572,7 +582,8 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Clear turn callback and update status
+	// Clear callbacks and update status
+	engine.SetResponseCompletedCallback(nil)
 	engine.SetTurnCompletedCallback(nil)
 
 	streamErr := <-errChan

@@ -38,6 +38,12 @@ type TurnMetrics struct {
 // turnIndex is 0-based, messages contains assistant message(s) and tool result(s).
 type TurnCompletedCallback func(ctx context.Context, turnIndex int, messages []Message, metrics TurnMetrics) error
 
+// ResponseCompletedCallback is called immediately after LLM streaming completes,
+// BEFORE tool execution. This enables incremental persistence of assistant messages
+// so they're saved even if the process crashes during tool execution.
+// The message contains only the assistant's response (no tool results yet).
+type ResponseCompletedCallback func(ctx context.Context, turnIndex int, assistantMsg Message, metrics TurnMetrics) error
+
 // Engine orchestrates provider calls and external tool execution.
 type Engine struct {
 	provider    Provider
@@ -53,7 +59,10 @@ type Engine struct {
 	// onTurnCompleted is called after each turn with messages generated.
 	// Used for incremental session saving. Protected by callbackMu.
 	onTurnCompleted TurnCompletedCallback
-	callbackMu      sync.RWMutex
+	// onResponseCompleted is called immediately after LLM streaming completes,
+	// BEFORE tool execution. Used for incremental persistence of assistant messages.
+	onResponseCompleted ResponseCompletedCallback
+	callbackMu          sync.RWMutex
 }
 
 // ToolExecutorSetter is an optional interface for providers that need
@@ -149,10 +158,27 @@ func (e *Engine) SetTurnCompletedCallback(cb TurnCompletedCallback) {
 	e.callbackMu.Unlock()
 }
 
-// getCallback returns the current callback under read lock.
-func (e *Engine) getCallback() TurnCompletedCallback {
+// SetResponseCompletedCallback sets the callback for response completion (before tool execution).
+// The callback receives the assistant message immediately after streaming completes.
+// Thread-safe: can be called while streaming is in progress.
+func (e *Engine) SetResponseCompletedCallback(cb ResponseCompletedCallback) {
+	e.callbackMu.Lock()
+	e.onResponseCompleted = cb
+	e.callbackMu.Unlock()
+}
+
+// getTurnCallback returns the current turn callback under read lock.
+func (e *Engine) getTurnCallback() TurnCompletedCallback {
 	e.callbackMu.RLock()
 	cb := e.onTurnCompleted
+	e.callbackMu.RUnlock()
+	return cb
+}
+
+// getResponseCallback returns the current response callback under read lock.
+func (e *Engine) getResponseCallback() ResponseCompletedCallback {
+	e.callbackMu.RLock()
+	cb := e.onResponseCompleted
 	e.callbackMu.RUnlock()
 	return cb
 }
@@ -234,7 +260,7 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 
 	// Wrap to call turn callback even for simple streams
 	// Copy callback under lock to avoid race with SetTurnCompletedCallback
-	if cb := e.getCallback(); cb != nil {
+	if cb := e.getTurnCallback(); cb != nil {
 		stream = wrapCallbackStream(ctx, stream, cb)
 	}
 
@@ -321,8 +347,9 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 	originalToolChoice := req.ToolChoice
 	restoredToolChoice := false
 
-	// Copy callback at start - protects against concurrent modification from UI thread
-	callback := e.getCallback()
+	// Copy callbacks at start - protects against concurrent modification from UI thread
+	turnCallback := e.getTurnCallback()
+	responseCallback := e.getResponseCallback()
 
 	for attempt := 0; attempt < maxTurns; attempt++ {
 		// Prepare turn
@@ -460,13 +487,15 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 				restoredToolChoice = true
 				continue
 			}
-			// Call callback with final text-only response (no tools)
-			if callback != nil && textBuilder.Len() > 0 {
+			// Call turnCallback with final text-only response (no tools)
+			// Note: responseCallback is NOT called here because no tool execution follows.
+			// responseCallback is only for persisting assistant messages before tool execution.
+			if turnCallback != nil && textBuilder.Len() > 0 {
 				finalMsg := Message{
 					Role:  RoleAssistant,
 					Parts: []Part{{Type: PartText, Text: textBuilder.String()}},
 				}
-				_ = callback(ctx, attempt, []Message{finalMsg}, turnMetrics)
+				_ = turnCallback(ctx, attempt, []Message{finalMsg}, turnMetrics)
 			}
 			events <- Event{Type: EventDone}
 			return nil
@@ -480,12 +509,14 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			req.Messages = append(req.Messages, assistantMsg)
 			req.Messages = append(req.Messages, syncToolResults...)
 
-			// Call turn completed callback for incremental persistence
-			if callback != nil {
+			// For MCP path, tools already executed synchronously during streaming,
+			// so we call turnCallback with the complete turn (assistant + tool results).
+			// ResponseCallback was effectively the streaming itself.
+			if turnCallback != nil {
 				turnMetrics.ToolCalls = len(syncToolCalls)
 				turnMessages := []Message{assistantMsg}
 				turnMessages = append(turnMessages, syncToolResults...)
-				_ = callback(ctx, attempt, turnMessages, turnMetrics)
+				_ = turnCallback(ctx, attempt, turnMessages, turnMetrics)
 			}
 
 			// If a finishing tool was executed, we're done (agent completed its task)
@@ -518,8 +549,10 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 
 		// If nothing to execute, we are done
 		if len(registered) == 0 {
-			// Call callback with text + unregistered tool calls
-			if callback != nil {
+			// Call turnCallback with text + unregistered tool calls
+			// Note: responseCallback is NOT called here because no tool execution follows.
+			// responseCallback is only for persisting assistant messages before tool execution.
+			if turnCallback != nil {
 				var parts []Part
 				if textBuilder.Len() > 0 {
 					parts = append(parts, Part{Type: PartText, Text: textBuilder.String()})
@@ -530,7 +563,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 				}
 				if len(parts) > 0 {
 					finalMsg := Message{Role: RoleAssistant, Parts: parts}
-					_ = callback(ctx, attempt, []Message{finalMsg}, turnMetrics)
+					_ = turnCallback(ctx, attempt, []Message{finalMsg}, turnMetrics)
 				}
 			}
 			events <- Event{Type: EventDone}
@@ -539,6 +572,16 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 
 		if attempt == maxTurns-1 {
 			return fmt.Errorf("agentic loop exceeded max turns (%d)", maxTurns)
+		}
+
+		// Build assistant message with text + tool calls + reasoning
+		// (built before tool execution so we can save it incrementally)
+		assistantMsg := buildAssistantMessage(textBuilder.String(), registered, reasoningBuilder.String())
+
+		// Call responseCallback BEFORE tool execution to persist assistant message
+		// This ensures the message is saved even if tool execution fails/crashes
+		if responseCallback != nil {
+			_ = responseCallback(ctx, attempt, assistantMsg, turnMetrics)
 		}
 
 		// Execute registered tools
@@ -556,17 +599,13 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			return err
 		}
 
-		// Build assistant message with text + tool calls + reasoning
-		assistantMsg := buildAssistantMessage(textBuilder.String(), registered, reasoningBuilder.String())
 		req.Messages = append(req.Messages, assistantMsg)
 		req.Messages = append(req.Messages, toolResults...)
 
-		// Call turn completed callback for incremental persistence
-		if callback != nil {
+		// Call turn completed callback with tool results for incremental persistence
+		if turnCallback != nil {
 			turnMetrics.ToolCalls = len(registered)
-			turnMessages := []Message{assistantMsg}
-			turnMessages = append(turnMessages, toolResults...)
-			_ = callback(ctx, attempt, turnMessages, turnMetrics)
+			_ = turnCallback(ctx, attempt, toolResults, turnMetrics)
 		}
 	}
 

@@ -198,11 +198,29 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 		return emptyResult, fmt.Errorf("setup tools: %w", err)
 	}
 
-	// Set up turn callback to save messages incrementally (after tools setup)
+	// Set up callbacks to save messages incrementally (after tools setup)
+	// Track when streaming starts for duration calculation
+	streamStartTime := time.Now()
 	if r.store != nil && childSessionID != "" {
+		// Response callback saves assistant message immediately (before tool execution)
+		// This ensures the message is persisted even if tool execution fails/crashes
+		engine.SetResponseCompletedCallback(func(ctx context.Context, turnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
+			sessionMsg := session.NewMessage(childSessionID, assistantMsg, -1)
+			sessionMsg.DurationMs = time.Since(streamStartTime).Milliseconds()
+			if err := r.store.AddMessage(ctx, childSessionID, sessionMsg); err != nil {
+				r.warn("session AddMessage failed: %v", err)
+			}
+			return nil
+		})
+
+		// Turn callback saves tool result messages and updates metrics
 		engine.SetTurnCompletedCallback(func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
 			for _, msg := range turnMessages {
 				sessionMsg := session.NewMessage(childSessionID, msg, -1)
+				// Set duration for assistant messages (when responseCallback didn't run)
+				if msg.Role == llm.RoleAssistant {
+					sessionMsg.DurationMs = time.Since(streamStartTime).Milliseconds()
+				}
 				if err := r.store.AddMessage(ctx, childSessionID, sessionMsg); err != nil {
 					r.warn("session AddMessage failed: %v", err)
 				}

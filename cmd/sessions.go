@@ -9,8 +9,12 @@ import (
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/tui/sessions"
+	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var sessionsCmd = &cobra.Command{
@@ -106,12 +110,30 @@ Example:
 	RunE: runSessionsUntag,
 }
 
+var sessionsBrowseCmd = &cobra.Command{
+	Use:   "browse",
+	Short: "Browse sessions interactively",
+	Long: `Open an interactive TUI for browsing, searching, and inspecting sessions.
+
+Key bindings:
+  j/k or arrows  Navigate up/down
+  enter          Open session inspector
+  /              Search sessions
+  ctrl+f         Toggle FTS (full-text search)
+  s              Cycle sort order
+  f              Cycle status filter
+  d              Delete session (with confirmation)
+  q/esc          Quit`,
+	RunE: runSessionsBrowse,
+}
+
 // Flags
 var (
 	sessionsProvider string
 	sessionsLimit    int
 	sessionsJSON     bool
 	sessionsStatus   string
+	sessionsMode     string
 	sessionsTag      string
 )
 
@@ -120,6 +142,7 @@ func init() {
 	sessionsListCmd.Flags().StringVar(&sessionsProvider, "provider", "", "Filter by provider")
 	sessionsListCmd.Flags().IntVar(&sessionsLimit, "limit", 20, "Maximum number of sessions to list")
 	sessionsListCmd.Flags().StringVar(&sessionsStatus, "status", "", "Filter by status (active, complete, error, interrupted)")
+	sessionsListCmd.Flags().StringVar(&sessionsMode, "mode", "", "Filter by mode (chat, ask, plan, exec)")
 	sessionsListCmd.Flags().StringVar(&sessionsTag, "tag", "", "Filter by tag")
 
 	// Show flags
@@ -135,6 +158,7 @@ func init() {
 	sessionsCmd.AddCommand(sessionsNameCmd)
 	sessionsCmd.AddCommand(sessionsTagCmd)
 	sessionsCmd.AddCommand(sessionsUntagCmd)
+	sessionsCmd.AddCommand(sessionsBrowseCmd)
 
 	rootCmd.AddCommand(sessionsCmd)
 }
@@ -165,6 +189,14 @@ func runSessionsList(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Validate mode if provided
+	if sessionsMode != "" {
+		validModes := []string{"chat", "ask", "plan", "exec"}
+		if !slices.Contains(validModes, sessionsMode) {
+			return fmt.Errorf("invalid mode %q: must be one of %v", sessionsMode, validModes)
+		}
+	}
+
 	store, err := getSessionStore()
 	if err != nil {
 		return err
@@ -174,6 +206,7 @@ func runSessionsList(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 	summaries, err := store.List(ctx, session.ListOptions{
 		Provider: sessionsProvider,
+		Mode:     session.SessionMode(sessionsMode),
 		Status:   session.SessionStatus(sessionsStatus),
 		Tag:      sessionsTag,
 		Limit:    sessionsLimit,
@@ -321,6 +354,11 @@ func runSessionsShow(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("Provider: %s\n", sess.Provider)
 	fmt.Printf("Model: %s\n", sess.Model)
+	mode := string(sess.Mode)
+	if mode == "" {
+		mode = "chat"
+	}
+	fmt.Printf("Mode: %s\n", mode)
 	fmt.Printf("Created: %s\n", sess.CreatedAt.Format(time.RFC3339))
 	fmt.Printf("Updated: %s\n", sess.UpdatedAt.Format(time.RFC3339))
 	if sess.CWD != "" {
@@ -657,4 +695,28 @@ func normalizeTag(tag string) string {
 // containsTag checks if a slice contains a tag (already normalized)
 func containsTag(tags []string, tag string) bool {
 	return slices.Contains(tags, normalizeTag(tag))
+}
+
+func runSessionsBrowse(cmd *cobra.Command, args []string) error {
+	store, err := getSessionStore()
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	// Get terminal size
+	width, height := 80, 24
+	if w, h, err := term.GetSize(int(os.Stdout.Fd())); err == nil {
+		width, height = w, h
+	}
+
+	styles := ui.DefaultStyles()
+	model := sessions.New(store, width, height, styles)
+
+	p := tea.NewProgram(model, tea.WithAltScreen())
+	if _, err := p.Run(); err != nil {
+		return fmt.Errorf("failed to run browser: %w", err)
+	}
+
+	return nil
 }

@@ -245,6 +245,7 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 			ID:        session.NewID(),
 			Provider:  provider.Name(),
 			Model:     modelName,
+			Mode:      session.ModeChat,
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
 			Search:    searchEnabled,
@@ -495,7 +496,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.streaming = false
 				m.err = ev.Err
 
-				// Clear turn callback and update status
+				// Clear callbacks and update status
+				m.engine.SetResponseCompletedCallback(nil)
 				m.engine.SetTurnCompletedCallback(nil)
 				if m.store != nil {
 					// Use interrupted for cancellation, error for other failures
@@ -647,7 +649,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.scrollToBottom = true
 			}
 
-			// Clear turn callback
+			// Clear callbacks
+			m.engine.SetResponseCompletedCallback(nil)
 			m.engine.SetTurnCompletedCallback(nil)
 
 			// Mark all text segments as complete and render
@@ -1181,7 +1184,8 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.streamCancelFunc()
 			m.streaming = false
 
-			// Clear turn callback and update status
+			// Clear callbacks and update status
+			m.engine.SetResponseCompletedCallback(nil)
 			m.engine.SetTurnCompletedCallback(nil)
 			if m.store != nil {
 				_ = m.store.UpdateStatus(context.Background(), m.sess.ID, session.StatusInterrupted)
@@ -1209,7 +1213,8 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.streamCancelFunc()
 			m.streaming = false
 
-			// Clear turn callback and update status
+			// Clear callbacks and update status
+			m.engine.SetResponseCompletedCallback(nil)
 			m.engine.SetTurnCompletedCallback(nil)
 			if m.store != nil {
 				_ = m.store.UpdateStatus(context.Background(), m.sess.ID, session.StatusInterrupted)
@@ -1643,20 +1648,30 @@ func (m *Model) startStream(content string) tea.Cmd {
 			MaxTurns:            m.maxTurns,
 		}
 
-		// Set up turn callback for incremental message saving (sequence auto-allocated)
+		// Set up callbacks for incremental message saving (sequence auto-allocated)
 		// Capture streamStartTime for duration calculation
 		streamStart := m.streamStartTime
 		if m.store != nil && m.sess != nil {
-			m.engine.SetTurnCompletedCallback(func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
+			// Response callback saves assistant message immediately (before tool execution)
+			// This ensures the message is persisted even if tool execution fails/crashes
+			m.engine.SetResponseCompletedCallback(func(ctx context.Context, turnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
 				// Calculate duration from stream start
 				durationMs := time.Since(streamStart).Milliseconds()
 
-				// Save each message from this turn (sequence auto-allocated)
+				sessionMsg := session.NewMessage(m.sess.ID, assistantMsg, -1)
+				sessionMsg.DurationMs = durationMs
+				_ = m.store.AddMessage(ctx, m.sess.ID, sessionMsg)
+				return nil
+			})
+
+			// Turn callback saves tool result messages and updates metrics
+			m.engine.SetTurnCompletedCallback(func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
+				// Save messages (tool results, or assistant message when no tools were executed)
 				for _, msg := range turnMessages {
 					sessionMsg := session.NewMessage(m.sess.ID, msg, -1)
-					// Set duration on assistant messages only
+					// Set duration for assistant messages (when responseCallback didn't run)
 					if msg.Role == llm.RoleAssistant {
-						sessionMsg.DurationMs = durationMs
+						sessionMsg.DurationMs = time.Since(streamStart).Milliseconds()
 					}
 					_ = m.store.AddMessage(ctx, m.sess.ID, sessionMsg)
 				}
