@@ -332,7 +332,7 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 
 func (m *Model) showSystemMessage(content string) (tea.Model, tea.Cmd) {
 	// In inline mode, print directly to scrollback rather than adding to session
-	m.textarea.SetValue("")
+	m.setTextareaValue("")
 
 	// Render the message content with markdown
 	rendered := m.renderMarkdown(content)
@@ -394,7 +394,7 @@ func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
 
 	m.messages = nil
 	m.scrollOffset = 0
-	m.textarea.SetValue("")
+	m.setTextareaValue("")
 
 	return m, tea.Println("Conversation cleared (new session started).")
 }
@@ -408,7 +408,7 @@ func (m *Model) cmdModel(args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
 		// Show model picker dialog
 		m.dialog.ShowModelPicker(m.modelName, GetAvailableProviders(m.config))
-		m.textarea.SetValue("")
+		m.setTextareaValue("")
 		return m, nil
 	}
 
@@ -500,7 +500,7 @@ func (m *Model) toggleSearch() {
 
 func (m *Model) cmdSearch() (tea.Model, tea.Cmd) {
 	m.toggleSearch()
-	m.textarea.SetValue("")
+	m.setTextareaValue("")
 
 	status := "disabled"
 	if m.searchEnabled {
@@ -526,7 +526,7 @@ func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
 	}
 	m.messages = nil
 	m.scrollOffset = 0
-	m.textarea.SetValue("")
+	m.setTextareaValue("")
 
 	// Persist to store
 	if m.store != nil {
@@ -571,7 +571,7 @@ func (m *Model) cmdSave(args []string) (tea.Model, tea.Cmd) {
 	}
 
 	if m.store == nil {
-		m.textarea.SetValue("")
+		m.setTextareaValue("")
 		return m.showSystemMessage("Session storage is disabled. Enable it in config with `sessions.enabled: true`.")
 	}
 
@@ -580,7 +580,7 @@ func (m *Model) cmdSave(args []string) (tea.Model, tea.Cmd) {
 		return m.showSystemMessage(fmt.Sprintf("Failed to save session: %v", err))
 	}
 
-	m.textarea.SetValue("")
+	m.setTextareaValue("")
 	return m.showSystemMessage(fmt.Sprintf("Session saved as '%s'.", name))
 }
 
@@ -613,7 +613,7 @@ func (m *Model) cmdLoad(args []string) (tea.Model, tea.Cmd) {
 			currentID = m.sess.ID
 		}
 		m.dialog.ShowSessionList(items, currentID)
-		m.textarea.SetValue("")
+		m.setTextareaValue("")
 		return m, nil
 	}
 
@@ -631,7 +631,7 @@ func (m *Model) cmdLoad(args []string) (tea.Model, tea.Cmd) {
 	m.sess = sess
 	m.messages = messages
 	m.scrollOffset = 0
-	m.textarea.SetValue("")
+	m.setTextareaValue("")
 	_ = m.store.SetCurrent(ctx, sess.ID)
 
 	name := sess.Name
@@ -670,7 +670,7 @@ func (m *Model) cmdSessions() (tea.Model, tea.Cmd) {
 	}
 	b.WriteString("\nUse `/load <id>` to load a session.")
 
-	m.textarea.SetValue("")
+	m.setTextareaValue("")
 	return m.showSystemMessage(b.String())
 }
 
@@ -730,7 +730,7 @@ func (m *Model) cmdExport(args []string) (tea.Model, tea.Cmd) {
 		return m.showSystemMessage(fmt.Sprintf("Failed to export: %v", err))
 	}
 
-	m.textarea.SetValue("")
+	m.setTextareaValue("")
 	return m.showSystemMessage(fmt.Sprintf("Exported %d messages to `%s`", len(m.messages), outputPath))
 }
 
@@ -745,7 +745,7 @@ func (m *Model) cmdSystem(args []string) (tea.Model, tea.Cmd) {
 	// Set custom system prompt (session-only, doesn't persist to config)
 	prompt := strings.Join(args, " ")
 	m.config.Chat.Instructions = prompt
-	m.textarea.SetValue("")
+	m.setTextareaValue("")
 	return m.showSystemMessage(fmt.Sprintf("System prompt set for this session:\n\n%s", prompt))
 }
 
@@ -771,7 +771,7 @@ func (m *Model) cmdFile(args []string) (tea.Model, tea.Cmd) {
 	if args[0] == "clear" {
 		count := len(m.files)
 		m.clearFiles()
-		m.textarea.SetValue("")
+		m.setTextareaValue("")
 		if count == 0 {
 			return m.showSystemMessage("No files were attached.")
 		}
@@ -820,7 +820,7 @@ func (m *Model) cmdDirs(args []string) (tea.Model, tea.Cmd) {
 		if err := m.approvedDirs.AddDirectory(path); err != nil {
 			return m.showSystemMessage(fmt.Sprintf("Failed to add directory: %v", err))
 		}
-		m.textarea.SetValue("")
+		m.setTextareaValue("")
 		return m.showSystemMessage(fmt.Sprintf("Approved directory: `%s`", path))
 
 	case "remove", "rm", "delete":
@@ -831,7 +831,7 @@ func (m *Model) cmdDirs(args []string) (tea.Model, tea.Cmd) {
 		if err := m.approvedDirs.RemoveDirectory(path); err != nil {
 			return m.showSystemMessage(fmt.Sprintf("Failed to remove directory: %v", err))
 		}
-		m.textarea.SetValue("")
+		m.setTextareaValue("")
 		return m.showSystemMessage(fmt.Sprintf("Removed directory from approved list: `%s`", path))
 
 	default:
@@ -846,7 +846,7 @@ func (m *Model) cmdMcp(args []string) (tea.Model, tea.Cmd) {
 			return m.showMCPQuickStart()
 		}
 		m.dialog.ShowMCPPicker(m.mcpManager)
-		m.textarea.SetValue("")
+		m.setTextareaValue("")
 		return m, nil
 	}
 
@@ -895,7 +895,7 @@ func (m *Model) cmdMcp(args []string) (tea.Model, tea.Cmd) {
 		if err := m.mcpManager.Restart(context.Background(), name); err != nil {
 			return m.showSystemMessage(fmt.Sprintf("Failed to restart %s: %v", name, err))
 		}
-		m.textarea.SetValue("")
+		m.setTextareaValue("")
 		return m.showSystemMessage(fmt.Sprintf("Restarting MCP server: %s", name))
 
 	case "status":
@@ -970,7 +970,7 @@ func (m *Model) mcpStartServer(query string) (tea.Model, tea.Cmd) {
 	if err := m.mcpManager.Enable(context.Background(), name); err != nil {
 		return m.showSystemMessage(fmt.Sprintf("Failed to start %s: %v", name, err))
 	}
-	m.textarea.SetValue("")
+	m.setTextareaValue("")
 	return m.showSystemMessage(fmt.Sprintf("Starting **%s**... tools will be available shortly.", name))
 }
 
@@ -989,7 +989,7 @@ func (m *Model) mcpStopServer(query string) (tea.Model, tea.Cmd) {
 	if err := m.mcpManager.Disable(name); err != nil {
 		return m.showSystemMessage(fmt.Sprintf("Failed to stop %s: %v", name, err))
 	}
-	m.textarea.SetValue("")
+	m.setTextareaValue("")
 	return m.showSystemMessage(fmt.Sprintf("Stopped **%s**", name))
 }
 
@@ -1077,7 +1077,7 @@ func (m *Model) mcpShowStatus() (tea.Model, tea.Cmd) {
 	b.WriteString("- `/mcp add <name>` - Add a new server\n")
 	b.WriteString("- `/mcp list` - Show available servers\n")
 
-	m.textarea.SetValue("")
+	m.setTextareaValue("")
 	return m.showSystemMessage(b.String())
 }
 
@@ -1096,7 +1096,7 @@ func (m *Model) showMCPQuickStart() (tea.Model, tea.Cmd) {
 	b.WriteString("- `/mcp add playwright` - Add a server\n")
 	b.WriteString("- `/mcp list` - See all available servers\n")
 
-	m.textarea.SetValue("")
+	m.setTextareaValue("")
 	return m.showSystemMessage(b.String())
 }
 
@@ -1160,14 +1160,14 @@ func (m *Model) quickAddMCP(query string) (tea.Model, tea.Cmd) {
 		}
 		// Auto-enable the newly added server
 		if err := m.mcpManager.Enable(context.Background(), match.Name); err != nil {
-			m.textarea.SetValue("")
+			m.setTextareaValue("")
 			return m.showSystemMessage(fmt.Sprintf(
 				"Added **%s** but failed to start: %v\n\nUse `/mcp %s` to try again.",
 				match.Name, err, match.Name))
 		}
 	}
 
-	m.textarea.SetValue("")
+	m.setTextareaValue("")
 	return m.showSystemMessage(fmt.Sprintf(
 		"Enabled **%s**\n\n%s\n\nTools will be available shortly.",
 		match.Name, match.Description))
@@ -1203,7 +1203,7 @@ func (m *Model) showBundledServersList() (tea.Model, tea.Cmd) {
 
 	b.WriteString("Use `/mcp add <name>` to add a server.\n")
 
-	m.textarea.SetValue("")
+	m.setTextareaValue("")
 	return m.showSystemMessage(b.String())
 }
 
@@ -1233,12 +1233,12 @@ func (m *Model) cmdSkills() (tea.Model, tea.Cmd) {
 	b.WriteString("Instructions for the AI when this skill is activated...\n")
 	b.WriteString("```\n")
 
-	m.textarea.SetValue("")
+	m.setTextareaValue("")
 	return m.showSystemMessage(b.String())
 }
 
 func (m *Model) cmdInspect() (tea.Model, tea.Cmd) {
-	m.textarea.SetValue("")
+	m.setTextareaValue("")
 
 	if len(m.messages) == 0 {
 		return m.showSystemMessage("No messages to inspect. Send a message first.")

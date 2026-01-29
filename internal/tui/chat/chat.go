@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
+	"github.com/muesli/reflow/wordwrap"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
@@ -337,6 +338,8 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 
 // Init initializes the model
 func (m *Model) Init() tea.Cmd {
+	// Update textarea height for any initial text
+	m.updateTextareaHeight()
 	return tea.Batch(
 		textarea.Blink,
 		m.spinner.Tick,
@@ -1122,8 +1125,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					args = strings.TrimSpace(input[idx+1:])
 				}
 				m.completions.Hide()
-				m.textarea.SetValue("")
-				m.textarea.SetHeight(1)
+				m.setTextareaValue("")
 				if args != "" {
 					return m.ExecuteCommand("/" + selected.Name + " " + args)
 				}
@@ -1134,7 +1136,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Tab completes but doesn't execute (for adding args)
 			selected := m.completions.Selected()
 			if selected != nil {
-				m.textarea.SetValue("/" + selected.Name + " ")
+				m.setTextareaValue("/" + selected.Name + " ")
 				m.completions.Hide()
 			}
 			return m, nil
@@ -1151,18 +1153,17 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Update query on backspace
 			value := m.textarea.Value()
 			if len(value) > 1 {
-				m.textarea.SetValue(value[:len(value)-1])
+				m.setTextareaValue(value[:len(value)-1])
 				m.updateCompletions()
 			} else if len(value) == 1 {
-				m.textarea.SetValue("")
-				m.textarea.SetHeight(1)
+				m.setTextareaValue("")
 				m.completions.Hide()
 			}
 			return m, nil
 		default:
 			// Add character to query
 			if len(msg.String()) == 1 {
-				m.textarea.SetValue(m.textarea.Value() + msg.String())
+				m.setTextareaValue(m.textarea.Value() + msg.String())
 				m.updateCompletions()
 				return m, nil
 			}
@@ -1219,8 +1220,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		// Clear input if not empty
 		if m.textarea.Value() != "" {
-			m.textarea.SetValue("")
-			m.textarea.SetHeight(1)
+			m.setTextareaValue("")
 		}
 		return m, nil
 	}
@@ -1310,7 +1310,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Handle command palette (Ctrl+P)
 	if key.Matches(msg, m.keyMap.Commands) {
-		m.textarea.SetValue("/")
+		m.setTextareaValue("/")
 		m.completions.Show()
 		return m, nil
 	}
@@ -1378,7 +1378,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					}
 				}
 				if match != "" {
-					m.textarea.SetValue("/mcp add " + match)
+					m.setTextareaValue("/mcp add " + match)
 				}
 			}
 			return m, nil
@@ -1389,7 +1389,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			partial := strings.TrimSpace(value[11:]) // after "/mcp start "
 			if partial != "" {
 				if match := m.mcpFindServerMatch(partial); match != "" {
-					m.textarea.SetValue("/mcp start " + match)
+					m.setTextareaValue("/mcp start " + match)
 				}
 			}
 			return m, nil
@@ -1400,7 +1400,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			partial := strings.TrimSpace(value[10:]) // after "/mcp stop "
 			if partial != "" {
 				if match := m.mcpFindServerMatch(partial); match != "" {
-					m.textarea.SetValue("/mcp stop " + match)
+					m.setTextareaValue("/mcp stop " + match)
 				}
 			}
 			return m, nil
@@ -1411,7 +1411,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			partial := strings.TrimSpace(value[13:]) // after "/mcp restart "
 			if partial != "" {
 				if match := m.mcpFindServerMatch(partial); match != "" {
-					m.textarea.SetValue("/mcp restart " + match)
+					m.setTextareaValue("/mcp restart " + match)
 				}
 			}
 			return m, nil
@@ -1427,8 +1427,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Check for backslash continuation
 		if strings.HasSuffix(content, "\\") {
 			// Remove backslash and insert newline
-			m.textarea.SetValue(strings.TrimSuffix(content, "\\") + "\n")
-			m.updateTextareaHeight()
+			m.setTextareaValue(strings.TrimSuffix(content, "\\") + "\n")
 			return m, nil
 		}
 
@@ -1446,7 +1445,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Handle "/" at start of empty input to show completions
 	if msg.String() == "/" && m.textarea.Value() == "" {
-		m.textarea.SetValue("/")
+		m.setTextareaValue("/")
 		m.completions.Show()
 		return m, nil
 	}
@@ -1530,9 +1529,28 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 
 	// Print user message permanently to scrollback (inline mode)
 	theme := m.styles.Theme()
+	promptStyle := lipgloss.NewStyle().Foreground(theme.Primary).Bold(true)
+	prompt := promptStyle.Render("❯") + " "
+	promptWidth := 2 // "❯ " is 2 cells
+
+	// Wrap content to fit terminal width minus prompt
+	wrapWidth := m.width - promptWidth
+	if wrapWidth < 20 {
+		wrapWidth = 20
+	}
+	wrappedContent := wordwrap.String(content, wrapWidth)
+
+	// Add prompt to first line, indent continuation lines
+	lines := strings.Split(wrappedContent, "\n")
 	var userDisplay strings.Builder
-	userDisplay.WriteString(lipgloss.NewStyle().Foreground(theme.Primary).Bold(true).Render("❯") + " ")
-	userDisplay.WriteString(content)
+	for i, line := range lines {
+		if i == 0 {
+			userDisplay.WriteString(prompt)
+		} else {
+			userDisplay.WriteString("\n  ") // 2-space indent for continuation
+		}
+		userDisplay.WriteString(line)
+	}
 	if len(fileNames) > 0 {
 		userDisplay.WriteString("\n")
 		userDisplay.WriteString(lipgloss.NewStyle().Foreground(theme.Muted).Render(
@@ -1541,8 +1559,7 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	// tea.Println adds newline, no need for extra
 
 	// Clear input and files
-	m.textarea.SetValue("")
-	m.textarea.SetHeight(1)
+	m.setTextareaValue("")
 	m.files = nil
 
 	// Start streaming
@@ -2044,6 +2061,12 @@ func (m *Model) updateTextareaHeight() {
 	m.textarea.SetHeight(visualLines)
 }
 
+// setTextareaValue sets the textarea value and updates its height for proper wrapping
+func (m *Model) setTextareaValue(s string) {
+	m.textarea.SetValue(s)
+	m.updateTextareaHeight()
+}
+
 // renderStatusLine renders a tiny status line showing model and options
 func (m *Model) renderStatusLine() string {
 	theme := m.styles.Theme()
@@ -2444,17 +2467,32 @@ func (m *Model) renderHistory() string {
 	for _, msg := range visibleMessages {
 		if msg.Role == llm.RoleUser {
 			// User message: ❯ content (with background)
-			// Render prompt and content separately to avoid ANSI nesting issues
-			b.WriteString(promptStyle.Render("❯ "))
-
 			// Extract content before file attachments for display
 			displayContent := msg.TextContent
 			if idx := strings.Index(displayContent, "\n\n---\n**Attached files:**"); idx != -1 {
 				displayContent = strings.TrimSpace(displayContent[:idx])
 			}
 
-			b.WriteString(userMsgStyle.Render(displayContent))
-			b.WriteString("\n\n")
+			// Wrap content to fit terminal width minus prompt
+			promptWidth := 2 // "❯ " is 2 cells
+			wrapWidth := m.width - promptWidth
+			if wrapWidth < 20 {
+				wrapWidth = 20
+			}
+			wrappedContent := wordwrap.String(displayContent, wrapWidth)
+
+			// Render with prompt on first line, indent continuation lines
+			lines := strings.Split(wrappedContent, "\n")
+			for i, line := range lines {
+				if i == 0 {
+					b.WriteString(promptStyle.Render("❯ "))
+				} else {
+					b.WriteString(userMsgStyle.Render("  ")) // 2-space indent for continuation
+				}
+				b.WriteString(userMsgStyle.Render(line))
+				b.WriteString("\n")
+			}
+			b.WriteString("\n")
 		} else {
 			// Assistant message: render all parts (text + tool calls)
 			hasContent := false
