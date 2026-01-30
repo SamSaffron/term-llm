@@ -184,18 +184,17 @@ func (m *Model) startStream(content string) tea.Cmd {
 				return nil
 			})
 
-			// Turn callback saves tool result messages (not assistant - those are saved in ResponseCompletedCallback)
-			// and updates metrics
+			// Turn callback saves messages and updates metrics
+			// Note: When tools are used, TurnCompletedCallback receives tool results only (assistant saved by ResponseCompletedCallback)
+			// When no tools are used, TurnCompletedCallback receives the assistant message (ResponseCompletedCallback never fires)
 			m.engine.SetTurnCompletedCallback(func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
-				// Save only tool result messages - assistant messages are already saved by ResponseCompletedCallback
 				for _, msg := range turnMessages {
-					if msg.Role == llm.RoleAssistant {
-						continue // Skip - already saved in ResponseCompletedCallback
-					}
 					sessionMsg := session.NewMessage(m.sess.ID, msg, -1)
+					if msg.Role == llm.RoleAssistant {
+						sessionMsg.DurationMs = time.Since(streamStart).Milliseconds()
+					}
 					_ = m.store.AddMessage(ctx, m.sess.ID, sessionMsg)
 				}
-				// Update metrics
 				_ = m.store.UpdateMetrics(ctx, m.sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens)
 				return nil
 			})

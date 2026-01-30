@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"bufio"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 
@@ -271,8 +273,37 @@ func InitSessionStore(cfg *config.Config, errWriter io.Writer) (session.Store, f
 		MaxCount:   cfg.Sessions.MaxCount,
 	})
 	if err != nil {
-		fmt.Fprintf(errWriter, "warning: session store unavailable: %v\n", err)
-		return nil, func() {}
+		// Check if this is a schema error that can be recovered by reset
+		if isSchemaError(err) {
+			dbPath, _ := session.GetDBPath()
+			fmt.Fprintf(errWriter, "Session database has schema errors: %v\n\n", err)
+			fmt.Fprintf(errWriter, "Would you like to reset the sessions database? [y/N]: ")
+
+			if promptForReset() {
+				if resetErr := resetSessionDatabase(); resetErr != nil {
+					fmt.Fprintf(errWriter, "warning: failed to reset database: %v\n", resetErr)
+					return nil, func() {}
+				}
+				fmt.Fprintln(errWriter, "Session database reset. Creating new store...")
+				// Retry store creation
+				store, err = session.NewStore(session.Config{
+					Enabled:    cfg.Sessions.Enabled,
+					MaxAgeDays: cfg.Sessions.MaxAgeDays,
+					MaxCount:   cfg.Sessions.MaxCount,
+				})
+				if err != nil {
+					fmt.Fprintf(errWriter, "warning: session store still unavailable after reset: %v\n", err)
+					return nil, func() {}
+				}
+			} else {
+				fmt.Fprintf(errWriter, "\nTo fix manually, run: term-llm sessions reset\n")
+				fmt.Fprintf(errWriter, "Or delete: %s\n", dbPath)
+				return nil, func() {}
+			}
+		} else {
+			fmt.Fprintf(errWriter, "warning: session store unavailable: %v\n", err)
+			return nil, func() {}
+		}
 	}
 
 	// Wrap store with logging to surface persistence errors
@@ -287,6 +318,74 @@ func InitSessionStore(cfg *config.Config, errWriter io.Writer) (session.Store, f
 	}
 
 	return store, cleanup
+}
+
+// isSchemaError checks if an error indicates a database schema problem
+// that could be fixed by resetting the database.
+func isSchemaError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	schemaPatterns := []string{
+		"no such column",
+		"no such table",
+		"SQL logic error",
+		"database disk image is malformed",
+		"file is not a database",
+		"create base schema",
+		"initialize schema",
+	}
+	for _, pattern := range schemaPatterns {
+		if strings.Contains(errStr, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// promptForReset asks the user if they want to reset the session database.
+// Returns true if user confirms with 'y' or 'yes'.
+func promptForReset() bool {
+	// Try to open /dev/tty directly for interactive input
+	// This works even when stdin is redirected
+	tty, err := os.Open("/dev/tty")
+	if err != nil {
+		// Fall back to stdin
+		tty = os.Stdin
+	} else {
+		defer tty.Close()
+	}
+
+	reader := bufio.NewReader(tty)
+	response, err := reader.ReadString('\n')
+	if err != nil {
+		return false
+	}
+	response = strings.TrimSpace(strings.ToLower(response))
+	return response == "yes" || response == "y"
+}
+
+// resetSessionDatabase deletes the session database files.
+func resetSessionDatabase() error {
+	dbPath, err := session.GetDBPath()
+	if err != nil {
+		return fmt.Errorf("get db path: %w", err)
+	}
+
+	filesToDelete := []string{
+		dbPath,
+		dbPath + "-wal",
+		dbPath + "-shm",
+	}
+
+	for _, f := range filesToDelete {
+		if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("delete %s: %w", f, err)
+		}
+	}
+
+	return nil
 }
 
 // SetupSkills initializes the skills system if enabled.
