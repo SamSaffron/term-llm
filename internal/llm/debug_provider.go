@@ -719,6 +719,30 @@ func parseCommand(prompt string, tools []ToolSpec) []*ToolCall {
 		}
 		return calls
 
+	case "ask":
+		if !toolSet["ask_user"] {
+			return nil
+		}
+		argsJSON, _ := json.Marshal(map[string]interface{}{
+			"questions": []map[string]interface{}{{
+				"header":   "Test",
+				"question": "Debug provider test question?",
+				"options": []map[string]string{
+					{"label": "Option A", "description": "First option"},
+					{"label": "Option B", "description": "Second option"},
+				},
+			}},
+		})
+		calls := make([]*ToolCall, multiplier)
+		for i := range calls {
+			calls[i] = &ToolCall{
+				ID:        nextDebugCallID(),
+				Name:      "ask_user",
+				Arguments: argsJSON,
+			}
+		}
+		return calls
+
 	default:
 		return nil
 	}
