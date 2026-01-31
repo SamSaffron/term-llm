@@ -158,12 +158,9 @@ func (s *StreamingBlock) Render(wavePos int, pausedForUI bool, includeImages boo
 
 	var b strings.Builder
 
-	// Get segments to render
-	// In alt-screen mode, use all segments
-	// In inline mode, use only unflushed segments
-	var completed, active []*ui.Segment
 	if includeImages {
 		// Alt-screen mode: show everything
+		var completed, active []*ui.Segment
 		for i := range s.tracker.Segments {
 			seg := &s.tracker.Segments[i]
 			if seg.Type == ui.SegmentTool && seg.ToolStatus == ui.ToolPending {
@@ -172,25 +169,47 @@ func (s *StreamingBlock) Render(wavePos int, pausedForUI bool, includeImages boo
 				completed = append(completed, seg)
 			}
 		}
+
+		// Render completed segments
+		content := ui.RenderSegments(completed, s.width, -1, s.mdRenderFunc(), true)
+		if content != "" {
+			b.WriteString(content)
+			// Add separator before active tools if needed
+			if len(active) > 0 {
+				b.WriteString(ui.SegmentSeparator(completed[len(completed)-1].Type, ui.SegmentTool))
+			}
+		}
+
+		// Render active tools
+		if len(active) > 0 {
+			activeContent := ui.RenderSegments(active, s.width, wavePos, s.mdRenderFunc(), false)
+			b.WriteString(activeContent)
+		}
 	} else {
 		// Inline mode: only unflushed
-		completed = s.tracker.CompletedSegments()
-		active = s.tracker.ActiveSegments()
-	}
+		content := s.tracker.RenderUnflushed(s.width, s.mdRenderFunc(), false)
+		if content != "" {
+			b.WriteString(content)
+		}
 
-	// Render completed segments
-	content := ui.RenderSegments(completed, s.width, -1, s.mdRenderFunc(), includeImages)
-	if content != "" {
-		b.WriteString(content)
-		b.WriteString("\n")
-	}
+		// If not paused for external UI, render active tools indicator
+		active := s.tracker.ActiveSegments()
+		if !pausedForUI && len(active) > 0 {
+			// Add separator before active tools if we have content OR if something was flushed
+			if b.Len() > 0 {
+				// We have unflushed completed segments, find the last one's type
+				unflushed := s.tracker.CompletedSegments()
+				lastType := unflushed[len(unflushed)-1].Type
+				b.WriteString(ui.SegmentSeparator(lastType, ui.SegmentTool))
+			} else if s.tracker.HasFlushed {
+				// Everything completed was flushed, use flush state for separator
+				b.WriteString(s.tracker.LeadingSeparator(ui.SegmentTool))
+			}
 
-	// If not paused for external UI, render active tools indicator
-	if !pausedForUI && len(active) > 0 {
-		activeContent := ui.RenderSegments(active, s.width, wavePos, s.mdRenderFunc(), false)
-		if activeContent != "" {
-			b.WriteString(activeContent)
-			b.WriteString("\n")
+			activeContent := ui.RenderSegments(active, s.width, wavePos, s.mdRenderFunc(), false)
+			if activeContent != "" {
+				b.WriteString(activeContent)
+			}
 		}
 	}
 

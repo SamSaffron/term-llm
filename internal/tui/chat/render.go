@@ -245,50 +245,49 @@ func (m *Model) maybeFlushToScrollback() tea.Cmd {
 func (m *Model) renderStreamingInline() string {
 	var b strings.Builder
 
-	// Get segments from tracker (excludes flushed segments)
-	var completed, active []*ui.Segment
-	if m.tracker != nil {
-		completed = m.tracker.CompletedSegments()
-		active = m.tracker.ActiveSegments()
-	}
-
 	// Cache rendered completed segments - only rebuild when tracker.Version changes
 	// This avoids expensive re-rendering during wave animation
 	var content string
 	if m.tracker != nil && m.viewCache.cachedTrackerVersion == m.tracker.Version {
 		content = m.viewCache.cachedCompletedContent
-	} else {
+	} else if m.tracker != nil {
 		// Render completed segments (segment-based tracking handles what's already flushed)
 		// In alt screen mode, include images since we never flush to scrollback
-		content = ui.RenderSegments(completed, m.width, -1, m.renderMd, m.altScreen)
-		if m.tracker != nil {
-			m.viewCache.cachedCompletedContent = content
-			m.viewCache.cachedTrackerVersion = m.tracker.Version
-		}
+		content = m.tracker.RenderUnflushed(m.width, m.renderMd, m.altScreen)
+		m.viewCache.cachedCompletedContent = content
+		m.viewCache.cachedTrackerVersion = m.tracker.Version
 	}
 
 	if content != "" {
 		b.WriteString(content)
-		b.WriteString("\n")
 	}
 
 	// Show the indicator with current phase, unless paused for external UI
 	if !m.pausedForExternalUI {
+		hasContent := b.Len() > 0
+		if hasContent {
+			b.WriteString("\n\n")
+		}
+
 		wavePos := 0
+		var active []*ui.Segment
 		if m.tracker != nil {
 			wavePos = m.tracker.WavePos
+			active = m.tracker.ActiveSegments()
 		}
 		indicator := ui.StreamingIndicator{
-			Spinner:        m.spinner.View(),
-			Phase:          m.phase,
-			Elapsed:        time.Since(m.streamStartTime),
-			Tokens:         m.currentTokens,
-			ShowCancel:     true,
-			HideProgress:   true, // progress shown in status line instead
-			Segments:       active,
-			WavePos:        wavePos,
-			Width:          m.width,
-			RenderMarkdown: m.renderMd,
+			Spinner:         m.spinner.View(),
+			Phase:           m.phase,
+			Elapsed:         time.Since(m.streamStartTime),
+			Tokens:          m.currentTokens,
+			ShowCancel:      true,
+			HideProgress:    true, // progress shown in status line instead
+			Segments:        active,
+			WavePos:         wavePos,
+			Width:           m.width,
+			RenderMarkdown:  m.renderMd,
+			HasFlushed:      !hasContent && m.tracker != nil && m.tracker.HasFlushed,
+			LastFlushedType: m.tracker.LastFlushedType,
 		}
 		b.WriteString(indicator.Render(m.styles))
 		b.WriteString("\n")

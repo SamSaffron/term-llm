@@ -159,6 +159,12 @@ func (sr *StreamRenderer) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
+// CommittedMarkdownLen returns the number of raw markdown bytes that have been
+// committed as complete blocks. This excludes any pending/incomplete block content.
+func (sr *StreamRenderer) CommittedMarkdownLen() int {
+	return sr.allMarkdown.Len()
+}
+
 // processLine handles a single complete line of input.
 func (sr *StreamRenderer) processLine(line string) error {
 	// Remove the trailing newline for analysis, but keep track of it

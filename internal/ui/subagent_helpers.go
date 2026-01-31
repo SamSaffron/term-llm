@@ -48,14 +48,14 @@ func HandleSubagentProgress(tracker *ToolTracker, subagentTracker *SubagentTrack
 			for _, imagePath := range parseImageMarkers(event.ToolOutput) {
 				tracker.AddImageSegment(imagePath)
 			}
-											// Diffs go to the spawn_agent segment itself (so they render within the subagent block)
-											if event.ToolName == tools.EditFileToolName || event.ToolName == tools.UnifiedDiffToolName || event.ToolName == tools.WriteFileToolName {
-												for _, d := range ParseDiffMarkers(event.ToolOutput) {
-													addDiffToSpawnAgentSegment(tracker, callID, d.File, d.Old, d.New, d.Line)
-												}
-											}
-									
-							}
+			// Diffs go to the spawn_agent segment itself (so they render within the subagent block)
+			if event.ToolName == tools.EditFileToolName || event.ToolName == tools.UnifiedDiffToolName || event.ToolName == tools.WriteFileToolName {
+				for _, d := range ParseDiffMarkers(event.ToolOutput) {
+					addDiffToSpawnAgentSegment(tracker, callID, d.File, d.Old, d.New, d.Line)
+				}
+			}
+
+		}
 	case tools.SubagentEventPhase:
 		subagentTracker.HandlePhase(callID, event.Phase)
 	case tools.SubagentEventUsage:

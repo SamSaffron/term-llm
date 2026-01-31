@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -13,6 +15,15 @@ type WaveTickMsg struct{}
 // WavePauseMsg is sent when wave pause ends
 type WavePauseMsg struct{}
 
+var flushDebugEnabled = os.Getenv("TERM_LLM_DEBUG_FLUSH") != ""
+
+func debugFlushf(format string, args ...any) {
+	if !flushDebugEnabled {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "[flush] "+format+"\n", args...)
+}
+
 // ToolTracker manages tool segment state and wave animation.
 // Designed to be embedded in larger models (ask, chat) for consistent tool tracking.
 type ToolTracker struct {
@@ -22,6 +33,10 @@ type ToolTracker struct {
 	LastActivity time.Time
 	Version      uint64 // Incremented when content changes (segments added/modified)
 	TextMode     bool   // When true, skip markdown rendering (plain text output)
+
+	// Flush state for consistent spacing
+	LastFlushedType SegmentType
+	HasFlushed      bool
 }
 
 // NewToolTracker creates a new ToolTracker
@@ -201,10 +216,7 @@ func (t *ToolTracker) UnflushedSegments() []*Segment {
 		}
 		// For text segments with partial flushes, create a copy with unflushed portion
 		if seg.Type == SegmentText && seg.FlushedPos > 0 {
-			text := seg.Text
-			if text == "" && seg.TextBuilder != nil {
-				text = seg.TextBuilder.String()
-			}
+			text := seg.GetText()
 			if seg.FlushedPos < len(text) {
 				// Create a partial segment with only unflushed content
 				partial := &Segment{
@@ -302,7 +314,7 @@ func (t *ToolTracker) CompleteTextSegments(renderFunc func(string) string) {
 						t.Segments[i].Rendered = renderFunc(t.Segments[i].Text)
 					}
 				} else {
-					t.Segments[i].Rendered = t.Segments[i].StreamRenderer.Rendered()
+					t.Segments[i].Rendered = t.Segments[i].StreamRenderer.RenderedAll()
 					t.Segments[i].StreamRenderer = nil
 				}
 			} else if t.Segments[i].Text != "" && renderFunc != nil {
@@ -336,7 +348,7 @@ func (t *ToolTracker) MarkCurrentTextComplete(renderFunc func(string) string) {
 						last.Rendered = renderFunc(last.Text)
 					}
 				} else {
-					last.Rendered = last.StreamRenderer.Rendered()
+					last.Rendered = last.StreamRenderer.RenderedAll()
 					last.StreamRenderer = nil
 				}
 			} else if last.Text != "" && renderFunc != nil {
@@ -422,9 +434,11 @@ type FlushStreamingTextResult struct {
 func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func(string, int) string) FlushStreamingTextResult {
 	// Find the current incomplete text segment
 	var seg *Segment
+	segIdx := -1
 	for i := range t.Segments {
 		if t.Segments[i].Type == SegmentText && !t.Segments[i].Complete {
 			seg = &t.Segments[i]
+			segIdx = i
 			break
 		}
 	}
@@ -443,8 +457,11 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 	// Check if we have enough unflushed content to bother flushing
 	unflushedLen := textLen - seg.FlushedPos
 	if unflushedLen < threshold {
+		debugFlushf("stream skip seg=%d reason=below-threshold textLen=%d flushedPos=%d unflushedLen=%d threshold=%d", segIdx, textLen, seg.FlushedPos, unflushedLen, threshold)
 		return FlushStreamingTextResult{}
 	}
+
+	debugFlushf("stream enter seg=%d textLen=%d flushedPos=%d unflushedLen=%d threshold=%d hasRenderer=%v", segIdx, textLen, seg.FlushedPos, unflushedLen, threshold, seg.StreamRenderer != nil)
 
 	// Get the full text
 	var fullText string
@@ -457,35 +474,100 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 		fullText = seg.Text
 	}
 
+	// If we have a streaming renderer, it's our source of truth for rendered output.
+	// We MUST use its output instead of re-rendering raw markdown to avoid duplication
+	// and drift.
+	if seg.StreamRenderer != nil {
+		// Use the committed markdown length from the renderer so raw/flushed state stays aligned.
+		safeBoundary := seg.StreamRenderer.CommittedMarkdownLen()
+		if safeBoundary <= seg.FlushedPos {
+			// No new committed blocks to flush yet
+			debugFlushf("stream skip seg=%d reason=no-committed committed=%d flushedPos=%d", segIdx, safeBoundary, seg.FlushedPos)
+			return FlushStreamingTextResult{}
+		}
+		rendered := seg.StreamRenderer.RenderedUnflushed()
+		if rendered == "" {
+			debugFlushf("stream skip seg=%d reason=empty-rendered committed=%d flushedPos=%d", segIdx, safeBoundary, seg.FlushedPos)
+			return FlushStreamingTextResult{}
+		}
+
+		var b strings.Builder
+		if t.HasFlushed && seg.FlushedPos == 0 {
+			b.WriteString(t.LeadingSeparator(SegmentText))
+		}
+
+		b.WriteString(rendered)
+
+		// Update tracker state
+		seg.FlushedPos = safeBoundary
+		t.HasFlushed = true
+		t.LastFlushedType = SegmentText
+		seg.StreamRenderer.MarkFlushed()
+		seg.FlushedRenderedPos = seg.StreamRenderer.FlushedRenderedPos()
+
+		debugFlushf("stream flush seg=%d committed=%d flushedPos=%d renderedUnflushedLen=%d flushedRenderedPos=%d", segIdx, safeBoundary, seg.FlushedPos, len(rendered), seg.FlushedRenderedPos)
+
+		return FlushStreamingTextResult{
+			ToPrint: b.String(),
+		}
+	}
+
 	// Find a safe boundary to flush up to (don't break markdown)
 	safeBoundary := FindSafeBoundaryIncremental(fullText, seg.FlushedPos)
 	if safeBoundary <= seg.FlushedPos {
 		// No safe boundary found, can't flush yet
+		debugFlushf("stream skip seg=%d reason=no-safe-boundary flushedPos=%d textLen=%d", segIdx, seg.FlushedPos, len(fullText))
 		return FlushStreamingTextResult{}
 	}
 
-	// Render the portion to flush
+	// Fallback for when no streaming renderer is available (should be rare)
 	toFlush := fullText[seg.FlushedPos:safeBoundary]
 	if toFlush == "" {
+		debugFlushf("stream skip seg=%d reason=empty-toFlush safeBoundary=%d flushedPos=%d", segIdx, safeBoundary, seg.FlushedPos)
 		return FlushStreamingTextResult{}
 	}
 
-	rendered := renderMd(toFlush, width)
+	if renderMd == nil {
+		debugFlushf("stream skip seg=%d reason=no-renderer safeBoundary=%d flushedPos=%d", segIdx, safeBoundary, seg.FlushedPos)
+		return FlushStreamingTextResult{}
+	}
+
+	// Render the full committed markdown so inter-block spacing is preserved.
+	renderedAll := renderMd(fullText[:safeBoundary], width)
+	if renderedAll == "" {
+		debugFlushf("stream skip seg=%d reason=empty-rendered-fallback safeBoundary=%d flushedPos=%d", segIdx, safeBoundary, seg.FlushedPos)
+		return FlushStreamingTextResult{}
+	}
+
+	rendered := renderedAll
+	if seg.FlushedRenderedPos > 0 {
+		if seg.FlushedRenderedPos >= len(renderedAll) {
+			debugFlushf("stream skip seg=%d reason=rendered-pos>=len safeBoundary=%d flushedRenderedPos=%d renderedLen=%d", segIdx, safeBoundary, seg.FlushedRenderedPos, len(renderedAll))
+			return FlushStreamingTextResult{}
+		}
+		rendered = renderedAll[seg.FlushedRenderedPos:]
+	}
 	if rendered == "" {
+		debugFlushf("stream skip seg=%d reason=empty-rendered-slice safeBoundary=%d flushedPos=%d", segIdx, safeBoundary, seg.FlushedPos)
 		return FlushStreamingTextResult{}
 	}
 
-	// Update flushed position
-	seg.FlushedPos = safeBoundary
-
-	// Also mark the StreamRenderer's current output as flushed so that
-	// RenderSegments (which uses RenderedUnflushed) won't duplicate content
-	if seg.StreamRenderer != nil {
-		seg.StreamRenderer.MarkFlushed()
+	var b strings.Builder
+	// Only add leading separator if this is the very FIRST flush for this segment.
+	if t.HasFlushed && seg.FlushedPos == 0 {
+		b.WriteString(t.LeadingSeparator(SegmentText))
 	}
+	b.WriteString(rendered)
+
+	// Update flushed position/state
+	seg.FlushedPos = safeBoundary
+	seg.FlushedRenderedPos = len(renderedAll)
+	t.HasFlushed = true
+	t.LastFlushedType = SegmentText
+	debugFlushf("stream flush seg=%d safeBoundary=%d flushedPos=%d toFlushLen=%d renderedLen=%d", segIdx, safeBoundary, seg.FlushedPos, len(toFlush), len(rendered))
 
 	return FlushStreamingTextResult{
-		ToPrint: rendered,
+		ToPrint: b.String(),
 	}
 }
 
@@ -536,9 +618,10 @@ func (t *ToolTracker) FlushToScrollback(
 		}
 	}
 
-	// Keep at least 1 segment unflushed for View() (or maxViewLines worth)
+	// Keep at least some segments unflushed for View()
 	// But always flush images and diffs immediately since they need to go to scrollback
-	minKeep := 1
+	minKeep := maxViewLines
+	debugFlushf("scrollback enter unflushedCount=%d minKeep=%d hasFlushed=%v lastFlushed=%d", unflushedCount, minKeep, t.HasFlushed, t.LastFlushedType)
 	if unflushedCount <= minKeep {
 		// Check if there's an image or diff that needs flushing
 		hasUnflushedSpecial := false
@@ -550,6 +633,7 @@ func (t *ToolTracker) FlushToScrollback(
 			}
 		}
 		if !hasUnflushedSpecial && contentBuilder.Len() == 0 {
+			debugFlushf("scrollback skip reason=min-keep unflushedCount=%d minKeep=%d", unflushedCount, minKeep)
 			return FlushToScrollbackResult{NewPrintedLines: 0}
 		}
 	}
@@ -570,12 +654,41 @@ func (t *ToolTracker) FlushToScrollback(
 			seg.Flushed = true
 		}
 	}
+	if len(toFlush) == 0 {
+		debugFlushf("scrollback skip reason=no-segments-to-flush")
+	} else {
+		debugFlushf("scrollback flushing count=%d hasFlushed=%v lastFlushed=%d", len(toFlush), t.HasFlushed, t.LastFlushedType)
+	}
 
 	// Render complete segments to flush
 	if len(toFlush) > 0 {
 		content := RenderSegments(toFlush, width, -1, renderMd, true)
+		if t.HasFlushed {
+			prefix := t.LeadingSeparator(toFlush[0].Type)
+			if prefix != "" {
+				content = prefix + content
+			}
+		}
 		if content != "" {
 			contentBuilder.WriteString(content)
+			t.HasFlushed = true
+			t.LastFlushedType = toFlush[len(toFlush)-1].Type
+			debugFlushf("scrollback flushed lastType=%d contentLen=%d", t.LastFlushedType, len(content))
+			// Ensure streaming renderer matches flush state if this was a text segment
+			for _, seg := range toFlush {
+				if seg.StreamRenderer != nil {
+					seg.StreamRenderer.MarkFlushed()
+					seg.FlushedRenderedPos = seg.StreamRenderer.FlushedRenderedPos()
+				} else if seg.Type == SegmentText && seg.Complete {
+					// For completed text segments, mark the whole thing as flushed rendered
+					if seg.Rendered != "" {
+						seg.FlushedRenderedPos = len(seg.Rendered)
+					} else {
+						// This case shouldn't really happen if Rendered was set correctly
+						// but as a fallback we could try to render it here if we had the width
+					}
+				}
+			}
 		}
 	}
 
@@ -596,29 +709,51 @@ func (t *ToolTracker) FlushAllRemaining(
 	printedLines int,
 	renderMd func(string, int) string,
 ) FlushToScrollbackResult {
-	// Collect all unflushed completed segments
+	// Collect all unflushed segments (excluding pending tools)
 	var toFlush []*Segment
 	for i := range t.Segments {
 		seg := &t.Segments[i]
 		if seg.Flushed {
 			continue
 		}
-		isPending := seg.Type == SegmentTool && seg.ToolStatus == ToolPending
-		if isPending {
+		if seg.Type == SegmentTool && seg.ToolStatus == ToolPending {
 			continue
 		}
 		toFlush = append(toFlush, seg)
-		seg.Flushed = true
 	}
 
 	if len(toFlush) == 0 {
+		debugFlushf("flush-all skip reason=no-segments")
 		return FlushToScrollbackResult{NewPrintedLines: 0}
 	}
 
 	content := RenderSegments(toFlush, width, -1, renderMd, true)
+	if t.HasFlushed {
+		prefix := t.LeadingSeparator(toFlush[0].Type)
+		if prefix != "" {
+			content = prefix + content
+		}
+	}
 	if content == "" {
+		debugFlushf("flush-all skip reason=empty-render count=%d", len(toFlush))
 		return FlushToScrollbackResult{NewPrintedLines: 0}
 	}
+
+	// Mark all processed segments as flushed
+	for _, seg := range toFlush {
+		seg.Flushed = true
+		if seg.StreamRenderer != nil {
+			seg.StreamRenderer.MarkFlushed()
+			seg.FlushedRenderedPos = seg.StreamRenderer.FlushedRenderedPos()
+		} else if seg.Type == SegmentText && seg.Complete && seg.Rendered != "" {
+			seg.FlushedRenderedPos = len(seg.Rendered)
+		}
+	}
+
+	t.HasFlushed = true
+	t.LastFlushedType = toFlush[len(toFlush)-1].Type
+	debugFlushf("flush-all flushed count=%d lastType=%d contentLen=%d", len(toFlush), t.LastFlushedType, len(content))
+
 	return FlushToScrollbackResult{
 		ToPrint:         content,
 		NewPrintedLines: 0,
@@ -665,13 +800,32 @@ func (t *ToolTracker) FlushBeforeExternalUI(
 	}
 
 	if len(toFlush) == 0 {
+		debugFlushf("flush-external skip reason=no-segments")
 		return FlushToScrollbackResult{NewPrintedLines: 0}
 	}
 
 	content := RenderSegments(toFlush, width, -1, renderMd, true)
+	if t.HasFlushed {
+		prefix := t.LeadingSeparator(toFlush[0].Type)
+		if prefix != "" {
+			content = prefix + content
+		}
+	}
 	if content == "" {
+		debugFlushf("flush-external skip reason=empty-render count=%d", len(toFlush))
 		return FlushToScrollbackResult{NewPrintedLines: 0}
 	}
+
+	t.HasFlushed = true
+	t.LastFlushedType = toFlush[len(toFlush)-1].Type
+	// Ensure streaming renderer matches flush state if this was a text segment
+	for _, seg := range toFlush {
+		if seg.StreamRenderer != nil {
+			seg.StreamRenderer.MarkFlushed()
+		}
+	}
+	debugFlushf("flush-external flushed count=%d lastType=%d contentLen=%d", len(toFlush), t.LastFlushedType, len(content))
+
 	return FlushToScrollbackResult{
 		ToPrint:         content,
 		NewPrintedLines: 0,
@@ -723,7 +877,27 @@ func SplitLines(content string) []string {
 	return lines
 }
 
-// JoinLines joins lines with newlines
-func JoinLines(lines []string) string {
-	return strings.Join(lines, "\n")
+// RenderUnflushed renders all non-pending, non-flushed segments with proper leading spacing.
+func (t *ToolTracker) RenderUnflushed(width int, renderMd func(string, int) string, includeImages bool) string {
+	unflushed := t.CompletedSegments()
+	if len(unflushed) == 0 {
+		return ""
+	}
+
+	var leading *Segment
+	// Only add leading context if the FIRST unflushed segment is at its very start.
+	if t.HasFlushed && unflushed[0].FlushedPos == 0 {
+		leading = &Segment{Type: t.LastFlushedType}
+	}
+
+	return RenderSegmentsWithLeading(leading, unflushed, width, -1, renderMd, includeImages)
+}
+
+// LeadingSeparator returns the required spacing before a segment of the given type,
+// based on the last flushed segment.
+func (t *ToolTracker) LeadingSeparator(nextType SegmentType) string {
+	if !t.HasFlushed {
+		return ""
+	}
+	return SegmentSeparator(t.LastFlushedType, nextType)
 }

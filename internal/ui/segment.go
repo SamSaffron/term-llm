@@ -60,9 +60,10 @@ type Segment struct {
 	StreamRenderer *TextSegmentRenderer // Active streaming renderer; nil when Complete
 
 	// Incremental rendering cache (streaming optimization)
-	SafePos      int    // Byte position of last safe markdown boundary
-	SafeRendered string // Cached render of text[:SafePos]
-	FlushedPos   int    // Byte position up to which content has been flushed to scrollback
+	SafePos            int    // Byte position of last safe markdown boundary
+	SafeRendered       string // Cached render of text[:SafePos]
+	FlushedPos         int    // Byte position up to which content has been flushed to scrollback
+	FlushedRenderedPos int    // Number of rendered bytes already flushed to scrollback
 
 	// Stitched rendering state (for correct inter-chunk spacing)
 	LastFlushedRaw         string // Raw markdown of last flushed chunk (for stitched rendering)
@@ -408,126 +409,161 @@ func renderAskUserResult(text string) string {
 	return b.String() + "\n"
 }
 
+// SegmentSeparator returns the vertical spacing (newlines) required between two segments.
+func SegmentSeparator(prevType, currType SegmentType) string {
+	prevIsTool := prevType == SegmentTool || prevType == SegmentAskUserResult
+	currIsTool := currType == SegmentTool || currType == SegmentAskUserResult
+
+	// No extra spacing between consecutive text segments
+	// (each segment already ends with \n from rendering)
+	if prevType == SegmentText && currType == SegmentText {
+		return ""
+	}
+
+	// Blank line between text and tools/ask_user results
+	if prevType == SegmentText && currIsTool {
+		return "\n\n"
+	}
+
+	// Single newline between consecutive tools/ask_user results
+	if prevIsTool && currIsTool {
+		return "\n"
+	}
+
+	// Blank line between tools/ask_user results and text
+	if prevIsTool && currType == SegmentText {
+		return "\n\n"
+	}
+
+	// Blank line between tools/ask_user results and images
+	if prevIsTool && currType == SegmentImage {
+		return "\n\n"
+	}
+
+	// Blank line between text and images
+	if prevType == SegmentText && currType == SegmentImage {
+		return "\n\n"
+	}
+
+	// Blank line between tools/ask_user results and diffs
+	if prevIsTool && currType == SegmentDiff {
+		return "\n\n"
+	}
+
+	// Blank line between text and diffs
+	if prevType == SegmentText && currType == SegmentDiff {
+		return "\n\n"
+	}
+
+	// Blank line between diffs and text
+	if prevType == SegmentDiff && currType == SegmentText {
+		return "\n\n"
+	}
+
+	// Blank line between diffs and tools
+	if prevType == SegmentDiff && currIsTool {
+		return "\n\n"
+	}
+
+	return ""
+}
+
 // RenderSegments renders a list of segments with proper spacing.
-// This is the main entry point for rendering the stream content.
-// renderMarkdown should be a function that renders markdown content.
-// includeImages controls whether image segments are rendered - should be false
-// for View() (called constantly) and true for scrollback flush (one-time).
-// Accepts []*Segment so mutations (like SafeRendered caching) persist to originals.
 func RenderSegments(segments []*Segment, width int, wavePos int, renderMarkdown func(string, int) string, includeImages bool) string {
+	return RenderSegmentsWithLeading(nil, segments, width, wavePos, renderMarkdown, includeImages)
+}
+
+// RenderSegmentsWithLeading renders a list of segments, optionally using a leading segment for initial spacing.
+func RenderSegmentsWithLeading(leading *Segment, segments []*Segment, width int, wavePos int, renderMarkdown func(string, int) string, includeImages bool) string {
 	var b strings.Builder
+	lastType := SegmentText
+	hasPrev := false
+	if leading != nil {
+		lastType = leading.Type
+		hasPrev = true
+	}
 
-	for i, seg := range segments {
-		if i > 0 {
-			prev := segments[i-1]
-			prevIsTool := prev.Type == SegmentTool || prev.Type == SegmentAskUserResult
-			currIsTool := seg.Type == SegmentTool || seg.Type == SegmentAskUserResult
-			// No extra spacing between consecutive text segments
-			// (each segment already ends with \n from rendering)
-			// Blank line between text and tools/ask_user results
-			if prev.Type == SegmentText && currIsTool {
-				b.WriteString("\n\n")
-			}
-			// Single newline between consecutive tools/ask_user results
-			if prevIsTool && currIsTool {
-				b.WriteString("\n")
-			}
-			// Blank line between tools/ask_user results and text
-			if prevIsTool && seg.Type == SegmentText {
-				b.WriteString("\n\n")
-			}
-			// Blank line between tools/ask_user results and images
-			if prevIsTool && seg.Type == SegmentImage {
-				b.WriteString("\n\n")
-			}
-			// Blank line between text and images
-			if prev.Type == SegmentText && seg.Type == SegmentImage {
-				b.WriteString("\n\n")
-			}
-			// Blank line between tools/ask_user results and diffs
-			if prevIsTool && seg.Type == SegmentDiff {
-				b.WriteString("\n\n")
-			}
-			// Blank line between text and diffs
-			if prev.Type == SegmentText && seg.Type == SegmentDiff {
-				b.WriteString("\n\n")
-			}
-			// Blank line between diffs and text
-			if prev.Type == SegmentDiff && seg.Type == SegmentText {
-				b.WriteString("\n\n")
-			}
-			// Blank line between diffs and tools
-			if prev.Type == SegmentDiff && currIsTool {
-				b.WriteString("\n\n")
-			}
-		}
-
+	for _, seg := range segments {
+		var rendered string
 		switch seg.Type {
 		case SegmentText:
 			text := seg.GetText()
 			if text == "" {
-				break
+				continue
 			}
 
 			if seg.Complete && seg.Rendered != "" {
-				// Completed segment with cached glamour render
-				b.WriteString(seg.Rendered)
+				rendered = seg.Rendered
 			} else if seg.StreamRenderer != nil {
-				// Streaming: use only unflushed portion to avoid duplicating content
-				// that was already printed to scrollback via FlushStreamingText
-				b.WriteString(seg.StreamRenderer.RenderedUnflushed())
+				rendered = seg.StreamRenderer.RenderedUnflushed()
 			} else if seg.Complete && renderMarkdown != nil {
-				// Completed but no cache - render now
-				b.WriteString(renderMarkdown(text, width))
+				rendered = renderMarkdown(text, width)
 			} else {
-				// Fallback: incomplete without streaming renderer - show raw text
-				b.WriteString(text)
+				rendered = text
 			}
+
+			// If this is a completed segment that was partially flushed,
+			// only show the unflushed part.
+			if seg.Complete && seg.FlushedRenderedPos > 0 && seg.FlushedRenderedPos < len(rendered) {
+				rendered = rendered[seg.FlushedRenderedPos:]
+			} else if seg.Complete && seg.FlushedRenderedPos >= len(rendered) {
+				rendered = ""
+			}
+
 		case SegmentTool:
-			b.WriteString(RenderToolSegment(seg, wavePos))
+			rendered = RenderToolSegment(seg, wavePos)
 			// Render subagent preview lines beneath spawn_agent tools
 			if seg.ToolName == "spawn_agent" && len(seg.SubagentPreview) > 0 {
+				var sb strings.Builder
+				sb.WriteString(rendered)
 				for _, line := range seg.SubagentPreview {
-					b.WriteString("\n  │ ")
-					b.WriteString(line)
+					sb.WriteString("\n  │ ")
+					sb.WriteString(line)
 				}
+				rendered = sb.String()
 			}
 			// Render subagent diffs after preview (still within spawn_agent block)
 			if seg.ToolName == "spawn_agent" && len(seg.SubagentDiffs) > 0 {
+				var sb strings.Builder
+				sb.WriteString(rendered)
 				for i := range seg.SubagentDiffs {
 					diff := &seg.SubagentDiffs[i]
-					b.WriteString("\n")
-					// Use cached render if available and width matches
+					sb.WriteString("\n")
 					if diff.Rendered != "" && diff.Width == width {
-						b.WriteString(diff.Rendered)
-					} else if rendered := RenderDiffSegment(diff.Path, diff.Old, diff.New, width, diff.Line); rendered != "" {
-						diff.Rendered = rendered
+						sb.WriteString(diff.Rendered)
+					} else if d := RenderDiffSegment(diff.Path, diff.Old, diff.New, width, diff.Line); d != "" {
+						diff.Rendered = d
 						diff.Width = width
-						b.WriteString(rendered)
+						sb.WriteString(d)
 					}
 				}
+				rendered = sb.String()
 			}
 		case SegmentAskUserResult:
-			b.WriteString(renderAskUserResult(seg.Text))
+			rendered = renderAskUserResult(seg.Text)
 		case SegmentImage:
-			// Render images inline when includeImages is true
 			if includeImages {
-				if rendered := RenderInlineImage(seg.ImagePath); rendered != "" {
-					b.WriteString(rendered)
-					b.WriteString("\r\n")
+				if r := RenderInlineImage(seg.ImagePath); r != "" {
+					rendered = r + "\r\n"
 				}
 			}
 		case SegmentDiff:
-			// Render diffs inline with caching (diff computation is expensive)
 			if seg.DiffRendered != "" && seg.DiffWidth == width {
-				// Use cached render
-				b.WriteString(seg.DiffRendered)
-			} else if rendered := RenderDiffSegment(seg.DiffPath, seg.DiffOld, seg.DiffNew, width, seg.DiffLine); rendered != "" {
-				// Cache the render
-				seg.DiffRendered = rendered
+				rendered = seg.DiffRendered
+			} else if r := RenderDiffSegment(seg.DiffPath, seg.DiffOld, seg.DiffNew, width, seg.DiffLine); r != "" {
+				seg.DiffRendered = r
 				seg.DiffWidth = width
-				b.WriteString(rendered)
+				rendered = r
 			}
+		}
+
+		if rendered != "" {
+			if hasPrev {
+				b.WriteString(SegmentSeparator(lastType, seg.Type))
+			}
+			b.WriteString(rendered)
+			lastType = seg.Type
+			hasPrev = true
 		}
 	}
 

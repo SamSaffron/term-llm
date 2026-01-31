@@ -30,6 +30,7 @@ type ClaudeBinProvider struct {
 	sessionID    string // For session continuity with --resume
 	messagesSent int    // Track messages already in session to avoid re-sending
 	toolExecutor mcphttp.ToolExecutor
+	preferOAuth  bool // If true, clear ANTHROPIC_API_KEY to force OAuth auth
 
 	// Persistent MCP server for multi-turn conversations.
 	// The server is kept alive across turns so Claude CLI can maintain
@@ -47,8 +48,16 @@ type ClaudeBinProvider struct {
 // NewClaudeBinProvider creates a new provider that uses the claude binary.
 func NewClaudeBinProvider(model string) *ClaudeBinProvider {
 	return &ClaudeBinProvider{
-		model: model,
+		model:       model,
+		preferOAuth: true, // Default to OAuth to avoid API key limits
 	}
+}
+
+// SetPreferOAuth controls whether to prefer OAuth auth over API key.
+// When true (default), clears ANTHROPIC_API_KEY for the subprocess
+// so Claude CLI uses OAuth subscription auth instead.
+func (p *ClaudeBinProvider) SetPreferOAuth(prefer bool) {
+	p.preferOAuth = prefer
 }
 
 // SetToolExecutor sets the function used to execute tools.
@@ -115,6 +124,18 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 		}
 
 		cmd := exec.CommandContext(ctx, "claude", args...)
+
+		// Set up environment - optionally clear ANTHROPIC_API_KEY to prefer OAuth
+		if p.preferOAuth {
+			env := os.Environ()
+			filtered := env[:0]
+			for _, e := range env {
+				if !strings.HasPrefix(e, "ANTHROPIC_API_KEY=") {
+					filtered = append(filtered, e)
+				}
+			}
+			cmd.Env = filtered
+		}
 
 		// Set up stdin pipe for the prompt
 		stdin, err := cmd.StdinPipe()
@@ -208,6 +229,10 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 			case "result":
 				var resultMsg claudeResultMessage
 				if err := json.Unmarshal([]byte(line), &resultMsg); err == nil {
+					// Check for API errors (rate limits, auth issues, etc.)
+					if resultMsg.IsError && resultMsg.Result != "" {
+						return fmt.Errorf("%s", resultMsg.Result)
+					}
 					lastUsage = &Usage{
 						InputTokens:  resultMsg.Usage.InputTokens + resultMsg.Usage.CacheReadInputTokens,
 						OutputTokens: resultMsg.Usage.OutputTokens,
@@ -604,8 +629,10 @@ type claudeContentBlock struct {
 }
 
 type claudeResultMessage struct {
-	Type  string `json:"type"`
-	Usage struct {
+	Type    string `json:"type"`
+	IsError bool   `json:"is_error"`
+	Result  string `json:"result"`
+	Usage   struct {
 		InputTokens          int `json:"input_tokens"`
 		OutputTokens         int `json:"output_tokens"`
 		CacheReadInputTokens int `json:"cache_read_input_tokens"`

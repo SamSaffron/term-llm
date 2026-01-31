@@ -55,6 +55,10 @@ type StreamingIndicator struct {
 	WavePos        int                      // current wave position
 	Width          int                      // terminal width for markdown rendering
 	RenderMarkdown func(string, int) string // markdown renderer for text segments
+
+	// Flush state for leading spacing
+	HasFlushed      bool
+	LastFlushedType SegmentType
 }
 
 // Render returns the formatted streaming indicator string
@@ -63,11 +67,20 @@ func (s StreamingIndicator) Render(styles *Styles) string {
 
 	// Render active tools if any
 	if len(s.Segments) > 0 {
-		b.WriteString(RenderSegments(s.Segments, s.Width, s.WavePos, s.RenderMarkdown, false))
+		var leading *Segment
+		if s.HasFlushed {
+			leading = &Segment{Type: s.LastFlushedType}
+		}
+		b.WriteString(RenderSegmentsWithLeading(leading, s.Segments, s.Width, s.WavePos, s.RenderMarkdown, false))
 		// When tools are active, we don't show the spinner/phase line
 		// as the wave animation provides the progress feedback.
 	} else if !s.HideProgress {
-		// No active tools, show the standard spinner and phase
+		// No active tools, show leading spacing for the standard spinner and phase if needed
+		if s.HasFlushed {
+			// Spinner/Phase line is treated as a tool/status line for spacing
+			b.WriteString(SegmentSeparator(s.LastFlushedType, SegmentTool))
+		}
+
 		b.WriteString(s.Spinner)
 		b.WriteString(" ")
 		b.WriteString(s.Phase)

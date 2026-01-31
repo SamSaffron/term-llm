@@ -805,8 +805,7 @@ type askStreamModel struct {
 	subagentTracker *ui.SubagentTracker
 
 	// State flags
-	done        bool   // True when streaming is complete (prevents spinner from showing)
-	finalOutput string // Rendered content to print after program exits
+	done bool // True when streaming is complete (prevents spinner from showing)
 
 	// Status display
 	retryStatus string    // Retry status (e.g., "Rate limited (2/5), waiting 5s...")
@@ -1000,7 +999,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" || msg.String() == "esc" {
-			return m, tea.Quit
+			return m, func() tea.Msg { return askCancelledMsg{} }
 		}
 		// Handle CTRL-O to open inspector (works during streaming too)
 		if msg.String() == "ctrl+o" && m.store != nil && m.sess != nil {
@@ -1039,15 +1038,14 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case askContentMsg:
 		// Track text for final rendering
 		m.tracker.AddTextSegment(string(msg), m.width)
-		m.cachedContent = ""
 		m.contentDirty = true
 
-		// Flush text incrementally when it exceeds threshold (4KB) to bound view size
-		// This prevents unbounded memory growth for long streaming responses
-		const streamingFlushThreshold = 4000
+		// Flush as soon as we have any safe boundary to avoid duplication/corruption
+		const streamingFlushThreshold = 0
 		if m.width > 0 {
 			result := m.tracker.FlushStreamingText(streamingFlushThreshold, m.width, renderMd)
 			if result.ToPrint != "" {
+				m.cachedContent = "" // Invalidate cache since state changed
 				return m, tea.Printf("%s", result.ToPrint)
 			}
 		}
@@ -1062,18 +1060,25 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.tracker.CompleteTextSegments(func(text string) string {
 			return renderMd(text, m.width)
 		})
-		// Get only unflushed content to avoid duplicating already-printed text
-		unflushed := m.tracker.UnflushedSegments()
-		rendered := ui.RenderSegments(unflushed, m.width, -1, renderMd, true)
 
-		if rendered != "" {
-			// Store for printing after program exits (avoids tea.Printf buffer issues)
-			m.finalOutput = rendered
+		// Flush everything remaining to scrollback
+		res := m.tracker.FlushAllRemaining(m.width, 0, renderMd)
+		if res.ToPrint != "" {
+			return m, tea.Sequence(tea.Printf("%s", res.ToPrint), tea.Quit)
 		}
 		return m, tea.Quit
 
 	case askCancelledMsg:
 		m.done = true
+		// Ensure we have a valid width
+		if m.width <= 0 {
+			m.width = getTerminalWidth()
+		}
+		// Flush whatever has been rendered so far (including partial text) to scrollback
+		res := m.tracker.FlushAllRemaining(m.width, 0, renderMd)
+		if res.ToPrint != "" {
+			return m, tea.Sequence(tea.Printf("%s", res.ToPrint), tea.Quit)
+		}
 		return m, tea.Quit
 
 	case askUsageMsg:
@@ -1197,13 +1202,17 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Remove from subagent tracker when spawn_agent completes
 		m.subagentTracker.Remove(msg.CallID)
 
-		// Immediately rebuild cache with the completed tool to prevent stale renders
-		completed := m.tracker.CompletedSegments()
-		m.cachedContent = ui.RenderSegments(completed, m.width, -1, renderMd, false)
-
 		// Flush completed tool to scrollback immediately to prevent duplicate rendering
+		var flushCmd tea.Cmd
 		if cmd := m.maybeFlushToScrollback(); cmd != nil {
-			return m, cmd
+			flushCmd = cmd
+		}
+
+		// Immediately rebuild cache with the remaining content
+		m.cachedContent = m.tracker.RenderUnflushed(m.width, renderMd, false)
+
+		if flushCmd != nil {
+			return m, flushCmd
 		}
 
 		// If no more pending tools, start spinner for idle state
@@ -1259,8 +1268,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Update cached content when dirty (must be done in Update, not View)
 	// View() uses a value receiver so mutations are discarded by Bubble Tea
 	if m.contentDirty {
-		completed := m.tracker.CompletedSegments()
-		m.cachedContent = ui.RenderSegments(completed, m.width, -1, renderMd, false)
+		m.cachedContent = m.tracker.RenderUnflushed(m.width, renderMd, false)
 		m.contentDirty = false
 	}
 
@@ -1310,8 +1318,7 @@ func (m askStreamModel) updateInspectorMode(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Update cached content when dirty (must be done in Update, not View)
 	// View() uses a value receiver so mutations are discarded by Bubble Tea
 	if m.contentDirty {
-		completed := m.tracker.CompletedSegments()
-		m.cachedContent = ui.RenderSegments(completed, m.width, -1, renderMd, false)
+		m.cachedContent = m.tracker.RenderUnflushed(m.width, renderMd, false)
 		m.contentDirty = false
 	}
 
@@ -1324,8 +1331,7 @@ func (m askStreamModel) View() string {
 		return m.inspectorModel.View()
 	}
 
-	// When done, return empty string - final output is printed via finalOutput after p.Run()
-	// to avoid duplicate rendering (View() content + finalOutput both being shown)
+	// When done, return empty string so flushed content isn't duplicated
 	if m.done {
 		return ""
 	}
@@ -1333,15 +1339,14 @@ func (m askStreamModel) View() string {
 	var b strings.Builder
 
 	// Get segments from tracker (excludes flushed segments)
-	completed := m.tracker.CompletedSegments()
 	active := m.tracker.ActiveSegments()
 
 	// Use cached content (updated in Update() when contentDirty was true)
 	// Fall back to rendering on-demand if cache is empty but we have segments
 	// (handles tests that call View() directly without Update())
 	content := m.cachedContent
-	if content == "" && len(completed) > 0 {
-		content = ui.RenderSegments(completed, m.width, -1, renderMd, false)
+	if content == "" {
+		content = m.tracker.RenderUnflushed(m.width, renderMd, false)
 	}
 	if content != "" {
 		b.WriteString(content)
@@ -1351,6 +1356,8 @@ func (m askStreamModel) View() string {
 	if m.approvalForm != nil {
 		if b.Len() > 0 {
 			b.WriteString("\n\n")
+		} else {
+			b.WriteString(m.tracker.LeadingSeparator(ui.SegmentTool))
 		}
 		b.WriteString(m.approvalForm.View())
 		return b.String()
@@ -1359,7 +1366,8 @@ func (m askStreamModel) View() string {
 	// Show spinner when idle (no activity for >1s) or when tools are active
 	// Don't show spinner when done or paused for external UI (ask_user/approval)
 	if !m.done && !m.pausedForExternalUI && (len(active) > 0 || m.tracker.IsIdle(time.Second)) {
-		if b.Len() > 0 {
+		hasContent := b.Len() > 0
+		if hasContent {
 			b.WriteString("\n\n")
 		}
 		phase := m.phase
@@ -1368,23 +1376,20 @@ func (m askStreamModel) View() string {
 		}
 
 		indicator := ui.StreamingIndicator{
-			Spinner:        m.spinner.View(),
-			Phase:          phase,
-			Elapsed:        time.Since(m.startTime),
-			Tokens:         m.totalTokens,
-			Status:         m.retryStatus,
-			ShowCancel:     true,
-			Segments:       active,
-			WavePos:        m.tracker.WavePos,
-			Width:          m.width,
-			RenderMarkdown: renderMd,
+			Spinner:         m.spinner.View(),
+			Phase:           phase,
+			Elapsed:         time.Since(m.startTime),
+			Tokens:          m.totalTokens,
+			Status:          m.retryStatus,
+			ShowCancel:      true,
+			Segments:        active,
+			WavePos:         m.tracker.WavePos,
+			Width:           m.width,
+			RenderMarkdown:  renderMd,
+			HasFlushed:      !hasContent && m.tracker.HasFlushed,
+			LastFlushedType: m.tracker.LastFlushedType,
 		}.Render(m.styles)
 		b.WriteString(indicator)
-	}
-
-	// Ensure trailing newline so final line isn't cut off
-	if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n") {
-		b.WriteString("\n")
 	}
 
 	return b.String()
@@ -1483,19 +1488,6 @@ func streamWithGlamour(ctx context.Context, events <-chan ui.StreamEvent, p *tea
 	}
 
 	result := <-programDone
-
-	// Print final output directly to stdout (bypasses tea.Printf buffer issues)
-	// Accept both value and pointer types since Bubble Tea may return either
-	switch m := result.model.(type) {
-	case askStreamModel:
-		if m.finalOutput != "" {
-			fmt.Print(m.finalOutput)
-		}
-	case *askStreamModel:
-		if m != nil && m.finalOutput != "" {
-			fmt.Print(m.finalOutput)
-		}
-	}
 
 	if streamErr != nil {
 		return streamErr

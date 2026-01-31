@@ -62,6 +62,11 @@ func (r *TextSegmentRenderer) Rendered() string {
 	return r.output.String()
 }
 
+// RenderedAll returns the full rendered output including already-flushed content.
+func (r *TextSegmentRenderer) RenderedAll() string {
+	return r.output.String()
+}
+
 // RenderedUnflushed returns only the portion of rendered output that hasn't
 // been flushed to scrollback yet. Use this in View() to avoid duplicating
 // content that was already printed via FlushStreamingText.
@@ -82,6 +87,15 @@ func (r *TextSegmentRenderer) MarkFlushed() {
 // FlushedRenderedPos returns the current flushed position in the rendered output.
 func (r *TextSegmentRenderer) FlushedRenderedPos() int {
 	return r.flushedRenderedPos
+}
+
+// CommittedMarkdownLen returns the number of raw markdown bytes that have been
+// committed as complete blocks by the streaming renderer.
+func (r *TextSegmentRenderer) CommittedMarkdownLen() int {
+	if r.sr == nil {
+		return 0
+	}
+	return r.sr.CommittedMarkdownLen()
 }
 
 // Flush renders any remaining incomplete blocks.
