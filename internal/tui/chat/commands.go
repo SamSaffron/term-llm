@@ -79,7 +79,7 @@ func AllCommands() []Command {
 		{
 			Name:        "load",
 			Description: "Load a saved session",
-			Usage:       "/load <id>",
+			Usage:       "/load <number|id>",
 		},
 		{
 			Name:        "sessions",
@@ -601,7 +601,7 @@ func (m *Model) cmdLoad(args []string) (tea.Model, tea.Cmd) {
 		for _, s := range summaries {
 			label := s.Name
 			if label == "" {
-				label = session.ShortID(s.ID)
+				label = fmt.Sprintf("#%d", s.Number)
 			}
 			items = append(items, DialogItem{
 				ID:    s.ID, // Full session ID for lookup
@@ -636,7 +636,7 @@ func (m *Model) cmdLoad(args []string) (tea.Model, tea.Cmd) {
 
 	name := sess.Name
 	if name == "" {
-		name = session.ShortID(sess.ID)
+		name = fmt.Sprintf("#%d", sess.Number)
 	}
 	return m.showSystemMessage(fmt.Sprintf("Loaded session '%s' (%d messages).", name, len(messages)))
 }
@@ -660,7 +660,7 @@ func (m *Model) cmdSessions() (tea.Model, tea.Cmd) {
 	for _, s := range summaries {
 		name := s.Name
 		if name == "" {
-			name = session.ShortID(s.ID)
+			name = fmt.Sprintf("#%d", s.Number)
 		}
 		summary := s.Summary
 		if len(summary) > 50 {
@@ -668,7 +668,7 @@ func (m *Model) cmdSessions() (tea.Model, tea.Cmd) {
 		}
 		b.WriteString(fmt.Sprintf("- `%s` (%s) - %d msgs - %s\n", name, s.Provider, s.MessageCount, summary))
 	}
-	b.WriteString("\nUse `/load <id>` to load a session.")
+	b.WriteString("\nUse `/load <number>` to load a session.")
 
 	m.setTextareaValue("")
 	return m.showSystemMessage(b.String())

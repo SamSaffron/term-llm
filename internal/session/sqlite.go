@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ type SQLiteStore struct {
 const schema = `
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
+    number INTEGER,
     name TEXT,
     summary TEXT,
     provider TEXT NOT NULL,
@@ -131,7 +133,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 5
+const schemaVersion = 6
 
 // migration represents a schema migration.
 type migration struct {
@@ -305,6 +307,41 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		// Migration 6: Add sequential session numbers
+		// Adds number column for simpler session identification (1, 2, 3...)
+		version:     6,
+		description: "add session number column",
+		up: func(db *sql.DB) error {
+			// Add number column
+			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN number INTEGER")
+			if err != nil && !isDuplicateColumnError(err) {
+				return err
+			}
+
+			// Create unique index on number
+			_, err = db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_number ON sessions(number)")
+			if err != nil {
+				return fmt.Errorf("create number index: %w", err)
+			}
+
+			// Backfill existing sessions with sequential numbers ordered by created_at
+			_, err = db.Exec(`
+				WITH numbered AS (
+					SELECT id, ROW_NUMBER() OVER (ORDER BY created_at ASC) as num
+					FROM sessions
+				)
+				UPDATE sessions SET number = (
+					SELECT num FROM numbered WHERE numbered.id = sessions.id
+				)
+			`)
+			if err != nil {
+				return fmt.Errorf("backfill session numbers: %w", err)
+			}
+
+			return nil
+		},
+	},
 }
 
 // initSchema initializes the database schema and runs any pending migrations.
@@ -383,6 +420,12 @@ func initSchemaFull(db *sql.DB, versionErr error, currentVersion int) error {
 		}
 	}
 
+	// Ensure indexes exist (handles fresh DBs where migrations don't run)
+	_, err = db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_number ON sessions(number)")
+	if err != nil {
+		return fmt.Errorf("ensure number index: %w", err)
+	}
+
 	return nil
 }
 
@@ -447,19 +490,37 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 	}
 
 	err := retryOnBusy(5, func() error {
-		_, err := s.db.ExecContext(ctx, `
-			INSERT INTO sessions (id, name, summary, provider, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
+		// Use a single INSERT statement with a subquery to atomically assign the
+		// next session number. This avoids race conditions where two concurrent
+		// Creates could read the same MAX(number).
+		result, err := s.db.ExecContext(ctx, `
+			INSERT INTO sessions (id, number, name, summary, provider, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
 			                      user_turns, llm_turns, tool_calls, input_tokens, output_tokens, status, tags)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			sess.ID, sess.Name, sess.Summary, sess.Provider, sess.Model, string(sess.Mode), nullString(sess.Agent), sess.CWD,
 			sess.CreatedAt, sess.UpdatedAt, sess.Archived, nullString(sess.ParentID),
 			sess.Search, nullString(sess.Tools), nullString(sess.MCP),
 			sess.UserTurns, sess.LLMTurns, sess.ToolCalls, sess.InputTokens, sess.OutputTokens,
 			string(sess.Status), nullString(sess.Tags))
-		return err
+		if err != nil {
+			return fmt.Errorf("insert session: %w", err)
+		}
+
+		// Fetch the assigned number
+		rows, _ := result.RowsAffected()
+		if rows == 0 {
+			return fmt.Errorf("no rows inserted")
+		}
+
+		// Query the assigned number back
+		err = s.db.QueryRowContext(ctx, "SELECT number FROM sessions WHERE id = ?", sess.ID).Scan(&sess.Number)
+		if err != nil {
+			return fmt.Errorf("get assigned number: %w", err)
+		}
+		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("insert session: %w", err)
+		return fmt.Errorf("create session: %w", err)
 	}
 	return nil
 }
@@ -467,13 +528,14 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 // Get retrieves a session by ID.
 func (s *SQLiteStore) Get(ctx context.Context, id string) (*Session, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, name, summary, provider, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
+		SELECT id, number, name, summary, provider, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
 		       user_turns, llm_turns, tool_calls, input_tokens, output_tokens, status, tags
 		FROM sessions WHERE id = ?`, id)
 
 	var sess Session
+	var number sql.NullInt64
 	var mode, agent, parentID, tools, mcp, status, tags sql.NullString
-	err := row.Scan(&sess.ID, &sess.Name, &sess.Summary, &sess.Provider, &sess.Model, &mode,
+	err := row.Scan(&sess.ID, &number, &sess.Name, &sess.Summary, &sess.Provider, &sess.Model, &mode,
 		&agent, &sess.CWD, &sess.CreatedAt, &sess.UpdatedAt, &sess.Archived, &parentID,
 		&sess.Search, &tools, &mcp,
 		&sess.UserTurns, &sess.LLMTurns, &sess.ToolCalls, &sess.InputTokens, &sess.OutputTokens,
@@ -483,6 +545,9 @@ func (s *SQLiteStore) Get(ctx context.Context, id string) (*Session, error) {
 	}
 	if err != nil {
 		return nil, fmt.Errorf("scan session: %w", err)
+	}
+	if number.Valid {
+		sess.Number = number.Int64
 	}
 	if mode.Valid {
 		sess.Mode = SessionMode(mode.String)
@@ -508,11 +573,86 @@ func (s *SQLiteStore) Get(ctx context.Context, id string) (*Session, error) {
 	return &sess, nil
 }
 
-// GetByPrefix retrieves a session by exact ID or by short ID prefix match.
-// If an exact match is found, it is returned. Otherwise, the short ID is expanded
-// to a SQL LIKE pattern and the most recent matching session is returned.
+// GetByNumber retrieves a session by its sequential number.
+func (s *SQLiteStore) GetByNumber(ctx context.Context, number int64) (*Session, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, number, name, summary, provider, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
+		       user_turns, llm_turns, tool_calls, input_tokens, output_tokens, status, tags
+		FROM sessions WHERE number = ?`, number)
+
+	var sess Session
+	var num sql.NullInt64
+	var mode, agent, parentID, tools, mcp, status, tags sql.NullString
+	err := row.Scan(&sess.ID, &num, &sess.Name, &sess.Summary, &sess.Provider, &sess.Model, &mode,
+		&agent, &sess.CWD, &sess.CreatedAt, &sess.UpdatedAt, &sess.Archived, &parentID,
+		&sess.Search, &tools, &mcp,
+		&sess.UserTurns, &sess.LLMTurns, &sess.ToolCalls, &sess.InputTokens, &sess.OutputTokens,
+		&status, &tags)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scan session: %w", err)
+	}
+	if num.Valid {
+		sess.Number = num.Int64
+	}
+	if mode.Valid {
+		sess.Mode = SessionMode(mode.String)
+	}
+	if agent.Valid {
+		sess.Agent = agent.String
+	}
+	if parentID.Valid {
+		sess.ParentID = parentID.String
+	}
+	if tools.Valid {
+		sess.Tools = tools.String
+	}
+	if mcp.Valid {
+		sess.MCP = mcp.String
+	}
+	if status.Valid {
+		sess.Status = SessionStatus(status.String)
+	}
+	if tags.Valid {
+		sess.Tags = tags.String
+	}
+	return &sess, nil
+}
+
+// GetByPrefix retrieves a session by number (with # prefix), exact ID, or by short ID prefix match.
+// It tries in order: #number (e.g., #42), exact ID match, short ID prefix match.
 func (s *SQLiteStore) GetByPrefix(ctx context.Context, prefix string) (*Session, error) {
-	// First try exact match
+	// Check for #number format (e.g., "#42" or "42" after stripping #)
+	if strings.HasPrefix(prefix, "#") {
+		numStr := strings.TrimPrefix(prefix, "#")
+		if num, err := strconv.ParseInt(numStr, 10, 64); err == nil {
+			sess, err := s.GetByNumber(ctx, num)
+			if err != nil {
+				return nil, err
+			}
+			if sess != nil {
+				return sess, nil
+			}
+		}
+	}
+
+	// Also support plain numbers for convenience (but only if it's purely numeric)
+	// This maintains backward compatibility while preferring # prefix
+	if num, err := strconv.ParseInt(prefix, 10, 64); err == nil {
+		sess, err := s.GetByNumber(ctx, num)
+		if err != nil {
+			return nil, err
+		}
+		if sess != nil {
+			return sess, nil
+		}
+		// If no session found by number, fall through to ID matching
+		// (in case someone has numeric-prefixed IDs)
+	}
+
+	// Try exact ID match
 	sess, err := s.Get(ctx, prefix)
 	if err != nil {
 		return nil, err
@@ -524,13 +664,14 @@ func (s *SQLiteStore) GetByPrefix(ctx context.Context, prefix string) (*Session,
 	// Try prefix match using expanded short ID
 	pattern := ExpandShortID(prefix)
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, name, summary, provider, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
+		SELECT id, number, name, summary, provider, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
 		       user_turns, llm_turns, tool_calls, input_tokens, output_tokens, status, tags
 		FROM sessions WHERE id LIKE ? ORDER BY created_at DESC LIMIT 1`, pattern)
 
 	var prefixSess Session
+	var number sql.NullInt64
 	var mode, agent, parentID, tools, mcp, status, tags sql.NullString
-	err = row.Scan(&prefixSess.ID, &prefixSess.Name, &prefixSess.Summary, &prefixSess.Provider, &prefixSess.Model, &mode,
+	err = row.Scan(&prefixSess.ID, &number, &prefixSess.Name, &prefixSess.Summary, &prefixSess.Provider, &prefixSess.Model, &mode,
 		&agent, &prefixSess.CWD, &prefixSess.CreatedAt, &prefixSess.UpdatedAt, &prefixSess.Archived, &parentID,
 		&prefixSess.Search, &tools, &mcp,
 		&prefixSess.UserTurns, &prefixSess.LLMTurns, &prefixSess.ToolCalls, &prefixSess.InputTokens, &prefixSess.OutputTokens,
@@ -540,6 +681,9 @@ func (s *SQLiteStore) GetByPrefix(ctx context.Context, prefix string) (*Session,
 	}
 	if err != nil {
 		return nil, fmt.Errorf("scan session: %w", err)
+	}
+	if number.Valid {
+		prefixSess.Number = number.Int64
 	}
 	if mode.Valid {
 		prefixSess.Mode = SessionMode(mode.String)
@@ -644,7 +788,7 @@ func (s *SQLiteStore) Delete(ctx context.Context, id string) error {
 // List returns sessions matching the options.
 func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSummary, error) {
 	query := `
-		SELECT s.id, s.name, s.summary, s.provider, s.model, s.mode, s.created_at, s.updated_at,
+		SELECT s.id, s.number, s.name, s.summary, s.provider, s.model, s.mode, s.created_at, s.updated_at,
 		       (SELECT COUNT(*) FROM messages WHERE session_id = s.id) as message_count,
 		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.output_tokens, s.status, s.tags
 		FROM sessions s
@@ -696,13 +840,17 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	var results []SessionSummary
 	for rows.Next() {
 		var sum SessionSummary
+		var number sql.NullInt64
 		var mode, status, tags sql.NullString
-		err := rows.Scan(&sum.ID, &sum.Name, &sum.Summary, &sum.Provider, &sum.Model, &mode,
+		err := rows.Scan(&sum.ID, &number, &sum.Name, &sum.Summary, &sum.Provider, &sum.Model, &mode,
 			&sum.CreatedAt, &sum.UpdatedAt, &sum.MessageCount,
 			&sum.UserTurns, &sum.LLMTurns, &sum.ToolCalls, &sum.InputTokens, &sum.OutputTokens,
 			&status, &tags)
 		if err != nil {
 			return nil, fmt.Errorf("scan session summary: %w", err)
+		}
+		if number.Valid {
+			sum.Number = number.Int64
 		}
 		if mode.Valid {
 			sum.Mode = SessionMode(mode.String)
@@ -725,7 +873,7 @@ func (s *SQLiteStore) Search(ctx context.Context, query string, limit int) ([]Se
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT m.session_id, m.id, s.name, s.summary, snippet(messages_fts, 0, '**', '**', '...', 32),
+		SELECT m.session_id, s.number, m.id, s.name, s.summary, snippet(messages_fts, 0, '**', '**', '...', 32),
 		       s.provider, s.model, m.created_at
 		FROM messages_fts f
 		JOIN messages m ON m.id = f.rowid
@@ -741,10 +889,14 @@ func (s *SQLiteStore) Search(ctx context.Context, query string, limit int) ([]Se
 	var results []SearchResult
 	for rows.Next() {
 		var r SearchResult
-		err := rows.Scan(&r.SessionID, &r.MessageID, &r.SessionName, &r.Summary,
+		var number sql.NullInt64
+		err := rows.Scan(&r.SessionID, &number, &r.MessageID, &r.SessionName, &r.Summary,
 			&r.Snippet, &r.Provider, &r.Model, &r.CreatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("scan search result: %w", err)
+		}
+		if number.Valid {
+			r.SessionNumber = number.Int64
 		}
 		results = append(results, r)
 	}

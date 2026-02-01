@@ -23,13 +23,17 @@ var sessionsCmd = &cobra.Command{
 	Short: "Manage chat sessions",
 	Long: `List, search, show, delete, and export chat sessions.
 
+Sessions are identified by sequential numbers (#1, #2, #3...) shown in listings.
+You can also use the full session ID or a unique prefix.
+
 Examples:
   term-llm sessions                       # List recent sessions
   term-llm sessions list --provider anthropic
   term-llm sessions search "kubernetes"
-  term-llm sessions show <id>
-  term-llm sessions delete <id>
-  term-llm sessions export <id> [path.md]`,
+  term-llm sessions show 42               # By number
+  term-llm sessions show #42              # By number (explicit)
+  term-llm sessions delete 42
+  term-llm sessions export 42 [path.md]`,
 	RunE: runSessionsList, // Default to list
 }
 
@@ -47,21 +51,21 @@ var sessionsSearchCmd = &cobra.Command{
 }
 
 var sessionsShowCmd = &cobra.Command{
-	Use:   "show <id>",
+	Use:   "show <number|id>",
 	Short: "Show session details",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runSessionsShow,
 }
 
 var sessionsDeleteCmd = &cobra.Command{
-	Use:   "delete <id>",
+	Use:   "delete <number|id>",
 	Short: "Delete a session",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runSessionsDelete,
 }
 
 var sessionsExportCmd = &cobra.Command{
-	Use:   "export <id> [path]",
+	Use:   "export <number|id> [path]",
 	Short: "Export session as markdown",
 	Args:  cobra.RangeArgs(1, 2),
 	RunE:  runSessionsExport,
@@ -77,36 +81,36 @@ You must type 'yes' to confirm.`,
 }
 
 var sessionsNameCmd = &cobra.Command{
-	Use:   "name <id> <name>",
+	Use:   "name <number|id> <name>",
 	Short: "Set a custom name for a session",
 	Long: `Set a custom name for a session. The name is displayed instead of
 the auto-generated summary in listings.
 
 Example:
-  term-llm sessions name abc123 "Auth refactor"`,
+  term-llm sessions name 42 "Auth refactor"`,
 	Args: cobra.ExactArgs(2),
 	RunE: runSessionsName,
 }
 
 var sessionsTagCmd = &cobra.Command{
-	Use:   "tag <id> <tags...>",
+	Use:   "tag <number|id> <tags...>",
 	Short: "Add tags to a session",
 	Long: `Add one or more tags to a session. Tags can be used to organize
 and filter sessions.
 
 Example:
-  term-llm sessions tag abc123 bug feature`,
+  term-llm sessions tag 42 bug feature`,
 	Args: cobra.MinimumNArgs(2),
 	RunE: runSessionsTag,
 }
 
 var sessionsUntagCmd = &cobra.Command{
-	Use:   "untag <id> <tags...>",
+	Use:   "untag <number|id> <tags...>",
 	Short: "Remove tags from a session",
 	Long: `Remove one or more tags from a session.
 
 Example:
-  term-llm sessions untag abc123 bug`,
+  term-llm sessions untag 42 bug`,
 	Args: cobra.MinimumNArgs(2),
 	RunE: runSessionsUntag,
 }
@@ -129,7 +133,7 @@ Key bindings:
 }
 
 var sessionsExportGistCmd = &cobra.Command{
-	Use:   "gist <id>",
+	Use:   "gist <number|id>",
 	Short: "Export session to GitHub Gist",
 	Long: `Export a session to a GitHub Gist for sharing.
 
@@ -137,9 +141,9 @@ Requires the gh CLI to be installed and authenticated.
 Creates a new gist with the session exported as pretty markdown.
 
 Examples:
-  term-llm sessions export gist abc123
-  term-llm sessions export gist abc123 --public
-  term-llm sessions export gist abc123 --include-system`,
+  term-llm sessions export gist 42
+  term-llm sessions export gist 42 --public
+  term-llm sessions export gist 42 --include-system`,
 	Args:         cobra.ExactArgs(1),
 	RunE:         runSessionsExportGist,
 	SilenceUsage: true,
@@ -248,12 +252,11 @@ func runSessionsList(cmd *cobra.Command, args []string) error {
 	}
 
 	// Header line
-	fmt.Printf("%-15s %-25s %4s %5s %5s %-11s %-8s %s\n",
-		"ID", "SUMMARY", "MSGS", "TURNS", "TOOLS", "TOKENS", "STATUS", "AGE")
+	fmt.Printf("%4s %-25s %4s %5s %5s %-11s %-8s %s\n",
+		"#", "SUMMARY", "MSGS", "TURNS", "TOOLS", "TOKENS", "STATUS", "AGE")
 	fmt.Println(strings.Repeat("-", 100))
 
 	for _, s := range summaries {
-		id := session.ShortID(s.ID)
 		summary := s.Summary
 		if s.Name != "" {
 			summary = s.Name
@@ -274,8 +277,8 @@ func runSessionsList(cmd *cobra.Command, args []string) error {
 		age := formatRelativeTime(s.UpdatedAt)
 
 		// MSGS shows actual message count (MessageCount), TURNS shows LLM API round-trips
-		fmt.Printf("%-15s %-25s %4d %5d %5d %-11s %-8s %s\n",
-			id, summary, s.MessageCount, s.LLMTurns, s.ToolCalls, tokens, status, age)
+		fmt.Printf("%4d %-25s %4d %5d %5d %-11s %-8s %s\n",
+			s.Number, summary, s.MessageCount, s.LLMTurns, s.ToolCalls, tokens, status, age)
 	}
 
 	return nil
@@ -331,7 +334,7 @@ func runSessionsSearch(cmd *cobra.Command, args []string) error {
 	for _, r := range results {
 		name := r.SessionName
 		if name == "" {
-			name = session.ShortID(r.SessionID)
+			name = fmt.Sprintf("#%d", r.SessionNumber)
 		}
 		fmt.Printf("**%s** (%s)\n", name, r.Provider)
 		fmt.Printf("  %s\n\n", r.Snippet)
@@ -448,7 +451,7 @@ func runSessionsDelete(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to delete session: %w", err)
 	}
 
-	fmt.Printf("Deleted session: %s\n", session.ShortID(sess.ID))
+	fmt.Printf("Deleted session: #%d\n", sess.Number)
 	return nil
 }
 
@@ -480,7 +483,7 @@ func runSessionsExport(cmd *cobra.Command, args []string) error {
 	} else {
 		name := sess.Name
 		if name == "" {
-			name = session.ShortID(sess.ID)
+			name = fmt.Sprintf("session-%d", sess.Number)
 		}
 		outputPath = fmt.Sprintf("%s.md", name)
 	}
@@ -596,7 +599,7 @@ func runSessionsName(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to update session: %w", err)
 	}
 
-	fmt.Printf("Session %s named: %s\n", session.ShortID(sess.ID), sess.Name)
+	fmt.Printf("Session #%d named: %s\n", sess.Number, sess.Name)
 	return nil
 }
 
@@ -642,7 +645,7 @@ func runSessionsTag(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to update session: %w", err)
 	}
 
-	fmt.Printf("Added tags to session %s: %s\n", session.ShortID(sess.ID), strings.Join(addedTags, ", "))
+	fmt.Printf("Added tags to session #%d: %s\n", sess.Number, strings.Join(addedTags, ", "))
 	return nil
 }
 
@@ -694,7 +697,7 @@ func runSessionsUntag(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to update session: %w", err)
 	}
 
-	fmt.Printf("Removed tags from session %s: %s\n", session.ShortID(sess.ID), strings.Join(removedTags, ", "))
+	fmt.Printf("Removed tags from session #%d: %s\n", sess.Number, strings.Join(removedTags, ", "))
 	return nil
 }
 
@@ -786,7 +789,7 @@ func runSessionsExportGist(cmd *cobra.Command, args []string) error {
 	// Build description
 	name := sess.Name
 	if name == "" {
-		name = session.ShortID(sess.ID)
+		name = fmt.Sprintf("#%d", sess.Number)
 	}
 	description := fmt.Sprintf("term-llm session: %s", name)
 

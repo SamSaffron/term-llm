@@ -72,9 +72,12 @@ func (r *MessageBlockRenderer) Render(msg *session.Message) *MessageBlock {
 		content = r.renderUserMessage(msg)
 	case llm.RoleAssistant:
 		content = r.renderAssistantMessage(msg)
+	case llm.RoleSystem:
+		// Skip system messages - users can view them via Ctrl+O inspector
+		content = ""
 	default:
-		// System messages or other roles - render as plain text
-		content = r.renderMarkdown(msg.TextContent)
+		// Tool messages and other roles - skip (tool results are verbose)
+		content = ""
 	}
 
 	return &MessageBlock{

@@ -305,11 +305,18 @@ func (r *Renderer) renderHistory(state RenderState) string {
 	start, end := vp.GetVisibleRange(state.Messages, state.Viewport.ScrollOffset)
 
 	// Render only visible messages using cache
+	// Skip system and tool messages (they render as empty anyway)
 	var b strings.Builder
 	for i := start; i < end; i++ {
 		msg := &state.Messages[i]
+		// Skip non-renderable roles
+		if msg.Role != "user" && msg.Role != "assistant" {
+			continue
+		}
 		block := r.getOrRenderBlock(msg, i, state.Messages)
-		b.WriteString(block.Rendered)
+		if block.Rendered != "" {
+			b.WriteString(block.Rendered)
+		}
 	}
 
 	return b.String()

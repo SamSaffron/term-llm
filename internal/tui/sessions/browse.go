@@ -105,6 +105,7 @@ type Model struct {
 	// Delete confirmation
 	deleteConfirm bool
 	deleteID      string
+	deleteNumber  int64
 
 	// Inspector state
 	inspecting bool
@@ -264,6 +265,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.sessions) > 0 && m.cursor < len(m.sessions) {
 			m.deleteConfirm = true
 			m.deleteID = m.sessions[m.cursor].ID
+			m.deleteNumber = m.sessions[m.cursor].Number
 		}
 
 	case key.Matches(msg, m.keyMap.Search):
@@ -351,6 +353,7 @@ func (m *Model) doRefresh() (tea.Model, tea.Cmd) {
 			msgs, _ := m.store.GetMessages(ctx, sess.ID, 0, 0)
 			summaries = append(summaries, session.SessionSummary{
 				ID:           sess.ID,
+				Number:       sess.Number,
 				Name:         sess.Name,
 				Summary:      sess.Summary,
 				Provider:     sess.Provider,
@@ -522,7 +525,6 @@ func (m *Model) View() string {
 		s := m.sessions[i]
 
 		// Format row
-		id := session.ShortID(s.ID)
 		summary := s.Summary
 		if s.Name != "" {
 			summary = s.Name
@@ -546,15 +548,15 @@ func (m *Model) View() string {
 		// Age
 		age := formatRelativeTime(s.UpdatedAt)
 
-		// Format: cursor ID summary mode model msgs status age
+		// Format: cursor # summary mode model msgs status age
 		cursor := "  "
 		if i == m.cursor {
 			cursor = "> "
 		}
 
 		// Build row
-		row := fmt.Sprintf("%s%-12s %-25s %-4s %-10s %3d %-8s %s",
-			cursor, id, summary, mode, truncateModel(s.Model, 10), s.MessageCount, status, age)
+		row := fmt.Sprintf("%s%4d %-25s %-4s %-10s %3d %-8s %s",
+			cursor, s.Number, summary, mode, truncateModel(s.Model, 10), s.MessageCount, status, age)
 
 		// Truncate or pad to width
 		if len(row) > m.width {
@@ -584,7 +586,7 @@ func (m *Model) View() string {
 	// Delete confirmation
 	if m.deleteConfirm {
 		confirmStyle := lipgloss.NewStyle().Bold(true).Foreground(theme.Error)
-		b.WriteString(confirmStyle.Render(fmt.Sprintf("Delete session %s? (y/n)", session.ShortID(m.deleteID))))
+		b.WriteString(confirmStyle.Render(fmt.Sprintf("Delete session #%d? (y/n)", m.deleteNumber)))
 	} else if m.err != nil {
 		errorStyle := lipgloss.NewStyle().Foreground(theme.Error)
 		b.WriteString(errorStyle.Render(fmt.Sprintf("Error: %v", m.err)))

@@ -31,6 +31,7 @@ const (
 // Session represents a chat session stored in the database.
 type Session struct {
 	ID         string      `json:"id"`
+	Number     int64       `json:"number,omitempty"` // Sequential session number (1, 2, 3...)
 	Name       string      `json:"name,omitempty"`
 	Summary    string      `json:"summary,omitempty"` // First user message or auto-generated
 	Provider   string      `json:"provider"`
@@ -76,6 +77,7 @@ type Message struct {
 // SessionSummary is a lightweight view of a session for listing.
 type SessionSummary struct {
 	ID           string        `json:"id"`
+	Number       int64         `json:"number,omitempty"` // Sequential session number
 	Name         string        `json:"name,omitempty"`
 	Summary      string        `json:"summary,omitempty"`
 	Provider     string        `json:"provider"`
@@ -107,14 +109,15 @@ type ListOptions struct {
 
 // SearchResult represents a search match.
 type SearchResult struct {
-	SessionID   string    `json:"session_id"`
-	MessageID   int64     `json:"message_id"`
-	SessionName string    `json:"session_name"`
-	Summary     string    `json:"summary"`
-	Snippet     string    `json:"snippet"` // Matched text snippet
-	Provider    string    `json:"provider"`
-	Model       string    `json:"model"`
-	CreatedAt   time.Time `json:"created_at"`
+	SessionID     string    `json:"session_id"`
+	SessionNumber int64     `json:"session_number"` // Sequential session number
+	MessageID     int64     `json:"message_id"`
+	SessionName   string    `json:"session_name"`
+	Summary       string    `json:"summary"`
+	Snippet       string    `json:"snippet"` // Matched text snippet
+	Provider      string    `json:"provider"`
+	Model         string    `json:"model"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 // NewMessage creates a new Message from an llm.Message with the given session ID and sequence.

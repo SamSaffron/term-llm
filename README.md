@@ -1018,17 +1018,19 @@ Supported sources: Claude Code, Gemini CLI, and term-llm's own usage logs.
 
 ## Session Management
 
-Chat sessions are automatically stored locally and can be managed with the `sessions` command:
+Chat sessions are automatically stored locally and can be managed with the `sessions` command. Each session is assigned a sequential number (#1, #2, #3...) for easy reference:
 
 ```bash
 term-llm sessions                        # List recent sessions
 term-llm sessions list --provider anthropic  # Filter by provider
 term-llm sessions search "kubernetes"    # Search session content
-term-llm sessions show <id>              # Show session details
-term-llm sessions export <id> [path.md]  # Export as markdown
-term-llm sessions name <id> "my session" # Set custom name
-term-llm sessions delete <id>            # Delete a session
+term-llm sessions show 42                # Show session details (by number)
+term-llm sessions show #42               # Same thing (explicit # prefix)
+term-llm sessions export 42 [path.md]    # Export as markdown
+term-llm sessions name 42 "my session"   # Set custom name
+term-llm sessions delete 42              # Delete a session
 term-llm sessions reset                  # Delete all sessions
+term-llm chat --resume=42                # Resume a session by number
 ```
 
 Sessions are stored in a SQLite database at `~/.local/share/term-llm/sessions.db`. Configure session storage in your config:
