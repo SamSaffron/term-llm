@@ -155,6 +155,11 @@ const maxDiffContentWidth = 90
 // content is the raw line content (will be highlighted internally).
 // bgColor is optional background color [R,G,B] for the block (nil for none).
 func wrapDiffLine(lineNumWidth int, lineNum int, prefix byte, prefixColor string, content string, contentWidth int, bgColor []int) string {
+	// Expand tabs to spaces using correct starting column (after line number and prefix)
+	// Line format: [lineNum][prefix] [content] - so content starts at lineNumWidth + 2
+	startCol := lineNumWidth + 2
+	content = expandTabsFromCol(content, startCol)
+
 	// Build background color codes
 	bgStart := ""
 	if bgColor != nil {
@@ -271,6 +276,48 @@ func getActiveAnsiCodes(s string) string {
 // stripAnsi removes ANSI escape codes from a string for length calculation
 func stripAnsi(s string) string {
 	return diffAnsiRegex.ReplaceAllString(s, "")
+}
+
+// expandTabsFromCol expands tabs to spaces, starting from a given column position.
+// This ensures consistent display width calculation regardless of where content appears.
+func expandTabsFromCol(s string, startCol int) string {
+	if !strings.Contains(s, "\t") {
+		return s
+	}
+
+	var result strings.Builder
+	col := startCol
+	inEscape := false
+
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+
+		// Track ANSI escape sequences (don't count them as columns)
+		if b == '\x1b' {
+			inEscape = true
+			result.WriteByte(b)
+			continue
+		}
+		if inEscape {
+			result.WriteByte(b)
+			if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') {
+				inEscape = false
+			}
+			continue
+		}
+
+		if b == '\t' {
+			// Expand tab to spaces (tab stops every 8 columns)
+			spaces := 8 - (col % 8)
+			result.WriteString(strings.Repeat(" ", spaces))
+			col += spaces
+		} else {
+			result.WriteByte(b)
+			col++
+		}
+	}
+
+	return result.String()
 }
 
 // splitAtVisibleLength splits a string with ANSI codes at a visible character position
@@ -506,6 +553,11 @@ func applyWordDiffHighlight(segments []diffSegment, highlighter *Highlighter, no
 // Unlike wrapDiffLine, this doesn't apply a uniform background - the content already has mixed backgrounds.
 // paddingBg is used for trailing padding on each line.
 func wrapWordDiffLine(lineNumWidth int, lineNum int, prefix byte, prefixColor string, content string, contentWidth int, paddingBg [3]int) string {
+	// Expand tabs to spaces using correct starting column (after line number and prefix)
+	// Line format: [lineNum][prefix] [content] - so content starts at lineNumWidth + 2
+	startCol := lineNumWidth + 2
+	content = expandTabsFromCol(content, startCol)
+
 	bgCode := fmt.Sprintf("\x1b[48;2;%d;%d;%dm", paddingBg[0], paddingBg[1], paddingBg[2])
 
 	// Helper to build a complete line
