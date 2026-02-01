@@ -208,11 +208,14 @@ func renderMarkdown(content string, width int) string {
 
 	renderer, err := glamour.NewTermRenderer(
 		glamour.WithStyles(style),
-		glamour.WithWordWrap(width),
+		glamour.WithWordWrap(width-1), // slight margin to avoid trailing spaces at terminal edge
 	)
 	if err != nil {
 		return content
 	}
+
+	// Normalize tabs to 2 spaces to prevent glamour from expanding to 8 spaces
+	content = strings.ReplaceAll(content, "\t", "  ")
 
 	rendered, err := renderer.Render(content)
 	if err != nil {

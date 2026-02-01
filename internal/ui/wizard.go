@@ -85,16 +85,6 @@ func isGeminiOAuthAvailable() bool {
 	return err == nil
 }
 
-// getProviderDisplayName returns the display name for a provider value
-func getProviderDisplayName(providers []providerOption, value string) string {
-	for _, p := range providers {
-		if p.value == value {
-			return p.name
-		}
-	}
-	return value
-}
-
 // imageProviderOption represents an image provider choice in the setup wizard
 type imageProviderOption struct {
 	name      string

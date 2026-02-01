@@ -7,10 +7,19 @@ package streaming
 import (
 	"bytes"
 	"io"
+	"regexp"
 	"strings"
 
 	"github.com/charmbracelet/glamour"
 )
+
+// multiNewlineRe matches 3 or more consecutive newlines.
+var multiNewlineRe = regexp.MustCompile(`\n{3,}`)
+
+// normalizeNewlines reduces 3+ consecutive newlines to 2 (one blank line max).
+func normalizeNewlines(s []byte) []byte {
+	return multiNewlineRe.ReplaceAll(s, []byte("\n\n"))
+}
 
 // blockType represents the type of markdown block being processed.
 type blockType int
@@ -127,6 +136,14 @@ func NewRendererWithOptions(
 	}
 
 	return sr, nil
+}
+
+// normalizedMarkdown returns the buffered markdown with tabs normalized to 2 spaces.
+// This prevents glamour from expanding tabs to 8 spaces, which causes code blocks
+// to overflow terminal width.
+func (sr *StreamRenderer) normalizedMarkdown() []byte {
+	content := sr.allMarkdown.Bytes()
+	return bytes.ReplaceAll(content, []byte("\t"), []byte("  "))
 }
 
 // Write accepts markdown chunks and renders complete blocks immediately.
@@ -428,10 +445,13 @@ func (sr *StreamRenderer) emitRendered() error {
 	}
 
 	// Render the full document to maintain consistent styling
-	rendered, err := sr.tr.RenderBytes(sr.allMarkdown.Bytes())
+	rendered, err := sr.tr.RenderBytes(sr.normalizedMarkdown())
 	if err != nil {
 		return err
 	}
+
+	// Normalize consecutive newlines to fix inconsistent header spacing
+	rendered = normalizeNewlines(rendered)
 
 	// Find the stable length - exclude trailing newlines that may change
 	// as more content is added (document margin vs inter-block spacing)
@@ -482,10 +502,13 @@ func (sr *StreamRenderer) Flush() error {
 	}
 
 	// Render the full document to maintain consistent styling
-	rendered, err := sr.tr.RenderBytes(sr.allMarkdown.Bytes())
+	rendered, err := sr.tr.RenderBytes(sr.normalizedMarkdown())
 	if err != nil {
 		return err
 	}
+
+	// Normalize consecutive newlines to fix inconsistent header spacing
+	rendered = normalizeNewlines(rendered)
 
 	// Output the remaining portion (including trailing newlines for final flush)
 	if len(rendered) > sr.renderedLen {
@@ -523,7 +546,7 @@ func (sr *StreamRenderer) Resize(newWidth int) error {
 	for _, opt := range sr.glamourOpts {
 		newOpts = append(newOpts, opt)
 	}
-	newOpts = append(newOpts, glamour.WithWordWrap(newWidth))
+	newOpts = append(newOpts, glamour.WithWordWrap(newWidth-1)) // slight margin
 
 	tr, err := glamour.NewTermRenderer(newOpts...)
 	if err != nil {
@@ -538,10 +561,13 @@ func (sr *StreamRenderer) Resize(newWidth int) error {
 	sr.renderedLen = 0
 
 	if sr.allMarkdown.Len() > 0 {
-		rendered, err := sr.tr.RenderBytes(sr.allMarkdown.Bytes())
+		rendered, err := sr.tr.RenderBytes(sr.normalizedMarkdown())
 		if err != nil {
 			return err
 		}
+
+		// Normalize consecutive newlines to fix inconsistent header spacing
+		rendered = normalizeNewlines(rendered)
 
 		// Find stable length (exclude trailing newlines)
 		stableLen := len(rendered)

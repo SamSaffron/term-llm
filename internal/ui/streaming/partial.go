@@ -86,6 +86,9 @@ func (sr *StreamRenderer) renderPartial(content string) (string, error) {
 		return "", err
 	}
 
+	// Normalize consecutive newlines to fix inconsistent header spacing
+	rendered = string(normalizeNewlines([]byte(rendered)))
+
 	// Strip trailing newlines from partial render since we'll re-render later
 	rendered = strings.TrimRight(rendered, "\n")
 

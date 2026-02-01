@@ -20,7 +20,7 @@ func PrintUnifiedDiffMulti(filePath, oldContent, newContent string) {
 	printUnifiedDiffInternal(filePath, oldContent, newContent, true)
 }
 
-func printUnifiedDiffInternal(filePath, oldContent, newContent string, multiFile bool) {
+func printUnifiedDiffInternal(filePath, oldContent, newContent string, _ bool) {
 	if oldContent == newContent {
 		return
 	}
@@ -726,14 +726,14 @@ func RenderDiffSegment(filePath, oldContent, newContent string, width int, start
 	}
 
 	// Helper to render a removal line with word-diff highlighting
-	renderRemovalWithWordDiff := func(content string, lineNum int, segments []diffSegment) {
+	renderRemovalWithWordDiff := func(_ string, lineNum int, segments []diffSegment) {
 		highlighted := applyWordDiffHighlight(segments, highlighter, diffRemoveBg, diffRemoveBgStrong)
 		b.WriteString(wrapWordDiffLine(lineNumWidth, lineNum, '-', "\x1b[38;2;160;80;80m", highlighted, contentWidth, diffRemoveBg))
 		renderedLines++
 	}
 
 	// Helper to render an addition line with word-diff highlighting
-	renderAdditionWithWordDiff := func(content string, lineNum int, segments []diffSegment) {
+	renderAdditionWithWordDiff := func(_ string, lineNum int, segments []diffSegment) {
 		highlighted := applyWordDiffHighlight(segments, highlighter, diffAddBg, diffAddBgStrong)
 		b.WriteString(wrapWordDiffLine(lineNumWidth, lineNum, '+', "\x1b[38;2;80;160;80m", highlighted, contentWidth, diffAddBg))
 		renderedLines++

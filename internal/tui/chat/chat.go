@@ -815,10 +815,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case clipboardCopiedMsg:
-		// Show brief confirmation - add as system message
-		return m.showSystemMessage("Copied last response to clipboard.")
-
 	case FlushBeforeAskUserMsg:
 		// Set flag to suppress spinner in View() while external UI is active
 		m.pausedForExternalUI = true

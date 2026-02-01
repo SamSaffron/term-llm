@@ -2,7 +2,6 @@ package chat
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -778,54 +777,15 @@ func (m *Model) renderMarkdown(content string) string {
 	m.rendererCache.renderer = renderer
 	m.rendererCache.width = targetWidth
 
+	// Normalize tabs to 2 spaces to prevent glamour from expanding to 8 spaces
+	content = strings.ReplaceAll(content, "\t", "  ")
+
 	rendered, err := renderer.Render(content)
 	if err != nil {
 		return content
 	}
 
 	return strings.TrimSpace(rendered)
-}
-
-// copyLastResponse copies the last assistant response to clipboard
-func (m *Model) copyLastResponse() (string, error) {
-	// Find last assistant message
-	for i := len(m.messages) - 1; i >= 0; i-- {
-		if m.messages[i].Role == llm.RoleAssistant {
-			content := m.messages[i].TextContent
-			// Try to copy to clipboard using OSC 52 escape sequence
-			// This works in most modern terminals
-			if err := copyToClipboard(content); err != nil {
-				return "", err
-			}
-			return "Copied last response to clipboard.", nil
-		}
-	}
-	return "", fmt.Errorf("no assistant response to copy")
-}
-
-// clipboardCopiedMsg signals clipboard copy completed
-type clipboardCopiedMsg struct{}
-
-// maxClipboardSize is the maximum size for OSC52 clipboard operations.
-// Many terminals have limits; 100KB is conservative and works with most.
-const maxClipboardSize = 100 * 1024
-
-// copyToClipboard uses OSC 52 escape sequence.
-// Returns an error if the text exceeds maxClipboardSize.
-func copyToClipboard(text string) error {
-	if len(text) > maxClipboardSize {
-		return fmt.Errorf("content too large for clipboard (%d bytes, max %d)", len(text), maxClipboardSize)
-	}
-	// OSC 52 clipboard escape sequence
-	// Works in terminals that support it (iTerm2, Ghostty, kitty, etc.)
-	encoded := base64Encode(text)
-	fmt.Printf("\x1b]52;c;%s\x07", encoded)
-	return nil
-}
-
-// base64Encode encodes text for clipboard
-func base64Encode(text string) string {
-	return base64.StdEncoding.EncodeToString([]byte(text))
 }
 
 // GetBundledServers returns bundled MCP servers (wrapper for mcp package)
