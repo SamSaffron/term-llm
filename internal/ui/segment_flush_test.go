@@ -283,3 +283,83 @@ func TestFallbackFlushPreservesHeadingSpacing(t *testing.T) {
 		t.Fatalf("Fallback flush output mismatch.\nReference:\n%q\nTotal:\n%q", StripANSI(reference), StripANSI(total))
 	}
 }
+
+func TestFlushStreamingText_FlushesCompletedToolsFirst(t *testing.T) {
+	// Test that FlushStreamingText flushes completed tool segments
+	// that appear before the current text segment.
+	width := 80
+	renderMd := func(s string, w int) string {
+		return RenderMarkdown(s, w)
+	}
+
+	tracker := NewToolTracker()
+
+	// Add a tool segment and mark it complete
+	tracker.HandleToolStart("tool-1", "test_tool", "test info")
+	tracker.HandleToolEnd("tool-1", true)
+
+	// Add an incomplete text segment with content
+	tracker.AddTextSegment("Some streaming text.\n\n", width)
+
+	// FlushStreamingText should flush the tool first, then the text
+	res := tracker.FlushStreamingText(0, width, renderMd)
+
+	output := res.ToPrint
+
+	// Verify tool segment content appears in output
+	stripped := stripAnsiForTest(output)
+	if !strings.Contains(stripped, "●") {
+		t.Error("Expected tool indicator (●) in output, tool segment was not flushed")
+	}
+	if !strings.Contains(stripped, "test_tool") {
+		t.Error("Expected 'test_tool' in output")
+	}
+	if !strings.Contains(stripped, "Some streaming text") {
+		t.Error("Expected 'Some streaming text' in output")
+	}
+
+	// Verify tool appears before text
+	toolIdx := strings.Index(stripped, "●")
+	textIdx := strings.Index(stripped, "Some streaming text")
+	if toolIdx > textIdx {
+		t.Errorf("Tool should appear before text. Tool at %d, text at %d", toolIdx, textIdx)
+	}
+
+	// Verify the tool segment is marked as flushed
+	if !tracker.Segments[0].Flushed {
+		t.Error("Tool segment should be marked as flushed")
+	}
+}
+
+func TestFlushStreamingText_ReturnsToolsEvenWhenTextBelowThreshold(t *testing.T) {
+	// Test that completed tools are returned even when text is below threshold
+	width := 80
+
+	tracker := NewToolTracker()
+
+	// Add a tool segment and mark it complete
+	tracker.HandleToolStart("tool-1", "test_tool", "test info")
+	tracker.HandleToolEnd("tool-1", true)
+
+	// Add an incomplete text segment with minimal content
+	tracker.AddTextSegment("Hi", width)
+
+	// Use high threshold so text won't be flushed, but tool should still be
+	res := tracker.FlushStreamingText(1000, width, nil)
+
+	output := res.ToPrint
+	stripped := stripAnsiForTest(output)
+
+	// Tool should be flushed even though text is below threshold
+	if !strings.Contains(stripped, "●") {
+		t.Error("Expected tool indicator (●) in output even when text is below threshold")
+	}
+	if !strings.Contains(stripped, "test_tool") {
+		t.Error("Expected 'test_tool' in output")
+	}
+
+	// Text should NOT be in output since it's below threshold
+	if strings.Contains(stripped, "Hi") {
+		t.Error("Text should not be flushed when below threshold")
+	}
+}

@@ -495,6 +495,33 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 		return FlushStreamingTextResult{}
 	}
 
+	// First: flush any completed tool segments before the text segment.
+	// Tool calls are always processed before text continues, so any tool segments
+	// that appear before the current text segment are already complete.
+	var contentBuilder strings.Builder
+	var toolsToFlush []*Segment
+	for i := 0; i < segIdx; i++ {
+		s := &t.Segments[i]
+		if s.Type == SegmentTool && !s.Flushed && s.ToolStatus != ToolPending {
+			toolsToFlush = append(toolsToFlush, s)
+			s.Flushed = true
+		}
+	}
+
+	if len(toolsToFlush) > 0 {
+		toolContent := RenderSegments(toolsToFlush, width, -1, nil, true)
+		if t.HasFlushed {
+			toolContent = stripLeadingBlankLine(toolContent)
+			prefix := t.LeadingSeparator(toolsToFlush[0].Type)
+			if prefix != "" {
+				toolContent = prefix + toolContent
+			}
+		}
+		contentBuilder.WriteString(toolContent)
+		t.HasFlushed = true
+		t.LastFlushedType = toolsToFlush[len(toolsToFlush)-1].Type
+	}
+
 	// Get current text length
 	textLen := 0
 	if seg.TextBuilder != nil {
@@ -507,6 +534,10 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 	unflushedLen := textLen - seg.FlushedPos
 	if unflushedLen < threshold {
 		debugFlushf("stream skip seg=%d reason=below-threshold textLen=%d flushedPos=%d unflushedLen=%d threshold=%d", segIdx, textLen, seg.FlushedPos, unflushedLen, threshold)
+		// Return any tool content we already flushed, even if text doesn't need flushing
+		if contentBuilder.Len() > 0 {
+			return FlushStreamingTextResult{ToPrint: contentBuilder.String()}
+		}
 		return FlushStreamingTextResult{}
 	}
 
@@ -532,17 +563,24 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 		if safeBoundary <= seg.FlushedPos {
 			// No new committed blocks to flush yet
 			debugFlushf("stream skip seg=%d reason=no-committed committed=%d flushedPos=%d", segIdx, safeBoundary, seg.FlushedPos)
+			// Return any tool content we already flushed
+			if contentBuilder.Len() > 0 {
+				return FlushStreamingTextResult{ToPrint: contentBuilder.String()}
+			}
 			return FlushStreamingTextResult{}
 		}
 		rendered := seg.StreamRenderer.RenderedUnflushed()
 		if rendered == "" {
 			debugFlushf("stream skip seg=%d reason=empty-rendered committed=%d flushedPos=%d", segIdx, safeBoundary, seg.FlushedPos)
+			// Return any tool content we already flushed
+			if contentBuilder.Len() > 0 {
+				return FlushStreamingTextResult{ToPrint: contentBuilder.String()}
+			}
 			return FlushStreamingTextResult{}
 		}
 
-		var b strings.Builder
 		if t.HasFlushed && seg.FlushedPos == 0 {
-			b.WriteString(t.LeadingSeparator(SegmentText))
+			contentBuilder.WriteString(t.LeadingSeparator(SegmentText))
 		}
 
 		// Strip leading blank line if we've already flushed content,
@@ -550,7 +588,7 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 		if t.HasFlushed {
 			rendered = stripLeadingBlankLine(rendered)
 		}
-		b.WriteString(rendered)
+		contentBuilder.WriteString(rendered)
 
 		// Update tracker state
 		seg.FlushedPos = safeBoundary
@@ -562,7 +600,7 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 		debugFlushf("stream flush seg=%d committed=%d flushedPos=%d renderedUnflushedLen=%d flushedRenderedPos=%d", segIdx, safeBoundary, seg.FlushedPos, len(rendered), seg.FlushedRenderedPos)
 
 		return FlushStreamingTextResult{
-			ToPrint: b.String(),
+			ToPrint: contentBuilder.String(),
 		}
 	}
 
@@ -571,6 +609,10 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 	if safeBoundary <= seg.FlushedPos {
 		// No safe boundary found, can't flush yet
 		debugFlushf("stream skip seg=%d reason=no-safe-boundary flushedPos=%d textLen=%d", segIdx, seg.FlushedPos, len(fullText))
+		// Return any tool content we already flushed
+		if contentBuilder.Len() > 0 {
+			return FlushStreamingTextResult{ToPrint: contentBuilder.String()}
+		}
 		return FlushStreamingTextResult{}
 	}
 
@@ -578,11 +620,19 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 	toFlush := fullText[seg.FlushedPos:safeBoundary]
 	if toFlush == "" {
 		debugFlushf("stream skip seg=%d reason=empty-toFlush safeBoundary=%d flushedPos=%d", segIdx, safeBoundary, seg.FlushedPos)
+		// Return any tool content we already flushed
+		if contentBuilder.Len() > 0 {
+			return FlushStreamingTextResult{ToPrint: contentBuilder.String()}
+		}
 		return FlushStreamingTextResult{}
 	}
 
 	if renderMd == nil {
 		debugFlushf("stream skip seg=%d reason=no-renderer safeBoundary=%d flushedPos=%d", segIdx, safeBoundary, seg.FlushedPos)
+		// Return any tool content we already flushed
+		if contentBuilder.Len() > 0 {
+			return FlushStreamingTextResult{ToPrint: contentBuilder.String()}
+		}
 		return FlushStreamingTextResult{}
 	}
 
@@ -590,6 +640,10 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 	renderedAll := renderMd(fullText[:safeBoundary], width)
 	if renderedAll == "" {
 		debugFlushf("stream skip seg=%d reason=empty-rendered-fallback safeBoundary=%d flushedPos=%d", segIdx, safeBoundary, seg.FlushedPos)
+		// Return any tool content we already flushed
+		if contentBuilder.Len() > 0 {
+			return FlushStreamingTextResult{ToPrint: contentBuilder.String()}
+		}
 		return FlushStreamingTextResult{}
 	}
 
@@ -597,25 +651,32 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 	if seg.FlushedRenderedPos > 0 {
 		if seg.FlushedRenderedPos >= len(renderedAll) {
 			debugFlushf("stream skip seg=%d reason=rendered-pos>=len safeBoundary=%d flushedRenderedPos=%d renderedLen=%d", segIdx, safeBoundary, seg.FlushedRenderedPos, len(renderedAll))
+			// Return any tool content we already flushed
+			if contentBuilder.Len() > 0 {
+				return FlushStreamingTextResult{ToPrint: contentBuilder.String()}
+			}
 			return FlushStreamingTextResult{}
 		}
 		rendered = renderedAll[seg.FlushedRenderedPos:]
 	}
 	if rendered == "" {
 		debugFlushf("stream skip seg=%d reason=empty-rendered-slice safeBoundary=%d flushedPos=%d", segIdx, safeBoundary, seg.FlushedPos)
+		// Return any tool content we already flushed
+		if contentBuilder.Len() > 0 {
+			return FlushStreamingTextResult{ToPrint: contentBuilder.String()}
+		}
 		return FlushStreamingTextResult{}
 	}
 
-	var b strings.Builder
 	// Only add leading separator if this is the very FIRST flush for this segment.
 	if t.HasFlushed && seg.FlushedPos == 0 {
-		b.WriteString(t.LeadingSeparator(SegmentText))
+		contentBuilder.WriteString(t.LeadingSeparator(SegmentText))
 	}
 	// Strip leading blank line since tea.Printf adds a newline after each flush
 	if t.HasFlushed {
 		rendered = stripLeadingBlankLine(rendered)
 	}
-	b.WriteString(rendered)
+	contentBuilder.WriteString(rendered)
 
 	// Update flushed position/state
 	seg.FlushedPos = safeBoundary
@@ -625,7 +686,7 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 	debugFlushf("stream flush seg=%d safeBoundary=%d flushedPos=%d toFlushLen=%d renderedLen=%d", segIdx, safeBoundary, seg.FlushedPos, len(toFlush), len(rendered))
 
 	return FlushStreamingTextResult{
-		ToPrint: b.String(),
+		ToPrint: contentBuilder.String(),
 	}
 }
 
