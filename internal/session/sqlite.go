@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     provider TEXT NOT NULL,
     model TEXT NOT NULL,
     mode TEXT DEFAULT 'chat',
+    agent TEXT,
     cwd TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -130,7 +131,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 4
+const schemaVersion = 5
 
 // migration represents a schema migration.
 type migration struct {
@@ -291,6 +292,19 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		// Migration 5: Add agent column
+		// Tracks which agent was used for the session
+		version:     5,
+		description: "add agent column",
+		up: func(db *sql.DB) error {
+			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN agent TEXT")
+			if err != nil && !isDuplicateColumnError(err) {
+				return err
+			}
+			return nil
+		},
+	},
 }
 
 // initSchema initializes the database schema and runs any pending migrations.
@@ -434,10 +448,10 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 
 	err := retryOnBusy(5, func() error {
 		_, err := s.db.ExecContext(ctx, `
-			INSERT INTO sessions (id, name, summary, provider, model, mode, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
+			INSERT INTO sessions (id, name, summary, provider, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
 			                      user_turns, llm_turns, tool_calls, input_tokens, output_tokens, status, tags)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			sess.ID, sess.Name, sess.Summary, sess.Provider, sess.Model, string(sess.Mode), sess.CWD,
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			sess.ID, sess.Name, sess.Summary, sess.Provider, sess.Model, string(sess.Mode), nullString(sess.Agent), sess.CWD,
 			sess.CreatedAt, sess.UpdatedAt, sess.Archived, nullString(sess.ParentID),
 			sess.Search, nullString(sess.Tools), nullString(sess.MCP),
 			sess.UserTurns, sess.LLMTurns, sess.ToolCalls, sess.InputTokens, sess.OutputTokens,
@@ -453,14 +467,14 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 // Get retrieves a session by ID.
 func (s *SQLiteStore) Get(ctx context.Context, id string) (*Session, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, name, summary, provider, model, mode, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
+		SELECT id, name, summary, provider, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
 		       user_turns, llm_turns, tool_calls, input_tokens, output_tokens, status, tags
 		FROM sessions WHERE id = ?`, id)
 
 	var sess Session
-	var mode, parentID, tools, mcp, status, tags sql.NullString
+	var mode, agent, parentID, tools, mcp, status, tags sql.NullString
 	err := row.Scan(&sess.ID, &sess.Name, &sess.Summary, &sess.Provider, &sess.Model, &mode,
-		&sess.CWD, &sess.CreatedAt, &sess.UpdatedAt, &sess.Archived, &parentID,
+		&agent, &sess.CWD, &sess.CreatedAt, &sess.UpdatedAt, &sess.Archived, &parentID,
 		&sess.Search, &tools, &mcp,
 		&sess.UserTurns, &sess.LLMTurns, &sess.ToolCalls, &sess.InputTokens, &sess.OutputTokens,
 		&status, &tags)
@@ -472,6 +486,9 @@ func (s *SQLiteStore) Get(ctx context.Context, id string) (*Session, error) {
 	}
 	if mode.Valid {
 		sess.Mode = SessionMode(mode.String)
+	}
+	if agent.Valid {
+		sess.Agent = agent.String
 	}
 	if parentID.Valid {
 		sess.ParentID = parentID.String
@@ -507,14 +524,14 @@ func (s *SQLiteStore) GetByPrefix(ctx context.Context, prefix string) (*Session,
 	// Try prefix match using expanded short ID
 	pattern := ExpandShortID(prefix)
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, name, summary, provider, model, mode, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
+		SELECT id, name, summary, provider, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
 		       user_turns, llm_turns, tool_calls, input_tokens, output_tokens, status, tags
 		FROM sessions WHERE id LIKE ? ORDER BY created_at DESC LIMIT 1`, pattern)
 
 	var prefixSess Session
-	var mode, parentID, tools, mcp, status, tags sql.NullString
+	var mode, agent, parentID, tools, mcp, status, tags sql.NullString
 	err = row.Scan(&prefixSess.ID, &prefixSess.Name, &prefixSess.Summary, &prefixSess.Provider, &prefixSess.Model, &mode,
-		&prefixSess.CWD, &prefixSess.CreatedAt, &prefixSess.UpdatedAt, &prefixSess.Archived, &parentID,
+		&agent, &prefixSess.CWD, &prefixSess.CreatedAt, &prefixSess.UpdatedAt, &prefixSess.Archived, &parentID,
 		&prefixSess.Search, &tools, &mcp,
 		&prefixSess.UserTurns, &prefixSess.LLMTurns, &prefixSess.ToolCalls, &prefixSess.InputTokens, &prefixSess.OutputTokens,
 		&status, &tags)
@@ -526,6 +543,9 @@ func (s *SQLiteStore) GetByPrefix(ctx context.Context, prefix string) (*Session,
 	}
 	if mode.Valid {
 		prefixSess.Mode = SessionMode(mode.String)
+	}
+	if agent.Valid {
+		prefixSess.Agent = agent.String
 	}
 	if parentID.Valid {
 		prefixSess.ParentID = parentID.String
@@ -549,12 +569,12 @@ func (s *SQLiteStore) GetByPrefix(ctx context.Context, prefix string) (*Session,
 func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	sess.UpdatedAt = time.Now()
 	result, err := s.db.ExecContext(ctx, `
-		UPDATE sessions SET name = ?, summary = ?, provider = ?, model = ?, mode = ?, cwd = ?,
+		UPDATE sessions SET name = ?, summary = ?, provider = ?, model = ?, mode = ?, agent = ?, cwd = ?,
 		       updated_at = ?, archived = ?, parent_id = ?, search = ?, tools = ?, mcp = ?,
 		       user_turns = ?, llm_turns = ?, tool_calls = ?, input_tokens = ?, output_tokens = ?,
 		       status = ?, tags = ?
 		WHERE id = ?`,
-		sess.Name, sess.Summary, sess.Provider, sess.Model, string(sess.Mode), sess.CWD,
+		sess.Name, sess.Summary, sess.Provider, sess.Model, string(sess.Mode), nullString(sess.Agent), sess.CWD,
 		sess.UpdatedAt, sess.Archived, nullString(sess.ParentID),
 		sess.Search, nullString(sess.Tools), nullString(sess.MCP),
 		sess.UserTurns, sess.LLMTurns, sess.ToolCalls, sess.InputTokens, sess.OutputTokens,

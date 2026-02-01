@@ -77,6 +77,7 @@ type Model struct {
 	config       *config.Config
 	providerName string
 	modelName    string
+	agentName    string
 
 	// Pending message context
 	files               []FileAttachment // Attached files for next message
@@ -216,7 +217,7 @@ type AskUserRequestMsg struct {
 }
 
 // New creates a new chat model
-func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, textMode bool) *Model {
+func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, textMode bool, agentName string) *Model {
 	// Get terminal size
 	width := 80
 	height := 24
@@ -260,6 +261,7 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 			Provider:  provider.Name(),
 			Model:     modelName,
 			Mode:      session.ModeChat,
+			Agent:     agentName,
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
 			Search:    searchEnabled,
@@ -336,6 +338,7 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 		config:              cfg,
 		providerName:        provider.Name(),
 		modelName:           modelName,
+		agentName:           agentName,
 		phase:               "Thinking",
 		viewportRows:        height - 8, // Reserve space for input and status
 		tracker:             tracker,

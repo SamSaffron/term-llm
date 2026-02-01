@@ -335,7 +335,11 @@ func runChat(cmd *cobra.Command, args []string) error {
 	useAltScreen := term.IsTerminal(int(os.Stdout.Fd())) && !autoSendMode
 
 	// Create chat model
-	model := chat.New(cfg, provider, engine, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, showStats, initialText, store, sess, useAltScreen, chatAutoSend, chatTextMode)
+	agentName := ""
+	if agent != nil {
+		agentName = agent.Name
+	}
+	model := chat.New(cfg, provider, engine, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, showStats, initialText, store, sess, useAltScreen, chatAutoSend, chatTextMode, agentName)
 
 	// Build program options
 	var opts []tea.ProgramOption

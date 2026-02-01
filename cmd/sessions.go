@@ -10,6 +10,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/samsaffron/term-llm/internal/agents/gist"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tui/sessions"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -127,14 +128,33 @@ Key bindings:
 	RunE: runSessionsBrowse,
 }
 
+var sessionsExportGistCmd = &cobra.Command{
+	Use:   "gist <id>",
+	Short: "Export session to GitHub Gist",
+	Long: `Export a session to a GitHub Gist for sharing.
+
+Requires the gh CLI to be installed and authenticated.
+Creates a new gist with the session exported as pretty markdown.
+
+Examples:
+  term-llm sessions export gist abc123
+  term-llm sessions export gist abc123 --public
+  term-llm sessions export gist abc123 --include-system`,
+	Args:         cobra.ExactArgs(1),
+	RunE:         runSessionsExportGist,
+	SilenceUsage: true,
+}
+
 // Flags
 var (
-	sessionsProvider string
-	sessionsLimit    int
-	sessionsJSON     bool
-	sessionsStatus   string
-	sessionsMode     string
-	sessionsTag      string
+	sessionsProvider          string
+	sessionsLimit             int
+	sessionsJSON              bool
+	sessionsStatus            string
+	sessionsMode              string
+	sessionsTag               string
+	sessionsGistPublic        bool
+	sessionsGistIncludeSystem bool
 )
 
 func init() {
@@ -148,6 +168,10 @@ func init() {
 	// Show flags
 	sessionsShowCmd.Flags().BoolVar(&sessionsJSON, "json", false, "Output as JSON")
 
+	// Gist export flags
+	sessionsExportGistCmd.Flags().BoolVar(&sessionsGistPublic, "public", false, "Create a public gist (default: private)")
+	sessionsExportGistCmd.Flags().BoolVar(&sessionsGistIncludeSystem, "include-system", false, "Include system prompt in export")
+
 	// Add subcommands
 	sessionsCmd.AddCommand(sessionsListCmd)
 	sessionsCmd.AddCommand(sessionsSearchCmd)
@@ -159,6 +183,9 @@ func init() {
 	sessionsCmd.AddCommand(sessionsTagCmd)
 	sessionsCmd.AddCommand(sessionsUntagCmd)
 	sessionsCmd.AddCommand(sessionsBrowseCmd)
+
+	// Add gist subcommand to export
+	sessionsExportCmd.AddCommand(sessionsExportGistCmd)
 
 	rootCmd.AddCommand(sessionsCmd)
 }
@@ -717,6 +744,67 @@ func runSessionsBrowse(cmd *cobra.Command, args []string) error {
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("failed to run browser: %w", err)
 	}
+
+	return nil
+}
+
+func runSessionsExportGist(cmd *cobra.Command, args []string) error {
+	store, err := getSessionStore()
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Get session
+	sess, err := store.GetByPrefix(ctx, args[0])
+	if err != nil {
+		return fmt.Errorf("failed to get session: %w", err)
+	}
+	if sess == nil {
+		return fmt.Errorf("session '%s' not found", args[0])
+	}
+
+	// Get messages
+	messages, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		return fmt.Errorf("failed to get messages: %w", err)
+	}
+
+	// Generate markdown
+	markdown := session.ExportToMarkdown(sess, messages, session.ExportOptions{
+		IncludeSystem: sessionsGistIncludeSystem,
+	})
+
+	// Initialize gist client
+	client, err := gist.NewClient()
+	if err != nil {
+		return err
+	}
+
+	// Build description
+	name := sess.Name
+	if name == "" {
+		name = session.ShortID(sess.ID)
+	}
+	description := fmt.Sprintf("term-llm session: %s", name)
+
+	// Create gist
+	fmt.Println("Creating gist...")
+	files := map[string]string{
+		"session.md": markdown,
+	}
+
+	g, err := client.Create(description, sessionsGistPublic, files)
+	if err != nil {
+		return fmt.Errorf("create gist: %w", err)
+	}
+
+	fmt.Printf("Created: %s\n", g.URL)
+	fmt.Println()
+	fmt.Println("Share with:")
+	fmt.Printf("  %s\n", g.URL)
 
 	return nil
 }

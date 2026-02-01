@@ -168,6 +168,7 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 			IsSubagent: true,
 			Provider:   providerName,
 			Model:      modelName,
+			Agent:      agentName,
 			Summary:    fmt.Sprintf("@%s: %s", agentName, session.TruncateSummary(prompt)),
 			CreatedAt:  time.Now(),
 			UpdatedAt:  time.Now(),

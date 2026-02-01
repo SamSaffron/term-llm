@@ -341,11 +341,16 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
 			modelName = providerCfg.Model
 		}
+		agentName := ""
+		if agent != nil {
+			agentName = agent.Name
+		}
 		sess = &session.Session{
 			ID:        session.NewID(),
 			Provider:  provider.Name(),
 			Model:     modelName,
 			Mode:      session.ModeAsk,
+			Agent:     agentName,
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
 			Search:    settings.Search,
@@ -502,6 +507,19 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	// Capture start time for duration tracking in callback
 	streamStartTime := time.Now()
 	if store != nil && sess != nil {
+		// Save system message first if this is a new session with instructions
+		if instructions != "" && !historyHasSystem {
+			sysMsg := &session.Message{
+				SessionID:   sess.ID,
+				Role:        llm.RoleSystem,
+				Parts:       []llm.Part{{Type: llm.PartText, Text: instructions}},
+				TextContent: instructions,
+				CreatedAt:   time.Now(),
+				Sequence:    -1, // Auto-allocate sequence
+			}
+			_ = store.AddMessage(ctx, sess.ID, sysMsg)
+		}
+
 		userMsg := &session.Message{
 			SessionID:   sess.ID,
 			Role:        llm.RoleUser,

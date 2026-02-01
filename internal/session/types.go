@@ -35,8 +35,9 @@ type Session struct {
 	Summary    string      `json:"summary,omitempty"` // First user message or auto-generated
 	Provider   string      `json:"provider"`
 	Model      string      `json:"model"`
-	Mode       SessionMode `json:"mode,omitempty"` // Session mode (chat, ask, plan, exec)
-	CWD        string      `json:"cwd,omitempty"`  // Working directory at session start
+	Mode       SessionMode `json:"mode,omitempty"`  // Session mode (chat, ask, plan, exec)
+	Agent      string      `json:"agent,omitempty"` // Agent name used for this session
+	CWD        string      `json:"cwd,omitempty"`   // Working directory at session start
 	CreatedAt  time.Time   `json:"created_at"`
 	UpdatedAt  time.Time   `json:"updated_at"`
 	Archived   bool        `json:"archived,omitempty"`

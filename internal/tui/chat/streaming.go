@@ -41,6 +41,29 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	}
 	m.messages = append(m.messages, *userMsg)
 	if m.store != nil {
+		// Save system message first if this is a new session with instructions
+		// Check if there's no existing system message in history
+		hasSystemMsg := false
+		for _, msg := range m.messages {
+			if msg.Role == llm.RoleSystem {
+				hasSystemMsg = true
+				break
+			}
+		}
+		if m.config.Chat.Instructions != "" && !hasSystemMsg {
+			sysMsg := &session.Message{
+				SessionID:   m.sess.ID,
+				Role:        llm.RoleSystem,
+				Parts:       []llm.Part{{Type: llm.PartText, Text: m.config.Chat.Instructions}},
+				TextContent: m.config.Chat.Instructions,
+				CreatedAt:   time.Now(),
+				Sequence:    -1, // Auto-allocate sequence
+			}
+			_ = m.store.AddMessage(context.Background(), m.sess.ID, sysMsg)
+			// Prepend to m.messages so we don't save it again on subsequent sends
+			m.messages = append([]session.Message{*sysMsg}, m.messages...)
+		}
+
 		_ = m.store.AddMessage(context.Background(), m.sess.ID, userMsg)
 		// Sync the assigned ID back to the copy in m.messages to avoid cache collisions
 		// (AddMessage sets userMsg.ID, but the copy was made before that)
@@ -243,8 +266,11 @@ func (m *Model) listenForStreamEventsSync() tea.Msg {
 func (m *Model) buildMessages() []llm.Message {
 	var messages []llm.Message
 
-	// Add system instructions if configured
-	if m.config.Chat.Instructions != "" {
+	// Check if history already starts with a system message
+	historyHasSystem := len(m.messages) > 0 && m.messages[0].Role == llm.RoleSystem
+
+	// Add system instructions if configured and not already in history
+	if m.config.Chat.Instructions != "" && !historyHasSystem {
 		messages = append(messages, llm.SystemText(m.config.Chat.Instructions))
 	}
 
