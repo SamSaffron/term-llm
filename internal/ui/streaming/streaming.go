@@ -86,6 +86,10 @@ type StreamRenderer struct {
 
 	// Glamour options for re-creating renderer on resize
 	glamourOpts []glamour.TermRendererOption
+
+	// Resume state when a nested block (like fenced code) ends.
+	// Used to keep list context stable across nested blocks.
+	resumeState state
 }
 
 // NewRenderer creates a new streaming markdown renderer.
@@ -313,6 +317,15 @@ func (sr *StreamRenderer) handleFencedCode(content, rawLine string) error {
 
 	// Check for closing fence
 	if isClosingFence(content, sr.fenceChar, sr.fenceLen, sr.fenceIndent) {
+		if sr.resumeState == stateInList {
+			// Return to list context without emitting yet.
+			sr.state = sr.resumeState
+			sr.resumeState = stateReady
+			sr.fenceChar = 0
+			sr.fenceLen = 0
+			sr.fenceIndent = 0
+			return nil
+		}
 		// Commit all pending lines
 		for _, l := range sr.pendingLines {
 			sr.allMarkdown.WriteString(l)
@@ -337,6 +350,11 @@ func (sr *StreamRenderer) handleTable(content, rawLine string) error {
 	}
 
 	// Non-table line ends the table
+	if sr.resumeState == stateInList {
+		sr.state = stateInList
+		sr.resumeState = stateReady
+		return sr.handleList(content, rawLine)
+	}
 	for _, l := range sr.pendingLines {
 		sr.allMarkdown.WriteString(l)
 	}
@@ -369,6 +387,33 @@ func (sr *StreamRenderer) handleList(content, rawLine string) error {
 
 	// Check if a new block type is starting (not a paragraph)
 	blockType := sr.detectBlock(content)
+	if indent > sr.listIndent {
+		switch blockType {
+		case blockFencedCode:
+			// Nested fenced code block inside list: stay in list context.
+			sr.state = stateInFencedCode
+			sr.resumeState = stateInList
+			sr.fenceChar, sr.fenceLen, sr.fenceIndent = parseFence(content)
+			sr.pendingLines = append(sr.pendingLines, rawLine)
+			return nil
+		case blockBlockquote:
+			// Nested blockquote inside list: stay in list context.
+			sr.state = stateInBlockquote
+			sr.resumeState = stateInList
+			sr.pendingLines = append(sr.pendingLines, rawLine)
+			return nil
+		case blockTable:
+			// Nested table inside list: stay in list context.
+			sr.state = stateInTable
+			sr.resumeState = stateInList
+			sr.pendingLines = append(sr.pendingLines, rawLine)
+			return nil
+		case blockHeading, blockThematicBreak:
+			// Nested single-line block inside list: treat as list continuation.
+			sr.pendingLines = append(sr.pendingLines, rawLine)
+			return nil
+		}
+	}
 	if blockType != blockParagraph && blockType != blockUnknown {
 		// New block type, emit list
 		for _, l := range sr.pendingLines {
@@ -418,6 +463,11 @@ func (sr *StreamRenderer) handleBlockquote(content, rawLine string) error {
 	}
 
 	// Non-blockquote line ends the blockquote
+	if sr.resumeState == stateInList {
+		sr.state = stateInList
+		sr.resumeState = stateReady
+		return sr.handleList(content, rawLine)
+	}
 	for _, l := range sr.pendingLines {
 		sr.allMarkdown.WriteString(l)
 	}

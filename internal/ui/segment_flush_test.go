@@ -363,3 +363,235 @@ func TestFlushStreamingText_ReturnsToolsEvenWhenTextBelowThreshold(t *testing.T)
 		t.Error("Text should not be flushed when below threshold")
 	}
 }
+
+func TestStreamingFlush_CodeBlockThenText(t *testing.T) {
+	md := "2. **Enforce changeset URL requirements at the model layer**\n" +
+		"    The controller validates `changeset_url`.\n" +
+		"    **Fix:** Add a model validation, e.g.:\n" +
+		"    ```ruby\n" +
+		"    validate :changeset_url_valid_for_fixed\n" +
+		"    \n" +
+		"    errors.add(:resolution_changeset_url, \"must be a valid URL\") unless\n" +
+		"    resolution_changeset_url =~ /\\Ahttps?:\\/\\//\n" +
+		"    end\n" +
+		"    ```\n" +
+		"    This keeps the constraint consistent no matter how the model is updated.\n" +
+		"\n" +
+		"3. **Ignore changeset URLs when resolving as invalid**\n" +
+		"    In `HotOrNotController#resolve` (`app/controllers/hot_or_not_controller.rb:194-206`), a malicious request can still pass a `changeset_url` while resolving as invalid.\n"
+
+	tracker := NewToolTracker()
+	width := 80
+	chunkSize := 24
+
+	var allPrinted strings.Builder
+	for i := 0; i < len(md); i += chunkSize {
+		end := i + chunkSize
+		if end > len(md) {
+			end = len(md)
+		}
+		chunk := md[i:end]
+		tracker.AddTextSegment(chunk, width)
+		result := tracker.FlushStreamingText(0, width, RenderMarkdown)
+		if result.ToPrint != "" {
+			allPrinted.WriteString(result.ToPrint)
+			allPrinted.WriteString("\n") // tea.Printf adds newline after each flush
+		}
+	}
+
+	tracker.CompleteTextSegments(func(text string) string {
+		return RenderMarkdown(text, width)
+	})
+	result := tracker.FlushAllRemaining(width, 0, RenderMarkdown)
+	if result.ToPrint != "" {
+		allPrinted.WriteString(result.ToPrint)
+		allPrinted.WriteString("\n")
+	}
+
+	output := stripAnsi(allPrinted.String())
+	if !strings.Contains(output, "This keeps the constraint consistent no matter how the model is updated.") {
+		t.Fatalf("Expected paragraph after code block to be present in output.\nOutput:\n%s", output)
+	}
+	if !strings.Contains(output, "changeset_url") {
+		t.Fatalf("Expected inline code `changeset_url` to be present in output.\nOutput:\n%s", output)
+	}
+}
+
+func TestStreamingFlush_BlockquoteThenText(t *testing.T) {
+	md := "1. **Has quote**\n" +
+		"    > quoted line\n" +
+		"    > more quote\n" +
+		"    This keeps the list item going after the quote.\n" +
+		"\n" +
+		"2. **Next item**\n"
+
+	tracker := NewToolTracker()
+	width := 80
+	chunkSize := 20
+
+	var allPrinted strings.Builder
+	for i := 0; i < len(md); i += chunkSize {
+		end := i + chunkSize
+		if end > len(md) {
+			end = len(md)
+		}
+		chunk := md[i:end]
+		tracker.AddTextSegment(chunk, width)
+		result := tracker.FlushStreamingText(0, width, RenderMarkdown)
+		if result.ToPrint != "" {
+			allPrinted.WriteString(result.ToPrint)
+			allPrinted.WriteString("\n")
+		}
+	}
+
+	tracker.CompleteTextSegments(func(text string) string {
+		return RenderMarkdown(text, width)
+	})
+	result := tracker.FlushAllRemaining(width, 0, RenderMarkdown)
+	if result.ToPrint != "" {
+		allPrinted.WriteString(result.ToPrint)
+		allPrinted.WriteString("\n")
+	}
+
+	output := stripAnsi(allPrinted.String())
+	if !strings.Contains(output, "This keeps the list item going after the quote.") {
+		t.Fatalf("Expected paragraph after blockquote to be present in output.\nOutput:\n%s", output)
+	}
+	if !strings.Contains(output, "Next item") {
+		t.Fatalf("Expected following list item to be present in output.\nOutput:\n%s", output)
+	}
+}
+
+func TestStreamingFlush_TableThenText(t *testing.T) {
+	md := "1. **Has table**\n" +
+		"    | A | B |\n" +
+		"    |---|---|\n" +
+		"    | 1 | 2 |\n" +
+		"    After the table, more text in the same item.\n" +
+		"\n" +
+		"2. **Next item**\n"
+
+	tracker := NewToolTracker()
+	width := 80
+	chunkSize := 20
+
+	var allPrinted strings.Builder
+	for i := 0; i < len(md); i += chunkSize {
+		end := i + chunkSize
+		if end > len(md) {
+			end = len(md)
+		}
+		chunk := md[i:end]
+		tracker.AddTextSegment(chunk, width)
+		result := tracker.FlushStreamingText(0, width, RenderMarkdown)
+		if result.ToPrint != "" {
+			allPrinted.WriteString(result.ToPrint)
+			allPrinted.WriteString("\n")
+		}
+	}
+
+	tracker.CompleteTextSegments(func(text string) string {
+		return RenderMarkdown(text, width)
+	})
+	result := tracker.FlushAllRemaining(width, 0, RenderMarkdown)
+	if result.ToPrint != "" {
+		allPrinted.WriteString(result.ToPrint)
+		allPrinted.WriteString("\n")
+	}
+
+	output := stripAnsi(allPrinted.String())
+	if !strings.Contains(output, "After the table, more text in the same item.") {
+		t.Fatalf("Expected paragraph after table to be present in output.\nOutput:\n%s", output)
+	}
+	if !strings.Contains(output, "Next item") {
+		t.Fatalf("Expected following list item to be present in output.\nOutput:\n%s", output)
+	}
+}
+
+func TestStreamingFlush_HeadingThenText(t *testing.T) {
+	md := "1. **Has heading**\n" +
+		"    ### Nested heading\n" +
+		"    Text after heading in the same item.\n" +
+		"\n" +
+		"2. **Next item**\n"
+
+	tracker := NewToolTracker()
+	width := 80
+	chunkSize := 20
+
+	var allPrinted strings.Builder
+	for i := 0; i < len(md); i += chunkSize {
+		end := i + chunkSize
+		if end > len(md) {
+			end = len(md)
+		}
+		chunk := md[i:end]
+		tracker.AddTextSegment(chunk, width)
+		result := tracker.FlushStreamingText(0, width, RenderMarkdown)
+		if result.ToPrint != "" {
+			allPrinted.WriteString(result.ToPrint)
+			allPrinted.WriteString("\n")
+		}
+	}
+
+	tracker.CompleteTextSegments(func(text string) string {
+		return RenderMarkdown(text, width)
+	})
+	result := tracker.FlushAllRemaining(width, 0, RenderMarkdown)
+	if result.ToPrint != "" {
+		allPrinted.WriteString(result.ToPrint)
+		allPrinted.WriteString("\n")
+	}
+
+	output := stripAnsi(allPrinted.String())
+	if !strings.Contains(output, "Text after heading in the same item.") {
+		t.Fatalf("Expected paragraph after heading to be present in output.\nOutput:\n%s", output)
+	}
+	if !strings.Contains(output, "Next item") {
+		t.Fatalf("Expected following list item to be present in output.\nOutput:\n%s", output)
+	}
+}
+
+func TestStreamingFlush_ThematicBreakThenText(t *testing.T) {
+	md := "1. **Has break**\n" +
+		"    ---\n" +
+		"    Text after break in the same item.\n" +
+		"\n" +
+		"2. **Next item**\n"
+
+	tracker := NewToolTracker()
+	width := 80
+	chunkSize := 20
+
+	var allPrinted strings.Builder
+	for i := 0; i < len(md); i += chunkSize {
+		end := i + chunkSize
+		if end > len(md) {
+			end = len(md)
+		}
+		chunk := md[i:end]
+		tracker.AddTextSegment(chunk, width)
+		result := tracker.FlushStreamingText(0, width, RenderMarkdown)
+		if result.ToPrint != "" {
+			allPrinted.WriteString(result.ToPrint)
+			allPrinted.WriteString("\n")
+		}
+	}
+
+	tracker.CompleteTextSegments(func(text string) string {
+		return RenderMarkdown(text, width)
+	})
+	result := tracker.FlushAllRemaining(width, 0, RenderMarkdown)
+	if result.ToPrint != "" {
+		allPrinted.WriteString(result.ToPrint)
+		allPrinted.WriteString("\n")
+	}
+
+	output := stripAnsi(allPrinted.String())
+	if !strings.Contains(output, "Text after break in the same item.") {
+		t.Fatalf("Expected paragraph after thematic break to be present in output.\nOutput:\n%s", output)
+	}
+	if !strings.Contains(output, "Next item") {
+		t.Fatalf("Expected following list item to be present in output.\nOutput:\n%s", output)
+	}
+}
