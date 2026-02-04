@@ -62,13 +62,15 @@ type Model struct {
 	askUserDoneCh chan<- []tools.AskUserAnswer
 
 	// LLM context
-	provider       llm.Provider
-	engine         *llm.Engine
-	config         *config.Config
-	modelName      string
-	maxTurns       int
-	addLineTool    *tools.AddLineTool
-	removeLineTool *tools.RemoveLineTool
+	provider            llm.Provider
+	engine              *llm.Engine
+	config              *config.Config
+	modelName           string
+	maxTurns            int
+	search              bool
+	forceExternalSearch bool
+	addLineTool         *tools.AddLineTool
+	removeLineTool      *tools.RemoveLineTool
 
 	// Streaming channels
 	streamChan <-chan ui.StreamEvent
@@ -104,7 +106,7 @@ type Model struct {
 }
 
 // New creates a new plan model.
-func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelName string, maxTurns int, filePath string) *Model {
+func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelName string, maxTurns int, filePath string, search bool, forceExternalSearch bool) *Model {
 	// Get terminal size
 	width := 80
 	height := 24
@@ -163,27 +165,29 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 	chatInput.Blur() // Start unfocused
 
 	return &Model{
-		width:            width,
-		height:           height,
-		doc:              doc,
-		editor:           ta,
-		focusEditor:      true,
-		spinner:          s,
-		viewport:         vp,
-		styles:           styles,
-		provider:         provider,
-		engine:           engine,
-		config:           cfg,
-		modelName:        modelName,
-		maxTurns:         maxTurns,
-		addLineTool:      addLineTool,
-		removeLineTool:   removeLineTool,
-		history:          make([]llm.Message, 0),
-		filePath:         filePath,
-		tracker:          ui.NewToolTracker(),
-		partialInsertIdx: -1,
-		chatInput:        chatInput,
-		pendingPrompts:   make([]string, 0),
+		width:               width,
+		height:              height,
+		doc:                 doc,
+		editor:              ta,
+		focusEditor:         true,
+		spinner:             s,
+		viewport:            vp,
+		styles:              styles,
+		provider:            provider,
+		engine:              engine,
+		config:              cfg,
+		modelName:           modelName,
+		maxTurns:            maxTurns,
+		search:              search,
+		forceExternalSearch: forceExternalSearch,
+		addLineTool:         addLineTool,
+		removeLineTool:      removeLineTool,
+		history:             make([]llm.Message, 0),
+		filePath:            filePath,
+		tracker:             ui.NewToolTracker(),
+		partialInsertIdx:    -1,
+		chatInput:           chatInput,
+		pendingPrompts:      make([]string, 0),
 	}
 }
 
@@ -1339,10 +1343,12 @@ Every plan section should address:
 	})
 
 	return llm.Request{
-		Model:    m.modelName,
-		Messages: messages,
-		MaxTurns: m.maxTurns,
-		Tools:    m.engine.Tools().AllSpecs(),
+		Model:               m.modelName,
+		Messages:            messages,
+		MaxTurns:            m.maxTurns,
+		Tools:               m.engine.Tools().AllSpecs(),
+		Search:              m.search,
+		ForceExternalSearch: m.forceExternalSearch,
 	}
 }
 

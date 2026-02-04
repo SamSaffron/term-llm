@@ -15,10 +15,13 @@ import (
 )
 
 var (
-	planDebug    bool
-	planProvider string
-	planMaxTurns int
-	planFile     string
+	planDebug          bool
+	planProvider       string
+	planMaxTurns       int
+	planFile           string
+	planSearch         bool
+	planNativeSearch   bool
+	planNoNativeSearch bool
 )
 
 var planCmd = &cobra.Command{
@@ -30,6 +33,7 @@ edit a plan document together in real-time.
 Examples:
   term-llm plan                      # Start with a new plan
   term-llm plan project.md           # Edit existing plan file
+  term-llm plan -s                   # With web search enabled
   term-llm plan --provider chatgpt   # Use specific provider
 
 Keyboard shortcuts:
@@ -53,6 +57,8 @@ func init() {
 	AddProviderFlag(planCmd, &planProvider)
 	AddDebugFlag(planCmd, &planDebug)
 	AddMaxTurnsFlag(planCmd, &planMaxTurns, 50)
+	AddSearchFlag(planCmd, &planSearch)
+	AddNativeSearchFlags(planCmd, &planNativeSearch, &planNoNativeSearch)
 
 	planCmd.Flags().StringVarP(&planFile, "file", "f", "plan.md", "Plan file to edit")
 
@@ -150,8 +156,11 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	// Only enable alt-screen when stdout is a terminal
 	useAltScreen := term.IsTerminal(int(os.Stdout.Fd()))
 
+	// Resolve force external search setting
+	forceExternalSearch := resolveForceExternalSearch(cfg, planNativeSearch, planNoNativeSearch)
+
 	// Create plan model
-	model := plan.New(cfg, provider, engine, modelName, maxTurns, filePath)
+	model := plan.New(cfg, provider, engine, modelName, maxTurns, filePath, planSearch, forceExternalSearch)
 
 	// Load existing file if it exists
 	if data, err := os.ReadFile(filePath); err == nil {
