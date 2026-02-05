@@ -2,10 +2,14 @@ package chat
 
 import (
 	"errors"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -65,5 +69,55 @@ func TestUpdate_StreamError_BumpsContentVersion(t *testing.T) {
 
 	if m.viewCache.contentVersion <= before {
 		t.Fatalf("contentVersion must advance on stream error in alt-screen mode (before=%d after=%d)", before, m.viewCache.contentVersion)
+	}
+}
+
+func TestViewAltScreen_FirstRenderAnchorsToBottom(t *testing.T) {
+	provider := llm.NewMockProvider("mock")
+	engine := llm.NewEngine(provider, nil)
+
+	m := New(
+		&config.Config{DefaultProvider: "mock"},
+		provider,
+		engine,
+		"mock-model",
+		nil,   // mcpManager
+		20,    // maxTurns
+		false, // forceExternalSearch
+		false, // searchEnabled
+		nil,   // localTools
+		"",    // toolsStr
+		"",    // mcpStr
+		false, // showStats
+		"",    // initialText
+		nil,   // store
+		nil,   // sess
+		true,  // altScreen
+		nil,   // autoSendQueue
+		false, // textMode
+		"",    // agentName
+	)
+
+	for i := 0; i < 120; i++ {
+		role := llm.RoleUser
+		if i%2 == 1 {
+			role = llm.RoleAssistant
+		}
+		text := "message " + strconv.Itoa(i) + " " + strings.Repeat("content ", 20)
+		m.messages = append(m.messages, session.Message{
+			ID:          int64(i + 1),
+			SessionID:   m.sess.ID,
+			Role:        role,
+			TextContent: text,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: text}},
+			CreatedAt:   time.Now(),
+			Sequence:    i,
+		})
+	}
+
+	_ = m.View()
+
+	if !m.viewport.AtBottom() {
+		t.Fatalf("expected first alt-screen render to anchor at bottom for resumed history")
 	}
 }

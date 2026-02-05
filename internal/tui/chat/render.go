@@ -155,12 +155,13 @@ func (m *Model) viewAltScreen() string {
 	if contentChanged {
 		// Check if user is at bottom BEFORE setting content (which changes maxYOffset)
 		wasAtBottom := m.viewport.AtBottom()
+		firstRender := m.viewCache.lastViewportView == ""
 		m.viewport.SetContent(contentStr)
 		m.viewCache.lastRenderedVersion = m.viewCache.contentVersion
-		// Only auto-scroll to bottom if user was already at bottom
-		// This allows users to scroll up and read during streaming
-		// GotoBottom() is expensive as it calls visibleLines() internally
-		if m.streaming && wasAtBottom {
+		// On first render (including resumed sessions), anchor at latest content.
+		// On subsequent renders while streaming, preserve user scroll position
+		// unless they were already at bottom.
+		if firstRender || (m.streaming && wasAtBottom) {
 			m.viewport.GotoBottom()
 		}
 	}

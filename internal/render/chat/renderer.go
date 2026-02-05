@@ -298,11 +298,13 @@ func (r *Renderer) renderHistory(state RenderState) string {
 		return ""
 	}
 
-	// Create viewport for virtualized rendering
-	vp := NewVirtualViewport(r.width, state.Viewport.Height)
-
-	// Get visible message range
-	start, end := vp.GetVisibleRange(state.Messages, state.Viewport.ScrollOffset)
+	start := 0
+	end := len(state.Messages)
+	if state.Mode != RenderModeAltScreen {
+		// Inline mode keeps message-window virtualization while using scroll offset.
+		vp := NewVirtualViewport(r.width, state.Viewport.Height)
+		start, end = vp.GetVisibleRange(state.Messages, state.Viewport.ScrollOffset)
+	}
 
 	// Render only visible messages using cache
 	// Skip system and tool messages (they render as empty anyway)

@@ -155,6 +155,58 @@ func TestRenderer_CacheInvalidateOnResize(t *testing.T) {
 	}
 }
 
+func TestRenderer_RenderAltScreen_IncludesFullHistory(t *testing.T) {
+	renderer := NewRenderer(80, 24)
+	renderer.SetMarkdownRenderer(simpleMarkdownRenderer)
+
+	messages := generateMessages(120)
+	state := RenderState{
+		Messages: messages,
+		Viewport: ViewportState{
+			Height:       24,
+			ScrollOffset: 0,
+			AtBottom:     true,
+		},
+		Mode:   RenderModeAltScreen,
+		Width:  80,
+		Height: 24,
+	}
+
+	output := renderer.Render(state)
+	if !strings.Contains(output, "user message 0") {
+		t.Fatalf("expected alt-screen render to include earliest history message")
+	}
+	if !strings.Contains(output, "assistant message 119") {
+		t.Fatalf("expected alt-screen render to include latest history message")
+	}
+}
+
+func TestRenderer_RenderInline_UsesScrollOffsetVirtualization(t *testing.T) {
+	renderer := NewRenderer(80, 24)
+	renderer.SetMarkdownRenderer(simpleMarkdownRenderer)
+
+	messages := generateMessages(120)
+	state := RenderState{
+		Messages: messages,
+		Viewport: ViewportState{
+			Height:       24,
+			ScrollOffset: 10,
+			AtBottom:     false,
+		},
+		Mode:   RenderModeInline,
+		Width:  80,
+		Height: 24,
+	}
+
+	output := renderer.Render(state)
+	if strings.Contains(output, "assistant message 119") {
+		t.Fatalf("inline scroll offset should hide latest messages when scrolled up")
+	}
+	if !strings.Contains(output, "assistant message 109") {
+		t.Fatalf("expected inline render to include visible scrolled history")
+	}
+}
+
 func TestVirtualViewport_GetVisibleRange(t *testing.T) {
 	vp := NewVirtualViewport(80, 24)
 
