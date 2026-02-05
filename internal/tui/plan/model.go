@@ -76,9 +76,6 @@ type Model struct {
 	maxTurns            int
 	search              bool
 	forceExternalSearch bool
-	addLineTool         *tools.AddLineTool
-	removeLineTool      *tools.RemoveLineTool
-
 	// Streaming channels
 	streamChan <-chan ui.StreamEvent
 
@@ -152,12 +149,6 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 	// Create empty document
 	doc := NewPlanDocument()
 
-	// Create line-based editing tools
-	addLineTool := tools.NewAddLineTool()
-	removeLineTool := tools.NewRemoveLineTool()
-	engine.Tools().Register(addLineTool)
-	engine.Tools().Register(removeLineTool)
-
 	// Create chat input for async instructions
 	chatInput := textarea.New()
 	chatInput.Placeholder = "Type instruction (Enter to queue)..."
@@ -187,8 +178,6 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 		maxTurns:            maxTurns,
 		search:              search,
 		forceExternalSearch: forceExternalSearch,
-		addLineTool:         addLineTool,
-		removeLineTool:      removeLineTool,
 		history:             make([]llm.Message, 0),
 		filePath:            filePath,
 		tracker:             ui.NewToolTracker(),
@@ -1200,10 +1189,6 @@ func (m *Model) triggerPlannerWithPrompt(userInstruction string) (tea.Model, tea
 	ctx, cancel := context.WithCancel(context.Background())
 	m.streamCancel = cancel
 
-	// Set up line editing executors
-	m.addLineTool.SetExecutor(m.executeAddLine)
-	m.removeLineTool.SetExecutor(m.executeRemoveLine)
-
 	// Build request
 	req := m.buildPlannerRequest(userInstruction)
 
@@ -1391,64 +1376,6 @@ Every plan section should address:
 		Search:              m.search,
 		ForceExternalSearch: m.forceExternalSearch,
 	}
-}
-
-func (m *Model) executeAddLine(content string, afterText string) (string, error) {
-	// Split content into individual lines
-	newLines := strings.Split(content, "\n")
-
-	// Get current lines for fuzzy matching
-	lines := m.doc.Lines()
-	lineTexts := make([]string, len(lines))
-	for i, line := range lines {
-		lineTexts[i] = line.Content
-	}
-
-	// Find initial insertion point using fuzzy matching
-	insertAfterIdx := len(lines) - 1 // Default: append at end
-	if afterText != "" {
-		matchIdx := tools.FindBestMatch(lineTexts, afterText)
-		if matchIdx >= 0 {
-			insertAfterIdx = matchIdx
-		}
-	} else if len(lines) == 0 {
-		insertAfterIdx = -1 // Empty doc, insert at beginning
-	}
-
-	// Insert each line and sync editor after each for streaming effect
-	for _, line := range newLines {
-		m.doc.InsertLine(insertAfterIdx, line, "agent")
-		insertAfterIdx++ // Next line goes after the one we just inserted
-		m.syncEditorFromDoc()
-	}
-
-	if len(newLines) == 1 {
-		return fmt.Sprintf("Added: %s", truncateResult(newLines[0], 40)), nil
-	}
-	return fmt.Sprintf("Added %d lines", len(newLines)), nil
-}
-
-func (m *Model) executeRemoveLine(matchText string) (string, error) {
-	// Get current lines for fuzzy matching
-	lines := m.doc.Lines()
-	lineTexts := make([]string, len(lines))
-	for i, line := range lines {
-		lineTexts[i] = line.Content
-	}
-
-	// Find line to remove using fuzzy matching
-	matchIdx := tools.FindBestMatch(lineTexts, matchText)
-	if matchIdx < 0 {
-		return "", fmt.Errorf("no line matched: %s", truncateResult(matchText, 30))
-	}
-
-	removedContent := lineTexts[matchIdx]
-	m.doc.DeleteLine(matchIdx)
-
-	// Sync editor to show the change immediately
-	m.syncEditorFromDoc()
-
-	return fmt.Sprintf("Removed: %s", truncateResult(removedContent, 40)), nil
 }
 
 // executePartialInsert handles a streaming partial insert - a single line as it arrives.
