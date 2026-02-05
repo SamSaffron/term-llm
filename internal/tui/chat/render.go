@@ -738,6 +738,10 @@ func (m *Model) renderMarkdown(content string) string {
 		return ""
 	}
 
+	// Normalize tabs to 2 spaces to prevent glamour from expanding to 8 spaces.
+	// This must run before both cache-hit and cache-miss paths for consistent output.
+	content = strings.ReplaceAll(content, "\t", "  ")
+
 	// In text mode, skip markdown rendering but still apply word wrapping
 	if m.textMode {
 		targetWidth := m.width - 2
@@ -748,6 +752,9 @@ func (m *Model) renderMarkdown(content string) string {
 	}
 
 	targetWidth := m.width - 2
+	if targetWidth < 1 {
+		targetWidth = 1
+	}
 
 	// Reuse cached renderer if width matches
 	if m.rendererCache.renderer != nil && m.rendererCache.width == targetWidth {
@@ -776,9 +783,6 @@ func (m *Model) renderMarkdown(content string) string {
 
 	m.rendererCache.renderer = renderer
 	m.rendererCache.width = targetWidth
-
-	// Normalize tabs to 2 spaces to prevent glamour from expanding to 8 spaces
-	content = strings.ReplaceAll(content, "\t", "  ")
 
 	rendered, err := renderer.Render(content)
 	if err != nil {

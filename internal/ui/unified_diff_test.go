@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestUnifiedDiffLineNumbers(t *testing.T) {
@@ -301,5 +302,77 @@ func TestRenderDiffSegmentNoWordDiff(t *testing.T) {
 	}
 	if strings.Contains(result, strongGreenBg) {
 		t.Errorf("strong green background should not appear for completely different lines")
+	}
+}
+
+func TestWrapDiffLine_DoesNotOverWrapWideRunes(t *testing.T) {
+	// Three emoji are 6 terminal cells total (each emoji is width 2).
+	// With contentWidth=6, this should stay on a single wrapped line.
+	got := wrapDiffLine(2, 1, '+', "", "🙂🙂🙂", 6, nil)
+
+	lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 wrapped line, got %d: %q", len(lines), lines)
+	}
+}
+
+func TestWrapWordDiffLine_DoesNotOverWrapWideRunes(t *testing.T) {
+	highlighted := "\x1b[48;2;40;90;40m🙂🙂🙂\x1b[0m"
+	got := wrapWordDiffLine(2, 1, '+', "", highlighted, 6, [3]int{30, 60, 30})
+
+	lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 wrapped line, got %d: %q", len(lines), lines)
+	}
+}
+
+func TestSplitAtVisibleLength_WideRunes_NoRuneSplit(t *testing.T) {
+	const plain = "🙂🙂🙂🙂"
+	input := "\x1b[31m" + plain + "\x1b[0m"
+
+	before, after := splitAtVisibleLength(input, 5)
+	beforePlain := stripAnsi(before)
+	afterPlain := stripAnsi(after)
+
+	if !utf8.ValidString(beforePlain) {
+		t.Fatalf("before split must be valid UTF-8, got %q", beforePlain)
+	}
+	if !utf8.ValidString(afterPlain) {
+		t.Fatalf("after split must be valid UTF-8, got %q", afterPlain)
+	}
+	if beforePlain+afterPlain != plain {
+		t.Fatalf("split must preserve content: got before=%q after=%q", beforePlain, afterPlain)
+	}
+	if got := ansiDisplayWidth(before, 0); got > 5 {
+		t.Fatalf("before part exceeds target width: got=%d target=5", got)
+	}
+}
+
+func TestWrapDiffLine_WideRunes_WhenWrapping_ValidUTF8(t *testing.T) {
+	got := wrapDiffLine(2, 1, '+', "", "🙂🙂🙂🙂", 5, nil)
+	lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
+
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 wrapped lines, got %d: %q", len(lines), lines)
+	}
+	for i, line := range lines {
+		if !utf8.ValidString(stripAnsi(line)) {
+			t.Fatalf("line %d contains invalid UTF-8 after wrapping: %q", i, line)
+		}
+	}
+}
+
+func TestWrapWordDiffLine_WideRunes_WhenWrapping_ValidUTF8(t *testing.T) {
+	highlighted := "\x1b[48;2;40;90;40m🙂🙂🙂🙂\x1b[0m"
+	got := wrapWordDiffLine(2, 1, '+', "", highlighted, 5, [3]int{30, 60, 30})
+	lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
+
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 wrapped lines, got %d: %q", len(lines), lines)
+	}
+	for i, line := range lines {
+		if !utf8.ValidString(stripAnsi(line)) {
+			t.Fatalf("line %d contains invalid UTF-8 after wrapping: %q", i, line)
+		}
 	}
 }

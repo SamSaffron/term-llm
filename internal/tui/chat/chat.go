@@ -551,6 +551,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.streaming = false
 				m.err = ev.Err
+				// Error line is part of alt-screen viewport content; force refresh.
+				if m.altScreen {
+					m.viewCache.contentVersion++
+				}
 
 				// Clear callbacks and update status
 				m.engine.SetResponseCompletedCallback(nil)

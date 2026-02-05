@@ -631,6 +631,7 @@ type infoModel struct {
 	styles   *Styles
 	width    int
 	height   int
+	content  string
 }
 
 func newInfoModel(content string, width, height int) infoModel {
@@ -647,6 +648,7 @@ func newInfoModel(content string, width, height int) infoModel {
 		styles:   styles,
 		width:    width,
 		height:   height,
+		content:  content,
 	}
 }
 
@@ -669,6 +671,7 @@ func (m infoModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.viewport.Width = msg.Width
 		m.viewport.Height = msg.Height - 1
+		m.viewport.SetContent(renderInfoMarkdown(m.content, m.width))
 	}
 
 	// Update viewport for scrolling

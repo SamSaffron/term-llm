@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	diff "github.com/shogoki/gotextdiff"
 )
@@ -172,7 +173,7 @@ func wrapDiffLine(lineNumWidth int, lineNum int, prefix byte, prefixColor string
 		if bgStart != "" {
 			chunk = strings.ReplaceAll(chunk, "\x1b[0m", "\x1b[0m"+bgStart)
 		}
-		visibleLen := len(stripAnsi(chunk))
+		visibleLen := ansiDisplayWidth(chunk, 0)
 		padding := ""
 		if visibleLen < contentWidth {
 			padding = strings.Repeat(" ", contentWidth-visibleLen)
@@ -183,7 +184,7 @@ func wrapDiffLine(lineNumWidth int, lineNum int, prefix byte, prefixColor string
 	}
 
 	// If content fits, return single padded line
-	rawLen := len(stripAnsi(content))
+	rawLen := ansiDisplayWidth(content, 0)
 	if rawLen <= contentWidth {
 		lineNumStr := fmt.Sprintf("%*d", lineNumWidth, lineNum)
 		return buildLine(lineNumStr, content)
@@ -197,22 +198,24 @@ func wrapDiffLine(lineNumWidth int, lineNum int, prefix byte, prefixColor string
 
 	for len(remaining) > 0 {
 		rawRemaining := stripAnsi(remaining)
-		if len(rawRemaining) == 0 {
+		rawRemainingWidth := ansiDisplayWidth(remaining, 0)
+		if rawRemainingWidth == 0 {
 			break
 		}
 
 		chunkLen := contentWidth
-		if chunkLen > len(rawRemaining) {
-			chunkLen = len(rawRemaining)
+		if chunkLen > rawRemainingWidth {
+			chunkLen = rawRemainingWidth
 		}
 		if chunkLen == 0 {
 			chunkLen = 1
 		}
 
 		// Find a good break point (prefer space)
-		if chunkLen < len(rawRemaining) {
+		if chunkLen < rawRemainingWidth {
 			breakAt := chunkLen
-			for i := chunkLen - 1; i > chunkLen/2; i-- {
+			// rawRemaining is byte-indexed; this heuristic is only for ASCII space.
+			for i := min(chunkLen-1, len(rawRemaining)-1); i > chunkLen/2; i-- {
 				if i < len(rawRemaining) && rawRemaining[i] == ' ' {
 					breakAt = i + 1
 					break
@@ -322,25 +325,78 @@ func expandTabsFromCol(s string, startCol int) string {
 
 // splitAtVisibleLength splits a string with ANSI codes at a visible character position
 func splitAtVisibleLength(s string, visibleLen int) (string, string) {
+	if visibleLen <= 0 {
+		return "", s
+	}
+
 	var result strings.Builder
 	visible := 0
 	i := 0
+	inEscape := false
 
 	for i < len(s) && visible < visibleLen {
-		if s[i] == '\x1b' && i+1 < len(s) && s[i+1] == '[' {
-			// ANSI escape sequence - copy until 'm'
-			start := i
-			for i < len(s) && s[i] != 'm' {
-				i++
+		b := s[i]
+		if b == '\x1b' {
+			inEscape = true
+			result.WriteByte(b)
+			i++
+			continue
+		}
+		if inEscape {
+			result.WriteByte(b)
+			if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') {
+				inEscape = false
 			}
-			if i < len(s) {
-				i++ // include the 'm'
+			i++
+			continue
+		}
+
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			// Preserve invalid byte and make forward progress.
+			if visible >= visibleLen {
+				break
 			}
-			result.WriteString(s[start:i])
-		} else {
 			result.WriteByte(s[i])
 			visible++
 			i++
+			continue
+		}
+
+		runeWidth := advanceColumn(0, r)
+		if runeWidth < 0 {
+			runeWidth = 0
+		}
+
+		// Avoid splitting a rune; if first rune is wider than target, still consume it
+		// to guarantee progress.
+		if visible+runeWidth > visibleLen {
+			if visible == 0 {
+				result.WriteString(s[i : i+size])
+				i += size
+			}
+			break
+		}
+
+		result.WriteString(s[i : i+size])
+		visible += runeWidth
+		i += size
+	}
+
+	// Copy any trailing partial ANSI sequence into the head to keep output well-formed.
+	if inEscape {
+		for i < len(s) {
+			b := s[i]
+			result.WriteByte(b)
+			i++
+			if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') {
+				inEscape = false
+				break
+			}
+		}
+		if inEscape {
+			// We consumed to end while still inside escape sequence.
+			return result.String(), ""
 		}
 	}
 
@@ -562,7 +618,7 @@ func wrapWordDiffLine(lineNumWidth int, lineNum int, prefix byte, prefixColor st
 
 	// Helper to build a complete line
 	buildLine := func(lineNumStr string, chunk string) string {
-		visibleLen := len(stripAnsi(chunk))
+		visibleLen := ansiDisplayWidth(chunk, 0)
 		padding := ""
 		if visibleLen < contentWidth {
 			padding = strings.Repeat(" ", contentWidth-visibleLen)
@@ -572,7 +628,7 @@ func wrapWordDiffLine(lineNumWidth int, lineNum int, prefix byte, prefixColor st
 	}
 
 	// If content fits, return single padded line
-	rawLen := len(stripAnsi(content))
+	rawLen := ansiDisplayWidth(content, 0)
 	if rawLen <= contentWidth {
 		lineNumStr := fmt.Sprintf("%*d", lineNumWidth, lineNum)
 		return buildLine(lineNumStr, content)
@@ -586,22 +642,24 @@ func wrapWordDiffLine(lineNumWidth int, lineNum int, prefix byte, prefixColor st
 
 	for len(remaining) > 0 {
 		rawRemaining := stripAnsi(remaining)
-		if len(rawRemaining) == 0 {
+		rawRemainingWidth := ansiDisplayWidth(remaining, 0)
+		if rawRemainingWidth == 0 {
 			break
 		}
 
 		chunkLen := contentWidth
-		if chunkLen > len(rawRemaining) {
-			chunkLen = len(rawRemaining)
+		if chunkLen > rawRemainingWidth {
+			chunkLen = rawRemainingWidth
 		}
 		if chunkLen == 0 {
 			chunkLen = 1
 		}
 
 		// Find a good break point (prefer space)
-		if chunkLen < len(rawRemaining) {
+		if chunkLen < rawRemainingWidth {
 			breakAt := chunkLen
-			for i := chunkLen - 1; i > chunkLen/2; i-- {
+			// rawRemaining is byte-indexed; this heuristic is only for ASCII space.
+			for i := min(chunkLen-1, len(rawRemaining)-1); i > chunkLen/2; i-- {
 				if i < len(rawRemaining) && rawRemaining[i] == ' ' {
 					breakAt = i + 1
 					break

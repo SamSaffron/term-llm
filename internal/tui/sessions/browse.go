@@ -481,6 +481,11 @@ func (m *Model) View() string {
 		return m.inspector.View()
 	}
 
+	renderWidth := m.width
+	if renderWidth < 1 {
+		renderWidth = 1
+	}
+
 	theme := m.styles.Theme()
 	var b strings.Builder
 
@@ -490,11 +495,11 @@ func (m *Model) View() string {
 		Foreground(theme.Text).
 		Background(theme.Border).
 		Padding(0, 1).
-		Width(m.width)
+		Width(renderWidth)
 
 	countStr := fmt.Sprintf("[%d sessions]", len(m.sessions))
 	title := "Sessions Browser"
-	padding := m.width - len(title) - len(countStr) - 4 // 4 for padding spaces
+	padding := renderWidth - lipgloss.Width(title) - lipgloss.Width(countStr) - 4 // 4 for padding spaces
 	if padding < 1 {
 		padding = 1
 	}
@@ -552,9 +557,7 @@ func (m *Model) View() string {
 		if s.Name != "" {
 			summary = s.Name
 		}
-		if len(summary) > 25 {
-			summary = summary[:22] + "..."
-		}
+		summary = truncateDisplay(summary, 25, "...")
 
 		// Status
 		status := string(s.Status)
@@ -585,11 +588,7 @@ func (m *Model) View() string {
 			cursor, s.Number, summary, style, truncateModel(s.Model, 10), s.MessageCount, tokens, status, age)
 
 		// Truncate or pad to width
-		if len(row) > m.width {
-			row = row[:m.width-3] + "..."
-		} else if len(row) < m.width {
-			row = row + strings.Repeat(" ", m.width-len(row))
-		}
+		row = fitToDisplayWidth(row, renderWidth)
 
 		if i == m.cursor {
 			b.WriteString(selectedStyle.Render(row))
@@ -602,11 +601,11 @@ func (m *Model) View() string {
 	// Pad remaining rows
 	rendered := end - start
 	for i := rendered; i < vpHeight; i++ {
-		b.WriteString(strings.Repeat(" ", m.width) + "\n")
+		b.WriteString(strings.Repeat(" ", renderWidth) + "\n")
 	}
 
 	// Footer
-	b.WriteString(strings.Repeat("─", m.width))
+	b.WriteString(strings.Repeat("─", renderWidth))
 	b.WriteString("\n")
 
 	// Delete confirmation
@@ -644,10 +643,51 @@ func formatRelativeTime(t time.Time) string {
 
 // truncateModel shortens a model name to fit
 func truncateModel(model string, maxLen int) string {
-	if len(model) <= maxLen {
-		return model
+	return truncateDisplay(model, maxLen, "..")
+}
+
+// truncateDisplay truncates a string to maxWidth display cells and adds suffix.
+// It preserves both UTF-8 boundaries and display-width boundaries.
+func truncateDisplay(s string, maxWidth int, suffix string) string {
+	if maxWidth <= 0 {
+		return ""
 	}
-	return model[:maxLen-2] + ".."
+	if lipgloss.Width(s) <= maxWidth {
+		return s
+	}
+
+	suffixWidth := lipgloss.Width(suffix)
+	if suffixWidth >= maxWidth {
+		// Keep tiny widths stable while still indicating truncation.
+		return strings.Repeat(".", maxWidth)
+	}
+
+	targetWidth := maxWidth - suffixWidth
+	var b strings.Builder
+	current := 0
+	for _, r := range s {
+		rw := lipgloss.Width(string(r))
+		if current+rw > targetWidth {
+			break
+		}
+		b.WriteRune(r)
+		current += rw
+	}
+	return b.String() + suffix
+}
+
+func fitToDisplayWidth(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	current := lipgloss.Width(s)
+	if current > width {
+		return truncateDisplay(s, width, "...")
+	}
+	if current < width {
+		return s + strings.Repeat(" ", width-current)
+	}
+	return s
 }
 
 // formatTokens formats input/output tokens in compact form (e.g., "1k/2k")
