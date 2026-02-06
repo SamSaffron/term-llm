@@ -684,6 +684,7 @@ func parseValue(s string) any {
 }
 
 func mcpRun(cmd *cobra.Command, args []string) error {
+	cmd.SilenceUsage = true
 	serverName := args[0]
 
 	// Parse remaining args into tool calls
