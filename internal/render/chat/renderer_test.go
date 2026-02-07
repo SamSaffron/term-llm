@@ -467,6 +467,113 @@ func TestMessageBlockRenderer_NonEditFileToolNoDiff(t *testing.T) {
 	}
 }
 
+// TestMessageBlockRenderer_DiffsFromDisplayField tests that diffs render from
+// the Display field (new path) when it contains the __DIFF__ markers.
+func TestMessageBlockRenderer_DiffsFromDisplayField(t *testing.T) {
+	makeDiffMarker := func(file, old, new string, line int) string {
+		data := ui.DiffData{File: file, Old: old, New: new, Line: line}
+		jsonData, _ := json.Marshal(data)
+		return "__DIFF__:" + base64.StdEncoding.EncodeToString(jsonData)
+	}
+
+	toolCallID := "call-display"
+	rawOutput := "Edited test.go: replaced 1 lines with 1 lines.\n" + makeDiffMarker("test.go", "x = 1", "x = 2", 10)
+	messages := []session.Message{
+		{
+			ID:   1,
+			Role: llm.RoleAssistant,
+			Parts: []llm.Part{
+				{Type: llm.PartText, Text: "Updating file."},
+				{
+					Type: llm.PartToolCall,
+					ToolCall: &llm.ToolCall{
+						ID:        toolCallID,
+						Name:      "edit_file",
+						Arguments: []byte(`{"file_path":"test.go","old_string":"x = 1","new_string":"x = 2"}`),
+					},
+				},
+			},
+			CreatedAt: time.Now(),
+		},
+		{
+			ID:   2,
+			Role: llm.RoleTool,
+			Parts: []llm.Part{
+				{
+					Type: llm.PartToolResult,
+					ToolResult: &llm.ToolResult{
+						ID:      toolCallID,
+						Name:    "edit_file",
+						Content: "Edited test.go: replaced 1 lines with 1 lines.", // Clean (no markers)
+						Display: rawOutput,                                        // Full output with markers
+					},
+				},
+			},
+			CreatedAt: time.Now(),
+		},
+	}
+
+	rb := NewMessageBlockRendererWithContext(80, simpleMarkdownRenderer, messages, 0)
+	block := rb.Render(&messages[0])
+
+	if !strings.Contains(block.Rendered, "test.go") {
+		t.Errorf("Expected diff to render from Display field, got:\n%s", block.Rendered)
+	}
+}
+
+// TestMessageBlockRenderer_BackwardCompatNilDisplay tests that old sessions
+// without the Display field still render diffs from Content.
+func TestMessageBlockRenderer_BackwardCompatNilDisplay(t *testing.T) {
+	makeDiffMarker := func(file, old, new string, line int) string {
+		data := ui.DiffData{File: file, Old: old, New: new, Line: line}
+		jsonData, _ := json.Marshal(data)
+		return "__DIFF__:" + base64.StdEncoding.EncodeToString(jsonData)
+	}
+
+	toolCallID := "call-compat"
+	messages := []session.Message{
+		{
+			ID:   1,
+			Role: llm.RoleAssistant,
+			Parts: []llm.Part{
+				{Type: llm.PartText, Text: "Updating file."},
+				{
+					Type: llm.PartToolCall,
+					ToolCall: &llm.ToolCall{
+						ID:        toolCallID,
+						Name:      "edit_file",
+						Arguments: []byte(`{"file_path":"compat.go","old_string":"a","new_string":"b"}`),
+					},
+				},
+			},
+			CreatedAt: time.Now(),
+		},
+		{
+			ID:   2,
+			Role: llm.RoleTool,
+			Parts: []llm.Part{
+				{
+					Type: llm.PartToolResult,
+					ToolResult: &llm.ToolResult{
+						ID:      toolCallID,
+						Name:    "edit_file",
+						Content: "Edit applied.\n" + makeDiffMarker("compat.go", "a", "b", 1),
+						// Display intentionally empty — simulating old session
+					},
+				},
+			},
+			CreatedAt: time.Now(),
+		},
+	}
+
+	rb := NewMessageBlockRendererWithContext(80, simpleMarkdownRenderer, messages, 0)
+	block := rb.Render(&messages[0])
+
+	if !strings.Contains(block.Rendered, "compat.go") {
+		t.Errorf("Expected diff to render from Content (backward compat), got:\n%s", block.Rendered)
+	}
+}
+
 // BenchmarkRender500MessagesScrolling benchmarks with scroll position changes.
 func BenchmarkRender500MessagesScrolling(b *testing.B) {
 	renderer := NewRenderer(80, 24)

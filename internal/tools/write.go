@@ -120,14 +120,11 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (stri
 	// Build result message
 	var sb strings.Builder
 	if isNew {
-		sb.WriteString(fmt.Sprintf("Created new file: %s\n", absPath))
-		sb.WriteString(fmt.Sprintf("Size: %d bytes, %d lines", len(a.Content), countLines(a.Content)))
+		sb.WriteString(fmt.Sprintf("Created new file: %s (%d lines).", absPath, countLines(a.Content)))
 	} else {
-		sb.WriteString(fmt.Sprintf("Updated file: %s\n", absPath))
 		oldLines := countLines(existingContent)
 		newLines := countLines(a.Content)
-		sb.WriteString(fmt.Sprintf("Lines: %d -> %d\n", oldLines, newLines))
-		sb.WriteString(fmt.Sprintf("Size: %d -> %d bytes", len(existingContent), len(a.Content)))
+		sb.WriteString(fmt.Sprintf("Updated %s: %d lines -> %d lines.", absPath, oldLines, newLines))
 
 		// Emit diff marker for streaming display (skip if content is too large)
 		if len(existingContent) < diff.MaxDiffSize && len(a.Content) < diff.MaxDiffSize {

@@ -708,8 +708,9 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, event
 		return []Message{ToolErrorMessage(call.ID, call.Name, errMsg, call.ThoughtSig)}, nil
 	}
 
-	DebugToolResult(debug, call.ID, call.Name, output)
-	DebugRawToolResult(debugRaw, call.ID, call.Name, output)
+	cleanOutput := stripDisplayMarkers(output)
+	DebugToolResult(debug, call.ID, call.Name, cleanOutput)
+	DebugRawToolResult(debugRaw, call.ID, call.Name, cleanOutput)
 	if events != nil {
 		events <- Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info, ToolSuccess: true, ToolOutput: output}
 	}
@@ -771,8 +772,9 @@ func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, event
 	if err != nil {
 		DebugToolResult(debug, callID, call.Name, fmt.Sprintf("Error: %v", err))
 	} else {
-		DebugToolResult(debug, callID, call.Name, result)
-		DebugRawToolResult(debugRaw, callID, call.Name, result)
+		cleanResult := stripDisplayMarkers(result)
+		DebugToolResult(debug, callID, call.Name, cleanResult)
+		DebugRawToolResult(debugRaw, callID, call.Name, cleanResult)
 	}
 
 	// Emit end event to TUI (non-blocking to avoid deadlock if consumer is slow)

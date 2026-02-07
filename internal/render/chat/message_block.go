@@ -193,8 +193,12 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 				switch part.ToolCall.Name {
 				case "edit_file", "unified_diff", "spawn_agent", "write_file":
 					if result := r.findToolResult(part.ToolCall.ID); result != nil {
-						// For spawn_agent, the diffs might be inside the JSON output
-						content := result.Content
+						// Use Display (full output with markers) for diff rendering;
+						// fall back to Content for sessions saved before Display existed.
+						content := result.Display
+						if content == "" {
+							content = result.Content
+						}
 						if part.ToolCall.Name == "spawn_agent" {
 							var res struct {
 								Output string `json:"output"`

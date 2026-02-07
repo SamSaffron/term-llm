@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"strings"
 )
 
 // contextKey is a private type for context keys to prevent collisions.
@@ -138,7 +139,8 @@ type ToolCall struct {
 type ToolResult struct {
 	ID         string
 	Name       string
-	Content    string
+	Content    string // Clean text sent to LLM (no __DIFF__/__IMAGE__ markers)
+	Display    string // Full output with markers (for UI rendering / session hydration)
 	IsError    bool   // True if this result represents a tool execution error
 	ThoughtSig []byte // Gemini 3 thought signature (passed through from ToolCall)
 }
@@ -248,11 +250,32 @@ func ToolResultMessage(id, name, content string, thoughtSig []byte) Message {
 			ToolResult: &ToolResult{
 				ID:         id,
 				Name:       name,
-				Content:    content,
+				Content:    stripDisplayMarkers(content),
+				Display:    content,
 				ThoughtSig: thoughtSig,
 			},
 		}},
 	}
+}
+
+// stripDisplayMarkers removes lines starting with __DIFF__: or __IMAGE__:
+// so the LLM receives clean text without large base64 blobs.
+// Returns the input unchanged if no markers are present.
+func stripDisplayMarkers(s string) string {
+	if !strings.Contains(s, "__DIFF__:") && !strings.Contains(s, "__IMAGE__:") {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	filtered := lines[:0]
+	for _, line := range lines {
+		if strings.HasPrefix(line, "__DIFF__:") || strings.HasPrefix(line, "__IMAGE__:") {
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+	result := strings.Join(filtered, "\n")
+	// Trim trailing newlines left by removed marker lines
+	return strings.TrimRight(result, "\n")
 }
 
 // ToolErrorMessage creates a tool result message that indicates an error.

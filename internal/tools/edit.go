@@ -195,16 +195,14 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (s
 	}
 
 	// Build result message
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Edited %s (match level: %s)\n", a.FilePath, result.Level.String()))
-	sb.WriteString(fmt.Sprintf("Replaced %d bytes with %d bytes", len(result.Original), len(a.NewText)))
-
-	// Show a brief diff summary
 	oldLines := countLines(result.Original)
 	newLines := countLines(a.NewText)
-	if oldLines != newLines {
-		sb.WriteString(fmt.Sprintf("\nLines: %d -> %d", oldLines, newLines))
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Edited %s: replaced %d lines with %d lines", a.FilePath, oldLines, newLines))
+	if result.Level != edit.MatchExact {
+		sb.WriteString(" (fuzzy match — old_text did not exactly match file content)")
 	}
+	sb.WriteString(".")
 
 	// Emit diff marker for streaming display (skip if content is too large)
 	if len(result.Original) < diff.MaxDiffSize && len(a.NewText) < diff.MaxDiffSize {
@@ -341,7 +339,9 @@ func (t *UnifiedDiffTool) Execute(ctx context.Context, args json.RawMessage) (st
 				continue
 			}
 
-			sb.WriteString(fmt.Sprintf("Applied changes to %s\n", fd.Path))
+			oldLines := countLines(content)
+			newLines := countLines(result.Content)
+			sb.WriteString(fmt.Sprintf("Applied changes to %s: %d lines -> %d lines.\n", fd.Path, oldLines, newLines))
 
 			// Emit diff marker
 			if len(content) < diff.MaxDiffSize && len(result.Content) < diff.MaxDiffSize {
@@ -356,7 +356,7 @@ func (t *UnifiedDiffTool) Execute(ctx context.Context, args json.RawMessage) (st
 				}
 			}
 		} else {
-			sb.WriteString(fmt.Sprintf("No changes for %s\n", fd.Path))
+			sb.WriteString(fmt.Sprintf("No changes for %s.\n", fd.Path))
 		}
 	}
 
