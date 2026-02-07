@@ -83,8 +83,8 @@ func AddFileFlag(cmd *cobra.Command, dest *[]string, description string) {
 
 // AddAgentFlag adds the --agent/-a flag with completion
 func AddAgentFlag(cmd *cobra.Command, dest *string) {
-	cmd.Flags().StringVarP(dest, "agent", "a", "", "Use an agent (named configuration bundle)")
-	if err := cmd.RegisterFlagCompletionFunc("agent", AgentFlagCompletion); err != nil {
+	cmd.Flags().StringVarP(dest, "agent", "a", "", "Use an agent (name or path to agent directory)")
+	if err := cmd.RegisterFlagCompletionFunc("agent", AgentFlagCompletionWithPaths); err != nil {
 		panic("failed to register agent completion: " + err.Error())
 	}
 }

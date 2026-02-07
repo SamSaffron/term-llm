@@ -143,6 +143,36 @@ func (c *OutputToolConfig) IsConfigured() bool {
 	return c.Name != ""
 }
 
+// IsAgentPath returns true if the value looks like a filesystem path
+// rather than an agent name. It checks for forward slashes, backslashes
+// (for Windows-style paths, including from WSL/mixed-shell usage),
+// and Windows drive-letter prefixes (e.g., C:\).
+func IsAgentPath(value string) bool {
+	if strings.Contains(value, "/") || strings.Contains(value, `\`) {
+		return true
+	}
+	// Detect Windows drive-letter prefix: C:\ D:\ etc.
+	if len(value) >= 3 && value[1] == ':' &&
+		((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z')) {
+		return true
+	}
+	return false
+}
+
+// LoadFromPath loads an agent from an explicit filesystem path.
+// The path is resolved to absolute. Returns an error if the directory
+// doesn't exist or doesn't contain agent.yaml.
+func LoadFromPath(path string) (*Agent, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve agent path: %w", err)
+	}
+	if !isAgentDir(absPath) {
+		return nil, fmt.Errorf("not a valid agent directory (missing agent.yaml): %s", absPath)
+	}
+	return LoadFromDir(absPath, SourceLocal)
+}
+
 // LoadFromDir loads an agent from a directory containing agent.yaml and optionally system.md.
 func LoadFromDir(dir string, source AgentSource) (*Agent, error) {
 	agentPath := filepath.Join(dir, "agent.yaml")

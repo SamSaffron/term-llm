@@ -57,11 +57,29 @@ type CLIFlags struct {
 	Files         []string // files passed via -f flag, used for agent template expansion (e.g., {{.Files}})
 }
 
-// LoadAgent loads and validates an agent by name.
+// LoadAgent loads and validates an agent by name or path.
 // Returns nil if agentName is empty.
+// If agentName contains a path separator, it is loaded directly from the filesystem.
+// Otherwise, it is looked up in the agent registry.
 func LoadAgent(agentName string, cfg *config.Config) (*agents.Agent, error) {
 	if agentName == "" {
 		return nil, nil
+	}
+
+	// If the value contains a path separator, load directly from filesystem
+	if agents.IsAgentPath(agentName) {
+		agent, err := agents.LoadFromPath(agentName)
+		if err != nil {
+			return nil, fmt.Errorf("load agent from path: %w", err)
+		}
+		if err := agent.Validate(); err != nil {
+			return nil, fmt.Errorf("invalid agent at %s: %w", agentName, err)
+		}
+		// Apply preferences by agent name if configured
+		if pref, ok := cfg.Agents.Preferences[agent.Name]; ok {
+			agent.Merge(pref)
+		}
+		return agent, nil
 	}
 
 	registry, err := agents.NewRegistry(agents.RegistryConfig{

@@ -617,6 +617,17 @@ func AgentFlagCompletion(cmd *cobra.Command, args []string, toComplete string) (
 	return agentNameCompletion(cmd, nil, toComplete)
 }
 
+// AgentFlagCompletionWithPaths provides shell completion for the --agent flag.
+// Returns agent names for plain strings, or falls back to directory completion
+// when the input looks like a path.
+func AgentFlagCompletionWithPaths(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if agents.IsAgentPath(toComplete) {
+		// Let the shell complete filesystem paths (directories only)
+		return nil, cobra.ShellCompDirectiveFilterDirs
+	}
+	return agentNameCompletion(cmd, nil, toComplete)
+}
+
 // exportableAgentCompletion provides completion for exportable agents (excludes built-ins).
 func exportableAgentCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	if len(args) > 0 {

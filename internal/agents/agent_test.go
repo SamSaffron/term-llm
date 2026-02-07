@@ -3,6 +3,7 @@ package agents
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -257,6 +258,167 @@ func TestAgent_GetMCPServerNames(t *testing.T) {
 	}
 	if names[1] != "playwright" {
 		t.Errorf("names[1] = %q, want %q", names[1], "playwright")
+	}
+}
+
+func TestIsAgentPath(t *testing.T) {
+	tests := []struct {
+		value    string
+		expected bool
+	}{
+		{"reviewer", false},
+		{"commit-message", false},
+		{"my_agent", false},
+		{"/abs/path/agent", true},
+		{"./relative/agent", true},
+		{"../parent/agent", true},
+		{"path/to/agent", true},
+		{"~/.config/agents/foo", true},
+		// Windows-style paths (backslashes, drive letters)
+		{`.\\rel\\agent`, true},
+		{`C:\agents\foo`, true},
+		{`D:\Users\me\agents\custom`, true},
+		{`c:\lowercase-drive`, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			got := IsAgentPath(tt.value)
+			if got != tt.expected {
+				t.Errorf("IsAgentPath(%q) = %v, want %v", tt.value, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestLoadFromPath(t *testing.T) {
+	// Create temp agent directory
+	tmpDir := t.TempDir()
+	agentDir := filepath.Join(tmpDir, "test-path-agent")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	agentYAML := `name: path-agent
+description: "Agent loaded from path"
+max_turns: 5
+`
+	if err := os.WriteFile(filepath.Join(agentDir, "agent.yaml"), []byte(agentYAML), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	systemMD := "You are a path-loaded agent."
+	if err := os.WriteFile(filepath.Join(agentDir, "system.md"), []byte(systemMD), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	agent, err := LoadFromPath(agentDir)
+	if err != nil {
+		t.Fatalf("LoadFromPath: %v", err)
+	}
+
+	if agent.Name != "path-agent" {
+		t.Errorf("Name = %q, want %q", agent.Name, "path-agent")
+	}
+	if agent.Description != "Agent loaded from path" {
+		t.Errorf("Description = %q, want %q", agent.Description, "Agent loaded from path")
+	}
+	if agent.MaxTurns != 5 {
+		t.Errorf("MaxTurns = %d, want 5", agent.MaxTurns)
+	}
+	if agent.SystemPrompt != systemMD {
+		t.Errorf("SystemPrompt = %q, want %q", agent.SystemPrompt, systemMD)
+	}
+	if agent.Source != SourceLocal {
+		t.Errorf("Source = %v, want %v", agent.Source, SourceLocal)
+	}
+	// SourcePath should be an absolute path
+	if !filepath.IsAbs(agent.SourcePath) {
+		t.Errorf("SourcePath should be absolute, got %q", agent.SourcePath)
+	}
+}
+
+func TestLoadFromPath_Relative(t *testing.T) {
+	// Create a temp dir and an agent inside it
+	tmpDir := t.TempDir()
+	agentDir := filepath.Join(tmpDir, "rel-agent")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	agentYAML := `name: rel-agent
+description: "Relative path agent"
+`
+	if err := os.WriteFile(filepath.Join(agentDir, "agent.yaml"), []byte(agentYAML), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Change to tmpDir so we can use a relative path
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(origDir)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatal(err)
+	}
+
+	agent, err := LoadFromPath("./rel-agent")
+	if err != nil {
+		t.Fatalf("LoadFromPath with relative path: %v", err)
+	}
+
+	if agent.Name != "rel-agent" {
+		t.Errorf("Name = %q, want %q", agent.Name, "rel-agent")
+	}
+	if !filepath.IsAbs(agent.SourcePath) {
+		t.Errorf("SourcePath should be absolute even for relative input, got %q", agent.SourcePath)
+	}
+}
+
+func TestLoadFromPath_MissingAgentYaml(t *testing.T) {
+	// Directory exists but has no agent.yaml
+	tmpDir := t.TempDir()
+
+	_, err := LoadFromPath(tmpDir)
+	if err == nil {
+		t.Fatal("expected error for directory without agent.yaml, got nil")
+	}
+	if !strings.Contains(err.Error(), "missing agent.yaml") {
+		t.Errorf("error should mention missing agent.yaml, got: %v", err)
+	}
+}
+
+func TestLoadFromPath_NonexistentDir(t *testing.T) {
+	_, err := LoadFromPath("/nonexistent/path/to/agent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent path, got nil")
+	}
+	if !strings.Contains(err.Error(), "missing agent.yaml") {
+		t.Errorf("error should mention missing agent.yaml, got: %v", err)
+	}
+}
+
+func TestLoadFromPath_DerivesNameFromDir(t *testing.T) {
+	// agent.yaml without a name field — name derived from directory
+	tmpDir := t.TempDir()
+	agentDir := filepath.Join(tmpDir, "my-custom-agent")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	agentYAML := `description: "No name field"`
+	if err := os.WriteFile(filepath.Join(agentDir, "agent.yaml"), []byte(agentYAML), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	agent, err := LoadFromPath(agentDir)
+	if err != nil {
+		t.Fatalf("LoadFromPath: %v", err)
+	}
+
+	if agent.Name != "my-custom-agent" {
+		t.Errorf("Name = %q, want %q (derived from directory)", agent.Name, "my-custom-agent")
 	}
 }
 
