@@ -740,13 +740,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					// In inline mode, print remaining content to scrollback
 					result := m.tracker.FlushAllRemaining(m.width, 0, m.renderMd)
-					if result.ToPrint != "" {
-						cmds = append(cmds, tea.Println(result.ToPrint))
-					}
-					cmds = append(cmds, tea.Println("")) // blank line
+					cmds = append(cmds, ui.ScrollbackPrintlnCommands(result.ToPrint, true)...)
 				}
 			} else if !m.altScreen {
-				cmds = append(cmds, tea.Println("")) // blank line
+				cmds = append(cmds, ui.ScrollbackPrintlnCommands("", true)...)
 			}
 
 			// Sync in-memory messages with persisted state

@@ -574,6 +574,117 @@ func TestMessageBlockRenderer_BackwardCompatNilDisplay(t *testing.T) {
 	}
 }
 
+func TestMessageBlockRenderer_ToolOnlyAssistantMessage_IsCompact(t *testing.T) {
+	msg := session.Message{
+		ID:   1,
+		Role: llm.RoleAssistant,
+		Parts: []llm.Part{
+			{
+				Type: llm.PartToolCall,
+				ToolCall: &llm.ToolCall{
+					ID:        "call-1",
+					Name:      "web_search",
+					Arguments: []byte(`{"query":"first"}`),
+				},
+			},
+			{
+				Type: llm.PartToolCall,
+				ToolCall: &llm.ToolCall{
+					ID:        "call-2",
+					Name:      "web_search",
+					Arguments: []byte(`{"query":"second"}`),
+				},
+			},
+		},
+		CreatedAt: time.Now(),
+	}
+
+	rb := NewMessageBlockRenderer(80, simpleMarkdownRenderer)
+	block := rb.Render(&msg)
+	plain := ui.StripANSI(block.Rendered)
+
+	first := strings.Index(plain, "web_search")
+	if first == -1 {
+		t.Fatalf("expected first web_search tool line in output, got %q", plain)
+	}
+	rest := plain[first+len("web_search"):]
+	secondOffset := strings.Index(rest, "web_search")
+	if secondOffset == -1 {
+		t.Fatalf("expected second web_search tool line in output, got %q", plain)
+	}
+	between := rest[:secondOffset]
+	if got := strings.Count(between, "\n"); got != 1 {
+		t.Fatalf("expected exactly 1 newline between tool lines, got %d; between=%q output=%q", got, between, plain)
+	}
+}
+
+func TestRenderer_ConsecutiveToolOnlyAssistantMessages_NoBlankLineBetweenTools(t *testing.T) {
+	renderer := NewRenderer(80, 24)
+	renderer.SetMarkdownRenderer(simpleMarkdownRenderer)
+
+	messages := []session.Message{
+		{
+			ID:   1,
+			Role: llm.RoleAssistant,
+			Parts: []llm.Part{
+				{
+					Type: llm.PartToolCall,
+					ToolCall: &llm.ToolCall{
+						ID:        "call-1",
+						Name:      "web_search",
+						Arguments: []byte(`{"query":"first"}`),
+					},
+				},
+			},
+			CreatedAt: time.Now(),
+			Sequence:  0,
+		},
+		{
+			ID:   2,
+			Role: llm.RoleAssistant,
+			Parts: []llm.Part{
+				{
+					Type: llm.PartToolCall,
+					ToolCall: &llm.ToolCall{
+						ID:        "call-2",
+						Name:      "web_search",
+						Arguments: []byte(`{"query":"second"}`),
+					},
+				},
+			},
+			CreatedAt: time.Now(),
+			Sequence:  1,
+		},
+	}
+
+	state := RenderState{
+		Messages: messages,
+		Viewport: ViewportState{
+			Height:       24,
+			ScrollOffset: 0,
+			AtBottom:     true,
+		},
+		Mode:   RenderModeAltScreen,
+		Width:  80,
+		Height: 24,
+	}
+
+	output := ui.StripANSI(renderer.Render(state))
+	first := strings.Index(output, "web_search")
+	if first == -1 {
+		t.Fatalf("expected first tool line in output, got %q", output)
+	}
+	rest := output[first+len("web_search"):]
+	secondOffset := strings.Index(rest, "web_search")
+	if secondOffset == -1 {
+		t.Fatalf("expected second tool line in output, got %q", output)
+	}
+	between := rest[:secondOffset]
+	if got := strings.Count(between, "\n"); got != 1 {
+		t.Fatalf("expected exactly 1 newline between consecutive tool-only assistant messages, got %d; between=%q output=%q", got, between, output)
+	}
+}
+
 // BenchmarkRender500MessagesScrolling benchmarks with scroll position changes.
 func BenchmarkRender500MessagesScrolling(b *testing.B) {
 	renderer := NewRenderer(80, 24)

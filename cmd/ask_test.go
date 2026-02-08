@@ -284,6 +284,33 @@ func TestAskToolStartFlushUsesOrderedCommandComposition(t *testing.T) {
 	}
 }
 
+func TestAskToolStartRefreshesCachedContentBeforeFlush(t *testing.T) {
+	model := newAskStreamModel()
+	model.width = 80
+
+	model.tracker.AddTextSegment("Before tool boundary.\n\n", model.width)
+	model.tracker.MarkCurrentTextComplete(func(text string) string {
+		return renderMd(text, model.width)
+	})
+	model.cachedContent = model.tracker.RenderUnflushed(model.width, renderMd, false)
+	model.contentDirty = false
+
+	updated, cmd := model.Update(askToolStartMsg{CallID: "call-1", Name: "read_file", Info: "(announcement.md)"})
+	model = updated.(askStreamModel)
+
+	if cmd == nil {
+		t.Fatal("expected command from tool-start boundary flush")
+	}
+
+	expected := model.tracker.RenderUnflushed(model.width, renderMd, false)
+	if model.cachedContent != expected {
+		t.Fatalf("cached content should reflect post-boundary tracker state\nexpected: %q\ngot: %q", model.cachedContent, expected)
+	}
+	if model.contentDirty {
+		t.Fatal("expected contentDirty to be false after refreshing cached content")
+	}
+}
+
 func TestAskViewNoForcedTrailingNewline(t *testing.T) {
 	model := newAskStreamModel()
 	model.pausedForExternalUI = true

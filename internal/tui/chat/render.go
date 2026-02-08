@@ -266,7 +266,7 @@ func (m *Model) renderStreamingInline() string {
 	if !m.pausedForExternalUI {
 		hasContent := b.Len() > 0
 		if hasContent {
-			b.WriteString("\n\n")
+			b.WriteString("\n")
 		}
 
 		wavePos := 0

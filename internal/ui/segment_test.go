@@ -185,3 +185,33 @@ func TestExtractAgentName(t *testing.T) {
 		})
 	}
 }
+
+func TestSegmentSeparator_CompactEverywhere(t *testing.T) {
+	cases := []struct {
+		name string
+		prev SegmentType
+		curr SegmentType
+		want string
+	}{
+		{name: "text to text", prev: SegmentText, curr: SegmentText, want: ""},
+		{name: "text to tool", prev: SegmentText, curr: SegmentTool, want: "\n"},
+		{name: "text to ask_user", prev: SegmentText, curr: SegmentAskUserResult, want: "\n"},
+		{name: "text to image", prev: SegmentText, curr: SegmentImage, want: "\n"},
+		{name: "text to diff", prev: SegmentText, curr: SegmentDiff, want: "\n"},
+		{name: "tool to text", prev: SegmentTool, curr: SegmentText, want: "\n\n"},
+		{name: "tool to image", prev: SegmentTool, curr: SegmentImage, want: "\n"},
+		{name: "tool to diff", prev: SegmentTool, curr: SegmentDiff, want: "\n"},
+		{name: "image to tool", prev: SegmentImage, curr: SegmentTool, want: "\n"},
+		{name: "image to text", prev: SegmentImage, curr: SegmentText, want: "\n"},
+		{name: "diff to text", prev: SegmentDiff, curr: SegmentText, want: "\n"},
+		{name: "diff to ask_user", prev: SegmentDiff, curr: SegmentAskUserResult, want: "\n"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SegmentSeparator(tc.prev, tc.curr); got != tc.want {
+				t.Fatalf("SegmentSeparator(%v, %v) = %q, want %q", tc.prev, tc.curr, got, tc.want)
+			}
+		})
+	}
+}

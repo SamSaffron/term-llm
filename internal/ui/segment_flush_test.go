@@ -128,6 +128,93 @@ func TestFlushToolToTool_NoBlankLine(t *testing.T) {
 	}
 }
 
+func TestFlushCompletedNow_ToolToTextAcrossPrintBoundaries_UsesBlankLine(t *testing.T) {
+	// Regression test: tool content and subsequent text are often flushed by
+	// separate tea.Printf calls. The combined output should still have exactly
+	// one blank line between tool and text.
+	mockRender := func(s string, w int) string {
+		return "\n\n" + strings.TrimSpace(s)
+	}
+
+	tracker := NewToolTracker()
+	tracker.HandleToolStart("t1", "web_search", "query")
+	tracker.HandleToolEnd("t1", true)
+
+	toolFlush := tracker.FlushCompletedNow(80, mockRender)
+	if toolFlush.ToPrint == "" {
+		t.Fatal("expected tool flush output")
+	}
+
+	tracker.AddTextSegment("Latest Claude update.", 80)
+	tracker.CompleteTextSegments(func(s string) string {
+		return mockRender(s, 80)
+	})
+
+	textFlush := tracker.FlushCompletedNow(80, mockRender)
+	if textFlush.ToPrint == "" {
+		t.Fatal("expected text flush output")
+	}
+
+	// Simulate tea.Printf trailing newlines between flush calls.
+	output := toolFlush.ToPrint + "\n" + textFlush.ToPrint + "\n"
+	stripped := stripAnsiForTest(output)
+
+	toolIdx := strings.Index(stripped, "web_search")
+	if toolIdx == -1 {
+		t.Fatalf("expected tool name in output, got: %q", stripped)
+	}
+	textIdx := strings.Index(stripped, "Latest Claude update.")
+	if textIdx == -1 {
+		t.Fatalf("expected text in output, got: %q", stripped)
+	}
+	if toolIdx >= textIdx {
+		t.Fatalf("expected tool before text, tool=%d text=%d output=%q", toolIdx, textIdx, stripped)
+	}
+
+	between := stripped[toolIdx+len("web_search") : textIdx]
+	if newlines := strings.Count(between, "\n"); newlines != 2 {
+		t.Fatalf("expected exactly 2 newlines between tool and text (blank line), got %d\nbetween: %q\nfull: %q", newlines, between, stripped)
+	}
+}
+
+func TestFlushStreamingText_ToolToTextCompactsLeadingBlankLinesInRenderedText(t *testing.T) {
+	// Regression test: even when rendered text starts with blank lines,
+	// tool->text boundaries should remain a single blank line.
+	width := 80
+	renderMd := func(s string, w int) string {
+		return "\n\n" + strings.TrimSpace(s)
+	}
+
+	tracker := NewToolTracker()
+	tracker.TextMode = true // force fallback renderMd path
+	tracker.HandleToolStart("t1", "web_search", "query")
+	tracker.HandleToolEnd("t1", true)
+	tracker.AddTextSegment("Latest Claude update.\n\n", width)
+
+	res := tracker.FlushStreamingText(0, width, renderMd)
+	if res.ToPrint == "" {
+		t.Fatal("expected tool+text flush")
+	}
+
+	stripped := stripAnsiForTest(res.ToPrint)
+	toolIdx := strings.Index(stripped, "web_search")
+	if toolIdx == -1 {
+		t.Fatalf("expected tool name in output, got: %q", stripped)
+	}
+	textIdx := strings.Index(stripped, "Latest Claude update.")
+	if textIdx == -1 {
+		t.Fatalf("expected text in output, got: %q", stripped)
+	}
+	if toolIdx >= textIdx {
+		t.Fatalf("expected tool before text, tool=%d text=%d output=%q", toolIdx, textIdx, stripped)
+	}
+
+	between := stripped[toolIdx+len("web_search") : textIdx]
+	if newlines := strings.Count(between, "\n"); newlines != 2 {
+		t.Fatalf("expected exactly 2 newlines between tool and text (blank line), got %d\nbetween: %q\nfull: %q", newlines, between, stripped)
+	}
+}
+
 func TestFlushStreamingText_ToolAndTextInOnePrint(t *testing.T) {
 	// Regression test: when FlushStreamingText returns both a completed tool
 	// and threshold-triggered text in a single ToPrint, the tool→text separator
@@ -168,12 +255,12 @@ func TestFlushStreamingText_ToolAndTextInOnePrint(t *testing.T) {
 		t.Errorf("tool should appear before text, tool at %d, text at %d", toolIdx, textIdx)
 	}
 
-	// Check spacing between tool line and text: should have a blank line (\n\n)
+	// Check spacing between tool line and text: should be one blank line
 	// since SegmentSeparator(SegmentTool, SegmentText) = "\n\n"
 	between := stripped[toolIdx:textIdx]
 	newlines := strings.Count(between, "\n")
-	if newlines < 2 {
-		t.Errorf("expected at least 2 newlines between tool and text (blank line), got %d\nbetween: %q\nfull: %q",
+	if newlines != 2 {
+		t.Errorf("expected 2 newlines between tool and text (blank line), got %d\nbetween: %q\nfull: %q",
 			newlines, between, stripped)
 	}
 }
@@ -248,10 +335,10 @@ func TestPartialTextFlushSpacing(t *testing.T) {
 				break
 			}
 		}
-		// With tea.Printf adding newlines, we should have at least 2 newlines
-		// (one blank line = \n\n) before the tool
-		if newlineCount < 2 {
-			t.Errorf("Expected at least 2 newlines before tool indicator, got %d\nStripped output before tool: %q", newlineCount, before[max(0, len(before)-50):])
+		// Compact spacing should avoid runaway blank lines while preserving
+		// existing text trailing newlines in edge cases.
+		if newlineCount < 1 || newlineCount > 2 {
+			t.Errorf("Expected 1-2 newlines before tool indicator, got %d\nStripped output before tool: %q", newlineCount, before[max(0, len(before)-50):])
 		}
 	}
 }

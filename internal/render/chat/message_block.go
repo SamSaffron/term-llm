@@ -232,9 +232,11 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 	if !hasContent && msg.TextContent != "" {
 		rendered := r.renderMarkdown(msg.TextContent)
 		b.WriteString(rendered)
+		b.WriteString("\n\n")
 	}
 
-	b.WriteString("\n\n") // Extra blank line after assistant messages
+	// Keep tool-only assistant blocks compact: they already include line breaks.
+	// Text parts append paragraph spacing above.
 
 	return b.String()
 }

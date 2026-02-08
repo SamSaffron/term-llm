@@ -203,7 +203,7 @@ func (s *StreamingBlock) Render(wavePos int, pausedForUI bool, includeImages boo
 				b.WriteString(ui.SegmentSeparator(lastType, ui.SegmentTool))
 			} else if s.tracker.HasFlushed {
 				// Everything completed was flushed, use flush state for separator
-				b.WriteString(s.tracker.LeadingSeparator(ui.SegmentTool))
+				b.WriteString(s.tracker.FlushLeadingSeparator(ui.SegmentTool))
 			}
 
 			activeContent := ui.RenderSegments(active, s.width, wavePos, s.mdRenderFunc(), false)

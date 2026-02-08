@@ -46,6 +46,23 @@ func stripLeadingBlankLine(s string) string {
 	return s
 }
 
+// stripAllLeadingBlankLines removes all leading blank lines from content.
+// This is used for tool->text boundaries where the tool line already
+// contributes the visual separator.
+func stripAllLeadingBlankLines(s string) string {
+	for {
+		next := stripLeadingBlankLine(s)
+		if next == s {
+			return s
+		}
+		s = next
+	}
+}
+
+func shouldTrimAllLeadingBlankLines(prevType, nextType SegmentType) bool {
+	return prevType == SegmentTool && nextType == SegmentText
+}
+
 // isBlankOrANSI returns true if the string contains only whitespace and ANSI escape codes.
 func isBlankOrANSI(s string) bool {
 	i := 0
@@ -590,9 +607,12 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 			}
 		}
 
-		// Strip leading blank line if we've already flushed content
-		// AND a prior tea.Printf boundary exists
-		if hadPriorFlush {
+		toolToTextBoundary := seg.FlushedPos == 0 && t.HasFlushed && t.LastFlushedType == SegmentTool
+		// Keep tool->text boundaries compact even if rendered markdown starts
+		// with one or more blank lines.
+		if toolToTextBoundary {
+			rendered = stripAllLeadingBlankLines(rendered)
+		} else if hadPriorFlush {
 			rendered = stripLeadingBlankLine(rendered)
 		}
 		contentBuilder.WriteString(rendered)
@@ -686,9 +706,12 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 			contentBuilder.WriteString(t.LeadingSeparator(SegmentText))
 		}
 	}
-	// Strip leading blank line if we've already flushed content
-	// AND a prior tea.Printf boundary exists
-	if hadPriorFlush {
+	toolToTextBoundary := seg.FlushedPos == 0 && t.HasFlushed && t.LastFlushedType == SegmentTool
+	// Keep tool->text boundaries compact even if rendered markdown starts
+	// with one or more blank lines.
+	if toolToTextBoundary {
+		rendered = stripAllLeadingBlankLines(rendered)
+	} else if hadPriorFlush {
 		rendered = stripLeadingBlankLine(rendered)
 	}
 	contentBuilder.WriteString(rendered)
@@ -798,9 +821,13 @@ func (t *ToolTracker) FlushToScrollback(
 	if len(toFlush) > 0 {
 		content := RenderSegments(toFlush, width, -1, renderMd, true)
 		if t.HasFlushed {
-			// Strip leading blank line FIRST since tea.Printf adds a newline after each flush
-			// This prevents double blank lines without removing intentional separator prefix
-			content = stripLeadingBlankLine(content)
+			if shouldTrimAllLeadingBlankLines(t.LastFlushedType, toFlush[0].Type) {
+				content = stripAllLeadingBlankLines(content)
+			} else {
+				// Strip leading blank line FIRST since tea.Printf adds a newline after each flush
+				// This prevents double blank lines without removing intentional separator prefix
+				content = stripLeadingBlankLine(content)
+			}
 			prefix := t.FlushLeadingSeparator(toFlush[0].Type)
 			if prefix != "" {
 				content = prefix + content
@@ -878,9 +905,13 @@ func (t *ToolTracker) FlushAllRemaining(
 
 	content := RenderSegments(toFlush, width, -1, renderMd, true)
 	if t.HasFlushed {
-		// Strip leading blank line FIRST since tea.Printf adds a newline after each flush
-		// This prevents double blank lines without removing intentional separator prefix
-		content = stripLeadingBlankLine(content)
+		if shouldTrimAllLeadingBlankLines(t.LastFlushedType, toFlush[0].Type) {
+			content = stripAllLeadingBlankLines(content)
+		} else {
+			// Strip leading blank line FIRST since tea.Printf adds a newline after each flush
+			// This prevents double blank lines without removing intentional separator prefix
+			content = stripLeadingBlankLine(content)
+		}
 		prefix := t.FlushLeadingSeparator(toFlush[0].Type)
 		if prefix != "" {
 			content = prefix + content
@@ -942,7 +973,11 @@ func (t *ToolTracker) FlushCompletedNow(
 
 	content := RenderSegments(toFlush, width, -1, renderMd, true)
 	if t.HasFlushed {
-		content = stripLeadingBlankLine(content)
+		if shouldTrimAllLeadingBlankLines(t.LastFlushedType, toFlush[0].Type) {
+			content = stripAllLeadingBlankLines(content)
+		} else {
+			content = stripLeadingBlankLine(content)
+		}
 		prefix := t.FlushLeadingSeparator(toFlush[0].Type)
 		if prefix != "" {
 			content = prefix + content
@@ -1021,9 +1056,13 @@ func (t *ToolTracker) FlushBeforeExternalUI(
 
 	content := RenderSegments(toFlush, width, -1, renderMd, true)
 	if t.HasFlushed {
-		// Strip leading blank line FIRST since tea.Printf adds a newline after each flush
-		// This prevents double blank lines without removing intentional separator prefix
-		content = stripLeadingBlankLine(content)
+		if shouldTrimAllLeadingBlankLines(t.LastFlushedType, toFlush[0].Type) {
+			content = stripAllLeadingBlankLines(content)
+		} else {
+			// Strip leading blank line FIRST since tea.Printf adds a newline after each flush
+			// This prevents double blank lines without removing intentional separator prefix
+			content = stripLeadingBlankLine(content)
+		}
 		prefix := t.FlushLeadingSeparator(toFlush[0].Type)
 		if prefix != "" {
 			content = prefix + content

@@ -466,61 +466,19 @@ func renderAskUserResult(text string) string {
 
 // SegmentSeparator returns the vertical spacing (newlines) required between two segments.
 func SegmentSeparator(prevType, currType SegmentType) string {
-	prevIsTool := prevType == SegmentTool || prevType == SegmentAskUserResult
-	currIsTool := currType == SegmentTool || currType == SegmentAskUserResult
-
 	// No extra spacing between consecutive text segments
 	// (each segment already ends with \n from rendering)
 	if prevType == SegmentText && currType == SegmentText {
 		return ""
 	}
 
-	// Blank line between text and tools/ask_user results
-	if prevType == SegmentText && currIsTool {
+	// Keep one blank line between a tool row and following prose content.
+	if prevType == SegmentTool && currType == SegmentText {
 		return "\n\n"
 	}
 
-	// Single newline between consecutive tools/ask_user results
-	if prevIsTool && currIsTool {
-		return "\n"
-	}
-
-	// Blank line between tools/ask_user results and text
-	if prevIsTool && currType == SegmentText {
-		return "\n\n"
-	}
-
-	// Blank line between tools/ask_user results and images
-	if prevIsTool && currType == SegmentImage {
-		return "\n\n"
-	}
-
-	// Blank line between text and images
-	if prevType == SegmentText && currType == SegmentImage {
-		return "\n\n"
-	}
-
-	// Blank line between tools/ask_user results and diffs
-	if prevIsTool && currType == SegmentDiff {
-		return "\n\n"
-	}
-
-	// Blank line between text and diffs
-	if prevType == SegmentText && currType == SegmentDiff {
-		return "\n\n"
-	}
-
-	// Blank line between diffs and text
-	if prevType == SegmentDiff && currType == SegmentText {
-		return "\n\n"
-	}
-
-	// Blank line between diffs and tools
-	if prevType == SegmentDiff && currIsTool {
-		return "\n\n"
-	}
-
-	return ""
+	// Keep all other boundaries compact and consistent.
+	return "\n"
 }
 
 // RenderSegments renders a list of segments with proper spacing.

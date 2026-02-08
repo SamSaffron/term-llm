@@ -674,17 +674,15 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent) error {
 	seenToolStarts := make(map[string]bool) // Track seen tool starts to prevent duplicates
 	seenToolEnds := make(map[string]bool)   // Track seen tool ends to prevent duplicates
 	printedAny := false
-	lastEndedWithNewline := true
+	trailingNewlines := 0
+	afterToolBoundary := false
 
 	printTools := func() {
 		if len(pendingTools) == 0 {
 			return
 		}
-		if printedAny && !lastEndedWithNewline {
-			fmt.Print("\n")
-		}
 		if printedAny {
-			fmt.Print("\n")
+			fmt.Print(ui.NewlinePadding(trailingNewlines, ui.SectionBreakTrailingNewlines))
 		}
 		for _, t := range pendingTools {
 			phase := ui.FormatToolPhase(t.name, t.info)
@@ -694,10 +692,18 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent) error {
 				fmt.Printf("%s %s\n", ui.ErrorCircle(), phase.Completed)
 			}
 		}
-		fmt.Print("\n")
 		pendingTools = nil
 		printedAny = true
-		lastEndedWithNewline = true
+		trailingNewlines = ui.SectionBreakTrailingNewlines
+		afterToolBoundary = true
+	}
+
+	ensureFinalSpacer := func() {
+		if !printedAny {
+			fmt.Println()
+			return
+		}
+		fmt.Print(ui.NewlinePadding(trailingNewlines, ui.FinalSpacerTrailingNewlines))
 	}
 
 	for {
@@ -709,7 +715,7 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent) error {
 				if len(pendingTools) > 0 {
 					printTools()
 				}
-				fmt.Println()
+				ensureFinalSpacer()
 				return nil
 			}
 
@@ -769,10 +775,18 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent) error {
 				})
 
 			case ui.StreamEventText:
-				fmt.Print(ev.Text)
-				printedAny = true
-				if len(ev.Text) > 0 {
-					lastEndedWithNewline = strings.HasSuffix(ev.Text, "\n")
+				text := ev.Text
+				if afterToolBoundary && text != "" {
+					// Keep exactly one blank line between tools and following text.
+					fmt.Print(ui.NewlinePadding(trailingNewlines, ui.FinalSpacerTrailingNewlines))
+					trailingNewlines = ui.FinalSpacerTrailingNewlines
+					text = strings.TrimLeft(text, "\n")
+					afterToolBoundary = false
+				}
+				if text != "" {
+					fmt.Print(text)
+					printedAny = true
+					trailingNewlines = ui.CountTrailingNewlines(text)
 				}
 
 			case ui.StreamEventImage:
@@ -782,7 +796,7 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent) error {
 						fmt.Print(rendered)
 						fmt.Print("\r\n") // CR+LF to reset cursor position after image
 						printedAny = true
-						lastEndedWithNewline = true
+						trailingNewlines = 1
 					}
 				}
 
@@ -790,7 +804,7 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent) error {
 				if len(pendingTools) > 0 {
 					printTools()
 				}
-				fmt.Println()
+				ensureFinalSpacer()
 				return nil
 
 			case ui.StreamEventError:
@@ -1286,6 +1300,10 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if cmd := m.flushCompletedBoundaryNow(); cmd != nil {
 			flushCmds = append(flushCmds, cmd)
 		}
+		// Rebuild cache immediately so the pending tool renders in-place without
+		// a transient frame that still contains just-flushed content.
+		m.cachedContent = m.tracker.RenderUnflushed(m.width, renderMd, false)
+		m.contentDirty = false
 
 		// Start (or restart) wave animation for non-ask_user tools.
 		if msg.Name != tools.AskUserToolName {
@@ -1457,9 +1475,9 @@ func (m askStreamModel) View() string {
 	// If approval form is active, show it after content (no spinner during approval)
 	if m.approvalForm != nil {
 		if b.Len() > 0 {
-			b.WriteString("\n\n")
+			b.WriteString("\n")
 		} else {
-			b.WriteString(m.tracker.LeadingSeparator(ui.SegmentTool))
+			b.WriteString(m.tracker.FlushLeadingSeparator(ui.SegmentTool))
 		}
 		b.WriteString(m.approvalForm.View())
 		return b.String()
@@ -1470,7 +1488,7 @@ func (m askStreamModel) View() string {
 	if !m.done && !m.pausedForExternalUI && (len(active) > 0 || m.tracker.IsIdle(time.Second)) {
 		hasContent := b.Len() > 0
 		if hasContent {
-			b.WriteString("\n\n")
+			b.WriteString("\n")
 		}
 		phase := m.phase
 		if phase == "" {
