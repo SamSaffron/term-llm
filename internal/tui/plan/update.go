@@ -73,13 +73,29 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusMsg = ""
 		return m, nil
 
-	case streamEventMsg:
-		ev := msg.event
-		cmds = append(cmds, m.handleStreamEvent(ev)...)
+	case streamEventsMsg:
+		if len(msg.events) == 0 {
+			return m, m.listenForStreamEvents()
+		}
 
-		// Continue listening for more events unless done or error
-		if ev.Type != ui.StreamEventDone && ev.Type != ui.StreamEventError {
+		done := false
+		for _, ev := range msg.events {
+			cmds = append(cmds, m.handleStreamEvent(ev)...)
+			if ev.Type == ui.StreamEventDone || ev.Type == ui.StreamEventError {
+				done = true
+				break
+			}
+		}
+
+		// Continue listening for more events unless stream ended.
+		if !done {
 			cmds = append(cmds, m.listenForStreamEvents())
+		}
+
+	case editorSyncMsg:
+		m.editorSyncPending = false
+		if cmd := m.flushEditorSync(); cmd != nil {
+			cmds = append(cmds, cmd)
 		}
 
 	case AskUserRequestMsg:
@@ -93,6 +109,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.triggerPlannerWithPrompt(msg.prompt)
 
 	case tickMsg:
+		if len(m.deferredEditEvents) > 0 && !m.shouldDeferStreamEdits() {
+			m.flushDeferredStreamEdits()
+		}
 		// Periodic tick for elapsed time updates
 		if m.agentActive {
 			cmds = append(cmds, m.tickEvery())
@@ -104,6 +123,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *Model) handleStreamEvent(ev ui.StreamEvent) []tea.Cmd {
 	var cmds []tea.Cmd
+
+	if len(m.deferredEditEvents) > 0 && ev.Type != ui.StreamEventDone && !m.shouldDeferStreamEdits() {
+		m.flushDeferredStreamEdits()
+	}
 
 	switch ev.Type {
 	case ui.StreamEventError:
@@ -149,18 +172,31 @@ func (m *Model) handleStreamEvent(ev ui.StreamEvent) []tea.Cmd {
 		m.agentPhase = ev.Phase
 
 	case ui.StreamEventText:
-		// Capture agent reasoning text for activity panel
-		m.agentText.WriteString(ev.Text)
+		// Capture agent reasoning text for activity panel with bounded memory.
+		m.appendReasoningDelta(ev.Text)
 		if m.agentPhase != "Inserting" && m.agentPhase != "Deleting" {
 			m.agentPhase = "Analyzing"
 		}
 
 	case ui.StreamEventPartialInsert:
+		if m.shouldDeferStreamEdits() {
+			m.deferStreamEdit(ev)
+			m.agentPhase = "Inserting"
+			return cmds
+		}
 		// Handle streaming partial insert - insert a single line as it arrives
 		m.executePartialInsert(ev.InlineAfter, ev.InlineLine)
+		if cmd := m.scheduleEditorSync(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 		m.agentPhase = "Inserting"
 
 	case ui.StreamEventInlineInsert:
+		if m.shouldDeferStreamEdits() {
+			m.deferStreamEdit(ev)
+			m.agentPhase = "Inserting"
+			return cmds
+		}
 		// Handle inline INSERT marker (complete) - reset partial tracking
 		// The lines have already been inserted via partial inserts
 		m.partialInsertIdx = -1
@@ -168,20 +204,27 @@ func (m *Model) handleStreamEvent(ev ui.StreamEvent) []tea.Cmd {
 		m.agentPhase = "Inserting"
 
 	case ui.StreamEventInlineDelete:
+		if m.shouldDeferStreamEdits() {
+			m.deferStreamEdit(ev)
+			m.agentPhase = "Deleting"
+			return cmds
+		}
 		// Handle inline DELETE marker - delete lines
-		m.executeInlineDelete(ev.InlineFrom, ev.InlineTo)
+		m.executeInlineDelete(ev.InlineFrom, ev.InlineTo, true)
 		m.agentPhase = "Deleting"
 
 	case ui.StreamEventDone:
+		m.flushDeferredStreamEdits()
+		if cmd := m.flushEditorSync(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 		m.agentActive = false
 		m.agentStreaming = false
 		m.agentPhase = ""
 		m.tracker = ui.NewToolTracker() // Reset tracker
 		m.partialInsertIdx = -1         // Reset partial insert tracking
 		m.partialInsertAfter = ""
-
-		// Sync editor with document content
-		m.syncEditorFromDoc()
+		m.agentReasoningTail = ""
 
 		// Add turn to history so agent has context for next invocation
 		m.addTurnToHistory()
@@ -212,6 +255,7 @@ func (m *Model) handleMouseMsg(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	switch msg.Button {
 	case tea.MouseButtonWheelUp:
 		// Scroll up - move cursor up multiple lines
+		m.noteEditorInput()
 		for i := 0; i < 3; i++ {
 			m.editor, _ = m.editor.Update(tea.KeyMsg{Type: tea.KeyUp})
 		}
@@ -219,6 +263,7 @@ func (m *Model) handleMouseMsg(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 	case tea.MouseButtonWheelDown:
 		// Scroll down - move cursor down multiple lines
+		m.noteEditorInput()
 		for i := 0; i < 3; i++ {
 			m.editor, _ = m.editor.Update(tea.KeyMsg{Type: tea.KeyDown})
 		}
@@ -226,6 +271,7 @@ func (m *Model) handleMouseMsg(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 	case tea.MouseButtonMiddle:
 		if msg.Action == tea.MouseActionPress {
+			m.noteEditorInput()
 			// Middle-click paste: read from primary selection (Linux) or clipboard (macOS)
 			text, err := clipboard.ReadPrimarySelection()
 			if err == nil && text != "" {
@@ -252,6 +298,7 @@ func (m *Model) handleMouseMsg(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			if m.chatFocused {
 				m.toggleChatFocus()
 			}
+			m.noteEditorInput()
 			m.moveCursorToMouse(msg.X, msg.Y)
 			return m, nil
 		}

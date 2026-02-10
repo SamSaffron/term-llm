@@ -23,6 +23,7 @@ var (
 	planMaxTurns       int
 	planFile           string
 	planSearch         bool
+	planNoSearch       bool
 	planNativeSearch   bool
 	planNoNativeSearch bool
 )
@@ -36,7 +37,7 @@ edit a plan document together in real-time.
 Examples:
   term-llm plan                      # Start with a new plan
   term-llm plan project.md           # Edit existing plan file
-  term-llm plan -s                   # With web search enabled
+  term-llm plan --no-search          # Disable web search
   term-llm plan --provider chatgpt   # Use specific provider
 
 Keyboard shortcuts:
@@ -60,7 +61,8 @@ func init() {
 	AddProviderFlag(planCmd, &planProvider)
 	AddDebugFlag(planCmd, &planDebug)
 	AddMaxTurnsFlag(planCmd, &planMaxTurns, 50)
-	AddSearchFlag(planCmd, &planSearch)
+	planCmd.Flags().BoolVarP(&planSearch, "search", "s", true, "Enable web search for current information")
+	planCmd.Flags().BoolVar(&planNoSearch, "no-search", false, "Disable web search for this plan session")
 	AddNativeSearchFlags(planCmd, &planNativeSearch, &planNoNativeSearch)
 
 	planCmd.Flags().StringVarP(&planFile, "file", "f", "plan.md", "Plan file to edit")
@@ -99,6 +101,8 @@ func runPlan(cmd *cobra.Command, args []string) error {
 
 	initThemeFromConfig(cfg)
 
+	planSearchEnabled := resolvePlanSearch(planSearch, planNoSearch)
+
 	// Create LLM provider and engine
 	provider, err := llm.NewProvider(cfg)
 	if err != nil {
@@ -134,7 +138,7 @@ func runPlan(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	engine := llm.NewEngine(provider, llm.NewToolRegistry())
+	engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
 	registry.RegisterWithEngine(engine)
 
 	// Set up debug logger if enabled
@@ -163,7 +167,7 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	forceExternalSearch := resolveForceExternalSearch(cfg, planNativeSearch, planNoNativeSearch)
 
 	// Create plan model
-	model := plan.New(cfg, provider, engine, modelName, maxTurns, filePath, planSearch, forceExternalSearch)
+	model := plan.New(cfg, provider, engine, modelName, maxTurns, filePath, planSearchEnabled, forceExternalSearch)
 
 	// Load existing file if it exists
 	if data, err := os.ReadFile(filePath); err == nil {
@@ -219,14 +223,18 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	if fm, ok := finalModel.(*plan.Model); ok && fm.HandedOff() {
 		planContent := fm.GetContent()
 		agentName := fm.HandoffAgent()
-		return runChatFromPlan(cfg, planContent, agentName, modelName, useAltScreen, forceExternalSearch)
+		return runChatFromPlan(cfg, planContent, agentName, modelName, useAltScreen, forceExternalSearch, planSearchEnabled)
 	}
 
 	return nil
 }
 
+func resolvePlanSearch(searchFlag, noSearchFlag bool) bool {
+	return searchFlag && !noSearchFlag
+}
+
 // runChatFromPlan launches a chat session with the plan content as system instructions.
-func runChatFromPlan(cfg *config.Config, planContent string, agentName string, modelName string, useAltScreen bool, forceExternalSearch bool) error {
+func runChatFromPlan(cfg *config.Config, planContent string, agentName string, modelName string, useAltScreen bool, forceExternalSearch bool, searchEnabled bool) error {
 	ctx, stop := signal.NotifyContext()
 	defer stop()
 
@@ -269,7 +277,7 @@ func runChatFromPlan(cfg *config.Config, planContent string, agentName string, m
 	// Resolve settings using agent configuration
 	cliFlags := CLIFlags{
 		Tools:  "all",
-		Search: planSearch,
+		Search: searchEnabled,
 	}
 	settings := ResolveSettings(cfg, agent, cliFlags, cfg.Chat.Provider, cfg.Chat.Model, cfg.Chat.Instructions, cfg.Chat.MaxTurns, 200)
 

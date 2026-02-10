@@ -224,7 +224,7 @@ func (m *Model) activityPanelHeight() int {
 	}
 
 	// Reasoning text line (if any)
-	if m.agentText.Len() > 0 {
+	if m.agentLastReasoningLn != "" {
 		lines++
 	}
 
@@ -295,18 +295,10 @@ func (m *Model) renderActivityPanel() string {
 	}
 
 	// Last line of agent reasoning text (dimmed)
-	if m.agentText.Len() > 0 {
-		text := m.agentText.String()
-		// Get the last non-empty line
-		lastLine := lastNonEmptyLine(text)
-		if lastLine != "" {
-			// Truncate to width
-			if len(lastLine) > m.width-4 {
-				lastLine = lastLine[:m.width-7] + "..."
-			}
-			b.WriteString(m.styles.Muted.Render("  " + lastLine))
-			b.WriteString("\n")
-		}
+	if m.agentLastReasoningLn != "" {
+		lastLine := truncateRunesWithEllipsis(m.agentLastReasoningLn, max(0, m.width-4))
+		b.WriteString(m.styles.Muted.Render("  " + lastLine))
+		b.WriteString("\n")
 	}
 
 	// Bottom separator
@@ -315,16 +307,21 @@ func (m *Model) renderActivityPanel() string {
 	return b.String()
 }
 
-// lastNonEmptyLine returns the last non-empty line from text.
-func lastNonEmptyLine(text string) string {
-	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		trimmed := strings.TrimSpace(lines[i])
-		if trimmed != "" {
-			return trimmed
-		}
+func truncateRunesWithEllipsis(text string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
 	}
-	return ""
+
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+
+	if maxRunes <= 3 {
+		return string(runes[:maxRunes])
+	}
+
+	return string(runes[:maxRunes-3]) + "..."
 }
 
 func (m *Model) renderDocument() string {

@@ -3,7 +3,6 @@ package plan
 import (
 	"context"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -58,7 +57,6 @@ type Model struct {
 
 	// Activity panel state
 	activityExpanded bool             // toggle with Ctrl+A
-	agentText        strings.Builder  // accumulated reasoning text
 	streamStartTime  time.Time        // when current agent run started
 	stats            *ui.SessionStats // usage/timing tracking for current run
 	currentTurn      int              // which LLM turn we're on
@@ -81,6 +79,14 @@ type Model struct {
 	// Partial insert tracking for streaming
 	partialInsertAfter string // The anchor text for current partial insert
 	partialInsertIdx   int    // Next insertion index (-1 if not tracking)
+	partialInsertLines int    // Number of pending partial insert lines since last editor sync
+	editorSyncPending  bool   // True when a deferred editor sync timer is active
+	lastEditorInputAt  time.Time
+	deferredEditEvents []ui.StreamEvent // Stream edit events deferred while user is actively editing
+
+	// Cached reasoning state for activity panel
+	agentReasoningTail   string // Current unflushed reasoning line
+	agentLastReasoningLn string // Last non-empty reasoning line
 
 	// UI components
 	spinner  spinner.Model
@@ -115,6 +121,13 @@ type Model struct {
 	pendingPrompts []string       // Queue of user instructions
 	chatFocused    bool           // true when chat input has focus
 }
+
+const (
+	maxStreamEventsPerBatch    = 128
+	partialInsertSyncBatchSize = 24
+	partialInsertSyncDelay     = 250 * time.Millisecond
+	editorInputQuietPeriod     = 400 * time.Millisecond
+)
 
 // New creates a new plan model.
 func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelName string, maxTurns int, filePath string, search bool, forceExternalSearch bool) *Model {
@@ -203,9 +216,9 @@ func (m *Model) Init() tea.Cmd {
 	)
 }
 
-// streamEventMsg wraps ui.StreamEvent for bubbletea.
-type streamEventMsg struct {
-	event ui.StreamEvent
+// streamEventsMsg wraps a batch of stream events for bubbletea.
+type streamEventsMsg struct {
+	events []ui.StreamEvent
 }
 
 // statusClearMsg clears the status message after a delay.
@@ -224,6 +237,9 @@ type pendingPromptMsg struct {
 
 // tickMsg is sent periodically to update elapsed time display.
 type tickMsg time.Time
+
+// editorSyncMsg triggers a deferred editor sync.
+type editorSyncMsg struct{}
 
 // SetProgram sets the tea.Program reference for sending messages.
 // Note: ask_user handler is set up in cmd/plan.go after the program is created.
@@ -265,15 +281,93 @@ func (m *Model) tickEvery() tea.Cmd {
 	})
 }
 
+func (m *Model) scheduleEditorSync() tea.Cmd {
+	m.partialInsertLines++
+
+	if m.partialInsertLines >= partialInsertSyncBatchSize {
+		if m.editorSyncPending {
+			return nil
+		}
+		return m.flushEditorSync()
+	}
+
+	if m.editorSyncPending {
+		return nil
+	}
+
+	m.editorSyncPending = true
+	return tea.Tick(partialInsertSyncDelay, func(time.Time) tea.Msg {
+		return editorSyncMsg{}
+	})
+}
+
+func (m *Model) flushEditorSync() tea.Cmd {
+	if m.partialInsertLines == 0 {
+		m.editorSyncPending = false
+		return nil
+	}
+
+	if m.isEditorInputRecent() {
+		m.editorSyncPending = true
+		return tea.Tick(partialInsertSyncDelay, func(time.Time) tea.Msg {
+			return editorSyncMsg{}
+		})
+	}
+
+	m.editorSyncPending = false
+	m.partialInsertLines = 0
+	m.syncEditorFromDoc()
+	return nil
+}
+
+func (m *Model) noteEditorInput() {
+	m.lastEditorInputAt = time.Now()
+}
+
+func (m *Model) isEditorInputRecent() bool {
+	if m.lastEditorInputAt.IsZero() {
+		return false
+	}
+	return time.Since(m.lastEditorInputAt) < editorInputQuietPeriod
+}
+
+func (m *Model) shouldDeferStreamEdits() bool {
+	return m.agentActive && m.isEditorInputRecent()
+}
+
 func (m *Model) listenForStreamEvents() tea.Cmd {
 	return func() tea.Msg {
 		if m.streamChan == nil {
 			return nil
 		}
+
 		ev, ok := <-m.streamChan
 		if !ok {
-			return streamEventMsg{event: ui.DoneEvent(0)}
+			return streamEventsMsg{events: []ui.StreamEvent{ui.DoneEvent(0)}}
 		}
-		return streamEventMsg{event: ev}
+
+		events := make([]ui.StreamEvent, 0, maxStreamEventsPerBatch)
+		events = append(events, ev)
+
+		if ev.Type == ui.StreamEventDone || ev.Type == ui.StreamEventError {
+			return streamEventsMsg{events: events}
+		}
+
+		for len(events) < maxStreamEventsPerBatch {
+			select {
+			case next, ok := <-m.streamChan:
+				if !ok {
+					return streamEventsMsg{events: append(events, ui.DoneEvent(0))}
+				}
+				events = append(events, next)
+				if next.Type == ui.StreamEventDone || next.Type == ui.StreamEventError {
+					return streamEventsMsg{events: events}
+				}
+			default:
+				return streamEventsMsg{events: events}
+			}
+		}
+
+		return streamEventsMsg{events: events}
 	}
 }

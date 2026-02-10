@@ -103,10 +103,12 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Vim normal mode handling
 	if m.vimMode {
+		m.noteEditorInput()
 		return m.handleVimNormalMode(msg)
 	}
 
 	// Insert mode - pass to editor
+	m.noteEditorInput()
 	var cmd tea.Cmd
 	m.editor, cmd = m.editor.Update(msg)
 	m.syncDocFromEditor()

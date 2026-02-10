@@ -32,7 +32,9 @@ func (m *Model) triggerPlannerWithPrompt(userInstruction string) (tea.Model, tea
 	m.agentError = nil
 	m.stats = ui.NewSessionStats()
 	m.streamStartTime = time.Now()
-	m.agentText.Reset()
+	m.agentReasoningTail = ""
+	m.agentLastReasoningLn = ""
+	m.deferredEditEvents = nil
 	m.activityExpanded = true
 	m.currentTurn = 0
 	// Keep editor focused - user can continue editing during agent operation
@@ -87,6 +89,8 @@ You have access to tools to explore the codebase:
 - glob: Find files by pattern (e.g., "**/*.go", "src/**/*.ts")
 - grep: Search file contents for patterns
 - read_file: Read file contents
+- web_search: Search the web for current information
+- read_url: Fetch and read web pages
 - shell: Run shell commands for git, npm, etc.
 
 **IMPORTANT**: Before making edits, use these tools to understand:
@@ -265,7 +269,6 @@ func (m *Model) executePartialInsert(afterText string, line string) {
 	// Insert the line at the tracked position
 	m.doc.InsertLine(m.partialInsertIdx, line, "agent")
 	m.partialInsertIdx++ // Next line goes after the one we just inserted
-	m.syncEditorFromDoc()
 }
 
 // executeInlineInsert handles an inline INSERT edit from the stream.
@@ -301,7 +304,7 @@ func (m *Model) executeInlineInsert(afterText string, content []string) {
 }
 
 // executeInlineDelete handles an inline DELETE edit from the stream.
-func (m *Model) executeInlineDelete(fromText string, toText string) {
+func (m *Model) executeInlineDelete(fromText string, toText string, syncEditor bool) {
 	if fromText == "" {
 		return
 	}
@@ -334,7 +337,39 @@ func (m *Model) executeInlineDelete(fromText string, toText string) {
 		m.doc.DeleteLine(i)
 	}
 
-	// Sync editor to show the change immediately
+	if syncEditor {
+		// Sync editor to show the change immediately.
+		m.syncEditorFromDoc()
+	}
+}
+
+func (m *Model) deferStreamEdit(ev ui.StreamEvent) {
+	m.deferredEditEvents = append(m.deferredEditEvents, ev)
+}
+
+func (m *Model) flushDeferredStreamEdits() {
+	if len(m.deferredEditEvents) == 0 {
+		return
+	}
+
+	events := m.deferredEditEvents
+	m.deferredEditEvents = nil
+
+	for _, deferred := range events {
+		switch deferred.Type {
+		case ui.StreamEventPartialInsert:
+			m.executePartialInsert(deferred.InlineAfter, deferred.InlineLine)
+		case ui.StreamEventInlineInsert:
+			// Partial inserts in this deferred batch were already replayed above; reset tracking.
+			m.partialInsertIdx = -1
+			m.partialInsertAfter = ""
+		case ui.StreamEventInlineDelete:
+			m.executeInlineDelete(deferred.InlineFrom, deferred.InlineTo, false)
+		}
+	}
+
+	m.editorSyncPending = false
+	m.partialInsertLines = 0
 	m.syncEditorFromDoc()
 }
 
@@ -425,6 +460,35 @@ func (m *Model) syncEditorFromDoc() {
 	m.editor, _ = m.editor.Update(tea.KeyMsg{Type: tea.KeyHome})
 	for i := 0; i < targetCol; i++ {
 		m.editor, _ = m.editor.Update(tea.KeyMsg{Type: tea.KeyRight})
+	}
+}
+
+func (m *Model) appendReasoningDelta(delta string) {
+	if delta == "" {
+		return
+	}
+
+	combined := m.agentReasoningTail + delta
+	combined = strings.ReplaceAll(combined, "\r\n", "\n")
+	parts := strings.Split(combined, "\n")
+
+	if len(parts) == 1 {
+		m.agentReasoningTail = parts[0]
+		if trimmed := strings.TrimSpace(parts[0]); trimmed != "" {
+			m.agentLastReasoningLn = trimmed
+		}
+		return
+	}
+
+	for i := 0; i < len(parts)-1; i++ {
+		if trimmed := strings.TrimSpace(parts[i]); trimmed != "" {
+			m.agentLastReasoningLn = trimmed
+		}
+	}
+
+	m.agentReasoningTail = parts[len(parts)-1]
+	if trimmed := strings.TrimSpace(m.agentReasoningTail); trimmed != "" {
+		m.agentLastReasoningLn = trimmed
 	}
 }
 

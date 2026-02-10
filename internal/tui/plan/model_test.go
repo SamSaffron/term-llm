@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -117,7 +118,7 @@ func TestRenderActivityPanel_WithReasoningText(t *testing.T) {
 	m.stats = ui.NewSessionStats()
 	m.streamStartTime = time.Now()
 	m.activityExpanded = true
-	m.agentText.WriteString("Looking at the codebase structure\n")
+	m.appendReasoningDelta("Looking at the codebase structure\n")
 
 	panel := m.renderActivityPanel()
 	if !strings.Contains(panel, "Looking at the codebase structure") {
@@ -243,8 +244,8 @@ func TestStreamEventText_CapturesReasoningText(t *testing.T) {
 	}
 	m.handleStreamEvent(ev)
 
-	if m.agentText.String() != "Looking at the code..." {
-		t.Errorf("expected reasoning text captured, got %q", m.agentText.String())
+	if m.agentLastReasoningLn != "Looking at the code..." {
+		t.Errorf("expected last reasoning line tracked, got %q", m.agentLastReasoningLn)
 	}
 	if m.agentPhase != "Analyzing" {
 		t.Errorf("expected phase 'Analyzing', got %q", m.agentPhase)
@@ -263,6 +264,160 @@ func TestStreamEventText_DoesNotOverrideInsertPhase(t *testing.T) {
 
 	if m.agentPhase != "Inserting" {
 		t.Errorf("expected phase to stay 'Inserting', got %q", m.agentPhase)
+	}
+}
+
+func TestStreamEventPartialInsert_DefersEditorSync(t *testing.T) {
+	m := newTestModel()
+	m.doc.SetText("# Plan", "user")
+	m.editor.SetValue("# Plan")
+
+	cmds := m.handleStreamEvent(ui.PartialInsertEvent("# Plan", "- Step 1"))
+
+	if got := m.doc.Text(); got != "# Plan\n- Step 1" {
+		t.Fatalf("expected document updated immediately, got %q", got)
+	}
+	if got := m.editor.Value(); got != "# Plan" {
+		t.Fatalf("expected editor sync to be deferred, got %q", got)
+	}
+	if len(cmds) == 0 {
+		t.Fatal("expected deferred editor sync command")
+	}
+}
+
+func TestStreamEventPartialInsert_DoesNotApplyDuringActiveEditing(t *testing.T) {
+	m := newTestModel()
+	m.agentActive = true
+	m.doc.SetText("# Plan", "user")
+	m.editor.SetValue("# Plan")
+
+	// Simulate active editing.
+	updatedModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'!'}})
+	m = updatedModel.(*Model)
+	beforeDoc := m.doc.Text()
+	beforeEditor := m.editor.Value()
+
+	cmds := m.handleStreamEvent(ui.PartialInsertEvent("# Plan", "- Step 1"))
+
+	if got := m.doc.Text(); got != beforeDoc {
+		t.Fatalf("expected stream edit to be deferred while typing, doc changed from %q to %q", beforeDoc, got)
+	}
+	if got := m.editor.Value(); got != beforeEditor {
+		t.Fatalf("expected editor to remain stable while typing, changed from %q to %q", beforeEditor, got)
+	}
+	if len(cmds) != 0 {
+		t.Fatalf("expected no immediate sync command while deferring stream edits, got %d", len(cmds))
+	}
+}
+
+func TestDeferredStreamEdit_FlushesAfterEditorIsIdle(t *testing.T) {
+	m := newTestModel()
+	m.agentActive = true
+	m.doc.SetText("# Plan", "user")
+	m.editor.SetValue("# Plan")
+
+	updatedModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'!'}})
+	m = updatedModel.(*Model)
+
+	m.handleStreamEvent(ui.PartialInsertEvent("# Plan", "- Step 1"))
+	if got := m.doc.Text(); got != "# Plan!" {
+		t.Fatalf("expected deferred stream edit to keep doc unchanged while typing, got %q", got)
+	}
+
+	m.lastEditorInputAt = time.Now().Add(-editorInputQuietPeriod - 10*time.Millisecond)
+	m.handleStreamEvent(ui.TextEvent("continuing..."))
+
+	if got := m.doc.Text(); got != "# Plan!\n- Step 1" {
+		t.Fatalf("expected deferred stream edit to flush when idle, got %q", got)
+	}
+	if got := m.editor.Value(); got != "# Plan!\n- Step 1" {
+		t.Fatalf("expected editor updated after deferred flush, got %q", got)
+	}
+}
+
+func TestEditorSyncMsg_FlushesDeferredPartialInsert(t *testing.T) {
+	m := newTestModel()
+	m.doc.SetText("# Plan", "user")
+	m.editor.SetValue("# Plan")
+
+	m.handleStreamEvent(ui.PartialInsertEvent("# Plan", "- Step 1"))
+
+	if m.editor.Value() != "# Plan" {
+		t.Fatalf("setup: expected stale editor before flush, got %q", m.editor.Value())
+	}
+
+	updatedModel, _ := m.Update(editorSyncMsg{})
+	m = updatedModel.(*Model)
+
+	if got := m.editor.Value(); got != "# Plan\n- Step 1" {
+		t.Fatalf("expected editor flushed from doc, got %q", got)
+	}
+}
+
+func TestListenForStreamEvents_BatchesPendingEvents(t *testing.T) {
+	m := newTestModel()
+
+	ch := make(chan ui.StreamEvent, 3)
+	ch <- ui.PartialInsertEvent("# Plan", "a")
+	ch <- ui.PartialInsertEvent("# Plan", "b")
+	ch <- ui.DoneEvent(0)
+	close(ch)
+	m.streamChan = ch
+
+	msg := m.listenForStreamEvents()()
+	batch, ok := msg.(streamEventsMsg)
+	if !ok {
+		t.Fatalf("expected streamEventsMsg, got %T", msg)
+	}
+	if len(batch.events) != 3 {
+		t.Fatalf("expected 3 events in batch, got %d", len(batch.events))
+	}
+	if batch.events[0].Type != ui.StreamEventPartialInsert || batch.events[1].Type != ui.StreamEventPartialInsert {
+		t.Fatalf("expected first two events to be partial inserts, got %v and %v", batch.events[0].Type, batch.events[1].Type)
+	}
+	if batch.events[2].Type != ui.StreamEventDone {
+		t.Fatalf("expected last event to be done, got %v", batch.events[2].Type)
+	}
+}
+
+func TestFlushEditorSync_ReschedulesWhileEditorIsActive(t *testing.T) {
+	m := newTestModel()
+	m.partialInsertLines = 2
+	m.editorSyncPending = true
+	m.lastEditorInputAt = time.Now()
+
+	cmd := m.flushEditorSync()
+	if cmd == nil {
+		t.Fatal("expected sync to be rescheduled while editor is active")
+	}
+	if m.partialInsertLines != 2 {
+		t.Fatalf("expected pending partial lines to remain buffered, got %d", m.partialInsertLines)
+	}
+}
+
+func TestScheduleEditorSync_DoesNotDuplicatePendingTimer(t *testing.T) {
+	m := newTestModel()
+	m.editorSyncPending = true
+	m.partialInsertLines = partialInsertSyncBatchSize - 1
+
+	cmd := m.scheduleEditorSync()
+	if cmd != nil {
+		t.Fatal("expected no duplicate timer when one is already pending")
+	}
+	if m.partialInsertLines != partialInsertSyncBatchSize {
+		t.Fatalf("expected partial insert count incremented, got %d", m.partialInsertLines)
+	}
+}
+
+func TestTruncateRunesWithEllipsis_HandlesUTF8(t *testing.T) {
+	input := "αβγδε"
+	got := truncateRunesWithEllipsis(input, 4)
+
+	if !utf8.ValidString(got) {
+		t.Fatalf("expected valid UTF-8 output, got %q", got)
+	}
+	if got != "α..." {
+		t.Fatalf("expected rune-safe truncation, got %q", got)
 	}
 }
 
@@ -292,27 +447,6 @@ func TestStatusLine_AgentActive_ShowsStats(t *testing.T) {
 	}
 	if !strings.Contains(line, "tok") {
 		t.Error("status line should contain token info")
-	}
-}
-
-func TestLastNonEmptyLine(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"", ""},
-		{"hello", "hello"},
-		{"hello\n", "hello"},
-		{"hello\nworld\n", "world"},
-		{"hello\n\n\n", "hello"},
-		{"  \n  \nhello\n  \n", "hello"},
-	}
-
-	for _, tt := range tests {
-		got := lastNonEmptyLine(tt.input)
-		if got != tt.want {
-			t.Errorf("lastNonEmptyLine(%q) = %q, want %q", tt.input, got, tt.want)
-		}
 	}
 }
 
