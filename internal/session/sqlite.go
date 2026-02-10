@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     llm_turns INTEGER DEFAULT 0,
     tool_calls INTEGER DEFAULT 0,
     input_tokens INTEGER DEFAULT 0,
+    cached_input_tokens INTEGER DEFAULT 0,
     output_tokens INTEGER DEFAULT 0,
     status TEXT DEFAULT 'active',
     tags TEXT
@@ -133,7 +134,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 6
+const schemaVersion = 7
 
 // migration represents a schema migration.
 type migration struct {
@@ -342,6 +343,19 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		// Migration 7: Add cached input token metrics
+		// Tracks prompt-cache token reads for cumulative session stats
+		version:     7,
+		description: "add cached_input_tokens metric column",
+		up: func(db *sql.DB) error {
+			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN cached_input_tokens INTEGER DEFAULT 0")
+			if err != nil && !isDuplicateColumnError(err) {
+				return err
+			}
+			return nil
+		},
+	},
 }
 
 // initSchema initializes the database schema and runs any pending migrations.
@@ -495,12 +509,12 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 		// Creates could read the same MAX(number).
 		result, err := s.db.ExecContext(ctx, `
 			INSERT INTO sessions (id, number, name, summary, provider, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
-			                      user_turns, llm_turns, tool_calls, input_tokens, output_tokens, status, tags)
-			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			                      user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens, output_tokens, status, tags)
+			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			sess.ID, sess.Name, sess.Summary, sess.Provider, sess.Model, string(sess.Mode), nullString(sess.Agent), sess.CWD,
 			sess.CreatedAt, sess.UpdatedAt, sess.Archived, nullString(sess.ParentID),
 			sess.Search, nullString(sess.Tools), nullString(sess.MCP),
-			sess.UserTurns, sess.LLMTurns, sess.ToolCalls, sess.InputTokens, sess.OutputTokens,
+			sess.UserTurns, sess.LLMTurns, sess.ToolCalls, sess.InputTokens, sess.CachedInputTokens, sess.OutputTokens,
 			string(sess.Status), nullString(sess.Tags))
 		if err != nil {
 			return fmt.Errorf("insert session: %w", err)
@@ -529,7 +543,7 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 func (s *SQLiteStore) Get(ctx context.Context, id string) (*Session, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, number, name, summary, provider, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
-		       user_turns, llm_turns, tool_calls, input_tokens, output_tokens, status, tags
+		       user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens, output_tokens, status, tags
 		FROM sessions WHERE id = ?`, id)
 
 	var sess Session
@@ -538,7 +552,7 @@ func (s *SQLiteStore) Get(ctx context.Context, id string) (*Session, error) {
 	err := row.Scan(&sess.ID, &number, &sess.Name, &sess.Summary, &sess.Provider, &sess.Model, &mode,
 		&agent, &sess.CWD, &sess.CreatedAt, &sess.UpdatedAt, &sess.Archived, &parentID,
 		&sess.Search, &tools, &mcp,
-		&sess.UserTurns, &sess.LLMTurns, &sess.ToolCalls, &sess.InputTokens, &sess.OutputTokens,
+		&sess.UserTurns, &sess.LLMTurns, &sess.ToolCalls, &sess.InputTokens, &sess.CachedInputTokens, &sess.OutputTokens,
 		&status, &tags)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -577,7 +591,7 @@ func (s *SQLiteStore) Get(ctx context.Context, id string) (*Session, error) {
 func (s *SQLiteStore) GetByNumber(ctx context.Context, number int64) (*Session, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, number, name, summary, provider, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
-		       user_turns, llm_turns, tool_calls, input_tokens, output_tokens, status, tags
+		       user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens, output_tokens, status, tags
 		FROM sessions WHERE number = ?`, number)
 
 	var sess Session
@@ -586,7 +600,7 @@ func (s *SQLiteStore) GetByNumber(ctx context.Context, number int64) (*Session, 
 	err := row.Scan(&sess.ID, &num, &sess.Name, &sess.Summary, &sess.Provider, &sess.Model, &mode,
 		&agent, &sess.CWD, &sess.CreatedAt, &sess.UpdatedAt, &sess.Archived, &parentID,
 		&sess.Search, &tools, &mcp,
-		&sess.UserTurns, &sess.LLMTurns, &sess.ToolCalls, &sess.InputTokens, &sess.OutputTokens,
+		&sess.UserTurns, &sess.LLMTurns, &sess.ToolCalls, &sess.InputTokens, &sess.CachedInputTokens, &sess.OutputTokens,
 		&status, &tags)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -665,7 +679,7 @@ func (s *SQLiteStore) GetByPrefix(ctx context.Context, prefix string) (*Session,
 	pattern := ExpandShortID(prefix)
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, number, name, summary, provider, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
-		       user_turns, llm_turns, tool_calls, input_tokens, output_tokens, status, tags
+		       user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens, output_tokens, status, tags
 		FROM sessions WHERE id LIKE ? ORDER BY created_at DESC LIMIT 1`, pattern)
 
 	var prefixSess Session
@@ -674,7 +688,7 @@ func (s *SQLiteStore) GetByPrefix(ctx context.Context, prefix string) (*Session,
 	err = row.Scan(&prefixSess.ID, &number, &prefixSess.Name, &prefixSess.Summary, &prefixSess.Provider, &prefixSess.Model, &mode,
 		&agent, &prefixSess.CWD, &prefixSess.CreatedAt, &prefixSess.UpdatedAt, &prefixSess.Archived, &parentID,
 		&prefixSess.Search, &tools, &mcp,
-		&prefixSess.UserTurns, &prefixSess.LLMTurns, &prefixSess.ToolCalls, &prefixSess.InputTokens, &prefixSess.OutputTokens,
+		&prefixSess.UserTurns, &prefixSess.LLMTurns, &prefixSess.ToolCalls, &prefixSess.InputTokens, &prefixSess.CachedInputTokens, &prefixSess.OutputTokens,
 		&status, &tags)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -715,13 +729,13 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE sessions SET name = ?, summary = ?, provider = ?, model = ?, mode = ?, agent = ?, cwd = ?,
 		       updated_at = ?, archived = ?, parent_id = ?, search = ?, tools = ?, mcp = ?,
-		       user_turns = ?, llm_turns = ?, tool_calls = ?, input_tokens = ?, output_tokens = ?,
+		       user_turns = ?, llm_turns = ?, tool_calls = ?, input_tokens = ?, cached_input_tokens = ?, output_tokens = ?,
 		       status = ?, tags = ?
 		WHERE id = ?`,
 		sess.Name, sess.Summary, sess.Provider, sess.Model, string(sess.Mode), nullString(sess.Agent), sess.CWD,
 		sess.UpdatedAt, sess.Archived, nullString(sess.ParentID),
 		sess.Search, nullString(sess.Tools), nullString(sess.MCP),
-		sess.UserTurns, sess.LLMTurns, sess.ToolCalls, sess.InputTokens, sess.OutputTokens,
+		sess.UserTurns, sess.LLMTurns, sess.ToolCalls, sess.InputTokens, sess.CachedInputTokens, sess.OutputTokens,
 		string(sess.Status), nullString(sess.Tags), sess.ID)
 	if err != nil {
 		return fmt.Errorf("update session: %w", err)
@@ -734,17 +748,18 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 }
 
 // UpdateMetrics updates just the metrics fields (used for incremental saves).
-func (s *SQLiteStore) UpdateMetrics(ctx context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens int) error {
+func (s *SQLiteStore) UpdateMetrics(ctx context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens, cachedInputTokens int) error {
 	return retryOnBusy(5, func() error {
 		_, err := s.db.ExecContext(ctx, `
 			UPDATE sessions SET
 			       llm_turns = llm_turns + ?,
 			       tool_calls = tool_calls + ?,
 			       input_tokens = input_tokens + ?,
+			       cached_input_tokens = cached_input_tokens + ?,
 			       output_tokens = output_tokens + ?,
 			       updated_at = ?
 			WHERE id = ?`,
-			llmTurns, toolCalls, inputTokens, outputTokens, time.Now(), id)
+			llmTurns, toolCalls, inputTokens, cachedInputTokens, outputTokens, time.Now(), id)
 		return err
 	})
 }
@@ -790,7 +805,7 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	query := `
 		SELECT s.id, s.number, s.name, s.summary, s.provider, s.model, s.mode, s.created_at, s.updated_at,
 		       (SELECT COUNT(*) FROM messages WHERE session_id = s.id) as message_count,
-		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.output_tokens, s.status, s.tags
+		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.cached_input_tokens, s.output_tokens, s.status, s.tags
 		FROM sessions s
 		WHERE 1=1`
 	args := []any{}
@@ -844,7 +859,7 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		var mode, status, tags sql.NullString
 		err := rows.Scan(&sum.ID, &number, &sum.Name, &sum.Summary, &sum.Provider, &sum.Model, &mode,
 			&sum.CreatedAt, &sum.UpdatedAt, &sum.MessageCount,
-			&sum.UserTurns, &sum.LLMTurns, &sum.ToolCalls, &sum.InputTokens, &sum.OutputTokens,
+			&sum.UserTurns, &sum.LLMTurns, &sum.ToolCalls, &sum.InputTokens, &sum.CachedInputTokens, &sum.OutputTokens,
 			&status, &tags)
 		if err != nil {
 			return nil, fmt.Errorf("scan session summary: %w", err)

@@ -435,10 +435,13 @@ func (p *CopilotProvider) streamResponses(ctx context.Context, req Request, mode
 	p.responsesClient.GetAuthHeader = func() string { return "Bearer " + p.sessionToken }
 
 	responsesReq := ResponsesRequest{
-		Model:  model,
-		Input:  BuildResponsesInput(req.Messages),
-		Tools:  BuildResponsesTools(req.Tools),
-		Stream: true,
+		Model:          model,
+		Input:          BuildResponsesInput(req.Messages),
+		Tools:          BuildResponsesTools(req.Tools),
+		Include:        []string{"reasoning.encrypted_content"},
+		PromptCacheKey: req.SessionID,
+		Stream:         true,
+		SessionID:      req.SessionID,
 	}
 
 	if req.ToolChoice.Mode != "" {
@@ -463,8 +466,9 @@ func (p *CopilotProvider) streamResponses(ctx context.Context, req Request, mode
 	if req.ReasoningEffort != "" {
 		effort = req.ReasoningEffort
 	}
+	responsesReq.Reasoning = &ResponsesReasoning{Summary: "auto"}
 	if effort != "" {
-		responsesReq.Reasoning = &ResponsesReasoning{Effort: effort}
+		responsesReq.Reasoning.Effort = effort
 	}
 
 	return p.responsesClient.Stream(ctx, responsesReq, req.DebugRaw)

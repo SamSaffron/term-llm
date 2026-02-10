@@ -208,6 +208,17 @@ func formatRequestEntry(w io.Writer, req RequestEntry, opts FormatOptions, style
 		}
 		fmt.Fprintf(w, "         Messages: %d, Tools: %s\n", msgCount, toolsStr)
 	}
+	if req.Request.SessionID != "" {
+		fmt.Fprintf(w, "         Session key: %s\n", req.Request.SessionID)
+	}
+	if req.Request.ReasoningReplayParts > 0 || req.Request.ReasoningEncryptedParts > 0 {
+		fmt.Fprintf(
+			w,
+			"         Reasoning replay: parts=%d encrypted=%d\n",
+			req.Request.ReasoningReplayParts,
+			req.Request.ReasoningEncryptedParts,
+		)
+	}
 
 	// Show system prompt if present
 	for _, msg := range req.Request.Messages {
@@ -319,6 +330,22 @@ func formatEventEntry(w io.Writer, evt EventEntry, opts FormatOptions, styles *u
 			int(input),
 			int(output),
 			int(cached),
+		)
+
+	case "reasoning_delta":
+		itemID, _ := evt.Data["reasoning_item_id"].(string)
+		textLen, _ := evt.Data["text_len"].(float64)
+		encLen, _ := evt.Data["reasoning_encrypted_content_len"].(float64)
+		encHash, _ := evt.Data["reasoning_encrypted_content_hash"].(string)
+		fmt.Fprintf(
+			w,
+			"%s%s item=%s text_len=%d enc_len=%d enc_hash=%s\n",
+			ts,
+			styles.Muted.Render("REASONING"),
+			orDash(itemID),
+			int(textLen),
+			int(encLen),
+			orDash(encHash),
 		)
 
 	case "done":
@@ -437,6 +464,19 @@ func FormatTailEntry(w io.Writer, line []byte) {
 				int(cached),
 			)
 
+		case "reasoning_delta":
+			itemID, _ := data["reasoning_item_id"].(string)
+			textLen, _ := data["text_len"].(float64)
+			encLen, _ := data["reasoning_encrypted_content_len"].(float64)
+			fmt.Fprintf(
+				w,
+				"[%s] REASONING item=%s text_len=%d enc_len=%d\n",
+				timeStr,
+				orDash(itemID),
+				int(textLen),
+				int(encLen),
+			)
+
 		case "done":
 			fmt.Fprintf(w, "[%s] %s\n", timeStr, styles.Success.Render("DONE"))
 
@@ -462,4 +502,11 @@ func formatNumber(n int) string {
 		result = append(result, byte(c))
 	}
 	return string(result)
+}
+
+func orDash(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "-"
+	}
+	return s
 }

@@ -397,7 +397,12 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	messages = append(messages, llm.UserText(userPrompt))
 
 	debugMode := askDebug
+	sessionID := ""
+	if sess != nil {
+		sessionID = sess.ID
+	}
 	req := llm.Request{
+		SessionID:           sessionID,
 		Messages:            messages,
 		Search:              settings.Search,
 		ForceExternalSearch: resolveForceExternalSearch(cfg, askNativeSearch, askNoNativeSearch),
@@ -432,6 +437,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	// Create stream adapter for unified event handling with proper buffering
 	adapter := ui.NewStreamAdapter(ui.DefaultStreamBufferSize)
+	if sess != nil {
+		adapter.Stats().SeedTotals(sess.InputTokens, sess.OutputTokens, sess.CachedInputTokens, sess.ToolCalls, sess.LLMTurns)
+	}
 
 	// For glamour mode, create the tea.Program and set PromptUIFunc BEFORE starting the stream
 	// This avoids a race condition where tool execution starts before PromptUIFunc is set
@@ -562,7 +570,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 				_ = store.AddMessage(ctx, sess.ID, sessionMsg)
 			}
 			// Update metrics
-			_ = store.UpdateMetrics(ctx, sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens)
+			_ = store.UpdateMetrics(ctx, sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens)
 			return nil
 		})
 	}

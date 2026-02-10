@@ -1,9 +1,39 @@
 package llm
 
 import (
+	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
+	"time"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func drainStreamToDone(t *testing.T, stream Stream) {
+	t.Helper()
+	for {
+		event, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			return
+		}
+		if recvErr != nil {
+			t.Fatalf("stream recv failed: %v", recvErr)
+		}
+		if event.Type == EventError {
+			t.Fatalf("stream returned error event: %v", event.Err)
+		}
+		if event.Type == EventDone {
+			return
+		}
+	}
+}
 
 func TestUseResponsesAPI(t *testing.T) {
 	tests := []struct {
@@ -120,6 +150,108 @@ func TestBuildResponsesInput_ToolCalls(t *testing.T) {
 	}
 	if input[1].Output != "Sunny, 72F" {
 		t.Errorf("expected output 'Sunny, 72F', got %q", input[1].Output)
+	}
+}
+
+func TestBuildResponsesInput_AssistantReasoningReplay(t *testing.T) {
+	messages := []Message{
+		{
+			Role: RoleAssistant,
+			Parts: []Part{
+				{
+					Type:                      PartText,
+					Text:                      "Final answer",
+					ReasoningContent:          "I reviewed the repository first.",
+					ReasoningItemID:           "rs_123",
+					ReasoningEncryptedContent: "enc_abc",
+				},
+			},
+		},
+	}
+
+	input := BuildResponsesInput(messages)
+	if len(input) != 2 {
+		t.Fatalf("expected 2 input items (reasoning + message), got %d", len(input))
+	}
+
+	var reasoningItem *ResponsesInputItem
+	var assistantMessage *ResponsesInputItem
+	for i := range input {
+		switch input[i].Type {
+		case "reasoning":
+			reasoningItem = &input[i]
+		case "message":
+			if input[i].Role == "assistant" {
+				assistantMessage = &input[i]
+			}
+		}
+	}
+
+	if reasoningItem == nil {
+		t.Fatal("expected reasoning input item")
+	}
+	if reasoningItem.ID != "rs_123" {
+		t.Errorf("expected reasoning id rs_123, got %q", reasoningItem.ID)
+	}
+	if reasoningItem.EncryptedContent != "enc_abc" {
+		t.Errorf("expected encrypted_content enc_abc, got %q", reasoningItem.EncryptedContent)
+	}
+	if reasoningItem.Summary == nil {
+		t.Fatal("expected reasoning summary to be present")
+	}
+	if len(*reasoningItem.Summary) != 1 {
+		t.Fatalf("expected one reasoning summary part, got %d", len(*reasoningItem.Summary))
+	}
+	if (*reasoningItem.Summary)[0].Type != "summary_text" {
+		t.Errorf("expected summary type summary_text, got %q", (*reasoningItem.Summary)[0].Type)
+	}
+	if (*reasoningItem.Summary)[0].Text != "I reviewed the repository first." {
+		t.Errorf("unexpected summary text: %q", (*reasoningItem.Summary)[0].Text)
+	}
+
+	if assistantMessage == nil {
+		t.Fatal("expected assistant message input item")
+	}
+	if assistantMessage.Content != "Final answer" {
+		t.Errorf("expected assistant message content Final answer, got %#v", assistantMessage.Content)
+	}
+}
+
+func TestBuildResponsesInput_AssistantReasoningReplayEmptySummary(t *testing.T) {
+	messages := []Message{
+		{
+			Role: RoleAssistant,
+			Parts: []Part{
+				{
+					Type:                      PartText,
+					Text:                      "Answer text",
+					ReasoningItemID:           "rs_empty",
+					ReasoningEncryptedContent: "enc_empty",
+				},
+			},
+		},
+	}
+
+	input := BuildResponsesInput(messages)
+	if len(input) != 2 {
+		t.Fatalf("expected 2 input items (reasoning + message), got %d", len(input))
+	}
+
+	var reasoningItem *ResponsesInputItem
+	for i := range input {
+		if input[i].Type == "reasoning" {
+			reasoningItem = &input[i]
+			break
+		}
+	}
+	if reasoningItem == nil {
+		t.Fatal("expected reasoning item")
+	}
+	if reasoningItem.Summary == nil {
+		t.Fatal("expected summary field to be present even when empty")
+	}
+	if len(*reasoningItem.Summary) != 0 {
+		t.Fatalf("expected empty summary, got %d parts", len(*reasoningItem.Summary))
 	}
 }
 
@@ -240,6 +372,218 @@ func TestResponsesToolState_TrackByOutputIndex(t *testing.T) {
 	}
 	if string(call.Arguments) != `{"query":"hello"}` {
 		t.Errorf("expected arguments '{\"query\":\"hello\"}', got %q", string(call.Arguments))
+	}
+}
+
+func TestResponsesClientStream_SendsSessionHeaderAndPromptCacheKey(t *testing.T) {
+	type capturedRequest struct {
+		SessionID      string
+		PromptCacheKey string
+	}
+
+	captured := make(chan capturedRequest, 1)
+	httpClient := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			defer r.Body.Close()
+
+			var payload struct {
+				PromptCacheKey string `json:"prompt_cache_key"`
+			}
+			body, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(body, &payload)
+
+			captured <- capturedRequest{
+				SessionID:      r.Header.Get("session_id"),
+				PromptCacheKey: payload.PromptCacheKey,
+			}
+
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header: http.Header{
+					"Content-Type": []string{"text/event-stream"},
+				},
+				Body: io.NopCloser(strings.NewReader(
+					"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}\n\n",
+				)),
+			}, nil
+		}),
+	}
+
+	client := &ResponsesClient{
+		BaseURL:       "https://example.test/v1/responses",
+		GetAuthHeader: func() string { return "Bearer test-token" },
+		HTTPClient:    httpClient,
+	}
+
+	stream, err := client.Stream(context.Background(), ResponsesRequest{
+		Model: "gpt-5.2",
+		Input: []ResponsesInputItem{
+			{Type: "message", Role: "user", Content: "hello"},
+		},
+		Stream:         true,
+		SessionID:      "session-123",
+		PromptCacheKey: "session-123",
+	}, false)
+	if err != nil {
+		t.Fatalf("stream request failed: %v", err)
+	}
+	defer stream.Close()
+	drainStreamToDone(t, stream)
+
+	select {
+	case req := <-captured:
+		if req.SessionID != "session-123" {
+			t.Fatalf("expected session_id header 'session-123', got %q", req.SessionID)
+		}
+		if req.PromptCacheKey != "session-123" {
+			t.Fatalf("expected prompt_cache_key 'session-123', got %q", req.PromptCacheKey)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for request capture")
+	}
+}
+
+func TestOpenAIProviderStream_UsesSessionIDForResponsesCaching(t *testing.T) {
+	type capturedRequest struct {
+		SessionID      string
+		PromptCacheKey string
+	}
+
+	captured := make(chan capturedRequest, 1)
+	httpClient := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			defer r.Body.Close()
+
+			var payload struct {
+				PromptCacheKey string `json:"prompt_cache_key"`
+			}
+			body, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(body, &payload)
+
+			captured <- capturedRequest{
+				SessionID:      r.Header.Get("session_id"),
+				PromptCacheKey: payload.PromptCacheKey,
+			}
+
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header: http.Header{
+					"Content-Type": []string{"text/event-stream"},
+				},
+				Body: io.NopCloser(strings.NewReader(
+					"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_openai\"}}\n\n",
+				)),
+			}, nil
+		}),
+	}
+
+	provider := &OpenAIProvider{
+		apiKey: "test-key",
+		model:  "gpt-5.2",
+		responsesClient: &ResponsesClient{
+			BaseURL:       "https://example.test/v1/responses",
+			GetAuthHeader: func() string { return "Bearer test-key" },
+			HTTPClient:    httpClient,
+		},
+	}
+
+	stream, err := provider.Stream(context.Background(), Request{
+		Model:     "gpt-5.2",
+		SessionID: "openai-session-1",
+		Messages: []Message{
+			{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "hello"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("openai stream failed: %v", err)
+	}
+	defer stream.Close()
+	drainStreamToDone(t, stream)
+
+	select {
+	case req := <-captured:
+		if req.SessionID != "openai-session-1" {
+			t.Fatalf("expected session_id header 'openai-session-1', got %q", req.SessionID)
+		}
+		if req.PromptCacheKey != "openai-session-1" {
+			t.Fatalf("expected prompt_cache_key 'openai-session-1', got %q", req.PromptCacheKey)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for request capture")
+	}
+}
+
+func TestCopilotStreamResponses_UsesSessionIDForResponsesCaching(t *testing.T) {
+	type capturedRequest struct {
+		SessionID      string
+		PromptCacheKey string
+	}
+
+	captured := make(chan capturedRequest, 1)
+	httpClient := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			defer r.Body.Close()
+
+			var payload struct {
+				PromptCacheKey string `json:"prompt_cache_key"`
+			}
+			body, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(body, &payload)
+
+			captured <- capturedRequest{
+				SessionID:      r.Header.Get("session_id"),
+				PromptCacheKey: payload.PromptCacheKey,
+			}
+
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header: http.Header{
+					"Content-Type": []string{"text/event-stream"},
+				},
+				Body: io.NopCloser(strings.NewReader(
+					"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_copilot\"}}\n\n",
+				)),
+			}, nil
+		}),
+	}
+
+	provider := &CopilotProvider{
+		model:        "gpt-5.2",
+		apiBaseURL:   "https://api.githubcopilot.com",
+		sessionToken: "copilot-session-token",
+		responsesClient: &ResponsesClient{
+			BaseURL:       "https://example.test/v1/responses",
+			GetAuthHeader: func() string { return "Bearer copilot-session-token" },
+			HTTPClient:    httpClient,
+		},
+	}
+
+	stream, err := provider.streamResponses(context.Background(), Request{
+		Model:     "gpt-5.2",
+		SessionID: "copilot-session-1",
+		Messages: []Message{
+			{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "hello"}}},
+		},
+	}, "gpt-5.2")
+	if err != nil {
+		t.Fatalf("copilot stream failed: %v", err)
+	}
+	defer stream.Close()
+	drainStreamToDone(t, stream)
+
+	select {
+	case req := <-captured:
+		if req.SessionID != "copilot-session-1" {
+			t.Fatalf("expected session_id header 'copilot-session-1', got %q", req.SessionID)
+		}
+		if req.PromptCacheKey != "copilot-session-1" {
+			t.Fatalf("expected prompt_cache_key 'copilot-session-1', got %q", req.PromptCacheKey)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for request capture")
 	}
 }
 

@@ -186,6 +186,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 		}
 
 		req := llm.Request{
+			SessionID:           m.sess.ID,
 			Messages:            messages,
 			Tools:               reqTools,
 			Search:              m.searchEnabled,
@@ -221,7 +222,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 					}
 					_ = m.store.AddMessage(ctx, m.sess.ID, sessionMsg)
 				}
-				_ = m.store.UpdateMetrics(ctx, m.sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens)
+				_ = m.store.UpdateMetrics(ctx, m.sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens)
 				return nil
 			})
 		}

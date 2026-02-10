@@ -226,7 +226,7 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 					r.warn("session AddMessage failed: %v", err)
 				}
 			}
-			if err := r.store.UpdateMetrics(ctx, childSessionID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens); err != nil {
+			if err := r.store.UpdateMetrics(ctx, childSessionID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens); err != nil {
 				r.warn("session UpdateMetrics failed: %v", err)
 			}
 			return nil
@@ -267,6 +267,7 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 
 	// Build request
 	req := llm.Request{
+		SessionID:         childSessionID,
 		Messages:          messages,
 		Search:            agent.Search,
 		ParallelToolCalls: true,

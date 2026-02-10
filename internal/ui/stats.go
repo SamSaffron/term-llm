@@ -30,6 +30,16 @@ func NewSessionStats() *SessionStats {
 	}
 }
 
+// SeedTotals initializes cumulative counters from persisted session metrics.
+// Timing remains scoped to the current process run.
+func (s *SessionStats) SeedTotals(input, output, cached, toolCalls, llmCalls int) {
+	s.InputTokens = input
+	s.OutputTokens = output
+	s.CachedInputTokens = cached
+	s.ToolCallCount = toolCalls
+	s.LLMCallCount = llmCalls
+}
+
 // AddUsage adds token usage to the stats and increments the LLM call count.
 func (s *SessionStats) AddUsage(input, output, cached int) {
 	s.InputTokens += input

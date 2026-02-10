@@ -33,8 +33,11 @@ type ResponsesRequest struct {
 	Temperature        *float64             `json:"temperature,omitempty"`
 	TopP               *float64             `json:"top_p,omitempty"`
 	Reasoning          *ResponsesReasoning  `json:"reasoning,omitempty"`
+	Include            []string             `json:"include,omitempty"`
+	PromptCacheKey     string               `json:"prompt_cache_key,omitempty"`
 	Stream             bool                 `json:"stream"`
 	PreviousResponseID string               `json:"previous_response_id,omitempty"`
+	SessionID          string               `json:"-"`
 }
 
 // ResponsesWebSearchTool represents the web search tool for OpenAI
@@ -47,6 +50,10 @@ type ResponsesInputItem struct {
 	Type    string      `json:"type"`
 	Role    string      `json:"role,omitempty"`
 	Content interface{} `json:"content,omitempty"` // string or []ResponsesContentPart
+	// For reasoning type
+	ID               string                     `json:"id,omitempty"`
+	EncryptedContent string                     `json:"encrypted_content,omitempty"`
+	Summary          *responsesReasoningSummary `json:"summary,omitempty"`
 	// For function_call type
 	CallID    string `json:"call_id,omitempty"`
 	Name      string `json:"name,omitempty"`
@@ -73,7 +80,8 @@ type ResponsesTool struct {
 
 // ResponsesReasoning configures reasoning effort for models that support it
 type ResponsesReasoning struct {
-	Effort string `json:"effort,omitempty"` // "low", "medium", "high", "xhigh"
+	Effort  string `json:"effort,omitempty"`  // "low", "medium", "high", "xhigh"
+	Summary string `json:"summary,omitempty"` // "auto"
 }
 
 // responsesAPIResponse is the response structure from the API
@@ -88,12 +96,22 @@ type responsesAPIResponse struct {
 type responsesOutputItem struct {
 	Type    string                   `json:"type"` // "message" or "function_call"
 	Content []responsesOutputContent `json:"content,omitempty"`
+	// For reasoning
+	EncryptedContent string                          `json:"encrypted_content,omitempty"`
+	Summary          []responsesReasoningSummaryPart `json:"summary,omitempty"`
 	// For function_call
 	ID        string `json:"id,omitempty"`
 	CallID    string `json:"call_id,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
 }
+
+type responsesReasoningSummaryPart struct {
+	Type string `json:"type"` // "summary_text"
+	Text string `json:"text,omitempty"`
+}
+
+type responsesReasoningSummary []responsesReasoningSummaryPart
 
 type responsesOutputContent struct {
 	Type    string `json:"type"` // "output_text" or "refusal"
@@ -139,7 +157,7 @@ func BuildResponsesInput(messages []Message) []ResponsesInputItem {
 		case RoleUser:
 			inputItems = append(inputItems, buildResponsesMessageItems("user", msg.Parts)...)
 		case RoleAssistant:
-			inputItems = append(inputItems, buildResponsesMessageItems("assistant", msg.Parts)...)
+			inputItems = append(inputItems, buildResponsesAssistantItems(msg.Parts)...)
 		case RoleTool:
 			for _, part := range msg.Parts {
 				if part.Type != PartToolResult || part.ToolResult == nil {
@@ -225,6 +243,81 @@ func buildResponsesMessageItems(role string, parts []Part) []ResponsesInputItem 
 	return items
 }
 
+func buildResponsesAssistantItems(parts []Part) []ResponsesInputItem {
+	var items []ResponsesInputItem
+	var textBuf strings.Builder
+
+	flushText := func() {
+		if textBuf.Len() == 0 {
+			return
+		}
+		items = append(items, ResponsesInputItem{
+			Type:    "message",
+			Role:    "assistant",
+			Content: textBuf.String(),
+		})
+		textBuf.Reset()
+	}
+
+	for _, part := range parts {
+		switch part.Type {
+		case PartText:
+			if hasResponsesReasoningReplay(part) {
+				flushText()
+				items = append(items, buildResponsesReasoningItem(part))
+			}
+			if part.Text != "" {
+				textBuf.WriteString(part.Text)
+			}
+
+		case PartToolCall:
+			if part.ToolCall == nil {
+				continue
+			}
+			flushText()
+			callID := strings.TrimSpace(part.ToolCall.ID)
+			if callID == "" {
+				continue
+			}
+			args := strings.TrimSpace(string(part.ToolCall.Arguments))
+			if args == "" {
+				args = "{}"
+			}
+			items = append(items, ResponsesInputItem{
+				Type:      "function_call",
+				CallID:    callID,
+				Name:      part.ToolCall.Name,
+				Arguments: args,
+			})
+		}
+	}
+
+	flushText()
+	return items
+}
+
+func hasResponsesReasoningReplay(part Part) bool {
+	return strings.TrimSpace(part.ReasoningItemID) != "" || strings.TrimSpace(part.ReasoningEncryptedContent) != ""
+}
+
+func buildResponsesReasoningItem(part Part) ResponsesInputItem {
+	summary := responsesReasoningSummary{}
+	item := ResponsesInputItem{
+		Type:             "reasoning",
+		ID:               strings.TrimSpace(part.ReasoningItemID),
+		EncryptedContent: strings.TrimSpace(part.ReasoningEncryptedContent),
+		Summary:          &summary,
+	}
+	if strings.TrimSpace(part.ReasoningContent) != "" {
+		summary = append(summary, responsesReasoningSummaryPart{
+			Type: "summary_text",
+			Text: strings.TrimSpace(part.ReasoningContent),
+		})
+		item.Summary = &summary
+	}
+	return item
+}
+
 // BuildResponsesTools converts []ToolSpec to Open Responses format with schema normalization
 func BuildResponsesTools(specs []ToolSpec) []any {
 	if len(specs) == 0 {
@@ -295,6 +388,9 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 	if c.GetAuthHeader != nil {
 		httpReq.Header.Set("Authorization", c.GetAuthHeader())
 	}
+	if req.SessionID != "" {
+		httpReq.Header.Set("session_id", req.SessionID)
+	}
 	for key, value := range c.ExtraHeaders {
 		httpReq.Header.Set(key, value)
 	}
@@ -352,6 +448,9 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 			if c.GetAuthHeader != nil {
 				httpReq.Header.Set("Authorization", c.GetAuthHeader())
 			}
+			if req.SessionID != "" {
+				httpReq.Header.Set("session_id", req.SessionID)
+			}
 			for key, value := range c.ExtraHeaders {
 				httpReq.Header.Set(key, value)
 			}
@@ -384,6 +483,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 
 		// Tool call state for accumulating streaming function calls
 		toolState := newResponsesToolState()
+		reasoningState := newResponsesReasoningState()
 		var lastUsage *Usage
 		var lastEventType string
 		var sawTextDelta bool // Track if any text deltas were emitted
@@ -426,6 +526,8 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 					if itemEvent.Item.Type == "function_call" {
 						// Use output_index as tracking key (stable across events), Item.CallID as the actual call ID
 						toolState.StartCall(itemEvent.OutputIndex, itemEvent.Item.CallID, itemEvent.Item.Name)
+					} else if itemEvent.Item.Type == "reasoning" {
+						reasoningState.Start(itemEvent.OutputIndex, itemEvent.Item.ID, itemEvent.Item.EncryptedContent, itemEvent.Item.Summary)
 					}
 				}
 
@@ -447,6 +549,16 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 					if doneEvent.Item.Type == "function_call" {
 						// Complete the tool call with final arguments using output_index
 						toolState.FinishCall(doneEvent.OutputIndex, doneEvent.Item.CallID, doneEvent.Item.Name, doneEvent.Item.Arguments)
+					} else if doneEvent.Item.Type == "reasoning" {
+						reasoningState.Finish(doneEvent.OutputIndex, doneEvent.Item.ID, doneEvent.Item.EncryptedContent, doneEvent.Item.Summary)
+						if part := reasoningState.Part(doneEvent.OutputIndex); part != nil {
+							events <- Event{
+								Type:                      EventReasoningDelta,
+								Text:                      part.ReasoningContent,
+								ReasoningItemID:           part.ReasoningItemID,
+								ReasoningEncryptedContent: part.ReasoningEncryptedContent,
+							}
+						}
 					} else if doneEvent.Item.Type == "message" {
 						// Text content is normally streamed via response.output_text.delta events.
 						// Fall back to emitting here if no deltas were seen (provider inconsistency).
@@ -459,6 +571,23 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 							}
 						}
 					}
+				}
+
+			case "response.reasoning_summary_part.added":
+				var partEvent struct {
+					OutputIndex int `json:"output_index"`
+				}
+				if err := json.Unmarshal([]byte(data), &partEvent); err == nil {
+					reasoningState.Ensure(partEvent.OutputIndex)
+				}
+
+			case "response.reasoning_summary_text.delta":
+				var summaryDeltaEvent struct {
+					OutputIndex int    `json:"output_index"`
+					Delta       string `json:"delta"`
+				}
+				if err := json.Unmarshal([]byte(data), &summaryDeltaEvent); err == nil {
+					reasoningState.AppendSummary(summaryDeltaEvent.OutputIndex, summaryDeltaEvent.Delta)
 				}
 
 			case "response.completed":
@@ -614,4 +743,80 @@ func (s *responsesToolState) Calls() []ToolCall {
 		})
 	}
 	return calls
+}
+
+type responsesReasoningState struct {
+	items map[int]*responsesReasoningItemState
+}
+
+type responsesReasoningItemState struct {
+	part Part
+}
+
+func newResponsesReasoningState() *responsesReasoningState {
+	return &responsesReasoningState{
+		items: make(map[int]*responsesReasoningItemState),
+	}
+}
+
+func (s *responsesReasoningState) Ensure(outputIndex int) {
+	if _, ok := s.items[outputIndex]; ok {
+		return
+	}
+	s.items[outputIndex] = &responsesReasoningItemState{
+		part: Part{Type: PartText},
+	}
+}
+
+func (s *responsesReasoningState) Start(outputIndex int, itemID, encrypted string, summary []responsesReasoningSummaryPart) {
+	s.Ensure(outputIndex)
+	state := s.items[outputIndex]
+	if itemID != "" {
+		state.part.ReasoningItemID = itemID
+	}
+	if encrypted != "" {
+		state.part.ReasoningEncryptedContent = encrypted
+	}
+	if text := extractReasoningSummaryText(summary); text != "" {
+		state.part.ReasoningContent = text
+	}
+}
+
+func (s *responsesReasoningState) AppendSummary(outputIndex int, delta string) {
+	if delta == "" {
+		return
+	}
+	s.Ensure(outputIndex)
+	state := s.items[outputIndex]
+	state.part.ReasoningContent += delta
+}
+
+func (s *responsesReasoningState) Finish(outputIndex int, itemID, encrypted string, summary []responsesReasoningSummaryPart) {
+	s.Start(outputIndex, itemID, encrypted, summary)
+}
+
+func (s *responsesReasoningState) Part(outputIndex int) *Part {
+	state, ok := s.items[outputIndex]
+	if !ok {
+		return nil
+	}
+	if state.part.ReasoningItemID == "" && state.part.ReasoningEncryptedContent == "" && state.part.ReasoningContent == "" {
+		return nil
+	}
+	part := state.part
+	return &part
+}
+
+func extractReasoningSummaryText(summary []responsesReasoningSummaryPart) string {
+	if len(summary) == 0 {
+		return ""
+	}
+	var text strings.Builder
+	for _, part := range summary {
+		if part.Type != "summary_text" || strings.TrimSpace(part.Text) == "" {
+			continue
+		}
+		text.WriteString(part.Text)
+	}
+	return text.String()
 }

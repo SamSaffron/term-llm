@@ -2,6 +2,8 @@ package llm
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -156,11 +158,36 @@ func DebugRawEvent(enabled bool, event Event) {
 		}
 	case EventUsage:
 		if event.Use != nil {
-			body := fmt.Sprintf("input_tokens: %d\noutput_tokens: %d", event.Use.InputTokens, event.Use.OutputTokens)
+			body := fmt.Sprintf(
+				"input_tokens: %d\noutput_tokens: %d\ncached_input_tokens: %d",
+				event.Use.InputTokens,
+				event.Use.OutputTokens,
+				event.Use.CachedInputTokens,
+			)
 			DebugRawSection(enabled, "Event Usage", body)
 		} else {
 			DebugRawSection(enabled, "Event Usage", "(nil)")
 		}
+	case EventReasoningDelta:
+		var body strings.Builder
+		if event.ReasoningItemID != "" {
+			fmt.Fprintf(&body, "reasoning_item_id: %s\n", event.ReasoningItemID)
+		}
+		fmt.Fprintf(&body, "text_len: %d\n", len(event.Text))
+		if event.Text != "" {
+			text := event.Text
+			if len(text) > 500 {
+				text = text[:500] + "...[truncated]"
+			}
+			body.WriteString("text:\n")
+			body.WriteString(text)
+			body.WriteString("\n")
+		}
+		if event.ReasoningEncryptedContent != "" {
+			fmt.Fprintf(&body, "encrypted_content_len: %d\n", len(event.ReasoningEncryptedContent))
+			fmt.Fprintf(&body, "encrypted_content_hash: %s\n", shortDebugHash(event.ReasoningEncryptedContent))
+		}
+		DebugRawSection(enabled, "Event Reasoning Delta", strings.TrimRight(body.String(), "\n"))
 	case EventToolExecStart:
 		info := event.ToolName
 		if event.ToolInfo != "" {
@@ -188,6 +215,15 @@ func DebugRawEvent(enabled bool, event Event) {
 	default:
 		DebugRawSection(enabled, "Event", fmt.Sprintf("type: %s", event.Type))
 	}
+}
+
+func shortDebugHash(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	hexHash := hex.EncodeToString(sum[:])
+	if len(hexHash) <= 16 {
+		return hexHash
+	}
+	return hexHash[:16]
 }
 
 // DebugRawSection prints a timestamped debug section.

@@ -53,6 +53,7 @@ type Stream interface {
 // Request represents a single model turn.
 type Request struct {
 	Model               string
+	SessionID           string // Optional session ID for provider-side continuity/caching hints
 	Messages            []Message
 	Tools               []ToolSpec
 	ToolChoice          ToolChoice
@@ -96,11 +97,13 @@ type Message struct {
 
 // Part represents a single content part.
 type Part struct {
-	Type             PartType
-	Text             string
-	ReasoningContent string // For thinking models (OpenRouter reasoning_content)
-	ToolCall         *ToolCall
-	ToolResult       *ToolResult
+	Type                      PartType
+	Text                      string
+	ReasoningContent          string // Reasoning summary text (or thinking content for OpenRouter)
+	ReasoningItemID           string // Responses API reasoning item ID for replay
+	ReasoningEncryptedContent string // Responses API encrypted reasoning content for replay
+	ToolCall                  *ToolCall
+	ToolResult                *ToolResult
 }
 
 // ToolSpec describes a callable tool.
@@ -192,18 +195,20 @@ type ToolExecutionResponse struct {
 
 // Event represents a streamed output update.
 type Event struct {
-	Type        EventType
-	Text        string
-	Tool        *ToolCall
-	ToolCallID  string     // For EventToolExecStart/End: unique ID of this tool invocation
-	ToolName    string     // For EventToolExecStart/End: name of tool being executed
-	ToolInfo    string     // For EventToolExecStart/End: additional info (e.g., URL being fetched)
-	ToolSuccess bool       // For EventToolExecEnd: whether tool execution succeeded
-	ToolOutput  string     // For EventToolExecEnd: the tool's text content
-	ToolDiffs   []DiffData // For EventToolExecEnd: structured diffs from edit tools
-	ToolImages  []string   // For EventToolExecEnd: image paths from image tools
-	Use         *Usage
-	Err         error
+	Type                      EventType
+	Text                      string
+	ReasoningItemID           string // For EventReasoningDelta: reasoning item ID
+	ReasoningEncryptedContent string // For EventReasoningDelta: encrypted reasoning content
+	Tool                      *ToolCall
+	ToolCallID                string     // For EventToolExecStart/End: unique ID of this tool invocation
+	ToolName                  string     // For EventToolExecStart/End: name of tool being executed
+	ToolInfo                  string     // For EventToolExecStart/End: additional info (e.g., URL being fetched)
+	ToolSuccess               bool       // For EventToolExecEnd: whether tool execution succeeded
+	ToolOutput                string     // For EventToolExecEnd: the tool's text content
+	ToolDiffs                 []DiffData // For EventToolExecEnd: structured diffs from edit tools
+	ToolImages                []string   // For EventToolExecEnd: image paths from image tools
+	Use                       *Usage
+	Err                       error
 	// Retry fields (for EventRetry)
 	RetryAttempt     int
 	RetryMaxAttempts int

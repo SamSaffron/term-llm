@@ -24,17 +24,20 @@ type RequestEntry struct {
 
 // RequestData contains the request details
 type RequestData struct {
-	Messages            []Message   `json:"messages"`
-	Tools               []Tool      `json:"tools,omitempty"`
-	ToolChoice          *ToolChoice `json:"tool_choice,omitempty"`
-	Search              bool        `json:"search,omitempty"`
-	ForceExternalSearch bool        `json:"force_external_search,omitempty"`
-	ParallelToolCalls   bool        `json:"parallel_tool_calls,omitempty"`
-	MaxOutputTokens     int         `json:"max_output_tokens,omitempty"`
-	Temperature         float32     `json:"temperature,omitempty"`
-	TopP                float32     `json:"top_p,omitempty"`
-	ReasoningEffort     string      `json:"reasoning_effort,omitempty"`
-	MaxTurns            int         `json:"max_turns,omitempty"`
+	SessionID               string      `json:"session_id,omitempty"`
+	Messages                []Message   `json:"messages"`
+	Tools                   []Tool      `json:"tools,omitempty"`
+	ToolChoice              *ToolChoice `json:"tool_choice,omitempty"`
+	Search                  bool        `json:"search,omitempty"`
+	ForceExternalSearch     bool        `json:"force_external_search,omitempty"`
+	ParallelToolCalls       bool        `json:"parallel_tool_calls,omitempty"`
+	MaxOutputTokens         int         `json:"max_output_tokens,omitempty"`
+	Temperature             float32     `json:"temperature,omitempty"`
+	TopP                    float32     `json:"top_p,omitempty"`
+	ReasoningEffort         string      `json:"reasoning_effort,omitempty"`
+	ReasoningReplayParts    int         `json:"reasoning_replay_parts,omitempty"`
+	ReasoningEncryptedParts int         `json:"reasoning_encrypted_parts,omitempty"`
+	MaxTurns                int         `json:"max_turns,omitempty"`
 }
 
 // ToolChoice represents tool choice settings
@@ -51,10 +54,14 @@ type Message struct {
 
 // Part represents a message part
 type Part struct {
-	Type       string      `json:"type"`
-	Text       string      `json:"text,omitempty"`
-	ToolCall   *ToolCall   `json:"tool_call,omitempty"`
-	ToolResult *ToolResult `json:"tool_result,omitempty"`
+	Type                          string      `json:"type"`
+	Text                          string      `json:"text,omitempty"`
+	ReasoningContent              string      `json:"reasoning_content,omitempty"`
+	ReasoningItemID               string      `json:"reasoning_item_id,omitempty"`
+	ReasoningEncryptedContentLen  int         `json:"reasoning_encrypted_content_len,omitempty"`
+	ReasoningEncryptedContentHash string      `json:"reasoning_encrypted_content_hash,omitempty"`
+	ToolCall                      *ToolCall   `json:"tool_call,omitempty"`
+	ToolResult                    *ToolResult `json:"tool_result,omitempty"`
 }
 
 // ToolCall is a simplified tool call for logging

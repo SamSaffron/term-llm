@@ -30,8 +30,10 @@ func (s *sliceStream) Close() error {
 }
 
 type fakeProvider struct {
-	script func(call int, req Request) []Event
-	calls  []Request
+	script          func(call int, req Request) []Event
+	calls           []Request
+	capabilities    Capabilities
+	hasCapabilities bool
 }
 
 func (p *fakeProvider) Name() string {
@@ -43,6 +45,9 @@ func (p *fakeProvider) Credential() string {
 }
 
 func (p *fakeProvider) Capabilities() Capabilities {
+	if p.hasCapabilities {
+		return p.capabilities
+	}
 	return Capabilities{
 		NativeWebSearch: false,
 		NativeWebFetch:  false,
@@ -289,6 +294,69 @@ func TestEngineExternalSearchStopsAfterMaxLoops(t *testing.T) {
 	last := provider.calls[len(provider.calls)-1]
 	if !hasSystemText(last.Messages, stopSearchToolHint) {
 		t.Fatalf("expected stop hint in final request")
+	}
+}
+
+func TestEngineForceExternalSearchDisablesNativeProviderSearch(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(&countingSearchTool{})
+
+	provider := &fakeProvider{
+		hasCapabilities: true,
+		capabilities: Capabilities{
+			NativeWebSearch: true,
+			NativeWebFetch:  false,
+			ToolCalls:       true,
+		},
+		script: func(call int, req Request) []Event {
+			return []Event{
+				{Type: EventTextDelta, Text: "ok"},
+				{Type: EventDone},
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	req := Request{
+		Messages:            []Message{UserText("search this")},
+		Search:              true,
+		ForceExternalSearch: true,
+	}
+
+	stream, err := engine.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+	}
+
+	if len(provider.calls) != 1 {
+		t.Fatalf("expected 1 provider call, got %d", len(provider.calls))
+	}
+
+	firstReq := provider.calls[0]
+	if firstReq.Search {
+		t.Fatalf("expected provider request Search=false when force_external is true")
+	}
+
+	hasExternalSearchTool := false
+	for _, spec := range firstReq.Tools {
+		if spec.Name == WebSearchToolName {
+			hasExternalSearchTool = true
+			break
+		}
+	}
+	if !hasExternalSearchTool {
+		t.Fatalf("expected injected external web_search tool")
 	}
 }
 

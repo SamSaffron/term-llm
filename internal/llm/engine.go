@@ -28,9 +28,10 @@ func getMaxTurns(req Request) int {
 
 // TurnMetrics contains metrics collected during a turn.
 type TurnMetrics struct {
-	InputTokens  int // Tokens consumed as input this turn
-	OutputTokens int // Tokens generated as output this turn
-	ToolCalls    int // Number of tools executed this turn
+	InputTokens       int // Tokens consumed as input this turn
+	OutputTokens      int // Tokens generated as output this turn
+	CachedInputTokens int // Input tokens served from cache this turn
+	ToolCalls         int // Number of tools executed this turn
 }
 
 // TurnCompletedCallback is called after each turn completes with the messages
@@ -226,6 +227,12 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 		}
 	}
 
+	// Force external search means "do not use provider-native search".
+	// Keep req.Search=true only for providers that must handle native search.
+	if req.ForceExternalSearch && caps.NativeWebSearch {
+		req.Search = false
+	}
+
 	// 2. Decide if we use the agentic loop
 	// We use it if request has tools AND provider supports tool calls
 	useLoop := len(req.Tools) > 0 && caps.ToolCalls
@@ -271,22 +278,28 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 // Used for simple (non-agentic) streams to enable incremental session saving.
 func wrapCallbackStream(ctx context.Context, inner Stream, cb TurnCompletedCallback) Stream {
 	return &callbackStream{
-		inner:    inner,
-		ctx:      ctx,
-		text:     &strings.Builder{},
-		metrics:  TurnMetrics{},
-		callback: cb,
+		inner:              inner,
+		ctx:                ctx,
+		text:               &strings.Builder{},
+		reasoning:          &strings.Builder{},
+		metrics:            TurnMetrics{},
+		callback:           cb,
+		reasoningItemID:    "",
+		reasoningEncrypted: "",
 	}
 }
 
 // callbackStream wraps a stream to accumulate text/usage and call callback on EOF.
 type callbackStream struct {
-	inner    Stream
-	ctx      context.Context
-	text     *strings.Builder
-	metrics  TurnMetrics
-	callback TurnCompletedCallback
-	done     bool
+	inner              Stream
+	ctx                context.Context
+	text               *strings.Builder
+	reasoning          *strings.Builder
+	reasoningItemID    string
+	reasoningEncrypted string
+	metrics            TurnMetrics
+	callback           TurnCompletedCallback
+	done               bool
 }
 
 func (s *callbackStream) Recv() (Event, error) {
@@ -309,6 +322,18 @@ func (s *callbackStream) Recv() (Event, error) {
 	if event.Type == EventUsage && event.Use != nil {
 		s.metrics.InputTokens += event.Use.InputTokens
 		s.metrics.OutputTokens += event.Use.OutputTokens
+		s.metrics.CachedInputTokens += event.Use.CachedInputTokens
+	}
+	if event.Type == EventReasoningDelta {
+		if event.Text != "" {
+			s.reasoning.WriteString(event.Text)
+		}
+		if event.ReasoningItemID != "" {
+			s.reasoningItemID = event.ReasoningItemID
+		}
+		if event.ReasoningEncryptedContent != "" {
+			s.reasoningEncrypted = event.ReasoningEncryptedContent
+		}
 	}
 
 	return event, nil
@@ -316,11 +341,17 @@ func (s *callbackStream) Recv() (Event, error) {
 
 // fireCallback invokes the callback once if there's accumulated content.
 func (s *callbackStream) fireCallback() {
-	if s.callback != nil && !s.done && s.text.Len() > 0 {
+	if s.callback != nil && !s.done && (s.text.Len() > 0 || s.reasoning.Len() > 0 || s.reasoningItemID != "" || s.reasoningEncrypted != "") {
 		s.done = true
 		msg := Message{
-			Role:  RoleAssistant,
-			Parts: []Part{{Type: PartText, Text: s.text.String()}},
+			Role: RoleAssistant,
+			Parts: []Part{{
+				Type:                      PartText,
+				Text:                      s.text.String(),
+				ReasoningContent:          s.reasoning.String(),
+				ReasoningItemID:           s.reasoningItemID,
+				ReasoningEncryptedContent: s.reasoningEncrypted,
+			}},
 		}
 		_ = s.callback(s.ctx, 0, []Message{msg}, s.metrics)
 	}
@@ -382,7 +413,9 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 		// Collect tool calls and text, forward events, track metrics
 		var toolCalls []ToolCall
 		var textBuilder strings.Builder
-		var reasoningBuilder strings.Builder // For thinking models (OpenRouter reasoning_content)
+		var reasoningBuilder strings.Builder // For reasoning summary/thinking content
+		var reasoningItemID string
+		var reasoningEncryptedContent string
 		var turnMetrics TurnMetrics
 		var syncToolsExecuted bool     // Track if tools were executed via sync path (MCP)
 		var finishingToolExecuted bool // Track if a finishing tool was executed (agent done)
@@ -408,6 +441,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			if event.Type == EventUsage && event.Use != nil {
 				turnMetrics.InputTokens += event.Use.InputTokens
 				turnMetrics.OutputTokens += event.Use.OutputTokens
+				turnMetrics.CachedInputTokens += event.Use.CachedInputTokens
 			}
 			// Accumulate text for callback
 			if event.Type == EventTextDelta && event.Text != "" {
@@ -416,6 +450,14 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			// Accumulate reasoning for thinking models (OpenRouter)
 			if event.Type == EventReasoningDelta && event.Text != "" {
 				reasoningBuilder.WriteString(event.Text)
+			}
+			if event.Type == EventReasoningDelta {
+				if event.ReasoningItemID != "" {
+					reasoningItemID = event.ReasoningItemID
+				}
+				if event.ReasoningEncryptedContent != "" {
+					reasoningEncryptedContent = event.ReasoningEncryptedContent
+				}
 			}
 			if event.Type == EventToolCall && event.Tool != nil {
 				// Check if this is a synchronous tool execution request (from claude_bin MCP)
@@ -490,10 +532,16 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			// Call turnCallback with final text-only response (no tools)
 			// Note: responseCallback is NOT called here because no tool execution follows.
 			// responseCallback is only for persisting assistant messages before tool execution.
-			if turnCallback != nil && textBuilder.Len() > 0 {
+			if turnCallback != nil && (textBuilder.Len() > 0 || reasoningBuilder.Len() > 0 || reasoningItemID != "" || reasoningEncryptedContent != "") {
 				finalMsg := Message{
-					Role:  RoleAssistant,
-					Parts: []Part{{Type: PartText, Text: textBuilder.String()}},
+					Role: RoleAssistant,
+					Parts: []Part{{
+						Type:                      PartText,
+						Text:                      textBuilder.String(),
+						ReasoningContent:          reasoningBuilder.String(),
+						ReasoningItemID:           reasoningItemID,
+						ReasoningEncryptedContent: reasoningEncryptedContent,
+					}},
 				}
 				_ = turnCallback(ctx, attempt, []Message{finalMsg}, turnMetrics)
 			}
@@ -505,7 +553,13 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 		if len(toolCalls) == 0 && syncToolsExecuted {
 			// Build assistant message with text and sync tool calls
 			// This is needed so claude-bin gets proper context when resuming
-			assistantMsg := buildAssistantMessage(textBuilder.String(), syncToolCalls, reasoningBuilder.String())
+			assistantMsg := buildAssistantMessageWithReasoningMetadata(
+				textBuilder.String(),
+				syncToolCalls,
+				reasoningBuilder.String(),
+				reasoningItemID,
+				reasoningEncryptedContent,
+			)
 			req.Messages = append(req.Messages, assistantMsg)
 			req.Messages = append(req.Messages, syncToolResults...)
 
@@ -554,8 +608,14 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			// responseCallback is only for persisting assistant messages before tool execution.
 			if turnCallback != nil {
 				var parts []Part
-				if textBuilder.Len() > 0 {
-					parts = append(parts, Part{Type: PartText, Text: textBuilder.String()})
+				if textBuilder.Len() > 0 || reasoningBuilder.Len() > 0 || reasoningItemID != "" || reasoningEncryptedContent != "" {
+					parts = append(parts, Part{
+						Type:                      PartText,
+						Text:                      textBuilder.String(),
+						ReasoningContent:          reasoningBuilder.String(),
+						ReasoningItemID:           reasoningItemID,
+						ReasoningEncryptedContent: reasoningEncryptedContent,
+					})
 				}
 				for i := range unregistered {
 					call := unregistered[i]
@@ -576,7 +636,13 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 
 		// Build assistant message with text + tool calls + reasoning
 		// (built before tool execution so we can save it incrementally)
-		assistantMsg := buildAssistantMessage(textBuilder.String(), registered, reasoningBuilder.String())
+		assistantMsg := buildAssistantMessageWithReasoningMetadata(
+			textBuilder.String(),
+			registered,
+			reasoningBuilder.String(),
+			reasoningItemID,
+			reasoningEncryptedContent,
+		)
 
 		// Call responseCallback BEFORE tool execution to persist assistant message
 		// This ensures the message is saved even if tool execution fails/crashes
@@ -615,9 +681,19 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 // buildAssistantMessage creates an assistant message with text, tool calls, and optional reasoning.
 // The reasoning parameter is for thinking models (OpenRouter reasoning_content).
 func buildAssistantMessage(text string, toolCalls []ToolCall, reasoning string) Message {
+	return buildAssistantMessageWithReasoningMetadata(text, toolCalls, reasoning, "", "")
+}
+
+func buildAssistantMessageWithReasoningMetadata(text string, toolCalls []ToolCall, reasoning, reasoningItemID, reasoningEncryptedContent string) Message {
 	var parts []Part
-	if text != "" || reasoning != "" {
-		parts = append(parts, Part{Type: PartText, Text: text, ReasoningContent: reasoning})
+	if text != "" || reasoning != "" || reasoningItemID != "" || reasoningEncryptedContent != "" {
+		parts = append(parts, Part{
+			Type:                      PartText,
+			Text:                      text,
+			ReasoningContent:          reasoning,
+			ReasoningItemID:           reasoningItemID,
+			ReasoningEncryptedContent: reasoningEncryptedContent,
+		})
 	}
 	for i := range toolCalls {
 		call := toolCalls[i]

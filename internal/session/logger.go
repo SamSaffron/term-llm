@@ -66,8 +66,8 @@ func (s *LoggingStore) AddMessage(ctx context.Context, sessionID string, msg *Me
 }
 
 // UpdateMetrics wraps Store.UpdateMetrics with error logging.
-func (s *LoggingStore) UpdateMetrics(ctx context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens int) error {
-	err := s.Store.UpdateMetrics(ctx, id, llmTurns, toolCalls, inputTokens, outputTokens)
+func (s *LoggingStore) UpdateMetrics(ctx context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens, cachedInputTokens int) error {
+	err := s.Store.UpdateMetrics(ctx, id, llmTurns, toolCalls, inputTokens, outputTokens, cachedInputTokens)
 	s.logOnce("UpdateMetrics", err)
 	return err
 }

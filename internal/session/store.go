@@ -26,7 +26,7 @@ type Store interface {
 	GetMessages(ctx context.Context, sessionID string, limit, offset int) ([]Message, error)
 
 	// Metrics operations (for incremental session saving)
-	UpdateMetrics(ctx context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens int) error
+	UpdateMetrics(ctx context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens, cachedInputTokens int) error
 	UpdateStatus(ctx context.Context, id string, status SessionStatus) error
 	IncrementUserTurns(ctx context.Context, id string) error
 

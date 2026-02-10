@@ -49,7 +49,7 @@ func (s *NoopStore) GetMessages(ctx context.Context, sessionID string, limit, of
 	return nil, nil
 }
 
-func (s *NoopStore) UpdateMetrics(ctx context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens int) error {
+func (s *NoopStore) UpdateMetrics(ctx context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens, cachedInputTokens int) error {
 	return nil
 }
 

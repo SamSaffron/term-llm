@@ -109,10 +109,13 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 	}
 
 	responsesReq := ResponsesRequest{
-		Model:  model,
-		Input:  BuildResponsesInput(req.Messages),
-		Tools:  tools,
-		Stream: true,
+		Model:          model,
+		Input:          BuildResponsesInput(req.Messages),
+		Tools:          tools,
+		Include:        []string{"reasoning.encrypted_content"},
+		PromptCacheKey: req.SessionID,
+		Stream:         true,
+		SessionID:      req.SessionID,
 	}
 
 	if req.ToolChoice.Mode != "" {
@@ -132,8 +135,9 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 	if req.MaxOutputTokens > 0 {
 		responsesReq.MaxOutputTokens = req.MaxOutputTokens
 	}
+	responsesReq.Reasoning = &ResponsesReasoning{Summary: "auto"}
 	if effort != "" {
-		responsesReq.Reasoning = &ResponsesReasoning{Effort: effort}
+		responsesReq.Reasoning.Effort = effort
 	}
 
 	if req.Debug {

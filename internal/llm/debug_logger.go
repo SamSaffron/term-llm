@@ -2,6 +2,8 @@ package llm
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -47,17 +49,20 @@ type debugTurnRequestEntry struct {
 
 // debugRequestData contains the request details
 type debugRequestData struct {
-	Messages            []debugMessage   `json:"messages"`
-	Tools               []debugTool      `json:"tools,omitempty"`
-	ToolChoice          *debugToolChoice `json:"tool_choice,omitempty"`
-	Search              bool             `json:"search,omitempty"`
-	ForceExternalSearch bool             `json:"force_external_search,omitempty"`
-	ParallelToolCalls   bool             `json:"parallel_tool_calls,omitempty"`
-	MaxOutputTokens     int              `json:"max_output_tokens,omitempty"`
-	Temperature         float32          `json:"temperature,omitempty"`
-	TopP                float32          `json:"top_p,omitempty"`
-	ReasoningEffort     string           `json:"reasoning_effort,omitempty"`
-	MaxTurns            int              `json:"max_turns,omitempty"`
+	SessionID               string           `json:"session_id,omitempty"`
+	Messages                []debugMessage   `json:"messages"`
+	Tools                   []debugTool      `json:"tools,omitempty"`
+	ToolChoice              *debugToolChoice `json:"tool_choice,omitempty"`
+	Search                  bool             `json:"search,omitempty"`
+	ForceExternalSearch     bool             `json:"force_external_search,omitempty"`
+	ParallelToolCalls       bool             `json:"parallel_tool_calls,omitempty"`
+	MaxOutputTokens         int              `json:"max_output_tokens,omitempty"`
+	Temperature             float32          `json:"temperature,omitempty"`
+	TopP                    float32          `json:"top_p,omitempty"`
+	ReasoningEffort         string           `json:"reasoning_effort,omitempty"`
+	ReasoningReplayParts    int              `json:"reasoning_replay_parts,omitempty"`
+	ReasoningEncryptedParts int              `json:"reasoning_encrypted_parts,omitempty"`
+	MaxTurns                int              `json:"max_turns,omitempty"`
 }
 
 // debugToolChoice represents tool choice settings
@@ -74,10 +79,14 @@ type debugMessage struct {
 
 // debugPart represents a message part
 type debugPart struct {
-	Type       string           `json:"type"`
-	Text       string           `json:"text,omitempty"`
-	ToolCall   *debugToolCall   `json:"tool_call,omitempty"`
-	ToolResult *debugToolResult `json:"tool_result,omitempty"`
+	Type                          string           `json:"type"`
+	Text                          string           `json:"text,omitempty"`
+	ReasoningContent              string           `json:"reasoning_content,omitempty"`
+	ReasoningItemID               string           `json:"reasoning_item_id,omitempty"`
+	ReasoningEncryptedContentLen  int              `json:"reasoning_encrypted_content_len,omitempty"`
+	ReasoningEncryptedContentHash string           `json:"reasoning_encrypted_content_hash,omitempty"`
+	ToolCall                      *debugToolCall   `json:"tool_call,omitempty"`
+	ToolResult                    *debugToolResult `json:"tool_result,omitempty"`
 }
 
 // debugToolCall is a simplified tool call for logging
@@ -173,6 +182,7 @@ func (l *DebugLogger) LogRequest(provider, model string, req Request) {
 	if logModel == "" {
 		logModel = model
 	}
+	replayParts, encryptedParts := countReasoningReplayParts(req.Messages)
 
 	entry := debugRequestEntry{
 		debugLogEntry: debugLogEntry{
@@ -183,17 +193,20 @@ func (l *DebugLogger) LogRequest(provider, model string, req Request) {
 		Provider: provider,
 		Model:    logModel,
 		Request: debugRequestData{
-			Messages:            convertMessages(req.Messages),
-			Tools:               convertTools(req.Tools),
-			ToolChoice:          convertToolChoice(req.ToolChoice),
-			Search:              req.Search,
-			ForceExternalSearch: req.ForceExternalSearch,
-			ParallelToolCalls:   req.ParallelToolCalls,
-			MaxOutputTokens:     req.MaxOutputTokens,
-			Temperature:         req.Temperature,
-			TopP:                req.TopP,
-			ReasoningEffort:     req.ReasoningEffort,
-			MaxTurns:            req.MaxTurns,
+			SessionID:               req.SessionID,
+			Messages:                convertMessages(req.Messages),
+			Tools:                   convertTools(req.Tools),
+			ToolChoice:              convertToolChoice(req.ToolChoice),
+			Search:                  req.Search,
+			ForceExternalSearch:     req.ForceExternalSearch,
+			ParallelToolCalls:       req.ParallelToolCalls,
+			MaxOutputTokens:         req.MaxOutputTokens,
+			Temperature:             req.Temperature,
+			TopP:                    req.TopP,
+			ReasoningEffort:         req.ReasoningEffort,
+			ReasoningReplayParts:    replayParts,
+			ReasoningEncryptedParts: encryptedParts,
+			MaxTurns:                req.MaxTurns,
 		},
 	}
 
@@ -225,6 +238,7 @@ func (l *DebugLogger) LogTurnRequest(turn int, provider, model string, req Reque
 	if logModel == "" {
 		logModel = model
 	}
+	replayParts, encryptedParts := countReasoningReplayParts(req.Messages)
 
 	entry := debugTurnRequestEntry{
 		debugLogEntry: debugLogEntry{
@@ -236,17 +250,20 @@ func (l *DebugLogger) LogTurnRequest(turn int, provider, model string, req Reque
 		Provider: provider,
 		Model:    logModel,
 		Request: debugRequestData{
-			Messages:            convertMessages(req.Messages),
-			Tools:               convertTools(req.Tools),
-			ToolChoice:          convertToolChoice(req.ToolChoice),
-			Search:              req.Search,
-			ForceExternalSearch: req.ForceExternalSearch,
-			ParallelToolCalls:   req.ParallelToolCalls,
-			MaxOutputTokens:     req.MaxOutputTokens,
-			Temperature:         req.Temperature,
-			TopP:                req.TopP,
-			ReasoningEffort:     req.ReasoningEffort,
-			MaxTurns:            req.MaxTurns,
+			SessionID:               req.SessionID,
+			Messages:                convertMessages(req.Messages),
+			Tools:                   convertTools(req.Tools),
+			ToolChoice:              convertToolChoice(req.ToolChoice),
+			Search:                  req.Search,
+			ForceExternalSearch:     req.ForceExternalSearch,
+			ParallelToolCalls:       req.ParallelToolCalls,
+			MaxOutputTokens:         req.MaxOutputTokens,
+			Temperature:             req.Temperature,
+			TopP:                    req.TopP,
+			ReasoningEffort:         req.ReasoningEffort,
+			ReasoningReplayParts:    replayParts,
+			ReasoningEncryptedParts: encryptedParts,
+			MaxTurns:                req.MaxTurns,
 		},
 	}
 
@@ -274,6 +291,26 @@ func (l *DebugLogger) LogEvent(event Event) {
 	switch event.Type {
 	case EventTextDelta:
 		entry.Data = map[string]string{"text": event.Text}
+	case EventReasoningDelta:
+		data := map[string]any{}
+		if event.Text != "" {
+			text := event.Text
+			if len(text) > 500 {
+				text = text[:500] + "...[truncated]"
+			}
+			data["text"] = text
+			data["text_len"] = len(event.Text)
+		}
+		if event.ReasoningItemID != "" {
+			data["reasoning_item_id"] = event.ReasoningItemID
+		}
+		if event.ReasoningEncryptedContent != "" {
+			data["reasoning_encrypted_content_len"] = len(event.ReasoningEncryptedContent)
+			data["reasoning_encrypted_content_hash"] = shortContentHash(event.ReasoningEncryptedContent)
+		}
+		if len(data) > 0 {
+			entry.Data = data
+		}
 	case EventToolCall:
 		if event.Tool != nil {
 			entry.Data = map[string]any{
@@ -412,7 +449,7 @@ func convertMessages(messages []Message) []debugMessage {
 // convertParts converts message parts to debug format
 func convertParts(parts []Part) any {
 	// If there's a single text part, return just the text string
-	if len(parts) == 1 && parts[0].Type == PartText {
+	if len(parts) == 1 && parts[0].Type == PartText && !hasReasoningMetadata(parts[0]) {
 		return parts[0].Text
 	}
 
@@ -423,6 +460,12 @@ func convertParts(parts []Part) any {
 		switch part.Type {
 		case PartText:
 			dp.Text = part.Text
+			dp.ReasoningContent = part.ReasoningContent
+			dp.ReasoningItemID = part.ReasoningItemID
+			if part.ReasoningEncryptedContent != "" {
+				dp.ReasoningEncryptedContentLen = len(part.ReasoningEncryptedContent)
+				dp.ReasoningEncryptedContentHash = shortContentHash(part.ReasoningEncryptedContent)
+			}
 		case PartToolCall:
 			if part.ToolCall != nil {
 				dp.ToolCall = &debugToolCall{
@@ -459,6 +502,34 @@ func convertTools(tools []ToolSpec) []debugTool {
 		}
 	}
 	return result
+}
+
+func hasReasoningMetadata(part Part) bool {
+	return part.ReasoningContent != "" || part.ReasoningItemID != "" || part.ReasoningEncryptedContent != ""
+}
+
+func countReasoningReplayParts(messages []Message) (replayParts int, encryptedParts int) {
+	for _, msg := range messages {
+		for _, part := range msg.Parts {
+			if !hasReasoningMetadata(part) {
+				continue
+			}
+			replayParts++
+			if part.ReasoningEncryptedContent != "" {
+				encryptedParts++
+			}
+		}
+	}
+	return replayParts, encryptedParts
+}
+
+func shortContentHash(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	hexHash := hex.EncodeToString(sum[:])
+	if len(hexHash) <= 16 {
+		return hexHash
+	}
+	return hexHash[:16]
 }
 
 // CleanupOldLogs removes JSONL log files older than maxAge from the specified directory.

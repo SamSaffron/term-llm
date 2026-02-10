@@ -324,6 +324,11 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 	tracker := ui.NewToolTracker()
 	tracker.TextMode = textMode
 
+	stats := ui.NewSessionStats()
+	if sess != nil {
+		stats.SeedTotals(sess.InputTokens, sess.OutputTokens, sess.CachedInputTokens, sess.ToolCalls, sess.LLMTurns)
+	}
+
 	return &Model{
 		width:               width,
 		height:              height,
@@ -356,7 +361,7 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 		toolsStr:            toolsStr,
 		mcpStr:              mcpStr,
 		showStats:           showStats,
-		stats:               ui.NewSessionStats(),
+		stats:               stats,
 		altScreen:           altScreen,
 		viewport:            vp,
 		chatRenderer:        chatRenderer,

@@ -185,14 +185,19 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 			"parallel_tool_calls": req.ParallelToolCalls,
 			"stream":              true,
 			"store":               false,
-			"include":             []string{},
+			"include":             []string{"reasoning.encrypted_content"},
+		}
+		if req.SessionID != "" {
+			reqBody["prompt_cache_key"] = req.SessionID
 		}
 
-		if effort != "" {
-			reqBody["reasoning"] = map[string]interface{}{
-				"effort": effort,
-			}
+		reasoning := map[string]interface{}{
+			"summary": "auto",
 		}
+		if effort != "" {
+			reasoning["effort"] = effort
+		}
+		reqBody["reasoning"] = reasoning
 
 		body, err := json.Marshal(reqBody)
 		if err != nil {
@@ -216,6 +221,9 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 		httpReq.Header.Set("OpenAI-Beta", "responses=experimental")
 		httpReq.Header.Set("originator", "term-llm")
 		httpReq.Header.Set("Accept", "text/event-stream")
+		if req.SessionID != "" {
+			httpReq.Header.Set("session_id", req.SessionID)
+		}
 
 		resp, err := chatGPTHTTPClient.Do(httpReq)
 		if err != nil {
@@ -255,6 +263,7 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 
 		// Stream and handle both text and tool calls
 		acc := newChatGPTToolAccumulator()
+		reasoningAcc := newChatGPTReasoningAccumulator()
 		var lastUsage *Usage
 		buf := make([]byte, 4096)
 		var pending string
@@ -308,6 +317,12 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 							if event.Item.Arguments != "" {
 								acc.setArgs(id, event.Item.Arguments)
 							}
+						case "reasoning":
+							id := event.Item.ID
+							if id == "" {
+								id = event.ItemID
+							}
+							reasoningAcc.start(id, event.OutputIndex, event.Item.EncryptedContent, event.Item.Summary)
 						}
 					case "response.output_item.done":
 						switch event.Item.Type {
@@ -327,6 +342,20 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 							if event.Item.Arguments != "" {
 								acc.setArgs(id, event.Item.Arguments)
 							}
+						case "reasoning":
+							id := event.Item.ID
+							if id == "" {
+								id = event.ItemID
+							}
+							reasoningAcc.finish(id, event.OutputIndex, event.Item.EncryptedContent, event.Item.Summary)
+							if part := reasoningAcc.part(id, event.OutputIndex); part != nil {
+								events <- Event{
+									Type:                      EventReasoningDelta,
+									Text:                      part.ReasoningContent,
+									ReasoningItemID:           part.ReasoningItemID,
+									ReasoningEncryptedContent: part.ReasoningEncryptedContent,
+								}
+							}
 						}
 					case "response.function_call_arguments.delta":
 						acc.ensureCall(event.ItemID)
@@ -334,8 +363,14 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 					case "response.function_call_arguments.done":
 						acc.ensureCall(event.ItemID)
 						acc.setArgs(event.ItemID, event.Arguments)
+					case "response.reasoning_summary_part.added":
+						reasoningAcc.ensure(event.ItemID, event.OutputIndex)
+					case "response.reasoning_summary_text.delta":
+						reasoningAcc.appendSummary(event.ItemID, event.OutputIndex, event.Delta)
 					case "response.completed":
-						if event.Response.Usage.OutputTokens > 0 {
+						if event.Response.Usage.InputTokens > 0 ||
+							event.Response.Usage.OutputTokens > 0 ||
+							event.Response.Usage.InputTokensDetails.CachedTokens > 0 {
 							lastUsage = &Usage{
 								InputTokens:       event.Response.Usage.InputTokens,
 								OutputTokens:      event.Response.Usage.OutputTokens,
@@ -394,47 +429,54 @@ func buildChatGPTInput(messages []Message) (string, []interface{}) {
 			}
 
 		case RoleAssistant:
-			// Collect text content from parts
-			var textContent string
-			var toolCalls []ToolCall
+			var textContent strings.Builder
 
-			for _, part := range msg.Parts {
-				switch part.Type {
-				case PartText:
-					if part.Text != "" {
-						if textContent != "" {
-							textContent += "\n"
-						}
-						textContent += part.Text
-					}
-				case PartToolCall:
-					if part.ToolCall != nil {
-						toolCalls = append(toolCalls, *part.ToolCall)
-					}
+			flushAssistantText := func() {
+				if textContent.Len() == 0 {
+					return
 				}
-			}
-
-			// Add assistant message with content if present
-			if textContent != "" {
 				input = append(input, map[string]interface{}{
 					"type": "message",
 					"role": "assistant",
 					"content": []map[string]string{
-						{"type": "output_text", "text": textContent},
+						{"type": "output_text", "text": textContent.String()},
 					},
 				})
+				textContent.Reset()
 			}
 
-			// Add function_call items for tool calls
-			for _, tc := range toolCalls {
-				input = append(input, map[string]interface{}{
-					"type":      "function_call",
-					"id":        tc.ID,
-					"call_id":   tc.ID,
-					"name":      tc.Name,
-					"arguments": string(tc.Arguments),
-				})
+			for _, part := range msg.Parts {
+				switch part.Type {
+				case PartText:
+					if hasChatGPTReasoningReplay(part) {
+						flushAssistantText()
+						input = append(input, buildChatGPTReasoningInputItem(part))
+					}
+					if part.Text != "" {
+						if textContent.Len() > 0 {
+							textContent.WriteString("\n")
+						}
+						textContent.WriteString(part.Text)
+					}
+				case PartToolCall:
+					if part.ToolCall == nil {
+						continue
+					}
+					flushAssistantText()
+					args := strings.TrimSpace(string(part.ToolCall.Arguments))
+					if args == "" {
+						args = "{}"
+					}
+					input = append(input, map[string]interface{}{
+						"type":      "function_call",
+						"id":        part.ToolCall.ID,
+						"call_id":   part.ToolCall.ID,
+						"name":      part.ToolCall.Name,
+						"arguments": args,
+					})
+				}
 			}
+			flushAssistantText()
 
 		case RoleTool:
 			// Tool results as function_call_output
@@ -462,16 +504,19 @@ func buildChatGPTInput(messages []Message) (string, []interface{}) {
 type chatGPTSSEEvent struct {
 	Type string `json:"type"`
 	Item struct {
-		Type      string `json:"type"`
-		ID        string `json:"id"`
-		CallID    string `json:"call_id"`
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
+		Type             string                          `json:"type"`
+		ID               string                          `json:"id"`
+		CallID           string                          `json:"call_id"`
+		Name             string                          `json:"name"`
+		Arguments        string                          `json:"arguments"`
+		EncryptedContent string                          `json:"encrypted_content"`
+		Summary          []responsesReasoningSummaryPart `json:"summary"`
 	} `json:"item"`
-	ItemID    string `json:"item_id"`
-	Delta     string `json:"delta"`
-	Arguments string `json:"arguments"`
-	Response  struct {
+	ItemID      string `json:"item_id"`
+	OutputIndex *int   `json:"output_index,omitempty"`
+	Delta       string `json:"delta"`
+	Arguments   string `json:"arguments"`
+	Response    struct {
 		Usage struct {
 			InputTokens        int `json:"input_tokens"`
 			OutputTokens       int `json:"output_tokens"`
@@ -480,6 +525,30 @@ type chatGPTSSEEvent struct {
 			} `json:"input_tokens_details"`
 		} `json:"usage"`
 	} `json:"response"`
+}
+
+func hasChatGPTReasoningReplay(part Part) bool {
+	return strings.TrimSpace(part.ReasoningItemID) != "" || strings.TrimSpace(part.ReasoningEncryptedContent) != ""
+}
+
+func buildChatGPTReasoningInputItem(part Part) map[string]interface{} {
+	item := map[string]interface{}{
+		"type":              "reasoning",
+		"id":                strings.TrimSpace(part.ReasoningItemID),
+		"encrypted_content": strings.TrimSpace(part.ReasoningEncryptedContent),
+		"summary":           []map[string]string{},
+	}
+
+	if strings.TrimSpace(part.ReasoningContent) != "" {
+		item["summary"] = []map[string]string{
+			{
+				"type": "summary_text",
+				"text": strings.TrimSpace(part.ReasoningContent),
+			},
+		}
+	}
+
+	return item
 }
 
 // chatGPTToolAccumulator accumulates streaming tool calls
@@ -517,6 +586,97 @@ func (a *chatGPTToolAccumulator) setCall(call ToolCall) {
 		a.order = append(a.order, call.ID)
 	}
 	a.calls[call.ID] = call
+}
+
+type chatGPTReasoningAccumulator struct {
+	items         map[int]*Part
+	idToIndex     map[string]int
+	nextSynthetic int
+}
+
+func newChatGPTReasoningAccumulator() *chatGPTReasoningAccumulator {
+	return &chatGPTReasoningAccumulator{
+		items:         make(map[int]*Part),
+		idToIndex:     make(map[string]int),
+		nextSynthetic: -1,
+	}
+}
+
+func (a *chatGPTReasoningAccumulator) resolveIndex(id string, outputIndex *int) int {
+	if outputIndex != nil {
+		idx := *outputIndex
+		if id != "" {
+			a.idToIndex[id] = idx
+		}
+		return idx
+	}
+
+	if id != "" {
+		if idx, ok := a.idToIndex[id]; ok {
+			return idx
+		}
+		idx := a.nextSynthetic
+		a.nextSynthetic--
+		a.idToIndex[id] = idx
+		return idx
+	}
+
+	idx := a.nextSynthetic
+	a.nextSynthetic--
+	return idx
+}
+
+func (a *chatGPTReasoningAccumulator) ensure(id string, outputIndex *int) int {
+	idx := a.resolveIndex(id, outputIndex)
+	if _, ok := a.items[idx]; !ok {
+		part := &Part{Type: PartText}
+		if id != "" {
+			part.ReasoningItemID = id
+		}
+		a.items[idx] = part
+	} else if id != "" && a.items[idx].ReasoningItemID == "" {
+		a.items[idx].ReasoningItemID = id
+	}
+	return idx
+}
+
+func (a *chatGPTReasoningAccumulator) start(id string, outputIndex *int, encrypted string, summary []responsesReasoningSummaryPart) {
+	idx := a.ensure(id, outputIndex)
+	item := a.items[idx]
+	if encrypted != "" {
+		item.ReasoningEncryptedContent = encrypted
+	}
+	if text := extractReasoningSummaryText(summary); text != "" {
+		item.ReasoningContent = text
+	}
+}
+
+func (a *chatGPTReasoningAccumulator) appendSummary(id string, outputIndex *int, delta string) {
+	if delta == "" {
+		return
+	}
+	idx := a.ensure(id, outputIndex)
+	a.items[idx].ReasoningContent += delta
+}
+
+func (a *chatGPTReasoningAccumulator) finish(id string, outputIndex *int, encrypted string, summary []responsesReasoningSummaryPart) {
+	a.start(id, outputIndex, encrypted, summary)
+}
+
+func (a *chatGPTReasoningAccumulator) part(id string, outputIndex *int) *Part {
+	if id == "" && outputIndex == nil {
+		return nil
+	}
+	idx := a.resolveIndex(id, outputIndex)
+	part, ok := a.items[idx]
+	if !ok || part == nil {
+		return nil
+	}
+	if part.ReasoningItemID == "" && part.ReasoningEncryptedContent == "" && part.ReasoningContent == "" {
+		return nil
+	}
+	clone := *part
+	return &clone
 }
 
 func (a *chatGPTToolAccumulator) appendArgs(id, delta string) {

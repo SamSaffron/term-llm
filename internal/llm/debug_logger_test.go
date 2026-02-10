@@ -168,3 +168,141 @@ func TestDebugLogger_CloseIdempotent(t *testing.T) {
 	// LogEvent after close should not panic (silently ignored)
 	logger.LogEvent(Event{Type: EventDone})
 }
+
+func TestDebugLogger_LogRequestIncludesSessionAndReasoningReplay(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessionID := "test-request-reasoning"
+
+	logger, err := NewDebugLogger(tmpDir, sessionID)
+	if err != nil {
+		t.Fatalf("failed to create debug logger: %v", err)
+	}
+	defer logger.Close()
+
+	req := Request{
+		Model:     "gpt-5.3-codex",
+		SessionID: "session-cache-key-123",
+		Messages: []Message{
+			UserText("hello"),
+			{
+				Role: RoleAssistant,
+				Parts: []Part{{
+					Type:                      PartText,
+					Text:                      "answer",
+					ReasoningContent:          "summary text",
+					ReasoningItemID:           "rs_123",
+					ReasoningEncryptedContent: "enc_123456",
+				}},
+			},
+		},
+	}
+
+	logger.LogRequest("test-provider", "test-model", req)
+	if err := logger.Close(); err != nil {
+		t.Fatalf("failed to close logger: %v", err)
+	}
+
+	logFile := filepath.Join(tmpDir, sessionID+".jsonl")
+	file, err := os.Open(logFile)
+	if err != nil {
+		t.Fatalf("failed to open log file: %v", err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	if !scanner.Scan() {
+		t.Fatal("expected at least one line in log file")
+	}
+
+	var entry map[string]any
+	if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+		t.Fatalf("failed to parse log entry: %v", err)
+	}
+
+	reqData, ok := entry["request"].(map[string]any)
+	if !ok {
+		t.Fatal("expected request object")
+	}
+	if got := reqData["session_id"]; got != "session-cache-key-123" {
+		t.Fatalf("expected request.session_id to be logged, got %#v", got)
+	}
+
+	msgs, ok := reqData["messages"].([]any)
+	if !ok || len(msgs) != 2 {
+		t.Fatalf("expected 2 messages, got %#v", reqData["messages"])
+	}
+	assistant, ok := msgs[1].(map[string]any)
+	if !ok {
+		t.Fatalf("expected assistant message object, got %#v", msgs[1])
+	}
+	content, ok := assistant["content"].([]any)
+	if !ok || len(content) != 1 {
+		t.Fatalf("expected assistant content parts array, got %#v", assistant["content"])
+	}
+	part, ok := content[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected content part object, got %#v", content[0])
+	}
+	if got := part["reasoning_item_id"]; got != "rs_123" {
+		t.Fatalf("expected reasoning_item_id rs_123, got %#v", got)
+	}
+	if got := int(part["reasoning_encrypted_content_len"].(float64)); got != len("enc_123456") {
+		t.Fatalf("expected reasoning_encrypted_content_len=%d, got %d", len("enc_123456"), got)
+	}
+}
+
+func TestDebugLogger_LogReasoningDeltaEventData(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessionID := "test-reasoning-event"
+
+	logger, err := NewDebugLogger(tmpDir, sessionID)
+	if err != nil {
+		t.Fatalf("failed to create debug logger: %v", err)
+	}
+	defer logger.Close()
+
+	logger.LogEvent(Event{
+		Type:                      EventReasoningDelta,
+		Text:                      "reasoning summary",
+		ReasoningItemID:           "rs_evt_1",
+		ReasoningEncryptedContent: "enc_evt_1",
+	})
+	logger.LogEvent(Event{Type: EventDone})
+	if err := logger.Close(); err != nil {
+		t.Fatalf("failed to close logger: %v", err)
+	}
+
+	logFile := filepath.Join(tmpDir, sessionID+".jsonl")
+	file, err := os.Open(logFile)
+	if err != nil {
+		t.Fatalf("failed to open log file: %v", err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	if !scanner.Scan() {
+		t.Fatal("expected at least one line in log file")
+	}
+
+	var entry map[string]any
+	if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+		t.Fatalf("failed to parse first log entry: %v", err)
+	}
+
+	if entry["event_type"] != "reasoning_delta" {
+		t.Fatalf("expected first event_type reasoning_delta, got %#v", entry["event_type"])
+	}
+	data, ok := entry["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected reasoning_delta event data object, got %#v", entry["data"])
+	}
+	if got := data["reasoning_item_id"]; got != "rs_evt_1" {
+		t.Fatalf("expected reasoning_item_id rs_evt_1, got %#v", got)
+	}
+	if got := int(data["reasoning_encrypted_content_len"].(float64)); got != len("enc_evt_1") {
+		t.Fatalf("expected reasoning_encrypted_content_len=%d, got %d", len("enc_evt_1"), got)
+	}
+	if got := data["text"]; got != "reasoning summary" {
+		t.Fatalf("expected text reasoning summary, got %#v", got)
+	}
+}

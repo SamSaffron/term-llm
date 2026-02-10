@@ -51,13 +51,14 @@ type Session struct {
 	MCP    string `json:"mcp,omitempty"`    // Enabled MCP servers (comma-separated)
 
 	// Session metrics
-	UserTurns    int           `json:"user_turns,omitempty"`    // Number of user messages
-	LLMTurns     int           `json:"llm_turns,omitempty"`     // Number of LLM API round-trips
-	ToolCalls    int           `json:"tool_calls,omitempty"`    // Total tool executions
-	InputTokens  int           `json:"input_tokens,omitempty"`  // Total input tokens used
-	OutputTokens int           `json:"output_tokens,omitempty"` // Total output tokens used
-	Status       SessionStatus `json:"status,omitempty"`        // Session status
-	Tags         string        `json:"tags,omitempty"`          // Comma-separated tags
+	UserTurns         int           `json:"user_turns,omitempty"`          // Number of user messages
+	LLMTurns          int           `json:"llm_turns,omitempty"`           // Number of LLM API round-trips
+	ToolCalls         int           `json:"tool_calls,omitempty"`          // Total tool executions
+	InputTokens       int           `json:"input_tokens,omitempty"`        // Total input tokens used
+	CachedInputTokens int           `json:"cached_input_tokens,omitempty"` // Total cached input tokens read
+	OutputTokens      int           `json:"output_tokens,omitempty"`       // Total output tokens used
+	Status            SessionStatus `json:"status,omitempty"`              // Session status
+	Tags              string        `json:"tags,omitempty"`                // Comma-separated tags
 }
 
 // Message represents a message in a session.
@@ -76,23 +77,24 @@ type Message struct {
 
 // SessionSummary is a lightweight view of a session for listing.
 type SessionSummary struct {
-	ID           string        `json:"id"`
-	Number       int64         `json:"number,omitempty"` // Sequential session number
-	Name         string        `json:"name,omitempty"`
-	Summary      string        `json:"summary,omitempty"`
-	Provider     string        `json:"provider"`
-	Model        string        `json:"model"`
-	Mode         SessionMode   `json:"mode,omitempty"`
-	MessageCount int           `json:"message_count"`
-	UserTurns    int           `json:"user_turns,omitempty"`
-	LLMTurns     int           `json:"llm_turns,omitempty"`
-	ToolCalls    int           `json:"tool_calls,omitempty"`
-	InputTokens  int           `json:"input_tokens,omitempty"`
-	OutputTokens int           `json:"output_tokens,omitempty"`
-	Status       SessionStatus `json:"status,omitempty"`
-	Tags         string        `json:"tags,omitempty"`
-	CreatedAt    time.Time     `json:"created_at"`
-	UpdatedAt    time.Time     `json:"updated_at"`
+	ID                string        `json:"id"`
+	Number            int64         `json:"number,omitempty"` // Sequential session number
+	Name              string        `json:"name,omitempty"`
+	Summary           string        `json:"summary,omitempty"`
+	Provider          string        `json:"provider"`
+	Model             string        `json:"model"`
+	Mode              SessionMode   `json:"mode,omitempty"`
+	MessageCount      int           `json:"message_count"`
+	UserTurns         int           `json:"user_turns,omitempty"`
+	LLMTurns          int           `json:"llm_turns,omitempty"`
+	ToolCalls         int           `json:"tool_calls,omitempty"`
+	InputTokens       int           `json:"input_tokens,omitempty"`
+	CachedInputTokens int           `json:"cached_input_tokens,omitempty"`
+	OutputTokens      int           `json:"output_tokens,omitempty"`
+	Status            SessionStatus `json:"status,omitempty"`
+	Tags              string        `json:"tags,omitempty"`
+	CreatedAt         time.Time     `json:"created_at"`
+	UpdatedAt         time.Time     `json:"updated_at"`
 }
 
 // ListOptions configures session listing.

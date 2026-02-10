@@ -120,8 +120,19 @@ func exportRequestMarkdown(w io.Writer, req RequestEntry, opts ExportOptions) {
 	fmt.Fprintf(w, "### Request (%s)\n\n", req.Timestamp.Local().Format("15:04:05"))
 	fmt.Fprintf(w, "- Provider: %s\n", req.Provider)
 	fmt.Fprintf(w, "- Model: %s\n", req.Model)
+	if req.Request.SessionID != "" {
+		fmt.Fprintf(w, "- Session key: %s\n", req.Request.SessionID)
+	}
 	fmt.Fprintf(w, "- Messages: %d\n", len(req.Request.Messages))
 	fmt.Fprintf(w, "- Tools: %d\n", len(req.Request.Tools))
+	if req.Request.ReasoningReplayParts > 0 || req.Request.ReasoningEncryptedParts > 0 {
+		fmt.Fprintf(
+			w,
+			"- Reasoning replay: parts=%d, encrypted=%d\n",
+			req.Request.ReasoningReplayParts,
+			req.Request.ReasoningEncryptedParts,
+		)
+	}
 	fmt.Fprintln(w)
 
 	// Show messages
@@ -180,6 +191,20 @@ func exportEventMarkdown(w io.Writer, evt EventEntry, opts ExportOptions) {
 		cached, _ := evt.Data["cached_input_tokens"].(float64)
 		fmt.Fprintf(w, "**Usage:** input=%d, output=%d, cached=%d\n\n", int(input), int(output), int(cached))
 
+	case "reasoning_delta":
+		itemID, _ := evt.Data["reasoning_item_id"].(string)
+		textLen, _ := evt.Data["text_len"].(float64)
+		encLen, _ := evt.Data["reasoning_encrypted_content_len"].(float64)
+		encHash, _ := evt.Data["reasoning_encrypted_content_hash"].(string)
+		fmt.Fprintf(
+			w,
+			"**Reasoning:** item=%s, text_len=%d, encrypted_len=%d, encrypted_hash=%s\n\n",
+			itemID,
+			int(textLen),
+			int(encLen),
+			encHash,
+		)
+
 	case "done":
 		fmt.Fprintf(w, "---\n\n")
 	}
@@ -208,6 +233,16 @@ func formatMessageContent(content any, opts ExportOptions) string {
 			if p, ok := part.(map[string]any); ok {
 				if text, ok := p["text"].(string); ok {
 					parts = append(parts, text)
+				}
+				if reasoning, ok := p["reasoning_content"].(string); ok && strings.TrimSpace(reasoning) != "" {
+					parts = append(parts, fmt.Sprintf("[Reasoning Summary] %s", reasoning))
+				}
+				if reasoningID, ok := p["reasoning_item_id"].(string); ok && strings.TrimSpace(reasoningID) != "" {
+					parts = append(parts, fmt.Sprintf("[Reasoning Item ID] %s", reasoningID))
+				}
+				if encLen, ok := p["reasoning_encrypted_content_len"].(float64); ok && int(encLen) > 0 {
+					hash, _ := p["reasoning_encrypted_content_hash"].(string)
+					parts = append(parts, fmt.Sprintf("[Reasoning Encrypted] len=%d hash=%s", int(encLen), hash))
 				}
 				if tc, ok := p["tool_call"].(map[string]any); ok {
 					name, _ := tc["name"].(string)
