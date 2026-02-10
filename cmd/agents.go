@@ -847,42 +847,28 @@ func runAgentsExportGist(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Collect files to upload
+	// Collect all files from agent directory
 	files := make(map[string]string)
-
-	// Read agent.yaml
 	agentYAMLPath := filepath.Join(agent.SourcePath, "agent.yaml")
-	agentYAML, err := os.ReadFile(agentYAMLPath)
+
+	entries, err := os.ReadDir(agent.SourcePath)
 	if err != nil {
-		return fmt.Errorf("read agent.yaml: %w", err)
+		return fmt.Errorf("read agent directory: %w", err)
 	}
-	files["agent.yaml"] = string(agentYAML)
-
-	// Read system.md if exists
-	systemMDPath := filepath.Join(agent.SourcePath, "system.md")
-	if systemMD, err := os.ReadFile(systemMDPath); err == nil {
-		files["system.md"] = string(systemMD)
-	}
-
-	// Read include files
-	for _, include := range agent.Include {
-		includePath := filepath.Join(agent.SourcePath, include)
-		// Security: validate path stays within agent directory
-		absInclude, err := filepath.Abs(includePath)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(agent.SourcePath, name))
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not read %s: %v\n", name, err)
 			continue
 		}
-		absDir, err := filepath.Abs(agent.SourcePath)
-		if err != nil {
-			continue
-		}
-		if !strings.HasPrefix(absInclude, absDir+string(filepath.Separator)) && absInclude != absDir {
-			fmt.Fprintf(os.Stderr, "warning: skipping include outside agent directory: %s\n", include)
-			continue
-		}
-		if data, err := os.ReadFile(includePath); err == nil {
-			files[include] = string(data)
-		}
+		files[name] = string(data)
 	}
 
 	description := fmt.Sprintf("term-llm agent: %s", agent.Name)
@@ -1025,6 +1011,11 @@ func runAgentsImportGist(cmd *cobra.Command, args []string) error {
 		filePath := filepath.Join(agentDir, filename)
 		if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
 			return fmt.Errorf("write %s: %w", filename, err)
+		}
+
+		// Make scripts executable
+		if strings.HasSuffix(filename, ".sh") || strings.HasSuffix(filename, ".py") || strings.HasSuffix(filename, ".rb") {
+			_ = os.Chmod(filePath, 0755)
 		}
 	}
 
