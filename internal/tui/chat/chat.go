@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -59,7 +60,9 @@ type Model struct {
 	streamChan <-chan ui.StreamEvent
 
 	// Smooth text buffer for 60fps rendering
-	smoothBuffer *ui.SmoothBuffer
+	smoothBuffer            *ui.SmoothBuffer
+	smoothTickPending       bool
+	streamRenderTickPending bool
 
 	// External UI state
 	pausedForExternalUI bool // True when paused for ask_user or approval prompts
@@ -112,17 +115,19 @@ type Model struct {
 	program *tea.Program // Reference to program for tea.Println
 
 	// Stats tracking
-	showStats bool
-	stats     *ui.SessionStats
+	showStats  bool
+	stats      *ui.SessionStats
+	streamPerf *streamPerfTelemetry
 
 	// Inspector mode
 	inspectorMode  bool
 	inspectorModel *inspector.Model
 
 	// Alt screen mode (full-screen rendering)
-	altScreen      bool
-	viewport       viewport.Model // Scrollable viewport for alt screen mode
-	scrollToBottom bool           // Flag to scroll to bottom after response completes
+	altScreen               bool
+	viewport                viewport.Model // Scrollable viewport for alt screen mode
+	scrollToBottom          bool           // Flag to scroll to bottom after response completes
+	streamRenderMinInterval time.Duration
 
 	// Render cache for alt screen mode (avoids re-rendering unchanged content)
 	viewCache struct {
@@ -135,6 +140,7 @@ type Model struct {
 		lastYOffset         int    // Viewport Y offset when view was cached
 		lastVPWidth         int    // Viewport width when view was cached
 		lastVPHeight        int    // Viewport height when view was cached
+		lastSetContentAt    time.Time
 		// completedStream holds rendered streaming content (diffs, tools) that should
 		// persist after streaming ends. Cleared when a new prompt is sent.
 		completedStream string
@@ -176,8 +182,11 @@ type (
 		sess     *session.Session
 		messages []session.Message
 	}
-	tickMsg time.Time
+	tickMsg             time.Time
+	streamRenderTickMsg struct{}
 )
+
+const chatRenderThrottleEnv = "TERM_LLM_CHAT_RENDER_THROTTLE_MS"
 
 // FlushBeforeAskUserMsg signals the TUI to flush content to scrollback
 // before releasing the terminal for ask_user prompts.
@@ -330,43 +339,45 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 	}
 
 	return &Model{
-		width:               width,
-		height:              height,
-		textarea:            ta,
-		spinner:             s,
-		styles:              styles,
-		keyMap:              DefaultKeyMap(),
-		store:               store,
-		sess:                sess,
-		messages:            messages,
-		provider:            provider,
-		engine:              engine,
-		config:              cfg,
-		providerName:        provider.Name(),
-		modelName:           modelName,
-		agentName:           agentName,
-		phase:               "Thinking",
-		viewportRows:        height - 8, // Reserve space for input and status
-		tracker:             tracker,
-		subagentTracker:     subagentTracker,
-		smoothBuffer:        ui.NewSmoothBuffer(),
-		completions:         completions,
-		dialog:              dialog,
-		approvedDirs:        approvedDirs,
-		mcpManager:          mcpManager,
-		maxTurns:            maxTurns,
-		forceExternalSearch: forceExternalSearch,
-		searchEnabled:       searchEnabled,
-		localTools:          localTools,
-		toolsStr:            toolsStr,
-		mcpStr:              mcpStr,
-		showStats:           showStats,
-		stats:               stats,
-		altScreen:           altScreen,
-		viewport:            vp,
-		chatRenderer:        chatRenderer,
-		autoSendQueue:       autoSendQueue,
-		textMode:            textMode,
+		width:                   width,
+		height:                  height,
+		textarea:                ta,
+		spinner:                 s,
+		styles:                  styles,
+		keyMap:                  DefaultKeyMap(),
+		store:                   store,
+		sess:                    sess,
+		messages:                messages,
+		provider:                provider,
+		engine:                  engine,
+		config:                  cfg,
+		providerName:            provider.Name(),
+		modelName:               modelName,
+		agentName:               agentName,
+		phase:                   "Thinking",
+		viewportRows:            height - 8, // Reserve space for input and status
+		tracker:                 tracker,
+		subagentTracker:         subagentTracker,
+		smoothBuffer:            ui.NewSmoothBuffer(),
+		completions:             completions,
+		dialog:                  dialog,
+		approvedDirs:            approvedDirs,
+		mcpManager:              mcpManager,
+		maxTurns:                maxTurns,
+		forceExternalSearch:     forceExternalSearch,
+		searchEnabled:           searchEnabled,
+		localTools:              localTools,
+		toolsStr:                toolsStr,
+		mcpStr:                  mcpStr,
+		showStats:               showStats,
+		stats:                   stats,
+		streamPerf:              newStreamPerfTelemetryFromEnv(),
+		altScreen:               altScreen,
+		viewport:                vp,
+		streamRenderMinInterval: chatRenderMinIntervalFromEnv(),
+		chatRenderer:            chatRenderer,
+		autoSendQueue:           autoSendQueue,
+		textMode:                textMode,
 	}
 }
 
@@ -397,6 +408,19 @@ func (m *Model) Init() tea.Cmd {
 		textarea.Blink,
 		m.spinner.Tick,
 	)
+}
+
+func chatRenderMinIntervalFromEnv() time.Duration {
+	const defaultInterval = 16 * time.Millisecond
+	raw := strings.TrimSpace(os.Getenv(chatRenderThrottleEnv))
+	if raw == "" {
+		return defaultInterval
+	}
+	millis, err := strconv.Atoi(raw)
+	if err != nil || millis < 0 {
+		return defaultInterval
+	}
+	return time.Duration(millis) * time.Millisecond
 }
 
 // Update handles messages
@@ -439,7 +463,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Invalidate completed stream cache since it's width-dependent (Issue 1)
 		m.viewCache.completedStream = ""
-		m.viewCache.contentVersion++
+		m.bumpContentVersion()
 
 		// Resize viewport for alt screen mode
 		// Reserve space for input area (textarea + separators + status)
@@ -507,6 +531,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.tickEvery())
 		}
 
+	case streamRenderTickMsg:
+		m.streamRenderTickPending = false
+		// No explicit action is needed here: Bubble Tea re-renders after each Update.
+		// This tick exists to ensure View() runs again after the throttle window, so
+		// pending content can pass shouldThrottleSetContent().
+
 	case ui.WaveTickMsg:
 		if m.tracker != nil {
 			if cmd := m.tracker.HandleWaveTick(); cmd != nil {
@@ -526,9 +556,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.sendMessage(m.textarea.Value())
 
 	case ui.SmoothTickMsg:
+		tickStart := time.Now()
+		m.smoothTickPending = false
 		// Release buffered text word-by-word for smooth 60fps rendering
 		if m.smoothBuffer != nil && m.streaming {
 			words := m.smoothBuffer.NextWords()
+			hadWords := words != ""
 			if words != "" {
 				m.currentResponse.WriteString(words)
 				if m.tracker != nil {
@@ -544,12 +577,26 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// Continue ticking if not drained
 			if !m.smoothBuffer.IsDrained() {
-				cmds = append(cmds, ui.SmoothTick())
+				if !m.smoothTickPending {
+					m.smoothTickPending = true
+					if m.streamPerf != nil {
+						m.streamPerf.RecordSmoothTickScheduled()
+					}
+					cmds = append(cmds, ui.SmoothTick())
+				}
+			}
+			if m.streamPerf != nil {
+				m.streamPerf.RecordSmoothTickHandled(hadWords, m.smoothBuffer.Len())
+				m.streamPerf.RecordDuration(durationMetricSmoothTick, time.Since(tickStart))
 			}
 		}
 
 	case streamEventMsg:
+		streamEventStart := time.Now()
 		ev := msg.event
+		if m.streamPerf != nil {
+			m.streamPerf.tracef("stream_event type=%v", ev.Type)
+		}
 
 		switch ev.Type {
 		case ui.StreamEventError:
@@ -565,11 +612,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					m.smoothBuffer.Reset()
 				}
+				m.smoothTickPending = false
+				// This resets local scheduling state for the next stream.
+				// An already in-flight render tick may still arrive and no-op.
+				m.streamRenderTickPending = false
 				m.streaming = false
 				m.err = ev.Err
 				// Error line is part of alt-screen viewport content; force refresh.
 				if m.altScreen {
-					m.viewCache.contentVersion++
+					m.bumpContentVersion()
 				}
 
 				// Clear callbacks and update status
@@ -582,6 +633,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						status = session.StatusInterrupted
 					}
 					_ = m.store.UpdateStatus(context.Background(), m.sess.ID, status)
+				}
+
+				if m.streamPerf != nil {
+					m.streamPerf.RecordDuration(durationMetricStreamEvent, time.Since(streamEventStart))
+					m.streamPerf.EmitSummaryIfActive(time.Now())
 				}
 
 				m.textarea.Focus()
@@ -600,6 +656,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.tracker.AddTextSegment(remaining, m.width)
 					}
 				}
+				m.smoothTickPending = false
 			}
 
 			// Mark current text segment as complete before starting tool
@@ -658,13 +715,25 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Buffer text for smooth 60fps rendering instead of immediate display
 			if m.smoothBuffer != nil {
 				m.smoothBuffer.Write(ev.Text)
+				if m.streamPerf != nil {
+					m.streamPerf.RecordTextDelta(ev.Text, m.smoothBuffer.Len())
+				}
 				// Start smooth tick if not already running
-				cmds = append(cmds, ui.SmoothTick())
+				if !m.smoothTickPending {
+					m.smoothTickPending = true
+					if m.streamPerf != nil {
+						m.streamPerf.RecordSmoothTickScheduled()
+					}
+					cmds = append(cmds, ui.SmoothTick())
+				}
 			} else {
 				// Fallback: direct display if no smooth buffer
 				m.currentResponse.WriteString(ev.Text)
 				if m.tracker != nil {
 					m.tracker.AddTextSegment(ev.Text, m.width)
+				}
+				if m.streamPerf != nil {
+					m.streamPerf.RecordTextDelta(ev.Text, 0)
 				}
 			}
 
@@ -741,7 +810,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// The last assistant message will be skipped in renderHistory() to avoid duplication.
 					completed := m.tracker.CompletedSegments()
 					m.viewCache.completedStream = ui.RenderSegments(completed, m.width, -1, m.renderMd, true)
-					m.viewCache.contentVersion++
+					m.bumpContentVersion()
 				} else {
 					// In inline mode, print remaining content to scrollback
 					result := m.tracker.FlushAllRemaining(m.width, 0, m.renderMd)
@@ -784,6 +853,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.smoothBuffer != nil {
 				m.smoothBuffer.Reset()
 			}
+			m.smoothTickPending = false
+			// This resets local scheduling state for the next stream.
+			// An already in-flight render tick may still arrive and no-op.
+			m.streamRenderTickPending = false
+			if m.streamPerf != nil {
+				m.streamPerf.EmitSummaryIfActive(time.Now())
+			}
 
 			// Auto-save session
 			cmds = append(cmds, m.saveSessionCmd())
@@ -820,6 +896,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Continue listening for more events unless we're done or got an error
 		if ev.Type != ui.StreamEventDone && ev.Type != ui.StreamEventError {
 			cmds = append(cmds, m.listenForStreamEvents())
+		}
+		if m.streamPerf != nil {
+			m.streamPerf.RecordDuration(durationMetricStreamEvent, time.Since(streamEventStart))
 		}
 
 	case sessionSavedMsg:
@@ -983,5 +1062,40 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	if cmd := m.maybeScheduleStreamRenderTick(); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+
 	return m, ui.ComposeFlushFirstCommands(flushCmds, cmds)
+}
+
+func (m *Model) maybeScheduleStreamRenderTick() tea.Cmd {
+	if !m.streaming || !m.altScreen {
+		return nil
+	}
+	if m.streamRenderTickPending {
+		return nil
+	}
+	if m.streamRenderMinInterval <= 0 {
+		return nil
+	}
+	if m.viewCache.contentVersion == m.viewCache.lastRenderedVersion {
+		return nil
+	}
+	if m.approvalModel != nil || m.askUserModel != nil {
+		return nil
+	}
+	if m.viewCache.lastSetContentAt.IsZero() {
+		return nil
+	}
+	elapsed := time.Since(m.viewCache.lastSetContentAt)
+	if elapsed >= m.streamRenderMinInterval {
+		return nil
+	}
+
+	delay := m.streamRenderMinInterval - elapsed
+	m.streamRenderTickPending = true
+	return tea.Tick(delay, func(time.Time) tea.Msg {
+		return streamRenderTickMsg{}
+	})
 }

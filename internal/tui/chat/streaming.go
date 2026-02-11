@@ -116,14 +116,20 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	m.streaming = true
 	m.phase = "Thinking"
 	m.streamStartTime = time.Now()
+	if m.streamPerf != nil && m.sess != nil {
+		m.streamPerf.StartTurn(m.sess.ID, m.streamStartTime)
+	}
 	m.currentResponse.Reset()
 	m.err = nil // Clear any previous error
 	m.webSearchUsed = false
 	m.viewCache.completedStream = "" // Clear previous response's diffs/tools
-	m.viewCache.contentVersion++
+	m.viewCache.lastSetContentAt = time.Time{}
+	m.bumpContentVersion()
 	if m.smoothBuffer != nil {
 		m.smoothBuffer.Reset()
 	}
+	m.smoothTickPending = false
+	m.streamRenderTickPending = false
 
 	// Start the stream
 	// In alt screen mode, View() renders history including user message
@@ -294,5 +300,12 @@ func (m *Model) saveSessionCmd() tea.Cmd {
 		// Sessions are now auto-saved via the store
 		// This is kept for compatibility but does nothing
 		return sessionSavedMsg{}
+	}
+}
+
+func (m *Model) bumpContentVersion() {
+	m.viewCache.contentVersion++
+	if m.streamPerf != nil {
+		m.streamPerf.RecordContentVersionBump()
 	}
 }

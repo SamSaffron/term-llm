@@ -264,6 +264,48 @@ func TestAskStreamsTextOnSmoothTicks(t *testing.T) {
 	}
 }
 
+func TestAskCoalescesSmoothTickSchedulingForBurstTextEvents(t *testing.T) {
+	model := newAskStreamModel()
+	model.width = 80
+
+	updated, firstCmd := model.Update(askContentMsg("hello"))
+	model = updated.(askStreamModel)
+	if firstCmd == nil {
+		t.Fatal("expected first text chunk to schedule smooth tick")
+	}
+
+	updated, secondCmd := model.Update(askContentMsg(" world"))
+	model = updated.(askStreamModel)
+	if secondCmd != nil {
+		t.Fatal("expected no additional smooth tick while one is already pending")
+	}
+	if !model.smoothTickPending {
+		t.Fatal("expected smoothTickPending to remain true until tick is handled")
+	}
+}
+
+func TestAskStreamingFlushThresholdAdaptsToBufferSize(t *testing.T) {
+	model := newAskStreamModel()
+	model.width = 80
+	model.adaptiveFlushThreshold = true
+
+	if got := model.streamingFlushThreshold(); got != 0 {
+		t.Fatalf("expected zero threshold for empty buffer, got %d", got)
+	}
+
+	model.smoothBuffer.Write(strings.Repeat("word ", 80)) // ~400 bytes
+	mid := model.streamingFlushThreshold()
+	if mid <= 0 {
+		t.Fatalf("expected positive threshold for medium buffer, got %d", mid)
+	}
+
+	model.smoothBuffer.Write(strings.Repeat("word ", 400)) // +~2000 bytes
+	high := model.streamingFlushThreshold()
+	if high <= mid {
+		t.Fatalf("expected larger threshold for large buffer, got mid=%d high=%d", mid, high)
+	}
+}
+
 func TestAskToolStartFlushUsesOrderedCommandComposition(t *testing.T) {
 	model := newAskStreamModel()
 	model.width = 80

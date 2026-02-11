@@ -842,7 +842,8 @@ type askStreamModel struct {
 	tracker *ui.ToolTracker
 
 	// Smooth text buffer for word-by-word rendering (shared with chat)
-	smoothBuffer *ui.SmoothBuffer
+	smoothBuffer      *ui.SmoothBuffer
+	smoothTickPending bool
 
 	// Subagent progress tracking
 	subagentTracker *ui.SubagentTracker
@@ -875,9 +876,22 @@ type askStreamModel struct {
 
 	// View caching (performance optimization - Issue 4)
 	// Avoids rebuilding content on every spinner tick
-	contentDirty  bool   // True when new content arrived, needs re-render
-	cachedContent string // Cached rendered content from last dirty=true render
+	contentDirty           bool   // True when new content arrived, needs re-render
+	cachedContent          string // Cached rendered content from last dirty=true render
+	adaptiveFlushThreshold bool   // Scales flush threshold with smooth buffer size when enabled
 }
+
+const askAdaptiveFlushThresholdEnv = "TERM_LLM_ASK_ADAPTIVE_FLUSH"
+
+const (
+	askFlushBufferThresholdMedium = 400
+	askFlushBufferThresholdLarge  = 1000
+	askFlushBufferThresholdXLarge = 2000
+
+	askFlushThresholdMedium = 32
+	askFlushThresholdLarge  = 64
+	askFlushThresholdXLarge = 128
+)
 
 type askContentMsg string
 type askDoneMsg struct{}
@@ -944,14 +958,35 @@ func newAskStreamModel() askStreamModel {
 	s.Style = styles.Spinner
 
 	return askStreamModel{
-		spinner:         s,
-		styles:          styles,
-		width:           width,
-		height:          height,
-		tracker:         ui.NewToolTracker(),
-		smoothBuffer:    ui.NewSmoothBuffer(),
-		subagentTracker: ui.NewSubagentTracker(),
-		startTime:       time.Now(),
+		spinner:                s,
+		styles:                 styles,
+		width:                  width,
+		height:                 height,
+		tracker:                ui.NewToolTracker(),
+		smoothBuffer:           ui.NewSmoothBuffer(),
+		subagentTracker:        ui.NewSubagentTracker(),
+		startTime:              time.Now(),
+		adaptiveFlushThreshold: ui.ParseBoolDefault(os.Getenv(askAdaptiveFlushThresholdEnv), true),
+	}
+}
+
+func (m *askStreamModel) streamingFlushThreshold() int {
+	if !m.adaptiveFlushThreshold || m.smoothBuffer == nil {
+		return 0
+	}
+
+	bufferLen := m.smoothBuffer.Len()
+	// As buffered text grows, require larger safe chunks before flushing to
+	// scrollback to reduce high-frequency partial render churn on long outputs.
+	switch {
+	case bufferLen >= askFlushBufferThresholdXLarge:
+		return askFlushThresholdXLarge
+	case bufferLen >= askFlushBufferThresholdLarge:
+		return askFlushThresholdLarge
+	case bufferLen >= askFlushBufferThresholdMedium:
+		return askFlushThresholdMedium
+	default:
+		return 0
 	}
 }
 
@@ -1111,7 +1146,11 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Buffer text and release it in smooth word-paced ticks.
 		if m.smoothBuffer != nil {
 			m.smoothBuffer.Write(string(msg))
-			return m, ui.SmoothTick()
+			if !m.smoothTickPending {
+				m.smoothTickPending = true
+				return m, ui.SmoothTick()
+			}
+			return m, nil
 		}
 		// Fallback: direct append if smooth buffer is unavailable.
 		m.tracker.AddTextSegment(string(msg), m.width)
@@ -1119,6 +1158,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case askDoneMsg:
 		m.done = true // Prevent spinner from showing in final View()
+		m.smoothTickPending = false
 		// Ensure we have a valid width
 		if m.width <= 0 {
 			m.width = getTerminalWidth()
@@ -1145,6 +1185,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case askCancelledMsg:
 		m.done = true
+		m.smoothTickPending = false
 		// Ensure we have a valid width
 		if m.width <= 0 {
 			m.width = getTerminalWidth()
@@ -1165,6 +1206,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.smoothBuffer == nil || m.done {
 			return m, nil
 		}
+		m.smoothTickPending = false
 
 		var flushCmds []tea.Cmd
 		var asyncCmds []tea.Cmd
@@ -1175,7 +1217,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.contentDirty = true
 
 			// Flush as soon as we have any safe boundary to avoid duplication/corruption.
-			const streamingFlushThreshold = 0
+			streamingFlushThreshold := m.streamingFlushThreshold()
 			if m.width > 0 {
 				result := m.tracker.FlushStreamingText(streamingFlushThreshold, m.width, renderMd)
 				if result.ToPrint != "" {
@@ -1186,7 +1228,10 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if !m.smoothBuffer.IsDrained() {
-			asyncCmds = append(asyncCmds, ui.SmoothTick())
+			if !m.smoothTickPending {
+				m.smoothTickPending = true
+				asyncCmds = append(asyncCmds, ui.SmoothTick())
+			}
 		}
 
 		cmd := ui.ComposeFlushFirstCommands(flushCmds, asyncCmds)
@@ -1293,6 +1338,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.retryStatus = ""
 		m.contentDirty = true // Tool state changed
 		m.flushSmoothBufferToTracker()
+		m.smoothTickPending = false
 
 		// Mark current text segment as complete before starting tool
 		// This preserves interleaving order: text -> tool -> text

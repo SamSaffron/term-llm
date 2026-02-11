@@ -33,6 +33,10 @@ func (m *Model) View() string {
 		return m.inspectorModel.View()
 	}
 
+	if m.streaming && m.streamPerf != nil {
+		m.streamPerf.RecordFrameAt(time.Now())
+	}
+
 	// Set terminal title
 	title := m.getTerminalTitle()
 	titleSeq := fmt.Sprintf("\x1b]0;%s\x07", title)
@@ -102,44 +106,30 @@ func (m *Model) viewAltScreen() string {
 		m.viewCache.historyWidth = m.width
 		m.viewCache.historyScrollOffset = m.scrollOffset
 		m.viewCache.historyValid = true
-		m.viewCache.contentVersion++ // History changed
+		m.bumpContentVersion() // History changed
 	}
 
-	// Build combined content
+	// Track whether we need to rebuild viewport content this frame.
+	// When throttled, we intentionally skip expensive content reconstruction and
+	// keep the previous viewport content until the next render tick.
 	var contentStr string
 	if m.streaming {
-		// During streaming, combine history + streaming content
-		streamingContent := m.renderStreamingInline()
-		contentStr = m.viewCache.historyContent + streamingContent
-
-		// If an embedded UI is active, append it to the content
-		if m.approvalModel != nil {
-			contentStr += "\n" + m.approvalModel.View()
-		} else if m.askUserModel != nil {
-			contentStr += "\n" + m.askUserModel.View()
-		}
 		// Only increment version when tracker content or wave position changes
 		// The completed segment rendering is cached, but we still need SetContent
 		// for wave animation updates
 		if m.tracker != nil {
 			trackerVersion := m.tracker.Version
+			if m.streamPerf != nil {
+				m.streamPerf.RecordTrackerVersion(trackerVersion)
+			}
 			wavePos := m.tracker.WavePos
 			contentChanged := trackerVersion != m.viewCache.lastTrackerVersion
 			waveChanged := wavePos != m.viewCache.lastWavePos && m.tracker.HasPending()
 			if contentChanged || waveChanged {
 				m.viewCache.lastTrackerVersion = trackerVersion
 				m.viewCache.lastWavePos = wavePos
-				m.viewCache.contentVersion++
+				m.bumpContentVersion()
 			}
-		}
-	} else {
-		// Include any completed streaming content (diffs, tools) that was saved
-		// when the last stream ended. This persists until a new prompt is sent.
-		contentStr = m.viewCache.historyContent + m.viewCache.completedStream
-
-		// Display error if one occurred
-		if m.err != nil {
-			contentStr += "\n" + m.renderError() + "\n"
 		}
 	}
 
@@ -151,12 +141,42 @@ func (m *Model) viewAltScreen() string {
 	if m.approvalModel != nil || m.askUserModel != nil {
 		contentChanged = true
 	}
+	if contentChanged {
+		now := time.Now()
+		if m.shouldThrottleSetContent(now) {
+			contentChanged = false
+			if m.streamPerf != nil {
+				m.streamPerf.tracef("set_content throttled")
+			}
+		}
+	}
 
 	if contentChanged {
+		if m.streaming {
+			streamingContent := m.renderStreamingInline()
+			contentStr = m.viewCache.historyContent + streamingContent
+			if m.approvalModel != nil {
+				contentStr += "\n" + m.approvalModel.View()
+			} else if m.askUserModel != nil {
+				contentStr += "\n" + m.askUserModel.View()
+			}
+		} else {
+			contentStr = m.viewCache.historyContent + m.viewCache.completedStream
+			if m.err != nil {
+				contentStr += "\n" + m.renderError() + "\n"
+			}
+		}
+
 		// Check if user is at bottom BEFORE setting content (which changes maxYOffset)
 		wasAtBottom := m.viewport.AtBottom()
 		firstRender := m.viewCache.lastViewportView == ""
+		setContentStart := time.Now()
 		m.viewport.SetContent(contentStr)
+		setContentEnd := time.Now()
+		if m.streamPerf != nil {
+			m.streamPerf.RecordDuration(durationMetricSetContent, setContentEnd.Sub(setContentStart))
+		}
+		m.viewCache.lastSetContentAt = setContentEnd
 		m.viewCache.lastRenderedVersion = m.viewCache.contentVersion
 		// On first render (including resumed sessions), anchor at latest content.
 		// On subsequent renders while streaming, preserve user scroll position
@@ -178,7 +198,11 @@ func (m *Model) viewAltScreen() string {
 	sizeChanged := m.viewport.Width != m.viewCache.lastVPWidth || m.viewport.Height != m.viewCache.lastVPHeight
 	needViewRender := contentChanged || yOffsetChanged || sizeChanged || m.viewCache.lastViewportView == ""
 	if needViewRender {
+		viewStart := time.Now()
 		m.viewCache.lastViewportView = m.viewport.View()
+		if m.streamPerf != nil {
+			m.streamPerf.RecordDuration(durationMetricViewportView, time.Since(viewStart))
+		}
 		m.viewCache.lastYOffset = m.viewport.YOffset
 		m.viewCache.lastVPWidth = m.viewport.Width
 		m.viewCache.lastVPHeight = m.viewport.Height
@@ -791,6 +815,25 @@ func (m *Model) renderMarkdown(content string) string {
 	}
 
 	return strings.TrimSpace(rendered)
+}
+
+func (m *Model) shouldThrottleSetContent(now time.Time) bool {
+	if !m.streaming {
+		return false
+	}
+	if m.streamRenderMinInterval <= 0 {
+		return false
+	}
+	if m.approvalModel != nil || m.askUserModel != nil {
+		return false
+	}
+	if m.scrollToBottom {
+		return false
+	}
+	if m.viewCache.lastSetContentAt.IsZero() {
+		return false
+	}
+	return now.Sub(m.viewCache.lastSetContentAt) < m.streamRenderMinInterval
 }
 
 // GetBundledServers returns bundled MCP servers (wrapper for mcp package)
