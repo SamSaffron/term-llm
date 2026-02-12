@@ -139,3 +139,37 @@ func TestTextSegmentRenderer_ResizeResetsFlushedPos(t *testing.T) {
 		t.Errorf("After Resize, RenderedUnflushed should equal Rendered.\nUnflushed: %q\nRendered: %q", unflushed, rendered)
 	}
 }
+
+func TestTextSegmentRenderer_RenderedUnflushedIsANSISafeForMidEscapeOffset(t *testing.T) {
+	renderer, err := NewTextSegmentRenderer(80)
+	if err != nil {
+		t.Fatalf("Failed to create renderer: %v", err)
+	}
+
+	if err := renderer.Write("1. Item with **bold** text\n2. Second item\n"); err != nil {
+		t.Fatalf("Failed to write markdown: %v", err)
+	}
+	if err := renderer.Flush(); err != nil {
+		t.Fatalf("Failed to flush renderer: %v", err)
+	}
+
+	output := renderer.RenderedAll()
+	escapeIndex := strings.Index(output, "\x1b[")
+	if escapeIndex == -1 {
+		t.Fatalf("Expected ANSI sequence in rendered output, got: %q", output)
+	}
+
+	// Intentionally place the flushed offset inside an ANSI sequence parameter list.
+	renderer.flushedRenderedPos = escapeIndex + 2
+
+	unflushed := renderer.RenderedUnflushed()
+	if unflushed == "" {
+		t.Fatal("Expected non-empty unflushed output")
+	}
+
+	// Mid-escape slicing tends to leak fragments like "178m" on line starts.
+	badFragment := regexp.MustCompile(`(^|\n)[0-9;]+m`)
+	if badFragment.MatchString(unflushed) {
+		t.Fatalf("Detected ANSI fragment leakage in unflushed output: %q", unflushed)
+	}
+}

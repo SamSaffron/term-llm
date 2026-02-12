@@ -367,6 +367,30 @@ func TestRenderUnflushed_HidesPendingTableContent(t *testing.T) {
 	}
 }
 
+func TestRenderUnflushed_HidesPendingListMarkerContent(t *testing.T) {
+	tracker := NewToolTracker()
+	width := 80
+
+	tracker.AddTextSegment("1. ", width)
+
+	output := stripAnsi(tracker.RenderUnflushed(width, RenderMarkdown, false))
+	if strings.Contains(output, "1.") {
+		t.Fatalf("expected pending list marker to stay hidden, got %q", output)
+	}
+}
+
+func TestRenderUnflushed_ShowsPendingAsteriskPrefix(t *testing.T) {
+	tracker := NewToolTracker()
+	width := 80
+
+	tracker.AddTextSegment("*", width)
+
+	output := stripAnsi(tracker.RenderUnflushed(width, RenderMarkdown, false))
+	if !strings.Contains(output, "*") {
+		t.Fatalf("expected pending asterisk prefix to remain visible, got %q", output)
+	}
+}
+
 // stripAnsiForTest removes ANSI escape sequences for testing
 func stripAnsiForTest(s string) string {
 	result := ""
@@ -717,6 +741,63 @@ func TestStreamingFlush_TableThenText(t *testing.T) {
 	}
 	if !strings.Contains(output, "Next item") {
 		t.Fatalf("Expected following list item to be present in output.\nOutput:\n%s", output)
+	}
+}
+
+func TestStreamingFlush_OrderedNestedListRemainsTight(t *testing.T) {
+	md := "1. First numbered item\n" +
+		"2. Second numbered item with ~~strikethrough~~\n" +
+		"3. Third numbered item\n" +
+		"   1. Nested numbered one\n" +
+		"   2. Nested numbered two\n" +
+		"4. Fourth numbered item\n"
+
+	tracker := NewToolTracker()
+	width := 80
+	chunkSize := 18
+
+	var allPrinted strings.Builder
+	for i := 0; i < len(md); i += chunkSize {
+		end := i + chunkSize
+		if end > len(md) {
+			end = len(md)
+		}
+		chunk := md[i:end]
+		tracker.AddTextSegment(chunk, width)
+		result := tracker.FlushStreamingText(0, width, RenderMarkdown)
+		if result.ToPrint != "" {
+			allPrinted.WriteString(result.ToPrint)
+			allPrinted.WriteString("\n") // tea.Printf appends newline
+		}
+	}
+
+	tracker.CompleteTextSegments(func(text string) string {
+		return RenderMarkdown(text, width)
+	})
+	result := tracker.FlushAllRemaining(width, 0, RenderMarkdown)
+	if result.ToPrint != "" {
+		allPrinted.WriteString(result.ToPrint)
+		allPrinted.WriteString("\n")
+	}
+
+	output := stripAnsi(allPrinted.String())
+	lines := strings.Split(output, "\n")
+	nestedOne := -1
+	nestedTwo := -1
+	for i, line := range lines {
+		if nestedOne == -1 && strings.Contains(line, "Nested numbered one") {
+			nestedOne = i
+		}
+		if nestedTwo == -1 && strings.Contains(line, "Nested numbered two") {
+			nestedTwo = i
+		}
+	}
+
+	if nestedOne == -1 || nestedTwo == -1 {
+		t.Fatalf("expected both nested lines in output:\n%s", output)
+	}
+	if nestedTwo != nestedOne+1 {
+		t.Fatalf("expected tight nested list (adjacent lines), got spacing %d lines apart\nOutput:\n%s", nestedTwo-nestedOne, output)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -68,6 +69,24 @@ func renderRandomChunks(t *testing.T, input string, maxChunkSize int) string {
 	}
 	sr.Close()
 	return buf.String()
+}
+
+var ansiEscapeRe = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
+
+func stripANSIForStreamingTest(s string) string {
+	return ansiEscapeRe.ReplaceAllString(s, "")
+}
+
+type nonResettableWriter struct {
+	builder strings.Builder
+}
+
+func (w *nonResettableWriter) Write(p []byte) (int, error) {
+	return w.builder.Write(p)
+}
+
+func (w *nonResettableWriter) String() string {
+	return w.builder.String()
 }
 
 // assertChunkingInvariant verifies that chunked output matches full output.
@@ -417,6 +436,137 @@ func TestOrderedList(t *testing.T) {
 	sr.Close()
 }
 
+func TestOrderedList_EmitsCompletedItemsIncrementally(t *testing.T) {
+	var buf bytes.Buffer
+	sr := testRenderer(t, &buf)
+
+	// First item should stay pending until a following list marker arrives.
+	sr.Write([]byte("1. First\n"))
+	if strings.Contains(stripANSIForStreamingTest(buf.String()), "First") {
+		t.Fatalf("first item should not render before a following item marker, got: %q", stripANSIForStreamingTest(buf.String()))
+	}
+
+	// Second marker closes item 1, so item 1 should now appear.
+	sr.Write([]byte("2. Second\n"))
+	output := stripANSIForStreamingTest(buf.String())
+	if !strings.Contains(output, "First") {
+		t.Fatalf("expected first item to render after second marker, got: %q", output)
+	}
+	if strings.Contains(output, "Second") {
+		t.Fatalf("second item should remain pending until another boundary, got: %q", output)
+	}
+
+	// Third marker closes item 2, so item 2 should now appear.
+	sr.Write([]byte("3. Third\n"))
+	output = stripANSIForStreamingTest(buf.String())
+	if !strings.Contains(output, "Second") {
+		t.Fatalf("expected second item to render after third marker, got: %q", output)
+	}
+	if strings.Contains(output, "Third") {
+		t.Fatalf("third item should remain pending until list end, got: %q", output)
+	}
+
+	// Final flush should include item 3.
+	sr.Close()
+	output = stripANSIForStreamingTest(buf.String())
+	if !strings.Contains(output, "Third") {
+		t.Fatalf("expected third item after close, got: %q", output)
+	}
+}
+
+func TestNestedList_EmitsNestedItemsIncrementally(t *testing.T) {
+	var buf bytes.Buffer
+	sr := testRenderer(t, &buf)
+
+	sr.Write([]byte("1. Parent\n"))
+	sr.Write([]byte("   - Child A\n"))
+	if strings.Contains(stripANSIForStreamingTest(buf.String()), "Child A") {
+		t.Fatalf("first nested item should remain pending before sibling marker, got: %q", stripANSIForStreamingTest(buf.String()))
+	}
+
+	// Sibling nested marker closes Child A and should emit it.
+	sr.Write([]byte("   - Child B\n"))
+	output := stripANSIForStreamingTest(buf.String())
+	if strings.Contains(output, "Child A") || strings.Contains(output, "Child B") {
+		t.Fatalf("nested items should remain pending until nested list closes, got: %q", output)
+	}
+
+	// Top-level sibling marker closes nested list and emits both nested items.
+	sr.Write([]byte("2. Next\n"))
+	output = stripANSIForStreamingTest(buf.String())
+	if !strings.Contains(output, "Child A") {
+		t.Fatalf("expected first nested item after nested list closes, got: %q", output)
+	}
+	if !strings.Contains(output, "Child B") {
+		t.Fatalf("expected second nested item after nested list closes, got: %q", output)
+	}
+	if strings.Contains(output, "Next") {
+		t.Fatalf("next top-level item should remain pending until list end, got: %q", output)
+	}
+
+	sr.Close()
+	output = stripANSIForStreamingTest(buf.String())
+	if !strings.Contains(output, "Next") {
+		t.Fatalf("expected final top-level item after close, got: %q", output)
+	}
+}
+
+func TestApplyRenderedSnapshot_NonResettableWriterErrorsOnPrefixChange(t *testing.T) {
+	writer := &nonResettableWriter{}
+	sr, err := NewRenderer(writer, glamour.WithStandardStyle("dark"))
+	if err != nil {
+		t.Fatalf("failed to create renderer: %v", err)
+	}
+
+	sr.lastRendered = []byte("prefix-value")
+
+	err = sr.applyRenderedSnapshot([]byte("prefix-updated"), false)
+	if err == nil {
+		t.Fatal("expected non-resettable writer error for changed prefix")
+	}
+	if !strings.Contains(err.Error(), "non-resettable writer") {
+		t.Fatalf("expected non-resettable writer error, got: %v", err)
+	}
+
+	err = sr.applyRenderedSnapshot([]byte("prefix-updated"), true)
+	if err == nil {
+		t.Fatal("expected non-resettable writer error for changed prefix with rewrite enabled")
+	}
+	if !strings.Contains(err.Error(), "non-resettable writer") {
+		t.Fatalf("expected non-resettable writer error, got: %v", err)
+	}
+}
+
+func TestApplyRenderedSnapshot_BestEffortShorterSnapshotKeepsExistingOutput(t *testing.T) {
+	var buf bytes.Buffer
+	sr, err := NewRenderer(&buf, glamour.WithStandardStyle("dark"))
+	if err != nil {
+		t.Fatalf("failed to create renderer: %v", err)
+	}
+
+	original := []byte("abcdef")
+	sr.lastRendered = append(sr.lastRendered[:0], original...)
+	sr.renderedLen = len(original)
+	if _, err := buf.Write(original); err != nil {
+		t.Fatalf("failed to seed output: %v", err)
+	}
+
+	err = sr.applyRenderedSnapshot([]byte("ab"), false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if buf.String() != "abcdef" {
+		t.Fatalf("expected append-only output unchanged, got %q", buf.String())
+	}
+	if string(sr.lastRendered) != "abcdef" {
+		t.Fatalf("expected lastRendered unchanged, got %q", string(sr.lastRendered))
+	}
+	if sr.renderedLen != len("abcdef") {
+		t.Fatalf("expected renderedLen unchanged, got %d", sr.renderedLen)
+	}
+}
+
 func TestBlockquote(t *testing.T) {
 	var buf bytes.Buffer
 	sr := testRenderer(t, &buf)
@@ -592,6 +742,31 @@ func TestIsListMarker(t *testing.T) {
 		got := isListMarker(tt.input)
 		if got != tt.expected {
 			t.Errorf("isListMarker(%q) = %v, want %v", tt.input, got, tt.expected)
+		}
+	}
+}
+
+func TestIsOrderedListMarkerPrefix(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected bool
+	}{
+		{"1.", true},
+		{"1)", true},
+		{"1. ", false},
+		{"1) ", false},
+		{"1", false},
+		{"", false},
+		{"123456789.", true},
+		{"123456789)", true},
+		{"1234567890.", false}, // >9 digits
+		{"a.", false},
+	}
+
+	for _, tt := range tests {
+		got := isOrderedListMarkerPrefix(tt.input)
+		if got != tt.expected {
+			t.Errorf("isOrderedListMarkerPrefix(%q) = %v, want %v", tt.input, got, tt.expected)
 		}
 	}
 }

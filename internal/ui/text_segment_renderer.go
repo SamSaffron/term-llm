@@ -53,7 +53,16 @@ func NewTextSegmentRenderer(width int) (*TextSegmentRenderer, error) {
 // Complete markdown blocks are rendered immediately.
 func (r *TextSegmentRenderer) Write(text string) error {
 	_, err := r.sr.Write([]byte(text))
-	return err
+	if err != nil {
+		return err
+	}
+
+	currentLen := r.output.Len()
+	if r.flushedRenderedPos > currentLen {
+		r.flushedRenderedPos = currentLen
+	}
+
+	return nil
 }
 
 // Rendered returns the currently rendered output.
@@ -75,7 +84,7 @@ func (r *TextSegmentRenderer) RenderedUnflushed() string {
 	if r.flushedRenderedPos >= len(output) {
 		return ""
 	}
-	return output[r.flushedRenderedPos:]
+	return safeANSISlice(output, r.flushedRenderedPos)
 }
 
 // MarkFlushed marks the current rendered output length as flushed.
@@ -112,6 +121,15 @@ func (r *TextSegmentRenderer) PendingIsTable() bool {
 		return false
 	}
 	return r.sr.PendingIsTable()
+}
+
+// PendingIsList reports whether the current incomplete block should be treated
+// as a list for preview purposes.
+func (r *TextSegmentRenderer) PendingIsList() bool {
+	if r.sr == nil {
+		return false
+	}
+	return r.sr.PendingIsList()
 }
 
 // Flush renders any remaining incomplete blocks.

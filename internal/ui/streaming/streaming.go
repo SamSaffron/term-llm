@@ -6,11 +6,13 @@ package streaming
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"regexp"
 	"strings"
 
 	"github.com/charmbracelet/glamour"
+	"github.com/samsaffron/term-llm/internal/ui/ansisafe"
 )
 
 // multiNewlineRe matches 3 or more consecutive newlines.
@@ -61,6 +63,9 @@ type StreamRenderer struct {
 
 	// How many bytes of rendered output we've already written
 	renderedLen int
+	// Last rendered snapshot that has been written to output.
+	// Used to append deltas safely and recover from non-prefix renders.
+	lastRendered []byte
 
 	// Current state
 	state state
@@ -71,7 +76,9 @@ type StreamRenderer struct {
 	fenceIndent int  // leading spaces before fence
 
 	// List state
-	listIndent int // base indent level of current list
+	listIndent           int  // base indent level of current list
+	lastListMarkerIndent int  // indent of the most recent list marker line
+	listHasMarker        bool // whether we've seen at least one marker in current list block
 
 	// Track pending block content (lines that form the current incomplete block)
 	pendingLines []string
@@ -199,17 +206,7 @@ func (sr *StreamRenderer) PendingIsTable() bool {
 		return true
 	}
 
-	content := sr.currentBlockContent()
-	if content == "" {
-		return false
-	}
-
-	firstLine := content
-	if idx := strings.Index(firstLine, "\n"); idx >= 0 {
-		firstLine = firstLine[:idx]
-	}
-	firstLine = strings.TrimSuffix(firstLine, "\r")
-	trimmed := strings.TrimLeft(firstLine, " \t")
+	trimmed := sr.firstPendingLine()
 	if trimmed == "" {
 		return false
 	}
@@ -217,6 +214,136 @@ func (sr *StreamRenderer) PendingIsTable() bool {
 	// Prefer deterministic table starts (pipe-first rows), which avoids
 	// suppressing preview for normal prose that merely contains a pipe character.
 	return strings.HasPrefix(trimmed, "|")
+}
+
+// PendingIsList reports whether the current incomplete block should be treated
+// as a list for preview purposes.
+func (sr *StreamRenderer) PendingIsList() bool {
+	if sr.state == stateInList {
+		return true
+	}
+
+	trimmed := sr.firstPendingLine()
+	if trimmed == "" {
+		return false
+	}
+
+	if isListMarker(trimmed) {
+		return true
+	}
+
+	// Handle marker-only partials while tokens are still arriving.
+	// Keep this conservative to avoid suppressing normal prose previews
+	// (for example a lone "*" while emphasis syntax is still streaming).
+	return isOrderedListMarkerPrefix(trimmed) || trimmed == "-" || trimmed == "+"
+}
+
+// firstPendingLine returns the first incomplete line from current block content,
+// left-trimmed of indentation and without trailing carriage return.
+func (sr *StreamRenderer) firstPendingLine() string {
+	content := sr.currentBlockContent()
+	if content == "" {
+		return ""
+	}
+
+	firstLine := content
+	if idx := strings.Index(firstLine, "\n"); idx >= 0 {
+		firstLine = firstLine[:idx]
+	}
+	firstLine = strings.TrimSuffix(firstLine, "\r")
+	return strings.TrimLeft(firstLine, " \t")
+}
+
+// beginList initializes list-tracking state when a new list block starts.
+func (sr *StreamRenderer) beginList(indent int) {
+	sr.state = stateInList
+	sr.listIndent = indent
+	sr.lastListMarkerIndent = indent
+	sr.listHasMarker = true
+}
+
+// resetListState clears list-tracking metadata when list processing ends.
+func (sr *StreamRenderer) resetListState() {
+	sr.listIndent = 0
+	sr.lastListMarkerIndent = 0
+	sr.listHasMarker = false
+}
+
+// commitPendingLines appends pending block lines into allMarkdown and emits
+// the incremental rendered delta for the updated full document.
+func (sr *StreamRenderer) commitPendingLines() error {
+	if len(sr.pendingLines) == 0 {
+		return nil
+	}
+	for _, l := range sr.pendingLines {
+		sr.allMarkdown.WriteString(l)
+	}
+	sr.pendingLines = nil
+	return sr.emitRendered()
+}
+
+// applyRenderedSnapshot writes the next rendered snapshot using one of:
+//  1. append-only delta when snapshot extends previous output
+//  2. append-only best-effort delta (ANSI-safe) when prefix changes and output supports Reset()
+//  3. explicit error for non-resettable outputs when prefix changes
+//
+// When allowRewrite is true, case (2) rewrites the full resettable output.
+func (sr *StreamRenderer) applyRenderedSnapshot(snapshot []byte, allowRewrite bool) error {
+	if bytes.Equal(snapshot, sr.lastRendered) {
+		return nil
+	}
+
+	// Fast path: append-only when new render extends previous render.
+	if bytes.HasPrefix(snapshot, sr.lastRendered) {
+		if len(snapshot) > len(sr.lastRendered) {
+			if _, err := sr.output.Write(snapshot[len(sr.lastRendered):]); err != nil {
+				return err
+			}
+		}
+		sr.lastRendered = append(sr.lastRendered[:0], snapshot...)
+		sr.renderedLen = len(sr.lastRendered)
+		return nil
+	}
+
+	// Prefix changed.
+	resetter, resettable := sr.output.(interface{ Reset() })
+	if !resettable {
+		// Non-resettable writer and changed prefix means we cannot emit a safe
+		// incremental delta without terminal cursor control.
+		return fmt.Errorf("streaming renderer cannot update changed prefix with non-resettable writer")
+	}
+
+	if allowRewrite {
+		resetter.Reset()
+		if len(snapshot) > 0 {
+			if _, err := sr.output.Write(snapshot); err != nil {
+				return err
+			}
+		}
+		sr.lastRendered = append(sr.lastRendered[:0], snapshot...)
+		sr.renderedLen = len(sr.lastRendered)
+		return nil
+	}
+
+	// Best-effort append-only delta for resettable writers: emit only new tail
+	// bytes beyond the previous rendered length, but avoid slicing mid-ANSI.
+	//
+	// If the new snapshot is shorter, append-only mode cannot safely remove stale
+	// trailing bytes that were already emitted. In that case we keep the previous
+	// authoritative snapshot to stay consistent with append-only output.
+	prevLen := len(sr.lastRendered)
+	if len(snapshot) <= prevLen {
+		return nil
+	}
+	delta := ansisafe.SuffixBytes(snapshot, prevLen)
+	if len(delta) > 0 {
+		if _, err := sr.output.Write(delta); err != nil {
+			return err
+		}
+	}
+	sr.lastRendered = append(sr.lastRendered[:0], snapshot...)
+	sr.renderedLen = len(sr.lastRendered)
+	return nil
 }
 
 // processLine handles a single complete line of input.
@@ -274,8 +401,7 @@ func (sr *StreamRenderer) handleReady(content, rawLine string) error {
 		sr.pendingLines = append(sr.pendingLines, rawLine)
 
 	case blockList:
-		sr.state = stateInList
-		sr.listIndent = countLeadingSpaces(content)
+		sr.beginList(countLeadingSpaces(content))
 		sr.pendingLines = append(sr.pendingLines, rawLine)
 
 	case blockBlockquote:
@@ -414,7 +540,22 @@ func (sr *StreamRenderer) handleList(content, rawLine string) error {
 
 	// Check if this is a list marker - always continues the list
 	if isListMarker(trimmed) {
+		// Stream top-level items as soon as a sibling marker arrives.
+		// For nested lists, defer sibling flushes until the nested list closes
+		// (outdent or return to base indent) to avoid loose-list rewrites.
+		shouldFlushAtMarker := sr.listHasMarker &&
+			(indent <= sr.listIndent || indent < sr.lastListMarkerIndent)
+		if shouldFlushAtMarker {
+			if err := sr.commitPendingLines(); err != nil {
+				return err
+			}
+		}
 		sr.pendingLines = append(sr.pendingLines, rawLine)
+		if indent < sr.listIndent {
+			sr.listIndent = indent
+		}
+		sr.lastListMarkerIndent = indent
+		sr.listHasMarker = true
 		return nil
 	}
 
@@ -449,12 +590,9 @@ func (sr *StreamRenderer) handleList(content, rawLine string) error {
 	}
 	if blockType != blockParagraph && blockType != blockUnknown {
 		// New block type, emit list
-		for _, l := range sr.pendingLines {
-			sr.allMarkdown.WriteString(l)
-		}
-		sr.pendingLines = nil
 		sr.state = stateReady
-		if err := sr.emitRendered(); err != nil {
+		sr.resetListState()
+		if err := sr.commitPendingLines(); err != nil {
 			return err
 		}
 		return sr.handleReady(content, rawLine)
@@ -468,12 +606,9 @@ func (sr *StreamRenderer) handleList(content, rawLine string) error {
 	}
 
 	// Non-indented, non-list content ends the list
-	for _, l := range sr.pendingLines {
-		sr.allMarkdown.WriteString(l)
-	}
-	sr.pendingLines = nil
 	sr.state = stateReady
-	if err := sr.emitRendered(); err != nil {
+	sr.resetListState()
+	if err := sr.commitPendingLines(); err != nil {
 		return err
 	}
 	return sr.handleReady(content, rawLine)
@@ -543,15 +678,7 @@ func (sr *StreamRenderer) emitRendered() error {
 		stableLen--
 	}
 
-	// Output only the new portion since last render
-	if stableLen > sr.renderedLen {
-		if _, err := sr.output.Write(rendered[sr.renderedLen:stableLen]); err != nil {
-			return err
-		}
-		sr.renderedLen = stableLen
-	}
-
-	return nil
+	return sr.applyRenderedSnapshot(rendered[:stableLen], false)
 }
 
 // Flush renders any buffered content, treating incomplete blocks as complete.
@@ -593,14 +720,8 @@ func (sr *StreamRenderer) Flush() error {
 	// Normalize consecutive newlines to fix inconsistent header spacing
 	rendered = normalizeNewlines(rendered)
 
-	// Output the remaining portion (including trailing newlines for final flush)
-	if len(rendered) > sr.renderedLen {
-		if _, err := sr.output.Write(rendered[sr.renderedLen:]); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	// Output final render including trailing newlines.
+	return sr.applyRenderedSnapshot(rendered, true)
 }
 
 // Close flushes any remaining content and cleans up.
@@ -642,6 +763,7 @@ func (sr *StreamRenderer) Resize(newWidth int) error {
 
 	// Reset render tracking - we'll re-render everything
 	sr.renderedLen = 0
+	sr.lastRendered = nil
 
 	if sr.allMarkdown.Len() > 0 {
 		rendered, err := sr.tr.RenderBytes(sr.normalizedMarkdown())
@@ -659,10 +781,9 @@ func (sr *StreamRenderer) Resize(newWidth int) error {
 		}
 
 		if stableLen > 0 {
-			if _, err := sr.output.Write(rendered[:stableLen]); err != nil {
+			if err := sr.applyRenderedSnapshot(rendered[:stableLen], true); err != nil {
 				return err
 			}
-			sr.renderedLen = stableLen
 		}
 	}
 
@@ -766,6 +887,26 @@ func isListMarker(trimmed string) bool {
 	}
 
 	return false
+}
+
+// isOrderedListMarkerPrefix reports whether trimmed is a marker-only ordered
+// list prefix like "1." or "2)" (without trailing content yet).
+func isOrderedListMarkerPrefix(trimmed string) bool {
+	if trimmed == "" {
+		return false
+	}
+
+	i := 0
+	for i < len(trimmed) && i < 9 && trimmed[i] >= '0' && trimmed[i] <= '9' {
+		i++
+	}
+	if i == 0 || i >= len(trimmed) {
+		return false
+	}
+	if trimmed[i] != '.' && trimmed[i] != ')' {
+		return false
+	}
+	return i+1 == len(trimmed)
 }
 
 // isThematicBreak returns true if the line is a thematic break (---, ***, ___).
