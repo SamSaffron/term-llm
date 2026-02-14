@@ -729,14 +729,38 @@ func parseCommand(prompt string, tools []ToolSpec) []*ToolCall {
 			return nil
 		}
 		argsJSON, _ := json.Marshal(map[string]interface{}{
-			"questions": []map[string]interface{}{{
-				"header":   "Test",
-				"question": "Debug provider test question?",
-				"options": []map[string]string{
-					{"label": "Option A", "description": "First option"},
-					{"label": "Option B", "description": "Second option"},
+			"questions": []map[string]interface{}{
+				{
+					"header":   "Language",
+					"question": "Which programming language should we use as the primary language for building out this new project from scratch?",
+					"options": []map[string]string{
+						{"label": "Go", "description": "Fast compiled language with great concurrency support and an excellent standard library for networking"},
+						{"label": "Rust", "description": "Memory-safe systems language with zero-cost abstractions and a powerful ownership model for correctness"},
+						{"label": "TypeScript", "description": "Typed JavaScript for full-stack web development with strong tooling and wide community adoption"},
+						{"label": "Python", "description": "Versatile scripting language with a rich ecosystem of packages for data science, web, and automation"},
+					},
 				},
-			}},
+				{
+					"header":   "Database",
+					"question": "Which database backend should we integrate for persistent storage and data management in the application?",
+					"options": []map[string]string{
+						{"label": "PostgreSQL", "description": "Full-featured relational database with advanced indexing, JSONB support, and strong ACID compliance"},
+						{"label": "SQLite", "description": "Lightweight embedded database that requires no server setup and stores everything in a single file"},
+						{"label": "Redis", "description": "In-memory key-value store commonly used for caching, message queues, and real-time session management"},
+					},
+				},
+				{
+					"header":       "Features",
+					"question":     "Which optional features do you want to enable for the initial release of this application?",
+					"multi_select": true,
+					"options": []map[string]string{
+						{"label": "Auth", "description": "User authentication and session management with support for OAuth providers and token refresh"},
+						{"label": "WebSockets", "description": "Real-time bidirectional communication for live updates, notifications, and collaborative editing"},
+						{"label": "Rate limiting", "description": "API rate limiting and request throttling to protect backend services from abuse and overload"},
+						{"label": "Metrics", "description": "Prometheus metrics endpoint and health checks for production monitoring and alerting dashboards"},
+					},
+				},
+			},
 		})
 		calls := make([]*ToolCall, multiplier)
 		for i := range calls {

@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/reflow/wordwrap"
 	"golang.org/x/term"
 )
 
@@ -618,7 +619,8 @@ func (m *AskUserModel) View() string {
 	b.WriteString("\n")
 	b.WriteString(m.renderHelp())
 
-	return askContainerStyle.Render(b.String())
+	style := askContainerStyle.Width(m.width)
+	return style.Render(b.String())
 }
 
 func (m *AskUserModel) renderTabs() string {
@@ -656,10 +658,16 @@ func (m *AskUserModel) renderTabs() string {
 func (m *AskUserModel) renderQuestion() string {
 	var b strings.Builder
 
+	// innerWidth accounts for border (1) + paddingLeft (1) + paddingRight (2) = 4
+	innerWidth := m.width - 4
+	if innerWidth < 20 {
+		innerWidth = 20
+	}
+
 	q := m.questions[m.currentTab]
 
 	// Question text
-	b.WriteString(askQuestionStyle.Render(q.Question))
+	b.WriteString(askQuestionStyle.Render(wordwrap.String(q.Question, innerWidth)))
 	b.WriteString("\n")
 
 	// Options
@@ -679,11 +687,11 @@ func (m *AskUserModel) renderQuestion() string {
 			if isChecked {
 				checkbox = "[✓]"
 			}
-			optLine.WriteString(style.Render(fmt.Sprintf("%d. %s %s", i+1, checkbox, opt.Label)))
+			optLine.WriteString(style.Render(wordwrap.String(fmt.Sprintf("%d. %s %s", i+1, checkbox, opt.Label), innerWidth)))
 		} else {
 			// Single-select: show checkmark when picked
 			isPicked := m.isAnswered(m.currentTab) && m.answers[m.currentTab].text == opt.Label && !m.answers[m.currentTab].isCustom
-			optLine.WriteString(style.Render(fmt.Sprintf("%d. %s", i+1, opt.Label)))
+			optLine.WriteString(style.Render(wordwrap.String(fmt.Sprintf("%d. %s", i+1, opt.Label), innerWidth)))
 			if isPicked {
 				optLine.WriteString(" ")
 				optLine.WriteString(askCheckStyle.Render("✓"))
@@ -692,9 +700,9 @@ func (m *AskUserModel) renderQuestion() string {
 		b.WriteString(optLine.String())
 		b.WriteString("\n")
 
-		// Description
+		// Description (askDescriptionStyle has PaddingLeft(3), so reduce wrap width)
 		if opt.Description != "" {
-			b.WriteString(askDescriptionStyle.Render(opt.Description))
+			b.WriteString(askDescriptionStyle.Render(wordwrap.String(opt.Description, innerWidth-3)))
 			b.WriteString("\n")
 		}
 	}

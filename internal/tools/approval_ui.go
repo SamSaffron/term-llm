@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/reflow/wordwrap"
 	"golang.org/x/term"
 )
 
@@ -461,6 +462,12 @@ func (m *ApprovalModel) View() string {
 
 	var b strings.Builder
 
+	// innerWidth accounts for border (1) + paddingLeft (1) + paddingRight (2) = 4
+	innerWidth := m.width - 4
+	if innerWidth < 20 {
+		innerWidth = 20
+	}
+
 	// Build styles with accent color
 	containerStyle := lipgloss.NewStyle().
 		BorderStyle(lipgloss.NormalBorder()).
@@ -469,7 +476,8 @@ func (m *ApprovalModel) View() string {
 		PaddingLeft(1).
 		PaddingRight(2).
 		PaddingTop(1).
-		PaddingBottom(1)
+		PaddingBottom(1).
+		Width(m.width)
 
 	titleStyle := lipgloss.NewStyle().
 		Foreground(m.accentColor).
@@ -503,7 +511,7 @@ func (m *ApprovalModel) View() string {
 	b.WriteString("\n")
 
 	// Path/command being requested
-	b.WriteString(pathStyle.Render(m.path))
+	b.WriteString(pathStyle.Render(wordwrap.String(m.path, innerWidth)))
 	b.WriteString("\n")
 
 	// Repo info (if applicable)
@@ -532,11 +540,11 @@ func (m *ApprovalModel) View() string {
 			prefix = fmt.Sprintf("  %d. ", i+1)
 		}
 
-		b.WriteString(style.Render(prefix + opt.Label))
+		b.WriteString(style.Render(wordwrap.String(prefix+opt.Label, innerWidth)))
 		b.WriteString("\n")
 
-		// Description
-		b.WriteString(descStyle.Render(opt.Description))
+		// Description (descStyle has PaddingLeft(3), so reduce wrap width)
+		b.WriteString(descStyle.Render(wordwrap.String(opt.Description, innerWidth-3)))
 		b.WriteString("\n")
 	}
 

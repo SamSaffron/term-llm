@@ -191,11 +191,35 @@ func RenderWaveText(text string, wavePos int) string {
 // Muted style for tool params (lighter than wave dim)
 var paramStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
 
+// truncateToolInfo truncates raw tool info text so the full rendered line
+// (circle + space + toolName + space + info) fits within width.
+// Truncation is done on the raw text before styling to avoid breaking ANSI codes.
+func truncateToolInfo(toolName, info string, width int) string {
+	if width <= 0 || info == "" {
+		return info
+	}
+	// 2 = circle (1 visible char) + space; 1 = space between name and info
+	overhead := 2 + len(toolName) + 1
+	maxInfoLen := width - overhead
+	if maxInfoLen <= 0 {
+		return ""
+	}
+	runes := []rune(info)
+	if len(runes) <= maxInfoLen {
+		return info
+	}
+	if maxInfoLen <= 3 {
+		return string(runes[:maxInfoLen])
+	}
+	return string(runes[:maxInfoLen-3]) + "..."
+}
+
 // RenderToolSegment renders a tool segment with its status indicator.
 // For pending tools, wavePos controls the wave animation (-1 = paused/all dim).
 // Tool name is rendered normally, params are rendered in slightly muted gray.
 // For spawn_agent tools with progress, stats are shown instead of wave animation.
-func RenderToolSegment(seg *Segment, wavePos int) string {
+// width is the terminal width used to truncate long lines (0 = no truncation).
+func RenderToolSegment(seg *Segment, wavePos int, width int) string {
 	switch seg.ToolStatus {
 	case ToolPending:
 		// spawn_agent tools with progress show stats instead of wave animation
@@ -204,15 +228,31 @@ func RenderToolSegment(seg *Segment, wavePos int) string {
 		}
 		// Wave animation for other pending tools
 		phase := FormatToolPhase(seg.ToolName, seg.ToolInfo)
-		return PendingCircle() + " " + RenderWaveText(phase.Active, wavePos)
+		activeText := phase.Active
+		if width > 0 {
+			// Truncate the plain text before wave styling (overhead: circle + space = 2)
+			maxLen := width - 2
+			if maxLen > 0 {
+				runes := []rune(activeText)
+				if len(runes) > maxLen {
+					if maxLen <= 3 {
+						activeText = string(runes[:maxLen])
+					} else {
+						activeText = string(runes[:maxLen-3]) + "..."
+					}
+				}
+			}
+		}
+		return PendingCircle() + " " + RenderWaveText(activeText, wavePos)
 	case ToolSuccess:
 		// spawn_agent shows final stats on success
 		if seg.ToolName == "spawn_agent" && seg.SubagentHasProgress {
 			return SuccessCircle() + " " + renderSpawnAgentStats(seg.ToolInfo, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentStartTime, seg.SubagentEndTime, seg.SubagentProvider, seg.SubagentModel)
 		}
 		// Tool name normal, params slightly muted (with space before info if present)
-		if seg.ToolInfo != "" {
-			return SuccessCircle() + " " + seg.ToolName + " " + paramStyle.Render(seg.ToolInfo)
+		info := truncateToolInfo(seg.ToolName, seg.ToolInfo, width)
+		if info != "" {
+			return SuccessCircle() + " " + seg.ToolName + " " + paramStyle.Render(info)
 		}
 		return SuccessCircle() + " " + seg.ToolName
 	case ToolError:
@@ -221,8 +261,9 @@ func RenderToolSegment(seg *Segment, wavePos int) string {
 			return ErrorCircle() + " " + renderSpawnAgentStats(seg.ToolInfo, seg.SubagentToolCalls, seg.SubagentTotalTokens, seg.SubagentStartTime, seg.SubagentEndTime, seg.SubagentProvider, seg.SubagentModel)
 		}
 		// Tool name normal, params slightly muted (with space before info if present)
-		if seg.ToolInfo != "" {
-			return ErrorCircle() + " " + seg.ToolName + " " + paramStyle.Render(seg.ToolInfo)
+		info := truncateToolInfo(seg.ToolName, seg.ToolInfo, width)
+		if info != "" {
+			return ErrorCircle() + " " + seg.ToolName + " " + paramStyle.Render(info)
 		}
 		return ErrorCircle() + " " + seg.ToolName
 	}
@@ -231,11 +272,12 @@ func RenderToolSegment(seg *Segment, wavePos int) string {
 
 // RenderToolCallFromPart renders a historical tool call from an llm.ToolCall.
 // Uses success styling since historical calls have completed.
-func RenderToolCallFromPart(tc *llm.ToolCall) string {
+// width is the terminal width used to truncate long lines (0 = no truncation).
+func RenderToolCallFromPart(tc *llm.ToolCall, width int) string {
 	if tc == nil {
 		return ""
 	}
-	info := llm.ExtractToolInfo(*tc)
+	info := truncateToolInfo(tc.Name, llm.ExtractToolInfo(*tc), width)
 	if info != "" {
 		return SuccessCircle() + " " + tc.Name + " " + paramStyle.Render(info)
 	}
@@ -491,7 +533,7 @@ func RenderSegmentsWithLeading(leading *Segment, segments []*Segment, width int,
 			}
 
 		case SegmentTool:
-			rendered = RenderToolSegment(seg, wavePos)
+			rendered = RenderToolSegment(seg, wavePos, width)
 			// Render subagent preview lines beneath spawn_agent tools
 			if seg.ToolName == "spawn_agent" && len(seg.SubagentPreview) > 0 {
 				var sb strings.Builder
