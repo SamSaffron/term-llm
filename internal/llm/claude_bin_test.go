@@ -359,7 +359,7 @@ func TestIsPromptTooLong(t *testing.T) {
 	}
 }
 
-func TestTruncateToolResults(t *testing.T) {
+func TestTruncateToolResultsAt(t *testing.T) {
 	shortContent := "short result"
 	longContent := strings.Repeat("x", maxToolResultCharsOnRetry+1000)
 
@@ -393,11 +393,11 @@ func TestTruncateToolResults(t *testing.T) {
 		},
 	}
 
-	truncated := truncateToolResults(messages)
+	truncated := truncateToolResultsAt(messages, maxToolResultCharsOnRetry)
 
 	// Should not modify original
 	if messages[1].Parts[1].ToolResult.Content != longContent {
-		t.Fatal("truncateToolResults modified original message")
+		t.Fatal("truncateToolResultsAt modified original message")
 	}
 
 	// User message should be unchanged
@@ -429,7 +429,7 @@ func TestTruncateToolResults_NoToolResults(t *testing.T) {
 		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "hello"}}},
 		{Role: RoleAssistant, Parts: []Part{{Type: PartText, Text: "hi"}}},
 	}
-	truncated := truncateToolResults(messages)
+	truncated := truncateToolResultsAt(messages, maxToolResultCharsOnRetry)
 	if len(truncated) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(truncated))
 	}

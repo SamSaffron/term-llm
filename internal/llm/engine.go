@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -45,6 +46,10 @@ type TurnCompletedCallback func(ctx context.Context, turnIndex int, messages []M
 // The message contains only the assistant's response (no tool results yet).
 type ResponseCompletedCallback func(ctx context.Context, turnIndex int, assistantMsg Message, metrics TurnMetrics) error
 
+// CompactionCallback is called after context compaction to allow callers to
+// update their state (e.g., replace in-memory messages, persist changes).
+type CompactionCallback func(ctx context.Context, result *CompactionResult) error
+
 // Engine orchestrates provider calls and external tool execution.
 type Engine struct {
 	provider    Provider
@@ -63,7 +68,17 @@ type Engine struct {
 	// onResponseCompleted is called immediately after LLM streaming completes,
 	// BEFORE tool execution. Used for incremental persistence of assistant messages.
 	onResponseCompleted ResponseCompletedCallback
-	callbackMu          sync.RWMutex
+	// onCompaction is called after context compaction completes.
+	onCompaction CompactionCallback
+	callbackMu   sync.RWMutex
+
+	// Context compaction
+	compactionConfig     *CompactionConfig // nil = compaction disabled
+	inputLimit           int               // 0 = unknown/disabled
+	lastTotalTokens      int               // input+output from most recent API response
+	lastMessageCount     int               // len(req.Messages) at time of last API call
+	systemPrompt         string            // Captured for re-injection after compaction
+	contextNoticeEmitted bool              // one-shot flag: WARNING emitted once per session
 }
 
 // ToolExecutorSetter is an optional interface for providers that need
@@ -182,6 +197,105 @@ func (e *Engine) getResponseCallback() ResponseCompletedCallback {
 	cb := e.onResponseCompleted
 	e.callbackMu.RUnlock()
 	return cb
+}
+
+// SetCompaction enables context compaction with the given input token limit
+// and configuration. Only enable for models with known input limits.
+// Must be called before Stream() or between streams (not during).
+func (e *Engine) SetCompaction(inputLimit int, config CompactionConfig) {
+	e.callbackMu.Lock()
+	e.inputLimit = inputLimit
+	e.compactionConfig = &config
+	e.callbackMu.Unlock()
+}
+
+// SetContextTracking enables token tracking without enabling compaction.
+// Use this to track context fullness when auto_compact is disabled.
+// Must be called before Stream() or between streams (not during).
+func (e *Engine) SetContextTracking(inputLimit int) {
+	e.callbackMu.Lock()
+	e.inputLimit = inputLimit
+	e.compactionConfig = nil
+	e.callbackMu.Unlock()
+}
+
+// ConfigureContextManagement enables compaction or context tracking based on
+// the provider/model's input limit and the autoCompact setting.
+// Skips setup if the provider manages its own context (e.g., claude-bin).
+// Both inputLimit and compactionConfig are set atomically under a single lock.
+func (e *Engine) ConfigureContextManagement(provider Provider, providerName, modelName string, autoCompact bool) {
+	if provider.Capabilities().ManagesOwnContext {
+		return
+	}
+	limit := InputLimitForProviderModel(providerName, modelName)
+	if limit <= 0 {
+		return
+	}
+	e.callbackMu.Lock()
+	e.inputLimit = limit
+	if autoCompact {
+		cfg := DefaultCompactionConfig()
+		e.compactionConfig = &cfg
+	} else {
+		e.compactionConfig = nil
+	}
+	e.callbackMu.Unlock()
+}
+
+// InputLimit returns the configured input token limit (0 if unknown).
+func (e *Engine) InputLimit() int {
+	e.callbackMu.RLock()
+	v := e.inputLimit
+	e.callbackMu.RUnlock()
+	return v
+}
+
+// LastTotalTokens returns the total tokens (input+output) from the most
+// recent API response, approximating current context fullness.
+func (e *Engine) LastTotalTokens() int {
+	e.callbackMu.RLock()
+	v := e.lastTotalTokens
+	e.callbackMu.RUnlock()
+	return v
+}
+
+// SetCompactionCallback sets the callback for context compaction events.
+// Thread-safe: can be called while streaming is in progress.
+func (e *Engine) SetCompactionCallback(cb CompactionCallback) {
+	e.callbackMu.Lock()
+	e.onCompaction = cb
+	e.callbackMu.Unlock()
+}
+
+// getCompactionCallback returns the current compaction callback under read lock.
+func (e *Engine) getCompactionCallback() CompactionCallback {
+	e.callbackMu.RLock()
+	cb := e.onCompaction
+	e.callbackMu.RUnlock()
+	return cb
+}
+
+// estimatedTokens returns the estimated input token count for the next API
+// call. Uses total_tokens (input+output) from the last API response as a
+// baseline — because the model's output gets echoed back as input on the
+// next turn — then adds heuristic estimates for messages appended since.
+func (e *Engine) estimatedTokens(messages []Message) int {
+	if e.lastTotalTokens > 0 && e.lastMessageCount > 0 && e.lastMessageCount < len(messages) {
+		return e.lastTotalTokens + EstimateMessageTokens(messages[e.lastMessageCount:])
+	}
+	// Fallback: pure heuristic estimate of all messages
+	return EstimateMessageTokens(messages)
+}
+
+// nonSystemMessages returns all messages that are not system messages.
+func nonSystemMessages(messages []Message) []Message {
+	var result []Message
+	for _, msg := range messages {
+		if msg.Role != RoleSystem {
+			result = append(result, msg)
+		}
+	}
+	return result
 }
 
 // IsToolAllowed checks if a tool can be executed under current restrictions.
@@ -378,11 +492,58 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 	originalToolChoice := req.ToolChoice
 	restoredToolChoice := false
 
-	// Copy callbacks at start - protects against concurrent modification from UI thread
+	// Snapshot callbacks and compaction config at start — protects against
+	// concurrent modification from the UI thread (e.g., SetCompaction called
+	// from a new startStream while a previous stream is finishing).
 	turnCallback := e.getTurnCallback()
 	responseCallback := e.getResponseCallback()
 
+	e.callbackMu.RLock()
+	compactionConfig := e.compactionConfig
+	inputLimit := e.inputLimit
+	e.callbackMu.RUnlock()
+
+	// Capture system prompt for re-injection after compaction
+	if inputLimit > 0 {
+		for _, msg := range req.Messages {
+			if msg.Role == RoleSystem {
+				e.systemPrompt = collectTextParts(msg.Parts)
+				break
+			}
+		}
+	}
+
+	var reactiveCompactionDone bool // prevents infinite retry if compacted context still overflows
 	for attempt := 0; attempt < maxTurns; attempt++ {
+		// Pre-turn compaction check (skip first turn — no history to compact yet)
+		if compactionConfig != nil && attempt > 0 {
+			threshold := int(float64(inputLimit) * compactionConfig.ThresholdRatio)
+			if e.estimatedTokens(req.Messages) >= threshold {
+				events <- Event{Type: EventPhase, Text: "Compacting context..."}
+				result, err := Compact(ctx, e.provider, req.Model, e.systemPrompt, nonSystemMessages(req.Messages), *compactionConfig)
+				if err == nil {
+					req.Messages = result.NewMessages
+					e.lastTotalTokens = 0
+					e.lastMessageCount = 0
+					if cb := e.getCompactionCallback(); cb != nil {
+						if cbErr := cb(ctx, result); cbErr != nil {
+							slog.Warn("compaction callback failed", "error", cbErr)
+						}
+					}
+				}
+				// On error: continue with full context (best effort)
+			}
+		}
+		// Warning when compaction is disabled but tracking detects high usage
+		if compactionConfig == nil && inputLimit > 0 && !e.contextNoticeEmitted && attempt > 0 {
+			threshold := int(float64(inputLimit) * defaultThresholdRatio)
+			est := e.estimatedTokens(req.Messages)
+			if est >= threshold {
+				e.contextNoticeEmitted = true
+				pct := int(100 * float64(est) / float64(inputLimit))
+				events <- Event{Type: EventPhase, Text: fmt.Sprintf(WarningPhasePrefix+"context is %d%% full. Add auto_compact: true to your config to enable automatic compaction.", pct)}
+			}
+		}
 		// Prepare turn
 		if attempt == maxTurns-1 {
 			req.Messages = append(req.Messages, SystemText(stopSearchToolHint))
@@ -407,6 +568,29 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 
 		stream, err := e.provider.Stream(ctx, req)
 		if err != nil {
+			// Reactive compaction: if this is a context overflow error, try compacting and retrying (once)
+			if compactionConfig != nil && isContextOverflowError(err) && !reactiveCompactionDone {
+				reactiveCompactionDone = true
+				events <- Event{Type: EventPhase, Text: "Compacting context..."}
+				result, compactErr := Compact(ctx, e.provider, req.Model, e.systemPrompt, nonSystemMessages(req.Messages), *compactionConfig)
+				if compactErr == nil {
+					req.Messages = result.NewMessages
+					e.lastTotalTokens = 0
+					e.lastMessageCount = 0
+					if cb := e.getCompactionCallback(); cb != nil {
+						if cbErr := cb(ctx, result); cbErr != nil {
+							slog.Warn("compaction callback failed", "error", cbErr)
+						}
+					}
+					attempt-- // Retry this turn
+					continue
+				}
+			}
+			// Warn when compaction is disabled and we hit context overflow
+			if compactionConfig == nil && inputLimit > 0 && !e.contextNoticeEmitted && isContextOverflowError(err) {
+				e.contextNoticeEmitted = true
+				events <- Event{Type: EventPhase, Text: WarningPhasePrefix + "context overflow. Add auto_compact: true to your config to enable automatic compaction."}
+			}
 			return err
 		}
 
@@ -442,6 +626,13 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 				turnMetrics.InputTokens += event.Use.InputTokens
 				turnMetrics.OutputTokens += event.Use.OutputTokens
 				turnMetrics.CachedInputTokens += event.Use.CachedInputTokens
+				// Update token tracking for compaction threshold estimation.
+				// total_tokens (input+output) ≈ next turn's input, because
+				// the model's output gets echoed back as input.
+				if inputLimit > 0 {
+					e.lastTotalTokens = event.Use.InputTokens + event.Use.OutputTokens
+					e.lastMessageCount = len(req.Messages)
+				}
 			}
 			// Accumulate text for callback
 			if event.Type == EventTextDelta && event.Text != "" {
@@ -774,6 +965,17 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, event
 	toolCtx := ContextWithCallID(ctx, call.ID)
 	output, err := tool.Execute(toolCtx, call.Arguments)
 	info := e.getToolPreview(call)
+
+	// Truncate large tool outputs when compaction is enabled.
+	// Reads compactionConfig under lock since this runs on the engine goroutine.
+	if err == nil {
+		e.callbackMu.RLock()
+		cc := e.compactionConfig
+		e.callbackMu.RUnlock()
+		if cc != nil && cc.MaxToolResultChars > 0 {
+			output.Content = truncateToolResult(output.Content, cc.MaxToolResultChars)
+		}
+	}
 
 	if err != nil {
 		errMsg := fmt.Sprintf("Error: %v", err)

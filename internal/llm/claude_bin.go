@@ -156,6 +156,7 @@ func (p *ClaudeBinProvider) Capabilities() Capabilities {
 		NativeWebFetch:     false,
 		ToolCalls:          true,
 		SupportsToolChoice: false, // Claude CLI doesn't support forcing specific tool use
+		ManagesOwnContext:  true,  // Claude CLI handles its own context window management
 	}
 }
 
@@ -186,16 +187,24 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 
 		err := p.runClaudeCommand(ctx, args, effort, userPrompt, debug, events)
 		if err != nil && isPromptTooLong(err) {
-			// Truncate tool results and retry exactly once
-			truncated := truncateToolResults(messagesToSend)
-			retryPrompt := p.buildConversationPrompt(truncated)
-			// Only retry if truncation actually reduced the prompt
-			if len(retryPrompt) < len(userPrompt) {
+			// Retry with progressively more aggressive truncation
+			retryLimits := []int{maxToolResultCharsOnRetry, maxToolResultCharsOnAggressiveRetry}
+			prevLen := len(userPrompt)
+			for _, limit := range retryLimits {
+				truncated := truncateToolResultsAt(messagesToSend, limit)
+				retryPrompt := p.buildConversationPrompt(truncated)
+				if len(retryPrompt) >= prevLen {
+					slog.Warn("prompt too long but truncation did not reduce size, not retrying",
+						"limit", limit)
+					break
+				}
 				slog.Info("prompt too long, retrying with truncated tool results",
-					"original_len", len(userPrompt), "truncated_len", len(retryPrompt))
+					"original_len", prevLen, "truncated_len", len(retryPrompt), "limit", limit)
+				prevLen = len(retryPrompt)
 				err = p.runClaudeCommand(ctx, args, effort, retryPrompt, debug, events)
-			} else {
-				slog.Warn("prompt too long but truncation did not reduce size, not retrying")
+				if err == nil || !isPromptTooLong(err) {
+					break
+				}
 			}
 		}
 		if err != nil {
@@ -930,10 +939,14 @@ func isPromptTooLong(err error) bool {
 // when retrying after a "prompt too long" error (~5.7K tokens at 3.5 chars/token).
 const maxToolResultCharsOnRetry = 20_000
 
-// truncateToolResults returns a copy of messages with oversized tool result
-// content truncated to maxToolResultCharsOnRetry runes.
+// maxToolResultCharsOnAggressiveRetry is used for the second retry with much
+// more aggressive truncation (~1.4K tokens at 3.5 chars/token).
+const maxToolResultCharsOnAggressiveRetry = 5_000
+
+// truncateToolResultsAt returns a copy of messages with oversized tool result
+// content truncated to maxChars runes.
 // Note: only copies Role and Parts — update if Message gains new fields.
-func truncateToolResults(messages []Message) []Message {
+func truncateToolResultsAt(messages []Message, maxChars int) []Message {
 	out := make([]Message, len(messages))
 	for i, msg := range messages {
 		out[i] = Message{Role: msg.Role}
@@ -943,10 +956,10 @@ func truncateToolResults(messages []Message) []Message {
 			if part.Type == PartToolResult && part.ToolResult != nil {
 				content := part.ToolResult.Content
 				runes := []rune(content)
-				if len(runes) > maxToolResultCharsOnRetry {
-					truncated := string(runes[:maxToolResultCharsOnRetry])
+				if len(runes) > maxChars {
+					truncated := string(runes[:maxChars])
 					truncated += fmt.Sprintf("\n[Truncated: showing first %d of %d chars]",
-						maxToolResultCharsOnRetry, len(runes))
+						maxChars, len(runes))
 					// Clone ToolResult to avoid mutating original
 					tr := *part.ToolResult
 					tr.Content = truncated

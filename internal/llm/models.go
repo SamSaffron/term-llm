@@ -19,15 +19,10 @@ var ProviderModels = map[string][]string{
 		"claude-haiku-4-5-thinking",
 	},
 	"openai": {
+		"gpt-5.3-codex",
 		"gpt-5.2-codex",
-		"gpt-5.2-codex-medium",
-		"gpt-5.2-codex-high",
-		"gpt-5.2-codex-xhigh",
 		"gpt-5.2",
-		"gpt-5.2-high",
-		"gpt-5.2-xhigh",
 		"gpt-5.1",
-		"gpt-5.1-high",
 		"gpt-5",
 		"gpt-5-mini",
 		"gpt-5-nano",
@@ -35,16 +30,9 @@ var ProviderModels = map[string][]string{
 	},
 	"chatgpt": {
 		// Uses ChatGPT backend API with native OAuth
+		"gpt-5.3-codex",
 		"gpt-5.2-codex",
-		"gpt-5.2-codex-low",
-		"gpt-5.2-codex-medium",
-		"gpt-5.2-codex-high",
-		"gpt-5.2-codex-xhigh",
 		"gpt-5.2",
-		"gpt-5.2-low",
-		"gpt-5.2-medium",
-		"gpt-5.2-high",
-		"gpt-5.2-xhigh",
 		"gpt-5.1-codex-max",
 		"gpt-5.1-codex",
 		"gpt-5.1-codex-mini",
@@ -142,6 +130,33 @@ var ImageProviderModels = map[string][]string{
 	"openai":     {"gpt-image-1.5", "gpt-image-1-mini"},
 	"flux":       {"flux-2-pro", "flux-kontext-pro", "flux-2-max"},
 	"openrouter": {"google/gemini-2.5-flash-image", "google/gemini-3-pro-image-preview", "openai/gpt-5-image", "openai/gpt-5-image-mini", "bytedance-seed/seedream-4.5", "black-forest-labs/flux.2-pro"},
+}
+
+// defaultEffortVariants are the standard effort levels for reasoning-capable models.
+var defaultEffortVariants = []string{"low", "medium", "high", "xhigh"}
+
+// EffortVariantsFor returns the effort suffixes for a model, or nil if none.
+// All GPT-5 family models are reasoning-capable and support effort levels.
+func EffortVariantsFor(model string) []string {
+	if strings.HasPrefix(model, "gpt-5") {
+		return defaultEffortVariants
+	}
+	return nil
+}
+
+// ExpandWithEffortVariants expands a model list by appending effort variants
+// after each base model. Used for tab-completion where all variants are needed.
+func ExpandWithEffortVariants(models []string) []string {
+	var expanded []string
+	for _, m := range models {
+		expanded = append(expanded, m)
+		if variants := EffortVariantsFor(m); len(variants) > 0 {
+			for _, v := range variants {
+				expanded = append(expanded, m+"-"+v)
+			}
+		}
+	}
+	return expanded
 }
 
 // GetBuiltInProviderNames returns the built-in provider type names
@@ -255,6 +270,11 @@ func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config)
 					return nil
 				}
 			}
+		}
+
+		// Expand effort variants for tab-completion
+		if !isImage {
+			models = ExpandWithEffortVariants(models)
 		}
 
 		// Filter by prefix and return as provider:model

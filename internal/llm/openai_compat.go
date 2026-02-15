@@ -291,6 +291,7 @@ func (p *OpenAICompatProvider) ListModels(ctx context.Context) ([]ModelInfo, err
 			DisplayName: m.Name,
 			Created:     m.Created,
 			OwnedBy:     m.OwnedBy,
+			InputLimit:  InputLimitForModel(m.ID),
 		}
 		// Parse OpenRouter-style pricing (per-token prices as strings)
 		if m.Pricing != nil {

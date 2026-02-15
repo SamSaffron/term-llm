@@ -377,9 +377,10 @@ func (p *XAIProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	models := make([]ModelInfo, len(modelsResp.Data))
 	for i, m := range modelsResp.Data {
 		models[i] = ModelInfo{
-			ID:      m.ID,
-			Created: m.Created,
-			OwnedBy: m.OwnedBy,
+			ID:         m.ID,
+			Created:    m.Created,
+			OwnedBy:    m.OwnedBy,
+			InputLimit: InputLimitForModel(m.ID),
 		}
 	}
 	return models, nil

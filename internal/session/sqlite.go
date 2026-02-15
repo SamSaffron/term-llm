@@ -986,6 +986,53 @@ func (s *SQLiteStore) AddMessage(ctx context.Context, sessionID string, msg *Mes
 	})
 }
 
+// ReplaceMessages deletes all existing messages for the session and inserts
+// the new set in a single transaction. Used after context compaction.
+func (s *SQLiteStore) ReplaceMessages(ctx context.Context, sessionID string, messages []Message) error {
+	return retryOnBusy(5, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin transaction: %w", err)
+		}
+		defer tx.Rollback()
+
+		// Delete all existing messages for this session
+		if _, err := tx.ExecContext(ctx, "DELETE FROM messages WHERE session_id = ?", sessionID); err != nil {
+			return fmt.Errorf("delete existing messages: %w", err)
+		}
+
+		// Insert new messages with sequential sequence numbers
+		for i, msg := range messages {
+			msg.SessionID = sessionID
+			msg.Sequence = i
+			if msg.CreatedAt.IsZero() {
+				msg.CreatedAt = time.Now()
+			}
+
+			partsJSON, err := msg.PartsJSON()
+			if err != nil {
+				return fmt.Errorf("serialize parts for message %d: %w", i, err)
+			}
+
+			_, err = tx.ExecContext(ctx, `
+				INSERT INTO messages (session_id, role, parts, text_content, duration_ms, created_at, sequence)
+				VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				sessionID, string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.CreatedAt, msg.Sequence)
+			if err != nil {
+				return fmt.Errorf("insert message %d: %w", i, err)
+			}
+		}
+
+		// Update session's updated_at
+		if _, err := tx.ExecContext(ctx, "UPDATE sessions SET updated_at = ? WHERE id = ?",
+			time.Now(), sessionID); err != nil {
+			return fmt.Errorf("update session timestamp: %w", err)
+		}
+
+		return tx.Commit()
+	})
+}
+
 // GetMessages retrieves messages for a session.
 func (s *SQLiteStore) GetMessages(ctx context.Context, sessionID string, limit, offset int) ([]Message, error) {
 	query := `

@@ -25,6 +25,7 @@ func (p *AnthropicProvider) ListModels(ctx context.Context) ([]ModelInfo, error)
 			ID:          m.ID,
 			DisplayName: m.DisplayName,
 			Created:     m.CreatedAt.Unix(),
+			InputLimit:  InputLimitForModel(m.ID),
 		})
 	}
 

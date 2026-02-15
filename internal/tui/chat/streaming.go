@@ -233,6 +233,26 @@ func (m *Model) startStream(content string) tea.Cmd {
 			})
 		}
 
+		// Enable context compaction or tracking for models with known input limits.
+		// Re-set each turn in case the provider/model changed mid-session.
+		m.engine.ConfigureContextManagement(m.provider, m.sess.Provider, m.sess.Model, m.config.AutoCompact)
+
+		// Set up compaction callback to update in-memory state and persist.
+		// This runs on the engine goroutine, so we protect m.messages with a mutex.
+		m.engine.SetCompactionCallback(func(ctx context.Context, result *llm.CompactionResult) error {
+			var newSessionMsgs []session.Message
+			for _, msg := range result.NewMessages {
+				newSessionMsgs = append(newSessionMsgs, *session.NewMessage(m.sess.ID, msg, -1))
+			}
+			m.messagesMu.Lock()
+			m.messages = newSessionMsgs
+			m.messagesMu.Unlock()
+			if m.store != nil {
+				return m.store.ReplaceMessages(ctx, m.sess.ID, newSessionMsgs)
+			}
+			return nil
+		})
+
 		// Start streaming in background - adapter handles all event conversion
 		go func() {
 			stream, err := m.engine.Stream(ctx, req)
@@ -271,10 +291,15 @@ func (m *Model) listenForStreamEventsSync() tea.Msg {
 }
 
 func (m *Model) buildMessages() []llm.Message {
+	m.messagesMu.Lock()
+	snapshot := make([]session.Message, len(m.messages))
+	copy(snapshot, m.messages)
+	m.messagesMu.Unlock()
+
 	var messages []llm.Message
 
 	// Check if history already starts with a system message
-	historyHasSystem := len(m.messages) > 0 && m.messages[0].Role == llm.RoleSystem
+	historyHasSystem := len(snapshot) > 0 && snapshot[0].Role == llm.RoleSystem
 
 	// Add system instructions if configured and not already in history
 	if m.config.Chat.Instructions != "" && !historyHasSystem {
@@ -282,7 +307,7 @@ func (m *Model) buildMessages() []llm.Message {
 	}
 
 	// Add conversation history - convert session messages to llm messages
-	for _, msg := range m.messages {
+	for _, msg := range snapshot {
 		messages = append(messages, msg.ToLLMMessage())
 	}
 

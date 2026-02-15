@@ -575,6 +575,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		})
 	}
 
+	// Enable context compaction or tracking for models with known context window data.
+	engine.ConfigureContextManagement(provider, cfg.DefaultProvider, activeModel(cfg), cfg.AutoCompact)
+
 	errChan := make(chan error, 1)
 	go func() {
 		stream, err := engine.Stream(ctx, req)
@@ -737,7 +740,10 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent) error {
 				continue
 
 			case ui.StreamEventPhase:
-				// Skip phase events in plain text mode
+				// Print WARNING phases to stderr, skip others
+				if strings.HasPrefix(ev.Phase, llm.WarningPhasePrefix) {
+					fmt.Fprintf(os.Stderr, "\n%s\n", ev.Phase)
+				}
 				continue
 
 			case ui.StreamEventToolEnd:
@@ -1284,6 +1290,11 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case askPhaseMsg:
 		m.phase = string(msg)
+		// Display WARNING phases as visible text in the conversation
+		if strings.HasPrefix(string(msg), llm.WarningPhasePrefix) {
+			m.tracker.AddTextSegment(string(msg)+"\n", m.width)
+			m.contentDirty = true
+		}
 		return m, nil
 
 	case askImageMsg:

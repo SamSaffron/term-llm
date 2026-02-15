@@ -82,6 +82,7 @@ func (p *ZenProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 			ID:          m.ID,
 			Created:     m.Created,
 			OwnedBy:     m.OwnedBy,
+			InputLimit:  InputLimitForModel(m.ID),
 			InputPrice:  -1, // Unknown by default
 			OutputPrice: -1,
 		}

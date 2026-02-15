@@ -456,6 +456,16 @@ func (m *Model) renderStatusLine() string {
 		fixedParts = append(fixedParts, fmt.Sprintf("%d file(s)", len(m.files)))
 	}
 
+	// Token usage counter (e.g., ~45K/136K)
+	if m.engine != nil && m.engine.InputLimit() > 0 {
+		last := m.engine.LastTotalTokens()
+		limit := m.engine.InputLimit()
+		if last > 0 {
+			fixedParts = append(fixedParts, fmt.Sprintf("~%s/%s",
+				llm.FormatTokenCount(last), llm.FormatTokenCount(limit)))
+		}
+	}
+
 	// During streaming, add progress info
 	var streamingPart string
 	if m.streaming {

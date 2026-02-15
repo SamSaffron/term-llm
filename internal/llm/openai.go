@@ -75,8 +75,9 @@ func (p *OpenAIProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	var models []ModelInfo
 	for _, m := range page.Data {
 		models = append(models, ModelInfo{
-			ID:      m.ID,
-			Created: m.Created,
+			ID:         m.ID,
+			Created:    m.Created,
+			InputLimit: InputLimitForModel(m.ID),
 		})
 	}
 

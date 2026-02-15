@@ -24,6 +24,7 @@ type Store interface {
 	// Message operations - stores full llm.Message with Parts
 	AddMessage(ctx context.Context, sessionID string, msg *Message) error
 	GetMessages(ctx context.Context, sessionID string, limit, offset int) ([]Message, error)
+	ReplaceMessages(ctx context.Context, sessionID string, messages []Message) error
 
 	// Metrics operations (for incremental session saving)
 	UpdateMetrics(ctx context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens, cachedInputTokens int) error

@@ -150,6 +150,14 @@ func createDebugLogger(cfg *config.Config) (*llm.DebugLogger, error) {
 	return logger, nil
 }
 
+// activeModel returns the model name from the active provider config, or empty string.
+func activeModel(cfg *config.Config) string {
+	if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
+		return providerCfg.Model
+	}
+	return ""
+}
+
 // generateSessionID creates a unique session identifier using timestamp and random bytes.
 // Format: 2006-01-02T15-04-05-abc123
 func generateSessionID() string {

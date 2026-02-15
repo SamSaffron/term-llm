@@ -42,6 +42,7 @@ type Capabilities struct {
 	NativeWebFetch     bool // Provider has native URL fetch capability
 	ToolCalls          bool
 	SupportsToolChoice bool // Provider supports tool_choice to force specific tool use
+	ManagesOwnContext  bool // Provider manages its own context window (skip compaction)
 }
 
 // Stream yields events until io.EOF.
@@ -186,6 +187,11 @@ const (
 	EventRetry          EventType = "retry" // Emitted when retrying after rate limit
 )
 
+// WarningPhasePrefix is the prefix for warning-level phase events.
+// Phase events starting with this prefix are rendered as visible warnings
+// in both the TUI and plain text output.
+const WarningPhasePrefix = "WARNING: "
+
 // ToolExecutionResponse holds the result of a synchronous tool execution.
 // Used by claude_bin provider to receive results from the engine.
 type ToolExecutionResponse struct {
@@ -241,13 +247,13 @@ type EditToolCall struct {
 
 // ModelInfo represents a model available from a provider.
 type ModelInfo struct {
-	ID          string
-	DisplayName string
-	Created     int64
-	OwnedBy     string
-	// Pricing per 1M tokens (0 = free, -1 = unknown)
-	InputPrice  float64
-	OutputPrice float64
+	ID          string  `json:"id"`
+	DisplayName string  `json:"display_name,omitempty"`
+	Created     int64   `json:"created,omitempty"`
+	OwnedBy     string  `json:"owned_by,omitempty"`
+	InputLimit  int     `json:"input_limit,omitempty"` // Max input tokens (0 = unknown)
+	InputPrice  float64 `json:"input_price"`           // Pricing per 1M tokens (0 = free, -1 = unknown)
+	OutputPrice float64 `json:"output_price"`          // Pricing per 1M tokens (0 = free, -1 = unknown)
 }
 
 func SystemText(text string) Message {

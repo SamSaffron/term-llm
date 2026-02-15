@@ -537,6 +537,7 @@ func (p *CopilotProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 			ID:          m.ID,
 			DisplayName: displayName,
 			OwnedBy:     m.Vendor,
+			InputLimit:  InputLimitForProviderModel("copilot", m.ID),
 		})
 	}
 

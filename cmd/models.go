@@ -196,6 +196,11 @@ func runModels(cmd *cobra.Command, args []string) error {
 			fmt.Printf("  %s", m.ID)
 		}
 
+		// Show input limit if known
+		if ctxStr := llm.FormatTokenCount(m.InputLimit); ctxStr != "" {
+			fmt.Printf(" [%s input]", ctxStr)
+		}
+
 		// Show pricing info only if provider returns it
 		if providerHasPricing {
 			if m.InputPrice == 0 && m.OutputPrice == 0 {
@@ -218,11 +223,15 @@ func runModels(cmd *cobra.Command, args []string) error {
 func printStaticModels(providerName string, models []string) error {
 	if modelsJSON {
 		type staticModel struct {
-			ID string `json:"id"`
+			ID         string `json:"id"`
+			InputLimit int    `json:"input_limit,omitempty"`
 		}
 		var jsonModels []staticModel
 		for _, m := range models {
-			jsonModels = append(jsonModels, staticModel{ID: m})
+			jsonModels = append(jsonModels, staticModel{
+				ID:         m,
+				InputLimit: llm.InputLimitForProviderModel(providerName, m),
+			})
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -231,7 +240,14 @@ func printStaticModels(providerName string, models []string) error {
 
 	fmt.Printf("Available models for %s:\n\n", providerName)
 	for _, m := range models {
-		fmt.Printf("  %s\n", m)
+		line := "  " + m
+		if ctxStr := llm.FormatTokenCount(llm.InputLimitForProviderModel(providerName, m)); ctxStr != "" {
+			line += fmt.Sprintf(" [%s input]", ctxStr)
+		}
+		if variants := llm.EffortVariantsFor(m); len(variants) > 0 {
+			line += fmt.Sprintf(" (effort: %s)", strings.Join(variants, ", "))
+		}
+		fmt.Println(line)
 	}
 	fmt.Printf("\nTo use a model, add to your config:\n")
 	fmt.Printf("  providers:\n    %s:\n", providerName)

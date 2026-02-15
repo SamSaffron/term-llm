@@ -49,6 +49,10 @@ func (s *NoopStore) GetMessages(ctx context.Context, sessionID string, limit, of
 	return nil, nil
 }
 
+func (s *NoopStore) ReplaceMessages(ctx context.Context, sessionID string, messages []Message) error {
+	return nil
+}
+
 func (s *NoopStore) UpdateMetrics(ctx context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens, cachedInputTokens int) error {
 	return nil
 }

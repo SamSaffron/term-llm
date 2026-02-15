@@ -102,6 +102,7 @@ type Config struct {
 	Agents          AgentsConfig              `mapstructure:"agents"`
 	Skills          SkillsConfig              `mapstructure:"skills"`
 	AgentsMd        AgentsMdConfig            `mapstructure:"agents_md"`
+	AutoCompact     bool                      `mapstructure:"auto_compact"`
 }
 
 // AgentsConfig configures the agent system
@@ -782,6 +783,9 @@ var KnownKeys = map[string]bool{
 
 	// AGENTS.md
 	"agents_md.enabled": true,
+
+	// Auto-compaction
+	"auto_compact": true,
 }
 
 // KnownProviderKeys contains valid keys for provider configurations
@@ -851,6 +855,7 @@ func GetDefaults() map[string]any {
 		"skills.always_enabled":          []string{},
 		"skills.never_auto":              []string{},
 		"agents_md.enabled":              false,
+		"auto_compact":                   false,
 	}
 }
 

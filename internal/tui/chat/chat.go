@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -40,11 +41,12 @@ type Model struct {
 	keyMap   KeyMap
 
 	// Session state
-	store     session.Store     // Session storage backend
-	sess      *session.Session  // Current session
-	messages  []session.Message // In-memory messages for current session
-	streaming bool
-	phase     string // "Thinking", "Searching", "Reading", "Responding"
+	store      session.Store     // Session storage backend
+	sess       *session.Session  // Current session
+	messages   []session.Message // In-memory messages for current session
+	messagesMu sync.Mutex        // Protects messages from concurrent compaction callback
+	streaming  bool
+	phase      string // "Thinking", "Searching", "Reading", "Responding"
 
 	// Streaming state
 	currentResponse  strings.Builder
@@ -743,6 +745,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case ui.StreamEventPhase:
 			m.phase = ev.Phase
 			m.retryStatus = ""
+			// Display WARNING phases as visible text in the conversation
+			if strings.HasPrefix(ev.Phase, llm.WarningPhasePrefix) && m.tracker != nil {
+				m.tracker.AddTextSegment(ev.Phase+"\n", m.width)
+			}
 
 		case ui.StreamEventRetry:
 			m.retryStatus = fmt.Sprintf("Rate limited (%d/%d), waiting %.0fs...",
