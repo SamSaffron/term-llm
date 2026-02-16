@@ -31,6 +31,7 @@ var ProviderModels = map[string][]string{
 	"chatgpt": {
 		// Uses ChatGPT backend API with native OAuth
 		"gpt-5.3-codex",
+		"gpt-5.3-codex-spark",
 		"gpt-5.2-codex",
 		"gpt-5.2",
 		"gpt-5.1-codex-max",
