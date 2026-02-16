@@ -148,7 +148,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 
 	// Initialize local tools if --tools flag is set
 	if editTools != "" {
-		engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
+		engine := newEngine(provider, cfg)
 		toolConfig := buildToolConfig(editTools, editReadDirs, editWriteDirs, editShellAllow, cfg)
 		// For edit command, exclude edit/write tools to avoid conflicts with the command's own editing
 		toolConfig.Enabled = filterOutTools(toolConfig.Enabled, "edit_file", "write_file")
@@ -184,7 +184,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	// Initialize MCP servers if --mcp flag is set
 	var mcpManager *mcp.Manager
 	if editMCP != "" {
-		engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
+		engine := newEngine(provider, cfg)
 		mcpOpts := &MCPOptions{
 			Provider: provider,
 			YoloMode: editYolo,

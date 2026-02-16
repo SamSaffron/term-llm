@@ -168,7 +168,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
+	engine := newEngine(provider, cfg)
 
 	// Set up debug logger if enabled
 	debugLogger, err := createDebugLogger(cfg)

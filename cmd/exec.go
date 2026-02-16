@@ -120,7 +120,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 	}
 
 	caps := provider.Capabilities()
-	engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
+	engine := newEngine(provider, cfg)
 
 	// Set up debug logger if enabled
 	debugLogger, err := createDebugLogger(cfg)

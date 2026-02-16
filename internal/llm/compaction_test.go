@@ -178,31 +178,112 @@ func TestReconstructHistoryNoSystem(t *testing.T) {
 }
 
 func TestTruncateToolResult(t *testing.T) {
-	// Short content — no truncation
-	short := "hello"
-	if got := truncateToolResult(short, 100); got != short {
-		t.Errorf("short content should not be truncated")
-	}
+	t.Run("under limit", func(t *testing.T) {
+		short := "hello"
+		if got := TruncateToolResult(short, 100); got != short {
+			t.Errorf("short content should not be truncated")
+		}
+	})
 
-	// Long content — truncated
-	long := strings.Repeat("x", 1000)
-	result := truncateToolResult(long, 100)
-	if len(result) >= len(long) {
-		t.Errorf("truncated result should be shorter than original")
-	}
-	if !strings.Contains(result, "[...") {
-		t.Errorf("truncated result should contain truncation marker")
-	}
-	if !strings.Contains(result, "chars truncated") {
-		t.Errorf("truncated result should mention chars truncated")
-	}
-	// First and last 50 chars should be preserved
-	if !strings.HasPrefix(result, strings.Repeat("x", 50)) {
-		t.Errorf("truncated result should preserve first half")
-	}
-	if !strings.HasSuffix(result, strings.Repeat("x", 50)) {
-		t.Errorf("truncated result should preserve last half")
-	}
+	t.Run("over limit", func(t *testing.T) {
+		long := strings.Repeat("x", 1000)
+		result := TruncateToolResult(long, 100)
+		if len(result) >= len(long) {
+			t.Errorf("truncated result should be shorter than original")
+		}
+		if !strings.Contains(result, "900 chars truncated") {
+			t.Errorf("truncated result should report 900 chars truncated, got: %s", result)
+		}
+		if !strings.Contains(result, "1 lines") {
+			t.Errorf("single-line truncated middle should report 1 line, got: %s", result)
+		}
+		// First 50 and last 50 chars should be preserved
+		if !strings.HasPrefix(result, strings.Repeat("x", 50)) {
+			t.Errorf("truncated result should preserve first half")
+		}
+		if !strings.HasSuffix(result, strings.Repeat("x", 50)) {
+			t.Errorf("truncated result should preserve last half")
+		}
+	})
+
+	t.Run("odd limit", func(t *testing.T) {
+		// With odd limit 101: head=50, tail=51
+		content := strings.Repeat("a", 50) + strings.Repeat("b", 51) + strings.Repeat("c", 99)
+		result := TruncateToolResult(content, 101)
+		runes := []rune(result)
+		// Head should be 50 'a's, tail should be 51 'c's (last 51 of the 99)
+		headPart := string(runes[:50])
+		if headPart != strings.Repeat("a", 50) {
+			t.Errorf("head should be 50 'a's, got %q", headPart)
+		}
+		tailPart := string(runes[len(runes)-51:])
+		if tailPart != strings.Repeat("c", 51) {
+			t.Errorf("tail should be 51 'c's, got %q", tailPart)
+		}
+	})
+
+	t.Run("line count accuracy", func(t *testing.T) {
+		// Create content with known line structure in the middle
+		head := strings.Repeat("H", 50)
+		middle := "line1\nline2\nline3\n" + strings.Repeat("x", 100)
+		tail := strings.Repeat("T", 50)
+		content := head + middle + tail
+		result := TruncateToolResult(content, 100)
+		// Middle has 3 newlines → 4 lines
+		if !strings.Contains(result, "4 lines") {
+			t.Errorf("expected 4 lines in truncation marker, got: %s", result)
+		}
+	})
+
+	t.Run("multibyte UTF-8", func(t *testing.T) {
+		// Each emoji is a multi-byte rune; ensure we don't split them
+		content := strings.Repeat("\U0001f600", 200) // 200 smiley faces (4 bytes each)
+		result := TruncateToolResult(content, 100)
+		// Should contain truncation marker
+		if !strings.Contains(result, "chars truncated") {
+			t.Errorf("should truncate multi-byte content")
+		}
+		// Head and tail should be valid UTF-8 with intact runes
+		runes := []rune(result)
+		// First 50 runes should be smiley faces
+		for i := 0; i < 50; i++ {
+			if runes[i] != '\U0001f600' {
+				t.Errorf("rune %d in head should be smiley, got %U", i, runes[i])
+				break
+			}
+		}
+		// Last 50 runes should be smiley faces
+		for i := len(runes) - 50; i < len(runes); i++ {
+			if runes[i] != '\U0001f600' {
+				t.Errorf("rune %d in tail should be smiley, got %U", i, runes[i])
+				break
+			}
+		}
+	})
+
+	t.Run("shell exit_code preserved in tail", func(t *testing.T) {
+		// Simulate shell output: large body + exit_code on last line
+		body := strings.Repeat("output line\n", 2000)
+		content := body + "exit_code: 0"
+		result := TruncateToolResult(content, 1000)
+		if !strings.HasSuffix(result, "exit_code: 0") {
+			t.Errorf("exit_code should be preserved in tail, result ends with: %q",
+				result[len(result)-50:])
+		}
+	})
+
+	t.Run("empty string", func(t *testing.T) {
+		if got := TruncateToolResult("", 100); got != "" {
+			t.Errorf("empty string should return empty, got %q", got)
+		}
+	})
+
+	t.Run("exact boundary", func(t *testing.T) {
+		exact := strings.Repeat("a", 100)
+		if got := TruncateToolResult(exact, 100); got != exact {
+			t.Errorf("content exactly at limit should not be truncated")
+		}
+	})
 }
 
 func TestIsContextOverflowError(t *testing.T) {

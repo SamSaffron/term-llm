@@ -138,7 +138,7 @@ func runPlan(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
+	engine := newEngine(provider, cfg)
 	registry.RegisterWithEngine(engine)
 
 	// Set up debug logger if enabled
@@ -272,7 +272,7 @@ func runChatFromPlan(cfg *config.Config, planContent string, agentName string, m
 	}
 
 	// Use the full chat tool registry (includes search, read_url, etc.)
-	engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
+	engine := newEngine(provider, cfg)
 
 	// Resolve settings using agent configuration
 	cliFlags := CLIFlags{

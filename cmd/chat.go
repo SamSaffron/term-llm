@@ -218,7 +218,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
+	engine := newEngine(provider, cfg)
 
 	// Set up debug logger if enabled.
 	// We close the logger manually after MCP cleanup (not via defer) because

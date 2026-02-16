@@ -72,6 +72,9 @@ type Engine struct {
 	onCompaction CompactionCallback
 	callbackMu   sync.RWMutex
 
+	// Global tool output truncation
+	maxToolOutputChars int // 0 = disabled; truncate tool output to this many runes
+
 	// Context compaction
 	compactionConfig     *CompactionConfig // nil = compaction disabled
 	inputLimit           int               // 0 = unknown/disabled
@@ -265,6 +268,33 @@ func (e *Engine) SetCompactionCallback(cb CompactionCallback) {
 	e.callbackMu.Lock()
 	e.onCompaction = cb
 	e.callbackMu.Unlock()
+}
+
+// SetMaxToolOutputChars sets the global maximum characters for tool output.
+// Tool results exceeding this limit are truncated with head+tail preservation.
+// Pass 0 to disable global truncation.
+func (e *Engine) SetMaxToolOutputChars(n int) {
+	e.callbackMu.Lock()
+	e.maxToolOutputChars = n
+	e.callbackMu.Unlock()
+}
+
+// applyToolOutputTruncation applies global and compaction truncation limits
+// to tool output content. Global limit fires first (typically stricter),
+// then compaction limit as a secondary safety net.
+func (e *Engine) applyToolOutputTruncation(content string) string {
+	e.callbackMu.RLock()
+	maxChars := e.maxToolOutputChars
+	cc := e.compactionConfig
+	e.callbackMu.RUnlock()
+
+	if maxChars > 0 {
+		content = TruncateToolResult(content, maxChars)
+	}
+	if cc != nil && cc.MaxToolResultChars > 0 {
+		content = TruncateToolResult(content, cc.MaxToolResultChars)
+	}
+	return content
 }
 
 // getCompactionCallback returns the current compaction callback under read lock.
@@ -966,15 +996,9 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, event
 	output, err := tool.Execute(toolCtx, call.Arguments)
 	info := e.getToolPreview(call)
 
-	// Truncate large tool outputs when compaction is enabled.
-	// Reads compactionConfig under lock since this runs on the engine goroutine.
+	// Truncate large tool outputs (global limit, then compaction limit).
 	if err == nil {
-		e.callbackMu.RLock()
-		cc := e.compactionConfig
-		e.callbackMu.RUnlock()
-		if cc != nil && cc.MaxToolResultChars > 0 {
-			output.Content = truncateToolResult(output.Content, cc.MaxToolResultChars)
-		}
+		output.Content = e.applyToolOutputTruncation(output.Content)
 	}
 
 	if err != nil {
@@ -1043,6 +1067,11 @@ func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, event
 	} else {
 		toolCtx := ContextWithCallID(ctx, callID)
 		result, err = tool.Execute(toolCtx, call.Arguments)
+	}
+
+	// Truncate large tool outputs (global limit, then compaction limit).
+	if err == nil {
+		result.Content = e.applyToolOutputTruncation(result.Content)
 	}
 
 	// Debug logging

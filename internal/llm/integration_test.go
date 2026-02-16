@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -271,6 +272,118 @@ func TestEngineHarness_ContextCancellation(t *testing.T) {
 
 	if err == nil {
 		t.Error("expected context cancellation error")
+	}
+}
+
+func TestEngineHarness_MaxToolOutputChars(t *testing.T) {
+	h := testutil.NewEngineHarness()
+
+	// Return a large tool output (5000 chars)
+	largeOutput := strings.Repeat("x", 5000)
+	h.AddMockTool("read_file", largeOutput)
+
+	// Set global truncation to 200 chars
+	h.Engine.SetMaxToolOutputChars(200)
+
+	// Turn 1: LLM requests tool call
+	h.Provider.AddTurn(llm.MockTurn{
+		ToolCalls: []llm.ToolCall{{
+			ID:        "call_1",
+			Name:      "read_file",
+			Arguments: json.RawMessage(`{"path": "big.txt"}`),
+		}},
+	})
+
+	// Turn 2: LLM responds after seeing truncated result
+	h.Provider.AddTextResponse("File is large.")
+
+	_, err := h.Run(context.Background(), llm.Request{
+		Messages: []llm.Message{llm.UserText("Read big.txt")},
+		Tools:    h.Registry.AllSpecs(),
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	// Inspect the messages sent to the provider on turn 2
+	if len(h.Provider.Requests) < 2 {
+		t.Fatalf("expected at least 2 requests, got %d", len(h.Provider.Requests))
+	}
+
+	turn2Msgs := h.Provider.Requests[1].Messages
+	// Find the tool result message
+	var toolResultContent string
+	for _, msg := range turn2Msgs {
+		for _, part := range msg.Parts {
+			if part.ToolResult != nil {
+				toolResultContent = part.ToolResult.Content
+			}
+		}
+	}
+	if toolResultContent == "" {
+		t.Fatal("no tool result found in turn 2 messages")
+	}
+
+	// Verify truncation occurred
+	if len([]rune(toolResultContent)) >= 5000 {
+		t.Errorf("tool result should be truncated, got %d runes", len([]rune(toolResultContent)))
+	}
+	if !strings.Contains(toolResultContent, "chars truncated") {
+		t.Error("tool result should contain truncation marker")
+	}
+	if !strings.Contains(toolResultContent, "lines") {
+		t.Error("tool result should contain line count in truncation marker")
+	}
+	// Head and tail preserved
+	if !strings.HasPrefix(toolResultContent, strings.Repeat("x", 100)) {
+		t.Error("tool result should preserve head content")
+	}
+	if !strings.HasSuffix(toolResultContent, strings.Repeat("x", 100)) {
+		t.Error("tool result should preserve tail content")
+	}
+}
+
+func TestEngineHarness_MaxToolOutputCharsDisabled(t *testing.T) {
+	h := testutil.NewEngineHarness()
+
+	// Return a large tool output
+	largeOutput := strings.Repeat("y", 5000)
+	h.AddMockTool("read_file", largeOutput)
+
+	// Leave maxToolOutputChars at 0 (disabled)
+
+	// Turn 1: LLM requests tool call
+	h.Provider.AddTurn(llm.MockTurn{
+		ToolCalls: []llm.ToolCall{{
+			ID:        "call_1",
+			Name:      "read_file",
+			Arguments: json.RawMessage(`{"path": "big.txt"}`),
+		}},
+	})
+
+	// Turn 2: LLM responds
+	h.Provider.AddTextResponse("OK")
+
+	_, err := h.Run(context.Background(), llm.Request{
+		Messages: []llm.Message{llm.UserText("Read big.txt")},
+		Tools:    h.Registry.AllSpecs(),
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	// Tool result should NOT be truncated
+	turn2Msgs := h.Provider.Requests[1].Messages
+	var toolResultContent string
+	for _, msg := range turn2Msgs {
+		for _, part := range msg.Parts {
+			if part.ToolResult != nil {
+				toolResultContent = part.ToolResult.Content
+			}
+		}
+	}
+	if toolResultContent != largeOutput {
+		t.Errorf("tool result should not be truncated when disabled, got %d chars", len(toolResultContent))
 	}
 }
 

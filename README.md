@@ -1184,6 +1184,9 @@ search:
   # google:
   #   api_key: ${GOOGLE_SEARCH_API_KEY}
   #   cx: ${GOOGLE_SEARCH_CX}
+
+tools:
+  max_tool_output_chars: 20000  # truncate tool outputs before sending to LLM (default 20000, 0 to disable)
 ```
 
 ### Per-Command Provider/Model

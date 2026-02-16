@@ -159,14 +159,15 @@ type AgentsMdConfig struct {
 
 // ToolsConfig configures the local tool system
 type ToolsConfig struct {
-	Enabled         []string `mapstructure:"enabled"`            // Enabled tool names (CLI names)
-	ReadDirs        []string `mapstructure:"read_dirs"`          // Directories for read operations
-	WriteDirs       []string `mapstructure:"write_dirs"`         // Directories for write operations
-	ShellAllow      []string `mapstructure:"shell_allow"`        // Shell command patterns
-	ShellAutoRun    bool     `mapstructure:"shell_auto_run"`     // Auto-approve matching shell
-	ShellAutoRunEnv string   `mapstructure:"shell_auto_run_env"` // Env var required for auto-run
-	ShellNonTTYEnv  string   `mapstructure:"shell_non_tty_env"`  // Env var for non-TTY execution
-	ImageProvider   string   `mapstructure:"image_provider"`     // Override for image provider
+	Enabled            []string `mapstructure:"enabled"`               // Enabled tool names (CLI names)
+	ReadDirs           []string `mapstructure:"read_dirs"`             // Directories for read operations
+	WriteDirs          []string `mapstructure:"write_dirs"`            // Directories for write operations
+	ShellAllow         []string `mapstructure:"shell_allow"`           // Shell command patterns
+	ShellAutoRun       bool     `mapstructure:"shell_auto_run"`        // Auto-approve matching shell
+	ShellAutoRunEnv    string   `mapstructure:"shell_auto_run_env"`    // Env var required for auto-run
+	ShellNonTTYEnv     string   `mapstructure:"shell_non_tty_env"`     // Env var for non-TTY execution
+	ImageProvider      string   `mapstructure:"image_provider"`        // Override for image provider
+	MaxToolOutputChars int      `mapstructure:"max_tool_output_chars"` // Global max chars per tool output (default 20000)
 }
 
 // DiagnosticsConfig configures diagnostic data collection
@@ -757,14 +758,15 @@ var KnownKeys = map[string]bool{
 	"theme.spinner":   true,
 
 	// Tools
-	"tools.enabled":            true,
-	"tools.read_dirs":          true,
-	"tools.write_dirs":         true,
-	"tools.shell_allow":        true,
-	"tools.shell_auto_run":     true,
-	"tools.shell_auto_run_env": true,
-	"tools.shell_non_tty_env":  true,
-	"tools.image_provider":     true,
+	"tools.enabled":               true,
+	"tools.read_dirs":             true,
+	"tools.write_dirs":            true,
+	"tools.shell_allow":           true,
+	"tools.shell_auto_run":        true,
+	"tools.shell_auto_run_env":    true,
+	"tools.shell_non_tty_env":     true,
+	"tools.image_provider":        true,
+	"tools.max_tool_output_chars": true,
 
 	// Agents
 	"agents.use_builtin":  true,
@@ -841,6 +843,7 @@ func GetDefaults() map[string]any {
 		"tools.shell_auto_run":           false,
 		"tools.shell_auto_run_env":       "TERM_LLM_ALLOW_AUTORUN",
 		"tools.shell_non_tty_env":        "TERM_LLM_ALLOW_NON_TTY",
+		"tools.max_tool_output_chars":    20000,
 		"sessions.enabled":               true,
 		"sessions.max_age_days":          0,
 		"sessions.max_count":             0,

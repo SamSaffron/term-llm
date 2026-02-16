@@ -191,7 +191,7 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 	}
 
 	// Create engine with default tool registry
-	engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
+	engine := newEngine(provider, cfg)
 
 	// Set up tools from agent config (pass child session ID for nested agents)
 	toolMgr, err := r.setupAgentTools(cfg, engine, agent, depth, childSessionID)

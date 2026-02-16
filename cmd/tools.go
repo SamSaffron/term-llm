@@ -21,6 +21,15 @@ func defaultToolRegistry(cfg *config.Config) *llm.ToolRegistry {
 	return registry
 }
 
+// newEngine creates an Engine with the default tool registry and global config
+// applied (e.g., tool output truncation). All command entry points should use
+// this instead of calling llm.NewEngine directly.
+func newEngine(provider llm.Provider, cfg *config.Config) *llm.Engine {
+	engine := llm.NewEngine(provider, defaultToolRegistry(cfg))
+	engine.SetMaxToolOutputChars(cfg.Tools.MaxToolOutputChars)
+	return engine
+}
+
 // buildToolConfig creates a ToolConfig from CLI flags and config defaults.
 func buildToolConfig(toolsFlag string, readDirs, writeDirs, shellAllow []string, cfg *config.Config) tools.ToolConfig {
 	// Start with config defaults

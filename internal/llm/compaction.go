@@ -220,18 +220,22 @@ func reconstructHistory(systemPrompt, summary string, recentUserMsgs []Message) 
 	return messages
 }
 
-// truncateToolResult preserves the first half and last half of long tool
+// TruncateToolResult preserves the first half and last half of long tool
 // results, inserting a truncation marker in the middle.
 // Uses rune count to avoid splitting multi-byte UTF-8 characters.
-func truncateToolResult(content string, maxChars int) string {
+func TruncateToolResult(content string, maxChars int) string {
 	runes := []rune(content)
 	if len(runes) <= maxChars {
 		return content
 	}
 
-	half := maxChars / 2
+	head := maxChars / 2
+	tail := maxChars - head
 	truncated := len(runes) - maxChars
-	return string(runes[:half]) + fmt.Sprintf("\n[...%d chars truncated...]\n", truncated) + string(runes[len(runes)-half:])
+	// Count lines in the truncated middle section to give the LLM more context
+	middle := string(runes[head : len(runes)-tail])
+	lines := 1 + strings.Count(middle, "\n")
+	return string(runes[:head]) + fmt.Sprintf("\n[...%d chars truncated - %d lines...]\n", truncated, lines) + string(runes[len(runes)-tail:])
 }
 
 // isContextOverflowError checks whether an error indicates that the context
