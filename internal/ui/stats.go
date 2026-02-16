@@ -14,6 +14,12 @@ type SessionStats struct {
 	ToolCallCount     int
 	LLMCallCount      int // Number of LLM API calls made
 
+	// Per-call tracking (current process only, not seeded from persisted data)
+	lastInputTokens  int  // Input tokens from most recent LLM call
+	lastOutputTokens int  // Output tokens from most recent LLM call
+	peakInputTokens  int  // Highest input tokens seen in any single LLM call
+	hasPerCallUsage  bool // True after first AddUsage in this process
+
 	// Time tracking
 	LLMTime       time.Duration
 	ToolTime      time.Duration
@@ -38,6 +44,11 @@ func (s *SessionStats) SeedTotals(input, output, cached, toolCalls, llmCalls int
 	s.CachedInputTokens = cached
 	s.ToolCallCount = toolCalls
 	s.LLMCallCount = llmCalls
+	// Reset per-call fields so stale data from prior usage doesn't leak through
+	s.lastInputTokens = 0
+	s.lastOutputTokens = 0
+	s.peakInputTokens = 0
+	s.hasPerCallUsage = false
 }
 
 // AddUsage adds token usage to the stats and increments the LLM call count.
@@ -46,6 +57,12 @@ func (s *SessionStats) AddUsage(input, output, cached int) {
 	s.OutputTokens += output
 	s.CachedInputTokens += cached
 	s.LLMCallCount++
+	s.lastInputTokens = input
+	s.lastOutputTokens = output
+	s.hasPerCallUsage = true
+	if input > s.peakInputTokens {
+		s.peakInputTokens = input
+	}
 }
 
 // ToolStart marks the start of a tool execution.
@@ -97,6 +114,18 @@ func (s SessionStats) Render() string {
 		tokensStr = fmt.Sprintf("%s in / %s out",
 			FormatTokenCount(s.InputTokens),
 			FormatTokenCount(s.OutputTokens))
+	}
+
+	// Append last/peak context info when there's been at least one AddUsage this process
+	if s.hasPerCallUsage {
+		lastStr := fmt.Sprintf("last: %s→%s",
+			FormatTokenCount(s.lastInputTokens),
+			FormatTokenCount(s.lastOutputTokens))
+		if s.peakInputTokens > s.lastInputTokens {
+			tokensStr += fmt.Sprintf(" (%s, peak: %s)", lastStr, FormatTokenCount(s.peakInputTokens))
+		} else {
+			tokensStr += fmt.Sprintf(" (%s)", lastStr)
+		}
 	}
 
 	// Format time breakdown
