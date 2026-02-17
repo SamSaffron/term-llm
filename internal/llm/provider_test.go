@@ -10,7 +10,7 @@ func TestParseProviderModel(t *testing.T) {
 	// Create a config with some custom providers
 	cfg := &config.Config{
 		Providers: map[string]config.ProviderConfig{
-			"anthropic":  {Model: "claude-sonnet-4-5"},
+			"anthropic":  {Model: "claude-sonnet-4-6"},
 			"openai":     {Model: "gpt-5.2"},
 			"gemini":     {Model: "gemini-3-flash-preview"},
 			"openrouter": {Model: "x-ai/grok-code-fast-1"},

@@ -7,7 +7,7 @@ func TestApplyOverrides(t *testing.T) {
 		DefaultProvider: "anthropic",
 		Providers: map[string]ProviderConfig{
 			"anthropic": {
-				Model: "claude-sonnet-4-5",
+				Model: "claude-sonnet-4-6",
 			},
 			"openai": {
 				Model: "gpt-5.2",
@@ -25,7 +25,7 @@ func TestApplyOverrides(t *testing.T) {
 	if cfg.Providers["openai"].Model != "gpt-4o" {
 		t.Fatalf("openai model=%q, want %q", cfg.Providers["openai"].Model, "gpt-4o")
 	}
-	if cfg.Providers["anthropic"].Model != "claude-sonnet-4-5" {
+	if cfg.Providers["anthropic"].Model != "claude-sonnet-4-6" {
 		t.Fatalf("anthropic model changed unexpectedly: %q", cfg.Providers["anthropic"].Model)
 	}
 

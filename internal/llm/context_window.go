@@ -84,10 +84,13 @@ func lookupPrefix(model string, table []inputLimitEntry) int {
 // Entries are matched by longest prefix. Unknown models return 0 (compaction disabled).
 var inputLimitTable = []inputLimitEntry{
 	// Anthropic Claude (from models.dev anthropic section: context - output)
-	// Claude 4.5/4.6: 200K ctx - 64K out = 136K input
+	// Claude 4.6: 200K ctx - 64K out = 136K input
+	{"claude-sonnet-4-6", 136_000},
+	// technically supports 128 out but in practice will not happen
+	{"claude-opus-4-6", 136_000},
+	// Claude 4.5: 200K ctx - 64K out = 136K input
 	{"claude-sonnet-4-5", 136_000},
 	{"claude-opus-4-5", 136_000},
-	{"claude-opus-4-6", 72_000},
 	{"claude-haiku-4-5", 136_000},
 	// Claude 4.0: 200K ctx - 64K out = 136K input
 	{"claude-sonnet-4", 136_000},

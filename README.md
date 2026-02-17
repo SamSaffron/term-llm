@@ -88,7 +88,7 @@ default_provider: zen
 Set your API key as an environment variable:
 
 ```bash
-# For Anthropic
+# For Anthropic (API key, or use OAuth — see below)
 export ANTHROPIC_API_KEY=your-key
 
 # For OpenAI
@@ -104,7 +104,23 @@ export OPENROUTER_API_KEY=your-key
 export GEMINI_API_KEY=your-key
 ```
 
-### Option 3: Use ChatGPT (Plus/Pro subscription)
+### Option 3: Use Anthropic with OAuth (Claude Pro/Max subscription)
+
+If you have a Claude Pro or Max subscription and the [Claude Code CLI](https://claude.ai/code) installed, you can use OAuth instead of an API key:
+
+```bash
+term-llm ask --provider anthropic "explain this code"
+```
+
+On first interactive use, you'll be prompted to run `claude setup-token` and paste the resulting token. The token is saved to `~/.config/term-llm/anthropic_oauth.json` and reused automatically.
+
+You can also set the token via environment variable (useful for CI after generating a token interactively):
+
+```bash
+export CLAUDE_CODE_OAUTH_TOKEN=your-oauth-token
+```
+
+### Option 4: Use ChatGPT (Plus/Pro subscription)
 
 If you have a ChatGPT Plus or Pro subscription, you can use the `chatgpt` provider with native OAuth authentication:
 
@@ -124,7 +140,7 @@ providers:
     model: gpt-5.2-codex
 ```
 
-### Option 4: Use xAI (Grok)
+### Option 5: Use xAI (Grok)
 
 [xAI](https://x.ai) provides access to Grok models with native web search and X (Twitter) search capabilities.
 
@@ -157,7 +173,7 @@ term-llm ask --provider xai:grok-4-1-fast-reasoning "solve this step by step"
 term-llm ask --provider xai:grok-code-fast-1 "review this code"
 ```
 
-### Option 5: Use OpenRouter
+### Option 6: Use OpenRouter
 
 [OpenRouter](https://openrouter.ai) provides a unified OpenAI-compatible API across many models. term-llm sends attribution headers by default.
 
@@ -196,7 +212,7 @@ term-llm providers anthropic       # Show details for specific provider
 term-llm providers --json          # JSON output
 ```
 
-### Option 6: Use local LLMs (Ollama, LM Studio)
+### Option 7: Use local LLMs (Ollama, LM Studio)
 
 Run models locally with [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai):
 
@@ -238,7 +254,7 @@ providers:
 
 The `models` list enables tab completion for `--provider my-server:<TAB>`. The configured `model` is always included in completions.
 
-### Option 7: Use Claude Code (claude-bin)
+### Option 8: Use Claude Code (claude-bin)
 
 If you have [Claude Code](https://claude.ai/code) installed and logged in, you can use the `claude-bin` provider to run completions via the [Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk). This requires no API key - it uses Claude Code's existing authentication.
 
@@ -267,7 +283,7 @@ providers:
 - Model selection: `opus`, `sonnet` (default), `haiku`
 - Works immediately if Claude Code is installed and logged in
 
-### Option 8: Use existing CLI credentials (gemini-cli)
+### Option 9: Use existing CLI credentials (gemini-cli)
 
 If you have [gemini-cli](https://github.com/google-gemini/gemini-cli) installed and logged in, term-llm can use those credentials directly:
 
@@ -289,7 +305,7 @@ OpenAI-compatible providers support two URL options:
 
 Use `url` when your endpoint doesn't follow the standard `/chat/completions` path, or to paste URLs directly from API documentation.
 
-### Option 9: Use GitHub Copilot
+### Option 10: Use GitHub Copilot
 
 If you have [GitHub Copilot](https://github.com/features/copilot) (free, Individual, or Business), you can use the `copilot` provider with OAuth device flow authentication:
 
@@ -849,7 +865,7 @@ name: Code Reviewer
 description: Reviews code for best practices and potential issues
 
 provider: anthropic
-model: claude-sonnet-4-5
+model: claude-sonnet-4-6
 
 system_message: |
   You are a code reviewer. Focus on:
@@ -1083,7 +1099,7 @@ default_provider: anthropic
 providers:
   # Built-in providers - type is inferred from the key name
   anthropic:
-    model: claude-sonnet-4-5
+    model: claude-sonnet-4-6
 
   openai:
     model: gpt-5.2
@@ -1198,7 +1214,7 @@ default_provider: anthropic  # global default
 
 providers:
   anthropic:
-    model: claude-sonnet-4-5
+    model: claude-sonnet-4-6
   openai:
     model: gpt-5.2
   zen:
@@ -1249,14 +1265,14 @@ providers:
 For Anthropic models, you can enable extended thinking by appending `-thinking` to the model name:
 
 ```bash
-term-llm ask --provider anthropic:claude-sonnet-4-5-thinking "complex question"
+term-llm ask --provider anthropic:claude-sonnet-4-6-thinking "complex question"
 ```
 
 Or in config:
 ```yaml
 providers:
   anthropic:
-    model: claude-sonnet-4-5-thinking  # enables 10k token thinking budget
+    model: claude-sonnet-4-6-thinking  # enables 10k token thinking budget
 ```
 
 Extended thinking allows Claude to reason through complex problems before responding. The thinking process uses ~10,000 tokens and is not shown in the output.
@@ -1287,7 +1303,7 @@ providers:
     use_native_search: false  # Always use external search for this provider
 
   anthropic:
-    model: claude-sonnet-4-5
+    model: claude-sonnet-4-6
     # use_native_search: true  # Default: use native if available
 ```
 
@@ -1332,7 +1348,7 @@ Most providers use API keys via environment variables. Some providers use OAuth 
 
 | Provider | Credentials Source | Description |
 |----------|-------------------|-------------|
-| `anthropic` | `ANTHROPIC_API_KEY` | Anthropic API key |
+| `anthropic` | `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, or OAuth | Anthropic API key or OAuth token |
 | `openai` | `OPENAI_API_KEY` | OpenAI API key |
 | `chatgpt` | `~/.config/term-llm/chatgpt_creds.json` | ChatGPT Plus/Pro OAuth |
 | `copilot` | `~/.config/term-llm/copilot_creds.json` | GitHub Copilot OAuth |
@@ -1342,9 +1358,10 @@ Most providers use API keys via environment variables. Some providers use OAuth 
 | `openrouter` | `OPENROUTER_API_KEY` | OpenRouter API key |
 | `zen` | `ZEN_API_KEY` (optional) | Empty for free tier |
 
-**ChatGPT**, **Copilot**, and **Gemini CLI** work without any API key if you have a subscription or the CLI installed and logged in:
+**Anthropic**, **ChatGPT**, **Copilot**, and **Gemini CLI** work without any API key if you have a subscription or the CLI installed and logged in:
 
 ```bash
+term-llm ask --provider anthropic "question"  # uses OAuth token (runs `claude setup-token` on first use)
 term-llm ask --provider chatgpt "question"    # uses ChatGPT Plus/Pro subscription
 term-llm ask --provider copilot "question"    # uses GitHub Copilot OAuth
 term-llm ask --provider gemini-cli "question" # uses ~/.gemini/oauth_creds.json

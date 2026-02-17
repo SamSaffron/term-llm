@@ -5,7 +5,100 @@ import (
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/samsaffron/term-llm/internal/credentials"
 )
+
+func TestNewAnthropicProviderWithExplicitAPIKey(t *testing.T) {
+	// Clear env to isolate test
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+
+	provider, err := NewAnthropicProvider("sk-test-key-123", "claude-sonnet-4-5")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if provider.Credential() != "api_key" {
+		t.Fatalf("credential=%q, want %q", provider.Credential(), "api_key")
+	}
+}
+
+func TestNewAnthropicProviderWithEnvAPIKey(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-env-key-456")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+
+	provider, err := NewAnthropicProvider("", "claude-sonnet-4-5")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if provider.Credential() != "env" {
+		t.Fatalf("credential=%q, want %q", provider.Credential(), "env")
+	}
+}
+
+func TestNewAnthropicProviderWithOAuthEnv(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test-token")
+
+	provider, err := NewAnthropicProvider("", "claude-sonnet-4-5")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if provider.Credential() != "oauth_env" {
+		t.Fatalf("credential=%q, want %q", provider.Credential(), "oauth_env")
+	}
+}
+
+func TestNewAnthropicProviderWithSavedOAuth(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+
+	// Save OAuth credentials to temp dir
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+
+	creds := &credentials.AnthropicOAuthCredentials{
+		AccessToken: "sk-ant-oat01-saved-token",
+	}
+	if err := credentials.SaveAnthropicOAuthCredentials(creds); err != nil {
+		t.Fatalf("failed to save test credentials: %v", err)
+	}
+
+	provider, err := NewAnthropicProvider("", "claude-sonnet-4-5")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if provider.Credential() != "oauth" {
+		t.Fatalf("credential=%q, want %q", provider.Credential(), "oauth")
+	}
+}
+
+func TestNewAnthropicProviderAPIKeyOverridesOAuthEnv(t *testing.T) {
+	// API key should take priority over OAuth env
+	t.Setenv("ANTHROPIC_API_KEY", "sk-api-key")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-oauth-token")
+
+	provider, err := NewAnthropicProvider("", "claude-sonnet-4-5")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// ANTHROPIC_API_KEY takes priority
+	if provider.Credential() != "env" {
+		t.Fatalf("credential=%q, want %q (API key should override OAuth)", provider.Credential(), "env")
+	}
+}
+
+func TestNewAnthropicProviderExplicitKeyOverridesAll(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-env-key")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-oauth-token")
+
+	provider, err := NewAnthropicProvider("sk-explicit-key", "claude-sonnet-4-5")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if provider.Credential() != "api_key" {
+		t.Fatalf("credential=%q, want %q (explicit key should override all)", provider.Credential(), "api_key")
+	}
+}
 
 func TestToolCallAccumulatorInputJSONDelta(t *testing.T) {
 	acc := newToolCallAccumulator()

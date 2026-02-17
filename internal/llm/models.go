@@ -10,11 +10,11 @@ import (
 // ProviderModels contains the curated list of common models per LLM provider type
 var ProviderModels = map[string][]string{
 	"anthropic": {
-		// Claude 4.5 (current)
-		"claude-sonnet-4-5",
-		"claude-sonnet-4-5-thinking",
-		"claude-opus-4-5",
-		"claude-opus-4-5-thinking",
+		// Claude 4.6 (current)
+		"claude-sonnet-4-6",
+		"claude-sonnet-4-6-thinking",
+		"claude-opus-4-6",
+		"claude-opus-4-6-thinking",
 		"claude-haiku-4-5",
 		"claude-haiku-4-5-thinking",
 	},

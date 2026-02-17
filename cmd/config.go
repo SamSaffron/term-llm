@@ -76,7 +76,7 @@ var configSetCmd = &cobra.Command{
 Examples:
   term-llm config set default_provider openai
   term-llm config set default_provider gemini
-  term-llm config set providers.anthropic.model claude-opus-4-5
+  term-llm config set providers.anthropic.model claude-opus-4-6
   term-llm config set exec.suggestions 5
   term-llm config set image.provider flux`,
 	Args:              cobra.ExactArgs(2),
@@ -742,7 +742,7 @@ default_provider: anthropic
 providers:
   # Built-in providers - type is inferred from the key name
   anthropic:
-    model: claude-sonnet-4-5
+    model: claude-sonnet-4-6
     # credentials: api_key (default)
 
   openai:

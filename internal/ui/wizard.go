@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/huh"
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/credentials"
 )
 
 // providerOption represents a provider choice in the setup wizard
@@ -22,10 +23,10 @@ type providerOption struct {
 func detectAvailableProviders() []providerOption {
 	options := []providerOption{
 		{
-			name:      "Anthropic - ANTHROPIC_API_KEY",
+			name:      "Anthropic - API key or OAuth token",
 			value:     "anthropic",
-			available: os.Getenv("ANTHROPIC_API_KEY") != "",
-			hint:      "set ANTHROPIC_API_KEY",
+			available: isAnthropicAvailable(),
+			hint:      "set ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, or run 'claude setup-token'",
 		},
 		{
 			name:      "Claude Code CLI - local credentials",
@@ -66,6 +67,14 @@ func detectAvailableProviders() []providerOption {
 	}
 
 	return options
+}
+
+// isAnthropicAvailable checks if any Anthropic credential source is available
+func isAnthropicAvailable() bool {
+	return os.Getenv("ANTHROPIC_API_KEY") != "" ||
+		os.Getenv("CLAUDE_CODE_OAUTH_TOKEN") != "" ||
+		credentials.AnthropicOAuthCredentialsExist() ||
+		isClaudeBinaryAvailable()
 }
 
 // isClaudeBinaryAvailable checks if the claude CLI is in PATH
@@ -262,7 +271,7 @@ func RunSetupWizard() (*config.Config, error) {
 		DefaultProvider: provider,
 		Providers: map[string]config.ProviderConfig{
 			"anthropic": {
-				Model: "claude-sonnet-4-5",
+				Model: "claude-sonnet-4-6",
 			},
 			"openai": {
 				Model: "gpt-5.2",

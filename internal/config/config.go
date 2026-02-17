@@ -818,7 +818,7 @@ func GetDefaults() map[string]any {
 		"edit.instructions":              "",
 		"edit.context_lines":             3,
 		"edit.diff_format":               "auto",
-		"providers.anthropic.model":      "claude-sonnet-4-5",
+		"providers.anthropic.model":      "claude-sonnet-4-6",
 		"providers.openai.model":         "gpt-5.2",
 		"providers.xai.model":            "grok-4-1-fast",
 		"providers.openrouter.model":     "x-ai/grok-code-fast-1",

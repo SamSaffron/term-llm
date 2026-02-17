@@ -72,6 +72,13 @@ func NewProviderByName(cfg *config.Config, name string, model string) (Provider,
 		// Check if it's a built-in provider type that can work without config
 		providerType := config.InferProviderType(name, "")
 		switch providerType {
+		case config.ProviderTypeAnthropic:
+			// anthropic uses API key, env var, or OAuth token with interactive setup
+			provider, err := NewAnthropicProvider("", model)
+			if err != nil {
+				return nil, fmt.Errorf("provider anthropic: %w", err)
+			}
+			return WrapWithRetry(provider, DefaultRetryConfig()), nil
 		case config.ProviderTypeClaudeBin:
 			// claude-bin doesn't need API key, can create directly
 			provider := NewClaudeBinProvider(model)
@@ -147,6 +154,9 @@ func newProviderInternal(cfg *config.Config) (Provider, error) {
 		// Check if it's a built-in provider type that can work without config
 		providerType := config.InferProviderType(cfg.DefaultProvider, "")
 		switch providerType {
+		case config.ProviderTypeAnthropic:
+			// anthropic uses API key, env var, or OAuth token with interactive setup
+			return NewAnthropicProvider("", "")
 		case config.ProviderTypeClaudeBin:
 			// claude-bin doesn't need API key, can create directly
 			return NewClaudeBinProvider(""), nil
@@ -198,7 +208,7 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 
 	switch providerType {
 	case config.ProviderTypeAnthropic:
-		return NewAnthropicProvider(cfg.ResolvedAPIKey, cfg.Model), nil
+		return NewAnthropicProvider(cfg.ResolvedAPIKey, cfg.Model)
 
 	case config.ProviderTypeOpenAI:
 		return NewOpenAIProvider(cfg.ResolvedAPIKey, cfg.Model), nil

@@ -322,6 +322,8 @@ func TestInputLimitForModel(t *testing.T) {
 		expected int
 	}{
 		// Values are effective input limits (not total context)
+		{"claude-sonnet-4-6", 136_000},          // 200K - 64K
+		{"claude-opus-4-6", 136_000},            // 200K - 64K
 		{"claude-sonnet-4-5-20250929", 136_000}, // 200K - 64K
 		{"claude-sonnet-4-20250514", 136_000},   // 200K - 64K
 		{"claude-opus-4-20250514", 168_000},     // 200K - 32K

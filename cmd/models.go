@@ -106,10 +106,11 @@ func runModels(cmd *cobra.Command, args []string) error {
 	var lister ModelLister
 	switch providerType {
 	case config.ProviderTypeAnthropic:
-		if providerCfg.ResolvedAPIKey == "" {
-			return fmt.Errorf("anthropic API key not configured. Set ANTHROPIC_API_KEY or configure credentials")
+		provider, err := llm.NewAnthropicProvider(providerCfg.ResolvedAPIKey, providerCfg.Model)
+		if err != nil {
+			return fmt.Errorf("anthropic: %w", err)
 		}
-		lister = llm.NewAnthropicProvider(providerCfg.ResolvedAPIKey, providerCfg.Model)
+		lister = provider
 	case config.ProviderTypeOpenAI:
 		if providerCfg.ResolvedAPIKey == "" {
 			return fmt.Errorf("openai API key not configured. Set OPENAI_API_KEY or configure api_key")

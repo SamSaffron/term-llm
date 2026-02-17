@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/shared/constant"
+	"github.com/samsaffron/term-llm/internal/credentials"
+	"golang.org/x/term"
 )
 
 // ListModels returns available models from Anthropic.
@@ -37,12 +40,12 @@ type AnthropicProvider struct {
 	client         *anthropic.Client
 	model          string
 	thinkingBudget int64  // 0 = disabled, >0 = enabled with budget
-	credential     string // "claude-code" or "api_key"
+	credential     string // "api_key", "env", "oauth_env", or "oauth"
 }
 
 // parseModelThinking extracts -thinking suffix from model name.
-// "claude-sonnet-4-5-thinking" -> ("claude-sonnet-4-5", 10000)
-// "claude-sonnet-4-5" -> ("claude-sonnet-4-5", 0)
+// "claude-sonnet-4-6-thinking" -> ("claude-sonnet-4-6", 10000)
+// "claude-sonnet-4-6" -> ("claude-sonnet-4-6", 0)
 func parseModelThinking(model string) (string, int64) {
 	if strings.HasSuffix(model, "-thinking") {
 		return strings.TrimSuffix(model, "-thinking"), 10000
@@ -50,23 +53,147 @@ func parseModelThinking(model string) (string, int64) {
 	return model, 0
 }
 
-func NewAnthropicProvider(apiKey, model string) *AnthropicProvider {
+// oauthBetaHeader is the beta header required to enable OAuth authentication.
+const oauthBetaHeader = "oauth-2025-04-20"
+
+// newOAuthClient creates an Anthropic client configured for OAuth Bearer token auth.
+// OAuth requires the anthropic-beta: oauth-2025-04-20 header on every request.
+func newOAuthClient(token string) anthropic.Client {
+	return anthropic.NewClient(
+		option.WithAuthToken(token),
+		option.WithHeader("anthropic-beta", oauthBetaHeader),
+	)
+}
+
+// NewAnthropicProvider creates a new Anthropic provider.
+// Credential resolution order:
+//  1. Explicit API key (from config api_key field)
+//  2. ANTHROPIC_API_KEY environment variable
+//  3. CLAUDE_CODE_OAUTH_TOKEN environment variable
+//  4. Saved OAuth token (~/.config/term-llm/anthropic_oauth.json)
+//  5. Interactive: run `claude setup-token` to generate a new token
+func NewAnthropicProvider(apiKey, model string) (*AnthropicProvider, error) {
 	actualModel, thinkingBudget := parseModelThinking(model)
-	var client anthropic.Client
-	var credential string
+
+	// 1. Explicit API key provided (from config)
 	if apiKey != "" {
-		client = anthropic.NewClient(option.WithAPIKey(apiKey))
-		credential = "api_key"
-	} else {
-		client = anthropic.NewClient()
-		credential = "env"
+		client := anthropic.NewClient(option.WithAPIKey(apiKey))
+		return &AnthropicProvider{
+			client:         &client,
+			model:          actualModel,
+			thinkingBudget: thinkingBudget,
+			credential:     "api_key",
+		}, nil
 	}
+
+	// 2. ANTHROPIC_API_KEY environment variable
+	if envKey := os.Getenv("ANTHROPIC_API_KEY"); envKey != "" {
+		client := anthropic.NewClient(option.WithAPIKey(envKey))
+		return &AnthropicProvider{
+			client:         &client,
+			model:          actualModel,
+			thinkingBudget: thinkingBudget,
+			credential:     "env",
+		}, nil
+	}
+
+	// 3. CLAUDE_CODE_OAUTH_TOKEN environment variable
+	if envToken := os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"); envToken != "" {
+		client := newOAuthClient(envToken)
+		return &AnthropicProvider{
+			client:         &client,
+			model:          actualModel,
+			thinkingBudget: thinkingBudget,
+			credential:     "oauth_env",
+		}, nil
+	}
+
+	// 4. Saved OAuth token from local storage
+	if creds, err := credentials.GetAnthropicOAuthCredentials(); err == nil {
+		client := newOAuthClient(creds.AccessToken)
+		return &AnthropicProvider{
+			client:         &client,
+			model:          actualModel,
+			thinkingBudget: thinkingBudget,
+			credential:     "oauth",
+		}, nil
+	}
+
+	// 5. Interactive: prompt user to run `claude setup-token` and paste the token
+	token, err := promptForAnthropicOAuth()
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate the token works before saving
+	testClient := newOAuthClient(token)
+	if err := validateAnthropicToken(&testClient); err != nil {
+		return nil, fmt.Errorf("token validation failed: %w", err)
+	}
+
+	// Save the validated token for future use
+	if err := credentials.SaveAnthropicOAuthCredentials(&credentials.AnthropicOAuthCredentials{
+		AccessToken: token,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to save OAuth token: %v\n", err)
+	}
+
+	fmt.Fprintln(os.Stderr, "Token validated and saved successfully.")
+
 	return &AnthropicProvider{
-		client:         &client,
+		client:         &testClient,
 		model:          actualModel,
 		thinkingBudget: thinkingBudget,
-		credential:     credential,
+		credential:     "oauth",
+	}, nil
+}
+
+// validateAnthropicToken checks that a token works by making a lightweight API call.
+func validateAnthropicToken(client *anthropic.Client) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err := client.Models.List(ctx, anthropic.ModelListParams{})
+	if err != nil {
+		return fmt.Errorf("invalid or expired token (API returned error): %w", err)
 	}
+	return nil
+}
+
+// promptForAnthropicOAuth asks the user to run `claude setup-token` and paste the resulting token.
+// Returns an error if running in a non-interactive context (e.g., scripts, CI).
+func promptForAnthropicOAuth() (string, error) {
+	// Check if stdin is a terminal - if not, we can't do interactive auth
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return "", fmt.Errorf("Anthropic authentication required but running in non-interactive mode.\n" +
+			"Set ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, or run interactively to authenticate")
+	}
+
+	fmt.Fprintln(os.Stderr, "No Anthropic credentials found.")
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "To authenticate, run this in another terminal:")
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "  claude setup-token")
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "This requires the Claude Code CLI and a Claude subscription (Pro/Max).")
+	fmt.Fprintln(os.Stderr, "Copy the token it generates and paste it below.")
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprint(os.Stderr, "Paste token: ")
+
+	// Read token with echo disabled so it isn't visible in terminal or logs
+	tokenBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Fprintln(os.Stderr) // newline after hidden input
+	if err != nil {
+		return "", fmt.Errorf("failed to read token: %w", err)
+	}
+
+	// Strip all whitespace (spaces, tabs, newlines) that may sneak in during paste
+	token := strings.Join(strings.Fields(string(tokenBytes)), "")
+	if token == "" {
+		return "", fmt.Errorf("empty token provided")
+	}
+
+	return token, nil
 }
 
 func (p *AnthropicProvider) Name() string {
