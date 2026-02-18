@@ -423,6 +423,21 @@ func (t *ToolTracker) MarkCurrentTextComplete(renderFunc func(string) string) {
 	}
 }
 
+// AddPreRenderedTextSegment adds a text segment that is already fully rendered
+// (e.g., styled interjection prompts). The segment is marked Complete immediately
+// with the Rendered field set, so it bypasses markdown rendering entirely.
+func (t *ToolTracker) AddPreRenderedTextSegment(rendered string) {
+	t.RecordActivity()
+	seg := Segment{
+		Type:     SegmentText,
+		Text:     rendered,
+		Rendered: rendered,
+		Complete: true,
+	}
+	t.Segments = append(t.Segments, seg)
+	t.Version++
+}
+
 // AddExternalUIResult adds a result from external UI (like ask_user) as a completed segment.
 // The summary is plain text - styling is applied at render time to avoid ANSI corruption
 // when passing through different tea.Program instances.

@@ -306,7 +306,7 @@ func runChatFromPlan(cfg *config.Config, planContent string, agentName string, m
 	defer storeCleanup()
 
 	// Create chat model
-	model := chat.New(cfg, provider, engine, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, settings.Tools, "", false, "", store, nil, useAltScreen, autoSendQueue, false, agentName)
+	model := chat.New(cfg, provider, engine, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, settings.Tools, "", false, "", store, nil, useAltScreen, autoSendQueue, false, false, agentName)
 
 	// Build program options
 	var opts []tea.ProgramOption

@@ -529,3 +529,118 @@ func TestStreamingThenComplete(t *testing.T) {
 		t.Error("Segment should be complete")
 	}
 }
+
+func TestAddPreRenderedTextSegment(t *testing.T) {
+	tracker := NewToolTracker()
+
+	styledText := "\x1b[1;34m❯\x1b[0m hello world\n\n"
+	tracker.AddPreRenderedTextSegment(styledText)
+
+	if len(tracker.Segments) != 1 {
+		t.Fatalf("expected 1 segment, got %d", len(tracker.Segments))
+	}
+
+	seg := tracker.Segments[0]
+
+	// Should be a text segment
+	if seg.Type != SegmentText {
+		t.Errorf("expected SegmentText, got %d", seg.Type)
+	}
+
+	// Should be marked complete
+	if !seg.Complete {
+		t.Error("expected segment to be complete")
+	}
+
+	// Should have Rendered set to the styled text
+	if seg.Rendered != styledText {
+		t.Errorf("expected Rendered=%q, got %q", styledText, seg.Rendered)
+	}
+
+	// Should have Text set for fallback
+	if seg.Text != styledText {
+		t.Errorf("expected Text=%q, got %q", styledText, seg.Text)
+	}
+
+	// Version should be incremented
+	if tracker.Version == 0 {
+		t.Error("expected Version to be incremented")
+	}
+}
+
+func TestAddPreRenderedTextSegment_BypassesMarkdownRendering(t *testing.T) {
+	tracker := NewToolTracker()
+
+	styledText := "\x1b[1;34m❯\x1b[0m stop doing that\n\n"
+	tracker.AddPreRenderedTextSegment(styledText)
+
+	// Render through RenderSegments with a markdown function that should NOT be called
+	segments := make([]*Segment, len(tracker.Segments))
+	for i := range tracker.Segments {
+		segments[i] = &tracker.Segments[i]
+	}
+	rendered := RenderSegments(segments, 80, -1, func(s string, w int) string {
+		return "MARKDOWN_PROCESSED:" + s
+	}, false)
+
+	// Should NOT contain "MARKDOWN_PROCESSED" since pre-rendered segments
+	// already have Rendered set and bypass markdown rendering
+	if strings.Contains(rendered, "MARKDOWN_PROCESSED") {
+		t.Error("pre-rendered segment should not pass through markdown renderer")
+	}
+
+	// Should contain the original styled text
+	if !strings.Contains(rendered, "stop doing that") {
+		t.Error("expected rendered output to contain original text")
+	}
+}
+
+func TestAddPreRenderedTextSegment_SurvivesFlush(t *testing.T) {
+	tracker := NewToolTracker()
+
+	// Add some normal text first
+	tracker.AddTextSegment("Normal text before.", 80)
+	tracker.MarkCurrentTextComplete(func(text string) string {
+		return "rendered:" + text
+	})
+
+	// Add pre-rendered interjection
+	styledText := "\x1b[1;34m❯\x1b[0m my interjection\n\n"
+	tracker.AddPreRenderedTextSegment(styledText)
+
+	// Flush to scrollback
+	result := tracker.FlushToScrollback(80, 0, 0, func(s string, w int) string {
+		return "md:" + s
+	})
+
+	// Flushed content should contain the original styled text without re-rendering
+	if !strings.Contains(result.ToPrint, "my interjection") {
+		t.Errorf("expected flushed output to contain interjection text, got: %q", result.ToPrint)
+	}
+
+	// Should NOT contain "md:" prefix for the interjection (it has Rendered set)
+	// The pre-rendered segment should be used as-is
+	if strings.Contains(result.ToPrint, "md:\x1b[1;34m") {
+		t.Error("pre-rendered segment should not pass through markdown renderer during flush")
+	}
+}
+
+func TestAddPreRenderedTextSegment_RenderUnflushed(t *testing.T) {
+	tracker := NewToolTracker()
+
+	styledText := "\x1b[1;34m❯\x1b[0m queued message\n\n"
+	tracker.AddPreRenderedTextSegment(styledText)
+
+	// RenderUnflushed should return the styled text without re-rendering
+	content := tracker.RenderUnflushed(80, func(s string, w int) string {
+		return "SHOULD_NOT_APPEAR:" + s
+	}, false)
+
+	if strings.Contains(content, "SHOULD_NOT_APPEAR") {
+		t.Error("pre-rendered segment should not pass through markdown renderer in RenderUnflushed")
+	}
+
+	if !strings.Contains(content, "queued message") {
+		t.Error("expected RenderUnflushed to contain the pre-rendered text")
+	}
+}

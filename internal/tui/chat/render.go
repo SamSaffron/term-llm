@@ -336,6 +336,19 @@ func (m *Model) renderInputInline() string {
 	separator := lipgloss.NewStyle().Foreground(theme.Muted).Render(strings.Repeat("─", m.width))
 	b.WriteString(separator)
 
+	// Show pending interjection indicator (queued message during streaming)
+	if m.pendingInterjection != "" {
+		pendingStyle := lipgloss.NewStyle().Foreground(theme.Muted).Italic(true)
+		pendingText := m.pendingInterjection
+		// Truncate long messages to fit the terminal width
+		maxLen := m.width - 20 // account for prefix/suffix
+		if maxLen > 0 && len(pendingText) > maxLen {
+			pendingText = pendingText[:maxLen] + "…"
+		}
+		b.WriteString("\n")
+		b.WriteString(pendingStyle.Render("  ⏳ " + pendingText + " (queued)"))
+	}
+
 	// Show attached files if any
 	if len(m.files) > 0 {
 		b.WriteString("\n")

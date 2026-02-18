@@ -14,6 +14,7 @@ const (
 	StreamEventError
 	StreamEventImage         // Image produced by tool
 	StreamEventDiff          // Diff from edit tool
+	StreamEventInterjection  // User interjected a message mid-stream
 	StreamEventInlineInsert  // Inline INSERT marker from planner (complete)
 	StreamEventInlineDelete  // Inline DELETE marker from planner
 	StreamEventPartialInsert // Streaming partial line during INSERT
@@ -160,6 +161,14 @@ func DiffEvent(path, old, new string, line int) StreamEvent {
 		DiffOld:  old,
 		DiffNew:  new,
 		DiffLine: line,
+	}
+}
+
+// InterjectionEvent creates an interjection event (user message injected mid-stream)
+func InterjectionEvent(text string) StreamEvent {
+	return StreamEvent{
+		Type: StreamEventInterjection,
+		Text: text,
 	}
 }
 

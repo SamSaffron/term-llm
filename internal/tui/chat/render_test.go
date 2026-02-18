@@ -61,6 +61,7 @@ func TestUpdate_StreamError_BumpsContentVersion(t *testing.T) {
 		nil,   // sess
 		true,  // altScreen
 		nil,   // autoSendQueue
+		false, // autoSendExitOnDone
 		false, // textMode
 		"",    // agentName
 	)
@@ -96,6 +97,7 @@ func TestViewAltScreen_FirstRenderAnchorsToBottom(t *testing.T) {
 		nil,   // sess
 		true,  // altScreen
 		nil,   // autoSendQueue
+		false, // autoSendExitOnDone
 		false, // textMode
 		"",    // agentName
 	)
@@ -146,6 +148,7 @@ func TestStreamEventDiffFlushUsesOrderedCommandComposition(t *testing.T) {
 		nil,
 		false,
 		nil,
+		false,
 		false,
 		"",
 	)
@@ -230,6 +233,7 @@ func TestRenderStatusLine_ShowsSeededCachedUsageFromSession(t *testing.T) {
 		false,
 		nil,
 		false,
+		false,
 		"",
 	)
 
@@ -271,5 +275,56 @@ func TestUpdate_StreamEventUsage_CacheOnlyUpdatesStats(t *testing.T) {
 	_, _ = m.Update(streamEventMsg{event: ui.UsageEvent(0, 0, 1234, 0)})
 	if got := m.stats.CachedInputTokens; got != 1234 {
 		t.Fatalf("expected cached input tokens to update from cache-only usage event, got %d", got)
+	}
+}
+
+func TestRenderInputInline_ShowsPendingInterjection(t *testing.T) {
+	m := newTestChatModel(false)
+	m.pendingInterjection = "stop doing that"
+	m.width = 80
+
+	output := m.renderInputInline()
+	stripped := ui.StripANSI(output)
+
+	if !strings.Contains(stripped, "⏳") {
+		t.Fatalf("expected pending indicator ⏳ in output, got %q", stripped)
+	}
+	if !strings.Contains(stripped, "stop doing that") {
+		t.Fatalf("expected interjection text in output, got %q", stripped)
+	}
+	if !strings.Contains(stripped, "queued") {
+		t.Fatalf("expected (queued) label in output, got %q", stripped)
+	}
+}
+
+func TestRenderInputInline_HidesPendingWhenEmpty(t *testing.T) {
+	m := newTestChatModel(false)
+	m.pendingInterjection = ""
+	m.width = 80
+
+	output := m.renderInputInline()
+	stripped := ui.StripANSI(output)
+
+	if strings.Contains(stripped, "⏳") {
+		t.Fatalf("expected no ⏳ when pendingInterjection is empty, got %q", stripped)
+	}
+	if strings.Contains(stripped, "queued") {
+		t.Fatalf("expected no (queued) when pendingInterjection is empty, got %q", stripped)
+	}
+}
+
+func TestRenderInputInline_TruncatesLongInterjection(t *testing.T) {
+	m := newTestChatModel(false)
+	m.width = 40
+	m.pendingInterjection = strings.Repeat("x", 100)
+
+	output := m.renderInputInline()
+	stripped := ui.StripANSI(output)
+
+	if !strings.Contains(stripped, "…") {
+		t.Fatalf("expected truncation marker … for long interjection, got %q", stripped)
+	}
+	if strings.Contains(stripped, strings.Repeat("x", 100)) {
+		t.Fatalf("expected long interjection to be truncated, got %q", stripped)
 	}
 }

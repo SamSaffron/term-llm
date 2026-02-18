@@ -305,6 +305,10 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				_ = m.store.UpdateStatus(context.Background(), m.sess.ID, session.StatusInterrupted)
 			}
 
+			// Drain any pending interjection (discard since we're quitting)
+			_ = m.engine.DrainInterjection()
+			m.pendingInterjection = "" // Clear visual indicator
+
 			return m, nil
 		}
 		m.quitting = true
@@ -333,6 +337,12 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.store != nil {
 				_ = m.store.UpdateStatus(context.Background(), m.sess.ID, session.StatusInterrupted)
 			}
+
+			// Recover pending interjection text into textarea
+			if residual := m.engine.DrainInterjection(); residual != "" {
+				m.setTextareaValue(residual)
+			}
+			m.pendingInterjection = "" // Clear visual indicator
 
 			m.textarea.Focus()
 			return m, nil
@@ -415,10 +425,18 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// During streaming: allow typing but block send
+	// During streaming: allow typing and interjection (send queues message for next turn)
 	if m.streaming {
-		// Block send key
 		if key.Matches(msg, m.keyMap.Send) {
+			content := strings.TrimSpace(m.textarea.Value())
+			if content == "" {
+				return m, nil
+			}
+			// Queue interjection in the engine — it will be injected after the
+			// current turn's tool results, before the next LLM turn begins.
+			m.engine.Interject(content)
+			m.pendingInterjection = content // Track for UI display
+			m.setTextareaValue("")
 			return m, nil
 		}
 		// Allow textarea to receive input

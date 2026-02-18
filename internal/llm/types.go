@@ -208,7 +208,8 @@ const (
 	EventPhase          EventType = "phase" // Emitted for high-level phase changes (Thinking, Searching, etc.)
 	EventDone           EventType = "done"
 	EventError          EventType = "error"
-	EventRetry          EventType = "retry" // Emitted when retrying after rate limit
+	EventRetry          EventType = "retry"        // Emitted when retrying after rate limit
+	EventInterjection   EventType = "interjection" // User interjected a message mid-stream
 )
 
 // WarningPhasePrefix is the prefix for warning-level phase events.

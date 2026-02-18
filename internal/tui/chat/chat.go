@@ -92,6 +92,7 @@ type Model struct {
 	localTools          []string         // Names of enabled local tools (read, write, etc.)
 	toolsStr            string           // Original tools setting (for session persistence)
 	mcpStr              string           // Original MCP setting (for session persistence)
+	pendingInterjection string           // Queued interjection text waiting to be injected
 
 	// MCP (Model Context Protocol)
 	mcpManager *mcp.Manager
@@ -167,6 +168,9 @@ type Model struct {
 
 	// Auto-send mode (for benchmarking) - queue of messages to send
 	autoSendQueue []string
+	// autoSendExitOnDone causes the TUI to quit when the queue is exhausted;
+	// when false the session continues in interactive mode after the queue drains.
+	autoSendExitOnDone bool
 
 	// Text mode (no markdown rendering)
 	textMode bool
@@ -232,7 +236,7 @@ type AskUserRequestMsg struct {
 }
 
 // New creates a new chat model
-func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, textMode bool, agentName string) *Model {
+func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, autoSendExitOnDone bool, textMode bool, agentName string) *Model {
 	// Get terminal size
 	width := 80
 	height := 24
@@ -383,6 +387,7 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 		streamRenderMinInterval: chatRenderMinIntervalFromEnv(),
 		chatRenderer:            chatRenderer,
 		autoSendQueue:           autoSendQueue,
+		autoSendExitOnDone:      autoSendExitOnDone,
 		textMode:                textMode,
 	}
 }
@@ -660,6 +665,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 
 				m.textarea.Focus()
+
+				// Recover pending interjection text into textarea on error
+				if residual := m.engine.DrainInterjection(); residual != "" {
+					m.setTextareaValue(residual)
+				}
+				m.pendingInterjection = "" // Clear pending indicator
+
 				return m, nil
 			}
 
@@ -810,6 +822,46 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
+		case ui.StreamEventInterjection:
+			// User interjected a message mid-stream (injected between tool turns).
+			m.pendingInterjection = "" // Interjection was injected, clear pending indicator
+			// Flush smooth buffer so any pending text appears before the interjection.
+			if m.smoothBuffer != nil {
+				remaining := m.smoothBuffer.FlushAll()
+				if remaining != "" {
+					m.currentResponse.WriteString(remaining)
+					if m.tracker != nil {
+						m.tracker.AddTextSegment(remaining, m.width)
+					}
+				}
+				m.smoothTickPending = false
+			}
+			// Mark current text segment as complete before interjection
+			if m.tracker != nil {
+				m.tracker.MarkCurrentTextComplete(func(text string) string {
+					return m.renderMarkdown(text)
+				})
+				// Add interjection as a pre-rendered text segment.
+				// Store the styled version directly so it bypasses markdown rendering
+				// and avoids ANSI escape code artifacts in the output.
+				theme := m.styles.Theme()
+				promptStyle := lipgloss.NewStyle().Foreground(theme.Primary).Bold(true)
+				rendered := promptStyle.Render("❯") + " " + ev.Text + "\n\n"
+				m.tracker.AddPreRenderedTextSegment(rendered)
+			}
+			// Persist interjected message to session store
+			if m.store != nil {
+				userMsg := &session.Message{
+					SessionID:   m.sess.ID,
+					Role:        llm.RoleUser,
+					Parts:       []llm.Part{{Type: llm.PartText, Text: ev.Text}},
+					TextContent: ev.Text,
+					CreatedAt:   time.Now(),
+					Sequence:    -1, // Store will assign the next sequence number
+				}
+				_ = m.store.AddMessage(context.Background(), m.sess.ID, userMsg)
+			}
+
 		case ui.StreamEventDone:
 			m.currentTokens = ev.Tokens
 
@@ -918,17 +970,31 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m.sendMessage(m.textarea.Value())
 				}
 
-				// Queue exhausted, quit
-				m.quitting = true
-				if m.showStats && m.stats.LLMCallCount > 0 {
-					m.stats.Finalize()
-					return m, tea.Sequence(tea.Println(m.stats.Render()), tea.Quit)
+				if m.autoSendExitOnDone {
+					// Queue exhausted and exit requested, quit
+					m.quitting = true
+					if m.showStats && m.stats.LLMCallCount > 0 {
+						m.stats.Finalize()
+						return m, tea.Sequence(tea.Println(m.stats.Render()), tea.Quit)
+					}
+					return m, tea.Quit
 				}
-				return m, tea.Quit
+
+				// Queue exhausted, continue in interactive mode
+				m.autoSendQueue = nil
 			}
 
 			// Re-enable textarea
 			m.textarea.Focus()
+
+			// Recover any pending interjection that wasn't consumed (e.g.,
+			// when the LLM returned no tool calls so the between-turns
+			// injection point was never reached). Place the text back
+			// in the textarea so the user can send it as a follow-up.
+			if residual := m.engine.DrainInterjection(); residual != "" {
+				m.setTextareaValue(residual)
+			}
+			m.pendingInterjection = "" // Clear pending indicator
 		}
 
 		// Continue listening for more events unless we're done or got an error

@@ -190,6 +190,7 @@ func newTestChatModel(altScreen bool) *Model {
 		altScreen,
 		nil,
 		false,
+		false,
 		"",
 	)
 }

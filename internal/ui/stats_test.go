@@ -30,39 +30,42 @@ func TestSessionStatsSeedTotals(t *testing.T) {
 func TestAddUsageSetsLastAndPeak(t *testing.T) {
 	stats := NewSessionStats()
 
+	// totalContext = input + cached + output = 100 + 0 + 20 = 120
 	stats.AddUsage(100, 20, 0, 0)
-	if stats.lastInputTokens != 100 {
-		t.Errorf("expected lastInputTokens 100, got %d", stats.lastInputTokens)
+	if stats.lastInputTokens != 120 {
+		t.Errorf("expected lastInputTokens 120 (input+output), got %d", stats.lastInputTokens)
 	}
 	if stats.lastOutputTokens != 20 {
 		t.Errorf("expected lastOutputTokens 20, got %d", stats.lastOutputTokens)
 	}
-	if stats.peakInputTokens != 100 {
-		t.Errorf("expected peakInputTokens 100, got %d", stats.peakInputTokens)
+	if stats.peakInputTokens != 120 {
+		t.Errorf("expected peakInputTokens 120, got %d", stats.peakInputTokens)
 	}
 
-	// Second call with higher input — peak should update
+	// Second call with higher context — peak should update
+	// totalContext = 500 + 0 + 50 = 550
 	stats.AddUsage(500, 50, 0, 0)
-	if stats.lastInputTokens != 500 {
-		t.Errorf("expected lastInputTokens 500, got %d", stats.lastInputTokens)
+	if stats.lastInputTokens != 550 {
+		t.Errorf("expected lastInputTokens 550, got %d", stats.lastInputTokens)
 	}
 	if stats.lastOutputTokens != 50 {
 		t.Errorf("expected lastOutputTokens 50, got %d", stats.lastOutputTokens)
 	}
-	if stats.peakInputTokens != 500 {
-		t.Errorf("expected peakInputTokens 500, got %d", stats.peakInputTokens)
+	if stats.peakInputTokens != 550 {
+		t.Errorf("expected peakInputTokens 550, got %d", stats.peakInputTokens)
 	}
 
-	// Third call with lower input — peak should stay at 500
+	// Third call with lower context — peak should stay at 550
+	// totalContext = 200 + 0 + 30 = 230
 	stats.AddUsage(200, 30, 0, 0)
-	if stats.lastInputTokens != 200 {
-		t.Errorf("expected lastInputTokens 200, got %d", stats.lastInputTokens)
+	if stats.lastInputTokens != 230 {
+		t.Errorf("expected lastInputTokens 230, got %d", stats.lastInputTokens)
 	}
 	if stats.lastOutputTokens != 30 {
 		t.Errorf("expected lastOutputTokens 30, got %d", stats.lastOutputTokens)
 	}
-	if stats.peakInputTokens != 500 {
-		t.Errorf("expected peakInputTokens to remain 500, got %d", stats.peakInputTokens)
+	if stats.peakInputTokens != 550 {
+		t.Errorf("expected peakInputTokens to remain 550, got %d", stats.peakInputTokens)
 	}
 }
 
@@ -83,10 +86,11 @@ func TestSeedTotalsClearsPerCallState(t *testing.T) {
 	stats := NewSessionStats()
 
 	// Build up per-call state
+	// totalContext = 5000 + 0 + 500 = 5500
 	stats.AddUsage(5000, 500, 0, 0)
 	stats.AddUsage(2000, 200, 0, 0)
-	if stats.peakInputTokens != 5000 {
-		t.Fatalf("expected peak 5000 before reseed, got %d", stats.peakInputTokens)
+	if stats.peakInputTokens != 5500 {
+		t.Fatalf("expected peak 5500 before reseed, got %d", stats.peakInputTokens)
 	}
 
 	// Reseed should clear per-call state
@@ -119,22 +123,25 @@ func TestSeedTotalsClearsPerCallState(t *testing.T) {
 func TestPeakTracksFullContext(t *testing.T) {
 	stats := NewSessionStats()
 
-	// 10 new + 5000 cached + 2000 written = 7010 total context
+	// totalContext = input + cached + output = 10 + 5000 + 100 = 5110
+	// cache_write tokens (2000) are NOT additive — they're a subset of
+	// input tokens indicating which ones were written to cache.
 	stats.AddUsage(10, 100, 5000, 2000)
-	if stats.lastInputTokens != 7010 {
-		t.Errorf("expected lastInputTokens 7010 (total context), got %d", stats.lastInputTokens)
+	if stats.lastInputTokens != 5110 {
+		t.Errorf("expected lastInputTokens 5110 (input+cached+output), got %d", stats.lastInputTokens)
 	}
-	if stats.peakInputTokens != 7010 {
-		t.Errorf("expected peakInputTokens 7010, got %d", stats.peakInputTokens)
+	if stats.peakInputTokens != 5110 {
+		t.Errorf("expected peakInputTokens 5110, got %d", stats.peakInputTokens)
 	}
 
 	// Second call with smaller total context — peak should stay
+	// totalContext = 5 + 100 + 50 = 155
 	stats.AddUsage(5, 50, 100, 0)
-	if stats.lastInputTokens != 105 {
-		t.Errorf("expected lastInputTokens 105, got %d", stats.lastInputTokens)
+	if stats.lastInputTokens != 155 {
+		t.Errorf("expected lastInputTokens 155, got %d", stats.lastInputTokens)
 	}
-	if stats.peakInputTokens != 7010 {
-		t.Errorf("expected peakInputTokens to remain 7010, got %d", stats.peakInputTokens)
+	if stats.peakInputTokens != 5110 {
+		t.Errorf("expected peakInputTokens to remain 5110, got %d", stats.peakInputTokens)
 	}
 }
 

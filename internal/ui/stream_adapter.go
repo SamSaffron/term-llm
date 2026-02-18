@@ -164,6 +164,11 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 			if event.Text != "" {
 				a.events <- PhaseEvent(event.Text)
 			}
+
+		case llm.EventInterjection:
+			if event.Text != "" {
+				a.events <- InterjectionEvent(event.Text)
+			}
 		}
 	}
 }

@@ -934,3 +934,445 @@ func TestEngineResetConversationSkipsNonResettableProvider(t *testing.T) {
 	// Should not panic
 	e.ResetConversation()
 }
+
+func TestLastTotalTokensIncludesCachedTokens(t *testing.T) {
+	// Provider returns a text response with usage that has cached tokens.
+	// Uses a tool spec so the engine enters the agentic runLoop path
+	// where lastTotalTokens is updated.
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			return []Event{
+				{Type: EventTextDelta, Text: "hello"},
+				{
+					Type: EventUsage,
+					Use: &Usage{
+						InputTokens:       1000,  // new (uncached) input tokens
+						OutputTokens:      500,   // output tokens
+						CachedInputTokens: 50000, // tokens read from cache
+						CacheWriteTokens:  200,   // tokens written to cache (subset of input, not additive)
+					},
+				},
+				{Type: EventDone},
+			}
+		},
+	}
+	e := NewEngine(provider, nil)
+	e.inputLimit = 200000 // enable token tracking
+
+	// Provide a dummy tool spec so the engine enters the agentic loop
+	dummyTool := &countingSearchTool{}
+	e.RegisterTool(dummyTool)
+
+	req := Request{
+		Model:    "test-model",
+		Messages: []Message{UserText("hi")},
+		Tools:    []ToolSpec{dummyTool.Spec()},
+	}
+
+	stream, err := e.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv() error: %v", err)
+		}
+	}
+
+	// lastTotalTokens should include cached + new input + output
+	// = 50000 + 1000 + 500 = 51500
+	// cache_write tokens are NOT additive (they're a subset of input tokens)
+	got := e.LastTotalTokens()
+	want := 51500
+	if got != want {
+		t.Errorf("LastTotalTokens() = %d, want %d (cached 50000 + input 1000 + output 500; cache_write excluded)", got, want)
+	}
+}
+
+// --- Interjection tests ---
+
+// TestEngineInterjection_Basic verifies that a user interjection queued during
+// tool execution appears in the conversation as a user message after tool results.
+func TestEngineInterjection_Basic(t *testing.T) {
+	tool := &delayingTool{delay: 50 * time.Millisecond}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				return []Event{
+					{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "delay_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventDone},
+				}
+			default:
+				return []Event{
+					{Type: EventTextDelta, Text: "final answer"},
+					{Type: EventDone},
+				}
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	req := Request{
+		Messages:   []Message{UserText("do something")},
+		Tools:      []ToolSpec{tool.Spec()},
+		ToolChoice: ToolChoice{Mode: ToolChoiceAuto},
+	}
+
+	stream, err := engine.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	// Queue the interjection while the stream is in progress
+	engine.Interject("stop doing that")
+
+	var text strings.Builder
+	var gotInterjection bool
+	var interjectionText string
+
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+		switch event.Type {
+		case EventError:
+			if event.Err != nil {
+				t.Fatalf("event error: %v", event.Err)
+			}
+		case EventTextDelta:
+			text.WriteString(event.Text)
+		case EventInterjection:
+			gotInterjection = true
+			interjectionText = event.Text
+		}
+	}
+
+	if !gotInterjection {
+		t.Fatal("expected EventInterjection to be emitted")
+	}
+	if interjectionText != "stop doing that" {
+		t.Fatalf("expected interjection text %q, got %q", "stop doing that", interjectionText)
+	}
+	if text.String() != "final answer" {
+		t.Fatalf("expected final text %q, got %q", "final answer", text.String())
+	}
+
+	// Verify the LLM saw the interjection on the second call:
+	// Messages should be: [user] + [assistant+tool_call] + [tool_result] + [user interjection]
+	if len(provider.calls) < 2 {
+		t.Fatalf("expected at least 2 provider calls, got %d", len(provider.calls))
+	}
+	secondCall := provider.calls[1]
+	lastMsg := secondCall.Messages[len(secondCall.Messages)-1]
+	if lastMsg.Role != RoleUser {
+		t.Fatalf("expected last message in second call to be user role, got %v", lastMsg.Role)
+	}
+	if len(lastMsg.Parts) == 0 || lastMsg.Parts[0].Text != "stop doing that" {
+		t.Fatalf("expected last message text to be interjection, got %v", lastMsg.Parts)
+	}
+}
+
+// TestEngineInterjection_NoToolCalls verifies that an interjection stays in the
+// channel when the LLM returns no tool calls (text-only response).
+func TestEngineInterjection_NoToolCalls(t *testing.T) {
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			return []Event{
+				{Type: EventTextDelta, Text: "just text"},
+				{Type: EventDone},
+			}
+		},
+	}
+
+	engine := NewEngine(provider, nil)
+	req := Request{
+		Messages: []Message{UserText("hello")},
+	}
+
+	// Queue interjection before streaming
+	engine.Interject("change of plan")
+
+	stream, err := engine.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	var gotInterjection bool
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+		if event.Type == EventInterjection {
+			gotInterjection = true
+		}
+	}
+
+	// Interjection should NOT have been emitted (no tool execution path)
+	if gotInterjection {
+		t.Fatal("interjection should not be emitted when there are no tool calls")
+	}
+
+	// The interjection should still be pending in the channel
+	residual := engine.DrainInterjection()
+	if residual != "change of plan" {
+		t.Fatalf("expected pending interjection %q, got %q", "change of plan", residual)
+	}
+}
+
+// TestEngineInterjection_MultipleInterjections verifies that sending multiple
+// interjections before a turn completes only keeps the latest one.
+func TestEngineInterjection_MultipleInterjections(t *testing.T) {
+	tool := &delayingTool{delay: 100 * time.Millisecond}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				return []Event{
+					{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "delay_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventDone},
+				}
+			default:
+				return []Event{
+					{Type: EventTextDelta, Text: "done"},
+					{Type: EventDone},
+				}
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	req := Request{
+		Messages:   []Message{UserText("run tool")},
+		Tools:      []ToolSpec{tool.Spec()},
+		ToolChoice: ToolChoice{Mode: ToolChoiceAuto},
+	}
+
+	stream, err := engine.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	// Queue two interjections rapidly — only the latest should be kept
+	engine.Interject("first attempt")
+	engine.Interject("second attempt")
+
+	var interjectionText string
+	var interjectionCount int
+
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+		if event.Type == EventInterjection {
+			interjectionCount++
+			interjectionText = event.Text
+		}
+		if event.Type == EventError && event.Err != nil {
+			t.Fatalf("event error: %v", event.Err)
+		}
+	}
+
+	if interjectionCount != 1 {
+		t.Fatalf("expected exactly 1 interjection event, got %d", interjectionCount)
+	}
+	if interjectionText != "second attempt" {
+		t.Fatalf("expected latest interjection %q, got %q", "second attempt", interjectionText)
+	}
+}
+
+// TestEngineInterjection_DrainOnNoPending verifies that drainInterjection
+// returns "" when nothing is queued and that DrainInterjection is safe
+// to call before any Interject().
+func TestEngineInterjection_DrainOnNoPending(t *testing.T) {
+	engine := NewEngine(NewMockProvider("test"), nil)
+
+	// Before any Interject: channel is nil, should return ""
+	if text := engine.DrainInterjection(); text != "" {
+		t.Fatalf("expected empty string, got %q", text)
+	}
+
+	// After Interject + Drain: channel exists but is empty, should return ""
+	engine.Interject("test")
+	_ = engine.DrainInterjection()
+	if text := engine.DrainInterjection(); text != "" {
+		t.Fatalf("expected empty string after drain, got %q", text)
+	}
+}
+
+// TestEngineInterjection_TurnCallback verifies that the turn callback receives
+// the interjected user message for session persistence.
+func TestEngineInterjection_TurnCallback(t *testing.T) {
+	tool := &delayingTool{delay: 50 * time.Millisecond}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				return []Event{
+					{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "delay_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventDone},
+				}
+			default:
+				return []Event{
+					{Type: EventTextDelta, Text: "ok"},
+					{Type: EventDone},
+				}
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+
+	var callbackMsgs [][]Message
+	var mu sync.Mutex
+	engine.SetTurnCompletedCallback(func(ctx context.Context, turnIndex int, messages []Message, metrics TurnMetrics) error {
+		mu.Lock()
+		defer mu.Unlock()
+		// Deep copy messages for test verification
+		copied := make([]Message, len(messages))
+		copy(copied, messages)
+		callbackMsgs = append(callbackMsgs, copied)
+		return nil
+	})
+
+	req := Request{
+		Messages:   []Message{UserText("run tool")},
+		Tools:      []ToolSpec{tool.Spec()},
+		ToolChoice: ToolChoice{Mode: ToolChoiceAuto},
+	}
+
+	// Queue interjection
+	engine.Interject("hey wait")
+
+	stream, err := engine.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+		if event.Type == EventError && event.Err != nil {
+			t.Fatalf("event error: %v", event.Err)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// We expect at least 2 callback invocations for the first turn:
+	//   1. Tool results (from regular turn completion)
+	//   2. Interjection user message
+	// Plus potentially a 3rd for the final text-only response.
+	foundInterjection := false
+	for _, msgs := range callbackMsgs {
+		for _, msg := range msgs {
+			if msg.Role == RoleUser && len(msg.Parts) > 0 && msg.Parts[0].Text == "hey wait" {
+				foundInterjection = true
+			}
+		}
+	}
+	if !foundInterjection {
+		t.Fatal("expected turn callback to receive interjection user message")
+	}
+}
+
+// TestEngineInterjection_EventEmitted verifies that EventInterjection events
+// are properly emitted through the stream with the correct text.
+func TestEngineInterjection_EventEmitted(t *testing.T) {
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				return []Event{
+					{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "count_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventDone},
+				}
+			default:
+				return []Event{
+					{Type: EventTextDelta, Text: "done"},
+					{Type: EventDone},
+				}
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	req := Request{
+		Messages:   []Message{UserText("run tool")},
+		Tools:      []ToolSpec{tool.Spec()},
+		ToolChoice: ToolChoice{Mode: ToolChoiceAuto},
+	}
+
+	engine.Interject("redirect please")
+
+	stream, err := engine.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	var events []Event
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+		events = append(events, event)
+	}
+
+	// Find the interjection event
+	var found bool
+	for _, ev := range events {
+		if ev.Type == EventInterjection {
+			found = true
+			if ev.Text != "redirect please" {
+				t.Fatalf("expected interjection text %q, got %q", "redirect please", ev.Text)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("EventInterjection not found in event stream")
+	}
+}

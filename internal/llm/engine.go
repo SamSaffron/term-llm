@@ -78,10 +78,14 @@ type Engine struct {
 	// Context compaction
 	compactionConfig     *CompactionConfig // nil = compaction disabled
 	inputLimit           int               // 0 = unknown/disabled
-	lastTotalTokens      int               // input+output from most recent API response
+	lastTotalTokens      int               // cached+input+output from most recent API response
 	lastMessageCount     int               // len(req.Messages) at time of last API call
 	systemPrompt         string            // Captured for re-injection after compaction
 	contextNoticeEmitted bool              // one-shot flag: WARNING emitted once per session
+
+	// Interjection support: user can send a message while the agent is streaming.
+	// The message is injected after the current turn's tool results, before the next LLM turn.
+	interjection chan string // Buffered channel (size 1) for mid-stream user interjections
 }
 
 // ToolExecutorSetter is an optional interface for providers that need
@@ -274,7 +278,7 @@ func (e *Engine) InputLimit() int {
 	return v
 }
 
-// LastTotalTokens returns the total tokens (input+output) from the most
+// LastTotalTokens returns the total tokens (cached+input+output) from the most
 // recent API response, approximating current context fullness.
 func (e *Engine) LastTotalTokens() int {
 	e.callbackMu.RLock()
@@ -298,6 +302,52 @@ func (e *Engine) SetMaxToolOutputChars(n int) {
 	e.callbackMu.Lock()
 	e.maxToolOutputChars = n
 	e.callbackMu.Unlock()
+}
+
+// Interject queues a user message to be inserted after the current turn's tool results,
+// right before the next LLM turn begins. Non-blocking: if an interjection is already
+// pending, the new one replaces it (only the latest interjection is kept).
+// Safe to call from any goroutine (e.g., the TUI thread).
+func (e *Engine) Interject(text string) {
+	e.callbackMu.Lock()
+	if e.interjection == nil {
+		e.interjection = make(chan string, 1)
+	}
+	ch := e.interjection
+	e.callbackMu.Unlock()
+
+	// Drain-then-send: replace any pending interjection with the new one.
+	select {
+	case <-ch:
+	default:
+	}
+	ch <- text
+}
+
+// DrainInterjection returns the pending interjection text, or "" if none.
+// Non-blocking. Public so the TUI layer can recover a pending interjection
+// when the stream completes without tool calls (the "between turns" injection
+// point was never reached). The recovered text can be placed back in the textarea.
+func (e *Engine) DrainInterjection() string {
+	return e.drainInterjection()
+}
+
+// drainInterjection returns the pending interjection text, or "" if none.
+// Non-blocking. Called within runLoop between turns.
+func (e *Engine) drainInterjection() string {
+	e.callbackMu.RLock()
+	ch := e.interjection
+	e.callbackMu.RUnlock()
+
+	if ch == nil {
+		return ""
+	}
+	select {
+	case text := <-ch:
+		return text
+	default:
+		return ""
+	}
 }
 
 // applyToolOutputTruncation applies global and compaction truncation limits
@@ -677,11 +727,12 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 				turnMetrics.InputTokens += event.Use.InputTokens
 				turnMetrics.OutputTokens += event.Use.OutputTokens
 				turnMetrics.CachedInputTokens += event.Use.CachedInputTokens
-				// Update token tracking for compaction threshold estimation.
-				// total_tokens (input+output) ≈ next turn's input, because
-				// the model's output gets echoed back as input.
+				// Update token tracking for compaction threshold and status line display.
+				// Include cached input tokens: they occupy context window space even though
+				// they're served from cache. Cache write tokens are NOT additive — they're
+				// a subset of input tokens indicating which ones were written to cache.
 				if inputLimit > 0 {
-					e.lastTotalTokens = event.Use.InputTokens + event.Use.OutputTokens
+					e.lastTotalTokens = event.Use.InputTokens + event.Use.CachedInputTokens + event.Use.OutputTokens
 					e.lastMessageCount = len(req.Messages)
 				}
 			}
@@ -815,6 +866,18 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 				_ = turnCallback(ctx, attempt, turnMessages, turnMetrics)
 			}
 
+			// Check for user interjection (MCP sync path)
+			if text := e.drainInterjection(); text != "" {
+				interjectionMsg := UserText(text)
+				req.Messages = append(req.Messages, interjectionMsg)
+				if turnCallback != nil {
+					_ = turnCallback(ctx, attempt, []Message{interjectionMsg}, TurnMetrics{})
+				}
+				if events != nil {
+					events <- Event{Type: EventInterjection, Text: text}
+				}
+			}
+
 			// If a finishing tool was executed, we're done (agent completed its task)
 			if finishingToolExecuted {
 				events <- Event{Type: EventDone}
@@ -914,6 +977,21 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 		if turnCallback != nil {
 			turnMetrics.ToolCalls = len(registered)
 			_ = turnCallback(ctx, attempt, toolResults, turnMetrics)
+		}
+
+		// Check for user interjection queued during this turn.
+		// If present, inject it as a user message so the LLM sees it on the next turn.
+		if text := e.drainInterjection(); text != "" {
+			interjectionMsg := UserText(text)
+			req.Messages = append(req.Messages, interjectionMsg)
+			// Fire turn callback so the interjection is persisted
+			if turnCallback != nil {
+				_ = turnCallback(ctx, attempt, []Message{interjectionMsg}, TurnMetrics{})
+			}
+			// Emit event so TUI can display the interjection inline
+			if events != nil {
+				events <- Event{Type: EventInterjection, Text: text}
+			}
 		}
 	}
 
