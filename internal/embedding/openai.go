@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	openaiDefaultModel   = "text-embedding-3-small"
-	openaiEmbedTimeout   = 2 * time.Minute
+	openaiDefaultModel = "text-embedding-3-small"
+	openaiEmbedTimeout = 2 * time.Minute
 )
 
 // OpenAIProvider implements EmbeddingProvider using OpenAI's embeddings API

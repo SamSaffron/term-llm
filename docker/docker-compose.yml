@@ -1,0 +1,22 @@
+services:
+  jarvis:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: jarvis
+    command: sleep infinity
+    env_file: .env
+    volumes:
+      - jarvis-state:/root
+    networks:
+      lan:
+        ipv4_address: 10.0.0.52
+    restart: unless-stopped
+
+volumes:
+  jarvis-state:
+
+networks:
+  lan:
+    external: true
+    name: openclaw_lan

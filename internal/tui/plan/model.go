@@ -48,13 +48,13 @@ type Model struct {
 	commandBuffer string // the command being typed
 
 	// Agent state
-	agentActive    bool
-	agentStreaming bool
-	agentPhase     string
-	agentError     error
-	streamCancel   context.CancelFunc
-	tracker        *ui.ToolTracker        // For tool tracking during agent runs
-	subagentTracker *ui.SubagentTracker   // For subagent progress tracking
+	agentActive     bool
+	agentStreaming  bool
+	agentPhase      string
+	agentError      error
+	streamCancel    context.CancelFunc
+	tracker         *ui.ToolTracker     // For tool tracking during agent runs
+	subagentTracker *ui.SubagentTracker // For subagent progress tracking
 
 	// Activity panel state
 	activityExpanded bool             // toggle with Ctrl+A

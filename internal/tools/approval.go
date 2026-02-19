@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-
-	"golang.org/x/term"
 )
 
 // ApprovalCache provides session-scoped caching for tool+path decisions.
@@ -248,14 +246,10 @@ func (m *ApprovalManager) PromptLock() *sync.Mutex {
 	return &m.promptMu
 }
 
-// SetYoloMode enables or disables yolo mode and prints a warning when enabled.
+// SetYoloMode enables or disables yolo mode.
 // Yolo mode auto-approves all tool executions without prompting.
 func (m *ApprovalManager) SetYoloMode(enabled bool) {
 	m.YoloMode = enabled
-	if enabled && term.IsTerminal(int(os.Stderr.Fd())) {
-		fmt.Fprintf(os.Stderr, "⚠️  WARNING: Yolo mode enabled - all tool operations will be auto-approved without prompting.\n")
-		fmt.Fprintf(os.Stderr, "   This includes shell commands and file modifications. Use only in trusted environments.\n")
-	}
 }
 
 // getProjectApprovals returns or loads project approvals for the given path.

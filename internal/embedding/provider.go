@@ -10,10 +10,10 @@ import (
 
 // EmbeddingResult contains the embeddings and metadata from an API call
 type EmbeddingResult struct {
-	Model      string       `json:"model"`
-	Dimensions int          `json:"dimensions"`
-	Embeddings []Embedding  `json:"embeddings"`
-	Usage      *UsageInfo   `json:"usage,omitempty"`
+	Model      string      `json:"model"`
+	Dimensions int         `json:"dimensions"`
+	Embeddings []Embedding `json:"embeddings"`
+	Usage      *UsageInfo  `json:"usage,omitempty"`
 }
 
 // Embedding holds a single text's embedding vector

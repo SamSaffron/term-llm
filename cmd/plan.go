@@ -132,9 +132,9 @@ func runPlan(cmd *cobra.Command, args []string) error {
 
 	// Configure spawn_agent: read-only agents only, conservative limits
 	toolConfig.Spawn = tools.SpawnConfig{
-		MaxParallel:    2,                              // Conservative for plan mode
-		MaxDepth:       1,                              // Sub-agents don't spawn further sub-agents
-		DefaultTimeout: 120,                            // 2 min per sub-agent task
+		MaxParallel:    2,                                  // Conservative for plan mode
+		MaxDepth:       1,                                  // Sub-agents don't spawn further sub-agents
+		DefaultTimeout: 120,                                // 2 min per sub-agent task
 		AllowedAgents:  []string{"codebase", "researcher"}, // Read-only agents only
 	}
 
@@ -329,7 +329,7 @@ func runChatFromPlan(cfg *config.Config, planContent string, agentName string, m
 	defer storeCleanup()
 
 	// Create chat model
-	model := chat.New(cfg, provider, engine, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, settings.Tools, "", false, "", store, nil, useAltScreen, autoSendQueue, false, false, agentName)
+	model := chat.New(cfg, provider, engine, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, settings.Tools, "", false, "", store, nil, useAltScreen, autoSendQueue, false, false, agentName, false)
 
 	// Build program options
 	var opts []tea.ProgramOption

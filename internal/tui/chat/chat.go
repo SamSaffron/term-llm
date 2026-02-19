@@ -109,6 +109,7 @@ type Model struct {
 	// UI state
 	quitting bool
 	err      error
+	yolo     bool
 
 	// Dialog components
 	completions *CompletionsModel
@@ -236,7 +237,7 @@ type AskUserRequestMsg struct {
 }
 
 // New creates a new chat model
-func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, autoSendExitOnDone bool, textMode bool, agentName string) *Model {
+func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, autoSendExitOnDone bool, textMode bool, agentName string, yolo bool) *Model {
 	// Get terminal size
 	width := 80
 	height := 24
@@ -364,6 +365,7 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 		providerName:            provider.Name(),
 		modelName:               modelName,
 		agentName:               agentName,
+		yolo:                    yolo,
 		phase:                   "Thinking",
 		viewportRows:            height - 8, // Reserve space for input and status
 		tracker:                 tracker,

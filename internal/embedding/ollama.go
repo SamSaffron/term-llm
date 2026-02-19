@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	ollamaDefaultModel   = "nomic-embed-text"
-	ollamaEmbedTimeout   = 2 * time.Minute
+	ollamaDefaultModel = "nomic-embed-text"
+	ollamaEmbedTimeout = 2 * time.Minute
 )
 
 // OllamaProvider implements EmbeddingProvider using Ollama's native API

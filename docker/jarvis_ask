@@ -1,0 +1,2 @@
+#!/bin/bash
+docker exec jarvis term-llm ask @jarvis --yolo "$@"

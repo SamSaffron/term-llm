@@ -467,6 +467,10 @@ func (m *Model) renderStatusLine() string {
 		fixedParts = append(fixedParts, m.providerName)
 	}
 
+	if m.yolo {
+		fixedParts = append(fixedParts, mutedStyle.Render("yolo"))
+	}
+
 	// Web search status
 	if m.searchEnabled {
 		fixedParts = append(fixedParts, successStyle.Render("web:on"))

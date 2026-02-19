@@ -283,12 +283,12 @@ type ImageDebugConfig struct {
 
 // EmbedConfig configures text embedding generation
 type EmbedConfig struct {
-	Provider string              `mapstructure:"provider"` // default embedding provider: gemini, openai, jina, voyage, ollama
-	OpenAI   EmbedOpenAIConfig   `mapstructure:"openai"`
-	Gemini   EmbedGeminiConfig   `mapstructure:"gemini"`
-	Jina     EmbedJinaConfig     `mapstructure:"jina"`
-	Voyage   EmbedVoyageConfig   `mapstructure:"voyage"`
-	Ollama   EmbedOllamaConfig   `mapstructure:"ollama"`
+	Provider string            `mapstructure:"provider"` // default embedding provider: gemini, openai, jina, voyage, ollama
+	OpenAI   EmbedOpenAIConfig `mapstructure:"openai"`
+	Gemini   EmbedGeminiConfig `mapstructure:"gemini"`
+	Jina     EmbedJinaConfig   `mapstructure:"jina"`
+	Voyage   EmbedVoyageConfig `mapstructure:"voyage"`
+	Ollama   EmbedOllamaConfig `mapstructure:"ollama"`
 }
 
 // EmbedOpenAIConfig configures OpenAI embedding generation
@@ -905,22 +905,22 @@ var KnownKeys = map[string]bool{
 	"image.debug.delay":        true,
 
 	// Embed
-	"embed.provider":          true,
-	"embed.openai":            true,
-	"embed.openai.api_key":    true,
-	"embed.openai.model":      true,
-	"embed.gemini":            true,
-	"embed.gemini.api_key":    true,
-	"embed.gemini.model":      true,
-	"embed.jina":              true,
-	"embed.jina.api_key":      true,
-	"embed.jina.model":        true,
-	"embed.voyage":            true,
-	"embed.voyage.api_key":    true,
-	"embed.voyage.model":      true,
-	"embed.ollama":            true,
-	"embed.ollama.base_url":   true,
-	"embed.ollama.model":      true,
+	"embed.provider":        true,
+	"embed.openai":          true,
+	"embed.openai.api_key":  true,
+	"embed.openai.model":    true,
+	"embed.gemini":          true,
+	"embed.gemini.api_key":  true,
+	"embed.gemini.model":    true,
+	"embed.jina":            true,
+	"embed.jina.api_key":    true,
+	"embed.jina.model":      true,
+	"embed.voyage":          true,
+	"embed.voyage.api_key":  true,
+	"embed.voyage.model":    true,
+	"embed.ollama":          true,
+	"embed.ollama.base_url": true,
+	"embed.ollama.model":    true,
 
 	// Search
 	"search.provider":       true,

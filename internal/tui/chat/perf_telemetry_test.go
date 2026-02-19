@@ -192,5 +192,6 @@ func newTestChatModel(altScreen bool) *Model {
 		false,
 		false,
 		"",
+		false, // yolo
 	)
 }

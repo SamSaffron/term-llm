@@ -340,7 +340,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 	if agent != nil {
 		agentName = agent.Name
 	}
-	model := chat.New(cfg, provider, engine, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, showStats, initialText, store, sess, useAltScreen, chatAutoSend, true, chatTextMode, agentName)
+	model := chat.New(cfg, provider, engine, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, showStats, initialText, store, sess, useAltScreen, chatAutoSend, true, chatTextMode, agentName, chatYolo)
 
 	// Build program options
 	var opts []tea.ProgramOption

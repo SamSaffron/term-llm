@@ -226,9 +226,9 @@ func (m *Model) handleStreamEvent(ev ui.StreamEvent) []tea.Cmd {
 		m.agentActive = false
 		m.agentStreaming = false
 		m.agentPhase = ""
-		m.tracker = ui.NewToolTracker()          // Reset tracker
+		m.tracker = ui.NewToolTracker()             // Reset tracker
 		m.subagentTracker = ui.NewSubagentTracker() // Reset subagent tracker
-		m.partialInsertIdx = -1         // Reset partial insert tracking
+		m.partialInsertIdx = -1                     // Reset partial insert tracking
 		m.partialInsertAfter = ""
 		m.agentReasoningTail = ""
 
