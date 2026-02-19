@@ -65,13 +65,16 @@ func expandFileIncludesRecursive(input, baseDir string, allowAbsolute bool, maxD
 	for _, m := range matches {
 		fullStart, fullEnd := m[0], m[1]
 		pathStart, pathEnd := m[2], m[3]
+		directive := input[fullStart:fullEnd]
 
 		out.WriteString(input[last:fullStart])
 
 		rawPath := strings.TrimSpace(input[pathStart:pathEnd])
 		resolvedPath, err := resolveIncludePath(rawPath, baseDir, allowAbsolute)
 		if err != nil {
-			return "", err
+			out.WriteString(directive)
+			last = fullEnd
+			continue
 		}
 
 		if cycle := findCycleStart(stack, resolvedPath); cycle >= 0 {
@@ -81,7 +84,9 @@ func expandFileIncludesRecursive(input, baseDir string, allowAbsolute bool, maxD
 
 		data, err := os.ReadFile(resolvedPath)
 		if err != nil {
-			return "", fmt.Errorf("read include %q (%s): %w", rawPath, resolvedPath, err)
+			out.WriteString(directive)
+			last = fullEnd
+			continue
 		}
 
 		nextStack := append(append([]string{}, stack...), resolvedPath)

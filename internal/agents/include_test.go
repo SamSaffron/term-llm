@@ -64,18 +64,18 @@ func TestExpandFileIncludes_AbsolutePathAllowed(t *testing.T) {
 	}
 }
 
-func TestExpandFileIncludes_MissingFileFails(t *testing.T) {
+func TestExpandFileIncludes_MissingFileLeavesDirectiveUnchanged(t *testing.T) {
 	tmp := t.TempDir()
-	_, err := ExpandFileIncludes("{{file:nope.md}}", IncludeOptions{
+	out, err := ExpandFileIncludes("{{file:nope.md}}", IncludeOptions{
 		BaseDir:       tmp,
 		MaxDepth:      10,
 		AllowAbsolute: true,
 	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	if err != nil {
+		t.Fatalf("ExpandFileIncludes() error = %v", err)
 	}
-	if !strings.Contains(err.Error(), "nope.md") {
-		t.Fatalf("error %q should mention missing file", err.Error())
+	if out != "{{file:nope.md}}" {
+		t.Fatalf("ExpandFileIncludes() = %q, want %q", out, "{{file:nope.md}}")
 	}
 }
 

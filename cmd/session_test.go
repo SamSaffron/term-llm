@@ -80,7 +80,7 @@ func TestResolveSettings_AgentSystemPromptIncludeUsesAgentDir(t *testing.T) {
 	}
 }
 
-func TestResolveSettings_MissingIncludeFails(t *testing.T) {
+func TestResolveSettings_MissingIncludeIsLeftUnchanged(t *testing.T) {
 	origWD, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -93,11 +93,11 @@ func TestResolveSettings_MissingIncludeFails(t *testing.T) {
 	}
 
 	cfg := &config.Config{}
-	_, err = ResolveSettings(cfg, nil, CLIFlags{}, "", "", "{{file:missing.md}}", 0, 20)
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	settings, err := ResolveSettings(cfg, nil, CLIFlags{}, "", "", "{{file:missing.md}}", 0, 20)
+	if err != nil {
+		t.Fatalf("ResolveSettings() error = %v", err)
 	}
-	if !strings.Contains(err.Error(), "missing.md") {
-		t.Fatalf("error %q should mention missing file", err.Error())
+	if settings.SystemPrompt != "{{file:missing.md}}" {
+		t.Fatalf("SystemPrompt = %q, want %q", settings.SystemPrompt, "{{file:missing.md}}")
 	}
 }
