@@ -47,7 +47,8 @@ RUN pacman -Syu --noconfirm && \
       nmap \
       openbsd-netcat \
       strace \
-      gnupg && \
+      gnupg \
+      runit && \
     pacman -Scc --noconfirm
 
 # Unprivileged user for AUR builds (makepkg refuses root)
@@ -75,5 +76,10 @@ COPY docker/jarvis/agent.yaml /bootstrap/agent.yaml
 COPY docker/jarvis/system.md /bootstrap/system.md
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
+
+# runit service skeleton — actual services are symlinked at runtime
+# (either by entrypoint or by the user via docker exec)
+# Drop your service dirs under docker/sv/ and they'll be available at /etc/sv/
+COPY docker/sv/ /etc/sv/
 
 ENTRYPOINT ["/entrypoint.sh"]

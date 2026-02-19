@@ -4,7 +4,6 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     container_name: jarvis
-    command: sleep infinity
     env_file: .env
     volumes:
       - jarvis-state:/root

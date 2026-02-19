@@ -11,4 +11,12 @@ if [ ! -f "$AGENT_DIR/agent.yaml" ]; then
   echo "Jarvis: bootstrapped agent files"
 fi
 
+# If no command given, boot runit as PID 1.
+# Services are managed via /etc/runit/runsvdir — symlink /etc/sv/<name> there to enable.
+# The volume at /root persists service configs and state across restarts.
+if [ "$#" -eq 0 ]; then
+  mkdir -p /etc/runit/runsvdir
+  exec runsvdir /etc/runit/runsvdir
+fi
+
 exec "$@"
