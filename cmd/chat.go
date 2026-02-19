@@ -141,7 +141,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 	}
 
 	// Resolve all settings: CLI > agent > config
-	settings := ResolveSettings(cfg, agent, CLIFlags{
+	settings, err := ResolveSettings(cfg, agent, CLIFlags{
 		Provider:      chatProvider,
 		Tools:         chatTools,
 		ReadDirs:      chatReadDirs,
@@ -153,6 +153,9 @@ func runChat(cmd *cobra.Command, args []string) error {
 		MaxTurnsSet:   cmd.Flags().Changed("max-turns"),
 		Search:        chatSearch,
 	}, cfg.Chat.Provider, cfg.Chat.Model, cfg.Chat.Instructions, cfg.Chat.MaxTurns, 200)
+	if err != nil {
+		return err
+	}
 
 	// Initialize session store EARLY so --resume can override settings before tool/MCP setup
 	store, storeCleanup := InitSessionStore(cfg, cmd.ErrOrStderr())

@@ -236,13 +236,14 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 	// Build system prompt
 	systemPrompt := ""
 	if agent.SystemPrompt != "" {
-		templateCtx := agents.NewTemplateContextForTemplate(agent.SystemPrompt)
-		if agents.IsBuiltinAgent(agent.Name) {
-			if resourceDir, err := agents.ExtractBuiltinResources(agent.Name); err == nil {
-				templateCtx = templateCtx.WithResourceDir(resourceDir)
-			}
+		templateCtx, includeBaseDir, err := agentPromptTemplateContextAndBaseDir(agent, nil)
+		if err != nil {
+			return tools.SpawnAgentRunResult{}, fmt.Errorf("prepare agent system prompt context: %w", err)
 		}
-		systemPrompt = agents.ExpandTemplate(agent.SystemPrompt, templateCtx)
+		systemPrompt, err = expandSystemPromptWithIncludes(agent.SystemPrompt, templateCtx, includeBaseDir)
+		if err != nil {
+			return tools.SpawnAgentRunResult{}, fmt.Errorf("expand agent system prompt: %w", err)
+		}
 
 		// Append project instructions if agent requests them
 		if agent.ShouldLoadProjectInstructions() {

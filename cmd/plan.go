@@ -302,7 +302,10 @@ func runChatFromPlan(cfg *config.Config, planContent string, agentName string, m
 		Tools:  "all",
 		Search: searchEnabled,
 	}
-	settings := ResolveSettings(cfg, agent, cliFlags, cfg.Chat.Provider, cfg.Chat.Model, cfg.Chat.Instructions, cfg.Chat.MaxTurns, 200)
+	settings, err := ResolveSettings(cfg, agent, cliFlags, cfg.Chat.Provider, cfg.Chat.Model, cfg.Chat.Instructions, cfg.Chat.MaxTurns, 200)
+	if err != nil {
+		return err
+	}
 
 	toolMgr, err := settings.SetupToolManager(cfg, engine)
 	if err != nil {

@@ -155,7 +155,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	settings := ResolveSettings(cfg, agent, CLIFlags{
+	settings, err := ResolveSettings(cfg, agent, CLIFlags{
 		Provider:      serveProvider,
 		Tools:         serveTools,
 		ReadDirs:      serveReadDirs,
@@ -167,6 +167,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 		MaxTurnsSet:   cmd.Flags().Changed("max-turns"),
 		Search:        serveSearch,
 	}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 20)
+	if err != nil {
+		return err
+	}
 
 	forceExternalSearch := resolveForceExternalSearch(cfg, serveNativeSearch, serveNoNativeSearch)
 

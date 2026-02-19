@@ -236,7 +236,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 	}
 
 	// Resolve all settings: CLI > agent > config
-	settings := ResolveSettings(cfg, agent, CLIFlags{
+	settings, err := ResolveSettings(cfg, agent, CLIFlags{
 		Provider:      loopProvider,
 		Tools:         loopTools,
 		ReadDirs:      loopReadDirs,
@@ -248,6 +248,9 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		MaxTurnsSet:   cmd.Flags().Changed("max-turns"),
 		Search:        loopSearch,
 	}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 100)
+	if err != nil {
+		return err
+	}
 
 	// Apply provider overrides
 	agentProvider, agentModel := "", ""

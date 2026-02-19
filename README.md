@@ -995,6 +995,27 @@ mcp:
   - github
 ```
 
+### System Prompt File Includes
+
+System prompts support inline file includes with `{{file:...}}`.
+
+```md
+You are a reviewer.
+
+{{file:prompts/rules.md}}
+{{file:/absolute/path/to/shared-context.md}}
+```
+
+Behavior:
+- Includes are expanded recursively (max depth: 10)
+- Cycles are detected and reported as errors
+- Missing/unreadable include files fail fast
+- Included content is inserted raw (no automatic headers/separators)
+- Relative paths are source-relative:
+  - Agent prompts resolve relative to the agent directory
+  - Config/CLI system prompts resolve relative to the current working directory
+- Expansion order is include first, then template variables (for example `{{year}}`)
+
 **Agent search order:** user agents → local agents → built-in agents
 
 ## Skills

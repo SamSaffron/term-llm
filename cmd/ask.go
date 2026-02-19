@@ -184,7 +184,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	skillsSetup := SetupSkills(&cfg.Skills, askSkills, cmd.ErrOrStderr())
 
 	// Resolve all settings: CLI > agent > config
-	settings := ResolveSettings(cfg, agent, CLIFlags{
+	settings, err := ResolveSettings(cfg, agent, CLIFlags{
 		Provider:      askProvider,
 		Tools:         askTools,
 		ReadDirs:      askReadDirs,
@@ -197,6 +197,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		Search:        askSearch,
 		Files:         askFiles,
 	}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 20)
+	if err != nil {
+		return err
+	}
 
 	// Initialize session store and handle --resume BEFORE tool/MCP initialization
 	// so that session settings can override settings.Tools, settings.MCP, etc.

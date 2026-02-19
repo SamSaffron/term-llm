@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -110,7 +111,7 @@ func LoadAgent(agentName string, cfg *config.Config) (*agents.Agent, error) {
 
 // ResolveSettings merges config, agent, and CLI flags into final settings.
 // Priority: CLI > agent > config
-func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, configProvider, configModel, configInstructions string, configMaxTurns, defaultMaxTurns int) SessionSettings {
+func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, configProvider, configModel, configInstructions string, configMaxTurns, defaultMaxTurns int) (SessionSettings, error) {
 	s := SessionSettings{}
 
 	// Provider/model: CLI > agent > config
@@ -184,18 +185,26 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 
 	// System prompt: CLI > agent > config
 	if cli.SystemMessage != "" {
-		// Expand template variables in CLI system message
 		templateCtx := agents.NewTemplateContextForTemplate(cli.SystemMessage).WithFiles(cli.Files)
-		s.SystemPrompt = agents.ExpandTemplate(cli.SystemMessage, templateCtx)
-	} else if agent != nil && agent.SystemPrompt != "" {
-		// Expand template variables
-		templateCtx := agents.NewTemplateContextForTemplate(agent.SystemPrompt).WithFiles(cli.Files)
-		if agents.IsBuiltinAgent(agent.Name) {
-			if resourceDir, err := agents.ExtractBuiltinResources(agent.Name); err == nil {
-				templateCtx = templateCtx.WithResourceDir(resourceDir)
-			}
+		cwd, err := systemPromptCWDBaseDir()
+		if err != nil {
+			return s, err
 		}
-		s.SystemPrompt = agents.ExpandTemplate(agent.SystemPrompt, templateCtx)
+		expanded, err := expandSystemPromptWithIncludes(cli.SystemMessage, templateCtx, cwd)
+		if err != nil {
+			return s, fmt.Errorf("expand --system prompt: %w", err)
+		}
+		s.SystemPrompt = expanded
+	} else if agent != nil && agent.SystemPrompt != "" {
+		templateCtx, includeBaseDir, err := agentPromptTemplateContextAndBaseDir(agent, cli.Files)
+		if err != nil {
+			return s, fmt.Errorf("prepare agent system prompt context: %w", err)
+		}
+		expanded, err := expandSystemPromptWithIncludes(agent.SystemPrompt, templateCtx, includeBaseDir)
+		if err != nil {
+			return s, fmt.Errorf("expand agent system prompt: %w", err)
+		}
+		s.SystemPrompt = expanded
 
 		// Append project instructions if agent requests them
 		if agent.ShouldLoadProjectInstructions() {
@@ -204,9 +213,16 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 			}
 		}
 	} else {
-		// Expand template variables in config instructions
 		templateCtx := agents.NewTemplateContextForTemplate(configInstructions).WithFiles(cli.Files)
-		s.SystemPrompt = agents.ExpandTemplate(configInstructions, templateCtx)
+		cwd, err := systemPromptCWDBaseDir()
+		if err != nil {
+			return s, err
+		}
+		expanded, err := expandSystemPromptWithIncludes(configInstructions, templateCtx, cwd)
+		if err != nil {
+			return s, fmt.Errorf("expand config system prompt: %w", err)
+		}
+		s.SystemPrompt = expanded
 	}
 
 	// Max turns: CLI (if set) > agent > config > default
@@ -223,7 +239,54 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 	// Search: CLI or agent enables it
 	s.Search = cli.Search || (agent != nil && agent.Search)
 
-	return s
+	return s, nil
+}
+
+func expandSystemPromptWithIncludes(prompt string, templateCtx agents.TemplateContext, baseDir string) (string, error) {
+	withIncludes, err := agents.ExpandFileIncludes(prompt, agents.IncludeOptions{
+		BaseDir:       baseDir,
+		MaxDepth:      agents.DefaultIncludeMaxDepth,
+		AllowAbsolute: true,
+	})
+	if err != nil {
+		return "", err
+	}
+	return agents.ExpandTemplate(withIncludes, templateCtx), nil
+}
+
+func systemPromptCWDBaseDir() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("resolve working directory for system prompt includes: %w", err)
+	}
+	return cwd, nil
+}
+
+func agentPromptTemplateContextAndBaseDir(agent *agents.Agent, files []string) (agents.TemplateContext, string, error) {
+	templateCtx := agents.NewTemplateContextForTemplate(agent.SystemPrompt).WithFiles(files)
+
+	if agent.Source == agents.SourceBuiltin {
+		resourceDir, err := agents.ExtractBuiltinResources(agent.Name)
+		if err != nil {
+			return agents.TemplateContext{}, "", fmt.Errorf("extract builtin resources for %q: %w", agent.Name, err)
+		}
+		return templateCtx.WithResourceDir(resourceDir), resourceDir, nil
+	}
+
+	baseDir := strings.TrimSpace(agent.SourcePath)
+	if baseDir == "" {
+		cwd, err := systemPromptCWDBaseDir()
+		if err != nil {
+			return agents.TemplateContext{}, "", err
+		}
+		return templateCtx, cwd, nil
+	}
+
+	absBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return agents.TemplateContext{}, "", fmt.Errorf("resolve agent source path %q: %w", baseDir, err)
+	}
+	return templateCtx, absBase, nil
 }
 
 // SetupToolManager creates and configures a ToolManager from settings.
