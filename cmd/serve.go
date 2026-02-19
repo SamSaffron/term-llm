@@ -176,19 +176,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return nil, err
 		}
-		engine := newEngine(provider, cfg)
-
-		toolMgr, err := settings.SetupToolManager(cfg, engine)
+		engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, serveYolo, WireSpawnAgentRunner)
 		if err != nil {
 			return nil, err
-		}
-		if toolMgr != nil {
-			if serveYolo {
-				toolMgr.ApprovalMgr.SetYoloMode(true)
-			}
-			if err := WireSpawnAgentRunner(cfg, toolMgr, serveYolo); err != nil {
-				return nil, err
-			}
 		}
 
 		var mcpManager *mcp.Manager
@@ -235,7 +225,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				return nil, err
 			}
-			return newEngine(p, cfg), nil
+			engine, _, err := newServeEngineWithTools(cfg, settings, p, serveYolo, WireSpawnAgentRunner)
+			if err != nil {
+				return nil, err
+			}
+			return engine, nil
 		},
 	}
 
@@ -315,6 +309,27 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	wg.Wait()
 	return nil
+}
+
+func newServeEngineWithTools(cfg *config.Config, settings SessionSettings, provider llm.Provider, yoloMode bool, wireSpawn func(*config.Config, *tools.ToolManager, bool) error) (*llm.Engine, *tools.ToolManager, error) {
+	engine := newEngine(provider, cfg)
+
+	toolMgr, err := settings.SetupToolManager(cfg, engine)
+	if err != nil {
+		return nil, nil, err
+	}
+	if toolMgr != nil {
+		if yoloMode {
+			toolMgr.ApprovalMgr.SetYoloMode(true)
+		}
+		if wireSpawn != nil {
+			if err := wireSpawn(cfg, toolMgr, yoloMode); err != nil {
+				return nil, nil, err
+			}
+		}
+	}
+
+	return engine, toolMgr, nil
 }
 
 func parsePlatforms(flag string) []string {

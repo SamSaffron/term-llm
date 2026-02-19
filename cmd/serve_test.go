@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 func TestParseResponsesInput_String(t *testing.T) {
@@ -200,5 +202,74 @@ func TestRequireJSONContentType(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
 	if err := requireJSONContentType(req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNewServeEngineWithTools_ConfiguresToolManagerAndSpawnWiring(t *testing.T) {
+	cfg := &config.Config{}
+	settings := SessionSettings{Tools: tools.ReadFileToolName}
+	provider := llm.NewMockProvider("mock")
+
+	wireCalls := 0
+	gotYolo := false
+	wireSpawn := func(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool) error {
+		wireCalls++
+		if cfg == nil {
+			t.Fatalf("cfg = nil")
+		}
+		if toolMgr == nil {
+			t.Fatalf("toolMgr = nil")
+		}
+		gotYolo = yoloMode
+		return nil
+	}
+
+	engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, true, wireSpawn)
+	if err != nil {
+		t.Fatalf("newServeEngineWithTools failed: %v", err)
+	}
+	if engine == nil {
+		t.Fatalf("engine = nil")
+	}
+	if toolMgr == nil {
+		t.Fatalf("toolMgr = nil")
+	}
+	if !toolMgr.ApprovalMgr.YoloMode {
+		t.Fatalf("toolMgr.ApprovalMgr.YoloMode = false, want true")
+	}
+	if wireCalls != 1 {
+		t.Fatalf("wireCalls = %d, want 1", wireCalls)
+	}
+	if !gotYolo {
+		t.Fatalf("yolo mode not passed to spawn wiring")
+	}
+	if _, ok := engine.Tools().Get(tools.ReadFileToolName); !ok {
+		t.Fatalf("expected %q tool to be registered on engine", tools.ReadFileToolName)
+	}
+}
+
+func TestNewServeEngineWithTools_SkipsToolManagerWhenToolsDisabled(t *testing.T) {
+	cfg := &config.Config{}
+	settings := SessionSettings{}
+	provider := llm.NewMockProvider("mock")
+
+	wireCalls := 0
+	wireSpawn := func(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool) error {
+		wireCalls++
+		return nil
+	}
+
+	engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, false, wireSpawn)
+	if err != nil {
+		t.Fatalf("newServeEngineWithTools failed: %v", err)
+	}
+	if engine == nil {
+		t.Fatalf("engine = nil")
+	}
+	if toolMgr != nil {
+		t.Fatalf("toolMgr != nil, want nil")
+	}
+	if wireCalls != 0 {
+		t.Fatalf("wireCalls = %d, want 0", wireCalls)
 	}
 }
