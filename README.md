@@ -414,6 +414,8 @@ See [Agents](#agents) for more details on creating and managing agents.
 | `--debug-raw` | | Emit raw debug logs with timestamps (tool calls/results, raw requests) |
 | `--system-message` | `-m` | Custom system message/instructions |
 | `--stats` | | Show session statistics (time, tokens, tool calls) |
+| `--no-session` | | Disable session persistence for this command |
+| `--session-db` | | Override sessions database path (supports `:memory:`) |
 | `--max-turns` | | Max agentic turns for tool execution (default: 20 for exec, 200 for chat) |
 | `--yolo` | | Auto-approve all tool operations (for unattended runs) |
 
@@ -1211,6 +1213,14 @@ sessions:
   enabled: true       # Master switch (default: true)
   max_age_days: 0     # Auto-delete sessions older than N days (0=never)
   max_count: 0        # Keep at most N sessions (0=unlimited)
+  path: ""            # Optional DB path override (supports :memory:)
+```
+
+Use CLI overrides when needed:
+
+```bash
+term-llm chat --no-session                      # Do not read/write session DB
+term-llm ask --session-db /tmp/term-llm.db ... # Use an alternate DB path
 ```
 
 ### Conversation Inspector

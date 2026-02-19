@@ -2,6 +2,8 @@ package session
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -65,5 +67,22 @@ func TestSQLiteStoreUpdateMetricsIncludesCachedTokens(t *testing.T) {
 	}
 	if summaries[0].CachedInputTokens != 700 {
 		t.Errorf("expected summary cached_input_tokens=700, got %d", summaries[0].CachedInputTokens)
+	}
+}
+
+func TestSQLiteStoreCustomPath(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "custom", "sessions.db")
+
+	store, err := NewSQLiteStore(Config{
+		Enabled: true,
+		Path:    dbPath,
+	})
+	if err != nil {
+		t.Fatalf("failed to create sqlite store with custom path: %v", err)
+	}
+	defer store.Close()
+
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Fatalf("expected database file at %q: %v", dbPath, err)
 	}
 }

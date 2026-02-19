@@ -199,9 +199,10 @@ type DebugLogsConfig struct {
 
 // SessionsConfig configures session storage
 type SessionsConfig struct {
-	Enabled    bool `mapstructure:"enabled"`      // Master switch - set to false to disable all session storage
-	MaxAgeDays int  `mapstructure:"max_age_days"` // Auto-delete sessions older than N days (0=never)
-	MaxCount   int  `mapstructure:"max_count"`    // Keep at most N sessions, delete oldest (0=unlimited)
+	Enabled    bool   `mapstructure:"enabled"`      // Master switch - set to false to disable all session storage
+	MaxAgeDays int    `mapstructure:"max_age_days"` // Auto-delete sessions older than N days (0=never)
+	MaxCount   int    `mapstructure:"max_count"`    // Keep at most N sessions, delete oldest (0=unlimited)
+	Path       string `mapstructure:"path"`         // Optional SQLite DB path override (supports :memory:)
 }
 
 // ThemeConfig allows customization of UI colors
@@ -869,6 +870,7 @@ var KnownKeys = map[string]bool{
 	"sessions.enabled":      true,
 	"sessions.max_age_days": true,
 	"sessions.max_count":    true,
+	"sessions.path":         true,
 
 	// Exec
 	"exec.provider":     true,
@@ -1053,6 +1055,7 @@ func GetDefaults() map[string]any {
 		"sessions.enabled":               true,
 		"sessions.max_age_days":          0,
 		"sessions.max_count":             0,
+		"sessions.path":                  "",
 		"agents.use_builtin":             true,
 		"agents.search_paths":            []string{},
 		"skills.enabled":                 false,

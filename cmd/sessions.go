@@ -200,15 +200,12 @@ func getSessionStore() (session.Store, error) {
 		return nil, err
 	}
 
-	if !cfg.Sessions.Enabled {
-		return nil, fmt.Errorf("session storage is disabled in config")
+	storeCfg := sessionStoreConfig(cfg)
+	if !storeCfg.Enabled {
+		return nil, fmt.Errorf("session storage is disabled (check sessions.enabled and --no-session)")
 	}
 
-	return session.NewStore(session.Config{
-		Enabled:    cfg.Sessions.Enabled,
-		MaxAgeDays: cfg.Sessions.MaxAgeDays,
-		MaxCount:   cfg.Sessions.MaxCount,
-	})
+	return session.NewStore(storeCfg)
 }
 
 func runSessionsList(cmd *cobra.Command, args []string) error {
@@ -536,9 +533,23 @@ func formatRelativeTime(t time.Time) string {
 }
 
 func runSessionsReset(cmd *cobra.Command, args []string) error {
-	dbPath, err := session.GetDBPath()
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+
+	storeCfg := sessionStoreConfig(cfg)
+	if !storeCfg.Enabled {
+		return fmt.Errorf("session storage is disabled (check sessions.enabled and --no-session)")
+	}
+
+	dbPath, err := session.ResolveDBPath(storeCfg.Path)
 	if err != nil {
 		return fmt.Errorf("failed to get database path: %w", err)
+	}
+	if dbPath == ":memory:" {
+		fmt.Println("Session database is configured as :memory: (ephemeral), nothing to reset.")
+		return nil
 	}
 
 	// Check if database exists

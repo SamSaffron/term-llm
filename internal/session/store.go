@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Store is the interface for session persistence.
@@ -42,9 +43,10 @@ type Store interface {
 
 // Config holds session storage configuration.
 type Config struct {
-	Enabled    bool `mapstructure:"enabled"`      // Master switch
-	MaxAgeDays int  `mapstructure:"max_age_days"` // Auto-delete after N days (0=never)
-	MaxCount   int  `mapstructure:"max_count"`    // Keep at most N sessions (0=unlimited)
+	Enabled    bool   `mapstructure:"enabled"`      // Master switch
+	MaxAgeDays int    `mapstructure:"max_age_days"` // Auto-delete after N days (0=never)
+	MaxCount   int    `mapstructure:"max_count"`    // Keep at most N sessions (0=unlimited)
+	Path       string `mapstructure:"path"`         // Optional DB path override (supports :memory:)
 }
 
 // DefaultConfig returns the default session configuration.
@@ -53,6 +55,7 @@ func DefaultConfig() Config {
 		Enabled:    true,
 		MaxAgeDays: 0, // Never auto-delete
 		MaxCount:   0, // Unlimited
+		Path:       "",
 	}
 }
 
@@ -76,6 +79,35 @@ func GetDBPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dataDir, "sessions.db"), nil
+}
+
+// ResolveDBPath resolves an optional DB path override.
+// Empty path uses the default XDG location.
+// Supports :memory: for ephemeral in-memory storage.
+func ResolveDBPath(pathOverride string) (string, error) {
+	pathOverride = strings.TrimSpace(pathOverride)
+	if pathOverride == "" {
+		return GetDBPath()
+	}
+	if pathOverride == ":memory:" {
+		return pathOverride, nil
+	}
+
+	// Expand env vars and leading "~/".
+	pathOverride = os.ExpandEnv(pathOverride)
+	if strings.HasPrefix(pathOverride, "~/") {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("failed to get home directory: %w", err)
+		}
+		pathOverride = filepath.Join(homeDir, pathOverride[2:])
+	}
+
+	abs, err := filepath.Abs(pathOverride)
+	if err != nil {
+		return "", fmt.Errorf("resolve db path %q: %w", pathOverride, err)
+	}
+	return abs, nil
 }
 
 // NewStore creates a new Store based on the configuration.

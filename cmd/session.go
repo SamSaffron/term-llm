@@ -344,39 +344,45 @@ func WireSpawnAgentRunnerWithStore(cfg *config.Config, toolMgr *tools.ToolManage
 	return nil
 }
 
+func sessionStoreConfig(cfg *config.Config) session.Config {
+	path := strings.TrimSpace(cfg.Sessions.Path)
+	if cliPath := strings.TrimSpace(sessionDBPath); cliPath != "" {
+		path = cliPath
+	}
+	return session.Config{
+		Enabled:    cfg.Sessions.Enabled && !noSession,
+		MaxAgeDays: cfg.Sessions.MaxAgeDays,
+		MaxCount:   cfg.Sessions.MaxCount,
+		Path:       path,
+	}
+}
+
 // InitSessionStore creates a session store if enabled in config.
 // Returns the store (may be nil if disabled) and a cleanup function.
 // The cleanup function is always safe to call (handles nil store).
 // Warnings are written to errWriter.
 func InitSessionStore(cfg *config.Config, errWriter io.Writer) (session.Store, func()) {
-	if !cfg.Sessions.Enabled {
+	storeCfg := sessionStoreConfig(cfg)
+	if !storeCfg.Enabled {
 		return nil, func() {}
 	}
 
-	store, err := session.NewStore(session.Config{
-		Enabled:    cfg.Sessions.Enabled,
-		MaxAgeDays: cfg.Sessions.MaxAgeDays,
-		MaxCount:   cfg.Sessions.MaxCount,
-	})
+	store, err := session.NewStore(storeCfg)
 	if err != nil {
 		// Check if this is a schema error that can be recovered by reset
 		if isSchemaError(err) {
-			dbPath, _ := session.GetDBPath()
+			dbPath, _ := session.ResolveDBPath(storeCfg.Path)
 			fmt.Fprintf(errWriter, "Session database has schema errors: %v\n\n", err)
 			fmt.Fprintf(errWriter, "Would you like to reset the sessions database? [y/N]: ")
 
 			if promptForReset() {
-				if resetErr := resetSessionDatabase(); resetErr != nil {
+				if resetErr := resetSessionDatabase(storeCfg.Path); resetErr != nil {
 					fmt.Fprintf(errWriter, "warning: failed to reset database: %v\n", resetErr)
 					return nil, func() {}
 				}
 				fmt.Fprintln(errWriter, "Session database reset. Creating new store...")
 				// Retry store creation
-				store, err = session.NewStore(session.Config{
-					Enabled:    cfg.Sessions.Enabled,
-					MaxAgeDays: cfg.Sessions.MaxAgeDays,
-					MaxCount:   cfg.Sessions.MaxCount,
-				})
+				store, err = session.NewStore(storeCfg)
 				if err != nil {
 					fmt.Fprintf(errWriter, "warning: session store still unavailable after reset: %v\n", err)
 					return nil, func() {}
@@ -453,10 +459,13 @@ func promptForReset() bool {
 }
 
 // resetSessionDatabase deletes the session database files.
-func resetSessionDatabase() error {
-	dbPath, err := session.GetDBPath()
+func resetSessionDatabase(pathOverride string) error {
+	dbPath, err := session.ResolveDBPath(pathOverride)
 	if err != nil {
 		return fmt.Errorf("get db path: %w", err)
+	}
+	if dbPath == ":memory:" {
+		return nil
 	}
 
 	filesToDelete := []string{

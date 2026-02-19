@@ -254,7 +254,7 @@ func printAnnotatedConfig(defaults map[string]any, rawKeys, unknownKeys map[stri
 		},
 		{
 			name: "sessions",
-			keys: []string{"enabled", "max_age_days", "max_count"},
+			keys: []string{"enabled", "max_age_days", "max_count", "path"},
 		},
 		{
 			name: "diagnostics",
@@ -840,6 +840,7 @@ edit:
 #   enabled: true       # Master switch - set to false to disable storage
 #   max_age_days: 0     # Auto-delete sessions older than N days (0=never)
 #   max_count: 0        # Keep at most N sessions (0=unlimited)
+#   path: ""            # Optional DB path override (supports :memory:)
 
 # Image generation settings
 image:

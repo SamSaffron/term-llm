@@ -93,14 +93,16 @@ END;
 
 // NewSQLiteStore creates a new SQLite-based session store.
 func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
-	dbPath, err := GetDBPath()
+	dbPath, err := ResolveDBPath(cfg.Path)
 	if err != nil {
 		return nil, fmt.Errorf("get db path: %w", err)
 	}
 
-	// Ensure directory exists
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
-		return nil, fmt.Errorf("create data directory: %w", err)
+	// Ensure directory exists for file-backed databases.
+	if dbPath != ":memory:" {
+		if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+			return nil, fmt.Errorf("create data directory: %w", err)
+		}
 	}
 
 	// Configure SQLite for concurrent access:
@@ -108,7 +110,14 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 	// - journal_mode(WAL): Write-Ahead Logging for better concurrency
 	// - busy_timeout(5000): Wait up to 5 seconds when database is locked
 	// - synchronous(NORMAL): Balanced durability/performance for WAL mode
-	db, err := sql.Open("sqlite", dbPath+"?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)")
+	dsn := dbPath
+	if strings.Contains(dsn, "?") {
+		dsn += "&"
+	} else {
+		dsn += "?"
+	}
+	dsn += "_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}

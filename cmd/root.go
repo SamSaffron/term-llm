@@ -22,6 +22,8 @@ func init() {
 	update.SetupUpdateChecks(rootCmd, Version)
 	rootCmd.PersistentFlags().BoolVar(&debugRaw, "debug-raw", false, "Emit raw debug logs with timestamps")
 	rootCmd.PersistentFlags().BoolVar(&showStats, "stats", false, "Show session statistics (time, tokens, tool calls)")
+	rootCmd.PersistentFlags().BoolVar(&noSession, "no-session", false, "Disable session persistence (no reads/writes to sessions database)")
+	rootCmd.PersistentFlags().StringVar(&sessionDBPath, "session-db", "", "Override sessions database path (defaults to ~/.local/share/term-llm/sessions.db)")
 	rootCmd.PersistentFlags().StringVar(&cpuProfile, "cpuprofile", "", "Write CPU profile to file")
 	rootCmd.PersistentFlags().StringVar(&memProfile, "memprofile", "", "Write memory profile to file")
 	rootCmd.PersistentFlags().StringVar(&pprofFlag, "pprof", "", "Start pprof debug server (optionally specify port)")
@@ -51,6 +53,8 @@ Examples:
 
 var debugRaw bool
 var showStats bool
+var noSession bool
+var sessionDBPath string
 var cpuProfile string
 var memProfile string
 var cpuProfileFile *os.File
