@@ -6,7 +6,16 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/session"
 )
+
+// SessionRuntime is a per-conversation runtime for non-web platforms.
+type SessionRuntime struct {
+	Engine       *llm.Engine
+	ProviderName string
+	ModelName    string
+	Cleanup      func()
+}
 
 // Settings holds per-platform runtime settings derived from CLI flags and config.
 type Settings struct {
@@ -14,9 +23,13 @@ type Settings struct {
 	IdleTimeout  time.Duration
 	MaxTurns     int
 	Search       bool
-	// NewEngine creates a fresh LLM engine instance for a new session.
-	// Called once per chat session.
-	NewEngine func() (*llm.Engine, error)
+	Tools        string
+	MCP          string
+	Agent        string
+	Store        session.Store
+	// NewSession creates a fresh runtime instance for a new conversation.
+	// Called once per platform session (for example, per Telegram chat session).
+	NewSession func(context.Context) (*SessionRuntime, error)
 }
 
 // Platform is the interface implemented by each messaging platform adapter.

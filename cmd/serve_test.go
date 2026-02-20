@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -271,5 +273,95 @@ func TestNewServeEngineWithTools_SkipsToolManagerWhenToolsDisabled(t *testing.T)
 	}
 	if wireCalls != 0 {
 		t.Fatalf("wireCalls = %d, want 0", wireCalls)
+	}
+}
+
+func TestServeRuntimeRun_PersistsSessionAndMessages(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	provider := llm.NewMockProvider("mock").AddTextResponse("hello from serve")
+	engine := llm.NewEngine(provider, nil)
+	rt := &serveRuntime{
+		provider:     provider,
+		engine:       engine,
+		store:        store,
+		defaultModel: "mock-model",
+		search:       true,
+		toolsSetting: tools.ReadFileToolName,
+		mcpSetting:   "playwright",
+		agentName:    "reviewer",
+	}
+	rt.Touch()
+
+	req := llm.Request{
+		SessionID: "serve-session-1",
+		MaxTurns:  3,
+	}
+	_, err = rt.Run(context.Background(), true, false, []llm.Message{
+		llm.UserText("test persistence"),
+	}, req)
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	sess, err := store.Get(context.Background(), "serve-session-1")
+	if err != nil {
+		t.Fatalf("Get session failed: %v", err)
+	}
+	if sess == nil {
+		t.Fatalf("session was not persisted")
+	}
+	if sess.Summary == "" {
+		t.Fatalf("session summary was not set")
+	}
+
+	msgs, err := store.GetMessages(context.Background(), "serve-session-1", 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages failed: %v", err)
+	}
+	if len(msgs) < 2 {
+		t.Fatalf("message count = %d, want >= 2", len(msgs))
+	}
+	if msgs[0].Role != llm.RoleUser {
+		t.Fatalf("first role = %s, want user", msgs[0].Role)
+	}
+	if msgs[len(msgs)-1].Role != llm.RoleAssistant {
+		t.Fatalf("last role = %s, want assistant", msgs[len(msgs)-1].Role)
+	}
+}
+
+func TestHandleResponses_GeneratesSessionIDHeaderWhenMissing(t *testing.T) {
+	manager := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
+		provider := llm.NewMockProvider("mock").AddTextResponse("ok")
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			engine:       engine,
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		return rt, nil
+	})
+	defer manager.Close()
+
+	srv := &serveServer{
+		sessionMgr: manager,
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"input":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	srv.handleResponses(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if got := strings.TrimSpace(rr.Header().Get("x-session-id")); got == "" {
+		t.Fatalf("x-session-id header missing")
 	}
 }

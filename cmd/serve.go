@@ -12,6 +12,7 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -23,6 +24,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/serve"
 	"github.com/samsaffron/term-llm/internal/serveui"
+	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/spf13/cobra"
@@ -171,6 +173,19 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	agentName := ""
+	if agent != nil {
+		agentName = agent.Name
+	}
+
+	store, storeCleanup := InitSessionStore(cfg, cmd.ErrOrStderr())
+	defer storeCleanup()
+	if store != nil {
+		store = session.NewLoggingStore(store, func(format string, args ...any) {
+			log.Printf("[serve] "+format, args...)
+		})
+	}
+
 	forceExternalSearch := resolveForceExternalSearch(cfg, serveNativeSearch, serveNoNativeSearch)
 
 	modelName := activeModel(cfg)
@@ -206,6 +221,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 			debug:               serveDebug,
 			debugRaw:            debugRaw,
 			defaultModel:        modelName,
+			store:               store,
+			toolsSetting:        settings.Tools,
+			mcpSetting:          settings.MCP,
+			agentName:           agentName,
 		}
 		runtime.Touch()
 		return runtime, nil
@@ -223,16 +242,21 @@ func runServe(cmd *cobra.Command, args []string) error {
 		IdleTimeout:  serveSessionTTL,
 		MaxTurns:     settings.MaxTurns,
 		Search:       settings.Search,
-		NewEngine: func() (*llm.Engine, error) {
-			p, err := llm.NewProvider(cfg)
+		Tools:        settings.Tools,
+		MCP:          settings.MCP,
+		Agent:        agentName,
+		Store:        store,
+		NewSession: func(ctx context.Context) (*serve.SessionRuntime, error) {
+			rt, err := factory(ctx)
 			if err != nil {
 				return nil, err
 			}
-			engine, _, err := newServeEngineWithTools(cfg, settings, p, serveYolo, WireSpawnAgentRunner)
-			if err != nil {
-				return nil, err
-			}
-			return engine, nil
+			return &serve.SessionRuntime{
+				Engine:       rt.engine,
+				ProviderName: rt.provider.Name(),
+				ModelName:    rt.defaultModel,
+				Cleanup:      rt.Close,
+			}, nil
 		},
 	}
 
@@ -521,6 +545,7 @@ func (s *serveServer) cors(next http.HandlerFunc) http.HandlerFunc {
 			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, session_id")
+			w.Header().Set("Access-Control-Expose-Headers", "x-session-id")
 		}
 
 		if r.Method == http.MethodOptions {
@@ -646,7 +671,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessionID := strings.TrimSpace(r.Header.Get("session_id"))
+	sessionID := resolveRequestSessionID(w, r)
 	runtime, stateful, err := s.runtimeForRequest(ctx, sessionID)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
@@ -688,7 +713,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Stream {
-		s.streamResponses(ctx, w, r, runtime, stateful, replaceHistory, inputMessages, llmReq)
+		s.streamResponses(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID)
 		return
 	}
 
@@ -709,7 +734,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, responsesFinalResponse(result, model))
 }
 
-func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, r *http.Request, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request) {
+func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "streaming not supported")
@@ -717,7 +742,7 @@ func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter
 	}
 
 	setSSEHeaders(w)
-	respID := "resp_" + sessionOrRandomID(strings.TrimSpace(r.Header.Get("session_id")))
+	respID := "resp_" + sessionOrRandomID(sessionID)
 	model := llmReq.Model
 	if model == "" {
 		model = runtime.defaultModel
@@ -831,7 +856,7 @@ func (s *serveServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	sessionID := strings.TrimSpace(r.Header.Get("session_id"))
+	sessionID := resolveRequestSessionID(w, r)
 	runtime, stateful, err := s.runtimeForRequest(ctx, sessionID)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
@@ -872,7 +897,7 @@ func (s *serveServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	}
 
 	if req.Stream {
-		s.streamChatCompletions(ctx, w, r, runtime, stateful, replaceHistory, messages, llmReq, req.StreamOptions)
+		s.streamChatCompletions(ctx, w, runtime, stateful, replaceHistory, messages, llmReq, req.StreamOptions, sessionID)
 		return
 	}
 
@@ -893,7 +918,7 @@ func (s *serveServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, chatCompletionFinalResponse(result, model))
 }
 
-func (s *serveServer) streamChatCompletions(ctx context.Context, w http.ResponseWriter, r *http.Request, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, streamOpts *chatStreamOptions) {
+func (s *serveServer) streamChatCompletions(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, streamOpts *chatStreamOptions, sessionID string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "streaming not supported")
@@ -901,7 +926,7 @@ func (s *serveServer) streamChatCompletions(ctx context.Context, w http.Response
 	}
 
 	setSSEHeaders(w)
-	respID := "chatcmpl_" + sessionOrRandomID(strings.TrimSpace(r.Header.Get("session_id")))
+	respID := "chatcmpl_" + sessionOrRandomID(sessionID)
 	model := llmReq.Model
 	if model == "" {
 		model = runtime.defaultModel
@@ -1248,9 +1273,14 @@ type serveRuntime struct {
 	engine              *llm.Engine
 	toolMgr             *tools.ToolManager
 	mcpManager          *mcp.Manager
+	store               session.Store
 	systemPrompt        string
 	history             []llm.Message
 	search              bool
+	toolsSetting        string
+	mcpSetting          string
+	agentName           string
+	sessionMeta         *session.Session
 	forceExternalSearch bool
 	maxTurns            int
 	debug               bool
@@ -1280,6 +1310,118 @@ func (rt *serveRuntime) Close() {
 	}
 	if cleaner, ok := rt.provider.(interface{ CleanupMCP() }); ok {
 		cleaner.CleanupMCP()
+	}
+}
+
+func (rt *serveRuntime) ensurePersistedSession(ctx context.Context, sessionID string, inputMessages []llm.Message) bool {
+	if rt.store == nil || sessionID == "" {
+		return false
+	}
+	if rt.sessionMeta != nil && rt.sessionMeta.ID == sessionID {
+		return true
+	}
+
+	providerName := "unknown"
+	if rt.provider != nil {
+		if name := strings.TrimSpace(rt.provider.Name()); name != "" {
+			providerName = name
+		}
+	}
+	modelName := strings.TrimSpace(rt.defaultModel)
+	if modelName == "" {
+		modelName = "unknown"
+	}
+
+	sess := &session.Session{
+		ID:        sessionID,
+		Provider:  providerName,
+		Model:     modelName,
+		Mode:      session.ModeChat,
+		Agent:     rt.agentName,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Search:    rt.search,
+		Tools:     rt.toolsSetting,
+		MCP:       rt.mcpSetting,
+		Status:    session.StatusActive,
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		sess.CWD = cwd
+	}
+	for _, msg := range inputMessages {
+		if msg.Role != llm.RoleUser {
+			continue
+		}
+		if text := session.NewMessage(sessionID, msg, -1).TextContent; text != "" {
+			sess.Summary = session.TruncateSummary(text)
+			break
+		}
+	}
+
+	if err := rt.store.Create(ctx, sess); err != nil {
+		existing, getErr := rt.store.Get(ctx, sessionID)
+		if getErr != nil || existing == nil {
+			log.Printf("[serve] session Create failed for %s: %v", sessionID, err)
+			return false
+		}
+		rt.sessionMeta = existing
+		if setErr := rt.store.SetCurrent(ctx, sessionID); setErr != nil {
+			log.Printf("[serve] session SetCurrent failed for %s: %v", sessionID, setErr)
+		}
+		return true
+	}
+
+	rt.sessionMeta = sess
+	if setErr := rt.store.SetCurrent(ctx, sessionID); setErr != nil {
+		log.Printf("[serve] session SetCurrent failed for %s: %v", sessionID, setErr)
+	}
+	return true
+}
+
+func (rt *serveRuntime) persistSnapshot(ctx context.Context, sessionID string, snapshot []llm.Message) {
+	if rt.store == nil || sessionID == "" {
+		return
+	}
+	messages := make([]session.Message, 0, len(snapshot))
+	for _, msg := range snapshot {
+		if msg.Role == "" {
+			continue
+		}
+		sessionMsg := session.NewMessage(sessionID, msg, -1)
+		messages = append(messages, *sessionMsg)
+	}
+	if err := rt.store.ReplaceMessages(ctx, sessionID, messages); err != nil {
+		log.Printf("[serve] session ReplaceMessages failed for %s: %v", sessionID, err)
+		return
+	}
+	if rt.sessionMeta != nil && rt.sessionMeta.Summary == "" {
+		for _, msg := range snapshot {
+			if msg.Role != llm.RoleUser {
+				continue
+			}
+			if text := session.NewMessage(sessionID, msg, -1).TextContent; text != "" {
+				rt.sessionMeta.Summary = session.TruncateSummary(text)
+				if updateErr := rt.store.Update(ctx, rt.sessionMeta); updateErr != nil {
+					log.Printf("[serve] session Update failed for %s: %v", sessionID, updateErr)
+				}
+				break
+			}
+		}
+	}
+	if setErr := rt.store.SetCurrent(ctx, sessionID); setErr != nil {
+		log.Printf("[serve] session SetCurrent failed for %s: %v", sessionID, setErr)
+	}
+	if statusErr := rt.store.UpdateStatus(ctx, sessionID, session.StatusActive); statusErr != nil {
+		log.Printf("[serve] session UpdateStatus(active) failed for %s: %v", sessionID, statusErr)
+	}
+}
+
+func (rt *serveRuntime) persistStatus(ctx context.Context, sessionID string, status session.SessionStatus) {
+	if rt.store == nil || sessionID == "" {
+		return
+	}
+	if err := rt.store.UpdateStatus(ctx, sessionID, status); err != nil {
+		log.Printf("[serve] session UpdateStatus(%s) failed for %s: %v", status, sessionID, err)
 	}
 }
 
@@ -1319,6 +1461,10 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	}
 	defer rt.mu.Unlock()
 	rt.Touch()
+	persisted := rt.ensurePersistedSession(ctx, req.SessionID, inputMessages)
+	if persisted {
+		rt.persistStatus(ctx, req.SessionID, session.StatusActive)
+	}
 
 	if !stateful {
 		rt.engine.ResetConversation()
@@ -1349,6 +1495,9 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 
 	stream, err := rt.engine.Stream(ctx, req)
 	if err != nil {
+		if persisted {
+			rt.persistStatus(ctx, req.SessionID, statusForRunError(err))
+		}
 		return serveRunResult{}, err
 	}
 	defer stream.Close()
@@ -1360,11 +1509,17 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 			break
 		}
 		if recvErr != nil {
+			if persisted {
+				rt.persistStatus(ctx, req.SessionID, statusForRunError(recvErr))
+			}
 			return serveRunResult{}, recvErr
 		}
 
 		if onEvent != nil {
 			if err := onEvent(ev); err != nil {
+				if persisted {
+					rt.persistStatus(ctx, req.SessionID, statusForRunError(err))
+				}
 				return serveRunResult{}, err
 			}
 		}
@@ -1384,20 +1539,36 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 			}
 		case llm.EventError:
 			if ev.Err != nil {
+				if persisted {
+					rt.persistStatus(ctx, req.SessionID, statusForRunError(ev.Err))
+				}
 				return serveRunResult{}, ev.Err
 			}
 		}
 	}
 
+	newHistory := make([]llm.Message, 0, len(baseHistory)+len(inputMessages)+len(produced)+1)
+	newHistory = append(newHistory, baseHistory...)
+	newHistory = append(newHistory, inputMessages...)
+	newHistory = append(newHistory, produced...)
+	if len(produced) == 0 && result.Text.Len() > 0 {
+		newHistory = append(newHistory, llm.AssistantText(result.Text.String()))
+	}
 	if stateful {
-		newHistory := make([]llm.Message, 0, len(baseHistory)+len(inputMessages)+len(produced))
-		newHistory = append(newHistory, baseHistory...)
-		newHistory = append(newHistory, inputMessages...)
-		newHistory = append(newHistory, produced...)
 		rt.history = newHistory
+	}
+	if persisted {
+		rt.persistSnapshot(ctx, req.SessionID, newHistory)
 	}
 
 	return result, nil
+}
+
+func statusForRunError(err error) session.SessionStatus {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return session.StatusInterrupted
+	}
+	return session.StatusError
 }
 
 func containsSystemMessage(messages []llm.Message) bool {
@@ -1742,6 +1913,15 @@ func decodeJSONBody(r *http.Request, dst any) error {
 		return fmt.Errorf("request body must contain a single JSON object")
 	}
 	return nil
+}
+
+func resolveRequestSessionID(w http.ResponseWriter, r *http.Request) string {
+	sessionID := strings.TrimSpace(r.Header.Get("session_id"))
+	if sessionID == "" {
+		sessionID = session.NewID()
+		w.Header().Set("x-session-id", sessionID)
+	}
+	return sessionID
 }
 
 func requireJSONContentType(r *http.Request) error {

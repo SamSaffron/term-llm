@@ -15,6 +15,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/session"
 )
 
 const telegramMaxMessageLen = 4000 // Telegram limit is 4096; leave margin
@@ -144,6 +145,7 @@ func (p *TelegramPlatform) Run(ctx context.Context, cfg *config.Config, settings
 		sessions:         make(map[int64]*telegramSession),
 		cfg:              cfg,
 		settings:         settings,
+		store:            settings.Store,
 		idleTimeout:      idleTimeout,
 		allowedUserIDs:   buildAllowedSet(p.cfg.AllowedUserIDs),
 		allowedUsernames: buildAllowedUsernameSet(p.cfg.AllowedUsernames),
@@ -156,6 +158,7 @@ func (p *TelegramPlatform) Run(ctx context.Context, cfg *config.Config, settings
 	for {
 		select {
 		case <-ctx.Done():
+			mgr.closeAllSessions()
 			bot.StopReceivingUpdates()
 			return nil
 		case update, ok := <-updates:
@@ -189,8 +192,9 @@ func buildAllowedUsernameSet(names []string) map[string]struct{} {
 // telegramSession holds per-chat conversation state.
 type telegramSession struct {
 	mu           sync.Mutex
-	engine       *llm.Engine
+	runtime      *SessionRuntime
 	history      []llm.Message
+	meta         *session.Session
 	lastActivity time.Time
 }
 
@@ -200,6 +204,7 @@ type telegramSessionMgr struct {
 	sessions         map[int64]*telegramSession
 	cfg              *config.Config
 	settings         Settings
+	store            session.Store
 	idleTimeout      time.Duration
 	allowedUserIDs   map[int64]struct{}
 	allowedUsernames map[string]struct{}
@@ -219,42 +224,164 @@ func (m *telegramSessionMgr) isAllowed(userID int64, username string) bool {
 	return false
 }
 
-func (m *telegramSessionMgr) getOrCreate(chatID int64) (*telegramSession, error) {
+func (m *telegramSessionMgr) getOrCreate(ctx context.Context, chatID int64) (*telegramSession, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if sess, ok := m.sessions[chatID]; ok {
+		m.mu.Unlock()
 		return sess, nil
 	}
+	m.mu.Unlock()
 
-	engine, err := m.settings.NewEngine()
+	created, err := m.newSession(ctx, chatID)
 	if err != nil {
-		return nil, fmt.Errorf("create engine: %w", err)
+		return nil, err
+	}
+
+	m.mu.Lock()
+	if existing, ok := m.sessions[chatID]; ok {
+		m.mu.Unlock()
+		created.mu.Lock()
+		closeTelegramSession(created)
+		created.mu.Unlock()
+		return existing, nil
+	}
+	m.sessions[chatID] = created
+	m.mu.Unlock()
+	return created, nil
+}
+
+func (m *telegramSessionMgr) resetSession(ctx context.Context, chatID int64) (*telegramSession, error) {
+	sess, _, err := m.resetSessionIfCurrent(ctx, chatID, nil)
+	return sess, err
+}
+
+func (m *telegramSessionMgr) resetSessionIfCurrent(ctx context.Context, chatID int64, expected *telegramSession) (*telegramSession, bool, error) {
+	created, err := m.newSession(ctx, chatID)
+	if err != nil {
+		return nil, false, err
+	}
+
+	m.mu.Lock()
+	current := m.sessions[chatID]
+	if expected != nil && current != nil && current != expected {
+		m.mu.Unlock()
+		created.mu.Lock()
+		closeTelegramSession(created)
+		created.mu.Unlock()
+		return current, false, nil
+	}
+	m.sessions[chatID] = created
+	m.mu.Unlock()
+
+	if current != nil {
+		current.mu.Lock()
+		closeTelegramSession(current)
+		current.mu.Unlock()
+	}
+	return created, true, nil
+}
+
+func (m *telegramSessionMgr) newSession(ctx context.Context, chatID int64) (*telegramSession, error) {
+	if m.settings.NewSession == nil {
+		return nil, fmt.Errorf("telegram runtime factory is not configured")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	runtime, err := m.settings.NewSession(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("create runtime: %w", err)
+	}
+
+	providerName := strings.TrimSpace(runtime.ProviderName)
+	if providerName == "" {
+		providerName = "unknown"
+	}
+	modelName := strings.TrimSpace(runtime.ModelName)
+	if modelName == "" {
+		modelName = "unknown"
+	}
+
+	meta := &session.Session{
+		ID:        session.NewID(),
+		Name:      fmt.Sprintf("telegram:%d", chatID),
+		Provider:  providerName,
+		Model:     modelName,
+		Mode:      session.ModeChat,
+		Agent:     m.settings.Agent,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Search:    m.settings.Search,
+		Tools:     m.settings.Tools,
+		MCP:       m.settings.MCP,
+		Status:    session.StatusActive,
+	}
+	if cwd, cwdErr := os.Getwd(); cwdErr == nil {
+		meta.CWD = cwd
 	}
 
 	sess := &telegramSession{
-		engine:       engine,
+		runtime:      runtime,
+		meta:         meta,
 		lastActivity: time.Now(),
 	}
-	m.sessions[chatID] = sess
+
+	if m.store != nil {
+		m.runStoreOp(ctx, meta.ID, "Create", func(storeCtx context.Context) error {
+			return m.store.Create(storeCtx, meta)
+		})
+		m.runStoreOp(ctx, meta.ID, "SetCurrent", func(storeCtx context.Context) error {
+			return m.store.SetCurrent(storeCtx, meta.ID)
+		})
+	}
+
 	return sess, nil
 }
 
-func (m *telegramSessionMgr) resetSession(chatID int64) (*telegramSession, error) {
+func (m *telegramSessionMgr) closeAllSessions() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	engine, err := m.settings.NewEngine()
-	if err != nil {
-		return nil, fmt.Errorf("create engine: %w", err)
+	sessions := make([]*telegramSession, 0, len(m.sessions))
+	for _, sess := range m.sessions {
+		sessions = append(sessions, sess)
 	}
+	m.sessions = make(map[int64]*telegramSession)
+	m.mu.Unlock()
 
-	sess := &telegramSession{
-		engine:       engine,
-		lastActivity: time.Now(),
+	for _, sess := range sessions {
+		sess.mu.Lock()
+		closeTelegramSession(sess)
+		sess.mu.Unlock()
 	}
-	m.sessions[chatID] = sess
-	return sess, nil
+}
+
+func closeTelegramSession(sess *telegramSession) {
+	if sess == nil || sess.runtime == nil || sess.runtime.Cleanup == nil {
+		return
+	}
+	sess.runtime.Cleanup()
+}
+
+func (m *telegramSessionMgr) runStoreOp(ctx context.Context, sessionID, op string, fn func(context.Context) error) {
+	if m.store == nil || fn == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := fn(ctx); err != nil {
+		log.Printf("[telegram] %s failed for %s: %v", op, sessionID, err)
+	}
+}
+
+func (m *telegramSessionMgr) runStoreOpWithTimeout(sessionID, op string, fn func(context.Context) error) {
+	if m.store == nil || fn == nil {
+		return
+	}
+	storeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := fn(storeCtx); err != nil {
+		log.Printf("[telegram] %s failed for %s: %v", op, sessionID, err)
+	}
 }
 
 func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
@@ -276,7 +403,7 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 			return
 
 		case "reset":
-			if _, err := m.resetSession(chatID); err != nil {
+			if _, err := m.resetSession(ctx, chatID); err != nil {
 				_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Error resetting session: "+err.Error()))
 				return
 			}
@@ -284,7 +411,7 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 			return
 
 		case "status":
-			sess, err := m.getOrCreate(chatID)
+			sess, err := m.getOrCreate(ctx, chatID)
 			if err != nil {
 				_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Error: "+err.Error()))
 				return
@@ -305,21 +432,30 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 		return
 	}
 
-	sess, err := m.getOrCreate(chatID)
+	sess, err := m.getOrCreate(ctx, chatID)
 	if err != nil {
 		_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Error creating session: "+err.Error()))
 		return
 	}
 
-	// Check idle timeout and reset if expired (under session lock).
+	// Check idle timeout and replace the whole session if expired.
 	sess.mu.Lock()
-	if time.Since(sess.lastActivity) > m.idleTimeout {
-		sess.history = nil
-		sess.engine.ResetConversation()
-		_, _ = bot.Send(tgbotapi.NewMessage(chatID, "(Session reset due to inactivity)"))
+	expired := time.Since(sess.lastActivity) > m.idleTimeout
+	if !expired {
+		sess.lastActivity = time.Now()
 	}
-	sess.lastActivity = time.Now()
 	sess.mu.Unlock()
+	if expired {
+		var replaced bool
+		sess, replaced, err = m.resetSessionIfCurrent(ctx, chatID, sess)
+		if err != nil {
+			_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Error resetting session: "+err.Error()))
+			return
+		}
+		if replaced {
+			_, _ = bot.Send(tgbotapi.NewMessage(chatID, "(Session reset due to inactivity)"))
+		}
+	}
 
 	// Send "typing…" indicator.
 	_, _ = bot.Send(tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping))
@@ -336,36 +472,105 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot *tgbotapi.BotA
 	// concurrent messages from the same chat are serialised.
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
+	if sess.runtime == nil || sess.runtime.Engine == nil {
+		return fmt.Errorf("telegram runtime is not initialized")
+	}
 
 	// Build full message list: system + history + new user turn.
 	messages := make([]llm.Message, 0, len(sess.history)+2)
-	if m.settings.SystemPrompt != "" && !containsSystemMsg(sess.history) {
+	historyHasSystem := containsSystemMsg(sess.history)
+	if m.settings.SystemPrompt != "" && !historyHasSystem {
 		messages = append(messages, llm.SystemText(m.settings.SystemPrompt))
 	}
 	messages = append(messages, sess.history...)
 	messages = append(messages, llm.UserText(userText))
+
+	sessionID := ""
+	if sess.meta != nil {
+		sessionID = sess.meta.ID
+	}
+
+	// Persist incoming messages before streaming.
+	if m.store != nil && sess.meta != nil {
+		if m.settings.SystemPrompt != "" && !historyHasSystem {
+			sysMsg := &session.Message{
+				SessionID:   sess.meta.ID,
+				Role:        llm.RoleSystem,
+				Parts:       []llm.Part{{Type: llm.PartText, Text: m.settings.SystemPrompt}},
+				TextContent: m.settings.SystemPrompt,
+				CreatedAt:   time.Now(),
+				Sequence:    -1,
+			}
+			m.runStoreOp(ctx, sess.meta.ID, "AddMessage(system)", func(storeCtx context.Context) error {
+				return m.store.AddMessage(storeCtx, sess.meta.ID, sysMsg)
+			})
+		}
+		userMsg := &session.Message{
+			SessionID:   sess.meta.ID,
+			Role:        llm.RoleUser,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: userText}},
+			TextContent: userText,
+			CreatedAt:   time.Now(),
+			Sequence:    -1,
+		}
+		m.runStoreOp(ctx, sess.meta.ID, "AddMessage(user)", func(storeCtx context.Context) error {
+			return m.store.AddMessage(storeCtx, sess.meta.ID, userMsg)
+		})
+		m.runStoreOp(ctx, sess.meta.ID, "IncrementUserTurns", func(storeCtx context.Context) error {
+			return m.store.IncrementUserTurns(storeCtx, sess.meta.ID)
+		})
+		if sess.meta.Summary == "" {
+			sess.meta.Summary = session.TruncateSummary(userText)
+			m.runStoreOp(ctx, sess.meta.ID, "Update(summary)", func(storeCtx context.Context) error {
+				return m.store.Update(storeCtx, sess.meta)
+			})
+		}
+		m.runStoreOp(ctx, sess.meta.ID, "SetCurrent", func(storeCtx context.Context) error {
+			return m.store.SetCurrent(storeCtx, sess.meta.ID)
+		})
+		m.runStoreOp(ctx, sess.meta.ID, "UpdateStatus(active)", func(storeCtx context.Context) error {
+			return m.store.UpdateStatus(storeCtx, sess.meta.ID, session.StatusActive)
+		})
+	}
 
 	// Collect assistant and tool-result messages via the turn callback.
 	var (
 		producedMu sync.Mutex
 		produced   []llm.Message
 	)
-	sess.engine.SetTurnCompletedCallback(func(_ context.Context, _ int, msgs []llm.Message, _ llm.TurnMetrics) error {
+	sess.runtime.Engine.SetTurnCompletedCallback(func(cbCtx context.Context, _ int, msgs []llm.Message, metrics llm.TurnMetrics) error {
 		producedMu.Lock()
 		produced = append(produced, msgs...)
 		producedMu.Unlock()
+		if m.store != nil && sess.meta != nil {
+			for _, msg := range msgs {
+				sessionMsg := session.NewMessage(sess.meta.ID, msg, -1)
+				m.runStoreOp(cbCtx, sess.meta.ID, "AddMessage(turn)", func(storeCtx context.Context) error {
+					return m.store.AddMessage(storeCtx, sess.meta.ID, sessionMsg)
+				})
+			}
+			m.runStoreOp(cbCtx, sess.meta.ID, "UpdateMetrics", func(storeCtx context.Context) error {
+				return m.store.UpdateMetrics(storeCtx, sess.meta.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens)
+			})
+		}
 		return nil
 	})
-	defer sess.engine.SetTurnCompletedCallback(nil)
+	defer sess.runtime.Engine.SetTurnCompletedCallback(nil)
 
 	req := llm.Request{
-		Messages: messages,
-		MaxTurns: m.settings.MaxTurns,
-		Search:   m.settings.Search,
+		SessionID: sessionID,
+		Messages:  messages,
+		MaxTurns:  m.settings.MaxTurns,
+		Search:    m.settings.Search,
 	}
 
-	stream, err := sess.engine.Stream(ctx, req)
+	stream, err := sess.runtime.Engine.Stream(ctx, req)
 	if err != nil {
+		if m.store != nil && sess.meta != nil {
+			m.runStoreOpWithTimeout(sess.meta.ID, "UpdateStatus(error)", func(storeCtx context.Context) error {
+				return m.store.UpdateStatus(storeCtx, sess.meta.ID, session.StatusError)
+			})
+		}
 		return fmt.Errorf("stream: %w", err)
 	}
 	defer stream.Close()
@@ -446,11 +651,25 @@ loop:
 				sendEdit(currentMsgID, segment, true)
 			}
 		case <-ctx.Done():
+			if m.store != nil && sess.meta != nil {
+				status := session.StatusInterrupted
+				if ctx.Err() != context.Canceled {
+					status = session.StatusError
+				}
+				m.runStoreOpWithTimeout(sess.meta.ID, "UpdateStatus(done)", func(storeCtx context.Context) error {
+					return m.store.UpdateStatus(storeCtx, sess.meta.ID, status)
+				})
+			}
 			return ctx.Err()
 		}
 	}
 
 	if streamErr != nil {
+		if m.store != nil && sess.meta != nil {
+			m.runStoreOpWithTimeout(sess.meta.ID, "UpdateStatus(stream_error)", func(storeCtx context.Context) error {
+				return m.store.UpdateStatus(storeCtx, sess.meta.ID, session.StatusError)
+			})
+		}
 		return streamErr
 	}
 
@@ -476,10 +695,24 @@ loop:
 	producedMu.Unlock()
 	// Fallback: if the callback didn't fire (no tools), record the text directly.
 	if len(produced) == 0 && full != "" {
+		if m.store != nil && sess.meta != nil {
+			assistantMsg := session.NewMessage(sess.meta.ID, llm.AssistantText(full), -1)
+			m.runStoreOp(ctx, sess.meta.ID, "AddMessage(assistant_fallback)", func(storeCtx context.Context) error {
+				return m.store.AddMessage(storeCtx, sess.meta.ID, assistantMsg)
+			})
+		}
 		newHistory = append(newHistory, llm.AssistantText(full))
 	}
 	sess.history = newHistory
 	sess.lastActivity = time.Now()
+	if m.store != nil && sess.meta != nil {
+		m.runStoreOp(ctx, sess.meta.ID, "UpdateStatus(active_end)", func(storeCtx context.Context) error {
+			return m.store.UpdateStatus(storeCtx, sess.meta.ID, session.StatusActive)
+		})
+		m.runStoreOp(ctx, sess.meta.ID, "SetCurrent(end)", func(storeCtx context.Context) error {
+			return m.store.SetCurrent(storeCtx, sess.meta.ID)
+		})
+	}
 
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 func TestResolveSettings_ConfigSystemPromptExpandsIncludeThenTemplate(t *testing.T) {
@@ -99,5 +100,39 @@ func TestResolveSettings_MissingIncludeIsLeftUnchanged(t *testing.T) {
 	}
 	if settings.SystemPrompt != "{{file:missing.md}}" {
 		t.Fatalf("SystemPrompt = %q, want %q", settings.SystemPrompt, "{{file:missing.md}}")
+	}
+}
+
+func TestResolveSettings_AgentToolsAppliedWhenCLIToolsUnset(t *testing.T) {
+	cfg := &config.Config{}
+	agent := &agents.Agent{
+		Tools: agents.ToolsConfig{
+			Enabled: []string{tools.ReadFileToolName, tools.ShellToolName},
+		},
+	}
+
+	settings, err := ResolveSettings(cfg, agent, CLIFlags{}, "", "", "", 0, 20)
+	if err != nil {
+		t.Fatalf("ResolveSettings() error = %v", err)
+	}
+	if settings.Tools != tools.ReadFileToolName+","+tools.ShellToolName {
+		t.Fatalf("Tools = %q, want %q", settings.Tools, tools.ReadFileToolName+","+tools.ShellToolName)
+	}
+}
+
+func TestResolveSettings_CLIToolsOverrideAgentTools(t *testing.T) {
+	cfg := &config.Config{}
+	agent := &agents.Agent{
+		Tools: agents.ToolsConfig{
+			Enabled: []string{tools.ReadFileToolName, tools.ShellToolName},
+		},
+	}
+
+	settings, err := ResolveSettings(cfg, agent, CLIFlags{Tools: tools.GrepToolName}, "", "", "", 0, 20)
+	if err != nil {
+		t.Fatalf("ResolveSettings() error = %v", err)
+	}
+	if settings.Tools != tools.GrepToolName {
+		t.Fatalf("Tools = %q, want %q", settings.Tools, tools.GrepToolName)
 	}
 }
