@@ -330,6 +330,28 @@ func TestStreamReply_PlaceholderSendFails(t *testing.T) {
 	}
 }
 
+func TestStreamReply_StreamEventErrorReturnsError(t *testing.T) {
+	h := testutil.NewEngineHarness()
+	h.Provider.AddError(errors.New("anthropic streaming error: upstream unavailable"))
+
+	mgr, sess := newTestMgrAndSession(h)
+	bot := &fakeBotSender{}
+
+	err := mgr.streamReply(context.Background(), bot, sess, 42, "hi")
+	if err == nil {
+		t.Fatal("expected streamReply to return error when stream emits EventError")
+	}
+	if !strings.Contains(err.Error(), "upstream unavailable") {
+		t.Fatalf("expected upstream error in streamReply error, got: %v", err)
+	}
+
+	for _, text := range bot.allTexts() {
+		if text == "(no response)" || text == "(done)" {
+			t.Fatalf("unexpected fallback text after stream error: %q", text)
+		}
+	}
+}
+
 // --- existing tests (unchanged) ---
 
 func TestTelegramSessionMgrGetOrCreate_DoesNotBlockOtherChatsWhileCreating(t *testing.T) {

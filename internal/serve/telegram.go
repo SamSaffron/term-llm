@@ -597,20 +597,24 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 	}
 
 	var (
-		textMu      sync.Mutex
-		textBuf     strings.Builder
-		activeTools = make(map[string]string) // toolCallID → toolName
-		activePhase string                    // most-recent EventPhase text, "" when idle
-		toolsRan    bool                      // true once any EventToolExecStart seen
-		textDeltas  int
-		toolStarts  int
-		toolEnds    int
-		toolCalls   int
-		phaseEvents int
-		usageEvents int
-		doneEvents  int
-		otherEvents int
-		streamDone  = make(chan error, 1)
+		textMu          sync.Mutex
+		textBuf         strings.Builder
+		activeTools     = make(map[string]string) // toolCallID → toolName
+		activePhase     string                    // most-recent EventPhase text, "" when idle
+		toolsRan        bool                      // true once any EventToolExecStart seen
+		textDeltas      int
+		reasoningDeltas int
+		toolStarts      int
+		toolEnds        int
+		toolCalls       int
+		phaseEvents     int
+		usageEvents     int
+		doneEvents      int
+		retryEvents     int
+		errorEvents     int
+		otherEvents     int
+		otherTypes      = make(map[llm.EventType]int)
+		streamDone      = make(chan error, 1)
 	)
 
 	// Goroutine: consume stream events.
@@ -630,6 +634,10 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 				textMu.Lock()
 				textBuf.WriteString(ev.Text)
 				textDeltas++
+				textMu.Unlock()
+			case llm.EventReasoningDelta:
+				textMu.Lock()
+				reasoningDeltas++
 				textMu.Unlock()
 			case llm.EventToolExecStart:
 				textMu.Lock()
@@ -659,9 +667,23 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 				textMu.Lock()
 				doneEvents++
 				textMu.Unlock()
+			case llm.EventRetry:
+				textMu.Lock()
+				retryEvents++
+				activePhase = fmt.Sprintf("Retrying (%d/%d), waiting %.0fs", ev.RetryAttempt, ev.RetryMaxAttempts, ev.RetryWaitSecs)
+				textMu.Unlock()
+			case llm.EventError:
+				textMu.Lock()
+				errorEvents++
+				textMu.Unlock()
+				if ev.Err != nil {
+					streamDone <- ev.Err
+					return
+				}
 			default:
 				textMu.Lock()
 				otherEvents++
+				otherTypes[ev.Type]++
 				textMu.Unlock()
 			}
 		}
@@ -750,13 +772,20 @@ loop:
 	textMu.Lock()
 	full, ran := textBuf.String(), toolsRan
 	finalTextDeltas := textDeltas
+	finalReasoningDeltas := reasoningDeltas
 	finalToolStarts := toolStarts
 	finalToolEnds := toolEnds
 	finalToolCalls := toolCalls
 	finalPhaseEvents := phaseEvents
 	finalUsageEvents := usageEvents
 	finalDoneEvents := doneEvents
+	finalRetryEvents := retryEvents
+	finalErrorEvents := errorEvents
 	finalOtherEvents := otherEvents
+	finalOtherTypes := make(map[llm.EventType]int, len(otherTypes))
+	for k, v := range otherTypes {
+		finalOtherTypes[k] = v
+	}
 	textMu.Unlock()
 
 	prose := full[msgStart:]
@@ -779,17 +808,21 @@ loop:
 			sendEdit(currentMsgID, "(no response)")
 		}
 		if m.settings.Debug || m.settings.DebugRaw {
-			log.Printf("[telegram] empty assistant text for chat %d (toolsRan=%v, text_delta=%d, tool_start=%d, tool_end=%d, tool_call=%d, phase=%d, usage=%d, done=%d, other=%d)",
+			log.Printf("[telegram] empty assistant text for chat %d (toolsRan=%v, text_delta=%d, reasoning_delta=%d, tool_start=%d, tool_end=%d, tool_call=%d, phase=%d, usage=%d, done=%d, retry=%d, error=%d, other=%d, other_types=%v)",
 				chatID,
 				ran,
 				finalTextDeltas,
+				finalReasoningDeltas,
 				finalToolStarts,
 				finalToolEnds,
 				finalToolCalls,
 				finalPhaseEvents,
 				finalUsageEvents,
 				finalDoneEvents,
+				finalRetryEvents,
+				finalErrorEvents,
 				finalOtherEvents,
+				finalOtherTypes,
 			)
 		}
 		// else: prose=="" but full!="", all content already shown in previous message(s).
