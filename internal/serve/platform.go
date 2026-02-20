@@ -25,10 +25,13 @@ type Settings struct {
 	Debug        bool
 	DebugRaw     bool
 	Search       bool
-	Tools        string
-	MCP          string
-	Agent        string
-	Store        session.Store
+	// ForceExternalSearch disables provider-native search and uses external
+	// web_search/read_url tools instead when search is enabled.
+	ForceExternalSearch bool
+	Tools               string
+	MCP                 string
+	Agent               string
+	Store               session.Store
 	// NewSession creates a fresh runtime instance for a new conversation.
 	// Called once per platform session (for example, per Telegram chat session).
 	NewSession func(context.Context) (*SessionRuntime, error)

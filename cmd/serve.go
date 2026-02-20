@@ -238,16 +238,17 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	// Build the serve.Settings used by non-web platforms.
 	serveSettings := serve.Settings{
-		SystemPrompt: settings.SystemPrompt,
-		IdleTimeout:  serveSessionTTL,
-		MaxTurns:     settings.MaxTurns,
-		Debug:        serveDebug,
-		DebugRaw:     debugRaw,
-		Search:       settings.Search,
-		Tools:        settings.Tools,
-		MCP:          settings.MCP,
-		Agent:        agentName,
-		Store:        store,
+		SystemPrompt:        settings.SystemPrompt,
+		IdleTimeout:         serveSessionTTL,
+		MaxTurns:            settings.MaxTurns,
+		Debug:               serveDebug,
+		DebugRaw:            debugRaw,
+		Search:              settings.Search,
+		ForceExternalSearch: forceExternalSearch,
+		Tools:               settings.Tools,
+		MCP:                 settings.MCP,
+		Agent:               agentName,
+		Store:               store,
 		NewSession: func(ctx context.Context) (*serve.SessionRuntime, error) {
 			rt, err := factory(ctx)
 			if err != nil {

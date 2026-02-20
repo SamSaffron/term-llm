@@ -565,12 +565,13 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 	defer sess.runtime.Engine.SetTurnCompletedCallback(nil)
 
 	req := llm.Request{
-		SessionID: sessionID,
-		Messages:  messages,
-		MaxTurns:  m.settings.MaxTurns,
-		Debug:     m.settings.Debug,
-		DebugRaw:  m.settings.DebugRaw,
-		Search:    m.settings.Search,
+		SessionID:           sessionID,
+		Messages:            messages,
+		MaxTurns:            m.settings.MaxTurns,
+		Debug:               m.settings.Debug,
+		DebugRaw:            m.settings.DebugRaw,
+		Search:              m.settings.Search,
+		ForceExternalSearch: m.settings.ForceExternalSearch,
 	}
 
 	// Populate tools so the engine enters the agentic tool loop.

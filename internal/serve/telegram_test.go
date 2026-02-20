@@ -150,6 +150,31 @@ func TestStreamReply_TextOnly(t *testing.T) {
 	}
 }
 
+func TestStreamReply_ForwardsForceExternalSearch(t *testing.T) {
+	h := testutil.NewEngineHarness()
+	h.Provider.AddTextResponse("Hello")
+
+	mgr, sess := newTestMgrAndSession(h)
+	mgr.settings.Search = true
+	mgr.settings.ForceExternalSearch = true
+	bot := &fakeBotSender{}
+
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, "hi"); err != nil {
+		t.Fatalf("streamReply returned error: %v", err)
+	}
+
+	if len(h.Provider.Requests) == 0 {
+		t.Fatal("expected provider request to be recorded")
+	}
+	lastReq := h.Provider.Requests[len(h.Provider.Requests)-1]
+	if !lastReq.Search {
+		t.Fatalf("expected request Search=true")
+	}
+	if !lastReq.ForceExternalSearch {
+		t.Fatalf("expected request ForceExternalSearch=true")
+	}
+}
+
 func TestStreamReply_ToolThenText(t *testing.T) {
 	h := testutil.NewEngineHarness()
 	h.AddMockTool("my_tool", "tool output")
