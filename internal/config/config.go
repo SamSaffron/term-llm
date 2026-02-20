@@ -117,7 +117,8 @@ type TelegramServeConfig struct {
 	Token            string   `mapstructure:"token" yaml:"token,omitempty"`
 	AllowedUserIDs   []int64  `mapstructure:"allowed_user_ids" yaml:"allowed_user_ids,omitempty"`
 	AllowedUsernames []string `mapstructure:"allowed_usernames" yaml:"allowed_usernames,omitempty"`
-	IdleTimeout      int      `mapstructure:"idle_timeout" yaml:"idle_timeout,omitempty"` // minutes
+	IdleTimeout      int      `mapstructure:"idle_timeout" yaml:"idle_timeout,omitempty"`           // minutes
+	InterruptTimeout int      `mapstructure:"interrupt_timeout" yaml:"interrupt_timeout,omitempty"` // seconds, 0 = default (3)
 }
 
 // AgentsConfig configures the agent system
@@ -1352,6 +1353,9 @@ func SetServeTelegramConfig(c TelegramServeConfig) error {
 	v.Set("serve.telegram.allowed_usernames", c.AllowedUsernames)
 	if c.IdleTimeout > 0 {
 		v.Set("serve.telegram.idle_timeout", c.IdleTimeout)
+	}
+	if c.InterruptTimeout > 0 {
+		v.Set("serve.telegram.interrupt_timeout", c.InterruptTimeout)
 	}
 
 	return v.WriteConfig()

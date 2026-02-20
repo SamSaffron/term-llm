@@ -107,6 +107,7 @@ func (p *TelegramPlatform) RunSetup() error {
 		AllowedUserIDs:   userIDs,
 		AllowedUsernames: usernames,
 		IdleTimeout:      p.cfg.IdleTimeout,
+		InterruptTimeout: p.cfg.InterruptTimeout,
 	}
 
 	if err := config.SetServeTelegramConfig(newCfg); err != nil {
@@ -147,12 +148,18 @@ func (p *TelegramPlatform) Run(ctx context.Context, cfg *config.Config, settings
 		}
 	}
 
+	interruptTimeout := 3 * time.Second
+	if p.cfg.InterruptTimeout > 0 {
+		interruptTimeout = time.Duration(p.cfg.InterruptTimeout) * time.Second
+	}
+
 	mgr := &telegramSessionMgr{
 		sessions:         make(map[int64]*telegramSession),
 		cfg:              cfg,
 		settings:         settings,
 		store:            settings.Store,
 		idleTimeout:      idleTimeout,
+		interruptTimeout: interruptTimeout,
 		allowedUserIDs:   buildAllowedSet(p.cfg.AllowedUserIDs),
 		allowedUsernames: buildAllowedUsernameSet(p.cfg.AllowedUsernames),
 	}
@@ -202,6 +209,10 @@ type telegramSession struct {
 	history      []llm.Message
 	meta         *session.Session
 	lastActivity time.Time
+
+	cancelMu     sync.Mutex         // protects streamCancel and replyDone
+	streamCancel context.CancelFunc // cancels the active stream's context
+	replyDone    chan struct{}      // closed when streamReply exits
 }
 
 // telegramSessionMgr manages per-chat sessions.
@@ -212,6 +223,7 @@ type telegramSessionMgr struct {
 	settings         Settings
 	store            session.Store
 	idleTimeout      time.Duration
+	interruptTimeout time.Duration
 	allowedUserIDs   map[int64]struct{}
 	allowedUsernames map[string]struct{}
 	tickerInterval   time.Duration // 0 means use default (500ms); overridden in tests
@@ -464,6 +476,30 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot botSender, m
 		}
 	}
 
+	// If a stream is active, wait for it to finish or interrupt it.
+	sess.cancelMu.Lock()
+	doneCh := sess.replyDone
+	cancelFn := sess.streamCancel
+	sess.cancelMu.Unlock()
+
+	if cancelFn != nil && doneCh != nil {
+		select {
+		case <-doneCh:
+			// Stream finished naturally within the grace period.
+		case <-time.After(m.interruptTimeout):
+			cancelFn()
+			select {
+			case <-doneCh:
+			case <-time.After(5 * time.Second):
+				log.Printf("[telegram] stream for chat %d did not stop within hard timeout", chatID)
+				_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Still processing, please try again."))
+				return
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+
 	// Send "typing…" indicator.
 	_, _ = bot.Send(tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping))
 
@@ -482,6 +518,23 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 	if sess.runtime == nil || sess.runtime.Engine == nil {
 		return fmt.Errorf("telegram runtime is not initialized")
 	}
+
+	// Create a cancellable child context so new messages can interrupt the stream.
+	streamCtx, streamCancel := context.WithCancel(ctx)
+	defer streamCancel()
+
+	replyDone := make(chan struct{})
+	sess.cancelMu.Lock()
+	sess.streamCancel = streamCancel
+	sess.replyDone = replyDone
+	sess.cancelMu.Unlock()
+	defer func() {
+		sess.cancelMu.Lock()
+		sess.streamCancel = nil
+		sess.replyDone = nil
+		sess.cancelMu.Unlock()
+		close(replyDone)
+	}()
 
 	// Build full message list: system + history + new user turn.
 	messages := make([]llm.Message, 0, len(sess.history)+2)
@@ -580,7 +633,7 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		req.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
 	}
 
-	stream, err := sess.runtime.Engine.Stream(ctx, req)
+	stream, err := sess.runtime.Engine.Stream(streamCtx, req)
 	if err != nil {
 		if m.store != nil && sess.meta != nil {
 			m.runStoreOpWithTimeout(sess.meta.ID, "UpdateStatus(error)", func(storeCtx context.Context) error {
@@ -746,17 +799,64 @@ loop:
 				}
 				sendEdit(currentMsgID, rendered)
 			}
-		case <-ctx.Done():
-			if m.store != nil && sess.meta != nil {
-				status := session.StatusInterrupted
-				if ctx.Err() != context.Canceled {
-					status = session.StatusError
+		case <-streamCtx.Done():
+			// Distinguish server shutdown (parent ctx cancelled) from user interrupt.
+			if ctx.Err() != nil {
+				// Server shutdown — existing behavior.
+				if m.store != nil && sess.meta != nil {
+					status := session.StatusInterrupted
+					if ctx.Err() != context.Canceled {
+						status = session.StatusError
+					}
+					m.runStoreOpWithTimeout(sess.meta.ID, "UpdateStatus(done)", func(storeCtx context.Context) error {
+						return m.store.UpdateStatus(storeCtx, sess.meta.ID, status)
+					})
 				}
-				m.runStoreOpWithTimeout(sess.meta.ID, "UpdateStatus(done)", func(storeCtx context.Context) error {
-					return m.store.UpdateStatus(storeCtx, sess.meta.ID, status)
+				return ctx.Err()
+			}
+
+			// User interrupt: cancel the stream and preserve partial state.
+			stream.Close()
+
+			textMu.Lock()
+			partial := textBuf.String()
+			textMu.Unlock()
+
+			// Edit the Telegram message to show partial text + interrupted marker.
+			display := partial[msgStart:]
+			if display == "" {
+				display = "(interrupted)"
+			} else {
+				display += "\n\n_(interrupted)_"
+			}
+			if needNewMsg {
+				newMsg, sendErr := bot.Send(tgbotapi.NewMessage(chatID, "⏳"))
+				if sendErr == nil {
+					currentMsgID = newMsg.MessageID
+				}
+			}
+			sendEdit(currentMsgID, display)
+
+			// Preserve partial history so conversation context isn't lost.
+			newHistory := make([]llm.Message, 0, len(sess.history)+2+len(produced))
+			newHistory = append(newHistory, sess.history...)
+			newHistory = append(newHistory, llm.UserText(userText))
+			producedMu.Lock()
+			newHistory = append(newHistory, produced...)
+			producedMu.Unlock()
+			// If we have partial text but no tool turns completed, save it.
+			if len(produced) == 0 && partial != "" {
+				newHistory = append(newHistory, llm.AssistantText(partial))
+			}
+			sess.history = newHistory
+			sess.lastActivity = time.Now()
+
+			if m.store != nil && sess.meta != nil {
+				m.runStoreOpWithTimeout(sess.meta.ID, "UpdateStatus(interrupted)", func(storeCtx context.Context) error {
+					return m.store.UpdateStatus(storeCtx, sess.meta.ID, session.StatusInterrupted)
 				})
 			}
-			return ctx.Err()
+			return nil
 		}
 	}
 

@@ -475,6 +475,240 @@ func TestTelegramSessionMgrResetSessionIfCurrent_RejectsStaleExpectedSession(t *
 	}
 }
 
+// --- interrupt tests ---
+
+func TestHandleMessage_InterruptCancelsActiveStream(t *testing.T) {
+	h := testutil.NewEngineHarness()
+
+	toolStarted := make(chan struct{})
+	toolRelease := make(chan struct{})
+
+	slowTool := &testutil.MockTool{
+		SpecData: llm.ToolSpec{
+			Name:        "slow_tool",
+			Description: "slow tool for testing",
+			Schema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+		},
+		ExecuteFn: func(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+			close(toolStarted)
+			select {
+			case <-toolRelease:
+			case <-ctx.Done():
+				return llm.TextOutput("cancelled"), ctx.Err()
+			}
+			return llm.TextOutput("done"), nil
+		},
+	}
+	h.Registry.Register(slowTool)
+
+	h.Provider.AddToolCall("id-1", "slow_tool", map[string]any{})
+	h.Provider.AddTextResponse("final answer")
+
+	mgr, sess := newTestMgrAndSession(h)
+	mgr.interruptTimeout = 50 * time.Millisecond
+	bot := &fakeBotSender{}
+
+	// Start the stream in a goroutine (simulates first message handling).
+	streamDone := make(chan error, 1)
+	go func() {
+		streamDone <- mgr.streamReply(context.Background(), bot, sess, 42, "do something slow")
+	}()
+
+	// Wait for the tool to start executing.
+	select {
+	case <-toolStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("tool never started")
+	}
+
+	// Now simulate a new message arriving: read cancel state and interrupt.
+	sess.cancelMu.Lock()
+	doneCh := sess.replyDone
+	cancelFn := sess.streamCancel
+	sess.cancelMu.Unlock()
+
+	if cancelFn == nil || doneCh == nil {
+		t.Fatal("expected streamCancel and replyDone to be set during active stream")
+	}
+
+	// Wait the interrupt timeout, then cancel.
+	select {
+	case <-doneCh:
+		t.Fatal("stream should not have finished yet")
+	case <-time.After(mgr.interruptTimeout):
+		cancelFn()
+	}
+
+	// Wait for stream to finish.
+	select {
+	case <-doneCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stream did not stop after cancel")
+	}
+
+	// streamReply should return nil (not an error) on user interrupt.
+	err := <-streamDone
+	if err != nil {
+		t.Fatalf("streamReply should return nil on user interrupt, got: %v", err)
+	}
+
+	// Check that "(interrupted)" appears in the sent messages.
+	found := false
+	for _, text := range bot.allTexts() {
+		if strings.Contains(text, "(interrupted)") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected '(interrupted)' in sent texts; got: %v", bot.allTexts())
+	}
+}
+
+func TestHandleMessage_GracePeriodAllowsNaturalCompletion(t *testing.T) {
+	h := testutil.NewEngineHarness()
+	h.Provider.AddTextResponse("quick answer")
+
+	mgr, sess := newTestMgrAndSession(h)
+	mgr.interruptTimeout = 2 * time.Second
+	bot := &fakeBotSender{}
+
+	// Start the stream.
+	streamDone := make(chan error, 1)
+	go func() {
+		streamDone <- mgr.streamReply(context.Background(), bot, sess, 42, "hello")
+	}()
+
+	// Give the stream a moment to start and publish cancel state.
+	time.Sleep(30 * time.Millisecond)
+
+	sess.cancelMu.Lock()
+	doneCh := sess.replyDone
+	cancelFn := sess.streamCancel
+	sess.cancelMu.Unlock()
+
+	// doneCh might be nil if stream already finished, or non-nil if still running.
+	if cancelFn != nil && doneCh != nil {
+		// Simulate interrupt-and-wait: the stream should finish within the grace period.
+		select {
+		case <-doneCh:
+			// Good — finished naturally.
+		case <-time.After(mgr.interruptTimeout):
+			t.Fatal("stream should have finished within the grace period")
+		}
+	}
+
+	// Wait for streamReply to return.
+	err := <-streamDone
+	if err != nil {
+		t.Fatalf("streamReply returned error: %v", err)
+	}
+
+	// Should NOT contain "(interrupted)".
+	for _, text := range bot.allTexts() {
+		if strings.Contains(text, "(interrupted)") {
+			t.Errorf("unexpected '(interrupted)' in sent texts; got: %v", bot.allTexts())
+			break
+		}
+	}
+
+	// Last message should be the actual answer.
+	last := bot.lastText()
+	if last != "quick answer" {
+		t.Errorf("lastText = %q; want %q", last, "quick answer")
+	}
+}
+
+func TestHandleMessage_InterruptPreservesHistory(t *testing.T) {
+	h := testutil.NewEngineHarness()
+
+	toolStarted := make(chan struct{})
+
+	slowTool := &testutil.MockTool{
+		SpecData: llm.ToolSpec{
+			Name:        "slow_tool",
+			Description: "slow tool for testing",
+			Schema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+		},
+		ExecuteFn: func(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+			close(toolStarted)
+			// Block until cancelled.
+			<-ctx.Done()
+			return llm.TextOutput("cancelled"), ctx.Err()
+		},
+	}
+	h.Registry.Register(slowTool)
+
+	h.Provider.AddToolCall("id-1", "slow_tool", map[string]any{})
+	h.Provider.AddTextResponse("should not reach")
+
+	mgr, sess := newTestMgrAndSession(h)
+	mgr.interruptTimeout = 50 * time.Millisecond
+	bot := &fakeBotSender{}
+
+	// Seed some existing history.
+	sess.history = []llm.Message{
+		llm.UserText("previous question"),
+		llm.AssistantText("previous answer"),
+	}
+
+	streamDone := make(chan error, 1)
+	go func() {
+		streamDone <- mgr.streamReply(context.Background(), bot, sess, 42, "do slow thing")
+	}()
+
+	select {
+	case <-toolStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("tool never started")
+	}
+
+	// Cancel the stream.
+	sess.cancelMu.Lock()
+	cancelFn := sess.streamCancel
+	sess.cancelMu.Unlock()
+	cancelFn()
+
+	err := <-streamDone
+	if err != nil {
+		t.Fatalf("streamReply should return nil on interrupt, got: %v", err)
+	}
+
+	// Verify history was preserved: should contain old history + new user message.
+	sess.mu.Lock()
+	histLen := len(sess.history)
+	sess.mu.Unlock()
+
+	// At minimum: 2 (old) + 1 (new user) = 3
+	if histLen < 3 {
+		t.Fatalf("expected at least 3 messages in history after interrupt, got %d", histLen)
+	}
+
+	// The user message should be present.
+	sess.mu.Lock()
+	foundUser := false
+	for _, msg := range sess.history {
+		if msg.Role == llm.RoleUser {
+			for _, p := range msg.Parts {
+				if p.Text == "do slow thing" {
+					foundUser = true
+				}
+			}
+		}
+	}
+	sess.mu.Unlock()
+
+	if !foundUser {
+		t.Error("expected interrupted user message in history")
+	}
+}
+
 func TestTelegramSessionMgrRunStoreOpWithTimeout_UsesLiveContext(t *testing.T) {
 	mgr := &telegramSessionMgr{
 		store: &session.NoopStore{},
