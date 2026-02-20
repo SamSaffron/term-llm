@@ -4,7 +4,7 @@
 
 # term-llm
 
-A Swiss Army knife for your terminal—AI-powered commands, answers, and images at your fingertips.
+A Swiss Army knife for your terminal — AI-powered commands, answers, and images at your fingertips.
 
 [![Release](https://img.shields.io/github/v/release/samsaffron/term-llm?style=flat-square)](https://github.com/samsaffron/term-llm/releases)
 
