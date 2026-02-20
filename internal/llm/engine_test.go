@@ -920,7 +920,7 @@ func TestEngineResetConversation(t *testing.T) {
 	e.lastTotalTokens = 500
 	e.lastMessageCount = 10
 	e.systemPrompt = "You are a helpful assistant."
-	e.contextNoticeEmitted = true
+	e.contextNoticeEmitted.Store(true)
 	e.callbackMu.Unlock()
 
 	// Reset conversation
@@ -937,7 +937,7 @@ func TestEngineResetConversation(t *testing.T) {
 	if e.systemPrompt != "" {
 		t.Errorf("expected systemPrompt=\"\", got %q", e.systemPrompt)
 	}
-	if e.contextNoticeEmitted {
+	if e.contextNoticeEmitted.Load() {
 		t.Error("expected contextNoticeEmitted=false")
 	}
 	e.callbackMu.RUnlock()

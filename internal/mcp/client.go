@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -117,7 +119,7 @@ func (c *Client) createStdioTransport(ctx context.Context) mcp.Transport {
 // createHTTPTransport creates an HTTP transport for URL-based servers.
 func (c *Client) createHTTPTransport() mcp.Transport {
 	// Create HTTP client with custom headers if specified
-	httpClient := &http.Client{}
+	httpClient := &http.Client{Timeout: 30 * time.Second}
 
 	// Use StreamableClientTransport (the modern MCP transport)
 	transport := &mcp.StreamableClientTransport{
@@ -243,17 +245,17 @@ func (c *Client) CallTool(ctx context.Context, name string, args json.RawMessage
 
 // formatContent converts MCP content to a string.
 func formatContent(content []mcp.Content) string {
-	var result string
+	var sb strings.Builder
 	for _, c := range content {
 		switch v := c.(type) {
 		case *mcp.TextContent:
-			result += v.Text
+			sb.WriteString(v.Text)
 		default:
 			// For other content types, try JSON encoding
 			if data, err := json.Marshal(c); err == nil {
-				result += string(data)
+				sb.WriteString(string(data))
 			}
 		}
 	}
-	return result
+	return sb.String()
 }

@@ -116,7 +116,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 	} else {
 		dsn += "?"
 	}
-	dsn += "_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)"
+	dsn += "_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=mmap_size(134217728)&_pragma=cache_size(-64000)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
@@ -244,14 +244,13 @@ var migrations = []migration{
 			// Renumber messages in each affected session
 			for _, sid := range sessionsToFix {
 				msgRows, err := db.Query(`
-					SELECT id FROM messages
-					WHERE session_id = ?
-					ORDER BY created_at ASC, id ASC
-				`, sid)
+				SELECT id FROM messages
+				WHERE session_id = ?
+				ORDER BY created_at ASC, id ASC
+			`, sid)
 				if err != nil {
 					return fmt.Errorf("get messages for session %s: %w", sid, err)
 				}
-
 				var msgIDs []int64
 				for msgRows.Next() {
 					var id int64
@@ -262,6 +261,9 @@ var migrations = []migration{
 					msgIDs = append(msgIDs, id)
 				}
 				msgRows.Close()
+				if err := msgRows.Err(); err != nil {
+					return fmt.Errorf("iterate messages: %w", err)
+				}
 
 				// Update sequences
 				for seq, msgID := range msgIDs {
@@ -512,7 +514,7 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 		sess.Mode = ModeChat
 	}
 
-	err := retryOnBusy(5, func() error {
+	err := retryOnBusy(ctx, 5, func() error {
 		// Use a single INSERT statement with a subquery to atomically assign the
 		// next session number. This avoids race conditions where two concurrent
 		// Creates could read the same MAX(number).
@@ -758,7 +760,7 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 
 // UpdateMetrics updates just the metrics fields (used for incremental saves).
 func (s *SQLiteStore) UpdateMetrics(ctx context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens, cachedInputTokens int) error {
-	return retryOnBusy(5, func() error {
+	return retryOnBusy(ctx, 5, func() error {
 		_, err := s.db.ExecContext(ctx, `
 			UPDATE sessions SET
 			       llm_turns = llm_turns + ?,
@@ -775,7 +777,7 @@ func (s *SQLiteStore) UpdateMetrics(ctx context.Context, id string, llmTurns, to
 
 // UpdateStatus updates just the session status.
 func (s *SQLiteStore) UpdateStatus(ctx context.Context, id string, status SessionStatus) error {
-	return retryOnBusy(5, func() error {
+	return retryOnBusy(ctx, 5, func() error {
 		_, err := s.db.ExecContext(ctx, `
 			UPDATE sessions SET status = ?, updated_at = ?
 			WHERE id = ?`,
@@ -786,7 +788,7 @@ func (s *SQLiteStore) UpdateStatus(ctx context.Context, id string, status Sessio
 
 // IncrementUserTurns increments the user turn count.
 func (s *SQLiteStore) IncrementUserTurns(ctx context.Context, id string) error {
-	return retryOnBusy(5, func() error {
+	return retryOnBusy(ctx, 5, func() error {
 		_, err := s.db.ExecContext(ctx, `
 			UPDATE sessions SET user_turns = user_turns + 1, updated_at = ?
 			WHERE id = ?`,
@@ -850,9 +852,11 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	if limit == 0 {
 		limit = 50 // Default
 	}
-	query += fmt.Sprintf(" LIMIT %d", limit)
+	query += " LIMIT ?"
+	args = append(args, limit)
 	if opts.Offset > 0 {
-		query += fmt.Sprintf(" OFFSET %d", opts.Offset)
+		query += " OFFSET ?"
+		args = append(args, opts.Offset)
 	}
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -944,7 +948,7 @@ func (s *SQLiteStore) AddMessage(ctx context.Context, sessionID string, msg *Mes
 	autoSequence := msg.Sequence < 0
 
 	// Retry the entire transaction on SQLITE_BUSY
-	return retryOnBusy(5, func() error {
+	return retryOnBusy(ctx, 5, func() error {
 		// Use transaction for atomic sequence allocation
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
@@ -998,7 +1002,7 @@ func (s *SQLiteStore) AddMessage(ctx context.Context, sessionID string, msg *Mes
 // ReplaceMessages deletes all existing messages for the session and inserts
 // the new set in a single transaction. Used after context compaction.
 func (s *SQLiteStore) ReplaceMessages(ctx context.Context, sessionID string, messages []Message) error {
-	return retryOnBusy(5, func() error {
+	return retryOnBusy(ctx, 5, func() error {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("begin transaction: %w", err)
@@ -1050,14 +1054,17 @@ func (s *SQLiteStore) GetMessages(ctx context.Context, sessionID string, limit, 
 		WHERE session_id = ?
 		ORDER BY sequence ASC`
 
+	args := []any{sessionID}
 	if limit > 0 {
-		query += fmt.Sprintf(" LIMIT %d", limit)
+		query += " LIMIT ?"
+		args = append(args, limit)
 	}
 	if offset > 0 {
-		query += fmt.Sprintf(" OFFSET %d", offset)
+		query += " OFFSET ?"
+		args = append(args, offset)
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, sessionID)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query messages: %w", err)
 	}
@@ -1137,7 +1144,7 @@ func isBusyError(err error) bool {
 
 // retryOnBusy retries an operation with exponential backoff on SQLITE_BUSY errors.
 // This provides additional resilience beyond the busy_timeout pragma for high-contention scenarios.
-func retryOnBusy(maxRetries int, op func() error) error {
+func retryOnBusy(ctx context.Context, maxRetries int, op func() error) error {
 	var err error
 	for i := 0; i < maxRetries; i++ {
 		err = op()
@@ -1145,7 +1152,12 @@ func retryOnBusy(maxRetries int, op func() error) error {
 			return err
 		}
 		// Exponential backoff: 10ms, 20ms, 40ms, 80ms, 160ms
-		time.Sleep(time.Duration(10*(1<<i)) * time.Millisecond)
+		d := time.Duration(10*(1<<i)) * time.Millisecond
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(d):
+		}
 	}
 	return err
 }

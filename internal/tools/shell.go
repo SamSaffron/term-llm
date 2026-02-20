@@ -15,17 +15,19 @@ import (
 
 // ShellTool implements the shell tool.
 type ShellTool struct {
-	approval *ApprovalManager
-	config   *ToolConfig
-	limits   OutputLimits
+	approval  *ApprovalManager
+	config    *ToolConfig
+	limits    OutputLimits
+	shellPath string
 }
 
 // NewShellTool creates a new ShellTool.
 func NewShellTool(approval *ApprovalManager, config *ToolConfig, limits OutputLimits) *ShellTool {
 	return &ShellTool{
-		approval: approval,
-		config:   config,
-		limits:   limits,
+		approval:  approval,
+		config:    config,
+		limits:    limits,
+		shellPath: detectShell(),
 	}
 }
 
@@ -126,14 +128,11 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 		}
 	}
 
-	// Detect shell
-	shell := detectShell()
-
 	// Create command with context timeout
 	execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(execCtx, shell, "-c", a.Command)
+	cmd := exec.CommandContext(execCtx, t.shellPath, "-c", a.Command)
 	cmd.Dir = workDir
 
 	var stdout, stderr bytes.Buffer

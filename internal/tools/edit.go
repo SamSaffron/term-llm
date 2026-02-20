@@ -124,10 +124,18 @@ func (t *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.T
 
 // executeDirectEdit performs a deterministic string replacement using 5-level matching.
 func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (llm.ToolOutput, error) {
+	// Resolve to absolute canonical path first so that any two goroutines
+	// editing the same physical file — regardless of how the path was spelled —
+	// compute an identical lock path and correctly serialize via flock.
+	absPath, err := filepath.Abs(a.FilePath)
+	if err != nil {
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to resolve path: %v", err))), nil
+	}
+
 	// Use a lock file to serialize concurrent edits to the same file.
 	// We can't lock the file itself because rename() replaces the inode,
 	// and other goroutines holding fds to the old inode won't see changes.
-	lockPath := a.FilePath + ".lock"
+	lockPath := absPath + ".lock"
 	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create lock file: %v", err))), nil
@@ -144,10 +152,10 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (l
 	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
 
 	// Read file content while holding lock
-	data, err := os.ReadFile(a.FilePath)
+	data, err := os.ReadFile(absPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return llm.TextOutput(formatToolError(NewToolError(ErrFileNotFound, a.FilePath))), nil
+			return llm.TextOutput(formatToolError(NewToolError(ErrFileNotFound, absPath))), nil
 		}
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "read error: %v", err))), nil
 	}
@@ -170,8 +178,8 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (l
 	newContent := edit.ApplyMatch(content, result, a.NewText)
 
 	// Write back atomically using a unique temp file
-	dir := filepath.Dir(a.FilePath)
-	base := filepath.Base(a.FilePath)
+	dir := filepath.Dir(absPath)
+	base := filepath.Base(absPath)
 	tempFile, err := os.CreateTemp(dir, "."+base+".*.tmp")
 	if err != nil {
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create temp file: %v", err))), nil
@@ -188,7 +196,7 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (l
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to close temp file: %v", err))), nil
 	}
 
-	if err := os.Rename(tempPath, a.FilePath); err != nil {
+	if err := os.Rename(tempPath, absPath); err != nil {
 		os.Remove(tempPath)
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to rename temp file: %v", err))), nil
 	}
@@ -197,7 +205,7 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (l
 	oldLines := countLines(result.Original)
 	newLines := countLines(a.NewText)
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Edited %s: replaced %d lines with %d lines", a.FilePath, oldLines, newLines))
+	sb.WriteString(fmt.Sprintf("Edited %s: replaced %d lines with %d lines", absPath, oldLines, newLines))
 	if result.Level != edit.MatchExact {
 		sb.WriteString(" (fuzzy match — old_text did not exactly match file content)")
 	}
@@ -209,7 +217,7 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (l
 	if len(result.Original) < diff.MaxDiffSize && len(a.NewText) < diff.MaxDiffSize {
 		startLine := strings.Count(content[:result.Start], "\n") + 1
 		output.Diffs = []llm.DiffData{
-			{File: a.FilePath, Old: result.Original, New: a.NewText, Line: startLine},
+			{File: absPath, Old: result.Original, New: a.NewText, Line: startLine},
 		}
 	}
 
@@ -295,9 +303,34 @@ func (t *UnifiedDiffTool) Execute(ctx context.Context, args json.RawMessage) (ll
 	var diffs []llm.DiffData
 
 	for _, fd := range fileDiffs {
-		// Read file content
-		data, err := os.ReadFile(fd.Path)
+		// Resolve to absolute canonical path so that concurrent goroutines
+		// editing the same physical file compute an identical lock path.
+		absPath, err := filepath.Abs(fd.Path)
 		if err != nil {
+			allWarnings = append(allWarnings, fmt.Sprintf("%s: failed to resolve path: %v", fd.Path, err))
+			continue
+		}
+
+		// Acquire an exclusive flock on a per-file lock file to serialise
+		// concurrent unified_diff (and edit_file) calls on the same file.
+		lockPath := absPath + ".lock"
+		lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+		if err != nil {
+			allWarnings = append(allWarnings, fmt.Sprintf("%s: failed to create lock file: %v", fd.Path, err))
+			continue
+		}
+		if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+			lockFile.Close()
+			allWarnings = append(allWarnings, fmt.Sprintf("%s: failed to lock: %v", fd.Path, err))
+			continue
+		}
+
+		// Read file content while holding the lock
+		data, err := os.ReadFile(absPath)
+		if err != nil {
+			syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+			lockFile.Close()
+			os.Remove(lockPath)
 			allWarnings = append(allWarnings, fmt.Sprintf("%s: %v", fd.Path, err))
 			continue
 		}
@@ -311,10 +344,13 @@ func (t *UnifiedDiffTool) Execute(ctx context.Context, args json.RawMessage) (ll
 
 		// Write back if any changes
 		if result.Content != content {
-			dir := filepath.Dir(fd.Path)
-			base := filepath.Base(fd.Path)
+			dir := filepath.Dir(absPath)
+			base := filepath.Base(absPath)
 			tempFile, err := os.CreateTemp(dir, "."+base+".*.tmp")
 			if err != nil {
+				syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+				lockFile.Close()
+				os.Remove(lockPath)
 				allWarnings = append(allWarnings, fmt.Sprintf("%s: failed to create temp file: %v", fd.Path, err))
 				continue
 			}
@@ -323,13 +359,19 @@ func (t *UnifiedDiffTool) Execute(ctx context.Context, args json.RawMessage) (ll
 			if _, err := tempFile.WriteString(result.Content); err != nil {
 				tempFile.Close()
 				os.Remove(tempPath)
+				syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+				lockFile.Close()
+				os.Remove(lockPath)
 				allWarnings = append(allWarnings, fmt.Sprintf("%s: failed to write temp file: %v", fd.Path, err))
 				continue
 			}
 			tempFile.Close()
 
-			if err := os.Rename(tempPath, fd.Path); err != nil {
+			if err := os.Rename(tempPath, absPath); err != nil {
 				os.Remove(tempPath)
+				syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+				lockFile.Close()
+				os.Remove(lockPath)
 				allWarnings = append(allWarnings, fmt.Sprintf("%s: failed to rename: %v", fd.Path, err))
 				continue
 			}
@@ -341,12 +383,17 @@ func (t *UnifiedDiffTool) Execute(ctx context.Context, args json.RawMessage) (ll
 			// Populate structured diff data
 			if len(content) < diff.MaxDiffSize && len(result.Content) < diff.MaxDiffSize {
 				diffs = append(diffs, llm.DiffData{
-					File: fd.Path, Old: content, New: result.Content, Line: 1,
+					File: absPath, Old: content, New: result.Content, Line: 1,
 				})
 			}
 		} else {
 			sb.WriteString(fmt.Sprintf("No changes for %s.\n", fd.Path))
 		}
+
+		// Release lock and clean up
+		syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		lockFile.Close()
+		os.Remove(lockPath)
 	}
 
 	if len(allWarnings) > 0 {

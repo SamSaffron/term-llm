@@ -265,127 +265,114 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 		acc := newChatGPTToolAccumulator()
 		reasoningAcc := newChatGPTReasoningAccumulator()
 		var lastUsage *Usage
-		buf := make([]byte, 4096)
-		var pending string
-		for {
-			n, err := resp.Body.Read(buf)
-			if n > 0 {
-				pending += string(buf[:n])
-				for {
-					idx := strings.Index(pending, "\n")
-					if idx < 0 {
-						break
-					}
-					line := pending[:idx]
-					pending = pending[idx+1:]
-					if !strings.HasPrefix(line, "data:") {
-						continue
-					}
-					jsonData := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-					if jsonData == "" || jsonData == "[DONE]" {
-						continue
-					}
-					if req.DebugRaw {
-						DebugRawSection(req.DebugRaw, "ChatGPT SSE Line", jsonData)
-					}
+		scanner := bufio.NewScanner(resp.Body)
+		buf := make([]byte, 0, 64*1024)
+		scanner.Buffer(buf, 1024*1024)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if !strings.HasPrefix(line, "data:") {
+				continue
+			}
+			jsonData := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if jsonData == "" || jsonData == "[DONE]" {
+				continue
+			}
+			if req.DebugRaw {
+				DebugRawSection(req.DebugRaw, "ChatGPT SSE Line", jsonData)
+			}
 
-					var event chatGPTSSEEvent
-					if json.Unmarshal([]byte(jsonData), &event) != nil {
-						continue
-					}
+			var event chatGPTSSEEvent
+			if json.Unmarshal([]byte(jsonData), &event) != nil {
+				continue
+			}
 
-					switch event.Type {
-					case "response.output_text.delta":
-						if event.Delta != "" {
-							events <- Event{Type: EventTextDelta, Text: event.Delta}
-						}
-					case "response.output_item.added":
-						switch event.Item.Type {
-						case "web_search_call":
-							events <- Event{Type: EventToolExecStart, ToolName: "web_search"}
-						case "function_call":
-							id := event.Item.ID
-							if id == "" {
-								id = event.Item.CallID
-							}
-							call := ToolCall{
-								ID:        id,
-								Name:      event.Item.Name,
-								Arguments: json.RawMessage(event.Item.Arguments),
-							}
-							acc.setCall(call)
-							if event.Item.Arguments != "" {
-								acc.setArgs(id, event.Item.Arguments)
-							}
-						case "reasoning":
-							id := event.Item.ID
-							if id == "" {
-								id = event.ItemID
-							}
-							reasoningAcc.start(id, event.OutputIndex, event.Item.EncryptedContent, event.Item.Summary)
-						}
-					case "response.output_item.done":
-						switch event.Item.Type {
-						case "web_search_call":
-							events <- Event{Type: EventToolExecEnd, ToolName: "web_search", ToolSuccess: true}
-						case "function_call":
-							id := event.Item.ID
-							if id == "" {
-								id = event.Item.CallID
-							}
-							call := ToolCall{
-								ID:        id,
-								Name:      event.Item.Name,
-								Arguments: json.RawMessage(event.Item.Arguments),
-							}
-							acc.setCall(call)
-							if event.Item.Arguments != "" {
-								acc.setArgs(id, event.Item.Arguments)
-							}
-						case "reasoning":
-							id := event.Item.ID
-							if id == "" {
-								id = event.ItemID
-							}
-							reasoningAcc.finish(id, event.OutputIndex, event.Item.EncryptedContent, event.Item.Summary)
-							if part := reasoningAcc.part(id, event.OutputIndex); part != nil {
-								events <- Event{
-									Type:                      EventReasoningDelta,
-									Text:                      part.ReasoningContent,
-									ReasoningItemID:           part.ReasoningItemID,
-									ReasoningEncryptedContent: part.ReasoningEncryptedContent,
-								}
-							}
-						}
-					case "response.function_call_arguments.delta":
-						acc.ensureCall(event.ItemID)
-						acc.appendArgs(event.ItemID, event.Delta)
-					case "response.function_call_arguments.done":
-						acc.ensureCall(event.ItemID)
-						acc.setArgs(event.ItemID, event.Arguments)
-					case "response.reasoning_summary_part.added":
-						reasoningAcc.ensure(event.ItemID, event.OutputIndex)
-					case "response.reasoning_summary_text.delta":
-						reasoningAcc.appendSummary(event.ItemID, event.OutputIndex, event.Delta)
-					case "response.completed":
-						if event.Response.Usage.InputTokens > 0 ||
-							event.Response.Usage.OutputTokens > 0 ||
-							event.Response.Usage.InputTokensDetails.CachedTokens > 0 {
-							lastUsage = &Usage{
-								InputTokens:       event.Response.Usage.InputTokens,
-								OutputTokens:      event.Response.Usage.OutputTokens,
-								CachedInputTokens: event.Response.Usage.InputTokensDetails.CachedTokens,
-							}
+			switch event.Type {
+			case "response.output_text.delta":
+				if event.Delta != "" {
+					events <- Event{Type: EventTextDelta, Text: event.Delta}
+				}
+			case "response.output_item.added":
+				switch event.Item.Type {
+				case "web_search_call":
+					events <- Event{Type: EventToolExecStart, ToolName: "web_search"}
+				case "function_call":
+					id := event.Item.ID
+					if id == "" {
+						id = event.Item.CallID
+					}
+					call := ToolCall{
+						ID:        id,
+						Name:      event.Item.Name,
+						Arguments: json.RawMessage(event.Item.Arguments),
+					}
+					acc.setCall(call)
+					if event.Item.Arguments != "" {
+						acc.setArgs(id, event.Item.Arguments)
+					}
+				case "reasoning":
+					id := event.Item.ID
+					if id == "" {
+						id = event.ItemID
+					}
+					reasoningAcc.start(id, event.OutputIndex, event.Item.EncryptedContent, event.Item.Summary)
+				}
+			case "response.output_item.done":
+				switch event.Item.Type {
+				case "web_search_call":
+					events <- Event{Type: EventToolExecEnd, ToolName: "web_search", ToolSuccess: true}
+				case "function_call":
+					id := event.Item.ID
+					if id == "" {
+						id = event.Item.CallID
+					}
+					call := ToolCall{
+						ID:        id,
+						Name:      event.Item.Name,
+						Arguments: json.RawMessage(event.Item.Arguments),
+					}
+					acc.setCall(call)
+					if event.Item.Arguments != "" {
+						acc.setArgs(id, event.Item.Arguments)
+					}
+				case "reasoning":
+					id := event.Item.ID
+					if id == "" {
+						id = event.ItemID
+					}
+					reasoningAcc.finish(id, event.OutputIndex, event.Item.EncryptedContent, event.Item.Summary)
+					if part := reasoningAcc.part(id, event.OutputIndex); part != nil {
+						events <- Event{
+							Type:                      EventReasoningDelta,
+							Text:                      part.ReasoningContent,
+							ReasoningItemID:           part.ReasoningItemID,
+							ReasoningEncryptedContent: part.ReasoningEncryptedContent,
 						}
 					}
 				}
+			case "response.function_call_arguments.delta":
+				acc.ensureCall(event.ItemID)
+				acc.appendArgs(event.ItemID, event.Delta)
+			case "response.function_call_arguments.done":
+				acc.ensureCall(event.ItemID)
+				acc.setArgs(event.ItemID, event.Arguments)
+			case "response.reasoning_summary_part.added":
+				reasoningAcc.ensure(event.ItemID, event.OutputIndex)
+			case "response.reasoning_summary_text.delta":
+				reasoningAcc.appendSummary(event.ItemID, event.OutputIndex, event.Delta)
+			case "response.completed":
+				if event.Response.Usage.InputTokens > 0 ||
+					event.Response.Usage.OutputTokens > 0 ||
+					event.Response.Usage.InputTokensDetails.CachedTokens > 0 {
+					lastUsage = &Usage{
+						InputTokens:       event.Response.Usage.InputTokens,
+						OutputTokens:      event.Response.Usage.OutputTokens,
+						CachedInputTokens: event.Response.Usage.InputTokensDetails.CachedTokens,
+					}
+				}
 			}
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				return fmt.Errorf("stream read error: %w", err)
-			}
+		}
+		if err := scanner.Err(); err != nil {
+			return fmt.Errorf("stream read error: %w", err)
 		}
 
 		// Emit any tool calls that were accumulated
@@ -418,26 +405,13 @@ func buildChatGPTInput(messages []Message) (string, []interface{}) {
 
 		case RoleUser:
 			text := collectTextParts(msg.Parts)
-			var contentParts []map[string]string
-			for _, part := range msg.Parts {
-				if part.Type == PartImage && part.ImageData != nil {
-					dataURL := fmt.Sprintf("data:%s;base64,%s", part.ImageData.MediaType, part.ImageData.Base64)
-					contentParts = append(contentParts, map[string]string{
-						"type":      "input_image",
-						"image_url": dataURL,
-					})
-				}
-			}
 			if text != "" {
-				contentParts = append([]map[string]string{
-					{"type": "input_text", "text": text},
-				}, contentParts...)
-			}
-			if len(contentParts) > 0 {
 				input = append(input, map[string]interface{}{
-					"type":    "message",
-					"role":    "user",
-					"content": contentParts,
+					"type": "message",
+					"role": "user",
+					"content": []map[string]string{
+						{"type": "input_text", "text": text},
+					},
 				})
 			}
 

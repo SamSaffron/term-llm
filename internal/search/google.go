@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // GoogleSearcher implements Searcher using Google Custom Search API.
@@ -20,7 +21,7 @@ type GoogleSearcher struct {
 
 func NewGoogleSearcher(apiKey, cx string, client *http.Client) *GoogleSearcher {
 	if client == nil {
-		client = http.DefaultClient
+		client = &http.Client{Timeout: 30 * time.Second}
 	}
 	return &GoogleSearcher{
 		client: client,

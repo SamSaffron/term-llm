@@ -24,6 +24,17 @@ func newEventStream(ctx context.Context, run func(context.Context, chan<- Event)
 }
 
 func (s *channelStream) Recv() (Event, error) {
+	// Non-blocking drain: consume any buffered event before checking ctx.Done().
+	// This prevents dropping EventUsage/EventDone when ctx and events are both ready.
+	select {
+	case event, ok := <-s.events:
+		if !ok {
+			return Event{}, io.EOF
+		}
+		return event, nil
+	default:
+	}
+
 	select {
 	case <-s.ctx.Done():
 		return Event{}, s.ctx.Err()

@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/usage"
@@ -82,7 +83,7 @@ type Engine struct {
 	lastTotalTokens      int               // cached+input+output from most recent API response
 	lastMessageCount     int               // len(req.Messages) at time of last API call
 	systemPrompt         string            // Captured for re-injection after compaction
-	contextNoticeEmitted bool              // one-shot flag: WARNING emitted once per session
+	contextNoticeEmitted atomic.Bool       // one-shot flag: WARNING emitted once per session
 
 	// Interjection support: user can send a message while the agent is streaming.
 	// The message is injected after the current turn's tool results, before the next LLM turn.
@@ -148,7 +149,7 @@ func (e *Engine) ResetConversation() {
 	e.lastTotalTokens = 0
 	e.lastMessageCount = 0
 	e.systemPrompt = ""
-	e.contextNoticeEmitted = false
+	e.contextNoticeEmitted.Store(false)
 	e.callbackMu.Unlock()
 
 	// Reset provider-side conversation state if supported
@@ -616,11 +617,14 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 	inputLimit := e.inputLimit
 	e.callbackMu.RUnlock()
 
-	// Capture system prompt for re-injection after compaction
+	// Capture system prompt for re-injection after compaction.
+	// Use a local variable to avoid a data race with ResetConversation,
+	// which writes e.systemPrompt="" under callbackMu on the UI goroutine.
+	var systemPrompt string
 	if inputLimit > 0 {
 		for _, msg := range req.Messages {
 			if msg.Role == RoleSystem {
-				e.systemPrompt = collectTextParts(msg.Parts)
+				systemPrompt = collectTextParts(msg.Parts)
 				break
 			}
 		}
@@ -633,11 +637,13 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			threshold := int(float64(inputLimit) * compactionConfig.ThresholdRatio)
 			if e.estimatedTokens(req.Messages) >= threshold {
 				events <- Event{Type: EventPhase, Text: "Compacting context..."}
-				result, err := Compact(ctx, e.provider, req.Model, e.systemPrompt, nonSystemMessages(req.Messages), *compactionConfig)
+				result, err := Compact(ctx, e.provider, req.Model, systemPrompt, nonSystemMessages(req.Messages), *compactionConfig)
 				if err == nil {
 					req.Messages = result.NewMessages
+					e.callbackMu.Lock()
 					e.lastTotalTokens = 0
 					e.lastMessageCount = 0
+					e.callbackMu.Unlock()
 					if cb := e.getCompactionCallback(); cb != nil {
 						if cbErr := cb(ctx, result); cbErr != nil {
 							slog.Warn("compaction callback failed", "error", cbErr)
@@ -648,11 +654,11 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			}
 		}
 		// Warning when compaction is disabled but tracking detects high usage
-		if compactionConfig == nil && inputLimit > 0 && !e.contextNoticeEmitted && attempt > 0 {
+		if compactionConfig == nil && inputLimit > 0 && !e.contextNoticeEmitted.Load() && attempt > 0 {
 			threshold := int(float64(inputLimit) * defaultThresholdRatio)
 			est := e.estimatedTokens(req.Messages)
 			if est >= threshold {
-				e.contextNoticeEmitted = true
+				e.contextNoticeEmitted.Store(true)
 				pct := int(100 * float64(est) / float64(inputLimit))
 				events <- Event{Type: EventPhase, Text: fmt.Sprintf(WarningPhasePrefix+"context is %d%% full. Add auto_compact: true to your config to enable automatic compaction.", pct)}
 			}
@@ -685,11 +691,13 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			if compactionConfig != nil && isContextOverflowError(err) && !reactiveCompactionDone {
 				reactiveCompactionDone = true
 				events <- Event{Type: EventPhase, Text: "Compacting context..."}
-				result, compactErr := Compact(ctx, e.provider, req.Model, e.systemPrompt, nonSystemMessages(req.Messages), *compactionConfig)
+				result, compactErr := Compact(ctx, e.provider, req.Model, systemPrompt, nonSystemMessages(req.Messages), *compactionConfig)
 				if compactErr == nil {
 					req.Messages = result.NewMessages
+					e.callbackMu.Lock()
 					e.lastTotalTokens = 0
 					e.lastMessageCount = 0
+					e.callbackMu.Unlock()
 					if cb := e.getCompactionCallback(); cb != nil {
 						if cbErr := cb(ctx, result); cbErr != nil {
 							slog.Warn("compaction callback failed", "error", cbErr)
@@ -700,8 +708,8 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 				}
 			}
 			// Warn when compaction is disabled and we hit context overflow
-			if compactionConfig == nil && inputLimit > 0 && !e.contextNoticeEmitted && isContextOverflowError(err) {
-				e.contextNoticeEmitted = true
+			if compactionConfig == nil && inputLimit > 0 && !e.contextNoticeEmitted.Load() && isContextOverflowError(err) {
+				e.contextNoticeEmitted.Store(true)
 				events <- Event{Type: EventPhase, Text: WarningPhasePrefix + "context overflow. Add auto_compact: true to your config to enable automatic compaction."}
 			}
 			return err
@@ -744,8 +752,10 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 				// they're served from cache. Cache write tokens are NOT additive — they're
 				// a subset of input tokens indicating which ones were written to cache.
 				if inputLimit > 0 {
+					e.callbackMu.Lock()
 					e.lastTotalTokens = event.Use.InputTokens + event.Use.CachedInputTokens + event.Use.OutputTokens
 					e.lastMessageCount = len(req.Messages)
+					e.callbackMu.Unlock()
 				}
 			}
 			// Accumulate text for callback
@@ -823,6 +833,11 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			events <- event
 		}
 		stream.Close()
+
+		// Exit promptly if caller cancelled while we were streaming.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 
 		// Search is only performed once (either pre-emptively or in first turn)
 		req.Search = false
@@ -1003,6 +1018,13 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			cancel()
 		}
 
+		// Exit promptly if caller cancelled while tools were executing.
+		// Check after the turn callback so in-progress tool results are persisted
+		// before we abandon the loop.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
 		// Check for user interjection queued during this turn.
 		// If present, inject it as a user message so the LLM sees it on the next turn.
 		if text := e.drainInterjection(); text != "" {
@@ -1082,9 +1104,11 @@ func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, events 
 				}
 			}()
 			msgs, _ := e.executeSingleToolCall(ctx, c, events, debug, debugRaw)
+			msg := ToolErrorMessage(c.ID, c.Name, "tool returned no result", c.ThoughtSig)
 			if len(msgs) > 0 {
-				resultChan <- toolResult{index: idx, message: msgs[0]}
+				msg = msgs[0]
 			}
+			resultChan <- toolResult{index: idx, message: msg}
 		}(i, call)
 	}
 

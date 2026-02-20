@@ -2,11 +2,18 @@ package chat
 
 import (
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
+
+// builderPool reuses strings.Builder instances to reduce allocations in hot
+// paths (e.g. Render is called on every animation tick).
+var builderPool = sync.Pool{
+	New: func() any { return new(strings.Builder) },
+}
 
 // StreamingBlock handles rendering of the active streaming response.
 // It manages segments (text, tools, images, diffs) and provides
@@ -156,7 +163,9 @@ func (s *StreamingBlock) Render(wavePos int, pausedForUI bool, includeImages boo
 		return ""
 	}
 
-	var b strings.Builder
+	b := builderPool.Get().(*strings.Builder)
+	b.Reset()
+	defer builderPool.Put(b)
 
 	if includeImages {
 		// Alt-screen mode: show everything

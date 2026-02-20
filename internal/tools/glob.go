@@ -76,6 +76,9 @@ func (t *GlobTool) Preview(args json.RawMessage) string {
 }
 
 func (t *GlobTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+
 	var a GlobArgs
 	if err := json.Unmarshal(args, &a); err != nil {
 		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
@@ -120,6 +123,9 @@ func (t *GlobTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 	pattern := a.Pattern
 
 	err = filepath.WalkDir(absBasePath, func(path string, d os.DirEntry, err error) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if err != nil {
 			return nil // Skip errors
 		}

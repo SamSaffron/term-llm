@@ -21,6 +21,10 @@ type Registry struct {
 
 	// Shadow counts for visibility
 	shadowCounts map[string]int
+
+	// Pre-built sets for O(1) lookup
+	neverAutoSet     map[string]bool
+	alwaysEnabledSet map[string]bool
 }
 
 type searchPath struct {
@@ -61,10 +65,21 @@ func DefaultRegistryConfig() RegistryConfig {
 
 // NewRegistry creates a skill registry with the given configuration.
 func NewRegistry(cfg RegistryConfig) (*Registry, error) {
+	neverAutoSet := make(map[string]bool, len(cfg.NeverAuto))
+	for _, n := range cfg.NeverAuto {
+		neverAutoSet[n] = true
+	}
+	alwaysEnabledSet := make(map[string]bool, len(cfg.AlwaysEnabled))
+	for _, a := range cfg.AlwaysEnabled {
+		alwaysEnabledSet[a] = true
+	}
+
 	r := &Registry{
-		config:       cfg,
-		cache:        make(map[string]*Skill),
-		shadowCounts: make(map[string]int),
+		config:           cfg,
+		cache:            make(map[string]*Skill),
+		shadowCounts:     make(map[string]int),
+		neverAutoSet:     neverAutoSet,
+		alwaysEnabledSet: alwaysEnabledSet,
 	}
 
 	// Build search paths based on config
@@ -338,6 +353,7 @@ func (r *Registry) ShadowCount(name string) int {
 func (r *Registry) Reload() error {
 	r.cache = make(map[string]*Skill)
 	r.shadowCounts = make(map[string]int)
+	r.searchPaths = nil
 	return r.buildSearchPaths()
 }
 
@@ -380,22 +396,12 @@ func (r *Registry) scanDir(dir string, source SkillSource) ([]*Skill, error) {
 
 // IsNeverAuto checks if a skill requires explicit activation.
 func (r *Registry) IsNeverAuto(name string) bool {
-	for _, n := range r.config.NeverAuto {
-		if n == name {
-			return true
-		}
-	}
-	return false
+	return r.neverAutoSet[name]
 }
 
 // IsAlwaysEnabled checks if a skill should always be included.
 func (r *Registry) IsAlwaysEnabled(name string) bool {
-	for _, a := range r.config.AlwaysEnabled {
-		if a == name {
-			return true
-		}
-	}
-	return false
+	return r.alwaysEnabledSet[name]
 }
 
 // GetUserSkillsDir returns the path for user-global skills.

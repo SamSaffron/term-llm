@@ -81,7 +81,31 @@ func WriteModelCache(provider string, models []string) error {
 		return err
 	}
 
-	return os.WriteFile(path, data, 0644)
+	f, err := os.CreateTemp(dir, provider+"-models-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := f.Name()
+	renamed := false
+	defer func() {
+		if !renamed {
+			os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	renamed = true
+	return nil
 }
 
 func IsCacheValid(cache *ModelCache) bool {

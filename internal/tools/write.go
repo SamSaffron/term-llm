@@ -104,15 +104,32 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create directory: %v", err))), nil
 	}
 
-	// Atomic write: write to temp file, then rename
-	tempFile := absPath + ".tmp"
-	if err := os.WriteFile(tempFile, []byte(a.Content), 0644); err != nil {
+	// Atomic write: write to a uniquely-named temp file, then rename.
+	// Using os.CreateTemp avoids a name collision when concurrent calls target the same destination.
+	base := filepath.Base(absPath)
+	tf, err := os.CreateTemp(dir, "."+base+".*.tmp")
+	if err != nil {
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create temp file: %v", err))), nil
+	}
+	tempPath := tf.Name()
+
+	if _, err := tf.Write([]byte(a.Content)); err != nil {
+		tf.Close()
+		os.Remove(tempPath)
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to write temp file: %v", err))), nil
 	}
+	if err := tf.Sync(); err != nil {
+		tf.Close()
+		os.Remove(tempPath)
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to sync temp file: %v", err))), nil
+	}
+	if err := tf.Close(); err != nil {
+		os.Remove(tempPath)
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to close temp file: %v", err))), nil
+	}
 
-	if err := os.Rename(tempFile, absPath); err != nil {
-		// Clean up temp file on failure
-		os.Remove(tempFile)
+	if err := os.Rename(tempPath, absPath); err != nil {
+		os.Remove(tempPath)
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to rename temp file: %v", err))), nil
 	}
 

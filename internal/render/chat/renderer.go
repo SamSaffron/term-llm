@@ -3,10 +3,17 @@ package chat
 import (
 	"strconv"
 	"strings"
+	"sync"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/samsaffron/term-llm/internal/session"
 )
+
+// historyBuilderPool reuses strings.Builder instances across renderHistory
+// calls to reduce per-frame allocations in the hot render path.
+var historyBuilderPool = sync.Pool{
+	New: func() any { return new(strings.Builder) },
+}
 
 // RenderMode determines how content is displayed
 type RenderMode int
@@ -308,7 +315,9 @@ func (r *Renderer) renderHistory(state RenderState) string {
 
 	// Render only visible messages using cache
 	// Skip system and tool messages (they render as empty anyway)
-	var b strings.Builder
+	b := historyBuilderPool.Get().(*strings.Builder)
+	b.Reset()
+	defer historyBuilderPool.Put(b)
 	for i := start; i < end; i++ {
 		msg := &state.Messages[i]
 		// Skip non-renderable roles

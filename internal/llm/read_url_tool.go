@@ -23,7 +23,7 @@ type ReadURLTool struct {
 func NewReadURLTool() *ReadURLTool {
 	return &ReadURLTool{
 		client: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 2 * time.Minute,
 		},
 	}
 }
