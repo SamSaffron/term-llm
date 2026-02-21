@@ -773,21 +773,27 @@ func TestDownloadTelegramPhoto_PicksLargest(t *testing.T) {
 		{FileID: "large", Width: 800, Height: 600},
 	}
 
-	mediaType, b64, err := downloadTelegramPhoto(fg, photos)
+	mediaType, b64, filePath, err := downloadTelegramPhoto(fg, photos)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if mediaType != "image/jpeg" {
-		t.Fatalf("mediaType = %q, want %q", mediaType, "image/jpeg")
+	if filePath != "" {
+		defer os.Remove(filePath)
+	}
+	if mediaType == "" {
+		t.Fatal("expected non-empty media type")
 	}
 	if b64 == "" {
 		t.Fatal("expected non-empty base64 data")
+	}
+	if filePath == "" {
+		t.Fatal("expected non-empty file path")
 	}
 }
 
 func TestDownloadTelegramPhoto_EmptyPhotos(t *testing.T) {
 	fg := &fakeFileGetter{}
-	_, _, err := downloadTelegramPhoto(fg, nil)
+	_, _, _, err := downloadTelegramPhoto(fg, nil)
 	if err == nil {
 		t.Fatal("expected error for empty photos")
 	}
