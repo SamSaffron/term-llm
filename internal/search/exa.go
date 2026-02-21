@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // ExaSearcher implements Searcher using the Exa API.
@@ -18,7 +19,7 @@ type ExaSearcher struct {
 
 func NewExaSearcher(apiKey string, client *http.Client) *ExaSearcher {
 	if client == nil {
-		client = http.DefaultClient
+		client = &http.Client{Timeout: 30 * time.Second}
 	}
 	return &ExaSearcher{
 		client: client,

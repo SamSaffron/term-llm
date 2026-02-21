@@ -192,7 +192,12 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 		err := client.Start(ctx)
 
 		m.mu.Lock()
-		state := m.statuses[name]
+		state, ok := m.statuses[name]
+		if !ok {
+			m.mu.Unlock()
+			client.Stop()
+			return
+		}
 		if err != nil {
 			state.Status = StatusFailed
 			state.Error = err

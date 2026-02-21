@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -182,7 +183,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		authHeader := r.Header.Get("Authorization")
 		expectedAuth := "Bearer " + s.authToken
 
-		if authHeader != expectedAuth {
+		if subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedAuth)) != 1 {
 			if s.debug {
 				fmt.Fprintf(os.Stderr, "[mcp-http] %s Unauthorized request from %s (got auth: %q)\n",
 					time.Now().Format("15:04:05.000"), r.RemoteAddr, authHeader[:min(20, len(authHeader))])

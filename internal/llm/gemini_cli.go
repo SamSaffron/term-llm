@@ -20,6 +20,10 @@ import (
 	"github.com/samsaffron/term-llm/internal/credentials"
 )
 
+// geminiCLIHTTPClient is a package-level HTTP client with a timeout to prevent
+// hung Gemini API calls from blocking the event stream goroutine forever.
+var geminiCLIHTTPClient = &http.Client{Timeout: 10 * time.Minute}
+
 const (
 	codeAssistEndpoint             = "https://cloudcode-pa.googleapis.com"
 	codeAssistAPIVersion           = "v1internal"
@@ -313,7 +317,7 @@ func (p *GeminiCLIProvider) Stream(ctx context.Context, req Request) (Stream, er
 			return err
 		}
 
-		token, err := p.getAccessToken(req.Debug)
+		token, err := p.getAccessToken(ctx, req.Debug)
 		if err != nil {
 			return err
 		}
@@ -398,7 +402,7 @@ func (p *GeminiCLIProvider) Stream(ctx context.Context, req Request) (Stream, er
 			httpReq.Header.Set("Content-Type", "application/json")
 			httpReq.Header.Set("Authorization", "Bearer "+token)
 
-			resp, err := http.DefaultClient.Do(httpReq)
+			resp, err := geminiCLIHTTPClient.Do(httpReq)
 			if err != nil {
 				return fmt.Errorf("generateContent request failed: %w", err)
 			}
@@ -477,7 +481,7 @@ func (p *GeminiCLIProvider) Stream(ctx context.Context, req Request) (Stream, er
 		httpReq.Header.Set("Authorization", "Bearer "+token)
 
 		streamStart := time.Now()
-		resp, err := http.DefaultClient.Do(httpReq)
+		resp, err := geminiCLIHTTPClient.Do(httpReq)
 		if err != nil {
 			return fmt.Errorf("streamGenerateContent request failed: %w", err)
 		}
@@ -582,7 +586,7 @@ func (p *GeminiCLIProvider) Stream(ctx context.Context, req Request) (Stream, er
 }
 
 // getAccessToken returns a valid access token, refreshing if needed
-func (p *GeminiCLIProvider) getAccessToken(debug bool) (string, error) {
+func (p *GeminiCLIProvider) getAccessToken(ctx context.Context, debug bool) (string, error) {
 	now := time.Now().UnixMilli()
 	bufferMs := int64(codeAssistTokenExpiryBuffer.Milliseconds())
 
@@ -605,7 +609,7 @@ func (p *GeminiCLIProvider) getAccessToken(debug bool) (string, error) {
 		p.clientCredsFromCache = fromCache
 	}
 
-	token, expiryDate, err := p.refreshAccessToken(debug, "")
+	token, expiryDate, err := p.refreshAccessToken(ctx, debug, "")
 	if err != nil && p.clientCredsFromCache {
 		if debug {
 			fmt.Fprintln(os.Stderr, "Cache: client creds refresh failed, reloading from gemini-cli")
@@ -614,7 +618,7 @@ func (p *GeminiCLIProvider) getAccessToken(debug bool) (string, error) {
 		if loadErr == nil {
 			p.clientCreds = creds
 			p.clientCredsFromCache = false
-			token, expiryDate, err = p.refreshAccessToken(debug, "retry")
+			token, expiryDate, err = p.refreshAccessToken(ctx, debug, "retry")
 		}
 	}
 	if err != nil {
@@ -628,7 +632,7 @@ func (p *GeminiCLIProvider) getAccessToken(debug bool) (string, error) {
 	return token, nil
 }
 
-func (p *GeminiCLIProvider) refreshAccessToken(debug bool, detail string) (string, int64, error) {
+func (p *GeminiCLIProvider) refreshAccessToken(ctx context.Context, debug bool, detail string) (string, int64, error) {
 	refreshStart := time.Now()
 	data := url.Values{}
 	data.Set("client_id", p.clientCreds.clientID)
@@ -636,7 +640,12 @@ func (p *GeminiCLIProvider) refreshAccessToken(debug bool, detail string) (strin
 	data.Set("refresh_token", p.creds.RefreshToken)
 	data.Set("grant_type", "refresh_token")
 
-	resp, err := http.Post(googleTokenEndpoint, "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
+	tokenReq, err := http.NewRequestWithContext(ctx, "POST", googleTokenEndpoint, strings.NewReader(data.Encode()))
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to create token refresh request: %w", err)
+	}
+	tokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := geminiCLIHTTPClient.Do(tokenReq)
 	if err != nil {
 		return "", 0, fmt.Errorf("failed to refresh token: %w", err)
 	}
@@ -762,7 +771,7 @@ func (p *GeminiCLIProvider) ensureProjectID(ctx context.Context, debug bool) err
 		return nil
 	}
 
-	token, err := p.getAccessToken(debug)
+	token, err := p.getAccessToken(ctx, debug)
 	if err != nil {
 		return err
 	}
@@ -786,7 +795,7 @@ func (p *GeminiCLIProvider) ensureProjectID(ctx context.Context, debug bool) err
 	req.Header.Set("Authorization", "Bearer "+token)
 
 	loadStart := time.Now()
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := geminiCLIHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("loadCodeAssist request failed: %w", err)
 	}
@@ -817,7 +826,7 @@ func (p *GeminiCLIProvider) performSearch(ctx context.Context, query string, deb
 		return "", err
 	}
 
-	token, err := p.getAccessToken(debug)
+	token, err := p.getAccessToken(ctx, debug)
 	if err != nil {
 		return "", err
 	}
@@ -862,7 +871,7 @@ func (p *GeminiCLIProvider) performSearch(ctx context.Context, query string, deb
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := geminiCLIHTTPClient.Do(httpReq)
 	if err != nil {
 		return "", fmt.Errorf("search request failed: %w", err)
 	}

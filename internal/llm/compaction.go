@@ -47,8 +47,14 @@ func EstimateTokens(text string) int {
 // EstimateMessageTokens returns an approximate token count for a slice of
 // messages by summing all text content across parts.
 func EstimateMessageTokens(msgs []Message) int {
+	if len(msgs) == 0 {
+		return 0
+	}
 	total := 0
 	for _, msg := range msgs {
+		if len(msg.Parts) == 0 {
+			continue
+		}
 		for _, part := range msg.Parts {
 			total += EstimateTokens(part.Text)
 			if part.ToolCall != nil {
@@ -98,6 +104,10 @@ func Compact(ctx context.Context, provider Provider, model, systemPrompt string,
 	for _, msg := range messages {
 		convText.WriteString(string(msg.Role))
 		convText.WriteString(": ")
+		if len(msg.Parts) == 0 {
+			convText.WriteString("\n\n")
+			continue
+		}
 		for _, part := range msg.Parts {
 			if part.Text != "" {
 				convText.WriteString(part.Text)
@@ -179,6 +189,9 @@ func Compact(ctx context.Context, provider Provider, model, systemPrompt string,
 // extractRecentUserMessages walks messages newest→oldest, collecting user-role
 // messages until the token budget is exhausted. Returns in chronological order.
 func extractRecentUserMessages(messages []Message, tokenBudget int) []Message {
+	if len(messages) == 0 {
+		return nil
+	}
 	var result []Message
 	remaining := tokenBudget
 
@@ -192,10 +205,15 @@ func extractRecentUserMessages(messages []Message, tokenBudget int) []Message {
 			break
 		}
 		remaining -= tokens
-		result = append([]Message{msg}, result...)
+		result = append(result, msg)
 		if remaining <= 0 {
 			break
 		}
+	}
+
+	// Messages were collected newest→oldest; reverse to restore chronological order.
+	for l, r := 0, len(result)-1; l < r; l, r = l+1, r-1 {
+		result[l], result[r] = result[r], result[l]
 	}
 
 	return result

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"golang.org/x/net/html"
 )
@@ -31,7 +32,7 @@ type DuckDuckGoLite struct {
 
 func NewDuckDuckGoLite(client *http.Client) *DuckDuckGoLite {
 	if client == nil {
-		client = http.DefaultClient
+		client = &http.Client{Timeout: 30 * time.Second}
 	}
 	return &DuckDuckGoLite{
 		client:  client,

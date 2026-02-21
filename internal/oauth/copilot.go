@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+var oauthHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
 const (
 	// CopilotClientID is the VS Code GitHub Copilot extension's client ID.
 	// This is required for access to GitHub's internal Copilot APIs (usage, token exchange).
@@ -65,7 +67,7 @@ func RequestCopilotDeviceCode() (*CopilotDeviceCodeResponse, error) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := oauthHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("device code request failed: %w", err)
 	}
@@ -111,7 +113,7 @@ func PollForCopilotToken(ctx context.Context, deviceCode string, interval int) (
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Header.Set("Accept", "application/json")
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := oauthHTTPClient.Do(req)
 		if err != nil {
 			cancel()
 			return nil, fmt.Errorf("token request failed: %w", err)

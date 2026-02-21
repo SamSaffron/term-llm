@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // BraveSearcher implements Searcher using the Brave Search API.
@@ -19,7 +20,7 @@ type BraveSearcher struct {
 
 func NewBraveSearcher(apiKey string, client *http.Client) *BraveSearcher {
 	if client == nil {
-		client = http.DefaultClient
+		client = &http.Client{Timeout: 30 * time.Second}
 	}
 	return &BraveSearcher{
 		client: client,

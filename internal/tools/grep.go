@@ -436,11 +436,14 @@ func searchFile(path string, re *regexp.Regexp, maxMatches int) ([]GrepMatch, er
 	}
 
 	// Reset to beginning
-	file.Seek(0, 0)
+	if _, err := file.Seek(0, 0); err != nil {
+		return nil, fmt.Errorf("seek: %w", err)
+	}
 
 	// Read all lines for context support
 	var lines []string
 	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())
 	}

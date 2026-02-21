@@ -305,6 +305,7 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 	// Log stderr in background (claude CLI outputs progress/errors here)
 	go func() {
 		stderrScanner := bufio.NewScanner(stderr)
+		stderrScanner.Buffer(make([]byte, 64*1024), 1024*1024)
 		for stderrScanner.Scan() {
 			line := stderrScanner.Text()
 			if debug {

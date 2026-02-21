@@ -3,8 +3,8 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
-	"math"
 	"math/rand"
 	"regexp"
 	"strconv"
@@ -106,13 +106,16 @@ func (r *RetryProvider) Stream(ctx context.Context, req Request) (Stream, error)
 			wait := r.calculateBackoff(attempt, lastErr)
 
 			// Emit retry event so UI can show progress
-			events <- Event{
+			select {
+			case events <- Event{
 				Type:             EventRetry,
 				RetryAttempt:     attempt,
 				RetryMaxAttempts: r.config.MaxAttempts,
 				RetryWaitSecs:    wait.Seconds(),
+			}:
+			case <-ctx.Done():
+				return ctx.Err()
 			}
-
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -160,6 +163,11 @@ func (r *RetryProvider) forwardEvents(ctx context.Context, stream Stream, events
 // isRetryable returns true if the error is a transient error worth retrying.
 func isRetryable(err error) bool {
 	if err == nil {
+		return false
+	}
+
+	// Never retry if the context itself has been cancelled or deadline exceeded.
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return false
 	}
 
@@ -225,17 +233,14 @@ func (r *RetryProvider) calculateBackoff(attempt int, err error) time.Duration {
 		}
 	}
 
-	// Exponential backoff: base * 2^(attempt-1)
-	backoff := float64(r.config.BaseBackoff) * math.Pow(2, float64(attempt-1))
-
-	// Add jitter: +/- 25%
-	jitter := (rand.Float64() - 0.5) * 0.5 * backoff
-	backoff += jitter
+	// Linear backoff with jitter: base * attempt * jitter (jitter in [0.5, 1.5])
+	jitter := 0.5 + rand.Float64()
+	delay := time.Duration(float64(r.config.BaseBackoff) * float64(attempt) * jitter)
 
 	// Cap at max backoff
-	if backoff > float64(r.config.MaxBackoff) {
-		backoff = float64(r.config.MaxBackoff)
+	if delay > r.config.MaxBackoff {
+		delay = r.config.MaxBackoff
 	}
 
-	return time.Duration(backoff)
+	return delay
 }
