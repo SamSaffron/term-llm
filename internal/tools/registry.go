@@ -1,6 +1,10 @@
 package tools
 
 import (
+	"fmt"
+	"os"
+
+	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/skills"
@@ -250,6 +254,43 @@ func (r *LocalToolRegistry) RegisterSkillTool(skillRegistry *skills.Registry) *A
 	tool := NewActivateSkillTool(skillRegistry, r.approval)
 	r.tools[ActivateSkillToolName] = tool
 	return tool
+}
+
+// RegisterSkillTools registers script-backed tools declared in a skill's frontmatter.
+// skillDir is the skill's SourcePath (absolute directory containing SKILL.md).
+// Tools are resolved relative to skillDir and executed from there.
+// Duplicate registrations (same name) overwrite the previous entry — activating
+// a skill twice is idempotent. Name collisions with built-in tools are rejected.
+func (r *LocalToolRegistry) RegisterSkillTools(defs []skills.SkillToolDef, skillDir string) error {
+	// Convert SkillToolDef → agents.CustomToolDef
+	agentDefs := make([]agents.CustomToolDef, 0, len(defs))
+	for _, d := range defs {
+		if d.Name == "" {
+			return fmt.Errorf("skill tool: name is required")
+		}
+		if d.Description == "" {
+			return fmt.Errorf("skill tool %q: description is required", d.Name)
+		}
+		if d.Script == "" {
+			return fmt.Errorf("skill tool %q: script is required", d.Name)
+		}
+		agentDefs = append(agentDefs, agents.CustomToolDef{
+			Name:           d.Name,
+			Description:    d.Description,
+			Script:         d.Script,
+			Input:          d.Input,
+			TimeoutSeconds: d.TimeoutSeconds,
+			Env:            d.Env,
+			Call:           d.Call,
+		})
+	}
+
+	// Warn if the skill dir doesn't exist (non-fatal, matches existing behaviour)
+	if _, err := os.Stat(skillDir); os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "warning: skill directory not found: %s\n", skillDir)
+	}
+
+	return r.RegisterCustomTools(agentDefs, skillDir)
 }
 
 // GetSkillTool returns the activate_skill tool if registered.

@@ -18,6 +18,7 @@ type frontmatterData struct {
 	Compatibility string            `yaml:"compatibility,omitempty"`
 	AllowedTools  any               `yaml:"allowed-tools,omitempty"` // Can be string, list, or nil
 	Metadata      map[string]string `yaml:"metadata,omitempty"`
+	Tools         []SkillToolDef    `yaml:"tools,omitempty"`
 }
 
 // ParseSkillMD parses a SKILL.md file and returns a Skill.
@@ -60,6 +61,7 @@ func ParseSkillMDContent(content string, loadBody bool) (*Skill, error) {
 		Metadata:      fm.Metadata,
 		Extras:        extractExtras(rawMap),
 		loaded:        loadBody,
+		Tools:         fm.Tools,
 	}
 
 	// Parse allowed-tools from various formats
@@ -164,6 +166,7 @@ func extractExtras(raw map[string]any) map[string]any {
 		"compatibility": true,
 		"allowed-tools": true,
 		"metadata":      true,
+		"tools":         true,
 	}
 
 	extras := make(map[string]any)

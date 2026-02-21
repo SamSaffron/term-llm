@@ -43,6 +43,37 @@ func (s SkillSource) SourceName() string {
 	}
 }
 
+// SkillToolDef defines a script-backed tool declared in a skill's SKILL.md frontmatter.
+// When the skill is activated, these tools are dynamically registered with the engine.
+// Scripts are resolved relative to the skill directory (SourcePath).
+type SkillToolDef struct {
+	// Name is the tool name shown to the LLM. Must match ^[a-z][a-z0-9_]*$
+	Name string `yaml:"name"`
+
+	// Description is the tool description passed to the LLM.
+	Description string `yaml:"description"`
+
+	// Script is the path to the script, relative to the skill directory.
+	// Subdirectories are allowed (e.g. "scripts/travel-time.sh").
+	Script string `yaml:"script"`
+
+	// Input is a JSON Schema (type: object) for the tool's input parameters.
+	// If omitted, the tool accepts no parameters.
+	Input map[string]interface{} `yaml:"input,omitempty"`
+
+	// TimeoutSeconds is the execution timeout. Default 30, max 300.
+	TimeoutSeconds int `yaml:"timeout_seconds,omitempty"`
+
+	// Env is a map of additional environment variables to set when running the script.
+	Env map[string]string `yaml:"env,omitempty"`
+
+	// Call controls how arguments are passed to the script.
+	//   ""       / "args"       — named flags: --key value (default)
+	//   "positional"            — positional args in schema property order
+	//   "json"                  — JSON object on stdin
+	Call string `yaml:"call,omitempty"`
+}
+
 // Skill represents a skill loaded from a SKILL.md file.
 type Skill struct {
 	// Required fields
@@ -54,6 +85,9 @@ type Skill struct {
 	Compatibility string            `yaml:"compatibility,omitempty"`
 	AllowedTools  []string          `yaml:"-"` // Parsed from allowed-tools
 	Metadata      map[string]string `yaml:"metadata,omitempty"`
+
+	// Tools declares script-backed tools that are registered when this skill is activated.
+	Tools []SkillToolDef `yaml:"-"`
 
 	// Extras stores vendor-specific/unknown frontmatter fields
 	Extras map[string]any `yaml:"-"`
@@ -149,6 +183,11 @@ func (s *Skill) String() string {
 // HasResources returns true if the skill has bundled resources.
 func (s *Skill) HasResources() bool {
 	return len(s.References) > 0 || len(s.Scripts) > 0 || len(s.Assets) > 0
+}
+
+// HasTools returns true if the skill declares any script-backed tools.
+func (s *Skill) HasTools() bool {
+	return len(s.Tools) > 0
 }
 
 // ResourceTree returns a formatted string of bundled resources.

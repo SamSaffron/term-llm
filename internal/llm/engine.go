@@ -88,6 +88,11 @@ type Engine struct {
 	// Interjection support: user can send a message while the agent is streaming.
 	// The message is injected after the current turn's tool results, before the next LLM turn.
 	interjection chan string // Buffered channel (size 1) for mid-stream user interjections
+
+	// pendingToolSpecs holds tool specs registered mid-loop (e.g. via skill activation)
+	// that should be injected into req.Tools at the start of the next loop iteration.
+	pendingToolSpecs []ToolSpec
+	pendingToolsMu   sync.Mutex
 }
 
 // ToolExecutorSetter is an optional interface for providers that need
@@ -128,6 +133,29 @@ func NewEngine(provider Provider, tools *ToolRegistry) *Engine {
 // RegisterTool adds a tool to the engine's registry.
 func (e *Engine) RegisterTool(tool Tool) {
 	e.tools.Register(tool)
+}
+
+// AddDynamicTool registers a tool and queues its spec to be injected into
+// the active agentic loop's tool list at the start of the next iteration.
+// Use this instead of engine.Tools().Register() when activating skill tools
+// mid-conversation so the LLM sees them immediately on the next turn.
+func (e *Engine) AddDynamicTool(tool Tool) {
+	e.tools.Register(tool)
+	e.pendingToolsMu.Lock()
+	e.pendingToolSpecs = append(e.pendingToolSpecs, tool.Spec())
+	e.pendingToolsMu.Unlock()
+}
+
+// drainPendingToolSpecs returns any queued tool specs and clears the queue.
+func (e *Engine) drainPendingToolSpecs() []ToolSpec {
+	e.pendingToolsMu.Lock()
+	defer e.pendingToolsMu.Unlock()
+	if len(e.pendingToolSpecs) == 0 {
+		return nil
+	}
+	specs := e.pendingToolSpecs
+	e.pendingToolSpecs = nil
+	return specs
 }
 
 // UnregisterTool removes a tool from the engine's registry.
@@ -632,6 +660,15 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 
 	var reactiveCompactionDone bool // prevents infinite retry if compacted context still overflows
 	for attempt := 0; attempt < maxTurns; attempt++ {
+		// Inject any tool specs registered mid-loop (e.g. via skill activation)
+		if pending := e.drainPendingToolSpecs(); len(pending) > 0 {
+			for _, spec := range pending {
+				if !hasToolNamed(req.Tools, spec.Name) {
+					req.Tools = append(req.Tools, spec)
+				}
+			}
+		}
+
 		// Pre-turn compaction check (skip first turn — no history to compact yet)
 		if compactionConfig != nil && attempt > 0 {
 			threshold := int(float64(inputLimit) * compactionConfig.ThresholdRatio)

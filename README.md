@@ -1053,22 +1053,96 @@ term-llm skills path                         # Print skills directory
 
 ### Skill Configuration
 
-Skills are YAML files stored in `~/.config/term-llm/skills/`:
+Skills live in `~/.config/term-llm/skills/<name>/SKILL.md`. Each skill is a directory containing a `SKILL.md` file with YAML frontmatter and Markdown body:
 
-```yaml
-# ~/.config/term-llm/skills/git.yaml
-name: Git Expert
-description: Expertise in Git version control
+```markdown
+---
+name: git
+description: "Git version control expertise"
+---
 
-instructions: |
-  You are an expert in Git version control. When helping with Git:
-  - Prefer rebase over merge for cleaner history
-  - Use conventional commit messages
-  - Explain the implications of destructive operations
-  - Suggest .gitignore patterns when appropriate
+# Git Skill
+
+When helping with Git:
+- Prefer rebase over merge for cleaner history
+- Use conventional commit messages
+- Explain the implications of destructive operations
 ```
 
-**Skill search order:** user skills → local skills → built-in skills
+**Skill search order:** local (project) → user (`~/.config/term-llm/skills/`) → built-in
+
+### Skill Tools
+
+Skills can declare script-backed tools in their frontmatter. When the skill is activated via `activate_skill`, those tools are dynamically registered with the engine—the LLM can then call them directly, with no hardcoded paths anywhere.
+
+```markdown
+---
+name: google-maps
+description: "Google Maps queries: travel times, place search, geocoding"
+tools:
+  - name: maps_travel_time
+    description: "Get traffic-aware travel time between two locations"
+    script: scripts/travel-time.sh
+    timeout_seconds: 15
+    input:
+      type: object
+      properties:
+        origin:
+          type: string
+          description: "Origin address or lat,lng"
+        destination:
+          type: string
+          description: "Destination address or lat,lng"
+        mode:
+          type: string
+          description: "DRIVE, WALK, BICYCLE, or TRANSIT (default: DRIVE)"
+      required: [origin, destination]
+
+  - name: maps_places_search
+    description: "Free-text place search with optional location bias"
+    script: scripts/places-search.sh
+    input:
+      type: object
+      properties:
+        query:
+          type: string
+        latlng:
+          type: string
+          description: "Optional bias point as lat,lng"
+      required: [query]
+---
+
+# Google Maps Skill
+
+API key is embedded in the scripts—no need to handle it here.
+...
+```
+
+Scripts live in the skill directory (e.g. `scripts/travel-time.sh`) and receive the LLM's arguments as **JSON on stdin**, exactly like agent custom tools:
+
+```bash
+#!/usr/bin/env bash
+INPUT=$(cat)
+ORIGIN=$(echo "$INPUT" | jq -r '.origin')
+DESTINATION=$(echo "$INPUT" | jq -r '.destination')
+MODE=$(echo "$INPUT" | jq -r '.mode // "DRIVE"')
+# ... call the API
+```
+
+This is the recommended pattern for skills that need API keys or other secrets—the key lives only in the script, never in the SKILL.md body that gets injected into the LLM context.
+
+**Field reference** (same as agent custom tools):
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | ✓ | Tool name shown to LLM. Must match `^[a-z][a-z0-9_]*$` |
+| `description` | ✓ | Description passed to LLM in the tool spec |
+| `script` | ✓ | Path relative to the skill directory (e.g. `scripts/foo.sh`) |
+| `input` | | JSON Schema for parameters. Must be `type: object` at root |
+| `timeout_seconds` | | Execution timeout (default 30, max 300) |
+| `env` | | Extra environment variables when running the script |
+
+Scripts run with `TERM_LLM_AGENT_DIR` set to the skill's directory and `TERM_LLM_TOOL_NAME` set to the tool name. Symlinks are resolved and containment-checked—scripts cannot escape the skill directory.
 
 ## Built-in Tools
 
