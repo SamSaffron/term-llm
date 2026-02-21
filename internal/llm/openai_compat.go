@@ -474,6 +474,9 @@ func buildCompatMessages(messages []Message) []oaiMessage {
 					if part.Type == PartImage && part.ImageData != nil {
 						dataURL := fmt.Sprintf("data:%s;base64,%s", part.ImageData.MediaType, part.ImageData.Base64)
 						imageParts = append(imageParts, oaiContentPart{Type: "image_url", ImageURL: &oaiImageURL{URL: dataURL, Detail: "auto"}})
+						if part.ImagePath != "" {
+							imageParts = append(imageParts, oaiContentPart{Type: "text", Text: "[image saved at: " + part.ImagePath + "]"})
+						}
 					}
 				}
 				if len(imageParts) > 0 {
