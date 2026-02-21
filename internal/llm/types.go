@@ -105,6 +105,7 @@ type Part struct {
 	ReasoningItemID           string         // Responses API reasoning item ID for replay
 	ReasoningEncryptedContent string         // Responses API encrypted reasoning content for replay
 	ImageData                 *ToolImageData // User-supplied image (base64-encoded)
+	ImagePath                 string         // Local filesystem path to the image (when available, e.g. Telegram uploads)
 	ToolCall                  *ToolCall
 	ToolResult                *ToolResult
 }
@@ -300,9 +301,16 @@ func UserText(text string) Message {
 
 // UserImageMessage creates a user message with an image and an optional text caption.
 func UserImageMessage(mediaType, base64Data, caption string) Message {
+	return UserImageMessageWithPath(mediaType, base64Data, "", caption)
+}
+
+// UserImageMessageWithPath creates a user message with an image, an optional local
+// file path (so tools like image_generate can reference it), and an optional caption.
+func UserImageMessageWithPath(mediaType, base64Data, filePath, caption string) Message {
 	parts := []Part{{
 		Type:      PartImage,
 		ImageData: &ToolImageData{MediaType: mediaType, Base64: base64Data},
+		ImagePath: filePath,
 	}}
 	if caption != "" {
 		parts = append(parts, Part{Type: PartText, Text: caption})
