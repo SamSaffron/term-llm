@@ -112,8 +112,6 @@ type ToolsConfig struct {
 }
 
 // CustomToolDef defines a script-backed custom tool declared in agent.yaml.
-// The script is resolved relative to the agent directory and invoked with
-// the LLM's tool call arguments as JSON on stdin.
 type CustomToolDef struct {
 	// Name is the tool name shown to the LLM. Must match ^[a-z][a-z0-9_]*$
 	// and must not collide with any built-in tool name.
@@ -135,6 +133,12 @@ type CustomToolDef struct {
 
 	// Env is a map of additional environment variables to set when running the script.
 	Env map[string]string `yaml:"env,omitempty"`
+
+	// Call controls how arguments are passed to the script.
+	//   ""       / "args"       — named flags: --key value (default)
+	//   "positional"            — positional args in schema property order
+	//   "json"                  — JSON object on stdin
+	Call string `yaml:"call,omitempty"`
 }
 
 // ShellConfig provides shell tool settings.
