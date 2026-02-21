@@ -441,6 +441,102 @@ description: "Name doesn't match directory"
 	}
 }
 
+func TestParseSkillMDContent_Tools(t *testing.T) {
+	content := `---
+name: google-maps
+description: "Google Maps skill with bundled tools"
+tools:
+  - name: maps_travel_time
+    description: "Get traffic-aware travel time between two places"
+    script: scripts/travel-time.sh
+    timeout_seconds: 15
+    input:
+      type: object
+      properties:
+        origin:
+          type: string
+          description: "Origin address or lat,lng"
+        destination:
+          type: string
+          description: "Destination address or lat,lng"
+        mode:
+          type: string
+          description: "Travel mode: DRIVE, WALK, BICYCLE, TRANSIT"
+      required: [origin, destination]
+  - name: maps_places_search
+    description: "Text search for places"
+    script: scripts/places-search.sh
+    input:
+      type: object
+      properties:
+        query:
+          type: string
+      required: [query]
+---
+
+# Google Maps Skill
+`
+
+	skill, err := ParseSkillMDContent(content, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !skill.HasTools() {
+		t.Fatal("expected skill to have tools")
+	}
+	if len(skill.Tools) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(skill.Tools))
+	}
+
+	tt := skill.Tools[0]
+	if tt.Name != "maps_travel_time" {
+		t.Errorf("expected tool name 'maps_travel_time', got %q", tt.Name)
+	}
+	if tt.Description != "Get traffic-aware travel time between two places" {
+		t.Errorf("unexpected description: %q", tt.Description)
+	}
+	if tt.Script != "scripts/travel-time.sh" {
+		t.Errorf("expected script 'scripts/travel-time.sh', got %q", tt.Script)
+	}
+	if tt.TimeoutSeconds != 15 {
+		t.Errorf("expected timeout 15, got %d", tt.TimeoutSeconds)
+	}
+	if tt.Input == nil {
+		t.Fatal("expected input schema to be set")
+	}
+	if tt.Input["type"] != "object" {
+		t.Errorf("expected input type 'object', got %v", tt.Input["type"])
+	}
+
+	tt2 := skill.Tools[1]
+	if tt2.Name != "maps_places_search" {
+		t.Errorf("expected tool name 'maps_places_search', got %q", tt2.Name)
+	}
+
+	// Extras should not contain "tools" key
+	if _, ok := skill.Extras["tools"]; ok {
+		t.Error("'tools' should not appear in Extras")
+	}
+}
+
+func TestParseSkillMDContent_NoTools(t *testing.T) {
+	content := `---
+name: simple-skill
+description: "A skill with no tools"
+---
+
+Body here.
+`
+	skill, err := ParseSkillMDContent(content, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if skill.HasTools() {
+		t.Error("expected skill to have no tools")
+	}
+}
+
 func TestIsSkillDir(t *testing.T) {
 	tmpDir := t.TempDir()
 
