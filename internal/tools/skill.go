@@ -22,11 +22,17 @@ type ActivateSkillArgs struct {
 // It receives the skill's allowed tools list (may be empty if skill has no restrictions).
 type SkillActivatedCallback func(allowedTools []string)
 
+// SkillToolsRegisteredCallback is called when a skill with declared tools is activated.
+// It receives the skill's tool definitions and the skill's source directory,
+// allowing the caller to register the tools with the engine dynamically.
+type SkillToolsRegisteredCallback func(defs []skills.SkillToolDef, skillDir string)
+
 // ActivateSkillTool implements the activate_skill tool.
 type ActivateSkillTool struct {
-	registry    *skills.Registry
-	approval    *ApprovalManager
-	onActivated SkillActivatedCallback
+	registry         *skills.Registry
+	approval         *ApprovalManager
+	onActivated      SkillActivatedCallback
+	onToolsActivated SkillToolsRegisteredCallback
 }
 
 // NewActivateSkillTool creates a new activate_skill tool.
@@ -41,6 +47,13 @@ func NewActivateSkillTool(registry *skills.Registry, approval *ApprovalManager) 
 // If the skill has allowed-tools, the callback receives the list for enforcement.
 func (t *ActivateSkillTool) SetOnActivated(cb SkillActivatedCallback) {
 	t.onActivated = cb
+}
+
+// SetOnToolsActivated sets a callback that's called when a skill with declared tools is activated.
+// The callback receives the tool definitions and the skill's directory so the caller
+// can register them with the engine.
+func (t *ActivateSkillTool) SetOnToolsActivated(cb SkillToolsRegisteredCallback) {
+	t.onToolsActivated = cb
 }
 
 // Spec returns the tool specification.
@@ -98,6 +111,11 @@ func (t *ActivateSkillTool) Execute(ctx context.Context, args json.RawMessage) (
 	// Notify callback about allowed-tools (if callback is set and skill has restrictions)
 	if t.onActivated != nil && len(skill.AllowedTools) > 0 {
 		t.onActivated(skill.AllowedTools)
+	}
+
+	// Register skill-declared tools if present
+	if t.onToolsActivated != nil && skill.HasTools() {
+		t.onToolsActivated(skill.Tools, skill.SourcePath)
 	}
 
 	// Generate the activation response
