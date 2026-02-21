@@ -127,6 +127,35 @@ echo "$INPUT" | grep -o '"name":"[^"]*"'
 		Name:        "echo_name",
 		Description: "Echo name",
 		Script:      "echo-name.sh",
+		Call:        "json", // explicit JSON-on-stdin mode
+	})
+
+	out, err := tool.Execute(context.Background(), json.RawMessage(`{"name":"jarvis"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !containsStr(out.Content, "jarvis") {
+		t.Errorf("expected 'jarvis' in output, got %q", out.Content)
+	}
+}
+
+func TestCustomScriptTool_Execute_NamedArgs(t *testing.T) {
+	dir := t.TempDir()
+	// Script echoes the --name flag value
+	writeScript(t, dir, "echo-name.sh", `#!/bin/sh
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --name) echo "$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+`)
+
+	tool := makeCustomTool(t, dir, agents.CustomToolDef{
+		Name:        "echo_name",
+		Description: "Echo name",
+		Script:      "echo-name.sh",
+		// Call defaults to "args" (named flags)
 	})
 
 	out, err := tool.Execute(context.Background(), json.RawMessage(`{"name":"jarvis"}`))
