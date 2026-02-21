@@ -42,8 +42,7 @@ func NewSetup(cfg *config.SkillsConfig) (*Setup, error) {
 	}
 
 	if len(allSkills) == 0 {
-		// No skills available, return nil setup
-		return &Setup{Registry: registry}, nil
+		return nil, nil
 	}
 
 	// Filter by never_auto for metadata injection (explicit only skills excluded)

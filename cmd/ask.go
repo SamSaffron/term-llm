@@ -289,16 +289,21 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			return err
 		}
 
-		// Register activate_skill tool if skills are available
-		if skillsSetup != nil && skillsSetup.Registry != nil {
-			skillTool := toolMgr.Registry.RegisterSkillTool(skillsSetup.Registry)
-			if skillTool != nil {
-				// Set up allowed-tools enforcement callback
-				skillTool.SetOnActivated(func(allowedTools []string) {
-					engine.SetAllowedTools(allowedTools)
-				})
-				engine.Tools().Register(skillTool)
-			}
+	}
+
+	// Register activate_skill tool if skills are available (independent of toolMgr)
+	if skillsSetup != nil && skillsSetup.Registry != nil {
+		var skillTool *tools.ActivateSkillTool
+		if toolMgr != nil {
+			skillTool = toolMgr.Registry.RegisterSkillTool(skillsSetup.Registry)
+		} else {
+			skillTool = tools.NewActivateSkillTool(skillsSetup.Registry, nil)
+		}
+		if skillTool != nil {
+			skillTool.SetOnActivated(func(allowedTools []string) {
+				engine.SetAllowedTools(allowedTools)
+			})
+			engine.Tools().Register(skillTool)
 		}
 	}
 

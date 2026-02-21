@@ -279,11 +279,15 @@ func runChat(cmd *cobra.Command, args []string) error {
 	// Initialize skills system
 	skillsSetup := SetupSkills(&cfg.Skills, chatSkills, cmd.ErrOrStderr())
 
-	// Register activate_skill tool if skills and tools are available
-	if skillsSetup != nil && skillsSetup.Registry != nil && toolMgr != nil {
-		skillTool := toolMgr.Registry.RegisterSkillTool(skillsSetup.Registry)
+	// Register activate_skill tool if skills are available (independent of toolMgr)
+	if skillsSetup != nil && skillsSetup.Registry != nil {
+		var skillTool *tools.ActivateSkillTool
+		if toolMgr != nil {
+			skillTool = toolMgr.Registry.RegisterSkillTool(skillsSetup.Registry)
+		} else {
+			skillTool = tools.NewActivateSkillTool(skillsSetup.Registry, nil)
+		}
 		if skillTool != nil {
-			// Set up allowed-tools enforcement callback
 			skillTool.SetOnActivated(func(allowedTools []string) {
 				engine.SetAllowedTools(allowedTools)
 			})
