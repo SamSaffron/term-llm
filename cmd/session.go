@@ -32,8 +32,11 @@ type SessionSettings struct {
 	ShellAutoRun bool
 	Scripts      []string
 
-	// Agent directory (for run_agent_script tool)
+	// Agent directory (for run_agent_script and custom tools)
 	AgentDir string
+
+	// CustomTools holds script-backed custom tool definitions from agent.yaml
+	CustomTools []agents.CustomToolDef
 
 	// MCP servers (comma-separated)
 	MCP string
@@ -171,6 +174,7 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 			s.Scripts = append(s.Scripts, agent.Shell.Scripts[k])
 		}
 		s.AgentDir = agent.SourcePath
+		s.CustomTools = agent.Tools.Custom
 	}
 
 	// MCP: CLI > agent
@@ -312,6 +316,13 @@ func (s *SessionSettings) SetupToolManager(cfg *config.Config, engine *llm.Engin
 	toolMgr, err := tools.NewToolManager(&toolConfig, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize tools: %w", err)
+	}
+
+	// Register any custom script-backed tools declared in agent.yaml
+	if len(s.CustomTools) > 0 {
+		if err := toolMgr.Registry.RegisterCustomTools(s.CustomTools, s.AgentDir); err != nil {
+			return nil, fmt.Errorf("custom tools: %w", err)
+		}
 	}
 
 	toolMgr.SetupEngine(engine)
