@@ -536,10 +536,12 @@ func RegisterSkillToolWithEngine(engine *llm.Engine, toolMgr *tools.ToolManager,
 				fmt.Fprintf(os.Stderr, "warning: skill tools registration failed: %v\n", err)
 				return
 			}
-			// Register the newly added tools with the engine so the LLM can call them
+			// Register the newly added tools with the engine so the LLM can call them.
+			// AddDynamicTool queues the spec for injection into the active agentic loop
+			// so the LLM sees the tools immediately on the very next turn.
 			for _, def := range defs {
 				if tool, ok := toolMgr.Registry.Get(def.Name); ok {
-					engine.Tools().Register(tool)
+					engine.AddDynamicTool(tool)
 				}
 			}
 		})
