@@ -1107,6 +1107,8 @@ mcp:
   - name: github
 ```
 
+Built-in agents that currently default to `search: true`: `agent-builder`, `researcher`, `developer`, `editor`, `shell`.
+
 ### System Prompt File Includes
 
 System prompts support inline file includes with `{{file:...}}`.

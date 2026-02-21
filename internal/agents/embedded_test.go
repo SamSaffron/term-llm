@@ -108,12 +108,12 @@ func TestBuiltinAgentConfigs(t *testing.T) {
 		{"changelog", true, 200, true, true, false, false},
 		{"codebase", true, 200, true, true, true, false},
 		{"commit-message", true, 200, true, true, true, false},
-		{"developer", true, 200, true, false, false, false},
-		{"editor", true, 200, false, false, false, false},
+		{"developer", true, 200, true, false, false, true},
+		{"editor", true, 200, false, false, false, true},
 		{"file-organizer", true, 200, true, true, false, false},
-		{"researcher", true, 200, false, false, false, false},
+		{"researcher", true, 200, false, false, false, true},
 		{"reviewer", true, 200, true, true, true, false},
-		{"shell", true, 200, false, false, false, false},
+		{"shell", true, 200, false, false, false, true},
 	}
 
 	for _, tt := range tests {

@@ -4,4 +4,6 @@ description: "Information gathering with web search"
 tools:
   enabled: [read_file, glob, grep]
 
+search: true
+
 max_turns: 200

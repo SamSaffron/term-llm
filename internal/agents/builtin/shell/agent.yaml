@@ -7,4 +7,6 @@ tools:
 shell:
   auto_run: false
 
+search: true
+
 max_turns: 200

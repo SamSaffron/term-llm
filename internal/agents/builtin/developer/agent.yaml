@@ -23,4 +23,6 @@ shell:
     - "pytest*"
     - "make *"
 
+search: true
+
 max_turns: 200
