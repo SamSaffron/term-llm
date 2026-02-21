@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -102,9 +103,12 @@ func (t *CustomScriptTool) Execute(ctx context.Context, args json.RawMessage) (l
 	execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(execCtx, detectShell(), "-c", scriptPath)
+	// Build the command according to the calling convention.
+	cmd, err := t.buildCommand(execCtx, scriptPath, args)
+	if err != nil {
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "build command: %v", err))), nil
+	}
 	cmd.Dir = workDir
-	cmd.Stdin = bytes.NewReader(args)
 
 	// Build environment: inherit + agent-specific vars + per-tool env
 	env := os.Environ()
@@ -140,6 +144,103 @@ func (t *CustomScriptTool) Execute(ctx context.Context, args json.RawMessage) (l
 	}
 
 	return llm.TextOutput(formatShellResult(result, t.limits)), nil
+}
+
+// buildCommand constructs the exec.Cmd for the script according to the calling convention.
+//
+//   ""/"args"   → script --key1 val1 --key2 val2  (named flags, default)
+//   "positional" → script val1 val2 …              (values in schema property order)
+//   "json"      → script  with JSON piped to stdin
+func (t *CustomScriptTool) buildCommand(ctx context.Context, scriptPath string, args json.RawMessage) (*exec.Cmd, error) {
+	call := strings.ToLower(strings.TrimSpace(t.def.Call))
+
+	// Parse JSON args into a map
+	var argMap map[string]json.RawMessage
+	if err := json.Unmarshal(args, &argMap); err != nil {
+		return nil, fmt.Errorf("parse args: %w", err)
+	}
+
+	switch call {
+	case "json":
+		// Pass raw JSON on stdin
+		cmd := exec.CommandContext(ctx, detectShell(), "-c", scriptPath)
+		cmd.Stdin = bytes.NewReader(args)
+		return cmd, nil
+
+	case "positional":
+		// Values in schema property order (alphabetical fallback if no order defined)
+		keys := propertyOrder(t.def.Input)
+		cmdArgs := []string{scriptPath}
+		for _, k := range keys {
+			if v, ok := argMap[k]; ok {
+				cmdArgs = append(cmdArgs, jsonValueToString(v))
+			}
+		}
+		cmd := exec.CommandContext(ctx, detectShell(), append([]string{"-c"}, shellJoin(cmdArgs)...)...)
+		return cmd, nil
+
+	default: // "" or "args" — named flags (--key value)
+		keys := sortedKeys(argMap)
+		cmdArgs := []string{scriptPath}
+		for _, k := range keys {
+			cmdArgs = append(cmdArgs, "--"+k, jsonValueToString(argMap[k]))
+		}
+		cmd := exec.CommandContext(ctx, detectShell(), append([]string{"-c"}, shellJoin(cmdArgs)...)...)
+		return cmd, nil
+	}
+}
+
+// propertyOrder returns property keys in the order defined by the JSON Schema,
+// falling back to sorted order when no explicit ordering is present.
+// JSON Schema doesn't guarantee property order, but in practice Go's yaml→map
+// loses order. We sort alphabetically as a stable fallback.
+func propertyOrder(input map[string]interface{}) []string {
+	if input == nil {
+		return nil
+	}
+	props, _ := input["properties"].(map[string]interface{})
+	keys := make([]string, 0, len(props))
+	for k := range props {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// sortedKeys returns the keys of a map in sorted order.
+func sortedKeys(m map[string]json.RawMessage) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// jsonValueToString converts a JSON value to a plain string suitable for a CLI arg.
+// Strings are unquoted; numbers/bools/nulls use their JSON representation.
+func jsonValueToString(v json.RawMessage) string {
+	var s string
+	if err := json.Unmarshal(v, &s); err == nil {
+		return s // already a string — strip quotes
+	}
+	return string(v) // number, bool, null — use as-is
+}
+
+// shellJoin builds a shell command string from a slice of args, quoting as needed.
+func shellJoin(args []string) []string {
+	// We pass the whole thing as a single "-c" argument to the shell,
+	// so we need to produce one properly-quoted string.
+	parts := make([]string, len(args))
+	for i, a := range args {
+		parts[i] = shellQuote(a)
+	}
+	return []string{strings.Join(parts, " ")}
+}
+
+// shellQuote wraps a string in single quotes, escaping any single quotes within.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 // resolveScript resolves and validates the script path within the agent directory.
