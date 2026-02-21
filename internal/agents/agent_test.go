@@ -520,3 +520,151 @@ func TestAgent_ShouldLoadProjectInstructions(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateCustomTools(t *testing.T) {
+	tests := []struct {
+		name    string
+		defs    []CustomToolDef
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "valid single tool",
+			defs: []CustomToolDef{
+				{Name: "job_status", Description: "Get status", Script: "scripts/job.sh"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid with input schema",
+			defs: []CustomToolDef{
+				{
+					Name:        "job_run",
+					Description: "Run a job",
+					Script:      "scripts/job-run.sh",
+					Input: map[string]interface{}{
+						"type":       "object",
+						"properties": map[string]interface{}{},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid with subdirectory script path",
+			defs: []CustomToolDef{
+				{Name: "my_tool", Description: "x", Script: "scripts/subdir/tool.sh"},
+			},
+			wantErr: false,
+		},
+		{
+			name:    "empty name",
+			defs:    []CustomToolDef{{Name: "", Description: "x", Script: "x.sh"}},
+			wantErr: true,
+			errMsg:  "name is required",
+		},
+		{
+			name:    "uppercase in name",
+			defs:    []CustomToolDef{{Name: "MyTool", Description: "x", Script: "x.sh"}},
+			wantErr: true,
+			errMsg:  "must match",
+		},
+		{
+			name:    "hyphen in name",
+			defs:    []CustomToolDef{{Name: "my-tool", Description: "x", Script: "x.sh"}},
+			wantErr: true,
+			errMsg:  "must match",
+		},
+		{
+			name:    "name starts with digit",
+			defs:    []CustomToolDef{{Name: "1tool", Description: "x", Script: "x.sh"}},
+			wantErr: true,
+			errMsg:  "must match",
+		},
+		{
+			name: "duplicate names",
+			defs: []CustomToolDef{
+				{Name: "my_tool", Description: "a", Script: "a.sh"},
+				{Name: "my_tool", Description: "b", Script: "b.sh"},
+			},
+			wantErr: true,
+			errMsg:  "duplicate",
+		},
+		{
+			name:    "missing description",
+			defs:    []CustomToolDef{{Name: "my_tool", Description: "", Script: "x.sh"}},
+			wantErr: true,
+			errMsg:  "description is required",
+		},
+		{
+			name:    "missing script",
+			defs:    []CustomToolDef{{Name: "my_tool", Description: "x", Script: ""}},
+			wantErr: true,
+			errMsg:  "script is required",
+		},
+		{
+			name:    "absolute script path",
+			defs:    []CustomToolDef{{Name: "my_tool", Description: "x", Script: "/etc/evil.sh"}},
+			wantErr: true,
+			errMsg:  "relative path",
+		},
+		{
+			name: "input schema wrong type",
+			defs: []CustomToolDef{
+				{
+					Name:        "my_tool",
+					Description: "x",
+					Script:      "x.sh",
+					Input:       map[string]interface{}{"type": "string"},
+				},
+			},
+			wantErr: true,
+			errMsg:  `"type": "object"`,
+		},
+		{
+			name: "input schema missing type",
+			defs: []CustomToolDef{
+				{
+					Name:        "my_tool",
+					Description: "x",
+					Script:      "x.sh",
+					Input:       map[string]interface{}{"properties": map[string]interface{}{}},
+				},
+			},
+			wantErr: true,
+			errMsg:  `"type": "object"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateCustomTools(tt.defs)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.errMsg)
+				}
+				if tt.errMsg != "" {
+					if !containsSubstr(err.Error(), tt.errMsg) {
+						t.Errorf("expected error to contain %q, got %q", tt.errMsg, err.Error())
+					}
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func containsSubstr(s, sub string) bool {
+	if len(sub) == 0 {
+		return true
+	}
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}

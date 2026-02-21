@@ -6,11 +6,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"gopkg.in/yaml.v3"
 )
+
+// validCustomToolNameRE matches valid custom tool names: lowercase letter, then lowercase alphanumeric or underscore.
+var validCustomToolNameRE = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
 // Agent represents a named configuration bundle.
 type Agent struct {
@@ -103,6 +107,34 @@ type ToolsConfig struct {
 	Enabled []string `yaml:"enabled,omitempty"`
 	// Disabled is a deny list (all others enabled)
 	Disabled []string `yaml:"disabled,omitempty"`
+	// Custom is a list of script-backed custom tools declared in agent.yaml
+	Custom []CustomToolDef `yaml:"custom,omitempty"`
+}
+
+// CustomToolDef defines a script-backed custom tool declared in agent.yaml.
+// The script is resolved relative to the agent directory and invoked with
+// the LLM's tool call arguments as JSON on stdin.
+type CustomToolDef struct {
+	// Name is the tool name shown to the LLM. Must match ^[a-z][a-z0-9_]*$
+	// and must not collide with any built-in tool name.
+	Name string `yaml:"name"`
+
+	// Description is the tool description passed to the LLM.
+	Description string `yaml:"description"`
+
+	// Script is the path to the script, relative to the agent directory.
+	// Subdirectories are allowed (e.g. "scripts/job-status.sh").
+	Script string `yaml:"script"`
+
+	// Input is a JSON Schema (type: object) for the tool's input parameters.
+	// If omitted, the tool accepts no parameters.
+	Input map[string]interface{} `yaml:"input,omitempty"`
+
+	// TimeoutSeconds is the execution timeout. Default 30, max 300.
+	TimeoutSeconds int `yaml:"timeout_seconds,omitempty"`
+
+	// Env is a map of additional environment variables to set when running the script.
+	Env map[string]string `yaml:"env,omitempty"`
 }
 
 // ShellConfig provides shell tool settings.
@@ -321,6 +353,11 @@ func (a *Agent) Validate() error {
 		return fmt.Errorf("cannot specify both tools.enabled and tools.disabled")
 	}
 
+	// Validate custom tools
+	if err := validateCustomTools(a.Tools.Custom); err != nil {
+		return err
+	}
+
 	// Validate output field (deprecated, but still supported)
 	if a.Output != "" && a.Output != "commit_editmsg" {
 		return fmt.Errorf("invalid output: %q (valid: commit_editmsg)", a.Output)
@@ -448,4 +485,43 @@ func (a *Agent) Merge(pref config.AgentPreference) {
 	if pref.Search != nil {
 		a.Search = *pref.Search
 	}
+}
+
+// validateCustomTools checks that a slice of CustomToolDef entries are valid.
+// It verifies name format, uniqueness within the list, script path safety,
+// and input schema structure. It does NOT check for collisions with built-in
+// tool names (that requires the tools package and is done at registration time).
+func validateCustomTools(defs []CustomToolDef) error {
+	seen := make(map[string]bool)
+	for i, def := range defs {
+		if def.Name == "" {
+			return fmt.Errorf("tools.custom[%d]: name is required", i)
+		}
+		if !validCustomToolNameRE.MatchString(def.Name) {
+			return fmt.Errorf("tools.custom[%d] %q: name must match ^[a-z][a-z0-9_]*$", i, def.Name)
+		}
+		if seen[def.Name] {
+			return fmt.Errorf("tools.custom: duplicate tool name %q", def.Name)
+		}
+		seen[def.Name] = true
+
+		if def.Description == "" {
+			return fmt.Errorf("tools.custom %q: description is required", def.Name)
+		}
+		if def.Script == "" {
+			return fmt.Errorf("tools.custom %q: script is required", def.Name)
+		}
+		// Script must be a relative path
+		if filepath.IsAbs(def.Script) {
+			return fmt.Errorf("tools.custom %q: script must be a relative path (got %q)", def.Name, def.Script)
+		}
+		// Input schema, if provided, must have type: object at root
+		if def.Input != nil {
+			t, ok := def.Input["type"]
+			if !ok || t != "object" {
+				return fmt.Errorf("tools.custom %q: input schema must have \"type\": \"object\" at root", def.Name)
+			}
+		}
+	}
+	return nil
 }

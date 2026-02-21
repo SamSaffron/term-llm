@@ -974,27 +974,29 @@ term-llm agents path                         # Print agents directory
 Agents are YAML files stored in `~/.config/term-llm/agents/`:
 
 ```yaml
-# ~/.config/term-llm/agents/reviewer.yaml
+# ~/.config/term-llm/agents/reviewer/agent.yaml
 name: Code Reviewer
 description: Reviews code for best practices and potential issues
 
 provider: anthropic
 model: claude-sonnet-4-6
 
-system_message: |
-  You are a code reviewer. Focus on:
-  - Code quality and best practices
-  - Potential bugs and edge cases
-  - Performance considerations
-  - Security issues
-
 tools:
-  - read_file
-  - grep
-  - glob
+  enabled: [read_file, grep, glob]
+  # OR use a denylist instead:
+  # disabled: [shell, write_file]
+
+shell:
+  allow: ["git *", "npm test"]  # glob patterns for allowed commands
+  auto_run: true                 # skip confirmation for matched commands
+  scripts:                       # named shortcuts (auto-approved)
+    build: "npm run build"
+
+search: true   # enables web_search and read_url tools
+max_turns: 50
 
 mcp:
-  - github
+  - name: github
 ```
 
 ### System Prompt File Includes
@@ -1092,7 +1094,74 @@ term-llm exec --tools read_file,write_file,edit_file,shell,grep,glob,view_image
 | `image_generate` | Generate images via configured provider |
 | `ask_user` | Prompt user for input |
 | `spawn_agent` | Spawn child agents for parallel tasks |
+| `run_agent_script` | Run a script bundled in the agent directory |
 | `activate_skill` | Activate a skill by name |
+
+### Custom Tools
+
+Agents can declare named, schema-bearing tools backed by shell scripts in the agent directory. These appear to the LLM as first-class tools with their own descriptions and typed parameters—no more asking the LLM to invoke `run_agent_script` with a magic filename.
+
+```yaml
+tools:
+  enabled: [read_file, shell]
+  custom:
+    - name: job_status
+      description: "List all registered jobs and their last run result."
+      script: scripts/job-status.sh
+
+    - name: job_run
+      description: "Trigger a scheduled job to run immediately."
+      script: scripts/job-run.sh
+      input:
+        type: object
+        properties:
+          name:
+            type: string
+            description: "Job name to run"
+        required: [name]
+        additionalProperties: false
+
+    - name: job_history
+      description: "Fetch recent run history for a job."
+      script: scripts/job-history.sh
+      input:
+        type: object
+        properties:
+          name:
+            type: string
+          limit:
+            type: integer
+            description: "Number of runs to return (default 10)"
+        required: [name]
+        additionalProperties: false
+      timeout_seconds: 10
+      env:
+        DB_PATH: /var/lib/myapp/jobs.db
+```
+
+Scripts receive the LLM's arguments as **JSON on stdin**:
+
+```bash
+#!/usr/bin/env bash
+INPUT=$(cat)
+NAME=$(echo "$INPUT" | jq -r '.name')
+LIMIT=$(echo "$INPUT" | jq -r '.limit // 10')
+sqlite3 "$DB_PATH" \
+  "SELECT * FROM runs WHERE job='$NAME' ORDER BY started DESC LIMIT $LIMIT;"
+```
+
+**Field reference:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | ✓ | Tool name shown to LLM. Must match `^[a-z][a-z0-9_]*$`, no collisions with built-in names |
+| `description` | ✓ | Description passed to LLM in the tool spec |
+| `script` | ✓ | Path to script, relative to the agent directory (e.g. `scripts/foo.sh`) |
+| `input` | | JSON Schema for parameters. Must be `type: object` at root. If omitted, tool takes no parameters |
+| `timeout_seconds` | | Execution timeout (default 30, max 300) |
+| `env` | | Extra environment variables to set when running the script |
+
+Scripts run with `TERM_LLM_AGENT_DIR` and `TERM_LLM_TOOL_NAME` set. Symlinks are resolved and containment-checked—scripts cannot escape the agent directory. No approval prompt is shown; scripts in the agent directory are implicitly trusted.
 
 ### Tool Permissions
 

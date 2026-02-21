@@ -360,6 +360,13 @@ func (r *SpawnAgentRunner) setupAgentTools(cfg *config.Config, engine *llm.Engin
 		return nil, err
 	}
 
+	// Register any custom script-backed tools declared in agent.yaml
+	if len(agent.Tools.Custom) > 0 {
+		if err := toolMgr.Registry.RegisterCustomTools(agent.Tools.Custom, agent.SourcePath); err != nil {
+			return nil, fmt.Errorf("custom tools: %w", err)
+		}
+	}
+
 	// Set yolo mode for sub-agents (they inherit from parent)
 	if r.yoloMode {
 		toolMgr.ApprovalMgr.SetYoloMode(true)
