@@ -530,6 +530,20 @@ func RegisterSkillToolWithEngine(engine *llm.Engine, toolMgr *tools.ToolManager,
 	skillTool.SetOnActivated(func(allowedTools []string) {
 		engine.SetAllowedTools(allowedTools)
 	})
+	if toolMgr != nil {
+		skillTool.SetOnToolsActivated(func(defs []skills.SkillToolDef, skillDir string) {
+			if err := toolMgr.Registry.RegisterSkillTools(defs, skillDir); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: skill tools registration failed: %v\n", err)
+				return
+			}
+			// Register the newly added tools with the engine so the LLM can call them
+			for _, def := range defs {
+				if tool, ok := toolMgr.Registry.Get(def.Name); ok {
+					engine.Tools().Register(tool)
+				}
+			}
+		})
+	}
 	engine.Tools().Register(skillTool)
 }
 
