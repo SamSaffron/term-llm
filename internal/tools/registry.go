@@ -281,6 +281,7 @@ func (r *LocalToolRegistry) RegisterSkillTools(defs []skills.SkillToolDef, skill
 			Input:          d.Input,
 			TimeoutSeconds: d.TimeoutSeconds,
 			Env:            d.Env,
+			Call:           d.Call,
 		})
 	}
 
