@@ -76,10 +76,18 @@ Web endpoints:
   GET  /healthz
 
 Jobs endpoints:
-  POST   /v1/jobs
-  GET    /v1/jobs/:id
-  DELETE /v1/jobs/:id
-  GET    /v1/jobs
+  POST   /v2/jobs
+  GET    /v2/jobs
+  GET    /v2/jobs/:id
+  PATCH  /v2/jobs/:id
+  DELETE /v2/jobs/:id
+  POST   /v2/jobs/:id/trigger
+  POST   /v2/jobs/:id/pause
+  POST   /v2/jobs/:id/resume
+  GET    /v2/runs
+  GET    /v2/runs/:id
+  GET    /v2/runs/:id/events
+  POST   /v2/runs/:id/cancel
 
 Use --ui to also serve a minimal web chat interface.
 Use --platform jobs for async per-agent queued work.
@@ -266,7 +274,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	defer sessionMgr.Close()
 
 	if hasJobs && strings.TrimSpace(serveAgent) != "" {
-		fmt.Fprintln(cmd.ErrOrStderr(), "warning: --agent is ignored for --platform jobs; set agent_name per POST /v1/jobs request")
+		fmt.Fprintln(cmd.ErrOrStderr(), "warning: --agent is ignored for --platform jobs; set llm runner_config.agent_name per job definition")
 	}
 
 	// Build the serve.Settings used by non-web platforms.
@@ -325,9 +333,12 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	var s *serveServer
 	if hasHTTP {
-		var jobsMgr *serveJobsManager
+		var jobsV2 *jobsV2Manager
 		if hasJobs {
-			jobsMgr = newServeJobsManager(serveJobsWorkers, newServeJobsExecutor(cfg))
+			jobsV2, err = newServeJobsV2Manager(cfg, serveJobsWorkers)
+			if err != nil {
+				return fmt.Errorf("initialize jobs v2 manager: %w", err)
+			}
 		}
 		s = &serveServer{
 			cfg: serveServerConfig{
@@ -339,7 +350,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 				corsOrigins: append([]string(nil), serveCORSOrigins...),
 			},
 			sessionMgr: sessionMgr,
-			jobsMgr:    jobsMgr,
+			jobsV2:     jobsV2,
 			cfgRef:     cfg,
 		}
 
@@ -489,7 +500,7 @@ type serveServerConfig struct {
 type serveServer struct {
 	cfg            serveServerConfig
 	sessionMgr     *serveSessionManager
-	jobsMgr        *serveJobsManager
+	jobsV2         *jobsV2Manager
 	cfgRef         *config.Config
 	server         *http.Server
 	modelsMu       sync.Mutex
@@ -503,9 +514,11 @@ func (s *serveServer) Start() error {
 	mux.HandleFunc("/v1/models", s.auth(s.cors(s.handleModels)))
 	mux.HandleFunc("/v1/responses", s.auth(s.cors(s.handleResponses)))
 	mux.HandleFunc("/v1/chat/completions", s.auth(s.cors(s.handleChatCompletions)))
-	if s.jobsMgr != nil {
-		mux.HandleFunc("/v1/jobs", s.auth(s.cors(s.handleJobs)))
-		mux.HandleFunc("/v1/jobs/", s.auth(s.cors(s.handleJobByID)))
+	if s.jobsV2 != nil {
+		mux.HandleFunc("/v2/jobs", s.auth(s.cors(s.handleJobsV2)))
+		mux.HandleFunc("/v2/jobs/", s.auth(s.cors(s.handleJobV2ByID)))
+		mux.HandleFunc("/v2/runs", s.auth(s.cors(s.handleRunsV2)))
+		mux.HandleFunc("/v2/runs/", s.auth(s.cors(s.handleRunV2ByID)))
 	}
 
 	if s.cfg.ui {
@@ -543,8 +556,8 @@ func (s *serveServer) Stop(ctx context.Context) error {
 	if s.server == nil {
 		return nil
 	}
-	if s.jobsMgr != nil {
-		s.jobsMgr.Close()
+	if s.jobsV2 != nil {
+		_ = s.jobsV2.Close()
 	}
 	s.modelsMu.Lock()
 	if cleaner, ok := s.modelsProvider.(interface{ CleanupMCP() }); ok {

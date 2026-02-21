@@ -818,6 +818,112 @@ term-llm loop @coder --done "make build" --max 20 --yolo \
   "Implement the feature described in {{SPEC.md}}"
 ```
 
+## Job Runner (Serve)
+
+Run term-llm as a jobs server:
+
+```bash
+term-llm serve --platform jobs --port 8080
+```
+
+### Jobs V2 API
+
+Definitions:
+
+- `POST /v2/jobs` - create job definition
+- `GET /v2/jobs` - list job definitions
+- `GET /v2/jobs/:id` - get definition
+- `PATCH /v2/jobs/:id` - update definition
+- `DELETE /v2/jobs/:id` - delete definition
+- `POST /v2/jobs/:id/trigger` - trigger manual run
+- `POST /v2/jobs/:id/pause` - disable schedule
+- `POST /v2/jobs/:id/resume` - re-enable schedule
+
+Runs:
+
+- `GET /v2/runs` - list runs (optional `job_id`)
+- `GET /v2/runs/:id` - get run details
+- `GET /v2/runs/:id/events` - get run event timeline
+- `POST /v2/runs/:id/cancel` - cancel run
+
+### Jobs CLI
+
+Use the first-class CLI for interrogation and queue control:
+
+```bash
+# Point to a server (or set TERM_LLM_JOBS_SERVER / TERM_LLM_JOBS_TOKEN)
+term-llm jobs --server http://127.0.0.1:8080 --token "$TOKEN" list
+
+# Create/update from JSON or YAML
+term-llm jobs create --file job.yaml
+term-llm jobs update nightly-summary --file update.yaml
+
+# Queue and control execution
+term-llm jobs trigger nightly-summary
+term-llm jobs pause nightly-summary
+term-llm jobs resume nightly-summary
+term-llm jobs delete nightly-summary --cancel-active
+
+# Interrogate runs/events
+term-llm jobs runs nightly-summary --limit 100
+term-llm jobs run get run_abc123
+term-llm jobs run events run_abc123
+term-llm jobs run cancel run_abc123
+```
+
+### Trigger Types
+
+- `manual`: run only when manually triggered
+- `once`: delayed one-off run via `trigger_config.run_at` (RFC3339)
+- `cron`: recurring schedule via `trigger_config.expression` + `trigger_config.timezone`
+
+### Retention
+
+Jobs v2 automatically prunes historical data to avoid unbounded disk growth:
+
+- terminal runs older than 30 days are deleted
+- event rows older than 30 days are deleted
+- terminal runs are capped to 1000 per job (oldest dropped first)
+
+### Example: Daily Midnight (Cron)
+
+```json
+{
+  "name": "nightly-summary",
+  "enabled": true,
+  "runner_type": "llm",
+  "runner_config": {
+    "agent_name": "developer",
+    "instructions": "Summarize today's changes and write a short report."
+  },
+  "trigger_type": "cron",
+  "trigger_config": {
+    "expression": "0 0 * * *",
+    "timezone": "America/Los_Angeles"
+  },
+  "timeout_seconds": 900
+}
+```
+
+### Example: One-Off Delayed Job
+
+```json
+{
+  "name": "run-once-at-midnight",
+  "enabled": true,
+  "runner_type": "program",
+  "runner_config": {
+    "command": "echo",
+    "args": ["hello from delayed run"]
+  },
+  "trigger_type": "once",
+  "trigger_config": {
+    "run_at": "2026-02-22T00:00:00-08:00"
+  },
+  "timeout_seconds": 60
+}
+```
+
 ## MCP Servers
 
 [MCP (Model Context Protocol)](https://modelcontextprotocol.io) lets you extend term-llm with external tools—browser automation, database access, API integrations, and more.
