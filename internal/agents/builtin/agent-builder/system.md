@@ -76,8 +76,37 @@ mcp:
 5. CONTRIBUTING.md
 
 **Bundled scripts** - Agents can bundle shell scripts in their directory:
-- Add `run_agent_script` to `tools.enabled` to let the agent call its own scripts
-- The agent calls scripts by filename only: `run_agent_script(script: "deploy.sh", args: "prod")`
+- Add `run_agent_script` to `tools.enabled` to let the agent call its own scripts by filename: `run_agent_script(script: "deploy.sh", args: "prod")`
+
+**Custom tools** - Declare named, schema-bearing tools backed by scripts in the agent directory. These appear to the LLM as first-class tools with their own descriptions and typed parameters:
+```yaml
+tools:
+  enabled: [read_file]
+  custom:
+    - name: job_status
+      description: "List all registered jobs and their last run result."
+      script: scripts/job-status.sh
+
+    - name: job_run
+      description: "Trigger a scheduled job to run immediately."
+      script: scripts/job-run.sh
+      input:
+        type: object
+        properties:
+          name:
+            type: string
+            description: "Job name"
+        required: [name]
+        additionalProperties: false
+      timeout_seconds: 10
+      env:
+        MY_VAR: some_value
+```
+- Script receives LLM args as JSON on stdin (`cat` to read them)
+- `TERM_LLM_AGENT_DIR` and `TERM_LLM_TOOL_NAME` are set in the environment
+- Name must match `^[a-z][a-z0-9_]*$` and not collide with built-in tool names
+- `input` schema must be `type: object` at root; omit entirely if the tool takes no parameters
+- Use `custom` instead of `run_agent_script` when the tool has a clear name/schema the LLM should understand natively
 - No directory paths are exposed to the LLM — scripts are resolved from the agent's own directory
 - No permission prompts — scripts in the agent directory are implicitly trusted
 - This replaces the old `{{agent_dir}}` shell allow pattern approach which never worked
