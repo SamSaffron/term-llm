@@ -234,12 +234,14 @@ func buildResponsesMessageItems(role string, parts []Part) []ResponsesInputItem 
 			if part.ImageData != nil {
 				flushText()
 				dataURL := fmt.Sprintf("data:%s;base64,%s", part.ImageData.MediaType, part.ImageData.Base64)
+				imageParts := []ResponsesContentPart{{Type: "input_image", ImageURL: dataURL}}
+				if part.ImagePath != "" {
+					imageParts = append(imageParts, ResponsesContentPart{Type: "input_text", Text: "[image saved at: " + part.ImagePath + "]"})
+				}
 				items = append(items, ResponsesInputItem{
-					Type: "message",
-					Role: role,
-					Content: []ResponsesContentPart{
-						{Type: "input_image", ImageURL: dataURL},
-					},
+					Type:    "message",
+					Role:    role,
+					Content: imageParts,
 				})
 			}
 		case PartToolCall:
