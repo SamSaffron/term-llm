@@ -5,12 +5,15 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/embedding"
 	_ "modernc.org/sqlite"
 )
 
@@ -36,6 +39,24 @@ type Fragment struct {
 	AccessCount int
 	DecayScore  float64
 	Pinned      bool
+}
+
+// ScoredFragment is a fragment paired with a relevance score.
+type ScoredFragment struct {
+	ID          string    `json:"id"`
+	Agent       string    `json:"agent"`
+	Path        string    `json:"path"`
+	Content     string    `json:"-"`
+	Source      string    `json:"-"`
+	CreatedAt   time.Time `json:"-"`
+	UpdatedAt   time.Time `json:"-"`
+	AccessedAt  *time.Time
+	AccessCount int       `json:"-"`
+	DecayScore  float64   `json:"-"`
+	Pinned      bool      `json:"-"`
+	Snippet     string    `json:"snippet"`
+	Score       float64   `json:"score"`
+	Vector      []float64 `json:"-"`
 }
 
 // ListOptions configures fragment listing.
@@ -93,6 +114,16 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
     tokenize='unicode61'
 );
 
+CREATE TABLE IF NOT EXISTS memory_embeddings (
+    fragment_id TEXT NOT NULL REFERENCES memory_fragments(id) ON DELETE CASCADE,
+    provider    TEXT NOT NULL,
+    model       TEXT NOT NULL,
+    dimensions  INTEGER NOT NULL,
+    vector      BLOB NOT NULL,
+    embedded_at DATETIME NOT NULL,
+    PRIMARY KEY (fragment_id, provider, model)
+);
+
 CREATE TABLE IF NOT EXISTS memory_mining_state (
     session_id         TEXT PRIMARY KEY,
     agent              TEXT NOT NULL,
@@ -125,7 +156,7 @@ func NewStore(cfg Config) (*Store, error) {
 	} else {
 		dsn += "?"
 	}
-	dsn += "_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=mmap_size(134217728)&_pragma=cache_size(-64000)"
+	dsn += "_pragma=foreign_keys(ON)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=mmap_size(134217728)&_pragma=cache_size(-64000)"
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -314,6 +345,10 @@ func (s *Store) UpdateFragment(ctx context.Context, agent, path, content string)
 		return false, fmt.Errorf("update fragment: %w", err)
 	}
 
+	if _, err := tx.ExecContext(ctx, `DELETE FROM memory_embeddings WHERE fragment_id = ?`, oldFrag.ID); err != nil {
+		return false, fmt.Errorf("delete stale embeddings: %w", err)
+	}
+
 	if err := syncFTSDelete(ctx, tx, rowID, oldFrag); err != nil {
 		return false, fmt.Errorf("sync fts delete: %w", err)
 	}
@@ -460,15 +495,24 @@ func (s *Store) ListFragments(ctx context.Context, opts ListOptions) ([]Fragment
 	return out, nil
 }
 
-// SearchFragments performs BM25 search over FTS5.
-func (s *Store) SearchFragments(ctx context.Context, query string, limit int, agent string) ([]SearchResult, error) {
+// SearchBM25 performs BM25 search over FTS5 and returns fragment details.
+func (s *Store) SearchBM25(ctx context.Context, query string, limit int, agent string) ([]ScoredFragment, error) {
 	if limit <= 0 {
 		limit = 6
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT mf.agent,
+		SELECT mf.id,
+		       mf.agent,
 		       mf.path,
+		       mf.content,
+		       mf.source,
+		       mf.created_at,
+		       mf.updated_at,
+		       mf.accessed_at,
+		       mf.access_count,
+		       mf.decay_score,
+		       mf.pinned,
 		       snippet(memory_fts, 3, '[', ']', '...', 24) AS snippet,
 		       bm25(memory_fts) AS score
 		FROM memory_fts
@@ -482,11 +526,30 @@ func (s *Store) SearchFragments(ctx context.Context, query string, limit int, ag
 	}
 	defer rows.Close()
 
-	var out []SearchResult
+	var out []ScoredFragment
 	for rows.Next() {
-		var r SearchResult
-		if err := rows.Scan(&r.Agent, &r.Path, &r.Snippet, &r.Score); err != nil {
+		var r ScoredFragment
+		var accessedAt sql.NullTime
+		if err := rows.Scan(
+			&r.ID,
+			&r.Agent,
+			&r.Path,
+			&r.Content,
+			&r.Source,
+			&r.CreatedAt,
+			&r.UpdatedAt,
+			&accessedAt,
+			&r.AccessCount,
+			&r.DecayScore,
+			&r.Pinned,
+			&r.Snippet,
+			&r.Score,
+		); err != nil {
 			return nil, fmt.Errorf("scan search result: %w", err)
+		}
+		if accessedAt.Valid {
+			at := accessedAt.Time
+			r.AccessedAt = &at
 		}
 		out = append(out, r)
 	}
@@ -494,6 +557,222 @@ func (s *Store) SearchFragments(ctx context.Context, query string, limit int, ag
 		return nil, err
 	}
 	return out, nil
+}
+
+// SearchFragments performs BM25 search over FTS5.
+func (s *Store) SearchFragments(ctx context.Context, query string, limit int, agent string) ([]SearchResult, error) {
+	scored, err := s.SearchBM25(ctx, query, limit, agent)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]SearchResult, 0, len(scored))
+	for _, r := range scored {
+		out = append(out, SearchResult{
+			Agent:   r.Agent,
+			Path:    r.Path,
+			Snippet: r.Snippet,
+			Score:   r.Score,
+		})
+	}
+	return out, nil
+}
+
+// UpsertEmbedding inserts or updates an embedding vector for a fragment.
+func (s *Store) UpsertEmbedding(ctx context.Context, fragmentID, provider, model string, dims int, vec []float64) error {
+	fragmentID = strings.TrimSpace(fragmentID)
+	provider = strings.TrimSpace(provider)
+	model = strings.TrimSpace(model)
+	if fragmentID == "" {
+		return fmt.Errorf("fragment_id is required")
+	}
+	if provider == "" {
+		return fmt.Errorf("provider is required")
+	}
+	if model == "" {
+		return fmt.Errorf("model is required")
+	}
+	if len(vec) == 0 {
+		return fmt.Errorf("vector cannot be empty")
+	}
+	if dims <= 0 {
+		dims = len(vec)
+	}
+	if len(vec) != dims {
+		return fmt.Errorf("vector dimensions mismatch: got %d values, dims=%d", len(vec), dims)
+	}
+
+	payload, err := json.Marshal(vec)
+	if err != nil {
+		return fmt.Errorf("encode embedding vector: %w", err)
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO memory_embeddings(fragment_id, provider, model, dimensions, vector, embedded_at)
+		VALUES(?, ?, ?, ?, ?, ?)
+		ON CONFLICT(fragment_id, provider, model) DO UPDATE SET
+			dimensions = excluded.dimensions,
+			vector = excluded.vector,
+			embedded_at = excluded.embedded_at`,
+		fragmentID, provider, model, dims, payload, time.Now())
+	if err != nil {
+		return fmt.Errorf("upsert embedding: %w", err)
+	}
+	return nil
+}
+
+// GetEmbedding fetches a stored embedding vector for a fragment+provider+model.
+func (s *Store) GetEmbedding(ctx context.Context, fragmentID, provider, model string) ([]float64, error) {
+	fragmentID = strings.TrimSpace(fragmentID)
+	provider = strings.TrimSpace(provider)
+	model = strings.TrimSpace(model)
+	if fragmentID == "" || provider == "" || model == "" {
+		return nil, fmt.Errorf("fragment_id, provider, and model are required")
+	}
+
+	var payload []byte
+	err := s.db.QueryRowContext(ctx, `
+		SELECT vector
+		FROM memory_embeddings
+		WHERE fragment_id = ? AND provider = ? AND model = ?`,
+		fragmentID, provider, model).Scan(&payload)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get embedding: %w", err)
+	}
+
+	var vec []float64
+	if err := json.Unmarshal(payload, &vec); err != nil {
+		return nil, fmt.Errorf("decode embedding vector: %w", err)
+	}
+	return vec, nil
+}
+
+// GetFragmentsNeedingEmbedding returns fragments missing an embedding row for provider+model.
+func (s *Store) GetFragmentsNeedingEmbedding(ctx context.Context, agent, provider, model string) ([]Fragment, error) {
+	provider = strings.TrimSpace(provider)
+	model = strings.TrimSpace(model)
+	if provider == "" || model == "" {
+		return nil, fmt.Errorf("provider and model are required")
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT f.id, f.agent, f.path, f.content, f.source, f.created_at, f.updated_at,
+		       f.accessed_at, f.access_count, f.decay_score, f.pinned
+		FROM memory_fragments f
+		LEFT JOIN memory_embeddings e
+		  ON e.fragment_id = f.id AND e.provider = ? AND e.model = ?
+		WHERE e.fragment_id IS NULL
+		  AND (? = '' OR f.agent = ?)
+		ORDER BY f.updated_at DESC`, provider, model, strings.TrimSpace(agent), strings.TrimSpace(agent))
+	if err != nil {
+		return nil, fmt.Errorf("query fragments needing embedding: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Fragment
+	for rows.Next() {
+		frag, scanErr := scanFragment(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan fragment: %w", scanErr)
+		}
+		out = append(out, *frag)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// VectorSearch performs a full cosine similarity scan over embeddings.
+func (s *Store) VectorSearch(ctx context.Context, agent string, queryVec []float64, limit int) ([]ScoredFragment, error) {
+	if len(queryVec) == 0 {
+		return nil, fmt.Errorf("query vector cannot be empty")
+	}
+	if limit <= 0 {
+		limit = 24
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT f.id, f.agent, f.path, f.content, f.source, f.created_at, f.updated_at,
+		       f.accessed_at, f.access_count, f.decay_score, f.pinned,
+		       e.vector
+		FROM memory_embeddings e
+		JOIN memory_fragments f ON f.id = e.fragment_id
+		WHERE e.dimensions = ?
+		  AND (? = '' OR f.agent = ?)`,
+		len(queryVec), strings.TrimSpace(agent), strings.TrimSpace(agent))
+	if err != nil {
+		return nil, fmt.Errorf("vector search query: %w", err)
+	}
+	defer rows.Close()
+
+	matches := make([]ScoredFragment, 0, limit)
+	for rows.Next() {
+		var r ScoredFragment
+		var accessedAt sql.NullTime
+		var payload []byte
+		if err := rows.Scan(
+			&r.ID,
+			&r.Agent,
+			&r.Path,
+			&r.Content,
+			&r.Source,
+			&r.CreatedAt,
+			&r.UpdatedAt,
+			&accessedAt,
+			&r.AccessCount,
+			&r.DecayScore,
+			&r.Pinned,
+			&payload,
+		); err != nil {
+			return nil, fmt.Errorf("scan vector search row: %w", err)
+		}
+		if accessedAt.Valid {
+			at := accessedAt.Time
+			r.AccessedAt = &at
+		}
+
+		if err := json.Unmarshal(payload, &r.Vector); err != nil {
+			return nil, fmt.Errorf("decode stored vector for fragment %s: %w", r.ID, err)
+		}
+		r.Score = embedding.CosineSimilarity(queryVec, r.Vector)
+		matches = append(matches, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	sort.Slice(matches, func(i, j int) bool {
+		if matches[i].Score == matches[j].Score {
+			return matches[i].UpdatedAt.After(matches[j].UpdatedAt)
+		}
+		return matches[i].Score > matches[j].Score
+	})
+
+	if len(matches) > limit {
+		matches = matches[:limit]
+	}
+	return matches, nil
+}
+
+// BumpAccess marks a fragment as recently accessed and increments access_count.
+func (s *Store) BumpAccess(ctx context.Context, fragmentID string) error {
+	fragmentID = strings.TrimSpace(fragmentID)
+	if fragmentID == "" {
+		return fmt.Errorf("fragment_id is required")
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE memory_fragments
+		SET accessed_at = ?, access_count = access_count + 1
+		WHERE id = ?`, time.Now(), fragmentID)
+	if err != nil {
+		return fmt.Errorf("bump fragment access: %w", err)
+	}
+	return nil
 }
 
 // GetState returns mining state for a session.

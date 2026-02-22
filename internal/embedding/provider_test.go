@@ -96,32 +96,24 @@ func TestParseProviderModel(t *testing.T) {
 
 func TestInferEmbeddingProvider(t *testing.T) {
 	tests := []struct {
-		name            string
-		defaultProvider string
-		hasVoyageKey    bool
-		expected        string
+		name      string
+		geminiKey string
+		openaiKey string
+		expected  string
 	}{
-		{"openai provider", "openai", false, "openai"},
-		{"gemini provider", "gemini", false, "gemini"},
-		{"gemini-cli provider", "gemini-cli", false, "gemini"},
-		{"anthropic defaults to gemini", "anthropic", false, "gemini"},
-		{"anthropic with voyage key", "anthropic", true, "voyage"},
-		{"claude-bin defaults to gemini", "claude-bin", false, "gemini"},
-		{"claude-bin with voyage key", "claude-bin", true, "voyage"},
-		{"unknown defaults to gemini", "something", false, "gemini"},
+		{name: "gemini preferred when available", geminiKey: "g-key", openaiKey: "o-key", expected: "gemini"},
+		{name: "openai fallback", openaiKey: "o-key", expected: "openai"},
+		{name: "none available", expected: ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := &config.Config{
-				DefaultProvider: tt.defaultProvider,
-			}
-			if tt.hasVoyageKey {
-				cfg.Embed.Voyage.APIKey = "test-key"
-			}
+			cfg := &config.Config{}
+			cfg.Embed.Gemini.APIKey = tt.geminiKey
+			cfg.Embed.OpenAI.APIKey = tt.openaiKey
 			result := inferEmbeddingProvider(cfg)
 			if result != tt.expected {
-				t.Errorf("inferEmbeddingProvider(%q) = %q, want %q", tt.defaultProvider, result, tt.expected)
+				t.Errorf("inferEmbeddingProvider() = %q, want %q", result, tt.expected)
 			}
 		})
 	}

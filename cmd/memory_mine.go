@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/embedding"
 	"github.com/samsaffron/term-llm/internal/llm"
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -26,6 +28,8 @@ var (
 	memoryMineIncludeSubagents bool
 	memoryMineMaxMessages      int
 	memoryMineReadBytes        int
+	memoryMineEmbed            bool
+	memoryMineEmbedProvider    string
 )
 
 var memoryMineCmd = &cobra.Command{
@@ -79,6 +83,9 @@ func init() {
 	memoryMineCmd.Flags().BoolVar(&memoryMineIncludeSubagents, "include-subagents", false, "Include subagent sessions")
 	memoryMineCmd.Flags().IntVar(&memoryMineMaxMessages, "max-messages", 0, "Maximum newly mined messages per session (0 = all)")
 	memoryMineCmd.Flags().IntVar(&memoryMineReadBytes, "read-bytes", 2048, "Bytes of existing fragment content to include in taxonomy context")
+	memoryMineCmd.Flags().BoolVar(&memoryMineEmbed, "embed", true, "Embed new/updated fragments after mining")
+	memoryMineCmd.Flags().StringVar(&memoryMineEmbedProvider, "embed-provider", "", "Override embedding provider used in EMBED phase (optionally provider:model)")
+	memoryMineCmd.RegisterFlagCompletionFunc("embed-provider", EmbedProviderFlagCompletion)
 }
 
 func runMemoryMine(cmd *cobra.Command, args []string) error {
@@ -227,6 +234,19 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 
 		fmt.Printf("[%d/%d] #%d mined messages [%d,%d): create=%d update=%d skip=%d\n",
 			i+1, len(candidates), candidate.Summary.Number, startOffset, nextOffset, created, updated, skipped)
+	}
+
+	embeddedCount := 0
+	if memoryMineEmbed {
+		if memoryDryRun {
+			fmt.Println("Dry run mode: skipping EMBED phase.")
+		} else {
+			embeddedCount, err = runMemoryEmbedPhase(ctx, cfg, memStore)
+			if err != nil {
+				return err
+			}
+		}
+		fmt.Printf("embedded %d fragments\n", embeddedCount)
 	}
 
 	fmt.Printf("Done. create=%d update=%d skip=%d\n", totalCreated, totalUpdated, totalSkipped)
@@ -588,6 +608,67 @@ func applyExtractionOperations(ctx context.Context, store *memorydb.Store, agent
 		}
 	}
 	return created, updated, skipped, nil
+}
+
+func runMemoryEmbedPhase(ctx context.Context, cfg *config.Config, store *memorydb.Store) (int, error) {
+	providerName, modelName, providerSpec := resolveMemoryEmbeddingProvider(cfg, memoryMineEmbedProvider)
+	if providerName == "" || providerSpec == "" {
+		fmt.Fprintln(os.Stderr, "warning: embedding provider unavailable, skipping EMBED phase")
+		return 0, nil
+	}
+
+	embedder, err := embedding.NewEmbeddingProvider(cfg, providerSpec)
+	if err != nil {
+		if strings.TrimSpace(memoryMineEmbedProvider) != "" {
+			return 0, err
+		}
+		fmt.Fprintf(os.Stderr, "warning: embedding provider initialization failed (%v), skipping EMBED phase\n", err)
+		return 0, nil
+	}
+
+	if modelName == "" {
+		modelName = embedder.DefaultModel()
+	}
+
+	fragments, err := store.GetFragmentsNeedingEmbedding(ctx, strings.TrimSpace(memoryAgent), providerName, modelName)
+	if err != nil {
+		return 0, fmt.Errorf("query fragments needing embedding: %w", err)
+	}
+	if len(fragments) == 0 {
+		return 0, nil
+	}
+
+	embeddedCount := 0
+	for _, frag := range fragments {
+		result, err := embedder.Embed(embedding.EmbedRequest{
+			Texts:    []string{frag.Content},
+			Model:    modelName,
+			TaskType: "RETRIEVAL_DOCUMENT",
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed embedding fragment %s: %v\n", frag.ID, err)
+			continue
+		}
+		if len(result.Embeddings) == 0 || len(result.Embeddings[0].Vector) == 0 {
+			fmt.Fprintf(os.Stderr, "warning: empty embedding for fragment %s\n", frag.ID)
+			continue
+		}
+
+		vec := result.Embeddings[0].Vector
+		dims := len(vec)
+		if dims == 0 {
+			fmt.Fprintf(os.Stderr, "warning: invalid embedding dimensions for fragment %s\n", frag.ID)
+			continue
+		}
+
+		if err := store.UpsertEmbedding(ctx, frag.ID, providerName, modelName, dims, vec); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to persist embedding for fragment %s: %v\n", frag.ID, err)
+			continue
+		}
+		embeddedCount++
+	}
+
+	return embeddedCount, nil
 }
 
 func readPrefixBytes(content string, maxBytes int) string {
