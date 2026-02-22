@@ -180,6 +180,11 @@ func processImage(data []byte, originalMime string) ([]byte, string, bool, error
 		return nil, "", false, fmt.Errorf("failed to decode image: %w", err)
 	}
 
+	detectedMime := mimeTypeFromDecodedFormat(format)
+	if detectedMime == "" {
+		detectedMime = originalMime
+	}
+
 	bounds := img.Bounds()
 	width := bounds.Dx()
 	height := bounds.Dy()
@@ -188,7 +193,7 @@ func processImage(data []byte, originalMime string) ([]byte, string, bool, error
 	needsResize := width > maxDimension || height > maxDimension || len(data) > maxImageSize
 
 	if !needsResize {
-		return data, originalMime, false, nil
+		return data, detectedMime, false, nil
 	}
 
 	// Calculate new dimensions maintaining aspect ratio
@@ -256,6 +261,21 @@ func processImage(data []byte, originalMime string) ([]byte, string, bool, error
 	}
 
 	return result, outputMime, true, nil
+}
+
+func mimeTypeFromDecodedFormat(format string) string {
+	switch strings.ToLower(format) {
+	case "jpeg", "jpg":
+		return "image/jpeg"
+	case "png":
+		return "image/png"
+	case "gif":
+		return "image/gif"
+	case "webp":
+		return "image/webp"
+	default:
+		return ""
+	}
 }
 
 // resizeImage resizes an image to the specified dimensions using high-quality interpolation.
