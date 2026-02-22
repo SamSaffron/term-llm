@@ -208,6 +208,93 @@ func TestBuildCompatMessages_ToolResultStructuredImageParts(t *testing.T) {
 	}
 }
 
+func TestNormalizeSchemaForOpenAI_FreeFormMapProperty(t *testing.T) {
+	// Regression: env parameter uses additionalProperties: {type: string} to represent
+	// a free-form string map. The normalizer must not clobber it with false.
+	schema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"command": map[string]interface{}{
+				"type":        "string",
+				"description": "Shell command to execute",
+			},
+			"env": map[string]interface{}{
+				"type":                 "object",
+				"description":          "Environment variables",
+				"additionalProperties": map[string]interface{}{"type": "string"},
+			},
+		},
+		"required":             []string{"command"},
+		"additionalProperties": false,
+	}
+
+	result := normalizeSchemaForOpenAI(schema)
+
+	props, ok := result["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected properties map")
+	}
+
+	envSchema, ok := props["env"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected env to be a map")
+	}
+
+	// additionalProperties on env must remain a schema map, not false
+	ap := envSchema["additionalProperties"]
+	apMap, ok := ap.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected env.additionalProperties to remain a schema map, got %T (%v)", ap, ap)
+	}
+	if apMap["type"] != "string" {
+		t.Errorf("expected env.additionalProperties.type = string, got %v", apMap["type"])
+	}
+
+	// Outer object must still have additionalProperties: false
+	if result["additionalProperties"] != false {
+		t.Errorf("expected outer additionalProperties = false, got %v", result["additionalProperties"])
+	}
+
+	// All properties must appear in required (OpenAI strict mode)
+	required, ok := result["required"].([]string)
+	if !ok {
+		t.Fatal("expected required to be []string")
+	}
+	requiredSet := make(map[string]bool)
+	for _, k := range required {
+		requiredSet[k] = true
+	}
+	for k := range props {
+		if !requiredSet[k] {
+			t.Errorf("expected %q in required array, not found", k)
+		}
+	}
+}
+
+func TestNormalizeSchemaForOpenAI_RegularObjectGetsAdditionalPropertiesFalse(t *testing.T) {
+	// Regular nested object (no additionalProperties set) should get additionalProperties: false
+	schema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"options": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"verbose": map[string]interface{}{"type": "boolean"},
+				},
+			},
+		},
+	}
+
+	result := normalizeSchemaForOpenAI(schema)
+
+	props := result["properties"].(map[string]interface{})
+	optionsSchema := props["options"].(map[string]interface{})
+
+	if optionsSchema["additionalProperties"] != false {
+		t.Errorf("expected nested object to get additionalProperties: false, got %v", optionsSchema["additionalProperties"])
+	}
+}
+
 func TestBuildCompatMessages_DropsDanglingToolCalls(t *testing.T) {
 	messages := []Message{
 		{

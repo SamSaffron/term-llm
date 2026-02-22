@@ -54,7 +54,7 @@ func countTrailingNewlines(s string) int {
 func TestStreamPlainText_DoesNotInsertExtraBlankLineBeforeToolWhenTextAlreadyHasBlankLine(t *testing.T) {
 	output := captureStreamPlainTextOutput(t, []ui.StreamEvent{
 		ui.TextEvent("Now let me write the test.\n\n"),
-		ui.ToolStartEvent("call-1", "shell", "(cd /var/www/discourse && sed -n '93,95p' plugins/discourse-ai/spec/requests/ai_helper/assistant_controller_spec.rb)"),
+		ui.ToolStartEvent("call-1", "shell", "(cd /var/www/discourse && sed -n '93,95p' plugins/discourse-ai/spec/requests/ai_helper/assistant_controller_spec.rb)", nil),
 		ui.ToolEndEvent("call-1", "shell", "(cd /var/www/discourse && sed -n '93,95p' plugins/discourse-ai/spec/requests/ai_helper/assistant_controller_spec.rb)", true),
 		ui.DoneEvent(0),
 	}, false)
@@ -78,7 +78,7 @@ func TestStreamPlainText_DoesNotInsertExtraBlankLineBeforeToolWhenTextAlreadyHas
 func TestStreamPlainText_TextToToolUsesSingleNewlineWhenTextHasNoTrailingNewline(t *testing.T) {
 	output := captureStreamPlainTextOutput(t, []ui.StreamEvent{
 		ui.TextEvent("Now let me write the test."),
-		ui.ToolStartEvent("call-1", "shell", "(echo hi)"),
+		ui.ToolStartEvent("call-1", "shell", "(echo hi)", nil),
 		ui.ToolEndEvent("call-1", "shell", "(echo hi)", true),
 		ui.DoneEvent(0),
 	}, false)
@@ -92,7 +92,7 @@ func TestStreamPlainText_TextToToolUsesSingleNewlineWhenTextHasNoTrailingNewline
 
 func TestStreamPlainText_ToolToTextUsesBlankLine(t *testing.T) {
 	output := captureStreamPlainTextOutput(t, []ui.StreamEvent{
-		ui.ToolStartEvent("call-1", "shell", "(echo hi)"),
+		ui.ToolStartEvent("call-1", "shell", "(echo hi)", nil),
 		ui.ToolEndEvent("call-1", "shell", "(echo hi)", true),
 		ui.TextEvent("Recent updates."),
 		ui.DoneEvent(0),
@@ -120,7 +120,7 @@ func TestStreamPlainText_ToolToTextUsesBlankLine(t *testing.T) {
 
 func TestStreamPlainText_ToolToTextTrimsLeadingTextBlankLines(t *testing.T) {
 	output := captureStreamPlainTextOutput(t, []ui.StreamEvent{
-		ui.ToolStartEvent("call-1", "shell", "(echo hi)"),
+		ui.ToolStartEvent("call-1", "shell", "(echo hi)", nil),
 		ui.ToolEndEvent("call-1", "shell", "(echo hi)", true),
 		ui.TextEvent("\n\nRecent updates."),
 		ui.DoneEvent(0),
@@ -152,7 +152,7 @@ func TestStreamPlainText_CompactsExcessiveNewlineRunsAcrossChunks(t *testing.T) 
 func TestStreamPlainText_PorcelainSuppressesToolStatus(t *testing.T) {
 	output := captureStreamPlainTextOutput(t, []ui.StreamEvent{
 		ui.TextEvent("Starting."),
-		ui.ToolStartEvent("call-1", "shell", "(echo hi)"),
+		ui.ToolStartEvent("call-1", "shell", "(echo hi)", nil),
 		ui.ToolEndEvent("call-1", "shell", "(echo hi)", true),
 		ui.TextEvent("Done."),
 		ui.DoneEvent(0),
