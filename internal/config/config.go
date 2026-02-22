@@ -1062,7 +1062,7 @@ func GetDefaults() map[string]any {
 		"skills.enabled":                 false,
 		"skills.auto_invoke":             true,
 		"skills.metadata_budget_tokens":  8000,
-		"skills.max_active":              8,
+		"skills.max_active":              50,
 		"skills.include_project_skills":  true,
 		"skills.include_ecosystem_paths": true,
 		"skills.always_enabled":          []string{},

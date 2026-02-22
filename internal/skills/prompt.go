@@ -2,6 +2,7 @@ package skills
 
 import (
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -121,6 +122,13 @@ func TruncateSkillsToTokenBudget(skills []*Skill, alwaysEnabled []string, budget
 
 		result = append(result, skill)
 		currentTokens += tokens
+	}
+
+	// Warn if any skills were dropped due to limits
+	if len(result) < len(skills) {
+		dropped := len(skills) - len(result)
+		fmt.Fprintf(os.Stderr, "warning: %d skill(s) not shown (max_active=%d, token_budget=%d); increase skills.max_active or skills.metadata_budget_tokens in config\n",
+			dropped, maxSkills, budgetTokens)
 	}
 
 	return result
