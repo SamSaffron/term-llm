@@ -100,6 +100,7 @@ type ToolTracker struct {
 	LastActivity time.Time
 	Version      uint64 // Incremented when content changes (segments added/modified)
 	TextMode     bool   // When true, skip markdown rendering (plain text output)
+	expanded     bool
 
 	// Flush state for consistent spacing
 	LastFlushedType SegmentType
@@ -112,6 +113,11 @@ func NewToolTracker() *ToolTracker {
 		Segments:     make([]Segment, 0),
 		LastActivity: time.Now(),
 	}
+}
+
+// SetExpanded controls whether tool segments render in expanded mode.
+func (t *ToolTracker) SetExpanded(v bool) {
+	t.expanded = v
 }
 
 // RecordActivity records the current time as the last activity.
@@ -540,7 +546,7 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 	}
 
 	if len(toolsToFlush) > 0 {
-		toolContent := RenderSegments(toolsToFlush, width, -1, nil, true, false)
+		toolContent := RenderSegments(toolsToFlush, width, -1, nil, true, t.expanded)
 		if t.HasFlushed {
 			toolContent = stripLeadingBlankLine(toolContent)
 			prefix := t.FlushLeadingSeparator(toolsToFlush[0].Type)
@@ -832,7 +838,7 @@ func (t *ToolTracker) FlushToScrollback(
 
 	// Render complete segments to flush
 	if len(toFlush) > 0 {
-		content := RenderSegments(toFlush, width, -1, renderMd, true, false)
+		content := RenderSegments(toFlush, width, -1, renderMd, true, t.expanded)
 		if t.HasFlushed {
 			if shouldTrimAllLeadingBlankLines(t.LastFlushedType, toFlush[0].Type) {
 				content = stripAllLeadingBlankLines(content)
@@ -916,7 +922,7 @@ func (t *ToolTracker) FlushAllRemaining(
 		return FlushToScrollbackResult{NewPrintedLines: 0}
 	}
 
-	content := RenderSegments(toFlush, width, -1, renderMd, true, false)
+	content := RenderSegments(toFlush, width, -1, renderMd, true, t.expanded)
 	if t.HasFlushed {
 		if shouldTrimAllLeadingBlankLines(t.LastFlushedType, toFlush[0].Type) {
 			content = stripAllLeadingBlankLines(content)
@@ -984,7 +990,7 @@ func (t *ToolTracker) FlushCompletedNow(
 		return FlushToScrollbackResult{NewPrintedLines: 0}
 	}
 
-	content := RenderSegments(toFlush, width, -1, renderMd, true, false)
+	content := RenderSegments(toFlush, width, -1, renderMd, true, t.expanded)
 	if t.HasFlushed {
 		if shouldTrimAllLeadingBlankLines(t.LastFlushedType, toFlush[0].Type) {
 			content = stripAllLeadingBlankLines(content)
@@ -1067,7 +1073,7 @@ func (t *ToolTracker) FlushBeforeExternalUI(
 		return FlushToScrollbackResult{NewPrintedLines: 0}
 	}
 
-	content := RenderSegments(toFlush, width, -1, renderMd, true, false)
+	content := RenderSegments(toFlush, width, -1, renderMd, true, t.expanded)
 	if t.HasFlushed {
 		if shouldTrimAllLeadingBlankLines(t.LastFlushedType, toFlush[0].Type) {
 			content = stripAllLeadingBlankLines(content)
@@ -1160,7 +1166,7 @@ func (t *ToolTracker) RenderUnflushed(width int, renderMd func(string, int) stri
 		leading = &Segment{Type: t.LastFlushedType}
 	}
 
-	return RenderSegmentsWithLeading(leading, unflushed, width, -1, renderMd, includeImages, false)
+	return RenderSegmentsWithLeading(leading, unflushed, width, -1, renderMd, includeImages, t.expanded)
 }
 
 // LeadingSeparator returns the full spacing before a segment of the given type,

@@ -365,7 +365,7 @@ func TestMessageBlockRenderer_DiffsOnHydration(t *testing.T) {
 	}
 
 	// Use the context-aware renderer with full message list
-	rb := NewMessageBlockRendererWithContext(80, simpleMarkdownRenderer, messages, 0)
+	rb := NewMessageBlockRendererWithContext(80, simpleMarkdownRenderer, messages, 0, false)
 	block := rb.Render(&messages[0])
 
 	// The rendered output should contain the diff
@@ -402,7 +402,7 @@ func TestMessageBlockRenderer_NoDiffsWithoutContext(t *testing.T) {
 	}
 
 	// Use basic renderer without context (no messages slice)
-	rb := NewMessageBlockRenderer(80, simpleMarkdownRenderer)
+	rb := NewMessageBlockRenderer(80, simpleMarkdownRenderer, false)
 	block := rb.Render(&msg)
 
 	// Should still have the tool call rendered
@@ -457,7 +457,7 @@ func TestMessageBlockRenderer_NonEditFileToolNoDiff(t *testing.T) {
 		},
 	}
 
-	rb := NewMessageBlockRendererWithContext(80, simpleMarkdownRenderer, messages, 0)
+	rb := NewMessageBlockRendererWithContext(80, simpleMarkdownRenderer, messages, 0, false)
 	block := rb.Render(&messages[0])
 
 	// Should NOT contain diff output for non-edit_file tools
@@ -513,7 +513,7 @@ func TestMessageBlockRenderer_DiffsFromDisplayField(t *testing.T) {
 		},
 	}
 
-	rb := NewMessageBlockRendererWithContext(80, simpleMarkdownRenderer, messages, 0)
+	rb := NewMessageBlockRendererWithContext(80, simpleMarkdownRenderer, messages, 0, false)
 	block := rb.Render(&messages[0])
 
 	if !strings.Contains(block.Rendered, "test.go") {
@@ -566,7 +566,7 @@ func TestMessageBlockRenderer_BackwardCompatNilDisplay(t *testing.T) {
 		},
 	}
 
-	rb := NewMessageBlockRendererWithContext(80, simpleMarkdownRenderer, messages, 0)
+	rb := NewMessageBlockRendererWithContext(80, simpleMarkdownRenderer, messages, 0, false)
 	block := rb.Render(&messages[0])
 
 	if !strings.Contains(block.Rendered, "compat.go") {
@@ -599,7 +599,7 @@ func TestMessageBlockRenderer_ToolOnlyAssistantMessage_IsCompact(t *testing.T) {
 		CreatedAt: time.Now(),
 	}
 
-	rb := NewMessageBlockRenderer(80, simpleMarkdownRenderer)
+	rb := NewMessageBlockRenderer(80, simpleMarkdownRenderer, false)
 	block := rb.Render(&msg)
 	plain := ui.StripANSI(block.Rendered)
 

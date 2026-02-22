@@ -27,9 +27,9 @@ type StreamingBlock struct {
 	tracker *ui.ToolTracker
 
 	// State
-	complete       bool
-	err            error
-	toolsExpanded  bool
+	complete      bool
+	err           error
+	toolsExpanded bool
 
 	// For flush tracking
 	lastFlushTime time.Time
@@ -68,6 +68,9 @@ func (s *StreamingBlock) Resize(width int) {
 // SetToolsExpanded toggles expanded tool rendering.
 func (s *StreamingBlock) SetToolsExpanded(v bool) {
 	s.toolsExpanded = v
+	if s.tracker != nil {
+		s.tracker.SetExpanded(v)
+	}
 }
 
 func (s *StreamingBlock) AddText(text string) {

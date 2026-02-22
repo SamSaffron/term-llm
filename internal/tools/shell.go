@@ -92,8 +92,9 @@ func (t *ShellTool) Preview(args json.RawMessage) string {
 	}
 	if a.Description != "" {
 		desc := a.Description
-		if len(desc) > 100 {
-			desc = desc[:97] + "..."
+		runes := []rune(desc)
+		if len(runes) > 100 {
+			desc = string(runes[:97]) + "..."
 		}
 		return desc
 	}

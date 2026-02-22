@@ -37,6 +37,7 @@ type MessageBlockRenderer struct {
 	theme            *ui.Theme
 	messages         []session.Message // Full message list for tool result lookup
 	currentIndex     int               // Current message index in the list
+	toolsExpanded    bool
 }
 
 // Shared theme instance to avoid allocations
@@ -45,24 +46,26 @@ var sharedTheme = ui.DefaultStyles().Theme()
 const ansi256UserMsgBg = "235"
 
 // NewMessageBlockRenderer creates a new renderer for message blocks.
-func NewMessageBlockRenderer(width int, mdRenderer MarkdownRenderer) *MessageBlockRenderer {
+func NewMessageBlockRenderer(width int, mdRenderer MarkdownRenderer, toolsExpanded bool) *MessageBlockRenderer {
 	return &MessageBlockRenderer{
 		width:            width,
 		markdownRenderer: mdRenderer,
 		theme:            sharedTheme,
+		toolsExpanded:    toolsExpanded,
 	}
 }
 
 // NewMessageBlockRendererWithContext creates a new renderer with message context for tool result lookup.
 // This allows rendering diffs for edit_file tool calls by finding the corresponding tool result
 // in subsequent messages.
-func NewMessageBlockRendererWithContext(width int, mdRenderer MarkdownRenderer, messages []session.Message, index int) *MessageBlockRenderer {
+func NewMessageBlockRendererWithContext(width int, mdRenderer MarkdownRenderer, messages []session.Message, index int, toolsExpanded bool) *MessageBlockRenderer {
 	return &MessageBlockRenderer{
 		width:            width,
 		markdownRenderer: mdRenderer,
 		theme:            sharedTheme,
 		messages:         messages,
 		currentIndex:     index,
+		toolsExpanded:    toolsExpanded,
 	}
 }
 
@@ -199,7 +202,7 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 			hasContent = true
 		case llm.PartToolCall:
 			if part.ToolCall != nil {
-				b.WriteString(ui.RenderToolCallFromPart(part.ToolCall, r.width, false))
+				b.WriteString(ui.RenderToolCallFromPart(part.ToolCall, r.width, r.toolsExpanded))
 				b.WriteString("\n")
 				hasContent = true
 

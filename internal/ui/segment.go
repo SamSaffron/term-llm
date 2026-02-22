@@ -219,8 +219,9 @@ func truncateToolInfo(toolName, info string, width int) string {
 }
 
 func truncateShellDescription(desc string) string {
-	if len(desc) > 100 {
-		return desc[:97] + "..."
+	runes := []rune(desc)
+	if len(runes) > 100 {
+		return string(runes[:97]) + "..."
 	}
 	return desc
 }

@@ -367,14 +367,16 @@ func (r *Renderer) getOrRenderBlock(msg *session.Message, index int, messages []
 // Key is based on message ID and width only - NOT index.
 // This ensures cache hits even when new messages are added.
 func (r *Renderer) blockCacheKey(msg *session.Message, index int) string {
-	// Key includes message ID and width only
-	// Using a simple format: "id:width"
-	return strconv.FormatInt(msg.ID, 10) + ":" + strconv.Itoa(r.width)
+	expanded := "0"
+	if r.toolsExpanded {
+		expanded = "1"
+	}
+	return strconv.FormatInt(msg.ID, 10) + ":" + strconv.Itoa(r.width) + ":" + expanded
 }
 
 // renderMessageBlock renders a single message to a block.
 func (r *Renderer) renderMessageBlock(msg *session.Message, index int, messages []session.Message) *MessageBlock {
-	rb := NewMessageBlockRendererWithContext(r.width, r.markdownRenderer, messages, index)
+	rb := NewMessageBlockRendererWithContext(r.width, r.markdownRenderer, messages, index, r.toolsExpanded)
 	return rb.Render(msg)
 }
 

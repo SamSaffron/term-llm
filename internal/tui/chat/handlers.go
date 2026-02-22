@@ -410,6 +410,9 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.chatRenderer != nil {
 			m.chatRenderer.SetToolsExpanded(m.toolsExpanded)
 		}
+		if m.tracker != nil {
+			m.tracker.SetExpanded(m.toolsExpanded)
+		}
 		return m, nil
 	}
 
