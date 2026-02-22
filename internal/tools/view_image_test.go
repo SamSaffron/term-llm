@@ -7,6 +7,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,5 +79,38 @@ func TestViewImageToolExecute_ReturnsStructuredImageData(t *testing.T) {
 	}
 	if _, err := base64.StdEncoding.DecodeString(imagePart.ImageData.Base64); err != nil {
 		t.Fatalf("image_data base64 should be valid: %v", err)
+	}
+}
+
+func TestViewImageToolExecute_DetectsMimeWhenExtensionMismatched(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "sample.jpg") // intentionally mismatched extension
+	writeTestPNG(t, filePath)
+
+	tool := NewViewImageTool(nil)
+	args, err := json.Marshal(ViewImageArgs{FilePath: filePath})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+
+	out, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if len(out.ContentParts) < 2 || out.ContentParts[1].ImageData == nil {
+		t.Fatalf("expected image content part in output")
+	}
+
+	imagePart := out.ContentParts[1]
+	if imagePart.ImageData.MediaType != "image/png" {
+		t.Fatalf("expected media type image/png for PNG bytes, got %q", imagePart.ImageData.MediaType)
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(imagePart.ImageData.Base64)
+	if err != nil {
+		t.Fatalf("image_data base64 should be valid: %v", err)
+	}
+	if got := http.DetectContentType(decoded); got != "image/png" {
+		t.Fatalf("expected decoded bytes to be image/png, got %q", got)
 	}
 }
