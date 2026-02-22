@@ -604,6 +604,96 @@ func TestStoreCountGCCandidatesAndGCFragments(t *testing.T) {
 	}
 }
 
+func TestLastMinedByAgent(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer store.Close()
+
+	// Nothing mined yet — should return empty map.
+	m, err := store.LastMinedByAgent(ctx)
+	if err != nil {
+		t.Fatalf("LastMinedByAgent (empty) error = %v", err)
+	}
+	if len(m) != 0 {
+		t.Fatalf("LastMinedByAgent (empty) = %v, want empty map", m)
+	}
+
+	// Insert a row via UpsertState (stores RFC3339 via modernc driver).
+	ref := time.Date(2026, 2, 22, 5, 0, 0, 0, time.UTC)
+	if err := store.UpsertState(ctx, &MiningState{
+		SessionID:       "sess-rfc3339",
+		Agent:           "jarvis",
+		LastMinedOffset: 10,
+		MinedAt:         ref,
+	}); err != nil {
+		t.Fatalf("UpsertState error = %v", err)
+	}
+
+	m, err = store.LastMinedByAgent(ctx)
+	if err != nil {
+		t.Fatalf("LastMinedByAgent (after upsert) error = %v", err)
+	}
+	got, ok := m["jarvis"]
+	if !ok {
+		t.Fatal("LastMinedByAgent: missing 'jarvis' key")
+	}
+	if !got.Equal(ref) {
+		t.Fatalf("LastMinedByAgent = %v, want %v", got, ref)
+	}
+
+	// Inject a row with the legacy Go time.String() format directly via SQL to
+	// simulate rows created by older versions of the binary.
+	legacyStr := "2026-02-22 16:33:08.122217311 +1100 AEDT m=+183.551756999"
+	_, err = store.db.ExecContext(ctx, `
+		INSERT INTO memory_mining_state(session_id, agent, last_mined_offset, mined_at)
+		VALUES('sess-legacy', 'legacy-agent', 5, ?)`, legacyStr)
+	if err != nil {
+		t.Fatalf("insert legacy row: %v", err)
+	}
+
+	m, err = store.LastMinedByAgent(ctx)
+	if err != nil {
+		t.Fatalf("LastMinedByAgent (with legacy row) error = %v", err)
+	}
+	if _, ok := m["legacy-agent"]; !ok {
+		t.Fatal("LastMinedByAgent: missing 'legacy-agent' key")
+	}
+}
+
+func TestParseFlexibleTime(t *testing.T) {
+	cases := []struct {
+		input string
+		wantY int
+		wantM time.Month
+		wantD int
+	}{
+		{"2026-02-22T05:00:00Z", 2026, time.February, 22},
+		{"2026-02-22T16:33:08.122217311+11:00", 2026, time.February, 22},
+		{"2026-02-22 16:33:08.122217311 +1100 AEDT m=+183.551756999", 2026, time.February, 22},
+		{"2026-02-22 16:33:08 +1100 AEDT", 2026, time.February, 22},
+	}
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			got, err := parseFlexibleTime(tc.input)
+			if err != nil {
+				t.Fatalf("parseFlexibleTime(%q) error = %v", tc.input, err)
+			}
+			gotUTC := got.UTC()
+			// Compare date only (UTC); we just care it parsed without error and
+			// landed on the right calendar day.
+			if gotUTC.Year() != tc.wantY || gotUTC.Month() != tc.wantM {
+				t.Fatalf("parseFlexibleTime(%q) = %v, want %d-%02d-%02d",
+					tc.input, gotUTC, tc.wantY, tc.wantM, tc.wantD)
+			}
+		})
+	}
+
+	_, err := parseFlexibleTime("not-a-time")
+	if err == nil {
+		t.Fatal("parseFlexibleTime(invalid) expected error, got nil")
+	}
+}
+
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "memory.db")
