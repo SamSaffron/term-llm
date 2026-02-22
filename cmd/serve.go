@@ -124,7 +124,7 @@ func init() {
 	AddSearchFlag(serveCmd, &serveSearch)
 	AddNativeSearchFlags(serveCmd, &serveNativeSearch, &serveNoNativeSearch)
 	AddMCPFlag(serveCmd, &serveMCP)
-	AddMaxTurnsFlag(serveCmd, &serveMaxTurns, 20)
+	AddMaxTurnsFlag(serveCmd, &serveMaxTurns, 200)
 	AddToolFlags(serveCmd, &serveTools, &serveReadDirs, &serveWriteDirs, &serveShellAllow)
 	AddSystemMessageFlag(serveCmd, &serveSystemMessage)
 	AddAgentFlag(serveCmd, &serveAgent)
