@@ -99,6 +99,7 @@ type SessionSummary struct {
 
 // ListOptions configures session listing.
 type ListOptions struct {
+	Name     string        // Filter by name
 	Provider string        // Filter by provider
 	Model    string        // Filter by model
 	Mode     SessionMode   // Filter by mode (chat, ask, plan, exec)

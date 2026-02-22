@@ -829,6 +829,10 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		WHERE 1=1`
 	args := []any{}
 
+	if opts.Name != "" {
+		query += " AND s.name = ?"
+		args = append(args, opts.Name)
+	}
 	if opts.Provider != "" {
 		query += " AND s.provider = ?"
 		args = append(args, opts.Provider)

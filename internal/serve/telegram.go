@@ -21,6 +21,7 @@ import (
 )
 
 const telegramMaxMessageLen = 4000 // Telegram limit is 4096; leave margin
+const telegramPreviousSessionMessageLimit = 20
 
 // botSender is the subset of tgbotapi.BotAPI used by streamReply and
 // handleMessage, allowing tests to supply a fake without a live connection.
@@ -275,12 +276,13 @@ func buildAllowedUsernameSet(names []string) map[string]struct{} {
 
 // telegramSession holds per-chat conversation state.
 type telegramSession struct {
-	mu               sync.Mutex
-	runtime          *SessionRuntime
-	history          []llm.Message
-	carryoverContext string // one-time context carried from the previous replaced session
-	meta             *session.Session
-	lastActivity     time.Time
+	mu                    sync.Mutex
+	runtime               *SessionRuntime
+	history               []llm.Message
+	carryoverContext      string // one-time context carried from the previous replaced session
+	carryoverContextLabel string
+	meta                  *session.Session
+	lastActivity          time.Time
 
 	cancelMu     sync.Mutex         // protects streamCancel and replyDone
 	streamCancel context.CancelFunc // cancels the active stream's context
@@ -368,13 +370,88 @@ func (m *telegramSessionMgr) resetSessionIfCurrent(ctx context.Context, chatID i
 		current.mu.Lock()
 		priorHistory := append([]llm.Message(nil), current.history...)
 		current.mu.Unlock()
-		created.carryoverContext = buildHistoryContextTail(priorHistory, m.settings.TelegramCarryoverChars)
+		carryover := buildHistoryContextTail(priorHistory, m.settings.TelegramCarryoverChars)
+		if carryover != "" {
+			created.carryoverContext = carryover
+			created.carryoverContextLabel = "Context from previous session (tail):"
+		}
 
 		current.mu.Lock()
 		closeTelegramSession(current)
 		current.mu.Unlock()
 	}
 	return created, true, nil
+}
+
+func (m *telegramSessionMgr) loadPreviousSessionContext(ctx context.Context, chatID int64, currentID string) string {
+	if m.store == nil || m.settings.TelegramCarryoverChars <= 0 {
+		return ""
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// Fetch enough recent sessions to walk back through. We skip the current
+	// session being created and accumulate messages across multiple prior
+	// sessions until we have enough to fill TelegramCarryoverChars.
+	sessions, err := m.store.List(ctx, session.ListOptions{
+		Name:  fmt.Sprintf("telegram:%d", chatID),
+		Limit: 20,
+	})
+	if err != nil {
+		log.Printf("[telegram] load previous session list failed for chat %d: %v", chatID, err)
+		return ""
+	}
+
+	// Collect messages from prior sessions, newest-first, until we have enough
+	// characters. We'll reverse at the end so context reads chronologically.
+	var accumulated []llm.Message
+	accChars := 0
+	target := m.settings.TelegramCarryoverChars
+
+	for i := range sessions {
+		s := &sessions[i]
+		if s.ID == currentID || s.MessageCount == 0 {
+			continue
+		}
+
+		// Fetch up to telegramPreviousSessionMessageLimit messages from this session.
+		limit := telegramPreviousSessionMessageLimit
+		if s.MessageCount < limit {
+			limit = s.MessageCount
+		}
+		offset := 0
+		if s.MessageCount > limit {
+			offset = s.MessageCount - limit
+		}
+
+		msgs, err := m.store.GetMessages(ctx, s.ID, limit, offset)
+		if err != nil {
+			log.Printf("[telegram] load previous session messages failed for session %s: %v", s.ID, err)
+			continue
+		}
+
+		// Prepend these messages (they're older than what we have so far).
+		sessionMsgs := make([]llm.Message, 0, len(msgs))
+		for _, msg := range msgs {
+			sessionMsgs = append(sessionMsgs, msg.ToLLMMessage())
+		}
+
+		// Estimate chars contributed by this session.
+		sessionText := buildHistoryContextTail(sessionMsgs, target)
+		accChars += len([]rune(sessionText))
+		accumulated = append(sessionMsgs, accumulated...)
+
+		if accChars >= target {
+			break
+		}
+	}
+
+	if len(accumulated) == 0 {
+		return ""
+	}
+
+	return buildHistoryContextTail(accumulated, target)
 }
 
 func (m *telegramSessionMgr) newSession(ctx context.Context, chatID int64) (*telegramSession, error) {
@@ -429,6 +506,14 @@ func (m *telegramSessionMgr) newSession(ctx context.Context, chatID int64) (*tel
 		m.runStoreOp(ctx, meta.ID, "SetCurrent", func(storeCtx context.Context) error {
 			return m.store.SetCurrent(storeCtx, meta.ID)
 		})
+	}
+
+	if m.store != nil && sess.carryoverContext == "" {
+		carryover := m.loadPreviousSessionContext(ctx, chatID, meta.ID)
+		if carryover != "" {
+			sess.carryoverContext = carryover
+			sess.carryoverContextLabel = "Context from previous Telegram session:"
+		}
 	}
 
 	return sess, nil
@@ -639,8 +724,13 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		messages = append(messages, llm.SystemText(m.settings.SystemPrompt))
 	}
 	if sess.carryoverContext != "" {
-		messages = append(messages, llm.SystemText("Context from previous session (tail):\n"+sess.carryoverContext))
+		label := sess.carryoverContextLabel
+		if label == "" {
+			label = "Context from previous session (tail):"
+		}
+		messages = append(messages, llm.SystemText(label+"\n"+sess.carryoverContext))
 		sess.carryoverContext = ""
+		sess.carryoverContextLabel = ""
 	}
 	messages = append(messages, sess.history...)
 	messages = append(messages, userMsg)
