@@ -1,9 +1,12 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 
+	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/image"
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/spf13/cobra"
@@ -75,4 +78,24 @@ func wireImageRecorder(registry *tools.LocalToolRegistry, agent, sessionID strin
 		return
 	}
 	registry.SetImageRecorder(store, agent, sessionID)
+}
+
+func recordImageDirect(cfg *config.Config, prompt, outputPath string, result *image.ImageResult, providerName string) {
+	if cfg == nil || outputPath == "" || result == nil {
+		return
+	}
+	store, err := openMemoryStore()
+	if err != nil {
+		return
+	}
+	defer store.Close()
+
+	rec := &memorydb.ImageRecord{
+		Prompt:     prompt,
+		OutputPath: outputPath,
+		MimeType:   result.MimeType,
+		Provider:   providerName,
+		FileSize:   len(result.Data),
+	}
+	_ = store.RecordImage(context.Background(), rec)
 }

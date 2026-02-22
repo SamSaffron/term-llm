@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,7 +17,9 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/image"
 	"github.com/samsaffron/term-llm/internal/llm"
+	memorystore "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -98,7 +101,52 @@ func mimeExtension(mimeType string) string {
 	}
 }
 
-// TelegramPlatform implements Platform for the Telegram messaging platform.
+func recordTelegramUpload(cfg *config.Config, agent, sessionID, mimeType, caption, srcPath string) {
+	if cfg == nil || strings.TrimSpace(srcPath) == "" {
+		return
+	}
+	caption = strings.TrimSpace(caption)
+	if caption == "" {
+		caption = "[telegram photo upload]"
+	}
+
+	data, err := os.ReadFile(srcPath)
+	if err != nil {
+		log.Printf("[telegram] failed to read uploaded photo %s: %v", srcPath, err)
+		return
+	}
+
+	outputDir := strings.TrimSpace(cfg.Image.OutputDir)
+	if outputDir == "" {
+		outputDir = "~/Pictures/term-llm"
+	}
+	outputDir = filepath.Join(outputDir, "uploads")
+
+	outputPath, err := image.SaveImage(data, outputDir, caption)
+	if err != nil {
+		log.Printf("[telegram] failed to save uploaded photo: %v", err)
+		return
+	}
+
+	store, err := memorystore.NewStore(memorystore.Config{Path: os.Getenv("TERM_LLM_MEMORY_DB")})
+	if err != nil {
+		log.Printf("[telegram] failed to open memory store for image upload: %v", err)
+		return
+	}
+	defer store.Close()
+
+	rec := &memorystore.ImageRecord{
+		Agent:      agent,
+		SessionID:  sessionID,
+		Prompt:     caption,
+		OutputPath: outputPath,
+		MimeType:   mimeType,
+		Provider:   "telegram-upload",
+		FileSize:   len(data),
+	}
+	_ = store.RecordImage(context.Background(), rec)
+}
+
 type TelegramPlatform struct {
 	cfg config.TelegramServeConfig
 }
@@ -609,8 +657,12 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 	}
 
 	// Build the user message: photo or text.
-	var userMsg llm.Message
-	var tempImagePath string // non-empty when we wrote a temp file for this message
+	var (
+		userMsg         llm.Message
+		tempImagePath   string // non-empty when we wrote a temp file for this message
+		uploadMediaType string
+		uploadCaption   string
+	)
 	if msg.Photo != nil && len(msg.Photo) > 0 {
 		mediaType, base64Data, imgPath, err := downloadTelegramPhoto(bot, msg.Photo)
 		if err != nil {
@@ -619,7 +671,9 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 			return
 		}
 		tempImagePath = imgPath
-		userMsg = llm.UserImageMessageWithPath(mediaType, base64Data, imgPath, strings.TrimSpace(msg.Caption))
+		uploadMediaType = mediaType
+		uploadCaption = strings.TrimSpace(msg.Caption)
+		userMsg = llm.UserImageMessageWithPath(mediaType, base64Data, imgPath, uploadCaption)
 	} else {
 		text := strings.TrimSpace(msg.Text)
 		if text == "" {
@@ -684,6 +738,14 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 	if err := m.streamReply(ctx, bot, sess, chatID, userMsg); err != nil {
 		log.Printf("[telegram] error streaming reply for chat %d: %v", chatID, err)
 		_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Sorry, an error occurred: "+err.Error()))
+	}
+
+	if tempImagePath != "" {
+		sessionID := ""
+		if sess.meta != nil {
+			sessionID = sess.meta.ID
+		}
+		recordTelegramUpload(m.cfg, m.settings.Agent, sessionID, uploadMediaType, uploadCaption, tempImagePath)
 	}
 }
 

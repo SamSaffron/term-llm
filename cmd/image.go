@@ -193,6 +193,7 @@ func runImage(cmd *cobra.Command, args []string) error {
 
 	if outputPath != "" {
 		fmt.Fprintf(os.Stderr, "Saved to: %s\n", outputPath)
+		recordImageDirect(cfg, prompt, outputPath, result, provider.Name())
 	}
 
 	// Display via icat
