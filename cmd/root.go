@@ -28,6 +28,8 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&memProfile, "memprofile", "", "Write memory profile to file")
 	rootCmd.PersistentFlags().StringVar(&pprofFlag, "pprof", "", "Start pprof debug server (optionally specify port)")
 	rootCmd.PersistentFlags().Lookup("pprof").NoOptDefVal = "0"
+
+	rootCmd.AddCommand(memoryCmd)
 }
 
 var rootCmd = &cobra.Command{

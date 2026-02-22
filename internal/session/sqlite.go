@@ -99,7 +99,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 	}
 
 	// Ensure directory exists for file-backed databases.
-	if dbPath != ":memory:" {
+	if dbPath != ":memory:" && !cfg.ReadOnly {
 		if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
 			return nil, fmt.Errorf("create data directory: %w", err)
 		}
@@ -111,6 +111,9 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 	// - busy_timeout(5000): Wait up to 5 seconds when database is locked
 	// - synchronous(NORMAL): Balanced durability/performance for WAL mode
 	dsn := dbPath
+	if cfg.ReadOnly && dbPath != ":memory:" {
+		dsn = "file:" + filepath.ToSlash(dbPath) + "?mode=ro"
+	}
 	if strings.Contains(dsn, "?") {
 		dsn += "&"
 	} else {
@@ -122,18 +125,23 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
-	// Initialize schema and run migrations
-	if err := initSchema(db); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("initialize schema: %w", err)
+	// Initialize schema and run migrations.
+	// Read-only mode skips initialization because it cannot write schema changes.
+	if !cfg.ReadOnly {
+		if err := initSchema(db); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("initialize schema: %w", err)
+		}
 	}
 
 	store := &SQLiteStore{db: db, cfg: cfg}
 
-	// Run cleanup if configured
-	if err := store.cleanup(); err != nil {
-		// Log but don't fail
-		fmt.Fprintf(os.Stderr, "warning: session cleanup failed: %v\n", err)
+	// Run cleanup if configured (read-write mode only).
+	if !cfg.ReadOnly {
+		if err := store.cleanup(); err != nil {
+			// Log but don't fail
+			fmt.Fprintf(os.Stderr, "warning: session cleanup failed: %v\n", err)
+		}
 	}
 
 	return store, nil
