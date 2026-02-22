@@ -363,9 +363,24 @@ func (m *Model) saveSessionCmd() tea.Cmd {
 	}
 }
 
+func (m *Model) invalidateViewCache() {
+	m.viewCache.historyValid = false
+	m.viewCache.completedStream = ""
+	m.viewCache.cachedCompletedContent = ""
+	m.viewCache.cachedTrackerVersion = 0
+	m.viewCache.lastTrackerVersion = 0
+	m.viewCache.lastWavePos = 0
+	m.viewCache.lastSetContentAt = time.Time{}
+	if m.chatRenderer != nil {
+		m.chatRenderer.InvalidateCache()
+	}
+	m.bumpContentVersion()
+}
+
 func (m *Model) bumpContentVersion() {
 	m.viewCache.contentVersion++
 	if m.streamPerf != nil {
 		m.streamPerf.RecordContentVersionBump()
 	}
 }
+

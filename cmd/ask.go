@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -914,9 +915,10 @@ type askUsageMsg struct {
 }
 type askTickMsg time.Time
 type askToolStartMsg struct {
-	CallID string // Unique ID for this tool invocation
-	Name   string // Tool name being executed
-	Info   string // Additional info (e.g., URL)
+	CallID  string          // Unique ID for this tool invocation
+	Name    string          // Tool name being executed
+	Info    string          // Additional info (e.g., URL)
+	ToolArgs json.RawMessage // Raw args JSON
 }
 type askToolEndMsg struct {
 	CallID  string // Unique ID for this tool invocation
@@ -1091,7 +1093,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.tracker.MarkCurrentTextComplete(func(text string) string {
 			return renderMd(text, m.width)
 		})
-		if m.tracker.HandleToolStart(toolMsg.CallID, toolMsg.Name, toolMsg.Info) {
+		if m.tracker.HandleToolStart(toolMsg.CallID, toolMsg.Name, toolMsg.Info, toolMsg.ToolArgs) {
 			// New segment added, but don't start wave yet (approval form is active)
 		}
 	}
@@ -1384,7 +1386,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		})
 
 		// Add or dedupe pending tool segment for this call.
-		m.tracker.HandleToolStart(msg.CallID, msg.Name, msg.Info)
+		m.tracker.HandleToolStart(msg.CallID, msg.Name, msg.Info, msg.ToolArgs)
 
 		// Defer pending tool rendering until boundary flush is visibly committed.
 		m.pendingBoundaryFlushes++
@@ -1676,9 +1678,10 @@ func streamWithGlamour(ctx context.Context, events <-chan ui.StreamEvent, p *tea
 
 			case ui.StreamEventToolStart:
 				p.Send(askToolStartMsg{
-					CallID: ev.ToolCallID,
-					Name:   ev.ToolName,
-					Info:   ev.ToolInfo,
+					CallID:   ev.ToolCallID,
+					Name:     ev.ToolName,
+					Info:     ev.ToolInfo,
+					ToolArgs: ev.ToolArgs,
 				})
 
 			case ui.StreamEventText:

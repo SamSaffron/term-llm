@@ -129,7 +129,7 @@ func (a *PlanStreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream
 				a.seenToolStarts[event.ToolCallID] = struct{}{}
 			}
 			a.stats.ToolStart()
-			a.events <- ToolStartEvent(event.ToolCallID, event.ToolName, event.ToolInfo)
+			a.events <- ToolStartEvent(event.ToolCallID, event.ToolName, event.ToolInfo, event.ToolArgs)
 
 		case llm.EventToolExecEnd:
 			if event.ToolCallID != "" {

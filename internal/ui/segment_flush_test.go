@@ -54,7 +54,7 @@ func TestFlushSpacingConsistency(t *testing.T) {
 			for i := range tt.segments {
 				refSegs[i] = &tt.segments[i]
 			}
-			reference := RenderSegments(refSegs, 80, -1, mockRender, true)
+			reference := RenderSegments(refSegs, 80, -1, mockRender, true, false)
 
 			// 2. Get concatenated output from individual flushes.
 			// Simulate tea.Printf's trailing newline between flushes.
@@ -86,7 +86,7 @@ func TestFlushToolToTool_NoBlankLine(t *testing.T) {
 	// tea.Printf adds a trailing \n after each flush, so FlushLeadingSeparator
 	// must strip the leading \n from the separator to avoid \n\n.
 	tracker := NewToolTracker()
-	tracker.HandleToolStart("t1", "web_search", "query one")
+	tracker.HandleToolStart("t1", "web_search", "query one", nil)
 	tracker.HandleToolEnd("t1", true)
 
 	// Flush first tool
@@ -95,7 +95,7 @@ func TestFlushToolToTool_NoBlankLine(t *testing.T) {
 		t.Fatal("expected first tool to flush")
 	}
 
-	tracker.HandleToolStart("t2", "web_search", "query two")
+	tracker.HandleToolStart("t2", "web_search", "query two", nil)
 	tracker.HandleToolEnd("t2", true)
 
 	// Flush second tool
@@ -138,7 +138,7 @@ func TestFlushCompletedNow_ToolToTextAcrossPrintBoundaries_UsesBlankLine(t *test
 	}
 
 	tracker := NewToolTracker()
-	tracker.HandleToolStart("t1", "web_search", "query")
+	tracker.HandleToolStart("t1", "web_search", "query", nil)
 	tracker.HandleToolEnd("t1", true)
 
 	toolFlush := tracker.FlushCompletedNow(80, mockRender)
@@ -188,7 +188,7 @@ func TestFlushStreamingText_ToolToTextCompactsLeadingBlankLinesInRenderedText(t 
 
 	tracker := NewToolTracker()
 	tracker.TextMode = true // force fallback renderMd path
-	tracker.HandleToolStart("t1", "web_search", "query")
+	tracker.HandleToolStart("t1", "web_search", "query", nil)
 	tracker.HandleToolEnd("t1", true)
 	tracker.AddTextSegment("Latest Claude update.\n\n", width)
 
@@ -229,7 +229,7 @@ func TestFlushStreamingText_ToolAndTextInOnePrint(t *testing.T) {
 	tracker := NewToolTracker()
 
 	// Add a completed tool segment
-	tracker.HandleToolStart("t1", "web_search", "query")
+	tracker.HandleToolStart("t1", "web_search", "query", nil)
 	tracker.HandleToolEnd("t1", true)
 
 	// Add enough text to exceed a 0 threshold
@@ -286,7 +286,7 @@ func TestPartialTextFlushSpacing(t *testing.T) {
 	res2 := tracker.FlushAllRemaining(80, 0, renderMd)
 
 	// Add a tool
-	tracker.HandleToolStart("tool-1", "tool", "info")
+	tracker.HandleToolStart("tool-1", "tool", "info", nil)
 	tracker.HandleToolEnd("tool-1", true)
 
 	// Flush tool
@@ -532,7 +532,7 @@ func TestFlushStreamingText_FlushesCompletedToolsFirst(t *testing.T) {
 	tracker := NewToolTracker()
 
 	// Add a tool segment and mark it complete
-	tracker.HandleToolStart("tool-1", "test_tool", "test info")
+	tracker.HandleToolStart("tool-1", "test_tool", "test info", nil)
 	tracker.HandleToolEnd("tool-1", true)
 
 	// Add an incomplete text segment with content
@@ -575,7 +575,7 @@ func TestFlushStreamingText_ReturnsToolsEvenWhenTextBelowThreshold(t *testing.T)
 	tracker := NewToolTracker()
 
 	// Add a tool segment and mark it complete
-	tracker.HandleToolStart("tool-1", "test_tool", "test info")
+	tracker.HandleToolStart("tool-1", "test_tool", "test info", nil)
 	tracker.HandleToolEnd("tool-1", true)
 
 	// Add an incomplete text segment with minimal content

@@ -115,8 +115,12 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 				if toolInfo == "" {
 					toolInfo = llm.ExtractToolInfo(*event.Tool)
 				}
+				toolArgs := event.ToolArgs
+				if len(toolArgs) == 0 {
+					toolArgs = event.Tool.Arguments
+				}
 				a.stats.ToolStart()
-				a.events <- ToolStartEvent(toolCallID, event.Tool.Name, toolInfo)
+				a.events <- ToolStartEvent(toolCallID, event.Tool.Name, toolInfo, toolArgs)
 			}
 
 		case llm.EventToolExecStart:
@@ -128,7 +132,7 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 				a.seenToolStarts[event.ToolCallID] = struct{}{}
 			}
 			a.stats.ToolStart()
-			a.events <- ToolStartEvent(event.ToolCallID, event.ToolName, event.ToolInfo)
+			a.events <- ToolStartEvent(event.ToolCallID, event.ToolName, event.ToolInfo, event.ToolArgs)
 
 		case llm.EventToolExecEnd:
 			// Skip if already seen. If toolCallID is empty, don't dedupe - treat as unique.

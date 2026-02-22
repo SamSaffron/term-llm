@@ -1035,7 +1035,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			info := e.getToolPreview(call)
 
 			if events != nil {
-				events <- Event{Type: EventToolExecStart, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info}
+				events <- Event{Type: EventToolExecStart, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info, ToolArgs: call.Arguments}
 			}
 		}
 
@@ -1263,6 +1263,7 @@ func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, event
 			ToolCallID: callID,
 			ToolName:   call.Name,
 			ToolInfo:   info,
+			ToolArgs:   call.Arguments,
 		}:
 		default:
 			// Event dropped due to slow consumer

@@ -144,7 +144,7 @@ func (m *Model) handleStreamEvent(ev ui.StreamEvent) []tea.Cmd {
 
 	case ui.StreamEventToolStart:
 		if m.tracker != nil {
-			if m.tracker.HandleToolStart(ev.ToolCallID, ev.ToolName, ev.ToolInfo) {
+			if m.tracker.HandleToolStart(ev.ToolCallID, ev.ToolName, ev.ToolInfo, ev.ToolArgs) {
 				// Don't start wave for ask_user - it has its own UI
 				if ev.ToolName != tools.AskUserToolName {
 					cmds = append(cmds, m.tracker.StartWave())

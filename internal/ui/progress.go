@@ -78,7 +78,7 @@ func (s StreamingIndicator) Render(styles *Styles) string {
 		if s.HasFlushed {
 			b.WriteString(flushBoundarySeparator(s.LastFlushedType, s.Segments[0].Type))
 		}
-		b.WriteString(RenderSegments(s.Segments, s.Width, s.WavePos, s.RenderMarkdown, false))
+		b.WriteString(RenderSegments(s.Segments, s.Width, s.WavePos, s.RenderMarkdown, false, false))
 		// When tools are active, we don't show the spinner/phase line
 		// as the wave animation provides the progress feedback.
 	} else if !s.HideProgress {

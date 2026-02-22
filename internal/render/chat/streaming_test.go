@@ -1,8 +1,11 @@
 package chat
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 func TestStreamingBlock_AddText(t *testing.T) {
@@ -29,7 +32,7 @@ func TestStreamingBlock_ToolTracking(t *testing.T) {
 
 	// Add text, then tool
 	sb.AddText("Thinking...")
-	started := sb.StartTool("call-1", "read_file", "main.go")
+	started := sb.StartTool("call-1", "read_file", "main.go", nil)
 	if !started {
 		t.Error("StartTool should return true for first tool")
 	}
@@ -46,6 +49,24 @@ func TestStreamingBlock_ToolTracking(t *testing.T) {
 	}
 }
 
+func TestStreamingBlock_ExpandedShellTool(t *testing.T) {
+	sb := NewStreamingBlock(80, nil)
+	sb.SetToolsExpanded(true)
+	args, err := json.Marshal(tools.ShellArgs{Command: "git status", Description: "Check git status"})
+	if err != nil {
+		t.Fatalf("failed to marshal args: %v", err)
+	}
+	started := sb.StartTool("call-1", "shell", "Check git status", args)
+	if !started {
+		t.Fatal("StartTool should return true for first tool")
+	}
+	sb.EndTool("call-1", true)
+
+	output := sb.Render(-1, false, true)
+	if !strings.Contains(output, "Check git status") {
+		t.Errorf("expected expanded description in output, got: %q", output)
+	}
+}
 func TestStreamingBlock_Complete(t *testing.T) {
 	mdRenderer := func(content string, width int) string {
 		return "[MD]" + content + "[/MD]"

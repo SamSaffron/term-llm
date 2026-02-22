@@ -290,7 +290,7 @@ func (m *Model) renderActivityPanel() string {
 		if seg.ToolStatus == ui.ToolPending {
 			wavePos = m.tracker.WavePos
 		}
-		b.WriteString(ui.RenderToolSegment(seg, wavePos, m.width))
+		b.WriteString(ui.RenderToolSegment(seg, wavePos, m.width, false))
 		b.WriteString("\n")
 	}
 

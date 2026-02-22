@@ -236,11 +236,12 @@ type Event struct {
 	Tool                      *ToolCall
 	ToolCallID                string     // For EventToolExecStart/End: unique ID of this tool invocation
 	ToolName                  string     // For EventToolExecStart/End: name of tool being executed
-	ToolInfo                  string     // For EventToolExecStart/End: additional info (e.g., URL being fetched)
-	ToolSuccess               bool       // For EventToolExecEnd: whether tool execution succeeded
-	ToolOutput                string     // For EventToolExecEnd: the tool's text content
-	ToolDiffs                 []DiffData // For EventToolExecEnd: structured diffs from edit tools
-	ToolImages                []string   // For EventToolExecEnd: image paths from image tools
+	ToolInfo                  string          // For EventToolExecStart/End: additional info (e.g., URL being fetched)
+	ToolArgs                  json.RawMessage // For EventToolExecStart: raw args JSON
+	ToolSuccess               bool            // For EventToolExecEnd: whether tool execution succeeded
+	ToolOutput                string          // For EventToolExecEnd: the tool's text content
+	ToolDiffs                 []DiffData      // For EventToolExecEnd: structured diffs from edit tools
+	ToolImages                []string        // For EventToolExecEnd: image paths from image tools
 	Use                       *Usage
 	Err                       error
 	// Retry fields (for EventRetry)

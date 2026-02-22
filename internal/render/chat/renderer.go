@@ -118,6 +118,7 @@ type Renderer struct {
 
 	// Configuration
 	markdownRenderer MarkdownRenderer
+	toolsExpanded    bool
 }
 
 // NewRenderer creates a new chat renderer with the given dimensions.
@@ -158,6 +159,15 @@ func (r *Renderer) SetMarkdownRenderer(renderer MarkdownRenderer) {
 	r.markdownRenderer = renderer
 }
 
+// SetToolsExpanded toggles expanded tool rendering in the streaming block.
+func (r *Renderer) SetToolsExpanded(v bool) {
+	r.toolsExpanded = v
+	r.blockCache.InvalidateAll()
+	if r.streaming != nil {
+		r.streaming.SetToolsExpanded(v)
+	}
+}
+
 // InvalidateCache forces re-rendering of all cached content.
 func (r *Renderer) InvalidateCache() {
 	r.blockCache.InvalidateAll()
@@ -168,6 +178,7 @@ func (r *Renderer) HandleEvent(event RenderEvent) tea.Cmd {
 	switch event.Type {
 	case RenderEventStreamStart:
 		r.streaming = NewStreamingBlock(r.width, r.markdownRenderer)
+		r.streaming.SetToolsExpanded(r.toolsExpanded)
 		return r.streaming.StartWaveAnimation()
 
 	case RenderEventStreamText:
@@ -178,7 +189,7 @@ func (r *Renderer) HandleEvent(event RenderEvent) tea.Cmd {
 
 	case RenderEventStreamToolStart:
 		if r.streaming != nil {
-			started := r.streaming.StartTool(event.ToolCallID, event.ToolName, event.ToolInfo)
+			started := r.streaming.StartTool(event.ToolCallID, event.ToolName, event.ToolInfo, event.ToolArgs)
 			if started {
 				return r.streaming.StartWaveAnimation()
 			}
@@ -356,14 +367,16 @@ func (r *Renderer) getOrRenderBlock(msg *session.Message, index int, messages []
 // Key is based on message ID and width only - NOT index.
 // This ensures cache hits even when new messages are added.
 func (r *Renderer) blockCacheKey(msg *session.Message, index int) string {
-	// Key includes message ID and width only
-	// Using a simple format: "id:width"
-	return strconv.FormatInt(msg.ID, 10) + ":" + strconv.Itoa(r.width)
+	expanded := "0"
+	if r.toolsExpanded {
+		expanded = "1"
+	}
+	return strconv.FormatInt(msg.ID, 10) + ":" + strconv.Itoa(r.width) + ":" + expanded
 }
 
 // renderMessageBlock renders a single message to a block.
 func (r *Renderer) renderMessageBlock(msg *session.Message, index int, messages []session.Message) *MessageBlock {
-	rb := NewMessageBlockRendererWithContext(r.width, r.markdownRenderer, messages, index)
+	rb := NewMessageBlockRendererWithContext(r.width, r.markdownRenderer, messages, index, r.toolsExpanded)
 	return rb.Render(msg)
 }
 

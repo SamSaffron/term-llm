@@ -44,7 +44,7 @@ func TestAddExternalUIResult(t *testing.T) {
 	rendered := RenderSegments(segments, 80, -1, func(s string, w int) string {
 		// This markdown renderer should NOT be called for ask_user results
 		return "MARKDOWN_PROCESSED:" + s
-	}, true)
+	}, true, false)
 
 	// Should NOT contain "MARKDOWN_PROCESSED" since ask_user results have their own renderer
 	if strings.Contains(rendered, "MARKDOWN_PROCESSED") {
@@ -82,7 +82,7 @@ func TestAddExternalUIResult_WithExistingSegments(t *testing.T) {
 	tracker.AddTextSegment("world", 80)
 
 	// Add a tool
-	tracker.HandleToolStart("call-1", "read_file", "test.go")
+	tracker.HandleToolStart("call-1", "read_file", "test.go", nil)
 	tracker.HandleToolEnd("call-1", true)
 
 	// Add external UI result
@@ -217,7 +217,7 @@ func TestAllCompletedSegments_ExcludesPending(t *testing.T) {
 	tracker.Segments[0].Complete = true
 
 	// Add a pending tool segment
-	tracker.HandleToolStart("call-1", "shell", "(git status)")
+	tracker.HandleToolStart("call-1", "shell", "(git status)", nil)
 	// Note: tool is pending, not ended
 
 	// AllCompletedSegments should only return the text segment
@@ -239,7 +239,7 @@ func TestAllCompletedSegments_MixedScenario(t *testing.T) {
 	tracker.AddTextSegment("First paragraph", 80)
 	tracker.Segments[0].Complete = true
 
-	tracker.HandleToolStart("call-1", "read_file", "main.go")
+	tracker.HandleToolStart("call-1", "read_file", "main.go", nil)
 	tracker.HandleToolEnd("call-1", true)
 	tracker.Segments[1].Flushed = true // Flushed to scrollback
 
@@ -247,7 +247,7 @@ func TestAllCompletedSegments_MixedScenario(t *testing.T) {
 	tracker.Segments[2].Complete = true
 	tracker.Segments[2].Flushed = true // Flushed to scrollback
 
-	tracker.HandleToolStart("call-2", "shell", "(ls)")
+	tracker.HandleToolStart("call-2", "shell", "(ls)", nil)
 	tracker.HandleToolEnd("call-2", true)
 
 	tracker.AddTextSegment("Third paragraph", 80)
@@ -277,7 +277,7 @@ func TestFlushToScrollback_IncompleteTextNotFlushed(t *testing.T) {
 	// Note: segment is NOT marked Complete
 
 	// Add a completed tool segment
-	tracker.HandleToolStart("call-1", "shell", "(pwd)")
+	tracker.HandleToolStart("call-1", "shell", "(pwd)", nil)
 	tracker.HandleToolEnd("call-1", true)
 
 	// Now we have 2 "unflushed" segments, but text is incomplete
@@ -347,7 +347,7 @@ func TestFlushCompletedNow_FlushesAllCompletedSegments(t *testing.T) {
 	tracker.AddTextSegment("Second paragraph\n\n", 0)
 	tracker.MarkCurrentTextComplete(renderFn)
 
-	tracker.HandleToolStart("call-1", "shell", "(pwd)")
+	tracker.HandleToolStart("call-1", "shell", "(pwd)", nil)
 	tracker.HandleToolEnd("call-1", true)
 
 	result := tracker.FlushCompletedNow(80, func(s string, w int) string { return s })
@@ -369,7 +369,7 @@ func TestFlushCompletedNow_FlushesAllCompletedSegments(t *testing.T) {
 func TestFlushCompletedNow_DoesNotFlushPendingTools(t *testing.T) {
 	tracker := NewToolTracker()
 
-	tracker.HandleToolStart("call-1", "shell", "(pwd)")
+	tracker.HandleToolStart("call-1", "shell", "(pwd)", nil)
 
 	result := tracker.FlushCompletedNow(80, func(s string, w int) string { return s })
 	if result.ToPrint != "" {
@@ -411,7 +411,7 @@ func TestMarkCurrentTextComplete_SyncsRendererFlushedOffsetBeforeBoundaryFlush(t
 	tracker.MarkCurrentTextComplete(func(text string) string {
 		return RenderMarkdown(text, width)
 	})
-	tracker.HandleToolStart("call-1", "set_commit_message", "(msg)")
+	tracker.HandleToolStart("call-1", "set_commit_message", "(msg)", nil)
 
 	result := tracker.FlushCompletedNow(width, RenderMarkdown)
 	if result.ToPrint == "" {
@@ -461,7 +461,7 @@ func TestDebugStreamingSimulation(t *testing.T) {
 
 	// CompletedSegments should include incomplete text for View()
 	segments := tracker.CompletedSegments()
-	content := RenderSegments(segments, 80, -1, nil, false)
+	content := RenderSegments(segments, 80, -1, nil, false, false)
 
 	// With the streaming renderer, complete blocks are rendered immediately
 	// The heading "# Debug" becomes a styled heading, so check for "Debug" in content
@@ -505,7 +505,7 @@ func TestStreamingThenComplete(t *testing.T) {
 
 	// Streaming renderer is active, so View shows rendered markdown
 	segments := tracker.CompletedSegments()
-	content := RenderSegments(segments, 80, -1, nil, false)
+	content := RenderSegments(segments, 80, -1, nil, false, false)
 	// The streaming renderer renders complete blocks, so "Header" should be present
 	if !strings.Contains(content, "Header") {
 		t.Errorf("View should show rendered content during streaming: %q", content)
@@ -581,7 +581,7 @@ func TestAddPreRenderedTextSegment_BypassesMarkdownRendering(t *testing.T) {
 	}
 	rendered := RenderSegments(segments, 80, -1, func(s string, w int) string {
 		return "MARKDOWN_PROCESSED:" + s
-	}, false)
+	}, false, false)
 
 	// Should NOT contain "MARKDOWN_PROCESSED" since pre-rendered segments
 	// already have Rendered set and bypass markdown rendering

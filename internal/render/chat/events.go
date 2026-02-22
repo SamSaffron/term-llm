@@ -1,6 +1,8 @@
 package chat
 
 import (
+	"encoding/json"
+
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -51,6 +53,7 @@ type RenderEvent struct {
 	ToolCallID  string
 	ToolName    string
 	ToolInfo    string
+	ToolArgs    json.RawMessage
 	ToolSuccess bool
 
 	// For streaming image/diff events
@@ -123,12 +126,13 @@ func NewStreamTextEvent(text string) RenderEvent {
 }
 
 // NewStreamToolStartEvent creates an event for when a tool starts executing
-func NewStreamToolStartEvent(callID, name, info string) RenderEvent {
+func NewStreamToolStartEvent(callID, name, info string, args json.RawMessage) RenderEvent {
 	return RenderEvent{
 		Type:       RenderEventStreamToolStart,
 		ToolCallID: callID,
 		ToolName:   name,
 		ToolInfo:   info,
+		ToolArgs:   args,
 	}
 }
 
@@ -200,7 +204,7 @@ func FromStreamEvent(ev ui.StreamEvent) RenderEvent {
 	case ui.StreamEventText:
 		return NewStreamTextEvent(ev.Text)
 	case ui.StreamEventToolStart:
-		return NewStreamToolStartEvent(ev.ToolCallID, ev.ToolName, ev.ToolInfo)
+		return NewStreamToolStartEvent(ev.ToolCallID, ev.ToolName, ev.ToolInfo, ev.ToolArgs)
 	case ui.StreamEventToolEnd:
 		return NewStreamToolEndEvent(ev.ToolCallID, ev.ToolName, ev.ToolInfo, ev.ToolSuccess)
 	case ui.StreamEventImage:

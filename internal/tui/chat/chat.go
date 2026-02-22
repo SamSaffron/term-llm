@@ -178,6 +178,8 @@ type Model struct {
 
 	// Text mode (no markdown rendering)
 	textMode bool
+	// Expanded tool display (full commands/env)
+	toolsExpanded bool
 
 	// Mouse layout tracking for textarea click-to-cursor support
 	textareaBoundsValid    bool
@@ -420,6 +422,7 @@ func (m *Model) Init() tea.Cmd {
 	// Set markdown renderer for chat renderer
 	if m.chatRenderer != nil {
 		m.chatRenderer.SetMarkdownRenderer(m.renderMd)
+		m.chatRenderer.SetToolsExpanded(m.toolsExpanded)
 	}
 
 	// In auto-send mode, pop first message from queue and send it
@@ -759,7 +762,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.tracker.MarkCurrentTextComplete(func(text string) string {
 					return m.renderMarkdown(text)
 				})
-				if m.tracker.HandleToolStart(ev.ToolCallID, ev.ToolName, ev.ToolInfo) {
+				if m.tracker.HandleToolStart(ev.ToolCallID, ev.ToolName, ev.ToolInfo, ev.ToolArgs) {
 					// New segment added, start wave animation (but not for ask_user which has its own UI)
 					if ev.ToolName != tools.AskUserToolName {
 						cmds = append(cmds, m.tracker.StartWave())
@@ -972,7 +975,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// This preserves the correct position of images/diffs relative to text.
 					// The last assistant message will be skipped in renderHistory() to avoid duplication.
 					completed := m.tracker.CompletedSegments()
-					m.viewCache.completedStream = ui.RenderSegments(completed, m.width, -1, m.renderMd, true)
+					m.viewCache.completedStream = ui.RenderSegments(completed, m.width, -1, m.renderMd, true, m.toolsExpanded)
 					m.bumpContentVersion()
 				} else {
 					// In inline mode, print remaining content to scrollback

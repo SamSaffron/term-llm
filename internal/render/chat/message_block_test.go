@@ -20,7 +20,7 @@ func TestMessageBlockRenderer_UserMessageBackground_UsesANSI256Fallback(t *testi
 		lipgloss.SetHasDarkBackground(prevDarkBg)
 	})
 
-	renderer := NewMessageBlockRenderer(80, nil)
+	renderer := NewMessageBlockRenderer(80, nil, false)
 	msg := &session.Message{
 		ID:          1,
 		Role:        llm.RoleUser,
@@ -43,7 +43,7 @@ func TestMessageBlockRenderer_UserMessageBackground_UsesThemeColorForTrueColor(t
 		lipgloss.SetHasDarkBackground(prevDarkBg)
 	})
 
-	renderer := NewMessageBlockRenderer(80, nil)
+	renderer := NewMessageBlockRenderer(80, nil, false)
 	msg := &session.Message{
 		ID:          1,
 		Role:        llm.RoleUser,

@@ -25,7 +25,7 @@ func TestShellTool_Spec(t *testing.T) {
 	if !ok {
 		t.Fatal("schema should have properties")
 	}
-	for _, p := range []string{"command", "working_dir", "timeout_seconds"} {
+	for _, p := range []string{"command", "working_dir", "timeout_seconds", "env", "description"} {
 		if _, ok := props[p]; !ok {
 			t.Errorf("schema should have %s property", p)
 		}
@@ -54,6 +54,11 @@ func TestShellTool_Preview(t *testing.T) {
 		args     json.RawMessage
 		expected string
 	}{
+		{
+			name:     "description overrides command",
+			args:     mustMarshalShellArgs(ShellArgs{Command: "echo hidden", Description: "Describe action"}),
+			expected: "Describe action",
+		},
 		{
 			name:     "short command",
 			args:     mustMarshalShellArgs(ShellArgs{Command: "echo hello"}),
@@ -146,6 +151,56 @@ func TestShellTool_Execute(t *testing.T) {
 				t.Errorf("expected %q in output, got: %s", tt.wantExit, text)
 			}
 		})
+	}
+}
+
+func TestShellTool_ExecuteEnv(t *testing.T) {
+	tool := NewShellTool(nil, nil, DefaultOutputLimits())
+
+	t.Setenv("INHERITED_VAR", "present")
+	args := mustMarshalShellArgs(ShellArgs{
+		Command: "echo $MY_VAR $INHERITED_VAR",
+		Env: map[string]string{
+			"MY_VAR": "hello",
+		},
+	})
+
+	output, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+
+	text := output.Content
+	if !strings.Contains(text, "hello") {
+		t.Errorf("expected output to contain env var value, got: %s", text)
+	}
+	if !strings.Contains(text, "present") {
+		t.Errorf("expected output to contain inherited env var value, got: %s", text)
+	}
+}
+
+func TestShellTool_ExecuteEnvOverride(t *testing.T) {
+	tool := NewShellTool(nil, nil, DefaultOutputLimits())
+
+	t.Setenv("CONFLICT_VAR", "old")
+	args := mustMarshalShellArgs(ShellArgs{
+		Command: "echo $CONFLICT_VAR",
+		Env: map[string]string{
+			"CONFLICT_VAR": "new",
+		},
+	})
+
+	output, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+
+	text := output.Content
+	if !strings.Contains(text, "new") {
+		t.Errorf("expected output to contain overridden env var value, got: %s", text)
+	}
+	if strings.Contains(text, "old") {
+		t.Errorf("expected output to omit old env var value, got: %s", text)
 	}
 }
 

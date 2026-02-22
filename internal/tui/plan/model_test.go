@@ -88,7 +88,7 @@ func TestRenderActivityPanel_WithCompletedTools(t *testing.T) {
 	m.activityExpanded = true
 
 	// Add a completed tool
-	m.tracker.HandleToolStart("call-1", "grep", "(pattern)")
+	m.tracker.HandleToolStart("call-1", "grep", "(pattern)", nil)
 	m.tracker.HandleToolEnd("call-1", true)
 
 	panel := m.renderActivityPanel()
@@ -106,7 +106,7 @@ func TestRenderActivityPanel_WithPendingTool(t *testing.T) {
 	m.activityExpanded = true
 
 	// Add a pending tool
-	m.tracker.HandleToolStart("call-1", "grep", "(pattern)")
+	m.tracker.HandleToolStart("call-1", "grep", "(pattern)", nil)
 
 	panel := m.renderActivityPanel()
 	if !strings.Contains(panel, "grep") {

@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"encoding/json"
 	"strings"
 	"sync"
 	"time"
@@ -26,8 +27,9 @@ type StreamingBlock struct {
 	tracker *ui.ToolTracker
 
 	// State
-	complete bool
-	err      error
+	complete      bool
+	err           error
+	toolsExpanded bool
 
 	// For flush tracking
 	lastFlushTime time.Time
@@ -63,7 +65,14 @@ func (s *StreamingBlock) Resize(width int) {
 	}
 }
 
-// AddText adds streaming text content.
+// SetToolsExpanded toggles expanded tool rendering.
+func (s *StreamingBlock) SetToolsExpanded(v bool) {
+	s.toolsExpanded = v
+	if s.tracker != nil {
+		s.tracker.SetExpanded(v)
+	}
+}
+
 func (s *StreamingBlock) AddText(text string) {
 	if s.tracker != nil {
 		s.tracker.AddTextSegment(text, s.width)
@@ -72,13 +81,13 @@ func (s *StreamingBlock) AddText(text string) {
 
 // StartTool adds a new pending tool segment.
 // Returns true if a new segment was added (for starting wave animation).
-func (s *StreamingBlock) StartTool(callID, name, info string) bool {
+func (s *StreamingBlock) StartTool(callID, name, info string, toolArgs json.RawMessage) bool {
 	if s.tracker == nil {
 		return false
 	}
 	// Mark current text as complete before adding tool
 	s.tracker.MarkCurrentTextComplete(s.renderFunc())
-	return s.tracker.HandleToolStart(callID, name, info)
+	return s.tracker.HandleToolStart(callID, name, info, toolArgs)
 }
 
 // EndTool updates the status of a pending tool.
@@ -180,7 +189,7 @@ func (s *StreamingBlock) Render(wavePos int, pausedForUI bool, includeImages boo
 		}
 
 		// Render completed segments
-		content := ui.RenderSegments(completed, s.width, -1, s.mdRenderFunc(), true)
+		content := ui.RenderSegments(completed, s.width, -1, s.mdRenderFunc(), true, s.toolsExpanded)
 		if content != "" {
 			b.WriteString(content)
 			// Add separator before active tools if needed
@@ -191,7 +200,7 @@ func (s *StreamingBlock) Render(wavePos int, pausedForUI bool, includeImages boo
 
 		// Render active tools
 		if len(active) > 0 {
-			activeContent := ui.RenderSegments(active, s.width, wavePos, s.mdRenderFunc(), false)
+			activeContent := ui.RenderSegments(active, s.width, wavePos, s.mdRenderFunc(), false, s.toolsExpanded)
 			b.WriteString(activeContent)
 		}
 	} else {
@@ -215,7 +224,7 @@ func (s *StreamingBlock) Render(wavePos int, pausedForUI bool, includeImages boo
 				b.WriteString(s.tracker.FlushLeadingSeparator(ui.SegmentTool))
 			}
 
-			activeContent := ui.RenderSegments(active, s.width, wavePos, s.mdRenderFunc(), false)
+			activeContent := ui.RenderSegments(active, s.width, wavePos, s.mdRenderFunc(), false, s.toolsExpanded)
 			if activeContent != "" {
 				b.WriteString(activeContent)
 			}
