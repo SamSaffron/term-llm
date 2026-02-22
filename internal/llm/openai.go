@@ -259,9 +259,13 @@ func normalizeSchemaRecursive(schema map[string]interface{}) map[string]interfac
 		}
 	}
 
-	// OpenAI requires additionalProperties to be false for objects
+	// OpenAI requires additionalProperties to be false for objects.
+	// Exception: if additionalProperties is already a schema map (e.g. {"type":"string"}),
+	// preserve it — that's a valid free-form map type (like the env parameter).
 	if schema["type"] == "object" || schema["properties"] != nil {
-		schema["additionalProperties"] = false
+		if _, isSchemaMap := schema["additionalProperties"].(map[string]interface{}); !isSchemaMap {
+			schema["additionalProperties"] = false
+		}
 	}
 
 	return schema
