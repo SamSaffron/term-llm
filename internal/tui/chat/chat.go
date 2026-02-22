@@ -203,6 +203,11 @@ type (
 	}
 	tickMsg             time.Time
 	streamRenderTickMsg struct{}
+	compactStartedMsg   struct{}
+	compactDoneMsg      struct {
+		result *llm.CompactionResult
+		err    error
+	}
 )
 
 const (
@@ -578,6 +583,47 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// No explicit action is needed here: Bubble Tea re-renders after each Update.
 		// This tick exists to ensure View() runs again after the throttle window, so
 		// pending content can pass shouldThrottleSetContent().
+
+	case compactDoneMsg:
+		m.streaming = false
+		m.phase = "Thinking"
+		if m.streamCancelFunc != nil {
+			m.streamCancelFunc()
+			m.streamCancelFunc = nil
+		}
+		theme := m.styles.Theme()
+		if msg.err != nil {
+			if errors.Is(msg.err, context.Canceled) || errors.Is(msg.err, context.DeadlineExceeded) {
+				muted := lipgloss.NewStyle().Foreground(theme.Muted)
+				return m, tea.Println(muted.Render("Compact cancelled."))
+			}
+			errStyle := lipgloss.NewStyle().Foreground(theme.Error)
+			return m, tea.Println(errStyle.Render(fmt.Sprintf("Compression failed: %v", msg.err)))
+		}
+		if msg.result == nil {
+			errStyle := lipgloss.NewStyle().Foreground(theme.Error)
+			return m, tea.Println(errStyle.Render("Compression failed: no result returned."))
+		}
+		var newSessionMsgs []session.Message
+		for _, msg := range msg.result.NewMessages {
+			newSessionMsgs = append(newSessionMsgs, *session.NewMessage(m.sess.ID, msg, -1))
+		}
+		m.messagesMu.Lock()
+		m.messages = newSessionMsgs
+		m.messagesMu.Unlock()
+
+		if m.store != nil {
+			if err := m.store.ReplaceMessages(context.Background(), m.sess.ID, newSessionMsgs); err != nil {
+				errStyle := lipgloss.NewStyle().Foreground(theme.Error)
+				return m, tea.Println(errStyle.Render(fmt.Sprintf("Compressed but failed to save: %v", err)))
+			}
+		}
+
+		if m.engine != nil {
+			m.engine.ResetConversation()
+		}
+		successStyle := lipgloss.NewStyle().Foreground(theme.Success)
+		return m, tea.Println(successStyle.Render(fmt.Sprintf("✓ Compacted: %d → %d messages", msg.result.OriginalCount, msg.result.CompactedCount)))
 
 	case ui.WaveTickMsg:
 		if m.tracker != nil {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/sahilm/fuzzy"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -1372,34 +1373,27 @@ func (m *Model) cmdCompress() (tea.Model, tea.Cmd) {
 
 	compactConfig := llm.DefaultCompactionConfig()
 	model := m.modelName
+	provider := m.provider
 
-	result, err := llm.Compact(context.Background(), m.provider, model, systemPrompt, llmMessages, compactConfig)
-	if err != nil {
-		return m.showSystemMessage(fmt.Sprintf("Compression failed: %v", err))
-	}
+	m.streaming = true
+	m.phase = "Compacting"
+	m.streamStartTime = time.Now()
 
-	// Update in-memory messages
-	var newSessionMsgs []session.Message
-	for _, msg := range result.NewMessages {
-		newSessionMsgs = append(newSessionMsgs, *session.NewMessage(m.sess.ID, msg, -1))
-	}
-	m.messagesMu.Lock()
-	m.messages = newSessionMsgs
-	m.messagesMu.Unlock()
+	theme := m.styles.Theme()
+	muted := lipgloss.NewStyle().Foreground(theme.Muted)
+	statusLine := muted.Render(fmt.Sprintf("⠋ Compacting %d messages...", len(llmMessages)))
 
-	// Persist to store
-	if m.store != nil {
-		if err := m.store.ReplaceMessages(context.Background(), m.sess.ID, newSessionMsgs); err != nil {
-			return m.showSystemMessage(fmt.Sprintf("Compressed but failed to save: %v", err))
-		}
-	}
-
-	// Reset engine compaction tracking since we just compacted
-	if m.engine != nil {
-		m.engine.ResetConversation()
-	}
-
-	return m.showSystemMessage(fmt.Sprintf("Compressed conversation: %d messages → %d messages.", result.OriginalCount, result.CompactedCount))
+	return m, tea.Batch(
+		tea.Println(statusLine),
+		func() tea.Msg {
+			ctx, cancel := context.WithCancel(context.Background())
+			m.streamCancelFunc = cancel
+			result, err := llm.Compact(ctx, provider, model, systemPrompt, llmMessages, compactConfig)
+			return compactDoneMsg{result: result, err: err}
+		},
+		m.spinner.Tick,
+		m.tickEvery(),
+	)
 }
 
 // switchModel switches to a new provider:model
