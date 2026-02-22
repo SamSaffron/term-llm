@@ -30,6 +30,9 @@ var (
 	memoryMineReadBytes        int
 	memoryMineEmbed            bool
 	memoryMineEmbedProvider    string
+	memoryMinePromote          string
+	memoryMinePromoteEvery     time.Duration
+	memoryMineHalfLifeDays     float64
 )
 
 var memoryMineCmd = &cobra.Command{
@@ -85,6 +88,9 @@ func init() {
 	memoryMineCmd.Flags().IntVar(&memoryMineReadBytes, "read-bytes", 2048, "Bytes of existing fragment content to include in taxonomy context")
 	memoryMineCmd.Flags().BoolVar(&memoryMineEmbed, "embed", true, "Embed new/updated fragments after mining")
 	memoryMineCmd.Flags().StringVar(&memoryMineEmbedProvider, "embed-provider", "", "Override embedding provider used in EMBED phase (optionally provider:model)")
+	memoryMineCmd.Flags().StringVar(&memoryMinePromote, "promote", "auto", "Promotion mode: auto|always|never")
+	memoryMineCmd.Flags().DurationVar(&memoryMinePromoteEvery, "promote-every", 6*time.Hour, "Minimum interval between auto-promote runs")
+	memoryMineCmd.Flags().Float64Var(&memoryMineHalfLifeDays, "half-life", 30.0, "Decay half-life in days for post-mine recalculation")
 	memoryMineCmd.RegisterFlagCompletionFunc("embed-provider", EmbedProviderFlagCompletion)
 }
 
@@ -100,6 +106,16 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 	}
 	if memoryMineReadBytes < 0 {
 		return fmt.Errorf("--read-bytes must be >= 0")
+	}
+
+	promoteMode := strings.ToLower(strings.TrimSpace(memoryMinePromote))
+	switch promoteMode {
+	case "auto", "always", "never":
+	default:
+		return fmt.Errorf("--promote must be one of: auto, always, never")
+	}
+	if promoteMode == "auto" && memoryMinePromoteEvery <= 0 {
+		return fmt.Errorf("--promote-every must be > 0 when --promote=auto")
 	}
 
 	cfg, err := loadConfig()
@@ -249,8 +265,70 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	if !memoryDryRun {
+		decayAgent := strings.TrimSpace(memoryAgent)
+		updated, err := memStore.RecalcDecayScores(ctx, decayAgent, memoryMineHalfLifeDays)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: decay recalc failed: %v\n", err)
+		} else if updated > 0 {
+			fmt.Printf("decay recalculated for %d fragments\n", updated)
+		}
+	}
+
+	if promoteMode != "never" {
+		if memoryDryRun {
+			fmt.Println("Dry run mode: skipping PROMOTE phase.")
+		} else {
+			for _, promoteAgent := range minePromoteAgents(memoryAgent, candidates) {
+				shouldPromote := promoteMode == "always"
+				if promoteMode == "auto" {
+					shouldPromote, err = shouldRunAutoPromote(ctx, memStore, promoteAgent, memoryMinePromoteEvery)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "warning: failed checking auto-promote schedule for %s: %v\n", promoteAgent, err)
+						continue
+					}
+				}
+				if !shouldPromote {
+					continue
+				}
+
+				if _, err := runMemoryPromoteFlow(ctx, cfg, engine, memStore, memoryPromoteOptions{
+					Agent:          promoteAgent,
+					RecentMaxBytes: defaultRecentMaxBytes,
+					Model:          strings.TrimSpace(memoryMineModel),
+					DryRun:         false,
+					QuietNothing:   true,
+				}); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: promote failed for %s: %v\n", promoteAgent, err)
+				}
+			}
+		}
+	}
+
 	fmt.Printf("Done. create=%d update=%d skip=%d\n", totalCreated, totalUpdated, totalSkipped)
 	return nil
+}
+
+func minePromoteAgents(globalAgent string, candidates []memoryMineCandidate) []string {
+	if strings.TrimSpace(globalAgent) != "" {
+		return []string{strings.TrimSpace(globalAgent)}
+	}
+
+	seen := map[string]struct{}{}
+	agents := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		agent := strings.TrimSpace(candidate.Agent)
+		if agent == "" {
+			agent = resolveMemoryAgent("")
+		}
+		if _, exists := seen[agent]; exists {
+			continue
+		}
+		seen[agent] = struct{}{}
+		agents = append(agents, agent)
+	}
+	sort.Strings(agents)
+	return agents
 }
 
 func collectMineCandidates(ctx context.Context, store session.Store, complete []session.SessionSummary, currentID string) ([]memoryMineCandidate, error) {

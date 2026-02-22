@@ -205,7 +205,7 @@ func TestStoreVectorSearchAndBumpAccess(t *testing.T) {
 	store := newTestStore(t)
 	defer store.Close()
 
-	f1 := &Fragment{Agent: "jarvis", Path: "top", Content: "Top hit"}
+	f1 := &Fragment{Agent: "jarvis", Path: "top", Content: "Top hit", DecayScore: 0.6}
 	f2 := &Fragment{Agent: "jarvis", Path: "mid", Content: "Mid hit"}
 	f3 := &Fragment{Agent: "jarvis", Path: "low", Content: "Low hit"}
 	f4 := &Fragment{Agent: "jarvis", Path: "other-model", Content: "Other model"}
@@ -270,6 +270,9 @@ func TestStoreVectorSearchAndBumpAccess(t *testing.T) {
 	if got.AccessedAt == nil {
 		t.Fatal("accessed_at was not updated")
 	}
+	if math.Abs(got.DecayScore-0.8) > 1e-9 {
+		t.Fatalf("decay_score after bumps = %f, want %f", got.DecayScore, 0.8)
+	}
 
 	if err := store.BumpAccess(ctx, "missing-id"); err == nil {
 		t.Fatal("BumpAccess(missing-id) expected error")
@@ -313,6 +316,291 @@ func TestStoreMiningState(t *testing.T) {
 	}
 	if got.LastMinedOffset != 100 {
 		t.Fatalf("offset after update = %d, want 100", got.LastMinedOffset)
+	}
+}
+
+func TestStoreMetaGetSet(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer store.Close()
+
+	value, err := store.GetMeta(ctx, "last_promoted_at_jarvis")
+	if err != nil {
+		t.Fatalf("GetMeta(missing) error = %v", err)
+	}
+	if value != "" {
+		t.Fatalf("GetMeta(missing) = %q, want empty", value)
+	}
+
+	if err := store.SetMeta(ctx, "last_promoted_at_jarvis", "2026-02-22T11:00:00Z"); err != nil {
+		t.Fatalf("SetMeta(insert) error = %v", err)
+	}
+	value, err = store.GetMeta(ctx, "last_promoted_at_jarvis")
+	if err != nil {
+		t.Fatalf("GetMeta(after insert) error = %v", err)
+	}
+	if value != "2026-02-22T11:00:00Z" {
+		t.Fatalf("GetMeta(after insert) = %q, want %q", value, "2026-02-22T11:00:00Z")
+	}
+
+	if err := store.SetMeta(ctx, "last_promoted_at_jarvis", "2026-02-22T12:00:00Z"); err != nil {
+		t.Fatalf("SetMeta(update) error = %v", err)
+	}
+	value, err = store.GetMeta(ctx, "last_promoted_at_jarvis")
+	if err != nil {
+		t.Fatalf("GetMeta(after update) error = %v", err)
+	}
+	if value != "2026-02-22T12:00:00Z" {
+		t.Fatalf("GetMeta(after update) = %q, want %q", value, "2026-02-22T12:00:00Z")
+	}
+}
+
+func TestStoreRecalcDecayScores(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer store.Close()
+
+	now := time.Now().UTC()
+	veryOld := &Fragment{
+		Agent:     "jarvis",
+		Path:      "decay/very-old",
+		Content:   "very old",
+		CreatedAt: now.Add(-400 * 24 * time.Hour),
+		UpdatedAt: now.Add(-400 * 24 * time.Hour),
+	}
+	recentAccessedAt := now.Add(-1 * 24 * time.Hour)
+	recent := &Fragment{
+		Agent:      "jarvis",
+		Path:       "decay/recent",
+		Content:    "recent",
+		CreatedAt:  now.Add(-20 * 24 * time.Hour),
+		UpdatedAt:  now.Add(-20 * 24 * time.Hour),
+		AccessedAt: &recentAccessedAt,
+	}
+	pinned := &Fragment{
+		Agent:      "jarvis",
+		Path:       "decay/pinned",
+		Content:    "pinned",
+		CreatedAt:  now.Add(-700 * 24 * time.Hour),
+		UpdatedAt:  now.Add(-700 * 24 * time.Hour),
+		Pinned:     true,
+		DecayScore: 1.0,
+	}
+	otherAgent := &Fragment{
+		Agent:     "reviewer",
+		Path:      "decay/other",
+		Content:   "other",
+		CreatedAt: now.Add(-300 * 24 * time.Hour),
+		UpdatedAt: now.Add(-300 * 24 * time.Hour),
+	}
+
+	for _, frag := range []*Fragment{veryOld, recent, pinned, otherAgent} {
+		if err := store.CreateFragment(ctx, frag); err != nil {
+			t.Fatalf("CreateFragment(%s) error = %v", frag.Path, err)
+		}
+	}
+
+	updated, err := store.RecalcDecayScores(ctx, "jarvis", 0)
+	if err != nil {
+		t.Fatalf("RecalcDecayScores(jarvis) error = %v", err)
+	}
+	if updated != 2 {
+		t.Fatalf("RecalcDecayScores(jarvis) updated = %d, want 2", updated)
+	}
+
+	veryOldGot, err := store.GetFragment(ctx, "jarvis", "decay/very-old")
+	if err != nil {
+		t.Fatalf("GetFragment(very-old) error = %v", err)
+	}
+	if veryOldGot == nil {
+		t.Fatal("GetFragment(very-old) returned nil")
+	}
+	if math.Abs(veryOldGot.DecayScore-0.04) > 1e-9 {
+		t.Fatalf("very-old decay_score = %f, want 0.04 floor", veryOldGot.DecayScore)
+	}
+
+	recentGot, err := store.GetFragment(ctx, "jarvis", "decay/recent")
+	if err != nil {
+		t.Fatalf("GetFragment(recent) error = %v", err)
+	}
+	if recentGot == nil {
+		t.Fatal("GetFragment(recent) returned nil")
+	}
+	if recentGot.AccessedAt == nil {
+		t.Fatal("GetFragment(recent) missing accessed_at")
+	}
+	lastActive := recentGot.UpdatedAt
+	if recentGot.AccessedAt != nil && recentGot.AccessedAt.After(lastActive) {
+		lastActive = *recentGot.AccessedAt
+	}
+	expectedRecent := math.Pow(0.5, time.Since(lastActive).Hours()/24.0/30.0)
+	expectedRecent = math.Max(expectedRecent, 0.04)
+	if math.Abs(recentGot.DecayScore-expectedRecent) > 1e-3 {
+		t.Fatalf("recent decay_score = %f, want approximately %f", recentGot.DecayScore, expectedRecent)
+	}
+
+	pinnedGot, err := store.GetFragment(ctx, "jarvis", "decay/pinned")
+	if err != nil {
+		t.Fatalf("GetFragment(pinned) error = %v", err)
+	}
+	if pinnedGot == nil {
+		t.Fatal("GetFragment(pinned) returned nil")
+	}
+	if pinnedGot.DecayScore != 1.0 {
+		t.Fatalf("pinned decay_score = %f, want 1.0", pinnedGot.DecayScore)
+	}
+
+	otherGot, err := store.GetFragment(ctx, "reviewer", "decay/other")
+	if err != nil {
+		t.Fatalf("GetFragment(other) error = %v", err)
+	}
+	if otherGot == nil {
+		t.Fatal("GetFragment(other) returned nil")
+	}
+	if otherGot.DecayScore != 1.0 {
+		t.Fatalf("other-agent decay_score before global recalc = %f, want unchanged 1.0", otherGot.DecayScore)
+	}
+
+	updatedAll, err := store.RecalcDecayScores(ctx, "", 30.0)
+	if err != nil {
+		t.Fatalf("RecalcDecayScores(all) error = %v", err)
+	}
+	if updatedAll != 3 {
+		t.Fatalf("RecalcDecayScores(all) updated = %d, want 3 non-pinned fragments", updatedAll)
+	}
+
+	otherGot, err = store.GetFragment(ctx, "reviewer", "decay/other")
+	if err != nil {
+		t.Fatalf("GetFragment(other after global recalc) error = %v", err)
+	}
+	if otherGot == nil {
+		t.Fatal("GetFragment(other after global recalc) returned nil")
+	}
+	if otherGot.DecayScore < 0.04 || otherGot.DecayScore > 1.0 {
+		t.Fatalf("other-agent decay_score after global recalc = %f, want within [0.04,1.0]", otherGot.DecayScore)
+	}
+}
+
+func TestStoreCountGCCandidatesAndGCFragments(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer store.Close()
+
+	now := time.Now().UTC()
+	stale := &Fragment{
+		Agent:     "jarvis",
+		Path:      "gc/stale",
+		Content:   "gcstalealpha",
+		CreatedAt: now.Add(-400 * 24 * time.Hour),
+		UpdatedAt: now.Add(-400 * 24 * time.Hour),
+	}
+	pinned := &Fragment{
+		Agent:     "jarvis",
+		Path:      "gc/pinned",
+		Content:   "gcpinned",
+		CreatedAt: now.Add(-400 * 24 * time.Hour),
+		UpdatedAt: now.Add(-400 * 24 * time.Hour),
+		Pinned:    true,
+	}
+	keep := &Fragment{
+		Agent:     "jarvis",
+		Path:      "gc/keep",
+		Content:   "gckeep",
+		CreatedAt: now.Add(-5 * 24 * time.Hour),
+		UpdatedAt: now.Add(-5 * 24 * time.Hour),
+	}
+	other := &Fragment{
+		Agent:     "reviewer",
+		Path:      "gc/other",
+		Content:   "gcstalebeta",
+		CreatedAt: now.Add(-500 * 24 * time.Hour),
+		UpdatedAt: now.Add(-500 * 24 * time.Hour),
+	}
+
+	for _, frag := range []*Fragment{stale, pinned, keep, other} {
+		if err := store.CreateFragment(ctx, frag); err != nil {
+			t.Fatalf("CreateFragment(%s) error = %v", frag.Path, err)
+		}
+	}
+
+	if err := store.UpsertEmbedding(ctx, stale.ID, "gemini", "gemini-embedding-001", 2, []float64{0.1, 0.2}); err != nil {
+		t.Fatalf("UpsertEmbedding(stale) error = %v", err)
+	}
+
+	if _, err := store.RecalcDecayScores(ctx, "", 30.0); err != nil {
+		t.Fatalf("RecalcDecayScores(all) error = %v", err)
+	}
+
+	countJarvis, err := store.CountGCCandidates(ctx, "jarvis")
+	if err != nil {
+		t.Fatalf("CountGCCandidates(jarvis) error = %v", err)
+	}
+	if countJarvis != 1 {
+		t.Fatalf("CountGCCandidates(jarvis) = %d, want 1", countJarvis)
+	}
+
+	countAll, err := store.CountGCCandidates(ctx, "")
+	if err != nil {
+		t.Fatalf("CountGCCandidates(all) error = %v", err)
+	}
+	if countAll != 2 {
+		t.Fatalf("CountGCCandidates(all) = %d, want 2", countAll)
+	}
+
+	removed, err := store.GCFragments(ctx, "jarvis")
+	if err != nil {
+		t.Fatalf("GCFragments(jarvis) error = %v", err)
+	}
+	if removed != 1 {
+		t.Fatalf("GCFragments(jarvis) removed = %d, want 1", removed)
+	}
+
+	staleGot, err := store.GetFragment(ctx, "jarvis", "gc/stale")
+	if err != nil {
+		t.Fatalf("GetFragment(gc/stale) error = %v", err)
+	}
+	if staleGot != nil {
+		t.Fatalf("stale fragment still exists after gc: %#v", staleGot)
+	}
+
+	emb, err := store.GetEmbedding(ctx, stale.ID, "gemini", "gemini-embedding-001")
+	if err != nil {
+		t.Fatalf("GetEmbedding(stale after gc) error = %v", err)
+	}
+	if emb != nil {
+		t.Fatalf("embedding for stale fragment should be deleted via cascade, got %v", emb)
+	}
+
+	searchResults, err := store.SearchFragments(ctx, "gcstalealpha", 10, "jarvis")
+	if err != nil {
+		t.Fatalf("SearchFragments(after gc) error = %v", err)
+	}
+	if len(searchResults) != 0 {
+		t.Fatalf("SearchFragments(after gc) returned %d rows, want 0", len(searchResults))
+	}
+
+	countJarvis, err = store.CountGCCandidates(ctx, "jarvis")
+	if err != nil {
+		t.Fatalf("CountGCCandidates(jarvis after gc) error = %v", err)
+	}
+	if countJarvis != 0 {
+		t.Fatalf("CountGCCandidates(jarvis after gc) = %d, want 0", countJarvis)
+	}
+
+	removedAll, err := store.GCFragments(ctx, "")
+	if err != nil {
+		t.Fatalf("GCFragments(all) error = %v", err)
+	}
+	if removedAll != 1 {
+		t.Fatalf("GCFragments(all) removed = %d, want 1", removedAll)
+	}
+
+	countAll, err = store.CountGCCandidates(ctx, "")
+	if err != nil {
+		t.Fatalf("CountGCCandidates(all after gc) error = %v", err)
+	}
+	if countAll != 0 {
+		t.Fatalf("CountGCCandidates(all after gc) = %d, want 0", countAll)
 	}
 }
 

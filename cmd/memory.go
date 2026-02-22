@@ -43,6 +43,7 @@ func init() {
 
 	memoryCmd.AddCommand(memoryMineCmd)
 	memoryCmd.AddCommand(memorySearchCmd)
+	memoryCmd.AddCommand(memoryPromoteCmd)
 	memoryCmd.AddCommand(memoryStatusCmd)
 	memoryCmd.AddCommand(memoryFragmentsCmd)
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -831,7 +832,8 @@ func (s *Store) VectorSearch(ctx context.Context, agent, provider, model string,
 	return matches, nil
 }
 
-// BumpAccess marks a fragment as recently accessed and increments access_count.
+// BumpAccess marks a fragment as recently accessed, increments access_count,
+// and gives decay_score a small recency boost.
 func (s *Store) BumpAccess(ctx context.Context, fragmentID string) error {
 	fragmentID = strings.TrimSpace(fragmentID)
 	if fragmentID == "" {
@@ -840,13 +842,220 @@ func (s *Store) BumpAccess(ctx context.Context, fragmentID string) error {
 
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE memory_fragments
-		SET accessed_at = ?, access_count = access_count + 1
+		SET accessed_at = ?,
+		    access_count = access_count + 1,
+		    decay_score = CASE WHEN decay_score + 0.1 > 1.0 THEN 1.0 ELSE decay_score + 0.1 END
 		WHERE id = ?`, time.Now(), fragmentID)
 	if err != nil {
 		return fmt.Errorf("bump fragment access: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("fragment %s not found", fragmentID)
+	}
+	return nil
+}
+
+// RecalcDecayScores recalculates decay_score for non-pinned fragments.
+// halfLifeDays defaults to 30 when <= 0.
+func (s *Store) RecalcDecayScores(ctx context.Context, agent string, halfLifeDays float64) (int, error) {
+	agent = strings.TrimSpace(agent)
+	if halfLifeDays <= 0 {
+		halfLifeDays = 30.0
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin decay recalculation transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	type decayUpdate struct {
+		id    string
+		score float64
+	}
+	updates := []decayUpdate{}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, updated_at, accessed_at
+		FROM memory_fragments
+		WHERE pinned = 0
+		  AND (? = '' OR agent = ?)`, agent, agent)
+	if err != nil {
+		return 0, fmt.Errorf("query fragments for decay recalculation: %w", err)
+	}
+	defer rows.Close()
+
+	now := time.Now()
+	for rows.Next() {
+		var id string
+		var updatedAt time.Time
+		var accessedAt sql.NullTime
+		if err := rows.Scan(&id, &updatedAt, &accessedAt); err != nil {
+			return 0, fmt.Errorf("scan fragment for decay recalculation: %w", err)
+		}
+
+		lastActive := updatedAt
+		if accessedAt.Valid && accessedAt.Time.After(lastActive) {
+			lastActive = accessedAt.Time
+		}
+
+		ageDays := now.Sub(lastActive).Hours() / 24.0
+		if ageDays < 0 {
+			ageDays = 0
+		}
+		decay := math.Pow(0.5, ageDays/halfLifeDays)
+		finalDecay := math.Max(decay, 0.04)
+		updates = append(updates, decayUpdate{id: id, score: finalDecay})
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate fragments for decay recalculation: %w", err)
+	}
+
+	if len(updates) == 0 {
+		if err := tx.Commit(); err != nil {
+			return 0, fmt.Errorf("commit decay recalculation: %w", err)
+		}
+		return 0, nil
+	}
+
+	stmt, err := tx.PrepareContext(ctx, `UPDATE memory_fragments SET decay_score = ? WHERE id = ?`)
+	if err != nil {
+		return 0, fmt.Errorf("prepare decay recalculation update: %w", err)
+	}
+	defer stmt.Close()
+
+	updatedCount := 0
+	for _, update := range updates {
+		res, err := stmt.ExecContext(ctx, update.score, update.id)
+		if err != nil {
+			return 0, fmt.Errorf("update decay score for fragment %s: %w", update.id, err)
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			updatedCount += int(n)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit decay recalculation: %w", err)
+	}
+	return updatedCount, nil
+}
+
+// CountGCCandidates counts fragments eligible for GC.
+func (s *Store) CountGCCandidates(ctx context.Context, agent string) (int, error) {
+	agent = strings.TrimSpace(agent)
+
+	var count int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM memory_fragments
+		WHERE decay_score < 0.05
+		  AND pinned = 0
+		  AND (? = '' OR agent = ?)`, agent, agent).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count gc candidates: %w", err)
+	}
+	return count, nil
+}
+
+// GCFragments deletes decayed, non-pinned fragments and keeps FTS in sync.
+func (s *Store) GCFragments(ctx context.Context, agent string) (int, error) {
+	agent = strings.TrimSpace(agent)
+
+	type gcCandidate struct {
+		rowID   int64
+		id      string
+		agent   string
+		path    string
+		content string
+	}
+	candidates := []gcCandidate{}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT rowid, id, agent, path, content
+		FROM memory_fragments
+		WHERE decay_score < 0.05
+		  AND pinned = 0
+		  AND (? = '' OR agent = ?)`, agent, agent)
+	if err != nil {
+		return 0, fmt.Errorf("query gc candidates: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var c gcCandidate
+		if err := rows.Scan(&c.rowID, &c.id, &c.agent, &c.path, &c.content); err != nil {
+			return 0, fmt.Errorf("scan gc candidate: %w", err)
+		}
+		candidates = append(candidates, c)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate gc candidates: %w", err)
+	}
+
+	if len(candidates) == 0 {
+		return 0, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin gc transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	removed := 0
+	for _, c := range candidates {
+		frag := &Fragment{ID: c.id, Agent: c.agent, Path: c.path, Content: c.content}
+		if err := syncFTSDelete(ctx, tx, c.rowID, frag); err != nil {
+			return 0, fmt.Errorf("sync fts delete during gc for fragment %s: %w", c.id, err)
+		}
+
+		res, err := tx.ExecContext(ctx, `DELETE FROM memory_fragments WHERE rowid = ?`, c.rowID)
+		if err != nil {
+			return 0, fmt.Errorf("delete fragment during gc %s: %w", c.id, err)
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			removed += int(n)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit gc fragments: %w", err)
+	}
+	return removed, nil
+}
+
+// GetMeta returns a value from memory_meta. Missing keys return "", nil.
+func (s *Store) GetMeta(ctx context.Context, key string) (string, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "", fmt.Errorf("meta key is required")
+	}
+
+	var value string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM memory_meta WHERE key = ?`, key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get meta value: %w", err)
+	}
+	return value, nil
+}
+
+// SetMeta upserts a key/value pair in memory_meta.
+func (s *Store) SetMeta(ctx context.Context, key, value string) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return fmt.Errorf("meta key is required")
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO memory_meta(key, value)
+		VALUES(?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
+	if err != nil {
+		return fmt.Errorf("set meta value: %w", err)
 	}
 	return nil
 }
