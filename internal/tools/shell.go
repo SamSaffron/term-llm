@@ -64,21 +64,21 @@ func (t *ShellTool) Spec() llm.ToolSpec {
 					"type":        "string",
 					"description": "Working directory (defaults to current directory)",
 				},
-			"timeout_seconds": map[string]interface{}{
-				"type":        "integer",
-				"description": "Command timeout in seconds (default: 30, max: 300)",
-				"default":     30,
+				"timeout_seconds": map[string]interface{}{
+					"type":        "integer",
+					"description": "Command timeout in seconds (default: 30, max: 300)",
+					"default":     30,
+				},
+				"env": map[string]interface{}{
+					"type":                 "object",
+					"description":          "Environment variables to set for the command",
+					"additionalProperties": map[string]interface{}{"type": "string"},
+				},
+				"description": map[string]interface{}{
+					"type":        "string",
+					"description": "Optional short human-readable label (≤10 words) describing what this command does",
+				},
 			},
-			"env": map[string]interface{}{
-				"type":                 "object",
-				"description":          "Environment variables to set for the command",
-				"additionalProperties": map[string]interface{}{"type": "string"},
-			},
-			"description": map[string]interface{}{
-				"type":        "string",
-				"description": "Optional short human-readable label (≤10 words) describing what this command does",
-			},
-		},
 			"required":             []string{"command"},
 			"additionalProperties": false,
 		},
@@ -91,7 +91,11 @@ func (t *ShellTool) Preview(args json.RawMessage) string {
 		return ""
 	}
 	if a.Description != "" {
-		return a.Description
+		desc := a.Description
+		if len(desc) > 100 {
+			desc = desc[:97] + "..."
+		}
+		return desc
 	}
 	cmd := a.Command
 	if len(cmd) > 50 {
@@ -149,7 +153,19 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 
 	cmd := exec.CommandContext(execCtx, t.shellPath, "-c", a.Command)
 	cmd.Dir = workDir
-	cmd.Env = os.Environ()
+	overrides := make(map[string]struct{}, len(a.Env))
+	for key := range a.Env {
+		overrides[key] = struct{}{}
+	}
+	cmd.Env = make([]string, 0, len(os.Environ())+len(a.Env))
+	for _, e := range os.Environ() {
+		if k, _, ok := strings.Cut(e, "="); ok {
+			if _, shadowed := overrides[k]; shadowed {
+				continue
+			}
+		}
+		cmd.Env = append(cmd.Env, e)
+	}
 	for key, value := range a.Env {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, value))
 	}

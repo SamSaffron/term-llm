@@ -156,7 +156,7 @@ func TestShellTool_Execute(t *testing.T) {
 
 func TestShellTool_ExecuteEnv(t *testing.T) {
 	tool := NewShellTool(nil, nil, DefaultOutputLimits())
-	
+
 	t.Setenv("INHERITED_VAR", "present")
 	args := mustMarshalShellArgs(ShellArgs{
 		Command: "echo $MY_VAR $INHERITED_VAR",
@@ -176,6 +176,31 @@ func TestShellTool_ExecuteEnv(t *testing.T) {
 	}
 	if !strings.Contains(text, "present") {
 		t.Errorf("expected output to contain inherited env var value, got: %s", text)
+	}
+}
+
+func TestShellTool_ExecuteEnvOverride(t *testing.T) {
+	tool := NewShellTool(nil, nil, DefaultOutputLimits())
+
+	t.Setenv("CONFLICT_VAR", "old")
+	args := mustMarshalShellArgs(ShellArgs{
+		Command: "echo $CONFLICT_VAR",
+		Env: map[string]string{
+			"CONFLICT_VAR": "new",
+		},
+	})
+
+	output, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+
+	text := output.Content
+	if !strings.Contains(text, "new") {
+		t.Errorf("expected output to contain overridden env var value, got: %s", text)
+	}
+	if strings.Contains(text, "old") {
+		t.Errorf("expected output to omit old env var value, got: %s", text)
 	}
 }
 

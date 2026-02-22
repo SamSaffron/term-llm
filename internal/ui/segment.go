@@ -37,22 +37,22 @@ const (
 // Segment represents a discrete unit in the response stream (text or tool)
 type Segment struct {
 	Type         SegmentType
-	Text         string     // For text segments: markdown content (finalized on completion)
-	Rendered     string     // For text segments: cached rendered markdown
-	ToolCallID   string     // For tool segments: unique ID for this invocation
-	ToolName     string     // For tool segments
+	Text         string          // For text segments: markdown content (finalized on completion)
+	Rendered     string          // For text segments: cached rendered markdown
+	ToolCallID   string          // For tool segments: unique ID for this invocation
+	ToolName     string          // For tool segments
 	ToolInfo     string          // For tool segments: additional context
 	ToolArgs     json.RawMessage // Raw args JSON, stored for expanded rendering
 	ToolStatus   ToolStatus      // For tool segments
-	Complete     bool       // For text segments: whether streaming is complete
-	ImagePath    string     // For image segments: path to image file
-	DiffPath     string     // For diff segments: file path
-	DiffOld      string     // For diff segments: old content
-	DiffNew      string     // For diff segments: new content
-	DiffLine     int        // For diff segments: 1-indexed starting line (0 = unknown)
-	DiffRendered string     // For diff segments: cached rendered output
-	DiffWidth    int        // For diff segments: width when rendered (for cache invalidation)
-	Flushed      bool       // True if this segment has been printed to scrollback
+	Complete     bool            // For text segments: whether streaming is complete
+	ImagePath    string          // For image segments: path to image file
+	DiffPath     string          // For diff segments: file path
+	DiffOld      string          // For diff segments: old content
+	DiffNew      string          // For diff segments: new content
+	DiffLine     int             // For diff segments: 1-indexed starting line (0 = unknown)
+	DiffRendered string          // For diff segments: cached rendered output
+	DiffWidth    int             // For diff segments: width when rendered (for cache invalidation)
+	Flushed      bool            // True if this segment has been printed to scrollback
 
 	// Streaming text accumulation (O(1) append instead of O(n) string concat)
 	TextBuilder *strings.Builder // Used during streaming; nil when Complete
@@ -218,6 +218,40 @@ func truncateToolInfo(toolName, info string, width int) string {
 	return string(runes[:maxInfoLen-3]) + "..."
 }
 
+func truncateShellDescription(desc string) string {
+	if len(desc) > 100 {
+		return desc[:97] + "..."
+	}
+	return desc
+}
+
+func buildExpandedShellInfo(args tools.ShellArgs) string {
+	if args.Command == "" {
+		return ""
+	}
+	var b strings.Builder
+	if args.Description != "" {
+		desc := truncateShellDescription(args.Description)
+		b.WriteString(desc)
+		b.WriteString("\n")
+	}
+	b.WriteString(args.Command)
+	if len(args.Env) > 0 {
+		keys := make([]string, 0, len(args.Env))
+		for key := range args.Env {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			b.WriteString("\n  ")
+			b.WriteString(key)
+			b.WriteString("=")
+			b.WriteString(args.Env[key])
+		}
+	}
+	return b.String()
+}
+
 // RenderToolSegment renders a tool segment with its status indicator.
 // For pending tools, wavePos controls the wave animation (-1 = paused/all dim).
 // Tool name is rendered normally, params are rendered in slightly muted gray.
@@ -228,24 +262,11 @@ func RenderToolSegment(seg *Segment, wavePos int, width int, expanded bool) stri
 	expandedShellInfo := ""
 	if expanded && seg.ToolName == "shell" && len(seg.ToolArgs) > 0 {
 		var args tools.ShellArgs
-		if err := json.Unmarshal(seg.ToolArgs, &args); err == nil && args.Command != "" {
-			var b strings.Builder
-			b.WriteString(args.Command)
-			if len(args.Env) > 0 {
-				keys := make([]string, 0, len(args.Env))
-				for key := range args.Env {
-					keys = append(keys, key)
-				}
-				sort.Strings(keys)
-				for _, key := range keys {
-					b.WriteString("\n  ")
-					b.WriteString(key)
-					b.WriteString("=")
-					b.WriteString(args.Env[key])
-				}
+		if err := json.Unmarshal(seg.ToolArgs, &args); err == nil {
+			expandedShellInfo = buildExpandedShellInfo(args)
+			if expandedShellInfo != "" {
+				info = expandedShellInfo
 			}
-			expandedShellInfo = b.String()
-			info = expandedShellInfo
 		}
 	}
 	renderWidth := width
@@ -319,6 +340,17 @@ func RenderToolCallFromPart(tc *llm.ToolCall, width int, expanded bool) string {
 	if tc == nil {
 		return ""
 	}
+
+	if expanded && tc.Name == "shell" && len(tc.Arguments) > 0 {
+		var args tools.ShellArgs
+		if err := json.Unmarshal(tc.Arguments, &args); err == nil {
+			info := buildExpandedShellInfo(args)
+			if info != "" {
+				return SuccessCircle() + " " + tc.Name + " " + paramStyle.Render(info)
+			}
+		}
+	}
+
 	info := truncateToolInfo(tc.Name, llm.ExtractToolInfo(*tc), width)
 	if info != "" {
 		return SuccessCircle() + " " + tc.Name + " " + paramStyle.Render(info)

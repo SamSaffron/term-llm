@@ -403,6 +403,16 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Toggle expanded tool display (Ctrl+E) - works even during streaming
+	if key.Matches(msg, m.keyMap.ExpandTools) {
+		m.toolsExpanded = !m.toolsExpanded
+		m.invalidateViewCache()
+		if m.chatRenderer != nil {
+			m.chatRenderer.SetToolsExpanded(m.toolsExpanded)
+		}
+		return m, nil
+	}
+
 	// Allow viewport scrolling even while streaming (in alt screen mode)
 	if m.altScreen {
 		if key.Matches(msg, m.keyMap.PageUp) {
@@ -460,16 +470,6 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if key.Matches(msg, m.keyMap.Commands) {
 		m.setTextareaValue("/")
 		m.completions.Show()
-		return m, nil
-	}
-
-	// Toggle expanded tool display (Ctrl+E)
-	if key.Matches(msg, m.keyMap.ExpandTools) {
-		m.toolsExpanded = !m.toolsExpanded
-		m.invalidateViewCache()
-		if m.chatRenderer != nil {
-			m.chatRenderer.SetToolsExpanded(m.toolsExpanded)
-		}
 		return m, nil
 	}
 

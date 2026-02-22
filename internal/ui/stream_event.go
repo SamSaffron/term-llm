@@ -1,6 +1,7 @@
 package ui
 
 import "encoding/json"
+
 // StreamEventType identifies the type of stream event
 type StreamEventType int
 

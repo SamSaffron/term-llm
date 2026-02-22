@@ -162,6 +162,7 @@ func (r *Renderer) SetMarkdownRenderer(renderer MarkdownRenderer) {
 // SetToolsExpanded toggles expanded tool rendering in the streaming block.
 func (r *Renderer) SetToolsExpanded(v bool) {
 	r.toolsExpanded = v
+	r.blockCache.InvalidateAll()
 	if r.streaming != nil {
 		r.streaming.SetToolsExpanded(v)
 	}
