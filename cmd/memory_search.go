@@ -14,11 +14,12 @@ import (
 )
 
 const (
-	memorySearchCandidateLimit = 24
-	memorySearchVectorWeight   = 0.7
-	memorySearchBM25Weight     = 0.3
-	memorySearchMMRLambda      = 0.5
-	memorySearchMinScore       = 0.35
+	memorySearchCandidateLimit    = 24
+	memorySearchVectorWeight      = 0.7
+	memorySearchBM25Weight        = 0.3
+	memorySearchMMRLambda         = 0.5
+	memorySearchMinScore          = 0.35
+	memorySearchMinScoreBM25Only  = 0.10 // lower threshold for fragments with no embedding
 )
 
 var (
@@ -182,7 +183,11 @@ func searchMemory(ctx context.Context, store *memorydb.Store, query string) ([]m
 	reranked := rerankMMR(merged)
 	out := make([]memorydb.ScoredFragment, 0, memorySearchLimit)
 	for _, c := range reranked {
-		if c.mergedScore < memorySearchMinScore {
+		threshold := memorySearchMinScore
+		if c.vectorScore == 0 {
+			threshold = memorySearchMinScoreBM25Only
+		}
+		if c.mergedScore < threshold {
 			continue
 		}
 		out = append(out, c.fragment)
@@ -244,7 +249,16 @@ func mergeSearchCandidates(ctx context.Context, store *memorydb.Store, provider,
 
 	out := make([]*hybridSearchCandidate, 0, len(merged))
 	for _, candidate := range merged {
-		score := memorySearchVectorWeight*candidate.vectorScore + memorySearchBM25Weight*candidate.bm25Score
+		var score float64
+		if candidate.vectorScore > 0 {
+			// Full hybrid score: both signals available
+			score = memorySearchVectorWeight*candidate.vectorScore + memorySearchBM25Weight*candidate.bm25Score
+		} else {
+			// No embedding yet — use BM25 score directly, scaled to hybrid range.
+			// Multiply by BM25Weight so embedded fragments always rank above equally-good
+			// BM25-only ones, but BM25-only fragments are no longer buried below minScore.
+			score = candidate.bm25Score
+		}
 		if !memorySearchNoDecay {
 			score *= candidate.fragment.DecayScore
 		}
