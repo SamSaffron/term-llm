@@ -5,6 +5,7 @@ import (
 	"os"
 
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
+	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/spf13/cobra"
 )
 
@@ -46,6 +47,7 @@ func init() {
 	memoryCmd.AddCommand(memoryPromoteCmd)
 	memoryCmd.AddCommand(memoryStatusCmd)
 	memoryCmd.AddCommand(memoryFragmentsCmd)
+	memoryCmd.AddCommand(memoryImagesCmd)
 }
 
 func openMemoryStore() (*memorydb.Store, error) {
@@ -59,4 +61,17 @@ func openMemoryStore() (*memorydb.Store, error) {
 		return nil, fmt.Errorf("open memory store: %w", err)
 	}
 	return store, nil
+}
+
+// wireImageRecorder opens the memory store and attaches it to the registry as an image recorder.
+// Non-fatal: if the store cannot be opened, image generation still works normally.
+func wireImageRecorder(registry *tools.LocalToolRegistry, agent, sessionID string) {
+	if registry == nil {
+		return
+	}
+	store, err := openMemoryStore()
+	if err != nil {
+		return
+	}
+	registry.SetImageRecorder(store, agent, sessionID)
 }

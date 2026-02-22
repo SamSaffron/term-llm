@@ -18,6 +18,10 @@ type LocalToolRegistry struct {
 	limits      OutputLimits
 	appConfig   *config.Config
 
+	memoryStore ImageRecorder
+	agent       string
+	sessionID   string
+
 	// Registered tools
 	tools map[string]llm.Tool
 }
@@ -51,6 +55,13 @@ func NewLocalToolRegistry(toolConfig *ToolConfig, appConfig *config.Config, appr
 	}
 
 	return r, nil
+}
+
+// SetImageRecorder wires an image recorder for image generation tracking.
+func (r *LocalToolRegistry) SetImageRecorder(recorder ImageRecorder, agent, sessionID string) {
+	r.memoryStore = recorder
+	r.agent = agent
+	r.sessionID = sessionID
 }
 
 // registerEnabledTools registers all tools that are enabled in config.
@@ -91,7 +102,7 @@ func (r *LocalToolRegistry) registerTool(specName string) error {
 	case ShowImageToolName:
 		tool = NewShowImageTool(r.approval)
 	case ImageGenerateToolName:
-		tool = NewImageGenerateTool(r.approval, r.appConfig, r.config.ImageProvider)
+		tool = NewImageGenerateTool(r.approval, r.appConfig, r.config.ImageProvider, r.memoryStore, r.agent, r.sessionID)
 	case AskUserToolName:
 		tool = NewAskUserTool()
 	case SpawnAgentToolName:

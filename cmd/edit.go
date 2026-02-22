@@ -162,6 +162,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to initialize tools: %w", err)
 		}
+		wireImageRecorder(toolMgr.Registry, "", "")
 		// Enable yolo mode if flag is set
 		if editYolo {
 			toolMgr.ApprovalMgr.SetYoloMode(true)

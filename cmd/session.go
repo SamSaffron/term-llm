@@ -24,6 +24,9 @@ type SessionSettings struct {
 	Provider string
 	Model    string
 
+	// Agent name (if any)
+	AgentName string
+
 	// Tool settings
 	Tools        string
 	ReadDirs     []string
@@ -116,6 +119,9 @@ func LoadAgent(agentName string, cfg *config.Config) (*agents.Agent, error) {
 // Priority: CLI > agent > config
 func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, configProvider, configModel, configInstructions string, configMaxTurns, defaultMaxTurns int) (SessionSettings, error) {
 	s := SessionSettings{}
+	if agent != nil {
+		s.AgentName = agent.Name
+	}
 
 	// Provider/model: CLI > agent > config
 	s.Provider = configProvider
@@ -317,6 +323,7 @@ func (s *SessionSettings) SetupToolManager(cfg *config.Config, engine *llm.Engin
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize tools: %w", err)
 	}
+	wireImageRecorder(toolMgr.Registry, s.AgentName, "")
 
 	// Register any custom script-backed tools declared in agent.yaml
 	if len(s.CustomTools) > 0 {

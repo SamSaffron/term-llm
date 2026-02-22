@@ -143,6 +143,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to initialize tools: %w", err)
 		}
+		wireImageRecorder(toolMgr.Registry, "", "")
 		// Enable yolo mode if flag is set
 		if execYolo {
 			toolMgr.ApprovalMgr.SetYoloMode(true)

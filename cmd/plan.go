@@ -147,6 +147,7 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	wireImageRecorder(registry, "", "")
 
 	engine := newEngine(provider, cfg)
 	registry.RegisterWithEngine(engine)

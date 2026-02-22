@@ -136,6 +136,31 @@ CREATE TABLE IF NOT EXISTS memory_meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS generated_images (
+    id          TEXT PRIMARY KEY,
+    agent       TEXT NOT NULL DEFAULT '',
+    session_id  TEXT NOT NULL DEFAULT '',
+    prompt      TEXT NOT NULL,
+    output_path TEXT NOT NULL,
+    mime_type   TEXT NOT NULL DEFAULT 'image/png',
+    provider    TEXT NOT NULL DEFAULT '',
+    width       INTEGER NOT NULL DEFAULT 0,
+    height      INTEGER NOT NULL DEFAULT 0,
+    file_size   INTEGER NOT NULL DEFAULT 0,
+    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_generated_images_agent ON generated_images(agent);
+CREATE INDEX IF NOT EXISTS idx_generated_images_created_at ON generated_images(created_at DESC);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS generated_images_fts USING fts5(
+    prompt,
+    output_path,
+    content='generated_images',
+    content_rowid='rowid',
+    tokenize='unicode61'
+);
 `
 
 // NewStore opens memory.db and initializes schema.
@@ -1282,4 +1307,146 @@ func newID() string {
 	randBytes := make([]byte, 3)
 	_, _ = rand.Read(randBytes)
 	return fmt.Sprintf("mem-%s-%s", now, hex.EncodeToString(randBytes))
+}
+
+// ── Image tracking ───────────────────────────────────────────────────────────
+
+// ImageRecord is a record of a generated image.
+type ImageRecord struct {
+	ID         string    `json:"id"`
+	Agent      string    `json:"agent"`
+	SessionID  string    `json:"session_id"`
+	Prompt     string    `json:"prompt"`
+	OutputPath string    `json:"output_path"`
+	MimeType   string    `json:"mime_type"`
+	Provider   string    `json:"provider"`
+	Width      int       `json:"width"`
+	Height     int       `json:"height"`
+	FileSize   int       `json:"file_size"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// ImageListOptions controls listing of generated images.
+type ImageListOptions struct {
+	Agent  string
+	Limit  int
+	Offset int
+}
+
+// RecordImage inserts a generated image record into the store.
+// Non-fatal in callers: errors do not stop image generation.
+func (s *Store) RecordImage(ctx context.Context, r *ImageRecord) error {
+	if r == nil {
+		return nil
+	}
+	if r.ID == "" {
+		randBytes := make([]byte, 6)
+		_, _ = rand.Read(randBytes)
+		r.ID = fmt.Sprintf("img-%s-%s", time.Now().Format("20060102-150405"), hex.EncodeToString(randBytes))
+	}
+	if r.MimeType == "" {
+		r.MimeType = "image/png"
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	res, err := tx.ExecContext(ctx, `
+		INSERT INTO generated_images
+			(id, agent, session_id, prompt, output_path, mime_type, provider, width, height, file_size)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.Agent, r.SessionID, r.Prompt, r.OutputPath, r.MimeType, r.Provider, r.Width, r.Height, r.FileSize,
+	)
+	if err != nil {
+		return fmt.Errorf("insert generated_images: %w", err)
+	}
+
+	rowID, err := res.LastInsertId()
+	if err != nil {
+		return fmt.Errorf("last insert id: %w", err)
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO generated_images_fts(rowid, prompt, output_path) VALUES (?, ?, ?)`,
+		rowID, r.Prompt, r.OutputPath,
+	)
+	if err != nil {
+		return fmt.Errorf("insert generated_images_fts: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+// ListImages returns generated images ordered by creation time (newest first).
+func (s *Store) ListImages(ctx context.Context, opts ImageListOptions) ([]ImageRecord, error) {
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+
+	query := `
+		SELECT id, agent, session_id, prompt, output_path, mime_type, provider, width, height, file_size, created_at
+		FROM generated_images`
+	args := []interface{}{}
+
+	if opts.Agent != "" {
+		query += ` WHERE agent = ?`
+		args = append(args, opts.Agent)
+	}
+	query += ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
+	args = append(args, limit, opts.Offset)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list images: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ImageRecord
+	for rows.Next() {
+		var r ImageRecord
+		if err := rows.Scan(&r.ID, &r.Agent, &r.SessionID, &r.Prompt, &r.OutputPath,
+			&r.MimeType, &r.Provider, &r.Width, &r.Height, &r.FileSize, &r.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan image row: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SearchImages searches generated images by prompt/path using FTS5.
+func (s *Store) SearchImages(ctx context.Context, query, agent string, limit int) ([]ImageRecord, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT g.id, g.agent, g.session_id, g.prompt, g.output_path, g.mime_type,
+		       g.provider, g.width, g.height, g.file_size, g.created_at
+		FROM generated_images_fts f
+		JOIN generated_images g ON g.rowid = f.rowid
+		WHERE generated_images_fts MATCH ?
+		  AND (? = '' OR g.agent = ?)
+		ORDER BY rank
+		LIMIT ?`,
+		query, agent, agent, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("search images: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ImageRecord
+	for rows.Next() {
+		var r ImageRecord
+		if err := rows.Scan(&r.ID, &r.Agent, &r.SessionID, &r.Prompt, &r.OutputPath,
+			&r.MimeType, &r.Provider, &r.Width, &r.Height, &r.FileSize, &r.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan image search row: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }

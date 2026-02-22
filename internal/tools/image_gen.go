@@ -11,21 +11,34 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/image"
 	"github.com/samsaffron/term-llm/internal/llm"
+	memorystore "github.com/samsaffron/term-llm/internal/memory"
 )
+
+// ImageRecorder is a minimal interface for recording generated images.
+// Using an interface keeps the tools package decoupled from memory internals.
+type ImageRecorder interface {
+	RecordImage(ctx context.Context, r *memorystore.ImageRecord) error
+}
 
 // ImageGenerateTool implements the image_generate tool.
 type ImageGenerateTool struct {
-	approval     *ApprovalManager
-	config       *config.Config
-	providerName string // Override provider name
+	approval      *ApprovalManager
+	config        *config.Config
+	providerName  string // Override provider name
+	imageRecorder ImageRecorder
+	agent         string
+	sessionID     string
 }
 
 // NewImageGenerateTool creates a new ImageGenerateTool.
-func NewImageGenerateTool(approval *ApprovalManager, cfg *config.Config, providerOverride string) *ImageGenerateTool {
+func NewImageGenerateTool(approval *ApprovalManager, cfg *config.Config, providerOverride string, recorder ImageRecorder, agent, sessionID string) *ImageGenerateTool {
 	return &ImageGenerateTool{
-		approval:     approval,
-		config:       cfg,
-		providerName: providerOverride,
+		approval:      approval,
+		config:        cfg,
+		providerName:  providerOverride,
+		imageRecorder: recorder,
+		agent:         agent,
+		sessionID:     sessionID,
 	}
 }
 
@@ -234,6 +247,21 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 
 	// Get image dimensions (approximate from data size)
 	width, height := estimateImageDimensions(result.Data)
+
+	if t.imageRecorder != nil {
+		rec := &memorystore.ImageRecord{
+			Agent:      t.agent,
+			SessionID:  t.sessionID,
+			Prompt:     a.Prompt,
+			OutputPath: outputPath,
+			MimeType:   result.MimeType,
+			Provider:   provider.Name(),
+			Width:      width,
+			Height:     height,
+			FileSize:   len(result.Data),
+		}
+		_ = t.imageRecorder.RecordImage(ctx, rec)
+	}
 
 	// Emit image marker for deferred display (default: true)
 	showImage := a.ShowImage == nil || *a.ShowImage
