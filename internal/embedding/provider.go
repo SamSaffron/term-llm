@@ -51,13 +51,15 @@ type EmbeddingProvider interface {
 
 // NewEmbeddingProvider creates an embedding provider based on config
 func NewEmbeddingProvider(cfg *config.Config, providerOverride string) (EmbeddingProvider, error) {
-	providerStr := providerOverride
+	providerStr := strings.TrimSpace(providerOverride)
 	if providerStr == "" {
-		providerStr = cfg.Embed.Provider
+		providerStr = strings.TrimSpace(cfg.Embed.Provider)
 	}
 	if providerStr == "" {
-		// Fall back to the default LLM provider if it supports embeddings
 		providerStr = inferEmbeddingProvider(cfg)
+	}
+	if providerStr == "" {
+		return nil, fmt.Errorf("no embedding provider configured. Set embed.provider or configure GEMINI_API_KEY/OPENAI_API_KEY")
 	}
 
 	// Parse provider:model syntax
@@ -124,34 +126,34 @@ func NewEmbeddingProvider(cfg *config.Config, providerOverride string) (Embeddin
 	}
 }
 
-// inferEmbeddingProvider picks a sensible embedding provider based on the
-// default LLM provider configured for chat/ask.
+// InferEmbeddingProvider returns an available embedding provider based on
+// configured credentials. Preference order: gemini, then openai.
+func InferEmbeddingProvider(cfg *config.Config) string {
+	return inferEmbeddingProvider(cfg)
+}
+
+// inferEmbeddingProvider returns the best available provider based on configured
+// embedding credentials. Returns empty string when no provider can be inferred.
 func inferEmbeddingProvider(cfg *config.Config) string {
-	switch cfg.DefaultProvider {
-	case "openai":
-		return "openai"
-	case "gemini", "gemini-cli":
-		return "gemini"
-	case "anthropic", "claude-bin":
-		// Anthropic doesn't offer embeddings; Voyage AI is their recommended partner.
-		// But only if the user has a Voyage key configured, otherwise fall back to gemini.
-		if cfg.Embed.Voyage.APIKey != "" {
-			return "voyage"
-		}
-		return "gemini"
-	default:
-		// Default to Gemini — free tier, high quality, and most users have a key
+	if cfg == nil {
+		return ""
+	}
+	if strings.TrimSpace(cfg.Embed.Gemini.APIKey) != "" {
 		return "gemini"
 	}
+	if strings.TrimSpace(cfg.Embed.OpenAI.APIKey) != "" {
+		return "openai"
+	}
+	return ""
 }
 
 // parseProviderModel parses "provider:model" or just "provider" from a string.
 func parseProviderModel(s string) (string, string) {
 	parts := strings.SplitN(s, ":", 2)
-	provider := parts[0]
+	provider := strings.TrimSpace(parts[0])
 	model := ""
 	if len(parts) == 2 {
-		model = parts[1]
+		model = strings.TrimSpace(parts[1])
 	}
 	return provider, model
 }
