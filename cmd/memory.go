@@ -41,6 +41,7 @@ func init() {
 	memoryCmd.PersistentFlags().StringVar(&memoryAgent, "agent", "", "Filter by agent")
 	memoryCmd.PersistentFlags().StringVar(&memoryDBPath, "db", defaultDB, "Override memory database path")
 	memoryCmd.PersistentFlags().BoolVar(&memoryDryRun, "dry-run", false, "Preview actions without writing changes")
+	memoryCmd.RegisterFlagCompletionFunc("agent", memoryAgentCompletion)
 
 	memoryCmd.AddCommand(memoryMineCmd)
 	memoryCmd.AddCommand(memorySearchCmd)

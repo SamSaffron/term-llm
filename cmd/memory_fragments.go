@@ -31,10 +31,11 @@ var memoryFragmentsListCmd = &cobra.Command{
 }
 
 var memoryFragmentsShowCmd = &cobra.Command{
-	Use:   "show <path>",
-	Short: "Show a memory fragment by path",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runMemoryFragmentsShow,
+	Use:               "show <path>",
+	Short:             "Show a memory fragment by path",
+	Args:              cobra.ExactArgs(1),
+	RunE:              runMemoryFragmentsShow,
+	ValidArgsFunction: memoryFragmentPathCompletion,
 }
 
 var memoryFragmentsGCCmd = &cobra.Command{

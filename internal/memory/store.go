@@ -521,6 +521,25 @@ func (s *Store) ListFragments(ctx context.Context, opts ListOptions) ([]Fragment
 	return out, nil
 }
 
+// ListAgents returns distinct agent names that have stored fragments.
+func (s *Store) ListAgents(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT agent FROM memory_fragments ORDER BY agent`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var agents []string
+	for rows.Next() {
+		var agent string
+		if err := rows.Scan(&agent); err != nil {
+			return nil, err
+		}
+		agents = append(agents, agent)
+	}
+	return agents, rows.Err()
+}
+
 // SearchBM25 performs BM25 search over FTS5 and returns fragment details.
 func (s *Store) SearchBM25(ctx context.Context, query string, limit int, agent string) ([]ScoredFragment, error) {
 	if limit <= 0 {
