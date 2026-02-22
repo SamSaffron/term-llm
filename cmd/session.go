@@ -27,6 +27,9 @@ type SessionSettings struct {
 	// Agent name (if any)
 	AgentName string
 
+	// Session ID (if any)
+	SessionID string
+
 	// Tool settings
 	Tools        string
 	ReadDirs     []string
@@ -323,7 +326,7 @@ func (s *SessionSettings) SetupToolManager(cfg *config.Config, engine *llm.Engin
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize tools: %w", err)
 	}
-	wireImageRecorder(toolMgr.Registry, s.AgentName, "")
+	wireImageRecorder(toolMgr.Registry, s.AgentName, s.SessionID)
 
 	// Register any custom script-backed tools declared in agent.yaml
 	if len(s.CustomTools) > 0 {

@@ -253,6 +253,16 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Resolve session ID early so tool wiring can capture it
+	sessionID := ""
+	if sess != nil {
+		sessionID = sess.ID
+	}
+	if sessionID == "" && store != nil && !resuming {
+		sessionID = session.NewID()
+	}
+	settings.SessionID = sessionID
+
 	// Initialize local tools if we have any
 	toolMgr, err := settings.SetupToolManager(cfg, engine)
 	if err != nil {
@@ -330,6 +340,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	// Create new session if not resuming
 	if !resuming && store != nil {
+		if sessionID == "" {
+			sessionID = session.NewID()
+		}
 		modelName := "unknown"
 		if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
 			modelName = providerCfg.Model
@@ -339,7 +352,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			agentName = agent.Name
 		}
 		sess = &session.Session{
-			ID:        session.NewID(),
+			ID:        sessionID,
 			Provider:  provider.Name(),
 			Model:     modelName,
 			Mode:      session.ModeAsk,
@@ -383,7 +396,6 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	messages = append(messages, llm.UserText(userPrompt))
 
 	debugMode := askDebug
-	sessionID := ""
 	if sess != nil {
 		sessionID = sess.ID
 	}

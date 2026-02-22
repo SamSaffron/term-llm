@@ -355,6 +355,105 @@ func TestStoreMetaGetSet(t *testing.T) {
 	}
 }
 
+func TestRecordImage(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer store.Close()
+
+	rec := &ImageRecord{
+		Agent:      "jarvis",
+		SessionID:  "sess-1",
+		Prompt:     "Astronaut on the moon",
+		OutputPath: "/tmp/astronaut.png",
+		Provider:   "openai",
+		Width:      512,
+		Height:     512,
+		FileSize:   2048,
+	}
+	if err := store.RecordImage(ctx, rec); err != nil {
+		t.Fatalf("RecordImage() error = %v", err)
+	}
+
+	images, err := store.ListImages(ctx, ImageListOptions{Agent: "jarvis", Limit: 5})
+	if err != nil {
+		t.Fatalf("ListImages() error = %v", err)
+	}
+	if len(images) != 1 {
+		t.Fatalf("ListImages() len = %d, want 1", len(images))
+	}
+	got := images[0]
+	if got.Agent != rec.Agent {
+		t.Fatalf("agent = %q, want %q", got.Agent, rec.Agent)
+	}
+	if got.SessionID != rec.SessionID {
+		t.Fatalf("session_id = %q, want %q", got.SessionID, rec.SessionID)
+	}
+	if got.Prompt != rec.Prompt {
+		t.Fatalf("prompt = %q, want %q", got.Prompt, rec.Prompt)
+	}
+	if got.OutputPath != rec.OutputPath {
+		t.Fatalf("output_path = %q, want %q", got.OutputPath, rec.OutputPath)
+	}
+	if got.Provider != rec.Provider {
+		t.Fatalf("provider = %q, want %q", got.Provider, rec.Provider)
+	}
+	if got.MimeType != "image/png" {
+		t.Fatalf("mime_type = %q, want image/png", got.MimeType)
+	}
+	if got.Width != rec.Width || got.Height != rec.Height {
+		t.Fatalf("dimensions = %dx%d, want %dx%d", got.Width, got.Height, rec.Width, rec.Height)
+	}
+	if got.FileSize != rec.FileSize {
+		t.Fatalf("file_size = %d, want %d", got.FileSize, rec.FileSize)
+	}
+	if got.ID == "" {
+		t.Fatal("expected image ID to be set")
+	}
+	if got.CreatedAt.IsZero() {
+		t.Fatal("expected created_at to be set")
+	}
+}
+
+func TestSearchImages(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer store.Close()
+
+	records := []*ImageRecord{
+		{
+			Agent:      "jarvis",
+			Prompt:     "Astronaut floating in space",
+			OutputPath: "/tmp/space.png",
+			Provider:   "openai",
+		},
+		{
+			Agent:      "reviewer",
+			Prompt:     "Sunset over the mountains",
+			OutputPath: "/tmp/sunset.png",
+			Provider:   "openai",
+		},
+	}
+	for _, rec := range records {
+		if err := store.RecordImage(ctx, rec); err != nil {
+			t.Fatalf("RecordImage() error = %v", err)
+		}
+	}
+
+	results, err := store.SearchImages(ctx, "astronaut", "jarvis", 10)
+	if err != nil {
+		t.Fatalf("SearchImages() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("SearchImages() len = %d, want 1", len(results))
+	}
+	if results[0].Agent != "jarvis" {
+		t.Fatalf("SearchImages() agent = %q, want jarvis", results[0].Agent)
+	}
+	if results[0].Prompt != records[0].Prompt {
+		t.Fatalf("SearchImages() prompt = %q, want %q", results[0].Prompt, records[0].Prompt)
+	}
+}
+
 func TestStoreRecalcDecayScores(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
@@ -368,6 +467,7 @@ func TestStoreRecalcDecayScores(t *testing.T) {
 		CreatedAt: now.Add(-400 * 24 * time.Hour),
 		UpdatedAt: now.Add(-400 * 24 * time.Hour),
 	}
+
 	recentAccessedAt := now.Add(-1 * 24 * time.Hour)
 	recent := &Fragment{
 		Agent:      "jarvis",

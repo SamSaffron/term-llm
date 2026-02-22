@@ -170,14 +170,15 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 	}
 	if len(candidates) == 0 {
 		fmt.Println("No sessions eligible for memory mining.")
-		return nil
 	}
 
 	modelName := activeModel(cfg)
 	if modelName == "" {
 		modelName = "(default model)"
 	}
-	fmt.Printf("Mining %d session(s) with %s / %s\n", len(candidates), provider.Name(), modelName)
+	if len(candidates) > 0 {
+		fmt.Printf("Mining %d session(s) with %s / %s\n", len(candidates), provider.Name(), modelName)
+	}
 	if memoryDryRun {
 		fmt.Println("Dry run mode: no database writes will be performed.")
 	}
@@ -250,6 +251,15 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 
 		fmt.Printf("[%d/%d] #%d mined messages [%d,%d): create=%d update=%d skip=%d\n",
 			i+1, len(candidates), candidate.Summary.Number, startOffset, nextOffset, created, updated, skipped)
+	}
+
+	if memoryDryRun {
+		fmt.Println("Dry run mode: skipping image mining phase.")
+	} else {
+		imageMined := mineGeneratedImages(ctx, memStore)
+		if imageMined > 0 {
+			fmt.Printf("mined %d image fragment(s)\n", imageMined)
+		}
 	}
 
 	embeddedCount := 0
@@ -686,6 +696,189 @@ func applyExtractionOperations(ctx context.Context, store *memorydb.Store, agent
 		}
 	}
 	return created, updated, skipped, nil
+}
+
+func mineGeneratedImages(ctx context.Context, store *memorydb.Store) int {
+	agents, err := resolveImageMineAgents(ctx, store)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: resolve image mining agents: %v\n", err)
+		return 0
+	}
+	if len(agents) == 0 {
+		return 0
+	}
+
+	total := 0
+	for _, agent := range agents {
+		total += mineGeneratedImagesForAgent(ctx, store, agent)
+	}
+	return total
+}
+
+func resolveImageMineAgents(ctx context.Context, store *memorydb.Store) ([]string, error) {
+	if strings.TrimSpace(memoryAgent) != "" {
+		return []string{strings.TrimSpace(memoryAgent)}, nil
+	}
+	return store.ListImageAgents(ctx)
+}
+
+func mineGeneratedImagesForAgent(ctx context.Context, store *memorydb.Store, agent string) int {
+	metaKey := memoryImageMineMetaKey(agent)
+	lastValue, err := store.GetMeta(ctx, metaKey)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: read image mine meta for %s: %v\n", agent, err)
+		return 0
+	}
+
+	lastTime := time.Time{}
+	if strings.TrimSpace(lastValue) != "" {
+		parsed, err := time.Parse(time.RFC3339, lastValue)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: invalid image mine timestamp for %s (%q): %v\n", agent, lastValue, err)
+		} else {
+			lastTime = parsed
+		}
+	}
+
+	images, err := store.ListImagesSince(ctx, agent, lastTime)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: list images for %s: %v\n", agent, err)
+		return 0
+	}
+	if len(images) == 0 {
+		return 0
+	}
+
+	effectiveAgent := strings.TrimSpace(agent)
+	if effectiveAgent == "" {
+		effectiveAgent = resolveMemoryAgent("")
+	}
+
+	created := 0
+	for _, img := range images {
+		path := buildImageFragmentPath(img)
+		content := buildImageFragmentContent(img)
+		if err := upsertImageFragment(ctx, store, effectiveAgent, path, content); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed mining image %s: %v\n", img.ID, err)
+			continue
+		}
+		created++
+	}
+
+	lastProcessed := images[len(images)-1].CreatedAt
+	if err := store.SetMeta(ctx, metaKey, lastProcessed.Format(time.RFC3339)); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: update image mine meta for %s: %v\n", agent, err)
+	}
+
+	return created
+}
+
+func memoryImageMineMetaKey(agent string) string {
+	agent = strings.TrimSpace(agent)
+	if agent == "" {
+		agent = resolveMemoryAgent("")
+	}
+	return "last_image_mine_at_" + agent
+}
+
+func buildImageFragmentPath(img memorydb.ImageRecord) string {
+	createdAt := img.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+	date := createdAt.Format("2006-01-02")
+	slug := imagePromptSlug(img.Prompt)
+	return path.Join("images", date, slug+".md")
+}
+
+func buildImageFragmentContent(img memorydb.ImageRecord) string {
+	prompt := strings.TrimSpace(img.Prompt)
+	if prompt == "" {
+		prompt = "(untitled)"
+	}
+	provider := strings.TrimSpace(img.Provider)
+	if provider == "" {
+		provider = "unknown"
+	}
+
+	dims := "unknown"
+	if img.Width > 0 && img.Height > 0 {
+		dims = fmt.Sprintf("%dx%d", img.Width, img.Height)
+	}
+
+	size := "unknown"
+	if img.FileSize > 0 {
+		size = formatBytes(int64(img.FileSize))
+	}
+
+	createdAt := img.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+
+	return fmt.Sprintf("# Image: %s\n\n- **Path:** %s\n- **Provider:** %s\n- **Generated:** %s\n- **Size:** %s (%s)\n",
+		prompt,
+		img.OutputPath,
+		provider,
+		createdAt.Format(time.RFC3339),
+		dims,
+		size,
+	)
+}
+
+func imagePromptSlug(prompt string) string {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return "image"
+	}
+	runes := []rune(prompt)
+	if len(runes) > 40 {
+		runes = runes[:40]
+	}
+
+	lower := strings.ToLower(string(runes))
+	var b strings.Builder
+	lastHyphen := false
+	for _, r := range lower {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+			lastHyphen = false
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastHyphen = false
+		case r == ' ' || r == '-' || r == '_':
+			if !lastHyphen {
+				b.WriteRune('-')
+				lastHyphen = true
+			}
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "image"
+	}
+	return out
+}
+
+func upsertImageFragment(ctx context.Context, store *memorydb.Store, agent, fragPath, content string) error {
+	if memoryDryRun {
+		return nil
+	}
+	createErr := store.CreateFragment(ctx, &memorydb.Fragment{
+		Agent:   agent,
+		Path:    fragPath,
+		Content: content,
+		Source:  memorydb.DefaultSourceMine,
+	})
+	if createErr == nil {
+		return nil
+	}
+	if isUniqueConstraintError(createErr) {
+		_, updateErr := store.UpdateFragment(ctx, agent, fragPath, content)
+		return updateErr
+	}
+	return createErr
 }
 
 func runMemoryEmbedPhase(ctx context.Context, cfg *config.Config, store *memorydb.Store) (int, error) {

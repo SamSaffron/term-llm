@@ -234,6 +234,10 @@ func runChat(cmd *cobra.Command, args []string) error {
 		engine.SetDebugLogger(debugLogger)
 	}
 
+	if sess != nil {
+		settings.SessionID = sess.ID
+	}
+
 	// Initialize tools if enabled (using possibly-updated settings from resume)
 	enabledLocalTools := tools.ParseToolsFlag(settings.Tools)
 	toolMgr, err := settings.SetupToolManager(cfg, engine)

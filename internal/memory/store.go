@@ -1436,6 +1436,56 @@ func (s *Store) ListImages(ctx context.Context, opts ImageListOptions) ([]ImageR
 	return out, rows.Err()
 }
 
+// ListImageAgents returns distinct agent names for generated images.
+func (s *Store) ListImageAgents(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT agent FROM generated_images ORDER BY agent`)
+	if err != nil {
+		return nil, fmt.Errorf("list image agents: %w", err)
+	}
+	defer rows.Close()
+
+	var agents []string
+	for rows.Next() {
+		var agent string
+		if err := rows.Scan(&agent); err != nil {
+			return nil, fmt.Errorf("scan image agent: %w", err)
+		}
+		agents = append(agents, agent)
+	}
+	return agents, rows.Err()
+}
+
+// ListImagesSince returns generated images for an agent created after the given time.
+func (s *Store) ListImagesSince(ctx context.Context, agent string, since time.Time) ([]ImageRecord, error) {
+	query := `
+		SELECT id, agent, session_id, prompt, output_path, mime_type, provider, width, height, file_size, created_at
+		FROM generated_images
+		WHERE agent = ?`
+	args := []interface{}{agent}
+	if !since.IsZero() {
+		query += ` AND created_at > ?`
+		args = append(args, since)
+	}
+	query += ` ORDER BY created_at ASC`
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list images since: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ImageRecord
+	for rows.Next() {
+		var r ImageRecord
+		if err := rows.Scan(&r.ID, &r.Agent, &r.SessionID, &r.Prompt, &r.OutputPath,
+			&r.MimeType, &r.Provider, &r.Width, &r.Height, &r.FileSize, &r.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan image row: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // SearchImages searches generated images by prompt/path using FTS5.
 func (s *Store) SearchImages(ctx context.Context, query, agent string, limit int) ([]ImageRecord, error) {
 	if limit <= 0 {
