@@ -10,7 +10,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
-func captureStreamPlainTextOutput(t *testing.T, events []ui.StreamEvent) string {
+func captureStreamPlainTextOutput(t *testing.T, events []ui.StreamEvent, suppressToolStatus bool) string {
 	t.Helper()
 
 	ch := make(chan ui.StreamEvent, len(events))
@@ -26,7 +26,7 @@ func captureStreamPlainTextOutput(t *testing.T, events []ui.StreamEvent) string 
 	}
 	os.Stdout = w
 
-	err = streamPlainText(context.Background(), ch)
+	err = streamPlainText(context.Background(), ch, suppressToolStatus)
 	_ = w.Close()
 	os.Stdout = oldStdout
 	if err != nil {
@@ -57,7 +57,7 @@ func TestStreamPlainText_DoesNotInsertExtraBlankLineBeforeToolWhenTextAlreadyHas
 		ui.ToolStartEvent("call-1", "shell", "(cd /var/www/discourse && sed -n '93,95p' plugins/discourse-ai/spec/requests/ai_helper/assistant_controller_spec.rb)"),
 		ui.ToolEndEvent("call-1", "shell", "(cd /var/www/discourse && sed -n '93,95p' plugins/discourse-ai/spec/requests/ai_helper/assistant_controller_spec.rb)", true),
 		ui.DoneEvent(0),
-	})
+	}, false)
 
 	plain := stripAnsi(output)
 	toolIdx := strings.Index(plain, "● shell(cd /var/www/discourse")
@@ -81,7 +81,7 @@ func TestStreamPlainText_TextToToolUsesSingleNewlineWhenTextHasNoTrailingNewline
 		ui.ToolStartEvent("call-1", "shell", "(echo hi)"),
 		ui.ToolEndEvent("call-1", "shell", "(echo hi)", true),
 		ui.DoneEvent(0),
-	})
+	}, false)
 
 	plain := stripAnsi(output)
 	boundary := "test.\n● shell(echo hi)"
@@ -96,7 +96,7 @@ func TestStreamPlainText_ToolToTextUsesBlankLine(t *testing.T) {
 		ui.ToolEndEvent("call-1", "shell", "(echo hi)", true),
 		ui.TextEvent("Recent updates."),
 		ui.DoneEvent(0),
-	})
+	}, false)
 
 	plain := stripAnsi(output)
 	toolLabel := "shell(echo hi)"
@@ -124,7 +124,7 @@ func TestStreamPlainText_ToolToTextTrimsLeadingTextBlankLines(t *testing.T) {
 		ui.ToolEndEvent("call-1", "shell", "(echo hi)", true),
 		ui.TextEvent("\n\nRecent updates."),
 		ui.DoneEvent(0),
-	})
+	}, false)
 
 	plain := stripAnsi(output)
 	boundary := "shell(echo hi)\n\nRecent updates."
@@ -138,13 +138,31 @@ func TestStreamPlainText_CompactsExcessiveNewlineRunsAcrossChunks(t *testing.T) 
 		ui.TextEvent("Alpha\n\n\n"),
 		ui.TextEvent("\n\nBeta"),
 		ui.DoneEvent(0),
-	})
+	}, false)
 
 	plain := stripAnsi(output)
 	if strings.Contains(plain, "\n\n\n") {
 		t.Fatalf("expected no triple-newline runs, got %q", plain)
 	}
 	if !strings.Contains(plain, "Alpha\n\nBeta") {
-		t.Fatalf("expected compact boundary \"Alpha\\\\n\\\\nBeta\", got %q", plain)
+		t.Fatalf("expected compact boundary \"Alpha\\n\\nBeta\", got %q", plain)
+	}
+}
+
+func TestStreamPlainText_PorcelainSuppressesToolStatus(t *testing.T) {
+	output := captureStreamPlainTextOutput(t, []ui.StreamEvent{
+		ui.TextEvent("Starting."),
+		ui.ToolStartEvent("call-1", "shell", "(echo hi)"),
+		ui.ToolEndEvent("call-1", "shell", "(echo hi)", true),
+		ui.TextEvent("Done."),
+		ui.DoneEvent(0),
+	}, true)
+
+	plain := stripAnsi(output)
+	if strings.Contains(plain, "●") || strings.Contains(plain, "shell(") {
+		t.Fatalf("expected no tool status lines in porcelain output, got %q", plain)
+	}
+	if !strings.Contains(plain, "Starting.") || !strings.Contains(plain, "Done.") {
+		t.Fatalf("expected text output to remain, got %q", plain)
 	}
 }
