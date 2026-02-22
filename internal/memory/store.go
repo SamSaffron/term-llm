@@ -1133,6 +1133,12 @@ func (s *Store) FragmentCountsByAgent(ctx context.Context) (map[string]int, erro
 }
 
 // LastMinedByAgent returns MAX(mined_at) grouped by agent.
+//
+// SQLite aggregate functions like MAX() return the underlying value as a plain
+// string, bypassing the driver's column-type inference that makes direct column
+// scans into time.Time work. We therefore scan as a string and parse manually,
+// accepting both RFC3339 (current format written by UpsertState) and the legacy
+// Go time.String() format that older rows may contain.
 func (s *Store) LastMinedByAgent(ctx context.Context) (map[string]time.Time, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT agent, MAX(mined_at)
@@ -1146,16 +1152,45 @@ func (s *Store) LastMinedByAgent(ctx context.Context) (map[string]time.Time, err
 	out := map[string]time.Time{}
 	for rows.Next() {
 		var agent string
-		var minedAt time.Time
-		if err := rows.Scan(&agent, &minedAt); err != nil {
+		var minedAtStr string
+		if err := rows.Scan(&agent, &minedAtStr); err != nil {
 			return nil, fmt.Errorf("scan last mined: %w", err)
 		}
-		out[agent] = minedAt
+		t, err := parseFlexibleTime(minedAtStr)
+		if err != nil {
+			// Unparseable timestamp: skip rather than hard-fail.
+			continue
+		}
+		out[agent] = t
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+// parseFlexibleTime parses a time string in either RFC3339 (the current
+// UpsertState format) or the legacy Go time.String() layout that older rows
+// may contain (e.g. "2006-01-02 15:04:05.999999999 -0700 MST m=+0.000").
+func parseFlexibleTime(s string) (time.Time, error) {
+	// RFC3339 / RFC3339Nano — written by current UpsertState.
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	// Go time.String() layout, with or without the monotonic "m=+…" suffix.
+	// Strip the suffix first so the layout is fixed-width.
+	cleaned := s
+	if idx := strings.Index(s, " m="); idx != -1 {
+		cleaned = s[:idx]
+	}
+	const goTimeLayout = "2006-01-02 15:04:05.999999999 -0700 MST"
+	if t, err := time.Parse(goTimeLayout, cleaned); err == nil {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("unrecognised time format: %q", s)
 }
 
 // Close closes the underlying DB.
