@@ -337,6 +337,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 		opts = append(opts, tea.WithInput(nil))
 	} else {
 		opts = append(opts, tea.WithMouseCellMotion()) // Enable mouse support
+		opts = append(opts, tea.WithInputTTY())
 	}
 
 	// Run the TUI

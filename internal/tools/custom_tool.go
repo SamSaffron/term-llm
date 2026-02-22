@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/agents"
@@ -165,6 +166,7 @@ func (t *CustomScriptTool) buildCommand(ctx context.Context, scriptPath string, 
 		// Pass raw JSON on stdin
 		cmd := exec.CommandContext(ctx, detectShell(), "-c", scriptPath)
 		cmd.Stdin = bytes.NewReader(args)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		return cmd, nil
 
 	case "positional":
@@ -177,6 +179,8 @@ func (t *CustomScriptTool) buildCommand(ctx context.Context, scriptPath string, 
 			}
 		}
 		cmd := exec.CommandContext(ctx, detectShell(), append([]string{"-c"}, shellJoin(cmdArgs)...)...)
+		cmd.Stdin = strings.NewReader("")
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		return cmd, nil
 
 	default: // "" or "args" — named flags (--key value)
@@ -186,6 +190,8 @@ func (t *CustomScriptTool) buildCommand(ctx context.Context, scriptPath string, 
 			cmdArgs = append(cmdArgs, "--"+k, jsonValueToString(argMap[k]))
 		}
 		cmd := exec.CommandContext(ctx, detectShell(), append([]string{"-c"}, shellJoin(cmdArgs)...)...)
+		cmd.Stdin = strings.NewReader("")
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		return cmd, nil
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -134,6 +135,18 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 
 	cmd := exec.CommandContext(execCtx, t.shellPath, "-c", a.Command)
 	cmd.Dir = workDir
+
+	// Isolate stdin: tools are non-interactive; never share the TUI's raw stdin
+	// with child processes.
+	devNull, openErr := os.OpenFile(os.DevNull, os.O_RDONLY, 0)
+	if openErr == nil {
+		cmd.Stdin = devNull
+		defer devNull.Close()
+	}
+
+	// Put child in its own process group so signals don't cross-contaminate
+	// and exec.CommandContext can kill the whole group on timeout.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
