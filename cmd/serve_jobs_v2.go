@@ -1830,7 +1830,6 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 		}
 
 		llmReq := llm.Request{
-			Model:               modelName,
 			Tools:               runtime.selectTools(nil),
 			ToolChoice:          llm.ToolChoice{Mode: llm.ToolChoiceAuto},
 			ParallelToolCalls:   true,
