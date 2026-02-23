@@ -113,6 +113,79 @@ func TestStoreEmbeddingMethods(t *testing.T) {
 	}
 }
 
+func TestUpdateFragmentNoOpWhenContentUnchanged(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer store.Close()
+
+	frag := &Fragment{Agent: "jarvis", Path: "notes/unchanged", Content: "original content"}
+	if err := store.CreateFragment(ctx, frag); err != nil {
+		t.Fatalf("CreateFragment() error = %v", err)
+	}
+
+	before, err := store.GetFragment(ctx, frag.Agent, frag.Path)
+	if err != nil || before == nil {
+		t.Fatalf("GetFragment() before: err=%v frag=%v", err, before)
+	}
+
+	// Small sleep so any timestamp change would be visible.
+	time.Sleep(5 * time.Millisecond)
+
+	// Update with identical content — should be a no-op.
+	updated, err := store.UpdateFragment(ctx, frag.Agent, frag.Path, frag.Content)
+	if err != nil {
+		t.Fatalf("UpdateFragment(no-op) error = %v", err)
+	}
+	if updated {
+		t.Fatal("UpdateFragment(no-op) returned updated=true, want false")
+	}
+
+	after, err := store.GetFragment(ctx, frag.Agent, frag.Path)
+	if err != nil || after == nil {
+		t.Fatalf("GetFragment() after: err=%v frag=%v", err, after)
+	}
+	if !after.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Fatalf("updated_at changed on no-op update: before=%v after=%v", before.UpdatedAt, after.UpdatedAt)
+	}
+}
+
+func TestUpdateFragmentBumpsUpdatedAtOnRealChange(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer store.Close()
+
+	frag := &Fragment{Agent: "jarvis", Path: "notes/changing", Content: "version one"}
+	if err := store.CreateFragment(ctx, frag); err != nil {
+		t.Fatalf("CreateFragment() error = %v", err)
+	}
+
+	before, err := store.GetFragment(ctx, frag.Agent, frag.Path)
+	if err != nil || before == nil {
+		t.Fatalf("GetFragment() before: err=%v frag=%v", err, before)
+	}
+
+	time.Sleep(5 * time.Millisecond)
+
+	updated, err := store.UpdateFragment(ctx, frag.Agent, frag.Path, "version two")
+	if err != nil {
+		t.Fatalf("UpdateFragment() error = %v", err)
+	}
+	if !updated {
+		t.Fatal("UpdateFragment() returned updated=false, want true")
+	}
+
+	after, err := store.GetFragment(ctx, frag.Agent, frag.Path)
+	if err != nil || after == nil {
+		t.Fatalf("GetFragment() after: err=%v frag=%v", err, after)
+	}
+	if after.Content != "version two" {
+		t.Fatalf("content = %q, want %q", after.Content, "version two")
+	}
+	if !after.UpdatedAt.After(before.UpdatedAt) {
+		t.Fatalf("updated_at not bumped: before=%v after=%v", before.UpdatedAt, after.UpdatedAt)
+	}
+}
+
 func TestStoreGetEmbeddingsByIDs(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)

@@ -343,7 +343,8 @@ func (s *Store) CreateFragment(ctx context.Context, f *Fragment) error {
 }
 
 // UpdateFragment updates content for an existing (agent,path) fragment and syncs FTS.
-// Returns updated=false when no matching fragment exists.
+// Returns updated=false when no matching fragment exists or content is identical (no-op).
+// updated_at is only bumped when content actually changes.
 func (s *Store) UpdateFragment(ctx context.Context, agent, path, content string) (updated bool, err error) {
 	agent = strings.TrimSpace(agent)
 	path = strings.TrimSpace(path)
@@ -362,6 +363,11 @@ func (s *Store) UpdateFragment(ctx context.Context, agent, path, content string)
 		return false, err
 	}
 	if oldFrag == nil {
+		return false, nil
+	}
+
+	// No-op: content unchanged — don't bump updated_at or invalidate embeddings.
+	if oldFrag.Content == content {
 		return false, nil
 	}
 
@@ -498,7 +504,9 @@ func (s *Store) FindFragmentsByPath(ctx context.Context, path string) ([]Fragmen
 	return out, nil
 }
 
-// ListFragments returns fragments sorted by updated_at descending.
+// ListFragments returns fragments sorted by created_at descending (most recently learned first).
+// updated_at is only bumped when content actually changes, so ordering by it would give
+// misleading results when many fragments happen to be updated in the same batch.
 // RowID is populated on each returned Fragment.
 func (s *Store) ListFragments(ctx context.Context, opts ListOptions) ([]Fragment, error) {
 	query := `
@@ -513,14 +521,14 @@ func (s *Store) ListFragments(ctx context.Context, opts ListOptions) ([]Fragment
 		args = append(args, strings.TrimSpace(opts.Agent))
 	}
 	if opts.Since != nil {
-		query += ` AND updated_at >= ?`
+		query += ` AND created_at >= ?`
 		args = append(args, *opts.Since)
 	}
 	if strings.TrimSpace(opts.PathFilter) != "" {
 		query += ` AND path LIKE ? ESCAPE '\'`
 		args = append(args, "%"+sqliteLikeEscape(strings.TrimSpace(opts.PathFilter))+"%")
 	}
-	query += ` ORDER BY updated_at DESC`
+	query += ` ORDER BY created_at DESC`
 	if opts.Limit > 0 {
 		query += ` LIMIT ?`
 		args = append(args, opts.Limit)

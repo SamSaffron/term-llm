@@ -120,18 +120,18 @@ func runMemoryFragmentsList(cmd *cobra.Command, args []string) error {
 	pathCol++ // one extra space of breathing room
 
 	if strings.TrimSpace(memoryAgent) == "" {
-		fmt.Printf("%-6s %-14s %-*s %-10s\n", "ID", "AGENT", pathCol, "PATH", "UPDATED")
+		fmt.Printf("%-6s %-14s %-*s %-10s\n", "ID", "AGENT", pathCol, "PATH", "CREATED")
 		fmt.Println(strings.Repeat("-", 6+1+14+1+pathCol+1+10))
 		for _, f := range fragments {
-			fmt.Printf("%-6d %-14s %-*s %-10s\n", f.RowID, f.Agent, pathCol, truncateString(f.Path, pathCol), formatRelativeTime(f.UpdatedAt))
+			fmt.Printf("%-6d %-14s %-*s %-10s\n", f.RowID, f.Agent, pathCol, truncateString(f.Path, pathCol), formatRelativeTime(f.CreatedAt))
 		}
 		return nil
 	}
 
-	fmt.Printf("%-6s %-*s %-10s\n", "ID", pathCol, "PATH", "UPDATED")
+	fmt.Printf("%-6s %-*s %-10s\n", "ID", pathCol, "PATH", "CREATED")
 	fmt.Println(strings.Repeat("-", 6+1+pathCol+1+10))
 	for _, f := range fragments {
-		fmt.Printf("%-6d %-*s %-10s\n", f.RowID, pathCol, truncateString(f.Path, pathCol), formatRelativeTime(f.UpdatedAt))
+		fmt.Printf("%-6d %-*s %-10s\n", f.RowID, pathCol, truncateString(f.Path, pathCol), formatRelativeTime(f.CreatedAt))
 	}
 
 	return nil
