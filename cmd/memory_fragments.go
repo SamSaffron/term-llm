@@ -74,6 +74,26 @@ func init() {
 	// --dry-run is inherited from the root memory command's persistent flags.
 }
 
+// shortFragmentID returns the last 6-char hex suffix of a fragment ID for display.
+// e.g. "mem-20260223-142301-a3f9c1" -> "a3f9c1"
+// Falls back to the full ID if the format is unexpected.
+func shortFragmentID(id string) string {
+	if idx := strings.LastIndex(id, "-"); idx >= 0 && len(id)-idx-1 == 6 {
+		return id[idx+1:]
+	}
+	return id
+}
+
+// isHexString returns true if s consists entirely of lowercase hex characters.
+func isHexString(s string) bool {
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
 func runMemoryFragmentsList(cmd *cobra.Command, args []string) error {
 	store, err := openMemoryStore()
 	if err != nil {
@@ -100,18 +120,18 @@ func runMemoryFragmentsList(cmd *cobra.Command, args []string) error {
 	}
 
 	if strings.TrimSpace(memoryAgent) == "" {
-		fmt.Printf("%-14s %-42s %-10s\n", "AGENT", "PATH", "UPDATED")
-		fmt.Println(strings.Repeat("-", 72))
+		fmt.Printf("%-8s %-14s %-10s %s\n", "ID", "AGENT", "UPDATED", "PATH")
+		fmt.Println(strings.Repeat("-", 90))
 		for _, f := range fragments {
-			fmt.Printf("%-14s %-42s %-10s\n", f.Agent, truncateString(f.Path, 42), formatRelativeTime(f.UpdatedAt))
+			fmt.Printf("%-8s %-14s %-10s %s\n", shortFragmentID(f.ID), f.Agent, formatRelativeTime(f.UpdatedAt), f.Path)
 		}
 		return nil
 	}
 
-	fmt.Printf("%-42s %-10s\n", "PATH", "UPDATED")
-	fmt.Println(strings.Repeat("-", 56))
+	fmt.Printf("%-8s %-10s %s\n", "ID", "UPDATED", "PATH")
+	fmt.Println(strings.Repeat("-", 72))
 	for _, f := range fragments {
-		fmt.Printf("%-42s %-10s\n", truncateString(f.Path, 42), formatRelativeTime(f.UpdatedAt))
+		fmt.Printf("%-8s %-10s %s\n", shortFragmentID(f.ID), formatRelativeTime(f.UpdatedAt), f.Path)
 	}
 
 	return nil
@@ -125,18 +145,19 @@ func runMemoryFragmentsShow(cmd *cobra.Command, args []string) error {
 	defer store.Close()
 
 	ctx := context.Background()
-	fragPath := strings.TrimSpace(args[0])
-	if fragPath == "" {
-		return fmt.Errorf("path cannot be empty")
+	arg := strings.TrimSpace(args[0])
+	if arg == "" {
+		return fmt.Errorf("path or id cannot be empty")
 	}
 
-	if strings.TrimSpace(memoryAgent) != "" {
-		frag, err := store.GetFragment(ctx, strings.TrimSpace(memoryAgent), fragPath)
+	// Full ID: mem-20260223-142301-a3f9c1
+	if strings.HasPrefix(arg, "mem-") {
+		frag, err := store.GetFragmentByID(ctx, arg)
 		if err != nil {
 			return err
 		}
 		if frag == nil {
-			return fmt.Errorf("fragment not found: %s", fragPath)
+			return fmt.Errorf("fragment not found: %s", arg)
 		}
 		fmt.Print(frag.Content)
 		if !strings.HasSuffix(frag.Content, "\n") {
@@ -145,15 +166,47 @@ func runMemoryFragmentsShow(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	frags, err := store.FindFragmentsByPath(ctx, fragPath)
+	// Short ID: 6-char hex suffix (e.g. "a3f9c1")
+	if len(arg) == 6 && isHexString(arg) {
+		frag, err := store.GetFragmentByShortID(ctx, arg)
+		if err != nil {
+			return err
+		}
+		if frag == nil {
+			return fmt.Errorf("fragment not found: %s", arg)
+		}
+		fmt.Print(frag.Content)
+		if !strings.HasSuffix(frag.Content, "\n") {
+			fmt.Println()
+		}
+		return nil
+	}
+
+	// Otherwise resolve by path (existing behaviour)
+	if strings.TrimSpace(memoryAgent) != "" {
+		frag, err := store.GetFragment(ctx, strings.TrimSpace(memoryAgent), arg)
+		if err != nil {
+			return err
+		}
+		if frag == nil {
+			return fmt.Errorf("fragment not found: %s", arg)
+		}
+		fmt.Print(frag.Content)
+		if !strings.HasSuffix(frag.Content, "\n") {
+			fmt.Println()
+		}
+		return nil
+	}
+
+	frags, err := store.FindFragmentsByPath(ctx, arg)
 	if err != nil {
 		return err
 	}
 	if len(frags) == 0 {
-		return fmt.Errorf("fragment not found: %s", fragPath)
+		return fmt.Errorf("fragment not found: %s", arg)
 	}
 	if len(frags) > 1 {
-		return fmt.Errorf("fragment path %q exists for multiple agents; rerun with --agent", fragPath)
+		return fmt.Errorf("fragment path %q exists for multiple agents; rerun with --agent or use the ID", arg)
 	}
 
 	fmt.Print(frags[0].Content)
