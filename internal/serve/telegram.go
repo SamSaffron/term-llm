@@ -25,6 +25,8 @@ import (
 
 const telegramMaxMessageLen = 4000 // Telegram limit is 4096; leave margin
 const telegramPreviousSessionMessageLimit = 20
+const minEditInterval = 3 * time.Second
+const streamEventTimeout = 90 * time.Second
 
 // botSender is the subset of tgbotapi.BotAPI used by streamReply and
 // handleMessage, allowing tests to supply a fake without a live connection.
@@ -922,7 +924,35 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		otherEvents     int
 		otherTypes      = make(map[llm.EventType]int)
 		streamDone      = make(chan error, 1)
+		lastEventPing   = make(chan struct{}, 1)
 	)
+
+	// Watchdog: cancel stream if no events arrive for streamEventTimeout.
+	go func() {
+		t := time.NewTimer(streamEventTimeout)
+		defer t.Stop()
+		for {
+			select {
+			case <-lastEventPing:
+				if !t.Stop() {
+					select {
+					case <-t.C:
+					default:
+					}
+				}
+				t.Reset(streamEventTimeout)
+			case <-t.C:
+				streamCancel()
+				select {
+				case streamDone <- fmt.Errorf("stream timed out: no events for %s", streamEventTimeout):
+				default:
+				}
+				return
+			case <-streamCtx.Done():
+				return
+			}
+		}
+	}()
 
 	// Goroutine: consume stream events.
 	go func() {
@@ -935,6 +965,10 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 			if recvErr != nil {
 				streamDone <- recvErr
 				return
+			}
+			select {
+			case lastEventPing <- struct{}{}:
+			default:
 			}
 			switch ev.Type {
 			case llm.EventTextDelta:
@@ -1010,10 +1044,26 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 	msgStart := 0       // byte offset in the full text where the current Telegram message begins
 	needNewMsg := false // true when overflow happened but next placeholder not yet created
 
-	sendEdit := func(msgID int, content string) {
+	var lastSentContent string
+	var lastEditTime time.Time
+
+	sendEdit := func(msgID int, content string, force bool) {
+		if !force && content == lastSentContent {
+			return
+		}
+		if !force && !lastEditTime.IsZero() && time.Since(lastEditTime) < minEditInterval {
+			return
+		}
 		edit := tgbotapi.NewEditMessageText(chatID, msgID, mdToTelegramHTML(content))
 		edit.ParseMode = tgbotapi.ModeHTML
-		_, _ = bot.Send(edit) // rate-limit errors are silently ignored
+		if _, sendErr := bot.Send(edit); sendErr != nil {
+			if strings.Contains(sendErr.Error(), "429") || strings.Contains(sendErr.Error(), "Too Many Requests") {
+				log.Printf("[telegram] edit rate limited (chat %d): %v", chatID, sendErr)
+			}
+			return
+		}
+		lastSentContent = content
+		lastEditTime = time.Now()
 	}
 
 	var streamErr error
@@ -1042,7 +1092,7 @@ loop:
 				if splitAt > len(prose) {
 					splitAt = len(prose)
 				}
-				sendEdit(currentMsgID, prose[:splitAt])
+				sendEdit(currentMsgID, prose[:splitAt], false)
 				msgStart += splitAt
 				needNewMsg = true
 			} else {
@@ -1054,7 +1104,7 @@ loop:
 					}
 					needNewMsg = false
 				}
-				sendEdit(currentMsgID, rendered)
+				sendEdit(currentMsgID, rendered, false)
 			}
 		case <-streamCtx.Done():
 			// Distinguish server shutdown (parent ctx cancelled) from user interrupt.
@@ -1092,7 +1142,7 @@ loop:
 					currentMsgID = newMsg.MessageID
 				}
 			}
-			sendEdit(currentMsgID, display)
+			sendEdit(currentMsgID, display, true)
 
 			// Preserve partial history so conversation context isn't lost.
 			newHistory := make([]llm.Message, 0, len(sess.history)+2+len(produced))
@@ -1118,6 +1168,9 @@ loop:
 	}
 
 	if streamErr != nil {
+		if strings.Contains(streamErr.Error(), "stream timed out") {
+			_, _ = bot.Send(tgbotapi.NewMessage(chatID, "⌛ Response timed out — please try again."))
+		}
 		if m.store != nil && sess.meta != nil {
 			m.runStoreOpWithTimeout(sess.meta.ID, "UpdateStatus(stream_error)", func(storeCtx context.Context) error {
 				return m.store.UpdateStatus(storeCtx, sess.meta.ID, session.StatusError)
@@ -1158,13 +1211,13 @@ loop:
 				currentMsgID = newMsg.MessageID
 			}
 		}
-		sendEdit(currentMsgID, prose)
+		sendEdit(currentMsgID, prose, true)
 	case full == "":
 		// Nothing was produced at all — show a fallback in the original placeholder.
 		if ran {
-			sendEdit(currentMsgID, "(done)")
+			sendEdit(currentMsgID, "(done)", true)
 		} else {
-			sendEdit(currentMsgID, "(no response)")
+			sendEdit(currentMsgID, "(no response)", true)
 		}
 		if m.settings.Debug || m.settings.DebugRaw {
 			log.Printf("[telegram] empty assistant text for chat %d (toolsRan=%v, text_delta=%d, reasoning_delta=%d, tool_start=%d, tool_end=%d, tool_call=%d, phase=%d, usage=%d, done=%d, retry=%d, error=%d, other=%d, other_types=%v)",
