@@ -115,7 +115,7 @@ func (t *timeoutTool) Spec() ToolSpec {
 
 func (t *timeoutTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
 	t.calls++
-	return TextOutput("[Command timed out]\n\nexit_code: 0"), nil
+	return ToolOutput{Content: "[Command timed out]\n\nexit_code: 0", TimedOut: true}, nil
 }
 
 func (t *timeoutTool) Preview(args json.RawMessage) string {
@@ -335,6 +335,75 @@ func TestEngineToolTimeoutOutputMarksToolEndNonSuccessButContinuesLoop(t *testin
 	}
 	if tool.calls != 1 {
 		t.Fatalf("expected tool to run once, got %d", tool.calls)
+	}
+}
+
+// contentWithTimeoutStringTool returns output that contains the timeout message
+// in its content but does NOT set TimedOut. Simulates e.g. read_file on shell.go.
+type contentWithTimeoutStringTool struct{}
+
+func (t *contentWithTimeoutStringTool) Spec() ToolSpec {
+	return ToolSpec{Name: "content_tool", Schema: map[string]any{"type": "object"}}
+}
+func (t *contentWithTimeoutStringTool) Execute(_ context.Context, _ json.RawMessage) (ToolOutput, error) {
+	return TextOutput("here is some source code: [Command timed out] in a string literal"), nil
+}
+func (t *contentWithTimeoutStringTool) Preview(_ json.RawMessage) string { return "" }
+
+func TestEngineToolWithTimeoutStringInContentIsNotMarkedFailed(t *testing.T) {
+	tool := &contentWithTimeoutStringTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				return []Event{
+					{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "content_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventDone},
+				}
+			default:
+				return []Event{
+					{Type: EventTextDelta, Text: "done"},
+					{Type: EventDone},
+				}
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	req := Request{
+		Messages:   []Message{UserText("run content tool")},
+		Tools:      []ToolSpec{tool.Spec()},
+		ToolChoice: ToolChoice{Mode: ToolChoiceAuto},
+	}
+	stream, err := engine.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	var toolSuccess bool
+	var gotToolEnd bool
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+		if event.Type == EventToolExecEnd && event.ToolCallID == "call-1" {
+			gotToolEnd = true
+			toolSuccess = event.ToolSuccess
+		}
+	}
+	if !gotToolEnd {
+		t.Fatal("expected tool end event")
+	}
+	if !toolSuccess {
+		t.Error("expected ToolSuccess=true: content containing timeout string should not be treated as timed out")
 	}
 }
 

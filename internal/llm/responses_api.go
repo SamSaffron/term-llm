@@ -352,13 +352,11 @@ func BuildResponsesTools(specs []ToolSpec) []any {
 	}
 	tools := make([]any, 0, len(specs))
 	for _, spec := range specs {
-		// Normalize schema for OpenAI's strict requirements
-		schema := normalizeSchemaForOpenAI(spec.Schema)
 		tools = append(tools, ResponsesTool{
 			Type:        "function",
 			Name:        spec.Name,
 			Description: spec.Description,
-			Parameters:  schema,
+			Parameters:  normalizeSchemaForOpenAIStrict(spec.Schema),
 			Strict:      true,
 		})
 	}

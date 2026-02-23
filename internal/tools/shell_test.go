@@ -160,7 +160,7 @@ func TestShellTool_ExecuteEnv(t *testing.T) {
 	t.Setenv("INHERITED_VAR", "present")
 	args := mustMarshalShellArgs(ShellArgs{
 		Command: "echo $MY_VAR $INHERITED_VAR",
-		Env: map[string]string{
+		Env: EnvMap{
 			"MY_VAR": "hello",
 		},
 	})
@@ -185,7 +185,7 @@ func TestShellTool_ExecuteEnvOverride(t *testing.T) {
 	t.Setenv("CONFLICT_VAR", "old")
 	args := mustMarshalShellArgs(ShellArgs{
 		Command: "echo $CONFLICT_VAR",
-		Env: map[string]string{
+		Env: EnvMap{
 			"CONFLICT_VAR": "new",
 		},
 	})
@@ -286,6 +286,21 @@ func TestShellTool_Timeout(t *testing.T) {
 		if !strings.Contains(output.Content, "[Command timed out]") {
 			t.Errorf("expected '[Command timed out]' in output, got: %s", output.Content)
 		}
+		if !output.TimedOut {
+			t.Error("expected output.TimedOut=true for timed-out command")
+		}
+	})
+
+	t.Run("successful command does not set TimedOut", func(t *testing.T) {
+		tool := NewShellTool(nil, nil, DefaultOutputLimits())
+		args := mustMarshalShellArgs(ShellArgs{Command: "echo ok"})
+		output, err := tool.Execute(context.Background(), args)
+		if err != nil {
+			t.Fatalf("Execute returned error: %v", err)
+		}
+		if output.TimedOut {
+			t.Error("expected output.TimedOut=false for successful command")
+		}
 	})
 }
 
@@ -309,6 +324,35 @@ func TestShellTool_OutputTruncation(t *testing.T) {
 	text := output.Content
 	if !strings.Contains(text, "[Output truncated due to size limit]") {
 		t.Errorf("expected truncation message in output, got: %s", text)
+	}
+}
+
+func TestShellTool_ExecuteEnvArrayFormat(t *testing.T) {
+	tool := NewShellTool(nil, nil, DefaultOutputLimits())
+
+	// Simulate the strict-mode array format emitted by the Responses API.
+	args := json.RawMessage(`{"command":"echo $MY_VAR","env":[{"key":"MY_VAR","value":"hello_strict"}]}`)
+
+	output, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+
+	if !strings.Contains(output.Content, "hello_strict") {
+		t.Errorf("expected output to contain env var value from array format, got: %s", output.Content)
+	}
+}
+
+func TestEnvMap_EmptyKeyReturnsError(t *testing.T) {
+	tool := NewShellTool(nil, nil, DefaultOutputLimits())
+	// An array-form env entry with an empty key should produce a clear error.
+	args := json.RawMessage(`{"command":"echo hi","env":[{"key":"","value":"oops"}]}`)
+	output, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute returned unexpected Go error: %v", err)
+	}
+	if !strings.Contains(output.Content, "Error") {
+		t.Errorf("expected error message in output for empty env key, got: %s", output.Content)
 	}
 }
 

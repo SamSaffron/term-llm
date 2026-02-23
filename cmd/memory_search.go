@@ -14,12 +14,12 @@ import (
 )
 
 const (
-	memorySearchCandidateLimit    = 24
-	memorySearchVectorWeight      = 0.7
-	memorySearchBM25Weight        = 0.3
-	memorySearchMMRLambda         = 0.5
-	memorySearchMinScore          = 0.35
-	memorySearchMinScoreBM25Only  = 0.10 // lower threshold for fragments with no embedding
+	memorySearchCandidateLimit   = 24
+	memorySearchVectorWeight     = 0.7
+	memorySearchBM25Weight       = 0.3
+	memorySearchMMRLambda        = 0.5
+	memorySearchMinScore         = 0.35
+	memorySearchMinScoreBM25Only = 0.10 // lower threshold for fragments with no embedding
 )
 
 var (

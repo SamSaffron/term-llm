@@ -295,6 +295,191 @@ func TestNormalizeSchemaForOpenAI_RegularObjectGetsAdditionalPropertiesFalse(t *
 	}
 }
 
+func TestBuildResponsesTools_NormalizesFreeFormMapProperty(t *testing.T) {
+	specs := []ToolSpec{{
+		Name: "shell",
+		Schema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"command": map[string]interface{}{"type": "string"},
+				"env": map[string]interface{}{
+					"type":                 "object",
+					"description":          "Environment variables",
+					"additionalProperties": map[string]interface{}{"type": "string"},
+				},
+			},
+			"required":             []string{"command"},
+			"additionalProperties": false,
+		},
+	}}
+	tools := BuildResponsesTools(specs)
+	tool := tools[0].(ResponsesTool)
+	props := tool.Parameters["properties"].(map[string]interface{})
+
+	// command must remain unchanged
+	if _, ok := props["command"]; !ok {
+		t.Error("expected command to remain in strict schema")
+	}
+
+	// env must be present but transformed to an array of key/value objects
+	envSchema, ok := props["env"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected env to be present and a map")
+	}
+	if envSchema["type"] != "array" {
+		t.Errorf("expected env to be transformed to array type, got %v", envSchema["type"])
+	}
+	if envSchema["description"] != "Environment variables" {
+		t.Errorf("expected description to be preserved, got %v", envSchema["description"])
+	}
+	items, ok := envSchema["items"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected env.items to be a map")
+	}
+	if items["type"] != "object" {
+		t.Errorf("expected env.items.type to be object, got %v", items["type"])
+	}
+	itemProps, ok := items["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected env.items.properties to be a map")
+	}
+	if _, ok := itemProps["key"]; !ok {
+		t.Error("expected env.items.properties.key to exist")
+	}
+	valueSchema, ok := itemProps["value"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected env.items.properties.value to be a map")
+	}
+	if valueSchema["type"] != "string" {
+		t.Errorf("expected env.items.properties.value.type to be string (original additionalProperties schema), got %v", valueSchema["type"])
+	}
+	if items["additionalProperties"] != false {
+		t.Errorf("expected env.items.additionalProperties to be false, got %v", items["additionalProperties"])
+	}
+}
+
+func TestNormalizeFreeFormMapProperties_PreservesNonStringValueType(t *testing.T) {
+	// A free-form map whose values are integers, not strings.
+	schema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"counts": map[string]interface{}{
+				"type":                 "object",
+				"additionalProperties": map[string]interface{}{"type": "integer"},
+			},
+		},
+	}
+	result := normalizeFreeFormMapProperties(schema)
+	props := result["properties"].(map[string]interface{})
+	countsSchema := props["counts"].(map[string]interface{})
+	if countsSchema["type"] != "array" {
+		t.Fatalf("expected counts to be transformed to array, got %v", countsSchema["type"])
+	}
+	items := countsSchema["items"].(map[string]interface{})
+	itemProps := items["properties"].(map[string]interface{})
+	valueSchema := itemProps["value"].(map[string]interface{})
+	if valueSchema["type"] != "integer" {
+		t.Errorf("expected value type to preserve original additionalProperties type 'integer', got %v", valueSchema["type"])
+	}
+}
+
+func TestNormalizeFreeFormMapProperties_TraversesItems(t *testing.T) {
+	// A free-form map nested inside an array's items schema.
+	schema := map[string]interface{}{
+		"type": "array",
+		"items": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"env": map[string]interface{}{
+					"type":                 "object",
+					"additionalProperties": map[string]interface{}{"type": "string"},
+				},
+			},
+		},
+	}
+	result := normalizeFreeFormMapProperties(schema)
+	items := result["items"].(map[string]interface{})
+	itemProps := items["properties"].(map[string]interface{})
+	envSchema, ok := itemProps["env"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected env to exist inside items.properties")
+	}
+	if envSchema["type"] != "array" {
+		t.Errorf("expected env inside items to be transformed to array, got %v", envSchema["type"])
+	}
+}
+
+func TestNormalizeFreeFormMapProperties_AnyOfFreeFormMap(t *testing.T) {
+	// A property whose schema is an anyOf where one branch is a free-form map.
+	schema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"meta": map[string]interface{}{
+				"anyOf": []interface{}{
+					map[string]interface{}{
+						"type":                 "object",
+						"additionalProperties": map[string]interface{}{"type": "string"},
+					},
+					map[string]interface{}{"type": "null"},
+				},
+			},
+		},
+	}
+	result := normalizeFreeFormMapProperties(schema)
+	props := result["properties"].(map[string]interface{})
+	metaSchema := props["meta"].(map[string]interface{})
+	anyOf := metaSchema["anyOf"].([]interface{})
+
+	// First anyOf branch (was a free-form map) must be converted to array.
+	firstBranch, ok := anyOf[0].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected first anyOf branch to be a map")
+	}
+	if firstBranch["type"] != "array" {
+		t.Errorf("expected free-form map in anyOf to be converted to array, got %v", firstBranch["type"])
+	}
+
+	// Second anyOf branch (null) must be unchanged.
+	secondBranch, ok := anyOf[1].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected second anyOf branch to be a map")
+	}
+	if secondBranch["type"] != "null" {
+		t.Errorf("expected null branch to be unchanged, got %v", secondBranch["type"])
+	}
+}
+
+func TestNormalizeFreeFormMapProperties_PreservesMetadata(t *testing.T) {
+	// Metadata fields beyond description (title, default) must survive conversion.
+	schema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"tags": map[string]interface{}{
+				"type":                 "object",
+				"description":          "Tag values",
+				"title":                "Tags",
+				"default":              map[string]interface{}{},
+				"additionalProperties": map[string]interface{}{"type": "string"},
+			},
+		},
+	}
+	result := normalizeFreeFormMapProperties(schema)
+	props := result["properties"].(map[string]interface{})
+	tagsSchema := props["tags"].(map[string]interface{})
+	if tagsSchema["type"] != "array" {
+		t.Fatalf("expected tags to be converted to array, got %v", tagsSchema["type"])
+	}
+	if tagsSchema["description"] != "Tag values" {
+		t.Errorf("expected description to be preserved, got %v", tagsSchema["description"])
+	}
+	if tagsSchema["title"] != "Tags" {
+		t.Errorf("expected title to be preserved, got %v", tagsSchema["title"])
+	}
+	if tagsSchema["default"] == nil {
+		t.Error("expected default to be preserved")
+	}
+}
+
 func TestBuildCompatMessages_DropsDanglingToolCalls(t *testing.T) {
 	messages := []Message{
 		{

@@ -164,7 +164,7 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 				"name":        spec.Name,
 				"description": spec.Description,
 				"strict":      true,
-				"parameters":  normalizeSchemaForOpenAI(spec.Schema),
+				"parameters":  normalizeSchemaForOpenAIStrict(spec.Schema),
 			})
 		}
 

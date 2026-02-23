@@ -383,4 +383,3 @@ func (m *Model) bumpContentVersion() {
 		m.streamPerf.RecordContentVersionBump()
 	}
 }
-

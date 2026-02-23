@@ -178,6 +178,7 @@ type ToolOutput struct {
 	ContentParts []ToolContentPart `json:"content_parts,omitempty"` // Structured multimodal tool content for provider formatting
 	Diffs        []DiffData        // Structured diff data (for UI rendering)
 	Images       []string          // Image paths (for UI rendering)
+	TimedOut     bool              // Set by tools that support timeouts (e.g. shell); drives ToolSuccess=false without content sniffing
 }
 
 // TextOutput creates a ToolOutput with only text content.
@@ -234,8 +235,8 @@ type Event struct {
 	ReasoningItemID           string // For EventReasoningDelta: reasoning item ID
 	ReasoningEncryptedContent string // For EventReasoningDelta: encrypted reasoning content
 	Tool                      *ToolCall
-	ToolCallID                string     // For EventToolExecStart/End: unique ID of this tool invocation
-	ToolName                  string     // For EventToolExecStart/End: name of tool being executed
+	ToolCallID                string          // For EventToolExecStart/End: unique ID of this tool invocation
+	ToolName                  string          // For EventToolExecStart/End: name of tool being executed
 	ToolInfo                  string          // For EventToolExecStart/End: additional info (e.g., URL being fetched)
 	ToolArgs                  json.RawMessage // For EventToolExecStart: raw args JSON
 	ToolSuccess               bool            // For EventToolExecEnd: whether tool execution succeeded

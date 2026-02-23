@@ -32,13 +32,46 @@ func NewShellTool(approval *ApprovalManager, config *ToolConfig, limits OutputLi
 	}
 }
 
+// EnvMap is a string-to-string map that can unmarshal both the standard JSON
+// object form ({"KEY":"val"}) used by non-strict providers, and the array
+// form ([{"key":"KEY","value":"val"}]) emitted by OpenAI strict-mode schemas
+// where additionalProperties must be false.
+type EnvMap map[string]string
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (e *EnvMap) UnmarshalJSON(data []byte) error {
+	// Try array of key/value pairs first (Responses API strict-mode form).
+	var pairs []struct {
+		Key   string `json:"key"`
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal(data, &pairs); err == nil {
+		m := make(map[string]string, len(pairs))
+		for _, p := range pairs {
+			if p.Key == "" {
+				return fmt.Errorf("env pair has empty key")
+			}
+			m[p.Key] = p.Value
+		}
+		*e = m
+		return nil
+	}
+	// Fall back to plain map (Chat Completions / non-strict form).
+	var m map[string]string
+	if err := json.Unmarshal(data, &m); err != nil {
+		return err
+	}
+	*e = m
+	return nil
+}
+
 // ShellArgs are the arguments for the shell tool.
 type ShellArgs struct {
-	Command        string            `json:"command"`
-	WorkingDir     string            `json:"working_dir,omitempty"`
-	TimeoutSeconds int               `json:"timeout_seconds,omitempty"`
-	Env            map[string]string `json:"env,omitempty"`
-	Description    string            `json:"description,omitempty"`
+	Command        string `json:"command"`
+	WorkingDir     string `json:"working_dir,omitempty"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+	Env            EnvMap `json:"env,omitempty"`
+	Description    string `json:"description,omitempty"`
 }
 
 // ShellResult contains the result of a shell command.
@@ -199,7 +232,7 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 	// Check for timeout
 	if execCtx.Err() == context.DeadlineExceeded {
 		result.TimedOut = true
-		return llm.TextOutput(formatShellResult(result, t.limits)), nil
+		return llm.ToolOutput{Content: formatShellResult(result, t.limits), TimedOut: true}, nil
 	}
 
 	// Get exit code

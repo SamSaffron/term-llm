@@ -164,15 +164,95 @@ func (p *OpenAIProvider) ResetConversation() {
 	}
 }
 
-// normalizeSchemaForOpenAI ensures schema meets OpenAI's strict requirements:
+// normalizeSchemaForOpenAI ensures schema meets OpenAI's requirements:
 // - 'required' must include every key in properties
-// - 'additionalProperties' must be false
+// - 'additionalProperties' must be false (free-form maps are preserved as-is)
 // - unsupported 'format' values must be removed
 func normalizeSchemaForOpenAI(schema map[string]interface{}) map[string]interface{} {
 	if schema == nil {
 		return schema
 	}
 	return normalizeSchemaRecursive(deepCopyMap(schema))
+}
+
+// normalizeSchemaForOpenAIStrict applies normalizeSchemaForOpenAI and additionally
+// converts free-form map properties (additionalProperties: schema) into arrays of
+// key/value objects, which is required for strict mode where additionalProperties
+// must be false on every object.
+func normalizeSchemaForOpenAIStrict(schema map[string]interface{}) map[string]interface{} {
+	return normalizeFreeFormMapProperties(normalizeSchemaForOpenAI(schema))
+}
+
+// normalizeFreeFormMapProperties converts any free-form map schema (one whose
+// additionalProperties is a schema object, not a bool) into an array of
+// {key, value} pair objects. OpenAI strict mode requires additionalProperties:
+// false on every object, so this is the closest strict-compatible equivalent.
+// The function handles both the case where the current schema is itself a
+// free-form map and the case where one is nested inside properties, items,
+// anyOf, oneOf, or allOf.
+func normalizeFreeFormMapProperties(schema map[string]interface{}) map[string]interface{} {
+	// If this schema is itself a free-form map, convert it and return early.
+	if valueSchema, isSchemaMap := schema["additionalProperties"].(map[string]interface{}); isSchemaMap {
+		return convertFreeFormMapToArray(schema, valueSchema)
+	}
+
+	// Recurse into properties.
+	if props, ok := schema["properties"].(map[string]interface{}); ok {
+		for key, val := range props {
+			if propSchema, ok := val.(map[string]interface{}); ok {
+				props[key] = normalizeFreeFormMapProperties(propSchema)
+			}
+		}
+	}
+
+	// Recurse into array items.
+	if items, ok := schema["items"].(map[string]interface{}); ok {
+		schema["items"] = normalizeFreeFormMapProperties(items)
+	}
+
+	// Recurse into anyOf, oneOf, allOf.
+	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
+		if arr, ok := schema[key].([]interface{}); ok {
+			for i, item := range arr {
+				if itemSchema, ok := item.(map[string]interface{}); ok {
+					arr[i] = normalizeFreeFormMapProperties(itemSchema)
+				}
+			}
+		}
+	}
+
+	return schema
+}
+
+// convertFreeFormMapToArray transforms a free-form map schema (type:object with
+// additionalProperties: schema) into a strict-compatible array of {key, value}
+// objects. The original additionalProperties schema is preserved as the value
+// type. All non-conflicting metadata fields (title, default, examples, etc.)
+// from the original schema are copied to the result.
+func convertFreeFormMapToArray(orig map[string]interface{}, valueSchema map[string]interface{}) map[string]interface{} {
+	normalizedValue := normalizeFreeFormMapProperties(valueSchema)
+	result := map[string]interface{}{
+		"type": "array",
+		"items": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"key":   map[string]interface{}{"type": "string"},
+				"value": normalizedValue,
+			},
+			"required":             []string{"key", "value"},
+			"additionalProperties": false,
+		},
+	}
+	// Copy metadata not rewritten by the conversion (e.g. title, default, examples).
+	skip := map[string]bool{
+		"type": true, "properties": true, "required": true, "additionalProperties": true,
+	}
+	for k, v := range orig {
+		if !skip[k] {
+			result[k] = v
+		}
+	}
+	return result
 }
 
 // deepCopyMap creates a deep copy of a map[string]interface{}

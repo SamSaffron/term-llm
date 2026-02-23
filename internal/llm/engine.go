@@ -1222,14 +1222,13 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, event
 
 	DebugToolResult(debug, call.ID, call.Name, output.Content)
 	DebugRawToolResult(debugRaw, call.ID, call.Name, output.Content)
-	timedOut := toolOutputTimedOut(output.Content)
 	if events != nil {
 		events <- Event{
 			Type:        EventToolExecEnd,
 			ToolCallID:  call.ID,
 			ToolName:    call.Name,
 			ToolInfo:    info,
-			ToolSuccess: !timedOut,
+			ToolSuccess: !output.TimedOut,
 			ToolOutput:  output.Content,
 			ToolDiffs:   output.Diffs,
 			ToolImages:  output.Images,
@@ -1302,8 +1301,6 @@ func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, event
 		DebugToolResult(debug, callID, call.Name, result.Content)
 		DebugRawToolResult(debugRaw, callID, call.Name, result.Content)
 	}
-	timedOut := err == nil && toolOutputTimedOut(result.Content)
-
 	// Emit end event to TUI (non-blocking to avoid deadlock if consumer is slow)
 	if events != nil {
 		select {
@@ -1312,7 +1309,7 @@ func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, event
 			ToolCallID:  callID,
 			ToolName:    call.Name,
 			ToolInfo:    info,
-			ToolSuccess: err == nil && !timedOut,
+			ToolSuccess: err == nil && !result.TimedOut,
 			ToolOutput:  result.Content,
 			ToolDiffs:   result.Diffs,
 			ToolImages:  result.Images,
@@ -1334,10 +1331,6 @@ func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, event
 	returnCall := *call
 	returnCall.ID = callID
 	return returnCall, result, err
-}
-
-func toolOutputTimedOut(content string) bool {
-	return strings.Contains(content, "[Command timed out]")
 }
 
 func ensureToolCallIDs(calls []ToolCall) []ToolCall {

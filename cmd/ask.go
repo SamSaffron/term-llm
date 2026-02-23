@@ -915,9 +915,9 @@ type askUsageMsg struct {
 }
 type askTickMsg time.Time
 type askToolStartMsg struct {
-	CallID  string          // Unique ID for this tool invocation
-	Name    string          // Tool name being executed
-	Info    string          // Additional info (e.g., URL)
+	CallID   string          // Unique ID for this tool invocation
+	Name     string          // Tool name being executed
+	Info     string          // Additional info (e.g., URL)
 	ToolArgs json.RawMessage // Raw args JSON
 }
 type askToolEndMsg struct {
