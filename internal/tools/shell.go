@@ -139,13 +139,18 @@ func (t *ShellTool) Preview(args json.RawMessage) string {
 }
 
 func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+	warning := WarnUnknownParams(args, []string{"command", "working_dir", "timeout_seconds", "description", "env"})
+	textOutput := func(message string) llm.ToolOutput {
+		return llm.TextOutput(warning + message)
+	}
+
 	var a ShellArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
+		return textOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
 	}
 
 	if a.Command == "" {
-		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "command is required"))), nil
+		return textOutput(formatToolError(NewToolError(ErrInvalidParams, "command is required"))), nil
 	}
 
 	// Check permissions via approval manager
@@ -153,12 +158,12 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 		outcome, err := t.approval.CheckShellApproval(a.Command)
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {
-				return llm.TextOutput(formatToolError(toolErr)), nil
+				return textOutput(formatToolError(toolErr)), nil
 			}
-			return llm.TextOutput(formatToolError(NewToolError(ErrPermissionDenied, err.Error()))), nil
+			return textOutput(formatToolError(NewToolError(ErrPermissionDenied, err.Error()))), nil
 		}
 		if outcome == Cancel {
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "command not allowed: %s", truncateCommand(a.Command)))), nil
+			return textOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "command not allowed: %s", truncateCommand(a.Command)))), nil
 		}
 	}
 
@@ -177,7 +182,7 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 		var err error
 		workDir, err = os.Getwd()
 		if err != nil {
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err))), nil
+			return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err))), nil
 		}
 	}
 
@@ -232,7 +237,7 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 	// Check for timeout
 	if execCtx.Err() == context.DeadlineExceeded {
 		result.TimedOut = true
-		return llm.ToolOutput{Content: formatShellResult(result, t.limits), TimedOut: true}, nil
+		return llm.ToolOutput{Content: warning + formatShellResult(result, t.limits), TimedOut: true}, nil
 	}
 
 	// Get exit code
@@ -240,11 +245,11 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			result.ExitCode = exitErr.ExitCode()
 		} else {
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "command error: %v", err))), nil
+			return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "command error: %v", err))), nil
 		}
 	}
 
-	return llm.TextOutput(formatShellResult(result, t.limits)), nil
+	return textOutput(formatShellResult(result, t.limits)), nil
 }
 
 // formatShellResult formats the shell result for the LLM.

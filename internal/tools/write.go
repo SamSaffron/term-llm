@@ -26,8 +26,8 @@ func NewWriteFileTool(approval *ApprovalManager) *WriteFileTool {
 
 // WriteFileArgs are the arguments for write_file.
 type WriteFileArgs struct {
-	FilePath string `json:"file_path"`
-	Content  string `json:"content"`
+	Path    string `json:"path"`
+	Content string `json:"content"`
 }
 
 func (t *WriteFileTool) Spec() llm.ToolSpec {
@@ -37,7 +37,7 @@ func (t *WriteFileTool) Spec() llm.ToolSpec {
 		Schema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
-				"file_path": map[string]interface{}{
+				"path": map[string]interface{}{
 					"type":        "string",
 					"description": "Path to the file to write",
 				},
@@ -46,7 +46,7 @@ func (t *WriteFileTool) Spec() llm.ToolSpec {
 					"description": "Full file content to write",
 				},
 			},
-			"required":             []string{"file_path", "content"},
+			"required":             []string{"path", "content"},
 			"additionalProperties": false,
 		},
 	}
@@ -54,40 +54,45 @@ func (t *WriteFileTool) Spec() llm.ToolSpec {
 
 func (t *WriteFileTool) Preview(args json.RawMessage) string {
 	var a WriteFileArgs
-	if err := json.Unmarshal(args, &a); err != nil || a.FilePath == "" {
+	if err := json.Unmarshal(args, &a); err != nil || a.Path == "" {
 		return ""
 	}
-	return a.FilePath
+	return a.Path
 }
 
 func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
-	var a WriteFileArgs
-	if err := json.Unmarshal(args, &a); err != nil {
-		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
+	warning := WarnUnknownParams(args, []string{"path", "content"})
+	textOutput := func(message string) llm.ToolOutput {
+		return llm.TextOutput(warning + message)
 	}
 
-	if a.FilePath == "" {
-		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "file_path is required"))), nil
+	var a WriteFileArgs
+	if err := json.Unmarshal(args, &a); err != nil {
+		return textOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
+	}
+
+	if a.Path == "" {
+		return textOutput(formatToolError(NewToolError(ErrInvalidParams, "path is required"))), nil
 	}
 
 	// Check permissions via approval manager
 	if t.approval != nil {
-		outcome, err := t.approval.CheckPathApproval(WriteFileToolName, a.FilePath, a.FilePath, true)
+		outcome, err := t.approval.CheckPathApproval(WriteFileToolName, a.Path, a.Path, true)
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {
-				return llm.TextOutput(formatToolError(toolErr)), nil
+				return textOutput(formatToolError(toolErr)), nil
 			}
-			return llm.TextOutput(formatToolError(NewToolError(ErrPermissionDenied, err.Error()))), nil
+			return textOutput(formatToolError(NewToolError(ErrPermissionDenied, err.Error()))), nil
 		}
 		if outcome == Cancel {
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", a.FilePath))), nil
+			return textOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", a.Path))), nil
 		}
 	}
 
 	// Resolve absolute path
-	absPath, err := filepath.Abs(a.FilePath)
+	absPath, err := filepath.Abs(a.Path)
 	if err != nil {
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
+		return textOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
 	}
 
 	// Check if file exists for diff info and preserve permissions
@@ -105,7 +110,7 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 	// Create parent directories
 	dir := filepath.Dir(absPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create directory: %v", err))), nil
+		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create directory: %v", err))), nil
 	}
 
 	// Atomic write: write to a uniquely-named temp file, then rename.
@@ -113,23 +118,23 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 	base := filepath.Base(absPath)
 	tf, err := os.CreateTemp(dir, "."+base+".*.tmp")
 	if err != nil {
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create temp file: %v", err))), nil
+		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create temp file: %v", err))), nil
 	}
 	tempPath := tf.Name()
 
 	if _, err := tf.Write([]byte(a.Content)); err != nil {
 		tf.Close()
 		os.Remove(tempPath)
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to write temp file: %v", err))), nil
+		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to write temp file: %v", err))), nil
 	}
 	if err := tf.Sync(); err != nil {
 		tf.Close()
 		os.Remove(tempPath)
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to sync temp file: %v", err))), nil
+		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to sync temp file: %v", err))), nil
 	}
 	if err := tf.Close(); err != nil {
 		os.Remove(tempPath)
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to close temp file: %v", err))), nil
+		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to close temp file: %v", err))), nil
 	}
 
 	// Preserve existing file permissions, or use 0644 for new files.
@@ -140,12 +145,12 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 	}
 	if err := os.Chmod(tempPath, mode); err != nil {
 		os.Remove(tempPath)
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to set file permissions: %v", err))), nil
+		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to set file permissions: %v", err))), nil
 	}
 
 	if err := os.Rename(tempPath, absPath); err != nil {
 		os.Remove(tempPath)
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to rename temp file: %v", err))), nil
+		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to rename temp file: %v", err))), nil
 	}
 
 	// Build result message
@@ -164,6 +169,8 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 			}
 		}
 	}
+
+	output.Content = warning + output.Content
 
 	return output, nil
 }

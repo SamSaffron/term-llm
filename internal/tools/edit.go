@@ -31,7 +31,7 @@ func NewEditFileTool(approval *ApprovalManager) *EditFileTool {
 // - Mode 1 (Delegated): instructions + optional line_range
 // - Mode 2 (Direct): old_text + new_text
 type EditFileArgs struct {
-	FilePath string `json:"file_path"`
+	Path string `json:"path"`
 	// Mode 1: Delegated edit (natural language)
 	Instructions string `json:"instructions,omitempty"`
 	LineRange    string `json:"line_range,omitempty"` // e.g., "10-20"
@@ -51,7 +51,7 @@ Use direct edit (old_text/new_text) for simple changes. Avoid mixing modes.`,
 		Schema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
-				"file_path": map[string]interface{}{
+				"path": map[string]interface{}{
 					"type":        "string",
 					"description": "Path to the file to edit",
 				},
@@ -64,7 +64,7 @@ Use direct edit (old_text/new_text) for simple changes. Avoid mixing modes.`,
 					"description": "Text to replace old_text with",
 				},
 			},
-			"required":             []string{"file_path", "old_text", "new_text"},
+			"required":             []string{"path", "old_text", "new_text"},
 			"additionalProperties": false,
 		},
 	}
@@ -72,33 +72,38 @@ Use direct edit (old_text/new_text) for simple changes. Avoid mixing modes.`,
 
 func (t *EditFileTool) Preview(args json.RawMessage) string {
 	var a EditFileArgs
-	if err := json.Unmarshal(args, &a); err != nil || a.FilePath == "" {
+	if err := json.Unmarshal(args, &a); err != nil || a.Path == "" {
 		return ""
 	}
-	return a.FilePath
+	return a.Path
 }
 
 func (t *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
-	var a EditFileArgs
-	if err := json.Unmarshal(args, &a); err != nil {
-		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
+	warning := WarnUnknownParams(args, []string{"path", "old_text", "new_text", "instructions", "line_range"})
+	textOutput := func(message string) llm.ToolOutput {
+		return llm.TextOutput(warning + message)
 	}
 
-	if a.FilePath == "" {
-		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "file_path is required"))), nil
+	var a EditFileArgs
+	if err := json.Unmarshal(args, &a); err != nil {
+		return textOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
+	}
+
+	if a.Path == "" {
+		return textOutput(formatToolError(NewToolError(ErrInvalidParams, "path is required"))), nil
 	}
 
 	// Check permissions via approval manager
 	if t.approval != nil {
-		outcome, err := t.approval.CheckPathApproval(EditFileToolName, a.FilePath, a.FilePath, true)
+		outcome, err := t.approval.CheckPathApproval(EditFileToolName, a.Path, a.Path, true)
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {
-				return llm.TextOutput(formatToolError(toolErr)), nil
+				return textOutput(formatToolError(toolErr)), nil
 			}
-			return llm.TextOutput(formatToolError(NewToolError(ErrPermissionDenied, err.Error()))), nil
+			return textOutput(formatToolError(NewToolError(ErrPermissionDenied, err.Error()))), nil
 		}
 		if outcome == Cancel {
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", a.FilePath))), nil
+			return textOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", a.Path))), nil
 		}
 	}
 
@@ -107,19 +112,24 @@ func (t *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.T
 	hasDirectEdit := a.OldText != "" || a.NewText != ""
 
 	if hasInstructions && hasDirectEdit {
-		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "cannot mix instructions with old_text/new_text"))), nil
+		return textOutput(formatToolError(NewToolError(ErrInvalidParams, "cannot mix instructions with old_text/new_text"))), nil
 	}
 
 	if !hasInstructions && !hasDirectEdit {
-		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "provide either instructions or old_text/new_text"))), nil
+		return textOutput(formatToolError(NewToolError(ErrInvalidParams, "provide either instructions or old_text/new_text"))), nil
 	}
 
 	if hasDirectEdit {
-		return t.executeDirectEdit(ctx, a)
+		output, err := t.executeDirectEdit(ctx, a)
+		if err != nil {
+			return output, err
+		}
+		output.Content = warning + output.Content
+		return output, nil
 	}
 
 	// Delegated edit not implemented in this tool - it would require an LLM provider
-	return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "instructions mode requires the full edit command"))), nil
+	return textOutput(formatToolError(NewToolError(ErrInvalidParams, "instructions mode requires the full edit command"))), nil
 }
 
 // executeDirectEdit performs a deterministic string replacement using 5-level matching.
@@ -128,7 +138,7 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (l
 	// file — regardless of how the path was spelled — compute an identical
 	// lock path and correctly serialize via flock.  Note: filepath.Abs does
 	// not resolve symlinks; different symlink paths will use separate locks.
-	absPath, err := filepath.Abs(a.FilePath)
+	absPath, err := filepath.Abs(a.Path)
 	if err != nil {
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to resolve path: %v", err))), nil
 	}
