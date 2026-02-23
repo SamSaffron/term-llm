@@ -205,14 +205,19 @@ func (m *Model) viewAltScreen() string {
 		}
 	}
 
-	// Scroll to bottom after response completes (regardless of previous scroll position)
+	// Scroll to bottom after response completes (regardless of previous scroll position).
+	// This MUST happen before viewport.View() is called so the rendered frame reflects
+	// the post-scroll position. Previously GotoBottom() ran after View() was cached,
+	// causing the completion frame to render at the old YOffset with no subsequent tick
+	// to re-render (spinner stops when streaming=false).
 	if m.scrollToBottom {
 		m.viewport.GotoBottom()
 		m.scrollToBottom = false
 	}
 
-	// Cache viewport.View() output - only regenerate if content, scroll position, or size changed
-	// Check YOffset after GotoBottom() since it modifies the offset
+	// Cache viewport.View() output - only regenerate if content, scroll position, or size changed.
+	// NOTE: this block must remain AFTER the scrollToBottom block above, so that GotoBottom()
+	// is reflected in the YOffset before we call viewport.View().
 	yOffsetChanged := m.viewport.YOffset != m.viewCache.lastYOffset
 	sizeChanged := m.viewport.Width != m.viewCache.lastVPWidth || m.viewport.Height != m.viewCache.lastVPHeight
 	needViewRender := contentChanged || yOffsetChanged || sizeChanged || m.viewCache.lastViewportView == ""
