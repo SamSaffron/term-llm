@@ -478,6 +478,64 @@ func (s *Store) FindFragmentsByPath(ctx context.Context, path string) ([]Fragmen
 	return out, nil
 }
 
+// GetFragmentByID fetches a fragment by its ID (across all agents).
+func (s *Store) GetFragmentByID(ctx context.Context, id string) (*Fragment, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, fmt.Errorf("id cannot be empty")
+	}
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, agent, path, content, source, created_at, updated_at,
+		       accessed_at, access_count, decay_score, pinned
+		FROM memory_fragments
+		WHERE id = ?`, id)
+	f, err := scanFragment(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get fragment by id: %w", err)
+	}
+	return f, nil
+}
+
+// GetFragmentByShortID fetches a fragment whose ID ends with the given 6-char hex suffix.
+// Returns an error if multiple fragments match (collision, extremely unlikely).
+func (s *Store) GetFragmentByShortID(ctx context.Context, suffix string) (*Fragment, error) {
+	suffix = strings.TrimSpace(suffix)
+	if suffix == "" {
+		return nil, fmt.Errorf("suffix cannot be empty")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, agent, path, content, source, created_at, updated_at,
+		       accessed_at, access_count, decay_score, pinned
+		FROM memory_fragments
+		WHERE id LIKE ?`, "%-"+suffix)
+	if err != nil {
+		return nil, fmt.Errorf("get fragment by short id: %w", err)
+	}
+	defer rows.Close()
+
+	var results []Fragment
+	for rows.Next() {
+		f, err := scanFragment(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan fragment: %w", err)
+		}
+		results = append(results, *f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(results) == 0 {
+		return nil, nil
+	}
+	if len(results) > 1 {
+		return nil, fmt.Errorf("short ID %q is ambiguous (%d matches); use the full ID", suffix, len(results))
+	}
+	return &results[0], nil
+}
+
 // ListFragments returns fragments sorted by updated_at descending.
 func (s *Store) ListFragments(ctx context.Context, opts ListOptions) ([]Fragment, error) {
 	query := `
