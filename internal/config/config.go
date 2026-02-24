@@ -94,6 +94,7 @@ type Config struct {
 	Exec            ExecConfig                `mapstructure:"exec"`
 	Ask             AskConfig                 `mapstructure:"ask"`
 	Chat            ChatConfig                `mapstructure:"chat"`
+	Remote          RemoteConfig              `mapstructure:"remote"`
 	Edit            EditConfig                `mapstructure:"edit"`
 	Image           ImageConfig               `mapstructure:"image"`
 	Embed           EmbedConfig               `mapstructure:"embed"`
@@ -110,6 +111,13 @@ type Config struct {
 // ServeConfig holds configuration for the serve command platforms.
 type ServeConfig struct {
 	Telegram TelegramServeConfig `mapstructure:"telegram" yaml:"telegram,omitempty"`
+	Chat     ChatServeConfig     `mapstructure:"chat" yaml:"chat,omitempty"`
+}
+
+// ChatServeConfig holds configuration for the remote chat server.
+type ChatServeConfig struct {
+	Listen string `mapstructure:"listen" yaml:"listen,omitempty"`
+	Token  string `mapstructure:"token" yaml:"token,omitempty"`
 }
 
 // TelegramServeConfig holds configuration for the Telegram bot platform.
@@ -238,6 +246,12 @@ type ChatConfig struct {
 	Model        string `mapstructure:"model"`        // Override model for chat only
 	Instructions string `mapstructure:"instructions"` // Custom system prompt for chat
 	MaxTurns     int    `mapstructure:"max_turns"`    // Max agentic turns (default 200)
+}
+
+type RemoteConfig struct {
+	URL   string `mapstructure:"url" yaml:"url,omitempty"`
+	Token string `mapstructure:"token" yaml:"token,omitempty"`
+	Agent string `mapstructure:"agent" yaml:"agent,omitempty"`
 }
 
 type EditConfig struct {

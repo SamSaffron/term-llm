@@ -169,6 +169,23 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) startStream(content string) tea.Cmd {
+	if m.backend != nil {
+		return func() tea.Msg {
+			ctx, cancel := context.WithCancel(context.Background())
+			m.streamCancelFunc = func() {
+				cancel()
+				m.backend.Interrupt()
+			}
+
+			streamCh, err := m.backend.SendMessage(ctx, content)
+			if err != nil {
+				return streamEventMsg{event: ui.ErrorEvent(err)}
+			}
+			m.streamChan = streamCh
+			return m.listenForStreamEventsSync()
+		}
+	}
+
 	return func() tea.Msg {
 		ctx, cancel := context.WithCancel(context.Background())
 		m.streamCancelFunc = cancel
@@ -314,6 +331,25 @@ func (m *Model) listenForStreamEvents() tea.Cmd {
 
 // listenForStreamEventsSync synchronously waits for the next stream event
 func (m *Model) listenForStreamEventsSync() tea.Msg {
+	if m.streamChan == nil && m.backendRequests == nil {
+		return streamEventMsg{event: ui.DoneEvent(0)}
+	}
+
+	if m.backendRequests != nil {
+		select {
+		case msg, ok := <-m.backendRequests:
+			if ok {
+				return msg
+			}
+			m.backendRequests = nil
+		case event, ok := <-m.streamChan:
+			if !ok {
+				return streamEventMsg{event: ui.DoneEvent(0)}
+			}
+			return streamEventMsg{event: event}
+		}
+	}
+
 	if m.streamChan == nil {
 		return streamEventMsg{event: ui.DoneEvent(0)}
 	}

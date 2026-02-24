@@ -24,6 +24,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/serve"
+	servechat "github.com/samsaffron/term-llm/internal/serve/chat"
 	"github.com/samsaffron/term-llm/internal/serveui"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
@@ -109,9 +110,9 @@ func init() {
 	serveCmd.Flags().DurationVar(&serveSessionTTL, "session-ttl", 30*time.Minute, "Stateful session idle TTL")
 	serveCmd.Flags().IntVar(&serveSessionMax, "session-max", 1000, "Max stateful sessions in memory")
 
-	serveCmd.Flags().StringVar(&servePlatform, "platform", "web", "Comma-separated platforms to serve: web, jobs, telegram")
+	serveCmd.Flags().StringVar(&servePlatform, "platform", "web", "Comma-separated platforms to serve: web, jobs, telegram, chat")
 	if err := serveCmd.RegisterFlagCompletionFunc("platform", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return []string{"web", "jobs", "telegram", "web,jobs", "web,telegram", "jobs,telegram", "web,jobs,telegram"}, cobra.ShellCompDirectiveNoFileComp
+		return []string{"web", "jobs", "telegram", "chat", "web,jobs", "web,telegram", "web,chat", "jobs,telegram", "jobs,chat", "telegram,chat", "web,jobs,telegram", "web,jobs,chat", "web,telegram,chat", "jobs,telegram,chat", "web,jobs,telegram,chat"}, cobra.ShellCompDirectiveNoFileComp
 	}); err != nil {
 		panic("failed to register platform completion: " + err.Error())
 	}
@@ -173,6 +174,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	hasJobs := platformContains(platformNames, "jobs")
 	hasWeb := platformContains(platformNames, "web")
 	hasTelegram := platformContains(platformNames, "telegram")
+	hasChat := platformContains(platformNames, "chat")
 
 	cfg, err := loadConfigWithSetup()
 	if err != nil {
@@ -180,7 +182,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	var agent *agents.Agent
-	if hasWeb || hasTelegram {
+	if hasWeb || hasTelegram || hasChat {
 		agent, err = LoadAgent(serveAgent, cfg)
 		if err != nil {
 			return err
@@ -315,6 +317,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 			// Handled by the HTTP serveServer below.
 		case "telegram":
 			platforms = append(platforms, serve.NewTelegramPlatform(cfg.Serve.Telegram))
+		case "chat":
+			// Handled by the HTTP serveServer below.
 		default:
 			return fmt.Errorf("unknown platform: %s", name)
 		}
@@ -329,7 +333,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	hasHTTP := hasWeb || hasJobs
+	hasHTTP := hasWeb || hasJobs || hasChat
 
 	var s *serveServer
 	if hasHTTP {
@@ -352,6 +356,35 @@ func runServe(cmd *cobra.Command, args []string) error {
 			sessionMgr: sessionMgr,
 			jobsV2:     jobsV2,
 			cfgRef:     cfg,
+			mux:        http.NewServeMux(),
+		}
+
+		if hasChat {
+			if cfg.Serve.Chat.Token == "" {
+				cfg.Serve.Chat.Token = token
+			}
+			chatMgr := servechat.NewSessionManager(cfg.Serve.Chat)
+			chatMgr.SetDefaults(settings.SystemPrompt, settings.Search, forceExternalSearch, settings.MaxTurns, agentName)
+			chatMgr.SetRuntimeFactory(func(ctx context.Context) (*servechat.Runtime, error) {
+				rt, err := factory(ctx)
+				if err != nil {
+					return nil, err
+				}
+				providerName := ""
+				if rt.provider != nil {
+					providerName = rt.provider.Name()
+				}
+				return &servechat.Runtime{
+					Engine:       rt.engine,
+					ProviderName: providerName,
+					ModelName:    rt.defaultModel,
+					ToolMgr:      rt.toolMgr,
+					MCPManager:   rt.mcpManager,
+					Cleanup:      rt.Close,
+				}, nil
+			})
+			s.mux.Handle("/chat/", chatMgr.HTTPHandler())
+			go chatMgr.StartGC(ctx)
 		}
 
 		if err := s.Start(); err != nil {
@@ -503,12 +536,17 @@ type serveServer struct {
 	jobsV2         *jobsV2Manager
 	cfgRef         *config.Config
 	server         *http.Server
+	mux            *http.ServeMux
 	modelsMu       sync.Mutex
 	modelsProvider llm.Provider
 }
 
 func (s *serveServer) Start() error {
-	mux := http.NewServeMux()
+	mux := s.mux
+	if mux == nil {
+		mux = http.NewServeMux()
+		s.mux = mux
+	}
 
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/v1/models", s.auth(s.cors(s.handleModels)))

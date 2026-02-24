@@ -61,6 +61,10 @@ type Model struct {
 	// Streaming channels
 	streamChan <-chan ui.StreamEvent
 
+	// Optional streaming backend (remote)
+	backend         StreamBackend
+	backendRequests <-chan any
+
 	// Smooth text buffer for 60fps rendering
 	smoothBuffer            *ui.SmoothBuffer
 	smoothTickPending       bool
@@ -256,7 +260,7 @@ type AskUserRequestMsg struct {
 }
 
 // New creates a new chat model
-func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, autoSendExitOnDone bool, textMode bool, agentName string, yolo bool) *Model {
+func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, autoSendExitOnDone bool, textMode bool, agentName string, yolo bool, backend StreamBackend) *Model {
 	// Get terminal size
 	width := 80
 	height := 24
@@ -368,6 +372,13 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 		stats.SeedTotals(sess.InputTokens, sess.OutputTokens, sess.CachedInputTokens, sess.ToolCalls, sess.LLMTurns)
 	}
 
+	var backendRequests <-chan any
+	if backend != nil {
+		if requester, ok := backend.(interface{ Requests() <-chan any }); ok {
+			backendRequests = requester.Requests()
+		}
+	}
+
 	return &Model{
 		width:                   width,
 		height:                  height,
@@ -380,6 +391,8 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, modelNam
 		messages:                messages,
 		provider:                provider,
 		engine:                  engine,
+		backend:                 backend,
+		backendRequests:         backendRequests,
 		config:                  cfg,
 		providerName:            provider.Name(),
 		modelName:               modelName,
@@ -1205,10 +1218,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m.renderMarkdown(text)
 				})
 			}
+			if m.backend != nil {
+				return m, m.listenForStreamEvents()
+			}
 			return m, nil
 		}
 		// Non-alt screen mode: shouldn't happen, but fall back to immediate deny
 		msg.DoneCh <- tools.ApprovalResult{Choice: tools.ApprovalChoiceCancelled, Cancelled: true}
+		if m.backend != nil {
+			return m, m.listenForStreamEvents()
+		}
 		return m, nil
 
 	case AskUserRequestMsg:
@@ -1223,10 +1242,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m.renderMarkdown(text)
 				})
 			}
+			if m.backend != nil {
+				return m, m.listenForStreamEvents()
+			}
 			return m, nil
 		}
 		// Non-alt screen mode: shouldn't happen, but fall back to cancelled
 		msg.DoneCh <- nil
+		if m.backend != nil {
+			return m, m.listenForStreamEvents()
+		}
 		return m, nil
 
 	case SubagentProgressMsg:
