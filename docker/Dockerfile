@@ -47,7 +47,8 @@ RUN pacman -Syu --noconfirm && \
       nmap \
       openbsd-netcat \
       strace \
-      gnupg && \
+      gnupg \
+      nvidia-utils && \
     pacman -Scc --noconfirm
 
 # Unprivileged user for AUR builds (makepkg refuses root)
