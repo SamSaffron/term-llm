@@ -91,12 +91,12 @@ func Compact(ctx context.Context, provider Provider, model, systemPrompt string,
 		return nil, fmt.Errorf("no messages to compact")
 	}
 
+	originalCount := len(messages)
+	messages = sanitizeToolHistory(messages)
+
 	// Build summarization request with the conversation history
 	var sumReq []Message
 	sumReq = append(sumReq, SystemText(summarizationPrompt))
-	if systemPrompt != "" {
-		sumReq = append(sumReq, UserText("The system prompt for this conversation is:\n"+systemPrompt))
-	}
 
 	// Add a representation of the conversation
 	var convText strings.Builder
@@ -139,8 +139,15 @@ func Compact(ctx context.Context, provider Provider, model, systemPrompt string,
 		convStr = string(convRunes[:half]) + "\n...[conversation truncated for summarization]...\n" + string(convRunes[len(convRunes)-half:])
 	}
 
-	sumReq = append(sumReq, UserText(convStr))
-	sumReq = append(sumReq, UserText("Now create the compaction summary."))
+	var userContent strings.Builder
+	if systemPrompt != "" {
+		userContent.WriteString("The system prompt for this conversation is:\n")
+		userContent.WriteString(systemPrompt)
+		userContent.WriteString("\n\n")
+	}
+	userContent.WriteString(convStr)
+	userContent.WriteString("\n\nNow create the compaction summary.")
+	sumReq = append(sumReq, UserText(userContent.String()))
 
 	// Call provider with no tools (pure text completion)
 	stream, err := provider.Stream(ctx, Request{
@@ -177,11 +184,12 @@ func Compact(ctx context.Context, provider Provider, model, systemPrompt string,
 
 	// Reconstruct history
 	newMessages := reconstructHistory(systemPrompt, summary.String(), recentUserMsgs)
+	newMessages = sanitizeToolHistory(newMessages)
 
 	return &CompactionResult{
 		Summary:        summary.String(),
 		NewMessages:    newMessages,
-		OriginalCount:  len(messages),
+		OriginalCount:  originalCount,
 		CompactedCount: len(newMessages),
 	}, nil
 }

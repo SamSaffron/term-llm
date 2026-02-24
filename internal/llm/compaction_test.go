@@ -431,6 +431,55 @@ func TestFormatTokenCount(t *testing.T) {
 	}
 }
 
+func TestCompactSanitizesOrphanedToolCalls(t *testing.T) {
+	provider := NewMockProvider("test")
+	provider.AddTextResponse("Summary of tool call.")
+
+	messages := []Message{
+		UserText("Please run the tool."),
+		{
+			Role: RoleAssistant,
+			Parts: []Part{{
+				Type: PartToolCall,
+				ToolCall: &ToolCall{
+					ID:        "call-1",
+					Name:      "orphaned_tool",
+					Arguments: []byte(`{"path":"/tmp/foo"}`),
+				},
+			}},
+		},
+		UserText("Thanks."),
+	}
+
+	result, err := Compact(context.Background(), provider, "test-model", "system prompt", messages, DefaultCompactionConfig())
+	if err != nil {
+		t.Fatalf("Compact failed: %v", err)
+	}
+
+	if len(provider.Requests) == 0 {
+		t.Fatal("expected provider request to be recorded")
+	}
+
+	var requestText strings.Builder
+	for _, msg := range provider.Requests[0].Messages {
+		if msg.Role != RoleUser || len(msg.Parts) == 0 {
+			continue
+		}
+		requestText.WriteString(msg.Parts[0].Text)
+	}
+	if strings.Contains(requestText.String(), "[tool_call:") || strings.Contains(requestText.String(), "orphaned_tool") {
+		t.Errorf("summarization request should not include orphaned tool calls, got: %s", requestText.String())
+	}
+
+	for _, msg := range result.NewMessages {
+		for _, part := range msg.Parts {
+			if part.Type == PartToolCall {
+				t.Fatalf("unexpected tool call in compacted history")
+			}
+		}
+	}
+}
+
 func TestCompactEndToEnd(t *testing.T) {
 	// Set up mock provider that returns a summary
 	provider := NewMockProvider("test")
