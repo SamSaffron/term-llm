@@ -975,6 +975,41 @@ func TestDownloadTelegramPhoto_EmptyPhotos(t *testing.T) {
 	}
 }
 
+func TestDownloadTelegramVoice(t *testing.T) {
+	ts := newTestAudioServer(t, []byte("fake-ogg-data"))
+	defer ts.Close()
+
+	fg := &fakeFileGetter{fileURL: ts.URL}
+	voice := &tgbotapi.Voice{FileID: "voice-1"}
+
+	filePath, err := downloadTelegramVoice(fg, voice)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if filePath == "" {
+		t.Fatal("expected non-empty file path")
+	}
+	if !strings.HasSuffix(filePath, ".ogg") {
+		t.Fatalf("expected .ogg temp file, got %q", filePath)
+	}
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("read temp file: %v", err)
+	}
+	if string(data) != "fake-ogg-data" {
+		t.Fatalf("unexpected voice data: %q", string(data))
+	}
+	_ = os.Remove(filePath)
+}
+
+func TestDownloadTelegramVoice_NilVoice(t *testing.T) {
+	fg := &fakeFileGetter{}
+	_, err := downloadTelegramVoice(fg, nil)
+	if err == nil {
+		t.Fatal("expected error for nil voice")
+	}
+}
+
 func TestCollectUserText(t *testing.T) {
 	msg := llm.UserImageMessage("image/jpeg", "data", "caption text")
 	got := collectUserText(msg)
@@ -1052,6 +1087,15 @@ func newTestImageServer(t *testing.T, data []byte) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/jpeg")
+		w.Write(data)
+	}))
+}
+
+// newTestAudioServer creates a test HTTP server that serves the given audio data.
+func newTestAudioServer(t *testing.T, data []byte) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/ogg")
 		w.Write(data)
 	}))
 }
