@@ -65,6 +65,7 @@ func TestUpdate_StreamError_BumpsContentVersion(t *testing.T) {
 		false, // textMode
 		"",    // agentName
 		false, // yolo
+		nil,
 	)
 	m.streaming = true
 	before := m.viewCache.contentVersion
@@ -102,6 +103,7 @@ func TestViewAltScreen_FirstRenderAnchorsToBottom(t *testing.T) {
 		false, // textMode
 		"",    // agentName
 		false, // yolo
+		nil,
 	)
 
 	for i := 0; i < 120; i++ {
@@ -154,6 +156,7 @@ func TestStreamEventDiffFlushUsesOrderedCommandComposition(t *testing.T) {
 		false,
 		"",
 		false, // yolo
+		nil,
 	)
 	m.streaming = true
 
@@ -239,6 +242,7 @@ func TestRenderStatusLine_ShowsSeededCachedUsageFromSession(t *testing.T) {
 		false,
 		"",
 		false, // yolo
+		nil,
 	)
 
 	line := ui.StripANSI(m.renderStatusLine())

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
@@ -40,6 +41,8 @@ var (
 	chatResume string
 	// Yolo mode
 	chatYolo bool
+	// Remote chat flag
+	chatRemote string
 	// Auto-send mode (for benchmarking) - queue of messages to send
 	chatAutoSend []string
 	// Text mode (no markdown rendering)
@@ -100,6 +103,8 @@ func init() {
 	AddSkillsFlag(chatCmd, &chatSkills)
 	AddYoloFlag(chatCmd, &chatYolo)
 
+	chatCmd.Flags().StringVar(&chatRemote, "remote", "", "Connect to a remote chat server (ws://host:port)")
+
 	// Auto-send flag for benchmarking (repeatable for multiple messages)
 	chatCmd.Flags().StringArrayVar(&chatAutoSend, "auto-send", nil, "Queue message(s) to send automatically and exit after all responses (repeatable)")
 
@@ -133,10 +138,26 @@ func runChat(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	remoteURL := strings.TrimSpace(chatRemote)
+	if remoteURL == "" {
+		remoteURL = strings.TrimSpace(cfg.Remote.URL)
+	}
+	remoteToken := strings.TrimSpace(cfg.Remote.Token)
+	remoteAgent := strings.TrimSpace(cfg.Remote.Agent)
+	if chatAgent != "" {
+		remoteAgent = chatAgent
+	} else if remoteAgent != "" {
+		chatAgent = remoteAgent
+	}
+	useRemote := remoteURL != ""
+
 	// Load agent if specified
-	agent, err := LoadAgent(chatAgent, cfg)
-	if err != nil {
-		return err
+	var agent *agents.Agent
+	if !useRemote {
+		agent, err = LoadAgent(chatAgent, cfg)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Resolve all settings: CLI > agent > config
@@ -157,52 +178,58 @@ func runChat(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initialize session store EARLY so --resume can override settings before tool/MCP setup
-	store, storeCleanup := InitSessionStore(cfg, cmd.ErrOrStderr())
-	defer storeCleanup()
-
-	// Handle --resume flag BEFORE tool/MCP setup so session settings take effect
+	var store session.Store
+	var storeCleanup func()
 	var sess *session.Session
-	if cmd.Flags().Changed("resume") {
-		if store == nil {
-			return fmt.Errorf("session storage is disabled; cannot resume")
-		}
-		resumeID := strings.TrimSpace(chatResume)
-		if resumeID == "" {
-			// Resume most recent session
-			sess, err = store.GetCurrent(context.Background())
-			if err != nil || sess == nil {
-				summaries, listErr := store.List(context.Background(), session.ListOptions{Limit: 1})
-				if listErr == nil && len(summaries) > 0 {
-					sess, _ = store.Get(context.Background(), summaries[0].ID)
+	if !useRemote {
+		store, storeCleanup = InitSessionStore(cfg, cmd.ErrOrStderr())
+		defer storeCleanup()
+
+		// Handle --resume flag BEFORE tool/MCP setup so session settings take effect
+		if cmd.Flags().Changed("resume") {
+			if store == nil {
+				return fmt.Errorf("session storage is disabled; cannot resume")
+			}
+			resumeID := strings.TrimSpace(chatResume)
+			if resumeID == "" {
+				// Resume most recent session
+				sess, err = store.GetCurrent(context.Background())
+				if err != nil || sess == nil {
+					summaries, listErr := store.List(context.Background(), session.ListOptions{Limit: 1})
+					if listErr == nil && len(summaries) > 0 {
+						sess, _ = store.Get(context.Background(), summaries[0].ID)
+					}
+				}
+				if sess == nil {
+					return fmt.Errorf("no session to resume")
+				}
+			} else {
+				sess, err = store.GetByPrefix(context.Background(), resumeID)
+				if err != nil {
+					return fmt.Errorf("failed to load session: %w", err)
+				}
+				if sess == nil {
+					return fmt.Errorf("session '%s' not found", resumeID)
 				}
 			}
-			if sess == nil {
-				return fmt.Errorf("no session to resume")
-			}
-		} else {
-			sess, err = store.GetByPrefix(context.Background(), resumeID)
-			if err != nil {
-				return fmt.Errorf("failed to load session: %w", err)
-			}
-			if sess == nil {
-				return fmt.Errorf("session '%s' not found", resumeID)
-			}
-		}
 
-		// Update current session marker so --resume without ID targets this session
-		_ = store.SetCurrent(context.Background(), sess.ID)
+			// Update current session marker so --resume without ID targets this session
+			_ = store.SetCurrent(context.Background(), sess.ID)
 
-		// Apply session settings for flags not explicitly set on CLI
-		// (unconditionally - session may have had search/tools/MCP disabled)
-		if !cmd.Flags().Changed("search") {
-			settings.Search = sess.Search
+			// Apply session settings for flags not explicitly set on CLI
+			// (unconditionally - session may have had search/tools/MCP disabled)
+			if !cmd.Flags().Changed("search") {
+				settings.Search = sess.Search
+			}
+			if !cmd.Flags().Changed("tools") {
+				settings.Tools = sess.Tools
+			}
+			if !cmd.Flags().Changed("mcp") {
+				settings.MCP = sess.MCP
+			}
 		}
-		if !cmd.Flags().Changed("tools") {
-			settings.Tools = sess.Tools
-		}
-		if !cmd.Flags().Changed("mcp") {
-			settings.MCP = sess.MCP
-		}
+	} else if cmd.Flags().Changed("resume") {
+		return fmt.Errorf("--resume is not supported in remote mode")
 	}
 
 	// Apply provider overrides
@@ -217,104 +244,123 @@ func runChat(cmd *cobra.Command, args []string) error {
 	initThemeFromConfig(cfg)
 
 	// Create LLM provider and engine
-	provider, err := llm.NewProvider(cfg)
-	if err != nil {
-		return err
+	var provider llm.Provider
+	var engine *llm.Engine
+	if useRemote {
+		provider = llm.NewMockProvider("remote")
+		engine = llm.NewEngine(provider, nil)
+	} else {
+		provider, err = llm.NewProvider(cfg)
+		if err != nil {
+			return err
+		}
+		engine = newEngine(provider, cfg)
 	}
-	engine := newEngine(provider, cfg)
 
 	// Set up debug logger if enabled.
 	// We close the logger manually after MCP cleanup (not via defer) because
 	// MCP servers may still log during shutdown, and the TUI blocks until exit.
-	debugLogger, debugLoggerErr := createDebugLogger(cfg)
-	if debugLoggerErr != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v\n", debugLoggerErr)
-	}
-	if debugLogger != nil {
-		engine.SetDebugLogger(debugLogger)
+	var debugLogger *llm.DebugLogger
+	if !useRemote {
+		debugLogger, err = createDebugLogger(cfg)
+		if err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v\n", err)
+		}
+		if debugLogger != nil {
+			engine.SetDebugLogger(debugLogger)
+		}
 	}
 
 	if sess != nil {
 		settings.SessionID = sess.ID
 	}
 
-	// Initialize tools if enabled (using possibly-updated settings from resume)
-	enabledLocalTools := tools.ParseToolsFlag(settings.Tools)
-	toolMgr, err := settings.SetupToolManager(cfg, engine)
-	if err != nil {
-		if debugLogger != nil {
-			debugLogger.Close()
-		}
-		return err
-	}
-	if toolMgr != nil {
-		// Enable yolo mode if flag is set
-		if chatYolo {
-			toolMgr.ApprovalMgr.SetYoloMode(true)
-		}
-
-		// Register output tool if agent configures one
-		if agent != nil && agent.OutputTool.IsConfigured() {
-			agentCfg := agent.OutputTool
-			param := agentCfg.Param
-			if param == "" {
-				param = "content"
-			}
-			toolMgr.Registry.RegisterOutputTool(agentCfg.Name, param, agentCfg.Description)
-			toolMgr.SetupEngine(engine)
-		}
-
-		// PromptUIFunc will be set up below after tea.Program is created
-
-		// Wire spawn_agent runner if enabled (with session tracking)
-		var parentSessionID string
-		if sess != nil {
-			parentSessionID = sess.ID
-		}
-		if err := WireSpawnAgentRunnerWithStore(cfg, toolMgr, chatYolo, store, parentSessionID); err != nil {
+	enabledLocalTools := []string{}
+	var toolMgr *tools.ToolManager
+	if !useRemote {
+		// Initialize tools if enabled (using possibly-updated settings from resume)
+		enabledLocalTools = tools.ParseToolsFlag(settings.Tools)
+		toolMgr, err = settings.SetupToolManager(cfg, engine)
+		if err != nil {
 			if debugLogger != nil {
 				debugLogger.Close()
 			}
 			return err
 		}
-	}
-
-	// Initialize skills system
-	skillsSetup := SetupSkills(&cfg.Skills, chatSkills, cmd.ErrOrStderr())
-
-	RegisterSkillToolWithEngine(engine, toolMgr, skillsSetup)
-
-	// Store resolved instructions in config for chat TUI
-	cfg.Chat.Instructions = settings.SystemPrompt
-
-	cfg.Chat.Instructions = InjectSkillsMetadata(cfg.Chat.Instructions, skillsSetup)
-
-	// Determine model name
-	modelName := getModelName(cfg)
-
-	// Create MCP manager
-	mcpManager := mcp.NewManager()
-	if err := mcpManager.LoadConfig(); err != nil {
-		// Non-fatal: continue without MCP
-		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to load MCP config: %v\n", err)
-	}
-
-	// Enable MCP servers
-	if settings.MCP != "" {
-		servers := strings.Split(settings.MCP, ",")
-		for _, server := range servers {
-			server = strings.TrimSpace(server)
-			if server == "" {
-				continue
+		if toolMgr != nil {
+			// Enable yolo mode if flag is set
+			if chatYolo {
+				toolMgr.ApprovalMgr.SetYoloMode(true)
 			}
-			if err := mcpManager.Enable(ctx, server); err != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to enable MCP server '%s': %v\n", server, err)
+
+			// Register output tool if agent configures one
+			if agent != nil && agent.OutputTool.IsConfigured() {
+				agentCfg := agent.OutputTool
+				param := agentCfg.Param
+				if param == "" {
+					param = "content"
+				}
+				toolMgr.Registry.RegisterOutputTool(agentCfg.Name, param, agentCfg.Description)
+				toolMgr.SetupEngine(engine)
+			}
+
+			// PromptUIFunc will be set up below after tea.Program is created
+
+			// Wire spawn_agent runner if enabled (with session tracking)
+			var parentSessionID string
+			if sess != nil {
+				parentSessionID = sess.ID
+			}
+			if err := WireSpawnAgentRunnerWithStore(cfg, toolMgr, chatYolo, store, parentSessionID); err != nil {
+				if debugLogger != nil {
+					debugLogger.Close()
+				}
+				return err
 			}
 		}
 	}
 
-	// Set up MCP sampling provider (for sampling/createMessage requests)
-	mcpManager.SetSamplingProvider(provider, modelName, chatYolo)
+	// Store resolved instructions in config for chat TUI
+	cfg.Chat.Instructions = settings.SystemPrompt
+	if !useRemote {
+		// Initialize skills system
+		skillsSetup := SetupSkills(&cfg.Skills, chatSkills, cmd.ErrOrStderr())
+		RegisterSkillToolWithEngine(engine, toolMgr, skillsSetup)
+		cfg.Chat.Instructions = InjectSkillsMetadata(cfg.Chat.Instructions, skillsSetup)
+	}
+
+	// Determine model name
+	modelName := getModelName(cfg)
+	if useRemote && modelName == "" {
+		modelName = "remote"
+	}
+
+	// Create MCP manager
+	var mcpManager *mcp.Manager
+	if !useRemote {
+		mcpManager = mcp.NewManager()
+		if err := mcpManager.LoadConfig(); err != nil {
+			// Non-fatal: continue without MCP
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to load MCP config: %v\n", err)
+		}
+
+		// Enable MCP servers
+		if settings.MCP != "" {
+			servers := strings.Split(settings.MCP, ",")
+			for _, server := range servers {
+				server = strings.TrimSpace(server)
+				if server == "" {
+					continue
+				}
+				if err := mcpManager.Enable(ctx, server); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to enable MCP server '%s': %v\n", server, err)
+				}
+			}
+		}
+
+		// Set up MCP sampling provider (for sampling/createMessage requests)
+		mcpManager.SetSamplingProvider(provider, modelName, chatYolo)
+	}
 
 	// Resolve force external search setting
 	forceExternalSearch := resolveForceExternalSearch(cfg, chatNativeSearch, chatNoNativeSearch)
@@ -324,12 +370,23 @@ func runChat(cmd *cobra.Command, args []string) error {
 	autoSendMode := len(chatAutoSend) > 0
 	useAltScreen := term.IsTerminal(int(os.Stdout.Fd())) && !autoSendMode
 
+	// Create chat backend when remote mode is enabled
+	var backend chat.StreamBackend
+	if useRemote {
+		backend, err = chat.NewRemoteBackend(remoteURL, remoteToken, remoteAgent)
+		if err != nil {
+			return err
+		}
+	}
+
 	// Create chat model
 	agentName := ""
 	if agent != nil {
 		agentName = agent.Name
+	} else if useRemote {
+		agentName = remoteAgent
 	}
-	model := chat.New(cfg, provider, engine, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, showStats, initialText, store, sess, useAltScreen, chatAutoSend, true, chatTextMode, agentName, chatYolo)
+	model := chat.New(cfg, provider, engine, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, showStats, initialText, store, sess, useAltScreen, chatAutoSend, true, chatTextMode, agentName, chatYolo, backend)
 
 	// Build program options
 	var opts []tea.ProgramOption
@@ -448,7 +505,9 @@ func runChat(cmd *cobra.Command, args []string) error {
 	_, err = p.Run()
 
 	// Cleanup MCP servers
-	mcpManager.StopAll()
+	if mcpManager != nil {
+		mcpManager.StopAll()
+	}
 
 	// Close debug logger
 	if debugLogger != nil {
