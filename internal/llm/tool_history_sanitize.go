@@ -1,6 +1,9 @@
 package llm
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 type toolCallRef struct {
 	messageIndex int
@@ -120,6 +123,14 @@ func sanitizeToolHistory(messages []Message) []Message {
 		for partIndex, part := range msg.Parts {
 			if part.Type == PartToolCall {
 				if matches == nil || !matches[partIndex] {
+					// Orphaned tool call — no matching tool_result was found (e.g. compaction
+					// trimmed the result). Convert to text so the model knows what it attempted
+					// rather than silently dropping it, which causes 400s on Anthropic.
+					if part.ToolCall != nil {
+						text := fmt.Sprintf("[tool call interrupted — id:%s name:%s args:%s]",
+							part.ToolCall.ID, part.ToolCall.Name, string(part.ToolCall.Arguments))
+						parts = append(parts, Part{Type: PartText, Text: text})
+					}
 					continue
 				}
 			}

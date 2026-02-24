@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -480,7 +481,7 @@ func TestNormalizeFreeFormMapProperties_PreservesMetadata(t *testing.T) {
 	}
 }
 
-func TestBuildCompatMessages_DropsDanglingToolCalls(t *testing.T) {
+func TestBuildCompatMessages_ConvertsDanglingToolCalls(t *testing.T) {
 	messages := []Message{
 		{
 			Role: RoleUser,
@@ -522,7 +523,11 @@ func TestBuildCompatMessages_DropsDanglingToolCalls(t *testing.T) {
 	if len(assistant.ToolCalls) != 0 {
 		t.Fatalf("expected dangling tool calls to be removed, got %d", len(assistant.ToolCalls))
 	}
-	if assistant.Content != "Working on it" {
-		t.Fatalf("expected assistant text to be preserved, got %v", assistant.Content)
+	// Orphaned tool_use is converted to a text stub so the model knows it was interrupted.
+	if !strings.Contains(assistant.Content.(string), "Working on it") {
+		t.Fatalf("expected original text to be preserved, got %v", assistant.Content)
+	}
+	if !strings.Contains(assistant.Content.(string), "[tool call interrupted") {
+		t.Fatalf("expected interrupted stub in text, got %v", assistant.Content)
 	}
 }

@@ -438,7 +438,7 @@ func TestBuildAnthropicBetaBlocks_AssistantReasoningReplay(t *testing.T) {
 	}
 }
 
-func TestBuildAnthropicMessages_DropsDanglingToolCalls(t *testing.T) {
+func TestBuildAnthropicMessages_ConvertsDanglingToolCalls(t *testing.T) {
 	_, out := buildAnthropicMessages([]Message{
 		UserText("Run shell"),
 		{
@@ -461,17 +461,18 @@ func TestBuildAnthropicMessages_DropsDanglingToolCalls(t *testing.T) {
 	if len(out) != 3 {
 		t.Fatalf("expected 3 messages, got %d", len(out))
 	}
-	if len(out[1].Content) != 1 {
-		t.Fatalf("expected assistant message to keep only text content, got %d blocks", len(out[1].Content))
+	// Orphaned tool_use becomes a text stub — so assistant message now has 2 text blocks.
+	if len(out[1].Content) != 2 {
+		t.Fatalf("expected 2 blocks (text + interrupted stub), got %d", len(out[1].Content))
 	}
-	if out[1].Content[0].OfText == nil {
-		t.Fatalf("expected assistant text block after sanitization, got %#v", out[1].Content[0])
+	if out[1].Content[0].OfText == nil || out[1].Content[0].OfText.Text != "Working" {
+		t.Fatalf("expected first block to be original text, got %#v", out[1].Content[0])
 	}
-	if out[1].Content[0].OfText.Text != "Working" {
-		t.Fatalf("expected assistant text to be preserved, got %q", out[1].Content[0].OfText.Text)
+	if out[1].Content[1].OfText == nil {
+		t.Fatalf("expected second block to be text stub for interrupted tool call, got %#v", out[1].Content[1])
 	}
-	if out[1].Content[0].OfToolUse != nil {
-		t.Fatalf("expected dangling tool_use block to be removed, got %#v", out[1].Content[0].OfToolUse)
+	if out[1].Content[1].OfToolUse != nil {
+		t.Fatalf("expected no tool_use block after sanitization, got %#v", out[1].Content[1])
 	}
 }
 
