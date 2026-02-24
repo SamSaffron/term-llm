@@ -139,6 +139,12 @@ func AllCommands() []Command {
 			Description: "Compact conversation context into a summary",
 			Usage:       "/compact",
 		},
+		{
+			Name:        "resume",
+			Aliases:     []string{"r"},
+			Description: "Browse and resume a previous session",
+			Usage:       "/resume [number|id]",
+		},
 	}
 }
 
@@ -323,6 +329,8 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 		return m.cmdInspect()
 	case "compact":
 		return m.cmdCompress()
+	case "resume":
+		return m.cmdResume(args)
 	default:
 		return m.showSystemMessage(fmt.Sprintf("Command /%s is not yet implemented.", cmd.Name))
 	}
@@ -753,6 +761,101 @@ func (m *Model) cmdSessions() (tea.Model, tea.Cmd) {
 
 	m.setTextareaValue("")
 	return m.showSystemMessage(b.String())
+}
+
+func (m *Model) cmdResume(args []string) (tea.Model, tea.Cmd) {
+	if m.store == nil {
+		return m.showSystemMessage("Session storage is disabled.")
+	}
+
+	ctx := context.Background()
+
+	// /resume <number|id> — direct resume without the picker
+	if len(args) > 0 {
+		sess, err := m.store.GetByPrefix(ctx, args[0])
+		if err != nil {
+			return m.showSystemMessage(fmt.Sprintf("Failed to find session: %v", err))
+		}
+		if sess == nil {
+			return m.showSystemMessage(fmt.Sprintf("Session '%s' not found.", args[0]))
+		}
+
+		messages, _ := m.store.GetMessages(ctx, sess.ID, 0, 0)
+		m.sess = sess
+		m.messages = messages
+		m.scrollOffset = 0
+		m.setTextareaValue("")
+		_ = m.store.SetCurrent(ctx, sess.ID)
+
+		name := sess.Name
+		if name == "" {
+			name = fmt.Sprintf("#%d", sess.Number)
+		}
+		return m.showSystemMessage(fmt.Sprintf("Resumed session '%s' (%d messages).", name, len(messages)))
+	}
+
+	// /resume with no args — show the session picker dialog with richer labels
+	summaries, err := m.store.List(ctx, session.ListOptions{Limit: 30})
+	if err != nil {
+		return m.showSystemMessage(fmt.Sprintf("Failed to list sessions: %v", err))
+	}
+	if len(summaries) == 0 {
+		return m.showSystemMessage("No saved sessions found.")
+	}
+
+	var items []DialogItem
+	for _, s := range summaries {
+		name := s.Name
+		if name == "" {
+			name = fmt.Sprintf("#%d", s.Number)
+		}
+
+		// Age
+		age := resumeFormatAge(s.UpdatedAt)
+
+		// Summary snippet
+		snippet := s.Summary
+		if len(snippet) > 45 {
+			snippet = snippet[:42] + "..."
+		}
+
+		var label string
+		if snippet != "" {
+			label = fmt.Sprintf("%s  %s · %dm · %s", name, snippet, s.MessageCount, age)
+		} else {
+			label = fmt.Sprintf("%s  %dm · %s", name, s.MessageCount, age)
+		}
+
+		items = append(items, DialogItem{
+			ID:    s.ID,
+			Label: label,
+		})
+	}
+
+	currentID := ""
+	if m.sess != nil {
+		currentID = m.sess.ID
+	}
+	m.dialog.ShowSessionList(items, currentID)
+	m.setTextareaValue("")
+	return m, nil
+}
+
+// resumeFormatAge returns a compact human-readable age string.
+func resumeFormatAge(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	case d < 7*24*time.Hour:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	default:
+		return t.Format("Jan 2")
+	}
 }
 
 func (m *Model) cmdExport(args []string) (tea.Model, tea.Cmd) {
