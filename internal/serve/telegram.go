@@ -87,6 +87,36 @@ func downloadTelegramPhoto(fileGetter botFileGetter, photos []tgbotapi.PhotoSize
 	return mimeType, base64.StdEncoding.EncodeToString(data), tmp.Name(), nil
 }
 
+// downloadTelegramVoice downloads a Telegram voice message OGG file to a temp file.
+// The caller is responsible for removing the temp file when done.
+func downloadTelegramVoice(fileGetter botFileGetter, voice *tgbotapi.Voice) (filePath string, err error) {
+	if voice == nil {
+		return "", fmt.Errorf("no voice provided")
+	}
+	directURL, err := fileGetter.GetFileDirectURL(voice.FileID)
+	if err != nil {
+		return "", fmt.Errorf("get voice file URL: %w", err)
+	}
+
+	resp, err := http.Get(directURL)
+	if err != nil {
+		return "", fmt.Errorf("download voice: %w", err)
+	}
+	defer resp.Body.Close()
+
+	tmp, err := os.CreateTemp("", "tg-voice-*.ogg")
+	if err != nil {
+		return "", fmt.Errorf("create temp file: %w", err)
+	}
+	if _, err := io.Copy(tmp, resp.Body); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return "", fmt.Errorf("write voice temp file: %w", err)
+	}
+	tmp.Close()
+	return tmp.Name(), nil
+}
+
 // mimeExtension returns a file extension for a MIME type.
 func mimeExtension(mimeType string) string {
 	switch mimeType {
@@ -676,6 +706,35 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 		uploadMediaType = mediaType
 		uploadCaption = strings.TrimSpace(msg.Caption)
 		userMsg = llm.UserImageMessageWithPath(mediaType, base64Data, imgPath, uploadCaption)
+	} else if msg.Voice != nil {
+		voicePath, err := downloadTelegramVoice(bot, msg.Voice)
+		if err != nil {
+			log.Printf("telegram: download voice error: %v", err)
+			_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Sorry, couldn't download your voice message."))
+			return
+		}
+		defer os.Remove(voicePath)
+
+		// Resolve OpenAI API key for Whisper
+		openaiCfg := m.cfg.Providers[string(config.ProviderTypeOpenAI)]
+		apiKey := openaiCfg.ResolvedAPIKey
+		if apiKey == "" {
+			apiKey = os.Getenv("OPENAI_API_KEY")
+		}
+		if apiKey == "" {
+			log.Printf("telegram: no OpenAI key for transcription")
+			_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Voice transcription requires an OpenAI API key."))
+			return
+		}
+
+		transcript, err := llm.TranscribeFile(ctx, voicePath, llm.TranscribeOptions{APIKey: apiKey})
+		if err != nil {
+			log.Printf("telegram: transcribe error: %v", err)
+			_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Sorry, couldn't transcribe your voice message."))
+			return
+		}
+
+		userMsg = llm.UserText("🎤 " + transcript)
 	} else {
 		text := strings.TrimSpace(msg.Text)
 		if text == "" {
