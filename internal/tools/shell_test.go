@@ -356,6 +356,26 @@ func TestEnvMap_EmptyKeyReturnsError(t *testing.T) {
 	}
 }
 
+func TestShellTool_TimeoutKillsGrandchildren(t *testing.T) {
+	tool := NewShellTool(nil, nil, DefaultOutputLimits())
+	// sh -c spawns sleep as a grandchild; without the fix cmd.Run() blocks forever
+	// because the grandchild holds the pipe write-ends open after the shell is killed.
+	args := mustMarshalShellArgs(ShellArgs{
+		Command:        "sleep 60 & wait",
+		TimeoutSeconds: 1,
+	})
+	output, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if !output.TimedOut {
+		t.Error("expected output.TimedOut=true for grandchild-holding command")
+	}
+	if !strings.Contains(output.Content, "[Command timed out]") {
+		t.Errorf("expected '[Command timed out]' in output, got: %s", output.Content)
+	}
+}
+
 func mustMarshalShellArgs(args ShellArgs) json.RawMessage {
 	data, err := json.Marshal(args)
 	if err != nil {

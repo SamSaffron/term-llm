@@ -220,6 +220,13 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 	// Put child in its own process group so signals don't cross-contaminate
 	// and exec.CommandContext can kill the whole group on timeout.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Override the default cancel behavior (which only kills the shell PID) to
+	// kill the entire process group. Without this, grandchildren that inherited
+	// the stdout/stderr pipe write-ends keep them open after the shell is killed,
+	// causing cmd.Wait() to block forever even after the timeout fires.
+	cmd.Cancel = func() error {
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

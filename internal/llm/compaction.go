@@ -12,6 +12,11 @@ const (
 	defaultRecentUserTokenBudget = 20_000
 	defaultMaxToolResultChars    = 80_000
 	approxBytesPerToken          = 4
+
+	// summarizationToolResultChars is the max chars of a tool result included in
+	// the summarization prompt.  Enough to understand what the tool did without
+	// flooding the compaction request with raw file/shell output.
+	summarizationToolResultChars = 500
 )
 
 // CompactionConfig controls when and how context compaction occurs.
@@ -92,6 +97,12 @@ func Compact(ctx context.Context, provider Provider, model, systemPrompt string,
 	}
 
 	originalCount := len(messages)
+	// Keep the pre-sanitized slice for building the summarization text.
+	// Sanitization converts orphaned tool calls to placeholder text that would
+	// leak tool names into the summary; building from the original and skipping
+	// PartToolCall parts avoids this.  Tool results capture the outcome, so
+	// dropping the call side loses nothing useful for summarization.
+	preSanitize := messages
 	messages = sanitizeToolHistory(messages)
 
 	// Build summarization request with the conversation history
@@ -101,27 +112,29 @@ func Compact(ctx context.Context, provider Provider, model, systemPrompt string,
 	// Add a representation of the conversation
 	var convText strings.Builder
 	convText.WriteString("Here is the conversation to summarize:\n\n")
-	for _, msg := range messages {
-		convText.WriteString(string(msg.Role))
-		convText.WriteString(": ")
-		if len(msg.Parts) == 0 {
-			convText.WriteString("\n\n")
-			continue
-		}
+	for _, msg := range preSanitize {
+		var lineParts []string
 		for _, part := range msg.Parts {
-			if part.Text != "" {
-				convText.WriteString(part.Text)
+			if part.Type == PartToolCall {
+				// Skip tool calls — orphaned ones must not appear in the summary,
+				// and matched ones are represented by their tool result below.
+				continue
 			}
-			if part.ToolCall != nil {
-				convText.WriteString(fmt.Sprintf("[tool_call: %s(%s)]", part.ToolCall.Name, string(part.ToolCall.Arguments)))
+			if part.Text != "" {
+				lineParts = append(lineParts, part.Text)
 			}
 			if part.ToolResult != nil {
-				content := part.ToolResult.Content
-				if len(content) > 2000 {
-					content = content[:1000] + "\n...[truncated]...\n" + content[len(content)-1000:]
-				}
-				convText.WriteString(fmt.Sprintf("[tool_result: %s → %s]", part.ToolResult.Name, content))
+				content := TruncateToolResult(part.ToolResult.Content, summarizationToolResultChars)
+				lineParts = append(lineParts, fmt.Sprintf("[tool_result: %s → %s]", part.ToolResult.Name, content))
 			}
+		}
+		if len(lineParts) == 0 {
+			continue
+		}
+		convText.WriteString(string(msg.Role))
+		convText.WriteString(": ")
+		for _, s := range lineParts {
+			convText.WriteString(s)
 		}
 		convText.WriteString("\n\n")
 	}
