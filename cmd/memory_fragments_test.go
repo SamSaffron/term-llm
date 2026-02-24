@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -66,6 +67,21 @@ func setStdin(t *testing.T, content string) {
 		os.Stdin = old
 		_ = r.Close()
 	})
+}
+
+func firstFragmentRowID(t *testing.T, dbPath string) int64 {
+	t.Helper()
+	store := openTestMemoryStore(t, dbPath)
+	defer store.Close()
+
+	frags, err := store.ListFragments(context.Background(), memorydb.ListOptions{Agent: "jarvis"})
+	if err != nil {
+		t.Fatalf("ListFragments() error = %v", err)
+	}
+	if len(frags) == 0 {
+		t.Fatal("expected fragment list, got none")
+	}
+	return frags[0].RowID
 }
 
 func TestMemoryFragmentsAddCreatesFragment(t *testing.T) {
@@ -160,6 +176,87 @@ func TestMemoryFragmentsUpdateMissing(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 	if err.Error() != "fragment not found: fragments/notes/missing.md — use 'add' to create it" {
+		t.Fatalf("error = %q", err.Error())
+	}
+}
+
+func TestUpdateFragmentByNumericID(t *testing.T) {
+	dbPath := setupMemoryFragmentsTest(t)
+	memoryFragmentsAddContent = "original"
+
+	if err := runMemoryFragmentsAdd(&cobra.Command{}, []string{"fragments/notes/foo.md"}); err != nil {
+		t.Fatalf("runMemoryFragmentsAdd() error = %v", err)
+	}
+
+	rowID := firstFragmentRowID(t, dbPath)
+
+	memoryFragmentsUpdateContent = "updated"
+	if err := runMemoryFragmentsUpdate(&cobra.Command{}, []string{fmt.Sprintf("%d", rowID)}); err != nil {
+		t.Fatalf("runMemoryFragmentsUpdate() error = %v", err)
+	}
+
+	store := openTestMemoryStore(t, dbPath)
+	defer store.Close()
+
+	frag, err := store.GetFragment(context.Background(), "jarvis", "fragments/notes/foo.md")
+	if err != nil {
+		t.Fatalf("GetFragment() error = %v", err)
+	}
+	if frag == nil {
+		t.Fatal("expected fragment, got nil")
+	}
+	if frag.Content != "updated" {
+		t.Fatalf("fragment content = %q, want %q", frag.Content, "updated")
+	}
+}
+
+func TestUpdateFragmentNotFound(t *testing.T) {
+	setupMemoryFragmentsTest(t)
+	memoryFragmentsUpdateContent = "updated"
+
+	err := runMemoryFragmentsUpdate(&cobra.Command{}, []string{"9999"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if err.Error() != "fragment not found or content unchanged: rowid 9999" {
+		t.Fatalf("error = %q", err.Error())
+	}
+}
+
+func TestDeleteFragmentByNumericID(t *testing.T) {
+	dbPath := setupMemoryFragmentsTest(t)
+	memoryFragmentsAddContent = "original"
+
+	if err := runMemoryFragmentsAdd(&cobra.Command{}, []string{"fragments/notes/foo.md"}); err != nil {
+		t.Fatalf("runMemoryFragmentsAdd() error = %v", err)
+	}
+
+	rowID := firstFragmentRowID(t, dbPath)
+
+	if err := runMemoryFragmentsDelete(&cobra.Command{}, []string{fmt.Sprintf("%d", rowID)}); err != nil {
+		t.Fatalf("runMemoryFragmentsDelete() error = %v", err)
+	}
+
+	store := openTestMemoryStore(t, dbPath)
+	defer store.Close()
+
+	frag, err := store.GetFragment(context.Background(), "jarvis", "fragments/notes/foo.md")
+	if err != nil {
+		t.Fatalf("GetFragment() error = %v", err)
+	}
+	if frag != nil {
+		t.Fatalf("expected fragment to be deleted")
+	}
+}
+
+func TestDeleteFragmentNotFound(t *testing.T) {
+	setupMemoryFragmentsTest(t)
+
+	err := runMemoryFragmentsDelete(&cobra.Command{}, []string{"9999"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if err.Error() != "fragment not found: rowid 9999" {
 		t.Fatalf("error = %q", err.Error())
 	}
 }

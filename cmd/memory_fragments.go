@@ -453,11 +453,7 @@ func runMemoryFragmentsAdd(cmd *cobra.Command, args []string) error {
 }
 
 func runMemoryFragmentsUpdate(cmd *cobra.Command, args []string) error {
-	agent := strings.TrimSpace(memoryAgent)
-	if agent == "" {
-		return fmt.Errorf("--agent is required for add/update/delete")
-	}
-	fragPath := strings.TrimSpace(args[0])
+	arg := strings.TrimSpace(args[0])
 	content, err := readFragmentContent(memoryFragmentsUpdateContent)
 	if err != nil {
 		return err
@@ -468,37 +464,73 @@ func runMemoryFragmentsUpdate(cmd *cobra.Command, args []string) error {
 	}
 	defer store.Close()
 
-	updated, err := store.UpdateFragment(context.Background(), agent, fragPath, content)
-	if err != nil {
-		return err
-	}
-	if !updated {
-		return fmt.Errorf("fragment not found: %s — use 'add' to create it", fragPath)
-	}
-	fmt.Printf("updated: %s\n", fragPath)
-	return nil
-}
+	ctx := context.Background()
 
-func runMemoryFragmentsDelete(cmd *cobra.Command, args []string) error {
+	// Numeric arg → update by rowid (no --agent required).
+	if rowID, err := strconv.ParseInt(arg, 10, 64); err == nil {
+		updated, err := store.UpdateFragmentByRowID(ctx, rowID, content)
+		if err != nil {
+			return err
+		}
+		if !updated {
+			return fmt.Errorf("fragment not found or content unchanged: rowid %d", rowID)
+		}
+		fmt.Printf("updated: rowid %d\n", rowID)
+		return nil
+	}
+
+	// Path arg → require --agent.
 	agent := strings.TrimSpace(memoryAgent)
 	if agent == "" {
 		return fmt.Errorf("--agent is required for add/update/delete")
 	}
-	fragPath := strings.TrimSpace(args[0])
+	updated, err := store.UpdateFragment(ctx, agent, arg, content)
+	if err != nil {
+		return err
+	}
+	if !updated {
+		return fmt.Errorf("fragment not found: %s — use 'add' to create it", arg)
+	}
+	fmt.Printf("updated: %s\n", arg)
+	return nil
+}
+
+func runMemoryFragmentsDelete(cmd *cobra.Command, args []string) error {
+	arg := strings.TrimSpace(args[0])
 	store, err := openMemoryStore()
 	if err != nil {
 		return err
 	}
 	defer store.Close()
 
-	deleted, err := store.DeleteFragment(context.Background(), agent, fragPath)
+	ctx := context.Background()
+
+	// Numeric arg → delete by rowid (no --agent required).
+	if rowID, err := strconv.ParseInt(arg, 10, 64); err == nil {
+		deleted, err := store.DeleteFragmentByRowID(ctx, rowID)
+		if err != nil {
+			return err
+		}
+		if !deleted {
+			return fmt.Errorf("fragment not found: rowid %d", rowID)
+		}
+		fmt.Printf("deleted: rowid %d\n", rowID)
+		return nil
+	}
+
+	// Path arg → require --agent.
+	agent := strings.TrimSpace(memoryAgent)
+	if agent == "" {
+		return fmt.Errorf("--agent is required for add/update/delete")
+	}
+	deleted, err := store.DeleteFragment(ctx, agent, arg)
 	if err != nil {
 		return err
 	}
 	if !deleted {
-		return fmt.Errorf("fragment not found: %s", fragPath)
+		return fmt.Errorf("fragment not found: %s", arg)
 	}
-	fmt.Printf("deleted: %s\n", fragPath)
+	fmt.Printf("deleted: %s\n", arg)
 	return nil
 }
 
@@ -513,5 +545,3 @@ func readFragmentContent(s string) (string, error) {
 	}
 	return string(data), nil
 }
-
-

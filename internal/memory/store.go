@@ -401,6 +401,64 @@ func (s *Store) UpdateFragment(ctx context.Context, agent, path, content string)
 	return true, nil
 }
 
+// UpdateFragmentByRowID updates a fragment looked up by its SQLite rowid.
+// Returns updated=false if no fragment with that rowid exists, or content is unchanged.
+func (s *Store) UpdateFragmentByRowID(ctx context.Context, rowID int64, content string) (updated bool, err error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var oldFrag Fragment
+	err = tx.QueryRowContext(ctx, `
+		SELECT rowid, id, agent, path, content, source, created_at, updated_at,
+		       accessed_at, access_count, decay_score, pinned
+		FROM memory_fragments WHERE rowid = ?`, rowID).Scan(
+		&oldFrag.RowID, &oldFrag.ID, &oldFrag.Agent, &oldFrag.Path,
+		&oldFrag.Content, &oldFrag.Source, &oldFrag.CreatedAt, &oldFrag.UpdatedAt,
+		&oldFrag.AccessedAt, &oldFrag.AccessCount, &oldFrag.DecayScore, &oldFrag.Pinned,
+	)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("get fragment by rowid: %w", err)
+	}
+
+	if oldFrag.Content == content {
+		return false, nil
+	}
+
+	now := time.Now()
+	_, err = tx.ExecContext(ctx,
+		`UPDATE memory_fragments SET content = ?, updated_at = ? WHERE rowid = ?`,
+		content, now, rowID)
+	if err != nil {
+		return false, fmt.Errorf("update fragment: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM memory_embeddings WHERE fragment_id = ?`, oldFrag.ID); err != nil {
+		return false, fmt.Errorf("delete stale embeddings: %w", err)
+	}
+
+	if err := syncFTSDelete(ctx, tx, rowID, &oldFrag); err != nil {
+		return false, fmt.Errorf("sync fts delete: %w", err)
+	}
+
+	newFrag := oldFrag
+	newFrag.Content = content
+	newFrag.UpdatedAt = now
+	if err := syncFTSInsert(ctx, tx, rowID, &newFrag); err != nil {
+		return false, fmt.Errorf("sync fts insert: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit update fragment: %w", err)
+	}
+	return true, nil
+}
+
 // DeleteFragment removes a fragment and syncs FTS.
 // Returns deleted=false when no matching fragment exists.
 func (s *Store) DeleteFragment(ctx context.Context, agent, path string) (deleted bool, err error) {
@@ -437,6 +495,46 @@ func (s *Store) DeleteFragment(ctx context.Context, agent, path string) (deleted
 		return false, fmt.Errorf("commit delete fragment: %w", err)
 	}
 
+	return true, nil
+}
+
+// DeleteFragmentByRowID removes a fragment by its SQLite rowid.
+// Returns deleted=false if no fragment with that rowid exists.
+func (s *Store) DeleteFragmentByRowID(ctx context.Context, rowID int64) (deleted bool, err error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var f Fragment
+	err = tx.QueryRowContext(ctx, `
+		SELECT rowid, id, agent, path, content, source, created_at, updated_at,
+		       accessed_at, access_count, decay_score, pinned
+		FROM memory_fragments WHERE rowid = ?`, rowID).Scan(
+		&f.RowID, &f.ID, &f.Agent, &f.Path,
+		&f.Content, &f.Source, &f.CreatedAt, &f.UpdatedAt,
+		&f.AccessedAt, &f.AccessCount, &f.DecayScore, &f.Pinned,
+	)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("get fragment by rowid: %w", err)
+	}
+
+	_, err = tx.ExecContext(ctx, `DELETE FROM memory_fragments WHERE rowid = ?`, rowID)
+	if err != nil {
+		return false, fmt.Errorf("delete fragment: %w", err)
+	}
+
+	if err := syncFTSDelete(ctx, tx, rowID, &f); err != nil {
+		return false, fmt.Errorf("sync fts delete: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit delete fragment: %w", err)
+	}
 	return true, nil
 }
 
