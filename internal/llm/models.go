@@ -123,6 +123,42 @@ var ProviderModels = map[string][]string{
 		// Grok 2
 		"grok-2",
 	},
+	"venice": {
+		"venice-uncensored",
+		"olafangensan-glm-4.7-flash-heretic",
+		"zai-org-glm-4.7-flash",
+		"zai-org-glm-5",
+		"zai-org-glm-4.7",
+		"qwen3-4b",
+		"mistral-31-24b",
+		"qwen3-235b-a22b-thinking-2507",
+		"qwen3-235b-a22b-instruct-2507",
+		"qwen3-next-80b",
+		"qwen3-coder-480b-a35b-instruct",
+		"hermes-3-llama-3.1-405b",
+		"google-gemma-3-27b-it",
+		"grok-41-fast",
+		"gemini-3-pro-preview",
+		"gemini-3-1-pro-preview",
+		"gemini-3-flash-preview",
+		"claude-opus-4-6",
+		"claude-opus-45",
+		"claude-sonnet-4-6",
+		"claude-sonnet-45",
+		"openai-gpt-oss-120b",
+		"kimi-k2-thinking",
+		"kimi-k2-5",
+		"deepseek-v3.2",
+		"llama-3.2-3b",
+		"llama-3.3-70b",
+		"openai-gpt-52",
+		"openai-gpt-52-codex",
+		"openai-gpt-53-codex",
+		"minimax-m21",
+		"minimax-m25",
+		"grok-code-fast-1",
+		"qwen3-vl-235b-a22b",
+	},
 }
 
 var ImageProviderModels = map[string][]string{
@@ -162,7 +198,7 @@ func ExpandWithEffortVariants(models []string) []string {
 
 // GetBuiltInProviderNames returns the built-in provider type names
 func GetBuiltInProviderNames() []string {
-	return []string{"anthropic", "openai", "chatgpt", "copilot", "openrouter", "gemini", "gemini-cli", "zen", "claude-bin", "xai"}
+	return []string{"anthropic", "openai", "chatgpt", "copilot", "openrouter", "gemini", "gemini-cli", "zen", "claude-bin", "xai", "venice"}
 }
 
 // GetProviderNames returns valid provider names from config plus built-in types.

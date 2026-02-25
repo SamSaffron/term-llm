@@ -25,6 +25,7 @@ const (
 	ProviderTypeClaudeBin    ProviderType = "claude-bin"
 	ProviderTypeOpenAICompat ProviderType = "openai_compatible"
 	ProviderTypeXAI          ProviderType = "xai"
+	ProviderTypeVenice       ProviderType = "venice"
 )
 
 // builtInProviderTypes maps known provider names to their types
@@ -39,6 +40,7 @@ var builtInProviderTypes = map[string]ProviderType{
 	"zen":        ProviderTypeZen,
 	"claude-bin": ProviderTypeClaudeBin,
 	"xai":        ProviderTypeXAI,
+	"venice":     ProviderTypeVenice,
 }
 
 // InferProviderType returns the provider type for a given provider name
@@ -1054,6 +1056,7 @@ func GetDefaults() map[string]any {
 		"providers.anthropic.model":      "claude-sonnet-4-6",
 		"providers.openai.model":         "gpt-5.2",
 		"providers.xai.model":            "grok-4-1-fast",
+		"providers.venice.model":         "venice-uncensored",
 		"providers.openrouter.model":     "x-ai/grok-code-fast-1",
 		"providers.openrouter.app_url":   "https://github.com/samsaffron/term-llm",
 		"providers.openrouter.app_title": "term-llm",

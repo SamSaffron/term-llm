@@ -78,6 +78,7 @@ func runModels(cmd *cobra.Command, args []string) error {
 		config.ProviderTypeOpenAICompat: true,
 		config.ProviderTypeZen:          true,
 		config.ProviderTypeXAI:          true,
+		config.ProviderTypeVenice:       true,
 	}
 
 	// For built-in providers without explicit config, check if they support dynamic listing
@@ -148,6 +149,15 @@ func runModels(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("xAI API key not configured. Set XAI_API_KEY or configure api_key")
 		}
 		lister = llm.NewXAIProvider(apiKey, providerCfg.Model)
+	case config.ProviderTypeVenice:
+		apiKey := providerCfg.ResolvedAPIKey
+		if apiKey == "" {
+			apiKey = os.Getenv("VENICE_API_KEY")
+		}
+		if apiKey == "" {
+			return fmt.Errorf("Venice API key not configured. Set VENICE_API_KEY or configure api_key")
+		}
+		lister = llm.NewVeniceProvider(apiKey, providerCfg.Model)
 	}
 
 	// Copilot may need interactive device auth (up to 5 minutes)

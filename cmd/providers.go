@@ -102,6 +102,13 @@ var builtinProviderMeta = map[string]struct {
 		supportsListModels: true,
 		description:        "xAI API (Grok models)",
 	},
+	"venice": {
+		credential:         "api_key",
+		envVar:             "VENICE_API_KEY",
+		requiresKey:        true,
+		supportsListModels: true,
+		description:        "Venice AI (private, uncensored inference — OpenAI-compatible)",
+	},
 }
 
 var providersCmd = &cobra.Command{
