@@ -24,10 +24,10 @@ func TestNewVeniceProviderCustom(t *testing.T) {
 
 func TestVeniceProviderCapabilities(t *testing.T) {
 	provider := NewVeniceProvider("key", "", "")
-	if provider.SupportsEdit() {
-		t.Error("expected SupportsEdit() = false")
+	if !provider.SupportsEdit() {
+		t.Error("expected SupportsEdit() = true")
 	}
-	if provider.SupportsMultiImage() {
-		t.Error("expected SupportsMultiImage() = false")
+	if !provider.SupportsMultiImage() {
+		t.Error("expected SupportsMultiImage() = true")
 	}
 }
