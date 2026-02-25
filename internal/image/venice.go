@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -58,14 +57,11 @@ func (p *VeniceProvider) SupportsMultiImage() bool {
 }
 
 func (p *VeniceProvider) Generate(ctx context.Context, req GenerateRequest) (*ImageResult, error) {
-	width, height := veniceResolutionDimensions(p.resolution)
-
 	genReq := veniceGenerateRequest{
 		Model:          p.model,
 		Prompt:         req.Prompt,
 		NegativePrompt: "",
-		Width:          width,
-		Height:         height,
+		Resolution:     p.resolution,
 		SafeMode:       false,
 		HideWatermark:  true,
 		Steps:          20,
@@ -125,26 +121,12 @@ func (p *VeniceProvider) Edit(ctx context.Context, req EditRequest) (*ImageResul
 	return nil, fmt.Errorf("Venice does not support image editing")
 }
 
-func veniceResolutionDimensions(resolution string) (int, int) {
-	switch strings.ToUpper(resolution) {
-	case "1K":
-		return 1024, 1024
-	case "2K":
-		return 2048, 2048
-	case "4K":
-		return 4096, 4096
-	default:
-		return 2048, 2048
-	}
-}
-
 // Venice API types
 type veniceGenerateRequest struct {
 	Model          string `json:"model"`
 	Prompt         string `json:"prompt"`
 	NegativePrompt string `json:"negative_prompt"`
-	Width          int    `json:"width"`
-	Height         int    `json:"height"`
+	Resolution     string `json:"resolution"`
 	SafeMode       bool   `json:"safe_mode"`
 	HideWatermark  bool   `json:"hide_watermark"`
 	Steps          int    `json:"steps"`

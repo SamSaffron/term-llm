@@ -12,27 +12,22 @@ func TestNewVeniceProviderDefaults(t *testing.T) {
 	}
 }
 
-func TestVeniceResolutionDimensions(t *testing.T) {
-	tests := []struct {
-		name       string
-		resolution string
-		width      int
-		height     int
-	}{
-		{name: "1K", resolution: "1K", width: 1024, height: 1024},
-		{name: "2K", resolution: "2K", width: 2048, height: 2048},
-		{name: "4K", resolution: "4K", width: 4096, height: 4096},
-		{name: "default", resolution: "", width: 2048, height: 2048},
-		{name: "unknown", resolution: "weird", width: 2048, height: 2048},
-		{name: "lowercase", resolution: "2k", width: 2048, height: 2048},
+func TestNewVeniceProviderCustom(t *testing.T) {
+	provider := NewVeniceProvider("key", "flux-2-max", "4K")
+	if provider.model != "flux-2-max" {
+		t.Errorf("expected model %q, got %q", "flux-2-max", provider.model)
 	}
+	if provider.resolution != "4K" {
+		t.Errorf("expected resolution %q, got %q", "4K", provider.resolution)
+	}
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			width, height := veniceResolutionDimensions(tt.resolution)
-			if width != tt.width || height != tt.height {
-				t.Errorf("veniceResolutionDimensions(%q) = %dx%d, want %dx%d", tt.resolution, width, height, tt.width, tt.height)
-			}
-		})
+func TestVeniceProviderCapabilities(t *testing.T) {
+	provider := NewVeniceProvider("key", "", "")
+	if provider.SupportsEdit() {
+		t.Error("expected SupportsEdit() = false")
+	}
+	if provider.SupportsMultiImage() {
+		t.Error("expected SupportsMultiImage() = false")
 	}
 }
