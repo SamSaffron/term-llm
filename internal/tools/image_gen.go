@@ -222,26 +222,35 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 
 	// Determine output path
 	outputPath := a.OutputPath
+	outputDir := t.config.Image.OutputDir
+	if outputDir == "" {
+		outputDir = "~/Pictures/term-llm"
+	}
+
+	var servedPath string
+
 	if outputPath == "" {
-		// Use default output directory from config
-		outputDir := t.config.Image.OutputDir
-		if outputDir == "" {
-			outputDir = "~/Pictures/term-llm"
-		}
 		outputPath, err = image.SaveImage(result.Data, outputDir, a.Prompt)
 		if err != nil {
 			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to save image: %v", err))), nil
 		}
+		servedPath = outputPath
 	} else {
-		// Ensure parent directory exists
+		// Write to requested location
 		dir := filepath.Dir(outputPath)
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create directory: %v", err))), nil
 		}
-
-		// Write to specified path
 		if err := os.WriteFile(outputPath, result.Data, 0644); err != nil {
 			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to write image: %v", err))), nil
+		}
+
+		// Also copy into outputDir so the web UI can serve it
+		var saveErr error
+		servedPath, saveErr = image.SaveImage(result.Data, outputDir, a.Prompt)
+		if saveErr != nil {
+			// Non-fatal: fall back to outputPath (web UI may not work but file is saved)
+			servedPath = outputPath
 		}
 	}
 
@@ -288,7 +297,7 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 
 	output := llm.ToolOutput{Content: sb.String()}
 	if showImage {
-		output.Images = []string{outputPath}
+		output.Images = []string{servedPath}
 	}
 
 	return output, nil
