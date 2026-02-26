@@ -22,6 +22,26 @@
 
     * {
       box-sizing: border-box;
+      scrollbar-width: thin;
+      scrollbar-color: var(--surface-2) transparent;
+    }
+
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: var(--surface-2);
+      border-radius: 3px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--border);
     }
 
     html,
@@ -428,19 +448,6 @@
       text-decoration: underline;
     }
 
-    .cursor {
-      color: var(--accent-green);
-      margin-left: 0.2rem;
-      animation: blink 1s steps(1) infinite;
-      font-weight: 700;
-    }
-
-    @keyframes blink {
-      50% {
-        opacity: 0;
-      }
-    }
-
     .message-meta {
       display: inline-flex;
       align-items: center;
@@ -512,17 +519,9 @@
 
     .tool-status {
       margin-left: auto;
-      color: var(--accent-amber);
-      font-size: 0.8rem;
-      border: 1px solid color-mix(in srgb, var(--accent-amber) 55%, var(--border) 45%);
-      border-radius: 999px;
-      padding: 0.1rem 0.45rem;
+      color: var(--text-muted);
+      font-size: 0.78rem;
       flex-shrink: 0;
-    }
-
-    .tool-status.done {
-      color: var(--accent-green);
-      border-color: color-mix(in srgb, var(--accent-green) 55%, var(--border) 45%);
     }
 
     .tool-details {
@@ -621,6 +620,31 @@
 
     .tool-group-entry .tool-entry-status.done {
       color: var(--accent-green);
+    }
+
+    .tool-entry-args {
+      padding: 0.25rem 0.75rem 0.35rem 2rem;
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    .tool-entry-args .arg-line {
+      display: flex;
+      gap: 0.4rem;
+    }
+
+    .tool-entry-args .arg-label {
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+
+    .tool-entry-args .arg-value {
+      font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Menlo, Consolas, monospace;
+      color: var(--text);
+      white-space: pre-wrap;
+      word-break: break-all;
+      min-width: 0;
     }
 
     .markdown-body img {
@@ -1379,7 +1403,7 @@
         return meta;
       };
 
-      const renderAssistantMarkdown = (target, content, streaming) => {
+      const renderAssistantMarkdown = (target, content) => {
         const html = marked.parse(content || '');
         const clean = DOMPurify.sanitize(html);
         target.innerHTML = clean;
@@ -1392,13 +1416,6 @@
         target.querySelectorAll('pre code').forEach((code) => {
           hljs.highlightElement(code);
         });
-
-        if (streaming) {
-          const cursor = document.createElement('span');
-          cursor.className = 'cursor';
-          cursor.textContent = '▋';
-          target.appendChild(cursor);
-        }
       };
 
       const createToolCard = (message) => {
@@ -1471,7 +1488,7 @@
 
         if (message.role === 'assistant') {
           body.classList.add('markdown-body');
-          renderAssistantMarkdown(body, message.content || '', false);
+          renderAssistantMarkdown(body, message.content || '');
         } else if (message.role === 'error') {
           body.textContent = `Error: ${message.content || 'Unknown error.'}`;
         } else {
@@ -1491,7 +1508,7 @@
         return article;
       };
 
-      const updateAssistantNode = (message, streaming) => {
+      const updateAssistantNode = (message) => {
         let node = findMessageElement(message.id);
         if (!node) {
           node = createMessageNode(message);
@@ -1500,7 +1517,7 @@
 
         const body = node.querySelector('.message-body');
         if (!body) return;
-        renderAssistantMarkdown(body, message.content || '', streaming);
+        renderAssistantMarkdown(body, message.content || '');
 
         let usageNode = node.querySelector('.usage-line');
         if (message.usage) {
@@ -1578,8 +1595,13 @@
         summary.textContent = toolGroupSummaryText(message);
 
         const statusBadge = document.createElement('span');
-        statusBadge.className = `tool-status${message.status === 'done' ? ' done' : ''}`;
-        statusBadge.textContent = message.status === 'done' ? '[done]' : '[running…]';
+        statusBadge.className = 'tool-status';
+        if (message.status === 'done') {
+          statusBadge.style.display = 'none';
+          statusBadge.textContent = '';
+        } else {
+          statusBadge.textContent = 'running\u2026';
+        }
 
         toggle.appendChild(arrow);
         toggle.appendChild(summary);
@@ -1606,10 +1628,74 @@
         return wrapper;
       };
 
+      const formatToolArgs = (tool) => {
+        if (!tool.arguments) return null;
+        let args;
+        try {
+          args = typeof tool.arguments === 'string' ? JSON.parse(tool.arguments) : tool.arguments;
+        } catch { return null; }
+        if (!args || typeof args !== 'object') return null;
+
+        // Pick the most relevant key(s) per tool type
+        const name = (tool.name || '').toLowerCase();
+        const priorityKeys = {
+          'shell': ['command'],
+          'bash': ['command'],
+          'read_file': ['path', 'file_path'],
+          'write_file': ['path', 'file_path'],
+          'edit_file': ['path', 'file_path'],
+          'web_search': ['query'],
+          'search': ['query'],
+          'grep': ['pattern', 'path'],
+          'glob': ['pattern', 'path'],
+        };
+
+        const pick = priorityKeys[name];
+        let entries;
+        if (pick) {
+          entries = pick.filter(k => args[k] != null).map(k => [k, args[k]]);
+          // If no priority keys matched, fall back to all keys
+          if (entries.length === 0) entries = Object.entries(args);
+        } else {
+          entries = Object.entries(args);
+        }
+
+        return entries.slice(0, 4); // Cap at 4 args to keep it compact
+      };
+
+      const buildArgsNode = (tool) => {
+        const entries = formatToolArgs(tool);
+        if (!entries || entries.length === 0) return null;
+
+        const argsDiv = document.createElement('div');
+        argsDiv.className = 'tool-entry-args';
+
+        entries.forEach(([key, value]) => {
+          const line = document.createElement('div');
+          line.className = 'arg-line';
+
+          const label = document.createElement('span');
+          label.className = 'arg-label';
+          label.textContent = key + ':';
+
+          const val = document.createElement('span');
+          val.className = 'arg-value';
+          val.textContent = typeof value === 'string' ? value : JSON.stringify(value);
+
+          line.appendChild(label);
+          line.appendChild(val);
+          argsDiv.appendChild(line);
+        });
+
+        return argsDiv;
+      };
+
       const createToolEntryNode = (tool) => {
+        const wrapper = document.createElement('div');
+        wrapper.dataset.toolId = tool.id;
+
         const entry = document.createElement('div');
         entry.className = 'tool-group-entry';
-        entry.dataset.toolId = tool.id;
 
         const icon = document.createElement('span');
         icon.textContent = toolIcon(tool.name);
@@ -1625,7 +1711,12 @@
         entry.appendChild(icon);
         entry.appendChild(name);
         entry.appendChild(status);
-        return entry;
+        wrapper.appendChild(entry);
+
+        const argsNode = buildArgsNode(tool);
+        if (argsNode) wrapper.appendChild(argsNode);
+
+        return wrapper;
       };
 
       const updateToolGroupNode = (message) => {
@@ -1641,8 +1732,13 @@
 
         const statusBadge = node.querySelector('.tool-status');
         if (statusBadge) {
-          statusBadge.className = `tool-status${message.status === 'done' ? ' done' : ''}`;
-          statusBadge.textContent = message.status === 'done' ? '[done]' : '[running…]';
+          if (message.status === 'done') {
+            statusBadge.style.display = 'none';
+            statusBadge.textContent = '';
+          } else {
+            statusBadge.style.display = '';
+            statusBadge.textContent = 'running\u2026';
+          }
         }
 
         const details = node.querySelector('.tool-group-details');
@@ -1658,6 +1754,14 @@
               if (status) {
                 status.className = `tool-entry-status${tool.status === 'done' ? ' done' : ''}`;
                 status.textContent = tool.status === 'done' ? '✓' : '…';
+              }
+              // Update or add arguments display
+              const existingArgs = entry.querySelector('.tool-entry-args');
+              const newArgs = buildArgsNode(tool);
+              if (existingArgs && newArgs) {
+                existingArgs.replaceWith(newArgs);
+              } else if (!existingArgs && newArgs) {
+                entry.appendChild(newArgs);
               }
             }
           });
@@ -2037,7 +2141,7 @@
                 closeToolGroup();
                 const msg = ensureAssistantMessage();
                 msg.content += delta;
-                updateAssistantNode(msg, true);
+                updateAssistantNode(msg);
                 saveSessions();
                 scrollToBottom();
               }
@@ -2127,7 +2231,7 @@
                 payload.images.forEach(url => {
                   msg.content += `\n\n![Generated Image](${url})\n`;
                 });
-                updateAssistantNode(msg, true);
+                updateAssistantNode(msg);
               }
               saveSessions();
               scrollToBottom();
@@ -2142,7 +2246,7 @@
               const lastAssistant = [...session.messages].reverse().find(m => m.role === 'assistant');
               if (lastAssistant) {
                 if (usage) lastAssistant.usage = usage;
-                updateAssistantNode(lastAssistant, false);
+                updateAssistantNode(lastAssistant);
               }
               saveSessions();
               scrollToBottom();
@@ -2155,7 +2259,7 @@
               closeToolGroup();
               markToolGroupsDone(session);
               const lastAssistant = [...session.messages].reverse().find(m => m.role === 'assistant');
-              if (lastAssistant) updateAssistantNode(lastAssistant, false);
+              if (lastAssistant) updateAssistantNode(lastAssistant);
               saveSessions();
               scrollToBottom(true);
               return true;
@@ -2167,14 +2271,14 @@
           closeToolGroup();
           markToolGroupsDone(session);
           const lastAssistant = [...session.messages].reverse().find(m => m.role === 'assistant');
-          if (lastAssistant) updateAssistantNode(lastAssistant, false);
+          if (lastAssistant) updateAssistantNode(lastAssistant);
           persistAndRefreshShell();
           scrollToBottom();
         } catch (err) {
           closeToolGroup();
           markToolGroupsDone(session);
           const lastAssistant = [...session.messages].reverse().find(m => m.role === 'assistant');
-          if (lastAssistant) updateAssistantNode(lastAssistant, false);
+          if (lastAssistant) updateAssistantNode(lastAssistant);
 
           if (err?.name === 'AbortError') {
             persistAndRefreshShell();
