@@ -577,6 +577,11 @@
       background: color-mix(in srgb, var(--surface-2) 80%, var(--accent-amber) 20%);
     }
 
+    .tool-group-toggle[aria-expanded="true"] .tool-arrow {
+      transform: rotate(90deg);
+      color: var(--text);
+    }
+
     .tool-group-summary {
       font-weight: 600;
       min-width: 0;
@@ -1636,8 +1641,17 @@
         } catch { return null; }
         if (!args || typeof args !== 'object') return null;
 
-        // Pick the most relevant key(s) per tool type
         const name = (tool.name || '').toLowerCase();
+
+        // spawn_agent: show "@agent_name: truncated prompt"
+        if (name === 'spawn_agent') {
+          const agentName = args.agent_name || 'agent';
+          let prompt = args.prompt || '';
+          if (prompt.length > 120) prompt = prompt.slice(0, 117) + '…';
+          return [['task', '@' + agentName + ': ' + prompt]];
+        }
+
+        // Pick the most relevant key(s) per tool type
         const priorityKeys = {
           'shell': ['command'],
           'bash': ['command'],
