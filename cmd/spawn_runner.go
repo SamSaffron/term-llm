@@ -272,11 +272,12 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 
 	// Build request
 	req := llm.Request{
-		SessionID:         childSessionID,
-		Messages:          messages,
-		Search:            agent.Search,
-		ParallelToolCalls: true,
-		MaxTurns:          maxTurns,
+		SessionID:           childSessionID,
+		Messages:            messages,
+		Search:              agent.Search,
+		ForceExternalSearch: resolveForceExternalSearch(cfg, false, false),
+		ParallelToolCalls:   true,
+		MaxTurns:            maxTurns,
 	}
 
 	// Add tools if any
