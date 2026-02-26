@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -505,11 +506,20 @@ func TestTelegramSessionMgrResetSessionIfCurrent_RejectsStaleExpectedSession(t *
 	}
 }
 
-func TestTelegramSessionMgrResetSessionIfCurrent_CopiesCarryoverContext(t *testing.T) {
+func TestTelegramSessionMgrResetSessionIfCurrent_RestoresHistoryFromDB(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	defer store.Close()
+
 	mgr := &telegramSessionMgr{
 		sessions: make(map[int64]*telegramSession),
+		store:    store,
 		settings: Settings{
-			TelegramCarryoverChars: 128,
+			TelegramCarryoverChars: 10000,
+			Store:                  store,
 			NewSession: func(ctx context.Context) (*SessionRuntime, error) {
 				return &SessionRuntime{
 					ProviderName: "mock",
@@ -519,30 +529,106 @@ func TestTelegramSessionMgrResetSessionIfCurrent_CopiesCarryoverContext(t *testi
 		},
 	}
 
-	original, err := mgr.getOrCreate(context.Background(), 42)
+	ctx := context.Background()
+	original, err := mgr.getOrCreate(ctx, 42)
 	if err != nil {
 		t.Fatalf("getOrCreate failed: %v", err)
 	}
-	original.history = []llm.Message{
-		llm.UserImageMessage("image/jpeg", "dGVzdA==", "photo caption"),
-		llm.AssistantText("reply text"),
+
+	// Persist messages to DB for the original session.
+	userMsg := &session.Message{
+		SessionID:   original.meta.ID,
+		Role:        llm.RoleUser,
+		Parts:       []llm.Part{{Type: llm.PartText, Text: "hello"}},
+		TextContent: "hello",
+		Sequence:    -1,
+	}
+	assistMsg := &session.Message{
+		SessionID:   original.meta.ID,
+		Role:        llm.RoleAssistant,
+		Parts:       []llm.Part{{Type: llm.PartText, Text: "hi there"}},
+		TextContent: "hi there",
+		Sequence:    -1,
+	}
+	if err := store.AddMessage(ctx, original.meta.ID, userMsg); err != nil {
+		t.Fatalf("add user message: %v", err)
+	}
+	if err := store.AddMessage(ctx, original.meta.ID, assistMsg); err != nil {
+		t.Fatalf("add assistant message: %v", err)
 	}
 
-	replacement, replaced, err := mgr.resetSessionIfCurrent(context.Background(), 42, original)
+	replacement, replaced, err := mgr.resetSessionIfCurrent(ctx, 42, original)
 	if err != nil {
 		t.Fatalf("resetSessionIfCurrent failed: %v", err)
 	}
 	if !replaced {
 		t.Fatalf("expected reset to replace session")
 	}
-	if replacement.carryoverContext == "" {
-		t.Fatal("expected non-empty carryoverContext")
+
+	// The replacement session should have history restored from DB.
+	if len(replacement.history) != 2 {
+		t.Fatalf("expected 2 messages in restored history, got %d", len(replacement.history))
 	}
-	if !strings.Contains(replacement.carryoverContext, "[image uploaded]") {
-		t.Fatalf("expected image placeholder in carryoverContext, got %q", replacement.carryoverContext)
+	if replacement.history[0].Role != llm.RoleUser {
+		t.Fatalf("expected first message to be user, got %s", replacement.history[0].Role)
 	}
-	if !strings.Contains(replacement.carryoverContext, "photo caption") {
-		t.Fatalf("expected caption text in carryoverContext, got %q", replacement.carryoverContext)
+	if replacement.history[1].Role != llm.RoleAssistant {
+		t.Fatalf("expected second message to be assistant, got %s", replacement.history[1].Role)
+	}
+}
+
+func TestTelegramSessionMgrResetSession_ZeroCarryoverDisablesHistory(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	defer store.Close()
+
+	mgr := &telegramSessionMgr{
+		sessions: make(map[int64]*telegramSession),
+		store:    store,
+		settings: Settings{
+			TelegramCarryoverChars: 0, // explicitly disable carryover
+			Store:                  store,
+			NewSession: func(ctx context.Context) (*SessionRuntime, error) {
+				return &SessionRuntime{
+					ProviderName: "mock",
+					ModelName:    "model",
+				}, nil
+			},
+		},
+	}
+
+	ctx := context.Background()
+	original, err := mgr.getOrCreate(ctx, 42)
+	if err != nil {
+		t.Fatalf("getOrCreate failed: %v", err)
+	}
+
+	// Persist messages to DB for the original session.
+	userMsg := &session.Message{
+		SessionID:   original.meta.ID,
+		Role:        llm.RoleUser,
+		Parts:       []llm.Part{{Type: llm.PartText, Text: "hello"}},
+		TextContent: "hello",
+		Sequence:    -1,
+	}
+	if err := store.AddMessage(ctx, original.meta.ID, userMsg); err != nil {
+		t.Fatalf("add user message: %v", err)
+	}
+
+	replacement, replaced, err := mgr.resetSessionIfCurrent(ctx, 42, original)
+	if err != nil {
+		t.Fatalf("resetSessionIfCurrent failed: %v", err)
+	}
+	if !replaced {
+		t.Fatalf("expected reset to replace session")
+	}
+
+	// With TelegramCarryoverChars=0, no history should be restored.
+	if len(replacement.history) != 0 {
+		t.Fatalf("expected 0 messages in restored history (carryover disabled), got %d", len(replacement.history))
 	}
 }
 
@@ -885,6 +971,42 @@ func TestBuildHistoryContextTail_RuneSafeAndImagePlaceholder(t *testing.T) {
 	}
 	if !strings.Contains(full, "desc") {
 		t.Fatalf("expected image caption in full tail, got %q", full)
+	}
+}
+
+func TestTailMessages_CapsAtCharLimit(t *testing.T) {
+	msgs := []llm.Message{
+		llm.UserText("aaaa"),      // 4 chars
+		llm.AssistantText("bbbb"), // 4 chars
+		llm.UserText("cccc"),      // 4 chars
+		llm.AssistantText("dddd"), // 4 chars
+	}
+
+	// Budget for all = 16 chars, should get all 4.
+	got := tailMessages(msgs, 16)
+	if len(got) != 4 {
+		t.Fatalf("expected 4 messages with budget 16, got %d", len(got))
+	}
+
+	// Budget for 8 chars = last 2 messages.
+	got = tailMessages(msgs, 8)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 messages with budget 8, got %d", len(got))
+	}
+	if got[0].Role != llm.RoleUser {
+		t.Fatalf("expected user message first in tail, got %s", got[0].Role)
+	}
+
+	// Budget for 1 char = still includes last message (never returns empty if msgs exist).
+	got = tailMessages(msgs, 1)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 message with budget 1, got %d", len(got))
+	}
+
+	// Zero budget = nil.
+	got = tailMessages(msgs, 0)
+	if got != nil {
+		t.Fatalf("expected nil with budget 0, got %d messages", len(got))
 	}
 }
 

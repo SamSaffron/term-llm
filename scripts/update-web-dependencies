@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+#
+# Checks for newer versions of CDN dependencies used in the web UI
+# and updates index.html if found.
+#
+set -euo pipefail
+
+HTML="internal/serveui/static/index.html"
+
+if [ ! -f "$HTML" ]; then
+  echo "Error: $HTML not found. Run from repo root." >&2
+  exit 1
+fi
+
+# Library definitions: name, cdnjs library id, current URL pattern to grep
+declare -A LIBS
+LIBS=(
+  [highlight.js]="highlight.js"
+  [marked]="marked"
+  [dompurify]="dompurify"
+)
+
+check_latest() {
+  local lib="$1"
+  local api_url="https://api.cdnjs.com/libraries/${lib}?fields=version"
+  local version
+  version=$(curl -sf "$api_url" | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4)
+  echo "$version"
+}
+
+echo "Checking latest versions on cdnjs..."
+echo
+
+updated=0
+
+# highlight.js
+HLJS_LATEST=$(check_latest "highlight.js")
+HLJS_CURRENT=$(grep -oP 'highlight\.js/\K[0-9]+\.[0-9]+\.[0-9]+' "$HTML" | head -1)
+echo "highlight.js: current=$HLJS_CURRENT latest=$HLJS_LATEST"
+if [ "$HLJS_CURRENT" != "$HLJS_LATEST" ] && [ -n "$HLJS_LATEST" ]; then
+  sed -i "s|highlight\.js/${HLJS_CURRENT}|highlight.js/${HLJS_LATEST}|g" "$HTML"
+  echo "  -> Updated to $HLJS_LATEST"
+  updated=1
+else
+  echo "  -> Up to date"
+fi
+
+# marked
+MARKED_LATEST=$(check_latest "marked")
+MARKED_CURRENT=$(grep -oP 'marked/\K[0-9]+\.[0-9]+\.[0-9]+' "$HTML" | head -1)
+echo "marked: current=$MARKED_CURRENT latest=$MARKED_LATEST"
+if [ "$MARKED_CURRENT" != "$MARKED_LATEST" ] && [ -n "$MARKED_LATEST" ]; then
+  sed -i "s|marked/${MARKED_CURRENT}|marked/${MARKED_LATEST}|g" "$HTML"
+  echo "  -> Updated to $MARKED_LATEST"
+  updated=1
+else
+  echo "  -> Up to date"
+fi
+
+# dompurify
+PURIFY_LATEST=$(check_latest "dompurify")
+PURIFY_CURRENT=$(grep -oP 'dompurify/\K[0-9]+\.[0-9]+\.[0-9]+' "$HTML" | head -1)
+echo "dompurify: current=$PURIFY_CURRENT latest=$PURIFY_LATEST"
+if [ "$PURIFY_CURRENT" != "$PURIFY_LATEST" ] && [ -n "$PURIFY_LATEST" ]; then
+  sed -i "s|dompurify/${PURIFY_CURRENT}|dompurify/${PURIFY_LATEST}|g" "$HTML"
+  echo "  -> Updated to $PURIFY_LATEST"
+  updated=1
+else
+  echo "  -> Up to date"
+fi
+
+echo
+if [ "$updated" -eq 1 ]; then
+  echo "Done. Review changes with: git diff $HTML"
+else
+  echo "All dependencies are up to date."
+fi

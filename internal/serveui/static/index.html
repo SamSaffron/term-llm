@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Jarvis</title>
+  <title>Chat</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230d1117'/%3E%3Cpath d='M17 14h30v6H24v26h16v-9H30v-6h17v21H17z' fill='%2358a6ff'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css">
   <style>
     :root {
       --bg: #0d1117;
@@ -553,6 +553,82 @@
       word-break: break-word;
     }
 
+    .tool-group-card {
+      border: 1px solid color-mix(in srgb, var(--accent-amber) 46%, var(--border) 54%);
+      border-radius: 12px;
+      background: color-mix(in srgb, var(--accent-amber) 10%, var(--surface-2) 90%);
+      overflow: hidden;
+    }
+
+    .tool-group-toggle {
+      width: 100%;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      padding: 0.65rem 0.75rem;
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      cursor: pointer;
+      text-align: left;
+      font-size: 0.92rem;
+    }
+
+    .tool-group-toggle:hover {
+      background: color-mix(in srgb, var(--surface-2) 80%, var(--accent-amber) 20%);
+    }
+
+    .tool-group-summary {
+      font-weight: 600;
+      min-width: 0;
+    }
+
+    .tool-group-details {
+      border-top: 1px solid var(--border);
+      display: none;
+    }
+
+    .tool-group-details.open {
+      display: block;
+    }
+
+    .tool-group-entry {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.4rem 0.75rem;
+      font-size: 0.88rem;
+      border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent 40%);
+    }
+
+    .tool-group-entry:last-child {
+      border-bottom: none;
+    }
+
+    .tool-group-entry .tool-entry-name {
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .tool-group-entry .tool-entry-status {
+      margin-left: auto;
+      color: var(--accent-amber);
+      font-size: 0.76rem;
+      flex-shrink: 0;
+    }
+
+    .tool-group-entry .tool-entry-status.done {
+      color: var(--accent-green);
+    }
+
+    .markdown-body img {
+      max-width: 100%;
+      border-radius: 8px;
+      margin: 0.5rem 0;
+    }
+
     .composer {
       border-top: 1px solid var(--border);
       background: var(--surface);
@@ -840,7 +916,7 @@
   <div class="app">
     <aside class="sidebar" id="sidebar" aria-label="Sessions">
       <div class="sidebar-header">
-        <div class="brand"><span aria-hidden="true">≡</span> <span>Jarvis</span></div>
+        <div class="brand"><span aria-hidden="true">≡</span> <span>Chat</span></div>
         <div style="display:inline-flex; gap:0.4rem;">
           <button class="icon-btn" id="settingsBtn" title="Token settings" aria-label="Token settings">⚙</button>
           <button class="icon-btn sidebar-close" id="sidebarCloseBtn" title="Close sidebar" aria-label="Close sidebar">✕</button>
@@ -860,7 +936,7 @@
       <header class="main-header">
         <div class="header-left">
           <button class="icon-btn mobile-menu" id="mobileMenuBtn" aria-label="Open sidebar" title="Open sidebar">☰</button>
-          <h1 class="header-title" id="activeSessionTitle">Jarvis</h1>
+          <h1 class="header-title" id="activeSessionTitle">Chat</h1>
           <span class="connection-state" id="connectionState">Checking token…</span>
         </div>
         <div class="header-right">
@@ -876,7 +952,7 @@
 
       <footer class="composer">
         <div class="composer-inner">
-          <textarea id="promptInput" class="prompt" rows="1" placeholder="Message Jarvis…" aria-label="Message"></textarea>
+          <textarea id="promptInput" class="prompt" rows="1" placeholder="Message…" aria-label="Message"></textarea>
           <div class="composer-actions">
             <button class="stop-btn" id="stopBtn" type="button">Stop</button>
             <button class="send-btn" id="sendBtn" type="button" aria-label="Send message">
@@ -893,7 +969,7 @@
   <div class="modal-overlay hidden" id="authModal" role="dialog" aria-modal="true" aria-labelledby="authModalTitle">
     <div class="modal">
       <h2 id="authModalTitle">Enter bearer token</h2>
-      <p>Jarvis uses your API token for <code>/v1/models</code> and <code>/v1/responses</code>.</p>
+      <p>Uses your API token for <code>/v1/models</code> and <code>/v1/responses</code>.</p>
       <input id="authTokenInput" type="password" placeholder="sk-..." autocomplete="off">
       <div class="modal-error" id="authError"></div>
       <div class="modal-actions">
@@ -903,19 +979,19 @@
     </div>
   </div>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.8/purify.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/16.3.0/lib/marked.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.2.7/purify.min.js"></script>
   <script>
     (() => {
       'use strict';
 
       // ===== Constants & state =====
       const STORAGE_KEYS = {
-        sessions: 'jarvis_sessions',
-        token: 'jarvis_token',
-        activeSession: 'jarvis_active_session',
-        selectedModel: 'jarvis_selected_model'
+        sessions: 'term_llm_sessions',
+        token: 'term_llm_token',
+        activeSession: 'term_llm_active_session',
+        selectedModel: 'term_llm_selected_model'
       };
 
       const state = {
@@ -929,6 +1005,11 @@
         autoScroll: true,
         authRequired: false
       };
+
+      // Ensure cookie is set on load so <img> requests to /images/ can authenticate
+      if (state.token) {
+        document.cookie = `term_llm_token=${encodeURIComponent(state.token)}; path=/images; SameSite=Strict; max-age=31536000`;
+      }
 
       const elements = {
         sidebar: document.getElementById('sidebar'),
@@ -954,11 +1035,9 @@
       };
 
       // ===== Markdown setup =====
-      marked.setOptions({
+      marked.use({
         breaks: true,
-        gfm: true,
-        mangle: false,
-        headerIds: false
+        gfm: true
       });
 
       // ===== Helpers =====
@@ -980,6 +1059,14 @@
         });
       };
       const generateId = (prefix) => `${prefix}_${generateUUID()}`;
+
+      const syncTokenCookie = (token) => {
+        if (token) {
+          document.cookie = `term_llm_token=${encodeURIComponent(token)}; path=/images; SameSite=Strict; max-age=31536000`;
+        } else {
+          document.cookie = 'term_llm_token=; path=/images; SameSite=Strict; max-age=0';
+        }
+      };
 
       const truncate = (text, max = 60) => {
         const value = (text || '').trim().replace(/\s+/g, ' ');
@@ -1056,9 +1143,9 @@
       const updateDocumentTitle = () => {
         const session = getActiveSession();
         if (session && session.title && session.title !== 'New chat') {
-          document.title = `Jarvis · ${session.title}`;
+          document.title = `Chat · ${session.title}`;
         } else {
-          document.title = 'Jarvis';
+          document.title = 'Chat';
         }
       };
 
@@ -1087,6 +1174,19 @@
           return base;
         }
 
+        if (role === 'tool-group') {
+          base.tools = Array.isArray(msg.tools) ? msg.tools.map(t => ({
+            id: String(t.id || ''),
+            name: String(t.name || 'tool'),
+            arguments: String(t.arguments || ''),
+            status: t.status === 'done' ? 'done' : 'running',
+            created: asTimestamp(t.created)
+          })) : [];
+          base.expanded = Boolean(msg.expanded);
+          base.status = msg.status === 'done' ? 'done' : 'running';
+          return base;
+        }
+
         return null;
       };
 
@@ -1096,12 +1196,15 @@
           ? session.messages.map(sanitizeMessage).filter(Boolean)
           : [];
 
-        return {
+        const result = {
           id: typeof session.id === 'string' ? session.id : `sess_${generateUUID()}`,
           title: typeof session.title === 'string' && session.title.trim() ? session.title.trim() : 'New chat',
           created: asTimestamp(session.created),
           messages
         };
+        if (session._serverOnly) result._serverOnly = true;
+        if (typeof session.messageCount === 'number') result.messageCount = session.messageCount;
+        return result;
       };
 
       const loadSessions = () => {
@@ -1190,7 +1293,7 @@
 
       const updateHeader = () => {
         const session = ensureActiveSession();
-        elements.activeSessionTitle.textContent = session.title || 'Jarvis';
+        elements.activeSessionTitle.textContent = session.title || 'Chat';
         updateDocumentTitle();
       };
 
@@ -1232,13 +1335,24 @@
 
             const meta = document.createElement('div');
             meta.className = 'session-meta';
-            meta.textContent = `${session.messages.length} message${session.messages.length === 1 ? '' : 's'} · ${relativeTime(session.created)}`;
+            const msgCount = session.messages.length || session.messageCount || 0;
+            meta.textContent = `${msgCount} message${msgCount === 1 ? '' : 's'} · ${relativeTime(session.created)}`;
             meta.title = fullDate(session.created);
 
             btn.appendChild(title);
             btn.appendChild(meta);
-            btn.addEventListener('click', () => {
+            btn.addEventListener('click', async () => {
               state.activeSessionId = session.id;
+
+              // Lazy-load messages for server-only sessions
+              if (session._serverOnly) {
+                const msgs = await loadServerSessionMessages(session.id);
+                if (msgs !== null) {
+                  session.messages = msgs;
+                  delete session._serverOnly;
+                }
+              }
+
               persistAndRefreshShell();
               renderMessages(true);
               closeSidebarIfMobile();
@@ -1346,6 +1460,7 @@
 
       const createMessageNode = (message) => {
         if (message.role === 'tool') return createToolCard(message);
+        if (message.role === 'tool-group') return createToolGroupNode(message);
 
         const article = document.createElement('article');
         article.className = `message ${message.role}`;
@@ -1429,6 +1544,123 @@
         }
         if (args) {
           args.textContent = message.arguments || '(waiting for arguments…)';
+        }
+      };
+
+      const toolGroupSummaryText = (message) => {
+        const total = message.tools.length;
+        const done = message.tools.filter(t => t.status === 'done').length;
+        if (message.status === 'done' || done === total) {
+          return `${total} tool call${total === 1 ? '' : 's'} completed`;
+        }
+        return `Running ${total} tool${total === 1 ? '' : 's'}… (${done}/${total} done)`;
+      };
+
+      const createToolGroupNode = (message) => {
+        const wrapper = document.createElement('article');
+        wrapper.className = 'message tool-group';
+        wrapper.dataset.messageId = message.id;
+
+        const card = document.createElement('div');
+        card.className = 'tool-group-card';
+
+        const toggle = document.createElement('button');
+        toggle.className = 'tool-group-toggle';
+        toggle.type = 'button';
+        toggle.setAttribute('aria-expanded', message.expanded ? 'true' : 'false');
+
+        const arrow = document.createElement('span');
+        arrow.className = 'tool-arrow';
+        arrow.textContent = '▶';
+
+        const summary = document.createElement('span');
+        summary.className = 'tool-group-summary';
+        summary.textContent = toolGroupSummaryText(message);
+
+        const statusBadge = document.createElement('span');
+        statusBadge.className = `tool-status${message.status === 'done' ? ' done' : ''}`;
+        statusBadge.textContent = message.status === 'done' ? '[done]' : '[running…]';
+
+        toggle.appendChild(arrow);
+        toggle.appendChild(summary);
+        toggle.appendChild(statusBadge);
+
+        const details = document.createElement('div');
+        details.className = `tool-group-details${message.expanded ? ' open' : ''}`;
+
+        message.tools.forEach(tool => {
+          details.appendChild(createToolEntryNode(tool));
+        });
+
+        toggle.addEventListener('click', () => {
+          message.expanded = !message.expanded;
+          toggle.setAttribute('aria-expanded', message.expanded ? 'true' : 'false');
+          details.classList.toggle('open', message.expanded);
+          saveSessions();
+        });
+
+        card.appendChild(toggle);
+        card.appendChild(details);
+        wrapper.appendChild(card);
+        wrapper.appendChild(createMetaNode(message.created));
+        return wrapper;
+      };
+
+      const createToolEntryNode = (tool) => {
+        const entry = document.createElement('div');
+        entry.className = 'tool-group-entry';
+        entry.dataset.toolId = tool.id;
+
+        const icon = document.createElement('span');
+        icon.textContent = toolIcon(tool.name);
+
+        const name = document.createElement('span');
+        name.className = 'tool-entry-name';
+        name.textContent = tool.name || 'tool';
+
+        const status = document.createElement('span');
+        status.className = `tool-entry-status${tool.status === 'done' ? ' done' : ''}`;
+        status.textContent = tool.status === 'done' ? '✓' : '…';
+
+        entry.appendChild(icon);
+        entry.appendChild(name);
+        entry.appendChild(status);
+        return entry;
+      };
+
+      const updateToolGroupNode = (message) => {
+        let node = findMessageElement(message.id);
+        if (!node) {
+          node = createToolGroupNode(message);
+          elements.messages.appendChild(node);
+          return;
+        }
+
+        const summary = node.querySelector('.tool-group-summary');
+        if (summary) summary.textContent = toolGroupSummaryText(message);
+
+        const statusBadge = node.querySelector('.tool-status');
+        if (statusBadge) {
+          statusBadge.className = `tool-status${message.status === 'done' ? ' done' : ''}`;
+          statusBadge.textContent = message.status === 'done' ? '[done]' : '[running…]';
+        }
+
+        const details = node.querySelector('.tool-group-details');
+        if (details) {
+          // Update existing entries or add new ones
+          message.tools.forEach(tool => {
+            let entry = details.querySelector(`[data-tool-id="${CSS.escape(tool.id)}"]`);
+            if (!entry) {
+              entry = createToolEntryNode(tool);
+              details.appendChild(entry);
+            } else {
+              const status = entry.querySelector('.tool-entry-status');
+              if (status) {
+                status.className = `tool-entry-status${tool.status === 'done' ? ' done' : ''}`;
+                status.textContent = tool.status === 'done' ? '✓' : '…';
+              }
+            }
+          });
         }
       };
 
@@ -1575,6 +1807,7 @@
       const handleAuthFailure = () => {
         state.token = '';
         localStorage.removeItem(STORAGE_KEYS.token);
+        syncTokenCookie('');
         setConnectionState('Not connected', 'bad');
         openAuthModal('Auth failed — check your token.', true);
       };
@@ -1595,6 +1828,7 @@
           state.token = token;
           state.models = models;
           localStorage.setItem(STORAGE_KEYS.token, token);
+          syncTokenCookie(token);
 
           renderModelOptions();
           setConnectionState('Connected', 'ok');
@@ -1606,6 +1840,7 @@
           if (err?.status === 401) {
             state.token = '';
             localStorage.removeItem(STORAGE_KEYS.token);
+            syncTokenCookie('');
           }
           setConnectionState('Not connected', 'bad');
         } finally {
@@ -1672,27 +1907,18 @@
         elements.messages.appendChild(createMessageNode(message));
       };
 
-      const markRunningToolsDone = (session, toolIds) => {
-        toolIds.forEach((id) => {
-          const tool = session.messages.find((m) => m.id === id && m.role === 'tool');
-          if (tool && tool.status === 'running') {
-            tool.status = 'done';
-            updateToolNode(tool);
+      const markToolGroupsDone = (session) => {
+        session.messages.forEach(m => {
+          if (m.role === 'tool-group' && m.status === 'running') {
+            m.tools.forEach(t => { t.status = 'done'; });
+            m.status = 'done';
+            updateToolGroupNode(m);
+          }
+          if (m.role === 'tool' && m.status === 'running') {
+            m.status = 'done';
+            updateToolNode(m);
           }
         });
-      };
-
-      const findRunningTool = (session, toolIds, name) => {
-        for (let i = toolIds.length - 1; i >= 0; i -= 1) {
-          const msg = session.messages.find((m) => m.id === toolIds[i]);
-          if (!msg || msg.role !== 'tool' || msg.status !== 'running') continue;
-          if (!name || msg.name === name) return msg;
-        }
-
-        const fallback = [...session.messages].reverse().find((m) => {
-          return m.role === 'tool' && m.status === 'running' && (!name || m.name === name);
-        });
-        return fallback || null;
       };
 
       const sendMessage = async () => {
@@ -1707,7 +1933,31 @@
         }
 
         const session = ensureActiveSession();
-        const toolIds = [];
+        let currentAssistantMessage = null;
+        let currentToolGroup = null;
+
+        const ensureAssistantMessage = () => {
+          if (currentAssistantMessage) return currentAssistantMessage;
+          const msg = {
+            id: generateId('msg'),
+            role: 'assistant',
+            content: '',
+            created: Date.now()
+          };
+          session.messages.push(msg);
+          elements.messages.appendChild(createMessageNode(msg));
+          currentAssistantMessage = msg;
+          return msg;
+        };
+
+        const closeToolGroup = () => {
+          if (currentToolGroup) {
+            currentToolGroup.tools.forEach(t => { t.status = 'done'; });
+            currentToolGroup.status = 'done';
+            updateToolGroupNode(currentToolGroup);
+            currentToolGroup = null;
+          }
+        };
 
         // user message
         const userMessage = {
@@ -1722,21 +1972,12 @@
           session.title = truncate(prompt, 60);
         }
 
-        // assistant placeholder
-        const assistantMessage = {
-          id: generateId('msg'),
-          role: 'assistant',
-          content: '',
-          created: Date.now()
-        };
-        session.messages.push(assistantMessage);
-
         const hadEmptyState = elements.messages.querySelector('.empty-state');
         if (hadEmptyState) hadEmptyState.remove();
 
-        elements.messages.appendChild(createMessageNode(userMessage));
-        const assistantNode = createMessageNode(assistantMessage);
-        elements.messages.appendChild(assistantNode);
+        // Render user message; assistant message is created lazily on first text/image event
+        const userNode = createMessageNode(userMessage);
+        elements.messages.appendChild(userNode);
 
         persistAndRefreshShell();
 
@@ -1775,7 +2016,8 @@
 
           await parseSSEStream(response.body, async (event, data) => {
             if (data === '[DONE]') {
-              markRunningToolsDone(session, toolIds);
+              closeToolGroup();
+              markToolGroupsDone(session);
               persistAndRefreshShell();
               return false;
             }
@@ -1792,30 +2034,56 @@
             if (event === 'response.output_text.delta') {
               const delta = String(payload.delta || '');
               if (delta) {
-                assistantMessage.content += delta;
-                markRunningToolsDone(session, toolIds);
-                updateAssistantNode(assistantMessage, true);
+                closeToolGroup();
+                const msg = ensureAssistantMessage();
+                msg.content += delta;
+                updateAssistantNode(msg, true);
                 saveSessions();
                 scrollToBottom();
               }
               return true;
             }
 
+            if (event === 'response.output_text.new_segment') {
+              closeToolGroup();
+              // Start a new assistant message segment
+              currentAssistantMessage = null;
+              ensureAssistantMessage();
+              saveSessions();
+              scrollToBottom();
+              return true;
+            }
+
             if (event === 'response.output_item.added') {
               const item = payload.item;
               if (item?.type === 'function_call') {
-                const toolMessage = {
-                  id: generateId('msg'),
-                  role: 'tool',
+                const toolEntry = {
+                  id: item.call_id || generateId('tool'),
                   name: String(item.name || 'tool'),
                   arguments: String(item.arguments || ''),
                   status: 'running',
-                  created: Date.now(),
-                  expanded: false
+                  created: Date.now()
                 };
-                session.messages.push(toolMessage);
-                toolIds.push(toolMessage.id);
-                elements.messages.appendChild(createToolCard(toolMessage));
+
+                if (!currentToolGroup) {
+                  currentToolGroup = {
+                    id: generateId('msg'),
+                    role: 'tool-group',
+                    tools: [toolEntry],
+                    expanded: false,
+                    status: 'running',
+                    created: Date.now()
+                  };
+                  session.messages.push(currentToolGroup);
+                  elements.messages.appendChild(createToolGroupNode(currentToolGroup));
+                } else {
+                  currentToolGroup.tools.push(toolEntry);
+                  updateToolGroupNode(currentToolGroup);
+                }
+
+                // Text after tools goes to a new segment
+                currentAssistantMessage = null;
+
                 saveSessions();
                 scrollToBottom();
               }
@@ -1823,27 +2091,59 @@
             }
 
             if (event === 'response.output_item.done') {
+              // Update arguments on the tool entry if we have a tool group
               const item = payload.item;
-              if (item?.type === 'function_call') {
-                const tool = findRunningTool(session, toolIds, String(item.name || ''));
-                if (tool) {
-                  tool.arguments = String(item.arguments || tool.arguments || '');
-                  tool.status = 'done';
-                  updateToolNode(tool);
-                  saveSessions();
-                  scrollToBottom();
+              if (item?.type === 'function_call' && currentToolGroup) {
+                const callId = item.call_id || item.id;
+                const entry = callId
+                  ? currentToolGroup.tools.find(t => t.id === callId)
+                  : currentToolGroup.tools.find(t => t.name === String(item.name || '') && t.status === 'running');
+                if (entry) {
+                  entry.arguments = String(item.arguments || entry.arguments || '');
+                }
+                updateToolGroupNode(currentToolGroup);
+                saveSessions();
+              }
+              return true;
+            }
+
+            if (event === 'response.tool_exec.end') {
+              if (currentToolGroup) {
+                const callId = payload.call_id;
+                const entry = currentToolGroup.tools.find(t => t.id === callId);
+                if (entry) {
+                  entry.status = 'done';
+                  updateToolGroupNode(currentToolGroup);
+                }
+                // Check if all tools in group are done
+                if (currentToolGroup.tools.every(t => t.status === 'done')) {
+                  currentToolGroup.status = 'done';
+                  updateToolGroupNode(currentToolGroup);
                 }
               }
+              // Handle images
+              if (payload.images && payload.images.length > 0) {
+                const msg = ensureAssistantMessage();
+                payload.images.forEach(url => {
+                  msg.content += `\n\n![Generated Image](${url})\n`;
+                });
+                updateAssistantNode(msg, true);
+              }
+              saveSessions();
+              scrollToBottom();
               return true;
             }
 
             if (event === 'response.completed') {
               const usage = payload?.response?.usage;
-              if (usage) {
-                assistantMessage.usage = usage;
+              closeToolGroup();
+              markToolGroupsDone(session);
+              // Apply usage to the last assistant message
+              const lastAssistant = [...session.messages].reverse().find(m => m.role === 'assistant');
+              if (lastAssistant) {
+                if (usage) lastAssistant.usage = usage;
+                updateAssistantNode(lastAssistant, false);
               }
-              markRunningToolsDone(session, toolIds);
-              updateAssistantNode(assistantMessage, false);
               saveSessions();
               scrollToBottom();
               return true;
@@ -1852,8 +2152,10 @@
             if (event === 'response.failed') {
               const errorMessage = payload?.error?.message || 'The response failed.';
               addErrorMessage(errorMessage, session);
-              markRunningToolsDone(session, toolIds);
-              updateAssistantNode(assistantMessage, false);
+              closeToolGroup();
+              markToolGroupsDone(session);
+              const lastAssistant = [...session.messages].reverse().find(m => m.role === 'assistant');
+              if (lastAssistant) updateAssistantNode(lastAssistant, false);
               saveSessions();
               scrollToBottom(true);
               return true;
@@ -1862,13 +2164,17 @@
             return true;
           });
 
-          markRunningToolsDone(session, toolIds);
-          updateAssistantNode(assistantMessage, false);
+          closeToolGroup();
+          markToolGroupsDone(session);
+          const lastAssistant = [...session.messages].reverse().find(m => m.role === 'assistant');
+          if (lastAssistant) updateAssistantNode(lastAssistant, false);
           persistAndRefreshShell();
           scrollToBottom();
         } catch (err) {
-          markRunningToolsDone(session, toolIds);
-          updateAssistantNode(assistantMessage, false);
+          closeToolGroup();
+          markToolGroupsDone(session);
+          const lastAssistant = [...session.messages].reverse().find(m => m.role === 'assistant');
+          if (lastAssistant) updateAssistantNode(lastAssistant, false);
 
           if (err?.name === 'AbortError') {
             persistAndRefreshShell();
@@ -1887,6 +2193,120 @@
           state.abortController = null;
           setStreaming(false);
           refreshRelativeTimes();
+        }
+      };
+
+      // ===== Server session helpers =====
+      const convertServerMessages = (serverMessages) => {
+        const result = [];
+        let currentGroup = null;
+
+        const flushGroup = () => {
+          if (currentGroup) {
+            result.push(currentGroup);
+            currentGroup = null;
+          }
+        };
+
+        for (const msg of serverMessages) {
+          const parts = Array.isArray(msg.parts) ? msg.parts : [];
+          const created = msg.created_at || Date.now();
+
+          // Walk through parts in order to preserve interleaving
+          for (const part of parts) {
+            if (part.type === 'text' && part.text) {
+              flushGroup();
+              result.push({
+                id: generateId('msg'),
+                role: msg.role === 'user' ? 'user' : 'assistant',
+                content: part.text,
+                created
+              });
+            } else if (part.type === 'tool_call') {
+              const toolEntry = {
+                id: part.tool_call_id || generateId('tool'),
+                name: part.tool_name || 'tool',
+                arguments: part.tool_arguments || '',
+                status: 'done',
+                created
+              };
+              if (!currentGroup) {
+                currentGroup = {
+                  id: generateId('msg'),
+                  role: 'tool-group',
+                  tools: [toolEntry],
+                  expanded: false,
+                  status: 'done',
+                  created
+                };
+              } else {
+                currentGroup.tools.push(toolEntry);
+              }
+            }
+            // tool_result parts are context for the LLM, skip in UI
+          }
+
+          // If message had no recognized parts, emit text content if present
+          if (parts.length === 0 && (msg.role === 'user' || msg.role === 'assistant')) {
+            flushGroup();
+            result.push({
+              id: generateId('msg'),
+              role: msg.role,
+              content: '',
+              created
+            });
+          }
+        }
+
+        flushGroup();
+        return result;
+      };
+
+      const loadServerSessionMessages = async (sessionId) => {
+        try {
+          const headers = {};
+          if (state.token) headers.Authorization = `Bearer ${state.token}`;
+          const resp = await fetch(`/v1/sessions/${sessionId}/messages`, { headers });
+          if (!resp.ok) return null;
+          const data = await resp.json();
+          if (!Array.isArray(data.messages)) return null;
+          return convertServerMessages(data.messages);
+        } catch {
+          return null;
+        }
+      };
+
+      const mergeServerSessions = async () => {
+        try {
+          const headers = {};
+          if (state.token) headers.Authorization = `Bearer ${state.token}`;
+          const resp = await fetch('/v1/sessions', { headers });
+          if (!resp.ok) return;
+          const data = await resp.json();
+          if (!Array.isArray(data.sessions)) return;
+
+          const localIds = new Set(state.sessions.map(s => s.id));
+
+          for (const serverSession of data.sessions) {
+            if (localIds.has(serverSession.id)) continue;
+            // Also check if session ID appears with the sess_ prefix convention
+            const prefixedId = `sess_${serverSession.id}`;
+            if (localIds.has(prefixedId)) continue;
+
+            state.sessions.push({
+              id: serverSession.id,
+              title: serverSession.summary || 'New chat',
+              created: serverSession.created_at || Date.now(),
+              messages: [],
+              messageCount: serverSession.message_count || 0,
+              _serverOnly: true
+            });
+          }
+
+          saveSessions();
+          renderSidebar();
+        } catch {
+          // Gracefully fall back to localStorage-only
         }
       };
 
@@ -1909,6 +2329,9 @@
             state.models = await fetchModels();
             renderModelOptions();
             setConnectionState('Connected', 'ok');
+
+            // Merge server-side sessions after successful auth
+            await mergeServerSessions();
           } catch (err) {
             const message = err?.message || 'Unable to validate token.';
             setConnectionState(message, 'bad');

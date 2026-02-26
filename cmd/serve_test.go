@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -397,5 +398,425 @@ func TestResolveServeAuthMode(t *testing.T) {
 
 	if _, err := resolveServeAuthMode(true, "invalid", false, false); err == nil {
 		t.Fatalf("expected invalid auth mode error")
+	}
+}
+
+func TestServeAuthMiddleware_CookieFallback(t *testing.T) {
+	srv := &serveServer{cfg: serveServerConfig{requireAuth: true, token: "secret"}}
+	h := srv.auth(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	// No credentials → 401
+	req := httptest.NewRequest(http.MethodGet, "/images/test.png", nil)
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("no auth: status = %d, want 401", rr.Code)
+	}
+
+	// Valid cookie → allowed
+	req = httptest.NewRequest(http.MethodGet, "/images/test.png", nil)
+	req.AddCookie(&http.Cookie{Name: "term_llm_token", Value: "secret"})
+	rr = httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("valid cookie: status = %d, want 204", rr.Code)
+	}
+
+	// Wrong cookie → 401
+	req = httptest.NewRequest(http.MethodGet, "/images/test.png", nil)
+	req.AddCookie(&http.Cookie{Name: "term_llm_token", Value: "wrong"})
+	rr = httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong cookie: status = %d, want 401", rr.Code)
+	}
+
+	// Bearer still works
+	req = httptest.NewRequest(http.MethodGet, "/images/test.png", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rr = httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("bearer: status = %d, want 204", rr.Code)
+	}
+
+	// Cookie on POST → rejected (cookie fallback is GET-only)
+	req = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.AddCookie(&http.Cookie{Name: "term_llm_token", Value: "secret"})
+	rr = httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("cookie on POST: status = %d, want 401", rr.Code)
+	}
+
+	// URL-encoded cookie → decoded and accepted
+	srv2 := &serveServer{cfg: serveServerConfig{requireAuth: true, token: "se+cret/val="}}
+	h2 := srv2.auth(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	req = httptest.NewRequest(http.MethodGet, "/images/test.png", nil)
+	req.AddCookie(&http.Cookie{Name: "term_llm_token", Value: "se%2Bcret%2Fval%3D"})
+	rr = httptest.NewRecorder()
+	h2(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("url-encoded cookie: status = %d, want 204", rr.Code)
+	}
+}
+
+func TestHandleImage_ServesFileAndRejectsTraversal(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "cat.png"), []byte("fake-png"), 0644); err != nil {
+		t.Fatalf("write test image: %v", err)
+	}
+
+	srv := &serveServer{cfgRef: &config.Config{}}
+	srv.cfgRef.Image.OutputDir = dir
+
+	// Valid file
+	req := httptest.NewRequest(http.MethodGet, "/images/cat.png", nil)
+	rr := httptest.NewRecorder()
+	srv.handleImage(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("valid file: status = %d, want 200", rr.Code)
+	}
+	if got := rr.Body.String(); got != "fake-png" {
+		t.Fatalf("body = %q, want %q", got, "fake-png")
+	}
+	if cc := rr.Header().Get("Cache-Control"); !strings.Contains(cc, "private") {
+		t.Fatalf("Cache-Control = %q, want 'private'", cc)
+	}
+	if vary := rr.Header().Get("Vary"); vary == "" {
+		t.Fatalf("missing Vary header")
+	}
+
+	// Path traversal with ..
+	req = httptest.NewRequest(http.MethodGet, "/images/..%2Fetc%2Fpasswd", nil)
+	rr = httptest.NewRecorder()
+	srv.handleImage(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("traversal: status = %d, want 404", rr.Code)
+	}
+
+	// Empty filename
+	req = httptest.NewRequest(http.MethodGet, "/images/", nil)
+	rr = httptest.NewRecorder()
+	srv.handleImage(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("empty: status = %d, want 404", rr.Code)
+	}
+
+	// Nonexistent file
+	req = httptest.NewRequest(http.MethodGet, "/images/nope.png", nil)
+	rr = httptest.NewRecorder()
+	srv.handleImage(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("missing: status = %d, want 404", rr.Code)
+	}
+}
+
+func TestHandleSessions_ListsFromStore(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &session.Session{
+		ID:        "test-session-1",
+		Provider:  "mock",
+		Model:     "mock-model",
+		Mode:      session.ModeChat,
+		Summary:   "hello world",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Status:    session.StatusActive,
+	}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create session: %v", err)
+	}
+
+	srv := &serveServer{store: store}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
+	rr := httptest.NewRecorder()
+	srv.handleSessions(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	var body struct {
+		Sessions []struct {
+			ID           string `json:"id"`
+			Summary      string `json:"summary"`
+			CreatedAt    int64  `json:"created_at"`
+			MessageCount int    `json:"message_count"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Sessions) != 1 {
+		t.Fatalf("session count = %d, want 1", len(body.Sessions))
+	}
+	if body.Sessions[0].ID != "test-session-1" {
+		t.Fatalf("id = %q, want %q", body.Sessions[0].ID, "test-session-1")
+	}
+	if body.Sessions[0].Summary != "hello world" {
+		t.Fatalf("summary = %q, want %q", body.Sessions[0].Summary, "hello world")
+	}
+}
+
+func TestHandleSessionMessages_ReturnsStructuredParts(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &session.Session{
+		ID:        "sess-parts",
+		Provider:  "mock",
+		Model:     "mock-model",
+		Mode:      session.ModeChat,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Status:    session.StatusActive,
+	}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Message with text + multiple tool calls (the case that was lossy before)
+	msg := session.NewMessage("sess-parts", llm.Message{
+		Role: llm.RoleAssistant,
+		Parts: []llm.Part{
+			{Type: llm.PartText, Text: "Let me search for that"},
+			{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call-1", Name: "web_search", Arguments: json.RawMessage(`{"query":"go"}`)}},
+			{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call-2", Name: "read_url", Arguments: json.RawMessage(`{"url":"https://go.dev"}`)}},
+		},
+	}, -1)
+	if err := store.AddMessage(ctx, "sess-parts", msg); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+
+	srv := &serveServer{store: store}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/sess-parts/messages", nil)
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	var body struct {
+		Messages []struct {
+			Role  string `json:"role"`
+			Parts []struct {
+				Type       string `json:"type"`
+				Text       string `json:"text"`
+				ToolName   string `json:"tool_name"`
+				ToolArgs   string `json:"tool_arguments"`
+				ToolCallID string `json:"tool_call_id"`
+			} `json:"parts"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(body.Messages) != 1 {
+		t.Fatalf("message count = %d, want 1", len(body.Messages))
+	}
+	m := body.Messages[0]
+	if m.Role != "assistant" {
+		t.Fatalf("role = %q, want assistant", m.Role)
+	}
+	if len(m.Parts) != 3 {
+		t.Fatalf("parts count = %d, want 3", len(m.Parts))
+	}
+
+	// Text part
+	if m.Parts[0].Type != "text" || m.Parts[0].Text != "Let me search for that" {
+		t.Fatalf("part[0] = %+v, want text part", m.Parts[0])
+	}
+	// First tool call
+	if m.Parts[1].Type != "tool_call" || m.Parts[1].ToolName != "web_search" || m.Parts[1].ToolCallID != "call-1" {
+		t.Fatalf("part[1] = %+v, want web_search tool_call", m.Parts[1])
+	}
+	if m.Parts[1].ToolArgs != `{"query":"go"}` {
+		t.Fatalf("part[1].args = %q", m.Parts[1].ToolArgs)
+	}
+	// Second tool call (was lost before due to break)
+	if m.Parts[2].Type != "tool_call" || m.Parts[2].ToolName != "read_url" || m.Parts[2].ToolCallID != "call-2" {
+		t.Fatalf("part[2] = %+v, want read_url tool_call", m.Parts[2])
+	}
+}
+
+func TestHandleSessionMessages_OmitsToolResults(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &session.Session{
+		ID: "sess-tr", Provider: "mock", Model: "mock-model",
+		Mode: session.ModeChat, CreatedAt: time.Now(), UpdatedAt: time.Now(), Status: session.StatusActive,
+	}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	msg := session.NewMessage("sess-tr", llm.Message{
+		Role: llm.RoleUser,
+		Parts: []llm.Part{
+			{Type: llm.PartText, Text: "result msg"},
+			{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{ID: "call-1", Content: "verbose tool output"}},
+		},
+	}, -1)
+	if err := store.AddMessage(ctx, "sess-tr", msg); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+
+	srv := &serveServer{store: store}
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/sess-tr/messages", nil)
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	var body struct {
+		Messages []struct {
+			Parts []struct{ Type string } `json:"parts"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(body.Messages) != 1 {
+		t.Fatalf("message count = %d, want 1", len(body.Messages))
+	}
+	for _, p := range body.Messages[0].Parts {
+		if p.Type == "tool_result" {
+			t.Fatal("tool_result parts should be omitted from API response")
+		}
+	}
+	if len(body.Messages[0].Parts) != 1 {
+		t.Fatalf("parts count = %d, want 1 (text only)", len(body.Messages[0].Parts))
+	}
+}
+
+func TestEnsurePersistedSession_RestoresHistory(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &session.Session{
+		ID:        "restore-test",
+		Provider:  "mock",
+		Model:     "mock-model",
+		Mode:      session.ModeChat,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Status:    session.StatusActive,
+	}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	msgs := []session.Message{
+		*session.NewMessage("restore-test", llm.UserText("hello"), -1),
+		*session.NewMessage("restore-test", llm.Message{
+			Role:  llm.RoleAssistant,
+			Parts: []llm.Part{{Type: llm.PartText, Text: "hi there"}},
+		}, -1),
+	}
+	if err := store.ReplaceMessages(ctx, "restore-test", msgs); err != nil {
+		t.Fatalf("ReplaceMessages: %v", err)
+	}
+
+	// Simulate a fresh runtime with empty history
+	rt := &serveRuntime{
+		store:        store,
+		defaultModel: "mock-model",
+		provider:     llm.NewMockProvider("mock"),
+	}
+
+	ok := rt.ensurePersistedSession(ctx, "restore-test", nil)
+	if !ok {
+		t.Fatalf("ensurePersistedSession returned false")
+	}
+	if len(rt.history) != 2 {
+		t.Fatalf("history len = %d, want 2", len(rt.history))
+	}
+	if rt.history[0].Role != llm.RoleUser {
+		t.Fatalf("history[0].role = %s, want user", rt.history[0].Role)
+	}
+	if rt.history[1].Role != llm.RoleAssistant {
+		t.Fatalf("history[1].role = %s, want assistant", rt.history[1].Role)
+	}
+	if rt.history[1].Parts[0].Text != "hi there" {
+		t.Fatalf("history[1].text = %q, want %q", rt.history[1].Parts[0].Text, "hi there")
+	}
+}
+
+func TestEnsurePersistedSession_SkipsRestoreWhenHistoryExists(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &session.Session{
+		ID:        "skip-restore",
+		Provider:  "mock",
+		Model:     "mock-model",
+		Mode:      session.ModeChat,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Status:    session.StatusActive,
+	}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	dbMsg := session.NewMessage("skip-restore", llm.UserText("db message"), -1)
+	if err := store.ReplaceMessages(ctx, "skip-restore", []session.Message{*dbMsg}); err != nil {
+		t.Fatalf("ReplaceMessages: %v", err)
+	}
+
+	// Runtime already has history — should NOT overwrite
+	existing := []llm.Message{llm.UserText("existing")}
+	rt := &serveRuntime{
+		store:        store,
+		defaultModel: "mock-model",
+		provider:     llm.NewMockProvider("mock"),
+		history:      existing,
+	}
+
+	ok := rt.ensurePersistedSession(ctx, "skip-restore", nil)
+	if !ok {
+		t.Fatalf("ensurePersistedSession returned false")
+	}
+	if len(rt.history) != 1 {
+		t.Fatalf("history len = %d, want 1 (unchanged)", len(rt.history))
+	}
+	if rt.history[0].Parts[0].Text != "existing" {
+		t.Fatalf("history was overwritten")
 	}
 }

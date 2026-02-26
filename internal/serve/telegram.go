@@ -24,7 +24,6 @@ import (
 )
 
 const telegramMaxMessageLen = 4000 // Telegram limit is 4096; leave margin
-const telegramPreviousSessionMessageLimit = 20
 const minEditInterval = 3 * time.Second
 const streamEventTimeout = 90 * time.Second
 
@@ -448,90 +447,84 @@ func (m *telegramSessionMgr) resetSessionIfCurrent(ctx context.Context, chatID i
 
 	if current != nil {
 		current.mu.Lock()
-		priorHistory := append([]llm.Message(nil), current.history...)
-		current.mu.Unlock()
-		carryover := buildHistoryContextTail(priorHistory, m.settings.TelegramCarryoverChars)
-		if carryover != "" {
-			created.carryoverContext = carryover
-			created.carryoverContextLabel = "Context from previous session (tail):"
-		}
-
-		current.mu.Lock()
 		closeTelegramSession(current)
 		current.mu.Unlock()
 	}
 	return created, true, nil
 }
 
-func (m *telegramSessionMgr) loadPreviousSessionContext(ctx context.Context, chatID int64, currentID string) string {
-	if m.store == nil || m.settings.TelegramCarryoverChars <= 0 {
-		return ""
-	}
-	if ctx == nil {
-		ctx = context.Background()
+// restoreHistoryFromDB loads the tail of message history from the most recent
+// prior session for this chatID, capped at TelegramCarryoverChars worth of text.
+// This ensures continuity after server restarts without bloating context.
+func (m *telegramSessionMgr) restoreHistoryFromDB(ctx context.Context, chatID int64, sess *telegramSession) {
+	if m.store == nil || sess.meta == nil {
+		return
 	}
 
-	// Fetch enough recent sessions to walk back through. We skip the current
-	// session being created and accumulate messages across multiple prior
-	// sessions until we have enough to fill TelegramCarryoverChars.
+	maxChars := m.settings.TelegramCarryoverChars
+	if maxChars <= 0 {
+		return // 0 (or negative) explicitly disables carryover
+	}
+
 	sessions, err := m.store.List(ctx, session.ListOptions{
 		Name:  fmt.Sprintf("telegram:%d", chatID),
-		Limit: 20,
+		Limit: 5,
 	})
 	if err != nil {
-		log.Printf("[telegram] load previous session list failed for chat %d: %v", chatID, err)
-		return ""
+		log.Printf("[telegram] restore history: list failed for chat %d: %v", chatID, err)
+		return
 	}
 
-	// Collect messages from prior sessions, newest-first, until we have enough
-	// characters. We'll reverse at the end so context reads chronologically.
-	var accumulated []llm.Message
-	accChars := 0
-	target := m.settings.TelegramCarryoverChars
-
+	// Find the most recent prior session with messages.
 	for i := range sessions {
 		s := &sessions[i]
-		if s.ID == currentID || s.MessageCount == 0 {
+		if s.ID == sess.meta.ID || s.MessageCount == 0 {
 			continue
 		}
 
-		// Fetch up to telegramPreviousSessionMessageLimit messages from this session.
-		limit := telegramPreviousSessionMessageLimit
-		if s.MessageCount < limit {
-			limit = s.MessageCount
-		}
-		offset := 0
-		if s.MessageCount > limit {
-			offset = s.MessageCount - limit
-		}
-
-		msgs, err := m.store.GetMessages(ctx, s.ID, limit, offset)
-		if err != nil {
-			log.Printf("[telegram] load previous session messages failed for session %s: %v", s.ID, err)
+		msgs, loadErr := m.store.GetMessages(ctx, s.ID, 0, 0)
+		if loadErr != nil {
+			log.Printf("[telegram] restore history: get messages failed for session %s: %v", s.ID, loadErr)
 			continue
 		}
 
-		// Prepend these messages (they're older than what we have so far).
-		sessionMsgs := make([]llm.Message, 0, len(msgs))
+		// Convert all messages, then take only the tail that fits within maxChars.
+		all := make([]llm.Message, 0, len(msgs))
 		for _, msg := range msgs {
-			sessionMsgs = append(sessionMsgs, msg.ToLLMMessage())
+			all = append(all, msg.ToLLMMessage())
 		}
 
-		// Estimate chars contributed by this session.
-		sessionText := buildHistoryContextTail(sessionMsgs, target)
-		accChars += len([]rune(sessionText))
-		accumulated = append(sessionMsgs, accumulated...)
-
-		if accChars >= target {
-			break
+		history := tailMessages(all, maxChars)
+		if len(history) > 0 {
+			sess.history = history
+			log.Printf("[telegram] restored %d messages (of %d) from session %s for chat %d",
+				len(history), len(all), s.ID, chatID)
 		}
+		return
+	}
+}
+
+// tailMessages returns the largest suffix of msgs whose combined text fits
+// within maxChars. It never splits a message — whole messages are included
+// or excluded.
+func tailMessages(msgs []llm.Message, maxChars int) []llm.Message {
+	if maxChars <= 0 || len(msgs) == 0 {
+		return nil
 	}
 
-	if len(accumulated) == 0 {
-		return ""
+	// Walk backwards, accumulating character count.
+	total := 0
+	start := len(msgs)
+	for i := len(msgs) - 1; i >= 0; i-- {
+		text := extractMessageTextWithPlaceholders(msgs[i])
+		n := len([]rune(text))
+		if total+n > maxChars && start < len(msgs) {
+			break // adding this message would exceed the budget
+		}
+		total += n
+		start = i
 	}
-
-	return buildHistoryContextTail(accumulated, target)
+	return msgs[start:]
 }
 
 func (m *telegramSessionMgr) newSession(ctx context.Context, chatID int64) (*telegramSession, error) {
@@ -588,12 +581,8 @@ func (m *telegramSessionMgr) newSession(ctx context.Context, chatID int64) (*tel
 		})
 	}
 
-	if m.store != nil && sess.carryoverContext == "" {
-		carryover := m.loadPreviousSessionContext(ctx, chatID, meta.ID)
-		if carryover != "" {
-			sess.carryoverContext = carryover
-			sess.carryoverContextLabel = "Context from previous Telegram session:"
-		}
+	if m.store != nil {
+		m.restoreHistoryFromDB(ctx, chatID, sess)
 	}
 
 	return sess, nil

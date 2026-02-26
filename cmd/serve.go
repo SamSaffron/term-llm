@@ -12,8 +12,11 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -352,6 +355,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 			sessionMgr: sessionMgr,
 			jobsV2:     jobsV2,
 			cfgRef:     cfg,
+			store:      store,
 		}
 
 		if err := s.Start(); err != nil {
@@ -502,6 +506,7 @@ type serveServer struct {
 	sessionMgr     *serveSessionManager
 	jobsV2         *jobsV2Manager
 	cfgRef         *config.Config
+	store          session.Store
 	server         *http.Server
 	modelsMu       sync.Mutex
 	modelsProvider llm.Provider
@@ -519,6 +524,13 @@ func (s *serveServer) Start() error {
 		mux.HandleFunc("/v2/jobs/", s.auth(s.cors(s.handleJobV2ByID)))
 		mux.HandleFunc("/v2/runs", s.auth(s.cors(s.handleRunsV2)))
 		mux.HandleFunc("/v2/runs/", s.auth(s.cors(s.handleRunV2ByID)))
+	}
+
+	mux.HandleFunc("/images/", s.auth(s.cors(s.handleImage)))
+
+	if s.store != nil {
+		mux.HandleFunc("/v1/sessions", s.auth(s.cors(s.handleSessions)))
+		mux.HandleFunc("/v1/sessions/", s.auth(s.cors(s.handleSessionByID)))
 	}
 
 	if s.cfg.ui {
@@ -591,6 +603,174 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(serveui.IndexHTML())
 }
 
+func (s *serveServer) handleImage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		return
+	}
+
+	filename := strings.TrimPrefix(r.URL.Path, "/images/")
+	if filename == "" || strings.Contains(filename, "/") || strings.Contains(filename, "..") {
+		http.NotFound(w, r)
+		return
+	}
+
+	outputDir := s.cfgRef.Image.OutputDir
+	if outputDir == "" {
+		outputDir = "~/Pictures/term-llm"
+	}
+	if strings.HasPrefix(outputDir, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "cannot resolve home directory")
+			return
+		}
+		outputDir = filepath.Join(home, outputDir[2:])
+	}
+
+	filePath := filepath.Join(outputDir, filename)
+	absDir, err := filepath.EvalSymlinks(outputDir)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	absFile, err := filepath.EvalSymlinks(filePath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if !strings.HasPrefix(absFile, absDir+string(filepath.Separator)) {
+		http.NotFound(w, r)
+		return
+	}
+
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	w.Header().Add("Vary", "Authorization, Cookie")
+	http.ServeFile(w, r, absFile)
+}
+
+func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		return
+	}
+
+	sessions, err := s.store.List(r.Context(), session.ListOptions{Limit: 100})
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to list sessions")
+		return
+	}
+
+	type sessionEntry struct {
+		ID           string `json:"id"`
+		Summary      string `json:"summary"`
+		CreatedAt    int64  `json:"created_at"`
+		MessageCount int    `json:"message_count"`
+	}
+
+	result := make([]sessionEntry, 0, len(sessions))
+	for _, sess := range sessions {
+		result = append(result, sessionEntry{
+			ID:           sess.ID,
+			Summary:      sess.Summary,
+			CreatedAt:    sess.CreatedAt.UnixMilli(),
+			MessageCount: sess.MessageCount,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"sessions": result})
+}
+
+func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		return
+	}
+
+	// Parse /v1/sessions/{id}/messages
+	path := strings.TrimPrefix(r.URL.Path, "/v1/sessions/")
+	parts := strings.SplitN(path, "/", 2)
+	if len(parts) < 1 || parts[0] == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	sessionID := parts[0]
+	suffix := ""
+	if len(parts) > 1 {
+		suffix = parts[1]
+	}
+
+	if suffix != "messages" {
+		http.NotFound(w, r)
+		return
+	}
+
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	msgs, err := s.store.GetMessages(r.Context(), sessionID, limit, offset)
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to get messages")
+		return
+	}
+
+	type partEntry struct {
+		Type       string `json:"type"`
+		Text       string `json:"text,omitempty"`
+		ToolName   string `json:"tool_name,omitempty"`
+		ToolArgs   string `json:"tool_arguments,omitempty"`
+		ToolCallID string `json:"tool_call_id,omitempty"`
+	}
+
+	type messageEntry struct {
+		Role      string      `json:"role"`
+		Parts     []partEntry `json:"parts"`
+		CreatedAt int64       `json:"created_at"`
+	}
+
+	result := make([]messageEntry, 0, len(msgs))
+	for _, msg := range msgs {
+		entry := messageEntry{
+			Role:      string(msg.Role),
+			CreatedAt: msg.CreatedAt.UnixMilli(),
+		}
+		for _, p := range msg.Parts {
+			switch p.Type {
+			case llm.PartText:
+				if p.Text != "" {
+					entry.Parts = append(entry.Parts, partEntry{
+						Type: "text",
+						Text: p.Text,
+					})
+				}
+			case llm.PartToolCall:
+				if p.ToolCall != nil {
+					pe := partEntry{
+						Type:       "tool_call",
+						ToolName:   p.ToolCall.Name,
+						ToolCallID: p.ToolCall.ID,
+					}
+					if len(p.ToolCall.Arguments) > 0 {
+						pe.ToolArgs = string(p.ToolCall.Arguments)
+					}
+					entry.Parts = append(entry.Parts, pe)
+				}
+			case llm.PartToolResult:
+				// Omitted: UI ignores tool_result parts and they bloat payloads.
+			}
+		}
+		if len(entry.Parts) == 0 {
+			entry.Parts = []partEntry{}
+		}
+		result = append(result, entry)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"messages": result})
+}
+
 func (s *serveServer) auth(next http.HandlerFunc) http.HandlerFunc {
 	if !s.cfg.requireAuth {
 		return next
@@ -600,14 +780,25 @@ func (s *serveServer) auth(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r)
 			return
 		}
+
+		var gotToken string
 		const prefix = "Bearer "
 		auth := r.Header.Get("Authorization")
-		if !strings.HasPrefix(auth, prefix) {
-			writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "invalid authentication credentials")
-			return
+		if strings.HasPrefix(auth, prefix) {
+			gotToken = strings.TrimSpace(strings.TrimPrefix(auth, prefix))
+		} else if r.Method == http.MethodGet {
+			// Cookie fallback only on safe GET requests (e.g. <img src> fetches
+			// that cannot set Authorization headers).
+			if cookie, err := r.Cookie("term_llm_token"); err == nil && cookie.Value != "" {
+				if decoded, decErr := url.QueryUnescape(cookie.Value); decErr == nil {
+					gotToken = decoded
+				} else {
+					gotToken = cookie.Value
+				}
+			}
 		}
-		gotToken := strings.TrimSpace(strings.TrimPrefix(auth, prefix))
-		if subtle.ConstantTimeCompare([]byte(gotToken), []byte(s.cfg.token)) != 1 {
+
+		if gotToken == "" || subtle.ConstantTimeCompare([]byte(gotToken), []byte(s.cfg.token)) != 1 {
 			writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "invalid authentication credentials")
 			return
 		}
@@ -857,9 +1048,18 @@ func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter
 	flusher.Flush()
 
 	outputIndex := 0
+	toolsSeen := false
 	result, err := runtime.RunWithEvents(ctx, stateful, replaceHistory, inputMessages, llmReq, func(ev llm.Event) error {
 		switch ev.Type {
 		case llm.EventTextDelta:
+			if toolsSeen {
+				if err := writeSSEEvent(w, "response.output_text.new_segment", map[string]any{
+					"output_index": outputIndex,
+				}); err != nil {
+					return err
+				}
+				toolsSeen = false
+			}
 			return writeSSEEvent(w, "response.output_text.delta", map[string]any{
 				"output_index": outputIndex,
 				"delta":        ev.Text,
@@ -868,6 +1068,7 @@ func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter
 			if ev.Tool == nil {
 				return nil
 			}
+			toolsSeen = true
 			item := map[string]any{
 				"id":        "fc_" + ev.Tool.ID,
 				"type":      "function_call",
@@ -885,6 +1086,26 @@ func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter
 				return err
 			}
 			outputIndex++
+		case llm.EventToolExecStart:
+			_ = writeSSEEvent(w, "response.tool_exec.start", map[string]any{
+				"call_id":   ev.ToolCallID,
+				"tool_name": ev.ToolName,
+				"tool_info": ev.ToolInfo,
+			})
+		case llm.EventToolExecEnd:
+			payload := map[string]any{
+				"call_id":   ev.ToolCallID,
+				"tool_name": ev.ToolName,
+				"success":   ev.ToolSuccess,
+			}
+			if len(ev.ToolImages) > 0 {
+				imageURLs := make([]string, 0, len(ev.ToolImages))
+				for _, imgPath := range ev.ToolImages {
+					imageURLs = append(imageURLs, "/images/"+filepath.Base(imgPath))
+				}
+				payload["images"] = imageURLs
+			}
+			_ = writeSSEEvent(w, "response.tool_exec.end", payload)
 		}
 		flusher.Flush()
 		return nil
@@ -1461,6 +1682,16 @@ func (rt *serveRuntime) ensurePersistedSession(ctx context.Context, sessionID st
 			return false
 		}
 		rt.sessionMeta = existing
+		if len(rt.history) == 0 {
+			msgs, loadErr := rt.store.GetMessages(ctx, sessionID, 0, 0)
+			if loadErr == nil && len(msgs) > 0 {
+				llmMsgs := make([]llm.Message, 0, len(msgs))
+				for _, m := range msgs {
+					llmMsgs = append(llmMsgs, m.ToLLMMessage())
+				}
+				rt.history = llmMsgs
+			}
+		}
 		if setErr := rt.store.SetCurrent(ctx, sessionID); setErr != nil {
 			log.Printf("[serve] session SetCurrent failed for %s: %v", sessionID, setErr)
 		}
