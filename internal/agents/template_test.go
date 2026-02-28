@@ -136,10 +136,10 @@ func TestTemplateContext_WithPlatform(t *testing.T) {
 		t.Errorf("Original Platform should be empty, got %q", ctx.Platform)
 	}
 
-	// Empty platform — variable expands to empty string
+	// Empty platform — variable is left unexpanded (deferred for per-session substitution)
 	result := ExpandTemplate("platform: {{platform}}", TemplateContext{})
-	if result != "platform: " {
-		t.Errorf("ExpandTemplate with empty platform = %q, want %q", result, "platform: ")
+	if result != "platform: {{platform}}" {
+		t.Errorf("ExpandTemplate with empty platform = %q, want %q", result, "platform: {{platform}}")
 	}
 }
 

@@ -181,6 +181,10 @@ func ExpandTemplate(text string, ctx TemplateContext) string {
 		case "resource_dir":
 			return ctx.ResourceDir
 		case "platform":
+			// Leave unexpanded when platform is unknown — caller will substitute later.
+			if ctx.Platform == "" {
+				return match
+			}
 			return ctx.Platform
 		case "agents":
 			return ctx.Agents

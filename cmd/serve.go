@@ -208,7 +208,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 		MaxTurns:      serveMaxTurns,
 		MaxTurnsSet:   cmd.Flags().Changed("max-turns"),
 		Search:        serveSearch,
-		Platform:      singlePlatformName(platformNames),
+		// Platform intentionally omitted — {{platform}} is expanded per-session
+		// by platformFactory so each surface (telegram, web) gets the right value.
 	}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 20)
 	if err != nil {
 		return err
@@ -230,20 +231,26 @@ func runServe(cmd *cobra.Command, args []string) error {
 	forceExternalSearch := resolveForceExternalSearch(cfg, serveNativeSearch, serveNoNativeSearch)
 
 	modelName := activeModel(cfg)
-	factory := func(ctx context.Context) (*serveRuntime, error) {
+	// platformFactory creates a runtime for a specific platform surface.
+	// It substitutes {{platform}} in the system prompt at session-creation time
+	// so each conversation knows which surface it's on (telegram, web, etc.).
+	platformFactory := func(ctx context.Context, platform string) (*serveRuntime, error) {
 		provider, err := llm.NewProvider(cfg)
 		if err != nil {
 			return nil, err
 		}
-		engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, serveYolo, WireSpawnAgentRunner)
+		// Substitute {{platform}} now that we know the surface.
+		ps := settings
+		ps.SystemPrompt = strings.ReplaceAll(settings.SystemPrompt, "{{platform}}", platform)
+		engine, toolMgr, err := newServeEngineWithTools(cfg, ps, provider, serveYolo, WireSpawnAgentRunner)
 		if err != nil {
 			return nil, err
 		}
 
 		var mcpManager *mcp.Manager
-		if settings.MCP != "" {
+		if ps.MCP != "" {
 			mcpOpts := &MCPOptions{Provider: provider, Model: modelName, YoloMode: serveYolo}
-			mgr, err := enableMCPServersWithFeedback(ctx, settings.MCP, engine, io.Discard, mcpOpts)
+			mgr, err := enableMCPServersWithFeedback(ctx, ps.MCP, engine, io.Discard, mcpOpts)
 			if err != nil {
 				return nil, err
 			}
@@ -255,20 +262,24 @@ func runServe(cmd *cobra.Command, args []string) error {
 			engine:              engine,
 			toolMgr:             toolMgr,
 			mcpManager:          mcpManager,
-			systemPrompt:        settings.SystemPrompt,
-			search:              settings.Search,
+			systemPrompt:        ps.SystemPrompt,
+			search:              ps.Search,
 			forceExternalSearch: forceExternalSearch,
-			maxTurns:            settings.MaxTurns,
+			maxTurns:            ps.MaxTurns,
 			debug:               serveDebug,
 			debugRaw:            debugRaw,
 			defaultModel:        modelName,
 			store:               store,
-			toolsSetting:        settings.Tools,
-			mcpSetting:          settings.MCP,
+			toolsSetting:        ps.Tools,
+			mcpSetting:          ps.MCP,
 			agentName:           agentName,
 		}
 		runtime.Touch()
 		return runtime, nil
+	}
+	// factory is the web-platform session factory (platform = "web").
+	factory := func(ctx context.Context) (*serveRuntime, error) {
+		return platformFactory(ctx, "web")
 	}
 
 	sessionMgr := newServeSessionManager(serveSessionTTL, serveSessionMax, factory)
@@ -293,7 +304,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		Agent:                  agentName,
 		Store:                  store,
 		NewSession: func(ctx context.Context) (*serve.SessionRuntime, error) {
-			rt, err := factory(ctx)
+			rt, err := platformFactory(ctx, "telegram")
 			if err != nil {
 				return nil, err
 			}
@@ -446,22 +457,7 @@ func platformContains(platforms []string, name string) bool {
 	return false
 }
 
-// singlePlatformName returns the platform name when exactly one non-jobs platform
-// is being served, so the system prompt knows which surface it's on.
-// Returns empty string for multi-platform serves — the system prompt is shared
-// across all surfaces and can't reflect a single one.
-func singlePlatformName(platforms []string) string {
-	var nonJobs []string
-	for _, p := range platforms {
-		if p != "jobs" {
-			nonJobs = append(nonJobs, p)
-		}
-	}
-	if len(nonJobs) == 1 {
-		return nonJobs[0]
-	}
-	return ""
-}
+
 
 func authSummary(required bool) string {
 	if required {
