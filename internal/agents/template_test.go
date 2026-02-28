@@ -21,6 +21,7 @@ func TestExpandTemplate(t *testing.T) {
 		Files:       "main.go, utils.go",
 		FileCount:   "2",
 		OS:          "linux",
+		Platform:    "chat",
 		ResourceDir: "/home/user/.cache/term-llm/agents/artist",
 	}
 
@@ -40,6 +41,11 @@ func TestExpandTemplate(t *testing.T) {
 			expected: "testuser is working on term-llm (branch: main)",
 		},
 		{
+			name:     "platform variable",
+			template: "Platform: {{platform}}",
+			expected: "Platform: chat",
+		},
+		{
 			name:     "no variables",
 			template: "Just plain text",
 			expected: "Just plain text",
@@ -51,8 +57,8 @@ func TestExpandTemplate(t *testing.T) {
 		},
 		{
 			name:     "all variables",
-			template: "{{date}} {{datetime}} {{time}} {{year}} {{cwd}} {{cwd_name}} {{home}} {{user}} {{git_branch}} {{git_repo}} {{files}} {{file_count}} {{os}} {{resource_dir}}",
-			expected: "2026-01-16 2026-01-16 14:30:00 14:30 2026 /home/user/project project /home/user testuser main term-llm main.go, utils.go 2 linux /home/user/.cache/term-llm/agents/artist",
+			template: "{{date}} {{datetime}} {{time}} {{year}} {{cwd}} {{cwd_name}} {{home}} {{user}} {{git_branch}} {{git_repo}} {{files}} {{file_count}} {{os}} {{platform}} {{resource_dir}}",
+			expected: "2026-01-16 2026-01-16 14:30:00 14:30 2026 /home/user/project project /home/user testuser main term-llm main.go, utils.go 2 linux chat /home/user/.cache/term-llm/agents/artist",
 		},
 		{
 			name:     "resource_dir variable",
@@ -139,6 +145,25 @@ func TestTemplateContext_WithFiles(t *testing.T) {
 	}
 	if ctx3.Files != "" {
 		t.Errorf("Files = %q, want empty string", ctx3.Files)
+	}
+}
+
+func TestTemplateContext_WithPlatform(t *testing.T) {
+	ctx := TemplateContext{}
+
+	ctx2 := ctx.WithPlatform("chat")
+	if ctx2.Platform != "chat" {
+		t.Errorf("Platform = %q, want %q", ctx2.Platform, "chat")
+	}
+	if ctx.Platform != "" {
+		t.Errorf("Original Platform = %q, want empty", ctx.Platform)
+	}
+}
+
+func TestExpandTemplate_PlatformTokenUnchangedWhenUnavailable(t *testing.T) {
+	result := ExpandTemplate("Platform={{platform}}", TemplateContext{})
+	if result != "Platform={{platform}}" {
+		t.Fatalf("ExpandTemplate() = %q, want %q", result, "Platform={{platform}}")
 	}
 }
 

@@ -247,6 +247,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		MaxTurns:      loopMaxTurns,
 		MaxTurnsSet:   cmd.Flags().Changed("max-turns"),
 		Search:        loopSearch,
+		Platform:      "console",
 	}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 100)
 	if err != nil {
 		return err
