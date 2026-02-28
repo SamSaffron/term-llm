@@ -44,12 +44,14 @@ By default this talks to http://127.0.0.1:8080.
 You can override with --server / --token or env vars:
   TERM_LLM_JOBS_SERVER
   TERM_LLM_JOBS_TOKEN`,
+	Args: cobra.NoArgs,
 	RunE: runJobsList,
 }
 
 var jobsListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List job definitions",
+	Args:  cobra.NoArgs,
 	RunE:  runJobsList,
 }
 
@@ -121,6 +123,13 @@ var jobsRunsCmd = &cobra.Command{
 	ValidArgsFunction: jobsArgCompletion,
 }
 
+var jobsActiveCmd = &cobra.Command{
+	Use:   "active",
+	Short: "List active runs across all jobs",
+	Args:  cobra.NoArgs,
+	RunE:  runJobsActive,
+}
+
 var jobsRunCmd = &cobra.Command{
 	Use:   "run",
 	Short: "Run operations",
@@ -179,6 +188,7 @@ func init() {
 	jobsCmd.AddCommand(jobsPauseCmd)
 	jobsCmd.AddCommand(jobsResumeCmd)
 	jobsCmd.AddCommand(jobsRunsCmd)
+	jobsCmd.AddCommand(jobsActiveCmd)
 	jobsCmd.AddCommand(jobsRunCmd)
 
 	jobsRunCmd.AddCommand(jobsRunGetCmd)
@@ -202,9 +212,21 @@ type jobsRunsListResponse struct {
 	Data []jobsV2Run `json:"data"`
 }
 
+type jobsActiveRun struct {
+	JobID        string          `json:"job_id"`
+	JobName      string          `json:"job_name"`
+	RunID        string          `json:"run_id"`
+	Status       jobsV2RunStatus `json:"status"`
+	StartedAt    *time.Time      `json:"started_at,omitempty"`
+	ScheduledFor time.Time       `json:"scheduled_for"`
+	WorkerID     string          `json:"worker_id,omitempty"`
+}
+
 type jobsRunEventsListResponse struct {
 	Data []jobsV2RunEvent `json:"data"`
 }
+
+const jobsActiveRunsPageSize = 10
 
 type openAIErrorResponse struct {
 	Error struct {
@@ -293,6 +315,67 @@ func (c *jobsClient) listRuns(ctx context.Context, jobID string, limit, offset i
 		return nil, err
 	}
 	return resp.Data, nil
+}
+
+func (c *jobsClient) listActiveRuns(ctx context.Context) ([]jobsActiveRun, error) {
+	jobs, err := c.listJobs(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	active := make([]jobsActiveRun, 0)
+	for _, job := range jobs {
+		offset := 0
+		for {
+			runs, err := c.listRuns(ctx, job.ID, jobsActiveRunsPageSize, offset)
+			if err != nil {
+				return nil, err
+			}
+			if len(runs) == 0 {
+				break
+			}
+
+			hasActive := false
+			for _, run := range runs {
+				if !isActiveRunStatus(run.Status) {
+					continue
+				}
+				hasActive = true
+				active = append(active, jobsActiveRun{
+					JobID:        run.JobID,
+					JobName:      job.Name,
+					RunID:        run.ID,
+					Status:       run.Status,
+					StartedAt:    run.StartedAt,
+					ScheduledFor: run.ScheduledFor,
+					WorkerID:     run.WorkerID,
+				})
+			}
+
+			if !hasActive {
+				break
+			}
+			offset += jobsActiveRunsPageSize
+		}
+	}
+
+	sort.Slice(active, func(i, j int) bool {
+		if active[i].ScheduledFor.Equal(active[j].ScheduledFor) {
+			return active[i].RunID < active[j].RunID
+		}
+		return active[i].ScheduledFor.After(active[j].ScheduledFor)
+	})
+
+	return active, nil
+}
+
+func isActiveRunStatus(status jobsV2RunStatus) bool {
+	switch status {
+	case jobsV2RunQueued, jobsV2RunClaimed, jobsV2RunRunning:
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *jobsClient) resolveJobID(ctx context.Context, ref string) (string, error) {
@@ -569,6 +652,49 @@ func runJobsResume(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	return printJSON(job)
+}
+
+func runJobsActive(cmd *cobra.Command, args []string) error {
+	client, err := newJobsClient()
+	if err != nil {
+		return err
+	}
+	items, err := client.listActiveRuns(cmd.Context())
+	if err != nil {
+		return err
+	}
+	if jobsJSON {
+		return printJSON(items)
+	}
+	if len(items) == 0 {
+		fmt.Println("No active runs found.")
+		return nil
+	}
+	fmt.Printf("%-24s %-24s %-24s %-8s %-20s %-20s %-24s\n", "JOB_ID", "JOB_NAME", "RUN_ID", "STATUS", "STARTED_AT", "SCHEDULED_FOR", "WORKER_ID")
+	for _, run := range items {
+		startedAt := "-"
+		if run.StartedAt != nil {
+			startedAt = run.StartedAt.Local().Format(time.RFC3339)
+		}
+		scheduledFor := "-"
+		if !run.ScheduledFor.IsZero() {
+			scheduledFor = run.ScheduledFor.Local().Format(time.RFC3339)
+		}
+		workerID := strings.TrimSpace(run.WorkerID)
+		if workerID == "" {
+			workerID = "-"
+		}
+		fmt.Printf("%-24s %-24s %-24s %-8s %-20s %-20s %-24s\n",
+			run.JobID,
+			truncateCell(run.JobName, 24),
+			run.RunID,
+			run.Status,
+			truncateCell(startedAt, 20),
+			truncateCell(scheduledFor, 20),
+			truncateCell(workerID, 24),
+		)
+	}
+	return nil
 }
 
 func runJobsRuns(cmd *cobra.Command, args []string) error {
