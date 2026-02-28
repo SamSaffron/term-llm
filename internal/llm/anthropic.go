@@ -51,17 +51,31 @@ type AnthropicProvider struct {
 	client         *anthropic.Client
 	model          string
 	thinkingBudget int64  // 0 = disabled, >0 = enabled with budget
+	useAdaptive    bool   // true = adaptive thinking (-thinking on 4.6 models)
 	credential     string // "api_key", "env", "oauth_env", or "oauth"
 }
 
+// isAdaptiveModel returns true for Claude 4.6 models that support adaptive thinking.
+func isAdaptiveModel(model string) bool {
+	return strings.HasPrefix(model, "claude-sonnet-4-6") || strings.HasPrefix(model, "claude-opus-4-6")
+}
+
 // parseModelThinking extracts -thinking suffix from model name.
-// "claude-sonnet-4-6-thinking" -> ("claude-sonnet-4-6", 10000)
-// "claude-sonnet-4-6" -> ("claude-sonnet-4-6", 0)
-func parseModelThinking(model string) (string, int64) {
+// For 4.6 models, -thinking uses adaptive thinking (budget_tokens is deprecated).
+// For older models, -thinking uses budget_tokens as before.
+//
+// "claude-sonnet-4-6-thinking" -> ("claude-sonnet-4-6", 0, true)
+// "claude-haiku-4-5-thinking"  -> ("claude-haiku-4-5", 10000, false)
+// "claude-sonnet-4-6"          -> ("claude-sonnet-4-6", 0, false)
+func parseModelThinking(model string) (string, int64, bool) {
 	if strings.HasSuffix(model, "-thinking") {
-		return strings.TrimSuffix(model, "-thinking"), 10000
+		base := strings.TrimSuffix(model, "-thinking")
+		if isAdaptiveModel(base) {
+			return base, 0, true
+		}
+		return base, 10000, false
 	}
-	return model, 0
+	return model, 0, false
 }
 
 // oauthBetaHeader is the beta header required to enable OAuth authentication.
@@ -84,7 +98,7 @@ func newOAuthClient(token string) anthropic.Client {
 //   - "oauth_env":  use only the CLAUDE_CODE_OAUTH_TOKEN environment variable
 //   - "oauth":      use only saved OAuth token or interactive setup
 func NewAnthropicProvider(apiKey, model, credentialMode string) (*AnthropicProvider, error) {
-	actualModel, thinkingBudget := parseModelThinking(model)
+	actualModel, thinkingBudget, adaptive := parseModelThinking(model)
 
 	// Normalize empty credential mode to "auto"
 	if credentialMode == "" {
@@ -96,6 +110,7 @@ func NewAnthropicProvider(apiKey, model, credentialMode string) (*AnthropicProvi
 			client:         &client,
 			model:          actualModel,
 			thinkingBudget: thinkingBudget,
+			useAdaptive:    adaptive,
 			credential:     cred,
 		}
 	}
@@ -123,7 +138,7 @@ func NewAnthropicProvider(apiKey, model, credentialMode string) (*AnthropicProvi
 		return mkProvider(newOAuthClient(envToken), "oauth_env"), nil
 
 	case AnthropicCredOAuth:
-		return newAnthropicOAuthProvider(actualModel, thinkingBudget)
+		return newAnthropicOAuthProvider(actualModel, thinkingBudget, adaptive)
 
 	case AnthropicCredAuto:
 		// Fall through to the cascade below.
@@ -155,12 +170,12 @@ func NewAnthropicProvider(apiKey, model, credentialMode string) (*AnthropicProvi
 	}
 
 	// 5. Interactive: prompt user to run `claude setup-token` and paste the token
-	return newAnthropicOAuthProvider(actualModel, thinkingBudget)
+	return newAnthropicOAuthProvider(actualModel, thinkingBudget, adaptive)
 }
 
 // newAnthropicOAuthProvider creates an Anthropic provider using saved OAuth credentials
 // or interactively prompts the user to set up a new token.
-func newAnthropicOAuthProvider(model string, thinkingBudget int64) (*AnthropicProvider, error) {
+func newAnthropicOAuthProvider(model string, thinkingBudget int64, adaptive bool) (*AnthropicProvider, error) {
 	// Try saved OAuth token first
 	if creds, err := credentials.GetAnthropicOAuthCredentials(); err == nil {
 		client := newOAuthClient(creds.AccessToken)
@@ -168,6 +183,7 @@ func newAnthropicOAuthProvider(model string, thinkingBudget int64) (*AnthropicPr
 			client:         &client,
 			model:          model,
 			thinkingBudget: thinkingBudget,
+			useAdaptive:    adaptive,
 			credential:     "oauth",
 		}, nil
 	}
@@ -197,6 +213,7 @@ func newAnthropicOAuthProvider(model string, thinkingBudget int64) (*AnthropicPr
 		client:         &testClient,
 		model:          model,
 		thinkingBudget: thinkingBudget,
+		useAdaptive:    adaptive,
 		credential:     "oauth",
 	}, nil
 }
@@ -250,6 +267,9 @@ func promptForAnthropicOAuth() (string, error) {
 }
 
 func (p *AnthropicProvider) Name() string {
+	if p.useAdaptive {
+		return fmt.Sprintf("Anthropic (%s, adaptive)", p.model)
+	}
 	if p.thinkingBudget > 0 {
 		return fmt.Sprintf("Anthropic (%s, thinking=%dk)", p.model, p.thinkingBudget/1000)
 	}
@@ -295,12 +315,18 @@ func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (St
 		}
 		if len(req.Tools) > 0 {
 			params.Tools = buildAnthropicTools(req.Tools)
-			if p.thinkingBudget == 0 {
+			if p.thinkingBudget == 0 && !p.useAdaptive {
 				params.ToolChoice = buildAnthropicToolChoice(req.ToolChoice, req.ParallelToolCalls)
 			}
 		}
 
-		if p.thinkingBudget > 0 {
+		if p.useAdaptive {
+			params.MaxTokens = maxTokens(req.MaxOutputTokens, 16000)
+			adaptive := anthropic.NewThinkingConfigAdaptiveParam()
+			params.Thinking = anthropic.ThinkingConfigParamUnion{
+				OfAdaptive: &adaptive,
+			}
+		} else if p.thinkingBudget > 0 {
 			params.MaxTokens = maxTokens(req.MaxOutputTokens, 16000)
 			params.Thinking = anthropic.ThinkingConfigParamUnion{
 				OfEnabled: &anthropic.ThinkingConfigEnabledParam{
@@ -416,7 +442,7 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 		}
 		// In search mode, use auto tool choice so model can call web_search first
 		// The model will call the user's requested tool after searching
-		if len(req.Tools) > 0 && p.thinkingBudget == 0 {
+		if len(req.Tools) > 0 && p.thinkingBudget == 0 && !p.useAdaptive {
 			params.ToolChoice = anthropic.BetaToolChoiceUnionParam{
 				OfAuto: &anthropic.BetaToolChoiceAutoParam{
 					DisableParallelToolUse: anthropic.Bool(!req.ParallelToolCalls),
@@ -424,7 +450,13 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 			}
 		}
 
-		if p.thinkingBudget > 0 {
+		if p.useAdaptive {
+			params.MaxTokens = maxTokens(req.MaxOutputTokens, 16000)
+			adaptive := anthropic.NewBetaThinkingConfigAdaptiveParam()
+			params.Thinking = anthropic.BetaThinkingConfigParamUnion{
+				OfAdaptive: &adaptive,
+			}
+		} else if p.thinkingBudget > 0 {
 			params.MaxTokens = maxTokens(req.MaxOutputTokens, 16000)
 			params.Thinking = anthropic.BetaThinkingConfigParamUnion{
 				OfEnabled: &anthropic.BetaThinkingConfigEnabledParam{

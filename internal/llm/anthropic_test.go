@@ -9,6 +9,39 @@ import (
 	"github.com/samsaffron/term-llm/internal/credentials"
 )
 
+func TestParseModelThinking(t *testing.T) {
+	tests := []struct {
+		input        string
+		wantModel    string
+		wantBudget   int64
+		wantAdaptive bool
+	}{
+		// 4.6 models: -thinking triggers adaptive (no budget)
+		{"claude-sonnet-4-6-thinking", "claude-sonnet-4-6", 0, true},
+		{"claude-opus-4-6-thinking", "claude-opus-4-6", 0, true},
+		// Older models: -thinking triggers budget_tokens
+		{"claude-haiku-4-5-thinking", "claude-haiku-4-5", 10000, false},
+		// No suffix: no thinking
+		{"claude-sonnet-4-6", "claude-sonnet-4-6", 0, false},
+		{"claude-opus-4-6", "claude-opus-4-6", 0, false},
+		{"claude-haiku-4-5", "claude-haiku-4-5", 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			model, budget, adaptive := parseModelThinking(tt.input)
+			if model != tt.wantModel {
+				t.Errorf("model = %q, want %q", model, tt.wantModel)
+			}
+			if budget != tt.wantBudget {
+				t.Errorf("budget = %d, want %d", budget, tt.wantBudget)
+			}
+			if adaptive != tt.wantAdaptive {
+				t.Errorf("adaptive = %v, want %v", adaptive, tt.wantAdaptive)
+			}
+		})
+	}
+}
+
 func TestNewAnthropicProviderWithExplicitAPIKey(t *testing.T) {
 	// Clear env to isolate test
 	t.Setenv("ANTHROPIC_API_KEY", "")

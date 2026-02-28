@@ -10,7 +10,7 @@ import (
 // ProviderModels contains the curated list of common models per LLM provider type
 var ProviderModels = map[string][]string{
 	"anthropic": {
-		// Claude 4.6 (current)
+		// Claude 4.6 (-thinking uses adaptive thinking for 4.6 models)
 		"claude-sonnet-4-6",
 		"claude-sonnet-4-6-thinking",
 		"claude-opus-4-6",
