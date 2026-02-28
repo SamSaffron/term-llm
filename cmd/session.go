@@ -68,6 +68,7 @@ type CLIFlags struct {
 	MaxTurnsSet   bool // true if --max-turns was explicitly set
 	Search        bool
 	Files         []string // files passed via -f flag, used for agent template expansion (e.g., {{.Files}})
+	Platform      string   // runtime surface: "telegram", "web", "chat", "console", or empty
 }
 
 // LoadAgent loads and validates an agent by name or path.
@@ -198,7 +199,7 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 
 	// System prompt: CLI > agent > config
 	if cli.SystemMessage != "" {
-		templateCtx := agents.NewTemplateContextForTemplate(cli.SystemMessage).WithFiles(cli.Files)
+		templateCtx := agents.NewTemplateContextForTemplate(cli.SystemMessage).WithFiles(cli.Files).WithPlatform(cli.Platform)
 		cwd, err := systemPromptCWDBaseDir()
 		if err != nil {
 			return s, err
@@ -213,6 +214,7 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 		if err != nil {
 			return s, fmt.Errorf("prepare agent system prompt context: %w", err)
 		}
+		templateCtx = templateCtx.WithPlatform(cli.Platform)
 		expanded, err := expandSystemPromptWithIncludes(agent.SystemPrompt, templateCtx, includeBaseDir)
 		if err != nil {
 			return s, fmt.Errorf("expand agent system prompt: %w", err)
@@ -226,7 +228,7 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 			}
 		}
 	} else {
-		templateCtx := agents.NewTemplateContextForTemplate(configInstructions).WithFiles(cli.Files)
+		templateCtx := agents.NewTemplateContextForTemplate(configInstructions).WithFiles(cli.Files).WithPlatform(cli.Platform)
 		cwd, err := systemPromptCWDBaseDir()
 		if err != nil {
 			return s, err

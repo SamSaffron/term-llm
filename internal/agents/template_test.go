@@ -22,6 +22,7 @@ func TestExpandTemplate(t *testing.T) {
 		FileCount:   "2",
 		OS:          "linux",
 		ResourceDir: "/home/user/.cache/term-llm/agents/artist",
+		Platform:    "telegram",
 	}
 
 	tests := []struct {
@@ -51,9 +52,15 @@ func TestExpandTemplate(t *testing.T) {
 		},
 		{
 			name:     "all variables",
-			template: "{{date}} {{datetime}} {{time}} {{year}} {{cwd}} {{cwd_name}} {{home}} {{user}} {{git_branch}} {{git_repo}} {{files}} {{file_count}} {{os}} {{resource_dir}}",
-			expected: "2026-01-16 2026-01-16 14:30:00 14:30 2026 /home/user/project project /home/user testuser main term-llm main.go, utils.go 2 linux /home/user/.cache/term-llm/agents/artist",
+			template: "{{date}} {{datetime}} {{time}} {{year}} {{cwd}} {{cwd_name}} {{home}} {{user}} {{git_branch}} {{git_repo}} {{files}} {{file_count}} {{os}} {{resource_dir}} {{platform}}",
+			expected: "2026-01-16 2026-01-16 14:30:00 14:30 2026 /home/user/project project /home/user testuser main term-llm main.go, utils.go 2 linux /home/user/.cache/term-llm/agents/artist telegram",
 		},
+		{
+			name:     "platform variable",
+			template: "Running on {{platform}}",
+			expected: "Running on telegram",
+		},
+
 		{
 			name:     "resource_dir variable",
 			template: "Read styles at {{resource_dir}}/styles.md",
@@ -112,6 +119,27 @@ func TestNewTemplateContext(t *testing.T) {
 	// Check that cwd is populated (should be valid in test)
 	if ctx.Cwd == "" {
 		t.Error("Cwd should not be empty")
+	}
+}
+
+func TestTemplateContext_WithPlatform(t *testing.T) {
+	ctx := TemplateContext{}
+
+	// Set platform
+	ctx2 := ctx.WithPlatform("telegram")
+	if ctx2.Platform != "telegram" {
+		t.Errorf("Platform = %q, want %q", ctx2.Platform, "telegram")
+	}
+
+	// Original unchanged
+	if ctx.Platform != "" {
+		t.Errorf("Original Platform should be empty, got %q", ctx.Platform)
+	}
+
+	// Empty platform — variable expands to empty string
+	result := ExpandTemplate("platform: {{platform}}", TemplateContext{})
+	if result != "platform: " {
+		t.Errorf("ExpandTemplate with empty platform = %q, want %q", result, "platform: ")
 	}
 }
 

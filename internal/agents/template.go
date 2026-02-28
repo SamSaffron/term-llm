@@ -40,6 +40,11 @@ type TemplateContext struct {
 	// Agent context
 	ResourceDir string // Directory containing agent resources (for builtin agents)
 
+	// Platform context
+	// Identifies the runtime surface: "telegram", "web", "chat", "console", or empty.
+	// Set at startup by serve/ask/chat commands; empty when not applicable.
+	Platform string
+
 	// Project agent instructions (dynamically discovered)
 	// Searches in priority order: AGENTS.md, CLAUDE.md, .github/copilot-instructions.md,
 	// .cursor/rules, CONTRIBUTING.md - returns first found
@@ -129,6 +134,12 @@ func (c TemplateContext) WithResourceDir(resourceDir string) TemplateContext {
 	return c
 }
 
+// WithPlatform sets the platform identifier (e.g. "telegram", "web", "chat", "console").
+func (c TemplateContext) WithPlatform(platform string) TemplateContext {
+	c.Platform = platform
+	return c
+}
+
 // ExpandTemplate replaces {{variable}} placeholders with values from context.
 func ExpandTemplate(text string, ctx TemplateContext) string {
 	// Match {{variable}} patterns
@@ -169,6 +180,8 @@ func ExpandTemplate(text string, ctx TemplateContext) string {
 			return ctx.OS
 		case "resource_dir":
 			return ctx.ResourceDir
+		case "platform":
+			return ctx.Platform
 		case "agents":
 			return ctx.Agents
 		default:

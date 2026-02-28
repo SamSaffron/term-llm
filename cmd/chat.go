@@ -151,6 +151,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 		MaxTurns:      chatMaxTurns,
 		MaxTurnsSet:   cmd.Flags().Changed("max-turns"),
 		Search:        chatSearch,
+		Platform:      "chat",
 	}, cfg.Chat.Provider, cfg.Chat.Model, cfg.Chat.Instructions, cfg.Chat.MaxTurns, 200)
 	if err != nil {
 		return err

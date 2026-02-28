@@ -198,6 +198,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		MaxTurnsSet:   cmd.Flags().Changed("max-turns"),
 		Search:        askSearch,
 		Files:         askFiles,
+		Platform:      "console",
 	}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 20)
 	if err != nil {
 		return err
