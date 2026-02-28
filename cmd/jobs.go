@@ -21,6 +21,7 @@ var (
 	jobsToken     string
 	jobsTimeout   time.Duration
 	jobsJSON      bool
+	jobsListAll   bool
 
 	jobsCreateFile string
 	jobsCreateData string
@@ -178,6 +179,9 @@ func init() {
 
 	jobsRunEventsCmd.Flags().IntVar(&jobsEventsLimit, "limit", 200, "Max events to return")
 	jobsRunEventsCmd.Flags().IntVar(&jobsEventsOffset, "offset", 0, "Pagination offset")
+
+	jobsCmd.Flags().BoolVar(&jobsListAll, "all", false, "Show all jobs, including completed once-off and finished agent jobs")
+	jobsListCmd.Flags().BoolVar(&jobsListAll, "all", false, "Show all jobs, including completed once-off and finished agent jobs")
 
 	jobsCmd.AddCommand(jobsListCmd)
 	jobsCmd.AddCommand(jobsGetCmd)
@@ -511,7 +515,8 @@ func runJobsList(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	items, err := client.listJobs(cmd.Context())
+	ctx := cmd.Context()
+	items, err := client.listJobs(ctx)
 	if err != nil {
 		return err
 	}
@@ -519,19 +524,151 @@ func runJobsList(cmd *cobra.Command, args []string) error {
 	if jobsJSON {
 		return printJSON(items)
 	}
-	if len(items) == 0 {
-		fmt.Println("No jobs found.")
+
+	// Fetch recent runs (all jobs, newest first) to determine per-job active status and last run.
+	type jobRunSummary struct {
+		activeRun *jobsV2Run // first queued/claimed/running run found
+		lastRun   *jobsV2Run // most recent terminal run
+	}
+	summaries := make(map[string]*jobRunSummary)
+	recentRuns, _ := client.listRuns(ctx, "", 500, 0)
+	for i := range recentRuns {
+		r := &recentRuns[i]
+		s, ok := summaries[r.JobID]
+		if !ok {
+			s = &jobRunSummary{}
+			summaries[r.JobID] = s
+		}
+		if isActiveRunStatus(r.Status) {
+			if s.activeRun == nil {
+				s.activeRun = r
+			}
+		} else if s.lastRun == nil {
+			// runs come newest-first; first terminal run encountered is the last completed one
+			s.lastRun = r
+		}
+	}
+
+	// isEphemeral returns true for jobs that clutter the default listing.
+	// Once-off jobs self-disable (enabled=false, next_run_at=nil) after firing.
+	// They remain visible for 6 hours so you can see what just happened, then drop off.
+	// Manual LLM jobs are spawned sub-agents that are no longer useful once complete.
+	const onceJobGrace = 6 * time.Hour
+	isEphemeral := func(j jobsV2Job) bool {
+		if j.TriggerType == jobsV2TriggerOnce && !j.Enabled && j.NextRunAt == nil {
+			return time.Since(j.UpdatedAt) > onceJobGrace
+		}
+		if j.TriggerType == jobsV2TriggerManual && j.RunnerType == jobsV2RunnerLLM {
+			s := summaries[j.ID]
+			if s != nil && s.lastRun != nil {
+				return true
+			}
+		}
+		return false
+	}
+
+	var visible []jobsV2Job
+	hidden := 0
+	for _, j := range items {
+		if !jobsListAll && isEphemeral(j) {
+			hidden++
+			continue
+		}
+		visible = append(visible, j)
+	}
+
+	if len(visible) == 0 {
+		if hidden > 0 {
+			fmt.Printf("No active jobs. %d completed once-off/agent job(s) hidden — use --all to show.\n", hidden)
+		} else {
+			fmt.Println("No jobs found.")
+		}
 		return nil
 	}
-	fmt.Printf("%-24s %-24s %-8s %-8s %-20s %-25s\n", "ID", "NAME", "ENABLED", "TRIGGER", "NEXT_RUN_AT", "RUNNER")
-	for _, j := range items {
-		next := "-"
-		if j.NextRunAt != nil {
-			next = j.NextRunAt.Local().Format(time.RFC3339)
+
+	fmt.Printf("%-28s %-8s %-10s %-22s %-20s\n", "NAME", "TRIGGER", "STATUS", "LAST_RUN", "NEXT_RUN")
+	for _, j := range visible {
+		s := summaries[j.ID]
+
+		// STATUS: active run state > disabled > idle
+		status := "-"
+		if !j.Enabled {
+			status = "disabled"
 		}
-		fmt.Printf("%-24s %-24s %-8t %-8s %-20s %-25s\n", j.ID, truncateCell(j.Name, 24), j.Enabled, j.TriggerType, truncateCell(next, 20), string(j.RunnerType))
+		if s != nil && s.activeRun != nil {
+			status = string(s.activeRun.Status)
+		}
+
+		// LAST_RUN: relative time + short status of most recent terminal run
+		lastRun := "-"
+		if s != nil && s.lastRun != nil {
+			r := s.lastRun
+			ref := r.FinishedAt
+			if ref == nil {
+				ref = r.StartedAt
+			}
+			if ref == nil {
+				ref = &r.CreatedAt
+			}
+			lastRun = relativeTime(*ref) + " " + shortRunStatus(r.Status)
+		}
+
+		// NEXT_RUN: compact local time for scheduled jobs
+		nextRun := "-"
+		if j.NextRunAt != nil {
+			nextRun = j.NextRunAt.Local().Format("Jan 2 15:04")
+		}
+
+		fmt.Printf("%-28s %-8s %-10s %-22s %-20s\n",
+			truncateCell(j.Name, 28),
+			string(j.TriggerType),
+			truncateCell(status, 10),
+			truncateCell(lastRun, 22),
+			truncateCell(nextRun, 20),
+		)
+	}
+	if hidden > 0 {
+		fmt.Printf("\n%d completed once-off/agent job(s) hidden. Use --all to show.\n", hidden)
 	}
 	return nil
+}
+
+// relativeTime formats a past time as a human-friendly relative string.
+func relativeTime(t time.Time) string {
+	d := time.Since(t)
+	if d < 0 {
+		d = 0
+	}
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	case d < 7*24*time.Hour:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	default:
+		return t.Local().Format("Jan 2")
+	}
+}
+
+// shortRunStatus returns a compact label for a terminal run status.
+func shortRunStatus(s jobsV2RunStatus) string {
+	switch s {
+	case jobsV2RunSucceeded:
+		return "ok"
+	case jobsV2RunFailed:
+		return "FAIL"
+	case jobsV2RunCancelled:
+		return "cancelled"
+	case jobsV2RunTimedOut:
+		return "timeout"
+	case jobsV2RunSkipped:
+		return "skipped"
+	default:
+		return string(s)
+	}
 }
 
 func runJobsGet(cmd *cobra.Command, args []string) error {
