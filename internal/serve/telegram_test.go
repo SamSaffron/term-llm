@@ -154,6 +154,36 @@ func TestStreamReply_TextOnly(t *testing.T) {
 	}
 }
 
+func TestStreamReply_IncludesConfiguredSystemPrompt(t *testing.T) {
+	h := testutil.NewEngineHarness()
+	h.Provider.AddTextResponse("Hello")
+
+	mgr, sess := newTestMgrAndSession(h)
+	mgr.settings.SystemPrompt = "platform=telegram"
+	bot := &fakeBotSender{}
+
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hi")); err != nil {
+		t.Fatalf("streamReply returned error: %v", err)
+	}
+	if len(h.Provider.Requests) == 0 {
+		t.Fatal("expected provider request to be recorded")
+	}
+	lastReq := h.Provider.Requests[len(h.Provider.Requests)-1]
+	if len(lastReq.Messages) == 0 {
+		t.Fatal("expected at least one request message")
+	}
+	first := lastReq.Messages[0]
+	if first.Role != llm.RoleSystem {
+		t.Fatalf("first role = %s, want system", first.Role)
+	}
+	if len(first.Parts) == 0 {
+		t.Fatal("system message missing parts")
+	}
+	if got := first.Parts[0].Text; got != "platform=telegram" {
+		t.Fatalf("system prompt = %q, want %q", got, "platform=telegram")
+	}
+}
+
 func TestStreamReply_MarkdownRenderedAsHTML(t *testing.T) {
 	h := testutil.NewEngineHarness()
 	h.Provider.AddTextResponse("**bold** and _italic_ and `code`")

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -34,6 +35,28 @@ func TestParseResponsesInput_String(t *testing.T) {
 	}
 	if got := msgs[0].Parts[0].Text; got != "hello" {
 		t.Fatalf("text = %q, want %q", got, "hello")
+	}
+}
+
+func TestResolveSettingsWithPlatform_WebForServe(t *testing.T) {
+	cfg := &config.Config{}
+	settings, err := ResolveSettingsWithPlatform(cfg, nil, CLIFlags{SystemMessage: "serve={{platform}}"}, "", "", "", 0, 20, agents.TemplatePlatformWeb)
+	if err != nil {
+		t.Fatalf("ResolveSettingsWithPlatform() error = %v", err)
+	}
+	if settings.SystemPrompt != "serve=web" {
+		t.Fatalf("SystemPrompt = %q, want %q", settings.SystemPrompt, "serve=web")
+	}
+}
+
+func TestResolveSettingsWithPlatform_TelegramForServeWiring(t *testing.T) {
+	cfg := &config.Config{}
+	settings, err := ResolveSettingsWithPlatform(cfg, nil, CLIFlags{SystemMessage: "serve={{platform}}"}, "", "", "", 0, 20, agents.TemplatePlatformTelegram)
+	if err != nil {
+		t.Fatalf("ResolveSettingsWithPlatform() error = %v", err)
+	}
+	if settings.SystemPrompt != "serve=telegram" {
+		t.Fatalf("SystemPrompt = %q, want %q", settings.SystemPrompt, "serve=telegram")
 	}
 }
 

@@ -17,9 +17,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/tools"
 	_ "modernc.org/sqlite"
 )
 
@@ -1781,7 +1783,7 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 			return err
 		}
 
-		settings, err := ResolveSettings(jobCfg, agent, CLIFlags{
+		settings, err := ResolveSettingsWithPlatform(jobCfg, agent, CLIFlags{
 			Provider:      serveProvider,
 			Tools:         serveTools,
 			ReadDirs:      serveReadDirs,
@@ -1791,7 +1793,7 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 			SystemMessage: serveSystemMessage,
 			MaxTurns:      serveMaxTurns,
 			Search:        serveSearch,
-		}, jobCfg.Ask.Provider, jobCfg.Ask.Model, jobCfg.Ask.Instructions, jobCfg.Ask.MaxTurns, 20)
+		}, jobCfg.Ask.Provider, jobCfg.Ask.Model, jobCfg.Ask.Instructions, jobCfg.Ask.MaxTurns, 20, agents.TemplatePlatformJobs)
 		if err != nil {
 			return err
 		}
@@ -1802,7 +1804,9 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 			return err
 		}
 
-		engine, toolMgr, err := newServeEngineWithTools(jobCfg, settings, provider, serveYolo, WireSpawnAgentRunner)
+		engine, toolMgr, err := newServeEngineWithTools(jobCfg, settings, provider, serveYolo, func(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool) error {
+			return WireSpawnAgentRunnerForPlatform(cfg, toolMgr, yoloMode, agents.TemplatePlatformJobs)
+		})
 		if err != nil {
 			return err
 		}

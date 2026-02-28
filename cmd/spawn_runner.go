@@ -25,18 +25,26 @@ type SpawnAgentRunner struct {
 	parentApprovalMgr *tools.ApprovalManager
 	store             session.Store // Session store for tracking subagent turns
 	parentSessionID   string        // Parent session ID for child session linking
+	platform          string        // Context for {{platform}} template expansion
 	warnFunc          func(format string, args ...any)
 }
 
 // NewSpawnAgentRunner creates a new SpawnAgentRunner.
 // parentApprovalMgr enables sub-agents to inherit parent's session approvals and prompting.
 func NewSpawnAgentRunner(cfg *config.Config, yoloMode bool, parentApprovalMgr *tools.ApprovalManager) (*SpawnAgentRunner, error) {
-	return NewSpawnAgentRunnerWithStore(cfg, yoloMode, parentApprovalMgr, nil, "")
+	return NewSpawnAgentRunnerWithStoreForPlatform(cfg, yoloMode, parentApprovalMgr, nil, "", agents.TemplatePlatformUnknown)
 }
 
 // NewSpawnAgentRunnerWithStore creates a new SpawnAgentRunner with session tracking.
 // store is used to save subagent turns, parentSessionID links child sessions to parent.
 func NewSpawnAgentRunnerWithStore(cfg *config.Config, yoloMode bool, parentApprovalMgr *tools.ApprovalManager, store session.Store, parentSessionID string) (*SpawnAgentRunner, error) {
+	return NewSpawnAgentRunnerWithStoreForPlatform(cfg, yoloMode, parentApprovalMgr, store, parentSessionID, agents.TemplatePlatformUnknown)
+}
+
+// NewSpawnAgentRunnerWithStoreForPlatform creates a new SpawnAgentRunner with
+// session tracking and platform context for {{platform}} expansion.
+// store is used to save subagent turns, parentSessionID links child sessions to parent.
+func NewSpawnAgentRunnerWithStoreForPlatform(cfg *config.Config, yoloMode bool, parentApprovalMgr *tools.ApprovalManager, store session.Store, parentSessionID string, platform string) (*SpawnAgentRunner, error) {
 	registry, err := agents.NewRegistry(agents.RegistryConfig{
 		UseBuiltin:  cfg.Agents.UseBuiltin,
 		SearchPaths: cfg.Agents.SearchPaths,
@@ -55,6 +63,7 @@ func NewSpawnAgentRunnerWithStore(cfg *config.Config, yoloMode bool, parentAppro
 		parentApprovalMgr: parentApprovalMgr,
 		store:             store,
 		parentSessionID:   parentSessionID,
+		platform:          agents.NormalizeTemplatePlatform(platform),
 	}, nil
 }
 
@@ -236,7 +245,7 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 	// Build system prompt
 	systemPrompt := ""
 	if agent.SystemPrompt != "" {
-		templateCtx, includeBaseDir, err := agentPromptTemplateContextAndBaseDir(agent, nil)
+		templateCtx, includeBaseDir, err := agentPromptTemplateContextAndBaseDirWithPlatform(agent, nil, r.platform)
 		if err != nil {
 			return tools.SpawnAgentRunResult{}, fmt.Errorf("prepare agent system prompt context: %w", err)
 		}
@@ -395,6 +404,7 @@ func (r *SpawnAgentRunner) setupAgentTools(cfg *config.Config, engine *llm.Engin
 			parentApprovalMgr: toolMgr.ApprovalMgr,
 			store:             r.store,
 			parentSessionID:   childSessionID, // This agent's session becomes parent for nested agents
+			platform:          r.platform,
 			warnFunc:          r.warnFunc,
 		}
 		spawnTool.SetRunner(childRunner)

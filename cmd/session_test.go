@@ -105,6 +105,104 @@ func TestResolveSettings_MissingIncludeIsLeftUnchanged(t *testing.T) {
 	}
 }
 
+func TestResolveSettings_SystemPromptPlatformAcrossSourcesAndIncludeOrder(t *testing.T) {
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(origWD) }()
+
+	tmp := t.TempDir()
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(tmp, "inc.md"), []byte("from-config={{platform}}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	agentDir := filepath.Join(tmp, "agent")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "inc.md"), []byte("from-agent={{platform}}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name               string
+		platform           string
+		agent              *agents.Agent
+		cli                CLIFlags
+		configInstructions string
+		want               string
+	}{
+		{
+			name:               "config instructions",
+			platform:           agents.TemplatePlatformChat,
+			configInstructions: "A {{file:inc.md}} B",
+			want:               "A from-config=chat B",
+		},
+		{
+			name:     "agent system prompt",
+			platform: agents.TemplatePlatformWeb,
+			agent: &agents.Agent{
+				Name:         "agent",
+				Source:       agents.SourceUser,
+				SourcePath:   agentDir,
+				SystemPrompt: "A {{file:inc.md}} B",
+			},
+			configInstructions: "ignored",
+			want:               "A from-agent=web B",
+		},
+		{
+			name:               "cli system message",
+			platform:           agents.TemplatePlatformJobs,
+			cli:                CLIFlags{SystemMessage: "A {{file:inc.md}} B"},
+			configInstructions: "ignored",
+			want:               "A from-config=jobs B",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{}
+			settings, err := ResolveSettingsWithPlatform(cfg, tt.agent, tt.cli, "", "", tt.configInstructions, 0, 20, tt.platform)
+			if err != nil {
+				t.Fatalf("ResolveSettingsWithPlatform() error = %v", err)
+			}
+			if settings.SystemPrompt != tt.want {
+				t.Fatalf("SystemPrompt = %q, want %q", settings.SystemPrompt, tt.want)
+			}
+			if strings.Contains(settings.SystemPrompt, "{{platform}}") {
+				t.Fatalf("SystemPrompt still has {{platform}} token: %q", settings.SystemPrompt)
+			}
+		})
+	}
+}
+
+func TestResolveSettings_PlatformDefaultsToUnknown(t *testing.T) {
+	cfg := &config.Config{}
+	settings, err := ResolveSettings(cfg, nil, CLIFlags{}, "", "", "{{platform}}", 0, 20)
+	if err != nil {
+		t.Fatalf("ResolveSettings() error = %v", err)
+	}
+	if settings.SystemPrompt != agents.TemplatePlatformUnknown {
+		t.Fatalf("SystemPrompt = %q, want %q", settings.SystemPrompt, agents.TemplatePlatformUnknown)
+	}
+}
+
+func TestResolveSettings_UnknownTokensRemainUnchangedWhenPlatformExpands(t *testing.T) {
+	cfg := &config.Config{}
+	settings, err := ResolveSettingsWithPlatform(cfg, nil, CLIFlags{SystemMessage: "{{platform}} {{unknown_token}}"}, "", "", "", 0, 20, agents.TemplatePlatformChat)
+	if err != nil {
+		t.Fatalf("ResolveSettingsWithPlatform() error = %v", err)
+	}
+	if settings.SystemPrompt != "chat {{unknown_token}}" {
+		t.Fatalf("SystemPrompt = %q, want %q", settings.SystemPrompt, "chat {{unknown_token}}")
+	}
+}
+
 func TestResolveSettings_AgentToolsAppliedWhenCLIToolsUnset(t *testing.T) {
 	cfg := &config.Config{}
 	agent := &agents.Agent{

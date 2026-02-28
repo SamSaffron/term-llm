@@ -197,7 +197,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	settings, err := ResolveSettings(cfg, agent, CLIFlags{
+	serveCLI := CLIFlags{
 		Provider:      serveProvider,
 		Tools:         serveTools,
 		ReadDirs:      serveReadDirs,
@@ -208,9 +208,19 @@ func runServe(cmd *cobra.Command, args []string) error {
 		MaxTurns:      serveMaxTurns,
 		MaxTurnsSet:   cmd.Flags().Changed("max-turns"),
 		Search:        serveSearch,
-	}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 20)
+	}
+
+	webSettings, err := ResolveSettingsWithPlatform(cfg, agent, serveCLI, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 20, agents.TemplatePlatformWeb)
 	if err != nil {
 		return err
+	}
+
+	telegramSettings := webSettings
+	if hasTelegram {
+		telegramSettings, err = ResolveSettingsWithPlatform(cfg, agent, serveCLI, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 20, agents.TemplatePlatformTelegram)
+		if err != nil {
+			return err
+		}
 	}
 
 	agentName := ""
@@ -229,70 +239,78 @@ func runServe(cmd *cobra.Command, args []string) error {
 	forceExternalSearch := resolveForceExternalSearch(cfg, serveNativeSearch, serveNoNativeSearch)
 
 	modelName := activeModel(cfg)
-	factory := func(ctx context.Context) (*serveRuntime, error) {
-		provider, err := llm.NewProvider(cfg)
-		if err != nil {
-			return nil, err
-		}
-		engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, serveYolo, WireSpawnAgentRunner)
-		if err != nil {
-			return nil, err
-		}
-
-		var mcpManager *mcp.Manager
-		if settings.MCP != "" {
-			mcpOpts := &MCPOptions{Provider: provider, Model: modelName, YoloMode: serveYolo}
-			mgr, err := enableMCPServersWithFeedback(ctx, settings.MCP, engine, io.Discard, mcpOpts)
+	newRuntimeFactory := func(settings SessionSettings, platform string) func(context.Context) (*serveRuntime, error) {
+		resolvedPlatform := agents.NormalizeTemplatePlatform(platform)
+		return func(ctx context.Context) (*serveRuntime, error) {
+			provider, err := llm.NewProvider(cfg)
 			if err != nil {
 				return nil, err
 			}
-			mcpManager = mgr
-		}
+			engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, serveYolo, func(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool) error {
+				return WireSpawnAgentRunnerForPlatform(cfg, toolMgr, yoloMode, resolvedPlatform)
+			})
+			if err != nil {
+				return nil, err
+			}
 
-		runtime := &serveRuntime{
-			provider:            provider,
-			engine:              engine,
-			toolMgr:             toolMgr,
-			mcpManager:          mcpManager,
-			systemPrompt:        settings.SystemPrompt,
-			search:              settings.Search,
-			forceExternalSearch: forceExternalSearch,
-			maxTurns:            settings.MaxTurns,
-			debug:               serveDebug,
-			debugRaw:            debugRaw,
-			defaultModel:        modelName,
-			store:               store,
-			toolsSetting:        settings.Tools,
-			mcpSetting:          settings.MCP,
-			agentName:           agentName,
+			var mcpManager *mcp.Manager
+			if settings.MCP != "" {
+				mcpOpts := &MCPOptions{Provider: provider, Model: modelName, YoloMode: serveYolo}
+				mgr, err := enableMCPServersWithFeedback(ctx, settings.MCP, engine, io.Discard, mcpOpts)
+				if err != nil {
+					return nil, err
+				}
+				mcpManager = mgr
+			}
+
+			runtime := &serveRuntime{
+				provider:            provider,
+				engine:              engine,
+				toolMgr:             toolMgr,
+				mcpManager:          mcpManager,
+				systemPrompt:        settings.SystemPrompt,
+				search:              settings.Search,
+				forceExternalSearch: forceExternalSearch,
+				maxTurns:            settings.MaxTurns,
+				debug:               serveDebug,
+				debugRaw:            debugRaw,
+				defaultModel:        modelName,
+				store:               store,
+				toolsSetting:        settings.Tools,
+				mcpSetting:          settings.MCP,
+				agentName:           agentName,
+			}
+			runtime.Touch()
+			return runtime, nil
 		}
-		runtime.Touch()
-		return runtime, nil
 	}
 
-	sessionMgr := newServeSessionManager(serveSessionTTL, serveSessionMax, factory)
+	webFactory := newRuntimeFactory(webSettings, agents.TemplatePlatformWeb)
+	sessionMgr := newServeSessionManager(serveSessionTTL, serveSessionMax, webFactory)
 	defer sessionMgr.Close()
 
 	if hasJobs && strings.TrimSpace(serveAgent) != "" {
 		fmt.Fprintln(cmd.ErrOrStderr(), "warning: --agent is ignored for --platform jobs; set llm runner_config.agent_name per job definition")
 	}
 
+	telegramFactory := newRuntimeFactory(telegramSettings, agents.TemplatePlatformTelegram)
+
 	// Build the serve.Settings used by non-web platforms.
 	serveSettings := serve.Settings{
-		SystemPrompt:           settings.SystemPrompt,
+		SystemPrompt:           telegramSettings.SystemPrompt,
 		IdleTimeout:            serveSessionTTL,
 		TelegramCarryoverChars: serveTelegramCarryoverChars,
-		MaxTurns:               settings.MaxTurns,
+		MaxTurns:               telegramSettings.MaxTurns,
 		Debug:                  serveDebug,
 		DebugRaw:               debugRaw,
-		Search:                 settings.Search,
+		Search:                 telegramSettings.Search,
 		ForceExternalSearch:    forceExternalSearch,
-		Tools:                  settings.Tools,
-		MCP:                    settings.MCP,
+		Tools:                  telegramSettings.Tools,
+		MCP:                    telegramSettings.MCP,
 		Agent:                  agentName,
 		Store:                  store,
 		NewSession: func(ctx context.Context) (*serve.SessionRuntime, error) {
-			rt, err := factory(ctx)
+			rt, err := telegramFactory(ctx)
 			if err != nil {
 				return nil, err
 			}

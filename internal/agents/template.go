@@ -11,6 +11,31 @@ import (
 	"time"
 )
 
+const (
+	TemplatePlatformWeb      = "web"
+	TemplatePlatformJobs     = "jobs"
+	TemplatePlatformTelegram = "telegram"
+	TemplatePlatformChat     = "chat"
+	TemplatePlatformUnknown  = "unknown"
+)
+
+// NormalizeTemplatePlatform ensures template platform values stay on an allowlist.
+// Unknown/empty values resolve to "unknown".
+func NormalizeTemplatePlatform(platform string) string {
+	switch strings.ToLower(strings.TrimSpace(platform)) {
+	case TemplatePlatformWeb:
+		return TemplatePlatformWeb
+	case TemplatePlatformJobs:
+		return TemplatePlatformJobs
+	case TemplatePlatformTelegram:
+		return TemplatePlatformTelegram
+	case TemplatePlatformChat:
+		return TemplatePlatformChat
+	default:
+		return TemplatePlatformUnknown
+	}
+}
+
 // TemplateContext holds values for template variable expansion.
 type TemplateContext struct {
 	// Time-related
@@ -35,7 +60,8 @@ type TemplateContext struct {
 	FileCount string // Number of files
 
 	// System
-	OS string // Operating system
+	OS       string // Operating system
+	Platform string // Runtime platform context (web|jobs|telegram|chat|unknown)
 
 	// Agent context
 	ResourceDir string // Directory containing agent resources (for builtin agents)
@@ -71,6 +97,7 @@ func newTemplateContext(computeGitDiffStat, computeAgents bool) TemplateContext 
 		Time:     now.Format("15:04"),
 		Year:     now.Format("2006"),
 		OS:       runtime.GOOS,
+		Platform: TemplatePlatformUnknown,
 	}
 
 	// Working directory
@@ -129,6 +156,12 @@ func (c TemplateContext) WithResourceDir(resourceDir string) TemplateContext {
 	return c
 }
 
+// WithPlatform sets the runtime platform context used by {{platform}}.
+func (c TemplateContext) WithPlatform(platform string) TemplateContext {
+	c.Platform = NormalizeTemplatePlatform(platform)
+	return c
+}
+
 // ExpandTemplate replaces {{variable}} placeholders with values from context.
 func ExpandTemplate(text string, ctx TemplateContext) string {
 	// Match {{variable}} patterns
@@ -167,6 +200,8 @@ func ExpandTemplate(text string, ctx TemplateContext) string {
 			return ctx.FileCount
 		case "os":
 			return ctx.OS
+		case "platform":
+			return NormalizeTemplatePlatform(ctx.Platform)
 		case "resource_dir":
 			return ctx.ResourceDir
 		case "agents":

@@ -7,7 +7,21 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/agents"
+	"github.com/samsaffron/term-llm/internal/config"
 )
+
+func TestResolveSettingsWithPlatform_JobsForServeJobsV2(t *testing.T) {
+	cfg := &config.Config{}
+	settings, err := ResolveSettingsWithPlatform(cfg, nil, CLIFlags{SystemMessage: "jobs={{platform}}"}, "", "", "", 0, 20, agents.TemplatePlatformJobs)
+	if err != nil {
+		t.Fatalf("ResolveSettingsWithPlatform() error = %v", err)
+	}
+	if settings.SystemPrompt != "jobs=jobs" {
+		t.Fatalf("SystemPrompt = %q, want %q", settings.SystemPrompt, "jobs=jobs")
+	}
+}
 
 func TestJobsV2OnceProgramRunLifecycle(t *testing.T) {
 	mgr, err := newJobsV2Manager(":memory:", 1, nil)

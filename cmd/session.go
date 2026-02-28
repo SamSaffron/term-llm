@@ -121,7 +121,16 @@ func LoadAgent(agentName string, cfg *config.Config) (*agents.Agent, error) {
 // ResolveSettings merges config, agent, and CLI flags into final settings.
 // Priority: CLI > agent > config
 func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, configProvider, configModel, configInstructions string, configMaxTurns, defaultMaxTurns int) (SessionSettings, error) {
+	return ResolveSettingsWithPlatform(cfg, agent, cli, configProvider, configModel, configInstructions, configMaxTurns, defaultMaxTurns, agents.TemplatePlatformUnknown)
+}
+
+// ResolveSettingsWithPlatform merges config, agent, and CLI flags into final settings.
+// Priority: CLI > agent > config.
+// platform controls expansion of {{platform}} and is allowlisted to
+// web|jobs|telegram|chat|unknown.
+func ResolveSettingsWithPlatform(cfg *config.Config, agent *agents.Agent, cli CLIFlags, configProvider, configModel, configInstructions string, configMaxTurns, defaultMaxTurns int, platform string) (SessionSettings, error) {
 	s := SessionSettings{}
+	resolvedPlatform := agents.NormalizeTemplatePlatform(platform)
 	if agent != nil {
 		s.AgentName = agent.Name
 	}
@@ -198,7 +207,7 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 
 	// System prompt: CLI > agent > config
 	if cli.SystemMessage != "" {
-		templateCtx := agents.NewTemplateContextForTemplate(cli.SystemMessage).WithFiles(cli.Files)
+		templateCtx := agents.NewTemplateContextForTemplate(cli.SystemMessage).WithFiles(cli.Files).WithPlatform(resolvedPlatform)
 		cwd, err := systemPromptCWDBaseDir()
 		if err != nil {
 			return s, err
@@ -209,7 +218,7 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 		}
 		s.SystemPrompt = expanded
 	} else if agent != nil && agent.SystemPrompt != "" {
-		templateCtx, includeBaseDir, err := agentPromptTemplateContextAndBaseDir(agent, cli.Files)
+		templateCtx, includeBaseDir, err := agentPromptTemplateContextAndBaseDirWithPlatform(agent, cli.Files, resolvedPlatform)
 		if err != nil {
 			return s, fmt.Errorf("prepare agent system prompt context: %w", err)
 		}
@@ -226,7 +235,7 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 			}
 		}
 	} else {
-		templateCtx := agents.NewTemplateContextForTemplate(configInstructions).WithFiles(cli.Files)
+		templateCtx := agents.NewTemplateContextForTemplate(configInstructions).WithFiles(cli.Files).WithPlatform(resolvedPlatform)
 		cwd, err := systemPromptCWDBaseDir()
 		if err != nil {
 			return s, err
@@ -276,7 +285,11 @@ func systemPromptCWDBaseDir() (string, error) {
 }
 
 func agentPromptTemplateContextAndBaseDir(agent *agents.Agent, files []string) (agents.TemplateContext, string, error) {
-	templateCtx := agents.NewTemplateContextForTemplate(agent.SystemPrompt).WithFiles(files)
+	return agentPromptTemplateContextAndBaseDirWithPlatform(agent, files, agents.TemplatePlatformUnknown)
+}
+
+func agentPromptTemplateContextAndBaseDirWithPlatform(agent *agents.Agent, files []string, platform string) (agents.TemplateContext, string, error) {
+	templateCtx := agents.NewTemplateContextForTemplate(agent.SystemPrompt).WithFiles(files).WithPlatform(platform)
 
 	if agent.Source == agents.SourceBuiltin {
 		resourceDir, err := agents.ExtractBuiltinResources(agent.Name)
@@ -344,12 +357,24 @@ func (s *SessionSettings) SetupToolManager(cfg *config.Config, engine *llm.Engin
 // The toolMgr's ApprovalMgr is passed to sub-agents so they inherit session approvals
 // and can use the parent's prompt function for interactive approvals.
 func WireSpawnAgentRunner(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool) error {
-	return WireSpawnAgentRunnerWithStore(cfg, toolMgr, yoloMode, nil, "")
+	return WireSpawnAgentRunnerForPlatform(cfg, toolMgr, yoloMode, agents.TemplatePlatformUnknown)
+}
+
+// WireSpawnAgentRunnerForPlatform wires spawn_agent and sets {{platform}} context
+// for spawned sub-agent system prompt expansion.
+func WireSpawnAgentRunnerForPlatform(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool, platform string) error {
+	return WireSpawnAgentRunnerWithStoreForPlatform(cfg, toolMgr, yoloMode, nil, "", platform)
 }
 
 // WireSpawnAgentRunnerWithStore sets up the spawn_agent runner with session tracking.
 // store is used to save subagent turns, parentSessionID links child sessions to parent.
 func WireSpawnAgentRunnerWithStore(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool, store session.Store, parentSessionID string) error {
+	return WireSpawnAgentRunnerWithStoreForPlatform(cfg, toolMgr, yoloMode, store, parentSessionID, agents.TemplatePlatformUnknown)
+}
+
+// WireSpawnAgentRunnerWithStoreForPlatform sets up the spawn_agent runner with
+// session tracking and platform context for {{platform}} expansion.
+func WireSpawnAgentRunnerWithStoreForPlatform(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool, store session.Store, parentSessionID string, platform string) error {
 	if toolMgr == nil {
 		return nil
 	}
@@ -357,7 +382,7 @@ func WireSpawnAgentRunnerWithStore(cfg *config.Config, toolMgr *tools.ToolManage
 	if spawnTool == nil {
 		return nil
 	}
-	runner, err := NewSpawnAgentRunnerWithStore(cfg, yoloMode, toolMgr.ApprovalMgr, store, parentSessionID)
+	runner, err := NewSpawnAgentRunnerWithStoreForPlatform(cfg, yoloMode, toolMgr.ApprovalMgr, store, parentSessionID, platform)
 	if err != nil {
 		return fmt.Errorf("setup spawn_agent: %w", err)
 	}

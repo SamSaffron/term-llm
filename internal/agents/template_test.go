@@ -21,6 +21,7 @@ func TestExpandTemplate(t *testing.T) {
 		Files:       "main.go, utils.go",
 		FileCount:   "2",
 		OS:          "linux",
+		Platform:    TemplatePlatformWeb,
 		ResourceDir: "/home/user/.cache/term-llm/agents/artist",
 	}
 
@@ -40,6 +41,11 @@ func TestExpandTemplate(t *testing.T) {
 			expected: "testuser is working on term-llm (branch: main)",
 		},
 		{
+			name:     "platform variable",
+			template: "Running on {{platform}}",
+			expected: "Running on web",
+		},
+		{
 			name:     "no variables",
 			template: "Just plain text",
 			expected: "Just plain text",
@@ -51,8 +57,8 @@ func TestExpandTemplate(t *testing.T) {
 		},
 		{
 			name:     "all variables",
-			template: "{{date}} {{datetime}} {{time}} {{year}} {{cwd}} {{cwd_name}} {{home}} {{user}} {{git_branch}} {{git_repo}} {{files}} {{file_count}} {{os}} {{resource_dir}}",
-			expected: "2026-01-16 2026-01-16 14:30:00 14:30 2026 /home/user/project project /home/user testuser main term-llm main.go, utils.go 2 linux /home/user/.cache/term-llm/agents/artist",
+			template: "{{date}} {{datetime}} {{time}} {{year}} {{cwd}} {{cwd_name}} {{home}} {{user}} {{git_branch}} {{git_repo}} {{files}} {{file_count}} {{os}} {{platform}} {{resource_dir}}",
+			expected: "2026-01-16 2026-01-16 14:30:00 14:30 2026 /home/user/project project /home/user testuser main term-llm main.go, utils.go 2 linux web /home/user/.cache/term-llm/agents/artist",
 		},
 		{
 			name:     "resource_dir variable",
@@ -69,6 +75,11 @@ func TestExpandTemplate(t *testing.T) {
 			template: "branch: {{git_branch}}",
 			expected: "branch: main",
 		},
+		{
+			name:     "unknown token is unchanged when platform expands",
+			template: "{{platform}} {{mystery_token}}",
+			expected: "web {{mystery_token}}",
+		},
 	}
 
 	for _, tt := range tests {
@@ -78,6 +89,33 @@ func TestExpandTemplate(t *testing.T) {
 				t.Errorf("ExpandTemplate() = %q, want %q", result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestExpandTemplate_PlatformDefaultsToUnknown(t *testing.T) {
+	ctx := TemplateContext{}
+	if got := ExpandTemplate("{{platform}}", ctx); got != TemplatePlatformUnknown {
+		t.Fatalf("ExpandTemplate() = %q, want %q", got, TemplatePlatformUnknown)
+	}
+}
+
+func TestNormalizeTemplatePlatform(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{input: "", want: TemplatePlatformUnknown},
+		{input: "WEB", want: TemplatePlatformWeb},
+		{input: " jobs ", want: TemplatePlatformJobs},
+		{input: "telegram", want: TemplatePlatformTelegram},
+		{input: "chat", want: TemplatePlatformChat},
+		{input: "host:8080", want: TemplatePlatformUnknown},
+	}
+
+	for _, tt := range tests {
+		if got := NormalizeTemplatePlatform(tt.input); got != tt.want {
+			t.Fatalf("NormalizeTemplatePlatform(%q) = %q, want %q", tt.input, got, tt.want)
+		}
 	}
 }
 
@@ -107,6 +145,10 @@ func TestNewTemplateContext(t *testing.T) {
 	// Check OS
 	if ctx.OS == "" {
 		t.Error("OS should not be empty")
+	}
+
+	if ctx.Platform != TemplatePlatformUnknown {
+		t.Errorf("Platform = %q, want %q", ctx.Platform, TemplatePlatformUnknown)
 	}
 
 	// Check that cwd is populated (should be valid in test)
@@ -139,6 +181,16 @@ func TestTemplateContext_WithFiles(t *testing.T) {
 	}
 	if ctx3.Files != "" {
 		t.Errorf("Files = %q, want empty string", ctx3.Files)
+	}
+}
+
+func TestTemplateContext_WithPlatform(t *testing.T) {
+	ctx := TemplateContext{}
+	if got := ctx.WithPlatform("TELEGRAM").Platform; got != TemplatePlatformTelegram {
+		t.Fatalf("WithPlatform(TELEGRAM).Platform = %q, want %q", got, TemplatePlatformTelegram)
+	}
+	if got := ctx.WithPlatform("127.0.0.1:8080").Platform; got != TemplatePlatformUnknown {
+		t.Fatalf("WithPlatform(host).Platform = %q, want %q", got, TemplatePlatformUnknown)
 	}
 }
 

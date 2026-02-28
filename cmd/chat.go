@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
@@ -140,7 +141,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 	}
 
 	// Resolve all settings: CLI > agent > config
-	settings, err := ResolveSettings(cfg, agent, CLIFlags{
+	settings, err := ResolveSettingsWithPlatform(cfg, agent, CLIFlags{
 		Provider:      chatProvider,
 		Tools:         chatTools,
 		ReadDirs:      chatReadDirs,
@@ -151,7 +152,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 		MaxTurns:      chatMaxTurns,
 		MaxTurnsSet:   cmd.Flags().Changed("max-turns"),
 		Search:        chatSearch,
-	}, cfg.Chat.Provider, cfg.Chat.Model, cfg.Chat.Instructions, cfg.Chat.MaxTurns, 200)
+	}, cfg.Chat.Provider, cfg.Chat.Model, cfg.Chat.Instructions, cfg.Chat.MaxTurns, 200, agents.TemplatePlatformChat)
 	if err != nil {
 		return err
 	}
@@ -271,7 +272,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 		if sess != nil {
 			parentSessionID = sess.ID
 		}
-		if err := WireSpawnAgentRunnerWithStore(cfg, toolMgr, chatYolo, store, parentSessionID); err != nil {
+		if err := WireSpawnAgentRunnerWithStoreForPlatform(cfg, toolMgr, chatYolo, store, parentSessionID, agents.TemplatePlatformChat); err != nil {
 			if debugLogger != nil {
 				debugLogger.Close()
 			}
