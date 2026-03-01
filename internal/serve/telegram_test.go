@@ -115,6 +115,55 @@ func TestBuildSegment(t *testing.T) {
 	}
 }
 
+func TestBuildHeartbeatSegment(t *testing.T) {
+	cases := []struct {
+		name       string
+		prose      string
+		tool       string
+		phase      string
+		spin       string
+		elapsedSec int
+		want       string
+	}{
+		{
+			name:       "tool with prose",
+			prose:      "Working",
+			tool:       "shell",
+			phase:      "",
+			spin:       "⠋",
+			elapsedSec: 75,
+			want:       "Working\n\n🔧 shell…\n\n⠋ 01:15",
+		},
+		{
+			name:       "phase without prose",
+			prose:      "",
+			tool:       "",
+			phase:      "Searching…",
+			spin:       "⠙",
+			elapsedSec: 9,
+			want:       "Searching…\n\n⠙ 00:09",
+		},
+		{
+			name:       "spinner only",
+			prose:      "",
+			tool:       "",
+			phase:      "",
+			spin:       "⠹",
+			elapsedSec: 0,
+			want:       "⠹ 00:00",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := buildHeartbeatSegment(tc.prose, tc.tool, tc.phase, tc.spin, tc.elapsedSec)
+			if got != tc.want {
+				t.Fatalf("buildHeartbeatSegment(...) = %q; want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // --- TestActiveToolDisplay ---
 
 func TestActiveToolDisplay(t *testing.T) {
@@ -547,6 +596,20 @@ func TestTelegramSessionMgrResetSessionIfCurrent_CopiesCarryoverContext(t *testi
 }
 
 // --- interrupt tests ---
+
+func TestAssessInterrupt_SafeDefaults(t *testing.T) {
+	mgr := &telegramSessionMgr{}
+
+	if got := mgr.assessInterrupt(context.Background(), nil, 42, "", []string{"shell"}, "stop"); got != interruptDecisionQueue {
+		t.Fatalf("expected queue for empty original task, got %v", got)
+	}
+	if got := mgr.assessInterrupt(context.Background(), nil, 42, "do something", nil, ""); got != interruptDecisionQueue {
+		t.Fatalf("expected queue for empty new message, got %v", got)
+	}
+	if got := mgr.assessInterrupt(context.Background(), nil, 42, "do something", []string{"shell"}, "stop"); got != interruptDecisionQueue {
+		t.Fatalf("expected queue when assessor cannot run (missing cfg), got %v", got)
+	}
+}
 
 func TestHandleMessage_InterruptCancelsActiveStream(t *testing.T) {
 	h := testutil.NewEngineHarness()
@@ -1021,6 +1084,22 @@ func TestCollectUserText(t *testing.T) {
 	got2 := collectUserText(msg2)
 	if got2 != "hello world" {
 		t.Fatalf("collectUserText = %q, want %q", got2, "hello world")
+	}
+}
+
+func TestExtractPlainTextFromMsg(t *testing.T) {
+	if got := extractPlainTextFromMsg(nil); got != "" {
+		t.Fatalf("extractPlainTextFromMsg(nil) = %q, want empty", got)
+	}
+
+	msg := &tgbotapi.Message{Text: "hello"}
+	if got := extractPlainTextFromMsg(msg); got != "hello" {
+		t.Fatalf("extractPlainTextFromMsg(text) = %q, want %q", got, "hello")
+	}
+
+	msg = &tgbotapi.Message{Caption: "image caption"}
+	if got := extractPlainTextFromMsg(msg); got != "image caption" {
+		t.Fatalf("extractPlainTextFromMsg(caption) = %q, want %q", got, "image caption")
 	}
 }
 
