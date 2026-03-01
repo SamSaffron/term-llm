@@ -453,6 +453,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if key.Matches(msg, m.keyMap.Send) {
 			content := strings.TrimSpace(m.textarea.Value())
 			if content == "" {
+				m.phase = "Type to interject, or press Esc to cancel"
 				return m, nil
 			}
 
@@ -469,7 +470,8 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case llm.InterruptCancel:
 				m.pendingInterjection = ""
 				m.queuedInterjection = ""
-				// Keep typed content so user can resend or edit after cancellation.
+				m.setTextareaValue("")
+				m.phase = "Stopping..."
 				if m.streamCancelFunc != nil {
 					m.streamCancelFunc()
 				}
