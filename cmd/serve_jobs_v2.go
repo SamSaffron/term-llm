@@ -50,6 +50,15 @@ const (
 	jobsV2RunSkipped         jobsV2RunStatus = "skipped"
 )
 
+const (
+	exitReasonNatural   = "natural_completion" // agent finished normally
+	exitReasonMaxTurns  = "max_turns_exceeded" // hit the agentic loop turn limit
+	exitReasonTimeout   = "timeout"            // context deadline exceeded
+	exitReasonCancelled = "cancelled"          // context cancelled
+	exitReasonException = "exception"          // unhandled error
+	exitReasonEmpty     = "empty_response"     // succeeded but produced no output
+)
+
 type jobsV2RetryPolicy struct {
 	MaxAttempts  int    `json:"max_attempts,omitempty"`
 	Backoff      string `json:"backoff,omitempty"`
@@ -100,6 +109,11 @@ type jobsV2Run struct {
 	Stderr       string          `json:"stderr,omitempty"`
 	Thinking     string          `json:"thinking,omitempty"`
 	Response     string          `json:"response,omitempty"`
+	ExitReason   string          `json:"exit_reason,omitempty"`
+	Truncated    bool            `json:"truncated,omitempty"`
+	TurnCount    int             `json:"turn_count,omitempty"`
+	InputTokens  int             `json:"input_tokens,omitempty"`
+	OutputTokens int             `json:"output_tokens,omitempty"`
 	CreatedAt    time.Time       `json:"created_at"`
 	UpdatedAt    time.Time       `json:"updated_at"`
 }
@@ -114,11 +128,16 @@ type jobsV2RunEvent struct {
 }
 
 type jobsV2RunResult struct {
-	ExitCode int
-	Stdout   string
-	Stderr   string
-	Thinking string
-	Response string
+	ExitCode     int
+	Stdout       string
+	Stderr       string
+	Thinking     string
+	Response     string
+	TurnCount    int    // number of LLM turns taken
+	InputTokens  int    // total input tokens consumed
+	OutputTokens int    // total output tokens generated
+	ExitReason   string // see exit reason constants
+	Truncated    bool   // true when exit_reason is "max_turns_exceeded"
 }
 
 type jobsV2Runner interface {
@@ -213,9 +232,34 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job) (jobsV2RunResu
 			res.Thinking += ev.Text
 		case llm.EventTextDelta:
 			res.Response += ev.Text
+		case llm.EventUsage:
+			if ev.Use != nil {
+				res.InputTokens += ev.Use.InputTokens
+				res.OutputTokens += ev.Use.OutputTokens
+				res.TurnCount++
+			}
 		}
 	})
 	return res, err
+}
+
+func classifyRunError(err error, result jobsV2RunResult) (exitReason string, truncated bool) {
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return exitReasonTimeout, false
+		}
+		if errors.Is(err, context.Canceled) {
+			return exitReasonCancelled, false
+		}
+		if strings.Contains(err.Error(), "max turns") {
+			return exitReasonMaxTurns, true
+		}
+		return exitReasonException, false
+	}
+	if strings.TrimSpace(result.Response) == "" {
+		return exitReasonEmpty, false
+	}
+	return exitReasonNatural, false
 }
 
 type jobsV2Manager struct {
@@ -274,6 +318,11 @@ CREATE TABLE IF NOT EXISTS job_runs_v2 (
 	stderr TEXT,
 	thinking TEXT,
 	response TEXT,
+	exit_reason TEXT,
+	truncated INTEGER NOT NULL DEFAULT 0,
+	turn_count INTEGER NOT NULL DEFAULT 0,
+	input_tokens INTEGER NOT NULL DEFAULT 0,
+	output_tokens INTEGER NOT NULL DEFAULT 0,
 	created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -327,6 +376,17 @@ func newJobsV2Manager(dbPath string, workers int, llmExec serveJobsExecutor) (*j
 	if err := execJobsV2Schema(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("init jobs schema: %w", err)
+	}
+
+	migrations := []string{
+		`ALTER TABLE job_runs_v2 ADD COLUMN exit_reason TEXT`,
+		`ALTER TABLE job_runs_v2 ADD COLUMN truncated INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE job_runs_v2 ADD COLUMN turn_count INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE job_runs_v2 ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE job_runs_v2 ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0`,
+	}
+	for _, migration := range migrations {
+		_, _ = db.Exec(migration)
 	}
 
 	mgr := &jobsV2Manager{
@@ -579,7 +639,7 @@ func (m *jobsV2Manager) claimNextRun() (jobsV2Run, bool, error) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	row := tx.QueryRow(`SELECT id, job_id, attempt, trigger, scheduled_for, status, worker_id, started_at, finished_at, exit_code, error, stdout, stderr, thinking, response, created_at, updated_at FROM job_runs_v2 WHERE status = ? ORDER BY scheduled_for ASC LIMIT 1`, jobsV2RunQueued)
+	row := tx.QueryRow(`SELECT id, job_id, attempt, trigger, scheduled_for, status, worker_id, started_at, finished_at, exit_code, error, stdout, stderr, thinking, response, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at FROM job_runs_v2 WHERE status = ? ORDER BY scheduled_for ASC LIMIT 1`, jobsV2RunQueued)
 	run, err := scanRunV2(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -642,7 +702,7 @@ func (m *jobsV2Manager) executeRun(run jobsV2Run) {
 
 	result, runErr := runner.Run(ctx, job)
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		_ = m.finishRun(run.ID, jobsV2RunTimedOut, result, fmt.Errorf("timed out"), run.Attempt)
+		_ = m.finishRun(run.ID, jobsV2RunTimedOut, result, context.DeadlineExceeded, run.Attempt)
 		return
 	}
 	if errors.Is(ctx.Err(), context.Canceled) {
@@ -658,19 +718,28 @@ func (m *jobsV2Manager) executeRun(run jobsV2Run) {
 
 func (m *jobsV2Manager) finishRun(runID string, status jobsV2RunStatus, result jobsV2RunResult, runErr error, attempt int) error {
 	now := time.Now().UTC()
+	exitReason, truncated := classifyRunError(runErr, result)
 	var errText string
 	if runErr != nil {
 		errText = runErr.Error()
 	}
-	_, err := m.db.Exec(`UPDATE job_runs_v2 SET status = ?, finished_at = ?, exit_code = ?, error = ?, stdout = ?, stderr = ?, thinking = ?, response = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, status, now, result.ExitCode, errText, result.Stdout, result.Stderr, result.Thinking, result.Response, runID)
+	_, err := m.db.Exec(`UPDATE job_runs_v2 SET status = ?, finished_at = ?, exit_code = ?, error = ?, stdout = ?, stderr = ?, thinking = ?, response = ?, exit_reason = ?, truncated = ?, turn_count = ?, input_tokens = ?, output_tokens = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		status, now, result.ExitCode, errText, result.Stdout, result.Stderr, result.Thinking, result.Response,
+		exitReason, boolToInt(truncated), result.TurnCount, result.InputTokens, result.OutputTokens,
+		runID)
 	if err != nil {
 		return err
 	}
 	_ = m.addRunEvent(runID, string(status), "run finished", map[string]any{
-		"status":    status,
-		"attempt":   attempt,
-		"exit_code": result.ExitCode,
-		"error":     errText,
+		"status":        status,
+		"attempt":       attempt,
+		"exit_code":     result.ExitCode,
+		"error":         errText,
+		"exit_reason":   exitReason,
+		"truncated":     truncated,
+		"turn_count":    result.TurnCount,
+		"input_tokens":  result.InputTokens,
+		"output_tokens": result.OutputTokens,
 	})
 
 	if status == jobsV2RunFailed || status == jobsV2RunTimedOut {
@@ -1024,7 +1093,7 @@ func (m *jobsV2Manager) TriggerJob(id string) (jobsV2Run, error) {
 }
 
 func (m *jobsV2Manager) GetRun(id string) (jobsV2Run, error) {
-	row := m.db.QueryRow(`SELECT id, job_id, attempt, trigger, scheduled_for, status, worker_id, started_at, finished_at, exit_code, error, stdout, stderr, thinking, response, created_at, updated_at FROM job_runs_v2 WHERE id = ?`, id)
+	row := m.db.QueryRow(`SELECT id, job_id, attempt, trigger, scheduled_for, status, worker_id, started_at, finished_at, exit_code, error, stdout, stderr, thinking, response, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at FROM job_runs_v2 WHERE id = ?`, id)
 	return scanRunV2(row)
 }
 
@@ -1049,7 +1118,7 @@ func (m *jobsV2Manager) ListRuns(jobID string, limit, offset int) ([]jobsV2Run, 
 	if err := m.db.QueryRow(countQuery, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	query := "SELECT id, job_id, attempt, trigger, scheduled_for, status, worker_id, started_at, finished_at, exit_code, error, stdout, stderr, thinking, response, created_at, updated_at FROM job_runs_v2" + where + " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+	query := "SELECT id, job_id, attempt, trigger, scheduled_for, status, worker_id, started_at, finished_at, exit_code, error, stdout, stderr, thinking, response, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at FROM job_runs_v2" + where + " ORDER BY created_at DESC LIMIT ? OFFSET ?"
 	args = append(args, limit, offset)
 	rows, err := m.db.Query(query, args...)
 	if err != nil {
@@ -1162,6 +1231,11 @@ func scanRunV2(scanner interface{ Scan(dest ...any) error }) (jobsV2Run, error) 
 	var stderr sql.NullString
 	var thinking sql.NullString
 	var response sql.NullString
+	var exitReason sql.NullString
+	var truncatedInt sql.NullInt64
+	var turnCount sql.NullInt64
+	var inputTokens sql.NullInt64
+	var outputTokens sql.NullInt64
 	err := scanner.Scan(
 		&run.ID,
 		&run.JobID,
@@ -1178,6 +1252,11 @@ func scanRunV2(scanner interface{ Scan(dest ...any) error }) (jobsV2Run, error) 
 		&stderr,
 		&thinking,
 		&response,
+		&exitReason,
+		&truncatedInt,
+		&turnCount,
+		&inputTokens,
+		&outputTokens,
 		&run.CreatedAt,
 		&run.UpdatedAt,
 	)
@@ -1214,6 +1293,21 @@ func scanRunV2(scanner interface{ Scan(dest ...any) error }) (jobsV2Run, error) 
 	}
 	if response.Valid {
 		run.Response = response.String
+	}
+	if exitReason.Valid {
+		run.ExitReason = exitReason.String
+	}
+	if truncatedInt.Valid {
+		run.Truncated = truncatedInt.Int64 != 0
+	}
+	if turnCount.Valid {
+		run.TurnCount = int(turnCount.Int64)
+	}
+	if inputTokens.Valid {
+		run.InputTokens = int(inputTokens.Int64)
+	}
+	if outputTokens.Valid {
+		run.OutputTokens = int(outputTokens.Int64)
 	}
 	return run, nil
 }
