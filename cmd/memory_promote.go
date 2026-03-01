@@ -18,9 +18,18 @@ import (
 )
 
 const (
-	defaultRecentMaxBytes          = 200000
+	defaultRecentMaxBytes          = 20000
 	defaultInitialPromoteLookback  = 7 * 24 * time.Hour
-	memoryPromoteSystemInstruction = "You are a memory curator. Given recently changed memory fragments and the current recent.md, produce an updated recent.md that incorporates the new/changed information. Be concise. Preserve existing entries that are still relevant. Output ONLY the raw markdown content for recent.md — no commentary, no code fences."
+	memoryPromoteSystemInstruction = `You are a memory curator. Given recently changed memory fragments and the current recent.md, produce an updated recent.md.
+
+Rules:
+- Target **3000 words maximum** — treat this as a hard limit, not a guideline.
+- Compress aggressively: merge related facts, drop low-value or stale details, prefer dense summaries over verbose prose.
+- Prioritise: active projects, recent events, infrastructure facts, preferences, API/config details that would be painful to re-derive.
+- Drop: transient observations, resolved issues, one-off tasks, anything already obvious from context.
+- Incorporate new/changed fragments; if they conflict with existing content, prefer the newer version.
+- Preserve structure (dates, headers) but trim ruthlessly within each section.
+- Output ONLY the raw markdown — no commentary, no code fences.`
 )
 
 var (
