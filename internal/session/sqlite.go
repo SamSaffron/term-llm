@@ -1092,6 +1092,9 @@ func (s *SQLiteStore) GetMessages(ctx context.Context, sessionID string, limit, 
 	if limit > 0 {
 		query += " LIMIT ?"
 		args = append(args, limit)
+	} else if offset > 0 {
+		// SQLite requires LIMIT before OFFSET; use -1 to mean "all rows".
+		query += " LIMIT -1"
 	}
 	if offset > 0 {
 		query += " OFFSET ?"
