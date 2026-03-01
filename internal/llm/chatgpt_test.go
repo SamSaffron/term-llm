@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -122,6 +123,65 @@ func TestBuildChatGPTInput_AssistantReasoningReplayEmptySummary(t *testing.T) {
 	}
 
 	t.Fatal("expected reasoning item")
+}
+
+func TestBuildChatGPTInput_SkipsUnresolvedToolCalls(t *testing.T) {
+	messages := []Message{
+		{
+			Role: RoleAssistant,
+			Parts: []Part{
+				{Type: PartText, Text: "Queued."},
+				{
+					Type: PartToolCall,
+					ToolCall: &ToolCall{
+						ID:        "fc_missing",
+						Name:      "wait_for_agent",
+						Arguments: json.RawMessage(`{"id":"job-1"}`),
+					},
+				},
+				{
+					Type: PartToolCall,
+					ToolCall: &ToolCall{
+						ID:        "fc_resolved",
+						Name:      "queue_agent",
+						Arguments: json.RawMessage(`{"task":"spec"}`),
+					},
+				},
+			},
+		},
+		ToolResultMessage("fc_resolved", "queue_agent", "ok", nil),
+	}
+
+	_, input := buildChatGPTInput(messages)
+
+	var functionCalls []map[string]interface{}
+	var outputs []map[string]interface{}
+	for _, itemAny := range input {
+		item, ok := itemAny.(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected map item, got %T", itemAny)
+		}
+		switch item["type"] {
+		case "function_call":
+			functionCalls = append(functionCalls, item)
+		case "function_call_output":
+			outputs = append(outputs, item)
+		}
+	}
+
+	if len(functionCalls) != 1 {
+		t.Fatalf("expected exactly one function_call, got %d", len(functionCalls))
+	}
+	if functionCalls[0]["call_id"] != "fc_resolved" {
+		t.Fatalf("expected resolved call_id fc_resolved, got %#v", functionCalls[0]["call_id"])
+	}
+
+	if len(outputs) != 1 {
+		t.Fatalf("expected exactly one function_call_output, got %d", len(outputs))
+	}
+	if outputs[0]["call_id"] != "fc_resolved" {
+		t.Fatalf("expected output call_id fc_resolved, got %#v", outputs[0]["call_id"])
+	}
 }
 
 func TestChatGPTStream_ReasoningSummaryByOutputIndex(t *testing.T) {

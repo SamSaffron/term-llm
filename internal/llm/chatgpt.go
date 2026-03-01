@@ -394,6 +394,26 @@ func buildChatGPTInput(messages []Message) (string, []interface{}) {
 	var systemParts []string
 	var input []interface{}
 
+	// The Responses API requires every function_call in input history to have a
+	// matching function_call_output. Interrupted turns can persist assistant
+	// tool-call parts without their tool result yet, so filter those calls out.
+	resolvedToolCallIDs := make(map[string]struct{})
+	for _, msg := range messages {
+		if msg.Role != RoleTool {
+			continue
+		}
+		for _, part := range msg.Parts {
+			if part.Type != PartToolResult || part.ToolResult == nil {
+				continue
+			}
+			callID := strings.TrimSpace(part.ToolResult.ID)
+			if callID == "" {
+				continue
+			}
+			resolvedToolCallIDs[callID] = struct{}{}
+		}
+	}
+
 	for _, msg := range messages {
 		switch msg.Role {
 		case RoleSystem:
@@ -472,6 +492,13 @@ func buildChatGPTInput(messages []Message) (string, []interface{}) {
 					if part.ToolCall == nil {
 						continue
 					}
+					callID := strings.TrimSpace(part.ToolCall.ID)
+					if callID == "" {
+						continue
+					}
+					if _, ok := resolvedToolCallIDs[callID]; !ok {
+						continue
+					}
 					flushAssistantText()
 					args := strings.TrimSpace(string(part.ToolCall.Arguments))
 					if args == "" {
@@ -479,8 +506,8 @@ func buildChatGPTInput(messages []Message) (string, []interface{}) {
 					}
 					input = append(input, map[string]interface{}{
 						"type":      "function_call",
-						"id":        part.ToolCall.ID,
-						"call_id":   part.ToolCall.ID,
+						"id":        callID,
+						"call_id":   callID,
 						"name":      part.ToolCall.Name,
 						"arguments": args,
 					})
