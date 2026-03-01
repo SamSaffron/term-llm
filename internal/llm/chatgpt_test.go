@@ -124,6 +124,48 @@ func TestBuildChatGPTInput_AssistantReasoningReplayEmptySummary(t *testing.T) {
 	t.Fatal("expected reasoning item")
 }
 
+func TestBuildChatGPTInput_DropsDanglingToolCalls(t *testing.T) {
+	messages := []Message{
+		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "Run a tool"}}},
+		{Role: RoleAssistant, Parts: []Part{
+			{Type: PartText, Text: "Working on it"},
+			{Type: PartToolCall, ToolCall: &ToolCall{
+				ID:        "fc_1",
+				Name:      "wait_for_agent",
+				Arguments: []byte(`{"job_id":"123"}`),
+			}},
+		}},
+		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "what is the status?"}}},
+	}
+
+	_, input := buildChatGPTInput(messages)
+	if len(input) != 3 {
+		t.Fatalf("expected 3 input items, got %d", len(input))
+	}
+
+	assistant, ok := input[1].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected assistant input item as map, got %T", input[1])
+	}
+	if assistant["type"] != "message" || assistant["role"] != "assistant" {
+		t.Fatalf("expected second item assistant message, got %#v", assistant)
+	}
+	content, ok := assistant["content"].([]map[string]string)
+	if !ok || len(content) != 1 || content[0]["type"] != "output_text" || content[0]["text"] != "Working on it" {
+		t.Fatalf("expected assistant text preserved in output_text content, got %#v", assistant["content"])
+	}
+
+	for _, itemAny := range input {
+		item, ok := itemAny.(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected map item, got %T", itemAny)
+		}
+		if item["type"] == "function_call" || item["type"] == "function_call_output" {
+			t.Fatalf("expected dangling tool call/result to be removed, got %#v", item)
+		}
+	}
+}
+
 func TestChatGPTStream_ReasoningSummaryByOutputIndex(t *testing.T) {
 	origClient := chatGPTHTTPClient
 	defer func() {

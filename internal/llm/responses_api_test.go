@@ -153,6 +153,40 @@ func TestBuildResponsesInput_ToolCalls(t *testing.T) {
 	}
 }
 
+func TestBuildResponsesInput_DropsDanglingToolCalls(t *testing.T) {
+	messages := []Message{
+		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "Run a tool"}}},
+		{Role: RoleAssistant, Parts: []Part{
+			{Type: PartText, Text: "Working on it"},
+			{Type: PartToolCall, ToolCall: &ToolCall{
+				ID:        "call_1",
+				Name:      "shell",
+				Arguments: json.RawMessage(`{"command":"sleep 10"}`),
+			}},
+		}},
+		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "status?"}}},
+	}
+
+	input := BuildResponsesInput(messages)
+	if len(input) != 3 {
+		t.Fatalf("expected 3 input items, got %d", len(input))
+	}
+
+	assistant := input[1]
+	if assistant.Type != "message" || assistant.Role != "assistant" {
+		t.Fatalf("expected second item assistant message, got %#v", assistant)
+	}
+	if assistant.Content != "Working on it" {
+		t.Fatalf("expected assistant text to be preserved, got %#v", assistant.Content)
+	}
+
+	for _, item := range input {
+		if item.Type == "function_call" || item.Type == "function_call_output" {
+			t.Fatalf("expected dangling tool call/result to be removed, got %#v", item)
+		}
+	}
+}
+
 func TestBuildResponsesInput_ToolResultStructuredImageParts(t *testing.T) {
 	messages := []Message{
 		{Role: RoleAssistant, Parts: []Part{{Type: PartToolCall, ToolCall: &ToolCall{

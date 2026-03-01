@@ -391,6 +391,10 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 // buildChatGPTInput converts Messages to the ChatGPT Responses API input format.
 // Returns the system instructions string and the input array.
 func buildChatGPTInput(messages []Message) (string, []interface{}) {
+	// ChatGPT Responses API requires every function_call to have a matching
+	// function_call_output in replayed history.
+	messages = sanitizeToolHistory(messages)
+
 	var systemParts []string
 	var input []interface{}
 

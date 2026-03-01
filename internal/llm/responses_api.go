@@ -147,6 +147,11 @@ type responsesSSEEvent struct {
 
 // BuildResponsesInput converts []Message to Open Responses input format
 func BuildResponsesInput(messages []Message) []ResponsesInputItem {
+	// Responses-style APIs reject assistant function calls that do not have
+	// a matching function_call_output. This can happen when a tool call is
+	// interrupted (for example, user interjects before a long-running tool returns).
+	messages = sanitizeToolHistory(messages)
+
 	var inputItems []ResponsesInputItem
 
 	for _, msg := range messages {
