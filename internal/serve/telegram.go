@@ -363,10 +363,19 @@ type telegramSession struct {
 	meta                  *session.Session
 	lastActivity          time.Time
 
-	cancelMu     sync.Mutex         // protects streamCancel and replyDone
-	streamCancel context.CancelFunc // cancels the active stream's context
-	replyDone    chan struct{}      // closed when streamReply exits
+	cancelMu      sync.Mutex         // protects streamCancel, replyDone, currentTask, toolsRanNames
+	streamCancel  context.CancelFunc // cancels the active stream's context
+	replyDone     chan struct{}      // closed when streamReply exits
+	currentTask   string             // plain text from the user message that started the current stream
+	toolsRanNames []string           // tool names executed so far in the current stream
 }
+
+type interruptDecision int
+
+const (
+	interruptDecisionQueue interruptDecision = iota // let current task finish, then process new message
+	interruptDecisionAbort                          // cancel current task and switch to the new message
+)
 
 // telegramSessionMgr manages per-chat sessions.
 type telegramSessionMgr struct {
@@ -751,7 +760,7 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 		}
 	}
 
-	// If a stream is active, wait for it to finish or interrupt it.
+	// If a stream is active, decide whether to queue or abort.
 	sess.cancelMu.Lock()
 	doneCh := sess.replyDone
 	cancelFn := sess.streamCancel
@@ -761,14 +770,43 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 		select {
 		case <-doneCh:
 			// Stream finished naturally within the grace period.
-		case <-time.After(m.interruptTimeout):
-			cancelFn()
-			select {
-			case <-doneCh:
-			case <-time.After(5 * time.Second):
-				log.Printf("[telegram] stream for chat %d did not stop within hard timeout", chatID)
-				_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Still processing, please try again."))
-				return
+		case <-time.After(500 * time.Millisecond):
+			sess.cancelMu.Lock()
+			originalTask := strings.TrimSpace(sess.currentTask)
+			toolsRan := append([]string(nil), sess.toolsRanNames...)
+			sess.cancelMu.Unlock()
+
+			newMsgText := strings.TrimSpace(extractPlainTextFromMsg(msg))
+			if newMsgText == "" {
+				newMsgText = strings.TrimSpace(collectUserText(userMsg))
+			}
+
+			decision := m.assessInterrupt(ctx, bot, chatID, originalTask, toolsRan, newMsgText)
+			switch decision {
+			case interruptDecisionAbort:
+				_, _ = bot.Send(tgbotapi.NewMessage(chatID, "↩️ Stopping — switching to your new request."))
+				cancelFn()
+
+				stopWait := 5 * time.Second
+				if m.interruptTimeout > stopWait {
+					stopWait = m.interruptTimeout
+				}
+				select {
+				case <-doneCh:
+				case <-time.After(stopWait):
+					log.Printf("[telegram] stream for chat %d did not stop within hard timeout", chatID)
+					_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Still processing, please try again."))
+					return
+				case <-ctx.Done():
+					return
+				}
+			default:
+				_, _ = bot.Send(tgbotapi.NewMessage(chatID, "📬 Got it — finishing current task first."))
+				select {
+				case <-doneCh:
+				case <-ctx.Done():
+					return
+				}
 			}
 		case <-ctx.Done():
 			return
@@ -777,6 +815,11 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 
 	// Send "typing…" indicator.
 	_, _ = bot.Send(tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping))
+
+	sess.cancelMu.Lock()
+	sess.currentTask = collectUserText(userMsg)
+	sess.toolsRanNames = nil
+	sess.cancelMu.Unlock()
 
 	if err := m.streamReply(ctx, bot, sess, chatID, userMsg); err != nil {
 		log.Printf("[telegram] error streaming reply for chat %d: %v", chatID, err)
@@ -790,6 +833,98 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 		}
 		recordTelegramUpload(m.cfg, m.settings.Agent, sessionID, uploadMediaType, uploadCaption, tempImagePath)
 	}
+}
+
+// assessInterrupt runs a fast single-turn LLM call to decide whether to queue
+// or abort an active stream when a new message arrives.
+//
+// It always defaults to interruptDecisionQueue on timeout or error.
+func (m *telegramSessionMgr) assessInterrupt(
+	ctx context.Context,
+	_ botSender,
+	chatID int64,
+	originalTask string,
+	toolsRan []string,
+	newMessage string,
+) interruptDecision {
+	originalTask = strings.TrimSpace(originalTask)
+	newMessage = strings.TrimSpace(newMessage)
+	if originalTask == "" || newMessage == "" {
+		return interruptDecisionQueue
+	}
+	if m.cfg == nil {
+		log.Printf("[telegram] assessor: missing config for chat %d", chatID)
+		return interruptDecisionQueue
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	assessCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+
+	toolsStr := strings.Join(toolsRan, ", ")
+	if strings.TrimSpace(toolsStr) == "" {
+		toolsStr = "none"
+	}
+
+	prompt := fmt.Sprintf(`You are deciding whether to interrupt an AI agent mid-task.
+
+Current task: %s
+Tools already executed: %s
+New user message: %s
+
+Reply with exactly one word:
+- QUEUE: the new message can wait; finish the current task first (e.g. follow-up, clarification, unrelated request)
+- ABORT: the new message supersedes or contradicts the current task; stop and restart (e.g. "actually do X instead", "stop", "never mind", "forget it")
+
+Reply:`, originalTask, toolsStr, newMessage)
+
+	provider, err := llm.NewProvider(m.cfg)
+	if err != nil {
+		log.Printf("[telegram] assessor: failed to create provider for chat %d: %v", chatID, err)
+		return interruptDecisionQueue
+	}
+	engine := llm.NewEngine(provider, nil)
+
+	req := llm.Request{
+		Messages: []llm.Message{llm.UserText(prompt)},
+		MaxTurns: 1,
+	}
+	stream, err := engine.Stream(assessCtx, req)
+	if err != nil {
+		log.Printf("[telegram] assessor: stream error for chat %d: %v", chatID, err)
+		return interruptDecisionQueue
+	}
+	defer stream.Close()
+
+	var responseBuf strings.Builder
+	for {
+		ev, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			if assessCtx.Err() != nil {
+				log.Printf("[telegram] assessor: timed out for chat %d", chatID)
+			} else {
+				log.Printf("[telegram] assessor: recv error for chat %d: %v", chatID, recvErr)
+			}
+			return interruptDecisionQueue
+		}
+		if ev.Type == llm.EventTextDelta {
+			responseBuf.WriteString(ev.Text)
+			if responseBuf.Len() > 20 {
+				break // enough to parse
+			}
+		}
+	}
+
+	response := strings.ToUpper(strings.TrimSpace(responseBuf.String()))
+	if strings.HasPrefix(response, "ABORT") {
+		return interruptDecisionAbort
+	}
+	return interruptDecisionQueue
 }
 
 // streamReply streams an LLM response back to the chat via live message editing.
@@ -815,6 +950,8 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		sess.cancelMu.Lock()
 		sess.streamCancel = nil
 		sess.replyDone = nil
+		sess.currentTask = ""
+		sess.toolsRanNames = nil
 		sess.cancelMu.Unlock()
 		close(replyDone)
 	}()
@@ -1043,6 +1180,10 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 				toolsRan = true
 				toolStarts++
 				textMu.Unlock()
+
+				sess.cancelMu.Lock()
+				sess.toolsRanNames = append(sess.toolsRanNames, ev.ToolName)
+				sess.cancelMu.Unlock()
 			case llm.EventToolExecEnd:
 				textMu.Lock()
 				delete(activeTools, ev.ToolCallID)
@@ -1097,14 +1238,47 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	currentMsgID := placeholder.MessageID
-	msgStart := 0       // byte offset in the full text where the current Telegram message begins
-	needNewMsg := false // true when overflow happened but next placeholder not yet created
+	var (
+		currentMsgMu    sync.Mutex
+		currentMsgID    = placeholder.MessageID
+		msgStart        = 0     // byte offset in the full text where the current Telegram message begins
+		needNewMsg      = false // true when overflow happened but next placeholder not yet created
+		lastSentContent string
+		lastEditTime    time.Time
+		sendEditMu      sync.Mutex
 
-	var lastSentContent string
-	var lastEditTime time.Time
+		lastEditMu  sync.Mutex
+		lastEditAt  = time.Now()
+		streamStart = time.Now()
+		spinChars   = []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+		spinIdx     int
+	)
+
+	getCurrentMsgID := func() int {
+		currentMsgMu.Lock()
+		defer currentMsgMu.Unlock()
+		return currentMsgID
+	}
+	setCurrentMsgID := func(id int) {
+		currentMsgMu.Lock()
+		currentMsgID = id
+		currentMsgMu.Unlock()
+	}
+	getMsgStart := func() int {
+		currentMsgMu.Lock()
+		defer currentMsgMu.Unlock()
+		return msgStart
+	}
+	setMsgStart := func(start int) {
+		currentMsgMu.Lock()
+		msgStart = start
+		currentMsgMu.Unlock()
+	}
 
 	sendEdit := func(msgID int, content string, force bool) {
+		sendEditMu.Lock()
+		defer sendEditMu.Unlock()
+
 		if !force && content == lastSentContent {
 			return
 		}
@@ -1119,9 +1293,61 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 			}
 			return
 		}
+		now := time.Now()
 		lastSentContent = content
-		lastEditTime = time.Now()
+		lastEditTime = now
+		lastEditMu.Lock()
+		lastEditAt = now
+		lastEditMu.Unlock()
 	}
+
+	tickerStop := make(chan struct{})
+	tickerExited := make(chan struct{})
+	var stopHeartbeatOnce sync.Once
+	stopHeartbeat := func() {
+		stopHeartbeatOnce.Do(func() {
+			close(tickerStop)
+			<-tickerExited
+		})
+	}
+	defer stopHeartbeat()
+
+	go func() {
+		defer close(tickerExited)
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-tickerStop:
+				return
+			case <-t.C:
+				lastEditMu.Lock()
+				gap := time.Since(lastEditAt)
+				lastEditMu.Unlock()
+				if gap < 13*time.Second {
+					continue
+				}
+
+				start := getMsgStart()
+				textMu.Lock()
+				prose := textBuf.String()
+				if start < len(prose) {
+					prose = prose[start:]
+				} else {
+					prose = ""
+				}
+				tool := activeToolDisplay(activeTools)
+				phase := activePhase
+				textMu.Unlock()
+
+				elapsed := int(time.Since(streamStart).Seconds())
+				spin := string(spinChars[spinIdx%len(spinChars)])
+				spinIdx++
+				heartbeat := buildHeartbeatSegment(prose, tool, phase, spin, elapsed)
+				sendEdit(getCurrentMsgID(), heartbeat, false)
+			}
+		}
+	}()
 
 	var streamErr error
 loop:
@@ -1135,7 +1361,11 @@ loop:
 			full, toolDisplay, phase := textBuf.String(), activeToolDisplay(activeTools), activePhase
 			textMu.Unlock()
 
-			prose := full[msgStart:]
+			start := getMsgStart()
+			prose := ""
+			if start < len(full) {
+				prose = full[start:]
+			}
 			if prose == "" && toolDisplay == "" && phase == "" {
 				continue
 			}
@@ -1149,19 +1379,19 @@ loop:
 				if splitAt > len(prose) {
 					splitAt = len(prose)
 				}
-				sendEdit(currentMsgID, prose[:splitAt], false)
-				msgStart += splitAt
+				sendEdit(getCurrentMsgID(), prose[:splitAt], false)
+				setMsgStart(start + splitAt)
 				needNewMsg = true
 			} else {
 				if needNewMsg {
 					// Lazily create the next placeholder now that we have content for it.
 					newMsg, sendErr := bot.Send(tgbotapi.NewMessage(chatID, "⏳"))
 					if sendErr == nil {
-						currentMsgID = newMsg.MessageID
+						setCurrentMsgID(newMsg.MessageID)
 					}
 					needNewMsg = false
 				}
-				sendEdit(currentMsgID, rendered, false)
+				sendEdit(getCurrentMsgID(), rendered, false)
 			}
 		case <-streamCtx.Done():
 			// Distinguish server shutdown (parent ctx cancelled) from user interrupt.
@@ -1187,7 +1417,11 @@ loop:
 			textMu.Unlock()
 
 			// Edit the Telegram message to show partial text + interrupted marker.
-			display := partial[msgStart:]
+			start := getMsgStart()
+			display := ""
+			if start < len(partial) {
+				display = partial[start:]
+			}
 			if display == "" {
 				display = "(interrupted)"
 			} else {
@@ -1196,10 +1430,10 @@ loop:
 			if needNewMsg {
 				newMsg, sendErr := bot.Send(tgbotapi.NewMessage(chatID, "⏳"))
 				if sendErr == nil {
-					currentMsgID = newMsg.MessageID
+					setCurrentMsgID(newMsg.MessageID)
 				}
 			}
-			sendEdit(currentMsgID, display, true)
+			sendEdit(getCurrentMsgID(), display, true)
 
 			// Preserve partial history so conversation context isn't lost.
 			newHistory := make([]llm.Message, 0, len(sess.history)+2+len(produced))
@@ -1223,6 +1457,8 @@ loop:
 			return nil
 		}
 	}
+
+	stopHeartbeat()
 
 	if streamErr != nil {
 		if strings.Contains(streamErr.Error(), "stream timed out") {
@@ -1257,7 +1493,11 @@ loop:
 	imagesToSend := append([]string(nil), collectedImages...)
 	textMu.Unlock()
 
-	prose := full[msgStart:]
+	start := getMsgStart()
+	prose := ""
+	if start < len(full) {
+		prose = full[start:]
+	}
 	switch {
 	case prose != "":
 		// There is new content to show in the current window.
@@ -1265,16 +1505,16 @@ loop:
 		if needNewMsg {
 			newMsg, sendErr := bot.Send(tgbotapi.NewMessage(chatID, "⏳"))
 			if sendErr == nil {
-				currentMsgID = newMsg.MessageID
+				setCurrentMsgID(newMsg.MessageID)
 			}
 		}
-		sendEdit(currentMsgID, prose, true)
+		sendEdit(getCurrentMsgID(), prose, true)
 	case full == "":
 		// Nothing was produced at all — show a fallback in the original placeholder.
 		if ran {
-			sendEdit(currentMsgID, "(done)", true)
+			sendEdit(getCurrentMsgID(), "(done)", true)
 		} else {
-			sendEdit(currentMsgID, "(no response)", true)
+			sendEdit(getCurrentMsgID(), "(no response)", true)
 		}
 		if m.settings.Debug || m.settings.DebugRaw {
 			log.Printf("[telegram] empty assistant text for chat %d (toolsRan=%v, text_delta=%d, reasoning_delta=%d, tool_start=%d, tool_end=%d, tool_call=%d, phase=%d, usage=%d, done=%d, retry=%d, error=%d, other=%d, other_types=%v)",
@@ -1351,6 +1591,20 @@ func containsSystemMsg(msgs []llm.Message) bool {
 		}
 	}
 	return false
+}
+
+// extractPlainTextFromMsg returns the text content of a Telegram message.
+func extractPlainTextFromMsg(msg *tgbotapi.Message) string {
+	if msg == nil {
+		return ""
+	}
+	if msg.Text != "" {
+		return msg.Text
+	}
+	if msg.Caption != "" {
+		return msg.Caption
+	}
+	return ""
 }
 
 // collectUserText extracts the text content from a user message for persistence.
@@ -1475,5 +1729,34 @@ func buildSegment(prose, tool, phase string, withCursor bool) string {
 	if withCursor {
 		sb.WriteString("▌")
 	}
+	return sb.String()
+}
+
+// buildHeartbeatSegment is like buildSegment but adds a spinner and elapsed timer.
+// Used by the progress heartbeat goroutine to keep the user informed during long tool calls.
+func buildHeartbeatSegment(prose, tool, phase, spin string, elapsedSec int) string {
+	var sb strings.Builder
+	sb.WriteString(prose)
+
+	statusLine := ""
+	if tool != "" {
+		statusLine = "🔧 " + tool + "…"
+	} else if phase != "" {
+		statusLine = phase
+	}
+	if statusLine != "" {
+		if prose != "" {
+			sb.WriteString("\n\n")
+		}
+		sb.WriteString(statusLine)
+	}
+
+	timeStr := fmt.Sprintf("%02d:%02d", elapsedSec/60, elapsedSec%60)
+	if prose != "" || statusLine != "" {
+		sb.WriteString("\n\n")
+	}
+	sb.WriteString(spin)
+	sb.WriteString(" ")
+	sb.WriteString(timeStr)
 	return sb.String()
 }
