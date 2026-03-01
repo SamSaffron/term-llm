@@ -19,6 +19,29 @@ import (
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
+func TestSingleServeTemplatePlatform(t *testing.T) {
+	tests := []struct {
+		name      string
+		platforms []string
+		want      string
+	}{
+		{name: "web only", platforms: []string{"web"}, want: "web"},
+		{name: "telegram only", platforms: []string{"telegram"}, want: "telegram"},
+		{name: "jobs only", platforms: []string{"jobs"}, want: "jobs"},
+		{name: "web and telegram", platforms: []string{"web", "telegram"}, want: ""},
+		{name: "web and jobs", platforms: []string{"web", "jobs"}, want: ""},
+		{name: "unknown ignored", platforms: []string{"web", "foo"}, want: "web"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := singleServeTemplatePlatform(tt.platforms); got != tt.want {
+				t.Fatalf("singleServeTemplatePlatform(%v) = %q, want %q", tt.platforms, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseResponsesInput_String(t *testing.T) {
 	msgs, replaceHistory, err := parseResponsesInput(json.RawMessage(`"hello"`))
 	if err != nil {

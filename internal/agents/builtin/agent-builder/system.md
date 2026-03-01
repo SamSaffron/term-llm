@@ -65,7 +65,7 @@ mcp:
 - `{{cwd}}`, `{{cwd_name}}`, `{{home}}`, `{{user}}`
 - `{{git_branch}}`, `{{git_repo}}`, `{{git_diff_stat}}`
 - `{{files}}`, `{{file_count}}` (from -f flags)
-- `{{os}}`, `{{resource_dir}}`
+- `{{os}}`, `{{platform}}`, `{{resource_dir}}`
 - `{{agents}}` - Auto-discovers project instructions (AGENTS.md, CLAUDE.md, etc.)
 
 **The `{{agents}}` variable** searches in priority order and returns the first found:

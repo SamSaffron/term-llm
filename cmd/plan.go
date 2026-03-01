@@ -300,8 +300,9 @@ func runChatFromPlan(cfg *config.Config, planContent string, agentName string, m
 
 	// Resolve settings using agent configuration
 	cliFlags := CLIFlags{
-		Tools:  "all",
-		Search: searchEnabled,
+		Tools:    "all",
+		Search:   searchEnabled,
+		Platform: "chat",
 	}
 	settings, err := ResolveSettings(cfg, agent, cliFlags, cfg.Chat.Provider, cfg.Chat.Model, cfg.Chat.Instructions, cfg.Chat.MaxTurns, 200)
 	if err != nil {

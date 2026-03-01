@@ -1791,6 +1791,7 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 			SystemMessage: serveSystemMessage,
 			MaxTurns:      serveMaxTurns,
 			Search:        serveSearch,
+			Platform:      "jobs",
 		}, jobCfg.Ask.Provider, jobCfg.Ask.Model, jobCfg.Ask.Instructions, jobCfg.Ask.MaxTurns, 20)
 		if err != nil {
 			return err

@@ -37,6 +37,9 @@ type TemplateContext struct {
 	// System
 	OS string // Operating system
 
+	// Runtime surface (chat, console, web, telegram, jobs)
+	Platform string
+
 	// Agent context
 	ResourceDir string // Directory containing agent resources (for builtin agents)
 
@@ -129,6 +132,12 @@ func (c TemplateContext) WithResourceDir(resourceDir string) TemplateContext {
 	return c
 }
 
+// WithPlatform sets the runtime surface for {{platform}} token expansion.
+func (c TemplateContext) WithPlatform(platform string) TemplateContext {
+	c.Platform = strings.TrimSpace(platform)
+	return c
+}
+
 // ExpandTemplate replaces {{variable}} placeholders with values from context.
 func ExpandTemplate(text string, ctx TemplateContext) string {
 	// Match {{variable}} patterns
@@ -167,6 +176,12 @@ func ExpandTemplate(text string, ctx TemplateContext) string {
 			return ctx.FileCount
 		case "os":
 			return ctx.OS
+		case "platform":
+			if ctx.Platform == "" {
+				// Leave token untouched when platform context is unavailable.
+				return match
+			}
+			return ctx.Platform
 		case "resource_dir":
 			return ctx.ResourceDir
 		case "agents":

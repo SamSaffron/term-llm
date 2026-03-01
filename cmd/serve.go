@@ -211,6 +211,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		MaxTurns:      serveMaxTurns,
 		MaxTurnsSet:   cmd.Flags().Changed("max-turns"),
 		Search:        serveSearch,
+		Platform:      singleServeTemplatePlatform(platformNames),
 	}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 20)
 	if err != nil {
 		return err
@@ -447,6 +448,26 @@ func platformContains(platforms []string, name string) bool {
 		}
 	}
 	return false
+}
+
+// singleServeTemplatePlatform returns a stable platform token for serve prompts.
+// If multiple runtime surfaces are selected (for example web+telegram), returns
+// empty so {{platform}} stays unexpanded and is not misleading.
+func singleServeTemplatePlatform(platforms []string) string {
+	unique := make(map[string]struct{})
+	for _, p := range platforms {
+		switch p {
+		case "web", "telegram", "jobs":
+			unique[p] = struct{}{}
+		}
+	}
+	if len(unique) != 1 {
+		return ""
+	}
+	for p := range unique {
+		return p
+	}
+	return ""
 }
 
 func authSummary(required bool) string {

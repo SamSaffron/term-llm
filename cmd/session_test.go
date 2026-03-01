@@ -105,6 +105,28 @@ func TestResolveSettings_MissingIncludeIsLeftUnchanged(t *testing.T) {
 	}
 }
 
+func TestResolveSettings_ExpandsPlatformTokenWhenProvided(t *testing.T) {
+	cfg := &config.Config{}
+	settings, err := ResolveSettings(cfg, nil, CLIFlags{Platform: "chat"}, "", "", "surface={{platform}}", 0, 20)
+	if err != nil {
+		t.Fatalf("ResolveSettings() error = %v", err)
+	}
+	if settings.SystemPrompt != "surface=chat" {
+		t.Fatalf("SystemPrompt = %q, want %q", settings.SystemPrompt, "surface=chat")
+	}
+}
+
+func TestResolveSettings_LeavesPlatformTokenWhenPlatformUnavailable(t *testing.T) {
+	cfg := &config.Config{}
+	settings, err := ResolveSettings(cfg, nil, CLIFlags{}, "", "", "surface={{platform}}", 0, 20)
+	if err != nil {
+		t.Fatalf("ResolveSettings() error = %v", err)
+	}
+	if settings.SystemPrompt != "surface={{platform}}" {
+		t.Fatalf("SystemPrompt = %q, want %q", settings.SystemPrompt, "surface={{platform}}")
+	}
+}
+
 func TestResolveSettings_AgentToolsAppliedWhenCLIToolsUnset(t *testing.T) {
 	cfg := &config.Config{}
 	agent := &agents.Agent{
