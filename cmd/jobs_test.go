@@ -242,6 +242,207 @@ func TestRunJobsActive_TableOutput(t *testing.T) {
 	}
 }
 
+func TestRelativeTime(t *testing.T) {
+	now := time.Now()
+	cases := []struct {
+		input time.Time
+		check func(string) bool
+		desc  string
+	}{
+		{now.Add(-30 * time.Second), func(s string) bool { return s == "just now" }, "30s ago → just now"},
+		{now.Add(-5 * time.Minute), func(s string) bool { return s == "5m ago" }, "5m ago"},
+		{now.Add(-2 * time.Hour), func(s string) bool { return s == "2h ago" }, "2h ago"},
+		{now.Add(-3 * 24 * time.Hour), func(s string) bool { return s == "3d ago" }, "3d ago"},
+		{now.Add(-10 * 24 * time.Hour), func(s string) bool { return strings.Contains(s, " ") && !strings.Contains(s, "ago") }, ">7d → date"},
+	}
+	for _, c := range cases {
+		got := relativeTime(c.input)
+		if !c.check(got) {
+			t.Errorf("%s: got %q", c.desc, got)
+		}
+	}
+}
+
+func TestShortRunStatus(t *testing.T) {
+	cases := []struct {
+		status jobsV2RunStatus
+		want   string
+	}{
+		{jobsV2RunSucceeded, "ok"},
+		{jobsV2RunFailed, "FAIL"},
+		{jobsV2RunCancelled, "cancelled"},
+		{jobsV2RunTimedOut, "timeout"},
+		{jobsV2RunSkipped, "skipped"},
+		{jobsV2RunRunning, "running"},
+	}
+	for _, c := range cases {
+		got := shortRunStatus(c.status)
+		if got != c.want {
+			t.Errorf("shortRunStatus(%q) = %q, want %q", c.status, got, c.want)
+		}
+	}
+}
+
+// jobsListTestServer creates an httptest server serving the given jobs and runs JSON payloads.
+func jobsListTestServer(t *testing.T, jobsPayload, runsPayload string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v2/jobs":
+			_, _ = w.Write([]byte(jobsPayload))
+		case "/v2/runs":
+			_, _ = w.Write([]byte(runsPayload))
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+}
+
+func runJobsListHelper(t *testing.T, srv *httptest.Server, all bool) string {
+	t.Helper()
+	oldServerURL := jobsServerURL
+	oldToken := jobsToken
+	oldTimeout := jobsTimeout
+	oldJSON := jobsJSON
+	oldAll := jobsListAll
+	jobsServerURL = srv.URL
+	jobsToken = ""
+	jobsTimeout = 2 * time.Second
+	jobsJSON = false
+	jobsListAll = all
+	t.Cleanup(func() {
+		jobsServerURL = oldServerURL
+		jobsToken = oldToken
+		jobsTimeout = oldTimeout
+		jobsJSON = oldJSON
+		jobsListAll = oldAll
+	})
+
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+
+	var runErr error
+	output := captureStdout(t, func() {
+		runErr = runJobsList(cmd, nil)
+	})
+	if runErr != nil {
+		t.Fatalf("runJobsList failed: %v", runErr)
+	}
+	return output
+}
+
+// TestRunJobsList_FiltersEphemeralJobs verifies that fired once-off and finished agent jobs
+// are hidden by default and visible with --all.
+func TestRunJobsList_FiltersEphemeralJobs(t *testing.T) {
+	// Jobs:
+	//   job_cron        – cron job, enabled → always visible
+	//   job_once_recent – once job fired 2h ago (within grace) → still visible by default
+	//   job_once_old    – once job fired 8h ago (past grace) → hidden by default
+	//   job_agent       – manual+llm with completed run → hidden by default
+	//   job_manual      – manual+program with completed run → always visible
+	recentUpdatedAt := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+	oldUpdatedAt := time.Now().Add(-8 * time.Hour).UTC().Format(time.RFC3339)
+	jobsPayload := `{"data":[
+		{"id":"job_cron",        "name":"my-cron",     "enabled":true,  "trigger_type":"cron",   "runner_type":"program", "updated_at":"2026-02-28T10:00:00Z"},
+		{"id":"job_once_recent", "name":"fresh-once",  "enabled":false, "trigger_type":"once",   "runner_type":"program", "updated_at":"` + recentUpdatedAt + `"},
+		{"id":"job_once_old",    "name":"stale-once",  "enabled":false, "trigger_type":"once",   "runner_type":"program", "updated_at":"` + oldUpdatedAt + `"},
+		{"id":"job_agent",       "name":"sub-agent",   "enabled":true,  "trigger_type":"manual", "runner_type":"llm",     "updated_at":"2026-02-28T10:00:00Z"},
+		{"id":"job_manual",      "name":"run-me",      "enabled":true,  "trigger_type":"manual", "runner_type":"program", "updated_at":"2026-02-28T10:00:00Z"}
+	]}`
+	runsPayload := `{"data":[
+		{"id":"run_1","job_id":"job_cron",        "status":"succeeded","scheduled_for":"2026-02-28T10:00:00Z","finished_at":"2026-02-28T10:01:00Z"},
+		{"id":"run_2","job_id":"job_once_recent", "status":"succeeded","scheduled_for":"2026-02-28T08:00:00Z","finished_at":"2026-02-28T08:01:00Z"},
+		{"id":"run_3","job_id":"job_once_old",    "status":"succeeded","scheduled_for":"2026-02-27T08:00:00Z","finished_at":"2026-02-27T08:01:00Z"},
+		{"id":"run_4","job_id":"job_agent",       "status":"succeeded","scheduled_for":"2026-02-27T09:00:00Z","finished_at":"2026-02-27T09:30:00Z"},
+		{"id":"run_5","job_id":"job_manual",      "status":"succeeded","scheduled_for":"2026-02-27T11:00:00Z","finished_at":"2026-02-27T11:01:00Z"}
+	]}`
+
+	srv := jobsListTestServer(t, jobsPayload, runsPayload)
+	defer srv.Close()
+
+	// Default view
+	out := runJobsListHelper(t, srv, false)
+	if !strings.Contains(out, "fresh-once") {
+		t.Errorf("default list should show once-off job fired within 6h; got:\n%s", out)
+	}
+	if strings.Contains(out, "stale-once") {
+		t.Errorf("default list should hide once-off job fired >6h ago; got:\n%s", out)
+	}
+	if strings.Contains(out, "sub-agent") {
+		t.Errorf("default list should hide finished agent job; got:\n%s", out)
+	}
+	if !strings.Contains(out, "my-cron") {
+		t.Errorf("default list should show cron job; got:\n%s", out)
+	}
+	if !strings.Contains(out, "run-me") {
+		t.Errorf("default list should show manual+program job; got:\n%s", out)
+	}
+	if !strings.Contains(out, "hidden") {
+		t.Errorf("expected hidden-count footer in output; got:\n%s", out)
+	}
+
+	// --all: everything visible
+	outAll := runJobsListHelper(t, srv, true)
+	if !strings.Contains(outAll, "stale-once") {
+		t.Errorf("--all should show old once-off job; got:\n%s", outAll)
+	}
+	if !strings.Contains(outAll, "sub-agent") {
+		t.Errorf("--all should show agent job; got:\n%s", outAll)
+	}
+}
+
+// TestRunJobsList_NewTableFormat verifies the table uses the new column layout.
+func TestRunJobsList_NewTableFormat(t *testing.T) {
+	jobsPayload := `{"data":[
+		{"id":"job_cron","name":"heartbeat","enabled":true,"trigger_type":"cron","runner_type":"program",
+		 "next_run_at":"2026-03-02T04:00:00Z"}
+	]}`
+	finishedAt := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+	runsPayload := `{"data":[
+		{"id":"run_1","job_id":"job_cron","status":"succeeded","scheduled_for":"2026-03-01T02:00:00Z","finished_at":"` + finishedAt + `"}
+	]}`
+
+	srv := jobsListTestServer(t, jobsPayload, runsPayload)
+	defer srv.Close()
+
+	out := runJobsListHelper(t, srv, false)
+
+	if !strings.Contains(out, "NAME") || !strings.Contains(out, "TRIGGER") ||
+		!strings.Contains(out, "STATUS") || !strings.Contains(out, "LAST_RUN") || !strings.Contains(out, "NEXT_RUN") {
+		t.Errorf("expected new column headers; got:\n%s", out)
+	}
+	if !strings.Contains(out, "heartbeat") {
+		t.Errorf("expected job name in output; got:\n%s", out)
+	}
+	if !strings.Contains(out, "ok") {
+		t.Errorf("expected 'ok' status in LAST_RUN column; got:\n%s", out)
+	}
+	if !strings.Contains(out, "ago") {
+		t.Errorf("expected relative time in LAST_RUN column; got:\n%s", out)
+	}
+}
+
+// TestRunJobsList_ActiveRunStatus verifies that a job with an active run shows its run status.
+func TestRunJobsList_ActiveRunStatus(t *testing.T) {
+	jobsPayload := `{"data":[
+		{"id":"job_1","name":"digester","enabled":true,"trigger_type":"cron","runner_type":"program"}
+	]}`
+	startedAt := time.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339)
+	runsPayload := `{"data":[
+		{"id":"run_1","job_id":"job_1","status":"running","scheduled_for":"2026-03-01T10:00:00Z","started_at":"` + startedAt + `"}
+	]}`
+
+	srv := jobsListTestServer(t, jobsPayload, runsPayload)
+	defer srv.Close()
+
+	out := runJobsListHelper(t, srv, false)
+	if !strings.Contains(out, "running") {
+		t.Errorf("expected STATUS=running for active job; got:\n%s", out)
+	}
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	oldStdout := os.Stdout
