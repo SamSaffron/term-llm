@@ -486,6 +486,60 @@
       align-self: flex-end;
     }
 
+    .interrupt-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.32rem;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 0.08rem 0.42rem;
+      font-size: 0.69rem;
+      line-height: 1.2;
+      color: var(--text-muted);
+      background: color-mix(in srgb, var(--surface-2) 72%, transparent);
+      white-space: nowrap;
+    }
+
+    .interrupt-badge .interrupt-spinner {
+      width: 0.62rem;
+      height: 0.62rem;
+      border-radius: 999px;
+      border: 1.5px solid color-mix(in srgb, var(--accent) 25%, var(--border) 75%);
+      border-top-color: var(--accent);
+      animation: spin 0.75s linear infinite;
+      flex-shrink: 0;
+    }
+
+    .interrupt-badge.pending {
+      color: var(--accent);
+      border-color: color-mix(in srgb, var(--accent) 45%, var(--border) 55%);
+      background: color-mix(in srgb, var(--accent) 11%, var(--surface-2) 89%);
+    }
+
+    .interrupt-badge.interject {
+      color: var(--accent-green);
+      border-color: color-mix(in srgb, var(--accent-green) 48%, var(--border) 52%);
+      background: color-mix(in srgb, var(--accent-green) 14%, var(--surface-2) 86%);
+    }
+
+    .interrupt-badge.cancel {
+      color: var(--danger);
+      border-color: color-mix(in srgb, var(--danger) 45%, var(--border) 55%);
+      background: color-mix(in srgb, var(--danger) 11%, var(--surface-2) 89%);
+    }
+
+    .interrupt-badge.queue {
+      color: var(--accent-amber);
+      border-color: color-mix(in srgb, var(--accent-amber) 45%, var(--border) 55%);
+      background: color-mix(in srgb, var(--accent-amber) 12%, var(--surface-2) 88%);
+    }
+
+    .interrupt-badge.error {
+      color: var(--danger);
+      border-color: color-mix(in srgb, var(--danger) 45%, var(--border) 55%);
+      background: color-mix(in srgb, var(--danger) 9%, var(--surface-2) 91%);
+    }
+
     .message.assistant .message-meta,
     .message.tool .message-meta,
     .message.error .message-meta {
@@ -1167,7 +1221,8 @@
         models: [],
         selectedModel: localStorage.getItem(STORAGE_KEYS.selectedModel) || '',
         streaming: false,
-        queuedInterrupt: '',
+        queuedInterrupts: [],
+        expectCanceledRun: false,
         abortController: null,
         autoScroll: true,
         authRequired: false,
@@ -1231,6 +1286,19 @@
         });
       };
       const generateId = (prefix) => `${prefix}_${generateUUID()}`;
+
+      const INTERRUPT_BADGE_META = {
+        evaluating: { className: 'pending', label: 'evaluating…' },
+        interject: { className: 'interject', icon: '✓', label: 'injected' },
+        cancel: { className: 'cancel', icon: '⏹', label: 'cancelled + queued' },
+        queue: { className: 'queue', icon: '⏳', label: 'queued' },
+        error: { className: 'error', icon: '⚠', label: 'failed' }
+      };
+
+      const sanitizeInterruptState = (value) => {
+        const v = String(value || '').toLowerCase();
+        return Object.prototype.hasOwnProperty.call(INTERRUPT_BADGE_META, v) ? v : '';
+      };
 
       const syncTokenCookie = (token) => {
         if (token) {
@@ -1350,11 +1418,17 @@
           if (role === 'assistant' && msg.usage && typeof msg.usage === 'object') {
             base.usage = msg.usage;
           }
-          if (role === 'user' && Array.isArray(msg.attachments) && msg.attachments.length > 0) {
-            base.attachments = msg.attachments.map(a => ({
-              name: String(a.name || 'file'),
-              type: String(a.type || '')
-            }));
+          if (role === 'user') {
+            const interruptState = sanitizeInterruptState(msg.interruptState);
+            if (interruptState) {
+              base.interruptState = interruptState;
+            }
+            if (Array.isArray(msg.attachments) && msg.attachments.length > 0) {
+              base.attachments = msg.attachments.map(a => ({
+                name: String(a.name || 'file'),
+                type: String(a.type || '')
+              }));
+            }
           }
           return base;
         }
@@ -1585,9 +1659,42 @@
       };
 
       // ===== Message rendering =====
-      const createMetaNode = (created) => {
+      const createInterruptBadgeNode = (interruptState) => {
+        const stateName = sanitizeInterruptState(interruptState);
+        if (!stateName) return null;
+
+        const config = INTERRUPT_BADGE_META[stateName];
+        if (!config) return null;
+
+        const badge = document.createElement('span');
+        badge.className = `interrupt-badge ${config.className}`;
+
+        if (stateName === 'evaluating') {
+          const spinner = document.createElement('span');
+          spinner.className = 'interrupt-spinner';
+          spinner.setAttribute('aria-hidden', 'true');
+          badge.appendChild(spinner);
+
+          const text = document.createElement('span');
+          text.textContent = config.label;
+          badge.appendChild(text);
+        } else {
+          badge.textContent = `${config.icon} ${config.label}`;
+        }
+
+        return badge;
+      };
+
+      const createMetaNode = (created, message = null) => {
         const meta = document.createElement('div');
         meta.className = 'message-meta';
+
+        if (message?.role === 'user') {
+          const badge = createInterruptBadgeNode(message.interruptState);
+          if (badge) {
+            meta.appendChild(badge);
+          }
+        }
 
         const time = document.createElement('span');
         time.setAttribute('data-created', String(created));
@@ -1721,7 +1828,7 @@
           article.appendChild(usage);
         }
 
-        article.appendChild(createMetaNode(message.created));
+        article.appendChild(createMetaNode(message.created, message));
         return article;
       };
 
@@ -1746,6 +1853,16 @@
           usageNode.textContent = formatUsage(message.usage);
         } else if (usageNode) {
           usageNode.remove();
+        }
+      };
+
+      const updateUserNode = (message) => {
+        const replacement = createMessageNode(message);
+        const existing = findMessageElement(message.id);
+        if (existing) {
+          existing.replaceWith(replacement);
+        } else {
+          elements.messages.appendChild(replacement);
         }
       };
 
@@ -2297,18 +2414,37 @@
         }
       };
 
-      const addStatusMessage = (text, session) => {
-        const message = {
-          id: generateId('msg'),
-          role: 'assistant',
-          content: `_Status: ${text}_`,
-          created: Date.now()
-        };
-        session.messages.push(message);
-        elements.messages.appendChild(createMessageNode(message));
+      const queueInterruptFollowUp = (prompt, messageId) => {
+        state.queuedInterrupts.push({ prompt, messageId });
       };
 
-      const interruptActiveRun = async (session, prompt) => {
+      const setInterruptMessageState = (session, messageId, interruptState) => {
+        if (!messageId) return;
+        const normalized = sanitizeInterruptState(interruptState);
+        if (!normalized) return;
+        const message = session.messages.find(m => m.id === messageId && m.role === 'user');
+        if (!message) return;
+        message.interruptState = normalized;
+        updateUserNode(message);
+      };
+
+      const createPendingInterruptMessage = (session, prompt) => {
+        const message = {
+          id: generateId('msg'),
+          role: 'user',
+          content: prompt,
+          created: Date.now(),
+          interruptState: 'evaluating'
+        };
+        session.messages.push(message);
+
+        const emptyState = elements.messages.querySelector('.empty-state');
+        if (emptyState) emptyState.remove();
+        elements.messages.appendChild(createMessageNode(message));
+        return message;
+      };
+
+      const interruptActiveRun = async (session, prompt, messageId) => {
         const response = await fetch(`/v1/sessions/${encodeURIComponent(session.id)}/interrupt`, {
           method: 'POST',
           headers: requestHeaders(session.id),
@@ -2317,19 +2453,25 @@
         if (!response.ok) {
           throw await normalizeError(response);
         }
+
         const payload = await response.json();
-        const action = String(payload.action || 'queue');
-        if (action === 'interject') {
-          addStatusMessage('Interjected into the active run.', session);
-        } else if (action === 'cancel') {
-          state.queuedInterrupt = prompt;
-          addStatusMessage('Stopping current run and queuing your new message.', session);
-        } else {
-          state.queuedInterrupt = prompt;
-          addStatusMessage('Queued your message to run next.', session);
+        const actionRaw = String(payload.action || 'queue').toLowerCase();
+        const action = (actionRaw === 'interject' || actionRaw === 'cancel' || actionRaw === 'queue')
+          ? actionRaw
+          : 'queue';
+
+        setInterruptMessageState(session, messageId, action);
+
+        if (action === 'cancel' || action === 'queue') {
+          queueInterruptFollowUp(prompt, messageId);
         }
+        if (action === 'cancel') {
+          state.expectCanceledRun = true;
+        }
+
         saveSessions();
         scrollToBottom(true);
+        return action;
       };
 
       const addErrorMessage = (text, session) => {
@@ -2357,9 +2499,13 @@
         });
       };
 
-      const sendMessage = async () => {
-        const prompt = elements.promptInput.value.trim();
-        const pendingAttachments = [...state.attachments];
+      const sendMessage = async (options = {}) => {
+        const promptSource = typeof options.prompt === 'string' ? options.prompt : elements.promptInput.value;
+        const prompt = String(promptSource || '').trim();
+        const pendingAttachments = Array.isArray(options.attachments)
+          ? [...options.attachments]
+          : [...state.attachments];
+
         if (!prompt && pendingAttachments.length === 0) return;
 
         if (!state.token) {
@@ -2373,16 +2519,25 @@
             alert('Attachments are not supported while a run is active.');
             return;
           }
+
+          const pendingMessage = createPendingInterruptMessage(session, prompt);
+          persistAndRefreshShell();
+          scrollToBottom(true);
+
+          elements.promptInput.value = '';
+          autoGrowPrompt();
+
           try {
-            await interruptActiveRun(session, prompt);
-            elements.promptInput.value = '';
-            autoGrowPrompt();
+            await interruptActiveRun(session, prompt, pendingMessage.id);
           } catch (err) {
+            setInterruptMessageState(session, pendingMessage.id, 'error');
             const message = err?.message || 'Failed to interrupt active run.';
             addErrorMessage(message, session);
             if (err?.status === 401) {
               handleAuthFailure();
             }
+            elements.promptInput.value = prompt;
+            autoGrowPrompt();
             persistAndRefreshShell();
             scrollToBottom(true);
           }
@@ -2415,21 +2570,34 @@
           }
         };
 
-        // user message
-        const userMessage = {
-          id: generateId('msg'),
-          role: 'user',
-          content: prompt,
-          created: Date.now()
-        };
+        const reuseMessageId = typeof options.reuseMessageId === 'string' ? options.reuseMessageId : '';
+        let userMessage = reuseMessageId
+          ? session.messages.find(m => m.id === reuseMessageId && m.role === 'user') || null
+          : null;
+        const isNewUserMessage = !userMessage;
+
+        if (!userMessage) {
+          userMessage = {
+            id: generateId('msg'),
+            role: 'user',
+            content: prompt,
+            created: Date.now()
+          };
+          session.messages.push(userMessage);
+        } else {
+          userMessage.content = prompt;
+          delete userMessage.interruptState;
+        }
+
         if (pendingAttachments.length > 0) {
           userMessage.attachments = pendingAttachments.map(a => ({
             name: a.name,
             type: a.type,
             dataURL: a.dataURL
           }));
+        } else {
+          delete userMessage.attachments;
         }
-        session.messages.push(userMessage);
 
         if (!session.title || session.title === 'New chat') {
           session.title = truncate(prompt || pendingAttachments[0]?.name || 'Image', 60);
@@ -2438,18 +2606,23 @@
         const hadEmptyState = elements.messages.querySelector('.empty-state');
         if (hadEmptyState) hadEmptyState.remove();
 
-        // Render user message; assistant message is created lazily on first text/image event
-        const userNode = createMessageNode(userMessage);
-        elements.messages.appendChild(userNode);
+        if (isNewUserMessage) {
+          elements.messages.appendChild(createMessageNode(userMessage));
+        } else {
+          updateUserNode(userMessage);
+        }
 
         persistAndRefreshShell();
 
         elements.promptInput.value = '';
-        state.attachments = [];
-        renderAttachments();
+        if (!Array.isArray(options.attachments)) {
+          state.attachments = [];
+          renderAttachments();
+        }
         autoGrowPrompt();
         scrollToBottom(true);
 
+        state.expectCanceledRun = false;
         setStreaming(true);
         const controller = new AbortController();
         state.abortController = controller;
@@ -2635,7 +2808,19 @@
 
             if (event === 'response.failed') {
               const errorMessage = payload?.error?.message || 'The response failed.';
-              addErrorMessage(errorMessage, session);
+              const lowered = errorMessage.toLowerCase();
+              const canceledByInterrupt = state.expectCanceledRun && (
+                lowered.includes('context canceled') ||
+                lowered.includes('context cancelled') ||
+                lowered.includes('cancelled') ||
+                lowered.includes('canceled')
+              );
+
+              if (!canceledByInterrupt) {
+                addErrorMessage(errorMessage, session);
+              }
+              state.expectCanceledRun = false;
+
               closeToolGroup();
               markToolGroupsDone(session);
               const lastAssistant = [...session.messages].reverse().find(m => m.role === 'assistant');
@@ -2677,12 +2862,16 @@
           state.abortController = null;
           setStreaming(false);
           refreshRelativeTimes();
-          if (state.queuedInterrupt) {
-            const queued = state.queuedInterrupt;
-            state.queuedInterrupt = '';
-            elements.promptInput.value = queued;
+
+          if (state.queuedInterrupts.length > 0) {
+            const queued = state.queuedInterrupts.shift();
+            elements.promptInput.value = queued.prompt;
             autoGrowPrompt();
-            await sendMessage();
+            await sendMessage({
+              prompt: queued.prompt,
+              attachments: [],
+              reuseMessageId: queued.messageId
+            });
           }
         }
       };
