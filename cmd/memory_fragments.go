@@ -16,13 +16,14 @@ import (
 )
 
 var (
-	memoryFragmentsSince      time.Duration
-	memoryFragmentsLimit      int
-	memoryFragmentsHalfLife   float64
-	memoryFragmentsSyncDir    string
-	memoryFragmentsShowJSON   bool
-	memoryFragmentsShowNoPath bool
-	memoryFragmentsFilterPath string
+	memoryFragmentsSince       time.Duration
+	memoryFragmentsLimit       int
+	memoryFragmentsHalfLife    float64
+	memoryFragmentsSyncDir     string
+	memoryFragmentsShowJSON    bool
+	memoryFragmentsShowNoPath  bool
+	memoryFragmentsSourcesJSON bool
+	memoryFragmentsFilterPath  string
 )
 
 var memoryFragmentsCmd = &cobra.Command{
@@ -41,6 +42,14 @@ var memoryFragmentsShowCmd = &cobra.Command{
 	Short:             "Show a memory fragment by path",
 	Args:              cobra.ExactArgs(1),
 	RunE:              runMemoryFragmentsShow,
+	ValidArgsFunction: memoryFragmentPathCompletion,
+}
+
+var memoryFragmentsSourcesCmd = &cobra.Command{
+	Use:               "sources <path-or-rowid>",
+	Short:             "Show session turn-range sources for a memory fragment",
+	Args:              cobra.ExactArgs(1),
+	RunE:              runMemoryFragmentsSources,
 	ValidArgsFunction: memoryFragmentPathCompletion,
 }
 
@@ -70,6 +79,7 @@ Files already in the DB with identical content are skipped.`,
 func init() {
 	memoryFragmentsCmd.AddCommand(memoryFragmentsListCmd)
 	memoryFragmentsCmd.AddCommand(memoryFragmentsShowCmd)
+	memoryFragmentsCmd.AddCommand(memoryFragmentsSourcesCmd)
 	memoryFragmentsCmd.AddCommand(memoryFragmentsGCCmd)
 	memoryFragmentsCmd.AddCommand(memoryFragmentsSyncCmd)
 	memoryFragmentsCmd.AddCommand(memoryFragmentsAddCmd)
@@ -83,6 +93,7 @@ func init() {
 	memoryFragmentsSyncCmd.Flags().StringVar(&memoryFragmentsSyncDir, "dir", "", "Root directory containing .md fragment files (required)")
 	memoryFragmentsShowCmd.Flags().BoolVar(&memoryFragmentsShowJSON, "json", false, "Output fragment as JSON with all metadata")
 	memoryFragmentsShowCmd.Flags().BoolVar(&memoryFragmentsShowNoPath, "no-path", false, "Suppress path header, print content only")
+	memoryFragmentsSourcesCmd.Flags().BoolVar(&memoryFragmentsSourcesJSON, "json", false, "Output fragment sources as JSON")
 	memoryFragmentsAddCmd.Flags().StringVar(&memoryFragmentsAddContent, "content", "", "Fragment content (defaults to stdin)")
 	memoryFragmentsAddCmd.Flags().StringVar(&memoryFragmentsAddSource, "source", "manual", "Fragment source")
 	memoryFragmentsUpdateCmd.Flags().StringVar(&memoryFragmentsUpdateContent, "content", "", "Fragment content (defaults to stdin)")
@@ -188,6 +199,89 @@ func runMemoryFragmentsShow(cmd *cobra.Command, args []string) error {
 	}
 
 	return printFragment(frag)
+}
+
+func runMemoryFragmentsSources(cmd *cobra.Command, args []string) error {
+	store, err := openMemoryStore()
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	arg := strings.TrimSpace(args[0])
+	if arg == "" {
+		return fmt.Errorf("path or id cannot be empty")
+	}
+
+	var frag *memorydb.Fragment
+
+	if rowID, err := strconv.ParseInt(arg, 10, 64); err == nil {
+		frag, err = store.GetFragmentByRowID(ctx, rowID)
+		if err != nil {
+			return err
+		}
+		if frag == nil {
+			return fmt.Errorf("fragment not found: rowid %d", rowID)
+		}
+	} else {
+		agent := strings.TrimSpace(memoryAgent)
+		if agent == "" {
+			return fmt.Errorf("--agent is required when looking up by path")
+		}
+		frag, err = store.GetFragment(ctx, agent, arg)
+		if err != nil {
+			return err
+		}
+		if frag == nil {
+			return fmt.Errorf("fragment not found: %s", arg)
+		}
+	}
+
+	sources, err := store.GetFragmentSources(ctx, frag.Agent, frag.Path)
+	if err != nil {
+		return err
+	}
+
+	if memoryFragmentsSourcesJSON {
+		out := struct {
+			Agent   string                    `json:"agent"`
+			Path    string                    `json:"path"`
+			Sources []memorydb.FragmentSource `json:"sources"`
+		}{
+			Agent:   frag.Agent,
+			Path:    frag.Path,
+			Sources: sources,
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(out)
+	}
+
+	if len(sources) == 0 {
+		fmt.Println("No sources recorded for this fragment.")
+		return nil
+	}
+
+	sessionCol := len("SESSION")
+	turnsCol := len("TURNS")
+	for _, source := range sources {
+		if len(source.SessionID) > sessionCol {
+			sessionCol = len(source.SessionID)
+		}
+		turns := fmt.Sprintf("[%d, %d)", source.TurnStart, source.TurnEnd)
+		if len(turns) > turnsCol {
+			turnsCol = len(turns)
+		}
+	}
+
+	fmt.Printf("SOURCES for %s\n", frag.Path)
+	fmt.Printf("%-*s %-*s %s\n", sessionCol, "SESSION", turnsCol, "TURNS", "MINED")
+	for _, source := range sources {
+		turns := fmt.Sprintf("[%d, %d)", source.TurnStart, source.TurnEnd)
+		fmt.Printf("%-*s %-*s %s\n", sessionCol, source.SessionID, turnsCol, turns, source.CreatedAt.Format("2006-01-02 15:04:05"))
+	}
+	return nil
 }
 
 func printFragment(frag *memorydb.Fragment) error {

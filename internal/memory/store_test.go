@@ -59,6 +59,134 @@ func TestStoreFragmentCRUDAndSearch(t *testing.T) {
 	}
 }
 
+func TestFragmentSourcesCRUD(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer store.Close()
+
+	agent := "jarvis"
+	fragPath := "fragments/homelab/setup.md"
+	if err := store.CreateFragment(ctx, &Fragment{
+		Agent:   agent,
+		Path:    fragPath,
+		Content: "homelab setup notes",
+		Source:  DefaultSourceMine,
+	}); err != nil {
+		t.Fatalf("CreateFragment() error = %v", err)
+	}
+
+	if err := store.AddFragmentSource(ctx, agent, fragPath, "sess-1", 0, 14); err != nil {
+		t.Fatalf("AddFragmentSource(sess-1) error = %v", err)
+	}
+	if err := store.AddFragmentSource(ctx, agent, fragPath, "sess-2", 14, 28); err != nil {
+		t.Fatalf("AddFragmentSource(sess-2) error = %v", err)
+	}
+
+	sources, err := store.GetFragmentSources(ctx, agent, fragPath)
+	if err != nil {
+		t.Fatalf("GetFragmentSources() error = %v", err)
+	}
+	if len(sources) != 2 {
+		t.Fatalf("GetFragmentSources() len = %d, want 2", len(sources))
+	}
+	if sources[0].SessionID != "sess-1" || sources[0].TurnStart != 0 || sources[0].TurnEnd != 14 {
+		t.Fatalf("first source = %+v, want sess-1 [0,14)", sources[0])
+	}
+	if sources[1].SessionID != "sess-2" || sources[1].TurnStart != 14 || sources[1].TurnEnd != 28 {
+		t.Fatalf("second source = %+v, want sess-2 [14,28)", sources[1])
+	}
+
+	if err := store.AddFragmentSource(ctx, agent, fragPath, "sess-1", 0, 14); err != nil {
+		t.Fatalf("AddFragmentSource(duplicate) error = %v", err)
+	}
+	sources, err = store.GetFragmentSources(ctx, agent, fragPath)
+	if err != nil {
+		t.Fatalf("GetFragmentSources(after duplicate) error = %v", err)
+	}
+	if len(sources) != 2 {
+		t.Fatalf("GetFragmentSources(after duplicate) len = %d, want 2", len(sources))
+	}
+
+	for _, tc := range []struct {
+		sessionID string
+		wantPath  string
+		wantStart int
+		wantEnd   int
+	}{
+		{sessionID: "sess-1", wantPath: fragPath, wantStart: 0, wantEnd: 14},
+		{sessionID: "sess-2", wantPath: fragPath, wantStart: 14, wantEnd: 28},
+	} {
+		rows, err := store.GetSourcesForSession(ctx, tc.sessionID)
+		if err != nil {
+			t.Fatalf("GetSourcesForSession(%s) error = %v", tc.sessionID, err)
+		}
+		if len(rows) != 1 {
+			t.Fatalf("GetSourcesForSession(%s) len = %d, want 1", tc.sessionID, len(rows))
+		}
+		if rows[0].Path != tc.wantPath || rows[0].TurnStart != tc.wantStart || rows[0].TurnEnd != tc.wantEnd {
+			t.Fatalf("GetSourcesForSession(%s) row = %+v, want path=%s turns=[%d,%d)", tc.sessionID, rows[0], tc.wantPath, tc.wantStart, tc.wantEnd)
+		}
+	}
+
+	deleted, err := store.DeleteFragment(ctx, agent, fragPath)
+	if err != nil {
+		t.Fatalf("DeleteFragment() error = %v", err)
+	}
+	if !deleted {
+		t.Fatal("DeleteFragment() returned deleted=false")
+	}
+
+	sources, err = store.GetFragmentSources(ctx, agent, fragPath)
+	if err != nil {
+		t.Fatalf("GetFragmentSources(after delete) error = %v", err)
+	}
+	if len(sources) != 0 {
+		t.Fatalf("GetFragmentSources(after delete) len = %d, want 0", len(sources))
+	}
+
+	secondPath := "fragments/homelab/network.md"
+	if err := store.CreateFragment(ctx, &Fragment{
+		Agent:   agent,
+		Path:    secondPath,
+		Content: "network notes",
+		Source:  DefaultSourceMine,
+	}); err != nil {
+		t.Fatalf("CreateFragment(second) error = %v", err)
+	}
+	if err := store.AddFragmentSource(ctx, agent, secondPath, "sess-3", 3, 9); err != nil {
+		t.Fatalf("AddFragmentSource(second) error = %v", err)
+	}
+	frags, err := store.ListFragments(ctx, ListOptions{Agent: agent})
+	if err != nil {
+		t.Fatalf("ListFragments(second) error = %v", err)
+	}
+	var secondRowID int64
+	for _, f := range frags {
+		if f.Path == secondPath {
+			secondRowID = f.RowID
+			break
+		}
+	}
+	if secondRowID == 0 {
+		t.Fatalf("failed to locate rowid for %s", secondPath)
+	}
+
+	deleted, err = store.DeleteFragmentByRowID(ctx, secondRowID)
+	if err != nil {
+		t.Fatalf("DeleteFragmentByRowID() error = %v", err)
+	}
+	if !deleted {
+		t.Fatal("DeleteFragmentByRowID() returned deleted=false")
+	}
+	sources, err = store.GetFragmentSources(ctx, agent, secondPath)
+	if err != nil {
+		t.Fatalf("GetFragmentSources(after rowid delete) error = %v", err)
+	}
+	if len(sources) != 0 {
+		t.Fatalf("GetFragmentSources(after rowid delete) len = %d, want 0", len(sources))
+	}
+}
+
 func TestStoreEmbeddingMethods(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
