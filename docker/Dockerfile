@@ -48,8 +48,22 @@ RUN pacman -Syu --noconfirm && \
       openbsd-netcat \
       strace \
       gnupg \
-      nvidia-utils && \
+      nvidia-utils \
+      uv \
+      nspr \
+      nss \
+      at-spi2-core \
+      libxcomposite \
+      libxdamage \
+      libxrandr \
+      libxkbcommon && \
     pacman -Scc --noconfirm
+
+# Playwright (Python) + Chromium headless shell — used by agent scripts for JS-heavy scraping.
+# Arch Linux isn't officially supported by playwright install-deps (apt-only), so we install
+# the required system libs above manually. Chromium goes to /root/.cache/ms-playwright/.
+RUN uv pip install playwright --system && \
+    playwright install chromium
 
 # Unprivileged user for AUR builds (makepkg refuses root)
 RUN useradd -m -G wheel aur && \
