@@ -24,7 +24,8 @@ var (
 	loopSearch         bool
 	loopProvider       string
 	loopMCP            string
-	loopMaxTurns       int
+	loopMaxTurns        int
+	loopMaxOutputTokens int
 	loopNativeSearch   bool
 	loopNoNativeSearch bool
 	// Tool flags
@@ -92,6 +93,7 @@ func init() {
 	AddNativeSearchFlags(loopCmd, &loopNativeSearch, &loopNoNativeSearch)
 	AddMCPFlag(loopCmd, &loopMCP)
 	AddMaxTurnsFlag(loopCmd, &loopMaxTurns, 100) // Higher default for loop
+	AddMaxOutputTokensFlag(loopCmd, &loopMaxOutputTokens)
 	AddToolFlags(loopCmd, &loopTools, &loopReadDirs, &loopWriteDirs, &loopShellAllow)
 	AddSystemMessageFlag(loopCmd, &loopSystemMessage)
 	AddAgentFlag(loopCmd, &loopAgent)
@@ -244,8 +246,9 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		ShellAllow:    loopShellAllow,
 		MCP:           loopMCP,
 		SystemMessage: loopSystemMessage,
-		MaxTurns:      loopMaxTurns,
-		MaxTurnsSet:   cmd.Flags().Changed("max-turns"),
+		MaxTurns:        loopMaxTurns,
+		MaxTurnsSet:     cmd.Flags().Changed("max-turns"),
+		MaxOutputTokens: loopMaxOutputTokens,
 		Search:        loopSearch,
 		Platform:      "console",
 	}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 100)
@@ -384,6 +387,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 			Search:              settings.Search,
 			ForceExternalSearch: forceExternalSearch,
 			MaxTurns:            settings.MaxTurns,
+			MaxOutputTokens:     settings.MaxOutputTokens,
 			Debug:               loopDebug,
 			DebugRaw:            debugRaw,
 		}

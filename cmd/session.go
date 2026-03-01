@@ -51,8 +51,9 @@ type SessionSettings struct {
 	SystemPrompt string
 
 	// Behavior
-	MaxTurns int
-	Search   bool
+	MaxTurns        int
+	MaxOutputTokens int // 0 = use provider default
+	Search          bool
 }
 
 // CLIFlags holds the CLI flag values that can override settings.
@@ -64,9 +65,10 @@ type CLIFlags struct {
 	ShellAllow    []string
 	MCP           string
 	SystemMessage string
-	MaxTurns      int
-	MaxTurnsSet   bool // true if --max-turns was explicitly set
-	Search        bool
+	MaxTurns        int
+	MaxTurnsSet     bool // true if --max-turns was explicitly set
+	MaxOutputTokens int  // 0 = use provider default
+	Search          bool
 	Files         []string // files passed via -f flag, used for agent template expansion (e.g., {{.Files}})
 	Platform      string   // runtime surface for template expansion (e.g., chat, console, web, telegram, jobs)
 }
@@ -250,6 +252,9 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 	} else {
 		s.MaxTurns = defaultMaxTurns
 	}
+
+	// MaxOutputTokens: CLI only (no agent/config fallback — provider defaults are fine)
+	s.MaxOutputTokens = cli.MaxOutputTokens
 
 	// Search: CLI or agent enables it
 	s.Search = cli.Search || (agent != nil && agent.Search)

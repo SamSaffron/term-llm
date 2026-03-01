@@ -63,6 +63,11 @@ func AddMaxTurnsFlag(cmd *cobra.Command, dest *int, defaultValue int) {
 	cmd.Flags().IntVar(dest, "max-turns", defaultValue, "Max agentic turns for tool execution")
 }
 
+// AddMaxOutputTokensFlag adds the --max-output-tokens flag
+func AddMaxOutputTokensFlag(cmd *cobra.Command, dest *int) {
+	cmd.Flags().IntVar(dest, "max-output-tokens", 0, "Maximum output tokens (0 = provider default)")
+}
+
 // AddToolFlags adds tool-related flags (--tools, --read-dir, --write-dir, --shell-allow)
 func AddToolFlags(cmd *cobra.Command, tools *string, readDirs, writeDirs, shellAllow *[]string) {
 	cmd.Flags().StringVar(tools, "tools", "", "Enable local tools (comma-separated, or 'all'): read_file,write_file,edit_file,shell,grep,glob,view_image,show_image,image_generate,ask_user,spawn_agent")

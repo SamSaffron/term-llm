@@ -37,7 +37,8 @@ var (
 	askProvider       string
 	askFiles          []string
 	askMCP            string
-	askMaxTurns       int
+	askMaxTurns        int
+	askMaxOutputTokens int
 	askNativeSearch   bool
 	askNoNativeSearch bool
 	// Tool flags
@@ -97,6 +98,7 @@ func init() {
 	AddNativeSearchFlags(askCmd, &askNativeSearch, &askNoNativeSearch)
 	AddMCPFlag(askCmd, &askMCP)
 	AddMaxTurnsFlag(askCmd, &askMaxTurns, 20)
+	AddMaxOutputTokensFlag(askCmd, &askMaxOutputTokens)
 	AddToolFlags(askCmd, &askTools, &askReadDirs, &askWriteDirs, &askShellAllow)
 	AddSystemMessageFlag(askCmd, &askSystemMessage)
 	AddFileFlag(askCmd, &askFiles, "File(s) to include as context (supports globs, line ranges like file.go:10-20, 'clipboard')")
@@ -194,8 +196,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		ShellAllow:    askShellAllow,
 		MCP:           askMCP,
 		SystemMessage: askSystemMessage,
-		MaxTurns:      askMaxTurns,
-		MaxTurnsSet:   cmd.Flags().Changed("max-turns"),
+		MaxTurns:        askMaxTurns,
+		MaxTurnsSet:     cmd.Flags().Changed("max-turns"),
+		MaxOutputTokens: askMaxOutputTokens,
 		Search:        askSearch,
 		Files:         askFiles,
 		Platform:      "console",
@@ -410,6 +413,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		ForceExternalSearch: resolveForceExternalSearch(cfg, askNativeSearch, askNoNativeSearch),
 		ParallelToolCalls:   true,
 		MaxTurns:            settings.MaxTurns,
+		MaxOutputTokens:     settings.MaxOutputTokens,
 		Debug:               debugMode,
 		DebugRaw:            debugRaw,
 	}
