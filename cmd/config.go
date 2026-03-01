@@ -436,7 +436,7 @@ func printProvidersSection(defaults map[string]any, rawKeys map[string]bool, raw
 
 // printProviderConfig prints a single provider's config
 func printProviderConfig(name string, defaults map[string]any, rawKeys map[string]bool, rawValues map[string]string, hasFile bool, cfg *config.Config) {
-	providerKeys := []string{"type", "model", "api_key", "credentials", "base_url", "url", "app_url", "app_title", "use_native_search", "models"}
+	providerKeys := []string{"type", "model", "fast_model", "fast_provider", "api_key", "credentials", "base_url", "url", "app_url", "app_title", "use_native_search", "models"}
 
 	// Check if provider has any values
 	hasValues := false
@@ -1247,6 +1247,8 @@ func configKeyCompletions(toComplete string) []string {
 	providerNames := llm.GetProviderNames(cfg)
 	for _, name := range providerNames {
 		keySet["providers."+name+".model"] = true
+		keySet["providers."+name+".fast_model"] = true
+		keySet["providers."+name+".fast_provider"] = true
 		keySet["providers."+name+".credentials"] = true
 		keySet["providers."+name+".api_key"] = true
 	}
@@ -1343,6 +1345,39 @@ func configValueCompletions(key, toComplete string) []string {
 			}
 			return completions
 		}
+	}
+
+	// Check for provider fast model keys
+	if strings.HasPrefix(key, "providers.") && strings.HasSuffix(key, ".fast_model") {
+		parts := strings.Split(key, ".")
+		if len(parts) == 3 {
+			provider := parts[1]
+			models := llm.ProviderModels[provider]
+			if models == nil {
+				// Try inferring type
+				providerType := string(config.InferProviderType(provider, ""))
+				models = llm.ProviderModels[providerType]
+			}
+			var completions []string
+			for _, m := range models {
+				if strings.HasPrefix(m, toComplete) {
+					completions = append(completions, m)
+				}
+			}
+			return completions
+		}
+	}
+
+	// Check for provider fast provider keys
+	if strings.HasPrefix(key, "providers.") && strings.HasSuffix(key, ".fast_provider") {
+		names := llm.GetProviderNames(cfg)
+		var completions []string
+		for _, name := range names {
+			if strings.HasPrefix(name, toComplete) {
+				completions = append(completions, name)
+			}
+		}
+		return completions
 	}
 
 	// Check for provider credentials keys

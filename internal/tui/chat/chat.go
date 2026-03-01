@@ -80,6 +80,7 @@ type Model struct {
 
 	// LLM context
 	provider     llm.Provider
+	fastProvider llm.Provider
 	engine       *llm.Engine
 	config       *config.Config
 	providerName string
@@ -97,6 +98,7 @@ type Model struct {
 	toolsStr            string   // Original tools setting (for session persistence)
 	mcpStr              string   // Original MCP setting (for session persistence)
 	pendingInterjection string   // Queued interjection text waiting to be injected
+	queuedInterjection  string   // Deferred follow-up to send after the current stream completes
 
 	// MCP (Model Context Protocol)
 	mcpManager *mcp.Manager
@@ -259,8 +261,15 @@ type AskUserRequestMsg struct {
 	DoneCh    chan<- []tools.AskUserAnswer
 }
 
-// New creates a new chat model
+// New creates a new chat model.
+// fast-provider aware callers should use NewWithFastProvider.
 func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, providerKey string, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, autoSendExitOnDone bool, textMode bool, agentName string, yolo bool) *Model {
+	return NewWithFastProvider(cfg, provider, nil, engine, providerKey, modelName, mcpManager, maxTurns, forceExternalSearch, searchEnabled, localTools, toolsStr, mcpStr, showStats, initialText, store, sess, altScreen, autoSendQueue, autoSendExitOnDone, textMode, agentName, yolo)
+}
+
+// NewWithFastProvider creates a new chat model with an optional fast provider
+// for control-plane classification tasks.
+func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider llm.Provider, engine *llm.Engine, providerKey string, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, autoSendExitOnDone bool, textMode bool, agentName string, yolo bool) *Model {
 	// Get terminal size
 	width := 80
 	height := 24
@@ -384,6 +393,7 @@ func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, provider
 		sess:                    sess,
 		messages:                messages,
 		provider:                provider,
+		fastProvider:            fastProvider,
 		engine:                  engine,
 		config:                  cfg,
 		providerName:            provider.Name(),
@@ -1041,6 +1051,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			// Auto-save session
 			cmds = append(cmds, m.saveSessionCmd())
+
+			// Send any queued follow-up immediately after the current stream completes.
+			if m.queuedInterjection != "" && m.autoSendQueue == nil {
+				next := m.queuedInterjection
+				m.queuedInterjection = ""
+				m.pendingInterjection = ""
+				m.setTextareaValue(next)
+				return m.sendMessage(next)
+			}
 
 			// In auto-send mode, check if there are more messages to send
 			if m.autoSendQueue != nil {

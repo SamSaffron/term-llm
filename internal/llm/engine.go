@@ -1203,6 +1203,29 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, event
 
 	// Add call ID to context for spawn_agent event bubbling
 	toolCtx := ContextWithCallID(ctx, call.ID)
+
+	heartbeatDone := make(chan struct{})
+	if events != nil {
+		go func() {
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					select {
+					case events <- Event{Type: EventHeartbeat, ToolCallID: call.ID, ToolName: call.Name}:
+					default:
+					}
+				case <-heartbeatDone:
+					return
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+	defer close(heartbeatDone)
+
 	output, err := tool.Execute(toolCtx, call.Arguments)
 	info := e.getToolPreview(call)
 

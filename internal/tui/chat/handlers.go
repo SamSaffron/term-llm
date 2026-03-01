@@ -455,11 +455,36 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if content == "" {
 				return m, nil
 			}
-			// Queue interjection in the engine — it will be injected after the
-			// current turn's tool results, before the next LLM turn begins.
-			m.engine.Interject(content)
-			m.pendingInterjection = content // Track for UI display
-			m.setTextareaValue("")
+
+			activity := llm.InterruptActivity{
+				CurrentTask: m.phase,
+				ProseLen:    m.currentResponse.Len(),
+			}
+			if m.tracker != nil && m.tracker.HasPending() {
+				activity.ActiveTool = "tool"
+			}
+
+			action := llm.ClassifyInterrupt(context.Background(), m.fastProvider, content, activity)
+			switch action {
+			case llm.InterruptCancel:
+				m.pendingInterjection = ""
+				m.queuedInterjection = ""
+				// Keep typed content so user can resend or edit after cancellation.
+				if m.streamCancelFunc != nil {
+					m.streamCancelFunc()
+				}
+			case llm.InterruptInterject:
+				// Queue interjection in the engine — it will be injected after the
+				// current turn's tool results, before the next LLM turn begins.
+				m.engine.Interject(content)
+				m.pendingInterjection = content
+				m.setTextareaValue("")
+			default:
+				// Defer as a queued follow-up to run immediately after current stream ends.
+				m.queuedInterjection = content
+				m.pendingInterjection = content
+				m.setTextareaValue("")
+			}
 			return m, nil
 		}
 		// Allow textarea to receive input

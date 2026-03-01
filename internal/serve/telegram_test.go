@@ -116,6 +116,64 @@ func TestBuildSegment(t *testing.T) {
 	}
 }
 
+func TestBuildHeartbeatSegment(t *testing.T) {
+	cases := []struct {
+		name   string
+		prose  string
+		tool   string
+		phase  string
+		spin   string
+		age    time.Duration
+		expect string
+	}{
+		{
+			name:   "tool with prose",
+			prose:  "Working",
+			tool:   "shell",
+			spin:   "⠋",
+			age:    75 * time.Second,
+			expect: "Working\n\n🔧 shell...\n\n⠋ 1m 15s",
+		},
+		{
+			name:   "phase only",
+			phase:  "Searching…",
+			spin:   "⠙",
+			age:    9 * time.Second,
+			expect: "Searching…\n\n⠙ 9s",
+		},
+		{
+			name:   "thinking fallback",
+			spin:   "⠹",
+			age:    0,
+			expect: "⏳ Thinking\n\n⠹ 0s",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := buildHeartbeatSegment(tc.prose, tc.tool, tc.phase, tc.spin, tc.age)
+			if got != tc.expect {
+				t.Fatalf("buildHeartbeatSegment(...) = %q; want %q", got, tc.expect)
+			}
+		})
+	}
+}
+
+func TestFormatElapsed(t *testing.T) {
+	cases := []struct {
+		age  time.Duration
+		want string
+	}{
+		{15 * time.Second, "15s"},
+		{90 * time.Second, "1m 30s"},
+		{(62 * time.Minute) + 4*time.Second, "1h 2m"},
+	}
+	for _, tc := range cases {
+		if got := formatElapsed(tc.age); got != tc.want {
+			t.Fatalf("formatElapsed(%v) = %q; want %q", tc.age, got, tc.want)
+		}
+	}
+}
+
 // --- TestActiveToolDisplay ---
 
 func TestActiveToolDisplay(t *testing.T) {
@@ -1143,6 +1201,20 @@ func TestCollectUserText(t *testing.T) {
 	got2 := collectUserText(msg2)
 	if got2 != "hello world" {
 		t.Fatalf("collectUserText = %q, want %q", got2, "hello world")
+	}
+}
+
+func TestExtractPlainTextFromMsg(t *testing.T) {
+	if got := extractPlainTextFromMsg(nil); got != "" {
+		t.Fatalf("extractPlainTextFromMsg(nil) = %q, want empty", got)
+	}
+	msg := &tgbotapi.Message{Text: "hello"}
+	if got := extractPlainTextFromMsg(msg); got != "hello" {
+		t.Fatalf("extractPlainTextFromMsg(text) = %q, want hello", got)
+	}
+	msg = &tgbotapi.Message{Caption: "caption"}
+	if got := extractPlainTextFromMsg(msg); got != "caption" {
+		t.Fatalf("extractPlainTextFromMsg(caption) = %q, want caption", got)
 	}
 }
 

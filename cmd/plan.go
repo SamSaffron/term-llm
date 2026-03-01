@@ -294,6 +294,10 @@ func runChatFromPlan(cfg *config.Config, planContent string, agentName string, m
 	if err != nil {
 		return err
 	}
+	fastProvider, fastErr := llm.NewFastProvider(cfg, cfg.DefaultProvider)
+	if fastErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: fast provider setup failed: %v\n", fastErr)
+	}
 
 	// Use the full chat tool registry (includes search, read_url, etc.)
 	engine := newEngine(provider, cfg)
@@ -334,7 +338,7 @@ func runChatFromPlan(cfg *config.Config, planContent string, agentName string, m
 	defer storeCleanup()
 
 	// Create chat model
-	model := chat.New(cfg, provider, engine, cfg.DefaultProvider, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, settings.Tools, "", false, "", store, nil, useAltScreen, autoSendQueue, false, false, agentName, false)
+	model := chat.NewWithFastProvider(cfg, provider, fastProvider, engine, cfg.DefaultProvider, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, settings.Tools, "", false, "", store, nil, useAltScreen, autoSendQueue, false, false, agentName, false)
 
 	// Build program options
 	var opts []tea.ProgramOption

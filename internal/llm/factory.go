@@ -149,6 +149,39 @@ func NewProviderByName(cfg *config.Config, name string, model string) (Provider,
 	return WrapWithRetry(provider, DefaultRetryConfig()), nil
 }
 
+// NewFastProvider creates a lightweight provider instance for the specified provider key.
+// Resolution order:
+// 1. providers.<name>.fast_provider + fast_model
+// 2. providers.<name>.fast_model on the same provider key
+// 3. built-in ProviderFastModels fallback for inferred provider type
+// Returns nil, nil if no fast model can be resolved.
+func NewFastProvider(cfg *config.Config, name string) (Provider, error) {
+	if cfg == nil {
+		return nil, nil
+	}
+
+	targetName := name
+	targetModel := ""
+
+	if pc, ok := cfg.Providers[name]; ok {
+		if strings.TrimSpace(pc.FastProvider) != "" {
+			targetName = strings.TrimSpace(pc.FastProvider)
+		}
+		targetModel = strings.TrimSpace(pc.FastModel)
+	}
+
+	if targetModel == "" {
+		providerType := string(config.InferProviderType(targetName, ""))
+		targetModel = ProviderFastModels[providerType]
+	}
+
+	if targetModel == "" {
+		return nil, nil
+	}
+
+	return NewProviderByName(cfg, targetName, targetModel)
+}
+
 // newProviderInternal creates the underlying provider without retry wrapper.
 func newProviderInternal(cfg *config.Config) (Provider, error) {
 	// Handle hidden debug provider first

@@ -30,17 +30,17 @@ import (
 )
 
 var (
-	askDebug          bool
-	askSearch         bool
-	askText           bool
-	askPorcelain      bool
-	askProvider       string
-	askFiles          []string
-	askMCP            string
+	askDebug           bool
+	askSearch          bool
+	askText            bool
+	askPorcelain       bool
+	askProvider        string
+	askFiles           []string
+	askMCP             string
 	askMaxTurns        int
 	askMaxOutputTokens int
-	askNativeSearch   bool
-	askNoNativeSearch bool
+	askNativeSearch    bool
+	askNoNativeSearch  bool
 	// Tool flags
 	askTools         string
 	askReadDirs      []string
@@ -189,19 +189,19 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	// Resolve all settings: CLI > agent > config
 	settings, err := ResolveSettings(cfg, agent, CLIFlags{
-		Provider:      askProvider,
-		Tools:         askTools,
-		ReadDirs:      askReadDirs,
-		WriteDirs:     askWriteDirs,
-		ShellAllow:    askShellAllow,
-		MCP:           askMCP,
-		SystemMessage: askSystemMessage,
+		Provider:        askProvider,
+		Tools:           askTools,
+		ReadDirs:        askReadDirs,
+		WriteDirs:       askWriteDirs,
+		ShellAllow:      askShellAllow,
+		MCP:             askMCP,
+		SystemMessage:   askSystemMessage,
 		MaxTurns:        askMaxTurns,
 		MaxTurnsSet:     cmd.Flags().Changed("max-turns"),
 		MaxOutputTokens: askMaxOutputTokens,
-		Search:        askSearch,
-		Files:         askFiles,
-		Platform:      "console",
+		Search:          askSearch,
+		Files:           askFiles,
+		Platform:        "console",
 	}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 20)
 	if err != nil {
 		return err

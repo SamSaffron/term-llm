@@ -58,19 +58,19 @@ type SessionSettings struct {
 
 // CLIFlags holds the CLI flag values that can override settings.
 type CLIFlags struct {
-	Provider      string
-	Tools         string
-	ReadDirs      []string
-	WriteDirs     []string
-	ShellAllow    []string
-	MCP           string
-	SystemMessage string
+	Provider        string
+	Tools           string
+	ReadDirs        []string
+	WriteDirs       []string
+	ShellAllow      []string
+	MCP             string
+	SystemMessage   string
 	MaxTurns        int
 	MaxTurnsSet     bool // true if --max-turns was explicitly set
 	MaxOutputTokens int  // 0 = use provider default
 	Search          bool
-	Files         []string // files passed via -f flag, used for agent template expansion (e.g., {{.Files}})
-	Platform      string   // runtime surface for template expansion (e.g., chat, console, web, telegram, jobs)
+	Files           []string // files passed via -f flag, used for agent template expansion (e.g., {{.Files}})
+	Platform        string   // runtime surface for template expansion (e.g., chat, console, web, telegram, jobs)
 }
 
 // LoadAgent loads and validates an agent by name or path.

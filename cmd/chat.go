@@ -238,6 +238,10 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	if err != nil {
 		return "", err
 	}
+	fastProvider, fastErr := llm.NewFastProvider(cfg, cfg.DefaultProvider)
+	if fastErr != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: fast provider setup failed: %v\n", fastErr)
+	}
 	engine := newEngine(provider, cfg)
 
 	// Set up debug logger if enabled.
@@ -351,7 +355,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	useAltScreen := term.IsTerminal(int(os.Stdout.Fd())) && !autoSendMode
 
 	// Create chat model
-	model := chat.New(cfg, provider, engine, providerKey, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, showStats, initialText, store, sess, useAltScreen, chatAutoSend, true, chatTextMode, agentName, chatYolo)
+	model := chat.NewWithFastProvider(cfg, provider, fastProvider, engine, providerKey, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, showStats, initialText, store, sess, useAltScreen, chatAutoSend, true, chatTextMode, agentName, chatYolo)
 
 	// Build program options
 	var opts []tea.ProgramOption

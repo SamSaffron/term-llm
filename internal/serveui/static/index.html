@@ -1167,6 +1167,7 @@
         models: [],
         selectedModel: localStorage.getItem(STORAGE_KEYS.selectedModel) || '',
         streaming: false,
+        queuedInterrupt: '',
         abortController: null,
         autoScroll: true,
         authRequired: false,
@@ -2287,13 +2288,48 @@
 
       const setStreaming = (streaming) => {
         state.streaming = streaming;
-        elements.promptInput.disabled = streaming;
-        elements.sendBtn.disabled = streaming;
+        elements.promptInput.disabled = false;
+        elements.sendBtn.disabled = false;
         elements.sendBtn.classList.toggle('loading', streaming);
         elements.stopBtn.classList.toggle('visible', streaming);
         if (!streaming) {
           elements.promptInput.focus();
         }
+      };
+
+      const addStatusMessage = (text, session) => {
+        const message = {
+          id: generateId('msg'),
+          role: 'assistant',
+          content: `_Status: ${text}_`,
+          created: Date.now()
+        };
+        session.messages.push(message);
+        elements.messages.appendChild(createMessageNode(message));
+      };
+
+      const interruptActiveRun = async (session, prompt) => {
+        const response = await fetch(`/v1/sessions/${encodeURIComponent(session.id)}/interrupt`, {
+          method: 'POST',
+          headers: requestHeaders(session.id),
+          body: JSON.stringify({ message: prompt })
+        });
+        if (!response.ok) {
+          throw await normalizeError(response);
+        }
+        const payload = await response.json();
+        const action = String(payload.action || 'queue');
+        if (action === 'interject') {
+          addStatusMessage('Interjected into the active run.', session);
+        } else if (action === 'cancel') {
+          state.queuedInterrupt = prompt;
+          addStatusMessage('Stopping current run and queuing your new message.', session);
+        } else {
+          state.queuedInterrupt = prompt;
+          addStatusMessage('Queued your message to run next.', session);
+        }
+        saveSessions();
+        scrollToBottom(true);
       };
 
       const addErrorMessage = (text, session) => {
@@ -2322,8 +2358,6 @@
       };
 
       const sendMessage = async () => {
-        if (state.streaming) return;
-
         const prompt = elements.promptInput.value.trim();
         const pendingAttachments = [...state.attachments];
         if (!prompt && pendingAttachments.length === 0) return;
@@ -2334,6 +2368,27 @@
         }
 
         const session = ensureActiveSession();
+        if (state.streaming) {
+          if (pendingAttachments.length > 0) {
+            alert('Attachments are not supported while a run is active.');
+            return;
+          }
+          try {
+            await interruptActiveRun(session, prompt);
+            elements.promptInput.value = '';
+            autoGrowPrompt();
+          } catch (err) {
+            const message = err?.message || 'Failed to interrupt active run.';
+            addErrorMessage(message, session);
+            if (err?.status === 401) {
+              handleAuthFailure();
+            }
+            persistAndRefreshShell();
+            scrollToBottom(true);
+          }
+          return;
+        }
+
         let currentAssistantMessage = null;
         let currentToolGroup = null;
 
@@ -2622,6 +2677,13 @@
           state.abortController = null;
           setStreaming(false);
           refreshRelativeTimes();
+          if (state.queuedInterrupt) {
+            const queued = state.queuedInterrupt;
+            state.queuedInterrupt = '';
+            elements.promptInput.value = queued;
+            autoGrowPrompt();
+            await sendMessage();
+          }
         }
       };
 

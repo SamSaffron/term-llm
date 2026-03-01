@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -25,7 +26,7 @@ import (
 
 const telegramMaxMessageLen = 4000 // Telegram limit is 4096; leave margin
 const minEditInterval = 3 * time.Second
-const streamEventTimeout = 90 * time.Second
+const streamEventTimeout = 10 * time.Minute
 
 // botSender is the subset of tgbotapi.BotAPI used by streamReply and
 // handleMessage, allowing tests to supply a fake without a live connection.
@@ -303,6 +304,10 @@ func (p *TelegramPlatform) Run(ctx context.Context, cfg *config.Config, settings
 	if p.cfg.InterruptTimeout > 0 {
 		interruptTimeout = time.Duration(p.cfg.InterruptTimeout) * time.Second
 	}
+	fastProvider, fastErr := llm.NewFastProvider(cfg, cfg.DefaultProvider)
+	if fastErr != nil {
+		log.Printf("[telegram] fast provider unavailable: %v", fastErr)
+	}
 
 	mgr := &telegramSessionMgr{
 		sessions:         make(map[int64]*telegramSession),
@@ -311,6 +316,7 @@ func (p *TelegramPlatform) Run(ctx context.Context, cfg *config.Config, settings
 		store:            settings.Store,
 		idleTimeout:      idleTimeout,
 		interruptTimeout: interruptTimeout,
+		fastProvider:     fastProvider,
 		allowedUserIDs:   buildAllowedSet(p.cfg.AllowedUserIDs),
 		allowedUsernames: buildAllowedUsernameSet(p.cfg.AllowedUsernames),
 	}
@@ -363,9 +369,15 @@ type telegramSession struct {
 	meta                  *session.Session
 	lastActivity          time.Time
 
-	cancelMu     sync.Mutex         // protects streamCancel and replyDone
-	streamCancel context.CancelFunc // cancels the active stream's context
-	replyDone    chan struct{}      // closed when streamReply exits
+	cancelMu      sync.Mutex         // protects streamCancel, replyDone and task/tool tracking
+	streamCancel  context.CancelFunc // cancels the active stream's context
+	replyDone     chan struct{}      // closed when streamReply exits
+	currentTask   string             // text from the user message that started the active stream
+	toolsRanNames []string           // tool names executed during the active stream
+
+	streamProseLen atomic.Int64
+	streamToolCnt  atomic.Int32
+	streamToolName atomic.Value // string
 }
 
 // telegramSessionMgr manages per-chat sessions.
@@ -377,6 +389,7 @@ type telegramSessionMgr struct {
 	store            session.Store
 	idleTimeout      time.Duration
 	interruptTimeout time.Duration
+	fastProvider     llm.Provider
 	allowedUserIDs   map[int64]struct{}
 	allowedUsernames map[string]struct{}
 	tickerInterval   time.Duration // 0 means use default (500ms); overridden in tests
@@ -751,24 +764,78 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 		}
 	}
 
-	// If a stream is active, wait for it to finish or interrupt it.
+	// If a stream is active, decide whether to cancel, interject, or queue.
 	sess.cancelMu.Lock()
 	doneCh := sess.replyDone
 	cancelFn := sess.streamCancel
 	sess.cancelMu.Unlock()
 
 	if cancelFn != nil && doneCh != nil {
+		newMsgText := strings.TrimSpace(extractPlainTextFromMsg(msg))
+		if newMsgText == "" {
+			newMsgText = strings.TrimSpace(collectUserText(userMsg))
+		}
+
 		select {
 		case <-doneCh:
 			// Stream finished naturally within the grace period.
-		case <-time.After(m.interruptTimeout):
-			cancelFn()
-			select {
-			case <-doneCh:
-			case <-time.After(5 * time.Second):
-				log.Printf("[telegram] stream for chat %d did not stop within hard timeout", chatID)
-				_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Still processing, please try again."))
+		case <-time.After(500 * time.Millisecond):
+			sess.cancelMu.Lock()
+			activity := llm.InterruptActivity{
+				CurrentTask: strings.TrimSpace(sess.currentTask),
+				ToolsRun:    append([]string(nil), sess.toolsRanNames...),
+				ProseLen:    int(sess.streamProseLen.Load()),
+				ActiveTool:  "",
+			}
+			if v := sess.streamToolName.Load(); v != nil {
+				if name, ok := v.(string); ok {
+					activity.ActiveTool = name
+				}
+			}
+			sess.cancelMu.Unlock()
+
+			action := llm.ClassifyInterrupt(ctx, m.fastProvider, newMsgText, activity)
+			switch action {
+			case llm.InterruptCancel:
+				_, _ = bot.Send(tgbotapi.NewMessage(chatID, "↩️ Stopping current work and switching to your new request."))
+				cancelFn()
+				stopWait := 5 * time.Second
+				if m.interruptTimeout > stopWait {
+					stopWait = m.interruptTimeout
+				}
+				select {
+				case <-doneCh:
+				case <-time.After(stopWait):
+					log.Printf("[telegram] stream for chat %d did not stop within hard timeout", chatID)
+					_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Still processing, please try again."))
+					return
+				case <-ctx.Done():
+					return
+				}
+			case llm.InterruptInterject:
+				sess.runtime.Engine.Interject(newMsgText)
+				_, _ = bot.Send(tgbotapi.NewMessage(chatID, "📝 Noted. I will incorporate that while I continue."))
+				if m.store != nil && sess.meta != nil {
+					text := newMsgText
+					m.runStoreOp(ctx, sess.meta.ID, "AddMessage(interjection)", func(storeCtx context.Context) error {
+						return m.store.AddMessage(storeCtx, sess.meta.ID, &session.Message{
+							SessionID:   sess.meta.ID,
+							Role:        llm.RoleUser,
+							Parts:       []llm.Part{{Type: llm.PartText, Text: text}},
+							TextContent: text,
+							CreatedAt:   time.Now(),
+							Sequence:    -1,
+						})
+					})
+				}
 				return
+			default:
+				_, _ = bot.Send(tgbotapi.NewMessage(chatID, "📬 Got it. I’ll finish this task first, then handle your new request."))
+				select {
+				case <-doneCh:
+				case <-ctx.Done():
+					return
+				}
 			}
 		case <-ctx.Done():
 			return
@@ -777,6 +844,14 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 
 	// Send "typing…" indicator.
 	_, _ = bot.Send(tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping))
+
+	sess.cancelMu.Lock()
+	sess.currentTask = collectUserText(userMsg)
+	sess.toolsRanNames = nil
+	sess.streamProseLen.Store(0)
+	sess.streamToolCnt.Store(0)
+	sess.streamToolName.Store("")
+	sess.cancelMu.Unlock()
 
 	if err := m.streamReply(ctx, bot, sess, chatID, userMsg); err != nil {
 		log.Printf("[telegram] error streaming reply for chat %d: %v", chatID, err)
@@ -815,6 +890,11 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		sess.cancelMu.Lock()
 		sess.streamCancel = nil
 		sess.replyDone = nil
+		sess.currentTask = ""
+		sess.toolsRanNames = nil
+		sess.streamProseLen.Store(0)
+		sess.streamToolCnt.Store(0)
+		sess.streamToolName.Store("")
 		sess.cancelMu.Unlock()
 		close(replyDone)
 	}()
@@ -1032,7 +1112,9 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 				textMu.Lock()
 				textBuf.WriteString(ev.Text)
 				textDeltas++
+				proseLen := textBuf.Len()
 				textMu.Unlock()
+				sess.streamProseLen.Store(int64(proseLen))
 			case llm.EventReasoningDelta:
 				textMu.Lock()
 				reasoningDeltas++
@@ -1043,6 +1125,11 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 				toolsRan = true
 				toolStarts++
 				textMu.Unlock()
+				sess.streamToolCnt.Add(1)
+				sess.streamToolName.Store(ev.ToolName)
+				sess.cancelMu.Lock()
+				sess.toolsRanNames = append(sess.toolsRanNames, ev.ToolName)
+				sess.cancelMu.Unlock()
 			case llm.EventToolExecEnd:
 				textMu.Lock()
 				delete(activeTools, ev.ToolCallID)
@@ -1051,6 +1138,14 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 					collectedImages = append(collectedImages, ev.ToolImages...)
 				}
 				textMu.Unlock()
+				if sess.streamToolCnt.Load() > 0 {
+					sess.streamToolCnt.Add(-1)
+				}
+				if sess.streamToolCnt.Load() <= 0 {
+					sess.streamToolName.Store("")
+				}
+			case llm.EventHeartbeat:
+				// No-op: presence of an event refreshes watchdog and keeps long tools alive.
 			case llm.EventPhase:
 				textMu.Lock()
 				activePhase = ev.Text
@@ -1072,6 +1167,10 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 				textMu.Lock()
 				retryEvents++
 				activePhase = fmt.Sprintf("Retrying (%d/%d), waiting %.0fs", ev.RetryAttempt, ev.RetryMaxAttempts, ev.RetryWaitSecs)
+				textMu.Unlock()
+			case llm.EventInterjection:
+				textMu.Lock()
+				activePhase = "📝 Considering: " + tailRunes(strings.TrimSpace(ev.Text), 80)
 				textMu.Unlock()
 			case llm.EventError:
 				textMu.Lock()
@@ -1103,13 +1202,17 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 
 	var lastSentContent string
 	var lastEditTime time.Time
+	lastVisibleChange := time.Now()
+	streamStart := time.Now()
+	spinChars := []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+	spinIdx := 0
 
-	sendEdit := func(msgID int, content string, force bool) {
+	sendEdit := func(msgID int, content string, force bool) bool {
 		if !force && content == lastSentContent {
-			return
+			return false
 		}
 		if !force && !lastEditTime.IsZero() && time.Since(lastEditTime) < minEditInterval {
-			return
+			return false
 		}
 		edit := tgbotapi.NewEditMessageText(chatID, msgID, mdToTelegramHTML(content))
 		edit.ParseMode = tgbotapi.ModeHTML
@@ -1117,10 +1220,15 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 			if strings.Contains(sendErr.Error(), "429") || strings.Contains(sendErr.Error(), "Too Many Requests") {
 				log.Printf("[telegram] edit rate limited (chat %d): %v", chatID, sendErr)
 			}
-			return
+			return false
 		}
+		contentChanged := content != lastSentContent
 		lastSentContent = content
 		lastEditTime = time.Now()
+		if contentChanged {
+			lastVisibleChange = lastEditTime
+		}
+		return true
 	}
 
 	var streamErr error
@@ -1135,16 +1243,34 @@ loop:
 			full, toolDisplay, phase := textBuf.String(), activeToolDisplay(activeTools), activePhase
 			textMu.Unlock()
 
-			prose := full[msgStart:]
+			prose := ""
+			if msgStart < len(full) {
+				prose = full[msgStart:]
+			}
+
+			forceProgress := time.Since(lastVisibleChange) >= 12*time.Second
 			if prose == "" && toolDisplay == "" && phase == "" {
+				if !forceProgress {
+					continue
+				}
+				elapsed := time.Since(streamStart)
+				spin := string(spinChars[spinIdx%len(spinChars)])
+				spinIdx++
+				heartbeat := buildHeartbeatSegment("", toolDisplay, phase, spin, elapsed)
+				sendEdit(currentMsgID, heartbeat, true)
 				continue
 			}
 
 			rendered := buildSegment(prose, toolDisplay, phase, true)
+			if forceProgress {
+				elapsed := time.Since(streamStart)
+				spin := string(spinChars[spinIdx%len(spinChars)])
+				spinIdx++
+				rendered = buildHeartbeatSegment(prose, toolDisplay, phase, spin, elapsed)
+			}
+
 			if len(prose) >= telegramMaxMessageLen || len(rendered) >= telegramMaxMessageLen {
-				// Finalize prose at the split point; defer creating the next placeholder
-				// until there is content to show in it (lazy creation avoids a stray "⏳"
-				// when the response length is an exact multiple of the chunk size).
+				// Keep chunk splitting based on prose, not status line rendering.
 				splitAt := telegramMaxMessageLen
 				if splitAt > len(prose) {
 					splitAt = len(prose)
@@ -1152,17 +1278,21 @@ loop:
 				sendEdit(currentMsgID, prose[:splitAt], false)
 				msgStart += splitAt
 				needNewMsg = true
-			} else {
-				if needNewMsg {
-					// Lazily create the next placeholder now that we have content for it.
-					newMsg, sendErr := bot.Send(tgbotapi.NewMessage(chatID, "⏳"))
-					if sendErr == nil {
-						currentMsgID = newMsg.MessageID
-					}
-					needNewMsg = false
-				}
-				sendEdit(currentMsgID, rendered, false)
+				continue
 			}
+
+			if needNewMsg {
+				// Lazily create the next placeholder now that we have content for it.
+				newMsg, sendErr := bot.Send(tgbotapi.NewMessage(chatID, "⏳"))
+				if sendErr == nil {
+					currentMsgID = newMsg.MessageID
+					lastSentContent = ""
+					lastEditTime = time.Time{}
+					lastVisibleChange = time.Now()
+				}
+				needNewMsg = false
+			}
+			sendEdit(currentMsgID, rendered, forceProgress)
 		case <-streamCtx.Done():
 			// Distinguish server shutdown (parent ctx cancelled) from user interrupt.
 			if ctx.Err() != nil {
@@ -1187,7 +1317,10 @@ loop:
 			textMu.Unlock()
 
 			// Edit the Telegram message to show partial text + interrupted marker.
-			display := partial[msgStart:]
+			display := ""
+			if msgStart < len(partial) {
+				display = partial[msgStart:]
+			}
 			if display == "" {
 				display = "(interrupted)"
 			} else {
@@ -1257,7 +1390,10 @@ loop:
 	imagesToSend := append([]string(nil), collectedImages...)
 	textMu.Unlock()
 
-	prose := full[msgStart:]
+	prose := ""
+	if msgStart < len(full) {
+		prose = full[msgStart:]
+	}
 	switch {
 	case prose != "":
 		// There is new content to show in the current window.
@@ -1351,6 +1487,20 @@ func containsSystemMsg(msgs []llm.Message) bool {
 		}
 	}
 	return false
+}
+
+// extractPlainTextFromMsg returns text/caption from a Telegram message.
+func extractPlainTextFromMsg(msg *tgbotapi.Message) string {
+	if msg == nil {
+		return ""
+	}
+	if msg.Text != "" {
+		return msg.Text
+	}
+	if msg.Caption != "" {
+		return msg.Caption
+	}
+	return ""
 }
 
 // collectUserText extracts the text content from a user message for persistence.
@@ -1476,4 +1626,52 @@ func buildSegment(prose, tool, phase string, withCursor bool) string {
 		sb.WriteString("▌")
 	}
 	return sb.String()
+}
+
+// buildHeartbeatSegment is like buildSegment but adds a spinner and elapsed timer.
+func buildHeartbeatSegment(prose, tool, phase, spin string, elapsed time.Duration) string {
+	var sb strings.Builder
+	sb.WriteString(prose)
+
+	statusLine := ""
+	if tool != "" {
+		statusLine = "🔧 " + tool + "..."
+	} else if phase != "" {
+		statusLine = phase
+	} else {
+		statusLine = "⏳ Thinking"
+	}
+	if statusLine != "" {
+		if prose != "" {
+			sb.WriteString("\n\n")
+		}
+		sb.WriteString(statusLine)
+	}
+
+	if prose != "" || statusLine != "" {
+		sb.WriteString("\n\n")
+	}
+	sb.WriteString(spin)
+	sb.WriteString(" ")
+	sb.WriteString(formatElapsed(elapsed))
+
+	return sb.String()
+}
+
+func formatElapsed(elapsed time.Duration) string {
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	totalSec := int(elapsed.Seconds())
+	hours := totalSec / 3600
+	mins := (totalSec % 3600) / 60
+	secs := totalSec % 60
+
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm", hours, mins)
+	}
+	if mins > 0 {
+		return fmt.Sprintf("%dm %ds", mins, secs)
+	}
+	return fmt.Sprintf("%ds", secs)
 }

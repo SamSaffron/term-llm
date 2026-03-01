@@ -61,10 +61,12 @@ type ProviderConfig struct {
 	Type ProviderType `mapstructure:"type"`
 
 	// Common fields
-	APIKey      string   `mapstructure:"api_key"`
-	Model       string   `mapstructure:"model"`
-	Models      []string `mapstructure:"models"`      // Available models for autocomplete
-	Credentials string   `mapstructure:"credentials"` // "api_key", "codex", "gemini-cli"
+	APIKey       string   `mapstructure:"api_key"`
+	Model        string   `mapstructure:"model"`
+	FastModel    string   `mapstructure:"fast_model"`    // Lightweight model for control-plane tasks
+	FastProvider string   `mapstructure:"fast_provider"` // Optional provider key override for FastModel
+	Models       []string `mapstructure:"models"`        // Available models for autocomplete
+	Credentials  string   `mapstructure:"credentials"`   // "api_key", "codex", "gemini-cli"
 
 	// Search behavior - nil means auto (use native if available)
 	UseNativeSearch *bool `mapstructure:"use_native_search"`
@@ -1034,6 +1036,8 @@ var KnownProviderKeys = map[string]bool{
 	"type":              true,
 	"api_key":           true,
 	"model":             true,
+	"fast_model":        true,
+	"fast_provider":     true,
 	"models":            true,
 	"credentials":       true,
 	"use_native_search": true,
@@ -1046,68 +1050,75 @@ var KnownProviderKeys = map[string]bool{
 // GetDefaults returns a map of all default configuration values
 func GetDefaults() map[string]any {
 	return map[string]any{
-		"default_provider":               "anthropic",
-		"exec.suggestions":               3,
-		"exec.instructions":              "",
-		"ask.max_turns":                  20,
-		"ask.instructions":               "You are a helpful assistant. Today's date is {{date}}.",
-		"chat.max_turns":                 200,
-		"chat.instructions":              "You are a helpful assistant. Today's date is {{date}}.",
-		"edit.show_line_numbers":         true,
-		"edit.instructions":              "",
-		"edit.context_lines":             3,
-		"edit.diff_format":               "auto",
-		"providers.anthropic.model":      "claude-sonnet-4-6",
-		"providers.openai.model":         "gpt-5.2",
-		"providers.xai.model":            "grok-4-1-fast",
-		"providers.venice.model":         "venice-uncensored",
-		"providers.openrouter.model":     "x-ai/grok-code-fast-1",
-		"providers.openrouter.app_url":   "https://github.com/samsaffron/term-llm",
-		"providers.openrouter.app_title": "term-llm",
-		"providers.gemini.model":         "gemini-3-flash-preview",
-		"providers.zen.model":            "minimax-m2.1-free",
-		"image.provider":                 "gemini",
-		"image.output_dir":               "~/Pictures/term-llm",
-		"image.gemini.model":             "gemini-2.5-flash-image",
-		"image.openai.model":             "gpt-image-1",
-		"image.xai.model":                "grok-2-image-1212",
-		"image.venice.model":             "nano-banana-pro",
-		"image.venice.resolution":        "2K",
-		"image.flux.model":               "flux-2-pro",
-		"image.openrouter.model":         "google/gemini-2.5-flash-image",
-		"image.debug.delay":              0.0,
-		"embed.openai.model":             "text-embedding-3-small",
-		"embed.gemini.model":             "gemini-embedding-001",
-		"embed.jina.model":               "jina-embeddings-v3",
-		"embed.voyage.model":             "voyage-3.5",
-		"embed.ollama.model":             "nomic-embed-text",
-		"embed.ollama.base_url":          "http://localhost:11434",
-		"search.provider":                "duckduckgo",
-		"search.force_external":          false,
-		"tools.enabled":                  []string{},
-		"tools.read_dirs":                []string{},
-		"tools.write_dirs":               []string{},
-		"tools.shell_allow":              []string{},
-		"tools.shell_auto_run":           false,
-		"tools.shell_auto_run_env":       "TERM_LLM_ALLOW_AUTORUN",
-		"tools.shell_non_tty_env":        "TERM_LLM_ALLOW_NON_TTY",
-		"tools.max_tool_output_chars":    20000,
-		"sessions.enabled":               true,
-		"sessions.max_age_days":          0,
-		"sessions.max_count":             0,
-		"sessions.path":                  "",
-		"agents.use_builtin":             true,
-		"agents.search_paths":            []string{},
-		"skills.enabled":                 false,
-		"skills.auto_invoke":             true,
-		"skills.metadata_budget_tokens":  8000,
-		"skills.max_active":              50,
-		"skills.include_project_skills":  true,
-		"skills.include_ecosystem_paths": true,
-		"skills.always_enabled":          []string{},
-		"skills.never_auto":              []string{},
-		"agents_md.enabled":              false,
-		"auto_compact":                   false,
+		"default_provider":                "anthropic",
+		"exec.suggestions":                3,
+		"exec.instructions":               "",
+		"ask.max_turns":                   20,
+		"ask.instructions":                "You are a helpful assistant. Today's date is {{date}}.",
+		"chat.max_turns":                  200,
+		"chat.instructions":               "You are a helpful assistant. Today's date is {{date}}.",
+		"edit.show_line_numbers":          true,
+		"edit.instructions":               "",
+		"edit.context_lines":              3,
+		"edit.diff_format":                "auto",
+		"providers.anthropic.model":       "claude-sonnet-4-6",
+		"providers.anthropic.fast_model":  "claude-haiku-4-5",
+		"providers.openai.model":          "gpt-5.2",
+		"providers.openai.fast_model":     "gpt-5-nano",
+		"providers.xai.model":             "grok-4-1-fast",
+		"providers.xai.fast_model":        "grok-3-mini-fast",
+		"providers.venice.model":          "venice-uncensored",
+		"providers.venice.fast_model":     "llama-3.2-3b",
+		"providers.openrouter.model":      "x-ai/grok-code-fast-1",
+		"providers.openrouter.fast_model": "anthropic/claude-haiku-4-5",
+		"providers.openrouter.app_url":    "https://github.com/samsaffron/term-llm",
+		"providers.openrouter.app_title":  "term-llm",
+		"providers.gemini.model":          "gemini-3-flash-preview",
+		"providers.gemini.fast_model":     "gemini-2.5-flash-lite",
+		"providers.zen.model":             "minimax-m2.1-free",
+		"providers.zen.fast_model":        "glm-4.7-free",
+		"image.provider":                  "gemini",
+		"image.output_dir":                "~/Pictures/term-llm",
+		"image.gemini.model":              "gemini-2.5-flash-image",
+		"image.openai.model":              "gpt-image-1",
+		"image.xai.model":                 "grok-2-image-1212",
+		"image.venice.model":              "nano-banana-pro",
+		"image.venice.resolution":         "2K",
+		"image.flux.model":                "flux-2-pro",
+		"image.openrouter.model":          "google/gemini-2.5-flash-image",
+		"image.debug.delay":               0.0,
+		"embed.openai.model":              "text-embedding-3-small",
+		"embed.gemini.model":              "gemini-embedding-001",
+		"embed.jina.model":                "jina-embeddings-v3",
+		"embed.voyage.model":              "voyage-3.5",
+		"embed.ollama.model":              "nomic-embed-text",
+		"embed.ollama.base_url":           "http://localhost:11434",
+		"search.provider":                 "duckduckgo",
+		"search.force_external":           false,
+		"tools.enabled":                   []string{},
+		"tools.read_dirs":                 []string{},
+		"tools.write_dirs":                []string{},
+		"tools.shell_allow":               []string{},
+		"tools.shell_auto_run":            false,
+		"tools.shell_auto_run_env":        "TERM_LLM_ALLOW_AUTORUN",
+		"tools.shell_non_tty_env":         "TERM_LLM_ALLOW_NON_TTY",
+		"tools.max_tool_output_chars":     20000,
+		"sessions.enabled":                true,
+		"sessions.max_age_days":           0,
+		"sessions.max_count":              0,
+		"sessions.path":                   "",
+		"agents.use_builtin":              true,
+		"agents.search_paths":             []string{},
+		"skills.enabled":                  false,
+		"skills.auto_invoke":              true,
+		"skills.metadata_budget_tokens":   8000,
+		"skills.max_active":               50,
+		"skills.include_project_skills":   true,
+		"skills.include_ecosystem_paths":  true,
+		"skills.always_enabled":           []string{},
+		"skills.never_auto":               []string{},
+		"agents_md.enabled":               false,
+		"auto_compact":                    false,
 	}
 }
 
@@ -1203,6 +1214,12 @@ func Save(cfg *Config) error {
 		}
 		if p.Model != "" {
 			providers.WriteString(fmt.Sprintf("    model: %s\n", p.Model))
+		}
+		if p.FastModel != "" {
+			providers.WriteString(fmt.Sprintf("    fast_model: %s\n", p.FastModel))
+		}
+		if p.FastProvider != "" {
+			providers.WriteString(fmt.Sprintf("    fast_provider: %s\n", p.FastProvider))
 		}
 		if p.BaseURL != "" {
 			providers.WriteString(fmt.Sprintf("    base_url: %s\n", p.BaseURL))

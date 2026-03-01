@@ -161,6 +161,22 @@ var ProviderModels = map[string][]string{
 	},
 }
 
+// ProviderFastModels contains the default lightweight model for each provider type.
+// These are used for short control-plane tasks (interrupt classification, summarization).
+var ProviderFastModels = map[string]string{
+	"anthropic":  "claude-haiku-4-5",
+	"openai":     "gpt-5-nano",
+	"chatgpt":    "gpt-5-nano",
+	"copilot":    "gpt-4.1",
+	"gemini":     "gemini-2.5-flash-lite",
+	"gemini-cli": "gemini-2.5-flash-lite",
+	"xai":        "grok-3-mini-fast",
+	"zen":        "glm-4.7-free",
+	"venice":     "llama-3.2-3b",
+	"openrouter": "anthropic/claude-haiku-4-5",
+	"claude-bin": "haiku",
+}
+
 var ImageProviderModels = map[string][]string{
 	"debug":      {"random"},
 	"gemini":     {"gemini-2.5-flash-image", "gemini-3-pro-image-preview", "gemini-3.1-flash-image-preview"},

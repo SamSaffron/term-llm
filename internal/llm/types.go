@@ -208,6 +208,7 @@ const (
 	EventToolCall       EventType = "tool_call"
 	EventToolExecStart  EventType = "tool_exec_start" // Emitted when tool execution begins
 	EventToolExecEnd    EventType = "tool_exec_end"   // Emitted when tool execution completes
+	EventHeartbeat      EventType = "heartbeat"       // Emitted while a long-running tool is still active
 	EventUsage          EventType = "usage"
 	EventPhase          EventType = "phase" // Emitted for high-level phase changes (Thinking, Searching, etc.)
 	EventDone           EventType = "done"

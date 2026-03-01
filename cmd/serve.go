@@ -255,6 +255,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 		runtime := &serveRuntime{
 			provider:            provider,
+			providerKey:         cfg.DefaultProvider,
 			engine:              engine,
 			toolMgr:             toolMgr,
 			mcpManager:          mcpManager,
@@ -705,13 +706,7 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", "GET")
-		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
-		return
-	}
-
-	// Parse /v1/sessions/{id}/messages
+	// Parse /v1/sessions/{id}/...
 	path := strings.TrimPrefix(r.URL.Path, "/v1/sessions/")
 	parts := strings.SplitN(path, "/", 2)
 	if len(parts) < 1 || parts[0] == "" {
@@ -723,6 +718,26 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 	suffix := ""
 	if len(parts) > 1 {
 		suffix = parts[1]
+	}
+
+	if suffix == "interrupt" {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+			return
+		}
+		if err := requireJSONContentType(r); err != nil {
+			writeOpenAIError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
+			return
+		}
+		s.handleSessionInterrupt(w, r, sessionID)
+		return
+	}
+
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		return
 	}
 
 	if suffix != "messages" {
@@ -790,6 +805,50 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"messages": result})
+}
+
+type sessionInterruptRequest struct {
+	Message string `json:"message"`
+}
+
+func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Request, sessionID string) {
+	var req sessionInterruptRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	msg := strings.TrimSpace(req.Message)
+	if msg == "" {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "message is required")
+		return
+	}
+
+	rt, err := s.sessionMgr.GetOrCreate(context.Background(), sessionID)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+
+	fastProvider, fastErr := llm.NewFastProvider(s.cfgRef, rt.providerKey)
+	if fastErr != nil {
+		log.Printf("[serve] fast provider unavailable for interrupt: %v", fastErr)
+	}
+	action, interruptErr := rt.Interrupt(r.Context(), msg, fastProvider)
+	if interruptErr != nil {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", interruptErr.Error())
+		return
+	}
+
+	actionName := "queue"
+	switch action {
+	case llm.InterruptCancel:
+		actionName = "cancel"
+	case llm.InterruptInterject:
+		actionName = "interject"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"action": actionName,
+	})
 }
 
 func (s *serveServer) auth(next http.HandlerFunc) http.HandlerFunc {
@@ -1127,6 +1186,11 @@ func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter
 				payload["images"] = imageURLs
 			}
 			_ = writeSSEEvent(w, "response.tool_exec.end", payload)
+		case llm.EventHeartbeat:
+			_ = writeSSEEvent(w, "response.heartbeat", map[string]any{
+				"call_id":   ev.ToolCallID,
+				"tool_name": ev.ToolName,
+			})
 		}
 		flusher.Flush()
 		return nil
@@ -1326,6 +1390,18 @@ func (s *serveServer) streamChatCompletions(ctx context.Context, w http.Response
 						}},
 					},
 				}},
+			})
+		case llm.EventHeartbeat:
+			writeErr = writeChatStreamChunk(w, map[string]any{
+				"id":      respID,
+				"object":  "chat.completion.chunk",
+				"created": created,
+				"model":   model,
+				"choices": []map[string]any{{"index": 0, "delta": map[string]any{}}},
+				"heartbeat": map[string]any{
+					"call_id":   ev.ToolCallID,
+					"tool_name": ev.ToolName,
+				},
 			})
 		}
 		if writeErr != nil {
@@ -1607,7 +1683,9 @@ func (m *serveSessionManager) Close() {
 
 type serveRuntime struct {
 	mu                  sync.Mutex
+	interruptMu         sync.Mutex
 	provider            llm.Provider
+	providerKey         string
 	engine              *llm.Engine
 	toolMgr             *tools.ToolManager
 	mcpManager          *mcp.Manager
@@ -1625,6 +1703,16 @@ type serveRuntime struct {
 	debugRaw            bool
 	defaultModel        string
 	lastUsedUnixNano    atomic.Int64
+	activeInterrupt     *runtimeInterruptState
+}
+
+type runtimeInterruptState struct {
+	cancel      context.CancelFunc
+	done        chan struct{}
+	currentTask string
+	toolsRun    []string
+	proseLen    int
+	activeTool  string
 }
 
 func (rt *serveRuntime) Touch() {
@@ -1642,6 +1730,11 @@ func (rt *serveRuntime) LastUsed() time.Time {
 func (rt *serveRuntime) Close() {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
+	rt.interruptMu.Lock()
+	if rt.activeInterrupt != nil && rt.activeInterrupt.cancel != nil {
+		rt.activeInterrupt.cancel()
+	}
+	rt.interruptMu.Unlock()
 	if rt.mcpManager != nil {
 		rt.mcpManager.StopAll()
 		rt.mcpManager = nil
@@ -1649,6 +1742,66 @@ func (rt *serveRuntime) Close() {
 	if cleaner, ok := rt.provider.(interface{ CleanupMCP() }); ok {
 		cleaner.CleanupMCP()
 	}
+}
+
+func (rt *serveRuntime) setActiveInterrupt(state *runtimeInterruptState) {
+	rt.interruptMu.Lock()
+	rt.activeInterrupt = state
+	rt.interruptMu.Unlock()
+}
+
+func (rt *serveRuntime) clearActiveInterrupt(state *runtimeInterruptState) {
+	rt.interruptMu.Lock()
+	if rt.activeInterrupt == state {
+		rt.activeInterrupt = nil
+	}
+	rt.interruptMu.Unlock()
+}
+
+func (rt *serveRuntime) updateInterruptFromEvent(ev llm.Event) {
+	rt.interruptMu.Lock()
+	defer rt.interruptMu.Unlock()
+	if rt.activeInterrupt == nil {
+		return
+	}
+	switch ev.Type {
+	case llm.EventTextDelta:
+		rt.activeInterrupt.proseLen += len(ev.Text)
+	case llm.EventToolExecStart:
+		rt.activeInterrupt.activeTool = ev.ToolName
+		if ev.ToolName != "" {
+			rt.activeInterrupt.toolsRun = append(rt.activeInterrupt.toolsRun, ev.ToolName)
+		}
+	case llm.EventToolExecEnd:
+		rt.activeInterrupt.activeTool = ""
+	}
+}
+
+func (rt *serveRuntime) Interrupt(ctx context.Context, msg string, fastProvider llm.Provider) (llm.InterruptAction, error) {
+	rt.interruptMu.Lock()
+	state := rt.activeInterrupt
+	if state == nil {
+		rt.interruptMu.Unlock()
+		return llm.InterruptQueue, fmt.Errorf("session has no active stream")
+	}
+	cancel := state.cancel
+	activity := llm.InterruptActivity{
+		CurrentTask: state.currentTask,
+		ToolsRun:    append([]string(nil), state.toolsRun...),
+		ProseLen:    state.proseLen,
+		ActiveTool:  state.activeTool,
+	}
+	rt.interruptMu.Unlock()
+	action := llm.ClassifyInterrupt(ctx, fastProvider, msg, activity)
+	switch action {
+	case llm.InterruptCancel:
+		if cancel != nil {
+			cancel()
+		}
+	case llm.InterruptInterject:
+		rt.engine.Interject(msg)
+	}
+	return action, nil
 }
 
 func (rt *serveRuntime) ensurePersistedSession(ctx context.Context, sessionID string, inputMessages []llm.Message) bool {
@@ -1826,6 +1979,20 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		rt.engine.ResetConversation()
 	}
 
+	runCtx, runCancel := context.WithCancel(ctx)
+	defer runCancel()
+
+	intState := &runtimeInterruptState{
+		cancel:      runCancel,
+		done:        make(chan struct{}),
+		currentTask: lastUserText(inputMessages),
+	}
+	rt.setActiveInterrupt(intState)
+	defer func() {
+		close(intState.done)
+		rt.clearActiveInterrupt(intState)
+	}()
+
 	messages := make([]llm.Message, 0, len(baseHistory)+len(inputMessages)+1)
 	if rt.systemPrompt != "" && !containsSystemMessage(baseHistory) && !containsSystemMessage(inputMessages) {
 		messages = append(messages, llm.SystemText(rt.systemPrompt))
@@ -1852,7 +2019,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	})
 	defer rt.engine.SetTurnCompletedCallback(nil)
 
-	stream, err := rt.engine.Stream(ctx, req)
+	stream, err := rt.engine.Stream(runCtx, req)
 	if err != nil {
 		if persisted {
 			rt.persistStatus(ctx, req.SessionID, statusForRunError(err))
@@ -1882,6 +2049,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 				return serveRunResult{}, err
 			}
 		}
+		rt.updateInterruptFromEvent(ev)
 
 		switch ev.Type {
 		case llm.EventTextDelta:
@@ -1937,6 +2105,25 @@ func containsSystemMessage(messages []llm.Message) bool {
 		}
 	}
 	return false
+}
+
+func lastUserText(messages []llm.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if msg.Role != llm.RoleUser {
+			continue
+		}
+		var parts []string
+		for _, p := range msg.Parts {
+			if p.Type == llm.PartText && strings.TrimSpace(p.Text) != "" {
+				parts = append(parts, strings.TrimSpace(p.Text))
+			}
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, "\n")
+		}
+	}
+	return ""
 }
 
 type responsesCreateRequest struct {

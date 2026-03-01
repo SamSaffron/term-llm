@@ -20,14 +20,14 @@ import (
 )
 
 var (
-	loopDebug          bool
-	loopSearch         bool
-	loopProvider       string
-	loopMCP            string
+	loopDebug           bool
+	loopSearch          bool
+	loopProvider        string
+	loopMCP             string
 	loopMaxTurns        int
 	loopMaxOutputTokens int
-	loopNativeSearch   bool
-	loopNoNativeSearch bool
+	loopNativeSearch    bool
+	loopNoNativeSearch  bool
 	// Tool flags
 	loopTools         string
 	loopReadDirs      []string
@@ -239,18 +239,18 @@ func runLoop(cmd *cobra.Command, args []string) error {
 
 	// Resolve all settings: CLI > agent > config
 	settings, err := ResolveSettings(cfg, agent, CLIFlags{
-		Provider:      loopProvider,
-		Tools:         loopTools,
-		ReadDirs:      loopReadDirs,
-		WriteDirs:     loopWriteDirs,
-		ShellAllow:    loopShellAllow,
-		MCP:           loopMCP,
-		SystemMessage: loopSystemMessage,
+		Provider:        loopProvider,
+		Tools:           loopTools,
+		ReadDirs:        loopReadDirs,
+		WriteDirs:       loopWriteDirs,
+		ShellAllow:      loopShellAllow,
+		MCP:             loopMCP,
+		SystemMessage:   loopSystemMessage,
 		MaxTurns:        loopMaxTurns,
 		MaxTurnsSet:     cmd.Flags().Changed("max-turns"),
 		MaxOutputTokens: loopMaxOutputTokens,
-		Search:        loopSearch,
-		Platform:      "console",
+		Search:          loopSearch,
+		Platform:        "console",
 	}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 100)
 	if err != nil {
 		return err
