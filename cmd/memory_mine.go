@@ -229,12 +229,17 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 			continue
 		}
 
-		created, updated, skipped, err := applyExtractionOperations(ctx, memStore, candidate.Agent, ops)
+		created, updated, skipped, affectedPaths, err := applyExtractionOperations(ctx, memStore, candidate.Agent, ops)
 		if err != nil {
 			return fmt.Errorf("apply operations for session %s: %w", candidate.Session.ID, err)
 		}
 
 		if !memoryDryRun {
+			for _, p := range affectedPaths {
+				if srcErr := memStore.AddFragmentSource(ctx, candidate.Agent, p, candidate.Session.ID, startOffset, nextOffset); srcErr != nil {
+					fmt.Fprintf(os.Stderr, "warning: record fragment source %s: %v\n", p, srcErr)
+				}
+			}
 			if err := memStore.UpsertState(ctx, &memorydb.MiningState{
 				SessionID:       candidate.Session.ID,
 				Agent:           candidate.Agent,
@@ -667,7 +672,16 @@ func isWindowsAbsPath(p string) bool {
 	return false
 }
 
-func applyExtractionOperations(ctx context.Context, store *memorydb.Store, agent string, ops []extractionOperation) (created, updated, skipped int, err error) {
+func applyExtractionOperations(ctx context.Context, store *memorydb.Store, agent string, ops []extractionOperation) (created, updated, skipped int, affectedPaths []string, err error) {
+	seenPaths := map[string]struct{}{}
+	addAffectedPath := func(p string) {
+		if _, exists := seenPaths[p]; exists {
+			return
+		}
+		seenPaths[p] = struct{}{}
+		affectedPaths = append(affectedPaths, p)
+	}
+
 	for _, op := range ops {
 		switch op.Op {
 		case "create":
@@ -685,16 +699,18 @@ func applyExtractionOperations(ctx context.Context, store *memorydb.Store, agent
 				if isUniqueConstraintError(createErr) {
 					ok, upErr := store.UpdateFragment(ctx, agent, op.Path, op.Content)
 					if upErr != nil {
-						return created, updated, skipped, upErr
+						return created, updated, skipped, affectedPaths, upErr
 					}
 					if ok {
 						created--
 						updated++
+						addAffectedPath(op.Path)
 						continue
 					}
 				}
-				return created, updated, skipped, createErr
+				return created, updated, skipped, affectedPaths, createErr
 			}
+			addAffectedPath(op.Path)
 		case "update":
 			updated++
 			if memoryDryRun {
@@ -702,18 +718,20 @@ func applyExtractionOperations(ctx context.Context, store *memorydb.Store, agent
 			}
 			ok, updateErr := store.UpdateFragment(ctx, agent, op.Path, op.Content)
 			if updateErr != nil {
-				return created, updated, skipped, updateErr
+				return created, updated, skipped, affectedPaths, updateErr
 			}
 			if !ok {
 				// Keep this as a skipped op if target fragment does not exist.
 				updated--
 				skipped++
+				continue
 			}
+			addAffectedPath(op.Path)
 		case "skip":
 			skipped++
 		}
 	}
-	return created, updated, skipped, nil
+	return created, updated, skipped, affectedPaths, nil
 }
 
 func mineGeneratedImages(ctx context.Context, store *memorydb.Store) int {

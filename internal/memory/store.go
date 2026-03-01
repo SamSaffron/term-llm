@@ -163,6 +163,19 @@ CREATE VIRTUAL TABLE IF NOT EXISTS generated_images_fts USING fts5(
     content_rowid='rowid',
     tokenize='unicode61'
 );
+
+CREATE TABLE IF NOT EXISTS memory_fragment_sources (
+    id         INTEGER PRIMARY KEY,
+    agent      TEXT NOT NULL,
+    path       TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    turn_start INTEGER NOT NULL,
+    turn_end   INTEGER NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_fragment_sources_agent_path ON memory_fragment_sources(agent, path);
+CREATE INDEX IF NOT EXISTS idx_fragment_sources_session_id ON memory_fragment_sources(session_id);
 `
 
 // NewStore opens memory.db and initializes schema.
@@ -491,6 +504,10 @@ func (s *Store) DeleteFragment(ctx context.Context, agent, path string) (deleted
 		return false, fmt.Errorf("sync fts delete: %w", err)
 	}
 
+	if err := s.deleteFragmentSources(ctx, tx, f.Agent, f.Path); err != nil {
+		return false, fmt.Errorf("delete fragment sources: %w", err)
+	}
+
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("commit delete fragment: %w", err)
 	}
@@ -530,6 +547,10 @@ func (s *Store) DeleteFragmentByRowID(ctx context.Context, rowID int64) (deleted
 
 	if err := syncFTSDelete(ctx, tx, rowID, &f); err != nil {
 		return false, fmt.Errorf("sync fts delete: %w", err)
+	}
+
+	if err := s.deleteFragmentSources(ctx, tx, f.Agent, f.Path); err != nil {
+		return false, fmt.Errorf("delete fragment sources: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -1474,6 +1495,101 @@ func newID() string {
 	randBytes := make([]byte, 3)
 	_, _ = rand.Read(randBytes)
 	return fmt.Sprintf("mem-%s-%s", now, hex.EncodeToString(randBytes))
+}
+
+// ── Fragment sources (L1→L2 backpointers) ────────────────────────────────────
+
+// FragmentSource records a link between a memory fragment (L1) and the raw
+// session turn range (L2) that the fragment was mined from.  One fragment can
+// accumulate many sources over time as the miner revisits sessions.
+type FragmentSource struct {
+	ID        int64
+	Agent     string
+	Path      string
+	SessionID string
+	TurnStart int
+	TurnEnd   int
+	CreatedAt time.Time
+}
+
+// AddFragmentSource records that the fragment at (agent, path) was derived from
+// messages [turnStart, turnEnd) of sessionID.  Duplicate rows (same agent,
+// path, session, and turn range) are silently ignored.
+func (s *Store) AddFragmentSource(ctx context.Context, agent, path, sessionID string, turnStart, turnEnd int) error {
+	agent = strings.TrimSpace(agent)
+	path = strings.TrimSpace(path)
+	sessionID = strings.TrimSpace(sessionID)
+	if agent == "" || path == "" || sessionID == "" {
+		return fmt.Errorf("agent, path, and session_id are required")
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO memory_fragment_sources (agent, path, session_id, turn_start, turn_end)
+		SELECT ?, ?, ?, ?, ?
+		WHERE NOT EXISTS (
+			SELECT 1 FROM memory_fragment_sources
+			WHERE agent = ? AND path = ? AND session_id = ? AND turn_start = ? AND turn_end = ?
+		)`,
+		agent, path, sessionID, turnStart, turnEnd,
+		agent, path, sessionID, turnStart, turnEnd,
+	)
+	if err != nil {
+		return fmt.Errorf("add fragment source: %w", err)
+	}
+	return nil
+}
+
+// GetFragmentSources returns all source records for a given (agent, path)
+// fragment, ordered oldest first.
+func (s *Store) GetFragmentSources(ctx context.Context, agent, path string) ([]FragmentSource, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, agent, path, session_id, turn_start, turn_end, created_at
+		FROM memory_fragment_sources
+		WHERE agent = ? AND path = ?
+		ORDER BY created_at ASC, id ASC`, agent, path)
+	if err != nil {
+		return nil, fmt.Errorf("get fragment sources: %w", err)
+	}
+	defer rows.Close()
+	return scanFragmentSources(rows)
+}
+
+// GetSourcesForSession returns all fragment sources that were derived from a
+// given session, ordered by path.  Useful for auditing what a session produced.
+func (s *Store) GetSourcesForSession(ctx context.Context, sessionID string) ([]FragmentSource, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, agent, path, session_id, turn_start, turn_end, created_at
+		FROM memory_fragment_sources
+		WHERE session_id = ?
+		ORDER BY path ASC, turn_start ASC, created_at ASC, id ASC`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("get sources for session: %w", err)
+	}
+	defer rows.Close()
+	return scanFragmentSources(rows)
+}
+
+// deleteFragmentSources removes all source records for (agent, path).
+// Called internally by DeleteFragment / DeleteFragmentByRowID.
+func (s *Store) deleteFragmentSources(ctx context.Context, tx *sql.Tx, agent, path string) error {
+	_, err := tx.ExecContext(ctx,
+		`DELETE FROM memory_fragment_sources WHERE agent = ? AND path = ?`, agent, path)
+	return err
+}
+
+func scanFragmentSources(rows *sql.Rows) ([]FragmentSource, error) {
+	var out []FragmentSource
+	for rows.Next() {
+		var fs FragmentSource
+		if err := rows.Scan(&fs.ID, &fs.Agent, &fs.Path, &fs.SessionID,
+			&fs.TurnStart, &fs.TurnEnd, &fs.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan fragment source: %w", err)
+		}
+		out = append(out, fs)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // ── Image tracking ───────────────────────────────────────────────────────────
