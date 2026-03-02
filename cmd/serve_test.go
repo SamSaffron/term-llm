@@ -452,7 +452,7 @@ func TestNewServeEngineWithTools_ConfiguresToolManagerAndSpawnWiring(t *testing.
 		return nil
 	}
 
-	engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, true, wireSpawn)
+	engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, true, wireSpawn, nil)
 	if err != nil {
 		t.Fatalf("newServeEngineWithTools failed: %v", err)
 	}
@@ -487,7 +487,7 @@ func TestNewServeEngineWithTools_SkipsToolManagerWhenToolsDisabled(t *testing.T)
 		return nil
 	}
 
-	engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, false, wireSpawn)
+	engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, false, wireSpawn, nil)
 	if err != nil {
 		t.Fatalf("newServeEngineWithTools failed: %v", err)
 	}
