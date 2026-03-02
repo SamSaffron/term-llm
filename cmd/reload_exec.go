@@ -39,7 +39,10 @@ func execReload(sessionID string) error {
 	}
 
 	if sessionID != "" {
-		newArgs = append(newArgs, "--resume", sessionID)
+		// Use --resume=ID (not --resume ID) because the flag has NoOptDefVal set,
+		// which means cobra treats the next positional arg as a separate argument
+		// rather than the flag value when the two-arg form is used.
+		newArgs = append(newArgs, "--resume="+sessionID)
 	}
 
 	return syscall.Exec(exe, newArgs, os.Environ())
