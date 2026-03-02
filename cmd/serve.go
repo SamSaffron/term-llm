@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -41,6 +42,7 @@ var (
 	serveAllowNoAuth            bool
 	serveAuthMode               string
 	serveUI                     bool
+	serveUIPrefix               string
 	serveCORSOrigins            []string
 	serveSessionTTL             time.Duration
 	serveSessionMax             int
@@ -108,6 +110,7 @@ func init() {
 	serveCmd.Flags().BoolVar(&serveAllowNoAuth, "allow-no-auth", false, "Disable auth (only allowed on loopback host)")
 	serveCmd.Flags().StringVar(&serveAuthMode, "auth", "bearer", "Auth mode: bearer or none")
 	serveCmd.Flags().BoolVar(&serveUI, "ui", false, "Serve minimal web UI")
+	serveCmd.Flags().StringVar(&serveUIPrefix, "ui-prefix", "/ui", "URL prefix the UI uses for session URLs (e.g. /chat)")
 	serveCmd.Flags().StringArrayVar(&serveCORSOrigins, "cors-origin", nil, "Allowed CORS origin (repeatable, or '*' for all)")
 	serveCmd.Flags().DurationVar(&serveSessionTTL, "session-ttl", 30*time.Minute, "Stateful session idle TTL")
 	serveCmd.Flags().IntVar(&serveSessionMax, "session-max", 1000, "Max stateful sessions in memory")
@@ -352,6 +355,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 				requireAuth: requireAuth,
 				token:       token,
 				ui:          serveUI,
+				uiPrefix:    strings.TrimRight(serveUIPrefix, "/"),
 				corsOrigins: append([]string(nil), serveCORSOrigins...),
 			},
 			sessionMgr: sessionMgr,
@@ -520,6 +524,7 @@ type serveServerConfig struct {
 	requireAuth bool
 	token       string
 	ui          bool
+	uiPrefix    string
 	corsOrigins []string
 }
 
@@ -622,7 +627,12 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write(serveui.IndexHTML())
+	html := serveui.IndexHTML()
+	if prefix := s.cfg.uiPrefix; prefix != "" && prefix != "/ui" {
+		snippet := `<script>window.TERM_LLM_UI_PREFIX=` + "`" + prefix + "`" + `;</script></head>`
+		html = bytes.Replace(html, []byte("</head>"), []byte(snippet), 1)
+	}
+	_, _ = w.Write(html)
 }
 
 func (s *serveServer) handleImage(w http.ResponseWriter, r *http.Request) {

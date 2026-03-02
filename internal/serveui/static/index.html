@@ -1389,15 +1389,18 @@
         }
       };
 
+      const UI_PREFIX = (window.TERM_LLM_UI_PREFIX || '/ui');
+
       const sessionIdFromURL = () => {
         const path = window.location.pathname;
-        const match = path.match(/^\/ui\/(.+)$/);
+        const escaped = UI_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const match = path.match(new RegExp('^' + escaped + '/(.+)$'));
         return match ? decodeURIComponent(match[1]) : '';
       };
 
       const updateURL = (sessionId) => {
         if (!sessionId) return;
-        const target = '/ui/' + encodeURIComponent(sessionId);
+        const target = UI_PREFIX + '/' + encodeURIComponent(sessionId);
         if (window.location.pathname !== target) {
           history.pushState(null, '', target);
         }
