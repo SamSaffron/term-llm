@@ -1967,13 +1967,19 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 			return err
 		}
 
+		// Setup skills and inject metadata into settings.SystemPrompt before
+		// constructing serveRuntime; skills.Setup is then passed to the engine
+		// factory for per-session activate_skill tool registration.
+		jobSkillsSetup := SetupSkills(&jobCfg.Skills, "", io.Discard)
+		settings.SystemPrompt = InjectSkillsMetadata(settings.SystemPrompt, jobSkillsSetup)
+
 		modelName := activeModel(jobCfg)
 		provider, err := llm.NewProvider(jobCfg)
 		if err != nil {
 			return err
 		}
 
-		engine, toolMgr, err := newServeEngineWithTools(jobCfg, settings, provider, serveYolo, WireSpawnAgentRunner)
+		engine, toolMgr, err := newServeEngineWithTools(jobCfg, settings, provider, serveYolo, WireSpawnAgentRunner, jobSkillsSetup)
 		if err != nil {
 			return err
 		}

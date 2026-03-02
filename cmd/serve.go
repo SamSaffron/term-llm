@@ -31,6 +31,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/serveui"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
+	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/spf13/cobra"
 )
@@ -220,6 +221,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Setup skills once for this serve process. The <available_skills> XML is
+	// injected here into settings.SystemPrompt so that both the web serveRuntime
+	// and the Telegram serveSettings pick it up correctly. Per-session engine
+	// registration (activate_skill tool) still happens inside the factory via
+	// newServeEngineWithTools.
+	skillsSetup := SetupSkills(&cfg.Skills, "", cmd.ErrOrStderr())
+	settings.SystemPrompt = InjectSkillsMetadata(settings.SystemPrompt, skillsSetup)
+
 	agentName := ""
 	if agent != nil {
 		agentName = agent.Name
@@ -241,7 +250,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return nil, err
 		}
-		engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, serveYolo, WireSpawnAgentRunner)
+		engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, serveYolo, WireSpawnAgentRunner, skillsSetup)
 		if err != nil {
 			return nil, err
 		}
@@ -406,7 +415,12 @@ func runServe(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func newServeEngineWithTools(cfg *config.Config, settings SessionSettings, provider llm.Provider, yoloMode bool, wireSpawn func(*config.Config, *tools.ToolManager, bool) error) (*llm.Engine, *tools.ToolManager, error) {
+// newServeEngineWithTools creates a new engine with tools wired up for serving.
+// skillsSetup must be pre-initialized by the caller (e.g. via SetupSkills); this
+// function registers the activate_skill tool on the engine but does NOT inject
+// <available_skills> metadata into the system prompt — the caller must do that
+// before constructing serveRuntime/serveSettings so the mutation is not lost.
+func newServeEngineWithTools(cfg *config.Config, settings SessionSettings, provider llm.Provider, yoloMode bool, wireSpawn func(*config.Config, *tools.ToolManager, bool) error, skillsSetup *skills.Setup) (*llm.Engine, *tools.ToolManager, error) {
 	engine := newEngine(provider, cfg)
 
 	toolMgr, err := settings.SetupToolManager(cfg, engine)
@@ -424,10 +438,9 @@ func newServeEngineWithTools(cfg *config.Config, settings SessionSettings, provi
 		}
 	}
 
-	// Wire skills system (activate_skill tool + system prompt injection).
-	skillsSetup := SetupSkills(&cfg.Skills, "", io.Discard)
+	// Register the activate_skill tool on the engine. Metadata injection into the
+	// system prompt is handled by the caller to avoid the by-value settings copy trap.
 	RegisterSkillToolWithEngine(engine, toolMgr, skillsSetup)
-	settings.SystemPrompt = InjectSkillsMetadata(settings.SystemPrompt, skillsSetup)
 
 	return engine, toolMgr, nil
 }
