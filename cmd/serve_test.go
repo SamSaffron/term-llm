@@ -1149,7 +1149,7 @@ func newTestServeServer(responses ...string) *serveServer {
 	mgr := newServeSessionManager(time.Minute, 100, factory)
 	srv := &serveServer{sessionMgr: mgr}
 	mgr.onEvict = func(rt *serveRuntime) {
-		for _, rid := range rt.responseIDs {
+		for _, rid := range rt.getResponseIDs() {
 			srv.responseToSession.Delete(rid)
 		}
 	}
@@ -1262,7 +1262,7 @@ func TestHandleResponses_UnknownPreviousResponseIDDoesNotOverwriteHistory(t *tes
 	mgr := newServeSessionManager(time.Minute, 100, factory)
 	srv := &serveServer{sessionMgr: mgr, store: store}
 	mgr.onEvict = func(rt *serveRuntime) {
-		for _, rid := range rt.responseIDs {
+		for _, rid := range rt.getResponseIDs() {
 			srv.responseToSession.Delete(rid)
 		}
 	}
@@ -1507,7 +1507,7 @@ func TestResponseToSessionMap_CleanedOnEviction(t *testing.T) {
 	mgr := newServeSessionManager(50*time.Millisecond, 100, factory)
 	srv := &serveServer{sessionMgr: mgr}
 	mgr.onEvict = func(rt *serveRuntime) {
-		for _, rid := range rt.responseIDs {
+		for _, rid := range rt.getResponseIDs() {
 			srv.responseToSession.Delete(rid)
 		}
 	}
@@ -1641,8 +1641,8 @@ func TestRegisterResponseID_CapsAtMax(t *testing.T) {
 	}
 
 	// Should be capped
-	if len(rt.responseIDs) != maxResponseIDs {
-		t.Fatalf("responseIDs len = %d, want %d", len(rt.responseIDs), maxResponseIDs)
+	if got := len(rt.getResponseIDs()); got != maxResponseIDs {
+		t.Fatalf("responseIDs len = %d, want %d", got, maxResponseIDs)
 	}
 
 	// First 5 IDs should be pruned from the map
@@ -1663,7 +1663,176 @@ func TestRegisterResponseID_CapsAtMax(t *testing.T) {
 
 	// lastResponseID should be the most recent
 	expected := fmt.Sprintf("resp_%d", maxResponseIDs+4)
-	if rt.lastResponseID != expected {
-		t.Fatalf("lastResponseID = %q, want %q", rt.lastResponseID, expected)
+	if got := rt.getLastResponseID(); got != expected {
+		t.Fatalf("lastResponseID = %q, want %q", got, expected)
+	}
+}
+
+func TestServeSessionManager_Get_ExistingSession(t *testing.T) {
+	factory := func(ctx context.Context) (*serveRuntime, error) {
+		rt := &serveRuntime{}
+		rt.Touch()
+		return rt, nil
+	}
+	mgr := newServeSessionManager(time.Minute, 10, factory)
+	defer mgr.Close()
+
+	// Create a session first.
+	created, err := mgr.GetOrCreate(context.Background(), "sess-1")
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+
+	// Get should find it.
+	got, ok := mgr.Get("sess-1")
+	if !ok {
+		t.Fatal("Get returned false for existing session")
+	}
+	if got != created {
+		t.Fatal("Get returned different runtime than GetOrCreate")
+	}
+}
+
+func TestServeSessionManager_Get_MissingSession(t *testing.T) {
+	factory := func(ctx context.Context) (*serveRuntime, error) {
+		t.Fatal("factory should not be called")
+		return nil, nil
+	}
+	mgr := newServeSessionManager(time.Minute, 10, factory)
+	defer mgr.Close()
+
+	rt, ok := mgr.Get("nonexistent")
+	if ok {
+		t.Fatal("Get returned true for nonexistent session")
+	}
+	if rt != nil {
+		t.Fatal("Get returned non-nil runtime for nonexistent session")
+	}
+}
+
+func TestServeSessionManager_GetOrCreate_RespectsContextCancel(t *testing.T) {
+	// Factory blocks until told to proceed.
+	proceed := make(chan struct{})
+	factory := func(ctx context.Context) (*serveRuntime, error) {
+		<-proceed
+		rt := &serveRuntime{}
+		rt.Touch()
+		return rt, nil
+	}
+	mgr := newServeSessionManager(time.Minute, 10, factory)
+	defer mgr.Close()
+
+	// First call triggers factory (blocks).
+	go func() {
+		_, _ = mgr.GetOrCreate(context.Background(), "slow-sess")
+	}()
+	// Give time for in-flight to be registered.
+	time.Sleep(20 * time.Millisecond)
+
+	// Second call with a cancelled context should return immediately.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := mgr.GetOrCreate(ctx, "slow-sess")
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+	if err != context.Canceled {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+
+	// Unblock factory so cleanup works.
+	close(proceed)
+}
+
+func TestServeSessionManager_EvictionCallbackCleansResponseIDs(t *testing.T) {
+	factory := func(ctx context.Context) (*serveRuntime, error) {
+		rt := &serveRuntime{}
+		rt.Touch()
+		return rt, nil
+	}
+	mgr := newServeSessionManager(50*time.Millisecond, 100, factory)
+	srv := &serveServer{sessionMgr: mgr}
+	mgr.onEvict = func(rt *serveRuntime) {
+		for _, rid := range rt.getResponseIDs() {
+			srv.responseToSession.Delete(rid)
+		}
+	}
+	defer mgr.Close()
+
+	rt, err := mgr.GetOrCreate(context.Background(), "evict-sess")
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+
+	// Simulate registering response IDs.
+	srv.registerResponseID(rt, "resp_a", "evict-sess")
+	srv.registerResponseID(rt, "resp_b", "evict-sess")
+
+	// Verify mappings exist.
+	if _, ok := srv.responseToSession.Load("resp_a"); !ok {
+		t.Fatal("resp_a should exist before eviction")
+	}
+	if _, ok := srv.responseToSession.Load("resp_b"); !ok {
+		t.Fatal("resp_b should exist before eviction")
+	}
+
+	// Wait for TTL and evict.
+	time.Sleep(100 * time.Millisecond)
+	mgr.evictExpired()
+
+	// Mappings should be cleaned up.
+	if _, ok := srv.responseToSession.Load("resp_a"); ok {
+		t.Fatal("resp_a should be cleaned up after eviction")
+	}
+	if _, ok := srv.responseToSession.Load("resp_b"); ok {
+		t.Fatal("resp_b should be cleaned up after eviction")
+	}
+}
+
+func TestServeSessionManager_GetOrCreate_ConcurrentDedup(t *testing.T) {
+	var factoryCalls atomic.Int32
+	factory := func(ctx context.Context) (*serveRuntime, error) {
+		factoryCalls.Add(1)
+		time.Sleep(30 * time.Millisecond)
+		rt := &serveRuntime{}
+		rt.Touch()
+		return rt, nil
+	}
+	mgr := newServeSessionManager(time.Minute, 10, factory)
+	defer mgr.Close()
+
+	const workers = 20
+	runtimes := make([]*serveRuntime, workers)
+	errs := make([]error, workers)
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			rt, err := mgr.GetOrCreate(context.Background(), "dedup-id")
+			runtimes[idx] = rt
+			errs[idx] = err
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("worker %d error: %v", i, err)
+		}
+	}
+
+	// All workers should get the same runtime.
+	first := runtimes[0]
+	for i := 1; i < workers; i++ {
+		if runtimes[i] != first {
+			t.Fatalf("worker %d got different runtime pointer", i)
+		}
+	}
+
+	// Factory should only have been called once.
+	if got := factoryCalls.Load(); got != 1 {
+		t.Fatalf("factory called %d times, want 1", got)
 	}
 }
