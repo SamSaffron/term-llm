@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1124,5 +1126,544 @@ func TestEnsurePersistedSession_SkipsRestoreWhenHistoryExists(t *testing.T) {
 	}
 	if rt.history[0].Parts[0].Text != "existing" {
 		t.Fatalf("history was overwritten")
+	}
+}
+
+// newTestServeServer creates a serveServer with a mock factory for testing.
+// Each runtime gets its own mock provider with the given responses.
+func newTestServeServer(responses ...string) *serveServer {
+	factory := func(ctx context.Context) (*serveRuntime, error) {
+		provider := llm.NewMockProvider("mock")
+		for _, r := range responses {
+			provider.AddTextResponse(r)
+		}
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			engine:       engine,
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		return rt, nil
+	}
+	mgr := newServeSessionManager(time.Minute, 100, factory)
+	srv := &serveServer{sessionMgr: mgr}
+	mgr.onEvict = func(rt *serveRuntime) {
+		for _, rid := range rt.responseIDs {
+			srv.responseToSession.Delete(rid)
+		}
+	}
+	return srv
+}
+
+// doResponses sends a non-streaming /v1/responses request and returns the parsed response body.
+func doResponses(t *testing.T, srv *serveServer, bodyJSON string) (int, map[string]any) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(bodyJSON))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleResponses(rr, req)
+	var result map[string]any
+	if rr.Code == http.StatusOK {
+		if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+	}
+	return rr.Code, result
+}
+
+// doResponsesWithHeader sends a non-streaming /v1/responses request with a session_id header.
+func doResponsesWithHeader(t *testing.T, srv *serveServer, bodyJSON, sessionID string) (int, map[string]any) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(bodyJSON))
+	req.Header.Set("Content-Type", "application/json")
+	if sessionID != "" {
+		req.Header.Set("session_id", sessionID)
+	}
+	rr := httptest.NewRecorder()
+	srv.handleResponses(rr, req)
+	var result map[string]any
+	if rr.Code == http.StatusOK {
+		if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+	}
+	return rr.Code, result
+}
+
+func TestHandleResponses_ReturnsStableResponseID(t *testing.T) {
+	srv := newTestServeServer("hello")
+	defer srv.sessionMgr.Close()
+
+	code, resp := doResponses(t, srv, `{"input":"hi"}`)
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+
+	id, _ := resp["id"].(string)
+	if !strings.HasPrefix(id, "resp_") {
+		t.Fatalf("response id = %q, want resp_ prefix", id)
+	}
+}
+
+func TestHandleResponses_IncludesSessionUsage(t *testing.T) {
+	srv := newTestServeServer("hello")
+	defer srv.sessionMgr.Close()
+
+	code, resp := doResponses(t, srv, `{"input":"hi"}`)
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+
+	sessionUsage, ok := resp["session_usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("session_usage missing from response")
+	}
+	// Session usage should have the same structure as usage
+	if _, ok := sessionUsage["input_tokens"]; !ok {
+		t.Fatalf("session_usage missing input_tokens")
+	}
+	if _, ok := sessionUsage["output_tokens"]; !ok {
+		t.Fatalf("session_usage missing output_tokens")
+	}
+}
+
+func TestHandleResponses_UnknownPreviousResponseIDReturnsError(t *testing.T) {
+	srv := newTestServeServer("hello")
+	defer srv.sessionMgr.Close()
+
+	body := `{"input":"hi","previous_response_id":"resp_does_not_exist"}`
+	code, _ := doResponses(t, srv, body)
+	if code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for unknown previous_response_id", code)
+	}
+}
+
+func TestHandleResponses_UnknownPreviousResponseIDDoesNotOverwriteHistory(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	factory := func(ctx context.Context) (*serveRuntime, error) {
+		provider := llm.NewMockProvider("mock").AddTextResponse("ok")
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			engine:       engine,
+			store:        store,
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		return rt, nil
+	}
+	mgr := newServeSessionManager(time.Minute, 100, factory)
+	srv := &serveServer{sessionMgr: mgr, store: store}
+	mgr.onEvict = func(rt *serveRuntime) {
+		for _, rid := range rt.responseIDs {
+			srv.responseToSession.Delete(rid)
+		}
+	}
+	defer mgr.Close()
+
+	// Establish a session with history
+	code, resp := doResponsesWithHeader(t, srv, `{"input":"first message"}`, "protect-me")
+	if code != http.StatusOK {
+		t.Fatalf("setup status = %d, want 200", code)
+	}
+	respID, _ := resp["id"].(string)
+	_ = respID
+
+	// Verify messages were persisted
+	msgs, err := store.GetMessages(context.Background(), "protect-me", 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	originalCount := len(msgs)
+	if originalCount < 2 {
+		t.Fatalf("expected at least 2 persisted messages, got %d", originalCount)
+	}
+
+	// Now send a request with an unknown previous_response_id and same session_id.
+	// This MUST fail and NOT overwrite history.
+	code2, _ := doResponsesWithHeader(t, srv,
+		`{"input":"bad","previous_response_id":"resp_bogus"}`, "protect-me")
+	if code2 != http.StatusBadRequest {
+		t.Fatalf("unknown previous_response_id status = %d, want 400", code2)
+	}
+
+	// Verify persisted history is unchanged
+	msgs2, err := store.GetMessages(context.Background(), "protect-me", 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages after bad request: %v", err)
+	}
+	if len(msgs2) != originalCount {
+		t.Fatalf("persisted messages changed: was %d, now %d", originalCount, len(msgs2))
+	}
+}
+
+func TestHandleResponses_StalePreviousResponseIDReturnsConflict(t *testing.T) {
+	srv := newTestServeServer("reply1", "reply2", "reply3")
+	defer srv.sessionMgr.Close()
+
+	// Send two messages to create two response IDs
+	code, resp1 := doResponsesWithHeader(t, srv, `{"input":"msg1"}`, "stale-test")
+	if code != http.StatusOK {
+		t.Fatalf("msg1 status = %d, want 200", code)
+	}
+	respID1, _ := resp1["id"].(string)
+
+	body2 := `{"input":"msg2","previous_response_id":"` + respID1 + `"}`
+	code, resp2 := doResponses(t, srv, body2)
+	if code != http.StatusOK {
+		t.Fatalf("msg2 status = %d, want 200", code)
+	}
+	_ = resp2["id"].(string) // respID2 is now the latest
+
+	// Try to chain from the OLD response ID (respID1) — should fail
+	body3 := `{"input":"msg3","previous_response_id":"` + respID1 + `"}`
+	code, _ = doResponses(t, srv, body3)
+	if code != http.StatusConflict {
+		t.Fatalf("stale previous_response_id status = %d, want 409", code)
+	}
+}
+
+func TestHandleResponses_PreviousResponseIDChainsSession(t *testing.T) {
+	// Each runtime gets 2 text responses so it can handle 2 messages
+	srv := newTestServeServer("first reply", "second reply")
+	defer srv.sessionMgr.Close()
+
+	// First request: no chaining
+	code, resp1 := doResponsesWithHeader(t, srv, `{"input":"msg1"}`, "sess-chain")
+	if code != http.StatusOK {
+		t.Fatalf("msg1 status = %d, want 200", code)
+	}
+	respID1, _ := resp1["id"].(string)
+	if respID1 == "" {
+		t.Fatalf("first response missing id")
+	}
+
+	// Second request: chain via previous_response_id
+	body2 := `{"input":"msg2","previous_response_id":"` + respID1 + `"}`
+	code, resp2 := doResponses(t, srv, body2)
+	if code != http.StatusOK {
+		t.Fatalf("msg2 status = %d, want 200", code)
+	}
+	respID2, _ := resp2["id"].(string)
+	if respID2 == "" {
+		t.Fatalf("second response missing id")
+	}
+	if respID1 == respID2 {
+		t.Fatalf("response IDs should be unique, both are %q", respID1)
+	}
+}
+
+func TestHandleResponses_NoPreviousResponseIDStartsFresh(t *testing.T) {
+	// Each runtime gets 2 responses so it can handle being reused
+	srv := newTestServeServer("reply1", "reply2")
+	defer srv.sessionMgr.Close()
+
+	// First request with session_id header, no previous_response_id
+	code1, resp1 := doResponsesWithHeader(t, srv, `{"input":"msg1"}`, "same-session")
+	if code1 != http.StatusOK {
+		t.Fatalf("msg1 status = %d, want 200", code1)
+	}
+	respID1, _ := resp1["id"].(string)
+
+	// Second request with same session_id header but no previous_response_id.
+	// Should start fresh (replaceHistory=true), clearing prior conversation.
+	code2, resp2 := doResponsesWithHeader(t, srv, `{"input":"msg2"}`, "same-session")
+	if code2 != http.StatusOK {
+		t.Fatalf("msg2 status = %d, want 200; without previous_response_id should start fresh", code2)
+	}
+
+	// Both should succeed and have different response IDs
+	respID2, _ := resp2["id"].(string)
+	if respID1 == respID2 {
+		t.Fatalf("response IDs should differ, both are %q", respID1)
+	}
+
+	// Verify that the runtime's history was reset: the second request should
+	// NOT have seen the first request's messages. We check the mock provider's
+	// recorded requests — the second request should have only the system prompt
+	// (if any) + the new user message, not the accumulated history.
+	rt, err := srv.sessionMgr.GetOrCreate(context.Background(), "same-session")
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+	provider := rt.provider.(*llm.MockProvider)
+	if len(provider.Requests) < 2 {
+		t.Fatalf("expected 2 provider requests, got %d", len(provider.Requests))
+	}
+	secondReq := provider.Requests[1]
+	// Count user messages in the second request — should be exactly 1 (fresh start)
+	userMsgCount := 0
+	for _, msg := range secondReq.Messages {
+		if msg.Role == llm.RoleUser {
+			userMsgCount++
+		}
+	}
+	if userMsgCount != 1 {
+		t.Fatalf("second request has %d user messages, want 1 (fresh start)", userMsgCount)
+	}
+}
+
+func TestHandleResponses_CumulativeUsageGrows(t *testing.T) {
+	srv := newTestServeServer("reply1", "reply2")
+	defer srv.sessionMgr.Close()
+
+	// First request
+	code, resp1 := doResponsesWithHeader(t, srv, `{"input":"msg1"}`, "usage-test")
+	if code != http.StatusOK {
+		t.Fatalf("msg1 status = %d, want 200", code)
+	}
+	respID1, _ := resp1["id"].(string)
+	su1, _ := resp1["session_usage"].(map[string]any)
+	total1 := su1["total_tokens"].(float64)
+
+	// Second request chained
+	body2 := `{"input":"msg2","previous_response_id":"` + respID1 + `"}`
+	code, resp2 := doResponses(t, srv, body2)
+	if code != http.StatusOK {
+		t.Fatalf("msg2 status = %d, want 200", code)
+	}
+	su2, _ := resp2["session_usage"].(map[string]any)
+	total2 := su2["total_tokens"].(float64)
+
+	if total2 < total1 {
+		t.Fatalf("cumulative session_usage should grow: first=%v, second=%v", total1, total2)
+	}
+}
+
+func TestStreamResponses_IncludesResponseIDAndSessionUsage(t *testing.T) {
+	srv := newTestServeServer("streamed response")
+	defer srv.sessionMgr.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses",
+		strings.NewReader(`{"input":"hi","stream":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleResponses(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	// Parse SSE events to find response.completed
+	var completedData map[string]any
+	scanner := bufio.NewScanner(rr.Body)
+	var currentEvent string
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "event: ") {
+			currentEvent = strings.TrimPrefix(line, "event: ")
+		} else if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+			if currentEvent == "response.completed" && data != "[DONE]" {
+				if err := json.Unmarshal([]byte(data), &completedData); err != nil {
+					t.Fatalf("parse response.completed data: %v", err)
+				}
+			}
+		}
+	}
+
+	if completedData == nil {
+		t.Fatalf("response.completed event not found in SSE stream")
+	}
+
+	response, ok := completedData["response"].(map[string]any)
+	if !ok {
+		t.Fatalf("response.completed missing response object")
+	}
+
+	respID, _ := response["id"].(string)
+	if !strings.HasPrefix(respID, "resp_") {
+		t.Fatalf("streaming response id = %q, want resp_ prefix", respID)
+	}
+
+	sessionUsage, ok := response["session_usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("streaming response missing session_usage")
+	}
+	if _, ok := sessionUsage["input_tokens"]; !ok {
+		t.Fatalf("session_usage missing input_tokens")
+	}
+}
+
+func TestResponseToSessionMap_CleanedOnEviction(t *testing.T) {
+	factory := func(ctx context.Context) (*serveRuntime, error) {
+		provider := llm.NewMockProvider("mock").AddTextResponse("ok")
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			engine:       engine,
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		return rt, nil
+	}
+	mgr := newServeSessionManager(50*time.Millisecond, 100, factory)
+	srv := &serveServer{sessionMgr: mgr}
+	mgr.onEvict = func(rt *serveRuntime) {
+		for _, rid := range rt.responseIDs {
+			srv.responseToSession.Delete(rid)
+		}
+	}
+	defer mgr.Close()
+
+	// Create a session and get a response ID
+	code, resp := doResponsesWithHeader(t, srv, `{"input":"hi"}`, "evict-test")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	respID, _ := resp["id"].(string)
+
+	// Verify mapping exists
+	if _, ok := srv.responseToSession.Load(respID); !ok {
+		t.Fatalf("responseToSession should contain %q after request", respID)
+	}
+
+	// Wait for TTL expiry + janitor tick
+	time.Sleep(200 * time.Millisecond)
+	mgr.evictExpired()
+
+	// Mapping should be cleaned up
+	if _, ok := srv.responseToSession.Load(respID); ok {
+		t.Fatalf("responseToSession should be cleaned up after eviction")
+	}
+}
+
+func TestParsePreviousResponseID(t *testing.T) {
+	var req responsesCreateRequest
+	body := `{"input":"hello","previous_response_id":"resp_abc123"}`
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if req.PreviousResponseID != "resp_abc123" {
+		t.Fatalf("previous_response_id = %q, want resp_abc123", req.PreviousResponseID)
+	}
+}
+
+func TestServeRuntime_CumulativeUsageAccumulates(t *testing.T) {
+	provider := llm.NewMockProvider("mock").
+		AddTurn(llm.MockTurn{Text: "a", Usage: llm.Usage{InputTokens: 10, OutputTokens: 5}}).
+		AddTurn(llm.MockTurn{Text: "b", Usage: llm.Usage{InputTokens: 20, OutputTokens: 8}})
+	engine := llm.NewEngine(provider, nil)
+
+	rt := &serveRuntime{
+		provider:     provider,
+		engine:       engine,
+		defaultModel: "mock-model",
+	}
+	rt.Touch()
+
+	req := llm.Request{SessionID: "cumul-test", MaxTurns: 1}
+
+	result1, err := rt.Run(context.Background(), true, false, []llm.Message{
+		llm.UserText("first"),
+	}, req)
+	if err != nil {
+		t.Fatalf("Run 1: %v", err)
+	}
+	if result1.SessionUsage.InputTokens != 10 {
+		t.Fatalf("session input tokens after 1st run = %d, want 10", result1.SessionUsage.InputTokens)
+	}
+	if result1.SessionUsage.OutputTokens != 5 {
+		t.Fatalf("session output tokens after 1st run = %d, want 5", result1.SessionUsage.OutputTokens)
+	}
+
+	result2, err := rt.Run(context.Background(), true, false, []llm.Message{
+		llm.UserText("second"),
+	}, req)
+	if err != nil {
+		t.Fatalf("Run 2: %v", err)
+	}
+	if result2.SessionUsage.InputTokens != 30 {
+		t.Fatalf("session input tokens after 2nd run = %d, want 30", result2.SessionUsage.InputTokens)
+	}
+	if result2.SessionUsage.OutputTokens != 13 {
+		t.Fatalf("session output tokens after 2nd run = %d, want 13", result2.SessionUsage.OutputTokens)
+	}
+}
+
+func TestServeRuntime_CumulativeUsageResetsOnFreshConversation(t *testing.T) {
+	provider := llm.NewMockProvider("mock").
+		AddTurn(llm.MockTurn{Text: "a", Usage: llm.Usage{InputTokens: 100, OutputTokens: 50}}).
+		AddTurn(llm.MockTurn{Text: "b", Usage: llm.Usage{InputTokens: 10, OutputTokens: 5}})
+	engine := llm.NewEngine(provider, nil)
+
+	rt := &serveRuntime{
+		provider:     provider,
+		engine:       engine,
+		defaultModel: "mock-model",
+	}
+	rt.Touch()
+
+	req := llm.Request{SessionID: "reset-test", MaxTurns: 1}
+
+	// First run accumulates usage
+	result1, err := rt.Run(context.Background(), true, false, []llm.Message{
+		llm.UserText("first"),
+	}, req)
+	if err != nil {
+		t.Fatalf("Run 1: %v", err)
+	}
+	if result1.SessionUsage.InputTokens != 100 {
+		t.Fatalf("after run 1: session input = %d, want 100", result1.SessionUsage.InputTokens)
+	}
+
+	// Second run with replaceHistory=true should reset cumulative usage
+	result2, err := rt.Run(context.Background(), true, true, []llm.Message{
+		llm.UserText("fresh start"),
+	}, req)
+	if err != nil {
+		t.Fatalf("Run 2: %v", err)
+	}
+	// Should only reflect this run's usage, not accumulated
+	if result2.SessionUsage.InputTokens != 10 {
+		t.Fatalf("after fresh run: session input = %d, want 10 (reset)", result2.SessionUsage.InputTokens)
+	}
+	if result2.SessionUsage.OutputTokens != 5 {
+		t.Fatalf("after fresh run: session output = %d, want 5 (reset)", result2.SessionUsage.OutputTokens)
+	}
+}
+
+func TestRegisterResponseID_CapsAtMax(t *testing.T) {
+	srv := &serveServer{}
+	rt := &serveRuntime{}
+
+	// Register more than maxResponseIDs
+	for i := 0; i < maxResponseIDs+5; i++ {
+		id := fmt.Sprintf("resp_%d", i)
+		srv.registerResponseID(rt, id, "sess-1")
+	}
+
+	// Should be capped
+	if len(rt.responseIDs) != maxResponseIDs {
+		t.Fatalf("responseIDs len = %d, want %d", len(rt.responseIDs), maxResponseIDs)
+	}
+
+	// First 5 IDs should be pruned from the map
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("resp_%d", i)
+		if _, ok := srv.responseToSession.Load(id); ok {
+			t.Fatalf("pruned ID %q still in responseToSession map", id)
+		}
+	}
+
+	// Latest IDs should still be in the map
+	for i := 5; i < maxResponseIDs+5; i++ {
+		id := fmt.Sprintf("resp_%d", i)
+		if _, ok := srv.responseToSession.Load(id); !ok {
+			t.Fatalf("retained ID %q missing from responseToSession map", id)
+		}
+	}
+
+	// lastResponseID should be the most recent
+	expected := fmt.Sprintf("resp_%d", maxResponseIDs+4)
+	if rt.lastResponseID != expected {
+		t.Fatalf("lastResponseID = %q, want %q", rt.lastResponseID, expected)
 	}
 }

@@ -372,6 +372,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 			cfgRef:     cfg,
 			store:      store,
 		}
+		sessionMgr.onEvict = func(rt *serveRuntime) {
+			for _, rid := range rt.responseIDs {
+				s.responseToSession.Delete(rid)
+			}
+		}
 
 		if err := s.Start(); err != nil {
 			return err
@@ -542,14 +547,15 @@ type serveServerConfig struct {
 }
 
 type serveServer struct {
-	cfg            serveServerConfig
-	sessionMgr     *serveSessionManager
-	jobsV2         *jobsV2Manager
-	cfgRef         *config.Config
-	store          session.Store
-	server         *http.Server
-	modelsMu       sync.Mutex
-	modelsProvider llm.Provider
+	cfg               serveServerConfig
+	sessionMgr        *serveSessionManager
+	jobsV2            *jobsV2Manager
+	cfgRef            *config.Config
+	store             session.Store
+	server            *http.Server
+	modelsMu          sync.Mutex
+	modelsProvider    llm.Provider
+	responseToSession sync.Map // response_id (string) → session_id (string)
 }
 
 func (s *serveServer) Start() error {
@@ -1062,10 +1068,45 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessionID := resolveRequestSessionID(w, r)
+	// Resolve session: previous_response_id for chaining, otherwise fresh.
+	// session_id header provides the ID for persistence but does NOT reuse
+	// an existing conversation without explicit chaining.
+	sessionID := ""
+	if req.PreviousResponseID != "" {
+		sid, ok := s.responseToSession.Load(req.PreviousResponseID)
+		if !ok {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error",
+				fmt.Sprintf("previous_response_id %q not found (session may have expired)", req.PreviousResponseID))
+			return
+		}
+		sessionID = sid.(string)
+	}
+	if sessionID == "" {
+		// No chaining — unconditionally fresh conversation.
+		sessionID = strings.TrimSpace(r.Header.Get("session_id"))
+		if sessionID == "" {
+			sessionID = session.NewID()
+		}
+		w.Header().Set("x-session-id", sessionID)
+		replaceHistory = true
+	}
 	runtime, stateful, err := s.runtimeForRequest(ctx, sessionID)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+
+	// Enforce chaining from the latest response only. Stale response IDs that
+	// map to a valid session but don't match the runtime's last response would
+	// produce incorrect branching (the context wouldn't match what the client
+	// expects from that response).
+	if req.PreviousResponseID != "" && runtime.lastResponseID != "" &&
+		req.PreviousResponseID != runtime.lastResponseID {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error",
+			fmt.Sprintf("previous_response_id %q is stale; latest is %q", req.PreviousResponseID, runtime.lastResponseID))
+		if !stateful {
+			runtime.Close()
+		}
 		return
 	}
 	if !stateful {
@@ -1122,7 +1163,11 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	if model == "" {
 		model = runtime.defaultModel
 	}
-	writeJSON(w, http.StatusOK, responsesFinalResponse(result, model))
+
+	respID := "resp_" + randomSuffix()
+	s.registerResponseID(runtime, respID, sessionID)
+
+	writeJSON(w, http.StatusOK, responsesFinalResponse(result, model, respID))
 }
 
 func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string) {
@@ -1133,7 +1178,7 @@ func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter
 	}
 
 	setSSEHeaders(w)
-	respID := "resp_" + sessionOrRandomID(sessionID)
+	respID := "resp_" + randomSuffix()
 	model := llmReq.Model
 	if model == "" {
 		model = runtime.defaultModel
@@ -1232,6 +1277,8 @@ func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter
 		return
 	}
 
+	s.registerResponseID(runtime, respID, sessionID)
+
 	_ = writeSSEEvent(w, "response.completed", map[string]any{
 		"response": map[string]any{
 			"id":      respID,
@@ -1245,6 +1292,14 @@ func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter
 				"total_tokens":  result.Usage.InputTokens + result.Usage.OutputTokens,
 				"input_tokens_details": map[string]any{
 					"cached_tokens": result.Usage.CachedInputTokens,
+				},
+			},
+			"session_usage": map[string]any{
+				"input_tokens":  result.SessionUsage.InputTokens,
+				"output_tokens": result.SessionUsage.OutputTokens,
+				"total_tokens":  result.SessionUsage.InputTokens + result.SessionUsage.OutputTokens,
+				"input_tokens_details": map[string]any{
+					"cached_tokens": result.SessionUsage.CachedInputTokens,
 				},
 			},
 		},
@@ -1283,6 +1338,9 @@ func (s *serveServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	}
 
 	sessionID := resolveRequestSessionID(w, r)
+	if sessionID == "" {
+		sessionID = ensureSessionID(w)
+	}
 	runtime, stateful, err := s.runtimeForRequest(ctx, sessionID)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
@@ -1520,6 +1578,23 @@ func writeSSEEvent(w io.Writer, event string, payload any) error {
 	return err
 }
 
+// registerResponseID stores a response ID on the runtime and server-wide map,
+// pruning old IDs that exceed the per-session cap.
+func (s *serveServer) registerResponseID(rt *serveRuntime, respID, sessionID string) {
+	rt.lastResponseID = respID
+	rt.responseIDs = append(rt.responseIDs, respID)
+	s.responseToSession.Store(respID, sessionID)
+
+	// Prune oldest IDs if over cap.
+	if len(rt.responseIDs) > maxResponseIDs {
+		excess := len(rt.responseIDs) - maxResponseIDs
+		for _, old := range rt.responseIDs[:excess] {
+			s.responseToSession.Delete(old)
+		}
+		rt.responseIDs = rt.responseIDs[excess:]
+	}
+}
+
 func (s *serveServer) runtimeForRequest(ctx context.Context, sessionID string) (*serveRuntime, bool, error) {
 	if sessionID == "" {
 		// Ephemeral stateless runtime (fresh per request for isolation)
@@ -1541,6 +1616,7 @@ type serveSessionManager struct {
 	ttl     time.Duration
 	max     int
 	factory func(context.Context) (*serveRuntime, error)
+	onEvict func(rt *serveRuntime) // called when a session is evicted
 
 	mu       sync.Mutex
 	sessions map[string]*serveRuntime
@@ -1595,6 +1671,9 @@ func (m *serveSessionManager) evictExpired() {
 	m.mu.Unlock()
 
 	for _, rt := range stale {
+		if m.onEvict != nil {
+			m.onEvict(rt)
+		}
 		rt.Close()
 	}
 }
@@ -1670,6 +1749,9 @@ func (m *serveSessionManager) GetOrCreate(ctx context.Context, id string) (*serv
 		duplicate.Close()
 	}
 	if evicted != nil {
+		if m.onEvict != nil {
+			m.onEvict(evicted)
+		}
 		evicted.Close()
 	}
 	if inflight.err != nil {
@@ -1701,6 +1783,9 @@ func (m *serveSessionManager) Close() {
 	m.mu.Unlock()
 
 	for _, rt := range sessions {
+		if m.onEvict != nil {
+			m.onEvict(rt)
+		}
 		rt.Close()
 	}
 }
@@ -1728,6 +1813,9 @@ type serveRuntime struct {
 	defaultModel        string
 	lastUsedUnixNano    atomic.Int64
 	activeInterrupt     *runtimeInterruptState
+	lastResponseID      string
+	responseIDs         []string
+	cumulativeUsage     llm.Usage
 }
 
 type runtimeInterruptState struct {
@@ -1950,6 +2038,11 @@ func (rt *serveRuntime) persistStatus(ctx context.Context, sessionID string, sta
 	}
 }
 
+// maxResponseIDs is the maximum number of response IDs tracked per session.
+// Only the latest is needed for chaining validation; a small buffer guards
+// against in-flight races. Older IDs are pruned from the server-wide map.
+const maxResponseIDs = 16
+
 func (rt *serveRuntime) selectTools(requested map[string]bool) []llm.ToolSpec {
 	all := rt.engine.Tools().AllSpecs()
 	if len(requested) == 0 {
@@ -1965,9 +2058,10 @@ func (rt *serveRuntime) selectTools(requested map[string]bool) []llm.ToolSpec {
 }
 
 type serveRunResult struct {
-	Text      strings.Builder
-	ToolCalls []llm.ToolCall
-	Usage     llm.Usage
+	Text         strings.Builder
+	ToolCalls    []llm.ToolCall
+	Usage        llm.Usage
+	SessionUsage llm.Usage
 }
 
 var errServeSessionBusy = errors.New("session is busy processing another request")
@@ -2001,6 +2095,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	if replaceHistory {
 		baseHistory = nil
 		rt.engine.ResetConversation()
+		rt.cumulativeUsage = llm.Usage{}
 	}
 
 	runCtx, runCancel := context.WithCancel(ctx)
@@ -2098,6 +2193,13 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		}
 	}
 
+	// Accumulate cumulative session-level usage
+	rt.cumulativeUsage.InputTokens += result.Usage.InputTokens
+	rt.cumulativeUsage.OutputTokens += result.Usage.OutputTokens
+	rt.cumulativeUsage.CachedInputTokens += result.Usage.CachedInputTokens
+	rt.cumulativeUsage.CacheWriteTokens += result.Usage.CacheWriteTokens
+	result.SessionUsage = rt.cumulativeUsage
+
 	newHistory := make([]llm.Message, 0, len(baseHistory)+len(inputMessages)+len(produced)+1)
 	newHistory = append(newHistory, baseHistory...)
 	newHistory = append(newHistory, inputMessages...)
@@ -2151,15 +2253,16 @@ func lastUserText(messages []llm.Message) string {
 }
 
 type responsesCreateRequest struct {
-	Model             string            `json:"model"`
-	Input             json.RawMessage   `json:"input"`
-	Tools             []json.RawMessage `json:"tools,omitempty"`
-	ToolChoice        json.RawMessage   `json:"tool_choice,omitempty"`
-	ParallelToolCalls *bool             `json:"parallel_tool_calls,omitempty"`
-	MaxOutputTokens   int               `json:"max_output_tokens,omitempty"`
-	Temperature       *float32          `json:"temperature,omitempty"`
-	TopP              *float32          `json:"top_p,omitempty"`
-	Stream            bool              `json:"stream,omitempty"`
+	Model              string            `json:"model"`
+	Input              json.RawMessage   `json:"input"`
+	Tools              []json.RawMessage `json:"tools,omitempty"`
+	ToolChoice         json.RawMessage   `json:"tool_choice,omitempty"`
+	ParallelToolCalls  *bool             `json:"parallel_tool_calls,omitempty"`
+	MaxOutputTokens    int               `json:"max_output_tokens,omitempty"`
+	Temperature        *float32          `json:"temperature,omitempty"`
+	TopP               *float32          `json:"top_p,omitempty"`
+	Stream             bool              `json:"stream,omitempty"`
+	PreviousResponseID string            `json:"previous_response_id,omitempty"`
 }
 
 type chatCompletionsRequest struct {
@@ -2694,10 +2797,15 @@ func decodeJSONBody(r *http.Request, dst any) error {
 
 func resolveRequestSessionID(w http.ResponseWriter, r *http.Request) string {
 	sessionID := strings.TrimSpace(r.Header.Get("session_id"))
-	if sessionID == "" {
-		sessionID = session.NewID()
-		w.Header().Set("x-session-id", sessionID)
+	if sessionID != "" {
+		return sessionID
 	}
+	return ""
+}
+
+func ensureSessionID(w http.ResponseWriter) string {
+	sessionID := session.NewID()
+	w.Header().Set("x-session-id", sessionID)
 	return sessionID
 }
 
@@ -2716,7 +2824,7 @@ func requireJSONContentType(r *http.Request) error {
 	return nil
 }
 
-func responsesFinalResponse(result serveRunResult, model string) map[string]any {
+func responsesFinalResponse(result serveRunResult, model string, respID string) map[string]any {
 	output := []map[string]any{}
 	if result.Text.Len() > 0 {
 		output = append(output, map[string]any{
@@ -2740,7 +2848,7 @@ func responsesFinalResponse(result serveRunResult, model string) map[string]any 
 	}
 
 	return map[string]any{
-		"id":      "resp_" + randomSuffix(),
+		"id":      respID,
 		"object":  "response",
 		"created": time.Now().Unix(),
 		"model":   model,
@@ -2751,6 +2859,14 @@ func responsesFinalResponse(result serveRunResult, model string) map[string]any 
 			"total_tokens":  result.Usage.InputTokens + result.Usage.OutputTokens,
 			"input_tokens_details": map[string]any{
 				"cached_tokens": result.Usage.CachedInputTokens,
+			},
+		},
+		"session_usage": map[string]any{
+			"input_tokens":  result.SessionUsage.InputTokens,
+			"output_tokens": result.SessionUsage.OutputTokens,
+			"total_tokens":  result.SessionUsage.InputTokens + result.SessionUsage.OutputTokens,
+			"input_tokens_details": map[string]any{
+				"cached_tokens": result.SessionUsage.CachedInputTokens,
 			},
 		},
 	}

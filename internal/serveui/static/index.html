@@ -553,6 +553,12 @@
       padding: 0 0.2rem;
     }
 
+    .session-usage {
+      font-size: 0.76rem;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+
     .tool-card {
       border: 1px solid color-mix(in srgb, var(--accent-amber) 46%, var(--border) 54%);
       border-radius: 12px;
@@ -1153,6 +1159,7 @@
           <span class="connection-state" id="connectionState">Checking token…</span>
         </div>
         <div class="header-right">
+          <span class="session-usage" id="sessionUsage"></span>
           <select class="model-select" id="modelSelect" title="Model selection">
             <option value="">Auto model</option>
           </select>
@@ -1258,7 +1265,8 @@
         attachBtn: document.getElementById('attachBtn'),
         fileInput: document.getElementById('fileInput'),
         attachmentsStrip: document.getElementById('attachmentsStrip'),
-        dropOverlay: document.getElementById('dropOverlay')
+        dropOverlay: document.getElementById('dropOverlay'),
+        sessionUsage: document.getElementById('sessionUsage')
       };
 
       // ===== Markdown setup =====
@@ -1359,6 +1367,21 @@
         const outTokens = Number(usage?.output_tokens || 0);
         const cached = Number(usage?.input_tokens_details?.cached_tokens || 0);
         return `↙ ${inTokens.toLocaleString()} in · ${outTokens.toLocaleString()} out · ${cached.toLocaleString()} cached`;
+      };
+
+      const updateSessionUsageDisplay = (session) => {
+        const el = elements?.sessionUsage;
+        if (!el) return;
+        const usage = session?.sessionUsage;
+        if (!usage) {
+          el.textContent = '';
+          return;
+        }
+        const inTokens = Number(usage.input_tokens || 0);
+        const outTokens = Number(usage.output_tokens || 0);
+        const total = inTokens + outTokens;
+        el.textContent = `${total.toLocaleString()} tokens`;
+        el.title = `Session total: ${inTokens.toLocaleString()} in, ${outTokens.toLocaleString()} out`;
       };
 
       const isNearBottom = () => {
@@ -1470,7 +1493,9 @@
           id: typeof session.id === 'string' ? session.id : `sess_${generateUUID()}`,
           title: typeof session.title === 'string' && session.title.trim() ? session.title.trim() : 'New chat',
           created: asTimestamp(session.created),
-          messages
+          messages,
+          lastResponseId: typeof session.lastResponseId === 'string' ? session.lastResponseId : null,
+          sessionUsage: session.sessionUsage && typeof session.sessionUsage === 'object' ? session.sessionUsage : null
         };
         if (session._serverOnly) result._serverOnly = true;
         if (typeof session.messageCount === 'number') result.messageCount = session.messageCount;
@@ -1528,7 +1553,9 @@
         id: `sess_${generateUUID()}`,
         title: 'New chat',
         created: Date.now(),
-        messages: []
+        messages: [],
+        lastResponseId: null,
+        sessionUsage: null
       });
 
       const ensureActiveSession = () => {
@@ -1590,6 +1617,7 @@
         const session = ensureActiveSession();
         elements.activeSessionTitle.textContent = session.title || 'Chat';
         updateDocumentTitle();
+        updateSessionUsageDisplay(session);
       };
 
       const renderSidebar = () => {
@@ -2654,6 +2682,10 @@
           input: [{ type: 'message', role: 'user', content: inputContent }]
         };
 
+        if (session.lastResponseId) {
+          body.previous_response_id = session.lastResponseId;
+        }
+
         if (state.selectedModel) {
           body.model = state.selectedModel;
         }
@@ -2798,6 +2830,16 @@
               const usage = payload?.response?.usage;
               closeToolGroup();
               markToolGroupsDone(session);
+
+              // Track response ID for conversation chaining
+              const respId = payload?.response?.id;
+              if (respId) session.lastResponseId = respId;
+
+              // Track cumulative session usage
+              const sessionUsage = payload?.response?.session_usage;
+              if (sessionUsage) session.sessionUsage = sessionUsage;
+              updateSessionUsageDisplay(session);
+
               // Apply usage to the last assistant message
               const lastAssistant = [...session.messages].reverse().find(m => m.role === 'assistant');
               if (lastAssistant) {
