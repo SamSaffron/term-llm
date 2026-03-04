@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -569,6 +570,42 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, responsesFinalResponse(result, model, respID))
 }
 
+// sseKeepalive starts a background goroutine that writes an SSE comment ping
+// to w every interval while streaming is active. This prevents intermediate
+// proxies (e.g. nginx with a short send_timeout) from closing the connection
+// during silent periods — e.g. when the LLM is in extended thinking mode or
+// the API is slow to emit tokens.
+//
+// The returned mu must wrap all writes to w inside the RunWithEvents callback.
+// Call stop() immediately after RunWithEvents returns; it blocks until the
+// goroutine has exited so subsequent final writes to w are safe without a lock.
+func sseKeepalive(w http.ResponseWriter, flusher http.Flusher, interval time.Duration) (mu *sync.Mutex, stop func()) {
+	mu = &sync.Mutex{}
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				mu.Lock()
+				_, _ = io.WriteString(w, ": ping\n\n")
+				flusher.Flush()
+				mu.Unlock()
+			case <-done:
+				return
+			}
+		}
+	}()
+	return mu, func() {
+		close(done)
+		wg.Wait()
+	}
+}
+
 func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -595,9 +632,13 @@ func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter
 	})
 	flusher.Flush()
 
+	pingMu, stopPing := sseKeepalive(w, flusher, 20*time.Second)
+
 	outputIndex := 0
 	toolsSeen := false
 	result, err := runtime.RunWithEvents(ctx, stateful, replaceHistory, inputMessages, llmReq, func(ev llm.Event) error {
+		pingMu.Lock()
+		defer pingMu.Unlock()
 		switch ev.Type {
 		case llm.EventTextDelta:
 			if toolsSeen {
@@ -663,6 +704,8 @@ func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter
 		flusher.Flush()
 		return nil
 	})
+	stopPing() // wait for keepalive goroutine before any final writes
+
 	if err != nil {
 		errType := "invalid_request_error"
 		if errors.Is(err, errServeSessionBusy) {
@@ -816,9 +859,13 @@ func (s *serveServer) streamChatCompletions(ctx context.Context, w http.Response
 	}
 	created := time.Now().Unix()
 
+	pingMu, stopPing := sseKeepalive(w, flusher, 20*time.Second)
+
 	first := true
 	toolCallSeen := false
 	result, err := runtime.RunWithEvents(ctx, stateful, replaceHistory, inputMessages, llmReq, func(ev llm.Event) error {
+		pingMu.Lock()
+		defer pingMu.Unlock()
 		var writeErr error
 		switch ev.Type {
 		case llm.EventTextDelta:
@@ -891,6 +938,8 @@ func (s *serveServer) streamChatCompletions(ctx context.Context, w http.Response
 		flusher.Flush()
 		return nil
 	})
+	stopPing() // wait for keepalive goroutine before any final writes
+
 	if err != nil {
 		if errors.Is(err, errServeSessionBusy) {
 			_ = writeChatStreamChunk(w, map[string]any{
