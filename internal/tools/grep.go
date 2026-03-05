@@ -19,6 +19,18 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 )
 
+const (
+	// maxLineDisplayLen is the maximum rune length of any line written into
+	// grep context output.  Lines beyond this are truncated with "…" to keep
+	// token counts predictable on minified / generated files.
+	maxLineDisplayLen = 120
+
+	// maxMatchesPerFileDisplay is the maximum number of matches shown per file
+	// in the grouped output.  When a file has more matches than this, a note
+	// is appended so the model knows to narrow its search.
+	maxMatchesPerFileDisplay = 10
+)
+
 // GrepTool implements the grep tool.
 type GrepTool struct {
 	approval *ApprovalManager
@@ -111,7 +123,7 @@ func (t *GrepTool) executeRipgrep(ctx context.Context, pattern, searchPath, incl
 		return nil, err
 	}
 
-	return parseRipgrepOutput(output, maxResults)
+	return parseRipgrepOutput(output, maxResults, contextLines)
 }
 
 // pendingMatch tracks context for building ripgrep results.
@@ -124,9 +136,24 @@ type pendingMatch struct {
 }
 
 // parseRipgrepOutput parses ripgrep JSON output into GrepMatches.
-func parseRipgrepOutput(output []byte, maxResults int) ([]GrepMatch, error) {
+//
+// maxAfterContext caps the number of after-context lines stored per match.
+// This prevents bleed: when two matches are close together rg emits the
+// lines between them as "context" events only once.  Without a cap they all
+// accumulate in the first match's after-slice, producing more context lines
+// than requested and stealing before-context from the next match.
+func parseRipgrepOutput(output []byte, maxResults, maxAfterContext int) ([]GrepMatch, error) {
 	var matches []GrepMatch
 	var pending *pendingMatch
+
+	flush := func() bool {
+		if pending == nil {
+			return false
+		}
+		matches = append(matches, buildMatchFromPending(pending))
+		pending = nil
+		return len(matches) >= maxResults
+	}
 
 	lines := strings.Split(string(output), "\n")
 	for _, line := range lines {
@@ -141,12 +168,8 @@ func parseRipgrepOutput(output []byte, maxResults int) ([]GrepMatch, error) {
 
 		switch msg.Type {
 		case "match":
-			// Flush any pending match
-			if pending != nil {
-				matches = append(matches, buildMatchFromPending(pending))
-				if len(matches) >= maxResults {
-					return matches, nil
-				}
+			if flush() {
+				return matches, nil
 			}
 
 			var data rgMatchData
@@ -172,18 +195,40 @@ func parseRipgrepOutput(output []byte, maxResults int) ([]GrepMatch, error) {
 			contextLine := strings.TrimSuffix(data.Lines.Text, "\n")
 			if data.LineNumber < pending.lineNumber {
 				pending.before = append(pending.before, contextLine)
-			} else {
+			} else if len(pending.after) < maxAfterContext {
+				// Cap after-context to prevent inter-match bleed.
+				// Lines beyond maxAfterContext belong to the next match's
+				// before-context; rg won't re-emit them for that match.
 				pending.after = append(pending.after, contextLine)
+			}
+
+		case "end":
+			// rg emits "end" at the close of each match group (separated by
+			// gaps wider than the context window).  Flush here so the final
+			// match in a group gets its after-context correctly assigned before
+			// the next group's before-context starts arriving.
+			if flush() {
+				return matches, nil
 			}
 		}
 	}
 
-	// Flush final pending match
-	if pending != nil {
-		matches = append(matches, buildMatchFromPending(pending))
-	}
+	// Flush any remaining match not terminated by an "end" event.
+	flush()
 
 	return matches, nil
+}
+
+// truncateLine trims leading/trailing whitespace and caps the line at
+// maxLineDisplayLen runes, appending "…" when truncated.  Leading whitespace
+// is preserved up to the cap so indentation remains meaningful.
+func truncateLine(s string) string {
+	s = strings.TrimRight(s, " \t")
+	r := []rune(s)
+	if len(r) <= maxLineDisplayLen {
+		return s
+	}
+	return string(r[:maxLineDisplayLen-1]) + "…"
 }
 
 func buildMatchFromPending(p *pendingMatch) GrepMatch {
@@ -191,11 +236,11 @@ func buildMatchFromPending(p *pendingMatch) GrepMatch {
 	startLine := p.lineNumber - len(p.before)
 
 	for i, line := range p.before {
-		sb.WriteString(fmt.Sprintf("  %d: %s\n", startLine+i, line))
+		sb.WriteString(fmt.Sprintf("  %d: %s\n", startLine+i, truncateLine(line)))
 	}
-	sb.WriteString(fmt.Sprintf("> %d: %s\n", p.lineNumber, p.matchLine))
+	sb.WriteString(fmt.Sprintf("> %d: %s\n", p.lineNumber, truncateLine(p.matchLine)))
 	for i, line := range p.after {
-		sb.WriteString(fmt.Sprintf("  %d: %s\n", p.lineNumber+1+i, line))
+		sb.WriteString(fmt.Sprintf("  %d: %s\n", p.lineNumber+1+i, truncateLine(line)))
 	}
 
 	return GrepMatch{
@@ -648,12 +693,24 @@ func formatGrepResults(matches []GrepMatch, truncated bool) string {
 
 	for _, g := range groups {
 		sb.WriteString(fmt.Sprintf("\n%s (%s):\n", g.path, plural(len(g.matches), "match")))
-		for i, m := range g.matches {
+
+		display := g.matches
+		overflow := 0
+		if len(g.matches) > maxMatchesPerFileDisplay {
+			display = g.matches[:maxMatchesPerFileDisplay]
+			overflow = len(g.matches) - maxMatchesPerFileDisplay
+		}
+
+		for i, m := range display {
 			if i > 0 {
 				sb.WriteString("\n")
 			}
 			sb.WriteString(m.Context)
 			sb.WriteString("\n")
+		}
+
+		if overflow > 0 {
+			sb.WriteString(fmt.Sprintf("\n  [+%d more in this file — use a more specific pattern or narrow the path]\n", overflow))
 		}
 	}
 
