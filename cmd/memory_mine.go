@@ -1130,6 +1130,12 @@ func runInsightExtractionPass(
 ) (int, error) {
 	total := 0
 	for _, candidate := range candidates {
+		// Skip sessions already processed for insights — avoids redundant LLM
+		// calls and duplicate extraction. MarkInsightMined is called on success.
+		if minedAt, err := memStore.InsightMinedAt(ctx, candidate.Session.ID); err == nil && !minedAt.IsZero() {
+			continue
+		}
+
 		messages, _, err := loadMessagesForMining(ctx, sessStore, candidate.Session.ID, 0)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  [insight] skip %s: load messages: %v\n", candidate.Session.ID, err)
@@ -1196,6 +1202,11 @@ func runInsightExtractionPass(
 			}
 			fmt.Printf("  [insight] created id=%d cat=%s conf=%.2f\n", ins.ID, ins.Category, ins.Confidence)
 			total++
+		}
+
+		// Mark this session as insight-mined so future runs skip it.
+		if err := memStore.MarkInsightMined(ctx, candidate.Session.ID, candidate.Agent); err != nil {
+			fmt.Fprintf(os.Stderr, "  [insight] warning: mark mined failed for %s: %v\n", candidate.Session.ID, err)
 		}
 	}
 	return total, nil

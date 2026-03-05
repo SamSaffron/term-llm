@@ -200,6 +200,12 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memory_insights_fts USING fts5(
     content_rowid='id',
     tokenize='unicode61'
 );
+
+CREATE TABLE IF NOT EXISTS memory_insight_mining_state (
+    session_id TEXT PRIMARY KEY,
+    agent      TEXT NOT NULL,
+    mined_at   DATETIME NOT NULL
+);
 `
 
 // NewStore opens memory.db and initializes schema.
@@ -1341,6 +1347,37 @@ func (s *Store) UpsertState(ctx context.Context, st *MiningState) error {
 		return fmt.Errorf("upsert mining state: %w", err)
 	}
 	return nil
+}
+
+// InsightMinedAt returns the time a session's insights were last extracted,
+// or (time.Time{}, nil) if the session has never been insight-mined.
+func (s *Store) InsightMinedAt(ctx context.Context, sessionID string) (time.Time, error) {
+	var raw string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT mined_at FROM memory_insight_mining_state WHERE session_id = ?`,
+		sessionID,
+	).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	t, _ := parseFlexibleTime(raw)
+	return t, nil
+}
+
+// MarkInsightMined records that insight extraction has run for a session.
+func (s *Store) MarkInsightMined(ctx context.Context, sessionID, agent string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO memory_insight_mining_state(session_id, agent, mined_at)
+		VALUES(?, ?, ?)
+		ON CONFLICT(session_id) DO UPDATE SET
+			agent    = excluded.agent,
+			mined_at = excluded.mined_at`,
+		sessionID, agent, time.Now().UTC().Format(time.RFC3339),
+	)
+	return err
 }
 
 // FragmentCountsByAgent returns count(fragment) grouped by agent.

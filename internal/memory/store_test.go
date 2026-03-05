@@ -1234,3 +1234,43 @@ func TestInsightExpand(t *testing.T) {
 		t.Errorf("expected empty for unknown agent, got: %q", out2)
 	}
 }
+
+func TestInsightMiningState(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer store.Close()
+
+	const sid = "sess-abc-123"
+	const agent = "jarvis"
+
+	// Initially unmined.
+	ts, err := store.InsightMinedAt(ctx, sid)
+	if err != nil {
+		t.Fatalf("InsightMinedAt: %v", err)
+	}
+	if !ts.IsZero() {
+		t.Errorf("expected zero time for unmined session, got %v", ts)
+	}
+
+	// Mark mined.
+	if err := store.MarkInsightMined(ctx, sid, agent); err != nil {
+		t.Fatalf("MarkInsightMined: %v", err)
+	}
+
+	ts2, err := store.InsightMinedAt(ctx, sid)
+	if err != nil {
+		t.Fatalf("InsightMinedAt after mark: %v", err)
+	}
+	if ts2.IsZero() {
+		t.Error("expected non-zero time after MarkInsightMined")
+	}
+
+	// Idempotent: marking again updates mined_at but doesn't error.
+	if err := store.MarkInsightMined(ctx, sid, agent); err != nil {
+		t.Fatalf("MarkInsightMined second call: %v", err)
+	}
+	ts3, _ := store.InsightMinedAt(ctx, sid)
+	if ts3.IsZero() {
+		t.Error("expected non-zero time after second MarkInsightMined")
+	}
+}
