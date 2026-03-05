@@ -139,20 +139,14 @@ func TestGroupMatchesByFile_PreservesOrder(t *testing.T) {
 	}
 }
 
-// TestParseRipgrepOutput_NoContextBleed verifies that after-context is capped
-// at maxAfterContext lines.
+// TestParseRipgrepOutput_NoContextBleed verifies that:
+//   - After-context is capped at maxAfterContext (no bleed into matchA)
+//   - Cap-overflow lines are buffered and recovered as matchB's before-context
 //
-// The bleed bug: rg emits before-context lines for match B as "context"
-// events while match A is still pending (because those lines have higher line
-// numbers than A, they went into A's after-slice without bound).  Example:
-//
-//	match@41  → pending
-//	context@43,44      → correct after for 41
-//	context@337,338    → before-context for match@339, but lineNumber>41
-//	                     so without a cap they bleed into 41's after-slice
-//	match@339 → flush 41 (would show 4 after-lines instead of 2)
-//
-// With maxAfterContext=2, context@337,338 are dropped and 41 flushes cleanly.
+// rg emits before-context for match B while match A is still pending (those
+// lines have higher line numbers than A).  Old behaviour: they bled into A's
+// after-slice.  New behaviour: cap at maxAfterContext, buffer overflow, hand
+// off to B's before on the next "match" event.
 func TestParseRipgrepOutput_NoContextBleed(t *testing.T) {
 	makeContext := func(path string, lineNum int, text string) string {
 		return fmt.Sprintf(`{"type":"context","data":{"path":{"text":%q},"lines":{"text":%q},"line_number":%d,"absolute_offset":0,"submatches":[]}}`,
@@ -166,20 +160,17 @@ func TestParseRipgrepOutput_NoContextBleed(t *testing.T) {
 		return `{"type":"end","data":{"path":{"text":"f.go"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0},"searches":1,"searches_with_match":1,"bytes_searched":0,"bytes_printed":0,"matched_lines":2,"matches":2}}}`
 	}
 
-	// Matches at lines 41 and 339, context=2.
-	// rg stream order (observed from real rg --json --context 2 output):
+	// Matches at lines 41 and 339, context=2.  Real rg stream order:
 	//   match@41
-	//   context@43,44          (after-context for 41)
-	//   context@337,338        (before-context for 339, arrives while 41 is pending)
+	//   context@43,44      (after for 41; fills cap)
+	//   context@337,338    (before for 339; cap exceeded → buffer)
 	//   match@339
-	//   context@340,341        (after-context for 339)
+	//   context@340,341    (after for 339)
 	//   end
 	lines := []string{
 		makeMatch("f.go", 41, "matchA"),
 		makeContext("f.go", 43, "after43"),
 		makeContext("f.go", 44, "after44"),
-		// These are before-context for matchB but arrive while matchA is pending.
-		// Without the cap they bleed into matchA's after-slice.
 		makeContext("f.go", 337, "before337"),
 		makeContext("f.go", 338, "before338"),
 		makeMatch("f.go", 339, "matchB"),
@@ -197,19 +188,78 @@ func TestParseRipgrepOutput_NoContextBleed(t *testing.T) {
 		t.Fatalf("expected 2 matches, got %d", len(matches))
 	}
 
-	// matchA: after should be exactly [43,44] — no bleed from 337,338.
+	// matchA: after-context must be exactly [43,44] — overflow lines must NOT appear.
 	ctxA := matches[0].Context
 	if strings.Contains(ctxA, "before337") || strings.Contains(ctxA, "before338") {
-		t.Errorf("context bleed: matchA context contains matchB's before-context:\n%s", ctxA)
+		t.Errorf("context bleed: matchA contains matchB's before-context:\n%s", ctxA)
 	}
 	if !strings.Contains(ctxA, "after43") || !strings.Contains(ctxA, "after44") {
-		t.Errorf("matchA missing correct after-context:\n%s", ctxA)
+		t.Errorf("matchA missing after-context:\n%s", ctxA)
 	}
 
-	// matchB: after should be [340,341].
+	// matchB: overflow lines must be recovered as before-context.
 	ctxB := matches[1].Context
+	if !strings.Contains(ctxB, "before337") || !strings.Contains(ctxB, "before338") {
+		t.Errorf("matchB missing before-context recovered from overflow:\n%s", ctxB)
+	}
 	if !strings.Contains(ctxB, "after340") || !strings.Contains(ctxB, "after341") {
 		t.Errorf("matchB missing after-context:\n%s", ctxB)
+	}
+}
+
+// TestParseRipgrepOutput_BeforeContext verifies that before-context lines are
+// correctly captured even though rg emits them before the "match" event.
+func TestParseRipgrepOutput_BeforeContext(t *testing.T) {
+	makeContext := func(lineNum int, text string) string {
+		return fmt.Sprintf(`{"type":"context","data":{"path":{"text":"f.go"},"lines":{"text":%q},"line_number":%d,"absolute_offset":0,"submatches":[]}}`,
+			text+"\n", lineNum)
+	}
+	makeMatch := func(lineNum int, text string) string {
+		return fmt.Sprintf(`{"type":"match","data":{"path":{"text":"f.go"},"lines":{"text":%q},"line_number":%d,"absolute_offset":0,"submatches":[]}}`,
+			text+"\n", lineNum)
+	}
+	makeEnd := func() string {
+		return `{"type":"end","data":{"path":{"text":"f.go"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0},"searches":1,"searches_with_match":1,"bytes_searched":0,"bytes_printed":0,"matched_lines":1,"matches":1}}}`
+	}
+
+	// Single match at line 10, context=2.  rg emits:
+	//   context@8  (before, arrives before the match event — pending==nil)
+	//   context@9  (before)
+	//   match@10
+	//   context@11 (after)
+	//   context@12 (after)
+	//   end
+	lines := []string{
+		makeContext(8, "before8"),
+		makeContext(9, "before9"),
+		makeMatch(10, "theMatch"),
+		makeContext(11, "after11"),
+		makeContext(12, "after12"),
+		makeEnd(),
+	}
+	input := []byte(strings.Join(lines, "\n"))
+
+	matches, err := parseRipgrepOutput(input, 100, 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("expected 1 match, got %d", len(matches))
+	}
+
+	ctx := matches[0].Context
+	if !strings.Contains(ctx, "before8") || !strings.Contains(ctx, "before9") {
+		t.Errorf("before-context not captured:\n%s", ctx)
+	}
+	if !strings.Contains(ctx, "after11") || !strings.Contains(ctx, "after12") {
+		t.Errorf("after-context missing:\n%s", ctx)
+	}
+	// Verify ordering: before8 appears before the match line, after11 after.
+	iB := strings.Index(ctx, "before8")
+	iM := strings.Index(ctx, "theMatch")
+	iA := strings.Index(ctx, "after11")
+	if !(iB < iM && iM < iA) {
+		t.Errorf("context lines out of order: before=%d match=%d after=%d\n%s", iB, iM, iA, ctx)
 	}
 }
 

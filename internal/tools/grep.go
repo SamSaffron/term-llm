@@ -135,16 +135,48 @@ type pendingMatch struct {
 	after      []string
 }
 
+// contextEntry is one line from a ripgrep "context" event.
+type contextEntry struct {
+	lineNumber int
+	text       string
+}
+
 // parseRipgrepOutput parses ripgrep JSON output into GrepMatches.
 //
-// maxAfterContext caps the number of after-context lines stored per match.
-// This prevents bleed: when two matches are close together rg emits the
-// lines between them as "context" events only once.  Without a cap they all
-// accumulate in the first match's after-slice, producing more context lines
-// than requested and stealing before-context from the next match.
+// # Stream ordering
+//
+// rg --json emits events in this order per match group:
+//
+//	begin → context(before) → match → context(after) → end
+//
+// Before-context lines arrive *before* the match event, so a naive parser
+// that creates pendingMatch on "match" will always drop them.
+//
+// # Before-context: look-back buffer
+//
+// We maintain a rolling contextBuf of recent context entries.  When a "match"
+// event fires we pull any entries with lineNumber < matchLine as before-context
+// and reset the buffer.  This correctly handles:
+//   - First match in a group (before lines arrive while pending == nil)
+//   - Far-apart matches in separate groups (before lines arrive after "end" flush)
+//   - Close matches: after-cap overflow lines buffer for the next match's before
+//
+// # After-context: capped slice
+//
+// After-context lines go directly into pending.after, capped at maxAfterContext.
+// Lines beyond the cap are buffered (not discarded) so they are available as
+// before-context for the next match.
 func parseRipgrepOutput(output []byte, maxResults, maxAfterContext int) ([]GrepMatch, error) {
 	var matches []GrepMatch
 	var pending *pendingMatch
+	var contextBuf []contextEntry // look-back buffer for before-context
+
+	bufAppend := func(e contextEntry) {
+		contextBuf = append(contextBuf, e)
+		if len(contextBuf) > maxAfterContext {
+			contextBuf = contextBuf[len(contextBuf)-maxAfterContext:]
+		}
+	}
 
 	flush := func() bool {
 		if pending == nil {
@@ -177,39 +209,48 @@ func parseRipgrepOutput(output []byte, maxResults, maxAfterContext int) ([]GrepM
 				continue
 			}
 
+			// Collect before-context from the look-back buffer.
+			var before []string
+			for _, e := range contextBuf {
+				if e.lineNumber < data.LineNumber {
+					before = append(before, e.text)
+				}
+			}
+
 			pending = &pendingMatch{
 				filePath:   data.Path.Text,
 				lineNumber: data.LineNumber,
 				matchLine:  strings.TrimSuffix(data.Lines.Text, "\n"),
+				before:     before,
 			}
+			contextBuf = nil // reset; subsequent context lines are after-context
 
 		case "context":
-			if pending == nil {
-				continue
-			}
 			var data rgMatchData
 			if err := json.Unmarshal(msg.Data, &data); err != nil {
 				continue
 			}
 
-			contextLine := strings.TrimSuffix(data.Lines.Text, "\n")
-			if data.LineNumber < pending.lineNumber {
-				pending.before = append(pending.before, contextLine)
-			} else if len(pending.after) < maxAfterContext {
-				// Cap after-context to prevent inter-match bleed.
-				// Lines beyond maxAfterContext belong to the next match's
-				// before-context; rg won't re-emit them for that match.
-				pending.after = append(pending.after, contextLine)
+			text := strings.TrimSuffix(data.Lines.Text, "\n")
+			if pending != nil && data.LineNumber > pending.lineNumber && len(pending.after) < maxAfterContext {
+				// Normal after-context for the current match.
+				pending.after = append(pending.after, text)
+			} else {
+				// Everything else goes into the look-back buffer:
+				//  - lines before the first match in a group (pending == nil)
+				//  - lines after "end" / before the next group's first match
+				//  - after-cap overflow that belongs to the next match's before
+				bufAppend(contextEntry{data.LineNumber, text})
 			}
 
 		case "end":
-			// rg emits "end" at the close of each match group (separated by
-			// gaps wider than the context window).  Flush here so the final
-			// match in a group gets its after-context correctly assigned before
-			// the next group's before-context starts arriving.
+			// rg emits "end" at the close of each match group.  Flush so the
+			// last match in a group gets its after-context before the next
+			// group's before-context starts arriving.
 			if flush() {
 				return matches, nil
 			}
+			contextBuf = nil // each group starts with a clean buffer
 		}
 	}
 
@@ -295,10 +336,9 @@ func (t *GrepTool) Spec() llm.ToolSpec {
 				},
 				"context_lines": map[string]interface{}{
 					"type":        "integer",
-					"description": "Lines of context around each match (default: 3)",
-					"default":     3,
-				},
-				"files_with_matches": map[string]interface{}{
+					"description": "Lines of context around each match (default: 2)",
+					"default":     2,
+				}, "files_with_matches": map[string]interface{}{
 					"type":        "boolean",
 					"description": "Return only filenames containing matches, not the match lines (default: false)",
 				},
@@ -373,7 +413,7 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 
 	contextLines := a.ContextLines
 	if contextLines <= 0 {
-		contextLines = 3
+		contextLines = 2
 	}
 
 	// Check permissions via approval manager
@@ -710,7 +750,7 @@ func formatGrepResults(matches []GrepMatch, truncated bool) string {
 		}
 
 		if overflow > 0 {
-			sb.WriteString(fmt.Sprintf("\n  [+%d more in this file — use a more specific pattern or narrow the path]\n", overflow))
+			sb.WriteString(fmt.Sprintf("\n  [+%d more — narrow your search]\n", overflow))
 		}
 	}
 
