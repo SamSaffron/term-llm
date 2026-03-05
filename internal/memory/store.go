@@ -2005,6 +2005,36 @@ func (s *Store) ReinforceInsight(ctx context.Context, id int64) error {
 }
 
 // SearchInsights returns insights matching a BM25 query, sorted by relevance.
+// buildFTSQuery converts a free-text query to an FTS5 OR expression so that
+// any word match scores a hit (BM25 ranking then surfaces the best results).
+// Words shorter than 3 characters and duplicates are dropped.
+func buildFTSQuery(query string) string {
+	seen := map[string]struct{}{}
+	var terms []string
+	for _, w := range strings.Fields(strings.ToLower(query)) {
+		// Strip non-alphanumeric so we don't pass FTS5 syntax characters.
+		var clean []rune
+		for _, r := range w {
+			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+				clean = append(clean, r)
+			}
+		}
+		s := string(clean)
+		if len(s) < 3 {
+			continue
+		}
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		terms = append(terms, s+"*") // prefix match for basic stemming
+	}
+	if len(terms) == 0 {
+		return query
+	}
+	return strings.Join(terms, " OR ")
+}
+
 func (s *Store) SearchInsights(ctx context.Context, agent, query string, limit int) ([]*Insight, error) {
 	if strings.TrimSpace(query) == "" {
 		return s.ListInsights(ctx, agent, limit)
@@ -2013,7 +2043,8 @@ func (s *Store) SearchInsights(ctx context.Context, agent, query string, limit i
 		limit = 10
 	}
 
-	args := []any{query}
+	ftsQuery := buildFTSQuery(query)
+	args := []any{ftsQuery}
 	agentClause := ""
 	if strings.TrimSpace(agent) != "" {
 		agentClause = `AND i.agent = ?`
@@ -2102,4 +2133,88 @@ func scanInsight(scanner interface{ Scan(dest ...any) error }) (*Insight, error)
 	ins.CreatedAt, _ = parseFlexibleTime(createdAt)
 	ins.LastReinforced, _ = parseFlexibleTime(lastReinforced)
 	return &ins, nil
+}
+
+// DecayInsights reduces confidence for insights that haven't been reinforced
+// recently, using an exponential half-life model identical to fragment decay.
+// For each insight, the new confidence is:
+//
+//	new = current * 2^(-days_since_reinforced / halfLifeDays)
+//
+// Returns the number of insights updated.
+func (s *Store) DecayInsights(ctx context.Context, agent string, halfLifeDays float64) (int, error) {
+	if halfLifeDays <= 0 {
+		halfLifeDays = 30
+	}
+	// Fetch all insights for the agent (or all agents if agent=="").
+	query := `SELECT id, confidence, last_reinforced FROM memory_insights`
+	var args []any
+	if agent != "" {
+		query += ` WHERE agent = ?`
+		args = append(args, agent)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("decay insights query: %w", err)
+	}
+	defer rows.Close()
+
+	type candidate struct {
+		id         int64
+		confidence float64
+		lastReinf  time.Time
+	}
+	var candidates []candidate
+	for rows.Next() {
+		var c candidate
+		var lastReinfStr string
+		if err := rows.Scan(&c.id, &c.confidence, &lastReinfStr); err != nil {
+			continue
+		}
+		c.lastReinf, _ = parseFlexibleTime(lastReinfStr)
+		candidates = append(candidates, c)
+	}
+	rows.Close()
+
+	now := time.Now()
+	updated := 0
+	for _, c := range candidates {
+		daysSince := now.Sub(c.lastReinf).Hours() / 24
+		if daysSince < 1 {
+			continue // No meaningful decay within the first day.
+		}
+		decayed := c.confidence * math.Pow(2, -daysSince/halfLifeDays)
+		if math.Abs(decayed-c.confidence) < 0.001 {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx,
+			`UPDATE memory_insights SET confidence = ? WHERE id = ?`,
+			decayed, c.id,
+		); err != nil {
+			continue
+		}
+		updated++
+	}
+	return updated, nil
+}
+
+// GCInsights deletes insights whose confidence has fallen below minConfidence.
+// This is typically called after DecayInsights to prune stale entries.
+// Returns the number of insights deleted.
+func (s *Store) GCInsights(ctx context.Context, agent string, minConfidence float64) (int, error) {
+	if minConfidence <= 0 {
+		minConfidence = 0.1
+	}
+	query := `DELETE FROM memory_insights WHERE confidence < ?`
+	var args []any = []any{minConfidence}
+	if agent != "" {
+		query = `DELETE FROM memory_insights WHERE confidence < ? AND agent = ?`
+		args = append(args, agent)
+	}
+	res, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("gc insights: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }

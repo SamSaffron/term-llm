@@ -1004,3 +1004,245 @@ func newTestStore(t *testing.T) *Store {
 	}
 	return store
 }
+
+// ── Insight tests ─────────────────────────────────────────────────────────────
+
+func TestInsightCRUD(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer store.Close()
+
+	ins := &Insight{
+		Agent:       "jarvis",
+		Content:     "Do not expose internal tooling names in public posts.",
+		Category:    "anti-pattern",
+		TriggerDesc: "writing a blog post or public article",
+		Confidence:  0.9,
+	}
+	if err := store.CreateInsight(ctx, ins); err != nil {
+		t.Fatalf("CreateInsight: %v", err)
+	}
+	if ins.ID == 0 {
+		t.Fatal("expected non-zero ID after CreateInsight")
+	}
+
+	got, err := store.GetInsightByID(ctx, ins.ID)
+	if err != nil {
+		t.Fatalf("GetInsightByID: %v", err)
+	}
+	if got.Content != ins.Content {
+		t.Errorf("content = %q, want %q", got.Content, ins.Content)
+	}
+	if got.Category != "anti-pattern" {
+		t.Errorf("category = %q, want anti-pattern", got.Category)
+	}
+
+	// Update
+	if err := store.UpdateInsight(ctx, ins.ID, "Never mention NZBGeek or SABnzbd in public posts."); err != nil {
+		t.Fatalf("UpdateInsight: %v", err)
+	}
+	got2, _ := store.GetInsightByID(ctx, ins.ID)
+	if got2.Content != "Never mention NZBGeek or SABnzbd in public posts." {
+		t.Errorf("after update, content = %q", got2.Content)
+	}
+
+	// Delete
+	deleted, err := store.DeleteInsight(ctx, ins.ID)
+	if err != nil {
+		t.Fatalf("DeleteInsight: %v", err)
+	}
+	if !deleted {
+		t.Error("DeleteInsight returned false")
+	}
+	got3, err := store.GetInsightByID(ctx, ins.ID)
+	if err != nil {
+		t.Fatalf("GetInsightByID after delete: %v", err)
+	}
+	if got3 != nil {
+		t.Error("expected nil after delete")
+	}
+}
+
+func TestInsightListAndSearch(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer store.Close()
+
+	for i, content := range []string{
+		"Never expose private tool names in public writing.",
+		"User prefers direct answers without hedging.",
+		"Always search memory before answering questions about setup.",
+	} {
+		cat := []string{"anti-pattern", "communication-style", "workflow"}[i]
+		if err := store.CreateInsight(ctx, &Insight{
+			Agent:      "jarvis",
+			Content:    content,
+			Category:   cat,
+			Confidence: 0.7 + float64(i)*0.1,
+		}); err != nil {
+			t.Fatalf("CreateInsight[%d]: %v", i, err)
+		}
+	}
+
+	list, err := store.ListInsights(ctx, "jarvis", 10)
+	if err != nil {
+		t.Fatalf("ListInsights: %v", err)
+	}
+	if len(list) != 3 {
+		t.Errorf("len(list) = %d, want 3", len(list))
+	}
+
+	results, err := store.SearchInsights(ctx, "jarvis", "private tool names blog", 5)
+	if err != nil {
+		t.Fatalf("SearchInsights: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("SearchInsights returned nothing for relevant query")
+	}
+	// Top result should be the anti-pattern about private tools.
+	if results[0].Category != "anti-pattern" {
+		t.Errorf("top result category = %q, want anti-pattern", results[0].Category)
+	}
+}
+
+func TestInsightReinforce(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer store.Close()
+
+	ins := &Insight{
+		Agent:      "jarvis",
+		Content:    "User always wants a recommendation, not a list of options.",
+		Category:   "communication-style",
+		Confidence: 0.5,
+	}
+	if err := store.CreateInsight(ctx, ins); err != nil {
+		t.Fatalf("CreateInsight: %v", err)
+	}
+
+	if err := store.ReinforceInsight(ctx, ins.ID); err != nil {
+		t.Fatalf("ReinforceInsight: %v", err)
+	}
+
+	got, _ := store.GetInsightByID(ctx, ins.ID)
+	if got.Confidence <= 0.5 {
+		t.Errorf("confidence after reinforce = %.3f, want > 0.5", got.Confidence)
+	}
+	// CreateInsight seeds reinforcement_count=1, so after one reinforce it's 2.
+	if got.ReinforcementCount != 2 {
+		t.Errorf("reinforcement_count = %d, want 2", got.ReinforcementCount)
+	}
+}
+
+func TestInsightDecayAndGC(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer store.Close()
+
+	// Insert a high-confidence insight and backdate last_reinforced by 60 days.
+	ins := &Insight{
+		Agent:      "jarvis",
+		Content:    "Old insight that should decay.",
+		Category:   "workflow",
+		Confidence: 0.8,
+	}
+	if err := store.CreateInsight(ctx, ins); err != nil {
+		t.Fatalf("CreateInsight: %v", err)
+	}
+	// Manually backdate to simulate staleness.
+	old := time.Now().Add(-60 * 24 * time.Hour)
+	if _, err := store.db.ExecContext(ctx,
+		`UPDATE memory_insights SET last_reinforced = ? WHERE id = ?`,
+		old.Format(time.RFC3339), ins.ID,
+	); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+
+	// Decay with 30-day half-life: after 60 days the confidence should halve twice.
+	n, err := store.DecayInsights(ctx, "jarvis", 30.0)
+	if err != nil {
+		t.Fatalf("DecayInsights: %v", err)
+	}
+	if n == 0 {
+		t.Fatal("DecayInsights updated 0 rows — expected at least 1")
+	}
+	got, _ := store.GetInsightByID(ctx, ins.ID)
+	expected := 0.8 * math.Pow(2, -60.0/30.0) // ≈ 0.2
+	if math.Abs(got.Confidence-expected) > 0.02 {
+		t.Errorf("confidence after decay = %.4f, want ≈%.4f", got.Confidence, expected)
+	}
+
+	// Insert a fresh insight that should NOT be GC'd.
+	fresh := &Insight{
+		Agent:      "jarvis",
+		Content:    "Fresh insight.",
+		Category:   "workflow",
+		Confidence: 0.85,
+	}
+	if err := store.CreateInsight(ctx, fresh); err != nil {
+		t.Fatalf("CreateInsight fresh: %v", err)
+	}
+
+	// GC with threshold 0.3 — should remove the decayed insight (~0.2) but keep the fresh one.
+	deleted, err := store.GCInsights(ctx, "jarvis", 0.3)
+	if err != nil {
+		t.Fatalf("GCInsights: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("GCInsights deleted %d rows, want 1", deleted)
+	}
+
+	remaining, _ := store.ListInsights(ctx, "jarvis", 10)
+	if len(remaining) != 1 || remaining[0].ID != fresh.ID {
+		t.Errorf("expected only fresh insight to remain, got %d entries", len(remaining))
+	}
+}
+
+func TestInsightExpand(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer store.Close()
+
+	if err := store.CreateInsight(ctx, &Insight{
+		Agent:      "jarvis",
+		Content:    "When writing public content, use generic stand-ins for private tools.",
+		Category:   "anti-pattern",
+		Confidence: 0.9,
+	}); err != nil {
+		t.Fatalf("CreateInsight: %v", err)
+	}
+
+	// Query that should match — uses words present in the content.
+	out, err := store.ExpandInsights(ctx, "jarvis", "public content private tools generic", 500)
+	if err != nil {
+		t.Fatalf("ExpandInsights: %v", err)
+	}
+	if out == "" {
+		t.Fatal("ExpandInsights returned empty string for matching query")
+	}
+	if !containsSubstring(out, "<insights>") {
+		t.Errorf("output missing <insights> tag: %q", out)
+	}
+
+	// Empty bank for a different agent should return empty.
+	out2, err := store.ExpandInsights(ctx, "other-agent", "any query", 500)
+	if err != nil {
+		t.Fatalf("ExpandInsights other-agent: %v", err)
+	}
+	if out2 != "" {
+		t.Errorf("expected empty for unknown agent, got: %q", out2)
+	}
+}
+
+func containsSubstring(s, sub string) bool {
+	return len(s) >= len(sub) && (s == sub || len(s) > 0 && containsSubstringHelper(s, sub))
+}
+
+func containsSubstringHelper(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}

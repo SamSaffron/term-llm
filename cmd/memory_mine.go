@@ -332,6 +332,14 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 		} else {
 			fmt.Printf("insights: %d created/reinforced\n", insightCount)
 		}
+		// After extraction, apply decay and prune stale insights.
+		decayAgent := strings.TrimSpace(memoryAgent)
+		if n, decayErr := memStore.DecayInsights(ctx, decayAgent, memoryMineHalfLifeDays); decayErr == nil && n > 0 {
+			fmt.Printf("insights: decayed %d entries (half-life=%.1f days)\n", n, memoryMineHalfLifeDays)
+		}
+		if n, gcErr := memStore.GCInsights(ctx, decayAgent, 0.1); gcErr == nil && n > 0 {
+			fmt.Printf("insights: gc deleted %d below 0.10 confidence\n", n)
+		}
 	}
 
 	return nil

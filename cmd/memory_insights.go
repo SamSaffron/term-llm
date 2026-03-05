@@ -11,12 +11,14 @@ import (
 )
 
 var (
-	insightCategory    string
-	insightTrigger     string
-	insightConfidence  float64
-	insightContent     string
-	insightLimit       int
-	insightSearchLimit int
+	insightCategory      string
+	insightTrigger       string
+	insightConfidence    float64
+	insightContent       string
+	insightLimit         int
+	insightSearchLimit   int
+	insightHalfLifeDays  float64
+	insightMinConfidence float64
 )
 
 var memoryInsightsCmd = &cobra.Command{
@@ -86,6 +88,18 @@ var memoryInsightsExpandCmd = &cobra.Command{
 	RunE:  runMemoryInsightsExpand,
 }
 
+var memoryInsightsDecayCmd = &cobra.Command{
+	Use:   "decay",
+	Short: "Apply exponential confidence decay to stale insights",
+	RunE:  runMemoryInsightsDecay,
+}
+
+var memoryInsightsGCCmd = &cobra.Command{
+	Use:   "gc",
+	Short: "Delete insights below minimum confidence threshold",
+	RunE:  runMemoryInsightsGC,
+}
+
 func init() {
 	memoryInsightsCmd.AddCommand(memoryInsightsListCmd)
 	memoryInsightsCmd.AddCommand(memoryInsightsAddCmd)
@@ -94,6 +108,8 @@ func init() {
 	memoryInsightsCmd.AddCommand(memoryInsightsReinforceCmd)
 	memoryInsightsCmd.AddCommand(memoryInsightsSearchCmd)
 	memoryInsightsCmd.AddCommand(memoryInsightsExpandCmd)
+	memoryInsightsCmd.AddCommand(memoryInsightsDecayCmd)
+	memoryInsightsCmd.AddCommand(memoryInsightsGCCmd)
 
 	memoryInsightsListCmd.Flags().IntVar(&insightLimit, "limit", 20, "Maximum insights to show (0 = all)")
 
@@ -106,6 +122,8 @@ func init() {
 
 	memoryInsightsSearchCmd.Flags().IntVar(&insightSearchLimit, "limit", 5, "Maximum results")
 	memoryInsightsExpandCmd.Flags().IntVar(&insightSearchLimit, "max-tokens", 500, "Token budget for expansion")
+	memoryInsightsDecayCmd.Flags().Float64Var(&insightHalfLifeDays, "half-life", 30.0, "Decay half-life in days")
+	memoryInsightsGCCmd.Flags().Float64Var(&insightMinConfidence, "min-confidence", 0.1, "Delete insights below this confidence")
 }
 
 func runMemoryInsightsList(cmd *cobra.Command, args []string) error {
@@ -308,5 +326,41 @@ func runMemoryInsightsExpand(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	fmt.Println(expanded)
+	return nil
+}
+
+func runMemoryInsightsDecay(cmd *cobra.Command, args []string) error {
+	agent := strings.TrimSpace(memoryAgent)
+
+	store, err := openMemoryStore()
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	halfLife, _ := cmd.Flags().GetFloat64("half-life")
+	n, err := store.DecayInsights(context.Background(), agent, halfLife)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("decayed %d insights (half-life=%.1f days)\n", n, halfLife)
+	return nil
+}
+
+func runMemoryInsightsGC(cmd *cobra.Command, args []string) error {
+	agent := strings.TrimSpace(memoryAgent)
+
+	store, err := openMemoryStore()
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	minConf, _ := cmd.Flags().GetFloat64("min-confidence")
+	n, err := store.GCInsights(context.Background(), agent, minConf)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("gc: deleted %d insights below confidence %.2f\n", n, minConf)
 	return nil
 }
