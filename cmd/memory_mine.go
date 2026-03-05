@@ -1039,7 +1039,12 @@ Do NOT extract:
 - Anything that is already obvious assistant best practice
 - More than 10 insights total
 
-Each insight must have: category (one of: anti-pattern | communication-style | domain-approach | workflow | anticipation), trigger (when it applies), rule (the actionable behavioral change, 1-3 sentences), confidence (0.0-1.0 based on how clearly the evidence supports the pattern).`
+Each insight must have:
+- category: one of anti-pattern | communication-style | domain-approach | workflow | anticipation
+- trigger: when it applies (1 sentence)
+- rule: the full actionable behavioral change (1-3 sentences, can include justification/evidence)
+- compact: a terse version of the rule in ≤15 words, imperative, no hedging (used for token-efficient injection)
+- confidence: 0.0-1.0 based on how clearly the evidence supports the pattern`
 
 type insightExtractionResponse struct {
 	Insights []insightExtractionItem `json:"insights"`
@@ -1049,6 +1054,7 @@ type insightExtractionItem struct {
 	Category   string  `json:"category"`
 	Trigger    string  `json:"trigger"`
 	Rule       string  `json:"rule"`
+	Compact    string  `json:"compact"`
 	Confidence float64 `json:"confidence"`
 }
 
@@ -1192,11 +1198,12 @@ func runInsightExtractionPass(
 			}
 
 			ins := &memorydb.Insight{
-				Agent:       candidate.Agent,
-				Content:     rule,
-				Category:    strings.TrimSpace(item.Category),
-				TriggerDesc: strings.TrimSpace(item.Trigger),
-				Confidence:  item.Confidence,
+				Agent:          candidate.Agent,
+				Content:        rule,
+				CompactContent: strings.TrimSpace(item.Compact),
+				Category:       strings.TrimSpace(item.Category),
+				TriggerDesc:    strings.TrimSpace(item.Trigger),
+				Confidence:     item.Confidence,
 			}
 			if ins.Confidence <= 0 {
 				ins.Confidence = 0.5
