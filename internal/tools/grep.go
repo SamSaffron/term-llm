@@ -34,6 +34,12 @@ const (
 	// auto-enrichment is applied.  Above this, the result set is large enough
 	// that adding more context would bloat the response unhelpfully.
 	autoEnrichThreshold = 3
+
+	// maxOutputBytes is the total byte budget for a formatted grep response.
+	// File groups that would push the output over this limit are omitted and
+	// replaced with a truncation note.  Keeps minified / generated files from
+	// producing enormous single-block responses even after per-line truncation.
+	maxOutputBytes = 50 * 1024 // 50 KB
 )
 
 // autoEnrichContextLines returns the number of context lines to use when
@@ -578,6 +584,8 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 					}
 				}
 			}
+			// Sort so the most recently modified files appear first.
+			matches = sortGrepMatchesByMtime(matches)
 			return textOutput(formatGrepResults(matches, len(matches) >= maxResults)), nil
 		}
 	}
@@ -683,6 +691,37 @@ func collectFiles(searchPath, include, exclude string) ([]string, error) {
 	})
 
 	return files, err
+}
+
+// sortGrepMatchesByMtime reorders matches so that matches from the
+// most-recently-modified file appear first.  Within a file the original
+// line order is preserved.  Files that cannot be stat'd are sorted last.
+func sortGrepMatchesByMtime(matches []GrepMatch) []GrepMatch {
+	groups := groupMatchesByFile(matches)
+
+	type mtimeGroup struct {
+		fg    fileGroup
+		mtime int64
+	}
+	mg := make([]mtimeGroup, len(groups))
+	for i, g := range groups {
+		info, err := os.Stat(g.path)
+		if err != nil {
+			mg[i] = mtimeGroup{fg: g, mtime: 0}
+		} else {
+			mg[i] = mtimeGroup{fg: g, mtime: info.ModTime().Unix()}
+		}
+	}
+
+	sort.SliceStable(mg, func(i, j int) bool {
+		return mg[i].mtime > mg[j].mtime
+	})
+
+	out := make([]GrepMatch, 0, len(matches))
+	for _, m := range mg {
+		out = append(out, m.fg.matches...)
+	}
+	return out
 }
 
 // sortFilesByMtime sorts files by modification time (newest first).
@@ -864,8 +903,14 @@ func formatGrepResults(matches []GrepMatch, truncated bool) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("%s in %s\n", plural(len(matches), "match"), plural(len(groups), "file")))
 
-	for _, g := range groups {
-		sb.WriteString(fmt.Sprintf("\n%s (%s):\n", g.path, plural(len(g.matches), "match")))
+	bytesWritten := sb.Len()
+	bytesCapped := false
+
+	for gi, g := range groups {
+		// Build this file's block into a temporary buffer so we can measure
+		// it before committing to the main output.
+		var block strings.Builder
+		block.WriteString(fmt.Sprintf("\n%s (%s):\n", g.path, plural(len(g.matches), "match")))
 
 		display := g.matches
 		overflow := 0
@@ -876,18 +921,32 @@ func formatGrepResults(matches []GrepMatch, truncated bool) string {
 
 		for i, m := range display {
 			if i > 0 {
-				sb.WriteString("  …\n")
+				block.WriteString("  …\n")
 			}
-			sb.WriteString(m.Context)
-			sb.WriteString("\n")
+			block.WriteString(m.Context)
+			block.WriteString("\n")
 		}
 
 		if overflow > 0 {
-			sb.WriteString(fmt.Sprintf("\n  [+%d more — narrow your search]\n", overflow))
+			block.WriteString(fmt.Sprintf("\n  [+%d more — narrow your search]\n", overflow))
 		}
+
+		// Enforce the total byte budget.  Stop before writing this block if it
+		// would push us over; always write at least the first group so the
+		// caller gets something useful.
+		if gi > 0 && bytesWritten+block.Len() > maxOutputBytes {
+			remaining := len(groups) - gi
+			sb.WriteString(fmt.Sprintf("\n[output capped at 50KB — %s not shown; narrow your search]\n",
+				plural(remaining, "file")))
+			bytesCapped = true
+			break
+		}
+
+		sb.WriteString(block.String())
+		bytesWritten += block.Len()
 	}
 
-	if truncated {
+	if truncated && !bytesCapped {
 		sb.WriteString("\n[Results truncated at limit]")
 	}
 

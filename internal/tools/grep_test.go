@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGrepTool_UsesFilePath(t *testing.T) {
@@ -641,5 +642,81 @@ func TestAutoEnrich_SingleMatch(t *testing.T) {
 	}
 	if contextLineCount2 > 2 {
 		t.Errorf("explicit ContextLines=1 should not auto-enrich; got %d context lines\noutput:\n%s", contextLineCount2, output2.Content)
+	}
+}
+
+// TestSortGrepMatchesByMtime verifies that matches from the most recently
+// modified file appear first in the output.
+func TestSortGrepMatchesByMtime(t *testing.T) {
+	if !ripgrepAvailable() {
+		t.Skip("ripgrep not available")
+	}
+
+	dir := t.TempDir()
+
+	// Write two files with a deliberate mtime gap so the ordering is stable.
+	older := filepath.Join(dir, "older.go")
+	newer := filepath.Join(dir, "newer.go")
+
+	token := "MTIME_SORT_TOKEN"
+	if err := os.WriteFile(older, []byte("package x\n// "+token+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Touch newer after a short sleep to guarantee a different mtime.
+	time.Sleep(20 * time.Millisecond)
+	if err := os.WriteFile(newer, []byte("package x\n// "+token+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := NewGrepTool(nil, DefaultOutputLimits())
+	args, _ := json.Marshal(GrepArgs{Pattern: token, Path: dir, ContextLines: 0})
+	output, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	newerPos := strings.Index(output.Content, "newer.go")
+	olderPos := strings.Index(output.Content, "older.go")
+	if newerPos < 0 || olderPos < 0 {
+		t.Fatalf("expected both files in output:\n%s", output.Content)
+	}
+	if newerPos > olderPos {
+		t.Errorf("expected newer.go before older.go in output:\n%s", output.Content)
+	}
+}
+
+// TestFormatGrepResults_ByteCap verifies that output is capped at maxOutputBytes
+// and a descriptive note is appended.
+func TestFormatGrepResults_ByteCap(t *testing.T) {
+	// Each block needs to be large enough to push us over 50KB well within
+	// the 50-file set.  Use a ~1500-char context string (simulating many
+	// context lines) so the cap fires around file 35.
+	bigContext := strings.Repeat("> 1: "+strings.Repeat("x", 110)+"\n", 12) // ~1500 bytes/block
+
+	var matches []GrepMatch
+	for i := 0; i < 50; i++ {
+		matches = append(matches, GrepMatch{
+			FilePath:   fmt.Sprintf("/tmp/file%02d.go", i),
+			LineNumber: 1,
+			Match:      "x",
+			Context:    bigContext,
+		})
+	}
+
+	result := formatGrepResults(matches, false)
+
+	// Must contain the cap notice.
+	if !strings.Contains(result, "output capped at 50KB") {
+		t.Errorf("expected byte-cap notice in output (total output %d bytes):\n%.500s", len(result), result)
+	}
+
+	// Must not exceed two blocks past the limit.
+	if len(result) > maxOutputBytes+2*len(bigContext) {
+		t.Errorf("output far exceeds byte cap: got %d bytes", len(result))
+	}
+
+	// First file must always be present.
+	if !strings.Contains(result, "file00.go") {
+		t.Errorf("first file missing from capped output:\n%s", result)
 	}
 }
