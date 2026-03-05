@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -135,6 +136,166 @@ func TestGroupMatchesByFile_PreservesOrder(t *testing.T) {
 	}
 	if len(groups[0].matches) != 2 || len(groups[1].matches) != 2 || len(groups[2].matches) != 1 {
 		t.Errorf("unexpected match counts: %d, %d, %d", len(groups[0].matches), len(groups[1].matches), len(groups[2].matches))
+	}
+}
+
+// TestParseRipgrepOutput_NoContextBleed verifies that after-context is capped
+// at maxAfterContext lines.
+//
+// The bleed bug: rg emits before-context lines for match B as "context"
+// events while match A is still pending (because those lines have higher line
+// numbers than A, they went into A's after-slice without bound).  Example:
+//
+//	match@41  → pending
+//	context@43,44      → correct after for 41
+//	context@337,338    → before-context for match@339, but lineNumber>41
+//	                     so without a cap they bleed into 41's after-slice
+//	match@339 → flush 41 (would show 4 after-lines instead of 2)
+//
+// With maxAfterContext=2, context@337,338 are dropped and 41 flushes cleanly.
+func TestParseRipgrepOutput_NoContextBleed(t *testing.T) {
+	makeContext := func(path string, lineNum int, text string) string {
+		return fmt.Sprintf(`{"type":"context","data":{"path":{"text":%q},"lines":{"text":%q},"line_number":%d,"absolute_offset":0,"submatches":[]}}`,
+			path, text+"\n", lineNum)
+	}
+	makeMatch := func(path string, lineNum int, text string) string {
+		return fmt.Sprintf(`{"type":"match","data":{"path":{"text":%q},"lines":{"text":%q},"line_number":%d,"absolute_offset":0,"submatches":[]}}`,
+			path, text+"\n", lineNum)
+	}
+	makeEnd := func() string {
+		return `{"type":"end","data":{"path":{"text":"f.go"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0},"searches":1,"searches_with_match":1,"bytes_searched":0,"bytes_printed":0,"matched_lines":2,"matches":2}}}`
+	}
+
+	// Matches at lines 41 and 339, context=2.
+	// rg stream order (observed from real rg --json --context 2 output):
+	//   match@41
+	//   context@43,44          (after-context for 41)
+	//   context@337,338        (before-context for 339, arrives while 41 is pending)
+	//   match@339
+	//   context@340,341        (after-context for 339)
+	//   end
+	lines := []string{
+		makeMatch("f.go", 41, "matchA"),
+		makeContext("f.go", 43, "after43"),
+		makeContext("f.go", 44, "after44"),
+		// These are before-context for matchB but arrive while matchA is pending.
+		// Without the cap they bleed into matchA's after-slice.
+		makeContext("f.go", 337, "before337"),
+		makeContext("f.go", 338, "before338"),
+		makeMatch("f.go", 339, "matchB"),
+		makeContext("f.go", 340, "after340"),
+		makeContext("f.go", 341, "after341"),
+		makeEnd(),
+	}
+	input := []byte(strings.Join(lines, "\n"))
+
+	matches, err := parseRipgrepOutput(input, 100, 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(matches) != 2 {
+		t.Fatalf("expected 2 matches, got %d", len(matches))
+	}
+
+	// matchA: after should be exactly [43,44] — no bleed from 337,338.
+	ctxA := matches[0].Context
+	if strings.Contains(ctxA, "before337") || strings.Contains(ctxA, "before338") {
+		t.Errorf("context bleed: matchA context contains matchB's before-context:\n%s", ctxA)
+	}
+	if !strings.Contains(ctxA, "after43") || !strings.Contains(ctxA, "after44") {
+		t.Errorf("matchA missing correct after-context:\n%s", ctxA)
+	}
+
+	// matchB: after should be [340,341].
+	ctxB := matches[1].Context
+	if !strings.Contains(ctxB, "after340") || !strings.Contains(ctxB, "after341") {
+		t.Errorf("matchB missing after-context:\n%s", ctxB)
+	}
+}
+
+// TestParseRipgrepOutput_EndEventFlush verifies that an "end" event flushes
+// the pending match, so the last match in each group is correctly emitted.
+func TestParseRipgrepOutput_EndEventFlush(t *testing.T) {
+	makeMatch := func(lineNum int, text string) string {
+		return fmt.Sprintf(`{"type":"match","data":{"path":{"text":"f.go"},"lines":{"text":%q},"line_number":%d,"absolute_offset":0,"submatches":[]}}`,
+			text+"\n", lineNum)
+	}
+	makeEnd := func() string {
+		return `{"type":"end","data":{"path":{"text":"f.go"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0},"searches":1,"searches_with_match":1,"bytes_searched":0,"bytes_printed":0,"matched_lines":1,"matches":1}}}`
+	}
+
+	lines := []string{
+		makeMatch(10, "matchA"),
+		makeEnd(),
+		makeMatch(200, "matchB"),
+		makeEnd(),
+	}
+	input := []byte(strings.Join(lines, "\n"))
+
+	matches, err := parseRipgrepOutput(input, 100, 3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(matches) != 2 {
+		t.Fatalf("expected 2 matches, got %d", len(matches))
+	}
+	if matches[0].Match != "matchA" || matches[1].Match != "matchB" {
+		t.Errorf("unexpected match content: %v %v", matches[0].Match, matches[1].Match)
+	}
+}
+
+func TestTruncateLine(t *testing.T) {
+	short := "hello world"
+	if truncateLine(short) != short {
+		t.Errorf("short line should be unchanged, got %q", truncateLine(short))
+	}
+
+	long := strings.Repeat("x", maxLineDisplayLen+10)
+	result := truncateLine(long)
+	r := []rune(result)
+	if len(r) > maxLineDisplayLen {
+		t.Errorf("truncated line too long: %d runes (max %d)", len(r), maxLineDisplayLen)
+	}
+	if !strings.HasSuffix(result, "…") {
+		t.Errorf("truncated line should end with ellipsis, got %q", result[len(result)-4:])
+	}
+
+	// Trailing whitespace stripped even if short
+	withTrail := "foo   "
+	if truncateLine(withTrail) != "foo" {
+		t.Errorf("trailing whitespace not stripped, got %q", truncateLine(withTrail))
+	}
+}
+
+func TestFormatGrepResults_PerFileOverflow(t *testing.T) {
+	// Build more than maxMatchesPerFileDisplay matches for one file.
+	var matches []GrepMatch
+	for i := 1; i <= maxMatchesPerFileDisplay+3; i++ {
+		matches = append(matches, GrepMatch{
+			FilePath:   "big.go",
+			LineNumber: i,
+			Match:      "match",
+			Context:    fmt.Sprintf("> %d: match", i),
+		})
+	}
+
+	result := formatGrepResults(matches, false)
+
+	// File header should show true total.
+	expected := fmt.Sprintf("big.go (%d matches):", maxMatchesPerFileDisplay+3)
+	if !strings.Contains(result, expected) {
+		t.Errorf("expected header %q in:\n%s", expected, result)
+	}
+
+	// Overflow note should be present.
+	if !strings.Contains(result, "[+3 more") {
+		t.Errorf("expected overflow note '[+3 more' in:\n%s", result)
+	}
+
+	// Only maxMatchesPerFileDisplay match lines should appear.
+	displayed := strings.Count(result, "> ")
+	if displayed != maxMatchesPerFileDisplay {
+		t.Errorf("expected %d displayed matches, got %d", maxMatchesPerFileDisplay, displayed)
 	}
 }
 
