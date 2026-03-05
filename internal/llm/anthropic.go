@@ -568,7 +568,11 @@ func buildAnthropicMessages(messages []Message) (string, []anthropic.MessagePara
 		case RoleUser:
 			blocks := buildAnthropicBlocks(msg.Parts, false)
 			if len(blocks) > 0 {
-				out = append(out, anthropic.NewUserMessage(blocks...))
+				m := anthropic.NewUserMessage(blocks...)
+				if msg.CacheAnchor {
+					applyCacheControlToLastBlock(m.Content)
+				}
+				out = append(out, m)
 			}
 		case RoleAssistant:
 			blocks := buildAnthropicBlocks(msg.Parts, true)
@@ -599,7 +603,11 @@ func buildAnthropicBetaMessages(messages []Message) (string, []anthropic.BetaMes
 		case RoleUser:
 			blocks := buildAnthropicBetaBlocks(msg.Parts, false)
 			if len(blocks) > 0 {
-				out = append(out, anthropic.NewBetaUserMessage(blocks...))
+				m := anthropic.NewBetaUserMessage(blocks...)
+				if msg.CacheAnchor {
+					applyBetaCacheControlToLastBlock(m.Content)
+				}
+				out = append(out, m)
 			}
 		case RoleAssistant:
 			blocks := buildAnthropicBetaBlocks(msg.Parts, true)
@@ -851,8 +859,18 @@ func applyLastMessageCacheControl(messages []anthropic.MessageParam) {
 	if len(last.Content) == 0 {
 		return
 	}
+	applyCacheControlToLastBlock(last.Content)
+}
+
+// applyCacheControlToLastBlock applies cache_control: ephemeral to the last block
+// in a slice of Anthropic content blocks. Used for both the rolling per-turn
+// breakpoint and the stable summary anchor.
+func applyCacheControlToLastBlock(blocks []anthropic.ContentBlockParamUnion) {
+	if len(blocks) == 0 {
+		return
+	}
 	cc := anthropic.NewCacheControlEphemeralParam()
-	block := &last.Content[len(last.Content)-1]
+	block := &blocks[len(blocks)-1]
 	switch {
 	case block.OfText != nil:
 		block.OfText.CacheControl = cc
@@ -875,8 +893,17 @@ func applyBetaLastMessageCacheControl(messages []anthropic.BetaMessageParam) {
 	if len(last.Content) == 0 {
 		return
 	}
+	applyBetaCacheControlToLastBlock(last.Content)
+}
+
+// applyBetaCacheControlToLastBlock applies cache_control: ephemeral to the last
+// block in a slice of Anthropic beta content blocks.
+func applyBetaCacheControlToLastBlock(blocks []anthropic.BetaContentBlockParamUnion) {
+	if len(blocks) == 0 {
+		return
+	}
 	cc := anthropic.NewBetaCacheControlEphemeralParam()
-	block := &last.Content[len(last.Content)-1]
+	block := &blocks[len(blocks)-1]
 	switch {
 	case block.OfText != nil:
 		block.OfText.CacheControl = cc

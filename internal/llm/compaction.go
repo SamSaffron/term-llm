@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	defaultThresholdRatio        = 0.80
+	defaultThresholdRatio        = 0.90
 	defaultRecentUserTokenBudget = 20_000
 	defaultMaxToolResultChars    = 80_000
 	approxBytesPerToken          = 4
@@ -73,15 +73,27 @@ func EstimateMessageTokens(msgs []Message) int {
 	return total
 }
 
-const summarizationPrompt = `You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another instance of yourself that will resume this conversation.
+const summarizationPrompt = `You are performing a CONTEXT CHECKPOINT COMPACTION. Create a detailed handoff summary for another instance of yourself that will resume this conversation.
 
-Include:
-- The overall goal/task being worked on
-- What has been accomplished so far (key decisions, actions taken)
-- Important context (file paths, variable names, error messages, constraints)
-- What remains to be done (clear next steps)
+Before your final summary, wrap your analysis in <analysis> tags. In your analysis:
+1. Chronologically review each message and section of the conversation. For each section identify:
+   - The user's explicit requests and intent
+   - Key decisions made and actions taken
+   - Specific details: file paths, variable names, error messages, API contracts, config values
+   - Errors encountered and how they were resolved
+   - Specific user feedback or corrections
 
-Be concise and structured. Focus on details that would be lost without this summary.`
+Your summary must include all of the following sections:
+1. Primary Request and Intent
+2. Key Context (file paths, APIs, config values, constraints, environment details)
+3. Actions Taken and Decisions Made
+4. Errors and Fixes
+5. All User Messages (verbatim — critical for understanding the user's exact intent and any changing instructions)
+6. Current Work (precisely what was in-flight immediately before this summary)
+7. Next Step (direct quote from the most recent conversation showing exactly what needs to happen next)
+
+Wrap your final summary in <summary> tags.
+Extract only the contents of the <summary> block as the result — the <analysis> is for your reasoning only.`
 
 const summaryPrefix = `[Context Compaction]
 A previous conversation was compacted to fit within the context window. Below is a summary of what happened before. Use this context to continue seamlessly.
@@ -192,11 +204,11 @@ func Compact(ctx context.Context, provider Provider, model, systemPrompt string,
 		return nil, fmt.Errorf("compaction produced empty summary")
 	}
 
-	// Extract recent user messages within budget
-	recentUserMsgs := extractRecentUserMessages(messages, config.RecentUserTokenBudget)
+	// Extract recent conversation tail within budget (user + assistant)
+	recentMsgs := extractRecentContext(messages, config.RecentUserTokenBudget)
 
 	// Reconstruct history
-	newMessages := reconstructHistory(systemPrompt, summary.String(), recentUserMsgs)
+	newMessages := reconstructHistory(systemPrompt, summary.String(), recentMsgs)
 	newMessages = sanitizeToolHistory(newMessages)
 
 	return &CompactionResult{
@@ -207,54 +219,77 @@ func Compact(ctx context.Context, provider Provider, model, systemPrompt string,
 	}, nil
 }
 
-// extractRecentUserMessages walks messages newest→oldest, collecting user-role
-// messages until the token budget is exhausted. Returns in chronological order.
-func extractRecentUserMessages(messages []Message, tokenBudget int) []Message {
+// extractRecentContext walks messages newest→oldest, collecting both user and
+// assistant messages until the token budget is exhausted. It cuts only at clean
+// message boundaries and never splits a tool call / tool result pair.
+// Returns the tail in chronological order.
+func extractRecentContext(messages []Message, tokenBudget int) []Message {
 	if len(messages) == 0 {
 		return nil
 	}
-	var result []Message
+
+	// Walk backward, accumulating whole messages until budget is gone.
+	// We stop before a message that would push us over, so the first message
+	// collected is always the newest one that fits.
 	remaining := tokenBudget
+	cutIdx := len(messages) // exclusive lower bound (we'll slice messages[cutIdx:])
 
 	for i := len(messages) - 1; i >= 0; i-- {
 		msg := messages[i]
-		if msg.Role != RoleUser {
+		// Skip system messages — they're re-injected separately.
+		if msg.Role == RoleSystem {
 			continue
 		}
 		tokens := EstimateMessageTokens([]Message{msg})
-		if tokens > remaining && len(result) > 0 {
+		if tokens > remaining && cutIdx < len(messages) {
+			// Budget exhausted; stop before this message.
 			break
 		}
 		remaining -= tokens
-		result = append(result, msg)
+		cutIdx = i
 		if remaining <= 0 {
 			break
 		}
 	}
 
-	// Messages were collected newest→oldest; reverse to restore chronological order.
-	for l, r := 0, len(result)-1; l < r; l, r = l+1, r-1 {
-		result[l], result[r] = result[r], result[l]
+	tail := messages[cutIdx:]
+
+	// Ensure the tail forms a valid conversation: must start with a user message
+	// (Anthropic and most providers reject histories that open with an assistant turn).
+	for len(tail) > 0 && tail[0].Role != RoleUser {
+		tail = tail[1:]
 	}
 
-	return result
+	return tail
 }
 
 // reconstructHistory builds the compacted message list:
-// [SystemText(systemPrompt)] + [UserText(summaryPrefix + summary)] + [recent user messages]
-func reconstructHistory(systemPrompt, summary string, recentUserMsgs []Message) []Message {
+// [SystemText(systemPrompt)] + [summary(user, CacheAnchor)] + [ack(assistant)] + [recent context]
+//
+// The summary message is marked CacheAnchor=true so Anthropic-compatible providers
+// apply cache_control: ephemeral to it, creating a stable cache breakpoint at the
+// summary. This means subsequent turns only pay cold-prefill cost on the delta after
+// the summary, not on the full compacted context.
+func reconstructHistory(systemPrompt, summary string, recentMsgs []Message) []Message {
 	var messages []Message
 
 	if systemPrompt != "" {
 		messages = append(messages, SystemText(systemPrompt))
 	}
 
-	messages = append(messages, UserText(summaryPrefix+summary))
+	// The summary message gets a cache anchor so the Anthropic provider applies
+	// cache_control: ephemeral to it. The summary is stable until the next
+	// compaction, so caching it here gives a cheap warm hit on every subsequent turn.
+	messages = append(messages, Message{
+		Role:        RoleUser,
+		Parts:       []Part{{Type: PartText, Text: summaryPrefix + summary}},
+		CacheAnchor: true,
+	})
 
 	// Add an assistant acknowledgement so the conversation flow is valid
 	messages = append(messages, AssistantText("I've reviewed the context summary. I'll continue from where we left off."))
 
-	messages = append(messages, recentUserMsgs...)
+	messages = append(messages, recentMsgs...)
 
 	return messages
 }

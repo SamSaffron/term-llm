@@ -93,8 +93,9 @@ const (
 
 // Message holds a role with structured parts.
 type Message struct {
-	Role  Role
-	Parts []Part
+	Role        Role
+	Parts       []Part
+	CacheAnchor bool // provider should apply cache_control to this message (Anthropic-specific)
 }
 
 // Part represents a single content part.
