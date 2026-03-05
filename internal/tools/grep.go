@@ -127,12 +127,14 @@ func (t *GrepTool) executeRipgrep(ctx context.Context, pattern, searchPath, incl
 }
 
 // pendingMatch tracks context for building ripgrep results.
+// before and after carry line numbers so adjacent matches can be merged
+// without re-parsing formatted strings.
 type pendingMatch struct {
 	filePath   string
 	lineNumber int
 	matchLine  string
-	before     []string
-	after      []string
+	before     []contextEntry
+	after      []contextEntry
 }
 
 // contextEntry is one line from a ripgrep "context" event.
@@ -141,7 +143,108 @@ type contextEntry struct {
 	text       string
 }
 
-// parseRipgrepOutput parses ripgrep JSON output into GrepMatches.
+// matchBlock is the merged display unit for one contiguous context window.
+// A single block may highlight multiple match lines when adjacent matches
+// are merged.
+type matchBlock struct {
+	filePath string
+	lines    []blockLine
+}
+
+type blockLine struct {
+	number  int
+	text    string
+	isMatch bool
+}
+
+// pendingToBlock converts a pendingMatch to a matchBlock.
+func pendingToBlock(p *pendingMatch) matchBlock {
+	lines := make([]blockLine, 0, len(p.before)+1+len(p.after))
+	for _, e := range p.before {
+		lines = append(lines, blockLine{e.lineNumber, e.text, false})
+	}
+	lines = append(lines, blockLine{p.lineNumber, p.matchLine, true})
+	for _, e := range p.after {
+		lines = append(lines, blockLine{e.lineNumber, e.text, false})
+	}
+	return matchBlock{p.filePath, lines}
+}
+
+// mergeBlocks combines two matchBlocks into one, deduplicating shared lines.
+// Lines present in both blocks are shown once; a line that is a match in
+// either block is marked as a match in the result.
+func mergeBlocks(a, b matchBlock) matchBlock {
+	byNum := make(map[int]int, len(a.lines)+len(b.lines)) // lineNum → slice index
+	merged := make([]blockLine, 0, len(a.lines)+len(b.lines))
+	for _, l := range a.lines {
+		byNum[l.number] = len(merged)
+		merged = append(merged, l)
+	}
+	for _, l := range b.lines {
+		if idx, ok := byNum[l.number]; ok {
+			if l.isMatch {
+				merged[idx].isMatch = true
+			}
+		} else {
+			byNum[l.number] = len(merged)
+			merged = append(merged, l)
+		}
+	}
+	sort.Slice(merged, func(i, j int) bool {
+		return merged[i].number < merged[j].number
+	})
+	return matchBlock{a.filePath, merged}
+}
+
+// pendingsToBlocks converts raw parsed matches to display blocks, merging
+// adjacent matches whose context windows overlap or are contiguous.
+func pendingsToBlocks(pending []pendingMatch) []matchBlock {
+	var blocks []matchBlock
+	for i := range pending {
+		b := pendingToBlock(&pending[i])
+		if len(blocks) > 0 && blocks[len(blocks)-1].filePath == b.filePath {
+			last := blocks[len(blocks)-1]
+			lastLine := last.lines[len(last.lines)-1].number
+			firstLine := b.lines[0].number
+			if firstLine <= lastLine+1 {
+				blocks[len(blocks)-1] = mergeBlocks(last, b)
+				continue
+			}
+		}
+		blocks = append(blocks, b)
+	}
+	return blocks
+}
+
+// blockToGrepMatch converts a matchBlock to a GrepMatch for external use.
+func blockToGrepMatch(b matchBlock) GrepMatch {
+	var sb strings.Builder
+	for _, l := range b.lines {
+		prefix := "  "
+		if l.isMatch {
+			prefix = "> "
+		}
+		sb.WriteString(fmt.Sprintf("%s%d: %s\n", prefix, l.number, truncateLine(l.text)))
+	}
+	// LineNumber and Match refer to the first highlighted line.
+	var firstNum int
+	var firstText string
+	for _, l := range b.lines {
+		if l.isMatch {
+			firstNum = l.number
+			firstText = l.text
+			break
+		}
+	}
+	return GrepMatch{
+		FilePath:   b.filePath,
+		LineNumber: firstNum,
+		Match:      firstText,
+		Context:    strings.TrimSuffix(sb.String(), "\n"),
+	}
+}
+
+// parseToPending parses ripgrep JSON output into raw pendingMatches.
 //
 // # Stream ordering
 //
@@ -166,9 +269,9 @@ type contextEntry struct {
 // After-context lines go directly into pending.after, capped at maxAfterContext.
 // Lines beyond the cap are buffered (not discarded) so they are available as
 // before-context for the next match.
-func parseRipgrepOutput(output []byte, maxResults, maxAfterContext int) ([]GrepMatch, error) {
-	var matches []GrepMatch
+func parseToPending(output []byte, maxResults, maxAfterContext int) ([]pendingMatch, error) {
 	var pending *pendingMatch
+	var result []pendingMatch
 	var contextBuf []contextEntry // look-back buffer for before-context
 
 	bufAppend := func(e contextEntry) {
@@ -182,9 +285,9 @@ func parseRipgrepOutput(output []byte, maxResults, maxAfterContext int) ([]GrepM
 		if pending == nil {
 			return false
 		}
-		matches = append(matches, buildMatchFromPending(pending))
+		result = append(result, *pending)
 		pending = nil
-		return len(matches) >= maxResults
+		return len(result) >= maxResults
 	}
 
 	lines := strings.Split(string(output), "\n")
@@ -201,7 +304,7 @@ func parseRipgrepOutput(output []byte, maxResults, maxAfterContext int) ([]GrepM
 		switch msg.Type {
 		case "match":
 			if flush() {
-				return matches, nil
+				return result, nil
 			}
 
 			var data rgMatchData
@@ -210,10 +313,10 @@ func parseRipgrepOutput(output []byte, maxResults, maxAfterContext int) ([]GrepM
 			}
 
 			// Collect before-context from the look-back buffer.
-			var before []string
+			var before []contextEntry
 			for _, e := range contextBuf {
 				if e.lineNumber < data.LineNumber {
-					before = append(before, e.text)
+					before = append(before, e)
 				}
 			}
 
@@ -234,7 +337,7 @@ func parseRipgrepOutput(output []byte, maxResults, maxAfterContext int) ([]GrepM
 			text := strings.TrimSuffix(data.Lines.Text, "\n")
 			if pending != nil && data.LineNumber > pending.lineNumber && len(pending.after) < maxAfterContext {
 				// Normal after-context for the current match.
-				pending.after = append(pending.after, text)
+				pending.after = append(pending.after, contextEntry{data.LineNumber, text})
 			} else {
 				// Everything else goes into the look-back buffer:
 				//  - lines before the first match in a group (pending == nil)
@@ -248,7 +351,7 @@ func parseRipgrepOutput(output []byte, maxResults, maxAfterContext int) ([]GrepM
 			// last match in a group gets its after-context before the next
 			// group's before-context starts arriving.
 			if flush() {
-				return matches, nil
+				return result, nil
 			}
 			contextBuf = nil // each group starts with a clean buffer
 		}
@@ -257,6 +360,21 @@ func parseRipgrepOutput(output []byte, maxResults, maxAfterContext int) ([]GrepM
 	// Flush any remaining match not terminated by an "end" event.
 	flush()
 
+	return result, nil
+}
+
+// parseRipgrepOutput parses ripgrep JSON output into GrepMatches.
+// It runs the full pipeline: raw parse → merge adjacent blocks → format.
+func parseRipgrepOutput(output []byte, maxResults, maxAfterContext int) ([]GrepMatch, error) {
+	pending, err := parseToPending(output, maxResults, maxAfterContext)
+	if err != nil {
+		return nil, err
+	}
+	blocks := pendingsToBlocks(pending)
+	matches := make([]GrepMatch, len(blocks))
+	for i, b := range blocks {
+		matches[i] = blockToGrepMatch(b)
+	}
 	return matches, nil
 }
 
@@ -270,26 +388,6 @@ func truncateLine(s string) string {
 		return s
 	}
 	return string(r[:maxLineDisplayLen-1]) + "…"
-}
-
-func buildMatchFromPending(p *pendingMatch) GrepMatch {
-	var sb strings.Builder
-	startLine := p.lineNumber - len(p.before)
-
-	for i, line := range p.before {
-		sb.WriteString(fmt.Sprintf("  %d: %s\n", startLine+i, truncateLine(line)))
-	}
-	sb.WriteString(fmt.Sprintf("> %d: %s\n", p.lineNumber, truncateLine(p.matchLine)))
-	for i, line := range p.after {
-		sb.WriteString(fmt.Sprintf("  %d: %s\n", p.lineNumber+1+i, truncateLine(line)))
-	}
-
-	return GrepMatch{
-		FilePath:   p.filePath,
-		LineNumber: p.lineNumber,
-		Match:      p.matchLine,
-		Context:    strings.TrimSuffix(sb.String(), "\n"),
-	}
 }
 
 // GrepArgs are the arguments for grep.
@@ -654,7 +752,7 @@ func buildContext(lines []string, matchIdx, contextLines int) string {
 		if i == matchIdx {
 			prefix = "> "
 		}
-		sb.WriteString(fmt.Sprintf("%s%d: %s\n", prefix, i+1, lines[i]))
+		sb.WriteString(fmt.Sprintf("%s%d: %s\n", prefix, i+1, truncateLine(lines[i])))
 	}
 
 	return strings.TrimSuffix(sb.String(), "\n")
@@ -743,7 +841,7 @@ func formatGrepResults(matches []GrepMatch, truncated bool) string {
 
 		for i, m := range display {
 			if i > 0 {
-				sb.WriteString("\n")
+				sb.WriteString("  …\n")
 			}
 			sb.WriteString(m.Context)
 			sb.WriteString("\n")

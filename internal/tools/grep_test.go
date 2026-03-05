@@ -116,6 +116,171 @@ func TestFormatGrepResults_Empty(t *testing.T) {
 	}
 }
 
+// TestPendingsToBlocks_MergeAdjacent verifies that two matches on consecutive
+// lines (e.g. lines 41 and 42) are merged into a single block with two ">"
+// markers rather than displayed as two separate overlapping context windows.
+func TestPendingsToBlocks_MergeAdjacent(t *testing.T) {
+	pending := []pendingMatch{
+		{
+			filePath:  "f.go",
+			lineNumber: 41,
+			matchLine: "matchA",
+			before:    []contextEntry{{39, "ctx39"}, {40, "ctx40"}},
+			after:     []contextEntry{},
+		},
+		{
+			filePath:  "f.go",
+			lineNumber: 42,
+			matchLine: "matchB",
+			before:    []contextEntry{},
+			after:     []contextEntry{{43, "ctx43"}, {44, "ctx44"}},
+		},
+	}
+
+	blocks := pendingsToBlocks(pending)
+
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 merged block, got %d", len(blocks))
+	}
+
+	b := blocks[0]
+	// Should have: 39(ctx), 40(ctx), 41(match), 42(match), 43(ctx), 44(ctx)
+	if len(b.lines) != 6 {
+		t.Errorf("expected 6 lines in merged block, got %d: %+v", len(b.lines), b.lines)
+	}
+
+	matchCount := 0
+	for _, l := range b.lines {
+		if l.isMatch {
+			matchCount++
+		}
+	}
+	if matchCount != 2 {
+		t.Errorf("expected 2 match lines in merged block, got %d", matchCount)
+	}
+
+	m := blockToGrepMatch(b)
+	if !strings.Contains(m.Context, "> 41:") || !strings.Contains(m.Context, "> 42:") {
+		t.Errorf("merged context missing match markers:\n%s", m.Context)
+	}
+	// No duplicate context lines (39,40 should appear once each)
+	if strings.Count(m.Context, "ctx39") != 1 || strings.Count(m.Context, "ctx40") != 1 {
+		t.Errorf("context lines duplicated in merged block:\n%s", m.Context)
+	}
+}
+
+// TestPendingsToBlocks_NoMergeFarApart verifies that matches with a large gap
+// between them are kept as separate blocks.
+func TestPendingsToBlocks_NoMergeFarApart(t *testing.T) {
+	pending := []pendingMatch{
+		{
+			filePath:  "f.go",
+			lineNumber: 41,
+			matchLine: "matchA",
+			before:    []contextEntry{{39, "ctx39"}, {40, "ctx40"}},
+			after:     []contextEntry{{43, "ctx43"}, {44, "ctx44"}},
+		},
+		{
+			filePath:  "f.go",
+			lineNumber: 339,
+			matchLine: "matchB",
+			before:    []contextEntry{{337, "ctx337"}, {338, "ctx338"}},
+			after:     []contextEntry{{340, "ctx340"}, {341, "ctx341"}},
+		},
+	}
+
+	blocks := pendingsToBlocks(pending)
+
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 separate blocks, got %d", len(blocks))
+	}
+	if blocks[0].lines[0].number != 39 {
+		t.Errorf("block 0 should start at line 39, got %d", blocks[0].lines[0].number)
+	}
+	if blocks[1].lines[0].number != 337 {
+		t.Errorf("block 1 should start at line 337, got %d", blocks[1].lines[0].number)
+	}
+}
+
+// TestPendingsToBlocks_DifferentFiles verifies that matches in different files
+// are never merged even if line numbers overlap.
+func TestPendingsToBlocks_DifferentFiles(t *testing.T) {
+	pending := []pendingMatch{
+		{filePath: "a.go", lineNumber: 10, matchLine: "matchA"},
+		{filePath: "b.go", lineNumber: 10, matchLine: "matchB"},
+	}
+
+	blocks := pendingsToBlocks(pending)
+
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 blocks for different files, got %d", len(blocks))
+	}
+	if blocks[0].filePath != "a.go" || blocks[1].filePath != "b.go" {
+		t.Errorf("unexpected file order: %s, %s", blocks[0].filePath, blocks[1].filePath)
+	}
+}
+
+// TestFormatGrepResults_EllipsisSeparator verifies that non-adjacent blocks
+// within the same file are separated by "  …" rather than a blank line.
+func TestFormatGrepResults_EllipsisSeparator(t *testing.T) {
+	matches := []GrepMatch{
+		{FilePath: "f.go", LineNumber: 10, Match: "matchA", Context: "> 10: matchA"},
+		{FilePath: "f.go", LineNumber: 300, Match: "matchB", Context: "> 300: matchB"},
+	}
+
+	result := formatGrepResults(matches, false)
+
+	if !strings.Contains(result, "  …") {
+		t.Errorf("expected ellipsis separator between non-adjacent blocks:\n%s", result)
+	}
+}
+
+// TestParseRipgrepOutput_MergesAdjacent is an end-to-end test verifying that
+// adjacent matches produce a single merged GrepMatch with both ">" lines.
+func TestParseRipgrepOutput_MergesAdjacent(t *testing.T) {
+	makeMatch := func(lineNum int, text string) string {
+		return fmt.Sprintf(`{"type":"match","data":{"path":{"text":"f.go"},"lines":{"text":%q},"line_number":%d,"absolute_offset":0,"submatches":[]}}`,
+			text+"\n", lineNum)
+	}
+	makeContext := func(lineNum int, text string) string {
+		return fmt.Sprintf(`{"type":"context","data":{"path":{"text":"f.go"},"lines":{"text":%q},"line_number":%d,"absolute_offset":0,"submatches":[]}}`,
+			text+"\n", lineNum)
+	}
+	makeEnd := func() string {
+		return `{"type":"end","data":{"path":{"text":"f.go"},"binary_offset":null,"stats":{"elapsed":{"secs":0,"nanos":0},"searches":1,"searches_with_match":1,"bytes_searched":0,"bytes_printed":0,"matched_lines":2,"matches":2}}}`
+	}
+
+	// Two adjacent matches at lines 41 and 42, context=2.
+	// rg emits before-context for 41, then match@41, then match@42 (no context
+	// between), then after-context for 42, then end.
+	lines := []string{
+		makeContext(39, "ctx39"),
+		makeContext(40, "ctx40"),
+		makeMatch(41, "matchA"),
+		makeMatch(42, "matchB"),
+		makeContext(43, "ctx43"),
+		makeContext(44, "ctx44"),
+		makeEnd(),
+	}
+	input := []byte(strings.Join(lines, "\n"))
+
+	matches, err := parseRipgrepOutput(input, 100, 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("expected 1 merged match, got %d", len(matches))
+	}
+
+	ctx := matches[0].Context
+	if !strings.Contains(ctx, "> 41:") || !strings.Contains(ctx, "> 42:") {
+		t.Errorf("merged context missing match markers:\n%s", ctx)
+	}
+	if strings.Count(ctx, "ctx39") != 1 || strings.Count(ctx, "ctx44") != 1 {
+		t.Errorf("context lines should appear exactly once:\n%s", ctx)
+	}
+}
+
 func TestGroupMatchesByFile_PreservesOrder(t *testing.T) {
 	matches := []GrepMatch{
 		{FilePath: "c.go", LineNumber: 1},
