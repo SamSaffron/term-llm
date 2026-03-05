@@ -1014,11 +1014,12 @@ func TestInsightCRUD(t *testing.T) {
 	defer store.Close()
 
 	ins := &Insight{
-		Agent:       "jarvis",
-		Content:     "Do not expose internal tooling names in public posts.",
-		Category:    "anti-pattern",
-		TriggerDesc: "writing a blog post or public article",
-		Confidence:  0.9,
+		Agent:          "jarvis",
+		Content:        "Do not expose internal tooling names in public posts.",
+		CompactContent: "Never name internal tools in public writing.",
+		Category:       "anti-pattern",
+		TriggerDesc:    "writing a blog post or public article",
+		Confidence:     0.9,
 	}
 	if err := store.CreateInsight(ctx, ins); err != nil {
 		t.Fatalf("CreateInsight: %v", err)
@@ -1034,17 +1035,32 @@ func TestInsightCRUD(t *testing.T) {
 	if got.Content != ins.Content {
 		t.Errorf("content = %q, want %q", got.Content, ins.Content)
 	}
+	if got.CompactContent != ins.CompactContent {
+		t.Errorf("compact_content = %q, want %q", got.CompactContent, ins.CompactContent)
+	}
 	if got.Category != "anti-pattern" {
 		t.Errorf("category = %q, want anti-pattern", got.Category)
 	}
 
-	// Update
-	if err := store.UpdateInsight(ctx, ins.ID, "Never mention NZBGeek or SABnzbd in public posts."); err != nil {
+	// Update content + compact together.
+	if err := store.UpdateInsight(ctx, ins.ID, "Never mention NZBGeek or SABnzbd in public posts.", "No internal tool names in public posts."); err != nil {
 		t.Fatalf("UpdateInsight: %v", err)
 	}
 	got2, _ := store.GetInsightByID(ctx, ins.ID)
 	if got2.Content != "Never mention NZBGeek or SABnzbd in public posts." {
 		t.Errorf("after update, content = %q", got2.Content)
+	}
+	if got2.CompactContent != "No internal tool names in public posts." {
+		t.Errorf("after update, compact_content = %q", got2.CompactContent)
+	}
+
+	// Update content only — compact should be preserved.
+	if err := store.UpdateInsight(ctx, ins.ID, "Keep internal tool names out of published writing.", ""); err != nil {
+		t.Fatalf("UpdateInsight preserve compact: %v", err)
+	}
+	got3u, _ := store.GetInsightByID(ctx, ins.ID)
+	if got3u.CompactContent != "No internal tool names in public posts." {
+		t.Errorf("compact should be preserved when empty passed: %q", got3u.CompactContent)
 	}
 
 	// Delete
@@ -1204,25 +1220,47 @@ func TestInsightExpand(t *testing.T) {
 	store := newTestStore(t)
 	defer store.Close()
 
+	// Insight with both full and compact forms.
 	if err := store.CreateInsight(ctx, &Insight{
-		Agent:      "jarvis",
-		Content:    "When writing public content, use generic stand-ins for private tools.",
-		Category:   "anti-pattern",
-		Confidence: 0.9,
+		Agent:          "jarvis",
+		Content:        "When writing public content, use generic stand-ins for private tools.",
+		CompactContent: "Use generic names in public writing.",
+		Category:       "anti-pattern",
+		Confidence:     0.9,
 	}); err != nil {
-		t.Fatalf("CreateInsight: %v", err)
+		t.Fatalf("CreateInsight with compact: %v", err)
 	}
 
-	// Query that should match — uses words present in the content.
-	out, err := store.ExpandInsights(ctx, "jarvis", "public content private tools generic", 500)
+	// Insight without compact — should fall back to full content.
+	if err := store.CreateInsight(ctx, &Insight{
+		Agent:      "jarvis",
+		Content:    "Always confirm before overwriting existing files.",
+		Category:   "workflow",
+		Confidence: 0.8,
+	}); err != nil {
+		t.Fatalf("CreateInsight no compact: %v", err)
+	}
+
+	out, err := store.ExpandInsights(ctx, "jarvis", "any", 500)
 	if err != nil {
 		t.Fatalf("ExpandInsights: %v", err)
 	}
 	if out == "" {
-		t.Fatal("ExpandInsights returned empty string for matching query")
+		t.Fatal("ExpandInsights returned empty string")
 	}
 	if !strings.Contains(out, "<insights>") {
 		t.Errorf("output missing <insights> tag: %q", out)
+	}
+	// Compact form should appear, not the verbose form.
+	if !strings.Contains(out, "Use generic names in public writing.") {
+		t.Errorf("compact form not used in expansion: %q", out)
+	}
+	if strings.Contains(out, "use generic stand-ins for private tools") {
+		t.Errorf("verbose form should not appear when compact is set: %q", out)
+	}
+	// Insight without compact should show full content.
+	if !strings.Contains(out, "Always confirm before overwriting existing files.") {
+		t.Errorf("full content fallback not working: %q", out)
 	}
 
 	// Empty bank for a different agent should return empty.

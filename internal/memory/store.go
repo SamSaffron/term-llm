@@ -181,6 +181,7 @@ CREATE TABLE IF NOT EXISTS memory_insights (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     agent               TEXT NOT NULL,
     content             TEXT NOT NULL,
+    compact_content     TEXT NOT NULL DEFAULT '',
     category            TEXT NOT NULL DEFAULT '',
     trigger_desc        TEXT NOT NULL DEFAULT '',
     confidence          REAL NOT NULL DEFAULT 0.5,
@@ -245,6 +246,18 @@ func NewStore(cfg Config) (*Store, error) {
 func initSchema(db *sql.DB) error {
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("initialize memory schema: %w", err)
+	}
+
+	// Idempotent column migrations for existing databases.
+	// SQLite returns "duplicate column name" when the column already exists;
+	// we suppress that specific error so initSchema is safe to run on any DB.
+	migrations := []string{
+		`ALTER TABLE memory_insights ADD COLUMN compact_content TEXT NOT NULL DEFAULT ''`,
+	}
+	for _, m := range migrations {
+		if _, err := db.Exec(m); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("schema migration %q: %w", m, err)
+		}
 	}
 
 	if err := ensureFTSInitialized(db); err != nil {
@@ -1862,6 +1875,7 @@ type Insight struct {
 	ID                 int64
 	Agent              string
 	Content            string
+	CompactContent     string // short form for injection; falls back to Content if empty
 	Category           string
 	TriggerDesc        string
 	Confidence         float64
@@ -1903,9 +1917,9 @@ func (s *Store) CreateInsight(ctx context.Context, ins *Insight) error {
 
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO memory_insights
-		    (agent, content, category, trigger_desc, confidence, reinforcement_count, created_at, last_reinforced)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		ins.Agent, ins.Content, ins.Category, ins.TriggerDesc,
+		    (agent, content, compact_content, category, trigger_desc, confidence, reinforcement_count, created_at, last_reinforced)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ins.Agent, ins.Content, ins.CompactContent, ins.Category, ins.TriggerDesc,
 		ins.Confidence, ins.ReinforcementCount,
 		ins.CreatedAt.UTC().Format(time.RFC3339),
 		ins.LastReinforced.UTC().Format(time.RFC3339),
@@ -1930,7 +1944,7 @@ func (s *Store) CreateInsight(ctx context.Context, ins *Insight) error {
 
 // ListInsights returns insights for an agent, newest first.
 func (s *Store) ListInsights(ctx context.Context, agent string, limit int) ([]*Insight, error) {
-	q := `SELECT id, agent, content, category, trigger_desc, confidence, reinforcement_count,
+	q := `SELECT id, agent, content, compact_content, category, trigger_desc, confidence, reinforcement_count,
 	             created_at, last_reinforced
 	      FROM memory_insights`
 	args := []any{}
@@ -1963,7 +1977,7 @@ func (s *Store) ListInsights(ctx context.Context, agent string, limit int) ([]*I
 // GetInsightByID returns a single insight by its row ID.
 func (s *Store) GetInsightByID(ctx context.Context, id int64) (*Insight, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, agent, content, category, trigger_desc, confidence, reinforcement_count,
+		SELECT id, agent, content, compact_content, category, trigger_desc, confidence, reinforcement_count,
 		       created_at, last_reinforced
 		FROM memory_insights WHERE id = ?`, id)
 	ins, err := scanInsight(row)
@@ -1973,12 +1987,14 @@ func (s *Store) GetInsightByID(ctx context.Context, id int64) (*Insight, error) 
 	return ins, err
 }
 
-// UpdateInsight replaces the content of an insight and resets FTS.
-func (s *Store) UpdateInsight(ctx context.Context, id int64, content string) error {
+// UpdateInsight replaces the content (and optionally compact_content) of an insight and resets FTS.
+// Pass compact="" to leave the compact form unchanged.
+func (s *Store) UpdateInsight(ctx context.Context, id int64, content, compact string) error {
 	content = strings.TrimSpace(content)
 	if content == "" {
 		return fmt.Errorf("content is required")
 	}
+	compact = strings.TrimSpace(compact)
 
 	// Fetch old row before UPDATE so the FTS delete command uses the exact
 	// original content (FTS5 delete requires the stored values to match).
@@ -1990,6 +2006,11 @@ func (s *Store) UpdateInsight(ctx context.Context, id int64, content string) err
 		return fmt.Errorf("insight not found: %d", id)
 	}
 
+	// Preserve existing compact if caller passes "".
+	if compact == "" {
+		compact = old.CompactContent
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("update insight tx: %w", err)
@@ -1997,8 +2018,8 @@ func (s *Store) UpdateInsight(ctx context.Context, id int64, content string) err
 	defer tx.Rollback() //nolint:errcheck
 
 	if _, err = tx.ExecContext(ctx,
-		`UPDATE memory_insights SET content = ?, last_reinforced = ? WHERE id = ?`,
-		content, time.Now().UTC().Format(time.RFC3339), id); err != nil {
+		`UPDATE memory_insights SET content = ?, compact_content = ?, last_reinforced = ? WHERE id = ?`,
+		content, compact, time.Now().UTC().Format(time.RFC3339), id); err != nil {
 		return fmt.Errorf("update insight: %w", err)
 	}
 
@@ -2109,7 +2130,7 @@ func (s *Store) SearchInsights(ctx context.Context, agent, query string, limit i
 	args = append(args, limit)
 
 	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
-		SELECT i.id, i.agent, i.content, i.category, i.trigger_desc,
+		SELECT i.id, i.agent, i.content, i.compact_content, i.category, i.trigger_desc,
 		       i.confidence, i.reinforcement_count, i.created_at, i.last_reinforced
 		FROM memory_insights_fts f
 		JOIN memory_insights i ON i.id = f.rowid
@@ -2168,7 +2189,11 @@ func (s *Store) ExpandInsights(ctx context.Context, agent, _ string, maxTokens i
 			continue
 		}
 		n++
-		line := fmt.Sprintf("%d. %s\n", n, strings.TrimSpace(ins.Content))
+		text := strings.TrimSpace(ins.CompactContent)
+		if text == "" {
+			text = strings.TrimSpace(ins.Content)
+		}
+		line := fmt.Sprintf("%d. %s\n", n, text)
 		if used+len(line) > maxChars {
 			break
 		}
@@ -2187,7 +2212,7 @@ func scanInsight(scanner interface{ Scan(dest ...any) error }) (*Insight, error)
 	var ins Insight
 	var createdAt, lastReinforced string
 	err := scanner.Scan(
-		&ins.ID, &ins.Agent, &ins.Content, &ins.Category, &ins.TriggerDesc,
+		&ins.ID, &ins.Agent, &ins.Content, &ins.CompactContent, &ins.Category, &ins.TriggerDesc,
 		&ins.Confidence, &ins.ReinforcementCount, &createdAt, &lastReinforced,
 	)
 	if err != nil {
