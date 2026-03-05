@@ -19,6 +19,8 @@ import (
 	"github.com/samsaffron/term-llm/internal/clipboard"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	memorydb "github.com/samsaffron/term-llm/internal/memory"
+
 	"github.com/samsaffron/term-llm/internal/mcp"
 	render "github.com/samsaffron/term-llm/internal/render/chat"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -191,6 +193,10 @@ type Model struct {
 	textMode bool
 	// Expanded tool display (full commands/env)
 	toolsExpanded bool
+
+	// InsightsExpander, when non-nil, injects behavioral insights on the
+	// first user turn of a new session. Nil means disabled.
+	insightsExpander *memorydb.InsightsExpander
 
 	// Mouse layout tracking for textarea click-to-cursor support
 	textareaBoundsValid    bool
@@ -437,6 +443,12 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 
 // WantsReload reports whether the user requested a binary reload via /reload.
 func (m *Model) WantsReload() bool { return m.reloadRequested }
+
+// SetInsightsExpander wires up insight injection for the first user turn.
+// Call this after construction when agent.yaml has memory.insights_expansion: true.
+func (m *Model) SetInsightsExpander(expander *memorydb.InsightsExpander) {
+	m.insightsExpander = expander
+}
 
 // ReloadSessionID returns the session ID to resume after a reload, if any.
 func (m *Model) ReloadSessionID() string { return m.reloadSessionID }

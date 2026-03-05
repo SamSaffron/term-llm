@@ -6,6 +6,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	memorydb "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -36,6 +37,11 @@ type Settings struct {
 	MCP                 string
 	Agent               string
 	Store               session.Store
+	// InsightsExpander, when non-nil, injects relevant behavioral insights at
+	// the first user turn of each new session. Nil means disabled (default).
+	// Build with memory.NewInsightsExpander — enabled only when agent.yaml
+	// sets memory.insights_expansion: true.
+	InsightsExpander *memorydb.InsightsExpander
 	// NewSession creates a fresh runtime instance for a new conversation.
 	// Called once per platform session (for example, per Telegram chat session).
 	NewSession func(context.Context) (*SessionRuntime, error)

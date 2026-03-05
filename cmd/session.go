@@ -54,6 +54,10 @@ type SessionSettings struct {
 	MaxTurns        int
 	MaxOutputTokens int // 0 = use provider default
 	Search          bool
+
+	// Memory / insights
+	InsightsExpansion bool
+	InsightsMaxTokens int // 0 → default 500
 }
 
 // CLIFlags holds the CLI flag values that can override settings.
@@ -258,6 +262,12 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 
 	// Search: CLI or agent enables it
 	s.Search = cli.Search || (agent != nil && agent.Search)
+
+	// Memory / insights — only configurable via agent.yaml (no CLI override)
+	if agent != nil {
+		s.InsightsExpansion = agent.Memory.InsightsExpansion
+		s.InsightsMaxTokens = agent.Memory.InsightsMaxTokens
+	}
 
 	return s, nil
 }

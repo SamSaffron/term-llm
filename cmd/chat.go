@@ -10,6 +10,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	memorydb "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -356,6 +357,16 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 
 	// Create chat model
 	model := chat.NewWithFastProvider(cfg, provider, fastProvider, engine, providerKey, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, showStats, initialText, store, sess, useAltScreen, chatAutoSend, true, chatTextMode, agentName, chatYolo)
+
+	// Wire insight expansion (no-op when disabled or store unavailable).
+	if settings.InsightsExpansion {
+		if ms, msErr := openMemoryStore(); msErr == nil {
+			expander := memorydb.NewInsightsExpander(ms, agentName, settings.InsightsMaxTokens)
+			model.SetInsightsExpander(expander)
+			// Store is kept open for the session lifetime; closed when program exits.
+			defer ms.Close()
+		}
+	}
 
 	// Build program options
 	var opts []tea.ProgramOption

@@ -64,6 +64,9 @@ type Agent struct {
 	// "auto" includes project instructions if the agent has coding tools (write_file, edit_file, shell)
 	ProjectInstructions string `yaml:"project_instructions,omitempty"`
 
+	// Memory settings
+	Memory MemoryConfig `yaml:"memory,omitempty"`
+
 	// MCP servers to auto-connect
 	MCP []MCPConfig `yaml:"mcp,omitempty"`
 
@@ -165,6 +168,15 @@ type SpawnConfig struct {
 type MCPConfig struct {
 	Name    string `yaml:"name"`
 	Command string `yaml:"command,omitempty"`
+}
+
+// MemoryConfig holds memory-related settings for an agent.
+type MemoryConfig struct {
+	// InsightsExpansion enables injecting relevant behavioral insights at the
+	// start of each new session (first user turn). Default false.
+	InsightsExpansion bool `yaml:"insights_expansion,omitempty"`
+	// InsightsMaxTokens caps the insight block token budget. Default: 500.
+	InsightsMaxTokens int `yaml:"insights_max_tokens,omitempty"`
 }
 
 // OutputToolConfig configures a tool for capturing structured output.

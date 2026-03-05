@@ -920,6 +920,14 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 	messages = append(messages, sess.history...)
 	messages = append(messages, userMsg)
 
+	// Insights expansion: on the first turn of a new session, inject relevant
+	// behavioral guidelines. Requires memory.insights_expansion: true in agent.yaml.
+	if len(sess.history) == 0 {
+		if expanded := m.settings.InsightsExpander.Expand(ctx, userText); expanded != "" {
+			messages = append(messages, llm.UserText(expanded))
+		}
+	}
+
 	sessionID := ""
 	if sess.meta != nil {
 		sessionID = sess.meta.ID

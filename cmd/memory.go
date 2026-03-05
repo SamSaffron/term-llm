@@ -53,6 +53,7 @@ func init() {
 	memoryCmd.AddCommand(memoryStatusCmd)
 	memoryCmd.AddCommand(memoryFragmentsCmd)
 	memoryCmd.AddCommand(memoryImagesCmd)
+	memoryCmd.AddCommand(memoryInsightsCmd)
 }
 
 func openMemoryStore() (*memorydb.Store, error) {

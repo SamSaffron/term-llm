@@ -14,6 +14,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	memorydb "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -28,6 +29,7 @@ type serveRuntime struct {
 	toolMgr             *tools.ToolManager
 	mcpManager          *mcp.Manager
 	store               session.Store
+	insightsExpander    *memorydb.InsightsExpander
 	systemPrompt        string
 	history             []llm.Message
 	search              bool
@@ -378,6 +380,16 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	}
 	messages = append(messages, baseHistory...)
 	messages = append(messages, inputMessages...)
+
+	// Insights expansion: on the first turn of a stateful session, inject
+	// relevant behavioral guidelines. Requires memory.insights_expansion: true
+	// in agent.yaml (default: false).
+	if len(baseHistory) == 0 && stateful {
+		if expanded := rt.insightsExpander.Expand(ctx, lastUserText(inputMessages)); expanded != "" {
+			messages = append(messages, llm.UserText(expanded))
+		}
+	}
+
 	req.Messages = messages
 
 	var produced []llm.Message
