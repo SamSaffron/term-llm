@@ -1858,7 +1858,13 @@ func (s *Store) CreateInsight(ctx context.Context, ins *Insight) error {
 		ins.ReinforcementCount = 1
 	}
 
-	res, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("create insight tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	res, err := tx.ExecContext(ctx, `
 		INSERT INTO memory_insights
 		    (agent, content, category, trigger_desc, confidence, reinforcement_count, created_at, last_reinforced)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -1876,15 +1882,13 @@ func (s *Store) CreateInsight(ctx context.Context, ins *Insight) error {
 	}
 	ins.ID = id
 
-	// Sync FTS.
-	_, err = s.db.ExecContext(ctx,
+	if _, err = tx.ExecContext(ctx,
 		`INSERT INTO memory_insights_fts(rowid, agent, content, category, trigger_desc)
 		 VALUES (?, ?, ?, ?, ?)`,
-		id, ins.Agent, ins.Content, ins.Category, ins.TriggerDesc)
-	if err != nil {
+		id, ins.Agent, ins.Content, ins.Category, ins.TriggerDesc); err != nil {
 		return fmt.Errorf("sync insight fts: %w", err)
 	}
-	return nil
+	return tx.Commit()
 }
 
 // ListInsights returns insights for an agent, newest first.
@@ -1938,31 +1942,43 @@ func (s *Store) UpdateInsight(ctx context.Context, id int64, content string) err
 	if content == "" {
 		return fmt.Errorf("content is required")
 	}
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE memory_insights SET content = ?, last_reinforced = ? WHERE id = ?`,
-		content, time.Now().UTC().Format(time.RFC3339), id)
+
+	// Fetch old row before UPDATE so the FTS delete command uses the exact
+	// original content (FTS5 delete requires the stored values to match).
+	old, err := s.GetInsightByID(ctx, id)
 	if err != nil {
-		return fmt.Errorf("update insight: %w", err)
+		return err
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
+	if old == nil {
 		return fmt.Errorf("insight not found: %d", id)
 	}
 
-	// Rebuild FTS row.
-	ins, err := s.GetInsightByID(ctx, id)
-	if err != nil || ins == nil {
-		return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("update insight tx: %w", err)
 	}
-	_, _ = s.db.ExecContext(ctx,
+	defer tx.Rollback() //nolint:errcheck
+
+	if _, err = tx.ExecContext(ctx,
+		`UPDATE memory_insights SET content = ?, last_reinforced = ? WHERE id = ?`,
+		content, time.Now().UTC().Format(time.RFC3339), id); err != nil {
+		return fmt.Errorf("update insight: %w", err)
+	}
+
+	// Remove old FTS entry then insert updated one.
+	if _, err = tx.ExecContext(ctx,
 		`INSERT INTO memory_insights_fts(memory_insights_fts, rowid, agent, content, category, trigger_desc)
 		 VALUES ('delete', ?, ?, ?, ?, ?)`,
-		id, ins.Agent, ins.Content, ins.Category, ins.TriggerDesc)
-	_, _ = s.db.ExecContext(ctx,
+		id, old.Agent, old.Content, old.Category, old.TriggerDesc); err != nil {
+		return fmt.Errorf("fts delete insight: %w", err)
+	}
+	if _, err = tx.ExecContext(ctx,
 		`INSERT INTO memory_insights_fts(rowid, agent, content, category, trigger_desc)
 		 VALUES (?, ?, ?, ?, ?)`,
-		id, ins.Agent, content, ins.Category, ins.TriggerDesc)
-	return nil
+		id, old.Agent, content, old.Category, old.TriggerDesc); err != nil {
+		return fmt.Errorf("fts insert insight: %w", err)
+	}
+	return tx.Commit()
 }
 
 // DeleteInsight removes an insight and its FTS entry.
@@ -2030,7 +2046,7 @@ func buildFTSQuery(query string) string {
 		terms = append(terms, s+"*") // prefix match for basic stemming
 	}
 	if len(terms) == 0 {
-		return query
+		return ""
 	}
 	return strings.Join(terms, " OR ")
 }
@@ -2101,27 +2117,30 @@ func (s *Store) ExpandInsights(ctx context.Context, agent, _ string, maxTokens i
 		return "", nil
 	}
 
-	var sb strings.Builder
-	sb.WriteString("<insights>\n")
-	sb.WriteString("Behavioral guidelines from past sessions:\n")
-	used := sb.Len()
+	const header = "<insights>\nBehavioral guidelines from past sessions:\n"
+	const footer = "</insights>"
 
-	for i, ins := range insights {
+	var sb strings.Builder
+	sb.WriteString(header)
+	used := sb.Len()
+	n := 0
+
+	for _, ins := range insights {
 		// Only include insights above a minimum confidence threshold.
 		if ins.Confidence < 0.4 {
 			continue
 		}
-		line := fmt.Sprintf("%d. %s\n", i+1, strings.TrimSpace(ins.Content))
+		n++
+		line := fmt.Sprintf("%d. %s\n", n, strings.TrimSpace(ins.Content))
 		if used+len(line) > maxChars {
 			break
 		}
 		sb.WriteString(line)
 		used += len(line)
 	}
-	sb.WriteString("</insights>")
+	sb.WriteString(footer)
 
-	// If nothing was written beyond the header, return empty.
-	if sb.Len() <= len("<insights>\nBehavioral guidelines from past sessions:\n</insights>") {
+	if n == 0 {
 		return "", nil
 	}
 	return sb.String(), nil
@@ -2179,6 +2198,9 @@ func (s *Store) DecayInsights(ctx context.Context, agent string, halfLifeDays fl
 			continue
 		}
 		c.lastReinf, _ = parseFlexibleTime(lastReinfStr)
+		if c.lastReinf.IsZero() {
+			continue // Malformed timestamp — skip rather than catastrophic decay.
+		}
 		candidates = append(candidates, c)
 	}
 	rows.Close()
@@ -2212,16 +2234,59 @@ func (s *Store) GCInsights(ctx context.Context, agent string, minConfidence floa
 	if minConfidence <= 0 {
 		minConfidence = 0.1
 	}
-	query := `DELETE FROM memory_insights WHERE confidence < ?`
-	var args []any = []any{minConfidence}
+
+	// Fetch candidates first so we can clean up FTS entries before deleting rows.
+	selectQ := `SELECT id, agent, content, category, trigger_desc FROM memory_insights WHERE confidence < ?`
+	selectArgs := []any{minConfidence}
 	if agent != "" {
-		query = `DELETE FROM memory_insights WHERE confidence < ? AND agent = ?`
-		args = append(args, agent)
+		selectQ += ` AND agent = ?`
+		selectArgs = append(selectArgs, agent)
 	}
-	res, err := s.db.ExecContext(ctx, query, args...)
+	rows, err := s.db.QueryContext(ctx, selectQ, selectArgs...)
 	if err != nil {
-		return 0, fmt.Errorf("gc insights: %w", err)
+		return 0, fmt.Errorf("gc insights select: %w", err)
 	}
-	n, _ := res.RowsAffected()
-	return int(n), nil
+	type gcRow struct {
+		id          int64
+		agent       string
+		content     string
+		category    string
+		triggerDesc string
+	}
+	var victims []gcRow
+	for rows.Next() {
+		var r gcRow
+		if err := rows.Scan(&r.id, &r.agent, &r.content, &r.category, &r.triggerDesc); err == nil {
+			victims = append(victims, r)
+		}
+	}
+	rows.Close()
+
+	if len(victims) == 0 {
+		return 0, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("gc insights tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	deleted := 0
+	for _, v := range victims {
+		_, _ = tx.ExecContext(ctx,
+			`INSERT INTO memory_insights_fts(memory_insights_fts, rowid, agent, content, category, trigger_desc)
+			 VALUES ('delete', ?, ?, ?, ?, ?)`,
+			v.id, v.agent, v.content, v.category, v.triggerDesc)
+		if res, err := tx.ExecContext(ctx,
+			`DELETE FROM memory_insights WHERE id = ?`, v.id); err == nil {
+			if n, _ := res.RowsAffected(); n > 0 {
+				deleted++
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("gc insights commit: %w", err)
+	}
+	return deleted, nil
 }

@@ -358,6 +358,8 @@ func (m *Model) buildMessages() []llm.Message {
 	}
 
 	// Insights expansion: inject on the very first user turn of a new session.
+	// buildMessages is called once per stream start, so this fires exactly once.
+	// On subsequent turns userMsgCount > 1 and the block is skipped.
 	if userMsgCount == 1 {
 		userText := ""
 		for _, msg := range snapshot {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -1220,7 +1221,7 @@ func TestInsightExpand(t *testing.T) {
 	if out == "" {
 		t.Fatal("ExpandInsights returned empty string for matching query")
 	}
-	if !containsSubstring(out, "<insights>") {
+	if !strings.Contains(out, "<insights>") {
 		t.Errorf("output missing <insights> tag: %q", out)
 	}
 
@@ -1232,17 +1233,4 @@ func TestInsightExpand(t *testing.T) {
 	if out2 != "" {
 		t.Errorf("expected empty for unknown agent, got: %q", out2)
 	}
-}
-
-func containsSubstring(s, sub string) bool {
-	return len(s) >= len(sub) && (s == sub || len(s) > 0 && containsSubstringHelper(s, sub))
-}
-
-func containsSubstringHelper(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }

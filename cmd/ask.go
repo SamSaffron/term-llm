@@ -408,7 +408,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	// memory.insights_expansion (default: false).
 	if len(sessionMessages) == 0 && settings.InsightsExpansion {
 		if ms, msErr := openMemoryStore(); msErr == nil {
-			defer ms.Close()
+			defer ms.Close() // defers to enclosing function — store stays open until ask returns
 			expander := memorydb.NewInsightsExpander(ms, settings.AgentName, settings.InsightsMaxTokens)
 			if expanded := expander.Expand(ctx, userPrompt); expanded != "" {
 				messages = append(messages, llm.UserText(expanded))

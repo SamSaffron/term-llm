@@ -1201,14 +1201,16 @@ func runInsightExtractionPass(
 	return total, nil
 }
 
-// isSimilarInsight is a cheap keyword-overlap heuristic: if more than 40% of
-// the words in the candidate rule appear in the existing insight, treat them as
-// the same pattern. This avoids an embedding call while catching obvious dupes.
+// isSimilarInsight uses Jaccard similarity on keywords (words >3 chars) to
+// detect duplicate insights. Requires at least 3 qualifying words in the
+// candidate; returns false for very short insights to avoid false positives.
+// Threshold: 40% Jaccard (intersection/union), which catches paraphrases
+// without conflating opposites ("prefer verbose" vs "prefer terse").
 func isSimilarInsight(candidate, existing string) bool {
 	words := func(s string) map[string]struct{} {
 		m := map[string]struct{}{}
 		for _, w := range strings.Fields(strings.ToLower(s)) {
-			if len(w) > 3 { // ignore short stop-words
+			if len(w) > 3 {
 				m[w] = struct{}{}
 			}
 		}
@@ -1216,14 +1218,18 @@ func isSimilarInsight(candidate, existing string) bool {
 	}
 	cw := words(candidate)
 	ew := words(existing)
-	if len(cw) == 0 {
-		return false
+	if len(cw) < 3 {
+		return false // Too short to deduplicate reliably.
 	}
-	overlap := 0
+	intersection := 0
 	for w := range cw {
 		if _, ok := ew[w]; ok {
-			overlap++
+			intersection++
 		}
 	}
-	return float64(overlap)/float64(len(cw)) > 0.40
+	union := len(cw) + len(ew) - intersection
+	if union == 0 {
+		return false
+	}
+	return float64(intersection)/float64(union) > 0.40
 }
