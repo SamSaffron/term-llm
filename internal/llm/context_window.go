@@ -74,34 +74,34 @@ func lookupPrefix(model string, table []inputLimitEntry) int {
 	return best
 }
 
-// inputLimitTable contains effective input token limits from models.dev/api.json.
-// These represent the maximum INPUT tokens (not total context = input + output).
-// Compaction must trigger before hitting this limit. Values are computed as:
-//   - limit.input if explicitly set (GPT-5 family)
-//   - limit.context - limit.output if both are set
-//   - limit.context as fallback (conservative upper bound)
+// inputLimitTable contains effective input token limits.
+// These represent the practical INPUT token budget for compaction purposes.
+//
+// For Anthropic Claude 4.x: we follow Claude CLI's approach — cap the output
+// reservation at 20K rather than the full theoretical max (64K–128K). In practice,
+// compaction never fires while the model is also generating 64K of output, so
+// reserving that much is needlessly conservative. 200K - 20K = 180K working window.
+// Claude 3.x models have small max outputs (4K–8K) so the full deduction applies.
+//
+// For other providers: context - max_output (or explicit input limit if known).
 //
 // Entries are matched by longest prefix. Unknown models return 0 (compaction disabled).
 var inputLimitTable = []inputLimitEntry{
-	// Anthropic Claude (from models.dev anthropic section: context - output)
-	// Claude 4.6: 200K ctx - 64K out = 136K input
-	{"claude-sonnet-4-6", 136_000},
-	// technically supports 128 out but in practice will not happen
-	{"claude-opus-4-6", 136_000},
-	// Claude 4.5: 200K ctx - 64K out = 136K input
-	{"claude-sonnet-4-5", 136_000},
-	{"claude-opus-4-5", 136_000},
-	{"claude-haiku-4-5", 136_000},
-	// Claude 4.0: 200K ctx - 64K out = 136K input
-	{"claude-sonnet-4", 136_000},
-	{"claude-opus-4", 168_000}, // 200K - 32K
-	{"claude-haiku-4", 136_000},
-	// Claude 3.x: 200K ctx - 8K out = 192K input
-	{"claude-3.5-sonnet", 192_000},
-	{"claude-3.5-haiku", 192_000},
-	{"claude-3-opus", 196_000}, // 200K - 4K
-	{"claude-3-sonnet", 196_000},
-	{"claude-3-haiku", 196_000},
+	// Anthropic Claude 4.x: 200K ctx - 20K practical output reserve = 180K
+	{"claude-sonnet-4-6", 180_000},
+	{"claude-opus-4-6", 180_000},
+	{"claude-sonnet-4-5", 180_000},
+	{"claude-opus-4-5", 180_000},
+	{"claude-haiku-4-5", 180_000},
+	{"claude-sonnet-4", 180_000},
+	{"claude-opus-4", 180_000},
+	{"claude-haiku-4", 180_000},
+	// Claude 3.x: max output is 4K–8K, well under 20K — full deduction
+	{"claude-3.5-sonnet", 192_000}, // 200K - 8K
+	{"claude-3.5-haiku", 192_000},  // 200K - 8K
+	{"claude-3-opus", 196_000},     // 200K - 4K
+	{"claude-3-sonnet", 196_000},   // 200K - 4K
+	{"claude-3-haiku", 196_000},    // 200K - 4K
 
 	// OpenAI GPT-5 family (from models.dev openai section: explicit input=272000)
 	{"gpt-5.3-codex-spark", 100_000}, // input=100000

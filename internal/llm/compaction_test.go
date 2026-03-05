@@ -345,12 +345,13 @@ func TestInputLimitForModel(t *testing.T) {
 		model    string
 		expected int
 	}{
-		// Values are effective input limits (not total context)
-		{"claude-sonnet-4-6", 136_000},          // 200K - 64K
-		{"claude-opus-4-6", 136_000},            // 200K - 64K
-		{"claude-sonnet-4-5-20250929", 136_000}, // 200K - 64K
-		{"claude-sonnet-4-20250514", 136_000},   // 200K - 64K
-		{"claude-opus-4-20250514", 168_000},     // 200K - 32K
+		// Claude 4.x: 200K - 20K practical output reserve = 180K
+		{"claude-sonnet-4-6", 180_000},
+		{"claude-opus-4-6", 180_000},
+		{"claude-sonnet-4-5-20250929", 180_000},
+		{"claude-sonnet-4-20250514", 180_000},
+		{"claude-opus-4-20250514", 180_000},
+		// Claude 3.x: small max output, full deduction
 		{"claude-3.5-sonnet-20241022", 192_000}, // 200K - 8K
 		{"gpt-4o-2024-05-13", 112_000},          // 128K - 16K
 		{"gpt-4.1-2025-04-14", 1_014_808},       // 1047K - 32K
@@ -379,7 +380,7 @@ func TestInputLimitForModel(t *testing.T) {
 		{"", 0},
 		// Case insensitivity
 		{"GPT-5", 272_000},
-		{"Claude-Sonnet-4-5-20250929", 136_000},
+		{"Claude-Sonnet-4-5-20250929", 180_000},
 	}
 
 	for _, tt := range tests {
