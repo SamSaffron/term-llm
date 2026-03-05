@@ -559,9 +559,13 @@ func collectToolCallNames(msg session.Message) []string {
 }
 
 func runExtractionRequest(ctx context.Context, engine *llm.Engine, prompt string) (string, error) {
+	return runExtractionRequestWithSystem(ctx, engine, memoryExtractionSystemPrompt, prompt)
+}
+
+func runExtractionRequestWithSystem(ctx context.Context, engine *llm.Engine, systemPrompt, prompt string) (string, error) {
 	req := llm.Request{
 		Model:    strings.TrimSpace(memoryMineModel),
-		Messages: []llm.Message{llm.SystemText(memoryExtractionSystemPrompt), llm.UserText(prompt)},
+		Messages: []llm.Message{llm.SystemText(systemPrompt), llm.UserText(prompt)},
 		MaxTurns: 1,
 		Debug:    false,
 		DebugRaw: debugRaw,
@@ -1153,11 +1157,12 @@ func runInsightExtractionPass(
 		}
 
 		prompt := buildInsightExtractionPrompt(candidate.Agent, messages, existing)
-		raw, err := runExtractionRequest(ctx, engine, prompt)
+		raw, err := runExtractionRequestWithSystem(ctx, engine, insightExtractionSystemPrompt, prompt)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  [insight] skip %s: llm call: %v\n", candidate.Session.ID, err)
 			continue
 		}
+		raw = stripMarkdownFences(raw)
 
 		var resp insightExtractionResponse
 		decoder := json.NewDecoder(strings.NewReader(raw))
