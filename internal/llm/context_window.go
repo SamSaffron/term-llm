@@ -112,6 +112,7 @@ var inputLimitTable = []inputLimitEntry{
 	{"claude-3-haiku", 196_000},    // 200K - 4K
 
 	// OpenAI GPT-5 family (from models.dev openai section: explicit input=272000)
+	{"gpt-5.4", 922_000},             // 1,050,000 ctx - 128,000 out
 	{"gpt-5.3-codex-spark", 100_000}, // input=100000
 	{"gpt-5.1-chat", 112_000},        // 128K ctx - 16K out (no explicit input)
 	{"gpt-5.2-chat", 112_000},        // 128K ctx - 16K out

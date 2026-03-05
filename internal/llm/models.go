@@ -23,6 +23,7 @@ var ProviderModels = map[string][]string{
 		"claude-haiku-4-5-thinking",
 	},
 	"openai": {
+		"gpt-5.4",
 		"gpt-5.3-codex",
 		"gpt-5.2-codex",
 		"gpt-5.2",
@@ -34,6 +35,7 @@ var ProviderModels = map[string][]string{
 	},
 	"chatgpt": {
 		// Uses ChatGPT backend API with native OAuth
+		"gpt-5.4",
 		"gpt-5.3-codex",
 		"gpt-5.3-codex-spark",
 		"gpt-5.2-codex",
