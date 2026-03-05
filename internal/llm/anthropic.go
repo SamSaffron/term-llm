@@ -52,6 +52,7 @@ type AnthropicProvider struct {
 	model          string
 	thinkingBudget int64  // 0 = disabled, >0 = enabled with budget
 	useAdaptive    bool   // true = adaptive thinking (-thinking on 4.6 models)
+	use1m          bool   // true = 1M token context window (-1m suffix)
 	credential     string // "api_key", "env", "oauth_env", or "oauth"
 }
 
@@ -78,6 +79,24 @@ func parseModelThinking(model string) (string, int64, bool) {
 	return model, 0, false
 }
 
+// the1mBetaHeader is the beta header that enables the 1M token context window.
+// Available for claude-sonnet-4-6, claude-sonnet-4-5, claude-sonnet-4, claude-opus-4-6.
+// Requires Anthropic usage tier 4 or custom rate limits.
+const the1mBetaHeader = "context-1m-2025-08-07"
+
+// parseModel1m extracts the -1m suffix from a model name.
+// Returns the base model name and whether 1M context is requested.
+//
+// "claude-sonnet-4-6-1m"         -> ("claude-sonnet-4-6", true)
+// "claude-sonnet-4-6-1m-thinking" is handled upstream (thinking stripped first)
+// "claude-sonnet-4-6"            -> ("claude-sonnet-4-6", false)
+func parseModel1m(model string) (string, bool) {
+	if strings.HasSuffix(model, "-1m") {
+		return strings.TrimSuffix(model, "-1m"), true
+	}
+	return model, false
+}
+
 // oauthBetaHeader is the beta header required to enable OAuth authentication.
 const oauthBetaHeader = "oauth-2025-04-20"
 
@@ -98,7 +117,12 @@ func newOAuthClient(token string) anthropic.Client {
 //   - "oauth_env":  use only the CLAUDE_CODE_OAUTH_TOKEN environment variable
 //   - "oauth":      use only saved OAuth token or interactive setup
 func NewAnthropicProvider(apiKey, model, credentialMode string) (*AnthropicProvider, error) {
-	actualModel, thinkingBudget, adaptive := parseModelThinking(model)
+	// Strip -thinking first (may leave -1m), then strip -1m.
+	// This means claude-sonnet-4-6-1m-thinking works correctly:
+	//   step 1: strip -thinking -> "claude-sonnet-4-6-1m", adaptive=true
+	//   step 2: strip -1m       -> "claude-sonnet-4-6",    use1m=true
+	afterThinking, thinkingBudget, adaptive := parseModelThinking(model)
+	actualModel, use1m := parseModel1m(afterThinking)
 
 	// Normalize empty credential mode to "auto"
 	if credentialMode == "" {
@@ -111,6 +135,7 @@ func NewAnthropicProvider(apiKey, model, credentialMode string) (*AnthropicProvi
 			model:          actualModel,
 			thinkingBudget: thinkingBudget,
 			useAdaptive:    adaptive,
+			use1m:          use1m,
 			credential:     cred,
 		}
 	}
@@ -138,7 +163,7 @@ func NewAnthropicProvider(apiKey, model, credentialMode string) (*AnthropicProvi
 		return mkProvider(newOAuthClient(envToken), "oauth_env"), nil
 
 	case AnthropicCredOAuth:
-		return newAnthropicOAuthProvider(actualModel, thinkingBudget, adaptive)
+		return newAnthropicOAuthProvider(actualModel, thinkingBudget, adaptive, use1m)
 
 	case AnthropicCredAuto:
 		// Fall through to the cascade below.
@@ -170,12 +195,12 @@ func NewAnthropicProvider(apiKey, model, credentialMode string) (*AnthropicProvi
 	}
 
 	// 5. Interactive: prompt user to run `claude setup-token` and paste the token
-	return newAnthropicOAuthProvider(actualModel, thinkingBudget, adaptive)
+	return newAnthropicOAuthProvider(actualModel, thinkingBudget, adaptive, use1m)
 }
 
 // newAnthropicOAuthProvider creates an Anthropic provider using saved OAuth credentials
 // or interactively prompts the user to set up a new token.
-func newAnthropicOAuthProvider(model string, thinkingBudget int64, adaptive bool) (*AnthropicProvider, error) {
+func newAnthropicOAuthProvider(model string, thinkingBudget int64, adaptive bool, use1m bool) (*AnthropicProvider, error) {
 	// Try saved OAuth token first
 	if creds, err := credentials.GetAnthropicOAuthCredentials(); err == nil {
 		client := newOAuthClient(creds.AccessToken)
@@ -184,6 +209,7 @@ func newAnthropicOAuthProvider(model string, thinkingBudget int64, adaptive bool
 			model:          model,
 			thinkingBudget: thinkingBudget,
 			useAdaptive:    adaptive,
+			use1m:          use1m,
 			credential:     "oauth",
 		}, nil
 	}
@@ -214,6 +240,7 @@ func newAnthropicOAuthProvider(model string, thinkingBudget int64, adaptive bool
 		model:          model,
 		thinkingBudget: thinkingBudget,
 		useAdaptive:    adaptive,
+		use1m:          use1m,
 		credential:     "oauth",
 	}, nil
 }
@@ -267,11 +294,18 @@ func promptForAnthropicOAuth() (string, error) {
 }
 
 func (p *AnthropicProvider) Name() string {
+	suffix := ""
+	if p.use1m {
+		suffix = ", 1m"
+	}
 	if p.useAdaptive {
-		return fmt.Sprintf("Anthropic (%s, adaptive)", p.model)
+		return fmt.Sprintf("Anthropic (%s, adaptive%s)", p.model, suffix)
 	}
 	if p.thinkingBudget > 0 {
-		return fmt.Sprintf("Anthropic (%s, thinking=%dk)", p.model, p.thinkingBudget/1000)
+		return fmt.Sprintf("Anthropic (%s, thinking=%dk%s)", p.model, p.thinkingBudget/1000, suffix)
+	}
+	if p.use1m {
+		return fmt.Sprintf("Anthropic (%s, 1m)", p.model)
 	}
 	return fmt.Sprintf("Anthropic (%s)", p.model)
 }
@@ -348,7 +382,11 @@ func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (St
 		}
 
 		var lastUsage *Usage
-		stream := p.client.Messages.NewStreaming(ctx, params)
+		var streamOpts []option.RequestOption
+		if p.use1m {
+			streamOpts = append(streamOpts, option.WithHeaderAdd("anthropic-beta", the1mBetaHeader))
+		}
+		stream := p.client.Messages.NewStreaming(ctx, params, streamOpts...)
 		for stream.Next() {
 			event := stream.Current()
 			switch variant := event.AsAny().(type) {
@@ -427,10 +465,14 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 		}
 		tools = append([]anthropic.BetaToolUnionParam{webSearchTool, webFetchTool}, tools...)
 
+		betas := []anthropic.AnthropicBeta{"web-search-2025-03-05", "web-fetch-2025-09-10"}
+		if p.use1m {
+			betas = append(betas, the1mBetaHeader)
+		}
 		params := anthropic.BetaMessageNewParams{
 			Model:     anthropic.Model(chooseModel(req.Model, p.model)),
 			MaxTokens: maxTokens(req.MaxOutputTokens, 4096),
-			Betas:     []anthropic.AnthropicBeta{"web-search-2025-03-05", "web-fetch-2025-09-10"},
+			Betas:     betas,
 			Messages:  messages,
 			Tools:     tools,
 		}

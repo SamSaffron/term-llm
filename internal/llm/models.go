@@ -13,8 +13,12 @@ var ProviderModels = map[string][]string{
 		// Claude 4.6 (-thinking uses adaptive thinking for 4.6 models)
 		"claude-sonnet-4-6",
 		"claude-sonnet-4-6-thinking",
+		"claude-sonnet-4-6-1m",
+		"claude-sonnet-4-6-1m-thinking",
 		"claude-opus-4-6",
 		"claude-opus-4-6-thinking",
+		"claude-opus-4-6-1m",
+		"claude-opus-4-6-1m-thinking",
 		"claude-haiku-4-5",
 		"claude-haiku-4-5-thinking",
 	},

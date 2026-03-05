@@ -87,6 +87,14 @@ func lookupPrefix(model string, table []inputLimitEntry) int {
 //
 // Entries are matched by longest prefix. Unknown models return 0 (compaction disabled).
 var inputLimitTable = []inputLimitEntry{
+	// Anthropic Claude 1M context: 1M ctx - 20K practical output reserve = 980K
+	// Enabled via -1m suffix (sends context-1m-2025-08-07 beta header).
+	// Requires Anthropic usage tier 4 or custom rate limits.
+	{"claude-sonnet-4-6-1m", 980_000},
+	{"claude-sonnet-4-5-1m", 980_000},
+	{"claude-sonnet-4-1m", 980_000},
+	{"claude-opus-4-6-1m", 980_000},
+
 	// Anthropic Claude 4.x: 200K ctx - 20K practical output reserve = 180K
 	{"claude-sonnet-4-6", 180_000},
 	{"claude-opus-4-6", 180_000},

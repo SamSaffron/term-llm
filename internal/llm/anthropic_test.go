@@ -25,6 +25,10 @@ func TestParseModelThinking(t *testing.T) {
 		{"claude-sonnet-4-6", "claude-sonnet-4-6", 0, false},
 		{"claude-opus-4-6", "claude-opus-4-6", 0, false},
 		{"claude-haiku-4-5", "claude-haiku-4-5", 0, false},
+		// -1m-thinking: -thinking is stripped first, leaving -1m suffix intact
+		// isAdaptiveModel sees "claude-sonnet-4-6-1m" which HasPrefix "claude-sonnet-4-6" -> adaptive
+		{"claude-sonnet-4-6-1m-thinking", "claude-sonnet-4-6-1m", 0, true},
+		{"claude-opus-4-6-1m-thinking", "claude-opus-4-6-1m", 0, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
@@ -37,6 +41,71 @@ func TestParseModelThinking(t *testing.T) {
 			}
 			if adaptive != tt.wantAdaptive {
 				t.Errorf("adaptive = %v, want %v", adaptive, tt.wantAdaptive)
+			}
+		})
+	}
+}
+
+func TestParseModel1m(t *testing.T) {
+	tests := []struct {
+		input     string
+		wantModel string
+		want1m    bool
+	}{
+		{"claude-sonnet-4-6-1m", "claude-sonnet-4-6", true},
+		{"claude-opus-4-6-1m", "claude-opus-4-6", true},
+		{"claude-sonnet-4-5-1m", "claude-sonnet-4-5", true},
+		{"claude-sonnet-4-1m", "claude-sonnet-4", true},
+		// No -1m suffix: passthrough
+		{"claude-sonnet-4-6", "claude-sonnet-4-6", false},
+		{"claude-haiku-4-5", "claude-haiku-4-5", false},
+		// After -thinking is stripped, -1m suffix is parsed here
+		{"claude-sonnet-4-6-1m", "claude-sonnet-4-6", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			model, use1m := parseModel1m(tt.input)
+			if model != tt.wantModel {
+				t.Errorf("model = %q, want %q", model, tt.wantModel)
+			}
+			if use1m != tt.want1m {
+				t.Errorf("use1m = %v, want %v", use1m, tt.want1m)
+			}
+		})
+	}
+}
+
+func TestParseModelCombined1mThinking(t *testing.T) {
+	// Test the full chain as used in NewAnthropicProvider:
+	// strip -thinking first, then strip -1m
+	tests := []struct {
+		input        string
+		wantModel    string
+		wantAdaptive bool
+		want1m       bool
+	}{
+		// Both suffixes
+		{"claude-sonnet-4-6-1m-thinking", "claude-sonnet-4-6", true, true},
+		{"claude-opus-4-6-1m-thinking", "claude-opus-4-6", true, true},
+		// Only -thinking
+		{"claude-sonnet-4-6-thinking", "claude-sonnet-4-6", true, false},
+		// Only -1m
+		{"claude-sonnet-4-6-1m", "claude-sonnet-4-6", false, true},
+		// Neither
+		{"claude-sonnet-4-6", "claude-sonnet-4-6", false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			afterThinking, _, adaptive := parseModelThinking(tt.input)
+			model, use1m := parseModel1m(afterThinking)
+			if model != tt.wantModel {
+				t.Errorf("model = %q, want %q", model, tt.wantModel)
+			}
+			if adaptive != tt.wantAdaptive {
+				t.Errorf("adaptive = %v, want %v", adaptive, tt.wantAdaptive)
+			}
+			if use1m != tt.want1m {
+				t.Errorf("use1m = %v, want %v", use1m, tt.want1m)
 			}
 		})
 	}
