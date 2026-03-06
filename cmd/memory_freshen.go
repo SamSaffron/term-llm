@@ -174,6 +174,10 @@ func runMemoryUpdateRecent(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	updatedRecent, err = fitUpdatedRecentWithinBudget(ctx, engine, reqModel, updatedRecent, memoryUpdateRecentTargetTokens, targetChars, highWaterChars)
+	if err != nil {
+		return err
+	}
 
 	if memoryDryRun {
 		fmt.Print(updatedRecent)
@@ -206,24 +210,6 @@ func runMemoryUpdateRecent(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("update last update-recent timestamp: %w", err)
 	}
 
-	if len([]byte(updatedRecent)) <= highWaterChars {
-		return nil
-	}
-
-	// recent.md has grown past the high water mark (+20% of target); rebuild from fragments.
-	promoteProvider, err := llm.NewProvider(cfg)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: promote after update-recent failed: %v\n", err)
-		return nil
-	}
-	promoteEngine := newEngine(promoteProvider, cfg)
-	if _, err := runMemoryPromoteFlow(ctx, cfg, promoteEngine, store, memoryPromoteOptions{
-		Agent:          agentName,
-		RecentMaxBytes: targetChars,
-		QuietNothing:   true,
-	}); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: promote after update-recent failed: %v\n", err)
-	}
 	return nil
 }
 
@@ -312,21 +298,99 @@ func runMemoryUpdateRecentRequest(ctx context.Context, engine *llm.Engine, model
 	return strings.TrimSpace(b.String()), nil
 }
 
+func runMemoryCompactRecentRequest(ctx context.Context, engine *llm.Engine, model, candidateRecent string, targetTokens, targetChars int) (string, error) {
+	req := llm.Request{
+		Model: strings.TrimSpace(model),
+		Messages: []llm.Message{
+			llm.SystemText(memoryCompactRecentSystemPrompt(targetTokens, targetChars)),
+			llm.UserText(memoryCompactRecentUserPrompt(candidateRecent)),
+		},
+		MaxTurns: 1,
+		DebugRaw: debugRaw,
+	}
+
+	stream, err := engine.Stream(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	defer stream.Close()
+
+	var b strings.Builder
+	for {
+		ev, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", err
+		}
+		switch ev.Type {
+		case llm.EventTextDelta:
+			b.WriteString(ev.Text)
+		case llm.EventError:
+			if ev.Err != nil {
+				return "", ev.Err
+			}
+		}
+	}
+
+	return strings.TrimSpace(b.String()), nil
+}
+
+func fitUpdatedRecentWithinBudget(ctx context.Context, engine *llm.Engine, model, updatedRecent string, targetTokens, targetChars, highWaterChars int) (string, error) {
+	if len([]byte(updatedRecent)) <= highWaterChars {
+		return updatedRecent, nil
+	}
+
+	compacted, err := runMemoryCompactRecentRequest(ctx, engine, model, updatedRecent, targetTokens, targetChars)
+	if err != nil {
+		return "", err
+	}
+	if len([]byte(compacted)) <= highWaterChars {
+		return compacted, nil
+	}
+	return truncatePromotedRecent(compacted, targetChars), nil
+}
+
 func memoryUpdateRecentSystemPrompt(targetTokens, targetChars int) string {
 	return fmt.Sprintf(`You are a memory curator. You maintain a concise recent memory file for an AI assistant named Jarvis.
 
 Given RECENT SESSION SNIPPETS and the CURRENT RECENT MEMORY, output the complete updated memory file integrating the new activity.
 
+The file is a compact current-state working memory, not a changelog.
+
 Rules:
 - Target total output: ~%d tokens (~%d characters). Treat this as a soft ceiling on the whole document.
-- If today's date section already exists, add bullet points to it; otherwise prepend a new ## YYYY-MM-DD section.
+- Use this structure when relevant: ## Current state, then compact ### sections such as Deployed / configured, Active work, Open issues / quirks, Recent completed work, Temporary notes.
+- Prefer latest truth over historical sequence.
+- Replace superseded facts instead of keeping old and new versions.
+- Drop resolved or stale items unless they still affect current behaviour over the next few days.
+- Keep durable long-term facts out unless they are actively relevant right now.
 - Be extremely terse: facts only, no prose, no filler.
-- If the existing content is already near the target size, compress or drop low-value older entries to make room for new ones.
+- Output only the content, no code fences, no commentary.`, targetTokens, targetChars)
+}
+
+func memoryCompactRecentSystemPrompt(targetTokens, targetChars int) string {
+	return fmt.Sprintf(`You are compacting a recent memory file for Jarvis.
+
+Given a candidate recent.md that is too large, rewrite it into a smaller current-state working memory file.
+
+Rules:
+- Target total output: ~%d tokens (~%d characters). Treat this as a hard target.
+- Preserve the newest and most actionable facts.
+- Prefer latest truth over history; replace superseded facts.
+- Drop resolved, duplicated, stale, or low-value detail aggressively.
+- Keep the file as compact current-state memory, not a dated log or archive.
+- Use short headings and bullets only when they earn their keep.
 - Output only the content, no code fences, no commentary.`, targetTokens, targetChars)
 }
 
 func memoryUpdateRecentUserPrompt(sessionSnippets, existingRecent string) string {
 	return fmt.Sprintf("RECENT SESSION SNIPPETS:\n\n%s\n\n===\n\nCURRENT RECENT MEMORY:\n\n%s", sessionSnippets, existingRecent)
+}
+
+func memoryCompactRecentUserPrompt(candidateRecent string) string {
+	return fmt.Sprintf("CANDIDATE RECENT MEMORY TO COMPACT:\n\n%s", candidateRecent)
 }
 
 func listUpdateRecentSessions(ctx context.Context, sessStore session.Store, agentName string, current *session.Session) ([]memoryUpdateRecentSession, error) {
@@ -395,7 +459,6 @@ func listUpdateRecentSessions(ctx context.Context, sessStore session.Store, agen
 
 	return sessions, nil
 }
-
 func formatUpdateRecentSessionBlock(sess memoryUpdateRecentSession, messages []session.Message) string {
 	lines := make([]string, 0, len(messages))
 	for _, msg := range messages {

@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -93,9 +94,9 @@ func TestUpdateRecentOffsetMetaKey(t *testing.T) {
 	}
 }
 
-// -- system prompt --
+// -- system prompts --
 
-func TestMemoryUpdateRecentSystemPrompt_ContainsTokenCount(t *testing.T) {
+func TestMemoryUpdateRecentSystemPrompt_ContainsCurrentStateGuidance(t *testing.T) {
 	prompt := memoryUpdateRecentSystemPrompt(4000, 16000)
 	if !contains(prompt, "4000") {
 		t.Error("prompt should mention target token count 4000")
@@ -103,8 +104,27 @@ func TestMemoryUpdateRecentSystemPrompt_ContainsTokenCount(t *testing.T) {
 	if !contains(prompt, "16000") {
 		t.Error("prompt should mention target char count 16000")
 	}
-	if contains(prompt, "markdown") {
-		t.Error("prompt should not mention markdown")
+	if !contains(prompt, "current-state working memory") {
+		t.Error("prompt should describe recent.md as current-state working memory")
+	}
+	if !contains(prompt, "Replace superseded facts") {
+		t.Error("prompt should instruct replacement of superseded facts")
+	}
+	if contains(prompt, "today's date section") {
+		t.Error("prompt should no longer instruct dated append behaviour")
+	}
+}
+
+func TestMemoryCompactRecentSystemPrompt_ContainsAggressiveCompactionGuidance(t *testing.T) {
+	prompt := memoryCompactRecentSystemPrompt(4000, 16000)
+	if !contains(prompt, "hard target") {
+		t.Error("compact prompt should use a hard target")
+	}
+	if !contains(prompt, "Drop resolved, duplicated, stale") {
+		t.Error("compact prompt should drop stale detail aggressively")
+	}
+	if !contains(prompt, "not a dated log or archive") {
+		t.Error("compact prompt should reject dated log behaviour")
 	}
 }
 
@@ -124,6 +144,16 @@ func TestMemoryUpdateRecentUserPrompt(t *testing.T) {
 	}
 }
 
+func TestMemoryCompactRecentUserPrompt(t *testing.T) {
+	prompt := memoryCompactRecentUserPrompt("oversized memory")
+	if !contains(prompt, "CANDIDATE RECENT MEMORY TO COMPACT") {
+		t.Error("missing compact label")
+	}
+	if !contains(prompt, "oversized memory") {
+		t.Error("missing candidate memory content")
+	}
+}
+
 // -- high water mark calculation --
 
 func TestHighWaterMarkCalculation(t *testing.T) {
@@ -139,6 +169,17 @@ func TestHighWaterMarkCalculation(t *testing.T) {
 	}
 	if highWater <= targetChars {
 		t.Error("high water mark must be above target")
+	}
+}
+
+func TestFitUpdatedRecentWithinBudget_ReturnsUnchangedWhenUnderHighWater(t *testing.T) {
+	current := strings.Repeat("x", 100)
+	got, err := fitUpdatedRecentWithinBudget(context.Background(), nil, "", current, 4000, 16000, 19200)
+	if err != nil {
+		t.Fatalf("fitUpdatedRecentWithinBudget: %v", err)
+	}
+	if got != current {
+		t.Fatalf("got %q, want unchanged content", got)
 	}
 }
 
