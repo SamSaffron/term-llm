@@ -257,10 +257,19 @@ type Event struct {
 }
 
 // Usage captures token usage if available.
+//
+// InputTokens is the count of non-cached input tokens — i.e. the portion that was
+// freshly processed. CachedInputTokens is the portion served from cache. The two
+// are always additive: InputTokens + CachedInputTokens = total prompt/context size.
+//
+// All providers must normalise to this convention:
+//   - Anthropic already reports input_tokens (non-cached) + cache_read_input_tokens separately.
+//   - OpenAI/ChatGPT reports prompt_tokens (inclusive of cached); providers must subtract
+//     the cached portion before populating InputTokens.
 type Usage struct {
-	InputTokens       int
+	InputTokens       int // Non-cached input tokens (newly processed this turn)
 	OutputTokens      int
-	CachedInputTokens int // Tokens read from cache (cache_read_input_tokens)
+	CachedInputTokens int // Tokens read from cache (additive with InputTokens, NOT a subset)
 	CacheWriteTokens  int // Tokens written to cache (cache_creation_input_tokens)
 }
 

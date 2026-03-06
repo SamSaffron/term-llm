@@ -1187,6 +1187,78 @@ func TestLastTotalTokensIncludesCachedTokens(t *testing.T) {
 	}
 }
 
+// TestLastTotalTokensNoDoubleCounting verifies that high cache hit rates do not
+// inflate lastTotalTokens by double-counting cached tokens.
+//
+// This is the bug that caused spurious compaction: for OpenAI-family providers,
+// prompt_tokens INCLUDES cached tokens. Before the fix, providers set
+// InputTokens=prompt_tokens (inclusive) and CachedInputTokens=cached_tokens, so
+// the engine computed lastTotalTokens = prompt + cached + output, double-counting.
+//
+// After the fix, providers set InputTokens=(prompt-cached) so both fields are
+// additive: lastTotalTokens = (prompt-cached) + cached + output = prompt + output.
+// This matches the actual context size and prevents false compaction triggers.
+func TestLastTotalTokensNoDoubleCounting(t *testing.T) {
+	// Simulate a high-cache-hit turn: 127K total input, 127K cached (warm session).
+	// Old (buggy) OpenAI provider would have set InputTokens=127431, CachedInputTokens=126976.
+	// New (fixed) provider sets InputTokens=455, CachedInputTokens=126976.
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			return []Event{
+				{Type: EventTextDelta, Text: "hello"},
+				{
+					Type: EventUsage,
+					Use: &Usage{
+						InputTokens:       455,    // 127431 - 126976 (non-cached portion only)
+						OutputTokens:      206,    // completion tokens
+						CachedInputTokens: 126976, // from cache (additive, not a subset)
+					},
+				},
+				{Type: EventDone},
+			}
+		},
+	}
+	e := NewEngine(provider, nil)
+	e.inputLimit = 922_000 // gpt-5.4 input limit
+
+	dummyTool := &countingSearchTool{}
+	e.RegisterTool(dummyTool)
+
+	stream, err := e.Stream(context.Background(), Request{
+		Model:    "gpt-5.4-medium",
+		Messages: []Message{UserText("hi")},
+		Tools:    []ToolSpec{dummyTool.Spec()},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv() error: %v", err)
+		}
+	}
+
+	// lastTotalTokens should be 455 + 126976 + 206 = 127637 (≈ 127K)
+	// NOT 127431 + 126976 + 206 = 254613 (the old double-counted value).
+	// 127637 is well below the 830K threshold (922K * 0.9), so compaction
+	// should NOT be triggered next turn.
+	got := e.LastTotalTokens()
+	wantApprox := 127637 // 455 + 126976 + 206
+	if got != wantApprox {
+		t.Errorf("LastTotalTokens() = %d, want %d (no double-counting of cached tokens)", got, wantApprox)
+	}
+
+	// Confirm the estimate is far below the compaction threshold
+	threshold := int(float64(922_000) * 0.90)
+	if got >= threshold {
+		t.Errorf("LastTotalTokens() %d >= threshold %d — would falsely trigger compaction!", got, threshold)
+	}
+}
+
 // --- Interjection tests ---
 
 // TestEngineInterjection_Basic verifies that a user interjection queued during

@@ -157,14 +157,15 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 				return fmt.Errorf("xAI API error: %s", errMsg)
 			}
 
-			if chatResp.Usage != nil {
-				lastUsage = &Usage{
-					InputTokens:       chatResp.Usage.PromptTokens,
-					OutputTokens:      chatResp.Usage.CompletionTokens,
-					CachedInputTokens: chatResp.Usage.PromptTokensDetails.CachedTokens,
-				}
+		if chatResp.Usage != nil {
+			cached := chatResp.Usage.PromptTokensDetails.CachedTokens
+			lastUsage = &Usage{
+				// XAI prompt_tokens includes cached; subtract to get non-cached portion.
+				InputTokens:       chatResp.Usage.PromptTokens - cached,
+				OutputTokens:      chatResp.Usage.CompletionTokens,
+				CachedInputTokens: cached,
 			}
-
+		}
 			for _, choice := range chatResp.Choices {
 				if choice.Delta != nil {
 					if content, ok := choice.Delta.Content.(string); ok && content != "" {

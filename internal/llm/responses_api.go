@@ -629,12 +629,14 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 						client.LastResponseID = completedEvent.Response.ID
 					}
 					if completedEvent.Response.Usage != nil {
-						lastUsage = &Usage{
-							InputTokens:       completedEvent.Response.Usage.InputTokens,
-							OutputTokens:      completedEvent.Response.Usage.OutputTokens,
-							CachedInputTokens: completedEvent.Response.Usage.InputTokensDetails.CachedTokens,
-						}
-					}
+					cached := completedEvent.Response.Usage.InputTokensDetails.CachedTokens
+					lastUsage = &Usage{
+						// OpenAI Responses API input_tokens includes cached; subtract to normalise.
+						// CachedInputTokens + InputTokens = total context size.
+						InputTokens:       completedEvent.Response.Usage.InputTokens - cached,
+						OutputTokens:      completedEvent.Response.Usage.OutputTokens,
+						CachedInputTokens: cached,
+					}					}
 				}
 
 			case "response.failed", "error":

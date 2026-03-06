@@ -359,17 +359,19 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 				reasoningAcc.ensure(event.ItemID, event.OutputIndex)
 			case "response.reasoning_summary_text.delta":
 				reasoningAcc.appendSummary(event.ItemID, event.OutputIndex, event.Delta)
-			case "response.completed":
-				if event.Response.Usage.InputTokens > 0 ||
-					event.Response.Usage.OutputTokens > 0 ||
-					event.Response.Usage.InputTokensDetails.CachedTokens > 0 {
-					lastUsage = &Usage{
-						InputTokens:       event.Response.Usage.InputTokens,
-						OutputTokens:      event.Response.Usage.OutputTokens,
-						CachedInputTokens: event.Response.Usage.InputTokensDetails.CachedTokens,
-					}
+		case "response.completed":
+			if event.Response.Usage.InputTokens > 0 ||
+				event.Response.Usage.OutputTokens > 0 ||
+				event.Response.Usage.InputTokensDetails.CachedTokens > 0 {
+				cached := event.Response.Usage.InputTokensDetails.CachedTokens
+				lastUsage = &Usage{
+					// ChatGPT input_tokens includes cached; subtract to get non-cached portion.
+					// CachedInputTokens + InputTokens = total context size.
+					InputTokens:       event.Response.Usage.InputTokens - cached,
+					OutputTokens:      event.Response.Usage.OutputTokens,
+					CachedInputTokens: cached,
 				}
-			}
+			}			}
 		}
 		if err := scanner.Err(); err != nil {
 			return fmt.Errorf("stream read error: %w", err)

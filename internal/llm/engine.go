@@ -791,9 +791,11 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 				turnMetrics.OutputTokens += event.Use.OutputTokens
 				turnMetrics.CachedInputTokens += event.Use.CachedInputTokens
 				// Update token tracking for compaction threshold and status line display.
-				// Include cached input tokens: they occupy context window space even though
-				// they're served from cache. Cache write tokens are NOT additive — they're
-				// a subset of input tokens indicating which ones were written to cache.
+				// InputTokens is the non-cached portion; CachedInputTokens is the cached
+				// portion. Together they equal the total context size this turn. Adding
+				// OutputTokens gives the baseline for the next turn's input estimate
+				// (the model's output becomes assistant-message input on the next turn).
+				// All providers normalise to this convention — see Usage type docs.
 				if inputLimit > 0 {
 					e.callbackMu.Lock()
 					e.lastTotalTokens = event.Use.InputTokens + event.Use.CachedInputTokens + event.Use.OutputTokens

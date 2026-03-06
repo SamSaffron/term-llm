@@ -409,10 +409,13 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 			}
 
 			if chatResp.Usage != nil {
+				cached := chatResp.Usage.PromptTokensDetails.CachedTokens
 				lastUsage = &Usage{
-					InputTokens:       chatResp.Usage.PromptTokens,
+					// OpenAI prompt_tokens includes cached; subtract to get non-cached portion.
+					// CachedInputTokens + InputTokens = total context size.
+					InputTokens:       chatResp.Usage.PromptTokens - cached,
 					OutputTokens:      chatResp.Usage.CompletionTokens,
-					CachedInputTokens: chatResp.Usage.PromptTokensDetails.CachedTokens,
+					CachedInputTokens: cached,
 				}
 			}
 
