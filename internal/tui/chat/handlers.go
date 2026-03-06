@@ -728,7 +728,6 @@ func (m *Model) handleInterruptClassified(msg interruptClassifiedMsg) (tea.Model
 		m.pendingInterruptUI = ""
 		if strings.TrimSpace(m.textarea.Value()) == "" {
 			m.setTextareaValue(msg.Content)
-			return m.sendMessage(msg.Content)
 		}
 		return m, nil
 	}
