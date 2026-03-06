@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -83,6 +84,41 @@ func TestHandleKeyMsg_StreamingEnterOnEmptyComposerShowsHint(t *testing.T) {
 	}
 	if m.phase != "Type to interject, or press Esc to cancel" {
 		t.Fatalf("expected empty enter hint phase, got %q", m.phase)
+	}
+}
+
+func TestHandleKeyMsg_StreamingAsyncClassificationFeelsImmediate(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streaming = true
+	m.phase = "Thinking"
+	m.fastProvider = llm.NewMockProvider("fast").AddTextResponse("interject")
+	m.setTextareaValue("also check the schema")
+
+	_, cmd := m.handleKeyMsg(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected async classification command")
+	}
+	if got := m.textarea.Value(); got != "" {
+		t.Fatalf("expected textarea to clear immediately, got %q", got)
+	}
+	if got := m.pendingInterjection; got != "also check the schema" {
+		t.Fatalf("expected pending interjection to render immediately, got %q", got)
+	}
+	if got := m.pendingInterruptUI; got != "deciding" {
+		t.Fatalf("expected deciding state immediately, got %q", got)
+	}
+
+	msg := cmd()
+	if _, ok := msg.(interruptClassifiedMsg); !ok {
+		t.Fatalf("expected interruptClassifiedMsg, got %T", msg)
+	}
+	_, _ = m.handleInterruptClassified(msg.(interruptClassifiedMsg))
+
+	if got := m.pendingInterruptUI; got != "interject" {
+		t.Fatalf("expected interject state after classification, got %q", got)
+	}
+	if got := m.engine.DrainInterjection(); got != "also check the schema" {
+		t.Fatalf("expected engine interjection to be queued, got %q", got)
 	}
 }
 

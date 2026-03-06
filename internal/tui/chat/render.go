@@ -369,13 +369,22 @@ func (m *Model) renderInputInline() string {
 	if m.pendingInterjection != "" {
 		pendingStyle := lipgloss.NewStyle().Foreground(theme.Muted).Italic(true)
 		pendingText := m.pendingInterjection
+		label := "queued"
+		switch m.pendingInterruptUI {
+		case "deciding":
+			label = "deciding…"
+		case "interject":
+			label = "will incorporate"
+		case "queued":
+			label = "queued"
+		}
 		// Truncate long messages to fit the terminal width
 		maxLen := m.width - 20 // account for prefix/suffix
 		if maxLen > 0 && len(pendingText) > maxLen {
 			pendingText = pendingText[:maxLen] + "…"
 		}
 		b.WriteString("\n")
-		b.WriteString(pendingStyle.Render("  ⏳ " + pendingText + " (queued)"))
+		b.WriteString(pendingStyle.Render("  ⏳ " + pendingText + " (" + label + ")"))
 	}
 
 	// Show attached files if any

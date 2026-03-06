@@ -100,7 +100,9 @@ type Model struct {
 	mcpStr              string   // Original MCP setting (for session persistence)
 	pendingInterjection string   // Queued interjection text waiting to be injected
 	queuedInterjection  string   // Deferred follow-up to send after the current stream completes
-
+	interruptRequestSeq uint64   // Monotonic sequence for async interrupt classification
+	activeInterruptSeq  uint64   // Currently active async interrupt classification request
+	pendingInterruptUI  string   // UI state: "", "deciding", "queued", "interject"
 	// MCP (Model Context Protocol)
 	mcpManager *mcp.Manager
 	maxTurns   int
@@ -215,10 +217,15 @@ type (
 		sess     *session.Session
 		messages []session.Message
 	}
-	tickMsg             time.Time
-	streamRenderTickMsg struct{}
-	compactStartedMsg   struct{}
-	compactDoneMsg      struct {
+	tickMsg                time.Time
+	streamRenderTickMsg    struct{}
+	interruptClassifiedMsg struct {
+		RequestID uint64
+		Content   string
+		Action    llm.InterruptAction
+	}
+	compactStartedMsg struct{}
+	compactDoneMsg    struct {
 		result *llm.CompactionResult
 		err    error
 	}
@@ -620,6 +627,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// This tick exists to ensure View() runs again after the throttle window, so
 		// pending content can pass shouldThrottleSetContent().
 
+	case interruptClassifiedMsg:
+		return m.handleInterruptClassified(msg)
+
 	case compactDoneMsg:
 		m.streaming = false
 		m.phase = "Thinking"
@@ -770,7 +780,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if residual := m.engine.DrainInterjection(); residual != "" {
 					m.setTextareaValue(residual)
 				}
+				m.activeInterruptSeq = 0
 				m.pendingInterjection = "" // Clear pending indicator
+				m.pendingInterruptUI = ""
 
 				return m, nil
 			}
@@ -933,7 +945,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case ui.StreamEventInterjection:
 			// User interjected a message mid-stream (injected between tool turns).
+			m.activeInterruptSeq = 0
 			m.pendingInterjection = "" // Interjection was injected, clear pending indicator
+			m.pendingInterruptUI = ""
 			// Flush smooth buffer so any pending text appears before the interjection.
 			if m.smoothBuffer != nil {
 				remaining := m.smoothBuffer.FlushAll()
@@ -1067,8 +1081,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Send any queued follow-up immediately after the current stream completes.
 			if m.queuedInterjection != "" && m.autoSendQueue == nil {
 				next := m.queuedInterjection
+				m.activeInterruptSeq = 0
 				m.queuedInterjection = ""
 				m.pendingInterjection = ""
+				m.pendingInterruptUI = ""
 				m.setTextareaValue(next)
 				return m.sendMessage(next)
 			}
@@ -1113,7 +1129,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if residual := m.engine.DrainInterjection(); residual != "" {
 				m.setTextareaValue(residual)
 			}
-			m.pendingInterjection = "" // Clear pending indicator
+			if m.activeInterruptSeq == 0 {
+				m.pendingInterjection = "" // Clear pending indicator
+				m.pendingInterruptUI = ""
+			}
 		}
 
 		// Continue listening for more events unless we're done or got an error

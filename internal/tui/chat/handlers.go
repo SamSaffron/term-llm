@@ -317,7 +317,9 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 			// Drain any pending interjection (discard since we're quitting)
 			_ = m.engine.DrainInterjection()
+			m.activeInterruptSeq = 0
 			m.pendingInterjection = "" // Clear visual indicator
+			m.pendingInterruptUI = ""
 
 			return m, nil
 		}
@@ -352,7 +354,9 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if residual := m.engine.DrainInterjection(); residual != "" {
 				m.setTextareaValue(residual)
 			}
+			m.activeInterruptSeq = 0
 			m.pendingInterjection = "" // Clear visual indicator
+			m.pendingInterruptUI = ""
 
 			m.textarea.Focus()
 			return m, nil
@@ -457,37 +461,16 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
-			activity := llm.InterruptActivity{
-				CurrentTask: m.phase,
-				ProseLen:    m.currentResponse.Len(),
+			if action, ok := llm.ClassifyInterruptImmediate(content); ok {
+				m.applyInterruptAction(content, action)
+				return m, nil
 			}
-			if m.tracker != nil && m.tracker.HasPending() {
-				activity.ActiveTool = "tool"
+			if m.fastProvider == nil {
+				m.applyInterruptAction(content, llm.InterruptQueue)
+				return m, nil
 			}
 
-			action := llm.ClassifyInterrupt(context.Background(), m.fastProvider, content, activity)
-			switch action {
-			case llm.InterruptCancel:
-				m.pendingInterjection = ""
-				m.queuedInterjection = ""
-				m.setTextareaValue("")
-				m.phase = "Stopping..."
-				if m.streamCancelFunc != nil {
-					m.streamCancelFunc()
-				}
-			case llm.InterruptInterject:
-				// Queue interjection in the engine — it will be injected after the
-				// current turn's tool results, before the next LLM turn begins.
-				m.engine.Interject(content)
-				m.pendingInterjection = content
-				m.setTextareaValue("")
-			default:
-				// Defer as a queued follow-up to run immediately after current stream ends.
-				m.queuedInterjection = content
-				m.pendingInterjection = content
-				m.setTextareaValue("")
-			}
-			return m, nil
+			return m, m.queueInterruptClassification(content)
 		}
 		// Allow textarea to receive input
 		var cmd tea.Cmd
@@ -675,6 +658,82 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.updateTextareaHeight()
 		return m, cmd
 	}
+	return m, nil
+}
+
+func (m *Model) currentInterruptActivity() llm.InterruptActivity {
+	activity := llm.InterruptActivity{
+		CurrentTask: m.phase,
+		ProseLen:    m.currentResponse.Len(),
+	}
+	if m.tracker != nil && m.tracker.HasPending() {
+		activity.ActiveTool = "tool"
+	}
+	return activity
+}
+
+func (m *Model) queueInterruptClassification(content string) tea.Cmd {
+	m.interruptRequestSeq++
+	requestID := m.interruptRequestSeq
+	activity := m.currentInterruptActivity()
+
+	m.activeInterruptSeq = requestID
+	m.pendingInterjection = content
+	m.pendingInterruptUI = "deciding"
+	m.queuedInterjection = ""
+	m.setTextareaValue("")
+
+	provider := m.fastProvider
+	return func() tea.Msg {
+		action := llm.ClassifyInterrupt(context.Background(), provider, content, activity)
+		return interruptClassifiedMsg{
+			RequestID: requestID,
+			Content:   content,
+			Action:    action,
+		}
+	}
+}
+
+func (m *Model) applyInterruptAction(content string, action llm.InterruptAction) {
+	m.activeInterruptSeq = 0
+	m.pendingInterjection = content
+	m.setTextareaValue("")
+
+	switch action {
+	case llm.InterruptCancel:
+		m.pendingInterjection = ""
+		m.pendingInterruptUI = ""
+		m.queuedInterjection = ""
+		m.phase = "Stopping..."
+		if m.streamCancelFunc != nil {
+			m.streamCancelFunc()
+		}
+	case llm.InterruptInterject:
+		m.pendingInterruptUI = "interject"
+		m.queuedInterjection = ""
+		m.engine.Interject(content)
+	default:
+		m.pendingInterruptUI = "queued"
+		m.queuedInterjection = content
+	}
+}
+
+func (m *Model) handleInterruptClassified(msg interruptClassifiedMsg) (tea.Model, tea.Cmd) {
+	if msg.RequestID == 0 || msg.RequestID != m.activeInterruptSeq {
+		return m, nil
+	}
+	if !m.streaming {
+		m.activeInterruptSeq = 0
+		m.pendingInterjection = ""
+		m.pendingInterruptUI = ""
+		if strings.TrimSpace(m.textarea.Value()) == "" {
+			m.setTextareaValue(msg.Content)
+			return m.sendMessage(msg.Content)
+		}
+		return m, nil
+	}
+
+	m.applyInterruptAction(msg.Content, msg.Action)
 	return m, nil
 }
 

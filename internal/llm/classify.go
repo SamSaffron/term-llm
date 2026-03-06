@@ -69,6 +69,12 @@ type InterruptActivity struct {
 	ProseLen    int
 }
 
+// ClassifyInterruptImmediate applies zero-latency local heuristics for common
+// interrupt intents. It returns (action, true) when a heuristic matched.
+func ClassifyInterruptImmediate(msg string) (InterruptAction, bool) {
+	return classifyInterruptHeuristic(msg)
+}
+
 func classifyInterruptHeuristic(msg string) (InterruptAction, bool) {
 	normalized := strings.ToLower(strings.TrimSpace(msg))
 	if normalized == "" {
