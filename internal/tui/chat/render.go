@@ -533,11 +533,11 @@ func (m *Model) renderStatusLine() string {
 	// Token usage counter (e.g., ~45K/136K) with optional cached segment
 	usagePart := ""
 	if m.engine != nil && m.engine.InputLimit() > 0 {
-		last := m.engine.LastTotalTokens()
+		contextTokens := m.engine.EstimateTokens(m.buildMessagesForContextEstimate())
 		limit := m.engine.InputLimit()
-		if last > 0 && limit > 0 {
+		if contextTokens > 0 && limit > 0 {
 			usagePart = fmt.Sprintf("~%s/%s",
-				llm.FormatTokenCount(last), llm.FormatTokenCount(limit))
+				llm.FormatTokenCount(contextTokens), llm.FormatTokenCount(limit))
 		}
 	}
 

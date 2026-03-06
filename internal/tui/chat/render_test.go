@@ -197,6 +197,30 @@ func TestRenderStatusLine_UsesWholeSecondElapsedWhileStreaming(t *testing.T) {
 	}
 }
 
+func TestRenderStatusLine_UsesEstimatedContextBeforeUsageArrives(t *testing.T) {
+	m := newTestChatModel(false)
+	m.engine.SetContextTracking(200_000)
+	userText := strings.Repeat("architecture tradeoffs and implementation details ", 80)
+	m.messages = append(m.messages,
+		session.Message{
+			SessionID:   m.sess.ID,
+			Role:        llm.RoleUser,
+			TextContent: userText,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: userText}},
+			CreatedAt:   time.Now(),
+			Sequence:    0,
+		},
+	)
+
+	line := ui.StripANSI(m.renderStatusLine())
+	if !strings.Contains(line, "/200K") {
+		t.Fatalf("expected estimated context usage in status line before usage event, got %q", line)
+	}
+	if strings.Contains(line, "~0K/") {
+		t.Fatalf("expected estimated context usage to stay above zero, got %q", line)
+	}
+}
+
 func TestRenderStatusLine_ShowsCachedUsageWhenPresent(t *testing.T) {
 	m := newTestChatModel(false)
 	m.stats.CachedInputTokens = 500_000

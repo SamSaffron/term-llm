@@ -326,6 +326,22 @@ func (e *Engine) LastTotalTokens() int {
 	return v
 }
 
+// EstimateTokens returns the estimated input token count for the next API call
+// based on the current message list. It uses the most recent API usage as a
+// baseline when possible, then adds heuristic estimates for newly appended
+// messages.
+func (e *Engine) EstimateTokens(messages []Message) int {
+	e.callbackMu.RLock()
+	lastTotalTokens := e.lastTotalTokens
+	lastMessageCount := e.lastMessageCount
+	e.callbackMu.RUnlock()
+
+	if lastTotalTokens > 0 && lastMessageCount > 0 && lastMessageCount < len(messages) {
+		return lastTotalTokens + EstimateMessageTokens(messages[lastMessageCount:])
+	}
+	return EstimateMessageTokens(messages)
+}
+
 // SetCompactionCallback sets the callback for context compaction events.
 // Thread-safe: can be called while streaming is in progress.
 func (e *Engine) SetCompactionCallback(cb CompactionCallback) {
@@ -420,11 +436,7 @@ func (e *Engine) getCompactionCallback() CompactionCallback {
 // baseline — because the model's output gets echoed back as input on the
 // next turn — then adds heuristic estimates for messages appended since.
 func (e *Engine) estimatedTokens(messages []Message) int {
-	if e.lastTotalTokens > 0 && e.lastMessageCount > 0 && e.lastMessageCount < len(messages) {
-		return e.lastTotalTokens + EstimateMessageTokens(messages[e.lastMessageCount:])
-	}
-	// Fallback: pure heuristic estimate of all messages
-	return EstimateMessageTokens(messages)
+	return e.EstimateTokens(messages)
 }
 
 // nonSystemMessages returns all messages that are not system messages.
