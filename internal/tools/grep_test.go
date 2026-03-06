@@ -98,13 +98,68 @@ func TestFormatGrepResults_MultipleFiles(t *testing.T) {
 	}
 }
 
-func TestFormatGrepResults_Truncated(t *testing.T) {
-	matches := []GrepMatch{
-		{FilePath: "x.go", LineNumber: 1, Match: "foo", Context: "> 1: foo"},
+func TestBuildRipgrepArgs_AddsDeterministicAndCursorStyleFlags(t *testing.T) {
+	a := GrepArgs{
+		Pattern:   "foo\\nbar",
+		Include:   "*.go",
+		Exclude:   "vendor/**",
+		Type:      "go",
+		Multiline: true,
 	}
 
-	result := formatGrepResults(matches, true)
+	args := buildRipgrepArgs(a, "/repo", 2, 100)
+	joined := strings.Join(args, " ")
 
+	for _, want := range []string{
+		"--no-config",
+		"--color=never",
+		"--hidden",
+		"--json",
+		"--max-count 100",
+		"--context 2",
+		"--glob !.git",
+		"--glob *.go",
+		"--glob !vendor/**",
+		"--type go",
+		"--multiline",
+		"--multiline-dotall",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("expected args to contain %q, got: %s", want, joined)
+		}
+	}
+}
+
+func TestBuildRipgrepArgs_FilesWithMatchesOmitsJSONFlags(t *testing.T) {
+	a := GrepArgs{Pattern: "needle", FilesWithMatches: true}
+	args := buildRipgrepArgs(a, "/repo", 2, 100)
+	joined := strings.Join(args, " ")
+
+	if !strings.Contains(joined, "--files-with-matches") {
+		t.Fatalf("expected files-with-matches flag, got: %s", joined)
+	}
+	for _, unwanted := range []string{"--json", "--max-count", "--context"} {
+		if strings.Contains(joined, unwanted) {
+			t.Fatalf("did not expect %q in args: %s", unwanted, joined)
+		}
+	}
+}
+
+func TestFormatFilesWithMatches_Truncated(t *testing.T) {
+	matches := []GrepMatch{{FilePath: "a.go"}, {FilePath: "a.go"}, {FilePath: "b.go"}}
+	result := formatFilesWithMatches(matches, true)
+
+	if strings.Count(result, "a.go") != 1 || strings.Count(result, "b.go") != 1 {
+		t.Fatalf("expected deduped file list, got:\n%s", result)
+	}
+	if !strings.Contains(result, "[Results truncated at limit]") {
+		t.Fatalf("expected truncation notice, got:\n%s", result)
+	}
+}
+
+func TestFormatGrepResults_Truncated(t *testing.T) {
+	matches := []GrepMatch{{FilePath: "x.go", LineNumber: 1, Match: "foo", Context: "> 1: foo"}}
+	result := formatGrepResults(matches, true)
 	if !strings.Contains(result, "[Results truncated at limit]") {
 		t.Errorf("expected truncation notice, got:\n%s", result)
 	}

@@ -2,9 +2,12 @@ package tools
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -40,6 +43,16 @@ const (
 	// replaced with a truncation note.  Keeps minified / generated files from
 	// producing enormous single-block responses even after per-line truncation.
 	maxOutputBytes = 50 * 1024 // 50 KB
+
+	// rgHardMaxOutputLines is the hard safety cap for raw ripgrep output.
+	// Once exceeded, the subprocess is terminated and the result is marked
+	// truncated before parsing / formatting happens.
+	rgHardMaxOutputLines = 10000
+
+	// rgMaxBufferedBytes caps the raw ripgrep stdout captured in memory.
+	// This is intentionally much higher than the final display budget because
+	// JSON output expands lines substantially before we collapse them back down.
+	rgMaxBufferedBytes = 8 * 1024 * 1024 // 8 MB
 )
 
 // autoEnrichContextLines returns the number of context lines to use when
@@ -99,62 +112,145 @@ type rgMatchData struct {
 	AbsoluteOffset int `json:"absolute_offset"`
 }
 
-// executeRipgrep runs ripgrep and returns matches.
-func (t *GrepTool) executeRipgrep(ctx context.Context, pattern, searchPath, include, exclude string, contextLines, maxResults int, filesWithMatches bool) ([]GrepMatch, error) {
-	// files-with-matches mode: skip JSON parsing entirely, just return filenames
-	if filesWithMatches {
-		args := []string{"--files-with-matches", "--hidden", "--glob", "!.git"}
-		if include != "" {
-			args = append(args, "--glob", include)
-		}
-		if exclude != "" {
-			args = append(args, "--glob", "!"+exclude)
-		}
-		args = append(args, pattern, searchPath)
-		cmd := exec.CommandContext(ctx, "rg", args...)
-		output, err := cmd.Output()
-		if err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-				return nil, nil
+type ripgrepResult struct {
+	matches   []GrepMatch
+	truncated bool
+}
+
+func buildRipgrepArgs(a GrepArgs, searchPath string, contextLines, maxResults int) []string {
+	args := []string{
+		"--no-config",
+		"--color=never",
+		"--hidden",
+		"--glob", "!.git",
+	}
+
+	if a.FilesWithMatches {
+		args = append(args, "--files-with-matches")
+	} else {
+		args = append(args,
+			"--json",
+			"--max-count", strconv.Itoa(maxResults),
+			"--context", strconv.Itoa(contextLines),
+		)
+	}
+
+	if a.Include != "" {
+		args = append(args, "--glob", a.Include)
+	}
+	if a.Exclude != "" {
+		args = append(args, "--glob", "!"+a.Exclude)
+	}
+	if a.Type != "" {
+		args = append(args, "--type", a.Type)
+	}
+	if a.Multiline {
+		args = append(args, "--multiline", "--multiline-dotall")
+	}
+
+	args = append(args, a.Pattern, searchPath)
+	return args
+}
+
+func runRipgrep(ctx context.Context, args []string) ([]byte, bool, error) {
+	cmd := exec.CommandContext(ctx, "rg", args...)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, false, err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, false, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, false, err
+	}
+
+	stderrCh := make(chan []byte, 1)
+	go func() {
+		data, _ := io.ReadAll(io.LimitReader(stderr, 64*1024))
+		stderrCh <- data
+	}()
+
+	var out bytes.Buffer
+	reader := bufio.NewReader(stdout)
+	lineCount := 0
+	truncated := false
+
+	for {
+		line, readErr := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			lineCount++
+			if lineCount > rgHardMaxOutputLines || out.Len()+len(line) > rgMaxBufferedBytes {
+				truncated = true
+				_ = cmd.Process.Kill()
+				break
 			}
-			return nil, err
+			out.Write(line)
 		}
+
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			_ = cmd.Process.Kill()
+			<-stderrCh
+			_ = cmd.Wait()
+			return nil, false, readErr
+		}
+	}
+
+	waitErr := cmd.Wait()
+	stderrOut := strings.TrimSpace(string(<-stderrCh))
+
+	if waitErr != nil {
+		if truncated {
+			return out.Bytes(), true, nil
+		}
+		if ctx.Err() != nil {
+			return nil, false, ctx.Err()
+		}
+		var exitErr *exec.ExitError
+		if errors.As(waitErr, &exitErr) && exitErr.ExitCode() == 1 {
+			return nil, false, nil
+		}
+		if stderrOut != "" {
+			return nil, false, fmt.Errorf("ripgrep failed: %s", stderrOut)
+		}
+		return nil, false, waitErr
+	}
+
+	return out.Bytes(), truncated, nil
+}
+
+// executeRipgrep runs ripgrep and returns matches.
+func (t *GrepTool) executeRipgrep(ctx context.Context, a GrepArgs, searchPath string, contextLines, maxResults int) (ripgrepResult, error) {
+	args := buildRipgrepArgs(a, searchPath, contextLines, maxResults)
+	output, truncated, err := runRipgrep(ctx, args)
+	if err != nil {
+		return ripgrepResult{}, err
+	}
+	if len(output) == 0 {
+		return ripgrepResult{}, nil
+	}
+
+	// files-with-matches mode: skip JSON parsing entirely, just return filenames.
+	if a.FilesWithMatches {
 		var matches []GrepMatch
 		for _, f := range strings.Split(strings.TrimSpace(string(output)), "\n") {
 			if f != "" {
 				matches = append(matches, GrepMatch{FilePath: f})
 			}
 		}
-		return matches, nil
+		return ripgrepResult{matches: matches, truncated: truncated}, nil
 	}
 
-	args := []string{
-		"--json",                                // JSON output for parsing
-		"--max-count", strconv.Itoa(maxResults), // Limit per file
-		"--context", strconv.Itoa(contextLines), // Context lines
-		"--hidden",        // Search hidden files but...
-		"--glob", "!.git", // ...exclude .git
-	}
-	if include != "" {
-		args = append(args, "--glob", include)
-	}
-	if exclude != "" {
-		args = append(args, "--glob", "!"+exclude)
-	}
-	args = append(args, pattern, searchPath)
-
-	cmd := exec.CommandContext(ctx, "rg", args...)
-	output, err := cmd.Output()
-
-	// Exit code 1 means no matches, which is not an error
+	matches, err := parseRipgrepOutput(output, maxResults, contextLines)
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			return nil, nil
-		}
-		return nil, err
+		return ripgrepResult{}, err
 	}
-
-	return parseRipgrepOutput(output, maxResults, contextLines)
+	return ripgrepResult{matches: matches, truncated: truncated}, nil
 }
 
 // pendingMatch tracks context for building ripgrep results.
@@ -427,9 +523,11 @@ type GrepArgs struct {
 	Path             string `json:"path,omitempty"`
 	Include          string `json:"include,omitempty"` // glob filter e.g., "*.go"
 	Exclude          string `json:"exclude,omitempty"` // glob pattern to exclude e.g., "vendor/**"
+	Type             string `json:"type,omitempty"`    // rg --type filter, e.g. "go"
 	MaxResults       int    `json:"max_results,omitempty"`
-	ContextLines     int    `json:"context_lines,omitempty"`      // lines of context around match (default 3)
+	ContextLines     int    `json:"context_lines,omitempty"`      // lines of context around match (default 2)
 	FilesWithMatches bool   `json:"files_with_matches,omitempty"` // return filenames only
+	Multiline        bool   `json:"multiline,omitempty"`          // allow matches to span line boundaries
 }
 
 // GrepMatch represents a single grep match.
@@ -463,6 +561,10 @@ func (t *GrepTool) Spec() llm.ToolSpec {
 					"type":        "string",
 					"description": "Glob pattern for paths to exclude, e.g. 'vendor/**' or '**/*_test.go'",
 				},
+				"type": map[string]interface{}{
+					"type":        "string",
+					"description": "Ripgrep file type filter, e.g. 'go', 'ts', or 'rb'",
+				},
 				"context_lines": map[string]interface{}{
 					"type":        "integer",
 					"description": "Lines of context around each match (default: 2)",
@@ -470,6 +572,10 @@ func (t *GrepTool) Spec() llm.ToolSpec {
 				}, "files_with_matches": map[string]interface{}{
 					"type":        "boolean",
 					"description": "Return only filenames containing matches, not the match lines (default: false)",
+				},
+				"multiline": map[string]interface{}{
+					"type":        "boolean",
+					"description": "Allow regex matches to span line boundaries (default: false)",
 				},
 				"max_results": map[string]interface{}{
 					"type":        "integer",
@@ -498,8 +604,14 @@ func (t *GrepTool) Preview(args json.RawMessage) string {
 	if a.Include != "" {
 		result += " (" + a.Include + ")"
 	}
+	if a.Type != "" {
+		result += " type:" + a.Type
+	}
 	if a.Exclude != "" {
 		result += " exclude:" + a.Exclude
+	}
+	if a.Multiline {
+		result += " multiline"
 	}
 	return result
 }
@@ -509,8 +621,8 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 	defer cancel()
 
 	warning := WarnUnknownParams(args, []string{
-		"pattern", "path", "include", "exclude",
-		"max_results", "context_lines", "files_with_matches",
+		"pattern", "path", "include", "exclude", "type",
+		"max_results", "context_lines", "files_with_matches", "multiline",
 	})
 	textOutput := func(message string) llm.ToolOutput {
 		return llm.TextOutput(warning + message)
@@ -561,32 +673,34 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 
 	// Try ripgrep first (faster)
 	if ripgrepAvailable() {
-		matches, err := t.executeRipgrep(ctx, a.Pattern, searchPath, a.Include, a.Exclude, contextLines, maxResults, a.FilesWithMatches)
+		result, err := t.executeRipgrep(ctx, a, searchPath, contextLines, maxResults)
 		if err != nil {
 			if ctx.Err() != nil {
 				return textOutput("grep timed out after 1 minute; try a more specific pattern or path"), nil
 			}
 			// Fall through to Go implementation on ripgrep error
 		} else {
+			matches := result.matches
 			if len(matches) == 0 {
 				return textOutput("No matches found."), nil
 			}
 			if a.FilesWithMatches {
-				return textOutput(formatFilesWithMatches(matches)), nil
+				return textOutput(formatFilesWithMatches(matches, result.truncated)), nil
 			}
 			// Auto-enrich: when the result set is small and the caller didn't
 			// request explicit context, bump the context window so the model can
 			// understand the match without an extra read_file round-trip.
 			if a.ContextLines <= 0 {
 				if enriched := autoEnrichContextLines(len(matches)); enriched > contextLines {
-					if richer, err2 := t.executeRipgrep(ctx, a.Pattern, searchPath, a.Include, a.Exclude, enriched, maxResults, false); err2 == nil && len(richer) > 0 {
-						matches = richer
+					if richer, err2 := t.executeRipgrep(ctx, a, searchPath, enriched, maxResults); err2 == nil && len(richer.matches) > 0 {
+						matches = richer.matches
+						result.truncated = richer.truncated
 					}
 				}
 			}
 			// Sort so the most recently modified files appear first.
 			matches = sortGrepMatchesByMtime(matches)
-			return textOutput(formatGrepResults(matches, len(matches) >= maxResults)), nil
+			return textOutput(formatGrepResults(matches, result.truncated || len(matches) >= maxResults)), nil
 		}
 	}
 
@@ -629,7 +743,7 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 	}
 
 	if a.FilesWithMatches {
-		return textOutput(formatFilesWithMatches(matches)), nil
+		return textOutput(formatFilesWithMatches(matches, len(matches) >= maxResults)), nil
 	}
 
 	// Format results
@@ -833,7 +947,7 @@ func buildContext(lines []string, matchIdx, contextLines int) string {
 }
 
 // formatFilesWithMatches formats a deduplicated list of filenames containing matches.
-func formatFilesWithMatches(matches []GrepMatch) string {
+func formatFilesWithMatches(matches []GrepMatch, truncated bool) string {
 	var sb strings.Builder
 	seen := make(map[string]bool)
 	for _, m := range matches {
@@ -841,6 +955,9 @@ func formatFilesWithMatches(matches []GrepMatch) string {
 			seen[m.FilePath] = true
 			sb.WriteString(m.FilePath + "\n")
 		}
+	}
+	if truncated {
+		sb.WriteString("[Results truncated at limit]\n")
 	}
 	return strings.TrimSuffix(sb.String(), "\n")
 }
