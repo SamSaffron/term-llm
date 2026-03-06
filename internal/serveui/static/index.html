@@ -1242,6 +1242,7 @@
         selectedModel: localStorage.getItem(STORAGE_KEYS.selectedModel) || '',
         streaming: false,
         queuedInterrupts: [],
+        pendingInterruptCommits: [],
         expectCanceledRun: false,
         abortController: null,
         autoScroll: true,
@@ -2462,6 +2463,36 @@
         state.queuedInterrupts.push({ prompt, messageId });
       };
 
+      const trackPendingInterruptCommit = (sessionId, prompt, messageId) => {
+        state.pendingInterruptCommits = state.pendingInterruptCommits.filter(entry => entry.messageId !== messageId);
+        state.pendingInterruptCommits.push({ sessionId, prompt, messageId });
+      };
+
+      const resolvePendingInterruptCommit = (sessionId, prompt) => {
+        const idx = state.pendingInterruptCommits.findIndex(entry => entry.sessionId === sessionId && entry.prompt === prompt);
+        if (idx < 0) return null;
+        const [entry] = state.pendingInterruptCommits.splice(idx, 1);
+        return entry;
+      };
+
+      const discardPendingInterruptCommit = (messageId) => {
+        if (!messageId) return;
+        state.pendingInterruptCommits = state.pendingInterruptCommits.filter(entry => entry.messageId !== messageId);
+      };
+
+      const requeueUncommittedInterrupts = (session) => {
+        if (!session?.id) return;
+        const remaining = [];
+        for (const entry of state.pendingInterruptCommits) {
+          if (entry.sessionId !== session.id) {
+            remaining.push(entry);
+            continue;
+          }
+          queueInterruptFollowUp(entry.prompt, entry.messageId);
+        }
+        state.pendingInterruptCommits = remaining;
+      };
+
       const setInterruptMessageState = (session, messageId, interruptState) => {
         if (!messageId) return;
         const normalized = sanitizeInterruptState(interruptState);
@@ -2505,6 +2536,12 @@
           : 'queue';
 
         setInterruptMessageState(session, messageId, action);
+
+        if (action === 'interject') {
+          trackPendingInterruptCommit(session.id, prompt, messageId);
+        } else {
+          discardPendingInterruptCommit(messageId);
+        }
 
         if (action === 'cancel' || action === 'queue') {
           queueInterruptFollowUp(prompt, messageId);
@@ -2574,6 +2611,7 @@
           try {
             await interruptActiveRun(session, prompt, pendingMessage.id);
           } catch (err) {
+            discardPendingInterruptCommit(pendingMessage.id);
             setInterruptMessageState(session, pendingMessage.id, 'error');
             const message = err?.message || 'Failed to interrupt active run.';
             addErrorMessage(message, session);
@@ -2839,6 +2877,15 @@
               return true;
             }
 
+            if (event === 'response.interjection') {
+              const interjectionText = String(payload.text || '').trim();
+              if (interjectionText) {
+                resolvePendingInterruptCommit(session.id, interjectionText);
+                saveSessions();
+              }
+              return true;
+            }
+
             if (event === 'response.completed') {
               const usage = payload?.response?.usage;
               closeToolGroup();
@@ -2920,6 +2967,8 @@
           state.abortController = null;
           setStreaming(false);
           refreshRelativeTimes();
+
+          requeueUncommittedInterrupts(session);
 
           if (state.queuedInterrupts.length > 0) {
             const queued = state.queuedInterrupts.shift();

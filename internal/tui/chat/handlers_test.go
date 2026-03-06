@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -182,6 +183,54 @@ func TestStreamDone_QueuedInterjectionRestoresDraftWithoutSending(t *testing.T) 
 	}
 	if got := len(m.messages); got != 0 {
 		t.Fatalf("expected queued interjection not to auto-send, got %d messages", got)
+	}
+}
+
+func TestStreamDone_PendingInterjectRestoresDraftWithoutEngineResidual(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streaming = true
+	m.pendingInterjection = "keep sleeping"
+	m.pendingInterruptUI = "interject"
+
+	_, cmd := m.Update(streamEventMsg{event: ui.DoneEvent(0)})
+	if cmd == nil {
+		t.Fatal("expected command batch from stream completion")
+	}
+	if m.streaming {
+		t.Fatal("expected streaming to stop after done event")
+	}
+	if got := m.textarea.Value(); got != "keep sleeping" {
+		t.Fatalf("expected pending interjection restored to composer, got %q", got)
+	}
+	if got := m.pendingInterjection; got != "" {
+		t.Fatalf("expected pending interjection cleared after restore, got %q", got)
+	}
+	if got := m.pendingInterruptUI; got != "" {
+		t.Fatalf("expected pending interrupt UI cleared after restore, got %q", got)
+	}
+}
+
+func TestStreamError_PendingInterjectRestoresDraftWithoutEngineResidual(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streaming = true
+	m.pendingInterjection = "keep sleeping"
+	m.pendingInterruptUI = "interject"
+
+	_, cmd := m.Update(streamEventMsg{event: ui.ErrorEvent(context.Canceled)})
+	if cmd != nil {
+		t.Fatal("expected no follow-up command on error")
+	}
+	if m.streaming {
+		t.Fatal("expected streaming to stop after error")
+	}
+	if got := m.textarea.Value(); got != "keep sleeping" {
+		t.Fatalf("expected pending interjection restored to composer, got %q", got)
+	}
+	if got := m.pendingInterjection; got != "" {
+		t.Fatalf("expected pending interjection cleared after restore, got %q", got)
+	}
+	if got := m.pendingInterruptUI; got != "" {
+		t.Fatalf("expected pending interrupt UI cleared after restore, got %q", got)
 	}
 }
 

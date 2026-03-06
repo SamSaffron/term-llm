@@ -736,6 +736,23 @@ func (m *Model) handleInterruptClassified(msg interruptClassifiedMsg) (tea.Model
 	return m, nil
 }
 
+func (m *Model) restorePendingInterjectionDraft() {
+	if strings.TrimSpace(m.textarea.Value()) != "" {
+		return
+	}
+	if residual := m.engine.DrainInterjection(); residual != "" {
+		m.setTextareaValue(residual)
+		return
+	}
+	if m.queuedInterjection != "" {
+		m.setTextareaValue(m.queuedInterjection)
+		return
+	}
+	if m.pendingInterjection != "" && (m.pendingInterruptUI == "interject" || m.pendingInterruptUI == "deciding") {
+		m.setTextareaValue(m.pendingInterjection)
+	}
+}
+
 func (m *Model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 	return m.ExecuteCommand(input)
 }

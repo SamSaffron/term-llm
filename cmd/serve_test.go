@@ -1129,6 +1129,27 @@ func TestEnsurePersistedSession_SkipsRestoreWhenHistoryExists(t *testing.T) {
 	}
 }
 
+type testServeDelayTool struct {
+	delay time.Duration
+}
+
+func (d *testServeDelayTool) Spec() llm.ToolSpec {
+	return llm.ToolSpec{Name: "slow_tool", Description: "delay for interjection test"}
+}
+
+func (d *testServeDelayTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+	select {
+	case <-ctx.Done():
+		return llm.ToolOutput{}, ctx.Err()
+	case <-time.After(d.delay):
+	}
+	return llm.ToolOutput{Content: "slept"}, nil
+}
+
+func (d *testServeDelayTool) Preview(args json.RawMessage) string {
+	return ""
+}
+
 // newTestServeServer creates a serveServer with a mock factory for testing.
 // Each runtime gets its own mock provider with the given responses.
 func newTestServeServer(responses ...string) *serveServer {
@@ -1532,6 +1553,52 @@ func TestResponseToSessionMap_CleanedOnEviction(t *testing.T) {
 	// Mapping should be cleaned up
 	if _, ok := srv.responseToSession.Load(respID); ok {
 		t.Fatalf("responseToSession should be cleaned up after eviction")
+	}
+}
+
+func TestStreamResponses_EmitsInterjectionEvent(t *testing.T) {
+	provider := llm.NewMockProvider("mock")
+	provider.AddToolCall("call_1", "slow_tool", map[string]any{})
+	provider.AddTextResponse("done")
+
+	registry := llm.NewToolRegistry()
+	registry.Register(&testServeDelayTool{delay: 20 * time.Millisecond})
+
+	engine := llm.NewEngine(provider, registry)
+	engine.Interject("keep sleeping")
+
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  "mock",
+		engine:       engine,
+		defaultModel: "mock-model",
+	}
+	rt.Touch()
+
+	mgr := newServeSessionManager(time.Minute, 100, func(ctx context.Context) (*serveRuntime, error) {
+		return rt, nil
+	})
+	defer mgr.Close()
+
+	srv := &serveServer{sessionMgr: mgr}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses",
+		strings.NewReader(`{"input":"hi","stream":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("session_id", "sess_interject")
+	rr := httptest.NewRecorder()
+
+	srv.handleResponses(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "event: response.interjection") {
+		t.Fatalf("expected response.interjection event in stream, got:\n%s", body)
+	}
+	if !strings.Contains(body, `"text":"keep sleeping"`) {
+		t.Fatalf("expected interjection payload in stream, got:\n%s", body)
 	}
 }
 

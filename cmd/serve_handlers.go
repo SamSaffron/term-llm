@@ -700,6 +700,10 @@ func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter
 				"call_id":   ev.ToolCallID,
 				"tool_name": ev.ToolName,
 			})
+		case llm.EventInterjection:
+			_ = writeSSEEvent(w, "response.interjection", map[string]any{
+				"text": ev.Text,
+			})
 		}
 		flusher.Flush()
 		return nil
@@ -930,6 +934,17 @@ func (s *serveServer) streamChatCompletions(ctx context.Context, w http.Response
 					"call_id":   ev.ToolCallID,
 					"tool_name": ev.ToolName,
 				},
+			})
+		case llm.EventInterjection:
+			writeErr = writeChatStreamChunk(w, map[string]any{
+				"id":      respID,
+				"object":  "chat.completion.chunk",
+				"created": created,
+				"model":   model,
+				"choices": []map[string]any{{
+					"index": 0,
+					"delta": map[string]any{"interjection": ev.Text},
+				}},
 			})
 		}
 		if writeErr != nil {

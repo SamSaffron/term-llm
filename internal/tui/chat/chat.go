@@ -778,10 +778,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 				m.textarea.Focus()
 
-				// Recover pending interjection text into textarea on error
-				if residual := m.engine.DrainInterjection(); residual != "" {
-					m.setTextareaValue(residual)
-				}
+				// Recover pending interjection text into textarea on error.
+				// If the engine queue is already empty but we never rendered the
+				// interjection inline, fall back to the visible pending draft.
+				m.restorePendingInterjectionDraft()
 				m.activeInterruptSeq = 0
 				m.pendingInterjection = "" // Clear pending indicator
 				m.pendingInterruptUI = ""
@@ -1126,13 +1126,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Re-enable textarea
 			m.textarea.Focus()
 
-			// Recover any pending interjection that wasn't consumed (e.g.,
-			// when the LLM returned no tool calls so the between-turns
-			// injection point was never reached). Place the text back
-			// in the textarea so the user can send it as a follow-up.
-			if residual := m.engine.DrainInterjection(); residual != "" {
-				m.setTextareaValue(residual)
-			}
+			// Recover any pending interjection that wasn't consumed. If the
+			// engine queue is already empty but the UI still shows a pending
+			// interjection, restore that draft rather than letting it vanish.
+			m.restorePendingInterjectionDraft()
 			if m.activeInterruptSeq == 0 {
 				m.pendingInterjection = "" // Clear pending indicator
 				m.pendingInterruptUI = ""
