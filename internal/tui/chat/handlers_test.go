@@ -6,6 +6,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/ui"
 )
 
 func TestHandleKeyMsg_SessionListEnterResumesSession(t *testing.T) {
@@ -119,6 +120,68 @@ func TestHandleKeyMsg_StreamingAsyncClassificationFeelsImmediate(t *testing.T) {
 	}
 	if got := m.engine.DrainInterjection(); got != "also check the schema" {
 		t.Fatalf("expected engine interjection to be queued, got %q", got)
+	}
+}
+
+func TestHandleInterruptClassified_StreamAlreadyFinishedRestoresDraft(t *testing.T) {
+	m := newTestChatModel(false)
+	m.activeInterruptSeq = 7
+	m.pendingInterjection = "keep sleeping"
+	m.pendingInterruptUI = "deciding"
+
+	_, cmd := m.handleInterruptClassified(interruptClassifiedMsg{
+		RequestID: 7,
+		Content:   "keep sleeping",
+		Action:    llm.InterruptQueue,
+	})
+	if cmd != nil {
+		t.Fatal("expected no follow-up command when restoring draft")
+	}
+	if got := m.textarea.Value(); got != "keep sleeping" {
+		t.Fatalf("expected interjection text restored to composer, got %q", got)
+	}
+	if m.streaming {
+		t.Fatal("expected stream to remain finished")
+	}
+	if got := m.pendingInterjection; got != "" {
+		t.Fatalf("expected pending interjection cleared after restore, got %q", got)
+	}
+	if got := m.pendingInterruptUI; got != "" {
+		t.Fatalf("expected pending interrupt UI cleared after restore, got %q", got)
+	}
+	if got := len(m.messages); got != 0 {
+		t.Fatalf("expected restored draft not to auto-send, got %d messages", got)
+	}
+}
+
+func TestStreamDone_QueuedInterjectionRestoresDraftWithoutSending(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streaming = true
+	m.queuedInterjection = "queue this for later"
+	m.pendingInterjection = "queue this for later"
+	m.pendingInterruptUI = "queued"
+
+	_, cmd := m.Update(streamEventMsg{event: ui.DoneEvent(0)})
+	if cmd == nil {
+		t.Fatal("expected command batch from stream completion")
+	}
+	if m.streaming {
+		t.Fatal("expected streaming to stop after done event")
+	}
+	if got := m.textarea.Value(); got != "queue this for later" {
+		t.Fatalf("expected queued interjection restored to composer, got %q", got)
+	}
+	if got := m.queuedInterjection; got != "" {
+		t.Fatalf("expected queued interjection state cleared, got %q", got)
+	}
+	if got := m.pendingInterjection; got != "" {
+		t.Fatalf("expected pending interjection cleared after restore, got %q", got)
+	}
+	if got := m.pendingInterruptUI; got != "" {
+		t.Fatalf("expected pending interrupt UI cleared after restore, got %q", got)
+	}
+	if got := len(m.messages); got != 0 {
+		t.Fatalf("expected queued interjection not to auto-send, got %d messages", got)
 	}
 }
 

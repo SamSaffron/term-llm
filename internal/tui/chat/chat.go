@@ -1082,7 +1082,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Auto-save session
 			cmds = append(cmds, m.saveSessionCmd())
 
-			// Send any queued follow-up immediately after the current stream completes.
+			// Restore any queued follow-up to the composer when the current stream completes.
+			// Do not auto-send it: user-authored text should remain visible and editable.
 			if m.queuedInterjection != "" && m.autoSendQueue == nil {
 				next := m.queuedInterjection
 				m.activeInterruptSeq = 0
@@ -1090,7 +1091,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pendingInterjection = ""
 				m.pendingInterruptUI = ""
 				m.setTextareaValue(next)
-				return m.sendMessage(next)
 			}
 
 			// In auto-send mode, check if there are more messages to send
