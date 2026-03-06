@@ -24,10 +24,6 @@ type CompactionConfig struct {
 	ThresholdRatio        float64 // Fraction of context window to trigger (default 0.80)
 	RecentUserTokenBudget int     // Max tokens of recent user messages to keep
 	MaxToolResultChars    int     // Max chars per tool result when recording
-	// CompactionModel overrides the model used for the summarization LLM call.
-	// If empty, the conversation's active model is used (expensive — avoid for large-context models).
-	// Recommended: set to the provider's fast/cheap model (e.g. gpt-5-nano, claude-haiku-4-5).
-	CompactionModel string
 }
 
 // DefaultCompactionConfig returns a CompactionConfig with sensible defaults.
@@ -107,21 +103,9 @@ Summary:
 
 // Compact generates a summary of the conversation history and returns a
 // compacted message list: [system] + [summary as user] + [recent user messages].
-//
-// model is the conversation's active model (used to compute context limits).
-// If config.CompactionModel is non-empty it overrides the model for the actual
-// summarization LLM call — use this to route compaction to a cheap/fast model
-// instead of the expensive main model.
 func Compact(ctx context.Context, provider Provider, model, systemPrompt string, messages []Message, config CompactionConfig) (*CompactionResult, error) {
 	if len(messages) == 0 {
 		return nil, fmt.Errorf("no messages to compact")
-	}
-
-	// Use a cheaper model for the summarization call if configured.
-	// The conversation model is still used for context-limit calculations below.
-	compModel := model
-	if config.CompactionModel != "" {
-		compModel = config.CompactionModel
 	}
 
 	originalCount := len(messages)
@@ -169,10 +153,9 @@ func Compact(ctx context.Context, provider Provider, model, systemPrompt string,
 	// Truncate conversation text if it's too large for the summarization request.
 	// Use ~75% of the input limit (if known) to leave room for the summary output
 	// and framing messages. Fall back to 400K chars (~100K tokens) if unknown.
-	// Use compModel (the model actually making the call) for limit calculation.
 	convStr := convText.String()
 	maxConvChars := 400_000
-	if inputLimit := InputLimitForModel(compModel); inputLimit > 0 {
+	if inputLimit := InputLimitForModel(model); inputLimit > 0 {
 		maxConvChars = inputLimit * approxBytesPerToken * 3 / 4
 	}
 	convRunes := []rune(convStr)
@@ -191,10 +174,9 @@ func Compact(ctx context.Context, provider Provider, model, systemPrompt string,
 	userContent.WriteString("\n\nNow create the compaction summary.")
 	sumReq = append(sumReq, UserText(userContent.String()))
 
-	// Call provider with no tools (pure text completion).
-	// Uses compModel (fast/cheap override) rather than the conversation's main model.
+	// Call provider with no tools (pure text completion)
 	stream, err := provider.Stream(ctx, Request{
-		Model:    compModel,
+		Model:    model,
 		Messages: sumReq,
 		// No tools - pure text completion
 	})

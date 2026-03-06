@@ -277,10 +277,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 				providerForLimits = m.sess.Provider
 			}
 		}
-		// Resolve a cheap fast model for compaction so we don't burn expensive
-		// large-context model tokens on every summarization call.
-		compactionModel := llm.FastModelForProvider(m.config, providerForLimits)
-		m.engine.ConfigureContextManagement(m.provider, providerForLimits, m.sess.Model, m.config.AutoCompact, compactionModel)
+		m.engine.ConfigureContextManagement(m.provider, providerForLimits, m.sess.Model, m.config.AutoCompact)
 
 		// Set up compaction callback to update in-memory state and persist.
 		// This runs on the engine goroutine, so we protect m.messages with a mutex.
