@@ -149,6 +149,22 @@ func NewProviderByName(cfg *config.Config, name string, model string) (Provider,
 	return WrapWithRetry(provider, DefaultRetryConfig()), nil
 }
 
+// FastModelForProvider returns the lightweight model name for the given provider key.
+// Resolution order mirrors NewFastProvider:
+// 1. providers.<name>.fast_model from user config
+// 2. built-in ProviderFastModels fallback for the inferred provider type
+// Returns "" if no fast model can be resolved.
+// Use this when you need just the model name (e.g. for CompactionConfig.CompactionModel).
+func FastModelForProvider(cfg *config.Config, providerName string) string {
+	if cfg != nil {
+		if pc, ok := cfg.Providers[providerName]; ok && strings.TrimSpace(pc.FastModel) != "" {
+			return strings.TrimSpace(pc.FastModel)
+		}
+	}
+	providerType := string(config.InferProviderType(providerName, ""))
+	return ProviderFastModels[providerType]
+}
+
 // NewFastProvider creates a lightweight provider instance for the specified provider key.
 // Resolution order:
 // 1. providers.<name>.fast_provider + fast_model

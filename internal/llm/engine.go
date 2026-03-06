@@ -290,7 +290,12 @@ func (e *Engine) SetContextTracking(inputLimit int) {
 // the provider/model's input limit and the autoCompact setting.
 // Skips setup if the provider manages its own context (e.g., claude-bin).
 // Both inputLimit and compactionConfig are set atomically under a single lock.
-func (e *Engine) ConfigureContextManagement(provider Provider, providerName, modelName string, autoCompact bool) {
+//
+// compactionModel overrides the model used for the summarization LLM call when
+// compaction fires. Pass the provider's fast/cheap model here (e.g. "gpt-5-nano")
+// to avoid burning expensive tokens on context summarization. Pass "" to use the
+// conversation's active model (old behaviour — not recommended for large-context models).
+func (e *Engine) ConfigureContextManagement(provider Provider, providerName, modelName string, autoCompact bool, compactionModel string) {
 	if provider.Capabilities().ManagesOwnContext {
 		return
 	}
@@ -302,6 +307,7 @@ func (e *Engine) ConfigureContextManagement(provider Provider, providerName, mod
 	e.inputLimit = limit
 	if autoCompact {
 		cfg := DefaultCompactionConfig()
+		cfg.CompactionModel = compactionModel
 		e.compactionConfig = &cfg
 	} else {
 		e.compactionConfig = nil

@@ -588,7 +588,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 
 	// Enable context compaction or tracking for models with known context window data.
-	engine.ConfigureContextManagement(provider, cfg.DefaultProvider, activeModel(cfg), cfg.AutoCompact)
+	// Use the provider's fast model for compaction to avoid burning expensive tokens on summarization.
+	compactionModel := llm.FastModelForProvider(cfg, cfg.DefaultProvider)
+	engine.ConfigureContextManagement(provider, cfg.DefaultProvider, activeModel(cfg), cfg.AutoCompact, compactionModel)
 
 	errChan := make(chan error, 1)
 	go func() {

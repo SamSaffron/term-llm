@@ -618,6 +618,70 @@ func TestDefaultCompactionConfig(t *testing.T) {
 	if config.MaxToolResultChars != 80_000 {
 		t.Errorf("MaxToolResultChars = %d, want 80000", config.MaxToolResultChars)
 	}
+	if config.CompactionModel != "" {
+		t.Errorf("CompactionModel = %q, want empty (no override by default)", config.CompactionModel)
+	}
+}
+
+// TestCompactUsesCompactionModel verifies that when CompactionModel is set in
+// CompactionConfig, Compact() routes the summarization call to that model rather
+// than the conversation's main model. This is the fix for the 8.75M token burn
+// caused by compaction using an expensive large-context model for summarization.
+func TestCompactUsesCompactionModel(t *testing.T) {
+	provider := NewMockProvider("test")
+	provider.AddTextResponse("<summary>compact summary</summary>")
+
+	messages := []Message{
+		UserText("tell me about something"),
+		AssistantText("here is a detailed explanation"),
+		UserText("and more?"),
+		AssistantText("more detail"),
+	}
+
+	cfg := DefaultCompactionConfig()
+	cfg.CompactionModel = "cheap-fast-model"
+
+	_, err := Compact(context.Background(), provider, "expensive-main-model", "system", messages, cfg)
+	if err != nil {
+		t.Fatalf("Compact failed: %v", err)
+	}
+
+	// The provider should have received exactly one request (the summarization call).
+	if len(provider.Requests) != 1 {
+		t.Fatalf("expected 1 request to provider, got %d", len(provider.Requests))
+	}
+	gotModel := provider.Requests[0].Model
+	if gotModel != "cheap-fast-model" {
+		t.Errorf("Compact used model %q, want %q (CompactionModel override)", gotModel, "cheap-fast-model")
+	}
+}
+
+// TestCompactFallsBackToMainModel verifies that when CompactionModel is empty,
+// Compact() uses the conversation's active model (backward-compatible behaviour).
+func TestCompactFallsBackToMainModel(t *testing.T) {
+	provider := NewMockProvider("test")
+	provider.AddTextResponse("<summary>compact summary</summary>")
+
+	messages := []Message{
+		UserText("hello"),
+		AssistantText("world"),
+	}
+
+	cfg := DefaultCompactionConfig()
+	// CompactionModel is empty — should fall back to the model param
+
+	_, err := Compact(context.Background(), provider, "main-model", "system", messages, cfg)
+	if err != nil {
+		t.Fatalf("Compact failed: %v", err)
+	}
+
+	if len(provider.Requests) != 1 {
+		t.Fatalf("expected 1 request to provider, got %d", len(provider.Requests))
+	}
+	gotModel := provider.Requests[0].Model
+	if gotModel != "main-model" {
+		t.Errorf("Compact used model %q, want %q (fallback to main model)", gotModel, "main-model")
+	}
 }
 
 func TestEstimatedTokens(t *testing.T) {
