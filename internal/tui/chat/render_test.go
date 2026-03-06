@@ -130,6 +130,71 @@ func TestViewAltScreen_FirstRenderAnchorsToBottom(t *testing.T) {
 	}
 }
 
+func TestViewAltScreen_RefreshesWhenMessagesReplacedWithSameCount(t *testing.T) {
+	m := newTestChatModel(true)
+	sessionID := m.sess.ID
+
+	m.messages = []session.Message{
+		{
+			ID:          1,
+			SessionID:   sessionID,
+			Role:        llm.RoleUser,
+			TextContent: "first prompt",
+			Parts:       []llm.Part{{Type: llm.PartText, Text: "first prompt"}},
+			CreatedAt:   time.Now(),
+			Sequence:    0,
+		},
+		{
+			ID:          2,
+			SessionID:   sessionID,
+			Role:        llm.RoleAssistant,
+			TextContent: "old reply",
+			Parts:       []llm.Part{{Type: llm.PartText, Text: "old reply"}},
+			CreatedAt:   time.Now(),
+			Sequence:    1,
+		},
+	}
+
+	first := ui.StripANSI(m.View())
+	if !strings.Contains(first, "old reply") {
+		t.Fatalf("expected initial render to include old reply, got %q", first)
+	}
+
+	replacement := []session.Message{
+		{
+			ID:          1,
+			SessionID:   sessionID,
+			Role:        llm.RoleUser,
+			TextContent: "first prompt",
+			Parts:       []llm.Part{{Type: llm.PartText, Text: "first prompt"}},
+			CreatedAt:   time.Now(),
+			Sequence:    0,
+		},
+		{
+			ID:          2,
+			SessionID:   sessionID,
+			Role:        llm.RoleAssistant,
+			TextContent: "new final reply",
+			Parts:       []llm.Part{{Type: llm.PartText, Text: "new final reply"}},
+			CreatedAt:   time.Now(),
+			Sequence:    1,
+		},
+	}
+
+	_, _ = m.Update(sessionLoadedMsg{
+		sess:     &session.Session{ID: sessionID},
+		messages: replacement,
+	})
+
+	second := ui.StripANSI(m.View())
+	if strings.Contains(second, "old reply") {
+		t.Fatalf("expected stale history cache to be invalidated, got %q", second)
+	}
+	if !strings.Contains(second, "new final reply") {
+		t.Fatalf("expected refreshed render to include replacement message, got %q", second)
+	}
+}
+
 func TestStreamEventDiffFlushUsesOrderedCommandComposition(t *testing.T) {
 	provider := llm.NewMockProvider("mock")
 	engine := llm.NewEngine(provider, nil)

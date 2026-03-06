@@ -115,13 +115,15 @@ func (m *Model) viewAltScreen() string {
 	// Build scrollable content with caching to avoid re-rendering unchanged content
 
 	// Check if history cache is valid
+	historySig := render.MessageHistorySignature(m.messages)
 	historyValid := m.viewCache.historyValid &&
-		m.viewCache.historyMsgCount == len(m.messages) &&
+		m.viewCache.historySignature == historySig &&
 		m.viewCache.historyWidth == m.width &&
 		m.viewCache.historyScrollOffset == m.scrollOffset
 	if !historyValid {
 		m.viewCache.historyContent = m.renderHistory()
 		m.viewCache.historyMsgCount = len(m.messages)
+		m.viewCache.historySignature = historySig
 		m.viewCache.historyWidth = m.width
 		m.viewCache.historyScrollOffset = m.scrollOffset
 		m.viewCache.historyValid = true

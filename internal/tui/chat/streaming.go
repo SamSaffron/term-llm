@@ -53,6 +53,7 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 		Sequence:    -1, // Auto-allocate sequence
 	}
 	m.messages = append(m.messages, *userMsg)
+	m.invalidateHistoryCache()
 	if m.store != nil {
 		// Save system message first if this is a new session with instructions
 		// Check if there's no existing system message in history
@@ -75,6 +76,7 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 			_ = m.store.AddMessage(context.Background(), m.sess.ID, sysMsg)
 			// Prepend to m.messages so we don't save it again on subsequent sends
 			m.messages = append([]session.Message{*sysMsg}, m.messages...)
+			m.invalidateHistoryCache()
 		}
 
 		_ = m.store.AddMessage(context.Background(), m.sess.ID, userMsg)
@@ -289,6 +291,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 			m.messagesMu.Lock()
 			m.messages = newSessionMsgs
 			m.messagesMu.Unlock()
+			m.invalidateHistoryCache()
 			if m.store != nil {
 				return m.store.ReplaceMessages(ctx, m.sess.ID, newSessionMsgs)
 			}
@@ -386,6 +389,14 @@ func (m *Model) invalidateViewCache() {
 	m.viewCache.lastTrackerVersion = 0
 	m.viewCache.lastWavePos = 0
 	m.viewCache.lastSetContentAt = time.Time{}
+	if m.chatRenderer != nil {
+		m.chatRenderer.InvalidateCache()
+	}
+	m.bumpContentVersion()
+}
+
+func (m *Model) invalidateHistoryCache() {
+	m.viewCache.historyValid = false
 	if m.chatRenderer != nil {
 		m.chatRenderer.InvalidateCache()
 	}

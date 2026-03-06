@@ -1,6 +1,8 @@
 package chat
 
 import (
+	"hash"
+	"hash/fnv"
 	"strconv"
 	"strings"
 	"sync"
@@ -346,6 +348,21 @@ func (r *Renderer) renderHistory(state RenderState) string {
 	return strings.Clone(b.String())
 }
 
+// MessageHistorySignature fingerprints rendered message history so cache validity
+// does not rely on message count alone.
+func MessageHistorySignature(messages []session.Message) uint64 {
+	h := fnv.New64a()
+	for i := range messages {
+		msg := &messages[i]
+		writeStringHash(h, strconv.FormatInt(msg.ID, 10))
+		writeStringHash(h, strconv.Itoa(msg.Sequence))
+		writeStringHash(h, string(msg.Role))
+		writeStringHash(h, msg.TextContent)
+		writeStringHash(h, messagePartsSignature(msg))
+	}
+	return h.Sum64()
+}
+
 // getOrRenderBlock gets a rendered block from cache or renders it.
 func (r *Renderer) getOrRenderBlock(msg *session.Message, index int, messages []session.Message) *MessageBlock {
 	// Check cache first
@@ -364,14 +381,68 @@ func (r *Renderer) getOrRenderBlock(msg *session.Message, index int, messages []
 }
 
 // blockCacheKey generates a cache key for a message.
-// Key is based on message ID and width only - NOT index.
-// This ensures cache hits even when new messages are added.
+// Key includes a content fingerprint, not just message ID, so stale blocks
+// cannot survive same-ID content changes.
 func (r *Renderer) blockCacheKey(msg *session.Message, index int) string {
 	expanded := "0"
 	if r.toolsExpanded {
 		expanded = "1"
 	}
-	return strconv.FormatInt(msg.ID, 10) + ":" + strconv.Itoa(r.width) + ":" + expanded
+	return strconv.FormatInt(msg.ID, 10) + ":" + strconv.Itoa(r.width) + ":" + expanded + ":" + messagePartsSignature(msg)
+}
+
+func messagePartsSignature(msg *session.Message) string {
+	h := fnv.New64a()
+	writeStringHash(h, msg.TextContent)
+	writeStringHash(h, strconv.Itoa(len(msg.Parts)))
+	for i := range msg.Parts {
+		part := &msg.Parts[i]
+		writeStringHash(h, string(part.Type))
+		writeStringHash(h, part.Text)
+		writeStringHash(h, part.ReasoningContent)
+		writeStringHash(h, part.ReasoningItemID)
+		writeStringHash(h, part.ReasoningEncryptedContent)
+		writeStringHash(h, part.ImagePath)
+		if part.ImageData != nil {
+			writeStringHash(h, part.ImageData.MediaType)
+			writeStringHash(h, part.ImageData.Base64)
+		}
+		if part.ToolCall != nil {
+			writeStringHash(h, part.ToolCall.ID)
+			writeStringHash(h, part.ToolCall.Name)
+			writeStringHash(h, string(part.ToolCall.Arguments))
+		}
+		if part.ToolResult != nil {
+			writeStringHash(h, part.ToolResult.ID)
+			writeStringHash(h, part.ToolResult.Name)
+			writeStringHash(h, part.ToolResult.Content)
+			writeStringHash(h, part.ToolResult.Display)
+			writeStringHash(h, strconv.FormatBool(part.ToolResult.IsError))
+			for _, diff := range part.ToolResult.Diffs {
+				writeStringHash(h, diff.File)
+				writeStringHash(h, diff.Old)
+				writeStringHash(h, diff.New)
+				writeStringHash(h, strconv.Itoa(diff.Line))
+			}
+			for _, image := range part.ToolResult.Images {
+				writeStringHash(h, image)
+			}
+			for _, contentPart := range part.ToolResult.ContentParts {
+				writeStringHash(h, string(contentPart.Type))
+				writeStringHash(h, contentPart.Text)
+				if contentPart.ImageData != nil {
+					writeStringHash(h, contentPart.ImageData.MediaType)
+					writeStringHash(h, contentPart.ImageData.Base64)
+				}
+			}
+		}
+	}
+	return strconv.FormatUint(h.Sum64(), 16)
+}
+
+func writeStringHash(h hash.Hash64, s string) {
+	_, _ = h.Write([]byte(s))
+	_, _ = h.Write([]byte{0})
 }
 
 // renderMessageBlock renders a single message to a block.

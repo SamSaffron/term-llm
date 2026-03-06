@@ -87,6 +87,42 @@ func TestRenderer_Render(t *testing.T) {
 	}
 }
 
+func TestRenderer_BlockCacheKeyChangesWhenMessageContentChanges(t *testing.T) {
+	renderer := NewRenderer(80, 24)
+
+	msg := &session.Message{
+		ID:          42,
+		Role:        llm.RoleAssistant,
+		TextContent: "old reply",
+		Parts:       []llm.Part{{Type: llm.PartText, Text: "old reply"}},
+	}
+	first := renderer.blockCacheKey(msg, 0)
+
+	msg.TextContent = "new reply"
+	msg.Parts = []llm.Part{{Type: llm.PartText, Text: "new reply"}}
+	second := renderer.blockCacheKey(msg, 0)
+
+	if first == second {
+		t.Fatalf("expected block cache key to change when message content changes")
+	}
+}
+
+func TestHistorySignatureChangesWhenSameCountMessagesChange(t *testing.T) {
+	messages := []session.Message{
+		{ID: 1, Role: llm.RoleUser, TextContent: "prompt", Parts: []llm.Part{{Type: llm.PartText, Text: "prompt"}}, Sequence: 0},
+		{ID: 2, Role: llm.RoleAssistant, TextContent: "old reply", Parts: []llm.Part{{Type: llm.PartText, Text: "old reply"}}, Sequence: 1},
+	}
+	first := MessageHistorySignature(messages)
+
+	messages[1].TextContent = "new reply"
+	messages[1].Parts = []llm.Part{{Type: llm.PartText, Text: "new reply"}}
+	second := MessageHistorySignature(messages)
+
+	if first == second {
+		t.Fatalf("expected history signature to change when same-count messages change")
+	}
+}
+
 func TestRenderer_CacheHit(t *testing.T) {
 	renderer := NewRenderer(80, 24)
 	renderer.SetMarkdownRenderer(simpleMarkdownRenderer)

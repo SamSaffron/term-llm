@@ -162,6 +162,7 @@ type Model struct {
 		lastVPWidth         int    // Viewport width when view was cached
 		lastVPHeight        int    // Viewport height when view was cached
 		lastSetContentAt    time.Time
+		historySignature    uint64 // Content fingerprint for cached history
 		// completedStream holds rendered streaming content (diffs, tools) that should
 		// persist after streaming ends. Cleared when a new prompt is sent.
 		completedStream string
@@ -657,6 +658,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.messagesMu.Lock()
 		m.messages = newSessionMsgs
 		m.messagesMu.Unlock()
+		m.invalidateHistoryCache()
 
 		if m.store != nil {
 			if err := m.store.ReplaceMessages(context.Background(), m.sess.ID, newSessionMsgs); err != nil {
@@ -1038,6 +1040,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Reload from store to ensure consistency (callback saved messages incrementally)
 				if loadedMsgs, err := m.store.GetMessages(context.Background(), m.sess.ID, 0, 0); err == nil {
 					m.messages = loadedMsgs
+					m.invalidateHistoryCache()
 				}
 				_ = m.store.UpdateStatus(context.Background(), m.sess.ID, session.StatusComplete)
 			} else {
@@ -1053,6 +1056,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						Sequence:    len(m.messages),
 					}
 					m.messages = append(m.messages, assistantMsg)
+					m.invalidateHistoryCache()
 				}
 			}
 
@@ -1150,6 +1154,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.sess != nil {
 			m.sess = msg.sess
 			m.messages = msg.messages
+			m.invalidateHistoryCache()
 			m.scrollOffset = 0
 			if m.store != nil {
 				_ = m.store.SetCurrent(context.Background(), m.sess.ID)
