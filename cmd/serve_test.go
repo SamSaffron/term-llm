@@ -235,6 +235,9 @@ func TestParseResponsesInput_String(t *testing.T) {
 }
 
 func TestParseResponsesInput_ImageContent(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+
 	payload := json.RawMessage(`[
 		{"type":"message","role":"user","content":[
 			{"type":"input_image","image_url":"data:image/png;base64,aGVsbG8="},
@@ -266,6 +269,12 @@ func TestParseResponsesInput_ImageContent(t *testing.T) {
 	}
 	if msg.Parts[0].ImageData.Base64 != "aGVsbG8=" {
 		t.Fatalf("base64 = %q, want aGVsbG8=", msg.Parts[0].ImageData.Base64)
+	}
+	if msg.Parts[0].ImagePath == "" {
+		t.Fatal("parts[0].ImagePath = empty, want saved upload path")
+	}
+	if _, err := os.Stat(msg.Parts[0].ImagePath); err != nil {
+		t.Fatalf("saved upload missing at %q: %v", msg.Parts[0].ImagePath, err)
 	}
 	if msg.Parts[1].Type != llm.PartText {
 		t.Fatalf("parts[1].type = %s, want text", msg.Parts[1].Type)
@@ -1102,6 +1111,8 @@ func TestHandleSessionMessages_ReturnsStructuredParts(t *testing.T) {
 				ToolName   string `json:"tool_name"`
 				ToolArgs   string `json:"tool_arguments"`
 				ToolCallID string `json:"tool_call_id"`
+				ImageURL   string `json:"image_url"`
+				MimeType   string `json:"mime_type"`
 			} `json:"parts"`
 		} `json:"messages"`
 	}
@@ -1134,6 +1145,82 @@ func TestHandleSessionMessages_ReturnsStructuredParts(t *testing.T) {
 	// Second tool call (was lost before due to break)
 	if m.Parts[2].Type != "tool_call" || m.Parts[2].ToolName != "read_url" || m.Parts[2].ToolCallID != "call-2" {
 		t.Fatalf("part[2] = %+v, want read_url tool_call", m.Parts[2])
+	}
+}
+
+func TestHandleSessionMessages_IncludesImageParts(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &session.Session{
+		ID: "sess-image", Provider: "mock", Model: "mock-model",
+		Mode: session.ModeChat, CreatedAt: time.Now(), UpdatedAt: time.Now(), Status: session.StatusActive,
+	}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	msg := session.NewMessage("sess-image", llm.Message{
+		Role: llm.RoleUser,
+		Parts: []llm.Part{
+			{Type: llm.PartImage, ImageData: &llm.ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="}},
+			{Type: llm.PartText, Text: "describe this"},
+		},
+	}, -1)
+	if err := store.AddMessage(ctx, "sess-image", msg); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+
+	srv := &serveServer{store: store}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/sess-image/messages", nil)
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	var body struct {
+		Messages []struct {
+			Role  string `json:"role"`
+			Parts []struct {
+				Type     string `json:"type"`
+				Text     string `json:"text"`
+				ImageURL string `json:"image_url"`
+				MimeType string `json:"mime_type"`
+			} `json:"parts"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(body.Messages) != 1 {
+		t.Fatalf("message count = %d, want 1", len(body.Messages))
+	}
+	m := body.Messages[0]
+	if m.Role != "user" {
+		t.Fatalf("role = %q, want user", m.Role)
+	}
+	if len(m.Parts) != 2 {
+		t.Fatalf("parts count = %d, want 2", len(m.Parts))
+	}
+	if m.Parts[0].Type != "image" {
+		t.Fatalf("part[0].type = %q, want image", m.Parts[0].Type)
+	}
+	if m.Parts[0].ImageURL != "data:image/png;base64,aGVsbG8=" {
+		t.Fatalf("part[0].image_url = %q, want data URL", m.Parts[0].ImageURL)
+	}
+	if m.Parts[0].MimeType != "image/png" {
+		t.Fatalf("part[0].mime_type = %q, want image/png", m.Parts[0].MimeType)
+	}
+	if m.Parts[1].Type != "text" || m.Parts[1].Text != "describe this" {
+		t.Fatalf("part[1] = %+v, want trailing text part", m.Parts[1])
 	}
 }
 

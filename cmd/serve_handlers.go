@@ -232,6 +232,8 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		ToolName   string `json:"tool_name,omitempty"`
 		ToolArgs   string `json:"tool_arguments,omitempty"`
 		ToolCallID string `json:"tool_call_id,omitempty"`
+		ImageURL   string `json:"image_url,omitempty"`
+		MimeType   string `json:"mime_type,omitempty"`
 	}
 
 	type messageEntry struct {
@@ -253,6 +255,14 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 					entry.Parts = append(entry.Parts, partEntry{
 						Type: "text",
 						Text: p.Text,
+					})
+				}
+			case llm.PartImage:
+				if p.ImageData != nil && p.ImageData.Base64 != "" {
+					entry.Parts = append(entry.Parts, partEntry{
+						Type:     "image",
+						ImageURL: "data:" + p.ImageData.MediaType + ";base64," + p.ImageData.Base64,
+						MimeType: p.ImageData.MediaType,
 					})
 				}
 			case llm.PartToolCall:

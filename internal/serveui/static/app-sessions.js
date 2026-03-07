@@ -28,13 +28,40 @@ const convertServerMessages = (serverMessages) => {
     const parts = Array.isArray(msg.parts) ? msg.parts : [];
     const created = msg.created_at || Date.now();
 
-    // Walk through parts in order to preserve interleaving
+    if (msg.role === 'user') {
+      flushGroup();
+
+      const attachments = [];
+      const textParts = [];
+      for (const part of parts) {
+        if (part.type === 'image' && part.image_url) {
+          attachments.push({
+            name: 'image',
+            type: part.mime_type || 'image/*',
+            dataURL: part.image_url
+          });
+        } else if (part.type === 'text' && part.text) {
+          textParts.push(part.text);
+        }
+      }
+
+      result.push({
+        id: generateId('msg'),
+        role: 'user',
+        content: textParts.join('\n'),
+        created,
+        ...(attachments.length > 0 ? { attachments } : {})
+      });
+      continue;
+    }
+
+    // Walk through assistant parts in order to preserve interleaving with tool calls.
     for (const part of parts) {
       if (part.type === 'text' && part.text) {
         flushGroup();
         result.push({
           id: generateId('msg'),
-          role: msg.role === 'user' ? 'user' : 'assistant',
+          role: 'assistant',
           content: part.text,
           created
         });
@@ -63,11 +90,11 @@ const convertServerMessages = (serverMessages) => {
     }
 
     // If message had no recognized parts, emit text content if present
-    if (parts.length === 0 && (msg.role === 'user' || msg.role === 'assistant')) {
+    if (parts.length === 0 && msg.role === 'assistant') {
       flushGroup();
       result.push({
         id: generateId('msg'),
-        role: msg.role,
+        role: 'assistant',
         content: '',
         created
       });

@@ -478,8 +478,11 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 					if filename == "" {
 						filename = "image"
 					}
-					if _, err := saveUploadedFile(filename, b64); err != nil {
+					savedPath := ""
+					if path, err := saveUploadedFile(filename, b64); err != nil {
 						log.Printf("[web] warning: could not save uploaded image %q: %v", filename, err)
+					} else {
+						savedPath = path
 					}
 
 					// Decode raw bytes for possible resize.
@@ -490,6 +493,7 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 						llmParts = append(llmParts, llm.Part{
 							Type:      llm.PartImage,
 							ImageData: &llm.ToolImageData{MediaType: mt, Base64: b64},
+							ImagePath: savedPath,
 						})
 						continue
 					}
@@ -503,6 +507,7 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 					llmParts = append(llmParts, llm.Part{
 						Type:      llm.PartImage,
 						ImageData: &llm.ToolImageData{MediaType: resMT, Base64: sendB64},
+						ImagePath: savedPath,
 					})
 				} else {
 					fileCount++
