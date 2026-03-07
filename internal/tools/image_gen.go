@@ -86,7 +86,7 @@ func (t *ImageGenerateTool) Spec() llm.ToolSpec {
 				},
 				"output_path": map[string]interface{}{
 					"type":        "string",
-					"description": "Path to save the generated image (defaults to temp file)",
+					"description": "Optional: path to save the image. Omit this — images are automatically saved and displayed. Only specify if the user explicitly requests a specific file path.",
 				},
 				"show_image": map[string]interface{}{
 					"type":        "boolean",

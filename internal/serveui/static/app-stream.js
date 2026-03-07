@@ -709,28 +709,108 @@ const collectAskUserAnswers = () => {
   return answers;
 };
 
+const validateSingleQuestion = (index) => {
+  const question = state.askUser?.questions[index];
+  if (!question) return;
+  const name = `ask_user_${index}`;
+
+  if (question.multi_select) {
+    const checked = elements.askUserModalBody.querySelectorAll(`input[name="${name}"]:checked`);
+    if (checked.length === 0) throw new Error('Choose at least one option.');
+    return;
+  }
+
+  const selected = elements.askUserModalBody.querySelector(`input[name="${name}"]:checked`);
+  if (!selected) throw new Error('Choose an option.');
+  if (selected.value === '__custom__') {
+    const textarea = elements.askUserModalBody.querySelector(`#askUserCustom_${index}`);
+    const custom = String(textarea?.value || '').trim();
+    if (!custom) throw new Error('Enter your answer.');
+  }
+};
+
+const switchAskUserTab = (newIndex) => {
+  const prompt = state.askUser;
+  if (!prompt) return;
+  const total = prompt.questions.length;
+  if (newIndex < 0 || newIndex >= total) return;
+
+  prompt.activeTab = newIndex;
+
+  elements.askUserModalBody.querySelectorAll('.ask-user-question').forEach((section) => {
+    const idx = parseInt(section.dataset.questionIndex, 10);
+    section.style.display = idx === newIndex ? '' : 'none';
+  });
+
+  elements.askUserModalBody.querySelectorAll('.ask-user-step').forEach((step, i) => {
+    step.classList.toggle('active', i === newIndex);
+    step.classList.toggle('completed', i < newIndex);
+  });
+  elements.askUserModalBody.querySelectorAll('.ask-user-step-line').forEach((line, i) => {
+    line.classList.toggle('done', i + 1 <= newIndex);
+  });
+
+  elements.askUserModalTitle.textContent = `Question ${newIndex + 1} of ${total}`;
+  elements.askUserCancelBtn.textContent = newIndex > 0 ? 'Back' : 'Dismiss';
+  elements.askUserSubmitBtn.textContent = newIndex < total - 1 ? 'Next' : 'Continue';
+  elements.askUserError.textContent = '';
+
+  const activeSection = elements.askUserModalBody.querySelector(`.ask-user-question[data-question-index="${newIndex}"]`);
+  if (activeSection) {
+    const firstInput = activeSection.querySelector('input, textarea');
+    firstInput?.focus();
+  }
+};
+
 const renderAskUserModal = () => {
   const prompt = state.askUser;
   if (!prompt) return;
 
-  elements.askUserModalTitle.textContent = prompt.questions.length === 1 ? 'Answer question' : 'Answer questions';
+  const total = prompt.questions.length;
+  const activeTab = prompt.activeTab || 0;
+
+  elements.askUserModalTitle.textContent = total === 1 ? 'Answer question' : `Question ${activeTab + 1} of ${total}`;
   elements.askUserModalSubtitle.textContent = 'The agent needs your input to continue.';
   elements.askUserModalBody.innerHTML = '';
   elements.askUserError.textContent = '';
 
+  if (total > 1) {
+    const steps = document.createElement('div');
+    steps.className = 'ask-user-steps';
+    for (let i = 0; i < total; i++) {
+      if (i > 0) {
+        const line = document.createElement('div');
+        line.className = 'ask-user-step-line';
+        if (i <= activeTab) line.classList.add('done');
+        steps.appendChild(line);
+      }
+      const dot = document.createElement('button');
+      dot.type = 'button';
+      dot.className = 'ask-user-step';
+      if (i === activeTab) dot.classList.add('active');
+      else if (i < activeTab) dot.classList.add('completed');
+      dot.textContent = i + 1;
+      dot.addEventListener('click', () => switchAskUserTab(i));
+      steps.appendChild(dot);
+    }
+    elements.askUserModalBody.appendChild(steps);
+  }
+
   prompt.questions.forEach((question, index) => {
     const section = document.createElement('section');
     section.className = 'ask-user-question';
+    section.dataset.questionIndex = index;
+    if (index !== activeTab) section.style.display = 'none';
 
-    const header = document.createElement('div');
-    header.className = 'ask-user-question-header';
-    header.textContent = question.header || `Question ${index + 1}`;
-    section.appendChild(header);
+    const headerEl = document.createElement('div');
+    headerEl.className = 'ask-user-question-header';
+    headerEl.textContent = question.header || `Question ${index + 1}`;
+    section.appendChild(headerEl);
 
-    const text = document.createElement('p');
-    text.className = 'ask-user-question-text';
-    text.textContent = question.question || '';
-    section.appendChild(text);
+    const textEl = document.createElement('p');
+    textEl.className = 'ask-user-question-text';
+    textEl.textContent = question.question || '';
+    section.appendChild(textEl);
 
     const options = document.createElement('div');
     options.className = 'ask-user-options';
@@ -749,11 +829,11 @@ const renderAskUserModal = () => {
       const copy = document.createElement('span');
       copy.className = 'ask-user-option-copy';
 
-      const title = document.createElement('span');
-      title.className = 'ask-user-option-title';
-      title.textContent = option.label || 'Option';
+      const titleEl = document.createElement('span');
+      titleEl.className = 'ask-user-option-title';
+      titleEl.textContent = option.label || 'Option';
 
-      copy.appendChild(title);
+      copy.appendChild(titleEl);
       if (option.description) {
         const desc = document.createElement('span');
         desc.className = 'ask-user-option-desc';
@@ -767,9 +847,6 @@ const renderAskUserModal = () => {
     });
 
     if (!question.multi_select) {
-      const customWrap = document.createElement('div');
-      customWrap.className = 'ask-user-custom';
-
       const customLabel = document.createElement('label');
       customLabel.className = 'ask-user-option';
 
@@ -793,16 +870,27 @@ const renderAskUserModal = () => {
       customCopy.appendChild(customDesc);
       customLabel.appendChild(customRadio);
       customLabel.appendChild(customCopy);
-      customWrap.appendChild(customLabel);
+      options.appendChild(customLabel);
+
+      section.appendChild(options);
 
       const textarea = document.createElement('textarea');
       textarea.id = `askUserCustom_${index}`;
-      textarea.placeholder = 'Type your answer';
+      textarea.className = 'ask-user-custom-input';
+      textarea.placeholder = 'Type your answer\u2026';
       textarea.addEventListener('focus', () => {
         customRadio.checked = true;
+        textarea.classList.add('visible');
       });
-      customWrap.appendChild(textarea);
-      options.appendChild(customWrap);
+
+      section.addEventListener('change', () => {
+        textarea.classList.toggle('visible', customRadio.checked);
+        if (customRadio.checked) setTimeout(() => textarea.focus(), 0);
+      });
+
+      section.appendChild(textarea);
+    } else {
+      section.appendChild(options);
     }
 
     const note = document.createElement('div');
@@ -810,10 +898,17 @@ const renderAskUserModal = () => {
     note.textContent = question.multi_select
       ? 'Choose one or more options to continue.'
       : 'Choose one option or provide a custom answer.';
-    section.appendChild(options);
     section.appendChild(note);
     elements.askUserModalBody.appendChild(section);
   });
+
+  if (total > 1) {
+    elements.askUserCancelBtn.textContent = activeTab > 0 ? 'Back' : 'Dismiss';
+    elements.askUserSubmitBtn.textContent = activeTab < total - 1 ? 'Next' : 'Continue';
+  } else {
+    elements.askUserCancelBtn.textContent = 'Dismiss';
+    elements.askUserSubmitBtn.textContent = 'Continue';
+  }
 };
 
 const openAskUserModal = (sessionId, callId, questions) => {
@@ -821,6 +916,7 @@ const openAskUserModal = (sessionId, callId, questions) => {
   state.askUser = {
     sessionId,
     callId,
+    activeTab: 0,
     questions: questions.map((question) => ({
       ...question,
       options: Array.isArray(question?.options) ? question.options.map((option) => ({ ...option })) : []
@@ -837,6 +933,27 @@ const openAskUserModal = (sessionId, callId, questions) => {
 const submitAskUserModal = async (cancelled = false) => {
   const prompt = state.askUser;
   if (!prompt) return;
+
+  const total = prompt.questions.length;
+  const activeTab = prompt.activeTab || 0;
+
+  // Multi-question: "Back" button (cancel on non-first tab goes back)
+  if (cancelled && total > 1 && activeTab > 0) {
+    switchAskUserTab(activeTab - 1);
+    return;
+  }
+
+  // Multi-question: "Next" button (submit on non-last tab advances)
+  if (!cancelled && total > 1 && activeTab < total - 1) {
+    try {
+      validateSingleQuestion(activeTab);
+    } catch (err) {
+      elements.askUserError.textContent = err?.message || 'Please answer the question.';
+      return;
+    }
+    switchAskUserTab(activeTab + 1);
+    return;
+  }
 
   let answers = [];
   if (!cancelled) {
@@ -1542,6 +1659,8 @@ Object.assign(app, {
   closeAskUserModal,
   askUserSummaryFromAnswers,
   collectAskUserAnswers,
+  validateSingleQuestion,
+  switchAskUserTab,
   renderAskUserModal,
   openAskUserModal,
   submitAskUserModal,
