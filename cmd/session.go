@@ -437,6 +437,16 @@ func sessionStoreConfig(cfg *config.Config) session.Config {
 	}
 }
 
+// ensureRequestSessionID returns a stable request/session key for provider-side
+// continuity and prompt caching. This is intentionally independent of the local
+// session store so --no-session only disables DB persistence, not upstream cache hints.
+func ensureRequestSessionID(sessionID string, resuming bool) string {
+	if sessionID != "" || resuming {
+		return sessionID
+	}
+	return session.NewID()
+}
+
 // InitSessionStore creates a session store if enabled in config.
 // Returns the store (may be nil if disabled) and a cleanup function.
 // The cleanup function is always safe to call (handles nil store).

@@ -163,11 +163,13 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 		}
 	}
 
-	// Create child session if store is available (before engine setup so nested agents can reference it)
-	var childSessionID string
+	// Create child session ID up front so provider-side continuity/cache hints are
+	// available even when local session persistence is disabled.
+	childSessionID := session.NewID()
+	persistChildSession := false
 	if r.store != nil {
 		childSession := &session.Session{
-			ID:         session.NewID(),
+			ID:         childSessionID,
 			ParentID:   r.parentSessionID,
 			IsSubagent: true,
 			Provider:   providerName,
@@ -184,7 +186,7 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 		if err := safeStoreOp(func() error { return r.store.Create(ctx, childSession) }); err != nil {
 			r.warn("session Create failed: %v", err)
 		} else {
-			childSessionID = childSession.ID
+			persistChildSession = true
 
 			// Save initial user prompt as first message
 			userMsg := session.NewMessage(childSessionID, llm.UserText(prompt), -1)
@@ -206,7 +208,7 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 	// Set up callbacks to save messages incrementally (after tools setup)
 	// Track when streaming starts for duration calculation
 	streamStartTime := time.Now()
-	if r.store != nil && childSessionID != "" {
+	if persistChildSession {
 		// Response callback saves assistant message immediately (before tool execution)
 		// This ensures the message is persisted even if tool execution fails/crashes
 		engine.SetResponseCompletedCallback(func(ctx context.Context, turnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
@@ -292,7 +294,7 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 	output, err := r.runAndCollectWithCallback(ctx, engine, req, callID, cb, providerName, modelName)
 	if err != nil {
 		// Update session status on error
-		if r.store != nil && childSessionID != "" {
+		if persistChildSession {
 			if statusErr := r.store.UpdateStatus(ctx, childSessionID, session.StatusError); statusErr != nil {
 				r.warn("session UpdateStatus failed: %v", statusErr)
 			}
@@ -301,7 +303,7 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 	}
 
 	// Update session status on completion
-	if r.store != nil && childSessionID != "" {
+	if persistChildSession {
 		if statusErr := r.store.UpdateStatus(ctx, childSessionID, session.StatusComplete); statusErr != nil {
 			r.warn("session UpdateStatus failed: %v", statusErr)
 		}

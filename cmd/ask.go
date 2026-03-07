@@ -265,9 +265,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	if sess != nil {
 		sessionID = sess.ID
 	}
-	if sessionID == "" && store != nil && !resuming {
-		sessionID = session.NewID()
-	}
+	sessionID = ensureRequestSessionID(sessionID, resuming)
 	settings.SessionID = sessionID
 
 	// Initialize local tools if we have any
@@ -297,10 +295,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		// PromptFunc is set in streamWithGlamour to use bubbletea UI
 
 		// Wire spawn_agent runner if enabled (with session tracking)
-		var parentSessionID string
-		if sess != nil {
-			parentSessionID = sess.ID
-		}
+		parentSessionID := sessionID
 		if err := WireSpawnAgentRunnerWithStore(cfg, toolMgr, askYolo, store, parentSessionID); err != nil {
 			return err
 		}
