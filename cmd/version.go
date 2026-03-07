@@ -11,11 +11,15 @@ var Version = "dev"
 var Commit = "unknown"
 var Date = "unknown"
 
+func versionString() string {
+	return fmt.Sprintf("%s (commit: %s, built: %s)", Version, Commit, Date)
+}
+
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version information",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf("term-llm version %s (commit: %s, built: %s)\n", Version, Commit, Date)
+		fmt.Fprintf(cmd.OutOrStdout(), "term-llm version %s\n", versionString())
 	},
 }
 
