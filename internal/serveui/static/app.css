@@ -1241,11 +1241,17 @@
     }
 
     .message-attachments img {
-      max-width: 200px;
-      max-height: 150px;
+      max-width: 360px;
+      max-height: 270px;
       border-radius: 8px;
       border: 1px solid var(--border);
       object-fit: cover;
+      cursor: pointer;
+      transition: opacity 0.15s ease;
+    }
+
+    .message-attachments img:hover {
+      opacity: 0.85;
     }
 
     .message-attachments .att-file {
@@ -1258,6 +1264,29 @@
       padding: 0.2rem 0.5rem;
       font-size: 0.82rem;
       color: var(--text-muted);
+    }
+
+    .lightbox {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      background: var(--overlay);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: zoom-out;
+      padding: 2rem;
+    }
+
+    .lightbox.hidden {
+      display: none;
+    }
+
+    .lightbox img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      border-radius: 8px;
     }
 
     @media (max-width: 767px) {

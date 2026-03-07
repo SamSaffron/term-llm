@@ -249,6 +249,8 @@ const createMessageNode = (message) => {
           const img = document.createElement('img');
           img.src = att.dataURL;
           img.alt = att.name || 'Attached image';
+          img.style.cursor = 'pointer';
+          img.addEventListener('click', () => app.openLightbox(att.dataURL));
           attDiv.appendChild(img);
         } else {
           const badge = document.createElement('span');

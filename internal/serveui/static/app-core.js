@@ -65,7 +65,9 @@ const elements = {
   fileInput: document.getElementById('fileInput'),
   attachmentsStrip: document.getElementById('attachmentsStrip'),
   dropOverlay: document.getElementById('dropOverlay'),
-  sessionUsage: document.getElementById('sessionUsage')
+  sessionUsage: document.getElementById('sessionUsage'),
+  lightbox: document.getElementById('lightbox'),
+  lightboxImg: document.getElementById('lightboxImg')
 };
 
 // ===== Markdown setup =====
@@ -402,6 +404,23 @@ const persistAndRefreshShell = () => {
   app.updateHeader();
 };
 
+const openLightbox = (src) => {
+  elements.lightboxImg.src = src;
+  elements.lightbox.classList.remove('hidden');
+};
+
+const closeLightbox = () => {
+  elements.lightbox.classList.add('hidden');
+  elements.lightboxImg.src = '';
+};
+
+elements.lightbox.addEventListener('click', closeLightbox);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !elements.lightbox.classList.contains('hidden')) {
+    closeLightbox();
+  }
+});
+
 Object.assign(app, {
   STORAGE_KEYS,
   state,
@@ -436,6 +455,8 @@ Object.assign(app, {
   ensureActiveSession,
   findMessageElement,
   refreshRelativeTimes,
-  persistAndRefreshShell
+  persistAndRefreshShell,
+  openLightbox,
+  closeLightbox
 });
 })();
