@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/samsaffron/term-llm/internal/prompt"
 )
@@ -70,11 +71,17 @@ func (r *ToolRegistry) Unregister(name string) {
 	delete(r.tools, name)
 }
 
-// AllSpecs returns the specs for all registered tools.
+// AllSpecs returns the specs for all registered tools in deterministic name order.
 func (r *ToolRegistry) AllSpecs() []ToolSpec {
-	specs := make([]ToolSpec, 0, len(r.tools))
-	for _, tool := range r.tools {
-		specs = append(specs, tool.Spec())
+	names := make([]string, 0, len(r.tools))
+	for name := range r.tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	specs := make([]ToolSpec, 0, len(names))
+	for _, name := range names {
+		specs = append(specs, r.tools[name].Spec())
 	}
 	return specs
 }
