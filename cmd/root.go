@@ -20,6 +20,8 @@ import (
 
 func init() {
 	update.SetupUpdateChecks(rootCmd, Version)
+	rootCmd.Version = versionString()
+	rootCmd.SetVersionTemplate("{{printf \"%s version %s\\n\" .Name .Version}}")
 	rootCmd.PersistentFlags().BoolVar(&debugRaw, "debug-raw", false, "Emit raw debug logs with timestamps")
 	rootCmd.PersistentFlags().BoolVar(&showStats, "stats", false, "Show session statistics (time, tokens, tool calls)")
 	rootCmd.PersistentFlags().BoolVar(&noSession, "no-session", false, "Disable session persistence (no reads/writes to sessions database)")
