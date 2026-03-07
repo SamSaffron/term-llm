@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Chat</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230d1117'/%3E%3Cpath d='M17 14h30v6H24v26h16v-9H30v-6h17v21H17z' fill='%2358a6ff'/%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230d1117'/%3E%3Cpath d='M17 14h30v6H24v26h16v-9H30v-6h17v21H17z' fill='%23ececec'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github.min.css" media="(prefers-color-scheme: light)">
   <link rel="stylesheet" href="app.css">
@@ -51,22 +51,23 @@
       <div class="drop-overlay hidden" id="dropOverlay">Drop files to attach</div>
 
       <footer class="composer">
-        <div id="attachmentsStrip" class="attachments" style="display:none;"></div>
         <div class="composer-inner">
-          <button class="icon-btn attach-btn" id="attachBtn" title="Attach file" aria-label="Attach file">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
-          </button>
-          <input type="file" id="fileInput" multiple hidden>
-          <textarea id="promptInput" class="prompt" rows="1" placeholder="Message…" aria-label="Message"></textarea>
-          <div class="composer-actions">
-            <button class="stop-btn" id="stopBtn" type="button">Stop</button>
-            <button class="send-btn" id="sendBtn" type="button" aria-label="Send message">
-              <span class="arrow">↑</span>
-              <span class="spinner" aria-hidden="true"></span>
+          <div id="attachmentsStrip" class="attachments" style="display:none;"></div>
+          <div class="composer-box">
+            <button class="composer-icon-btn attach-btn" id="attachBtn" title="Attach file" aria-label="Attach file">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
             </button>
+            <input type="file" id="fileInput" multiple hidden>
+            <textarea id="promptInput" class="prompt" rows="1" placeholder="Message…" aria-label="Message"></textarea>
+            <div class="composer-actions">
+              <button class="stop-btn" id="stopBtn" type="button">Stop</button>
+              <button class="send-btn" id="sendBtn" type="button" aria-label="Send message">
+                <span class="arrow">↑</span>
+                <span class="spinner" aria-hidden="true"></span>
+              </button>
+            </div>
           </div>
         </div>
-        <div class="composer-hint">Enter to send · Shift+Enter for newline · Paste or drag files to attach</div>
       </footer>
     </main>
   </div>

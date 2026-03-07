@@ -572,7 +572,7 @@ const renderMessages = (forceScroll = false) => {
   if (!session.messages.length) {
     const empty = document.createElement('div');
     empty.className = 'empty-state';
-    empty.innerHTML = '<p><strong>Start a new conversation</strong></p><p>Type a prompt below to begin.</p>';
+    empty.textContent = 'How can I help you today?';
     elements.messages.appendChild(empty);
   } else {
     session.messages.forEach((message) => {

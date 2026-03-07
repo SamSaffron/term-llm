@@ -330,39 +330,34 @@ const initialize = async () => {
   renderModelOptions();
   autoGrowPrompt();
 
-  if (!state.token) {
-    setConnectionState('Token required', 'bad');
-    openAuthModal('', true);
-  } else {
-    try {
-      setConnectionState('Validating token…');
-      state.models = await fetchModels();
-      renderModelOptions();
-      setConnectionState('', '');
+  try {
+    setConnectionState(state.token ? 'Validating token…' : 'Connecting…');
+    state.models = await fetchModels();
+    renderModelOptions();
+    setConnectionState('', '');
 
-      // Merge server-side sessions after successful auth
-      await mergeServerSessions();
+    // Merge server-side sessions after successful auth
+    await mergeServerSessions();
 
-      // Lazy-load messages for URL-targeted server session
-      const active = getActiveSession();
-      if (active && active._serverOnly) {
-        const msgs = await loadServerSessionMessages(active.id);
-        if (msgs !== null) {
-          mergeServerMessagesWithLocalState(active, msgs);
-          saveSessions();
-          renderSidebar();
-          renderMessages(true);
-        }
+    // Lazy-load messages for URL-targeted server session
+    const active = getActiveSession();
+    if (active && active._serverOnly) {
+      const msgs = await loadServerSessionMessages(active.id);
+      if (msgs !== null) {
+        mergeServerMessagesWithLocalState(active, msgs);
+        saveSessions();
+        renderSidebar();
+        renderMessages(true);
       }
-      if (active) {
-        await syncActiveSessionFromServer(active, true);
-      }
-    } catch (err) {
-      const message = err?.message || 'Unable to validate token.';
-      setConnectionState(message, 'bad');
-      if (err?.status === 401) {
-        handleAuthFailure();
-      }
+    }
+    if (active) {
+      await syncActiveSessionFromServer(active, true);
+    }
+  } catch (err) {
+    const message = err?.message || 'Unable to validate token.';
+    setConnectionState(message, 'bad');
+    if (!state.token || err?.status === 401) {
+      handleAuthFailure();
     }
   }
 };
