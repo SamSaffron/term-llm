@@ -22,6 +22,8 @@ type serveRuntime struct {
 	mu                  sync.Mutex
 	interruptMu         sync.Mutex
 	responseMu          sync.Mutex // guards lastResponseID and responseIDs
+	askUserMu           sync.Mutex
+	uiStateMu           sync.Mutex
 	provider            llm.Provider
 	providerKey         string
 	engine              *llm.Engine
@@ -45,6 +47,8 @@ type serveRuntime struct {
 	lastResponseID      string
 	responseIDs         []string
 	cumulativeUsage     llm.Usage
+	pendingAskUsers     map[string]*servePendingAskUser
+	lastUIRunError      string
 }
 
 type runtimeInterruptState struct {
@@ -76,6 +80,7 @@ func (rt *serveRuntime) Close() {
 		rt.activeInterrupt.cancel()
 	}
 	rt.interruptMu.Unlock()
+	rt.clearPendingAskUsers()
 	if rt.mcpManager != nil {
 		rt.mcpManager.StopAll()
 		rt.mcpManager = nil
@@ -360,6 +365,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
+	runCtx = tools.ContextWithAskUserUIFunc(runCtx, rt.awaitAskUser)
 
 	intState := &runtimeInterruptState{
 		cancel:      runCancel,
@@ -382,19 +388,33 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	req.Messages = messages
 
 	var produced []llm.Message
+	persistProducedSnapshot := func(persistCtx context.Context) {
+		snapshot := make([]llm.Message, 0, len(baseHistory)+len(inputMessages)+len(produced))
+		snapshot = append(snapshot, baseHistory...)
+		snapshot = append(snapshot, inputMessages...)
+		snapshot = append(snapshot, produced...)
+		if stateful {
+			rt.history = snapshot
+		}
+		if persisted {
+			rt.persistSnapshot(persistCtx, req.SessionID, snapshot)
+		}
+	}
 	// ResponseCompletedCallback receives the assistant message (with tool call parts)
 	// immediately after streaming, BEFORE tool execution. Without this, tool calls
 	// are missing from persisted sessions because TurnCompletedCallback only receives
 	// tool results.
-	rt.engine.SetResponseCompletedCallback(func(_ context.Context, _ int, assistantMsg llm.Message, _ llm.TurnMetrics) error {
+	rt.engine.SetResponseCompletedCallback(func(cbCtx context.Context, _ int, assistantMsg llm.Message, _ llm.TurnMetrics) error {
 		produced = append(produced, assistantMsg)
+		persistProducedSnapshot(cbCtx)
 		return nil
 	})
 	defer rt.engine.SetResponseCompletedCallback(nil)
 	// TurnCompletedCallback receives tool results after execution, or the final
 	// assistant message when no tools are used (ResponseCompletedCallback never fires).
-	rt.engine.SetTurnCompletedCallback(func(_ context.Context, _ int, msgs []llm.Message, _ llm.TurnMetrics) error {
+	rt.engine.SetTurnCompletedCallback(func(cbCtx context.Context, _ int, msgs []llm.Message, _ llm.TurnMetrics) error {
 		produced = append(produced, msgs...)
+		persistProducedSnapshot(cbCtx)
 		return nil
 	})
 	defer rt.engine.SetTurnCompletedCallback(nil)

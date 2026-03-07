@@ -960,6 +960,111 @@
       cursor: not-allowed;
     }
 
+    .ask-user-modal {
+      width: min(720px, 100%);
+      max-height: min(82vh, 900px);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .ask-user-body {
+      display: flex;
+      flex-direction: column;
+      gap: 0.85rem;
+      max-height: min(60vh, 560px);
+      overflow-y: auto;
+      padding-right: 0.1rem;
+    }
+
+    .ask-user-question {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--surface-2);
+      padding: 0.85rem;
+    }
+
+    .ask-user-question-header {
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 0.45rem;
+    }
+
+    .ask-user-question-text {
+      margin: 0 0 0.75rem;
+      font-size: 0.98rem;
+      font-weight: 600;
+      line-height: 1.45;
+    }
+
+    .ask-user-options {
+      display: flex;
+      flex-direction: column;
+      gap: 0.55rem;
+    }
+
+    .ask-user-option {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.7rem;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.65rem 0.7rem;
+      background: color-mix(in srgb, var(--surface) 45%, var(--surface-2) 55%);
+      cursor: pointer;
+    }
+
+    .ask-user-option input {
+      margin: 0.18rem 0 0;
+      flex-shrink: 0;
+    }
+
+    .ask-user-option-copy {
+      display: flex;
+      flex-direction: column;
+      gap: 0.14rem;
+      min-width: 0;
+    }
+
+    .ask-user-option-title {
+      font-weight: 600;
+      line-height: 1.35;
+    }
+
+    .ask-user-option-desc {
+      color: var(--text-muted);
+      font-size: 0.84rem;
+      line-height: 1.4;
+    }
+
+    .ask-user-custom textarea {
+      width: 100%;
+      min-height: 84px;
+      resize: vertical;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      border-radius: 10px;
+      padding: 0.65rem 0.75rem;
+      margin-top: 0.55rem;
+      font: inherit;
+      line-height: 1.45;
+    }
+
+    .ask-user-custom textarea:focus {
+      outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+      border-color: var(--accent);
+    }
+
+    .ask-user-note {
+      margin-top: 0.55rem;
+      color: var(--text-muted);
+      font-size: 0.78rem;
+      line-height: 1.4;
+    }
+
     .attachments {
       display: flex;
       gap: 0.5rem;
@@ -1219,6 +1324,19 @@
     </div>
   </div>
 
+  <div class="modal-overlay hidden" id="askUserModal" role="dialog" aria-modal="true" aria-labelledby="askUserModalTitle">
+    <div class="modal ask-user-modal">
+      <h2 id="askUserModalTitle">Answer question</h2>
+      <p id="askUserModalSubtitle">The agent needs your input to continue.</p>
+      <div class="ask-user-body" id="askUserModalBody"></div>
+      <div class="modal-error" id="askUserError"></div>
+      <div class="modal-actions">
+        <button class="btn" id="askUserCancelBtn" type="button">Dismiss</button>
+        <button class="btn primary" id="askUserSubmitBtn" type="button">Continue</button>
+      </div>
+    </div>
+  </div>
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/16.3.0/lib/marked.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.2.7/purify.min.js"></script>
@@ -1247,8 +1365,10 @@
         abortController: null,
         autoScroll: true,
         authRequired: false,
-        attachments: []
+        attachments: [],
+        askUser: null
       };
+      let sessionStatePollTimer = null;
 
       // Ensure cookie is set on load so <img> requests to /images/ can authenticate
       if (state.token) {
@@ -1276,6 +1396,13 @@
         authError: document.getElementById('authError'),
         authConnectBtn: document.getElementById('authConnectBtn'),
         authCancelBtn: document.getElementById('authCancelBtn'),
+        askUserModal: document.getElementById('askUserModal'),
+        askUserModalTitle: document.getElementById('askUserModalTitle'),
+        askUserModalSubtitle: document.getElementById('askUserModalSubtitle'),
+        askUserModalBody: document.getElementById('askUserModalBody'),
+        askUserError: document.getElementById('askUserError'),
+        askUserCancelBtn: document.getElementById('askUserCancelBtn'),
+        askUserSubmitBtn: document.getElementById('askUserSubmitBtn'),
         attachBtn: document.getElementById('attachBtn'),
         fileInput: document.getElementById('fileInput'),
         attachmentsStrip: document.getElementById('attachmentsStrip'),
@@ -1462,6 +1589,9 @@
             const interruptState = sanitizeInterruptState(msg.interruptState);
             if (interruptState) {
               base.interruptState = interruptState;
+            }
+            if (msg.askUser) {
+              base.askUser = true;
             }
             if (Array.isArray(msg.attachments) && msg.attachments.length > 0) {
               base.attachments = msg.attachments.map(a => ({
@@ -1679,6 +1809,10 @@
             btn.appendChild(title);
             btn.appendChild(meta);
             btn.addEventListener('click', async () => {
+              stopSessionStatePoll();
+              if (state.askUser?.sessionId && state.askUser.sessionId !== session.id) {
+                closeAskUserModal();
+              }
               state.activeSessionId = session.id;
               updateURL(session.id);
 
@@ -1686,13 +1820,13 @@
               if (session._serverOnly) {
                 const msgs = await loadServerSessionMessages(session.id);
                 if (msgs !== null) {
-                  session.messages = msgs;
-                  delete session._serverOnly;
+                  mergeServerMessagesWithLocalState(session, msgs);
                 }
               }
 
               persistAndRefreshShell();
               renderMessages(true);
+              await syncActiveSessionFromServer(session, true);
               closeSidebarIfMobile();
             });
 
@@ -2025,6 +2159,14 @@
           return [['task', '@' + agentName + ': ' + prompt]];
         }
 
+        if (name === 'ask_user') {
+          const questions = Array.isArray(args.questions) ? args.questions : [];
+          return questions.slice(0, 4).map((question, index) => [
+            question.header || `question_${index + 1}`,
+            question.question || ''
+          ]);
+        }
+
         // Pick the most relevant key(s) per tool type
         const priorityKeys = {
           'shell': ['command'],
@@ -2276,6 +2418,285 @@
         }
       };
 
+      // ===== ask_user modal =====
+      const closeAskUserModal = () => {
+        state.askUser = null;
+        elements.askUserModal.classList.add('hidden');
+        elements.askUserModalBody.innerHTML = '';
+        elements.askUserError.textContent = '';
+        elements.askUserSubmitBtn.disabled = false;
+        elements.askUserCancelBtn.disabled = false;
+        elements.askUserSubmitBtn.textContent = 'Continue';
+        elements.askUserCancelBtn.textContent = 'Dismiss';
+      };
+
+      const askUserSummaryFromAnswers = (answers) => {
+        if (!Array.isArray(answers) || answers.length === 0) return '';
+        return answers
+          .map((answer) => {
+            const header = String(answer?.header || '').trim();
+            const selected = String(answer?.selected || '').trim();
+            if (!header) return selected;
+            return `${header}: ${selected}`;
+          })
+          .filter(Boolean)
+          .join(' | ');
+      };
+
+      const collectAskUserAnswers = () => {
+        const prompt = state.askUser;
+        if (!prompt) {
+          throw new Error('No pending question.');
+        }
+        const answers = [];
+        prompt.questions.forEach((question, index) => {
+          const name = `ask_user_${index}`;
+          if (question.multi_select) {
+            const selectedList = Array.from(elements.askUserModalBody.querySelectorAll(`input[name="${name}"]:checked`))
+              .map((input) => String(input.value || '').trim())
+              .filter(Boolean);
+            if (selectedList.length === 0) {
+              throw new Error(`${question.header || `Question ${index + 1}`}: choose at least one option.`);
+            }
+            answers.push({
+              question_index: index,
+              header: question.header,
+              selected: selectedList.join(', '),
+              selected_list: selectedList,
+              is_custom: false,
+              is_multi_select: true
+            });
+            return;
+          }
+
+          const selected = elements.askUserModalBody.querySelector(`input[name="${name}"]:checked`);
+          if (!selected) {
+            throw new Error(`${question.header || `Question ${index + 1}`}: choose an option.`);
+          }
+          if (selected.value === '__custom__') {
+            const textarea = elements.askUserModalBody.querySelector(`#askUserCustom_${index}`);
+            const custom = String(textarea?.value || '').trim();
+            if (!custom) {
+              throw new Error(`${question.header || `Question ${index + 1}`}: enter your answer.`);
+            }
+            answers.push({
+              question_index: index,
+              header: question.header,
+              selected: custom,
+              is_custom: true,
+              is_multi_select: false
+            });
+            return;
+          }
+          answers.push({
+            question_index: index,
+            header: question.header,
+            selected: String(selected.value || '').trim(),
+            is_custom: false,
+            is_multi_select: false
+          });
+        });
+        return answers;
+      };
+
+      const renderAskUserModal = () => {
+        const prompt = state.askUser;
+        if (!prompt) return;
+
+        elements.askUserModalTitle.textContent = prompt.questions.length === 1 ? 'Answer question' : 'Answer questions';
+        elements.askUserModalSubtitle.textContent = 'The agent needs your input to continue.';
+        elements.askUserModalBody.innerHTML = '';
+        elements.askUserError.textContent = '';
+
+        prompt.questions.forEach((question, index) => {
+          const section = document.createElement('section');
+          section.className = 'ask-user-question';
+
+          const header = document.createElement('div');
+          header.className = 'ask-user-question-header';
+          header.textContent = question.header || `Question ${index + 1}`;
+          section.appendChild(header);
+
+          const text = document.createElement('p');
+          text.className = 'ask-user-question-text';
+          text.textContent = question.question || '';
+          section.appendChild(text);
+
+          const options = document.createElement('div');
+          options.className = 'ask-user-options';
+          const inputType = question.multi_select ? 'checkbox' : 'radio';
+          const groupName = `ask_user_${index}`;
+
+          (Array.isArray(question.options) ? question.options : []).forEach((option) => {
+            const label = document.createElement('label');
+            label.className = 'ask-user-option';
+
+            const input = document.createElement('input');
+            input.type = inputType;
+            input.name = groupName;
+            input.value = option.label || '';
+
+            const copy = document.createElement('span');
+            copy.className = 'ask-user-option-copy';
+
+            const title = document.createElement('span');
+            title.className = 'ask-user-option-title';
+            title.textContent = option.label || 'Option';
+
+            copy.appendChild(title);
+            if (option.description) {
+              const desc = document.createElement('span');
+              desc.className = 'ask-user-option-desc';
+              desc.textContent = option.description;
+              copy.appendChild(desc);
+            }
+
+            label.appendChild(input);
+            label.appendChild(copy);
+            options.appendChild(label);
+          });
+
+          if (!question.multi_select) {
+            const customWrap = document.createElement('div');
+            customWrap.className = 'ask-user-custom';
+
+            const customLabel = document.createElement('label');
+            customLabel.className = 'ask-user-option';
+
+            const customRadio = document.createElement('input');
+            customRadio.type = 'radio';
+            customRadio.name = groupName;
+            customRadio.value = '__custom__';
+
+            const customCopy = document.createElement('span');
+            customCopy.className = 'ask-user-option-copy';
+
+            const customTitle = document.createElement('span');
+            customTitle.className = 'ask-user-option-title';
+            customTitle.textContent = 'Other';
+
+            const customDesc = document.createElement('span');
+            customDesc.className = 'ask-user-option-desc';
+            customDesc.textContent = 'Type your own answer.';
+
+            customCopy.appendChild(customTitle);
+            customCopy.appendChild(customDesc);
+            customLabel.appendChild(customRadio);
+            customLabel.appendChild(customCopy);
+            customWrap.appendChild(customLabel);
+
+            const textarea = document.createElement('textarea');
+            textarea.id = `askUserCustom_${index}`;
+            textarea.placeholder = 'Type your answer';
+            textarea.addEventListener('focus', () => {
+              customRadio.checked = true;
+            });
+            customWrap.appendChild(textarea);
+            options.appendChild(customWrap);
+          }
+
+          const note = document.createElement('div');
+          note.className = 'ask-user-note';
+          note.textContent = question.multi_select
+            ? 'Choose one or more options to continue.'
+            : 'Choose one option or provide a custom answer.';
+          section.appendChild(options);
+          section.appendChild(note);
+          elements.askUserModalBody.appendChild(section);
+        });
+      };
+
+      const openAskUserModal = (sessionId, callId, questions) => {
+        if (!sessionId || !callId || !Array.isArray(questions) || questions.length === 0) return;
+        state.askUser = {
+          sessionId,
+          callId,
+          questions: questions.map((question) => ({
+            ...question,
+            options: Array.isArray(question?.options) ? question.options.map((option) => ({ ...option })) : []
+          }))
+        };
+        renderAskUserModal();
+        elements.askUserModal.classList.remove('hidden');
+        setTimeout(() => {
+          const firstInput = elements.askUserModalBody.querySelector('input, textarea');
+          firstInput?.focus();
+        }, 0);
+      };
+
+      const submitAskUserModal = async (cancelled = false) => {
+        const prompt = state.askUser;
+        if (!prompt) return;
+
+        let answers = [];
+        if (!cancelled) {
+          try {
+            answers = collectAskUserAnswers();
+          } catch (err) {
+            elements.askUserError.textContent = err?.message || 'Please answer all questions.';
+            return;
+          }
+        }
+
+        elements.askUserError.textContent = '';
+        elements.askUserSubmitBtn.disabled = true;
+        elements.askUserCancelBtn.disabled = true;
+        elements.askUserSubmitBtn.textContent = cancelled ? 'Closing…' : 'Sending…';
+        elements.askUserCancelBtn.textContent = cancelled ? 'Dismissing…' : 'Dismiss';
+
+        try {
+          const response = await fetch(`/v1/sessions/${encodeURIComponent(prompt.sessionId)}/ask_user`, {
+            method: 'POST',
+            headers: requestHeaders(prompt.sessionId),
+            body: JSON.stringify(cancelled
+              ? { call_id: prompt.callId, cancelled: true }
+              : { call_id: prompt.callId, answers })
+          });
+          if (!response.ok) {
+            throw await normalizeError(response);
+          }
+          const payload = await response.json().catch(() => ({}));
+          if (!cancelled) {
+            const session = state.sessions.find((item) => item.id === prompt.sessionId);
+            if (session) {
+              const normalized = Array.isArray(payload.answers) ? payload.answers : answers;
+              const summary = String(payload.summary || askUserSummaryFromAnswers(normalized) || 'Answered prompt').trim();
+              if (summary) {
+                const message = {
+                  id: generateId('msg'),
+                  role: 'user',
+                  content: summary,
+                  created: Date.now(),
+                  askUser: true
+                };
+                session.messages.push(message);
+                if (session.id === state.activeSessionId) {
+                  const empty = elements.messages.querySelector('.empty-state');
+                  if (empty) empty.remove();
+                  elements.messages.appendChild(createMessageNode(message));
+                }
+                saveSessions();
+                scrollToBottom(true);
+              }
+            }
+          }
+          closeAskUserModal();
+          if (!state.abortController) {
+            setStreaming(true);
+            scheduleSessionStatePoll(prompt.sessionId, 400);
+          }
+        } catch (err) {
+          elements.askUserError.textContent = err?.message || 'Failed to submit your answer.';
+          if (err?.status === 401) {
+            handleAuthFailure();
+          }
+          elements.askUserSubmitBtn.disabled = false;
+          elements.askUserCancelBtn.disabled = false;
+          elements.askUserSubmitBtn.textContent = 'Continue';
+          elements.askUserCancelBtn.textContent = 'Dismiss';
+        }
+      };
+
       // ===== Auth modal =====
       const openAuthModal = (errorText = '', required = !state.token) => {
         state.authRequired = required;
@@ -2297,6 +2718,8 @@
       };
 
       const handleAuthFailure = () => {
+        stopSessionStatePoll();
+        closeAskUserModal();
         state.token = '';
         localStorage.removeItem(STORAGE_KEYS.token);
         syncTokenCookie('');
@@ -2326,6 +2749,10 @@
           setConnectionState('', '');
           state.authRequired = false;
           closeAuthModal();
+          const active = getActiveSession();
+          if (active) {
+            await syncActiveSessionFromServer(active, true);
+          }
         } catch (err) {
           const message = err?.message || 'Unable to validate token.';
           elements.authError.textContent = message;
@@ -2453,7 +2880,7 @@
         elements.promptInput.disabled = false;
         elements.sendBtn.disabled = false;
         elements.sendBtn.classList.toggle('loading', streaming);
-        elements.stopBtn.classList.toggle('visible', streaming);
+        elements.stopBtn.classList.toggle('visible', streaming && Boolean(state.abortController));
         if (!streaming) {
           elements.promptInput.focus();
         }
@@ -2705,9 +3132,9 @@
         scrollToBottom(true);
 
         state.expectCanceledRun = false;
-        setStreaming(true);
         const controller = new AbortController();
         state.abortController = controller;
+        setStreaming(true);
 
         // Build input content: plain string or array with file/image parts
         let inputContent;
@@ -2744,7 +3171,10 @@
         try {
           const response = await fetch('/v1/responses', {
             method: 'POST',
-            headers: requestHeaders(session.id),
+            headers: {
+              ...requestHeaders(session.id),
+              'X-Term-LLM-UI': '1'
+            },
             body: JSON.stringify(body),
             signal: controller.signal
           });
@@ -2846,6 +3276,15 @@
                 }
                 updateToolGroupNode(currentToolGroup);
                 saveSessions();
+              }
+              return true;
+            }
+
+            if (event === 'response.ask_user.prompt') {
+              const callId = String(payload.call_id || '').trim();
+              const questions = Array.isArray(payload.questions) ? payload.questions : [];
+              if (callId && questions.length > 0) {
+                openAskUserModal(session.id, callId, questions);
               }
               return true;
             }
@@ -2963,12 +3402,14 @@
 
           persistAndRefreshShell();
           scrollToBottom(true);
-        } finally {
-          state.abortController = null;
-          setStreaming(false);
-          refreshRelativeTimes();
-
-          requeueUncommittedInterrupts(session);
+          } finally {
+            if (state.askUser?.sessionId === session.id) {
+              closeAskUserModal();
+            }
+            state.abortController = null;
+            setStreaming(false);
+            refreshRelativeTimes();
+         requeueUncommittedInterrupts(session);
 
           if (state.queuedInterrupts.length > 0) {
             const queued = state.queuedInterrupts.shift();
@@ -3053,13 +3494,129 @@
         try {
           const headers = {};
           if (state.token) headers.Authorization = `Bearer ${state.token}`;
-          const resp = await fetch(`/v1/sessions/${sessionId}/messages`, { headers });
+          const resp = await fetch(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`, { headers });
           if (!resp.ok) return null;
           const data = await resp.json();
           if (!Array.isArray(data.messages)) return null;
           return convertServerMessages(data.messages);
         } catch {
           return null;
+        }
+      };
+
+      const loadServerSessionState = async (sessionId) => {
+        try {
+          const headers = {};
+          if (state.token) headers.Authorization = `Bearer ${state.token}`;
+          const resp = await fetch(`/v1/sessions/${encodeURIComponent(sessionId)}/state`, { headers });
+          if (!resp.ok) return null;
+          const data = await resp.json().catch(() => null);
+          if (!data || typeof data !== 'object') return null;
+          return data;
+        } catch {
+          return null;
+        }
+      };
+
+      const mergeServerMessagesWithLocalState = (session, serverMessages) => {
+        if (!session || !Array.isArray(serverMessages)) return;
+
+        const syntheticAskUserMessages = session.messages
+          .filter((message) => message?.askUser && message.role === 'user' && message.content)
+          .map((message) => ({ ...message }));
+
+        const merged = serverMessages.map((message) => ({ ...message }));
+        if (syntheticAskUserMessages.length > 0) {
+          const insertAfter = (() => {
+            for (let i = merged.length - 1; i >= 0; i -= 1) {
+              if (merged[i].role === 'tool-group') return i + 1;
+            }
+            for (let i = merged.length - 1; i >= 0; i -= 1) {
+              if (merged[i].role === 'user') return i + 1;
+            }
+            return merged.length;
+          })();
+          merged.splice(insertAfter, 0, ...syntheticAskUserMessages.filter((message) => !merged.some((existing) => existing.askUser && existing.content === message.content)));
+        }
+
+        session.messages = merged;
+        delete session._serverOnly;
+        if (merged.length > 0) {
+          const firstUserMsg = merged.find((message) => message.role === 'user' && !message.askUser);
+          if (firstUserMsg?.content) {
+            session.title = truncate(firstUserMsg.content, 60);
+          }
+        }
+      };
+
+      const stopSessionStatePoll = () => {
+        if (sessionStatePollTimer !== null) {
+          clearTimeout(sessionStatePollTimer);
+          sessionStatePollTimer = null;
+        }
+      };
+
+      const scheduleSessionStatePoll = (sessionId, delay = 1200) => {
+        stopSessionStatePoll();
+        sessionStatePollTimer = setTimeout(async () => {
+          const active = getActiveSession();
+          if (!active || active.id !== sessionId || state.abortController) {
+            stopSessionStatePoll();
+            return;
+          }
+          await syncActiveSessionFromServer(active, true);
+        }, delay);
+      };
+
+      const syncActiveSessionFromServer = async (session, pollOnActive = false) => {
+        if (!session || !state.token) return;
+
+        const runtimeState = await loadServerSessionState(session.id);
+        if (!runtimeState) return;
+
+        const prompts = Array.isArray(runtimeState.pending_ask_users)
+          ? runtimeState.pending_ask_users
+          : (runtimeState.pending_ask_user ? [runtimeState.pending_ask_user] : []);
+        const prompt = prompts[0] || null;
+
+        if (prompt && prompt.call_id && Array.isArray(prompt.questions) && prompt.questions.length > 0) {
+          const samePrompt = state.askUser
+            && state.askUser.sessionId === session.id
+            && state.askUser.callId === prompt.call_id;
+          if (!samePrompt) {
+            openAskUserModal(session.id, prompt.call_id, prompt.questions);
+          }
+        } else if (state.askUser?.sessionId === session.id) {
+          closeAskUserModal();
+        }
+
+        const activeRun = Boolean(runtimeState.active_run);
+        if (activeRun && !state.abortController) {
+          setStreaming(true);
+          if (pollOnActive) {
+            scheduleSessionStatePoll(session.id);
+          }
+          return;
+        }
+
+        if (!activeRun && !state.abortController) {
+          stopSessionStatePoll();
+          const serverMessages = await loadServerSessionMessages(session.id);
+          if (serverMessages !== null) {
+            mergeServerMessagesWithLocalState(session, serverMessages);
+            persistAndRefreshShell();
+            if (session.id === state.activeSessionId) {
+              renderMessages(true);
+            }
+          }
+          if (runtimeState.last_error) {
+            addErrorMessage(String(runtimeState.last_error), session);
+            persistAndRefreshShell();
+            if (session.id === state.activeSessionId) {
+              scrollToBottom(true);
+            }
+          }
+          setStreaming(false);
         }
       };
 
@@ -3146,16 +3703,14 @@
             if (active && active._serverOnly) {
               const msgs = await loadServerSessionMessages(active.id);
               if (msgs !== null) {
-                active.messages = msgs;
-                if (msgs.length > 0) {
-                  const firstUserMsg = msgs.find(m => m.role === 'user');
-                  if (firstUserMsg) active.title = truncate(firstUserMsg.content, 60);
-                }
-                delete active._serverOnly;
+                mergeServerMessagesWithLocalState(active, msgs);
                 saveSessions();
                 renderSidebar();
                 renderMessages(true);
               }
+            }
+            if (active) {
+              await syncActiveSessionFromServer(active, true);
             }
           } catch (err) {
             const message = err?.message || 'Unable to validate token.';
@@ -3170,6 +3725,11 @@
       // ===== Event listeners =====
       elements.newChatBtn.addEventListener('click', () => {
         if (state.streaming) return;
+
+        stopSessionStatePoll();
+        if (state.askUser) {
+          closeAskUserModal();
+        }
 
         const session = createSession();
         state.sessions.unshift(session);
@@ -3274,6 +3834,18 @@
 
       elements.authConnectBtn.addEventListener('click', connectToken);
       elements.authCancelBtn.addEventListener('click', closeAuthModal);
+      elements.askUserSubmitBtn.addEventListener('click', () => {
+        submitAskUserModal(false);
+      });
+      elements.askUserCancelBtn.addEventListener('click', () => {
+        submitAskUserModal(true);
+      });
+      elements.askUserModal.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && !event.defaultPrevented) {
+          event.preventDefault();
+          submitAskUserModal(true);
+        }
+      });
       elements.authTokenInput.addEventListener('keydown', (event) => {
         if (event.key === 'Enter') {
           event.preventDefault();
@@ -3291,18 +3863,23 @@
         const urlId = sessionIdFromURL();
         if (!urlId || urlId === state.activeSessionId) return;
 
+        stopSessionStatePoll();
+        if (state.askUser?.sessionId && state.askUser.sessionId !== urlId) {
+          closeAskUserModal();
+        }
+
         const found = state.sessions.find(s => s.id === urlId);
         if (found) {
           state.activeSessionId = found.id;
           if (found._serverOnly) {
             const msgs = await loadServerSessionMessages(found.id);
             if (msgs !== null) {
-              found.messages = msgs;
-              delete found._serverOnly;
+              mergeServerMessagesWithLocalState(found, msgs);
             }
           }
           persistAndRefreshShell();
           renderMessages(true);
+          await syncActiveSessionFromServer(found, true);
         }
       });
 

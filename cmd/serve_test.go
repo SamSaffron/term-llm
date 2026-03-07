@@ -1212,6 +1212,186 @@ func doResponsesWithHeader(t *testing.T, srv *serveServer, bodyJSON, sessionID s
 	return rr.Code, result
 }
 
+// waitForServeCondition polls until fn returns true or timeout elapses.
+func waitForServeCondition(t *testing.T, timeout time.Duration, fn func() bool, description string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", description)
+}
+
+func TestHandleResponses_UIAskUserResumeSurvivesDisconnect(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	provider := llm.NewMockProvider("mock")
+	provider.AddToolCall("call_ask_1", tools.AskUserToolName, map[string]any{
+		"questions": []map[string]any{{
+			"header":   "Theme",
+			"question": "Pick a theme",
+			"options": []map[string]any{
+				{"label": "Dark", "description": "Use dark mode"},
+				{"label": "Light", "description": "Use light mode"},
+			},
+		}},
+	})
+	provider.AddTextResponse("All set.")
+
+	engine := llm.NewEngine(provider, nil)
+	engine.RegisterTool(tools.NewAskUserTool())
+
+	rt := &serveRuntime{
+		provider:     provider,
+		engine:       engine,
+		store:        store,
+		defaultModel: "mock-model",
+	}
+	rt.Touch()
+
+	mgr := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
+		return rt, nil
+	})
+	defer mgr.Close()
+
+	srv := &serveServer{sessionMgr: mgr, store: store}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	body := `{"stream":true,"input":"hello"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("session_id", "resume-session")
+	req.Header.Set("X-Term-LLM-UI", "1")
+	rr := httptest.NewRecorder()
+
+	doneCh := make(chan struct{})
+	go func() {
+		defer close(doneCh)
+		srv.handleResponses(rr, req)
+	}()
+
+	waitForServeCondition(t, time.Second, func() bool {
+		return len(rt.pendingAskUserPrompts()) == 1
+	}, "pending ask_user prompt")
+
+	stateReq := httptest.NewRequest(http.MethodGet, "/v1/sessions/resume-session/state", nil)
+	stateRR := httptest.NewRecorder()
+	srv.handleSessionByID(stateRR, stateReq)
+	if stateRR.Code != http.StatusOK {
+		t.Fatalf("state status = %d, want 200", stateRR.Code)
+	}
+	var stateBody struct {
+		ActiveRun      bool                `json:"active_run"`
+		PendingAskUser *serveAskUserPrompt `json:"pending_ask_user"`
+	}
+	if err := json.Unmarshal(stateRR.Body.Bytes(), &stateBody); err != nil {
+		t.Fatalf("decode state: %v", err)
+	}
+	if !stateBody.ActiveRun {
+		t.Fatal("expected active_run=true while ask_user is pending")
+	}
+	if stateBody.PendingAskUser == nil || stateBody.PendingAskUser.CallID != "call_ask_1" {
+		t.Fatalf("unexpected pending ask_user state: %#v", stateBody.PendingAskUser)
+	}
+
+	waitForServeCondition(t, time.Second, func() bool {
+		msgs, err := store.GetMessages(context.Background(), "resume-session", 0, 0)
+		if err != nil || len(msgs) < 2 {
+			return false
+		}
+		for _, msg := range msgs {
+			if msg.Role != llm.RoleAssistant {
+				continue
+			}
+			for _, part := range msg.Parts {
+				if part.Type == llm.PartToolCall && part.ToolCall != nil && part.ToolCall.Name == tools.AskUserToolName {
+					return true
+				}
+			}
+		}
+		return false
+	}, "persisted ask_user tool call snapshot")
+
+	cancel()
+	select {
+	case <-doneCh:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for streaming request to detach")
+	}
+
+	if !rt.hasActiveRun() {
+		t.Fatal("expected runtime to remain active after client disconnect")
+	}
+
+	submitBody := `{"call_id":"call_ask_1","answers":[{"question_index":0,"header":"Theme","selected":"Dark","is_custom":false}]}`
+	submitReq := httptest.NewRequest(http.MethodPost, "/v1/sessions/resume-session/ask_user", strings.NewReader(submitBody))
+	submitReq.Header.Set("Content-Type", "application/json")
+	submitRR := httptest.NewRecorder()
+	srv.handleSessionByID(submitRR, submitReq)
+	if submitRR.Code != http.StatusOK {
+		t.Fatalf("submit status = %d, body=%s", submitRR.Code, submitRR.Body.String())
+	}
+
+	waitForServeCondition(t, time.Second, func() bool {
+		if rt.hasActiveRun() {
+			return false
+		}
+		msgs, err := store.GetMessages(context.Background(), "resume-session", 0, 0)
+		if err != nil {
+			return false
+		}
+		for _, msg := range msgs {
+			if msg.Role == llm.RoleAssistant && strings.Contains(msg.TextContent, "All set.") {
+				return true
+			}
+		}
+		return false
+	}, "completed resumed ask_user run")
+}
+
+func TestHandleSessionState_ConsumesDeferredUIRunError(t *testing.T) {
+	rt := &serveRuntime{}
+	rt.setLastUIRunError("resume failed")
+	mgr := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
+		return rt, nil
+	})
+	defer mgr.Close()
+	mgr.mu.Lock()
+	mgr.sessions["sess-state"] = rt
+	mgr.mu.Unlock()
+
+	srv := &serveServer{sessionMgr: mgr}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/sess-state/state", nil)
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("first state status = %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "resume failed") {
+		t.Fatalf("expected first state response to include deferred error, got %s", rr.Body.String())
+	}
+
+	rr2 := httptest.NewRecorder()
+	srv.handleSessionByID(rr2, req)
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("second state status = %d", rr2.Code)
+	}
+	if strings.Contains(rr2.Body.String(), "resume failed") {
+		t.Fatalf("expected deferred error to be consumed, got %s", rr2.Body.String())
+	}
+}
+
 func TestHandleResponses_ReturnsStableResponseID(t *testing.T) {
 	srv := newTestServeServer("hello")
 	defer srv.sessionMgr.Close()
@@ -1510,6 +1690,168 @@ func TestStreamResponses_IncludesResponseIDAndSessionUsage(t *testing.T) {
 	}
 	if _, ok := sessionUsage["input_tokens"]; !ok {
 		t.Fatalf("session_usage missing input_tokens")
+	}
+}
+
+func TestStreamResponses_AskUserRoundTrip(t *testing.T) {
+	provider := llm.NewMockProvider("mock")
+	provider.AddToolCall("call-ask", tools.AskUserToolName, map[string]any{
+		"questions": []map[string]any{{
+			"header":   "Color",
+			"question": "Pick a color",
+			"options": []map[string]any{
+				{"label": "Red", "description": "Warm"},
+				{"label": "Blue", "description": "Cool"},
+			},
+		}},
+	})
+	provider.AddTextResponse("Thanks for answering")
+
+	factory := func(ctx context.Context) (*serveRuntime, error) {
+		engine := llm.NewEngine(provider, nil)
+		engine.RegisterTool(tools.NewAskUserTool())
+		rt := &serveRuntime{
+			provider:     provider,
+			engine:       engine,
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		return rt, nil
+	}
+
+	mgr := newServeSessionManager(time.Minute, 10, factory)
+	defer mgr.Close()
+	srv := &serveServer{sessionMgr: mgr}
+	mgr.onEvict = func(rt *serveRuntime) {
+		for _, rid := range rt.getResponseIDs() {
+			srv.responseToSession.Delete(rid)
+		}
+	}
+
+	sessionID := "sess-ask-user"
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses",
+		strings.NewReader(`{"input":"hi","stream":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("session_id", sessionID)
+	rr := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		srv.handleResponses(rr, req)
+		close(done)
+	}()
+
+	var runtime *serveRuntime
+	pendingReady := false
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rt, ok := mgr.Get(sessionID)
+		if ok {
+			runtime = rt
+			rt.askUserMu.Lock()
+			_, pendingReady = rt.pendingAskUsers["call-ask"]
+			rt.askUserMu.Unlock()
+			if pendingReady {
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if runtime == nil || !pendingReady {
+		t.Fatal("timed out waiting for pending ask_user prompt")
+	}
+
+	submitReq := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sessionID+"/ask_user",
+		strings.NewReader(`{"call_id":"call-ask","answers":[{"selected":"Blue","is_custom":false}]}`))
+	submitReq.Header.Set("Content-Type", "application/json")
+	submitRR := httptest.NewRecorder()
+	srv.handleSessionByID(submitRR, submitReq)
+	if submitRR.Code != http.StatusOK {
+		t.Fatalf("ask_user submit status = %d, body = %s", submitRR.Code, submitRR.Body.String())
+	}
+
+	var submitBody struct {
+		Summary string                `json:"summary"`
+		Answers []tools.AskUserAnswer `json:"answers"`
+	}
+	if err := json.Unmarshal(submitRR.Body.Bytes(), &submitBody); err != nil {
+		t.Fatalf("decode ask_user submit response: %v", err)
+	}
+	if submitBody.Summary != "Color: Blue" {
+		t.Fatalf("summary = %q, want %q", submitBody.Summary, "Color: Blue")
+	}
+	if len(submitBody.Answers) != 1 || submitBody.Answers[0].Selected != "Blue" {
+		t.Fatalf("answers = %#v", submitBody.Answers)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for streaming response to finish")
+	}
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("stream status = %d, want 200", rr.Code)
+	}
+
+	var sawPrompt bool
+	var sawCompleted bool
+	scanner := bufio.NewScanner(rr.Body)
+	var currentEvent string
+	var promptData serveAskUserPrompt
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "event: ") {
+			currentEvent = strings.TrimPrefix(line, "event: ")
+			continue
+		}
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		switch currentEvent {
+		case "response.ask_user.prompt":
+			sawPrompt = true
+			if err := json.Unmarshal([]byte(data), &promptData); err != nil {
+				t.Fatalf("decode ask_user prompt: %v", err)
+			}
+		case "response.completed":
+			if data != "[DONE]" {
+				sawCompleted = true
+			}
+		}
+	}
+	if !sawPrompt {
+		t.Fatal("response.ask_user.prompt event not found")
+	}
+	if promptData.CallID != "call-ask" || len(promptData.Questions) != 1 || promptData.Questions[0].Header != "Color" {
+		t.Fatalf("prompt data = %#v", promptData)
+	}
+	if !sawCompleted {
+		t.Fatal("response.completed event not found")
+	}
+	if len(provider.Requests) != 2 {
+		t.Fatalf("provider request count = %d, want 2", len(provider.Requests))
+	}
+
+	var toolResult *tools.AskUserResult
+	for _, msg := range provider.Requests[1].Messages {
+		for _, part := range msg.Parts {
+			if part.Type != llm.PartToolResult || part.ToolResult == nil || part.ToolResult.Name != tools.AskUserToolName {
+				continue
+			}
+			var parsed tools.AskUserResult
+			if err := json.Unmarshal([]byte(part.ToolResult.Content), &parsed); err != nil {
+				t.Fatalf("decode tool result content: %v", err)
+			}
+			toolResult = &parsed
+		}
+	}
+	if toolResult == nil {
+		t.Fatal("second provider request missing ask_user tool result")
+	}
+	if len(toolResult.Answers) != 1 || toolResult.Answers[0].Selected != "Blue" {
+		t.Fatalf("tool result answers = %#v", toolResult.Answers)
 	}
 }
 

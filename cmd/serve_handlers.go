@@ -21,6 +21,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/serveui"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 func (s *serveServer) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -161,6 +162,30 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if suffix == "ask_user" {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+			return
+		}
+		if err := requireJSONContentType(r); err != nil {
+			writeOpenAIError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
+			return
+		}
+		s.handleSessionAskUser(w, r, sessionID)
+		return
+	}
+
+	if suffix == "state" {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+			return
+		}
+		s.handleSessionState(w, r, sessionID)
+		return
+	}
+
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
@@ -169,6 +194,10 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 
 	if suffix != "messages" {
 		http.NotFound(w, r)
+		return
+	}
+	if s.store == nil {
+		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session history is unavailable")
 		return
 	}
 
@@ -334,7 +363,7 @@ func (s *serveServer) cors(next http.HandlerFunc) http.HandlerFunc {
 				w.Header().Add("Vary", "Origin")
 			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, session_id")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, session_id, X-Term-LLM-UI")
 			w.Header().Set("Access-Control-Expose-Headers", "x-session-id")
 		}
 
@@ -545,7 +574,11 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Stream {
-		s.streamResponses(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID)
+		if isServeUIRequest(r) && stateful {
+			s.streamUIResponses(w, r, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID)
+		} else {
+			s.streamResponses(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID)
+		}
 		return
 	}
 
@@ -676,12 +709,21 @@ func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter
 			}
 			outputIndex++
 		case llm.EventToolExecStart:
+			if ev.ToolName == tools.AskUserToolName {
+				if prompt, err := runtime.prepareAskUserFromToolArgs(ev.ToolCallID, ev.ToolArgs); err == nil {
+					_ = writeSSEEvent(w, "response.ask_user.prompt", prompt)
+				}
+			}
 			_ = writeSSEEvent(w, "response.tool_exec.start", map[string]any{
-				"call_id":   ev.ToolCallID,
-				"tool_name": ev.ToolName,
-				"tool_info": ev.ToolInfo,
+				"call_id":        ev.ToolCallID,
+				"tool_name":      ev.ToolName,
+				"tool_info":      ev.ToolInfo,
+				"tool_arguments": string(ev.ToolArgs),
 			})
 		case llm.EventToolExecEnd:
+			if ev.ToolName == tools.AskUserToolName {
+				runtime.clearPendingAskUser(ev.ToolCallID)
+			}
 			payload := map[string]any{
 				"call_id":   ev.ToolCallID,
 				"tool_name": ev.ToolName,

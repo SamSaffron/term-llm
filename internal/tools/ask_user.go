@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 )
@@ -42,6 +43,97 @@ type AskUserResult struct {
 // AskUserArgs are the arguments passed to the ask_user tool.
 type AskUserArgs struct {
 	Questions []AskUserQuestion `json:"questions"`
+}
+
+// NormalizeAskUserAnswers validates ask_user answers and rewrites them into the
+// canonical shape expected by the tool result.
+func NormalizeAskUserAnswers(questions []AskUserQuestion, answers []AskUserAnswer) ([]AskUserAnswer, error) {
+	if len(answers) != len(questions) {
+		return nil, fmt.Errorf("ask_user UI returned incomplete answers")
+	}
+
+	normalized := make([]AskUserAnswer, len(questions))
+	for i, q := range questions {
+		answer := answers[i]
+		if q.MultiSelect {
+			if answer.IsCustom {
+				return nil, fmt.Errorf("question %d does not support custom answers", i+1)
+			}
+			if len(answer.SelectedList) == 0 {
+				return nil, fmt.Errorf("question %d requires at least one selection", i+1)
+			}
+			allowed := make(map[string]struct{}, len(q.Options))
+			for _, opt := range q.Options {
+				allowed[opt.Label] = struct{}{}
+			}
+			selected := make([]string, 0, len(answer.SelectedList))
+			seen := make(map[string]struct{}, len(answer.SelectedList))
+			for _, raw := range answer.SelectedList {
+				label := strings.TrimSpace(raw)
+				if label == "" {
+					return nil, fmt.Errorf("question %d has an empty selection", i+1)
+				}
+				if _, ok := allowed[label]; !ok {
+					return nil, fmt.Errorf("question %d has invalid selection %q", i+1, label)
+				}
+				if _, ok := seen[label]; ok {
+					return nil, fmt.Errorf("question %d has duplicate selection %q", i+1, label)
+				}
+				seen[label] = struct{}{}
+				selected = append(selected, label)
+			}
+			normalized[i] = AskUserAnswer{
+				QuestionIndex: i,
+				Header:        q.Header,
+				Selected:      strings.Join(selected, ", "),
+				SelectedList:  selected,
+				IsCustom:      false,
+				IsMultiSelect: true,
+			}
+			continue
+		}
+
+		selected := strings.TrimSpace(answer.Selected)
+		if selected == "" {
+			return nil, fmt.Errorf("question %d requires an answer", i+1)
+		}
+		if !answer.IsCustom {
+			valid := false
+			for _, opt := range q.Options {
+				if opt.Label == selected {
+					valid = true
+					break
+				}
+			}
+			if !valid {
+				return nil, fmt.Errorf("question %d has invalid selection %q", i+1, selected)
+			}
+		}
+		normalized[i] = AskUserAnswer{
+			QuestionIndex: i,
+			Header:        q.Header,
+			Selected:      selected,
+			IsCustom:      answer.IsCustom,
+			IsMultiSelect: false,
+		}
+	}
+
+	return normalized, nil
+}
+
+// AskUserAnswerSummary renders a compact summary of canonical ask_user answers.
+func AskUserAnswerSummary(answers []AskUserAnswer) string {
+	parts := make([]string, 0, len(answers))
+	for _, answer := range answers {
+		header := strings.TrimSpace(answer.Header)
+		selected := strings.TrimSpace(answer.Selected)
+		if header == "" {
+			parts = append(parts, selected)
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s: %s", header, selected))
+	}
+	return strings.Join(parts, " | ")
 }
 
 // AskUserTool implements the ask_user tool.
@@ -160,6 +252,8 @@ func (t *AskUserTool) Execute(ctx context.Context, args json.RawMessage) (llm.To
 		}
 	}
 
+	ctxHandler := askUserUIFuncFromContext(ctx)
+
 	// Get hooks and UI func under mutex protection
 	askUserMu.Lock()
 	startHook := OnAskUserStart
@@ -170,10 +264,13 @@ func (t *AskUserTool) Execute(ctx context.Context, args json.RawMessage) (llm.To
 	var answers []AskUserAnswer
 	var err error
 
-	if uiFunc != nil {
+	switch {
+	case ctxHandler != nil:
+		answers, err = ctxHandler(ctx, a.Questions)
+	case uiFunc != nil:
 		// Use custom UI function (inline rendering in alt screen mode)
 		answers, err = uiFunc(a.Questions)
-	} else {
+	default:
 		// Use default RunAskUser with hooks
 		// Call the hooks to pause spinner/TUI before showing UI
 		if startHook != nil {
@@ -203,9 +300,9 @@ func (t *AskUserTool) Execute(ctx context.Context, args json.RawMessage) (llm.To
 		return llm.TextOutput(formatAskUserError(ErrExecutionFailed, err.Error())), nil
 	}
 
-	// Validate answers from custom UI
-	if len(answers) != len(a.Questions) {
-		return llm.TextOutput(formatAskUserError(ErrExecutionFailed, "ask_user UI returned incomplete answers")), nil
+	answers, err = NormalizeAskUserAnswers(a.Questions, answers)
+	if err != nil {
+		return llm.TextOutput(formatAskUserError(ErrExecutionFailed, err.Error())), nil
 	}
 
 	// Return successful result
