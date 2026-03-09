@@ -78,7 +78,7 @@ func (s *serveServer) handleImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filename := strings.TrimPrefix(r.URL.Path, "/images/")
+	filename := strings.TrimPrefix(r.URL.Path, "/ui/images/")
 	if filename == "" || strings.Contains(filename, "/") || strings.Contains(filename, "..") {
 		http.NotFound(w, r)
 		return
@@ -113,7 +113,7 @@ func (s *serveServer) handleImage(w http.ResponseWriter, r *http.Request) {
 // ensureImageServeable ensures the given image path is under the serveable
 // image output directory. If the file is already there, the path is returned
 // as-is. Otherwise the file is copied into the output dir so that the
-// /images/ handler can serve it. Returns the serveable path and true on
+// /ui/images/ handler can serve it. Returns the serveable path and true on
 // success, or ("", false) if the image could not be made serveable.
 func (s *serveServer) ensureImageServeable(imgPath string) (string, bool) {
 	outputDir := image.ExpandPath(s.cfgRef.Image.OutputDir)

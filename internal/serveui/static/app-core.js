@@ -35,9 +35,9 @@ const state = {
   approval: null,
   serviceWorkerRegistration: null
 };
-// Ensure cookie is set on load so <img> requests to /images/ can authenticate
+// Ensure cookie is set on load so <img> requests to /ui/images/ can authenticate
 if (state.token) {
-  document.cookie = `term_llm_token=${encodeURIComponent(state.token)}; path=/images; SameSite=Strict; max-age=31536000`;
+  document.cookie = `term_llm_token=${encodeURIComponent(state.token)}; path=/ui/images; SameSite=Strict; max-age=31536000`;
 }
 
 const elements = {
@@ -128,9 +128,9 @@ const sanitizeInterruptState = (value) => {
 
 const syncTokenCookie = (token) => {
   if (token) {
-    document.cookie = `term_llm_token=${encodeURIComponent(token)}; path=/images; SameSite=Strict; max-age=31536000`;
+    document.cookie = `term_llm_token=${encodeURIComponent(token)}; path=/ui/images; SameSite=Strict; max-age=31536000`;
   } else {
-    document.cookie = 'term_llm_token=; path=/images; SameSite=Strict; max-age=0';
+    document.cookie = 'term_llm_token=; path=/ui/images; SameSite=Strict; max-age=0';
   }
 };
 

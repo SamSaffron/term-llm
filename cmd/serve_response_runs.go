@@ -807,7 +807,7 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 			imageURLs := make([]string, 0, len(ev.ToolImages))
 			for _, imgPath := range ev.ToolImages {
 				if served, ok := s.ensureImageServeable(imgPath); ok {
-					imageURLs = append(imageURLs, "/images/"+filepath.Base(served))
+					imageURLs = append(imageURLs, "/ui/images/"+filepath.Base(served))
 				}
 			}
 			if len(imageURLs) > 0 {
