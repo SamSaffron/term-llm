@@ -574,7 +574,7 @@ func (s *serveServer) Start() error {
 		mux.HandleFunc("/v2/runs/", s.auth(s.cors(s.handleRunV2ByID)))
 	}
 
-	mux.HandleFunc("/images/", s.auth(s.cors(s.handleImage)))
+	mux.HandleFunc("/ui/images/", s.auth(s.cors(s.handleImage)))
 	mux.HandleFunc("/v1/sessions/", s.auth(s.cors(s.handleSessionByID)))
 
 	if s.store != nil {

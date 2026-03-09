@@ -897,7 +897,7 @@ func TestServeAuthMiddleware_CookieFallback(t *testing.T) {
 	})
 
 	// No credentials → 401
-	req := httptest.NewRequest(http.MethodGet, "/images/test.png", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui/images/test.png", nil)
 	rr := httptest.NewRecorder()
 	h(rr, req)
 	if rr.Code != http.StatusUnauthorized {
@@ -905,7 +905,7 @@ func TestServeAuthMiddleware_CookieFallback(t *testing.T) {
 	}
 
 	// Valid cookie → allowed
-	req = httptest.NewRequest(http.MethodGet, "/images/test.png", nil)
+	req = httptest.NewRequest(http.MethodGet, "/ui/images/test.png", nil)
 	req.AddCookie(&http.Cookie{Name: "term_llm_token", Value: "secret"})
 	rr = httptest.NewRecorder()
 	h(rr, req)
@@ -914,7 +914,7 @@ func TestServeAuthMiddleware_CookieFallback(t *testing.T) {
 	}
 
 	// Wrong cookie → 401
-	req = httptest.NewRequest(http.MethodGet, "/images/test.png", nil)
+	req = httptest.NewRequest(http.MethodGet, "/ui/images/test.png", nil)
 	req.AddCookie(&http.Cookie{Name: "term_llm_token", Value: "wrong"})
 	rr = httptest.NewRecorder()
 	h(rr, req)
@@ -923,7 +923,7 @@ func TestServeAuthMiddleware_CookieFallback(t *testing.T) {
 	}
 
 	// Bearer still works
-	req = httptest.NewRequest(http.MethodGet, "/images/test.png", nil)
+	req = httptest.NewRequest(http.MethodGet, "/ui/images/test.png", nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	rr = httptest.NewRecorder()
 	h(rr, req)
@@ -945,7 +945,7 @@ func TestServeAuthMiddleware_CookieFallback(t *testing.T) {
 	h2 := srv2.auth(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	req = httptest.NewRequest(http.MethodGet, "/images/test.png", nil)
+	req = httptest.NewRequest(http.MethodGet, "/ui/images/test.png", nil)
 	req.AddCookie(&http.Cookie{Name: "term_llm_token", Value: "se%2Bcret%2Fval%3D"})
 	rr = httptest.NewRecorder()
 	h2(rr, req)
@@ -964,7 +964,7 @@ func TestHandleImage_ServesFileAndRejectsTraversal(t *testing.T) {
 	srv.cfgRef.Image.OutputDir = dir
 
 	// Valid file
-	req := httptest.NewRequest(http.MethodGet, "/images/cat.png", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui/images/cat.png", nil)
 	rr := httptest.NewRecorder()
 	srv.handleImage(rr, req)
 	if rr.Code != http.StatusOK {
@@ -981,7 +981,7 @@ func TestHandleImage_ServesFileAndRejectsTraversal(t *testing.T) {
 	}
 
 	// Path traversal with ..
-	req = httptest.NewRequest(http.MethodGet, "/images/..%2Fetc%2Fpasswd", nil)
+	req = httptest.NewRequest(http.MethodGet, "/ui/images/..%2Fetc%2Fpasswd", nil)
 	rr = httptest.NewRecorder()
 	srv.handleImage(rr, req)
 	if rr.Code != http.StatusNotFound {
@@ -989,7 +989,7 @@ func TestHandleImage_ServesFileAndRejectsTraversal(t *testing.T) {
 	}
 
 	// Empty filename
-	req = httptest.NewRequest(http.MethodGet, "/images/", nil)
+	req = httptest.NewRequest(http.MethodGet, "/ui/images/", nil)
 	rr = httptest.NewRecorder()
 	srv.handleImage(rr, req)
 	if rr.Code != http.StatusNotFound {
@@ -997,7 +997,7 @@ func TestHandleImage_ServesFileAndRejectsTraversal(t *testing.T) {
 	}
 
 	// Nonexistent file
-	req = httptest.NewRequest(http.MethodGet, "/images/nope.png", nil)
+	req = httptest.NewRequest(http.MethodGet, "/ui/images/nope.png", nil)
 	rr = httptest.NewRecorder()
 	srv.handleImage(rr, req)
 	if rr.Code != http.StatusNotFound {
@@ -1061,7 +1061,7 @@ func TestEnsureImageServeable_CopiesExternalFile(t *testing.T) {
 		t.Fatal("ensureImageServeable should succeed for second external copy")
 	}
 	copiedName := filepath.Base(copied)
-	req := httptest.NewRequest(http.MethodGet, "/images/"+copiedName, nil)
+	req := httptest.NewRequest(http.MethodGet, "/ui/images/"+copiedName, nil)
 	rr := httptest.NewRecorder()
 	srv.handleImage(rr, req)
 	if rr.Code != http.StatusOK {
