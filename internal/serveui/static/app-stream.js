@@ -6,7 +6,7 @@ const {
   STORAGE_KEYS, state, elements, generateId, sanitizeInterruptState, sanitizeMessage, syncTokenCookie, truncate, saveSessions,
   getActiveSession, ensureActiveSession, createSession, findMessageElement, scrollToBottom, setConnectionState,
   persistAndRefreshShell, updateSessionUsageDisplay, refreshRelativeTimes, requestHeaders: _unusedRequestHeaders, updateAssistantNode, updateUserNode,
-  updateToolNode, updateToolGroupNode, createMessageNode, createToolGroupNode, renderSidebar, renderMessages
+  updateToolNode, updateToolGroupNode, createMessageNode, createToolGroupNode, renderSidebar, renderMessages, maybeNotifyResponseComplete
 } = app;
 
 // ===== Network helpers =====
@@ -370,6 +370,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       updateAssistantNode(lastAssistant);
     }
     saveSessions();
+    void maybeNotifyResponseComplete(session, lastAssistant, responseId);
     scrollToBottom();
     return { terminal: true };
   }
@@ -1147,6 +1148,7 @@ const openAuthModal = (errorText = '', required = !state.token) => {
   elements.authTokenInput.value = state.token || '';
   elements.authCancelBtn.style.display = required ? 'none' : 'inline-flex';
   elements.modelSelect.value = state.selectedModel;
+  app.refreshNotificationUI();
   elements.authModal.classList.remove('hidden');
 
   setTimeout(() => {

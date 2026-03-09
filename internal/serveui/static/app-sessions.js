@@ -9,7 +9,7 @@ const {
   clearActiveResponseTracking, setStreaming, resumeActiveResponse, renderSidebar, renderMessages, renderModelOptions,
   autoGrowPrompt, fetchModels, addErrorMessage, sendMessage, openSidebar, closeSidebar, closeSidebarIfMobile,
   connectToken, submitAskUserModal, cancelActiveResponse, handleFiles, isNearBottom,
-  openApprovalModal, closeApprovalModal, submitApprovalModal
+  openApprovalModal, closeApprovalModal, submitApprovalModal, registerServiceWorker, refreshNotificationUI, requestNotificationPermission
 } = app;
 let sessionStatePollTimer = null;
 
@@ -343,6 +343,8 @@ const initialize = async () => {
   renderMessages(true);
   renderModelOptions();
   autoGrowPrompt();
+  refreshNotificationUI();
+  void registerServiceWorker().then(() => refreshNotificationUI());
 
   try {
     setConnectionState(state.token ? 'Validating token…' : 'Connecting…');
@@ -488,6 +490,11 @@ elements.promptInput.addEventListener('paste', (e) => {
 });
 
 elements.authConnectBtn.addEventListener('click', connectToken);
+if (elements.notificationBtn) {
+  elements.notificationBtn.addEventListener('click', async () => {
+    await requestNotificationPermission();
+  });
+}
 elements.authCancelBtn.addEventListener('click', closeAuthModal);
 elements.askUserSubmitBtn.addEventListener('click', () => {
   submitAskUserModal(false);

@@ -2,9 +2,15 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Chat</title>
+  <meta name="theme-color" content="#212121">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="term-llm">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230d1117'/%3E%3Cpath d='M17 14h30v6H24v26h16v-9H30v-6h17v21H17z' fill='%23ececec'/%3E%3C/svg%3E">
+  <link rel="apple-touch-icon" href="icon-512.png">
+  <link rel="manifest" href="manifest.webmanifest">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github.min.css" media="(prefers-color-scheme: light)">
   <link rel="stylesheet" href="app.css">
@@ -81,6 +87,16 @@
       <div class="settings-field">
         <label class="settings-label" for="authTokenInput">Bearer token</label>
         <input id="authTokenInput" type="password" placeholder="sk-..." autocomplete="off">
+      </div>
+      <div class="settings-field">
+        <div class="settings-row">
+          <div>
+            <div class="settings-label">Notifications</div>
+            <div class="settings-help" id="notificationStatus">Off</div>
+          </div>
+          <button class="btn" id="notificationBtn" type="button">Enable</button>
+        </div>
+        <div class="settings-help" id="installHint">On iPhone, use Share → Add to Home Screen for the best layout and background-friendly notifications.</div>
       </div>
       <div class="modal-error" id="authError"></div>
       <div class="modal-actions">

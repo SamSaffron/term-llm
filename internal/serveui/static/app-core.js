@@ -8,7 +8,9 @@ const STORAGE_KEYS = {
   sessions: 'term_llm_sessions',
   token: 'term_llm_token',
   activeSession: 'term_llm_active_session',
-  selectedModel: 'term_llm_selected_model'
+  selectedModel: 'term_llm_selected_model',
+  notificationsEnabled: 'term_llm_notifications_enabled',
+  lastNotifiedResponseId: 'term_llm_last_notified_response_id'
 };
 
 const state = {
@@ -17,6 +19,8 @@ const state = {
   activeSessionId: localStorage.getItem(STORAGE_KEYS.activeSession) || '',
   models: [],
   selectedModel: localStorage.getItem(STORAGE_KEYS.selectedModel) || '',
+  notificationsEnabled: localStorage.getItem(STORAGE_KEYS.notificationsEnabled) === '1',
+  lastNotifiedResponseId: localStorage.getItem(STORAGE_KEYS.lastNotifiedResponseId) || '',
   streaming: false,
   currentStreamResponseId: '',
   queuedInterrupts: [],
@@ -28,7 +32,8 @@ const state = {
   connected: false,
   attachments: [],
   askUser: null,
-  approval: null
+  approval: null,
+  serviceWorkerRegistration: null
 };
 // Ensure cookie is set on load so <img> requests to /images/ can authenticate
 if (state.token) {
@@ -55,6 +60,9 @@ const elements = {
   authError: document.getElementById('authError'),
   authConnectBtn: document.getElementById('authConnectBtn'),
   authCancelBtn: document.getElementById('authCancelBtn'),
+  notificationStatus: document.getElementById('notificationStatus'),
+  notificationBtn: document.getElementById('notificationBtn'),
+  installHint: document.getElementById('installHint'),
   askUserModal: document.getElementById('askUserModal'),
   askUserModalTitle: document.getElementById('askUserModalTitle'),
   askUserModalSubtitle: document.getElementById('askUserModalSubtitle'),
@@ -255,6 +263,107 @@ const updateDocumentTitle = () => {
 };
 
 const UI_PREFIX = (window.TERM_LLM_UI_PREFIX || '/ui');
+const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+
+const refreshNotificationUI = () => {
+  if (!elements.notificationStatus || !elements.notificationBtn) return;
+  const supported = typeof Notification !== 'undefined';
+  if (!supported) {
+    elements.notificationStatus.textContent = 'This browser does not support notifications.';
+    elements.notificationBtn.disabled = true;
+    elements.notificationBtn.textContent = 'Unavailable';
+  } else if (!state.notificationsEnabled || Notification.permission === 'default') {
+    elements.notificationStatus.textContent = isStandalone()
+      ? 'Off. Enable to get a ping when a reply finishes while you are away.'
+      : 'Off. Install to Home Screen first on iPhone, then enable notifications.';
+    elements.notificationBtn.disabled = false;
+    elements.notificationBtn.textContent = 'Enable';
+  } else if (Notification.permission === 'granted') {
+    elements.notificationStatus.textContent = 'On. Replies can notify you when the app is in the background.';
+    elements.notificationBtn.disabled = false;
+    elements.notificationBtn.textContent = 'Enabled';
+  } else {
+    elements.notificationStatus.textContent = 'Blocked in browser settings.';
+    elements.notificationBtn.disabled = true;
+    elements.notificationBtn.textContent = 'Blocked';
+  }
+
+  if (elements.installHint) {
+    elements.installHint.hidden = isStandalone();
+  }
+};
+
+const registerServiceWorker = async () => {
+  if (!('serviceWorker' in navigator)) return null;
+  try {
+    const registration = await navigator.serviceWorker.register(`${UI_PREFIX}/sw.js`, { scope: `${UI_PREFIX}/` });
+    state.serviceWorkerRegistration = registration;
+    return registration;
+  } catch {
+    return null;
+  }
+};
+
+const requestNotificationPermission = async () => {
+  if (typeof Notification === 'undefined') {
+    refreshNotificationUI();
+    return 'unsupported';
+  }
+  if (Notification.permission === 'granted') {
+    state.notificationsEnabled = true;
+    localStorage.setItem(STORAGE_KEYS.notificationsEnabled, '1');
+    refreshNotificationUI();
+    return 'granted';
+  }
+  const permission = await Notification.requestPermission();
+  state.notificationsEnabled = permission === 'granted';
+  localStorage.setItem(STORAGE_KEYS.notificationsEnabled, state.notificationsEnabled ? '1' : '0');
+  refreshNotificationUI();
+  return permission;
+};
+
+const maybeNotifyResponseComplete = async (session, assistantMessage, responseId) => {
+  const normalizedResponseId = String(responseId || '').trim();
+  if (!state.notificationsEnabled || !normalizedResponseId) return;
+  if (state.lastNotifiedResponseId === normalizedResponseId) return;
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  if (document.visibilityState === 'visible' && document.hasFocus()) return;
+
+  const body = String(assistantMessage?.content || 'Reply finished.')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 180) || 'Reply finished.';
+  const title = session?.title && session.title !== 'New chat'
+    ? `Reply finished · ${session.title}`
+    : 'Reply finished';
+  const targetURL = `${UI_PREFIX}/${encodeURIComponent(session?.id || '')}`;
+  const options = {
+    body,
+    tag: `response-${normalizedResponseId}`,
+    renotify: false,
+    icon: `${UI_PREFIX}/icon-512.png`,
+    badge: `${UI_PREFIX}/icon-512.png`,
+    data: { url: targetURL }
+  };
+
+  try {
+    const registration = state.serviceWorkerRegistration || await registerServiceWorker();
+    if (registration && typeof registration.showNotification === 'function') {
+      await registration.showNotification(title, options);
+    } else {
+      const notification = new Notification(title, options);
+      notification.onclick = () => {
+        window.focus();
+        window.location.href = targetURL;
+        notification.close();
+      };
+    }
+    state.lastNotifiedResponseId = normalizedResponseId;
+    localStorage.setItem(STORAGE_KEYS.lastNotifiedResponseId, normalizedResponseId);
+  } catch {
+    // Ignore notification failures — chat completion still succeeded.
+  }
+};
 
 const sessionIdFromURL = () => {
   const path = window.location.pathname;
@@ -488,6 +597,11 @@ Object.assign(app, {
   setConnectionState,
   updateDocumentTitle,
   UI_PREFIX,
+  isStandalone,
+  refreshNotificationUI,
+  registerServiceWorker,
+  requestNotificationPermission,
+  maybeNotifyResponseComplete,
   sessionIdFromURL,
   updateURL,
   sanitizeMessage,

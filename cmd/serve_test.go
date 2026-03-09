@@ -193,6 +193,7 @@ func TestHandleUI_ReturnsEmbeddedStaticAsset(t *testing.T) {
 	}{
 		{name: "css", path: "/ui/app.css", contentType: "text/css", bodySnippet: ".app {"},
 		{name: "js", path: "/ui/app-core.js", contentType: "text/javascript", bodySnippet: "window.TermLLMApp"},
+		{name: "manifest", path: "/ui/manifest.webmanifest", contentType: "", bodySnippet: `"display": "standalone"`},
 	}
 
 	for _, tt := range tests {
@@ -205,7 +206,7 @@ func TestHandleUI_ReturnsEmbeddedStaticAsset(t *testing.T) {
 			if rr.Code != http.StatusOK {
 				t.Fatalf("status = %d, want 200", rr.Code)
 			}
-			if got := rr.Header().Get("Content-Type"); !strings.HasPrefix(got, tt.contentType) {
+			if got := rr.Header().Get("Content-Type"); tt.contentType != "" && !strings.HasPrefix(got, tt.contentType) {
 				t.Fatalf("content-type = %q, want %s", got, tt.contentType)
 			}
 			if !strings.Contains(rr.Body.String(), tt.bodySnippet) {
