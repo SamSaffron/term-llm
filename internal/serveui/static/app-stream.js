@@ -7,7 +7,7 @@ const {
   getActiveSession, ensureActiveSession, createSession, findMessageElement, scrollToBottom, setConnectionState,
   persistAndRefreshShell, updateSessionUsageDisplay, refreshRelativeTimes, requestHeaders: _unusedRequestHeaders, updateAssistantNode, updateUserNode,
   updateToolNode, updateToolGroupNode, createMessageNode, createToolGroupNode, renderSidebar, renderMessages, maybeNotifyResponseComplete,
-  subscribeToPush
+  subscribeToPush, shouldAutoSubscribeToPush
 } = app;
 
 // ===== Network helpers =====
@@ -1216,8 +1216,9 @@ const connectToken = async () => {
     state.authRequired = false;
     closeAuthModal();
 
-    // Retry push enrollment now that we have a valid token
-    if (state.notificationsEnabled && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+    // Retry push enrollment now that we have a valid token. Also recover if the
+    // browser permission was already granted but the old client-side flag was missing.
+    if (shouldAutoSubscribeToPush()) {
       subscribeToPush();
     }
 

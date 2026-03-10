@@ -9,7 +9,8 @@ const {
   clearActiveResponseTracking, setStreaming, resumeActiveResponse, renderSidebar, renderMessages, renderModelOptions,
   autoGrowPrompt, fetchModels, addErrorMessage, sendMessage, openSidebar, closeSidebar, closeSidebarIfMobile,
   connectToken, submitAskUserModal, cancelActiveResponse, handleFiles, isNearBottom,
-  openApprovalModal, closeApprovalModal, submitApprovalModal, registerServiceWorker, subscribeToPush, refreshNotificationUI, requestNotificationPermission
+  openApprovalModal, closeApprovalModal, submitApprovalModal, registerServiceWorker, subscribeToPush, refreshNotificationUI,
+  requestNotificationPermission, shouldAutoSubscribeToPush
 } = app;
 let sessionStatePollTimer = null;
 
@@ -356,8 +357,10 @@ const initialize = async () => {
     // Merge server-side sessions after successful auth
     await mergeServerSessions();
 
-    // Retry push enrollment now that auth is confirmed
-    if (state.notificationsEnabled && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+    // Retry push enrollment now that auth is confirmed. Also recover automatically
+    // when the browser permission is already granted but the old localStorage flag
+    // was never set (for example after earlier installs or app updates).
+    if (shouldAutoSubscribeToPush()) {
       subscribeToPush();
     }
 

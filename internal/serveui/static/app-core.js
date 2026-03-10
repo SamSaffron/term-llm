@@ -268,9 +268,27 @@ const updateDocumentTitle = () => {
 
 const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
 
+const syncNotificationPermissionState = () => {
+  if (typeof Notification === 'undefined') return;
+  if (Notification.permission === 'granted') {
+    state.notificationsEnabled = true;
+    localStorage.setItem(STORAGE_KEYS.notificationsEnabled, '1');
+  } else if (Notification.permission === 'denied') {
+    state.notificationsEnabled = false;
+    localStorage.setItem(STORAGE_KEYS.notificationsEnabled, '0');
+  }
+};
+
+const shouldAutoSubscribeToPush = () => (
+  typeof Notification !== 'undefined' &&
+  Notification.permission === 'granted' &&
+  !!state.token
+);
+
 const refreshNotificationUI = () => {
   if (!elements.notificationStatus || !elements.notificationBtn) return;
   const supported = typeof Notification !== 'undefined';
+  syncNotificationPermissionState();
   if (!supported) {
     elements.notificationStatus.textContent = 'This browser does not support notifications.';
     elements.notificationBtn.disabled = true;
@@ -366,15 +384,13 @@ const requestNotificationPermission = async () => {
     return 'unsupported';
   }
   if (Notification.permission === 'granted') {
-    state.notificationsEnabled = true;
-    localStorage.setItem(STORAGE_KEYS.notificationsEnabled, '1');
+    syncNotificationPermissionState();
     subscribeToPush();
     refreshNotificationUI();
     return 'granted';
   }
   const permission = await Notification.requestPermission();
-  state.notificationsEnabled = permission === 'granted';
-  localStorage.setItem(STORAGE_KEYS.notificationsEnabled, state.notificationsEnabled ? '1' : '0');
+  syncNotificationPermissionState();
   if (permission === 'granted') {
     subscribeToPush();
   }
@@ -661,6 +677,7 @@ Object.assign(app, {
   refreshNotificationUI,
   registerServiceWorker,
   subscribeToPush,
+  shouldAutoSubscribeToPush,
   requestNotificationPermission,
   maybeNotifyResponseComplete,
   sessionIdFromURL,
