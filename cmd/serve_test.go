@@ -348,6 +348,52 @@ func TestCustomBasePath_EndToEnd(t *testing.T) {
 	}
 }
 
+func TestServeHTTPHandler_MountsJobsOnlyAtRoot(t *testing.T) {
+	srv := &serveServer{
+		cfg:    serveServerConfig{basePath: "/ui"},
+		jobsV2: &jobsV2Manager{},
+	}
+	h := srv.httpHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("/healthz status = %d, want 200", rr.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/ui/healthz", nil)
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("/ui/healthz status = %d, want 404", rr.Code)
+	}
+}
+
+func TestServeHTTPHandler_MountsWebUnderBasePath(t *testing.T) {
+	srv := &serveServer{
+		cfg: serveServerConfig{ui: true, basePath: "/chat"},
+	}
+	h := srv.httpHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/chat/healthz", nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("/chat/healthz status = %d, want 200", rr.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("/healthz status = %d, want 307", rr.Code)
+	}
+	if loc := rr.Header().Get("Location"); loc != "/chat/" {
+		t.Fatalf("/healthz redirect location = %q, want %q", loc, "/chat/")
+	}
+}
+
 func TestNormalizeBasePath_ProducesValidRoutes(t *testing.T) {
 	// Verify that normalizeBasePath output always produces valid route helpers
 	// and that handleUI/handleImage parse paths correctly.

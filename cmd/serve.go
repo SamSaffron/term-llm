@@ -643,9 +643,35 @@ type serveServer struct {
 }
 
 func (s *serveServer) Start() error {
+	s.server = &http.Server{
+		Addr:    fmt.Sprintf("%s:%d", s.cfg.host, s.cfg.port),
+		Handler: s.httpHandler(),
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		err := s.server.ListenAndServe()
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+		close(errCh)
+	}()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			return fmt.Errorf("start server: %w", err)
+		}
+		return nil
+	case <-time.After(50 * time.Millisecond):
+		return nil
+	}
+}
+
+func (s *serveServer) httpHandler() http.Handler {
 	// Inner mux: all routes registered at their natural paths.
-	// basePath is stripped by http.StripPrefix on the outer mux, so
-	// handlers see /v1/..., /images/..., / etc. without the prefix.
+	// basePath is stripped by http.StripPrefix on the outer mux when mounted,
+	// so handlers see /v1/..., /images/..., / etc. without the prefix.
 	inner := http.NewServeMux()
 
 	inner.HandleFunc("/healthz", s.handleHealth)
@@ -672,6 +698,13 @@ func (s *serveServer) Start() error {
 		inner.HandleFunc("/", s.cors(s.handleUI)) // catch-all SPA
 	}
 
+	// Jobs-only serve instances have no UI surface, so mount at root and keep
+	// the canonical /v2/* API paths. The shared base-path wrapper is still used
+	// for web/UI surfaces where the browser and API must live under one prefix.
+	if s.jobsV2 != nil && !s.cfg.ui {
+		return inner
+	}
+
 	// Outer mux: mount everything under basePath.
 	// Requests to basePath/ are handled by StripPrefix → inner.
 	// Go's ServeMux auto-redirects basePath (no slash) → basePath/.
@@ -685,29 +718,7 @@ func (s *serveServer) Start() error {
 		}))
 	}
 
-	s.server = &http.Server{
-		Addr:    fmt.Sprintf("%s:%d", s.cfg.host, s.cfg.port),
-		Handler: mux,
-	}
-
-	errCh := make(chan error, 1)
-	go func() {
-		err := s.server.ListenAndServe()
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errCh <- err
-		}
-		close(errCh)
-	}()
-
-	select {
-	case err := <-errCh:
-		if err != nil {
-			return fmt.Errorf("start server: %w", err)
-		}
-		return nil
-	case <-time.After(50 * time.Millisecond):
-		return nil
-	}
+	return mux
 }
 
 func (s *serveServer) Stop(ctx context.Context) error {
