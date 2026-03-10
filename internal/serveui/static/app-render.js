@@ -8,6 +8,29 @@ const {
   updateSessionUsageDisplay, updateURL
 } = app;
 
+const directionForText = (value) => {
+  const text = String(value || '');
+  const strongChars = text.match(/[A-Za-z\u00C0-\u02AF\u0370-\u03FF\u0400-\u052F\u0590-\u08FF]/g);
+  if (!strongChars || strongChars.length === 0) return 'auto';
+  for (const ch of strongChars) {
+    if (/[\u0590-\u08FF]/.test(ch)) return 'rtl';
+    if (/[A-Za-z\u00C0-\u02AF\u0370-\u03FF\u0400-\u052F]/.test(ch)) return 'ltr';
+  }
+  return 'auto';
+};
+
+const applyTextDirection = (element, value) => {
+  if (!element) return;
+  const dir = directionForText(value);
+  if (dir === 'auto') {
+    element.setAttribute('dir', 'auto');
+    element.classList.remove('rtl');
+    return;
+  }
+  element.setAttribute('dir', dir);
+  element.classList.toggle('rtl', dir === 'rtl');
+};
+
 const openSidebar = () => {
   elements.sidebar.classList.add('open');
   elements.sidebarBackdrop.classList.add('open');
@@ -152,6 +175,7 @@ const createMetaNode = (created, message = null) => {
 };
 
 const renderAssistantMarkdown = (target, content) => {
+  applyTextDirection(target, content || '');
   const html = marked.parse(content || '');
   const clean = DOMPurify.sanitize(html);
   target.innerHTML = clean;
@@ -233,6 +257,7 @@ const createMessageNode = (message) => {
 
   const body = document.createElement('div');
   body.className = 'message-body';
+  applyTextDirection(body, message.content || '');
 
   if (message.role === 'assistant') {
     body.classList.add('markdown-body');
@@ -289,6 +314,7 @@ const updateAssistantNode = (message) => {
 
   const body = node.querySelector('.message-body');
   if (!body) return;
+  applyTextDirection(body, message.content || '');
   renderAssistantMarkdown(body, message.content || '');
 
   let usageNode = node.querySelector('.usage-line');
@@ -593,6 +619,8 @@ Object.assign(app, {
   closeSidebarIfMobile,
   updateHeader,
   renderSidebar,
+  directionForText,
+  applyTextDirection,
   createInterruptBadgeNode,
   createMetaNode,
   renderAssistantMarkdown,

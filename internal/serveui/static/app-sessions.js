@@ -7,7 +7,7 @@ const {
   sessionIdFromURL, updateURL, scrollToBottom, setConnectionState, persistAndRefreshShell, refreshRelativeTimes,
   openAuthModal, closeAuthModal, handleAuthFailure, closeAskUserModal, openAskUserModal, setActiveResponseTracking,
   clearActiveResponseTracking, setStreaming, resumeActiveResponse, renderSidebar, renderMessages, renderModelOptions,
-  autoGrowPrompt, fetchModels, addErrorMessage, sendMessage, openSidebar, closeSidebar, closeSidebarIfMobile,
+  autoGrowPrompt, updateVoiceUI, toggleVoiceRecording, fetchModels, addErrorMessage, sendMessage, openSidebar, closeSidebar, closeSidebarIfMobile,
   connectToken, submitAskUserModal, cancelActiveResponse, handleFiles, isNearBottom,
   openApprovalModal, closeApprovalModal, submitApprovalModal, registerServiceWorker, subscribeToPush, refreshNotificationUI,
   requestNotificationPermission, shouldAutoSubscribeToPush
@@ -344,6 +344,7 @@ const initialize = async () => {
   renderMessages(true);
   renderModelOptions();
   autoGrowPrompt();
+  updateVoiceUI();
   refreshNotificationUI();
   void registerServiceWorker().then(() => refreshNotificationUI());
 
@@ -427,6 +428,11 @@ elements.promptInput.addEventListener('keydown', (event) => {
 });
 
 elements.sendBtn.addEventListener('click', sendMessage);
+if (elements.voiceBtn) {
+  elements.voiceBtn.addEventListener('click', () => {
+    toggleVoiceRecording();
+  });
+}
 elements.stopBtn.addEventListener('click', async () => {
   const session = getActiveSession();
   try {

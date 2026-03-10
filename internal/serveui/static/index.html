@@ -55,6 +55,7 @@
 
       <footer class="composer">
         <div class="composer-inner">
+          <div id="voiceStatus" class="voice-status hidden" aria-live="polite"></div>
           <div id="attachmentsStrip" class="attachments" style="display:none;"></div>
           <div class="composer-box">
             <button class="composer-icon-btn attach-btn" id="attachBtn" title="Attach file" aria-label="Attach file">
@@ -64,6 +65,9 @@
             <textarea id="promptInput" class="prompt" rows="1" placeholder="Message…" aria-label="Message"></textarea>
             <div class="composer-actions">
               <button class="stop-btn" id="stopBtn" type="button">Stop</button>
+              <button class="composer-icon-btn voice-btn" id="voiceBtn" type="button" title="Record voice message" aria-label="Record voice message">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg>
+              </button>
               <button class="send-btn" id="sendBtn" type="button" aria-label="Send message">
                 <span class="arrow">↑</span>
                 <span class="spinner" aria-hidden="true"></span>

@@ -37,7 +37,20 @@ const state = {
   attachments: [],
   askUser: null,
   approval: null,
-  serviceWorkerRegistration: null
+  serviceWorkerRegistration: null,
+  voice: {
+    supported: typeof window !== 'undefined' && typeof navigator !== 'undefined' && !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) && typeof window.MediaRecorder !== 'undefined',
+    recording: false,
+    transcribing: false,
+    recorder: null,
+    stream: null,
+    chunks: [],
+    timerId: null,
+    startedAt: 0,
+    cancelOnStop: false,
+    mimeType: '',
+    status: ''
+  }
 };
 // Ensure cookie is set on load so <img> requests to basePath/images/ can authenticate
 if (state.token) {
@@ -77,6 +90,8 @@ const elements = {
   attachBtn: document.getElementById('attachBtn'),
   fileInput: document.getElementById('fileInput'),
   attachmentsStrip: document.getElementById('attachmentsStrip'),
+  voiceStatus: document.getElementById('voiceStatus'),
+  voiceBtn: document.getElementById('voiceBtn'),
   dropOverlay: document.getElementById('dropOverlay'),
   headerStats: document.getElementById('headerStats'),
   modelSelect: document.getElementById('modelSelect'),

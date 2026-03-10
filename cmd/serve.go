@@ -74,6 +74,7 @@ Examples:
 All HTTP routes are mounted under --base-path (default /ui):
   POST {base}/v1/responses
   POST {base}/v1/chat/completions
+  POST {base}/v1/transcribe
   GET  {base}/v1/models
   GET  {base}/healthz
   GET  {base}/                       (web UI)
@@ -679,6 +680,7 @@ func (s *serveServer) httpHandler() http.Handler {
 	inner.HandleFunc("/v1/responses", s.auth(s.cors(s.handleResponses)))
 	inner.HandleFunc("/v1/responses/", s.auth(s.cors(s.handleResponseByID)))
 	inner.HandleFunc("/v1/chat/completions", s.auth(s.cors(s.handleChatCompletions)))
+	inner.HandleFunc("/v1/transcribe", s.auth(s.cors(s.handleTranscribe)))
 	if s.jobsV2 != nil {
 		inner.HandleFunc("/v2/jobs", s.auth(s.cors(s.handleJobsV2)))
 		inner.HandleFunc("/v2/jobs/", s.auth(s.cors(s.handleJobV2ByID)))

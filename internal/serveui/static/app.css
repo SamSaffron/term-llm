@@ -467,6 +467,12 @@
       white-space: pre-wrap;
       word-wrap: break-word;
       background: var(--surface);
+      unicode-bidi: plaintext;
+    }
+
+    .message-body.rtl,
+    .markdown-body.rtl {
+      text-align: right;
     }
 
     .message.user .message-body {
@@ -541,6 +547,15 @@
       padding: 0.11rem 0.35rem;
       border-radius: 4px;
       font-size: 0.88em;
+    }
+
+    .markdown-body pre,
+    .markdown-body code,
+    .tool-details pre,
+    .tool-entry-args .arg-value,
+    .approval-path {
+      direction: ltr;
+      text-align: left;
     }
 
     .markdown-body table {
@@ -834,7 +849,7 @@
 
     .composer {
       background: var(--bg);
-      padding: 0.75rem calc(1rem + var(--safe-right)) calc(0.85rem + var(--safe-bottom)) calc(1rem + var(--safe-left));
+      padding: 0.75rem calc(1rem + var(--safe-right)) max(0.3rem, calc(var(--safe-bottom) * 0.35)) calc(1rem + var(--safe-left));
       position: relative;
       z-index: 1;
     }
@@ -845,6 +860,79 @@
       display: flex;
       flex-direction: column;
       gap: 0;
+    }
+
+    .voice-status {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      margin: 0 0.3rem 0.45rem;
+      padding: 0.65rem 0.85rem;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      min-height: 44px;
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+    }
+
+    .voice-status.hidden {
+      display: none;
+    }
+
+    .voice-status-copy {
+      min-width: 0;
+      line-height: 1.35;
+      font-size: 0.92rem;
+    }
+
+    .voice-status strong {
+      font-variant-numeric: tabular-nums;
+    }
+
+    .voice-status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: var(--danger);
+      flex-shrink: 0;
+      box-shadow: 0 0 0 0 rgba(248,113,113,0.5);
+      animation: voice-pulse 1.35s infinite;
+    }
+
+    .voice-status-spinner {
+      width: 15px;
+      height: 15px;
+      border-radius: 999px;
+      border: 2px solid var(--border);
+      border-top-color: var(--text);
+      animation: spin 0.8s linear infinite;
+      flex-shrink: 0;
+    }
+
+    .voice-status-cancel {
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--text);
+      border-radius: 999px;
+      padding: 0.42rem 0.7rem;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+
+    .voice-status-cancel:hover {
+      background: var(--surface-3);
+    }
+
+    @keyframes voice-pulse {
+      0% { box-shadow: 0 0 0 0 rgba(248,113,113,0.55); }
+      70% { box-shadow: 0 0 0 10px rgba(248,113,113,0); }
+      100% { box-shadow: 0 0 0 0 rgba(248,113,113,0); }
     }
 
     .composer-box {
@@ -882,9 +970,32 @@
       color: var(--text);
     }
 
+    .composer-icon-btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
     .composer-icon-btn svg {
       width: 20px;
       height: 20px;
+    }
+
+    .voice-btn {
+      margin-bottom: 6px;
+    }
+
+    .voice-btn.recording {
+      background: rgba(248,113,113,0.14);
+      color: var(--danger);
+    }
+
+    .voice-btn.recording:hover {
+      background: rgba(248,113,113,0.2);
+      color: var(--danger);
+    }
+
+    .voice-btn.busy {
+      color: var(--text);
     }
 
     .prompt {
@@ -898,6 +1009,7 @@
       line-height: 1.5;
       font-size: 1rem;
       overflow-y: hidden;
+      unicode-bidi: plaintext;
     }
 
     .prompt:focus {
@@ -1545,7 +1657,44 @@
       }
 
       .composer {
-        padding: 0.5rem calc(0.5rem + var(--safe-right)) calc(0.6rem + var(--safe-bottom)) calc(0.5rem + var(--safe-left));
+        padding: 0.45rem calc(0.5rem + var(--safe-right)) max(0.1rem, calc(var(--safe-bottom) * 0.2)) calc(0.5rem + var(--safe-left));
+      }
+
+      .voice-status {
+        margin: 0 0.15rem 0.4rem;
+        padding: 0.65rem 0.75rem;
+        border-radius: 16px;
+        gap: 0.6rem;
+      }
+
+      .voice-status-copy {
+        font-size: 0.89rem;
+      }
+
+      .voice-status-cancel {
+        padding: 0.48rem 0.72rem;
+      }
+
+      .composer-box {
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        border-radius: 22px;
+        padding: 5px;
+      }
+
+      .composer-icon-btn,
+      .send-btn,
+      .stop-btn {
+        min-height: 40px;
+      }
+
+      .composer-icon-btn,
+      .send-btn {
+        width: 40px;
+        height: 40px;
+      }
+
+      .prompt {
+        padding: 12px 6px;
       }
 
       .message.user {

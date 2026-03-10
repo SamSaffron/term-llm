@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
@@ -9,8 +10,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -1429,6 +1432,113 @@ func TestHandleSessions_ListsFromStore(t *testing.T) {
 	}
 	if body.Sessions[0].Summary != "hello world" {
 		t.Fatalf("summary = %q, want %q", body.Sessions[0].Summary, "hello world")
+	}
+}
+
+func TestHandleTranscribe_Success(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", r.Method)
+		}
+		if r.URL.Path != "/audio/transcriptions" {
+			t.Fatalf("path = %q, want /audio/transcriptions", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+			t.Fatalf("authorization = %q, want Bearer test-key", got)
+		}
+		if err := r.ParseMultipartForm(2 << 20); err != nil {
+			t.Fatalf("ParseMultipartForm: %v", err)
+		}
+		f, header, err := r.FormFile("file")
+		if err != nil {
+			t.Fatalf("FormFile: %v", err)
+		}
+		defer f.Close()
+		if header.Filename == "" {
+			t.Fatal("expected filename")
+		}
+		data, err := io.ReadAll(f)
+		if err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+		if string(data) != "fake audio" {
+			t.Fatalf("audio payload = %q, want fake audio", string(data))
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"text": "hello from audio"})
+	}))
+	defer upstream.Close()
+
+	srv := &serveServer{cfgRef: &config.Config{
+		Providers: map[string]config.ProviderConfig{
+			"openai": {
+				ResolvedAPIKey: "test-key",
+				BaseURL:        upstream.URL,
+			},
+		},
+	}}
+
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	fw, err := mw.CreateFormFile("file", "voice-note.webm")
+	if err != nil {
+		t.Fatalf("CreateFormFile: %v", err)
+	}
+	if _, err := fw.Write([]byte("fake audio")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/transcribe", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	rr := httptest.NewRecorder()
+
+	srv.handleTranscribe(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 body=%s", rr.Code, rr.Body.String())
+	}
+
+	var payload struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if payload.Text != "hello from audio" {
+		t.Fatalf("text = %q, want %q", payload.Text, "hello from audio")
+	}
+}
+
+func TestHandleTranscribe_RejectsUnsupportedType(t *testing.T) {
+	srv := &serveServer{cfgRef: &config.Config{}}
+
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	fw, err := mw.CreatePart(textproto.MIMEHeader{
+		"Content-Disposition": {`form-data; name="file"; filename="voice-note.bin"`},
+		"Content-Type":        {"application/octet-stream"},
+	})
+	if err != nil {
+		t.Fatalf("CreatePart: %v", err)
+	}
+	if _, err := fw.Write([]byte("nope")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/transcribe", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	rr := httptest.NewRecorder()
+
+	srv.handleTranscribe(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "unsupported") {
+		t.Fatalf("body = %q, want unsupported error", rr.Body.String())
 	}
 }
 
