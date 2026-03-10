@@ -23,13 +23,14 @@ type ImageRecorder interface {
 
 // ImageGenerateTool implements the image_generate tool.
 type ImageGenerateTool struct {
-	approval      *ApprovalManager
-	config        *config.Config
-	providerName  string // Override provider name
-	imageRecorder ImageRecorder
-	agent         string
-	sessionID     string
-	serveMode     bool // When true, strip clipboard/terminal params from spec
+	approval          *ApprovalManager
+	config            *config.Config
+	providerName      string // Override provider name
+	imageRecorder     ImageRecorder
+	agent             string
+	sessionID         string
+	serveMode         bool   // When true, strip clipboard/terminal params from spec
+	serveImageBaseURL string // URL prefix for images in serve mode (e.g. "/ui/images/")
 }
 
 // NewImageGenerateTool creates a new ImageGenerateTool.
@@ -330,7 +331,14 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 
 	// Build result
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Generated image saved to: %s\n", outputPath))
+	if t.serveImageBaseURL != "" {
+		sb.WriteString(fmt.Sprintf("Generated image URL: %s\n", t.serveImageBaseURL+filepath.Base(servedPath)))
+		if a.OutputPath != "" {
+			sb.WriteString(fmt.Sprintf("Saved to: %s\n", outputPath))
+		}
+	} else {
+		sb.WriteString(fmt.Sprintf("Generated image saved to: %s\n", outputPath))
+	}
 	sb.WriteString(fmt.Sprintf("Prompt: %s\n", a.Prompt))
 	sb.WriteString(fmt.Sprintf("Format: %s\n", result.MimeType))
 	sb.WriteString(fmt.Sprintf("Size: %d bytes\n", len(result.Data)))

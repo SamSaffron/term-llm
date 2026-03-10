@@ -186,10 +186,13 @@ func (r *LocalToolRegistry) AddShellPattern(pattern string) error {
 // SetServeMode marks tools as running in serve (web/telegram) mode.
 // This strips terminal-only params like copy_to_clipboard and show_image
 // from tool specs and disables clipboard operations during execution.
-func (r *LocalToolRegistry) SetServeMode(enabled bool) {
+// imageBaseURL is the URL prefix for serving generated images (e.g.
+// "/ui/images/"); pass "" when the platform doesn't serve images over HTTP.
+func (r *LocalToolRegistry) SetServeMode(enabled bool, imageBaseURL string) {
 	if t, ok := r.tools[ImageGenerateToolName]; ok {
 		if ig, ok := t.(*ImageGenerateTool); ok {
 			ig.serveMode = enabled
+			ig.serveImageBaseURL = imageBaseURL
 		}
 	}
 	if t, ok := r.tools[ShowImageToolName]; ok {

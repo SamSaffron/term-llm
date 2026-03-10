@@ -117,6 +117,178 @@ func TestImageGenAutoApprove_SymlinkEscape(t *testing.T) {
 	}
 }
 
+func TestImageGenerateTool_ServeModeIncludesWebURL(t *testing.T) {
+	tmpDir := t.TempDir()
+	tmpDir, err := filepath.EvalSymlinks(tmpDir)
+	if err != nil {
+		t.Fatalf("resolve tmpDir: %v", err)
+	}
+
+	cfg := &config.Config{
+		Image: config.ImageConfig{
+			Provider:  "debug",
+			OutputDir: tmpDir,
+		},
+	}
+	tool := NewImageGenerateTool(nil, cfg, "debug", nil, "", "")
+	tool.serveMode = true
+	tool.serveImageBaseURL = "/ui/images/"
+
+	args, _ := json.Marshal(ImageGenerateArgs{Prompt: "a cat"})
+	out, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	// Web platform: URL path only, no disk path.
+	if !strings.Contains(out.Content, "Generated image URL: /ui/images/") {
+		t.Errorf("expected image URL in content, got:\n%s", out.Content)
+	}
+	if strings.Contains(out.Content, tmpDir) {
+		t.Errorf("expected no disk path in web serve mode, got:\n%s", out.Content)
+	}
+}
+
+func TestImageGenerateTool_ServeModeExplicitOutputPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	tmpDir, err := filepath.EvalSymlinks(tmpDir)
+	if err != nil {
+		t.Fatalf("resolve tmpDir: %v", err)
+	}
+
+	explicitPath := filepath.Join(tmpDir, "custom-output.png")
+
+	cfg := &config.Config{
+		Image: config.ImageConfig{
+			Provider:  "debug",
+			OutputDir: tmpDir,
+		},
+	}
+	tool := NewImageGenerateTool(nil, cfg, "debug", nil, "", "")
+	tool.serveMode = true
+	tool.serveImageBaseURL = "/ui/images/"
+
+	args, _ := json.Marshal(ImageGenerateArgs{Prompt: "a cat", OutputPath: explicitPath})
+	out, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	// Should have both the web URL and the explicit save path.
+	if !strings.Contains(out.Content, "Generated image URL: /ui/images/") {
+		t.Errorf("expected image URL in content, got:\n%s", out.Content)
+	}
+	if !strings.Contains(out.Content, "Saved to: "+explicitPath) {
+		t.Errorf("expected explicit output path in content, got:\n%s", out.Content)
+	}
+}
+
+func TestImageGenerateTool_TelegramServeModeNoWebURL(t *testing.T) {
+	tmpDir := t.TempDir()
+	tmpDir, err := filepath.EvalSymlinks(tmpDir)
+	if err != nil {
+		t.Fatalf("resolve tmpDir: %v", err)
+	}
+
+	cfg := &config.Config{
+		Image: config.ImageConfig{
+			Provider:  "debug",
+			OutputDir: tmpDir,
+		},
+	}
+	// Telegram: serveMode=true but no imageBaseURL
+	tool := NewImageGenerateTool(nil, cfg, "debug", nil, "", "")
+	tool.serveMode = true
+
+	args, _ := json.Marshal(ImageGenerateArgs{Prompt: "a dog"})
+	out, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	// Telegram: disk path present, no URL.
+	if !strings.Contains(out.Content, "Generated image saved to:") {
+		t.Errorf("expected 'saved to' with disk path in content, got:\n%s", out.Content)
+	}
+	if strings.Contains(out.Content, "Generated image URL:") {
+		t.Errorf("unexpected image URL in telegram serve mode, got:\n%s", out.Content)
+	}
+}
+
+func TestImageGenerateTool_NonServeModeNoDiskPathOnly(t *testing.T) {
+	tmpDir := t.TempDir()
+	tmpDir, err := filepath.EvalSymlinks(tmpDir)
+	if err != nil {
+		t.Fatalf("resolve tmpDir: %v", err)
+	}
+
+	cfg := &config.Config{
+		Image: config.ImageConfig{
+			Provider:  "debug",
+			OutputDir: tmpDir,
+		},
+	}
+	tool := NewImageGenerateTool(nil, cfg, "debug", nil, "", "")
+
+	args, _ := json.Marshal(ImageGenerateArgs{Prompt: "a dog"})
+	out, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if !strings.Contains(out.Content, "Generated image saved to:") {
+		t.Errorf("expected 'saved to' with disk path in content, got:\n%s", out.Content)
+	}
+	if strings.Contains(out.Content, "Generated image URL:") {
+		t.Errorf("unexpected image URL in non-serve mode, got:\n%s", out.Content)
+	}
+}
+
+func TestSetServeMode_SetsImageBaseURL(t *testing.T) {
+	cfg := &config.Config{
+		Image: config.ImageConfig{
+			Provider: "debug",
+		},
+	}
+	toolConfig := &ToolConfig{
+		Enabled: []string{ImageGenerateToolName},
+	}
+	registry, err := NewLocalToolRegistry(toolConfig, cfg, nil)
+	if err != nil {
+		t.Fatalf("NewLocalToolRegistry: %v", err)
+	}
+
+	// Web platform: imageBaseURL set
+	registry.SetServeMode(true, "/ui/images/")
+
+	tool, ok := registry.Get(ImageGenerateToolName)
+	if !ok {
+		t.Fatal("image_generate tool not found")
+	}
+	ig := tool.(*ImageGenerateTool)
+	if !ig.serveMode {
+		t.Error("expected serveMode to be true")
+	}
+	if ig.serveImageBaseURL != "/ui/images/" {
+		t.Errorf("expected serveImageBaseURL = %q, got %q", "/ui/images/", ig.serveImageBaseURL)
+	}
+
+	// Telegram platform: serveMode on but no imageBaseURL
+	registry.SetServeMode(true, "")
+	if !ig.serveMode {
+		t.Error("expected serveMode to remain true for telegram")
+	}
+	if ig.serveImageBaseURL != "" {
+		t.Errorf("expected serveImageBaseURL = %q for telegram, got %q", "", ig.serveImageBaseURL)
+	}
+
+	// Disable serve mode entirely
+	registry.SetServeMode(false, "")
+	if ig.serveMode {
+		t.Error("expected serveMode to be false after disabling")
+	}
+}
+
 func TestImageGenerateTool_ServeModeStripsTerminalParams(t *testing.T) {
 	cfg := &config.Config{}
 	tool := NewImageGenerateTool(nil, cfg, "", nil, "", "")

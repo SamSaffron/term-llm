@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -45,8 +46,8 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Strip /ui/ prefix and check if remainder matches a static asset.
-	assetName := strings.TrimPrefix(r.URL.Path, "/ui/")
+	// Strip base-path prefix and check if remainder matches a static asset.
+	assetName := strings.TrimPrefix(r.URL.Path, s.cfg.uiRoute())
 	if assetName != "" && !strings.Contains(assetName, "/") && !strings.Contains(assetName, "..") {
 		if data, err := serveui.StaticAsset(assetName); err == nil {
 			contentType := mime.TypeByExtension(filepath.Ext(assetName))
@@ -64,8 +65,9 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	html := serveui.IndexHTML()
-	if prefix := s.cfg.uiPrefix; prefix != "" && prefix != "/ui" {
-		snippet := `<script>window.TERM_LLM_UI_PREFIX=` + "`" + prefix + "`" + `;</script></head>`
+	if prefix := s.cfg.basePath; prefix != "" && prefix != "/ui" {
+		escaped, _ := json.Marshal(prefix)
+		snippet := `<script>window.TERM_LLM_UI_PREFIX=` + string(escaped) + `;</script></head>`
 		html = bytes.Replace(html, []byte("</head>"), []byte(snippet), 1)
 	}
 	_, _ = w.Write(html)
@@ -78,7 +80,7 @@ func (s *serveServer) handleImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filename := strings.TrimPrefix(r.URL.Path, "/ui/images/")
+	filename := strings.TrimPrefix(r.URL.Path, s.cfg.imagesRoute())
 	if filename == "" || strings.Contains(filename, "/") || strings.Contains(filename, "..") {
 		http.NotFound(w, r)
 		return
@@ -113,8 +115,9 @@ func (s *serveServer) handleImage(w http.ResponseWriter, r *http.Request) {
 // ensureImageServeable ensures the given image path is under the serveable
 // image output directory. If the file is already there, the path is returned
 // as-is. Otherwise the file is copied into the output dir so that the
-// /ui/images/ handler can serve it. Returns the serveable path and true on
-// success, or ("", false) if the image could not be made serveable.
+// images handler (mounted at basePath/images/) can serve it. Returns the
+// serveable path and true on success, or ("", false) if the image could not
+// be made serveable.
 func (s *serveServer) ensureImageServeable(imgPath string) (string, bool) {
 	outputDir := image.ExpandPath(s.cfgRef.Image.OutputDir)
 	if outputDir == "" {

@@ -159,6 +159,262 @@ func readSSEEvent(t *testing.T, scanner *bufio.Scanner) (string, string, bool) {
 	return eventName, strings.Join(dataLines, "\n"), true
 }
 
+func TestResolvePlatforms(t *testing.T) {
+	tests := []struct {
+		name           string
+		args           []string
+		configPlatform []string
+		want           []string
+		wantErr        string
+	}{
+		{name: "single web", args: []string{"web"}, want: []string{"web"}},
+		{name: "single telegram", args: []string{"telegram"}, want: []string{"telegram"}},
+		{name: "multiple platforms", args: []string{"telegram", "web"}, want: []string{"telegram", "web"}},
+		{name: "all three", args: []string{"web", "jobs", "telegram"}, want: []string{"web", "jobs", "telegram"}},
+		{name: "unknown platform", args: []string{"slack"}, wantErr: `unknown platform "slack"`},
+		{name: "mixed valid and invalid", args: []string{"web", "invalid"}, wantErr: `unknown platform "invalid"`},
+		{name: "case insensitive", args: []string{"WEB", "Telegram"}, want: []string{"web", "telegram"}},
+		{name: "dedup", args: []string{"telegram", "telegram", "web"}, want: []string{"telegram", "web"}},
+		{name: "whitespace trimmed", args: []string{" web ", " telegram "}, want: []string{"web", "telegram"}},
+		{name: "no args no config", args: nil, wantErr: "no platforms specified"},
+		{name: "args override config", args: []string{"web"}, configPlatform: []string{"telegram"}, want: []string{"web"}},
+		{name: "config fallback", args: nil, configPlatform: []string{"telegram", "web"}, want: []string{"telegram", "web"}},
+		{name: "config dedup", args: nil, configPlatform: []string{"web", "web"}, want: []string{"web"}},
+		{name: "config unknown", args: nil, configPlatform: []string{"slack"}, wantErr: `unknown platform "slack"`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolvePlatforms(tt.args, tt.configPlatform)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error %q does not contain %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("got[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestPlatformContains(t *testing.T) {
+	tests := []struct {
+		name      string
+		platforms []string
+		target    string
+		want      bool
+	}{
+		{name: "found", platforms: []string{"web", "telegram"}, target: "telegram", want: true},
+		{name: "not found", platforms: []string{"web", "jobs"}, target: "telegram", want: false},
+		{name: "empty list", platforms: nil, target: "web", want: false},
+		{name: "single match", platforms: []string{"web"}, target: "web", want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := platformContains(tt.platforms, tt.target); got != tt.want {
+				t.Fatalf("platformContains(%v, %q) = %v, want %v", tt.platforms, tt.target, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeBasePath(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{name: "default", input: "/ui", want: "/ui"},
+		{name: "custom", input: "/chat", want: "/chat"},
+		{name: "nested", input: "/app/v2", want: "/app/v2"},
+		{name: "trailing slash stripped", input: "/chat/", want: "/chat"},
+		{name: "multiple trailing slashes", input: "/chat///", want: "/chat"},
+		{name: "no leading slash added", input: "chat", want: "/chat"},
+		{name: "whitespace trimmed", input: "  /chat  ", want: "/chat"},
+		{name: "root rejected", input: "/", wantErr: true},
+		{name: "empty rejected", input: "", wantErr: true},
+		{name: "whitespace only rejected", input: "   ", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := normalizeBasePath(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for input %q, got %q", tt.input, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error for input %q: %v", tt.input, err)
+			}
+			if got != tt.want {
+				t.Fatalf("normalizeBasePath(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestServeServerConfig_RouteHelpers(t *testing.T) {
+	tests := []struct {
+		basePath   string
+		wantUI     string
+		wantImages string
+	}{
+		{"/ui", "/ui/", "/ui/images/"},
+		{"/chat", "/chat/", "/chat/images/"},
+		{"/app/v2", "/app/v2/", "/app/v2/images/"},
+	}
+	for _, tt := range tests {
+		cfg := serveServerConfig{basePath: tt.basePath}
+		if got := cfg.uiRoute(); got != tt.wantUI {
+			t.Errorf("basePath=%q uiRoute()=%q, want %q", tt.basePath, got, tt.wantUI)
+		}
+		if got := cfg.imagesRoute(); got != tt.wantImages {
+			t.Errorf("basePath=%q imagesRoute()=%q, want %q", tt.basePath, got, tt.wantImages)
+		}
+	}
+}
+
+func TestCustomBasePath_EndToEnd(t *testing.T) {
+	srv := &serveServer{
+		cfg: serveServerConfig{
+			ui:       true,
+			basePath: "/chat",
+		},
+	}
+
+	// 1. /chat/ serves the SPA with the injected prefix
+	req := httptest.NewRequest(http.MethodGet, "/chat/", nil)
+	rr := httptest.NewRecorder()
+	srv.handleUI(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("/chat/ status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	// Prefix should be JSON-escaped (a proper JS string literal, not a template literal)
+	if !strings.Contains(body, `TERM_LLM_UI_PREFIX="/chat"`) {
+		t.Errorf("/chat/ should inject JSON-escaped TERM_LLM_UI_PREFIX, got:\n%s",
+			body[strings.Index(body, "TERM_LLM")-20:strings.Index(body, "TERM_LLM")+60])
+	}
+
+	// 2. /chat/app.css serves static assets
+	req = httptest.NewRequest(http.MethodGet, "/chat/app.css", nil)
+	rr = httptest.NewRecorder()
+	srv.handleUI(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("/chat/app.css status = %d, want 200", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), ".app {") {
+		t.Error("/chat/app.css should contain app styles")
+	}
+
+	// 3. /chat/images/<file> serves images via handleImage
+	//    (We test that the path parsing works — actual file serving
+	//    is tested elsewhere in TestHandleImage_ServesFileAndRejectsTraversal)
+	req = httptest.NewRequest(http.MethodGet, "/chat/images/", nil)
+	rr = httptest.NewRecorder()
+	srv.handleImage(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("/chat/images/ (empty filename) status = %d, want 404", rr.Code)
+	}
+
+	// 4. Traversal attempt on custom path also rejected
+	req = httptest.NewRequest(http.MethodGet, "/chat/images/..%2Fetc%2Fpasswd", nil)
+	rr = httptest.NewRecorder()
+	srv.handleImage(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("/chat/images/ traversal status = %d, want 404", rr.Code)
+	}
+}
+
+func TestNormalizeBasePath_ProducesValidRoutes(t *testing.T) {
+	// Verify that normalizeBasePath output always produces valid route helpers
+	// and that handleUI/handleImage parse paths correctly.
+	inputs := []struct {
+		raw          string
+		wantBasePath string
+	}{
+		{"chat", "/chat"},    // no leading slash → added
+		{"/chat/", "/chat"},  // trailing slash → stripped
+		{"  /app  ", "/app"}, // whitespace → trimmed
+		{"/a/b/c", "/a/b/c"}, // nested path
+		{"/ui", "/ui"},       // default
+	}
+
+	for _, tt := range inputs {
+		bp, err := normalizeBasePath(tt.raw)
+		if err != nil {
+			t.Fatalf("normalizeBasePath(%q) unexpected error: %v", tt.raw, err)
+		}
+		if bp != tt.wantBasePath {
+			t.Fatalf("normalizeBasePath(%q) = %q, want %q", tt.raw, bp, tt.wantBasePath)
+		}
+
+		cfg := serveServerConfig{ui: true, basePath: bp}
+
+		// Route helpers produce valid patterns (non-empty, start with /)
+		if ui := cfg.uiRoute(); ui == "" || ui[0] != '/' || ui[len(ui)-1] != '/' {
+			t.Errorf("basePath=%q: uiRoute()=%q invalid", bp, ui)
+		}
+		if img := cfg.imagesRoute(); img == "" || img[0] != '/' || img[len(img)-1] != '/' {
+			t.Errorf("basePath=%q: imagesRoute()=%q invalid", bp, img)
+		}
+
+		// handleUI serves SPA at basePath + "/"
+		srv := &serveServer{cfg: cfg}
+		req := httptest.NewRequest(http.MethodGet, cfg.uiRoute(), nil)
+		rr := httptest.NewRecorder()
+		srv.handleUI(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Errorf("basePath=%q: handleUI(%s) status=%d, want 200", bp, cfg.uiRoute(), rr.Code)
+		}
+
+		// handleUI serves assets at basePath + "/app.css"
+		req = httptest.NewRequest(http.MethodGet, cfg.uiRoute()+"app.css", nil)
+		rr = httptest.NewRecorder()
+		srv.handleUI(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Errorf("basePath=%q: handleUI(%sapp.css) status=%d, want 200", bp, cfg.uiRoute(), rr.Code)
+		}
+
+		// handleImage rejects empty filename at basePath + "/images/"
+		req = httptest.NewRequest(http.MethodGet, cfg.imagesRoute(), nil)
+		rr = httptest.NewRecorder()
+		srv.handleImage(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Errorf("basePath=%q: handleImage(%s) status=%d, want 404", bp, cfg.imagesRoute(), rr.Code)
+		}
+	}
+}
+
+func TestNormalizeBasePath_RejectsInvalid(t *testing.T) {
+	// These must all be rejected — if they weren't, they'd produce
+	// empty or root-only routes that would panic or misbehave.
+	invalid := []string{"/", "", "   ", "///"}
+	for _, input := range invalid {
+		_, err := normalizeBasePath(input)
+		if err == nil {
+			t.Errorf("normalizeBasePath(%q) should have returned an error", input)
+		}
+	}
+}
+
 func TestSingleServeTemplatePlatform(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -183,7 +439,7 @@ func TestSingleServeTemplatePlatform(t *testing.T) {
 }
 
 func TestHandleUI_ReturnsEmbeddedStaticAsset(t *testing.T) {
-	srv := &serveServer{cfg: serveServerConfig{ui: true}}
+	srv := &serveServer{cfg: serveServerConfig{ui: true, basePath: "/ui"}}
 
 	tests := []struct {
 		name        string
@@ -960,7 +1216,7 @@ func TestHandleImage_ServesFileAndRejectsTraversal(t *testing.T) {
 		t.Fatalf("write test image: %v", err)
 	}
 
-	srv := &serveServer{cfgRef: &config.Config{}}
+	srv := &serveServer{cfg: serveServerConfig{basePath: "/ui"}, cfgRef: &config.Config{}}
 	srv.cfgRef.Image.OutputDir = dir
 
 	// Valid file
@@ -1021,7 +1277,7 @@ func TestEnsureImageServeable_CopiesExternalFile(t *testing.T) {
 		t.Fatalf("write internal image: %v", err)
 	}
 
-	srv := &serveServer{cfgRef: &config.Config{}}
+	srv := &serveServer{cfg: serveServerConfig{basePath: "/ui"}, cfgRef: &config.Config{}}
 	srv.cfgRef.Image.OutputDir = outputDir
 
 	// External file should be copied

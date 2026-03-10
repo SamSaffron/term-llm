@@ -114,7 +114,9 @@ type Config struct {
 
 // ServeConfig holds configuration for the serve command platforms.
 type ServeConfig struct {
-	Telegram TelegramServeConfig `mapstructure:"telegram" yaml:"telegram,omitempty"`
+	Platforms []string            `mapstructure:"platforms" yaml:"platforms,omitempty"`
+	BasePath  string              `mapstructure:"base_path" yaml:"base_path,omitempty"`
+	Telegram  TelegramServeConfig `mapstructure:"telegram" yaml:"telegram,omitempty"`
 }
 
 // TelegramServeConfig holds configuration for the Telegram bot platform.

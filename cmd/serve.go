@@ -31,8 +31,8 @@ var (
 	serveToken                  string
 	serveAllowNoAuth            bool
 	serveAuthMode               string
-	serveUI                     bool
-	serveUIPrefix               string
+	serveNoUI                   bool
+	serveBasePath               string
 	serveCORSOrigins            []string
 	serveSessionTTL             time.Duration
 	serveSessionMax             int
@@ -52,17 +52,23 @@ var (
 	serveYolo                   bool
 	serveTelegramCarryoverChars int
 	serveJobsWorkers            int
-	// Platform flags
-	servePlatform string
-	serveSetup    bool
+	serveSetup                  bool
 )
 
 var serveCmd = &cobra.Command{
-	Use:   "serve",
+	Use:   "serve <platform> [platform...]",
 	Short: "Run the agent as a server (web, jobs, Telegram, or any combination)",
 	Long: `Run term-llm as a server on one or more platforms simultaneously.
 
-Default platform is "web": an OpenAI-compatible HTTP server.
+Platforms are specified as positional arguments. If none are given, the
+serve.platforms list from config.yaml is used.
+
+Examples:
+  term-llm serve web             # web server with UI enabled
+  term-llm serve web --no-ui     # web API only (no chat UI)
+  term-llm serve telegram        # Telegram bot only
+  term-llm serve telegram web    # both platforms
+  term-llm serve web --base-path /chat
 
 Web endpoints:
   POST /v1/responses
@@ -84,11 +90,9 @@ Jobs endpoints:
   GET    /v2/runs/:id/events
   POST   /v2/runs/:id/cancel
 
-Use --ui to also serve a minimal web chat interface.
-Use --platform jobs for async per-agent queued work.
-Use --platform telegram to run a Telegram bot instead (or alongside web/jobs).
 Use --setup to configure credentials for the selected platforms.`,
-	RunE: runServe,
+	ValidArgs: []string{"web", "jobs", "telegram"},
+	RunE:      runServe,
 }
 
 func init() {
@@ -99,18 +103,12 @@ func init() {
 	serveCmd.Flags().StringVar(&serveToken, "token", "", "Bearer token for API auth (auto-generated if omitted)")
 	serveCmd.Flags().BoolVar(&serveAllowNoAuth, "allow-no-auth", false, "Disable auth (only allowed on loopback host)")
 	serveCmd.Flags().StringVar(&serveAuthMode, "auth", "bearer", "Auth mode: bearer or none")
-	serveCmd.Flags().BoolVar(&serveUI, "ui", false, "Serve minimal web UI")
-	serveCmd.Flags().StringVar(&serveUIPrefix, "ui-prefix", "/ui", "URL prefix the UI uses for session URLs (e.g. /chat)")
+	serveCmd.Flags().BoolVar(&serveNoUI, "no-ui", false, "Disable web UI (enabled by default when web platform is active)")
+	serveCmd.Flags().StringVar(&serveBasePath, "base-path", "/ui", "URL prefix the UI uses for session URLs (e.g. /chat)")
 	serveCmd.Flags().StringArrayVar(&serveCORSOrigins, "cors-origin", nil, "Allowed CORS origin (repeatable, or '*' for all)")
 	serveCmd.Flags().DurationVar(&serveSessionTTL, "session-ttl", 30*time.Minute, "Stateful session idle TTL")
 	serveCmd.Flags().IntVar(&serveSessionMax, "session-max", 1000, "Max stateful sessions in memory")
 
-	serveCmd.Flags().StringVar(&servePlatform, "platform", "web", "Comma-separated platforms to serve: web, jobs, telegram")
-	if err := serveCmd.RegisterFlagCompletionFunc("platform", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return []string{"web", "jobs", "telegram", "web,jobs", "web,telegram", "jobs,telegram", "web,jobs,telegram"}, cobra.ShellCompDirectiveNoFileComp
-	}); err != nil {
-		panic("failed to register platform completion: " + err.Error())
-	}
 	serveCmd.Flags().BoolVar(&serveSetup, "setup", false, "Re-run setup wizard for selected platforms")
 	serveCmd.Flags().IntVar(&serveTelegramCarryoverChars, "telegram-carryover-chars", 4000, "Characters of previous Telegram session context to carry into replacement sessions (0 disables)")
 	serveCmd.Flags().IntVar(&serveJobsWorkers, "jobs-workers", 4, "Number of concurrent job workers for --platform jobs")
@@ -165,12 +163,24 @@ func runServe(cmd *cobra.Command, args []string) error {
 	ctx, stop := signal.NotifyContext()
 	defer stop()
 
-	platformNames := parsePlatforms(servePlatform)
+	cfg, err := loadConfigWithSetup()
+	if err != nil {
+		return err
+	}
+
+	platformNames, err := resolvePlatforms(args, cfg.Serve.Platforms)
+	if err != nil {
+		return err
+	}
 	hasJobs := platformContains(platformNames, "jobs")
 	hasWeb := platformContains(platformNames, "web")
 	hasTelegram := platformContains(platformNames, "telegram")
 
-	cfg, err := loadConfigWithSetup()
+	// Apply config fallback for base-path if not set via flag
+	if !cmd.Flags().Changed("base-path") && cfg.Serve.BasePath != "" {
+		serveBasePath = cfg.Serve.BasePath
+	}
+	serveBasePath, err = normalizeBasePath(serveBasePath)
 	if err != nil {
 		return err
 	}
@@ -273,7 +283,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 			agentName:           agentName,
 		}
 		if toolMgr != nil {
-			runtime.toolMgr.Registry.SetServeMode(true)
+			imageBaseURL := ""
+			if hasWeb {
+				imageBaseURL = strings.TrimRight(serveBasePath, "/") + "/images/"
+			}
+			runtime.toolMgr.Registry.SetServeMode(true, imageBaseURL)
 			if !serveYolo {
 				runtime.toolMgr.ApprovalMgr.IgnoreProjectApprovals = true
 				runtime.toolMgr.ApprovalMgr.DebugApproval = serveDebug
@@ -356,6 +370,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 				return fmt.Errorf("initialize jobs v2 manager: %w", err)
 			}
 		}
+		serveUI := hasWeb && !serveNoUI
 		s = &serveServer{
 			cfg: serveServerConfig{
 				host:        serveHost,
@@ -363,7 +378,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 				requireAuth: requireAuth,
 				token:       token,
 				ui:          serveUI,
-				uiPrefix:    strings.TrimRight(serveUIPrefix, "/"),
+				basePath:    serveBasePath,
 				corsOrigins: append([]string(nil), serveCORSOrigins...),
 			},
 			sessionMgr: sessionMgr,
@@ -386,7 +401,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		if requireAuth {
 			fmt.Fprintf(cmd.ErrOrStderr(), "token: %s\n", token)
 		}
-		fmt.Fprintf(cmd.ErrOrStderr(), "ui: %v\n", serveUI)
+		fmt.Fprintf(cmd.ErrOrStderr(), "ui: %v\n", s.cfg.ui)
 		if hasJobs {
 			fmt.Fprintf(cmd.ErrOrStderr(), "jobs workers: %d\n", serveJobsWorkers)
 		}
@@ -449,18 +464,41 @@ func newServeEngineWithTools(cfg *config.Config, settings SessionSettings, provi
 	return engine, toolMgr, nil
 }
 
-func parsePlatforms(flag string) []string {
+var knownPlatforms = map[string]bool{"web": true, "jobs": true, "telegram": true}
+
+// resolvePlatforms returns the list of platforms to serve. Positional args
+// take precedence; if none are given, configPlatforms (from config.yaml
+// serve.platforms) is used as fallback.
+func resolvePlatforms(args []string, configPlatforms []string) ([]string, error) {
+	var raw []string
+	if len(args) > 0 {
+		raw = args
+	} else if len(configPlatforms) > 0 {
+		raw = configPlatforms
+	}
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("no platforms specified\n\nUsage: term-llm serve <platform> [platform...]\n\nExamples:\n  term-llm serve web\n  term-llm serve telegram web\n\nOr set serve.platforms in config.yaml")
+	}
+
+	seen := make(map[string]bool)
 	var out []string
-	for _, part := range strings.Split(flag, ",") {
-		part = strings.TrimSpace(strings.ToLower(part))
-		if part != "" {
-			out = append(out, part)
+	for _, a := range raw {
+		p := strings.TrimSpace(strings.ToLower(a))
+		if p == "" {
+			continue
+		}
+		if !knownPlatforms[p] {
+			return nil, fmt.Errorf("unknown platform %q (valid: web, jobs, telegram)", p)
+		}
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
 		}
 	}
 	if len(out) == 0 {
-		out = []string{"web"}
+		return nil, fmt.Errorf("no platforms specified\n\nUsage: term-llm serve <platform> [platform...]\n\nExamples:\n  term-llm serve web\n  term-llm serve telegram web\n\nOr set serve.platforms in config.yaml")
 	}
-	return out
+	return out, nil
 }
 
 func platformContains(platforms []string, name string) bool {
@@ -541,8 +579,32 @@ type serveServerConfig struct {
 	requireAuth bool
 	token       string
 	ui          bool
-	uiPrefix    string
+	basePath    string // e.g. "/ui" or "/chat", always without trailing slash
 	corsOrigins []string
+}
+
+// uiRoute returns the base-path with trailing slash, e.g. "/ui/" or "/chat/".
+func (c serveServerConfig) uiRoute() string { return c.basePath + "/" }
+
+// imagesRoute returns the images sub-route, e.g. "/ui/images/" or "/chat/images/".
+func (c serveServerConfig) imagesRoute() string { return c.basePath + "/images/" }
+
+// normalizeBasePath validates and normalizes a base-path value.
+// It ensures a leading slash, strips trailing slashes, and rejects
+// empty or root-only paths (use the default "/ui" instead of "/").
+func normalizeBasePath(raw string) (string, error) {
+	p := strings.TrimSpace(raw)
+	if p == "" {
+		return "", fmt.Errorf("--base-path must not be empty")
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	p = strings.TrimRight(p, "/")
+	if p == "" {
+		return "", fmt.Errorf("--base-path must not be \"/\" (use the default /ui or a sub-path like /chat)")
+	}
+	return p, nil
 }
 
 type serveServer struct {
@@ -574,7 +636,8 @@ func (s *serveServer) Start() error {
 		mux.HandleFunc("/v2/runs/", s.auth(s.cors(s.handleRunV2ByID)))
 	}
 
-	mux.HandleFunc("/ui/images/", s.auth(s.cors(s.handleImage)))
+	imagesRoute := s.cfg.imagesRoute()
+	mux.HandleFunc(imagesRoute, s.auth(s.cors(s.handleImage)))
 	mux.HandleFunc("/v1/sessions/", s.auth(s.cors(s.handleSessionByID)))
 
 	if s.store != nil {
@@ -582,12 +645,13 @@ func (s *serveServer) Start() error {
 	}
 
 	if s.cfg.ui {
-		mux.HandleFunc("/ui/", s.cors(s.handleUI))
-		mux.HandleFunc("/ui", s.cors(func(w http.ResponseWriter, r *http.Request) {
-			http.Redirect(w, r, "/ui/", http.StatusMovedPermanently)
+		uiRoute := s.cfg.uiRoute()
+		mux.HandleFunc(uiRoute, s.cors(s.handleUI))
+		mux.HandleFunc(s.cfg.basePath, s.cors(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, uiRoute, http.StatusMovedPermanently)
 		}))
 		mux.HandleFunc("/", s.cors(func(w http.ResponseWriter, r *http.Request) {
-			http.Redirect(w, r, "/ui/", http.StatusTemporaryRedirect)
+			http.Redirect(w, r, uiRoute, http.StatusTemporaryRedirect)
 		}))
 	}
 
