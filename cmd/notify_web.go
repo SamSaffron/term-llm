@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/samsaffron/term-llm/internal/config"
@@ -53,6 +54,18 @@ func runNotifyWeb(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func normalizeWebPushSubject(raw string) string {
+	subject := strings.TrimSpace(raw)
+	if subject == "" {
+		return "https://github.com/samsaffron/term-llm"
+	}
+	lower := strings.ToLower(subject)
+	if strings.HasPrefix(lower, "mailto:") {
+		return strings.TrimSpace(subject[len("mailto:"):])
+	}
+	return subject
+}
+
 // sendWebPushAll sends a push notification to all stored subscriptions.
 // Returns the number of successful sends and a list of error strings.
 func sendWebPushAll(ctx context.Context, cfg *config.Config, message string, errWriter io.Writer) (int, []string) {
@@ -75,10 +88,7 @@ func sendWebPushAll(ctx context.Context, cfg *config.Config, message string, err
 		"body":  message,
 	})
 
-	subject := cfg.Serve.WebPush.Subject
-	if subject == "" {
-		subject = "mailto:webpush@term-llm.local"
-	}
+	subject := normalizeWebPushSubject(cfg.Serve.WebPush.Subject)
 
 	opts := &webpush.Options{
 		VAPIDPublicKey:  cfg.Serve.WebPush.VAPIDPublicKey,
