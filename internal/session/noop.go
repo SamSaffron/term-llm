@@ -77,6 +77,18 @@ func (s *NoopStore) ClearCurrent(ctx context.Context) error {
 	return nil
 }
 
+func (s *NoopStore) SavePushSubscription(ctx context.Context, sub *PushSubscription) error {
+	return nil
+}
+
+func (s *NoopStore) DeletePushSubscription(ctx context.Context, endpoint string) error {
+	return nil
+}
+
+func (s *NoopStore) ListPushSubscriptions(ctx context.Context) ([]PushSubscription, error) {
+	return nil, nil
+}
+
 func (s *NoopStore) Close() error {
 	return nil
 }

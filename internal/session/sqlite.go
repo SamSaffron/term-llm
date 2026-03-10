@@ -152,7 +152,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 8
+const schemaVersion = 9
 
 // migration represents a schema migration.
 type migration struct {
@@ -386,6 +386,24 @@ var migrations = []migration{
 				return err
 			}
 			return nil
+		},
+	},
+	{
+		// Migration 9: Create push_subscriptions table for Web Push notifications
+		version:     9,
+		description: "create push_subscriptions table",
+		up: func(db *sql.DB) error {
+			_, err := db.Exec(`
+				CREATE TABLE IF NOT EXISTS push_subscriptions (
+					id TEXT PRIMARY KEY,
+					endpoint TEXT NOT NULL UNIQUE,
+					key_p256dh TEXT NOT NULL,
+					key_auth TEXT NOT NULL,
+					created_at TEXT NOT NULL DEFAULT (datetime('now')),
+					last_used_at TEXT
+				)
+			`)
+			return err
 		},
 	},
 }
@@ -1154,6 +1172,56 @@ func (s *SQLiteStore) GetCurrent(ctx context.Context) (*Session, error) {
 func (s *SQLiteStore) ClearCurrent(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, "DELETE FROM metadata WHERE key = 'current_session'")
 	return err
+}
+
+// SavePushSubscription upserts a Web Push subscription.
+func (s *SQLiteStore) SavePushSubscription(ctx context.Context, sub *PushSubscription) error {
+	if sub.ID == "" {
+		sub.ID = NewID()
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO push_subscriptions (id, endpoint, key_p256dh, key_auth)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(endpoint) DO UPDATE SET
+			key_p256dh = excluded.key_p256dh,
+			key_auth = excluded.key_auth,
+			last_used_at = datetime('now')`,
+		sub.ID, sub.Endpoint, sub.KeyP256DH, sub.KeyAuth)
+	if err != nil {
+		return fmt.Errorf("save push subscription: %w", err)
+	}
+	return nil
+}
+
+// DeletePushSubscription removes a Web Push subscription by endpoint.
+func (s *SQLiteStore) DeletePushSubscription(ctx context.Context, endpoint string) error {
+	_, err := s.db.ExecContext(ctx, "DELETE FROM push_subscriptions WHERE endpoint = ?", endpoint)
+	if err != nil {
+		return fmt.Errorf("delete push subscription: %w", err)
+	}
+	return nil
+}
+
+// ListPushSubscriptions returns all stored Web Push subscriptions.
+func (s *SQLiteStore) ListPushSubscriptions(ctx context.Context) ([]PushSubscription, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, endpoint, key_p256dh, key_auth
+		FROM push_subscriptions
+		ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("list push subscriptions: %w", err)
+	}
+	defer rows.Close()
+
+	var subs []PushSubscription
+	for rows.Next() {
+		var sub PushSubscription
+		if err := rows.Scan(&sub.ID, &sub.Endpoint, &sub.KeyP256DH, &sub.KeyAuth); err != nil {
+			return nil, fmt.Errorf("scan push subscription: %w", err)
+		}
+		subs = append(subs, sub)
+	}
+	return subs, rows.Err()
 }
 
 // Close closes the database connection.

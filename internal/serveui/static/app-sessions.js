@@ -3,13 +3,13 @@
 
 const app = window.TermLLMApp;
 const {
-  STORAGE_KEYS, state, elements, generateId, truncate, loadSessions, saveSessions, getActiveSession, createSession, ensureActiveSession,
+  UI_PREFIX, STORAGE_KEYS, state, elements, generateId, truncate, loadSessions, saveSessions, getActiveSession, createSession, ensureActiveSession,
   sessionIdFromURL, updateURL, scrollToBottom, setConnectionState, persistAndRefreshShell, refreshRelativeTimes,
   openAuthModal, closeAuthModal, handleAuthFailure, closeAskUserModal, openAskUserModal, setActiveResponseTracking,
   clearActiveResponseTracking, setStreaming, resumeActiveResponse, renderSidebar, renderMessages, renderModelOptions,
   autoGrowPrompt, fetchModels, addErrorMessage, sendMessage, openSidebar, closeSidebar, closeSidebarIfMobile,
   connectToken, submitAskUserModal, cancelActiveResponse, handleFiles, isNearBottom,
-  openApprovalModal, closeApprovalModal, submitApprovalModal, registerServiceWorker, refreshNotificationUI, requestNotificationPermission
+  openApprovalModal, closeApprovalModal, submitApprovalModal, registerServiceWorker, subscribeToPush, refreshNotificationUI, requestNotificationPermission
 } = app;
 let sessionStatePollTimer = null;
 
@@ -110,7 +110,7 @@ const loadServerSessionMessages = async (sessionId) => {
   try {
     const headers = {};
     if (state.token) headers.Authorization = `Bearer ${state.token}`;
-    const resp = await fetch(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`, { headers });
+    const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(sessionId)}/messages`, { headers });
     if (!resp.ok) return null;
     const data = await resp.json();
     if (!Array.isArray(data.messages)) return null;
@@ -124,7 +124,7 @@ const loadServerSessionState = async (sessionId) => {
   try {
     const headers = {};
     if (state.token) headers.Authorization = `Bearer ${state.token}`;
-    const resp = await fetch(`/v1/sessions/${encodeURIComponent(sessionId)}/state`, { headers });
+    const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(sessionId)}/state`, { headers });
     if (!resp.ok) return null;
     const data = await resp.json().catch(() => null);
     if (!data || typeof data !== 'object') return null;
@@ -277,7 +277,7 @@ const mergeServerSessions = async () => {
   try {
     const headers = {};
     if (state.token) headers.Authorization = `Bearer ${state.token}`;
-    const resp = await fetch('/v1/sessions', { headers });
+    const resp = await fetch(`${UI_PREFIX}/v1/sessions`, { headers });
     if (!resp.ok) return;
     const data = await resp.json();
     if (!Array.isArray(data.sessions)) return;
@@ -355,6 +355,11 @@ const initialize = async () => {
 
     // Merge server-side sessions after successful auth
     await mergeServerSessions();
+
+    // Retry push enrollment now that auth is confirmed
+    if (state.notificationsEnabled && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      subscribeToPush();
+    }
 
     // Lazy-load messages for URL-targeted server session
     const active = getActiveSession();

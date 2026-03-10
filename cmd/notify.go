@@ -18,32 +18,78 @@ import (
 )
 
 var (
-	serveTelegramChatID    int64
-	serveTelegramParseMode string
+	notifyTelegramChatID    int64
+	notifyTelegramParseMode string
 )
 
-var serveTelegramCmd = &cobra.Command{
-	Use:   "telegram",
-	Short: "Telegram utilities",
-}
+var notifyCmd = &cobra.Command{
+	Use:   "notify <message>",
+	Short: "Send a notification to all configured platforms",
+	Long: `Send a notification message to all configured platforms (Telegram, Web Push).
 
-var serveTelegramNotifyCmd = &cobra.Command{
-	Use:   "notify --chat-id <id> <message>",
-	Short: "Send a Telegram message and log it to the session store",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runServeTelegramNotify,
+Examples:
+  term-llm notify "build finished"
+  term-llm notify --chat-id 12345 "deploy complete"
+  term-llm notify telegram --chat-id 12345 "test"
+  term-llm notify web "test"`,
+	Args: cobra.ExactArgs(1),
+	RunE: runNotifyBroadcast,
 }
 
 func init() {
-	serveTelegramNotifyCmd.Flags().Int64Var(&serveTelegramChatID, "chat-id", 0, "Telegram chat ID to send to")
-	serveTelegramNotifyCmd.Flags().StringVar(&serveTelegramParseMode, "parse-mode", "Markdown", "Telegram parse mode: Markdown or HTML")
-	if err := serveTelegramNotifyCmd.MarkFlagRequired("chat-id"); err != nil {
-		panic(fmt.Sprintf("failed to mark chat-id required: %v", err))
+	notifyCmd.Flags().Int64Var(&notifyTelegramChatID, "chat-id", 0, "Telegram chat ID to send to")
+	notifyCmd.Flags().StringVar(&notifyTelegramParseMode, "parse-mode", "Markdown", "Telegram parse mode: Markdown or HTML")
+
+	rootCmd.AddCommand(notifyCmd)
+}
+
+func runNotifyBroadcast(cmd *cobra.Command, args []string) error {
+	message := args[0]
+
+	cfg, err := loadConfigWithSetup()
+	if err != nil {
+		return err
 	}
 
-	serveTelegramCmd.AddCommand(serveTelegramNotifyCmd)
-	serveCmd.AddCommand(serveTelegramCmd)
+	var errs []string
+	sent := 0
+
+	// Telegram: send if token is configured and chat-id provided
+	token := strings.TrimSpace(cfg.Serve.Telegram.Token)
+	if token != "" && notifyTelegramChatID != 0 {
+		parseMode, err := normalizeTelegramParseMode(notifyTelegramParseMode)
+		if err != nil {
+			return err
+		}
+		if err := sendTelegramMessage(cmd.Context(), token, notifyTelegramChatID, message, parseMode); err != nil {
+			errs = append(errs, fmt.Sprintf("telegram: %v", err))
+		} else {
+			logTelegramNotifySession(cmd.Context(), cfg, notifyTelegramChatID, message, cmd.ErrOrStderr())
+			fmt.Fprintln(cmd.ErrOrStderr(), "sent via telegram")
+			sent++
+		}
+	}
+
+	// Web Push: send if VAPID keys are configured
+	if cfg.Serve.WebPush.VAPIDPublicKey != "" && cfg.Serve.WebPush.VAPIDPrivateKey != "" {
+		n, webErrs := sendWebPushAll(cmd.Context(), cfg, message, cmd.ErrOrStderr())
+		sent += n
+		errs = append(errs, webErrs...)
+		if n > 0 {
+			fmt.Fprintf(cmd.ErrOrStderr(), "sent via web push (%d subscriptions)\n", n)
+		}
+	}
+
+	if sent == 0 && len(errs) == 0 {
+		return fmt.Errorf("no notification platforms configured\n\nConfigure telegram (serve.telegram.token + --chat-id) or web push (serve.web_push VAPID keys)")
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("notification errors:\n  %s", strings.Join(errs, "\n  "))
+	}
+	return nil
 }
+
+// Telegram helpers — shared by notify and notify telegram subcommands.
 
 type telegramSendRequest struct {
 	ChatID    int64  `json:"chat_id"`
@@ -54,32 +100,6 @@ type telegramSendRequest struct {
 type telegramSendResponse struct {
 	OK          bool   `json:"ok"`
 	Description string `json:"description"`
-}
-
-func runServeTelegramNotify(cmd *cobra.Command, args []string) error {
-	ctx := cmd.Context()
-	message := args[0]
-	parseMode, err := normalizeTelegramParseMode(serveTelegramParseMode)
-	if err != nil {
-		return err
-	}
-
-	cfg, err := loadConfigWithSetup()
-	if err != nil {
-		return err
-	}
-
-	token := strings.TrimSpace(cfg.Serve.Telegram.Token)
-	if token == "" {
-		return fmt.Errorf("telegram token is not configured (serve.telegram.token)")
-	}
-
-	if err := sendTelegramMessage(ctx, token, serveTelegramChatID, message, parseMode); err != nil {
-		return err
-	}
-
-	logTelegramNotifySession(ctx, cfg, serveTelegramChatID, message, cmd.ErrOrStderr())
-	return nil
 }
 
 func normalizeTelegramParseMode(parseMode string) (string, error) {

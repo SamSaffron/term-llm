@@ -4,6 +4,10 @@
 const app = window.TermLLMApp || (window.TermLLMApp = {});
 
 // ===== Constants & state =====
+// UI_PREFIX is the base path for all routes (UI + API). Injected by the server
+// into index.html as window.TERM_LLM_UI_PREFIX, defaults to '/ui'.
+const UI_PREFIX = (window.TERM_LLM_UI_PREFIX || '/ui');
+
 const STORAGE_KEYS = {
   sessions: 'term_llm_sessions',
   token: 'term_llm_token',
@@ -35,9 +39,9 @@ const state = {
   approval: null,
   serviceWorkerRegistration: null
 };
-// Ensure cookie is set on load so <img> requests to /ui/images/ can authenticate
+// Ensure cookie is set on load so <img> requests to basePath/images/ can authenticate
 if (state.token) {
-  document.cookie = `term_llm_token=${encodeURIComponent(state.token)}; path=/ui/images; SameSite=Strict; max-age=31536000`;
+  document.cookie = `term_llm_token=${encodeURIComponent(state.token)}; path=${UI_PREFIX}/images; SameSite=Strict; max-age=31536000`;
 }
 
 const elements = {
@@ -128,9 +132,9 @@ const sanitizeInterruptState = (value) => {
 
 const syncTokenCookie = (token) => {
   if (token) {
-    document.cookie = `term_llm_token=${encodeURIComponent(token)}; path=/ui/images; SameSite=Strict; max-age=31536000`;
+    document.cookie = `term_llm_token=${encodeURIComponent(token)}; path=${UI_PREFIX}/images; SameSite=Strict; max-age=31536000`;
   } else {
-    document.cookie = 'term_llm_token=; path=/ui/images; SameSite=Strict; max-age=0';
+    document.cookie = `term_llm_token=; path=${UI_PREFIX}/images; SameSite=Strict; max-age=0`;
   }
 };
 
@@ -262,7 +266,6 @@ const updateDocumentTitle = () => {
   }
 };
 
-const UI_PREFIX = (window.TERM_LLM_UI_PREFIX || '/ui');
 const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
 
 const refreshNotificationUI = () => {
@@ -304,6 +307,59 @@ const registerServiceWorker = async () => {
   }
 };
 
+const subscribeToPush = async () => {
+  const vapidKey = window.TERM_LLM_VAPID_PUBLIC_KEY;
+  if (!vapidKey) return;
+
+  // Wait for an active service worker — on first install there may not be one yet.
+  if (!('serviceWorker' in navigator)) return;
+  const registration = await navigator.serviceWorker.ready;
+  if (!registration || !registration.pushManager) return;
+  state.serviceWorkerRegistration = registration;
+
+  try {
+    // Check for existing subscription first
+    let subscription = await registration.pushManager.getSubscription();
+    if (!subscription) {
+      // Convert base64 VAPID key to Uint8Array
+      const padding = '='.repeat((4 - vapidKey.length % 4) % 4);
+      const base64 = (vapidKey + padding).replace(/-/g, '+').replace(/_/g, '/');
+      const rawData = atob(base64);
+      const applicationServerKey = new Uint8Array(rawData.length);
+      for (let i = 0; i < rawData.length; i++) {
+        applicationServerKey[i] = rawData.charCodeAt(i);
+      }
+
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey
+      });
+    }
+
+    // Send subscription to server using toJSON() which provides keys in
+    // base64url format — the encoding webpush-go expects.
+    const subJSON = subscription.toJSON();
+    const body = {
+      endpoint: subJSON.endpoint,
+      keys: subJSON.keys
+    };
+
+    const resp = await fetch(`${UI_PREFIX}/v1/push/subscribe`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': state.token ? `Bearer ${state.token}` : ''
+      },
+      body: JSON.stringify(body)
+    });
+    if (!resp.ok) {
+      console.warn('Push subscribe failed:', resp.status, await resp.text().catch(() => ''));
+    }
+  } catch {
+    // Push subscription failed — in-app notifications still work
+  }
+};
+
 const requestNotificationPermission = async () => {
   if (typeof Notification === 'undefined') {
     refreshNotificationUI();
@@ -312,12 +368,16 @@ const requestNotificationPermission = async () => {
   if (Notification.permission === 'granted') {
     state.notificationsEnabled = true;
     localStorage.setItem(STORAGE_KEYS.notificationsEnabled, '1');
+    subscribeToPush();
     refreshNotificationUI();
     return 'granted';
   }
   const permission = await Notification.requestPermission();
   state.notificationsEnabled = permission === 'granted';
   localStorage.setItem(STORAGE_KEYS.notificationsEnabled, state.notificationsEnabled ? '1' : '0');
+  if (permission === 'granted') {
+    subscribeToPush();
+  }
   refreshNotificationUI();
   return permission;
 };
@@ -600,6 +660,7 @@ Object.assign(app, {
   isStandalone,
   refreshNotificationUI,
   registerServiceWorker,
+  subscribeToPush,
   requestNotificationPermission,
   maybeNotifyResponseComplete,
   sessionIdFromURL,

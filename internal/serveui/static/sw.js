@@ -6,6 +6,18 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(self.clients.claim());
 });
 
+self.addEventListener('push', (event) => {
+  const data = event.data?.json() || {};
+  event.waitUntil(
+    self.registration.showNotification(data.title || 'term-llm', {
+      body: data.body || '',
+      icon: './icon-512.png',
+      badge: './icon-512.png',
+      data: { url: data.url || self.registration.scope }
+    })
+  );
+});
+
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const targetURL = String(event.notification?.data?.url || self.registration.scope);

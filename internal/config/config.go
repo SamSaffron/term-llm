@@ -117,6 +117,14 @@ type ServeConfig struct {
 	Platforms []string            `mapstructure:"platforms" yaml:"platforms,omitempty"`
 	BasePath  string              `mapstructure:"base_path" yaml:"base_path,omitempty"`
 	Telegram  TelegramServeConfig `mapstructure:"telegram" yaml:"telegram,omitempty"`
+	WebPush   WebPushConfig       `mapstructure:"web_push" yaml:"web_push,omitempty"`
+}
+
+// WebPushConfig holds VAPID keys for Web Push notifications.
+type WebPushConfig struct {
+	VAPIDPublicKey  string `mapstructure:"vapid_public_key" yaml:"vapid_public_key,omitempty"`
+	VAPIDPrivateKey string `mapstructure:"vapid_private_key" yaml:"vapid_private_key,omitempty"`
+	Subject         string `mapstructure:"subject" yaml:"subject,omitempty"` // mailto: or URL
 }
 
 // TelegramServeConfig holds configuration for the Telegram bot platform.
@@ -1414,6 +1422,31 @@ func SetServeTelegramConfig(c TelegramServeConfig) error {
 	}
 	if c.InterruptTimeout > 0 {
 		v.Set("serve.telegram.interrupt_timeout", c.InterruptTimeout)
+	}
+
+	return v.WriteConfig()
+}
+
+// SetServeWebPushConfig saves Web Push VAPID configuration using viper.
+func SetServeWebPushConfig(c WebPushConfig) error {
+	configPath, err := GetConfigPath()
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
+	}
+
+	v := viper.New()
+	v.SetConfigFile(configPath)
+	v.SetConfigType("yaml")
+	_ = v.ReadInConfig()
+
+	v.Set("serve.web_push.vapid_public_key", c.VAPIDPublicKey)
+	v.Set("serve.web_push.vapid_private_key", c.VAPIDPrivateKey)
+	if c.Subject != "" {
+		v.Set("serve.web_push.subject", c.Subject)
 	}
 
 	return v.WriteConfig()

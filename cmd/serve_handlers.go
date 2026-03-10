@@ -46,8 +46,8 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Strip base-path prefix and check if remainder matches a static asset.
-	assetName := strings.TrimPrefix(r.URL.Path, s.cfg.uiRoute())
+	// basePath is already stripped by http.StripPrefix; URL.Path is "/" or "/session-id" etc.
+	assetName := strings.TrimPrefix(r.URL.Path, "/")
 	if assetName != "" && !strings.Contains(assetName, "/") && !strings.Contains(assetName, "..") {
 		if data, err := serveui.StaticAsset(assetName); err == nil {
 			contentType := mime.TypeByExtension(filepath.Ext(assetName))
@@ -65,11 +65,19 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	html := serveui.IndexHTML()
-	if prefix := s.cfg.basePath; prefix != "" && prefix != "/ui" {
-		escaped, _ := json.Marshal(prefix)
-		snippet := `<script>window.TERM_LLM_UI_PREFIX=` + string(escaped) + `;</script></head>`
-		html = bytes.Replace(html, []byte("</head>"), []byte(snippet), 1)
+
+	// Always inject UI prefix so JS can prefix all API calls with it.
+	// Also inject VAPID public key for web push if configured.
+	var headSnippet string
+	escaped, _ := json.Marshal(s.cfg.basePath)
+	headSnippet += `<script>window.TERM_LLM_UI_PREFIX=` + string(escaped) + `;</script>`
+	if s.cfgRef != nil {
+		if vapidKey := s.cfgRef.Serve.WebPush.VAPIDPublicKey; vapidKey != "" {
+			vapidEscaped, _ := json.Marshal(vapidKey)
+			headSnippet += `<script>window.TERM_LLM_VAPID_PUBLIC_KEY=` + string(vapidEscaped) + `;</script>`
+		}
 	}
+	html = bytes.Replace(html, []byte("</head>"), []byte(headSnippet+"</head>"), 1)
 	_, _ = w.Write(html)
 }
 
@@ -80,7 +88,8 @@ func (s *serveServer) handleImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filename := strings.TrimPrefix(r.URL.Path, s.cfg.imagesRoute())
+	// basePath is already stripped by http.StripPrefix; URL.Path is "/images/filename".
+	filename := strings.TrimPrefix(r.URL.Path, "/images/")
 	if filename == "" || strings.Contains(filename, "/") || strings.Contains(filename, "..") {
 		http.NotFound(w, r)
 		return
@@ -1035,4 +1044,70 @@ func (s *serveServer) runtimeForRequest(ctx context.Context, sessionID string) (
 		return nil, false, err
 	}
 	return rt, true, nil
+}
+
+func (s *serveServer) handlePushSubscribe(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeOpenAIError(w, http.StatusServiceUnavailable, "server_error", "session store not available")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodPost:
+		if err := requireJSONContentType(r); err != nil {
+			writeOpenAIError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
+			return
+		}
+		var req struct {
+			Endpoint string `json:"endpoint"`
+			Keys     struct {
+				P256DH string `json:"p256dh"`
+				Auth   string `json:"auth"`
+			} `json:"keys"`
+		}
+		if err := decodeJSONBody(r, &req); err != nil {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
+		}
+		if req.Endpoint == "" || req.Keys.P256DH == "" || req.Keys.Auth == "" {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "endpoint and keys (p256dh, auth) are required")
+			return
+		}
+		sub := &session.PushSubscription{
+			Endpoint:  req.Endpoint,
+			KeyP256DH: req.Keys.P256DH,
+			KeyAuth:   req.Keys.Auth,
+		}
+		if err := s.store.SavePushSubscription(r.Context(), sub); err != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to save subscription")
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"ok": true})
+
+	case http.MethodDelete:
+		if err := requireJSONContentType(r); err != nil {
+			writeOpenAIError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
+			return
+		}
+		var req struct {
+			Endpoint string `json:"endpoint"`
+		}
+		if err := decodeJSONBody(r, &req); err != nil {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
+		}
+		if req.Endpoint == "" {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "endpoint is required")
+			return
+		}
+		if err := s.store.DeletePushSubscription(r.Context(), req.Endpoint); err != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to delete subscription")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+
+	default:
+		w.Header().Set("Allow", "POST, DELETE")
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+	}
 }

@@ -3,6 +3,9 @@ package cmd
 import (
 	"bufio"
 	"context"
+	"crypto/ecdh"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -292,6 +296,9 @@ func TestServeServerConfig_RouteHelpers(t *testing.T) {
 }
 
 func TestCustomBasePath_EndToEnd(t *testing.T) {
+	// Handlers are called with paths already stripped of basePath by
+	// http.StripPrefix in the mux. So "/" is the SPA root, "/app.css" is
+	// a static asset, and "/images/" is the images route.
 	srv := &serveServer{
 		cfg: serveServerConfig{
 			ui:       true,
@@ -299,47 +306,45 @@ func TestCustomBasePath_EndToEnd(t *testing.T) {
 		},
 	}
 
-	// 1. /chat/ serves the SPA with the injected prefix
-	req := httptest.NewRequest(http.MethodGet, "/chat/", nil)
+	// 1. / serves the SPA with the injected prefix
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rr := httptest.NewRecorder()
 	srv.handleUI(rr, req)
 	if rr.Code != http.StatusOK {
-		t.Fatalf("/chat/ status = %d, want 200", rr.Code)
+		t.Fatalf("/ status = %d, want 200", rr.Code)
 	}
 	body := rr.Body.String()
 	// Prefix should be JSON-escaped (a proper JS string literal, not a template literal)
 	if !strings.Contains(body, `TERM_LLM_UI_PREFIX="/chat"`) {
-		t.Errorf("/chat/ should inject JSON-escaped TERM_LLM_UI_PREFIX, got:\n%s",
+		t.Errorf("/ should inject JSON-escaped TERM_LLM_UI_PREFIX, got:\n%s",
 			body[strings.Index(body, "TERM_LLM")-20:strings.Index(body, "TERM_LLM")+60])
 	}
 
-	// 2. /chat/app.css serves static assets
-	req = httptest.NewRequest(http.MethodGet, "/chat/app.css", nil)
+	// 2. /app.css serves static assets
+	req = httptest.NewRequest(http.MethodGet, "/app.css", nil)
 	rr = httptest.NewRecorder()
 	srv.handleUI(rr, req)
 	if rr.Code != http.StatusOK {
-		t.Fatalf("/chat/app.css status = %d, want 200", rr.Code)
+		t.Fatalf("/app.css status = %d, want 200", rr.Code)
 	}
 	if !strings.Contains(rr.Body.String(), ".app {") {
-		t.Error("/chat/app.css should contain app styles")
+		t.Error("/app.css should contain app styles")
 	}
 
-	// 3. /chat/images/<file> serves images via handleImage
-	//    (We test that the path parsing works — actual file serving
-	//    is tested elsewhere in TestHandleImage_ServesFileAndRejectsTraversal)
-	req = httptest.NewRequest(http.MethodGet, "/chat/images/", nil)
+	// 3. /images/ serves images via handleImage (empty filename → 404)
+	req = httptest.NewRequest(http.MethodGet, "/images/", nil)
 	rr = httptest.NewRecorder()
 	srv.handleImage(rr, req)
 	if rr.Code != http.StatusNotFound {
-		t.Fatalf("/chat/images/ (empty filename) status = %d, want 404", rr.Code)
+		t.Fatalf("/images/ (empty filename) status = %d, want 404", rr.Code)
 	}
 
-	// 4. Traversal attempt on custom path also rejected
-	req = httptest.NewRequest(http.MethodGet, "/chat/images/..%2Fetc%2Fpasswd", nil)
+	// 4. Traversal attempt also rejected
+	req = httptest.NewRequest(http.MethodGet, "/images/..%2Fetc%2Fpasswd", nil)
 	rr = httptest.NewRecorder()
 	srv.handleImage(rr, req)
 	if rr.Code != http.StatusNotFound {
-		t.Fatalf("/chat/images/ traversal status = %d, want 404", rr.Code)
+		t.Fatalf("/images/ traversal status = %d, want 404", rr.Code)
 	}
 }
 
@@ -376,29 +381,29 @@ func TestNormalizeBasePath_ProducesValidRoutes(t *testing.T) {
 			t.Errorf("basePath=%q: imagesRoute()=%q invalid", bp, img)
 		}
 
-		// handleUI serves SPA at basePath + "/"
+		// handleUI serves SPA at "/" (basePath stripped by StripPrefix in mux)
 		srv := &serveServer{cfg: cfg}
-		req := httptest.NewRequest(http.MethodGet, cfg.uiRoute(), nil)
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		rr := httptest.NewRecorder()
 		srv.handleUI(rr, req)
 		if rr.Code != http.StatusOK {
-			t.Errorf("basePath=%q: handleUI(%s) status=%d, want 200", bp, cfg.uiRoute(), rr.Code)
+			t.Errorf("basePath=%q: handleUI(/) status=%d, want 200", bp, rr.Code)
 		}
 
-		// handleUI serves assets at basePath + "/app.css"
-		req = httptest.NewRequest(http.MethodGet, cfg.uiRoute()+"app.css", nil)
+		// handleUI serves assets at "/app.css" (basePath stripped)
+		req = httptest.NewRequest(http.MethodGet, "/app.css", nil)
 		rr = httptest.NewRecorder()
 		srv.handleUI(rr, req)
 		if rr.Code != http.StatusOK {
-			t.Errorf("basePath=%q: handleUI(%sapp.css) status=%d, want 200", bp, cfg.uiRoute(), rr.Code)
+			t.Errorf("basePath=%q: handleUI(/app.css) status=%d, want 200", bp, rr.Code)
 		}
 
-		// handleImage rejects empty filename at basePath + "/images/"
-		req = httptest.NewRequest(http.MethodGet, cfg.imagesRoute(), nil)
+		// handleImage rejects empty filename at "/images/" (basePath stripped)
+		req = httptest.NewRequest(http.MethodGet, "/images/", nil)
 		rr = httptest.NewRecorder()
 		srv.handleImage(rr, req)
 		if rr.Code != http.StatusNotFound {
-			t.Errorf("basePath=%q: handleImage(%s) status=%d, want 404", bp, cfg.imagesRoute(), rr.Code)
+			t.Errorf("basePath=%q: handleImage(/images/) status=%d, want 404", bp, rr.Code)
 		}
 	}
 }
@@ -441,15 +446,16 @@ func TestSingleServeTemplatePlatform(t *testing.T) {
 func TestHandleUI_ReturnsEmbeddedStaticAsset(t *testing.T) {
 	srv := &serveServer{cfg: serveServerConfig{ui: true, basePath: "/ui"}}
 
+	// Paths are as seen by the handler after StripPrefix removes basePath.
 	tests := []struct {
 		name        string
 		path        string
 		contentType string
 		bodySnippet string
 	}{
-		{name: "css", path: "/ui/app.css", contentType: "text/css", bodySnippet: ".app {"},
-		{name: "js", path: "/ui/app-core.js", contentType: "text/javascript", bodySnippet: "window.TermLLMApp"},
-		{name: "manifest", path: "/ui/manifest.webmanifest", contentType: "", bodySnippet: `"display": "standalone"`},
+		{name: "css", path: "/app.css", contentType: "text/css", bodySnippet: ".app {"},
+		{name: "js", path: "/app-core.js", contentType: "text/javascript", bodySnippet: "window.TermLLMApp"},
+		{name: "manifest", path: "/manifest.webmanifest", contentType: "", bodySnippet: `"display": "standalone"`},
 	}
 
 	for _, tt := range tests {
@@ -1219,8 +1225,9 @@ func TestHandleImage_ServesFileAndRejectsTraversal(t *testing.T) {
 	srv := &serveServer{cfg: serveServerConfig{basePath: "/ui"}, cfgRef: &config.Config{}}
 	srv.cfgRef.Image.OutputDir = dir
 
+	// Paths as seen by handler after StripPrefix removes basePath.
 	// Valid file
-	req := httptest.NewRequest(http.MethodGet, "/ui/images/cat.png", nil)
+	req := httptest.NewRequest(http.MethodGet, "/images/cat.png", nil)
 	rr := httptest.NewRecorder()
 	srv.handleImage(rr, req)
 	if rr.Code != http.StatusOK {
@@ -1237,7 +1244,7 @@ func TestHandleImage_ServesFileAndRejectsTraversal(t *testing.T) {
 	}
 
 	// Path traversal with ..
-	req = httptest.NewRequest(http.MethodGet, "/ui/images/..%2Fetc%2Fpasswd", nil)
+	req = httptest.NewRequest(http.MethodGet, "/images/..%2Fetc%2Fpasswd", nil)
 	rr = httptest.NewRecorder()
 	srv.handleImage(rr, req)
 	if rr.Code != http.StatusNotFound {
@@ -1245,7 +1252,7 @@ func TestHandleImage_ServesFileAndRejectsTraversal(t *testing.T) {
 	}
 
 	// Empty filename
-	req = httptest.NewRequest(http.MethodGet, "/ui/images/", nil)
+	req = httptest.NewRequest(http.MethodGet, "/images/", nil)
 	rr = httptest.NewRecorder()
 	srv.handleImage(rr, req)
 	if rr.Code != http.StatusNotFound {
@@ -1253,7 +1260,7 @@ func TestHandleImage_ServesFileAndRejectsTraversal(t *testing.T) {
 	}
 
 	// Nonexistent file
-	req = httptest.NewRequest(http.MethodGet, "/ui/images/nope.png", nil)
+	req = httptest.NewRequest(http.MethodGet, "/images/nope.png", nil)
 	rr = httptest.NewRecorder()
 	srv.handleImage(rr, req)
 	if rr.Code != http.StatusNotFound {
@@ -1317,7 +1324,7 @@ func TestEnsureImageServeable_CopiesExternalFile(t *testing.T) {
 		t.Fatal("ensureImageServeable should succeed for second external copy")
 	}
 	copiedName := filepath.Base(copied)
-	req := httptest.NewRequest(http.MethodGet, "/ui/images/"+copiedName, nil)
+	req := httptest.NewRequest(http.MethodGet, "/images/"+copiedName, nil)
 	rr := httptest.NewRecorder()
 	srv.handleImage(rr, req)
 	if rr.Code != http.StatusOK {
@@ -3240,5 +3247,194 @@ func TestServeSessionManager_GetOrCreate_ConcurrentDedup(t *testing.T) {
 	// Factory should only have been called once.
 	if got := factoryCalls.Load(); got != 1 {
 		t.Fatalf("factory called %d times, want 1", got)
+	}
+}
+
+func TestHandlePushSubscribe(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	t.Run("POST saves subscription", func(t *testing.T) {
+		srv := &serveServer{store: store}
+		body := `{"endpoint":"https://push.example.com/sub1","keys":{"p256dh":"keydata","auth":"authdata"}}`
+		req := httptest.NewRequest(http.MethodPost, "/v1/push/subscribe", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		srv.handlePushSubscribe(rr, req)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want 201; body: %s", rr.Code, rr.Body.String())
+		}
+
+		// Verify subscription was persisted
+		subs, err := store.ListPushSubscriptions(context.Background())
+		if err != nil {
+			t.Fatalf("ListPushSubscriptions: %v", err)
+		}
+		if len(subs) != 1 {
+			t.Fatalf("subscription count = %d, want 1", len(subs))
+		}
+		if subs[0].Endpoint != "https://push.example.com/sub1" {
+			t.Fatalf("endpoint = %q, want %q", subs[0].Endpoint, "https://push.example.com/sub1")
+		}
+	})
+
+	t.Run("DELETE removes subscription", func(t *testing.T) {
+		srv := &serveServer{store: store}
+		body := `{"endpoint":"https://push.example.com/sub1"}`
+		req := httptest.NewRequest(http.MethodDelete, "/v1/push/subscribe", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		srv.handlePushSubscribe(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+		}
+
+		subs, err := store.ListPushSubscriptions(context.Background())
+		if err != nil {
+			t.Fatalf("ListPushSubscriptions: %v", err)
+		}
+		if len(subs) != 0 {
+			t.Fatalf("subscription count = %d, want 0", len(subs))
+		}
+	})
+
+	t.Run("POST missing fields returns 400", func(t *testing.T) {
+		srv := &serveServer{store: store}
+		body := `{"endpoint":"https://push.example.com/sub2"}`
+		req := httptest.NewRequest(http.MethodPost, "/v1/push/subscribe", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		srv.handlePushSubscribe(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400; body: %s", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("no store returns 503", func(t *testing.T) {
+		srv := &serveServer{}
+		body := `{"endpoint":"https://push.example.com/sub3","keys":{"p256dh":"k","auth":"a"}}`
+		req := httptest.NewRequest(http.MethodPost, "/v1/push/subscribe", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		srv.handlePushSubscribe(rr, req)
+		if rr.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want 503; body: %s", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("auth required returns 401 without token", func(t *testing.T) {
+		srv := &serveServer{
+			store: store,
+			cfg:   serveServerConfig{requireAuth: true, token: "secret"},
+		}
+		body := `{"endpoint":"https://push.example.com/sub4","keys":{"p256dh":"k","auth":"a"}}`
+		req := httptest.NewRequest(http.MethodPost, "/v1/push/subscribe", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		srv.auth(srv.handlePushSubscribe)(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401; body: %s", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("GET not allowed", func(t *testing.T) {
+		srv := &serveServer{store: store}
+		req := httptest.NewRequest(http.MethodGet, "/v1/push/subscribe", nil)
+		rr := httptest.NewRecorder()
+		srv.handlePushSubscribe(rr, req)
+		if rr.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("status = %d, want 405; body: %s", rr.Code, rr.Body.String())
+		}
+	})
+}
+
+// TestPushSubscribe_EndToEnd stores a subscription via the handler using
+// base64url-encoded keys (matching real browser toJSON() output), then calls
+// sendWebPush against a local httptest push server. This validates the full
+// chain: handler -> DB -> webpush-go encrypt+send.
+func TestPushSubscribe_EndToEnd(t *testing.T) {
+	// Generate a real P-256 ECDH key pair (simulates the browser's key).
+	browserKey, err := ecdh.P256().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate browser key: %v", err)
+	}
+	p256dh := base64.RawURLEncoding.EncodeToString(browserKey.PublicKey().Bytes())
+
+	authSecret := make([]byte, 16)
+	if _, err := rand.Read(authSecret); err != nil {
+		t.Fatalf("generate auth secret: %v", err)
+	}
+	auth := base64.RawURLEncoding.EncodeToString(authSecret)
+
+	// Mock push service that records whether it received a request.
+	var pushReceived atomic.Bool
+	pushServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pushReceived.Store(true)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer pushServer.Close()
+
+	// Store via handler (same JSON shape as subscription.toJSON()).
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	srv := &serveServer{store: store}
+	subBody := fmt.Sprintf(`{"endpoint":%q,"keys":{"p256dh":%q,"auth":%q}}`,
+		pushServer.URL, p256dh, auth)
+	req := httptest.NewRequest(http.MethodPost, "/v1/push/subscribe", strings.NewReader(subBody))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handlePushSubscribe(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("subscribe status = %d, want 201; body: %s", rr.Code, rr.Body.String())
+	}
+
+	// Read the stored subscription back
+	subs, err := store.ListPushSubscriptions(context.Background())
+	if err != nil {
+		t.Fatalf("ListPushSubscriptions: %v", err)
+	}
+	if len(subs) != 1 {
+		t.Fatalf("subscription count = %d, want 1", len(subs))
+	}
+
+	// Verify keys were stored in base64url (no +, /, or trailing =)
+	for _, key := range []string{subs[0].KeyP256DH, subs[0].KeyAuth} {
+		if strings.ContainsAny(key, "+/=") {
+			t.Fatalf("stored key %q contains standard base64 characters; expected base64url", key)
+		}
+	}
+
+	// Generate VAPID keys and send a push notification via sendWebPush.
+	vapidPriv, vapidPub, err := webpush.GenerateVAPIDKeys()
+	if err != nil {
+		t.Fatalf("generate VAPID keys: %v", err)
+	}
+
+	payload, _ := json.Marshal(map[string]string{"title": "test", "body": "hello"})
+	opts := &webpush.Options{
+		VAPIDPublicKey:  vapidPub,
+		VAPIDPrivateKey: vapidPriv,
+		Subscriber:      "mailto:test@example.com",
+		TTL:             30,
+	}
+
+	status, err := sendWebPush(context.Background(), &subs[0], payload, opts)
+	if err != nil {
+		t.Fatalf("sendWebPush error: %v", err)
+	}
+	if status != http.StatusCreated {
+		t.Fatalf("push status = %d, want 201", status)
+	}
+	if !pushReceived.Load() {
+		t.Fatal("mock push server never received a request")
 	}
 }

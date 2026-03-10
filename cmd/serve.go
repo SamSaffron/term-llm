@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -70,25 +71,27 @@ Examples:
   term-llm serve telegram web    # both platforms
   term-llm serve web --base-path /chat
 
-Web endpoints:
-  POST /v1/responses
-  POST /v1/chat/completions
-  GET  /v1/models
-  GET  /healthz
+All HTTP routes are mounted under --base-path (default /ui):
+  POST {base}/v1/responses
+  POST {base}/v1/chat/completions
+  GET  {base}/v1/models
+  GET  {base}/healthz
+  GET  {base}/                       (web UI)
+  GET  {base}/images/:file
 
-Jobs endpoints:
-  POST   /v2/jobs
-  GET    /v2/jobs
-  GET    /v2/jobs/:id
-  PATCH  /v2/jobs/:id
-  DELETE /v2/jobs/:id
-  POST   /v2/jobs/:id/trigger
-  POST   /v2/jobs/:id/pause
-  POST   /v2/jobs/:id/resume
-  GET    /v2/runs
-  GET    /v2/runs/:id
-  GET    /v2/runs/:id/events
-  POST   /v2/runs/:id/cancel
+Jobs endpoints (also under base-path):
+  POST   {base}/v2/jobs
+  GET    {base}/v2/jobs
+  GET    {base}/v2/jobs/:id
+  PATCH  {base}/v2/jobs/:id
+  DELETE {base}/v2/jobs/:id
+  POST   {base}/v2/jobs/:id/trigger
+  POST   {base}/v2/jobs/:id/pause
+  POST   {base}/v2/jobs/:id/resume
+  GET    {base}/v2/runs
+  GET    {base}/v2/runs/:id
+  GET    {base}/v2/runs/:id/events
+  POST   {base}/v2/runs/:id/cancel
 
 Use --setup to configure credentials for the selected platforms.`,
 	ValidArgs: []string{"web", "jobs", "telegram"},
@@ -175,6 +178,24 @@ func runServe(cmd *cobra.Command, args []string) error {
 	hasJobs := platformContains(platformNames, "jobs")
 	hasWeb := platformContains(platformNames, "web")
 	hasTelegram := platformContains(platformNames, "telegram")
+
+	// Auto-generate VAPID keys for web push if not already configured.
+	if hasWeb && (cfg.Serve.WebPush.VAPIDPublicKey == "" || cfg.Serve.WebPush.VAPIDPrivateKey == "") {
+		privKey, pubKey, genErr := webpush.GenerateVAPIDKeys()
+		if genErr != nil {
+			return fmt.Errorf("generate VAPID keys: %w", genErr)
+		}
+		wpCfg := config.WebPushConfig{
+			VAPIDPublicKey:  pubKey,
+			VAPIDPrivateKey: privKey,
+			Subject:         cfg.Serve.WebPush.Subject,
+		}
+		if err := config.SetServeWebPushConfig(wpCfg); err != nil {
+			return fmt.Errorf("persist VAPID keys: %w (web push requires stable keys across restarts)", err)
+		}
+		cfg.Serve.WebPush = wpCfg
+		log.Println("generated VAPID keys for web push (saved to config)")
+	}
 
 	// Apply config fallback for base-path if not set via flag
 	if !cmd.Flags().Changed("base-path") && cfg.Serve.BasePath != "" {
@@ -622,36 +643,45 @@ type serveServer struct {
 }
 
 func (s *serveServer) Start() error {
-	mux := http.NewServeMux()
+	// Inner mux: all routes registered at their natural paths.
+	// basePath is stripped by http.StripPrefix on the outer mux, so
+	// handlers see /v1/..., /images/..., / etc. without the prefix.
+	inner := http.NewServeMux()
 
-	mux.HandleFunc("/healthz", s.handleHealth)
-	mux.HandleFunc("/v1/models", s.auth(s.cors(s.handleModels)))
-	mux.HandleFunc("/v1/responses", s.auth(s.cors(s.handleResponses)))
-	mux.HandleFunc("/v1/responses/", s.auth(s.cors(s.handleResponseByID)))
-	mux.HandleFunc("/v1/chat/completions", s.auth(s.cors(s.handleChatCompletions)))
+	inner.HandleFunc("/healthz", s.handleHealth)
+	inner.HandleFunc("/v1/models", s.auth(s.cors(s.handleModels)))
+	inner.HandleFunc("/v1/responses", s.auth(s.cors(s.handleResponses)))
+	inner.HandleFunc("/v1/responses/", s.auth(s.cors(s.handleResponseByID)))
+	inner.HandleFunc("/v1/chat/completions", s.auth(s.cors(s.handleChatCompletions)))
 	if s.jobsV2 != nil {
-		mux.HandleFunc("/v2/jobs", s.auth(s.cors(s.handleJobsV2)))
-		mux.HandleFunc("/v2/jobs/", s.auth(s.cors(s.handleJobV2ByID)))
-		mux.HandleFunc("/v2/runs", s.auth(s.cors(s.handleRunsV2)))
-		mux.HandleFunc("/v2/runs/", s.auth(s.cors(s.handleRunV2ByID)))
+		inner.HandleFunc("/v2/jobs", s.auth(s.cors(s.handleJobsV2)))
+		inner.HandleFunc("/v2/jobs/", s.auth(s.cors(s.handleJobV2ByID)))
+		inner.HandleFunc("/v2/runs", s.auth(s.cors(s.handleRunsV2)))
+		inner.HandleFunc("/v2/runs/", s.auth(s.cors(s.handleRunV2ByID)))
 	}
 
-	imagesRoute := s.cfg.imagesRoute()
-	mux.HandleFunc(imagesRoute, s.auth(s.cors(s.handleImage)))
-	mux.HandleFunc("/v1/sessions/", s.auth(s.cors(s.handleSessionByID)))
+	inner.HandleFunc("/images/", s.auth(s.cors(s.handleImage)))
+	inner.HandleFunc("/v1/sessions/", s.auth(s.cors(s.handleSessionByID)))
+	inner.HandleFunc("/v1/push/subscribe", s.auth(s.cors(s.handlePushSubscribe)))
 
 	if s.store != nil {
-		mux.HandleFunc("/v1/sessions", s.auth(s.cors(s.handleSessions)))
+		inner.HandleFunc("/v1/sessions", s.auth(s.cors(s.handleSessions)))
 	}
 
 	if s.cfg.ui {
-		uiRoute := s.cfg.uiRoute()
-		mux.HandleFunc(uiRoute, s.cors(s.handleUI))
-		mux.HandleFunc(s.cfg.basePath, s.cors(func(w http.ResponseWriter, r *http.Request) {
-			http.Redirect(w, r, uiRoute, http.StatusMovedPermanently)
-		}))
+		inner.HandleFunc("/", s.cors(s.handleUI)) // catch-all SPA
+	}
+
+	// Outer mux: mount everything under basePath.
+	// Requests to basePath/ are handled by StripPrefix → inner.
+	// Go's ServeMux auto-redirects basePath (no slash) → basePath/.
+	prefix := s.cfg.basePath
+	mux := http.NewServeMux()
+	mux.Handle(prefix+"/", http.StripPrefix(prefix, inner))
+
+	if s.cfg.ui {
 		mux.HandleFunc("/", s.cors(func(w http.ResponseWriter, r *http.Request) {
-			http.Redirect(w, r, uiRoute, http.StatusTemporaryRedirect)
+			http.Redirect(w, r, prefix+"/", http.StatusTemporaryRedirect)
 		}))
 	}
 

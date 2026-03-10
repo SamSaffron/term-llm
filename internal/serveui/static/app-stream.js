@@ -3,10 +3,11 @@
 
 const app = window.TermLLMApp;
 const {
-  STORAGE_KEYS, state, elements, generateId, sanitizeInterruptState, sanitizeMessage, syncTokenCookie, truncate, saveSessions,
+  UI_PREFIX, STORAGE_KEYS, state, elements, generateId, sanitizeInterruptState, sanitizeMessage, syncTokenCookie, truncate, saveSessions,
   getActiveSession, ensureActiveSession, createSession, findMessageElement, scrollToBottom, setConnectionState,
   persistAndRefreshShell, updateSessionUsageDisplay, refreshRelativeTimes, requestHeaders: _unusedRequestHeaders, updateAssistantNode, updateUserNode,
-  updateToolNode, updateToolGroupNode, createMessageNode, createToolGroupNode, renderSidebar, renderMessages, maybeNotifyResponseComplete
+  updateToolNode, updateToolGroupNode, createMessageNode, createToolGroupNode, renderSidebar, renderMessages, maybeNotifyResponseComplete,
+  subscribeToPush
 } = app;
 
 // ===== Network helpers =====
@@ -52,7 +53,7 @@ const fetchModels = async (tokenOverride = '') => {
   const token = tokenOverride || state.token;
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  const response = await fetch('/v1/models', { headers });
+  const response = await fetch(`${UI_PREFIX}/v1/models`, { headers });
   if (!response.ok) {
     throw await normalizeError(response);
   }
@@ -437,7 +438,7 @@ const consumeResponseStream = async (stream, session, streamState) => {
 };
 
 const fetchResponseSnapshot = async (session, responseId) => {
-  const response = await fetch(`/v1/responses/${encodeURIComponent(responseId)}`, {
+  const response = await fetch(`${UI_PREFIX}/v1/responses/${encodeURIComponent(responseId)}`, {
     headers: requestHeaders(session?.id || '')
   });
   if (!response.ok) {
@@ -530,7 +531,7 @@ const resumeActiveResponse = async (session, options = {}) => {
     setStreaming(true);
 
     try {
-      const response = await fetch(`/v1/responses/${encodeURIComponent(responseId)}/events?after=${encodeURIComponent(session.lastSequenceNumber || 0)}`, {
+      const response = await fetch(`${UI_PREFIX}/v1/responses/${encodeURIComponent(responseId)}/events?after=${encodeURIComponent(session.lastSequenceNumber || 0)}`, {
         headers: requestHeaders(session.id),
         signal: controller.signal
       });
@@ -625,7 +626,7 @@ const cancelActiveResponse = async (session) => {
   }
 
   state.expectCanceledRun = true;
-  const response = await fetch(`/v1/responses/${encodeURIComponent(responseId)}/cancel`, {
+  const response = await fetch(`${UI_PREFIX}/v1/responses/${encodeURIComponent(responseId)}/cancel`, {
     method: 'POST',
     headers: requestHeaders(session?.id || '')
   });
@@ -982,7 +983,7 @@ const submitAskUserModal = async (cancelled = false) => {
   elements.askUserCancelBtn.textContent = cancelled ? 'Dismissing…' : 'Dismiss';
 
   try {
-    const response = await fetch(`/v1/sessions/${encodeURIComponent(prompt.sessionId)}/ask_user`, {
+    const response = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(prompt.sessionId)}/ask_user`, {
       method: 'POST',
       headers: requestHeaders(prompt.sessionId),
       body: JSON.stringify(cancelled
@@ -1116,7 +1117,7 @@ const submitApprovalModal = async (denied = false) => {
   const body = { approval_id: prompt.approvalId, choice: choiceIndex };
 
   try {
-    const response = await fetch(`/v1/sessions/${encodeURIComponent(prompt.sessionId)}/approval`, {
+    const response = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(prompt.sessionId)}/approval`, {
       method: 'POST',
       headers: requestHeaders(prompt.sessionId),
       body: JSON.stringify(body)
@@ -1214,6 +1215,12 @@ const connectToken = async () => {
     setConnectionState('', '');
     state.authRequired = false;
     closeAuthModal();
+
+    // Retry push enrollment now that we have a valid token
+    if (state.notificationsEnabled && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      subscribeToPush();
+    }
+
     const active = getActiveSession();
     if (active) {
       await app.syncActiveSessionFromServer(active, true);
@@ -1412,7 +1419,7 @@ const createPendingInterruptMessage = (session, prompt) => {
 };
 
 const interruptActiveRun = async (session, prompt, messageId) => {
-  const response = await fetch(`/v1/sessions/${encodeURIComponent(session.id)}/interrupt`, {
+  const response = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/interrupt`, {
     method: 'POST',
     headers: requestHeaders(session.id),
     body: JSON.stringify({ message: prompt })
@@ -1644,7 +1651,7 @@ const sendMessage = async (options = {}) => {
   }
 
   try {
-    let response = await fetch('/v1/responses', {
+    let response = await fetch(`${UI_PREFIX}/v1/responses`, {
       method: 'POST',
       headers: {
         ...requestHeaders(session.id),
@@ -1664,7 +1671,7 @@ const sendMessage = async (options = {}) => {
         session.lastResponseId = null;
         body.input = rebuildInputFromSession(session, inputContent);
 
-        response = await fetch('/v1/responses', {
+        response = await fetch(`${UI_PREFIX}/v1/responses`, {
           method: 'POST',
           headers: {
             ...requestHeaders(session.id),

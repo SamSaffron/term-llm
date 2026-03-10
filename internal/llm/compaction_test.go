@@ -398,6 +398,7 @@ func TestInputLimitForProviderModel(t *testing.T) {
 		expected int
 	}{
 		// Copilot-specific effective input limits
+		{"copilot", "gpt-5.4", 922_000},       // copilot: same as canonical (1,050K - 128K)
 		{"copilot", "gpt-5.3-codex", 272_000}, // copilot: 400K ctx, input=272K
 		{"copilot", "gpt-5.2-codex", 144_000}, // copilot: 272K - 128K
 		{"copilot", "gpt-5.2", 64_000},        // copilot: 128K - 64K

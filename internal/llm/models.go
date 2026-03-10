@@ -54,15 +54,21 @@ var ProviderModels = map[string][]string{
 		// gpt-4.1 is free (no premium requests)
 		"gpt-4.1",
 		// OpenAI Codex models
+		"gpt-5.3-codex",
 		"gpt-5.2-codex",
 		"gpt-5.1-codex",
 		"gpt-5.1-codex-max",
 		"gpt-5.1-codex-mini",
 		// OpenAI standard
+		"gpt-5.4",
 		"gpt-5.2",
 		"gpt-5.1",
 		"gpt-5-mini",
 		// Anthropic Claude
+		"claude-opus-4.6-thinking",
+		"claude-sonnet-4.6-thinking",
+		"claude-opus-4.6",
+		"claude-sonnet-4.6",
 		"claude-opus-4.5",
 		"claude-sonnet-4.5",
 		"claude-sonnet-4",

@@ -37,8 +37,21 @@ type Store interface {
 	GetCurrent(ctx context.Context) (*Session, error)
 	ClearCurrent(ctx context.Context) error
 
+	// Push subscription management (for web push notifications)
+	SavePushSubscription(ctx context.Context, sub *PushSubscription) error
+	DeletePushSubscription(ctx context.Context, endpoint string) error
+	ListPushSubscriptions(ctx context.Context) ([]PushSubscription, error)
+
 	// Lifecycle
 	Close() error
+}
+
+// PushSubscription represents a Web Push subscription stored in the database.
+type PushSubscription struct {
+	ID        string
+	Endpoint  string
+	KeyP256DH string
+	KeyAuth   string
 }
 
 // Config holds session storage configuration.

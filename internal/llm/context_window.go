@@ -177,6 +177,7 @@ var providerInputOverrides = map[string][]inputLimitEntry{
 		{"gemini-3-pro", 64_000},      // 128K - 64K
 		{"gemini-3-flash", 64_000},    // 128K - 64K
 		{"gemini-2.5-pro", 64_000},    // 128K - 64K
+		{"gpt-5.4", 922_000},          // 1,050,000 ctx - 128,000 out (same as canonical)
 		{"gpt-5.3-codex", 272_000},    // 400K ctx, input=272K
 		{"gpt-5.2-codex", 144_000},    // 272K - 128K
 		{"gpt-5.2", 64_000},           // 128K - 64K
