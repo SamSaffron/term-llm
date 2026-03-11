@@ -76,77 +76,6 @@ func TestEstimateMessageTokensEmpty(t *testing.T) {
 	}
 }
 
-func TestExtractRecentContext(t *testing.T) {
-	messages := []Message{
-		UserText("first user message"),   // ~5 tokens
-		AssistantText("first response"),  // ~4 tokens
-		UserText("second user message"),  // ~5 tokens
-		AssistantText("second response"), // ~4 tokens
-		UserText("third user message"),   // ~5 tokens
-	}
-
-	// Budget large enough for the full conversation
-	result := extractRecentContext(messages, 1000)
-	if len(result) != 5 {
-		t.Errorf("expected 5 messages with large budget, got %d", len(result))
-	}
-
-	// Small budget: should fit only the last user message (~5 tokens)
-	result = extractRecentContext(messages, 5)
-	if len(result) != 1 {
-		t.Errorf("expected 1 message with budget=5, got %d", len(result))
-	}
-	if result[0].Parts[0].Text != "third user message" {
-		t.Errorf("expected last user message, got %q", result[0].Parts[0].Text)
-	}
-
-	// Medium budget: should include assistant messages too
-	result = extractRecentContext(messages, 100)
-	if len(result) < 3 {
-		t.Fatalf("expected at least 3 messages with medium budget, got %d", len(result))
-	}
-	// Result must start with a user message
-	if result[0].Role != RoleUser {
-		t.Errorf("first result must be user-role, got %s", result[0].Role)
-	}
-	// Must be in chronological order
-	if result[0].Parts[0].Text == "third user message" && len(result) > 1 {
-		t.Errorf("expected chronological order, but first message is already the last")
-	}
-}
-
-func TestExtractRecentContextEmpty(t *testing.T) {
-	result := extractRecentContext(nil, 1000)
-	if len(result) != 0 {
-		t.Errorf("expected 0 messages from nil input, got %d", len(result))
-	}
-
-	// Only assistant messages — result must start with user, so should be empty
-	messages := []Message{
-		AssistantText("just an assistant message"),
-	}
-	result = extractRecentContext(messages, 1000)
-	if len(result) != 0 {
-		t.Errorf("expected 0 messages when only assistant messages present, got %d", len(result))
-	}
-}
-
-func TestExtractRecentContextStartsWithUser(t *testing.T) {
-	// If the budget only fits the last assistant message, we should get nothing
-	// (because we strip leading assistant messages)
-	messages := []Message{
-		UserText("user one"),
-		AssistantText(strings.Repeat("a", 1000)), // large assistant message
-	}
-	// Budget too small for the user message but big enough for the assistant
-	userTokens := EstimateMessageTokens([]Message{UserText("user one")})
-	result := extractRecentContext(messages, userTokens-1)
-	// The assistant message alone would be left, then stripped — result is empty
-	if len(result) != 0 {
-		t.Errorf("expected empty result when only a leading assistant message fits, got %d", len(result))
-	}
-}
-
 func TestReconstructHistory(t *testing.T) {
 	recentUser := []Message{UserText("recent question")}
 
@@ -916,9 +845,6 @@ func TestDefaultCompactionConfig(t *testing.T) {
 	config := DefaultCompactionConfig()
 	if config.ThresholdRatio != 0.90 {
 		t.Errorf("ThresholdRatio = %f, want 0.90", config.ThresholdRatio)
-	}
-	if config.RecentUserTokenBudget != 20_000 {
-		t.Errorf("RecentUserTokenBudget = %d, want 20000", config.RecentUserTokenBudget)
 	}
 	if config.MaxToolResultChars != 80_000 {
 		t.Errorf("MaxToolResultChars = %d, want 80000", config.MaxToolResultChars)

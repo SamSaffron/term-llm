@@ -8,29 +8,26 @@ import (
 )
 
 const (
-	defaultThresholdRatio        = 0.90
-	defaultRecentUserTokenBudget = 20_000
-	defaultMaxToolResultChars    = 80_000
-	defaultSummaryTokenBudget    = 10_000
-	approxBytesPerToken          = 4
+	defaultThresholdRatio     = 0.90
+	defaultMaxToolResultChars = 80_000
+	defaultSummaryTokenBudget = 10_000
+	approxBytesPerToken       = 4
 )
 
 // CompactionConfig controls when and how context compaction occurs.
 type CompactionConfig struct {
-	ThresholdRatio        float64 // Fraction of context window to trigger (default 0.80)
-	RecentUserTokenBudget int     // Max tokens of recent user messages to keep
-	MaxToolResultChars    int     // Max chars per tool result when recording
-	SummaryTokenBudget    int     // Max output tokens for the compaction summary
-	InputLimit            int     // Provider-effective input token limit (0 = use canonical)
+	ThresholdRatio     float64 // Fraction of context window to trigger (default 0.80)
+	MaxToolResultChars int     // Max chars per tool result when recording
+	SummaryTokenBudget int     // Max output tokens for the compaction summary
+	InputLimit         int     // Provider-effective input token limit (0 = use canonical)
 }
 
 // DefaultCompactionConfig returns a CompactionConfig with sensible defaults.
 func DefaultCompactionConfig() CompactionConfig {
 	return CompactionConfig{
-		ThresholdRatio:        defaultThresholdRatio,
-		RecentUserTokenBudget: defaultRecentUserTokenBudget,
-		MaxToolResultChars:    defaultMaxToolResultChars,
-		SummaryTokenBudget:    defaultSummaryTokenBudget,
+		ThresholdRatio:     defaultThresholdRatio,
+		MaxToolResultChars: defaultMaxToolResultChars,
+		SummaryTokenBudget: defaultSummaryTokenBudget,
 	}
 }
 
@@ -175,12 +172,11 @@ func Compact(ctx context.Context, provider Provider, model, systemPrompt string,
 		return nil, fmt.Errorf("compaction produced empty summary")
 	}
 
-	// Extract recent conversation tail within budget (user + assistant)
-	recentMsgs := extractRecentContext(messages, config.RecentUserTokenBudget)
-
-	// Reconstruct history
-	newMessages := reconstructHistory(systemPrompt, summary.String(), recentMsgs)
-	newMessages = sanitizeToolHistory(newMessages)
+	// Reconstruct history: system + summary + ack. No recent turns are carried
+	// forward — the summary captures everything needed. Appending raw recent
+	// turns would bloat context and break thinking models (tool call/result
+	// pairs can't be injected into a compacted user-message history).
+	newMessages := reconstructHistory(systemPrompt, summary.String(), nil)
 
 	return &CompactionResult{
 		Summary:        summary.String(),
@@ -188,50 +184,6 @@ func Compact(ctx context.Context, provider Provider, model, systemPrompt string,
 		OriginalCount:  originalCount,
 		CompactedCount: len(newMessages),
 	}, nil
-}
-
-// extractRecentContext walks messages newest→oldest, collecting both user and
-// assistant messages until the token budget is exhausted. It cuts only at clean
-// message boundaries and never splits a tool call / tool result pair.
-// Returns the tail in chronological order.
-func extractRecentContext(messages []Message, tokenBudget int) []Message {
-	if len(messages) == 0 {
-		return nil
-	}
-
-	// Walk backward, accumulating whole messages until budget is gone.
-	// We stop before a message that would push us over, so the first message
-	// collected is always the newest one that fits.
-	remaining := tokenBudget
-	cutIdx := len(messages) // exclusive lower bound (we'll slice messages[cutIdx:])
-
-	for i := len(messages) - 1; i >= 0; i-- {
-		msg := messages[i]
-		// Skip system messages — they're re-injected separately.
-		if msg.Role == RoleSystem {
-			continue
-		}
-		tokens := EstimateMessageTokens([]Message{msg})
-		if tokens > remaining && cutIdx < len(messages) {
-			// Budget exhausted; stop before this message.
-			break
-		}
-		remaining -= tokens
-		cutIdx = i
-		if remaining <= 0 {
-			break
-		}
-	}
-
-	tail := messages[cutIdx:]
-
-	// Ensure the tail forms a valid conversation: must start with a user message
-	// (Anthropic and most providers reject histories that open with an assistant turn).
-	for len(tail) > 0 && tail[0].Role != RoleUser {
-		tail = tail[1:]
-	}
-
-	return tail
 }
 
 // trimMessagesToFit removes messages from the front (after any system message)
