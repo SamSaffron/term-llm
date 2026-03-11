@@ -15,9 +15,10 @@ import (
 
 // SQLiteStore implements Store using SQLite.
 type SQLiteStore struct {
-	db               *sql.DB
-	cfg              Config
-	hasCompactionSeq bool // true if sessions table has compaction_seq column
+	db                  *sql.DB
+	cfg                 Config
+	hasCompactionSeq    bool // true if sessions table has compaction_seq column
+	hasCacheWriteTokens bool // true if sessions table has cache_write_tokens column
 }
 
 // Schema for the sessions database.
@@ -45,6 +46,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     tool_calls INTEGER DEFAULT 0,
     input_tokens INTEGER DEFAULT 0,
     cached_input_tokens INTEGER DEFAULT 0,
+    cache_write_tokens INTEGER DEFAULT 0,
     output_tokens INTEGER DEFAULT 0,
     status TEXT DEFAULT 'active',
     tags TEXT,
@@ -139,9 +141,10 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 
 	store := &SQLiteStore{db: db, cfg: cfg}
 
-	// Probe for compaction_seq column. Read-write mode always has it after
+	// Probe for optional columns. Read-write mode always has them after
 	// migration, but read-only mode skips migrations and may open an older DB.
-	store.hasCompactionSeq = store.probeCompactionSeq()
+	store.hasCompactionSeq = store.probeColumn("compaction_seq")
+	store.hasCacheWriteTokens = store.probeColumn("cache_write_tokens")
 
 	// Run cleanup if configured (read-write mode only).
 	if !cfg.ReadOnly {
@@ -158,7 +161,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 10
+const schemaVersion = 11
 
 // migration represents a schema migration.
 type migration struct {
@@ -424,6 +427,21 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		// Migration 11: Add cache_write_tokens for accurate cost accounting
+		// Tracks cache-creation input tokens (Anthropic cache_creation_input_tokens,
+		// distinct from cache reads and non-cached input). Without this column,
+		// the largest cost bucket on cold-cache turns was silently dropped.
+		version:     11,
+		description: "add cache_write_tokens column",
+		up: func(db *sql.DB) error {
+			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN cache_write_tokens INTEGER DEFAULT 0")
+			if err != nil && !isDuplicateColumnError(err) {
+				return err
+			}
+			return nil
+		},
+	},
 }
 
 // initSchema initializes the database schema and runs any pending migrations.
@@ -577,12 +595,12 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 		// Creates could read the same MAX(number).
 		result, err := s.db.ExecContext(ctx, `
 			INSERT INTO sessions (id, number, name, summary, provider, provider_key, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
-			                      user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens, output_tokens, status, tags)
-			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			                      user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, status, tags)
+			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			sess.ID, sess.Name, sess.Summary, sess.Provider, nullString(sess.ProviderKey), sess.Model, string(sess.Mode), nullString(sess.Agent), sess.CWD,
 			sess.CreatedAt, sess.UpdatedAt, sess.Archived, nullString(sess.ParentID),
 			sess.Search, nullString(sess.Tools), nullString(sess.MCP),
-			sess.UserTurns, sess.LLMTurns, sess.ToolCalls, sess.InputTokens, sess.CachedInputTokens, sess.OutputTokens,
+			sess.UserTurns, sess.LLMTurns, sess.ToolCalls, sess.InputTokens, sess.CachedInputTokens, sess.CacheWriteTokens, sess.OutputTokens,
 			string(sess.Status), nullString(sess.Tags))
 		if err != nil {
 			return fmt.Errorf("insert session: %w", err)
@@ -611,14 +629,14 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 func (s *SQLiteStore) Get(ctx context.Context, id string) (*Session, error) {
 	row := s.db.QueryRowContext(ctx,
 		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE id = ?", id)
-	return scanSessionRow(row, s.hasCompactionSeq)
+	return scanSessionRow(row, s.hasCacheWriteTokens, s.hasCompactionSeq)
 }
 
 // GetByNumber retrieves a session by its sequential number.
 func (s *SQLiteStore) GetByNumber(ctx context.Context, number int64) (*Session, error) {
 	row := s.db.QueryRowContext(ctx,
 		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE number = ?", number)
-	return scanSessionRow(row, s.hasCompactionSeq)
+	return scanSessionRow(row, s.hasCacheWriteTokens, s.hasCompactionSeq)
 }
 
 // GetByPrefix retrieves a session by number (with # prefix), exact ID, or by short ID prefix match.
@@ -665,23 +683,25 @@ func (s *SQLiteStore) GetByPrefix(ctx context.Context, prefix string) (*Session,
 	pattern := ExpandShortID(prefix)
 	row := s.db.QueryRowContext(ctx,
 		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE id LIKE ? ORDER BY created_at DESC LIMIT 1", pattern)
-	return scanSessionRow(row, s.hasCompactionSeq)
+	return scanSessionRow(row, s.hasCacheWriteTokens, s.hasCompactionSeq)
 }
 
-// Update modifies an existing session.
+// Update modifies an existing session's metadata fields.
+// Token metrics (input_tokens, cached_input_tokens, cache_write_tokens, output_tokens)
+// and turn counters (llm_turns, tool_calls) are intentionally excluded — they are
+// managed exclusively by UpdateMetrics (which uses atomic increments) to prevent
+// stale in-memory values from clobbering accumulated totals.
 func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	sess.UpdatedAt = time.Now()
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE sessions SET name = ?, summary = ?, provider = ?, provider_key = ?, model = ?, mode = ?, agent = ?, cwd = ?,
 		       updated_at = ?, archived = ?, parent_id = ?, search = ?, tools = ?, mcp = ?,
-		       user_turns = ?, llm_turns = ?, tool_calls = ?, input_tokens = ?, cached_input_tokens = ?, output_tokens = ?,
-		       status = ?, tags = ?
+		       user_turns = ?, status = ?, tags = ?
 		WHERE id = ?`,
 		sess.Name, sess.Summary, sess.Provider, nullString(sess.ProviderKey), sess.Model, string(sess.Mode), nullString(sess.Agent), sess.CWD,
 		sess.UpdatedAt, sess.Archived, nullString(sess.ParentID),
 		sess.Search, nullString(sess.Tools), nullString(sess.MCP),
-		sess.UserTurns, sess.LLMTurns, sess.ToolCalls, sess.InputTokens, sess.CachedInputTokens, sess.OutputTokens,
-		string(sess.Status), nullString(sess.Tags), sess.ID)
+		sess.UserTurns, string(sess.Status), nullString(sess.Tags), sess.ID)
 	if err != nil {
 		return fmt.Errorf("update session: %w", err)
 	}
@@ -692,8 +712,9 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	return nil
 }
 
-// UpdateMetrics updates just the metrics fields (used for incremental saves).
-func (s *SQLiteStore) UpdateMetrics(ctx context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens, cachedInputTokens int) error {
+// UpdateMetrics atomically increments the metrics fields for a session.
+// All token counters use += to avoid clobbering concurrent accumulation.
+func (s *SQLiteStore) UpdateMetrics(ctx context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int) error {
 	return retryOnBusy(ctx, 5, func() error {
 		_, err := s.db.ExecContext(ctx, `
 			UPDATE sessions SET
@@ -701,10 +722,11 @@ func (s *SQLiteStore) UpdateMetrics(ctx context.Context, id string, llmTurns, to
 			       tool_calls = tool_calls + ?,
 			       input_tokens = input_tokens + ?,
 			       cached_input_tokens = cached_input_tokens + ?,
+			       cache_write_tokens = cache_write_tokens + ?,
 			       output_tokens = output_tokens + ?,
 			       updated_at = ?
 			WHERE id = ?`,
-			llmTurns, toolCalls, inputTokens, cachedInputTokens, outputTokens, time.Now(), id)
+			llmTurns, toolCalls, inputTokens, cachedInputTokens, cacheWriteTokens, outputTokens, time.Now(), id)
 		return err
 	})
 }
@@ -747,10 +769,14 @@ func (s *SQLiteStore) Delete(ctx context.Context, id string) error {
 
 // List returns sessions matching the options.
 func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSummary, error) {
+	cacheWriteCol := "0"
+	if s.hasCacheWriteTokens {
+		cacheWriteCol = "s.cache_write_tokens"
+	}
 	query := `
 		SELECT s.id, s.number, s.name, s.summary, s.provider, s.model, s.mode, s.created_at, s.updated_at,
 		       (SELECT COUNT(*) FROM messages WHERE session_id = s.id) as message_count,
-		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.cached_input_tokens, s.output_tokens, s.status, s.tags
+		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.cached_input_tokens, ` + cacheWriteCol + `, s.output_tokens, s.status, s.tags
 		FROM sessions s
 		WHERE 1=1`
 	args := []any{}
@@ -810,7 +836,7 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		var mode, status, tags sql.NullString
 		err := rows.Scan(&sum.ID, &number, &sum.Name, &sum.Summary, &sum.Provider, &sum.Model, &mode,
 			&sum.CreatedAt, &sum.UpdatedAt, &sum.MessageCount,
-			&sum.UserTurns, &sum.LLMTurns, &sum.ToolCalls, &sum.InputTokens, &sum.CachedInputTokens, &sum.OutputTokens,
+			&sum.UserTurns, &sum.LLMTurns, &sum.ToolCalls, &sum.InputTokens, &sum.CachedInputTokens, &sum.CacheWriteTokens, &sum.OutputTokens,
 			&status, &tags)
 		if err != nil {
 			return nil, fmt.Errorf("scan session summary: %w", err)
@@ -1204,10 +1230,10 @@ func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
 
-// probeCompactionSeq checks whether the sessions table has a compaction_seq
-// column. This is necessary for read-only mode, which skips migrations and
-// may open a database created before compaction_seq was added.
-func (s *SQLiteStore) probeCompactionSeq() bool {
+// probeColumn checks whether the sessions table has a given column.
+// This is necessary for read-only mode, which skips migrations and
+// may open a database created before the column was added.
+func (s *SQLiteStore) probeColumn(colName string) bool {
 	rows, err := s.db.Query("PRAGMA table_info(sessions)")
 	if err != nil {
 		return false
@@ -1222,7 +1248,7 @@ func (s *SQLiteStore) probeCompactionSeq() bool {
 		if err := rows.Scan(&cid, &name, &typ, &notnull, &dfltValue, &pk); err != nil {
 			return false
 		}
-		if name == "compaction_seq" {
+		if name == colName {
 			return true
 		}
 	}
@@ -1233,16 +1259,20 @@ func (s *SQLiteStore) probeCompactionSeq() bool {
 // Excludes compaction_seq when the column doesn't exist (old DB in read-only mode).
 func (s *SQLiteStore) sessionSelectCols() string {
 	base := `id, number, name, summary, provider, provider_key, model, mode, agent, cwd, created_at, updated_at, archived, parent_id, search, tools, mcp,
-		       user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens, output_tokens, status, tags`
+		       user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens`
+	if s.hasCacheWriteTokens {
+		base += ", cache_write_tokens"
+	}
+	base += ", output_tokens, status, tags"
 	if s.hasCompactionSeq {
-		return base + ", compaction_seq"
+		base += ", compaction_seq"
 	}
 	return base
 }
 
-// scanSessionRow scans a session row into a Session struct. The hasCompactionSeq
-// flag determines whether the compaction_seq column is present in the result set.
-func scanSessionRow(row *sql.Row, hasCompactionSeq bool) (*Session, error) {
+// scanSessionRow scans a session row into a Session struct. The flags
+// determine which optional columns are present in the result set.
+func scanSessionRow(row *sql.Row, hasCacheWriteTokens, hasCompactionSeq bool) (*Session, error) {
 	var sess Session
 	var number sql.NullInt64
 	var name, summary, cwd sql.NullString
@@ -1253,9 +1283,12 @@ func scanSessionRow(row *sql.Row, hasCompactionSeq bool) (*Session, error) {
 		&sess.ID, &number, &name, &summary, &sess.Provider, &providerKey, &sess.Model, &mode,
 		&agent, &cwd, &sess.CreatedAt, &sess.UpdatedAt, &sess.Archived, &parentID,
 		&sess.Search, &tools, &mcp,
-		&sess.UserTurns, &sess.LLMTurns, &sess.ToolCalls, &sess.InputTokens, &sess.CachedInputTokens, &sess.OutputTokens,
-		&status, &tags,
+		&sess.UserTurns, &sess.LLMTurns, &sess.ToolCalls, &sess.InputTokens, &sess.CachedInputTokens,
 	)
+	if hasCacheWriteTokens {
+		scanArgs = append(scanArgs, &sess.CacheWriteTokens)
+	}
+	scanArgs = append(scanArgs, &sess.OutputTokens, &status, &tags)
 	if hasCompactionSeq {
 		scanArgs = append(scanArgs, &sess.CompactionSeq)
 	}

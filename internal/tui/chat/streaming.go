@@ -268,7 +268,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 					}
 					_ = m.store.AddMessage(ctx, m.sess.ID, sessionMsg)
 				}
-				_ = m.store.UpdateMetrics(ctx, m.sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens)
+				_ = m.store.UpdateMetrics(ctx, m.sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens)
 				return nil
 			})
 		}

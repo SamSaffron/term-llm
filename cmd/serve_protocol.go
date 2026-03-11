@@ -659,17 +659,19 @@ func responsesFinalResponse(result serveRunResult, model string, respID string) 
 		"usage": map[string]any{
 			"input_tokens":  result.Usage.InputTokens,
 			"output_tokens": result.Usage.OutputTokens,
-			"total_tokens":  result.Usage.InputTokens + result.Usage.OutputTokens,
+			"total_tokens":  result.Usage.InputTokens + result.Usage.CachedInputTokens + result.Usage.CacheWriteTokens + result.Usage.OutputTokens,
 			"input_tokens_details": map[string]any{
-				"cached_tokens": result.Usage.CachedInputTokens,
+				"cached_tokens":      result.Usage.CachedInputTokens,
+				"cache_write_tokens": result.Usage.CacheWriteTokens,
 			},
 		},
 		"session_usage": map[string]any{
 			"input_tokens":  result.SessionUsage.InputTokens,
 			"output_tokens": result.SessionUsage.OutputTokens,
-			"total_tokens":  result.SessionUsage.InputTokens + result.SessionUsage.OutputTokens,
+			"total_tokens":  result.SessionUsage.InputTokens + result.SessionUsage.CachedInputTokens + result.SessionUsage.CacheWriteTokens + result.SessionUsage.OutputTokens,
 			"input_tokens_details": map[string]any{
-				"cached_tokens": result.SessionUsage.CachedInputTokens,
+				"cached_tokens":      result.SessionUsage.CachedInputTokens,
+				"cache_write_tokens": result.SessionUsage.CacheWriteTokens,
 			},
 		},
 	}
@@ -710,9 +712,10 @@ func chatCompletionFinalResponse(result serveRunResult, model string) map[string
 		"usage": map[string]any{
 			"prompt_tokens":     result.Usage.InputTokens,
 			"completion_tokens": result.Usage.OutputTokens,
-			"total_tokens":      result.Usage.InputTokens + result.Usage.OutputTokens,
+			"total_tokens":      result.Usage.InputTokens + result.Usage.CachedInputTokens + result.Usage.CacheWriteTokens + result.Usage.OutputTokens,
 			"prompt_tokens_details": map[string]any{
-				"cached_tokens": result.Usage.CachedInputTokens,
+				"cached_tokens":      result.Usage.CachedInputTokens,
+				"cache_write_tokens": result.Usage.CacheWriteTokens,
 			},
 		},
 	}

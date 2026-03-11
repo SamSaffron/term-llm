@@ -468,6 +468,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 				result.Usage.InputTokens += ev.Use.InputTokens
 				result.Usage.OutputTokens += ev.Use.OutputTokens
 				result.Usage.CachedInputTokens += ev.Use.CachedInputTokens
+				result.Usage.CacheWriteTokens += ev.Use.CacheWriteTokens
 			}
 		case llm.EventError:
 			if ev.Err != nil {

@@ -412,7 +412,7 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 
 	stats := ui.NewSessionStats()
 	if sess != nil {
-		stats.SeedTotals(sess.InputTokens, sess.OutputTokens, sess.CachedInputTokens, sess.ToolCalls, sess.LLMTurns)
+		stats.SeedTotals(sess.InputTokens, sess.OutputTokens, sess.CachedInputTokens, sess.CacheWriteTokens, sess.ToolCalls, sess.LLMTurns)
 	}
 
 	return &Model{

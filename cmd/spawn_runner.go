@@ -232,7 +232,7 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 					r.warn("session AddMessage failed: %v", err)
 				}
 			}
-			if err := r.store.UpdateMetrics(ctx, childSessionID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens); err != nil {
+			if err := r.store.UpdateMetrics(ctx, childSessionID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens); err != nil {
 				r.warn("session UpdateMetrics failed: %v", err)
 			}
 			return nil

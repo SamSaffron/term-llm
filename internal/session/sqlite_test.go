@@ -31,7 +31,8 @@ func TestSQLiteStoreUpdateMetricsIncludesCachedTokens(t *testing.T) {
 		t.Fatalf("failed to create session: %v", err)
 	}
 
-	if err := store.UpdateMetrics(ctx, sess.ID, 2, 3, 1000, 250, 700); err != nil {
+	// Turn 1: 1000 input, 250 output, 700 cache read, 500 cache write
+	if err := store.UpdateMetrics(ctx, sess.ID, 2, 3, 1000, 250, 700, 500); err != nil {
 		t.Fatalf("failed to update session metrics: %v", err)
 	}
 
@@ -58,6 +59,30 @@ func TestSQLiteStoreUpdateMetricsIncludesCachedTokens(t *testing.T) {
 	if loaded.CachedInputTokens != 700 {
 		t.Errorf("expected cached_input_tokens=700, got %d", loaded.CachedInputTokens)
 	}
+	if loaded.CacheWriteTokens != 500 {
+		t.Errorf("expected cache_write_tokens=500, got %d", loaded.CacheWriteTokens)
+	}
+
+	// Turn 2: verify accumulation
+	if err := store.UpdateMetrics(ctx, sess.ID, 1, 2, 50, 100, 1200, 50); err != nil {
+		t.Fatalf("failed to update session metrics (turn 2): %v", err)
+	}
+	loaded2, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("failed to load session after turn 2: %v", err)
+	}
+	if loaded2.InputTokens != 1050 {
+		t.Errorf("expected input_tokens=1050 after accumulation, got %d", loaded2.InputTokens)
+	}
+	if loaded2.CachedInputTokens != 1900 {
+		t.Errorf("expected cached_input_tokens=1900 after accumulation, got %d", loaded2.CachedInputTokens)
+	}
+	if loaded2.CacheWriteTokens != 550 {
+		t.Errorf("expected cache_write_tokens=550 after accumulation, got %d", loaded2.CacheWriteTokens)
+	}
+	if loaded2.OutputTokens != 350 {
+		t.Errorf("expected output_tokens=350 after accumulation, got %d", loaded2.OutputTokens)
+	}
 
 	summaries, err := store.List(ctx, ListOptions{Limit: 10})
 	if err != nil {
@@ -66,8 +91,70 @@ func TestSQLiteStoreUpdateMetricsIncludesCachedTokens(t *testing.T) {
 	if len(summaries) != 1 {
 		t.Fatalf("expected 1 session summary, got %d", len(summaries))
 	}
-	if summaries[0].CachedInputTokens != 700 {
-		t.Errorf("expected summary cached_input_tokens=700, got %d", summaries[0].CachedInputTokens)
+	if summaries[0].CachedInputTokens != 1900 {
+		t.Errorf("expected summary cached_input_tokens=1900, got %d", summaries[0].CachedInputTokens)
+	}
+	if summaries[0].CacheWriteTokens != 550 {
+		t.Errorf("expected summary cache_write_tokens=550, got %d", summaries[0].CacheWriteTokens)
+	}
+}
+
+func TestUpdateDoesNotClobberTokenMetrics(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("failed to create sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{
+		ID:       NewID(),
+		Provider: "test",
+		Model:    "test-model",
+		Mode:     ModeChat,
+	}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Accumulate metrics via UpdateMetrics
+	if err := store.UpdateMetrics(ctx, sess.ID, 3, 5, 1000, 250, 700, 500); err != nil {
+		t.Fatalf("UpdateMetrics: %v", err)
+	}
+
+	// Now call Update to change metadata (e.g. summary).
+	// The in-memory sess still has zero token counts — this must NOT reset the DB.
+	sess.Summary = "updated summary"
+	if err := store.Update(ctx, sess); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	reloaded, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if reloaded.Summary != "updated summary" {
+		t.Errorf("expected summary=%q, got %q", "updated summary", reloaded.Summary)
+	}
+	if reloaded.InputTokens != 1000 {
+		t.Errorf("Update clobbered input_tokens: expected 1000, got %d", reloaded.InputTokens)
+	}
+	if reloaded.CachedInputTokens != 700 {
+		t.Errorf("Update clobbered cached_input_tokens: expected 700, got %d", reloaded.CachedInputTokens)
+	}
+	if reloaded.CacheWriteTokens != 500 {
+		t.Errorf("Update clobbered cache_write_tokens: expected 500, got %d", reloaded.CacheWriteTokens)
+	}
+	if reloaded.OutputTokens != 250 {
+		t.Errorf("Update clobbered output_tokens: expected 250, got %d", reloaded.OutputTokens)
+	}
+	if reloaded.LLMTurns != 3 {
+		t.Errorf("Update clobbered llm_turns: expected 3, got %d", reloaded.LLMTurns)
+	}
+	if reloaded.ToolCalls != 5 {
+		t.Errorf("Update clobbered tool_calls: expected 5, got %d", reloaded.ToolCalls)
 	}
 }
 

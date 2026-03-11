@@ -55,8 +55,9 @@ type Session struct {
 	UserTurns         int           `json:"user_turns,omitempty"`          // Number of user messages
 	LLMTurns          int           `json:"llm_turns,omitempty"`           // Number of LLM API round-trips
 	ToolCalls         int           `json:"tool_calls,omitempty"`          // Total tool executions
-	InputTokens       int           `json:"input_tokens,omitempty"`        // Total input tokens used
-	CachedInputTokens int           `json:"cached_input_tokens,omitempty"` // Total cached input tokens read
+	InputTokens       int           `json:"input_tokens,omitempty"`        // Total non-cached, non-cache-write input tokens
+	CachedInputTokens int           `json:"cached_input_tokens,omitempty"` // Total cached input tokens read (cache hits)
+	CacheWriteTokens  int           `json:"cache_write_tokens,omitempty"`  // Total tokens written to cache (cache misses)
 	OutputTokens      int           `json:"output_tokens,omitempty"`       // Total output tokens used
 	Status            SessionStatus `json:"status,omitempty"`              // Session status
 	Tags              string        `json:"tags,omitempty"`                // Comma-separated tags
@@ -92,6 +93,7 @@ type SessionSummary struct {
 	ToolCalls         int           `json:"tool_calls,omitempty"`
 	InputTokens       int           `json:"input_tokens,omitempty"`
 	CachedInputTokens int           `json:"cached_input_tokens,omitempty"`
+	CacheWriteTokens  int           `json:"cache_write_tokens,omitempty"`
 	OutputTokens      int           `json:"output_tokens,omitempty"`
 	Status            SessionStatus `json:"status,omitempty"`
 	Tags              string        `json:"tags,omitempty"`

@@ -39,10 +39,11 @@ func NewSessionStats() *SessionStats {
 
 // SeedTotals initializes cumulative counters from persisted session metrics.
 // Timing remains scoped to the current process run.
-func (s *SessionStats) SeedTotals(input, output, cached, toolCalls, llmCalls int) {
+func (s *SessionStats) SeedTotals(input, output, cached, cacheWrite, toolCalls, llmCalls int) {
 	s.InputTokens = input
 	s.OutputTokens = output
 	s.CachedInputTokens = cached
+	s.CacheWriteTokens = cacheWrite
 	s.ToolCallCount = toolCalls
 	s.LLMCallCount = llmCalls
 	// Reset per-call fields so stale data from prior usage doesn't leak through

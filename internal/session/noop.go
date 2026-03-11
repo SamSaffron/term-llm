@@ -61,7 +61,7 @@ func (s *NoopStore) CompactMessages(ctx context.Context, sessionID string, messa
 	return nil
 }
 
-func (s *NoopStore) UpdateMetrics(ctx context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens, cachedInputTokens int) error {
+func (s *NoopStore) UpdateMetrics(ctx context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int) error {
 	return nil
 }
 

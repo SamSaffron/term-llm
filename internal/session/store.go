@@ -30,7 +30,7 @@ type Store interface {
 	CompactMessages(ctx context.Context, sessionID string, messages []Message) error
 
 	// Metrics operations (for incremental session saving)
-	UpdateMetrics(ctx context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens, cachedInputTokens int) error
+	UpdateMetrics(ctx context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int) error
 	UpdateStatus(ctx context.Context, id string, status SessionStatus) error
 	IncrementUserTurns(ctx context.Context, id string) error
 

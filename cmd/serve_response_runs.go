@@ -651,9 +651,10 @@ func usagePayload(usage llm.Usage) map[string]any {
 	return map[string]any{
 		"input_tokens":  usage.InputTokens,
 		"output_tokens": usage.OutputTokens,
-		"total_tokens":  usage.InputTokens + usage.OutputTokens,
+		"total_tokens":  usage.InputTokens + usage.CachedInputTokens + usage.CacheWriteTokens + usage.OutputTokens,
 		"input_tokens_details": map[string]any{
-			"cached_tokens": usage.CachedInputTokens,
+			"cached_tokens":      usage.CachedInputTokens,
+			"cache_write_tokens": usage.CacheWriteTokens,
 		},
 	}
 }

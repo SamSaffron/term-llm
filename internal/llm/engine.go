@@ -31,9 +31,10 @@ func getMaxTurns(req Request) int {
 
 // TurnMetrics contains metrics collected during a turn.
 type TurnMetrics struct {
-	InputTokens       int // Tokens consumed as input this turn
+	InputTokens       int // Non-cached, non-cache-write input tokens this turn
 	OutputTokens      int // Tokens generated as output this turn
-	CachedInputTokens int // Input tokens served from cache this turn
+	CachedInputTokens int // Input tokens served from cache (cache read) this turn
+	CacheWriteTokens  int // Input tokens written to cache (cache creation) this turn
 	ToolCalls         int // Number of tools executed this turn
 }
 
@@ -589,6 +590,7 @@ func (s *callbackStream) Recv() (Event, error) {
 		s.metrics.InputTokens += event.Use.InputTokens
 		s.metrics.OutputTokens += event.Use.OutputTokens
 		s.metrics.CachedInputTokens += event.Use.CachedInputTokens
+		s.metrics.CacheWriteTokens += event.Use.CacheWriteTokens
 	}
 	if event.Type == EventReasoningDelta {
 		if event.Text != "" {
@@ -804,6 +806,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 				turnMetrics.InputTokens += event.Use.InputTokens
 				turnMetrics.OutputTokens += event.Use.OutputTokens
 				turnMetrics.CachedInputTokens += event.Use.CachedInputTokens
+				turnMetrics.CacheWriteTokens += event.Use.CacheWriteTokens
 				// Update token tracking for compaction threshold and status line display.
 				// InputTokens is the non-cached portion; CachedInputTokens is the cached
 				// portion. Together they equal the total context size this turn. Adding

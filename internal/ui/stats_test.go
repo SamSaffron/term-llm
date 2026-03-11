@@ -7,7 +7,7 @@ import (
 
 func TestSessionStatsSeedTotals(t *testing.T) {
 	stats := NewSessionStats()
-	stats.SeedTotals(1000, 250, 700, 3, 2)
+	stats.SeedTotals(1000, 250, 700, 0, 3, 2)
 	stats.AddUsage(10, 5, 4, 0)
 
 	if stats.InputTokens != 1010 {
@@ -71,7 +71,7 @@ func TestAddUsageSetsLastAndPeak(t *testing.T) {
 
 func TestRenderAfterSeedTotalsWithoutAddUsage(t *testing.T) {
 	stats := NewSessionStats()
-	stats.SeedTotals(100000, 5000, 80000, 10, 5)
+	stats.SeedTotals(100000, 5000, 80000, 0, 10, 5)
 
 	out := stats.Render()
 	if strings.Contains(out, "last:") {
@@ -94,7 +94,7 @@ func TestSeedTotalsClearsPerCallState(t *testing.T) {
 	}
 
 	// Reseed should clear per-call state
-	stats.SeedTotals(100000, 10000, 80000, 5, 3)
+	stats.SeedTotals(100000, 10000, 80000, 0, 5, 3)
 
 	if stats.lastInputTokens != 0 {
 		t.Errorf("expected lastInputTokens 0 after reseed, got %d", stats.lastInputTokens)

@@ -571,8 +571,9 @@ func (m *Model) View() string {
 			style = "chat"
 		}
 
-		// Tokens
-		tokens := formatTokens(s.InputTokens, s.OutputTokens)
+		// Tokens — show total input (uncached + cache read + cache write)
+		totalInput := s.InputTokens + s.CachedInputTokens + s.CacheWriteTokens
+		tokens := formatTokens(totalInput, s.OutputTokens)
 
 		// Age
 		age := formatRelativeTime(s.UpdatedAt)

@@ -431,7 +431,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	// Create stream adapter for unified event handling with proper buffering
 	adapter := ui.NewStreamAdapter(ui.DefaultStreamBufferSize)
 	if sess != nil {
-		adapter.Stats().SeedTotals(sess.InputTokens, sess.OutputTokens, sess.CachedInputTokens, sess.ToolCalls, sess.LLMTurns)
+		adapter.Stats().SeedTotals(sess.InputTokens, sess.OutputTokens, sess.CachedInputTokens, sess.CacheWriteTokens, sess.ToolCalls, sess.LLMTurns)
 	}
 
 	// For glamour mode, create the tea.Program and set PromptUIFunc BEFORE starting the stream
@@ -563,7 +563,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 				_ = store.AddMessage(ctx, sess.ID, sessionMsg)
 			}
 			// Update metrics
-			_ = store.UpdateMetrics(ctx, sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens)
+			_ = store.UpdateMetrics(ctx, sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens)
 			return nil
 		})
 	}

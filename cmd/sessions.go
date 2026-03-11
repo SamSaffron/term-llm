@@ -262,8 +262,10 @@ func runSessionsList(cmd *cobra.Command, args []string) error {
 			summary = summary[:22] + "..."
 		}
 
-		// Format tokens as "input/output" in k format
-		tokens := formatSessionTokens(s.InputTokens, s.OutputTokens)
+		// Format tokens as "total_input/output" in k format
+		// Total input = input (after cache breakpoint) + cache read + cache write
+		totalInput := s.InputTokens + s.CachedInputTokens + s.CacheWriteTokens
+		tokens := formatSessionTokens(totalInput, s.OutputTokens)
 
 		// Format status
 		status := string(s.Status)
@@ -402,9 +404,10 @@ func runSessionsShow(cmd *cobra.Command, args []string) error {
 	fmt.Printf("User Turns: %d\n", sess.UserTurns)
 	fmt.Printf("LLM Turns: %d\n", sess.LLMTurns)
 	fmt.Printf("Tool Calls: %d\n", sess.ToolCalls)
-	fmt.Printf("Tokens: %s (input: %d, output: %d)\n",
-		formatSessionTokens(sess.InputTokens, sess.OutputTokens),
-		sess.InputTokens, sess.OutputTokens)
+	totalInput := sess.InputTokens + sess.CachedInputTokens + sess.CacheWriteTokens
+	fmt.Printf("Tokens: %s (input: %d, cache_read: %d, cache_write: %d, output: %d)\n",
+		formatSessionTokens(totalInput, sess.OutputTokens),
+		sess.InputTokens, sess.CachedInputTokens, sess.CacheWriteTokens, sess.OutputTokens)
 	if sess.Tags != "" {
 		fmt.Printf("Tags: %s\n", sess.Tags)
 	}
