@@ -311,6 +311,10 @@ func (p *GeminiCLIProvider) Capabilities() Capabilities {
 	}
 }
 
+func (p *GeminiCLIProvider) supportsNativeSearchWithToolCalls() bool {
+	return false
+}
+
 func (p *GeminiCLIProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
 		if err := p.ensureProjectID(ctx, req.Debug); err != nil {

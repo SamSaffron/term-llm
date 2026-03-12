@@ -463,6 +463,21 @@ func (e *Engine) IsToolAllowed(name string) bool {
 	return e.allowedTools[name]
 }
 
+// nativeSearchWithToolCallsProvider is an optional provider capability for
+// providers that support native web search but cannot combine it with function
+// calling in the same request.
+type nativeSearchWithToolCallsProvider interface {
+	supportsNativeSearchWithToolCalls() bool
+}
+
+func providerSupportsNativeSearchWithToolCalls(provider Provider) bool {
+	supporter, ok := provider.(nativeSearchWithToolCallsProvider)
+	if !ok {
+		return true
+	}
+	return supporter.supportsNativeSearchWithToolCalls()
+}
+
 // Stream returns a stream, applying external tools when needed.
 func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	if req.DebugRaw {
@@ -470,13 +485,18 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	}
 
 	caps := e.provider.Capabilities()
+	effectiveForceExternalSearch := req.ForceExternalSearch
+	if req.Search && len(req.Tools) > 0 && caps.NativeWebSearch && !providerSupportsNativeSearchWithToolCalls(e.provider) {
+		effectiveForceExternalSearch = true
+	}
+	req.ForceExternalSearch = effectiveForceExternalSearch
 
 	// 1. Handle external search/fetch tool injection
 	// If Search is enabled, add web_search and read_url tools to the tool list.
 	// The LLM will use them naturally during conversation like any other tool.
 	if req.Search {
-		needsExternalSearch := !caps.NativeWebSearch || req.ForceExternalSearch
-		needsExternalFetch := !caps.NativeWebFetch || req.ForceExternalSearch
+		needsExternalSearch := !caps.NativeWebSearch || effectiveForceExternalSearch
+		needsExternalFetch := !caps.NativeWebFetch || effectiveForceExternalSearch
 
 		if needsExternalSearch {
 			if t, ok := e.tools.Get(WebSearchToolName); ok {
@@ -496,7 +516,7 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 
 	// Force external search means "do not use provider-native search".
 	// Keep req.Search=true only for providers that must handle native search.
-	if req.ForceExternalSearch && caps.NativeWebSearch {
+	if effectiveForceExternalSearch && caps.NativeWebSearch {
 		req.Search = false
 	}
 

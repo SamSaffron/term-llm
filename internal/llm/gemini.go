@@ -94,6 +94,10 @@ func (p *GeminiProvider) Capabilities() Capabilities {
 	}
 }
 
+func (p *GeminiProvider) supportsNativeSearchWithToolCalls() bool {
+	return false
+}
+
 func (p *GeminiProvider) newClient(ctx context.Context) (*genai.Client, error) {
 	return genai.NewClient(ctx, &genai.ClientConfig{APIKey: p.apiKey})
 }

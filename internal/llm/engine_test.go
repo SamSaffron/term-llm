@@ -37,6 +37,15 @@ type fakeProvider struct {
 	hasCapabilities bool
 }
 
+type nativeSearchToolCallsFakeProvider struct {
+	*fakeProvider
+	supportsNativeSearchWithTools bool
+}
+
+func (p *nativeSearchToolCallsFakeProvider) supportsNativeSearchWithToolCalls() bool {
+	return p.supportsNativeSearchWithTools
+}
+
 func (p *fakeProvider) Name() string {
 	return "fake"
 }
@@ -512,6 +521,79 @@ func TestEngineForceExternalSearchDisablesNativeProviderSearch(t *testing.T) {
 	firstReq := provider.calls[0]
 	if firstReq.Search {
 		t.Fatalf("expected provider request Search=false when force_external is true")
+	}
+
+	hasExternalSearchTool := false
+	for _, spec := range firstReq.Tools {
+		if spec.Name == WebSearchToolName {
+			hasExternalSearchTool = true
+			break
+		}
+	}
+	if !hasExternalSearchTool {
+		t.Fatalf("expected injected external web_search tool")
+	}
+}
+
+func TestEngineAutoDisablesNativeSearchWhenProviderCannotCombineItWithTools(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(&countingSearchTool{})
+
+	provider := &nativeSearchToolCallsFakeProvider{
+		fakeProvider: &fakeProvider{
+			hasCapabilities: true,
+			capabilities: Capabilities{
+				NativeWebSearch: true,
+				NativeWebFetch:  false,
+				ToolCalls:       true,
+			},
+			script: func(call int, req Request) []Event {
+				return []Event{
+					{Type: EventTextDelta, Text: "ok"},
+					{Type: EventDone},
+				}
+			},
+		},
+		supportsNativeSearchWithTools: false,
+	}
+
+	engine := NewEngine(provider, registry)
+	req := Request{
+		Messages: []Message{UserText("search this")},
+		Search:   true,
+		Tools: []ToolSpec{{
+			Name:        "activate_skill",
+			Description: "Load a skill",
+			Schema:      map[string]any{"type": "object"},
+		}},
+	}
+
+	stream, err := engine.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+	}
+
+	if len(provider.calls) != 1 {
+		t.Fatalf("expected 1 provider call, got %d", len(provider.calls))
+	}
+
+	firstReq := provider.calls[0]
+	if firstReq.Search {
+		t.Fatalf("expected provider request Search=false when native search cannot be combined with tools")
+	}
+	if !firstReq.ForceExternalSearch {
+		t.Fatalf("expected provider request ForceExternalSearch=true for incompatible native search + tools")
 	}
 
 	hasExternalSearchTool := false
