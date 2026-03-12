@@ -731,6 +731,26 @@ func (t *namedTool) Preview(args json.RawMessage) string {
 	return ""
 }
 
+type finishingNamedTool struct {
+	name string
+}
+
+func (t *finishingNamedTool) Spec() ToolSpec {
+	return ToolSpec{Name: t.name, Description: "finishing test tool"}
+}
+
+func (t *finishingNamedTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
+	return TextOutput("done"), nil
+}
+
+func (t *finishingNamedTool) Preview(args json.RawMessage) string {
+	return ""
+}
+
+func (t *finishingNamedTool) IsFinishingTool() bool {
+	return true
+}
+
 // TestEngineAllowedToolsEnforcement verifies that the engine blocks tools not in the allowed list.
 func TestEngineAllowedToolsEnforcement(t *testing.T) {
 	// Create tools with different names
@@ -789,6 +809,55 @@ func TestEngineAllowedToolsEnforcement(t *testing.T) {
 	}
 	if !engine.IsToolAllowed("tool_b") {
 		t.Error("tool_b should be allowed after setting empty filter")
+	}
+}
+
+func TestEngineStopsAfterAsyncFinishingTool(t *testing.T) {
+	tool := &finishingNamedTool{name: "finish_now"}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				return []Event{
+					{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "finish_now", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventDone},
+				}
+			default:
+				t.Fatalf("provider should not be called after finishing tool (call=%d)", call)
+				return nil
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	req := Request{
+		Messages:   []Message{UserText("finish")},
+		Tools:      []ToolSpec{tool.Spec()},
+		ToolChoice: ToolChoice{Mode: ToolChoiceAuto},
+		MaxTurns:   4,
+	}
+
+	stream, err := engine.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+	}
+
+	if len(provider.calls) != 1 {
+		t.Fatalf("provider calls = %d, want %d", len(provider.calls), 1)
 	}
 }
 

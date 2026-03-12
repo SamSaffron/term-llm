@@ -200,3 +200,15 @@ func TestDescribeCredentialSource_ClaudeBin(t *testing.T) {
 		t.Fatalf("source=%q, expected to mention no key needed", source)
 	}
 }
+
+func TestGetDefaultsEnablesAutoCompact(t *testing.T) {
+	defaults := GetDefaults()
+
+	got, ok := defaults["auto_compact"].(bool)
+	if !ok {
+		t.Fatalf("auto_compact default has unexpected type %T", defaults["auto_compact"])
+	}
+	if !got {
+		t.Fatal("auto_compact should default to true")
+	}
+}

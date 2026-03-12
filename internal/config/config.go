@@ -1156,7 +1156,7 @@ func GetDefaults() map[string]any {
 		"skills.always_enabled":           []string{},
 		"skills.never_auto":               []string{},
 		"agents_md.enabled":               false,
-		"auto_compact":                    false,
+		"auto_compact":                    true,
 	}
 }
 

@@ -34,11 +34,15 @@ var (
 	askSearch          bool
 	askText            bool
 	askPorcelain       bool
+	askProgressive     bool
 	askProvider        string
 	askFiles           []string
 	askMCP             string
 	askMaxTurns        int
 	askMaxOutputTokens int
+	askTimeout         time.Duration
+	askStopWhen        string
+	askContinueWith    string
 	askNativeSearch    bool
 	askNoNativeSearch  bool
 	// Tool flags
@@ -107,6 +111,10 @@ func init() {
 	// Ask-specific flags
 	askCmd.Flags().BoolVarP(&askText, "text", "t", false, "Output plain text instead of rendered markdown")
 	askCmd.Flags().BoolVar(&askPorcelain, "porcelain", false, "Output plain text without tool status lines (implies --text)")
+	askCmd.Flags().BoolVar(&askProgressive, "progressive", false, "Enable progressive execution with persisted best-so-far progress")
+	askCmd.Flags().DurationVar(&askTimeout, "timeout", 0, "Set a hard deadline for the run (used by progressive execution for finalization budget)")
+	askCmd.Flags().StringVar(&askStopWhen, "stop-when", "", "Progressive stop condition: done or timeout (defaults to done in progressive mode)")
+	askCmd.Flags().StringVar(&askContinueWith, "continue-with", "", "Custom continuation prompt for progressive timeout mode")
 	AddYoloFlag(askCmd, &askYolo)
 	AddSkillsFlag(askCmd, &askSkills)
 
@@ -131,6 +139,20 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	question := strings.Join(filteredArgs, " ")
 	ctx, stop := signal.NotifyContext()
 	defer stop()
+	progressiveOpts := askProgressiveOptions{
+		Enabled:      askProgressive,
+		Timeout:      askTimeout,
+		StopWhen:     progressiveStopWhen(strings.TrimSpace(askStopWhen)),
+		ContinueWith: askContinueWith,
+	}
+	if err := validateAskProgressiveOptions(progressiveOpts); err != nil {
+		return err
+	}
+	if askTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, askTimeout)
+		defer cancel()
+	}
 
 	cfg, err := loadConfigWithSetup()
 	if err != nil {
@@ -506,7 +528,10 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	// Save user message BEFORE streaming (incremental save)
 	// Capture start time for duration tracking in callback
-	streamStartTime := time.Now()
+	turnStartTime := time.Now()
+	var persistResponseCompleted llm.ResponseCompletedCallback
+	var persistTurnCompleted llm.TurnCompletedCallback
+	var persistSyntheticUserMessage func(context.Context, llm.Message) error
 	if store != nil && sess != nil {
 		// Save system message first if this is a new session with instructions
 		if instructions != "" && !historyHasSystem {
@@ -541,93 +566,203 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 		// Set up response callback to save assistant message immediately (before tool execution)
 		// This ensures the message is persisted even if tool execution fails/crashes
-		engine.SetResponseCompletedCallback(func(ctx context.Context, turnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
+		persistResponseCompleted = func(ctx context.Context, turnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
 			// Calculate duration from stream start
-			durationMs := time.Since(streamStartTime).Milliseconds()
+			durationMs := time.Since(turnStartTime).Milliseconds()
 
 			sessionMsg := session.NewMessage(sess.ID, assistantMsg, -1)
 			sessionMsg.DurationMs = durationMs
 			_ = store.AddMessage(ctx, sess.ID, sessionMsg)
 			return nil
-		})
+		}
 
 		// Set up turn callback for tool result messages and metrics
-		engine.SetTurnCompletedCallback(func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
+		persistTurnCompleted = func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
 			// Save messages (tool results, or assistant message when no tools were executed)
 			for _, msg := range turnMessages {
 				sessionMsg := session.NewMessage(sess.ID, msg, -1)
 				// Set duration for assistant messages (when responseCallback didn't run)
 				if msg.Role == llm.RoleAssistant {
-					sessionMsg.DurationMs = time.Since(streamStartTime).Milliseconds()
+					sessionMsg.DurationMs = time.Since(turnStartTime).Milliseconds()
 				}
 				_ = store.AddMessage(ctx, sess.ID, sessionMsg)
 			}
 			// Update metrics
 			_ = store.UpdateMetrics(ctx, sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens)
 			return nil
-		})
+		}
+		persistSyntheticUserMessage = func(ctx context.Context, msg llm.Message) error {
+			turnStartTime = time.Now()
+			return store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, msg, -1))
+		}
 	}
 
 	// Enable context compaction or tracking for models with known context window data.
 	engine.ConfigureContextManagement(provider, cfg.DefaultProvider, activeModel(cfg), cfg.AutoCompact)
 
-	errChan := make(chan error, 1)
-	go func() {
-		stream, err := engine.Stream(ctx, req)
-		if err != nil {
-			errChan <- err
-			return
-		}
-		defer stream.Close()
-		// ProcessStream handles all events and closes the channel when done
-		adapter.ProcessStream(ctx, stream)
-		errChan <- nil
-	}()
-
 	// Set up text collection for output capture (commit_editmsg, on_complete, or session save)
 	var collector *textCollector
-	events := adapter.Events()
 	needsCollector := (agent != nil && (agent.Output == "commit_editmsg" || agent.OnComplete != "")) || (store != nil && sess != nil)
-	if needsCollector {
-		collector = &textCollector{}
-		events = collector.wrapEvents(events)
-	}
+	var stats *ui.SessionStats
+	var progressiveResult progressiveRunResult
 
-	if useGlamour {
-		err = streamWithGlamour(ctx, events, teaProgram, store, sess)
-	} else {
-		err = streamPlainText(ctx, events, askPorcelain)
-	}
-	tools.ClearAskUserHooks() // Safe to call even if hooks weren't set
-
-	if err != nil {
-		return err
-	}
-
-	// Clear callbacks and update status
-	engine.SetResponseCompletedCallback(nil)
-	engine.SetTurnCompletedCallback(nil)
-
-	streamErr := <-errChan
-	if streamErr != nil {
-		// Update session status based on error type
-		if store != nil && sess != nil {
-			if errors.Is(streamErr, context.Canceled) {
-				_ = store.UpdateStatus(ctx, sess.ID, session.StatusInterrupted)
+	if askProgressive {
+		var bridge *askProgressiveBridge
+		var events <-chan ui.StreamEvent
+		if !askPorcelain || showStats {
+			bridge = newAskProgressiveBridge(ui.DefaultStreamBufferSize)
+			if sess != nil {
+				bridge.Stats().SeedTotals(sess.InputTokens, sess.OutputTokens, sess.CachedInputTokens, sess.CacheWriteTokens, sess.ToolCalls, sess.LLMTurns)
+			}
+			stats = bridge.Stats()
+			if !askPorcelain {
+				events = bridge.Events()
+				if needsCollector {
+					collector = &textCollector{}
+					events = collector.wrapEvents(events)
+				}
 			} else {
-				_ = store.UpdateStatus(ctx, sess.ID, session.StatusError)
+				go func() {
+					for range bridge.Events() {
+					}
+				}()
 			}
 		}
-		if errors.Is(streamErr, context.Canceled) {
-			return nil
-		}
-		return fmt.Errorf("streaming failed: %w", streamErr)
-	}
 
-	// Update session status to complete
-	if store != nil && sess != nil {
-		_ = store.UpdateStatus(ctx, sess.ID, session.StatusComplete)
-		_ = store.SetCurrent(ctx, sess.ID)
+		runOpts := progressiveRunOptions{
+			StopWhen:               progressiveOpts.StopWhen,
+			ContinueWith:           progressiveOpts.ContinueWith,
+			SessionID:              sessionID,
+			ForceNamedFinalization: provider.Capabilities().SupportsToolChoice,
+			OnSyntheticUserMessage: persistSyntheticUserMessage,
+			OnResponseCompleted:    persistResponseCompleted,
+			OnTurnCompleted:        persistTurnCompleted,
+		}
+		if bridge != nil {
+			runOpts.OnEvent = bridge.HandleEvent
+		}
+
+		runProgressive := func() askProgressiveRunResult {
+			result, runErr := runProgressiveSession(ctx, engine, req, runOpts)
+			if bridge != nil {
+				if runErr != nil {
+					bridge.CloseError(runErr)
+				} else {
+					bridge.CloseSuccess()
+				}
+			}
+			return askProgressiveRunResult{Result: result, Err: runErr}
+		}
+
+		var progressiveRun askProgressiveRunResult
+		if askPorcelain {
+			progressiveRun = runProgressive()
+		} else {
+			runCh := make(chan askProgressiveRunResult, 1)
+			go func() {
+				runCh <- runProgressive()
+			}()
+			displayCtx := context.WithoutCancel(ctx)
+			if useGlamour {
+				err = streamWithGlamour(displayCtx, events, teaProgram, store, sess)
+			} else {
+				err = streamPlainText(displayCtx, events, false)
+			}
+			progressiveRun = <-runCh
+		}
+		tools.ClearAskUserHooks() // Safe to call even if hooks weren't set
+
+		if err != nil {
+			return err
+		}
+
+		progressiveResult = progressiveRun.Result
+		progressiveStatus := session.StatusComplete
+		switch progressiveResult.ExitReason {
+		case exitReasonTimeout, exitReasonCancelled:
+			progressiveStatus = session.StatusInterrupted
+		}
+		if progressiveRun.Err != nil && progressiveStatus != session.StatusInterrupted {
+			progressiveStatus = session.StatusError
+		}
+		if store != nil && sess != nil {
+			_ = store.UpdateStatus(context.Background(), sess.ID, progressiveStatus)
+			_ = store.SetCurrent(context.Background(), sess.ID)
+		}
+
+		if askPorcelain {
+			if err := json.NewEncoder(cmd.OutOrStdout()).Encode(progressiveResult); err != nil {
+				return fmt.Errorf("encode progressive result: %w", err)
+			}
+		}
+
+		if progressiveRun.Err != nil {
+			return fmt.Errorf("progressive run failed: %w", progressiveRun.Err)
+		}
+	} else {
+		if persistResponseCompleted != nil {
+			engine.SetResponseCompletedCallback(persistResponseCompleted)
+		}
+		if persistTurnCompleted != nil {
+			engine.SetTurnCompletedCallback(persistTurnCompleted)
+		}
+
+		stats = adapter.Stats()
+		errChan := make(chan error, 1)
+		go func() {
+			stream, err := engine.Stream(ctx, req)
+			if err != nil {
+				errChan <- err
+				return
+			}
+			defer stream.Close()
+			// ProcessStream handles all events and closes the channel when done
+			adapter.ProcessStream(ctx, stream)
+			errChan <- nil
+		}()
+
+		events := adapter.Events()
+		if needsCollector {
+			collector = &textCollector{}
+			events = collector.wrapEvents(events)
+		}
+
+		if useGlamour {
+			err = streamWithGlamour(ctx, events, teaProgram, store, sess)
+		} else {
+			err = streamPlainText(ctx, events, askPorcelain)
+		}
+		tools.ClearAskUserHooks() // Safe to call even if hooks weren't set
+
+		if err != nil {
+			return err
+		}
+
+		// Clear callbacks and update status
+		engine.SetResponseCompletedCallback(nil)
+		engine.SetTurnCompletedCallback(nil)
+
+		streamErr := <-errChan
+		if streamErr != nil {
+			// Update session status based on error type
+			if store != nil && sess != nil {
+				if errors.Is(streamErr, context.Canceled) {
+					_ = store.UpdateStatus(ctx, sess.ID, session.StatusInterrupted)
+				} else {
+					_ = store.UpdateStatus(ctx, sess.ID, session.StatusError)
+				}
+			}
+			if errors.Is(streamErr, context.Canceled) {
+				return nil
+			}
+			return fmt.Errorf("streaming failed: %w", streamErr)
+		}
+
+		// Update session status to complete
+		if store != nil && sess != nil {
+			_ = store.UpdateStatus(ctx, sess.ID, session.StatusComplete)
+			_ = store.SetCurrent(ctx, sess.ID)
+		}
 	}
 
 	// Run on_complete handler if configured
@@ -637,6 +772,8 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			output = outputTool.Value() // Tool output (preferred)
 		} else if collector != nil {
 			output = collector.Text() // Fallback to text
+		} else if askProgressive {
+			output = progressiveOutputText(progressiveResult)
 		}
 
 		if output != "" {
@@ -646,8 +783,14 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 	} else if agent != nil && agent.Output == "commit_editmsg" {
 		// Backwards compat: keep old output: commit_editmsg (deprecated path)
+		output := ""
 		if collector != nil {
-			if err := writeCommitEditMsg(collector.Text()); err != nil {
+			output = collector.Text()
+		} else if askProgressive {
+			output = progressiveOutputText(progressiveResult)
+		}
+		if output != "" {
+			if err := writeCommitEditMsg(output); err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to write commit message: %v\n", err)
 			} else {
 				fmt.Fprintf(cmd.ErrOrStderr(), "\nCommit message written to .git/COMMIT_EDITMSG and .git/GITGUI_MSG\n")
@@ -656,9 +799,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if showStats {
-		adapter.Stats().Finalize()
-		fmt.Fprintln(cmd.ErrOrStderr(), adapter.Stats().Render())
+	if showStats && stats != nil {
+		stats.Finalize()
+		fmt.Fprintln(cmd.ErrOrStderr(), stats.Render())
 	}
 
 	return nil
@@ -1885,6 +2028,20 @@ func runOnComplete(command, input string) error {
 	cmd.Stderr = os.Stderr
 
 	return cmd.Run()
+}
+
+func progressiveOutputText(result progressiveRunResult) string {
+	if strings.TrimSpace(result.FallbackText) != "" {
+		return result.FallbackText
+	}
+	if len(result.Progress) == 0 {
+		return ""
+	}
+	data, err := json.Marshal(result.Progress)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 // textCollector wraps an event channel and collects all text events.

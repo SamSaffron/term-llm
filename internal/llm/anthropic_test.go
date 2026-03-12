@@ -578,6 +578,54 @@ func TestBuildAnthropicMessages_ConvertsDanglingToolCalls(t *testing.T) {
 	}
 }
 
+func TestBuildAnthropicMessages_AppendsSyntheticUserAfterTrailingAssistant(t *testing.T) {
+	summary := Message{
+		Role:        RoleUser,
+		Parts:       []Part{{Type: PartText, Text: summaryPrefix + "Previous context"}},
+		CacheAnchor: true,
+	}
+	ack := AssistantText("I've reviewed the context summary. I'll continue from where we left off.")
+
+	_, out := buildAnthropicMessages([]Message{summary, ack})
+	if len(out) != 3 {
+		t.Fatalf("expected 3 anthropic messages after normalization, got %d", len(out))
+	}
+	last := out[len(out)-1]
+	if last.Role != anthropic.MessageParamRoleUser {
+		t.Fatalf("expected trailing anthropic role user, got %v", last.Role)
+	}
+	if len(last.Content) != 1 || last.Content[0].OfText == nil {
+		t.Fatalf("expected trailing anthropic message to be a text user block, got %#v", last.Content)
+	}
+	if got := last.Content[0].OfText.Text; got != "Continue from the conversation state above." {
+		t.Fatalf("synthetic user text = %q, want %q", got, "Continue from the conversation state above.")
+	}
+}
+
+func TestBuildAnthropicBetaMessages_AppendsSyntheticUserAfterTrailingAssistant(t *testing.T) {
+	summary := Message{
+		Role:        RoleUser,
+		Parts:       []Part{{Type: PartText, Text: summaryPrefix + "Previous context"}},
+		CacheAnchor: true,
+	}
+	ack := AssistantText("I've reviewed the context summary. I'll continue from where we left off.")
+
+	_, out := buildAnthropicBetaMessages([]Message{summary, ack})
+	if len(out) != 3 {
+		t.Fatalf("expected 3 anthropic beta messages after normalization, got %d", len(out))
+	}
+	last := out[len(out)-1]
+	if last.Role != anthropic.BetaMessageParamRoleUser {
+		t.Fatalf("expected trailing anthropic beta role user, got %v", last.Role)
+	}
+	if len(last.Content) != 1 || last.Content[0].OfText == nil {
+		t.Fatalf("expected trailing anthropic beta message to be a text user block, got %#v", last.Content)
+	}
+	if got := last.Content[0].OfText.Text; got != "Continue from the conversation state above." {
+		t.Fatalf("synthetic beta user text = %q, want %q", got, "Continue from the conversation state above.")
+	}
+}
+
 func TestHandleAnthropicStartBlockContent_TextBlockEmitsTextDelta(t *testing.T) {
 	events := make(chan Event, 1)
 	acc := newToolCallAccumulator()

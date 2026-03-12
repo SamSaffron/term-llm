@@ -29,7 +29,11 @@ type jobsV2TriggerType string
 
 type jobsV2RunStatus string
 
-type serveJobsExecutor func(ctx context.Context, agentName, instructions string, onEvent func(llm.Event)) error
+type serveJobsExecResult struct {
+	Progressive *progressiveRunResult
+}
+
+type serveJobsExecutor func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(llm.Event)) (serveJobsExecResult, error)
 
 const (
 	jobsV2RunnerLLM     jobsV2RunnerType = "llm"
@@ -141,7 +145,7 @@ type jobsV2RunResult struct {
 }
 
 // progressWriter receives real-time progress updates from a running job.
-// eventType is one of: "tool_start", "tool_end", "phase", "turn_complete", "response_flush".
+// eventType is one of: "tool_start", "tool_end", "phase", "turn_complete", "response_flush", "progress_update".
 // For "response_flush": message is the current accumulated response text, data is nil.
 // For others: message is a human-readable summary, data is structured metadata.
 type progressWriter func(eventType, message string, data any)
@@ -216,6 +220,9 @@ type jobsV2LLMRunner struct {
 type jobsV2LLMConfig struct {
 	AgentName    string `json:"agent_name"`
 	Instructions string `json:"instructions"`
+	Progressive  bool   `json:"progressive,omitempty"`
+	StopWhen     string `json:"stop_when,omitempty"`
+	ContinueWith string `json:"continue_with,omitempty"`
 }
 
 func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWriter) (jobsV2RunResult, error) {
@@ -232,13 +239,33 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 	if strings.TrimSpace(cfg.Instructions) == "" {
 		return jobsV2RunResult{}, fmt.Errorf("llm runner instructions is required")
 	}
+	progressiveOpts := askProgressiveOptions{
+		Enabled:      cfg.Progressive,
+		Timeout:      time.Duration(job.TimeoutSeconds) * time.Second,
+		StopWhen:     progressiveStopWhen(strings.TrimSpace(cfg.StopWhen)),
+		ContinueWith: cfg.ContinueWith,
+	}
+	if err := validateAskProgressiveOptions(progressiveOpts); err != nil {
+		return jobsV2RunResult{}, err
+	}
 	res := jobsV2RunResult{}
-	err := r.exec(ctx, cfg.AgentName, cfg.Instructions, func(ev llm.Event) {
+	progressTracker := newProgressTracker()
+	execResult, err := r.exec(ctx, cfg, func(ev llm.Event) {
 		switch ev.Type {
 		case llm.EventReasoningDelta:
 			res.Thinking += ev.Text
 		case llm.EventTextDelta:
-			res.Response += ev.Text
+			if !cfg.Progressive {
+				res.Response += ev.Text
+			}
+		case llm.EventToolCall:
+			if ev.Tool != nil && cfg.Progressive && isProgressToolName(ev.Tool.Name) {
+				callID := strings.TrimSpace(ev.ToolCallID)
+				if callID == "" {
+					callID = strings.TrimSpace(ev.Tool.ID)
+				}
+				progressTracker.observeToolCall(callID, strings.TrimSpace(ev.Tool.Name), ev.Tool.Arguments)
+			}
 		case llm.EventUsage:
 			if ev.Use != nil {
 				res.InputTokens += ev.Use.InputTokens
@@ -246,7 +273,9 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 				res.TurnCount++
 				// Flush accumulated response to DB after each turn so callers can see partial output.
 				if pw != nil {
-					pw("response_flush", res.Response, nil)
+					if !cfg.Progressive {
+						pw("response_flush", res.Response, nil)
+					}
 					pw("turn_complete", fmt.Sprintf("turn %d complete (%d in, %d out tokens)", res.TurnCount, ev.Use.InputTokens, ev.Use.OutputTokens), map[string]any{
 						"turn":          res.TurnCount,
 						"input_tokens":  ev.Use.InputTokens,
@@ -255,6 +284,9 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 				}
 			}
 		case llm.EventToolExecStart:
+			if cfg.Progressive && isProgressToolName(ev.ToolName) {
+				return
+			}
 			if pw != nil {
 				info := ev.ToolInfo
 				if info == "" {
@@ -267,6 +299,22 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 				})
 			}
 		case llm.EventToolExecEnd:
+			if cfg.Progressive && isProgressToolName(ev.ToolName) {
+				if commit := progressTracker.commitToolCall(strings.TrimSpace(ev.ToolCallID), strings.TrimSpace(ev.ToolName), ev.ToolSuccess); commit != nil && pw != nil {
+					message := commit.Message
+					if message == "" {
+						message = "progress updated"
+					}
+					pw("progress_update", message, map[string]any{
+						"sequence": commit.Sequence,
+						"reason":   commit.Reason,
+						"message":  commit.Message,
+						"final":    commit.Final,
+						"progress": cloneProgressState(commit.State),
+					})
+				}
+				return
+			}
 			if pw != nil {
 				status := "ok"
 				if !ev.ToolSuccess {
@@ -284,6 +332,14 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 			}
 		}
 	})
+	if execResult.Progressive != nil {
+		data, marshalErr := json.Marshal(execResult.Progressive)
+		if marshalErr != nil {
+			return res, fmt.Errorf("marshal progressive job result: %w", marshalErr)
+		}
+		res.ExitReason = execResult.Progressive.ExitReason
+		res.Response = string(data)
+	}
 	return res, err
 }
 
@@ -299,6 +355,9 @@ func classifyRunError(err error, result jobsV2RunResult) (exitReason string, tru
 			return exitReasonMaxTurns, true
 		}
 		return exitReasonException, false
+	}
+	if strings.TrimSpace(result.ExitReason) != "" {
+		return result.ExitReason, result.ExitReason == exitReasonMaxTurns
 	}
 	if strings.TrimSpace(result.Response) == "" {
 		return exitReasonEmpty, false
@@ -770,6 +829,14 @@ func (m *jobsV2Manager) executeRun(run jobsV2Run) {
 		return
 	}
 	if errors.Is(ctx.Err(), context.Canceled) {
+		_ = m.finishRun(run.ID, jobsV2RunCancelled, result, context.Canceled, run.Attempt)
+		return
+	}
+	if result.ExitReason == exitReasonTimeout {
+		_ = m.finishRun(run.ID, jobsV2RunTimedOut, result, context.DeadlineExceeded, run.Attempt)
+		return
+	}
+	if result.ExitReason == exitReasonCancelled {
 		_ = m.finishRun(run.ID, jobsV2RunCancelled, result, context.Canceled, run.Attempt)
 		return
 	}
@@ -1946,19 +2013,19 @@ func cloneConfigForServeJob(src *config.Config) *config.Config {
 }
 
 func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
-	return func(ctx context.Context, agentName, instructions string, onEvent func(llm.Event)) error {
+	return func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(llm.Event)) (serveJobsExecResult, error) {
 		jobCfg := cloneConfigForServeJob(baseCfg)
 
-		agent, err := LoadAgent(agentName, jobCfg)
+		agent, err := LoadAgent(cfg.AgentName, jobCfg)
 		if err != nil {
-			return err
+			return serveJobsExecResult{}, err
 		}
 		if agent == nil {
-			return fmt.Errorf("agent %q not found", agentName)
+			return serveJobsExecResult{}, fmt.Errorf("agent %q not found", cfg.AgentName)
 		}
 
 		if err := applyProviderOverridesWithAgent(jobCfg, jobCfg.Ask.Provider, jobCfg.Ask.Model, serveProvider, agent.Provider, agent.Model); err != nil {
-			return err
+			return serveJobsExecResult{}, err
 		}
 
 		settings, err := ResolveSettings(jobCfg, agent, CLIFlags{
@@ -1974,7 +2041,7 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 			Platform:      "jobs",
 		}, jobCfg.Ask.Provider, jobCfg.Ask.Model, jobCfg.Ask.Instructions, jobCfg.Ask.MaxTurns, 20)
 		if err != nil {
-			return err
+			return serveJobsExecResult{}, err
 		}
 
 		// Setup skills and inject metadata into settings.SystemPrompt before
@@ -1986,12 +2053,12 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 		modelName := activeModel(jobCfg)
 		provider, err := llm.NewProvider(jobCfg)
 		if err != nil {
-			return err
+			return serveJobsExecResult{}, err
 		}
 
 		engine, toolMgr, err := newServeEngineWithTools(jobCfg, settings, provider, serveYolo, WireSpawnAgentRunner, jobSkillsSetup)
 		if err != nil {
-			return err
+			return serveJobsExecResult{}, err
 		}
 
 		forceExternalSearch := resolveForceExternalSearch(jobCfg, serveNativeSearch, serveNoNativeSearch)
@@ -2016,7 +2083,7 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 			mcpOpts := &MCPOptions{Provider: provider, Model: modelName, YoloMode: serveYolo}
 			mgr, err := enableMCPServersWithFeedback(ctx, settings.MCP, engine, io.Discard, mcpOpts)
 			if err != nil {
-				return err
+				return serveJobsExecResult{}, err
 			}
 			runtime.mcpManager = mgr
 		}
@@ -2032,12 +2099,33 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 			DebugRaw:            debugRaw,
 		}
 
-		_, err = runtime.RunWithEvents(ctx, false, false, []llm.Message{llm.UserText(instructions)}, llmReq, func(ev llm.Event) error {
+		if cfg.Progressive {
+			messages := []llm.Message{llm.UserText(cfg.Instructions)}
+			if runtime.systemPrompt != "" {
+				messages = append([]llm.Message{llm.SystemText(runtime.systemPrompt)}, messages...)
+			}
+			llmReq.Messages = messages
+
+			progressiveResult, err := runProgressiveSession(ctx, engine, llmReq, progressiveRunOptions{
+				StopWhen:               progressiveStopWhen(strings.TrimSpace(cfg.StopWhen)),
+				ContinueWith:           cfg.ContinueWith,
+				ForceNamedFinalization: provider.Capabilities().SupportsToolChoice,
+				OnEvent: func(ev llm.Event) error {
+					if onEvent != nil {
+						onEvent(ev)
+					}
+					return nil
+				},
+			})
+			return serveJobsExecResult{Progressive: &progressiveResult}, err
+		}
+
+		_, err = runtime.RunWithEvents(ctx, false, false, []llm.Message{llm.UserText(cfg.Instructions)}, llmReq, func(ev llm.Event) error {
 			if onEvent != nil {
 				onEvent(ev)
 			}
 			return nil
 		})
-		return err
+		return serveJobsExecResult{}, err
 	}
 }

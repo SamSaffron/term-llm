@@ -599,7 +599,7 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 }
 
 func buildAnthropicMessages(messages []Message) (string, []anthropic.MessageParam) {
-	messages = sanitizeToolHistory(messages)
+	messages = prepareAnthropicMessages(messages)
 
 	var systemParts []string
 	var out []anthropic.MessageParam
@@ -634,7 +634,7 @@ func buildAnthropicMessages(messages []Message) (string, []anthropic.MessagePara
 }
 
 func buildAnthropicBetaMessages(messages []Message) (string, []anthropic.BetaMessageParam) {
-	messages = sanitizeToolHistory(messages)
+	messages = prepareAnthropicMessages(messages)
 
 	var systemParts []string
 	var out []anthropic.BetaMessageParam
@@ -669,6 +669,25 @@ func buildAnthropicBetaMessages(messages []Message) (string, []anthropic.BetaMes
 	}
 
 	return strings.Join(systemParts, "\n\n"), out
+}
+
+func prepareAnthropicMessages(messages []Message) []Message {
+	messages = sanitizeToolHistory(messages)
+	if len(messages) == 0 {
+		return nil
+	}
+
+	lastRole := messages[len(messages)-1].Role
+	if lastRole != RoleAssistant {
+		return messages
+	}
+
+	normalized := append([]Message(nil), messages...)
+	// Anthropic treats a trailing assistant turn as response prefill. That is
+	// deprecated and unsupported on newer Claude models, so convert assistant-
+	// ended histories into a normal assistant->user continuation turn.
+	normalized = append(normalized, UserText("Continue from the conversation state above."))
+	return normalized
 }
 
 func buildAnthropicBlocks(parts []Part, allowToolUse bool) []anthropic.ContentBlockParamUnion {

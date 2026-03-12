@@ -1069,6 +1069,14 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			return err
 		}
 
+		finishingToolExecuted = false
+		for _, call := range registered {
+			if e.tools.IsFinishingTool(call.Name) {
+				finishingToolExecuted = true
+				break
+			}
+		}
+
 		req.Messages = append(req.Messages, assistantMsg)
 		req.Messages = append(req.Messages, toolResults...)
 
@@ -1085,6 +1093,11 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 		// before we abandon the loop.
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+
+		if finishingToolExecuted {
+			events <- Event{Type: EventDone}
+			return nil
 		}
 
 		// Check for user interjection queued during this turn.
