@@ -1746,16 +1746,20 @@ When using external search (non-native), you can choose from multiple search pro
 |----------|---------------------|-------------|
 | DuckDuckGo (default) | — | Free, no API key required |
 | [Exa](https://exa.ai) | `EXA_API_KEY` | AI-native semantic search |
+| [Tavily](https://tavily.com/) | `TAVILY_API_KEY` | Agent-oriented web search with snippets |
 | [Brave](https://brave.com/search/api/) | `BRAVE_API_KEY` | Independent index, privacy-focused |
 | [Google](https://developers.google.com/custom-search) | `GOOGLE_SEARCH_API_KEY` + `GOOGLE_SEARCH_CX` | Google Custom Search |
 
 **Configure in `~/.config/term-llm/config.yaml`:**
 ```yaml
 search:
-  provider: exa  # exa, brave, google, or duckduckgo (default)
+  provider: exa  # exa, tavily, brave, google, or duckduckgo (default)
 
   exa:
     api_key: ${EXA_API_KEY}
+
+  tavily:
+    api_key: ${TAVILY_API_KEY}
 
   brave:
     api_key: ${BRAVE_API_KEY}
