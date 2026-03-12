@@ -89,6 +89,23 @@ func (t *countingSearchTool) Preview(args json.RawMessage) string {
 	return ""
 }
 
+type countingReadURLTool struct {
+	calls int
+}
+
+func (t *countingReadURLTool) Spec() ToolSpec {
+	return ReadURLToolSpec()
+}
+
+func (t *countingReadURLTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
+	t.calls++
+	return TextOutput(fmt.Sprintf("page %d", t.calls)), nil
+}
+
+func (t *countingReadURLTool) Preview(args json.RawMessage) string {
+	return ""
+}
+
 type countingTool struct {
 	calls int
 }
@@ -605,6 +622,81 @@ func TestEngineAutoDisablesNativeSearchWhenProviderCannotCombineItWithTools(t *t
 	}
 	if !hasExternalSearchTool {
 		t.Fatalf("expected injected external web_search tool")
+	}
+}
+
+func TestEngineAutoDisablesNativeSearchWhenReadURLWouldBeInjected(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(&countingSearchTool{})
+	registry.Register(&countingReadURLTool{})
+
+	provider := &nativeSearchToolCallsFakeProvider{
+		fakeProvider: &fakeProvider{
+			hasCapabilities: true,
+			capabilities: Capabilities{
+				NativeWebSearch: true,
+				NativeWebFetch:  false,
+				ToolCalls:       true,
+			},
+			script: func(call int, req Request) []Event {
+				return []Event{
+					{Type: EventTextDelta, Text: "ok"},
+					{Type: EventDone},
+				}
+			},
+		},
+		supportsNativeSearchWithTools: false,
+	}
+
+	engine := NewEngine(provider, registry)
+	req := Request{
+		Messages: []Message{UserText("search this")},
+		Search:   true,
+	}
+
+	stream, err := engine.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+	}
+
+	if len(provider.calls) != 1 {
+		t.Fatalf("expected 1 provider call, got %d", len(provider.calls))
+	}
+
+	firstReq := provider.calls[0]
+	if firstReq.Search {
+		t.Fatalf("expected provider request Search=false when read_url would force tool calls")
+	}
+	if !firstReq.ForceExternalSearch {
+		t.Fatalf("expected provider request ForceExternalSearch=true when read_url would be injected")
+	}
+
+	hasExternalSearchTool := false
+	hasReadURLTool := false
+	for _, spec := range firstReq.Tools {
+		switch spec.Name {
+		case WebSearchToolName:
+			hasExternalSearchTool = true
+		case ReadURLToolName:
+			hasReadURLTool = true
+		}
+	}
+	if !hasExternalSearchTool {
+		t.Fatalf("expected injected external web_search tool")
+	}
+	if !hasReadURLTool {
+		t.Fatalf("expected injected read_url tool")
 	}
 }
 

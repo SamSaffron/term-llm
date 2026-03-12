@@ -486,8 +486,14 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 
 	caps := e.provider.Capabilities()
 	effectiveForceExternalSearch := req.ForceExternalSearch
-	if req.Search && len(req.Tools) > 0 && caps.NativeWebSearch && !providerSupportsNativeSearchWithToolCalls(e.provider) {
-		effectiveForceExternalSearch = true
+	if req.Search && caps.NativeWebSearch && !providerSupportsNativeSearchWithToolCalls(e.provider) {
+		nativeSearchWouldUseToolCalls := len(req.Tools) > 0
+		if !nativeSearchWouldUseToolCalls && !caps.NativeWebFetch {
+			_, nativeSearchWouldUseToolCalls = e.tools.Get(ReadURLToolName)
+		}
+		if nativeSearchWouldUseToolCalls {
+			effectiveForceExternalSearch = true
+		}
 	}
 	req.ForceExternalSearch = effectiveForceExternalSearch
 
