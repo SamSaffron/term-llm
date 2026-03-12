@@ -21,6 +21,12 @@ func NewSearcher(cfg *config.Config) (Searcher, error) {
 		}
 		return NewExaSearcher(cfg.Search.Exa.APIKey, nil), nil
 
+	case "tavily":
+		if cfg.Search.Tavily.APIKey == "" {
+			return nil, fmt.Errorf("tavily search requires TAVILY_API_KEY")
+		}
+		return NewTavilySearcher(cfg.Search.Tavily.APIKey, nil), nil
+
 	case "brave":
 		if cfg.Search.Brave.APIKey == "" {
 			return nil, fmt.Errorf("brave search requires BRAVE_API_KEY")

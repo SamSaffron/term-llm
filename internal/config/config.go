@@ -370,15 +370,21 @@ type EmbedOllamaConfig struct {
 
 // SearchConfig configures web search providers
 type SearchConfig struct {
-	Provider      string             `mapstructure:"provider"`       // exa, brave, google, duckduckgo (default)
+	Provider      string             `mapstructure:"provider"`       // exa, tavily, brave, google, duckduckgo (default)
 	ForceExternal bool               `mapstructure:"force_external"` // force external search for all providers
 	Exa           SearchExaConfig    `mapstructure:"exa"`
+	Tavily        SearchTavilyConfig `mapstructure:"tavily"`
 	Brave         SearchBraveConfig  `mapstructure:"brave"`
 	Google        SearchGoogleConfig `mapstructure:"google"`
 }
 
 // SearchExaConfig configures Exa search
 type SearchExaConfig struct {
+	APIKey string `mapstructure:"api_key"`
+}
+
+// SearchTavilyConfig configures Tavily search
+type SearchTavilyConfig struct {
 	APIKey string `mapstructure:"api_key"`
 }
 
@@ -786,6 +792,12 @@ func resolveSearchCredentials(cfg *SearchConfig) {
 		cfg.Exa.APIKey = os.Getenv("EXA_API_KEY")
 	}
 
+	// Tavily credentials
+	cfg.Tavily.APIKey = expandEnv(cfg.Tavily.APIKey)
+	if cfg.Tavily.APIKey == "" {
+		cfg.Tavily.APIKey = os.Getenv("TAVILY_API_KEY")
+	}
+
 	// Brave credentials
 	cfg.Brave.APIKey = expandEnv(cfg.Brave.APIKey)
 	if cfg.Brave.APIKey == "" {
@@ -992,6 +1004,8 @@ var KnownKeys = map[string]bool{
 	"search.force_external": true,
 	"search.exa":            true,
 	"search.exa.api_key":    true,
+	"search.tavily":         true,
+	"search.tavily.api_key": true,
 	"search.brave":          true,
 	"search.brave.api_key":  true,
 	"search.google":         true,
