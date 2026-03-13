@@ -50,7 +50,8 @@ const state = {
     cancelOnStop: false,
     mimeType: '',
     status: ''
-  }
+  },
+  restorePromptFocus: false
 };
 // Ensure cookie is set on load so <img> requests to basePath/images/ can authenticate
 if (state.token) {
@@ -296,6 +297,9 @@ const updateDocumentTitle = () => {
 };
 
 const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+
+// Mobile browsers treat programmatic focus as an instruction to pop the keyboard.
+const shouldSuppressPromptAutoFocus = () => window.matchMedia('(hover: none) and (pointer: coarse)').matches;
 
 const syncNotificationPermissionState = () => {
   if (typeof Notification === 'undefined') return;
@@ -704,6 +708,7 @@ Object.assign(app, {
   updateDocumentTitle,
   UI_PREFIX,
   isStandalone,
+  shouldSuppressPromptAutoFocus,
   refreshNotificationUI,
   registerServiceWorker,
   subscribeToPush,

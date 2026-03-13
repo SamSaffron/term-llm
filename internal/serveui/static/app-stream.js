@@ -7,7 +7,7 @@ const {
   getActiveSession, ensureActiveSession, createSession, findMessageElement, scrollToBottom, setConnectionState,
   persistAndRefreshShell, updateSessionUsageDisplay, refreshRelativeTimes, requestHeaders: _unusedRequestHeaders, updateAssistantNode, updateUserNode,
   updateToolNode, updateToolGroupNode, createMessageNode, createToolGroupNode, renderSidebar, renderMessages, maybeNotifyResponseComplete,
-  subscribeToPush, shouldAutoSubscribeToPush, applyTextDirection
+  subscribeToPush, shouldAutoSubscribeToPush, applyTextDirection, shouldSuppressPromptAutoFocus
 } = app;
 
 // ===== Network helpers =====
@@ -1599,6 +1599,12 @@ const handleFiles = (fileList) => {
 };
 
 const setStreaming = (streaming) => {
+  const wasStreaming = state.streaming;
+  if (streaming && !wasStreaming) {
+    // Only restore focus after a reply if the user was already typing and the device
+    // will not pop an on-screen keyboard just because we touched focus().
+    state.restorePromptFocus = document.activeElement === elements.promptInput && !shouldSuppressPromptAutoFocus();
+  }
   state.streaming = streaming;
   elements.promptInput.disabled = false;
   elements.sendBtn.disabled = false;
@@ -1606,7 +1612,11 @@ const setStreaming = (streaming) => {
   elements.stopBtn.classList.toggle('visible', streaming && (Boolean(state.abortController) || Boolean(state.currentStreamResponseId)));
   updateVoiceUI();
   if (!streaming) {
-    elements.promptInput.focus();
+    const shouldRestoreFocus = state.restorePromptFocus;
+    state.restorePromptFocus = false;
+    if (shouldRestoreFocus) {
+      elements.promptInput.focus();
+    }
   }
 };
 
