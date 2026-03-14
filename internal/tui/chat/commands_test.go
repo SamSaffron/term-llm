@@ -127,6 +127,7 @@ func newCmdTestModel(store session.Store) *Model {
 	ta := textarea.New()
 	return &Model{
 		width:    80,
+		height:   24,
 		textarea: ta,
 		dialog:   NewDialogModel(nil),
 		store:    store,
@@ -195,7 +196,7 @@ func TestCmdResume_DoesNotMutateViewStateInPlace(t *testing.T) {
 	}
 }
 
-func TestCmdResume_NoArgs_ShowsSessionPicker(t *testing.T) {
+func TestCmdResume_NoArgs_OpensEmbeddedSessionsBrowser(t *testing.T) {
 	sessionID := "sess-resume-picker-1"
 	store := &mockStore{
 		summaries: []session.SessionSummary{
@@ -211,22 +212,22 @@ func TestCmdResume_NoArgs_ShowsSessionPicker(t *testing.T) {
 		},
 	}
 	m := newCmdTestModel(store)
+	m.setTextareaValue("draft note")
 
 	result, _ := m.cmdResume([]string{})
 	rm := result.(*Model)
 
-	if !rm.dialog.IsOpen() {
-		t.Fatal("expected session picker dialog to be open")
+	if !rm.resumeBrowserMode {
+		t.Fatal("expected resume browser mode to be active")
 	}
-	if rm.dialog.Type() != DialogSessionList {
-		t.Fatalf("expected dialog type %v, got %v", DialogSessionList, rm.dialog.Type())
+	if rm.resumeBrowserModel == nil {
+		t.Fatal("expected embedded resume browser model to be initialized")
 	}
-	selected := rm.dialog.Selected()
-	if selected == nil {
-		t.Fatal("expected selected session item to be available")
+	if rm.dialog.IsOpen() {
+		t.Fatal("expected generic dialog to remain closed")
 	}
-	if selected.ID != sessionID {
-		t.Fatalf("expected selected session ID %q, got %q", sessionID, selected.ID)
+	if got := rm.textarea.Value(); got != "draft note" {
+		t.Fatalf("expected draft input to be preserved, got %q", got)
 	}
 }
 

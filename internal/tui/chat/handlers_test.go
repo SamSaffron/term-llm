@@ -3,10 +3,12 @@ package chat
 import (
 	"context"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
+	sessionsui "github.com/samsaffron/term-llm/internal/tui/sessions"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -33,6 +35,90 @@ func TestHandleKeyMsg_SessionListEnterResumesSession(t *testing.T) {
 	}
 	if rm.RequestedResumeSessionID() != sessionID {
 		t.Fatalf("expected pending resume session ID %q, got %q", sessionID, rm.RequestedResumeSessionID())
+	}
+}
+
+func TestResumeBrowserEnterRequestsRelaunch(t *testing.T) {
+	sessionID := "sess-handler-resume-browser-1"
+	store := &mockStore{
+		summaries: []session.SessionSummary{{
+			ID:        sessionID,
+			Number:    11,
+			Name:      "picked session",
+			Summary:   "Discussed rollout checks and release notes",
+			UpdatedAt: time.Now(),
+		}},
+	}
+
+	m := newCmdTestModel(store)
+	result, _ := m.cmdResume(nil)
+	rm := result.(*Model)
+
+	result, cmd := rm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	rm = result.(*Model)
+	if cmd == nil {
+		t.Fatal("expected enter to return a resume selection command")
+	}
+
+	msg := cmd()
+	chatMsg, ok := msg.(sessionsui.ChatMsg)
+	if !ok {
+		t.Fatalf("expected sessions ChatMsg, got %T", msg)
+	}
+	if chatMsg.SessionID != sessionID {
+		t.Fatalf("expected selected session ID %q, got %q", sessionID, chatMsg.SessionID)
+	}
+
+	result, quitCmd := rm.Update(chatMsg)
+	rm = result.(*Model)
+	if quitCmd == nil {
+		t.Fatal("expected resume selection to request program quit")
+	}
+	if !rm.quitting {
+		t.Fatal("expected selecting a browser session to quit for relaunch")
+	}
+	if rm.RequestedResumeSessionID() != sessionID {
+		t.Fatalf("expected pending resume session ID %q, got %q", sessionID, rm.RequestedResumeSessionID())
+	}
+}
+
+func TestResumeBrowserCloseReturnsToChatWithoutLosingDraft(t *testing.T) {
+	sessionID := "sess-handler-resume-browser-close-1"
+	store := &mockStore{
+		summaries: []session.SessionSummary{{
+			ID:        sessionID,
+			Number:    12,
+			Name:      "picked session",
+			UpdatedAt: time.Now(),
+		}},
+	}
+
+	m := newCmdTestModel(store)
+	m.setTextareaValue("draft follow-up")
+	result, _ := m.cmdResume(nil)
+	rm := result.(*Model)
+
+	result, cmd := rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	rm = result.(*Model)
+	if cmd == nil {
+		t.Fatal("expected q to return a close command")
+	}
+
+	msg := cmd()
+	if _, ok := msg.(sessionsui.CloseMsg); !ok {
+		t.Fatalf("expected sessions CloseMsg, got %T", msg)
+	}
+
+	result, _ = rm.Update(msg)
+	rm = result.(*Model)
+	if rm.resumeBrowserMode {
+		t.Fatal("expected resume browser mode to close")
+	}
+	if rm.quitting {
+		t.Fatal("expected close to return to chat instead of quitting")
+	}
+	if got := rm.textarea.Value(); got != "draft follow-up" {
+		t.Fatalf("expected draft input to be preserved, got %q", got)
 	}
 }
 

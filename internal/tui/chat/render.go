@@ -34,6 +34,11 @@ func (m *Model) View() string {
 		return m.inspectorModel.View()
 	}
 
+	// Resume browser mode uses the dedicated sessions browser view
+	if m.resumeBrowserMode && m.resumeBrowserModel != nil {
+		return m.resumeBrowserModel.View()
+	}
+
 	if m.streaming && m.streamPerf != nil {
 		m.streamPerf.RecordFrameAt(time.Now())
 	}

@@ -25,6 +25,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/tui/inspector"
+	sessionsui "github.com/samsaffron/term-llm/internal/tui/sessions"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"golang.org/x/term"
 )
@@ -145,6 +146,10 @@ type Model struct {
 	// Inspector mode
 	inspectorMode  bool
 	inspectorModel *inspector.Model
+
+	// Resume browser mode
+	resumeBrowserMode  bool
+	resumeBrowserModel *sessionsui.Model
 
 	// Alt screen mode (full-screen rendering)
 	altScreen               bool
@@ -471,6 +476,65 @@ func (m *Model) WantsReload() bool { return m.reloadRequested }
 // ReloadSessionID returns the session ID to resume after a reload, if any.
 func (m *Model) ReloadSessionID() string { return m.reloadSessionID }
 
+func (m *Model) applyWindowSize(msg tea.WindowSizeMsg) {
+	m.selection = Selection{}
+	m.width = msg.Width
+	m.height = msg.Height
+	m.viewportRows = m.height - 8
+	m.textarea.SetWidth(m.width)
+	if m.completions != nil {
+		m.completions.SetSize(m.width, m.height)
+	}
+	if m.dialog != nil {
+		m.dialog.SetSize(m.width, m.height)
+	}
+
+	// Invalidate cached markdown renderings since they are width-dependent.
+	if m.tracker != nil {
+		for i := range m.tracker.Segments {
+			m.tracker.Segments[i].Rendered = ""
+			m.tracker.Segments[i].SafeRendered = ""
+			m.tracker.Segments[i].SafePos = 0
+			// Also clear diff caches (Issue 2: diff render cache invalidation).
+			m.tracker.Segments[i].DiffRendered = ""
+			m.tracker.Segments[i].DiffWidth = 0
+			// Clear subagent diff caches.
+			for j := range m.tracker.Segments[i].SubagentDiffs {
+				m.tracker.Segments[i].SubagentDiffs[j].Rendered = ""
+				m.tracker.Segments[i].SubagentDiffs[j].Width = 0
+			}
+		}
+		// Resize active streaming renderers.
+		m.tracker.ResizeStreamRenderers(m.width)
+	}
+
+	// Invalidate completed stream cache since it's width-dependent (Issue 1).
+	m.viewCache.completedStream = ""
+	m.bumpContentVersion()
+
+	// Resize viewport for alt screen mode.
+	// Reserve space for input area (textarea + separators + status).
+	vpHeight := m.height - 4
+	if vpHeight < 1 {
+		vpHeight = 1
+	}
+	m.viewport.Width = m.width
+	m.viewport.Height = vpHeight
+
+	// Propagate size to embedded dialogs if active.
+	if m.approvalModel != nil {
+		m.approvalModel.SetWidth(m.width)
+	}
+	if m.askUserModel != nil {
+		m.askUserModel.SetWidth(m.width)
+	}
+
+	// Update chat renderer size (invalidates cache).
+	if m.chatRenderer != nil {
+		m.chatRenderer.SetSize(m.width, vpHeight)
+	}
+}
+
 // Init initializes the model
 func (m *Model) Init() tea.Cmd {
 	// Update textarea height for any initial text
@@ -537,6 +601,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	var flushCmds []tea.Cmd
 
+	// Handle resume browser mode
+	if m.resumeBrowserMode {
+		return m.updateResumeBrowserMode(msg)
+	}
+
 	// Handle inspector mode
 	if m.inspectorMode {
 		return m.updateInspectorMode(msg)
@@ -544,58 +613,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.selection = Selection{}
-		m.width = msg.Width
-		m.height = msg.Height
-		m.viewportRows = m.height - 8
-		m.textarea.SetWidth(m.width)
-		m.completions.SetSize(m.width, m.height)
-		m.dialog.SetSize(m.width, m.height)
-
-		// Invalidate cached markdown renderings since they are width-dependent
-		if m.tracker != nil {
-			for i := range m.tracker.Segments {
-				m.tracker.Segments[i].Rendered = ""
-				m.tracker.Segments[i].SafeRendered = ""
-				m.tracker.Segments[i].SafePos = 0
-				// Also clear diff caches (Issue 2: diff render cache invalidation)
-				m.tracker.Segments[i].DiffRendered = ""
-				m.tracker.Segments[i].DiffWidth = 0
-				// Clear subagent diff caches
-				for j := range m.tracker.Segments[i].SubagentDiffs {
-					m.tracker.Segments[i].SubagentDiffs[j].Rendered = ""
-					m.tracker.Segments[i].SubagentDiffs[j].Width = 0
-				}
-			}
-			// Resize active streaming renderers
-			m.tracker.ResizeStreamRenderers(m.width)
-		}
-
-		// Invalidate completed stream cache since it's width-dependent (Issue 1)
-		m.viewCache.completedStream = ""
-		m.bumpContentVersion()
-
-		// Resize viewport for alt screen mode
-		// Reserve space for input area (textarea + separators + status)
-		vpHeight := m.height - 4
-		if vpHeight < 1 {
-			vpHeight = 1
-		}
-		m.viewport.Width = m.width
-		m.viewport.Height = vpHeight
-
-		// Propagate size to embedded dialogs if active
-		if m.approvalModel != nil {
-			m.approvalModel.SetWidth(m.width)
-		}
-		if m.askUserModel != nil {
-			m.askUserModel.SetWidth(m.width)
-		}
-
-		// Update chat renderer size (invalidates cache)
-		if m.chatRenderer != nil {
-			m.chatRenderer.SetSize(m.width, vpHeight)
-		}
+		m.applyWindowSize(msg)
 
 		// In alt screen mode, just clear screen (View() renders history)
 		// In inline mode, reprint history to scrollback after clearing

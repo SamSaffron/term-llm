@@ -10,14 +10,53 @@ import (
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tui/inspector"
+	sessionsui "github.com/samsaffron/term-llm/internal/tui/sessions"
 )
+
+// updateResumeBrowserMode handles updates while the embedded resume browser is active.
+func (m *Model) updateResumeBrowserMode(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.applyWindowSize(msg)
+		if m.resumeBrowserModel != nil {
+			var cmd tea.Cmd
+			updated, next := m.resumeBrowserModel.Update(msg)
+			if browser, ok := updated.(*sessionsui.Model); ok {
+				m.resumeBrowserModel = browser
+			}
+			cmd = next
+			return m, cmd
+		}
+		return m, nil
+
+	case sessionsui.ChatMsg:
+		m.resumeBrowserMode = false
+		m.resumeBrowserModel = nil
+		return m.requestResumeSession(msg.SessionID)
+
+	case sessionsui.CloseMsg:
+		return m.closeResumeBrowser()
+
+	default:
+		if m.resumeBrowserModel != nil {
+			var cmd tea.Cmd
+			updated, next := m.resumeBrowserModel.Update(msg)
+			if browser, ok := updated.(*sessionsui.Model); ok {
+				m.resumeBrowserModel = browser
+			}
+			cmd = next
+			return m, cmd
+		}
+	}
+
+	return m, nil
+}
 
 // updateInspectorMode handles updates while in inspector mode
 func (m *Model) updateInspectorMode(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
+		m.applyWindowSize(msg)
 		// Pass to inspector
 		if m.inspectorModel != nil {
 			m.inspectorModel, _ = m.inspectorModel.Update(msg)

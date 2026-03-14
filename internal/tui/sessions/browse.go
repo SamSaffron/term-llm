@@ -76,6 +76,9 @@ type ChatMsg struct {
 	SessionID string
 }
 
+// CloseMsg signals that the browser should close and return to its parent view.
+type CloseMsg struct{}
+
 // DeleteConfirmMsg signals a delete was confirmed
 type DeleteConfirmMsg struct {
 	SessionID string
@@ -119,6 +122,11 @@ type Model struct {
 	// Chat request (set when user wants to chat with a session)
 	chatSessionID string
 
+	// Embedded/browser integration state
+	embedded               bool
+	preferredSessionID     string
+	selectPreferredSession bool
+
 	// Components
 	styles *ui.Styles
 	keyMap KeyMap
@@ -154,6 +162,17 @@ func New(store session.Store, width, height int, styles *ui.Styles) *Model {
 // Check this after the TUI exits to determine if chat should be launched.
 func (m *Model) ChatSessionID() string {
 	return m.chatSessionID
+}
+
+// SetEmbedded enables parent-managed close behavior for embedded browsers.
+func (m *Model) SetEmbedded(embedded bool) {
+	m.embedded = embedded
+}
+
+// SetPreferredSessionID selects a session after the next refresh, if present.
+func (m *Model) SetPreferredSessionID(sessionID string) {
+	m.preferredSessionID = strings.TrimSpace(sessionID)
+	m.selectPreferredSession = m.preferredSessionID != ""
 }
 
 // Init initializes the model
@@ -252,6 +271,9 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Normal key handling
 	switch {
 	case key.Matches(msg, m.keyMap.Quit):
+		if m.embedded {
+			return m, func() tea.Msg { return CloseMsg{} }
+		}
 		return m, tea.Quit
 
 	case key.Matches(msg, m.keyMap.Up):
@@ -327,7 +349,7 @@ func (m *Model) moveCursor(delta int) {
 
 // viewportHeight returns the number of visible session rows
 func (m *Model) viewportHeight() int {
-	// Header (2) + footer (2) + filter bar (1) = 5 lines reserved
+	// Header (1) + filter bar (1) + column header (1) + separator (1) + footer (1) = 5 lines reserved
 	return max(1, m.height-5)
 }
 
@@ -417,6 +439,16 @@ func (m *Model) doRefresh() (tea.Model, tea.Cmd) {
 	// Apply sort order
 	m.sortSessions()
 
+	if m.selectPreferredSession && m.preferredSessionID != "" {
+		for i, s := range m.sessions {
+			if s.ID == m.preferredSessionID {
+				m.cursor = i
+				break
+			}
+		}
+		m.selectPreferredSession = false
+	}
+
 	// Clamp cursor
 	if m.cursor >= len(m.sessions) && len(m.sessions) > 0 {
 		m.cursor = len(m.sessions) - 1
@@ -487,6 +519,13 @@ func (m *Model) View() string {
 	}
 
 	theme := m.styles.Theme()
+	selectedStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(theme.Text).
+		Background(theme.Primary)
+	normalStyle := lipgloss.NewStyle().Foreground(theme.Text)
+	mutedStyle := lipgloss.NewStyle().Foreground(theme.Muted)
+
 	var b strings.Builder
 
 	// Header
@@ -499,6 +538,9 @@ func (m *Model) View() string {
 
 	countStr := fmt.Sprintf("[%d sessions]", len(m.sessions))
 	title := "Sessions Browser"
+	if m.embedded {
+		title = "Resume Session"
+	}
 	padding := renderWidth - lipgloss.Width(title) - lipgloss.Width(countStr) - 4 // 4 for padding spaces
 	if padding < 1 {
 		padding = 1
@@ -526,7 +568,11 @@ func (m *Model) View() string {
 		filterParts = append(filterParts, "[FTS: on]")
 	}
 
-	b.WriteString(filterStyle.Render(strings.Join(filterParts, " ")))
+	b.WriteString(filterStyle.Render(fitToDisplayWidth(strings.Join(filterParts, " "), renderWidth)))
+	b.WriteString("\n")
+
+	cols := sessionColumnWidths(renderWidth)
+	b.WriteString(mutedStyle.Render(fitToDisplayWidth(renderSessionColumnsHeader(cols), renderWidth)))
 	b.WriteString("\n")
 
 	// Session list
@@ -542,55 +588,8 @@ func (m *Model) View() string {
 		end = len(m.sessions)
 	}
 
-	selectedStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(theme.Text).
-		Background(theme.Primary)
-	normalStyle := lipgloss.NewStyle().Foreground(theme.Text)
-	mutedStyle := lipgloss.NewStyle().Foreground(theme.Muted)
-
 	for i := start; i < end; i++ {
-		s := m.sessions[i]
-
-		// Format row
-		summary := s.Summary
-		if s.Name != "" {
-			summary = s.Name
-		}
-		summary = truncateDisplay(summary, 25, "...")
-
-		// Status
-		status := string(s.Status)
-		if status == "" {
-			status = "active"
-		}
-
-		// Mode indicator (style: chat/ask)
-		style := string(s.Mode)
-		if style == "" {
-			style = "chat"
-		}
-
-		// Tokens — show total input (uncached + cache read + cache write)
-		totalInput := s.InputTokens + s.CachedInputTokens + s.CacheWriteTokens
-		tokens := formatTokens(totalInput, s.OutputTokens)
-
-		// Age
-		age := formatRelativeTime(s.UpdatedAt)
-
-		// Format: cursor # summary style model msgs tokens status age
-		cursor := "  "
-		if i == m.cursor {
-			cursor = "> "
-		}
-
-		// Build row
-		row := fmt.Sprintf("%s%4d %-25s %-4s %-10s %3d %-11s %-8s %s",
-			cursor, s.Number, summary, style, truncateModel(s.Model, 10), s.MessageCount, tokens, status, age)
-
-		// Truncate or pad to width
-		row = fitToDisplayWidth(row, renderWidth)
-
+		row := fitToDisplayWidth(renderSessionRow(m.sessions[i], i == m.cursor, cols), renderWidth)
 		if i == m.cursor {
 			b.WriteString(selectedStyle.Render(row))
 		} else {
@@ -612,17 +611,136 @@ func (m *Model) View() string {
 	// Delete confirmation
 	if m.deleteConfirm {
 		confirmStyle := lipgloss.NewStyle().Bold(true).Foreground(theme.Error)
-		b.WriteString(confirmStyle.Render(fmt.Sprintf("Delete session #%d? (y/n)", m.deleteNumber)))
+		b.WriteString(confirmStyle.Render(fitToDisplayWidth(fmt.Sprintf("Delete session #%d? (y/n)", m.deleteNumber), renderWidth)))
 	} else if m.err != nil {
 		errorStyle := lipgloss.NewStyle().Foreground(theme.Error)
-		b.WriteString(errorStyle.Render(fmt.Sprintf("Error: %v", m.err)))
+		b.WriteString(errorStyle.Render(fitToDisplayWidth(fmt.Sprintf("Error: %v", m.err), renderWidth)))
 	} else {
 		// Help
 		help := "[enter] chat  [i] inspect  [d] delete  [/] search  [s] sort  [f] filter  [q] quit"
-		b.WriteString(mutedStyle.Render(help))
+		if m.embedded {
+			help = "[enter] resume  [i] inspect  [d] delete  [/] search  [s] sort  [f] filter  [q] back"
+		}
+		b.WriteString(mutedStyle.Render(fitToDisplayWidth(help, renderWidth)))
 	}
 
 	return b.String()
+}
+
+type sessionColumns struct {
+	cursor  int
+	number  int
+	summary int
+	mode    int
+	model   int
+	msgs    int
+	tokens  int
+	status  int
+	age     int
+}
+
+func sessionColumnWidths(renderWidth int) sessionColumns {
+	cols := sessionColumns{
+		cursor: 2,
+		number: 7,
+		mode:   4,
+		model:  min(18, max(10, renderWidth/6)),
+		msgs:   5,
+		tokens: 11,
+		status: 8,
+		age:    7,
+	}
+
+	fixed := cols.cursor + cols.number + cols.mode + cols.model + cols.msgs + cols.tokens + cols.status + cols.age
+	cols.summary = renderWidth - fixed - 8 // 8 spaces between columns
+	if cols.summary < 12 {
+		shrink := min(12-cols.summary, max(0, cols.model-8))
+		cols.model -= shrink
+		cols.summary += shrink
+	}
+	if cols.summary < 8 {
+		cols.summary = 8
+	}
+
+	return cols
+}
+
+func renderSessionColumnsHeader(cols sessionColumns) string {
+	parts := []string{
+		fitToDisplayWidth("", cols.cursor),
+		fitToDisplayWidth("session", cols.number),
+		fitToDisplayWidth("name / summary", cols.summary),
+		fitToDisplayWidth("mode", cols.mode),
+		fitToDisplayWidth("model", cols.model),
+		fitToDisplayWidth("msgs", cols.msgs),
+		fitToDisplayWidth("tokens", cols.tokens),
+		fitToDisplayWidth("status", cols.status),
+		fitToDisplayWidth("updated", cols.age),
+	}
+	return strings.Join(parts, " ")
+}
+
+func renderSessionRow(s session.SessionSummary, selected bool, cols sessionColumns) string {
+	status := string(s.Status)
+	if status == "" {
+		status = "active"
+	}
+
+	mode := string(s.Mode)
+	if mode == "" {
+		mode = "chat"
+	}
+
+	totalInput := s.InputTokens + s.CachedInputTokens + s.CacheWriteTokens
+	tokens := formatTokens(totalInput, s.OutputTokens)
+	age := formatRelativeTime(s.UpdatedAt)
+
+	number := truncateDisplay(s.ID, cols.number, "...")
+	if s.Number > 0 {
+		number = fmt.Sprintf("#%d", s.Number)
+	}
+
+	model := s.Model
+	if model == "" {
+		model = s.Provider
+	}
+
+	cursor := "  "
+	if selected {
+		cursor = "> "
+	}
+
+	parts := []string{
+		fitToDisplayWidth(cursor, cols.cursor),
+		fitToDisplayWidth(number, cols.number),
+		fitToDisplayWidth(sessionPrimaryText(s), cols.summary),
+		fitToDisplayWidth(mode, cols.mode),
+		fitToDisplayWidth(model, cols.model),
+		fitToDisplayWidth(fmt.Sprintf("%d", s.MessageCount), cols.msgs),
+		fitToDisplayWidth(tokens, cols.tokens),
+		fitToDisplayWidth(status, cols.status),
+		fitToDisplayWidth(age, cols.age),
+	}
+
+	return strings.Join(parts, " ")
+}
+
+func sessionPrimaryText(s session.SessionSummary) string {
+	name := strings.TrimSpace(s.Name)
+	summary := strings.TrimSpace(s.Summary)
+
+	switch {
+	case name != "" && summary != "" && !strings.EqualFold(name, summary):
+		return name + " — " + summary
+	case name != "":
+		return name
+	case summary != "":
+		return summary
+	case s.Number > 0:
+		return fmt.Sprintf("Session #%d", s.Number)
+	default:
+		return strings.TrimSpace(s.ID)
+	}
 }
 
 // formatRelativeTime returns a human-readable relative time string

@@ -735,7 +735,7 @@ func (m *Model) cmdResume(args []string) (tea.Model, tea.Cmd) {
 
 	ctx := context.Background()
 
-	// /resume <number|id> — direct resume without the picker
+	// /resume <number|id> — direct resume without the browser.
 	if len(args) > 0 {
 		sess, err := m.store.GetByPrefix(ctx, args[0])
 		if err != nil {
@@ -745,15 +745,12 @@ func (m *Model) cmdResume(args []string) (tea.Model, tea.Cmd) {
 			return m.showSystemMessage(fmt.Sprintf("Session '%s' not found.", args[0]))
 		}
 
-		_ = m.store.SetCurrent(ctx, sess.ID)
-		m.pendingResumeSessionID = sess.ID
-		m.quitting = true
 		m.setTextareaValue("")
-		return m, tea.Quit
+		return m.requestResumeSession(sess.ID)
 	}
 
-	// /resume with no args — show the session picker dialog with richer labels
-	summaries, err := m.store.List(ctx, session.ListOptions{Limit: 30})
+	// /resume with no args — open the dedicated embedded sessions browser.
+	summaries, err := m.store.List(ctx, session.ListOptions{Limit: 1})
 	if err != nil {
 		return m.showSystemMessage(fmt.Sprintf("Failed to list sessions: %v", err))
 	}
@@ -761,43 +758,7 @@ func (m *Model) cmdResume(args []string) (tea.Model, tea.Cmd) {
 		return m.showSystemMessage("No saved sessions found.")
 	}
 
-	var items []DialogItem
-	for _, s := range summaries {
-		name := s.Name
-		if name == "" {
-			name = fmt.Sprintf("#%d", s.Number)
-		}
-
-		// Age
-		age := resumeFormatAge(s.UpdatedAt)
-
-		// Summary snippet
-		snippet := s.Summary
-		if len(snippet) > 45 {
-			snippet = snippet[:42] + "..."
-		}
-
-		shortModel := resumeShortenModel(s.Model)
-		var label string
-		if snippet != "" {
-			label = fmt.Sprintf("%s  %s · %d msgs · [%s] %s", name, snippet, s.MessageCount, shortModel, age)
-		} else {
-			label = fmt.Sprintf("%s  %d msgs · [%s] %s", name, s.MessageCount, shortModel, age)
-		}
-
-		items = append(items, DialogItem{
-			ID:    s.ID,
-			Label: label,
-		})
-	}
-
-	currentID := ""
-	if m.sess != nil {
-		currentID = m.sess.ID
-	}
-	m.dialog.ShowSessionList(items, currentID)
-	m.setTextareaValue("")
-	return m, nil
+	return m.openResumeBrowser()
 }
 
 // resumeFormatAge returns a compact human-readable age string.
