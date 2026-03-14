@@ -49,6 +49,19 @@ Built-in tools handle common filesystem and shell tasks. MCP servers extend that
 
 In practice that means the model is not just generating text — it can interrogate files, run commands, call external tools, and then keep going.
 
+## Jobs turn it into a runtime, not just a CLI
+
+The jobs platform lets term-llm run work on a schedule, after a delay, or on manual trigger.
+
+That matters because it moves the system beyond interactive use:
+
+- recurring agent runs
+- background program execution
+- inspectable run history and events
+- controllable retention and cancellation
+
+Once jobs are in the picture, term-llm starts looking less like a terminal helper and more like an automation substrate.
+
 ## Agents and skills are different things
 
 - **Agents** are named configuration bundles. They can choose provider, model, tools, MCP, search, and instructions.

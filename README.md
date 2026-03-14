@@ -73,6 +73,7 @@ Common entry points:
 - [Skills](https://term-llm.com/guides/skills/)
 - [MCP servers](https://term-llm.com/guides/mcp-servers/)
 - [Memory](https://term-llm.com/guides/memory/)
+- [Jobs](https://term-llm.com/guides/job-runner/)
 
 ## License
 

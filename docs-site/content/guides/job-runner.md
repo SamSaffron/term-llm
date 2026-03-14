@@ -1,14 +1,15 @@
 ---
 title: "Job runner"
 weight: 7
-description: "Run the jobs server, use the v2 API, and manage definitions and runs from the CLI."
+description: "Run the jobs server, define scheduled work, and manage job definitions and runs from the CLI or API."
+featured: true
 kicker: "Operations"
 source_readme_heading: "Job Runner (Serve)"
 next:
   label: MCP servers
   url: /guides/mcp-servers/
 ---
-Run term-llm as a jobs server:
+Use the jobs runtime when you want scheduled, delayed, or manually triggered background work:
 
 ```bash
 term-llm serve --platform jobs --port 8080
