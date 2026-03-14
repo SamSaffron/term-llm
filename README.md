@@ -74,6 +74,8 @@ Common entry points:
 - [MCP servers](https://term-llm.com/guides/mcp-servers/)
 - [Memory](https://term-llm.com/guides/memory/)
 - [Jobs](https://term-llm.com/guides/job-runner/)
+- [Text embeddings](https://term-llm.com/guides/text-embeddings/)
+- [Usage tracking](https://term-llm.com/reference/usage-tracking/)
 
 ## License
 
