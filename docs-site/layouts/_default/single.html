@@ -28,12 +28,6 @@
           <h3>Section</h3>
           <p><a href="/{{ .Section }}/">{{ .CurrentSection.Title }}</a></p>
         </div>
-        {{ with .Params.source_readme_heading }}
-        <div class="doc-surface">
-          <h3>Source</h3>
-          <p>Migrated from <code>README.md</code> → <strong>{{ . }}</strong>.</p>
-        </div>
-        {{ end }}
         {{ with .Params.next }}
         <div class="doc-surface">
           <h3>Next</h3>

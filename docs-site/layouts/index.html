@@ -5,8 +5,8 @@
       <h1>{{ .Title }}</h1>
       <div class="lede markdown">{{ .Content }}</div>
       <div class="actions">
-        <a class="button primary" href="/getting-started/quickstart/">Open quickstart path</a>
-        <a class="button" href="/reference/configuration/">Browse configuration reference</a>
+        <a class="button primary" href="/getting-started/quickstart/">Start with the quickstart</a>
+        <a class="button" href="/reference/configuration/">Open configuration reference</a>
       </div>
     </div>
 
@@ -19,15 +19,14 @@
 A terminal-first AI runtime with:
 - chat, web, and jobs runtimes
 - agents, tools, skills, and memory
-- enough structure to run real workflows
-  instead of demo theatre</code></pre>
+- enough structure for real workflows</code></pre>
     </aside>
   </section>
 
   <section class="section-block">
     <div class="section-heading">
       <p class="eyebrow">Choose your path</p>
-      <h2>Start with intent, not file names</h2>
+      <h2>Start with the task at hand</h2>
     </div>
     <div class="card-grid card-grid-4">
       {{ range site.Sections.ByWeight }}
@@ -44,14 +43,14 @@ A terminal-first AI runtime with:
     <div>
       <div class="section-heading">
         <p class="eyebrow">What belongs here</p>
-        <h2>Documentation shape</h2>
+        <h2>Documentation structure</h2>
       </div>
       <div class="list-panel markdown">{{ .Params.belongs | markdownify }}</div>
     </div>
     <div>
       <div class="section-heading">
-        <p class="eyebrow">What does not</p>
-        <h2>Things we are trying not to repeat</h2>
+        <p class="eyebrow">What to avoid</p>
+        <h2>Documentation failure modes</h2>
       </div>
       <div class="list-panel markdown">{{ .Params.avoids | markdownify }}</div>
     </div>
@@ -60,7 +59,7 @@ A terminal-first AI runtime with:
   <section class="section-block">
     <div class="section-heading">
       <p class="eyebrow">Featured pages</p>
-      <h2>Good starting points</h2>
+      <h2>Recommended starting points</h2>
     </div>
     <div class="card-grid card-grid-3">
       {{ range first 6 (where site.RegularPages "Params.featured" true) }}

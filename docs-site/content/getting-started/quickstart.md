@@ -44,7 +44,7 @@ term-llm ask "What is the difference between TCP and UDP?"
 term-llm chat
 ```
 
-## Then stop reading the README and use the docs
+## Continue with the docs
 
 - [Installation](/getting-started/installation/)
 - [Providers and setup](/getting-started/providers-and-setup/)
