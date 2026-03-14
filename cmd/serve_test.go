@@ -579,10 +579,15 @@ func TestHandleUI_IndexVersionsShellAssets(t *testing.T) {
 		`src="app-render.js?v=` + version + `"`,
 		`src="app-stream.js?v=` + version + `"`,
 		`src="app-sessions.js?v=` + version + `"`,
+		`.startup-splash {`,
+		`@keyframes startup-spin {`,
 	} {
 		if !strings.Contains(body, snippet) {
 			t.Fatalf("expected %q in body", snippet)
 		}
+	}
+	if strings.Index(body, `.startup-splash {`) > strings.Index(body, `href="app.css?v=`+version+`"`) {
+		t.Fatalf("expected inline startup styles before app.css link")
 	}
 }
 

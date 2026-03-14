@@ -15,6 +15,114 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230d1117'/%3E%3Cpath d='M17 14h30v6H24v26h16v-9H30v-6h17v21H17z' fill='%23ececec'/%3E%3C/svg%3E">
   <link rel="apple-touch-icon" href="icon-512.png">
   <link rel="manifest" href="manifest.webmanifest">
+  <style>
+    :root {
+      --startup-bg: #212121;
+      --startup-bg-accent: rgba(255,255,255,0.03);
+      --startup-surface: #2f2f2f;
+      --startup-surface-2: #373737;
+      --startup-border: rgba(255,255,255,0.08);
+      --startup-text: #ececec;
+      --startup-text-muted: #9a9a9a;
+      --startup-accent: #ffffff;
+      --startup-shadow: 0 2px 8px rgba(0,0,0,0.15);
+      --startup-safe-top: env(safe-area-inset-top, 0px);
+      --startup-safe-right: env(safe-area-inset-right, 0px);
+      --startup-safe-bottom: env(safe-area-inset-bottom, 0px);
+      --startup-safe-left: env(safe-area-inset-left, 0px);
+    }
+
+    @media (prefers-color-scheme: light) {
+      :root {
+        --startup-bg: #ffffff;
+        --startup-bg-accent: rgba(0,0,0,0.02);
+        --startup-surface: #ffffff;
+        --startup-surface-2: #f7f7f8;
+        --startup-border: rgba(0,0,0,0.08);
+        --startup-text: #0d0d0d;
+        --startup-text-muted: #6e6e6e;
+        --startup-accent: #0d0d0d;
+        --startup-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      }
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      background: var(--startup-bg);
+      color: var(--startup-text);
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    body {
+      overflow: hidden;
+      -webkit-text-size-adjust: 100%;
+    }
+
+    .startup-splash {
+      position: fixed;
+      inset: 0;
+      z-index: 120;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: calc(1.5rem + var(--startup-safe-top)) calc(1.5rem + var(--startup-safe-right)) calc(1.5rem + var(--startup-safe-bottom)) calc(1.5rem + var(--startup-safe-left));
+      background:
+        radial-gradient(circle at top, var(--startup-bg-accent), transparent 55%),
+        var(--startup-bg);
+    }
+
+    .startup-card {
+      width: min(320px, 100%);
+      padding: 1.5rem 1.35rem;
+      border: 1px solid var(--startup-border);
+      border-radius: 16px;
+      background: var(--startup-surface);
+      box-shadow: var(--startup-shadow);
+      text-align: center;
+    }
+
+    .startup-mark {
+      width: 52px;
+      height: 52px;
+      margin: 0 auto 0.9rem;
+      border-radius: 14px;
+      display: grid;
+      place-items: center;
+      background: var(--startup-surface-2);
+      border: 1px solid var(--startup-border);
+      font-size: 1.45rem;
+      font-weight: 800;
+    }
+
+    .startup-title {
+      font-size: 1.05rem;
+      font-weight: 800;
+      letter-spacing: 0.01em;
+    }
+
+    .startup-subtitle {
+      margin-top: 0.4rem;
+      color: var(--startup-text-muted);
+      font-size: 0.92rem;
+      line-height: 1.45;
+    }
+
+    .startup-spinner {
+      width: 22px;
+      height: 22px;
+      margin: 1rem auto 0;
+      border-radius: 50%;
+      border: 2px solid var(--startup-border);
+      border-top-color: var(--startup-accent);
+      animation: startup-spin 0.8s linear infinite;
+    }
+
+    @keyframes startup-spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
   <link rel="stylesheet" href="vendor/katex/katex.min.css?v=0.16.38">
   <link rel="stylesheet" href="vendor/hljs/github-dark.min.css?v=11.11.1">
   <link rel="stylesheet" href="vendor/hljs/github.min.css?v=11.11.1" media="(prefers-color-scheme: light)">
