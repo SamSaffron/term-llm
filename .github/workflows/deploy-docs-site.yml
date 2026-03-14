@@ -22,7 +22,12 @@ jobs:
           extended: true
 
       - name: Build docs site
-        run: hugo --source docs-site --destination docs-site-public
+        run: |
+          rm -rf docs-site-public
+          cd docs-site
+          hugo --destination ../docs-site-public
+          cd ..
+          test -f docs-site-public/index.html
 
       - name: Prepare release directories
         uses: appleboy/ssh-action@v1.2.0
