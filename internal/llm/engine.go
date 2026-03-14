@@ -476,7 +476,7 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	// The LLM will use them naturally during conversation like any other tool.
 	if req.Search {
 		needsExternalSearch := !caps.NativeWebSearch || req.ForceExternalSearch
-		needsExternalFetch := !caps.NativeWebFetch || req.ForceExternalSearch
+		needsExternalFetch := (!caps.NativeWebFetch || req.ForceExternalSearch) && !req.DisableExternalWebFetch
 
 		if needsExternalSearch {
 			if t, ok := e.tools.Get(WebSearchToolName); ok {

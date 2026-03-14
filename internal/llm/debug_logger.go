@@ -56,6 +56,7 @@ type debugRequestData struct {
 	ToolChoice              *debugToolChoice `json:"tool_choice,omitempty"`
 	Search                  bool             `json:"search,omitempty"`
 	ForceExternalSearch     bool             `json:"force_external_search,omitempty"`
+	DisableExternalWebFetch bool             `json:"disable_external_web_fetch,omitempty"`
 	ParallelToolCalls       bool             `json:"parallel_tool_calls,omitempty"`
 	MaxOutputTokens         int              `json:"max_output_tokens,omitempty"`
 	Temperature             float32          `json:"temperature,omitempty"`
@@ -200,6 +201,7 @@ func (l *DebugLogger) LogRequest(provider, model string, req Request) {
 			ToolChoice:              convertToolChoice(req.ToolChoice),
 			Search:                  req.Search,
 			ForceExternalSearch:     req.ForceExternalSearch,
+			DisableExternalWebFetch: req.DisableExternalWebFetch,
 			ParallelToolCalls:       req.ParallelToolCalls,
 			MaxOutputTokens:         req.MaxOutputTokens,
 			Temperature:             req.Temperature,
@@ -257,6 +259,7 @@ func (l *DebugLogger) LogTurnRequest(turn int, provider, model string, req Reque
 			ToolChoice:              convertToolChoice(req.ToolChoice),
 			Search:                  req.Search,
 			ForceExternalSearch:     req.ForceExternalSearch,
+			DisableExternalWebFetch: req.DisableExternalWebFetch,
 			ParallelToolCalls:       req.ParallelToolCalls,
 			MaxOutputTokens:         req.MaxOutputTokens,
 			Temperature:             req.Temperature,

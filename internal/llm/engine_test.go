@@ -526,6 +526,119 @@ func TestEngineForceExternalSearchDisablesNativeProviderSearch(t *testing.T) {
 	}
 }
 
+func TestEngineDisableExternalWebFetchWithNativeSearch(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(&countingSearchTool{})
+	registry.Register(NewReadURLTool())
+
+	provider := &fakeProvider{
+		hasCapabilities: true,
+		capabilities: Capabilities{
+			NativeWebSearch: true,
+			NativeWebFetch:  false,
+			ToolCalls:       true,
+		},
+		script: func(call int, req Request) []Event {
+			return []Event{{Type: EventDone}}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	req := Request{
+		Messages:                []Message{UserText("search this")},
+		Search:                  true,
+		DisableExternalWebFetch: true,
+	}
+
+	stream, err := engine.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+	}
+
+	if len(provider.calls) != 1 {
+		t.Fatalf("expected 1 provider call, got %d", len(provider.calls))
+	}
+
+	firstReq := provider.calls[0]
+	if !firstReq.Search {
+		t.Fatalf("expected provider request Search=true with native search")
+	}
+	if hasToolNamed(firstReq.Tools, ReadURLToolName) {
+		t.Fatalf("did not expect injected %s tool", ReadURLToolName)
+	}
+	if hasToolNamed(firstReq.Tools, WebSearchToolName) {
+		t.Fatalf("did not expect injected %s tool", WebSearchToolName)
+	}
+}
+
+func TestEngineDisableExternalWebFetchStillAllowsExternalSearch(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(&countingSearchTool{})
+	registry.Register(NewReadURLTool())
+
+	provider := &fakeProvider{
+		hasCapabilities: true,
+		capabilities: Capabilities{
+			NativeWebSearch: true,
+			NativeWebFetch:  false,
+			ToolCalls:       true,
+		},
+		script: func(call int, req Request) []Event {
+			return []Event{{Type: EventDone}}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	req := Request{
+		Messages:                []Message{UserText("search this")},
+		Search:                  true,
+		ForceExternalSearch:     true,
+		DisableExternalWebFetch: true,
+	}
+
+	stream, err := engine.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+	}
+
+	if len(provider.calls) != 1 {
+		t.Fatalf("expected 1 provider call, got %d", len(provider.calls))
+	}
+
+	firstReq := provider.calls[0]
+	if firstReq.Search {
+		t.Fatalf("expected provider request Search=false when force_external is true")
+	}
+	if !hasToolNamed(firstReq.Tools, WebSearchToolName) {
+		t.Fatalf("expected injected %s tool", WebSearchToolName)
+	}
+	if hasToolNamed(firstReq.Tools, ReadURLToolName) {
+		t.Fatalf("did not expect injected %s tool", ReadURLToolName)
+	}
+}
+
 func countToolResults(messages []Message) int {
 	count := 0
 	for _, msg := range messages {

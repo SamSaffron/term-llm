@@ -30,6 +30,7 @@ type RequestData struct {
 	ToolChoice              *ToolChoice `json:"tool_choice,omitempty"`
 	Search                  bool        `json:"search,omitempty"`
 	ForceExternalSearch     bool        `json:"force_external_search,omitempty"`
+	DisableExternalWebFetch bool        `json:"disable_external_web_fetch,omitempty"`
 	ParallelToolCalls       bool        `json:"parallel_tool_calls,omitempty"`
 	MaxOutputTokens         int         `json:"max_output_tokens,omitempty"`
 	Temperature             float32     `json:"temperature,omitempty"`

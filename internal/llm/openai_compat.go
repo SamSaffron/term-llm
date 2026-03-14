@@ -91,16 +91,17 @@ func (p *OpenAICompatProvider) Capabilities() Capabilities {
 // OpenAI-compatible request/response structures
 // Tool choice can be string ("none"/"auto") or object.
 type oaiChatRequest struct {
-	Model             string            `json:"model"`
-	Messages          []oaiMessage      `json:"messages"`
-	Tools             []oaiTool         `json:"tools,omitempty"`
-	ToolChoice        interface{}       `json:"tool_choice,omitempty"`
-	ParallelToolCalls *bool             `json:"parallel_tool_calls,omitempty"`
-	Temperature       *float64          `json:"temperature,omitempty"`
-	TopP              *float64          `json:"top_p,omitempty"`
-	MaxTokens         *int              `json:"max_tokens,omitempty"`
-	Stream            bool              `json:"stream,omitempty"`
-	StreamOptions     *oaiStreamOptions `json:"stream_options,omitempty"`
+	Model             string                 `json:"model"`
+	Messages          []oaiMessage           `json:"messages"`
+	Tools             []oaiTool              `json:"tools,omitempty"`
+	ToolChoice        interface{}            `json:"tool_choice,omitempty"`
+	ParallelToolCalls *bool                  `json:"parallel_tool_calls,omitempty"`
+	Temperature       *float64               `json:"temperature,omitempty"`
+	TopP              *float64               `json:"top_p,omitempty"`
+	MaxTokens         *int                   `json:"max_tokens,omitempty"`
+	Stream            bool                   `json:"stream,omitempty"`
+	StreamOptions     *oaiStreamOptions      `json:"stream_options,omitempty"`
+	VeniceParameters  map[string]interface{} `json:"venice_parameters,omitempty"`
 }
 
 type oaiStreamOptions struct {

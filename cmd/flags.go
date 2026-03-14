@@ -21,6 +21,7 @@ type CommonFlags struct {
 	Search         *bool
 	NativeSearch   *bool
 	NoNativeSearch *bool
+	NoWebFetch     *bool
 	MaxTurns       *int
 	Files          *[]string
 	Agent          *string
@@ -48,6 +49,11 @@ func AddSearchFlag(cmd *cobra.Command, dest *bool) {
 func AddNativeSearchFlags(cmd *cobra.Command, native, noNative *bool) {
 	cmd.Flags().BoolVar(native, "native-search", false, "Use provider's native search (override config)")
 	cmd.Flags().BoolVar(noNative, "no-native-search", false, "Use external search tools instead of provider's native search")
+}
+
+// AddNoWebFetchFlag adds --no-web-fetch to disable external read_url injection.
+func AddNoWebFetchFlag(cmd *cobra.Command, dest *bool) {
+	cmd.Flags().BoolVar(dest, "no-web-fetch", false, "Disable external URL fetching (read_url) when search is enabled")
 }
 
 // AddMCPFlag adds the --mcp flag with completion

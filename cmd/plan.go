@@ -26,6 +26,7 @@ var (
 	planNoSearch       bool
 	planNativeSearch   bool
 	planNoNativeSearch bool
+	planNoWebFetch     bool
 )
 
 var planCmd = &cobra.Command{
@@ -64,6 +65,7 @@ func init() {
 	planCmd.Flags().BoolVarP(&planSearch, "search", "s", true, "Enable web search for current information")
 	planCmd.Flags().BoolVar(&planNoSearch, "no-search", false, "Disable web search for this plan session")
 	AddNativeSearchFlags(planCmd, &planNativeSearch, &planNoNativeSearch)
+	AddNoWebFetchFlag(planCmd, &planNoWebFetch)
 
 	planCmd.Flags().StringVarP(&planFile, "file", "f", "plan.md", "Plan file to edit")
 
@@ -247,7 +249,7 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	if fm, ok := finalModel.(*plan.Model); ok && fm.HandedOff() {
 		planContent := fm.GetContent()
 		agentName := fm.HandoffAgent()
-		return runChatFromPlan(cfg, planContent, agentName, modelName, useAltScreen, forceExternalSearch, planSearchEnabled)
+		return runChatFromPlan(cfg, planContent, agentName, modelName, useAltScreen, forceExternalSearch, planNoWebFetch, planSearchEnabled)
 	}
 
 	return nil
@@ -258,7 +260,7 @@ func resolvePlanSearch(searchFlag, noSearchFlag bool) bool {
 }
 
 // runChatFromPlan launches a chat session with the plan content as system instructions.
-func runChatFromPlan(cfg *config.Config, planContent string, agentName string, modelName string, useAltScreen bool, forceExternalSearch bool, searchEnabled bool) error {
+func runChatFromPlan(cfg *config.Config, planContent string, agentName string, modelName string, useAltScreen bool, forceExternalSearch bool, disableExternalWebFetch bool, searchEnabled bool) error {
 	ctx, stop := signal.NotifyContext()
 	defer stop()
 
@@ -338,7 +340,7 @@ func runChatFromPlan(cfg *config.Config, planContent string, agentName string, m
 	defer storeCleanup()
 
 	// Create chat model
-	model := chat.NewWithFastProvider(cfg, provider, fastProvider, engine, cfg.DefaultProvider, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, settings.Tools, "", false, "", store, nil, useAltScreen, autoSendQueue, false, false, agentName, false)
+	model := chat.NewWithFastProvider(cfg, provider, fastProvider, engine, cfg.DefaultProvider, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, disableExternalWebFetch, settings.Search, enabledLocalTools, settings.Tools, "", false, "", store, nil, useAltScreen, autoSendQueue, false, false, agentName, false)
 
 	// Build program options
 	var opts []tea.ProgramOption

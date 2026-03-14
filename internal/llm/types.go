@@ -53,22 +53,23 @@ type Stream interface {
 
 // Request represents a single model turn.
 type Request struct {
-	Model               string
-	SessionID           string // Optional session ID for provider-side continuity/caching hints
-	Messages            []Message
-	Tools               []ToolSpec
-	ToolChoice          ToolChoice
-	LastTurnToolChoice  *ToolChoice // If set, force this tool choice on the last agentic turn
-	ParallelToolCalls   bool
-	Search              bool
-	ForceExternalSearch bool // If true, use external search even if provider supports native
-	ReasoningEffort     string
-	MaxOutputTokens     int
-	Temperature         float32
-	TopP                float32
-	MaxTurns            int // Max agentic turns for tool execution (0 = use default)
-	Debug               bool
-	DebugRaw            bool
+	Model                   string
+	SessionID               string // Optional session ID for provider-side continuity/caching hints
+	Messages                []Message
+	Tools                   []ToolSpec
+	ToolChoice              ToolChoice
+	LastTurnToolChoice      *ToolChoice // If set, force this tool choice on the last agentic turn
+	ParallelToolCalls       bool
+	Search                  bool
+	ForceExternalSearch     bool // If true, use external search even if provider supports native
+	DisableExternalWebFetch bool // If true, do not inject external read_url even when provider lacks native fetch
+	ReasoningEffort         string
+	MaxOutputTokens         int
+	Temperature             float32
+	TopP                    float32
+	MaxTurns                int // Max agentic turns for tool execution (0 = use default)
+	Debug                   bool
+	DebugRaw                bool
 }
 
 // Role identifies a message role.

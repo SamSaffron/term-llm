@@ -26,6 +26,7 @@ var (
 	chatMaxTurns       int
 	chatNativeSearch   bool
 	chatNoNativeSearch bool
+	chatNoWebFetch     bool
 	// Tool flags
 	chatTools         string
 	chatReadDirs      []string
@@ -92,6 +93,7 @@ func init() {
 	AddDebugFlag(chatCmd, &chatDebug)
 	AddSearchFlag(chatCmd, &chatSearch)
 	AddNativeSearchFlags(chatCmd, &chatNativeSearch, &chatNoNativeSearch)
+	AddNoWebFetchFlag(chatCmd, &chatNoWebFetch)
 	AddMCPFlag(chatCmd, &chatMCP)
 	AddMaxTurnsFlag(chatCmd, &chatMaxTurns, 200) // chat has higher default
 	AddToolFlags(chatCmd, &chatTools, &chatReadDirs, &chatWriteDirs, &chatShellAllow)
@@ -355,8 +357,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	useAltScreen := term.IsTerminal(int(os.Stdout.Fd())) && !autoSendMode
 
 	// Create chat model
-	model := chat.NewWithFastProvider(cfg, provider, fastProvider, engine, providerKey, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, showStats, initialText, store, sess, useAltScreen, chatAutoSend, true, chatTextMode, agentName, chatYolo)
-
+	model := chat.NewWithFastProvider(cfg, provider, fastProvider, engine, providerKey, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, chatNoWebFetch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, false, initialText, store, sess, useAltScreen, chatAutoSend, autoSendMode, chatTextMode, agentName, chatYolo)
 	// Build program options
 	var opts []tea.ProgramOption
 	if useAltScreen {

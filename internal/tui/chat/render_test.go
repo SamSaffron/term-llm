@@ -52,6 +52,7 @@ func TestUpdate_StreamError_BumpsContentVersion(t *testing.T) {
 		nil,   // mcpManager
 		20,    // maxTurns
 		false, // forceExternalSearch
+		false, // disableExternalWebFetch
 		false, // searchEnabled
 		nil,   // localTools
 		"",    // toolsStr
@@ -90,6 +91,7 @@ func TestViewAltScreen_FirstRenderAnchorsToBottom(t *testing.T) {
 		nil,   // mcpManager
 		20,    // maxTurns
 		false, // forceExternalSearch
+		false, // disableExternalWebFetch
 		false, // searchEnabled
 		nil,   // localTools
 		"",    // toolsStr
@@ -209,6 +211,7 @@ func TestStreamEventDiffFlushUsesOrderedCommandComposition(t *testing.T) {
 		20,
 		false,
 		false,
+		false,
 		nil,
 		"",
 		"",
@@ -317,6 +320,7 @@ func TestRenderStatusLine_ShowsSeededCachedUsageFromSession(t *testing.T) {
 		"mock-model",
 		nil,
 		20,
+		false,
 		false,
 		false,
 		nil,

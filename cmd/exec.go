@@ -30,6 +30,7 @@ var (
 	execMaxTurns       int
 	execNativeSearch   bool
 	execNoNativeSearch bool
+	execNoWebFetch     bool
 	// Tool flags
 	execTools         string
 	execReadDirs      []string
@@ -77,6 +78,7 @@ func init() {
 	AddDebugFlag(execCmd, &execDebug)
 	AddSearchFlag(execCmd, &execSearch)
 	AddNativeSearchFlags(execCmd, &execNativeSearch, &execNoNativeSearch)
+	AddNoWebFetchFlag(execCmd, &execNoWebFetch)
 	AddMCPFlag(execCmd, &execMCP)
 	AddMaxTurnsFlag(execCmd, &execMaxTurns, 20)
 	AddToolFlags(execCmd, &execTools, &execReadDirs, &execWriteDirs, &execShellAllow)
@@ -243,15 +245,16 @@ func runExec(cmd *cobra.Command, args []string) error {
 				llm.SystemText(systemPrompt),
 				llm.UserText(userPrompt),
 			},
-			Tools:               reqTools,
-			ToolChoice:          toolChoice,
-			LastTurnToolChoice:  lastTurnToolChoice,
-			ParallelToolCalls:   true,
-			Search:              execSearch,
-			ForceExternalSearch: resolveForceExternalSearch(cfg, execNativeSearch, execNoNativeSearch),
-			MaxTurns:            execMaxTurns,
-			Debug:               debugMode,
-			DebugRaw:            debugRaw,
+			Tools:                   reqTools,
+			ToolChoice:              toolChoice,
+			LastTurnToolChoice:      lastTurnToolChoice,
+			ParallelToolCalls:       true,
+			Search:                  execSearch,
+			ForceExternalSearch:     resolveForceExternalSearch(cfg, execNativeSearch, execNoNativeSearch),
+			DisableExternalWebFetch: execNoWebFetch,
+			MaxTurns:                execMaxTurns,
+			Debug:                   debugMode,
+			DebugRaw:                debugRaw,
 		}
 
 		// Create progress channel for spinner updates

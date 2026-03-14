@@ -232,13 +232,14 @@ func (m *Model) startStream(content string) tea.Cmd {
 		}
 
 		req := llm.Request{
-			SessionID:           m.sess.ID,
-			Messages:            messages,
-			Tools:               reqTools,
-			Search:              m.searchEnabled,
-			ForceExternalSearch: m.forceExternalSearch,
-			ParallelToolCalls:   true,
-			MaxTurns:            m.maxTurns,
+			SessionID:               m.sess.ID,
+			Messages:                messages,
+			Tools:                   reqTools,
+			Search:                  m.searchEnabled,
+			ForceExternalSearch:     m.forceExternalSearch,
+			DisableExternalWebFetch: m.disableExternalWebFetch,
+			ParallelToolCalls:       true,
+			MaxTurns:                m.maxTurns,
 		}
 
 		// Set up callbacks for incremental message saving (sequence auto-allocated)

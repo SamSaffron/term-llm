@@ -45,6 +45,7 @@ var (
 	askContinueWith    string
 	askNativeSearch    bool
 	askNoNativeSearch  bool
+	askNoWebFetch      bool
 	// Tool flags
 	askTools         string
 	askReadDirs      []string
@@ -100,6 +101,7 @@ func init() {
 	AddDebugFlag(askCmd, &askDebug)
 	AddSearchFlag(askCmd, &askSearch)
 	AddNativeSearchFlags(askCmd, &askNativeSearch, &askNoNativeSearch)
+	AddNoWebFetchFlag(askCmd, &askNoWebFetch)
 	AddMCPFlag(askCmd, &askMCP)
 	AddMaxTurnsFlag(askCmd, &askMaxTurns, 20)
 	AddMaxOutputTokensFlag(askCmd, &askMaxOutputTokens)
@@ -424,15 +426,16 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		sessionID = sess.ID
 	}
 	req := llm.Request{
-		SessionID:           sessionID,
-		Messages:            messages,
-		Search:              settings.Search,
-		ForceExternalSearch: resolveForceExternalSearch(cfg, askNativeSearch, askNoNativeSearch),
-		ParallelToolCalls:   true,
-		MaxTurns:            settings.MaxTurns,
-		MaxOutputTokens:     settings.MaxOutputTokens,
-		Debug:               debugMode,
-		DebugRaw:            debugRaw,
+		SessionID:               sessionID,
+		Messages:                messages,
+		Search:                  settings.Search,
+		ForceExternalSearch:     resolveForceExternalSearch(cfg, askNativeSearch, askNoNativeSearch),
+		DisableExternalWebFetch: askNoWebFetch,
+		ParallelToolCalls:       true,
+		MaxTurns:                settings.MaxTurns,
+		MaxOutputTokens:         settings.MaxOutputTokens,
+		Debug:                   debugMode,
+		DebugRaw:                debugRaw,
 	}
 
 	// Add tools to request if any are registered (local or MCP)

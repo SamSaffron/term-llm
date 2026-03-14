@@ -28,6 +28,7 @@ var (
 	loopMaxOutputTokens int
 	loopNativeSearch    bool
 	loopNoNativeSearch  bool
+	loopNoWebFetch      bool
 	// Tool flags
 	loopTools         string
 	loopReadDirs      []string
@@ -91,6 +92,7 @@ func init() {
 	AddDebugFlag(loopCmd, &loopDebug)
 	AddSearchFlag(loopCmd, &loopSearch)
 	AddNativeSearchFlags(loopCmd, &loopNativeSearch, &loopNoNativeSearch)
+	AddNoWebFetchFlag(loopCmd, &loopNoWebFetch)
 	AddMCPFlag(loopCmd, &loopMCP)
 	AddMaxTurnsFlag(loopCmd, &loopMaxTurns, 100) // Higher default for loop
 	AddMaxOutputTokensFlag(loopCmd, &loopMaxOutputTokens)
@@ -380,16 +382,17 @@ func runLoop(cmd *cobra.Command, args []string) error {
 
 		// Build request
 		req := llm.Request{
-			Messages:            messages,
-			Tools:               toolSpecs,
-			ToolChoice:          llm.ToolChoice{Mode: llm.ToolChoiceAuto},
-			ParallelToolCalls:   true,
-			Search:              settings.Search,
-			ForceExternalSearch: forceExternalSearch,
-			MaxTurns:            settings.MaxTurns,
-			MaxOutputTokens:     settings.MaxOutputTokens,
-			Debug:               loopDebug,
-			DebugRaw:            debugRaw,
+			Messages:                messages,
+			Tools:                   toolSpecs,
+			ToolChoice:              llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+			ParallelToolCalls:       true,
+			Search:                  settings.Search,
+			ForceExternalSearch:     forceExternalSearch,
+			DisableExternalWebFetch: loopNoWebFetch,
+			MaxTurns:                settings.MaxTurns,
+			MaxOutputTokens:         settings.MaxOutputTokens,
+			Debug:                   loopDebug,
+			DebugRaw:                debugRaw,
 		}
 
 		// Print iteration header
