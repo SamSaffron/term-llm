@@ -1,14 +1,15 @@
 ---
 title: "Text embeddings"
 weight: 4
-description: "Generate vector embeddings for search, RAG, clustering, and similarity workflows."
+description: "Generate vector embeddings for search, RAG, clustering, semantic similarity, and retrieval workflows."
+featured: true
 kicker: "Embeddings"
 source_readme_heading: "Text Embeddings"
 next:
   label: MCP servers
   url: /guides/mcp-servers/
 ---
-Generate vector embeddings from text for semantic search, RAG, clustering, and similarity comparison.
+Use `term-llm embed` when you need vectors for retrieval, ranking, clustering, semantic similarity, or local pipeline glue.
 
 ```bash
 term-llm embed "What is the meaning of life?"
@@ -116,3 +117,12 @@ Embedding providers use their own credentials, separate from text and image prov
 **Jina AI** is a great choice for getting started — sign up at [jina.ai/embeddings](https://jina.ai/embeddings/) for a free API key with 10M tokens, no credit card required.
 
 **Voyage AI** is Anthropic's recommended embedding partner (acquired by MongoDB, Feb 2025). The API remains fully available.
+
+## When to use it
+
+Typical uses include:
+
+- embedding a query and a corpus for retrieval
+- comparing candidate text by cosine similarity
+- generating vectors for a local RAG index
+- piping embeddings into your own scripts or downstream tools
