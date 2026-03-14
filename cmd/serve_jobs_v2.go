@@ -106,6 +106,7 @@ type jobsV2Run struct {
 	ScheduledFor time.Time       `json:"scheduled_for"`
 	Status       jobsV2RunStatus `json:"status"`
 	WorkerID     string          `json:"worker_id,omitempty"`
+	SessionID    string          `json:"session_id,omitempty"`
 	StartedAt    *time.Time      `json:"started_at,omitempty"`
 	FinishedAt   *time.Time      `json:"finished_at,omitempty"`
 	ExitCode     *int            `json:"exit_code,omitempty"`
@@ -138,6 +139,7 @@ type jobsV2RunResult struct {
 	Stderr       string
 	Thinking     string
 	Response     string
+	SessionID    string
 	TurnCount    int    // number of LLM turns taken
 	InputTokens  int    // total input tokens consumed
 	OutputTokens int    // total output tokens generated
@@ -242,11 +244,27 @@ type jobsV2LLMRunner struct {
 }
 
 type jobsV2LLMConfig struct {
-	AgentName    string `json:"agent_name"`
-	Instructions string `json:"instructions"`
-	Progressive  bool   `json:"progressive,omitempty"`
-	StopWhen     string `json:"stop_when,omitempty"`
-	ContinueWith string `json:"continue_with,omitempty"`
+	AgentName      string `json:"agent_name"`
+	Instructions   string `json:"instructions"`
+	Progressive    bool   `json:"progressive,omitempty"`
+	StopWhen       string `json:"stop_when,omitempty"`
+	ContinueWith   string `json:"continue_with,omitempty"`
+	PersistSession *bool  `json:"persist_session,omitempty"`
+	SessionID      string `json:"session_id,omitempty"`
+}
+
+func (c jobsV2LLMConfig) sessionPersistenceEnabled() bool {
+	if c.PersistSession == nil {
+		return true
+	}
+	return *c.PersistSession
+}
+
+func (c jobsV2LLMConfig) effectiveSessionID() string {
+	if id := strings.TrimSpace(c.SessionID); id != "" {
+		return id
+	}
+	return session.NewID()
 }
 
 func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWriter) (jobsV2RunResult, error) {
@@ -263,6 +281,7 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 	if strings.TrimSpace(cfg.Instructions) == "" {
 		return jobsV2RunResult{}, fmt.Errorf("llm runner instructions is required")
 	}
+	cfg.SessionID = cfg.effectiveSessionID()
 	progressiveOpts := askProgressiveOptions{
 		Enabled:      cfg.Progressive,
 		Timeout:      time.Duration(job.TimeoutSeconds) * time.Second,
@@ -272,7 +291,7 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 	if err := validateAskProgressiveOptions(progressiveOpts); err != nil {
 		return jobsV2RunResult{}, err
 	}
-	res := jobsV2RunResult{}
+	res := jobsV2RunResult{SessionID: cfg.SessionID}
 	progressTracker := newProgressTracker()
 	execResult, err := r.exec(ctx, cfg, func(ev llm.Event) {
 		switch ev.Type {
@@ -329,13 +348,8 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 					if message == "" {
 						message = "progress updated"
 					}
-					pw("progress_update", message, map[string]any{
-						"sequence": commit.Sequence,
-						"reason":   commit.Reason,
-						"message":  commit.Message,
-						"final":    commit.Final,
-						"progress": cloneProgressState(commit.State),
-					})
+					envelope := buildProgressiveRunResult(cfg.SessionID, "", commit.Final, commit, res.Response)
+					pw("progress_update", message, envelope)
 				}
 				return
 			}
@@ -357,6 +371,9 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 		}
 	})
 	if execResult.Progressive != nil {
+		if strings.TrimSpace(execResult.Progressive.SessionID) == "" {
+			execResult.Progressive.SessionID = cfg.SessionID
+		}
 		data, marshalErr := json.Marshal(execResult.Progressive)
 		if marshalErr != nil {
 			return res, fmt.Errorf("marshal progressive job result: %w", marshalErr)
@@ -441,6 +458,7 @@ CREATE TABLE IF NOT EXISTS job_runs_v2 (
 	scheduled_for TIMESTAMP NOT NULL,
 	status TEXT NOT NULL,
 	worker_id TEXT,
+	session_id TEXT,
 	started_at TIMESTAMP,
 	finished_at TIMESTAMP,
 	exit_code INTEGER,
@@ -515,6 +533,7 @@ func newJobsV2Manager(dbPath string, workers int, llmExec serveJobsExecutor) (*j
 		`ALTER TABLE job_runs_v2 ADD COLUMN turn_count INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE job_runs_v2 ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE job_runs_v2 ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE job_runs_v2 ADD COLUMN session_id TEXT`,
 	}
 	for _, migration := range migrations {
 		_, _ = db.Exec(migration)
@@ -770,7 +789,7 @@ func (m *jobsV2Manager) claimNextRun() (jobsV2Run, bool, error) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	row := tx.QueryRow(`SELECT id, job_id, attempt, trigger, scheduled_for, status, worker_id, started_at, finished_at, exit_code, error, stdout, stderr, thinking, response, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at FROM job_runs_v2 WHERE status = ? ORDER BY scheduled_for ASC LIMIT 1`, jobsV2RunQueued)
+	row := tx.QueryRow(`SELECT id, job_id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, stdout, stderr, thinking, response, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at FROM job_runs_v2 WHERE status = ? ORDER BY scheduled_for ASC LIMIT 1`, jobsV2RunQueued)
 	run, err := scanRunV2(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -847,6 +866,13 @@ func (m *jobsV2Manager) executeRun(run jobsV2Run) {
 		case "response_flush":
 			// Update response column so GET /v2/runs/{id} shows partial output.
 			_, _ = m.db.Exec(`UPDATE job_runs_v2 SET response = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, message, run.ID)
+		case "progress_update":
+			if data != nil {
+				if payload, err := json.Marshal(data); err == nil {
+					_, _ = m.db.Exec(`UPDATE job_runs_v2 SET response = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, string(payload), run.ID)
+				}
+			}
+			_ = m.addRunEvent(run.ID, eventType, message, data)
 		default:
 			_ = m.addRunEvent(run.ID, eventType, message, data)
 		}
@@ -882,8 +908,8 @@ func (m *jobsV2Manager) finishRun(runID string, status jobsV2RunStatus, result j
 	if runErr != nil {
 		errText = runErr.Error()
 	}
-	_, err := m.db.Exec(`UPDATE job_runs_v2 SET status = ?, finished_at = ?, exit_code = ?, error = ?, stdout = ?, stderr = ?, thinking = ?, response = ?, exit_reason = ?, truncated = ?, turn_count = ?, input_tokens = ?, output_tokens = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-		status, now, result.ExitCode, errText, result.Stdout, result.Stderr, result.Thinking, result.Response,
+	_, err := m.db.Exec(`UPDATE job_runs_v2 SET status = ?, finished_at = ?, exit_code = ?, error = ?, stdout = ?, stderr = ?, thinking = ?, response = ?, session_id = ?, exit_reason = ?, truncated = ?, turn_count = ?, input_tokens = ?, output_tokens = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		status, now, result.ExitCode, errText, result.Stdout, result.Stderr, result.Thinking, result.Response, result.SessionID,
 		exitReason, boolToInt(truncated), result.TurnCount, result.InputTokens, result.OutputTokens,
 		runID)
 	if err != nil {
@@ -892,6 +918,7 @@ func (m *jobsV2Manager) finishRun(runID string, status jobsV2RunStatus, result j
 	_ = m.addRunEvent(runID, string(status), "run finished", map[string]any{
 		"status":        status,
 		"attempt":       attempt,
+		"session_id":    result.SessionID,
 		"exit_code":     result.ExitCode,
 		"error":         errText,
 		"exit_reason":   exitReason,
@@ -1268,7 +1295,7 @@ func (m *jobsV2Manager) TriggerJob(id string) (jobsV2Run, error) {
 }
 
 func (m *jobsV2Manager) GetRun(id string) (jobsV2Run, error) {
-	row := m.db.QueryRow(`SELECT id, job_id, attempt, trigger, scheduled_for, status, worker_id, started_at, finished_at, exit_code, error, stdout, stderr, thinking, response, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at FROM job_runs_v2 WHERE id = ?`, id)
+	row := m.db.QueryRow(`SELECT id, job_id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, stdout, stderr, thinking, response, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at FROM job_runs_v2 WHERE id = ?`, id)
 	return scanRunV2(row)
 }
 
@@ -1293,7 +1320,7 @@ func (m *jobsV2Manager) ListRuns(jobID string, limit, offset int) ([]jobsV2Run, 
 	if err := m.db.QueryRow(countQuery, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	query := "SELECT id, job_id, attempt, trigger, scheduled_for, status, worker_id, started_at, finished_at, exit_code, error, stdout, stderr, thinking, response, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at FROM job_runs_v2" + where + " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+	query := "SELECT id, job_id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, stdout, stderr, thinking, response, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at FROM job_runs_v2" + where + " ORDER BY created_at DESC LIMIT ? OFFSET ?"
 	args = append(args, limit, offset)
 	rows, err := m.db.Query(query, args...)
 	if err != nil {
@@ -1398,6 +1425,7 @@ func scanRunV2(scanner interface{ Scan(dest ...any) error }) (jobsV2Run, error) 
 	var run jobsV2Run
 	var status string
 	var workerID sql.NullString
+	var sessionID sql.NullString
 	var startedAt sql.NullTime
 	var finishedAt sql.NullTime
 	var exitCode sql.NullInt64
@@ -1419,6 +1447,7 @@ func scanRunV2(scanner interface{ Scan(dest ...any) error }) (jobsV2Run, error) 
 		&run.ScheduledFor,
 		&status,
 		&workerID,
+		&sessionID,
 		&startedAt,
 		&finishedAt,
 		&exitCode,
@@ -1441,6 +1470,9 @@ func scanRunV2(scanner interface{ Scan(dest ...any) error }) (jobsV2Run, error) 
 	run.Status = jobsV2RunStatus(status)
 	if workerID.Valid {
 		run.WorkerID = workerID.String
+	}
+	if sessionID.Valid {
+		run.SessionID = sessionID.String
 	}
 	if startedAt.Valid {
 		t := startedAt.Time.UTC()
@@ -2090,10 +2122,19 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 		}
 
 		forceExternalSearch := resolveForceExternalSearch(jobCfg, serveNativeSearch, serveNoNativeSearch)
+		var store session.Store
+		var closeStore func()
+		if cfg.sessionPersistenceEnabled() {
+			store, closeStore = InitSessionStore(jobCfg, io.Discard)
+			if closeStore != nil {
+				defer closeStore()
+			}
+		}
 		runtime := &serveRuntime{
 			provider:            provider,
 			engine:              engine,
 			toolMgr:             toolMgr,
+			store:               store,
 			systemPrompt:        settings.SystemPrompt,
 			search:              settings.Search,
 			forceExternalSearch: forceExternalSearch,
@@ -2107,6 +2148,53 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 		}
 		defer runtime.Close()
 
+		var persistResponseCompleted llm.ResponseCompletedCallback
+		var persistTurnCompleted llm.TurnCompletedCallback
+		var persistSyntheticUserMessage func(context.Context, llm.Message) error
+		var sess *session.Session
+		turnStartTime := time.Now()
+		if store != nil {
+			sess = &session.Session{
+				ID:        cfg.SessionID,
+				Provider:  provider.Name(),
+				Model:     modelName,
+				Mode:      session.ModeAsk,
+				Agent:     agent.Name,
+				CreatedAt: time.Now(),
+				UpdatedAt: time.Now(),
+				Search:    settings.Search,
+				Tools:     settings.Tools,
+				MCP:       settings.MCP,
+				Status:    session.StatusActive,
+			}
+			if cwd, cwdErr := os.Getwd(); cwdErr == nil {
+				sess.CWD = cwd
+			}
+			_ = store.Create(ctx, sess)
+			runtime.sessionMeta = sess
+			persistResponseCompleted = func(ctx context.Context, turnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
+				sessionMsg := session.NewMessage(sess.ID, assistantMsg, -1)
+				sessionMsg.DurationMs = time.Since(turnStartTime).Milliseconds()
+				return store.AddMessage(ctx, sess.ID, sessionMsg)
+			}
+			persistTurnCompleted = func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
+				for _, msg := range turnMessages {
+					sessionMsg := session.NewMessage(sess.ID, msg, -1)
+					if msg.Role == llm.RoleAssistant {
+						sessionMsg.DurationMs = time.Since(turnStartTime).Milliseconds()
+					}
+					if err := store.AddMessage(ctx, sess.ID, sessionMsg); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
+			persistSyntheticUserMessage = func(ctx context.Context, msg llm.Message) error {
+				turnStartTime = time.Now()
+				return store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, msg, -1))
+			}
+		}
+
 		if settings.MCP != "" {
 			mcpOpts := &MCPOptions{Provider: provider, Model: modelName, YoloMode: serveYolo}
 			mgr, err := enableMCPServersWithFeedback(ctx, settings.MCP, engine, io.Discard, mcpOpts)
@@ -2117,6 +2205,7 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 		}
 
 		llmReq := llm.Request{
+			SessionID:           cfg.SessionID,
 			Tools:               runtime.selectTools(nil),
 			ToolChoice:          llm.ToolChoice{Mode: llm.ToolChoiceAuto},
 			ParallelToolCalls:   true,
@@ -2133,11 +2222,21 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 				messages = append([]llm.Message{llm.SystemText(runtime.systemPrompt)}, messages...)
 			}
 			llmReq.Messages = messages
+			if store != nil && sess != nil {
+				if runtime.systemPrompt != "" {
+					_ = store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, llm.SystemText(runtime.systemPrompt), -1))
+				}
+				_ = store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, llm.UserText(cfg.Instructions), -1))
+			}
 
 			progressiveResult, err := runProgressiveSession(ctx, engine, llmReq, progressiveRunOptions{
 				StopWhen:               progressiveStopWhen(strings.TrimSpace(cfg.StopWhen)),
 				ContinueWith:           cfg.ContinueWith,
+				SessionID:              cfg.SessionID,
 				ForceNamedFinalization: provider.Capabilities().SupportsToolChoice,
+				OnSyntheticUserMessage: persistSyntheticUserMessage,
+				OnResponseCompleted:    persistResponseCompleted,
+				OnTurnCompleted:        persistTurnCompleted,
 				OnEvent: func(ev llm.Event) error {
 					if onEvent != nil {
 						onEvent(ev)
@@ -2145,6 +2244,18 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 					return nil
 				},
 			})
+			if store != nil && sess != nil {
+				status := session.StatusComplete
+				switch progressiveResult.ExitReason {
+				case exitReasonTimeout, exitReasonCancelled:
+					status = session.StatusInterrupted
+				}
+				if err != nil && status != session.StatusInterrupted {
+					status = session.StatusError
+				}
+				_ = store.UpdateStatus(context.Background(), sess.ID, status)
+				_ = store.SetCurrent(context.Background(), sess.ID)
+			}
 			return serveJobsExecResult{Progressive: &progressiveResult}, err
 		}
 
