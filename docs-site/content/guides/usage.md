@@ -132,4 +132,9 @@ term-llm edit "use the API" -f main.go -c api/client.go  # with context
 term-llm image "a sunset over mountains"
 term-llm image "logo design" --provider flux    # use specific provider
 term-llm image "make it purple" -i photo.png    # edit existing image
+
+# Generate videos (Venice AI)
+term-llm video "a corgi surfing at sunset"
+term-llm video "make Romeo blink" -i romeo.png
+term-llm video "astronaut on mars" --quote-only
 ```
