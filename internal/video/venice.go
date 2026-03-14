@@ -48,18 +48,24 @@ var (
 	ValidResolutions = []string{"480p", "720p", "1080p"}
 )
 
+type InputImage struct {
+	Path string
+	Data []byte
+}
+
 type Request struct {
-	Prompt         string
-	Model          string
-	Duration       string
-	AspectRatio    string
-	Resolution     string
-	Audio          bool
-	NegativePrompt string
-	ImagePath      string
-	ImageData      []byte
-	Debug          bool
-	DebugRaw       bool
+	Prompt          string
+	Model           string
+	Duration        string
+	AspectRatio     string
+	Resolution      string
+	Audio           bool
+	NegativePrompt  string
+	ImagePath       string
+	ImageData       []byte
+	ReferenceImages []InputImage
+	Debug           bool
+	DebugRaw        bool
 }
 
 type Quote struct {
@@ -138,6 +144,13 @@ func (p *VeniceProvider) Queue(ctx context.Context, req Request) (*QueuedJob, er
 	}
 	if len(req.ImageData) > 0 {
 		payload["image_url"] = dataURL(req.ImagePath, req.ImageData)
+	}
+	if len(req.ReferenceImages) > 0 {
+		references := make([]string, 0, len(req.ReferenceImages))
+		for _, img := range req.ReferenceImages {
+			references = append(references, dataURL(img.Path, img.Data))
+		}
+		payload["reference_image_urls"] = references
 	}
 
 	var respBody struct {
@@ -287,12 +300,45 @@ func SaveVideo(data []byte, outputDir, prompt string) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("create output directory: %w", err)
 	}
-	filename := generateFilename(prompt, ".mp4")
+	filename := generateVideoFilename(prompt)
 	path := filepath.Join(dir, filename)
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return "", fmt.Errorf("write video: %w", err)
 	}
 	return path, nil
+}
+
+func generateVideoFilename(prompt string) string {
+	timestamp := time.Now().Format("20060102-150405")
+	safe := sanitizeForFilename(prompt)
+	if len(safe) > 30 {
+		safe = safe[:30]
+	}
+	if safe == "" {
+		safe = "video"
+	}
+	return fmt.Sprintf("%s-%s.mp4", timestamp, safe)
+}
+
+func sanitizeForFilename(s string) string {
+	replacer := strings.NewReplacer(" ", "_", "/", "", "\\", "", ":", "", "?", "", "*", "", "\"", "", "<", "", ">", "", "|", "")
+	s = replacer.Replace(s)
+	var b strings.Builder
+	b.Grow(len(s))
+	lastUnderscore := false
+	for _, r := range strings.ToLower(s) {
+		isAlphaNum := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if isAlphaNum || r == '-' {
+			b.WriteRune(r)
+			lastUnderscore = false
+			continue
+		}
+		if r == '_' && !lastUnderscore {
+			b.WriteRune(r)
+			lastUnderscore = true
+		}
+	}
+	return strings.Trim(b.String(), "_")
 }
 
 func withDefaultTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
@@ -323,54 +369,27 @@ func validateEnum(name, value string, allowed []string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("invalid %s %q (valid: %s)", name, value, strings.Join(allowed, ", "))
-}
-
-func veniceRequestError(err error) error {
-	if errors.Is(err, context.DeadlineExceeded) {
-		return fmt.Errorf("Venice API request timed out")
-	}
-	if errors.Is(err, context.Canceled) {
-		return fmt.Errorf("cancelled")
-	}
-	return fmt.Errorf("Venice API request failed: %w", err)
-}
-
-func debugLog(label, format string, args ...interface{}) {
-	ts := time.Now().Format(time.RFC3339Nano)
-	fmt.Fprintf(os.Stderr, "\n[%s] %s\n", ts, label)
-	fmt.Fprintf(os.Stderr, format+"\n", args...)
-	fmt.Fprintf(os.Stderr, "[%s] END %s\n\n", ts, label)
+	return fmt.Errorf("invalid %s %q (allowed: %s)", name, value, strings.Join(allowed, ", "))
 }
 
 func expandPath(path string) string {
 	if strings.HasPrefix(path, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
+		home, err := os.UserHomeDir()
+		if err == nil {
 			return filepath.Join(home, path[2:])
 		}
 	}
 	return path
 }
 
-func generateFilename(prompt, ext string) string {
-	timestamp := time.Now().Format("20060102-150405")
-	safe := sanitizeForFilename(prompt)
-	if len(safe) > 30 {
-		safe = safe[:30]
+func veniceRequestError(err error) error {
+	var netErr interface{ Timeout() bool }
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return fmt.Errorf("Venice request timed out: %w", err)
 	}
-	if safe == "" {
-		safe = "video"
-	}
-	return fmt.Sprintf("%s-%s%s", timestamp, safe, ext)
+	return fmt.Errorf("Venice request failed: %w", err)
 }
 
-func sanitizeForFilename(s string) string {
-	s = strings.ReplaceAll(s, " ", "_")
-	replacer := strings.NewReplacer("/", "", "\\", "", ":", "", "?", "", "*", "", "\"", "", "<", "", ">", "", "|", "")
-	s = replacer.Replace(s)
-	for strings.Contains(s, "__") {
-		s = strings.ReplaceAll(s, "__", "_")
-	}
-	s = strings.Trim(s, "_")
-	return strings.ToLower(s)
+func debugLog(title, format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "\n=== %s ===\n%s\n", title, fmt.Sprintf(format, args...))
 }

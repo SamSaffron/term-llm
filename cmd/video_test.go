@@ -1,0 +1,86 @@
+package cmd
+
+import (
+	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/spf13/cobra"
+)
+
+func TestLoadVideoReferences(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first.png")
+	second := filepath.Join(dir, "second.jpg")
+	if err := os.WriteFile(first, []byte("one"), 0o644); err != nil {
+		t.Fatalf("write first: %v", err)
+	}
+	if err := os.WriteFile(second, []byte("two"), 0o644); err != nil {
+		t.Fatalf("write second: %v", err)
+	}
+
+	references, err := loadVideoReferences([]string{first, second})
+	if err != nil {
+		t.Fatalf("loadVideoReferences: %v", err)
+	}
+	if len(references) != 2 {
+		t.Fatalf("len(references) = %d, want 2", len(references))
+	}
+	if references[0].Path != first || string(references[0].Data) != "one" {
+		t.Fatalf("unexpected first reference: %+v", references[0])
+	}
+	if references[1].Path != second || string(references[1].Data) != "two" {
+		t.Fatalf("unexpected second reference: %+v", references[1])
+	}
+}
+
+func TestEmitVideoJSON(t *testing.T) {
+	oldJSON := videoJSON
+	oldAspectRatio := videoAspectRatio
+	videoJSON = true
+	videoAspectRatio = "9:16"
+	defer func() {
+		videoJSON = oldJSON
+		videoAspectRatio = oldAspectRatio
+	}()
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+
+	err := emitVideoJSON(cmd, videoJSONResult{
+		Provider:   "venice",
+		Prompt:     "romeo is adorable",
+		Model:      "kling-o3-pro-image-to-video",
+		Duration:   "5s",
+		Resolution: "720p",
+		Status:     "queued",
+		Quote:      &videoJSONQuote{Amount: 1.06},
+		Job:        &videoJSONJob{QueueID: "queue-123"},
+		References: []string{"a.png", "b.png"},
+	})
+	if err != nil {
+		t.Fatalf("emitVideoJSON: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal json: %v", err)
+	}
+	if got["aspect_ratio"] != "9:16" {
+		t.Fatalf("aspect_ratio = %v, want 9:16", got["aspect_ratio"])
+	}
+	if got["status"] != "queued" {
+		t.Fatalf("status = %v, want queued", got["status"])
+	}
+	job, ok := got["job"].(map[string]any)
+	if !ok || job["queue_id"] != "queue-123" {
+		t.Fatalf("job = %#v", got["job"])
+	}
+	references, ok := got["references"].([]any)
+	if !ok || len(references) != 2 {
+		t.Fatalf("references = %#v", got["references"])
+	}
+}

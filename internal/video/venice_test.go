@@ -44,6 +44,7 @@ func TestValidateEnums(t *testing.T) {
 
 func TestVeniceProviderQuoteQueueRetrieve(t *testing.T) {
 	var queueSawImageURL bool
+	var queueSawReferences bool
 	retrieveCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -60,6 +61,11 @@ func TestVeniceProviderQuoteQueueRetrieve(t *testing.T) {
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			if imageURL, ok := body["image_url"].(string); ok && strings.HasPrefix(imageURL, "data:image/png;base64,") {
 				queueSawImageURL = true
+			}
+			if refs, ok := body["reference_image_urls"].([]any); ok && len(refs) == 2 {
+				first, firstOK := refs[0].(string)
+				second, secondOK := refs[1].(string)
+				queueSawReferences = firstOK && secondOK && strings.HasPrefix(first, "data:image/png;base64,") && strings.HasPrefix(second, "data:image/jpeg;base64,")
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"model":"venice-video-model","queue_id":"queue-123"}`))
@@ -103,6 +109,10 @@ func TestVeniceProviderQuoteQueueRetrieve(t *testing.T) {
 		Resolution:  "720p",
 		ImagePath:   "romeo.png",
 		ImageData:   []byte{0x89, 'P', 'N', 'G'},
+		ReferenceImages: []InputImage{
+			{Path: "romeo-1.png", Data: []byte{0x89, 'P', 'N', 'G'}},
+			{Path: "romeo-2.jpg", Data: []byte{0xff, 0xd8, 0xff, 0xdb}},
+		},
 	})
 	if err != nil {
 		t.Fatalf("Queue error: %v", err)
@@ -112,6 +122,9 @@ func TestVeniceProviderQuoteQueueRetrieve(t *testing.T) {
 	}
 	if !queueSawImageURL {
 		t.Fatal("expected queue request to include data URL image")
+	}
+	if !queueSawReferences {
+		t.Fatal("expected queue request to include reference_image_urls")
 	}
 
 	processing, err := provider.Retrieve(context.Background(), *job, true, false)
