@@ -66,6 +66,53 @@ term-llm jobs run cancel run_abc123
 - `once`: delayed one-off run via `trigger_config.run_at` (RFC3339)
 - `cron`: recurring schedule via `trigger_config.expression` + `trigger_config.timezone`
 
+### LLM job persistence and progressive state
+
+LLM jobs now persist a session trail to the normal sessions SQLite store **by default**.
+
+That means each LLM run gets a stable `session_id`, and long-running progressive jobs no longer keep their best-so-far state only in memory.
+
+Practical effects:
+
+- `GET /v2/runs/:id` returns `session_id` for LLM runs
+- progressive LLM jobs update `response` during execution with the latest progressive envelope
+- you can inspect the full message and tool history in the sessions DB using that `session_id`
+
+Default behavior is persistence **on**. If you explicitly do not want that, set:
+
+```json
+{
+  "runner_type": "llm",
+  "runner_config": {
+    "agent_name": "developer",
+    "instructions": "Do the thing",
+    "persist_session": false
+  }
+}
+```
+
+You can also provide your own `session_id` when an integration wants a stable external key:
+
+```json
+{
+  "runner_type": "llm",
+  "runner_config": {
+    "agent_name": "developer",
+    "instructions": "Investigate the failing deploy and summarize it.",
+    "session_id": "deploy-investigation-2026-03-14"
+  }
+}
+```
+
+### Inspecting partial progressive output
+
+For progressive LLM jobs, the latest `update_progress` / `finalize_progress` envelope is written into the run record while the job is still running.
+
+That gives you two inspection paths:
+
+- `term-llm jobs run get <run-id>` for the latest envelope and run metadata
+- `term-llm sessions show <session>` or direct SQLite inspection for the full persisted transcript
+
 ### Retention
 
 Jobs v2 automatically prunes historical data to avoid unbounded disk growth:

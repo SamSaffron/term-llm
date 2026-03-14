@@ -37,6 +37,8 @@ With the default base path of `/ui`, the web runtime exposes:
 
 If the jobs platform is also enabled, the jobs API is mounted under the same base path.
 
+LLM job runs now expose a `session_id` and persist to the same sessions store by default, which makes web/API integrations much easier to inspect while a progressive run is still executing.
+
 ## Authentication
 
 By default, serve mode uses bearer-token auth.

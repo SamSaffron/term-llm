@@ -359,6 +359,9 @@ func TestJobsV2LLMProgressiveRunStoresEnvelopeAndProgressEvents(t *testing.T) {
 		if cfg.AgentName != "planner" {
 			t.Fatalf("agent_name = %q, want %q", cfg.AgentName, "planner")
 		}
+		if strings.TrimSpace(cfg.SessionID) == "" {
+			t.Fatal("expected session_id to be set for llm job runs")
+		}
 		onEvent(llm.Event{
 			Type: llm.EventToolCall,
 			Tool: &llm.ToolCall{
@@ -429,6 +432,15 @@ func TestJobsV2LLMProgressiveRunStoresEnvelopeAndProgressEvents(t *testing.T) {
 	}
 	if envelope.ExitReason != exitReasonNatural {
 		t.Fatalf("exit_reason = %q, want %q", envelope.ExitReason, exitReasonNatural)
+	}
+	if strings.TrimSpace(envelope.SessionID) == "" {
+		t.Fatal("expected progressive envelope session_id to be populated")
+	}
+	if strings.TrimSpace(run.SessionID) == "" {
+		t.Fatal("expected persisted run session_id to be populated")
+	}
+	if run.SessionID != envelope.SessionID {
+		t.Fatalf("run session_id = %q, want %q", run.SessionID, envelope.SessionID)
 	}
 	if got := envelope.Progress["step"]; got != "draft" {
 		t.Fatalf("progress step = %#v, want %q", got, "draft")

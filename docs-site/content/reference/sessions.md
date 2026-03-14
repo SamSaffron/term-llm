@@ -33,6 +33,8 @@ Sessions are stored in SQLite at:
 ~/.local/share/term-llm/sessions.db
 ```
 
+That store is not just for interactive `chat` and `ask` runs. LLM jobs also use it by default now, so background runs can leave a persisted transcript and tool trail instead of vanishing into process memory.
+
 Session storage config:
 
 ```yaml
@@ -69,6 +71,7 @@ Use sessions when you want:
 - transcript search
 - exported chat history
 - per-session naming and tagging
+- persisted LLM job transcripts and tool history for background runs
 
 Use [Memory](/guides/memory/) when you want durable facts and behavioral insights that survive beyond one specific chat.
 
