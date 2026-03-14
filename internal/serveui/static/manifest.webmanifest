@@ -1,10 +1,13 @@
 {
+  "id": "./",
   "name": "term-llm Chat",
   "short_name": "term-llm",
   "description": "Chat with term-llm from your phone home screen.",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui", "browser"],
   "start_url": "./",
   "scope": "./",
+  "orientation": "any",
   "background_color": "#212121",
   "theme_color": "#212121",
   "icons": [

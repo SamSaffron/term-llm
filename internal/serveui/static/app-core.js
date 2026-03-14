@@ -104,7 +104,9 @@ const elements = {
   approvalDenyBtn: document.getElementById('approvalDenyBtn'),
   approvalApproveBtn: document.getElementById('approvalApproveBtn'),
   lightbox: document.getElementById('lightbox'),
-  lightboxImg: document.getElementById('lightboxImg')
+  lightboxImg: document.getElementById('lightboxImg'),
+  startupSplash: document.getElementById('startupSplash'),
+  startupStatus: document.getElementById('startupStatus')
 };
 
 // ===== Markdown setup =====
@@ -285,6 +287,22 @@ const setConnectionState = (text, mode = '') => {
   if (mode) {
     elements.connectionState.classList.add(mode);
   }
+};
+
+const setStartupStatus = (text) => {
+  if (!elements.startupStatus || !text) return;
+  elements.startupStatus.textContent = text;
+};
+
+const hideStartupSplash = () => {
+  if (!elements.startupSplash || elements.startupSplash.classList.contains('hidden')) return;
+  document.body.classList.remove('app-loading');
+  elements.startupSplash.classList.add('hidden');
+  window.setTimeout(() => {
+    if (elements.startupSplash) {
+      elements.startupSplash.setAttribute('hidden', 'hidden');
+    }
+  }, 220);
 };
 
 const updateDocumentTitle = () => {
@@ -705,6 +723,8 @@ Object.assign(app, {
   isNearBottom,
   scrollToBottom,
   setConnectionState,
+  setStartupStatus,
+  hideStartupSplash,
   updateDocumentTitle,
   UI_PREFIX,
   isStandalone,

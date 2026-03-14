@@ -4,7 +4,7 @@
 const app = window.TermLLMApp;
 const {
   UI_PREFIX, STORAGE_KEYS, state, elements, generateId, truncate, loadSessions, saveSessions, getActiveSession, createSession, ensureActiveSession,
-  sessionIdFromURL, updateURL, scrollToBottom, setConnectionState, persistAndRefreshShell, refreshRelativeTimes,
+  sessionIdFromURL, updateURL, scrollToBottom, setConnectionState, setStartupStatus, hideStartupSplash, persistAndRefreshShell, refreshRelativeTimes,
   openAuthModal, closeAuthModal, handleAuthFailure, closeAskUserModal, openAskUserModal, setActiveResponseTracking,
   clearActiveResponseTracking, setStreaming, resumeActiveResponse, renderSidebar, renderMessages, renderModelOptions,
   autoGrowPrompt, updateVoiceUI, toggleVoiceRecording, fetchModels, addErrorMessage, sendMessage, openSidebar, closeSidebar, closeSidebarIfMobile,
@@ -313,6 +313,7 @@ const mergeServerSessions = async () => {
 
 // ===== Initialization =====
 const initialize = async () => {
+  setStartupStatus('Loading your chat shell…');
   state.sessions = loadSessions();
 
   // Check URL for a specific session ID
@@ -346,14 +347,17 @@ const initialize = async () => {
   autoGrowPrompt();
   updateVoiceUI();
   refreshNotificationUI();
+  hideStartupSplash();
   void registerServiceWorker().then(() => refreshNotificationUI());
 
   try {
+    setStartupStatus(state.token ? 'Checking your token…' : 'Connecting…');
     setConnectionState(state.token ? 'Validating token…' : 'Connecting…');
     state.models = await fetchModels();
     state.connected = true;
     renderModelOptions();
     setConnectionState('', '');
+    setStartupStatus('Syncing sessions…');
 
     // Merge server-side sessions after successful auth
     await mergeServerSessions();
@@ -381,10 +385,13 @@ const initialize = async () => {
     }
   } catch (err) {
     const message = err?.message || 'Unable to validate token.';
+    setStartupStatus(message);
     setConnectionState(message, 'bad');
     if (!state.token || err?.status === 401) {
       handleAuthFailure();
     }
+  } finally {
+    hideStartupSplash();
   }
 };
 

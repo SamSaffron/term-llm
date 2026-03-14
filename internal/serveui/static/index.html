@@ -4,10 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Chat</title>
-  <meta name="theme-color" content="#212121">
+  <meta name="application-name" content="term-llm">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="term-llm">
+  <meta name="theme-color" content="#212121" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+  <meta name="color-scheme" content="dark light">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230d1117'/%3E%3Cpath d='M17 14h30v6H24v26h16v-9H30v-6h17v21H17z' fill='%23ececec'/%3E%3C/svg%3E">
   <link rel="apple-touch-icon" href="icon-512.png">
   <link rel="manifest" href="manifest.webmanifest">
@@ -16,7 +20,16 @@
   <link rel="stylesheet" href="vendor/hljs/github.min.css?v=11.11.1" media="(prefers-color-scheme: light)">
   <link rel="stylesheet" href="app.css">
 </head>
-<body>
+<body class="app-loading">
+  <div class="startup-splash" id="startupSplash" role="status" aria-live="polite">
+    <div class="startup-card">
+      <div class="startup-mark" aria-hidden="true">⌘</div>
+      <div class="startup-title">term-llm</div>
+      <div class="startup-subtitle" id="startupStatus">Loading your chat shell…</div>
+      <div class="startup-spinner" aria-hidden="true"></div>
+    </div>
+  </div>
+
   <div class="app">
     <aside class="sidebar" id="sidebar" aria-label="Sessions">
       <div class="sidebar-header">
