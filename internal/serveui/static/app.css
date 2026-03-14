@@ -931,6 +931,34 @@
       margin: 0.5rem 0;
     }
 
+    .deferred-video {
+      display: inline-flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      margin: 0.5rem 0;
+      max-width: 100%;
+    }
+
+    .deferred-video-poster {
+      max-width: 100%;
+      border-radius: 8px;
+    }
+
+    .deferred-video-btn {
+      align-self: flex-start;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--surface-elevated);
+      color: var(--text);
+      padding: 0.55rem 0.9rem;
+      cursor: pointer;
+      font: inherit;
+    }
+
+    .deferred-video-btn:hover {
+      background: color-mix(in srgb, var(--surface-elevated) 70%, var(--accent) 30%);
+    }
+
     .composer {
       background: var(--bg);
       padding: 0.75rem calc(1rem + var(--safe-right)) max(0.3rem, calc(var(--safe-bottom) * 0.35)) calc(1rem + var(--safe-left));

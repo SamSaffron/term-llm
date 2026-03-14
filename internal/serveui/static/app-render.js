@@ -99,25 +99,7 @@ const renderSidebar = () => {
       btn.appendChild(title);
       btn.appendChild(meta);
       btn.addEventListener('click', async () => {
-        app.stopSessionStatePoll();
-        if (state.askUser?.sessionId && state.askUser.sessionId !== session.id) {
-          app.closeAskUserModal();
-        }
-        state.activeSessionId = session.id;
-        updateURL(session.id);
-
-        // Lazy-load messages for server-only sessions
-        if (session._serverOnly) {
-          const msgs = await app.loadServerSessionMessages(session.id);
-          if (msgs !== null) {
-            app.mergeServerMessagesWithLocalState(session, msgs);
-          }
-        }
-
-        app.persistAndRefreshShell();
-        renderMessages(true);
-        await app.syncActiveSessionFromServer(session, true);
-        closeSidebarIfMobile();
+        await app.switchToSession(session.id);
       });
 
       groupEl.appendChild(btn);
@@ -174,6 +156,74 @@ const createMetaNode = (created, message = null) => {
   return meta;
 };
 
+const buildDeferredVideoNode = (video) => {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'deferred-video';
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'deferred-video-btn';
+  button.textContent = 'Load video';
+
+  const src = video.getAttribute('src') || '';
+  const poster = video.getAttribute('poster') || '';
+  const preload = video.getAttribute('preload') || '';
+  if (src) button.dataset.videoSrc = src;
+  if (poster) button.dataset.videoPoster = poster;
+  if (preload) button.dataset.videoPreload = preload;
+
+  const sources = Array.from(video.querySelectorAll('source'))
+    .map((source) => ({
+      src: source.getAttribute('src') || '',
+      type: source.getAttribute('type') || ''
+    }))
+    .filter((source) => source.src);
+  if (sources.length > 0) {
+    button.dataset.videoSources = JSON.stringify(sources);
+  }
+
+  button.addEventListener('click', () => {
+    const replacement = document.createElement('video');
+    ['controls', 'playsinline', 'muted', 'loop'].forEach((attr) => {
+      if (video.hasAttribute(attr)) replacement.setAttribute(attr, '');
+    });
+    if (poster) replacement.setAttribute('poster', poster);
+    replacement.setAttribute('preload', 'metadata');
+
+    if (src) {
+      replacement.src = src;
+    } else {
+      sources.forEach((source) => {
+        const sourceNode = document.createElement('source');
+        sourceNode.src = source.src;
+        if (source.type) sourceNode.type = source.type;
+        replacement.appendChild(sourceNode);
+      });
+    }
+
+    wrapper.replaceWith(replacement);
+  });
+
+  if (poster) {
+    const preview = document.createElement('img');
+    preview.src = poster;
+    preview.alt = 'Video preview';
+    preview.className = 'deferred-video-poster';
+    wrapper.appendChild(preview);
+  }
+
+  wrapper.appendChild(button);
+  return wrapper;
+};
+
+const deferEmbeddedVideos = (target) => {
+  target.querySelectorAll('video').forEach((video) => {
+    video.removeAttribute('autoplay');
+    video.setAttribute('preload', 'none');
+    video.replaceWith(buildDeferredVideoNode(video));
+  });
+};
+
 const renderAssistantMarkdown = (target, content) => {
   applyTextDirection(target, content || '');
   const html = marked.parse(content || '');
@@ -182,6 +232,7 @@ const renderAssistantMarkdown = (target, content) => {
     ADD_ATTR: ['controls', 'playsinline', 'muted', 'loop', 'autoplay', 'poster', 'preload']
   });
   target.innerHTML = clean;
+  deferEmbeddedVideos(target);
 
   renderMath(target);
 

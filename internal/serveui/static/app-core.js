@@ -27,6 +27,7 @@ const state = {
   lastNotifiedResponseId: localStorage.getItem(STORAGE_KEYS.lastNotifiedResponseId) || '',
   streaming: false,
   currentStreamResponseId: '',
+  currentStreamSessionId: '',
   queuedInterrupts: [],
   pendingInterruptCommits: [],
   expectCanceledRun: false,

@@ -10,9 +10,52 @@ const {
   autoGrowPrompt, updateVoiceUI, toggleVoiceRecording, fetchModels, addErrorMessage, sendMessage, openSidebar, closeSidebar, closeSidebarIfMobile,
   connectToken, submitAskUserModal, cancelActiveResponse, handleFiles, isNearBottom,
   openApprovalModal, closeApprovalModal, submitApprovalModal, registerServiceWorker, subscribeToPush, refreshNotificationUI,
-  requestNotificationPermission, shouldAutoSubscribeToPush
+  requestNotificationPermission, shouldAutoSubscribeToPush, detachResponseStream
 } = app;
 let sessionStatePollTimer = null;
+
+const switchToSession = async (sessionId, options = {}) => {
+  const nextId = String(sessionId || '').trim();
+  if (!nextId) return null;
+
+  const session = state.sessions.find((item) => item.id === nextId);
+  if (!session) return null;
+
+  stopSessionStatePoll();
+  if (state.askUser?.sessionId && state.askUser.sessionId !== nextId) {
+    closeAskUserModal();
+  }
+  if (state.approval?.sessionId && state.approval.sessionId !== nextId) {
+    closeApprovalModal();
+  }
+  if (state.currentStreamSessionId && state.currentStreamSessionId !== nextId) {
+    detachResponseStream();
+  }
+
+  state.activeSessionId = nextId;
+  updateURL(nextId);
+
+  if (session._serverOnly) {
+    const msgs = await loadServerSessionMessages(session.id);
+    if (msgs !== null) {
+      mergeServerMessagesWithLocalState(session, msgs);
+    }
+  }
+
+  persistAndRefreshShell();
+  renderMessages(true);
+
+  if (options.sync !== false) {
+    await syncActiveSessionFromServer(session, true);
+  }
+  if (options.focusPrompt) {
+    elements.promptInput.focus();
+  }
+  if (options.closeSidebar !== false) {
+    closeSidebarIfMobile();
+  }
+  return session;
+};
 
 // ===== Server session helpers =====
 const convertServerMessages = (serverMessages) => {
@@ -395,22 +438,12 @@ const initialize = async () => {
 };
 
 // ===== Event listeners =====
-elements.newChatBtn.addEventListener('click', () => {
+elements.newChatBtn.addEventListener('click', async () => {
   if (state.streaming) return;
-
-  stopSessionStatePoll();
-  if (state.askUser) {
-    closeAskUserModal();
-  }
 
   const session = createSession();
   state.sessions.unshift(session);
-  state.activeSessionId = session.id;
-  updateURL(session.id);
-  persistAndRefreshShell();
-  renderMessages(true);
-  elements.promptInput.focus();
-  closeSidebarIfMobile();
+  await switchToSession(session.id, { sync: false, focusPrompt: true });
 });
 
 elements.settingsBtn.addEventListener('click', () => {
@@ -553,23 +586,9 @@ window.addEventListener('popstate', async () => {
   const urlId = sessionIdFromURL();
   if (!urlId || urlId === state.activeSessionId) return;
 
-  stopSessionStatePoll();
-  if (state.askUser?.sessionId && state.askUser.sessionId !== urlId) {
-    closeAskUserModal();
-  }
-
   const found = state.sessions.find(s => s.id === urlId);
   if (found) {
-    state.activeSessionId = found.id;
-    if (found._serverOnly) {
-      const msgs = await loadServerSessionMessages(found.id);
-      if (msgs !== null) {
-        mergeServerMessagesWithLocalState(found, msgs);
-      }
-    }
-    persistAndRefreshShell();
-    renderMessages(true);
-    await syncActiveSessionFromServer(found, true);
+    await switchToSession(found.id, { closeSidebar: false });
   }
 });
 
@@ -586,6 +605,7 @@ Object.assign(app, {
   scheduleSessionStatePoll,
   syncActiveSessionFromServer,
   mergeServerSessions,
+  switchToSession,
   initialize
 });
 })();

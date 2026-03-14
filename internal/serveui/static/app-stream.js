@@ -130,8 +130,24 @@ const setActiveResponseTracking = (session, responseId, sequenceNumber = null) =
       session.lastSequenceNumber = nextSeq;
     }
   }
+};
 
-  state.currentStreamResponseId = normalized;
+const attachResponseStream = (session, responseId = '', controller = null) => {
+  state.currentStreamSessionId = String(session?.id || '').trim();
+  state.currentStreamResponseId = String(responseId || '').trim();
+  state.abortController = controller;
+};
+
+const detachResponseStream = () => {
+  const controller = state.abortController;
+  state.abortController = null;
+  state.currentStreamSessionId = '';
+  state.currentStreamResponseId = '';
+  if (controller) {
+    controller.abort();
+  }
+  setConnectionState('', '');
+  setStreaming(false);
 };
 
 const clearActiveResponseTracking = (session, responseId = '') => {
@@ -143,8 +159,18 @@ const clearActiveResponseTracking = (session, responseId = '') => {
     session.activeResponseId = null;
     session.lastSequenceNumber = 0;
   }
-  if (!targetId || state.currentStreamResponseId === targetId) {
+  if (
+    !targetId
+    || (
+      state.currentStreamSessionId === String(session.id || '').trim()
+      && (!state.currentStreamResponseId || state.currentStreamResponseId === targetId)
+    )
+  ) {
+    state.currentStreamSessionId = '';
     state.currentStreamResponseId = '';
+    if (!state.abortController) {
+      setConnectionState('', '');
+    }
   }
 };
 
@@ -509,11 +535,15 @@ const resumeActiveResponse = async (session, options = {}) => {
   const responseId = String(options.responseId || session.activeResponseId || '').trim();
   if (!responseId) return false;
 
+  if (state.currentStreamSessionId && state.currentStreamSessionId !== session.id) {
+    detachResponseStream();
+  }
+
   if (session.activeResponseId !== responseId) {
     setActiveResponseTracking(session, responseId, 0);
     saveSessions();
-  } else {
-    state.currentStreamResponseId = responseId;
+  } else if (state.currentStreamSessionId !== session.id || state.currentStreamResponseId !== responseId) {
+    attachResponseStream(session, responseId, null);
   }
 
   let streamState = options.streamState || createResponseStreamState(session);
@@ -526,8 +556,7 @@ const resumeActiveResponse = async (session, options = {}) => {
     }
 
     const controller = new AbortController();
-    state.abortController = controller;
-    state.currentStreamResponseId = responseId;
+    attachResponseStream(session, responseId, controller);
     setStreaming(true);
 
     try {
@@ -544,7 +573,9 @@ const resumeActiveResponse = async (session, options = {}) => {
 
       setConnectionState('', '');
       const terminal = await consumeResponseStream(response.body, session, streamState);
-      state.abortController = null;
+      if (state.abortController === controller) {
+        state.abortController = null;
+      }
 
       if (session.activeResponseId !== responseId) {
         setStreaming(Boolean(state.currentStreamResponseId));
@@ -555,7 +586,9 @@ const resumeActiveResponse = async (session, options = {}) => {
         return true;
       }
     } catch (err) {
-      state.abortController = null;
+      if (state.abortController === controller) {
+        state.abortController = null;
+      }
 
       if (err?.name === 'AbortError') {
         setStreaming(Boolean(state.currentStreamResponseId));
@@ -608,7 +641,7 @@ const resumeActiveResponse = async (session, options = {}) => {
 
   if (session.activeResponseId === responseId) {
     state.abortController = null;
-    state.currentStreamResponseId = responseId;
+    attachResponseStream(session, responseId, null);
     setStreaming(true);
     app.scheduleSessionStatePoll(session.id, 2000);
     setConnectionState('Stream disconnected', 'bad');
@@ -1866,7 +1899,7 @@ const sendMessage = async (options = {}) => {
 
   state.expectCanceledRun = false;
   const controller = new AbortController();
-  state.abortController = controller;
+  attachResponseStream(session, '', controller);
   setStreaming(true);
   const streamState = createResponseStreamState(session);
 
@@ -2028,6 +2061,8 @@ Object.assign(app, {
   parseSSEStream,
   sleep,
   setActiveResponseTracking,
+  attachResponseStream,
+  detachResponseStream,
   clearActiveResponseTracking,
   updateResponseSequence,
   createResponseStreamState,
