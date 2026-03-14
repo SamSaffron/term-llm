@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>term-llm docs</title>
+    <meta
+      name="description"
+      content="term-llm documentation hub: getting started, guides, architecture, and reference."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="term-llm docs" />
+    <meta
+      property="og:description"
+      content="A terminal-first AI runtime for chat, web, jobs, agents, tools, skills, and memory."
+    />
+    <meta property="og:url" content="https://term-llm.com/" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="term-llm docs" />
+    <meta
+      name="twitter:description"
+      content="Documentation hub for the terminal-first AI runtime."
+    />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="topbar">
+        <a class="brand" href="/">term-llm</a>
+        <nav class="topnav" aria-label="Primary">
+          <a href="/getting-started/">Start</a>
+          <a href="/guides/">Guides</a>
+          <a href="/architecture/">Architecture</a>
+          <a href="/reference/">Reference</a>
+          <a href="https://github.com/samsaffron/term-llm">GitHub</a>
+        </nav>
+      </header>
+
+      <main>
+        <section class="hero">
+          <div>
+            <p class="eyebrow">Documentation hub</p>
+            <h1>A front door, not another markdown landfill.</h1>
+            <p class="lede">
+              term-llm has outgrown the giant README. This is the hub: clear paths,
+              fewer dead ends, and room for the docs to become an actual product.
+            </p>
+            <div class="actions">
+              <a class="button primary" href="/getting-started/">Open quickstart path</a>
+              <a class="button" href="/reference/">Browse reference skeleton</a>
+            </div>
+          </div>
+
+          <aside class="hero-panel terminal-panel">
+            <div class="terminal-bar">
+              <span></span><span></span><span></span>
+            </div>
+            <pre><code>$ term-llm chat --agent jarvis
+
+&gt; what is term-llm?
+
+A terminal-first AI runtime with:
+- chat, web, and jobs runtimes
+- agents, tools, skills, and memory
+- enough structure to run real workflows
+  instead of demo theatre</code></pre>
+          </aside>
+        </section>
+
+        <section class="section-block">
+          <div class="section-heading">
+            <p class="eyebrow">Choose your path</p>
+            <h2>Start with intent, not file names</h2>
+          </div>
+
+          <div class="card-grid card-grid-4">
+            <a class="card path-card" href="/getting-started/">
+              <p class="card-kicker">New here</p>
+              <h3>Getting started</h3>
+              <p>Install, configure, and get to a first successful run without archaeology.</p>
+            </a>
+            <a class="card path-card" href="/guides/">
+              <p class="card-kicker">Do a thing</p>
+              <h3>Guides</h3>
+              <p>Task-focused docs for providers, agents, memory, jobs, web, and Telegram.</p>
+            </a>
+            <a class="card path-card" href="/architecture/">
+              <p class="card-kicker">Understand it</p>
+              <h3>Architecture</h3>
+              <p>How sessions, runtimes, tools, skills, memory, and routing actually fit together.</p>
+            </a>
+            <a class="card path-card" href="/reference/">
+              <p class="card-kicker">Need exact truth</p>
+              <h3>Reference</h3>
+              <p>CLI, config, env vars, API surface, and the sharp edges where hand-waving dies.</p>
+            </a>
+          </div>
+        </section>
+
+        <section class="section-block split-layout">
+          <div>
+            <div class="section-heading">
+              <p class="eyebrow">What belongs here</p>
+              <h2>Documentation shape</h2>
+            </div>
+            <div class="list-panel">
+              <ul class="check-list">
+                <li>Quickstart flows that get from zero to useful</li>
+                <li>How-to guides for concrete tasks</li>
+                <li>Architecture pages that explain the model</li>
+                <li>Reference pages that stop arguing and state facts</li>
+              </ul>
+            </div>
+          </div>
+
+          <div>
+            <div class="section-heading">
+              <p class="eyebrow">What does not</p>
+              <h2>Things we are trying not to repeat</h2>
+            </div>
+            <div class="list-panel">
+              <ul class="warning-list">
+                <li>One README containing tutorial, manifesto, and config dump in a trench coat</li>
+                <li>GitHub directory spelunking mistaken for information architecture</li>
+                <li>Pretty docs chrome hiding content that still has no classification</li>
+                <li>Reference facts trapped inside prose paragraphs nobody can scan</li>
+              </ul>
+            </div>
+          </div>
+        </section>
+
+        <section class="section-block">
+          <div class="section-heading">
+            <p class="eyebrow">First skeleton</p>
+            <h2>Planned doc clusters</h2>
+          </div>
+          <div class="card-grid card-grid-2">
+            <article class="card detail-card">
+              <h3>Core user paths</h3>
+              <ul>
+                <li>First chat</li>
+                <li>Running the web UI and API</li>
+                <li>Scheduling jobs</li>
+                <li>Configuring agents, tools, skills, and memory</li>
+              </ul>
+            </article>
+            <article class="card detail-card">
+              <h3>Operator and contributor paths</h3>
+              <ul>
+                <li>Deploying runtimes</li>
+                <li>Understanding session/state behavior</li>
+                <li>Adding providers and tools</li>
+                <li>Troubleshooting weird runtime failure modes</li>
+              </ul>
+            </article>
+          </div>
+        </section>
+      </main>
+
+      <footer class="site-footer">
+        <p>Initial docs hub skeleton for term-llm.com. Better than a README trying to swallow the planet.</p>
+      </footer>
+    </div>
+  </body>
+</html>

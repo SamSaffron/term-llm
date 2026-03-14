@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Architecture · term-llm docs</title>
+    <meta
+      name="description"
+      content="Architecture overview for term-llm: runtimes, sessions, tools, skills, memory, and routing."
+    />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="docs-page">
+    <div class="page-shell">
+      <header class="topbar">
+        <a class="brand" href="/">term-llm</a>
+        <nav class="topnav" aria-label="Primary">
+          <a href="/getting-started/">Start</a>
+          <a href="/guides/">Guides</a>
+          <a class="active" href="/architecture/">Architecture</a>
+          <a href="/reference/">Reference</a>
+          <a href="https://github.com/samsaffron/term-llm">GitHub</a>
+        </nav>
+      </header>
+
+      <main>
+        <section class="doc-hero">
+          <div class="breadcrumbs"><a href="/">Docs</a><span>→</span><span>Architecture</span></div>
+          <p class="eyebrow">Understand the system</p>
+          <h1>How the moving pieces actually fit together.</h1>
+          <p class="doc-intro">
+            term-llm has enough subsystems now that “just read the README” is no longer a serious answer.
+            Architecture docs should explain the model without forcing people to reverse-engineer the runtime.
+          </p>
+        </section>
+
+        <section class="doc-section">
+          <div class="card-grid card-grid-2">
+            <article class="card detail-card">
+              <h3>Core architecture pages</h3>
+              <ul>
+                <li>Runtimes: chat, web, jobs, Telegram</li>
+                <li>Sessions, persistence, and stateless turns</li>
+                <li>Agents vs tools vs skills</li>
+                <li>Memory model and fragment store</li>
+                <li>Search and model routing</li>
+              </ul>
+            </article>
+            <article class="card detail-card">
+              <h3>Design questions worth answering directly</h3>
+              <ul>
+                <li>Why externalized memory instead of giant prompts</li>
+                <li>What state lives where</li>
+                <li>How jobs and sub-agents differ</li>
+                <li>Where provider-specific complexity leaks through</li>
+              </ul>
+            </article>
+          </div>
+        </section>
+
+        <section class="doc-section">
+          <div class="doc-grid">
+            <div class="doc-surface">
+              <h3>Architecture page rules</h3>
+              <ul class="simple-list">
+                <li>Explain, do not meander</li>
+                <li>Use diagrams and examples where they pay rent</li>
+                <li>Link out to guides for procedures</li>
+                <li>Link out to reference for exact flags, schemas, and endpoints</li>
+              </ul>
+            </div>
+            <aside class="doc-meta">
+              <div class="doc-surface">
+                <h3>Why this section matters</h3>
+                <p>The system now has enough shape that users and contributors need a mental model, not just commands.</p>
+              </div>
+              <div class="doc-surface">
+                <h3>Failure mode</h3>
+                <p>Pages that are really just code comments with better typography. That is not architecture documentation.</p>
+              </div>
+            </aside>
+          </div>
+        </section>
+      </main>
+
+      <footer class="site-footer">
+        <p>Architecture shelf under construction.</p>
+      </footer>
+    </div>
+  </body>
+</html>

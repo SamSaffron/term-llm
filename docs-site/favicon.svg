@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="term-llm icon">
+  <rect width="128" height="128" rx="24" fill="#0b1020" />
+  <path d="M28 34h72v12H28zm0 24h48v12H28zm0 24h72v12H28z" fill="#8bffb0" />
+  <path d="M82 58l18 18-18 18" fill="none" stroke="#8bffb0" stroke-linecap="round" stroke-linejoin="round" stroke-width="10" />
+</svg>

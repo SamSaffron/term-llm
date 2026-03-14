@@ -1,0 +1,78 @@
+name: Deploy docs site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs-site/**'
+      - 'ops/nginx/term-llm*.conf'
+      - '.github/workflows/deploy-docs-site.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare release directories
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: wasnotwas.com
+          username: root
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            rm -rf /root/term-llm-release
+            mkdir -p /root/term-llm-release/site /root/term-llm-release/ops/nginx
+
+      - name: Upload static site assets
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: wasnotwas.com
+          username: root
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          source: "docs-site/*"
+          target: "/root/term-llm-release/site"
+          strip_components: 1
+
+      - name: Upload nginx configuration
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: wasnotwas.com
+          username: root
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          source: "ops/nginx/term-llm*.conf"
+          target: "/root/term-llm-release/ops/nginx"
+          strip_components: 2
+
+      - name: Install nginx config, issue cert, and swap webroot
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: wasnotwas.com
+          username: root
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -euo pipefail
+
+            mkdir -p /var/www/term-llm /etc/nginx/sites-available /etc/nginx/sites-enabled
+            rsync -a --delete /root/term-llm-release/site/ /var/www/term-llm/
+
+            cp /root/term-llm-release/ops/nginx/term-llm-http.conf /etc/nginx/sites-available/term-llm.conf
+            ln -sfn /etc/nginx/sites-available/term-llm.conf /etc/nginx/sites-enabled/term-llm.conf
+            nginx -t
+            systemctl reload nginx
+
+            if [ ! -f /etc/letsencrypt/live/term-llm.com/fullchain.pem ]; then
+              certbot certonly \
+                --webroot \
+                -w /var/www/term-llm \
+                -d term-llm.com \
+                -d www.term-llm.com \
+                --non-interactive \
+                --agree-tos
+            fi
+
+            cp /root/term-llm-release/ops/nginx/term-llm.conf /etc/nginx/sites-available/term-llm.conf
+            nginx -t
+            systemctl reload nginx

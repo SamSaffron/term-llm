@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Guides · term-llm docs</title>
+    <meta
+      name="description"
+      content="Task-focused guides for term-llm: providers, agents, memory, jobs, web, and Telegram."
+    />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="docs-page">
+    <div class="page-shell">
+      <header class="topbar">
+        <a class="brand" href="/">term-llm</a>
+        <nav class="topnav" aria-label="Primary">
+          <a href="/getting-started/">Start</a>
+          <a class="active" href="/guides/">Guides</a>
+          <a href="/architecture/">Architecture</a>
+          <a href="/reference/">Reference</a>
+          <a href="https://github.com/samsaffron/term-llm">GitHub</a>
+        </nav>
+      </header>
+
+      <main>
+        <section class="doc-hero">
+          <div class="breadcrumbs"><a href="/">Docs</a><span>→</span><span>Guides</span></div>
+          <p class="eyebrow">Do a thing</p>
+          <h1>Task-focused docs, not essay-shaped wandering.</h1>
+          <p class="doc-intro">
+            Guides should solve one concrete problem each. If a page starts trying to teach the whole system,
+            it belongs in architecture or getting started instead.
+          </p>
+        </section>
+
+        <section class="doc-section">
+          <div class="card-grid card-grid-3">
+            <article class="card detail-card">
+              <h3>Providers and models</h3>
+              <ul>
+                <li>Configure OpenAI-compatible endpoints</li>
+                <li>Switch provider routing</li>
+                <li>Handle auth and model naming footguns</li>
+              </ul>
+            </article>
+            <article class="card detail-card">
+              <h3>Agents, memory, and skills</h3>
+              <ul>
+                <li>Create an agent</li>
+                <li>Persist the right memory</li>
+                <li>Use skills without turning prompts into soup</li>
+              </ul>
+            </article>
+            <article class="card detail-card">
+              <h3>Runtimes and automation</h3>
+              <ul>
+                <li>Run web mode</li>
+                <li>Set up Telegram</li>
+                <li>Create scheduled jobs</li>
+              </ul>
+            </article>
+          </div>
+        </section>
+
+        <section class="doc-section">
+          <div class="doc-grid">
+            <div class="doc-surface">
+              <h3>Guide rules</h3>
+              <ul class="simple-list">
+                <li>One job per guide</li>
+                <li>Use step-by-step instructions where they help</li>
+                <li>Link to reference for exact flags and config keys</li>
+                <li>Link to architecture when understanding is required</li>
+              </ul>
+            </div>
+            <aside class="doc-meta">
+              <div class="doc-surface">
+                <h3>Examples to add</h3>
+                <p>Set up web UI, add a provider, configure memory, write a job, and debug a failing tool call.</p>
+              </div>
+              <div class="doc-surface">
+                <h3>Anti-pattern</h3>
+                <p>A guide that becomes half tutorial, half internal architecture note, and half reference page. Three halves again.</p>
+              </div>
+            </aside>
+          </div>
+        </section>
+      </main>
+
+      <footer class="site-footer">
+        <p>Guide shelf under construction.</p>
+      </footer>
+    </div>
+  </body>
+</html>
