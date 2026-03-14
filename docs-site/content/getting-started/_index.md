@@ -2,6 +2,6 @@
 title: "Getting started"
 weight: 1
 kicker: "New here"
-description: "Install term-llm, configure a provider, and get to a first successful run without archaeology."
+description: "Install term-llm, configure a provider, and get to a successful first run quickly."
 ---
-Start here if you want the shortest path from fresh install to a working term-llm setup.
+Start here for the shortest path from a fresh install to a working term-llm setup.

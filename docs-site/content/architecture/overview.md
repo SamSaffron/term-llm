@@ -33,11 +33,34 @@ The CLI can override provider or model per command, while config sets the defaul
 
 That statefulness is local and explicit rather than magical. The runtime can be told not to use sessions, or to use a different session database path.
 
+## Memory is long-term context
+
+Memory sits beside sessions rather than replacing them.
+
+- **Sessions** preserve the transcript of a conversation.
+- **Memory fragments** preserve durable facts mined from many conversations.
+- **Insights** preserve behavioral rules that should influence future runs.
+
+That gives term-llm a way to accumulate reusable context without pretending every prior token is still in the prompt. The runtime can search memory when needed, while keeping the live session focused on the current task.
+
 ## Tools and MCP extend the model
 
 Built-in tools handle common filesystem and shell tasks. MCP servers extend that with external capabilities such as browser automation, GitHub, or custom APIs.
 
 In practice that means the model is not just generating text — it can interrogate files, run commands, call external tools, and then keep going.
+
+## Jobs turn it into a runtime, not just a CLI
+
+The jobs platform lets term-llm run work on a schedule, after a delay, or on manual trigger.
+
+That matters because it moves the system beyond interactive use:
+
+- recurring agent runs
+- background program execution
+- inspectable run history and events
+- controllable retention and cancellation
+
+Once jobs are in the picture, term-llm starts looking less like a terminal helper and more like an automation substrate.
 
 ## Agents and skills are different things
 
