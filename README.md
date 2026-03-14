@@ -8,6 +8,8 @@ A Swiss Army knife for your terminal—AI-powered commands, answers, and images 
 
 [![Release](https://img.shields.io/github/v/release/samsaffron/term-llm?style=flat-square)](https://github.com/samsaffron/term-llm/releases)
 
+Docs hub: **https://term-llm.com**
+
 ## Features
 
 - **Command suggestions**: Natural language → executable shell commands
