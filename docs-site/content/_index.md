@@ -1,6 +1,6 @@
 ---
-title: "Documentation"
-description: "Documentation for term-llm, organized into getting started, guides, architecture, and reference."
+title: "term-llm"
+description: "Terminal-first AI runtime for commands, chat, agents, editing, tools, jobs, and local workflows."
 belongs: |
   - Quickstart flows that take you from installation to a working setup
   - Task-focused guides for common workflows and integrations
@@ -12,6 +12,8 @@ avoids: |
   - Landing pages that look polished but do not help readers find the right page
   - Burying important configuration and command details inside long prose
 ---
-term-llm has a documentation hub with clear entry points for setup, day-to-day use, architecture, and reference.
+term-llm is a terminal-first AI runtime.
 
-It is not just one generic chat box in a trench coat. The built-in agents are a real part of the product: use `@reviewer` for code review, `@codebase` for repo exploration, `@developer` for implementation, `@researcher` for web-backed investigation, and the rest when the job fits.
+It turns natural language into command suggestions, supports persistent chat, runs agents, edits files, calls tools, schedules jobs, and works with local or hosted models.
+
+Use `exec` for fast one-shot terminal help, `ask` when you want an answer or an agent, and `chat` when you need an ongoing working session.
