@@ -18,6 +18,7 @@ const switchToSession = async (sessionId, options = {}) => {
   const nextId = String(sessionId || '').trim();
   if (!nextId) return null;
 
+  const previousActiveSessionId = String(state.activeSessionId || '').trim();
   const session = state.sessions.find((item) => item.id === nextId);
   if (!session) return null;
 
@@ -30,6 +31,9 @@ const switchToSession = async (sessionId, options = {}) => {
   }
   if (state.currentStreamSessionId && state.currentStreamSessionId !== nextId) {
     detachResponseStream();
+  }
+  if (previousActiveSessionId && previousActiveSessionId !== nextId && state.currentStreamSessionId !== nextId) {
+    setStreaming(false);
   }
 
   state.activeSessionId = nextId;
@@ -439,8 +443,6 @@ const initialize = async () => {
 
 // ===== Event listeners =====
 elements.newChatBtn.addEventListener('click', async () => {
-  if (state.streaming) return;
-
   const session = createSession();
   state.sessions.unshift(session);
   await switchToSession(session.id, { sync: false, focusPrompt: true });
