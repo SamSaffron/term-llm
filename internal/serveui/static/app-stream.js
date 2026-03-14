@@ -1402,31 +1402,21 @@ const handleRecordedVoiceBlob = async (blob, mimeType) => {
   state.voice.transcribing = true;
   updateVoiceUI();
 
-  let draftUpdated = false;
   try {
     const transcript = await transcribeVoiceBlob(blob, mimeType);
     const existingPrompt = String(elements.promptInput.value || '').trim();
 
     if (!existingPrompt && state.attachments.length === 0) {
-      await sendMessage({ prompt: transcript, attachments: [] });
+      void sendMessage({ prompt: transcript, attachments: [] });
       return;
     }
 
     elements.promptInput.value = existingPrompt ? `${existingPrompt}\n${transcript}` : transcript;
     autoGrowPrompt();
     elements.promptInput.focus();
-    draftUpdated = true;
   } finally {
     state.voice.transcribing = false;
     updateVoiceUI();
-    if (draftUpdated) {
-      setVoiceStatus('<span class="voice-status-copy">Transcript added to your draft.</span>');
-      window.setTimeout(() => {
-        if (!state.voice.recording && !state.voice.transcribing) {
-          setVoiceStatus('');
-        }
-      }, 2200);
-    }
   }
 };
 
@@ -1906,6 +1896,8 @@ const sendMessage = async (options = {}) => {
 
   if (session.lastResponseId) {
     body.previous_response_id = session.lastResponseId;
+  } else if (session.messages.length > 1) {
+    body.input = rebuildInputFromSession(session, inputContent);
   }
 
   if (state.selectedModel) {
