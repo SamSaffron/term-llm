@@ -26,6 +26,7 @@ import (
 	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/serveui"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -556,6 +557,59 @@ func TestHandleUI_VersionedAssetCaching(t *testing.T) {
 	}
 	if got := rr.Header().Get("Cache-Control"); got != "no-cache" {
 		t.Errorf("unversioned asset cache-control = %q, want no-cache", got)
+	}
+}
+
+func TestHandleUI_IndexVersionsShellAssets(t *testing.T) {
+	srv := &serveServer{cfg: serveServerConfig{ui: true, basePath: "/ui"}}
+	version := serveui.AssetVersion()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	srv.handleUI(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	for _, snippet := range []string{
+		`href="manifest.webmanifest?v=` + version + `"`,
+		`href="icon-512.png?v=` + version + `"`,
+		`href="app.css?v=` + version + `"`,
+		`src="app-core.js?v=` + version + `"`,
+		`src="app-render.js?v=` + version + `"`,
+		`src="app-stream.js?v=` + version + `"`,
+		`src="app-sessions.js?v=` + version + `"`,
+	} {
+		if !strings.Contains(body, snippet) {
+			t.Fatalf("expected %q in body", snippet)
+		}
+	}
+}
+
+func TestHandleUI_ServiceWorkerVersionsShellCache(t *testing.T) {
+	srv := &serveServer{cfg: serveServerConfig{ui: true, basePath: "/ui"}}
+	version := serveui.AssetVersion()
+
+	req := httptest.NewRequest(http.MethodGet, "/sw.js", nil)
+	rr := httptest.NewRecorder()
+	srv.handleUI(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	for _, snippet := range []string{
+		`term-llm-shell-` + version,
+		`'./manifest.webmanifest?v=` + version + `'`,
+		`'./icon-512.png?v=` + version + `'`,
+		`'./app.css?v=` + version + `'`,
+		`'./app-core.js?v=` + version + `'`,
+		`'./app-render.js?v=` + version + `'`,
+		`'./app-stream.js?v=` + version + `'`,
+		`'./app-sessions.js?v=` + version + `'`,
+	} {
+		if !strings.Contains(body, snippet) {
+			t.Fatalf("expected %q in body", snippet)
+		}
 	}
 }
 

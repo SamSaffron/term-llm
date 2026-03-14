@@ -1,13 +1,11 @@
 package cmd
 
 import (
-	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
-	htmlpkg "html"
 	"io"
 	"log"
 	"mime"
@@ -49,6 +47,32 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 
 	// basePath is already stripped by http.StripPrefix; URL.Path is "/" or "/session-id" etc.
 	assetName := strings.TrimPrefix(r.URL.Path, "/")
+	if assetName == "index.html" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if strings.Contains(r.URL.RawQuery, "v=") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		_, _ = w.Write(s.renderIndexHTML())
+		return
+	}
+	if assetName == "manifest.webmanifest" {
+		w.Header().Set("Content-Type", "application/manifest+json")
+		if strings.Contains(r.URL.RawQuery, "v=") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		_, _ = w.Write(serveui.RenderManifest())
+		return
+	}
+	if assetName == "sw.js" {
+		w.Header().Set("Content-Type", "text/javascript")
+		w.Header().Set("Cache-Control", "no-cache")
+		_, _ = w.Write(serveui.RenderServiceWorker())
+		return
+	}
 	if assetName != "" && !strings.Contains(assetName, "..") {
 		if data, err := serveui.StaticAsset(assetName); err == nil {
 			contentType := mime.TypeByExtension(filepath.Ext(assetName))
@@ -75,14 +99,10 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 	// SPA catch-all: serve index.html for all other paths.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	html := serveui.IndexHTML()
+	_, _ = w.Write(s.renderIndexHTML())
+}
 
-	// Inject <base> so all relative asset URLs (app.css, vendor/*, etc.)
-	// resolve against the base path regardless of the SPA route depth.
-	baseTag := `<base href="` + htmlpkg.EscapeString(s.cfg.basePath) + `/">`
-	html = bytes.Replace(html, []byte(`<meta charset="utf-8">`),
-		[]byte(`<meta charset="utf-8">`+"\n  "+baseTag), 1)
-
+func (s *serveServer) renderIndexHTML() []byte {
 	// Inject UI prefix so JS can prefix all API calls with it.
 	// Also inject VAPID public key for web push if configured.
 	var headSnippet string
@@ -94,8 +114,7 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 			headSnippet += `<script>window.TERM_LLM_VAPID_PUBLIC_KEY=` + string(vapidEscaped) + `;</script>`
 		}
 	}
-	html = bytes.Replace(html, []byte("</head>"), []byte(headSnippet+"</head>"), 1)
-	_, _ = w.Write(html)
+	return serveui.RenderIndexHTML(s.cfg.basePath, headSnippet)
 }
 
 func (s *serveServer) handleImage(w http.ResponseWriter, r *http.Request) {

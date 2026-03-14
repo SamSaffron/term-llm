@@ -347,7 +347,6 @@ const initialize = async () => {
   autoGrowPrompt();
   updateVoiceUI();
   refreshNotificationUI();
-  hideStartupSplash();
   void registerServiceWorker().then(() => refreshNotificationUI());
 
   try {
