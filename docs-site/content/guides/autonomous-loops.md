@@ -63,6 +63,6 @@ term-llm loop --done-file RESEARCH.md:"## Conclusion" --tools read,write --searc
   "Research WebGPU compute shaders. Current progress: {{RESEARCH.md}}. Write a Conclusion section when done."
 
 # With an agent and iteration cap
-term-llm loop @coder --done "make build" --max 20 --yolo \
+term-llm loop @developer --done "make build" --max 20 --yolo \
   "Implement the feature described in {{SPEC.md}}"
 ```

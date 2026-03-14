@@ -15,7 +15,7 @@ ln -sf /etc/sv/<name> /etc/runit/runsvdir/<name>
 Or manage it from outside the container:
 
 ```bash
-docker exec jarvis ln -sf /etc/sv/<name> /etc/runit/runsvdir/<name>
+docker exec <container> ln -sf /etc/sv/<name> /etc/runit/runsvdir/<name>
 ```
 
 ## Service structure

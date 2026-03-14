@@ -1,7 +1,7 @@
 ---
 title: "Agents"
 weight: 9
-description: "Create and manage named workflow bundles with their own provider, model, tools, and instructions."
+description: "Use built-in agents or create your own workflow bundles with their own provider, model, tools, and instructions."
 kicker: "Workflow bundles"
 source_readme_heading: "Agents"
 featured: true
@@ -9,19 +9,54 @@ next:
   label: Skills
   url: /guides/skills/
 ---
-Agents are named configuration bundles that define a persona with specific provider, model, system prompt, tools, and MCP servers. Use agents to switch between different workflows quickly.
+Agents are named workflow bundles. An agent can carry its own system prompt, provider and model preferences, tool permissions, MCP servers, shell allowlists, and turn limits.
 
-### Using Agents
+That means you can stop restating the same intent over and over. Use `@reviewer` when you want review behavior, `@codebase` when you want repository exploration, `@researcher` when you want web-backed investigation, and so on.
+
+## Using agents
 
 Use the `@agent` prefix syntax or `--agent` flag:
 
 ```bash
-term-llm ask @reviewer "review this code"     # use reviewer agent
-term-llm chat @coder                          # start chat with coder agent
-term-llm ask --agent reviewer "question"      # alternative syntax
+term-llm ask @reviewer "review this code" -f main.go
+term-llm chat @codebase
+term-llm ask --agent researcher "Find info about Go 1.24"
 ```
 
-### Managing Agents
+## Built-in agents
+
+List them anytime with:
+
+```bash
+term-llm agents list --builtin
+```
+
+term-llm ships with these built-in agents:
+
+| Agent | What it is for |
+|---|---|
+| `active-review` | Runs a review-and-fix loop by spawning `reviewer`, then `developer` if fixes are needed. |
+| `agent-builder` | Creates and edits custom agents interactively. |
+| `artist` | Image generation and editing workflows. |
+| `changelog` | Writes human-readable summaries of interesting git activity. |
+| `codebase` | Reads repositories, traces call paths, and answers source-code questions. |
+| `commit-message` | Writes commit messages from staged or unstaged changes. |
+| `developer` | Implements code changes, fixes, and features. |
+| `editor` | Focused file editing without shell access. |
+| `file-organizer` | Renames and organizes files into sensible names and folders. |
+| `researcher` | Information gathering with web search. |
+| `reviewer` | Read-only code review with git-aware inspection tools. |
+| `shell` | General shell command helper. |
+
+A few good starting points:
+
+- `@reviewer` for code review without letting the model edit files
+- `@codebase` for architecture questions and tracing behavior across a repo
+- `@developer` when you want implementation work done
+- `@researcher` when the answer depends on current web information
+- `@commit-message` when you want a clean commit message without fuss
+
+## Managing agents
 
 ```bash
 term-llm agents                              # List all agents
@@ -32,7 +67,7 @@ term-llm agents list --user                  # Only user agents
 term-llm agents new my-agent                 # Create new agent
 term-llm agents show reviewer                # Show agent configuration
 term-llm agents edit reviewer                # Edit agent configuration
-term-llm agents copy builtin/coder my-coder  # Copy agent to customize
+term-llm agents copy reviewer my-reviewer    # Copy an agent to customize
 term-llm agents path                         # Print agents directory
 term-llm agents export reviewer              # Export an agent bundle
 term-llm agents import ./agent-dir           # Import an agent bundle
@@ -42,13 +77,13 @@ term-llm agents get reviewer
 term-llm agents clear reviewer model
 ```
 
-### Agent Configuration
+## Agent configuration
 
 Agents are YAML files stored in `~/.config/term-llm/agents/`:
 
 ```yaml
 # ~/.config/term-llm/agents/reviewer/agent.yaml
-name: Code Reviewer
+name: reviewer
 description: Reviews code for best practices and potential issues
 
 provider: anthropic
@@ -61,8 +96,8 @@ tools:
 
 shell:
   allow: ["git *", "npm test"]  # glob patterns for allowed commands
-  auto_run: true                 # skip confirmation for matched commands
-  scripts:                       # named shortcuts (auto-approved)
+  auto_run: true                   # skip confirmation for matched commands
+  scripts:                         # named shortcuts (auto-approved)
     build: "npm run build"
 
 search: true   # enables web_search and read_url tools
@@ -74,7 +109,7 @@ mcp:
 
 Built-in agents that currently default to `search: true`: `agent-builder`, `researcher`, `developer`, `editor`, `shell`.
 
-### System Prompt File Includes
+## System prompt file includes
 
 System prompts support inline file includes with `{{file:...}}`.
 

@@ -79,7 +79,7 @@ Examples:
     "Fix the tests. Don't repeat failed approaches."
 
   # Using an agent
-  term-llm loop @coder --done "make build" --max 20 \
+  term-llm loop @developer --done "make build" --max 20 \
     "Implement the feature described in {{SPEC.md}}"`,
 	Args:              cobra.MinimumNArgs(1),
 	RunE:              runLoop,

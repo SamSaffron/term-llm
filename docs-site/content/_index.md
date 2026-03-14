@@ -12,4 +12,6 @@ avoids: |
   - Landing pages that look polished but do not help readers find the right page
   - Burying important configuration and command details inside long prose
 ---
-term-llm now has a documentation hub with clear entry points for setup, day-to-day use, architecture, and reference.
+term-llm has a documentation hub with clear entry points for setup, day-to-day use, architecture, and reference.
+
+It is not just one generic chat box in a trench coat. The built-in agents are a real part of the product: use `@reviewer` for code review, `@codebase` for repo exploration, `@developer` for implementation, `@researcher` for web-backed investigation, and the rest when the job fits.

@@ -12,15 +12,57 @@
 
     <aside class="hero-panel terminal-panel">
       <div class="terminal-bar"><span></span><span></span><span></span></div>
-      <pre><code>$ term-llm chat --agent jarvis
+      <pre><code>$ term-llm exec "find the 3 biggest files"
 
-> what is term-llm?
+$ term-llm ask @reviewer "review the staged changes"
 
-A terminal-first AI runtime with:
-- chat, web, and jobs runtimes
-- agents, tools, skills, and memory
-- enough structure for real workflows</code></pre>
+$ term-llm chat @codebase</code></pre>
     </aside>
+  </section>
+
+  <section class="section-block">
+    <div class="section-heading">
+      <p class="eyebrow">Start with intent</p>
+      <h2>Three common entry points</h2>
+    </div>
+    <div class="card-grid card-grid-3">
+      <a class="card detail-card" href="/guides/usage/">
+        <p class="card-kicker">Exec</p>
+        <h3><code>term-llm exec</code></h3>
+        <p>Use plain English to get a command suggestion fast. Good for one-shot terminal tasks like finding the 3 biggest files.</p>
+      </a>
+      <a class="card detail-card" href="/guides/agents/">
+        <p class="card-kicker">Ask + agents</p>
+        <h3><code>term-llm ask @reviewer</code></h3>
+        <p>Use a built-in agent when the job has a mode. `@reviewer` is read-only and git-aware, so it reviews code without wandering off into edits.</p>
+      </a>
+      <a class="card detail-card" href="/guides/agents/">
+        <p class="card-kicker">Chat + agents</p>
+        <h3><code>term-llm chat @codebase</code></h3>
+        <p>Start a persistent session when you need back-and-forth. `@codebase` is the right tool for tracing behavior and understanding a repository.</p>
+      </a>
+    </div>
+  </section>
+
+  <section class="section-block split-layout">
+    <div>
+      <div class="section-heading">
+        <p class="eyebrow">Built-in agents</p>
+        <h2>Use the ones that already exist</h2>
+      </div>
+      <div class="list-panel">
+        <p><code>@reviewer</code>, <code>@codebase</code>, <code>@developer</code>, <code>@researcher</code>, <code>@commit-message</code></p>
+        <p><code>@active-review</code>, <code>@agent-builder</code>, <code>@artist</code>, <code>@changelog</code>, <code>@editor</code>, <code>@file-organizer</code>, <code>@shell</code></p>
+        <p><a href="/guides/agents/">See the built-in agents guide</a></p>
+      </div>
+    </div>
+    <div>
+      <div class="section-heading">
+        <p class="eyebrow">What belongs here</p>
+        <h2>Documentation structure</h2>
+      </div>
+      <div class="list-panel markdown">{{ .Params.belongs | markdownify }}</div>
+    </div>
   </section>
 
   <section class="section-block">
@@ -42,33 +84,25 @@ A terminal-first AI runtime with:
   <section class="section-block split-layout">
     <div>
       <div class="section-heading">
-        <p class="eyebrow">What belongs here</p>
-        <h2>Documentation structure</h2>
-      </div>
-      <div class="list-panel markdown">{{ .Params.belongs | markdownify }}</div>
-    </div>
-    <div>
-      <div class="section-heading">
         <p class="eyebrow">What to avoid</p>
         <h2>Documentation failure modes</h2>
       </div>
       <div class="list-panel markdown">{{ .Params.avoids | markdownify }}</div>
     </div>
-  </section>
-
-  <section class="section-block">
-    <div class="section-heading">
-      <p class="eyebrow">Featured pages</p>
-      <h2>Recommended starting points</h2>
-    </div>
-    <div class="card-grid card-grid-3">
-      {{ range first 6 (where site.RegularPages "Params.featured" true) }}
-        <a class="card detail-card" href="{{ .RelPermalink }}">
-          <p class="card-kicker">{{ .CurrentSection.Title }}</p>
-          <h3>{{ .Title }}</h3>
-          <p>{{ with .Description }}{{ . }}{{ else }}{{ .Summary }}{{ end }}</p>
-        </a>
-      {{ end }}
+    <div>
+      <div class="section-heading">
+        <p class="eyebrow">Featured pages</p>
+        <h2>Recommended starting points</h2>
+      </div>
+      <div class="card-grid card-grid-3">
+        {{ range first 3 (where site.RegularPages "Params.featured" true) }}
+          <a class="card detail-card" href="{{ .RelPermalink }}">
+            <p class="card-kicker">{{ .CurrentSection.Title }}</p>
+            <h3>{{ .Title }}</h3>
+            <p>{{ with .Description }}{{ . }}{{ else }}{{ .Summary }}{{ end }}</p>
+          </a>
+        {{ end }}
+      </div>
     </div>
   </section>
 

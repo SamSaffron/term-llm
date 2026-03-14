@@ -60,7 +60,7 @@ term-llm serve web --auth none --host 127.0.0.1
 ```bash
 term-llm serve web \
   --provider anthropic \
-  --agent jarvis \
+  --agent assistant \
   --search \
   --mcp playwright \
   --max-turns 200 \

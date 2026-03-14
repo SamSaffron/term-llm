@@ -23,14 +23,14 @@ The distinction matters. Most session content is ephemeral. Memory is meant for 
 term-llm memory status
 term-llm memory search "retry policy"
 term-llm memory fragments list
-term-llm memory insights list --agent jarvis
+term-llm memory insights list --agent assistant
 ```
 
 Use `--agent` when you want to scope memory to a particular agent:
 
 ```bash
-term-llm memory status --agent jarvis
-term-llm memory search "docs tone" --agent jarvis
+term-llm memory status --agent assistant
+term-llm memory search "docs tone" --agent assistant
 ```
 
 ## Mine completed sessions into fragments
@@ -92,15 +92,15 @@ term-llm memory search "embedding provider" --embed-provider gemini
 List fragments:
 
 ```bash
-term-llm memory fragments list --agent jarvis --limit 20
+term-llm memory fragments list --agent assistant --limit 20
 term-llm memory fragments list --filter-path preferences
 ```
 
 Show a fragment by numeric ID or path:
 
 ```bash
-term-llm memory fragments show 42 --agent jarvis
-term-llm memory fragments show fragments/preferences/editor.md --agent jarvis
+term-llm memory fragments show 42 --agent assistant
+term-llm memory fragments show fragments/preferences/editor.md --agent assistant
 ```
 
 Show where a fragment came from:
@@ -112,15 +112,15 @@ term-llm memory fragments sources 42 --json
 Manage fragments manually when you need precise control:
 
 ```bash
-term-llm memory fragments add fragments/preferences/search.md --agent jarvis --content "Prefer Exa with Brave fallback."
-term-llm memory fragments update fragments/preferences/search.md --agent jarvis --content "Prefer Exa with Brave as fallback only."
-term-llm memory fragments delete fragments/preferences/search.md --agent jarvis
+term-llm memory fragments add fragments/preferences/search.md --agent assistant --content "Prefer Exa with Brave fallback."
+term-llm memory fragments update fragments/preferences/search.md --agent assistant --content "Prefer Exa with Brave as fallback only."
+term-llm memory fragments delete fragments/preferences/search.md --agent assistant
 ```
 
 ## Promote recent fragments into an agent summary
 
 ```bash
-term-llm memory promote --agent jarvis
+term-llm memory promote --agent assistant
 ```
 
 Promotion condenses recently changed fragments into an agent-level `recent.md` summary. It is a compression step, not a raw dump.
@@ -128,9 +128,9 @@ Promotion condenses recently changed fragments into an agent-level `recent.md` s
 Useful flags:
 
 ```bash
-term-llm memory promote --agent jarvis --since 6h
-term-llm memory promote --agent jarvis --recent-max-bytes 20000
-term-llm memory promote --agent jarvis --dry-run
+term-llm memory promote --agent assistant --since 6h
+term-llm memory promote --agent assistant --recent-max-bytes 20000
+term-llm memory promote --agent assistant --dry-run
 ```
 
 ## Behavioral insights
@@ -138,20 +138,20 @@ term-llm memory promote --agent jarvis --dry-run
 Fragments store facts. Insights store reusable behavioral rules.
 
 ```bash
-term-llm memory insights list --agent jarvis
+term-llm memory insights list --agent assistant
 term-llm memory insights search "code review"
-term-llm memory insights expand "debugging deploy failures" --agent jarvis
+term-llm memory insights expand "debugging deploy failures" --agent assistant
 ```
 
 You can add or reinforce them manually:
 
 ```bash
-term-llm memory insights add --agent jarvis \
+term-llm memory insights add --agent assistant \
   --category workflow \
   --confidence 0.8 \
   --content "Write code first, then wait for approval before starting services."
 
-term-llm memory insights reinforce 42 --agent jarvis
+term-llm memory insights reinforce 42 --agent assistant
 ```
 
 High-confidence insights are meant to shape future behavior, not just sit in storage looking profound.
