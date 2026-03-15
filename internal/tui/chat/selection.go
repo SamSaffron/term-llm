@@ -174,7 +174,7 @@ func (m *Model) extractSelectedText() string {
 		if line < 0 || line >= len(m.contentLines) {
 			continue
 		}
-		stripped := ansi.Strip(m.contentLines[line])
+		stripped := strings.TrimRight(ansi.Strip(m.contentLines[line]), " ")
 		w := ansi.StringWidth(stripped)
 
 		if start.Line == end.Line {

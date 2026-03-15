@@ -19,9 +19,9 @@ import (
 )
 
 var (
-	transcribeLanguage  string
-	transcribePorcelain bool
-	transcribeProvider  string
+	transcribeLanguage       string
+	transcribePorcelain      bool
+	transcribeProvider       string
 	transcribeCLIOutputLimit int64         = 1 << 20
 	transcribeCLIWaitDelay   time.Duration = time.Second
 )

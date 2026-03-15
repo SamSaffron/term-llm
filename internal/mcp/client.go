@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/procutil"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/samsaffron/term-llm/internal/procutil"
 )
 
 var mcpCommandWaitDelay = time.Second
