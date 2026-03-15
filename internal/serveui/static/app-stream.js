@@ -655,6 +655,9 @@ const cancelActiveResponse = async (session) => {
     if (state.abortController) {
       state.abortController.abort();
     }
+    if (session?.id) {
+      await refreshSessionFromServerTruth(session, true);
+    }
     return;
   }
 
@@ -663,7 +666,13 @@ const cancelActiveResponse = async (session) => {
     method: 'POST',
     headers: requestHeaders(session?.id || '')
   });
-  if (!response.ok && response.status !== 404 && response.status !== 409) {
+  if (!response.ok) {
+    if (response.status === 404 || response.status === 409) {
+      if (session?.id) {
+        await refreshSessionFromServerTruth(session, true);
+      }
+      return;
+    }
     throw await normalizeError(response);
   }
 
@@ -1057,6 +1066,15 @@ const submitAskUserModal = async (cancelled = false) => {
       app.scheduleSessionStatePoll(prompt.sessionId, 400);
     }
   } catch (err) {
+    if (err?.status === 409) {
+      const session = state.sessions.find((item) => item.id === prompt.sessionId) || null;
+      const runtimeState = session ? await refreshSessionFromServerTruth(session, true) : null;
+      if (!runtimeHasPendingAskUser(runtimeState, prompt.callId)) {
+        closeAskUserModal();
+        return;
+      }
+    }
+
     elements.askUserError.textContent = err?.message || 'Failed to submit your answer.';
     if (err?.status === 401) {
       handleAuthFailure();
@@ -1164,6 +1182,15 @@ const submitApprovalModal = async (denied = false) => {
       app.scheduleSessionStatePoll(prompt.sessionId, 400);
     }
   } catch (err) {
+    if (err?.status === 409) {
+      const session = state.sessions.find((item) => item.id === prompt.sessionId) || null;
+      const runtimeState = session ? await refreshSessionFromServerTruth(session, true) : null;
+      if (!runtimeHasPendingApproval(runtimeState, prompt.approvalId)) {
+        closeApprovalModal();
+        return;
+      }
+    }
+
     elements.approvalError.textContent = err?.message || 'Failed to submit approval.';
     if (err?.status === 401) {
       handleAuthFailure();
@@ -1644,6 +1671,10 @@ const setStreaming = (streaming) => {
 };
 
 const queueInterruptFollowUp = (prompt, messageId) => {
+  const normalizedMessageId = String(messageId || '').trim();
+  if (normalizedMessageId && state.queuedInterrupts.some(entry => entry.messageId === normalizedMessageId)) {
+    return;
+  }
   state.queuedInterrupts.push({ prompt, messageId });
 };
 
@@ -1739,6 +1770,57 @@ const interruptActiveRun = async (session, prompt, messageId) => {
   return action;
 };
 
+const runtimeHasActiveRun = (runtimeState) => {
+  if (!runtimeState || typeof runtimeState !== 'object') return false;
+  return Boolean(runtimeState.active_run || String(runtimeState.active_response_id || '').trim());
+};
+
+const runtimeHasPendingAskUser = (runtimeState, callId) => {
+  const normalizedCallId = String(callId || '').trim();
+  if (!normalizedCallId || !runtimeState || typeof runtimeState !== 'object') return false;
+  const prompts = Array.isArray(runtimeState.pending_ask_users)
+    ? runtimeState.pending_ask_users
+    : (runtimeState.pending_ask_user ? [runtimeState.pending_ask_user] : []);
+  return prompts.some((item) => String(item?.call_id || '').trim() === normalizedCallId);
+};
+
+const runtimeHasPendingApproval = (runtimeState, approvalId) => {
+  const normalizedApprovalId = String(approvalId || '').trim();
+  if (!normalizedApprovalId || !runtimeState || typeof runtimeState !== 'object') return false;
+  const approvals = Array.isArray(runtimeState.pending_approvals)
+    ? runtimeState.pending_approvals
+    : (runtimeState.pending_approval ? [runtimeState.pending_approval] : []);
+  return approvals.some((item) => String(item?.approval_id || '').trim() === normalizedApprovalId);
+};
+
+const refreshSessionFromServerTruth = async (session, pollOnActive = false) => {
+  if (!session?.id) return null;
+  return app.syncActiveSessionFromServer(session, pollOnActive);
+};
+
+const recoverInterruptConflict = async (session, prompt, messageId) => {
+  const runtimeState = await refreshSessionFromServerTruth(session, true);
+  if (!runtimeState) {
+    return false;
+  }
+  if (runtimeHasActiveRun(runtimeState)) {
+    discardPendingInterruptCommit(messageId);
+    setInterruptMessageState(session, messageId, 'queue');
+    queueInterruptFollowUp(prompt, messageId);
+    persistAndRefreshShell();
+    scrollToBottom(true);
+    return true;
+  }
+
+  discardPendingInterruptCommit(messageId);
+  await sendMessage({
+    prompt,
+    attachments: [],
+    reuseMessageId: messageId
+  });
+  return true;
+};
+
 const addErrorMessage = (text, session) => {
   const message = {
     id: generateId('msg'),
@@ -1830,6 +1912,17 @@ const sendMessage = async (options = {}) => {
     try {
       await interruptActiveRun(session, prompt, pendingMessage.id);
     } catch (err) {
+      if (err?.status === 409) {
+        try {
+          const recovered = await recoverInterruptConflict(session, prompt, pendingMessage.id);
+          if (recovered) {
+            return;
+          }
+        } catch (recoveryErr) {
+          err = recoveryErr;
+        }
+      }
+
       discardPendingInterruptCommit(pendingMessage.id);
       setInterruptMessageState(session, pendingMessage.id, 'error');
       const message = err?.message || 'Failed to interrupt active run.';

@@ -233,10 +233,10 @@ const scheduleSessionStatePoll = (sessionId, delay = 1200) => {
 };
 
 const syncActiveSessionFromServer = async (session, pollOnActive = false) => {
-  if (!session || !state.token) return;
+  if (!session || !state.token) return null;
 
   const runtimeState = await loadServerSessionState(session.id);
-  if (!runtimeState) return;
+  if (!runtimeState) return null;
 
   const prompts = Array.isArray(runtimeState.pending_ask_users)
     ? runtimeState.pending_ask_users
@@ -279,12 +279,12 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false) => {
     if (session.id === state.activeSessionId && !state.abortController) {
       setStreaming(true);
       void resumeActiveResponse(session, { responseId: activeResponseId });
-      return;
+      return runtimeState;
     }
     if (pollOnActive) {
       scheduleSessionStatePoll(session.id);
     }
-    return;
+    return runtimeState;
   }
 
   if (activeRun && !state.abortController) {
@@ -292,7 +292,7 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false) => {
     if (pollOnActive) {
       scheduleSessionStatePoll(session.id);
     }
-    return;
+    return runtimeState;
   }
 
   if (!activeRun && !state.abortController) {
@@ -319,6 +319,8 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false) => {
     setConnectionState('', '');
     setStreaming(false);
   }
+
+  return runtimeState;
 };
 
 const mergeServerSessions = async () => {
