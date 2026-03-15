@@ -116,9 +116,13 @@ pre, code, .terminal-panel code, .install-command code { font-family: "JetBrains
 .card-grid { display: grid; gap: 1rem; }
 .card-grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .card-grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.path-card, .detail-card { padding: 1.2rem; text-decoration: none; color: var(--soft); }
+.path-card, .detail-card, .docs-card { padding: 1.2rem; text-decoration: none; color: var(--soft); }
 .card-kicker { margin: 0 0 0.6rem; color: var(--accent); font-size: 0.8rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
 .path-card p, .detail-card p { margin: 0.75rem 0 0; line-height: 1.65; }
+.docs-card { height: 100%; }
+.docs-card h3 { margin-bottom: 0.85rem; }
+.docs-card ul { margin: 0; padding-left: 1.2rem; }
+.docs-card li + li { margin-top: 0.55rem; }
 .split-layout, .doc-grid { display: grid; gap: 1rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .doc-grid-wide { grid-template-columns: minmax(0, 1.7fr) minmax(260px, 0.7fr); align-items: start; }
 .list-panel, .doc-surface { padding: 1.2rem 1.25rem; }

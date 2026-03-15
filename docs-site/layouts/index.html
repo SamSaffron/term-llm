@@ -29,7 +29,7 @@ $ term-llm chat @codebase</code></pre>
       <pre class="install-command"><code id="install-command">curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh</code></pre>
       <button class="button primary copy-button" type="button" data-copy-text="curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh" data-copy-default="Copy install command" data-copy-success="Copied install command">Copy install command</button>
     </div>
-    <p class="install-note">The full command is shown inline, so people do not have to horizontally scroll just to see what they are about to paste.</p>
+    <p class="install-note">The full command is shown inline, so you can see exactly what you are about to paste.</p>
   </section>
 
   <section class="section-block">
@@ -46,99 +46,42 @@ $ term-llm chat @codebase</code></pre>
       <a class="card detail-card" href="/guides/agents/">
         <p class="card-kicker">Ask + agents</p>
         <h3><code>term-llm ask @reviewer</code></h3>
-        <p>Use a built-in agent when the job has a mode. `@reviewer` is read-only and git-aware, so it reviews code without wandering off into edits.</p>
+        <p>Use a built-in agent when the job has a mode. <code>@reviewer</code> is read-only and git-aware, so it reviews code without wandering off into edits.</p>
       </a>
       <a class="card detail-card" href="/guides/agents/">
         <p class="card-kicker">Chat + agents</p>
         <h3><code>term-llm chat @codebase</code></h3>
-        <p>Start a persistent session when you need back-and-forth. `@codebase` is the right tool for tracing behavior and understanding a repository.</p>
+        <p>Start a persistent session when you need back-and-forth. <code>@codebase</code> is the right tool for tracing behavior and understanding a repository.</p>
       </a>
-    </div>
-  </section>
-
-  <section class="section-block split-layout">
-    <div>
-      <div class="section-heading">
-        <p class="eyebrow">Built-in agents</p>
-        <h2>Use the ones that already exist</h2>
-      </div>
-      <div class="list-panel">
-        <p><code>@reviewer</code>, <code>@codebase</code>, <code>@developer</code>, <code>@researcher</code>, <code>@commit-message</code></p>
-        <p><code>@active-review</code>, <code>@agent-builder</code>, <code>@artist</code>, <code>@changelog</code>, <code>@editor</code>, <code>@file-organizer</code>, <code>@shell</code></p>
-        <p><a href="/guides/agents/">See the built-in agents guide</a></p>
-      </div>
-    </div>
-    <div>
-      <div class="section-heading">
-        <p class="eyebrow">What belongs here</p>
-        <h2>Documentation structure</h2>
-      </div>
-      <div class="list-panel markdown">{{ .Params.belongs | markdownify }}</div>
     </div>
   </section>
 
   <section class="section-block">
     <div class="section-heading">
-      <p class="eyebrow">Choose your path</p>
-      <h2>Start with the task at hand</h2>
+      <p class="eyebrow">Read the right page</p>
+      <h2>Pick the lane that matches the job</h2>
     </div>
     <div class="card-grid card-grid-4">
-      {{ range site.Sections.ByWeight }}
-        <a class="card path-card" href="{{ .RelPermalink }}">
-          <p class="card-kicker">{{ with .Params.kicker }}{{ . }}{{ else }}Section{{ end }}</p>
-          <h3>{{ .Title }}</h3>
-          <p>{{ with .Description }}{{ . }}{{ else }}{{ .Summary }}{{ end }}</p>
-        </a>
-      {{ end }}
-    </div>
-  </section>
-
-  <section class="section-block split-layout">
-    <div>
-      <div class="section-heading">
-        <p class="eyebrow">What to avoid</p>
-        <h2>Documentation failure modes</h2>
+      <div class="card docs-card markdown">
+        <p class="card-kicker">Start here</p>
+        <h3>New here</h3>
+        {{ .Params.new_here | markdownify }}
       </div>
-      <div class="list-panel markdown">{{ .Params.avoids | markdownify }}</div>
-    </div>
-    <div>
-      <div class="section-heading">
-        <p class="eyebrow">Featured pages</p>
-        <h2>Recommended starting points</h2>
+      <div class="card docs-card markdown">
+        <p class="card-kicker">Do a thing</p>
+        <h3>Common workflows</h3>
+        {{ .Params.common_workflows | markdownify }}
       </div>
-      <div class="card-grid card-grid-3">
-        {{ range first 3 (where site.RegularPages "Params.featured" true) }}
-          <a class="card detail-card" href="{{ .RelPermalink }}">
-            <p class="card-kicker">{{ .CurrentSection.Title }}</p>
-            <h3>{{ .Title }}</h3>
-            <p>{{ with .Description }}{{ . }}{{ else }}{{ .Summary }}{{ end }}</p>
-          </a>
-        {{ end }}
+      <div class="card docs-card markdown">
+        <p class="card-kicker">Exact details</p>
+        <h3>Reference shortcuts</h3>
+        {{ .Params.reference_shortcuts | markdownify }}
       </div>
-    </div>
-  </section>
-
-  <section class="section-block">
-    <div class="section-heading">
-      <p class="eyebrow">More topics</p>
-      <h2>Other important capabilities</h2>
-    </div>
-    <div class="card-grid card-grid-3">
-      <a class="card detail-card" href="/guides/text-embeddings/">
-        <p class="card-kicker">Guides</p>
-        <h3>Text embeddings</h3>
-        <p>Generate vectors for retrieval, semantic similarity, clustering, and RAG workflows.</p>
-      </a>
-      <a class="card detail-card" href="/reference/usage-tracking/">
-        <p class="card-kicker">Reference</p>
-        <h3>Usage tracking</h3>
-        <p>Inspect local token usage and cost data across term-llm, Claude Code, and Gemini CLI.</p>
-      </a>
-      <a class="card detail-card" href="/guides/image-generation/">
-        <p class="card-kicker">Guides</p>
-        <h3>Image generation</h3>
-        <p>Generate and edit images with Gemini, OpenAI, xAI, Venice, and Flux providers.</p>
-      </a>
+      <div class="card docs-card markdown">
+        <p class="card-kicker">Model underneath</p>
+        <h3>Architecture and internals</h3>
+        {{ .Params.understand_it | markdownify }}
+      </div>
     </div>
   </section>
 {{ end }}
