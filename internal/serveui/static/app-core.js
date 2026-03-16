@@ -52,7 +52,8 @@ const state = {
     mimeType: '',
     status: ''
   },
-  restorePromptFocus: false
+  restorePromptFocus: false,
+  lastEventTime: 0
 };
 // Ensure cookie is set on load so <img> requests to basePath/images/ can authenticate
 if (state.token) {

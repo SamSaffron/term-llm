@@ -72,6 +72,7 @@ type responseRun struct {
 	currentToolGroup   int
 	compactionEnabled  bool
 	subscribers        map[int]chan responseRunEvent
+	subscriberWarned   map[int]bool // tracks whether 75% buffer warning was logged
 	nextSubscriberID   int
 	cancel             context.CancelFunc
 }
@@ -94,6 +95,7 @@ func newResponseRun(respID, sessionID, previousResponseID, model string, created
 		currentToolGroup:   -1,
 		compactionEnabled:  true,
 		subscribers:        make(map[int]chan responseRunEvent),
+		subscriberWarned:   make(map[int]bool),
 		cancel:             cancel,
 	}
 }
@@ -147,13 +149,25 @@ func (r *responseRun) appendEventLocked(event string, payload map[string]any, te
 	r.events = append(r.events, stored)
 	r.compactEventsLocked()
 
+	// Fan out to subscribers under the lock to guarantee event ordering.
+	// Non-blocking send: the 256-event buffer provides ample headroom.
+	// A subscriber that can't accept is truly stalled and gets dropped immediately.
 	for id, ch := range r.subscribers {
 		select {
 		case ch <- stored:
+			fill := len(ch)
+			threshold := cap(ch) * 3 / 4
+			if fill > threshold && !r.subscriberWarned[id] {
+				log.Printf("response run %s subscriber %d buffer at %d/%d", r.id, id, fill, cap(ch))
+				r.subscriberWarned[id] = true
+			} else if fill <= threshold/2 && r.subscriberWarned[id] {
+				r.subscriberWarned[id] = false
+			}
 		default:
 			log.Printf("response run %s subscriber fell behind at sequence %d; closing stream", r.id, stored.Sequence)
 			close(ch)
 			delete(r.subscribers, id)
+			delete(r.subscriberWarned, id)
 		}
 	}
 
@@ -161,6 +175,7 @@ func (r *responseRun) appendEventLocked(event string, payload map[string]any, te
 		for id, ch := range r.subscribers {
 			close(ch)
 			delete(r.subscribers, id)
+			delete(r.subscriberWarned, id)
 		}
 	}
 
@@ -389,6 +404,7 @@ func (r *responseRun) unsubscribe(ch <-chan responseRunEvent) {
 			// Explicit unsubscribe only detaches the subscriber to avoid
 			// coupling normal teardown to a specific close ordering.
 			delete(r.subscribers, id)
+			delete(r.subscriberWarned, id)
 			return
 		}
 	}
@@ -503,8 +519,8 @@ type responseRunManager struct {
 
 const (
 	defaultResponseRunRetention        = 5 * time.Minute
-	defaultResponseRunReplayLimit      = 256
-	defaultResponseRunSubscriberBuffer = 64
+	defaultResponseRunReplayLimit      = 2048
+	defaultResponseRunSubscriberBuffer = 256
 	defaultResponseRunTimeout          = 15 * time.Minute
 )
 

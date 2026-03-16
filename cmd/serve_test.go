@@ -2968,7 +2968,7 @@ func TestHandleResponseByID_CancelOnlySucceedsOnce(t *testing.T) {
 }
 
 func TestResponsesCompactedRunRequiresSnapshotRecovery(t *testing.T) {
-	longText := strings.Repeat("abcdefghij", 300)
+	longText := strings.Repeat("abcdefghij", 3000)
 	provider := llm.NewMockProvider("mock").AddTextResponse(longText)
 
 	factory := func(ctx context.Context) (*serveRuntime, error) {

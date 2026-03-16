@@ -92,6 +92,7 @@ const parseSSEStream = async (stream, onEvent) => {
     if (done) break;
 
     buffer += decoder.decode(value, { stream: true }).replace(/\r/g, '');
+    state.lastEventTime = Date.now();
 
     let idx;
     while ((idx = buffer.indexOf('\n\n')) !== -1) {
@@ -132,13 +133,48 @@ const setActiveResponseTracking = (session, responseId, sequenceNumber = null) =
   }
 };
 
+let heartbeatTimerId = null;
+const HEARTBEAT_STALE_THRESHOLD = 45000; // Backend pings every 20s
+const HEARTBEAT_ABORT_REASON = 'heartbeat';
+
+const startHeartbeatMonitor = () => {
+  stopHeartbeatMonitor();
+  state.lastEventTime = Date.now();
+  heartbeatTimerId = window.setInterval(() => {
+    if (!state.abortController || !state.currentStreamResponseId) {
+      stopHeartbeatMonitor();
+      return;
+    }
+    if (Date.now() - state.lastEventTime > HEARTBEAT_STALE_THRESHOLD) {
+      if (state.abortController) {
+        state.abortController._heartbeatAbort = true;
+        state.abortController.abort(HEARTBEAT_ABORT_REASON);
+      }
+    }
+  }, 10000);
+};
+
+const stopHeartbeatMonitor = () => {
+  if (heartbeatTimerId !== null) {
+    clearInterval(heartbeatTimerId);
+    heartbeatTimerId = null;
+  }
+};
+
+// Guards against multiple concurrent resumeActiveResponse loops for the same response.
+const activeResumeKeys = new Set();
+
 const attachResponseStream = (session, responseId = '', controller = null) => {
   state.currentStreamSessionId = String(session?.id || '').trim();
   state.currentStreamResponseId = String(responseId || '').trim();
   state.abortController = controller;
+  if (controller) {
+    startHeartbeatMonitor();
+  }
 };
 
 const detachResponseStream = () => {
+  stopHeartbeatMonitor();
   const controller = state.abortController;
   state.abortController = null;
   state.currentStreamSessionId = '';
@@ -535,6 +571,19 @@ const resumeActiveResponse = async (session, options = {}) => {
   const responseId = String(options.responseId || session.activeResponseId || '').trim();
   if (!responseId) return false;
 
+  // Prevent multiple concurrent resume loops for the same session+response.
+  const resumeKey = `${session.id}:${responseId}`;
+  if (activeResumeKeys.has(resumeKey)) return false;
+  activeResumeKeys.add(resumeKey);
+
+  try {
+    return await resumeActiveResponseInner(session, responseId, options);
+  } finally {
+    activeResumeKeys.delete(resumeKey);
+  }
+};
+
+const resumeActiveResponseInner = async (session, responseId, options) => {
   if (state.currentStreamSessionId && state.currentStreamSessionId !== session.id) {
     detachResponseStream();
   }
@@ -547,15 +596,33 @@ const resumeActiveResponse = async (session, options = {}) => {
   }
 
   let streamState = options.streamState || createResponseStreamState(session);
-  const maxAttempts = Number.isFinite(Number(options.maxAttempts)) ? Number(options.maxAttempts) : 8;
+  let consecutiveHttpFailures = 0;
 
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+  for (let attempt = 0; ; attempt += 1) {
     if (session.activeResponseId !== responseId) {
       setStreaming(Boolean(state.currentStreamResponseId));
       return true;
     }
 
+    // After repeated HTTP failures, fall back to session-state polling to
+    // detect whether the run has finished while we can't reach the event stream.
+    if (consecutiveHttpFailures >= 5) {
+      consecutiveHttpFailures = 0;
+      setConnectionState('Checking session state\u2026');
+      await app.syncActiveSessionFromServer(session, false);
+      if (session.activeResponseId !== responseId) {
+        // Run completed/changed while we were polling — exit.
+        setStreaming(Boolean(state.currentStreamResponseId));
+        return true;
+      }
+      // State poll may have failed (null) or the run is still active — either
+      // way, continue the retry loop with backoff.
+    }
+
     const controller = new AbortController();
+    // Tag the controller so heartbeat vs intentional aborts are distinguishable,
+    // including in browsers where AbortSignal.reason is not supported.
+    controller._heartbeatAbort = false;
     attachResponseStream(session, responseId, controller);
     setStreaming(true);
 
@@ -571,6 +638,7 @@ const resumeActiveResponse = async (session, options = {}) => {
         throw { status: 0, message: 'No response body from server.' };
       }
 
+      consecutiveHttpFailures = 0;
       setConnectionState('', '');
       const terminal = await consumeResponseStream(response.body, session, streamState);
       if (state.abortController === controller) {
@@ -591,8 +659,15 @@ const resumeActiveResponse = async (session, options = {}) => {
       }
 
       if (err?.name === 'AbortError') {
-        setStreaming(Boolean(state.currentStreamResponseId));
-        return false;
+        // Only retry if this was a heartbeat-triggered abort.
+        // Intentional detach/session-switch aborts should exit immediately.
+        if (!controller._heartbeatAbort) {
+          setStreaming(Boolean(state.currentStreamResponseId));
+          return false;
+        }
+        // Heartbeat abort: fall through to retry
+      } else {
+        consecutiveHttpFailures += 1;
       }
       if (err?.status === 401) {
         handleAuthFailure();
@@ -635,18 +710,13 @@ const resumeActiveResponse = async (session, options = {}) => {
       }
     }
 
-    setConnectionState('Reconnecting…');
-    await sleep(Math.min(400 * (attempt + 1), 2400));
+    setConnectionState(attempt < 3 ? 'Reconnecting\u2026' : `Reconnecting (attempt ${attempt + 1})\u2026`);
+    if (session.activeResponseId !== responseId) {
+      setStreaming(Boolean(state.currentStreamResponseId));
+      return true;
+    }
+    await sleep(Math.min(1000 * Math.pow(1.5, Math.min(attempt, 6)), 8000));
   }
-
-  if (session.activeResponseId === responseId) {
-    state.abortController = null;
-    attachResponseStream(session, responseId, null);
-    setStreaming(true);
-    app.scheduleSessionStatePoll(session.id, 2000);
-    setConnectionState('Stream disconnected', 'bad');
-  }
-  return false;
 };
 
 const cancelActiveResponse = async (session) => {
@@ -2161,6 +2231,8 @@ Object.assign(app, {
   createResponseStreamState,
   applyResponseStreamEvent,
   consumeResponseStream,
+  HEARTBEAT_STALE_THRESHOLD,
+  HEARTBEAT_ABORT_REASON,
   resumeActiveResponse,
   cancelActiveResponse,
   closeAskUserModal,

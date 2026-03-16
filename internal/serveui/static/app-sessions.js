@@ -10,7 +10,7 @@ const {
   autoGrowPrompt, updateVoiceUI, toggleVoiceRecording, fetchModels, addErrorMessage, sendMessage, openSidebar, closeSidebar, closeSidebarIfMobile,
   connectToken, submitAskUserModal, cancelActiveResponse, handleFiles, isNearBottom,
   openApprovalModal, closeApprovalModal, submitApprovalModal, registerServiceWorker, subscribeToPush, refreshNotificationUI,
-  requestNotificationPermission, shouldAutoSubscribeToPush, detachResponseStream
+  requestNotificationPermission, shouldAutoSubscribeToPush, detachResponseStream, HEARTBEAT_STALE_THRESHOLD, HEARTBEAT_ABORT_REASON
 } = app;
 let sessionStatePollTimer = null;
 
@@ -593,6 +593,61 @@ window.addEventListener('popstate', async () => {
   const found = state.sessions.find(s => s.id === urlId);
   if (found) {
     await switchToSession(found.id, { closeSidebar: false });
+  }
+});
+
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState !== 'visible') return;
+  const session = getActiveSession();
+  if (!session) return;
+
+  if (session.activeResponseId && !state.abortController) {
+    setStreaming(true);
+    void resumeActiveResponse(session, { responseId: session.activeResponseId });
+    return;
+  }
+  if (state.abortController && state.lastEventTime > 0 && Date.now() - state.lastEventTime > HEARTBEAT_STALE_THRESHOLD) {
+    state.abortController._heartbeatAbort = true;
+    state.abortController.abort(HEARTBEAT_ABORT_REASON); // triggers retry in resumeActiveResponse
+    return;
+  }
+  if (!state.streaming && !state.abortController) {
+    await syncActiveSessionFromServer(session, true);
+  }
+});
+
+window.addEventListener('online', async () => {
+  const session = getActiveSession();
+  if (!session) return;
+  if (session.activeResponseId && state.abortController) {
+    // Abort the stale fetch so the existing resume loop reconnects immediately
+    // instead of waiting for the 45s heartbeat timeout.
+    state.abortController._heartbeatAbort = true;
+    state.abortController.abort(HEARTBEAT_ABORT_REASON);
+  } else if (session.activeResponseId && !state.abortController) {
+    setConnectionState('Network restored, reconnecting\u2026');
+    setStreaming(true);
+    void resumeActiveResponse(session, { responseId: session.activeResponseId });
+  } else if (!state.streaming) {
+    await syncActiveSessionFromServer(session, true);
+  }
+});
+
+window.addEventListener('offline', () => {
+  if (state.streaming || state.abortController) {
+    setConnectionState('Network offline', 'bad');
+  }
+});
+
+window.addEventListener('pageshow', (event) => {
+  if (!event.persisted) return;
+  const session = getActiveSession();
+  if (!session) return;
+  if (session.activeResponseId) {
+    setStreaming(true);
+    void resumeActiveResponse(session, { responseId: session.activeResponseId });
+  } else {
+    void syncActiveSessionFromServer(session, true);
   }
 });
 
