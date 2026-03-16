@@ -199,6 +199,8 @@ func isRetryable(err error) bool {
 		strings.Contains(errStr, "rate limit") ||
 		strings.Contains(errStr, "too many requests") ||
 		strings.Contains(errStr, "high concurrency") ||
+		strings.Contains(errStr, "500") ||
+		strings.Contains(errStr, "internal server error") ||
 		strings.Contains(errStr, "502") ||
 		strings.Contains(errStr, "bad gateway") ||
 		strings.Contains(errStr, "503") ||
