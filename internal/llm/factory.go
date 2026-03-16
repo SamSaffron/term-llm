@@ -303,7 +303,9 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 		return NewVeniceProvider(apiKey, cfg.Model), nil
 
 	case config.ProviderTypeClaudeBin:
-		return NewClaudeBinProvider(cfg.Model, cfg.Env), nil
+		provider := NewClaudeBinProvider(cfg.Model, cfg.Env)
+		provider.SetEnableHooks(cfg.EnableHooks)
+		return provider, nil
 
 	case config.ProviderTypeOpenAICompat:
 		// Use ResolvedURL if available (from srv:// or $() resolution), otherwise use config values

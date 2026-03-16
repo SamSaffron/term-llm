@@ -254,12 +254,16 @@ providers:
     env:
       IS_SANDBOX: "1"  # useful when running term-llm as root in a trusted container
       CLAUDE_CODE_OAUTH_TOKEN: "file:///root/.config/term-llm/anthropic_oauth.json#access_token"
+    # Optional: Claude Code hooks are disabled by default; set to true to opt back in
+    # enable_hooks: true
 ```
 
 **Features:**
 - No API key required - uses Claude Code's OAuth authentication
 - Full tool support via MCP (exec, search, edit all work)
 - Model selection: `opus`, `sonnet` (default), `haiku`
+- Claude Code hooks are disabled by default to keep user hook automation out of term-llm inference sessions
+- Optional `providers.claude-bin.enable_hooks: true` to opt back into Claude Code hooks
 - Optional `providers.claude-bin.env` passthrough for Claude subprocess settings (for example `IS_SANDBOX=1` in trusted root-run containers)
 - `providers.<name>.env` values support the same deferred resolution as other config values, including `file://...#json.path`, `op://...`, and `$()`
 - Works immediately if Claude Code is installed and logged in

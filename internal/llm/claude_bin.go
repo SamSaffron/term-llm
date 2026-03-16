@@ -35,6 +35,7 @@ type ClaudeBinProvider struct {
 	toolExecutor mcphttp.ToolExecutor
 	preferOAuth  bool              // If true, clear ANTHROPIC_API_KEY to force OAuth auth
 	extraEnv     map[string]string // Extra subprocess env vars from provider config
+	enableHooks  bool              // Opt in to Claude Code hooks (disabled by default)
 
 	// Persistent MCP server for multi-turn conversations.
 	// The server is kept alive across turns so Claude CLI can maintain
@@ -128,6 +129,13 @@ func NewClaudeBinProvider(model string, env map[string]string) *ClaudeBinProvide
 // so Claude CLI uses OAuth subscription auth instead.
 func (p *ClaudeBinProvider) SetPreferOAuth(prefer bool) {
 	p.preferOAuth = prefer
+}
+
+// SetEnableHooks controls whether Claude Code hooks are allowed to run.
+// Hooks are disabled by default so term-llm sessions don't inherit user-defined
+// Claude Code automation unexpectedly.
+func (p *ClaudeBinProvider) SetEnableHooks(enable bool) {
+	p.enableHooks = enable
 }
 
 // SetEnv configures extra environment variables for the Claude CLI subprocess.
@@ -655,6 +663,9 @@ func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request, events c
 		"--strict-mcp-config",            // Ignore Claude's configured MCPs
 		"--dangerously-skip-permissions", // Allow MCP tool execution
 		"--setting-sources", "user",      // Skip project CLAUDE.md files (term-llm provides its own context)
+	}
+	if !p.enableHooks {
+		args = append(args, "--settings", `{"disableAllHooks":true}`)
 	}
 
 	// Always limit to 1 turn - term-llm handles tool execution loop

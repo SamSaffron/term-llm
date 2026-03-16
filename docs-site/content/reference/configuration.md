@@ -162,6 +162,8 @@ Each feature block can hold provider-specific credentials and defaults. The imag
 
 Providers that shell out to local CLIs can accept extra subprocess environment variables via `providers.<name>.env`.
 
+For `claude-bin`, term-llm also disables Claude Code hooks by default so user-level Claude automation does not leak into inference sessions. Set `providers.claude-bin.enable_hooks: true` if you explicitly want Claude Code hooks to run.
+
 Example for Claude Code when term-llm itself runs as root inside a trusted container:
 
 ```yaml
@@ -171,6 +173,8 @@ providers:
     env:
       IS_SANDBOX: "1"
       CLAUDE_CODE_OAUTH_TOKEN: "file:///root/.config/term-llm/anthropic_oauth.json#access_token"
+    # Optional: re-enable Claude Code hooks for this provider
+    # enable_hooks: true
 ```
 
 `providers.<name>.env` values support the same resolution rules as other deferred config values:

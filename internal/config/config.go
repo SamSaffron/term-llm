@@ -69,6 +69,7 @@ type ProviderConfig struct {
 	Models       []string          `mapstructure:"models"`        // Available models for autocomplete
 	Credentials  string            `mapstructure:"credentials"`   // "api_key", "codex", "gemini-cli"
 	Env          map[string]string `mapstructure:"env"`           // Extra subprocess env vars for providers that shell out (e.g. claude-bin)
+	EnableHooks  bool              `mapstructure:"enable_hooks"`  // Opt in to Claude Code hooks for claude-bin (disabled by default)
 
 	// Search behavior - nil means auto (use native if available)
 	UseNativeSearch *bool `mapstructure:"use_native_search"`

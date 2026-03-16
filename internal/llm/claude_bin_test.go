@@ -383,6 +383,32 @@ func TestClaudeBinProvider_NameWithEffort(t *testing.T) {
 	}
 }
 
+func TestClaudeBinProvider_BuildArgsDisablesHooksByDefault(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+
+	args, _ := p.buildArgs(context.Background(), Request{}, nil)
+	joined := strings.Join(args, "\n")
+
+	if !strings.Contains(joined, "--settings") {
+		t.Fatal("expected claude-bin args to include --settings when hooks are disabled by default")
+	}
+	if !strings.Contains(joined, `{"disableAllHooks":true}`) {
+		t.Fatal("expected claude-bin args to disable hooks by default")
+	}
+}
+
+func TestClaudeBinProvider_BuildArgsCanEnableHooks(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+	p.SetEnableHooks(true)
+
+	args, _ := p.buildArgs(context.Background(), Request{}, nil)
+	joined := strings.Join(args, "\n")
+
+	if strings.Contains(joined, `{"disableAllHooks":true}`) {
+		t.Fatal("expected disableAllHooks setting to be omitted when hooks are enabled")
+	}
+}
+
 func TestClaudeBinProvider_BuildCommandEnv(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "should-be-cleared")
 	t.Setenv("CLAUDE_CODE_EFFORT_LEVEL", "medium")
