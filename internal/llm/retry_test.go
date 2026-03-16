@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"testing"
 	"time"
@@ -29,6 +30,29 @@ func (p *retryStreamingProvider) Stream(ctx context.Context, req Request) (Strea
 	return newEventStream(ctx, func(ctx context.Context, ch chan<- Event) error {
 		ch <- Event{Type: EventTextDelta, Text: "hello"}
 		ch <- Event{Type: EventTextDelta, Text: " world"}
+		return nil
+	}), nil
+}
+
+type retryInternalServerErrorProvider struct {
+	attempt int
+}
+
+func (p *retryInternalServerErrorProvider) Name() string { return "retry-500" }
+
+func (p *retryInternalServerErrorProvider) Credential() string { return "mock" }
+
+func (p *retryInternalServerErrorProvider) Capabilities() Capabilities { return Capabilities{} }
+
+func (p *retryInternalServerErrorProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	p.attempt++
+	if p.attempt == 1 {
+		return newEventStream(ctx, func(ctx context.Context, ch chan<- Event) error {
+			return fmt.Errorf(`anthropic streaming error: POST "https://api.anthropic.com/v1/messages": 500 Internal Server Error (Request-ID: req_123) {"type":"error","error":{"type":"api_error","message":"Internal server error"}}`)
+		}), nil
+	}
+	return newEventStream(ctx, func(ctx context.Context, ch chan<- Event) error {
+		ch <- Event{Type: EventTextDelta, Text: "recovered"}
 		return nil
 	}), nil
 }
