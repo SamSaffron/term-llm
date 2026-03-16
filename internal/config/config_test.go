@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -42,6 +43,46 @@ func TestApplyOverrides(t *testing.T) {
 	}
 	if cfg.Providers["openai"].Model != "gemini-2.5-flash" {
 		t.Fatalf("openai model=%q, want %q", cfg.Providers["openai"].Model, "gemini-2.5-flash")
+	}
+}
+
+func TestResolveProviderCredentials_ExpandsEnvMap(t *testing.T) {
+	t.Setenv("CLAUDE_TEST_FLAG", "1")
+	cfg := &ProviderConfig{
+		Env: map[string]string{
+			"IS_SANDBOX": "$CLAUDE_TEST_FLAG",
+		},
+	}
+	if err := resolveProviderCredentials("claude-bin", cfg); err != nil {
+		t.Fatalf("resolveProviderCredentials: %v", err)
+	}
+	if got := cfg.Env["IS_SANDBOX"]; got != "1" {
+		t.Fatalf("env expansion = %q, want %q", got, "1")
+	}
+}
+
+func TestResolveProviderCredentials_ResolvesLazyEnvMapForInference(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "oauth.json")
+	if err := os.WriteFile(path, []byte(`{"access_token":"secret-token"}`), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	cfg := &ProviderConfig{
+		Env: map[string]string{
+			"CLAUDE_CODE_OAUTH_TOKEN": "file://" + path + "#access_token",
+		},
+	}
+	if err := resolveProviderCredentials("claude-bin", cfg); err != nil {
+		t.Fatalf("resolveProviderCredentials: %v", err)
+	}
+	if !cfg.needsLazyResolution {
+		t.Fatal("expected lazy resolution to be enabled for file:// env value")
+	}
+	if err := cfg.ResolveForInference(); err != nil {
+		t.Fatalf("ResolveForInference: %v", err)
+	}
+	if got := cfg.Env["CLAUDE_CODE_OAUTH_TOKEN"]; got != "secret-token" {
+		t.Fatalf("resolved env value = %q, want %q", got, "secret-token")
 	}
 }
 

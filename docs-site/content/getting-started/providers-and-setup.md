@@ -253,6 +253,7 @@ providers:
     model: sonnet  # opus, sonnet, or haiku
     env:
       IS_SANDBOX: "1"  # useful when running term-llm as root in a trusted container
+      CLAUDE_CODE_OAUTH_TOKEN: "file:///root/.config/term-llm/anthropic_oauth.json#access_token"
 ```
 
 **Features:**
@@ -260,6 +261,7 @@ providers:
 - Full tool support via MCP (exec, search, edit all work)
 - Model selection: `opus`, `sonnet` (default), `haiku`
 - Optional `providers.claude-bin.env` passthrough for Claude subprocess settings (for example `IS_SANDBOX=1` in trusted root-run containers)
+- `providers.<name>.env` values support the same deferred resolution as other config values, including `file://...#json.path`, `op://...`, and `$()`
 - Works immediately if Claude Code is installed and logged in
 
 ### Option 10: Use existing CLI credentials (gemini-cli)

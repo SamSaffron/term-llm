@@ -2,11 +2,14 @@ package config
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -22,6 +25,8 @@ var (
 // ResolveValue handles magic URL schemes in config values:
 // - op://vault/item/field -> 1Password secret (via `op read`)
 // - srv://record/path -> DNS SRV lookup + path (always HTTPS)
+// - file://path -> file contents (trimmed)
+// - file://path#key or file://path#nested.path -> JSON field from file contents
 // - $(...) -> shell command output
 // - ${VAR} or $VAR -> environment variable
 // - literal string -> returned as-is
@@ -36,6 +41,8 @@ func ResolveValue(value string) (string, error) {
 		return resolveOnePassword(value)
 	case strings.HasPrefix(value, "srv://"):
 		return resolveSRV(value)
+	case strings.HasPrefix(value, "file://"):
+		return resolveFile(value)
 	case strings.HasPrefix(value, "$(") && strings.HasSuffix(value, ")"):
 		return resolveCommand(value[2 : len(value)-1])
 	default:
@@ -100,6 +107,77 @@ func resolveSRV(srvURL string) (string, error) {
 	host := strings.TrimSuffix(addr.Target, ".")
 
 	return fmt.Sprintf("https://%s:%d%s", host, addr.Port, path), nil
+}
+
+func resolveFile(fileURL string) (string, error) {
+	u, err := url.Parse(fileURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid file:// URL: %w", err)
+	}
+
+	if u.Host != "" && u.Host != "localhost" {
+		return "", fmt.Errorf("file:// URL host must be empty or localhost: %s", fileURL)
+	}
+
+	path := expandEnv(u.Path)
+	if path == "" {
+		return "", fmt.Errorf("file:// URL missing path: %s", fileURL)
+	}
+	path = filepath.Clean(path)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("file: failed to read %s: %w", path, err)
+	}
+	content := strings.TrimSpace(string(data))
+
+	fragment := strings.TrimSpace(u.Fragment)
+	if fragment == "" {
+		return content, nil
+	}
+
+	var parsed any
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return "", fmt.Errorf("file: failed to parse JSON in %s for fragment %q: %w", path, fragment, err)
+	}
+	value, err := lookupJSONFragment(parsed, fragment)
+	if err != nil {
+		return "", fmt.Errorf("file: %w", err)
+	}
+	return strings.TrimSpace(value), nil
+}
+
+func lookupJSONFragment(v any, fragment string) (string, error) {
+	parts := strings.Split(fragment, ".")
+	cur := v
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return "", fmt.Errorf("invalid JSON fragment %q", fragment)
+		}
+		obj, ok := cur.(map[string]any)
+		if !ok {
+			return "", fmt.Errorf("fragment %q does not resolve to an object before %q", fragment, part)
+		}
+		next, ok := obj[part]
+		if !ok {
+			return "", fmt.Errorf("fragment %q not found", fragment)
+		}
+		cur = next
+	}
+
+	switch x := cur.(type) {
+	case string:
+		return x, nil
+	case float64, bool, nil:
+		return fmt.Sprintf("%v", x), nil
+	default:
+		b, err := json.Marshal(x)
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal fragment %q: %w", fragment, err)
+		}
+		return string(b), nil
+	}
 }
 
 // resolveCommand executes a shell command and returns its output

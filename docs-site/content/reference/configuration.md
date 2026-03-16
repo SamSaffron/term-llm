@@ -170,9 +170,18 @@ providers:
     model: opus
     env:
       IS_SANDBOX: "1"
+      CLAUDE_CODE_OAUTH_TOKEN: "file:///root/.config/term-llm/anthropic_oauth.json#access_token"
 ```
 
-This is passed only to the Claude subprocess. It does not mutate your parent shell environment.
+`providers.<name>.env` values support the same resolution rules as other deferred config values:
+
+- `file://path` → trimmed file contents
+- `file://path#json.path` → JSON field extracted from the file
+- `op://...` → 1Password secret lookup
+- `$()` → command output
+- `${VAR}` / `$VAR` → environment variable expansion
+
+This is passed only to the provider subprocess. It does not mutate your parent shell environment.
 
 ## Dynamic secrets and endpoints
 

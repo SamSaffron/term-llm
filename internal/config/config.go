@@ -502,15 +502,16 @@ func (c *Config) GetActiveProviderConfig() *ProviderConfig {
 	return c.GetProviderConfig(c.DefaultProvider)
 }
 
-// needsLazyResolve checks if a value requires expensive resolution (1Password, commands, SRV)
+// needsLazyResolve checks if a value requires expensive resolution (1Password, files, commands, SRV)
 func needsLazyResolve(value string) bool {
 	return strings.HasPrefix(value, "op://") ||
 		strings.HasPrefix(value, "srv://") ||
+		strings.HasPrefix(value, "file://") ||
 		(strings.HasPrefix(value, "$(") && strings.HasSuffix(value, ")"))
 }
 
 // resolveProviderCredentials resolves credentials for a provider based on its type.
-// Expensive operations (op://, srv://, $()) are deferred - call ResolveForInference() before use.
+// Expensive operations (op://, file://, srv://, $()) are deferred - call ResolveForInference() before use.
 func resolveProviderCredentials(name string, cfg *ProviderConfig) error {
 	providerType := InferProviderType(name, cfg.Type)
 
@@ -526,8 +527,9 @@ func resolveProviderCredentials(name string, cfg *ProviderConfig) error {
 	// Expand environment variables in other fields
 	cfg.AppURL = expandEnv(cfg.AppURL)
 	cfg.AppTitle = expandEnv(cfg.AppTitle)
+	resolveProviderEnv(cfg)
 
-	// Check if api_key uses magic syntax (op://, $(), etc.)
+	// Check if api_key uses magic syntax (op://, file://, $(), etc.)
 	// If so, defer resolution until inference time
 	if cfg.APIKey != "" && needsLazyResolve(cfg.APIKey) {
 		cfg.needsLazyResolution = true
@@ -592,7 +594,20 @@ func resolveProviderCredentials(name string, cfg *ProviderConfig) error {
 	return nil
 }
 
-// ResolveForInference performs lazy resolution of expensive config values (op://, srv://, $()).
+func resolveProviderEnv(cfg *ProviderConfig) {
+	if len(cfg.Env) == 0 {
+		return
+	}
+	for k, v := range cfg.Env {
+		if needsLazyResolve(v) {
+			cfg.needsLazyResolution = true
+			continue
+		}
+		cfg.Env[k] = expandEnv(v)
+	}
+}
+
+// ResolveForInference performs lazy resolution of expensive config values (op://, file://, srv://, $()).
 // Call this before creating a provider for inference.
 func (cfg *ProviderConfig) ResolveForInference() error {
 	if !cfg.needsLazyResolution {
@@ -623,6 +638,16 @@ func (cfg *ProviderConfig) ResolveForInference() error {
 		}
 	}
 
+	for k, v := range cfg.Env {
+		if needsLazyResolve(v) {
+			resolved, err := ResolveValue(v)
+			if err != nil {
+				return fmt.Errorf("env.%s: %w", k, err)
+			}
+			cfg.Env[k] = resolved
+		}
+	}
+
 	cfg.needsLazyResolution = false
 	return nil
 }
@@ -634,7 +659,7 @@ func (cfg *ProviderConfig) ResolveForInference() error {
 func DescribeCredentialSource(name string, cfg *ProviderConfig) (string, bool) {
 	providerType := InferProviderType(name, cfg.Type)
 
-	// If there's a lazy-resolved api_key (op://, $()), describe it
+	// If there's a lazy-resolved api_key (op://, file://, $()), describe it
 	if cfg.APIKey != "" && needsLazyResolve(cfg.APIKey) {
 		return fmt.Sprintf("api_key (deferred: %s)", truncateValue(cfg.APIKey, 30)), true
 	}
