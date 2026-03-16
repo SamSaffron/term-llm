@@ -660,9 +660,11 @@ func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request, events c
 		"--output-format", "stream-json",
 		"--include-partial-messages", // Stream text as it arrives
 		"--verbose",
-		"--strict-mcp-config",            // Ignore Claude's configured MCPs
-		"--dangerously-skip-permissions", // Allow MCP tool execution
-		"--setting-sources", "user",      // Skip project CLAUDE.md files (term-llm provides its own context)
+		"--strict-mcp-config",       // Ignore Claude's configured MCPs
+		"--setting-sources", "user", // Skip project CLAUDE.md files (term-llm provides its own context)
+	}
+	if os.Geteuid() != 0 {
+		args = append(args, "--dangerously-skip-permissions") // Claude rejects this flag when running as root
 	}
 	if !p.enableHooks {
 		args = append(args, "--settings", `{"disableAllHooks":true}`)

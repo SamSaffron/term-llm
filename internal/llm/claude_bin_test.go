@@ -397,6 +397,20 @@ func TestClaudeBinProvider_BuildArgsDisablesHooksByDefault(t *testing.T) {
 	}
 }
 
+func TestClaudeBinProvider_BuildArgsSkipsDangerousPermissionsWhenRunningAsRoot(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("test only applies when running as root")
+	}
+
+	p := NewClaudeBinProvider("sonnet", nil)
+	args, _ := p.buildArgs(context.Background(), Request{}, nil)
+	joined := strings.Join(args, "\n")
+
+	if strings.Contains(joined, "--dangerously-skip-permissions") {
+		t.Fatal("expected claude-bin args to omit --dangerously-skip-permissions when running as root")
+	}
+}
+
 func TestClaudeBinProvider_BuildArgsCanEnableHooks(t *testing.T) {
 	p := NewClaudeBinProvider("sonnet", nil)
 	p.SetEnableHooks(true)
