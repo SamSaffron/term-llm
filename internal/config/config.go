@@ -629,6 +629,12 @@ func resolveProviderCredentials(name string, cfg *ProviderConfig) error {
 			cfg.ResolvedAPIKey = os.Getenv("XAI_API_KEY")
 		}
 
+	case ProviderTypeVenice:
+		cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
+		if cfg.ResolvedAPIKey == "" {
+			cfg.ResolvedAPIKey = os.Getenv("VENICE_API_KEY")
+		}
+
 	case ProviderTypeOpenAICompat:
 		cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
 		if cfg.ResolvedAPIKey == "" {
@@ -733,6 +739,8 @@ func DescribeCredentialSource(name string, cfg *ProviderConfig) (string, bool) {
 		return source, found
 	case ProviderTypeXAI:
 		return describeEnvKeyCredential(cfg, "XAI_API_KEY")
+	case ProviderTypeVenice:
+		return describeEnvKeyCredential(cfg, "VENICE_API_KEY")
 	case ProviderTypeClaudeBin:
 		return "claude-bin CLI (no key needed)", true
 	case ProviderTypeChatGPT:
