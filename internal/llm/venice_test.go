@@ -92,6 +92,13 @@ func TestNewVeniceProviderTrimsAPIKey(t *testing.T) {
 	}
 }
 
+func TestNewVeniceProviderStripsBearerPrefix(t *testing.T) {
+	provider := NewVeniceProvider("  Bearer test-key\n", "")
+	if provider.apiKey != "test-key" {
+		t.Fatalf("apiKey = %q, want %q", provider.apiKey, "test-key")
+	}
+}
+
 func TestVeniceProviderCapabilities(t *testing.T) {
 	provider := NewVeniceProvider("key", "")
 	caps := provider.Capabilities()

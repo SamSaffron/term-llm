@@ -18,11 +18,19 @@ type VeniceProvider struct {
 }
 
 func NewVeniceProvider(apiKey, model string) *VeniceProvider {
-	apiKey = strings.TrimSpace(apiKey)
+	apiKey = normalizeVeniceAPIKey(apiKey)
 	if model == "" {
 		model = "venice-uncensored"
 	}
 	return &VeniceProvider{OpenAICompatProvider: NewOpenAICompatProvider(veniceBaseURL, apiKey, model, "Venice")}
+}
+
+func normalizeVeniceAPIKey(apiKey string) string {
+	apiKey = strings.TrimSpace(apiKey)
+	if strings.HasPrefix(strings.ToLower(apiKey), "bearer ") {
+		apiKey = strings.TrimSpace(apiKey[len("Bearer "):])
+	}
+	return apiKey
 }
 
 func (p *VeniceProvider) Capabilities() Capabilities {
