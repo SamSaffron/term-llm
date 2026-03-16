@@ -203,13 +203,11 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 			messagesToSend = req.Messages[p.messagesSent:]
 		}
 
-		// Build the conversation prompt from messages to send
-		userPrompt := p.buildConversationPrompt(messagesToSend)
-
-		// Add system prompt if present
-		if systemPrompt != "" {
-			args = append(args, "--system-prompt", systemPrompt)
-		}
+		// Build the conversation prompt from messages to send.
+		// Keep the system prompt on stdin rather than argv so large prompts
+		// (for example skill metadata) do not cause the claude CLI to exit
+		// before emitting structured output.
+		userPrompt := p.combinePrompt(systemPrompt, p.buildConversationPrompt(messagesToSend))
 
 		debug := req.Debug || req.DebugRaw
 
@@ -220,7 +218,7 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 			prevLen := len(userPrompt)
 			for _, limit := range retryLimits {
 				truncated := truncateToolResultsAt(messagesToSend, limit)
-				retryPrompt := p.buildConversationPrompt(truncated)
+				retryPrompt := p.combinePrompt(systemPrompt, p.buildConversationPrompt(truncated))
 				if len(retryPrompt) >= prevLen {
 					slog.Warn("prompt too long but truncation did not reduce size, not retrying",
 						"limit", limit)
@@ -660,9 +658,11 @@ func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request, events c
 		"--output-format", "stream-json",
 		"--include-partial-messages", // Stream text as it arrives
 		"--verbose",
-		"--strict-mcp-config",            // Ignore Claude's configured MCPs
-		"--dangerously-skip-permissions", // Allow MCP tool execution
-		"--setting-sources", "user",      // Skip project CLAUDE.md files (term-llm provides its own context)
+		"--strict-mcp-config",       // Ignore Claude's configured MCPs
+		"--setting-sources", "user", // Skip project CLAUDE.md files (term-llm provides its own context)
+	}
+	if os.Geteuid() != 0 {
+		args = append(args, "--dangerously-skip-permissions") // Claude rejects this flag when running as root
 	}
 	if !p.enableHooks {
 		args = append(args, "--settings", `{"disableAllHooks":true}`)
@@ -908,7 +908,8 @@ func (p *ClaudeBinProvider) buildConversationPrompt(messages []Message) string {
 	for _, msg := range messages {
 		switch msg.Role {
 		case RoleSystem:
-			// System messages handled separately by extractSystemPrompt
+			// System messages are combined separately via combinePrompt so we keep
+			// conversation history stable when resuming and only sending new turns.
 			continue
 		case RoleUser:
 			text := collectTextParts(msg.Parts)
@@ -941,6 +942,20 @@ func (p *ClaudeBinProvider) buildConversationPrompt(messages []Message) string {
 	}
 
 	return strings.TrimSpace(strings.Join(conversationParts, "\n\n"))
+}
+
+func (p *ClaudeBinProvider) combinePrompt(systemPrompt, conversationPrompt string) string {
+	systemPrompt = strings.TrimSpace(systemPrompt)
+	conversationPrompt = strings.TrimSpace(conversationPrompt)
+
+	switch {
+	case systemPrompt == "":
+		return conversationPrompt
+	case conversationPrompt == "":
+		return "System: " + systemPrompt
+	default:
+		return fmt.Sprintf("System: %s\n\n%s", systemPrompt, conversationPrompt)
+	}
 }
 
 // mapModelToClaudeArg converts a model name to claude CLI argument.

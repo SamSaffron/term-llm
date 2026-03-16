@@ -397,6 +397,20 @@ func TestClaudeBinProvider_BuildArgsDisablesHooksByDefault(t *testing.T) {
 	}
 }
 
+func TestClaudeBinProvider_BuildArgsSkipsDangerousPermissionsWhenRunningAsRoot(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("test only applies when running as root")
+	}
+
+	p := NewClaudeBinProvider("sonnet", nil)
+	args, _ := p.buildArgs(context.Background(), Request{}, nil)
+	joined := strings.Join(args, "\n")
+
+	if strings.Contains(joined, "--dangerously-skip-permissions") {
+		t.Fatal("expected claude-bin args to omit --dangerously-skip-permissions when running as root")
+	}
+}
+
 func TestClaudeBinProvider_BuildArgsCanEnableHooks(t *testing.T) {
 	p := NewClaudeBinProvider("sonnet", nil)
 	p.SetEnableHooks(true)
@@ -406,6 +420,25 @@ func TestClaudeBinProvider_BuildArgsCanEnableHooks(t *testing.T) {
 
 	if strings.Contains(joined, `{"disableAllHooks":true}`) {
 		t.Fatal("expected disableAllHooks setting to be omitted when hooks are enabled")
+	}
+}
+
+func TestClaudeBinProvider_CombinePromptIncludesSystemOnStdin(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+
+	got := p.combinePrompt("You are helpful.\nUse tools when needed.", "User: hi")
+	want := "System: You are helpful.\nUse tools when needed.\n\nUser: hi"
+	if got != want {
+		t.Fatalf("combinePrompt() = %q, want %q", got, want)
+	}
+}
+
+func TestClaudeBinProvider_CombinePromptHandlesEmptyConversation(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+
+	got := p.combinePrompt("You are helpful.", "")
+	if got != "System: You are helpful." {
+		t.Fatalf("combinePrompt() with empty conversation = %q", got)
 	}
 }
 
