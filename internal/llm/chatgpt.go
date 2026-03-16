@@ -301,11 +301,6 @@ func parseChatGPTRateLimitError(body []byte, headers http.Header) error {
 
 	retryAfter := time.Duration(resetsIn) * time.Second
 
-	// For short waits, include Retry-After hint for the retry logic
-	if resetsIn > 0 && resetsIn <= 120 {
-		msg.WriteString(fmt.Sprintf(". Retry-After: %d", resetsIn))
-	}
-
 	return &RateLimitError{
 		Message:       msg.String(),
 		RetryAfter:    retryAfter,
