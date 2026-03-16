@@ -1506,10 +1506,11 @@ func TestHandleSessions_ListsFromStore(t *testing.T) {
 
 	var body struct {
 		Sessions []struct {
-			ID           string `json:"id"`
-			Summary      string `json:"summary"`
-			CreatedAt    int64  `json:"created_at"`
-			MessageCount int    `json:"message_count"`
+			ID         string `json:"id"`
+			ShortTitle string `json:"short_title"`
+			LongTitle  string `json:"long_title"`
+			CreatedAt  int64  `json:"created_at"`
+			MsgCount   int    `json:"message_count"`
 		} `json:"sessions"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
@@ -1521,8 +1522,8 @@ func TestHandleSessions_ListsFromStore(t *testing.T) {
 	if body.Sessions[0].ID != "test-session-1" {
 		t.Fatalf("id = %q, want %q", body.Sessions[0].ID, "test-session-1")
 	}
-	if body.Sessions[0].Summary != "hello world" {
-		t.Fatalf("summary = %q, want %q", body.Sessions[0].Summary, "hello world")
+	if body.Sessions[0].ShortTitle != "hello world" {
+		t.Fatalf("short_title = %q, want %q", body.Sessions[0].ShortTitle, "hello world")
 	}
 }
 

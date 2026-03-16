@@ -14,6 +14,8 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
+var fileWrapperRe = regexp.MustCompile(`<<<<< FILE:[^>]+>>>>>`)
+
 type Candidate struct {
 	ShortTitle string  `json:"short_title"`
 	LongTitle  string  `json:"long_title"`
@@ -36,8 +38,8 @@ func Generate(ctx context.Context, provider llm.Provider, sess *session.Session,
 	prompt := fmt.Sprintf(`Produce two session titles from this conversation slice.
 
 Rules:
-- short_title: 3 to 6 words
-- long_title: 8 to 14 words
+- short_title: 2 to 8 words
+- long_title: 5 to 18 words
 - be specific, concrete, and friendly
 - prefer the main task, decision, or topic
 - do not use filler like "Help with", "Discussion about", or "Question about"
@@ -165,13 +167,14 @@ func Acceptable(c Candidate) bool {
 	if strings.TrimSpace(c.ShortTitle) == "" || strings.TrimSpace(c.LongTitle) == "" {
 		return false
 	}
+	// confidence=0 means the model omitted the field; treat as acceptable.
 	if c.Confidence > 0 && c.Confidence < 0.45 {
 		return false
 	}
-	if n := wordCount(c.ShortTitle); n < 3 || n > 6 {
+	if n := wordCount(c.ShortTitle); n < 2 || n > 8 {
 		return false
 	}
-	if n := wordCount(c.LongTitle); n < 8 || n > 14 {
+	if n := wordCount(c.LongTitle); n < 5 || n > 18 {
 		return false
 	}
 	if isGenericTitle(c.ShortTitle) || isGenericTitle(c.LongTitle) {
@@ -224,8 +227,7 @@ func cleanMessageText(s string) string {
 	if s == "" {
 		return ""
 	}
-	fileWrapper := regexp.MustCompile(`<<<<< FILE:[^>]+>>>>>`)
-	s = fileWrapper.ReplaceAllString(s, "")
+	s = fileWrapperRe.ReplaceAllString(s, "")
 	s = strings.Join(strings.Fields(s), " ")
 	return strings.TrimSpace(s)
 }
@@ -265,7 +267,6 @@ func isGenericTitle(s string) bool {
 		"help with",
 		"discussion about",
 		"question about",
-		"work on term-llm task",
 		"fix web issue",
 		"making it better",
 		"fixing this issue",

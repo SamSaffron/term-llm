@@ -609,6 +609,7 @@ const sanitizeSession = (session) => {
   const result = {
     id: typeof session.id === 'string' ? session.id : `sess_${generateUUID()}`,
     title: typeof session.title === 'string' && session.title.trim() ? session.title.trim() : 'New chat',
+    longTitle: typeof session.longTitle === 'string' ? session.longTitle : '',
     created: asTimestamp(session.created),
     messages,
     lastResponseId: typeof session.lastResponseId === 'string' ? session.lastResponseId : null,

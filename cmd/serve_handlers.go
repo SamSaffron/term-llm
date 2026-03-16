@@ -234,19 +234,21 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type sessionEntry struct {
-		ID           string `json:"id"`
-		Summary      string `json:"summary"`
-		CreatedAt    int64  `json:"created_at"`
-		MessageCount int    `json:"message_count"`
+		ID         string `json:"id"`
+		ShortTitle string `json:"short_title"`
+		LongTitle  string `json:"long_title"`
+		CreatedAt  int64  `json:"created_at"`
+		MsgCount   int    `json:"message_count"`
 	}
 
 	result := make([]sessionEntry, 0, len(sessions))
 	for _, sess := range sessions {
 		result = append(result, sessionEntry{
-			ID:           sess.ID,
-			Summary:      sess.Summary,
-			CreatedAt:    sess.CreatedAt.UnixMilli(),
-			MessageCount: sess.MessageCount,
+			ID:         sess.ID,
+			ShortTitle: sess.PreferredShortTitle(),
+			LongTitle:  sess.PreferredLongTitle(),
+			CreatedAt:  sess.CreatedAt.UnixMilli(),
+			MsgCount:   sess.MessageCount,
 		})
 	}
 

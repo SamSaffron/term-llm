@@ -726,21 +726,14 @@ func renderSessionRow(s session.SessionSummary, selected bool, cols sessionColum
 }
 
 func sessionPrimaryText(s session.SessionSummary) string {
-	name := strings.TrimSpace(s.Name)
-	summary := strings.TrimSpace(s.Summary)
-
-	switch {
-	case name != "" && summary != "" && !strings.EqualFold(name, summary):
-		return name + " — " + summary
-	case name != "":
-		return name
-	case summary != "":
-		return summary
-	case s.Number > 0:
-		return fmt.Sprintf("Session #%d", s.Number)
-	default:
-		return strings.TrimSpace(s.ID)
+	title := s.PreferredLongTitle()
+	if title != "" {
+		return title
 	}
+	if s.Number > 0 {
+		return fmt.Sprintf("Session #%d", s.Number)
+	}
+	return strings.TrimSpace(s.ID)
 }
 
 // formatRelativeTime returns a human-readable relative time string

@@ -89,6 +89,9 @@ const renderSidebar = () => {
       const title = document.createElement('div');
       title.className = 'session-title';
       title.textContent = session.title || 'New chat';
+      if (session.longTitle) {
+        title.title = session.longTitle;
+      }
 
       const meta = document.createElement('div');
       meta.className = 'session-meta';

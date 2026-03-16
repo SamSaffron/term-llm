@@ -205,7 +205,7 @@ const mergeServerMessagesWithLocalState = (session, serverMessages) => {
 
   session.messages = merged;
   delete session._serverOnly;
-  if (merged.length > 0) {
+  if (merged.length > 0 && (!session.title || session.title === 'New chat')) {
     const firstUserMsg = merged.find((message) => message.role === 'user' && !message.askUser);
     if (firstUserMsg?.content) {
       session.title = truncate(firstUserMsg.content, 60);
@@ -342,7 +342,8 @@ const mergeServerSessions = async () => {
 
       state.sessions.push({
         id: serverSession.id,
-        title: serverSession.summary || 'New chat',
+        title: serverSession.short_title || 'New chat',
+        longTitle: serverSession.long_title || '',
         created: serverSession.created_at || Date.now(),
         messages: [],
         lastResponseId: null,
