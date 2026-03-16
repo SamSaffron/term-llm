@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/credentials"
+	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
 )
 
@@ -43,6 +44,53 @@ func TestApplyOverrides(t *testing.T) {
 	}
 	if cfg.Providers["openai"].Model != "gemini-2.5-flash" {
 		t.Fatalf("openai model=%q, want %q", cfg.Providers["openai"].Model, "gemini-2.5-flash")
+	}
+}
+
+func TestLoad_PreservesProviderEnvKeyCase(t *testing.T) {
+	viper.Reset()
+	defer viper.Reset()
+
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+
+	configDir := filepath.Join(configHome, "term-llm")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	configYAML := `default_provider: claude-bin
+providers:
+  claude-bin:
+    model: sonnet
+    env:
+      IS_SANDBOX: "1"
+      CLAUDE_CODE_OAUTH_TOKEN: file:///tmp/oauth.json#access_token
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	providerCfg, ok := cfg.Providers["claude-bin"]
+	if !ok {
+		t.Fatal("expected claude-bin provider to be loaded")
+	}
+	if got := providerCfg.Env["IS_SANDBOX"]; got != "1" {
+		t.Fatalf("IS_SANDBOX = %q, want %q", got, "1")
+	}
+	if got := providerCfg.Env["CLAUDE_CODE_OAUTH_TOKEN"]; got != "file:///tmp/oauth.json#access_token" {
+		t.Fatalf("CLAUDE_CODE_OAUTH_TOKEN = %q", got)
+	}
+	if _, ok := providerCfg.Env["is_sandbox"]; ok {
+		t.Fatal("did not expect lowercased is_sandbox key")
+	}
+	if _, ok := providerCfg.Env["claude_code_oauth_token"]; ok {
+		t.Fatal("did not expect lowercased claude_code_oauth_token key")
 	}
 }
 

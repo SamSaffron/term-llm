@@ -437,6 +437,10 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
+	if err := overlayProviderEnvFromRawConfig(&cfg); err != nil {
+		return nil, fmt.Errorf("failed to load raw provider env config: %w", err)
+	}
+
 	// Initialize providers map if nil
 	if cfg.Providers == nil {
 		cfg.Providers = make(map[string]ProviderConfig)
@@ -455,6 +459,48 @@ func Load() (*Config, error) {
 	resolveSearchCredentials(&cfg.Search)
 
 	return &cfg, nil
+}
+
+func overlayProviderEnvFromRawConfig(cfg *Config) error {
+	configFile := viper.ConfigFileUsed()
+	if configFile == "" {
+		return nil
+	}
+
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		return err
+	}
+
+	var raw struct {
+		Providers map[string]struct {
+			Env map[string]string `yaml:"env"`
+		} `yaml:"providers"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	if len(raw.Providers) == 0 {
+		return nil
+	}
+	if cfg.Providers == nil {
+		cfg.Providers = make(map[string]ProviderConfig)
+	}
+
+	for name, provider := range raw.Providers {
+		if provider.Env == nil {
+			continue
+		}
+		providerCfg := cfg.Providers[name]
+		providerCfg.Env = make(map[string]string, len(provider.Env))
+		for k, v := range provider.Env {
+			providerCfg.Env[k] = v
+		}
+		cfg.Providers[name] = providerCfg
+	}
+
+	return nil
 }
 
 // GetBuiltInProviderNames returns a list of all built-in provider type names.
