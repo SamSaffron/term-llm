@@ -94,7 +94,7 @@ type VeniceProvider struct {
 
 func NewVeniceProvider(apiKey string) *VeniceProvider {
 	return &VeniceProvider{
-		apiKey:  apiKey,
+		apiKey:  strings.TrimSpace(apiKey),
 		baseURL: veniceBaseURL,
 		client:  &http.Client{},
 	}

@@ -43,6 +43,7 @@ type VeniceProvider struct {
 }
 
 func NewVeniceProvider(apiKey, model, editModel, resolution string) *VeniceProvider {
+	apiKey = strings.TrimSpace(apiKey)
 	if model == "" {
 		model = veniceDefaultModel
 	}

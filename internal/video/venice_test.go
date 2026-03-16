@@ -9,6 +9,13 @@ import (
 	"testing"
 )
 
+func TestNewVeniceProviderTrimsAPIKey(t *testing.T) {
+	provider := NewVeniceProvider("  test-key\n")
+	if provider.apiKey != "test-key" {
+		t.Fatalf("apiKey = %q, want %q", provider.apiKey, "test-key")
+	}
+}
+
 func TestResolveModel(t *testing.T) {
 	if got := ResolveModel("", false); got != veniceDefaultTextModel {
 		t.Fatalf("ResolveModel text default = %q, want %q", got, veniceDefaultTextModel)

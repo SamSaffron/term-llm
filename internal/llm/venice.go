@@ -18,6 +18,7 @@ type VeniceProvider struct {
 }
 
 func NewVeniceProvider(apiKey, model string) *VeniceProvider {
+	apiKey = strings.TrimSpace(apiKey)
 	if model == "" {
 		model = "venice-uncensored"
 	}

@@ -85,6 +85,13 @@ func TestNewProvider_VeniceTrimsEnvAPIKey(t *testing.T) {
 	}
 }
 
+func TestNewVeniceProviderTrimsAPIKey(t *testing.T) {
+	provider := NewVeniceProvider("  test-key\n", "")
+	if provider.apiKey != "test-key" {
+		t.Fatalf("apiKey = %q, want %q", provider.apiKey, "test-key")
+	}
+}
+
 func TestVeniceProviderCapabilities(t *testing.T) {
 	provider := NewVeniceProvider("key", "")
 	caps := provider.Capabilities()
