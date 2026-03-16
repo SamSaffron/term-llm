@@ -198,7 +198,24 @@ func matchShellPattern(pattern, value string) bool {
 	return g.Match(value)
 }
 
+// expandTilde replaces a leading ~ with the current user's home directory.
+// It handles "~/" (home + subpath) and bare "~" (home directory itself).
+// Paths that do not start with ~ are returned unchanged.
+func expandTilde(path string) string {
+	if path == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home
+		}
+	} else if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home + path[1:]
+		}
+	}
+	return path
+}
+
 func resolveToolPath(path string, isWrite bool) (string, error) {
+	path = expandTilde(path)
 	if isWrite {
 		return canonicalizePathForWrite(path)
 	}
