@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
 
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -132,6 +133,7 @@ func (m *Manager) EnabledServers() []string {
 			names = append(names, name)
 		}
 	}
+	sort.Strings(names)
 	return names
 }
 
