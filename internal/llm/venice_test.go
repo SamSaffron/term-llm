@@ -43,6 +43,48 @@ func TestCreateProviderFromConfig_VeniceTrimsConfiguredAPIKey(t *testing.T) {
 	}
 }
 
+func TestNewProviderByName_VeniceTrimsEnvAPIKey(t *testing.T) {
+	t.Setenv("VENICE_API_KEY", "  test-key\n")
+
+	provider, err := NewProviderByName(&config.Config{}, "venice", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	retryProvider, ok := provider.(*RetryProvider)
+	if !ok {
+		t.Fatalf("provider type = %T, want *RetryProvider", provider)
+	}
+	venice, ok := retryProvider.inner.(*VeniceProvider)
+	if !ok {
+		t.Fatalf("inner provider type = %T, want *VeniceProvider", retryProvider.inner)
+	}
+	if venice.apiKey != "test-key" {
+		t.Fatalf("apiKey = %q, want %q", venice.apiKey, "test-key")
+	}
+}
+
+func TestNewProvider_VeniceTrimsEnvAPIKey(t *testing.T) {
+	t.Setenv("VENICE_API_KEY", "  test-key\n")
+
+	provider, err := NewProvider(&config.Config{DefaultProvider: "venice"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	retryProvider, ok := provider.(*RetryProvider)
+	if !ok {
+		t.Fatalf("provider type = %T, want *RetryProvider", provider)
+	}
+	venice, ok := retryProvider.inner.(*VeniceProvider)
+	if !ok {
+		t.Fatalf("inner provider type = %T, want *VeniceProvider", retryProvider.inner)
+	}
+	if venice.apiKey != "test-key" {
+		t.Fatalf("apiKey = %q, want %q", venice.apiKey, "test-key")
+	}
+}
+
 func TestVeniceProviderCapabilities(t *testing.T) {
 	provider := NewVeniceProvider("key", "")
 	caps := provider.Capabilities()
