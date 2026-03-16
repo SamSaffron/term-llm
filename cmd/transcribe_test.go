@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm"
 )
 
 func writeWhisperScript(t *testing.T, body string) string {
@@ -16,15 +17,80 @@ func writeWhisperScript(t *testing.T, body string) string {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "whisper")
-	script := "#!/bin/sh\n" + body + "\n"
+	script := "#!/bin/sh\nset -eu\n" + body + "\n"
 	if err := os.WriteFile(path, []byte(script), 0755); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 	return dir
 }
 
-func TestTranscribeWhisperCLI_RejectsOversizedOutput(t *testing.T) {
-	scriptDir := writeWhisperScript(t, `head -c 1100000 /dev/zero | tr '\000' x`)
+func TestTranscribeWhisperCLI_RejectsImplausiblyLongTranscript(t *testing.T) {
+	scriptDir := writeWhisperScript(t, `
+file=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -f)
+      file="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+if [ -z "$file" ]; then
+  echo "missing -f" >&2
+  exit 1
+fi
+head -c 1100000 /dev/zero | tr '\000' x > "$file.txt"
+`)
+
+	origValidator := transcribeValidator
+	defer func() {
+		transcribeValidator = origValidator
+	}()
+	transcribeValidator = func(context.Context, string, string) error {
+		return llm.ValidateTranscriptPlausibilityForDuration(time.Minute, strings.TrimSpace(strings.Repeat("word ", 351)))
+	}
+
+	t.Setenv("PATH", scriptDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("WHISPER_MODEL", "/tmp/fake-model.bin")
+
+	audioPath := filepath.Join(t.TempDir(), "sample.wav")
+	if err := os.WriteFile(audioPath, []byte("fake-audio"), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	_, err := transcribeWhisperCLI(context.Background(), &config.Config{}, audioPath, "")
+	if err == nil {
+		t.Fatal("expected transcribeWhisperCLI to fail")
+	}
+	if !strings.Contains(err.Error(), "implausibly long") {
+		t.Fatalf("error = %q, want contains %q", err.Error(), "implausibly long")
+	}
+}
+
+func TestTranscribeWhisperCLI_RejectsOversizedLogs(t *testing.T) {
+	scriptDir := writeWhisperScript(t, `
+file=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -f)
+      file="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+if [ -z "$file" ]; then
+  echo "missing -f" >&2
+  exit 1
+fi
+printf 'ok' > "$file.txt"
+head -c 1100000 /dev/zero | tr '\000' x
+`)
 
 	t.Setenv("PATH", scriptDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("WHISPER_MODEL", "/tmp/fake-model.bin")

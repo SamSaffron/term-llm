@@ -27,6 +27,9 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 
 	modelOverride := cfg.Transcription.Model
 
+	var transcript string
+	var err error
+
 	switch providerName {
 	case "local":
 		// whisper.cpp HTTP server — OpenAI-compatible endpoint, typically no auth required
@@ -40,7 +43,7 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 				endpoint = strings.TrimRight(baseURL, "/") + "/inference"
 			}
 		}
-		return TranscribeFile(ctx, filePath, TranscribeOptions{
+		transcript, err = TranscribeFile(ctx, filePath, TranscribeOptions{
 			Endpoint: endpoint,
 			Model:    modelOverride,
 			Language: language,
@@ -67,7 +70,7 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 		if model == "" {
 			model = "voxtral-mini-latest"
 		}
-		return TranscribeFile(ctx, filePath, TranscribeOptions{
+		transcript, err = TranscribeFile(ctx, filePath, TranscribeOptions{
 			APIKey:   apiKey,
 			Endpoint: endpoint,
 			Model:    model,
@@ -85,19 +88,20 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 			if baseURL != "" {
 				endpoint = strings.TrimRight(baseURL, "/") + "/audio/transcriptions"
 			}
-			return TranscribeFile(ctx, filePath, TranscribeOptions{
+			transcript, err = TranscribeFile(ctx, filePath, TranscribeOptions{
 				APIKey:   p.ResolvedAPIKey,
 				Endpoint: endpoint,
 				Model:    modelOverride,
 				Language: language,
 			})
+			break
 		}
 		// Fall back to environment variable
 		apiKey := os.Getenv("OPENAI_API_KEY")
 		if apiKey == "" {
 			return "", fmt.Errorf("transcription is not configured — set providers.openai.api_key or configure a transcription provider in config")
 		}
-		return TranscribeFile(ctx, filePath, TranscribeOptions{
+		transcript, err = TranscribeFile(ctx, filePath, TranscribeOptions{
 			APIKey:   apiKey,
 			Model:    modelOverride,
 			Language: language,
@@ -117,13 +121,21 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 			} else if p.BaseURL != "" {
 				endpoint = strings.TrimRight(p.BaseURL, "/") + "/audio/transcriptions"
 			}
-			return TranscribeFile(ctx, filePath, TranscribeOptions{
+			transcript, err = TranscribeFile(ctx, filePath, TranscribeOptions{
 				APIKey:   apiKey,
 				Endpoint: endpoint,
 				Model:    modelOverride,
 				Language: language,
 			})
+			break
 		}
 		return "", fmt.Errorf("transcription provider %q not found in providers config (supported builtins: openai, mistral, local, whisper-cli)", providerName)
 	}
+	if err != nil {
+		return "", err
+	}
+	if err := ValidateTranscriptPlausibility(ctx, filePath, transcript); err != nil {
+		return "", err
+	}
+	return transcript, nil
 }

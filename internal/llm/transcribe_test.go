@@ -7,15 +7,21 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
 )
 
 func TestTranscribeWithConfig_UsesResolvedURLForBuiltins(t *testing.T) {
 	origClient := defaultHTTPClient
+	origProbe := probeAudioDuration
 	defer func() {
 		defaultHTTPClient = origClient
+		probeAudioDuration = origProbe
 	}()
+	probeAudioDuration = func(context.Context, string) (time.Duration, error) {
+		return time.Minute, nil
+	}
 
 	audioFile, err := os.CreateTemp(t.TempDir(), "audio-*.wav")
 	if err != nil {
@@ -102,5 +108,51 @@ func TestTranscribeWithConfig_UsesResolvedURLForBuiltins(t *testing.T) {
 				t.Fatalf("request URL = %q, want %q", capturedURL, tt.wantURL)
 			}
 		})
+	}
+}
+
+func TestTranscribeWithConfig_RejectsImplausiblyLongTranscript(t *testing.T) {
+	origClient := defaultHTTPClient
+	origProbe := probeAudioDuration
+	defer func() {
+		defaultHTTPClient = origClient
+		probeAudioDuration = origProbe
+	}()
+	probeAudioDuration = func(context.Context, string) (time.Duration, error) {
+		return time.Minute, nil
+	}
+
+	audioFile, err := os.CreateTemp(t.TempDir(), "audio-*.wav")
+	if err != nil {
+		t.Fatalf("CreateTemp failed: %v", err)
+	}
+	if _, err := audioFile.WriteString("not really audio"); err != nil {
+		t.Fatalf("write temp audio: %v", err)
+	}
+	if err := audioFile.Close(); err != nil {
+		t.Fatalf("close temp audio: %v", err)
+	}
+
+	transcript := strings.TrimSpace(strings.Repeat("word ", 351))
+	defaultHTTPClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"text":"` + transcript + `"}`)),
+			}, nil
+		}),
+	}
+
+	_, err = TranscribeWithConfig(context.Background(), &config.Config{
+		Providers: map[string]config.ProviderConfig{
+			"openai": {ResolvedAPIKey: "test-key"},
+		},
+	}, audioFile.Name(), "", "openai")
+	if err == nil {
+		t.Fatal("expected TranscribeWithConfig to fail")
+	}
+	if !strings.Contains(err.Error(), "implausibly long") {
+		t.Fatalf("error = %q, want contains %q", err.Error(), "implausibly long")
 	}
 }

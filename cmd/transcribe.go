@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,6 +25,7 @@ var (
 	transcribeProvider       string
 	transcribeCLIOutputLimit int64         = 1 << 20
 	transcribeCLIWaitDelay   time.Duration = time.Second
+	transcribeValidator                    = llm.ValidateTranscriptPlausibility
 )
 
 var transcribeCmd = &cobra.Command{
@@ -64,12 +66,19 @@ func transcribeWhisperCLI(ctx context.Context, cfg *config.Config, filePath, lan
 		return "", fmt.Errorf("no whisper model found; set WHISPER_MODEL or providers.local_whisper.model in config")
 	}
 
-	args := []string{"-m", modelPath, "-f", filePath, "--print-special", "false", "-np"}
+	workDir, inputPath, cleanupInput, err := prepareWhisperCLIInput(filePath)
+	if err != nil {
+		return "", err
+	}
+	defer cleanupInput()
+
+	args := []string{"-m", modelPath, "-f", inputPath, "--print-special", "false", "-np", "-otxt"}
 	if language != "" {
 		args = append(args, "--language", language)
 	}
 
 	cmd := exec.CommandContext(ctx, whisperBin, args...)
+	cmd.Dir = workDir
 	cmd.WaitDelay = transcribeCLIWaitDelay
 	cleanup, prepErr := procutil.PrepareCommand(cmd)
 	if prepErr != nil {
@@ -99,15 +108,74 @@ func transcribeWhisperCLI(ctx context.Context, cfg *config.Config, filePath, lan
 		return "", fmt.Errorf("whisper-cli: %w", err)
 	}
 
+	transcriptPath := inputPath + ".txt"
+	transcriptBytes, err := os.ReadFile(transcriptPath)
+	if err != nil {
+		return "", fmt.Errorf("whisper-cli: read transcript %s: %w", filepath.Base(transcriptPath), err)
+	}
+
 	re := regexp.MustCompile(`^\[[\d:.,\s>-]+\]\s*`)
 	var lines []string
-	for _, line := range strings.Split(stdout.String(), "\n") {
+	for _, line := range strings.Split(string(transcriptBytes), "\n") {
 		line = re.ReplaceAllString(strings.TrimSpace(line), "")
 		if line != "" {
 			lines = append(lines, line)
 		}
 	}
-	return strings.Join(lines, " "), nil
+	transcript := strings.Join(lines, " ")
+	if err := transcribeValidator(ctx, filePath, transcript); err != nil {
+		return "", err
+	}
+	return transcript, nil
+}
+
+func prepareWhisperCLIInput(filePath string) (workDir string, inputPath string, cleanup func(), err error) {
+	absPath, err := filepath.Abs(filePath)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("resolve audio file path: %w", err)
+	}
+
+	workDir, err = os.MkdirTemp("", "term-llm-whisper-cli-*")
+	if err != nil {
+		return "", "", nil, fmt.Errorf("create whisper temp dir: %w", err)
+	}
+	cleanup = func() {
+		_ = os.RemoveAll(workDir)
+	}
+
+	inputPath = filepath.Join(workDir, filepath.Base(absPath))
+	if err := os.Symlink(absPath, inputPath); err == nil {
+		return workDir, inputPath, cleanup, nil
+	}
+	if err := copyFile(absPath, inputPath); err != nil {
+		cleanup()
+		return "", "", nil, fmt.Errorf("prepare whisper input: %w", err)
+	}
+	return workDir, inputPath, cleanup, nil
+}
+
+func copyFile(srcPath, dstPath string) error {
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", srcPath, err)
+	}
+	defer src.Close()
+
+	dst, err := os.Create(dstPath)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", dstPath, err)
+	}
+	defer func() {
+		_ = dst.Close()
+	}()
+
+	if _, err := io.Copy(dst, src); err != nil {
+		return fmt.Errorf("copy %s to %s: %w", srcPath, dstPath, err)
+	}
+	if err := dst.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", dstPath, err)
+	}
+	return nil
 }
 
 func init() {
