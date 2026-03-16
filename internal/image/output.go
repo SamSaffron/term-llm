@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/clipboard"
+	"github.com/samsaffron/term-llm/internal/pathutil"
 )
 
 // SaveImage saves image data to the configured output directory
@@ -58,14 +59,11 @@ func ReadFromClipboard() ([]byte, error) {
 	return clipboard.ReadImage()
 }
 
-// ExpandPath expands ~ to home directory
+// ExpandPath expands ~ and ~username to the appropriate home directory.
+// It delegates to pathutil.Expand and returns the original path on error.
+// Deprecated: prefer pathutil.Expand or pathutil.MustExpand directly.
 func ExpandPath(path string) string {
-	if strings.HasPrefix(path, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, path[2:])
-		}
-	}
-	return path
+	return pathutil.MustExpand(path)
 }
 
 // generateFilename creates a filename from timestamp and sanitized prompt

@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/gobwas/glob"
+	"github.com/samsaffron/term-llm/internal/pathutil"
 )
 
 type limitedBuffer struct {
@@ -199,8 +200,12 @@ func matchShellPattern(pattern, value string) bool {
 }
 
 func resolveToolPath(path string, isWrite bool) (string, error) {
-	if isWrite {
-		return canonicalizePathForWrite(path)
+	expanded, err := pathutil.Expand(path)
+	if err != nil {
+		return "", NewToolErrorf(ErrInvalidParams, "%v", err)
 	}
-	return canonicalizePath(path)
+	if isWrite {
+		return canonicalizePathForWrite(expanded)
+	}
+	return canonicalizePath(expanded)
 }

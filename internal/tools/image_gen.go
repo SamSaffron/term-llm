@@ -164,7 +164,7 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 	if outputDir == "" {
 		outputDir = "~/Pictures/term-llm"
 	}
-	resolvedOutputDir, err := resolveToolPath(image.ExpandPath(outputDir), true)
+	resolvedOutputDir, err := resolveToolPath(outputDir, true)
 	if err != nil {
 		if toolErr, ok := err.(*ToolError); ok {
 			return llm.TextOutput(formatToolError(toolErr)), nil
