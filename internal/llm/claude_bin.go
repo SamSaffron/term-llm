@@ -1267,6 +1267,9 @@ func (p *ClaudeBinProvider) buildStreamJsonInput(messages []Message, sessionID s
 							Data:      base64Data,
 						},
 					})
+					if part.ImagePath != "" {
+						blocks = append(blocks, sdkContentBlock{Type: "text", Text: "[image saved at: " + part.ImagePath + "]"})
+					}
 				}
 			}
 		}
