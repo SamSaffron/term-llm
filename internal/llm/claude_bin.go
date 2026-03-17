@@ -3,6 +3,7 @@ package llm
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -911,7 +912,26 @@ func (p *ClaudeBinProvider) buildConversationPrompt(messages []Message) string {
 			// System messages handled separately by extractSystemPrompt
 			continue
 		case RoleUser:
-			text := collectTextParts(msg.Parts)
+			var userParts []string
+			for _, part := range msg.Parts {
+				switch part.Type {
+				case PartText:
+					if part.Text != "" {
+						userParts = append(userParts, part.Text)
+					}
+				case PartImage:
+					// Prefer an existing filesystem path; otherwise materialise the
+					// base64 data into a temp file so Claude CLI can read the image.
+					path := part.ImagePath
+					if path == "" && part.ImageData != nil && part.ImageData.Base64 != "" {
+						path = imageDataToTempFile(part.ImageData.MediaType, part.ImageData.Base64)
+					}
+					if path != "" {
+						userParts = append(userParts, path)
+					}
+				}
+			}
+			text := strings.Join(userParts, "\n")
 			if text != "" {
 				conversationParts = append(conversationParts, "User: "+text)
 			}
@@ -965,23 +985,74 @@ func mapClaudeToolName(claudeName string) string {
 	return claudeName
 }
 
-// processToolResultContent keeps tool results compact for Claude CLI prompts.
-// Structured image_data parts are intentionally omitted from the prompt text.
+// processToolResultContent formats tool result content for Claude CLI prompts.
+// Image data parts are written to temp files and their paths included inline so
+// Claude CLI can read them natively rather than receiving truncated base64.
 func (p *ClaudeBinProvider) processToolResultContent(result *ToolResult) string {
 	if result == nil {
 		return ""
 	}
-
-	textContent := toolResultTextContent(result)
 	if !toolResultHasImageData(result) {
-		return textContent
+		return toolResultTextContent(result)
 	}
 
-	notice := "[Image data omitted from Claude CLI prompt]"
-	if strings.TrimSpace(textContent) == "" {
-		return notice
+	// Build combined output: text parts inline, image parts as file paths.
+	var parts []string
+	for _, contentPart := range toolResultContentParts(result) {
+		switch contentPart.Type {
+		case ToolContentPartText:
+			if contentPart.Text != "" {
+				parts = append(parts, contentPart.Text)
+			}
+		case ToolContentPartImageData:
+			mediaType, base64Data, ok := toolResultImageData(contentPart)
+			if !ok {
+				continue
+			}
+			path := imageDataToTempFile(mediaType, base64Data)
+			if path != "" {
+				parts = append(parts, path)
+			}
+		}
 	}
-	return strings.TrimSpace(textContent + "\n" + notice)
+	if len(parts) == 0 {
+		return toolResultTextContent(result)
+	}
+	return strings.Join(parts, "\n")
+}
+
+// imageDataToTempFile decodes base64 image data, writes it to a temporary file,
+// and returns the file path. Returns empty string on any error.
+func imageDataToTempFile(mediaType, base64Data string) string {
+	raw, err := base64.StdEncoding.DecodeString(base64Data)
+	if err != nil {
+		return ""
+	}
+	ext := mediaTypeToExt(mediaType)
+	f, err := os.CreateTemp("", "term-llm-img-*."+ext)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	if _, err := f.Write(raw); err != nil {
+		os.Remove(f.Name())
+		return ""
+	}
+	return f.Name()
+}
+
+// mediaTypeToExt maps an image MIME type to a file extension.
+func mediaTypeToExt(mediaType string) string {
+	switch mediaType {
+	case "image/png":
+		return "png"
+	case "image/gif":
+		return "gif"
+	case "image/webp":
+		return "webp"
+	default:
+		return "jpg"
+	}
 }
 
 func extractClaudeAssistantText(msg claudeAssistantMessage) string {
