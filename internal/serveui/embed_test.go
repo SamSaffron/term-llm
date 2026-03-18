@@ -87,6 +87,28 @@ func TestMarkdownSetupJS(t *testing.T) {
 	}
 }
 
+func TestMarkdownStreamingJS(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not found in PATH, skipping JS markdown streaming tests")
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file path")
+	}
+	script := filepath.Join(filepath.Dir(thisFile), "static", "markdown_streaming_test.js")
+	if _, err := os.Stat(script); err != nil {
+		t.Fatalf("markdown_streaming_test.js not found at %s: %v", script, err)
+	}
+
+	out, err := exec.Command(node, script).CombinedOutput()
+	t.Log(string(out))
+	if err != nil {
+		t.Fatalf("markdown_streaming_test.js failed: %v", err)
+	}
+}
+
 func TestStaticAssetsSupportSessionStreamDetachOnSwitch(t *testing.T) {
 	sessionsJS, err := StaticAsset("app-sessions.js")
 	if err != nil {
@@ -115,6 +137,108 @@ func TestStaticAssetsSupportSessionStreamDetachOnSwitch(t *testing.T) {
 	} {
 		if !strings.Contains(streamSrc, want) {
 			t.Fatalf("app-stream.js missing %q", want)
+		}
+	}
+}
+
+func TestStaticAssetsSupportIncrementalMarkdownStreaming(t *testing.T) {
+	indexHTML, err := StaticAsset("index.html")
+	if err != nil {
+		t.Fatalf("StaticAsset(index.html): %v", err)
+	}
+	indexSrc := string(indexHTML)
+	for _, want := range []string{
+		`src="markdown-streaming.js"`,
+		`id="sidebarToggleBtn"`,
+		`id="sidebarRailNewChatBtn"`,
+	} {
+		if !strings.Contains(indexSrc, want) {
+			t.Fatalf("index.html missing %q", want)
+		}
+	}
+
+	streamingJS, err := StaticAsset("markdown-streaming.js")
+	if err != nil {
+		t.Fatalf("StaticAsset(markdown-streaming.js): %v", err)
+	}
+	streamingSrc := string(streamingJS)
+	for _, want := range []string{
+		"function findStreamingBoundary(",
+		"function nextStreamingRenderDelay(",
+		"function areMathDelimitersBalanced(",
+	} {
+		if !strings.Contains(streamingSrc, want) {
+			t.Fatalf("markdown-streaming.js missing %q", want)
+		}
+	}
+
+	renderJS, err := StaticAsset("app-render.js")
+	if err != nil {
+		t.Fatalf("StaticAsset(app-render.js): %v", err)
+	}
+	renderSrc := string(renderJS)
+	for _, want := range []string{
+		"const enqueueAssistantStreamUpdate = (message) => {",
+		"const finalizeAssistantStreamRender = (message) => {",
+		"app.markdownStreaming.findStreamingBoundary",
+	} {
+		if !strings.Contains(renderSrc, want) {
+			t.Fatalf("app-render.js missing %q", want)
+		}
+	}
+
+	coreJS, err := StaticAsset("app-core.js")
+	if err != nil {
+		t.Fatalf("StaticAsset(app-core.js): %v", err)
+	}
+	coreSrc := string(coreJS)
+	for _, want := range []string{
+		"sidebarCollapsed: localStorage.getItem(STORAGE_KEYS.sidebarCollapsed) === '1'",
+		"sidebarCollapsed: 'term_llm_sidebar_collapsed'",
+		"sidebarRailNewChatBtn: document.getElementById('sidebarRailNewChatBtn')",
+	} {
+		if !strings.Contains(coreSrc, want) {
+			t.Fatalf("app-core.js missing %q", want)
+		}
+	}
+
+	sessionsJS, err := StaticAsset("app-sessions.js")
+	if err != nil {
+		t.Fatalf("StaticAsset(app-sessions.js): %v", err)
+	}
+	sessionsSrc := string(sessionsJS)
+	for _, want := range []string{
+		"elements.sidebarToggleBtn.addEventListener('click', toggleSidebarCollapsed);",
+		"elements.sidebarRailNewChatBtn.addEventListener('click', async () => {",
+		"document.addEventListener('visibilitychange', async () => {",
+		"flushStreamPersistence();",
+	} {
+		if !strings.Contains(sessionsSrc, want) {
+			t.Fatalf("app-sessions.js missing %q", want)
+		}
+	}
+
+	swJS, err := StaticAsset("sw.js")
+	if err != nil {
+		t.Fatalf("StaticAsset(sw.js): %v", err)
+	}
+	if !strings.Contains(string(swJS), "'./markdown-streaming.js'") {
+		t.Fatal("sw.js missing markdown-streaming.js shell asset")
+	}
+
+	css, err := StaticAsset("app.css")
+	if err != nil {
+		t.Fatalf("StaticAsset(app.css): %v", err)
+	}
+	cssSrc := string(css)
+	for _, want := range []string{
+		"--sidebar-width: 280px;",
+		"--sidebar-rail-width: 56px;",
+		".app.sidebar-collapsed {",
+		".sidebar-rail {",
+	} {
+		if !strings.Contains(cssSrc, want) {
+			t.Fatalf("app.css missing %q", want)
 		}
 	}
 }

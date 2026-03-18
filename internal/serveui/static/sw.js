@@ -6,6 +6,7 @@ const SHELL_ASSETS = [
   './icon-512.png',
   './app.css',
   './markdown-setup.js',
+  './markdown-streaming.js',
   './app-core.js',
   './app-render.js',
   './app-stream.js',

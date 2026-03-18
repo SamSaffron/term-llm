@@ -3,10 +3,12 @@
 
 const app = window.TermLLMApp;
 const {
-  state, elements, INTERRUPT_BADGE_META, sanitizeInterruptState, relativeTime, fullDate, sessionBucket, toolIcon, formatUsage,
+  STORAGE_KEYS, state, elements, INTERRUPT_BADGE_META, sanitizeInterruptState, relativeTime, fullDate, sessionBucket, toolIcon, formatUsage,
   saveSessions, findMessageElement, scrollToBottom, refreshRelativeTimes, ensureActiveSession, updateDocumentTitle,
-  updateSessionUsageDisplay, updateURL, renderMath
+  updateSessionUsageDisplay, renderMath
 } = app;
+
+const isMobileViewport = () => window.matchMedia('(max-width: 767px)').matches;
 
 const directionForText = (value) => {
   const text = String(value || '');
@@ -42,9 +44,39 @@ const closeSidebar = () => {
 };
 
 const closeSidebarIfMobile = () => {
-  if (window.matchMedia('(max-width: 767px)').matches) {
+  if (isMobileViewport()) {
     closeSidebar();
   }
+};
+
+const applySidebarToggleButtonState = () => {
+  if (!elements.sidebarToggleBtn) return;
+  const expanded = !state.sidebarCollapsed;
+  elements.sidebarToggleBtn.textContent = expanded ? '◀' : '▶';
+  elements.sidebarToggleBtn.title = expanded ? 'Collapse sidebar' : 'Expand sidebar';
+  elements.sidebarToggleBtn.setAttribute('aria-label', expanded ? 'Collapse sidebar' : 'Expand sidebar');
+  elements.sidebarToggleBtn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+};
+
+const applyDesktopSidebarState = () => {
+  const collapsed = !isMobileViewport() && state.sidebarCollapsed;
+  elements.appShell?.classList.toggle('sidebar-collapsed', collapsed);
+  elements.sidebar?.classList.toggle('collapsed', collapsed);
+  applySidebarToggleButtonState();
+};
+
+const setSidebarCollapsed = (collapsed) => {
+  state.sidebarCollapsed = Boolean(collapsed);
+  localStorage.setItem(STORAGE_KEYS.sidebarCollapsed, state.sidebarCollapsed ? '1' : '0');
+  applyDesktopSidebarState();
+};
+
+const toggleSidebarCollapsed = () => {
+  if (isMobileViewport()) {
+    openSidebar();
+    return;
+  }
+  setSidebarCollapsed(!state.sidebarCollapsed);
 };
 
 const updateHeader = () => {
@@ -52,6 +84,7 @@ const updateHeader = () => {
   elements.activeSessionTitle.textContent = session.title || 'Chat';
   updateDocumentTitle();
   updateSessionUsageDisplay(session);
+  applyDesktopSidebarState();
 };
 
 const renderSidebar = () => {
@@ -227,7 +260,23 @@ const deferEmbeddedVideos = (target) => {
   });
 };
 
+const assistantStreamStates = new Map();
+
+const decorateAssistantFragment = (target) => {
+  if (!target) return;
+  deferEmbeddedVideos(target);
+  renderMath(target);
+  target.querySelectorAll('a').forEach((a) => {
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+  });
+  target.querySelectorAll('pre code').forEach((code) => {
+    hljs.highlightElement(code);
+  });
+};
+
 const renderAssistantMarkdown = (target, content) => {
+  if (!target) return;
   applyTextDirection(target, content || '');
   const html = marked.parse(content || '');
   const clean = DOMPurify.sanitize(html, {
@@ -235,18 +284,202 @@ const renderAssistantMarkdown = (target, content) => {
     ADD_ATTR: ['controls', 'playsinline', 'muted', 'loop', 'autoplay', 'poster', 'preload']
   });
   target.innerHTML = clean;
-  deferEmbeddedVideos(target);
+  decorateAssistantFragment(target);
+};
 
-  renderMath(target);
+const disposeAssistantStreamState = (messageId) => {
+  const streamState = assistantStreamStates.get(messageId);
+  if (!streamState) return;
+  if (streamState.rafId) {
+    window.cancelAnimationFrame(streamState.rafId);
+  }
+  if (streamState.timerId) {
+    window.clearTimeout(streamState.timerId);
+  }
+  assistantStreamStates.delete(messageId);
+};
 
-  target.querySelectorAll('a').forEach((a) => {
-    a.target = '_blank';
-    a.rel = 'noopener noreferrer';
+const resetAssistantStreamRenders = () => {
+  Array.from(assistantStreamStates.keys()).forEach((messageId) => {
+    disposeAssistantStreamState(messageId);
   });
+};
 
-  target.querySelectorAll('pre code').forEach((code) => {
-    hljs.highlightElement(code);
-  });
+const syncAssistantUsageNode = (node, message) => {
+  let usageNode = node.querySelector('.usage-line');
+  if (message.usage) {
+    if (!usageNode) {
+      usageNode = document.createElement('div');
+      usageNode.className = 'usage-line';
+      node.insertBefore(usageNode, node.querySelector('.message-meta'));
+    }
+    usageNode.textContent = formatUsage(message.usage);
+  } else if (usageNode) {
+    usageNode.remove();
+  }
+};
+
+const createAssistantStreamContainers = (body) => {
+  body.innerHTML = '';
+  const stableContainer = document.createElement('div');
+  stableContainer.className = 'markdown-stream-stable';
+  const tailContainer = document.createElement('div');
+  tailContainer.className = 'markdown-stream-tail';
+  body.appendChild(stableContainer);
+  body.appendChild(tailContainer);
+  return { stableContainer, tailContainer };
+};
+
+const getOrCreateAssistantStreamState = (message, body) => {
+  let streamState = assistantStreamStates.get(message.id);
+  if (streamState && streamState.body === body) {
+    return streamState;
+  }
+  disposeAssistantStreamState(message.id);
+  streamState = app.markdownStreaming && typeof app.markdownStreaming.createStreamingState === 'function'
+    ? app.markdownStreaming.createStreamingState()
+    : {
+      messageId: '',
+      body: null,
+      stableContainer: null,
+      tailContainer: null,
+      committedLength: 0,
+      latestContent: '',
+      lastTailContent: '',
+      dirty: false,
+      rendering: false,
+      rafId: 0,
+      timerId: 0,
+      lastRenderAt: 0
+    };
+  const containers = createAssistantStreamContainers(body);
+  streamState.messageId = message.id;
+  streamState.body = body;
+  streamState.stableContainer = containers.stableContainer;
+  streamState.tailContainer = containers.tailContainer;
+  assistantStreamStates.set(message.id, streamState);
+  return streamState;
+};
+
+const scheduleAssistantStreamRender = (streamState) => {
+  if (!streamState) return;
+  const renderDelay = app.markdownStreaming && typeof app.markdownStreaming.nextStreamingRenderDelay === 'function'
+    ? app.markdownStreaming.nextStreamingRenderDelay(streamState.latestContent.length)
+    : 33;
+  const elapsed = Date.now() - streamState.lastRenderAt;
+  const enqueueFrame = () => {
+    streamState.timerId = 0;
+    if (streamState.rafId) return;
+    streamState.rafId = window.requestAnimationFrame(() => performAssistantStreamRender(streamState));
+  };
+
+  if (streamState.rendering || streamState.rafId || streamState.timerId) return;
+  if (elapsed >= renderDelay) {
+    enqueueFrame();
+    return;
+  }
+  streamState.timerId = window.setTimeout(enqueueFrame, renderDelay - elapsed);
+};
+
+const performAssistantStreamRender = (streamState) => {
+  if (!streamState || !streamState.body) return;
+  streamState.rafId = 0;
+
+  if (!document.body.contains(streamState.body)) {
+    disposeAssistantStreamState(streamState.messageId);
+    return;
+  }
+
+  if (streamState.rendering) return;
+
+  streamState.rendering = true;
+  streamState.dirty = false;
+  const content = String(streamState.latestContent || '');
+
+  try {
+    applyTextDirection(streamState.body, content);
+
+    const nextBoundary = app.markdownStreaming && typeof app.markdownStreaming.findStreamingBoundary === 'function'
+      ? app.markdownStreaming.findStreamingBoundary(content, streamState.committedLength)
+      : -1;
+
+    if (Number.isInteger(nextBoundary) && nextBoundary > streamState.committedLength) {
+      const committedChunk = content.slice(streamState.committedLength, nextBoundary);
+      if (committedChunk) {
+        const piece = document.createElement('div');
+        piece.className = 'markdown-stream-piece';
+        renderAssistantMarkdown(piece, committedChunk);
+        streamState.stableContainer.appendChild(piece);
+      }
+      streamState.committedLength = nextBoundary;
+    }
+
+    const tail = content.slice(streamState.committedLength);
+    if (tail !== streamState.lastTailContent) {
+      if (tail) {
+        renderAssistantMarkdown(streamState.tailContainer, tail);
+      } else {
+        streamState.tailContainer.innerHTML = '';
+      }
+      streamState.lastTailContent = tail;
+    }
+
+    streamState.lastRenderAt = Date.now();
+    app.scheduleStreamPersistence?.();
+    app.scheduleStreamScroll?.();
+  } finally {
+    streamState.rendering = false;
+    if (streamState.dirty || streamState.latestContent !== content) {
+      scheduleAssistantStreamRender(streamState);
+    }
+  }
+};
+
+const renderAssistantNodeFully = (node, message) => {
+  const body = node.querySelector('.message-body');
+  if (!body) return;
+  disposeAssistantStreamState(message.id);
+  body.classList.add('markdown-body');
+  renderAssistantMarkdown(body, message.content || '');
+  syncAssistantUsageNode(node, message);
+};
+
+const enqueueAssistantStreamUpdate = (message) => {
+  if (!app.markdownStreaming) {
+    updateAssistantNode(message);
+    if (typeof app.scheduleStreamScroll === 'function') {
+      app.scheduleStreamScroll();
+    } else {
+      scrollToBottom();
+    }
+    return;
+  }
+
+  let node = findMessageElement(message.id);
+  if (!node) {
+    node = createMessageNode({ ...message, content: '' });
+    elements.messages.appendChild(node);
+  }
+
+  const body = node.querySelector('.message-body');
+  if (!body) return;
+
+  body.classList.add('markdown-body');
+  const streamState = getOrCreateAssistantStreamState(message, body);
+  streamState.latestContent = String(message.content || '');
+  streamState.dirty = true;
+  syncAssistantUsageNode(node, message);
+  scheduleAssistantStreamRender(streamState);
+};
+
+const finalizeAssistantStreamRender = (message) => {
+  let node = findMessageElement(message.id);
+  if (!node) {
+    node = createMessageNode(message);
+    elements.messages.appendChild(node);
+    return;
+  }
+  renderAssistantNodeFully(node, message);
 };
 
 const createToolCard = (message) => {
@@ -369,24 +602,9 @@ const updateAssistantNode = (message) => {
   if (!node) {
     node = createMessageNode(message);
     elements.messages.appendChild(node);
+    return;
   }
-
-  const body = node.querySelector('.message-body');
-  if (!body) return;
-  applyTextDirection(body, message.content || '');
-  renderAssistantMarkdown(body, message.content || '');
-
-  let usageNode = node.querySelector('.usage-line');
-  if (message.usage) {
-    if (!usageNode) {
-      usageNode = document.createElement('div');
-      usageNode.className = 'usage-line';
-      node.insertBefore(usageNode, node.querySelector('.message-meta'));
-    }
-    usageNode.textContent = formatUsage(message.usage);
-  } else if (usageNode) {
-    usageNode.remove();
-  }
+  renderAssistantNodeFully(node, message);
 };
 
 const updateUserNode = (message) => {
@@ -654,6 +872,7 @@ const updateToolGroupNode = (message) => {
 
 const renderMessages = (forceScroll = false) => {
   const session = ensureActiveSession();
+  resetAssistantStreamRenders();
   elements.messages.innerHTML = '';
 
   if (!session.messages.length) {
@@ -676,6 +895,9 @@ Object.assign(app, {
   openSidebar,
   closeSidebar,
   closeSidebarIfMobile,
+  applyDesktopSidebarState,
+  setSidebarCollapsed,
+  toggleSidebarCollapsed,
   updateHeader,
   renderSidebar,
   directionForText,
@@ -683,6 +905,8 @@ Object.assign(app, {
   createInterruptBadgeNode,
   createMetaNode,
   renderAssistantMarkdown,
+  enqueueAssistantStreamUpdate,
+  finalizeAssistantStreamRender,
   createToolCard,
   createMessageNode,
   updateAssistantNode,
@@ -694,6 +918,7 @@ Object.assign(app, {
   buildArgsNode,
   createToolEntryNode,
   updateToolGroupNode,
+  resetAssistantStreamRenders,
   renderMessages
 });
 })();

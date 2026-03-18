@@ -2,6 +2,7 @@
 'use strict';
 
 const app = window.TermLLMApp || (window.TermLLMApp = {});
+app.markdownStreaming = window.TermLLMMarkdownStreaming || null;
 
 // ===== Constants & state =====
 // UI_PREFIX is the base path for all routes (UI + API). Injected by the server
@@ -13,6 +14,7 @@ const STORAGE_KEYS = {
   token: 'term_llm_token',
   activeSession: 'term_llm_active_session',
   selectedModel: 'term_llm_selected_model',
+  sidebarCollapsed: 'term_llm_sidebar_collapsed',
   notificationsEnabled: 'term_llm_notifications_enabled',
   lastNotifiedResponseId: 'term_llm_last_notified_response_id'
 };
@@ -23,6 +25,7 @@ const state = {
   activeSessionId: localStorage.getItem(STORAGE_KEYS.activeSession) || '',
   models: [],
   selectedModel: localStorage.getItem(STORAGE_KEYS.selectedModel) || '',
+  sidebarCollapsed: localStorage.getItem(STORAGE_KEYS.sidebarCollapsed) === '1',
   notificationsEnabled: localStorage.getItem(STORAGE_KEYS.notificationsEnabled) === '1',
   lastNotifiedResponseId: localStorage.getItem(STORAGE_KEYS.lastNotifiedResponseId) || '',
   streaming: false,
@@ -61,9 +64,13 @@ if (state.token) {
 }
 
 const elements = {
+  appShell: document.getElementById('appShell'),
   sidebar: document.getElementById('sidebar'),
   sidebarBackdrop: document.getElementById('sidebarBackdrop'),
+  sidebarToggleBtn: document.getElementById('sidebarToggleBtn'),
   sidebarCloseBtn: document.getElementById('sidebarCloseBtn'),
+  sidebarRailNewChatBtn: document.getElementById('sidebarRailNewChatBtn'),
+  sidebarRailSettingsBtn: document.getElementById('sidebarRailSettingsBtn'),
   mobileMenuBtn: document.getElementById('mobileMenuBtn'),
   settingsBtn: document.getElementById('settingsBtn'),
   newChatBtn: document.getElementById('newChatBtn'),
@@ -742,6 +749,7 @@ Object.assign(app, {
   STORAGE_KEYS,
   state,
   elements,
+  markdownStreaming: app.markdownStreaming,
   generateUUID,
   generateId,
   INTERRUPT_BADGE_META,

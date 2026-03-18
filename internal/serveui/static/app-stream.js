@@ -7,6 +7,7 @@ const {
   getActiveSession, ensureActiveSession, createSession, findMessageElement, scrollToBottom, setConnectionState,
   persistAndRefreshShell, updateSessionUsageDisplay, refreshRelativeTimes, requestHeaders: _unusedRequestHeaders, updateAssistantNode, updateUserNode,
   updateToolNode, updateToolGroupNode, createMessageNode, createToolGroupNode, renderSidebar, renderMessages, maybeNotifyResponseComplete,
+  enqueueAssistantStreamUpdate, finalizeAssistantStreamRender,
   subscribeToPush, shouldAutoSubscribeToPush, applyTextDirection, shouldSuppressPromptAutoFocus
 } = app;
 
@@ -161,6 +162,40 @@ const stopHeartbeatMonitor = () => {
   }
 };
 
+const STREAM_PERSIST_INTERVAL = 1000;
+let streamPersistTimerId = null;
+let streamPersistDirty = false;
+let streamScrollRafId = 0;
+
+const scheduleStreamPersistence = () => {
+  streamPersistDirty = true;
+  if (streamPersistTimerId !== null) return;
+  streamPersistTimerId = window.setTimeout(() => {
+    streamPersistTimerId = null;
+    if (!streamPersistDirty) return;
+    streamPersistDirty = false;
+    saveSessions();
+  }, STREAM_PERSIST_INTERVAL);
+};
+
+const flushStreamPersistence = () => {
+  if (streamPersistTimerId !== null) {
+    clearTimeout(streamPersistTimerId);
+    streamPersistTimerId = null;
+  }
+  if (!streamPersistDirty) return;
+  streamPersistDirty = false;
+  saveSessions();
+};
+
+const scheduleStreamScroll = () => {
+  if (streamScrollRafId) return;
+  streamScrollRafId = window.requestAnimationFrame(() => {
+    streamScrollRafId = 0;
+    scrollToBottom();
+  });
+};
+
 // Guards against multiple concurrent resumeActiveResponse loops for the same response.
 const activeResumeKeys = new Set();
 
@@ -175,6 +210,7 @@ const attachResponseStream = (session, responseId = '', controller = null) => {
 
 const detachResponseStream = () => {
   stopHeartbeatMonitor();
+  flushStreamPersistence();
   const controller = state.abortController;
   state.abortController = null;
   state.currentStreamSessionId = '';
@@ -262,6 +298,9 @@ const createResponseStreamState = (session) => {
     set currentToolGroup(value) {
       currentToolGroup = value;
     },
+    get currentAssistantMessage() {
+      return currentAssistantMessage;
+    },
     set currentAssistantMessage(value) {
       currentAssistantMessage = value;
     }
@@ -291,25 +330,27 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       streamState.closeToolGroup();
       const msg = streamState.ensureAssistantMessage();
       msg.content += delta;
-      updateAssistantNode(msg);
-      saveSessions();
-      scrollToBottom();
+      scheduleStreamPersistence();
+      enqueueAssistantStreamUpdate(msg);
     }
     return { terminal: false };
   }
 
   if (event === 'response.output_text.new_segment') {
     streamState.closeToolGroup();
+    if (streamState.currentAssistantMessage?.content) {
+      finalizeAssistantStreamRender(streamState.currentAssistantMessage);
+    }
     streamState.currentAssistantMessage = null;
-    streamState.ensureAssistantMessage();
-    saveSessions();
-    scrollToBottom();
     return { terminal: false };
   }
 
   if (event === 'response.output_item.added') {
     const item = payload.item;
     if (item?.type === 'function_call') {
+      if (streamState.currentAssistantMessage?.content) {
+        finalizeAssistantStreamRender(streamState.currentAssistantMessage);
+      }
       const toolEntry = {
         id: item.call_id || generateId('tool'),
         name: String(item.name || 'tool'),
@@ -393,10 +434,10 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       payload.images.forEach((url) => {
         msg.content += `\n\n![Generated Image](${url})\n`;
       });
-      updateAssistantNode(msg);
+      enqueueAssistantStreamUpdate(msg);
     }
     saveSessions();
-    scrollToBottom();
+    scheduleStreamScroll();
     return { terminal: false };
   }
 
@@ -430,8 +471,9 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     const lastAssistant = [...session.messages].reverse().find((message) => message.role === 'assistant');
     if (lastAssistant) {
       if (usage) lastAssistant.usage = usage;
-      updateAssistantNode(lastAssistant);
+      finalizeAssistantStreamRender(lastAssistant);
     }
+    flushStreamPersistence();
     saveSessions();
     void maybeNotifyResponseComplete(session, lastAssistant, responseId);
     scrollToBottom();
@@ -458,7 +500,8 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     clearActiveResponseTracking(session, session.activeResponseId || state.currentStreamResponseId);
 
     const lastAssistant = [...session.messages].reverse().find((message) => message.role === 'assistant');
-    if (lastAssistant) updateAssistantNode(lastAssistant);
+    if (lastAssistant) finalizeAssistantStreamRender(lastAssistant);
+    flushStreamPersistence();
     saveSessions();
     scrollToBottom(true);
     return { terminal: true };
@@ -1732,6 +1775,7 @@ const setStreaming = (streaming) => {
   elements.stopBtn.classList.toggle('visible', streaming && (Boolean(state.abortController) || Boolean(state.currentStreamResponseId)));
   updateVoiceUI();
   if (!streaming) {
+    flushStreamPersistence();
     const shouldRestoreFocus = state.restorePromptFocus;
     state.restorePromptFocus = false;
     if (shouldRestoreFocus) {
@@ -2231,6 +2275,9 @@ Object.assign(app, {
   createResponseStreamState,
   applyResponseStreamEvent,
   consumeResponseStream,
+  scheduleStreamPersistence,
+  flushStreamPersistence,
+  scheduleStreamScroll,
   HEARTBEAT_STALE_THRESHOLD,
   HEARTBEAT_ABORT_REASON,
   resumeActiveResponse,

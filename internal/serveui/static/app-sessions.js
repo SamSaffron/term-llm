@@ -10,9 +10,16 @@ const {
   autoGrowPrompt, updateVoiceUI, toggleVoiceRecording, fetchModels, addErrorMessage, sendMessage, openSidebar, closeSidebar, closeSidebarIfMobile,
   connectToken, submitAskUserModal, cancelActiveResponse, handleFiles, isNearBottom,
   openApprovalModal, closeApprovalModal, submitApprovalModal, registerServiceWorker, subscribeToPush, refreshNotificationUI,
-  requestNotificationPermission, shouldAutoSubscribeToPush, detachResponseStream, HEARTBEAT_STALE_THRESHOLD, HEARTBEAT_ABORT_REASON
+  requestNotificationPermission, shouldAutoSubscribeToPush, detachResponseStream, HEARTBEAT_STALE_THRESHOLD, HEARTBEAT_ABORT_REASON,
+  applyDesktopSidebarState, toggleSidebarCollapsed, flushStreamPersistence
 } = app;
 let sessionStatePollTimer = null;
+
+const createAndSwitchToFreshSession = async () => {
+  const session = createSession();
+  state.sessions.unshift(session);
+  await switchToSession(session.id, { sync: false, focusPrompt: true });
+};
 
 const switchToSession = async (sessionId, options = {}) => {
   const nextId = String(sessionId || '').trim();
@@ -445,17 +452,20 @@ const initialize = async () => {
 };
 
 // ===== Event listeners =====
-elements.newChatBtn.addEventListener('click', async () => {
-  const session = createSession();
-  state.sessions.unshift(session);
-  await switchToSession(session.id, { sync: false, focusPrompt: true });
+elements.newChatBtn.addEventListener('click', createAndSwitchToFreshSession);
+elements.sidebarRailNewChatBtn.addEventListener('click', async () => {
+  await createAndSwitchToFreshSession();
 });
 
 elements.settingsBtn.addEventListener('click', () => {
   openAuthModal('', false);
 });
+elements.sidebarRailSettingsBtn.addEventListener('click', () => {
+  openAuthModal('', false);
+});
 
 elements.mobileMenuBtn.addEventListener('click', openSidebar);
+elements.sidebarToggleBtn.addEventListener('click', toggleSidebarCollapsed);
 elements.sidebarBackdrop.addEventListener('click', closeSidebar);
 elements.sidebarCloseBtn.addEventListener('click', closeSidebar);
 
@@ -585,7 +595,21 @@ window.addEventListener('resize', () => {
   if (!window.matchMedia('(max-width: 767px)').matches) {
     closeSidebar();
   }
+  applyDesktopSidebarState();
 });
+
+const sidebarViewportMedia = window.matchMedia('(max-width: 767px)');
+const handleSidebarViewportChange = () => {
+  if (!sidebarViewportMedia.matches) {
+    closeSidebar();
+  }
+  applyDesktopSidebarState();
+};
+if (typeof sidebarViewportMedia.addEventListener === 'function') {
+  sidebarViewportMedia.addEventListener('change', handleSidebarViewportChange);
+} else if (typeof sidebarViewportMedia.addListener === 'function') {
+  sidebarViewportMedia.addListener(handleSidebarViewportChange);
+}
 
 window.addEventListener('popstate', async () => {
   const urlId = sessionIdFromURL();
@@ -598,7 +622,10 @@ window.addEventListener('popstate', async () => {
 });
 
 document.addEventListener('visibilitychange', async () => {
-  if (document.visibilityState !== 'visible') return;
+  if (document.visibilityState !== 'visible') {
+    flushStreamPersistence();
+    return;
+  }
   const session = getActiveSession();
   if (!session) return;
 
@@ -615,6 +642,10 @@ document.addEventListener('visibilitychange', async () => {
   if (!state.streaming && !state.abortController) {
     await syncActiveSessionFromServer(session, true);
   }
+});
+
+window.addEventListener('pagehide', () => {
+  flushStreamPersistence();
 });
 
 window.addEventListener('online', async () => {

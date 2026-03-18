@@ -138,20 +138,27 @@
     </div>
   </div>
 
-  <div class="app">
+  <div class="app" id="appShell">
     <aside class="sidebar" id="sidebar" aria-label="Sessions">
-      <div class="sidebar-header">
-        <div class="brand"><span aria-hidden="true">≡</span> <span>Chat</span></div>
-        <div style="display:inline-flex; gap:0.4rem;">
-          <button class="icon-btn" id="settingsBtn" title="Token settings" aria-label="Token settings">⚙</button>
-          <button class="icon-btn sidebar-close" id="sidebarCloseBtn" title="Close sidebar" aria-label="Close sidebar">✕</button>
-        </div>
+      <div class="sidebar-rail">
+        <button class="icon-btn sidebar-rail-btn" id="sidebarToggleBtn" type="button" aria-label="Collapse sidebar" aria-expanded="true" title="Collapse sidebar">◀</button>
+        <button class="icon-btn sidebar-rail-btn" id="sidebarRailNewChatBtn" type="button" aria-label="New chat" title="New chat">＋</button>
+        <button class="icon-btn sidebar-rail-btn" id="sidebarRailSettingsBtn" type="button" aria-label="Token settings" title="Token settings">⚙</button>
       </div>
-      <div class="sidebar-content">
-        <div class="new-chat-wrap">
-          <button class="new-chat-btn" id="newChatBtn">+ New chat</button>
+      <div class="sidebar-panel">
+        <div class="sidebar-header">
+          <div class="brand"><span aria-hidden="true">≡</span> <span>Chat</span></div>
+          <div class="sidebar-header-actions">
+            <button class="icon-btn" id="settingsBtn" title="Token settings" aria-label="Token settings">⚙</button>
+            <button class="icon-btn sidebar-close" id="sidebarCloseBtn" title="Close sidebar" aria-label="Close sidebar">✕</button>
+          </div>
         </div>
-        <div class="session-groups" id="sessionGroups"></div>
+        <div class="sidebar-content">
+          <div class="new-chat-wrap">
+            <button class="new-chat-btn" id="newChatBtn">+ New chat</button>
+          </div>
+          <div class="session-groups" id="sessionGroups"></div>
+        </div>
       </div>
     </aside>
 
@@ -268,6 +275,7 @@
   <script src="vendor/hljs/highlight.min.js?v=11.11.1"></script>
   <script src="vendor/dompurify/purify.min.js?v=3.2.7"></script>
   <script src="markdown-setup.js"></script>
+  <script src="markdown-streaming.js"></script>
   <script src="app-core.js"></script>
   <script src="app-render.js"></script>
   <script src="app-stream.js"></script>
