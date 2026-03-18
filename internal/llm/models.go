@@ -24,6 +24,8 @@ var ProviderModels = map[string][]string{
 	},
 	"openai": {
 		"gpt-5.4",
+		"gpt-5.4-mini",
+		"gpt-5.4-nano",
 		"gpt-5.3-codex",
 		"gpt-5.2-codex",
 		"gpt-5.2",
@@ -36,6 +38,7 @@ var ProviderModels = map[string][]string{
 	"chatgpt": {
 		// Uses ChatGPT backend API with native OAuth
 		"gpt-5.4",
+		"gpt-5.4-mini",
 		"gpt-5.3-codex",
 		"gpt-5.3-codex-spark",
 		"gpt-5.2-codex",
@@ -180,8 +183,8 @@ var ProviderModels = map[string][]string{
 // These are used for short control-plane tasks (interrupt classification, summarization).
 var ProviderFastModels = map[string]string{
 	"anthropic":  "claude-haiku-4-5",
-	"openai":     "gpt-5-nano",
-	"chatgpt":    "gpt-5-nano",
+	"openai":     "gpt-5.4-nano",
+	"chatgpt":    "gpt-5.4-mini",
 	"copilot":    "gpt-4.1",
 	"gemini":     "gemini-2.5-flash-lite",
 	"gemini-cli": "gemini-2.5-flash-lite",

@@ -1185,7 +1185,7 @@ func GetDefaults() map[string]any {
 		"providers.anthropic.model":       "claude-sonnet-4-6",
 		"providers.anthropic.fast_model":  "claude-haiku-4-5",
 		"providers.openai.model":          "gpt-5.2",
-		"providers.openai.fast_model":     "gpt-5-nano",
+		"providers.openai.fast_model":     "gpt-5.4-nano",
 		"providers.xai.model":             "grok-4-1-fast",
 		"providers.xai.fast_model":        "grok-3-mini-fast",
 		"providers.venice.model":          "venice-uncensored",

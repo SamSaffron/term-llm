@@ -293,6 +293,8 @@ func TestInputLimitForModel(t *testing.T) {
 		{"gpt-5.1", 272_000},
 		{"gpt-5.1-chat-latest", 112_000},
 		{"gpt-5", 272_000},
+		{"gpt-5.4-mini", 272_000},
+		{"gpt-5.4-nano", 272_000},
 		{"gpt-5-mini", 272_000},
 		{"o1-mini", 62_000},                 // 128K - 65K
 		{"o1-pro", 100_000},                 // 200K - 100K
@@ -340,10 +342,13 @@ func TestInputLimitForProviderModel(t *testing.T) {
 		{"copilot", "gpt-3.5-turbo", 12_000},
 		// OpenAI direct uses canonical input limits
 		{"openai", "gpt-5.2-codex", 272_000},
+		{"openai", "gpt-5.4-mini", 272_000},
+		{"openai", "gpt-5.4-nano", 272_000},
 		{"openai", "gpt-5", 272_000},
 		{"openai", "gpt-4.1", 1_014_808},
 		// ChatGPT uses canonical input limits
 		{"chatgpt", "gpt-5.2-codex", 272_000},
+		{"chatgpt", "gpt-5.4-mini", 272_000},
 		// Unknown provider falls back to canonical
 		{"", "gpt-5", 272_000},
 		{"unknown", "gpt-5", 272_000},
@@ -369,6 +374,8 @@ func TestOutputLimitForModel(t *testing.T) {
 		{"gpt-3.5-turbo-0125", 4_096},
 		{"gpt-4o-2024-05-13", 16_384},
 		{"gpt-5", 128_000},
+		{"gpt-5.4-mini", 128_000},
+		{"gpt-5.4-nano", 128_000},
 		{"unknown-model-xyz", 0},
 	}
 
