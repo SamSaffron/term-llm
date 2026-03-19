@@ -3,9 +3,105 @@ package llm
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/samsaffron/term-llm/internal/config"
 )
+
+// ConfigModelLimit holds per-model token limits from user config.
+type ConfigModelLimit struct {
+	Provider    string // provider config key (e.g., "cdck", "discourse")
+	Model       string
+	InputLimit  int
+	OutputLimit int
+}
+
+var (
+	configMu sync.RWMutex
+	// Provider-scoped: "provider\x00model" -> limit (always authoritative)
+	configProviderInputLimits  map[string]int
+	configProviderOutputLimits map[string]int
+	// Model-only fallback: populated only when all providers agree on limits
+	configInputLimits  map[string]int
+	configOutputLimits map[string]int
+)
+
+func configKey(provider, model string) string {
+	return provider + "\x00" + model
+}
+
+// RegisterConfigLimits registers model token limits from user configuration.
+// These are used as a fallback when hardcoded tables return 0.
+// Limits are stored provider-scoped; model-only fallback is populated only
+// when all providers defining a model agree on the same limits.
+func RegisterConfigLimits(limits []ConfigModelLimit) {
+	configMu.Lock()
+	defer configMu.Unlock()
+
+	configProviderInputLimits = make(map[string]int, len(limits))
+	configProviderOutputLimits = make(map[string]int, len(limits))
+
+	// First pass: populate provider-scoped maps and detect model-only collisions
+	inputByModel := make(map[string]int)
+	outputByModel := make(map[string]int)
+	inputConflict := make(map[string]bool)
+	outputConflict := make(map[string]bool)
+
+	for _, l := range limits {
+		model := strings.ToLower(l.Model)
+		provider := strings.ToLower(l.Provider)
+
+		if l.InputLimit > 0 {
+			configProviderInputLimits[configKey(provider, model)] = l.InputLimit
+			if prev, exists := inputByModel[model]; exists && prev != l.InputLimit {
+				inputConflict[model] = true
+			}
+			inputByModel[model] = l.InputLimit
+		}
+		if l.OutputLimit > 0 {
+			configProviderOutputLimits[configKey(provider, model)] = l.OutputLimit
+			if prev, exists := outputByModel[model]; exists && prev != l.OutputLimit {
+				outputConflict[model] = true
+			}
+			outputByModel[model] = l.OutputLimit
+		}
+	}
+
+	// Second pass: model-only maps exclude conflicting entries
+	configInputLimits = make(map[string]int, len(inputByModel))
+	for model, limit := range inputByModel {
+		if !inputConflict[model] {
+			configInputLimits[model] = limit
+		}
+	}
+	configOutputLimits = make(map[string]int, len(outputByModel))
+	for model, limit := range outputByModel {
+		if !outputConflict[model] {
+			configOutputLimits[model] = limit
+		}
+	}
+}
+
+func configInputLimitForProvider(provider, model string) int {
+	configMu.RLock()
+	defer configMu.RUnlock()
+	if v, ok := configProviderInputLimits[configKey(strings.ToLower(provider), model)]; ok {
+		return v
+	}
+	return configInputLimits[model]
+}
+
+func configInputLimit(model string) int {
+	configMu.RLock()
+	defer configMu.RUnlock()
+	return configInputLimits[model]
+}
+
+func configOutputLimit(model string) int {
+	configMu.RLock()
+	defer configMu.RUnlock()
+	return configOutputLimits[model]
+}
 
 // InputLimitForModel returns the effective input token limit for a known model
 // using canonical (direct API) numbers. This is the maximum number of tokens
@@ -13,7 +109,10 @@ import (
 // Returns 0 for unknown models.
 // For provider-specific limits, use InputLimitForProviderModel instead.
 func InputLimitForModel(model string) int {
-	return lookupPrefix(strings.ToLower(model), inputLimitTable)
+	if result := lookupPrefix(strings.ToLower(model), inputLimitTable); result > 0 {
+		return result
+	}
+	return configInputLimit(strings.ToLower(model))
 }
 
 // InputLimitForProviderModel returns the effective input token limit for a model
@@ -36,7 +135,12 @@ func InputLimitForProviderModel(providerName, model string) int {
 	}
 
 	// Fall back to canonical table
-	return lookupPrefix(model, inputLimitTable)
+	if result := lookupPrefix(model, inputLimitTable); result > 0 {
+		return result
+	}
+
+	// Fall back to config registry (provider-scoped, then model-only)
+	return configInputLimitForProvider(providerName, model)
 }
 
 // FormatTokenCount returns a human-readable string for a token count
@@ -196,7 +300,10 @@ var providerInputOverrides = map[string][]limitEntry{
 // OutputLimitForModel returns the maximum output tokens for a known model.
 // Returns 0 for unknown models.
 func OutputLimitForModel(model string) int {
-	return lookupPrefix(strings.ToLower(model), outputLimitTable)
+	if result := lookupPrefix(strings.ToLower(model), outputLimitTable); result > 0 {
+		return result
+	}
+	return configOutputLimit(strings.ToLower(model))
 }
 
 // ClampOutputTokens returns the requested output token count clamped to the

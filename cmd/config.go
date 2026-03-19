@@ -438,7 +438,7 @@ func printProvidersSection(defaults map[string]any, rawKeys map[string]bool, raw
 
 // printProviderConfig prints a single provider's config
 func printProviderConfig(name string, defaults map[string]any, rawKeys map[string]bool, rawValues map[string]string, hasFile bool, cfg *config.Config) {
-	providerKeys := []string{"type", "model", "fast_model", "fast_provider", "api_key", "credentials", "base_url", "url", "app_url", "app_title", "use_native_search", "models"}
+	providerKeys := []string{"type", "model", "fast_model", "fast_provider", "api_key", "credentials", "base_url", "url", "app_url", "app_title", "use_native_search", "models", "context_window", "max_output_tokens"}
 
 	// Check if provider has any values
 	hasValues := false
@@ -809,6 +809,8 @@ providers:
   #   base_url: https://api.cerebras.ai/v1
   #   model: llama-4-scout-17b
   #   api_key: ${CEREBRAS_API_KEY}
+  #   context_window: 128000       # total context window (tokens)
+  #   max_output_tokens: 8192      # max output tokens (set both for best results)
 
   # groq:
   #   type: openai_compatible

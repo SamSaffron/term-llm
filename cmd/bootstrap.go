@@ -18,7 +18,48 @@ func loadConfig() (*config.Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
+	registerModelLimits(cfg)
 	return cfg, nil
+}
+
+// registerModelLimits registers per-model token limits from provider configs
+// so that InputLimitForModel/OutputLimitForModel work for custom models.
+func registerModelLimits(cfg *config.Config) {
+	var limits []llm.ConfigModelLimit
+	for name, pc := range cfg.Providers {
+		if pc.Model == "" {
+			continue
+		}
+		if pc.ContextWindow <= 0 && pc.MaxOutputTokens <= 0 {
+			continue
+		}
+
+		var inputLimit, outputLimit int
+		switch {
+		case pc.ContextWindow > 0 && pc.MaxOutputTokens > 0:
+			inputLimit = pc.ContextWindow - pc.MaxOutputTokens
+			outputLimit = pc.MaxOutputTokens
+			if inputLimit <= 0 {
+				continue // nonsensical config, skip
+			}
+		case pc.ContextWindow > 0:
+			// Only context_window set: use full window as input limit.
+			// Output clamping won't apply — compaction fires but output
+			// tokens are uncapped. Set max_output_tokens for tighter control.
+			inputLimit = pc.ContextWindow
+		case pc.MaxOutputTokens > 0:
+			outputLimit = pc.MaxOutputTokens
+		}
+
+		limits = append(limits, llm.ConfigModelLimit{
+			Provider:    name,
+			Model:       pc.Model,
+			InputLimit:  inputLimit,
+			OutputLimit: outputLimit,
+		})
+	}
+	// Always register (even if empty) so a config reload clears stale limits.
+	llm.RegisterConfigLimits(limits)
 }
 
 func loadConfigWithSetup() (*config.Config, error) {
@@ -27,6 +68,7 @@ func loadConfigWithSetup() (*config.Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("setup cancelled: %w", err)
 		}
+		registerModelLimits(cfg)
 		return cfg, nil
 	}
 

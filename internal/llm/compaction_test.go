@@ -1056,6 +1056,151 @@ func TestEstimatedTokensFallback(t *testing.T) {
 	}
 }
 
+func TestConfigFallbackInputLimit(t *testing.T) {
+	// Register config limits for a custom model
+	RegisterConfigLimits([]ConfigModelLimit{
+		{Provider: "cdck", Model: "custom-model-abc", InputLimit: 150_000, OutputLimit: 50_000},
+	})
+	defer RegisterConfigLimits(nil) // cleanup
+
+	// Custom model should use config fallback
+	if got := InputLimitForModel("custom-model-abc"); got != 150_000 {
+		t.Errorf("InputLimitForModel(custom) = %d, want 150000", got)
+	}
+
+	// Hardcoded model should still use hardcoded table (not config)
+	if got := InputLimitForModel("claude-sonnet-4-6"); got != 180_000 {
+		t.Errorf("InputLimitForModel(claude) = %d, want 180000", got)
+	}
+
+	// Unknown model with no config should return 0
+	if got := InputLimitForModel("totally-unknown"); got != 0 {
+		t.Errorf("InputLimitForModel(unknown) = %d, want 0", got)
+	}
+}
+
+func TestConfigFallbackOutputLimit(t *testing.T) {
+	RegisterConfigLimits([]ConfigModelLimit{
+		{Provider: "cdck", Model: "custom-model-abc", InputLimit: 150_000, OutputLimit: 50_000},
+	})
+	defer RegisterConfigLimits(nil)
+
+	if got := OutputLimitForModel("custom-model-abc"); got != 50_000 {
+		t.Errorf("OutputLimitForModel(custom) = %d, want 50000", got)
+	}
+
+	// Hardcoded model still uses hardcoded table
+	if got := OutputLimitForModel("claude-sonnet-4-6"); got != 64_000 {
+		t.Errorf("OutputLimitForModel(claude) = %d, want 64000", got)
+	}
+}
+
+func TestConfigFallbackClampOutputTokens(t *testing.T) {
+	RegisterConfigLimits([]ConfigModelLimit{
+		{Provider: "cdck", Model: "custom-model-abc", OutputLimit: 50_000},
+	})
+	defer RegisterConfigLimits(nil)
+
+	// Should clamp to config output limit
+	if got := ClampOutputTokens(100_000, "custom-model-abc"); got != 50_000 {
+		t.Errorf("ClampOutputTokens(100000, custom) = %d, want 50000", got)
+	}
+
+	// Within limit should pass through
+	if got := ClampOutputTokens(30_000, "custom-model-abc"); got != 30_000 {
+		t.Errorf("ClampOutputTokens(30000, custom) = %d, want 30000", got)
+	}
+}
+
+func TestConfigFallbackProviderModel(t *testing.T) {
+	RegisterConfigLimits([]ConfigModelLimit{
+		{Provider: "my-custom-provider", Model: "custom-model-abc", InputLimit: 150_000},
+	})
+	defer RegisterConfigLimits(nil)
+
+	// Provider model lookup should fall back to config (provider-scoped)
+	if got := InputLimitForProviderModel("my-custom-provider", "custom-model-abc"); got != 150_000 {
+		t.Errorf("InputLimitForProviderModel(custom) = %d, want 150000", got)
+	}
+}
+
+func TestConfigFallbackCaseInsensitive(t *testing.T) {
+	RegisterConfigLimits([]ConfigModelLimit{
+		{Provider: "cdck", Model: "Qwen/Qwen3.5-122B-A10B", InputLimit: 150_000, OutputLimit: 50_000},
+	})
+	defer RegisterConfigLimits(nil)
+
+	// Exact case match via lowering
+	if got := InputLimitForModel("Qwen/Qwen3.5-122B-A10B"); got != 150_000 {
+		t.Errorf("InputLimitForModel(mixed case) = %d, want 150000", got)
+	}
+	if got := InputLimitForModel("qwen/qwen3.5-122b-a10b"); got != 150_000 {
+		t.Errorf("InputLimitForModel(lower case) = %d, want 150000", got)
+	}
+}
+
+func TestConfigFallbackNilCleanup(t *testing.T) {
+	RegisterConfigLimits([]ConfigModelLimit{
+		{Provider: "cdck", Model: "temp-model", InputLimit: 100_000},
+	})
+	// Should be registered
+	if got := InputLimitForModel("temp-model"); got != 100_000 {
+		t.Errorf("before cleanup: InputLimitForModel = %d, want 100000", got)
+	}
+	// Clear
+	RegisterConfigLimits(nil)
+	if got := InputLimitForModel("temp-model"); got != 0 {
+		t.Errorf("after cleanup: InputLimitForModel = %d, want 0", got)
+	}
+}
+
+func TestConfigFallbackProviderCollision(t *testing.T) {
+	// Two providers use the same model with different limits
+	RegisterConfigLimits([]ConfigModelLimit{
+		{Provider: "fast-host", Model: "qwen3-coder", InputLimit: 100_000, OutputLimit: 8_000},
+		{Provider: "big-host", Model: "qwen3-coder", InputLimit: 200_000, OutputLimit: 50_000},
+	})
+	defer RegisterConfigLimits(nil)
+
+	// Model-only lookups should return 0 (ambiguous — no wrong answer is safe)
+	if got := InputLimitForModel("qwen3-coder"); got != 0 {
+		t.Errorf("InputLimitForModel(collision) = %d, want 0 (ambiguous)", got)
+	}
+	if got := OutputLimitForModel("qwen3-coder"); got != 0 {
+		t.Errorf("OutputLimitForModel(collision) = %d, want 0 (ambiguous)", got)
+	}
+
+	// Provider-scoped lookups should return the correct value
+	if got := InputLimitForProviderModel("fast-host", "qwen3-coder"); got != 100_000 {
+		t.Errorf("InputLimitForProviderModel(fast-host) = %d, want 100000", got)
+	}
+	if got := InputLimitForProviderModel("big-host", "qwen3-coder"); got != 200_000 {
+		t.Errorf("InputLimitForProviderModel(big-host) = %d, want 200000", got)
+	}
+
+	// Unknown provider with collision should return 0 (falls through to model-only)
+	if got := InputLimitForProviderModel("unknown", "qwen3-coder"); got != 0 {
+		t.Errorf("InputLimitForProviderModel(unknown, collision) = %d, want 0", got)
+	}
+}
+
+func TestConfigFallbackProviderNoCollision(t *testing.T) {
+	// Two providers with same model and same limits — no collision
+	RegisterConfigLimits([]ConfigModelLimit{
+		{Provider: "host-a", Model: "shared-model", InputLimit: 150_000, OutputLimit: 50_000},
+		{Provider: "host-b", Model: "shared-model", InputLimit: 150_000, OutputLimit: 50_000},
+	})
+	defer RegisterConfigLimits(nil)
+
+	// Model-only lookups should work (no conflict)
+	if got := InputLimitForModel("shared-model"); got != 150_000 {
+		t.Errorf("InputLimitForModel(no collision) = %d, want 150000", got)
+	}
+	if got := OutputLimitForModel("shared-model"); got != 50_000 {
+		t.Errorf("OutputLimitForModel(no collision) = %d, want 50000", got)
+	}
+}
+
 func TestEffortVariantsFor(t *testing.T) {
 	tests := []struct {
 		model    string

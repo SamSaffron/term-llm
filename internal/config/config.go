@@ -74,6 +74,10 @@ type ProviderConfig struct {
 	// Search behavior - nil means auto (use native if available)
 	UseNativeSearch *bool `mapstructure:"use_native_search"`
 
+	// Model token limits (for custom/self-hosted models not in hardcoded tables)
+	ContextWindow   int `mapstructure:"context_window"`
+	MaxOutputTokens int `mapstructure:"max_output_tokens"`
+
 	// OpenAI-compatible specific
 	BaseURL string `mapstructure:"base_url"` // Base URL - /chat/completions is appended
 	URL     string `mapstructure:"url"`      // Full URL - used as-is without appending endpoint
@@ -1166,6 +1170,9 @@ var KnownProviderKeys = map[string]bool{
 	"url":               true,
 	"app_url":           true,
 	"app_title":         true,
+	"context_window":    true,
+	"max_output_tokens": true,
+	"enable_hooks":      true,
 }
 
 // GetDefaults returns a map of all default configuration values
