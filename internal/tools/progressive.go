@@ -54,26 +54,24 @@ func (t *progressTool) Spec() llm.ToolSpec {
 			"type": "object",
 			"properties": map[string]any{
 				"state": map[string]any{
-					"type":                 "object",
-					"description":          "Best-so-far structured state for the task.",
-					"additionalProperties": true,
+					"type":        "object",
+					"description": "Best-so-far structured state for the task.",
 				},
 				"reason": map[string]any{
-					"type":        []string{"string", "null"},
+					"type":        "string",
 					"description": "Why this checkpoint is being saved: voluntary, milestone, or finalize.",
-					"enum":        []any{"voluntary", "milestone", "finalize", nil},
+					"enum":        []string{"voluntary", "milestone", "finalize"},
 				},
 				"message": map[string]any{
-					"type":        []string{"string", "null"},
+					"type":        "string",
 					"description": "Optional short summary of what changed.",
 				},
 				"final": map[string]any{
-					"type":        []string{"boolean", "null"},
+					"type":        "boolean",
 					"description": "Whether this checkpoint is the final saved state for the run.",
 				},
 			},
-			"required":             []string{"state", "reason", "message", "final"},
-			"additionalProperties": false,
+			"required": []string{"state"},
 		},
 	}
 }
