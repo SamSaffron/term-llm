@@ -364,12 +364,20 @@ func BuildResponsesTools(specs []ToolSpec) []any {
 	}
 	tools := make([]any, 0, len(specs))
 	for _, spec := range specs {
+		var params map[string]interface{}
+		strict := true
+		if spec.NoStrict {
+			params = normalizeSchemaForOpenAI(spec.Schema)
+			strict = false
+		} else {
+			params = normalizeSchemaForOpenAIStrict(spec.Schema)
+		}
 		tools = append(tools, ResponsesTool{
 			Type:        "function",
 			Name:        spec.Name,
 			Description: spec.Description,
-			Parameters:  normalizeSchemaForOpenAIStrict(spec.Schema),
-			Strict:      true,
+			Parameters:  params,
+			Strict:      strict,
 		})
 	}
 	return tools

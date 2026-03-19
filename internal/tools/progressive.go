@@ -47,6 +47,9 @@ func (t *progressTool) Spec() llm.ToolSpec {
 	return llm.ToolSpec{
 		Name:        t.name,
 		Description: t.description,
+		// NoStrict: state is a free-form object and optional fields use union
+		// types — both are incompatible with OpenAI strict mode.
+		NoStrict: true,
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

@@ -295,6 +295,30 @@ func deepCopySlice(s []interface{}) []interface{} {
 
 // normalizeSchemaRecursive applies OpenAI normalization recursively
 func normalizeSchemaRecursive(schema map[string]interface{}) map[string]interface{} {
+	// Handle union types expressed as []string (e.g. []string{"string", "null"}).
+	// OpenAI strict mode requires anyOf instead of array type values.
+	if typeSlice, ok := schema["type"].([]string); ok {
+		anyOf := make([]interface{}, 0, len(typeSlice))
+		enum, hasEnum := schema["enum"]
+		delete(schema, "enum")
+		delete(schema, "type")
+		for _, t := range typeSlice {
+			branch := map[string]interface{}{"type": t}
+			if hasEnum && t != "null" {
+				branch["enum"] = enum
+			}
+			anyOf = append(anyOf, branch)
+		}
+		schema["anyOf"] = anyOf
+		// Recurse into the newly created anyOf branches.
+		for i, item := range anyOf {
+			if m, ok := item.(map[string]interface{}); ok {
+				anyOf[i] = normalizeSchemaRecursive(m)
+			}
+		}
+		return schema
+	}
+
 	// Remove unsupported format values (OpenAI only supports a limited set)
 	if format, ok := schema["format"].(string); ok {
 		// OpenAI supported formats: date-time, date, time, email
