@@ -12,7 +12,7 @@ next:
 Use the jobs runtime when you want scheduled, delayed, or manually triggered background work:
 
 ```bash
-term-llm serve --platform jobs --port 8080
+term-llm serve jobs --port 8080
 ```
 
 ### Jobs V2 API

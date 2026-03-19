@@ -21,7 +21,31 @@ term-llm serve web --no-ui
 term-llm serve web --base-path /chat
 term-llm serve web --host 127.0.0.1 --port 8080
 term-llm serve web jobs
+term-llm serve web jobs telegram   # all three platforms at once
 ```
+
+## First-time setup
+
+Use `--setup` to run the interactive credential wizard for the selected platforms:
+
+```bash
+term-llm serve web --setup
+```
+
+Re-run with `--setup` any time to update stored credentials.
+
+## Default platforms
+
+To avoid specifying platforms every time, set them in `config.yaml`:
+
+```yaml
+serve:
+  platforms:
+    - web
+    - jobs
+```
+
+`term-llm serve` with no positional arguments reads from `serve.platforms`.
 
 ## What it serves
 
@@ -104,5 +128,6 @@ Use the web runtime when you want:
 ## Related pages
 
 - [Jobs](/guides/job-runner/)
+- [Telegram Bot](/guides/telegram-bot/)
 - [Configuration](/reference/configuration/)
 - [Search](/guides/search/)
