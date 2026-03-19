@@ -184,6 +184,44 @@ func normalizeSchemaForOpenAIStrict(schema map[string]interface{}) map[string]in
 	return normalizeFreeFormMapProperties(normalizeSchemaForOpenAI(schema))
 }
 
+// schemaContainsFreeFormObject reports whether any object in the schema tree uses
+// additionalProperties: true (boolean), which cannot be expressed in OpenAI strict
+// mode. Tools with such schemas must be sent with Strict: false.
+func schemaContainsFreeFormObject(schema map[string]interface{}) bool {
+	if schema == nil {
+		return false
+	}
+	if v, ok := schema["additionalProperties"].(bool); ok && v {
+		return true
+	}
+	if props, ok := schema["properties"].(map[string]interface{}); ok {
+		for _, val := range props {
+			if propSchema, ok := val.(map[string]interface{}); ok {
+				if schemaContainsFreeFormObject(propSchema) {
+					return true
+				}
+			}
+		}
+	}
+	if items, ok := schema["items"].(map[string]interface{}); ok {
+		if schemaContainsFreeFormObject(items) {
+			return true
+		}
+	}
+	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
+		if arr, ok := schema[key].([]interface{}); ok {
+			for _, item := range arr {
+				if itemSchema, ok := item.(map[string]interface{}); ok {
+					if schemaContainsFreeFormObject(itemSchema) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
 // normalizeFreeFormMapProperties converts any free-form map schema (one whose
 // additionalProperties is a schema object, not a bool) into an array of
 // {key, value} pair objects. OpenAI strict mode requires additionalProperties:
@@ -341,10 +379,16 @@ func normalizeSchemaRecursive(schema map[string]interface{}) map[string]interfac
 	}
 
 	// OpenAI requires additionalProperties to be false for objects.
-	// Exception: if additionalProperties is already a schema map (e.g. {"type":"string"}),
-	// preserve it — that's a valid free-form map type (like the env parameter).
+	// Exceptions:
+	//   - additionalProperties is already a schema map (e.g. {"type":"string"}) — free-form
+	//     typed map; normalizeFreeFormMapProperties will convert it to {key,value} pairs.
+	//   - additionalProperties is the boolean true — completely free-form object; preserving
+	//     true lets callers detect this case and opt out of strict mode.
 	if schema["type"] == "object" || schema["properties"] != nil {
-		if _, isSchemaMap := schema["additionalProperties"].(map[string]interface{}); !isSchemaMap {
+		switch schema["additionalProperties"].(type) {
+		case map[string]interface{}, bool:
+			// preserve: either an explicit schema map or an explicit boolean
+		default:
 			schema["additionalProperties"] = false
 		}
 	}

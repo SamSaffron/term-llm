@@ -357,19 +357,28 @@ func buildResponsesReasoningItem(part Part) ResponsesInputItem {
 	return item
 }
 
-// BuildResponsesTools converts []ToolSpec to Open Responses format with schema normalization
+// BuildResponsesTools converts []ToolSpec to Open Responses format with schema normalization.
+// Tools whose schema contains a free-form object (additionalProperties: true) cannot be
+// expressed in OpenAI strict mode and are sent with Strict: false.
 func BuildResponsesTools(specs []ToolSpec) []any {
 	if len(specs) == 0 {
 		return nil
 	}
 	tools := make([]any, 0, len(specs))
 	for _, spec := range specs {
+		var params map[string]interface{}
+		strict := !schemaContainsFreeFormObject(spec.Schema)
+		if strict {
+			params = normalizeSchemaForOpenAIStrict(spec.Schema)
+		} else {
+			params = normalizeSchemaForOpenAI(spec.Schema)
+		}
 		tools = append(tools, ResponsesTool{
 			Type:        "function",
 			Name:        spec.Name,
 			Description: spec.Description,
-			Parameters:  normalizeSchemaForOpenAIStrict(spec.Schema),
-			Strict:      true,
+			Parameters:  params,
+			Strict:      strict,
 		})
 	}
 	return tools
