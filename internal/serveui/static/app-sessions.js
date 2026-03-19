@@ -466,6 +466,7 @@ elements.sidebarRailSettingsBtn.addEventListener('click', () => {
 
 elements.mobileMenuBtn.addEventListener('click', openSidebar);
 elements.sidebarToggleBtn.addEventListener('click', toggleSidebarCollapsed);
+elements.sidebarPanelToggleBtn.addEventListener('click', toggleSidebarCollapsed);
 elements.sidebarBackdrop.addEventListener('click', closeSidebar);
 elements.sidebarCloseBtn.addEventListener('click', closeSidebar);
 

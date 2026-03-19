@@ -50,12 +50,19 @@ const closeSidebarIfMobile = () => {
 };
 
 const applySidebarToggleButtonState = () => {
-  if (!elements.sidebarToggleBtn) return;
   const expanded = !state.sidebarCollapsed;
-  elements.sidebarToggleBtn.textContent = expanded ? '◀' : '▶';
-  elements.sidebarToggleBtn.title = expanded ? 'Collapse sidebar' : 'Expand sidebar';
-  elements.sidebarToggleBtn.setAttribute('aria-label', expanded ? 'Collapse sidebar' : 'Expand sidebar');
-  elements.sidebarToggleBtn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  // Rail toggle (visible when collapsed)
+  if (elements.sidebarToggleBtn) {
+    elements.sidebarToggleBtn.title = 'Expand sidebar';
+    elements.sidebarToggleBtn.setAttribute('aria-label', 'Expand sidebar');
+    elements.sidebarToggleBtn.setAttribute('aria-expanded', 'false');
+  }
+  // Panel toggle (visible when expanded)
+  if (elements.sidebarPanelToggleBtn) {
+    elements.sidebarPanelToggleBtn.title = expanded ? 'Collapse sidebar' : 'Expand sidebar';
+    elements.sidebarPanelToggleBtn.setAttribute('aria-label', expanded ? 'Collapse sidebar' : 'Expand sidebar');
+    elements.sidebarPanelToggleBtn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  }
 };
 
 const applyDesktopSidebarState = () => {

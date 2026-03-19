@@ -68,6 +68,7 @@ const elements = {
   sidebar: document.getElementById('sidebar'),
   sidebarBackdrop: document.getElementById('sidebarBackdrop'),
   sidebarToggleBtn: document.getElementById('sidebarToggleBtn'),
+  sidebarPanelToggleBtn: document.getElementById('sidebarPanelToggleBtn'),
   sidebarCloseBtn: document.getElementById('sidebarCloseBtn'),
   sidebarRailNewChatBtn: document.getElementById('sidebarRailNewChatBtn'),
   sidebarRailSettingsBtn: document.getElementById('sidebarRailSettingsBtn'),

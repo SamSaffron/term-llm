@@ -205,6 +205,7 @@
       right: 0;
       z-index: 1;
       overflow: hidden;
+      transition: grid-template-columns 0.2s ease;
     }
 
     .app.sidebar-collapsed {
@@ -214,21 +215,31 @@
     .sidebar {
       border-right: 1px solid var(--border);
       background: var(--surface);
-      display: grid;
-      grid-template-columns: var(--sidebar-rail-width) minmax(0, 1fr);
+      display: flex;
+      flex-direction: column;
       min-height: 0;
       z-index: 20;
       padding-left: var(--safe-left);
+      position: relative;
+      overflow: hidden;
     }
 
     .sidebar-rail {
-      border-right: 1px solid var(--border);
-      background: var(--surface-2);
+      background: transparent;
       display: flex;
       flex-direction: column;
       align-items: center;
       gap: 0.55rem;
       padding: calc(0.85rem + var(--safe-top)) 0.55rem 0.85rem;
+      position: absolute;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      width: var(--sidebar-rail-width);
+      z-index: 1;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.15s ease;
     }
 
     .sidebar-rail-btn {
@@ -241,14 +252,18 @@
       min-height: 0;
       display: flex;
       flex-direction: column;
+      flex: 1;
+      transition: opacity 0.15s ease;
     }
 
-    .app.sidebar-collapsed .sidebar {
-      grid-template-columns: var(--sidebar-rail-width);
+    .app.sidebar-collapsed .sidebar-rail {
+      opacity: 1;
+      pointer-events: auto;
     }
 
     .app.sidebar-collapsed .sidebar-panel {
-      display: none;
+      opacity: 0;
+      pointer-events: none;
     }
 
     .sidebar-header {
@@ -257,7 +272,6 @@
       justify-content: space-between;
       gap: 0.5rem;
       padding: calc(0.85rem + var(--safe-top)) 0.8rem 0.85rem;
-      border-bottom: 1px solid var(--border);
       min-height: 58px;
     }
 
@@ -315,7 +329,6 @@
 
     .new-chat-wrap {
       padding: 0.75rem;
-      border-bottom: 1px solid var(--border);
     }
 
     .new-chat-btn {
@@ -1805,6 +1818,8 @@
 
       .app.sidebar-collapsed .sidebar-panel {
         display: flex;
+        opacity: 1;
+        pointer-events: auto;
       }
 
       .sidebar.open {
