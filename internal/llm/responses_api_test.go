@@ -351,6 +351,83 @@ func TestBuildResponsesTools(t *testing.T) {
 	}
 }
 
+// TestBuildResponsesTools_FreeFormObjectUsesNonStrictMode reproduces the bug where a
+// tool schema that contains a free-form object property (additionalProperties: true)
+// was sent to the Responses API with Strict: true, causing OpenAI to reject the schema
+// with "Extra required key 'state' supplied".
+func TestBuildResponsesTools_FreeFormObjectUsesNonStrictMode(t *testing.T) {
+	// Mirrors the progress tool schema that triggered the bug.
+	specs := []ToolSpec{
+		{
+			Name:        "update_progress",
+			Description: "Save progress state",
+			Schema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"state": map[string]interface{}{
+						"type":                 "object",
+						"description":          "Free-form state object",
+						"additionalProperties": true,
+					},
+					"reason": map[string]interface{}{
+						"type": "string",
+					},
+				},
+				"required":             []string{"state", "reason"},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Name:        "regular_tool",
+			Description: "A tool with no free-form properties",
+			Schema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query": map[string]interface{}{
+						"type": "string",
+					},
+				},
+				"additionalProperties": false,
+			},
+		},
+	}
+
+	tools := BuildResponsesTools(specs)
+	if len(tools) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(tools))
+	}
+
+	progressTool, ok := tools[0].(ResponsesTool)
+	if !ok {
+		t.Fatal("expected ResponsesTool")
+	}
+	// Tool with free-form object must NOT use strict mode.
+	if progressTool.Strict {
+		t.Error("expected Strict=false for tool with additionalProperties:true property")
+	}
+	// The 'state' property must still be present with additionalProperties: true preserved.
+	props, ok := progressTool.Parameters["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected parameters.properties to be a map")
+	}
+	stateSchema, ok := props["state"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected state property schema to be a map")
+	}
+	if stateSchema["additionalProperties"] != true {
+		t.Errorf("expected state.additionalProperties=true, got %v", stateSchema["additionalProperties"])
+	}
+
+	regularTool, ok := tools[1].(ResponsesTool)
+	if !ok {
+		t.Fatal("expected ResponsesTool")
+	}
+	// Regular tool (no free-form object) must use strict mode.
+	if !regularTool.Strict {
+		t.Error("expected Strict=true for tool without free-form object properties")
+	}
+}
+
 func TestBuildResponsesToolChoice(t *testing.T) {
 	tests := []struct {
 		choice   ToolChoice
