@@ -12,10 +12,10 @@ type wrappedLineSegment struct {
 	end   int
 }
 
-func (m *Model) recordTextareaLayout(inputStartY int) {
+func (m *Model) applyFooterLayout(startY int, layout footerLayout) {
 	m.textareaBoundsValid = false
 
-	textareaHeight := m.textarea.Height()
+	textareaHeight := layout.textareaHeight
 	if textareaHeight <= 0 {
 		return
 	}
@@ -28,28 +28,7 @@ func (m *Model) recordTextareaLayout(inputStartY int) {
 		textareaWidth = 1
 	}
 
-	extraRows := 0
-	if m.pendingInterjection != "" {
-		extraRows++
-	}
-	if len(m.files) > 0 {
-		extraRows++
-	}
-	if len(m.images) > 0 {
-		extraRows++
-	}
-
-	if m.altScreen && m.height > 0 {
-		// In alt-screen mode input is pinned to the bottom.
-		inputBlockHeight := textareaHeight + extraRows + 3 // top sep + bottom sep + status
-		topSeparatorY := m.height - inputBlockHeight
-		if topSeparatorY < 0 {
-			topSeparatorY = 0
-		}
-		m.textareaTopY = topSeparatorY + 1 + extraRows
-	} else {
-		m.textareaTopY = inputStartY + 1 + extraRows
-	}
+	m.textareaTopY = startY + layout.textareaOffsetY
 	m.textareaBottomY = m.textareaTopY + textareaHeight - 1
 	m.textareaLeftX = 0
 	m.textareaPromptWidth = lipgloss.Width(m.textarea.Prompt)

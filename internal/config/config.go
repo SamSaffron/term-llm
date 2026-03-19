@@ -79,8 +79,9 @@ type ProviderConfig struct {
 	MaxOutputTokens int `mapstructure:"max_output_tokens"`
 
 	// OpenAI-compatible specific
-	BaseURL string `mapstructure:"base_url"` // Base URL - /chat/completions is appended
-	URL     string `mapstructure:"url"`      // Full URL - used as-is without appending endpoint
+	BaseURL         string `mapstructure:"base_url"`          // Base URL - /chat/completions is appended
+	URL             string `mapstructure:"url"`               // Full URL - used as-is without appending endpoint
+	NoStreamOptions bool   `mapstructure:"no_stream_options"` // Don't send stream_options (for servers that reject it)
 
 	// OpenRouter specific
 	AppURL   string `mapstructure:"app_url"`

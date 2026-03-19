@@ -319,7 +319,9 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 		}
 		// Use provider name as display name, with first letter capitalized
 		displayName := strings.ToUpper(name[:1]) + name[1:]
-		return NewOpenAICompatProviderFull(baseURL, chatURL, cfg.ResolvedAPIKey, cfg.Model, displayName, nil), nil
+		p := NewOpenAICompatProviderFull(baseURL, chatURL, cfg.ResolvedAPIKey, cfg.Model, displayName, nil)
+		p.noStreamOptions = cfg.NoStreamOptions
+		return p, nil
 
 	default:
 		return nil, fmt.Errorf("unknown provider type: %s", providerType)

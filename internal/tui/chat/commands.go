@@ -417,8 +417,7 @@ func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
 	m.webSearchUsed = false
 	m.retryStatus = ""
 	if m.tracker != nil {
-		m.tracker = ui.NewToolTracker()
-		m.tracker.TextMode = m.textMode
+		m.resetTracker()
 	}
 	if m.smoothBuffer != nil {
 		m.smoothBuffer.Reset()
@@ -618,8 +617,7 @@ func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
 	m.webSearchUsed = false
 	m.retryStatus = ""
 	if m.tracker != nil {
-		m.tracker = ui.NewToolTracker()
-		m.tracker.TextMode = m.textMode
+		m.resetTracker()
 	}
 	if m.smoothBuffer != nil {
 		m.smoothBuffer.Reset()

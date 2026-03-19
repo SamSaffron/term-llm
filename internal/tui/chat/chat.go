@@ -482,6 +482,7 @@ func (m *Model) applyWindowSize(msg tea.WindowSizeMsg) {
 	m.height = msg.Height
 	m.viewportRows = m.height - 8
 	m.textarea.SetWidth(m.width)
+	m.updateTextareaHeight()
 	if m.completions != nil {
 		m.completions.SetSize(m.width, m.height)
 	}
@@ -513,13 +514,7 @@ func (m *Model) applyWindowSize(msg tea.WindowSizeMsg) {
 	m.bumpContentVersion()
 
 	// Resize viewport for alt screen mode.
-	// Reserve space for input area (textarea + separators + status).
-	vpHeight := m.height - 4
-	if vpHeight < 1 {
-		vpHeight = 1
-	}
 	m.viewport.Width = m.width
-	m.viewport.Height = vpHeight
 
 	// Propagate size to embedded dialogs if active.
 	if m.approvalModel != nil {
@@ -530,9 +525,34 @@ func (m *Model) applyWindowSize(msg tea.WindowSizeMsg) {
 	}
 
 	// Update chat renderer size (invalidates cache).
+	if m.altScreen {
+		m.syncAltScreenViewportHeight(m.buildFooterLayout().height)
+	} else if m.chatRenderer != nil {
+		m.chatRenderer.SetSize(m.width, m.height)
+	}
+}
+
+func (m *Model) syncAltScreenViewportHeight(footerHeight int) {
+	vpHeight := m.height - footerHeight
+	if vpHeight < 1 {
+		vpHeight = 1
+	}
+	m.viewport.Width = m.width
+	m.viewport.Height = vpHeight
+	m.viewportRows = vpHeight
+	m.viewport.SetYOffset(m.viewport.YOffset)
 	if m.chatRenderer != nil {
 		m.chatRenderer.SetSize(m.width, vpHeight)
 	}
+}
+
+func (m *Model) resetTracker() {
+	m.tracker = ui.NewToolTracker()
+	m.tracker.TextMode = m.textMode
+	m.viewCache.cachedCompletedContent = ""
+	m.viewCache.cachedTrackerVersion = 0
+	m.viewCache.lastTrackerVersion = 0
+	m.viewCache.lastWavePos = 0
 }
 
 // Init initializes the model
@@ -1110,8 +1130,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.currentTokens = 0
 			m.webSearchUsed = false
 			m.retryStatus = ""
-			m.tracker = ui.NewToolTracker() // Reset tracker
-			m.tracker.TextMode = m.textMode // Preserve text mode setting
+			m.resetTracker()
 			if m.smoothBuffer != nil {
 				m.smoothBuffer.Reset()
 			}

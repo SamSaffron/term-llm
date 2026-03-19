@@ -230,6 +230,31 @@ providers:
 
 The `models` list enables tab completion for `--provider my-server:<TAB>`. The configured `model` is always included in completions.
 
+If your server rejects `stream_options` (causing errors on connect), disable it:
+
+```yaml
+providers:
+  my-server:
+    type: openai_compatible
+    base_url: http://your-server:8080/v1
+    model: my-model
+    no_stream_options: true
+```
+
+For custom models not in the built-in token limit tables, set `context_window` and `max_output_tokens` explicitly:
+
+```yaml
+providers:
+  my-server:
+    type: openai_compatible
+    base_url: http://your-server:8080/v1
+    model: my-model
+    context_window: 32768
+    max_output_tokens: 8192
+```
+
+See [Providers and models](/reference/providers-and-models/#configuration-reference) for the full list of OpenAI-compatible provider options.
+
 ### Option 9: Use Claude Code (claude-bin)
 
 If you have [Claude Code](https://claude.ai/code) installed and logged in, you can use the `claude-bin` provider to run completions via the [Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk). This requires no API key - it uses Claude Code's existing authentication.

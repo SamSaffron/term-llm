@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -194,6 +195,48 @@ func TestViewAltScreen_RefreshesWhenMessagesReplacedWithSameCount(t *testing.T) 
 	}
 	if !strings.Contains(second, "new final reply") {
 		t.Fatalf("expected refreshed render to include replacement message, got %q", second)
+	}
+}
+
+func TestViewAltScreen_ViewportHeightAccountsForMultilineFooter(t *testing.T) {
+	m := newTestChatModel(true)
+	m.setTextareaValue("line one\nline two\nline three\nline four")
+
+	footerHeight := lipgloss.Height(m.renderInputInline())
+	if footerHeight <= 4 {
+		t.Fatalf("expected multiline footer height > 4, got %d", footerHeight)
+	}
+
+	_ = m.View()
+
+	wantHeight := m.height - footerHeight
+	if wantHeight < 1 {
+		wantHeight = 1
+	}
+	if m.viewport.Height != wantHeight {
+		t.Fatalf("viewport height = %d, want %d for footer height %d", m.viewport.Height, wantHeight, footerHeight)
+	}
+}
+
+func TestRenderStatusLine_FitsViewportWidth(t *testing.T) {
+	m := newTestChatModel(false)
+	m.width = 24
+	m.modelName = "claude-sonnet-4-20250514"
+	m.yolo = true
+	m.searchEnabled = true
+	m.localTools = []string{"read_file", "write_file", "shell", "grep"}
+	m.streaming = true
+	m.phase = "Responding"
+	m.currentTokens = 12345
+	m.streamStartTime = time.Now().Add(-45 * time.Second)
+	m.stats = ui.NewSessionStats()
+	m.stats.CachedInputTokens = 500_000
+
+	rendered := ui.StripANSI(m.renderStatusLine())
+	for _, line := range strings.Split(rendered, "\n") {
+		if lipgloss.Width(line) > m.width {
+			t.Fatalf("status line width = %d, want <= %d; line=%q", lipgloss.Width(line), m.width, line)
+		}
 	}
 }
 

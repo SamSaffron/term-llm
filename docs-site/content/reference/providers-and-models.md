@@ -81,6 +81,44 @@ providers:
 
 Use `base_url` when the standard `/chat/completions` path should be appended automatically. Use `url` when you need to specify the full chat completions endpoint directly.
 
+### Configuration reference
+
+| Field | Type | Description |
+|---|---|---|
+| `type` | string | Must be `openai_compatible` for custom providers. Inferred automatically for known names like `ollama`, `cerebras`, `groq`. |
+| `base_url` | string | Base URL (e.g., `http://localhost:11434/v1`). `/chat/completions` is appended automatically. |
+| `url` | string | Full chat completions URL, used as-is. Use this when your endpoint path differs from the standard. Supports `srv://` for DNS SRV discovery and `$()` for command-based resolution. |
+| `api_key` | string | API key. Supports `${ENV_VAR}`, `op://`, `file://`, and `$()` resolution. If omitted, term-llm tries `<PROVIDER_NAME>_API_KEY` from the environment. |
+| `model` | string | Default model name sent to the server. |
+| `models` | list | Optional list of model names for shell tab completion with `--provider name:<TAB>`. |
+| `fast_model` | string | Lightweight model used for control-plane tasks (e.g., title generation). |
+| `fast_provider` | string | Provider key to use for `fast_model` if it lives on a different provider. |
+| `context_window` | int | Override context window size in tokens. Use this for self-hosted models not in the built-in token limit tables. |
+| `max_output_tokens` | int | Override maximum output tokens. Same use case as `context_window`. |
+| `no_stream_options` | bool | When `true`, don't send `stream_options` in the request. Use this for servers that reject the field. Default `false` — most OpenAI-compatible servers (vLLM, Ollama, LM Studio) support it and need it to report token usage. |
+
+### Full example
+
+```yaml
+providers:
+  my-vllm:
+    type: openai_compatible
+    base_url: http://gpu-server:8000/v1
+    model: Qwen/Qwen3-30B-A3B
+    api_key: ${VLLM_API_KEY}
+    context_window: 32768
+    max_output_tokens: 8192
+    models:
+      - Qwen/Qwen3-30B-A3B
+      - Qwen/Qwen3-8B
+
+  legacy-server:
+    type: openai_compatible
+    url: http://old-server:5000/api/chat
+    model: custom-finetune
+    no_stream_options: true  # this server rejects stream_options
+```
+
 ## Reasoning and model suffixes
 
 ### OpenAI reasoning effort

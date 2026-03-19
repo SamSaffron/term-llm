@@ -170,6 +170,30 @@ func TestTextSnapshotStressTest(t *testing.T) {
 	}
 }
 
+func TestMarkCurrentTextComplete_BumpsVersion(t *testing.T) {
+	tracker := NewToolTracker()
+	tracker.AddTextSegment("hello", 80)
+
+	before := tracker.Version
+	tracker.MarkCurrentTextComplete(func(text string) string { return text })
+
+	if tracker.Version <= before {
+		t.Fatalf("Version = %d, want > %d after MarkCurrentTextComplete", tracker.Version, before)
+	}
+}
+
+func TestCompleteTextSegments_BumpsVersion(t *testing.T) {
+	tracker := NewToolTracker()
+	tracker.AddTextSegment("hello", 80)
+
+	before := tracker.Version
+	tracker.CompleteTextSegments(func(text string) string { return text })
+
+	if tracker.Version <= before {
+		t.Fatalf("Version = %d, want > %d after CompleteTextSegments", tracker.Version, before)
+	}
+}
+
 // TestAllCompletedSegments_IncludesFlushed verifies that AllCompletedSegments
 // returns both flushed and unflushed segments, unlike CompletedSegments.
 // This is critical for the final View() render to include all content.

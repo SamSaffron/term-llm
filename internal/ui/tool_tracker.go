@@ -368,9 +368,9 @@ func (t *ToolTracker) AddTextSegment(text string, width int) bool {
 	return true
 }
 
-func completeTextSegment(seg *Segment, renderFunc func(string) string) {
+func completeTextSegment(seg *Segment, renderFunc func(string) string) bool {
 	if seg == nil || seg.Type != SegmentText || seg.Complete {
-		return
+		return false
 	}
 
 	// Finalize TextBuilder to Text - clone to avoid sharing memory with builder.
@@ -412,13 +412,20 @@ func completeTextSegment(seg *Segment, renderFunc func(string) string) {
 	}
 
 	seg.Complete = true
+	return true
 }
 
 // CompleteTextSegments marks all incomplete text segments as complete.
 // Renders the full text with glamour on completion.
 func (t *ToolTracker) CompleteTextSegments(renderFunc func(string) string) {
+	changed := false
 	for i := range t.Segments {
-		completeTextSegment(&t.Segments[i], renderFunc)
+		if completeTextSegment(&t.Segments[i], renderFunc) {
+			changed = true
+		}
+	}
+	if changed {
+		t.Version++
 	}
 }
 
@@ -427,7 +434,9 @@ func (t *ToolTracker) CompleteTextSegments(renderFunc func(string) string) {
 func (t *ToolTracker) MarkCurrentTextComplete(renderFunc func(string) string) {
 	if len(t.Segments) > 0 {
 		last := &t.Segments[len(t.Segments)-1]
-		completeTextSegment(last, renderFunc)
+		if completeTextSegment(last, renderFunc) {
+			t.Version++
+		}
 	}
 }
 

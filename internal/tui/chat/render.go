@@ -104,10 +104,9 @@ func (m *Model) View() string {
 		renderedLines++
 	}
 
-	m.recordTextareaLayout(renderedLines)
-
-	// Input prompt
-	b.WriteString(m.renderInputInline())
+	footer := m.buildFooterLayout()
+	m.applyFooterLayout(renderedLines, footer)
+	b.WriteString(footer.view)
 
 	return titleSeq + b.String()
 }
@@ -116,6 +115,8 @@ func (m *Model) View() string {
 func (m *Model) viewAltScreen() string {
 	var b strings.Builder
 	renderedLines := 0
+	footer := m.buildFooterLayout()
+	m.syncAltScreenViewportHeight(footer.height)
 
 	// Build scrollable content with caching to avoid re-rendering unchanged content
 
@@ -273,12 +274,102 @@ func (m *Model) viewAltScreen() string {
 		renderedLines++
 	}
 
-	m.recordTextareaLayout(renderedLines)
-
-	// Input area (fixed at bottom)
-	b.WriteString(m.renderInputInline())
+	m.applyFooterLayout(renderedLines, footer)
+	b.WriteString(footer.view)
 
 	return b.String()
+}
+
+type footerLayout struct {
+	view            string
+	height          int
+	textareaOffsetY int
+	textareaHeight  int
+}
+
+func (m *Model) wrapFooterLine(line string) string {
+	if line == "" || m.width <= 0 {
+		return line
+	}
+	return lipgloss.NewStyle().Width(m.width).MaxWidth(m.width).Render(line)
+}
+
+func (m *Model) buildFooterLayout() footerLayout {
+	theme := m.styles.Theme()
+	separator := lipgloss.NewStyle().Foreground(theme.Muted).Render(strings.Repeat("─", m.width))
+	var rows []string
+	rows = append(rows, separator)
+	textareaOffsetY := 1
+
+	appendMetaRow := func(row string) {
+		if row == "" {
+			return
+		}
+		row = m.wrapFooterLine(row)
+		rows = append(rows, row)
+		textareaOffsetY += lipgloss.Height(row)
+	}
+
+	if m.interruptNotice != "" {
+		noticeStyle := lipgloss.NewStyle().Foreground(theme.Muted).Italic(true)
+		appendMetaRow(noticeStyle.Render("  " + m.interruptNotice))
+	}
+
+	if m.pendingInterjection != "" {
+		pendingStyle := lipgloss.NewStyle().Foreground(theme.Muted).Italic(true)
+		pendingText := m.pendingInterjection
+		label := "will incorporate"
+		switch m.pendingInterruptUI {
+		case "deciding":
+			label = "deciding…"
+		case "interject":
+			label = "will incorporate"
+		}
+		// Truncate long messages before wrapping so very narrow widths remain stable.
+		maxLen := m.width - 20 // account for prefix/suffix
+		if maxLen > 0 && len(pendingText) > maxLen {
+			pendingText = pendingText[:maxLen] + "…"
+		}
+		appendMetaRow(pendingStyle.Render("  ⏳ " + pendingText + " (" + label + ")"))
+	}
+
+	if len(m.files) > 0 {
+		var fileNames []string
+		for _, f := range m.files {
+			fileNames = append(fileNames, f.Name)
+		}
+		filesInfo := lipgloss.NewStyle().Foreground(theme.Secondary).Render(
+			fmt.Sprintf("[with: %s]", strings.Join(fileNames, ", ")))
+		appendMetaRow(filesInfo)
+	}
+
+	if len(m.images) > 0 {
+		muted := lipgloss.NewStyle().Foreground(theme.Muted)
+		selected := lipgloss.NewStyle().Foreground(theme.Primary).Bold(true).Underline(true)
+		var chips []string
+		for i := range m.images {
+			label := fmt.Sprintf("[image %d]", i+1)
+			if i == m.selectedImage {
+				chips = append(chips, selected.Render(label))
+			} else {
+				chips = append(chips, muted.Render(label))
+			}
+		}
+		appendMetaRow(strings.Join(chips, " "))
+	}
+
+	textareaView := m.textarea.View()
+	rows = append(rows, textareaView)
+	rows = append(rows, separator)
+	rows = append(rows, m.renderStatusLine())
+
+	view := strings.Join(rows, "\n")
+	return footerLayout{
+		view:            view,
+		height:          lipgloss.Height(view),
+		textareaOffsetY: textareaOffsetY,
+		textareaHeight:  lipgloss.Height(textareaView),
+	}
 }
 
 // viewAutoSend renders a minimal view for auto-send benchmarking mode.
@@ -379,83 +470,7 @@ func (m *Model) renderStreamingInline() string {
 
 // renderInputInline renders the input prompt for inline mode
 func (m *Model) renderInputInline() string {
-	theme := m.styles.Theme()
-
-	var b strings.Builder
-
-	// Separator line above input (no extra newline - content already has one)
-	separator := lipgloss.NewStyle().Foreground(theme.Muted).Render(strings.Repeat("─", m.width))
-	b.WriteString(separator)
-
-	// Show recent interrupt notice above the composer.
-	if m.interruptNotice != "" {
-		noticeStyle := lipgloss.NewStyle().Foreground(theme.Muted).Italic(true)
-		b.WriteString("\n")
-		b.WriteString(noticeStyle.Render("  " + m.interruptNotice))
-	}
-
-	// Show pending interjection indicator while interrupt classification/injection is in flight.
-	if m.pendingInterjection != "" {
-		pendingStyle := lipgloss.NewStyle().Foreground(theme.Muted).Italic(true)
-		pendingText := m.pendingInterjection
-		label := "will incorporate"
-		switch m.pendingInterruptUI {
-		case "deciding":
-			label = "deciding…"
-		case "interject":
-			label = "will incorporate"
-		}
-		// Truncate long messages to fit the terminal width
-		maxLen := m.width - 20 // account for prefix/suffix
-		if maxLen > 0 && len(pendingText) > maxLen {
-			pendingText = pendingText[:maxLen] + "…"
-		}
-		b.WriteString("\n")
-		b.WriteString(pendingStyle.Render("  ⏳ " + pendingText + " (" + label + ")"))
-	}
-
-	// Show attached files if any
-	if len(m.files) > 0 {
-		b.WriteString("\n")
-		var fileNames []string
-		for _, f := range m.files {
-			fileNames = append(fileNames, f.Name)
-		}
-		filesInfo := lipgloss.NewStyle().Foreground(theme.Secondary).Render(
-			fmt.Sprintf("[with: %s]", strings.Join(fileNames, ", ")))
-		b.WriteString(filesInfo)
-	}
-
-	// Show pasted image attachments as selectable chips above the textarea.
-	if len(m.images) > 0 {
-		b.WriteString("\n")
-		muted := lipgloss.NewStyle().Foreground(theme.Muted)
-		selected := lipgloss.NewStyle().Foreground(theme.Primary).Bold(true).Underline(true)
-		var chips []string
-		for i := range m.images {
-			label := fmt.Sprintf("[image %d]", i+1)
-			if i == m.selectedImage {
-				chips = append(chips, selected.Render(label))
-			} else {
-				chips = append(chips, muted.Render(label))
-			}
-		}
-		b.WriteString(strings.Join(chips, " "))
-	}
-
-	// Input prompt
-	b.WriteString("\n")
-	b.WriteString(m.textarea.View())
-	b.WriteString("\n")
-
-	// Separator line below input
-	b.WriteString(separator)
-	b.WriteString("\n")
-
-	// Status line
-	b.WriteString(m.renderStatusLine())
-
-	return b.String()
+	return m.buildFooterLayout().view
 }
 
 // renderError renders the error message when m.err is set
@@ -732,7 +747,7 @@ func (m *Model) renderStatusLine() string {
 		parts = append(parts, m.copyStatus)
 	}
 
-	return mutedStyle.Render(strings.Join(parts, sep))
+	return m.wrapFooterLine(mutedStyle.Render(strings.Join(parts, sep)))
 }
 
 // mcpFindServerMatch finds the best matching server name for tab completion
