@@ -21,13 +21,20 @@ jobs:
           hugo-version: '0.145.0'
           extended: true
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - name: Build docs site
         run: |
           rm -rf docs-site-public
           cd docs-site
           hugo --destination ../docs-site-public
           cd ..
+          npx --yes pagefind --site docs-site-public
           test -f docs-site-public/index.html
+          test -f docs-site-public/pagefind/pagefind.js
 
       - name: Prepare release directories
         uses: appleboy/ssh-action@v1.2.0

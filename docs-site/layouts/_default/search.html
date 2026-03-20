@@ -1,0 +1,19 @@
+{{ define "main" }}
+  <section class="doc-hero" data-pagefind-ignore="all">
+    <div class="breadcrumbs">
+      <a href="/">Docs</a>
+      <span>→</span>
+      <span>{{ .Title }}</span>
+    </div>
+    <p class="eyebrow">{{ with .Params.kicker }}{{ . }}{{ else }}Search{{ end }}</p>
+    <h1>{{ .Title }}</h1>
+    <p class="doc-intro">{{ with .Description }}{{ . }}{{ else }}Search the term-llm docs.{{ end }}</p>
+  </section>
+
+  <section class="doc-section search-section" data-pagefind-ignore="all">
+    <div class="search-shell">
+      <div class="search-lede markdown">{{ .Content }}</div>
+      <div id="search-ui"></div>
+    </div>
+  </section>
+{{ end }}

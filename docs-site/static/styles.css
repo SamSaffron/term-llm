@@ -149,6 +149,77 @@ pre, code, .terminal-panel code, .install-command code { font-family: "JetBrains
 .doc-meta p { margin: 0.5rem 0 0; color: var(--soft); line-height: 1.6; }
 .toc-box { margin-bottom: 1.5rem; padding: 1rem 1rem 0.2rem; border-radius: 16px; background: rgba(8,14,25,0.5); border: 1px solid rgba(125,211,252,0.12); }
 .toc-box ul { padding-left: 1rem; }
+.search-shell {
+  display: grid;
+  gap: 1rem;
+  padding: 1.25rem;
+  border-radius: 22px;
+  background: var(--panel-strong);
+  border: 1px solid rgba(125,211,252,0.14);
+}
+.search-lede { color: var(--soft); }
+#search-ui .pagefind-ui__search-input {
+  width: 100%;
+  padding: 1rem 1.1rem;
+  border-radius: 16px;
+  border: 1px solid rgba(125,211,252,0.18);
+  background: rgba(4,8,16,0.82);
+  color: var(--text);
+  font: inherit;
+  box-shadow: none;
+}
+#search-ui .pagefind-ui__search-input::placeholder {
+  color: var(--muted);
+  opacity: 0.75;
+}
+#search-ui .pagefind-ui__search-input:focus {
+  outline: 2px solid rgba(114,241,184,0.35);
+  outline-offset: 2px;
+}
+#search-ui .pagefind-ui__search-clear,
+#search-ui .pagefind-ui__button {
+  border-radius: 12px;
+  border: 1px solid rgba(125,211,252,0.18);
+  background: rgba(10,18,32,0.96);
+  color: var(--text);
+}
+#search-ui .pagefind-ui__search-clear:hover,
+#search-ui .pagefind-ui__button:hover {
+  background: rgba(13,23,40,1);
+  border-color: rgba(114,241,184,0.36);
+}
+#search-ui .pagefind-ui__drawer {
+  margin-top: 1rem;
+}
+#search-ui .pagefind-ui__message {
+  color: var(--muted);
+}
+#search-ui .pagefind-ui__results {
+  margin-top: 0.5rem;
+}
+#search-ui .pagefind-ui__result {
+  padding: 1rem 0;
+  border-top: 1px solid rgba(125,211,252,0.12);
+}
+#search-ui .pagefind-ui__result:first-of-type {
+  border-top: 0;
+}
+#search-ui .pagefind-ui__result-title,
+#search-ui .pagefind-ui__result-link,
+#search-ui .pagefind-ui__result-link:hover,
+#search-ui .pagefind-ui__button {
+  color: var(--text);
+}
+#search-ui .pagefind-ui__result-excerpt,
+#search-ui .pagefind-ui__result-nested {
+  color: var(--soft);
+}
+#search-ui mark {
+  background: rgba(114,241,184,0.2);
+  color: var(--text);
+  padding: 0.05rem 0.18rem;
+  border-radius: 4px;
+}
 .site-footer { margin-top: 0.5rem; padding: 0 1rem; color: var(--muted); font-size: 0.95rem; text-align: center; }
 @media (max-width: 980px) {
   .hero, .card-grid-4, .card-grid-3, .split-layout, .doc-grid, .doc-grid-wide { grid-template-columns: 1fr; }
@@ -165,4 +236,6 @@ pre, code, .terminal-panel code, .install-command code { font-family: "JetBrains
   .markdown pre, .install-command { padding: 0.85rem 0.9rem; border-radius: 14px; }
   .markdown pre, .markdown table { font-size: 0.88rem; }
   .markdown th, .markdown td { padding: 0.6rem; }
+  .search-shell { padding: 1rem; }
+  #search-ui .pagefind-ui__search-input { padding: 0.9rem 1rem; }
 }

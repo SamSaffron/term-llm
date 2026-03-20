@@ -14,11 +14,14 @@
     <meta name="twitter:description" content="{{ with .Description }}{{ . }}{{ else }}{{ site.Params.description }}{{ end }}" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
+    {{ if eq .Layout "search" }}
+      <link rel="stylesheet" href="/pagefind/pagefind-ui.css" />
+    {{ end }}
   </head>
   <body class="{{ if not .IsHome }}docs-page{{ end }}">
     <div class="page-shell">
       {{ partial "header.html" . }}
-      <main>
+      <main data-pagefind-body>
         {{ block "main" . }}{{ end }}
       </main>
       {{ partial "footer.html" . }}
@@ -47,5 +50,27 @@
         }, 1800);
       });
     </script>
+    {{ if eq .Layout "search" }}
+      <script src="/pagefind/pagefind-ui.js"></script>
+      <script>
+        window.addEventListener("DOMContentLoaded", () => {
+          const mount = document.getElementById("search-ui");
+          if (!mount || typeof PagefindUI === "undefined") {
+            return;
+          }
+
+          new PagefindUI({
+            element: "#search-ui",
+            showSubResults: true,
+            resetStyles: false,
+            autofocus: true,
+            excerptLength: 18,
+            translations: {
+              placeholder: "Search commands, flags, guides, concepts…"
+            }
+          });
+        });
+      </script>
+    {{ end }}
   </body>
 </html>
