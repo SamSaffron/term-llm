@@ -137,6 +137,24 @@ term-llm memory promote --agent assistant --dry-run
 
 Fragments store facts. Insights store reusable behavioral rules.
 
+Why care? Because facts tell the agent **what is true**, while insights tell it **how to behave next time**.
+
+A fragment is something like:
+- "Use the staging Redis instance at `redis://staging.internal:6379/2`."
+
+An insight is something like:
+- "When debugging staging issues, check Redis connectivity before blaming Sidekiq."
+
+Or:
+- fragment: "The docs site is built with Hugo and deployed from GitHub Actions."
+- insight: "For docs changes, preview locally first and verify mobile layout before opening the PR."
+
+Another invented example:
+- fragment: "This repo keeps generated files under `internal/embed/`."
+- insight: "When changing frontend assets, search for the generated embed step before assuming the file is served directly."
+
+That is the point of insights: they capture **reusable judgment**, not just stored facts.
+
 ```bash
 term-llm memory insights list --agent assistant
 term-llm memory insights search "code review"
@@ -153,6 +171,14 @@ term-llm memory insights add --agent assistant \
 
 term-llm memory insights reinforce 42 --agent assistant
 ```
+
+Good insight candidates usually sound like:
+- a rule of thumb
+- a repeated correction
+- a workflow preference
+- a pattern that prevents future mistakes
+
+Bad insight candidates are usually just facts wearing a fake mustache.
 
 High-confidence insights are meant to shape future behavior, not just sit in storage looking profound.
 
