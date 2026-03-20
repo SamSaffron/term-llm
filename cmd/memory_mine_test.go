@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
@@ -191,5 +192,42 @@ func TestLoadMessagesForMining_RespectsPromptBudget(t *testing.T) {
 	}
 	if got := estimateExtractionPromptTokens(candidate, 0, loadResult.NextOffset, loadResult.Messages, "Memory fragment map:\n- total_fragments: 0"); got > memoryMinePromptMaxTokens {
 		t.Fatalf("estimated prompt tokens = %d, want <= %d", got, memoryMinePromptMaxTokens)
+	}
+}
+
+func TestFitMessagesForPromptBudget_PrefersUserAndDurableAssistantText(t *testing.T) {
+	oldPromptMax := memoryMinePromptMaxTokens
+	memoryMinePromptMaxTokens = 1000
+	t.Cleanup(func() { memoryMinePromptMaxTokens = oldPromptMax })
+
+	candidate := memoryMineCandidate{
+		Summary: session.SessionSummary{Number: 1},
+		Session: &session.Session{ID: "sess-1"},
+		Agent:   "jarvis",
+	}
+	messages := []session.Message{
+		{Role: llm.RoleUser, TextContent: strings.Repeat("user durable preference ", 18)},
+		{Role: llm.RoleAssistant, TextContent: strings.Repeat("ok sure maybe maybe ", 45)},
+		{Role: llm.RoleAssistant, TextContent: strings.Repeat("Changed config path /etc/service and updated model budget summary. ", 18)},
+	}
+
+	fit, ok := fitMessagesForPromptBudget(candidate, 0, len(messages), messages, "Memory fragment map:\n- total_fragments: 0")
+	if !ok {
+		t.Fatal("expected fitMessagesForPromptBudget to succeed")
+	}
+	if got := estimateExtractionPromptTokens(candidate, 0, len(messages), fit.Messages, "Memory fragment map:\n- total_fragments: 0"); got > memoryMinePromptMaxTokens {
+		t.Fatalf("estimated prompt tokens = %d, want <= %d", got, memoryMinePromptMaxTokens)
+	}
+	if fit.Messages[0].TextContent != messages[0].TextContent {
+		t.Fatalf("user message should be preserved, got %q", fit.Messages[0].TextContent)
+	}
+	if utf8.RuneCountInString(fit.Messages[2].TextContent) <= utf8.RuneCountInString(fit.Messages[1].TextContent) {
+		t.Fatalf("durable assistant text should retain more budget than filler: durable=%d filler=%d", utf8.RuneCountInString(fit.Messages[2].TextContent), utf8.RuneCountInString(fit.Messages[1].TextContent))
+	}
+	if fit.AssistantMessagesCut == 0 {
+		t.Fatal("expected assistant truncation to occur")
+	}
+	if fit.UserMessagesCut != 0 {
+		t.Fatalf("expected no user truncation, got %d", fit.UserMessagesCut)
 	}
 }

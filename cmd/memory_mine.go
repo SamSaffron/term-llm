@@ -471,26 +471,24 @@ func loadMessagesForMining(ctx context.Context, store session.Store, candidate m
 		}
 
 		for _, msg := range msgs {
-			candidateMessages := append(append([]session.Message(nil), all...), msg)
+			candidateMessages := append(cloneMessages(all), msg)
 			nextOffset := currentOffset + 1
-			if estimateExtractionPromptTokens(candidate, offset, nextOffset, candidateMessages, taxonomyMap) > memoryMinePromptMaxTokens {
+			fit, ok := fitMessagesForPromptBudget(candidate, offset, nextOffset, candidateMessages, taxonomyMap)
+			if !ok {
 				result.PromptBudgetHit = true
-				if len(all) == 0 {
-					clipped, ok := truncateMessageForPromptBudget(candidate, offset, nextOffset, taxonomyMap, msg)
-					if !ok {
-						return result, fmt.Errorf("single message at offset %d cannot fit within --prompt-max-tokens=%d", currentOffset, memoryMinePromptMaxTokens)
-					}
-					all = append(all, clipped)
-					currentOffset = nextOffset
-					result.TruncatedMessages++
-					result.SingleMessageClipped = true
-				}
 				result.Messages = all
 				result.NextOffset = currentOffset
 				return result, nil
 			}
-			all = candidateMessages
+			all = fit.Messages
 			currentOffset = nextOffset
+			result.TruncatedMessages = fit.TruncatedMessages
+			result.AssistantMessagesCut = fit.AssistantMessagesCut
+			result.UserMessagesCut = fit.UserMessagesCut
+			result.SingleMessageClipped = fit.SingleMessageClipped
+			if fit.TruncatedMessages > 0 {
+				result.PromptBudgetHit = true
+			}
 			if remaining > 0 {
 				remaining--
 				if remaining <= 0 {

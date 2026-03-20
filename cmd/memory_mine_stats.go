@@ -23,36 +23,42 @@ type memoryMineLoadResult struct {
 	Messages             []session.Message
 	NextOffset           int
 	TruncatedMessages    int
+	AssistantMessagesCut int
+	UserMessagesCut      int
 	PromptBudgetHit      bool
 	SingleMessageClipped bool
 }
 
 type memoryExtractionStats struct {
-	SessionID             string
-	SessionNumber         int64
-	Agent                 string
-	StartOffset           int
-	EndOffset             int
-	ExistingFragments     int
-	TranscriptMessages    int
-	PromptMaxTokens       int
-	PromptEstimatedTokens int
-	SystemTokens          int
-	MetadataTokens        int
-	TaxonomyTokens        int
-	TranscriptTokens      int
-	InstructionsTokens    int
-	ToolTurns             int
-	ToolCalls             int
-	ToolNames             []string
-	InputTokens           int
-	CachedInputTokens     int
-	CacheWriteTokens      int
-	OutputTokens          int
-	TruncatedMessages     int
-	PromptBudgetHit       bool
-	SingleMessageClipped  bool
-	Duration              time.Duration
+	SessionID                 string
+	SessionNumber             int64
+	Agent                     string
+	StartOffset               int
+	EndOffset                 int
+	ExistingFragments         int
+	TranscriptMessages        int
+	PromptMaxTokens           int
+	PromptEstimatedTokens     int
+	SystemTokens              int
+	MetadataTokens            int
+	TaxonomyTokens            int
+	TranscriptTokens          int
+	TranscriptUserTokens      int
+	TranscriptAssistantTokens int
+	InstructionsTokens        int
+	ToolTurns                 int
+	ToolCalls                 int
+	ToolNames                 []string
+	InputTokens               int
+	CachedInputTokens         int
+	CacheWriteTokens          int
+	OutputTokens              int
+	TruncatedMessages         int
+	AssistantMessagesCut      int
+	UserMessagesCut           int
+	PromptBudgetHit           bool
+	SingleMessageClipped      bool
+	Duration                  time.Duration
 }
 
 type memoryMineSummaryStats struct {
@@ -118,25 +124,47 @@ Transcript (role + text + tool call names only):
 }
 
 func newMemoryExtractionStats(candidate memoryMineCandidate, startOffset, endOffset int, existingFragments int, load memoryMineLoadResult, parts memoryPromptParts) memoryExtractionStats {
+	userTokens, assistantTokens := transcriptRoleTokenBreakdown(load.Messages)
 	return memoryExtractionStats{
-		SessionID:             candidate.Session.ID,
-		SessionNumber:         candidate.Summary.Number,
-		Agent:                 candidate.Agent,
-		StartOffset:           startOffset,
-		EndOffset:             endOffset,
-		ExistingFragments:     existingFragments,
-		TranscriptMessages:    len(load.Messages),
-		PromptMaxTokens:       memoryMinePromptMaxTokens,
-		PromptEstimatedTokens: llm.EstimateTokens(memoryExtractionSystemPrompt) + llm.EstimateTokens(parts.Prompt),
-		SystemTokens:          llm.EstimateTokens(memoryExtractionSystemPrompt),
-		MetadataTokens:        llm.EstimateTokens(parts.Metadata),
-		TaxonomyTokens:        llm.EstimateTokens(parts.TaxonomyMap),
-		TranscriptTokens:      llm.EstimateTokens(parts.Transcript),
-		InstructionsTokens:    llm.EstimateTokens(parts.Instructions),
-		TruncatedMessages:     load.TruncatedMessages,
-		PromptBudgetHit:       load.PromptBudgetHit,
-		SingleMessageClipped:  load.SingleMessageClipped,
+		SessionID:                 candidate.Session.ID,
+		SessionNumber:             candidate.Summary.Number,
+		Agent:                     candidate.Agent,
+		StartOffset:               startOffset,
+		EndOffset:                 endOffset,
+		ExistingFragments:         existingFragments,
+		TranscriptMessages:        len(load.Messages),
+		PromptMaxTokens:           memoryMinePromptMaxTokens,
+		PromptEstimatedTokens:     llm.EstimateTokens(memoryExtractionSystemPrompt) + llm.EstimateTokens(parts.Prompt),
+		SystemTokens:              llm.EstimateTokens(memoryExtractionSystemPrompt),
+		MetadataTokens:            llm.EstimateTokens(parts.Metadata),
+		TaxonomyTokens:            llm.EstimateTokens(parts.TaxonomyMap),
+		TranscriptTokens:          llm.EstimateTokens(parts.Transcript),
+		TranscriptUserTokens:      userTokens,
+		TranscriptAssistantTokens: assistantTokens,
+		InstructionsTokens:        llm.EstimateTokens(parts.Instructions),
+		TruncatedMessages:         load.TruncatedMessages,
+		AssistantMessagesCut:      load.AssistantMessagesCut,
+		UserMessagesCut:           load.UserMessagesCut,
+		PromptBudgetHit:           load.PromptBudgetHit,
+		SingleMessageClipped:      load.SingleMessageClipped,
 	}
+}
+
+func transcriptRoleTokenBreakdown(messages []session.Message) (userTokens, assistantTokens int) {
+	for _, msg := range messages {
+		text := strings.TrimSpace(msg.TextContent)
+		if text == "" {
+			continue
+		}
+		tokens := llm.EstimateTokens(text)
+		switch msg.Role {
+		case llm.RoleUser:
+			userTokens += tokens
+		case llm.RoleAssistant:
+			assistantTokens += tokens
+		}
+	}
+	return userTokens, assistantTokens
 }
 
 func (s *memoryExtractionStats) noteToolCall(name string) {
@@ -155,7 +183,7 @@ func (s memoryExtractionStats) oneLine() string {
 	if len(s.ToolNames) > 0 {
 		tools = strings.Join(s.ToolNames, ",")
 	}
-	return fmt.Sprintf("stats: wall=%s prompt≈%dt/%dt system=%dt meta=%dt taxonomy=%dt transcript=%dt instr=%dt existing=%d msgs=%d turns=%d tool_calls=%d tools=%s usage[in=%d cached=%d out=%d write=%d] truncated_msgs=%d budget_hit=%t single_clip=%t",
+	return fmt.Sprintf("stats: wall=%s prompt≈%dt/%dt system=%dt meta=%dt taxonomy=%dt transcript=%dt(user=%dt assistant=%dt) instr=%dt existing=%d msgs=%d turns=%d tool_calls=%d tools=%s usage[in=%d cached=%d out=%d write=%d] truncated_msgs=%d assistant_cut=%d user_cut=%d budget_hit=%t single_clip=%t",
 		s.Duration.Round(time.Millisecond),
 		s.PromptEstimatedTokens,
 		s.PromptMaxTokens,
@@ -163,6 +191,8 @@ func (s memoryExtractionStats) oneLine() string {
 		s.MetadataTokens,
 		s.TaxonomyTokens,
 		s.TranscriptTokens,
+		s.TranscriptUserTokens,
+		s.TranscriptAssistantTokens,
 		s.InstructionsTokens,
 		s.ExistingFragments,
 		s.TranscriptMessages,
@@ -174,6 +204,8 @@ func (s memoryExtractionStats) oneLine() string {
 		s.OutputTokens,
 		s.CacheWriteTokens,
 		s.TruncatedMessages,
+		s.AssistantMessagesCut,
+		s.UserMessagesCut,
 		s.PromptBudgetHit,
 		s.SingleMessageClipped,
 	)
