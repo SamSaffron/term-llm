@@ -17,7 +17,7 @@ import (
 const (
 	defaultMemoryMinePromptMaxTokens   = 12000
 	defaultMemoryMineTaxonomyMaxTokens = 1000
-	defaultMemoryMineToolMaxTurns      = 6
+	defaultMemoryMineToolMaxTurns      = 10
 	defaultMemoryMineMaxOutputTokens   = 2048
 	memoryMineFragmentSearchLimit      = 8
 	memoryMineFragmentListLimit        = 20
