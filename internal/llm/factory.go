@@ -96,7 +96,7 @@ func NewProviderByName(cfg *config.Config, name string, model string) (Provider,
 			provider := NewXAIProvider(apiKey, model)
 			return WrapWithRetry(provider, DefaultRetryConfig()), nil
 		case config.ProviderTypeVenice:
-			apiKey := os.Getenv("VENICE_API_KEY")
+			apiKey := strings.TrimSpace(os.Getenv("VENICE_API_KEY"))
 			if apiKey == "" {
 				return nil, fmt.Errorf("provider %q requires VENICE_API_KEY or explicit config", name)
 			}
@@ -211,7 +211,7 @@ func newProviderInternal(cfg *config.Config) (Provider, error) {
 			}
 			return NewXAIProvider(apiKey, ""), nil
 		case config.ProviderTypeVenice:
-			apiKey := os.Getenv("VENICE_API_KEY")
+			apiKey := strings.TrimSpace(os.Getenv("VENICE_API_KEY"))
 			if apiKey == "" {
 				return nil, fmt.Errorf("provider %q requires VENICE_API_KEY environment variable or explicit config", cfg.DefaultProvider)
 			}
@@ -296,9 +296,12 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 		return NewXAIProvider(apiKey, cfg.Model), nil
 
 	case config.ProviderTypeVenice:
-		apiKey := cfg.ResolvedAPIKey
+		apiKey := strings.TrimSpace(cfg.ResolvedAPIKey)
 		if apiKey == "" {
-			apiKey = os.Getenv("VENICE_API_KEY")
+			apiKey = strings.TrimSpace(os.Getenv("VENICE_API_KEY"))
+		}
+		if apiKey == "" {
+			return nil, fmt.Errorf("provider %q requires VENICE_API_KEY or explicit config", name)
 		}
 		return NewVeniceProvider(apiKey, cfg.Model), nil
 

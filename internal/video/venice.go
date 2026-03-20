@@ -94,10 +94,18 @@ type VeniceProvider struct {
 
 func NewVeniceProvider(apiKey string) *VeniceProvider {
 	return &VeniceProvider{
-		apiKey:  apiKey,
+		apiKey:  normalizeVeniceAPIKey(apiKey),
 		baseURL: veniceBaseURL,
 		client:  &http.Client{},
 	}
+}
+
+func normalizeVeniceAPIKey(apiKey string) string {
+	apiKey = strings.TrimSpace(apiKey)
+	if strings.HasPrefix(strings.ToLower(apiKey), "bearer ") {
+		apiKey = strings.TrimSpace(apiKey[len("Bearer "):])
+	}
+	return apiKey
 }
 
 func (p *VeniceProvider) Quote(ctx context.Context, req Request) (*Quote, error) {

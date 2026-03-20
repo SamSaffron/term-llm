@@ -43,6 +43,7 @@ type VeniceProvider struct {
 }
 
 func NewVeniceProvider(apiKey, model, editModel, resolution string) *VeniceProvider {
+	apiKey = normalizeVeniceAPIKey(apiKey)
 	if model == "" {
 		model = veniceDefaultModel
 	}
@@ -55,6 +56,14 @@ func NewVeniceProvider(apiKey, model, editModel, resolution string) *VeniceProvi
 		editMdl:    editModel,
 		resolution: resolution,
 	}
+}
+
+func normalizeVeniceAPIKey(apiKey string) string {
+	apiKey = strings.TrimSpace(apiKey)
+	if strings.HasPrefix(strings.ToLower(apiKey), "bearer ") {
+		apiKey = strings.TrimSpace(apiKey[len("Bearer "):])
+	}
+	return apiKey
 }
 
 func (p *VeniceProvider) Name() string {

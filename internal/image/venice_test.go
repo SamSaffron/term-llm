@@ -2,6 +2,20 @@ package image
 
 import "testing"
 
+func TestNewVeniceProviderTrimsAPIKey(t *testing.T) {
+	provider := NewVeniceProvider("  api-key\n", "", "", "")
+	if provider.apiKey != "api-key" {
+		t.Fatalf("apiKey = %q, want %q", provider.apiKey, "api-key")
+	}
+}
+
+func TestNewVeniceProviderStripsBearerPrefix(t *testing.T) {
+	provider := NewVeniceProvider("  Bearer api-key\n", "", "", "")
+	if provider.apiKey != "api-key" {
+		t.Fatalf("apiKey = %q, want %q", provider.apiKey, "api-key")
+	}
+}
+
 func TestNewVeniceProviderDefaults(t *testing.T) {
 	provider := NewVeniceProvider("api-key", "", "", "")
 	if provider.model != veniceDefaultModel {
