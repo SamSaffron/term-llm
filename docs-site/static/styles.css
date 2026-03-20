@@ -63,18 +63,6 @@ body::before {
   align-items: center;
   gap: 0.45rem;
 }
-.search-shortcut {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 2.2rem;
-  padding: 0.1rem 0.38rem;
-  border-radius: 999px;
-  border: 1px solid rgba(125,211,252,0.12);
-  background: rgba(13,23,40,0.72);
-  font-size: 0.74rem;
-  color: var(--soft);
-}
 .topnav a:hover, .topnav a.active, .topnav button:hover, .topnav button.active, .brand:hover, .card:hover h3 { color: var(--text); }
 main { display: grid; gap: 1.5rem; }
 .hero, .section-block, .doc-hero, .doc-section {
@@ -290,25 +278,11 @@ body.search-open { overflow: hidden; }
   background: rgba(16,28,48,1) !important;
 }
 .search-interface .pagefind-ui__search-clear {
-  appearance: none;
-  border-radius: 999px !important;
-  border: 1px solid rgba(125,211,252,0.14) !important;
-  background: transparent !important;
-  color: var(--muted) !important;
-  font-size: 0.82rem !important;
-  padding: 0.2rem 0.7rem !important;
-  min-width: auto;
-  box-shadow: none !important;
-  cursor: pointer;
-}
-.search-interface .pagefind-ui__search-clear:hover {
-  border-color: rgba(114,241,184,0.36) !important;
-  color: var(--text) !important;
-  background: rgba(114,241,184,0.08) !important;
+  display: none !important;
 }
 .search-interface .pagefind-ui__search-input {
   width: 100%;
-  padding: 1rem 1.1rem !important;
+  padding: 1rem 1.1rem 1rem 2.8rem !important;
   border-radius: 16px !important;
   border: 1px solid rgba(125,211,252,0.18) !important;
   background: rgba(4,8,16,0.82) !important;
@@ -386,7 +360,6 @@ body.search-open { overflow: hidden; }
   .topbar { flex-direction: column; align-items: flex-start; gap: 0.65rem; }
   .topnav { gap: 0.75rem; }
   .topnav a, .topnav button { font-size: 0.88rem; }
-  .search-shortcut { display: none; }
   .list-panel, .doc-surface { padding: 1rem; }
   .markdown pre, .install-command { padding: 0.85rem 0.9rem; border-radius: 14px; }
   .markdown pre, .markdown table { font-size: 0.88rem; }
@@ -395,5 +368,5 @@ body.search-open { overflow: hidden; }
   .search-modal { padding: 1rem 0.5rem 0.5rem; }
   .search-modal-panel { padding: 1rem; max-height: calc(100vh - 1rem); }
   .search-modal-header { flex-direction: column; }
-  .search-interface .pagefind-ui__search-input { padding: 0.9rem 1rem !important; }
+  .search-interface .pagefind-ui__search-input { padding: 0.9rem 1rem 0.9rem 2.6rem !important; }
 }
