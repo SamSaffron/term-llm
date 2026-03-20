@@ -48,9 +48,34 @@ body::before {
 }
 .brand { color: var(--text); text-decoration: none; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
 .topnav { display: flex; flex-wrap: wrap; gap: 1rem; }
-.topnav a, .markdown a, .doc-meta a { color: var(--accent-2); text-decoration: none; }
-.topnav a { color: var(--muted); font-size: 0.96rem; }
-.topnav a:hover, .topnav a.active, .brand:hover, .card:hover h3 { color: var(--text); }
+.topnav a, .topnav button, .markdown a, .doc-meta a { color: var(--accent-2); text-decoration: none; }
+.topnav a, .topnav button {
+  color: var(--muted);
+  font-size: 0.96rem;
+  font-family: inherit;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+.search-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+.search-shortcut {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.2rem;
+  padding: 0.1rem 0.38rem;
+  border-radius: 999px;
+  border: 1px solid rgba(125,211,252,0.12);
+  background: rgba(13,23,40,0.72);
+  font-size: 0.74rem;
+  color: var(--soft);
+}
+.topnav a:hover, .topnav a.active, .topnav button:hover, .topnav button.active, .brand:hover, .card:hover h3 { color: var(--text); }
 main { display: grid; gap: 1.5rem; }
 .hero, .section-block, .doc-hero, .doc-section {
   position: relative; background: var(--panel); border: 1px solid var(--panel-border); border-radius: 28px; box-shadow: 0 20px 60px var(--shadow);
@@ -157,68 +182,168 @@ pre, code, .terminal-panel code, .install-command code { font-family: "JetBrains
   background: var(--panel-strong);
   border: 1px solid rgba(125,211,252,0.14);
 }
-.search-lede { color: var(--soft); }
-#search-ui .pagefind-ui__search-input {
-  width: 100%;
-  padding: 1rem 1.1rem;
-  border-radius: 16px;
-  border: 1px solid rgba(125,211,252,0.18);
-  background: rgba(4,8,16,0.82);
-  color: var(--text);
-  font: inherit;
-  box-shadow: none;
+.search-shell-static { gap: 1.25rem; }
+.search-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: center;
 }
-#search-ui .pagefind-ui__search-input::placeholder {
+.search-hint {
+  margin: 0;
   color: var(--muted);
-  opacity: 0.75;
 }
-#search-ui .pagefind-ui__search-input:focus {
+.search-hint kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.2rem;
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid rgba(125,211,252,0.12);
+  background: rgba(13,23,40,0.72);
+  color: var(--soft);
+  font: inherit;
+  font-size: 0.82rem;
+}
+.search-lede { color: var(--soft); }
+body.search-open { overflow: hidden; }
+.search-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: start center;
+  padding: 5rem 1rem 1rem;
+}
+.search-modal[hidden] { display: none; }
+.search-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(3, 8, 16, 0.72);
+  backdrop-filter: blur(10px);
+}
+.search-modal-panel {
+  position: relative;
+  width: min(900px, 100%);
+  max-height: min(80vh, 960px);
+  overflow: auto;
+  padding: 1.25rem;
+  border-radius: 28px;
+  border: 1px solid rgba(125,211,252,0.18);
+  background: rgba(8,14,25,0.94);
+  box-shadow: 0 30px 80px rgba(0,0,0,0.45);
+}
+.search-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.search-modal-header h2 {
+  font-size: clamp(1.5rem, 3vw, 2.1rem);
+}
+.search-modal-header .eyebrow { margin-bottom: 0.4rem; }
+.search-modal-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid rgba(125,211,252,0.16);
+  background: rgba(13,23,40,0.74);
+  color: var(--soft);
+  font: inherit;
+  padding: 0.6rem 0.9rem;
+  cursor: pointer;
+}
+.search-modal-close:hover {
+  color: var(--text);
+  border-color: rgba(114,241,184,0.36);
+  background: rgba(13,23,40,0.96);
+}
+.search-modal-copy {
+  margin: 0.6rem 0 1rem;
+  color: var(--muted);
+  line-height: 1.65;
+}
+.search-interface .pagefind-ui__form {
+  margin: 0;
+}
+.search-interface .pagefind-ui__search-clear,
+.search-interface .pagefind-ui__button {
+  appearance: none;
+  border-radius: 12px !important;
+  border: 1px solid rgba(125,211,252,0.18) !important;
+  background: rgba(13,23,40,0.96) !important;
+  color: var(--text) !important;
+  box-shadow: none !important;
+}
+.search-interface .pagefind-ui__search-clear:hover,
+.search-interface .pagefind-ui__button:hover {
+  border-color: rgba(114,241,184,0.36) !important;
+  background: rgba(16,28,48,1) !important;
+}
+.search-interface .pagefind-ui__search-clear {
+  min-width: 2.9rem;
+  padding: 0 0.8rem !important;
+}
+.search-interface .pagefind-ui__search-input {
+  width: 100%;
+  padding: 1rem 1.1rem !important;
+  border-radius: 16px !important;
+  border: 1px solid rgba(125,211,252,0.18) !important;
+  background: rgba(4,8,16,0.82) !important;
+  color: var(--text) !important;
+  font: inherit !important;
+  box-shadow: inset 0 0 0 1px rgba(114,241,184,0.18) !important;
+}
+.search-interface .pagefind-ui__search-input::placeholder {
+  color: rgba(199,211,228,0.72) !important;
+  opacity: 1 !important;
+}
+.search-interface .pagefind-ui__search-input:focus {
   outline: 2px solid rgba(114,241,184,0.35);
   outline-offset: 2px;
 }
-#search-ui .pagefind-ui__search-clear,
-#search-ui .pagefind-ui__button {
-  border-radius: 12px;
-  border: 1px solid rgba(125,211,252,0.18);
-  background: rgba(10,18,32,0.96);
-  color: var(--text);
-}
-#search-ui .pagefind-ui__search-clear:hover,
-#search-ui .pagefind-ui__button:hover {
-  background: rgba(13,23,40,1);
-  border-color: rgba(114,241,184,0.36);
-}
-#search-ui .pagefind-ui__drawer {
+.search-interface .pagefind-ui__drawer {
   margin-top: 1rem;
 }
-#search-ui .pagefind-ui__message {
+.search-interface .pagefind-ui__message {
   color: var(--muted);
 }
-#search-ui .pagefind-ui__results {
+.search-interface .pagefind-ui__results {
   margin-top: 0.5rem;
 }
-#search-ui .pagefind-ui__result {
+.search-interface .pagefind-ui__result {
   padding: 1rem 0;
   border-top: 1px solid rgba(125,211,252,0.12);
 }
-#search-ui .pagefind-ui__result:first-of-type {
+.search-interface .pagefind-ui__result:first-of-type {
   border-top: 0;
 }
-#search-ui .pagefind-ui__result-title,
-#search-ui .pagefind-ui__result-link,
-#search-ui .pagefind-ui__result-link:hover,
-#search-ui .pagefind-ui__button {
+.search-interface .pagefind-ui__result-title,
+.search-interface .pagefind-ui__result-link,
+.search-interface .pagefind-ui__result-link:hover,
+.search-interface .pagefind-ui__button {
   color: var(--text);
 }
-#search-ui .pagefind-ui__result-excerpt,
-#search-ui .pagefind-ui__result-nested {
+.search-interface .pagefind-ui__result-excerpt,
+.search-interface .pagefind-ui__result-nested {
   color: var(--soft);
 }
-#search-ui mark {
+.search-interface mark {
   background: rgba(114,241,184,0.2);
   color: var(--text);
   padding: 0.05rem 0.18rem;
   border-radius: 4px;
+}
+.search-error {
+  margin: 0;
+  padding: 1rem 1.1rem;
+  border-radius: 16px;
+  border: 1px solid rgba(255,180,162,0.24);
+  background: rgba(43, 20, 24, 0.7);
+  color: var(--danger);
 }
 .site-footer { margin-top: 0.5rem; padding: 0 1rem; color: var(--muted); font-size: 0.95rem; text-align: center; }
 @media (max-width: 980px) {
@@ -231,11 +356,15 @@ pre, code, .terminal-panel code, .install-command code { font-family: "JetBrains
   h1 { font-size: clamp(2.2rem, 12vw, 3.6rem); }
   .topbar { flex-direction: column; align-items: flex-start; gap: 0.65rem; }
   .topnav { gap: 0.75rem; }
-  .topnav a { font-size: 0.88rem; }
+  .topnav a, .topnav button { font-size: 0.88rem; }
+  .search-shortcut { display: none; }
   .list-panel, .doc-surface { padding: 1rem; }
   .markdown pre, .install-command { padding: 0.85rem 0.9rem; border-radius: 14px; }
   .markdown pre, .markdown table { font-size: 0.88rem; }
   .markdown th, .markdown td { padding: 0.6rem; }
   .search-shell { padding: 1rem; }
-  #search-ui .pagefind-ui__search-input { padding: 0.9rem 1rem; }
+  .search-modal { padding: 1rem 0.5rem 0.5rem; }
+  .search-modal-panel { padding: 1rem; max-height: calc(100vh - 1rem); }
+  .search-modal-header { flex-direction: column; }
+  .search-interface .pagefind-ui__search-input { padding: 0.9rem 1rem !important; }
 }

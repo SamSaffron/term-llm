@@ -14,9 +14,7 @@
     <meta name="twitter:description" content="{{ with .Description }}{{ . }}{{ else }}{{ site.Params.description }}{{ end }}" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
-    {{ if eq .Layout "search" }}
-      <link rel="stylesheet" href="/pagefind/pagefind-ui.css" />
-    {{ end }}
+    <link rel="stylesheet" href="/pagefind/pagefind-ui.css" />
   </head>
   <body class="{{ if not .IsHome }}docs-page{{ end }}">
     <div class="page-shell">
@@ -26,6 +24,22 @@
       </main>
       {{ partial "footer.html" . }}
     </div>
+
+    <div id="search-modal" class="search-modal" hidden data-pagefind-ignore>
+      <div class="search-modal-backdrop" data-close-search></div>
+      <div class="search-modal-panel" role="dialog" aria-modal="true" aria-labelledby="search-modal-title">
+        <div class="search-modal-header">
+          <div>
+            <p class="eyebrow">Find the thing</p>
+            <h2 id="search-modal-title">Search term-llm docs</h2>
+          </div>
+          <button class="search-modal-close" type="button" data-close-search aria-label="Close search">Close</button>
+        </div>
+        <p class="search-modal-copy">Jump to commands, flags, pages, and section headings without leaving the page.</p>
+        <div id="search-modal-ui" class="search-interface"></div>
+      </div>
+    </div>
+
     <script>
       document.addEventListener("click", async (event) => {
         const button = event.target.closest("[data-copy-text]");
@@ -50,27 +64,136 @@
         }, 1800);
       });
     </script>
-    {{ if eq .Layout "search" }}
-      <script src="/pagefind/pagefind-ui.js"></script>
-      <script>
-        window.addEventListener("DOMContentLoaded", () => {
-          const mount = document.getElementById("search-ui");
-          if (!mount || typeof PagefindUI === "undefined") {
+    <script>
+      (() => {
+        const modal = document.getElementById("search-modal");
+        const modalUI = document.getElementById("search-modal-ui");
+        let pagefindUILoad;
+        let pagefindUIReady;
+        let lastFocused = null;
+
+        function getSearchInput() {
+          return modal.querySelector(".pagefind-ui__search-input");
+        }
+
+        function loadPagefindUI() {
+          if (typeof PagefindUI !== "undefined") {
+            return Promise.resolve();
+          }
+          if (pagefindUILoad) {
+            return pagefindUILoad;
+          }
+
+          pagefindUILoad = new Promise((resolve, reject) => {
+            const script = document.createElement("script");
+            script.src = "/pagefind/pagefind-ui.js";
+            script.onload = resolve;
+            script.onerror = reject;
+            document.body.appendChild(script);
+          });
+
+          return pagefindUILoad;
+        }
+
+        async function ensureSearchUI() {
+          if (pagefindUIReady) {
+            return pagefindUIReady;
+          }
+
+          pagefindUIReady = loadPagefindUI().then(() => {
+            if (modalUI.dataset.initialized === "true") {
+              return;
+            }
+
+            new PagefindUI({
+              element: "#search-modal-ui",
+              showSubResults: true,
+              resetStyles: false,
+              autofocus: true,
+              excerptLength: 18,
+              translations: {
+                placeholder: "Search commands, flags, guides, concepts…"
+              }
+            });
+
+            modalUI.dataset.initialized = "true";
+          });
+
+          return pagefindUIReady;
+        }
+
+        async function openSearch(prefill) {
+          lastFocused = document.activeElement;
+          modal.hidden = false;
+          document.body.classList.add("search-open");
+
+          try {
+            await ensureSearchUI();
+            window.setTimeout(() => {
+              const input = getSearchInput();
+              if (!input) {
+                return;
+              }
+              input.focus();
+              if (typeof prefill === "string") {
+                input.value = prefill;
+                input.dispatchEvent(new Event("input", { bubbles: true }));
+              }
+            }, 20);
+          } catch (_error) {
+            modalUI.innerHTML = '<p class="search-error">Search assets failed to load. Try reloading the page.</p>';
+          }
+        }
+
+        function closeSearch() {
+          if (modal.hidden) {
+            return;
+          }
+          modal.hidden = true;
+          document.body.classList.remove("search-open");
+          if (lastFocused && typeof lastFocused.focus === "function") {
+            lastFocused.focus();
+          }
+        }
+
+        document.addEventListener("click", (event) => {
+          const open = event.target.closest("[data-open-search]");
+          if (open) {
+            event.preventDefault();
+            openSearch(open.getAttribute("data-search-query") || undefined);
             return;
           }
 
-          new PagefindUI({
-            element: "#search-ui",
-            showSubResults: true,
-            resetStyles: false,
-            autofocus: true,
-            excerptLength: 18,
-            translations: {
-              placeholder: "Search commands, flags, guides, concepts…"
-            }
-          });
+          if (event.target.closest("[data-close-search]")) {
+            event.preventDefault();
+            closeSearch();
+          }
         });
-      </script>
-    {{ end }}
+
+        document.addEventListener("keydown", (event) => {
+          const tag = document.activeElement && document.activeElement.tagName;
+          const typing = tag === "INPUT" || tag === "TEXTAREA" || document.activeElement?.isContentEditable;
+
+          if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+            event.preventDefault();
+            openSearch();
+            return;
+          }
+
+          if (event.key === "Escape") {
+            closeSearch();
+            return;
+          }
+
+          if (event.key === "/" && !typing && !modal.hidden) {
+            event.preventDefault();
+            const input = getSearchInput();
+            if (input) {
+              input.focus();
+            }
+          }
+        });
+      })();
+    </script>
   </body>
 </html>

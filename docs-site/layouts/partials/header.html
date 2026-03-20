@@ -5,7 +5,10 @@
     <a href="/guides/" class="{{ if eq .Section "guides" }}active{{ end }}">Guides</a>
     <a href="/architecture/" class="{{ if eq .Section "architecture" }}active{{ end }}">Architecture</a>
     <a href="/reference/" class="{{ if eq .Section "reference" }}active{{ end }}">Reference</a>
-    <a href="/search/" class="{{ if eq .Layout "search" }}active{{ end }}">Search</a>
+    <button class="search-trigger{{ if eq .Layout "search" }} active{{ end }}" type="button" data-open-search aria-haspopup="dialog" aria-controls="search-modal">
+      <span>Search</span>
+      <span class="search-shortcut" aria-hidden="true">⌘K</span>
+    </button>
     <a href="https://github.com/samsaffron/term-llm">GitHub</a>
   </nav>
 </header>
