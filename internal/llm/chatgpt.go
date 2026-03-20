@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/credentials"
 	"github.com/samsaffron/term-llm/internal/oauth"
+	"golang.org/x/term"
 )
 
 const chatGPTDefaultModel = "gpt-5.3-codex"
@@ -88,11 +88,18 @@ func NewChatGPTProviderWithCreds(creds *credentials.ChatGPTCredentials, model st
 
 // promptForChatGPTAuth prompts the user to authenticate with ChatGPT
 func promptForChatGPTAuth() (*credentials.ChatGPTCredentials, error) {
+	// Check if stdin is a terminal - if not, we can't do interactive auth
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return nil, fmt.Errorf("ChatGPT authentication required but running in non-interactive mode.\n" +
+			"Run 'term-llm ask --provider chatgpt \"test\"' interactively first to authenticate")
+	}
+
 	fmt.Println("ChatGPT provider requires authentication.")
 	fmt.Print("Press Enter to open browser and sign in with your ChatGPT account...")
 
-	reader := bufio.NewReader(os.Stdin)
-	reader.ReadString('\n')
+	if err := waitForEnterOrInterrupt(); err != nil {
+		return nil, err
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -165,6 +172,17 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 					return parseChatGPTRateLimitError(body, headers)
 				}
 				return nil // fall through to default handling
+			},
+			OnAuthRetry: func(_ context.Context) error {
+				// Try silent token refresh
+				if err := credentials.RefreshChatGPTCredentials(p.creds); err == nil {
+					return nil
+				}
+				// Clear stale credentials so next run triggers interactive auth
+				if clearErr := credentials.ClearChatGPTCredentials(); clearErr != nil {
+					return fmt.Errorf("ChatGPT session expired and failed to clear credentials: %w", clearErr)
+				}
+				return fmt.Errorf("ChatGPT session expired — please re-run your command to re-authenticate")
 			},
 		}
 	}

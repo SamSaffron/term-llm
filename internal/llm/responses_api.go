@@ -23,6 +23,12 @@ type ResponsesClient struct {
 	// HandleError, if set, is called for non-200 responses before default handling.
 	// Return a non-nil error to short-circuit; return nil to fall through to defaults.
 	HandleError func(statusCode int, body []byte, headers http.Header) error
+	// OnAuthRetry, if set, is called when a 401/403 is received.
+	// The current request context is passed so that refresh operations
+	// use a live context rather than a potentially canceled one.
+	// If it returns nil (success), the request is retried with fresh credentials.
+	// If it returns an error, that error is returned to the caller.
+	OnAuthRetry func(ctx context.Context) error
 }
 
 // ResponsesRequest follows the Open Responses spec
@@ -516,7 +522,38 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 				return nil, fmt.Errorf("Responses API error (status %d): %s", resp.StatusCode, string(retryBody))
 			}
 		} else if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-			return nil, fmt.Errorf("Responses API authentication failed (status %d): token may be invalid or expired", resp.StatusCode)
+			if c.OnAuthRetry != nil {
+				if err := c.OnAuthRetry(ctx); err != nil {
+					return nil, err
+				}
+				// Retry with refreshed credentials
+				httpReq, err = http.NewRequestWithContext(ctx, "POST", c.BaseURL, bytes.NewReader(body))
+				if err != nil {
+					return nil, fmt.Errorf("failed to create auth retry request: %w", err)
+				}
+				httpReq.Header.Set("Content-Type", "application/json")
+				httpReq.Header.Set("Accept", "text/event-stream")
+				if c.GetAuthHeader != nil {
+					httpReq.Header.Set("Authorization", c.GetAuthHeader())
+				}
+				if req.SessionID != "" {
+					httpReq.Header.Set("session_id", req.SessionID)
+				}
+				for key, value := range c.ExtraHeaders {
+					httpReq.Header.Set(key, value)
+				}
+				resp, err = httpClient.Do(httpReq)
+				if err != nil {
+					return nil, fmt.Errorf("Responses API auth retry request failed: %w", err)
+				}
+				if resp.StatusCode != http.StatusOK {
+					retryBody, _ := io.ReadAll(resp.Body)
+					resp.Body.Close()
+					return nil, fmt.Errorf("Responses API error after re-auth (status %d): %s", resp.StatusCode, string(retryBody))
+				}
+			} else {
+				return nil, fmt.Errorf("Responses API authentication failed (status %d): token may be invalid or expired", resp.StatusCode)
+			}
 		} else {
 			return nil, fmt.Errorf("Responses API error (status %d): %s", resp.StatusCode, string(respBody))
 		}

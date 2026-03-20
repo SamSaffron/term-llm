@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -759,5 +760,132 @@ func TestBuildResponsesInput_ConvertsDanglingToolCalls(t *testing.T) {
 	}
 	if !strings.Contains(s, "[tool call interrupted") {
 		t.Fatalf("expected [tool call interrupted stub, got: %s", s)
+	}
+}
+
+func TestResponsesClient_OnAuthRetry_RefreshesAndRetries(t *testing.T) {
+	callCount := 0
+	httpClient := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			callCount++
+			if callCount == 1 {
+				// First call returns 401
+				return &http.Response{
+					StatusCode: http.StatusUnauthorized,
+					Status:     "401 Unauthorized",
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(`{"error":"invalid token"}`)),
+				}, nil
+			}
+			// Second call (after retry) succeeds
+			if auth := r.Header.Get("Authorization"); auth != "Bearer refreshed-token" {
+				t.Errorf("expected refreshed token on retry, got %q", auth)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body: io.NopCloser(strings.NewReader(
+					"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_retry\"}}\n\n",
+				)),
+			}, nil
+		}),
+	}
+
+	token := "expired-token"
+	retryCalled := false
+	client := &ResponsesClient{
+		BaseURL:       "https://example.test/v1/responses",
+		GetAuthHeader: func() string { return "Bearer " + token },
+		HTTPClient:    httpClient,
+		OnAuthRetry: func(_ context.Context) error {
+			retryCalled = true
+			token = "refreshed-token"
+			return nil
+		},
+	}
+
+	stream, err := client.Stream(context.Background(), ResponsesRequest{
+		Model:  "test-model",
+		Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "hello"}},
+		Stream: true,
+	}, false)
+	if err != nil {
+		t.Fatalf("expected stream to succeed after auth retry, got error: %v", err)
+	}
+	defer stream.Close()
+	drainStreamToDone(t, stream)
+
+	if !retryCalled {
+		t.Fatal("expected OnAuthRetry to be called")
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 HTTP calls (initial + retry), got %d", callCount)
+	}
+}
+
+func TestResponsesClient_OnAuthRetry_FailureReturnsError(t *testing.T) {
+	httpClient := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusUnauthorized,
+				Status:     "401 Unauthorized",
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"error":"invalid token"}`)),
+			}, nil
+		}),
+	}
+
+	client := &ResponsesClient{
+		BaseURL:       "https://example.test/v1/responses",
+		GetAuthHeader: func() string { return "Bearer bad-token" },
+		HTTPClient:    httpClient,
+		OnAuthRetry: func(_ context.Context) error {
+			return fmt.Errorf("re-authentication failed: user cancelled")
+		},
+	}
+
+	_, err := client.Stream(context.Background(), ResponsesRequest{
+		Model:  "test-model",
+		Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "hello"}},
+		Stream: true,
+	}, false)
+	if err == nil {
+		t.Fatal("expected error when OnAuthRetry fails")
+	}
+	if !strings.Contains(err.Error(), "re-authentication failed") {
+		t.Fatalf("expected re-authentication error, got: %v", err)
+	}
+}
+
+func TestResponsesClient_NoOnAuthRetry_Returns401Error(t *testing.T) {
+	httpClient := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusUnauthorized,
+				Status:     "401 Unauthorized",
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"error":"invalid token"}`)),
+			}, nil
+		}),
+	}
+
+	client := &ResponsesClient{
+		BaseURL:       "https://example.test/v1/responses",
+		GetAuthHeader: func() string { return "Bearer bad-token" },
+		HTTPClient:    httpClient,
+		// No OnAuthRetry set
+	}
+
+	_, err := client.Stream(context.Background(), ResponsesRequest{
+		Model:  "test-model",
+		Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "hello"}},
+		Stream: true,
+	}, false)
+	if err == nil {
+		t.Fatal("expected error on 401 without OnAuthRetry")
+	}
+	if !strings.Contains(err.Error(), "authentication failed") {
+		t.Fatalf("expected authentication failed error, got: %v", err)
 	}
 }

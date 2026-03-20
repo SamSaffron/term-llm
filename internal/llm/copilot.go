@@ -122,8 +122,9 @@ func promptForCopilotAuth() (*credentials.CopilotCredentials, error) {
 	fmt.Println("GitHub Copilot provider requires authentication.")
 	fmt.Print("Press Enter to start device code authentication...")
 
-	reader := bufio.NewReader(os.Stdin)
-	reader.ReadString('\n')
+	if err := waitForEnterOrInterrupt(); err != nil {
+		return nil, err
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -430,6 +431,17 @@ func (p *CopilotProvider) streamResponses(ctx context.Context, req Request, mode
 			},
 			HTTPClient:         copilotHTTPClient,
 			DisableServerState: true, // Copilot doesn't support previous_response_id
+			OnAuthRetry: func(retryCtx context.Context) error {
+				// Try silent session token refresh using the current request context
+				if err := p.refreshSession(retryCtx); err == nil {
+					return nil
+				}
+				// Clear stale credentials so next run triggers interactive auth
+				if clearErr := credentials.ClearCopilotCredentials(); clearErr != nil {
+					return fmt.Errorf("Copilot session expired and failed to clear credentials: %w", clearErr)
+				}
+				return fmt.Errorf("Copilot session expired — please re-run your command to re-authenticate")
+			},
 		}
 	}
 
