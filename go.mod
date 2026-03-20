@@ -4,6 +4,7 @@ go 1.25.5
 
 require (
 	github.com/BourgeoisBear/rasterm v1.1.2
+	github.com/SherClockHolmes/webpush-go v1.4.0
 	github.com/alecthomas/chroma/v2 v2.23.0
 	github.com/anthropics/anthropic-sdk-go v1.23.0
 	github.com/bmatcuk/doublestar/v4 v4.9.2
@@ -34,11 +35,12 @@ require (
 	modernc.org/sqlite v1.44.3
 )
 
+replace github.com/muesli/reflow v0.3.0 => ./internal/reflow
+
 require (
 	cloud.google.com/go v0.123.0 // indirect
 	cloud.google.com/go/auth v0.18.0 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
-	github.com/SherClockHolmes/webpush-go v1.4.0 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/aymerick/douceur v0.2.0 // indirect

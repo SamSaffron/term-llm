@@ -1,0 +1,62 @@
+Source: github.com/muesli/reflow v0.3.0
+Replace: go.mod `replace github.com/muesli/reflow v0.3.0 => ./internal/reflow`
+Tests: internal/ui/reflow_test.go, internal/ui/glamour_wrap_test.go
+
+Local changes from upstream v0.3.0:
+
+  ansi/ansi.go:
+    - IsTerminator widened to full ECMA-48 CSI final-byte range (0x40–0x7E),
+      so sequences ending in ~, {, |, } etc. are handled correctly.
+    - Added Parser type — a centralized state machine for ANSI escape sequence
+      detection, handling CSI (ESC [), OSC (ESC ]), DCS (ESC P), PM (ESC ^),
+      APC (ESC _), and SOS (ESC X). OSC/DCS/PM/APC/SOS are terminated by
+      BEL (0x07) or ST (ESC \). All writers use this shared parser instead
+      of duplicating inline boolean + IsTerminator logic.
+
+  ansi/buffer.go:
+    - PrintableRuneWidth rewritten to use Parser. Upstream only handled CSI,
+      causing hyperlink URLs and other ST-terminated payloads to be counted
+      as printable width.
+
+  ansi/writer.go:
+    - Rewritten to use Parser. OSC/DCS sequences are now accumulated and
+      forwarded correctly instead of terminating at the first letter.
+    - WriteTo error on sequence flush is now propagated to the caller.
+    - ResetAnsi/RestoreAnsi remain best-effort (documented).
+
+  wordwrap/wordwrap.go:
+    - Uses ansi.Parser for escape sequence detection.
+    - Counts breakpoint rune width in lineLen (upstream omitted this).
+    - Wraps before emitting breakpoint when it would exceed Limit.
+    - Uses runewidth.RuneWidth(c) for breakpoint width.
+    - Tracks active ANSI style sequences and emits reset/restore at line
+      breaks so each wrapped line is ANSI-self-contained (PR #3).
+
+  wrap/wrap.go:
+    - Uses ansi.Parser for escape sequence detection.
+    - Fast path writes normalized string instead of original byte slice.
+    - Fast path gated on !parser.InSequence() to avoid skipping the state
+      machine when a previous Write ended mid-sequence.
+    - Fast path skipped when input contains embedded newlines.
+
+  truncate/truncate.go:
+    - Uses ansi.Parser for escape sequence detection.
+    - curWidth persistent across Write calls.
+    - Width not mutated; tail width cached, safePos rewind approach for
+      exact-fit preservation (PR #57).
+    - Post-truncation writes return len(b), nil per io.Writer contract.
+    - Tracks OSC8 hyperlink state; emits close sequence on truncation
+      to prevent hyperlink leaking into subsequent terminal output.
+
+  indent/indent.go:
+    - Uses ansi.Parser for escape sequence detection.
+
+  padding/padding.go:
+    - Uses ansi.Parser for escape sequence detection.
+    - Flush resets the parser.
+
+  margin/margin.go:
+    - Indent and padding composed as a pipe instead of replaying buffer.
+
+  dedent/dedent.go:
+    - Sets shouldOmit=false on non-space/non-newline (Issue #72).
