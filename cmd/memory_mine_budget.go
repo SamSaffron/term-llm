@@ -317,25 +317,6 @@ func assistantMessagePriority(text string) int {
 	return 0
 }
 
-func registerMemoryExtractionTools(engine *llm.Engine, store *memorydb.Store, agent string) ([]llm.ToolSpec, func()) {
-	tools := []llm.Tool{
-		&memorySearchFragmentsTool{store: store, agent: agent},
-		&memoryListFragmentsTool{store: store, agent: agent},
-		&memoryGetFragmentTool{store: store, agent: agent},
-	}
-	specs := make([]llm.ToolSpec, 0, len(tools))
-	for _, tool := range tools {
-		engine.RegisterTool(tool)
-		specs = append(specs, tool.Spec())
-	}
-	cleanup := func() {
-		for _, tool := range tools {
-			engine.UnregisterTool(tool.Spec().Name)
-		}
-	}
-	return specs, cleanup
-}
-
 type memorySearchFragmentsTool struct {
 	store *memorydb.Store
 	agent string

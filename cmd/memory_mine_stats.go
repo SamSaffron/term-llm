@@ -92,19 +92,13 @@ func buildExtractionPromptParts(candidate memoryMineCandidate, startOffset, endO
 - Skip ephemeral content like specific transient errors, one-off debugging output, and conversational filler.
 - The fragment map is intentionally compact and may omit exact duplicates or existing content details.
 - Use lookup tools when you need to confirm whether related memory already exists, inspect exact fragment content, or browse likely paths.
-- Prefer update when an existing fragment already captures the fact; use create for genuinely new memory.
-- Return at most 20 operations.
+- Use memory_create_fragment for genuinely new memory.
+- Use memory_update_fragment when an existing fragment should be revised.
+- Avoid duplicate fragments.
 - Fragment content must stay <= 8192 bytes.
-- Path must be relative and must not contain ../ or be absolute.
-
-Return strict JSON only, exactly in this format:
-{
-  "operations": [
-    {"op": "create", "path": "...", "content": "..."},
-    {"op": "update", "path": "...", "content": "...", "reason": "..."},
-    {"op": "skip", "reason": "..."}
-  ]
-}`
+- Paths must be relative and must not contain ../ or be absolute.
+- You may apply multiple create/update tool calls in one extraction batch.
+- When finished, reply with plain text such as "done". Do not return JSON.`
 	prompt := fmt.Sprintf(`%s
 
 Existing fragment map (compact, partial by design):

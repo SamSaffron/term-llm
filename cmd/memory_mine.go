@@ -39,6 +39,7 @@ var (
 	memoryMineToolMaxTurns      int
 	memoryMineMaxOutputTokens   int
 	memoryMineShowStats         bool
+	memoryMineUseFastModel      bool
 )
 
 var memoryMineCmd = &cobra.Command{
@@ -49,28 +50,18 @@ var memoryMineCmd = &cobra.Command{
 
 const memoryExtractionSystemPrompt = `You are a strict memory extraction engine.
 
-Output must be valid JSON only (no markdown fences, no prose).
-Return exactly one object with key "operations".
-
 Goal: extract durable long-term memory from the provided transcript.
 Focus on stable facts, decisions, preferences, and technical details worth remembering.
-Ignore ephemeral details such as transient errors, one-off debugging steps, and conversational filler.`
+Ignore ephemeral details such as transient errors, one-off debugging steps, and conversational filler.
+
+Use the provided memory tools to inspect existing fragments and to create or update memory directly.
+Prefer updating existing fragments over creating duplicates.
+When finished, reply briefly with plain text like "done".`
 
 type memoryMineCandidate struct {
 	Summary session.SessionSummary
 	Session *session.Session
 	Agent   string
-}
-
-type extractionResponse struct {
-	Operations []extractionOperation `json:"operations"`
-}
-
-type extractionOperation struct {
-	Op      string `json:"op"`
-	Path    string `json:"path,omitempty"`
-	Content string `json:"content,omitempty"`
-	Reason  string `json:"reason,omitempty"`
 }
 
 type transcriptMessage struct {
@@ -98,6 +89,7 @@ func init() {
 	memoryMineCmd.Flags().IntVar(&memoryMineToolMaxTurns, "tool-max-turns", defaultMemoryMineToolMaxTurns, "Maximum tool-assisted turns allowed for one extraction request")
 	memoryMineCmd.Flags().IntVar(&memoryMineMaxOutputTokens, "max-output-tokens", defaultMemoryMineMaxOutputTokens, "Maximum output tokens for one extraction request")
 	memoryMineCmd.Flags().BoolVar(&memoryMineShowStats, "stats", false, "Print prompt, tool, token, and timing stats for each mined batch")
+	memoryMineCmd.Flags().BoolVar(&memoryMineUseFastModel, "fast-model", false, "Use the configured fast provider/model for memory extraction")
 	memoryMineCmd.RegisterFlagCompletionFunc("embed-provider", EmbedProviderFlagCompletion)
 }
 
@@ -149,7 +141,7 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 		cfg.ApplyOverrides("", strings.TrimSpace(memoryMineModel))
 	}
 
-	provider, err := llm.NewProvider(cfg)
+	provider, modelName, err := newMemoryMineProvider(cfg)
 	if err != nil {
 		return err
 	}
@@ -191,7 +183,10 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 		fmt.Println("No sessions eligible for memory mining.")
 	}
 
-	modelName := activeModel(cfg)
+	modelName = strings.TrimSpace(modelName)
+	if modelName == "" {
+		modelName = activeModel(cfg)
+	}
 	if modelName == "" {
 		modelName = "(default model)"
 	}
@@ -240,28 +235,14 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 		promptParts := buildExtractionPromptParts(candidate, startOffset, loadResult.NextOffset, loadResult.Messages, taxonomyMap)
 		batchStats := newMemoryExtractionStats(candidate, startOffset, loadResult.NextOffset, len(existing), loadResult, promptParts)
 		batchStart := time.Now()
-		raw, err := runExtractionRequest(ctx, engine, memStore, candidate.Agent, promptParts.Prompt, &batchStats)
+		extractionResult, err := runExtractionRequest(ctx, engine, memStore, candidate.Agent, promptParts.Prompt, &batchStats)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: skipping session %s batch at offset %d: %v\n", candidate.Session.ID, startOffset, err)
 			continue
 		}
-
-		ops, err := parseExtractionOperations(raw)
 		batchStats.Duration = time.Since(batchStart)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: bad extraction output for session %s at offset %d: %v\nraw: %s\n", candidate.Session.ID, startOffset, err, raw)
-			if memoryMineShowStats {
-				fmt.Printf("[%d/%d] #%d %s\n", i+1, len(candidates), candidate.Summary.Number, batchStats.oneLine())
-				summaryStats.add(batchStats)
-			}
-			continue
-		}
 
-		created, updated, skipped, affectedPaths, err := applyExtractionOperations(ctx, memStore, candidate.Agent, ops)
-		if err != nil {
-			return fmt.Errorf("apply operations for session %s: %w", candidate.Session.ID, err)
-		}
-		batchStats.Duration = time.Since(batchStart)
+		created, updated, skipped, affectedPaths := extractionResult.Created, extractionResult.Updated, extractionResult.Skipped, extractionResult.AffectedPaths
 
 		if !memoryDryRun {
 			for _, p := range affectedPaths {
@@ -377,6 +358,47 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+func newMemoryMineProvider(cfg *config.Config) (llm.Provider, string, error) {
+	if memoryMineUseFastModel && strings.TrimSpace(memoryMineModel) != "" {
+		return nil, "", fmt.Errorf("--fast-model and --model are mutually exclusive")
+	}
+	if memoryMineUseFastModel {
+		provider, err := llm.NewFastProvider(cfg, cfg.DefaultProvider)
+		if err != nil {
+			return nil, "", fmt.Errorf("fast provider: %w", err)
+		}
+		if provider == nil {
+			return nil, "", fmt.Errorf("no fast model configured for %q", cfg.DefaultProvider)
+		}
+		return provider, resolveMemoryMineFastModelName(cfg), nil
+	}
+	provider, err := llm.NewProvider(cfg)
+	if err != nil {
+		return nil, "", err
+	}
+	return provider, strings.TrimSpace(memoryMineModel), nil
+}
+
+func resolveMemoryMineFastModelName(cfg *config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	providerKey := strings.TrimSpace(cfg.DefaultProvider)
+	targetKey := providerKey
+	model := ""
+	if pc, ok := cfg.Providers[providerKey]; ok {
+		if strings.TrimSpace(pc.FastProvider) != "" {
+			targetKey = strings.TrimSpace(pc.FastProvider)
+		}
+		model = strings.TrimSpace(pc.FastModel)
+	}
+	if model != "" {
+		return model
+	}
+	providerType := string(config.InferProviderType(targetKey, ""))
+	return llm.ProviderFastModels[providerType]
 }
 
 func minePromoteAgents(globalAgent string, candidates []memoryMineCandidate) []string {
@@ -561,10 +583,15 @@ func collectToolCallNames(msg session.Message) []string {
 	return out
 }
 
-func runExtractionRequest(ctx context.Context, engine *llm.Engine, store *memorydb.Store, agent, prompt string, stats *memoryExtractionStats) (string, error) {
-	toolSpecs, cleanup := registerMemoryExtractionTools(engine, store, agent)
+func runExtractionRequest(ctx context.Context, engine *llm.Engine, store *memorydb.Store, agent, prompt string, stats *memoryExtractionStats) (memoryExtractionResult, error) {
+	collector := newMemoryExtractionCollector()
+	toolSpecs, cleanup := registerMemoryExtractionTools(engine, store, agent, collector)
 	defer cleanup()
-	return runExtractionRequestWithSystem(ctx, engine, memoryExtractionSystemPrompt, prompt, stats, toolSpecs...)
+	finalText, err := runExtractionRequestWithSystem(ctx, engine, memoryExtractionSystemPrompt, prompt, stats, toolSpecs...)
+	if err != nil {
+		return memoryExtractionResult{}, err
+	}
+	return collector.result(finalText), nil
 }
 
 func runExtractionRequestWithSystem(ctx context.Context, engine *llm.Engine, systemPrompt, prompt string, stats *memoryExtractionStats, tools ...llm.ToolSpec) (string, error) {
@@ -640,56 +667,6 @@ func stripMarkdownFences(s string) string {
 	return strings.TrimSpace(s)
 }
 
-func parseExtractionOperations(raw string) ([]extractionOperation, error) {
-	raw = stripMarkdownFences(raw)
-	dec := json.NewDecoder(strings.NewReader(raw))
-
-	var response extractionResponse
-	if err := dec.Decode(&response); err != nil {
-		return nil, fmt.Errorf("decode json: %w", err)
-	}
-	var trailing any
-	if err := dec.Decode(&trailing); err != io.EOF {
-		return nil, fmt.Errorf("unexpected trailing content after JSON object")
-	}
-
-	if len(response.Operations) > 20 {
-		return nil, fmt.Errorf("too many operations: got %d, max 20", len(response.Operations))
-	}
-
-	normalized := make([]extractionOperation, 0, len(response.Operations))
-	for i, op := range response.Operations {
-		op.Op = strings.ToLower(strings.TrimSpace(op.Op))
-		switch op.Op {
-		case "create", "update":
-			p, err := validateFragmentPath(op.Path)
-			if err != nil {
-				return nil, fmt.Errorf("op[%d] path invalid: %w", i, err)
-			}
-			content := strings.TrimSpace(op.Content)
-			if content == "" {
-				return nil, fmt.Errorf("op[%d] content cannot be empty", i)
-			}
-			if len([]byte(content)) > 8192 {
-				return nil, fmt.Errorf("op[%d] content exceeds 8192 bytes", i)
-			}
-			op.Path = p
-			op.Content = content
-		case "skip":
-			op.Path = ""
-			op.Content = ""
-			if strings.TrimSpace(op.Reason) == "" {
-				op.Reason = "no durable memory extracted"
-			}
-		default:
-			return nil, fmt.Errorf("op[%d] has invalid op %q", i, op.Op)
-		}
-		normalized = append(normalized, op)
-	}
-
-	return normalized, nil
-}
-
 func validateFragmentPath(p string) (string, error) {
 	p = strings.TrimSpace(strings.ReplaceAll(p, "\\", "/"))
 	if p == "" {
@@ -719,68 +696,6 @@ func isWindowsAbsPath(p string) bool {
 		return p[1] == ':'
 	}
 	return false
-}
-
-func applyExtractionOperations(ctx context.Context, store *memorydb.Store, agent string, ops []extractionOperation) (created, updated, skipped int, affectedPaths []string, err error) {
-	seenPaths := map[string]struct{}{}
-	addAffectedPath := func(p string) {
-		if _, exists := seenPaths[p]; exists {
-			return
-		}
-		seenPaths[p] = struct{}{}
-		affectedPaths = append(affectedPaths, p)
-	}
-
-	for _, op := range ops {
-		switch op.Op {
-		case "create":
-			created++
-			if memoryDryRun {
-				continue
-			}
-			createErr := store.CreateFragment(ctx, &memorydb.Fragment{
-				Agent:   agent,
-				Path:    op.Path,
-				Content: op.Content,
-				Source:  memorydb.DefaultSourceMine,
-			})
-			if createErr != nil {
-				if isUniqueConstraintError(createErr) {
-					ok, upErr := store.UpdateFragment(ctx, agent, op.Path, op.Content)
-					if upErr != nil {
-						return created, updated, skipped, affectedPaths, upErr
-					}
-					if ok {
-						created--
-						updated++
-						addAffectedPath(op.Path)
-						continue
-					}
-				}
-				return created, updated, skipped, affectedPaths, createErr
-			}
-			addAffectedPath(op.Path)
-		case "update":
-			updated++
-			if memoryDryRun {
-				continue
-			}
-			ok, updateErr := store.UpdateFragment(ctx, agent, op.Path, op.Content)
-			if updateErr != nil {
-				return created, updated, skipped, affectedPaths, updateErr
-			}
-			if !ok {
-				// Keep this as a skipped op if target fragment does not exist.
-				updated--
-				skipped++
-				continue
-			}
-			addAffectedPath(op.Path)
-		case "skip":
-			skipped++
-		}
-	}
-	return created, updated, skipped, affectedPaths, nil
 }
 
 func mineGeneratedImages(ctx context.Context, store *memorydb.Store) int {
