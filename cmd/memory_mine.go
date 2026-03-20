@@ -21,19 +21,23 @@ import (
 )
 
 var (
-	memoryMineModel            string
-	memoryMineSince            time.Duration
-	memoryMineLimit            int
-	memoryMineBatchSize        int
-	memoryMineIncludeSubagents bool
-	memoryMineMaxMessages      int
-	memoryMineReadBytes        int
-	memoryMineEmbed            bool
-	memoryMineEmbedProvider    string
-	memoryMinePromote          string
-	memoryMinePromoteEvery     time.Duration
-	memoryMineHalfLifeDays     float64
-	memoryMineInsights         bool
+	memoryMineModel             string
+	memoryMineSince             time.Duration
+	memoryMineLimit             int
+	memoryMineBatchSize         int
+	memoryMineIncludeSubagents  bool
+	memoryMineMaxMessages       int
+	memoryMineReadBytes         int
+	memoryMineEmbed             bool
+	memoryMineEmbedProvider     string
+	memoryMinePromote           string
+	memoryMinePromoteEvery      time.Duration
+	memoryMineHalfLifeDays      float64
+	memoryMineInsights          bool
+	memoryMinePromptMaxTokens   int
+	memoryMineTaxonomyMaxTokens int
+	memoryMineToolMaxTurns      int
+	memoryMineMaxOutputTokens   int
 )
 
 var memoryMineCmd = &cobra.Command{
@@ -74,11 +78,6 @@ type transcriptMessage struct {
 	ToolCalls []string `json:"tool_calls,omitempty"`
 }
 
-type taxonomyEntry struct {
-	Path    string `json:"path"`
-	Preview string `json:"preview"`
-}
-
 func init() {
 	memoryMineCmd.Flags().StringVar(&memoryMineModel, "model", "", "Override model used for memory extraction")
 	memoryMineCmd.Flags().DurationVar(&memoryMineSince, "since", 0, "Only mine sessions updated within this duration (e.g. 24h)")
@@ -86,13 +85,17 @@ func init() {
 	memoryMineCmd.Flags().IntVar(&memoryMineBatchSize, "batch-size", 10, "Number of messages to fetch per pagination request")
 	memoryMineCmd.Flags().BoolVar(&memoryMineIncludeSubagents, "include-subagents", false, "Include subagent sessions")
 	memoryMineCmd.Flags().IntVar(&memoryMineMaxMessages, "max-messages", 0, "Maximum newly mined messages per session (0 = all)")
-	memoryMineCmd.Flags().IntVar(&memoryMineReadBytes, "read-bytes", 2048, "Bytes of existing fragment content to include in taxonomy context")
+	memoryMineCmd.Flags().IntVar(&memoryMineReadBytes, "read-bytes", 2048, "Maximum bytes returned by fragment lookup tools during mining")
 	memoryMineCmd.Flags().BoolVar(&memoryMineEmbed, "embed", true, "Embed new/updated fragments after mining")
 	memoryMineCmd.Flags().StringVar(&memoryMineEmbedProvider, "embed-provider", "", "Override embedding provider used in EMBED phase (optionally provider:model)")
 	memoryMineCmd.Flags().StringVar(&memoryMinePromote, "promote", "never", "Promotion mode: auto|always|never")
 	memoryMineCmd.Flags().DurationVar(&memoryMinePromoteEvery, "promote-every", 6*time.Hour, "Minimum interval between auto-promote runs")
 	memoryMineCmd.Flags().Float64Var(&memoryMineHalfLifeDays, "half-life", 30.0, "Decay half-life in days for post-mine recalculation")
 	memoryMineCmd.Flags().BoolVar(&memoryMineInsights, "insights", false, "Also run insight extraction pass after fragment mining")
+	memoryMineCmd.Flags().IntVar(&memoryMinePromptMaxTokens, "prompt-max-tokens", defaultMemoryMinePromptMaxTokens, "Approximate maximum prompt budget per extraction request")
+	memoryMineCmd.Flags().IntVar(&memoryMineTaxonomyMaxTokens, "taxonomy-max-tokens", defaultMemoryMineTaxonomyMaxTokens, "Approximate maximum tokens for the compact fragment taxonomy map")
+	memoryMineCmd.Flags().IntVar(&memoryMineToolMaxTurns, "tool-max-turns", defaultMemoryMineToolMaxTurns, "Maximum tool-assisted turns allowed for one extraction request")
+	memoryMineCmd.Flags().IntVar(&memoryMineMaxOutputTokens, "max-output-tokens", defaultMemoryMineMaxOutputTokens, "Maximum output tokens for one extraction request")
 	memoryMineCmd.RegisterFlagCompletionFunc("embed-provider", EmbedProviderFlagCompletion)
 }
 
@@ -108,6 +111,18 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 	}
 	if memoryMineReadBytes < 0 {
 		return fmt.Errorf("--read-bytes must be >= 0")
+	}
+	if memoryMinePromptMaxTokens <= 0 {
+		return fmt.Errorf("--prompt-max-tokens must be > 0")
+	}
+	if memoryMineTaxonomyMaxTokens <= 0 {
+		return fmt.Errorf("--taxonomy-max-tokens must be > 0")
+	}
+	if memoryMineToolMaxTurns <= 0 {
+		return fmt.Errorf("--tool-max-turns must be > 0")
+	}
+	if memoryMineMaxOutputTokens <= 0 {
+		return fmt.Errorf("--max-output-tokens must be > 0")
 	}
 
 	promoteMode := strings.ToLower(strings.TrimSpace(memoryMinePromote))
@@ -204,7 +219,13 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 			continue
 		}
 
-		messages, nextOffset, err := loadMessagesForMining(ctx, sessStore, candidate.Session.ID, startOffset)
+		existing, err := memStore.ListFragments(ctx, memorydb.ListOptions{Agent: candidate.Agent})
+		if err != nil {
+			return fmt.Errorf("list existing fragments for agent %s: %w", candidate.Agent, err)
+		}
+		taxonomyMap := buildTaxonomyMap(existing, memoryMineTaxonomyMaxTokens)
+
+		messages, nextOffset, err := loadMessagesForMining(ctx, sessStore, candidate, startOffset, taxonomyMap)
 		if err != nil {
 			return fmt.Errorf("load messages for session %s: %w", candidate.Session.ID, err)
 		}
@@ -213,13 +234,8 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 			continue
 		}
 
-		existing, err := memStore.ListFragments(ctx, memorydb.ListOptions{Agent: candidate.Agent})
-		if err != nil {
-			return fmt.Errorf("list existing fragments for agent %s: %w", candidate.Agent, err)
-		}
-
-		prompt := buildExtractionPrompt(candidate, startOffset, nextOffset, messages, existing)
-		raw, err := runExtractionRequest(ctx, engine, prompt)
+		prompt := buildExtractionPrompt(candidate, startOffset, nextOffset, messages, taxonomyMap)
+		raw, err := runExtractionRequest(ctx, engine, memStore, candidate.Agent, prompt)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: skipping session %s batch at offset %d: %v\n", candidate.Session.ID, startOffset, err)
 			continue
@@ -416,7 +432,7 @@ func collectMineCandidates(ctx context.Context, store session.Store, complete []
 	return out, nil
 }
 
-func loadMessagesForMining(ctx context.Context, store session.Store, sessionID string, offset int) ([]session.Message, int, error) {
+func loadMessagesForMining(ctx context.Context, store session.Store, candidate memoryMineCandidate, offset int, taxonomyMap string) ([]session.Message, int, error) {
 	remaining := memoryMineMaxMessages
 	currentOffset := offset
 	all := make([]session.Message, 0, memoryMineBatchSize)
@@ -427,7 +443,7 @@ func loadMessagesForMining(ctx context.Context, store session.Store, sessionID s
 			limit = remaining
 		}
 
-		msgs, err := store.GetMessages(ctx, sessionID, limit, currentOffset)
+		msgs, err := store.GetMessages(ctx, candidate.Session.ID, limit, currentOffset)
 		if err != nil {
 			return nil, currentOffset, err
 		}
@@ -435,13 +451,27 @@ func loadMessagesForMining(ctx context.Context, store session.Store, sessionID s
 			break
 		}
 
-		all = append(all, msgs...)
-		currentOffset += len(msgs)
-
-		if remaining > 0 {
-			remaining -= len(msgs)
-			if remaining <= 0 {
-				break
+		for _, msg := range msgs {
+			candidateMessages := append(append([]session.Message(nil), all...), msg)
+			nextOffset := currentOffset + 1
+			if estimateExtractionPromptTokens(candidate, offset, nextOffset, candidateMessages, taxonomyMap) > memoryMinePromptMaxTokens {
+				if len(all) == 0 {
+					clipped, ok := truncateMessageForPromptBudget(candidate, offset, nextOffset, taxonomyMap, msg)
+					if !ok {
+						return nil, currentOffset, fmt.Errorf("single message at offset %d cannot fit within --prompt-max-tokens=%d", currentOffset, memoryMinePromptMaxTokens)
+					}
+					all = append(all, clipped)
+					currentOffset = nextOffset
+				}
+				return all, currentOffset, nil
+			}
+			all = candidateMessages
+			currentOffset = nextOffset
+			if remaining > 0 {
+				remaining--
+				if remaining <= 0 {
+					return all, currentOffset, nil
+				}
 			}
 		}
 
@@ -453,17 +483,17 @@ func loadMessagesForMining(ctx context.Context, store session.Store, sessionID s
 	return all, currentOffset, nil
 }
 
-func buildExtractionPrompt(candidate memoryMineCandidate, startOffset, endOffset int, messages []session.Message, existing []memorydb.Fragment) string {
+func buildExtractionPrompt(candidate memoryMineCandidate, startOffset, endOffset int, messages []session.Message, taxonomyMap string) string {
 	transcriptJSON, _ := json.MarshalIndent(buildTranscript(messages), "", "  ")
-	taxonomyJSON, _ := json.MarshalIndent(buildTaxonomy(existing), "", "  ")
 
 	return fmt.Sprintf(`Session metadata:
 - session_id: %s
 - session_number: %d
 - agent: %s
 - mined_message_range: [%d, %d)
+- transcript_message_count: %d
 
-Existing fragment taxonomy (path + preview):
+Existing fragment map (compact, partial by design):
 %s
 
 Transcript (role + text + tool call names only):
@@ -472,7 +502,9 @@ Transcript (role + text + tool call names only):
 Instructions:
 - Extract only durable facts, decisions, preferences, and technical details worth remembering long-term.
 - Skip ephemeral content like specific transient errors, one-off debugging output, and conversational filler.
-- Avoid duplicates: prefer update when a path already exists in taxonomy.
+- The fragment map is intentionally compact and may omit exact duplicates or existing content details.
+- Use lookup tools when you need to confirm whether related memory already exists, inspect exact fragment content, or browse likely paths.
+- Prefer update when an existing fragment already captures the fact; use create for genuinely new memory.
 - Return at most 20 operations.
 - Fragment content must stay <= 8192 bytes.
 - Path must be relative and must not contain ../ or be absolute.
@@ -491,23 +523,10 @@ Return strict JSON only, exactly in this format:
 		candidate.Agent,
 		startOffset,
 		endOffset,
-		string(taxonomyJSON),
+		len(messages),
+		taxonomyMap,
 		string(transcriptJSON),
 	)
-}
-
-func buildTaxonomy(fragments []memorydb.Fragment) []taxonomyEntry {
-	entries := make([]taxonomyEntry, 0, len(fragments))
-	for _, frag := range fragments {
-		entries = append(entries, taxonomyEntry{
-			Path:    frag.Path,
-			Preview: readPrefixBytes(frag.Content, memoryMineReadBytes),
-		})
-	}
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Path < entries[j].Path
-	})
-	return entries
 }
 
 func buildTranscript(messages []session.Message) []transcriptMessage {
@@ -558,17 +577,26 @@ func collectToolCallNames(msg session.Message) []string {
 	return out
 }
 
-func runExtractionRequest(ctx context.Context, engine *llm.Engine, prompt string) (string, error) {
-	return runExtractionRequestWithSystem(ctx, engine, memoryExtractionSystemPrompt, prompt)
+func runExtractionRequest(ctx context.Context, engine *llm.Engine, store *memorydb.Store, agent, prompt string) (string, error) {
+	toolSpecs, cleanup := registerMemoryExtractionTools(engine, store, agent)
+	defer cleanup()
+	return runExtractionRequestWithSystem(ctx, engine, memoryExtractionSystemPrompt, prompt, toolSpecs...)
 }
 
-func runExtractionRequestWithSystem(ctx context.Context, engine *llm.Engine, systemPrompt, prompt string) (string, error) {
+func runExtractionRequestWithSystem(ctx context.Context, engine *llm.Engine, systemPrompt, prompt string, tools ...llm.ToolSpec) (string, error) {
 	req := llm.Request{
-		Model:    strings.TrimSpace(memoryMineModel),
-		Messages: []llm.Message{llm.SystemText(systemPrompt), llm.UserText(prompt)},
-		MaxTurns: 1,
-		Debug:    false,
-		DebugRaw: debugRaw,
+		Model:           strings.TrimSpace(memoryMineModel),
+		Messages:        []llm.Message{llm.SystemText(systemPrompt), llm.UserText(prompt)},
+		MaxTurns:        1,
+		MaxOutputTokens: memoryMineMaxOutputTokens,
+		Debug:           false,
+		DebugRaw:        debugRaw,
+	}
+	if len(tools) > 0 {
+		req.Tools = tools
+		req.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
+		req.ParallelToolCalls = true
+		req.MaxTurns = memoryMineToolMaxTurns
 	}
 
 	stream, err := engine.Stream(ctx, req)
@@ -1008,17 +1036,6 @@ func runMemoryEmbedPhase(ctx context.Context, cfg *config.Config, store *memoryd
 	return embeddedCount, nil
 }
 
-func readPrefixBytes(content string, maxBytes int) string {
-	if maxBytes <= 0 {
-		return ""
-	}
-	b := []byte(content)
-	if len(b) <= maxBytes {
-		return content
-	}
-	return string(b[:maxBytes]) + "..."
-}
-
 // ── Insight extraction pass ───────────────────────────────────────────────────
 
 const insightExtractionSystemPrompt = `You are a behavioral insight extractor.
@@ -1146,7 +1163,7 @@ func runInsightExtractionPass(
 			continue
 		}
 
-		messages, _, err := loadMessagesForMining(ctx, sessStore, candidate.Session.ID, 0)
+		messages, _, err := loadMessagesForMining(ctx, sessStore, candidate, 0, "Memory fragment map:\n- total_fragments: 0")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  [insight] skip %s: load messages: %v\n", candidate.Session.ID, err)
 			continue

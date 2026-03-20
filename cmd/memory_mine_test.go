@@ -3,9 +3,13 @@ package cmd
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/samsaffron/term-llm/internal/llm"
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
+	"github.com/samsaffron/term-llm/internal/session"
 )
 
 func TestParseExtractionOperations_PlainJSON(t *testing.T) {
@@ -112,5 +116,80 @@ func TestApplyExtractionOperations_AffectedPaths(t *testing.T) {
 	}
 	if len(dryRunPaths) != 0 {
 		t.Fatalf("affectedPaths in dry-run = %v, want empty", dryRunPaths)
+	}
+}
+
+func TestBuildTaxonomyMap_RespectsBudget(t *testing.T) {
+	fragments := make([]memorydb.Fragment, 0, 20)
+	for i := 0; i < 20; i++ {
+		fragments = append(fragments, memorydb.Fragment{
+			Path:      filepath.ToSlash(filepath.Join("fragments", "prefs", "topic", time.Now().Format("150405"), strings.Repeat("x", 20)+".md")),
+			UpdatedAt: time.Now().Add(-time.Duration(i) * time.Minute),
+		})
+	}
+	got := buildTaxonomyMap(fragments, 60)
+	if tokens := llm.EstimateTokens(got); tokens > 60 {
+		t.Fatalf("taxonomy tokens = %d, want <= 60\n%s", tokens, got)
+	}
+	if !strings.Contains(got, "total_fragments") {
+		t.Fatalf("taxonomy map missing summary: %s", got)
+	}
+}
+
+func TestLoadMessagesForMining_RespectsPromptBudget(t *testing.T) {
+	ctx := context.Background()
+	sessStore, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer sessStore.Close()
+
+	sess := &session.Session{
+		ID:        session.NewID(),
+		Provider:  "test",
+		Model:     "test-model",
+		Mode:      session.ModeChat,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := sessStore.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	for i := 0; i < 6; i++ {
+		msg := session.NewMessage(sess.ID, llm.UserText(strings.Repeat("long durable text ", 80)), -1)
+		if err := sessStore.AddMessage(ctx, sess.ID, msg); err != nil {
+			t.Fatalf("AddMessage(%d): %v", i, err)
+		}
+	}
+
+	oldPromptMax := memoryMinePromptMaxTokens
+	oldBatchSize := memoryMineBatchSize
+	oldMaxMessages := memoryMineMaxMessages
+	memoryMinePromptMaxTokens = 500
+	memoryMineBatchSize = 10
+	memoryMineMaxMessages = 0
+	t.Cleanup(func() {
+		memoryMinePromptMaxTokens = oldPromptMax
+		memoryMineBatchSize = oldBatchSize
+		memoryMineMaxMessages = oldMaxMessages
+	})
+
+	candidate := memoryMineCandidate{
+		Summary: session.SessionSummary{Number: 1},
+		Session: sess,
+		Agent:   "jarvis",
+	}
+	messages, nextOffset, err := loadMessagesForMining(ctx, sessStore, candidate, 0, "Memory fragment map:\n- total_fragments: 0")
+	if err != nil {
+		t.Fatalf("loadMessagesForMining: %v", err)
+	}
+	if len(messages) == 0 {
+		t.Fatal("expected at least one message")
+	}
+	if nextOffset >= 6 {
+		t.Fatalf("nextOffset = %d, want partial batch due to prompt budget", nextOffset)
+	}
+	if got := estimateExtractionPromptTokens(candidate, 0, nextOffset, messages, "Memory fragment map:\n- total_fragments: 0"); got > memoryMinePromptMaxTokens {
+		t.Fatalf("estimated prompt tokens = %d, want <= %d", got, memoryMinePromptMaxTokens)
 	}
 }
