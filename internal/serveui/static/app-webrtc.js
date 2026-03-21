@@ -13,6 +13,9 @@
 // ?webrtc_diag=1 in the URL) to enable console.log timeline output:
 //   [webrtc] connection lifecycle events with timestamps
 //   [webrtc] per-request: method, path, body size, status, latency
+//
+// Force TURN relay: pass ?webrtc_turn=1 to set iceTransportPolicy=relay,
+// which forces all traffic through the TURN server (ignores host/srflx).
 
 (function () {
   'use strict';
@@ -35,10 +38,11 @@
   // Diagnostics
   // ---------------------------------------------------------------------------
 
+  const _params = new URLSearchParams(window.location.search);
   const diagEnabled = !!(
-    window.__WEBRTC_DIAGNOSTICS__ ||
-    new URLSearchParams(window.location.search).has('webrtc_diag')
+    window.__WEBRTC_DIAGNOSTICS__ || _params.has('webrtc_diag')
   );
+  const forceTurn = _params.has('webrtc_turn');
 
   // t0 is the timestamp when initWebRTC() starts, used for relative timings.
   let diagT0 = 0;
@@ -84,7 +88,12 @@
         });
       }
 
-      const pc = new RTCPeerConnection({ iceServers });
+      const pcConfig = { iceServers };
+      if (forceTurn) {
+        pcConfig.iceTransportPolicy = 'relay';
+        diag('FORCED TURN — iceTransportPolicy=relay');
+      }
+      const pc = new RTCPeerConnection(pcConfig);
 
       pc.oniceconnectionstatechange = () => {
         diag('ICE state=' + pc.iceConnectionState);
