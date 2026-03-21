@@ -43,14 +43,15 @@ type progressiveRunOptions struct {
 }
 
 type progressiveRunResult struct {
-	ExitReason   string         `json:"exit_reason"`
-	Finalized    bool           `json:"finalized"`
-	SessionID    string         `json:"session_id,omitempty"`
-	Sequence     int            `json:"sequence,omitempty"`
-	Reason       string         `json:"reason,omitempty"`
-	Message      string         `json:"message,omitempty"`
-	Progress     map[string]any `json:"progress,omitempty"`
-	FallbackText string         `json:"fallback_text,omitempty"`
+	ExitReason    string         `json:"exit_reason"`
+	Finalized     bool           `json:"finalized"`
+	SessionID     string         `json:"session_id,omitempty"`
+	Sequence      int            `json:"sequence,omitempty"`
+	Reason        string         `json:"reason,omitempty"`
+	Message       string         `json:"message,omitempty"`
+	Progress      map[string]any `json:"progress,omitempty"`
+	FinalResponse string         `json:"final_response,omitempty"`
+	FallbackText  string         `json:"fallback_text,omitempty"`
 }
 
 type progressivePassResult struct {
@@ -459,8 +460,13 @@ func buildProgressiveRunResult(sessionID, exitReason string, finalized bool, com
 		result.Message = commit.Message
 		result.Progress = cloneProgressState(commit.State)
 	}
-	if result.Progress == nil && strings.TrimSpace(fallbackText) != "" {
-		result.FallbackText = fallbackText
+	if strings.TrimSpace(fallbackText) != "" {
+		if result.Progress == nil {
+			result.FallbackText = fallbackText
+		} else if finalized {
+			// The finalization pass produced prose — surface it as the readable answer.
+			result.FinalResponse = fallbackText
+		}
 	}
 	return result
 }
@@ -521,8 +527,8 @@ func progressiveFinalizationContext(parent context.Context, reserve time.Duratio
 func buildProgressiveFinalizePrompt(latest *progressCommit) string {
 	var b strings.Builder
 	b.WriteString("Time budget is ending. Do not do more exploration.\n")
-	b.WriteString("Save the best current state now by calling finalize_progress.\n")
-	b.WriteString("Set final=true and reason=finalize.\n")
+	b.WriteString("Write a complete, well-formatted human-readable response to the original question using your best-so-far state.\n")
+	b.WriteString("After writing your response, call finalize_progress with final=true and reason=finalize to save the structured state.\n")
 	if latest != nil && latest.State != nil {
 		if data, err := json.Marshal(latest.State); err == nil && len(data) > 0 {
 			b.WriteString("Current best state:\n")
