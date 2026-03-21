@@ -19,8 +19,8 @@ const (
 	progressiveStopWhenDone    progressiveStopWhen = "done"
 	progressiveStopWhenTimeout progressiveStopWhen = "timeout"
 
-	progressiveDefaultFinalizeGrace = 15 * time.Second
-	progressiveMaxFinalizeBudget    = 30 * time.Second
+	progressiveDefaultFinalizeGrace = 5 * time.Minute
+	progressiveMaxFinalizeBudget    = 5 * time.Minute
 	progressiveMinFinalizeBudget    = 5 * time.Second
 )
 
