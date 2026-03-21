@@ -672,11 +672,13 @@ func (m *Model) renderStatusLine() string {
 	// Calculate available width for tools and mcp
 	availableWidth := m.width - fixedWidth
 
-	// Build tools string - use full names if they fit, otherwise abbreviate
+	// Build tools string - show count when 4+ tools, full names only for small sets
 	var toolsPart string
 	if len(m.localTools) > 0 {
 		if len(m.localTools) == len(tools.AllToolNames()) {
 			toolsPart = successStyle.Render("tools:all")
+		} else if len(m.localTools) >= 4 {
+			toolsPart = successStyle.Render(fmt.Sprintf("tools:%d", len(m.localTools)))
 		} else {
 			fullTools := "tools:" + strings.Join(m.localTools, ",")
 			shortTools := fmt.Sprintf("tools:%d", len(m.localTools))
@@ -713,9 +715,6 @@ func (m *Model) renderStatusLine() string {
 			} else {
 				mcpPart = mutedStyle.Render("mcp:off")
 			}
-		} else if len(m.messages) == 0 {
-			// Show hint for new users on empty conversation
-			mcpPart = mutedStyle.Render("Ctrl+T:mcp")
 		}
 	}
 
