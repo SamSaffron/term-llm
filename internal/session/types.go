@@ -56,6 +56,7 @@ type Session struct {
 	TitleSource         SessionTitleSource `json:"title_source,omitempty"`
 	TitleGeneratedAt    time.Time          `json:"title_generated_at,omitempty"`
 	TitleBasisMsgSeq    int                `json:"title_basis_msg_seq,omitempty"`
+	TitleSkippedAt      time.Time          `json:"title_skipped_at,omitempty"` // Set when autotitle considers session untitlable; cleared when session is updated
 
 	Provider    string        `json:"provider"`               // Provider display label
 	ProviderKey string        `json:"provider_key,omitempty"` // Canonical provider key (e.g. openai, chatgpt, custom alias)

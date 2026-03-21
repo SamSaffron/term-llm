@@ -33,12 +33,13 @@ type autotitleSkipStats struct {
 	recent         int
 	customName     int
 	alreadyTitled  int
+	trivial        int
 	rejected       int
 	generationErrs int
 }
 
 func (s autotitleSkipStats) total() int {
-	return s.recent + s.customName + s.alreadyTitled + s.rejected + s.generationErrs
+	return s.recent + s.customName + s.alreadyTitled + s.trivial + s.rejected + s.generationErrs
 }
 
 func (s autotitleSkipStats) print(out interface{ Write([]byte) (int, error) }) {
@@ -54,6 +55,9 @@ func (s autotitleSkipStats) print(out interface{ Write([]byte) (int, error) }) {
 	}
 	if s.alreadyTitled > 0 {
 		fmt.Fprintf(out, "  already titled: %d\n", s.alreadyTitled)
+	}
+	if s.trivial > 0 {
+		fmt.Fprintf(out, "  trivial (skipped until updated): %d\n", s.trivial)
 	}
 	if s.rejected > 0 {
 		fmt.Fprintf(out, "  generated titles rejected: %d\n", s.rejected)
@@ -123,6 +127,11 @@ func runSessionsAutotitle(cmd *cobra.Command, args []string) error {
 			skips.alreadyTitled++
 			continue
 		}
+		// Skip sessions previously marked trivial unless they've been updated since.
+		if !sess.TitleSkippedAt.IsZero() && !sess.UpdatedAt.After(sess.TitleSkippedAt) && !sessionsAutotitleForce {
+			skips.trivial++
+			continue
+		}
 		candidates = append(candidates, candidate{summary: summary, sess: sess})
 	}
 
@@ -160,6 +169,13 @@ func runSessionsAutotitle(cmd *cobra.Command, args []string) error {
 				skips.rejected++
 				if sessionsAutotitleVerbose {
 					fmt.Fprintf(cmd.ErrOrStderr(), "#%d rejected: %v\n", sess.Number, err)
+				}
+				// Mark session as trivial so we don't retry until it changes.
+				if !sessionsAutotitleDryRun {
+					sess.TitleSkippedAt = time.Now().UTC()
+					if uerr := store.Update(ctx, sess); uerr != nil {
+						fmt.Fprintf(cmd.ErrOrStderr(), "#%d skip-mark failed: %v\n", sess.Number, uerr)
+					}
 				}
 			} else {
 				skips.generationErrs++

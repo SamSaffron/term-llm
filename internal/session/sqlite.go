@@ -22,6 +22,7 @@ type SQLiteStore struct {
 	hasCacheWriteTokens bool // true if sessions table has cache_write_tokens column
 	hasOrigin           bool // true if sessions table has origin column
 	hasPinned           bool // true if sessions table has pinned column
+	hasTitleSkippedAt   bool // true if sessions table has title_skipped_at column
 }
 
 // Schema for the sessions database.
@@ -36,6 +37,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     title_source TEXT,
     title_generated_at TIMESTAMP,
     title_basis_msg_seq INTEGER DEFAULT 0,
+    title_skipped_at TIMESTAMP,
     provider TEXT NOT NULL,
     provider_key TEXT,
     model TEXT NOT NULL,
@@ -158,6 +160,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 	store.hasCacheWriteTokens = store.probeColumn("cache_write_tokens")
 	store.hasOrigin = store.probeColumn("origin")
 	store.hasPinned = store.probeColumn("pinned")
+	store.hasTitleSkippedAt = store.probeColumn("title_skipped_at")
 
 	// Run cleanup if configured (read-write mode only).
 	if !cfg.ReadOnly {
@@ -174,7 +177,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 14
+const schemaVersion = 15
 
 // migration represents a schema migration.
 type migration struct {
@@ -517,6 +520,24 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		// Migration 15: Add title_skipped_at for autotitle skip-until-changed logic.
+		version:     15,
+		description: "add title_skipped_at column",
+		up: func(db *sql.DB) error {
+			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN title_skipped_at TIMESTAMP")
+			if err != nil && !isDuplicateColumnError(err) {
+				return err
+			}
+			// Index covers: WHERE archived=FALSE AND (title_skipped_at IS NULL OR title_skipped_at < updated_at)
+			// ORDER BY updated_at DESC — ready for SQL-level autotitle filtering.
+			_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_sessions_title_skipped ON sessions(archived, title_skipped_at, updated_at DESC)`)
+			if err != nil {
+				return fmt.Errorf("create title_skipped index: %w", err)
+			}
+			return nil
+		},
+	},
 }
 
 // initSchema initializes the database schema and runs any pending migrations.
@@ -680,11 +701,11 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 		// next session number. This avoids race conditions where two concurrent
 		// Creates could read the same MAX(number).
 		result, err := s.db.ExecContext(ctx, `
-			INSERT INTO sessions (id, number, name, summary, generated_short_title, generated_long_title, title_source, title_generated_at, title_basis_msg_seq,
+			INSERT INTO sessions (id, number, name, summary, generated_short_title, generated_long_title, title_source, title_generated_at, title_basis_msg_seq, title_skipped_at,
 			                      provider, provider_key, model, mode, origin, agent, cwd, created_at, updated_at, archived, pinned, parent_id, search, tools, mcp,
 			                      user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, status, tags)
-			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			sess.ID, sess.Name, sess.Summary, nullString(sess.GeneratedShortTitle), nullString(sess.GeneratedLongTitle), nullString(string(sess.TitleSource)), nullTime(sess.TitleGeneratedAt), sess.TitleBasisMsgSeq,
+			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			sess.ID, sess.Name, sess.Summary, nullString(sess.GeneratedShortTitle), nullString(sess.GeneratedLongTitle), nullString(string(sess.TitleSource)), nullTime(sess.TitleGeneratedAt), sess.TitleBasisMsgSeq, nullTime(sess.TitleSkippedAt),
 			sess.Provider, nullString(sess.ProviderKey), sess.Model, string(sess.Mode), nullString(string(sess.Origin)), nullString(sess.Agent), sess.CWD,
 			sess.CreatedAt, sess.UpdatedAt, sess.Archived, sess.Pinned, nullString(sess.ParentID),
 			sess.Search, nullString(sess.Tools), nullString(sess.MCP),
@@ -717,14 +738,14 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 func (s *SQLiteStore) Get(ctx context.Context, id string) (*Session, error) {
 	row := s.db.QueryRowContext(ctx,
 		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE id = ?", id)
-	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq)
+	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasTitleSkippedAt)
 }
 
 // GetByNumber retrieves a session by its sequential number.
 func (s *SQLiteStore) GetByNumber(ctx context.Context, number int64) (*Session, error) {
 	row := s.db.QueryRowContext(ctx,
 		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE number = ?", number)
-	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq)
+	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasTitleSkippedAt)
 }
 
 // GetByPrefix retrieves a session by number (with # prefix), exact ID, or by short ID prefix match.
@@ -771,7 +792,7 @@ func (s *SQLiteStore) GetByPrefix(ctx context.Context, prefix string) (*Session,
 	pattern := ExpandShortID(prefix)
 	row := s.db.QueryRowContext(ctx,
 		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE id LIKE ? ORDER BY created_at DESC LIMIT 1", pattern)
-	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq)
+	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasTitleSkippedAt)
 }
 
 // Update modifies an existing session's metadata fields.
@@ -784,17 +805,33 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	if sess.Origin == "" {
 		sess.Origin = OriginTUI
 	}
-	result, err := s.db.ExecContext(ctx, `
-		UPDATE sessions SET name = ?, summary = ?, generated_short_title = ?, generated_long_title = ?, title_source = ?, title_generated_at = ?, title_basis_msg_seq = ?,
+
+	titleSkippedAtClause := ""
+	if s.hasTitleSkippedAt {
+		titleSkippedAtClause = ", title_skipped_at = ?"
+	}
+	query := `
+		UPDATE sessions SET name = ?, summary = ?, generated_short_title = ?, generated_long_title = ?, title_source = ?, title_generated_at = ?, title_basis_msg_seq = ?` +
+		titleSkippedAtClause + `,
 		       provider = ?, provider_key = ?, model = ?, mode = ?, origin = ?, agent = ?, cwd = ?,
 		       updated_at = ?, archived = ?, pinned = ?, parent_id = ?, search = ?, tools = ?, mcp = ?,
 		       user_turns = ?, status = ?, tags = ?
-		WHERE id = ?`,
+		WHERE id = ?`
+
+	args := []any{
 		sess.Name, sess.Summary, nullString(sess.GeneratedShortTitle), nullString(sess.GeneratedLongTitle), nullString(string(sess.TitleSource)), nullTime(sess.TitleGeneratedAt), sess.TitleBasisMsgSeq,
+	}
+	if s.hasTitleSkippedAt {
+		args = append(args, nullTime(sess.TitleSkippedAt))
+	}
+	args = append(args,
 		sess.Provider, nullString(sess.ProviderKey), sess.Model, string(sess.Mode), nullString(string(sess.Origin)), nullString(sess.Agent), sess.CWD,
 		sess.UpdatedAt, sess.Archived, sess.Pinned, nullString(sess.ParentID),
 		sess.Search, nullString(sess.Tools), nullString(sess.MCP),
-		sess.UserTurns, string(sess.Status), nullString(sess.Tags), sess.ID)
+		sess.UserTurns, string(sess.Status), nullString(sess.Tags), sess.ID,
+	)
+
+	result, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("update session: %w", err)
 	}
@@ -1424,6 +1461,11 @@ func (s *SQLiteStore) sessionSelectCols() string {
 	base := `id, number, name, summary`
 	if s.hasGeneratedTitles {
 		base += ", generated_short_title, generated_long_title, title_source, title_generated_at, title_basis_msg_seq"
+		if s.hasTitleSkippedAt {
+			base += ", title_skipped_at"
+		} else {
+			base += ", NULL AS title_skipped_at"
+		}
 	}
 	base += `,
 	       provider, provider_key, model, mode`
@@ -1451,18 +1493,21 @@ func (s *SQLiteStore) sessionSelectCols() string {
 
 // scanSessionRow scans a session row into a Session struct. The flags
 // determine which optional columns are present in the result set.
-func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCompactionSeq bool) (*Session, error) {
+func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCompactionSeq, hasTitleSkippedAt bool) (*Session, error) {
 	var sess Session
 	var number sql.NullInt64
 	var name, summary, cwd sql.NullString
 	var generatedShortTitle, generatedLongTitle, titleSource sql.NullString
-	var titleGeneratedAt sql.NullTime
+	var titleGeneratedAt, titleSkippedAt sql.NullTime
 	var mode, origin, agent, parentID, tools, mcp, status, tags, providerKey sql.NullString
 
 	var scanArgs []any
 	scanArgs = append(scanArgs, &sess.ID, &number, &name, &summary)
 	if hasGeneratedTitles {
 		scanArgs = append(scanArgs, &generatedShortTitle, &generatedLongTitle, &titleSource, &titleGeneratedAt, &sess.TitleBasisMsgSeq)
+		if hasTitleSkippedAt {
+			scanArgs = append(scanArgs, &titleSkippedAt)
+		}
 	}
 	scanArgs = append(scanArgs,
 		&sess.Provider, &providerKey, &sess.Model, &mode, &origin, &sess.Pinned,
@@ -1511,6 +1556,9 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 		}
 		if titleGeneratedAt.Valid {
 			sess.TitleGeneratedAt = titleGeneratedAt.Time
+		}
+		if hasTitleSkippedAt && titleSkippedAt.Valid {
+			sess.TitleSkippedAt = titleSkippedAt.Time
 		}
 	}
 	if cwd.Valid {
