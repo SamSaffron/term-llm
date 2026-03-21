@@ -107,19 +107,26 @@ func runSessionsAutotitle(cmd *cobra.Command, args []string) error {
 		skips      autotitleSkipStats
 	)
 	for _, summary := range summaries {
+		// Skip sessions with no messages at all (no point loading full session).
+		if summary.MessageCount == 0 {
+			continue
+		}
 		sess, err := store.Get(ctx, summary.ID)
 		if err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "#%d load failed: %v\n", summary.Number, err)
 			continue
 		}
-		if sess == nil || sess.UserTurns == 0 {
+		if sess == nil {
 			continue
 		}
 		if sessionsAutotitleMinAge > 0 && time.Since(sess.UpdatedAt) < sessionsAutotitleMinAge {
 			skips.recent++
 			continue
 		}
-		if sess.Name != "" && !sessionsAutotitleForce {
+		// Only skip custom-named sessions if they already have a generated title too.
+		// If Name is set but GeneratedShortTitle is empty, still generate — the generated
+		// title serves as a backup and the Name will still win in the UI.
+		if sess.Name != "" && sess.GeneratedShortTitle != "" && !sessionsAutotitleForce {
 			skips.customName++
 			continue
 		}
