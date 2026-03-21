@@ -1858,6 +1858,69 @@ func TestHandleSessionMessages_OmitsToolResults(t *testing.T) {
 	}
 }
 
+func TestHandleSessionMessages_OmitsSystemMessages(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &session.Session{
+		ID: "sess-sys", Provider: "mock", Model: "mock-model",
+		Mode: session.ModeChat, CreatedAt: time.Now(), UpdatedAt: time.Now(), Status: session.StatusActive,
+	}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Add a system message (as persisted by TUI chat sessions)
+	sysMsg := session.NewMessage("sess-sys", llm.SystemText("You are a helpful assistant."), -1)
+	if err := store.AddMessage(ctx, "sess-sys", sysMsg); err != nil {
+		t.Fatalf("AddMessage(system): %v", err)
+	}
+	// Add a user message
+	userMsg := session.NewMessage("sess-sys", llm.UserText("hello"), -1)
+	if err := store.AddMessage(ctx, "sess-sys", userMsg); err != nil {
+		t.Fatalf("AddMessage(user): %v", err)
+	}
+	// Add an assistant message
+	assistantMsg := session.NewMessage("sess-sys", llm.Message{
+		Role:  llm.RoleAssistant,
+		Parts: []llm.Part{{Type: llm.PartText, Text: "hi there"}},
+	}, -1)
+	if err := store.AddMessage(ctx, "sess-sys", assistantMsg); err != nil {
+		t.Fatalf("AddMessage(assistant): %v", err)
+	}
+
+	srv := &serveServer{store: store}
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/sess-sys/messages", nil)
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	var body struct {
+		Messages []struct {
+			Role string `json:"role"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(body.Messages) != 2 {
+		t.Fatalf("message count = %d, want 2 (system message should be filtered)", len(body.Messages))
+	}
+	for _, m := range body.Messages {
+		if m.Role == "system" {
+			t.Fatal("system messages should be filtered from API response")
+		}
+	}
+}
+
 func TestEnsurePersistedSession_RestoresHistory(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})

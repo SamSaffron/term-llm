@@ -364,6 +364,10 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 
 	result := make([]messageEntry, 0, len(msgs))
 	for _, msg := range msgs {
+		// System messages contain the internal system prompt — never expose to UI clients.
+		if msg.Role == llm.RoleSystem {
+			continue
+		}
 		entry := messageEntry{
 			Role:      string(msg.Role),
 			CreatedAt: msg.CreatedAt.UnixMilli(),
