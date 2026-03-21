@@ -509,7 +509,7 @@ func progressiveFinalizeReserve(total time.Duration) time.Duration {
 
 func progressiveFinalizationContext(parent context.Context, reserve time.Duration, exitReason string) context.Context {
 	grace := reserve
-	if grace <= 0 {
+	if grace < progressiveDefaultFinalizeGrace {
 		grace = progressiveDefaultFinalizeGrace
 	}
 	if exitReason == exitReasonNatural {
