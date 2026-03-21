@@ -58,6 +58,7 @@
     diag('init signaling=' + SIGNALING_URL);
     try {
       // 1. Request a signaling session (no auth — session_id gates routing).
+      const sessStart = performance.now();
       const sessResp = await originalFetch(SIGNALING_URL + '/session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -68,7 +69,8 @@
       }
       const sess = await sessResp.json();
       diag('session created id=' + sess.session_id +
-        (sess.turn_url ? ' turn=' + sess.turn_url : ' no-turn'));
+        (sess.turn_url ? ' turn=' + sess.turn_url : ' no-turn') +
+        ' (' + ((performance.now() - sessStart) | 0) + 'ms)');
 
       // 2. Build ICE server list from session response.
       const iceServers = [
@@ -86,6 +88,20 @@
 
       pc.oniceconnectionstatechange = () => {
         diag('ICE state=' + pc.iceConnectionState);
+      };
+
+      // Log each ICE candidate as it is gathered.
+      pc.onicecandidate = (e) => {
+        if (e.candidate) {
+          diag('ICE candidate: ' + e.candidate.type + ' ' +
+            e.candidate.protocol + ' ' + e.candidate.address +
+            ':' + e.candidate.port +
+            (e.candidate.relatedAddress
+              ? ' raddr=' + e.candidate.relatedAddress + ':' + e.candidate.relatedPort
+              : ''));
+        } else {
+          diag('ICE candidate gathering done (null sentinel)');
+        }
       };
 
       // 3. Browser creates the data channel (ordered, reliable).
@@ -112,6 +128,7 @@
       diag('ICE gathering complete');
 
       // 5. Send the completed offer to the signaling server.
+      const offerStart = performance.now();
       const sendResp = await originalFetch(SIGNALING_URL + '/signal', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -125,7 +142,7 @@
         diag('offer post failed status=' + sendResp.status);
         return;
       }
-      diag('offer sent');
+      diag('offer sent (' + ((performance.now() - offerStart) | 0) + 'ms)');
 
       // 6. Poll for the home peer's answer (8-second timeout).
       const answer = await pollForAnswer(sess.session_id, ICE_TIMEOUT_MS);
@@ -278,7 +295,9 @@
           resolveOnce(new Response(stream, { status, headers: new Headers(headers) }));
         },
         onChunk(line) {
-          resolveOnce(new Response(stream, { status: 200 }));
+          if (!resolved) {
+            resolveOnce(new Response(stream, { status: 200 }));
+          }
           responseBytes += (line ? line.length : 0) + 1; // +1 for the \n
           if (streamController) {
             streamController.enqueue(encoder.encode(line + '\n'));
@@ -288,7 +307,9 @@
           const latency = (performance.now() - reqStart) | 0;
           diag('← ' + status + ' ' + method + ' ' + path +
             ' (' + responseBytes + 'b, ' + latency + 'ms)');
-          resolveOnce(new Response(stream, { status }));
+          if (!resolved) {
+            resolveOnce(new Response(stream, { status }));
+          }
           if (streamController) streamController.close();
           pendingRequests.delete(reqId);
         },

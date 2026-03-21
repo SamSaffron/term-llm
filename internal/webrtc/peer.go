@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -336,13 +337,24 @@ func (p *peer) handleOffer(ctx context.Context, offer signalingMsg) {
 		stunURLs = append(stunURLs, u)
 	}
 
+	// Build a shared pion logger factory. Default is Error; ICE at Info for
+	// connection state visibility; DTLS/SCTP at Warn to surface fatal alerts
+	// without flooding the log with per-packet trace output.
+	logFactory := pionlog.NewDefaultLoggerFactory()
+	logFactory.DefaultLogLevel = pionlog.LogLevelError
+	logFactory.ScopeLevels = map[string]pionlog.LogLevel{
+		"ice":  pionlog.LogLevelInfo,
+		"dtls": pionlog.LogLevelWarn,
+		"sctp": pionlog.LogLevelWarn,
+	}
+
 	// Create the ICE agent and gather candidates.
 	gatherDone := make(chan struct{})
 	var gatherOnce sync.Once
 	agent, err := ice.NewAgentWithOptions(
 		ice.WithUrls(stunURLs),
 		ice.WithNetworkTypes([]ice.NetworkType{ice.NetworkTypeUDP4, ice.NetworkTypeUDP6}),
-		ice.WithLoggerFactory(pionlog.NewDefaultLoggerFactory()),
+		ice.WithLoggerFactory(logFactory),
 		ice.WithDisconnectedTimeout(30*time.Second),
 	)
 	if err != nil {
@@ -439,6 +451,15 @@ func (p *peer) handleOffer(ctx context.Context, offer signalingMsg) {
 		ClientAuth:            dtls.RequireAnyClientCert,
 		InsecureSkipVerify:    true, // CA chain not applicable; fingerprint checked below
 		VerifyPeerCertificate: makeFingerprintVerifier(info.fpAlgo, info.fpValue),
+		LoggerFactory:         logFactory,
+		// Browsers always include the use_srtp extension in their DTLS ClientHello
+		// (even for data-channel-only connections). Without matching profiles the
+		// pion/dtls server sends a fatal alert, killing the connection.
+		SRTPProtectionProfiles: []dtls.SRTPProtectionProfile{
+			dtls.SRTP_AEAD_AES_256_GCM,
+			dtls.SRTP_AEAD_AES_128_GCM,
+			dtls.SRTP_AES128_CM_HMAC_SHA1_80,
+		},
 	})
 	if err != nil {
 		log.Printf("webrtc: DTLS handshake for session %s: %v", offer.SessionID, err)
@@ -448,22 +469,32 @@ func (p *peer) handleOffer(ctx context.Context, offer signalingMsg) {
 	log.Printf("webrtc: DTLS handshake complete for session %s", offer.SessionID)
 
 	// Establish SCTP association over DTLS.
+	// Per RFC 8832: the DTLS client (browser) is the SCTP client (sends INIT).
+	// We are the DTLS server, so we act as the SCTP server (wait for INIT).
 	log.Printf("webrtc: starting SCTP server for session %s", offer.SessionID)
 	sctpAssoc, err := sctp.Server(sctp.Config{
-		NetConn:              dtlsConn,
+		NetConn:              &loggedConn{Conn: dtlsConn, sessionID: offer.SessionID},
 		MaxReceiveBufferSize: uint32(maxFrameBytes + 64*1024),
+		LoggerFactory:        logFactory,
 	})
 	if err != nil {
-		log.Printf("webrtc: SCTP server for session %s: %v", offer.SessionID, err)
+		log.Printf("webrtc: SCTP client for session %s: %v", offer.SessionID, err)
 		return
 	}
 	defer sctpAssoc.Close()
 	log.Printf("webrtc: SCTP association established for session %s", offer.SessionID)
 
 	// Accept the WebRTC data channel over SCTP.
-	dc, err := datachannel.Accept(sctpAssoc, &datachannel.Config{})
+	log.Printf("webrtc: waiting for data channel accept for session %s", offer.SessionID)
+	dc, err := datachannel.Accept(sctpAssoc, &datachannel.Config{
+		LoggerFactory: logFactory,
+	})
 	if err != nil {
 		log.Printf("webrtc: accept data channel for session %s: %v", offer.SessionID, err)
+		return
+	}
+	if dc == nil {
+		log.Printf("webrtc: accept data channel returned nil for session %s", offer.SessionID)
 		return
 	}
 	defer dc.Close()
@@ -622,6 +653,29 @@ func (p *peer) postSignal(ctx context.Context, msg signalingMsg) error {
 		return fmt.Errorf("signaling POST returned %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// loggedConn wraps a net.Conn and logs every Read and Write call.
+// It is used to observe what errors SCTP sees on the DTLS connection.
+type loggedConn struct {
+	net.Conn
+	sessionID string
+}
+
+func (l *loggedConn) Read(b []byte) (int, error) {
+	n, err := l.Conn.Read(b)
+	if err != nil {
+		log.Printf("webrtc: dtlsConn.Read session=%s err=%v", l.sessionID, err)
+	}
+	return n, err
+}
+
+func (l *loggedConn) Write(b []byte) (int, error) {
+	n, err := l.Conn.Write(b)
+	if err != nil {
+		log.Printf("webrtc: dtlsConn.Write session=%s err=%v", l.sessionID, err)
+	}
+	return n, err
 }
 
 func sendDoneFrame(send func(string) error, id string, status int) {
