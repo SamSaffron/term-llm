@@ -652,6 +652,14 @@ const resumeActiveResponseInner = async (session, responseId, options) => {
     if (consecutiveHttpFailures >= 5) {
       consecutiveHttpFailures = 0;
       setConnectionState('Checking session state\u2026');
+      // Temporarily clear the abort controller so syncActiveSessionFromServer
+      // can act on the server state.  The !activeRun && !state.abortController
+      // branch inside sync refuses to clear tracking while a controller is set,
+      // but our own retry loop is the one that set it — creating a deadlock
+      // where the loop never exits even after the server confirms the run is done.
+      if (state.abortController) {
+        state.abortController = null;
+      }
       await app.syncActiveSessionFromServer(session, false);
       if (session.activeResponseId !== responseId) {
         // Run completed/changed while we were polling — exit.
