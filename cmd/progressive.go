@@ -200,7 +200,13 @@ func validateAskProgressiveOptions(opts askProgressiveOptions) error {
 
 	stopWhen := opts.StopWhen
 	if stopWhen == "" {
-		stopWhen = progressiveStopWhenDone
+		// When a timeout is configured, default to "timeout" so the agent
+		// actually uses its budget instead of exiting after the first pass.
+		if opts.Timeout > 0 {
+			stopWhen = progressiveStopWhenTimeout
+		} else {
+			stopWhen = progressiveStopWhenDone
+		}
 	}
 	switch stopWhen {
 	case progressiveStopWhenDone, progressiveStopWhenTimeout:
