@@ -8,6 +8,11 @@
 // falls back to the normal HTTPS path; no user-visible error is shown.
 // When the data channel later disconnects or errors the same silent fallback
 // applies to all subsequent requests.
+//
+// Diagnostics mode: set window.__WEBRTC_DIAGNOSTICS__ = true (or pass
+// ?webrtc_diag=1 in the URL) to enable console.log timeline output:
+//   [webrtc] connection lifecycle events with timestamps
+//   [webrtc] per-request: method, path, body size, status, latency
 
 (function () {
   'use strict';
@@ -27,18 +32,43 @@
   let dataChannel = null;
 
   // ---------------------------------------------------------------------------
+  // Diagnostics
+  // ---------------------------------------------------------------------------
+
+  const diagEnabled = !!(
+    window.__WEBRTC_DIAGNOSTICS__ ||
+    new URLSearchParams(window.location.search).has('webrtc_diag')
+  );
+
+  // t0 is the timestamp when initWebRTC() starts, used for relative timings.
+  let diagT0 = 0;
+
+  function diag(msg) {
+    if (!diagEnabled) return;
+    const elapsed = diagT0 ? ((performance.now() - diagT0) | 0) : 0;
+    console.log('[webrtc] +' + elapsed + 'ms ' + msg);
+  }
+
+  // ---------------------------------------------------------------------------
   // Initialisation
   // ---------------------------------------------------------------------------
 
   async function initWebRTC() {
+    diagT0 = performance.now();
+    diag('init signaling=' + SIGNALING_URL);
     try {
       // 1. Request a signaling session (no auth — session_id gates routing).
       const sessResp = await originalFetch(SIGNALING_URL + '/session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });
-      if (!sessResp.ok) return;
+      if (!sessResp.ok) {
+        diag('session request failed status=' + sessResp.status);
+        return;
+      }
       const sess = await sessResp.json();
+      diag('session created id=' + sess.session_id +
+        (sess.turn_url ? ' turn=' + sess.turn_url : ' no-turn'));
 
       // 2. Build ICE server list from session response.
       const iceServers = [
@@ -54,6 +84,10 @@
 
       const pc = new RTCPeerConnection({ iceServers });
 
+      pc.oniceconnectionstatechange = () => {
+        diag('ICE state=' + pc.iceConnectionState);
+      };
+
       // 3. Browser creates the data channel (ordered, reliable).
       const dc = pc.createDataChannel('api', { ordered: true });
 
@@ -61,6 +95,7 @@
       //    includes all candidates (vanilla ICE — no trickle).
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
+      diag('ICE gathering started');
 
       await new Promise((resolve) => {
         if (pc.iceGatheringState === 'complete') { resolve(); return; }
@@ -68,6 +103,7 @@
           if (pc.iceGatheringState === 'complete') resolve();
         };
       });
+      diag('ICE gathering complete');
 
       // 5. Send the completed offer to the signaling server.
       const sendResp = await originalFetch(SIGNALING_URL + '/signal', {
@@ -79,11 +115,19 @@
           sdp: pc.localDescription.sdp,
         }),
       });
-      if (!sendResp.ok) return;
+      if (!sendResp.ok) {
+        diag('offer post failed status=' + sendResp.status);
+        return;
+      }
+      diag('offer sent');
 
       // 6. Poll for the home peer's answer (8-second timeout).
       const answer = await pollForAnswer(sess.session_id, ICE_TIMEOUT_MS);
-      if (!answer) return; // timed out — fall back to HTTPS silently
+      if (!answer) {
+        diag('answer timeout — falling back to HTTPS');
+        return; // timed out — fall back to HTTPS silently
+      }
+      diag('answer received');
 
       await pc.setRemoteDescription({ type: 'answer', sdp: answer.sdp });
 
@@ -103,10 +147,13 @@
 
       window.fetch = patchedFetch;
 
+      diag('data channel open — fetch patched');
+
       if (typeof setConnectionState === 'function') {
         setConnectionState('\u26A1 direct', 'ok');
       }
     } catch (_e) {
+      diag('init error: ' + (_e && _e.message ? _e.message : String(_e)));
       // Silent fallback — HTTPS continues to work for all requests.
     }
   }
@@ -163,6 +210,7 @@
 
   function onChannelClose() {
     dataChannel = null;
+    diag('data channel closed — restoring original fetch');
     // Restore native fetch so subsequent requests use HTTPS.
     window.fetch = originalFetch;
     if (typeof setConnectionState === 'function') {
@@ -199,11 +247,21 @@
       const reqId = crypto.randomUUID();
       let streamController;
       let resolved = false;
+      const reqStart = performance.now();
+
+      const urlObj = new URL(urlStr, window.location.origin);
+      const method = options.method || 'GET';
+      const path = urlObj.pathname + (urlObj.search || '');
+      const bodySize = options.body ? new Blob([options.body]).size : 0;
+
+      diag('→ ' + method + ' ' + path + ' (' + bodySize + 'b)');
 
       const stream = new ReadableStream({
         start(ctrl) { streamController = ctrl; },
         cancel() { pendingRequests.delete(reqId); },
       });
+
+      let responseBytes = 0;
 
       function resolveOnce(response) {
         if (!resolved) { resolved = true; resolve(response); }
@@ -215,11 +273,15 @@
         },
         onChunk(line) {
           resolveOnce(new Response(stream, { status: 200 }));
+          responseBytes += (line ? line.length : 0) + 1; // +1 for the \n
           if (streamController) {
             streamController.enqueue(encoder.encode(line + '\n'));
           }
         },
         onDone(status) {
+          const latency = (performance.now() - reqStart) | 0;
+          diag('← ' + status + ' ' + method + ' ' + path +
+            ' (' + responseBytes + 'b, ' + latency + 'ms)');
           resolveOnce(new Response(stream, { status }));
           if (streamController) streamController.close();
           pendingRequests.delete(reqId);
@@ -227,7 +289,6 @@
       });
 
       // Build and send the request frame.
-      const urlObj = new URL(urlStr, window.location.origin);
       const headersObj = {};
 
       // Carry over all request headers (Authorization, session_id, Content-Type, …).
@@ -240,8 +301,8 @@
 
       const frame = {
         id: reqId,
-        method: options.method || 'GET',
-        path: urlObj.pathname + (urlObj.search || ''),
+        method,
+        path,
         headers: Object.keys(headersObj).length ? headersObj : undefined,
         body: options.body ? strToBase64(options.body) : undefined,
       };
@@ -249,6 +310,7 @@
       try {
         dataChannel.send(JSON.stringify(frame));
       } catch (_e) {
+        diag('send error: ' + (_e && _e.message ? _e.message : String(_e)));
         // Channel error — fall back to HTTPS for this request.
         pendingRequests.delete(reqId);
         if (streamController) streamController.close();

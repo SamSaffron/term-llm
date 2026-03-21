@@ -15,6 +15,7 @@ var (
 	serveWebRTCToken        string
 	serveWebRTCSTUN         []string
 	serveWebRTCMaxConns     int
+	serveWebRTCDiagnostics  bool
 )
 
 func init() {
@@ -28,6 +29,8 @@ func init() {
 		[]string{"stun:stun.l.google.com:19302"}, "STUN server URL(s)")
 	serveCmd.Flags().IntVar(&serveWebRTCMaxConns, "webrtc-max-conns", 10,
 		"Maximum concurrent WebRTC connections")
+	serveCmd.Flags().BoolVar(&serveWebRTCDiagnostics, "webrtc-diagnostics", false,
+		"Enable WebRTC diagnostics: log connection timeline and per-request latency to browser console")
 }
 
 // webrtcHTMLSnippet returns the <script> snippet to inject into index.html
@@ -37,8 +40,13 @@ func webrtcHTMLSnippet() string {
 		return ""
 	}
 	urlJSON, _ := json.Marshal(serveWebRTCSignalingURL)
-	return `<script>window.__WEBRTC_ENABLED__=true;window.__WEBRTC_SIGNALING_URL__=` +
-		string(urlJSON) + `;</script>`
+	snippet := `<script>window.__WEBRTC_ENABLED__=true;window.__WEBRTC_SIGNALING_URL__=` +
+		string(urlJSON) + `;`
+	if serveWebRTCDiagnostics {
+		snippet += `window.__WEBRTC_DIAGNOSTICS__=true;`
+	}
+	snippet += `</script>`
+	return snippet
 }
 
 // runWebRTCPeer starts the WebRTC home peer in the background.
