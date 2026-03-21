@@ -4,10 +4,16 @@
 // this module attempts to establish a WebRTC data channel directly to the
 // home peer, bypassing the intermediate relay for all /v1/ API calls.
 //
+// Per-request timeout (1 s): if a WebRTC request receives no response frame
+// within 1 second, the request seamlessly falls back to HTTPS and the data
+// channel is marked degraded.  All other in-flight requests on the same
+// channel are also drained to HTTPS.  A background renegotiation then
+// re-establishes WebRTC so subsequent requests can try the fast path again.
+//
 // If ICE negotiation does not complete within 8 seconds the browser silently
 // falls back to the normal HTTPS path; no user-visible error is shown.
 // When the data channel later disconnects or errors the same silent fallback
-// applies to all subsequent requests.
+// applies — all pending requests are rescued via HTTPS.
 //
 // Diagnostics mode: set window.__WEBRTC_DIAGNOSTICS__ = true (or pass
 // ?webrtc_diag=1 in the URL) to enable console.log timeline output:
@@ -26,13 +32,18 @@
   const UI_PREFIX = window.TERM_LLM_UI_PREFIX || '/ui';
   const ICE_TIMEOUT_MS = 8000;
 
+  // If no response frame (headers/chunk/done) arrives within this window,
+  // assume UDP is dead: fall back to HTTPS and renegotiate in the background.
+  const RESPONSE_TIMEOUT_MS = 1000;
+
   const originalFetch = window.fetch.bind(window);
   const encoder = new TextEncoder();
 
-  // pendingRequests maps request-id → { onHeaders, onChunk, onDone }
+  // pendingRequests maps request-id → { onHeaders, onChunk, onDone, fallback, timer }
   const pendingRequests = new Map();
 
   let dataChannel = null;
+  let renegotiating = false;
 
   // ---------------------------------------------------------------------------
   // Diagnostics
@@ -240,14 +251,75 @@
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Drain all pending requests to HTTPS
+  // ---------------------------------------------------------------------------
+
+  // Called when the channel dies (close/error/timeout).  Every in-flight
+  // request that hasn't received its first response frame yet gets retried
+  // via HTTPS.  Requests that already started streaming are closed — the
+  // consumer will see a truncated stream and can retry at the app layer.
+  function drainPendingToHTTPS(reason) {
+    if (pendingRequests.size === 0) return;
+    diag(reason + ' — draining ' + pendingRequests.size + ' pending request(s) to HTTPS');
+
+    // Snapshot the entries; fallback() deletes its own key.
+    const entries = Array.from(pendingRequests.values());
+    for (const entry of entries) {
+      entry.fallback();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Channel close / error
+  // ---------------------------------------------------------------------------
+
   function onChannelClose() {
     dataChannel = null;
     diag('data channel closed — restoring original fetch');
-    // Restore native fetch so subsequent requests use HTTPS.
     window.fetch = originalFetch;
     if (typeof setConnectionState === 'function') {
       setConnectionState('Connected', 'ok');
     }
+    drainPendingToHTTPS('channel closed');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Background renegotiation
+  // ---------------------------------------------------------------------------
+
+  function triggerRenegotiation() {
+    if (renegotiating) return;
+    renegotiating = true;
+
+    // Tear down the current channel so new requests route to HTTPS immediately.
+    if (dataChannel) {
+      try { dataChannel.close(); } catch (_e) { /* ignore */ }
+    }
+    dataChannel = null;
+    window.fetch = originalFetch;
+
+    if (typeof setConnectionState === 'function') {
+      setConnectionState('Connected', 'ok');
+    }
+
+    // Rescue any other in-flight requests stuck on the dead channel.
+    drainPendingToHTTPS('renegotiation');
+
+    diag('renegotiating — new requests use HTTPS');
+
+    // Small delay before renegotiating to avoid tight loops if the network
+    // is genuinely down.  2 s is enough to not spam but short enough that
+    // if the issue was transient, WebRTC comes back quickly.
+    setTimeout(async () => {
+      try {
+        await initWebRTC();
+      } catch (_e) {
+        diag('renegotiation failed: ' + (_e && _e.message ? _e.message : String(_e)));
+      } finally {
+        renegotiating = false;
+      }
+    }, 2000);
   }
 
   // ---------------------------------------------------------------------------
@@ -279,6 +351,7 @@
       const reqId = crypto.randomUUID();
       let streamController;
       let resolved = false;
+      let gotResponse = false;
       const reqStart = performance.now();
 
       const urlObj = new URL(urlStr, window.location.origin);
@@ -299,11 +372,60 @@
         if (!resolved) { resolved = true; resolve(response); }
       }
 
+      // --- 1 s timeout: if no response frame arrives, fall back to HTTPS ---
+      const responseTimer = setTimeout(() => {
+        if (gotResponse) return; // already got data, all good
+
+        diag('⚠ timeout (' + RESPONSE_TIMEOUT_MS + 'ms) ' + method + ' ' + path + ' — falling back to HTTPS');
+
+        // Clean up the WebRTC side of this request.
+        pendingRequests.delete(reqId);
+        if (streamController) {
+          try { streamController.close(); } catch (_e) { /* ignore */ }
+        }
+
+        // Fall back to HTTPS for this request.
+        resolveOnce(originalFetch(urlStr, options));
+
+        // Mark the channel as degraded and renegotiate in the background.
+        // This also drains any other stuck pending requests.
+        triggerRenegotiation();
+      }, RESPONSE_TIMEOUT_MS);
+
+      function markGotResponse() {
+        if (!gotResponse) {
+          gotResponse = true;
+          clearTimeout(responseTimer);
+        }
+      }
+
+      // fallback: called by drainPendingToHTTPS() when the channel dies
+      // while this request is still waiting for its first response.
+      function fallback() {
+        clearTimeout(responseTimer);
+        pendingRequests.delete(reqId);
+        if (!gotResponse) {
+          // Haven't received anything yet — retry cleanly via HTTPS.
+          if (streamController) {
+            try { streamController.close(); } catch (_e) { /* ignore */ }
+          }
+          diag('↩ fallback ' + method + ' ' + path);
+          resolveOnce(originalFetch(urlStr, options));
+        } else {
+          // Already streaming — close the stream; consumer sees truncation.
+          if (streamController) {
+            try { streamController.close(); } catch (_e) { /* ignore */ }
+          }
+        }
+      }
+
       pendingRequests.set(reqId, {
         onHeaders(headers, status) {
+          markGotResponse();
           resolveOnce(new Response(stream, { status, headers: new Headers(headers) }));
         },
         onChunk(line) {
+          markGotResponse();
           if (!resolved) {
             resolveOnce(new Response(stream, { status: 200 }));
           }
@@ -313,6 +435,7 @@
           }
         },
         onDone(status) {
+          markGotResponse();
           const latency = (performance.now() - reqStart) | 0;
           diag('← ' + status + ' ' + method + ' ' + path +
             ' (' + responseBytes + 'b, ' + latency + 'ms)');
@@ -322,6 +445,7 @@
           if (streamController) streamController.close();
           pendingRequests.delete(reqId);
         },
+        fallback,
       });
 
       // Build and send the request frame.
@@ -347,10 +471,11 @@
         dataChannel.send(JSON.stringify(frame));
       } catch (_e) {
         diag('send error: ' + (_e && _e.message ? _e.message : String(_e)));
-        // Channel error — fall back to HTTPS for this request.
+        clearTimeout(responseTimer);
         pendingRequests.delete(reqId);
         if (streamController) streamController.close();
-        resolve(originalFetch(urlStr, options));
+        resolveOnce(originalFetch(urlStr, options));
+        triggerRenegotiation();
       }
     });
   }
