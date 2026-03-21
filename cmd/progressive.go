@@ -184,7 +184,7 @@ func parseProgressCandidate(raw json.RawMessage) (progressCandidate, error) {
 	}, nil
 }
 
-func validateAskProgressiveOptions(opts askProgressiveOptions) error {
+func validateAskProgressiveOptions(opts *askProgressiveOptions) error {
 	stopWhenSet := opts.StopWhen != ""
 	continueWithSet := strings.TrimSpace(opts.ContinueWith) != ""
 
@@ -198,26 +198,25 @@ func validateAskProgressiveOptions(opts askProgressiveOptions) error {
 		return nil
 	}
 
-	stopWhen := opts.StopWhen
-	if stopWhen == "" {
+	if opts.StopWhen == "" {
 		// When a timeout is configured, default to "timeout" so the agent
 		// actually uses its budget instead of exiting after the first pass.
 		if opts.Timeout > 0 {
-			stopWhen = progressiveStopWhenTimeout
+			opts.StopWhen = progressiveStopWhenTimeout
 		} else {
-			stopWhen = progressiveStopWhenDone
+			opts.StopWhen = progressiveStopWhenDone
 		}
 	}
-	switch stopWhen {
+	switch opts.StopWhen {
 	case progressiveStopWhenDone, progressiveStopWhenTimeout:
 	default:
 		return fmt.Errorf("invalid --stop-when %q", opts.StopWhen)
 	}
 
-	if continueWithSet && stopWhen != progressiveStopWhenTimeout {
+	if continueWithSet && opts.StopWhen != progressiveStopWhenTimeout {
 		return fmt.Errorf("--continue-with requires --stop-when timeout")
 	}
-	if stopWhen == progressiveStopWhenTimeout && opts.Timeout <= 0 {
+	if opts.StopWhen == progressiveStopWhenTimeout && opts.Timeout <= 0 {
 		return fmt.Errorf("--stop-when timeout requires --timeout")
 	}
 	return nil

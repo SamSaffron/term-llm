@@ -150,7 +150,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		StopWhen:     progressiveStopWhen(strings.TrimSpace(askStopWhen)),
 		ContinueWith: askContinueWith,
 	}
-	if err := validateAskProgressiveOptions(progressiveOpts); err != nil {
+	if err := validateAskProgressiveOptions(&progressiveOpts); err != nil {
 		return err
 	}
 	if askTimeout > 0 {

@@ -44,11 +44,18 @@ func TestValidateAskProgressiveOptions(t *testing.T) {
 				ContinueWith: "verify more",
 			},
 		},
+		{
+			name: "progressive with timeout defaults stop_when to timeout",
+			opts: askProgressiveOptions{
+				Enabled: true,
+				Timeout: 5 * time.Minute,
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateAskProgressiveOptions(tt.opts)
+			err := validateAskProgressiveOptions(&tt.opts)
 			if tt.wantErr && err == nil {
 				t.Fatal("expected error")
 			}
@@ -56,6 +63,31 @@ func TestValidateAskProgressiveOptions(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+func TestValidateProgressiveDefaultsStopWhenToTimeout(t *testing.T) {
+	opts := askProgressiveOptions{
+		Enabled: true,
+		Timeout: 5 * time.Minute,
+	}
+	if err := validateAskProgressiveOptions(&opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if opts.StopWhen != progressiveStopWhenTimeout {
+		t.Fatalf("StopWhen = %q, want %q", opts.StopWhen, progressiveStopWhenTimeout)
+	}
+}
+
+func TestValidateProgressiveDefaultsStopWhenToDoneWithoutTimeout(t *testing.T) {
+	opts := askProgressiveOptions{
+		Enabled: true,
+	}
+	if err := validateAskProgressiveOptions(&opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if opts.StopWhen != progressiveStopWhenDone {
+		t.Fatalf("StopWhen = %q, want %q", opts.StopWhen, progressiveStopWhenDone)
 	}
 }
 

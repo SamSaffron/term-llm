@@ -288,9 +288,12 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 		StopWhen:     progressiveStopWhen(strings.TrimSpace(cfg.StopWhen)),
 		ContinueWith: cfg.ContinueWith,
 	}
-	if err := validateAskProgressiveOptions(progressiveOpts); err != nil {
+	if err := validateAskProgressiveOptions(&progressiveOpts); err != nil {
 		return jobsV2RunResult{}, err
 	}
+	// Write resolved defaults back so the exec closure can use cfg directly.
+	cfg.StopWhen = string(progressiveOpts.StopWhen)
+	cfg.ContinueWith = progressiveOpts.ContinueWith
 	res := jobsV2RunResult{SessionID: cfg.SessionID}
 	progressTracker := newProgressTracker()
 	execResult, err := r.exec(ctx, cfg, func(ev llm.Event) {
@@ -2230,7 +2233,7 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 			}
 
 			progressiveResult, err := runProgressiveSession(ctx, engine, llmReq, progressiveRunOptions{
-				StopWhen:               progressiveStopWhen(strings.TrimSpace(cfg.StopWhen)),
+				StopWhen:               progressiveStopWhen(cfg.StopWhen),
 				ContinueWith:           cfg.ContinueWith,
 				SessionID:              cfg.SessionID,
 				ForceNamedFinalization: provider.Capabilities().SupportsToolChoice,
