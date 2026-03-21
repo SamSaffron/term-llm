@@ -193,6 +193,9 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 			if err := safeStoreOp(func() error { return r.store.AddMessage(ctx, childSessionID, userMsg) }); err != nil {
 				r.warn("session AddMessage failed: %v", err)
 			}
+			if err := safeStoreOp(func() error { return r.store.IncrementUserTurns(ctx, childSessionID) }); err != nil {
+				r.warn("session IncrementUserTurns failed: %v", err)
+			}
 		}
 	}
 
