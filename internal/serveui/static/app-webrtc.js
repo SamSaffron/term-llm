@@ -97,12 +97,18 @@
       await pc.setLocalDescription(offer);
       diag('ICE gathering started');
 
-      await new Promise((resolve) => {
-        if (pc.iceGatheringState === 'complete') { resolve(); return; }
-        pc.onicegatheringstatechange = () => {
-          if (pc.iceGatheringState === 'complete') resolve();
-        };
-      });
+      // Wait for ICE gathering to complete, but cap at 4 s so a slow/broken
+      // STUN or TURN server (e.g. IPv6 timeout) never stalls the handshake.
+      // Whatever candidates are ready at that point are included in the offer.
+      await Promise.race([
+        new Promise((resolve) => {
+          if (pc.iceGatheringState === 'complete') { resolve(); return; }
+          pc.onicegatheringstatechange = () => {
+            if (pc.iceGatheringState === 'complete') resolve();
+          };
+        }),
+        new Promise((resolve) => setTimeout(resolve, 4000)),
+      ]);
       diag('ICE gathering complete');
 
       // 5. Send the completed offer to the signaling server.
