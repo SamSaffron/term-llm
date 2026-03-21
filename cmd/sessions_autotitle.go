@@ -160,7 +160,9 @@ func runSessionsAutotitle(cmd *cobra.Command, args []string) error {
 	for _, c := range candidates {
 		sess := c.sess
 
-		messages, err := store.GetMessages(ctx, sess.ID, 0, 0)
+		// Only the first few user+assistant messages are used for titling.
+		// Fetch at most 50 rows to avoid loading entire large sessions.
+		messages, err := store.GetMessages(ctx, sess.ID, 50, 0)
 		if err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "#%d messages failed: %v\n", sess.Number, err)
 			continue

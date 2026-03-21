@@ -53,7 +53,7 @@ JSON schema:
 Conversation slice:
 %s`, slice)
 
-	text, err := completeText(ctx, provider, prompt, 10*time.Second)
+	text, err := completeText(ctx, provider, prompt, 30*time.Second)
 	if err != nil {
 		return Candidate{}, err
 	}
