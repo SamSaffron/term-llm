@@ -4,11 +4,18 @@
 // this module attempts to establish a WebRTC data channel directly to the
 // home peer, bypassing the intermediate relay for all /v1/ API calls.
 //
-// Per-request timeout (1 s): if a WebRTC request receives no response frame
-// within 1 second, the request seamlessly falls back to HTTPS and the data
-// channel is marked degraded.  All other in-flight requests on the same
-// channel are also drained to HTTPS.  A background renegotiation then
-// re-establishes WebRTC so subsequent requests can try the fast path again.
+// Two-tier timeout:
+//   1. First-frame timeout (1 s):  if no response frame arrives within 1 s,
+//      the request seamlessly falls back to HTTPS and the channel is torn down
+//      and renegotiated in the background.
+//   2. Stream watchdog (30 s):  once streaming begins, if no frame (chunk,
+//      done, or server keepalive) arrives for 30 s the stream is closed and
+//      the channel renegotiated.  The app-layer resume logic reconnects via
+//      HTTPS from the last sequence number — no data is lost.
+//
+// AbortSignal:  the caller's AbortController.signal (e.g. from the heartbeat
+// monitor) is wired through — aborting it closes the WebRTC stream the same
+// way a normal fetch abort would, letting app-layer recovery take over.
 //
 // If ICE negotiation does not complete within 8 seconds the browser silently
 // falls back to the normal HTTPS path; no user-visible error is shown.
@@ -36,10 +43,15 @@
   // assume UDP is dead: fall back to HTTPS and renegotiate in the background.
   const RESPONSE_TIMEOUT_MS = 1000;
 
+  // Once streaming has started, if no frame arrives within this window,
+  // assume the channel silently died.  The backend sends keepalive pings
+  // every ~20 s, so 30 s gives 10 s of grace before declaring death.
+  const STREAM_WATCHDOG_MS = 30000;
+
   const originalFetch = window.fetch.bind(window);
   const encoder = new TextEncoder();
 
-  // pendingRequests maps request-id → { onHeaders, onChunk, onDone, fallback, timer }
+  // pendingRequests maps request-id → { onHeaders, onChunk, onDone, fallback, cleanup }
   const pendingRequests = new Map();
 
   let dataChannel = null;
@@ -352,6 +364,7 @@
       let streamController;
       let resolved = false;
       let gotResponse = false;
+      let cleaned = false;
       const reqStart = performance.now();
 
       const urlObj = new URL(urlStr, window.location.origin);
@@ -363,13 +376,53 @@
 
       const stream = new ReadableStream({
         start(ctrl) { streamController = ctrl; },
-        cancel() { pendingRequests.delete(reqId); },
+        cancel() { cleanup('stream-cancel'); },
       });
 
       let responseBytes = 0;
+      let streamWatchdogId = null;
 
       function resolveOnce(response) {
         if (!resolved) { resolved = true; resolve(response); }
+      }
+
+      // Central cleanup — idempotent, called from every exit path.
+      function cleanup(reason) {
+        if (cleaned) return;
+        cleaned = true;
+        clearTimeout(responseTimer);
+        clearTimeout(streamWatchdogId);
+        pendingRequests.delete(reqId);
+        if (abortHandler) {
+          try { options.signal.removeEventListener('abort', abortHandler); } catch (_e) { /* */ }
+        }
+        diag('cleanup ' + method + ' ' + path + ' reason=' + reason);
+      }
+
+      function closeStream() {
+        if (streamController) {
+          try { streamController.close(); } catch (_e) { /* ignore */ }
+          streamController = null;
+        }
+      }
+
+      function errorStream(err) {
+        if (streamController) {
+          try { streamController.error(err); } catch (_e) { /* ignore */ }
+          streamController = null;
+        }
+      }
+
+      // --- Stream watchdog: resets on every frame after first response ---
+      function resetStreamWatchdog() {
+        clearTimeout(streamWatchdogId);
+        streamWatchdogId = setTimeout(() => {
+          diag('⚠ stream watchdog (' + STREAM_WATCHDOG_MS + 'ms) ' +
+            method + ' ' + path + ' — closing stale stream');
+          cleanup('stream-watchdog');
+          closeStream();
+          triggerRenegotiation();
+        }, STREAM_WATCHDOG_MS);
       }
 
       // --- 1 s timeout: if no response frame arrives, fall back to HTTPS ---
@@ -378,11 +431,8 @@
 
         diag('⚠ timeout (' + RESPONSE_TIMEOUT_MS + 'ms) ' + method + ' ' + path + ' — falling back to HTTPS');
 
-        // Clean up the WebRTC side of this request.
-        pendingRequests.delete(reqId);
-        if (streamController) {
-          try { streamController.close(); } catch (_e) { /* ignore */ }
-        }
+        cleanup('first-frame-timeout');
+        closeStream();
 
         // Fall back to HTTPS for this request.
         resolveOnce(originalFetch(urlStr, options));
@@ -396,26 +446,52 @@
         if (!gotResponse) {
           gotResponse = true;
           clearTimeout(responseTimer);
+          // Start the rolling stream watchdog now that data is flowing.
+          resetStreamWatchdog();
+        } else {
+          // Reset watchdog on every subsequent frame.
+          resetStreamWatchdog();
         }
       }
 
-      // fallback: called by drainPendingToHTTPS() when the channel dies
-      // while this request is still waiting for its first response.
+      // --- AbortSignal wiring (heartbeat monitor, user cancel, etc.) ---
+      let abortHandler = null;
+      if (options.signal) {
+        if (options.signal.aborted) {
+          // Already aborted — don't even start the WebRTC request.
+          cleanup('pre-aborted');
+          closeStream();
+          resolveOnce(originalFetch(urlStr, options));
+          return;
+        }
+        abortHandler = () => {
+          diag('⚠ abort signal ' + method + ' ' + path);
+          cleanup('abort-signal');
+          if (!resolved) {
+            closeStream();
+            // Delegate to original fetch which will also throw AbortError.
+            resolveOnce(originalFetch(urlStr, options));
+          } else {
+            // Already streaming — error the stream so reader.read() rejects
+            // with AbortError, triggering the app-layer recovery path.
+            errorStream(new DOMException('The operation was aborted.', 'AbortError'));
+          }
+        };
+        options.signal.addEventListener('abort', abortHandler, { once: true });
+      }
+
+      // fallback: called by drainPendingToHTTPS() when the channel dies.
       function fallback() {
-        clearTimeout(responseTimer);
-        pendingRequests.delete(reqId);
+        cleanup('drain-fallback');
         if (!gotResponse) {
           // Haven't received anything yet — retry cleanly via HTTPS.
-          if (streamController) {
-            try { streamController.close(); } catch (_e) { /* ignore */ }
-          }
+          closeStream();
           diag('↩ fallback ' + method + ' ' + path);
           resolveOnce(originalFetch(urlStr, options));
         } else {
           // Already streaming — close the stream; consumer sees truncation.
-          if (streamController) {
-            try { streamController.close(); } catch (_e) { /* ignore */ }
-          }
+          // App-layer resume logic will reconnect via HTTPS.
+          closeStream();
         }
       }
 
@@ -439,11 +515,11 @@
           const latency = (performance.now() - reqStart) | 0;
           diag('← ' + status + ' ' + method + ' ' + path +
             ' (' + responseBytes + 'b, ' + latency + 'ms)');
+          cleanup('done');
           if (!resolved) {
             resolveOnce(new Response(stream, { status }));
           }
-          if (streamController) streamController.close();
-          pendingRequests.delete(reqId);
+          closeStream();
         },
         fallback,
       });
@@ -471,9 +547,8 @@
         dataChannel.send(JSON.stringify(frame));
       } catch (_e) {
         diag('send error: ' + (_e && _e.message ? _e.message : String(_e)));
-        clearTimeout(responseTimer);
-        pendingRequests.delete(reqId);
-        if (streamController) streamController.close();
+        cleanup('send-error');
+        closeStream();
         resolveOnce(originalFetch(urlStr, options));
         triggerRenegotiation();
       }
