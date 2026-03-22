@@ -42,7 +42,7 @@ func webrtcHTMLSnippet() string {
 	urlJSON, _ := json.Marshal(serveWebRTCSignalingURL)
 	snippet := `<script>window.__WEBRTC_ENABLED__=true;window.__WEBRTC_SIGNALING_URL__=` +
 		string(urlJSON) + `;`
-	if serveWebRTCDiagnostics {
+	if serveWebRTCDiagnostics || envEnabled("TERM_LLM_WEBRTC_DIAGNOSTICS") {
 		snippet += `window.__WEBRTC_DIAGNOSTICS__=true;`
 	}
 	snippet += `</script>`
