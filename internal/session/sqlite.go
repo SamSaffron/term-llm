@@ -15,14 +15,15 @@ import (
 
 // SQLiteStore implements Store using SQLite.
 type SQLiteStore struct {
-	db                  *sql.DB
-	cfg                 Config
-	hasGeneratedTitles  bool // true if sessions table has generated title columns
-	hasCompactionSeq    bool // true if sessions table has compaction_seq column
-	hasCacheWriteTokens bool // true if sessions table has cache_write_tokens column
-	hasOrigin           bool // true if sessions table has origin column
-	hasPinned           bool // true if sessions table has pinned column
-	hasTitleSkippedAt   bool // true if sessions table has title_skipped_at column
+	db                   *sql.DB
+	cfg                  Config
+	hasGeneratedTitles   bool // true if sessions table has generated title columns
+	hasCompactionSeq     bool // true if sessions table has compaction_seq column
+	hasCacheWriteTokens  bool // true if sessions table has cache_write_tokens column
+	hasOrigin            bool // true if sessions table has origin column
+	hasPinned            bool // true if sessions table has pinned column
+	hasTitleSkippedAt    bool // true if sessions table has title_skipped_at column
+	hasLastUserMessageAt bool // true if sessions table has last_user_message_at column
 }
 
 // Schema for the sessions database.
@@ -161,6 +162,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 	store.hasOrigin = store.probeColumn("origin")
 	store.hasPinned = store.probeColumn("pinned")
 	store.hasTitleSkippedAt = store.probeColumn("title_skipped_at")
+	store.hasLastUserMessageAt = store.probeColumn("last_user_message_at")
 
 	// Run cleanup if configured (read-write mode only).
 	if !cfg.ReadOnly {
@@ -177,7 +179,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 15
+const schemaVersion = 16
 
 // migration represents a schema migration.
 type migration struct {
@@ -538,6 +540,37 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		// Migration 16: Add last_user_message_at for sorting sessions by user activity.
+		// Sessions sorted by updated_at bubble up when background jobs (autotitle, mining)
+		// touch them. Sorting by last user message time reflects actual user engagement.
+		version:     16,
+		description: "add last_user_message_at column",
+		up: func(db *sql.DB) error {
+			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN last_user_message_at TIMESTAMP")
+			if err != nil && !isDuplicateColumnError(err) {
+				return err
+			}
+			// Backfill from messages table: set to the most recent user message time per session.
+			_, err = db.Exec(`
+				UPDATE sessions SET last_user_message_at = (
+					SELECT MAX(m.created_at) FROM messages m
+					WHERE m.session_id = sessions.id AND m.role = 'user'
+				)
+				WHERE EXISTS (
+					SELECT 1 FROM messages m
+					WHERE m.session_id = sessions.id AND m.role = 'user'
+				)`)
+			if err != nil {
+				return fmt.Errorf("backfill last_user_message_at: %w", err)
+			}
+			_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_sessions_last_user_msg ON sessions(last_user_message_at DESC)`)
+			if err != nil {
+				return fmt.Errorf("create last_user_message_at index: %w", err)
+			}
+			return nil
+		},
+	},
 }
 
 // initSchema initializes the database schema and runs any pending migrations.
@@ -886,13 +919,21 @@ func (s *SQLiteStore) UpdateStatus(ctx context.Context, id string, status Sessio
 	})
 }
 
-// IncrementUserTurns increments the user turn count.
+// IncrementUserTurns increments the user turn count and updates last_user_message_at.
 func (s *SQLiteStore) IncrementUserTurns(ctx context.Context, id string) error {
 	return retryOnBusy(ctx, 5, func() error {
-		_, err := s.db.ExecContext(ctx, `
-			UPDATE sessions SET user_turns = user_turns + 1, updated_at = ?
-			WHERE id = ?`,
-			time.Now(), id)
+		now := time.Now()
+		lastUserMsgClause := ""
+		if s.hasLastUserMessageAt {
+			lastUserMsgClause = ", last_user_message_at = ?"
+		}
+		query := `UPDATE sessions SET user_turns = user_turns + 1, updated_at = ?` + lastUserMsgClause + ` WHERE id = ?`
+		args := []any{now}
+		if s.hasLastUserMessageAt {
+			args = append(args, now)
+		}
+		args = append(args, id)
+		_, err := s.db.ExecContext(ctx, query, args...)
 		return err
 	})
 }
@@ -1006,10 +1047,17 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		query += " AND s.archived = FALSE"
 	}
 
+	// Sort by last user message time (when the user last interacted), falling back
+	// to created_at for sessions with no user messages yet. This prevents background
+	// activity (autotitle, mining, status changes) from reordering the sidebar.
+	sortCol := "s.updated_at"
+	if s.hasLastUserMessageAt {
+		sortCol = "COALESCE(s.last_user_message_at, s.created_at)"
+	}
 	if s.hasPinned {
-		query += " ORDER BY COALESCE(s.pinned, FALSE) DESC, s.updated_at DESC"
+		query += " ORDER BY COALESCE(s.pinned, FALSE) DESC, " + sortCol + " DESC"
 	} else {
-		query += " ORDER BY s.updated_at DESC"
+		query += " ORDER BY " + sortCol + " DESC"
 	}
 
 	limit := opts.Limit
