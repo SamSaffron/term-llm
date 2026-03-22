@@ -377,12 +377,8 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 		if strings.TrimSpace(execResult.Progressive.SessionID) == "" {
 			execResult.Progressive.SessionID = cfg.SessionID
 		}
-		data, marshalErr := json.Marshal(execResult.Progressive)
-		if marshalErr != nil {
-			return res, fmt.Errorf("marshal progressive job result: %w", marshalErr)
-		}
 		res.ExitReason = execResult.Progressive.ExitReason
-		res.Response = string(data)
+		res.Response = progressiveOutputText(*execResult.Progressive)
 	}
 	return res, err
 }

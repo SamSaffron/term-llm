@@ -426,24 +426,20 @@ func TestJobsV2LLMProgressiveRunStoresEnvelopeAndProgressEvents(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	var envelope progressiveRunResult
-	if err := json.Unmarshal([]byte(run.Response), &envelope); err != nil {
-		t.Fatalf("response is not a progressive envelope: %v", err)
+	// Response should be the human-readable output from progressiveOutputText.
+	// With no FinalResponse or FallbackText, it falls back to JSON-marshaled progress state.
+	var progressState map[string]any
+	if err := json.Unmarshal([]byte(run.Response), &progressState); err != nil {
+		t.Fatalf("response is not progress JSON: %v", err)
 	}
-	if envelope.ExitReason != exitReasonNatural {
-		t.Fatalf("exit_reason = %q, want %q", envelope.ExitReason, exitReasonNatural)
+	if got := progressState["step"]; got != "draft" {
+		t.Fatalf("progress step = %#v, want %q", got, "draft")
 	}
-	if strings.TrimSpace(envelope.SessionID) == "" {
-		t.Fatal("expected progressive envelope session_id to be populated")
+	if run.ExitReason != exitReasonNatural {
+		t.Fatalf("exit_reason = %q, want %q", run.ExitReason, exitReasonNatural)
 	}
 	if strings.TrimSpace(run.SessionID) == "" {
 		t.Fatal("expected persisted run session_id to be populated")
-	}
-	if run.SessionID != envelope.SessionID {
-		t.Fatalf("run session_id = %q, want %q", run.SessionID, envelope.SessionID)
-	}
-	if got := envelope.Progress["step"]; got != "draft" {
-		t.Fatalf("progress step = %#v, want %q", got, "draft")
 	}
 
 	events, _, err := mgr.ListRunEvents(run.ID, 0, 100, 0)
@@ -460,5 +456,65 @@ func TestJobsV2LLMProgressiveRunStoresEnvelopeAndProgressEvents(t *testing.T) {
 	}
 	if !foundProgressUpdate {
 		t.Fatalf("expected progress_update event, got %+v", events)
+	}
+}
+
+func TestJobsV2_ProgressiveLLM_FinalResponseProse(t *testing.T) {
+	mgr, err := newJobsV2Manager(":memory:", 1, func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(llm.Event)) (serveJobsExecResult, error) {
+		return serveJobsExecResult{
+			Progressive: &progressiveRunResult{
+				ExitReason:    exitReasonTimeout,
+				Finalized:     true,
+				FinalResponse: "Here are the top 10 sci-fi audiobooks released in the past year.",
+				Progress: map[string]any{
+					"entries": []string{"Book A", "Book B"},
+				},
+			},
+		}, nil
+	})
+	if err != nil {
+		t.Fatalf("newJobsV2Manager failed: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+
+	job, err := mgr.CreateJob(jobsV2Job{
+		Name:       "progressive-prose",
+		Enabled:    true,
+		RunnerType: jobsV2RunnerLLM,
+		RunnerConfig: json.RawMessage(`{
+			"agent_name":"planner",
+			"instructions":"Find audiobooks",
+			"progressive":true
+		}`),
+		TriggerType:    jobsV2TriggerManual,
+		TriggerConfig:  json.RawMessage(`{}`),
+		TimeoutSeconds: 30,
+	})
+	if err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+
+	run, err := mgr.TriggerJob(job.ID)
+	if err != nil {
+		t.Fatalf("TriggerJob failed: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		current, err := mgr.GetRun(run.ID)
+		if err == nil && current.Status == jobsV2RunTimedOut {
+			run = current
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for progressive prose run")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// When FinalResponse is set, Response should be the prose, not JSON.
+	expected := "Here are the top 10 sci-fi audiobooks released in the past year."
+	if run.Response != expected {
+		t.Fatalf("Response = %q, want prose %q", run.Response, expected)
 	}
 }

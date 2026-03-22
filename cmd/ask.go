@@ -2048,6 +2048,9 @@ func runOnComplete(command, input string) error {
 }
 
 func progressiveOutputText(result progressiveRunResult) string {
+	if strings.TrimSpace(result.FinalResponse) != "" {
+		return result.FinalResponse
+	}
 	if strings.TrimSpace(result.FallbackText) != "" {
 		return result.FallbackText
 	}
