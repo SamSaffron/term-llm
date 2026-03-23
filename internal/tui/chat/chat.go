@@ -659,12 +659,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.handleTextareaMouse(msg) {
 			return m, nil
 		}
-		// Handle middle-click paste
+		// Handle middle-click paste: read primary selection and route through
+		// the same KeyMsg path as bracketed paste so collapse logic applies.
 		if msg.Button == tea.MouseButtonMiddle && msg.Action == tea.MouseActionPress {
 			text, err := clipboard.ReadPrimarySelection()
 			if err == nil && text != "" {
-				m.textarea.InsertString(text)
-				m.updateTextareaHeight()
+				return m.handleKeyMsg(tea.KeyMsg{
+					Type:  tea.KeyRunes,
+					Runes: []rune(text),
+					Paste: true,
+				})
 			}
 			return m, nil
 		}
