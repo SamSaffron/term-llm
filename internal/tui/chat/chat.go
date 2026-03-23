@@ -282,6 +282,7 @@ type ApprovalRequestMsg struct {
 	Path    string
 	IsWrite bool
 	IsShell bool
+	WorkDir string // directory where a shell command will execute (may be empty)
 	DoneCh  chan<- tools.ApprovalResult
 }
 
@@ -1317,7 +1318,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pausedForExternalUI = true
 			m.approvalDoneCh = msg.DoneCh
 			if msg.IsShell {
-				m.approvalModel = tools.NewEmbeddedShellApprovalModel(msg.Path, m.width)
+				m.approvalModel = tools.NewEmbeddedShellApprovalModel(msg.Path, msg.WorkDir, m.width)
 			} else {
 				m.approvalModel = tools.NewEmbeddedApprovalModel(msg.Path, msg.IsWrite, m.width)
 			}

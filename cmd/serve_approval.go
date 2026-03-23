@@ -21,6 +21,7 @@ type serveApprovalPrompt struct {
 	Path       string                `json:"path"`
 	IsWrite    bool                  `json:"is_write"`
 	IsShell    bool                  `json:"is_shell"`
+	WorkDir    string                `json:"work_dir,omitempty"`
 	Title      string                `json:"title"`
 	Options    []serveApprovalOption `json:"options"`
 	CreatedAt  int64                 `json:"created_at"`
@@ -43,6 +44,7 @@ type servePendingApproval struct {
 	Path       string
 	IsWrite    bool
 	IsShell    bool
+	WorkDir    string
 	Options    []tools.ApprovalOption
 	CreatedAt  time.Time
 	responseC  chan serveApprovalSubmission
@@ -75,31 +77,35 @@ func (p *servePendingApproval) snapshot() serveApprovalPrompt {
 		Path:       p.Path,
 		IsWrite:    p.IsWrite,
 		IsShell:    p.IsShell,
+		WorkDir:    p.WorkDir,
 		Title:      title,
 		Options:    options,
 		CreatedAt:  p.CreatedAt.UnixMilli(),
 	}
 }
 
-func (rt *serveRuntime) awaitApproval(path string, isWrite bool, isShell bool) (tools.ApprovalResult, error) {
+func (rt *serveRuntime) awaitApproval(target string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {
 	approvalID := "appr_" + randomSuffix()
 
 	var options []tools.ApprovalOption
 	if isShell {
-		cwd, _ := os.Getwd()
-		repoInfo := tools.DetectGitRepo(cwd)
+		dir := workDir
+		if dir == "" {
+			dir, _ = os.Getwd()
+		}
+		repoInfo := tools.DetectGitRepo(dir)
 		var repoInfoPtr *tools.GitRepoInfo
 		if repoInfo.IsRepo {
 			repoInfoPtr = &repoInfo
 		}
-		options = tools.BuildShellOptions(path, repoInfoPtr)
+		options = tools.BuildShellOptions(target, repoInfoPtr)
 	} else {
-		repoInfo := tools.DetectGitRepo(path)
+		repoInfo := tools.DetectGitRepo(target)
 		var repoInfoPtr *tools.GitRepoInfo
 		if repoInfo.IsRepo {
 			repoInfoPtr = &repoInfo
 		}
-		options = tools.BuildFileOptions(path, repoInfoPtr, isWrite)
+		options = tools.BuildFileOptions(target, repoInfoPtr, isWrite)
 	}
 
 	rt.approvalMu.Lock()
@@ -122,9 +128,10 @@ func (rt *serveRuntime) awaitApproval(path string, isWrite bool, isShell bool) (
 	}
 	pending := &servePendingApproval{
 		ApprovalID: approvalID,
-		Path:       path,
+		Path:       target,
 		IsWrite:    isWrite,
 		IsShell:    isShell,
+		WorkDir:    workDir,
 		Options:    options,
 		CreatedAt:  time.Now(),
 		responseC:  make(chan serveApprovalSubmission, 1),
@@ -137,7 +144,7 @@ func (rt *serveRuntime) awaitApproval(path string, isWrite bool, isShell bool) (
 	// Emit SSE event — if this fails the client never learns about the
 	// pending approval, so return immediately instead of blocking forever.
 	snap := pending.snapshot()
-	if err := eventFunc("response.approval.prompt", map[string]any{
+	payload := map[string]any{
 		"approval_id": snap.ApprovalID,
 		"path":        snap.Path,
 		"is_write":    snap.IsWrite,
@@ -145,7 +152,11 @@ func (rt *serveRuntime) awaitApproval(path string, isWrite bool, isShell bool) (
 		"title":       snap.Title,
 		"options":     snap.Options,
 		"created_at":  snap.CreatedAt,
-	}); err != nil {
+	}
+	if snap.WorkDir != "" {
+		payload["work_dir"] = snap.WorkDir
+	}
+	if err := eventFunc("response.approval.prompt", payload); err != nil {
 		return tools.ApprovalResult{}, fmt.Errorf("failed to emit approval event: %w", err)
 	}
 

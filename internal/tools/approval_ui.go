@@ -58,6 +58,7 @@ var (
 type ApprovalModel struct {
 	title       string           // "Read Access Request" or "Write Access Request" or "Shell Command Request"
 	path        string           // The path or command being requested
+	workDir     string           // Working directory for shell commands (may be empty)
 	repoInfo    *GitRepoInfo     // Git repo info (nil if not in repo)
 	options     []ApprovalOption // Available choices
 	cursor      int              // Currently selected option
@@ -115,10 +116,13 @@ func NewEmbeddedApprovalModel(path string, isWrite bool, width int) *ApprovalMod
 }
 
 // NewEmbeddedShellApprovalModel creates an approval model for shell commands that can be embedded in a parent TUI.
-func NewEmbeddedShellApprovalModel(command string, width int) *ApprovalModel {
-	// Detect git repo from current directory
-	cwd, _ := os.Getwd()
-	repoInfo := DetectGitRepo(cwd)
+func NewEmbeddedShellApprovalModel(command, workDir string, width int) *ApprovalModel {
+	// Detect git repo from the command's working directory.
+	dir := workDir
+	if dir == "" {
+		dir, _ = os.Getwd()
+	}
+	repoInfo := DetectGitRepo(dir)
 	var repoInfoPtr *GitRepoInfo
 	if repoInfo.IsRepo {
 		repoInfoPtr = &repoInfo
@@ -129,6 +133,7 @@ func NewEmbeddedShellApprovalModel(command string, width int) *ApprovalModel {
 	return &ApprovalModel{
 		title:       "Shell Command Request",
 		path:        command,
+		workDir:     workDir,
 		repoInfo:    repoInfoPtr,
 		options:     options,
 		cursor:      0,
@@ -167,7 +172,7 @@ func newApprovalModel(path string, repoInfo *GitRepoInfo, isWrite bool) *Approva
 }
 
 // newShellApprovalModel creates a new approval model for shell commands (internal use).
-func newShellApprovalModel(command string, repoInfo *GitRepoInfo) *ApprovalModel {
+func newShellApprovalModel(command, workDir string, repoInfo *GitRepoInfo) *ApprovalModel {
 	width := 80
 	if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 {
 		width = w
@@ -178,6 +183,7 @@ func newShellApprovalModel(command string, repoInfo *GitRepoInfo) *ApprovalModel
 	return &ApprovalModel{
 		title:       "Shell Command Request",
 		path:        command,
+		workDir:     workDir,
 		repoInfo:    repoInfo,
 		options:     options,
 		cursor:      0,
@@ -514,6 +520,12 @@ func (m *ApprovalModel) View() string {
 	b.WriteString(pathStyle.Render(wordwrap.String(m.path, innerWidth)))
 	b.WriteString("\n")
 
+	// Working directory (for shell commands with a non-default directory)
+	if m.workDir != "" {
+		b.WriteString(repoStyle.Render(fmt.Sprintf("in %s", m.workDir)))
+		b.WriteString("\n")
+	}
+
 	// Repo info (if applicable)
 	if m.repoInfo != nil && m.repoInfo.IsRepo {
 		b.WriteString(repoStyle.Render(fmt.Sprintf("Git repository: %s", m.repoInfo.RepoName)))
@@ -629,16 +641,19 @@ func RunFileApprovalUI(path string, isWrite bool) (ApprovalResult, error) {
 }
 
 // RunShellApprovalUI displays the approval UI for shell commands and returns the result.
-func RunShellApprovalUI(command string) (ApprovalResult, error) {
+func RunShellApprovalUI(command, workDir string) (ApprovalResult, error) {
 	tty, err := getApprovalTTY()
 	if err != nil {
 		return ApprovalResult{Cancelled: true}, fmt.Errorf("no TTY available: %w", err)
 	}
 	defer tty.Close()
 
-	// Detect git repo from current directory
-	cwd, _ := os.Getwd()
-	repoInfo := DetectGitRepo(cwd)
+	// Detect git repo from the command's working directory.
+	dir := workDir
+	if dir == "" {
+		dir, _ = os.Getwd()
+	}
+	repoInfo := DetectGitRepo(dir)
 	var repoInfoPtr *GitRepoInfo
 	if repoInfo.IsRepo {
 		repoInfoPtr = &repoInfo
@@ -650,7 +665,7 @@ func RunShellApprovalUI(command string) (ApprovalResult, error) {
 		width = w
 	}
 
-	m := newShellApprovalModel(command, repoInfoPtr)
+	m := newShellApprovalModel(command, workDir, repoInfoPtr)
 	m.width = width
 
 	p := tea.NewProgram(m, tea.WithInput(tty), tea.WithOutput(tty))

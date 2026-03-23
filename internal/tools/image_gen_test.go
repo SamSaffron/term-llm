@@ -66,7 +66,7 @@ func TestImageGenAutoApprove_SymlinkEscape(t *testing.T) {
 	mgr.dirCache.Set(outputDir, ProceedAlways, true)
 
 	var approvalRequested []string
-	mgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (ApprovalResult, error) {
+	mgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (ApprovalResult, error) {
 		approvalRequested = append(approvalRequested, path)
 		return ApprovalResult{Choice: ApprovalChoiceDeny}, nil
 	}
@@ -128,7 +128,7 @@ func TestImageGenerateTool_RequiresApprovalForDefaultOutputDir(t *testing.T) {
 	}
 
 	mgr := NewApprovalManager(NewToolPermissions())
-	mgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (ApprovalResult, error) {
+	mgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (ApprovalResult, error) {
 		return ApprovalResult{Choice: ApprovalChoiceDeny}, nil
 	}
 

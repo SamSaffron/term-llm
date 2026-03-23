@@ -3,6 +3,9 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"os/user"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -373,6 +376,239 @@ func TestShellTool_TimeoutKillsGrandchildren(t *testing.T) {
 	}
 	if !strings.Contains(output.Content, "[Command timed out]") {
 		t.Errorf("expected '[Command timed out]' in output, got: %s", output.Content)
+	}
+}
+
+func TestExtractLeadingCd(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Look up current user for tilde tests.
+	currentUser, _ := user.Current()
+	homeDir, _ := os.UserHomeDir()
+
+	tests := []struct {
+		name        string
+		command     string
+		workDir     string
+		wantCmd     string
+		wantWorkDir string
+	}{
+		{
+			name:        "absolute path",
+			command:     "cd /tmp/foo && echo hi",
+			wantCmd:     "echo hi",
+			wantWorkDir: "/tmp/foo",
+		},
+		{
+			name:        "relative path resolved against cwd",
+			command:     "cd subdir && echo hi",
+			wantCmd:     "echo hi",
+			wantWorkDir: filepath.Join(cwd, "subdir"),
+		},
+		{
+			name:        "relative path resolved against explicit workdir",
+			command:     "cd child && echo hi",
+			workDir:     "/opt/project",
+			wantCmd:     "echo hi",
+			wantWorkDir: "/opt/project/child",
+		},
+		{
+			name:        "single-quoted path",
+			command:     "cd '/tmp/my dir' && ls -la",
+			wantCmd:     "ls -la",
+			wantWorkDir: "/tmp/my dir",
+		},
+		{
+			name:        "double-quoted path",
+			command:     `cd "/tmp/my dir" && ls -la`,
+			wantCmd:     "ls -la",
+			wantWorkDir: "/tmp/my dir",
+		},
+		{
+			name:        "tilde alone",
+			command:     "cd ~ && echo hi",
+			wantCmd:     "echo hi",
+			wantWorkDir: homeDir,
+		},
+		{
+			name:        "tilde with subdir",
+			command:     "cd ~/projects && echo hi",
+			wantCmd:     "echo hi",
+			wantWorkDir: filepath.Join(homeDir, "projects"),
+		},
+		{
+			name:        "tilde nonexistent user",
+			command:     "cd ~__no_such_user_ever__ && echo hi",
+			wantCmd:     "cd ~__no_such_user_ever__ && echo hi",
+			wantWorkDir: "",
+		},
+		{
+			name:        "env var - bail",
+			command:     "cd $HOME && echo hi",
+			wantCmd:     "cd $HOME && echo hi",
+			wantWorkDir: "",
+		},
+		{
+			name:        "backtick - bail",
+			command:     "cd `pwd` && echo hi",
+			wantCmd:     "cd `pwd` && echo hi",
+			wantWorkDir: "",
+		},
+		{
+			name:        "no separator",
+			command:     "cd /tmp/foo",
+			wantCmd:     "cd /tmp/foo",
+			wantWorkDir: "",
+		},
+		{
+			name:        "semicolon separator not handled",
+			command:     "cd /tmp/foo ; echo hi",
+			wantCmd:     "cd /tmp/foo ; echo hi",
+			wantWorkDir: "",
+		},
+		{
+			name:        "empty after &&",
+			command:     "cd /tmp/foo &&   ",
+			wantCmd:     "cd /tmp/foo &&   ",
+			wantWorkDir: "",
+		},
+		{
+			name:        "no cd prefix",
+			command:     "echo hello",
+			wantCmd:     "echo hello",
+			wantWorkDir: "",
+		},
+		{
+			name:        "cd with tab separator",
+			command:     "cd\t/tmp/foo && echo hi",
+			wantCmd:     "echo hi",
+			wantWorkDir: "/tmp/foo",
+		},
+		{
+			name:        "extra whitespace around &&",
+			command:     "cd /tmp/foo   &&   echo hi",
+			wantCmd:     "echo hi",
+			wantWorkDir: "/tmp/foo",
+		},
+		{
+			name:        "leading whitespace in command",
+			command:     "  cd /tmp/foo && echo hi",
+			wantCmd:     "echo hi",
+			wantWorkDir: "/tmp/foo",
+		},
+		{
+			name:        "complex remaining command preserved",
+			command:     "cd /tmp && go test ./... -v -count=1",
+			wantCmd:     "go test ./... -v -count=1",
+			wantWorkDir: "/tmp",
+		},
+		{
+			name:        "path cleaned",
+			command:     "cd /tmp/foo/../bar && echo hi",
+			wantCmd:     "echo hi",
+			wantWorkDir: "/tmp/bar",
+		},
+		// Shell-semantic edge cases: these must NOT be rewritten because
+		// the parser cannot reproduce the shell's behaviour exactly.
+		{
+			name:        "double-quoted tilde - bail (POSIX: literal)",
+			command:     `cd "~/repo" && pwd`,
+			wantCmd:     `cd "~/repo" && pwd`,
+			wantWorkDir: "",
+		},
+		{
+			name:        "single-quoted tilde - bail (POSIX: literal)",
+			command:     "cd '~' && pwd",
+			wantCmd:     "cd '~' && pwd",
+			wantWorkDir: "",
+		},
+		{
+			name:        "cd dash - bail (OLDPWD)",
+			command:     "cd - && pwd",
+			wantCmd:     "cd - && pwd",
+			wantWorkDir: "",
+		},
+		{
+			name:        "cd ~+ - bail (PWD)",
+			command:     "cd ~+ && pwd",
+			wantCmd:     "cd ~+ && pwd",
+			wantWorkDir: "",
+		},
+		{
+			name:        "cd ~- - bail (OLDPWD)",
+			command:     "cd ~- && pwd",
+			wantCmd:     "cd ~- && pwd",
+			wantWorkDir: "",
+		},
+		{
+			name:        "backslash escape - bail",
+			command:     `cd /tmp/my\ dir && echo hi`,
+			wantCmd:     `cd /tmp/my\ dir && echo hi`,
+			wantWorkDir: "",
+		},
+	}
+
+	// Add tilde-with-username test only if we can look up the current user.
+	if currentUser != nil && homeDir != "" {
+		tests = append(tests, struct {
+			name        string
+			command     string
+			workDir     string
+			wantCmd     string
+			wantWorkDir string
+		}{
+			name:        "tilde with current username",
+			command:     "cd ~" + currentUser.Username + " && echo hi",
+			wantCmd:     "echo hi",
+			wantWorkDir: currentUser.HomeDir,
+		})
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotCmd, gotDir := extractLeadingCd(tt.command, tt.workDir)
+			if gotCmd != tt.wantCmd {
+				t.Errorf("command: got %q, want %q", gotCmd, tt.wantCmd)
+			}
+			if gotDir != tt.wantWorkDir {
+				t.Errorf("workDir: got %q, want %q", gotDir, tt.wantWorkDir)
+			}
+		})
+	}
+}
+
+func TestExtractLeadingCd_Preview(t *testing.T) {
+	tool := NewShellTool(nil, nil, DefaultOutputLimits())
+
+	args := mustMarshalShellArgs(ShellArgs{Command: "cd /tmp && echo hello"})
+	preview := tool.Preview(args)
+	if preview != "echo hello" {
+		t.Errorf("Preview should strip cd prefix, got %q", preview)
+	}
+}
+
+func TestShellTool_ExecuteCdPrefix(t *testing.T) {
+	dir := t.TempDir()
+	tool := NewShellTool(nil, nil, DefaultOutputLimits())
+
+	args := mustMarshalShellArgs(ShellArgs{
+		Command: "cd " + dir + " && pwd",
+	})
+
+	output, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+
+	text := output.Content
+	if !strings.Contains(text, dir) {
+		t.Errorf("expected output to contain %q (from cd extraction), got: %s", dir, text)
+	}
+	if !strings.Contains(text, "exit_code: 0") {
+		t.Errorf("expected exit_code: 0, got: %s", text)
 	}
 }
 

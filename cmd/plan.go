@@ -353,13 +353,14 @@ func runChatFromPlan(cfg *config.Config, planContent string, agentName string, m
 
 	// Set up approval UI
 	if toolMgr != nil {
-		toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (tools.ApprovalResult, error) {
+		toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {
 			if useAltScreen {
 				doneCh := make(chan tools.ApprovalResult, 1)
 				p.Send(chat.ApprovalRequestMsg{
 					Path:    path,
 					IsWrite: isWrite,
 					IsShell: isShell,
+					WorkDir: workDir,
 					DoneCh:  doneCh,
 				})
 				select {
@@ -375,7 +376,7 @@ func runChatFromPlan(cfg *config.Config, planContent string, agentName string, m
 				p.Send(chat.ResumeFromExternalUIMsg{})
 			}()
 			if isShell {
-				return tools.RunShellApprovalUI(path)
+				return tools.RunShellApprovalUI(path, workDir)
 			}
 			return tools.RunFileApprovalUI(path, isWrite)
 		}

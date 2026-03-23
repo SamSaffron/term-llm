@@ -213,10 +213,11 @@ type ApprovalManager struct {
 	// Legacy callback - will be replaced by PromptUIFunc
 	PromptFunc func(req *ApprovalRequest) (ConfirmOutcome, string)
 
-	// New UI callback for improved approval prompts
-	// Takes path/command, isWrite (for files), and returns ApprovalResult
-	// If nil, falls back to PromptFunc
-	PromptUIFunc func(path string, isWrite bool, isShell bool) (ApprovalResult, error)
+	// New UI callback for improved approval prompts.
+	// Takes path/command, isWrite (for files), isShell, and workDir
+	// (non-empty for shell commands to show where the command will run).
+	// If nil, falls back to PromptFunc.
+	PromptUIFunc func(path string, isWrite bool, isShell bool, workDir string) (ApprovalResult, error)
 
 	// Parent manager for inheriting session approvals and prompt function.
 	// When set, this manager will check parent's caches and use parent's
@@ -373,9 +374,10 @@ func (m *ApprovalManager) checkPathApprovalNoPrompt(toolName, path, absPath stri
 }
 
 // checkShellApprovalNoPrompt runs the non-interactive shell approval checks.
+// workDir is the directory where the command will execute (empty = cwd).
 // Returns (outcome, true) when a decision is made, or (Cancel, false) when
 // prompting is still required.
-func (m *ApprovalManager) checkShellApprovalNoPrompt(command string) (ConfirmOutcome, bool) {
+func (m *ApprovalManager) checkShellApprovalNoPrompt(command, workDir string) (ConfirmOutcome, bool) {
 	// Check pre-approved patterns
 	if m.permissions.IsShellCommandAllowed(command) {
 		return ProceedOnce, true
@@ -397,10 +399,14 @@ func (m *ApprovalManager) checkShellApprovalNoPrompt(command string) (ConfirmOut
 		}
 	}
 
-	// Check project-level approvals (persisted)
+	// Check project-level approvals (persisted) — use the command's
+	// working directory so approvals attach to the correct repo.
 	if !m.IgnoreProjectApprovals {
-		cwd, _ := os.Getwd()
-		projectApprovals := m.getProjectApprovals(cwd)
+		dir := workDir
+		if dir == "" {
+			dir, _ = os.Getwd()
+		}
+		projectApprovals := m.getProjectApprovals(dir)
 		if projectApprovals != nil && projectApprovals.IsShellPatternApproved(command) {
 			return ProceedAlways, true
 		}
@@ -486,7 +492,7 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 		if m.DebugApproval {
 			log.Printf("[approval] CheckPathApproval tool=%s path=%q → calling PromptUIFunc", toolName, absPath)
 		}
-		result, err := promptUIFunc(absPath, isWrite, false)
+		result, err := promptUIFunc(absPath, isWrite, false, "")
 		if err != nil {
 			if m.DebugApproval {
 				log.Printf("[approval] CheckPathApproval tool=%s path=%q → PromptUIFunc error: %v", toolName, absPath, err)
@@ -619,7 +625,8 @@ func getDirectoryForApproval(path string) string {
 }
 
 // CheckShellApproval checks if a shell command is approved.
-func (m *ApprovalManager) CheckShellApproval(command string) (ConfirmOutcome, error) {
+// workDir is the directory where the command will execute (may be empty for cwd).
+func (m *ApprovalManager) CheckShellApproval(command, workDir string) (ConfirmOutcome, error) {
 	// Yolo mode - auto-approve everything
 	if m.YoloMode {
 		if m.DebugApproval {
@@ -628,7 +635,7 @@ func (m *ApprovalManager) CheckShellApproval(command string) (ConfirmOutcome, er
 		return ProceedOnce, nil
 	}
 
-	if outcome, ok := m.checkShellApprovalNoPrompt(command); ok {
+	if outcome, ok := m.checkShellApprovalNoPrompt(command, workDir); ok {
 		if m.DebugApproval {
 			log.Printf("[approval] CheckShellApproval cmd=%q → no-prompt decided: %v", command, outcome)
 		}
@@ -642,15 +649,20 @@ func (m *ApprovalManager) CheckShellApproval(command string) (ConfirmOutcome, er
 	defer promptLock.Unlock()
 
 	// Recheck now that we hold the prompt lock to avoid duplicate prompts
-	if outcome, ok := m.checkShellApprovalNoPrompt(command); ok {
+	if outcome, ok := m.checkShellApprovalNoPrompt(command, workDir); ok {
 		if m.DebugApproval {
 			log.Printf("[approval] CheckShellApproval cmd=%q → recheck decided: %v", command, outcome)
 		}
 		return outcome, nil
 	}
 
-	cwd, _ := os.Getwd()
-	projectApprovals := m.getProjectApprovals(cwd)
+	// Use the command's working directory for project approval lookup
+	// so remembered approvals attach to the correct repo.
+	dir := workDir
+	if dir == "" {
+		dir, _ = os.Getwd()
+	}
+	projectApprovals := m.getProjectApprovals(dir)
 
 	// Try new UI first (local, then parent), then fall back to legacy
 	promptUIFunc := m.PromptUIFunc
@@ -661,7 +673,7 @@ func (m *ApprovalManager) CheckShellApproval(command string) (ConfirmOutcome, er
 		if m.DebugApproval {
 			log.Printf("[approval] CheckShellApproval cmd=%q → calling PromptUIFunc", command)
 		}
-		result, err := promptUIFunc(command, false, true)
+		result, err := promptUIFunc(command, false, true, workDir)
 		if err != nil {
 			return Cancel, err
 		}

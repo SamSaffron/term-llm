@@ -500,7 +500,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 
 		// Set up the improved approval UI with git-aware heuristics
-		toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (tools.ApprovalResult, error) {
+		toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {
 			// Flush content and suppress spinner before releasing terminal
 			done := make(chan struct{})
 			teaProgram.Send(askFlushBeforeApprovalMsg{Done: done})
@@ -515,7 +515,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 			// Run the appropriate approval UI
 			if isShell {
-				return tools.RunShellApprovalUI(path)
+				return tools.RunShellApprovalUI(path, workDir)
 			}
 			return tools.RunFileApprovalUI(path, isWrite)
 		}
@@ -535,9 +535,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		tools.SetAskUserHooks(start, end)
 	} else if toolMgr != nil {
 		// Non-TUI mode: set up approval UI directly (no tea.Program to pause)
-		toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (tools.ApprovalResult, error) {
+		toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {
 			if isShell {
-				return tools.RunShellApprovalUI(path)
+				return tools.RunShellApprovalUI(path, workDir)
 			}
 			return tools.RunFileApprovalUI(path, isWrite)
 		}

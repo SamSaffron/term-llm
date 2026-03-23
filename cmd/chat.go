@@ -386,7 +386,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 
 	// Set up the improved approval UI with git-aware heuristics
 	if toolMgr != nil {
-		toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (tools.ApprovalResult, error) {
+		toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {
 			// In alt screen mode, use inline approval UI
 			if useAltScreen {
 				// Use buffered channel to prevent goroutine leak if TUI exits before responding
@@ -395,6 +395,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 					Path:    path,
 					IsWrite: isWrite,
 					IsShell: isShell,
+					WorkDir: workDir,
 					DoneCh:  doneCh,
 				})
 				// Block until user responds or context is cancelled
@@ -420,7 +421,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 
 			// Run the appropriate approval UI
 			if isShell {
-				return tools.RunShellApprovalUI(path)
+				return tools.RunShellApprovalUI(path, workDir)
 			}
 			return tools.RunFileApprovalUI(path, isWrite)
 		}

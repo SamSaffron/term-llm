@@ -319,8 +319,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 			if !serveYolo {
 				runtime.toolMgr.ApprovalMgr.IgnoreProjectApprovals = true
 				runtime.toolMgr.ApprovalMgr.DebugApproval = serveDebug
-				runtime.toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (tools.ApprovalResult, error) {
-					return runtime.awaitApproval(path, isWrite, isShell)
+				runtime.toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {
+					return runtime.awaitApproval(path, isWrite, isShell, workDir)
 				}
 			}
 		}

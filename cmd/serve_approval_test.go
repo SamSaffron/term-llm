@@ -27,7 +27,7 @@ func putTestSession(mgr *serveSessionManager, id string, rt *serveRuntime) {
 func TestAwaitApproval_NoTransport_FailsFast(t *testing.T) {
 	rt := newTestRuntime()
 	// No approvalEventFunc set — should fail fast instead of hanging.
-	result, err := rt.awaitApproval("/some/path", false, false)
+	result, err := rt.awaitApproval("/some/path", false, false, "")
 	if err != errServeApprovalNoTransport {
 		t.Fatalf("expected errServeApprovalNoTransport, got %v", err)
 	}
@@ -58,7 +58,7 @@ func TestAwaitApproval_WithTransport_EmitsEventAndBlocks(t *testing.T) {
 	var awaitErr error
 
 	go func() {
-		result, awaitErr = rt.awaitApproval("/test/file.txt", false, false)
+		result, awaitErr = rt.awaitApproval("/test/file.txt", false, false, "")
 		close(done)
 	}()
 
@@ -137,7 +137,7 @@ func TestAwaitApproval_Cancellation(t *testing.T) {
 	var result tools.ApprovalResult
 
 	go func() {
-		result, _ = rt.awaitApproval("/test/file.txt", false, false)
+		result, _ = rt.awaitApproval("/test/file.txt", false, false, "")
 		close(done)
 	}()
 
@@ -190,7 +190,7 @@ func TestSubmitApproval_DenyFlow(t *testing.T) {
 	var result tools.ApprovalResult
 
 	go func() {
-		result, _ = rt.awaitApproval("/test/file.txt", false, false)
+		result, _ = rt.awaitApproval("/test/file.txt", false, false, "")
 		close(done)
 	}()
 
@@ -246,7 +246,7 @@ func TestSubmitApproval_AlreadyAnswered(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		rt.awaitApproval("/test/file.txt", false, false)
+		rt.awaitApproval("/test/file.txt", false, false, "")
 		close(done)
 	}()
 

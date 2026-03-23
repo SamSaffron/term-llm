@@ -207,7 +207,7 @@ func TestApprovalManager_CheckPathApproval_RecheckSkipsQueuedPrompt(t *testing.T
 	promptRelease := make(chan struct{})
 	var promptCalls int32
 
-	mgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (ApprovalResult, error) {
+	mgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (ApprovalResult, error) {
 		if atomic.AddInt32(&promptCalls, 1) > 1 {
 			return ApprovalResult{}, fmt.Errorf("prompt called more than once")
 		}
@@ -374,7 +374,7 @@ func TestApprovalManager_CheckPathApproval_IgnoreProjectApprovals(t *testing.T) 
 
 	// With IgnoreProjectApprovals=true, PromptUIFunc should be called
 	prompted := false
-	mgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (ApprovalResult, error) {
+	mgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (ApprovalResult, error) {
 		prompted = true
 		return ApprovalResult{Choice: ApprovalChoiceOnce}, nil
 	}
@@ -401,7 +401,7 @@ func TestApprovalManager_CheckShellApproval_PreApproved(t *testing.T) {
 	mgr := NewApprovalManager(perms)
 
 	// Test matching pattern
-	outcome, err := mgr.CheckShellApproval("git status")
+	outcome, err := mgr.CheckShellApproval("git status", "")
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -409,7 +409,7 @@ func TestApprovalManager_CheckShellApproval_PreApproved(t *testing.T) {
 		t.Errorf("expected ProceedOnce for pre-approved command, got %v", outcome)
 	}
 
-	outcome, err = mgr.CheckShellApproval("go test ./...")
+	outcome, err = mgr.CheckShellApproval("go test ./...", "")
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -426,7 +426,7 @@ func TestApprovalManager_CheckShellApproval_SessionCache(t *testing.T) {
 	mgr.shellCache.AddPattern("npm *")
 
 	// Check should succeed without prompting
-	outcome, err := mgr.CheckShellApproval("npm install lodash")
+	outcome, err := mgr.CheckShellApproval("npm install lodash", "")
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -485,12 +485,80 @@ func TestApprovalManager_CheckShellApproval_ProjectApprovals(t *testing.T) {
 	}
 
 	// Check should succeed from project approvals
-	outcome, err := mgr.CheckShellApproval("make build")
+	outcome, err := mgr.CheckShellApproval("make build", "")
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 	if outcome != ProceedAlways {
 		t.Errorf("expected ProceedAlways from project approvals, got %v", outcome)
+	}
+}
+
+func TestApprovalManager_CheckShellApproval_WorkDirRepoSelection(t *testing.T) {
+	// Create two separate git repos.
+	repoA, err := os.MkdirTemp("", "test-repo-a-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(repoA)
+	repoA, _ = filepath.EvalSymlinks(repoA)
+
+	repoB, err := os.MkdirTemp("", "test-repo-b-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(repoB)
+	repoB, _ = filepath.EvalSymlinks(repoB)
+
+	for _, dir := range []string{repoA, repoB} {
+		cmd := exec.Command("git", "init")
+		cmd.Dir = dir
+		if err := cmd.Run(); err != nil {
+			t.Skipf("git init failed, skipping: %v", err)
+		}
+	}
+
+	// Set up config dir
+	configDir, err := os.MkdirTemp("", "test-config-*")
+	if err != nil {
+		t.Fatalf("failed to create config dir: %v", err)
+	}
+	defer os.RemoveAll(configDir)
+
+	oldXDG := os.Getenv("XDG_CONFIG_HOME")
+	os.Setenv("XDG_CONFIG_HOME", configDir)
+	defer os.Setenv("XDG_CONFIG_HOME", oldXDG)
+
+	// Process CWD is repo A.
+	oldCwd, _ := os.Getwd()
+	os.Chdir(repoA)
+	defer os.Chdir(oldCwd)
+
+	// Approve "make *" in repo B only.
+	paB, err := LoadProjectApprovals(repoB)
+	if err != nil {
+		t.Fatalf("failed to load project approvals for repo B: %v", err)
+	}
+	if err := paB.ApproveShellPattern("make *"); err != nil {
+		t.Fatalf("failed to approve pattern in repo B: %v", err)
+	}
+
+	perms := NewToolPermissions()
+	mgr := NewApprovalManager(perms)
+
+	// With workDir pointing at repo B, the approval should match.
+	outcome, ok := mgr.checkShellApprovalNoPrompt("make build", repoB)
+	if !ok {
+		t.Fatal("expected project approval to match when workDir points at repo B")
+	}
+	if outcome != ProceedAlways {
+		t.Errorf("expected ProceedAlways, got %v", outcome)
+	}
+
+	// With empty workDir (falls back to CWD = repo A), should NOT match.
+	outcome, ok = mgr.checkShellApprovalNoPrompt("make build", "")
+	if ok {
+		t.Errorf("expected no match when workDir is empty (CWD = repo A), got outcome %v", outcome)
 	}
 }
 
@@ -532,7 +600,7 @@ func TestApprovalManager_CheckShellApproval_NoPromptFunc(t *testing.T) {
 	// Don't set PromptFunc or PromptUIFunc
 
 	// Should return error when command is not pre-approved
-	outcome, err := mgr.CheckShellApproval("rm -rf /")
+	outcome, err := mgr.CheckShellApproval("rm -rf /", "")
 	if err == nil {
 		t.Error("expected error when no prompt func set")
 	}
@@ -770,7 +838,7 @@ func TestApprovalManager_FileApproval_SuppressesReprompt(t *testing.T) {
 	}
 
 	promptCount := 0
-	mgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (ApprovalResult, error) {
+	mgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (ApprovalResult, error) {
 		promptCount++
 		return ApprovalResult{
 			Choice: ApprovalChoiceFile,
@@ -824,7 +892,7 @@ func TestApprovalManager_ReadApprovalDoesNotGrantWrite(t *testing.T) {
 	}
 
 	promptCount := 0
-	mgr.PromptUIFunc = func(path string, isWrite bool, isShell bool) (ApprovalResult, error) {
+	mgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (ApprovalResult, error) {
 		promptCount++
 		// Always approve the directory for the requested access type
 		return ApprovalResult{
