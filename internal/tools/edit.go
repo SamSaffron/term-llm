@@ -7,13 +7,31 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
+	"sync"
 
 	"github.com/samsaffron/term-llm/cmd/udiff"
 	"github.com/samsaffron/term-llm/internal/diff"
 	"github.com/samsaffron/term-llm/internal/edit"
 	"github.com/samsaffron/term-llm/internal/llm"
 )
+
+// fileMu serialises concurrent edits to the same file path.
+// Both EditFileTool and UnifiedDiffTool share this map so that
+// an edit_file and a unified_diff targeting the same path cannot
+// race each other.
+//
+// Entries are never evicted: one *sync.Mutex (~100 bytes) per unique
+// resolved path edited during the process lifetime. This is fine for a
+// CLI tool that edits tens to hundreds of files per session.
+var fileMu sync.Map // absPath (string) -> *sync.Mutex
+
+// lockFilePath acquires a per-path mutex and returns the unlock function.
+func lockFilePath(absPath string) func() {
+	v, _ := fileMu.LoadOrStore(absPath, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
 
 // EditFileTool implements the edit_file tool with dual modes.
 type EditFileTool struct {
@@ -145,21 +163,8 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (l
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to resolve path: %v", err))), nil
 	}
 
-	// Use a lock file to serialize concurrent edits to the same file.
-	// We can't lock the file itself because rename() replaces the inode,
-	// and other goroutines holding fds to the old inode won't see changes.
-	lockPath := absPath + ".lock"
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
-	if err != nil {
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create lock file: %v", err))), nil
-	}
-	defer lockFile.Close()
-
-	// Acquire exclusive lock (blocks until available)
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to lock: %v", err))), nil
-	}
-	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	// Serialize concurrent edits to the same file path.
+	defer lockFilePath(absPath)()
 
 	// Read file content and permissions while holding lock
 	info, err := os.Stat(absPath)
@@ -339,109 +344,13 @@ func (t *UnifiedDiffTool) Execute(ctx context.Context, args json.RawMessage) (ll
 			continue
 		}
 
-		// Acquire an exclusive flock on a per-file lock file to serialise
-		// concurrent unified_diff (and edit_file) calls on the same file.
-		lockPath := absPath + ".lock"
-		lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
-		if err != nil {
-			allWarnings = append(allWarnings, fmt.Sprintf("%s: failed to create lock file: %v", fd.Path, err))
-			continue
+		// Serialise concurrent unified_diff (and edit_file) calls on the same file.
+		status, warnings, d := t.applyFileDiff(absPath, fd)
+		sb.WriteString(status)
+		allWarnings = append(allWarnings, warnings...)
+		if d != nil {
+			diffs = append(diffs, *d)
 		}
-		if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
-			lockFile.Close()
-			allWarnings = append(allWarnings, fmt.Sprintf("%s: failed to lock: %v", fd.Path, err))
-			continue
-		}
-
-		// Read file content and permissions while holding the lock
-		fileInfo, err := os.Stat(absPath)
-		if err != nil {
-			syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
-			lockFile.Close()
-			allWarnings = append(allWarnings, fmt.Sprintf("%s: %v", fd.Path, err))
-			continue
-		}
-		fileMode := fileInfo.Mode()
-		data, err := os.ReadFile(absPath)
-		if err != nil {
-			syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
-			lockFile.Close()
-			allWarnings = append(allWarnings, fmt.Sprintf("%s: %v", fd.Path, err))
-			continue
-		}
-		content := string(data)
-
-		// Apply the diff
-		result := udiff.ApplyWithWarnings(content, fd.Hunks)
-		if len(result.Warnings) > 0 {
-			allWarnings = append(allWarnings, result.Warnings...)
-		}
-
-		// Write back if any changes
-		if result.Content != content {
-			dir := filepath.Dir(absPath)
-			base := filepath.Base(absPath)
-			tempFile, err := os.CreateTemp(dir, "."+base+".*.tmp")
-			if err != nil {
-				syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
-				lockFile.Close()
-				allWarnings = append(allWarnings, fmt.Sprintf("%s: failed to create temp file: %v", fd.Path, err))
-				continue
-			}
-			tempPath := tempFile.Name()
-
-			if _, err := tempFile.WriteString(result.Content); err != nil {
-				tempFile.Close()
-				os.Remove(tempPath)
-				syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
-				lockFile.Close()
-				allWarnings = append(allWarnings, fmt.Sprintf("%s: failed to write temp file: %v", fd.Path, err))
-				continue
-			}
-			if err := tempFile.Sync(); err != nil {
-				tempFile.Close()
-				os.Remove(tempPath)
-				syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
-				lockFile.Close()
-				allWarnings = append(allWarnings, fmt.Sprintf("%s: failed to sync temp file: %v", fd.Path, err))
-				continue
-			}
-			tempFile.Close()
-
-			// Preserve original file permissions (CreateTemp uses 0600)
-			if err := os.Chmod(tempPath, fileMode); err != nil {
-				os.Remove(tempPath)
-				syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
-				lockFile.Close()
-				allWarnings = append(allWarnings, fmt.Sprintf("%s: failed to set permissions: %v", fd.Path, err))
-				continue
-			}
-
-			if err := os.Rename(tempPath, absPath); err != nil {
-				os.Remove(tempPath)
-				syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
-				lockFile.Close()
-				allWarnings = append(allWarnings, fmt.Sprintf("%s: failed to rename: %v", fd.Path, err))
-				continue
-			}
-
-			oldLines := countLines(content)
-			newLines := countLines(result.Content)
-			sb.WriteString(fmt.Sprintf("Applied changes to %s: %d lines -> %d lines.\n", fd.Path, oldLines, newLines))
-
-			// Populate structured diff data
-			if len(content) < diff.MaxDiffSize && len(result.Content) < diff.MaxDiffSize {
-				diffs = append(diffs, llm.DiffData{
-					File: absPath, Old: content, New: result.Content, Line: 1,
-				})
-			}
-		} else {
-			sb.WriteString(fmt.Sprintf("No changes for %s.\n", fd.Path))
-		}
-
-		// Release lock; keep lock file persistent for correct flock semantics
-		syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
-		lockFile.Close()
 	}
 
 	if len(allWarnings) > 0 {
@@ -452,6 +361,73 @@ func (t *UnifiedDiffTool) Execute(ctx context.Context, args json.RawMessage) (ll
 	}
 
 	return llm.ToolOutput{Content: sb.String(), Diffs: diffs}, nil
+}
+
+// applyFileDiff applies a single file's hunks while holding a per-path lock.
+func (t *UnifiedDiffTool) applyFileDiff(absPath string, fd udiff.FileDiff) (status string, warnings []string, diffData *llm.DiffData) {
+	defer lockFilePath(absPath)()
+
+	fileInfo, err := os.Stat(absPath)
+	if err != nil {
+		return "", []string{fmt.Sprintf("%s: %v", fd.Path, err)}, nil
+	}
+	fileMode := fileInfo.Mode()
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		return "", []string{fmt.Sprintf("%s: %v", fd.Path, err)}, nil
+	}
+	content := string(data)
+
+	result := udiff.ApplyWithWarnings(content, fd.Hunks)
+	if len(result.Warnings) > 0 {
+		warnings = append(warnings, result.Warnings...)
+	}
+
+	if result.Content == content {
+		return fmt.Sprintf("No changes for %s.\n", fd.Path), warnings, nil
+	}
+
+	dir := filepath.Dir(absPath)
+	base := filepath.Base(absPath)
+	tempFile, err := os.CreateTemp(dir, "."+base+".*.tmp")
+	if err != nil {
+		return "", append(warnings, fmt.Sprintf("%s: failed to create temp file: %v", fd.Path, err)), nil
+	}
+	tempPath := tempFile.Name()
+
+	if _, err := tempFile.WriteString(result.Content); err != nil {
+		tempFile.Close()
+		os.Remove(tempPath)
+		return "", append(warnings, fmt.Sprintf("%s: failed to write temp file: %v", fd.Path, err)), nil
+	}
+	if err := tempFile.Sync(); err != nil {
+		tempFile.Close()
+		os.Remove(tempPath)
+		return "", append(warnings, fmt.Sprintf("%s: failed to sync temp file: %v", fd.Path, err)), nil
+	}
+	tempFile.Close()
+
+	if err := os.Chmod(tempPath, fileMode); err != nil {
+		os.Remove(tempPath)
+		return "", append(warnings, fmt.Sprintf("%s: failed to set permissions: %v", fd.Path, err)), nil
+	}
+
+	if err := os.Rename(tempPath, absPath); err != nil {
+		os.Remove(tempPath)
+		return "", append(warnings, fmt.Sprintf("%s: failed to rename: %v", fd.Path, err)), nil
+	}
+
+	oldLines := countLines(content)
+	newLines := countLines(result.Content)
+	status = fmt.Sprintf("Applied changes to %s: %d lines -> %d lines.\n", fd.Path, oldLines, newLines)
+
+	if len(content) < diff.MaxDiffSize && len(result.Content) < diff.MaxDiffSize {
+		diffData = &llm.DiffData{
+			File: absPath, Old: content, New: result.Content, Line: 1,
+		}
+	}
+
+	return status, warnings, diffData
 }
 
 // GenerateDiff creates a unified diff between old and new content.
