@@ -585,6 +585,10 @@ func (m *Model) Init() tea.Cmd {
 	return tea.Batch(
 		textarea.Blink,
 		m.spinner.Tick,
+		// Continuous tick to keep UI responsive even when not streaming
+		tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg {
+			return tickMsg{}
+		}),
 	)
 }
 
