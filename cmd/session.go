@@ -127,6 +127,18 @@ func LoadAgent(agentName string, cfg *config.Config) (*agents.Agent, error) {
 	return agent, nil
 }
 
+// ListAgentNames returns all available agent names for completions.
+func ListAgentNames(cfg *config.Config) ([]string, error) {
+	registry, err := agents.NewRegistry(agents.RegistryConfig{
+		UseBuiltin:  cfg.Agents.UseBuiltin,
+		SearchPaths: cfg.Agents.SearchPaths,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return registry.ListNames()
+}
+
 // ResolveSettings merges config, agent, and CLI flags into final settings.
 // Priority: CLI > agent > config
 func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, configProvider, configModel, configInstructions string, configMaxTurns, defaultMaxTurns int) (SessionSettings, error) {

@@ -11,10 +11,12 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/sahilm/fuzzy"
+	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/tui/inspector"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -138,6 +140,12 @@ func AllCommands() []Command {
 			Name:        "reload",
 			Description: "Re-exec under the current binary, resuming this session (useful after upgrades)",
 			Usage:       "/reload",
+		},
+		{
+			Name:        "handover",
+			Aliases:     []string{"ho"},
+			Description: "Hand conversation to another agent",
+			Usage:       "/handover @agent [provider:model]",
 		},
 	}
 }
@@ -323,6 +331,8 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 		return m.cmdResume(args)
 	case "reload":
 		return m.cmdReload()
+	case "handover":
+		return m.cmdHandover(args)
 	default:
 		return m.showSystemMessage(fmt.Sprintf("Command /%s is not yet implemented.", cmd.Name))
 	}
@@ -1439,4 +1449,310 @@ func (m *Model) switchModel(providerModel string) (tea.Model, tea.Cmd) {
 	}
 
 	return m.showSystemMessage(fmt.Sprintf("Switched to %s:%s", providerName, modelName))
+}
+
+// cmdHandover handles /handover @agent [provider:model]
+func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
+	m.setTextareaValue("")
+
+	if m.streaming {
+		return m.showSystemMessage("Cannot handover while streaming. Wait for the response to finish.")
+	}
+
+	if len(args) == 0 {
+		return m.showSystemMessage("Usage: /handover @agent [provider:model]\nExample: /handover @developer anthropic:claude-sonnet-4-5")
+	}
+
+	if m.agentResolver == nil {
+		return m.showSystemMessage("Agent resolver not configured.")
+	}
+
+	if m.store == nil {
+		return m.showSystemMessage("Handover requires session storage. Enable sessions to use /handover.")
+	}
+
+	// Parse agent name (strip @ prefix if present)
+	agentName := strings.TrimPrefix(args[0], "@")
+
+	// Optional provider:model override
+	var providerStr string
+	if len(args) > 1 {
+		providerStr = args[1]
+		if !strings.Contains(providerStr, ":") {
+			return m.showSystemMessage(fmt.Sprintf("Invalid provider format: %s (expected provider:model)", providerStr))
+		}
+	}
+
+	// Resolve target agent
+	targetAgent, err := m.agentResolver(agentName, m.config)
+	if err != nil {
+		return m.showSystemMessage(fmt.Sprintf("Failed to load agent @%s: %v", agentName, err))
+	}
+	if targetAgent == nil {
+		return m.showSystemMessage(fmt.Sprintf("Agent @%s not found.", agentName))
+	}
+
+	// Determine the new system prompt from the target agent.
+	// Fall back to empty string — the restart path will resolve it properly.
+	newSystemPrompt := targetAgent.SystemPrompt
+
+	// Determine handover mode from the current (source) agent
+	mode := ""
+	if m.currentAgent != nil {
+		mode = m.currentAgent.HandoverMode
+	}
+
+	sourceAgent := m.agentName
+	if sourceAgent == "" {
+		sourceAgent = "default"
+	}
+
+	// Light mode: use last assistant message as handover context
+	if mode == "light" {
+		doc := m.lastAssistantMessage()
+		if doc == "" {
+			doc = "(No assistant response to hand over.)"
+		}
+		result := llm.HandoverFromFile(doc, newSystemPrompt, sourceAgent, targetAgent.Name)
+		return m, func() tea.Msg {
+			return handoverDoneMsg{
+				result:      result,
+				agentName:   agentName,
+				providerStr: providerStr,
+			}
+		}
+	}
+
+	// File mode: read handover_file, but only if it was modified during this session
+	if mode == "file" || (mode == "" && m.currentAgent != nil && m.currentAgent.HandoverFile != "") {
+		handoverFile := ""
+		if m.currentAgent != nil {
+			handoverFile = m.currentAgent.HandoverFile
+		}
+		if handoverFile != "" {
+			info, statErr := os.Stat(handoverFile)
+			if statErr == nil && info.Size() > 0 {
+				// Check freshness: file must have been modified after the session started
+				sessionStart := time.Time{}
+				if m.sess != nil {
+					sessionStart = m.sess.CreatedAt
+				}
+				stale := !sessionStart.IsZero() && info.ModTime().Before(sessionStart)
+				if stale && mode == "file" {
+					// Explicit file mode — hard fail on stale file
+					return m.showSystemMessage(fmt.Sprintf(
+						"Handover file %s exists but predates this session (last modified %s).\n"+
+							"Ask the agent to update it, or remove it to use LLM compression.",
+						handoverFile, info.ModTime().Format("2006-01-02 15:04")))
+				}
+				if !stale {
+					content, readErr := os.ReadFile(handoverFile)
+					if readErr == nil && len(content) > 0 {
+						result := llm.HandoverFromFile(string(content), newSystemPrompt, sourceAgent, targetAgent.Name)
+						return m, func() tea.Msg {
+							return handoverDoneMsg{
+								result:      result,
+								agentName:   agentName,
+								providerStr: providerStr,
+							}
+						}
+					}
+				}
+				// Auto mode with stale file: fall through to LLM compression
+			}
+			// File mode was explicitly set but file doesn't exist — warn
+			if mode == "file" {
+				return m.showSystemMessage(fmt.Sprintf(
+					"Agent @%s has handover_mode: file but %s does not exist or is empty.\n"+
+						"Ask the agent to write the handover document first.",
+					sourceAgent, handoverFile))
+			}
+		}
+	}
+
+	// Compress mode (or auto fallback): LLM compression
+	m.messagesMu.Lock()
+	snapshot := make([]session.Message, len(m.messages))
+	copy(snapshot, m.messages)
+	m.messagesMu.Unlock()
+
+	if len(snapshot) < 2 {
+		result := llm.HandoverFromFile("(No prior conversation to hand over.)", newSystemPrompt, sourceAgent, targetAgent.Name)
+		return m, func() tea.Msg {
+			return handoverDoneMsg{
+				result:      result,
+				agentName:   agentName,
+				providerStr: providerStr,
+			}
+		}
+	}
+
+	// Build llm.Message slice, extract system prompt
+	var llmMessages []llm.Message
+	var currentSystemPrompt string
+	for _, msg := range snapshot {
+		if msg.Role == llm.RoleSystem {
+			for _, p := range msg.Parts {
+				if p.Text != "" {
+					currentSystemPrompt = p.Text
+					break
+				}
+			}
+			continue
+		}
+		llmMessages = append(llmMessages, msg.ToLLMMessage())
+	}
+
+	if len(llmMessages) == 0 {
+		result := llm.HandoverFromFile("(No prior conversation to hand over.)", newSystemPrompt, sourceAgent, targetAgent.Name)
+		return m, func() tea.Msg {
+			return handoverDoneMsg{
+				result:      result,
+				agentName:   agentName,
+				providerStr: providerStr,
+			}
+		}
+	}
+
+	compactConfig := llm.DefaultCompactionConfig()
+	model := m.modelName
+	provider := m.provider
+
+	m.streaming = true
+	m.phase = "Handover"
+	m.streamStartTime = time.Now()
+
+	theme := m.styles.Theme()
+	muted := lipgloss.NewStyle().Foreground(theme.Muted)
+	statusLine := muted.Render(fmt.Sprintf("⠋ Generating handover to @%s...", agentName))
+
+	return m, tea.Batch(
+		tea.Println(statusLine),
+		func() tea.Msg {
+			ctx, cancel := context.WithCancel(context.Background())
+			m.streamCancelFunc = cancel
+			result, err := llm.Handover(ctx, provider, model, currentSystemPrompt, newSystemPrompt, llmMessages, sourceAgent, targetAgent.Name, compactConfig)
+			return handoverDoneMsg{result: result, err: err, agentName: agentName, providerStr: providerStr}
+		},
+		m.spinner.Tick,
+		m.tickEvery(),
+	)
+}
+
+// resolveAgentTools derives the comma-separated tool list from an agent's config.
+func resolveAgentTools(agent *agents.Agent) string {
+	if agent.HasEnabledList() {
+		return strings.Join(agent.Tools.Enabled, ",")
+	}
+	if agent.HasDisabledList() {
+		allTools := tools.AllToolNames()
+		enabled := agent.GetEnabledTools(allTools)
+		return strings.Join(enabled, ",")
+	}
+	return "" // No tool restrictions — use defaults
+}
+
+// lastAssistantMessage returns the text of the most recent assistant message.
+func (m *Model) lastAssistantMessage() string {
+	m.messagesMu.Lock()
+	defer m.messagesMu.Unlock()
+
+	for i := len(m.messages) - 1; i >= 0; i-- {
+		if m.messages[i].Role == llm.RoleAssistant {
+			var text strings.Builder
+			for _, p := range m.messages[i].Parts {
+				if p.Text != "" {
+					text.WriteString(p.Text)
+				}
+			}
+			return text.String()
+		}
+	}
+	return ""
+}
+
+// executeHandover performs the actual agent switch after user confirmation.
+// It persists the handover messages and session metadata, then triggers a TUI
+// restart so the target agent's full runtime configuration (tools, permissions,
+// MCP, shell allowlists) is applied via the normal startup path.
+func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
+	if m.pendingHandover == nil || m.pendingHandover.result == nil {
+		return m, nil
+	}
+
+	pending := m.pendingHandover
+	m.pendingHandover = nil
+
+	theme := m.styles.Theme()
+	errStyle := lipgloss.NewStyle().Foreground(theme.Error)
+
+	// Step 1: Resolve target agent before any mutations
+	targetAgent, resolveErr := m.agentResolver(pending.agentName, m.config)
+	if resolveErr != nil || targetAgent == nil {
+		msg := "unknown error"
+		if resolveErr != nil {
+			msg = resolveErr.Error()
+		}
+		return m, tea.Println(errStyle.Render(fmt.Sprintf("Handover failed to resolve target agent: %s", msg)))
+	}
+
+	// Step 2: Persist handover messages
+	var newSessionMsgs []session.Message
+	for _, msg := range pending.result.NewMessages {
+		newSessionMsgs = append(newSessionMsgs, *session.NewMessage(m.sess.ID, msg, -1))
+	}
+
+	if err := m.store.CompactMessages(context.Background(), m.sess.ID, newSessionMsgs); err != nil {
+		return m, tea.Println(errStyle.Render(fmt.Sprintf("Handover failed to persist: %v", err)))
+	}
+
+	// Step 3: Update session metadata with target agent's runtime settings.
+	// On restart, cmd/chat.go:205-211 overwrites resolved settings with session
+	// values (Tools, Search, MCP, Provider, Model), so we must persist the
+	// target agent's values here — otherwise the old agent's config survives.
+	m.sess.Agent = pending.agentName
+	m.sess.Search = targetAgent.Search
+	m.sess.Tools = resolveAgentTools(targetAgent)
+
+	mcpNames := targetAgent.GetMCPServerNames()
+	if len(mcpNames) > 0 {
+		m.sess.MCP = strings.Join(mcpNames, ",")
+	} else {
+		m.sess.MCP = ""
+	}
+
+	// Provider/model: explicit override > target agent > keep current
+	if pending.providerStr != "" {
+		parts := strings.SplitN(pending.providerStr, ":", 2)
+		if len(parts) == 2 {
+			m.sess.ProviderKey = parts[0]
+			m.sess.Model = parts[1]
+		}
+	} else {
+		// Apply agent provider and model independently (matching ResolveSettings behavior)
+		if targetAgent.Provider != "" {
+			m.sess.ProviderKey = targetAgent.Provider
+		}
+		if targetAgent.Model != "" {
+			m.sess.Model = targetAgent.Model
+		}
+	}
+
+	if err := m.store.Update(context.Background(), m.sess); err != nil {
+		return m, tea.Println(errStyle.Render(fmt.Sprintf("Handover failed to persist session metadata: %v", err)))
+	}
+
+	// Step 4: Update in-memory state only after both writes succeed
+	m.messagesMu.Lock()
+	m.compactionIdx = len(m.messages)
+	m.messages = append(m.messages, newSessionMsgs...)
+	m.messagesMu.Unlock()
+	m.invalidateHistoryCache()
+
+	// Step 5: Trigger TUI restart via the same resume mechanism used by /resume.
+	// This causes runChatOnce to exit and the outer loop to re-enter with
+	// the updated session, running the full agent setup path.
+	m.pendingResumeSessionID = m.sess.ID
+	m.quitting = true
+	return m, tea.Quit
 }

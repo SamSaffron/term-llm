@@ -1,0 +1,30 @@
+name: planner
+description: "Plan and break down complex tasks before implementation"
+
+tools:
+  enabled: [read_file, write_file, edit_file, glob, grep, shell, ask_user]
+
+shell:
+  allow:
+    - "go build*"
+    - "go test*"
+    - "go run*"
+    - "go fmt*"
+    - "npm *"
+    - "yarn *"
+    - "pnpm *"
+    - "git diff*"
+    - "git status"
+    - "git log*"
+    - "cargo build*"
+    - "cargo test*"
+    - "cargo fmt*"
+    - "python *"
+    - "pytest*"
+    - "make *"
+
+search: true
+agents_md: "true"
+max_turns: 50
+handover_file: .handover.md
+handover_mode: "file"

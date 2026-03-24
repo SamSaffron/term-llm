@@ -165,7 +165,7 @@ func (m *Model) viewAltScreen() string {
 	contentChanged := m.viewCache.contentVersion != m.viewCache.lastRenderedVersion
 
 	// Force update if embedded UI is active (since it's interactive and doesn't affect tracker version)
-	if m.approvalModel != nil || m.askUserModel != nil {
+	if m.approvalModel != nil || m.askUserModel != nil || m.handoverPreview != nil {
 		contentChanged = true
 	}
 	if contentChanged {
@@ -189,6 +189,9 @@ func (m *Model) viewAltScreen() string {
 			}
 		} else {
 			contentStr = m.viewCache.historyContent + m.viewCache.completedStream
+			if m.handoverPreview != nil {
+				contentStr += m.handoverPreview.View()
+			}
 			if m.err != nil {
 				contentStr += "\n" + m.renderError() + "\n"
 			}
@@ -208,8 +211,12 @@ func (m *Model) viewAltScreen() string {
 		// On first render (including resumed sessions), anchor at latest content.
 		// On subsequent renders while streaming, preserve user scroll position
 		// unless they were already at bottom.
-		if firstRender || (m.streaming && wasAtBottom) {
+		if m.handoverPreview != nil && m.handoverPreview.editing {
+			m.scrollToBottom = true
+		}
+		if firstRender || (m.streaming && wasAtBottom) || m.scrollToBottom {
 			m.viewport.GotoBottom()
+			m.scrollToBottom = false
 		}
 	}
 
@@ -852,6 +859,32 @@ func (m *Model) updateCompletions() {
 		}
 		m.completions.SetItems(items)
 		return
+	}
+
+	// Check for "/handover " or "/ho " - show available agents
+	if strings.HasPrefix(lowerQuery, "handover ") || strings.HasPrefix(lowerQuery, "ho ") {
+		if m.agentLister != nil {
+			parts := strings.SplitN(query, " ", 2)
+			partial := ""
+			if len(parts) >= 2 {
+				partial = strings.ToLower(strings.TrimPrefix(parts[1], "@"))
+			}
+
+			names, err := m.agentLister(m.config)
+			if err == nil {
+				var items []Command
+				for _, name := range names {
+					if partial == "" || strings.Contains(strings.ToLower(name), partial) {
+						items = append(items, Command{
+							Name:        parts[0] + " @" + name,
+							Description: "agent",
+						})
+					}
+				}
+				m.completions.SetItems(items)
+				return
+			}
+		}
 	}
 
 	// Default: use standard command filtering

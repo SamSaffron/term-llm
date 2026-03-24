@@ -71,6 +71,18 @@ type Agent struct {
 	// MCP servers to auto-connect
 	MCP []MCPConfig `yaml:"mcp,omitempty"`
 
+	// HandoverFile is a file path (relative to cwd) that the agent maintains
+	// as a living handover document. On /handover, this file is read and used
+	// as the handover context for the next agent (zero LLM cost).
+	HandoverFile string `yaml:"handover_file,omitempty"`
+
+	// HandoverMode controls how context is produced on /handover:
+	//   "light"    - use last assistant message as handover context (zero cost)
+	//   "file"     - read handover_file (zero cost, agent maintains the file)
+	//   "compress" - LLM-driven compression of full conversation
+	//   ""         - auto: try file first, fall back to compress
+	HandoverMode string `yaml:"handover_mode,omitempty"`
+
 	// GistID for syncing with GitHub Gists (set on export/import)
 	GistID string `yaml:"gist_id,omitempty"`
 
@@ -398,6 +410,14 @@ func (a *Agent) Validate() error {
 		// Valid values
 	default:
 		return fmt.Errorf("invalid agents_md: %q (valid: auto, true, false)", a.AgentsMd)
+	}
+
+	// Validate handover_mode field
+	switch a.HandoverMode {
+	case "", "light", "file", "compress":
+		// Valid values
+	default:
+		return fmt.Errorf("invalid handover_mode: %q (valid: light, file, compress, or empty for auto)", a.HandoverMode)
 	}
 
 	return nil

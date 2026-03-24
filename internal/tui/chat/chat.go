@@ -16,6 +16,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/clipboard"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -90,6 +91,13 @@ type Model struct {
 	providerKey  string
 	modelName    string
 	agentName    string
+
+	// Agent handover
+	agentResolver   func(name string, cfg *config.Config) (*agents.Agent, error)
+	agentLister     func(cfg *config.Config) ([]string, error) // Lists available agent names
+	pendingHandover *handoverDoneMsg                           // Non-nil while awaiting confirmation
+	handoverPreview *handoverPreviewModel                      // Inline confirmation UI (alt screen)
+	currentAgent    *agents.Agent                              // Current agent config (for handover_file)
 
 	// Pending message context
 	files                   []FileAttachment // Attached files for next message
@@ -246,6 +254,14 @@ type (
 		result *llm.CompactionResult
 		err    error
 	}
+	handoverDoneMsg struct {
+		result      *llm.HandoverResult
+		err         error
+		agentName   string
+		providerStr string // Optional "provider:model" override
+	}
+	handoverConfirmMsg struct{}
+	handoverCancelMsg  struct{}
 )
 
 const (
@@ -558,6 +574,24 @@ func (m *Model) resetTracker() {
 	m.viewCache.lastWavePos = 0
 }
 
+// SetAgentResolver configures the function used to resolve agent names
+// during /handover. The function should match cmd.LoadAgent's signature.
+func (m *Model) SetAgentResolver(resolver func(name string, cfg *config.Config) (*agents.Agent, error)) {
+	m.agentResolver = resolver
+}
+
+// SetAgentLister configures the function used to list available agent names
+// for /handover completions.
+func (m *Model) SetAgentLister(lister func(cfg *config.Config) ([]string, error)) {
+	m.agentLister = lister
+}
+
+// SetCurrentAgent sets the current agent configuration (used by /handover
+// to check for handover_file).
+func (m *Model) SetCurrentAgent(agent *agents.Agent) {
+	m.currentAgent = agent
+}
+
 // Init initializes the model
 func (m *Model) Init() tea.Cmd {
 	// Update textarea height for any initial text
@@ -744,6 +778,69 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		muted := lipgloss.NewStyle().Foreground(theme.Muted)
 		return m, tea.Println(muted.Render("session compacted"))
+
+	case handoverDoneMsg:
+		m.streaming = false
+		m.phase = "Thinking"
+		if m.streamCancelFunc != nil {
+			m.streamCancelFunc()
+			m.streamCancelFunc = nil
+		}
+		theme := m.styles.Theme()
+		if msg.err != nil {
+			if errors.Is(msg.err, context.Canceled) || errors.Is(msg.err, context.DeadlineExceeded) {
+				muted := lipgloss.NewStyle().Foreground(theme.Muted)
+				return m, tea.Println(muted.Render("Handover cancelled."))
+			}
+			errStyle := lipgloss.NewStyle().Foreground(theme.Error)
+			return m, tea.Println(errStyle.Render(fmt.Sprintf("Handover failed: %v", msg.err)))
+		}
+		if msg.result == nil {
+			errStyle := lipgloss.NewStyle().Foreground(theme.Error)
+			return m, tea.Println(errStyle.Render("Handover failed: no result returned."))
+		}
+		// Show inline handover confirmation UI
+		m.pendingHandover = &msg
+		m.handoverPreview = newHandoverPreviewModel(
+			msg.result.Document, msg.agentName, msg.providerStr,
+			m.width, m.styles,
+		)
+		m.scrollToBottom = true
+		return m, nil
+
+	case handoverConfirmMsg:
+		// Capture instructions before clearing the preview
+		instructions := ""
+		if m.handoverPreview != nil {
+			instructions = m.handoverPreview.Instructions()
+		}
+		m.handoverPreview = nil
+		if instructions != "" && m.pendingHandover != nil && m.pendingHandover.result != nil {
+			m.pendingHandover.result.Document = "## Additional Instructions\n\n" + instructions + "\n\n" + m.pendingHandover.result.Document
+			// Rebuild messages with updated document
+			newSystemPrompt := ""
+			if len(m.pendingHandover.result.NewMessages) > 0 && m.pendingHandover.result.NewMessages[0].Role == llm.RoleSystem {
+				for _, p := range m.pendingHandover.result.NewMessages[0].Parts {
+					if p.Text != "" {
+						newSystemPrompt = p.Text
+						break
+					}
+				}
+			}
+			m.pendingHandover.result.NewMessages = llm.ReconstructHandoverHistory(
+				newSystemPrompt,
+				m.pendingHandover.result.Document,
+				m.pendingHandover.result.SourceAgent,
+				m.pendingHandover.result.TargetAgent,
+			)
+		}
+		return m.executeHandover()
+
+	case handoverCancelMsg:
+		m.pendingHandover = nil
+		m.handoverPreview = nil
+		m.invalidateHistoryCache()
+		return m, nil
 
 	case ui.WaveTickMsg:
 		if m.tracker != nil {

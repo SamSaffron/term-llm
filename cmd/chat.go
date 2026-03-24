@@ -82,6 +82,7 @@ Slash commands:
   /mcp         - Manage MCP servers
   /skills      - List available skills
   /compact     - Compact conversation context
+  /handover    - Hand conversation to another agent
   /quit        - Exit chat`,
 	RunE:              runChat,
 	ValidArgsFunction: AtAgentCompletion,
@@ -358,6 +359,14 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 
 	// Create chat model
 	model := chat.NewWithFastProvider(cfg, provider, fastProvider, engine, providerKey, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, chatNoWebFetch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, false, initialText, store, sess, useAltScreen, chatAutoSend, autoSendMode, chatTextMode, agentName, chatYolo)
+
+	// Wire agent resolver, lister, and current agent for /handover support
+	model.SetAgentResolver(LoadAgent)
+	model.SetAgentLister(ListAgentNames)
+	if agent != nil {
+		model.SetCurrentAgent(agent)
+	}
+
 	// Build program options
 	var opts []tea.ProgramOption
 	if useAltScreen {

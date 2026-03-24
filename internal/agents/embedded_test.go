@@ -74,6 +74,7 @@ func TestIsBuiltinAgent(t *testing.T) {
 		{"developer", true},
 		{"editor", true},
 		{"file-organizer", true},
+		{"planner", true},
 		{"web-researcher", true},
 		{"reviewer", true},
 		{"shell", true},
@@ -111,6 +112,7 @@ func TestBuiltinAgentConfigs(t *testing.T) {
 		{"developer", true, 200, true, false, false, true},
 		{"editor", true, 200, false, false, false, true},
 		{"file-organizer", true, 200, true, true, false, false},
+		{"planner", true, 50, true, false, false, true},
 		{"web-researcher", true, 200, false, false, false, true},
 		{"reviewer", true, 200, true, true, true, false},
 		{"shell", true, 200, false, false, false, true},
@@ -156,10 +158,6 @@ func TestBuiltinAgentConfigs(t *testing.T) {
 func TestGetBuiltinAgentNames(t *testing.T) {
 	names := GetBuiltinAgentNames()
 
-	if len(names) != 12 {
-		t.Errorf("len(GetBuiltinAgentNames()) = %d, want 12", len(names))
-	}
-
 	expected := map[string]bool{
 		"active-review":  true,
 		"agent-builder":  true,
@@ -170,9 +168,14 @@ func TestGetBuiltinAgentNames(t *testing.T) {
 		"developer":      true,
 		"editor":         true,
 		"file-organizer": true,
+		"planner":        true,
 		"web-researcher": true,
 		"reviewer":       true,
 		"shell":          true,
+	}
+
+	if len(names) != len(expected) {
+		t.Errorf("len(GetBuiltinAgentNames()) = %d, want %d", len(names), len(expected))
 	}
 
 	for _, name := range names {
