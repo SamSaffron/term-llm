@@ -52,7 +52,7 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.RawQuery, "v=") {
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		} else {
-			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 		}
 		_, _ = w.Write(s.renderIndexHTML())
 		return
