@@ -772,27 +772,68 @@ func (m *ApprovalManager) ApproveDirectory(toolName, dir string, outcome Confirm
 	m.cache.SetForDirectory(toolName, dir, outcome)
 }
 
+// safePipeTargets lists commands that only read/filter/format stdin and are
+// safe to auto-approve as pipe targets without separate pattern matching.
+var safePipeTargets = map[string]bool{
+	"head": true, "tail": true, "grep": true, "egrep": true, "fgrep": true,
+	"sort": true, "uniq": true, "wc": true, "cat": true, "less": true,
+	"more": true, "cut": true, "tr": true, "column": true, "fmt": true,
+	"fold": true, "nl": true, "paste": true, "rev": true, "tac": true,
+	"jq": true, "yq": true,
+}
+
+// isSafePipeTarget checks if a command string is a safe pipe target
+// by extracting its first word and checking against the safe set.
+func isSafePipeTarget(command string) bool {
+	words, err := splitShellWords(command)
+	if err != nil || len(words) == 0 {
+		return false
+	}
+	return safePipeTargets[filepath.Base(words[0])]
+}
+
 // matchPattern checks if a command matches a glob pattern.
-// For commands containing shell operators (&&, ||, ;, |), it decomposes the
-// command into sub-commands and checks each independently — all must match.
+// For compound commands, it uses two-level decomposition:
+//  1. Split on sequential operators (&&, ||, ;) — each segment must match.
+//  2. Within each segment, split on pipes (|) — the first command must match
+//     the pattern, and remaining pipe targets must match OR be safe pipe targets.
 func matchPattern(pattern, command string) bool {
 	if matchPatternSingle(pattern, command) {
 		return true
 	}
-	// If the command has unsafe shell syntax (&&, |, etc.), try decomposing
-	// into sub-commands and checking each one. The pattern must be safe.
-	if hasUnsafeShellSyntax(command) && !hasUnsafeShellSyntax(pattern) {
-		subs := splitShellCommands(command)
-		if len(subs) > 1 {
-			for _, sub := range subs {
-				if !matchPatternSingle(pattern, sub) {
-					return false
-				}
-			}
-			return true
+	if !hasUnsafeShellSyntax(command) || hasUnsafeShellSyntax(pattern) {
+		return false
+	}
+	// Level 1: split on sequential operators (&&, ||, ;).
+	seqParts := splitSequentialCommands(command)
+	if len(seqParts) < 1 {
+		return false
+	}
+	for _, seqPart := range seqParts {
+		if !matchPipeChain(pattern, seqPart) {
+			return false
 		}
 	}
-	return false
+	return true
+}
+
+// matchPipeChain checks if a pipe chain matches a pattern.
+// The first command must match the pattern. Subsequent pipe targets
+// must either match the pattern or be safe pipe targets.
+func matchPipeChain(pattern, pipeChain string) bool {
+	pipeParts := splitPipeCommands(pipeChain)
+	if len(pipeParts) == 0 {
+		return false
+	}
+	if !matchPatternSingle(pattern, pipeParts[0]) {
+		return false
+	}
+	for _, pipePart := range pipeParts[1:] {
+		if !matchPatternSingle(pattern, pipePart) && !isSafePipeTarget(pipePart) {
+			return false
+		}
+	}
+	return true
 }
 
 // matchPatternSingle checks if a single command (no shell operators) matches
@@ -899,6 +940,134 @@ func splitShellCommands(input string) []string {
 					commands = append(commands, s)
 				}
 				current.Reset()
+				i++ // skip second |
+			case r == '|':
+				if s := strings.TrimSpace(current.String()); s != "" {
+					commands = append(commands, s)
+				}
+				current.Reset()
+			default:
+				current.WriteRune(r)
+			}
+		}
+	}
+	if s := strings.TrimSpace(current.String()); s != "" {
+		commands = append(commands, s)
+	}
+	return commands
+}
+
+// splitSequentialCommands splits on sequential operators (&&, ||, ;) but
+// NOT on pipes (|). This preserves pipe chains as single units.
+func splitSequentialCommands(input string) []string {
+	var commands []string
+	var current strings.Builder
+	inSingle := false
+	inDouble := false
+	escaped := false
+	runes := []rune(input)
+
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		switch {
+		case escaped:
+			current.WriteRune(r)
+			escaped = false
+		case inSingle:
+			current.WriteRune(r)
+			if r == '\'' {
+				inSingle = false
+			}
+		case inDouble:
+			current.WriteRune(r)
+			switch r {
+			case '"':
+				inDouble = false
+			case '\\':
+				escaped = true
+			}
+		default:
+			switch {
+			case r == '\'':
+				inSingle = true
+				current.WriteRune(r)
+			case r == '"':
+				inDouble = true
+				current.WriteRune(r)
+			case r == '\\':
+				escaped = true
+				current.WriteRune(r)
+			case r == ';':
+				if s := strings.TrimSpace(current.String()); s != "" {
+					commands = append(commands, s)
+				}
+				current.Reset()
+			case r == '&' && i+1 < len(runes) && runes[i+1] == '&':
+				if s := strings.TrimSpace(current.String()); s != "" {
+					commands = append(commands, s)
+				}
+				current.Reset()
+				i++ // skip second &
+			case r == '|' && i+1 < len(runes) && runes[i+1] == '|':
+				if s := strings.TrimSpace(current.String()); s != "" {
+					commands = append(commands, s)
+				}
+				current.Reset()
+				i++ // skip second |
+			default:
+				current.WriteRune(r)
+			}
+		}
+	}
+	if s := strings.TrimSpace(current.String()); s != "" {
+		commands = append(commands, s)
+	}
+	return commands
+}
+
+// splitPipeCommands splits on single pipe (|) but NOT on ||, &&, or ;.
+func splitPipeCommands(input string) []string {
+	var commands []string
+	var current strings.Builder
+	inSingle := false
+	inDouble := false
+	escaped := false
+	runes := []rune(input)
+
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		switch {
+		case escaped:
+			current.WriteRune(r)
+			escaped = false
+		case inSingle:
+			current.WriteRune(r)
+			if r == '\'' {
+				inSingle = false
+			}
+		case inDouble:
+			current.WriteRune(r)
+			switch r {
+			case '"':
+				inDouble = false
+			case '\\':
+				escaped = true
+			}
+		default:
+			switch {
+			case r == '\'':
+				inSingle = true
+				current.WriteRune(r)
+			case r == '"':
+				inDouble = true
+				current.WriteRune(r)
+			case r == '\\':
+				escaped = true
+				current.WriteRune(r)
+			case r == '|' && i+1 < len(runes) && runes[i+1] == '|':
+				// || is a sequential operator, preserve it
+				current.WriteRune(r)
+				current.WriteRune(runes[i+1])
 				i++ // skip second |
 			case r == '|':
 				if s := strings.TrimSpace(current.String()); s != "" {

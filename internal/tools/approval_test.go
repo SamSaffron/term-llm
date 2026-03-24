@@ -51,9 +51,26 @@ func TestMatchPattern(t *testing.T) {
 		{"bundle *", "bundle exec stree check a.rb && rm -rf /", false},
 		{"bundle *", "npm install && bundle exec rake", false},
 
-		// Commands with | (pipe) — all sub-commands must match
-		{"git *", "git log --oneline | head -20", false}, // "head" doesn't match "git *"
-		{"git *", "git log | git diff", true},            // both match "git *"
+		// Pipes: first command must match, downstream must be safe or match
+		{"git *", "git log --oneline | head -20", true}, // head is a safe pipe target
+		{"git *", "git log | git diff", true},           // both match "git *"
+		{"git *", "git log --oneline | tail -30", true},
+		{"git *", "git log --oneline | grep feature", true},
+		{"git *", "git log --oneline | sort | uniq", true},
+		{"bin/rspec *", "bin/rspec spec/foo | tail -30", true},
+
+		// Unsafe pipe targets: NOT auto-approved
+		{"git *", "git log | bash", false},
+		{"git *", "git log | sh", false},
+		{"git *", "git log | xargs rm", false},
+
+		// Mixed sequential + pipe
+		{"git *", "git log | head -5 && git status | tail -3", true},
+		{"git *", "git log | head -5 && rm -rf /", false},
+		{"bundle *", "bundle exec rspec | tail -20 && bundle exec rubocop | grep error", true},
+
+		// Pipe target that matches pattern is OK even if not in safe list
+		{"npm *", "npm test | npm run format", true},
 
 		// $ in single quotes is not unsafe — normal match works
 		{"bundle *", "bundle exec ruby -e '$stdout.puts 1'", true},
@@ -1168,6 +1185,104 @@ func TestSplitShellCommands(t *testing.T) {
 	}
 }
 
+func TestSplitSequentialCommands(t *testing.T) {
+	tests := []struct {
+		input string
+		want  []string
+	}{
+		{"cmd1 && cmd2", []string{"cmd1", "cmd2"}},
+		{"cmd1 || cmd2", []string{"cmd1", "cmd2"}},
+		{"cmd1 ; cmd2", []string{"cmd1", "cmd2"}},
+		// Pipe is NOT split — preserved as a single unit
+		{"cmd1 | cmd2", []string{"cmd1 | cmd2"}},
+		// Mixed: sequential split, pipe preserved
+		{"cmd1 | tail && cmd2 | head", []string{"cmd1 | tail", "cmd2 | head"}},
+		{"simple command", []string{"simple command"}},
+		{"", nil},
+		{"  ", nil},
+		// Quoted operators preserved
+		{"cmd1 'has && inside' && cmd2", []string{"cmd1 'has && inside'", "cmd2"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := splitSequentialCommands(tt.input)
+			if len(got) != len(tt.want) {
+				t.Fatalf("splitSequentialCommands(%q) = %v (len %d), want %v (len %d)",
+					tt.input, got, len(got), tt.want, len(tt.want))
+			}
+			for i, w := range tt.want {
+				if got[i] != w {
+					t.Errorf("splitSequentialCommands(%q)[%d] = %q, want %q", tt.input, i, got[i], w)
+				}
+			}
+		})
+	}
+}
+
+func TestSplitPipeCommands(t *testing.T) {
+	tests := []struct {
+		input string
+		want  []string
+	}{
+		{"cmd1 | cmd2", []string{"cmd1", "cmd2"}},
+		{"cmd1 | cmd2 | cmd3", []string{"cmd1", "cmd2", "cmd3"}},
+		// || is NOT split (it's a sequential operator)
+		{"cmd1 || cmd2", []string{"cmd1 || cmd2"}},
+		// && is NOT split
+		{"cmd1 && cmd2", []string{"cmd1 && cmd2"}},
+		{"simple command", []string{"simple command"}},
+		{"", nil},
+		{"  ", nil},
+		// Quoted pipe preserved
+		{`cmd1 "a | b" | cmd2`, []string{`cmd1 "a | b"`, "cmd2"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := splitPipeCommands(tt.input)
+			if len(got) != len(tt.want) {
+				t.Fatalf("splitPipeCommands(%q) = %v (len %d), want %v (len %d)",
+					tt.input, got, len(got), tt.want, len(tt.want))
+			}
+			for i, w := range tt.want {
+				if got[i] != w {
+					t.Errorf("splitPipeCommands(%q)[%d] = %q, want %q", tt.input, i, got[i], w)
+				}
+			}
+		})
+	}
+}
+
+func TestIsSafePipeTarget(t *testing.T) {
+	tests := []struct {
+		command string
+		want    bool
+	}{
+		{"head -20", true},
+		{"tail -f", true},
+		{"grep pattern", true},
+		{"sort -r", true},
+		{"jq '.data'", true},
+		{"/usr/bin/tail -30", true},
+		{"bash", false},
+		{"sh -c 'evil'", false},
+		{"xargs rm", false},
+		{"python3 -c 'import os'", false},
+		{"curl http://example.com", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.command, func(t *testing.T) {
+			got := isSafePipeTarget(tt.command)
+			if got != tt.want {
+				t.Errorf("isSafePipeTarget(%q) = %v, want %v", tt.command, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestApprovalManager_ShellPatternCacheWorksWithUnsafeSyntax(t *testing.T) {
 	perms := NewToolPermissions()
 	mgr := NewApprovalManager(perms)
@@ -1182,6 +1297,8 @@ func TestApprovalManager_ShellPatternCacheWorksWithUnsafeSyntax(t *testing.T) {
 		"bundle exec stree check lib/a.rb && bundle exec stree check lib/b.rb",
 		"bundle exec ruby -e '$stdout.puts 1'",
 		"bundle exec rake db:migrate && bundle exec rake db:seed",
+		"bundle exec rspec spec/foo | tail -30",
+		"bundle exec rspec | grep -v pending | sort",
 	}
 
 	for _, cmd := range approved {
@@ -1202,6 +1319,8 @@ func TestApprovalManager_ShellPatternCacheWorksWithUnsafeSyntax(t *testing.T) {
 	notApproved := []string{
 		"bundle exec stree check a.rb && rm -rf /",
 		"npm install && bundle exec rake",
+		"bundle exec rspec | bash",
+		"bundle exec rspec | xargs rm -rf",
 	}
 
 	for _, cmd := range notApproved {

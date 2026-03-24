@@ -3,9 +3,6 @@ title: "Notifications"
 weight: 11
 description: "Send notifications through Telegram or web push from the command line."
 kicker: "Notify"
-next:
-  label: Plan mode
-  url: /guides/plan-mode/
 ---
 ## Broadcast notifications
 

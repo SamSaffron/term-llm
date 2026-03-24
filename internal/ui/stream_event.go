@@ -14,12 +14,9 @@ const (
 	StreamEventRetry
 	StreamEventDone
 	StreamEventError
-	StreamEventImage         // Image produced by tool
-	StreamEventDiff          // Diff from edit tool
-	StreamEventInterjection  // User interjected a message mid-stream
-	StreamEventInlineInsert  // Inline INSERT marker from planner (complete)
-	StreamEventInlineDelete  // Inline DELETE marker from planner
-	StreamEventPartialInsert // Streaming partial line during INSERT
+	StreamEventImage        // Image produced by tool
+	StreamEventDiff         // Diff from edit tool
+	StreamEventInterjection // User interjected a message mid-stream
 )
 
 // StreamEvent represents a unified event from the LLM stream.
@@ -65,12 +62,6 @@ type StreamEvent struct {
 	DiffNew  string
 	DiffLine int // 1-indexed starting line number (0 = unknown)
 
-	// Inline edits (for StreamEventInlineInsert, StreamEventInlineDelete, StreamEventPartialInsert)
-	InlineAfter   string   // INSERT: anchor text to insert after
-	InlineContent []string // INSERT: lines to insert (for complete insert)
-	InlineLine    string   // PartialInsert: single line being streamed
-	InlineFrom    string   // DELETE: start line text
-	InlineTo      string   // DELETE: end line text (empty for single line)
 }
 
 // TextEvent creates a text delta event
@@ -173,32 +164,5 @@ func InterjectionEvent(text string) StreamEvent {
 	return StreamEvent{
 		Type: StreamEventInterjection,
 		Text: text,
-	}
-}
-
-// InlineInsertEvent creates an inline insert event
-func InlineInsertEvent(after string, content []string) StreamEvent {
-	return StreamEvent{
-		Type:          StreamEventInlineInsert,
-		InlineAfter:   after,
-		InlineContent: content,
-	}
-}
-
-// InlineDeleteEvent creates an inline delete event
-func InlineDeleteEvent(from, to string) StreamEvent {
-	return StreamEvent{
-		Type:       StreamEventInlineDelete,
-		InlineFrom: from,
-		InlineTo:   to,
-	}
-}
-
-// PartialInsertEvent creates a partial insert event for streaming lines
-func PartialInsertEvent(after, line string) StreamEvent {
-	return StreamEvent{
-		Type:        StreamEventPartialInsert,
-		InlineAfter: after,
-		InlineLine:  line,
 	}
 }

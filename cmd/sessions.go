@@ -219,7 +219,7 @@ func runSessionsList(cmd *cobra.Command, args []string) error {
 
 	// Validate mode if provided
 	if sessionsMode != "" {
-		validModes := []string{"chat", "ask", "plan", "exec"}
+		validModes := []string{"chat", "ask", "exec"}
 		if !slices.Contains(validModes, sessionsMode) {
 			return fmt.Errorf("invalid mode %q: must be one of %v", sessionsMode, validModes)
 		}

@@ -603,7 +603,6 @@ var validSidebarSessionCategories = map[string]bool{
 	"chat": true,
 	"web":  true,
 	"ask":  true,
-	"plan": true,
 	"exec": true,
 }
 
