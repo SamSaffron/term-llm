@@ -206,6 +206,53 @@ func TestLevenshteinDistance(t *testing.T) {
 	}
 }
 
+// Regression tests for the trailing-newline offset bug:
+// When a match is not at the end of the file, the end byte offset must NOT
+// include the newline after the last matched line. If it did, ApplyMatch would
+// concatenate the replacement's last line with the following line (no separator).
+
+func TestApplyMatch_Stripped_MidFile(t *testing.T) {
+	// The matched block is in the middle of the file (line C follows it).
+	content := "line A\n\tline B\nline C\n"
+	// Stripped match: different indentation on line B
+	search := "line A\nline B"
+
+	result, err := FindMatch(content, search)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Level != MatchStripped {
+		t.Errorf("expected MatchStripped, got %v", result.Level)
+	}
+
+	got := ApplyMatch(content, result, "new A\nnew B")
+	want := "new A\nnew B\nline C\n"
+	if got != want {
+		t.Errorf("ApplyMatch result:\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
+func TestApplyMatch_Fuzzy_MidFile(t *testing.T) {
+	// The matched block is in the middle of the file (line C follows it).
+	content := "line A\n\tfmt.Println(\"hello world\")\nline C\n"
+	// Fuzzy match: small typo in the search
+	search := "line A\n\tfmt.Prinltn(\"hello world\")"
+
+	result, err := FindMatch(content, search)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Level != MatchFuzzy {
+		t.Errorf("expected MatchFuzzy, got %v", result.Level)
+	}
+
+	got := ApplyMatch(content, result, "new A\nnew B")
+	want := "new A\nnew B\nline C\n"
+	if got != want {
+		t.Errorf("ApplyMatch result:\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
 func TestLineSimilarity(t *testing.T) {
 	tests := []struct {
 		a, b   string

@@ -149,8 +149,8 @@ func findStrippedMatch(content, search string) (MatchResult, bool) {
 			end := start
 			for k := 0; k < len(searchLines); k++ {
 				end += len(contentLines[i+k])
-				if i+k < len(contentLines)-1 {
-					end++ // newline
+				if k < len(searchLines)-1 {
+					end++ // newline between matched lines
 				}
 			}
 			// Handle trailing newline in search
@@ -226,8 +226,8 @@ func findBlankFilteredMatch(content, search string) (MatchResult, bool) {
 			end := start
 			for k := firstLineIdx; k <= lastLineIdx; k++ {
 				end += len(contentLines[k])
-				if k < len(contentLines)-1 {
-					end++ // newline
+				if k < lastLineIdx {
+					end++ // newline between matched lines
 				}
 			}
 			// Include trailing newline if search had one
@@ -381,8 +381,8 @@ func findFuzzyMatch(content, search string) (MatchResult, bool) {
 				end := start
 				for k := 0; k < len(searchLines); k++ {
 					end += len(contentLines[i+k])
-					if i+k < len(contentLines)-1 {
-						end++
+					if k < len(searchLines)-1 {
+						end++ // newline between matched lines
 					}
 				}
 				if strings.HasSuffix(search, "\n") && end < len(content) {
