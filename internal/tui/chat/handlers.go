@@ -341,8 +341,13 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Handle quit
+	// Handle quit (Ctrl+C copies when text is selected)
 	if key.Matches(msg, m.keyMap.Quit) {
+		if m.selection.Active {
+			cmd := m.copySelectionToClipboard()
+			m.selection = Selection{}
+			return m, cmd
+		}
 		if m.streaming && m.streamCancelFunc != nil {
 			// Flush buffered text on cancel
 			if m.smoothBuffer != nil {
