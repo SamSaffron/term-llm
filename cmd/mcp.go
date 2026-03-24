@@ -108,6 +108,8 @@ type mcpToolCall struct {
 	args map[string]any
 }
 
+var mcpRunTimeout time.Duration
+
 var mcpRunCmd = &cobra.Command{
 	Use:   "run <server> <tool> [key=val|json] ...",
 	Short: "Run MCP tool(s) directly",
@@ -136,6 +138,7 @@ Examples:
 
 func init() {
 	mcpBrowseCmd.Flags().BoolVar(&mcpBrowseTUI, "no-tui", false, "Use simple CLI output instead of interactive browser")
+	mcpRunCmd.Flags().DurationVar(&mcpRunTimeout, "timeout", 30*time.Second, "Timeout for MCP server startup and tool execution")
 	rootCmd.AddCommand(mcpCmd)
 	mcpCmd.AddCommand(mcpListCmd)
 	mcpCmd.AddCommand(mcpBrowseCmd)
@@ -763,7 +766,7 @@ func mcpRun(cmd *cobra.Command, args []string) error {
 
 	client := mcp.NewClient(serverName, serverCfg)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), mcpRunTimeout)
 	defer cancel()
 
 	if err := client.Start(ctx); err != nil {
