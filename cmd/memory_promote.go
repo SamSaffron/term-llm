@@ -18,13 +18,17 @@ import (
 )
 
 const (
-	defaultRecentMaxBytes          = 20000
-	defaultInitialPromoteLookback  = 7 * 24 * time.Hour
-	memoryPromoteSystemInstruction = `You are a memory curator. Given recently changed memory fragments and the current recent.md, produce an updated recent.md.
+	defaultRecentMaxBytes         = 10000
+	defaultInitialPromoteLookback = 7 * 24 * time.Hour
+
+	// estimatedCharsPerWord is used to derive a word target from the byte cap.
+	estimatedCharsPerWord = 4
+
+	memoryPromoteSystemInstructionTemplate = `You are a memory curator. Given recently changed memory fragments and the current recent.md, produce an updated recent.md.
 
 Rules:
-- Target **3000 words maximum** — treat this as a hard limit, not a guideline.
-- Compress aggressively: merge related facts, drop low-value or stale details, prefer dense summaries over verbose prose.
+- Target **%d words maximum** — treat this as a hard limit, not a guideline.
+- Compress aggressively: merge related facts, drop low-value or stale details, prefer dense bullet points over prose.
 - Prioritise: active projects, recent events, infrastructure facts, preferences, API/config details that would be painful to re-derive.
 - Drop: transient observations, resolved issues, one-off tasks, anything already obvious from context.
 - Incorporate new/changed fragments; if they conflict with existing content, prefer the newer version.
@@ -108,6 +112,7 @@ func runMemoryPromoteFlow(ctx context.Context, cfg *config.Config, engine *llm.E
 	if maxBytes <= 0 {
 		maxBytes = defaultRecentMaxBytes
 	}
+	maxWords := maxBytes / estimatedCharsPerWord
 
 	now := time.Now().UTC()
 	cutoff, err := resolvePromotionCutoff(ctx, store, agentName, opts.Since, now)
@@ -144,7 +149,7 @@ func runMemoryPromoteFlow(ctx context.Context, cfg *config.Config, engine *llm.E
 	}
 
 	prompt := buildPromotePrompt(changed, existingRecent)
-	updatedRecent, err := runMemoryPromoteRequest(ctx, engine, strings.TrimSpace(opts.Model), prompt)
+	updatedRecent, err := runMemoryPromoteRequest(ctx, engine, strings.TrimSpace(opts.Model), prompt, maxWords)
 	if err != nil {
 		return 0, err
 	}
@@ -265,11 +270,12 @@ func buildPromotePrompt(changed []memorydb.Fragment, existingRecent string) stri
 	return b.String()
 }
 
-func runMemoryPromoteRequest(ctx context.Context, engine *llm.Engine, model, prompt string) (string, error) {
+func runMemoryPromoteRequest(ctx context.Context, engine *llm.Engine, model, prompt string, maxWords int) (string, error) {
+	sysInstruction := fmt.Sprintf(memoryPromoteSystemInstructionTemplate, maxWords)
 	req := llm.Request{
 		Model: strings.TrimSpace(model),
 		Messages: []llm.Message{
-			llm.SystemText(memoryPromoteSystemInstruction),
+			llm.SystemText(sysInstruction),
 			llm.UserText(prompt),
 		},
 		MaxTurns: 1,
