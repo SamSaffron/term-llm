@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -284,6 +286,33 @@ func TestAskCoalescesSmoothTickSchedulingForBurstTextEvents(t *testing.T) {
 	}
 }
 
+func TestAskDefersNextStreamReadUntilSmoothTick(t *testing.T) {
+	model := newAskStreamModel()
+	model.width = 80
+	model.streamChan = make(chan ui.StreamEvent)
+
+	updated, cmd := model.Update(askStreamEventMsg{event: ui.TextEvent("hello world")})
+	model = updated.(askStreamModel)
+	if cmd == nil {
+		t.Fatal("expected text event to schedule a smooth tick")
+	}
+	if !model.smoothTickPending {
+		t.Fatal("expected smooth tick to be pending after text event")
+	}
+	if !model.deferredStreamRead {
+		t.Fatal("expected next stream read to be deferred until the smooth tick")
+	}
+
+	updated, cmd = model.Update(ui.SmoothTickMsg{})
+	model = updated.(askStreamModel)
+	if model.deferredStreamRead {
+		t.Fatal("expected deferred stream read to clear after smooth tick")
+	}
+	if cmd == nil {
+		t.Fatal("expected smooth tick to resume stream reading")
+	}
+}
+
 func TestAskStreamingFlushThresholdAdaptsToBufferSize(t *testing.T) {
 	model := newAskStreamModel()
 	model.width = 80
@@ -395,6 +424,34 @@ func TestAskToolStartViewDefersPendingToolRowUntilBoundaryFlushAck(t *testing.T)
 	}
 }
 
+func TestProgressiveCollectorCapturesBridgeTextWhenDrained(t *testing.T) {
+	bridge := newAskProgressiveBridge(ui.DefaultStreamBufferSize)
+	collector := &textCollector{}
+	events := collector.wrapEvents(bridge.Events())
+
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		for range events {
+		}
+	}()
+
+	if err := bridge.HandleEvent(llm.Event{Type: llm.EventTextDelta, Text: "hello "}); err != nil {
+		t.Fatalf("HandleEvent() error = %v", err)
+	}
+	if err := bridge.HandleEvent(llm.Event{Type: llm.EventTextDelta, Text: "world"}); err != nil {
+		t.Fatalf("HandleEvent() error = %v", err)
+	}
+	bridge.CloseSuccess()
+
+	collector.Wait()
+	<-drained
+
+	if got := collector.Text(); got != "hello world" {
+		t.Fatalf("collector.Text() = %q, want %q", got, "hello world")
+	}
+}
+
 func TestAskViewNoForcedTrailingNewline(t *testing.T) {
 	model := newAskStreamModel()
 	model.pausedForExternalUI = true
@@ -404,6 +461,19 @@ func TestAskViewNoForcedTrailingNewline(t *testing.T) {
 	view := model.View()
 	if strings.HasSuffix(view, "\n") {
 		t.Fatalf("unexpected trailing newline in view output: %q", view)
+	}
+}
+
+func TestNewAskGlamourProgramUsesProvidedEventChannel(t *testing.T) {
+	events := make(chan ui.StreamEvent)
+	cfg := &config.Config{DefaultProvider: "test"}
+
+	model, program := newAskGlamourProgram(cfg, nil, nil, nil, events)
+	if program == nil {
+		t.Fatal("expected Bubble Tea program")
+	}
+	if model.streamChan != events {
+		t.Fatal("expected program model to listen on the provided event channel")
 	}
 }
 

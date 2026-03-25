@@ -135,8 +135,9 @@ func runChat(cmd *cobra.Command, args []string) error {
 	resumeRequested := cmd.Flags().Changed("resume")
 	resumeID := strings.TrimSpace(chatResume)
 
+	handoverAutoSend := ""
 	for {
-		nextResumeID, err := runChatOnce(ctx, cmd, initialText, cliAgent, resumeRequested, resumeID)
+		nextResumeID, nextAutoSend, err := runChatOnce(ctx, cmd, initialText, cliAgent, resumeRequested, resumeID, handoverAutoSend)
 		if err != nil {
 			return err
 		}
@@ -148,13 +149,28 @@ func runChat(cmd *cobra.Command, args []string) error {
 		resumeRequested = true
 		resumeID = nextResumeID
 		initialText = ""
+		handoverAutoSend = nextAutoSend
 	}
 }
 
-func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent string, resumeRequested bool, resumeID string) (string, error) {
+func buildChatHandoverApprovalManager(cfg *config.Config, settings SessionSettings) (*tools.ApprovalManager, error) {
+	toolConfig := buildToolConfig("", nil, nil, settings.ShellAllow, cfg)
+	perms := tools.NewToolPermissions()
+	for _, pattern := range toolConfig.ShellAllow {
+		if err := perms.AddShellPattern(pattern); err != nil {
+			return nil, err
+		}
+	}
+	for _, script := range settings.Scripts {
+		perms.AddScriptCommand(script)
+	}
+	return tools.NewApprovalManager(perms), nil
+}
+
+func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent string, resumeRequested bool, resumeID, handoverAutoSend string) (string, string, error) {
 	cfg, err := loadConfigWithSetup()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	// Initialize session store EARLY so resume can override settings before tool/MCP setup
@@ -164,11 +180,11 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	var sess *session.Session
 	if resumeRequested {
 		if store == nil {
-			return "", fmt.Errorf("session storage is disabled; cannot resume")
+			return "", "", fmt.Errorf("session storage is disabled; cannot resume")
 		}
 		sess, err = resolveChatResumeSession(context.Background(), store, resumeID)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		_ = store.SetCurrent(context.Background(), sess.ID)
 	}
@@ -181,7 +197,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 
 	agent, err := LoadAgent(effectiveAgent, cfg)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	// Resolve all settings: CLI > agent > config (resume overrides applied below).
@@ -199,7 +215,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		Platform:      "chat",
 	}, cfg.Chat.Provider, cfg.Chat.Model, cfg.Chat.Instructions, cfg.Chat.MaxTurns, 200)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	// Saved session settings win on resume.
@@ -222,7 +238,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 			providerOverride = resumeProvider + ":" + model
 		}
 		if err := applyProviderOverridesWithAgent(cfg, cfg.Chat.Provider, cfg.Chat.Model, providerOverride, "", ""); err != nil {
-			return "", err
+			return "", "", err
 		}
 	} else {
 		agentProvider, agentModel := "", ""
@@ -230,7 +246,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 			agentProvider, agentModel = agent.Provider, agent.Model
 		}
 		if err := applyProviderOverridesWithAgent(cfg, cfg.Chat.Provider, cfg.Chat.Model, chatProvider, agentProvider, agentModel); err != nil {
-			return "", err
+			return "", "", err
 		}
 	}
 
@@ -239,7 +255,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	// Create LLM provider and engine
 	provider, err := llm.NewProvider(cfg)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	fastProvider, fastErr := llm.NewFastProvider(cfg, cfg.DefaultProvider)
 	if fastErr != nil {
@@ -265,12 +281,20 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		if debugLogger != nil {
 			debugLogger.Close()
 		}
-		return "", err
+		return "", "", err
+	}
+	approvalMgr, err := buildChatHandoverApprovalManager(cfg, settings)
+	if err != nil {
+		if debugLogger != nil {
+			debugLogger.Close()
+		}
+		return "", "", err
 	}
 	if toolMgr != nil {
+		approvalMgr = toolMgr.ApprovalMgr
 		// Enable yolo mode if flag is set
 		if chatYolo {
-			toolMgr.ApprovalMgr.SetYoloMode(true)
+			approvalMgr.SetYoloMode(true)
 		}
 
 		// Register output tool if agent configures one
@@ -295,8 +319,10 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 			if debugLogger != nil {
 				debugLogger.Close()
 			}
-			return "", err
+			return "", "", err
 		}
+	} else if chatYolo {
+		approvalMgr.SetYoloMode(true)
 	}
 
 	// Initialize skills system
@@ -359,6 +385,13 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 
 	// Create chat model
 	model := chat.NewWithFastProvider(cfg, provider, fastProvider, engine, providerKey, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, chatNoWebFetch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, false, initialText, store, sess, useAltScreen, chatAutoSend, autoSendMode, chatTextMode, agentName, chatYolo)
+	model.SetRootContext(ctx)
+
+	// Wire handover auto-send if pending from previous iteration
+	if handoverAutoSend != "" {
+		model.SetHandoverAutoSend(handoverAutoSend)
+	}
+	model.SetHandoverApprovalManager(approvalMgr)
 
 	// Wire agent resolver, lister, and current agent for /handover support
 	model.SetAgentResolver(LoadAgent)
@@ -393,9 +426,10 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		}
 	}
 
-	// Set up the improved approval UI with git-aware heuristics
-	if toolMgr != nil {
-		toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {
+	// Set up the improved approval UI with git-aware heuristics.
+	// This also powers /handover script approvals even when no shell tool is enabled.
+	if approvalMgr != nil {
+		approvalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {
 			// In alt screen mode, use inline approval UI
 			if useAltScreen {
 				// Use buffered channel to prevent goroutine leak if TUI exits before responding
@@ -493,12 +527,13 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	}
 
 	if err != nil {
-		return "", fmt.Errorf("failed to run chat: %w", err)
+		return "", "", fmt.Errorf("failed to run chat: %w", err)
 	}
 
-	nextResumeID := ""
+	var nextResumeID, nextHandoverAutoSend string
 	if m, ok := finalModel.(*chat.Model); ok {
 		nextResumeID = m.RequestedResumeSessionID()
+		nextHandoverAutoSend = m.RequestedHandoverAutoSend()
 	}
 
 	// Handle /reload: close the store, then re-exec under the (potentially new) binary.
@@ -509,7 +544,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 			// exec failed (shouldn't happen on Unix) — fall through and exit normally
 			fmt.Fprintf(cmd.ErrOrStderr(), "reload: %v\n", execErr)
 		}
-		return "", nil
+		return "", "", nil
 	}
 
 	// Print resume hint after alt-screen has been dismissed.
@@ -520,7 +555,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		}
 	}
 
-	return nextResumeID, nil
+	return nextResumeID, nextHandoverAutoSend, nil
 }
 
 func resolveChatResumeSession(ctx context.Context, store session.Store, resumeID string) (*session.Session, error) {

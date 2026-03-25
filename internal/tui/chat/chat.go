@@ -68,6 +68,7 @@ type Model struct {
 	// Smooth text buffer for 60fps rendering
 	smoothBuffer            *ui.SmoothBuffer
 	smoothTickPending       bool
+	deferredStreamRead      bool
 	streamRenderTickPending bool
 	newlineCompactor        *ui.StreamingNewlineCompactor
 
@@ -83,6 +84,7 @@ type Model struct {
 	askUserDoneCh chan<- []tools.AskUserAnswer
 
 	// LLM context
+	rootCtx      context.Context
 	provider     llm.Provider
 	fastProvider llm.Provider
 	engine       *llm.Engine
@@ -93,11 +95,12 @@ type Model struct {
 	agentName    string
 
 	// Agent handover
-	agentResolver   func(name string, cfg *config.Config) (*agents.Agent, error)
-	agentLister     func(cfg *config.Config) ([]string, error) // Lists available agent names
-	pendingHandover *handoverDoneMsg                           // Non-nil while awaiting confirmation
-	handoverPreview *handoverPreviewModel                      // Inline confirmation UI (alt screen)
-	currentAgent    *agents.Agent                              // Current agent config (for handover_file)
+	agentResolver       func(name string, cfg *config.Config) (*agents.Agent, error)
+	agentLister         func(cfg *config.Config) ([]string, error) // Lists available agent names
+	pendingHandover     *handoverDoneMsg                           // Non-nil while awaiting confirmation
+	handoverPreview     *handoverPreviewModel                      // Inline confirmation UI (alt screen)
+	currentAgent        *agents.Agent                              // Current agent config (for handover_file)
+	handoverApprovalMgr *tools.ApprovalManager                     // Shell approval flow for handover scripts
 
 	// Pending message context
 	files                   []FileAttachment // Attached files for next message
@@ -147,6 +150,12 @@ type Model struct {
 
 	// If set, the caller should relaunch chat with this session ID.
 	pendingResumeSessionID string
+
+	// If set, the caller should auto-send this message after handover restart.
+	pendingHandoverAutoSend string
+
+	// If set, auto-send this message on Init (used after handover restart).
+	handoverAutoSend string
 
 	// Stats tracking
 	showStats  bool
@@ -255,10 +264,12 @@ type (
 		err    error
 	}
 	handoverDoneMsg struct {
-		result      *llm.HandoverResult
-		err         error
-		agentName   string
-		providerStr string // Optional "provider:model" override
+		result       *llm.HandoverResult
+		err          error
+		agentName    string
+		providerStr  string // Optional "provider:model" override
+		confirmed    bool   // True when the document was prepared after confirmation.
+		instructions string // Additional instructions captured at confirmation time.
 	}
 	handoverConfirmMsg struct{}
 	handoverCancelMsg  struct{}
@@ -450,6 +461,7 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 		store:                   store,
 		sess:                    sess,
 		messages:                messages,
+		rootCtx:                 context.Background(),
 		provider:                provider,
 		fastProvider:            fastProvider,
 		engine:                  engine,
@@ -592,6 +604,26 @@ func (m *Model) SetCurrentAgent(agent *agents.Agent) {
 	m.currentAgent = agent
 }
 
+// SetHandoverApprovalManager configures shell approval checks for handover scripts.
+func (m *Model) SetHandoverApprovalManager(mgr *tools.ApprovalManager) {
+	m.handoverApprovalMgr = mgr
+}
+
+// SetRootContext configures the parent context for long-running chat commands.
+func (m *Model) SetRootContext(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	m.rootCtx = ctx
+}
+
+func (m *Model) rootContext() context.Context {
+	if m.rootCtx != nil {
+		return m.rootCtx
+	}
+	return context.Background()
+}
+
 // Init initializes the model
 func (m *Model) Init() tea.Cmd {
 	// Update textarea height for any initial text
@@ -601,6 +633,18 @@ func (m *Model) Init() tea.Cmd {
 	if m.chatRenderer != nil {
 		m.chatRenderer.SetMarkdownRenderer(m.renderMd)
 		m.chatRenderer.SetToolsExpanded(m.toolsExpanded)
+	}
+
+	// Handover auto-send: send the target agent's default prompt after restart
+	if m.handoverAutoSend != "" {
+		m.textarea.SetValue(m.handoverAutoSend)
+		m.handoverAutoSend = ""
+		m.updateTextareaHeight()
+		return tea.Batch(
+			textarea.Blink,
+			m.spinner.Tick,
+			func() tea.Msg { return autoSendMsg{} },
+		)
 	}
 
 	// In auto-send mode, pop first message from queue and send it
@@ -625,6 +669,16 @@ func (m *Model) Init() tea.Cmd {
 // RequestedResumeSessionID returns a pending session ID to relaunch, if any.
 func (m *Model) RequestedResumeSessionID() string {
 	return strings.TrimSpace(m.pendingResumeSessionID)
+}
+
+// RequestedHandoverAutoSend returns a message to auto-send after handover restart.
+func (m *Model) RequestedHandoverAutoSend() string {
+	return strings.TrimSpace(m.pendingHandoverAutoSend)
+}
+
+// SetHandoverAutoSend sets a message to auto-send on Init (for handover restart).
+func (m *Model) SetHandoverAutoSend(text string) {
+	m.handoverAutoSend = strings.TrimSpace(text)
 }
 
 func chatRenderMinIntervalFromEnv() time.Duration {
@@ -788,6 +842,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		theme := m.styles.Theme()
 		if msg.err != nil {
+			if msg.confirmed {
+				m.pendingHandover = nil
+			}
 			if errors.Is(msg.err, context.Canceled) || errors.Is(msg.err, context.DeadlineExceeded) {
 				muted := lipgloss.NewStyle().Foreground(theme.Muted)
 				return m, tea.Println(muted.Render("Handover cancelled."))
@@ -796,8 +853,24 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Println(errStyle.Render(fmt.Sprintf("Handover failed: %v", msg.err)))
 		}
 		if msg.result == nil {
+			if msg.confirmed {
+				m.pendingHandover = nil
+			}
 			errStyle := lipgloss.NewStyle().Foreground(theme.Error)
 			return m, tea.Println(errStyle.Render("Handover failed: no result returned."))
+		}
+		if msg.confirmed {
+			if m.pendingHandover == nil {
+				m.pendingHandover = &handoverDoneMsg{
+					agentName:   msg.agentName,
+					providerStr: msg.providerStr,
+				}
+			}
+			m.pendingHandover.result = msg.result
+			if instructions := strings.TrimSpace(msg.instructions); instructions != "" {
+				m.pendingHandover.instructions = instructions
+			}
+			return m.executeHandover()
 		}
 		// Show inline handover confirmation UI
 		m.pendingHandover = &msg
@@ -815,24 +888,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			instructions = m.handoverPreview.Instructions()
 		}
 		m.handoverPreview = nil
-		if instructions != "" && m.pendingHandover != nil && m.pendingHandover.result != nil {
-			m.pendingHandover.result.Document = "## Additional Instructions\n\n" + instructions + "\n\n" + m.pendingHandover.result.Document
-			// Rebuild messages with updated document
-			newSystemPrompt := ""
-			if len(m.pendingHandover.result.NewMessages) > 0 && m.pendingHandover.result.NewMessages[0].Role == llm.RoleSystem {
-				for _, p := range m.pendingHandover.result.NewMessages[0].Parts {
-					if p.Text != "" {
-						newSystemPrompt = p.Text
-						break
-					}
-				}
+		if m.pendingHandover == nil {
+			return m, nil
+		}
+		m.pendingHandover.instructions = strings.TrimSpace(instructions)
+		if m.agentResolver != nil {
+			targetAgent, err := m.agentResolver(m.pendingHandover.agentName, m.config)
+			if err != nil {
+				m.pendingHandover = nil
+				errStyle := lipgloss.NewStyle().Foreground(m.styles.Theme().Error)
+				return m, tea.Println(errStyle.Render(fmt.Sprintf("Handover failed to resolve target agent: %v", err)))
 			}
-			m.pendingHandover.result.NewMessages = llm.ReconstructHandoverHistory(
-				newSystemPrompt,
-				m.pendingHandover.result.Document,
-				m.pendingHandover.result.SourceAgent,
-				m.pendingHandover.result.TargetAgent,
-			)
+			if targetAgent != nil && strings.TrimSpace(targetAgent.HandoverScript) != "" {
+				sourceAgent := handoverSourceAgent(m.pendingHandover, m.agentName)
+				return m.startHandoverScriptHandover(targetAgent, sourceAgent, targetAgent, m.pendingHandover.providerStr, true, m.pendingHandover.instructions)
+			}
 		}
 		return m.executeHandover()
 
@@ -890,6 +960,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					cmds = append(cmds, ui.SmoothTick())
 				}
 			}
+			if m.deferredStreamRead && m.streaming {
+				m.deferredStreamRead = false
+				cmds = append(cmds, m.listenForStreamEvents())
+			}
 			if m.streamPerf != nil {
 				m.streamPerf.RecordSmoothTickHandled(hadWords, m.smoothBuffer.Len())
 				m.streamPerf.RecordDuration(durationMetricSmoothTick, time.Since(tickStart))
@@ -918,6 +992,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.smoothBuffer.Reset()
 				}
 				m.smoothTickPending = false
+				m.deferredStreamRead = false
 				// This resets local scheduling state for the next stream.
 				// An already in-flight render tick may still arrive and no-op.
 				m.streamRenderTickPending = false
@@ -1240,6 +1315,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.newlineCompactor = nil
 			m.smoothTickPending = false
+			m.deferredStreamRead = false
 			// This resets local scheduling state for the next stream.
 			// An already in-flight render tick may still arrive and no-op.
 			m.streamRenderTickPending = false
@@ -1293,9 +1369,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Continue listening for more events unless we're done or got an error
+		// Continue listening for more events unless we're done or got an error.
+		// When smooth text is already buffered behind a pending render tick,
+		// defer the next stream read until that tick gets a chance to run.
 		if ev.Type != ui.StreamEventDone && ev.Type != ui.StreamEventError {
-			cmds = append(cmds, m.listenForStreamEvents())
+			if ev.Type == ui.StreamEventText && m.smoothTickPending {
+				m.deferredStreamRead = true
+			} else {
+				cmds = append(cmds, m.listenForStreamEvents())
+			}
 		}
 		if m.streamPerf != nil {
 			m.streamPerf.RecordDuration(durationMetricStreamEvent, time.Since(streamEventStart))

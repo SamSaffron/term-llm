@@ -1,9 +1,13 @@
 package chat
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -434,6 +438,7 @@ func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
 		m.smoothBuffer.Reset()
 	}
 	m.smoothTickPending = false
+	m.deferredStreamRead = false
 	m.streamRenderTickPending = false
 
 	// Reset stats for new session
@@ -1507,6 +1512,16 @@ func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
 		sourceAgent = "default"
 	}
 
+	// Target-declared script takes precedence over source's handover mode, but it
+	// only runs after the user explicitly confirms the handover.
+	if strings.TrimSpace(targetAgent.HandoverScript) != "" {
+		preview := pendingTargetScriptPreview(targetAgent)
+		result := llm.HandoverFromFile(preview, newSystemPrompt, sourceAgent, targetAgent.Name)
+		return m, func() tea.Msg {
+			return handoverDoneMsg{result: result, agentName: agentName, providerStr: providerStr}
+		}
+	}
+
 	// Light mode: use last assistant message as handover context
 	if mode == "light" {
 		doc := m.lastAssistantMessage()
@@ -1521,6 +1536,18 @@ func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
 				providerStr: providerStr,
 			}
 		}
+	}
+
+	// Script mode (source-side): run source agent's handover_script
+	if mode == "script" {
+		script := ""
+		if m.currentAgent != nil {
+			script = m.currentAgent.HandoverScript
+		}
+		if script == "" {
+			return m.showSystemMessage("Agent has handover_mode: script but no handover_script configured.")
+		}
+		return m.startHandoverScriptHandover(m.currentAgent, sourceAgent, targetAgent, providerStr, false, "")
 	}
 
 	// File mode: read handover_file, but only if it was modified during this session
@@ -1671,12 +1698,212 @@ func (m *Model) lastAssistantMessage() string {
 	return ""
 }
 
+// pendingTargetScriptPreview describes a deferred target-side handover script.
+func pendingTargetScriptPreview(agent *agents.Agent) string {
+	var b strings.Builder
+	b.WriteString("## Pending Target Handover Script\n\n")
+	b.WriteString(fmt.Sprintf("@%s declares a handover script. It will run only after you confirm this handover and approve the command if required.\n", agent.Name))
+	if script := strings.TrimSpace(agent.HandoverScript); script != "" {
+		b.WriteString("\n```sh\n")
+		b.WriteString(script)
+		b.WriteString("\n```\n")
+	}
+	return b.String()
+}
+
+func handoverSourceAgent(pending *handoverDoneMsg, fallback string) string {
+	if pending != nil && pending.result != nil && strings.TrimSpace(pending.result.SourceAgent) != "" {
+		return strings.TrimSpace(pending.result.SourceAgent)
+	}
+	fallback = strings.TrimSpace(fallback)
+	if fallback == "" {
+		return "default"
+	}
+	return fallback
+}
+
+func handoverScriptCmd(ctx context.Context, approvalMgr *tools.ApprovalManager, scriptAgent *agents.Agent, sourceAgent string, targetAgent *agents.Agent, providerStr string, confirmed bool, instructions string) tea.Cmd {
+	agentName := ""
+	if targetAgent != nil {
+		agentName = targetAgent.Name
+	}
+	return func() tea.Msg {
+		result, err := buildScriptBackedHandover(ctx, approvalMgr, scriptAgent, sourceAgent, targetAgent)
+		return handoverDoneMsg{
+			result:       result,
+			err:          err,
+			agentName:    agentName,
+			providerStr:  providerStr,
+			confirmed:    confirmed,
+			instructions: instructions,
+		}
+	}
+}
+
+func buildScriptBackedHandover(ctx context.Context, approvalMgr *tools.ApprovalManager, scriptAgent *agents.Agent, sourceAgent string, targetAgent *agents.Agent) (*llm.HandoverResult, error) {
+	if scriptAgent == nil {
+		return nil, fmt.Errorf("handover script agent is not configured")
+	}
+	if targetAgent == nil {
+		return nil, fmt.Errorf("target agent is not configured")
+	}
+	doc, err := runHandoverScript(ctx, approvalMgr, scriptAgent, scriptAgent.HandoverScript)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(doc) == "" {
+		return nil, fmt.Errorf("handover script produced no output")
+	}
+	return llm.HandoverFromFile(doc, targetAgent.SystemPrompt, sourceAgent, targetAgent.Name), nil
+}
+
+func (m *Model) startHandoverScriptHandover(scriptAgent *agents.Agent, sourceAgent string, targetAgent *agents.Agent, providerStr string, confirmed bool, instructions string) (tea.Model, tea.Cmd) {
+	ctx, cancel := context.WithCancel(m.rootContext())
+	m.streamCancelFunc = cancel
+	m.streaming = true
+	m.phase = "Handover"
+	m.streamStartTime = time.Now()
+
+	theme := m.styles.Theme()
+	muted := lipgloss.NewStyle().Foreground(theme.Muted)
+	statusLine := muted.Render(fmt.Sprintf("⠋ Generating handover to @%s...", targetAgent.Name))
+
+	return m, tea.Batch(
+		tea.Println(statusLine),
+		handoverScriptCmd(ctx, m.handoverApprovalMgr, scriptAgent, sourceAgent, targetAgent, providerStr, confirmed, instructions),
+		m.spinner.Tick,
+		m.tickEvery(),
+	)
+}
+
+// runHandoverScript executes a handover command without invoking a shell and returns its stdout.
+func runHandoverScript(ctx context.Context, approvalMgr *tools.ApprovalManager, agent *agents.Agent, script string) (string, error) {
+	script = strings.TrimSpace(script)
+	if script == "" {
+		return "", fmt.Errorf("handover_script is empty")
+	}
+	if tools.HasUnsafeShellSyntax(script) {
+		return "", fmt.Errorf("handover_script must be a single executable plus arguments; shell operators like |, &&, or redirection are not supported")
+	}
+
+	argv, err := tools.SplitShellWords(script)
+	if err != nil {
+		return "", fmt.Errorf("invalid handover_script: %w", err)
+	}
+	if len(argv) == 0 {
+		return "", fmt.Errorf("handover_script is empty")
+	}
+
+	execPath, workDir, err := resolveHandoverScriptCommand(agent, argv)
+	if err != nil {
+		return "", err
+	}
+
+	if approvalMgr == nil {
+		return "", fmt.Errorf("handover script approval is not configured")
+	}
+	outcome, err := approvalMgr.CheckShellApproval(script, workDir)
+	if err != nil {
+		return "", err
+	}
+	if outcome == tools.Cancel {
+		return "", fmt.Errorf("handover script not approved")
+	}
+
+	execCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(execCtx, execPath, argv[1:]...)
+	cmd.Dir = workDir
+	cmd.Env = os.Environ()
+
+	cleanup, prepErr := tools.PrepareCommand(cmd)
+	if prepErr != nil {
+		return "", fmt.Errorf("handover script setup failed: %w", prepErr)
+	}
+	defer cleanup()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err = cmd.Run()
+	if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
+		return "", fmt.Errorf("handover script timed out after 30s")
+	}
+	if errors.Is(execCtx.Err(), context.Canceled) {
+		return "", execCtx.Err()
+	}
+	if err != nil {
+		if output := strings.TrimSpace(stderr.String()); output != "" {
+			return "", fmt.Errorf("handover script failed: %w: %s", err, output)
+		}
+		return "", fmt.Errorf("handover script failed: %w", err)
+	}
+	return stdout.String(), nil
+}
+
+func resolveHandoverScriptCommand(agent *agents.Agent, argv []string) (string, string, error) {
+	workDir, err := os.Getwd()
+	if err != nil {
+		return "", "", fmt.Errorf("resolve working directory: %w", err)
+	}
+	if gitInfo := tools.DetectGitRepo(workDir); gitInfo.IsRepo {
+		workDir = gitInfo.Root
+	}
+
+	execPath := argv[0]
+	if isRelativeCommandPath(execPath) {
+		if agent == nil || !filepath.IsAbs(agent.SourcePath) || agent.Source == agents.SourceBuiltin {
+			return "", "", fmt.Errorf("relative handover_script path %q requires a filesystem-backed agent source", execPath)
+		}
+		workDir = agent.SourcePath
+		execPath = filepath.Join(agent.SourcePath, execPath)
+	}
+
+	return execPath, workDir, nil
+}
+
+func isRelativeCommandPath(path string) bool {
+	if filepath.IsAbs(path) {
+		return false
+	}
+	return strings.Contains(path, "/") || strings.Contains(path, "\\") || strings.HasPrefix(path, ".")
+}
+
+func applyHandoverInstructions(result *llm.HandoverResult, instructions string) *llm.HandoverResult {
+	instructions = strings.TrimSpace(instructions)
+	if result == nil || instructions == "" {
+		return result
+	}
+	document := "## Additional Instructions\n\n" + instructions + "\n\n" + result.Document
+	return &llm.HandoverResult{
+		Document:    document,
+		NewMessages: llm.ReconstructHandoverHistory(handoverSystemPrompt(result.NewMessages), document, result.SourceAgent, result.TargetAgent),
+		SourceAgent: result.SourceAgent,
+		TargetAgent: result.TargetAgent,
+	}
+}
+
+func handoverSystemPrompt(messages []llm.Message) string {
+	if len(messages) == 0 || messages[0].Role != llm.RoleSystem {
+		return ""
+	}
+	for _, p := range messages[0].Parts {
+		if p.Text != "" {
+			return p.Text
+		}
+	}
+	return ""
+}
+
 // executeHandover performs the actual agent switch after user confirmation.
 // It persists the handover messages and session metadata, then triggers a TUI
 // restart so the target agent's full runtime configuration (tools, permissions,
 // MCP, shell allowlists) is applied via the normal startup path.
 func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
-	if m.pendingHandover == nil || m.pendingHandover.result == nil {
+	if m.pendingHandover == nil {
 		return m, nil
 	}
 
@@ -1696,9 +1923,14 @@ func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 		return m, tea.Println(errStyle.Render(fmt.Sprintf("Handover failed to resolve target agent: %s", msg)))
 	}
 
+	result := applyHandoverInstructions(pending.result, pending.instructions)
+	if result == nil {
+		return m, tea.Println(errStyle.Render("Handover failed: no result returned."))
+	}
+
 	// Step 2: Persist handover messages
 	var newSessionMsgs []session.Message
-	for _, msg := range pending.result.NewMessages {
+	for _, msg := range result.NewMessages {
 		newSessionMsgs = append(newSessionMsgs, *session.NewMessage(m.sess.ID, msg, -1))
 	}
 
@@ -1753,6 +1985,11 @@ func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 	// This causes runChatOnce to exit and the outer loop to re-enter with
 	// the updated session, running the full agent setup path.
 	m.pendingResumeSessionID = m.sess.ID
+	if prompt := strings.TrimSpace(targetAgent.DefaultPrompt); prompt != "" {
+		m.pendingHandoverAutoSend = prompt
+	} else {
+		m.pendingHandoverAutoSend = ""
+	}
 	m.quitting = true
 	return m, tea.Quit
 }

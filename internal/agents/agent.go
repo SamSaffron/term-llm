@@ -79,9 +79,15 @@ type Agent struct {
 	// HandoverMode controls how context is produced on /handover:
 	//   "light"    - use last assistant message as handover context (zero cost)
 	//   "file"     - read handover_file (zero cost, agent maintains the file)
+	//   "script"   - run handover_script command line (no shell expansion), use stdout (zero cost)
 	//   "compress" - LLM-driven compression of full conversation
 	//   ""         - auto: try file first, fall back to compress
 	HandoverMode string `yaml:"handover_mode,omitempty"`
+
+	// HandoverScript is a command line whose stdout becomes the handover context.
+	// It is executed directly (without shell expansion). When the agent is the
+	// handover target, the command runs only after explicit confirmation.
+	HandoverScript string `yaml:"handover_script,omitempty"`
 
 	// GistID for syncing with GitHub Gists (set on export/import)
 	GistID string `yaml:"gist_id,omitempty"`
@@ -414,10 +420,15 @@ func (a *Agent) Validate() error {
 
 	// Validate handover_mode field
 	switch a.HandoverMode {
-	case "", "light", "file", "compress":
+	case "", "light", "file", "script", "compress":
 		// Valid values
 	default:
-		return fmt.Errorf("invalid handover_mode: %q (valid: light, file, compress, or empty for auto)", a.HandoverMode)
+		return fmt.Errorf("invalid handover_mode: %q (valid: light, file, script, compress, or empty for auto)", a.HandoverMode)
+	}
+
+	// Cross-validate: script mode requires handover_script
+	if a.HandoverMode == "script" && a.HandoverScript == "" {
+		return fmt.Errorf("handover_mode %q requires handover_script to be set", a.HandoverMode)
 	}
 
 	return nil

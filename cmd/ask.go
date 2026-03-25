@@ -10,12 +10,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
@@ -473,67 +475,20 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		adapter.Stats().SeedTotals(sess.InputTokens, sess.OutputTokens, sess.CachedInputTokens, sess.CacheWriteTokens, sess.ToolCalls, sess.LLMTurns)
 	}
 
-	// For glamour mode, create the tea.Program and set PromptUIFunc BEFORE starting the stream
-	// This avoids a race condition where tool execution starts before PromptUIFunc is set
+	// Set up text collection for output capture (commit_editmsg, on_complete, or session save)
+	var collector *textCollector
+	needsCollector := (agent != nil && (agent.Output == "commit_editmsg" || agent.OnComplete != "")) || (store != nil && sess != nil)
+	wrapStreamEvents := func(events <-chan ui.StreamEvent) <-chan ui.StreamEvent {
+		if !needsCollector || events == nil {
+			return events
+		}
+		collector = &textCollector{}
+		return collector.wrapEvents(events)
+	}
+	streamEvents := adapter.Events()
+
 	var teaProgram *tea.Program
-	if useGlamour && toolMgr != nil {
-		model := newAskStreamModel()
-		model.store = store
-		model.sess = sess
-
-		// Set main provider/model for subagent comparison
-		// Use cfg.DefaultProvider (e.g. "chatgpt") for cleaner display
-		mainModelName := ""
-		if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
-			mainModelName = providerCfg.Model
-		}
-		model.subagentTracker.SetMainProviderModel(cfg.DefaultProvider, mainModelName)
-
-		teaProgram = tea.NewProgram(model, tea.WithoutSignalHandler())
-
-		// Set up spawn_agent event callback for subagent progress visibility
-		if spawnTool := toolMgr.GetSpawnAgentTool(); spawnTool != nil {
-			spawnTool.SetEventCallback(func(callID string, event tools.SubagentEvent) {
-				// Use goroutine to avoid blocking subagent execution if TUI message channel backs up
-				go teaProgram.Send(askSubagentProgressMsg{CallID: callID, Event: event})
-			})
-		}
-
-		// Set up the improved approval UI with git-aware heuristics
-		toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {
-			// Flush content and suppress spinner before releasing terminal
-			done := make(chan struct{})
-			teaProgram.Send(askFlushBeforeApprovalMsg{Done: done})
-			<-done
-
-			// Pause the TUI
-			teaProgram.ReleaseTerminal()
-			defer func() {
-				teaProgram.RestoreTerminal()
-				teaProgram.Send(askResumeFromExternalUIMsg{})
-			}()
-
-			// Run the appropriate approval UI
-			if isShell {
-				return tools.RunShellApprovalUI(path, workDir)
-			}
-			return tools.RunFileApprovalUI(path, isWrite)
-		}
-
-		// Set up ask_user hooks to pause/resume the TUI during the interactive UI
-		start, end := tools.CreateTUIHooks(teaProgram, func() {
-			done := make(chan struct{})
-			teaProgram.Send(askFlushBeforeAskUserMsg{Done: done})
-			<-done // Wait for flush to complete
-		})
-		// Wrap end hook to also send resume message after terminal is restored
-		originalEnd := end
-		end = func() {
-			originalEnd()
-			teaProgram.Send(askResumeFromExternalUIMsg{})
-		}
-		tools.SetAskUserHooks(start, end)
-	} else if toolMgr != nil {
+	if !useGlamour && toolMgr != nil {
 		// Non-TUI mode: set up approval UI directly (no tea.Program to pause)
 		toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {
 			if isShell {
@@ -541,6 +496,13 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			}
 			return tools.RunFileApprovalUI(path, isWrite)
 		}
+	}
+
+	runGlamour := func(ctx context.Context, events <-chan ui.StreamEvent) error {
+		if teaProgram != nil {
+			return runAskStreamProgram(ctx, teaProgram)
+		}
+		return streamWithGlamour(ctx, events, store, sess)
 	}
 
 	// Save user message BEFORE streaming (incremental save)
@@ -617,30 +579,22 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	// Enable context compaction or tracking for models with known context window data.
 	engine.ConfigureContextManagement(provider, cfg.DefaultProvider, activeModel(cfg), cfg.AutoCompact)
 
-	// Set up text collection for output capture (commit_editmsg, on_complete, or session save)
-	var collector *textCollector
-	needsCollector := (agent != nil && (agent.Output == "commit_editmsg" || agent.OnComplete != "")) || (store != nil && sess != nil)
 	var stats *ui.SessionStats
 	var progressiveResult progressiveRunResult
 
 	if askProgressive {
 		var bridge *askProgressiveBridge
 		var events <-chan ui.StreamEvent
-		if !askPorcelain || showStats {
+		if !askPorcelain || showStats || needsCollector {
 			bridge = newAskProgressiveBridge(ui.DefaultStreamBufferSize)
 			if sess != nil {
 				bridge.Stats().SeedTotals(sess.InputTokens, sess.OutputTokens, sess.CachedInputTokens, sess.CacheWriteTokens, sess.ToolCalls, sess.LLMTurns)
 			}
 			stats = bridge.Stats()
-			if !askPorcelain {
-				events = bridge.Events()
-				if needsCollector {
-					collector = &textCollector{}
-					events = collector.wrapEvents(events)
-				}
-			} else {
+			events = wrapStreamEvents(bridge.Events())
+			if askPorcelain {
 				go func() {
-					for range bridge.Events() {
+					for range events {
 					}
 				}()
 			}
@@ -657,6 +611,10 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 		if bridge != nil {
 			runOpts.OnEvent = bridge.HandleEvent
+		}
+
+		if useGlamour && toolMgr != nil {
+			_, teaProgram = newAskGlamourProgram(cfg, toolMgr, store, sess, events)
 		}
 
 		runProgressive := func() askProgressiveRunResult {
@@ -681,7 +639,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			}()
 			displayCtx := context.WithoutCancel(ctx)
 			if useGlamour {
-				err = streamWithGlamour(displayCtx, events, teaProgram, store, sess)
+				err = runGlamour(displayCtx, events)
 			} else {
 				err = streamPlainText(displayCtx, events, false)
 			}
@@ -717,11 +675,16 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("progressive run failed: %w", progressiveRun.Err)
 		}
 	} else {
+		streamEvents = wrapStreamEvents(streamEvents)
 		if persistResponseCompleted != nil {
 			engine.SetResponseCompletedCallback(persistResponseCompleted)
 		}
 		if persistTurnCompleted != nil {
 			engine.SetTurnCompletedCallback(persistTurnCompleted)
+		}
+
+		if useGlamour && toolMgr != nil {
+			_, teaProgram = newAskGlamourProgram(cfg, toolMgr, store, sess, streamEvents)
 		}
 
 		stats = adapter.Stats()
@@ -738,16 +701,10 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			errChan <- nil
 		}()
 
-		events := adapter.Events()
-		if needsCollector {
-			collector = &textCollector{}
-			events = collector.wrapEvents(events)
-		}
-
 		if useGlamour {
-			err = streamWithGlamour(ctx, events, teaProgram, store, sess)
+			err = runGlamour(ctx, streamEvents)
 		} else {
-			err = streamPlainText(ctx, events, askPorcelain)
+			err = streamPlainText(ctx, streamEvents, askPorcelain)
 		}
 		tools.ClearAskUserHooks() // Safe to call even if hooks weren't set
 
@@ -780,6 +737,10 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			_ = store.UpdateStatus(ctx, sess.ID, session.StatusComplete)
 			_ = store.SetCurrent(ctx, sess.ID)
 		}
+	}
+
+	if collector != nil {
+		collector.Wait()
 	}
 
 	// Run on_complete handler if configured
@@ -1010,8 +971,11 @@ type askStreamModel struct {
 	tracker *ui.ToolTracker
 
 	// Smooth text buffer for word-by-word rendering (shared with chat)
-	smoothBuffer      *ui.SmoothBuffer
-	smoothTickPending bool
+	smoothBuffer       *ui.SmoothBuffer
+	smoothTickPending  bool
+	deferredStreamRead bool
+	streamChan         <-chan ui.StreamEvent
+	streamErr          error
 
 	// Subagent progress tracking
 	subagentTracker *ui.SubagentTracker
@@ -1067,6 +1031,9 @@ const (
 )
 
 type askContentMsg string
+type askStreamEventMsg struct {
+	event ui.StreamEvent
+}
 type askDoneMsg struct{}
 type askCancelledMsg struct{}
 type askUsageMsg struct {
@@ -1148,6 +1115,61 @@ func newAskStreamModel() askStreamModel {
 	}
 }
 
+func newAskGlamourProgram(cfg *config.Config, toolMgr *tools.ToolManager, store session.Store, sess *session.Session, events <-chan ui.StreamEvent) (askStreamModel, *tea.Program) {
+	model := newAskStreamModel()
+	model.store = store
+	model.sess = sess
+	model.streamChan = events
+
+	mainModelName := ""
+	if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
+		mainModelName = providerCfg.Model
+	}
+	model.subagentTracker.SetMainProviderModel(cfg.DefaultProvider, mainModelName)
+
+	teaProgram := tea.NewProgram(model, tea.WithoutSignalHandler())
+	if toolMgr == nil {
+		return model, teaProgram
+	}
+
+	if spawnTool := toolMgr.GetSpawnAgentTool(); spawnTool != nil {
+		spawnTool.SetEventCallback(func(callID string, event tools.SubagentEvent) {
+			go teaProgram.Send(askSubagentProgressMsg{CallID: callID, Event: event})
+		})
+	}
+
+	toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {
+		done := make(chan struct{})
+		teaProgram.Send(askFlushBeforeApprovalMsg{Done: done})
+		<-done
+
+		teaProgram.ReleaseTerminal()
+		defer func() {
+			teaProgram.RestoreTerminal()
+			teaProgram.Send(askResumeFromExternalUIMsg{})
+		}()
+
+		if isShell {
+			return tools.RunShellApprovalUI(path, workDir)
+		}
+		return tools.RunFileApprovalUI(path, isWrite)
+	}
+
+	start, end := tools.CreateTUIHooks(teaProgram, func() {
+		done := make(chan struct{})
+		teaProgram.Send(askFlushBeforeAskUserMsg{Done: done})
+		<-done
+	})
+	originalEnd := end
+	end = func() {
+		originalEnd()
+		teaProgram.Send(askResumeFromExternalUIMsg{})
+	}
+	tools.SetAskUserHooks(start, end)
+
+	return model, teaProgram
+}
+
 func (m *askStreamModel) streamingFlushThreshold() int {
 	if !m.adaptiveFlushThreshold || m.smoothBuffer == nil {
 		return 0
@@ -1169,7 +1191,11 @@ func (m *askStreamModel) streamingFlushThreshold() int {
 }
 
 func (m askStreamModel) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, m.tickEvery())
+	cmds := []tea.Cmd{m.spinner.Tick, m.tickEvery()}
+	if m.streamChan != nil {
+		cmds = append(cmds, m.listenForStreamEvents())
+	}
+	return tea.Batch(cmds...)
 }
 
 // tickEvery returns a command that sends a tick every second for elapsed time updates.
@@ -1177,6 +1203,19 @@ func (m askStreamModel) tickEvery() tea.Cmd {
 	return tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
 		return askTickMsg(t)
 	})
+}
+
+func (m askStreamModel) listenForStreamEvents() tea.Cmd {
+	return func() tea.Msg {
+		if m.streamChan == nil {
+			return askStreamEventMsg{event: ui.DoneEvent(0)}
+		}
+		event, ok := <-m.streamChan
+		if !ok {
+			return askStreamEventMsg{event: ui.DoneEvent(0)}
+		}
+		return askStreamEventMsg{event: event}
+	}
 }
 
 // maxViewLines is the maximum number of lines to keep in View().
@@ -1337,6 +1376,51 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Resize active streaming renderers
 		m.tracker.ResizeStreamRenderers(m.width)
 
+	case askStreamEventMsg:
+		var innerMsg tea.Msg
+		ev := msg.event
+		switch ev.Type {
+		case ui.StreamEventRetry:
+			innerMsg = askRetryMsg{Attempt: ev.RetryAttempt, MaxAttempts: ev.RetryMax, WaitSecs: ev.RetryWait}
+		case ui.StreamEventUsage:
+			innerMsg = askUsageMsg{InputTokens: ev.InputTokens, OutputTokens: ev.OutputTokens}
+		case ui.StreamEventPhase:
+			innerMsg = askPhaseMsg(ev.Phase)
+		case ui.StreamEventToolEnd:
+			innerMsg = askToolEndMsg{CallID: ev.ToolCallID, Success: ev.ToolSuccess}
+		case ui.StreamEventToolStart:
+			innerMsg = askToolStartMsg{CallID: ev.ToolCallID, Name: ev.ToolName, Info: ev.ToolInfo, ToolArgs: ev.ToolArgs}
+		case ui.StreamEventText:
+			innerMsg = askContentMsg(ev.Text)
+		case ui.StreamEventImage:
+			innerMsg = askImageMsg(ev.ImagePath)
+		case ui.StreamEventDiff:
+			innerMsg = askDiffMsg{Path: ev.DiffPath, Old: ev.DiffOld, New: ev.DiffNew, Line: ev.DiffLine}
+		case ui.StreamEventDone:
+			innerMsg = askDoneMsg{}
+		case ui.StreamEventError:
+			if ev.Err != nil {
+				m.streamErr = ev.Err
+				innerMsg = askCancelledMsg{}
+			}
+		}
+
+		var innerCmd tea.Cmd
+		if innerMsg != nil {
+			updated, cmd := m.Update(innerMsg)
+			m = updated.(askStreamModel)
+			innerCmd = cmd
+		}
+
+		if ev.Type != ui.StreamEventDone && (ev.Type != ui.StreamEventError || ev.Err == nil) {
+			if ev.Type == ui.StreamEventText && m.smoothTickPending {
+				m.deferredStreamRead = true
+			} else {
+				return m, ui.ComposeFlushFirstCommands(nil, []tea.Cmd{innerCmd, m.listenForStreamEvents()})
+			}
+		}
+		return m, innerCmd
+
 	case askContentMsg:
 		// Buffer text and release it in smooth word-paced ticks.
 		if m.smoothBuffer != nil {
@@ -1354,6 +1438,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case askDoneMsg:
 		m.done = true // Prevent spinner from showing in final View()
 		m.smoothTickPending = false
+		m.deferredStreamRead = false
 		// Ensure we have a valid width
 		if m.width <= 0 {
 			m.width = getTerminalWidth()
@@ -1381,6 +1466,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case askCancelledMsg:
 		m.done = true
 		m.smoothTickPending = false
+		m.deferredStreamRead = false
 		// Ensure we have a valid width
 		if m.width <= 0 {
 			m.width = getTerminalWidth()
@@ -1427,6 +1513,10 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.smoothTickPending = true
 				asyncCmds = append(asyncCmds, ui.SmoothTick())
 			}
+		}
+		if m.deferredStreamRead && !m.done {
+			m.deferredStreamRead = false
+			asyncCmds = append(asyncCmds, m.listenForStreamEvents())
 		}
 
 		cmd := ui.ComposeFlushFirstCommands(flushCmds, asyncCmds)
@@ -1779,15 +1869,22 @@ func (m askStreamModel) View() string {
 	return b.String()
 }
 
-// streamWithGlamour renders markdown beautifully as content streams in
-// If p is nil, creates a new tea.Program; otherwise uses the provided one.
-func streamWithGlamour(ctx context.Context, events <-chan ui.StreamEvent, p *tea.Program, store session.Store, sess *session.Session) error {
-	// Create program if not provided (when no tools are used)
+// streamWithGlamour renders markdown beautifully as content streams in.
+// It creates an ask stream program wired to read from events itself.
+func streamWithGlamour(ctx context.Context, events <-chan ui.StreamEvent, store session.Store, sess *session.Session) error {
+	model := newAskStreamModel()
+	model.store = store
+	model.sess = sess
+	model.streamChan = events
+	return runAskStreamProgram(ctx, tea.NewProgram(model, tea.WithoutSignalHandler()))
+}
+
+// runAskStreamProgram runs a preconfigured ask-stream Bubble Tea program.
+// Callers are responsible for wiring the underlying askStreamModel to its
+// stream source before calling this helper.
+func runAskStreamProgram(ctx context.Context, p *tea.Program) error {
 	if p == nil {
-		model := newAskStreamModel()
-		model.store = store
-		model.sess = sess
-		p = tea.NewProgram(model, tea.WithoutSignalHandler())
+		return fmt.Errorf("ask stream program is nil")
 	}
 
 	type programResult struct {
@@ -1800,84 +1897,24 @@ func streamWithGlamour(ctx context.Context, events <-chan ui.StreamEvent, p *tea
 		programDone <- programResult{model: m, err: err}
 	}()
 
-	var streamErr error
-	for events != nil {
+	done := make(chan struct{})
+	go func() {
 		select {
 		case <-ctx.Done():
 			p.Send(askCancelledMsg{})
-			events = nil
-
-		case ev, ok := <-events:
-			if !ok {
-				events = nil
-				continue
-			}
-
-			switch ev.Type {
-			case ui.StreamEventRetry:
-				p.Send(askRetryMsg{
-					Attempt:     ev.RetryAttempt,
-					MaxAttempts: ev.RetryMax,
-					WaitSecs:    ev.RetryWait,
-				})
-
-			case ui.StreamEventUsage:
-				p.Send(askUsageMsg{
-					InputTokens:  ev.InputTokens,
-					OutputTokens: ev.OutputTokens,
-				})
-
-			case ui.StreamEventPhase:
-				p.Send(askPhaseMsg(ev.Phase))
-
-			case ui.StreamEventToolEnd:
-				p.Send(askToolEndMsg{
-					CallID:  ev.ToolCallID,
-					Success: ev.ToolSuccess,
-				})
-
-			case ui.StreamEventToolStart:
-				p.Send(askToolStartMsg{
-					CallID:   ev.ToolCallID,
-					Name:     ev.ToolName,
-					Info:     ev.ToolInfo,
-					ToolArgs: ev.ToolArgs,
-				})
-
-			case ui.StreamEventText:
-				p.Send(askContentMsg(ev.Text))
-
-			case ui.StreamEventImage:
-				p.Send(askImageMsg(ev.ImagePath))
-
-			case ui.StreamEventDiff:
-				p.Send(askDiffMsg{
-					Path: ev.DiffPath,
-					Old:  ev.DiffOld,
-					New:  ev.DiffNew,
-					Line: ev.DiffLine,
-				})
-
-			case ui.StreamEventDone:
-				p.Send(askDoneMsg{})
-				events = nil
-
-			case ui.StreamEventError:
-				if ev.Err != nil {
-					streamErr = ev.Err
-					p.Send(askCancelledMsg{})
-					events = nil
-				}
-			}
+		case <-done:
 		}
-	}
+	}()
 
 	result := <-programDone
-
-	if streamErr != nil {
-		return streamErr
+	close(done)
+	if result.err != nil {
+		return result.err
 	}
-	return result.err
+	if model, ok := result.model.(askStreamModel); ok && model.streamErr != nil {
+		return model.streamErr
+	}
+	return nil
 }
 
 // MCPOptions contains options for enabling MCP servers.
@@ -2066,18 +2103,24 @@ func progressiveOutputText(result progressiveRunResult) string {
 
 // textCollector wraps an event channel and collects all text events.
 type textCollector struct {
+	mu   sync.Mutex
 	text strings.Builder
+	done chan struct{}
 }
 
 // wrapEventsWithCollector creates a new channel that forwards all events from the input
 // channel while collecting text events. Returns the wrapped channel.
 func (tc *textCollector) wrapEvents(events <-chan ui.StreamEvent) <-chan ui.StreamEvent {
 	wrapped := make(chan ui.StreamEvent, 100)
+	tc.done = make(chan struct{})
 	go func() {
 		defer close(wrapped)
+		defer close(tc.done)
 		for ev := range events {
 			if ev.Type == ui.StreamEventText {
+				tc.mu.Lock()
 				tc.text.WriteString(ev.Text)
+				tc.mu.Unlock()
 			}
 			wrapped <- ev
 		}
@@ -2085,7 +2128,20 @@ func (tc *textCollector) wrapEvents(events <-chan ui.StreamEvent) <-chan ui.Stre
 	return wrapped
 }
 
+// Wait blocks until all wrapped events have been collected.
+func (tc *textCollector) Wait() {
+	if tc == nil || tc.done == nil {
+		return
+	}
+	<-tc.done
+}
+
 // Text returns the collected text.
 func (tc *textCollector) Text() string {
+	if tc == nil {
+		return ""
+	}
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
 	return tc.text.String()
 }

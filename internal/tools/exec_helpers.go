@@ -65,6 +65,11 @@ func prepareToolCommand(cmd *exec.Cmd) (func(), error) {
 	return func() {}, nil
 }
 
+// PrepareCommand configures a command for safe cancellation, including process-group teardown.
+func PrepareCommand(cmd *exec.Cmd) (func(), error) {
+	return prepareToolCommand(cmd)
+}
+
 func configureCommandProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
@@ -146,6 +151,11 @@ func splitShellWords(input string) ([]string, error) {
 	return args, nil
 }
 
+// SplitShellWords parses a command line into argv without invoking a shell.
+func SplitShellWords(input string) ([]string, error) {
+	return splitShellWords(input)
+}
+
 func hasUnsafeShellSyntax(input string) bool {
 	inSingle := false
 	inDouble := false
@@ -189,6 +199,11 @@ func hasUnsafeShellSyntax(input string) bool {
 	}
 
 	return false
+}
+
+// HasUnsafeShellSyntax reports whether input uses shell operators that require a shell.
+func HasUnsafeShellSyntax(input string) bool {
+	return hasUnsafeShellSyntax(input)
 }
 
 func matchShellPattern(pattern, value string) bool {
