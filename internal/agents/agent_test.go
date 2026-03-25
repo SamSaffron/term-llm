@@ -228,6 +228,31 @@ func TestAgent_Validate(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "valid handover_mode script with script",
+			agent: Agent{
+				Name:           "test",
+				HandoverMode:   "script",
+				HandoverScript: "echo hello",
+			},
+			wantErr: false,
+		},
+		{
+			name: "handover_mode script without script",
+			agent: Agent{
+				Name:         "test",
+				HandoverMode: "script",
+			},
+			wantErr: true,
+		},
+		{
+			name: "handover_script without script mode is valid",
+			agent: Agent{
+				Name:           "test",
+				HandoverScript: "git diff",
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {

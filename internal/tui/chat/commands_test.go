@@ -2,13 +2,24 @@ package chat
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/samsaffron/term-llm/internal/ui"
 )
 
 func TestAllCommandsIncludesCompact(t *testing.T) {
@@ -81,12 +92,14 @@ func TestAllCommandsRemovesLoadAndKeepsResume(t *testing.T) {
 // mockStore implements session.Store for testing resume behavior.
 type mockStore struct {
 	session.NoopStore
-	sessions  map[string]*session.Session
-	messages  map[string][]session.Message
-	summaries []session.SessionSummary
-	msgErr    error
-	updated   *session.Session
-	updateErr error
+	sessions   map[string]*session.Session
+	messages   map[string][]session.Message
+	summaries  []session.SessionSummary
+	msgErr     error
+	updated    *session.Session
+	updateErr  error
+	compacted  []session.Message
+	compactErr error
 }
 
 func (s *mockStore) Get(_ context.Context, id string) (*session.Session, error) {
@@ -122,14 +135,24 @@ func (s *mockStore) Update(_ context.Context, sess *session.Session) error {
 	return nil
 }
 
+func (s *mockStore) CompactMessages(_ context.Context, _ string, messages []session.Message) error {
+	if s.compactErr != nil {
+		return s.compactErr
+	}
+	s.compacted = append([]session.Message(nil), messages...)
+	return nil
+}
+
 // newCmdTestModel creates a minimal Model suitable for testing command functions.
 func newCmdTestModel(store session.Store) *Model {
+	styles := ui.DefaultStyles()
 	ta := textarea.New()
 	return &Model{
 		width:    80,
 		height:   24,
 		textarea: ta,
-		dialog:   NewDialogModel(nil),
+		styles:   styles,
+		dialog:   NewDialogModel(styles),
 		store:    store,
 	}
 }
@@ -279,4 +302,204 @@ func TestResumeFormatAge(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCmdHandover_TargetScriptIsDeferredUntilConfirmation(t *testing.T) {
+	agentDir := t.TempDir()
+	scriptPath := filepath.Join(agentDir, "handover.sh")
+	markerPath := filepath.Join(agentDir, "marker")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\nprintf 'generated handover'\nprintf 'script warning' >&2\ntouch marker\n"), 0755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	targetAgent := &agents.Agent{
+		Name:           "target",
+		SystemPrompt:   "You are target.",
+		HandoverScript: "./handover.sh",
+		Source:         agents.SourceLocal,
+		SourcePath:     agentDir,
+	}
+
+	m := newCmdTestModel(&mockStore{})
+	m.config = &config.Config{}
+	m.sess = &session.Session{ID: "sess-handover-preview", CreatedAt: time.Now()}
+	m.agentName = "source"
+	m.agentResolver = func(name string, cfg *config.Config) (*agents.Agent, error) {
+		return targetAgent, nil
+	}
+	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
+	mgr.SetYoloMode(true)
+	m.SetHandoverApprovalManager(mgr)
+
+	result, cmd := m.cmdHandover([]string{"@target"})
+	if cmd == nil {
+		t.Fatal("expected preview command")
+	}
+	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
+		t.Fatalf("script should not run before preview, stat err = %v", err)
+	}
+
+	updated, _ := result.(*Model).Update(cmd())
+	rm := updated.(*Model)
+	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
+		t.Fatalf("script should remain deferred until confirmation, stat err = %v", err)
+	}
+	if rm.pendingHandover == nil || rm.handoverPreview == nil {
+		t.Fatal("expected pending handover preview to be shown")
+	}
+	if !strings.Contains(rm.pendingHandover.result.Document, "will run only after you confirm") {
+		t.Fatalf("expected deferred-script preview, got %q", rm.pendingHandover.result.Document)
+	}
+}
+
+func TestHandoverScriptCmd_UsesAgentSourcePathAndPersistsResult(t *testing.T) {
+	agentDir := t.TempDir()
+	scriptPath := filepath.Join(agentDir, "handover.sh")
+	markerPath := filepath.Join(agentDir, "marker")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\nprintf 'generated handover'\nprintf 'script warning' >&2\ntouch marker\n"), 0755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	targetAgent := &agents.Agent{
+		Name:           "target",
+		SystemPrompt:   "You are target.",
+		DefaultPrompt:  "  review changes  ",
+		HandoverScript: "./handover.sh",
+		Source:         agents.SourceLocal,
+		SourcePath:     agentDir,
+	}
+	store := &mockStore{}
+	m := newCmdTestModel(store)
+	m.config = &config.Config{}
+	m.sess = &session.Session{ID: "sess-handover-confirm", CreatedAt: time.Now()}
+	m.agentName = "source"
+	m.agentResolver = func(name string, cfg *config.Config) (*agents.Agent, error) {
+		return targetAgent, nil
+	}
+	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
+	mgr.SetYoloMode(true)
+	m.SetHandoverApprovalManager(mgr)
+	m.pendingHandover = &handoverDoneMsg{
+		result:    llm.HandoverFromFile("placeholder", targetAgent.SystemPrompt, "source", targetAgent.Name),
+		agentName: targetAgent.Name,
+	}
+
+	msg := handoverScriptCmd(context.Background(), mgr, targetAgent, "source", targetAgent, "", true, "please focus on tests")()
+	updated, quitCmd := m.Update(msg)
+	rm := updated.(*Model)
+
+	if quitCmd == nil {
+		t.Fatal("expected handover to request quit after confirmation")
+	}
+	if _, err := os.Stat(markerPath); err != nil {
+		t.Fatalf("expected deferred script to run after confirmation: %v", err)
+	}
+	if !rm.quitting {
+		t.Fatal("expected model to request restart after confirmed handover")
+	}
+	if got := rm.RequestedResumeSessionID(); got != "sess-handover-confirm" {
+		t.Fatalf("RequestedResumeSessionID() = %q, want %q", got, "sess-handover-confirm")
+	}
+	if got := rm.RequestedHandoverAutoSend(); got != "review changes" {
+		t.Fatalf("RequestedHandoverAutoSend() = %q, want %q", got, "review changes")
+	}
+	if len(store.compacted) == 0 {
+		t.Fatal("expected compacted handover messages to be persisted")
+	}
+	var combined strings.Builder
+	for _, msg := range store.compacted {
+		if msg.TextContent == "" {
+			continue
+		}
+		combined.WriteString(msg.TextContent)
+		combined.WriteString("\n")
+	}
+	text := combined.String()
+	if !strings.Contains(text, "generated handover") {
+		t.Fatalf("expected script output in persisted messages, got %q", text)
+	}
+	if strings.Contains(text, "script warning") {
+		t.Fatalf("expected stderr to be excluded from persisted messages, got %q", text)
+	}
+	if !strings.Contains(text, "Additional Instructions") || !strings.Contains(text, "please focus on tests") {
+		t.Fatalf("expected additional instructions in persisted messages, got %q", text)
+	}
+}
+
+func TestRunHandoverScript_CancelKillsProcessGroup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process-group cancellation test is unix-specific")
+	}
+
+	agentDir := t.TempDir()
+	scriptPath := filepath.Join(agentDir, "handover.sh")
+	childPIDPath := filepath.Join(agentDir, "child.pid")
+	script := "#!/bin/sh\nchild_pid_file=\"$1\"\n(while :; do sleep 1; done) &\necho $! > \"$child_pid_file\"\nwhile :; do sleep 1; done\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	agent := &agents.Agent{
+		Name:       "target",
+		Source:     agents.SourceLocal,
+		SourcePath: agentDir,
+	}
+	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
+	mgr.SetYoloMode(true)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := runHandoverScript(ctx, mgr, agent, fmt.Sprintf("./handover.sh %q", childPIDPath))
+		errCh <- err
+	}()
+
+	childPID := waitForHandoverChildPID(t, childPIDPath)
+	cancel()
+
+	err := <-errCh
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("runHandoverScript error = %v, want context.Canceled", err)
+	}
+	waitForProcessExit(t, childPID)
+}
+
+func waitForHandoverChildPID(t *testing.T, path string) int {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			pidText := strings.TrimSpace(string(data))
+			if pidText != "" {
+				pid, convErr := strconv.Atoi(pidText)
+				if convErr != nil {
+					t.Fatalf("parse child pid %q: %v", pidText, convErr)
+				}
+				return pid
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for child pid file %s", path)
+	return 0
+}
+
+func waitForProcessExit(t *testing.T, pid int) {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		err := syscall.Kill(pid, 0)
+		if err != nil && errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for process %d to exit", pid)
 }

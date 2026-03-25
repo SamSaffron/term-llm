@@ -16,3 +16,4 @@ shell:
     git-recent: "git log --oneline -20"
 
 max_turns: 200
+handover_mode: "light"

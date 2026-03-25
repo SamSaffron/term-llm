@@ -1251,3 +1251,97 @@ func TestExpandWithEffortVariants(t *testing.T) {
 		t.Errorf("last entry should be claude-sonnet-4-5, got %q", expanded[5])
 	}
 }
+
+func TestHandoverEndToEnd(t *testing.T) {
+	provider := NewMockProvider("test")
+	provider.AddTextResponse("## Objective\nBuild feature X\n\n## Pending Tasks\n1. Implement handler\n2. Add tests")
+
+	messages := []Message{
+		UserText("I want to build feature X"),
+		AssistantText("Let me explore the codebase first."),
+		UserText("Focus on the handler"),
+		AssistantText("I found the handler in cmd/handler.go. Here's my plan..."),
+	}
+
+	config := DefaultCompactionConfig()
+	result, err := Handover(context.Background(), provider, "test-model", "You are a planner.", "You are a developer.", messages, "planner", "developer", config)
+	if err != nil {
+		t.Fatalf("Handover failed: %v", err)
+	}
+
+	if result.Document == "" {
+		t.Error("handover document should not be empty")
+	}
+	if result.SourceAgent != "planner" {
+		t.Errorf("source agent = %q, want planner", result.SourceAgent)
+	}
+	if result.TargetAgent != "developer" {
+		t.Errorf("target agent = %q, want developer", result.TargetAgent)
+	}
+
+	// NewMessages should have: [system] + [handover doc] + [assistant ack]
+	if len(result.NewMessages) != 3 {
+		t.Fatalf("new messages count = %d, want 3", len(result.NewMessages))
+	}
+	if result.NewMessages[0].Role != RoleSystem {
+		t.Errorf("first message should be system, got %s", result.NewMessages[0].Role)
+	}
+	if result.NewMessages[1].Role != RoleUser {
+		t.Errorf("second message should be user (handover doc), got %s", result.NewMessages[1].Role)
+	}
+	if !result.NewMessages[1].CacheAnchor {
+		t.Error("handover doc message should have CacheAnchor=true")
+	}
+	if !strings.Contains(result.NewMessages[1].Parts[0].Text, "[Agent Handover: @planner -> @developer]") {
+		t.Error("handover doc should contain handover prefix")
+	}
+	if result.NewMessages[2].Role != RoleAssistant {
+		t.Errorf("third message should be assistant (ack), got %s", result.NewMessages[2].Role)
+	}
+	if !strings.Contains(result.NewMessages[2].Parts[0].Text, "@planner") {
+		t.Error("assistant ack should reference source agent")
+	}
+
+	// System prompt should be the NEW agent's system prompt
+	if !strings.Contains(result.NewMessages[0].Parts[0].Text, "developer") {
+		t.Error("system prompt should be the new agent's prompt")
+	}
+
+	// Verify the handover prompt was sent to the provider
+	req := provider.Requests[0]
+	lastMsg := req.Messages[len(req.Messages)-1]
+	if !strings.Contains(lastMsg.Parts[0].Text, "handing over") {
+		t.Error("last request message should contain handover prompt")
+	}
+}
+
+func TestHandoverFromFile(t *testing.T) {
+	content := "## Objective\nBuild feature X\n\n## Next Steps\n1. Do the thing"
+	result := HandoverFromFile(content, "You are a developer.", "planner", "developer")
+
+	if result.Document != content {
+		t.Errorf("document should match input content")
+	}
+	if result.SourceAgent != "planner" {
+		t.Errorf("source agent = %q, want planner", result.SourceAgent)
+	}
+	if len(result.NewMessages) != 3 {
+		t.Fatalf("new messages count = %d, want 3", len(result.NewMessages))
+	}
+	if !strings.Contains(result.NewMessages[1].Parts[0].Text, content) {
+		t.Error("handover doc message should contain file content")
+	}
+	if !result.NewMessages[1].CacheAnchor {
+		t.Error("handover doc should have CacheAnchor=true")
+	}
+}
+
+func TestHandoverEmptyMessages(t *testing.T) {
+	provider := NewMockProvider("test")
+	config := DefaultCompactionConfig()
+
+	_, err := Handover(context.Background(), provider, "test-model", "", "", nil, "planner", "developer", config)
+	if err == nil {
+		t.Error("Handover with nil messages should return error")
+	}
+}

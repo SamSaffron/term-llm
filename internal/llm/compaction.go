@@ -186,6 +186,148 @@ func Compact(ctx context.Context, provider Provider, model, systemPrompt string,
 	}, nil
 }
 
+// HandoverResult describes the outcome of a handover compression.
+type HandoverResult struct {
+	Document    string    // The handover document text
+	NewMessages []Message // [system] + [handover doc as user] + [assistant ack]
+	SourceAgent string
+	TargetAgent string
+}
+
+const handoverPromptTemplate = `You are handing over this conversation to a different agent (%s -> %s). Create a structured handover briefing that the new agent can use to continue the work.
+
+Your handover document must include:
+1. **Objective** — what the user is trying to accomplish
+2. **Work Completed** — what was explored, discussed, and decided (chronologically)
+3. **Current State** — exact files involved, errors found, test results, what's in progress
+4. **Pending Tasks** — what still needs to be done, in priority order
+5. **Key Context** — file paths, function names, config values, constraints, user preferences
+
+Be specific and concrete — include exact file paths, function names, error messages, and code snippets when relevant. The new agent has no other context beyond this document.
+
+Budget: keep your briefing under 3000 words.`
+
+// handoverPrefix is prepended to the handover document in the reconstructed message history.
+func handoverPrefix(source, target string) string {
+	return fmt.Sprintf("[Agent Handover: @%s -> @%s]\n\n", source, target)
+}
+
+// Handover generates a handover document from the conversation history using
+// the outgoing provider. This is the Tier 2 fallback used when an agent has no
+// handover_file configured. The result contains reconstructed messages suitable
+// for the new agent: [new system prompt] + [handover doc] + [assistant ack].
+func Handover(ctx context.Context, provider Provider, model, currentSystemPrompt, newSystemPrompt string, messages []Message, sourceAgent, targetAgent string, config CompactionConfig) (*HandoverResult, error) {
+	if len(messages) == 0 {
+		return nil, fmt.Errorf("no messages to hand over")
+	}
+
+	messages = sanitizeToolHistory(messages)
+
+	// Build request: [system] + sanitized messages + handover instruction.
+	var reqMessages []Message
+	if currentSystemPrompt != "" {
+		reqMessages = append(reqMessages, SystemText(currentSystemPrompt))
+	}
+	reqMessages = append(reqMessages, messages...)
+
+	// Trim to fit input limits (same logic as Compact).
+	inputLimit := config.InputLimit
+	if inputLimit <= 0 {
+		inputLimit = InputLimitForModel(model)
+	}
+	if inputLimit > 0 {
+		maxInputTokens := inputLimit * 3 / 4
+		reqMessages = trimMessagesToFit(reqMessages, maxInputTokens)
+	}
+
+	// Ensure valid role alternation before appending the handover prompt.
+	if len(reqMessages) > 0 {
+		lastRole := reqMessages[len(reqMessages)-1].Role
+		if lastRole == RoleUser || lastRole == RoleTool {
+			reqMessages = append(reqMessages, AssistantText("I'll now prepare the handover briefing."))
+		}
+	}
+
+	prompt := fmt.Sprintf(handoverPromptTemplate, sourceAgent, targetAgent)
+	reqMessages = append(reqMessages, UserText(prompt))
+
+	budget := 12_000 // Slightly larger budget than compaction for handover precision
+	budget = ClampOutputTokens(budget, model)
+
+	stream, err := provider.Stream(ctx, Request{
+		Model:           model,
+		Messages:        reqMessages,
+		MaxOutputTokens: budget,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("handover stream failed: %w", err)
+	}
+	defer stream.Close()
+
+	var document strings.Builder
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("handover recv failed: %w", err)
+		}
+		if event.Type == EventTextDelta {
+			document.WriteString(event.Text)
+		}
+	}
+
+	if document.Len() == 0 {
+		return nil, fmt.Errorf("handover produced empty document")
+	}
+
+	// Reconstruct messages for the new agent with the new system prompt.
+	newMessages := ReconstructHandoverHistory(newSystemPrompt, document.String(), sourceAgent, targetAgent)
+
+	return &HandoverResult{
+		Document:    document.String(),
+		NewMessages: newMessages,
+		SourceAgent: sourceAgent,
+		TargetAgent: targetAgent,
+	}, nil
+}
+
+// HandoverFromFile creates a HandoverResult from an existing handover document
+// file (Tier 1: zero LLM cost). Used when the outgoing agent has a handover_file
+// configured and has written content to it.
+func HandoverFromFile(content, newSystemPrompt, sourceAgent, targetAgent string) *HandoverResult {
+	newMessages := ReconstructHandoverHistory(newSystemPrompt, content, sourceAgent, targetAgent)
+	return &HandoverResult{
+		Document:    content,
+		NewMessages: newMessages,
+		SourceAgent: sourceAgent,
+		TargetAgent: targetAgent,
+	}
+}
+
+// ReconstructHandoverHistory builds the message list for the new agent:
+// [SystemText(newSystemPrompt)] + [handover doc (user, CacheAnchor)] + [assistant ack]
+func ReconstructHandoverHistory(systemPrompt, document, sourceAgent, targetAgent string) []Message {
+	var messages []Message
+
+	if systemPrompt != "" {
+		messages = append(messages, SystemText(systemPrompt))
+	}
+
+	prefix := handoverPrefix(sourceAgent, targetAgent)
+	messages = append(messages, Message{
+		Role:        RoleUser,
+		Parts:       []Part{{Type: PartText, Text: prefix + document}},
+		CacheAnchor: true,
+	})
+
+	ack := fmt.Sprintf("I've reviewed the handover briefing from @%s. I'll continue from where they left off.", sourceAgent)
+	messages = append(messages, AssistantText(ack))
+
+	return messages
+}
+
 // trimMessagesToFit removes messages from the front (after any system message)
 // until the total estimated tokens fit within maxTokens. Preserves the system
 // message, cache-anchored messages (previous compaction summaries), and the

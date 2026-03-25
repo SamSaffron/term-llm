@@ -154,6 +154,7 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	}
 	m.newlineCompactor = ui.NewStreamingNewlineCompactor(ui.MaxStreamingConsecutiveNewlines)
 	m.smoothTickPending = false
+	m.deferredStreamRead = false
 	m.streamRenderTickPending = false
 
 	// Start the stream

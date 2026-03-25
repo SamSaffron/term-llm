@@ -25,6 +25,7 @@ var builtinAgentNames = []string{
 	"developer",
 	"editor",
 	"file-organizer",
+	"planner",
 	"web-researcher",
 	"reviewer",
 	"shell",

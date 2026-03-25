@@ -145,6 +145,27 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Handle pending handover confirmation via inline preview
+	if m.handoverPreview != nil {
+		done, handled := m.handoverPreview.UpdateEmbedded(msg)
+		if done {
+			if m.handoverPreview.confirmed {
+				return m.Update(handoverConfirmMsg{})
+			}
+			return m.Update(handoverCancelMsg{})
+		}
+		if handled {
+			return m, nil
+		}
+		// Allow viewport scroll keys to pass through; block everything else
+		if m.altScreen && (key.Matches(msg, m.keyMap.PageUp) || key.Matches(msg, m.keyMap.PageDown)) {
+			var cmd tea.Cmd
+			m.viewport, cmd = m.viewport.Update(msg)
+			return m, cmd
+		}
+		return m, nil
+	}
+
 	// Bracketed paste and Ctrl+V image attach support for the composer.
 	if !m.streaming && m.maybeAttachImageFromPaste(msg) {
 		return m, nil
@@ -288,15 +309,30 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Enter executes immediately with the selected command
 			selected := m.completions.Selected()
 			if selected != nil {
-				// Extract any args typed after the command prefix
-				// e.g., "/mo son" -> command "model", args "son"
+				// Capture typed input before clearing
 				input := m.textarea.Value()
+				m.completions.Hide()
+				m.setTextareaValue("")
+
+				// Multi-word completion items (e.g., "handover @developer",
+				// "mcp start server") already contain the selected arg.
+				// Preserve any typed suffix beyond what the completion covers.
+				if strings.Contains(selected.Name, " ") {
+					// Count words in selected name to find where extra args start
+					selectedParts := strings.Fields(selected.Name)
+					inputParts := strings.Fields(strings.TrimPrefix(input, "/"))
+					// If user typed more words than the selection, keep the extra
+					if len(inputParts) > len(selectedParts) {
+						extra := strings.Join(inputParts[len(selectedParts):], " ")
+						return m.ExecuteCommand("/" + selected.Name + " " + extra)
+					}
+					return m.ExecuteCommand("/" + selected.Name)
+				}
+				// Single-word command: extract any args the user typed
 				args := ""
 				if idx := strings.Index(input, " "); idx != -1 {
 					args = strings.TrimSpace(input[idx+1:])
 				}
-				m.completions.Hide()
-				m.setTextareaValue("")
 				if args != "" {
 					return m.ExecuteCommand("/" + selected.Name + " " + args)
 				}
@@ -308,7 +344,12 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			selected := m.completions.Selected()
 			if selected != nil {
 				m.setTextareaValue("/" + selected.Name + " ")
-				m.completions.Hide()
+				// Re-run completions — commands like /handover may show
+				// argument completions (e.g., agent names) at this point
+				m.updateCompletions()
+				if !m.completions.IsVisible() {
+					m.completions.Hide()
+				}
 			}
 			return m, nil
 		case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
@@ -754,6 +795,11 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.reflowTextarea()
 		}
 		m.updateTextareaHeight()
+		// Show argument completions for commands that support them
+		// (e.g., /handover @<partial> triggers agent name completions)
+		if newVal := m.textarea.Value(); newVal != old && strings.HasPrefix(newVal, "/") && !m.completions.IsVisible() {
+			m.updateCompletions()
+		}
 		return m, cmd
 	}
 	return m, nil

@@ -138,14 +138,17 @@ func (e *committedError) Unwrap() error { return e.err }
 // forwardAttempt reads a single inner stream attempt.
 //
 // Before any externally-visible side effects, events are buffered so retryable
-// failures can be retried without leaking partial text into the outer stream.
+// failures can be retried without leaking partial output into the outer stream.
 //
-// Once the provider emits a synchronous tool request (EventToolCall with
-// ToolResponse), buffering must stop immediately: the caller needs to see the
-// event in real time to execute the tool, and after that point the attempt has
-// already escaped so retrying would duplicate visible/side-effecting work.
-// Any error after that point is wrapped in committedError so the retry loop
-// will not retry.
+// Buffering stops once the attempt has visibly committed to the caller:
+//   - assistant text deltas
+//   - warning-prefixed phase updates (rendered as visible warnings)
+//   - interjections injected into the conversation
+//   - synchronous tool requests (EventToolCall with ToolResponse)
+//
+// After that point the attempt has already escaped, so retrying would duplicate
+// visible output or side effects. Any subsequent error is wrapped in
+// committedError so the retry loop will not retry.
 func (r *RetryProvider) forwardAttempt(ctx context.Context, stream Stream, events chan<- Event) error {
 	defer stream.Close()
 
@@ -203,7 +206,16 @@ func (r *RetryProvider) forwardAttempt(ctx context.Context, stream Stream, event
 }
 
 func eventRequiresImmediateForwarding(event Event) bool {
-	return event.Type == EventToolCall && event.ToolResponse != nil
+	switch event.Type {
+	case EventTextDelta, EventInterjection:
+		return true
+	case EventPhase:
+		return strings.HasPrefix(event.Text, WarningPhasePrefix)
+	case EventToolCall:
+		return event.ToolResponse != nil
+	default:
+		return false
+	}
 }
 
 func flushEvents(ctx context.Context, events chan<- Event, buffered []Event) error {

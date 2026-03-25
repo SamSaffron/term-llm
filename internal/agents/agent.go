@@ -71,6 +71,24 @@ type Agent struct {
 	// MCP servers to auto-connect
 	MCP []MCPConfig `yaml:"mcp,omitempty"`
 
+	// HandoverFile is a file path (relative to cwd) that the agent maintains
+	// as a living handover document. On /handover, this file is read and used
+	// as the handover context for the next agent (zero LLM cost).
+	HandoverFile string `yaml:"handover_file,omitempty"`
+
+	// HandoverMode controls how context is produced on /handover:
+	//   "light"    - use last assistant message as handover context (zero cost)
+	//   "file"     - read handover_file (zero cost, agent maintains the file)
+	//   "script"   - run handover_script command line (no shell expansion), use stdout (zero cost)
+	//   "compress" - LLM-driven compression of full conversation
+	//   ""         - auto: try file first, fall back to compress
+	HandoverMode string `yaml:"handover_mode,omitempty"`
+
+	// HandoverScript is a command line whose stdout becomes the handover context.
+	// It is executed directly (without shell expansion). When the agent is the
+	// handover target, the command runs only after explicit confirmation.
+	HandoverScript string `yaml:"handover_script,omitempty"`
+
 	// GistID for syncing with GitHub Gists (set on export/import)
 	GistID string `yaml:"gist_id,omitempty"`
 
@@ -398,6 +416,19 @@ func (a *Agent) Validate() error {
 		// Valid values
 	default:
 		return fmt.Errorf("invalid agents_md: %q (valid: auto, true, false)", a.AgentsMd)
+	}
+
+	// Validate handover_mode field
+	switch a.HandoverMode {
+	case "", "light", "file", "script", "compress":
+		// Valid values
+	default:
+		return fmt.Errorf("invalid handover_mode: %q (valid: light, file, script, compress, or empty for auto)", a.HandoverMode)
+	}
+
+	// Cross-validate: script mode requires handover_script
+	if a.HandoverMode == "script" && a.HandoverScript == "" {
+		return fmt.Errorf("handover_mode %q requires handover_script to be set", a.HandoverMode)
 	}
 
 	return nil

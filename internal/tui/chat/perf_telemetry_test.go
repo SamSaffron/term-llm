@@ -130,6 +130,31 @@ func TestModelCoalescesSmoothTickSchedulingForBurstTextEvents(t *testing.T) {
 	}
 }
 
+func TestModelDefersNextStreamReadUntilSmoothTick(t *testing.T) {
+	model := newTestChatModel(false)
+	model.streaming = true
+	model.streamChan = make(chan ui.StreamEvent)
+
+	_, cmd := model.Update(streamEventMsg{event: ui.TextEvent("hello world")})
+	if cmd == nil {
+		t.Fatal("expected text event to schedule a smooth tick")
+	}
+	if !model.smoothTickPending {
+		t.Fatal("expected smooth tick to be pending after text event")
+	}
+	if !model.deferredStreamRead {
+		t.Fatal("expected next stream read to be deferred until the smooth tick")
+	}
+
+	_, cmd = model.Update(ui.SmoothTickMsg{})
+	if model.deferredStreamRead {
+		t.Fatal("expected deferred stream read to clear after smooth tick")
+	}
+	if cmd == nil {
+		t.Fatal("expected smooth tick to resume stream reading")
+	}
+}
+
 func TestViewAltScreenThrottlesSetContentDuringStreaming(t *testing.T) {
 	model := newTestChatModel(true)
 
