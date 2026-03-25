@@ -25,12 +25,15 @@ const (
 	memoryUpdateRecentCharsPerToken        = 4   // chars-per-token estimate
 
 	memoryUpdateRecentUserCharCap      = 2000
-	memoryUpdateRecentAssistantCharCap = 300
+	memoryUpdateRecentAssistantCharCap = 2000
+
+	defaultMemoryUpdateRecentFragmentChars = 10000
 )
 
 var (
 	memoryUpdateRecentMaxInputChars int
 	memoryUpdateRecentTargetTokens  int
+	memoryUpdateRecentFragmentChars int
 	memoryUpdateRecentModel         string
 	memoryUpdateRecentFile          string
 )
@@ -53,6 +56,7 @@ func init() {
 	memoryUpdateRecentCmd.Flags().IntVar(&memoryUpdateRecentTargetTokens, "target-recent-tokens", defaultMemoryUpdateRecentTargetTokens, "Target size of recent.md in tokens (~4 chars/token); high water mark is +20%")
 	memoryUpdateRecentCmd.Flags().StringVar(&memoryUpdateRecentModel, "model", "", "Override model used for update-recent")
 	memoryUpdateRecentCmd.Flags().StringVarP(&memoryUpdateRecentFile, "file", "f", "", "Path to recent.md file (overrides default agent path)")
+	memoryUpdateRecentCmd.Flags().IntVar(&memoryUpdateRecentFragmentChars, "fragment-chars", defaultMemoryUpdateRecentFragmentChars, "Max chars of recent memory fragments to include in the prompt")
 }
 
 func runMemoryUpdateRecent(cmd *cobra.Command, args []string) error {
@@ -164,13 +168,18 @@ func runMemoryUpdateRecent(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	fragmentsText, err := loadRecentFragmentsText(ctx, store, agentName, memoryUpdateRecentFragmentChars)
+	if err != nil {
+		return err
+	}
+
 	provider, reqModel, err := newMemoryUpdateRecentProvider(cfg, strings.TrimSpace(memoryUpdateRecentModel))
 	if err != nil {
 		return err
 	}
 	engine := newEngine(provider, cfg)
 
-	updatedRecent, err := runMemoryUpdateRecentRequest(ctx, engine, reqModel, inputBuilder.String(), existingRecent, memoryUpdateRecentTargetTokens, targetChars)
+	updatedRecent, err := runMemoryUpdateRecentRequest(ctx, engine, reqModel, inputBuilder.String(), existingRecent, fragmentsText, memoryUpdateRecentTargetTokens, targetChars)
 	if err != nil {
 		return err
 	}
@@ -259,12 +268,12 @@ func newMemoryUpdateRecentProvider(cfg *config.Config, modelOverride string) (ll
 	return provider, modelOverride, nil
 }
 
-func runMemoryUpdateRecentRequest(ctx context.Context, engine *llm.Engine, model, sessionSnippets, existingRecent string, targetTokens, targetChars int) (string, error) {
+func runMemoryUpdateRecentRequest(ctx context.Context, engine *llm.Engine, model, sessionSnippets, existingRecent, fragmentsText string, targetTokens, targetChars int) (string, error) {
 	req := llm.Request{
 		Model: strings.TrimSpace(model),
 		Messages: []llm.Message{
 			llm.SystemText(memoryUpdateRecentSystemPrompt(targetTokens, targetChars)),
-			llm.UserText(memoryUpdateRecentUserPrompt(sessionSnippets, existingRecent)),
+			llm.UserText(memoryUpdateRecentUserPrompt(sessionSnippets, existingRecent, fragmentsText)),
 		},
 		MaxTurns: 1,
 		DebugRaw: debugRaw,
@@ -355,7 +364,9 @@ func fitUpdatedRecentWithinBudget(ctx context.Context, engine *llm.Engine, model
 func memoryUpdateRecentSystemPrompt(targetTokens, targetChars int) string {
 	return fmt.Sprintf(`You are a memory curator. You maintain a concise recent memory file for an AI assistant named Jarvis.
 
-Given RECENT SESSION SNIPPETS and the CURRENT RECENT MEMORY, output the complete updated memory file integrating the new activity.
+Given RECENT MEMORY FRAGMENTS (distilled facts from past sessions), RECENT SESSION SNIPPETS (raw recent activity), and the CURRENT RECENT MEMORY, output the complete updated memory file integrating the new activity.
+
+The fragments are the primary source of truth for established facts. The session snippets capture the latest activity not yet in fragments.
 
 The file is a compact current-state working memory, not a changelog.
 
@@ -385,8 +396,50 @@ Rules:
 - Output only the content, no code fences, no commentary.`, targetTokens, targetChars)
 }
 
-func memoryUpdateRecentUserPrompt(sessionSnippets, existingRecent string) string {
-	return fmt.Sprintf("RECENT SESSION SNIPPETS:\n\n%s\n\n===\n\nCURRENT RECENT MEMORY:\n\n%s", sessionSnippets, existingRecent)
+func memoryUpdateRecentUserPrompt(sessionSnippets, existingRecent, fragmentsText string) string {
+	var b strings.Builder
+	if fragmentsText != "" {
+		b.WriteString("RECENT MEMORY FRAGMENTS:\n\n")
+		b.WriteString(fragmentsText)
+		b.WriteString("\n\n===\n\n")
+	}
+	b.WriteString("RECENT SESSION SNIPPETS:\n\n")
+	b.WriteString(sessionSnippets)
+	b.WriteString("\n\n===\n\nCURRENT RECENT MEMORY:\n\n")
+	b.WriteString(existingRecent)
+	return b.String()
+}
+
+// loadRecentFragmentsText returns up to maxChars of fragment content for the given agent,
+// ordered by most recently created first (newest fragments first).
+func loadRecentFragmentsText(ctx context.Context, store *memorydb.Store, agentName string, maxChars int) (string, error) {
+	if maxChars <= 0 {
+		return "", nil
+	}
+	fragments, err := store.ListFragments(ctx, memorydb.ListOptions{
+		Agent: agentName,
+		Limit: 500, // fetch a generous batch; we'll stop at maxChars
+	})
+	if err != nil {
+		return "", fmt.Errorf("list fragments for update-recent: %w", err)
+	}
+
+	var b strings.Builder
+	for _, f := range fragments {
+		content := strings.TrimSpace(f.Content)
+		if content == "" {
+			continue
+		}
+		entry := fmt.Sprintf("[%s]\n%s\n", f.Path, content)
+		if b.Len()+len(entry) > maxChars {
+			break
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(entry)
+	}
+	return b.String(), nil
 }
 
 func memoryCompactRecentUserPrompt(candidateRecent string) string {

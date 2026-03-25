@@ -129,7 +129,7 @@ func TestMemoryCompactRecentSystemPrompt_ContainsAggressiveCompactionGuidance(t 
 }
 
 func TestMemoryUpdateRecentUserPrompt(t *testing.T) {
-	prompt := memoryUpdateRecentUserPrompt("snippets here", "existing content")
+	prompt := memoryUpdateRecentUserPrompt("snippets here", "existing content", "fragment facts")
 	if !contains(prompt, "RECENT SESSION SNIPPETS") {
 		t.Error("missing RECENT SESSION SNIPPETS label")
 	}
@@ -141,6 +141,22 @@ func TestMemoryUpdateRecentUserPrompt(t *testing.T) {
 	}
 	if !contains(prompt, "existing content") {
 		t.Error("missing existing content")
+	}
+	if !contains(prompt, "RECENT MEMORY FRAGMENTS") {
+		t.Error("missing RECENT MEMORY FRAGMENTS label")
+	}
+	if !contains(prompt, "fragment facts") {
+		t.Error("missing fragment content")
+	}
+}
+
+func TestMemoryUpdateRecentUserPromptNoFragments(t *testing.T) {
+	prompt := memoryUpdateRecentUserPrompt("snippets here", "existing content", "")
+	if contains(prompt, "RECENT MEMORY FRAGMENTS") {
+		t.Error("should omit RECENT MEMORY FRAGMENTS section when fragmentsText is empty")
+	}
+	if !contains(prompt, "RECENT SESSION SNIPPETS") {
+		t.Error("missing RECENT SESSION SNIPPETS label")
 	}
 }
 
