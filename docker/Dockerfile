@@ -48,7 +48,6 @@ RUN pacman -Syu --noconfirm && \
       openbsd-netcat \
       strace \
       gnupg \
-      nvidia-utils \
       uv \
       nspr \
       nss \
