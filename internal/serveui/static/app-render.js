@@ -182,7 +182,7 @@ const renderSidebar = () => {
 
       const meta = document.createElement('div');
       meta.className = 'session-meta';
-      const msgCount = session.messages.length || session.messageCount || 0;
+      const msgCount = session.messageCount || session.messages.filter(m => m.role !== 'tool-group').length || 0;
       const metaParts = [`${msgCount} message${msgCount === 1 ? '' : 's'}`];
       if (session.archived) {
         metaParts.push('hidden');
