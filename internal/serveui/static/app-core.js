@@ -694,9 +694,21 @@ const loadSessions = () => {
   }
 };
 
-// Strip large binary payloads from attachment metadata before serialization.
+// Prepare sessions for localStorage.  Only the 20 most-recent sessions
+// keep their full message arrays; older ones are stored as metadata-only
+// stubs that will be lazy-loaded from the server on next switch.
+const MAX_CACHED_MESSAGE_SESSIONS = 20;
+
 const sessionsForStorage = () => {
+  const sorted = [...state.sessions]
+    .filter(s => s.messages && s.messages.length > 0 && !s._serverOnly)
+    .sort((a, b) => b.created - a.created);
+  const keep = new Set(sorted.slice(0, MAX_CACHED_MESSAGE_SESSIONS).map(s => s.id));
+
   return state.sessions.map(s => {
+    if (!keep.has(s.id) && s.messages && s.messages.length > 0) {
+      return { ...s, messages: [], _serverOnly: true };
+    }
     if (!s.messages || !s.messages.some(m => m.attachments)) return s;
     return {
       ...s,
