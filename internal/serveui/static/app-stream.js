@@ -2182,7 +2182,7 @@ const sendMessage = async (options = {}) => {
     state.sessions.unshift(session);
     state.activeSessionId = session.id;
     state.draftSessionActive = false;
-    updateURL(session.id);
+    updateURL(sessionSlug(session));
   }
 
   const reuseMessageId = typeof options.reuseMessageId === 'string' ? options.reuseMessageId : '';

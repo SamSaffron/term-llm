@@ -178,11 +178,13 @@ function createHarness(options = {}) {
         lastResponseId: null,
         activeResponseId: null,
         lastSequenceNumber: 0,
+        number: 0,
       };
     },
     findMessageElement() { return null; },
     scrollToBottom() {},
     setConnectionState() {},
+    sessionSlug(s) { return s ? s.id : ''; },
     updateURL() {},
     persistAndRefreshShell() {},
     updateSessionUsageDisplay() {},
