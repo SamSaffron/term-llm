@@ -450,8 +450,8 @@ const findMatchingServerSessionStub = (serverSession) => {
   const num = Number(serverSession.number || 0);
   if (num <= 0) return null;
 
-  return state.sessions.find((item) => item._serverOnly
-    && Number(item.number || 0) === num) || null;
+  return state.sessions.find((item) => Number(item.number || 0) === num
+    && /^\d+$/.test(item.id)) || null;
 };
 
 const reconcileServerSessionIdentity = (session, serverSession) => {
