@@ -1040,7 +1040,7 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	query := `
 		SELECT s.id, s.number, s.name, s.summary, ` + generatedShortCol + `, ` + generatedLongCol + `, ` + titleSourceCol + `,
 		       s.provider, s.model, s.mode, ` + originCol + `, s.archived, ` + pinnedCol + `, s.created_at, s.updated_at,
-		       (SELECT COUNT(*) FROM messages WHERE session_id = s.id) as message_count,
+		       (SELECT COUNT(*) FROM messages WHERE session_id = s.id AND role IN ('user', 'assistant')) as message_count,
 		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.cached_input_tokens, ` + cacheWriteCol + `, s.output_tokens, s.status, s.tags
 		FROM sessions s
 		WHERE 1=1`
