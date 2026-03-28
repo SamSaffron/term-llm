@@ -109,6 +109,33 @@ mcp:
 
 Built-in agents that currently default to `search: true`: `agent-builder`, `web-researcher`, `developer`, `editor`, `shell`.
 
+## Platform developer messages
+
+When term-llm serves an agent on different platforms (web UI, Telegram, CLI chat, background jobs), each platform may need different behavioral guidance. The `platform_messages` block in `agent.yaml` lets you inject a developer-role message at the start of every new session, keyed by platform.
+
+```yaml
+platform_messages:
+  web_developer_message: |
+    You are running in the web UI. Use markdown, tables, and links freely.
+  telegram_developer_message: |
+    You are running as a Telegram bot. Keep responses short.
+  chat_developer_message: |
+    You are running in CLI chat mode.
+  jobs_developer_message: |
+    You are running as a background job. Do not prompt for input.
+```
+
+Supported platform keys:
+
+| Key | Platform | When used |
+|---|---|---|
+| `web_developer_message` | Web UI / HTTP API | `term-llm serve --platform web` |
+| `telegram_developer_message` | Telegram bot | `term-llm serve --platform telegram` |
+| `chat_developer_message` | CLI chat | `term-llm chat` |
+| `jobs_developer_message` | Scheduled/background jobs | `term-llm serve --platform jobs` |
+
+Messages are injected as `developer` role messages before the first user turn. If no message is configured for the active platform, nothing is injected. Each key is optional — define only the platforms you need.
+
 ## System prompt file includes
 
 System prompts support inline file includes with `{{file:...}}`.

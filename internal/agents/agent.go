@@ -22,9 +22,10 @@ type PlatformMessagesConfig struct {
 	Web      string `yaml:"web_developer_message,omitempty"`
 	Telegram string `yaml:"telegram_developer_message,omitempty"`
 	Chat     string `yaml:"chat_developer_message,omitempty"`
+	Jobs     string `yaml:"jobs_developer_message,omitempty"`
 }
 
-// For returns the developer message for the given platform name ("web", "telegram", "chat").
+// For returns the developer message for the given platform name ("web", "telegram", "chat", "jobs").
 // Returns empty string when no message is configured for that platform.
 func (p PlatformMessagesConfig) For(platform string) string {
 	switch platform {
@@ -34,6 +35,8 @@ func (p PlatformMessagesConfig) For(platform string) string {
 		return p.Telegram
 	case "chat":
 		return p.Chat
+	case "jobs":
+		return p.Jobs
 	default:
 		return ""
 	}

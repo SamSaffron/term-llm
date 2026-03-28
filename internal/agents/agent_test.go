@@ -687,6 +687,7 @@ func TestPlatformMessagesConfig_For(t *testing.T) {
 		Web:      "You are a web assistant",
 		Telegram: "You are a telegram bot",
 		Chat:     "You are a CLI helper",
+		Jobs:     "You are a background job",
 	}
 
 	tests := []struct {
@@ -696,8 +697,8 @@ func TestPlatformMessagesConfig_For(t *testing.T) {
 		{"web", "You are a web assistant"},
 		{"telegram", "You are a telegram bot"},
 		{"chat", "You are a CLI helper"},
+		{"jobs", "You are a background job"},
 		{"unknown", ""},
-		{"jobs", ""},
 		{"", ""},
 	}
 
@@ -712,7 +713,7 @@ func TestPlatformMessagesConfig_For(t *testing.T) {
 
 	// Empty config returns "" for all platforms
 	empty := PlatformMessagesConfig{}
-	for _, p := range []string{"web", "telegram", "chat"} {
+	for _, p := range []string{"web", "telegram", "chat", "jobs"} {
 		if got := empty.For(p); got != "" {
 			t.Errorf("empty config For(%q) = %q, want empty", p, got)
 		}
