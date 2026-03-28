@@ -15,6 +15,74 @@ import (
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
+func (m *Model) shouldInjectPlatformDeveloperMessage() bool {
+	if strings.TrimSpace(m.platformDeveloperMessage) == "" {
+		return false
+	}
+	if len(m.messages) == 0 {
+		return true
+	}
+	if m.sess == nil {
+		return false
+	}
+	return m.sess.Origin != m.currentOrigin
+}
+
+func (m *Model) prependMessage(msg session.Message) {
+	m.messages = append([]session.Message{msg}, m.messages...)
+	m.invalidateHistoryCache()
+}
+
+func (m *Model) ensureContextMessages() {
+	hasSystemMsg := false
+	for _, msg := range m.messages {
+		if msg.Role == llm.RoleSystem {
+			hasSystemMsg = true
+			break
+		}
+	}
+
+	if m.config.Chat.Instructions != "" && !hasSystemMsg {
+		sysMsg := &session.Message{
+			SessionID:   m.sess.ID,
+			Role:        llm.RoleSystem,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: m.config.Chat.Instructions}},
+			TextContent: m.config.Chat.Instructions,
+			CreatedAt:   time.Now(),
+			Sequence:    -1,
+		}
+		if m.store != nil {
+			_ = m.store.AddMessage(context.Background(), m.sess.ID, sysMsg)
+		}
+		m.prependMessage(*sysMsg)
+	}
+
+	if !m.shouldInjectPlatformDeveloperMessage() {
+		return
+	}
+
+	devText := strings.TrimSpace(m.platformDeveloperMessage)
+	devMsg := &session.Message{
+		SessionID:   m.sess.ID,
+		Role:        llm.RoleDeveloper,
+		Parts:       []llm.Part{{Type: llm.PartText, Text: devText}},
+		TextContent: devText,
+		CreatedAt:   time.Now(),
+		Sequence:    -1,
+	}
+	if m.store != nil {
+		_ = m.store.AddMessage(context.Background(), m.sess.ID, devMsg)
+	}
+	m.prependMessage(*devMsg)
+
+	if m.sess != nil {
+		m.sess.Origin = m.currentOrigin
+		if m.store != nil {
+			_ = m.store.Update(context.Background(), m.sess)
+		}
+	}
+}
+
 func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	m.selection = Selection{}
 	m.interruptNotice = ""
@@ -46,6 +114,9 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 		displayText = "[" + strings.Join(imageLabels, ", ") + "]"
 	}
 
+	// Ensure system/platform context messages exist before the user turn.
+	m.ensureContextMessages()
+
 	// Create user message and store it
 	userMsg := &session.Message{
 		SessionID:   m.sess.ID,
@@ -58,30 +129,6 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	m.messages = append(m.messages, *userMsg)
 	m.invalidateHistoryCache()
 	if m.store != nil {
-		// Save system message first if this is a new session with instructions
-		// Check if there's no existing system message in history
-		hasSystemMsg := false
-		for _, msg := range m.messages {
-			if msg.Role == llm.RoleSystem {
-				hasSystemMsg = true
-				break
-			}
-		}
-		if m.config.Chat.Instructions != "" && !hasSystemMsg {
-			sysMsg := &session.Message{
-				SessionID:   m.sess.ID,
-				Role:        llm.RoleSystem,
-				Parts:       []llm.Part{{Type: llm.PartText, Text: m.config.Chat.Instructions}},
-				TextContent: m.config.Chat.Instructions,
-				CreatedAt:   time.Now(),
-				Sequence:    -1, // Auto-allocate sequence
-			}
-			_ = m.store.AddMessage(context.Background(), m.sess.ID, sysMsg)
-			// Prepend to m.messages so we don't save it again on subsequent sends
-			m.messages = append([]session.Message{*sysMsg}, m.messages...)
-			m.invalidateHistoryCache()
-		}
-
 		_ = m.store.AddMessage(context.Background(), m.sess.ID, userMsg)
 		// Sync the assigned ID back to the copy in m.messages to avoid cache collisions
 		// (AddMessage sets userMsg.ID, but the copy was made before that)

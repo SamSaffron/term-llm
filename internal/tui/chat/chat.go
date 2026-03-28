@@ -94,6 +94,9 @@ type Model struct {
 	modelName    string
 	agentName    string
 
+	platformDeveloperMessage string
+	currentOrigin            session.SessionOrigin
+
 	// Agent handover
 	agentResolver       func(name string, cfg *config.Config) (*agents.Agent, error)
 	agentLister         func(cfg *config.Config) ([]string, error) // Lists available agent names
@@ -321,13 +324,13 @@ type AskUserRequestMsg struct {
 
 // New creates a new chat model.
 // fast-provider aware callers should use NewWithFastProvider.
-func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, providerKey string, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, disableExternalWebFetch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, autoSendExitOnDone bool, textMode bool, agentName string, yolo bool) *Model {
-	return NewWithFastProvider(cfg, provider, nil, engine, providerKey, modelName, mcpManager, maxTurns, forceExternalSearch, disableExternalWebFetch, searchEnabled, localTools, toolsStr, mcpStr, showStats, initialText, store, sess, altScreen, autoSendQueue, autoSendExitOnDone, textMode, agentName, yolo)
+func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, providerKey string, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, disableExternalWebFetch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, autoSendExitOnDone bool, textMode bool, agentName string, platformDeveloperMessage string, yolo bool) *Model {
+	return NewWithFastProvider(cfg, provider, nil, engine, providerKey, modelName, mcpManager, maxTurns, forceExternalSearch, disableExternalWebFetch, searchEnabled, localTools, toolsStr, mcpStr, showStats, initialText, store, sess, altScreen, autoSendQueue, autoSendExitOnDone, textMode, agentName, platformDeveloperMessage, yolo)
 }
 
 // NewWithFastProvider creates a new chat model with an optional fast provider
 // for control-plane classification tasks.
-func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider llm.Provider, engine *llm.Engine, providerKey string, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, disableExternalWebFetch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, autoSendExitOnDone bool, textMode bool, agentName string, yolo bool) *Model {
+func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider llm.Provider, engine *llm.Engine, providerKey string, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, disableExternalWebFetch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, autoSendExitOnDone bool, textMode bool, agentName string, platformDeveloperMessage string, yolo bool) *Model {
 	// Get terminal size
 	width := 80
 	height := 24
@@ -373,6 +376,7 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 			ProviderKey: providerKey,
 			Model:       modelName,
 			Mode:        session.ModeChat,
+			Origin:      session.OriginTUI,
 			Agent:       agentName,
 			CreatedAt:   time.Now(),
 			UpdatedAt:   time.Now(),
@@ -452,52 +456,54 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 	}
 
 	return &Model{
-		width:                   width,
-		height:                  height,
-		textarea:                ta,
-		spinner:                 s,
-		styles:                  styles,
-		keyMap:                  DefaultKeyMap(),
-		store:                   store,
-		sess:                    sess,
-		messages:                messages,
-		rootCtx:                 context.Background(),
-		provider:                provider,
-		fastProvider:            fastProvider,
-		engine:                  engine,
-		config:                  cfg,
-		providerName:            provider.Name(),
-		providerKey:             providerKey,
-		modelName:               modelName,
-		agentName:               agentName,
-		yolo:                    yolo,
-		phase:                   "Thinking",
-		viewportRows:            height - 8, // Reserve space for input and status
-		tracker:                 tracker,
-		subagentTracker:         subagentTracker,
-		smoothBuffer:            ui.NewSmoothBuffer(),
-		completions:             completions,
-		dialog:                  dialog,
-		approvedDirs:            approvedDirs,
-		mcpManager:              mcpManager,
-		maxTurns:                maxTurns,
-		forceExternalSearch:     forceExternalSearch,
-		disableExternalWebFetch: disableExternalWebFetch,
-		searchEnabled:           searchEnabled,
-		localTools:              localTools,
-		toolsStr:                toolsStr,
-		mcpStr:                  mcpStr,
-		showStats:               showStats,
-		stats:                   stats,
-		streamPerf:              newStreamPerfTelemetryFromEnv(),
-		altScreen:               altScreen,
-		viewport:                vp,
-		streamRenderMinInterval: chatRenderMinIntervalFromEnv(),
-		chatRenderer:            chatRenderer,
-		autoSendQueue:           autoSendQueue,
-		autoSendExitOnDone:      autoSendExitOnDone,
-		textMode:                textMode,
-		selectedImage:           -1,
+		width:                    width,
+		height:                   height,
+		textarea:                 ta,
+		spinner:                  s,
+		styles:                   styles,
+		keyMap:                   DefaultKeyMap(),
+		store:                    store,
+		sess:                     sess,
+		messages:                 messages,
+		rootCtx:                  context.Background(),
+		provider:                 provider,
+		fastProvider:             fastProvider,
+		engine:                   engine,
+		config:                   cfg,
+		providerName:             provider.Name(),
+		providerKey:              providerKey,
+		modelName:                modelName,
+		agentName:                agentName,
+		platformDeveloperMessage: strings.TrimSpace(platformDeveloperMessage),
+		currentOrigin:            session.OriginTUI,
+		yolo:                     yolo,
+		phase:                    "Thinking",
+		viewportRows:             height - 8, // Reserve space for input and status
+		tracker:                  tracker,
+		subagentTracker:          subagentTracker,
+		smoothBuffer:             ui.NewSmoothBuffer(),
+		completions:              completions,
+		dialog:                   dialog,
+		approvedDirs:             approvedDirs,
+		mcpManager:               mcpManager,
+		maxTurns:                 maxTurns,
+		forceExternalSearch:      forceExternalSearch,
+		disableExternalWebFetch:  disableExternalWebFetch,
+		searchEnabled:            searchEnabled,
+		localTools:               localTools,
+		toolsStr:                 toolsStr,
+		mcpStr:                   mcpStr,
+		showStats:                showStats,
+		stats:                    stats,
+		streamPerf:               newStreamPerfTelemetryFromEnv(),
+		altScreen:                altScreen,
+		viewport:                 vp,
+		streamRenderMinInterval:  chatRenderMinIntervalFromEnv(),
+		chatRenderer:             chatRenderer,
+		autoSendQueue:            autoSendQueue,
+		autoSendExitOnDone:       autoSendExitOnDone,
+		textMode:                 textMode,
+		selectedImage:            -1,
 	}
 }
 

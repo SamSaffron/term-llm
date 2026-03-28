@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/session"
 )
 
 func TestIsImagePasteAttempt(t *testing.T) {
@@ -109,5 +110,52 @@ func TestSendMessage_IncludesImageParts(t *testing.T) {
 	}
 	if len(m.images) != 0 {
 		t.Fatalf("expected images to be cleared after send, got %d", len(m.images))
+	}
+}
+
+func TestSendMessage_InjectsPlatformDeveloperMessageOnlyOnFirstTurn(t *testing.T) {
+	m := newTestChatModel(false)
+	m.platformDeveloperMessage = "You are running on the CLI chat platform."
+
+	_, _ = m.sendMessage("hello")
+	if len(m.messages) != 2 {
+		t.Fatalf("expected developer + user messages after first send, got %d", len(m.messages))
+	}
+	if m.messages[0].Role != llm.RoleDeveloper {
+		t.Fatalf("expected first message role developer, got %q", m.messages[0].Role)
+	}
+
+	_, _ = m.sendMessage("again")
+	devCount := 0
+	for _, msg := range m.messages {
+		if msg.Role == llm.RoleDeveloper {
+			devCount++
+		}
+	}
+	if devCount != 1 {
+		t.Fatalf("developer message count = %d, want 1", devCount)
+	}
+}
+
+func TestSendMessage_InjectsPlatformDeveloperMessageWhenOriginChanges(t *testing.T) {
+	m := newTestChatModel(false)
+	m.platformDeveloperMessage = "You are running on the CLI chat platform."
+	m.sess.Origin = session.OriginWeb
+	m.messages = []session.Message{{
+		SessionID:   m.sess.ID,
+		Role:        llm.RoleUser,
+		Parts:       []llm.Part{{Type: llm.PartText, Text: "from web"}},
+		TextContent: "from web",
+	}}
+
+	_, _ = m.sendMessage("now from tui")
+	if len(m.messages) < 3 {
+		t.Fatalf("expected at least 3 messages after origin change, got %d", len(m.messages))
+	}
+	if m.messages[0].Role != llm.RoleDeveloper {
+		t.Fatalf("expected prepended developer message, got %q", m.messages[0].Role)
+	}
+	if m.sess.Origin != session.OriginTUI {
+		t.Fatalf("session origin = %q, want %q", m.sess.Origin, session.OriginTUI)
 	}
 }

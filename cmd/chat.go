@@ -384,7 +384,11 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	useAltScreen := term.IsTerminal(int(os.Stdout.Fd())) && !autoSendMode
 
 	// Create chat model
-	model := chat.NewWithFastProvider(cfg, provider, fastProvider, engine, providerKey, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, chatNoWebFetch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, false, initialText, store, sess, useAltScreen, chatAutoSend, autoSendMode, chatTextMode, agentName, chatYolo)
+	chatPlatformMessage := ""
+	if agent != nil {
+		chatPlatformMessage = agent.PlatformMessages.For("chat")
+	}
+	model := chat.NewWithFastProvider(cfg, provider, fastProvider, engine, providerKey, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, chatNoWebFetch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, false, initialText, store, sess, useAltScreen, chatAutoSend, autoSendMode, chatTextMode, agentName, chatPlatformMessage, chatYolo)
 	model.SetRootContext(ctx)
 
 	// Wire handover auto-send if pending from previous iteration
