@@ -762,6 +762,7 @@ const visibleSessions = () => state.sessions.filter(sessionMatchesSidebarFilters
 
 const createSession = () => ({
   id: `sess_${generateUUID()}`,
+  number: 0,
   name: '',
   title: 'New chat',
   longTitle: '',
@@ -779,6 +780,20 @@ const createSession = () => ({
   activeModel: ''
 });
 
+const sessionSlug = (session) => {
+  if (session && session.number > 0) return String(session.number);
+  return session ? session.id : '';
+};
+
+const findSessionBySlug = (slug) => {
+  if (!slug) return null;
+  const num = /^\d+$/.test(slug) ? Number(slug) : 0;
+  if (num > 0) {
+    return state.sessions.find(s => s.number === num) || null;
+  }
+  return state.sessions.find(s => s.id === slug) || null;
+};
+
 const ensureActiveSession = () => {
   if (state.draftSessionActive) {
     return null;
@@ -786,7 +801,7 @@ const ensureActiveSession = () => {
   let active = getActiveSession();
   if (active) {
     state.draftSessionActive = false;
-    updateURL(active.id);
+    updateURL(sessionSlug(active));
     return active;
   }
 
@@ -807,7 +822,7 @@ const ensureActiveSession = () => {
   active = sorted[0];
   state.activeSessionId = active.id;
   state.draftSessionActive = false;
-  updateURL(active.id);
+  updateURL(sessionSlug(active));
   saveSessions();
   return active;
 };
@@ -883,6 +898,8 @@ Object.assign(app, {
   requestNotificationPermission,
   maybeNotifyResponseComplete,
   sessionIdFromURL,
+  sessionSlug,
+  findSessionBySlug,
   updateURL,
   sanitizeMessage,
   sanitizeSession,

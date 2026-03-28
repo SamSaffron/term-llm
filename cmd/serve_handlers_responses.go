@@ -175,6 +175,8 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		model = runtime.defaultModel
 	}
 
+	setSessionNumberHeader(w, runtime)
+
 	respID := "resp_" + randomSuffix()
 	s.registerResponseID(runtime, respID, sessionID)
 

@@ -4,7 +4,7 @@
 const app = window.TermLLMApp;
 const {
   UI_PREFIX, STORAGE_KEYS, state, elements, generateId, sanitizeInterruptState, sanitizeMessage, syncTokenCookie, truncate, saveSessions,
-  getActiveSession, createSession, findMessageElement, scrollToBottom, setConnectionState, updateURL,
+  getActiveSession, createSession, findMessageElement, scrollToBottom, setConnectionState, sessionSlug, updateURL,
   persistAndRefreshShell, updateSessionUsageDisplay, refreshRelativeTimes, requestHeaders: _unusedRequestHeaders, updateAssistantNode, updateUserNode,
   updateToolNode, updateToolGroupNode, createMessageNode, createToolGroupNode, renderSidebar, renderMessages, maybeNotifyResponseComplete,
   enqueueAssistantStreamUpdate, finalizeAssistantStreamRender,
@@ -2314,6 +2314,11 @@ const sendMessage = async (options = {}) => {
     }
 
     const headerResponseId = String(response.headers.get('x-response-id') || '').trim();
+    const headerSessionNumber = Number(response.headers.get('x-session-number') || 0);
+    if (headerSessionNumber > 0 && session.number !== headerSessionNumber) {
+      session.number = headerSessionNumber;
+      updateURL(sessionSlug(session));
+    }
     if (!response.ok) {
       throw await normalizeError(response);
     }

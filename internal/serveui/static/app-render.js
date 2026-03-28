@@ -175,7 +175,8 @@ const renderSidebar = () => {
 
       const title = document.createElement('div');
       title.className = 'session-title';
-      title.textContent = session.title || 'New chat';
+      const titlePrefix = session.number > 0 ? `#${session.number} ` : '';
+      title.textContent = titlePrefix + (session.title || 'New chat');
       if (session.longTitle) {
         title.title = session.longTitle;
       }

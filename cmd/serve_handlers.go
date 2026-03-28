@@ -259,6 +259,7 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 
 	type sessionEntry struct {
 		ID         string                `json:"id"`
+		Number     int64                 `json:"number,omitempty"`
 		Name       string                `json:"name,omitempty"`
 		ShortTitle string                `json:"short_title"`
 		LongTitle  string                `json:"long_title"`
@@ -275,6 +276,7 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 		result = append(result, sessionEntry{
 			Name:       sess.Name,
 			ID:         sess.ID,
+			Number:     sess.Number,
 			ShortTitle: sess.PreferredShortTitle(),
 			LongTitle:  sess.PreferredLongTitle(),
 			Mode:       sess.Mode,
@@ -299,6 +301,15 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 	}
 
 	sessionID := parts[0]
+	// If the path segment is purely numeric, resolve via session number.
+	if num, err := strconv.ParseInt(sessionID, 10, 64); err == nil && num > 0 && s.store != nil {
+		sess, err := s.store.GetByNumber(r.Context(), num)
+		if err != nil || sess == nil {
+			http.NotFound(w, r)
+			return
+		}
+		sessionID = sess.ID
+	}
 	suffix := ""
 	if len(parts) > 1 {
 		suffix = parts[1]
@@ -636,7 +647,7 @@ func (s *serveServer) cors(next http.HandlerFunc) http.HandlerFunc {
 			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, session_id, X-Term-LLM-UI, X-API-Key, anthropic-version")
-			w.Header().Set("Access-Control-Expose-Headers", "x-session-id")
+			w.Header().Set("Access-Control-Expose-Headers", "x-session-id, x-session-number")
 		}
 
 		if r.Method == http.MethodOptions {

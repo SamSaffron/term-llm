@@ -4,7 +4,7 @@
 const app = window.TermLLMApp;
 const {
   UI_PREFIX, STORAGE_KEYS, state, elements, generateId, truncate, asTimestamp, loadSessions, saveSessions, getActiveSession, createSession, ensureActiveSession,
-  sessionIdFromURL, updateURL, scrollToBottom, setConnectionState, setStartupStatus, hideStartupSplash, persistAndRefreshShell, refreshRelativeTimes,
+  sessionIdFromURL, sessionSlug, findSessionBySlug, updateURL, scrollToBottom, setConnectionState, setStartupStatus, hideStartupSplash, persistAndRefreshShell, refreshRelativeTimes,
   openAuthModal, closeAuthModal, handleAuthFailure, closeAskUserModal, openAskUserModal, setActiveResponseTracking,
   clearActiveResponseTracking, setStreaming, resumeActiveResponse, renderSidebar, renderMessages, renderProviderOptions, renderModelOptions, normalizeSelectedProvider,
   autoGrowPrompt, updateVoiceUI, toggleVoiceRecording, fetchProviders, fetchModels, addErrorMessage, sendMessage, openSidebar, closeSidebar, closeSidebarIfMobile,
@@ -138,7 +138,7 @@ const switchToSession = async (sessionId, options = {}) => {
 
   state.activeSessionId = nextId;
   state.draftSessionActive = false;
-  updateURL(nextId);
+  updateURL(sessionSlug(session));
 
   if (session._serverOnly) {
     const msgs = await loadServerSessionMessages(session.id);
@@ -437,6 +437,7 @@ const applyServerSessionSummary = (target, serverSession) => {
   target.pinned = Boolean(serverSession.pinned);
   target.created = asTimestamp(serverSession.created_at || target.created);
   target.messageCount = Number(serverSession.message_count || target.messageCount || 0);
+  target.number = Number(serverSession.number || target.number || 0);
   return target;
 };
 
@@ -470,6 +471,7 @@ const mergeServerSessions = async (options = {}) => {
 
       local = applyServerSessionSummary({
         id: serverSession.id,
+        number: 0,
         name: '',
         title: 'New chat',
         longTitle: '',
@@ -664,17 +666,19 @@ const initialize = async () => {
   setStartupStatus('Loading your chat shell…');
   state.sessions = loadSessions();
 
-  // Check URL for a specific session ID
-  const urlSessionId = sessionIdFromURL();
-  if (urlSessionId) {
-    const found = state.sessions.find(s => s.id === urlSessionId);
+  // Check URL for a specific session (number or ID)
+  const urlSlug = sessionIdFromURL();
+  if (urlSlug) {
+    const found = findSessionBySlug(urlSlug);
     if (found) {
       state.activeSessionId = found.id;
       state.draftSessionActive = false;
     } else {
       // Create a server-only stub that will be lazy-loaded
+      const num = /^\d+$/.test(urlSlug) ? Number(urlSlug) : 0;
       const stub = {
-        id: urlSessionId,
+        id: num > 0 ? `pending_${urlSlug}` : urlSlug,
+        number: num,
         name: '',
         title: 'Loading…',
         longTitle: '',
@@ -690,7 +694,7 @@ const initialize = async () => {
         _serverOnly: true
       };
       state.sessions.unshift(stub);
-      state.activeSessionId = urlSessionId;
+      state.activeSessionId = stub.id;
       state.draftSessionActive = false;
     }
   } else if (!state.activeSessionId && state.sessions.length === 0) {
@@ -941,20 +945,21 @@ if (typeof sidebarViewportMedia.addEventListener === 'function') {
 }
 
 window.addEventListener('popstate', async () => {
-  const urlId = sessionIdFromURL();
-  if (!urlId) {
+  const urlSlug = sessionIdFromURL();
+  if (!urlSlug) {
     await switchToDraftSession({ closeSidebar: false });
     return;
   }
-  if (urlId === state.activeSessionId) return;
-
-  const found = state.sessions.find(s => s.id === urlId);
+  const found = findSessionBySlug(urlSlug);
   if (found) {
+    if (found.id === state.activeSessionId) return;
     await switchToSession(found.id, { closeSidebar: false });
     return;
   }
+  const num = /^\d+$/.test(urlSlug) ? Number(urlSlug) : 0;
   const stub = {
-    id: urlId,
+    id: num > 0 ? `pending_${urlSlug}` : urlSlug,
+    number: num,
     name: '',
     title: 'Loading…',
     longTitle: '',

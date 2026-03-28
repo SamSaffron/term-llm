@@ -81,6 +81,13 @@ func (rt *serveRuntime) LastUsed() time.Time {
 	return time.Unix(0, unixNano)
 }
 
+func (rt *serveRuntime) SessionNumber() int64 {
+	if rt.sessionMeta != nil {
+		return rt.sessionMeta.Number
+	}
+	return 0
+}
+
 func (rt *serveRuntime) Close() {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -337,6 +338,12 @@ func ensureSessionID(w http.ResponseWriter) string {
 	sessionID := session.NewID()
 	w.Header().Set("x-session-id", sessionID)
 	return sessionID
+}
+
+func setSessionNumberHeader(w http.ResponseWriter, rt *serveRuntime) {
+	if rt != nil && rt.sessionMeta != nil && rt.sessionMeta.Number > 0 {
+		w.Header().Set("x-session-number", strconv.FormatInt(rt.sessionMeta.Number, 10))
+	}
 }
 
 func requireJSONContentType(r *http.Request) error {
