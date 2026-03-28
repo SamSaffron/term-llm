@@ -11,9 +11,67 @@ const {
   connectToken, submitAskUserModal, cancelActiveResponse, handleFiles, isNearBottom,
   openApprovalModal, closeApprovalModal, submitApprovalModal, registerServiceWorker, subscribeToPush, refreshNotificationUI,
   requestNotificationPermission, shouldAutoSubscribeToPush, detachResponseStream, HEARTBEAT_STALE_THRESHOLD, HEARTBEAT_ABORT_REASON,
-  applyDesktopSidebarState, toggleSidebarCollapsed, flushStreamPersistence, requestHeaders, normalizeError, renderAttachments
+  applyDesktopSidebarState, toggleSidebarCollapsed, flushStreamPersistence, requestHeaders, normalizeError, renderAttachments,
+  updateSidebarStatus
 } = app;
 let sessionStatePollTimer = null;
+
+// ===== Sidebar status polling =====
+const SIDEBAR_POLL_ACTIVE = 2000;
+const SIDEBAR_POLL_IDLE = 30000;
+let sidebarStatusTimer = null;
+let sidebarStatusEtag = null;
+let sidebarHasActive = false;
+
+const stopSidebarStatusPoll = () => {
+  if (sidebarStatusTimer !== null) {
+    clearTimeout(sidebarStatusTimer);
+    sidebarStatusTimer = null;
+  }
+};
+
+const pollSidebarStatus = async () => {
+  stopSidebarStatusPoll();
+  if (document.visibilityState === 'hidden') return;
+
+  try {
+    const params = new URLSearchParams();
+    const categories = state.sidebarSessionCategories;
+    if (Array.isArray(categories) && categories.length > 0 && !categories.includes('all')) {
+      params.set('categories', categories.join(','));
+    }
+    if (state.showHiddenSessions) params.set('include_archived', '1');
+    const query = params.toString();
+
+    const headers = requestHeaders('');
+    if (sidebarStatusEtag) headers['If-None-Match'] = sidebarStatusEtag;
+
+    const resp = await fetch(`${UI_PREFIX}/v1/sessions/status${query ? `?${query}` : ''}`, { headers });
+
+    if (resp.status === 304) {
+      // No change — keep current active state, schedule next poll
+    } else if (resp.ok) {
+      const etag = resp.headers.get('ETag');
+      if (etag) sidebarStatusEtag = etag;
+      const data = await resp.json();
+      if (Array.isArray(data.sessions)) {
+        sidebarHasActive = data.sessions.some(s => s.active_run);
+        updateSidebarStatus(data.sessions);
+      }
+    }
+  } catch (_e) {
+    // Network error — just retry on next interval
+  }
+
+  const delay = sidebarHasActive ? SIDEBAR_POLL_ACTIVE : SIDEBAR_POLL_IDLE;
+  sidebarStatusTimer = setTimeout(pollSidebarStatus, delay);
+};
+
+const startSidebarStatusPoll = () => {
+  stopSidebarStatusPoll();
+  sidebarStatusEtag = null;
+  pollSidebarStatus();
+};
 
 const createAndSwitchToFreshSession = async () => {
   await switchToDraftSession({ clearComposer: true, focusPrompt: true });
@@ -667,6 +725,7 @@ const initialize = async () => {
 
     // Merge server-side sessions after successful auth
     await mergeServerSessions();
+    startSidebarStatusPoll();
     if (!state.draftSessionActive && !getActiveSession()) {
       ensureActiveSession();
       renderMessages(true);
@@ -917,8 +976,10 @@ window.addEventListener('popstate', async () => {
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState !== 'visible') {
     flushStreamPersistence();
+    stopSidebarStatusPoll();
     return;
   }
+  startSidebarStatusPoll();
   const session = getActiveSession();
   if (!session) return;
 
@@ -990,6 +1051,8 @@ Object.assign(app, {
   syncActiveSessionFromServer,
   applyServerSessionSummary,
   mergeServerSessions,
+  startSidebarStatusPoll,
+  stopSidebarStatusPoll,
   promptRenameSession,
   setSessionArchived,
   setSessionPinned,

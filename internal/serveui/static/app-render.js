@@ -999,6 +999,41 @@ const renderMessages = (forceScroll = false) => {
   updateHeader();
 };
 
+const updateSidebarStatus = (statusSessions) => {
+  if (!Array.isArray(statusSessions)) return false;
+  let changed = false;
+  for (const entry of statusSessions) {
+    const row = elements.sessionGroups.querySelector(`.session-row[data-session-id="${CSS.escape(entry.id)}"]`);
+    if (!row) continue;
+    const wasActive = row.classList.contains('is-active');
+    row.classList.toggle('is-active', Boolean(entry.active_run));
+    if (wasActive !== Boolean(entry.active_run)) changed = true;
+
+    const titleEl = row.querySelector('.session-title');
+    if (titleEl && entry.short_title && titleEl.textContent !== entry.short_title) {
+      titleEl.textContent = entry.short_title;
+      if (entry.long_title) titleEl.title = entry.long_title;
+      changed = true;
+    }
+
+    const metaEl = row.querySelector('.session-meta');
+    if (metaEl && entry.message_count != null) {
+      const count = entry.message_count;
+      const local = state.sessions.find(s => s.id === entry.id);
+      if (local) {
+        if (entry.short_title) local.title = entry.short_title;
+        if (entry.long_title) local.longTitle = entry.long_title;
+        local.messageCount = count;
+      }
+      const parts = [`${count} message${count === 1 ? '' : 's'}`];
+      if (local?.archived) parts.push('hidden');
+      parts.push(relativeTime(local?.created || Date.now()));
+      metaEl.textContent = parts.join(' · ');
+    }
+  }
+  return changed;
+};
+
 Object.assign(app, {
   openSidebar,
   closeSidebar,
@@ -1008,6 +1043,7 @@ Object.assign(app, {
   toggleSidebarCollapsed,
   updateHeader,
   renderSidebar,
+  updateSidebarStatus,
   directionForText,
   applyTextDirection,
   createInterruptBadgeNode,

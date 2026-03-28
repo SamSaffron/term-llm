@@ -274,6 +274,21 @@ func (m *serveSessionManager) GetOrCreateWith(ctx context.Context, id string, cr
 	return inflight.rt, nil
 }
 
+// ActiveSessionIDs returns the set of session IDs that currently have an
+// active run (activeInterrupt != nil). Unlike Get, this does NOT touch
+// runtimes, so it won't extend their TTL.
+func (m *serveSessionManager) ActiveSessionIDs() map[string]bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := make(map[string]bool, len(m.sessions))
+	for id, rt := range m.sessions {
+		if rt.hasActiveRun() {
+			result[id] = true
+		}
+	}
+	return result
+}
+
 func (m *serveSessionManager) Close() {
 	m.mu.Lock()
 	if m.closed {

@@ -428,6 +428,24 @@
       white-space: nowrap;
     }
 
+    .session-row.is-active .session-title::before {
+      content: '';
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #22c55e;
+      margin-right: 0.4em;
+      flex-shrink: 0;
+      animation: pulse-dot 1.8s ease-in-out infinite;
+      vertical-align: middle;
+    }
+
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.35; }
+    }
+
     .session-row-menu {
       position: absolute;
       top: 0.4rem;

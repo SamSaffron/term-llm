@@ -824,6 +824,7 @@ func (s *serveServer) httpHandler() http.Handler {
 	}
 
 	inner.HandleFunc("/images/", s.auth(s.cors(s.handleImage)))
+	inner.HandleFunc("/v1/sessions/status", s.auth(s.cors(s.handleSessionsStatus)))
 	inner.HandleFunc("/v1/sessions/", s.auth(s.cors(s.handleSessionByID)))
 	inner.HandleFunc("/v1/push/subscribe", s.auth(s.cors(s.handlePushSubscribe)))
 

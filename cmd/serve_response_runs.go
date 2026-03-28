@@ -641,6 +641,18 @@ func (m *responseRunManager) activeRunID(sessionID string) string {
 	return m.activeBySession[sessionID]
 }
 
+// ActiveSessionIDs returns session IDs that currently have an active
+// response run. Does not touch any runtime TTLs.
+func (m *responseRunManager) ActiveSessionIDs() map[string]bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := make(map[string]bool, len(m.activeBySession))
+	for sid := range m.activeBySession {
+		result[sid] = true
+	}
+	return result
+}
+
 func (m *responseRunManager) Close() {
 	m.mu.Lock()
 	if m.closed {
