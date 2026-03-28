@@ -481,6 +481,9 @@
         options.signal.addEventListener('abort', abortHandler, { once: true });
       }
 
+      // Null-body statuses per Fetch spec — Response constructor forbids a body.
+      const nullBodyStatus = (s) => s === 101 || s === 204 || s === 205 || s === 304;
+
       // fallback: called by drainPendingToHTTPS() when the channel dies.
       function fallback() {
         cleanup('drain-fallback');
@@ -499,12 +502,12 @@
       pendingRequests.set(reqId, {
         onHeaders(headers, status) {
           markGotResponse();
-          resolveOnce(new Response(stream, { status, headers: new Headers(headers) }));
+          resolveOnce(new Response(nullBodyStatus(status) ? null : stream, { status, headers: new Headers(headers) }));
         },
         onChunk(line) {
           markGotResponse();
           if (!resolved) {
-            resolveOnce(new Response(stream, { status: 200 }));
+            resolveOnce(new Response(stream, { status: 200 })); // 200 is never null-body
           }
           const chunk = typeof line === 'string' ? line : '';
           responseBytes += chunk.length + 1; // +1 for the \n
@@ -519,7 +522,7 @@
             ' (' + responseBytes + 'b, ' + latency + 'ms)');
           cleanup('done');
           if (!resolved) {
-            resolveOnce(new Response(stream, { status }));
+            resolveOnce(new Response(nullBodyStatus(status) ? null : stream, { status }));
           }
           closeStream();
         },
