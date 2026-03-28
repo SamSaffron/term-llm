@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system', 'tool')),
+    role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system', 'tool', 'developer')),
     parts TEXT NOT NULL,
     text_content TEXT,
     duration_ms INTEGER,
@@ -108,6 +108,18 @@ CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
     INSERT INTO messages_fts(rowid, text_content) VALUES (new.id, new.text_content);
 END;
 `
+
+const messagesTableSchema = `
+CREATE TABLE messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system', 'tool', 'developer')),
+    parts TEXT NOT NULL,
+    text_content TEXT,
+    duration_ms INTEGER,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    sequence INTEGER NOT NULL
+)`
 
 // NewSQLiteStore creates a new SQLite-based session store.
 func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
@@ -179,7 +191,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 16
+const schemaVersion = 17
 
 // migration represents a schema migration.
 type migration struct {
@@ -571,6 +583,57 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		// Migration 17: Allow developer-role messages in persisted chat history.
+		// Platform developer messages were added above the session layer, but the
+		// messages table still rejected role='developer', causing silent drops.
+		version:     17,
+		description: "allow developer messages in messages table",
+		up: func(db *sql.DB) error {
+			return rebuildMessagesTableForDeveloperRole(db)
+		},
+	},
+}
+
+func rebuildMessagesTableForDeveloperRole(db *sql.DB) error {
+	stmts := []string{
+		`DROP TRIGGER IF EXISTS messages_ai`,
+		`DROP TRIGGER IF EXISTS messages_ad`,
+		`DROP TRIGGER IF EXISTS messages_au`,
+		`DROP INDEX IF EXISTS idx_messages_session_id`,
+		`DROP INDEX IF EXISTS idx_messages_session_sequence`,
+		`DROP TABLE IF EXISTS messages_fts`,
+		`ALTER TABLE messages RENAME TO messages_old`,
+		messagesTableSchema,
+		`INSERT INTO messages (id, session_id, role, parts, text_content, duration_ms, created_at, sequence)
+		 SELECT id, session_id, role, parts, text_content, duration_ms, created_at, sequence
+		 FROM messages_old`,
+		`DROP TABLE messages_old`,
+		`CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, sequence)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_session_sequence ON messages(session_id, sequence)`,
+		`CREATE VIRTUAL TABLE messages_fts USING fts5(
+			text_content,
+			content='messages',
+			content_rowid='id'
+		)`,
+		`INSERT INTO messages_fts(rowid, text_content) SELECT id, text_content FROM messages`,
+		`CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN
+			INSERT INTO messages_fts(rowid, text_content) VALUES (new.id, new.text_content);
+		END`,
+		`CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN
+			INSERT INTO messages_fts(messages_fts, rowid, text_content) VALUES ('delete', old.id, old.text_content);
+		END`,
+		`CREATE TRIGGER messages_au AFTER UPDATE ON messages BEGIN
+			INSERT INTO messages_fts(messages_fts, rowid, text_content) VALUES ('delete', old.id, old.text_content);
+			INSERT INTO messages_fts(rowid, text_content) VALUES (new.id, new.text_content);
+		END`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // initSchema initializes the database schema and runs any pending migrations.

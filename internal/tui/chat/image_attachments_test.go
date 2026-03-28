@@ -113,6 +113,23 @@ func TestSendMessage_IncludesImageParts(t *testing.T) {
 	}
 }
 
+func TestSendMessage_InjectsPlatformDeveloperMessageOnFirstTurnEvenWithSystemInstructions(t *testing.T) {
+	m := newTestChatModel(false)
+	m.platformDeveloperMessage = "You are running on the CLI chat platform."
+	m.config.Chat.Instructions = "Base system instructions"
+
+	_, _ = m.sendMessage("hello")
+	if len(m.messages) != 3 {
+		t.Fatalf("expected system + developer + user messages after first send, got %d", len(m.messages))
+	}
+	if m.messages[0].Role != llm.RoleSystem {
+		t.Fatalf("expected first message role system, got %q", m.messages[0].Role)
+	}
+	if m.messages[1].Role != llm.RoleDeveloper {
+		t.Fatalf("expected second message role developer, got %q", m.messages[1].Role)
+	}
+}
+
 func TestSendMessage_InjectsPlatformDeveloperMessageOnlyOnFirstTurn(t *testing.T) {
 	m := newTestChatModel(false)
 	m.platformDeveloperMessage = "You are running on the CLI chat platform."

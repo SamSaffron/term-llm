@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/llm"
 )
 
 func TestSessionPreferredTitlePrecedence(t *testing.T) {
@@ -23,6 +25,145 @@ func TestSessionPreferredTitlePrecedence(t *testing.T) {
 	}
 	if got := sess.PreferredLongTitle(); got != "Custom name" {
 		t.Fatalf("PreferredLongTitle() with name = %q", got)
+	}
+}
+
+func TestSQLiteStorePersistsDeveloperMessages(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("failed to create sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	msg := NewMessage(sess.ID, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "Be concise"}}}, -1)
+	if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
+		t.Fatalf("AddMessage developer: %v", err)
+	}
+
+	msgs, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].Role != llm.RoleDeveloper {
+		t.Fatalf("message role = %q, want %q", msgs[0].Role, llm.RoleDeveloper)
+	}
+}
+
+func TestSQLiteStoreMigratesMessagesTableToAllowDeveloperRole(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open seed database: %v", err)
+	}
+	_, err = db.Exec(`
+		CREATE TABLE sessions (
+			id TEXT PRIMARY KEY,
+			number INTEGER,
+			name TEXT,
+			summary TEXT,
+			generated_short_title TEXT,
+			generated_long_title TEXT,
+			title_source TEXT,
+			title_generated_at TIMESTAMP,
+			title_basis_msg_seq INTEGER DEFAULT 0,
+			title_skipped_at TIMESTAMP,
+			provider TEXT NOT NULL,
+			provider_key TEXT,
+			model TEXT NOT NULL,
+			mode TEXT DEFAULT 'chat',
+			origin TEXT DEFAULT 'tui',
+			agent TEXT,
+			cwd TEXT,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			archived BOOLEAN DEFAULT FALSE,
+			pinned BOOLEAN DEFAULT FALSE,
+			parent_id TEXT REFERENCES sessions(id),
+			search BOOLEAN DEFAULT FALSE,
+			tools TEXT,
+			mcp TEXT,
+			user_turns INTEGER DEFAULT 0,
+			llm_turns INTEGER DEFAULT 0,
+			tool_calls INTEGER DEFAULT 0,
+			input_tokens INTEGER DEFAULT 0,
+			cached_input_tokens INTEGER DEFAULT 0,
+			cache_write_tokens INTEGER DEFAULT 0,
+			output_tokens INTEGER DEFAULT 0,
+			status TEXT DEFAULT 'active',
+			tags TEXT,
+			compaction_seq INTEGER DEFAULT -1,
+			last_user_message_at TIMESTAMP
+		);
+		CREATE UNIQUE INDEX idx_sessions_number ON sessions(number);
+		CREATE INDEX idx_sessions_updated_at ON sessions(updated_at DESC);
+		CREATE INDEX idx_sessions_mode ON sessions(mode);
+		CREATE INDEX idx_sessions_origin ON sessions(origin);
+		CREATE INDEX idx_sessions_pinned ON sessions(pinned);
+		CREATE INDEX idx_sessions_last_user_msg ON sessions(last_user_message_at DESC);
+		CREATE TABLE messages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+			role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system', 'tool')),
+			parts TEXT NOT NULL,
+			text_content TEXT,
+			duration_ms INTEGER,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			sequence INTEGER NOT NULL
+		);
+		CREATE INDEX idx_messages_session_id ON messages(session_id, sequence);
+		CREATE UNIQUE INDEX idx_messages_session_sequence ON messages(session_id, sequence);
+		CREATE VIRTUAL TABLE messages_fts USING fts5(
+			text_content,
+			content='messages',
+			content_rowid='id'
+		);
+		CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN
+			INSERT INTO messages_fts(rowid, text_content) VALUES (new.id, new.text_content);
+		END;
+		CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN
+			INSERT INTO messages_fts(messages_fts, rowid, text_content) VALUES ('delete', old.id, old.text_content);
+		END;
+		CREATE TRIGGER messages_au AFTER UPDATE ON messages BEGIN
+			INSERT INTO messages_fts(messages_fts, rowid, text_content) VALUES ('delete', old.id, old.text_content);
+			INSERT INTO messages_fts(rowid, text_content) VALUES (new.id, new.text_content);
+		END;
+		CREATE TABLE schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version(version) VALUES (16);
+	`)
+	if err != nil {
+		t.Fatalf("seed schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed database: %v", err)
+	}
+
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("failed to open migrated sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	msg := NewMessage(sess.ID, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: "Be concise"}}}, -1)
+	if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
+		t.Fatalf("AddMessage developer after migration: %v", err)
 	}
 }
 

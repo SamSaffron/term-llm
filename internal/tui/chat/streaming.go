@@ -19,9 +19,18 @@ func (m *Model) shouldInjectPlatformDeveloperMessage() bool {
 	if strings.TrimSpace(m.platformDeveloperMessage) == "" {
 		return false
 	}
-	if len(m.messages) == 0 {
+
+	hasUserMsg := false
+	for _, msg := range m.messages {
+		if msg.Role == llm.RoleUser {
+			hasUserMsg = true
+			break
+		}
+	}
+	if !hasUserMsg {
 		return true
 	}
+
 	if m.sess == nil {
 		return false
 	}
@@ -30,6 +39,15 @@ func (m *Model) shouldInjectPlatformDeveloperMessage() bool {
 
 func (m *Model) prependMessage(msg session.Message) {
 	m.messages = append([]session.Message{msg}, m.messages...)
+	m.invalidateHistoryCache()
+}
+
+func (m *Model) insertDeveloperMessage(msg session.Message) {
+	insertAt := 0
+	for insertAt < len(m.messages) && m.messages[insertAt].Role == llm.RoleSystem {
+		insertAt++
+	}
+	m.messages = append(m.messages[:insertAt], append([]session.Message{msg}, m.messages[insertAt:]...)...)
 	m.invalidateHistoryCache()
 }
 
@@ -73,7 +91,7 @@ func (m *Model) ensureContextMessages() {
 	if m.store != nil {
 		_ = m.store.AddMessage(context.Background(), m.sess.ID, devMsg)
 	}
-	m.prependMessage(*devMsg)
+	m.insertDeveloperMessage(*devMsg)
 
 	if m.sess != nil {
 		m.sess.Origin = m.currentOrigin
