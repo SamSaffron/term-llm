@@ -682,6 +682,43 @@ func TestValidateCustomTools(t *testing.T) {
 	}
 }
 
+func TestPlatformMessagesConfig_For(t *testing.T) {
+	cfg := PlatformMessagesConfig{
+		Web:      "You are a web assistant",
+		Telegram: "You are a telegram bot",
+		Chat:     "You are a CLI helper",
+	}
+
+	tests := []struct {
+		platform string
+		want     string
+	}{
+		{"web", "You are a web assistant"},
+		{"telegram", "You are a telegram bot"},
+		{"chat", "You are a CLI helper"},
+		{"unknown", ""},
+		{"jobs", ""},
+		{"", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.platform, func(t *testing.T) {
+			got := cfg.For(tt.platform)
+			if got != tt.want {
+				t.Errorf("For(%q) = %q, want %q", tt.platform, got, tt.want)
+			}
+		})
+	}
+
+	// Empty config returns "" for all platforms
+	empty := PlatformMessagesConfig{}
+	for _, p := range []string{"web", "telegram", "chat"} {
+		if got := empty.For(p); got != "" {
+			t.Errorf("empty config For(%q) = %q, want empty", p, got)
+		}
+	}
+}
+
 func containsSubstr(s, sub string) bool {
 	if len(sub) == 0 {
 		return true
