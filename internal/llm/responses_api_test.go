@@ -889,3 +889,58 @@ func TestResponsesClient_NoOnAuthRetry_Returns401Error(t *testing.T) {
 		t.Fatalf("expected authentication failed error, got: %v", err)
 	}
 }
+
+func TestBuildResponsesInput_DeveloperRole(t *testing.T) {
+	messages := []Message{
+		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "Be concise"}}},
+		UserText("Hello"),
+		AssistantText("Hi"),
+	}
+
+	input := BuildResponsesInput(messages)
+
+	if len(input) != 3 {
+		t.Fatalf("expected 3 input items, got %d", len(input))
+	}
+	if input[0].Role != "developer" {
+		t.Errorf("expected developer role, got %q", input[0].Role)
+	}
+	if input[0].Content != "Be concise" {
+		t.Errorf("expected developer content 'Be concise', got %v", input[0].Content)
+	}
+	if input[1].Role != "user" {
+		t.Errorf("expected user role, got %q", input[1].Role)
+	}
+	if input[2].Role != "assistant" {
+		t.Errorf("expected assistant role, got %q", input[2].Role)
+	}
+}
+
+func TestBuildResponsesInputWithInstructions_DeveloperStaysInline(t *testing.T) {
+	messages := []Message{
+		{Role: RoleSystem, Parts: []Part{{Type: PartText, Text: "You are helpful."}}},
+		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "Be concise"}}},
+		UserText("Hello"),
+	}
+
+	instructions, input := BuildResponsesInputWithInstructions(messages)
+
+	// System messages should be extracted to instructions
+	if instructions != "You are helpful." {
+		t.Fatalf("expected system instructions, got %q", instructions)
+	}
+
+	// Developer message should stay inline, not be extracted
+	if len(input) != 2 {
+		t.Fatalf("expected 2 input items (developer + user), got %d", len(input))
+	}
+	if input[0].Role != "developer" {
+		t.Errorf("expected developer role inline, got %q", input[0].Role)
+	}
+	if input[0].Content != "Be concise" {
+		t.Errorf("expected developer content 'Be concise', got %v", input[0].Content)
+	}
+	if input[1].Role != "user" {
+		t.Errorf("expected user role, got %q", input[1].Role)
+	}
+}

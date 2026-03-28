@@ -181,7 +181,7 @@ func BuildResponsesInput(messages []Message) []ResponsesInputItem {
 	messages = sanitizeToolHistory(messages)
 	var inputItems []ResponsesInputItem
 	for _, msg := range messages {
-		if msg.Role == RoleSystem {
+		if msg.Role == RoleSystem || msg.Role == RoleDeveloper {
 			inputItems = append(inputItems, buildResponsesMessageItems("developer", msg.Parts)...)
 		} else {
 			inputItems = append(inputItems, buildResponsesInputForRole(msg)...)
@@ -195,6 +195,8 @@ func buildResponsesInputForRole(msg Message) []ResponsesInputItem {
 	switch msg.Role {
 	case RoleUser:
 		return buildResponsesMessageItems("user", msg.Parts)
+	case RoleDeveloper:
+		return buildResponsesMessageItems("developer", msg.Parts)
 	case RoleAssistant:
 		return buildResponsesAssistantItems(msg.Parts)
 	case RoleTool:

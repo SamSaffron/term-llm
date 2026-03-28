@@ -271,8 +271,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 	settings.SystemPrompt = InjectSkillsMetadata(settings.SystemPrompt, skillsSetup)
 
 	agentName := ""
+	var agentPlatformMsgs agents.PlatformMessagesConfig
 	if agent != nil {
 		agentName = agent.Name
+		agentPlatformMsgs = agent.PlatformMessages
 	}
 
 	store, storeCleanup := InitSessionStore(cfg, cmd.ErrOrStderr())
@@ -370,6 +372,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 			toolsSetting:        settings.Tools,
 			mcpSetting:          settings.MCP,
 			agentName:           agentName,
+			platform:            "web",
+			platformMessages:    agentPlatformMsgs,
 		}
 		if toolMgr != nil {
 			imageBaseURL := ""
@@ -412,6 +416,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		Tools:                  settings.Tools,
 		MCP:                    settings.MCP,
 		Agent:                  agentName,
+		PlatformMessages:       agentPlatformMsgs,
 		Store:                  store,
 		NewSession: func(ctx context.Context) (*serve.SessionRuntime, error) {
 			rt, err := factory(ctx)

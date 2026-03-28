@@ -300,6 +300,14 @@ func (r *ContentRenderer) renderMessageWithItems(msg session.Message, msgID stri
 			items = append(items, *item)
 			lineCount = item.EndLine - startLine
 		}
+	case llm.RoleDeveloper:
+		roleStyle = roleStyle.Foreground(theme.Spinner)
+		content, item := r.renderBoxWithItem("Developer", roleStyle, r.renderTextContent(msg), msgID, "message", startLine)
+		b.WriteString(content)
+		if item != nil {
+			items = append(items, *item)
+			lineCount = item.EndLine - startLine
+		}
 	case llm.RoleTool:
 		content, toolItems := r.renderToolResultsWithItems(msg, msgID, startLine)
 		b.WriteString(content)
@@ -863,6 +871,8 @@ func (r *ContentRenderer) renderSubagentSession(sessionID string, startLine int)
 			roleLabel = "System"
 		case llm.RoleTool:
 			roleLabel = "Tool"
+		case llm.RoleDeveloper:
+			roleLabel = "Developer"
 		default:
 			roleLabel = string(msg.Role)
 		}

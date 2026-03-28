@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -19,41 +20,44 @@ import (
 )
 
 type serveRuntime struct {
-	mu                  sync.Mutex
-	interruptMu         sync.Mutex
-	responseMu          sync.Mutex // guards lastResponseID and responseIDs
-	askUserMu           sync.Mutex
-	approvalMu          sync.Mutex
-	uiStateMu           sync.Mutex
-	provider            llm.Provider
-	providerKey         string
-	engine              *llm.Engine
-	toolMgr             *tools.ToolManager
-	mcpManager          *mcp.Manager
-	store               session.Store
-	systemPrompt        string
-	history             []llm.Message
-	search              bool
-	toolsSetting        string
-	mcpSetting          string
-	agentName           string
-	sessionMeta         *session.Session
-	forceExternalSearch bool
-	maxTurns            int
-	toolMap             map[string]string
-	debug               bool
-	debugRaw            bool
-	defaultModel        string
-	lastUsedUnixNano    atomic.Int64
-	activeInterrupt     *runtimeInterruptState
-	lastResponseID      string
-	responseIDs         []string
-	cumulativeUsage     llm.Usage
-	pendingAskUsers     map[string]*servePendingAskUser
-	pendingApprovals    map[string]*servePendingApproval
-	approvalEventFunc   func(event string, data map[string]any) error
-	approvalCtx         context.Context
-	lastUIRunError      string
+	mu                   sync.Mutex
+	interruptMu          sync.Mutex
+	responseMu           sync.Mutex // guards lastResponseID and responseIDs
+	askUserMu            sync.Mutex
+	approvalMu           sync.Mutex
+	uiStateMu            sync.Mutex
+	provider             llm.Provider
+	providerKey          string
+	engine               *llm.Engine
+	toolMgr              *tools.ToolManager
+	mcpManager           *mcp.Manager
+	store                session.Store
+	systemPrompt         string
+	history              []llm.Message
+	search               bool
+	toolsSetting         string
+	mcpSetting           string
+	agentName            string
+	sessionMeta          *session.Session
+	forceExternalSearch  bool
+	maxTurns             int
+	toolMap              map[string]string
+	debug                bool
+	debugRaw             bool
+	defaultModel         string
+	lastUsedUnixNano     atomic.Int64
+	activeInterrupt      *runtimeInterruptState
+	lastResponseID       string
+	responseIDs          []string
+	cumulativeUsage      llm.Usage
+	pendingAskUsers      map[string]*servePendingAskUser
+	pendingApprovals     map[string]*servePendingApproval
+	approvalEventFunc    func(event string, data map[string]any) error
+	approvalCtx          context.Context
+	lastUIRunError       string
+	platform             string
+	platformMessages     agents.PlatformMessagesConfig
+	lastInjectedPlatform string
 }
 
 type runtimeInterruptState struct {
@@ -381,6 +385,13 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		baseHistory = nil
 		rt.engine.ResetConversation()
 		rt.cumulativeUsage = llm.Usage{}
+		rt.lastInjectedPlatform = ""
+	}
+
+	if devText := rt.platformMessages.For(rt.platform); devText != "" && rt.lastInjectedPlatform != rt.platform {
+		devMsg := llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: devText}}}
+		inputMessages = append([]llm.Message{devMsg}, inputMessages...)
+		rt.lastInjectedPlatform = rt.platform
 	}
 
 	runCtx, runCancel := context.WithCancel(ctx)

@@ -603,13 +603,23 @@ func buildAnthropicMessages(messages []Message) (string, []anthropic.MessagePara
 
 	var systemParts []string
 	var out []anthropic.MessageParam
+	var pendingDev string
 
 	for _, msg := range messages {
 		switch msg.Role {
 		case RoleSystem:
 			systemParts = append(systemParts, collectTextParts(msg.Parts))
+		case RoleDeveloper:
+			// Anthropic has no native developer role. Buffer the text and prepend
+			// it into the next user turn wrapped in <developer> tags.
+			pendingDev = collectTextParts(msg.Parts)
 		case RoleUser:
-			blocks := buildAnthropicBlocks(msg.Parts, false)
+			parts := msg.Parts
+			if pendingDev != "" {
+				parts = prependTextToParts(fmt.Sprintf("<developer>\n%s\n</developer>\n\n", pendingDev), parts)
+				pendingDev = ""
+			}
+			blocks := buildAnthropicBlocks(parts, false)
 			if len(blocks) > 0 {
 				m := anthropic.NewUserMessage(blocks...)
 				if msg.CacheAnchor {
@@ -638,13 +648,21 @@ func buildAnthropicBetaMessages(messages []Message) (string, []anthropic.BetaMes
 
 	var systemParts []string
 	var out []anthropic.BetaMessageParam
+	var pendingDev string
 
 	for _, msg := range messages {
 		switch msg.Role {
 		case RoleSystem:
 			systemParts = append(systemParts, collectTextParts(msg.Parts))
+		case RoleDeveloper:
+			pendingDev = collectTextParts(msg.Parts)
 		case RoleUser:
-			blocks := buildAnthropicBetaBlocks(msg.Parts, false)
+			parts := msg.Parts
+			if pendingDev != "" {
+				parts = prependTextToParts(fmt.Sprintf("<developer>\n%s\n</developer>\n\n", pendingDev), parts)
+				pendingDev = ""
+			}
+			blocks := buildAnthropicBetaBlocks(parts, false)
 			if len(blocks) > 0 {
 				m := anthropic.NewBetaUserMessage(blocks...)
 				if msg.CacheAnchor {
@@ -669,6 +687,20 @@ func buildAnthropicBetaMessages(messages []Message) (string, []anthropic.BetaMes
 	}
 
 	return strings.Join(systemParts, "\n\n"), out
+}
+
+// prependTextToParts prepends prefix to the first PartText part in parts,
+// or inserts a new text part at the front if none exists.
+func prependTextToParts(prefix string, parts []Part) []Part {
+	for i, p := range parts {
+		if p.Type == PartText {
+			out := make([]Part, len(parts))
+			copy(out, parts)
+			out[i].Text = prefix + out[i].Text
+			return out
+		}
+	}
+	return append([]Part{{Type: PartText, Text: prefix}}, parts...)
 }
 
 func prepareAnthropicMessages(messages []Message) []Message {

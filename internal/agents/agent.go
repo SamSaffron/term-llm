@@ -16,6 +16,29 @@ import (
 // validCustomToolNameRE matches valid custom tool names: lowercase letter, then lowercase alphanumeric or underscore.
 var validCustomToolNameRE = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
+// PlatformMessagesConfig holds per-platform developer messages that are injected
+// at the start of each new conversation session.
+type PlatformMessagesConfig struct {
+	Web      string `yaml:"web_developer_message,omitempty"`
+	Telegram string `yaml:"telegram_developer_message,omitempty"`
+	Chat     string `yaml:"chat_developer_message,omitempty"`
+}
+
+// For returns the developer message for the given platform name ("web", "telegram", "chat").
+// Returns empty string when no message is configured for that platform.
+func (p PlatformMessagesConfig) For(platform string) string {
+	switch platform {
+	case "web":
+		return p.Web
+	case "telegram":
+		return p.Telegram
+	case "chat":
+		return p.Chat
+	default:
+		return ""
+	}
+}
+
 // Agent represents a named configuration bundle.
 type Agent struct {
 	// Metadata
@@ -91,6 +114,10 @@ type Agent struct {
 
 	// GistID for syncing with GitHub Gists (set on export/import)
 	GistID string `yaml:"gist_id,omitempty"`
+
+	// PlatformMessages holds developer messages injected at the start of each
+	// new conversation session, keyed by platform.
+	PlatformMessages PlatformMessagesConfig `yaml:"platform_messages,omitempty"`
 
 	// System prompt (loaded from system.md + included files)
 	SystemPrompt string `yaml:"-"`

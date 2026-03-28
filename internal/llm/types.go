@@ -81,6 +81,11 @@ const (
 	RoleUser      Role = "user"
 	RoleAssistant Role = "assistant"
 	RoleTool      Role = "tool"
+	// RoleDeveloper is a privileged instruction role injected by the platform layer.
+	// OpenAI/Responses API providers send it as a "developer" role message; Anthropic
+	// providers have no native equivalent, so the text is prepended into the next user turn
+	// wrapped in <developer>…</developer> tags.
+	RoleDeveloper Role = "developer"
 )
 
 // PartType identifies a message content part.

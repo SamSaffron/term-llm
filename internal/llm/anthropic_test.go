@@ -2,6 +2,7 @@ package llm
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -906,5 +907,79 @@ func TestBuildAnthropicTools_ToolHasSchema(t *testing.T) {
 	schema := tools[0].OfTool.InputSchema
 	if schema.Type != constant.Object("object") {
 		t.Fatalf("expected schema type=object")
+	}
+}
+
+func TestBuildAnthropicMessages_DeveloperRole(t *testing.T) {
+	messages := []Message{
+		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "Be concise"}}},
+		UserText("Hello"),
+	}
+
+	_, out := buildAnthropicMessages(messages)
+
+	if len(out) != 1 {
+		t.Fatalf("expected 1 message (developer merged into user), got %d", len(out))
+	}
+	if out[0].Role != anthropic.MessageParamRoleUser {
+		t.Fatalf("expected user role, got %v", out[0].Role)
+	}
+	if len(out[0].Content) != 1 || out[0].Content[0].OfText == nil {
+		t.Fatalf("expected single text block, got %#v", out[0].Content)
+	}
+	got := out[0].Content[0].OfText.Text
+	want := "<developer>\nBe concise\n</developer>\n\nHello"
+	if got != want {
+		t.Errorf("content = %q, want %q", got, want)
+	}
+}
+
+func TestBuildAnthropicMessages_DeveloperRoleNotMergedWithoutUser(t *testing.T) {
+	// Developer message at end with no following user message — should be dropped
+	messages := []Message{
+		UserText("Hello"),
+		AssistantText("Hi"),
+		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "Be concise"}}},
+	}
+
+	_, out := buildAnthropicMessages(messages)
+
+	// Should have user + assistant + synthetic user (trailing assistant normalization)
+	// but no developer content since there's no user turn to merge into
+	for _, msg := range out {
+		if msg.Role == anthropic.MessageParamRoleUser {
+			for _, block := range msg.Content {
+				if block.OfText != nil && strings.Contains(block.OfText.Text, "<developer>") {
+					t.Fatalf("developer tag should not appear without a following user message, got %q", block.OfText.Text)
+				}
+			}
+		}
+	}
+}
+
+func TestBuildAnthropicBetaMessages_DeveloperRole(t *testing.T) {
+	messages := []Message{
+		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "Be concise"}}},
+		UserText("Hello"),
+	}
+
+	_, out := buildAnthropicBetaMessages(messages)
+
+	if len(out) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(out))
+	}
+	if out[0].Role != anthropic.BetaMessageParamRoleUser {
+		t.Fatalf("expected user role, got %v", out[0].Role)
+	}
+	if len(out[0].Content) != 1 {
+		t.Fatalf("expected single content block, got %d", len(out[0].Content))
+	}
+	got := out[0].Content[0].GetText()
+	if got == nil {
+		t.Fatalf("expected text block, got %#v", out[0].Content[0])
+	}
+	want := "<developer>\nBe concise\n</developer>\n\nHello"
+	if *got != want {
+		t.Errorf("content = %q, want %q", *got, want)
 	}
 }

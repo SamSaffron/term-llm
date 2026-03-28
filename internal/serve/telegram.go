@@ -911,6 +911,10 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		sess.carryoverContext = ""
 		sess.carryoverContextLabel = ""
 	}
+	// Inject platform developer message for telegram.
+	if devText := m.settings.PlatformMessages.For("telegram"); devText != "" {
+		messages = append(messages, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: devText}}})
+	}
 	messages = append(messages, sess.history...)
 	messages = append(messages, userMsg)
 

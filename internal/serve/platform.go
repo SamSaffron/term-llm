@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -35,6 +36,7 @@ type Settings struct {
 	Tools               string
 	MCP                 string
 	Agent               string
+	PlatformMessages    agents.PlatformMessagesConfig
 	Store               session.Store
 	// NewSession creates a fresh runtime instance for a new conversation.
 	// Called once per platform session (for example, per Telegram chat session).
