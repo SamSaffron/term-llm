@@ -2813,6 +2813,159 @@ func TestStreamResponses_IncludesResponseIDAndSessionUsage(t *testing.T) {
 	}
 }
 
+func TestStreamResponses_FailedRunDoesNotBecomeLatestResponseID(t *testing.T) {
+	provider := newStagedProvider("hello ", "world")
+
+	factory := func(ctx context.Context) (*serveRuntime, error) {
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			engine:       engine,
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		return rt, nil
+	}
+
+	mgr := newServeSessionManager(time.Minute, 100, factory)
+	srv := &serveServer{
+		sessionMgr:   mgr,
+		responseRuns: newServeResponseRunManager(),
+	}
+	mgr.onEvict = func(rt *serveRuntime) {
+		for _, rid := range rt.getResponseIDs() {
+			srv.responseToSession.Delete(rid)
+		}
+	}
+	defer mgr.Close()
+	defer srv.responseRuns.Close()
+
+	ts := newServeHTTPTestServer(srv)
+	defer ts.Close()
+
+	firstReq, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/responses", strings.NewReader(`{"input":"first","stream":true}`))
+	if err != nil {
+		t.Fatalf("new first request: %v", err)
+	}
+	firstReq.Header.Set("Content-Type", "application/json")
+	firstReq.Header.Set("session_id", "busy-session")
+
+	firstResp, err := ts.Client().Do(firstReq)
+	if err != nil {
+		t.Fatalf("first stream request failed: %v", err)
+	}
+	defer firstResp.Body.Close()
+
+	firstScanner := bufio.NewScanner(firstResp.Body)
+	var firstRespID string
+	for {
+		eventName, data, ok := readSSEEvent(t, firstScanner)
+		if !ok {
+			t.Fatal("first stream ended before first text delta")
+		}
+		if data == "[DONE]" {
+			t.Fatal("first stream completed before first text delta")
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			t.Fatalf("unmarshal first SSE payload: %v", err)
+		}
+		switch eventName {
+		case "response.created":
+			response, _ := payload["response"].(map[string]any)
+			firstRespID, _ = response["id"].(string)
+		case "response.output_text.delta":
+			goto firstStreamBusy
+		}
+	}
+
+firstStreamBusy:
+	if firstRespID == "" {
+		t.Fatal("missing first response id")
+	}
+
+	secondReq, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/responses", strings.NewReader(`{"input":"second","stream":true}`))
+	if err != nil {
+		t.Fatalf("new second request: %v", err)
+	}
+	secondReq.Header.Set("Content-Type", "application/json")
+	secondReq.Header.Set("session_id", "busy-session")
+
+	secondResp, err := ts.Client().Do(secondReq)
+	if err != nil {
+		t.Fatalf("second stream request failed: %v", err)
+	}
+	defer secondResp.Body.Close()
+
+	secondScanner := bufio.NewScanner(secondResp.Body)
+	var secondRespID string
+	sawFailed := false
+	for {
+		eventName, data, ok := readSSEEvent(t, secondScanner)
+		if !ok {
+			break
+		}
+		if data == "[DONE]" {
+			break
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			t.Fatalf("unmarshal second SSE payload: %v", err)
+		}
+		switch eventName {
+		case "response.created":
+			response, _ := payload["response"].(map[string]any)
+			secondRespID, _ = response["id"].(string)
+		case "response.failed":
+			sawFailed = true
+			errPayload, _ := payload["error"].(map[string]any)
+			if got := errPayload["type"]; got != "conflict_error" {
+				t.Fatalf("response.failed error type = %v, want conflict_error", got)
+			}
+		}
+	}
+	if secondRespID == "" {
+		t.Fatal("missing failed response id")
+	}
+	if !sawFailed {
+		t.Fatal("second stream missing response.failed")
+	}
+	if _, ok := srv.responseToSession.Load(secondRespID); ok {
+		t.Fatalf("failed response id %q should not be registered for chaining", secondRespID)
+	}
+
+	close(provider.releaseSecond)
+
+	sawCompleted := false
+	for {
+		eventName, data, ok := readSSEEvent(t, firstScanner)
+		if !ok {
+			break
+		}
+		if data == "[DONE]" {
+			break
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			t.Fatalf("unmarshal completed first SSE payload: %v", err)
+		}
+		if eventName == "response.completed" {
+			sawCompleted = true
+		}
+	}
+	if !sawCompleted {
+		t.Fatal("first stream missing response.completed")
+	}
+	if _, ok := srv.responseToSession.Load(firstRespID); !ok {
+		t.Fatalf("successful response id %q should be registered for chaining", firstRespID)
+	}
+
+	code, _ := doResponses(t, srv, `{"input":"follow-up","previous_response_id":"`+firstRespID+`"}`)
+	if code != http.StatusOK {
+		t.Fatalf("chained request status = %d, want 200", code)
+	}
+}
+
 func TestStreamResponses_AskUserRoundTrip(t *testing.T) {
 	provider := llm.NewMockProvider("mock")
 	provider.AddToolCall("call-ask", tools.AskUserToolName, map[string]any{

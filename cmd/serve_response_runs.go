@@ -1013,7 +1013,6 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	}
 	mgr.setActiveRun(sessionID, respID)
 
-	s.registerResponseID(runtime, respID, sessionID)
 	if options.uiSession {
 		runtime.clearLastUIRunError()
 	}
@@ -1093,6 +1092,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		if options.uiSession {
 			runtime.clearLastUIRunError()
 		}
+		s.registerResponseID(runtime, respID, sessionID)
 		if err := run.complete(map[string]any{
 			"response": map[string]any{
 				"id":            respID,
