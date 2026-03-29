@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -25,6 +26,7 @@ import (
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
+	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/serveui"
@@ -1263,6 +1265,66 @@ func TestServeRuntimeRun_PersistsSessionAndMessages(t *testing.T) {
 	}
 	if msgs[len(msgs)-1].Role != llm.RoleAssistant {
 		t.Fatalf("last role = %s, want assistant", msgs[len(msgs)-1].Role)
+	}
+}
+
+func TestServeRuntimeRun_ReinjectsPlatformDeveloperMessageAfterFailedFirstRun(t *testing.T) {
+	provider := llm.NewMockProvider("mock").
+		AddError(errors.New("boom")).
+		AddTextResponse("hello from serve")
+	engine := llm.NewEngine(provider, nil)
+	devText := "telegram developer instructions"
+	input := []llm.Message{llm.UserText("hello")}
+
+	rt := &serveRuntime{
+		provider:         provider,
+		engine:           engine,
+		platform:         "telegram",
+		platformMessages: agents.PlatformMessagesConfig{Telegram: devText},
+	}
+	rt.Touch()
+
+	_, err := rt.Run(context.Background(), true, false, input, llm.Request{})
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("first Run error = %v, want boom", err)
+	}
+	if rt.lastInjectedPlatform != "" {
+		t.Fatalf("lastInjectedPlatform = %q, want empty after failed first run", rt.lastInjectedPlatform)
+	}
+	if len(rt.history) != 0 {
+		t.Fatalf("history len = %d, want 0 after failed first run", len(rt.history))
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("request count after first run = %d, want 1", len(provider.Requests))
+	}
+	if len(provider.Requests[0].Messages) != 2 {
+		t.Fatalf("first request message count = %d, want 2", len(provider.Requests[0].Messages))
+	}
+	if provider.Requests[0].Messages[0].Role != llm.RoleDeveloper || provider.Requests[0].Messages[0].Parts[0].Text != devText {
+		t.Fatalf("first request did not include injected developer message: %+v", provider.Requests[0].Messages)
+	}
+
+	_, err = rt.Run(context.Background(), true, false, input, llm.Request{})
+	if err != nil {
+		t.Fatalf("second Run failed: %v", err)
+	}
+	if rt.lastInjectedPlatform != "telegram" {
+		t.Fatalf("lastInjectedPlatform = %q, want telegram after successful run", rt.lastInjectedPlatform)
+	}
+	if len(provider.Requests) != 2 {
+		t.Fatalf("request count after second run = %d, want 2", len(provider.Requests))
+	}
+	if len(provider.Requests[1].Messages) != 2 {
+		t.Fatalf("second request message count = %d, want 2", len(provider.Requests[1].Messages))
+	}
+	if provider.Requests[1].Messages[0].Role != llm.RoleDeveloper || provider.Requests[1].Messages[0].Parts[0].Text != devText {
+		t.Fatalf("second request did not re-include injected developer message: %+v", provider.Requests[1].Messages)
+	}
+	if len(rt.history) < 3 {
+		t.Fatalf("history len = %d, want at least 3 after successful run", len(rt.history))
+	}
+	if rt.history[0].Role != llm.RoleDeveloper || rt.history[0].Parts[0].Text != devText {
+		t.Fatalf("history missing injected developer message: %+v", rt.history)
 	}
 }
 

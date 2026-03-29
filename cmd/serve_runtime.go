@@ -395,10 +395,11 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		rt.lastInjectedPlatform = ""
 	}
 
+	var injectedPlatform string
 	if devText := rt.platformMessages.For(rt.platform); devText != "" && rt.lastInjectedPlatform != rt.platform {
 		devMsg := llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: devText}}}
 		inputMessages = append([]llm.Message{devMsg}, inputMessages...)
-		rt.lastInjectedPlatform = rt.platform
+		injectedPlatform = rt.platform
 	}
 
 	runCtx, runCancel := context.WithCancel(ctx)
@@ -426,6 +427,12 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	req.Messages = messages
 
 	var produced []llm.Message
+	persistPlatformInjection := func() {
+		if injectedPlatform != "" && (stateful || persisted) {
+			rt.lastInjectedPlatform = injectedPlatform
+		}
+	}
+
 	persistProducedSnapshot := func(persistCtx context.Context) {
 		snapshot := make([]llm.Message, 0, len(baseHistory)+len(inputMessages)+len(produced))
 		snapshot = append(snapshot, baseHistory...)
@@ -437,6 +444,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		if persisted {
 			rt.persistSnapshot(persistCtx, req.SessionID, snapshot)
 		}
+		persistPlatformInjection()
 	}
 	// ResponseCompletedCallback receives the assistant message (with tool call parts)
 	// immediately after streaming, BEFORE tool execution. Without this, tool calls
@@ -533,6 +541,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	if persisted {
 		rt.persistSnapshot(ctx, req.SessionID, newHistory)
 	}
+	persistPlatformInjection()
 
 	return result, nil
 }
