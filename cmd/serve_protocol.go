@@ -172,6 +172,7 @@ func abbreviatePath(path string) string {
 
 // parseUserMessageContent builds a user llm.Message from a content field
 // that may be a plain string or an array of content parts (input_text, input_image, input_file).
+// Chat Completions-style text/image_url parts are also accepted.
 // Supported image types are sent inline to the LLM; all other files are saved to disk
 // and referenced by path in a text part.
 //
@@ -184,15 +185,15 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 		var llmParts []llm.Part
 		fileCount := 0
 		for _, part := range parts {
-			partType := jsonString(part["type"])
+			partType := strings.ToLower(strings.TrimSpace(jsonString(part["type"])))
 			switch partType {
-			case "input_text":
+			case "input_text", "text", "output_text":
 				text := jsonString(part["text"])
 				if text != "" {
 					llmParts = append(llmParts, llm.Part{Type: llm.PartText, Text: text})
 				}
-			case "input_image":
-				imageURL := jsonString(part["image_url"])
+			case "input_image", "image_url":
+				imageURL := jsonImageURL(part["image_url"])
 				filename := jsonString(part["filename"])
 				if !strings.HasPrefix(imageURL, "data:") {
 					continue
@@ -286,6 +287,19 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 		}
 	}
 	return llm.UserText(extractItemContent(content)), nil
+}
+
+func jsonImageURL(raw json.RawMessage) string {
+	if s := jsonString(raw); s != "" {
+		return s
+	}
+	var value struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(raw, &value); err == nil {
+		return strings.TrimSpace(value.URL)
+	}
+	return ""
 }
 
 func jsonString(raw json.RawMessage) string {

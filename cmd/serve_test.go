@@ -955,6 +955,78 @@ func TestParseChatMessages_ToolCallAndToolResult(t *testing.T) {
 	}
 }
 
+func TestParseChatMessages_UserImageContent(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	msgs, replaceHistory, err := parseChatMessages([]chatMessage{{
+		Role: "user",
+		Content: json.RawMessage(`[
+			{"type":"image_url","image_url":{"url":"data:image/png;base64,aGVsbG8="}},
+			{"type":"text","text":"describe this"}
+		]`),
+	}})
+	if err != nil {
+		t.Fatalf("parseChatMessages failed: %v", err)
+	}
+	if replaceHistory {
+		t.Fatalf("replaceHistory = true, want false")
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("len(msgs) = %d, want 1", len(msgs))
+	}
+	if msgs[0].Role != llm.RoleUser {
+		t.Fatalf("role = %s, want user", msgs[0].Role)
+	}
+	if len(msgs[0].Parts) != 2 {
+		t.Fatalf("len(parts) = %d, want 2", len(msgs[0].Parts))
+	}
+	if msgs[0].Parts[0].Type != llm.PartImage {
+		t.Fatalf("parts[0].type = %s, want image", msgs[0].Parts[0].Type)
+	}
+	if msgs[0].Parts[0].ImageData == nil || msgs[0].Parts[0].ImageData.MediaType != "image/png" || msgs[0].Parts[0].ImageData.Base64 != "aGVsbG8=" {
+		t.Fatalf("parts[0].image = %#v, want png data URL", msgs[0].Parts[0].ImageData)
+	}
+	if msgs[0].Parts[1].Type != llm.PartText || msgs[0].Parts[1].Text != "describe this" {
+		t.Fatalf("parts[1] = %+v, want trailing text", msgs[0].Parts[1])
+	}
+}
+
+func TestParseChatMessages_AssistantImageContent(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	msgs, replaceHistory, err := parseChatMessages([]chatMessage{{
+		Role: "assistant",
+		Content: json.RawMessage(`[
+			{"type":"text","text":"looking"},
+			{"type":"image_url","image_url":{"url":"data:image/png;base64,aGVsbG8="}}
+		]`),
+	}})
+	if err != nil {
+		t.Fatalf("parseChatMessages failed: %v", err)
+	}
+	if !replaceHistory {
+		t.Fatalf("replaceHistory = false, want true")
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("len(msgs) = %d, want 1", len(msgs))
+	}
+	if msgs[0].Role != llm.RoleAssistant {
+		t.Fatalf("role = %s, want assistant", msgs[0].Role)
+	}
+	if len(msgs[0].Parts) != 2 {
+		t.Fatalf("len(parts) = %d, want 2", len(msgs[0].Parts))
+	}
+	if msgs[0].Parts[0].Type != llm.PartText || msgs[0].Parts[0].Text != "looking" {
+		t.Fatalf("parts[0] = %+v, want leading text", msgs[0].Parts[0])
+	}
+	if msgs[0].Parts[1].Type != llm.PartImage {
+		t.Fatalf("parts[1].type = %s, want image", msgs[0].Parts[1].Type)
+	}
+	if msgs[0].Parts[1].ImageData == nil || msgs[0].Parts[1].ImageData.MediaType != "image/png" || msgs[0].Parts[1].ImageData.Base64 != "aGVsbG8=" {
+		t.Fatalf("parts[1].image = %#v, want png data URL", msgs[0].Parts[1].ImageData)
+	}
+}
+
 func TestParseToolChoice(t *testing.T) {
 	if got := parseToolChoice(json.RawMessage(`"none"`)); got.Mode != llm.ToolChoiceNone {
 		t.Fatalf("mode = %s, want none", got.Mode)

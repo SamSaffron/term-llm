@@ -64,13 +64,17 @@ func parseChatMessages(msgs []chatMessage) ([]llm.Message, bool, error) {
 			result = append(result, llm.SystemText(extractMessageText(msg.Content)))
 			replaceHistory = true
 		case "user":
-			result = append(result, llm.UserText(extractMessageText(msg.Content)))
-		case "assistant":
-			parts := []llm.Part{}
-			text := extractMessageText(msg.Content)
-			if text != "" {
-				parts = append(parts, llm.Part{Type: llm.PartText, Text: text})
+			userMsg, err := parseUserMessageContent(msg.Content)
+			if err != nil {
+				return nil, false, fmt.Errorf("user message: %w", err)
 			}
+			result = append(result, userMsg)
+		case "assistant":
+			assistantMsg, err := parseUserMessageContent(msg.Content)
+			if err != nil {
+				return nil, false, fmt.Errorf("assistant message: %w", err)
+			}
+			parts := append([]llm.Part{}, assistantMsg.Parts...)
 			for _, tc := range msg.ToolCalls {
 				args := tc.Function.Arguments
 				if strings.TrimSpace(args) == "" {
