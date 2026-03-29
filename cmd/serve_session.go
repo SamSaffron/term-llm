@@ -73,6 +73,32 @@ func (m *serveSessionManager) evictExpired() {
 	}
 }
 
+func (m *serveSessionManager) evictOldestIdleLocked() *serveRuntime {
+	if len(m.sessions) < m.max {
+		return nil
+	}
+
+	oldestID := ""
+	var oldestTime time.Time
+	for sid, srt := range m.sessions {
+		if srt.hasActiveRun() {
+			continue
+		}
+		t := srt.LastUsed()
+		if oldestID == "" || t.Before(oldestTime) {
+			oldestID = sid
+			oldestTime = t
+		}
+	}
+	if oldestID == "" {
+		return nil
+	}
+
+	evicted := m.sessions[oldestID]
+	delete(m.sessions, oldestID)
+	return evicted
+}
+
 // Get returns an existing session runtime without creating one.
 // Returns (nil, false) if the session does not exist.
 func (m *serveSessionManager) Get(id string) (*serveRuntime, bool) {
@@ -134,21 +160,7 @@ func (m *serveSessionManager) GetOrCreate(ctx context.Context, id string) (*serv
 			duplicate = rt
 		} else {
 			rt.Touch()
-			if len(m.sessions) >= m.max {
-				oldestID := ""
-				var oldestTime time.Time
-				for sid, srt := range m.sessions {
-					t := srt.LastUsed()
-					if oldestID == "" || t.Before(oldestTime) {
-						oldestID = sid
-						oldestTime = t
-					}
-				}
-				if oldestID != "" {
-					evicted = m.sessions[oldestID]
-					delete(m.sessions, oldestID)
-				}
-			}
+			evicted = m.evictOldestIdleLocked()
 			m.sessions[id] = rt
 			inflight.rt = rt
 		}
@@ -230,21 +242,7 @@ func (m *serveSessionManager) GetOrCreateWith(ctx context.Context, id string, cr
 			duplicate = rt
 		} else {
 			rt.Touch()
-			if len(m.sessions) >= m.max {
-				oldestID := ""
-				var oldestTime time.Time
-				for sid, srt := range m.sessions {
-					t := srt.LastUsed()
-					if oldestID == "" || t.Before(oldestTime) {
-						oldestID = sid
-						oldestTime = t
-					}
-				}
-				if oldestID != "" {
-					evicted = m.sessions[oldestID]
-					delete(m.sessions, oldestID)
-				}
-			}
+			evicted = m.evictOldestIdleLocked()
 			m.sessions[id] = rt
 			inflight.rt = rt
 		}
