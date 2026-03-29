@@ -114,6 +114,7 @@ type SessionSummary struct {
 	GeneratedLongTitle  string             `json:"generated_long_title,omitempty"`
 	TitleSource         SessionTitleSource `json:"title_source,omitempty"`
 	Provider            string             `json:"provider"`
+	ProviderKey         string             `json:"provider_key,omitempty"`
 	Model               string             `json:"model"`
 	Mode                SessionMode        `json:"mode,omitempty"`
 	Origin              SessionOrigin      `json:"origin,omitempty"`

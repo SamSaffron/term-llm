@@ -597,7 +597,7 @@ func resolveChatResumeSession(ctx context.Context, store session.Store, resumeID
 }
 
 func resolveSessionProviderKey(cfg *config.Config, sess *session.Session) string {
-	if sess == nil {
+	if sess == nil || cfg == nil {
 		return ""
 	}
 

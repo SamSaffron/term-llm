@@ -265,6 +265,7 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 		LongTitle  string                `json:"long_title"`
 		Mode       session.SessionMode   `json:"mode,omitempty"`
 		Origin     session.SessionOrigin `json:"origin,omitempty"`
+		Provider   string                `json:"provider,omitempty"`
 		Archived   bool                  `json:"archived"`
 		Pinned     bool                  `json:"pinned"`
 		CreatedAt  int64                 `json:"created_at"`
@@ -273,6 +274,13 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 
 	result := make([]sessionEntry, 0, len(sessions))
 	for _, sess := range sessions {
+		provider := strings.TrimSpace(sess.ProviderKey)
+		if provider == "" {
+			// Resolve display label to canonical key for legacy rows.
+			provider = resolveSessionProviderKey(s.cfgRef, &session.Session{
+				Provider: sess.Provider,
+			})
+		}
 		result = append(result, sessionEntry{
 			Name:       sess.Name,
 			ID:         sess.ID,
@@ -281,6 +289,7 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 			LongTitle:  sess.PreferredLongTitle(),
 			Mode:       sess.Mode,
 			Origin:     sess.Origin,
+			Provider:   provider,
 			Archived:   sess.Archived,
 			Pinned:     sess.Pinned,
 			CreatedAt:  sess.CreatedAt.UnixMilli(),
@@ -874,12 +883,35 @@ func (s *serveServer) runtimeForProviderRequest(ctx context.Context, sessionID s
 		}
 		return rt, false, nil
 	}
+	// Check persisted session provider before creating/reusing a runtime.
+	// This is the authoritative source — it survives runtime eviction and
+	// server restarts, unlike the in-memory providerKey on the runtime.
+	if s.store != nil && providerName != "" {
+		if sess, err := s.store.Get(ctx, sessionID); err == nil && sess != nil {
+			storedProvider := strings.TrimSpace(sess.ProviderKey)
+			if storedProvider == "" {
+				storedProvider = resolveSessionProviderKey(s.cfgRef, sess)
+			}
+			if storedProvider != "" && storedProvider != providerName {
+				return nil, false, fmt.Errorf("session %q already uses provider %q (requested %q)", sessionID, storedProvider, providerName)
+			}
+		}
+	}
 	// Use GetOrCreateWith to get proper in-flight deduplication.
 	rt, err := s.sessionMgr.GetOrCreateWith(context.Background(), sessionID, func(ctx context.Context) (*serveRuntime, error) {
 		return s.runtimeFactory(ctx, providerName, "")
 	})
 	if err != nil {
 		return nil, false, err
+	}
+	// Belt-and-suspenders: also check the live runtime in case the store
+	// missed (new session not yet persisted, store error, etc.).
+	existingProvider := strings.TrimSpace(rt.providerKey)
+	if existingProvider == "" && rt.provider != nil {
+		existingProvider = strings.TrimSpace(rt.provider.Name())
+	}
+	if existingProvider != "" && providerName != "" && existingProvider != providerName {
+		return nil, false, fmt.Errorf("session %q already uses provider %q (requested %q)", sessionID, existingProvider, providerName)
 	}
 	return rt, true, nil
 }

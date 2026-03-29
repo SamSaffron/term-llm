@@ -341,6 +341,11 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false) => {
   const runtimeState = await loadServerSessionState(session.id);
   if (!runtimeState) return null;
 
+  if (runtimeState.provider && runtimeState.provider !== session.provider) {
+    session.provider = runtimeState.provider;
+    saveSessions();
+  }
+
   const prompts = Array.isArray(runtimeState.pending_ask_users)
     ? runtimeState.pending_ask_users
     : (runtimeState.pending_ask_user ? [runtimeState.pending_ask_user] : []);
@@ -438,6 +443,9 @@ const applyServerSessionSummary = (target, serverSession) => {
   target.created = asTimestamp(serverSession.created_at || target.created);
   target.messageCount = Number(serverSession.message_count || target.messageCount || 0);
   target.number = Number(serverSession.number || target.number || 0);
+  if (serverSession.provider) {
+    target.provider = serverSession.provider;
+  }
   return target;
 };
 

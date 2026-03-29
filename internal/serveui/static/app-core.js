@@ -790,7 +790,8 @@ const createSession = () => ({
   lastSequenceNumber: 0,
   sessionUsage: null,
   lastUsage: null,
-  activeModel: ''
+  activeModel: '',
+  provider: ''
 });
 
 const sessionSlug = (session) => {

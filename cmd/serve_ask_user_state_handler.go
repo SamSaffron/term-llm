@@ -1,6 +1,11 @@
 package cmd
 
-import "net/http"
+import (
+	"net/http"
+	"strings"
+
+	"github.com/samsaffron/term-llm/internal/session"
+)
 
 func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request, sessionID string) {
 	resp := map[string]any{
@@ -18,6 +23,17 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 			if approvals := rt.pendingApprovalPrompts(); len(approvals) > 0 {
 				resp["pending_approvals"] = approvals
 				resp["pending_approval"] = approvals[0]
+			}
+			if pk := strings.TrimSpace(rt.providerKey); pk != "" {
+				resp["provider"] = pk
+			} else if rt.provider != nil {
+				// Resolve display label to canonical key.
+				resolved := resolveSessionProviderKey(s.cfgRef, &session.Session{
+					Provider: strings.TrimSpace(rt.provider.Name()),
+				})
+				if resolved != "" {
+					resp["provider"] = resolved
+				}
 			}
 			if !activeRun {
 				if lastErr := rt.consumeLastUIRunError(); lastErr != "" {

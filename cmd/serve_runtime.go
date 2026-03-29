@@ -187,18 +187,19 @@ func (rt *serveRuntime) ensurePersistedSession(ctx context.Context, sessionID st
 	}
 
 	sess := &session.Session{
-		ID:        sessionID,
-		Provider:  providerName,
-		Model:     modelName,
-		Mode:      session.ModeChat,
-		Origin:    session.OriginWeb,
-		Agent:     rt.agentName,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-		Search:    rt.search,
-		Tools:     rt.toolsSetting,
-		MCP:       rt.mcpSetting,
-		Status:    session.StatusActive,
+		ID:          sessionID,
+		Provider:    providerName,
+		ProviderKey: strings.TrimSpace(rt.providerKey),
+		Model:       modelName,
+		Mode:        session.ModeChat,
+		Origin:      session.OriginWeb,
+		Agent:       rt.agentName,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+		Search:      rt.search,
+		Tools:       rt.toolsSetting,
+		MCP:         rt.mcpSetting,
+		Status:      session.StatusActive,
 	}
 	if cwd, err := os.Getwd(); err == nil {
 		sess.CWD = cwd

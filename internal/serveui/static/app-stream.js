@@ -2276,8 +2276,11 @@ const sendMessage = async (options = {}) => {
   if (state.selectedModel) {
     body.model = state.selectedModel;
   }
-  if (state.selectedProvider) {
-    body.provider = state.selectedProvider;
+  if (!session.provider && state.selectedProvider) {
+    session.provider = state.selectedProvider;
+  }
+  if (session.provider) {
+    body.provider = session.provider;
   }
 
   try {
