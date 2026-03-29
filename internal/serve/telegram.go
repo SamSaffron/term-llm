@@ -364,6 +364,7 @@ type telegramSession struct {
 	mu                    sync.Mutex
 	runtime               *SessionRuntime
 	history               []llm.Message
+	systemPromptPersisted bool
 	carryoverContext      string // one-time context carried from the previous replaced session
 	carryoverContextLabel string
 	meta                  *session.Session
@@ -925,7 +926,7 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 
 	// Persist incoming messages before streaming.
 	if m.store != nil && sess.meta != nil {
-		if m.settings.SystemPrompt != "" && !historyHasSystem {
+		if m.settings.SystemPrompt != "" && !sess.systemPromptPersisted {
 			sysMsg := &session.Message{
 				SessionID:   sess.meta.ID,
 				Role:        llm.RoleSystem,
@@ -937,6 +938,7 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 			m.runStoreOp(ctx, sess.meta.ID, "AddMessage(system)", func(storeCtx context.Context) error {
 				return m.store.AddMessage(storeCtx, sess.meta.ID, sysMsg)
 			})
+			sess.systemPromptPersisted = true
 		}
 		storeUserMsg := &session.Message{
 			SessionID:   sess.meta.ID,

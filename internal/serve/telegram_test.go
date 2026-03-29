@@ -975,6 +975,85 @@ func TestStreamReply_InjectsCarryoverSystemNoteOnce(t *testing.T) {
 	}
 }
 
+func TestStreamReply_PersistsSystemPromptOnlyOncePerSession(t *testing.T) {
+	h := testutil.NewEngineHarness()
+	h.Provider.AddTextResponse("first")
+	h.Provider.AddTextResponse("second")
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	defer store.Close()
+
+	mgr := &telegramSessionMgr{
+		sessions:       make(map[int64]*telegramSession),
+		store:          store,
+		tickerInterval: 10 * time.Millisecond,
+		settings: Settings{
+			MaxTurns:     5,
+			Store:        store,
+			SystemPrompt: "be helpful",
+			NewSession: func(ctx context.Context) (*SessionRuntime, error) {
+				return &SessionRuntime{
+					Engine:       h.Engine,
+					ProviderName: "mock",
+					ModelName:    "test",
+				}, nil
+			},
+		},
+	}
+
+	ctx := context.Background()
+	sess, err := mgr.getOrCreate(ctx, 42)
+	if err != nil {
+		t.Fatalf("getOrCreate failed: %v", err)
+	}
+	bot := &fakeBotSender{}
+
+	if err := mgr.streamReply(ctx, bot, sess, 42, llm.UserText("turn one")); err != nil {
+		t.Fatalf("first streamReply returned error: %v", err)
+	}
+	if err := mgr.streamReply(ctx, bot, sess, 42, llm.UserText("turn two")); err != nil {
+		t.Fatalf("second streamReply returned error: %v", err)
+	}
+
+	msgs, err := store.GetMessages(ctx, sess.meta.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages failed: %v", err)
+	}
+	var systemCount int
+	for _, msg := range msgs {
+		if msg.Role == llm.RoleSystem {
+			systemCount++
+		}
+	}
+	if systemCount != 1 {
+		t.Fatalf("expected exactly 1 persisted system message, got %d", systemCount)
+	}
+
+	if len(h.Provider.Requests) != 2 {
+		t.Fatalf("expected 2 provider requests, got %d", len(h.Provider.Requests))
+	}
+	for i, req := range h.Provider.Requests {
+		found := false
+		for _, msg := range req.Messages {
+			if msg.Role != llm.RoleSystem {
+				continue
+			}
+			for _, part := range msg.Parts {
+				if part.Type == llm.PartText && part.Text == "be helpful" {
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("expected system prompt in provider request %d", i)
+		}
+	}
+}
+
 func TestStreamReply_PersistsImagePlaceholderInHistory(t *testing.T) {
 	h := testutil.NewEngineHarness()
 	h.Provider.AddTextResponse("ok")
