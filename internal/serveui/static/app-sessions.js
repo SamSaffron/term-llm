@@ -178,7 +178,7 @@ const convertServerMessages = (serverMessages) => {
     const parts = Array.isArray(msg.parts) ? msg.parts : [];
     const created = msg.created_at || Date.now();
 
-    if (msg.role === 'system') continue;
+    if (msg.role === 'system' || msg.role === 'developer') continue;
 
     if (msg.role === 'user') {
       flushGroup();

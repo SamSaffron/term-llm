@@ -2066,7 +2066,7 @@ func TestHandleSessionMessages_OmitsToolResults(t *testing.T) {
 	}
 }
 
-func TestHandleSessionMessages_OmitsSystemMessages(t *testing.T) {
+func TestHandleSessionMessages_OmitsSystemAndDeveloperMessages(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
 	if err != nil {
@@ -2087,6 +2087,14 @@ func TestHandleSessionMessages_OmitsSystemMessages(t *testing.T) {
 	sysMsg := session.NewMessage("sess-sys", llm.SystemText("You are a helpful assistant."), -1)
 	if err := store.AddMessage(ctx, "sess-sys", sysMsg); err != nil {
 		t.Fatalf("AddMessage(system): %v", err)
+	}
+	// Add a developer message (platform developer prompt, persisted with role=developer)
+	devMsg := session.NewMessage("sess-sys", llm.Message{
+		Role:  llm.RoleDeveloper,
+		Parts: []llm.Part{{Type: llm.PartText, Text: "You are Jarvis, a personal AI assistant."}},
+	}, -1)
+	if err := store.AddMessage(ctx, "sess-sys", devMsg); err != nil {
+		t.Fatalf("AddMessage(developer): %v", err)
 	}
 	// Add a user message
 	userMsg := session.NewMessage("sess-sys", llm.UserText("hello"), -1)
@@ -2120,11 +2128,14 @@ func TestHandleSessionMessages_OmitsSystemMessages(t *testing.T) {
 	}
 
 	if len(body.Messages) != 2 {
-		t.Fatalf("message count = %d, want 2 (system message should be filtered)", len(body.Messages))
+		t.Fatalf("message count = %d, want 2 (system+developer should be filtered)", len(body.Messages))
 	}
 	for _, m := range body.Messages {
 		if m.Role == "system" {
 			t.Fatal("system messages should be filtered from API response")
+		}
+		if m.Role == "developer" {
+			t.Fatal("developer messages should be filtered from API response")
 		}
 	}
 }

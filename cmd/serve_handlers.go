@@ -417,8 +417,8 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 
 	result := make([]messageEntry, 0, len(msgs))
 	for _, msg := range msgs {
-		// System messages contain the internal system prompt — never expose to UI clients.
-		if msg.Role == llm.RoleSystem {
+		// System and developer messages contain internal prompts — never expose to UI clients.
+		if msg.Role == llm.RoleSystem || msg.Role == llm.RoleDeveloper {
 			continue
 		}
 		entry := messageEntry{
