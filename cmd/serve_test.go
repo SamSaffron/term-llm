@@ -4500,6 +4500,31 @@ func TestParseAnthropicMessages_ToolUseRoundTrip(t *testing.T) {
 	}
 }
 
+func TestParseAnthropicMessages_MixedUserAndToolResultPreservesOrder(t *testing.T) {
+	msgs, err := parseAnthropicMessages([]anthropicMessage{
+		{Role: "user", Content: json.RawMessage(`[
+			{"type":"text","text":"before"},
+			{"type":"tool_result","tool_use_id":"call_1","content":"tool output"},
+			{"type":"text","text":"after"}
+		]`)},
+	})
+	if err != nil {
+		t.Fatalf("parseAnthropicMessages: %v", err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("len = %d, want 3", len(msgs))
+	}
+	if msgs[0].Role != llm.RoleUser || msgs[0].Parts[0].Text != "before" {
+		t.Fatalf("first message = %#v, want leading user text", msgs[0])
+	}
+	if msgs[1].Role != llm.RoleTool || msgs[1].Parts[0].ToolResult == nil || msgs[1].Parts[0].ToolResult.Content != "tool output" {
+		t.Fatalf("second message = %#v, want tool result", msgs[1])
+	}
+	if msgs[2].Role != llm.RoleUser || msgs[2].Parts[0].Text != "after" {
+		t.Fatalf("third message = %#v, want trailing user text", msgs[2])
+	}
+}
+
 func TestParseAnthropicSystem(t *testing.T) {
 	// String form
 	if got := parseAnthropicSystem(json.RawMessage(`"Be helpful"`)); got != "Be helpful" {
