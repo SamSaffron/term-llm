@@ -366,11 +366,12 @@ func (e *Engine) SetMaxToolOutputChars(n int) {
 // Safe to call from any goroutine (e.g., the TUI thread).
 func (e *Engine) Interject(text string) {
 	e.callbackMu.Lock()
+	defer e.callbackMu.Unlock()
+
 	if e.interjection == nil {
 		e.interjection = make(chan string, 1)
 	}
 	ch := e.interjection
-	e.callbackMu.Unlock()
 
 	// Drain-then-send: replace any pending interjection with the new one.
 	select {

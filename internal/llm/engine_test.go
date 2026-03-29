@@ -1673,6 +1673,46 @@ func TestEngineInterjection_DrainOnNoPending(t *testing.T) {
 	}
 }
 
+// TestEngineInterject_ConcurrentCallsDoNotBlock verifies that concurrent
+// Interject calls remain non-blocking even when several goroutines race to
+// replace the single pending interjection.
+func TestEngineInterject_ConcurrentCallsDoNotBlock(t *testing.T) {
+	for attempt := 0; attempt < 50; attempt++ {
+		engine := NewEngine(NewMockProvider("test"), nil)
+
+		const goroutines = 32
+		start := make(chan struct{})
+
+		var wg sync.WaitGroup
+		wg.Add(goroutines)
+		for i := 0; i < goroutines; i++ {
+			go func(i int) {
+				defer wg.Done()
+				<-start
+				engine.Interject(fmt.Sprintf("msg-%d", i))
+			}(i)
+		}
+
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+
+		close(start)
+
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("concurrent Interject calls blocked on attempt %d", attempt)
+		}
+
+		if text := engine.DrainInterjection(); text == "" {
+			t.Fatalf("expected an interjection to remain queued on attempt %d", attempt)
+		}
+	}
+}
+
 // TestEngineInterjection_TurnCallback verifies that the turn callback receives
 // the interjected user message for session persistence.
 func TestEngineInterjection_TurnCallback(t *testing.T) {
