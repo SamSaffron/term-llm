@@ -72,11 +72,27 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("x-session-id", sessionID)
 		replaceHistory = true
 	}
-	// Use requested provider for new sessions only.
+	// Use requested provider for new sessions only. For chained requests,
+	// recover the persisted session provider so runtime recreation preserves
+	// the original provider/model continuity after eviction.
 	reqProvider := strings.TrimSpace(req.Provider)
+	if req.PreviousResponseID != "" && reqProvider == "" && s.store != nil {
+		if sess, getErr := s.store.Get(ctx, sessionID); getErr == nil && sess != nil {
+			reqProvider = strings.TrimSpace(sess.ProviderKey)
+			if reqProvider == "" {
+				reqProvider = resolveSessionProviderKey(s.cfgRef, sess)
+			}
+		}
+	}
+	defaultProvider := ""
+	if s.cfgRef != nil {
+		defaultProvider = s.cfgRef.DefaultProvider
+	}
 	var runtime *serveRuntime
 	var stateful bool
-	if req.PreviousResponseID != "" || reqProvider == "" || reqProvider == s.cfgRef.DefaultProvider {
+	if req.PreviousResponseID != "" {
+		runtime, stateful, err = s.runtimeForProviderRequest(ctx, sessionID, reqProvider)
+	} else if reqProvider == "" || reqProvider == defaultProvider {
 		runtime, stateful, err = s.runtimeForRequest(ctx, sessionID)
 	} else {
 		runtime, stateful, err = s.runtimeForProviderRequest(ctx, sessionID, reqProvider)

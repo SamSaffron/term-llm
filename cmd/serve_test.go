@@ -2795,6 +2795,107 @@ func TestHandleResponses_PreviousResponseIDChainsSession(t *testing.T) {
 	}
 }
 
+func TestHandleResponses_PreviousResponseIDRestoresPersistedProviderAfterRuntimeRecreation(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	var defaultCreates atomic.Int32
+	var otherCreates atomic.Int32
+
+	newRuntime := func(providerName, response string) *serveRuntime {
+		provider := llm.NewMockProvider(providerName).AddTextResponse(response)
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			providerKey:  providerName,
+			engine:       engine,
+			defaultModel: providerName + "-model",
+			store:        store,
+		}
+		rt.Touch()
+		return rt
+	}
+
+	manager := newServeSessionManager(time.Minute, 100, func(ctx context.Context) (*serveRuntime, error) {
+		createNum := defaultCreates.Add(1)
+		return newRuntime("default", fmt.Sprintf("default response %d", createNum)), nil
+	})
+	defer manager.Close()
+
+	srv := &serveServer{
+		cfgRef:     &config.Config{DefaultProvider: "default"},
+		sessionMgr: manager,
+		store:      store,
+		runtimeFactory: func(ctx context.Context, providerName string, model string) (*serveRuntime, error) {
+			createNum := otherCreates.Add(1)
+			return newRuntime(providerName, fmt.Sprintf("%s response %d", providerName, createNum)), nil
+		},
+	}
+
+	code, resp1 := doResponsesWithHeader(t, srv, `{"input":"hello","provider":"other"}`, "provider-chain")
+	if code != http.StatusOK {
+		t.Fatalf("first request status = %d, want 200", code)
+	}
+	respID1, _ := resp1["id"].(string)
+	if respID1 == "" {
+		t.Fatal("first response missing id")
+	}
+
+	sess, err := store.Get(context.Background(), "provider-chain")
+	if err != nil {
+		t.Fatalf("Get session: %v", err)
+	}
+	if sess == nil {
+		t.Fatal("expected persisted session")
+	}
+	if sess.ProviderKey != "other" {
+		t.Fatalf("ProviderKey = %q, want other", sess.ProviderKey)
+	}
+
+	manager.mu.Lock()
+	evicted := manager.sessions["provider-chain"]
+	delete(manager.sessions, "provider-chain")
+	manager.mu.Unlock()
+	if evicted != nil {
+		evicted.Close()
+	}
+
+	code, resp2 := doResponses(t, srv, `{"input":"resume","previous_response_id":"`+respID1+`"}`)
+	if code != http.StatusOK {
+		t.Fatalf("second request status = %d, want 200", code)
+	}
+
+	output, ok := resp2["output"].([]any)
+	if !ok || len(output) == 0 {
+		t.Fatalf("response output = %#v, want assistant message", resp2["output"])
+	}
+	msg, ok := output[0].(map[string]any)
+	if !ok {
+		t.Fatalf("first output item = %#v, want object", output[0])
+	}
+	content, ok := msg["content"].([]any)
+	if !ok || len(content) == 0 {
+		t.Fatalf("message content = %#v, want output_text", msg["content"])
+	}
+	part, ok := content[0].(map[string]any)
+	if !ok {
+		t.Fatalf("first content part = %#v, want object", content[0])
+	}
+	if got := part["text"]; got != "other response 2" {
+		t.Fatalf("response text = %v, want %q", got, "other response 2")
+	}
+	if got := defaultCreates.Load(); got != 0 {
+		t.Fatalf("default provider factory calls = %d, want 0", got)
+	}
+	if got := otherCreates.Load(); got != 2 {
+		t.Fatalf("other provider factory calls = %d, want 2", got)
+	}
+}
+
 func TestHandleResponses_NoPreviousResponseIDStartsFresh(t *testing.T) {
 	// Each runtime gets 2 responses so it can handle being reused
 	srv := newTestServeServer("reply1", "reply2")
