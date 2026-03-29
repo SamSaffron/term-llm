@@ -71,16 +71,19 @@ func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 
 	search := runtime.search
 	toolChoice := parseAnthropicToolChoice(req.ToolChoice)
+	requestedTools := parseAnthropicRequestedToolNames(req.Tools)
 
-	// Merge server tools (engine can execute) with client tools (passthrough).
-	// Server tools win on name collision so the engine executes its own version.
+	// Merge requested server tools (engine can execute) with client tools
+	// (passthrough). Server tools win on name collision so the engine executes
+	// its own version.
+	//
 	// Client tools the engine doesn't recognise are forwarded to the LLM and
 	// returned as tool_use blocks for the client to handle.
 	//
 	// ToolMap targets (e.g. "search" when mapping "WebSearch" → "search") are
 	// excluded from the server list — the LLM will see the client's tool name
 	// and the engine redirects execution via ToolMap.
-	serverTools := runtime.selectTools(nil) // all registered server tools
+	serverTools := runtime.selectTools(requestedTools)
 	mappedTargets := make(map[string]bool)
 	if runtime.toolMap != nil {
 		for _, target := range runtime.toolMap {
