@@ -87,6 +87,18 @@ func newTestMgrAndSession(h *testutil.EngineHarness) (*telegramSessionMgr, *tele
 	return mgr, sess
 }
 
+func TestHandleMessage_IgnoresMessagesWithNilFrom(t *testing.T) {
+	mgr := &telegramSessionMgr{}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("handleMessage panicked: %v", r)
+		}
+	}()
+
+	mgr.handleMessage(context.Background(), nil, &tgbotapi.Message{Text: "hi"})
+}
+
 // --- TestBuildSegment ---
 
 func TestBuildSegment(t *testing.T) {

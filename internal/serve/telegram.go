@@ -650,6 +650,10 @@ func (m *telegramSessionMgr) runStoreOpWithTimeout(sessionID, op string, fn func
 }
 
 func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
+	if msg.From == nil {
+		log.Printf("[telegram] ignoring message with no sender")
+		return
+	}
 	if !m.isAllowed(msg.From.ID, msg.From.UserName) {
 		log.Printf("[telegram] ignoring message from unauthorised user %d (@%s)", msg.From.ID, msg.From.UserName)
 		return
