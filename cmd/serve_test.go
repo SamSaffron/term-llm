@@ -1038,6 +1038,58 @@ func TestServeSessionManager_GetOrCreateSingleFactoryCall(t *testing.T) {
 	}
 }
 
+func TestServeSessionManager_EvictExpiredSkipsActiveRun(t *testing.T) {
+	manager := newServeSessionManager(10*time.Millisecond, 10, nil)
+	defer manager.Close()
+
+	var evictions atomic.Int32
+	manager.onEvict = func(rt *serveRuntime) {
+		evictions.Add(1)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rt := &serveRuntime{}
+	rt.lastUsedUnixNano.Store(time.Now().Add(-time.Hour).UnixNano())
+	state := &runtimeInterruptState{cancel: cancel, done: make(chan struct{})}
+	rt.setActiveInterrupt(state)
+
+	manager.mu.Lock()
+	manager.sessions["busy"] = rt
+	manager.mu.Unlock()
+
+	manager.evictExpired()
+
+	manager.mu.Lock()
+	_, ok := manager.sessions["busy"]
+	manager.mu.Unlock()
+	if !ok {
+		t.Fatal("expected active expired session to remain in manager")
+	}
+	if got := evictions.Load(); got != 0 {
+		t.Fatalf("evictions after active session sweep = %d, want 0", got)
+	}
+	select {
+	case <-ctx.Done():
+		t.Fatal("expected active session not to be cancelled during eviction sweep")
+	default:
+	}
+
+	rt.clearActiveInterrupt(state)
+	manager.evictExpired()
+
+	manager.mu.Lock()
+	_, ok = manager.sessions["busy"]
+	manager.mu.Unlock()
+	if ok {
+		t.Fatal("expected inactive expired session to be evicted")
+	}
+	if got := evictions.Load(); got != 1 {
+		t.Fatalf("evictions after inactive session sweep = %d, want 1", got)
+	}
+}
+
 func TestRequireJSONContentType(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
 	if err := requireJSONContentType(req); err == nil {

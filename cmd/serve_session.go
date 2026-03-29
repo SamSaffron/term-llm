@@ -58,7 +58,7 @@ func (m *serveSessionManager) evictExpired() {
 
 	m.mu.Lock()
 	for id, rt := range m.sessions {
-		if now.Sub(rt.LastUsed()) > m.ttl {
+		if now.Sub(rt.LastUsed()) > m.ttl && !rt.hasActiveRun() {
 			delete(m.sessions, id)
 			stale = append(stale, rt)
 		}
