@@ -123,8 +123,8 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 	if req.ToolChoice.Mode != "" {
 		responsesReq.ToolChoice = BuildResponsesToolChoice(req.ToolChoice)
 	}
-	if req.ParallelToolCalls {
-		responsesReq.ParallelToolCalls = boolPtr(true)
+	if len(tools) > 0 {
+		responsesReq.ParallelToolCalls = boolPtr(req.ParallelToolCalls)
 	}
 	if req.Temperature > 0 {
 		v := float64(req.Temperature)
