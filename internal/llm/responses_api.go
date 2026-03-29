@@ -412,6 +412,8 @@ func BuildResponsesToolChoice(choice ToolChoice) interface{} {
 
 // Stream makes a streaming request to the Responses API and returns events via a Stream
 func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debugRaw bool) (Stream, error) {
+	fullInput := req.Input
+
 	// Use server state: send previous_response_id if we have one (unless disabled)
 	if !c.DisableServerState && c.LastResponseID != "" {
 		req.PreviousResponseID = c.LastResponseID
@@ -494,6 +496,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 			// Clear state and retry with full history
 			c.LastResponseID = ""
 			req.PreviousResponseID = ""
+			req.Input = fullInput
 			// Re-marshal without previous_response_id
 			body, err = json.Marshal(req)
 			if err != nil {

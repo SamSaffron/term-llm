@@ -763,6 +763,101 @@ func TestBuildResponsesInput_ConvertsDanglingToolCalls(t *testing.T) {
 	}
 }
 
+func TestResponsesClientStream_Retries404WithFullHistory(t *testing.T) {
+	type capturedRequest struct {
+		PreviousResponseID string               `json:"previous_response_id"`
+		Input              []ResponsesInputItem `json:"input"`
+	}
+
+	callCount := 0
+	requests := make([]capturedRequest, 0, 2)
+	httpClient := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			callCount++
+			defer r.Body.Close()
+
+			var payload capturedRequest
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read request body: %w", err)
+			}
+			if err := json.Unmarshal(body, &payload); err != nil {
+				return nil, fmt.Errorf("failed to decode request body: %w", err)
+			}
+			requests = append(requests, payload)
+
+			if callCount == 1 {
+				return &http.Response{
+					StatusCode: http.StatusNotFound,
+					Status:     "404 Not Found",
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(`{"error":"previous_response_id not found"}`)),
+				}, nil
+			}
+
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+			}, nil
+		}),
+	}
+
+	client := &ResponsesClient{
+		BaseURL:        "https://example.test/v1/responses",
+		GetAuthHeader:  func() string { return "Bearer test-token" },
+		HTTPClient:     httpClient,
+		LastResponseID: "resp_prev",
+	}
+
+	stream, err := client.Stream(context.Background(), ResponsesRequest{
+		Model: "gpt-5.2",
+		Input: []ResponsesInputItem{
+			{Type: "message", Role: "developer", Content: "Be concise"},
+			{Type: "message", Role: "user", Content: "old question"},
+			{Type: "message", Role: "assistant", Content: "old answer"},
+			{Type: "message", Role: "user", Content: "new question"},
+		},
+		Stream: true,
+	}, false)
+	if err != nil {
+		t.Fatalf("expected stream to succeed after 404 retry, got error: %v", err)
+	}
+	defer stream.Close()
+	drainStreamToDone(t, stream)
+
+	if callCount != 2 {
+		t.Fatalf("expected 2 HTTP calls (initial + retry), got %d", callCount)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("expected 2 captured requests, got %d", len(requests))
+	}
+
+	if requests[0].PreviousResponseID != "resp_prev" {
+		t.Fatalf("expected initial previous_response_id resp_prev, got %q", requests[0].PreviousResponseID)
+	}
+	if len(requests[0].Input) != 1 {
+		t.Fatalf("expected initial request to send only new input, got %d items", len(requests[0].Input))
+	}
+	if requests[0].Input[0].Content != "new question" {
+		t.Fatalf("expected initial request to send latest user message, got %#v", requests[0].Input[0].Content)
+	}
+
+	if requests[1].PreviousResponseID != "" {
+		t.Fatalf("expected retry request to clear previous_response_id, got %q", requests[1].PreviousResponseID)
+	}
+	if len(requests[1].Input) != 4 {
+		t.Fatalf("expected retry request to restore full history, got %d items", len(requests[1].Input))
+	}
+	if requests[1].Input[0].Role != "developer" || requests[1].Input[1].Content != "old question" || requests[1].Input[2].Content != "old answer" || requests[1].Input[3].Content != "new question" {
+		t.Fatalf("expected retry request to preserve full history, got %+v", requests[1].Input)
+	}
+	if client.LastResponseID != "" {
+		t.Fatalf("expected client LastResponseID to be cleared after 404 retry, got %q", client.LastResponseID)
+	}
+}
+
 func TestResponsesClient_OnAuthRetry_RefreshesAndRetries(t *testing.T) {
 	callCount := 0
 	httpClient := &http.Client{
