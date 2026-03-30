@@ -1292,6 +1292,46 @@ func TestDownloadTelegramPhoto_EmptyPhotos(t *testing.T) {
 	}
 }
 
+func TestDownloadTelegramPhoto_RejectsUnexpectedStatus(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+	}))
+	defer ts.Close()
+
+	fg := &fakeFileGetter{fileURL: ts.URL}
+	photos := []tgbotapi.PhotoSize{{FileID: "large", Width: 800, Height: 600}}
+
+	_, _, _, err := downloadTelegramPhoto(fg, photos)
+	if err == nil {
+		t.Fatal("expected error for unexpected status")
+	}
+	if !strings.Contains(err.Error(), "unexpected status 502 Bad Gateway") {
+		t.Fatalf("expected unexpected status error, got %v", err)
+	}
+}
+
+func TestDownloadTelegramPhoto_RejectsOversizeResponse(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		chunk := []byte(strings.Repeat("a", 1024))
+		for written := 0; written < telegramMaxPhotoDownloadBytes+1; written += len(chunk) {
+			_, _ = w.Write(chunk)
+		}
+	}))
+	defer ts.Close()
+
+	fg := &fakeFileGetter{fileURL: ts.URL}
+	photos := []tgbotapi.PhotoSize{{FileID: "large", Width: 800, Height: 600}}
+
+	_, _, _, err := downloadTelegramPhoto(fg, photos)
+	if err == nil {
+		t.Fatal("expected error for oversized response")
+	}
+	if !strings.Contains(err.Error(), "response exceeded") {
+		t.Fatalf("expected oversized response error, got %v", err)
+	}
+}
+
 func TestDownloadTelegramVoice(t *testing.T) {
 	ts := newTestAudioServer(t, []byte("fake-ogg-data"))
 	defer ts.Close()
