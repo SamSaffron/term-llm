@@ -336,8 +336,8 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 	if req.ToolChoice.Mode != "" {
 		chatReq.ToolChoice = buildCompatToolChoice(req.ToolChoice)
 	}
-	if req.ParallelToolCalls {
-		chatReq.ParallelToolCalls = boolPtr(true)
+	if len(tools) > 0 {
+		chatReq.ParallelToolCalls = boolPtr(req.ParallelToolCalls)
 	}
 	if req.Temperature > 0 {
 		v := float64(req.Temperature)
