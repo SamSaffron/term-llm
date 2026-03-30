@@ -486,6 +486,34 @@ func TestStreamReply_ExactChunkBoundary(t *testing.T) {
 	}
 }
 
+func TestStreamReply_UnicodeChunkBoundaryPreservesUTF8(t *testing.T) {
+	h := testutil.NewEngineHarness()
+	response := strings.Repeat("世", telegramMaxMessageLen)
+	h.Provider.AddTextResponse(response)
+
+	mgr, sess := newTestMgrAndSession(h)
+	mgr.tickerInterval = 1 * time.Millisecond
+	bot := &fakeBotSender{}
+
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hi")); err != nil {
+		t.Fatalf("streamReply returned error: %v", err)
+	}
+
+	texts := bot.allTexts()
+	foundContent := false
+	for _, text := range texts {
+		if !utf8.ValidString(text) {
+			t.Fatalf("sent invalid UTF-8 text: %q", text)
+		}
+		if text == response || strings.HasPrefix(text, response) {
+			foundContent = true
+		}
+	}
+	if !foundContent {
+		t.Fatalf("expected full unicode response in sent texts; got %d messages", len(texts))
+	}
+}
+
 func TestStreamReply_PlaceholderSendFails(t *testing.T) {
 	h := testutil.NewEngineHarness()
 	h.Provider.AddTextResponse("Hello")

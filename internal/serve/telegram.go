@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/samsaffron/term-llm/internal/config"
@@ -1302,14 +1303,16 @@ loop:
 				rendered = buildHeartbeatSegment(prose, toolDisplay, phase, spin, elapsed)
 			}
 
-			if len(prose) >= telegramMaxMessageLen || len(rendered) >= telegramMaxMessageLen {
+			if utf8.RuneCountInString(prose) >= telegramMaxMessageLen || utf8.RuneCountInString(rendered) >= telegramMaxMessageLen {
 				// Keep chunk splitting based on prose, not status line rendering.
-				splitAt := telegramMaxMessageLen
-				if splitAt > len(prose) {
-					splitAt = len(prose)
+				splitAtRunes := telegramMaxMessageLen
+				proseRunes := utf8.RuneCountInString(prose)
+				if splitAtRunes > proseRunes {
+					splitAtRunes = proseRunes
 				}
-				sendEdit(currentMsgID, prose[:splitAt], false)
-				msgStart += splitAt
+				chunk, splitAtBytes := prefixRunes(prose, splitAtRunes)
+				sendEdit(currentMsgID, chunk, false)
+				msgStart += splitAtBytes
 				needNewMsg = true
 				continue
 			}
@@ -1618,6 +1621,22 @@ func tailRunes(s string, maxRunes int) string {
 		return s
 	}
 	return string(runes[len(runes)-maxRunes:])
+}
+
+func prefixRunes(s string, maxRunes int) (string, int) {
+	if maxRunes <= 0 || s == "" {
+		return "", 0
+	}
+
+	runeCount := 0
+	for idx := range s {
+		if runeCount == maxRunes {
+			return s[:idx], idx
+		}
+		runeCount++
+	}
+
+	return s, len(s)
 }
 
 // activeToolDisplay returns a short human-readable string describing which tools
