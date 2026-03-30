@@ -27,6 +27,7 @@ import (
 const telegramMaxMessageLen = 4000 // Telegram limit is 4096; leave margin
 const minEditInterval = 3 * time.Second
 const streamEventTimeout = 10 * time.Minute
+const telegramMaxConcurrentHandlers = 8
 
 // botSender is the subset of tgbotapi.BotAPI used by streamReply and
 // handleMessage, allowing tests to supply a fake without a live connection.
@@ -319,6 +320,7 @@ func (p *TelegramPlatform) Run(ctx context.Context, cfg *config.Config, settings
 		fastProvider:     fastProvider,
 		allowedUserIDs:   buildAllowedSet(p.cfg.AllowedUserIDs),
 		allowedUsernames: buildAllowedUsernameSet(p.cfg.AllowedUsernames),
+		messageSlots:     make(chan struct{}, telegramMaxConcurrentHandlers),
 	}
 
 	u := tgbotapi.NewUpdate(0)
@@ -338,7 +340,15 @@ func (p *TelegramPlatform) Run(ctx context.Context, cfg *config.Config, settings
 			if update.Message == nil {
 				continue
 			}
-			go mgr.handleMessage(ctx, bot, update.Message)
+			if !mgr.acquireMessageSlot(ctx) {
+				mgr.closeAllSessions()
+				bot.StopReceivingUpdates()
+				return nil
+			}
+			go func(msg *tgbotapi.Message) {
+				defer mgr.releaseMessageSlot()
+				mgr.handleMessage(ctx, bot, msg)
+			}(update.Message)
 		}
 	}
 }
@@ -357,6 +367,24 @@ func buildAllowedUsernameSet(names []string) map[string]struct{} {
 		m[strings.ToLower(name)] = struct{}{}
 	}
 	return m
+}
+
+func (m *telegramSessionMgr) acquireMessageSlot(ctx context.Context) bool {
+	slots := m.messageSlots
+	if slots == nil {
+		slots = make(chan struct{}, telegramMaxConcurrentHandlers)
+		m.messageSlots = slots
+	}
+	select {
+	case slots <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (m *telegramSessionMgr) releaseMessageSlot() {
+	<-m.messageSlots
 }
 
 // telegramSession holds per-chat conversation state.
@@ -393,6 +421,7 @@ type telegramSessionMgr struct {
 	fastProvider     llm.Provider
 	allowedUserIDs   map[int64]struct{}
 	allowedUsernames map[string]struct{}
+	messageSlots     chan struct{}
 	tickerInterval   time.Duration // 0 means use default (500ms); overridden in tests
 }
 

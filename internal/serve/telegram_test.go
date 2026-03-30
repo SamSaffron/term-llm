@@ -99,6 +99,52 @@ func TestHandleMessage_IgnoresMessagesWithNilFrom(t *testing.T) {
 	mgr.handleMessage(context.Background(), nil, &tgbotapi.Message{Text: "hi"})
 }
 
+func TestTelegramSessionMgrAcquireMessageSlot_BlocksUntilReleased(t *testing.T) {
+	mgr := &telegramSessionMgr{messageSlots: make(chan struct{}, 1)}
+	if !mgr.acquireMessageSlot(context.Background()) {
+		t.Fatal("first acquireMessageSlot returned false")
+	}
+
+	acquired := make(chan bool, 1)
+	go func() {
+		acquired <- mgr.acquireMessageSlot(context.Background())
+	}()
+
+	select {
+	case ok := <-acquired:
+		t.Fatalf("acquireMessageSlot succeeded while full: %v", ok)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	mgr.releaseMessageSlot()
+
+	select {
+	case ok := <-acquired:
+		if !ok {
+			t.Fatal("acquireMessageSlot returned false after release")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("acquireMessageSlot did not succeed after release")
+	}
+
+	mgr.releaseMessageSlot()
+}
+
+func TestTelegramSessionMgrAcquireMessageSlot_RespectsContextCancel(t *testing.T) {
+	mgr := &telegramSessionMgr{messageSlots: make(chan struct{}, 1)}
+	if !mgr.acquireMessageSlot(context.Background()) {
+		t.Fatal("first acquireMessageSlot returned false")
+	}
+	defer mgr.releaseMessageSlot()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if mgr.acquireMessageSlot(ctx) {
+		t.Fatal("acquireMessageSlot returned true after context cancellation")
+	}
+}
+
 // --- TestBuildSegment ---
 
 func TestBuildSegment(t *testing.T) {
