@@ -28,6 +28,7 @@ const telegramMaxMessageLen = 4000 // Telegram limit is 4096; leave margin
 const minEditInterval = 3 * time.Second
 const streamEventTimeout = 10 * time.Minute
 const telegramMaxConcurrentHandlers = 8
+const telegramMaxVoiceDownloadBytes = 25 << 20 // 25 MB
 
 // botSender is the subset of tgbotapi.BotAPI used by streamReply and
 // handleMessage, allowing tests to supply a fake without a live connection.
@@ -94,6 +95,9 @@ func downloadTelegramVoice(fileGetter botFileGetter, voice *tgbotapi.Voice) (fil
 	if voice == nil {
 		return "", fmt.Errorf("no voice provided")
 	}
+	if voice.FileSize > telegramMaxVoiceDownloadBytes {
+		return "", fmt.Errorf("voice file too large: %d bytes exceeds %d", voice.FileSize, telegramMaxVoiceDownloadBytes)
+	}
 	directURL, err := fileGetter.GetFileDirectURL(voice.FileID)
 	if err != nil {
 		return "", fmt.Errorf("get voice file URL: %w", err)
@@ -104,17 +108,31 @@ func downloadTelegramVoice(fileGetter botFileGetter, voice *tgbotapi.Voice) (fil
 		return "", fmt.Errorf("download voice: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("download voice: unexpected HTTP status %s", resp.Status)
+	}
+	if resp.ContentLength > telegramMaxVoiceDownloadBytes {
+		return "", fmt.Errorf("voice file too large: %d bytes exceeds %d", resp.ContentLength, telegramMaxVoiceDownloadBytes)
+	}
 
 	tmp, err := os.CreateTemp("", "tg-voice-*.ogg")
 	if err != nil {
 		return "", fmt.Errorf("create temp file: %w", err)
 	}
-	if _, err := io.Copy(tmp, resp.Body); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		return "", fmt.Errorf("write voice temp file: %w", err)
+
+	limitedBody := &io.LimitedReader{R: resp.Body, N: telegramMaxVoiceDownloadBytes + 1}
+	written, copyErr := io.Copy(tmp, limitedBody)
+	if closeErr := tmp.Close(); copyErr == nil && closeErr != nil {
+		copyErr = closeErr
 	}
-	tmp.Close()
+	if copyErr != nil {
+		os.Remove(tmp.Name())
+		return "", fmt.Errorf("write voice temp file: %w", copyErr)
+	}
+	if written > telegramMaxVoiceDownloadBytes {
+		os.Remove(tmp.Name())
+		return "", fmt.Errorf("voice file too large: exceeds %d bytes", telegramMaxVoiceDownloadBytes)
+	}
 	return tmp.Name(), nil
 }
 
