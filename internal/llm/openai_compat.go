@@ -339,11 +339,11 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 	if req.ParallelToolCalls {
 		chatReq.ParallelToolCalls = boolPtr(true)
 	}
-	if req.Temperature > 0 {
+	if req.Temperature >= 0 {
 		v := float64(req.Temperature)
 		chatReq.Temperature = &v
 	}
-	if req.TopP > 0 {
+	if req.TopP >= 0 {
 		v := float64(req.TopP)
 		chatReq.TopP = &v
 	}
