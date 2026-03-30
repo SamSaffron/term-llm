@@ -533,3 +533,110 @@ func TestBuildCompatMessages_ConvertsDanglingToolCalls(t *testing.T) {
 		t.Fatalf("expected interrupted stub in text, got %v", assistant.Content)
 	}
 }
+
+func TestBuildCompatMessages_DeveloperRolePrependedToUser(t *testing.T) {
+	messages := []Message{
+		{
+			Role:  RoleSystem,
+			Parts: []Part{{Type: PartText, Text: "You are helpful."}},
+		},
+		{
+			Role:  RoleDeveloper,
+			Parts: []Part{{Type: PartText, Text: "Always respond in JSON."}},
+		},
+		{
+			Role:  RoleUser,
+			Parts: []Part{{Type: PartText, Text: "What is 2+2?"}},
+		},
+		{
+			Role:  RoleAssistant,
+			Parts: []Part{{Type: PartText, Text: `{"answer": 4}`}},
+		},
+	}
+
+	oaiMsgs := buildCompatMessages(messages)
+
+	if len(oaiMsgs) != 3 {
+		t.Fatalf("expected 3 messages (system, user, assistant), got %d", len(oaiMsgs))
+	}
+	if oaiMsgs[0].Role != "system" {
+		t.Errorf("expected first message role 'system', got %q", oaiMsgs[0].Role)
+	}
+	userContent, ok := oaiMsgs[1].Content.(string)
+	if !ok {
+		t.Fatalf("expected user content to be string, got %T", oaiMsgs[1].Content)
+	}
+	if !strings.Contains(userContent, "<developer>") {
+		t.Errorf("expected <developer> tag in user message, got %q", userContent)
+	}
+	if !strings.Contains(userContent, "Always respond in JSON.") {
+		t.Errorf("expected developer text in user message, got %q", userContent)
+	}
+	if !strings.Contains(userContent, "What is 2+2?") {
+		t.Errorf("expected original user text preserved, got %q", userContent)
+	}
+}
+
+func TestBuildCompatMessages_TrailingDeveloperMessage(t *testing.T) {
+	messages := []Message{
+		{
+			Role:  RoleUser,
+			Parts: []Part{{Type: PartText, Text: "Hello"}},
+		},
+		{
+			Role:  RoleAssistant,
+			Parts: []Part{{Type: PartText, Text: "Hi!"}},
+		},
+		{
+			Role:  RoleDeveloper,
+			Parts: []Part{{Type: PartText, Text: "Be concise from now on."}},
+		},
+	}
+
+	oaiMsgs := buildCompatMessages(messages)
+
+	if len(oaiMsgs) != 3 {
+		t.Fatalf("expected 3 messages (user, assistant, synthetic user), got %d", len(oaiMsgs))
+	}
+	trailing := oaiMsgs[2]
+	if trailing.Role != "user" {
+		t.Errorf("expected trailing message role 'user', got %q", trailing.Role)
+	}
+	content, ok := trailing.Content.(string)
+	if !ok {
+		t.Fatalf("expected trailing content to be string, got %T", trailing.Content)
+	}
+	if !strings.Contains(content, "<developer>") || !strings.Contains(content, "Be concise from now on.") {
+		t.Errorf("expected developer text in trailing user message, got %q", content)
+	}
+}
+
+func TestBuildCompatMessages_DeveloperMessageNotDropped(t *testing.T) {
+	// Regression: before the fix, RoleDeveloper messages were silently dropped.
+	messages := []Message{
+		{
+			Role:  RoleDeveloper,
+			Parts: []Part{{Type: PartText, Text: "You must use formal English."}},
+		},
+		{
+			Role:  RoleUser,
+			Parts: []Part{{Type: PartText, Text: "hey whats up"}},
+		},
+	}
+
+	oaiMsgs := buildCompatMessages(messages)
+
+	if len(oaiMsgs) != 1 {
+		t.Fatalf("expected 1 message (merged dev+user), got %d", len(oaiMsgs))
+	}
+	content, ok := oaiMsgs[0].Content.(string)
+	if !ok {
+		t.Fatalf("expected content to be string, got %T", oaiMsgs[0].Content)
+	}
+	if !strings.Contains(content, "You must use formal English.") {
+		t.Errorf("developer text was dropped — not found in %q", content)
+	}
+	if !strings.Contains(content, "hey whats up") {
+		t.Errorf("user text was dropped — not found in %q", content)
+	}
+}

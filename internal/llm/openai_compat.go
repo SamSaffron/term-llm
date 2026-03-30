@@ -463,10 +463,23 @@ func buildCompatMessages(messages []Message) []oaiMessage {
 	messages = sanitizeToolHistory(messages)
 
 	var result []oaiMessage
+	var pendingDev string
 	for _, msg := range messages {
 		switch msg.Role {
+		case RoleDeveloper:
+			// OpenAI-compatible backends have no native developer role.
+			// Buffer the text and prepend it into the next user turn
+			// wrapped in <developer> tags.
+			text, _, _ := splitParts(msg.Parts)
+			if text != "" {
+				pendingDev = text
+			}
 		case RoleSystem, RoleUser, RoleAssistant:
 			text, toolCalls, reasoning := splitParts(msg.Parts)
+			if msg.Role == RoleUser && pendingDev != "" {
+				text = fmt.Sprintf("<developer>\n%s\n</developer>\n\n", pendingDev) + text
+				pendingDev = ""
+			}
 			if msg.Role == RoleAssistant && len(toolCalls) > 0 {
 				result = append(result, oaiMessage{
 					Role:             "assistant",
@@ -539,6 +552,13 @@ func buildCompatMessages(messages []Message) []oaiMessage {
 				}
 			}
 		}
+	}
+	// Trailing developer message with no following user turn.
+	if pendingDev != "" {
+		result = append(result, oaiMessage{
+			Role:    "user",
+			Content: fmt.Sprintf("<developer>\n%s\n</developer>", pendingDev),
+		})
 	}
 	return result
 }
