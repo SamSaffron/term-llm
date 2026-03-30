@@ -1214,6 +1214,130 @@ func TestServeSessionManager_EvictExpiredSkipsActiveRun(t *testing.T) {
 	}
 }
 
+func TestServeSessionManager_GetOrCreateSkipsEvictingActiveRunAtCapacity(t *testing.T) {
+	manager := newServeSessionManager(time.Minute, 2, func(ctx context.Context) (*serveRuntime, error) {
+		rt := &serveRuntime{}
+		rt.Touch()
+		return rt, nil
+	})
+	defer manager.Close()
+
+	var evicted *serveRuntime
+	manager.onEvict = func(rt *serveRuntime) {
+		evicted = rt
+	}
+
+	busyCtx, busyCancel := context.WithCancel(context.Background())
+	defer busyCancel()
+
+	busy := &serveRuntime{}
+	busy.lastUsedUnixNano.Store(time.Now().Add(-2 * time.Hour).UnixNano())
+	busyState := &runtimeInterruptState{cancel: busyCancel, done: make(chan struct{})}
+	busy.setActiveInterrupt(busyState)
+
+	idle := &serveRuntime{}
+	idle.lastUsedUnixNano.Store(time.Now().Add(-time.Hour).UnixNano())
+
+	manager.mu.Lock()
+	manager.sessions["busy"] = busy
+	manager.sessions["idle"] = idle
+	manager.mu.Unlock()
+
+	created, err := manager.GetOrCreate(context.Background(), "new")
+	if err != nil {
+		t.Fatalf("GetOrCreate error: %v", err)
+	}
+	if created == nil {
+		t.Fatal("expected created runtime")
+	}
+
+	manager.mu.Lock()
+	_, busyOK := manager.sessions["busy"]
+	_, idleOK := manager.sessions["idle"]
+	_, newOK := manager.sessions["new"]
+	sessionCount := len(manager.sessions)
+	manager.mu.Unlock()
+
+	if !busyOK {
+		t.Fatal("expected active session to remain in manager")
+	}
+	if idleOK {
+		t.Fatal("expected idle session to be evicted instead of active session")
+	}
+	if !newOK {
+		t.Fatal("expected new session to be stored in manager")
+	}
+	if sessionCount != 2 {
+		t.Fatalf("session count = %d, want 2", sessionCount)
+	}
+	if evicted != idle {
+		t.Fatal("expected idle session to be evicted")
+	}
+	select {
+	case <-busyCtx.Done():
+		t.Fatal("expected active session not to be cancelled during capacity eviction")
+	default:
+	}
+}
+
+func TestServeSessionManager_GetOrCreateWithDoesNotEvictActiveRunWhenAllSessionsAreBusy(t *testing.T) {
+	manager := newServeSessionManager(time.Minute, 1, nil)
+	defer manager.Close()
+
+	var evictions atomic.Int32
+	manager.onEvict = func(rt *serveRuntime) {
+		evictions.Add(1)
+	}
+
+	busyCtx, busyCancel := context.WithCancel(context.Background())
+	defer busyCancel()
+
+	busy := &serveRuntime{}
+	busy.lastUsedUnixNano.Store(time.Now().Add(-time.Hour).UnixNano())
+	busyState := &runtimeInterruptState{cancel: busyCancel, done: make(chan struct{})}
+	busy.setActiveInterrupt(busyState)
+
+	manager.mu.Lock()
+	manager.sessions["busy"] = busy
+	manager.mu.Unlock()
+
+	created, err := manager.GetOrCreateWith(context.Background(), "new", func(ctx context.Context) (*serveRuntime, error) {
+		rt := &serveRuntime{}
+		rt.Touch()
+		return rt, nil
+	})
+	if err != nil {
+		t.Fatalf("GetOrCreateWith error: %v", err)
+	}
+	if created == nil {
+		t.Fatal("expected created runtime")
+	}
+
+	manager.mu.Lock()
+	_, busyOK := manager.sessions["busy"]
+	_, newOK := manager.sessions["new"]
+	sessionCount := len(manager.sessions)
+	manager.mu.Unlock()
+
+	if !busyOK {
+		t.Fatal("expected active session to remain in manager")
+	}
+	if !newOK {
+		t.Fatal("expected new session to be stored in manager")
+	}
+	if sessionCount != 2 {
+		t.Fatalf("session count = %d, want 2", sessionCount)
+	}
+	if got := evictions.Load(); got != 0 {
+		t.Fatalf("evictions = %d, want 0", got)
+	}
+	select {
+	case <-busyCtx.Done():
+		t.Fatal("expected active session not to be cancelled during capacity eviction")
+	default:
+	}
+}
+
 func TestRequireJSONContentType(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
 	if err := requireJSONContentType(req); err == nil {
