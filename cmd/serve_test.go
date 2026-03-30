@@ -682,6 +682,52 @@ func TestParseResponsesInput_String(t *testing.T) {
 	}
 }
 
+func TestParseResponsesInput_DeveloperDoesNotSuppressServerSystemPrompt(t *testing.T) {
+	payload := json.RawMessage(`[
+		{"type":"message","role":"developer","content":"Be concise"},
+		{"type":"message","role":"user","content":"hello"}
+	]`)
+	msgs, replaceHistory, err := parseResponsesInput(payload)
+	if err != nil {
+		t.Fatalf("parseResponsesInput failed: %v", err)
+	}
+	if !replaceHistory {
+		t.Fatalf("replaceHistory = false, want true")
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("len(msgs) = %d, want 2", len(msgs))
+	}
+	if msgs[0].Role != llm.RoleDeveloper {
+		t.Fatalf("first role = %s, want developer", msgs[0].Role)
+	}
+
+	provider := llm.NewMockProvider("mock").AddTextResponse("ok")
+	rt := &serveRuntime{
+		provider:     provider,
+		engine:       llm.NewEngine(provider, nil),
+		systemPrompt: "server system prompt",
+	}
+	_, err = rt.Run(context.Background(), true, replaceHistory, msgs, llm.Request{})
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("request count = %d, want 1", len(provider.Requests))
+	}
+	if len(provider.Requests[0].Messages) != 3 {
+		t.Fatalf("request message count = %d, want 3", len(provider.Requests[0].Messages))
+	}
+	if provider.Requests[0].Messages[0].Role != llm.RoleSystem || provider.Requests[0].Messages[0].Parts[0].Text != "server system prompt" {
+		t.Fatalf("first request message = %+v, want server system prompt", provider.Requests[0].Messages[0])
+	}
+	if provider.Requests[0].Messages[1].Role != llm.RoleDeveloper || provider.Requests[0].Messages[1].Parts[0].Text != "Be concise" {
+		t.Fatalf("second request message = %+v, want developer prompt", provider.Requests[0].Messages[1])
+	}
+	if provider.Requests[0].Messages[2].Role != llm.RoleUser || provider.Requests[0].Messages[2].Parts[0].Text != "hello" {
+		t.Fatalf("third request message = %+v, want user prompt", provider.Requests[0].Messages[2])
+	}
+}
+
 func TestParseResponsesInput_ImageContent(t *testing.T) {
 	dataHome := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", dataHome)

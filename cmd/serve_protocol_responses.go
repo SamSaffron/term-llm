@@ -54,7 +54,10 @@ func parseResponsesInput(input json.RawMessage) ([]llm.Message, bool, error) {
 		case "message":
 			role := strings.ToLower(strings.TrimSpace(jsonString(item["role"])))
 			switch role {
-			case "developer", "system":
+			case "developer":
+				messages = append(messages, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: extractItemContent(item["content"])}}})
+				replaceHistory = true
+			case "system":
 				messages = append(messages, llm.SystemText(extractItemContent(item["content"])))
 				replaceHistory = true
 			case "assistant":
