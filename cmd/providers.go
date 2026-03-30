@@ -189,7 +189,7 @@ func buildProviderList(cfg *config.Config) []ProviderInfo {
 			EnvVar:             meta.envVar,
 			RequiresKey:        meta.requiresKey,
 			SupportsListModels: meta.supportsListModels,
-			Models:             llm.ProviderModels[name],
+			Models:             llm.ProviderModelIDs(name),
 			IsBuiltin:          true,
 		}
 

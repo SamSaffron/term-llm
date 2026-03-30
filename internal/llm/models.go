@@ -7,197 +7,241 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 )
 
-// ProviderModels contains the curated list of common models per LLM provider type
-var ProviderModels = map[string][]string{
+// ModelEntry describes a model available through a specific provider.
+// InputLimit and OutputLimit are the effective token budgets for compaction
+// and output clamping. A value of 0 means "unknown — fall back to prefix
+// tables in context_window.go".
+type ModelEntry struct {
+	ID          string
+	InputLimit  int // effective input budget (context - output reserve)
+	OutputLimit int // max output tokens
+}
+
+// ProviderModels contains the curated list of common models per LLM provider type.
+// This is the single source of truth for model names AND their token limits.
+// When adding a model, always include InputLimit/OutputLimit if known.
+var ProviderModels = map[string][]ModelEntry{
 	"anthropic": {
 		// Claude 4.6 (-thinking uses adaptive thinking for 4.6 models)
-		"claude-sonnet-4-6",
-		"claude-sonnet-4-6-thinking",
-		"claude-sonnet-4-6-1m",
-		"claude-sonnet-4-6-1m-thinking",
-		"claude-opus-4-6",
-		"claude-opus-4-6-thinking",
-		"claude-opus-4-6-1m",
-		"claude-opus-4-6-1m-thinking",
-		"claude-haiku-4-5",
-		"claude-haiku-4-5-thinking",
+		{ID: "claude-sonnet-4-6", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-sonnet-4-6-thinking", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-sonnet-4-6-1m", InputLimit: 980_000, OutputLimit: 64_000},
+		{ID: "claude-sonnet-4-6-1m-thinking", InputLimit: 980_000, OutputLimit: 64_000},
+		{ID: "claude-opus-4-6", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-opus-4-6-thinking", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-opus-4-6-1m", InputLimit: 980_000, OutputLimit: 64_000},
+		{ID: "claude-opus-4-6-1m-thinking", InputLimit: 980_000, OutputLimit: 64_000},
+		{ID: "claude-haiku-4-5", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-haiku-4-5-thinking", InputLimit: 180_000, OutputLimit: 64_000},
 	},
 	"openai": {
-		"gpt-5.4",
-		"gpt-5.4-mini",
-		"gpt-5.4-nano",
-		"gpt-5.3-codex",
-		"gpt-5.2-codex",
-		"gpt-5.2",
-		"gpt-5.1",
-		"gpt-5",
-		"gpt-5-mini",
-		"gpt-5-nano",
-		"o3-mini",
+		{ID: "gpt-5.4", InputLimit: 922_000, OutputLimit: 128_000},
+		{ID: "gpt-5.4-mini", InputLimit: 272_000, OutputLimit: 128_000},
+		{ID: "gpt-5.4-nano", InputLimit: 272_000, OutputLimit: 128_000},
+		{ID: "gpt-5.3-codex", InputLimit: 272_000, OutputLimit: 128_000},
+		{ID: "gpt-5.2-codex", InputLimit: 272_000, OutputLimit: 128_000},
+		{ID: "gpt-5.2", InputLimit: 272_000, OutputLimit: 128_000},
+		{ID: "gpt-5.1", InputLimit: 272_000, OutputLimit: 128_000},
+		{ID: "gpt-5", InputLimit: 272_000, OutputLimit: 128_000},
+		{ID: "gpt-5-mini", InputLimit: 272_000, OutputLimit: 128_000},
+		{ID: "gpt-5-nano", InputLimit: 272_000, OutputLimit: 128_000},
+		{ID: "o3-mini", InputLimit: 100_000, OutputLimit: 100_000},
 	},
 	"chatgpt": {
 		// Uses ChatGPT backend API with native OAuth
-		"gpt-5.4",
-		"gpt-5.4-mini",
-		"gpt-5.3-codex",
-		"gpt-5.3-codex-spark",
-		"gpt-5.2-codex",
-		"gpt-5.2",
-		"gpt-5.1-codex-max",
-		"gpt-5.1-codex",
-		"gpt-5.1-codex-mini",
-		"gpt-5.1",
-		"gpt-5-codex",
-		"gpt-5-codex-mini",
-		"gpt-5",
+		{ID: "gpt-5.4", InputLimit: 922_000, OutputLimit: 128_000},
+		{ID: "gpt-5.4-mini", InputLimit: 272_000, OutputLimit: 128_000},
+		{ID: "gpt-5.3-codex", InputLimit: 272_000, OutputLimit: 128_000},
+		{ID: "gpt-5.3-codex-spark", InputLimit: 100_000, OutputLimit: 16_000},
+		{ID: "gpt-5.2-codex", InputLimit: 272_000, OutputLimit: 128_000},
+		{ID: "gpt-5.2", InputLimit: 272_000, OutputLimit: 128_000},
+		{ID: "gpt-5.1-codex-max", InputLimit: 272_000, OutputLimit: 128_000},
+		{ID: "gpt-5.1-codex", InputLimit: 272_000, OutputLimit: 128_000},
+		{ID: "gpt-5.1-codex-mini", InputLimit: 272_000, OutputLimit: 128_000},
+		{ID: "gpt-5.1", InputLimit: 272_000, OutputLimit: 128_000},
+		{ID: "gpt-5-codex", InputLimit: 272_000, OutputLimit: 128_000},
+		{ID: "gpt-5-codex-mini", InputLimit: 272_000, OutputLimit: 128_000},
+		{ID: "gpt-5", InputLimit: 272_000, OutputLimit: 128_000},
 	},
 	"copilot": {
 		// Uses GitHub Copilot API with device code OAuth
 		// Run 'term-llm models --provider copilot' for live list
+		// Copilot imposes its own context limits (from models.dev github-copilot section)
 		// gpt-4.1 is free (no premium requests)
-		"gpt-4.1",
+		{ID: "gpt-4.1", InputLimit: 48_000, OutputLimit: 32_768},
 		// OpenAI Codex models
-		"gpt-5.3-codex",
-		"gpt-5.2-codex",
-		"gpt-5.1-codex",
-		"gpt-5.1-codex-max",
-		"gpt-5.1-codex-mini",
+		{ID: "gpt-5.3-codex", InputLimit: 272_000, OutputLimit: 128_000},
+		{ID: "gpt-5.2-codex", InputLimit: 144_000, OutputLimit: 128_000},
+		{ID: "gpt-5.1-codex", InputLimit: 64_000, OutputLimit: 128_000},
+		{ID: "gpt-5.1-codex-max", InputLimit: 64_000, OutputLimit: 128_000},
+		{ID: "gpt-5.1-codex-mini", InputLimit: 64_000, OutputLimit: 128_000},
 		// OpenAI standard
-		"gpt-5.4",
-		"gpt-5.2",
-		"gpt-5.1",
-		"gpt-5-mini",
-		// Anthropic Claude
-		"claude-opus-4.6-thinking",
-		"claude-sonnet-4.6-thinking",
-		"claude-opus-4.6",
-		"claude-sonnet-4.6",
-		"claude-opus-4.5",
-		"claude-sonnet-4.5",
-		"claude-sonnet-4",
-		"claude-haiku-4.5",
+		{ID: "gpt-5.4", InputLimit: 922_000, OutputLimit: 128_000},
+		{ID: "gpt-5.2", InputLimit: 64_000, OutputLimit: 128_000},
+		{ID: "gpt-5.1", InputLimit: 64_000, OutputLimit: 128_000},
+		{ID: "gpt-5-mini", InputLimit: 64_000, OutputLimit: 128_000},
+		// Anthropic Claude (Copilot uses dot naming: claude-opus-4.6)
+		{ID: "claude-opus-4.6-thinking", InputLimit: 64_000, OutputLimit: 64_000},
+		{ID: "claude-sonnet-4.6-thinking", InputLimit: 112_000, OutputLimit: 64_000},
+		{ID: "claude-opus-4.6", InputLimit: 64_000, OutputLimit: 64_000},
+		{ID: "claude-sonnet-4.6", InputLimit: 112_000, OutputLimit: 64_000},
+		{ID: "claude-opus-4.5", InputLimit: 96_000, OutputLimit: 64_000},
+		{ID: "claude-sonnet-4.5", InputLimit: 96_000, OutputLimit: 64_000},
+		{ID: "claude-sonnet-4", InputLimit: 112_000, OutputLimit: 64_000},
+		{ID: "claude-haiku-4.5", InputLimit: 96_000, OutputLimit: 64_000},
 		// Google Gemini
-		"gemini-3-pro",
-		"gemini-3-flash",
+		{ID: "gemini-3-pro", InputLimit: 64_000, OutputLimit: 65_536},
+		{ID: "gemini-3-flash", InputLimit: 64_000, OutputLimit: 65_536},
 		// Other
-		"grok-code-fast-1",
-		"raptor-mini",
+		{ID: "grok-code-fast-1", InputLimit: 64_000, OutputLimit: 16_384},
+		{ID: "raptor-mini"},
 	},
 	"openrouter": {
-		"x-ai/grok-code-fast-1",
+		{ID: "x-ai/grok-code-fast-1"},
 	},
 	"gemini": {
-		"gemini-3-pro-preview",
-		"gemini-3-pro-preview-thinking",
-		"gemini-3-flash-preview",
-		"gemini-3-flash-preview-thinking",
-		"gemini-2.5-flash",
-		"gemini-2.5-flash-lite",
+		{ID: "gemini-3-pro-preview", InputLimit: 936_000, OutputLimit: 65_536},
+		{ID: "gemini-3-pro-preview-thinking", InputLimit: 936_000, OutputLimit: 65_536},
+		{ID: "gemini-3-flash-preview", InputLimit: 983_000, OutputLimit: 65_536},
+		{ID: "gemini-3-flash-preview-thinking", InputLimit: 983_000, OutputLimit: 65_536},
+		{ID: "gemini-2.5-flash", InputLimit: 983_000, OutputLimit: 65_536},
+		{ID: "gemini-2.5-flash-lite", InputLimit: 983_000, OutputLimit: 65_536},
 	},
 	"gemini-cli": {
-		"gemini-3-pro-preview",
-		"gemini-3-pro-preview-thinking",
-		"gemini-3-flash-preview",
-		"gemini-3-flash-preview-thinking",
-		"gemini-2.5-flash",
-		"gemini-2.5-flash-lite",
+		{ID: "gemini-3-pro-preview", InputLimit: 936_000, OutputLimit: 65_536},
+		{ID: "gemini-3-pro-preview-thinking", InputLimit: 936_000, OutputLimit: 65_536},
+		{ID: "gemini-3-flash-preview", InputLimit: 983_000, OutputLimit: 65_536},
+		{ID: "gemini-3-flash-preview-thinking", InputLimit: 983_000, OutputLimit: 65_536},
+		{ID: "gemini-2.5-flash", InputLimit: 983_000, OutputLimit: 65_536},
+		{ID: "gemini-2.5-flash-lite", InputLimit: 983_000, OutputLimit: 65_536},
 	},
 	"zen": {
-		"big-pickle",
-		"glm-4.7-free",
-		"trinity-large-preview-free",
-		"kimi-k2.5-free",
-		"minimax-m2.1-free",
-		"gpt-5-nano",
+		{ID: "big-pickle"},
+		{ID: "glm-4.7-free"},
+		{ID: "trinity-large-preview-free"},
+		{ID: "kimi-k2.5-free"},
+		{ID: "minimax-m2.1-free"},
+		{ID: "gpt-5-nano", InputLimit: 272_000, OutputLimit: 128_000},
 	},
 	"claude-bin": {
-		"opus",
-		"opus-low",
-		"opus-medium",
-		"opus-high",
-		"opus-max",
-		"sonnet",
-		"sonnet-low",
-		"sonnet-medium",
-		"sonnet-high",
-		"haiku",
+		// Aliases resolved internally by claude-bin provider
+		{ID: "opus"},
+		{ID: "opus-low"},
+		{ID: "opus-medium"},
+		{ID: "opus-high"},
+		{ID: "opus-max"},
+		{ID: "sonnet"},
+		{ID: "sonnet-low"},
+		{ID: "sonnet-medium"},
+		{ID: "sonnet-high"},
+		{ID: "haiku"},
 	},
 	"xai": {
 		// Grok 4.1 (latest, 2M context)
-		"grok-4-1-fast",
-		"grok-4-1-fast-reasoning",
-		"grok-4-1-fast-non-reasoning",
-		// Grok 4 (256K-2M context)
-		"grok-4",
-		"grok-4-fast-reasoning",
-		"grok-4-fast-non-reasoning",
+		{ID: "grok-4-1-fast", InputLimit: 1_970_000, OutputLimit: 32_000},
+		{ID: "grok-4-1-fast-reasoning", InputLimit: 1_970_000, OutputLimit: 32_000},
+		{ID: "grok-4-1-fast-non-reasoning", InputLimit: 1_970_000, OutputLimit: 32_000},
+		// Grok 4 (256K context)
+		{ID: "grok-4", InputLimit: 192_000, OutputLimit: 64_000},
+		{ID: "grok-4-fast-reasoning", InputLimit: 192_000, OutputLimit: 64_000},
+		{ID: "grok-4-fast-non-reasoning", InputLimit: 192_000, OutputLimit: 64_000},
 		// Grok 3 (131K context)
-		"grok-3",
-		"grok-3-fast",
-		"grok-3-mini",
-		"grok-3-mini-fast",
+		{ID: "grok-3", InputLimit: 123_000, OutputLimit: 8_192},
+		{ID: "grok-3-fast", InputLimit: 123_000, OutputLimit: 8_192},
+		{ID: "grok-3-mini", InputLimit: 123_000, OutputLimit: 8_192},
+		{ID: "grok-3-mini-fast", InputLimit: 123_000, OutputLimit: 8_192},
 		// Specialized
-		"grok-code-fast-1",
+		{ID: "grok-code-fast-1", InputLimit: 246_000, OutputLimit: 16_384},
 		// Grok 2
-		"grok-2",
+		{ID: "grok-2", InputLimit: 123_000, OutputLimit: 8_192},
 	},
 	"bedrock": {
 		// AWS Bedrock: same friendly names as anthropic (translated to Bedrock IDs internally)
-		"claude-sonnet-4-6",
-		"claude-sonnet-4-6-thinking",
-		"claude-sonnet-4-6-1m",
-		"claude-sonnet-4-6-1m-thinking",
-		"claude-opus-4-6",
-		"claude-opus-4-6-thinking",
-		"claude-opus-4-6-1m",
-		"claude-opus-4-6-1m-thinking",
-		"claude-haiku-4-5",
-		"claude-haiku-4-5-thinking",
+		{ID: "claude-sonnet-4-6", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-sonnet-4-6-thinking", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-sonnet-4-6-1m", InputLimit: 980_000, OutputLimit: 64_000},
+		{ID: "claude-sonnet-4-6-1m-thinking", InputLimit: 980_000, OutputLimit: 64_000},
+		{ID: "claude-opus-4-6", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-opus-4-6-thinking", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-opus-4-6-1m", InputLimit: 980_000, OutputLimit: 64_000},
+		{ID: "claude-opus-4-6-1m-thinking", InputLimit: 980_000, OutputLimit: 64_000},
+		{ID: "claude-haiku-4-5", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-haiku-4-5-thinking", InputLimit: 180_000, OutputLimit: 64_000},
 	},
 	"venice": {
-		"venice-uncensored",
-		"olafangensan-glm-4.7-flash-heretic",
-		"zai-org-glm-4.7-flash",
-		"zai-org-glm-5",
-		"zai-org-glm-4.7",
-		"qwen3-4b",
-		"mistral-small-3-2-24b-instruct",
-		"qwen3-235b-a22b-thinking-2507",
-		"qwen3-235b-a22b-instruct-2507",
-		"qwen3-next-80b",
-		"qwen3-coder-480b-a35b-instruct",
-		"qwen3-5-9b",
-		"qwen3-5-35b-a3b",
-		"hermes-3-llama-3.1-405b",
-		"google-gemma-3-27b-it",
-		"grok-41-fast",
-		"grok-4-20-beta",
-		"grok-4-20-multi-agent-beta",
-		"gemini-3-pro-preview",
-		"gemini-3-1-pro-preview",
-		"gemini-3-flash-preview",
-		"claude-opus-4-6",
-		"claude-opus-45",
-		"claude-sonnet-4-6",
-		"claude-sonnet-45",
-		"openai-gpt-oss-120b",
-		"openai-gpt-52",
-		"openai-gpt-52-codex",
-		"openai-gpt-53-codex",
-		"openai-gpt-54",
-		"openai-gpt-54-mini",
-		"openai-gpt-54-pro",
-		"kimi-k2-thinking",
-		"kimi-k2-5",
-		"deepseek-v3.2",
-		"llama-3.2-3b",
-		"llama-3.3-70b",
-		"minimax-m21",
-		"minimax-m25",
-		"minimax-m27",
-		"grok-code-fast-1",
-		"qwen3-vl-235b-a22b",
+		{ID: "venice-uncensored"},
+		{ID: "olafangensan-glm-4.7-flash-heretic"},
+		{ID: "zai-org-glm-4.7-flash"},
+		{ID: "zai-org-glm-5"},
+		{ID: "zai-org-glm-4.7"},
+		{ID: "qwen3-4b"},
+		{ID: "mistral-small-3-2-24b-instruct"},
+		{ID: "qwen3-235b-a22b-thinking-2507"},
+		{ID: "qwen3-235b-a22b-instruct-2507"},
+		{ID: "qwen3-next-80b"},
+		{ID: "qwen3-coder-480b-a35b-instruct"},
+		{ID: "qwen3-5-9b"},
+		{ID: "qwen3-5-35b-a3b"},
+		{ID: "hermes-3-llama-3.1-405b"},
+		{ID: "google-gemma-3-27b-it"},
+		{ID: "grok-41-fast", InputLimit: 1_970_000, OutputLimit: 32_000},
+		{ID: "grok-4-20-beta", InputLimit: 192_000, OutputLimit: 64_000},
+		{ID: "grok-4-20-multi-agent-beta", InputLimit: 192_000, OutputLimit: 64_000},
+		{ID: "gemini-3-pro-preview", InputLimit: 936_000, OutputLimit: 65_536},
+		{ID: "gemini-3-1-pro-preview", InputLimit: 936_000, OutputLimit: 65_536},
+		{ID: "gemini-3-flash-preview", InputLimit: 983_000, OutputLimit: 65_536},
+		{ID: "claude-opus-4-6", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-opus-45", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-sonnet-4-6", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-sonnet-45", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "openai-gpt-oss-120b"},
+		{ID: "openai-gpt-52", InputLimit: 272_000, OutputLimit: 128_000},
+		{ID: "openai-gpt-52-codex", InputLimit: 272_000, OutputLimit: 128_000},
+		{ID: "openai-gpt-53-codex", InputLimit: 272_000, OutputLimit: 128_000},
+		{ID: "openai-gpt-54", InputLimit: 922_000, OutputLimit: 128_000},
+		{ID: "openai-gpt-54-mini", InputLimit: 272_000, OutputLimit: 128_000},
+		{ID: "openai-gpt-54-pro", InputLimit: 922_000, OutputLimit: 128_000},
+		{ID: "kimi-k2-thinking", InputLimit: 128_000},
+		{ID: "kimi-k2-5", InputLimit: 128_000},
+		{ID: "deepseek-v3.2", InputLimit: 128_000},
+		{ID: "llama-3.2-3b"},
+		{ID: "llama-3.3-70b"},
+		{ID: "minimax-m21"},
+		{ID: "minimax-m25"},
+		{ID: "minimax-m27"},
+		{ID: "grok-code-fast-1", InputLimit: 246_000, OutputLimit: 16_384},
+		{ID: "qwen3-vl-235b-a22b"},
 	},
+}
+
+// ProviderModelIDs returns just the model ID strings for a provider.
+// This only checks the built-in ProviderModels map by exact key.
+// For callers that might receive a custom alias name, use ResolveProviderModelIDs.
+func ProviderModelIDs(provider string) []string {
+	entries := ProviderModels[provider]
+	if entries == nil {
+		return nil
+	}
+	ids := make([]string, len(entries))
+	for i, e := range entries {
+		ids[i] = e.ID
+	}
+	return ids
+}
+
+// ResolveProviderModelIDs returns curated model IDs for a provider, resolving
+// custom aliases (e.g., "acme" → "venice") via registered provider aliases
+// and built-in type inference.
+func ResolveProviderModelIDs(name string) []string {
+	if ids := ProviderModelIDs(name); len(ids) > 0 {
+		return ids
+	}
+	// Resolve via alias or type inference
+	resolved := resolveProviderType(name)
+	if resolved != name {
+		return ProviderModelIDs(resolved)
+	}
+	return nil
 }
 
 // ProviderFastModels contains the default lightweight model for each provider type.
@@ -241,10 +285,14 @@ func EffortVariantsFor(model string) []string {
 
 // ExpandWithEffortVariants expands a model list by appending effort variants
 // after each base model. Used for tab-completion where all variants are needed.
+// Models that already end with a known effort suffix are not expanded again.
 func ExpandWithEffortVariants(models []string) []string {
 	var expanded []string
 	for _, m := range models {
 		expanded = append(expanded, m)
+		if hasEffortSuffix(m) {
+			continue
+		}
 		if variants := EffortVariantsFor(m); len(variants) > 0 {
 			for _, v := range variants {
 				expanded = append(expanded, m+"-"+v)
@@ -252,6 +300,16 @@ func ExpandWithEffortVariants(models []string) []string {
 		}
 	}
 	return expanded
+}
+
+// hasEffortSuffix reports whether model already ends with a known effort suffix.
+func hasEffortSuffix(model string) bool {
+	for _, suffix := range defaultEffortVariants {
+		if strings.HasSuffix(model, "-"+suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // GetBuiltInProviderNames returns the built-in provider type names
@@ -295,14 +353,14 @@ func GetImageProviderNames() []string {
 // For LLM providers, pass a config to include custom provider names.
 func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config) []string {
 	var providerNames []string
-	var modelMap map[string][]string
+	var getModelIDs func(string) []string
 
 	if isImage {
 		providerNames = GetImageProviderNames()
-		modelMap = ImageProviderModels
+		getModelIDs = func(p string) []string { return ImageProviderModels[p] }
 	} else {
 		providerNames = GetProviderNames(cfg)
-		modelMap = ProviderModels
+		getModelIDs = ProviderModelIDs
 	}
 
 	// Check if user has typed a colon (wants model completion)
@@ -338,7 +396,8 @@ func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config)
 				}
 			}
 		} else {
-			providerType := string(config.InferProviderType(provider, ""))
+			// Resolve provider type, including custom aliases (e.g., "acme" → "venice")
+			providerType := resolveProviderType(provider)
 
 			// For LLM (non-image) openrouter, fetch models from API cache
 			if !isImage && (providerType == "openrouter" || provider == "openrouter") {
@@ -351,17 +410,16 @@ func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config)
 				if cachedModels := GetCachedOpenRouterModels(apiKey); len(cachedModels) > 0 {
 					models = cachedModels
 				} else {
-					models = modelMap["openrouter"]
+					models = getModelIDs("openrouter")
 				}
 			} else {
-				var ok bool
-				models, ok = modelMap[providerType]
-				if !ok {
-					models, ok = modelMap[provider]
+				models = getModelIDs(providerType)
+				if len(models) == 0 {
+					models = getModelIDs(provider)
 				}
-				if !ok && configModel != "" {
+				if len(models) == 0 && configModel != "" {
 					models = []string{configModel}
-				} else if !ok {
+				} else if len(models) == 0 {
 					return nil
 				}
 			}

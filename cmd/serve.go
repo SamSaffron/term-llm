@@ -318,7 +318,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 				// Use provider's configured model or first curated model
 				if pc, ok := cfg.Providers[providerName]; ok && pc.Model != "" {
 					rtModelName = pc.Model
-				} else if models, ok := llm.ProviderModels[providerName]; ok && len(models) > 0 {
+				} else if models := llm.ResolveProviderModelIDs(providerName); len(models) > 0 {
 					rtModelName = models[0]
 				}
 			}

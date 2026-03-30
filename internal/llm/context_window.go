@@ -24,7 +24,83 @@ var (
 	// Model-only fallback: populated only when all providers agree on limits
 	configInputLimits  map[string]int
 	configOutputLimits map[string]int
+
+	// Explicit limits from ProviderModels (populated by init).
+	// Provider-scoped: "provider\x00model" -> limit
+	explicitProviderInput map[string]int
+	// Model-only: populated only when all providers agree on limits
+	explicitModelInput  map[string]int
+	explicitModelOutput map[string]int
+
+	// providerAliases maps custom provider names to built-in type names
+	// so that provider-scoped limits resolve correctly for aliases like
+	// "acme" -> "venice". Populated by RegisterProviderAliases.
+	providerAliases map[string]string
 )
+
+func init() {
+	explicitProviderInput = make(map[string]int)
+
+	inputByModel := make(map[string]int)
+	outputByModel := make(map[string]int)
+	inputConflict := make(map[string]bool)
+	outputConflict := make(map[string]bool)
+
+	for provider, entries := range ProviderModels {
+		for _, e := range entries {
+			model := strings.ToLower(e.ID)
+			if e.InputLimit > 0 {
+				explicitProviderInput[configKey(provider, model)] = e.InputLimit
+				if prev, ok := inputByModel[model]; ok && prev != e.InputLimit {
+					inputConflict[model] = true
+				}
+				inputByModel[model] = e.InputLimit
+			}
+			if e.OutputLimit > 0 {
+				if prev, ok := outputByModel[model]; ok && prev != e.OutputLimit {
+					outputConflict[model] = true
+				}
+				outputByModel[model] = e.OutputLimit
+			}
+		}
+	}
+
+	explicitModelInput = make(map[string]int, len(inputByModel))
+	for model, limit := range inputByModel {
+		if !inputConflict[model] {
+			explicitModelInput[model] = limit
+		}
+	}
+	explicitModelOutput = make(map[string]int, len(outputByModel))
+	for model, limit := range outputByModel {
+		if !outputConflict[model] {
+			explicitModelOutput[model] = limit
+		}
+	}
+}
+
+// RegisterProviderAliases registers custom provider name → built-in type mappings
+// from user config. This allows provider-scoped limits to resolve correctly for
+// aliases like "acme" → "venice".
+func RegisterProviderAliases(aliases map[string]string) {
+	configMu.Lock()
+	defer configMu.Unlock()
+	providerAliases = aliases
+}
+
+func resolveProviderType(providerName string) string {
+	providerType := string(config.InferProviderType(providerName, ""))
+	if providerType == providerName || providerType == string(config.ProviderTypeOpenAICompat) {
+		// InferProviderType didn't recognize the name; check aliases
+		configMu.RLock()
+		if alias, ok := providerAliases[providerName]; ok {
+			configMu.RUnlock()
+			return alias
+		}
+		configMu.RUnlock()
+	}
+	return providerType
+}
 
 func configKey(provider, model string) string {
 	return provider + "\x00" + model
@@ -109,10 +185,17 @@ func configOutputLimit(model string) int {
 // Returns 0 for unknown models.
 // For provider-specific limits, use InputLimitForProviderModel instead.
 func InputLimitForModel(model string) int {
-	if result := lookupPrefix(strings.ToLower(model), inputLimitTable); result > 0 {
+	model = strings.ToLower(model)
+	// 1. Explicit limits from ProviderModels (non-conflicting model-only)
+	if v, ok := explicitModelInput[model]; ok {
+		return v
+	}
+	// 2. Prefix-matched tables
+	if result := lookupPrefix(model, inputLimitTable); result > 0 {
 		return result
 	}
-	return configInputLimit(strings.ToLower(model))
+	// 3. Config fallback
+	return configInputLimit(model)
 }
 
 // InputLimitForProviderModel returns the effective input token limit for a model
@@ -124,22 +207,33 @@ func InputLimitForModel(model string) int {
 func InputLimitForProviderModel(providerName, model string) int {
 	model = strings.ToLower(model)
 
-	// Resolve provider name to type (e.g., "my-copilot" -> "copilot")
-	providerType := string(config.InferProviderType(providerName, ""))
+	// Resolve provider name to type (e.g., "my-copilot" -> "copilot",
+	// or "acme" -> "venice" via registered aliases).
+	providerType := resolveProviderType(providerName)
 
-	// Check provider-specific overrides first
+	// 1. Explicit provider-scoped limits from ProviderModels
+	if v, ok := explicitProviderInput[configKey(providerType, model)]; ok {
+		return v
+	}
+	if providerType != providerName {
+		if v, ok := explicitProviderInput[configKey(providerName, model)]; ok {
+			return v
+		}
+	}
+
+	// 2. Provider-specific overrides (e.g., Copilot)
 	if table, ok := providerInputOverrides[providerType]; ok {
 		if result := lookupPrefix(model, table); result > 0 {
 			return result
 		}
 	}
 
-	// Fall back to canonical table
+	// 3. Prefix-matched canonical tables
 	if result := lookupPrefix(model, inputLimitTable); result > 0 {
 		return result
 	}
 
-	// Fall back to config registry (provider-scoped, then model-only)
+	// 4. Config fallback (provider-scoped, then model-only)
 	return configInputLimitForProvider(providerName, model)
 }
 
@@ -329,10 +423,17 @@ var providerInputOverrides = map[string][]limitEntry{
 // OutputLimitForModel returns the maximum output tokens for a known model.
 // Returns 0 for unknown models.
 func OutputLimitForModel(model string) int {
-	if result := lookupPrefix(strings.ToLower(model), outputLimitTable); result > 0 {
+	model = strings.ToLower(model)
+	// 1. Explicit limits from ProviderModels (non-conflicting model-only)
+	if v, ok := explicitModelOutput[model]; ok {
+		return v
+	}
+	// 2. Prefix-matched tables
+	if result := lookupPrefix(model, outputLimitTable); result > 0 {
 		return result
 	}
-	return configOutputLimit(strings.ToLower(model))
+	// 3. Config fallback
+	return configOutputLimit(model)
 }
 
 // ClampOutputTokens returns the requested output token count clamped to the

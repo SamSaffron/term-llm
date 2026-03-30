@@ -87,7 +87,7 @@ func runModels(cmd *cobra.Command, args []string) error {
 	// static model lists when available.
 	if !ok {
 		if !supportedTypes[providerType] {
-			if staticModels, hasStatic := llm.ProviderModels[providerName]; hasStatic {
+			if staticModels := llm.ResolveProviderModelIDs(providerName); len(staticModels) > 0 {
 				return printStaticModels(providerName, staticModels)
 			}
 			return fmt.Errorf("provider '%s' is not configured", providerName)
@@ -96,7 +96,7 @@ func runModels(cmd *cobra.Command, args []string) error {
 
 	if !supportedTypes[providerType] {
 		// Fall back to static model list if available
-		if staticModels, hasStatic := llm.ProviderModels[providerName]; hasStatic {
+		if staticModels := llm.ResolveProviderModelIDs(providerName); len(staticModels) > 0 {
 			return printStaticModels(providerName, staticModels)
 		}
 		return fmt.Errorf("provider '%s' (type: %s) does not support model listing.\n"+

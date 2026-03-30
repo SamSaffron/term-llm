@@ -835,7 +835,7 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		if curated, ok := llm.ProviderModels[effectiveName]; ok {
+		if curated := llm.ResolveProviderModelIDs(effectiveName); len(curated) > 0 {
 			for _, id := range curated {
 				models = append(models, llm.ModelInfo{ID: id})
 			}

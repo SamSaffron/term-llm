@@ -1356,12 +1356,7 @@ func configValueCompletions(key, toComplete string) []string {
 		parts := strings.Split(key, ".")
 		if len(parts) == 3 {
 			provider := parts[1]
-			models := llm.ProviderModels[provider]
-			if models == nil {
-				// Try inferring type
-				providerType := string(config.InferProviderType(provider, ""))
-				models = llm.ProviderModels[providerType]
-			}
+			models := llm.ResolveProviderModelIDs(provider)
 			var completions []string
 			for _, m := range models {
 				if strings.HasPrefix(m, toComplete) {
@@ -1377,12 +1372,7 @@ func configValueCompletions(key, toComplete string) []string {
 		parts := strings.Split(key, ".")
 		if len(parts) == 3 {
 			provider := parts[1]
-			models := llm.ProviderModels[provider]
-			if models == nil {
-				// Try inferring type
-				providerType := string(config.InferProviderType(provider, ""))
-				models = llm.ProviderModels[providerType]
-			}
+			models := llm.ResolveProviderModelIDs(provider)
 			var completions []string
 			for _, m := range models {
 				if strings.HasPrefix(m, toComplete) {

@@ -309,7 +309,14 @@ func TestHandleKeyMsg_StreamingEscCancelsActiveStream(t *testing.T) {
 	}
 }
 
+func stubClipboard(t *testing.T) {
+	orig := readClipboardImage
+	readClipboardImage = func() ([]byte, error) { return nil, nil }
+	t.Cleanup(func() { readClipboardImage = orig })
+}
+
 func TestPasteCollapse_LargePasteBecomesInlinePlaceholder(t *testing.T) {
+	stubClipboard(t)
 	m := newTestChatModel(false)
 
 	// 100+ chars to trigger collapse
@@ -340,6 +347,7 @@ func TestPasteCollapse_LargePasteBecomesInlinePlaceholder(t *testing.T) {
 }
 
 func TestPasteCollapse_SmallPasteGoesToTextarea(t *testing.T) {
+	stubClipboard(t)
 	m := newTestChatModel(false)
 
 	// Under 100 chars — should pass through
@@ -360,6 +368,7 @@ func TestPasteCollapse_SmallPasteGoesToTextarea(t *testing.T) {
 }
 
 func TestPasteCollapse_MultiplePastesGetUniquePlaceholders(t *testing.T) {
+	stubClipboard(t)
 	m := newTestChatModel(false)
 
 	longPaste := strings.Repeat("x", 101)
@@ -404,6 +413,7 @@ func TestPasteCollapse_ExpandPlaceholdersOnSend(t *testing.T) {
 }
 
 func TestPasteCollapse_MultilinePlaceholderShowsLines(t *testing.T) {
+	stubClipboard(t)
 	m := newTestChatModel(false)
 
 	// Multi-line paste over 100 chars

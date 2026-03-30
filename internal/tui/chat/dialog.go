@@ -615,10 +615,7 @@ func GetAvailableProviders(cfg *config.Config) []ProviderInfo {
 
 	// Add built-in providers first, merging any configured model
 	for _, name := range llm.GetBuiltInProviderNames() {
-		if models, ok := llm.ProviderModels[name]; ok {
-			modelList := make([]string, len(models))
-			copy(modelList, models)
-
+		if modelList := llm.ProviderModelIDs(name); len(modelList) > 0 {
 			// If config has a model for this provider, prepend it if not already present
 			if cfg != nil {
 				if providerCfg, ok := cfg.Providers[name]; ok && providerCfg.Model != "" {
@@ -637,7 +634,7 @@ func GetAvailableProviders(cfg *config.Config) []ProviderInfo {
 
 			providers = append(providers, ProviderInfo{
 				Name:   name,
-				Models: modelList,
+				Models: llm.ExpandWithEffortVariants(modelList),
 			})
 			seen[name] = true
 		}
@@ -655,10 +652,14 @@ func GetAvailableProviders(cfg *config.Config) []ProviderInfo {
 			} else if providerCfg.Model != "" {
 				models = []string{providerCfg.Model}
 			}
+			// Fall back to curated models for the resolved provider type
+			if len(models) == 0 {
+				models = llm.ResolveProviderModelIDs(name)
+			}
 			if len(models) > 0 {
 				providers = append(providers, ProviderInfo{
 					Name:   name,
-					Models: models,
+					Models: llm.ExpandWithEffortVariants(models),
 				})
 			}
 		}

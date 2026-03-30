@@ -25,6 +25,16 @@ func loadConfig() (*config.Config, error) {
 // registerModelLimits registers per-model token limits from provider configs
 // so that InputLimitForModel/OutputLimitForModel work for custom models.
 func registerModelLimits(cfg *config.Config) {
+	// Register provider name → type aliases so provider-scoped limits
+	// resolve correctly for custom names (e.g., "acme" → "venice").
+	aliases := make(map[string]string)
+	for name, pc := range cfg.Providers {
+		if pc.Type != "" {
+			aliases[name] = string(pc.Type)
+		}
+	}
+	llm.RegisterProviderAliases(aliases)
+
 	var limits []llm.ConfigModelLimit
 	for name, pc := range cfg.Providers {
 		if pc.Model == "" {
