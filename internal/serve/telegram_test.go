@@ -1327,6 +1327,54 @@ func TestDownloadTelegramVoice_NilVoice(t *testing.T) {
 	}
 }
 
+func TestDownloadTelegramVoice_HTTPError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusBadGateway)
+	}))
+	defer ts.Close()
+
+	fg := &fakeFileGetter{fileURL: ts.URL}
+	voice := &tgbotapi.Voice{FileID: "voice-1"}
+
+	_, err := downloadTelegramVoice(fg, voice)
+	if err == nil {
+		t.Fatal("expected error for non-200 response")
+	}
+	if !strings.Contains(err.Error(), "unexpected status 502") {
+		t.Fatalf("expected status error, got %v", err)
+	}
+}
+
+func TestDownloadTelegramVoice_TooLarge(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/ogg")
+		chunk := []byte(strings.Repeat("a", 32*1024))
+		remaining := telegramMaxVoiceDownloadBytes + 1
+		for remaining > 0 {
+			n := len(chunk)
+			if int64(n) > remaining {
+				n = int(remaining)
+			}
+			if _, err := w.Write(chunk[:n]); err != nil {
+				return
+			}
+			remaining -= int64(n)
+		}
+	}))
+	defer ts.Close()
+
+	fg := &fakeFileGetter{fileURL: ts.URL}
+	voice := &tgbotapi.Voice{FileID: "voice-1"}
+
+	_, err := downloadTelegramVoice(fg, voice)
+	if err == nil {
+		t.Fatal("expected error for oversized voice download")
+	}
+	if !strings.Contains(err.Error(), "voice file too large") {
+		t.Fatalf("expected too large error, got %v", err)
+	}
+}
+
 func TestCollectUserText(t *testing.T) {
 	msg := llm.UserImageMessage("image/jpeg", "data", "caption text")
 	got := collectUserText(msg)
