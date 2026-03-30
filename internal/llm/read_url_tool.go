@@ -102,7 +102,7 @@ func (t *ReadURLTool) Execute(ctx context.Context, args json.RawMessage) (ToolOu
 		return TextOutput(fmt.Sprintf("Error: HTTP %d %s - Unable to fetch this URL.", resp.StatusCode, statusText)), nil
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxReadURLChars+1))
 	if err != nil {
 		return TextOutput(fmt.Sprintf("Error reading response: %v", err)), nil
 	}
