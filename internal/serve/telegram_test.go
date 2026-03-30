@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1289,6 +1290,44 @@ func TestDownloadTelegramPhoto_EmptyPhotos(t *testing.T) {
 	_, _, _, err := downloadTelegramPhoto(fg, nil)
 	if err == nil {
 		t.Fatal("expected error for empty photos")
+	}
+}
+
+func TestDownloadTelegramPhoto_UnexpectedStatus(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "upstream error", http.StatusBadGateway)
+	}))
+	defer ts.Close()
+
+	fg := &fakeFileGetter{fileURL: ts.URL}
+	photos := []tgbotapi.PhotoSize{{FileID: "large", Width: 800, Height: 600}}
+
+	_, _, _, err := downloadTelegramPhoto(fg, photos)
+	if err == nil {
+		t.Fatal("expected error for unexpected status")
+	}
+	if !strings.Contains(err.Error(), "unexpected status 502 Bad Gateway") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDownloadTelegramPhoto_TooLarge(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Header().Set("Content-Length", strconv.FormatInt(telegramMaxPhotoBytes+1, 10))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	fg := &fakeFileGetter{fileURL: ts.URL}
+	photos := []tgbotapi.PhotoSize{{FileID: "large", Width: 800, Height: 600}}
+
+	_, _, _, err := downloadTelegramPhoto(fg, photos)
+	if err == nil {
+		t.Fatal("expected error for oversized response")
+	}
+	if !strings.Contains(err.Error(), "response too large") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

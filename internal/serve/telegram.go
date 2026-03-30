@@ -28,6 +28,8 @@ const telegramMaxMessageLen = 4000 // Telegram limit is 4096; leave margin
 const minEditInterval = 3 * time.Second
 const streamEventTimeout = 10 * time.Minute
 const telegramMaxConcurrentHandlers = 8
+const telegramDownloadTimeout = 30 * time.Second
+const telegramMaxPhotoBytes = 20 << 20 // 20 MB
 
 // botSender is the subset of tgbotapi.BotAPI used by streamReply and
 // handleMessage, allowing tests to supply a fake without a live connection.
@@ -55,15 +57,33 @@ func downloadTelegramPhoto(fileGetter botFileGetter, photos []tgbotapi.PhotoSize
 		return "", "", "", fmt.Errorf("get file URL: %w", err)
 	}
 
-	resp, err := http.Get(directURL)
+	ctx, cancel := context.WithTimeout(context.Background(), telegramDownloadTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, directURL, nil)
+	if err != nil {
+		return "", "", "", fmt.Errorf("create photo request: %w", err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", "", "", fmt.Errorf("download photo: %w", err)
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", "", "", fmt.Errorf("download photo: unexpected status %s", resp.Status)
+	}
+	if resp.ContentLength > telegramMaxPhotoBytes {
+		return "", "", "", fmt.Errorf("download photo: response too large: %d bytes", resp.ContentLength)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(resp.Body, telegramMaxPhotoBytes+1))
 	if err != nil {
 		return "", "", "", fmt.Errorf("read photo data: %w", err)
+	}
+	if int64(len(data)) > telegramMaxPhotoBytes {
+		return "", "", "", fmt.Errorf("read photo data: response exceeds %d bytes", telegramMaxPhotoBytes)
 	}
 
 	// Detect MIME type from content (Telegram can serve PNG, WebP, etc.)
