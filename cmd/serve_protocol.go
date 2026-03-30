@@ -203,6 +203,10 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 					continue
 				}
 				if isLLMImageType(mt) {
+					fileCount++
+					if fileCount > maxAttachments {
+						return llm.Message{}, fmt.Errorf("too many attachments (max %d)", maxAttachments)
+					}
 					// Always save the original to disk first.
 					if filename == "" {
 						filename = "image"
