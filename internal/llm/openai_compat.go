@@ -12,16 +12,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 )
 
-// httpClientTimeout is the default timeout for HTTP requests
-const httpClientTimeout = 10 * time.Minute
-
-// defaultHTTPClient is a shared HTTP client with reasonable timeouts
-var defaultHTTPClient = &http.Client{
-	Timeout: httpClientTimeout,
-}
+// defaultHTTPClient is a shared HTTP client. Do not set http.Client.Timeout here:
+// it applies to the entire request lifetime, including reading streaming response
+// bodies, and would abort legitimate long-running streams.
+var defaultHTTPClient = &http.Client{}
 
 // OpenAICompatProvider implements Provider for OpenAI-compatible APIs
 // Used by Ollama, LM Studio, and other compatible servers.

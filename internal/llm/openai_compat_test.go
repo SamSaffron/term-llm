@@ -5,6 +5,12 @@ import (
 	"testing"
 )
 
+func TestDefaultHTTPClient_HasNoOverallTimeout(t *testing.T) {
+	if defaultHTTPClient.Timeout != 0 {
+		t.Fatalf("expected shared HTTP client timeout to be disabled for streaming requests, got %v", defaultHTTPClient.Timeout)
+	}
+}
+
 func TestSplitParts_WithReasoningContent(t *testing.T) {
 	// Test that splitParts correctly extracts reasoning content from parts
 	parts := []Part{
