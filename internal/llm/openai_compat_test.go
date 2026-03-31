@@ -713,3 +713,107 @@ func TestOpenAICompatProviderStreamSendsExplicitParallelToolCallsFalse(t *testin
 		t.Fatal("expected stream=true")
 	}
 }
+
+func TestOpenAICompatProviderStreamSendsExplicitZeroTemperatureAndTopP(t *testing.T) {
+	var got struct {
+		Temperature *float64 `json:"temperature,omitempty"`
+		TopP        *float64 `json:"top_p,omitempty"`
+		Stream      bool     `json:"stream"`
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer ts.Close()
+
+	provider := NewOpenAICompatProvider(ts.URL, "test-key", "test-model", "Test")
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages:       []Message{UserText("hello")},
+		Temperature:    0,
+		TemperatureSet: true,
+		TopP:           0,
+		TopPSet:        true,
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+
+	for {
+		ev, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv() error = %v", err)
+		}
+		if ev.Type == EventDone {
+			break
+		}
+	}
+
+	if got.Temperature == nil {
+		t.Fatal("expected temperature=0 to be sent explicitly")
+	}
+	if *got.Temperature != 0 {
+		t.Fatalf("expected temperature=0, got %v", *got.Temperature)
+	}
+	if got.TopP == nil {
+		t.Fatal("expected top_p=0 to be sent explicitly")
+	}
+	if *got.TopP != 0 {
+		t.Fatalf("expected top_p=0, got %v", *got.TopP)
+	}
+	if !got.Stream {
+		t.Fatal("expected stream=true")
+	}
+}
+
+func TestOpenAICompatProviderStreamOmitsUnsetTemperatureAndTopP(t *testing.T) {
+	var got struct {
+		Temperature *float64 `json:"temperature,omitempty"`
+		TopP        *float64 `json:"top_p,omitempty"`
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer ts.Close()
+
+	provider := NewOpenAICompatProvider(ts.URL, "test-key", "test-model", "Test")
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{UserText("hello")},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+
+	for {
+		ev, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv() error = %v", err)
+		}
+		if ev.Type == EventDone {
+			break
+		}
+	}
+
+	if got.Temperature != nil {
+		t.Fatalf("expected temperature to be omitted, got %v", *got.Temperature)
+	}
+	if got.TopP != nil {
+		t.Fatalf("expected top_p to be omitted, got %v", *got.TopP)
+	}
+}
