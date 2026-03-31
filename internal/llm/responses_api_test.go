@@ -1026,6 +1026,142 @@ func TestResponsesClient_NoOnAuthRetry_Returns401Error(t *testing.T) {
 	}
 }
 
+func assertResponsesAPIErrorBodyTruncated(t *testing.T, err error, prefix string) {
+	t.Helper()
+
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), prefix) {
+		t.Fatalf("expected error %q to contain %q", err.Error(), prefix)
+	}
+	if !strings.Contains(err.Error(), string(truncatedResponsesAPIErrorBodySuffix)) {
+		t.Fatalf("expected error %q to contain truncation suffix", err.Error())
+	}
+	if strings.Contains(err.Error(), "TAIL_MARKER") {
+		t.Fatalf("expected error %q not to include truncated tail marker", err.Error())
+	}
+}
+
+func TestResponsesClient_Stream_LimitsErrorBody(t *testing.T) {
+	body := strings.Repeat("x", maxResponsesAPIErrorBodyBytes+1024) + "TAIL_MARKER"
+	httpClient := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Status:     "500 Internal Server Error",
+				Header:     http.Header{"Content-Type": []string{"text/plain"}},
+				Body:       io.NopCloser(strings.NewReader(body)),
+			}, nil
+		}),
+	}
+
+	client := &ResponsesClient{
+		BaseURL:       "https://example.test/v1/responses",
+		GetAuthHeader: func() string { return "Bearer test-token" },
+		HTTPClient:    httpClient,
+	}
+
+	_, err := client.Stream(context.Background(), ResponsesRequest{
+		Model:  "test-model",
+		Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "hello"}},
+		Stream: true,
+	}, false)
+
+	assertResponsesAPIErrorBodyTruncated(t, err, "Responses API error (status 500):")
+}
+
+func TestResponsesClientStream_Retry404FailureLimitsErrorBody(t *testing.T) {
+	body := strings.Repeat("x", maxResponsesAPIErrorBodyBytes+1024) + "TAIL_MARKER"
+	callCount := 0
+	httpClient := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			callCount++
+			if callCount == 1 {
+				return &http.Response{
+					StatusCode: http.StatusNotFound,
+					Status:     "404 Not Found",
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(`{"error":"previous_response_id not found"}`)),
+				}, nil
+			}
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Status:     "500 Internal Server Error",
+				Header:     http.Header{"Content-Type": []string{"text/plain"}},
+				Body:       io.NopCloser(strings.NewReader(body)),
+			}, nil
+		}),
+	}
+
+	client := &ResponsesClient{
+		BaseURL:        "https://example.test/v1/responses",
+		GetAuthHeader:  func() string { return "Bearer test-token" },
+		HTTPClient:     httpClient,
+		LastResponseID: "resp_prev",
+	}
+
+	_, err := client.Stream(context.Background(), ResponsesRequest{
+		Model:  "test-model",
+		Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "hello"}},
+		Stream: true,
+	}, false)
+
+	if callCount != 2 {
+		t.Fatalf("expected 2 HTTP calls (initial + retry), got %d", callCount)
+	}
+	assertResponsesAPIErrorBodyTruncated(t, err, "Responses API error (status 500):")
+}
+
+func TestResponsesClient_OnAuthRetry_LimitsErrorBodyAfterReauth(t *testing.T) {
+	body := strings.Repeat("x", maxResponsesAPIErrorBodyBytes+1024) + "TAIL_MARKER"
+	callCount := 0
+	token := "expired-token"
+	httpClient := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			callCount++
+			if callCount == 1 {
+				return &http.Response{
+					StatusCode: http.StatusUnauthorized,
+					Status:     "401 Unauthorized",
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(`{"error":"invalid token"}`)),
+				}, nil
+			}
+			if auth := r.Header.Get("Authorization"); auth != "Bearer refreshed-token" {
+				t.Fatalf("expected refreshed token on retry, got %q", auth)
+			}
+			return &http.Response{
+				StatusCode: http.StatusForbidden,
+				Status:     "403 Forbidden",
+				Header:     http.Header{"Content-Type": []string{"text/plain"}},
+				Body:       io.NopCloser(strings.NewReader(body)),
+			}, nil
+		}),
+	}
+
+	client := &ResponsesClient{
+		BaseURL:       "https://example.test/v1/responses",
+		GetAuthHeader: func() string { return "Bearer " + token },
+		HTTPClient:    httpClient,
+		OnAuthRetry: func(_ context.Context) error {
+			token = "refreshed-token"
+			return nil
+		},
+	}
+
+	_, err := client.Stream(context.Background(), ResponsesRequest{
+		Model:  "test-model",
+		Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "hello"}},
+		Stream: true,
+	}, false)
+
+	if callCount != 2 {
+		t.Fatalf("expected 2 HTTP calls (initial + retry), got %d", callCount)
+	}
+	assertResponsesAPIErrorBodyTruncated(t, err, "Responses API error after re-auth (status 403):")
+}
+
 func TestBuildResponsesInput_DeveloperRole(t *testing.T) {
 	messages := []Message{
 		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "Be concise"}}},
