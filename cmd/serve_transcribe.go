@@ -68,8 +68,14 @@ func (s *serveServer) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxVoiceUploadBytes)
 	if err := r.ParseMultipartForm(maxVoiceUploadBytes); err != nil {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "request must be multipart/form-data with an audio file")
 		return
+	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
 	}
 
 	file, header, err := r.FormFile("file")
