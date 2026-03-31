@@ -4724,6 +4724,73 @@ func TestHandleResponses_WithProviderField(t *testing.T) {
 	}
 }
 
+func TestHandleResponses_PreservesClientDefinedPassthroughTools(t *testing.T) {
+	provider := llm.NewMockProvider("mock")
+	provider.AddToolCall("call_passthrough_1", "client_tool", map[string]any{"value": "ok"})
+
+	factory := func(ctx context.Context) (*serveRuntime, error) {
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			providerKey:  "mock",
+			engine:       engine,
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		return rt, nil
+	}
+	manager := newServeSessionManager(time.Minute, 10, factory)
+	defer manager.Close()
+
+	srv := &serveServer{
+		cfgRef:     &config.Config{DefaultProvider: "mock"},
+		sessionMgr: manager,
+	}
+
+	code, _ := doResponses(t, srv, `{
+		"input":"hello",
+		"tools":[{
+			"type":"function",
+			"name":"client_tool",
+			"description":"Client-defined passthrough tool",
+			"parameters":{
+				"type":"object",
+				"properties":{"value":{"type":"string"}},
+				"required":["value"]
+			}
+		}],
+		"tool_choice":{"type":"function","name":"client_tool"}
+	}`)
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("provider request count = %d, want 1", len(provider.Requests))
+	}
+
+	req := provider.Requests[0]
+	if len(req.Tools) != 1 {
+		t.Fatalf("tool count = %d, want 1", len(req.Tools))
+	}
+	if req.Tools[0].Name != "client_tool" {
+		t.Fatalf("tool name = %q, want client_tool", req.Tools[0].Name)
+	}
+	if req.Tools[0].Description != "Client-defined passthrough tool" {
+		t.Fatalf("tool description = %q", req.Tools[0].Description)
+	}
+	if req.ToolChoice.Mode != llm.ToolChoiceName || req.ToolChoice.Name != "client_tool" {
+		t.Fatalf("tool choice = %#v, want name client_tool", req.ToolChoice)
+	}
+	props, ok := req.Tools[0].Schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("tool schema properties missing: %#v", req.Tools[0].Schema)
+	}
+	valueProp, ok := props["value"].(map[string]interface{})
+	if !ok || valueProp["type"] != "string" {
+		t.Fatalf("tool schema value property = %#v, want string type", props["value"])
+	}
+}
+
 func TestSessionManager_GetOrCreateWithDeduplication(t *testing.T) {
 	var calls int32
 	manager := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {

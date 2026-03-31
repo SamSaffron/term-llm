@@ -105,10 +105,10 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		defer runtime.Close()
 	}
 
-	searchFromTools, requestedTools := parseRequestedTools(req.Tools)
+	searchFromTools, requestedTools, passthroughTools := parseRequestedTools(req.Tools)
 	search := runtime.search || searchFromTools
 	toolChoice := parseToolChoice(req.ToolChoice)
-	tools := runtime.selectTools(requestedTools)
+	tools := appendResponsePassthroughTools(runtime.selectTools(requestedTools), passthroughTools, runtime.toolMap)
 	if len(tools) == 0 {
 		toolChoice = llm.ToolChoice{}
 	}
@@ -183,6 +183,30 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	s.registerResponseID(runtime, respID, sessionID)
 
 	writeJSON(w, http.StatusOK, responsesFinalResponse(result, model, respID))
+}
+
+func appendResponsePassthroughTools(serverTools []llm.ToolSpec, passthroughTools []llm.ToolSpec, toolMap map[string]string) []llm.ToolSpec {
+	if len(passthroughTools) == 0 {
+		return serverTools
+	}
+
+	selected := make(map[string]bool, len(serverTools))
+	for _, spec := range serverTools {
+		selected[spec.Name] = true
+	}
+
+	for _, spec := range passthroughTools {
+		if selected[spec.Name] {
+			continue
+		}
+		if mapped, ok := toolMap[spec.Name]; ok && selected[mapped] {
+			continue
+		}
+		serverTools = append(serverTools, spec)
+		selected[spec.Name] = true
+	}
+
+	return serverTools
 }
 
 func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string) {

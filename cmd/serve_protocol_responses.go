@@ -98,9 +98,10 @@ func parseResponsesInput(input json.RawMessage) ([]llm.Message, bool, error) {
 	return messages, replaceHistory, nil
 }
 
-func parseRequestedTools(raw []json.RawMessage) (bool, map[string]bool) {
+func parseRequestedTools(raw []json.RawMessage) (bool, map[string]bool, []llm.ToolSpec) {
 	search := false
 	toolNames := map[string]bool{}
+	passthrough := make([]llm.ToolSpec, 0, len(raw))
 
 	for _, item := range raw {
 		var generic map[string]json.RawMessage
@@ -112,21 +113,66 @@ func parseRequestedTools(raw []json.RawMessage) (bool, map[string]bool) {
 		case "web_search_preview", "web_search":
 			search = true
 		case "function":
-			name := strings.TrimSpace(jsonString(generic["name"]))
-			if name == "" {
-				var fn chatToolFuncDef
-				if rawFunc := generic["function"]; len(rawFunc) > 0 {
-					_ = json.Unmarshal(rawFunc, &fn)
-					name = strings.TrimSpace(fn.Name)
-				}
+			spec, ok := parseRequestedFunctionTool(generic)
+			if !ok {
+				continue
 			}
-			if name != "" {
-				toolNames[name] = true
+			toolNames[spec.Name] = true
+			passthrough = append(passthrough, spec)
+		}
+	}
+
+	return search, toolNames, passthrough
+}
+
+func parseRequestedFunctionTool(generic map[string]json.RawMessage) (llm.ToolSpec, bool) {
+	spec := llm.ToolSpec{
+		Name:        strings.TrimSpace(jsonString(generic["name"])),
+		Description: strings.TrimSpace(jsonString(generic["description"])),
+	}
+	if rawParams := generic["parameters"]; len(rawParams) > 0 {
+		_ = json.Unmarshal(rawParams, &spec.Schema)
+	}
+	if rawStrict := generic["strict"]; len(rawStrict) > 0 {
+		var strict bool
+		if err := json.Unmarshal(rawStrict, &strict); err == nil && !strict {
+			spec.NoStrict = true
+		}
+	}
+
+	if rawFunc := generic["function"]; len(rawFunc) > 0 {
+		var fn struct {
+			Name        string                 `json:"name"`
+			Description string                 `json:"description"`
+			Parameters  map[string]interface{} `json:"parameters"`
+			Strict      *bool                  `json:"strict"`
+		}
+		if err := json.Unmarshal(rawFunc, &fn); err == nil {
+			if spec.Name == "" {
+				spec.Name = strings.TrimSpace(fn.Name)
+			}
+			if spec.Description == "" {
+				spec.Description = strings.TrimSpace(fn.Description)
+			}
+			if spec.Schema == nil {
+				spec.Schema = fn.Parameters
+			}
+			if fn.Strict != nil && !*fn.Strict {
+				spec.NoStrict = true
 			}
 		}
 	}
 
-	return search, toolNames
+	if spec.Name == "" {
+		return llm.ToolSpec{}, false
+	}
+	if spec.Schema == nil {
+		spec.Schema = map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		}
+	}
+	return spec, true
 }
 
 func responsesFinalResponse(result serveRunResult, model string, respID string) map[string]any {
