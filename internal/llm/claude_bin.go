@@ -420,7 +420,7 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		scanErrCh <- scanner.Err()
 	}()
 
-	lastUsage, err := p.dispatchClaudeEvents(ctx, lineCh, bridge.toolReqCh, debug, events)
+	lastUsage, toolsExecuted, err := p.dispatchClaudeEvents(ctx, lineCh, bridge.toolReqCh, debug, events)
 	if err != nil {
 		// Kill the process if dispatch failed (e.g., context cancelled)
 		// to avoid orphan processes.
@@ -440,7 +440,10 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 	if scanErr != nil {
 		return fmt.Errorf("error reading claude output: %w", scanErr)
 	}
-	if cmdErr != nil {
+	// When MCP tools were executed, the CLI exits with code 1 because
+	// --max-turns 1 is exhausted after the tool call. This is expected;
+	// the engine's outer loop will re-invoke us with the tool results.
+	if cmdErr != nil && !toolsExecuted {
 		return fmt.Errorf("claude command failed: %w", cmdErr)
 	}
 
@@ -456,12 +459,13 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 	toolReqCh <-chan claudeToolRequest,
 	debug bool,
 	events chan<- Event,
-) (*Usage, error) {
+) (*Usage, bool, error) {
 	var (
 		lastUsage             *Usage
 		linesOpen             = true
 		sawTextDelta          bool
 		assistantFallbackText string
+		toolsExecuted         bool
 	)
 
 	for linesOpen {
@@ -476,7 +480,7 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 				}
 				hadLine = true
 				if err := p.handleClaudeLine(ctx, line, debug, events, &lastUsage, &sawTextDelta, &assistantFallbackText); err != nil {
-					return nil, err
+					return nil, false, err
 				}
 			default:
 				goto drainDone
@@ -494,15 +498,16 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 				continue
 			}
 			if err := p.handleClaudeLine(ctx, line, debug, events, &lastUsage, &sawTextDelta, &assistantFallbackText); err != nil {
-				return nil, err
+				return nil, false, err
 			}
 		case req := <-toolReqCh:
 			if err := p.drainClaudeLinesWithGrace(ctx, lineCh, debug, events, &lastUsage, &sawTextDelta, &assistantFallbackText); err != nil {
-				return nil, err
+				return nil, false, err
 			}
+			toolsExecuted = true
 			p.handleClaudeToolRequest(req, events)
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, false, ctx.Err()
 		}
 	}
 
@@ -510,6 +515,7 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 	for {
 		select {
 		case req := <-toolReqCh:
+			toolsExecuted = true
 			p.handleClaudeToolRequest(req, events)
 		default:
 			goto drained
@@ -517,7 +523,7 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 	}
 drained:
 
-	return lastUsage, nil
+	return lastUsage, toolsExecuted, nil
 }
 
 func (p *ClaudeBinProvider) handleClaudeLine(

@@ -134,7 +134,7 @@ func TestDispatchClaudeEvents_PrioritizesTextOverToolRequest(t *testing.T) {
 	toolReqs <- req
 	close(lines)
 
-	_, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, events)
+	_, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, events)
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestDispatchClaudeEvents_PrioritizesSlightlyDelayedTextOverToolRequest(t *t
 		close(lines)
 	}()
 
-	_, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, events)
+	_, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, events)
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestDispatchClaudeEvents_FallsBackToAssistantTextWhenNoDeltas(t *testing.T)
 	lines <- `{"type":"result","is_error":false,"result":"ok","usage":{"input_tokens":1,"output_tokens":2,"cache_read_input_tokens":0}}`
 	close(lines)
 
-	_, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, events)
+	_, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, events)
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -233,7 +233,7 @@ func TestDispatchClaudeEvents_FallsBackToResultTextWhenNoAssistantOrDeltas(t *te
 	lines <- `{"type":"result","subtype":"success","is_error":false,"result":"result fallback text","usage":{"input_tokens":1,"output_tokens":3,"cache_read_input_tokens":0}}`
 	close(lines)
 
-	_, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, events)
+	_, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, events)
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestDispatchClaudeEvents_EmitsStreamlinedText(t *testing.T) {
 	lines <- `{"type":"result","subtype":"success","is_error":false,"result":"ignored final result","usage":{"input_tokens":1,"output_tokens":3,"cache_read_input_tokens":0}}`
 	close(lines)
 
-	_, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, events)
+	_, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, events)
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -290,7 +290,7 @@ func TestDispatchClaudeEvents_DoesNotDuplicateAssistantFallbackWhenDeltasPresent
 	lines <- `{"type":"result","is_error":false,"result":"ok","usage":{"input_tokens":1,"output_tokens":2,"cache_read_input_tokens":0}}`
 	close(lines)
 
-	_, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, events)
+	_, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, events)
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
