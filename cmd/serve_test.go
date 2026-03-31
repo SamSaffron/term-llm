@@ -5206,6 +5206,73 @@ func TestToolMap_ChatCompletions(t *testing.T) {
 	}
 }
 
+func TestChatCompletions_PreservesClientPassthroughTools(t *testing.T) {
+	provider := llm.NewMockProvider("mock").AddTextResponse("ok")
+	engine := llm.NewEngine(provider, nil)
+
+	factory := func(ctx context.Context) (*serveRuntime, error) {
+		rt := &serveRuntime{
+			provider:     provider,
+			engine:       engine,
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		return rt, nil
+	}
+	mgr := newServeSessionManager(time.Minute, 100, factory)
+	srv := &serveServer{sessionMgr: mgr}
+
+	body := `{
+		"model": "test",
+		"messages": [{"role": "user", "content": "Hi"}],
+		"tools": [{
+			"type": "function",
+			"function": {
+				"name": "client_tool",
+				"description": "Client-defined passthrough tool",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"query": {"type": "string"}
+					},
+					"required": ["query"]
+				}
+			}
+		}]
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleChatCompletions(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("expected 1 provider request, got %d", len(provider.Requests))
+	}
+	tools := provider.Requests[0].Tools
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 passthrough tool, got %d", len(tools))
+	}
+	if tools[0].Name != "client_tool" {
+		t.Fatalf("expected tool name client_tool, got %q", tools[0].Name)
+	}
+	if tools[0].Description != "Client-defined passthrough tool" {
+		t.Fatalf("unexpected tool description: %q", tools[0].Description)
+	}
+	if got := tools[0].Schema["type"]; got != "object" {
+		t.Fatalf("expected tool schema type object, got %#v", got)
+	}
+	props, ok := tools[0].Schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected schema properties map, got %#v", tools[0].Schema["properties"])
+	}
+	if _, ok := props["query"]; !ok {
+		t.Fatalf("expected query property in schema, got %#v", props)
+	}
+}
+
 func TestToolMap_Responses(t *testing.T) {
 	srv := newTestServeServerWithToolMap(
 		map[string]string{"MyEcho": "echo"},

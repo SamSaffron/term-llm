@@ -33,7 +33,9 @@ type chatTool struct {
 }
 
 type chatToolFuncDef struct {
-	Name string `json:"name"`
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
 }
 
 type chatMessage struct {
@@ -126,6 +128,30 @@ func parseChatRequestedToolNames(tools []chatTool) map[string]bool {
 		}
 	}
 	return selected
+}
+
+func chatToolsToSpecs(tools []chatTool) []llm.ToolSpec {
+	specs := make([]llm.ToolSpec, 0, len(tools))
+	for _, t := range tools {
+		if strings.ToLower(strings.TrimSpace(t.Type)) != "function" {
+			continue
+		}
+		name := strings.TrimSpace(t.Name)
+		spec := llm.ToolSpec{}
+		if t.Function != nil {
+			if name == "" {
+				name = strings.TrimSpace(t.Function.Name)
+			}
+			spec.Description = t.Function.Description
+			spec.Schema = t.Function.Parameters
+		}
+		if name == "" {
+			continue
+		}
+		spec.Name = name
+		specs = append(specs, spec)
+	}
+	return specs
 }
 
 func parseToolChoice(raw json.RawMessage) llm.ToolChoice {

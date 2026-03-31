@@ -60,7 +60,29 @@ func (s *serveServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	search := runtime.search
 	requestedTools := parseChatRequestedToolNames(req.Tools)
 	toolChoice := parseToolChoice(req.ToolChoice)
-	tools := runtime.selectTools(requestedTools)
+
+	serverTools := runtime.selectTools(requestedTools)
+	mappedTargets := make(map[string]bool)
+	if runtime.toolMap != nil {
+		for name := range requestedTools {
+			if mapped, ok := runtime.toolMap[name]; ok {
+				mappedTargets[mapped] = true
+			}
+		}
+	}
+	serverNames := make(map[string]bool, len(serverTools))
+	tools := make([]llm.ToolSpec, 0, len(serverTools)+len(req.Tools))
+	for _, t := range serverTools {
+		serverNames[t.Name] = true
+		if !mappedTargets[t.Name] {
+			tools = append(tools, t)
+		}
+	}
+	for _, ct := range chatToolsToSpecs(req.Tools) {
+		if !serverNames[ct.Name] {
+			tools = append(tools, ct)
+		}
+	}
 	if len(tools) == 0 {
 		toolChoice = llm.ToolChoice{}
 	}
