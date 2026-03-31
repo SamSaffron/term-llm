@@ -11,6 +11,10 @@ import (
 	"strings"
 )
 
+const maxResponsesAPIErrorBodyBytes = 64 * 1024
+
+var truncatedResponsesAPIErrorBodySuffix = []byte("\n... response body truncated")
+
 // ResponsesClient makes raw HTTP calls to Open Responses-compliant endpoints.
 // See https://www.openresponses.org/specification
 type ResponsesClient struct {
@@ -410,6 +414,20 @@ func BuildResponsesToolChoice(choice ToolChoice) interface{} {
 	}
 }
 
+func readResponsesAPIErrorBody(resp *http.Response) []byte {
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponsesAPIErrorBodyBytes+1))
+	if len(body) <= maxResponsesAPIErrorBodyBytes {
+		return body
+	}
+
+	truncated := make([]byte, 0, maxResponsesAPIErrorBodyBytes+len(truncatedResponsesAPIErrorBodySuffix))
+	truncated = append(truncated, body[:maxResponsesAPIErrorBodyBytes]...)
+	truncated = append(truncated, truncatedResponsesAPIErrorBodySuffix...)
+	return truncated
+}
+
 // Stream makes a streaming request to the Responses API and returns events via a Stream
 func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debugRaw bool) (Stream, error) {
 	fullInput := req.Input
@@ -462,8 +480,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 
 	// Check for error responses synchronously so retry logic can handle them
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		respBody := readResponsesAPIErrorBody(resp)
 
 		if debugRaw {
 			var debugInfo strings.Builder
@@ -522,8 +539,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 				return nil, fmt.Errorf("Responses API retry request failed: %w", err)
 			}
 			if resp.StatusCode != http.StatusOK {
-				retryBody, _ := io.ReadAll(resp.Body)
-				resp.Body.Close()
+				retryBody := readResponsesAPIErrorBody(resp)
 				return nil, fmt.Errorf("Responses API error (status %d): %s", resp.StatusCode, string(retryBody))
 			}
 		} else if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
@@ -552,8 +568,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 					return nil, fmt.Errorf("Responses API auth retry request failed: %w", err)
 				}
 				if resp.StatusCode != http.StatusOK {
-					retryBody, _ := io.ReadAll(resp.Body)
-					resp.Body.Close()
+					retryBody := readResponsesAPIErrorBody(resp)
 					return nil, fmt.Errorf("Responses API error after re-auth (status %d): %s", resp.StatusCode, string(retryBody))
 				}
 			} else {
