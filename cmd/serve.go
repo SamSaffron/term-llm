@@ -329,7 +329,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 			return nil, err
 		}
 
-		engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, serveYolo, WireSpawnAgentRunner, skillsSetup)
+		engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, provKey, rtModelName, serveYolo, WireSpawnAgentRunner, skillsSetup)
 		if err != nil {
 			return nil, err
 		}
@@ -369,6 +369,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 			toolMap:             toolMap,
 			debug:               serveDebug,
 			debugRaw:            debugRaw,
+			autoCompact:         cfg.AutoCompact,
 			defaultModel:        rtModelName,
 			store:               store,
 			toolsSetting:        settings.Tools,
@@ -551,7 +552,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 // function registers the activate_skill tool on the engine but does NOT inject
 // <available_skills> metadata into the system prompt — the caller must do that
 // before constructing serveRuntime/serveSettings so the mutation is not lost.
-func newServeEngineWithTools(cfg *config.Config, settings SessionSettings, provider llm.Provider, yoloMode bool, wireSpawn func(*config.Config, *tools.ToolManager, bool) error, skillsSetup *skills.Setup) (*llm.Engine, *tools.ToolManager, error) {
+func newServeEngineWithTools(cfg *config.Config, settings SessionSettings, provider llm.Provider, providerName, modelName string, yoloMode bool, wireSpawn func(*config.Config, *tools.ToolManager, bool) error, skillsSetup *skills.Setup) (*llm.Engine, *tools.ToolManager, error) {
 	engine := newEngine(provider, cfg)
 
 	toolMgr, err := settings.SetupToolManager(cfg, engine)
@@ -568,6 +569,10 @@ func newServeEngineWithTools(cfg *config.Config, settings SessionSettings, provi
 			}
 		}
 	}
+
+	// Serve runtimes need the same context tracking/auto-compaction setup as ask/TUI
+	// so long-lived sessions can warn or compact before hitting provider limits.
+	engine.ConfigureContextManagement(provider, providerName, modelName, cfg.AutoCompact)
 
 	// Register the activate_skill tool on the engine. Metadata injection into the
 	// system prompt is handled by the caller to avoid the by-value settings copy trap.

@@ -17,6 +17,7 @@ import (
 	"net/textproto"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -1376,7 +1377,7 @@ func TestNewServeEngineWithTools_ConfiguresToolManagerAndSpawnWiring(t *testing.
 		return nil
 	}
 
-	engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, true, wireSpawn, nil)
+	engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, "mock", "mock-model", true, wireSpawn, nil)
 	if err != nil {
 		t.Fatalf("newServeEngineWithTools failed: %v", err)
 	}
@@ -1411,7 +1412,7 @@ func TestNewServeEngineWithTools_SkipsToolManagerWhenToolsDisabled(t *testing.T)
 		return nil
 	}
 
-	engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, false, wireSpawn, nil)
+	engine, toolMgr, err := newServeEngineWithTools(cfg, settings, provider, "mock", "mock-model", false, wireSpawn, nil)
 	if err != nil {
 		t.Fatalf("newServeEngineWithTools failed: %v", err)
 	}
@@ -1423,6 +1424,85 @@ func TestNewServeEngineWithTools_SkipsToolManagerWhenToolsDisabled(t *testing.T)
 	}
 	if wireCalls != 0 {
 		t.Fatalf("wireCalls = %d, want 0", wireCalls)
+	}
+}
+
+func TestNewServeEngineWithTools_ConfiguresContextManagement(t *testing.T) {
+	llm.RegisterConfigLimits([]llm.ConfigModelLimit{{Provider: "mock", Model: "serve-test-model", InputLimit: 1234}})
+	defer llm.RegisterConfigLimits(nil)
+
+	cfg := &config.Config{AutoCompact: true}
+	provider := llm.NewMockProvider("mock")
+
+	engine, _, err := newServeEngineWithTools(cfg, SessionSettings{}, provider, "mock", "serve-test-model", false, nil, nil)
+	if err != nil {
+		t.Fatalf("newServeEngineWithTools failed: %v", err)
+	}
+	if got := engine.InputLimit(); got != 1234 {
+		t.Fatalf("engine.InputLimit() = %d, want 1234", got)
+	}
+
+	compactionConfig := reflect.ValueOf(engine).Elem().FieldByName("compactionConfig")
+	if !compactionConfig.IsValid() {
+		t.Fatalf("compactionConfig field not found")
+	}
+	if compactionConfig.IsNil() {
+		t.Fatalf("compactionConfig = nil, want enabled when auto_compact is true")
+	}
+}
+
+func TestNewServeEngineWithTools_TracksContextWhenAutoCompactDisabled(t *testing.T) {
+	llm.RegisterConfigLimits([]llm.ConfigModelLimit{{Provider: "mock", Model: "serve-test-model", InputLimit: 1234}})
+	defer llm.RegisterConfigLimits(nil)
+
+	cfg := &config.Config{AutoCompact: false}
+	provider := llm.NewMockProvider("mock")
+
+	engine, _, err := newServeEngineWithTools(cfg, SessionSettings{}, provider, "mock", "serve-test-model", false, nil, nil)
+	if err != nil {
+		t.Fatalf("newServeEngineWithTools failed: %v", err)
+	}
+	if got := engine.InputLimit(); got != 1234 {
+		t.Fatalf("engine.InputLimit() = %d, want 1234", got)
+	}
+
+	compactionConfig := reflect.ValueOf(engine).Elem().FieldByName("compactionConfig")
+	if !compactionConfig.IsValid() {
+		t.Fatalf("compactionConfig field not found")
+	}
+	if !compactionConfig.IsNil() {
+		t.Fatalf("compactionConfig != nil, want tracking-only when auto_compact is false")
+	}
+}
+
+func TestServeRuntimeRun_ReconfiguresContextManagementForRequestModel(t *testing.T) {
+	llm.RegisterConfigLimits([]llm.ConfigModelLimit{
+		{Provider: "mock", Model: "default-model", InputLimit: 1000},
+		{Provider: "mock", Model: "override-model", InputLimit: 2000},
+	})
+	defer llm.RegisterConfigLimits(nil)
+
+	provider := llm.NewMockProvider("mock").AddTextResponse("ok")
+	engine := llm.NewEngine(provider, nil)
+	engine.ConfigureContextManagement(provider, "mock", "default-model", false)
+
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  "mock",
+		engine:       engine,
+		defaultModel: "default-model",
+	}
+	rt.Touch()
+
+	_, err := rt.Run(context.Background(), false, false, []llm.Message{llm.UserText("hello")}, llm.Request{
+		SessionID: "request-model-override",
+		Model:     "override-model",
+	})
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	if got := engine.InputLimit(); got != 2000 {
+		t.Fatalf("engine.InputLimit() = %d, want 2000 after request model override", got)
 	}
 }
 

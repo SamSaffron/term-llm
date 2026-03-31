@@ -44,6 +44,7 @@ type serveRuntime struct {
 	toolMap              map[string]string
 	debug                bool
 	debugRaw             bool
+	autoCompact          bool
 	defaultModel         string
 	lastUsedUnixNano     atomic.Int64
 	activeInterrupt      *runtimeInterruptState
@@ -86,6 +87,24 @@ func (rt *serveRuntime) SessionNumber() int64 {
 		return rt.sessionMeta.Number
 	}
 	return 0
+}
+
+func (rt *serveRuntime) configureContextManagementForRequest(req llm.Request) {
+	if rt.engine == nil || rt.provider == nil {
+		return
+	}
+
+	providerForLimits := strings.TrimSpace(rt.providerKey)
+	if providerForLimits == "" {
+		providerForLimits = strings.TrimSpace(rt.provider.Name())
+	}
+
+	modelForLimits := strings.TrimSpace(req.Model)
+	if modelForLimits == "" {
+		modelForLimits = strings.TrimSpace(rt.defaultModel)
+	}
+
+	rt.engine.ConfigureContextManagement(rt.provider, providerForLimits, modelForLimits, rt.autoCompact)
 }
 
 func (rt *serveRuntime) Close() {
@@ -426,6 +445,10 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	messages = append(messages, inputMessages...)
 
 	req.Messages = messages
+
+	// Re-set each run in case the request selects a different model than the
+	// runtime default, matching the TUI's per-turn context management behavior.
+	rt.configureContextManagementForRequest(req)
 
 	var produced []llm.Message
 	persistPlatformInjection := func() {

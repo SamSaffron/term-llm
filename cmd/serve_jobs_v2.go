@@ -2115,7 +2115,7 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 			return serveJobsExecResult{}, err
 		}
 
-		engine, toolMgr, err := newServeEngineWithTools(jobCfg, settings, provider, serveYolo, WireSpawnAgentRunner, jobSkillsSetup)
+		engine, toolMgr, err := newServeEngineWithTools(jobCfg, settings, provider, jobCfg.DefaultProvider, modelName, serveYolo, WireSpawnAgentRunner, jobSkillsSetup)
 		if err != nil {
 			return serveJobsExecResult{}, err
 		}
@@ -2131,6 +2131,7 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 		}
 		runtime := &serveRuntime{
 			provider:            provider,
+			providerKey:         jobCfg.DefaultProvider,
 			engine:              engine,
 			toolMgr:             toolMgr,
 			store:               store,
@@ -2140,6 +2141,7 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 			maxTurns:            settings.MaxTurns,
 			debug:               serveDebug,
 			debugRaw:            debugRaw,
+			autoCompact:         jobCfg.AutoCompact,
 			defaultModel:        modelName,
 			toolsSetting:        settings.Tools,
 			mcpSetting:          settings.MCP,
