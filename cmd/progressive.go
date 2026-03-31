@@ -294,7 +294,8 @@ func runProgressiveSession(ctx context.Context, engine *llm.Engine, req llm.Requ
 				return buildProgressiveRunResult(opts.SessionID, exitReasonNatural, false, tracker.latest, lastText), err
 			}
 		}
-		continueMsg := llm.UserText(opts.ContinueWith)
+
+		continueMsg := llm.UserText(expandProgressiveTemplate(opts.ContinueWith, mainCtx))
 		history = append(history, continueMsg)
 		if opts.OnSyntheticUserMessage != nil {
 			if err := opts.OnSyntheticUserMessage(context.Background(), continueMsg); err != nil {
@@ -427,18 +428,25 @@ func attemptProgressiveFinalization(parentCtx context.Context, engine *llm.Engin
 		}
 	}
 
-	engine.RegisterTool(finalizeTool)
-	defer engine.UnregisterTool(finalizeTool.Spec().Name)
-
 	finalReq := baseReq
 	finalReq.Messages = append(append([]llm.Message(nil), history...), finalizeMsg)
-	finalReq.Tools = []llm.ToolSpec{finalizeTool.Spec()}
 	finalReq.Search = false
 	finalReq.ForceExternalSearch = false
 	finalReq.ParallelToolCalls = false
-	finalReq.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
-	if opts.ForceNamedFinalization {
-		finalReq.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceName, Name: finalizeTool.Spec().Name}
+
+	if tracker.latest != nil {
+		// State has been accumulated — ask model to write prose then call finalize_progress.
+		engine.RegisterTool(finalizeTool)
+		defer engine.UnregisterTool(finalizeTool.Spec().Name)
+		finalReq.Tools = []llm.ToolSpec{finalizeTool.Spec()}
+		finalReq.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
+		if opts.ForceNamedFinalization {
+			finalReq.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceName, Name: finalizeTool.Spec().Name}
+		}
+	} else {
+		// No accumulated state — suppress tools so the model writes plain text directly.
+		finalReq.Tools = []llm.ToolSpec{}
+		finalReq.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceNone}
 	}
 
 	passResult, err := runProgressivePass(finalizeCtx, engine, finalReq, opts, tracker)
@@ -531,21 +539,58 @@ func progressiveFinalizationContext(parent context.Context, reserve time.Duratio
 
 func buildProgressiveFinalizePrompt(latest *progressCommit) string {
 	var b strings.Builder
-	b.WriteString("Time budget is ending. Do not do more exploration.\n")
-	b.WriteString("Write a complete, well-formatted human-readable response to the original question using your best-so-far state.\n")
-	b.WriteString("After writing your response, call finalize_progress with final=true and reason=finalize to save the structured state.\n")
+	b.WriteString("Time budget is ending. Stop all tool calls immediately.\n")
 	if latest != nil && latest.State != nil {
+		b.WriteString("Write a complete, well-formatted human-readable response to the original question using your best-so-far state.\n")
+		b.WriteString("After writing your response, call finalize_progress with final=true and reason=finalize to save the structured state.\n")
 		if data, err := json.Marshal(latest.State); err == nil && len(data) > 0 {
 			b.WriteString("Current best state:\n")
 			b.Write(data)
 			b.WriteString("\n")
 		}
+	} else {
+		b.WriteString("Write a complete, well-formatted human-readable response to the original question based on everything you have found so far.\n")
+		b.WriteString("Do not call any tools. Write your response as plain text now.\n")
 	}
 	return b.String()
 }
 
 func defaultProgressiveContinuePrompt() string {
-	return "Continue working on the same task. Do not stop because you already have a plausible answer. Use the remaining budget to verify risky claims, explore credible alternatives, find counterevidence, strengthen the current best answer, and identify failure modes. Call update_progress if the best-so-far state materially improves. Only stop early if the task is genuinely exhausted or blocked."
+	return "{{remaining}}Continue working on the same task. Do not stop because you already have a plausible answer. Use the remaining budget to verify risky claims, explore credible alternatives, find counterevidence, strengthen the current best answer, and identify failure modes. Call update_progress if the best-so-far state materially improves. Only stop early if the task is genuinely exhausted or blocked."
+}
+
+// expandProgressiveTemplate replaces {{remaining}} with a human-readable
+// representation of how much time is left on ctx's deadline.
+// If ctx has no deadline, {{remaining}} is replaced with an empty string.
+func expandProgressiveTemplate(text string, ctx context.Context) string {
+	if !strings.Contains(text, "{{remaining}}") {
+		return text
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return strings.ReplaceAll(text, "{{remaining}}", "")
+	}
+	remaining := time.Until(deadline)
+	if remaining < 0 {
+		remaining = 0
+	}
+	return strings.ReplaceAll(text, "{{remaining}}", formatProgressiveDuration(remaining)+" remaining. ")
+}
+
+func formatProgressiveDuration(d time.Duration) string {
+	if d <= 0 {
+		return "0s"
+	}
+	d = d.Round(time.Second)
+	m := int(d.Minutes())
+	s := int(d.Seconds()) % 60
+	if m == 0 {
+		return fmt.Sprintf("%ds", s)
+	}
+	if s == 0 {
+		return fmt.Sprintf("%dm", m)
+	}
+	return fmt.Sprintf("%dm%ds", m, s)
 }
 
 func progressiveExitReason(err error) string {
