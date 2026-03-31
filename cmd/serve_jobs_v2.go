@@ -2115,7 +2115,7 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 			return serveJobsExecResult{}, err
 		}
 
-		engine, toolMgr, err := newServeEngineWithTools(jobCfg, settings, provider, serveYolo, WireSpawnAgentRunner, jobSkillsSetup)
+		engine, toolMgr, err := newServeEngineWithTools(jobCfg, settings, provider, jobCfg.DefaultProvider, modelName, serveYolo, WireSpawnAgentRunner, jobSkillsSetup)
 		if err != nil {
 			return serveJobsExecResult{}, err
 		}
