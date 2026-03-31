@@ -7,17 +7,34 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
-// defaultHTTPClient is a shared HTTP client. Do not set http.Client.Timeout here:
-// it applies to the entire request lifetime, including reading streaming response
-// bodies, and would abort legitimate long-running streams.
-var defaultHTTPClient = &http.Client{}
+// defaultHTTPClient is a shared HTTP client with transport-level timeouts.
+//
+// http.Client.Timeout is intentionally NOT set: it applies to the entire
+// request lifetime including reading the streaming response body, and would
+// abort legitimate long-running streams.
+//
+// Instead we use Transport-level timeouts that only cover connection
+// establishment and the initial response headers, so hung connections fail
+// fast while active streams are never killed.
+var defaultHTTPClient = &http.Client{
+	Transport: &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ResponseHeaderTimeout: 2 * time.Minute,
+		IdleConnTimeout:       90 * time.Second,
+	},
+}
 
 // OpenAICompatProvider implements Provider for OpenAI-compatible APIs
 // Used by Ollama, LM Studio, and other compatible servers.
