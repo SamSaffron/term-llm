@@ -2,7 +2,6 @@ package llm
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -934,8 +933,7 @@ func TestBuildAnthropicMessages_DeveloperRole(t *testing.T) {
 	}
 }
 
-func TestBuildAnthropicMessages_DeveloperRoleNotMergedWithoutUser(t *testing.T) {
-	// Developer message at end with no following user message — should be dropped
+func TestBuildAnthropicMessages_TrailingDeveloperMessage(t *testing.T) {
 	messages := []Message{
 		UserText("Hello"),
 		AssistantText("Hi"),
@@ -944,16 +942,20 @@ func TestBuildAnthropicMessages_DeveloperRoleNotMergedWithoutUser(t *testing.T) 
 
 	_, out := buildAnthropicMessages(messages)
 
-	// Should have user + assistant + synthetic user (trailing assistant normalization)
-	// but no developer content since there's no user turn to merge into
-	for _, msg := range out {
-		if msg.Role == anthropic.MessageParamRoleUser {
-			for _, block := range msg.Content {
-				if block.OfText != nil && strings.Contains(block.OfText.Text, "<developer>") {
-					t.Fatalf("developer tag should not appear without a following user message, got %q", block.OfText.Text)
-				}
-			}
-		}
+	if len(out) != 3 {
+		t.Fatalf("expected 3 messages (user, assistant, synthetic user), got %d", len(out))
+	}
+	trailing := out[2]
+	if trailing.Role != anthropic.MessageParamRoleUser {
+		t.Fatalf("expected trailing user role, got %v", trailing.Role)
+	}
+	if len(trailing.Content) != 1 || trailing.Content[0].OfText == nil {
+		t.Fatalf("expected single trailing text block, got %#v", trailing.Content)
+	}
+	got := trailing.Content[0].OfText.Text
+	want := "<developer>\nBe concise\n</developer>"
+	if got != want {
+		t.Errorf("content = %q, want %q", got, want)
 	}
 }
 
@@ -979,6 +981,35 @@ func TestBuildAnthropicBetaMessages_DeveloperRole(t *testing.T) {
 		t.Fatalf("expected text block, got %#v", out[0].Content[0])
 	}
 	want := "<developer>\nBe concise\n</developer>\n\nHello"
+	if *got != want {
+		t.Errorf("content = %q, want %q", *got, want)
+	}
+}
+
+func TestBuildAnthropicBetaMessages_TrailingDeveloperMessage(t *testing.T) {
+	messages := []Message{
+		UserText("Hello"),
+		AssistantText("Hi"),
+		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "Be concise"}}},
+	}
+
+	_, out := buildAnthropicBetaMessages(messages)
+
+	if len(out) != 3 {
+		t.Fatalf("expected 3 messages (user, assistant, synthetic user), got %d", len(out))
+	}
+	trailing := out[2]
+	if trailing.Role != anthropic.BetaMessageParamRoleUser {
+		t.Fatalf("expected trailing user role, got %v", trailing.Role)
+	}
+	if len(trailing.Content) != 1 {
+		t.Fatalf("expected single trailing content block, got %d", len(trailing.Content))
+	}
+	got := trailing.Content[0].GetText()
+	if got == nil {
+		t.Fatalf("expected trailing text block, got %#v", trailing.Content[0])
+	}
+	want := "<developer>\nBe concise\n</developer>"
 	if *got != want {
 		t.Errorf("content = %q, want %q", *got, want)
 	}

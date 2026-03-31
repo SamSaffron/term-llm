@@ -639,6 +639,9 @@ func buildAnthropicMessages(messages []Message) (string, []anthropic.MessagePara
 			}
 		}
 	}
+	if pendingDev != "" {
+		out = append(out, anthropic.NewUserMessage(anthropic.NewTextBlock(fmt.Sprintf("<developer>\n%s\n</developer>", pendingDev))))
+	}
 
 	return strings.Join(systemParts, "\n\n"), out
 }
@@ -684,6 +687,9 @@ func buildAnthropicBetaMessages(messages []Message) (string, []anthropic.BetaMes
 				out = append(out, anthropic.NewBetaUserMessage(blocks...))
 			}
 		}
+	}
+	if pendingDev != "" {
+		out = append(out, anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(fmt.Sprintf("<developer>\n%s\n</developer>", pendingDev))))
 	}
 
 	return strings.Join(systemParts, "\n\n"), out
