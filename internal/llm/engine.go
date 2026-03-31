@@ -190,6 +190,20 @@ func (e *Engine) ResetConversation() {
 	}
 }
 
+// ResetConversationKeepServerState resets engine-side conversation tracking
+// (token counts, system prompt, context notices) but does NOT call
+// provider.ResetConversation(). This preserves provider-side state such as
+// the Responses API LastResponseID, enabling server-side prompt caching
+// when the same session is reused across requests via prefix hash matching.
+func (e *Engine) ResetConversationKeepServerState() {
+	e.callbackMu.Lock()
+	e.lastTotalTokens = 0
+	e.lastMessageCount = 0
+	e.systemPrompt = ""
+	e.contextNoticeEmitted.Store(false)
+	e.callbackMu.Unlock()
+}
+
 // SetDebugLogger sets the debug logger for this engine.
 func (e *Engine) SetDebugLogger(logger *DebugLogger) {
 	e.debugLogger = logger

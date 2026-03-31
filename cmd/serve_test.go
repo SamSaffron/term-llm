@@ -707,7 +707,7 @@ func TestParseResponsesInput_DeveloperDoesNotSuppressServerSystemPrompt(t *testi
 		engine:       llm.NewEngine(provider, nil),
 		systemPrompt: "server system prompt",
 	}
-	_, err = rt.Run(context.Background(), true, replaceHistory, msgs, llm.Request{})
+	_, err = rt.Run(context.Background(), true, replaceHistory, false, msgs, llm.Request{})
 	if err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
@@ -1473,7 +1473,7 @@ func TestServeRuntimeRun_PersistsToolCallMessages(t *testing.T) {
 		MaxTurns:  5,
 		Tools:     []llm.ToolSpec{(&echoTool{}).Spec()},
 	}
-	_, err = rt.Run(context.Background(), true, false, []llm.Message{
+	_, err = rt.Run(context.Background(), true, false, false, []llm.Message{
 		llm.UserText("call the echo tool"),
 	}, req)
 	if err != nil {
@@ -1533,7 +1533,7 @@ func TestServeRuntimeRun_PersistsSessionAndMessages(t *testing.T) {
 		SessionID: "serve-session-1",
 		MaxTurns:  3,
 	}
-	_, err = rt.Run(context.Background(), true, false, []llm.Message{
+	_, err = rt.Run(context.Background(), true, false, false, []llm.Message{
 		llm.UserText("test persistence"),
 	}, req)
 	if err != nil {
@@ -1582,7 +1582,7 @@ func TestServeRuntimeRun_ReinjectsPlatformDeveloperMessageAfterFailedFirstRun(t 
 	}
 	rt.Touch()
 
-	_, err := rt.Run(context.Background(), true, false, input, llm.Request{})
+	_, err := rt.Run(context.Background(), true, false, false, input, llm.Request{})
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("first Run error = %v, want boom", err)
 	}
@@ -1602,7 +1602,7 @@ func TestServeRuntimeRun_ReinjectsPlatformDeveloperMessageAfterFailedFirstRun(t 
 		t.Fatalf("first request did not include injected developer message: %+v", provider.Requests[0].Messages)
 	}
 
-	_, err = rt.Run(context.Background(), true, false, input, llm.Request{})
+	_, err = rt.Run(context.Background(), true, false, false, input, llm.Request{})
 	if err != nil {
 		t.Fatalf("second Run failed: %v", err)
 	}
@@ -4119,7 +4119,7 @@ func TestServeRuntime_CumulativeUsageAccumulates(t *testing.T) {
 
 	req := llm.Request{SessionID: "cumul-test", MaxTurns: 1}
 
-	result1, err := rt.Run(context.Background(), true, false, []llm.Message{
+	result1, err := rt.Run(context.Background(), true, false, false, []llm.Message{
 		llm.UserText("first"),
 	}, req)
 	if err != nil {
@@ -4132,7 +4132,7 @@ func TestServeRuntime_CumulativeUsageAccumulates(t *testing.T) {
 		t.Fatalf("session output tokens after 1st run = %d, want 5", result1.SessionUsage.OutputTokens)
 	}
 
-	result2, err := rt.Run(context.Background(), true, false, []llm.Message{
+	result2, err := rt.Run(context.Background(), true, false, false, []llm.Message{
 		llm.UserText("second"),
 	}, req)
 	if err != nil {
@@ -4162,7 +4162,7 @@ func TestServeRuntime_CumulativeUsageResetsOnFreshConversation(t *testing.T) {
 	req := llm.Request{SessionID: "reset-test", MaxTurns: 1}
 
 	// First run accumulates usage
-	result1, err := rt.Run(context.Background(), true, false, []llm.Message{
+	result1, err := rt.Run(context.Background(), true, false, false, []llm.Message{
 		llm.UserText("first"),
 	}, req)
 	if err != nil {
@@ -4173,7 +4173,7 @@ func TestServeRuntime_CumulativeUsageResetsOnFreshConversation(t *testing.T) {
 	}
 
 	// Second run with replaceHistory=true should reset cumulative usage
-	result2, err := rt.Run(context.Background(), true, true, []llm.Message{
+	result2, err := rt.Run(context.Background(), true, true, false, []llm.Message{
 		llm.UserText("fresh start"),
 	}, req)
 	if err != nil {

@@ -371,7 +371,7 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, fmt.Errorf("%s API error (status %d): %s", p.name, resp.StatusCode, string(body))
+		return nil, formatCompatAPIError(p.name, resp.StatusCode, body, tools)
 	}
 
 	// Only create async stream for successful HTTP responses
@@ -605,7 +605,8 @@ func buildCompatTools(specs []ToolSpec) ([]oaiTool, error) {
 	}
 	tools := make([]oaiTool, 0, len(specs))
 	for _, spec := range specs {
-		schema, err := json.Marshal(spec.Schema)
+		normalized := normalizeSchemaForOpenAI(spec.Schema)
+		schema, err := json.Marshal(normalized)
 		if err != nil {
 			return nil, fmt.Errorf("marshal tool schema %s: %w", spec.Name, err)
 		}
@@ -637,6 +638,42 @@ func buildCompatToolChoice(choice ToolChoice) interface{} {
 	default:
 		return nil
 	}
+}
+
+// formatCompatAPIError formats an API error, enriching it with the offending
+// tool's full definition when the error is about an invalid tool schema.
+func formatCompatAPIError(providerName string, statusCode int, body []byte, tools []oaiTool) error {
+	var errResp struct {
+		Error struct {
+			Message string `json:"message"`
+			Param   string `json:"param"`
+			Code    string `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &errResp) == nil && errResp.Error.Code == "invalid_function_parameters" {
+		if idx, ok := parseToolIndex(errResp.Error.Param); ok && idx >= 0 && idx < len(tools) {
+			toolJSON, _ := json.MarshalIndent(tools[idx], "", "  ")
+			return fmt.Errorf("%s API error (status %d): %s\n\nOffending tool definition:\n%s",
+				providerName, statusCode, errResp.Error.Message, string(toolJSON))
+		}
+	}
+	return fmt.Errorf("%s API error (status %d): %s", providerName, statusCode, string(body))
+}
+
+// parseToolIndex extracts the integer index from a param string like "tools[1].parameters".
+func parseToolIndex(param string) (int, bool) {
+	if !strings.HasPrefix(param, "tools[") {
+		return 0, false
+	}
+	closeBracket := strings.Index(param, "]")
+	if closeBracket < 0 {
+		return 0, false
+	}
+	idx, err := strconv.Atoi(param[6:closeBracket])
+	if err != nil {
+		return 0, false
+	}
+	return idx, true
 }
 
 type compatToolState struct {

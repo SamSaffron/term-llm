@@ -116,7 +116,7 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, fmt.Errorf("xAI API error (status %d): %s", resp.StatusCode, string(body))
+		return nil, formatCompatAPIError("xAI", resp.StatusCode, body, tools)
 	}
 
 	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {

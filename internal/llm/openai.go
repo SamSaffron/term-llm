@@ -176,11 +176,15 @@ func normalizeSchemaForOpenAI(schema map[string]interface{}) map[string]interfac
 	return normalizeSchemaRecursive(deepCopyMap(schema))
 }
 
-// normalizeSchemaForOpenAIStrict applies normalizeSchemaForOpenAI and additionally
-// converts free-form map properties (additionalProperties: schema) into arrays of
-// key/value objects, which is required for strict mode where additionalProperties
-// must be false on every object.
+// normalizeSchemaForOpenAIStrict applies normalizeSchemaForOpenAI and additionally:
+//  1. Makes originally-optional properties nullable (anyOf with null) so the LLM
+//     knows it can pass null — strict mode requires all properties in required.
+//  2. Converts free-form map properties (additionalProperties: schema) into arrays
+//     of key/value objects, since strict mode requires additionalProperties: false.
 func normalizeSchemaForOpenAIStrict(schema map[string]interface{}) map[string]interface{} {
+	if schema == nil {
+		return schema
+	}
 	return normalizeFreeFormMapProperties(normalizeSchemaForOpenAI(schema))
 }
 
@@ -192,9 +196,15 @@ func normalizeSchemaForOpenAIStrict(schema map[string]interface{}) map[string]in
 // free-form map and the case where one is nested inside properties, items,
 // anyOf, oneOf, or allOf.
 func normalizeFreeFormMapProperties(schema map[string]interface{}) map[string]interface{} {
-	// If this schema is itself a free-form map, convert it and return early.
+	// If this schema is itself a free-form map with a typed value schema,
+	// convert it to an array of key/value objects for strict mode.
+	// An empty schema map ({}) just means "accept any" — treat it as
+	// additionalProperties: false rather than converting to array.
 	if valueSchema, isSchemaMap := schema["additionalProperties"].(map[string]interface{}); isSchemaMap {
-		return convertFreeFormMapToArray(schema, valueSchema)
+		if len(valueSchema) > 0 {
+			return convertFreeFormMapToArray(schema, valueSchema)
+		}
+		schema["additionalProperties"] = false
 	}
 
 	// Recurse into properties.
@@ -295,8 +305,36 @@ func deepCopySlice(s []interface{}) []interface{} {
 
 // normalizeSchemaRecursive applies OpenAI normalization recursively
 func normalizeSchemaRecursive(schema map[string]interface{}) map[string]interface{} {
+	// Remove JSON Schema keywords not supported by OpenAI function calling.
+	for _, kw := range []string{
+		"propertyNames", "dependentRequired", "dependentSchemas",
+		"patternProperties", "unevaluatedProperties", "unevaluatedItems",
+		"if", "then", "else",
+		"$id", "$ref", "$schema", "$defs", "definitions", "$anchor",
+		"$dynamicRef", "$dynamicAnchor",
+		"contentMediaType", "contentEncoding",
+		"prefixItems", "contains", "minContains", "maxContains",
+		"not",
+	} {
+		delete(schema, kw)
+	}
+
+	// Normalize []interface{} type arrays (from JSON unmarshal) to []string
+	// so the union type handler below can process them.
+	if typeArr, ok := schema["type"].([]interface{}); ok {
+		typeSlice := make([]string, 0, len(typeArr))
+		for _, t := range typeArr {
+			if s, ok := t.(string); ok {
+				typeSlice = append(typeSlice, s)
+			}
+		}
+		schema["type"] = typeSlice
+	}
+
 	// Handle union types expressed as []string (e.g. []string{"string", "null"}).
 	// OpenAI strict mode requires anyOf instead of array type values.
+	// Note: do NOT return early — the schema may have other keywords
+	// (properties, additionalProperties, items) that still need processing.
 	if typeSlice, ok := schema["type"].([]string); ok {
 		anyOf := make([]interface{}, 0, len(typeSlice))
 		enum, hasEnum := schema["enum"]
@@ -310,13 +348,6 @@ func normalizeSchemaRecursive(schema map[string]interface{}) map[string]interfac
 			anyOf = append(anyOf, branch)
 		}
 		schema["anyOf"] = anyOf
-		// Recurse into the newly created anyOf branches.
-		for i, item := range anyOf {
-			if m, ok := item.(map[string]interface{}); ok {
-				anyOf[i] = normalizeSchemaRecursive(m)
-			}
-		}
-		return schema
 	}
 
 	// Remove unsupported format values (OpenAI only supports a limited set)
@@ -331,21 +362,32 @@ func normalizeSchemaRecursive(schema map[string]interface{}) map[string]interfac
 		}
 	}
 
-	// Handle properties
-	if props, ok := schema["properties"].(map[string]interface{}); ok && len(props) > 0 {
-		// Recursively normalize each property
+	// Ensure objects have a properties key (required for OpenAI strict mode).
+	// Without it, the property is treated as invalid and stripped.
+	if schema["type"] == "object" && schema["properties"] == nil {
+		schema["properties"] = map[string]interface{}{}
+	}
+
+	// Handle properties: recurse into each and rebuild required from actual keys.
+	// Always sync required with properties to remove stale entries.
+	if props, ok := schema["properties"].(map[string]interface{}); ok {
 		for key, val := range props {
 			if propSchema, ok := val.(map[string]interface{}); ok {
 				props[key] = normalizeSchemaRecursive(propSchema)
 			}
 		}
-
-		// Build required array with all property keys
-		required := make([]string, 0, len(props))
-		for key := range props {
-			required = append(required, key)
+		if len(props) > 0 {
+			required := make([]string, 0, len(props))
+			for key := range props {
+				required = append(required, key)
+			}
+			schema["required"] = required
+		} else {
+			delete(schema, "required")
 		}
-		schema["required"] = required
+	} else {
+		// No properties — any leftover required is invalid
+		delete(schema, "required")
 	}
 
 	// Handle array items
@@ -364,13 +406,14 @@ func normalizeSchemaRecursive(schema map[string]interface{}) map[string]interfac
 		}
 	}
 
-	// OpenAI requires additionalProperties to be false for objects.
-	// Exception: if additionalProperties is already a schema map (e.g. {"type":"string"}),
-	// preserve it — that's a valid free-form map type (like the env parameter).
-	if schema["type"] == "object" || schema["properties"] != nil {
-		if _, isSchemaMap := schema["additionalProperties"].(map[string]interface{}); !isSchemaMap {
-			schema["additionalProperties"] = false
-		}
+	// Always recurse into additionalProperties when it's a schema map, so that
+	// nested value schemas get required arrays, additionalProperties: false, etc.
+	// For object schemas without a schema-valued additionalProperties, set it to false
+	// as required by OpenAI.
+	if addProps, isSchemaMap := schema["additionalProperties"].(map[string]interface{}); isSchemaMap {
+		schema["additionalProperties"] = normalizeSchemaRecursive(addProps)
+	} else if schema["type"] == "object" || schema["properties"] != nil {
+		schema["additionalProperties"] = false
 	}
 
 	return schema

@@ -2258,7 +2258,7 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 			return serveJobsExecResult{Progressive: &progressiveResult}, err
 		}
 
-		_, err = runtime.RunWithEvents(ctx, false, false, []llm.Message{llm.UserText(cfg.Instructions)}, llmReq, func(ev llm.Event) error {
+		_, err = runtime.RunWithEvents(ctx, false, false, false, []llm.Message{llm.UserText(cfg.Instructions)}, llmReq, func(ev llm.Event) error {
 			if onEvent != nil {
 				onEvent(ev)
 			}

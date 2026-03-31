@@ -97,7 +97,7 @@ func (s *serveServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	result, err := runtime.Run(ctx, stateful, replaceHistory, messages, llmReq)
+	result, err := runtime.Run(ctx, stateful, replaceHistory, false, messages, llmReq)
 	if err != nil {
 		if errors.Is(err, errServeSessionBusy) {
 			writeOpenAIError(w, http.StatusConflict, "conflict_error", err.Error())
@@ -145,7 +145,7 @@ func (s *serveServer) streamChatCompletions(ctx context.Context, w http.Response
 	first := true
 	toolCallSeen := false
 	toolCallIndex := 0
-	result, err := runtime.RunWithEvents(ctx, stateful, replaceHistory, inputMessages, llmReq, func(ev llm.Event) error {
+	result, err := runtime.RunWithEvents(ctx, stateful, replaceHistory, false, inputMessages, llmReq, func(ev llm.Event) error {
 		pingMu.Lock()
 		defer pingMu.Unlock()
 		var writeErr error

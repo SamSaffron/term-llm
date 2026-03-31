@@ -102,7 +102,7 @@ func (p *VeniceProvider) Stream(ctx context.Context, req Request) (Stream, error
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, fmt.Errorf("%s API error (status %d): %s", p.name, resp.StatusCode, string(body))
+		return nil, formatCompatAPIError(p.name, resp.StatusCode, body, tools)
 	}
 
 	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {

@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -638,5 +639,279 @@ func TestBuildCompatMessages_DeveloperMessageNotDropped(t *testing.T) {
 	}
 	if !strings.Contains(content, "hey whats up") {
 		t.Errorf("user text was dropped — not found in %q", content)
+	}
+}
+
+func TestBuildCompatTools_NormalizesSchema(t *testing.T) {
+	specs := []ToolSpec{{
+		Name:        "AskUserQuestion",
+		Description: "Ask a question",
+		Schema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"question": map[string]interface{}{"type": "string"},
+				"annotations": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"audience": map[string]interface{}{"type": "string"},
+					},
+					"propertyNames": map[string]interface{}{
+						"enum": []interface{}{"audience"},
+					},
+				},
+			},
+		},
+	}}
+
+	tools, err := buildCompatTools(specs)
+	if err != nil {
+		t.Fatalf("buildCompatTools error: %v", err)
+	}
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+
+	var schema map[string]interface{}
+	if err := json.Unmarshal(tools[0].Function.Parameters, &schema); err != nil {
+		t.Fatalf("unmarshal schema: %v", err)
+	}
+
+	props := schema["properties"].(map[string]interface{})
+	annotations := props["annotations"].(map[string]interface{})
+
+	if _, ok := annotations["propertyNames"]; ok {
+		t.Error("expected propertyNames to be stripped from annotations sub-schema")
+	}
+	if annotations["additionalProperties"] != false {
+		t.Errorf("expected additionalProperties: false on annotations, got %v", annotations["additionalProperties"])
+	}
+	// required should include all property keys
+	req := schema["required"].([]interface{})
+	if len(req) != 2 {
+		t.Errorf("expected 2 required fields, got %d", len(req))
+	}
+}
+
+func TestNormalizeSchemaForOpenAI_RecursesIntoAdditionalProperties(t *testing.T) {
+	// When additionalProperties is a schema map (free-form map), the value
+	// schema must be recursively normalized so that nested properties get
+	// required arrays built — otherwise strict mode rejects it.
+	schema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"annotations": map[string]interface{}{
+				"type": "object",
+				"additionalProperties": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"notes":    map[string]interface{}{"type": "string"},
+						"priority": map[string]interface{}{"type": "integer"},
+					},
+				},
+			},
+		},
+	}
+
+	result := normalizeSchemaForOpenAI(schema)
+	props := result["properties"].(map[string]interface{})
+	annotations := props["annotations"].(map[string]interface{})
+	addProps := annotations["additionalProperties"].(map[string]interface{})
+
+	req, ok := addProps["required"].([]string)
+	if !ok {
+		t.Fatal("expected required to be a []string in the additionalProperties value schema")
+	}
+	reqSet := map[string]bool{}
+	for _, r := range req {
+		reqSet[r] = true
+	}
+	if !reqSet["notes"] || !reqSet["priority"] {
+		t.Errorf("expected required to include notes and priority, got %v", req)
+	}
+	if addProps["additionalProperties"] != false {
+		t.Errorf("expected nested object to get additionalProperties: false, got %v", addProps["additionalProperties"])
+	}
+}
+
+func TestNormalizeSchemaForOpenAI_StripsUnsupportedKeywords(t *testing.T) {
+	schema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"data": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"name": map[string]interface{}{"type": "string"},
+				},
+				"propertyNames": map[string]interface{}{
+					"enum": []interface{}{"name"},
+				},
+				"dependentRequired": map[string]interface{}{
+					"name": []interface{}{"other"},
+				},
+				"$schema": "http://json-schema.org/draft-07/schema#",
+			},
+		},
+	}
+
+	result := normalizeSchemaForOpenAI(schema)
+	props := result["properties"].(map[string]interface{})
+	data := props["data"].(map[string]interface{})
+
+	for _, kw := range []string{"propertyNames", "dependentRequired", "$schema"} {
+		if _, ok := data[kw]; ok {
+			t.Errorf("expected %q to be stripped, but it was present", kw)
+		}
+	}
+	// properties and type should be preserved
+	if data["type"] != "object" {
+		t.Errorf("expected type to be preserved, got %v", data["type"])
+	}
+	if _, ok := data["properties"]; !ok {
+		t.Error("expected properties to be preserved")
+	}
+}
+
+func TestFormatCompatAPIError_IncludesToolDefinition(t *testing.T) {
+	errorBody := `{"error":{"message":"Invalid schema for function 'AskUserQuestion': In context=('properties', 'annotations'), 'propertyNames' is not permitted.","type":"invalid_request_error","param":"tools[1].parameters","code":"invalid_function_parameters"}}`
+	tools := []oaiTool{
+		{Type: "function", Function: oaiFunction{Name: "ToolA", Parameters: json.RawMessage(`{}`)}},
+		{Type: "function", Function: oaiFunction{Name: "AskUserQuestion", Parameters: json.RawMessage(`{"type":"object"}`)}},
+	}
+
+	err := formatCompatAPIError("TestProvider", 400, []byte(errorBody), tools)
+	msg := err.Error()
+
+	if !strings.Contains(msg, "AskUserQuestion") {
+		t.Errorf("expected error to mention AskUserQuestion, got: %s", msg)
+	}
+	if !strings.Contains(msg, "Offending tool definition") {
+		t.Errorf("expected error to include tool definition header, got: %s", msg)
+	}
+}
+
+func TestFormatCompatAPIError_FallbackOnUnparseableError(t *testing.T) {
+	err := formatCompatAPIError("TestProvider", 500, []byte("Internal Server Error"), nil)
+	msg := err.Error()
+
+	if !strings.Contains(msg, "Internal Server Error") {
+		t.Errorf("expected raw error body in fallback, got: %s", msg)
+	}
+	if !strings.Contains(msg, "status 500") {
+		t.Errorf("expected status code in error, got: %s", msg)
+	}
+}
+
+func TestParseToolIndex(t *testing.T) {
+	tests := []struct {
+		param string
+		idx   int
+		ok    bool
+	}{
+		{"tools[1].parameters", 1, true},
+		{"tools[0]", 0, true},
+		{"tools[12].parameters", 12, true},
+		{"invalid", 0, false},
+		{"tools[abc]", 0, false},
+		{"tools[]", 0, false},
+	}
+	for _, tt := range tests {
+		idx, ok := parseToolIndex(tt.param)
+		if ok != tt.ok || idx != tt.idx {
+			t.Errorf("parseToolIndex(%q) = (%d, %v), want (%d, %v)", tt.param, idx, ok, tt.idx, tt.ok)
+		}
+	}
+}
+
+func TestNormalizeSchemaForOpenAIStrict_EmptyAdditionalProperties(t *testing.T) {
+	// additionalProperties: {} means "accept any" - must NOT convert
+	// the top-level to type: "array" (OpenAI requires type: "object").
+	rawSchema := `{
+		"type": "object",
+		"additionalProperties": {},
+		"properties": {
+			"allowedPrompts": {
+				"items": {
+					"additionalProperties": false,
+					"properties": {
+						"prompt": {"type": "string"},
+						"tool": {"enum": ["Bash"], "type": "string"}
+					},
+					"required": ["tool", "prompt"],
+					"type": "object"
+				},
+				"type": "array"
+			}
+		}
+	}`
+
+	var schema map[string]interface{}
+	if err := json.Unmarshal([]byte(rawSchema), &schema); err != nil {
+		t.Fatal(err)
+	}
+
+	result := normalizeSchemaForOpenAIStrict(schema)
+
+	if result["type"] != "object" {
+		t.Fatalf("top-level schema must remain type: object, got %v", result["type"])
+	}
+	if result["additionalProperties"] != false {
+		t.Errorf("expected additionalProperties: false, got %v", result["additionalProperties"])
+	}
+}
+
+func TestNormalizeSchemaForOpenAIStrict_JSONUnmarshaledUnionType(t *testing.T) {
+	// Schemas arriving from JSON unmarshal have []interface{} for type arrays,
+	// not []string. This test ensures the normalizer handles both forms and
+	// properly recurses into additionalProperties of union-typed schemas.
+	rawSchema := `{
+		"type": "object",
+		"properties": {
+			"question": {"type": "string"},
+			"annotations": {
+				"type": ["object", "null"],
+				"additionalProperties": {
+					"type": "object",
+					"properties": {
+						"notes": {"type": "string"},
+						"priority": {"type": "integer"}
+					}
+				}
+			}
+		}
+	}`
+
+	var schema map[string]interface{}
+	if err := json.Unmarshal([]byte(rawSchema), &schema); err != nil {
+		t.Fatal(err)
+	}
+
+	result := normalizeSchemaForOpenAIStrict(schema)
+
+	props := result["properties"].(map[string]interface{})
+	annotations := props["annotations"].(map[string]interface{})
+
+	// Free-form map should be converted to array
+	if annotations["type"] != "array" {
+		t.Fatalf("expected annotations to be converted to array, got %v", annotations["type"])
+	}
+
+	items := annotations["items"].(map[string]interface{})
+	itemProps := items["properties"].(map[string]interface{})
+	value := itemProps["value"].(map[string]interface{})
+
+	// The value schema must have required with all property keys
+	req, ok := value["required"].([]string)
+	if !ok {
+		t.Fatal("value schema missing required []string")
+	}
+	reqSet := map[string]bool{}
+	for _, r := range req {
+		reqSet[r] = true
+	}
+	if !reqSet["notes"] || !reqSet["priority"] {
+		t.Errorf("required missing notes or priority: %v", req)
+	}
+	if value["additionalProperties"] != false {
+		t.Errorf("expected additionalProperties: false on value, got %v", value["additionalProperties"])
 	}
 }

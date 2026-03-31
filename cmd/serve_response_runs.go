@@ -1062,7 +1062,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		}()
 
 		streamState := &responseRunStreamState{}
-		result, err := runtime.RunWithEvents(runCtx, stateful, replaceHistory, inputMessages, llmReq, func(ev llm.Event) error {
+		result, err := runtime.RunWithEvents(runCtx, stateful, replaceHistory, false, inputMessages, llmReq, func(ev llm.Event) error {
 			return s.appendResponseRunEvent(runtime, run, streamState, ev)
 		})
 		if err != nil {

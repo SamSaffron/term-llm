@@ -150,7 +150,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := runtime.Run(ctx, stateful, replaceHistory, inputMessages, llmReq)
+	result, err := runtime.Run(ctx, stateful, replaceHistory, false, inputMessages, llmReq)
 	if err != nil {
 		if errors.Is(err, errServeSessionBusy) {
 			writeOpenAIError(w, http.StatusConflict, "conflict_error", err.Error())

@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -56,7 +57,45 @@ func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 	// so always replace session history instead of appending.
 	replaceHistory := true
 
+	// Prefix-hash matching: identify an existing session by matching the
+	// incoming message history prefix. This allows the Responses API backend
+	// to use previous_response_id for prompt caching.
+	hashes := computeMessageHashes(messages, s.cfg.stripSystemPatterns)
 	sessionID := resolveRequestSessionID(r)
+	prefixMatched := false
+	matchedCount := 0
+	if sessionID == "" && s.prefixCache != nil {
+		if sid, mc, ok := s.prefixCache.Match(hashes); ok {
+			sessionID = sid
+			matchedCount = mc
+			prefixMatched = true
+		}
+	}
+	if s.cfg.verbose {
+		s.verboseLog("  prefix_cache: msgs=%d hashes=%v matched=%v entries=%d stored=%v",
+			len(messages), hashes, prefixMatched, s.prefixCache.Len(), s.prefixCache.StoredHashes())
+		for i, msg := range messages {
+			var parts []string
+			for _, p := range msg.Parts {
+				desc := string(p.Type)
+				if p.Text != "" {
+					t := p.Text
+					if len(t) > 80 {
+						t = t[:80] + "..."
+					}
+					desc += fmt.Sprintf("(%d bytes: %q)", len(p.Text), t)
+				}
+				if p.ToolCall != nil {
+					desc += fmt.Sprintf("(id=%s name=%s)", p.ToolCall.ID, p.ToolCall.Name)
+				}
+				if p.ToolResult != nil {
+					desc += fmt.Sprintf("(id=%s)", p.ToolResult.ID)
+				}
+				parts = append(parts, desc)
+			}
+			s.verboseLog("    msg[%d] role=%s hash=%d parts=%v", i, msg.Role, hashes[i], parts)
+		}
+	}
 	if sessionID == "" {
 		sessionID = ensureSessionID(w)
 	}
@@ -67,6 +106,9 @@ func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 	}
 	if !stateful {
 		defer runtime.Close()
+	}
+	if prefixMatched {
+		s.verboseLog("  session=%s prefix_match=%d/%d msgs", sessionID, matchedCount, len(messages))
 	}
 
 	search := runtime.search
@@ -131,11 +173,11 @@ func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 	}
 
 	if req.Stream {
-		s.streamAnthropicMessages(ctx, w, runtime, stateful, replaceHistory, messages, llmReq, sessionID)
+		s.streamAnthropicMessages(ctx, w, runtime, stateful, replaceHistory, prefixMatched, hashes, messages, llmReq, sessionID)
 		return
 	}
 
-	result, err := runtime.Run(ctx, stateful, replaceHistory, messages, llmReq)
+	result, err := runtime.Run(ctx, stateful, replaceHistory, prefixMatched, messages, llmReq)
 	if err != nil {
 		s.verboseLog("✗ POST /v1/messages error: %v", err)
 		if errors.Is(err, errServeSessionBusy) {
@@ -156,6 +198,13 @@ func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 		result.ToolCalls = filtered
 	}
 
+	s.verboseLog("✓ POST /v1/messages input=%d cached=%d cache_write=%d output=%d",
+		result.Usage.InputTokens, result.Usage.CachedInputTokens, result.Usage.CacheWriteTokens, result.Usage.OutputTokens)
+
+	if s.prefixCache != nil && len(hashes) > 0 {
+		s.prefixCache.Store(hashes[len(hashes)-1], sessionID, 60*time.Minute)
+	}
+
 	model := llmReq.Model
 	if model == "" {
 		model = runtime.defaultModel
@@ -163,7 +212,7 @@ func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, anthropicMessagesFinalResponse(result, model))
 }
 
-func (s *serveServer) streamAnthropicMessages(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string) {
+func (s *serveServer) streamAnthropicMessages(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, prefixMatched bool, hashes []uint64, inputMessages []llm.Message, llmReq llm.Request, sessionID string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeAnthropicError(w, http.StatusInternalServerError, "api_error", "streaming not supported")
@@ -221,7 +270,7 @@ func (s *serveServer) streamAnthropicMessages(ctx context.Context, w http.Respon
 	flusher.Flush()
 	pingMu.Unlock()
 
-	result, err := runtime.RunWithEvents(ctx, stateful, replaceHistory, inputMessages, llmReq, func(ev llm.Event) error {
+	result, err := runtime.RunWithEvents(ctx, stateful, replaceHistory, prefixMatched, inputMessages, llmReq, func(ev llm.Event) error {
 		pingMu.Lock()
 		defer pingMu.Unlock()
 		var writeErr error
@@ -350,12 +399,13 @@ func (s *serveServer) streamAnthropicMessages(ctx context.Context, w http.Respon
 		return
 	}
 
-	outputTokens := 0
-	inputTokens := 0
-	if result.Usage.OutputTokens > 0 || result.Usage.InputTokens > 0 {
-		outputTokens = result.Usage.OutputTokens
-		inputTokens = result.Usage.InputTokens
-	}
+	outputTokens := result.Usage.OutputTokens
+	inputTokens := result.Usage.InputTokens
+	cachedTokens := result.Usage.CachedInputTokens
+	cacheWriteTokens := result.Usage.CacheWriteTokens
+
+	s.verboseLog("✓ POST /v1/messages input=%d cached=%d cache_write=%d output=%d",
+		inputTokens, cachedTokens, cacheWriteTokens, outputTokens)
 
 	_ = writeAnthropicSSE(w, "message_delta", map[string]any{
 		"type":  "message_delta",
@@ -373,9 +423,15 @@ func (s *serveServer) streamAnthropicMessages(ctx context.Context, w http.Respon
 	_ = writeAnthropicSSE(w, "ping", map[string]any{
 		"type": "ping",
 		"usage": map[string]any{
-			"input_tokens":  inputTokens,
-			"output_tokens": outputTokens,
+			"input_tokens":                inputTokens,
+			"output_tokens":               outputTokens,
+			"cache_creation_input_tokens": cacheWriteTokens,
+			"cache_read_input_tokens":     cachedTokens,
 		},
 	})
 	flusher.Flush()
+
+	if s.prefixCache != nil && len(hashes) > 0 {
+		s.prefixCache.Store(hashes[len(hashes)-1], sessionID, 60*time.Minute)
+	}
 }

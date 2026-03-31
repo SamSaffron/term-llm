@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -58,6 +59,7 @@ var (
 	serveSidebarSessions        string
 	serveToolMap                []string
 	serveFilesDir               string
+	serveStripSystem            []string
 )
 
 var serveCmd = &cobra.Command{
@@ -133,6 +135,7 @@ func init() {
 	serveCmd.Flags().StringArrayVar(&serveToolMap, "tool-map", nil, "Map client tool name to server tool (repeatable, format ClientName:ServerName)")
 	serveCmd.Flags().BoolVar(&serveFilterServerTools, "suppress-server-tool-calls", false, "Hide server-executed tool calls from API responses (use when proxying to external clients)")
 	serveCmd.Flags().StringVar(&serveFilesDir, "files-dir", "", "Directory for serving arbitrary files (videos, PDFs, etc) at {base}/files/")
+	serveCmd.Flags().StringArrayVar(&serveStripSystem, "strip-system", nil, "Regex patterns to strip from system messages before prefix-hash matching (repeatable)")
 
 	AddProviderFlag(serveCmd, &serveProvider)
 	AddDebugFlag(serveCmd, &serveDebug)
@@ -472,6 +475,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 			}
 		}
 		serveUI := hasWeb
+		var compiledStripPatterns []*regexp.Regexp
+		for _, pat := range serveStripSystem {
+			re, err := regexp.Compile(pat)
+			if err != nil {
+				return fmt.Errorf("invalid --strip-system pattern %q: %w", pat, err)
+			}
+			compiledStripPatterns = append(compiledStripPatterns, re)
+		}
 		s = &serveServer{
 			cfg: serveServerConfig{
 				host:                serveHost,
@@ -486,12 +497,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 				sidebarSessions:     append([]string(nil), sidebarSessions...),
 				corsOrigins:         append([]string(nil), serveCORSOrigins...),
 				filesDir:            resolveFilesDir(serveFilesDir, cfg),
+				stripSystemPatterns: compiledStripPatterns,
 			},
 			sessionMgr:     sessionMgr,
 			jobsV2:         jobsV2,
 			cfgRef:         cfg,
 			store:          store,
 			runtimeFactory: runtimeFactory,
+			prefixCache:    newPrefixHashCache(),
 		}
 		sessionMgr.onEvict = func(rt *serveRuntime) {
 			for _, rid := range rt.getResponseIDs() {
@@ -742,7 +755,8 @@ type serveServerConfig struct {
 	basePath            string // e.g. "/ui" or "/chat", always without trailing slash
 	sidebarSessions     []string
 	corsOrigins         []string
-	filesDir            string // opt-in directory for serving arbitrary files (videos, PDFs, etc)
+	filesDir            string           // opt-in directory for serving arbitrary files (videos, PDFs, etc)
+	stripSystemPatterns []*regexp.Regexp // patterns stripped from system messages before prefix hashing
 }
 
 // uiRoute returns the base-path with trailing slash, e.g. "/ui/" or "/chat/".
@@ -794,6 +808,7 @@ type serveServer struct {
 	responseRuns      *responseRunManager
 	webrtcHeadSnippet string // injected into index.html <head>; empty when WebRTC disabled
 	runtimeFactory    func(ctx context.Context, providerName string, model string) (*serveRuntime, error)
+	prefixCache       *prefixHashCache // hash-based session matching for Anthropic bridge caching
 }
 
 func (s *serveServer) Start() error {

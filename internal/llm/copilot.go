@@ -324,7 +324,7 @@ func (p *CopilotProvider) streamChatCompletions(ctx context.Context, req Request
 			if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 				return fmt.Errorf("Copilot authentication failed (status %d): token may be invalid or expired. Re-run with --provider copilot to re-authenticate", resp.StatusCode)
 			}
-			return fmt.Errorf("Copilot API error (status %d): %s", resp.StatusCode, string(respBody))
+			return formatCompatAPIError("Copilot", resp.StatusCode, respBody, tools)
 		}
 
 		scanner := bufio.NewScanner(resp.Body)

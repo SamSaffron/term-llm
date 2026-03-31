@@ -363,15 +363,15 @@ type serveRunResult struct {
 
 var errServeSessionBusy = errors.New("session is busy processing another request")
 
-func (rt *serveRuntime) Run(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request) (serveRunResult, error) {
-	return rt.run(ctx, stateful, replaceHistory, inputMessages, req, nil)
+func (rt *serveRuntime) Run(ctx context.Context, stateful bool, replaceHistory bool, preserveServerState bool, inputMessages []llm.Message, req llm.Request) (serveRunResult, error) {
+	return rt.run(ctx, stateful, replaceHistory, preserveServerState, inputMessages, req, nil)
 }
 
-func (rt *serveRuntime) RunWithEvents(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request, onEvent func(llm.Event) error) (serveRunResult, error) {
-	return rt.run(ctx, stateful, replaceHistory, inputMessages, req, onEvent)
+func (rt *serveRuntime) RunWithEvents(ctx context.Context, stateful bool, replaceHistory bool, preserveServerState bool, inputMessages []llm.Message, req llm.Request, onEvent func(llm.Event) error) (serveRunResult, error) {
+	return rt.run(ctx, stateful, replaceHistory, preserveServerState, inputMessages, req, onEvent)
 }
 
-func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request, onEvent func(llm.Event) error) (serveRunResult, error) {
+func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory bool, preserveServerState bool, inputMessages []llm.Message, req llm.Request, onEvent func(llm.Event) error) (serveRunResult, error) {
 	if !rt.mu.TryLock() {
 		return serveRunResult{}, errServeSessionBusy
 	}
@@ -391,7 +391,11 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	copy(baseHistory, rt.history)
 	if replaceHistory {
 		baseHistory = nil
-		rt.engine.ResetConversation()
+		if preserveServerState {
+			rt.engine.ResetConversationKeepServerState()
+		} else {
+			rt.engine.ResetConversation()
+		}
 		rt.cumulativeUsage = llm.Usage{}
 		rt.lastInjectedPlatform = ""
 	}
