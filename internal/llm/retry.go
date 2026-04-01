@@ -51,6 +51,15 @@ func (r *RetryProvider) Capabilities() Capabilities {
 	return r.inner.Capabilities()
 }
 
+// ResetConversation forwards to the inner provider if it implements
+// ResetConversation. This preserves provider-side conversation reset behavior
+// when providers are wrapped with retry logic.
+func (r *RetryProvider) ResetConversation() {
+	if resetter, ok := r.inner.(interface{ ResetConversation() }); ok {
+		resetter.ResetConversation()
+	}
+}
+
 // SetToolExecutor forwards to the inner provider if it implements ToolExecutorSetter.
 // This ensures providers like ClaudeBinProvider can receive their tool executor
 // even when wrapped with retry logic.

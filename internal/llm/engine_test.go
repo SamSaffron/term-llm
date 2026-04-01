@@ -1302,6 +1302,18 @@ func TestEngineResetConversationCallsProvider(t *testing.T) {
 	}
 }
 
+func TestEngineResetConversationCallsWrappedProvider(t *testing.T) {
+	inner := &mockResettableProvider{MockProvider: NewMockProvider("test")}
+	provider := WrapWithRetry(inner, DefaultRetryConfig())
+	e := NewEngine(provider, nil)
+
+	e.ResetConversation()
+
+	if inner.resetCalls != 1 {
+		t.Errorf("expected wrapped provider ResetConversation called once, got %d", inner.resetCalls)
+	}
+}
+
 func TestEngineResetConversationSkipsNonResettableProvider(t *testing.T) {
 	// Regular MockProvider doesn't implement ResetConversation
 	provider := NewMockProvider("test")
