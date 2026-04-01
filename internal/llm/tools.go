@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"sync"
 
 	"github.com/samsaffron/term-llm/internal/prompt"
 )
@@ -39,6 +40,7 @@ type FinishingTool interface {
 
 // ToolRegistry stores tools by name for execution.
 type ToolRegistry struct {
+	mu    sync.RWMutex
 	tools map[string]Tool
 }
 
@@ -47,16 +49,22 @@ func NewToolRegistry() *ToolRegistry {
 }
 
 func (r *ToolRegistry) Register(tool Tool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.tools[tool.Spec().Name] = tool
 }
 
 func (r *ToolRegistry) Get(name string) (Tool, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	tool, ok := r.tools[name]
 	return tool, ok
 }
 
 // IsFinishingTool returns true if the named tool is a finishing tool.
 func (r *ToolRegistry) IsFinishingTool(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	tool, ok := r.tools[name]
 	if !ok {
 		return false
@@ -68,11 +76,16 @@ func (r *ToolRegistry) IsFinishingTool(name string) bool {
 }
 
 func (r *ToolRegistry) Unregister(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	delete(r.tools, name)
 }
 
 // AllSpecs returns the specs for all registered tools in deterministic name order.
 func (r *ToolRegistry) AllSpecs() []ToolSpec {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	names := make([]string, 0, len(r.tools))
 	for name := range r.tools {
 		names = append(names, name)
