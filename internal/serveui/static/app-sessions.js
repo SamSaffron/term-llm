@@ -336,7 +336,7 @@ const scheduleSessionStatePoll = (sessionId, delay = 1200) => {
 };
 
 const syncActiveSessionFromServer = async (session, pollOnActive = false) => {
-  if (!session || !state.token) return null;
+  if (!session) return null;
 
   const runtimeState = await loadServerSessionState(session.id);
   if (!runtimeState) return null;

@@ -75,6 +75,7 @@ type responseRun struct {
 	subscriberWarned   map[int]bool // tracks whether 75% buffer warning was logged
 	nextSubscriberID   int
 	cancel             context.CancelFunc
+	cancelRequested    bool
 }
 
 type startResponseRunOptions struct {
@@ -112,6 +113,8 @@ func (r *responseRun) complete(payload map[string]any, usage llm.Usage, sessionU
 	r.status = "completed"
 	r.errorType = ""
 	r.errorMessage = ""
+	r.cancel = nil
+	r.cancelRequested = false
 	r.usage = usage
 	r.sessionUsage = sessionUsage
 	return r.appendEventLocked("response.completed", payload, true)
@@ -124,6 +127,8 @@ func (r *responseRun) fail(payload map[string]any, errType, errMessage string) (
 	r.status = "failed"
 	r.errorType = errType
 	r.errorMessage = errMessage
+	r.cancel = nil
+	r.cancelRequested = false
 	return hadSubscribers, r.appendEventLocked("response.failed", payload, true)
 }
 
@@ -490,15 +495,22 @@ func (r *responseRun) recoveryPayloadLocked() map[string]any {
 
 func (r *responseRun) cancelRun() bool {
 	r.mu.Lock()
-	if r.status != "in_progress" || r.cancel == nil {
+	if r.status != "in_progress" {
 		r.mu.Unlock()
 		return false
 	}
 	cancel := r.cancel
+	if cancel == nil && !r.cancelRequested {
+		r.mu.Unlock()
+		return false
+	}
+	r.cancelRequested = true
 	r.cancel = nil
 	r.mu.Unlock()
 
-	cancel()
+	if cancel != nil {
+		cancel()
+	}
 	return true
 }
 
@@ -987,6 +999,8 @@ func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.Respon
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-s.shutdownCh:
 			return
 		case ev, ok := <-ch:
 			if !ok {

@@ -186,11 +186,90 @@ func (rt *serveRuntime) Interrupt(ctx context.Context, msg string, fastProvider 
 	return action, nil
 }
 
+// ensureSessionInStore creates the session record in the database if it doesn't
+// exist yet and returns the assigned session number. Unlike ensurePersistedSession,
+// this does NOT mutate runtime state (sessionMeta, history), so it is safe to call
+// without holding rt.mu.
+func (rt *serveRuntime) ensureSessionInStore(ctx context.Context, sessionID string, inputMessages []llm.Message) int64 {
+	if rt.store == nil || sessionID == "" {
+		return 0
+	}
+	// Fast path: runtime already hydrated under rt.mu by a prior run.
+	if meta := rt.sessionMeta; meta != nil && meta.ID == sessionID {
+		return meta.Number
+	}
+	// Check DB for existing session.
+	if existing, err := rt.store.Get(ctx, sessionID); err == nil && existing != nil {
+		return existing.Number
+	}
+	// Build and insert a new session record.
+	providerName := "unknown"
+	if rt.provider != nil {
+		if name := strings.TrimSpace(rt.provider.Name()); name != "" {
+			providerName = name
+		}
+	}
+	modelName := strings.TrimSpace(rt.defaultModel)
+	if modelName == "" {
+		modelName = "unknown"
+	}
+	sess := &session.Session{
+		ID:          sessionID,
+		Provider:    providerName,
+		ProviderKey: strings.TrimSpace(rt.providerKey),
+		Model:       modelName,
+		Mode:        session.ModeChat,
+		Origin:      session.OriginWeb,
+		Agent:       rt.agentName,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+		Search:      rt.search,
+		Tools:       rt.toolsSetting,
+		MCP:         rt.mcpSetting,
+		Status:      session.StatusActive,
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		sess.CWD = cwd
+	}
+	for _, msg := range inputMessages {
+		if msg.Role != llm.RoleUser {
+			continue
+		}
+		if text := session.NewMessage(sessionID, msg, -1).TextContent; text != "" {
+			sess.Summary = session.TruncateSummary(text)
+			break
+		}
+	}
+	if err := rt.store.Create(ctx, sess); err != nil {
+		if existing, getErr := rt.store.Get(ctx, sessionID); getErr == nil && existing != nil {
+			return existing.Number
+		}
+		log.Printf("[serve] session Create failed for %s: %v", sessionID, err)
+		return 0
+	}
+	return sess.Number
+}
+
 func (rt *serveRuntime) ensurePersistedSession(ctx context.Context, sessionID string, inputMessages []llm.Message) bool {
 	if rt.store == nil || sessionID == "" {
 		return false
 	}
 	if rt.sessionMeta != nil && rt.sessionMeta.ID == sessionID {
+		return true
+	}
+
+	// Check DB first — ensureSessionInStore may have already created the record.
+	if existing, err := rt.store.Get(ctx, sessionID); err == nil && existing != nil {
+		rt.sessionMeta = existing
+		if len(rt.history) == 0 {
+			if msgs, loadErr := rt.store.GetMessages(ctx, sessionID, 0, 0); loadErr == nil && len(msgs) > 0 {
+				llmMsgs := make([]llm.Message, 0, len(msgs))
+				for _, m := range msgs {
+					llmMsgs = append(llmMsgs, m.ToLLMMessage())
+				}
+				rt.history = llmMsgs
+			}
+		}
 		return true
 	}
 
@@ -267,6 +346,12 @@ func (rt *serveRuntime) persistSnapshot(ctx context.Context, sessionID string, s
 	if rt.store == nil || sessionID == "" {
 		return
 	}
+	// Use a cancel-proof context so snapshot persistence succeeds even when the
+	// run context is cancelled (e.g. ^C or client disconnect), while preserving
+	// any context values (tracing, logging) from the original context.
+	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+
 	messages := make([]session.Message, 0, len(snapshot))
 	for _, msg := range snapshot {
 		if msg.Role == "" {
@@ -275,7 +360,7 @@ func (rt *serveRuntime) persistSnapshot(ctx context.Context, sessionID string, s
 		sessionMsg := session.NewMessage(sessionID, msg, -1)
 		messages = append(messages, *sessionMsg)
 	}
-	if err := rt.store.ReplaceMessages(ctx, sessionID, messages); err != nil {
+	if err := rt.store.ReplaceMessages(dbCtx, sessionID, messages); err != nil {
 		log.Printf("[serve] session ReplaceMessages failed for %s: %v", sessionID, err)
 		return
 	}
@@ -286,17 +371,17 @@ func (rt *serveRuntime) persistSnapshot(ctx context.Context, sessionID string, s
 			}
 			if text := session.NewMessage(sessionID, msg, -1).TextContent; text != "" {
 				rt.sessionMeta.Summary = session.TruncateSummary(text)
-				if updateErr := rt.store.Update(ctx, rt.sessionMeta); updateErr != nil {
+				if updateErr := rt.store.Update(dbCtx, rt.sessionMeta); updateErr != nil {
 					log.Printf("[serve] session Update failed for %s: %v", sessionID, updateErr)
 				}
 				break
 			}
 		}
 	}
-	if setErr := rt.store.SetCurrent(ctx, sessionID); setErr != nil {
+	if setErr := rt.store.SetCurrent(dbCtx, sessionID); setErr != nil {
 		log.Printf("[serve] session SetCurrent failed for %s: %v", sessionID, setErr)
 	}
-	if statusErr := rt.store.UpdateStatus(ctx, sessionID, session.StatusActive); statusErr != nil {
+	if statusErr := rt.store.UpdateStatus(dbCtx, sessionID, session.StatusActive); statusErr != nil {
 		log.Printf("[serve] session UpdateStatus(active) failed for %s: %v", sessionID, statusErr)
 	}
 }
@@ -305,7 +390,12 @@ func (rt *serveRuntime) persistStatus(ctx context.Context, sessionID string, sta
 	if rt.store == nil || sessionID == "" {
 		return
 	}
-	if err := rt.store.UpdateStatus(ctx, sessionID, status); err != nil {
+	// Use a cancel-proof context for final status writes so they succeed even
+	// when the run context is cancelled (e.g. ^C or client disconnect), while
+	// preserving any context values (tracing, logging).
+	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := rt.store.UpdateStatus(dbCtx, sessionID, status); err != nil {
 		log.Printf("[serve] session UpdateStatus(%s) failed for %s: %v", status, sessionID, err)
 	}
 }

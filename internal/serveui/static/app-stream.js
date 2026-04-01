@@ -4,7 +4,7 @@
 const app = window.TermLLMApp;
 const {
   UI_PREFIX, STORAGE_KEYS, state, elements, generateId, sanitizeInterruptState, sanitizeMessage, syncTokenCookie, truncate, saveSessions,
-  getActiveSession, createSession, findMessageElement, scrollToBottom, setConnectionState, sessionSlug, updateURL,
+  getActiveSession, createSession, scrollToBottom, setConnectionState, sessionSlug, updateURL,
   persistAndRefreshShell, updateSessionUsageDisplay, refreshRelativeTimes, requestHeaders: _unusedRequestHeaders, updateAssistantNode, updateUserNode,
   updateToolNode, updateToolGroupNode, createMessageNode, createToolGroupNode, renderSidebar, renderMessages, maybeNotifyResponseComplete,
   enqueueAssistantStreamUpdate, finalizeAssistantStreamRender,
@@ -235,15 +235,30 @@ const attachResponseStream = (session, responseId = '', controller = null) => {
   }
 };
 
+const clearResumeKeysForSession = (sessionId) => {
+  const prefix = sessionId + ':';
+  for (const key of activeResumeKeys) {
+    if (key.startsWith(prefix)) activeResumeKeys.delete(key);
+  }
+};
+
 const detachResponseStream = () => {
   stopHeartbeatMonitor();
   flushStreamPersistence();
+  state.streamGeneration += 1;
   const controller = state.abortController;
+  const detachedSessionId = state.currentStreamSessionId;
   state.abortController = null;
   state.currentStreamSessionId = '';
   state.currentStreamResponseId = '';
   if (controller) {
-    controller.abort();
+    try { controller.abort(); } catch (_) { /* stream may already be closed */ }
+  }
+  // Clear resume keys for the detached session so that a subsequent
+  // resumeActiveResponse (e.g. when switching back) is not blocked by
+  // a stale key from the still-unwinding previous resume loop.
+  if (detachedSessionId) {
+    clearResumeKeysForSession(detachedSessionId);
   }
   setConnectionState('', '');
   setStreaming(false);
@@ -2135,7 +2150,8 @@ const sendMessage = async (options = {}) => {
   }
 
   let session = getActiveSession();
-  if (state.streaming) {
+  const sessionBusy = state.streaming || (session && session.activeResponseId);
+  if (sessionBusy) {
     if (pendingAttachments.length > 0) {
       alert('Attachments are not supported while a run is active.');
       return;
@@ -2239,6 +2255,7 @@ const sendMessage = async (options = {}) => {
 
   state.expectCanceledRun = false;
   const controller = new AbortController();
+  const sendGeneration = state.streamGeneration;
   attachResponseStream(session, '', controller);
   setStreaming(true);
   const streamState = createResponseStreamState(session);
@@ -2346,20 +2363,29 @@ const sendMessage = async (options = {}) => {
       }
     }
 
-    const lastAssistant = [...session.messages].reverse().find(m => m.role === 'assistant');
-    if (lastAssistant) updateAssistantNode(lastAssistant);
-    persistAndRefreshShell();
-    scrollToBottom();
+    if (sendGeneration === state.streamGeneration) {
+      const lastAssistant = [...session.messages].reverse().find(m => m.role === 'assistant');
+      if (lastAssistant) updateAssistantNode(lastAssistant);
+      persistAndRefreshShell();
+      scrollToBottom();
+    }
   } catch (err) {
     streamState.closeToolGroup();
     markToolGroupsDone(session);
-    const lastAssistant = [...session.messages].reverse().find(m => m.role === 'assistant');
-    if (lastAssistant) updateAssistantNode(lastAssistant);
 
     if (err?.name === 'AbortError') {
       persistAndRefreshShell();
       return;
     }
+
+    // If the stream was detached (New Chat, switched session), don't
+    // touch DOM or streaming state for this session.
+    if (sendGeneration !== state.streamGeneration) {
+      return;
+    }
+
+    const lastAssistant = [...session.messages].reverse().find(m => m.role === 'assistant');
+    if (lastAssistant) updateAssistantNode(lastAssistant);
 
     if (session.activeResponseId) {
       await resumeActiveResponse(session, { streamState });
@@ -2384,6 +2410,12 @@ const sendMessage = async (options = {}) => {
   } finally {
     if (state.abortController === controller) {
       state.abortController = null;
+    }
+
+    // If the stream was detached (New Chat, switched session), don't
+    // touch streaming state — the navigation already set it correctly.
+    if (sendGeneration !== state.streamGeneration) {
+      return;
     }
 
     const stillActive = Boolean(session.activeResponseId || state.currentStreamResponseId);

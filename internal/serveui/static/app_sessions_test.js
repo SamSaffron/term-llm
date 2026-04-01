@@ -65,10 +65,92 @@ function makeNode() {
   };
 }
 
-async function testNumericDeepLinkResolvesRealSessionId() {
-  const name = 'numeric deep link resolves server session id';
-  const fetchCalls = [];
-  const storage = new Map();
+function defaultAppStubs(app, overrides = {}) {
+  return {
+    persistAndRefreshShell() {},
+    refreshRelativeTimes() {},
+    openAuthModal() {},
+    closeAuthModal() {},
+    handleAuthFailure() {},
+    closeAskUserModal() {},
+    openAskUserModal() {},
+    setActiveResponseTracking(session, responseId, sequenceNumber = null) {
+      if (!session) return;
+      const normalized = String(responseId || '').trim();
+      if (!normalized) return;
+      if (session.activeResponseId !== normalized) {
+        session.activeResponseId = normalized;
+        if (sequenceNumber === null) {
+          session.lastSequenceNumber = 0;
+        }
+      }
+      if (sequenceNumber !== null) {
+        const nextSeq = Number(sequenceNumber);
+        if (Number.isFinite(nextSeq) && nextSeq >= 0) {
+          session.lastSequenceNumber = nextSeq;
+        }
+      }
+    },
+    clearActiveResponseTracking(session, responseId = '') {
+      if (!session) return;
+      const currentId = String(session.activeResponseId || '').trim();
+      const targetId = String(responseId || '').trim();
+      if (!targetId || currentId === targetId) {
+        session.activeResponseId = null;
+        session.lastSequenceNumber = 0;
+      }
+      if (!targetId || app.state.currentStreamResponseId === targetId) {
+        app.state.currentStreamSessionId = '';
+        app.state.currentStreamResponseId = '';
+      }
+    },
+    setStreaming(next) {
+      app.state.streaming = Boolean(next);
+    },
+    resumeActiveResponse: async () => {},
+    renderSidebar() {},
+    renderMessages() {},
+    renderProviderOptions() {},
+    renderModelOptions() {},
+    normalizeSelectedProvider() {},
+    autoGrowPrompt() {},
+    updateVoiceUI() {},
+    toggleVoiceRecording() {},
+    fetchProviders: async () => [],
+    fetchModels: async () => [],
+    addErrorMessage() {},
+    sendMessage() {},
+    openSidebar() {},
+    closeSidebar() {},
+    closeSidebarIfMobile() {},
+    connectToken: async () => {},
+    submitAskUserModal: async () => {},
+    cancelActiveResponse: async () => {},
+    handleFiles() {},
+    openApprovalModal() {},
+    closeApprovalModal() {},
+    submitApprovalModal: async () => {},
+    registerServiceWorker: async () => null,
+    subscribeToPush() {},
+    refreshNotificationUI() {},
+    requestNotificationPermission: async () => 'default',
+    shouldAutoSubscribeToPush() { return false; },
+    detachResponseStream() {},
+    HEARTBEAT_STALE_THRESHOLD: 45000,
+    HEARTBEAT_ABORT_REASON: 'heartbeat stale',
+    applyDesktopSidebarState() {},
+    toggleSidebarCollapsed() {},
+    flushStreamPersistence() {},
+    requestHeaders() { return {}; },
+    normalizeError: async (resp) => ({ status: resp.status, message: `HTTP ${resp.status}` }),
+    renderAttachments() {},
+    updateSidebarStatus() {},
+    ...overrides,
+  };
+}
+
+async function createSessionsHarness(options = {}) {
+  const storage = new Map(Object.entries(options.initialStorage || {}));
 
   const document = {
     cookie: '',
@@ -91,7 +173,7 @@ async function testNumericDeepLinkResolvesRealSessionId() {
   const windowObj = {
     TERM_LLM_UI_PREFIX: '/ui',
     TERM_LLM_SIDEBAR_SESSIONS: 'all',
-    location: { pathname: '/ui/1291', search: '', origin: 'https://example.test' },
+    location: { pathname: options.pathname || '/ui/', search: '', origin: 'https://example.test' },
     history: { pushState(_state, _title, url) { windowObj.location.pathname = url; } },
     matchMedia() {
       return {
@@ -131,7 +213,37 @@ async function testNumericDeepLinkResolvesRealSessionId() {
     clearInterval() {},
     URL,
     URLSearchParams,
-    fetch: async (url) => {
+    fetch: options.fetchImpl || (async () => new Response(JSON.stringify({ sessions: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    })),
+    Response,
+    Headers,
+    AbortController,
+    Notification: undefined,
+    renderMathInElement() {},
+    crypto: webcrypto,
+  };
+  context.globalThis = context;
+
+  vm.createContext(context);
+  vm.runInContext(coreSource, context, { filename: 'app-core.js' });
+
+  const app = windowObj.TermLLMApp;
+  Object.assign(app, defaultAppStubs(app, options.appOverrides || {}));
+
+  vm.runInContext(sessionsSource, context, { filename: 'app-sessions.js' });
+  await windowObj.__termllmInitializePromise;
+
+  return { app, storage, windowObj };
+}
+
+async function testNumericDeepLinkResolvesRealSessionId() {
+  const name = 'numeric deep link resolves server session id';
+  const fetchCalls = [];
+  const { app } = await createSessionsHarness({
+    pathname: '/ui/1291',
+    fetchImpl: async (url) => {
       fetchCalls.push(url);
       if (url === '/ui/v1/sessions') {
         return new Response(JSON.stringify({
@@ -174,73 +286,8 @@ async function testNumericDeepLinkResolvesRealSessionId() {
         return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    },
-    Response,
-    Headers,
-    AbortController,
-    Notification: undefined,
-    renderMathInElement() {},
-    crypto: webcrypto,
-  };
-  context.globalThis = context;
-
-  vm.createContext(context);
-  vm.runInContext(coreSource, context, { filename: 'app-core.js' });
-
-  const app = windowObj.TermLLMApp;
-  Object.assign(app, {
-    persistAndRefreshShell() {},
-    refreshRelativeTimes() {},
-    openAuthModal() {},
-    closeAuthModal() {},
-    handleAuthFailure() {},
-    closeAskUserModal() {},
-    openAskUserModal() {},
-    setActiveResponseTracking() {},
-    clearActiveResponseTracking() {},
-    setStreaming() {},
-    resumeActiveResponse: async () => {},
-    renderSidebar() {},
-    renderMessages() {},
-    renderProviderOptions() {},
-    renderModelOptions() {},
-    normalizeSelectedProvider() {},
-    autoGrowPrompt() {},
-    updateVoiceUI() {},
-    toggleVoiceRecording() {},
-    fetchProviders: async () => [],
-    fetchModels: async () => [],
-    addErrorMessage() {},
-    sendMessage() {},
-    openSidebar() {},
-    closeSidebar() {},
-    closeSidebarIfMobile() {},
-    connectToken: async () => {},
-    submitAskUserModal: async () => {},
-    cancelActiveResponse: async () => {},
-    handleFiles() {},
-    openApprovalModal() {},
-    closeApprovalModal() {},
-    submitApprovalModal: async () => {},
-    registerServiceWorker: async () => null,
-    subscribeToPush() {},
-    refreshNotificationUI() {},
-    requestNotificationPermission: async () => 'default',
-    shouldAutoSubscribeToPush() { return false; },
-    detachResponseStream() {},
-    HEARTBEAT_STALE_THRESHOLD: 45000,
-    HEARTBEAT_ABORT_REASON: 'heartbeat stale',
-    applyDesktopSidebarState() {},
-    toggleSidebarCollapsed() {},
-    flushStreamPersistence() {},
-    requestHeaders() { return {}; },
-    normalizeError: async (resp) => ({ status: resp.status, message: `HTTP ${resp.status}` }),
-    renderAttachments() {},
-    updateSidebarStatus() {},
+    }
   });
-
-  vm.runInContext(sessionsSource, context, { filename: 'app-sessions.js' });
-  await windowObj.__termllmInitializePromise;
 
   if (app.state.activeSessionId !== 'sess_real') {
     fail(name, 'active session id should be reconciled to real server id', `got ${app.state.activeSessionId}`);
@@ -259,70 +306,9 @@ async function testNumericDeepLinkResolvesRealSessionId() {
 
 async function testDeveloperMessagesAreHidden() {
   const name = 'developer role messages are excluded from converted messages';
-  const storage = new Map();
-
-  const document = {
-    cookie: '',
-    visibilityState: 'visible',
-    body: { classList: makeClassList() },
-    documentElement: { style: { setProperty() {} } },
-    getElementById() { return makeNode(); },
-    createElement() { return makeNode(); },
-    querySelector() { return makeNode(); },
-    querySelectorAll() { return []; },
-    addEventListener() {},
-  };
-
-  const localStorage = {
-    getItem(key) { return storage.has(key) ? storage.get(key) : null; },
-    setItem(key, value) { storage.set(key, String(value)); },
-    removeItem(key) { storage.delete(key); },
-  };
-
-  const windowObj = {
-    TERM_LLM_UI_PREFIX: '/ui',
-    TERM_LLM_SIDEBAR_SESSIONS: 'all',
-    location: { pathname: '/ui/42', search: '', origin: 'https://example.test' },
-    history: { pushState(_state, _title, url) { windowObj.location.pathname = url; } },
-    matchMedia() {
-      return {
-        matches: false,
-        addEventListener() {},
-        addListener() {},
-        removeEventListener() {},
-        removeListener() {},
-      };
-    },
-    navigator: { standalone: false, mediaDevices: null, serviceWorker: null },
-    visualViewport: null,
-    addEventListener() {},
-    removeEventListener() {},
-    requestAnimationFrame(callback) { return setTimeout(callback, 0); },
-    cancelAnimationFrame(handle) { clearTimeout(handle); },
-    setTimeout,
-    clearTimeout,
-    setInterval() { return 0; },
-    clearInterval() {},
-    focus() {},
-  };
-  windowObj.document = document;
-  windowObj.localStorage = localStorage;
-
-  const context = {
-    window: windowObj,
-    document,
-    localStorage,
-    history: windowObj.history,
-    location: windowObj.location,
-    navigator: windowObj.navigator,
-    console,
-    setTimeout,
-    clearTimeout,
-    setInterval() { return 0; },
-    clearInterval() {},
-    URL,
-    URLSearchParams,
-    fetch: async (url) => {
+  const { app } = await createSessionsHarness({
+    pathname: '/ui/42',
+    fetchImpl: async (url) => {
       if (url === '/ui/v1/sessions') {
         return new Response(JSON.stringify({
           sessions: [{
@@ -364,73 +350,8 @@ async function testDeveloperMessagesAreHidden() {
         return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    },
-    Response,
-    Headers,
-    AbortController,
-    Notification: undefined,
-    renderMathInElement() {},
-    crypto: webcrypto,
-  };
-  context.globalThis = context;
-
-  vm.createContext(context);
-  vm.runInContext(coreSource, context, { filename: 'app-core.js' });
-
-  const app = windowObj.TermLLMApp;
-  Object.assign(app, {
-    persistAndRefreshShell() {},
-    refreshRelativeTimes() {},
-    openAuthModal() {},
-    closeAuthModal() {},
-    handleAuthFailure() {},
-    closeAskUserModal() {},
-    openAskUserModal() {},
-    setActiveResponseTracking() {},
-    clearActiveResponseTracking() {},
-    setStreaming() {},
-    resumeActiveResponse: async () => {},
-    renderSidebar() {},
-    renderMessages() {},
-    renderProviderOptions() {},
-    renderModelOptions() {},
-    normalizeSelectedProvider() {},
-    autoGrowPrompt() {},
-    updateVoiceUI() {},
-    toggleVoiceRecording() {},
-    fetchProviders: async () => [],
-    fetchModels: async () => [],
-    addErrorMessage() {},
-    sendMessage() {},
-    openSidebar() {},
-    closeSidebar() {},
-    closeSidebarIfMobile() {},
-    connectToken: async () => {},
-    submitAskUserModal: async () => {},
-    cancelActiveResponse: async () => {},
-    handleFiles() {},
-    openApprovalModal() {},
-    closeApprovalModal() {},
-    submitApprovalModal: async () => {},
-    registerServiceWorker: async () => null,
-    subscribeToPush() {},
-    refreshNotificationUI() {},
-    requestNotificationPermission: async () => 'default',
-    shouldAutoSubscribeToPush() { return false; },
-    detachResponseStream() {},
-    HEARTBEAT_STALE_THRESHOLD: 45000,
-    HEARTBEAT_ABORT_REASON: 'heartbeat stale',
-    applyDesktopSidebarState() {},
-    toggleSidebarCollapsed() {},
-    flushStreamPersistence() {},
-    requestHeaders() { return {}; },
-    normalizeError: async (resp) => ({ status: resp.status, message: `HTTP ${resp.status}` }),
-    renderAttachments() {},
-    updateSidebarStatus() {},
+    }
   });
-
-  vm.runInContext(sessionsSource, context, { filename: 'app-sessions.js' });
-  await windowObj.__termllmInitializePromise;
 
   const session = app.state.sessions.find(s => s.id === 'sess_dev');
   if (!session) {
@@ -458,9 +379,236 @@ async function testDeveloperMessagesAreHidden() {
   pass(name);
 }
 
+async function testSwitchToSessionSyncsWithoutTokenAndResumes() {
+  const name = 'sidebar session switch syncs with server and resumes without token';
+  const fetchCalls = [];
+  const resumeCalls = [];
+  const initialSessions = [
+    {
+      id: 'sess_other',
+      title: 'Other session',
+      origin: 'web',
+      created: 1710000000000,
+      messages: [],
+    },
+    {
+      id: 'sess_resume',
+      title: 'Resume me',
+      origin: 'tui',
+      created: 1710000001000,
+      messages: [],
+      activeResponseId: null,
+      lastSequenceNumber: 0,
+    },
+  ];
+
+  const { app } = await createSessionsHarness({
+    initialStorage: {
+      term_llm_sessions: JSON.stringify(initialSessions),
+      term_llm_active_session: 'sess_other',
+    },
+    fetchImpl: async (url) => {
+      fetchCalls.push(url);
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({
+          sessions: [
+            {
+              id: 'sess_other',
+              short_title: 'Other session',
+              long_title: 'Other session',
+              mode: 'chat',
+              origin: 'web',
+              archived: false,
+              pinned: false,
+              created_at: 1710000000000,
+              message_count: 0,
+            },
+            {
+              id: 'sess_resume',
+              short_title: 'Resume me',
+              long_title: 'Resume me',
+              mode: 'chat',
+              origin: 'tui',
+              archived: false,
+              pinned: false,
+              created_at: 1710000001000,
+              message_count: 0,
+            },
+          ]
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/sess_other/state') {
+        return new Response(JSON.stringify({ active_run: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/sess_other/messages') {
+        return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/sess_resume/state') {
+        return new Response(JSON.stringify({
+          active_run: true,
+          active_response_id: 'resp_resume_123',
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/status') {
+        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+    appOverrides: {
+      async resumeActiveResponse(session, options = {}) {
+        resumeCalls.push({
+          sessionId: session.id,
+          responseId: options.responseId || '',
+        });
+        return true;
+      },
+    }
+  });
+
+  await app.switchToSession('sess_resume');
+
+  if (!fetchCalls.includes('/ui/v1/sessions/sess_resume/state')) {
+    fail(name, 'expected session switch to fetch runtime state without a token', JSON.stringify(fetchCalls));
+    return;
+  }
+
+  if (resumeCalls.length !== 1 || resumeCalls[0].responseId !== 'resp_resume_123') {
+    fail(name, 'expected session switch to resume the active response', JSON.stringify(resumeCalls));
+    return;
+  }
+
+  const session = app.state.sessions.find((item) => item.id === 'sess_resume');
+  if (!session || session.activeResponseId !== 'resp_resume_123') {
+    fail(name, 'expected server active response id to replace local idle state', session ? `got ${session.activeResponseId}` : 'session missing');
+    return;
+  }
+
+  pass(name);
+}
+
+async function testSwitchToSessionClearsStaleActiveResponseWithoutToken() {
+  const name = 'sidebar session switch clears stale active response without token';
+  const fetchCalls = [];
+  const initialSessions = [
+    {
+      id: 'sess_other',
+      title: 'Other session',
+      origin: 'web',
+      created: 1710000000000,
+      messages: [],
+    },
+    {
+      id: 'sess_stale',
+      title: 'Stale session',
+      origin: 'tui',
+      created: 1710000001000,
+      messages: [],
+      activeResponseId: 'resp_stale_123',
+      lastSequenceNumber: 17,
+    },
+  ];
+
+  const { app } = await createSessionsHarness({
+    initialStorage: {
+      term_llm_sessions: JSON.stringify(initialSessions),
+      term_llm_active_session: 'sess_other',
+    },
+    fetchImpl: async (url) => {
+      fetchCalls.push(url);
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({
+          sessions: [
+            {
+              id: 'sess_other',
+              short_title: 'Other session',
+              long_title: 'Other session',
+              mode: 'chat',
+              origin: 'web',
+              archived: false,
+              pinned: false,
+              created_at: 1710000000000,
+              message_count: 0,
+            },
+            {
+              id: 'sess_stale',
+              short_title: 'Stale session',
+              long_title: 'Stale session',
+              mode: 'chat',
+              origin: 'tui',
+              archived: false,
+              pinned: false,
+              created_at: 1710000001000,
+              message_count: 2,
+            },
+          ]
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/sess_other/state') {
+        return new Response(JSON.stringify({ active_run: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/sess_other/messages') {
+        return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/sess_stale/state') {
+        return new Response(JSON.stringify({ active_run: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/sess_stale/messages') {
+        return new Response(JSON.stringify({
+          messages: [
+            {
+              role: 'user',
+              created_at: 1710000002000,
+              parts: [{ type: 'text', text: 'hello from another tab' }],
+            },
+            {
+              role: 'assistant',
+              created_at: 1710000003000,
+              parts: [{ type: 'text', text: 'synced reply' }],
+            },
+          ]
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/status') {
+        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+
+  await app.switchToSession('sess_stale');
+
+  if (!fetchCalls.includes('/ui/v1/sessions/sess_stale/state')) {
+    fail(name, 'expected session switch to fetch runtime state without a token', JSON.stringify(fetchCalls));
+    return;
+  }
+
+  if (!fetchCalls.includes('/ui/v1/sessions/sess_stale/messages')) {
+    fail(name, 'expected completed session sync to reload messages from server', JSON.stringify(fetchCalls));
+    return;
+  }
+
+  const session = app.state.sessions.find((item) => item.id === 'sess_stale');
+  if (!session) {
+    fail(name, 'session missing after switch');
+    return;
+  }
+  if (session.activeResponseId !== null || session.lastSequenceNumber !== 0) {
+    fail(name, 'expected stale local active response tracking to be cleared', `activeResponseId=${session.activeResponseId}, lastSequenceNumber=${session.lastSequenceNumber}`);
+    return;
+  }
+  if (session.messages.length !== 2 || session.messages[1].content !== 'synced reply') {
+    fail(name, 'expected local messages to refresh from server after stale run cleared', JSON.stringify(session.messages));
+    return;
+  }
+
+  pass(name);
+}
+
 (async () => {
   await testNumericDeepLinkResolvesRealSessionId();
   await testDeveloperMessagesAreHidden();
+  await testSwitchToSessionSyncsWithoutTokenAndResumes();
+  await testSwitchToSessionClearsStaleActiveResponseWithoutToken();
   if (failures > 0) process.exit(1);
   process.exit(0);
 })();

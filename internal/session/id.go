@@ -16,7 +16,7 @@ import (
 //   - Has enough randomness to prevent collisions
 func NewID() string {
 	now := time.Now()
-	random := make([]byte, 3) // 6 hex chars
+	random := make([]byte, 8) // 16 hex chars
 	rand.Read(random)
 	return fmt.Sprintf("%s-%s",
 		now.Format("20060102-150405"),

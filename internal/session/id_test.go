@@ -9,9 +9,9 @@ import (
 func TestNewID(t *testing.T) {
 	id := NewID()
 
-	// Should be in format YYYYMMDD-HHMMSS-RANDOM
-	if len(id) != 22 {
-		t.Errorf("NewID() = %q, expected length 22", id)
+	// Should be in format YYYYMMDD-HHMMSS-RANDOM (15 + 1 + 16 = 32)
+	if len(id) != 32 {
+		t.Errorf("NewID() = %q, expected length 32", id)
 	}
 
 	// Should start with current year (20XX)

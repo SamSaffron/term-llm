@@ -298,18 +298,22 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 	if err != nil {
 		// Update session status on error
 		if persistChildSession {
-			if statusErr := r.store.UpdateStatus(ctx, childSessionID, session.StatusError); statusErr != nil {
+			dbCtx, dbCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			if statusErr := r.store.UpdateStatus(dbCtx, childSessionID, session.StatusError); statusErr != nil {
 				r.warn("session UpdateStatus failed: %v", statusErr)
 			}
+			dbCancel()
 		}
 		return tools.SpawnAgentRunResult{Output: output, SessionID: childSessionID}, err
 	}
 
 	// Update session status on completion
 	if persistChildSession {
-		if statusErr := r.store.UpdateStatus(ctx, childSessionID, session.StatusComplete); statusErr != nil {
+		dbCtx, dbCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		if statusErr := r.store.UpdateStatus(dbCtx, childSessionID, session.StatusComplete); statusErr != nil {
 			r.warn("session UpdateStatus failed: %v", statusErr)
 		}
+		dbCancel()
 	}
 
 	return tools.SpawnAgentRunResult{Output: output, SessionID: childSessionID}, nil

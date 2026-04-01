@@ -57,6 +57,7 @@ const state = {
   notificationsEnabled: localStorage.getItem(STORAGE_KEYS.notificationsEnabled) === '1',
   lastNotifiedResponseId: localStorage.getItem(STORAGE_KEYS.lastNotifiedResponseId) || '',
   streaming: false,
+  streamGeneration: 0,
   currentStreamResponseId: '',
   currentStreamSessionId: '',
   renameSessionId: '',

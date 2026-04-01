@@ -1737,6 +1737,53 @@ func TestHandleResponses_GeneratesSessionIDHeaderWhenMissing(t *testing.T) {
 	}
 }
 
+func TestStreamUIResponses_SetsSessionNumberHeader(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	manager := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
+		provider := llm.NewMockProvider("mock").AddTextResponse("hi")
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			engine:       engine,
+			store:        store,
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		return rt, nil
+	})
+	defer manager.Close()
+
+	srv := &serveServer{
+		sessionMgr:   manager,
+		store:        store,
+		responseRuns: newServeResponseRunManager(),
+	}
+
+	body := `{"stream":true,"input":[{"type":"message","role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Term-LLM-UI", "1")
+	req.Header.Set("session_id", "sess_test_number")
+	rr := httptest.NewRecorder()
+
+	srv.handleResponses(rr, req)
+
+	numStr := strings.TrimSpace(rr.Header().Get("x-session-number"))
+	if numStr == "" {
+		t.Fatalf("x-session-number header missing from streaming UI response")
+	}
+	num, parseErr := strconv.ParseInt(numStr, 10, 64)
+	if parseErr != nil || num <= 0 {
+		t.Fatalf("x-session-number = %q, want positive integer", numStr)
+	}
+}
+
 func TestResolveServeAuthMode(t *testing.T) {
 	mode, err := resolveServeAuthMode(false, "bearer", false, false)
 	if err != nil {
@@ -4017,7 +4064,7 @@ func TestResponsesCompletedRunExpiresAfterRetention(t *testing.T) {
 	}
 }
 
-func TestHandleResponseByID_CancelOnlySucceedsOnce(t *testing.T) {
+func TestHandleResponseByID_CancelIsIdempotentWhileRunInProgress(t *testing.T) {
 	_, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -4041,8 +4088,187 @@ func TestHandleResponseByID_CancelOnlySucceedsOnce(t *testing.T) {
 	secondReq := httptest.NewRequest(http.MethodPost, "/v1/responses/resp_cancel_once/cancel", nil)
 	secondRR := httptest.NewRecorder()
 	srv.handleResponseByID(secondRR, secondReq)
-	if secondRR.Code != http.StatusConflict {
-		t.Fatalf("second cancel status = %d, want 409", secondRR.Code)
+	if secondRR.Code != http.StatusOK {
+		t.Fatalf("second cancel status = %d, want 200", secondRR.Code)
+	}
+}
+
+func TestHandleResponseByID_CancelStopsActiveToolRun(t *testing.T) {
+	provider := llm.NewMockProvider("mock")
+	provider.AddToolCall("call_1", "slow_tool", map[string]any{})
+	provider.AddTextResponse("done")
+
+	registry := llm.NewToolRegistry()
+	registry.Register(&testServeDelayTool{delay: 5 * time.Second})
+
+	engine := llm.NewEngine(provider, registry)
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  "mock",
+		engine:       engine,
+		defaultModel: "mock-model",
+	}
+	rt.Touch()
+
+	srv := &serveServer{
+		responseRuns: newServeResponseRunManager(),
+	}
+
+	run, err := srv.startResponseRun(rt, true, false, []llm.Message{
+		llm.UserText("sleep for a while"),
+	}, llm.Request{
+		SessionID:  "sess_cancel_tool",
+		MaxTurns:   5,
+		Tools:      []llm.ToolSpec{(&testServeDelayTool{}).Spec()},
+		ToolChoice: llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+	}, "sess_cancel_tool", startResponseRunOptions{})
+	if err != nil {
+		t.Fatalf("startResponseRun failed: %v", err)
+	}
+
+	waitForServeCondition(t, time.Second, func() bool {
+		snapshot := run.snapshot()
+		recovery, ok := snapshot["recovery"].(map[string]any)
+		if !ok {
+			return false
+		}
+		messages, ok := recovery["messages"].([]map[string]any)
+		if !ok {
+			return false
+		}
+		for _, message := range messages {
+			if message["role"] != "tool-group" || message["status"] != "running" {
+				continue
+			}
+			toolsPayload, ok := message["tools"].([]map[string]any)
+			if !ok {
+				continue
+			}
+			for _, tool := range toolsPayload {
+				if tool["name"] == "slow_tool" && tool["status"] == "running" {
+					return true
+				}
+			}
+		}
+		return false
+	}, "slow tool running in response recovery state")
+
+	firstReq := httptest.NewRequest(http.MethodPost, "/v1/responses/"+run.id+"/cancel", nil)
+	firstRR := httptest.NewRecorder()
+	srv.handleResponseByID(firstRR, firstReq)
+	if firstRR.Code != http.StatusOK {
+		t.Fatalf("first cancel status = %d, want 200 body=%s", firstRR.Code, firstRR.Body.String())
+	}
+
+	waitForServeCondition(t, time.Second, func() bool {
+		if rt.hasActiveRun() {
+			return false
+		}
+		snapshot := run.snapshot()
+		status, _ := snapshot["status"].(string)
+		return status != "in_progress"
+	}, "tool-backed response run to stop after cancel")
+
+	if got := provider.CurrentTurn(); got != 1 {
+		t.Fatalf("provider turn index = %d, want 1 (tool run should stop before follow-up turn)", got)
+	}
+
+	snapshot := run.snapshot()
+	if status, _ := snapshot["status"].(string); status == "in_progress" {
+		t.Fatalf("run status remained in_progress after cancel: %#v", snapshot)
+	}
+}
+
+func TestHandleResponseByID_CancelStopsShellToolRun(t *testing.T) {
+	provider := llm.NewMockProvider("mock")
+	provider.AddToolCall("call_1", tools.ShellToolName, map[string]any{
+		"command": "sleep 10",
+	})
+	provider.AddTextResponse("done")
+
+	shellTool := tools.NewShellTool(nil, nil, tools.DefaultOutputLimits())
+	registry := llm.NewToolRegistry()
+	registry.Register(shellTool)
+
+	engine := llm.NewEngine(provider, registry)
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  "mock",
+		engine:       engine,
+		defaultModel: "mock-model",
+	}
+	rt.Touch()
+
+	srv := &serveServer{
+		responseRuns: newServeResponseRunManager(),
+	}
+
+	run, err := srv.startResponseRun(rt, true, false, []llm.Message{
+		llm.UserText("sleep for a while"),
+	}, llm.Request{
+		SessionID:  "sess_cancel_shell_tool",
+		MaxTurns:   5,
+		Tools:      []llm.ToolSpec{shellTool.Spec()},
+		ToolChoice: llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+	}, "sess_cancel_shell_tool", startResponseRunOptions{})
+	if err != nil {
+		t.Fatalf("startResponseRun failed: %v", err)
+	}
+
+	waitForServeCondition(t, time.Second, func() bool {
+		snapshot := run.snapshot()
+		recovery, ok := snapshot["recovery"].(map[string]any)
+		if !ok {
+			return false
+		}
+		messages, ok := recovery["messages"].([]map[string]any)
+		if !ok {
+			return false
+		}
+		for _, message := range messages {
+			if message["role"] != "tool-group" || message["status"] != "running" {
+				continue
+			}
+			toolsPayload, ok := message["tools"].([]map[string]any)
+			if !ok {
+				continue
+			}
+			for _, tool := range toolsPayload {
+				if tool["name"] == tools.ShellToolName && tool["status"] == "running" {
+					return true
+				}
+			}
+		}
+		return false
+	}, "shell tool running in response recovery state")
+
+	start := time.Now()
+	cancelReq := httptest.NewRequest(http.MethodPost, "/v1/responses/"+run.id+"/cancel", nil)
+	cancelRR := httptest.NewRecorder()
+	srv.handleResponseByID(cancelRR, cancelReq)
+	if cancelRR.Code != http.StatusOK {
+		t.Fatalf("cancel status = %d, want 200 body=%s", cancelRR.Code, cancelRR.Body.String())
+	}
+
+	waitForServeCondition(t, 2*time.Second, func() bool {
+		if rt.hasActiveRun() {
+			return false
+		}
+		snapshot := run.snapshot()
+		status, _ := snapshot["status"].(string)
+		return status != "in_progress"
+	}, "shell-backed response run to stop after cancel")
+
+	if elapsed := time.Since(start); elapsed >= 5*time.Second {
+		t.Fatalf("shell tool cancel took too long: %s", elapsed)
+	}
+	if got := provider.CurrentTurn(); got != 1 {
+		t.Fatalf("provider turn index = %d, want 1 (shell tool run should stop before follow-up turn)", got)
+	}
+
+	snapshot := run.snapshot()
+	if status, _ := snapshot["status"].(string); status == "in_progress" {
+		t.Fatalf("run status remained in_progress after shell-tool cancel: %#v", snapshot)
 	}
 }
 

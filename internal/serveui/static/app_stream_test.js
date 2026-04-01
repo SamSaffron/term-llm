@@ -70,9 +70,11 @@ function createHarness(options = {}) {
   let postStreamController = null;
   let postStreamCanceled = false;
   let getEventsStarted = false;
+  let eventsStreamController = null;
   const fetchCalls = [];
   const responseId = options.responseId || 'resp_test';
   const postBody = String(options.postBody || '');
+  const eventsKeepOpen = Boolean(options.eventsKeepOpen);
   const eventsBody = String(options.eventsBody || [
     'id: 1\n',
     'event: response.created\n',
@@ -133,6 +135,7 @@ function createHarness(options = {}) {
     token: '',
     connected: true,
     streaming: false,
+    streamGeneration: 0,
     attachments: [],
     sessions: [],
     activeSessionId: '',
@@ -271,10 +274,21 @@ function createHarness(options = {}) {
     }
     if (url.startsWith(`/ui/v1/responses/${responseId}/events?after=`)) {
       getEventsStarted = true;
+      const signal = options.signal || null;
       return new Response(new ReadableStream({
         start(controller) {
-          controller.enqueue(encoder.encode(eventsBody));
-          controller.close();
+          eventsStreamController = controller;
+          if (eventsBody) {
+            controller.enqueue(encoder.encode(eventsBody));
+          }
+          if (!eventsKeepOpen) {
+            controller.close();
+          } else if (signal) {
+            // Wire abort signal to stream so pending reads reject with AbortError
+            signal.addEventListener('abort', () => {
+              try { controller.error(new DOMException('The operation was aborted.', 'AbortError')); } catch (_e) { /* ignore */ }
+            });
+          }
         },
       }), {
         status: 200,
@@ -294,10 +308,22 @@ function createHarness(options = {}) {
     fetchCalls,
     getEventsStarted: () => getEventsStarted,
     postStreamCanceled: () => postStreamCanceled,
+    closeEventsStream: () => {
+      if (eventsStreamController) {
+        try { eventsStreamController.close(); } catch (_err) { /* ignore */ }
+      }
+    },
     cleanup: async () => {
       if (postStreamController) {
         try {
           postStreamController.close();
+        } catch (_err) {
+          // ignore cleanup errors
+        }
+      }
+      if (eventsStreamController) {
+        try {
+          eventsStreamController.close();
         } catch (_err) {
           // ignore cleanup errors
         }
@@ -401,9 +427,100 @@ async function testSendMessageIgnoresPostBodyAfterHandoff() {
   pass(name);
 }
 
+async function testNewChatDuringStreamingClearsStreamingState() {
+  const name = 'New Chat during streaming clears streaming state and allows new session';
+
+  const responseId = 'resp_long';
+  const h = createHarness({
+    responseId,
+    eventsKeepOpen: true,
+    eventsBody: [
+      'id: 1\n',
+      'event: response.created\n',
+      `data: {"response":{"id":"${responseId}","model":"test-model","status":"in_progress"},"sequence_number":1}\n\n`,
+      'id: 2\n',
+      'event: response.output_text.delta\n',
+      `data: {"delta":"working","sequence_number":2}\n\n`,
+    ].join(''),
+  });
+
+  h.elements.promptInput.value = 'sleep for 30 secs';
+
+  let sendErr = null;
+  const sendPromise = h.app.sendMessage().catch((err) => {
+    sendErr = err;
+  });
+
+  // Wait for the events stream to start (stream stays open, reader is blocked)
+  const started = await waitFor(() => h.getEventsStarted(), 75);
+  if (!started) {
+    fail(name, 'events stream never started');
+    await h.cleanup();
+    await sendPromise;
+    return;
+  }
+
+  const session = h.state.sessions[0];
+  if (!session) {
+    fail(name, 'no session created');
+    await h.cleanup();
+    await sendPromise;
+    return;
+  }
+
+  // Simulate "New Chat" — detach stream and switch to draft mode
+  h.app.detachResponseStream();
+  h.state.activeSessionId = '';
+  h.state.draftSessionActive = true;
+
+  // Wait for sendMessage to settle
+  await sendPromise;
+
+  if (h.state.streaming) {
+    fail(name, 'state.streaming should be false after New Chat, but it is true');
+    await h.cleanup();
+    return;
+  }
+
+  // Verify sending again creates a fresh session (not an interrupt on the old one).
+  // Session creation is synchronous inside sendMessage (before the first await),
+  // so we can check it immediately after starting the promise.
+  h.elements.promptInput.value = 'new message';
+  h.closeEventsStream();
+
+  const send2Promise = h.app.sendMessage().catch(() => {});
+  // Yield once so the synchronous session-creation part of sendMessage runs.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  if (h.state.sessions.length < 2) {
+    fail(name, `expected at least 2 sessions after New Chat + send, got ${h.state.sessions.length}`);
+    // Detach to let the send settle, then cleanup.
+    h.app.detachResponseStream();
+    await send2Promise;
+    await h.cleanup();
+    return;
+  }
+
+  const newSession = h.state.sessions[0];
+  if (newSession.id === session.id) {
+    fail(name, 'second send reused old session instead of creating a new one');
+    h.app.detachResponseStream();
+    await send2Promise;
+    await h.cleanup();
+    return;
+  }
+
+  // Clean up: detach the second stream so sendMessage settles.
+  h.app.detachResponseStream();
+  await send2Promise;
+  await h.cleanup();
+  pass(name);
+}
+
 (async () => {
   await testSendMessageHandsOffToEventsStream();
   await testSendMessageIgnoresPostBodyAfterHandoff();
+  await testNewChatDuringStreamingClearsStreamingState();
 
   if (failures > 0) {
     console.error(`\n${failures} test(s) failed`);

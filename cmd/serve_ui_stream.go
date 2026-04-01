@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -14,6 +15,13 @@ func isServeUIRequest(r *http.Request) bool {
 }
 
 func (s *serveServer) streamUIResponses(w http.ResponseWriter, r *http.Request, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string) {
+	// Persist session in the store so the client gets the session number in
+	// headers before the streaming body begins. This is a store-only operation
+	// that does NOT mutate runtime state (safe without rt.mu).
+	if num := runtime.ensureSessionInStore(r.Context(), sessionID, inputMessages); num > 0 {
+		w.Header().Set("x-session-number", strconv.FormatInt(num, 10))
+	}
+
 	s.streamResponseRun(r.Context(), w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, startResponseRunOptions{
 		previousResponseID: previousResponseID,
 		uiSession:          true,
