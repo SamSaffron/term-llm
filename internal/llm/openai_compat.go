@@ -323,6 +323,17 @@ func (p *OpenAICompatProvider) ListModels(ctx context.Context) ([]ModelInfo, err
 	return models, nil
 }
 
+func readSSELine(reader *bufio.Reader) (line string, eof bool, err error) {
+	line, err = reader.ReadString('\n')
+	if err != nil {
+		if err == io.EOF {
+			return strings.TrimRight(line, "\r\n"), true, nil
+		}
+		return "", false, err
+	}
+	return strings.TrimRight(line, "\r\n"), false, nil
+}
+
 func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	req.MaxOutputTokens = ClampOutputTokens(req.MaxOutputTokens, chooseModel(req.Model, p.model))
 	// Build messages and tools synchronously
@@ -391,22 +402,33 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
 		defer resp.Body.Close()
 
-		scanner := bufio.NewScanner(resp.Body)
-		buf := make([]byte, 0, 64*1024)
-		scanner.Buffer(buf, 1024*1024)
+		reader := bufio.NewReader(resp.Body)
 
 		toolState := newCompatToolState()
 		var lastUsage *Usage
 		var lastEventType string
 		var reasoningBuilder strings.Builder
 
-		for scanner.Scan() {
-			line := scanner.Text()
+		for {
+			line, eof, err := readSSELine(reader)
+			if err != nil {
+				return fmt.Errorf("%s streaming error: %w", p.name, err)
+			}
+			if eof && line == "" {
+				break
+			}
+
 			if strings.HasPrefix(line, "event: ") {
 				lastEventType = strings.TrimPrefix(line, "event: ")
+				if eof {
+					break
+				}
 				continue
 			}
 			if !strings.HasPrefix(line, "data: ") {
+				if eof {
+					break
+				}
 				continue
 			}
 			data := strings.TrimPrefix(line, "data: ")
@@ -416,6 +438,9 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 
 			var chatResp oaiChatResponse
 			if err := json.Unmarshal([]byte(data), &chatResp); err != nil {
+				if eof {
+					break
+				}
 				continue
 			}
 
@@ -455,10 +480,9 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 			}
 
 			lastEventType = ""
-		}
-
-		if err := scanner.Err(); err != nil {
-			return fmt.Errorf("%s streaming error: %w", p.name, err)
+			if eof {
+				break
+			}
 		}
 
 		for _, call := range toolState.Calls() {

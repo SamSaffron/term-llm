@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +13,72 @@ import (
 func TestDefaultHTTPClient_HasNoOverallTimeout(t *testing.T) {
 	if defaultHTTPClient.Timeout != 0 {
 		t.Fatalf("expected shared HTTP client timeout to be disabled for streaming requests, got %v", defaultHTTPClient.Timeout)
+	}
+}
+
+func TestOpenAICompatStream_AllowsLargeSSEDataLines(t *testing.T) {
+	largeText := strings.Repeat("a", 1024*1024+1024)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		chunk, err := json.Marshal(oaiChatResponse{
+			Choices: []oaiChoice{{
+				Delta: &oaiMessage{Content: largeText},
+			}},
+		})
+		if err != nil {
+			t.Fatalf("marshal chunk: %v", err)
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		if _, err := w.Write([]byte("data: ")); err != nil {
+			t.Fatalf("write prefix: %v", err)
+		}
+		if _, err := w.Write(chunk); err != nil {
+			t.Fatalf("write chunk: %v", err)
+		}
+		if _, err := w.Write([]byte("\n\ndata: [DONE]\n\n")); err != nil {
+			t.Fatalf("write done: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatProvider(server.URL, "", "test-model", "Test")
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{{
+			Role:  RoleUser,
+			Parts: []Part{{Type: PartText, Text: "hello"}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	var got strings.Builder
+	var sawDone bool
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv: %v", err)
+		}
+		switch event.Type {
+		case EventTextDelta:
+			got.WriteString(event.Text)
+		case EventDone:
+			sawDone = true
+		case EventError:
+			t.Fatalf("unexpected stream error: %v", event.Err)
+		}
+	}
+
+	if got.String() != largeText {
+		t.Fatalf("expected %d bytes of streamed text, got %d", len(largeText), got.Len())
+	}
+	if !sawDone {
+		t.Fatal("expected EventDone")
 	}
 }
 
