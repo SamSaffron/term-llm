@@ -349,10 +349,6 @@ func (p *TelegramPlatform) Run(ctx context.Context, cfg *config.Config, settings
 	if p.cfg.InterruptTimeout > 0 {
 		interruptTimeout = time.Duration(p.cfg.InterruptTimeout) * time.Second
 	}
-	fastProvider, fastErr := llm.NewFastProvider(cfg, cfg.DefaultProvider)
-	if fastErr != nil {
-		log.Printf("[telegram] fast provider unavailable: %v", fastErr)
-	}
 
 	mgr := &telegramSessionMgr{
 		sessions:         make(map[int64]*telegramSession),
@@ -361,7 +357,6 @@ func (p *TelegramPlatform) Run(ctx context.Context, cfg *config.Config, settings
 		store:            settings.Store,
 		idleTimeout:      idleTimeout,
 		interruptTimeout: interruptTimeout,
-		fastProvider:     fastProvider,
 		allowedUserIDs:   buildAllowedSet(p.cfg.AllowedUserIDs),
 		allowedUsernames: buildAllowedUsernameSet(p.cfg.AllowedUsernames),
 		messageSlots:     make(chan struct{}, telegramMaxConcurrentHandlers),
@@ -462,11 +457,22 @@ type telegramSessionMgr struct {
 	store            session.Store
 	idleTimeout      time.Duration
 	interruptTimeout time.Duration
-	fastProvider     llm.Provider
 	allowedUserIDs   map[int64]struct{}
 	allowedUsernames map[string]struct{}
 	messageSlots     chan struct{}
 	tickerInterval   time.Duration // 0 means use default (500ms); overridden in tests
+}
+
+func (m *telegramSessionMgr) newFastProvider() llm.Provider {
+	if m == nil || m.cfg == nil {
+		return nil
+	}
+	fastProvider, err := llm.NewFastProvider(m.cfg, m.cfg.DefaultProvider)
+	if err != nil {
+		log.Printf("[telegram] fast provider unavailable: %v", err)
+		return nil
+	}
+	return fastProvider
 }
 
 func (m *telegramSessionMgr) isAllowed(userID int64, username string) bool {
@@ -873,7 +879,8 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 			}
 			sess.cancelMu.Unlock()
 
-			action := llm.ClassifyInterrupt(ctx, m.fastProvider, newMsgText, activity)
+			fastProvider := m.newFastProvider()
+			action := llm.ClassifyInterrupt(ctx, fastProvider, newMsgText, activity)
 			switch action {
 			case llm.InterruptCancel:
 				_, _ = bot.Send(tgbotapi.NewMessage(chatID, "↩️ Stopping current work and switching to your new request."))

@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/testutil"
@@ -85,6 +86,35 @@ func newTestMgrAndSession(h *testutil.EngineHarness) (*telegramSessionMgr, *tele
 		},
 	}
 	return mgr, sess
+}
+
+func TestTelegramSessionMgrNewFastProvider_ReturnsFreshProviderEachTime(t *testing.T) {
+	mgr := &telegramSessionMgr{
+		cfg: &config.Config{
+			DefaultProvider: "my-openai",
+			Providers: map[string]config.ProviderConfig{
+				"my-openai": {
+					Type:         config.ProviderTypeOpenAI,
+					APIKey:       "sk-test",
+					Model:        "gpt-5.2",
+					FastProvider: "debug",
+					FastModel:    "random",
+				},
+			},
+		},
+	}
+
+	first := mgr.newFastProvider()
+	if first == nil {
+		t.Fatal("expected first fast provider to be non-nil")
+	}
+	second := mgr.newFastProvider()
+	if second == nil {
+		t.Fatal("expected second fast provider to be non-nil")
+	}
+	if first == second {
+		t.Fatal("expected a fresh fast provider per interrupt classification")
+	}
 }
 
 func TestHandleMessage_IgnoresMessagesWithNilFrom(t *testing.T) {
