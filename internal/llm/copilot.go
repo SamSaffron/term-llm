@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -29,9 +30,6 @@ const copilotUsageURL = "https://api.github.com/copilot_internal/user"
 // copilotTokenURL is the endpoint to exchange GitHub OAuth token for Copilot session token
 const copilotTokenURL = "https://api.github.com/copilot_internal/v2/token"
 
-// copilotHTTPTimeout is the timeout for Copilot HTTP requests
-const copilotHTTPTimeout = 10 * time.Minute
-
 // Copilot API header constants.
 // These values are required to access GitHub's internal Copilot APIs, which check
 // for specific client identifiers. We use the VS Code Copilot extension's identifiers
@@ -46,9 +44,20 @@ const (
 	copilotSessionRefreshIn = 20 * time.Minute // Refresh session token before expiry (tokens last ~25min)
 )
 
-// copilotHTTPClient is a shared HTTP client with reasonable timeouts
+// copilotHTTPClient is a shared HTTP client with transport-level timeouts.
+//
+// http.Client.Timeout is intentionally NOT set: it applies to the entire
+// request lifetime including reading the streaming response body, and would
+// abort legitimate long-running Copilot streams.
 var copilotHTTPClient = &http.Client{
-	Timeout: copilotHTTPTimeout,
+	Transport: &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ResponseHeaderTimeout: 2 * time.Minute,
+		IdleConnTimeout:       90 * time.Second,
+	},
 }
 
 // CopilotProvider implements Provider using GitHub Copilot's OpenAI-compatible API.
