@@ -1387,6 +1387,30 @@ func TestDownloadTelegramPhoto_TooLarge(t *testing.T) {
 	}
 }
 
+func TestDownloadTelegramPhoto_Timeout(t *testing.T) {
+	oldClient := telegramDownloadHTTPClient
+	telegramDownloadHTTPClient = &http.Client{Timeout: 50 * time.Millisecond}
+	t.Cleanup(func() {
+		telegramDownloadHTTPClient = oldClient
+	})
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer ts.Close()
+
+	fg := &fakeFileGetter{fileURL: ts.URL}
+	photos := []tgbotapi.PhotoSize{{FileID: "photo-1"}}
+
+	_, _, _, err := downloadTelegramPhoto(fg, photos)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !strings.Contains(err.Error(), "Client.Timeout") {
+		t.Fatalf("expected timeout error, got %v", err)
+	}
+}
+
 func TestDownloadTelegramVoice(t *testing.T) {
 	ts := newTestAudioServer(t, []byte("fake-ogg-data"))
 	defer ts.Close()
@@ -1467,6 +1491,30 @@ func TestDownloadTelegramVoice_TooLarge(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "voice file too large") {
 		t.Fatalf("expected too large error, got %v", err)
+	}
+}
+
+func TestDownloadTelegramVoice_Timeout(t *testing.T) {
+	oldClient := telegramDownloadHTTPClient
+	telegramDownloadHTTPClient = &http.Client{Timeout: 50 * time.Millisecond}
+	t.Cleanup(func() {
+		telegramDownloadHTTPClient = oldClient
+	})
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer ts.Close()
+
+	fg := &fakeFileGetter{fileURL: ts.URL}
+	voice := &tgbotapi.Voice{FileID: "voice-1"}
+
+	_, err := downloadTelegramVoice(fg, voice)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !strings.Contains(err.Error(), "Client.Timeout") {
+		t.Fatalf("expected timeout error, got %v", err)
 	}
 }
 
