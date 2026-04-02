@@ -31,6 +31,9 @@ const streamEventTimeout = 10 * time.Minute
 const telegramMaxConcurrentHandlers = 8
 const telegramMaxPhotoDownloadBytes int64 = 25 << 20
 const telegramMaxVoiceDownloadBytes int64 = 25 << 20
+const telegramDownloadTimeout = 5 * time.Minute
+
+var telegramDownloadHTTPClient = &http.Client{Timeout: telegramDownloadTimeout}
 
 // botSender is the subset of tgbotapi.BotAPI used by streamReply and
 // handleMessage, allowing tests to supply a fake without a live connection.
@@ -61,7 +64,7 @@ func downloadTelegramPhoto(fileGetter botFileGetter, photos []tgbotapi.PhotoSize
 		return "", "", "", fmt.Errorf("get file URL: %w", err)
 	}
 
-	resp, err := http.Get(directURL)
+	resp, err := telegramDownloadHTTPClient.Get(directURL)
 	if err != nil {
 		return "", "", "", fmt.Errorf("download photo: %w", err)
 	}
@@ -123,7 +126,7 @@ func downloadTelegramVoice(fileGetter botFileGetter, voice *tgbotapi.Voice) (fil
 		return "", fmt.Errorf("get voice file URL: %w", err)
 	}
 
-	resp, err := http.Get(directURL)
+	resp, err := telegramDownloadHTTPClient.Get(directURL)
 	if err != nil {
 		return "", fmt.Errorf("download voice: %w", err)
 	}
