@@ -19,13 +19,11 @@ const chatGPTDefaultModel = "gpt-5.3-codex"
 // chatGPTResponsesURL is the ChatGPT backend API endpoint for responses
 const chatGPTResponsesURL = "https://chatgpt.com/backend-api/codex/responses"
 
-// chatGPTHTTPTimeout is the timeout for ChatGPT HTTP requests
-const chatGPTHTTPTimeout = 10 * time.Minute
-
-// chatGPTHTTPClient is a shared HTTP client with reasonable timeouts
-var chatGPTHTTPClient = &http.Client{
-	Timeout: chatGPTHTTPTimeout,
-}
+// chatGPTHTTPClient intentionally uses transport-level timeouts only.
+//
+// ChatGPT streams can legitimately run for longer than 10 minutes, and
+// http.Client.Timeout would abort an otherwise healthy stream mid-response.
+var chatGPTHTTPClient = defaultHTTPClient
 
 // ChatGPTProvider implements Provider using the ChatGPT backend API with native OAuth.
 type ChatGPTProvider struct {

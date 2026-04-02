@@ -33,6 +33,12 @@ func TestBuildResponsesInputWithInstructions_ExtractsSystem(t *testing.T) {
 	}
 }
 
+func TestChatGPTHTTPClient_DoesNotUseClientTimeout(t *testing.T) {
+	if chatGPTHTTPClient.Timeout != 0 {
+		t.Fatalf("expected no http.Client.Timeout for ChatGPT streaming client, got %s", chatGPTHTTPClient.Timeout)
+	}
+}
+
 func TestChatGPTStream_ReasoningSummaryByOutputIndex(t *testing.T) {
 	origClient := chatGPTHTTPClient
 	defer func() {
