@@ -585,7 +585,22 @@ func execJobsV2Schema(db *sql.DB) error {
 }
 
 func (m *jobsV2Manager) recoverRuns() error {
-	_, err := m.db.Exec(`UPDATE job_runs_v2 SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE status IN (?, ?, ?)`, jobsV2RunQueued, jobsV2RunClaimed, jobsV2RunRunning, jobsV2RunCancelRequested)
+	_, err := m.db.Exec(`
+		UPDATE job_runs_v2
+		SET status = CASE
+				WHEN status = ? THEN ?
+				ELSE ?
+			END,
+			finished_at = CASE
+				WHEN status = ? THEN CURRENT_TIMESTAMP
+				ELSE finished_at
+			END,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE status IN (?, ?, ?, ?)`,
+		jobsV2RunCancelRequested, jobsV2RunCancelled,
+		jobsV2RunQueued,
+		jobsV2RunCancelRequested,
+		jobsV2RunQueued, jobsV2RunClaimed, jobsV2RunRunning, jobsV2RunCancelRequested)
 	if err != nil {
 		return fmt.Errorf("recover runs: %w", err)
 	}

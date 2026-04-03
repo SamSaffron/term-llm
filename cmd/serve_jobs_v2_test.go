@@ -170,6 +170,52 @@ func TestJobsV2ManualTriggerAndCancel(t *testing.T) {
 	}
 }
 
+func TestJobsV2RecoverRunsCancelsCancelRequestedRuns(t *testing.T) {
+	mgr, err := newJobsV2Manager(":memory:", 0, nil)
+	if err != nil {
+		t.Fatalf("newJobsV2Manager failed: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+
+	job, err := mgr.CreateJob(jobsV2Job{
+		Name:          "recover-cancel-requested",
+		Enabled:       true,
+		RunnerType:    jobsV2RunnerProgram,
+		RunnerConfig:  json.RawMessage(`{"command":"echo","args":["x"]}`),
+		TriggerType:   jobsV2TriggerManual,
+		TriggerConfig: json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+
+	run, err := mgr.TriggerJob(job.ID)
+	if err != nil {
+		t.Fatalf("TriggerJob failed: %v", err)
+	}
+
+	startedAt := time.Now().UTC().Add(-time.Second)
+	_, err = mgr.db.Exec(`UPDATE job_runs_v2 SET status = ?, started_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, jobsV2RunCancelRequested, startedAt, run.ID)
+	if err != nil {
+		t.Fatalf("mark cancel_requested failed: %v", err)
+	}
+
+	if err := mgr.recoverRuns(); err != nil {
+		t.Fatalf("recoverRuns failed: %v", err)
+	}
+
+	recovered, err := mgr.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("GetRun failed: %v", err)
+	}
+	if recovered.Status != jobsV2RunCancelled {
+		t.Fatalf("status = %s, want %s", recovered.Status, jobsV2RunCancelled)
+	}
+	if recovered.FinishedAt == nil {
+		t.Fatalf("finished_at was not set for recovered cancelled run")
+	}
+}
+
 func TestJobsV2CronValidation(t *testing.T) {
 	mgr, err := newJobsV2Manager(":memory:", 1, nil)
 	if err != nil {
