@@ -718,6 +718,42 @@ func TestBuildCompatMessages_DeveloperMessageNotDropped(t *testing.T) {
 	}
 }
 
+func TestBuildCompatMessages_ConsecutiveDeveloperMessagesPreserved(t *testing.T) {
+	messages := []Message{
+		{
+			Role:  RoleDeveloper,
+			Parts: []Part{{Type: PartText, Text: "Platform instruction."}},
+		},
+		{
+			Role:  RoleDeveloper,
+			Parts: []Part{{Type: PartText, Text: "Runtime instruction."}},
+		},
+		{
+			Role:  RoleUser,
+			Parts: []Part{{Type: PartText, Text: "Hello"}},
+		},
+	}
+
+	oaiMsgs := buildCompatMessages(messages)
+
+	if len(oaiMsgs) != 1 {
+		t.Fatalf("expected 1 message (merged dev+user), got %d", len(oaiMsgs))
+	}
+	content, ok := oaiMsgs[0].Content.(string)
+	if !ok {
+		t.Fatalf("expected content to be string, got %T", oaiMsgs[0].Content)
+	}
+	if !strings.Contains(content, "Platform instruction.") {
+		t.Errorf("first developer text was dropped — not found in %q", content)
+	}
+	if !strings.Contains(content, "Runtime instruction.") {
+		t.Errorf("second developer text was dropped — not found in %q", content)
+	}
+	if !strings.Contains(content, "Hello") {
+		t.Errorf("user text was dropped — not found in %q", content)
+	}
+}
+
 func TestOpenAICompatProviderStreamSendsExplicitParallelToolCallsFalse(t *testing.T) {
 	var got struct {
 		ParallelToolCalls *bool             `json:"parallel_tool_calls,omitempty"`

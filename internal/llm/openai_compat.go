@@ -509,7 +509,10 @@ func buildCompatMessages(messages []Message) []oaiMessage {
 			// wrapped in <developer> tags.
 			text, _, _ := splitParts(msg.Parts)
 			if text != "" {
-				pendingDev = text
+				if pendingDev != "" {
+					pendingDev += "\n\n"
+				}
+				pendingDev += text
 			}
 		case RoleSystem, RoleUser, RoleAssistant:
 			text, toolCalls, reasoning := splitParts(msg.Parts)
