@@ -518,3 +518,91 @@ func TestJobsV2_ProgressiveLLM_FinalResponseProse(t *testing.T) {
 		t.Fatalf("Response = %q, want prose %q", run.Response, expected)
 	}
 }
+
+func TestJobsV2TriggerJobRespectsMaxConcurrentRuns(t *testing.T) {
+	mgr, err := newJobsV2Manager(":memory:", 1, nil)
+	if err != nil {
+		t.Fatalf("newJobsV2Manager failed: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+
+	job, err := mgr.CreateJob(jobsV2Job{
+		Name:              "manual-bounded-concurrency",
+		Enabled:           true,
+		RunnerType:        jobsV2RunnerProgram,
+		RunnerConfig:      json.RawMessage(`{"command":"echo","args":["x"]}`),
+		TriggerType:       jobsV2TriggerManual,
+		TriggerConfig:     json.RawMessage(`{}`),
+		ConcurrencyPolicy: "allow",
+		MaxConcurrentRuns: 2,
+		TimeoutSeconds:    30,
+	})
+	if err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+
+	now := time.Now().UTC()
+	for _, runID := range []string{"run_existing_1", "run_existing_2"} {
+		_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, created_at, updated_at) VALUES (?, ?, 1, 'manual', ?, ?, ?, ?)`,
+			runID, job.ID, now, jobsV2RunRunning, now, now)
+		if err != nil {
+			t.Fatalf("insert active run %s: %v", runID, err)
+		}
+	}
+
+	if _, err := mgr.TriggerJob(job.ID); err == nil {
+		t.Fatal("TriggerJob should reject runs above max_concurrent_runs")
+	}
+
+	active, err := mgr.countActiveRuns(job.ID)
+	if err != nil {
+		t.Fatalf("countActiveRuns failed: %v", err)
+	}
+	if active != 2 {
+		t.Fatalf("active runs = %d, want 2", active)
+	}
+}
+
+func TestJobsV2ScheduleOneRespectsMaxConcurrentRuns(t *testing.T) {
+	mgr, err := newJobsV2Manager(":memory:", 1, nil)
+	if err != nil {
+		t.Fatalf("newJobsV2Manager failed: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+
+	job, err := mgr.CreateJob(jobsV2Job{
+		Name:              "cron-bounded-concurrency",
+		Enabled:           true,
+		RunnerType:        jobsV2RunnerProgram,
+		RunnerConfig:      json.RawMessage(`{"command":"echo","args":["x"]}`),
+		TriggerType:       jobsV2TriggerCron,
+		TriggerConfig:     json.RawMessage(`{"expression":"* * * * *","timezone":"UTC"}`),
+		ConcurrencyPolicy: "allow",
+		MaxConcurrentRuns: 2,
+		TimeoutSeconds:    30,
+	})
+	if err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+
+	now := time.Now().UTC()
+	for _, runID := range []string{"run_existing_1", "run_existing_2"} {
+		_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, created_at, updated_at) VALUES (?, ?, 1, 'schedule', ?, ?, ?, ?)`,
+			runID, job.ID, now, jobsV2RunRunning, now, now)
+		if err != nil {
+			t.Fatalf("insert active run %s: %v", runID, err)
+		}
+	}
+
+	if err := mgr.scheduleOne(job, now); err != nil {
+		t.Fatalf("scheduleOne failed: %v", err)
+	}
+
+	active, err := mgr.countActiveRuns(job.ID)
+	if err != nil {
+		t.Fatalf("countActiveRuns failed: %v", err)
+	}
+	if active != 2 {
+		t.Fatalf("active runs = %d, want 2", active)
+	}
+}

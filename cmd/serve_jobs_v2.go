@@ -747,22 +747,38 @@ func (m *jobsV2Manager) scheduleDueRuns(now time.Time) error {
 	return nil
 }
 
+func jobsV2ConcurrencyLimit(job jobsV2Job) int {
+	if job.ConcurrencyPolicy == "forbid" {
+		return 1
+	}
+	if job.MaxConcurrentRuns > 0 {
+		return job.MaxConcurrentRuns
+	}
+	return 1
+}
+
+func (m *jobsV2Manager) countActiveRuns(jobID string) (int, error) {
+	var active int
+	err := m.db.QueryRow(`SELECT COUNT(1) FROM job_runs_v2 WHERE job_id = ? AND status IN (?, ?, ?)`, jobID, jobsV2RunQueued, jobsV2RunClaimed, jobsV2RunRunning).Scan(&active)
+	if err != nil {
+		return 0, err
+	}
+	return active, nil
+}
+
 func (m *jobsV2Manager) scheduleOne(job jobsV2Job, now time.Time) error {
 	next, err := computeNextRunAt(job, now)
 	if err != nil {
 		return err
 	}
 
-	if job.ConcurrencyPolicy == "forbid" {
-		var active int
-		err := m.db.QueryRow(`SELECT COUNT(1) FROM job_runs_v2 WHERE job_id = ? AND status IN (?, ?, ?)`, job.ID, jobsV2RunQueued, jobsV2RunClaimed, jobsV2RunRunning).Scan(&active)
-		if err != nil {
-			return err
-		}
-		if active > 0 {
-			_, err = m.db.Exec(`UPDATE jobs_v2 SET next_run_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, next, job.ID)
-			return err
-		}
+	active, err := m.countActiveRuns(job.ID)
+	if err != nil {
+		return err
+	}
+	if active >= jobsV2ConcurrencyLimit(job) {
+		_, err = m.db.Exec(`UPDATE jobs_v2 SET next_run_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, next, job.ID)
+		return err
 	}
 
 	runID := "run_" + randomSuffix()
@@ -1273,16 +1289,19 @@ func (m *jobsV2Manager) TriggerJob(id string) (jobsV2Run, error) {
 	if !job.Enabled {
 		return jobsV2Run{}, fmt.Errorf("job is disabled")
 	}
-	if job.ConcurrencyPolicy == "forbid" {
-		var active int
-		err := m.db.QueryRow(`SELECT COUNT(1) FROM job_runs_v2 WHERE job_id = ? AND status IN (?, ?, ?)`, id, jobsV2RunQueued, jobsV2RunClaimed, jobsV2RunRunning).Scan(&active)
-		if err != nil {
-			return jobsV2Run{}, err
-		}
-		if active > 0 {
+
+	active, err := m.countActiveRuns(id)
+	if err != nil {
+		return jobsV2Run{}, err
+	}
+	limit := jobsV2ConcurrencyLimit(job)
+	if active >= limit {
+		if limit == 1 {
 			return jobsV2Run{}, fmt.Errorf("job already has an active run")
 		}
+		return jobsV2Run{}, fmt.Errorf("job already has %d active runs (max %d)", active, limit)
 	}
+
 	runID := "run_" + randomSuffix()
 	now := time.Now().UTC()
 	_, err = m.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, runID, id, "manual", now, jobsV2RunQueued)
