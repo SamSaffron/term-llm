@@ -27,7 +27,10 @@ import (
 
 const telegramMaxMessageLen = 4000 // Telegram limit is 4096; leave margin
 const minEditInterval = 3 * time.Second
-const streamEventTimeout = 10 * time.Minute
+
+// var so tests can shorten the watchdog without waiting 10 minutes.
+var streamEventTimeout = 10 * time.Minute
+
 const telegramMaxConcurrentHandlers = 8
 const telegramMaxPhotoDownloadBytes int64 = 25 << 20
 const telegramMaxVoiceDownloadBytes int64 = 25 << 20
@@ -1128,26 +1131,27 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 	}
 
 	var (
-		textMu          sync.Mutex
-		textBuf         strings.Builder
-		activeTools     = make(map[string]string) // toolCallID → toolName
-		activePhase     string                    // most-recent EventPhase text, "" when idle
-		toolsRan        bool                      // true once any EventToolExecStart seen
-		collectedImages []string                  // image paths from tool executions
-		textDeltas      int
-		reasoningDeltas int
-		toolStarts      int
-		toolEnds        int
-		toolCalls       int
-		phaseEvents     int
-		usageEvents     int
-		doneEvents      int
-		retryEvents     int
-		errorEvents     int
-		otherEvents     int
-		otherTypes      = make(map[llm.EventType]int)
-		streamDone      = make(chan error, 1)
-		lastEventPing   = make(chan struct{}, 1)
+		textMu           sync.Mutex
+		textBuf          strings.Builder
+		activeTools      = make(map[string]string) // toolCallID → toolName
+		activePhase      string                    // most-recent EventPhase text, "" when idle
+		toolsRan         bool                      // true once any EventToolExecStart seen
+		collectedImages  []string                  // image paths from tool executions
+		textDeltas       int
+		reasoningDeltas  int
+		toolStarts       int
+		toolEnds         int
+		toolCalls        int
+		phaseEvents      int
+		usageEvents      int
+		doneEvents       int
+		retryEvents      int
+		errorEvents      int
+		otherEvents      int
+		otherTypes       = make(map[llm.EventType]int)
+		streamDone       = make(chan error, 1)
+		lastEventPing    = make(chan struct{}, 1)
+		watchdogTimedOut atomic.Bool
 	)
 
 	// Watchdog: cancel stream if no events arrive for streamEventTimeout.
@@ -1165,11 +1169,12 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 				}
 				t.Reset(streamEventTimeout)
 			case <-t.C:
-				streamCancel()
+				watchdogTimedOut.Store(true)
 				select {
 				case streamDone <- fmt.Errorf("stream timed out: no events for %s", streamEventTimeout):
 				default:
 				}
+				streamCancel()
 				return
 			case <-streamCtx.Done():
 				return
@@ -1382,7 +1387,7 @@ loop:
 			}
 			sendEdit(currentMsgID, rendered, forceProgress)
 		case <-streamCtx.Done():
-			// Distinguish server shutdown (parent ctx cancelled) from user interrupt.
+			// Distinguish server shutdown (parent ctx cancelled) from watchdog timeouts and user interrupt.
 			if ctx.Err() != nil {
 				// Server shutdown — existing behavior.
 				if m.store != nil && sess.meta != nil {
@@ -1395,6 +1400,15 @@ loop:
 					})
 				}
 				return ctx.Err()
+			}
+
+			if watchdogTimedOut.Load() {
+				select {
+				case streamErr = <-streamDone:
+				default:
+					streamErr = fmt.Errorf("stream timed out: no events for %s", streamEventTimeout)
+				}
+				break loop
 			}
 
 			// User interrupt: cancel the stream and preserve partial state.
