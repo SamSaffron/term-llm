@@ -213,8 +213,8 @@ func handoverPrefix(source, target string) string {
 }
 
 // Handover generates a handover document from the conversation history using
-// the outgoing provider. This is the Tier 2 fallback used when an agent has no
-// handover_file configured. The result contains reconstructed messages suitable
+// the outgoing provider. This is the Tier 2 fallback used when file-based
+// handover is not available. The result contains reconstructed messages suitable
 // for the new agent: [new system prompt] + [handover doc] + [assistant ack].
 func Handover(ctx context.Context, provider Provider, model, currentSystemPrompt, newSystemPrompt string, messages []Message, sourceAgent, targetAgent string, config CompactionConfig) (*HandoverResult, error) {
 	if len(messages) == 0 {
@@ -294,8 +294,8 @@ func Handover(ctx context.Context, provider Provider, model, currentSystemPrompt
 }
 
 // HandoverFromFile creates a HandoverResult from an existing handover document
-// file (Tier 1: zero LLM cost). Used when the outgoing agent has a handover_file
-// configured and has written content to it.
+// file (Tier 1: zero LLM cost). Used when the outgoing agent has enable_handover
+// set and has written content to the handover directory.
 func HandoverFromFile(content, newSystemPrompt, sourceAgent, targetAgent string) *HandoverResult {
 	newMessages := ReconstructHandoverHistory(newSystemPrompt, content, sourceAgent, targetAgent)
 	return &HandoverResult{

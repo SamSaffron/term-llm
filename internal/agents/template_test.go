@@ -11,21 +11,23 @@ import (
 
 func TestExpandTemplate(t *testing.T) {
 	ctx := TemplateContext{
-		Date:        "2026-01-16",
-		DateTime:    "2026-01-16 14:30:00",
-		Time:        "14:30",
-		Year:        "2026",
-		Cwd:         "/home/user/project",
-		CwdName:     "project",
-		Home:        "/home/user",
-		User:        "testuser",
-		GitBranch:   "main",
-		GitRepo:     "term-llm",
-		Files:       "main.go, utils.go",
-		FileCount:   "2",
-		OS:          "linux",
-		Platform:    "chat",
-		ResourceDir: "/home/user/.cache/term-llm/agents/artist",
+		Date:         "2026-01-16",
+		DateTime:     "2026-01-16 14:30:00",
+		Time:         "14:30",
+		Year:         "2026",
+		Cwd:          "/home/user/project",
+		CwdName:      "project",
+		Home:         "/home/user",
+		User:         "testuser",
+		GitBranch:    "main",
+		GitRepo:      "term-llm",
+		Files:        "main.go, utils.go",
+		FileCount:    "2",
+		OS:           "linux",
+		Platform:     "chat",
+		ResourceDir:  "/home/user/.cache/term-llm/agents/artist",
+		HandoverDir:  "/home/user/.local/share/term-llm/handover/project-abc123",
+		HandoverPath: "/home/user/.local/share/term-llm/handover/project-abc123/2026-01-16-amber-creek-bloom.md",
 	}
 
 	tests := []struct {
@@ -60,8 +62,18 @@ func TestExpandTemplate(t *testing.T) {
 		},
 		{
 			name:     "all variables",
-			template: "{{date}} {{datetime}} {{time}} {{year}} {{cwd}} {{cwd_name}} {{home}} {{user}} {{git_branch}} {{git_repo}} {{files}} {{file_count}} {{os}} {{platform}} {{resource_dir}}",
-			expected: "2026-01-16 2026-01-16 14:30:00 14:30 2026 /home/user/project project /home/user testuser main term-llm main.go, utils.go 2 linux chat /home/user/.cache/term-llm/agents/artist",
+			template: "{{date}} {{datetime}} {{time}} {{year}} {{cwd}} {{cwd_name}} {{home}} {{user}} {{git_branch}} {{git_repo}} {{files}} {{file_count}} {{os}} {{platform}} {{resource_dir}} {{handover_dir}} {{handover_path}}",
+			expected: "2026-01-16 2026-01-16 14:30:00 14:30 2026 /home/user/project project /home/user testuser main term-llm main.go, utils.go 2 linux chat /home/user/.cache/term-llm/agents/artist /home/user/.local/share/term-llm/handover/project-abc123 /home/user/.local/share/term-llm/handover/project-abc123/2026-01-16-amber-creek-bloom.md",
+		},
+		{
+			name:     "handover_dir variable",
+			template: "Write to {{handover_dir}}/plan.md",
+			expected: "Write to /home/user/.local/share/term-llm/handover/project-abc123/plan.md",
+		},
+		{
+			name:     "handover_path variable",
+			template: "Write to {{handover_path}}",
+			expected: "Write to /home/user/.local/share/term-llm/handover/project-abc123/2026-01-16-amber-creek-bloom.md",
 		},
 		{
 			name:     "resource_dir variable",

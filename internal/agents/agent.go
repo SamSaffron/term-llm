@@ -97,14 +97,14 @@ type Agent struct {
 	// MCP servers to auto-connect
 	MCP []MCPConfig `yaml:"mcp,omitempty"`
 
-	// HandoverFile is a file path (relative to cwd) that the agent maintains
-	// as a living handover document. On /handover, this file is read and used
-	// as the handover context for the next agent (zero LLM cost).
-	HandoverFile string `yaml:"handover_file,omitempty"`
+	// EnableHandover indicates the agent writes handover documents to the
+	// XDG handover directory. On /handover the most recently modified .md
+	// file in that directory is read as zero-cost context for the next agent.
+	EnableHandover bool `yaml:"enable_handover,omitempty"`
 
 	// HandoverMode controls how context is produced on /handover:
 	//   "light"    - use last assistant message as handover context (zero cost)
-	//   "file"     - read handover_file (zero cost, agent maintains the file)
+	//   "file"     - read latest .md from the handover directory (zero cost, agent maintains it)
 	//   "script"   - run handover_script command line (no shell expansion), use stdout (zero cost)
 	//   "compress" - LLM-driven compression of full conversation
 	//   ""         - auto: try file first, fall back to compress
@@ -459,6 +459,11 @@ func (a *Agent) Validate() error {
 	// Cross-validate: script mode requires handover_script
 	if a.HandoverMode == "script" && a.HandoverScript == "" {
 		return fmt.Errorf("handover_mode %q requires handover_script to be set", a.HandoverMode)
+	}
+
+	// Cross-validate: file mode requires enable_handover
+	if a.HandoverMode == "file" && !a.EnableHandover {
+		return fmt.Errorf("handover_mode %q requires enable_handover: true", a.HandoverMode)
 	}
 
 	return nil

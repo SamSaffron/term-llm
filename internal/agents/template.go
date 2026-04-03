@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/session"
 )
 
 // TemplateContext holds values for template variable expansion.
@@ -43,7 +44,9 @@ type TemplateContext struct {
 	Platform string
 
 	// Agent context
-	ResourceDir string // Directory containing agent resources (for builtin agents)
+	ResourceDir  string // Directory containing agent resources (for builtin agents)
+	HandoverDir  string // XDG handover directory for the current project
+	HandoverPath string // Full handover file path (date + random slug)
 
 	// Project agent instructions (dynamically discovered)
 	// Searches in priority order: AGENTS.md, CLAUDE.md, .github/copilot-instructions.md,
@@ -55,19 +58,20 @@ type TemplateContext struct {
 // Deprecated: Use NewTemplateContextForTemplate instead to avoid expensive operations
 // when template variables are not used.
 func NewTemplateContext() TemplateContext {
-	return newTemplateContext(true, true)
+	return newTemplateContext(true, true, false)
 }
 
 // NewTemplateContextForTemplate creates a context, only computing expensive values
-// (like git_diff_stat, agents) if they are actually used in the template.
+// (like git_diff_stat, agents, handover_dir) if they are actually used in the template.
 func NewTemplateContextForTemplate(template string) TemplateContext {
 	needsGitDiffStat := strings.Contains(template, "{{git_diff_stat}}")
 	needsAgents := strings.Contains(template, "{{agents}}")
-	return newTemplateContext(needsGitDiffStat, needsAgents)
+	needsHandoverDir := strings.Contains(template, "{{handover_dir}}") || strings.Contains(template, "{{handover_path}}")
+	return newTemplateContext(needsGitDiffStat, needsAgents, needsHandoverDir)
 }
 
 // newTemplateContext creates a context with optional expensive computations.
-func newTemplateContext(computeGitDiffStat, computeAgents bool) TemplateContext {
+func newTemplateContext(computeGitDiffStat, computeAgents, computeHandoverDir bool) TemplateContext {
 	now := time.Now()
 
 	ctx := TemplateContext{
@@ -108,6 +112,16 @@ func newTemplateContext(computeGitDiffStat, computeAgents bool) TemplateContext 
 		ctx.Agents = loadProjectInstructions()
 	}
 
+	// Compute handover directory and path if needed
+	if computeHandoverDir && ctx.Cwd != "" {
+		if dir, err := session.GetHandoverDir(ctx.Cwd); err == nil {
+			ctx.HandoverDir = dir
+		}
+		if p, err := session.GetHandoverPath(ctx.Cwd, ctx.Date); err == nil {
+			ctx.HandoverPath = p
+		}
+	}
+
 	return ctx
 }
 
@@ -131,6 +145,18 @@ func (c TemplateContext) WithFiles(files []string) TemplateContext {
 // WithResourceDir sets the resource directory for an agent.
 func (c TemplateContext) WithResourceDir(resourceDir string) TemplateContext {
 	c.ResourceDir = resourceDir
+	return c
+}
+
+// WithHandoverDir sets the handover directory for {{handover_dir}} token expansion.
+func (c TemplateContext) WithHandoverDir(dir string) TemplateContext {
+	c.HandoverDir = dir
+	return c
+}
+
+// WithHandoverPath sets the full handover file path for {{handover_path}} token expansion.
+func (c TemplateContext) WithHandoverPath(path string) TemplateContext {
+	c.HandoverPath = path
 	return c
 }
 
@@ -186,6 +212,10 @@ func ExpandTemplate(text string, ctx TemplateContext) string {
 			return ctx.Platform
 		case "resource_dir":
 			return ctx.ResourceDir
+		case "handover_dir":
+			return ctx.HandoverDir
+		case "handover_path":
+			return ctx.HandoverPath
 		case "agents":
 			return ctx.Agents
 		default:

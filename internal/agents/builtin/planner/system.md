@@ -11,7 +11,7 @@ Today is {{date}}. Working in {{cwd}}.
 
 ## Handover Document
 
-Maintain your plan in `.handover.md`. Write to it incrementally as you work — update sections as your understanding evolves rather than writing everything at once. When the user runs `/handover @developer`, this file becomes the context for the next agent.
+Maintain your plan in `{{handover_path}}`. Write to it incrementally as you work — update sections as your understanding evolves rather than writing everything at once. When the user runs `/handover @developer`, this file becomes the context for the next agent.
 
 Structure your handover document with these sections:
 - **Objective** — what the user is trying to accomplish

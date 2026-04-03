@@ -2,6 +2,8 @@ package session
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -97,6 +99,35 @@ func GetDBPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dataDir, "sessions.db"), nil
+}
+
+// GetHandoverDir returns the handover directory for the given working directory.
+// The path is XDG_DATA_HOME/term-llm/handover/<basename>-<sha256[:6]>/
+// where the hash is computed from the absolute cwd to avoid collisions.
+func GetHandoverDir(cwd string) (string, error) {
+	dataDir, err := GetDataDir()
+	if err != nil {
+		return "", err
+	}
+	abs, err := filepath.Abs(cwd)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve absolute path: %w", err)
+	}
+	h := sha256.Sum256([]byte(abs))
+	projectID := filepath.Base(abs) + "-" + hex.EncodeToString(h[:3])
+	return filepath.Join(dataDir, "handover", projectID), nil
+}
+
+// GetHandoverPath returns a full handover file path with a deterministic
+// random name like "2026-04-03-amber-creek-bloom.md". The random slug is
+// generated once per call; callers should cache the result for the session.
+func GetHandoverPath(cwd, date string) (string, error) {
+	dir, err := GetHandoverDir(cwd)
+	if err != nil {
+		return "", err
+	}
+	slug := RandomHandoverSlug()
+	return filepath.Join(dir, date+"-"+slug+".md"), nil
 }
 
 // ResolveDBPath resolves an optional DB path override.

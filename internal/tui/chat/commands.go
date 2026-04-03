@@ -1550,30 +1550,32 @@ func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
 		return m.startHandoverScriptHandover(m.currentAgent, sourceAgent, targetAgent, providerStr, false, "")
 	}
 
-	// File mode: read handover_file, but only if it was modified during this session
-	if mode == "file" || (mode == "" && m.currentAgent != nil && m.currentAgent.HandoverFile != "") {
-		handoverFile := ""
-		if m.currentAgent != nil {
-			handoverFile = m.currentAgent.HandoverFile
+	// File mode: scan handover directory for latest .md file
+	if mode == "file" || (mode == "" && m.currentAgent != nil && m.currentAgent.EnableHandover) {
+		handoverDir := ""
+		if m.currentAgent != nil && m.currentAgent.EnableHandover {
+			if dir, err := session.GetHandoverDir("."); err == nil {
+				handoverDir = dir
+			}
 		}
-		if handoverFile != "" {
-			info, statErr := os.Stat(handoverFile)
-			if statErr == nil && info.Size() > 0 {
+		if handoverDir != "" {
+			latestFile, latestInfo := findLatestHandoverFile(handoverDir)
+			if latestFile != "" && latestInfo.Size() > 0 {
 				// Check freshness: file must have been modified after the session started
 				sessionStart := time.Time{}
 				if m.sess != nil {
 					sessionStart = m.sess.CreatedAt
 				}
-				stale := !sessionStart.IsZero() && info.ModTime().Before(sessionStart)
+				stale := !sessionStart.IsZero() && latestInfo.ModTime().Before(sessionStart)
 				if stale && mode == "file" {
 					// Explicit file mode — hard fail on stale file
 					return m.showSystemMessage(fmt.Sprintf(
 						"Handover file %s exists but predates this session (last modified %s).\n"+
 							"Ask the agent to update it, or remove it to use LLM compression.",
-						handoverFile, info.ModTime().Format("2006-01-02 15:04")))
+						latestFile, latestInfo.ModTime().Format("2006-01-02 15:04")))
 				}
 				if !stale {
-					content, readErr := os.ReadFile(handoverFile)
+					content, readErr := os.ReadFile(latestFile)
 					if readErr == nil && len(content) > 0 {
 						result := llm.HandoverFromFile(string(content), newSystemPrompt, sourceAgent, targetAgent.Name)
 						return m, func() tea.Msg {
@@ -1587,12 +1589,12 @@ func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
 				}
 				// Auto mode with stale file: fall through to LLM compression
 			}
-			// File mode was explicitly set but file doesn't exist — warn
+			// File mode was explicitly set but no handover file found — warn
 			if mode == "file" {
 				return m.showSystemMessage(fmt.Sprintf(
-					"Agent @%s has handover_mode: file but %s does not exist or is empty.\n"+
+					"Agent @%s has handover_mode: file but no .md files found in %s.\n"+
 						"Ask the agent to write the handover document first.",
-					sourceAgent, handoverFile))
+					sourceAgent, handoverDir))
 			}
 		}
 	}
@@ -1709,6 +1711,31 @@ func pendingTargetScriptPreview(agent *agents.Agent) string {
 		b.WriteString("\n```\n")
 	}
 	return b.String()
+}
+
+// findLatestHandoverFile scans dir for .md files and returns the path and
+// os.FileInfo of the most recently modified one. Returns ("", nil) if none found.
+func findLatestHandoverFile(dir string) (string, os.FileInfo) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", nil
+	}
+	var latestPath string
+	var latestInfo os.FileInfo
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if latestInfo == nil || info.ModTime().After(latestInfo.ModTime()) {
+			latestPath = filepath.Join(dir, e.Name())
+			latestInfo = info
+		}
+	}
+	return latestPath, latestInfo
 }
 
 func handoverSourceAgent(pending *handoverDoneMsg, fallback string) string {
@@ -1987,6 +2014,8 @@ func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 	m.pendingResumeSessionID = m.sess.ID
 	if prompt := strings.TrimSpace(targetAgent.DefaultPrompt); prompt != "" {
 		m.pendingHandoverAutoSend = prompt
+	} else if pending != nil && pending.result != nil {
+		m.pendingHandoverAutoSend = "Execute the pending tasks from the handover."
 	} else {
 		m.pendingHandoverAutoSend = ""
 	}

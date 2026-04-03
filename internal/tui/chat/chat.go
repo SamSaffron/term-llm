@@ -102,7 +102,7 @@ type Model struct {
 	agentLister         func(cfg *config.Config) ([]string, error) // Lists available agent names
 	pendingHandover     *handoverDoneMsg                           // Non-nil while awaiting confirmation
 	handoverPreview     *handoverPreviewModel                      // Inline confirmation UI (alt screen)
-	currentAgent        *agents.Agent                              // Current agent config (for handover_file)
+	currentAgent        *agents.Agent                              // Current agent config (for enable_handover)
 	handoverApprovalMgr *tools.ApprovalManager                     // Shell approval flow for handover scripts
 
 	// Pending message context
@@ -274,8 +274,9 @@ type (
 		confirmed    bool   // True when the document was prepared after confirmation.
 		instructions string // Additional instructions captured at confirmation time.
 	}
-	handoverConfirmMsg struct{}
-	handoverCancelMsg  struct{}
+	handoverConfirmMsg    struct{}
+	handoverCancelMsg     struct{}
+	handoverRenameDoneMsg struct{ err error }
 )
 
 const (
@@ -612,7 +613,7 @@ func (m *Model) SetAgentLister(lister func(cfg *config.Config) ([]string, error)
 }
 
 // SetCurrentAgent sets the current agent configuration (used by /handover
-// to check for handover_file).
+// to check for enable_handover).
 func (m *Model) SetCurrentAgent(agent *agents.Agent) {
 	m.currentAgent = agent
 }
@@ -923,6 +924,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pendingHandover = nil
 		m.handoverPreview = nil
 		m.invalidateHistoryCache()
+		return m, nil
+
+	case handoverRenameDoneMsg:
+		// Silently ignore — rename is best-effort background work.
 		return m, nil
 
 	case ui.WaveTickMsg:
@@ -1339,6 +1344,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			// Auto-save session
 			cmds = append(cmds, m.saveSessionCmd())
+
+			// Try to rename random-word handover files to descriptive slugs
+			if cmd := m.maybeRenameHandoverCmd(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 
 			// In auto-send mode, check if there are more messages to send
 			if m.autoSendQueue != nil {

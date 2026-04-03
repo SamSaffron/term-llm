@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -457,6 +458,65 @@ func (m *Model) saveSessionCmd() tea.Cmd {
 		// Sessions are now auto-saved via the store
 		// This is kept for compatibility but does nothing
 		return sessionSavedMsg{}
+	}
+}
+
+// maybeRenameHandoverCmd returns a tea.Cmd that checks the handover directory
+// for a random-named file large enough to rename. If found, it uses the fast
+// provider to generate a descriptive slug, renames the file, and creates a
+// symlink from the old name so the system prompt path remains valid.
+func (m *Model) maybeRenameHandoverCmd() tea.Cmd {
+	if m.currentAgent == nil || !m.currentAgent.EnableHandover {
+		return nil
+	}
+	provider := m.fastProvider
+	if provider == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		dir, err := session.GetHandoverDir(".")
+		if err != nil {
+			return handoverRenameDoneMsg{err: err}
+		}
+		path, _ := findLatestHandoverFile(dir)
+		if path == "" {
+			return handoverRenameDoneMsg{}
+		}
+		slugGen := func(ctx context.Context, content string) (string, error) {
+			// Truncate content to first 2000 chars to keep the request small
+			if len(content) > 2000 {
+				content = content[:2000]
+			}
+			prompt := fmt.Sprintf("Generate a short filesystem-safe slug (2-5 words, lowercase, dash-separated) that describes this document. Reply with ONLY the slug, nothing else.\n\n%s", content)
+			ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer cancel()
+			stream, err := provider.Stream(ctx, llm.Request{
+				Messages: []llm.Message{
+					llm.UserText(prompt),
+				},
+				MaxTurns: 1,
+			})
+			if err != nil {
+				return "", err
+			}
+			defer stream.Close()
+			var b strings.Builder
+			for {
+				ev, err := stream.Recv()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					return "", err
+				}
+				if ev.Type == llm.EventTextDelta {
+					b.WriteString(ev.Text)
+				}
+			}
+			return strings.TrimSpace(b.String()), nil
+		}
+		err = session.MaybeRenameHandover(context.Background(), path, slugGen)
+		return handoverRenameDoneMsg{err: err}
 	}
 }
 

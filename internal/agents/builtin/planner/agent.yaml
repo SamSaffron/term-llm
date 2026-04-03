@@ -26,5 +26,5 @@ shell:
 search: true
 agents_md: "true"
 max_turns: 50
-handover_file: .handover.md
+enable_handover: true
 handover_mode: "file"
