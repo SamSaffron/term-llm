@@ -536,3 +536,70 @@ func TestRenderInputInline_TruncatesLongInterjection(t *testing.T) {
 		t.Fatalf("expected long interjection to be truncated, got %q", stripped)
 	}
 }
+
+func TestRenderStatusLine_ShowsAgentNameBeforeModel(t *testing.T) {
+	m := newTestChatModel(false)
+	m.agentName = "jarvis"
+	m.modelName = "mock-model"
+
+	line := ui.StripANSI(m.renderStatusLine())
+
+	if !strings.Contains(line, "jarvis") {
+		t.Fatalf("expected agent name in status line, got %q", line)
+	}
+	agentIdx := strings.Index(line, "jarvis")
+	modelIdx := strings.Index(line, "mock-model")
+	if modelIdx == -1 {
+		t.Fatalf("expected model name in status line, got %q", line)
+	}
+	if agentIdx > modelIdx {
+		t.Fatalf("expected agent name before model name in status line, got %q", line)
+	}
+}
+
+func TestRenderStatusLine_OmitsAgentNameWhenUnset(t *testing.T) {
+	m := newTestChatModel(false)
+	m.agentName = ""
+	m.modelName = "mock-model"
+
+	line := ui.StripANSI(m.renderStatusLine())
+
+	// Status line should begin with the model segment, not a blank " · " prefix.
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, " · ") {
+		t.Fatalf("expected no leading separator when agentName is empty, got %q", line)
+	}
+}
+
+func TestViewAutoSend_ShowsAgentNameFirstWhenStreaming(t *testing.T) {
+	m := newTestChatModel(false)
+	m.agentName = "jarvis"
+	m.providerName = "anthropic"
+	m.modelName = "claude-sonnet"
+	m.streaming = true
+	m.streamStartTime = time.Now()
+
+	out := m.viewAutoSend()
+
+	if !strings.HasPrefix(out, "jarvis · ") {
+		t.Fatalf("expected viewAutoSend to start with 'jarvis · ', got %q", out)
+	}
+}
+
+func TestViewAutoSend_OmitsAgentPrefixWhenUnset(t *testing.T) {
+	m := newTestChatModel(false)
+	m.agentName = ""
+	m.providerName = "anthropic"
+	m.modelName = "claude-sonnet"
+	m.streaming = true
+	m.streamStartTime = time.Now()
+
+	out := m.viewAutoSend()
+
+	if strings.HasPrefix(out, " · ") {
+		t.Fatalf("expected no leading ' · ' when agentName is empty, got %q", out)
+	}
+	if !strings.Contains(out, "anthropic") {
+		t.Fatalf("expected provider name in auto-send output, got %q", out)
+	}
+}

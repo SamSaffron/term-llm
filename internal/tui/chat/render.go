@@ -386,8 +386,16 @@ func (m *Model) viewAutoSend() string {
 	if m.streaming {
 		// Minimal status line during streaming
 		elapsed := time.Since(m.streamStartTime)
-		return fmt.Sprintf("%s:%s · mcp:off · %s  Responding %s",
-			m.providerName, m.modelName, m.spinner.View(), formatChatElapsed(elapsed))
+		return fmt.Sprintf("%s%s:%s · mcp:off · %s  Responding %s",
+			m.agentPrefix(), m.providerName, m.modelName, m.spinner.View(), formatChatElapsed(elapsed))
+	}
+	return ""
+}
+
+// agentPrefix returns "agentname · " when an agent is set, or "" otherwise.
+func (m *Model) agentPrefix() string {
+	if m.agentName != "" {
+		return m.agentName + " · "
 	}
 	return ""
 }
@@ -586,7 +594,12 @@ func (m *Model) renderStatusLine() string {
 	// Build fixed parts first (these are always shown as-is)
 	var fixedParts []string
 
-	// Model-first label to reduce footer noise.
+	// Agent name first if set.
+	if m.agentName != "" {
+		fixedParts = append(fixedParts, m.agentName)
+	}
+
+	// Model label (after agent, to keep agent identity prominent).
 	model := shortenModelName(m.modelName)
 	if model != "" {
 		fixedParts = append(fixedParts, model)
