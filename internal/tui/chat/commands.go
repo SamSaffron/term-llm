@@ -348,10 +348,23 @@ func (m *Model) showSystemMessage(content string) (tea.Model, tea.Cmd) {
 	// In inline mode, print directly to scrollback rather than adding to session
 	m.setTextareaValue("")
 
+	// If a tool-initiated handover is pending but we're showing an error,
+	// signal the tool so it doesn't hang forever.
+	m.cancelHandoverTool()
+
 	// Render the message content with markdown
 	rendered := m.renderMarkdown(content)
 
 	return m, tea.Println(rendered + "\n")
+}
+
+// cancelHandoverTool signals false on the tool-initiated handover channel
+// and clears it. This is a no-op if no tool handover is pending.
+func (m *Model) cancelHandoverTool() {
+	if m.handoverToolDoneCh != nil {
+		m.handoverToolDoneCh <- false
+		m.handoverToolDoneCh = nil
+	}
 }
 
 func (m *Model) cmdHelp() (tea.Model, tea.Cmd) {
@@ -456,6 +469,13 @@ func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) cmdQuit() (tea.Model, tea.Cmd) {
+	// Signal tool-initiated handover (if any) right before quitting.
+	// The session is about to restart so the tool result is moot,
+	// but we unblock the goroutine to avoid a leak.
+	if m.handoverToolDoneCh != nil {
+		m.handoverToolDoneCh <- true
+		m.handoverToolDoneCh = nil
+	}
 	m.quitting = true
 	return m, tea.Quit
 }
@@ -1943,6 +1963,7 @@ func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 	// Step 1: Resolve target agent before any mutations
 	targetAgent, resolveErr := m.agentResolver(pending.agentName, m.config)
 	if resolveErr != nil || targetAgent == nil {
+		m.cancelHandoverTool()
 		msg := "unknown error"
 		if resolveErr != nil {
 			msg = resolveErr.Error()
@@ -1952,6 +1973,7 @@ func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 
 	result := applyHandoverInstructions(pending.result, pending.instructions)
 	if result == nil {
+		m.cancelHandoverTool()
 		return m, tea.Println(errStyle.Render("Handover failed: no result returned."))
 	}
 
@@ -1962,6 +1984,7 @@ func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 	}
 
 	if err := m.store.CompactMessages(context.Background(), m.sess.ID, newSessionMsgs); err != nil {
+		m.cancelHandoverTool()
 		return m, tea.Println(errStyle.Render(fmt.Sprintf("Handover failed to persist: %v", err)))
 	}
 
@@ -1998,6 +2021,7 @@ func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 	}
 
 	if err := m.store.Update(context.Background(), m.sess); err != nil {
+		m.cancelHandoverTool()
 		return m, tea.Println(errStyle.Render(fmt.Sprintf("Handover failed to persist session metadata: %v", err)))
 	}
 
@@ -2018,6 +2042,13 @@ func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 		m.pendingHandoverAutoSend = "Execute the pending tasks from the handover."
 	} else {
 		m.pendingHandoverAutoSend = ""
+	}
+	// Signal tool-initiated handover (if any) now that the handover is committed.
+	// The session is about to restart so the tool result is moot,
+	// but we unblock the goroutine to avoid a leak.
+	if m.handoverToolDoneCh != nil {
+		m.handoverToolDoneCh <- true
+		m.handoverToolDoneCh = nil
 	}
 	m.quitting = true
 	return m, tea.Quit

@@ -113,19 +113,20 @@ type ToolMetadata struct {
 
 // Tool specification names
 const (
-	ReadFileToolName       = "read_file"
-	WriteFileToolName      = "write_file"
-	EditFileToolName       = "edit_file"
-	UnifiedDiffToolName    = "unified_diff"
-	ShellToolName          = "shell"
-	GrepToolName           = "grep"
-	GlobToolName           = "glob"
-	ViewImageToolName      = "view_image"
-	ShowImageToolName      = "show_image"
-	ImageGenerateToolName  = "image_generate"
-	AskUserToolName        = "ask_user"
-	SpawnAgentToolName     = "spawn_agent"
-	RunAgentScriptToolName = "run_agent_script"
+	ReadFileToolName         = "read_file"
+	WriteFileToolName        = "write_file"
+	EditFileToolName         = "edit_file"
+	UnifiedDiffToolName      = "unified_diff"
+	ShellToolName            = "shell"
+	GrepToolName             = "grep"
+	GlobToolName             = "glob"
+	ViewImageToolName        = "view_image"
+	ShowImageToolName        = "show_image"
+	ImageGenerateToolName    = "image_generate"
+	AskUserToolName          = "ask_user"
+	SpawnAgentToolName       = "spawn_agent"
+	RunAgentScriptToolName   = "run_agent_script"
+	InitiateHandoverToolName = "initiate_handover"
 )
 
 // AllToolNames returns all standard tool spec names that can be registered directly.
@@ -145,25 +146,27 @@ func AllToolNames() []string {
 		AskUserToolName,
 		SpawnAgentToolName,
 		RunAgentScriptToolName,
+		InitiateHandoverToolName,
 	}
 }
 
 // validToolNames is a set of valid tool spec names for fast lookup.
 // Note: activate_skill is excluded as it requires a skills registry and is registered separately.
 var validToolNames = map[string]bool{
-	ReadFileToolName:       true,
-	WriteFileToolName:      true,
-	EditFileToolName:       true,
-	UnifiedDiffToolName:    true,
-	ShellToolName:          true,
-	GrepToolName:           true,
-	GlobToolName:           true,
-	ViewImageToolName:      true,
-	ShowImageToolName:      true,
-	ImageGenerateToolName:  true,
-	AskUserToolName:        true,
-	SpawnAgentToolName:     true,
-	RunAgentScriptToolName: true,
+	ReadFileToolName:         true,
+	WriteFileToolName:        true,
+	EditFileToolName:         true,
+	UnifiedDiffToolName:      true,
+	ShellToolName:            true,
+	GrepToolName:             true,
+	GlobToolName:             true,
+	ViewImageToolName:        true,
+	ShowImageToolName:        true,
+	ImageGenerateToolName:    true,
+	AskUserToolName:          true,
+	SpawnAgentToolName:       true,
+	RunAgentScriptToolName:   true,
+	InitiateHandoverToolName: true,
 }
 
 // ValidToolName checks if a name is a valid tool spec name.
@@ -186,7 +189,7 @@ func GetToolKind(specName string) ToolKind {
 		return KindImage
 	case AskUserToolName:
 		return KindInteractive
-	case SpawnAgentToolName:
+	case SpawnAgentToolName, InitiateHandoverToolName:
 		return KindAgent
 	case RunAgentScriptToolName:
 		return KindExecute

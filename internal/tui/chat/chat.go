@@ -104,6 +104,7 @@ type Model struct {
 	handoverPreview     *handoverPreviewModel                      // Inline confirmation UI (alt screen)
 	currentAgent        *agents.Agent                              // Current agent config (for enable_handover)
 	handoverApprovalMgr *tools.ApprovalManager                     // Shell approval flow for handover scripts
+	handoverToolDoneCh  chan<- bool                                // Signal back to initiate_handover tool
 
 	// Pending message context
 	files                   []FileAttachment // Attached files for next message
@@ -204,7 +205,8 @@ type Model struct {
 		cachedTrackerVersion   uint64 // Tracker version when cache was built
 		lastWavePos            int    // Last wave position for animation
 		// Selection cache for invalidation
-		lastSelection Selection
+		lastSelection  Selection
+		lastContentStr string // stored for lazy contentLines split
 	}
 
 	// Cached glamour renderer (avoids expensive recreation during streaming)
@@ -321,6 +323,12 @@ type ApprovalRequestMsg struct {
 type AskUserRequestMsg struct {
 	Questions []tools.AskUserQuestion
 	DoneCh    chan<- []tools.AskUserAnswer
+}
+
+// HandoverRequestMsg triggers a handover flow from a tool call.
+type HandoverRequestMsg struct {
+	Agent  string
+	DoneCh chan<- bool
 }
 
 // New creates a new chat model.
@@ -850,12 +858,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case handoverDoneMsg:
 		m.streaming = false
 		m.phase = "Thinking"
-		if m.streamCancelFunc != nil {
+		// Don't cancel the stream when a tool-initiated handover is pending:
+		// the engine must stay alive to receive the tool result.
+		if m.handoverToolDoneCh == nil && m.streamCancelFunc != nil {
 			m.streamCancelFunc()
 			m.streamCancelFunc = nil
 		}
 		theme := m.styles.Theme()
 		if msg.err != nil {
+			m.cancelHandoverTool()
 			if msg.confirmed {
 				m.pendingHandover = nil
 			}
@@ -867,6 +878,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Println(errStyle.Render(fmt.Sprintf("Handover failed: %v", msg.err)))
 		}
 		if msg.result == nil {
+			m.cancelHandoverTool()
 			if msg.confirmed {
 				m.pendingHandover = nil
 			}
@@ -896,6 +908,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case handoverConfirmMsg:
+		// Don't signal the tool yet — wait until the handover is actually
+		// committed (in executeHandover) so the old turn doesn't resume
+		// prematurely if a later step fails.
 		// Capture instructions before clearing the preview
 		instructions := ""
 		if m.handoverPreview != nil {
@@ -903,12 +918,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.handoverPreview = nil
 		if m.pendingHandover == nil {
+			m.cancelHandoverTool()
 			return m, nil
 		}
 		m.pendingHandover.instructions = strings.TrimSpace(instructions)
 		if m.agentResolver != nil {
 			targetAgent, err := m.agentResolver(m.pendingHandover.agentName, m.config)
 			if err != nil {
+				m.cancelHandoverTool()
 				m.pendingHandover = nil
 				errStyle := lipgloss.NewStyle().Foreground(m.styles.Theme().Error)
 				return m, tea.Println(errStyle.Render(fmt.Sprintf("Handover failed to resolve target agent: %v", err)))
@@ -921,9 +938,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.executeHandover()
 
 	case handoverCancelMsg:
+		toolWasPending := m.handoverToolDoneCh != nil
+		m.cancelHandoverTool()
 		m.pendingHandover = nil
 		m.handoverPreview = nil
 		m.invalidateHistoryCache()
+		// Resume the engine stream so the tool result is delivered.
+		if toolWasPending {
+			m.streaming = true
+		}
 		return m, nil
 
 	case handoverRenameDoneMsg:
@@ -1554,6 +1577,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Non-alt screen mode: shouldn't happen, but fall back to cancelled
 		msg.DoneCh <- nil
 		return m, nil
+
+	case HandoverRequestMsg:
+		// Tool-initiated handover: trigger the same flow as /handover @agent.
+		// Keep streaming paused until the handover is confirmed, cancelled,
+		// or fails — the render path needs !m.streaming to show the preview.
+		m.handoverToolDoneCh = msg.DoneCh
+		m.streaming = false
+		return m.cmdHandover([]string{msg.Agent})
 
 	case SubagentProgressMsg:
 		// Handle subagent progress events and update segment stats

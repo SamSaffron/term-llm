@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"encoding/binary"
 	"hash"
 	"hash/fnv"
 	"strconv"
@@ -105,6 +106,15 @@ type ChatRenderer interface {
 	SetMarkdownRenderer(renderer MarkdownRenderer)
 }
 
+// sigCacheEntry caches the expensive messagePartsSignature result for a message.
+// Validity is checked via cheap comparisons before reuse.
+type sigCacheEntry struct {
+	textLen  int
+	partsCnt int
+	textHash uint64 // FNV-1a of TextContent for same-length change detection
+	sig      uint64
+}
+
 // Renderer implements ChatRenderer with virtualized rendering
 // and caching for performance.
 type Renderer struct {
@@ -114,6 +124,7 @@ type Renderer struct {
 
 	// Caches
 	blockCache *BlockCache
+	sigCache   map[int64]sigCacheEntry // message ID → cached parts signature
 
 	// Streaming state
 	streaming *StreamingBlock
@@ -126,17 +137,18 @@ type Renderer struct {
 // NewRenderer creates a new chat renderer with the given dimensions.
 func NewRenderer(width, height int) *Renderer {
 	// Size cache proportional to viewport: estimate ~5 lines/message average,
-	// then 3x buffer for smooth scrolling. Minimum 50, maximum 200.
+	// then 3x buffer for smooth scrolling. Minimum 50, maximum 2000.
 	cacheSize := (height / 5) * 3
 	if cacheSize < 50 {
 		cacheSize = 50
-	} else if cacheSize > 200 {
-		cacheSize = 200
+	} else if cacheSize > 2000 {
+		cacheSize = 2000
 	}
 	r := &Renderer{
 		width:      width,
 		height:     height,
 		blockCache: NewBlockCache(cacheSize),
+		sigCache:   make(map[int64]sigCacheEntry),
 	}
 	return r
 }
@@ -173,6 +185,7 @@ func (r *Renderer) SetToolsExpanded(v bool) {
 // InvalidateCache forces re-rendering of all cached content.
 func (r *Renderer) InvalidateCache() {
 	r.blockCache.InvalidateAll()
+	clear(r.sigCache)
 }
 
 // HandleEvent processes a render event and returns any commands.
@@ -352,13 +365,15 @@ func (r *Renderer) renderHistory(state RenderState) string {
 // does not rely on message count alone.
 func MessageHistorySignature(messages []session.Message) uint64 {
 	h := fnv.New64a()
+	var buf [8]byte
 	for i := range messages {
 		msg := &messages[i]
 		writeStringHash(h, strconv.FormatInt(msg.ID, 10))
 		writeStringHash(h, strconv.Itoa(msg.Sequence))
 		writeStringHash(h, string(msg.Role))
 		writeStringHash(h, msg.TextContent)
-		writeStringHash(h, messagePartsSignature(msg))
+		binary.LittleEndian.PutUint64(buf[:], messagePartsSignature(msg))
+		_, _ = h.Write(buf[:])
 	}
 	return h.Sum64()
 }
@@ -388,10 +403,61 @@ func (r *Renderer) blockCacheKey(msg *session.Message, index int) string {
 	if r.toolsExpanded {
 		expanded = "1"
 	}
-	return strconv.FormatInt(msg.ID, 10) + ":" + strconv.Itoa(r.width) + ":" + expanded + ":" + messagePartsSignature(msg)
+	return strconv.FormatInt(msg.ID, 10) + ":" + strconv.Itoa(r.width) + ":" + expanded + ":" + strconv.FormatUint(r.cachedPartsSignature(msg), 16)
 }
 
-func messagePartsSignature(msg *session.Message) string {
+// cachedPartsSignature returns the parts signature for a message, using a
+// per-message cache to avoid recomputing the expensive hash on every frame.
+// Cache validity is checked via cheap length comparisons and a text hash.
+func (r *Renderer) cachedPartsSignature(msg *session.Message) uint64 {
+	th := quickTextHash(msg.TextContent)
+	if entry, ok := r.sigCache[msg.ID]; ok {
+		if entry.textLen == len(msg.TextContent) && entry.partsCnt == len(msg.Parts) && entry.textHash == th {
+			return entry.sig
+		}
+	}
+	sig := messagePartsSignature(msg)
+	r.sigCache[msg.ID] = sigCacheEntry{
+		textLen:  len(msg.TextContent),
+		partsCnt: len(msg.Parts),
+		textHash: th,
+		sig:      sig,
+	}
+	return sig
+}
+
+// quickTextHash computes a fast hash of a string for cache invalidation.
+// Only samples the first and last 64 bytes plus the length to avoid O(n)
+// hashing on every frame for large messages. Uses inline FNV-1a to avoid
+// heap allocations from fnv.New64a() and []byte conversions.
+func quickTextHash(s string) uint64 {
+	const (
+		offset64 = 14695981039346656037
+		prime64  = 1099511628211
+	)
+	h := uint64(offset64)
+	n := len(s)
+	if n <= 128 {
+		for i := 0; i < n; i++ {
+			h ^= uint64(s[i])
+			h *= prime64
+		}
+	} else {
+		for i := 0; i < 64; i++ {
+			h ^= uint64(s[i])
+			h *= prime64
+		}
+		for i := n - 64; i < n; i++ {
+			h ^= uint64(s[i])
+			h *= prime64
+		}
+	}
+	h ^= uint64(n)
+	h *= prime64
+	return h
+}
+
+func messagePartsSignature(msg *session.Message) uint64 {
 	h := fnv.New64a()
 	writeStringHash(h, msg.TextContent)
 	writeStringHash(h, strconv.Itoa(len(msg.Parts)))
@@ -437,7 +503,7 @@ func messagePartsSignature(msg *session.Message) string {
 			}
 		}
 	}
-	return strconv.FormatUint(h.Sum64(), 16)
+	return h.Sum64()
 }
 
 func writeStringHash(h hash.Hash64, s string) {

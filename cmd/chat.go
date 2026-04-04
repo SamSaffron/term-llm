@@ -513,6 +513,23 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		defer tools.ClearAskUserHooks()
 	}
 
+	// Set up initiate_handover handling — works in both alt screen and inline modes
+	// because cmdHandover already handles both.
+	tools.SetHandoverUIFunc(func(toolCtx context.Context, agent string) (bool, error) {
+		doneCh := make(chan bool, 1)
+		p.Send(chat.HandoverRequestMsg{
+			Agent:  agent,
+			DoneCh: doneCh,
+		})
+		select {
+		case confirmed := <-doneCh:
+			return confirmed, nil
+		case <-toolCtx.Done():
+			return false, toolCtx.Err()
+		}
+	})
+	defer tools.ClearHandoverUIFunc()
+
 	// Wire signal handling to quit the Bubble Tea program gracefully.
 	// This ensures SIGTERM/SIGINT properly exit alt-screen mode.
 	go func() {

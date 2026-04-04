@@ -2,7 +2,7 @@ name: planner
 description: "Plan and break down complex tasks before implementation"
 
 tools:
-  enabled: [read_file, write_file, edit_file, glob, grep, shell, ask_user]
+  enabled: [read_file, write_file, edit_file, glob, grep, shell, ask_user, initiate_handover]
 
 shell:
   allow:

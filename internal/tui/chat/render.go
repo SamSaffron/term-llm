@@ -120,20 +120,27 @@ func (m *Model) viewAltScreen() string {
 
 	// Build scrollable content with caching to avoid re-rendering unchanged content
 
-	// Check if history cache is valid
-	historySig := render.MessageHistorySignature(m.messages)
+	// Check if history cache is valid.
+	// Skip expensive signature computation when the cache is already valid and
+	// dimensions/scroll haven't changed — this eliminates O(total_content_bytes)
+	// hashing on every frame during streaming.
 	historyValid := m.viewCache.historyValid &&
-		m.viewCache.historySignature == historySig &&
 		m.viewCache.historyWidth == m.width &&
 		m.viewCache.historyScrollOffset == m.scrollOffset
 	if !historyValid {
-		m.viewCache.historyContent = m.renderHistory()
-		m.viewCache.historyMsgCount = len(m.messages)
-		m.viewCache.historySignature = historySig
-		m.viewCache.historyWidth = m.width
-		m.viewCache.historyScrollOffset = m.scrollOffset
-		m.viewCache.historyValid = true
-		m.bumpContentVersion() // History changed
+		historySig := render.MessageHistorySignature(m.messages)
+		if m.viewCache.historyValid && m.viewCache.historySignature == historySig && m.viewCache.historyWidth == m.width {
+			// Content unchanged despite invalidation (e.g. scroll offset change) — restore validity.
+			m.viewCache.historyScrollOffset = m.scrollOffset
+		} else {
+			m.viewCache.historyContent = m.renderHistory()
+			m.viewCache.historyMsgCount = len(m.messages)
+			m.viewCache.historySignature = historySig
+			m.viewCache.historyWidth = m.width
+			m.viewCache.historyScrollOffset = m.scrollOffset
+			m.viewCache.historyValid = true
+			m.bumpContentVersion() // History changed
+		}
 	}
 
 	// Track whether we need to rebuild viewport content this frame.
@@ -186,6 +193,8 @@ func (m *Model) viewAltScreen() string {
 				contentStr += "\n" + m.approvalModel.View()
 			} else if m.askUserModel != nil {
 				contentStr += "\n" + m.askUserModel.View()
+			} else if m.handoverPreview != nil {
+				contentStr += m.handoverPreview.View()
 			}
 		} else {
 			contentStr = m.viewCache.historyContent + m.viewCache.completedStream
@@ -246,9 +255,11 @@ func (m *Model) viewAltScreen() string {
 		m.viewCache.lastSelection = m.selection
 	}
 
-	// Update content lines for selection extraction when content changes
+	// Invalidate content lines when content changes — they'll be rebuilt
+	// lazily on demand in extractSelectedText (only needed for selection).
 	if contentChanged {
-		m.contentLines = strings.Split(contentStr, "\n")
+		m.viewCache.lastContentStr = contentStr
+		m.contentLines = nil
 	}
 
 	// Post-process: apply selection highlight

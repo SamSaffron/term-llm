@@ -165,6 +165,11 @@ func (m *Model) extractSelectedText() string {
 	if start.Line == end.Line && start.Col == end.Col {
 		return ""
 	}
+	// Lazily rebuild content lines from stored content string (avoids
+	// splitting the full content on every frame — only when selection needs it).
+	if m.contentLines == nil && m.viewCache.lastContentStr != "" {
+		m.contentLines = strings.Split(m.viewCache.lastContentStr, "\n")
+	}
 	if len(m.contentLines) == 0 {
 		return ""
 	}
