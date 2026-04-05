@@ -136,6 +136,7 @@ function defaultAppStubs(app, overrides = {}) {
     requestNotificationPermission: async () => 'default',
     shouldAutoSubscribeToPush() { return false; },
     detachResponseStream() {},
+    requeueUncommittedInterrupts() {},
     HEARTBEAT_STALE_THRESHOLD: 45000,
     HEARTBEAT_ABORT_REASON: 'heartbeat stale',
     applyDesktopSidebarState() {},
@@ -604,6 +605,108 @@ async function testSwitchToSessionClearsStaleActiveResponseWithoutToken() {
   pass(name);
 }
 
+async function testIdleSessionSyncRescuesPendingInterruptCommit() {
+  const name = 'idle session sync rescues pending interrupt commits';
+  const sendCalls = [];
+  const requeueCalls = [];
+  let appRef = null;
+
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({ sessions: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (url === '/ui/v1/sessions/sess_interrupt/state') {
+        return new Response(JSON.stringify({ active_run: false }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (url === '/ui/v1/sessions/sess_interrupt/messages') {
+        return new Response(JSON.stringify({ messages: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (url === '/ui/v1/sessions/status') {
+        return new Response(JSON.stringify({ sessions: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    },
+    appOverrides: {
+      requeueUncommittedInterrupts(session) {
+        requeueCalls.push(session.id);
+        const [entry] = appRef.state.pendingInterruptCommits;
+        if (!entry) return;
+        appRef.state.pendingInterruptCommits = [];
+        appRef.state.queuedInterrupts.push({
+          prompt: entry.prompt,
+          messageId: entry.messageId
+        });
+      },
+      sendMessage(payload) {
+        sendCalls.push(payload);
+        return Promise.resolve();
+      },
+    }
+  });
+  appRef = app;
+
+  const session = {
+    id: 'sess_interrupt',
+    title: 'Interrupt me',
+    origin: 'web',
+    created: 1710000000000,
+    messages: [],
+    activeResponseId: 'resp_interrupt_123',
+    lastSequenceNumber: 9,
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  app.state.pendingInterruptCommits = [{
+    sessionId: session.id,
+    prompt: 'follow up after reconnect',
+    messageId: 'msg_interrupt_123'
+  }];
+
+  await app.syncActiveSessionFromServer(session, false);
+
+  if (requeueCalls.length !== 1 || requeueCalls[0] !== session.id) {
+    fail(name, 'expected idle sync to requeue pending interrupt commits', JSON.stringify(requeueCalls));
+    return;
+  }
+
+  if (sendCalls.length !== 1) {
+    fail(name, 'expected rescued interrupt to be sent immediately', JSON.stringify(sendCalls));
+    return;
+  }
+
+  if (sendCalls[0].prompt !== 'follow up after reconnect' || sendCalls[0].reuseMessageId !== 'msg_interrupt_123') {
+    fail(name, 'expected rescued interrupt payload to preserve prompt and message id', JSON.stringify(sendCalls[0]));
+    return;
+  }
+
+  if (app.state.pendingInterruptCommits.length !== 0 || app.state.queuedInterrupts.length !== 0) {
+    fail(name, 'expected rescued interrupt queues to be drained', JSON.stringify({
+      pendingInterruptCommits: app.state.pendingInterruptCommits,
+      queuedInterrupts: app.state.queuedInterrupts,
+    }));
+    return;
+  }
+
+  pass(name);
+}
+
 async function testSessionProgressStatePrefersLocalAndServerSignals() {
   const name = 'session progress state combines optimistic local state with server truth';
   const { app } = await createSessionsHarness();
@@ -664,6 +767,7 @@ async function testSessionProgressStatePrefersLocalAndServerSignals() {
   await testDeveloperMessagesAreHidden();
   await testSwitchToSessionSyncsWithoutTokenAndResumes();
   await testSwitchToSessionClearsStaleActiveResponseWithoutToken();
+  await testIdleSessionSyncRescuesPendingInterruptCommit();
   await testSessionProgressStatePrefersLocalAndServerSignals();
   if (failures > 0) process.exit(1);
   process.exit(0);
