@@ -950,6 +950,15 @@ func (s *serveServer) registerResponseID(rt *serveRuntime, respID, sessionID str
 	}
 }
 
+func (s *serveServer) unregisterResponseIDs(rt *serveRuntime) {
+	if rt == nil {
+		return
+	}
+	for _, rid := range rt.getResponseIDs() {
+		s.responseToSession.Delete(rid)
+	}
+}
+
 func (s *serveServer) runtimeForRequest(ctx context.Context, sessionID string) (*serveRuntime, bool, error) {
 	if sessionID == "" {
 		// Ephemeral stateless runtime (fresh per request for isolation)

@@ -1066,7 +1066,10 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			mgr.scheduleCleanup(respID)
 		}()
 		if !stateful {
-			defer runtime.Close()
+			defer func() {
+				runtime.Close()
+				s.unregisterResponseIDs(runtime)
+			}()
 		}
 
 		// Wire approval event callback so PromptUIFunc can emit SSE events

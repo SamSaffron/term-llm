@@ -112,13 +112,17 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 			writeOpenAIError(w, http.StatusConflict, "conflict_error",
 				fmt.Sprintf("previous_response_id %q is stale; latest is %q", req.PreviousResponseID, lastRespID))
 			if !stateful {
+				s.unregisterResponseIDs(runtime)
 				runtime.Close()
 			}
 			return
 		}
 	}
 	if !stateful {
-		defer runtime.Close()
+		defer func() {
+			runtime.Close()
+			s.unregisterResponseIDs(runtime)
+		}()
 	}
 
 	searchFromTools, requestedTools, passthroughTools := parseRequestedTools(req.Tools)

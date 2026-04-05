@@ -4633,6 +4633,39 @@ func TestRegisterResponseID_CapsAtMax(t *testing.T) {
 	}
 }
 
+func TestStartResponseRun_StatelessCleanupRemovesResponseIDMapping(t *testing.T) {
+	provider := llm.NewMockProvider("mock")
+	provider.AddTextResponse("hello")
+
+	rt := &serveRuntime{
+		provider:     provider,
+		engine:       llm.NewEngine(provider, nil),
+		defaultModel: "mock-model",
+	}
+	rt.Touch()
+
+	srv := &serveServer{responseRuns: newServeResponseRunManager()}
+	defer srv.responseRuns.Close()
+
+	run, err := srv.startResponseRun(rt, false, true, []llm.Message{
+		llm.UserText("hi"),
+	}, llm.Request{Model: "mock-model"}, "", startResponseRunOptions{})
+	if err != nil {
+		t.Fatalf("startResponseRun: %v", err)
+	}
+
+	waitForServeCondition(t, time.Second, func() bool {
+		run.mu.Lock()
+		defer run.mu.Unlock()
+		return run.status == "completed"
+	}, "stateless response run completion")
+
+	waitForServeCondition(t, time.Second, func() bool {
+		_, ok := srv.responseToSession.Load(run.id)
+		return !ok
+	}, "stateless response ID cleanup")
+}
+
 func TestServeSessionManager_Get_ExistingSession(t *testing.T) {
 	factory := func(ctx context.Context) (*serveRuntime, error) {
 		rt := &serveRuntime{}
