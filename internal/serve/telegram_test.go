@@ -1040,6 +1040,54 @@ func TestHandleMessage_InterruptPreservesHistory(t *testing.T) {
 	}
 }
 
+func TestStreamReply_WatchdogTimeoutIsNotTreatedAsUserInterrupt(t *testing.T) {
+	oldTimeout := streamEventTimeout
+	streamEventTimeout = 25 * time.Millisecond
+	defer func() {
+		streamEventTimeout = oldTimeout
+	}()
+
+	h := testutil.NewEngineHarness()
+	h.Provider.AddTurn(llm.MockTurn{Delay: 200 * time.Millisecond, Text: "late reply"})
+
+	mgr, sess := newTestMgrAndSession(h)
+	bot := &fakeBotSender{}
+
+	sess.history = []llm.Message{
+		llm.UserText("previous question"),
+		llm.AssistantText("previous answer"),
+	}
+
+	err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hello"))
+	if err == nil {
+		t.Fatal("expected streamReply to return timeout error")
+	}
+	if !strings.Contains(err.Error(), "stream timed out") {
+		t.Fatalf("expected timeout error, got: %v", err)
+	}
+
+	texts := bot.allTexts()
+	foundTimeout := false
+	for _, text := range texts {
+		if strings.Contains(text, "Response timed out") {
+			foundTimeout = true
+		}
+		if strings.Contains(text, "(interrupted)") {
+			t.Fatalf("watchdog timeout should not be shown as interrupted; sent texts: %v", texts)
+		}
+	}
+	if !foundTimeout {
+		t.Fatalf("expected timeout notification in sent texts, got: %v", texts)
+	}
+
+	sess.mu.Lock()
+	historyLen := len(sess.history)
+	sess.mu.Unlock()
+	if historyLen != 2 {
+		t.Fatalf("watchdog timeout should not persist partial history; got %d messages", historyLen)
+	}
+}
+
 func TestStreamReply_InjectsCarryoverSystemNoteOnce(t *testing.T) {
 	h := testutil.NewEngineHarness()
 	h.Provider.AddTextResponse("first")
