@@ -959,8 +959,9 @@ func (s *serveServer) runtimeForRequest(ctx context.Context, sessionID string) (
 		}
 		return rt, false, nil
 	}
-	// Stateful sessions should outlive a single HTTP request context.
-	rt, err := s.sessionMgr.GetOrCreate(context.Background(), sessionID)
+	// Stateful sessions should persist beyond a single HTTP request, but
+	// creation must still respect request cancellation/timeouts.
+	rt, err := s.sessionMgr.GetOrCreate(ctx, sessionID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -994,7 +995,7 @@ func (s *serveServer) runtimeForProviderRequest(ctx context.Context, sessionID s
 		}
 	}
 	// Use GetOrCreateWith to get proper in-flight deduplication.
-	rt, err := s.sessionMgr.GetOrCreateWith(context.Background(), sessionID, func(ctx context.Context) (*serveRuntime, error) {
+	rt, err := s.sessionMgr.GetOrCreateWith(ctx, sessionID, func(ctx context.Context) (*serveRuntime, error) {
 		return s.runtimeFactory(ctx, providerName, "")
 	})
 	if err != nil {

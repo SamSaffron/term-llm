@@ -4709,6 +4709,84 @@ func TestServeSessionManager_GetOrCreate_RespectsContextCancel(t *testing.T) {
 	close(proceed)
 }
 
+func TestServeServer_RuntimeForRequest_StatefulRespectsRequestCancel(t *testing.T) {
+	started := make(chan struct{})
+	factory := func(ctx context.Context) (*serveRuntime, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	mgr := newServeSessionManager(time.Minute, 10, factory)
+	defer mgr.Close()
+
+	srv := &serveServer{sessionMgr: mgr}
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, _, err := srv.runtimeForRequest(ctx, "slow-sess")
+		errCh <- err
+	}()
+
+	<-started
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("runtimeForRequest did not return after request cancellation")
+	}
+
+	if _, ok := mgr.Get("slow-sess"); ok {
+		t.Fatal("cancelled runtime creation should not store a session runtime")
+	}
+}
+
+func TestServeServer_RuntimeForProviderRequest_StatefulRespectsRequestCancel(t *testing.T) {
+	started := make(chan struct{})
+	mgr := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
+		return nil, fmt.Errorf("default session manager factory should not be used")
+	})
+	defer mgr.Close()
+
+	srv := &serveServer{
+		sessionMgr: mgr,
+		runtimeFactory: func(ctx context.Context, providerName string, model string) (*serveRuntime, error) {
+			if providerName != "test-provider" {
+				return nil, fmt.Errorf("expected provider test-provider, got %q", providerName)
+			}
+			close(started)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, _, err := srv.runtimeForProviderRequest(ctx, "slow-sess", "test-provider")
+		errCh <- err
+	}()
+
+	<-started
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("runtimeForProviderRequest did not return after request cancellation")
+	}
+
+	if _, ok := mgr.Get("slow-sess"); ok {
+		t.Fatal("cancelled runtime creation should not store a session runtime")
+	}
+}
+
 func TestServeSessionManager_EvictionCallbackCleansResponseIDs(t *testing.T) {
 	factory := func(ctx context.Context) (*serveRuntime, error) {
 		rt := &serveRuntime{}
