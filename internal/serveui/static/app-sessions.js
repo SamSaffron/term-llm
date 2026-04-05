@@ -13,7 +13,7 @@ const {
   requestNotificationPermission, shouldAutoSubscribeToPush, detachResponseStream, HEARTBEAT_STALE_THRESHOLD, HEARTBEAT_ABORT_REASON,
   applyDesktopSidebarState, toggleSidebarCollapsed, flushStreamPersistence, requestHeaders, normalizeError, renderAttachments,
   updateSidebarStatus, sessionHasInProgressState, hasAnySessionInProgressState, setSessionServerActiveRun, setSessionOptimisticBusy,
-  moveSessionProgressState
+  moveSessionProgressState, requeueUncommittedInterrupts
 } = app;
 let sessionStatePollTimer = null;
 
@@ -458,6 +458,13 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false) => {
     }
     setConnectionState('', '');
     setStreaming(false);
+    requeueUncommittedInterrupts(session);
+    if (session.id === state.activeSessionId && state.queuedInterrupts.length > 0) {
+      const queued = state.queuedInterrupts.shift();
+      elements.promptInput.value = queued.prompt;
+      autoGrowPrompt();
+      void sendMessage({ prompt: queued.prompt, attachments: [], reuseMessageId: queued.messageId });
+    }
   }
 
   return runtimeState;
