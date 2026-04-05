@@ -154,7 +154,7 @@ type oaiFunction struct {
 }
 
 type oaiToolCall struct {
-	Index    int    `json:"index,omitempty"`
+	Index    *int   `json:"index,omitempty"`
 	ID       string `json:"id,omitempty"`
 	Type     string `json:"type,omitempty"`
 	Function struct {
@@ -680,8 +680,11 @@ func buildCompatToolChoice(choice ToolChoice) interface{} {
 }
 
 type compatToolState struct {
-	byIndex map[int]*toolCallState
-	order   []int
+	byIndex            map[int]*toolCallState
+	order              []int
+	implicitByPosition map[int]int
+	nextImplicitIndex  int
+	hasImplicitIndex   bool
 }
 
 type toolCallState struct {
@@ -691,12 +694,31 @@ type toolCallState struct {
 }
 
 func newCompatToolState() *compatToolState {
-	return &compatToolState{byIndex: make(map[int]*toolCallState)}
+	return &compatToolState{
+		byIndex:            make(map[int]*toolCallState),
+		implicitByPosition: make(map[int]int),
+		nextImplicitIndex:  -1,
+	}
 }
 
 func (s *compatToolState) Add(calls []oaiToolCall) {
-	for _, call := range calls {
-		idx := call.Index
+	for pos, call := range calls {
+		idx := 0
+		if call.Index != nil {
+			idx = *call.Index
+			if mappedIdx, ok := s.implicitByPosition[pos]; ok && mappedIdx < 0 {
+				idx = mappedIdx
+			}
+		} else {
+			s.hasImplicitIndex = true
+			var ok bool
+			idx, ok = s.implicitByPosition[pos]
+			if !ok {
+				idx = s.nextImplicitIndex
+				s.nextImplicitIndex--
+				s.implicitByPosition[pos] = idx
+			}
+		}
 		state, ok := s.byIndex[idx]
 		if !ok {
 			state = &toolCallState{}
@@ -719,9 +741,12 @@ func (s *compatToolState) Calls() []ToolCall {
 	if len(s.order) == 0 {
 		return nil
 	}
-	sort.Ints(s.order)
-	calls := make([]ToolCall, 0, len(s.order))
-	for _, idx := range s.order {
+	order := append([]int(nil), s.order...)
+	if !s.hasImplicitIndex {
+		sort.Ints(order)
+	}
+	calls := make([]ToolCall, 0, len(order))
+	for _, idx := range order {
 		state := s.byIndex[idx]
 		if state == nil {
 			continue

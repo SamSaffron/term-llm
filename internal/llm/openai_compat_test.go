@@ -82,6 +82,140 @@ func TestOpenAICompatStream_AllowsLargeSSEDataLines(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatStream_KeepsToolCallsSeparateWhenIndexesAreOmitted(t *testing.T) {
+	firstChunk := oaiChatResponse{
+		Choices: []oaiChoice{{
+			Delta: &oaiMessage{ToolCalls: []oaiToolCall{{}, {}}},
+		}},
+	}
+	firstChunk.Choices[0].Delta.ToolCalls[0].ID = "call-1"
+	firstChunk.Choices[0].Delta.ToolCalls[0].Function.Name = "search"
+	firstChunk.Choices[0].Delta.ToolCalls[0].Function.Arguments = `{"query":"wea`
+	firstChunk.Choices[0].Delta.ToolCalls[1].ID = "call-2"
+	firstChunk.Choices[0].Delta.ToolCalls[1].Function.Name = "fetch"
+	firstChunk.Choices[0].Delta.ToolCalls[1].Function.Arguments = `{"url":"https://exa`
+
+	secondChunk := oaiChatResponse{
+		Choices: []oaiChoice{{
+			Delta: &oaiMessage{ToolCalls: []oaiToolCall{{}, {}}},
+		}},
+	}
+	secondChunk.Choices[0].Delta.ToolCalls[0].Function.Arguments = `ther"}`
+	secondChunk.Choices[0].Delta.ToolCalls[1].Function.Arguments = `mple.com"}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, chunk := range []oaiChatResponse{firstChunk, secondChunk} {
+			data, err := json.Marshal(chunk)
+			if err != nil {
+				t.Fatalf("marshal chunk: %v", err)
+			}
+			if _, err := w.Write([]byte("data: ")); err != nil {
+				t.Fatalf("write prefix: %v", err)
+			}
+			if _, err := w.Write(data); err != nil {
+				t.Fatalf("write chunk: %v", err)
+			}
+			if _, err := w.Write([]byte("\n\n")); err != nil {
+				t.Fatalf("write separator: %v", err)
+			}
+		}
+		if _, err := w.Write([]byte("data: [DONE]\n\n")); err != nil {
+			t.Fatalf("write done: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatProvider(server.URL, "", "test-model", "Test")
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{{
+			Role:  RoleUser,
+			Parts: []Part{{Type: PartText, Text: "hello"}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	var toolCalls []ToolCall
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv: %v", err)
+		}
+		switch event.Type {
+		case EventToolCall:
+			if event.Tool == nil {
+				t.Fatal("expected tool call event to include tool")
+			}
+			toolCalls = append(toolCalls, *event.Tool)
+		case EventError:
+			t.Fatalf("unexpected stream error: %v", event.Err)
+		}
+	}
+
+	if len(toolCalls) != 2 {
+		t.Fatalf("expected 2 tool calls, got %d: %#v", len(toolCalls), toolCalls)
+	}
+	if toolCalls[0].ID != "call-1" || toolCalls[0].Name != "search" || string(toolCalls[0].Arguments) != `{"query":"weather"}` {
+		t.Fatalf("unexpected first tool call: %#v", toolCalls[0])
+	}
+	if toolCalls[1].ID != "call-2" || toolCalls[1].Name != "fetch" || string(toolCalls[1].Arguments) != `{"url":"https://example.com"}` {
+		t.Fatalf("unexpected second tool call: %#v", toolCalls[1])
+	}
+}
+
+func TestCompatToolState_CallsStaySortedWhenIndexesArePresent(t *testing.T) {
+	s := newCompatToolState()
+
+	first := oaiToolCall{Index: intPtr(1), ID: "call-2"}
+	first.Function.Name = "second"
+	first.Function.Arguments = `{"value":2}`
+	s.Add([]oaiToolCall{first})
+
+	second := oaiToolCall{Index: intPtr(0), ID: "call-1"}
+	second.Function.Name = "first"
+	second.Function.Arguments = `{"value":1}`
+	s.Add([]oaiToolCall{second})
+
+	calls := s.Calls()
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 calls, got %d", len(calls))
+	}
+	if calls[0].ID != "call-1" || calls[1].ID != "call-2" {
+		t.Fatalf("expected calls to be ordered by explicit indexes, got %#v", calls)
+	}
+}
+
+func TestCompatToolState_ReusesPositionWhenIndexAppearsAfterOmission(t *testing.T) {
+	s := newCompatToolState()
+
+	first := oaiToolCall{ID: "call-1"}
+	first.Function.Name = "search"
+	first.Function.Arguments = `{"query":"wea`
+	s.Add([]oaiToolCall{first})
+
+	second := oaiToolCall{Index: intPtr(0)}
+	second.Function.Arguments = `ther"}`
+	s.Add([]oaiToolCall{second})
+
+	calls := s.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d: %#v", len(calls), calls)
+	}
+	if calls[0].ID != "call-1" || calls[0].Name != "search" || string(calls[0].Arguments) != `{"query":"weather"}` {
+		t.Fatalf("unexpected merged call: %#v", calls[0])
+	}
+}
+
+func intPtr(v int) *int {
+	return &v
+}
+
 func TestSplitParts_WithReasoningContent(t *testing.T) {
 	// Test that splitParts correctly extracts reasoning content from parts
 	parts := []Part{
