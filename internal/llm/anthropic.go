@@ -522,6 +522,7 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 
 		// Track current server tool use block (web_search, etc.)
 		currentServerTool := ""
+		currentServerToolIndex := int64(-1)
 		var lastUsage *Usage
 
 		stream := p.client.Beta.Messages.NewStreaming(ctx, params)
@@ -540,6 +541,7 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 						if currentServerTool != "" {
 							events <- Event{Type: EventToolExecEnd, ToolName: currentServerTool, ToolSuccess: true}
 							currentServerTool = ""
+							currentServerToolIndex = -1
 						}
 						events <- Event{Type: EventTextDelta, Text: delta.Text}
 					}
@@ -555,11 +557,17 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 					serverTool := variant.ContentBlock.AsServerToolUse()
 					toolName := string(serverTool.Name)
 					currentServerTool = toolName
+					currentServerToolIndex = variant.Index
 					events <- Event{Type: EventToolExecStart, ToolName: toolName}
 				} else {
 					handleAnthropicBetaStartBlockContent(variant.ContentBlock.AsAny(), variant.Index, accumulator, events)
 				}
 			case anthropic.BetaRawContentBlockStopEvent:
+				if currentServerTool != "" && variant.Index == currentServerToolIndex {
+					events <- Event{Type: EventToolExecEnd, ToolName: currentServerTool, ToolSuccess: true}
+					currentServerTool = ""
+					currentServerToolIndex = -1
+				}
 				if toolCall, ok := accumulator.Finish(variant.Index); ok {
 					events <- Event{Type: EventToolCall, Tool: &toolCall}
 				}
@@ -589,6 +597,9 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 		}
 		if err := stream.Err(); err != nil {
 			return fmt.Errorf("anthropic streaming error: %w", err)
+		}
+		if currentServerTool != "" {
+			events <- Event{Type: EventToolExecEnd, ToolName: currentServerTool, ToolSuccess: true}
 		}
 		if lastUsage != nil {
 			events <- Event{Type: EventUsage, Use: lastUsage}
