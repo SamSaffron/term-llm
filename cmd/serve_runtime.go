@@ -616,7 +616,11 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 			result.Text.WriteString(ev.Text)
 		case llm.EventToolCall:
 			if ev.Tool != nil {
-				result.ToolCalls = append(result.ToolCalls, *ev.Tool)
+				toolCall := *ev.Tool
+				if strings.TrimSpace(toolCall.ID) == "" {
+					toolCall.ID = strings.TrimSpace(ev.ToolCallID)
+				}
+				result.ToolCalls = append(result.ToolCalls, toolCall)
 			}
 		case llm.EventUsage:
 			if ev.Use != nil {

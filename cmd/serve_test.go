@@ -137,6 +137,32 @@ func (p *stagedProvider) Stream(ctx context.Context, req llm.Request) (llm.Strea
 	return &stagedStream{ctx: streamCtx, cancel: cancel, events: ch}, nil
 }
 
+type fixedEventProvider struct {
+	events []llm.Event
+}
+
+func (p *fixedEventProvider) Name() string {
+	return "fixed-events"
+}
+
+func (p *fixedEventProvider) Credential() string {
+	return "test"
+}
+
+func (p *fixedEventProvider) Capabilities() llm.Capabilities {
+	return llm.Capabilities{ToolCalls: true}
+}
+
+func (p *fixedEventProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	streamCtx, cancel := context.WithCancel(ctx)
+	ch := make(chan llm.Event, len(p.events))
+	for _, ev := range p.events {
+		ch <- ev
+	}
+	close(ch)
+	return &stagedStream{ctx: streamCtx, cancel: cancel, events: ch}, nil
+}
+
 func newServeHTTPTestServer(srv *serveServer) *httptest.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/responses", srv.handleResponses)
@@ -5306,6 +5332,72 @@ func TestHandleResponses_PreservesClientDefinedPassthroughTools(t *testing.T) {
 	valueProp, ok := props["value"].(map[string]interface{})
 	if !ok || valueProp["type"] != "string" {
 		t.Fatalf("tool schema value property = %#v, want string type", props["value"])
+	}
+}
+
+func TestNonStreamingResponses_PreservesToolCallIDFromEvent(t *testing.T) {
+	provider := &fixedEventProvider{events: []llm.Event{
+		{
+			Type:       llm.EventToolCall,
+			ToolCallID: "call_passthrough_1",
+			Tool: &llm.ToolCall{
+				Name:      "client_tool",
+				Arguments: json.RawMessage(`{"value":"ok"}`),
+			},
+		},
+		{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 1, OutputTokens: 1}},
+	}}
+
+	factory := func(ctx context.Context) (*serveRuntime, error) {
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			providerKey:  "mock",
+			engine:       engine,
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		return rt, nil
+	}
+	manager := newServeSessionManager(time.Minute, 10, factory)
+	defer manager.Close()
+
+	srv := &serveServer{
+		cfgRef:     &config.Config{DefaultProvider: "mock"},
+		sessionMgr: manager,
+	}
+
+	code, resp := doResponses(t, srv, `{
+		"input":"hello",
+		"tools":[{
+			"type":"function",
+			"name":"client_tool",
+			"description":"Client-defined passthrough tool",
+			"parameters":{
+				"type":"object",
+				"properties":{"value":{"type":"string"}},
+				"required":["value"]
+			}
+		}],
+		"tool_choice":{"type":"function","name":"client_tool"}
+	}`)
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+
+	output := resp["output"].([]any)
+	if len(output) != 1 {
+		t.Fatalf("output len = %d, want 1", len(output))
+	}
+	item := output[0].(map[string]any)
+	if item["type"] != "function_call" {
+		t.Fatalf("output[0].type = %v, want function_call", item["type"])
+	}
+	if item["call_id"] != "call_passthrough_1" {
+		t.Fatalf("output[0].call_id = %v, want call_passthrough_1", item["call_id"])
+	}
+	if item["id"] != "fc_call_passthrough_1" {
+		t.Fatalf("output[0].id = %v, want fc_call_passthrough_1", item["id"])
 	}
 }
 
