@@ -977,6 +977,17 @@ func (s *serveServer) runtimeForRequest(ctx context.Context, sessionID string) (
 	return rt, true, nil
 }
 
+func runtimeProviderKey(rt *serveRuntime) string {
+	if rt == nil {
+		return ""
+	}
+	provider := strings.TrimSpace(rt.providerKey)
+	if provider == "" && rt.provider != nil {
+		provider = strings.TrimSpace(rt.provider.Name())
+	}
+	return provider
+}
+
 // runtimeForProviderRequest creates a runtime using a specific (non-default) provider.
 func (s *serveServer) runtimeForProviderRequest(ctx context.Context, sessionID string, providerName string) (*serveRuntime, bool, error) {
 	if s.runtimeFactory == nil {
@@ -1012,14 +1023,91 @@ func (s *serveServer) runtimeForProviderRequest(ctx context.Context, sessionID s
 	}
 	// Belt-and-suspenders: also check the live runtime in case the store
 	// missed (new session not yet persisted, store error, etc.).
-	existingProvider := strings.TrimSpace(rt.providerKey)
-	if existingProvider == "" && rt.provider != nil {
-		existingProvider = strings.TrimSpace(rt.provider.Name())
-	}
+	existingProvider := runtimeProviderKey(rt)
 	if existingProvider != "" && providerName != "" && existingProvider != providerName {
 		return nil, false, fmt.Errorf("session %q already uses provider %q (requested %q)", sessionID, existingProvider, providerName)
 	}
 	return rt, true, nil
+}
+
+// runtimeForFreshProviderRequest starts a fresh conversation for a non-default
+// provider, even when the caller reuses an existing session ID.
+func (s *serveServer) runtimeForFreshProviderRequest(ctx context.Context, sessionID string, providerName string) (*serveRuntime, bool, error) {
+	if s.runtimeFactory == nil {
+		return s.runtimeForRequest(ctx, sessionID)
+	}
+	if sessionID == "" {
+		rt, err := s.runtimeFactory(ctx, providerName, "")
+		if err != nil {
+			return nil, false, err
+		}
+		return rt, false, nil
+	}
+	if existing, ok := s.sessionMgr.Get(sessionID); ok {
+		existingProvider := runtimeProviderKey(existing)
+		if existingProvider != "" && providerName != "" && existingProvider != providerName {
+			evicted, err := s.sessionMgr.DeleteIfIdle(sessionID)
+			if err != nil {
+				return nil, false, err
+			}
+			if evicted != nil {
+				s.unregisterResponseIDs(evicted)
+				evicted.Close()
+			}
+		}
+	}
+	rt, err := s.sessionMgr.GetOrCreateWith(ctx, sessionID, func(ctx context.Context) (*serveRuntime, error) {
+		return s.runtimeFactory(ctx, providerName, "")
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	existingProvider := runtimeProviderKey(rt)
+	if existingProvider != "" && providerName != "" && existingProvider != providerName {
+		return nil, false, fmt.Errorf("session %q already uses provider %q (requested %q)", sessionID, existingProvider, providerName)
+	}
+	return rt, true, nil
+}
+
+func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID string, rt *serveRuntime) {
+	if s.store == nil || sessionID == "" || rt == nil {
+		return
+	}
+	sess, err := s.store.Get(ctx, sessionID)
+	if err != nil || sess == nil {
+		return
+	}
+	providerKey := strings.TrimSpace(rt.providerKey)
+	providerName := providerKey
+	if rt.provider != nil {
+		if name := strings.TrimSpace(rt.provider.Name()); name != "" {
+			providerName = name
+		}
+	}
+	modelName := strings.TrimSpace(rt.defaultModel)
+	changed := false
+	if providerName != "" && sess.Provider != providerName {
+		sess.Provider = providerName
+		changed = true
+	}
+	if providerKey != "" && sess.ProviderKey != providerKey {
+		sess.ProviderKey = providerKey
+		changed = true
+	}
+	if modelName != "" && sess.Model != modelName {
+		sess.Model = modelName
+		changed = true
+	}
+	if !changed {
+		return
+	}
+	if err := s.store.Update(ctx, sess); err != nil {
+		log.Printf("[serve] session Update failed for %s: %v", sessionID, err)
+		return
+	}
+	rt.mu.Lock()
+	rt.sessionMeta = sess
+	rt.mu.Unlock()
 }
 
 func (s *serveServer) handlePushSubscribe(w http.ResponseWriter, r *http.Request) {

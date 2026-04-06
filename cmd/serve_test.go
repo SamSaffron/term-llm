@@ -3371,6 +3371,95 @@ func TestHandleResponses_PreviousResponseIDRestoresPersistedProviderAfterRuntime
 	}
 }
 
+func TestHandleResponses_FreshProviderRequestCanReuseSessionID(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	var defaultCreates atomic.Int32
+	var otherCreates atomic.Int32
+
+	newRuntime := func(providerName, response string) *serveRuntime {
+		provider := llm.NewMockProvider(providerName).AddTextResponse(response)
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			providerKey:  providerName,
+			engine:       engine,
+			defaultModel: providerName + "-model",
+			store:        store,
+		}
+		rt.Touch()
+		return rt
+	}
+
+	manager := newServeSessionManager(time.Minute, 100, func(ctx context.Context) (*serveRuntime, error) {
+		createNum := defaultCreates.Add(1)
+		return newRuntime("default", fmt.Sprintf("default response %d", createNum)), nil
+	})
+	defer manager.Close()
+
+	srv := &serveServer{
+		cfgRef:     &config.Config{DefaultProvider: "default"},
+		sessionMgr: manager,
+		store:      store,
+		runtimeFactory: func(ctx context.Context, providerName string, model string) (*serveRuntime, error) {
+			createNum := otherCreates.Add(1)
+			return newRuntime(providerName, fmt.Sprintf("%s response %d", providerName, createNum)), nil
+		},
+	}
+
+	code, _ := doResponsesWithHeader(t, srv, `{"input":"hello"}`, "provider-reuse")
+	if code != http.StatusOK {
+		t.Fatalf("first request status = %d, want 200", code)
+	}
+
+	code, resp := doResponsesWithHeader(t, srv, `{"input":"fresh","provider":"other"}`, "provider-reuse")
+	if code != http.StatusOK {
+		t.Fatalf("fresh provider request status = %d, want 200", code)
+	}
+
+	output, ok := resp["output"].([]any)
+	if !ok || len(output) == 0 {
+		t.Fatalf("response output = %#v, want assistant message", resp["output"])
+	}
+	msg, ok := output[0].(map[string]any)
+	if !ok {
+		t.Fatalf("first output item = %#v, want object", output[0])
+	}
+	content, ok := msg["content"].([]any)
+	if !ok || len(content) == 0 {
+		t.Fatalf("message content = %#v, want output_text", msg["content"])
+	}
+	part, ok := content[0].(map[string]any)
+	if !ok {
+		t.Fatalf("first content part = %#v, want object", content[0])
+	}
+	if got := part["text"]; got != "other response 1" {
+		t.Fatalf("response text = %v, want %q", got, "other response 1")
+	}
+
+	sess, err := store.Get(context.Background(), "provider-reuse")
+	if err != nil {
+		t.Fatalf("Get session: %v", err)
+	}
+	if sess == nil {
+		t.Fatal("expected persisted session")
+	}
+	if sess.ProviderKey != "other" {
+		t.Fatalf("ProviderKey = %q, want other", sess.ProviderKey)
+	}
+	if got := defaultCreates.Load(); got != 1 {
+		t.Fatalf("default provider factory calls = %d, want 1", got)
+	}
+	if got := otherCreates.Load(); got != 1 {
+		t.Fatalf("other provider factory calls = %d, want 1", got)
+	}
+}
+
 func TestHandleResponses_NoPreviousResponseIDStartsFresh(t *testing.T) {
 	// Each runtime gets 2 responses so it can handle being reused
 	srv := newTestServeServer("reply1", "reply2")

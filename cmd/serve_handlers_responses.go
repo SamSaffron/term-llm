@@ -90,16 +90,20 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 	var runtime *serveRuntime
 	var stateful bool
+	freshProviderRequest := req.PreviousResponseID == "" && reqProvider != "" && reqProvider != defaultProvider
 	if req.PreviousResponseID != "" {
 		runtime, stateful, err = s.runtimeForProviderRequest(ctx, sessionID, reqProvider)
-	} else if reqProvider == "" || reqProvider == defaultProvider {
+	} else if !freshProviderRequest {
 		runtime, stateful, err = s.runtimeForRequest(ctx, sessionID)
 	} else {
-		runtime, stateful, err = s.runtimeForProviderRequest(ctx, sessionID, reqProvider)
+		runtime, stateful, err = s.runtimeForFreshProviderRequest(ctx, sessionID, reqProvider)
 	}
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
+	}
+	if freshProviderRequest {
+		s.syncPersistedSessionRuntime(ctx, sessionID, runtime)
 	}
 
 	// Enforce chaining from the latest response only. Stale response IDs that

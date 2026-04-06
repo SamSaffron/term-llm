@@ -272,6 +272,24 @@ func (m *serveSessionManager) GetOrCreateWith(ctx context.Context, id string, cr
 	return inflight.rt, nil
 }
 
+// DeleteIfIdle removes a session runtime only when it is not active.
+func (m *serveSessionManager) DeleteIfIdle(id string) (*serveRuntime, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if inflight, ok := m.creating[id]; ok && inflight != nil {
+		return nil, errServeSessionBusy
+	}
+	rt, ok := m.sessions[id]
+	if !ok {
+		return nil, nil
+	}
+	if rt.hasActiveRun() {
+		return nil, errServeSessionBusy
+	}
+	delete(m.sessions, id)
+	return rt, nil
+}
+
 // ActiveSessionIDs returns the set of session IDs that currently have an
 // active run (activeInterrupt != nil). Unlike Get, this does NOT touch
 // runtimes, so it won't extend their TTL.
