@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -14,6 +16,10 @@ const (
 	ReadURLToolName = "read_url"
 	maxReadURLChars = 50000
 )
+
+var readURLLookupIP = func(ctx context.Context, host string) ([]net.IP, error) {
+	return net.DefaultResolver.LookupIP(ctx, "ip", host)
+}
 
 // ReadURLTool fetches web pages using Jina AI Reader.
 type ReadURLTool struct {
@@ -73,10 +79,9 @@ func (t *ReadURLTool) Execute(ctx context.Context, args json.RawMessage) (ToolOu
 		return ToolOutput{}, fmt.Errorf("url is required")
 	}
 
-	// Ensure URL has a scheme
-	url := payload.URL
-	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
-		url = "https://" + url
+	url, err := normalizeReadURLTarget(ctx, payload.URL)
+	if err != nil {
+		return ToolOutput{}, err
 	}
 
 	// Fetch via Jina AI Reader
@@ -115,4 +120,64 @@ func (t *ReadURLTool) Execute(ctx context.Context, args json.RawMessage) (ToolOu
 	}
 
 	return TextOutput(content), nil
+}
+
+func normalizeReadURLTarget(ctx context.Context, rawURL string) (string, error) {
+	targetURL := rawURL
+	if !strings.HasPrefix(strings.ToLower(targetURL), "http://") && !strings.HasPrefix(strings.ToLower(targetURL), "https://") {
+		targetURL = "https://" + targetURL
+	}
+
+	parsedURL, err := url.Parse(targetURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid url: %w", err)
+	}
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return "", fmt.Errorf("url scheme must be http or https")
+	}
+
+	host := strings.TrimSuffix(strings.ToLower(parsedURL.Hostname()), ".")
+	if host == "" {
+		return "", fmt.Errorf("url host is required")
+	}
+	if isBlockedReadURLHost(host) {
+		return "", fmt.Errorf("url host is not allowed")
+	}
+
+	if ip := net.ParseIP(host); ip != nil {
+		if isBlockedReadURLIP(ip) {
+			return "", fmt.Errorf("url host is not allowed")
+		}
+		return targetURL, nil
+	}
+
+	ips, err := readURLLookupIP(ctx, host)
+	if err != nil {
+		return "", fmt.Errorf("resolve url host: %w", err)
+	}
+	for _, ip := range ips {
+		if isBlockedReadURLIP(ip) {
+			return "", fmt.Errorf("url host is not allowed")
+		}
+	}
+
+	return targetURL, nil
+}
+
+func isBlockedReadURLHost(host string) bool {
+	switch host {
+	case "localhost", "metadata.google.internal", "metadata.goog":
+		return true
+	}
+
+	return strings.HasSuffix(host, ".localhost")
+}
+
+func isBlockedReadURLIP(ip net.IP) bool {
+	return ip.IsLoopback() ||
+		ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsUnspecified() ||
+		ip.IsMulticast()
 }

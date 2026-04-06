@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -34,10 +35,18 @@ func (r *failAfterNReadCloser) Close() error {
 }
 
 func TestReadURLToolExecuteLimitsBodyReadBeforeTruncating(t *testing.T) {
+	origLookup := readURLLookupIP
+	readURLLookupIP = func(ctx context.Context, host string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("93.184.216.34")}, nil
+	}
+	defer func() { readURLLookupIP = origLookup }()
+
 	readErr := errors.New("read past limit")
+	capturedURL := ""
 	tool := NewReadURLTool()
 	tool.client = &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			capturedURL = req.URL.String()
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Body: &failAfterNReadCloser{
@@ -58,6 +67,9 @@ func TestReadURLToolExecuteLimitsBodyReadBeforeTruncating(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
+	if got, want := capturedURL, "https://r.jina.ai/https://example.com/article"; got != want {
+		t.Fatalf("expected fetch URL %q, got %q", want, got)
+	}
 	if strings.Contains(out.Content, readErr.Error()) {
 		t.Fatalf("expected limited read to avoid body read error, got %q", out.Content)
 	}
@@ -75,6 +87,76 @@ func TestReadURLToolExecuteLimitsBodyReadBeforeTruncating(t *testing.T) {
 	}
 	if out.Content[:32] != strings.Repeat("a", 32) {
 		t.Fatalf("expected response body prefix to be preserved")
+	}
+}
+
+func TestReadURLToolExecuteRejectsPrivateHosts(t *testing.T) {
+	blockedURLs := []string{
+		"localhost",
+		"http://127.0.0.1/admin",
+		"https://10.0.0.1/status",
+		"http://169.254.169.254/latest/meta-data/",
+		"http://[::1]/",
+		"https://metadata.google.internal/computeMetadata/v1/",
+	}
+
+	for _, rawURL := range blockedURLs {
+		t.Run(rawURL, func(t *testing.T) {
+			called := false
+			tool := NewReadURLTool()
+			tool.client = &http.Client{
+				Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					called = true
+					return nil, errors.New("request should not be sent")
+				}),
+			}
+
+			args, err := json.Marshal(map[string]string{"url": rawURL})
+			if err != nil {
+				t.Fatalf("marshal args: %v", err)
+			}
+
+			_, err = tool.Execute(context.Background(), args)
+			if err == nil || !strings.Contains(err.Error(), "url host is not allowed") {
+				t.Fatalf("expected blocked host error, got %v", err)
+			}
+			if called {
+				t.Fatalf("expected blocked host to prevent outbound request")
+			}
+		})
+	}
+}
+
+func TestReadURLToolExecuteRejectsHostsResolvingToPrivateIPs(t *testing.T) {
+	origLookup := readURLLookupIP
+	readURLLookupIP = func(ctx context.Context, host string) ([]net.IP, error) {
+		if host != "intranet.example.com" {
+			t.Fatalf("unexpected host lookup %q", host)
+		}
+		return []net.IP{net.ParseIP("10.0.0.25")}, nil
+	}
+	defer func() { readURLLookupIP = origLookup }()
+
+	called := false
+	tool := NewReadURLTool()
+	tool.client = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			called = true
+			return nil, errors.New("request should not be sent")
+		}),
+	}
+
+	args, err := json.Marshal(map[string]string{"url": "https://intranet.example.com/status"})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+
+	_, err = tool.Execute(context.Background(), args)
+	if err == nil || !strings.Contains(err.Error(), "url host is not allowed") {
+		t.Fatalf("expected blocked host error, got %v", err)
+	}
+	if called {
+		t.Fatalf("expected blocked host to prevent outbound request")
 	}
 }
 
