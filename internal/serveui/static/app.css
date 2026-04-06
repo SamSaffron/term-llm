@@ -781,6 +781,10 @@
       display: none;
     }
 
+    .markdown-stream-tail.streaming-plain-text {
+      white-space: pre-wrap;
+    }
+
     .markdown-stream-piece > :first-child {
       margin-top: 0;
     }

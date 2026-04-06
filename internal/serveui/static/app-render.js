@@ -371,20 +371,28 @@ const deferEmbeddedVideos = (target) => {
 
 const assistantStreamStates = new Map();
 
-const decorateAssistantFragment = (target) => {
+const decorateAssistantFragment = (target, options = {}) => {
   if (!target) return;
+  const streaming = Boolean(options.streaming);
   deferEmbeddedVideos(target);
-  renderMath(target);
   target.querySelectorAll('a').forEach((a) => {
     a.target = '_blank';
     a.rel = 'noopener noreferrer';
   });
-  target.querySelectorAll('pre code').forEach((code) => {
-    if (/\blanguage-\w+/.test(code.className)) {
-      hljs.highlightElement(code);
-    }
-  });
+  if (!streaming) {
+    renderMath(target);
+    target.querySelectorAll('pre code').forEach((code) => {
+      if (/\blanguage-\w+/.test(code.className)) {
+        hljs.highlightElement(code);
+      }
+    });
+  }
   target.querySelectorAll('pre').forEach((pre) => {
+    if (streaming) {
+      const existingBtn = pre.querySelector('.code-copy-btn');
+      if (existingBtn) existingBtn.remove();
+      return;
+    }
     if (pre.querySelector('.code-copy-btn')) return;
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -409,7 +417,7 @@ const decorateAssistantFragment = (target) => {
   });
 };
 
-const renderAssistantMarkdown = (target, content) => {
+const renderAssistantMarkdown = (target, content, options = {}) => {
   if (!target) return;
   applyTextDirection(target, content || '');
   const html = marked.parse(content || '');
@@ -418,7 +426,7 @@ const renderAssistantMarkdown = (target, content) => {
     ADD_ATTR: ['controls', 'playsinline', 'muted', 'loop', 'autoplay', 'poster', 'preload']
   });
   target.innerHTML = clean;
-  decorateAssistantFragment(target);
+  decorateAssistantFragment(target, options);
 };
 
 const disposeAssistantStreamState = (messageId) => {
@@ -515,6 +523,46 @@ const scheduleAssistantStreamRender = (streamState) => {
   streamState.timerId = window.setTimeout(enqueueFrame, renderDelay - elapsed);
 };
 
+const clearAssistantTailRender = (streamState) => {
+  if (!streamState?.tailContainer) return;
+  streamState.tailContainer.classList.remove('streaming-plain-text');
+  streamState.tailContainer.innerHTML = '';
+  streamState.tailTextNode = null;
+  streamState.lastTailSource = '';
+};
+
+const renderAssistantTailPlainText = (streamState, tail) => {
+  const container = streamState?.tailContainer;
+  if (!container) return;
+  container.classList.add('streaming-plain-text');
+
+  let textNode = streamState.tailTextNode;
+  if (!textNode || textNode.parentNode !== container) {
+    container.innerHTML = '';
+    textNode = document.createTextNode('');
+    container.appendChild(textNode);
+    streamState.tailTextNode = textNode;
+    streamState.lastTailSource = '';
+  }
+
+  if (tail.startsWith(streamState.lastTailSource || '')) {
+    textNode.textContent += tail.slice(streamState.lastTailSource.length);
+  } else {
+    textNode.textContent = tail;
+  }
+
+  streamState.lastTailSource = tail;
+};
+
+const renderAssistantTailMarkdown = (streamState, tail) => {
+  const container = streamState?.tailContainer;
+  if (!container) return;
+  container.classList.remove('streaming-plain-text');
+  streamState.tailTextNode = null;
+  renderAssistantMarkdown(container, tail, { streaming: true });
+  streamState.lastTailSource = tail;
+};
+
 const performAssistantStreamRender = (streamState) => {
   if (!streamState || !streamState.body) return;
   streamState.rafId = 0;
@@ -551,9 +599,18 @@ const performAssistantStreamRender = (streamState) => {
     const tail = content.slice(streamState.committedLength);
     if (tail !== streamState.lastTailContent) {
       if (tail) {
-        renderAssistantMarkdown(streamState.tailContainer, tail);
+        const renderPlainTail = Boolean(
+          app.markdownStreaming
+          && typeof app.markdownStreaming.canStreamPlainTextTail === 'function'
+          && app.markdownStreaming.canStreamPlainTextTail(tail)
+        );
+        if (renderPlainTail) {
+          renderAssistantTailPlainText(streamState, tail);
+        } else {
+          renderAssistantTailMarkdown(streamState, tail);
+        }
       } else {
-        streamState.tailContainer.innerHTML = '';
+        clearAssistantTailRender(streamState);
       }
       streamState.lastTailContent = tail;
     }
