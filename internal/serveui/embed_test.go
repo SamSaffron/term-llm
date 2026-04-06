@@ -153,6 +153,39 @@ func TestAppSessionsJS(t *testing.T) {
 	}
 }
 
+func TestStaticAssetsSupportCodeBlockUX(t *testing.T) {
+	renderJS, err := StaticAsset("app-render.js")
+	if err != nil {
+		t.Fatalf("StaticAsset(app-render.js): %v", err)
+	}
+	renderSrc := string(renderJS)
+	for _, want := range []string{
+		`/\blanguage-\w+/.test(code.className)`,
+		`btn.className = 'code-copy-btn'`,
+		`navigator.clipboard.writeText(text)`,
+		`btn.classList.add('copied')`,
+	} {
+		if !strings.Contains(renderSrc, want) {
+			t.Fatalf("app-render.js missing %q", want)
+		}
+	}
+
+	css, err := StaticAsset("app.css")
+	if err != nil {
+		t.Fatalf("StaticAsset(app.css): %v", err)
+	}
+	cssSrc := string(css)
+	for _, want := range []string{
+		".code-copy-btn",
+		".code-copy-btn.copied",
+		".markdown-body pre:hover .code-copy-btn",
+	} {
+		if !strings.Contains(cssSrc, want) {
+			t.Fatalf("app.css missing %q", want)
+		}
+	}
+}
+
 func TestStaticAssetsSupportSessionStreamDetachOnSwitch(t *testing.T) {
 	sessionsJS, err := StaticAsset("app-sessions.js")
 	if err != nil {

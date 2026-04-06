@@ -833,6 +833,40 @@
       font-size: 0.87rem;
     }
 
+    .code-copy-btn {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      width: 28px;
+      height: 28px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--text-muted);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+      padding: 0;
+      z-index: 1;
+    }
+
+    .markdown-body pre:hover .code-copy-btn {
+      opacity: 1;
+    }
+
+    .code-copy-btn:hover {
+      background: var(--surface-2);
+      color: var(--text);
+    }
+
+    .code-copy-btn.copied {
+      color: var(--accent-green);
+      opacity: 1;
+    }
+
     .markdown-body :not(pre) > code {
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
       background: var(--surface-2);

@@ -61,6 +61,24 @@ const cases = [
     contains: ['<del>wrong</del>'],
     absent: [],
   },
+  {
+    name: 'fenced code with language gets language class',
+    input: '```ruby\nputs "hello"\n```',
+    contains: ['<code class="language-ruby">'],
+    absent: [],
+  },
+  {
+    name: 'fenced code without language gets no language class',
+    input: '```\nplain text\n```',
+    contains: ['<code>'],
+    absent: ['language-'],
+  },
+  {
+    name: 'fenced code with sql language gets language class',
+    input: '```sql\nSELECT 1;\n```',
+    contains: ['<code class="language-sql">'],
+    absent: [],
+  },
 ];
 
 for (const tc of cases) {
