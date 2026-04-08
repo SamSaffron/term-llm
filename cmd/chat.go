@@ -175,7 +175,15 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 
 	// Initialize session store EARLY so resume can override settings before tool/MCP setup
 	store, storeCleanup := InitSessionStore(cfg, cmd.ErrOrStderr())
-	defer storeCleanup()
+	var spawnRunner *SpawnAgentRunner
+	defer func() {
+		// Drain in-flight sub-agent runs before closing the store to avoid
+		// "database is closed" warnings from callbacks that outlive the store.
+		if spawnRunner != nil {
+			spawnRunner.Wait()
+		}
+		storeCleanup()
+	}()
 
 	var sess *session.Session
 	if resumeRequested {
@@ -315,11 +323,13 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		if sess != nil {
 			parentSessionID = sess.ID
 		}
-		if err := WireSpawnAgentRunnerWithStore(cfg, toolMgr, chatYolo, store, parentSessionID); err != nil {
+		var wireErr error
+		spawnRunner, wireErr = WireSpawnAgentRunnerWithStore(cfg, toolMgr, chatYolo, store, parentSessionID)
+		if wireErr != nil {
 			if debugLogger != nil {
 				debugLogger.Close()
 			}
-			return "", "", err
+			return "", "", wireErr
 		}
 	} else if chatYolo {
 		approvalMgr.SetYoloMode(true)
@@ -559,6 +569,9 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 
 	// Handle /reload: close the store, then re-exec under the (potentially new) binary.
 	if m, ok := finalModel.(*chat.Model); ok && m.WantsReload() {
+		if spawnRunner != nil {
+			spawnRunner.Wait()
+		}
 		storeCleanup() // flush & close DB before replacing the process
 		sessionID := m.ReloadSessionID()
 		if execErr := execReload(sessionID); execErr != nil {

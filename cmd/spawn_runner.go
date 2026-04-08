@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/agents"
@@ -26,6 +27,7 @@ type SpawnAgentRunner struct {
 	store             session.Store // Session store for tracking subagent turns
 	parentSessionID   string        // Parent session ID for child session linking
 	warnFunc          func(format string, args ...any)
+	wg                *sync.WaitGroup // tracks in-flight agent runs so callers can drain before closing the store
 }
 
 // NewSpawnAgentRunner creates a new SpawnAgentRunner.
@@ -55,6 +57,7 @@ func NewSpawnAgentRunnerWithStore(cfg *config.Config, yoloMode bool, parentAppro
 		parentApprovalMgr: parentApprovalMgr,
 		store:             store,
 		parentSessionID:   parentSessionID,
+		wg:                &sync.WaitGroup{},
 	}, nil
 }
 
@@ -73,6 +76,12 @@ func (r *SpawnAgentRunner) warn(format string, args ...any) {
 	}
 }
 
+// Wait blocks until all in-flight agent runs have completed.
+// Call this before closing the session store to avoid use-after-close errors.
+func (r *SpawnAgentRunner) Wait() {
+	r.wg.Wait()
+}
+
 // RunAgent loads and runs a sub-agent with the given prompt.
 // It returns the text output from the agent.
 func (r *SpawnAgentRunner) RunAgent(ctx context.Context, agentName string, prompt string, depth int) (tools.SpawnAgentRunResult, error) {
@@ -88,6 +97,9 @@ func (r *SpawnAgentRunner) RunAgentWithCallback(ctx context.Context, agentName s
 // runAgentInternal is the shared implementation for running sub-agents.
 func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName string, prompt string, depth int,
 	callID string, cb tools.SubagentEventCallback) (tools.SpawnAgentRunResult, error) {
+	r.wg.Add(1)
+	defer r.wg.Done()
+
 	emptyResult := tools.SpawnAgentRunResult{}
 
 	// Load the agent
@@ -410,6 +422,7 @@ func (r *SpawnAgentRunner) setupAgentTools(cfg *config.Config, engine *llm.Engin
 			store:             r.store,
 			parentSessionID:   childSessionID, // This agent's session becomes parent for nested agents
 			warnFunc:          r.warnFunc,
+			wg:                r.wg, // share parent's WaitGroup so all nested runs are tracked
 		}
 		spawnTool.SetRunner(childRunner)
 	}

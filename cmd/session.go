@@ -415,25 +415,27 @@ func (s *SessionSettings) SetupToolManager(cfg *config.Config, engine *llm.Engin
 // The toolMgr's ApprovalMgr is passed to sub-agents so they inherit session approvals
 // and can use the parent's prompt function for interactive approvals.
 func WireSpawnAgentRunner(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool) error {
-	return WireSpawnAgentRunnerWithStore(cfg, toolMgr, yoloMode, nil, "")
+	_, err := WireSpawnAgentRunnerWithStore(cfg, toolMgr, yoloMode, nil, "")
+	return err
 }
 
 // WireSpawnAgentRunnerWithStore sets up the spawn_agent runner with session tracking.
 // store is used to save subagent turns, parentSessionID links child sessions to parent.
-func WireSpawnAgentRunnerWithStore(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool, store session.Store, parentSessionID string) error {
+// Returns the runner so callers can call Wait() to drain in-flight runs before closing the store.
+func WireSpawnAgentRunnerWithStore(cfg *config.Config, toolMgr *tools.ToolManager, yoloMode bool, store session.Store, parentSessionID string) (*SpawnAgentRunner, error) {
 	if toolMgr == nil {
-		return nil
+		return nil, nil
 	}
 	spawnTool := toolMgr.GetSpawnAgentTool()
 	if spawnTool == nil {
-		return nil
+		return nil, nil
 	}
 	runner, err := NewSpawnAgentRunnerWithStore(cfg, yoloMode, toolMgr.ApprovalMgr, store, parentSessionID)
 	if err != nil {
-		return fmt.Errorf("setup spawn_agent: %w", err)
+		return nil, fmt.Errorf("setup spawn_agent: %w", err)
 	}
 	spawnTool.SetRunner(runner)
-	return nil
+	return runner, nil
 }
 
 func sessionStoreConfig(cfg *config.Config) session.Config {

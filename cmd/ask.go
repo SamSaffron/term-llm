@@ -250,7 +250,13 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	// Initialize session store and handle --resume BEFORE tool/MCP initialization
 	// so that session settings can override settings.Tools, settings.MCP, etc.
 	store, storeCleanup := InitSessionStore(cfg, cmd.ErrOrStderr())
-	defer storeCleanup()
+	var spawnRunner *SpawnAgentRunner
+	defer func() {
+		if spawnRunner != nil {
+			spawnRunner.Wait()
+		}
+		storeCleanup()
+	}()
 	var sess *session.Session
 	var sessionMessages []llm.Message
 
@@ -336,8 +342,10 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 		// Wire spawn_agent runner if enabled (with session tracking)
 		parentSessionID := sessionID
-		if err := WireSpawnAgentRunnerWithStore(cfg, toolMgr, askYolo, store, parentSessionID); err != nil {
-			return err
+		var wireErr error
+		spawnRunner, wireErr = WireSpawnAgentRunnerWithStore(cfg, toolMgr, askYolo, store, parentSessionID)
+		if wireErr != nil {
+			return wireErr
 		}
 
 	}
