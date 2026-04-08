@@ -635,6 +635,10 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		}
 	}
 
+	if text := rt.engine.DrainInterjection(); text != "" {
+		produced = append(produced, llm.UserText(text))
+	}
+
 	// Accumulate cumulative session-level usage
 	rt.cumulativeUsage.InputTokens += result.Usage.InputTokens
 	rt.cumulativeUsage.OutputTokens += result.Usage.OutputTokens

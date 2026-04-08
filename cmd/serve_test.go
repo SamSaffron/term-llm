@@ -1691,6 +1691,83 @@ func TestServeRuntimeRun_PersistsSessionAndMessages(t *testing.T) {
 	}
 }
 
+func TestServeRuntimeRun_PersistsPendingInterjectionAtEndOfSimpleStream(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	provider := newStagedProvider("hello ", "world")
+	engine := llm.NewEngine(provider, nil)
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  "staged",
+		engine:       engine,
+		store:        store,
+		defaultModel: "staged-model",
+	}
+	rt.Touch()
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, runErr := rt.Run(context.Background(), true, false, []llm.Message{
+			llm.UserText("original request"),
+		}, llm.Request{SessionID: "serve-interject-persist", MaxTurns: 3})
+		errCh <- runErr
+	}()
+
+	select {
+	case <-provider.firstSent:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first streamed chunk")
+	}
+
+	action, err := rt.Interrupt(context.Background(), "also remember this", nil)
+	if err != nil {
+		t.Fatalf("Interrupt failed: %v", err)
+	}
+	if action != llm.InterruptInterject {
+		t.Fatalf("Interrupt action = %v, want %v", action, llm.InterruptInterject)
+	}
+
+	close(provider.releaseSecond)
+
+	select {
+	case runErr := <-errCh:
+		if runErr != nil {
+			t.Fatalf("Run failed: %v", runErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for run to finish")
+	}
+
+	if len(rt.history) != 3 {
+		t.Fatalf("history len = %d, want 3", len(rt.history))
+	}
+	if rt.history[2].Role != llm.RoleUser {
+		t.Fatalf("last history role = %s, want user", rt.history[2].Role)
+	}
+	if got := rt.history[2].Parts[0].Text; got != "also remember this" {
+		t.Fatalf("last history text = %q, want %q", got, "also remember this")
+	}
+
+	msgs, err := store.GetMessages(context.Background(), "serve-interject-persist", 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages failed: %v", err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("persisted message count = %d, want 3", len(msgs))
+	}
+	if msgs[2].Role != llm.RoleUser {
+		t.Fatalf("last persisted role = %s, want user", msgs[2].Role)
+	}
+	if msgs[2].TextContent != "also remember this" {
+		t.Fatalf("last persisted text = %q, want %q", msgs[2].TextContent, "also remember this")
+	}
+}
+
 func TestServeRuntimeRun_ReinjectsPlatformDeveloperMessageAfterFailedFirstRun(t *testing.T) {
 	provider := llm.NewMockProvider("mock").
 		AddError(errors.New("boom")).
