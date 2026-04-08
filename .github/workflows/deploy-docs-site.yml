@@ -39,7 +39,7 @@ jobs:
       - name: Prepare release directories
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: wasnotwas.com
+          host: 143.198.76.107
           username: root
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
@@ -50,7 +50,7 @@ jobs:
       - name: Upload built site
         uses: appleboy/scp-action@v0.1.7
         with:
-          host: wasnotwas.com
+          host: 143.198.76.107
           username: root
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           source: "docs-site-public/*"
@@ -60,7 +60,7 @@ jobs:
       - name: Upload nginx configuration
         uses: appleboy/scp-action@v0.1.7
         with:
-          host: wasnotwas.com
+          host: 143.198.76.107
           username: root
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           source: "ops/nginx/term-llm*.conf"
@@ -70,7 +70,7 @@ jobs:
       - name: Install nginx config, issue cert, and swap webroot
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: wasnotwas.com
+          host: 143.198.76.107
           username: root
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
