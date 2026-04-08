@@ -1,11 +1,16 @@
 package llm
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/shared/constant"
 	"github.com/samsaffron/term-llm/internal/credentials"
 )
@@ -981,5 +986,127 @@ func TestBuildAnthropicBetaMessages_DeveloperRole(t *testing.T) {
 	want := "<developer>\nBe concise\n</developer>\n\nHello"
 	if *got != want {
 		t.Errorf("content = %q, want %q", *got, want)
+	}
+}
+
+func TestStreamWithSearchServerToolExecEnd(t *testing.T) {
+	msgStart := `event: message_start
+data: {"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-6","usage":{"input_tokens":10,"output_tokens":0}}}
+
+`
+	serverToolStart := `event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{}}}
+
+`
+	blockStop1 := `event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+`
+	textBlockStart := `event: content_block_start
+data: {"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}
+
+`
+	textDelta := `event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"hello"}}
+
+`
+	blockStop2 := `event: content_block_stop
+data: {"type":"content_block_stop","index":2}
+
+`
+	msgDelta := `event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}
+
+`
+	msgStop := `event: message_stop
+data: {"type":"message_stop"}
+
+`
+
+	tests := []struct {
+		name           string
+		sse            string
+		wantExecStarts int
+		wantExecEnds   int
+		wantText       string
+	}{
+		{
+			name:           "block_stop_ends_server_tool",
+			sse:            msgStart + serverToolStart + blockStop1 + msgDelta + msgStop,
+			wantExecStarts: 1,
+			wantExecEnds:   1,
+		},
+		{
+			name:           "server_tool_then_text_no_double_end",
+			sse:            msgStart + serverToolStart + blockStop1 + textBlockStart + textDelta + blockStop2 + msgDelta + msgStop,
+			wantExecStarts: 1,
+			wantExecEnds:   1,
+			wantText:       "hello",
+		},
+		{
+			name:           "stream_end_fallback",
+			sse:            msgStart + serverToolStart + msgStop,
+			wantExecStarts: 1,
+			wantExecEnds:   1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprint(w, tt.sse)
+			}))
+			defer ts.Close()
+
+			client := anthropic.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(ts.URL))
+			provider := &AnthropicProvider{client: &client, model: "claude-sonnet-4-6"}
+
+			stream, err := provider.streamWithSearch(context.Background(), Request{
+				Messages: []Message{UserText("test")},
+			})
+			if err != nil {
+				t.Fatalf("streamWithSearch error: %v", err)
+			}
+			defer stream.Close()
+
+			var execStarts, execEnds int
+			var textContent string
+			for {
+				ev, err := stream.Recv()
+				if err != nil {
+					t.Fatalf("Recv error: %v", err)
+				}
+				switch ev.Type {
+				case EventToolExecStart:
+					if ev.ToolName != "web_search" {
+						t.Errorf("EventToolExecStart ToolName = %q, want %q", ev.ToolName, "web_search")
+					}
+					execStarts++
+				case EventToolExecEnd:
+					if ev.ToolName != "web_search" {
+						t.Errorf("EventToolExecEnd ToolName = %q, want %q", ev.ToolName, "web_search")
+					}
+					if !ev.ToolSuccess {
+						t.Error("EventToolExecEnd ToolSuccess = false, want true")
+					}
+					execEnds++
+				case EventTextDelta:
+					textContent += ev.Text
+				case EventDone:
+					goto done
+				}
+			}
+		done:
+			if execStarts != tt.wantExecStarts {
+				t.Errorf("EventToolExecStart count = %d, want %d", execStarts, tt.wantExecStarts)
+			}
+			if execEnds != tt.wantExecEnds {
+				t.Errorf("EventToolExecEnd count = %d, want %d", execEnds, tt.wantExecEnds)
+			}
+			if tt.wantText != "" && textContent != tt.wantText {
+				t.Errorf("text content = %q, want %q", textContent, tt.wantText)
+			}
+		})
 	}
 }
