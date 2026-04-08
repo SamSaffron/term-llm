@@ -62,8 +62,11 @@ func parseChatMessages(msgs []chatMessage) ([]llm.Message, bool, error) {
 	for _, msg := range msgs {
 		role := strings.ToLower(strings.TrimSpace(msg.Role))
 		switch role {
-		case "system", "developer":
+		case "system":
 			result = append(result, llm.SystemText(extractMessageText(msg.Content)))
+			replaceHistory = true
+		case "developer":
+			result = append(result, llm.Message{Role: llm.RoleDeveloper, Parts: []llm.Part{{Type: llm.PartText, Text: extractMessageText(msg.Content)}}})
 			replaceHistory = true
 		case "user":
 			userMsg, err := parseUserMessageContent(msg.Content)
