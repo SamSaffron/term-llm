@@ -476,6 +476,11 @@ func (m *Model) cmdQuit() (tea.Model, tea.Cmd) {
 		m.handoverToolDoneCh <- true
 		m.handoverToolDoneCh = nil
 	}
+	// Cancel the engine stream now that the tool is unblocked
+	if m.streamCancelFunc != nil {
+		m.streamCancelFunc()
+		m.streamCancelFunc = nil
+	}
 	m.quitting = true
 	return m, tea.Quit
 }
@@ -2049,6 +2054,11 @@ func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 	if m.handoverToolDoneCh != nil {
 		m.handoverToolDoneCh <- true
 		m.handoverToolDoneCh = nil
+	}
+	// Cancel the engine stream now that the tool is unblocked
+	if m.streamCancelFunc != nil {
+		m.streamCancelFunc()
+		m.streamCancelFunc = nil
 	}
 	m.quitting = true
 	return m, tea.Quit

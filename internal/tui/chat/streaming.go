@@ -372,7 +372,9 @@ func (m *Model) startStream(content string) tea.Cmd {
 		})
 
 		// Start streaming in background - adapter handles all event conversion
+		m.streamDone = make(chan struct{})
 		go func() {
+			defer close(m.streamDone)
 			stream, err := m.engine.Stream(ctx, req)
 			if err != nil {
 				adapter.EmitErrorAndClose(err)

@@ -176,11 +176,18 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	// Initialize session store EARLY so resume can override settings before tool/MCP setup
 	store, storeCleanup := InitSessionStore(cfg, cmd.ErrOrStderr())
 	var spawnRunner *SpawnAgentRunner
+	var finalModel tea.Model
 	defer func() {
 		// Drain in-flight sub-agent runs before closing the store to avoid
 		// "database is closed" warnings from callbacks that outlive the store.
 		if spawnRunner != nil {
 			spawnRunner.Wait()
+		}
+		// Wait for engine stream goroutine to finish before closing store.
+		// Same pattern as spawnRunner — engine callbacks use WithoutCancel
+		// and will fire after stream cancellation.
+		if m, ok := finalModel.(*chat.Model); ok {
+			m.WaitStreamDone()
 		}
 		storeCleanup()
 	}()
@@ -547,7 +554,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		p.Quit()
 	}()
 
-	finalModel, err := p.Run()
+	finalModel, err = p.Run()
 
 	// Cleanup MCP servers
 	mcpManager.StopAll()

@@ -59,6 +59,7 @@ type Model struct {
 	webSearchUsed    bool
 	retryStatus      string
 	streamCancelFunc context.CancelFunc
+	streamDone       chan struct{} // closed when the engine goroutine exits
 	tracker          *ui.ToolTracker     // Tool and segment tracking (shared component)
 	subagentTracker  *ui.SubagentTracker // Subagent progress tracking
 
@@ -696,6 +697,14 @@ func (m *Model) RequestedResumeSessionID() string {
 // RequestedHandoverAutoSend returns a message to auto-send after handover restart.
 func (m *Model) RequestedHandoverAutoSend() string {
 	return strings.TrimSpace(m.pendingHandoverAutoSend)
+}
+
+// WaitStreamDone blocks until the engine streaming goroutine has exited.
+// It is safe to call when no stream was started (no-op).
+func (m *Model) WaitStreamDone() {
+	if m.streamDone != nil {
+		<-m.streamDone
+	}
 }
 
 // SetHandoverAutoSend sets a message to auto-send on Init (for handover restart).
