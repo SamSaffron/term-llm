@@ -863,8 +863,9 @@ func RenderDiffSegment(filePath, oldContent, newContent string, width int, start
 	renderedLines := 0
 	truncated := false
 
-	// Buffer for removal lines (to pair with additions for word-diff)
+	// Buffers for grouping removals and additions
 	var removalBuffer []bufferedRemoval
+	var additionBuffer []bufferedRemoval // reuse same struct for additions
 
 	// Regex to parse hunk header: @@ -start,count +start,count @@
 	hunkRe := regexp.MustCompile(`^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@`)
@@ -903,17 +904,88 @@ func RenderDiffSegment(filePath, oldContent, newContent string, width int, start
 		renderedLines++
 	}
 
-	// Helper to flush buffered removals (renders them without word-diff)
-	// Respects maxDiffLines limit
-	flushRemovals := func() {
-		for _, rem := range removalBuffer {
+	// flushChanges renders buffered removals and additions as grouped blocks:
+	// all removals first, then all additions. Word-diff is computed by pairing
+	// removals and additions positionally. Whitespace-only pairs collapse to ~.
+	flushChanges := func() {
+		if len(removalBuffer) == 0 && len(additionBuffer) == 0 {
+			return
+		}
+
+		// Pair removals with additions for word-diff analysis
+		pairs := min(len(removalBuffer), len(additionBuffer))
+
+		// Pre-compute word-diff data for each pair
+		type pairData struct {
+			wsOnly  bool
+			useWord bool
+			oldSegs []diffSegment
+			newSegs []diffSegment
+		}
+		pairInfo := make([]pairData, pairs)
+		for i := 0; i < pairs; i++ {
+			rem := removalBuffer[i]
+			add := additionBuffer[i]
+			if isWhitespaceOnlyChange(rem.content, add.content) {
+				pairInfo[i] = pairData{wsOnly: true}
+			} else if shouldUseWordDiff(rem.content, add.content) {
+				oldSegs, newSegs := wordDiff(rem.content, add.content)
+				pairInfo[i] = pairData{useWord: true, oldSegs: oldSegs, newSegs: newSegs}
+			}
+		}
+
+		// Render all removal lines first
+		for i, rem := range removalBuffer {
 			if renderedLines >= maxDiffLines {
 				truncated = true
 				break
 			}
-			renderRemoval(rem.content, rem.lineNum)
+			if i < pairs && pairInfo[i].wsOnly {
+				continue // skip — will render as ~ line
+			}
+			if i < pairs && pairInfo[i].useWord {
+				renderRemovalWithWordDiff(rem.content, rem.lineNum, pairInfo[i].oldSegs)
+			} else {
+				renderRemoval(rem.content, rem.lineNum)
+			}
 		}
+
+		// Render whitespace-only ~ lines between the two groups
+		for i := 0; i < pairs; i++ {
+			if renderedLines >= maxDiffLines {
+				truncated = true
+				break
+			}
+			if !pairInfo[i].wsOnly {
+				continue
+			}
+			add := additionBuffer[i]
+			highlighted := add.content
+			if highlighter != nil {
+				highlighted = highlighter.HighlightLine(add.content)
+			}
+			b.WriteString(wrapDiffLine(lineNumWidth, add.lineNum, '~', "\x1b[38;2;100;100;140m", highlighted, contentWidth, diffWsBg[:]))
+			renderedLines++
+		}
+
+		// Render all addition lines
+		for i, add := range additionBuffer {
+			if renderedLines >= maxDiffLines {
+				truncated = true
+				break
+			}
+			if i < pairs && pairInfo[i].wsOnly {
+				continue // already rendered as ~
+			}
+			if i < pairs && pairInfo[i].useWord {
+				renderAdditionWithWordDiff(add.content, add.lineNum, pairInfo[i].newSegs)
+			} else {
+				renderAddition(add.content, add.lineNum)
+			}
+		}
+
 		removalBuffer = nil
+		additionBuffer = nil
 	}
 
 	// Parse and colorize the diff
@@ -944,8 +1016,8 @@ func RenderDiffSegment(filePath, oldContent, newContent string, width int, start
 
 		switch prefix {
 		case '@':
-			// Flush any buffered removals before new hunk
-			flushRemovals()
+			// Flush any buffered changes before new hunk
+			flushChanges()
 
 			// Parse hunk header to get starting line numbers
 			if matches := hunkRe.FindStringSubmatch(line); matches != nil {
@@ -966,7 +1038,11 @@ func RenderDiffSegment(filePath, oldContent, newContent string, width int, start
 			hunkCount++
 
 		case '-':
-			// Buffer removal lines for potential pairing with additions
+			// If we already have additions buffered, flush before starting new removal block
+			if len(additionBuffer) > 0 {
+				flushChanges()
+			}
+			// Buffer removal lines for grouped rendering
 			removalBuffer = append(removalBuffer, bufferedRemoval{
 				content: content,
 				lineNum: oldLineNum,
@@ -974,37 +1050,16 @@ func RenderDiffSegment(filePath, oldContent, newContent string, width int, start
 			oldLineNum++
 
 		case '+':
-			if len(removalBuffer) > 0 {
-				// Pop the first buffered removal
-				rem := removalBuffer[0]
-				removalBuffer = removalBuffer[1:]
-
-				if isWhitespaceOnlyChange(rem.content, content) {
-					// Whitespace-only change: collapse to single ~ line
-					highlighted := content
-					if highlighter != nil {
-						highlighted = highlighter.HighlightLine(content)
-					}
-					b.WriteString(wrapDiffLine(lineNumWidth, newLineNum, '~', "\x1b[38;2;100;100;140m", highlighted, contentWidth, diffWsBg[:]))
-					renderedLines++
-				} else if shouldUseWordDiff(rem.content, content) {
-					oldSegs, newSegs := wordDiff(rem.content, content)
-					renderRemovalWithWordDiff(rem.content, rem.lineNum, oldSegs)
-					renderAdditionWithWordDiff(content, newLineNum, newSegs)
-				} else {
-					// Lines are too different, render without word-diff
-					renderRemoval(rem.content, rem.lineNum)
-					renderAddition(content, newLineNum)
-				}
-			} else {
-				// Pure addition (no removal to pair with)
-				renderAddition(content, newLineNum)
-			}
+			// Buffer addition lines for grouped rendering
+			additionBuffer = append(additionBuffer, bufferedRemoval{
+				content: content,
+				lineNum: newLineNum,
+			})
 			newLineNum++
 
 		case ' ':
-			// Flush any buffered removals before context line
-			flushRemovals()
+			// Flush any buffered changes before context line
+			flushChanges()
 
 			// Context line - no background, show line number in grey
 			highlighted := content
@@ -1026,8 +1081,8 @@ func RenderDiffSegment(filePath, oldContent, newContent string, width int, start
 		}
 	}
 
-	// Flush any remaining buffered removals
-	flushRemovals()
+	// Flush any remaining buffered changes
+	flushChanges()
 
 	// Show truncation notice if we hit the limit
 	if truncated {

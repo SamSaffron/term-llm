@@ -356,6 +356,33 @@ func TestRenderDiffSegmentNoWordDiff(t *testing.T) {
 	}
 }
 
+func TestRenderDiffSegmentGroupedOutput(t *testing.T) {
+	// Verify that multi-line replacements render all removal lines
+	// before any addition lines (grouped, not interleaved).
+	oldContent := "line one\nline two\nline three"
+	newContent := "LINE ONE\nLINE TWO\nLINE THREE"
+
+	result := RenderDiffSegment("test.txt", oldContent, newContent, 120, 1)
+
+	// Find the last removal line and first addition line in the output.
+	// Removal lines use diffRemoveBg, addition lines use diffAddBg.
+	removeBg := "\x1b[48;2;60;30;30m"
+	addBg := "\x1b[48;2;30;60;30m"
+
+	lastRemoveIdx := strings.LastIndex(result, removeBg)
+	firstAddIdx := strings.Index(result, addBg)
+
+	if lastRemoveIdx == -1 {
+		t.Fatal("expected removal lines in output, found none")
+	}
+	if firstAddIdx == -1 {
+		t.Fatal("expected addition lines in output, found none")
+	}
+	if lastRemoveIdx > firstAddIdx {
+		t.Errorf("removal lines should all appear before addition lines (last remove at %d, first add at %d)", lastRemoveIdx, firstAddIdx)
+	}
+}
+
 func TestWrapDiffLine_DoesNotOverWrapWideRunes(t *testing.T) {
 	// Three emoji are 6 terminal cells total (each emoji is width 2).
 	// With contentWidth=6, this should stay on a single wrapped line.
