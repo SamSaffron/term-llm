@@ -101,6 +101,31 @@ expectEqual('nextStreamingRenderDelay medium', streaming.nextStreamingRenderDela
 expectEqual('nextStreamingRenderDelay large', streaming.nextStreamingRenderDelay(40000), 150);
 expectEqual('nextStreamingRenderDelay huge', streaming.nextStreamingRenderDelay(200000), 250);
 
+expectTrue(
+  'canStreamPlainTextTail accepts ordinary prose',
+  streaming.canStreamPlainTextTail('This is just a steadily growing paragraph\nwith another plain line.')
+);
+expectTrue(
+  'canStreamPlainTextTail accepts snake_case prose',
+  streaming.canStreamPlainTextTail('term_llm keeps file_name.go untouched while streaming prose.')
+);
+expectFalse(
+  'canStreamPlainTextTail rejects emphasis markers',
+  streaming.canStreamPlainTextTail('This has *emphasis* in it.')
+);
+expectFalse(
+  'canStreamPlainTextTail rejects markdown links',
+  streaming.canStreamPlainTextTail('See [docs](https://example.com) for details.')
+);
+expectFalse(
+  'canStreamPlainTextTail rejects list blocks',
+  streaming.canStreamPlainTextTail('- first item\n- second item')
+);
+expectFalse(
+  'canStreamPlainTextTail rejects fenced code blocks',
+  streaming.canStreamPlainTextTail('```js\nconsole.log(1);\n```')
+);
+
 if (failures > 0) {
   console.error('\n' + failures + ' test(s) failed');
   process.exit(1);

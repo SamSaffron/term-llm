@@ -39,6 +39,8 @@
       committedLength: 0,
       latestContent: '',
       lastTailContent: '',
+      lastTailSource: '',
+      tailTextNode: null,
       dirty: false,
       rendering: false,
       rafId: 0,
@@ -312,6 +314,39 @@
     return fallback;
   }
 
+  function containsMarkdownBlockSyntax(text) {
+    return /^\s{0,3}(?:#{1,6}\s|>\s|[-+*]\s|\d+[.)]\s|```|~~~)/m.test(text)
+      || /^\s*\|.*\|\s*$/m.test(text)
+      || /^\s*[-:| ]+\|[-:| ]*$/m.test(text);
+  }
+
+  function containsMarkdownInlineSyntax(text) {
+    if (/`/.test(text)) return true;
+    if (/\[[^\]]*\]\([^\n)]+\)/.test(text)) return true;
+    if (/(^|[^\\])!\[[^\]]*\]\([^\n)]+\)/.test(text)) return true;
+    if (/(\*\*|~~)/.test(text)) return true;
+    if (/<[A-Za-z!/][^>]*>/.test(text)) return true;
+    if (/^\s*---+\s*$/m.test(text) || /^\s*===+\s*$/m.test(text)) return true;
+
+    for (let i = 0; i < text.length; i += 1) {
+      const ch = text[i];
+      if (ch === '*' && isSingleAsteriskDelimiter(text, i)) return true;
+      if (ch === '*' && text[i + 1] === '*' && isDoubleAsteriskDelimiter(text, i)) return true;
+      if (ch === '_' && isUnderscoreDelimiter(text, i)) return true;
+    }
+
+    return false;
+  }
+
+  function canStreamPlainTextTail(text) {
+    const value = String(text || '');
+    if (!value) return true;
+    if (isInCodeBlockFast(value, value.length)) return false;
+    if (containsMarkdownBlockSyntax(value)) return false;
+    if (containsMarkdownInlineSyntax(value)) return false;
+    return true;
+  }
+
   function findStreamingBoundary(content, lastCommittedLength) {
     const text = String(content || '');
     const lastCommitted = Math.max(0, Number(lastCommittedLength) || 0);
@@ -347,6 +382,7 @@
     isInCodeBlockFast,
     areInlineMarkersBalanced,
     areMathDelimitersBalanced,
+    canStreamPlainTextTail,
     findStreamingBoundary
   };
 });
