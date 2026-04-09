@@ -144,6 +144,20 @@ func newServeHTTPTestServer(srv *serveServer) *httptest.Server {
 	return httptest.NewServer(mux)
 }
 
+func TestServeServerStopIsIdempotent(t *testing.T) {
+	s := &serveServer{
+		server:     &http.Server{},
+		shutdownCh: make(chan struct{}),
+	}
+
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatalf("first Stop() error = %v", err)
+	}
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatalf("second Stop() error = %v", err)
+	}
+}
+
 func readSSEEvent(t *testing.T, scanner *bufio.Scanner) (string, string, bool) {
 	t.Helper()
 

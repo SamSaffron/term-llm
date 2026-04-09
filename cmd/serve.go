@@ -816,6 +816,7 @@ type serveServer struct {
 	store             session.Store
 	server            *http.Server
 	shutdownCh        chan struct{}
+	shutdownOnce      sync.Once
 	modelsMu          sync.Mutex
 	modelsProviders   map[string]llm.Provider // keyed by provider name
 	responseToSession sync.Map                // response_id (string) → session_id (string)
@@ -827,6 +828,7 @@ type serveServer struct {
 
 func (s *serveServer) Start() error {
 	s.shutdownCh = make(chan struct{})
+	s.shutdownOnce = sync.Once{}
 	s.server = &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", s.cfg.host, s.cfg.port),
 		Handler: s.httpHandler(),
@@ -918,9 +920,11 @@ func (s *serveServer) Stop(ctx context.Context) error {
 	}
 	// Signal all SSE handlers to return immediately so server.Shutdown
 	// does not block waiting for long-lived streaming connections.
-	if s.shutdownCh != nil {
-		close(s.shutdownCh)
-	}
+	s.shutdownOnce.Do(func() {
+		if s.shutdownCh != nil {
+			close(s.shutdownCh)
+		}
+	})
 	if s.jobsV2 != nil {
 		_ = s.jobsV2.Close()
 	}
