@@ -1,10 +1,15 @@
 #!/bin/bash
 # Boot hook — runs every container start via entrypoint.
-# Installs runit services from /seed/services/ and enables them.
+# Installs runit services from /seed/services/ on first boot only.
 
 SEED_SERVICES="/seed/services"
 SV_DIR="/etc/sv"
 RUNSVDIR="/etc/runit/runsvdir"
+SENTINEL="/root/.config/term-llm/.services-seeded"
+
+if [ -f "$SENTINEL" ]; then
+  exit 0
+fi
 
 if [ ! -d "$SEED_SERVICES" ]; then
   exit 0
@@ -16,13 +21,13 @@ for svc_dir in "$SEED_SERVICES"/*/; do
   svc_name="$(basename "$svc_dir")"
   target="$SV_DIR/$svc_name"
 
-  # Always refresh service definitions from seed
   rm -rf "$target"
   cp -r "$svc_dir" "$target"
   chmod +x "$target"/run "$target"/finish 2>/dev/null || true
 
-  # Enable if not already linked
-  if [ ! -L "$RUNSVDIR/$svc_name" ]; then
-    ln -sf "$target" "$RUNSVDIR/$svc_name"
-  fi
+  ln -sf "$target" "$RUNSVDIR/$svc_name"
 done
+
+mkdir -p "$(dirname "$SENTINEL")"
+touch "$SENTINEL"
+echo "init: services seeded"
