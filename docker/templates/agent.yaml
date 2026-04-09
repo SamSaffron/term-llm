@@ -1,6 +1,6 @@
 name: {{AGENT_NAME}}
 description: "AI assistant"
-include: ["soul.md"]
+include: ["soul.md", "memory/recent.md"]
 tools:
   enabled: [read_file, write_file, edit_file, glob, grep, shell, ask_user, spawn_agent, view_image, run_agent_script]
 shell:
@@ -9,3 +9,6 @@ shell:
 max_turns: 200
 search: true
 agents_md: "false"
+memory:
+  insights_expansion: true
+  insights_max_tokens: 600
