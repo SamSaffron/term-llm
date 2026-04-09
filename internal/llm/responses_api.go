@@ -586,9 +586,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
 		defer resp.Body.Close()
 
-		scanner := bufio.NewScanner(resp.Body)
-		buf := make([]byte, 0, 64*1024)
-		scanner.Buffer(buf, 1024*1024)
+		reader := bufio.NewReader(resp.Body)
 
 		// Tool call state for accumulating streaming function calls
 		toolState := newResponsesToolState()
@@ -597,13 +595,26 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 		var lastEventType string
 		var sawTextDelta bool // Track if any text deltas were emitted
 
-		for scanner.Scan() {
-			line := scanner.Text()
+		for {
+			line, eof, err := readSSELine(reader)
+			if err != nil {
+				return fmt.Errorf("Responses API streaming error: %w", err)
+			}
+			if eof && line == "" {
+				break
+			}
+
 			if strings.HasPrefix(line, "event: ") {
 				lastEventType = strings.TrimPrefix(line, "event: ")
+				if eof {
+					break
+				}
 				continue
 			}
 			if !strings.HasPrefix(line, "data: ") {
+				if eof {
+					break
+				}
 				continue
 			}
 			data := strings.TrimPrefix(line, "data: ")
@@ -734,10 +745,9 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 			}
 
 			lastEventType = ""
-		}
-
-		if err := scanner.Err(); err != nil {
-			return fmt.Errorf("Responses API streaming error: %w", err)
+			if eof {
+				break
+			}
 		}
 
 		// Emit completed tool calls

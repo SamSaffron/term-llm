@@ -1026,6 +1026,76 @@ func TestResponsesClient_NoOnAuthRetry_Returns401Error(t *testing.T) {
 	}
 }
 
+func TestResponsesClientStream_AllowsLargeSSEDataLines(t *testing.T) {
+	largeDelta := strings.Repeat("x", 1024*1024+32)
+	deltaJSON, err := json.Marshal(struct {
+		Delta string `json:"delta"`
+	}{Delta: largeDelta})
+	if err != nil {
+		t.Fatalf("marshal delta event: %v", err)
+	}
+
+	httpClient := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body: io.NopCloser(strings.NewReader(
+					"event: response.output_text.delta\n" +
+						"data: " + string(deltaJSON) + "\n\n" +
+						"event: response.completed\n" +
+						"data: {\"response\":{\"id\":\"resp_large\"}}\n\n" +
+						"data: [DONE]\n\n",
+				)),
+			}, nil
+		}),
+	}
+
+	client := &ResponsesClient{
+		BaseURL:       "https://example.test/v1/responses",
+		GetAuthHeader: func() string { return "Bearer test-token" },
+		HTTPClient:    httpClient,
+	}
+
+	stream, err := client.Stream(context.Background(), ResponsesRequest{
+		Model:  "gpt-5.2",
+		Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "hello"}},
+		Stream: true,
+	}, false)
+	if err != nil {
+		t.Fatalf("stream creation failed: %v", err)
+	}
+	defer stream.Close()
+
+	var got strings.Builder
+	for {
+		event, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			t.Fatalf("stream recv failed: %v", recvErr)
+		}
+		switch event.Type {
+		case EventTextDelta:
+			got.WriteString(event.Text)
+		case EventError:
+			t.Fatalf("unexpected error event: %v", event.Err)
+		case EventDone:
+			if got.String() != largeDelta {
+				t.Fatalf("expected %d bytes of text delta, got %d", len(largeDelta), got.Len())
+			}
+			if client.LastResponseID != "resp_large" {
+				t.Fatalf("expected LastResponseID resp_large, got %q", client.LastResponseID)
+			}
+			return
+		}
+	}
+
+	t.Fatal("expected EventDone")
+}
+
 func assertResponsesAPIErrorBodyTruncated(t *testing.T, err error, prefix string) {
 	t.Helper()
 
