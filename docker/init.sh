@@ -70,9 +70,9 @@ cat <<EOF
   │       ├── soul.md      ← voice, values, personality
   │       └── system.md    ← operational context
   └── services/
-      ├── webui/run        ← web UI on port 8081
-      ├── jobs/run         ← job scheduler
-      └── memory-mine/run  ← mines transcripts into memory
+      ├── webui/run           ← web UI on port 8081
+      ├── jobs/run            ← job scheduler
+      └── bootstrap-jobs/run  ← creates default jobs on first boot
 
   Next steps:
     1. Edit .env — add at least one API key (ANTHROPIC_API_KEY, etc.)

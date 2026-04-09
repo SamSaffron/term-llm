@@ -34,9 +34,9 @@ myagent/
 │       ├── soul.md      ← voice, values, personality
 │       └── system.md    ← operational context
 └── services/
-    ├── webui/run        ← web UI on port 8081
-    ├── jobs/run         ← job scheduler
-    └── memory-mine/run  ← mines transcripts into memory
+    ├── webui/run           ← web UI on port 8081
+    ├── jobs/run            ← job scheduler
+    └── bootstrap-jobs/run  ← creates default jobs on first boot
 ```
 
 You can also specify a custom output directory:
@@ -107,7 +107,7 @@ The container uses the same term-llm Docker image for every agent. No agent-spec
 On first boot, the entrypoint:
 
 1. Copies seed files from `/seed/` into the state volume (only if they don't already exist)
-2. Runs `/seed/init.sh` which installs runit services (web UI, job scheduler, memory mining)
+2. Runs `/seed/init.sh` which installs runit services (web UI, job scheduler, job bootstrapper)
 3. Starts runit as PID 1
 
 After the first boot, the state volume owns all agent config. Your local `agents/` directory remains the seed — edit it and delete the volume to re-seed, or edit the live files inside the container directly.
@@ -118,7 +118,18 @@ After the first boot, the state volume owns all agent config. Your local `agents
 |---|---|
 | `webui` | Web UI and HTTP API on port 8081 |
 | `jobs` | Background job scheduler |
-| `memory-mine` | Mines session transcripts into memory fragments every 6 hours |
+| `bootstrap-jobs` | Creates default scheduled jobs on first boot, then sleeps |
+
+On first boot, the `bootstrap-jobs` service waits for the jobs API, then creates four default jobs:
+
+| Job | Schedule | What it does |
+|---|---|---|
+| `mine-sessions` | Every 30 min | Extracts memory fragments from session transcripts |
+| `update-recent` | Every 10 min | Promotes recent fragments into the agent's context |
+| `memory-gc` | Daily at 4am UTC | Garbage-collects stale or duplicate memory fragments |
+| `pacman-upgrade` | Daily at 5am | Keeps the container's Arch packages current |
+
+These jobs are yours after creation — edit or delete them with `term-llm jobs list` and `term-llm jobs update`.
 
 All services are managed by runit. Check status:
 
@@ -167,4 +178,4 @@ docker exec myagent term-llm sessions list --agent myagent
 docker exec myagent term-llm sessions show <session-id> --agent myagent
 ```
 
-The memory mining service automatically extracts key facts from transcripts into searchable memory fragments.
+The `mine-sessions` job automatically extracts key facts from transcripts into searchable memory fragments. See the bootstrapped jobs above for the full list of default scheduled tasks.

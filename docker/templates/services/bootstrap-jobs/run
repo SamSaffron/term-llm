@@ -1,0 +1,83 @@
+#!/bin/bash
+# One-shot service: bootstraps default jobs on first container launch.
+# After bootstrapping, sleeps forever — runit keeps it "up" with no churn.
+# Jobs are user-owned after creation: edit/delete via term-llm jobs CLI.
+
+SENTINEL="/root/.config/term-llm/.jobs-bootstrapped"
+AGENT="${AGENT_NAME:-agent}"
+
+# Already bootstrapped — nothing to do
+if [ -f "$SENTINEL" ]; then
+  exec sleep infinity
+fi
+
+# Wait for jobs API to be ready (starts after runit launches the jobs service)
+echo "bootstrap-jobs: waiting for jobs API..."
+until curl -sf http://127.0.0.1:8080/health > /dev/null 2>&1; do
+  sleep 2
+done
+echo "bootstrap-jobs: jobs API ready, creating default jobs for agent=$AGENT"
+
+# mine-sessions — extract memory fragments from session transcripts
+term-llm jobs create --data "{
+  \"name\": \"mine-sessions\",
+  \"runner_type\": \"program\",
+  \"runner_config\": {
+    \"command\": \"/usr/local/bin/term-llm\",
+    \"args\": [\"memory\", \"mine\", \"--agent\", \"$AGENT\", \"--stats\", \"--limit\", \"50\", \"--insights\"]
+  },
+  \"trigger_type\": \"cron\",
+  \"trigger_config\": { \"expression\": \"*/30 * * * *\" },
+  \"concurrency_policy\": \"forbid\",
+  \"timeout_seconds\": 3600,
+  \"misfire_policy\": \"skip\"
+}"
+
+# update-recent — promote recent fragments into the agent's recent.md
+term-llm jobs create --data "{
+  \"name\": \"update-recent\",
+  \"runner_type\": \"program\",
+  \"runner_config\": {
+    \"command\": \"/usr/local/bin/term-llm\",
+    \"args\": [\"memory\", \"update-recent\", \"--agent\", \"$AGENT\"]
+  },
+  \"trigger_type\": \"cron\",
+  \"trigger_config\": { \"expression\": \"*/10 * * * *\" },
+  \"concurrency_policy\": \"forbid\",
+  \"timeout_seconds\": 300,
+  \"misfire_policy\": \"skip\"
+}"
+
+# memory-gc — garbage-collect stale or duplicate memory fragments
+term-llm jobs create --data "{
+  \"name\": \"memory-gc\",
+  \"runner_type\": \"program\",
+  \"runner_config\": {
+    \"command\": \"/usr/local/bin/term-llm\",
+    \"args\": [\"memory\", \"fragments\", \"gc\", \"--agent\", \"$AGENT\"]
+  },
+  \"trigger_type\": \"cron\",
+  \"trigger_config\": { \"expression\": \"0 4 * * *\" },
+  \"concurrency_policy\": \"forbid\",
+  \"timeout_seconds\": 300,
+  \"misfire_policy\": \"skip\"
+}"
+
+# pacman-upgrade — keep the container's Arch packages current
+term-llm jobs create --data "{
+  \"name\": \"pacman-upgrade\",
+  \"runner_type\": \"program\",
+  \"runner_config\": {
+    \"command\": \"pacman\",
+    \"args\": [\"-Syu\", \"--noconfirm\"]
+  },
+  \"trigger_type\": \"cron\",
+  \"trigger_config\": { \"expression\": \"0 5 * * *\" },
+  \"concurrency_policy\": \"forbid\",
+  \"timeout_seconds\": 7200,
+  \"misfire_policy\": \"skip\"
+}"
+
+touch "$SENTINEL"
+echo "bootstrap-jobs: done — 4 jobs created. Edit them with: term-llm jobs list / term-llm jobs update"
+exec sleep infinity
