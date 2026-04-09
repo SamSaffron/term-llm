@@ -1033,6 +1033,14 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	}
 	created := time.Now().Unix()
 
+	// Intentionally detached from the HTTP request context. Runs must survive
+	// client disconnects so that:
+	//  - SSE connections are fragile (network blips, mobile tab switches, etc.);
+	//    killing a run on disconnect would waste partial work.
+	//  - Clients reconnect via GET /v1/responses/{id}/events?after=N and replay
+	//    events they missed, which only works if the run kept going.
+	//  - Explicit cancellation is available via POST /v1/responses/{id}/cancel.
+	//  - defaultResponseRunTimeout bounds orphan-run lifetime.
 	runCtx, cancel := context.WithTimeout(context.Background(), defaultResponseRunTimeout)
 	run := newResponseRun(respID, sessionID, options.previousResponseID, model, created, cancel)
 	if err := mgr.create(run); err != nil {
