@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-AGENT_NAME="${AGENT_NAME:-agent}"
+export AGENT_NAME="${AGENT_NAME:-agent}"
 AGENT_DIR="/root/.config/term-llm/agents/$AGENT_NAME"
 SEED_DIR="/seed/agents/$AGENT_NAME"
 
@@ -22,7 +22,7 @@ if [ -f /seed/init.sh ]; then
   bash /seed/init.sh
 fi
 
-# Volume init hook (for manual one-time setup after deploy)
+# Volume init hook (runs every container start)
 if [ -f /root/.config/term-llm/init.sh ]; then
   bash /root/.config/term-llm/init.sh
 fi
