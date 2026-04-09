@@ -13,7 +13,7 @@ fi
 
 # Wait for jobs API to be ready (starts after runit launches the jobs service)
 echo "bootstrap-jobs: waiting for jobs API..."
-until curl -sf http://127.0.0.1:8080/health > /dev/null 2>&1; do
+until nc -z 127.0.0.1 8080 > /dev/null 2>&1; do
   sleep 2
 done
 echo "bootstrap-jobs: jobs API ready, creating default jobs for agent=$AGENT"
@@ -27,7 +27,7 @@ term-llm jobs create --data "{
     \"args\": [\"memory\", \"mine\", \"--agent\", \"$AGENT\", \"--stats\", \"--limit\", \"50\", \"--insights\"]
   },
   \"trigger_type\": \"cron\",
-  \"trigger_config\": { \"expression\": \"*/30 * * * *\" },
+  \"trigger_config\": { \"expression\": \"*/30 * * * *\", \"timezone\": \"UTC\" },
   \"concurrency_policy\": \"forbid\",
   \"timeout_seconds\": 3600,
   \"misfire_policy\": \"skip\"
@@ -42,7 +42,7 @@ term-llm jobs create --data "{
     \"args\": [\"memory\", \"update-recent\", \"--agent\", \"$AGENT\"]
   },
   \"trigger_type\": \"cron\",
-  \"trigger_config\": { \"expression\": \"*/10 * * * *\" },
+  \"trigger_config\": { \"expression\": \"*/10 * * * *\", \"timezone\": \"UTC\" },
   \"concurrency_policy\": \"forbid\",
   \"timeout_seconds\": 300,
   \"misfire_policy\": \"skip\"
@@ -57,7 +57,7 @@ term-llm jobs create --data "{
     \"args\": [\"memory\", \"fragments\", \"gc\", \"--agent\", \"$AGENT\"]
   },
   \"trigger_type\": \"cron\",
-  \"trigger_config\": { \"expression\": \"0 4 * * *\" },
+  \"trigger_config\": { \"expression\": \"0 4 * * *\", \"timezone\": \"UTC\" },
   \"concurrency_policy\": \"forbid\",
   \"timeout_seconds\": 300,
   \"misfire_policy\": \"skip\"
@@ -72,7 +72,7 @@ term-llm jobs create --data "{
     \"args\": [\"-Syu\", \"--noconfirm\"]
   },
   \"trigger_type\": \"cron\",
-  \"trigger_config\": { \"expression\": \"0 5 * * *\" },
+  \"trigger_config\": { \"expression\": \"0 5 * * *\", \"timezone\": \"UTC\" },
   \"concurrency_policy\": \"forbid\",
   \"timeout_seconds\": 7200,
   \"misfire_policy\": \"skip\"
