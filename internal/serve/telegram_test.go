@@ -1040,6 +1040,75 @@ func TestHandleMessage_InterruptPreservesHistory(t *testing.T) {
 	}
 }
 
+func TestHandleMessage_InterruptWaitsForToolCallbackBeforePersistingHistory(t *testing.T) {
+	h := testutil.NewEngineHarness()
+
+	toolStarted := make(chan struct{})
+
+	slowTool := &testutil.MockTool{
+		SpecData: llm.ToolSpec{
+			Name:        "slow_tool",
+			Description: "slow tool for testing",
+			Schema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+		},
+		ExecuteFn: func(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+			close(toolStarted)
+			<-ctx.Done()
+			time.Sleep(25 * time.Millisecond)
+			return llm.TextOutput("cancelled"), ctx.Err()
+		},
+	}
+	h.Registry.Register(slowTool)
+
+	h.Provider.AddToolCall("call-1", "slow_tool", map[string]any{})
+	h.Provider.AddTextResponse("should not reach")
+
+	mgr, sess := newTestMgrAndSession(h)
+	bot := &fakeBotSender{}
+
+	streamDone := make(chan error, 1)
+	go func() {
+		streamDone <- mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("do slow thing"))
+	}()
+
+	select {
+	case <-toolStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("tool never started")
+	}
+
+	sess.cancelMu.Lock()
+	cancelFn := sess.streamCancel
+	sess.cancelMu.Unlock()
+	if cancelFn == nil {
+		t.Fatal("expected streamCancel to be set during active stream")
+	}
+	cancelFn()
+
+	if err := <-streamDone; err != nil {
+		t.Fatalf("streamReply should return nil on interrupt, got: %v", err)
+	}
+
+	sess.mu.Lock()
+	history := append([]llm.Message(nil), sess.history...)
+	sess.mu.Unlock()
+
+	foundToolResult := false
+	for _, msg := range history {
+		for _, part := range msg.Parts {
+			if part.Type == llm.PartToolResult && part.ToolResult != nil && part.ToolResult.ID == "call-1" {
+				foundToolResult = true
+			}
+		}
+	}
+	if !foundToolResult {
+		t.Fatalf("expected interrupted history to include cancelled tool result; history len=%d", len(history))
+	}
+}
+
 func TestStreamReply_WatchdogTimeoutIsNotTreatedAsUserInterrupt(t *testing.T) {
 	oldTimeout := streamEventTimeout
 	streamEventTimeout = 25 * time.Millisecond

@@ -1413,10 +1413,17 @@ loop:
 
 			// User interrupt: cancel the stream and preserve partial state.
 			stream.Close()
+			// Wait for the Recv goroutine to finish draining anything already in-flight
+			// so history snapshots include the final partial text and callback-produced
+			// messages from the interrupted turn.
+			<-streamDone
 
 			textMu.Lock()
 			partial := textBuf.String()
 			textMu.Unlock()
+			producedMu.Lock()
+			producedSnapshot := append([]llm.Message(nil), produced...)
+			producedMu.Unlock()
 
 			// Edit the Telegram message to show partial text + interrupted marker.
 			display := ""
@@ -1437,14 +1444,12 @@ loop:
 			sendEdit(currentMsgID, display, true)
 
 			// Preserve partial history so conversation context isn't lost.
-			newHistory := make([]llm.Message, 0, len(sess.history)+2+len(produced))
+			newHistory := make([]llm.Message, 0, len(sess.history)+2+len(producedSnapshot))
 			newHistory = append(newHistory, sess.history...)
 			newHistory = append(newHistory, normalizeUserMessageForHistory(userMsg))
-			producedMu.Lock()
-			newHistory = append(newHistory, produced...)
-			producedMu.Unlock()
+			newHistory = append(newHistory, producedSnapshot...)
 			// If we have partial text but no tool turns completed, save it.
-			if len(produced) == 0 && partial != "" {
+			if len(producedSnapshot) == 0 && partial != "" {
 				newHistory = append(newHistory, llm.AssistantText(partial))
 			}
 			sess.history = newHistory
