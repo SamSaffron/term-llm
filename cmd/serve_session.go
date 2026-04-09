@@ -300,13 +300,6 @@ func (m *serveSessionManager) ReplaceIdleWith(ctx context.Context, id string, sh
 
 	if inflight, ok := m.creating[id]; ok {
 		m.mu.Unlock()
-		// Clean up the replaced session outside the lock.
-		if replaced != nil {
-			if m.onEvict != nil {
-				m.onEvict(replaced)
-			}
-			replaced.Close()
-		}
 		select {
 		case <-inflight.done:
 		case <-ctx.Done():
@@ -326,23 +319,24 @@ func (m *serveSessionManager) ReplaceIdleWith(ctx context.Context, id string, sh
 	m.creating[id] = inflight
 	m.mu.Unlock()
 
-	// Clean up the replaced session outside the lock.
-	if replaced != nil {
-		if m.onEvict != nil {
-			m.onEvict(replaced)
-		}
-		replaced.Close()
-	}
-
 	rt, err := create(ctx)
 	m.mu.Lock()
 	delete(m.creating, id)
 
 	var duplicate *serveRuntime
 	var evicted *serveRuntime
+	var retired *serveRuntime
+	restoredReplaced := false
 	switch {
 	case err != nil:
 		inflight.err = err
+		if replaced != nil && !m.closed {
+			if _, ok := m.sessions[id]; !ok {
+				replaced.Touch()
+				m.sessions[id] = replaced
+				restoredReplaced = true
+			}
+		}
 	case m.closed:
 		inflight.err = fmt.Errorf("session manager closed")
 	default:
@@ -357,11 +351,20 @@ func (m *serveSessionManager) ReplaceIdleWith(ctx context.Context, id string, sh
 			inflight.rt = rt
 		}
 	}
+	if replaced != nil && !restoredReplaced {
+		retired = replaced
+	}
 	close(inflight.done)
 	m.mu.Unlock()
 
 	if duplicate != nil {
 		duplicate.Close()
+	}
+	if retired != nil {
+		if m.onEvict != nil {
+			m.onEvict(retired)
+		}
+		retired.Close()
 	}
 	if evicted != nil {
 		if m.onEvict != nil {

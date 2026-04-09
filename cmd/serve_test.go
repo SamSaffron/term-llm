@@ -1384,6 +1384,62 @@ func TestServeSessionManager_GetOrCreateWithDoesNotEvictActiveRunWhenAllSessions
 	}
 }
 
+func TestServeSessionManager_ReplaceIdleWith_RestoresExistingSessionWhenCreateFails(t *testing.T) {
+	manager := newServeSessionManager(time.Minute, 10, nil)
+	defer manager.Close()
+
+	var evictions atomic.Int32
+	manager.onEvict = func(rt *serveRuntime) {
+		evictions.Add(1)
+	}
+
+	existing := &serveRuntime{
+		pendingApprovals: map[string]*servePendingApproval{
+			"appr_1": {
+				ApprovalID: "appr_1",
+				Path:       "/tmp/file.txt",
+				Options: []tools.ApprovalOption{{
+					Label:  "Allow once",
+					Choice: tools.ApprovalChoiceOnce,
+				}},
+				CreatedAt: time.Now(),
+				responseC: make(chan serveApprovalSubmission, 1),
+			},
+		},
+	}
+	putTestSession(manager, "sess", existing)
+
+	replaceErr := errors.New("replacement failed")
+	got, err := manager.ReplaceIdleWith(
+		context.Background(),
+		"sess",
+		func(existing *serveRuntime) bool { return true },
+		func(ctx context.Context) (*serveRuntime, error) {
+			return nil, replaceErr
+		},
+	)
+	if !errors.Is(err, replaceErr) {
+		t.Fatalf("ReplaceIdleWith error = %v, want %v", err, replaceErr)
+	}
+	if got != nil {
+		t.Fatalf("ReplaceIdleWith runtime = %v, want nil", got)
+	}
+
+	restored, ok := manager.Get("sess")
+	if !ok {
+		t.Fatal("expected existing session to remain in manager after replacement failure")
+	}
+	if restored != existing {
+		t.Fatal("expected existing runtime pointer to be preserved after replacement failure")
+	}
+	if prompts := existing.pendingApprovalPrompts(); len(prompts) != 1 {
+		t.Fatalf("pending approvals = %d, want 1", len(prompts))
+	}
+	if got := evictions.Load(); got != 0 {
+		t.Fatalf("evictions = %d, want 0", got)
+	}
+}
+
 func TestRequireJSONContentType(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
 	if err := requireJSONContentType(req); err == nil {
