@@ -57,6 +57,8 @@ func (s *serveServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		defer runtime.Close()
 	}
 
+	populateMissingToolResultNames(messages, runtime.history)
+
 	search := runtime.search
 	requestedTools := parseChatRequestedToolNames(req.Tools)
 	toolChoice := parseToolChoice(req.ToolChoice)

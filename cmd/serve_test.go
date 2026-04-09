@@ -1006,6 +1006,35 @@ func TestParseChatMessages_ToolCallAndToolResult(t *testing.T) {
 	}
 }
 
+func TestPopulateMissingToolResultNames_UsesHistory(t *testing.T) {
+	messages, _, err := parseChatMessages([]chatMessage{{
+		Role:       "tool",
+		ToolCallID: "call_1",
+		Content:    json.RawMessage(`"done"`),
+	}})
+	if err != nil {
+		t.Fatalf("parseChatMessages failed: %v", err)
+	}
+
+	history := []llm.Message{{
+		Role: llm.RoleAssistant,
+		Parts: []llm.Part{{
+			Type: llm.PartToolCall,
+			ToolCall: &llm.ToolCall{
+				ID:        "call_1",
+				Name:      "read_file",
+				Arguments: json.RawMessage(`{"path":"a.txt"}`),
+			},
+		}},
+	}}
+
+	populateMissingToolResultNames(messages, history)
+
+	if got := messages[0].Parts[0].ToolResult.Name; got != "read_file" {
+		t.Fatalf("tool result name = %q, want %q", got, "read_file")
+	}
+}
+
 func TestParseChatMessages_DeveloperDoesNotSuppressServerSystemPrompt(t *testing.T) {
 	msgs, replaceHistory, err := parseChatMessages([]chatMessage{
 		{Role: "developer", Content: json.RawMessage(`"Be concise"`)},
@@ -6116,6 +6145,69 @@ func TestChatCompletions_PreservesClientPassthroughTools(t *testing.T) {
 	}
 	if _, ok := props["query"]; !ok {
 		t.Fatalf("expected query property in schema, got %#v", props)
+	}
+}
+
+func TestChatCompletions_ToolResultWithoutReplayedToolCallKeepsNameFromSessionHistory(t *testing.T) {
+	provider := llm.NewMockProvider("mock").
+		AddToolCall("call-1", "client_tool", map[string]any{"query": "hi"}).
+		AddTextResponse("all set")
+	engine := llm.NewEngine(provider, nil)
+
+	factory := func(ctx context.Context) (*serveRuntime, error) {
+		rt := &serveRuntime{
+			provider:     provider,
+			engine:       engine,
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		return rt, nil
+	}
+	mgr := newServeSessionManager(time.Minute, 100, factory)
+	srv := &serveServer{sessionMgr: mgr}
+
+	firstBody := `{
+		"model": "test",
+		"messages": [{"role": "user", "content": "Hi"}],
+		"tools": [{"type": "function", "function": {"name": "client_tool"}}]
+	}`
+	firstReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(firstBody))
+	firstReq.Header.Set("Content-Type", "application/json")
+	firstReq.Header.Set("session_id", "tool-history-session")
+	firstResp := httptest.NewRecorder()
+	srv.handleChatCompletions(firstResp, firstReq)
+	if firstResp.Code != http.StatusOK {
+		t.Fatalf("first status = %d, want 200; body: %s", firstResp.Code, firstResp.Body.String())
+	}
+
+	secondBody := `{
+		"model": "test",
+		"messages": [{"role": "tool", "tool_call_id": "call-1", "content": "done"}]
+	}`
+	secondReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(secondBody))
+	secondReq.Header.Set("Content-Type", "application/json")
+	secondReq.Header.Set("session_id", "tool-history-session")
+	secondResp := httptest.NewRecorder()
+	srv.handleChatCompletions(secondResp, secondReq)
+	if secondResp.Code != http.StatusOK {
+		t.Fatalf("second status = %d, want 200; body: %s", secondResp.Code, secondResp.Body.String())
+	}
+
+	if len(provider.Requests) != 2 {
+		t.Fatalf("provider request count = %d, want 2", len(provider.Requests))
+	}
+
+	var toolResultName string
+	for _, msg := range provider.Requests[1].Messages {
+		for _, part := range msg.Parts {
+			if part.Type != llm.PartToolResult || part.ToolResult == nil || part.ToolResult.ID != "call-1" {
+				continue
+			}
+			toolResultName = part.ToolResult.Name
+		}
+	}
+	if toolResultName != "client_tool" {
+		t.Fatalf("tool result name = %q, want %q", toolResultName, "client_tool")
 	}
 }
 

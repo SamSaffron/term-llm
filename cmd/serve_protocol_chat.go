@@ -43,6 +43,7 @@ type chatMessage struct {
 	Content    json.RawMessage `json:"content,omitempty"`
 	ToolCalls  []chatToolCall  `json:"tool_calls,omitempty"`
 	ToolCallID string          `json:"tool_call_id,omitempty"`
+	Name       string          `json:"name,omitempty"`
 }
 
 type chatToolCall struct {
@@ -105,7 +106,10 @@ func parseChatMessages(msgs []chatMessage) ([]llm.Message, bool, error) {
 			if callID == "" {
 				return nil, false, fmt.Errorf("tool message missing tool_call_id")
 			}
-			name := callNameByID[callID]
+			name := strings.TrimSpace(msg.Name)
+			if name == "" {
+				name = callNameByID[callID]
+			}
 			result = append(result, llm.ToolResultMessage(callID, name, extractMessageText(msg.Content), nil))
 			replaceHistory = true
 		default:
@@ -114,6 +118,53 @@ func parseChatMessages(msgs []chatMessage) ([]llm.Message, bool, error) {
 	}
 
 	return result, replaceHistory, nil
+}
+
+func populateMissingToolResultNames(messages []llm.Message, history []llm.Message) {
+	callNameByID := make(map[string]string)
+	collectToolNamesByID(callNameByID, history)
+	if len(callNameByID) == 0 {
+		return
+	}
+	for i := range messages {
+		for j := range messages[i].Parts {
+			part := &messages[i].Parts[j]
+			if part.Type != llm.PartToolResult || part.ToolResult == nil {
+				continue
+			}
+			if strings.TrimSpace(part.ToolResult.Name) != "" {
+				continue
+			}
+			part.ToolResult.Name = callNameByID[strings.TrimSpace(part.ToolResult.ID)]
+		}
+	}
+}
+
+func collectToolNamesByID(callNameByID map[string]string, messages []llm.Message) {
+	for _, msg := range messages {
+		for _, part := range msg.Parts {
+			switch part.Type {
+			case llm.PartToolCall:
+				if part.ToolCall == nil {
+					continue
+				}
+				callID := strings.TrimSpace(part.ToolCall.ID)
+				name := strings.TrimSpace(part.ToolCall.Name)
+				if callID != "" && name != "" {
+					callNameByID[callID] = name
+				}
+			case llm.PartToolResult:
+				if part.ToolResult == nil {
+					continue
+				}
+				callID := strings.TrimSpace(part.ToolResult.ID)
+				name := strings.TrimSpace(part.ToolResult.Name)
+				if callID != "" && name != "" {
+					callNameByID[callID] = name
+				}
+			}
+		}
+	}
 }
 
 func parseChatRequestedToolNames(tools []chatTool) map[string]bool {
