@@ -510,9 +510,7 @@ func (m *telegramSessionMgr) getOrCreate(ctx context.Context, chatID int64) (*te
 	m.mu.Lock()
 	if existing, ok := m.sessions[chatID]; ok {
 		m.mu.Unlock()
-		created.mu.Lock()
 		closeTelegramSession(created)
-		created.mu.Unlock()
 		return existing, nil
 	}
 	m.sessions[chatID] = created
@@ -535,18 +533,14 @@ func (m *telegramSessionMgr) resetSessionIfCurrent(ctx context.Context, chatID i
 	current := m.sessions[chatID]
 	if expected != nil && current != nil && current != expected {
 		m.mu.Unlock()
-		created.mu.Lock()
 		closeTelegramSession(created)
-		created.mu.Unlock()
 		return current, false, nil
 	}
 	m.sessions[chatID] = created
 	m.mu.Unlock()
 
 	if current != nil {
-		current.mu.Lock()
 		closeTelegramSession(current)
-		current.mu.Unlock()
 	}
 	return created, true, nil
 }
@@ -697,17 +691,30 @@ func (m *telegramSessionMgr) closeAllSessions() {
 	m.mu.Unlock()
 
 	for _, sess := range sessions {
-		sess.mu.Lock()
 		closeTelegramSession(sess)
-		sess.mu.Unlock()
 	}
 }
 
 func closeTelegramSession(sess *telegramSession) {
-	if sess == nil || sess.runtime == nil || sess.runtime.Cleanup == nil {
+	if sess == nil {
 		return
 	}
-	sess.runtime.Cleanup()
+
+	sess.cancelMu.Lock()
+	cancelFn := sess.streamCancel
+	doneCh := sess.replyDone
+	sess.cancelMu.Unlock()
+
+	if cancelFn != nil {
+		cancelFn()
+		if doneCh != nil {
+			<-doneCh
+		}
+	}
+
+	if sess.runtime != nil && sess.runtime.Cleanup != nil {
+		sess.runtime.Cleanup()
+	}
 }
 
 func (m *telegramSessionMgr) runStoreOp(ctx context.Context, sessionID, op string, fn func(context.Context) error) {

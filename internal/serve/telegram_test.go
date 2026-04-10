@@ -681,6 +681,112 @@ func TestTelegramSessionMgrResetSessionIfCurrent_RejectsStaleExpectedSession(t *
 	}
 }
 
+func TestTelegramSessionMgrResetSessionIfCurrent_CancelsActiveStream(t *testing.T) {
+	h := testutil.NewEngineHarness()
+
+	toolStarted := make(chan struct{})
+	slowTool := &testutil.MockTool{
+		SpecData: llm.ToolSpec{
+			Name:        "slow_tool",
+			Description: "slow tool for testing",
+			Schema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+		},
+		ExecuteFn: func(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+			close(toolStarted)
+			<-ctx.Done()
+			return llm.TextOutput("cancelled"), ctx.Err()
+		},
+	}
+	h.Registry.Register(slowTool)
+	h.Provider.AddToolCall("id-1", "slow_tool", map[string]any{})
+	h.Provider.AddTextResponse("final answer")
+
+	var cleanupCalls atomic.Int32
+	mgr := &telegramSessionMgr{
+		sessions:       make(map[int64]*telegramSession),
+		tickerInterval: 5 * time.Millisecond,
+		settings: Settings{
+			MaxTurns: 5,
+			NewSession: func(ctx context.Context) (*SessionRuntime, error) {
+				return &SessionRuntime{
+					Engine:       h.Engine,
+					ProviderName: "mock",
+					ModelName:    "replacement",
+				}, nil
+			},
+		},
+	}
+	original := &telegramSession{
+		runtime: &SessionRuntime{
+			Engine:       h.Engine,
+			ProviderName: "mock",
+			ModelName:    "test",
+			Cleanup: func() {
+				cleanupCalls.Add(1)
+			},
+		},
+	}
+	mgr.sessions[42] = original
+
+	bot := &fakeBotSender{}
+	streamDone := make(chan error, 1)
+	go func() {
+		streamDone <- mgr.streamReply(context.Background(), bot, original, 42, llm.UserText("do something slow"))
+	}()
+
+	select {
+	case <-toolStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("tool never started")
+	}
+
+	resetDone := make(chan struct{})
+	var (
+		replacement *telegramSession
+		replaced    bool
+		resetErr    error
+	)
+	go func() {
+		replacement, replaced, resetErr = mgr.resetSessionIfCurrent(context.Background(), 42, original)
+		close(resetDone)
+	}()
+
+	select {
+	case <-resetDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("resetSessionIfCurrent did not return after cancelling active stream")
+	}
+
+	if resetErr != nil {
+		t.Fatalf("resetSessionIfCurrent failed: %v", resetErr)
+	}
+	if !replaced {
+		t.Fatal("expected reset to replace the active session")
+	}
+	if replacement == nil || replacement == original {
+		t.Fatal("expected a new replacement session")
+	}
+
+	select {
+	case err := <-streamDone:
+		if err != nil {
+			t.Fatalf("streamReply should return nil after session reset interruption, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("streamReply did not stop after session reset")
+	}
+
+	if cleanupCalls.Load() != 1 {
+		t.Fatalf("cleanup calls = %d, want 1", cleanupCalls.Load())
+	}
+	if got := mgr.sessions[42]; got != replacement {
+		t.Fatal("expected replacement session to be current")
+	}
+}
+
 func TestTelegramSessionMgrResetSessionIfCurrent_RestoresHistoryFromDB(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
