@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/credentials"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
 )
@@ -65,7 +64,7 @@ providers:
     model: sonnet
     env:
       IS_SANDBOX: "1"
-      CLAUDE_CODE_OAUTH_TOKEN: file:///tmp/oauth.json#access_token
+      MY_AUTH_TOKEN: file:///tmp/oauth.json#access_token
 `
 	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configYAML), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -83,14 +82,14 @@ providers:
 	if got := providerCfg.Env["IS_SANDBOX"]; got != "1" {
 		t.Fatalf("IS_SANDBOX = %q, want %q", got, "1")
 	}
-	if got := providerCfg.Env["CLAUDE_CODE_OAUTH_TOKEN"]; got != "file:///tmp/oauth.json#access_token" {
-		t.Fatalf("CLAUDE_CODE_OAUTH_TOKEN = %q", got)
+	if got := providerCfg.Env["MY_AUTH_TOKEN"]; got != "file:///tmp/oauth.json#access_token" {
+		t.Fatalf("MY_AUTH_TOKEN = %q", got)
 	}
 	if _, ok := providerCfg.Env["is_sandbox"]; ok {
 		t.Fatal("did not expect lowercased is_sandbox key")
 	}
-	if _, ok := providerCfg.Env["claude_code_oauth_token"]; ok {
-		t.Fatal("did not expect lowercased claude_code_oauth_token key")
+	if _, ok := providerCfg.Env["my_auth_token"]; ok {
+		t.Fatal("did not expect lowercased my_auth_token key")
 	}
 }
 
@@ -117,7 +116,7 @@ func TestResolveProviderCredentials_ResolvesLazyEnvMapForInference(t *testing.T)
 	}
 	cfg := &ProviderConfig{
 		Env: map[string]string{
-			"CLAUDE_CODE_OAUTH_TOKEN": "file://" + path + "#access_token",
+			"MY_AUTH_TOKEN": "file://" + path + "#access_token",
 		},
 	}
 	if err := resolveProviderCredentials("claude-bin", cfg); err != nil {
@@ -129,7 +128,7 @@ func TestResolveProviderCredentials_ResolvesLazyEnvMapForInference(t *testing.T)
 	if err := cfg.ResolveForInference(); err != nil {
 		t.Fatalf("ResolveForInference: %v", err)
 	}
-	if got := cfg.Env["CLAUDE_CODE_OAUTH_TOKEN"]; got != "secret-token" {
+	if got := cfg.Env["MY_AUTH_TOKEN"]; got != "secret-token" {
 		t.Fatalf("resolved env value = %q, want %q", got, "secret-token")
 	}
 }
@@ -163,7 +162,6 @@ func TestInferProviderType(t *testing.T) {
 
 func TestDescribeCredentialSource_AnthropicExplicitKey(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
-	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
 
 	cfg := &ProviderConfig{APIKey: "sk-test-123"}
 	source, found := DescribeCredentialSource("anthropic", cfg)
@@ -177,7 +175,6 @@ func TestDescribeCredentialSource_AnthropicExplicitKey(t *testing.T) {
 
 func TestDescribeCredentialSource_AnthropicEnvKey(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-env-key-456")
-	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
 
 	cfg := &ProviderConfig{}
 	source, found := DescribeCredentialSource("anthropic", cfg)
@@ -189,71 +186,16 @@ func TestDescribeCredentialSource_AnthropicEnvKey(t *testing.T) {
 	}
 }
 
-func TestDescribeCredentialSource_AnthropicOAuthEnv(t *testing.T) {
-	t.Setenv("ANTHROPIC_API_KEY", "")
-	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test")
-
-	cfg := &ProviderConfig{}
-	source, found := DescribeCredentialSource("anthropic", cfg)
-	if !found {
-		t.Fatal("expected credential to be found")
-	}
-	if !strings.Contains(source, "CLAUDE_CODE_OAUTH_TOKEN") {
-		t.Fatalf("source=%q, expected to contain CLAUDE_CODE_OAUTH_TOKEN", source)
-	}
-}
-
-func TestDescribeCredentialSource_AnthropicSavedOAuth(t *testing.T) {
-	t.Setenv("ANTHROPIC_API_KEY", "")
-	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
-
-	// Save OAuth credentials to temp dir
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-
-	creds := &credentials.AnthropicOAuthCredentials{
-		AccessToken: "sk-ant-oat01-saved-token",
-	}
-	if err := credentials.SaveAnthropicOAuthCredentials(creds); err != nil {
-		t.Fatalf("failed to save test credentials: %v", err)
-	}
-
-	cfg := &ProviderConfig{}
-	source, found := DescribeCredentialSource("anthropic", cfg)
-	if !found {
-		t.Fatal("expected credential to be found")
-	}
-	if !strings.Contains(source, "saved OAuth") {
-		t.Fatalf("source=%q, expected to contain 'saved OAuth'", source)
-	}
-}
-
 func TestDescribeCredentialSource_AnthropicNone(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
-	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
-
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
 
 	cfg := &ProviderConfig{}
 	source, found := DescribeCredentialSource("anthropic", cfg)
 	if found {
 		t.Fatalf("expected no credential found, got source=%q", source)
 	}
-	if !strings.Contains(source, "prompt") {
-		t.Fatalf("source=%q, expected to mention interactive prompt", source)
-	}
-}
-
-func TestDescribeCredentialSource_AnthropicPriority(t *testing.T) {
-	// When both API key env and OAuth env are set, API key should win
-	t.Setenv("ANTHROPIC_API_KEY", "sk-api-key")
-	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-oauth-token")
-
-	cfg := &ProviderConfig{}
-	source, _ := DescribeCredentialSource("anthropic", cfg)
-	if source != "ANTHROPIC_API_KEY env" {
-		t.Fatalf("source=%q, want %q (API key should take priority)", source, "ANTHROPIC_API_KEY env")
+	if !strings.Contains(source, "ANTHROPIC_API_KEY") {
+		t.Fatalf("source=%q, expected to mention ANTHROPIC_API_KEY", source)
 	}
 }
 

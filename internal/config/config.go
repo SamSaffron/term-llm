@@ -826,18 +826,7 @@ func describeAnthropicCredential(cfg *ProviderConfig) (string, bool) {
 		return "ANTHROPIC_API_KEY env", true
 	}
 
-	// 3. CLAUDE_CODE_OAUTH_TOKEN env
-	if os.Getenv("CLAUDE_CODE_OAUTH_TOKEN") != "" {
-		return "CLAUDE_CODE_OAUTH_TOKEN env (OAuth)", true
-	}
-
-	// 4. Saved OAuth token
-	if credentials.AnthropicOAuthCredentialsExist() {
-		return "saved OAuth token (~/.config/term-llm/anthropic_oauth.json)", true
-	}
-
-	// 5. Would prompt interactively
-	return "none (will prompt for OAuth token interactively)", false
+	return "none (set ANTHROPIC_API_KEY or config api_key)", false
 }
 
 // describeEnvKeyCredential checks config api_key then an environment variable.

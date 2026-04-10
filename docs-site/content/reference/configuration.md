@@ -172,7 +172,9 @@ providers:
     model: opus
     env:
       IS_SANDBOX: "1"
-      CLAUDE_CODE_OAUTH_TOKEN: "file:///root/.config/term-llm/anthropic_oauth.json#access_token"
+      # Generate a long-lived token with: claude setup-token
+      # Useful in CI or headless environments where interactive login isn't possible
+      CLAUDE_CODE_OAUTH_TOKEN: "your-oauth-token-here"
     # Optional: re-enable Claude Code hooks for this provider
     # enable_hooks: true
 ```

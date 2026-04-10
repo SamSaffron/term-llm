@@ -765,9 +765,6 @@ providers:
     # Credential resolution order:
     #   1. api_key in config (or ${ANTHROPIC_API_KEY} expansion)
     #   2. ANTHROPIC_API_KEY environment variable
-    #   3. CLAUDE_CODE_OAUTH_TOKEN environment variable (OAuth)
-    #   4. Saved OAuth token (~/.config/term-llm/anthropic_oauth.json)
-    #   5. Interactive prompt (runs 'claude setup-token')
     # Run 'term-llm config' to see which credential is active
 
   openai:

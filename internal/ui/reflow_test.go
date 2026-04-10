@@ -73,7 +73,7 @@ func TestWordwrapBreakpointCountsInLineLen(t *testing.T) {
 		limit int
 	}{
 		{"hyphenated_words", "aaa bbb ccc ddd eee fff ggg hhh iii jjj kkk lll mmm nnn ooo ppp-qqq rrr sss ttt uuu vvv www xxxx YYYY and more text after.", 100},
-		{"multiple_hyphens", "anthropic-beta setup-token oauth-2025-04-20 some more words to fill the line up to the limit here.", 80},
+		{"multiple_hyphens", "anthropic-beta context-window rate-limit-2025 some more words to fill the line up to the limit here.", 80},
 		{"small_limit", "aaa-bbb cccc dddd eeee ffff gggg hhhh.", 20},
 		{"boundary_exact_limit", strings.Repeat("a", 10) + "-b", 10},
 		{"boundary_limit_minus_one", strings.Repeat("a", 9) + "-b", 10},

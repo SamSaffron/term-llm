@@ -37,7 +37,7 @@ Most providers use API keys via environment variables. Some use OAuth credential
 
 | Provider | Credentials source | Notes |
 |---|---|---|
-| `anthropic` | `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` | API key or OAuth token |
+| `anthropic` | `ANTHROPIC_API_KEY` | API key |
 | `bedrock` | AWS credential chain or explicit `access_key_id` / `secret_access_key` | Anthropic Claude via AWS Bedrock |
 | `openai` | `OPENAI_API_KEY` | Standard OpenAI API key |
 | `chatgpt` | `~/.config/term-llm/chatgpt_creds.json` | ChatGPT Plus/Pro OAuth |
@@ -236,7 +236,7 @@ See [Search](/guides/search/) for the full routing model.
 
 - **fast free experimentation:** `zen`
 - **OpenAI ecosystem / Codex editing:** `openai`
-- **Claude models with OAuth:** `anthropic`
+- **Claude models:** `anthropic`
 - **Claude models via AWS billing:** `bedrock`
 - **broad model access:** `openrouter`
 - **local inference:** `ollama` or another OpenAI-compatible endpoint

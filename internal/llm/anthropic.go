@@ -6,13 +6,10 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/shared/constant"
-	"github.com/samsaffron/term-llm/internal/credentials"
-	"golang.org/x/term"
 )
 
 // ListModels returns available models from Anthropic.
@@ -39,11 +36,9 @@ func (p *AnthropicProvider) ListModels(ctx context.Context) ([]ModelInfo, error)
 // These control which authentication method is used. "auto" (or empty) uses
 // the default cascade; any other value forces that specific method.
 const (
-	AnthropicCredAuto     = "auto"      // Default cascade: api_key → env → oauth_env → oauth → interactive
-	AnthropicCredAPIKey   = "api_key"   // Force: explicit api_key from config only
-	AnthropicCredEnv      = "env"       // Force: ANTHROPIC_API_KEY env var only
-	AnthropicCredOAuthEnv = "oauth_env" // Force: CLAUDE_CODE_OAUTH_TOKEN env var only
-	AnthropicCredOAuth    = "oauth"     // Force: saved OAuth token or interactive setup
+	AnthropicCredAuto   = "auto"    // Default cascade: api_key → env
+	AnthropicCredAPIKey = "api_key" // Force: explicit api_key from config only
+	AnthropicCredEnv    = "env"     // Force: ANTHROPIC_API_KEY env var only
 )
 
 // AnthropicProvider implements Provider using the Anthropic API.
@@ -53,7 +48,7 @@ type AnthropicProvider struct {
 	thinkingBudget int64  // 0 = disabled, >0 = enabled with budget
 	useAdaptive    bool   // true = adaptive thinking (-thinking on 4.6 models)
 	use1m          bool   // true = 1M token context window (-1m suffix)
-	credential     string // "api_key", "env", "oauth_env", or "oauth"
+	credential     string // "api_key" or "env"
 }
 
 // isAdaptiveModel returns true for Claude 4.6 models that support adaptive thinking.
@@ -97,25 +92,11 @@ func parseModel1m(model string) (string, bool) {
 	return model, false
 }
 
-// oauthBetaHeader is the beta header required to enable OAuth authentication.
-const oauthBetaHeader = "oauth-2025-04-20"
-
-// newOAuthClient creates an Anthropic client configured for OAuth Bearer token auth.
-// OAuth requires the anthropic-beta: oauth-2025-04-20 header on every request.
-func newOAuthClient(token string) anthropic.Client {
-	return anthropic.NewClient(
-		option.WithAuthToken(token),
-		option.WithHeader("anthropic-beta", oauthBetaHeader),
-	)
-}
-
 // NewAnthropicProvider creates a new Anthropic provider.
 // The credentialMode parameter controls which authentication method is used:
-//   - "" or "auto": try the full cascade (api_key → env → oauth_env → oauth → interactive)
+//   - "" or "auto": try the cascade (api_key → env)
 //   - "api_key":    use only the explicit apiKey parameter
 //   - "env":        use only the ANTHROPIC_API_KEY environment variable
-//   - "oauth_env":  use only the CLAUDE_CODE_OAUTH_TOKEN environment variable
-//   - "oauth":      use only saved OAuth token or interactive setup
 func NewAnthropicProvider(apiKey, model, credentialMode string) (*AnthropicProvider, error) {
 	// Strip -thinking first (may leave -1m), then strip -1m.
 	// This means claude-sonnet-4-6-1m-thinking works correctly:
@@ -155,21 +136,11 @@ func NewAnthropicProvider(apiKey, model, credentialMode string) (*AnthropicProvi
 		}
 		return mkProvider(anthropic.NewClient(option.WithAPIKey(envKey)), "env"), nil
 
-	case AnthropicCredOAuthEnv:
-		envToken := os.Getenv("CLAUDE_CODE_OAUTH_TOKEN")
-		if envToken == "" {
-			return nil, fmt.Errorf("credentials mode %q requires CLAUDE_CODE_OAUTH_TOKEN environment variable", credentialMode)
-		}
-		return mkProvider(newOAuthClient(envToken), "oauth_env"), nil
-
-	case AnthropicCredOAuth:
-		return newAnthropicOAuthProvider(actualModel, thinkingBudget, adaptive, use1m)
-
 	case AnthropicCredAuto:
 		// Fall through to the cascade below.
 
 	default:
-		return nil, fmt.Errorf("unknown Anthropic credentials mode: %q (valid: auto, api_key, env, oauth_env, oauth)", credentialMode)
+		return nil, fmt.Errorf("unknown Anthropic credentials mode: %q (valid: auto, api_key, env)", credentialMode)
 	}
 
 	// Auto mode: full credential cascade.
@@ -184,113 +155,7 @@ func NewAnthropicProvider(apiKey, model, credentialMode string) (*AnthropicProvi
 		return mkProvider(anthropic.NewClient(option.WithAPIKey(envKey)), "env"), nil
 	}
 
-	// 3. CLAUDE_CODE_OAUTH_TOKEN environment variable
-	if envToken := os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"); envToken != "" {
-		return mkProvider(newOAuthClient(envToken), "oauth_env"), nil
-	}
-
-	// 4. Saved OAuth token from local storage
-	if creds, err := credentials.GetAnthropicOAuthCredentials(); err == nil {
-		return mkProvider(newOAuthClient(creds.AccessToken), "oauth"), nil
-	}
-
-	// 5. Interactive: prompt user to run `claude setup-token` and paste the token
-	return newAnthropicOAuthProvider(actualModel, thinkingBudget, adaptive, use1m)
-}
-
-// newAnthropicOAuthProvider creates an Anthropic provider using saved OAuth credentials
-// or interactively prompts the user to set up a new token.
-func newAnthropicOAuthProvider(model string, thinkingBudget int64, adaptive bool, use1m bool) (*AnthropicProvider, error) {
-	// Try saved OAuth token first
-	if creds, err := credentials.GetAnthropicOAuthCredentials(); err == nil {
-		client := newOAuthClient(creds.AccessToken)
-		return &AnthropicProvider{
-			client:         &client,
-			model:          model,
-			thinkingBudget: thinkingBudget,
-			useAdaptive:    adaptive,
-			use1m:          use1m,
-			credential:     "oauth",
-		}, nil
-	}
-
-	// Interactive: prompt user to run `claude setup-token` and paste the token
-	token, err := promptForAnthropicOAuth()
-	if err != nil {
-		return nil, err
-	}
-
-	// Validate the token works before saving
-	testClient := newOAuthClient(token)
-	if err := validateAnthropicToken(&testClient); err != nil {
-		return nil, fmt.Errorf("token validation failed: %w", err)
-	}
-
-	// Save the validated token for future use
-	if err := credentials.SaveAnthropicOAuthCredentials(&credentials.AnthropicOAuthCredentials{
-		AccessToken: token,
-	}); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to save OAuth token: %v\n", err)
-	}
-
-	fmt.Fprintln(os.Stderr, "Token validated and saved successfully.")
-
-	return &AnthropicProvider{
-		client:         &testClient,
-		model:          model,
-		thinkingBudget: thinkingBudget,
-		useAdaptive:    adaptive,
-		use1m:          use1m,
-		credential:     "oauth",
-	}, nil
-}
-
-// validateAnthropicToken checks that a token works by making a lightweight API call.
-func validateAnthropicToken(client *anthropic.Client) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	_, err := client.Models.List(ctx, anthropic.ModelListParams{})
-	if err != nil {
-		return fmt.Errorf("invalid or expired token (API returned error): %w", err)
-	}
-	return nil
-}
-
-// promptForAnthropicOAuth asks the user to run `claude setup-token` and paste the resulting token.
-// Returns an error if running in a non-interactive context (e.g., scripts, CI).
-func promptForAnthropicOAuth() (string, error) {
-	// Check if stdin is a terminal - if not, we can't do interactive auth
-	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return "", fmt.Errorf("Anthropic authentication required but running in non-interactive mode.\n" +
-			"Set ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, or run interactively to authenticate")
-	}
-
-	fmt.Fprintln(os.Stderr, "No Anthropic credentials found.")
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "To authenticate, run this in another terminal:")
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "  claude setup-token")
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "This requires the Claude Code CLI and a Claude subscription (Pro/Max).")
-	fmt.Fprintln(os.Stderr, "Copy the token it generates and paste it below.")
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprint(os.Stderr, "Paste token: ")
-
-	// Read token with echo disabled so it isn't visible in terminal or logs
-	tokenBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
-	fmt.Fprintln(os.Stderr) // newline after hidden input
-	if err != nil {
-		return "", fmt.Errorf("failed to read token: %w", err)
-	}
-
-	// Strip all whitespace (spaces, tabs, newlines) that may sneak in during paste
-	token := strings.Join(strings.Fields(string(tokenBytes)), "")
-	if token == "" {
-		return "", fmt.Errorf("empty token provided")
-	}
-
-	return token, nil
+	return nil, fmt.Errorf("no Anthropic credentials found. Set ANTHROPIC_API_KEY or configure api_key in provider config")
 }
 
 func (p *AnthropicProvider) Name() string {

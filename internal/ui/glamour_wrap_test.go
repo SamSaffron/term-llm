@@ -24,7 +24,7 @@ func TestWordwrapHyphenLineLen(t *testing.T) {
 		},
 		{
 			"multiple_hyphens",
-			"anthropic-beta setup-token oauth-2025-04-20 some more words to fill the line up to the limit here.",
+			"anthropic-beta context-window rate-limit-2025 some more words to fill the line up to the limit here.",
 			80,
 		},
 		{
@@ -93,7 +93,7 @@ func TestGlamourWrapNoOrphans(t *testing.T) {
 		},
 		{
 			"inline_code_with_hyphens",
-			"The simplest path is to install `anthropic-beta` and then use `setup-token` from `oauth-2025-04-20` to configure your environment properly.",
+			"The simplest path is to install `anthropic-beta` and then use `context-window` from `rate-limit-2025` to configure your environment properly.",
 		},
 		{
 			"no_hyphens_control",

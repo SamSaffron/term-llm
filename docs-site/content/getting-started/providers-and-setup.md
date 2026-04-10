@@ -35,7 +35,7 @@ default_provider: zen
 Set your API key as an environment variable:
 
 ```bash
-# For Anthropic (API key, or use OAuth — see below)
+# For Anthropic
 export ANTHROPIC_API_KEY=your-key
 
 # For OpenAI
@@ -57,23 +57,7 @@ export GEMINI_API_KEY=your-key
 export PERPLEXITY_API_KEY=your-key
 ```
 
-### Option 3: Use Anthropic with OAuth (Claude Pro/Max subscription)
-
-If you have a Claude Pro or Max subscription and the [Claude Code CLI](https://claude.ai/code) installed, you can use OAuth instead of an API key:
-
-```bash
-term-llm ask --provider anthropic "explain this code"
-```
-
-On first interactive use, you'll be prompted to run `claude setup-token` and paste the resulting token. The token is saved to `~/.config/term-llm/anthropic_oauth.json` and reused automatically.
-
-You can also set the token via environment variable (useful for CI after generating a token interactively):
-
-```bash
-export CLAUDE_CODE_OAUTH_TOKEN=your-oauth-token
-```
-
-### Option 4: Use ChatGPT (Plus/Pro subscription)
+### Option 3: Use ChatGPT (Plus/Pro subscription)
 
 If you have a ChatGPT Plus or Pro subscription, you can use the `chatgpt` provider with native OAuth authentication:
 
@@ -93,7 +77,7 @@ providers:
     model: gpt-5.2-codex
 ```
 
-### Option 5: Use xAI (Grok)
+### Option 4: Use xAI (Grok)
 
 [xAI](https://x.ai) provides access to Grok models with native web search and X (Twitter) search capabilities.
 
@@ -126,7 +110,7 @@ term-llm ask --provider xai:grok-4-1-fast-reasoning "solve this step by step"
 term-llm ask --provider xai:grok-code-fast-1 "review this code"
 ```
 
-### Option 6: Use Venice
+### Option 5: Use Venice
 
 [Venice](https://venice.ai) exposes a wide mix of hosted text models behind an OpenAI-compatible API, including Venice's own uncensored models plus Claude, Gemini, Grok, Qwen, GLM, Kimi, DeepSeek, and more. term-llm also enables Venice native web search when you use `-s` / `--search`.
 
@@ -149,7 +133,7 @@ term-llm ask --provider venice:qwen3-coder-480b-a35b-instruct "review this code"
 term-llm models --provider venice
 ```
 
-### Option 7: Use OpenRouter
+### Option 6: Use OpenRouter
 
 [OpenRouter](https://openrouter.ai) provides a unified OpenAI-compatible API across many models. term-llm sends attribution headers by default.
 
@@ -188,7 +172,7 @@ term-llm providers anthropic       # Show details for specific provider
 term-llm providers --json          # JSON output
 ```
 
-### Option 8: Use AWS Bedrock
+### Option 7: Use AWS Bedrock
 
 [AWS Bedrock](https://aws.amazon.com/bedrock/) provides access to Anthropic Claude models through your AWS account. This is useful for organizations that route AI usage through AWS billing, need VPC/PrivateLink access, or use application inference profiles for rate/cost management.
 
@@ -269,7 +253,7 @@ You can also pass raw Bedrock model IDs directly (e.g., `us.anthropic.claude-son
 | `model_map` | Map of friendly names to Bedrock model IDs or ARNs. |
 | `model` | Default model (friendly name, Bedrock ID, or ARN). |
 
-### Option 9: Use local LLMs (Ollama, LM Studio)
+### Option 8: Use local LLMs (Ollama, LM Studio)
 
 Run models locally with [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai):
 
@@ -336,7 +320,7 @@ providers:
 
 See [Providers and models](/reference/providers-and-models/#configuration-reference) for the full list of OpenAI-compatible provider options.
 
-### Option 10: Use Claude Code (claude-bin)
+### Option 9: Use Claude Code (claude-bin)
 
 If you have [Claude Code](https://claude.ai/code) installed and logged in, you can use the `claude-bin` provider to run completions via the [Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk). This requires no API key - it uses Claude Code's existing authentication.
 
@@ -359,13 +343,15 @@ providers:
     model: sonnet  # opus, sonnet, or haiku
     env:
       IS_SANDBOX: "1"  # useful when running term-llm as root in a trusted container
-      CLAUDE_CODE_OAUTH_TOKEN: "file:///root/.config/term-llm/anthropic_oauth.json#access_token"
+      # Generate a long-lived token with: claude setup-token
+      # Useful in CI or headless environments where interactive login isn't possible
+      CLAUDE_CODE_OAUTH_TOKEN: "your-oauth-token-here"
     # Optional: Claude Code hooks are disabled by default; set to true to opt back in
     # enable_hooks: true
 ```
 
 **Features:**
-- No API key required - uses Claude Code's OAuth authentication
+- No API key required - uses Claude Code's existing authentication
 - Full tool support via MCP (exec, search, edit all work)
 - Model selection: `opus`, `sonnet` (default), `haiku`
 - Claude Code hooks are disabled by default to keep user hook automation out of term-llm inference sessions
@@ -374,7 +360,7 @@ providers:
 - `providers.<name>.env` values support the same deferred resolution as other config values, including `file://...#json.path`, `op://...`, and `$()`
 - Works immediately if Claude Code is installed and logged in
 
-### Option 11: Use existing CLI credentials (gemini-cli)
+### Option 10: Use existing CLI credentials (gemini-cli)
 
 If you have [gemini-cli](https://github.com/google-gemini/gemini-cli) installed and logged in, term-llm can use those credentials directly:
 
@@ -396,7 +382,7 @@ OpenAI-compatible providers support two URL options:
 
 Use `url` when your endpoint doesn't follow the standard `/chat/completions` path, or to paste URLs directly from API documentation.
 
-### Option 12: Use GitHub Copilot
+### Option 11: Use GitHub Copilot
 
 If you have [GitHub Copilot](https://github.com/features/copilot) (free, Individual, or Business), you can use the `copilot` provider with OAuth device flow authentication:
 
