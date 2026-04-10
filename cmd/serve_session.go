@@ -99,6 +99,19 @@ func (m *serveSessionManager) evictOldestIdleLocked() *serveRuntime {
 	return evicted
 }
 
+func (m *serveSessionManager) makeRoomForNewSessionLocked() (*serveRuntime, error) {
+	if len(m.sessions) < m.max {
+		return nil, nil
+	}
+
+	evicted := m.evictOldestIdleLocked()
+	if evicted != nil {
+		return evicted, nil
+	}
+
+	return nil, errServeSessionLimitReached
+}
+
 // Get returns an existing session runtime without creating one.
 // Returns (nil, false) if the session does not exist.
 func (m *serveSessionManager) Get(id string) (*serveRuntime, bool) {
@@ -160,9 +173,11 @@ func (m *serveSessionManager) GetOrCreate(ctx context.Context, id string) (*serv
 			duplicate = rt
 		} else {
 			rt.Touch()
-			evicted = m.evictOldestIdleLocked()
-			m.sessions[id] = rt
-			inflight.rt = rt
+			evicted, inflight.err = m.makeRoomForNewSessionLocked()
+			if inflight.err == nil {
+				m.sessions[id] = rt
+				inflight.rt = rt
+			}
 		}
 	}
 	close(inflight.done)
@@ -242,9 +257,11 @@ func (m *serveSessionManager) GetOrCreateWith(ctx context.Context, id string, cr
 			duplicate = rt
 		} else {
 			rt.Touch()
-			evicted = m.evictOldestIdleLocked()
-			m.sessions[id] = rt
-			inflight.rt = rt
+			evicted, inflight.err = m.makeRoomForNewSessionLocked()
+			if inflight.err == nil {
+				m.sessions[id] = rt
+				inflight.rt = rt
+			}
 		}
 	}
 	close(inflight.done)
@@ -346,9 +363,11 @@ func (m *serveSessionManager) ReplaceIdleWith(ctx context.Context, id string, sh
 			duplicate = rt
 		} else {
 			rt.Touch()
-			evicted = m.evictOldestIdleLocked()
-			m.sessions[id] = rt
-			inflight.rt = rt
+			evicted, inflight.err = m.makeRoomForNewSessionLocked()
+			if inflight.err == nil {
+				m.sessions[id] = rt
+				inflight.rt = rt
+			}
 		}
 	}
 	if replaced != nil && !restoredReplaced {

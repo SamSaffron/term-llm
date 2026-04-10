@@ -1340,7 +1340,65 @@ func TestServeSessionManager_GetOrCreateSkipsEvictingActiveRunAtCapacity(t *test
 	}
 }
 
-func TestServeSessionManager_GetOrCreateWithDoesNotEvictActiveRunWhenAllSessionsAreBusy(t *testing.T) {
+func TestServeSessionManager_GetOrCreateReturnsErrorWhenAllSessionsAreBusyAtCapacity(t *testing.T) {
+	manager := newServeSessionManager(time.Minute, 1, func(ctx context.Context) (*serveRuntime, error) {
+		rt := &serveRuntime{}
+		rt.Touch()
+		return rt, nil
+	})
+	defer manager.Close()
+
+	var evictions atomic.Int32
+	manager.onEvict = func(rt *serveRuntime) {
+		evictions.Add(1)
+	}
+
+	busyCtx, busyCancel := context.WithCancel(context.Background())
+	defer busyCancel()
+
+	busy := &serveRuntime{}
+	busy.lastUsedUnixNano.Store(time.Now().Add(-time.Hour).UnixNano())
+	busyState := &runtimeInterruptState{cancel: busyCancel, done: make(chan struct{})}
+	busy.setActiveInterrupt(busyState)
+
+	manager.mu.Lock()
+	manager.sessions["busy"] = busy
+	manager.mu.Unlock()
+
+	created, err := manager.GetOrCreate(context.Background(), "new")
+	if !errors.Is(err, errServeSessionLimitReached) {
+		t.Fatalf("error = %v, want %v", err, errServeSessionLimitReached)
+	}
+	if created != nil {
+		t.Fatal("expected no runtime to be created")
+	}
+
+	manager.mu.Lock()
+	_, busyOK := manager.sessions["busy"]
+	_, newOK := manager.sessions["new"]
+	sessionCount := len(manager.sessions)
+	manager.mu.Unlock()
+
+	if !busyOK {
+		t.Fatal("expected active session to remain in manager")
+	}
+	if newOK {
+		t.Fatal("expected new session not to be stored when all sessions are busy")
+	}
+	if sessionCount != 1 {
+		t.Fatalf("session count = %d, want 1", sessionCount)
+	}
+	if got := evictions.Load(); got != 0 {
+		t.Fatalf("evictions = %d, want 0", got)
+	}
+	select {
+	case <-busyCtx.Done():
+		t.Fatal("expected active session not to be cancelled during capacity check")
+	default:
+	}
+}
+
+func TestServeSessionManager_GetOrCreateWithReturnsErrorWhenAllSessionsAreBusyAtCapacity(t *testing.T) {
 	manager := newServeSessionManager(time.Minute, 1, nil)
 	defer manager.Close()
 
@@ -1366,11 +1424,11 @@ func TestServeSessionManager_GetOrCreateWithDoesNotEvictActiveRunWhenAllSessions
 		rt.Touch()
 		return rt, nil
 	})
-	if err != nil {
-		t.Fatalf("GetOrCreateWith error: %v", err)
+	if !errors.Is(err, errServeSessionLimitReached) {
+		t.Fatalf("error = %v, want %v", err, errServeSessionLimitReached)
 	}
-	if created == nil {
-		t.Fatal("expected created runtime")
+	if created != nil {
+		t.Fatal("expected no runtime to be created")
 	}
 
 	manager.mu.Lock()
@@ -1382,18 +1440,18 @@ func TestServeSessionManager_GetOrCreateWithDoesNotEvictActiveRunWhenAllSessions
 	if !busyOK {
 		t.Fatal("expected active session to remain in manager")
 	}
-	if !newOK {
-		t.Fatal("expected new session to be stored in manager")
+	if newOK {
+		t.Fatal("expected new session not to be stored when all sessions are busy")
 	}
-	if sessionCount != 2 {
-		t.Fatalf("session count = %d, want 2", sessionCount)
+	if sessionCount != 1 {
+		t.Fatalf("session count = %d, want 1", sessionCount)
 	}
 	if got := evictions.Load(); got != 0 {
 		t.Fatalf("evictions = %d, want 0", got)
 	}
 	select {
 	case <-busyCtx.Done():
-		t.Fatal("expected active session not to be cancelled during capacity eviction")
+		t.Fatal("expected active session not to be cancelled during capacity check")
 	default:
 	}
 }

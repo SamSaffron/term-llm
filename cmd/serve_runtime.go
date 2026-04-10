@@ -470,7 +470,10 @@ type serveRunResult struct {
 	SessionUsage llm.Usage
 }
 
-var errServeSessionBusy = errors.New("session is busy processing another request")
+var (
+	errServeSessionBusy         = errors.New("session is busy processing another request")
+	errServeSessionLimitReached = errors.New("session limit reached: all sessions are busy")
+)
 
 func (rt *serveRuntime) Run(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request) (serveRunResult, error) {
 	return rt.run(ctx, stateful, replaceHistory, inputMessages, req, nil)

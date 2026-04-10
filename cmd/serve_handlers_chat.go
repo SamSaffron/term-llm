@@ -50,6 +50,10 @@ func (s *serveServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	}
 	runtime, stateful, err := s.runtimeForRequest(ctx, sessionID)
 	if err != nil {
+		if errors.Is(err, errServeSessionBusy) || errors.Is(err, errServeSessionLimitReached) {
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", err.Error())
+			return
+		}
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}

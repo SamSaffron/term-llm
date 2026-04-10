@@ -62,6 +62,10 @@ func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 	}
 	runtime, stateful, err := s.runtimeForRequest(ctx, sessionID)
 	if err != nil {
+		if errors.Is(err, errServeSessionBusy) || errors.Is(err, errServeSessionLimitReached) {
+			writeAnthropicError(w, http.StatusConflict, "api_error", err.Error())
+			return
+		}
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
