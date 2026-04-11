@@ -160,12 +160,36 @@ func (r *TextSegmentRenderer) Resize(newWidth int) error {
 		return nil
 	}
 
-	// Clear current output since we're re-rendering
+	// Save the already-flushed rendered prefix before clearing the buffer.
+	// After re-rendering we remap the flushed boundary via common-prefix
+	// logic (same approach as Write) so content already printed to
+	// scrollback is not duplicated.
+	prevFlushedPos := r.flushedRenderedPos
+	prevOutput := r.output.Bytes()
+	if prevFlushedPos > len(prevOutput) {
+		prevFlushedPos = len(prevOutput)
+	}
+	var prevFlushedPrefix []byte
+	if prevFlushedPos > 0 {
+		prevFlushedPrefix = append([]byte(nil), prevOutput[:prevFlushedPos]...)
+	}
+
 	r.output.Reset()
-	r.flushedRenderedPos = 0 // Reset flush position since buffer is cleared
 	r.width = newWidth
 
-	return r.sr.Resize(newWidth)
+	if err := r.sr.Resize(newWidth); err != nil {
+		r.flushedRenderedPos = 0
+		return err
+	}
+
+	currentOutput := r.output.Bytes()
+	if prevFlushedPos > 0 && len(currentOutput) > 0 {
+		r.flushedRenderedPos = longestCommonPrefixLenBytes(prevFlushedPrefix, currentOutput)
+	} else {
+		r.flushedRenderedPos = 0
+	}
+
+	return nil
 }
 
 // Width returns the current terminal width.

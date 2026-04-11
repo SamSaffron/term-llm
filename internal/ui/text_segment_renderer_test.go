@@ -84,7 +84,7 @@ func TestTextSegmentRenderer_Width(t *testing.T) {
 	}
 }
 
-func TestTextSegmentRenderer_ResizeResetsFlushedPos(t *testing.T) {
+func TestTextSegmentRenderer_ResizePreservesFlushedPos(t *testing.T) {
 	renderer, err := NewTextSegmentRenderer(80)
 	if err != nil {
 		t.Fatalf("Failed to create renderer: %v", err)
@@ -102,7 +102,8 @@ func TestTextSegmentRenderer_ResizeResetsFlushedPos(t *testing.T) {
 
 	// Mark content as flushed
 	renderer.MarkFlushed()
-	if renderer.FlushedRenderedPos() == 0 {
+	flushedBefore := renderer.FlushedRenderedPos()
+	if flushedBefore == 0 {
 		t.Fatalf("Expected flushedRenderedPos > 0 after MarkFlushed")
 	}
 
@@ -111,32 +112,23 @@ func TestTextSegmentRenderer_ResizeResetsFlushedPos(t *testing.T) {
 		t.Errorf("Expected empty RenderedUnflushed after MarkFlushed, got: %q", renderer.RenderedUnflushed())
 	}
 
-	// Resize to new width
+	// Resize to a new width — "Hello world" is short enough that the
+	// re-rendered output should be identical, so the flushed boundary
+	// must be preserved via common-prefix logic.
 	err = renderer.Resize(100)
 	if err != nil {
 		t.Fatalf("Failed to resize: %v", err)
 	}
 
-	// After resize, flushedRenderedPos should be reset to 0
-	if renderer.FlushedRenderedPos() != 0 {
-		t.Errorf("Expected flushedRenderedPos = 0 after Resize, got %d", renderer.FlushedRenderedPos())
+	// The flushed position must still cover the unchanged prefix.
+	if renderer.FlushedRenderedPos() == 0 {
+		t.Errorf("Resize must not zero flushedRenderedPos when the re-rendered output matches the flushed prefix")
 	}
 
-	// RenderedUnflushed should return all content (which is empty after resize clears buffer)
-	// Write some new content to verify it shows up correctly
-	err = renderer.Write("New content\n\n")
-	if err != nil {
-		t.Fatalf("Failed to write after resize: %v", err)
-	}
-	err = renderer.Flush()
-	if err != nil {
-		t.Fatalf("Failed to flush after resize: %v", err)
-	}
-
-	unflushed := renderer.RenderedUnflushed()
-	rendered := renderer.Rendered()
-	if unflushed != rendered {
-		t.Errorf("After Resize, RenderedUnflushed should equal Rendered.\nUnflushed: %q\nRendered: %q", unflushed, rendered)
+	// RenderedUnflushed must not re-expose the already-flushed content.
+	unflushed := stripANSI(renderer.RenderedUnflushed())
+	if strings.Contains(unflushed, "Hello world") {
+		t.Errorf("RenderedUnflushed after Resize must not duplicate already-flushed content, got: %q", unflushed)
 	}
 }
 
