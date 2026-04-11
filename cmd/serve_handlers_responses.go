@@ -126,8 +126,12 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if !stateful {
+	cleanupRuntime := !stateful
+	if cleanupRuntime {
 		defer func() {
+			if !cleanupRuntime {
+				return
+			}
 			runtime.Close()
 			s.unregisterResponseIDs(runtime)
 		}()
@@ -175,7 +179,10 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		if isServeUIRequest(r) && stateful {
 			s.streamUIResponses(w, r, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, req.PreviousResponseID)
 		} else {
-			s.streamResponses(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, req.PreviousResponseID)
+			started := s.streamResponses(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, req.PreviousResponseID)
+			if !stateful && started {
+				cleanupRuntime = false
+			}
 		}
 		return
 	}
@@ -237,8 +244,8 @@ func appendResponsePassthroughTools(serverTools []llm.ToolSpec, passthroughTools
 	return serverTools
 }
 
-func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string) {
-	s.streamResponseRun(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, startResponseRunOptions{
+func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string) bool {
+	return s.streamResponseRun(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, startResponseRunOptions{
 		previousResponseID: previousResponseID,
 	})
 }

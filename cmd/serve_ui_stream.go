@@ -28,12 +28,13 @@ func (s *serveServer) streamUIResponses(w http.ResponseWriter, r *http.Request, 
 	})
 }
 
-func (s *serveServer) streamResponseRun(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, options startResponseRunOptions) {
+func (s *serveServer) streamResponseRun(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, options startResponseRunOptions) bool {
 	run, err := s.startResponseRun(runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, options)
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
-		return
+		return false
 	}
 	w.Header().Set("x-response-id", run.id)
 	s.streamResponseRunEvents(ctx, w, run, 0)
+	return true
 }
