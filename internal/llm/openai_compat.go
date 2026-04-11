@@ -408,6 +408,14 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 		var lastUsage *Usage
 		var lastEventType string
 		var reasoningBuilder strings.Builder
+		emit := func(event Event) error {
+			select {
+			case events <- event:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 
 		for {
 			line, eof, err := readSSELine(reader)
@@ -466,12 +474,16 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 			for _, choice := range chatResp.Choices {
 				if choice.Delta != nil {
 					if content, ok := choice.Delta.Content.(string); ok && content != "" {
-						events <- Event{Type: EventTextDelta, Text: content}
+						if err := emit(Event{Type: EventTextDelta, Text: content}); err != nil {
+							return err
+						}
 					}
 					// Capture reasoning from thinking models (OpenRouter streaming uses "reasoning" field)
 					if choice.Delta.Reasoning != "" {
 						reasoningBuilder.WriteString(choice.Delta.Reasoning)
-						events <- Event{Type: EventReasoningDelta, Text: choice.Delta.Reasoning}
+						if err := emit(Event{Type: EventReasoningDelta, Text: choice.Delta.Reasoning}); err != nil {
+							return err
+						}
 					}
 					if len(choice.Delta.ToolCalls) > 0 {
 						toolState.Add(choice.Delta.ToolCalls)
@@ -486,12 +498,18 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 		}
 
 		for _, call := range toolState.Calls() {
-			events <- Event{Type: EventToolCall, Tool: &call}
+			if err := emit(Event{Type: EventToolCall, Tool: &call}); err != nil {
+				return err
+			}
 		}
 		if lastUsage != nil {
-			events <- Event{Type: EventUsage, Use: lastUsage}
+			if err := emit(Event{Type: EventUsage, Use: lastUsage}); err != nil {
+				return err
+			}
 		}
-		events <- Event{Type: EventDone}
+		if err := emit(Event{Type: EventDone}); err != nil {
+			return err
+		}
 		return nil
 	}), nil
 }

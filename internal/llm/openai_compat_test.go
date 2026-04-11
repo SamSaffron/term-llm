@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDefaultHTTPClient_HasNoOverallTimeout(t *testing.T) {
@@ -79,6 +80,76 @@ func TestOpenAICompatStream_AllowsLargeSSEDataLines(t *testing.T) {
 	}
 	if !sawDone {
 		t.Fatal("expected EventDone")
+	}
+}
+
+func TestOpenAICompatStream_CloseDoesNotHangWhenConsumerStopsReceiving(t *testing.T) {
+	chunk, err := json.Marshal(oaiChatResponse{
+		Choices: []oaiChoice{{
+			Delta: &oaiMessage{Content: "x"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal chunk: %v", err)
+	}
+
+	wroteChunks := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("expected response writer to implement http.Flusher")
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		for i := 0; i < 64; i++ {
+			if _, err := w.Write([]byte("data: ")); err != nil {
+				return
+			}
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+			if _, err := w.Write([]byte("\n\n")); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+		close(wroteChunks)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatProvider(server.URL, "", "test-model", "Test")
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{{
+			Role:  RoleUser,
+			Parts: []Part{{Type: PartText, Text: "hello"}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+
+	select {
+	case <-wroteChunks:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for SSE chunks to be written")
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- stream.Close()
+	}()
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("stream.Close() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream.Close() blocked while stream goroutine was trying to emit events")
 	}
 }
 
