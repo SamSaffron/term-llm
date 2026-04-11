@@ -39,3 +39,18 @@ func TestRenderInfoMarkdown_ZeroWidth_DoesNotFallbackToRaw(t *testing.T) {
 		t.Fatalf("expected zero-width markdown rendering fallback clamp, got raw fallback: %q", got)
 	}
 }
+
+func TestRenderInfoMarkdown_MatchesSharedRendererOptions(t *testing.T) {
+	input := "# Heading\n\nBody"
+	got := renderInfoMarkdown(input, 80)
+	want := RenderMarkdownWithOptions(input, 80, MarkdownRenderOptions{
+		WrapOffset:         2,
+		NormalizeTabs:      false,
+		NormalizeNewlines:  false,
+		EnsureTrailingLine: true,
+	})
+
+	if got != want {
+		t.Fatalf("info markdown render must match shared renderer\nwant:\n%q\n\ngot:\n%q", want, got)
+	}
+}

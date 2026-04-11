@@ -9,13 +9,29 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/glamour"
+	rendermarkdown "github.com/samsaffron/term-llm/internal/render/markdown"
 )
+
+const testRenderWidth = 80
+
+func newTestMarkdownRenderer(width int) rendermarkdown.Renderer {
+	return rendermarkdown.NewANSI(rendermarkdown.Config{
+		Palette: rendermarkdown.Palette{
+			Primary:   "#b8bb26",
+			Secondary: "#83a598",
+			Success:   "#b8bb26",
+			Warning:   "#fabd2f",
+			Muted:     "#928374",
+			Text:      "#ebdbb2",
+		},
+		Width: width,
+	})
+}
 
 // testRenderer creates a StreamRenderer for testing with consistent options.
 func testRenderer(t *testing.T, w *bytes.Buffer) *StreamRenderer {
 	t.Helper()
-	sr, err := NewRenderer(w, glamour.WithStandardStyle("dark"))
+	sr, err := NewRenderer(w, newTestMarkdownRenderer(testRenderWidth))
 	if err != nil {
 		t.Fatalf("failed to create renderer: %v", err)
 	}
@@ -26,7 +42,7 @@ func testRenderer(t *testing.T, w *bytes.Buffer) *StreamRenderer {
 func renderFull(t *testing.T, input string) string {
 	t.Helper()
 	var buf bytes.Buffer
-	sr, err := NewRenderer(&buf, glamour.WithStandardStyle("dark"))
+	sr, err := NewRenderer(&buf, newTestMarkdownRenderer(testRenderWidth))
 	if err != nil {
 		t.Fatalf("failed to create renderer: %v", err)
 	}
@@ -39,7 +55,7 @@ func renderFull(t *testing.T, input string) string {
 func renderChunked(t *testing.T, input string) string {
 	t.Helper()
 	var buf bytes.Buffer
-	sr, err := NewRenderer(&buf, glamour.WithStandardStyle("dark"))
+	sr, err := NewRenderer(&buf, newTestMarkdownRenderer(testRenderWidth))
 	if err != nil {
 		t.Fatalf("failed to create renderer: %v", err)
 	}
@@ -54,7 +70,7 @@ func renderChunked(t *testing.T, input string) string {
 func renderRandomChunks(t *testing.T, input string, maxChunkSize int) string {
 	t.Helper()
 	var buf bytes.Buffer
-	sr, err := NewRenderer(&buf, glamour.WithStandardStyle("dark"))
+	sr, err := NewRenderer(&buf, newTestMarkdownRenderer(testRenderWidth))
 	if err != nil {
 		t.Fatalf("failed to create renderer: %v", err)
 	}
@@ -275,15 +291,15 @@ func TestChunkingInvariant_SingleByteChunks(t *testing.T) {
 
 func TestNewRenderer(t *testing.T) {
 	var buf bytes.Buffer
-	sr, err := NewRenderer(&buf, glamour.WithStandardStyle("dark"))
+	sr, err := NewRenderer(&buf, newTestMarkdownRenderer(testRenderWidth))
 	if err != nil {
 		t.Fatalf("NewRenderer failed: %v", err)
 	}
 	if sr == nil {
 		t.Fatal("NewRenderer returned nil")
 	}
-	if sr.tr == nil {
-		t.Fatal("StreamRenderer has nil TermRenderer")
+	if sr.renderer == nil {
+		t.Fatal("StreamRenderer has nil renderer")
 	}
 	if sr.output != &buf {
 		t.Fatal("StreamRenderer has wrong output writer")
@@ -513,7 +529,7 @@ func TestNestedList_EmitsNestedItemsIncrementally(t *testing.T) {
 
 func TestApplyRenderedSnapshot_NonResettableWriterErrorsOnPrefixChange(t *testing.T) {
 	writer := &nonResettableWriter{}
-	sr, err := NewRenderer(writer, glamour.WithStandardStyle("dark"))
+	sr, err := NewRenderer(writer, newTestMarkdownRenderer(testRenderWidth))
 	if err != nil {
 		t.Fatalf("failed to create renderer: %v", err)
 	}
@@ -539,7 +555,7 @@ func TestApplyRenderedSnapshot_NonResettableWriterErrorsOnPrefixChange(t *testin
 
 func TestApplyRenderedSnapshot_ChangedPrefixShorterSnapshotRewritesOutput(t *testing.T) {
 	var buf bytes.Buffer
-	sr, err := NewRenderer(&buf, glamour.WithStandardStyle("dark"))
+	sr, err := NewRenderer(&buf, newTestMarkdownRenderer(testRenderWidth))
 	if err != nil {
 		t.Fatalf("failed to create renderer: %v", err)
 	}
@@ -569,7 +585,7 @@ func TestApplyRenderedSnapshot_ChangedPrefixShorterSnapshotRewritesOutput(t *tes
 
 func TestApplyRenderedSnapshot_ChangedPrefixLongerSnapshotRewritesOutput(t *testing.T) {
 	var buf bytes.Buffer
-	sr, err := NewRenderer(&buf, glamour.WithStandardStyle("dark"))
+	sr, err := NewRenderer(&buf, newTestMarkdownRenderer(testRenderWidth))
 	if err != nil {
 		t.Fatalf("failed to create renderer: %v", err)
 	}
@@ -898,7 +914,7 @@ Paragraph text here.
 
 	for i := 0; i < b.N; i++ {
 		var buf bytes.Buffer
-		sr, _ := NewRenderer(&buf, glamour.WithStandardStyle("dark"))
+		sr, _ := NewRenderer(&buf, newTestMarkdownRenderer(testRenderWidth))
 		sr.Write([]byte(input))
 		sr.Close()
 	}
@@ -916,7 +932,7 @@ Paragraph text here.
 
 	for i := 0; i < b.N; i++ {
 		var buf bytes.Buffer
-		sr, _ := NewRenderer(&buf, glamour.WithStandardStyle("dark"))
+		sr, _ := NewRenderer(&buf, newTestMarkdownRenderer(testRenderWidth))
 		for j := 0; j < len(input); j++ {
 			sr.Write([]byte{input[j]})
 		}

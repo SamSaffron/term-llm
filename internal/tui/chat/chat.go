@@ -14,7 +14,6 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/clipboard"
@@ -208,12 +207,6 @@ type Model struct {
 		// Selection cache for invalidation
 		lastSelection  Selection
 		lastContentStr string // stored for lazy contentLines split
-	}
-
-	// Cached glamour renderer (avoids expensive recreation during streaming)
-	rendererCache struct {
-		renderer *glamour.TermRenderer
-		width    int
 	}
 
 	// New chat renderer (virtualized rendering for large histories)

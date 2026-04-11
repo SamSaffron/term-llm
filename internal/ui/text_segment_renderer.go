@@ -3,7 +3,7 @@ package ui
 import (
 	"bytes"
 
-	"github.com/charmbracelet/glamour"
+	rendermarkdown "github.com/samsaffron/term-llm/internal/render/markdown"
 	"github.com/samsaffron/term-llm/internal/ui/streaming"
 )
 
@@ -23,21 +23,12 @@ type TextSegmentRenderer struct {
 // Uses flowing mode (no cursor control) since Bubble Tea owns the terminal.
 func NewTextSegmentRenderer(width int) (*TextSegmentRenderer, error) {
 	var output bytes.Buffer
+	renderer := rendermarkdown.NewANSI(rendermarkdown.Config{
+		Palette: currentMarkdownPalette(),
+		Width:   width,
+	})
 
-	// Use the same style configuration as RenderMarkdown for consistency
-	style := GlamourStyle()
-	margin := uint(0)
-	style.Document.Margin = &margin
-	style.Document.BlockPrefix = ""
-	style.Document.BlockSuffix = ""
-	style.CodeBlock.Margin = &margin
-
-	// Create streaming renderer with glamour options
-	sr, err := streaming.NewRenderer(
-		&output,
-		glamour.WithStyles(style),
-		glamour.WithWordWrap(width),
-	)
+	sr, err := streaming.NewRenderer(&output, renderer)
 	if err != nil {
 		return nil, err
 	}

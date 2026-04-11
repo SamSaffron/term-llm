@@ -3,12 +3,10 @@ package streaming
 import (
 	"bytes"
 	"testing"
-
-	"github.com/charmbracelet/glamour"
 )
 
-// TestGlamourParity verifies streaming output exactly matches glamour.
-func TestGlamourParity(t *testing.T) {
+// TestDirectParity verifies streaming output exactly matches direct rendering.
+func TestDirectParity(t *testing.T) {
 	tests := []struct {
 		name  string
 		input string
@@ -23,54 +21,53 @@ func TestGlamourParity(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Glamour direct render
-			tr, err := glamour.NewTermRenderer(glamour.WithStandardStyle("dark"))
+			direct := newTestMarkdownRenderer(testRenderWidth)
+			directOut, err := direct.Render([]byte(tt.input))
 			if err != nil {
-				t.Fatalf("Failed to create glamour renderer: %v", err)
-			}
-			glamourOut, err := tr.RenderBytes([]byte(tt.input))
-			if err != nil {
-				t.Fatalf("Glamour render failed: %v", err)
+				t.Fatalf("direct render failed: %v", err)
 			}
 
-			// Streaming render (all at once)
 			var buf bytes.Buffer
-			sr, err := NewRenderer(&buf, glamour.WithStandardStyle("dark"))
+			sr, err := NewRenderer(&buf, newTestMarkdownRenderer(testRenderWidth))
 			if err != nil {
 				t.Fatalf("Failed to create streaming renderer: %v", err)
 			}
 			sr.Write([]byte(tt.input))
 			sr.Close()
 
-			if buf.String() != string(glamourOut) {
-				t.Errorf("Parity failed\nInput: %q\nGlamour len: %d, newlines: %d\nStreaming len: %d, newlines: %d\nGlamour: %q\nStreaming: %q",
+			if buf.String() != string(directOut) {
+				t.Errorf("Parity failed\nInput: %q\nDirect len: %d, newlines: %d\nStreaming len: %d, newlines: %d\nDirect: %q\nStreaming: %q",
 					tt.input,
-					len(glamourOut), bytes.Count(glamourOut, []byte("\n")),
+					len(directOut), bytes.Count(directOut, []byte("\n")),
 					buf.Len(), bytes.Count(buf.Bytes(), []byte("\n")),
-					glamourOut,
+					directOut,
 					buf.String())
 			}
 		})
 	}
 }
 
-// TestGlamourParityChunked verifies streaming output matches glamour even when chunked.
-func TestGlamourParityChunked(t *testing.T) {
+// TestDirectParityChunked verifies streaming output matches direct rendering even when chunked.
+func TestDirectParityChunked(t *testing.T) {
 	input := "# Hello\n\nWorld\n"
 
-	// Glamour direct render
-	tr, _ := glamour.NewTermRenderer(glamour.WithStandardStyle("dark"))
-	glamourOut, _ := tr.RenderBytes([]byte(input))
+	direct := newTestMarkdownRenderer(testRenderWidth)
+	directOut, err := direct.Render([]byte(input))
+	if err != nil {
+		t.Fatalf("direct render failed: %v", err)
+	}
 
-	// Streaming render byte-by-byte
 	var buf bytes.Buffer
-	sr, _ := NewRenderer(&buf, glamour.WithStandardStyle("dark"))
+	sr, err := NewRenderer(&buf, newTestMarkdownRenderer(testRenderWidth))
+	if err != nil {
+		t.Fatalf("failed to create renderer: %v", err)
+	}
 	for i := 0; i < len(input); i++ {
 		sr.Write([]byte{input[i]})
 	}
 	sr.Close()
 
-	if buf.String() != string(glamourOut) {
-		t.Errorf("Chunked parity failed\nGlamour: %q\nStreaming: %q", glamourOut, buf.String())
+	if buf.String() != string(directOut) {
+		t.Errorf("Chunked parity failed\nDirect: %q\nStreaming: %q", directOut, buf.String())
 	}
 }

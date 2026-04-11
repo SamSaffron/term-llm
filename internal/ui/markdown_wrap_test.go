@@ -4,7 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/glamour"
 	xansi "github.com/charmbracelet/x/ansi"
 	"github.com/muesli/reflow/wordwrap"
 )
@@ -66,22 +65,8 @@ func TestWordwrapHyphenLineLen(t *testing.T) {
 	}
 }
 
-func TestGlamourWrapNoOrphans(t *testing.T) {
+func TestTerminalMarkdownWrapNoOrphans(t *testing.T) {
 	width := 100
-	style := GlamourStyle()
-	margin := uint(0)
-	style.Document.Margin = &margin
-	style.Document.BlockPrefix = ""
-	style.Document.BlockSuffix = ""
-	style.CodeBlock.Margin = &margin
-
-	renderer, err := glamour.NewTermRenderer(
-		glamour.WithStyles(style),
-		glamour.WithWordWrap(width),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	tests := []struct {
 		name     string
@@ -107,10 +92,11 @@ func TestGlamourWrapNoOrphans(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			rendered, err := renderer.Render(tc.markdown)
-			if err != nil {
-				t.Fatal(err)
-			}
+			rendered := RenderMarkdownWithOptions(tc.markdown, width, MarkdownRenderOptions{
+				WrapOffset:        0,
+				NormalizeTabs:     true,
+				NormalizeNewlines: true,
+			})
 			rendered = strings.TrimSpace(rendered)
 			lines := strings.Split(rendered, "\n")
 			for i, line := range lines {

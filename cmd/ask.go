@@ -338,7 +338,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			toolMgr.SetupEngine(engine)
 		}
 
-		// PromptFunc is set in streamWithGlamour to use bubbletea UI
+		// PromptFunc is set in streamWithRenderer to use bubbletea UI
 
 		// Wire spawn_agent runner if enabled (with session tracking)
 		parentSessionID := sessionID
@@ -470,12 +470,12 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Check if we're in a TTY and can use glamour
+	// Check if we're in a TTY and can use terminal markdown rendering
 	if askPorcelain {
 		askText = true
 	}
 	isTTY := term.IsTerminal(int(os.Stdout.Fd()))
-	useGlamour := !askText && isTTY && !debugRaw
+	useRichRenderer := !askText && isTTY && !debugRaw
 
 	// Create stream adapter for unified event handling with proper buffering
 	adapter := ui.NewStreamAdapter(ui.DefaultStreamBufferSize)
@@ -496,7 +496,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	streamEvents := adapter.Events()
 
 	var teaProgram *tea.Program
-	if !useGlamour && toolMgr != nil {
+	if !useRichRenderer && toolMgr != nil {
 		// Non-TUI mode: set up approval UI directly (no tea.Program to pause)
 		toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {
 			if isShell {
@@ -506,11 +506,11 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	runGlamour := func(ctx context.Context, events <-chan ui.StreamEvent) error {
+	runRenderer := func(ctx context.Context, events <-chan ui.StreamEvent) error {
 		if teaProgram != nil {
 			return runAskStreamProgram(ctx, teaProgram)
 		}
-		return streamWithGlamour(ctx, events, store, sess)
+		return streamWithRenderer(ctx, events, store, sess)
 	}
 
 	// Save user message BEFORE streaming (incremental save)
@@ -621,8 +621,8 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			runOpts.OnEvent = bridge.HandleEvent
 		}
 
-		if useGlamour && toolMgr != nil {
-			_, teaProgram = newAskGlamourProgram(cfg, toolMgr, store, sess, events)
+		if useRichRenderer && toolMgr != nil {
+			_, teaProgram = newAskRendererProgram(cfg, toolMgr, store, sess, events)
 		}
 
 		runProgressive := func() askProgressiveRunResult {
@@ -646,8 +646,8 @@ func runAsk(cmd *cobra.Command, args []string) error {
 				runCh <- runProgressive()
 			}()
 			displayCtx := context.WithoutCancel(ctx)
-			if useGlamour {
-				err = runGlamour(displayCtx, events)
+			if useRichRenderer {
+				err = runRenderer(displayCtx, events)
 			} else {
 				err = streamPlainText(displayCtx, events, false)
 			}
@@ -691,8 +691,8 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			engine.SetTurnCompletedCallback(persistTurnCompleted)
 		}
 
-		if useGlamour && toolMgr != nil {
-			_, teaProgram = newAskGlamourProgram(cfg, toolMgr, store, sess, streamEvents)
+		if useRichRenderer && toolMgr != nil {
+			_, teaProgram = newAskRendererProgram(cfg, toolMgr, store, sess, streamEvents)
 		}
 
 		stats = adapter.Stats()
@@ -709,8 +709,8 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			errChan <- nil
 		}()
 
-		if useGlamour {
-			err = runGlamour(ctx, streamEvents)
+		if useRichRenderer {
+			err = runRenderer(ctx, streamEvents)
 		} else {
 			err = streamPlainText(ctx, streamEvents, askPorcelain)
 		}
@@ -1123,7 +1123,7 @@ func newAskStreamModel() askStreamModel {
 	}
 }
 
-func newAskGlamourProgram(cfg *config.Config, toolMgr *tools.ToolManager, store session.Store, sess *session.Session, events <-chan ui.StreamEvent) (askStreamModel, *tea.Program) {
+func newAskRendererProgram(cfg *config.Config, toolMgr *tools.ToolManager, store session.Store, sess *session.Session, events <-chan ui.StreamEvent) (askStreamModel, *tea.Program) {
 	model := newAskStreamModel()
 	model.store = store
 	model.sess = sess
@@ -1877,9 +1877,9 @@ func (m askStreamModel) View() string {
 	return b.String()
 }
 
-// streamWithGlamour renders markdown beautifully as content streams in.
+// streamWithRenderer renders markdown progressively as content streams in.
 // It creates an ask stream program wired to read from events itself.
-func streamWithGlamour(ctx context.Context, events <-chan ui.StreamEvent, store session.Store, sess *session.Session) error {
+func streamWithRenderer(ctx context.Context, events <-chan ui.StreamEvent, store session.Store, sess *session.Session) error {
 	model := newAskStreamModel()
 	model.store = store
 	model.sess = sess

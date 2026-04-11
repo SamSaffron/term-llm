@@ -16,27 +16,29 @@ import (
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
-func TestRenderMarkdown_CachePathMatchesFreshRender_ForTabs(t *testing.T) {
+func TestRenderMarkdown_MatchesSharedRenderer_ForTabs(t *testing.T) {
 	content := "```\na\tb\n```"
 
-	cached := &Model{width: 80}
-	_ = cached.renderMarkdown("warmup")
-	gotCached := cached.renderMarkdown(content)
+	m := &Model{width: 80}
+	got := m.renderMarkdown(content)
+	want := ui.RenderMarkdownWithOptions(content, 80, ui.MarkdownRenderOptions{
+		WrapOffset:        2,
+		NormalizeTabs:     true,
+		NormalizeNewlines: false,
+	})
 
-	fresh := &Model{width: 80}
-	gotFresh := fresh.renderMarkdown(content)
-
-	if gotCached != gotFresh {
-		t.Fatalf("cached render must match fresh render for tabbed content\ncached:\n%q\nfresh:\n%q", gotCached, gotFresh)
+	if got != want {
+		t.Fatalf("chat markdown render must match shared renderer for tabbed content\nwant:\n%q\n\ngot:\n%q", want, got)
 	}
 }
 
-func TestRenderMarkdown_ClampsRendererWidthForNarrowTerminal(t *testing.T) {
+func TestRenderMarkdown_NarrowWidth_DoesNotFallbackToRaw(t *testing.T) {
+	input := "**bold**"
 	m := &Model{width: 1}
-	_ = m.renderMarkdown("x")
+	got := m.renderMarkdown(input)
 
-	if m.rendererCache.width < 1 {
-		t.Fatalf("renderer width must be clamped to >= 1, got %d", m.rendererCache.width)
+	if strings.TrimSpace(got) == strings.TrimSpace(input) {
+		t.Fatalf("expected narrow-width markdown rendering, got raw fallback: %q", got)
 	}
 }
 

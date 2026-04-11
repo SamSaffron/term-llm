@@ -342,8 +342,8 @@ func (t *ToolTracker) AddTextSegment(text string, width int) bool {
 	builder := &strings.Builder{}
 	builder.WriteString(text)
 
-	// Create streaming renderer for progressive markdown rendering
-	// Skip in text mode to avoid glamour rendering entirely
+	// Create streaming renderer for progressive markdown rendering.
+	// Skip in text mode to avoid terminal markdown rendering entirely.
 	var renderer *TextSegmentRenderer
 	if width > 0 && !t.TextMode {
 		var err error
@@ -416,7 +416,7 @@ func completeTextSegment(seg *Segment, renderFunc func(string) string) bool {
 }
 
 // CompleteTextSegments marks all incomplete text segments as complete.
-// Renders the full text with glamour on completion.
+// Renders the full text through the configured markdown renderer on completion.
 func (t *ToolTracker) CompleteTextSegments(renderFunc func(string) string) {
 	changed := false
 	for i := range t.Segments {
@@ -430,7 +430,7 @@ func (t *ToolTracker) CompleteTextSegments(renderFunc func(string) string) {
 }
 
 // MarkCurrentTextComplete marks the current text segment as complete before a tool starts.
-// Renders the full text with glamour.
+// Renders the full text through the configured markdown renderer.
 func (t *ToolTracker) MarkCurrentTextComplete(renderFunc func(string) string) {
 	if len(t.Segments) > 0 {
 		last := &t.Segments[len(t.Segments)-1]
@@ -766,7 +766,7 @@ type FlushToScrollbackResult struct {
 
 // FlushToScrollback flushes completed segments to scrollback.
 // Incomplete text segments are NOT flushed - they show as raw text in View()
-// and get rendered with glamour only when completed.
+// and get rendered only when completed.
 //
 // Parameters:
 //   - width: terminal width for rendering

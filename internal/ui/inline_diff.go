@@ -9,7 +9,6 @@ import (
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/glamour"
 	"golang.org/x/term"
 )
 
@@ -689,32 +688,12 @@ func (m infoModel) View() string {
 	return m.viewport.View() + "\n" + footer
 }
 
-// renderInfoMarkdown renders content with glamour for info display
+// renderInfoMarkdown renders content with the shared terminal markdown renderer.
 func renderInfoMarkdown(content string, width int) string {
-	style := GlamourStyle()
-	margin := uint(0)
-	style.Document.Margin = &margin
-	style.Document.BlockPrefix = ""
-	style.Document.BlockSuffix = ""
-	style.CodeBlock.Margin = &margin
-
-	renderer, err := glamour.NewTermRenderer(
-		glamour.WithStyles(style),
-		glamour.WithWordWrap(width-2), // slight margin
-	)
-	if err != nil {
-		return content
-	}
-
-	rendered, err := renderer.Render(content)
-	if err != nil {
-		return content
-	}
-
-	result := strings.TrimSpace(rendered)
-	if result != "" && !strings.HasSuffix(result, "\n") {
-		result += "\n"
-	}
-
-	return result
+	return RenderMarkdownWithOptions(content, width, MarkdownRenderOptions{
+		WrapOffset:         2,
+		NormalizeTabs:      false,
+		NormalizeNewlines:  false,
+		EnsureTrailingLine: true,
+	})
 }

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/reflow/wordwrap"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -1021,11 +1020,7 @@ func (m *Model) renderMarkdown(content string) string {
 		return ""
 	}
 
-	// Normalize tabs to 2 spaces to prevent glamour from expanding to 8 spaces.
-	// This must run before both cache-hit and cache-miss paths for consistent output.
-	content = strings.ReplaceAll(content, "\t", "  ")
-
-	// In text mode, skip markdown rendering but still apply word wrapping
+	// In text mode, skip markdown rendering but still apply word wrapping.
 	if m.textMode {
 		targetWidth := m.width - 2
 		if targetWidth < 20 {
@@ -1034,45 +1029,11 @@ func (m *Model) renderMarkdown(content string) string {
 		return wordwrap.String(content, targetWidth)
 	}
 
-	targetWidth := m.width - 2
-	if targetWidth < 1 {
-		targetWidth = 1
-	}
-
-	// Reuse cached renderer if width matches
-	if m.rendererCache.renderer != nil && m.rendererCache.width == targetWidth {
-		rendered, err := m.rendererCache.renderer.Render(content)
-		if err != nil {
-			return content
-		}
-		return strings.TrimSpace(rendered)
-	}
-
-	// Create new renderer and cache it
-	style := ui.GlamourStyle()
-	margin := uint(0)
-	style.Document.Margin = &margin
-	style.Document.BlockPrefix = ""
-	style.Document.BlockSuffix = ""
-	style.CodeBlock.Margin = &margin
-
-	renderer, err := glamour.NewTermRenderer(
-		glamour.WithStyles(style),
-		glamour.WithWordWrap(targetWidth),
-	)
-	if err != nil {
-		return content
-	}
-
-	m.rendererCache.renderer = renderer
-	m.rendererCache.width = targetWidth
-
-	rendered, err := renderer.Render(content)
-	if err != nil {
-		return content
-	}
-
-	return strings.TrimSpace(rendered)
+	return ui.RenderMarkdownWithOptions(content, m.width, ui.MarkdownRenderOptions{
+		WrapOffset:        2,
+		NormalizeTabs:     true,
+		NormalizeNewlines: false,
+	})
 }
 
 func (m *Model) shouldThrottleSetContent(now time.Time) bool {

@@ -7,8 +7,6 @@ import (
 	"math/rand"
 	"os"
 	"testing"
-
-	"github.com/charmbracelet/glamour"
 )
 
 // SpecExample represents a single example from the CommonMark spec.
@@ -49,7 +47,7 @@ func TestCommonMarkSpecChunkingInvariant(t *testing.T) {
 		t.Run(fmt.Sprintf("%s/%d", ex.Section, ex.Example), func(t *testing.T) {
 			// Render all at once
 			var fullBuf bytes.Buffer
-			fullSR, err := NewRenderer(&fullBuf, glamour.WithStandardStyle("dark"))
+			fullSR, err := NewRenderer(&fullBuf, newTestMarkdownRenderer(testRenderWidth))
 			if err != nil {
 				t.Fatalf("Failed to create renderer: %v", err)
 			}
@@ -59,7 +57,7 @@ func TestCommonMarkSpecChunkingInvariant(t *testing.T) {
 
 			// Render byte by byte
 			var byteBuf bytes.Buffer
-			byteSR, _ := NewRenderer(&byteBuf, glamour.WithStandardStyle("dark"))
+			byteSR, _ := NewRenderer(&byteBuf, newTestMarkdownRenderer(testRenderWidth))
 			for i := 0; i < len(ex.Markdown); i++ {
 				byteSR.Write([]byte{ex.Markdown[i]})
 			}
@@ -87,7 +85,7 @@ func TestCommonMarkSpecRandomChunks(t *testing.T) {
 		t.Run(ex.Section+"/random", func(t *testing.T) {
 			// Render all at once for reference
 			var fullBuf bytes.Buffer
-			fullSR, _ := NewRenderer(&fullBuf, glamour.WithStandardStyle("dark"))
+			fullSR, _ := NewRenderer(&fullBuf, newTestMarkdownRenderer(testRenderWidth))
 			fullSR.Write([]byte(ex.Markdown))
 			fullSR.Close()
 			fullOutput := fullBuf.String()
@@ -95,7 +93,7 @@ func TestCommonMarkSpecRandomChunks(t *testing.T) {
 			// Render with random chunks
 			for trial := 0; trial < 5; trial++ {
 				var randBuf bytes.Buffer
-				randSR, _ := NewRenderer(&randBuf, glamour.WithStandardStyle("dark"))
+				randSR, _ := NewRenderer(&randBuf, newTestMarkdownRenderer(testRenderWidth))
 
 				pos := 0
 				for pos < len(ex.Markdown) {
@@ -146,7 +144,7 @@ func TestCommonMarkSpecSections(t *testing.T) {
 
 		t.Run(fmt.Sprintf("%s/%d", ex.Section, ex.Example), func(t *testing.T) {
 			var buf bytes.Buffer
-			sr, _ := NewRenderer(&buf, glamour.WithStandardStyle("dark"))
+			sr, _ := NewRenderer(&buf, newTestMarkdownRenderer(testRenderWidth))
 			sr.Write([]byte(ex.Markdown))
 			sr.Close()
 
@@ -159,14 +157,9 @@ func TestCommonMarkSpecSections(t *testing.T) {
 	}
 }
 
-// TestCommonMarkSpecGlamourParity verifies streaming output matches glamour for most spec examples.
-// NOTE: Due to the streaming nature of this renderer, some CommonMark edge cases cannot achieve
-// perfect parity (e.g., link reference definitions, complex list continuations with tabs).
-// The key guarantees are:
-// 1. Chunking invariant: output is identical regardless of how input is chunked
-// 2. Common case parity: typical markdown patterns match glamour exactly
-// 3. Spec parity: ~89% of CommonMark spec examples match (583/653)
-func TestCommonMarkSpecGlamourParity(t *testing.T) {
+// TestCommonMarkSpecDirectParity verifies the streaming renderer matches direct
+// rendering with the same terminal markdown renderer.
+func TestCommonMarkSpecDirectParity(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping CommonMark spec tests in short mode")
 	}
@@ -177,53 +170,46 @@ func TestCommonMarkSpecGlamourParity(t *testing.T) {
 
 	for _, ex := range examples {
 		t.Run(fmt.Sprintf("%s/%d", ex.Section, ex.Example), func(t *testing.T) {
-			// Glamour direct render
-			tr, err := glamour.NewTermRenderer(glamour.WithStandardStyle("dark"))
+			directRenderer := newTestMarkdownRenderer(testRenderWidth)
+			directOut, err := directRenderer.Render([]byte(ex.Markdown))
 			if err != nil {
-				t.Fatalf("Failed to create glamour renderer: %v", err)
-			}
-			glamourOut, err := tr.RenderBytes([]byte(ex.Markdown))
-			if err != nil {
-				t.Fatalf("Glamour render failed: %v", err)
+				t.Fatalf("direct render failed: %v", err)
 			}
 
-			// Streaming render
 			var buf bytes.Buffer
-			sr, _ := NewRenderer(&buf, glamour.WithStandardStyle("dark"))
+			sr, err := NewRenderer(&buf, newTestMarkdownRenderer(testRenderWidth))
+			if err != nil {
+				t.Fatalf("failed to create streaming renderer: %v", err)
+			}
 			sr.Write([]byte(ex.Markdown))
 			sr.Close()
 
-			if buf.String() != string(glamourOut) {
+			if buf.String() != string(directOut) {
 				failed++
-				// Log but don't fail - these are known edge cases
-				t.Logf("Example %d (%s): parity differs (expected for some edge cases)\nInput: %q",
-					ex.Example, ex.Section, ex.Markdown)
+				t.Logf("Example %d (%s): direct parity differs\nInput: %q", ex.Example, ex.Section, ex.Markdown)
 			} else {
 				passed++
 			}
 		})
 	}
 
-	// Report overall pass rate
 	total := passed + failed
 	if total > 0 {
 		passRate := float64(passed) / float64(total) * 100
-		t.Logf("CommonMark spec parity: %d/%d (%.1f%%)", passed, total, passRate)
-		// Fail if we drop below 80% parity
-		if passRate < 80 {
-			t.Errorf("Parity rate %.1f%% is below threshold of 80%%", passRate)
+		t.Logf("CommonMark spec direct parity: %d/%d (%.1f%%)", passed, total, passRate)
+		if passRate < 95 {
+			t.Errorf("Parity rate %.1f%% is below threshold of 95%%", passRate)
 		}
 	}
 }
 
-// BenchmarkStreamingVsGlamour compares performance.
-func BenchmarkStreamingVsGlamour(b *testing.B) {
+// BenchmarkStreamingVsDirect compares streaming against direct document rendering.
+func BenchmarkStreamingVsDirect(b *testing.B) {
 	examples := loadSpec(b)
 	if len(examples) == 0 {
 		b.Skip("No spec examples loaded")
 	}
 
-	// Combine first 20 examples into one document
 	var combined bytes.Buffer
 	for i := 0; i < 20 && i < len(examples); i++ {
 		combined.WriteString(examples[i].Markdown)
@@ -231,17 +217,17 @@ func BenchmarkStreamingVsGlamour(b *testing.B) {
 	}
 	input := combined.Bytes()
 
-	b.Run("Glamour", func(b *testing.B) {
+	b.Run("Direct", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
-			tr, _ := glamour.NewTermRenderer(glamour.WithStandardStyle("dark"))
-			tr.RenderBytes(input)
+			renderer := newTestMarkdownRenderer(testRenderWidth)
+			_, _ = renderer.Render(input)
 		}
 	})
 
 	b.Run("Streaming", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			var buf bytes.Buffer
-			sr, _ := NewRenderer(&buf, glamour.WithStandardStyle("dark"))
+			sr, _ := NewRenderer(&buf, newTestMarkdownRenderer(testRenderWidth))
 			sr.Write(input)
 			sr.Close()
 		}
@@ -250,8 +236,7 @@ func BenchmarkStreamingVsGlamour(b *testing.B) {
 	b.Run("StreamingChunked", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			var buf bytes.Buffer
-			sr, _ := NewRenderer(&buf, glamour.WithStandardStyle("dark"))
-			// Write in 50-byte chunks
+			sr, _ := NewRenderer(&buf, newTestMarkdownRenderer(testRenderWidth))
 			for pos := 0; pos < len(input); pos += 50 {
 				end := pos + 50
 				if end > len(input) {

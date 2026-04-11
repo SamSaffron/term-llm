@@ -248,6 +248,6 @@ func simulateThinkingScreenWithToolLog(filePath string, elapsed time.Duration) s
 }
 
 func simulateResponseScreen(response string, elapsed time.Duration) string {
-	// In real UI, this would be glamour-rendered markdown
+	// In real UI, this would be terminal-rendered markdown
 	return response
 }

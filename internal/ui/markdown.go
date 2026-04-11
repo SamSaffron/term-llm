@@ -1,55 +1,38 @@
 package ui
 
-import (
-	"regexp"
-	"strings"
-	"sync"
+import rendermarkdown "github.com/samsaffron/term-llm/internal/render/markdown"
 
-	"github.com/charmbracelet/glamour"
-)
+// MarkdownRenderOptions controls legacy caller-specific markdown rendering quirks.
+type MarkdownRenderOptions struct {
+	WrapOffset int
 
-// multiNewlineRe matches 3 or more consecutive newlines.
-var multiNewlineRe = regexp.MustCompile(`\n{3,}`)
+	NormalizeTabs     bool
+	NormalizeNewlines bool
 
-// NormalizeNewlines reduces 3+ consecutive newlines to 2 (one blank line max).
-// This fixes inconsistent spacing between headers caused by glamour's hardcoded
-// extra newline before headings combined with our BlockSuffix settings.
-func NormalizeNewlines(s string) string {
-	return multiNewlineRe.ReplaceAllString(s, "\n\n")
+	EnsureTrailingLine bool
 }
 
-// rendererCache provides width-keyed caching of glamour renderers.
-// Creating a renderer is expensive; caching by width avoids recreation.
-var rendererCache sync.Map // map[int]*glamour.TermRenderer
-
-// getRenderer returns a cached renderer for the given width, creating one if needed.
-func getRenderer(width int) (*glamour.TermRenderer, error) {
-	if cached, ok := rendererCache.Load(width); ok {
-		return cached.(*glamour.TermRenderer), nil
+func defaultMarkdownRenderOptions() MarkdownRenderOptions {
+	return MarkdownRenderOptions{
+		WrapOffset:        1,
+		NormalizeTabs:     true,
+		NormalizeNewlines: true,
 	}
-
-	style := GlamourStyle()
-	margin := uint(0)
-	style.Document.Margin = &margin
-	style.Document.BlockPrefix = ""
-	style.Document.BlockSuffix = ""
-	style.CodeBlock.Margin = &margin
-
-	renderer, err := glamour.NewTermRenderer(
-		glamour.WithStyles(style),
-		glamour.WithWordWrap(width-1), // slight margin to avoid trailing spaces at terminal edge
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	// Store for future use (race-safe: if another goroutine stored first, we just discard ours)
-	rendererCache.Store(width, renderer)
-	return renderer, nil
 }
 
-// RenderMarkdown renders markdown content using glamour with standard styling.
-// This is the main function for rendering markdown in streaming contexts.
+func currentMarkdownPalette() rendermarkdown.Palette {
+	theme := GetTheme()
+	return rendermarkdown.Palette{
+		Primary:   string(theme.Primary),
+		Secondary: string(theme.Secondary),
+		Success:   string(theme.Success),
+		Warning:   string(theme.Warning),
+		Muted:     string(theme.Muted),
+		Text:      string(theme.Text),
+	}
+}
+
+// RenderMarkdown renders markdown content with the shared terminal renderer.
 // On error, returns the original content unchanged.
 func RenderMarkdown(content string, width int) string {
 	if content == "" {
@@ -64,23 +47,37 @@ func RenderMarkdown(content string, width int) string {
 }
 
 // RenderMarkdownWithError renders markdown content and returns any errors.
-// Use this variant when error handling is needed.
 func RenderMarkdownWithError(content string, width int) (string, error) {
-	renderer, err := getRenderer(width)
-	if err != nil {
-		return "", err
+	return RenderMarkdownWithOptionsError(content, width, defaultMarkdownRenderOptions())
+}
+
+// RenderMarkdownWithOptions renders markdown with caller-specific compatibility options.
+// On error, returns the original content unchanged.
+func RenderMarkdownWithOptions(content string, width int, options MarkdownRenderOptions) string {
+	if content == "" {
+		return ""
 	}
 
-	// Normalize tabs to 2 spaces before rendering to prevent glamour
-	// from expanding them to 8 spaces (its default), which causes
-	// code blocks to overflow terminal width
-	content = strings.ReplaceAll(content, "\t", "  ")
-
-	rendered, err := renderer.Render(content)
+	rendered, err := RenderMarkdownWithOptionsError(content, width, options)
 	if err != nil {
-		return "", err
+		return content
+	}
+	return rendered
+}
+
+// RenderMarkdownWithOptionsError renders markdown with caller-specific compatibility options.
+func RenderMarkdownWithOptionsError(content string, width int, options MarkdownRenderOptions) (string, error) {
+	if content == "" {
+		return "", nil
 	}
 
-	normalized := NormalizeNewlines(rendered)
-	return strings.TrimSpace(normalized), nil
+	return rendermarkdown.RenderString(content, rendermarkdown.Config{
+		Palette:            currentMarkdownPalette(),
+		Width:              width,
+		WrapOffset:         options.WrapOffset,
+		NormalizeTabs:      options.NormalizeTabs,
+		NormalizeNewlines:  options.NormalizeNewlines,
+		TrimSpace:          true,
+		EnsureTrailingLine: options.EnsureTrailingLine,
+	})
 }

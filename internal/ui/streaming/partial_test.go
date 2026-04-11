@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"strings"
 	"testing"
-
-	"github.com/charmbracelet/glamour"
 )
 
 func TestFindSafePoint(t *testing.T) {
@@ -103,7 +101,7 @@ func TestFindSafePoint(t *testing.T) {
 
 	// Create a minimal renderer for testing
 	var buf bytes.Buffer
-	sr, err := NewRenderer(&buf, glamour.WithAutoStyle())
+	sr, err := NewRenderer(&buf, newTestMarkdownRenderer(testRenderWidth))
 	if err != nil {
 		t.Fatalf("Failed to create renderer: %v", err)
 	}
@@ -229,11 +227,11 @@ func TestNewRendererWithOptions(t *testing.T) {
 
 	sr, err := NewRendererWithOptions(
 		&buf,
+		newTestMarkdownRenderer(120),
 		[]StreamRendererOption{
 			WithPartialRendering(),
 			WithTerminalWidth(120),
 		},
-		glamour.WithAutoStyle(),
 	)
 	if err != nil {
 		t.Fatalf("NewRendererWithOptions failed: %v", err)
@@ -259,10 +257,10 @@ func TestNewRendererWithOptionsFlowingMode(t *testing.T) {
 
 	sr, err := NewRendererWithOptions(
 		&buf,
+		newTestMarkdownRenderer(testRenderWidth),
 		[]StreamRendererOption{
 			WithPartialRendering(),
 		},
-		glamour.WithAutoStyle(),
 	)
 	if err != nil {
 		t.Fatalf("NewRendererWithOptions failed: %v", err)
@@ -285,7 +283,7 @@ func TestPartialRenderingBackwardsCompatibility(t *testing.T) {
 	// Test that the basic NewRenderer still works without partial rendering
 	var buf bytes.Buffer
 
-	sr, err := NewRenderer(&buf, glamour.WithAutoStyle())
+	sr, err := NewRenderer(&buf, newTestMarkdownRenderer(testRenderWidth))
 	if err != nil {
 		t.Fatalf("NewRenderer failed: %v", err)
 	}
@@ -317,7 +315,7 @@ func TestPartialRenderingBackwardsCompatibility(t *testing.T) {
 
 func TestCurrentBlockContent(t *testing.T) {
 	var buf bytes.Buffer
-	sr, err := NewRenderer(&buf, glamour.WithAutoStyle())
+	sr, err := NewRenderer(&buf, newTestMarkdownRenderer(testRenderWidth))
 	if err != nil {
 		t.Fatalf("NewRenderer failed: %v", err)
 	}
@@ -338,11 +336,11 @@ func TestPartialStateClearing(t *testing.T) {
 
 	sr, err := NewRendererWithOptions(
 		&buf,
+		newTestMarkdownRenderer(80),
 		[]StreamRendererOption{
 			WithPartialRendering(),
 			WithTerminalWidth(80),
 		},
-		glamour.WithAutoStyle(),
 	)
 	if err != nil {
 		t.Fatalf("NewRendererWithOptions failed: %v", err)
@@ -379,8 +377,8 @@ func TestPartialStateClearing(t *testing.T) {
 func TestPartialRendering_IncompleteBoldPreservesLeadingSpace(t *testing.T) {
 	// End-to-end test: writing "hello **wor" (incomplete bold) through the
 	// partial rendering path should render "hello " (safe portion with
-	// trailing space preserved) via glamour. If findSafePoint regressed to
-	// trimming the space, the rendered safeContent fed to glamour would be
+	// trailing space preserved) through the markdown renderer. If findSafePoint
+	// regressed to trimming the space, the rendered safeContent would be
 	// "hello" instead of "hello ". We structure the input as two distinct
 	// words ("hello world") split by an incomplete bold marker so that
 	// space-trimming would concatenate them: "helloworld" vs "hello world".
@@ -388,18 +386,18 @@ func TestPartialRendering_IncompleteBoldPreservesLeadingSpace(t *testing.T) {
 
 	sr, err := NewRendererWithOptions(
 		&buf,
+		newTestMarkdownRenderer(80),
 		[]StreamRendererOption{
 			WithPartialRendering(),
 			WithTerminalWidth(80),
 		},
-		glamour.WithAutoStyle(),
 	)
 	if err != nil {
 		t.Fatalf("NewRendererWithOptions failed: %v", err)
 	}
 
 	// "first second" is one phrase; the incomplete bold starts right after
-	// "first ". If findSafePoint trims the trailing space, glamour would
+	// "first ". If findSafePoint trims the trailing space, the renderer would
 	// render just "first" — and the next partial render would start with
 	// "second" glued to the previous line. We verify the two words remain
 	// separated by checking the rendered safeMarkdown state directly.
@@ -430,17 +428,17 @@ func TestPartialRendering_CompleteBoldThenIncomplete(t *testing.T) {
 	// End-to-end: "hello **world** more **inc" should render through
 	// "hello **world** more " (safe point preserves trailing space)
 	// while excluding the incomplete "**inc". We verify by checking
-	// the safeMarkdown that was fed to glamour, which must end with
+	// the safeMarkdown that was rendered, which must end with
 	// the space before the incomplete marker.
 	var buf bytes.Buffer
 
 	sr, err := NewRendererWithOptions(
 		&buf,
+		newTestMarkdownRenderer(80),
 		[]StreamRendererOption{
 			WithPartialRendering(),
 			WithTerminalWidth(80),
 		},
-		glamour.WithAutoStyle(),
 	)
 	if err != nil {
 		t.Fatalf("NewRendererWithOptions failed: %v", err)

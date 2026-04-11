@@ -53,7 +53,7 @@ func simpleMarkdownRenderer(content string, width int) string {
 	if len(content) < width {
 		return content
 	}
-	// Just return content as-is for benchmarking (real glamour would be slower)
+	// Just return content as-is for benchmarking (the real renderer does more work)
 	return content
 }
 

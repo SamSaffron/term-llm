@@ -79,12 +79,12 @@ func (sr *StreamRenderer) renderPartialBlock() error {
 // For paragraph content, it renders directly. For other block types,
 // it may need to wrap in appropriate context.
 func (sr *StreamRenderer) renderPartial(content string) (string, error) {
-	// For now, render the content directly through glamour
-	// The content should be renderable as-is since we've identified the safe point
-	rendered, err := sr.tr.Render(content)
+	// Render the content through the configured markdown renderer.
+	renderedBytes, err := sr.renderer.Render([]byte(content))
 	if err != nil {
 		return "", err
 	}
+	rendered := string(renderedBytes)
 
 	// Normalize consecutive newlines to fix inconsistent header spacing
 	rendered = string(normalizeNewlines([]byte(rendered)))

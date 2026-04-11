@@ -1,7 +1,7 @@
-// Package streaming provides a streaming markdown renderer that wraps glamour's
-// TermRenderer. It buffers markdown input and renders complete blocks as they
-// become available, making it suitable for rendering markdown from streaming
-// sources like LLM outputs.
+// Package streaming provides a streaming markdown renderer for incremental
+// terminal markdown output. It buffers markdown input and renders complete
+// blocks as they become available, making it suitable for streaming sources
+// like LLM outputs.
 package streaming
 
 import (
@@ -11,7 +11,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/charmbracelet/glamour"
+	rendermarkdown "github.com/samsaffron/term-llm/internal/render/markdown"
 )
 
 // multiNewlineRe matches 3 or more consecutive newlines.
@@ -48,11 +48,11 @@ const (
 	stateInBlockquote              // Inside > block
 )
 
-// StreamRenderer wraps glamour's TermRenderer and provides streaming capabilities.
+// StreamRenderer wraps a terminal markdown renderer and provides streaming capabilities.
 // It buffers markdown input and renders complete blocks immediately to the output writer.
 type StreamRenderer struct {
-	tr     *glamour.TermRenderer
-	output io.Writer
+	renderer rendermarkdown.Renderer
+	output   io.Writer
 
 	// Line buffering - accumulates bytes until we have complete lines
 	lineBuf bytes.Buffer
@@ -90,27 +90,21 @@ type StreamRenderer struct {
 	// Track partial block state for re-rendering
 	partialState partialState
 
-	// Glamour options for re-creating renderer on resize
-	glamourOpts []glamour.TermRendererOption
-
 	// Resume state when a nested block (like fenced code) ends.
 	// Used to keep list context stable across nested blocks.
 	resumeState state
 }
 
 // NewRenderer creates a new streaming markdown renderer.
-// Options are passed directly to glamour.NewTermRenderer.
-func NewRenderer(w io.Writer, opts ...glamour.TermRendererOption) (*StreamRenderer, error) {
-	tr, err := glamour.NewTermRenderer(opts...)
-	if err != nil {
-		return nil, err
+func NewRenderer(w io.Writer, renderer rendermarkdown.Renderer) (*StreamRenderer, error) {
+	if renderer == nil {
+		return nil, fmt.Errorf("streaming renderer requires a markdown renderer")
 	}
 
 	return &StreamRenderer{
-		tr:          tr,
-		output:      w,
-		state:       stateReady,
-		glamourOpts: opts,
+		renderer: renderer,
+		output:   w,
+		state:    stateReady,
 	}, nil
 }
 
@@ -118,19 +112,12 @@ func NewRenderer(w io.Writer, opts ...glamour.TermRendererOption) (*StreamRender
 // additional streaming-specific options like partial rendering.
 func NewRendererWithOptions(
 	w io.Writer,
+	renderer rendermarkdown.Renderer,
 	streamOpts []StreamRendererOption,
-	glamourOpts ...glamour.TermRendererOption,
 ) (*StreamRenderer, error) {
-	tr, err := glamour.NewTermRenderer(glamourOpts...)
+	sr, err := NewRenderer(w, renderer)
 	if err != nil {
 		return nil, err
-	}
-
-	sr := &StreamRenderer{
-		tr:          tr,
-		output:      w,
-		state:       stateReady,
-		glamourOpts: glamourOpts,
 	}
 
 	// Apply streaming options
@@ -149,8 +136,7 @@ func NewRendererWithOptions(
 }
 
 // normalizedMarkdown returns the buffered markdown with tabs normalized to 2 spaces.
-// This prevents glamour from expanding tabs to 8 spaces, which causes code blocks
-// to overflow terminal width.
+// This preserves legacy terminal rendering behaviour for code blocks.
 func (sr *StreamRenderer) normalizedMarkdown() []byte {
 	content := sr.allMarkdown.Bytes()
 	return bytes.ReplaceAll(content, []byte("\t"), []byte("  "))
@@ -629,8 +615,8 @@ func (sr *StreamRenderer) handleBlockquote(content, rawLine string) error {
 }
 
 // emitRendered renders the full document and outputs only the new portion.
-// This maintains exact parity with glamour's direct rendering while avoiding
-// redundant output of already-written content.
+// This maintains direct-render parity while avoiding redundant output of
+// already-written content.
 func (sr *StreamRenderer) emitRendered() error {
 	// Clear partial render before emitting complete block
 	if sr.partialEnabled {
@@ -644,7 +630,7 @@ func (sr *StreamRenderer) emitRendered() error {
 	}
 
 	// Render the full document to maintain consistent styling
-	rendered, err := sr.tr.RenderBytes(sr.normalizedMarkdown())
+	rendered, err := sr.renderer.Render(sr.normalizedMarkdown())
 	if err != nil {
 		return err
 	}
@@ -693,7 +679,7 @@ func (sr *StreamRenderer) Flush() error {
 	}
 
 	// Render the full document to maintain consistent styling
-	rendered, err := sr.tr.RenderBytes(sr.normalizedMarkdown())
+	rendered, err := sr.renderer.Render(sr.normalizedMarkdown())
 	if err != nil {
 		return err
 	}
@@ -710,7 +696,7 @@ func (sr *StreamRenderer) Close() error {
 	return sr.Flush()
 }
 
-// Resize handles terminal resize events by re-creating the glamour renderer
+// Resize handles terminal resize events by resizing the markdown renderer
 // with the new width and re-rendering all accumulated content.
 // The caller should clear the screen before calling this method.
 func (sr *StreamRenderer) Resize(newWidth int) error {
@@ -726,18 +712,7 @@ func (sr *StreamRenderer) Resize(newWidth int) error {
 		sr.termCtrl.width = newWidth
 	}
 
-	// Re-create glamour renderer with new word wrap width
-	newOpts := make([]glamour.TermRendererOption, 0, len(sr.glamourOpts)+1)
-	for _, opt := range sr.glamourOpts {
-		newOpts = append(newOpts, opt)
-	}
-	newOpts = append(newOpts, glamour.WithWordWrap(newWidth-1)) // slight margin
-
-	tr, err := glamour.NewTermRenderer(newOpts...)
-	if err != nil {
-		return err
-	}
-	sr.tr = tr
+	sr.renderer.Resize(newWidth)
 
 	// Clear partial state
 	sr.partialState = partialState{}
@@ -747,7 +722,7 @@ func (sr *StreamRenderer) Resize(newWidth int) error {
 	sr.lastRendered = nil
 
 	if sr.allMarkdown.Len() > 0 {
-		rendered, err := sr.tr.RenderBytes(sr.normalizedMarkdown())
+		rendered, err := sr.renderer.Render(sr.normalizedMarkdown())
 		if err != nil {
 			return err
 		}

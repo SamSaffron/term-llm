@@ -10,7 +10,6 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/glamour"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/prompt"
 	"golang.org/x/term"
@@ -197,39 +196,14 @@ func (m helpModel) View() string {
 	return m.viewport.View() + "\n" + footer
 }
 
-// renderMarkdown renders content with glamour
+// renderMarkdown renders content with the shared terminal markdown renderer.
 func renderMarkdown(content string, width int) string {
-	style := GlamourStyle()
-	margin := uint(0)
-	style.Document.Margin = &margin
-	style.Document.BlockPrefix = ""
-	style.Document.BlockSuffix = ""
-	style.CodeBlock.Margin = &margin
-
-	renderer, err := glamour.NewTermRenderer(
-		glamour.WithStyles(style),
-		glamour.WithWordWrap(width-1), // slight margin to avoid trailing spaces at terminal edge
-	)
-	if err != nil {
-		return content
-	}
-
-	// Normalize tabs to 2 spaces to prevent glamour from expanding to 8 spaces
-	content = strings.ReplaceAll(content, "\t", "  ")
-
-	rendered, err := renderer.Render(content)
-	if err != nil {
-		return content
-	}
-
-	result := strings.TrimSpace(rendered)
-	if result != "" && !strings.HasSuffix(result, "\n") {
-		result += "\n"
-	}
-
-	// Don't apply wordwrap - glamour already handles wrapping,
-	// and wordwrap breaks ANSI escape codes
-	return result
+	return RenderMarkdownWithOptions(content, width, MarkdownRenderOptions{
+		WrapOffset:         1,
+		NormalizeTabs:      true,
+		NormalizeNewlines:  false,
+		EnsureTrailingLine: true,
+	})
 }
 
 // getTerminalSize returns terminal width and height

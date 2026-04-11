@@ -905,8 +905,7 @@ func TestRenderUnflushed_BoldBlockThenPendingText_HasNewlineSeparator(t *testing
 	width := 80
 
 	// Feed "**BOLD**\n\n" — this completes a paragraph block in the
-	// streaming renderer, so RenderedUnflushed() returns the glamour-
-	// rendered bold text (with trailing newlines stripped).
+	// streaming renderer, so RenderedUnflushed() returns the rendered bold
 	tracker.AddTextSegment("**BOLD**\n\n", width)
 
 	// Feed "new text" — still pending (no block boundary yet), so

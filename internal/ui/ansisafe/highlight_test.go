@@ -33,7 +33,7 @@ func TestApplyReverseVideo(t *testing.T) {
 }
 
 func TestHighlightSurvivesResets(t *testing.T) {
-	// Glamour table lines contain embedded \033[0m resets.
+	// Table lines may contain embedded \033[0m resets.
 	// Verify selection background is re-asserted after each reset.
 	line := "\033[0m  Claim  \033[0m│\033[0m  Source  \033[0m│\033[0m  Date  \033[0m"
 	got := ApplyReverseVideo(line)

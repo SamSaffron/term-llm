@@ -45,8 +45,8 @@ func TestMarkdownRendering(t *testing.T) {
 func TestIncrementalRendering(t *testing.T) {
 	width := 80
 
-	// Simulate streaming by splitting content and rendering incrementally
-	// This mimics what streamWithGlamour does
+	// Simulate streaming by splitting content and rendering incrementally.
+	// This mimics what the rich terminal renderer path does.
 	chunks := simulateStreaming(testMarkdown)
 
 	var content strings.Builder
@@ -117,8 +117,8 @@ func TestAskDoneRendersMarkdown(t *testing.T) {
 	model := newAskStreamModel()
 	model.width = 80
 
-	// Note: glamour requires paragraph structure (trailing newlines) to render inline markdown.
-	// Without newlines, **bold** is not recognized as a complete paragraph.
+	// Note: markdown rendering expects paragraph structure (trailing newlines) to
+	// recognize inline markdown as complete content.
 	updated, _ := model.Update(askContentMsg("**bold**\n\n"))
 	model = updated.(askStreamModel)
 
@@ -464,11 +464,11 @@ func TestAskViewNoForcedTrailingNewline(t *testing.T) {
 	}
 }
 
-func TestNewAskGlamourProgramUsesProvidedEventChannel(t *testing.T) {
+func TestNewAskRendererProgramUsesProvidedEventChannel(t *testing.T) {
 	events := make(chan ui.StreamEvent)
 	cfg := &config.Config{DefaultProvider: "test"}
 
-	model, program := newAskGlamourProgram(cfg, nil, nil, nil, events)
+	model, program := newAskRendererProgram(cfg, nil, nil, nil, events)
 	if program == nil {
 		t.Fatal("expected Bubble Tea program")
 	}
