@@ -117,6 +117,26 @@ func TestRenderString_ThematicBreakUsesRenderWidth(t *testing.T) {
 	}
 }
 
+func TestRenderString_BlockquotePreservesNestedStructure(t *testing.T) {
+	got, err := RenderString("> outer\n>\n> > inner1\n> >\n> > inner2\n>\n> tail", Config{
+		Palette:           testPalette,
+		Width:             80,
+		WrapOffset:        1,
+		NormalizeTabs:     true,
+		NormalizeNewlines: true,
+		TrimSpace:         true,
+	})
+	if err != nil {
+		t.Fatalf("RenderString error: %v", err)
+	}
+
+	visible := normalizeVisibleOutput(got)
+	want := "> outer\n>\n> > inner1\n> >\n> > inner2\n>\n> tail"
+	if visible != want {
+		t.Fatalf("blockquote structure mismatch\nwant:\n%s\n\ngot:\n%s", want, visible)
+	}
+}
+
 func TestRenderString_LooseListsKeepBlankLinesBetweenItems(t *testing.T) {
 	got, err := RenderString("- First item\n\n- Second item\n\n- Third item", Config{
 		Palette:           testPalette,

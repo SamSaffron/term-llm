@@ -249,14 +249,14 @@ func (r *ANSI) renderBlock(node gast.Node, source []byte, width int, styles ansi
 		}
 		return wrapANSI(inline, width), nil
 	case *gast.Blockquote:
-		inner, err := r.renderBlockChildren(n, source, max(width-2, 1), styles, "\n")
+		inner, err := r.renderBlockChildren(n, source, max(width-2, 1), styles, "\n\n")
 		if err != nil {
 			return "", err
 		}
 		if strings.TrimSpace(stripANSI(inner)) == "" {
-			return styles.blockquote.Render(" "), nil
+			return styles.blockquote.Render(">"), nil
 		}
-		return prefixLinesWithStyle(inner, "  ", "  ", styles.blockquote), nil
+		return prefixLinesWithStyle(inner, "> ", "> ", styles.blockquote), nil
 	case *gast.List:
 		return r.renderList(n, source, width, styles)
 	case *gast.FencedCodeBlock:
