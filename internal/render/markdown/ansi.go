@@ -221,12 +221,15 @@ func (r *ANSI) renderBlockChildren(parent gast.Node, source []byte, width int, s
 func (r *ANSI) renderBlock(node gast.Node, source []byte, width int, styles ansiStyles) (string, error) {
 	switch n := node.(type) {
 	case *gast.Heading:
-		text := strings.TrimSpace(r.plainInlineChildren(n, source, true))
-		label := strings.Repeat("#", max(n.Level, 1))
-		if text != "" {
-			label += " " + text
+		inline, err := r.renderInlineChildren(n, source, styles)
+		if err != nil {
+			return "", err
 		}
-		return wrapANSI(styles.heading.Render(label), width), nil
+		label := styles.heading.Render(strings.Repeat("#", max(n.Level, 1)))
+		if strings.TrimSpace(stripANSI(inline)) == "" {
+			return wrapANSI(label, width), nil
+		}
+		return wrapANSI(label+" "+inline, width), nil
 	case *gast.Paragraph:
 		inline, err := r.renderInlineChildren(n, source, styles)
 		if err != nil {

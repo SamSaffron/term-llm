@@ -66,6 +66,29 @@ func TestRenderString_GoldenVisibleOutput(t *testing.T) {
 	}
 }
 
+func TestRenderString_HeadingPreservesInlineFormatting(t *testing.T) {
+	got, err := RenderString("## Why `--flag` matters and **you should care**", Config{
+		Palette:           testPalette,
+		Width:             80,
+		WrapOffset:        1,
+		NormalizeTabs:     true,
+		NormalizeNewlines: true,
+		TrimSpace:         true,
+	})
+	if err != nil {
+		t.Fatalf("RenderString error: %v", err)
+	}
+
+	visible := normalizeVisibleOutput(got)
+	if visible != "## Why --flag matters and you should care" {
+		t.Fatalf("unexpected visible output: %q", visible)
+	}
+
+	if !strings.Contains(got, newANSIStyles(testPalette).code.Render("--flag")) {
+		t.Fatalf("expected heading to preserve inline code styling, got: %q", got)
+	}
+}
+
 func TestRenderString_ZeroWidthDoesNotError(t *testing.T) {
 	_, err := RenderString("# title", Config{
 		Palette:           testPalette,
