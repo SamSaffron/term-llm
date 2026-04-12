@@ -1,6 +1,13 @@
 package llm
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"google.golang.org/genai"
+)
 
 func TestBuildGeminiContents_DropsDanglingToolCalls(t *testing.T) {
 	_, contents := buildGeminiContents([]Message{
@@ -42,5 +49,35 @@ func TestBuildGeminiContents_DropsDanglingToolCalls(t *testing.T) {
 	}
 	if !sawText {
 		t.Fatalf("expected assistant text to be preserved, got %#v", assistant.Parts)
+	}
+}
+
+func TestEmitGeminiUsage_DoesNotBlockAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	events := make(chan Event, 1)
+	events <- Event{Type: EventTextDelta, Text: "buffer-full"}
+
+	resp := &genai.GenerateContentResponse{
+		UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+			PromptTokenCount:     3,
+			CandidatesTokenCount: 5,
+			TotalTokenCount:      8,
+		},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- emitGeminiUsage(ctx, events, resp)
+	}()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("emitGeminiUsage() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("emitGeminiUsage blocked after context cancellation")
 	}
 }
