@@ -503,6 +503,15 @@ func (p *GeminiCLIProvider) Stream(ctx context.Context, req Request) (Stream, er
 		buf := make([]byte, 0, 64*1024)
 		scanner.Buffer(buf, 1024*1024) // 1MB max line size
 		firstChunkLogged := false
+		emit := func(event Event) error {
+			select {
+			case events <- event:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+
 		for scanner.Scan() {
 			line := scanner.Text()
 			if !strings.HasPrefix(line, "data: ") {
@@ -544,7 +553,9 @@ func (p *GeminiCLIProvider) Stream(ctx context.Context, req Request) (Stream, er
 				if len(candidate.Content.Parts) > 0 {
 					text := candidate.Content.Parts[0].Text
 					if text != "" {
-						events <- Event{Type: EventTextDelta, Text: text}
+						if err := emit(Event{Type: EventTextDelta, Text: text}); err != nil {
+							return err
+						}
 					}
 				}
 
@@ -560,13 +571,17 @@ func (p *GeminiCLIProvider) Stream(ctx context.Context, req Request) (Stream, er
 		}
 
 		if len(sources) > 0 {
-			events <- Event{Type: EventTextDelta, Text: "\n\nSources:\n"}
+			if err := emit(Event{Type: EventTextDelta, Text: "\n\nSources:\n"}); err != nil {
+				return err
+			}
 			for i, src := range sources {
 				label := src.URI
 				if src.Title != "" {
 					label = fmt.Sprintf("%s (%s)", src.Title, src.URI)
 				}
-				events <- Event{Type: EventTextDelta, Text: fmt.Sprintf("[%d] %s\n", i+1, label)}
+				if err := emit(Event{Type: EventTextDelta, Text: fmt.Sprintf("[%d] %s\n", i+1, label)}); err != nil {
+					return err
+				}
 			}
 		}
 
@@ -580,7 +595,9 @@ func (p *GeminiCLIProvider) Stream(ctx context.Context, req Request) (Stream, er
 			return err
 		}
 
-		events <- Event{Type: EventDone}
+		if err := emit(Event{Type: EventDone}); err != nil {
+			return err
+		}
 		return nil
 	}), nil
 }
