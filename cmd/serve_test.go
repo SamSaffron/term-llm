@@ -1925,6 +1925,140 @@ func TestServeRuntimeRun_PersistsPendingInterjectionAtEndOfSimpleStream(t *testi
 	}
 }
 
+func TestServeRuntimeRun_PersistsMessagesOnErrorExit(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// Turn 1: tool call (succeeds, callbacks persist).
+	// Turn 2: error (run returns error — deferred persist must save turn 1).
+	provider := llm.NewMockProvider("mock").
+		AddToolCall("call-1", "echo", map[string]any{"input": "hi"}).
+		AddError(errors.New("provider exploded"))
+
+	registry := llm.NewToolRegistry()
+	registry.Register(&echoTool{})
+	engine := llm.NewEngine(provider, registry)
+
+	rt := &serveRuntime{
+		provider:     provider,
+		engine:       engine,
+		store:        store,
+		defaultModel: "mock-model",
+	}
+	rt.Touch()
+
+	req := llm.Request{
+		SessionID: "error-persist-test",
+		MaxTurns:  5,
+		Tools:     []llm.ToolSpec{(&echoTool{}).Spec()},
+	}
+	_, runErr := rt.Run(context.Background(), true, false, []llm.Message{
+		llm.UserText("call the echo tool"),
+	}, req)
+	if runErr == nil {
+		t.Fatal("expected Run to return an error")
+	}
+
+	// Despite the error, turn 1 messages must be persisted.
+	msgs, err := store.GetMessages(context.Background(), "error-persist-test", 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages failed: %v", err)
+	}
+
+	var hasToolCall, hasToolResult bool
+	for _, m := range msgs {
+		for _, p := range m.Parts {
+			if p.Type == llm.PartToolCall && p.ToolCall != nil && p.ToolCall.Name == "echo" {
+				hasToolCall = true
+			}
+			if p.Type == llm.PartToolResult && p.ToolResult != nil && p.ToolResult.ID == "call-1" {
+				hasToolResult = true
+			}
+		}
+	}
+	if !hasToolCall {
+		t.Fatalf("persisted messages missing assistant tool_call after error exit; messages: %d", len(msgs))
+	}
+	if !hasToolResult {
+		t.Fatalf("persisted messages missing tool_result after error exit; messages: %d", len(msgs))
+	}
+}
+
+func TestServeRuntimeRun_ImmediateErrorDoesNotDesyncState(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	// The provider fails on the very first call — no callbacks fire.
+	provider := llm.NewMockProvider("mock").
+		AddError(errors.New("immediate boom")).
+		AddTextResponse("recovered")
+
+	registry := llm.NewToolRegistry()
+	registry.Register(&echoTool{})
+	engine := llm.NewEngine(provider, registry)
+
+	rt := &serveRuntime{
+		provider:     provider,
+		engine:       engine,
+		store:        store,
+		defaultModel: "mock-model",
+	}
+	rt.Touch()
+
+	sid := "immediate-error-test"
+	req := llm.Request{
+		SessionID: sid,
+		MaxTurns:  5,
+		Tools:     []llm.ToolSpec{(&echoTool{}).Spec()},
+	}
+
+	// First run: immediate error, no produced messages.
+	_, runErr := rt.Run(context.Background(), true, false, []llm.Message{
+		llm.UserText("hello"),
+	}, req)
+	if runErr == nil {
+		t.Fatal("expected Run to return an error")
+	}
+
+	// rt.history must be empty — no callbacks ran, no state committed.
+	if len(rt.history) != 0 {
+		t.Fatalf("history len after immediate error = %d, want 0", len(rt.history))
+	}
+
+	// DB should have no messages for this session (no eager persist without callback).
+	msgs, err := store.GetMessages(context.Background(), sid, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages failed: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Fatalf("persisted message count after immediate error = %d, want 0", len(msgs))
+	}
+
+	// Second run: succeeds — must not be confused by stale DB state.
+	_, runErr = rt.Run(context.Background(), true, false, []llm.Message{
+		llm.UserText("hello again"),
+	}, req)
+	if runErr != nil {
+		t.Fatalf("second Run failed: %v", runErr)
+	}
+
+	msgs, err = store.GetMessages(context.Background(), sid, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages after recovery failed: %v", err)
+	}
+	if len(msgs) == 0 {
+		t.Fatal("expected persisted messages after successful second run")
+	}
+}
+
 func TestServeRuntimeRun_ReinjectsPlatformDeveloperMessageAfterFailedFirstRun(t *testing.T) {
 	provider := llm.NewMockProvider("mock").
 		AddError(errors.New("boom")).
