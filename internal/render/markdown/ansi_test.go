@@ -117,6 +117,26 @@ func TestRenderString_ThematicBreakUsesRenderWidth(t *testing.T) {
 	}
 }
 
+func TestRenderString_LooseListsKeepBlankLinesBetweenItems(t *testing.T) {
+	got, err := RenderString("- First item\n\n- Second item\n\n- Third item", Config{
+		Palette:           testPalette,
+		Width:             80,
+		WrapOffset:        1,
+		NormalizeTabs:     true,
+		NormalizeNewlines: true,
+		TrimSpace:         true,
+	})
+	if err != nil {
+		t.Fatalf("RenderString error: %v", err)
+	}
+
+	visible := normalizeVisibleOutput(got)
+	want := "• First item\n\n• Second item\n\n• Third item"
+	if visible != want {
+		t.Fatalf("loose list spacing mismatch\nwant:\n%s\n\ngot:\n%s", want, visible)
+	}
+}
+
 func TestRenderString_ZeroWidthDoesNotError(t *testing.T) {
 	_, err := RenderString("# title", Config{
 		Palette:           testPalette,
