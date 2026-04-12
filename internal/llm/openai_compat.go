@@ -43,6 +43,7 @@ type OpenAICompatProvider struct {
 	chatURL         string // Full chat URL - used as-is (optional, overrides baseURL)
 	apiKey          string // Optional, most servers ignore it
 	model           string
+	effort          string // reasoning effort: "low", "medium", "high", "xhigh", or ""
 	name            string // Display name: "Ollama", "LM Studio", etc.
 	headers         map[string]string
 	noStreamOptions bool // If true, don't send stream_options (for servers that reject it)
@@ -83,6 +84,9 @@ func NewOpenAICompatProviderFull(baseURL, chatURL, apiKey, model, name string, h
 }
 
 func (p *OpenAICompatProvider) Name() string {
+	if p.effort != "" {
+		return fmt.Sprintf("%s (%s, effort=%s)", p.name, p.model, p.effort)
+	}
 	return fmt.Sprintf("%s (%s)", p.name, p.model)
 }
 
@@ -110,6 +114,7 @@ type oaiChatRequest struct {
 	Tools             []oaiTool              `json:"tools,omitempty"`
 	ToolChoice        interface{}            `json:"tool_choice,omitempty"`
 	ParallelToolCalls *bool                  `json:"parallel_tool_calls,omitempty"`
+	ReasoningEffort   string                 `json:"reasoning_effort,omitempty"`
 	Temperature       *float64               `json:"temperature,omitempty"`
 	TopP              *float64               `json:"top_p,omitempty"`
 	MaxTokens         *int                   `json:"max_tokens,omitempty"`
@@ -347,11 +352,23 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 		return nil, err
 	}
 
+	// Strip effort suffix from req.Model if present, use it if no provider-level effort set
+	reqModel, reqEffort := parseModelEffort(req.Model)
+	model := chooseModel(reqModel, p.model)
+	effort := p.effort
+	if effort == "" && reqEffort != "" {
+		effort = reqEffort
+	}
+	if effort == "" && req.ReasoningEffort != "" {
+		effort = req.ReasoningEffort
+	}
+
 	chatReq := oaiChatRequest{
-		Model:    chooseModel(req.Model, p.model),
-		Messages: messages,
-		Tools:    tools,
-		Stream:   true,
+		Model:           model,
+		Messages:        messages,
+		Tools:           tools,
+		Stream:          true,
+		ReasoningEffort: effort,
 	}
 	if !p.noStreamOptions {
 		chatReq.StreamOptions = &oaiStreamOptions{IncludeUsage: true}
@@ -380,6 +397,10 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 		fmt.Fprintf(os.Stderr, "=== DEBUG: %s Stream Request ===\n", p.name)
 		fmt.Fprintf(os.Stderr, "Provider: %s\n", p.Name())
 		fmt.Fprintf(os.Stderr, "URL: %s/chat/completions\n", p.baseURL)
+		fmt.Fprintf(os.Stderr, "Model: %s\n", model)
+		if effort != "" {
+			fmt.Fprintf(os.Stderr, "ReasoningEffort: %s\n", effort)
+		}
 		fmt.Fprintf(os.Stderr, "Messages: %d\n", len(messages))
 		fmt.Fprintf(os.Stderr, "Tools: %d\n", len(tools))
 		fmt.Fprintln(os.Stderr, "===================================")

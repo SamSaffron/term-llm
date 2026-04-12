@@ -285,8 +285,13 @@ var defaultEffortVariants = []string{"low", "medium", "high", "xhigh"}
 
 // EffortVariantsFor returns the effort suffixes for a model, or nil if none.
 // All GPT-5 family models are reasoning-capable and support effort levels.
+// Handles both direct model names ("gpt-5.4") and vendor-prefixed names ("openai/gpt-5.4").
 func EffortVariantsFor(model string) []string {
-	if strings.HasPrefix(model, "gpt-5") {
+	name := model
+	if i := strings.LastIndex(model, "/"); i >= 0 {
+		name = model[i+1:]
+	}
+	if strings.HasPrefix(name, "gpt-5") {
 		return defaultEffortVariants
 	}
 	return nil

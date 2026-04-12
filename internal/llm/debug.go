@@ -67,6 +67,9 @@ func DebugRawRequest(enabled bool, providerName, credential string, req Request,
 	if req.TopP > 0 {
 		fmt.Fprintf(&b, "top_p: %.2f\n", req.TopP)
 	}
+	if req.ReasoningEffort != "" {
+		fmt.Fprintf(&b, "reasoning_effort: %s\n", req.ReasoningEffort)
+	}
 	if len(req.Tools) > 0 {
 		b.WriteString("tools:\n")
 		for _, tool := range req.Tools {

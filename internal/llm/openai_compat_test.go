@@ -1125,3 +1125,93 @@ func TestOpenAICompatProviderStreamOmitsUnsetTemperatureAndTopP(t *testing.T) {
 		t.Fatalf("expected top_p to be omitted, got %v", *got.TopP)
 	}
 }
+
+func TestOpenAICompatProviderStreamSendsReasoningEffort(t *testing.T) {
+	tests := []struct {
+		name           string
+		providerModel  string
+		providerEffort string // set directly on provider
+		requestModel   string // model override in Request
+		wantModel      string
+		wantEffort     string
+	}{
+		{
+			name:          "effort from provider model suffix",
+			providerModel: "openai/gpt-5.4-xhigh",
+			wantModel:     "openai/gpt-5.4",
+			wantEffort:    "xhigh",
+		},
+		{
+			name:          "effort from request model suffix",
+			providerModel: "openai/gpt-5.4",
+			requestModel:  "openai/gpt-5.4-high",
+			wantModel:     "openai/gpt-5.4",
+			wantEffort:    "high",
+		},
+		{
+			name:          "no effort when not specified",
+			providerModel: "openai/gpt-5.4",
+			wantModel:     "openai/gpt-5.4",
+			wantEffort:    "",
+		},
+		{
+			name:           "provider effort takes priority over request suffix",
+			providerModel:  "openai/gpt-5.4",
+			providerEffort: "low",
+			requestModel:   "openai/gpt-5.4-high",
+			wantModel:      "openai/gpt-5.4",
+			wantEffort:     "low",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got struct {
+				Model           string `json:"model"`
+				ReasoningEffort string `json:"reasoning_effort"`
+			}
+
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			}))
+			defer ts.Close()
+
+			actualModel, effort := parseModelEffort(tt.providerModel)
+			provider := NewOpenAICompatProvider(ts.URL, "test-key", actualModel, "Test")
+			provider.effort = effort
+			if tt.providerEffort != "" {
+				provider.effort = tt.providerEffort
+			}
+
+			stream, err := provider.Stream(context.Background(), Request{
+				Model:    tt.requestModel,
+				Messages: []Message{UserText("hello")},
+			})
+			if err != nil {
+				t.Fatalf("Stream() error = %v", err)
+			}
+			defer stream.Close()
+
+			for {
+				ev, err := stream.Recv()
+				if err != nil {
+					t.Fatalf("Recv() error = %v", err)
+				}
+				if ev.Type == EventDone {
+					break
+				}
+			}
+
+			if got.Model != tt.wantModel {
+				t.Errorf("model = %q, want %q", got.Model, tt.wantModel)
+			}
+			if got.ReasoningEffort != tt.wantEffort {
+				t.Errorf("reasoning_effort = %q, want %q", got.ReasoningEffort, tt.wantEffort)
+			}
+		})
+	}
+}
