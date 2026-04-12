@@ -376,6 +376,9 @@ func TestSQLiteStoreUpdateMetricsIncludesCachedTokens(t *testing.T) {
 	if err := store.UpdateMetrics(ctx, sess.ID, 1, 2, 50, 100, 1200, 50); err != nil {
 		t.Fatalf("failed to update session metrics (turn 2): %v", err)
 	}
+	if err := store.UpdateContextEstimate(ctx, sess.ID, 127_637, 42); err != nil {
+		t.Fatalf("failed to update context estimate: %v", err)
+	}
 	loaded2, err := store.Get(ctx, sess.ID)
 	if err != nil {
 		t.Fatalf("failed to load session after turn 2: %v", err)
@@ -391,6 +394,12 @@ func TestSQLiteStoreUpdateMetricsIncludesCachedTokens(t *testing.T) {
 	}
 	if loaded2.OutputTokens != 350 {
 		t.Errorf("expected output_tokens=350 after accumulation, got %d", loaded2.OutputTokens)
+	}
+	if loaded2.LastTotalTokens != 127_637 {
+		t.Errorf("expected last_total_tokens=127637 after update, got %d", loaded2.LastTotalTokens)
+	}
+	if loaded2.LastMessageCount != 42 {
+		t.Errorf("expected last_message_count=42 after update, got %d", loaded2.LastMessageCount)
 	}
 
 	summaries, err := store.List(ctx, ListOptions{Limit: 10})
@@ -432,6 +441,9 @@ func TestUpdateDoesNotClobberTokenMetrics(t *testing.T) {
 	if err := store.UpdateMetrics(ctx, sess.ID, 3, 5, 1000, 250, 700, 500); err != nil {
 		t.Fatalf("UpdateMetrics: %v", err)
 	}
+	if err := store.UpdateContextEstimate(ctx, sess.ID, 127_637, 42); err != nil {
+		t.Fatalf("UpdateContextEstimate: %v", err)
+	}
 
 	// Now call Update to change metadata (e.g. summary).
 	// The in-memory sess still has zero token counts — this must NOT reset the DB.
@@ -458,6 +470,12 @@ func TestUpdateDoesNotClobberTokenMetrics(t *testing.T) {
 	}
 	if reloaded.OutputTokens != 250 {
 		t.Errorf("Update clobbered output_tokens: expected 250, got %d", reloaded.OutputTokens)
+	}
+	if reloaded.LastTotalTokens != 127_637 {
+		t.Errorf("Update clobbered last_total_tokens: expected 127637, got %d", reloaded.LastTotalTokens)
+	}
+	if reloaded.LastMessageCount != 42 {
+		t.Errorf("Update clobbered last_message_count: expected 42, got %d", reloaded.LastMessageCount)
 	}
 	if reloaded.LLMTurns != 3 {
 		t.Errorf("Update clobbered llm_turns: expected 3, got %d", reloaded.LLMTurns)

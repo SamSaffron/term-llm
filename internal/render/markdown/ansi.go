@@ -13,6 +13,7 @@ import (
 	chromastyles "github.com/alecthomas/chroma/v2/styles"
 	xansi "github.com/charmbracelet/x/ansi"
 	"github.com/muesli/reflow/wordwrap"
+	"github.com/muesli/reflow/wrap"
 	"github.com/yuin/goldmark"
 	gast "github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
@@ -798,7 +799,25 @@ func wrapANSI(text string, width int) string {
 	f.Breakpoints = []rune{}
 	_, _ = f.Write([]byte(text))
 	_ = f.Close()
-	return f.String()
+
+	wrapped := f.String()
+	if wrapped == "" {
+		return ""
+	}
+
+	lines := strings.Split(wrapped, "\n")
+	changed := false
+	for i, line := range lines {
+		if visibleWidth(line) <= width {
+			continue
+		}
+		lines[i] = wrap.String(line, width)
+		changed = true
+	}
+	if !changed {
+		return wrapped
+	}
+	return strings.Join(lines, "\n")
 }
 
 func prefixLinesWithStyle(text, firstPrefix, otherPrefix string, style ansiStyle) string {

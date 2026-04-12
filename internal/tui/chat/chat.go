@@ -458,7 +458,7 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 		stats.SeedTotals(sess.InputTokens, sess.OutputTokens, sess.CachedInputTokens, sess.CacheWriteTokens, sess.ToolCalls, sess.LLMTurns)
 	}
 
-	return &Model{
+	model := &Model{
 		width:                    width,
 		height:                   height,
 		textarea:                 ta,
@@ -508,6 +508,57 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 		textMode:                 textMode,
 		selectedImage:            -1,
 	}
+	model.configureContextManagementForSession()
+	return model
+}
+
+func (m *Model) seedStatsFromSession() {
+	if m.sess == nil {
+		m.stats = ui.NewSessionStats()
+		return
+	}
+	if m.stats == nil {
+		m.stats = ui.NewSessionStats()
+	}
+	m.stats.SeedTotals(m.sess.InputTokens, m.sess.OutputTokens, m.sess.CachedInputTokens, m.sess.CacheWriteTokens, m.sess.ToolCalls, m.sess.LLMTurns)
+}
+
+func (m *Model) configureContextManagementForSession() {
+	if m == nil || m.engine == nil || m.provider == nil || m.config == nil || m.sess == nil {
+		return
+	}
+
+	providerForLimits := strings.TrimSpace(m.sess.ProviderKey)
+	if providerForLimits == "" {
+		providerForLimits = strings.TrimSpace(m.providerKey)
+	}
+	if providerForLimits == "" {
+		providerForLimits = strings.TrimSpace(m.sess.Provider)
+	}
+
+	modelForLimits := strings.TrimSpace(m.sess.Model)
+	if modelForLimits == "" {
+		modelForLimits = strings.TrimSpace(m.modelName)
+	}
+	if modelForLimits == "" {
+		return
+	}
+
+	m.engine.ConfigureContextManagement(m.provider, providerForLimits, modelForLimits, m.config.AutoCompact)
+	m.engine.SetContextEstimateBaseline(m.sess.LastTotalTokens, m.sess.LastMessageCount)
+}
+
+func (m *Model) persistContextEstimate(ctx context.Context) {
+	if m == nil || m.store == nil || m.sess == nil || m.engine == nil {
+		return
+	}
+	total, count := m.engine.ContextEstimateBaseline()
+	if total <= 0 || count <= 0 {
+		return
+	}
+	_ = m.store.UpdateContextEstimate(ctx, m.sess.ID, total, count)
+	m.sess.LastTotalTokens = total
+	m.sess.LastMessageCount = count
 }
 
 // WantsReload reports whether the user requested a binary reload via /reload.
@@ -1439,6 +1490,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.sess != nil {
 			m.sess = msg.sess
 			m.messages = msg.messages
+			m.seedStatsFromSession()
+			m.configureContextManagementForSession()
 			m.invalidateHistoryCache()
 			m.scrollOffset = 0
 			if m.store != nil {

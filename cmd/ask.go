@@ -577,6 +577,11 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			}
 			// Update metrics
 			_ = store.UpdateMetrics(ctx, sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens)
+			if total, count := engine.ContextEstimateBaseline(); total > 0 && count > 0 {
+				_ = store.UpdateContextEstimate(ctx, sess.ID, total, count)
+				sess.LastTotalTokens = total
+				sess.LastMessageCount = count
+			}
 			return nil
 		}
 		persistSyntheticUserMessage = func(ctx context.Context, msg llm.Message) error {
@@ -587,6 +592,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	// Enable context compaction or tracking for models with known context window data.
 	engine.ConfigureContextManagement(provider, cfg.DefaultProvider, activeModel(cfg), cfg.AutoCompact)
+	applyPersistedContextEstimate(engine, sess)
 
 	var stats *ui.SessionStats
 	var progressiveResult progressiveRunResult

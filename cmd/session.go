@@ -461,6 +461,19 @@ func ensureRequestSessionID(sessionID string, resuming bool) string {
 	return session.NewID()
 }
 
+// applyPersistedContextEstimate seeds the engine's context-estimate baseline from
+// persisted session state so resumed runs can use the last real provider-observed
+// context size instead of falling back to heuristic-only estimation.
+func applyPersistedContextEstimate(engine *llm.Engine, sess *session.Session) {
+	if engine == nil || sess == nil {
+		return
+	}
+	if sess.LastTotalTokens <= 0 || sess.LastMessageCount <= 0 {
+		return
+	}
+	engine.SetContextEstimateBaseline(sess.LastTotalTokens, sess.LastMessageCount)
+}
+
 // InitSessionStore creates a session store if enabled in config.
 // Returns the store (may be nil if disabled) and a cleanup function.
 // The cleanup function is always safe to call (handles nil store).

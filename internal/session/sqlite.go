@@ -24,6 +24,8 @@ type SQLiteStore struct {
 	hasPinned            bool // true if sessions table has pinned column
 	hasTitleSkippedAt    bool // true if sessions table has title_skipped_at column
 	hasLastUserMessageAt bool // true if sessions table has last_user_message_at column
+	hasLastTotalTokens   bool // true if sessions table has last_total_tokens column
+	hasLastMessageCount  bool // true if sessions table has last_message_count column
 }
 
 // Schema for the sessions database.
@@ -61,6 +63,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     cached_input_tokens INTEGER DEFAULT 0,
     cache_write_tokens INTEGER DEFAULT 0,
     output_tokens INTEGER DEFAULT 0,
+    last_total_tokens INTEGER DEFAULT 0,
+    last_message_count INTEGER DEFAULT 0,
     status TEXT DEFAULT 'active',
     tags TEXT,
     compaction_seq INTEGER DEFAULT -1
@@ -175,6 +179,8 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 	store.hasPinned = store.probeColumn("pinned")
 	store.hasTitleSkippedAt = store.probeColumn("title_skipped_at")
 	store.hasLastUserMessageAt = store.probeColumn("last_user_message_at")
+	store.hasLastTotalTokens = store.probeColumn("last_total_tokens")
+	store.hasLastMessageCount = store.probeColumn("last_message_count")
 
 	// Run cleanup if configured (read-write mode only).
 	if !cfg.ReadOnly {
@@ -191,7 +197,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 17
+const schemaVersion = 18
 
 // migration represents a schema migration.
 type migration struct {
@@ -593,6 +599,25 @@ var migrations = []migration{
 			return rebuildMessagesTableForDeveloperRole(db)
 		},
 	},
+	{
+		// Migration 18: Persist last observed context estimate baseline for resumes.
+		version:     18,
+		description: "add last context estimate columns",
+		up: func(db *sql.DB) error {
+			alterStatements := []string{
+				"ALTER TABLE sessions ADD COLUMN last_total_tokens INTEGER DEFAULT 0",
+				"ALTER TABLE sessions ADD COLUMN last_message_count INTEGER DEFAULT 0",
+			}
+			for _, stmt := range alterStatements {
+				if _, err := db.Exec(stmt); err != nil {
+					if !isDuplicateColumnError(err) {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+	},
 }
 
 func rebuildMessagesTableForDeveloperRole(db *sql.DB) error {
@@ -799,14 +824,15 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 		result, err := s.db.ExecContext(ctx, `
 			INSERT INTO sessions (id, number, name, summary, generated_short_title, generated_long_title, title_source, title_generated_at, title_basis_msg_seq, title_skipped_at,
 			                      provider, provider_key, model, mode, origin, agent, cwd, created_at, updated_at, archived, pinned, parent_id, search, tools, mcp,
-			                      user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, status, tags)
-			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			                      user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens,
+			                      last_total_tokens, last_message_count, status, tags)
+			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			sess.ID, sess.Name, sess.Summary, nullString(sess.GeneratedShortTitle), nullString(sess.GeneratedLongTitle), nullString(string(sess.TitleSource)), nullTime(sess.TitleGeneratedAt), sess.TitleBasisMsgSeq, nullTime(sess.TitleSkippedAt),
 			sess.Provider, nullString(sess.ProviderKey), sess.Model, string(sess.Mode), nullString(string(sess.Origin)), nullString(sess.Agent), sess.CWD,
 			sess.CreatedAt, sess.UpdatedAt, sess.Archived, sess.Pinned, nullString(sess.ParentID),
 			sess.Search, nullString(sess.Tools), nullString(sess.MCP),
 			sess.UserTurns, sess.LLMTurns, sess.ToolCalls, sess.InputTokens, sess.CachedInputTokens, sess.CacheWriteTokens, sess.OutputTokens,
-			string(sess.Status), nullString(sess.Tags))
+			sess.LastTotalTokens, sess.LastMessageCount, string(sess.Status), nullString(sess.Tags))
 		if err != nil {
 			return fmt.Errorf("insert session: %w", err)
 		}
@@ -834,14 +860,14 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 func (s *SQLiteStore) Get(ctx context.Context, id string) (*Session, error) {
 	row := s.db.QueryRowContext(ctx,
 		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE id = ?", id)
-	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasTitleSkippedAt)
+	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasTitleSkippedAt, s.hasLastTotalTokens, s.hasLastMessageCount)
 }
 
 // GetByNumber retrieves a session by its sequential number.
 func (s *SQLiteStore) GetByNumber(ctx context.Context, number int64) (*Session, error) {
 	row := s.db.QueryRowContext(ctx,
 		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE number = ?", number)
-	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasTitleSkippedAt)
+	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasTitleSkippedAt, s.hasLastTotalTokens, s.hasLastMessageCount)
 }
 
 // GetByPrefix retrieves a session by number (with # prefix), exact ID, or by short ID prefix match.
@@ -888,7 +914,7 @@ func (s *SQLiteStore) GetByPrefix(ctx context.Context, prefix string) (*Session,
 	pattern := ExpandShortID(prefix)
 	row := s.db.QueryRowContext(ctx,
 		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE id LIKE ? ORDER BY created_at DESC LIMIT 1", pattern)
-	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasTitleSkippedAt)
+	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasTitleSkippedAt, s.hasLastTotalTokens, s.hasLastMessageCount)
 }
 
 // Update modifies an existing session's metadata fields.
@@ -967,6 +993,30 @@ func (s *SQLiteStore) UpdateMetrics(ctx context.Context, id string, llmTurns, to
 			       updated_at = ?
 			WHERE id = ?`,
 			llmTurns, toolCalls, inputTokens, cachedInputTokens, cacheWriteTokens, outputTokens, time.Now(), id)
+		return err
+	})
+}
+
+// UpdateContextEstimate persists the last observed provider context estimate so
+// resumed sessions can display a realistic context meter before the next turn.
+func (s *SQLiteStore) UpdateContextEstimate(ctx context.Context, id string, lastTotalTokens, lastMessageCount int) error {
+	if !s.hasLastTotalTokens || !s.hasLastMessageCount {
+		return nil
+	}
+	if lastTotalTokens < 0 {
+		lastTotalTokens = 0
+	}
+	if lastMessageCount < 0 {
+		lastMessageCount = 0
+	}
+	return retryOnBusy(ctx, 5, func() error {
+		_, err := s.db.ExecContext(ctx, `
+			UPDATE sessions SET
+			       last_total_tokens = ?,
+			       last_message_count = ?,
+			       updated_at = ?
+			WHERE id = ?`,
+			lastTotalTokens, lastMessageCount, time.Now(), id)
 		return err
 	})
 }
@@ -1609,7 +1659,14 @@ func (s *SQLiteStore) sessionSelectCols() string {
 	if s.hasCacheWriteTokens {
 		base += ", cache_write_tokens"
 	}
-	base += ", output_tokens, status, tags"
+	base += ", output_tokens"
+	if s.hasLastTotalTokens {
+		base += ", last_total_tokens"
+	}
+	if s.hasLastMessageCount {
+		base += ", last_message_count"
+	}
+	base += ", status, tags"
 	if s.hasCompactionSeq {
 		base += ", compaction_seq"
 	}
@@ -1618,7 +1675,7 @@ func (s *SQLiteStore) sessionSelectCols() string {
 
 // scanSessionRow scans a session row into a Session struct. The flags
 // determine which optional columns are present in the result set.
-func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCompactionSeq, hasTitleSkippedAt bool) (*Session, error) {
+func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCompactionSeq, hasTitleSkippedAt, hasLastTotalTokens, hasLastMessageCount bool) (*Session, error) {
 	var sess Session
 	var number sql.NullInt64
 	var name, summary, cwd sql.NullString
@@ -1643,7 +1700,14 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 	if hasCacheWriteTokens {
 		scanArgs = append(scanArgs, &sess.CacheWriteTokens)
 	}
-	scanArgs = append(scanArgs, &sess.OutputTokens, &status, &tags)
+	scanArgs = append(scanArgs, &sess.OutputTokens)
+	if hasLastTotalTokens {
+		scanArgs = append(scanArgs, &sess.LastTotalTokens)
+	}
+	if hasLastMessageCount {
+		scanArgs = append(scanArgs, &sess.LastMessageCount)
+	}
+	scanArgs = append(scanArgs, &status, &tags)
 	if hasCompactionSeq {
 		scanArgs = append(scanArgs, &sess.CompactionSeq)
 	}

@@ -1056,6 +1056,22 @@ func TestEstimatedTokensFallback(t *testing.T) {
 	}
 }
 
+func TestEstimatedTokensUsesBaselineWhenMessageCountMatches(t *testing.T) {
+	e := NewEngine(NewMockProvider("test"), nil)
+	e.lastTotalTokens = 336_000
+	e.lastMessageCount = 3
+
+	msgs := []Message{
+		SystemText("system"),
+		UserText("hello"),
+		AssistantText("world"),
+	}
+	got := e.estimatedTokens(msgs)
+	if got != 336_000 {
+		t.Fatalf("estimatedTokens (matching baseline) = %d, want %d", got, 336_000)
+	}
+}
+
 func TestConfigFallbackInputLimit(t *testing.T) {
 	// Register config limits for a custom model
 	RegisterConfigLimits([]ConfigModelLimit{

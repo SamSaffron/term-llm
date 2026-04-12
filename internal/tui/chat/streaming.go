@@ -338,20 +338,14 @@ func (m *Model) startStream(content string) tea.Cmd {
 					_ = m.store.AddMessage(ctx, m.sess.ID, sessionMsg)
 				}
 				_ = m.store.UpdateMetrics(ctx, m.sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens)
+				m.persistContextEstimate(ctx)
 				return nil
 			})
 		}
 
 		// Enable context compaction or tracking for models with known input limits.
 		// Re-set each turn in case the provider/model changed mid-session.
-		providerForLimits := m.providerKey
-		if providerForLimits == "" && m.sess != nil {
-			providerForLimits = m.sess.ProviderKey
-			if providerForLimits == "" {
-				providerForLimits = m.sess.Provider
-			}
-		}
-		m.engine.ConfigureContextManagement(m.provider, providerForLimits, m.sess.Model, m.config.AutoCompact)
+		m.configureContextManagementForSession()
 
 		// Set up compaction callback to update in-memory state and persist.
 		// This runs on the engine goroutine, so we protect m.messages with a mutex.

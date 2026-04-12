@@ -72,6 +72,10 @@ func (s *NoopStore) UpdateMetrics(ctx context.Context, id string, llmTurns, tool
 	return nil
 }
 
+func (s *NoopStore) UpdateContextEstimate(ctx context.Context, id string, lastTotalTokens, lastMessageCount int) error {
+	return nil
+}
+
 func (s *NoopStore) UpdateStatus(ctx context.Context, id string, status SessionStatus) error {
 	return nil
 }

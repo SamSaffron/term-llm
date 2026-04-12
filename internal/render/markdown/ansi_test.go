@@ -176,6 +176,22 @@ func TestRenderString_HyphenatedWordsNotBrokenAtHyphen(t *testing.T) {
 	}
 }
 
+func TestRenderString_LongTokenNeverExceedsWidth(t *testing.T) {
+	got, err := RenderString(strings.Repeat("a", 99)+"-b", Config{
+		Palette:           testPalette,
+		Width:             100,
+		WrapOffset:        0,
+		NormalizeTabs:     true,
+		NormalizeNewlines: true,
+		TrimSpace:         true,
+	})
+	if err != nil {
+		t.Fatalf("RenderString error: %v", err)
+	}
+
+	assertLinesWithinWidth(t, normalizeVisibleOutput(got), 100)
+}
+
 func TestRenderString_ZeroWidthDoesNotError(t *testing.T) {
 	_, err := RenderString("# title", Config{
 		Palette:           testPalette,

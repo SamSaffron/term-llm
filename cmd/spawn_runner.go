@@ -250,6 +250,11 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 			if err := r.store.UpdateMetrics(ctx, childSessionID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens); err != nil {
 				r.warn("session UpdateMetrics failed: %v", err)
 			}
+			if total, count := engine.ContextEstimateBaseline(); total > 0 && count > 0 {
+				if err := r.store.UpdateContextEstimate(ctx, childSessionID, total, count); err != nil {
+					r.warn("session UpdateContextEstimate failed: %v", err)
+				}
+			}
 			return nil
 		})
 	}

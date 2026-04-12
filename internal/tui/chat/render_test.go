@@ -384,6 +384,127 @@ func TestRenderStatusLine_UsesEstimatedContextBeforeUsageArrives(t *testing.T) {
 	}
 }
 
+func TestNew_ResumeSession_ConfiguresContextEstimateFromLoadedSession(t *testing.T) {
+	provider := llm.NewMockProvider("mock")
+	engine := llm.NewEngine(provider, nil)
+	sess := &session.Session{
+		ID:               session.NewID(),
+		Provider:         "OpenAI",
+		ProviderKey:      "openai",
+		Model:            "gpt-5.2",
+		Mode:             session.ModeChat,
+		CreatedAt:        time.Now(),
+		UpdatedAt:        time.Now(),
+		CompactionSeq:    -1,
+		LastTotalTokens:  336_000,
+		LastMessageCount: 1,
+	}
+	userText := strings.Repeat("architecture tradeoffs and implementation details ", 80)
+	store := &mockStore{
+		messages: map[string][]session.Message{
+			sess.ID: {{
+				SessionID:   sess.ID,
+				Role:        llm.RoleUser,
+				TextContent: userText,
+				Parts:       []llm.Part{{Type: llm.PartText, Text: userText}},
+				CreatedAt:   time.Now(),
+				Sequence:    0,
+			}},
+		},
+	}
+
+	m := New(
+		&config.Config{DefaultProvider: "openai"},
+		provider,
+		engine,
+		"openai",
+		"gpt-5.2",
+		nil,
+		20,
+		false,
+		false,
+		false,
+		nil,
+		"",
+		"",
+		false,
+		"",
+		store,
+		sess,
+		false,
+		nil,
+		false,
+		false,
+		"",
+		"",
+		false,
+	)
+
+	wantLimit := llm.InputLimitForProviderModel("openai", "gpt-5.2")
+	if got := m.engine.InputLimit(); got != wantLimit {
+		t.Fatalf("engine input limit = %d, want %d", got, wantLimit)
+	}
+
+	line := ui.StripANSI(m.renderStatusLine())
+	wantUsage := "~336K/" + llm.FormatTokenCount(wantLimit)
+	if !strings.Contains(line, wantUsage) {
+		t.Fatalf("expected resumed status line to include %q, got %q", wantUsage, line)
+	}
+}
+
+func TestUpdate_SessionLoadedMsg_ReseedsStatsAndContextTracking(t *testing.T) {
+	m := newTestChatModel(false)
+	m.providerKey = "openai"
+	m.modelName = "gpt-5.2"
+	m.config = &config.Config{DefaultProvider: "openai"}
+	m.stats = ui.NewSessionStats()
+	m.stats.SeedTotals(0, 0, 999_000, 0, 0, 0)
+
+	loadedSess := &session.Session{
+		ID:                session.NewID(),
+		Provider:          "OpenAI",
+		ProviderKey:       "openai",
+		Model:             "gpt-5.2",
+		Mode:              session.ModeChat,
+		CreatedAt:         time.Now(),
+		UpdatedAt:         time.Now(),
+		CachedInputTokens: 250_000,
+		LastTotalTokens:   127_637,
+		LastMessageCount:  1,
+	}
+	userText := strings.Repeat("architecture tradeoffs and implementation details ", 80)
+	messages := []session.Message{{
+		SessionID:   loadedSess.ID,
+		Role:        llm.RoleUser,
+		TextContent: userText,
+		Parts:       []llm.Part{{Type: llm.PartText, Text: userText}},
+		CreatedAt:   time.Now(),
+		Sequence:    0,
+	}}
+
+	_, _ = m.Update(sessionLoadedMsg{sess: loadedSess, messages: messages})
+
+	if got := m.stats.CachedInputTokens; got != 250_000 {
+		t.Fatalf("cached input tokens after session load = %d, want 250000", got)
+	}
+	wantLimit := llm.InputLimitForProviderModel("openai", "gpt-5.2")
+	if got := m.engine.InputLimit(); got != wantLimit {
+		t.Fatalf("engine input limit after session load = %d, want %d", got, wantLimit)
+	}
+
+	line := ui.StripANSI(m.renderStatusLine())
+	if strings.Contains(line, "999K") {
+		t.Fatalf("expected stale cached usage to be cleared, got %q", line)
+	}
+	if !strings.Contains(line, "250K cached") && !strings.Contains(line, "cache:250K") {
+		t.Fatalf("expected reseeded cached usage in status line, got %q", line)
+	}
+	wantUsage := "~128K/" + llm.FormatTokenCount(wantLimit)
+	if !strings.Contains(line, wantUsage) {
+		t.Fatalf("expected loaded status line to include %q, got %q", wantUsage, line)
+	}
+}
+
 func TestRenderStatusLine_ShowsCachedUsageWhenPresent(t *testing.T) {
 	m := newTestChatModel(false)
 	m.stats.CachedInputTokens = 500_000

@@ -72,6 +72,13 @@ func (s *LoggingStore) UpdateMetrics(ctx context.Context, id string, llmTurns, t
 	return err
 }
 
+// UpdateContextEstimate wraps Store.UpdateContextEstimate with error logging.
+func (s *LoggingStore) UpdateContextEstimate(ctx context.Context, id string, lastTotalTokens, lastMessageCount int) error {
+	err := s.Store.UpdateContextEstimate(ctx, id, lastTotalTokens, lastMessageCount)
+	s.logOnce("UpdateContextEstimate", err)
+	return err
+}
+
 // UpdateStatus wraps Store.UpdateStatus with error logging.
 func (s *LoggingStore) UpdateStatus(ctx context.Context, id string, status SessionStatus) error {
 	err := s.Store.UpdateStatus(ctx, id, status)

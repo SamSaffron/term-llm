@@ -1099,6 +1099,13 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 			m.runStoreOp(cbCtx, sess.meta.ID, "UpdateMetrics", func(storeCtx context.Context) error {
 				return m.store.UpdateMetrics(storeCtx, sess.meta.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens)
 			})
+			if total, count := sess.runtime.Engine.ContextEstimateBaseline(); total > 0 && count > 0 {
+				sess.meta.LastTotalTokens = total
+				sess.meta.LastMessageCount = count
+				m.runStoreOp(cbCtx, sess.meta.ID, "UpdateContextEstimate", func(storeCtx context.Context) error {
+					return m.store.UpdateContextEstimate(storeCtx, sess.meta.ID, total, count)
+				})
+			}
 		}
 		return nil
 	})

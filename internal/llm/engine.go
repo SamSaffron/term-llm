@@ -327,6 +327,31 @@ func (e *Engine) LastTotalTokens() int {
 	return v
 }
 
+// ContextEstimateBaseline returns the persisted context-estimate baseline:
+// the last observed total tokens and the message count at which it was observed.
+func (e *Engine) ContextEstimateBaseline() (int, int) {
+	e.callbackMu.RLock()
+	total := e.lastTotalTokens
+	count := e.lastMessageCount
+	e.callbackMu.RUnlock()
+	return total, count
+}
+
+// SetContextEstimateBaseline seeds the context-estimate baseline, typically
+// from persisted session state on resume.
+func (e *Engine) SetContextEstimateBaseline(lastTotalTokens, lastMessageCount int) {
+	if lastTotalTokens < 0 {
+		lastTotalTokens = 0
+	}
+	if lastMessageCount < 0 {
+		lastMessageCount = 0
+	}
+	e.callbackMu.Lock()
+	e.lastTotalTokens = lastTotalTokens
+	e.lastMessageCount = lastMessageCount
+	e.callbackMu.Unlock()
+}
+
 // EstimateTokens returns the estimated input token count for the next API call
 // based on the current message list. It uses the most recent API usage as a
 // baseline when possible, then adds heuristic estimates for newly appended
@@ -337,8 +362,13 @@ func (e *Engine) EstimateTokens(messages []Message) int {
 	lastMessageCount := e.lastMessageCount
 	e.callbackMu.RUnlock()
 
-	if lastTotalTokens > 0 && lastMessageCount > 0 && lastMessageCount < len(messages) {
-		return lastTotalTokens + EstimateMessageTokens(messages[lastMessageCount:])
+	if lastTotalTokens > 0 && lastMessageCount > 0 {
+		switch {
+		case lastMessageCount == len(messages):
+			return lastTotalTokens
+		case lastMessageCount < len(messages):
+			return lastTotalTokens + EstimateMessageTokens(messages[lastMessageCount:])
+		}
 	}
 	return EstimateMessageTokens(messages)
 }
