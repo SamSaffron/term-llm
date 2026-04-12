@@ -794,7 +794,11 @@ func wrapANSI(text string, width int) string {
 	if width < 1 {
 		width = 1
 	}
-	return wordwrap.String(text, width)
+	f := wordwrap.NewWriter(width)
+	f.Breakpoints = []rune{}
+	_, _ = f.Write([]byte(text))
+	_ = f.Close()
+	return f.String()
 }
 
 func prefixLinesWithStyle(text, firstPrefix, otherPrefix string, style ansiStyle) string {

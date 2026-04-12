@@ -157,6 +157,25 @@ func TestRenderString_LooseListsKeepBlankLinesBetweenItems(t *testing.T) {
 	}
 }
 
+func TestRenderString_HyphenatedWordsNotBrokenAtHyphen(t *testing.T) {
+	got, err := RenderString("see well-known for details", Config{
+		Palette:           testPalette,
+		Width:             25,
+		WrapOffset:        1,
+		NormalizeTabs:     true,
+		NormalizeNewlines: true,
+		TrimSpace:         true,
+	})
+	if err != nil {
+		t.Fatalf("RenderString error: %v", err)
+	}
+
+	visible := normalizeVisibleOutput(got)
+	if strings.Contains(visible, "well-\nknown") {
+		t.Fatalf("hyphenated word was broken at hyphen\ngot:\n%s", visible)
+	}
+}
+
 func TestRenderString_ZeroWidthDoesNotError(t *testing.T) {
 	_, err := RenderString("# title", Config{
 		Palette:           testPalette,
