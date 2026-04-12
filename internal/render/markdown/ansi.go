@@ -294,6 +294,12 @@ func (r *ANSI) renderList(list *gast.List, source []byte, width int, styles ansi
 	if number <= 0 {
 		number = 1
 	}
+	itemSeparator := "\n"
+	bodySeparator := "\n"
+	if !list.IsTight {
+		itemSeparator = "\n\n"
+		bodySeparator = "\n\n"
+	}
 	for itemNode := list.FirstChild(); itemNode != nil; itemNode = itemNode.NextSibling() {
 		item, ok := itemNode.(*gast.ListItem)
 		if !ok {
@@ -306,7 +312,7 @@ func (r *ANSI) renderList(list *gast.List, source []byte, width int, styles ansi
 			number++
 		}
 		innerWidth := max(width-visibleWidth(prefix), 1)
-		body, err := r.renderBlockChildren(item, source, innerWidth, styles, "\n")
+		body, err := r.renderBlockChildren(item, source, innerWidth, styles, bodySeparator)
 		if err != nil {
 			return "", err
 		}
@@ -317,7 +323,7 @@ func (r *ANSI) renderList(list *gast.List, source []byte, width int, styles ansi
 		}
 		items = append(items, prefixExistingLines(body, prefix, strings.Repeat(" ", visibleWidth(prefix))))
 	}
-	return strings.Join(items, "\n"), nil
+	return strings.Join(items, itemSeparator), nil
 }
 
 func (r *ANSI) renderTable(table *extast.Table, source []byte, width int, styles ansiStyles) (string, error) {
