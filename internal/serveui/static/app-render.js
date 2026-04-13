@@ -463,13 +463,10 @@ const syncAssistantUsageNode = (node, message) => {
 
 const createAssistantStreamContainers = (body) => {
   body.innerHTML = '';
-  const stableContainer = document.createElement('div');
-  stableContainer.className = 'markdown-stream-stable';
   const tailContainer = document.createElement('div');
   tailContainer.className = 'markdown-stream-tail';
-  body.appendChild(stableContainer);
   body.appendChild(tailContainer);
-  return { stableContainer, tailContainer };
+  return { tailContainer };
 };
 
 const getOrCreateAssistantStreamState = (message, body) => {
@@ -483,9 +480,7 @@ const getOrCreateAssistantStreamState = (message, body) => {
     : {
       messageId: '',
       body: null,
-      stableContainer: null,
       tailContainer: null,
-      committedLength: 0,
       latestContent: '',
       lastTailContent: '',
       dirty: false,
@@ -497,7 +492,6 @@ const getOrCreateAssistantStreamState = (message, body) => {
   const containers = createAssistantStreamContainers(body);
   streamState.messageId = message.id;
   streamState.body = body;
-  streamState.stableContainer = containers.stableContainer;
   streamState.tailContainer = containers.tailContainer;
   assistantStreamStates.set(message.id, streamState);
   return streamState;
@@ -581,38 +575,22 @@ const performAssistantStreamRender = (streamState) => {
   try {
     applyTextDirection(streamState.body, content);
 
-    const nextBoundary = app.markdownStreaming && typeof app.markdownStreaming.findStreamingBoundary === 'function'
-      ? app.markdownStreaming.findStreamingBoundary(content, streamState.committedLength)
-      : -1;
-
-    if (Number.isInteger(nextBoundary) && nextBoundary > streamState.committedLength) {
-      const committedChunk = content.slice(streamState.committedLength, nextBoundary);
-      if (committedChunk) {
-        const piece = document.createElement('div');
-        piece.className = 'markdown-stream-piece';
-        renderAssistantMarkdown(piece, committedChunk);
-        streamState.stableContainer.appendChild(piece);
-      }
-      streamState.committedLength = nextBoundary;
-    }
-
-    const tail = content.slice(streamState.committedLength);
-    if (tail !== streamState.lastTailContent) {
-      if (tail) {
+    if (content !== streamState.lastTailContent) {
+      if (content) {
         const renderPlainTail = Boolean(
           app.markdownStreaming
           && typeof app.markdownStreaming.canStreamPlainTextTail === 'function'
-          && app.markdownStreaming.canStreamPlainTextTail(tail)
+          && app.markdownStreaming.canStreamPlainTextTail(content)
         );
         if (renderPlainTail) {
-          renderAssistantTailPlainText(streamState, tail);
+          renderAssistantTailPlainText(streamState, content);
         } else {
-          renderAssistantTailMarkdown(streamState, tail);
+          renderAssistantTailMarkdown(streamState, content);
         }
       } else {
         clearAssistantTailRender(streamState);
       }
-      streamState.lastTailContent = tail;
+      streamState.lastTailContent = content;
     }
 
     streamState.lastRenderAt = Date.now();

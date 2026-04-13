@@ -240,9 +240,9 @@ func TestStaticAssetsSupportIncrementalMarkdownStreaming(t *testing.T) {
 	}
 	streamingSrc := string(streamingJS)
 	for _, want := range []string{
-		"function findStreamingBoundary(",
 		"function nextStreamingRenderDelay(",
 		"function areMathDelimitersBalanced(",
+		"function canStreamPlainTextTail(",
 	} {
 		if !strings.Contains(streamingSrc, want) {
 			t.Fatalf("markdown-streaming.js missing %q", want)
@@ -257,7 +257,7 @@ func TestStaticAssetsSupportIncrementalMarkdownStreaming(t *testing.T) {
 	for _, want := range []string{
 		"const enqueueAssistantStreamUpdate = (message) => {",
 		"const finalizeAssistantStreamRender = (message) => {",
-		"app.markdownStreaming.findStreamingBoundary",
+		"const renderAssistantTailPlainText = (streamState, tail) => {",
 	} {
 		if !strings.Contains(renderSrc, want) {
 			t.Fatalf("app-render.js missing %q", want)
