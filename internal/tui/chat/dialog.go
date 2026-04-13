@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -82,8 +83,11 @@ func (d *DialogModel) Close() {
 	d.cursor = 0
 }
 
-// ShowModelPicker opens the model picker dialog
-func (d *DialogModel) ShowModelPicker(currentModel string, providers []ProviderInfo) {
+// ShowModelPicker opens the model picker dialog.
+// currentProviderModel is the full "provider:model" identifier of the active model.
+// recentModels is an optional MRU-ordered list of "provider:model" strings;
+// matching items are floated to the top of the list.
+func (d *DialogModel) ShowModelPicker(currentProviderModel string, providers []ProviderInfo, recentModels []string) {
 	d.dialogType = DialogModelPicker
 	d.title = "Select Model"
 	d.cursor = 0
@@ -92,15 +96,37 @@ func (d *DialogModel) ShowModelPicker(currentModel string, providers []ProviderI
 
 	for _, p := range providers {
 		for _, model := range p.Models {
+			id := p.Name + ":" + model
 			item := DialogItem{
-				ID:       p.Name + ":" + model,
-				Label:    p.Name + ":" + model,
+				ID:       id,
+				Label:    id,
 				Category: p.Name,
-				Selected: model == currentModel,
+				Selected: id == currentProviderModel,
 			}
 			d.items = append(d.items, item)
 		}
 	}
+
+	// Reorder: recent models first, preserving MRU order, then the rest.
+	if len(recentModels) > 0 {
+		recentRank := make(map[string]int, len(recentModels))
+		for i, m := range recentModels {
+			recentRank[m] = i
+		}
+		var recent, rest []DialogItem
+		for _, item := range d.items {
+			if _, ok := recentRank[item.ID]; ok {
+				recent = append(recent, item)
+			} else {
+				rest = append(rest, item)
+			}
+		}
+		slices.SortFunc(recent, func(a, b DialogItem) int {
+			return recentRank[a.ID] - recentRank[b.ID]
+		})
+		d.items = append(recent, rest...)
+	}
+
 	d.filtered = d.items
 
 	// Find current model and set cursor

@@ -503,8 +503,9 @@ func (m *Model) cmdReload() (tea.Model, tea.Cmd) {
 
 func (m *Model) cmdModel(args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
-		// Show model picker dialog
-		m.dialog.ShowModelPicker(m.modelName, GetAvailableProviders(m.config))
+		// Show model picker dialog with MRU ordering
+		history, _ := config.LoadModelHistory()
+		m.dialog.ShowModelPicker(m.providerKey+":"+m.modelName, GetAvailableProviders(m.config), config.ModelHistoryOrder(history))
 		m.setTextareaValue("")
 		return m, nil
 	}
@@ -1477,6 +1478,9 @@ func (m *Model) switchModel(providerModel string) (tea.Model, tea.Cmd) {
 			_ = m.store.Update(context.Background(), m.sess)
 		}
 	}
+
+	// Record model usage for MRU ordering in the picker
+	_ = config.RecordModelUse(providerModel)
 
 	return m.showSystemMessage(fmt.Sprintf("Switched to %s:%s", providerName, modelName))
 }

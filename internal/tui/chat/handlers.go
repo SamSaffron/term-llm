@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -594,7 +595,8 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Handle model picker (Ctrl+L)
 	if key.Matches(msg, m.keyMap.SwitchModel) {
-		m.dialog.ShowModelPicker(m.modelName, GetAvailableProviders(m.config))
+		history, _ := config.LoadModelHistory()
+		m.dialog.ShowModelPicker(m.providerKey+":"+m.modelName, GetAvailableProviders(m.config), config.ModelHistoryOrder(history))
 		return m, nil
 	}
 
