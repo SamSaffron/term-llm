@@ -40,18 +40,12 @@ function expectFalse(name, actual) {
   }
 }
 
-const hardBoundaryInput = 'First paragraph.\n\nSecond paragraph starts here.';
-expectEqual(
-  'findStreamingBoundary uses paragraph break',
-  streaming.findStreamingBoundary(hardBoundaryInput, 0),
-  'First paragraph.\n\n'.length
-);
-
-const codeFenceInput = 'Before code.\n\n```\ncode block\n\nstill code\n';
-expectEqual(
-  'findStreamingBoundary avoids unclosed code fences',
-  streaming.findStreamingBoundary(codeFenceInput, 0),
-  'Before code.\n\n'.length
+expectTrue(
+  'createStreamingState starts with only tail streaming state',
+  (() => {
+    const state = streaming.createStreamingState();
+    return state && state.stableContainer === undefined && state.committedLength === undefined && state.tailContainer === null;
+  })()
 );
 
 expectFalse(
@@ -73,27 +67,6 @@ expectTrue(
 expectTrue(
   'areInlineMarkersBalanced ignores list item markers',
   streaming.areInlineMarkersBalanced('* item one\n* item two\n')
-);
-
-const longParagraph = 'alpha '.repeat(400);
-const longBoundary = streaming.findStreamingBoundary(longParagraph, 0);
-expectTrue(
-  'findStreamingBoundary produces a soft boundary for long paragraphs',
-  Number.isInteger(longBoundary) && longBoundary > 0 && longBoundary < longParagraph.length
-);
-
-const longSnakeCaseParagraph = 'term_llm foo_bar baz_qux '.repeat(160);
-const snakeBoundary = streaming.findStreamingBoundary(longSnakeCaseParagraph, 0);
-expectTrue(
-  'findStreamingBoundary still finds boundaries in snake_case-heavy text',
-  Number.isInteger(snakeBoundary) && snakeBoundary > 0 && snakeBoundary < longSnakeCaseParagraph.length
-);
-
-const longList = '* item one\n* item two\n* item three\n'.repeat(90);
-const listBoundary = streaming.findStreamingBoundary(longList, 0);
-expectTrue(
-  'findStreamingBoundary still finds boundaries in list-heavy text',
-  Number.isInteger(listBoundary) && listBoundary > 0 && listBoundary < longList.length
 );
 
 expectEqual('nextStreamingRenderDelay small', streaming.nextStreamingRenderDelay(4000), 33);
