@@ -512,78 +512,221 @@ func (m *Model) cmdModel(args []string) (tea.Model, tea.Cmd) {
 
 	// Switch to specified model (format: provider:model or just model/alias)
 	modelArg := args[0]
-
-	// If it already has provider prefix, use as-is
-	if strings.Contains(modelArg, ":") {
-		return m.switchModel(modelArg)
-	}
-
-	// Try fuzzy matching across all providers
-	match := fuzzyMatchModel(modelArg, m.config)
-	if match != "" {
-		return m.switchModel(match)
-	}
-
-	// Fallback to current provider with exact name
 	fallbackProvider := strings.TrimSpace(m.providerKey)
 	if fallbackProvider == "" {
 		fallbackProvider = strings.TrimSpace(m.providerName)
 	}
-	return m.switchModel(fallbackProvider + ":" + modelArg)
+	resolved, ok := resolveProviderModelArg(modelArg, m.config, fallbackProvider)
+	if !ok {
+		return m.showSystemMessage(fmt.Sprintf("Invalid model format: %s", modelArg))
+	}
+	return m.switchModel(resolved)
 }
 
-// fuzzyMatchModel finds the best matching model for a query
-// Returns "provider:model" or empty string if no good match
-func fuzzyMatchModel(query string, cfg *config.Config) string {
-	query = strings.ToLower(query)
+// providerModelEntry captures a concrete provider:model combination.
+type providerModelEntry struct {
+	provider string
+	model    string
+	combined string
+}
 
-	// Build list of all provider:model combinations
-	type modelEntry struct {
-		provider string
-		model    string
-		combined string
-	}
-	var allModels []modelEntry
+func availableProviderModels(cfg *config.Config) []providerModelEntry {
+	var entries []providerModelEntry
 	for _, provider := range GetAvailableProviders(cfg) {
 		for _, model := range provider.Models {
-			allModels = append(allModels, modelEntry{
+			entries = append(entries, providerModelEntry{
 				provider: provider.Name,
 				model:    model,
 				combined: provider.Name + ":" + model,
 			})
 		}
 	}
+	return entries
+}
 
-	// First try exact substring match on model name
-	// Collect all matches and prefer shorter model names
-	var substringMatches []modelEntry
-	for _, entry := range allModels {
-		if strings.Contains(strings.ToLower(entry.model), query) {
-			substringMatches = append(substringMatches, entry)
+func matchProviderModels(arg string, cfg *config.Config) []providerModelEntry {
+	query := strings.ToLower(strings.TrimSpace(arg))
+	entries := availableProviderModels(cfg)
+	if query == "" {
+		return reorderProviderModelsByRecency(entries, recentProviderModels())
+	}
+
+	var direct []providerModelEntry
+	for _, entry := range entries {
+		providerLower := strings.ToLower(entry.provider)
+		modelLower := strings.ToLower(entry.model)
+		combinedLower := strings.ToLower(entry.combined)
+
+		match := false
+		if strings.Contains(query, ":") {
+			match = strings.HasPrefix(combinedLower, query)
+		} else {
+			match = strings.HasPrefix(providerLower, query) ||
+				strings.HasPrefix(modelLower, query) ||
+				strings.Contains(modelLower, query) ||
+				strings.HasPrefix(combinedLower, query)
+		}
+		if match {
+			direct = append(direct, entry)
 		}
 	}
-	if len(substringMatches) > 0 {
-		// Prefer shorter model names (more specific matches)
-		best := substringMatches[0]
-		for _, entry := range substringMatches[1:] {
-			if len(entry.model) < len(best.model) {
-				best = entry
-			}
+	if len(direct) > 0 {
+		return reorderProviderModelsByRecency(direct, recentProviderModels())
+	}
+
+	return reorderProviderModelsByRecency(fuzzyProviderModelMatches(query, entries), recentProviderModels())
+}
+
+func (m *Model) currentProviderModel() string {
+	provider := strings.TrimSpace(m.providerKey)
+	if provider == "" && m.sess != nil {
+		provider = strings.TrimSpace(m.sess.ProviderKey)
+	}
+	if provider == "" {
+		provider = strings.TrimSpace(m.providerName)
+	}
+
+	model := strings.TrimSpace(m.modelName)
+	if model == "" && m.sess != nil {
+		model = strings.TrimSpace(m.sess.Model)
+	}
+
+	if provider == "" || model == "" {
+		return ""
+	}
+	return provider + ":" + model
+}
+
+func (m *Model) recordCurrentModelUse() {
+	if providerModel := m.currentProviderModel(); providerModel != "" {
+		config.RecordModelUseAsync(providerModel)
+	}
+}
+
+func recentProviderModels() []string {
+	history, err := config.LoadModelHistory()
+	if err != nil {
+		return nil
+	}
+	return config.ModelHistoryOrder(history)
+}
+
+func reorderProviderModelsByRecency(entries []providerModelEntry, recent []string) []providerModelEntry {
+	if len(entries) <= 1 || len(recent) == 0 {
+		return entries
+	}
+
+	byCombined := make(map[string]providerModelEntry, len(entries))
+	for _, entry := range entries {
+		byCombined[entry.combined] = entry
+	}
+
+	ordered := make([]providerModelEntry, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, combined := range recent {
+		entry, ok := byCombined[combined]
+		if !ok {
+			continue
 		}
-		return best.combined
+		ordered = append(ordered, entry)
+		seen[combined] = struct{}{}
+	}
+	for _, entry := range entries {
+		if _, ok := seen[entry.combined]; ok {
+			continue
+		}
+		ordered = append(ordered, entry)
+	}
+	return ordered
+}
+
+func fuzzyProviderModelMatches(query string, entries []providerModelEntry) []providerModelEntry {
+	if query == "" || len(entries) == 0 {
+		return nil
 	}
 
-	// Try fuzzy match using the fuzzy package
-	modelNames := make([]string, len(allModels))
-	for i, entry := range allModels {
-		modelNames[i] = entry.model
-	}
-	matches := fuzzy.Find(query, modelNames)
-	if len(matches) > 0 {
-		return allModels[matches[0].Index].combined
+	rawCandidates := make([]string, len(entries))
+	normalizedCandidates := make([]string, len(entries))
+	for i, entry := range entries {
+		rawCandidates[i] = strings.ToLower(entry.combined)
+		normalizedCandidates[i] = normalizeProviderModelMatcher(entry.provider + entry.model)
 	}
 
-	return ""
+	orderedIndexes := fuzzyMatchIndexes(query, rawCandidates)
+	normalizedQuery := normalizeProviderModelMatcher(query)
+	if normalizedQuery != "" && normalizedQuery != query {
+		orderedIndexes = appendUniqueIndexes(orderedIndexes, fuzzyMatchIndexes(normalizedQuery, normalizedCandidates)...)
+	}
+
+	matches := make([]providerModelEntry, 0, len(orderedIndexes))
+	for _, idx := range orderedIndexes {
+		matches = append(matches, entries[idx])
+	}
+	return matches
+}
+
+func fuzzyMatchIndexes(query string, candidates []string) []int {
+	results := fuzzy.Find(query, candidates)
+	indexes := make([]int, 0, len(results))
+	for _, match := range results {
+		indexes = append(indexes, match.Index)
+	}
+	return indexes
+}
+
+func appendUniqueIndexes(existing []int, additional ...int) []int {
+	seen := make(map[int]struct{}, len(existing))
+	for _, idx := range existing {
+		seen[idx] = struct{}{}
+	}
+	for _, idx := range additional {
+		if _, ok := seen[idx]; ok {
+			continue
+		}
+		existing = append(existing, idx)
+		seen[idx] = struct{}{}
+	}
+	return existing
+}
+
+func normalizeProviderModelMatcher(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func providerModelCompletionItems(commandPrefix, arg string, cfg *config.Config) []Command {
+	entries := matchProviderModels(arg, cfg)
+	items := make([]Command, 0, len(entries))
+	for _, entry := range entries {
+		items = append(items, Command{
+			Name:        commandPrefix + entry.combined,
+			Description: entry.provider,
+		})
+	}
+	return items
+}
+
+func resolveProviderModelArg(arg string, cfg *config.Config, fallbackProvider string) (string, bool) {
+	arg = strings.TrimSpace(arg)
+	if arg == "" {
+		return "", false
+	}
+	if strings.Contains(arg, ":") {
+		return arg, true
+	}
+	if matches := matchProviderModels(arg, cfg); len(matches) > 0 {
+		return matches[0].combined, true
+	}
+	if fallbackProvider != "" {
+		return fallbackProvider + ":" + arg, true
+	}
+	return "", false
 }
 
 // toggleSearch toggles web search and persists to session.
@@ -1480,7 +1623,7 @@ func (m *Model) switchModel(providerModel string) (tea.Model, tea.Cmd) {
 	}
 
 	// Record model usage for MRU ordering in the picker
-	_ = config.RecordModelUse(providerModel)
+	m.recordCurrentModelUse()
 
 	return m.showSystemMessage(fmt.Sprintf("Switched to %s:%s", providerName, modelName))
 }
@@ -1511,10 +1654,11 @@ func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
 	// Optional provider:model override
 	var providerStr string
 	if len(args) > 1 {
-		providerStr = args[1]
-		if !strings.Contains(providerStr, ":") {
-			return m.showSystemMessage(fmt.Sprintf("Invalid provider format: %s (expected provider:model)", providerStr))
+		resolved, ok := resolveProviderModelArg(args[1], m.config, "")
+		if !ok {
+			return m.showSystemMessage(fmt.Sprintf("Invalid provider format: %s (expected provider:model)", args[1]))
 		}
+		providerStr = resolved
 	}
 
 	// Resolve target agent

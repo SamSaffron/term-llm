@@ -809,8 +809,8 @@ func (m *Model) mcpFindServerMatch(partial string) string {
 	return ""
 }
 
-// updateCompletions updates the completions popup based on current input
-// Handles both static command completions and dynamic server completions
+// updateCompletions updates the completions popup based on current input.
+// Handles both static command completions and dynamic argument completions.
 func (m *Model) updateCompletions() {
 	value := m.textarea.Value()
 	query := strings.TrimPrefix(value, "/")
@@ -892,10 +892,25 @@ func (m *Model) updateCompletions() {
 		return
 	}
 
-	// Check for "/handover " or "/ho " - show available agents
+	// Check for "/model " or "/m " - show provider:model completions
+	if strings.HasPrefix(lowerQuery, "model ") || strings.HasPrefix(lowerQuery, "m ") {
+		parts := strings.SplitN(query, " ", 2)
+		partial := ""
+		if len(parts) == 2 {
+			partial = parts[1]
+		}
+		m.completions.SetItems(providerModelCompletionItems(parts[0]+" ", partial, m.config))
+		return
+	}
+
+	// Check for "/handover " or "/ho " - show available agents, then provider:model overrides
 	if strings.HasPrefix(lowerQuery, "handover ") || strings.HasPrefix(lowerQuery, "ho ") {
+		parts := strings.SplitN(query, " ", 3)
+		if len(parts) == 3 && strings.HasPrefix(parts[1], "@") {
+			m.completions.SetItems(providerModelCompletionItems(parts[0]+" "+parts[1]+" ", parts[2], m.config))
+			return
+		}
 		if m.agentLister != nil {
-			parts := strings.SplitN(query, " ", 2)
 			partial := ""
 			if len(parts) >= 2 {
 				partial = strings.ToLower(strings.TrimPrefix(parts[1], "@"))

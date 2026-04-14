@@ -99,6 +99,22 @@ func TestLoadModelHistory_Corrupt(t *testing.T) {
 	}
 }
 
+func TestRecordModelUseAsync(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+
+	RecordModelUseAsync("openai:gpt-5.4")
+	FlushModelHistoryAsync()
+
+	entries, err := LoadModelHistory()
+	if err != nil {
+		t.Fatalf("LoadModelHistory: %v", err)
+	}
+	if len(entries) == 0 || entries[0].Model != "openai:gpt-5.4" {
+		t.Fatalf("expected async model history write, got %v", entries)
+	}
+}
+
 func TestModelHistoryOrder(t *testing.T) {
 	entries := []ModelHistoryEntry{
 		{Model: "a:b", UsedAt: time.Now()},

@@ -4,10 +4,24 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 )
 
 const maxModelHistoryEntries = 20
+
+var (
+	modelHistoryMu        sync.Mutex
+	modelHistoryAsyncOnce sync.Once
+	modelHistoryAsyncCh   chan modelHistoryAsyncReq
+)
+
+type modelHistoryAsyncReq struct {
+	providerModel string
+	path          string
+	done          chan struct{}
+}
 
 // ModelHistoryEntry records a single model usage event.
 type ModelHistoryEntry struct {
@@ -22,24 +36,33 @@ func LoadModelHistory() ([]ModelHistoryEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var entries []ModelHistoryEntry
-	if err := json.Unmarshal(data, &entries); err != nil {
-		return nil, nil // treat corrupt file as empty
-	}
-	return entries, nil
+
+	modelHistoryMu.Lock()
+	defer modelHistoryMu.Unlock()
+	return loadModelHistoryLocked(path)
 }
 
 // RecordModelUse adds or bumps a "provider:model" entry to the front of the
 // history list, deduplicating and capping at maxModelHistoryEntries.
 func RecordModelUse(providerModel string) error {
-	entries, _ := LoadModelHistory() // ignore read errors; start fresh
+	providerModel = strings.TrimSpace(providerModel)
+	if providerModel == "" {
+		return nil
+	}
+
+	path, err := modelHistoryPath()
+	if err != nil {
+		return err
+	}
+
+	return recordModelUseAtPath(path, providerModel)
+}
+
+func recordModelUseAtPath(path, providerModel string) error {
+	modelHistoryMu.Lock()
+	defer modelHistoryMu.Unlock()
+
+	entries, _ := loadModelHistoryLocked(path) // ignore read errors; start fresh
 
 	now := time.Now().UTC()
 	updated := []ModelHistoryEntry{{Model: providerModel, UsedAt: now}}
@@ -52,7 +75,47 @@ func RecordModelUse(providerModel string) error {
 		updated = updated[:maxModelHistoryEntries]
 	}
 
-	return saveModelHistory(updated)
+	return saveModelHistoryLocked(path, updated)
+}
+
+// RecordModelUseAsync queues a best-effort background MRU update.
+// Updates are serialized through a single worker to preserve ordering.
+func RecordModelUseAsync(providerModel string) {
+	providerModel = strings.TrimSpace(providerModel)
+	if providerModel == "" {
+		return
+	}
+
+	path, err := modelHistoryPath()
+	if err != nil {
+		return
+	}
+
+	modelHistoryAsyncOnce.Do(func() {
+		modelHistoryAsyncCh = make(chan modelHistoryAsyncReq, 64)
+		go func() {
+			for req := range modelHistoryAsyncCh {
+				if req.done != nil {
+					close(req.done)
+					continue
+				}
+				_ = recordModelUseAtPath(req.path, req.providerModel)
+			}
+		}()
+	})
+
+	modelHistoryAsyncCh <- modelHistoryAsyncReq{providerModel: providerModel, path: path}
+}
+
+// FlushModelHistoryAsync waits for queued async history writes to complete.
+// Intended for tests and orderly shutdown paths.
+func FlushModelHistoryAsync() {
+	if modelHistoryAsyncCh == nil {
+		return
+	}
+	done := make(chan struct{})
+	modelHistoryAsyncCh <- modelHistoryAsyncReq{done: done}
+	<-done
 }
 
 // ModelHistoryOrder returns model IDs ordered by most-recently-used.
@@ -73,11 +136,22 @@ func modelHistoryPath() (string, error) {
 	return filepath.Join(dir, "model_history.json"), nil
 }
 
-func saveModelHistory(entries []ModelHistoryEntry) error {
-	path, err := modelHistoryPath()
+func loadModelHistoryLocked(path string) ([]ModelHistoryEntry, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
 	}
+	var entries []ModelHistoryEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return nil, nil // treat corrupt file as empty
+	}
+	return entries, nil
+}
+
+func saveModelHistoryLocked(path string, entries []ModelHistoryEntry) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}

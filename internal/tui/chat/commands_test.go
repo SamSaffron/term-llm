@@ -254,6 +254,144 @@ func TestCmdResume_NoArgs_OpensEmbeddedSessionsBrowser(t *testing.T) {
 	}
 }
 
+func TestUpdateCompletions_ModelCommandShowsModelMatches(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	m := newTestChatModel(false)
+	m.config = &config.Config{DefaultProvider: "anthropic"}
+	m.completions.Show()
+	m.setTextareaValue("/model claude-sonnet")
+
+	m.updateCompletions()
+
+	if len(m.completions.filtered) == 0 {
+		t.Fatal("expected /model completions to include matching models")
+	}
+
+	for _, item := range m.completions.filtered {
+		if strings.HasPrefix(item.Name, "model anthropic:claude-sonnet") {
+			return
+		}
+	}
+
+	t.Fatalf("expected an anthropic claude-sonnet completion, got %#v", m.completions.filtered)
+}
+
+func TestUpdateCompletions_ModelCommandFallbackFuzzyMatchesProviderAndModel(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	m := newTestChatModel(false)
+	m.config = &config.Config{DefaultProvider: "chatgpt"}
+	m.completions.Show()
+	m.setTextareaValue("/model chat5.4")
+
+	m.updateCompletions()
+
+	if len(m.completions.filtered) == 0 {
+		t.Fatal("expected fuzzy /model completions to include matching models")
+	}
+
+	for _, item := range m.completions.filtered {
+		if item.Name == "model chatgpt:gpt-5.4" {
+			return
+		}
+	}
+
+	t.Fatalf("expected fuzzy completion to include chatgpt:gpt-5.4, got %#v", m.completions.filtered)
+}
+
+func TestUpdateCompletions_HandoverModelOverrideUsesSameProviderModelMatcher(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	m := newTestChatModel(false)
+	m.config = &config.Config{DefaultProvider: "chatgpt"}
+	m.agentLister = func(cfg *config.Config) ([]string, error) {
+		return []string{"developer"}, nil
+	}
+	m.completions.Show()
+	m.setTextareaValue("/handover @developer chat5.4")
+
+	m.updateCompletions()
+
+	if len(m.completions.filtered) == 0 {
+		t.Fatal("expected /handover completions to include matching provider:model overrides")
+	}
+
+	for _, item := range m.completions.filtered {
+		if item.Name == "handover @developer chatgpt:gpt-5.4" {
+			return
+		}
+	}
+
+	t.Fatalf("expected handover completion to include chatgpt:gpt-5.4, got %#v", m.completions.filtered)
+}
+
+func TestResolveProviderModelArg_FuzzyMatchSharedByCommands(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	resolved, ok := resolveProviderModelArg("chat5.4", &config.Config{DefaultProvider: "chatgpt"}, "")
+	if !ok {
+		t.Fatal("expected shorthand provider/model query to resolve")
+	}
+	if resolved != "chatgpt:gpt-5.4" {
+		t.Fatalf("resolveProviderModelArg() = %q, want %q", resolved, "chatgpt:gpt-5.4")
+	}
+}
+
+func TestResolveProviderModelArg_PrefersRecentModels(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+
+	if err := config.RecordModelUse("openai:gpt-5.4"); err != nil {
+		t.Fatalf("RecordModelUse: %v", err)
+	}
+
+	resolved, ok := resolveProviderModelArg("gpt-5.4", &config.Config{DefaultProvider: "chatgpt"}, "")
+	if !ok {
+		t.Fatal("expected gpt-5.4 to resolve")
+	}
+	if resolved != "openai:gpt-5.4" {
+		t.Fatalf("resolveProviderModelArg() = %q, want %q", resolved, "openai:gpt-5.4")
+	}
+}
+
+func TestProviderModelCompletionItems_PrefersRecentModels(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+
+	if err := config.RecordModelUse("openai:gpt-5.4"); err != nil {
+		t.Fatalf("RecordModelUse: %v", err)
+	}
+
+	items := providerModelCompletionItems("model ", "gpt-5.4", &config.Config{DefaultProvider: "chatgpt"})
+	if len(items) == 0 {
+		t.Fatal("expected provider model completions")
+	}
+	if items[0].Name != "model openai:gpt-5.4" {
+		t.Fatalf("first completion = %q, want %q", items[0].Name, "model openai:gpt-5.4")
+	}
+}
+
+func TestSendMessage_RecordsCurrentModelUse(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+
+	m := newTestChatModel(false)
+	m.providerKey = "claude-bin"
+	m.modelName = "opus"
+
+	_, _ = m.sendMessage("hello")
+	config.FlushModelHistoryAsync()
+
+	history, err := config.LoadModelHistory()
+	if err != nil {
+		t.Fatalf("LoadModelHistory: %v", err)
+	}
+	if len(history) == 0 || history[0].Model != "claude-bin:opus" {
+		t.Fatalf("expected claude-bin:opus in model history, got %v", history)
+	}
+}
+
 func TestSwitchModel_UpdatesSessionMetadata(t *testing.T) {
 	store := &mockStore{}
 	m := newCmdTestModel(store)
