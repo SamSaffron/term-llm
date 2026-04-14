@@ -344,6 +344,15 @@ func (p *CopilotProvider) streamChatCompletions(ctx context.Context, req Request
 		var lastUsage *Usage
 		var lastEventType string
 		unmarshalErrors := 0
+		sendEvent := func(event Event) error {
+			if safeSendEvent(ctx, events, event) {
+				return nil
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return fmt.Errorf("failed to emit Copilot event: stream closed")
+		}
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -396,7 +405,9 @@ func (p *CopilotProvider) streamChatCompletions(ctx context.Context, req Request
 			for _, choice := range chatResp.Choices {
 				if choice.Delta != nil {
 					if content, ok := choice.Delta.Content.(string); ok && content != "" {
-						events <- Event{Type: EventTextDelta, Text: content}
+						if err := sendEvent(Event{Type: EventTextDelta, Text: content}); err != nil {
+							return err
+						}
 					}
 					if len(choice.Delta.ToolCalls) > 0 {
 						toolState.Add(choice.Delta.ToolCalls)
@@ -412,12 +423,18 @@ func (p *CopilotProvider) streamChatCompletions(ctx context.Context, req Request
 		}
 
 		for _, call := range toolState.Calls() {
-			events <- Event{Type: EventToolCall, Tool: &call}
+			if err := sendEvent(Event{Type: EventToolCall, Tool: &call}); err != nil {
+				return err
+			}
 		}
 		if lastUsage != nil {
-			events <- Event{Type: EventUsage, Use: lastUsage}
+			if err := sendEvent(Event{Type: EventUsage, Use: lastUsage}); err != nil {
+				return err
+			}
 		}
-		events <- Event{Type: EventDone}
+		if err := sendEvent(Event{Type: EventDone}); err != nil {
+			return err
+		}
 		return nil
 	}), nil
 }
