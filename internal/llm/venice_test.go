@@ -3,10 +3,12 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
 )
@@ -275,5 +277,47 @@ func TestVeniceProviderExplicitXSearchUsesVeniceParameters(t *testing.T) {
 	}
 	if _, ok := got.VeniceParameters["enable_web_search"]; ok {
 		t.Fatalf("did not expect enable_web_search alongside explicit x search: %#v", got.VeniceParameters)
+	}
+}
+
+func TestVeniceProviderCloseDoesNotBlockWhenEventBufferIsFull(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("response writer does not support flushing")
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		for i := 0; i < 32; i++ {
+			_, _ = fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"chunk-%d\"}}]}\n\n", i)
+			flusher.Flush()
+		}
+
+		<-r.Context().Done()
+	}))
+	defer ts.Close()
+
+	provider := &VeniceProvider{OpenAICompatProvider: NewOpenAICompatProvider(ts.URL, "test-key", "venice-uncensored", "Venice")}
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{UserText("hello")},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- stream.Close()
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close() blocked with a full event buffer")
 	}
 }

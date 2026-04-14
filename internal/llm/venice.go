@@ -108,6 +108,16 @@ func (p *VeniceProvider) Stream(ctx context.Context, req Request) (Stream, error
 	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
 		defer resp.Body.Close()
 
+		sendEvent := func(event Event) error {
+			if safeSendEvent(ctx, events, event) {
+				return nil
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return nil
+		}
+
 		scanner := bufio.NewScanner(resp.Body)
 		buf := make([]byte, 0, 64*1024)
 		scanner.Buffer(buf, 1024*1024)
@@ -153,11 +163,15 @@ func (p *VeniceProvider) Stream(ctx context.Context, req Request) (Stream, error
 			for _, choice := range chatResp.Choices {
 				if choice.Delta != nil {
 					if content, ok := choice.Delta.Content.(string); ok && content != "" {
-						events <- Event{Type: EventTextDelta, Text: content}
+						if err := sendEvent(Event{Type: EventTextDelta, Text: content}); err != nil {
+							return err
+						}
 					}
 					if choice.Delta.Reasoning != "" {
 						reasoningBuilder.WriteString(choice.Delta.Reasoning)
-						events <- Event{Type: EventReasoningDelta, Text: choice.Delta.Reasoning}
+						if err := sendEvent(Event{Type: EventReasoningDelta, Text: choice.Delta.Reasoning}); err != nil {
+							return err
+						}
 					}
 					if len(choice.Delta.ToolCalls) > 0 {
 						toolState.Add(choice.Delta.ToolCalls)
@@ -170,12 +184,18 @@ func (p *VeniceProvider) Stream(ctx context.Context, req Request) (Stream, error
 			return fmt.Errorf("%s streaming error: %w", p.name, err)
 		}
 		for _, call := range toolState.Calls() {
-			events <- Event{Type: EventToolCall, Tool: &call}
+			if err := sendEvent(Event{Type: EventToolCall, Tool: &call}); err != nil {
+				return err
+			}
 		}
 		if lastUsage != nil {
-			events <- Event{Type: EventUsage, Use: lastUsage}
+			if err := sendEvent(Event{Type: EventUsage, Use: lastUsage}); err != nil {
+				return err
+			}
 		}
-		events <- Event{Type: EventDone}
+		if err := sendEvent(Event{Type: EventDone}); err != nil {
+			return err
+		}
 		return nil
 	}), nil
 }
