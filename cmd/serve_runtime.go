@@ -550,6 +550,12 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		rt.engine.ResetConversation()
 		rt.cumulativeUsage = llm.Usage{}
 		rt.lastInjectedPlatform = ""
+		if persisted {
+			// Clear any previously persisted conversation state immediately so a
+			// fresh run that fails before callbacks or the final snapshot cannot
+			// silently leave stale DB history behind.
+			rt.persistSnapshot(ctx, req.SessionID, nil)
+		}
 	}
 
 	var injectedPlatform string

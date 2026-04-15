@@ -333,6 +333,26 @@ func (p *serveRuntimeBlockingProvider) Stream(ctx context.Context, req llm.Reque
 	return &serveRuntimeBlockingStream{ctx: ctx}, nil
 }
 
+type serveRuntimeErrorProvider struct {
+	err error
+}
+
+func (p *serveRuntimeErrorProvider) Name() string {
+	return "serve-runtime-error"
+}
+
+func (p *serveRuntimeErrorProvider) Credential() string {
+	return "test"
+}
+
+func (p *serveRuntimeErrorProvider) Capabilities() llm.Capabilities {
+	return llm.Capabilities{}
+}
+
+func (p *serveRuntimeErrorProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	return nil, p.err
+}
+
 func TestServeRuntimeCloseCancelsActiveRun(t *testing.T) {
 	provider := &serveRuntimeBlockingProvider{streamStarted: make(chan struct{})}
 	engine := llm.NewEngine(provider, llm.NewToolRegistry())
@@ -462,5 +482,48 @@ func TestServeRuntimeRetriesInitialSnapshotBeforeAppending(t *testing.T) {
 	}
 	if msgs[5].Role != llm.RoleAssistant || msgs[5].TextContent != "done" {
 		t.Fatalf("message[5] = %+v, want final assistant message", msgs[5])
+	}
+}
+
+func TestServeRuntimeReplaceHistoryClearsPersistedMessagesBeforeEarlyFailure(t *testing.T) {
+	store := newServeRuntimeTestStore()
+	sess := &session.Session{ID: "sess-replace", Status: session.StatusActive}
+	if err := store.Create(context.Background(), sess); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := store.ReplaceMessages(context.Background(), "sess-replace", []session.Message{
+		*session.NewMessage("sess-replace", serveRuntimeTextMessage(llm.RoleUser, "stale user"), -1),
+		*session.NewMessage("sess-replace", serveRuntimeTextMessage(llm.RoleAssistant, "stale assistant"), -1),
+	}); err != nil {
+		t.Fatalf("ReplaceMessages() error = %v", err)
+	}
+
+	providerErr := errors.New("provider startup failed")
+	provider := &serveRuntimeErrorProvider{err: providerErr}
+	engine := llm.NewEngine(provider, nil)
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  provider.Name(),
+		engine:       engine,
+		store:        store,
+		defaultModel: "test-model",
+	}
+
+	_, err := rt.Run(context.Background(), true, true, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "fresh user")}, llm.Request{
+		SessionID: "sess-replace",
+	})
+	if !errors.Is(err, providerErr) {
+		t.Fatalf("Run() error = %v, want %v", err, providerErr)
+	}
+
+	msgs, err := store.GetMessages(context.Background(), "sess-replace", 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages() error = %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Fatalf("stored message count = %d, want 0", len(msgs))
+	}
+	if got := rt.history; len(got) != 0 {
+		t.Fatalf("runtime history length = %d, want 0", len(got))
 	}
 }
