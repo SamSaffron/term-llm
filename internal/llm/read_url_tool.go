@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	ReadURLToolName = "read_url"
-	maxReadURLChars = 50000
+	ReadURLToolName     = "read_url"
+	maxReadURLChars     = 50000
+	maxReadURLRedirects = 10
 )
 
 var readURLLookupIP = func(ctx context.Context, host string) ([]net.IP, error) {
@@ -79,7 +80,7 @@ func (t *ReadURLTool) Execute(ctx context.Context, args json.RawMessage) (ToolOu
 		return ToolOutput{}, fmt.Errorf("url is required")
 	}
 
-	url, err := normalizeReadURLTarget(ctx, payload.URL)
+	url, err := resolveReadURLTarget(ctx, t.client, payload.URL)
 	if err != nil {
 		return ToolOutput{}, err
 	}
@@ -120,6 +121,52 @@ func (t *ReadURLTool) Execute(ctx context.Context, args json.RawMessage) (ToolOu
 	}
 
 	return TextOutput(content), nil
+}
+
+func resolveReadURLTarget(ctx context.Context, client *http.Client, rawURL string) (string, error) {
+	targetURL, err := normalizeReadURLTarget(ctx, rawURL)
+	if err != nil {
+		return "", err
+	}
+
+	redirectClient := *client
+	redirectClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+
+	for range maxReadURLRedirects {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+		if err != nil {
+			return "", fmt.Errorf("create redirect check request: %w", err)
+		}
+
+		resp, err := redirectClient.Do(req)
+		if err != nil {
+			return "", fmt.Errorf("check url redirects: %w", err)
+		}
+		_ = resp.Body.Close()
+
+		if resp.StatusCode < 300 || resp.StatusCode >= 400 {
+			return targetURL, nil
+		}
+
+		location := resp.Header.Get("Location")
+		if location == "" {
+			return "", fmt.Errorf("redirect response missing location header")
+		}
+
+		nextURL, err := req.URL.Parse(location)
+		if err != nil {
+			return "", fmt.Errorf("parse redirect location: %w", err)
+		}
+
+		targetURL, err = normalizeReadURLTarget(ctx, nextURL.String())
+		if err != nil {
+			return "", err
+		}
+	}
+
+	return "", fmt.Errorf("too many redirects")
 }
 
 func normalizeReadURLTarget(ctx context.Context, rawURL string) (string, error) {
