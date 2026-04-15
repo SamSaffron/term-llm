@@ -312,7 +312,7 @@ func (p *GeminiCLIProvider) Capabilities() Capabilities {
 }
 
 func (p *GeminiCLIProvider) Stream(ctx context.Context, req Request) (Stream, error) {
-	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
+	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 		if err := p.ensureProjectID(ctx, req.Debug); err != nil {
 			return err
 		}
@@ -447,7 +447,9 @@ func (p *GeminiCLIProvider) Stream(ctx context.Context, req Request) (Stream, er
 					}
 					// Emit text parts (skip thought parts which are internal)
 					if part.Text != "" && !part.Thought {
-						events <- Event{Type: EventTextDelta, Text: part.Text}
+						if err := send.Send(Event{Type: EventTextDelta, Text: part.Text}); err != nil {
+							return err
+						}
 					}
 					if part.FunctionCall != nil {
 						argsJSON, _ := json.Marshal(part.FunctionCall.Args)
@@ -464,12 +466,13 @@ func (p *GeminiCLIProvider) Stream(ctx context.Context, req Request) (Stream, er
 							Arguments:  argsJSON,
 							ThoughtSig: thoughtSig,
 						}
-						events <- Event{Type: EventToolCall, Tool: &call}
+						if err := send.Send(Event{Type: EventToolCall, Tool: &call}); err != nil {
+							return err
+						}
 					}
 				}
 			}
-			events <- Event{Type: EventDone}
-			return nil
+			return send.Send(Event{Type: EventDone})
 		}
 
 		reqURL := fmt.Sprintf("%s/%s:streamGenerateContent?alt=sse", codeAssistEndpoint, codeAssistAPIVersion)
@@ -504,12 +507,7 @@ func (p *GeminiCLIProvider) Stream(ctx context.Context, req Request) (Stream, er
 		scanner.Buffer(buf, 1024*1024) // 1MB max line size
 		firstChunkLogged := false
 		emit := func(event Event) error {
-			select {
-			case events <- event:
-				return nil
-			case <-ctx.Done():
-				return ctx.Err()
-			}
+			return send.Send(event)
 		}
 
 		for scanner.Scan() {

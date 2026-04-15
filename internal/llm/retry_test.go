@@ -48,23 +48,23 @@ func (p *syncToolProvider) Capabilities() Capabilities              { return Cap
 func (p *retryStreamingProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	p.attempt++
 	if p.attempt == 1 {
-		return newEventStream(ctx, func(ctx context.Context, ch chan<- Event) error {
-			ch <- Event{Type: EventError, Err: &RateLimitError{Message: "rate limit", RetryAfter: 5 * time.Millisecond}}
+		return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
+			send.Send(Event{Type: EventError, Err: &RateLimitError{Message: "rate limit", RetryAfter: 5 * time.Millisecond}})
 			return nil
 		}), nil
 	}
-	return newEventStream(ctx, func(ctx context.Context, ch chan<- Event) error {
-		ch <- Event{Type: EventTextDelta, Text: "hello"}
-		ch <- Event{Type: EventTextDelta, Text: " world"}
+	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
+		send.Send(Event{Type: EventTextDelta, Text: "hello"})
+		send.Send(Event{Type: EventTextDelta, Text: " world"})
 		return nil
 	}), nil
 }
 
 func (p *textThenErrorProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	p.attempts++
-	return newEventStream(ctx, func(ctx context.Context, ch chan<- Event) error {
-		ch <- Event{Type: EventTextDelta, Text: "hello"}
-		ch <- Event{Type: EventError, Err: errors.New("502 bad gateway")}
+	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
+		send.Send(Event{Type: EventTextDelta, Text: "hello"})
+		send.Send(Event{Type: EventError, Err: errors.New("502 bad gateway")})
 		return nil
 	}), nil
 }
@@ -72,45 +72,45 @@ func (p *textThenErrorProvider) Stream(ctx context.Context, req Request) (Stream
 func (p *phaseThenErrorProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	p.attempts++
 	if p.attempts == 1 {
-		return newEventStream(ctx, func(ctx context.Context, ch chan<- Event) error {
-			ch <- Event{Type: EventPhase, Text: "Compacting context..."}
-			ch <- Event{Type: EventError, Err: errors.New("502 bad gateway")}
+		return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
+			send.Send(Event{Type: EventPhase, Text: "Compacting context..."})
+			send.Send(Event{Type: EventError, Err: errors.New("502 bad gateway")})
 			return nil
 		}), nil
 	}
-	return newEventStream(ctx, func(ctx context.Context, ch chan<- Event) error {
-		ch <- Event{Type: EventTextDelta, Text: "hello"}
-		ch <- Event{Type: EventTextDelta, Text: " world"}
+	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
+		send.Send(Event{Type: EventTextDelta, Text: "hello"})
+		send.Send(Event{Type: EventTextDelta, Text: " world"})
 		return nil
 	}), nil
 }
 
 func (p *warningPhaseThenErrorProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	p.attempts++
-	return newEventStream(ctx, func(ctx context.Context, ch chan<- Event) error {
-		ch <- Event{Type: EventPhase, Text: WarningPhasePrefix + "context is nearly full"}
-		ch <- Event{Type: EventError, Err: errors.New("502 bad gateway")}
+	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
+		send.Send(Event{Type: EventPhase, Text: WarningPhasePrefix + "context is nearly full"})
+		send.Send(Event{Type: EventError, Err: errors.New("502 bad gateway")})
 		return nil
 	}), nil
 }
 
 func (p *syncToolProvider) Stream(ctx context.Context, req Request) (Stream, error) {
-	return newEventStream(ctx, func(ctx context.Context, ch chan<- Event) error {
+	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 		responseCh := make(chan ToolExecutionResponse, 1)
-		ch <- Event{
+		send.Send(Event{
 			Type:         EventToolCall,
 			ToolCallID:   "tool-1",
 			ToolName:     "read_file",
 			Tool:         &ToolCall{ID: "tool-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"/tmp/test.txt"}`)},
 			ToolResponse: responseCh,
-		}
+		})
 
 		select {
 		case resp := <-responseCh:
 			if resp.Err != nil {
 				return resp.Err
 			}
-			ch <- Event{Type: EventTextDelta, Text: resp.Result.Content}
+			send.Send(Event{Type: EventTextDelta, Text: resp.Result.Content})
 			return nil
 		case <-ctx.Done():
 			return ctx.Err()
@@ -152,18 +152,18 @@ func (p *toolThenErrorProvider) Capabilities() Capabilities {
 
 func (p *toolThenErrorProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	p.attempts++
-	return newEventStream(ctx, func(ctx context.Context, ch chan<- Event) error {
+	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 		// Emit a synchronous tool call (has ToolResponse channel)
 		response := make(chan ToolExecutionResponse, 1)
-		ch <- Event{
+		send.Send(Event{
 			Type:         EventToolCall,
 			ToolResponse: response,
 			ToolName:     "test_tool",
-		}
+		})
 		// Simulate tool execution completing
 		response <- ToolExecutionResponse{Result: ToolOutput{Content: "tool result"}}
 		// Then a retryable error occurs
-		ch <- Event{Type: EventError, Err: errors.New("502 bad gateway")}
+		send.Send(Event{Type: EventError, Err: errors.New("502 bad gateway")})
 		return nil
 	}), nil
 }

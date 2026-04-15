@@ -536,8 +536,8 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	useLoop := len(req.Tools) > 0 && caps.ToolCalls
 
 	if useLoop {
-		stream := newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
-			return e.runLoop(ctx, req, events)
+		stream := newEventStream(ctx, func(ctx context.Context, send eventSender) error {
+			return e.runLoop(ctx, req, send)
 		})
 		stream = wrapLoggingStream(stream, e.provider.Name(), req.Model)
 		stream = e.wrapDebugLoggingStream(stream)
@@ -691,22 +691,10 @@ func hasToolNamed(tools []ToolSpec, name string) bool {
 	return false
 }
 
-func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) error {
+func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) error {
 	maxTurns := getMaxTurns(req)
 	originalToolChoice := req.ToolChoice
 	restoredToolChoice := false
-	sendEvent := func(event Event) error {
-		if events == nil {
-			return nil
-		}
-		if safeSendEvent(ctx, events, event) {
-			return nil
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		return nil
-	}
 
 	// Snapshot callbacks and compaction config at start — protects against
 	// concurrent modification from the UI thread (e.g., SetCompaction called
@@ -755,7 +743,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 		if compactionConfig != nil && attempt > 0 {
 			threshold := int(float64(inputLimit) * compactionConfig.ThresholdRatio)
 			if e.estimatedTokens(req.Messages) >= threshold {
-				if err := sendEvent(Event{Type: EventPhase, Text: "Compacting context..."}); err != nil {
+				if err := send.Send(Event{Type: EventPhase, Text: "Compacting context..."}); err != nil {
 					return err
 				}
 				result, err := Compact(ctx, e.provider, req.Model, systemPrompt, nonSystemMessages(req.Messages), *compactionConfig)
@@ -781,7 +769,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			if est >= threshold {
 				e.contextNoticeEmitted.Store(true)
 				pct := int(100 * float64(est) / float64(inputLimit))
-				if err := sendEvent(Event{Type: EventPhase, Text: fmt.Sprintf(WarningPhasePrefix+"context is %d%% full. Add auto_compact: true to your config to enable automatic compaction.", pct)}); err != nil {
+				if err := send.Send(Event{Type: EventPhase, Text: fmt.Sprintf(WarningPhasePrefix+"context is %d%% full. Add auto_compact: true to your config to enable automatic compaction.", pct)}); err != nil {
 					return err
 				}
 			}
@@ -813,7 +801,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			// Reactive compaction: if this is a context overflow error, try compacting and retrying (once)
 			if compactionConfig != nil && isContextOverflowError(err) && !reactiveCompactionDone {
 				reactiveCompactionDone = true
-				if err := sendEvent(Event{Type: EventPhase, Text: "Compacting context..."}); err != nil {
+				if err := send.Send(Event{Type: EventPhase, Text: "Compacting context..."}); err != nil {
 					return err
 				}
 				result, compactErr := Compact(ctx, e.provider, req.Model, systemPrompt, nonSystemMessages(req.Messages), *compactionConfig)
@@ -835,7 +823,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			// Warn when compaction is disabled and we hit context overflow
 			if compactionConfig == nil && inputLimit > 0 && !e.contextNoticeEmitted.Load() && isContextOverflowError(err) {
 				e.contextNoticeEmitted.Store(true)
-				if err := sendEvent(Event{Type: EventPhase, Text: WarningPhasePrefix + "context overflow. Add auto_compact: true to your config to enable automatic compaction."}); err != nil {
+				if err := send.Send(Event{Type: EventPhase, Text: WarningPhasePrefix + "context overflow. Add auto_compact: true to your config to enable automatic compaction."}); err != nil {
 					return err
 				}
 			}
@@ -920,12 +908,12 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 						ToolName:   event.ToolName,
 						Tool:       event.Tool,
 					}
-					if err := sendEvent(forwardEvent); err != nil {
+					if err := send.Send(forwardEvent); err != nil {
 						return err
 					}
 
 					// Handle synchronous execution: emit events to TUI and send result back
-					call, result, execErr := e.handleSyncToolExecution(ctx, event, events, req.Debug, req.DebugRaw)
+					call, result, execErr := e.handleSyncToolExecution(ctx, event, send, req.Debug, req.DebugRaw)
 					syncToolsExecuted = true
 					syncToolCalls = append(syncToolCalls, call)
 					// Build result message for this tool call
@@ -966,7 +954,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 				event.Tool.ToolInfo = info
 				toolCalls = append(toolCalls, *event.Tool)
 
-				if err := sendEvent(Event{
+				if err := send.Send(Event{
 					Type:       EventToolCall,
 					ToolCallID: toolCallID,
 					ToolName:   event.Tool.Name,
@@ -980,7 +968,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			if event.Type == EventDone {
 				continue
 			}
-			if err := sendEvent(event); err != nil {
+			if err := send.Send(event); err != nil {
 				return err
 			}
 		}
@@ -1019,7 +1007,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 				_ = turnCallback(cbCtx, attempt, []Message{finalMsg}, turnMetrics)
 				cancel()
 			}
-			if err := sendEvent(Event{Type: EventDone}); err != nil {
+			if err := send.Send(Event{Type: EventDone}); err != nil {
 				return err
 			}
 			return nil
@@ -1060,16 +1048,14 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 					_ = turnCallback(cbCtx, attempt, []Message{interjectionMsg}, TurnMetrics{})
 					cancel()
 				}
-				if events != nil {
-					if err := sendEvent(Event{Type: EventInterjection, Text: text}); err != nil {
-						return err
-					}
+				if err := send.Send(Event{Type: EventInterjection, Text: text}); err != nil {
+					return err
 				}
 			}
 
 			// If a finishing tool was executed, we're done (agent completed its task)
 			if finishingToolExecuted {
-				if err := sendEvent(Event{Type: EventDone}); err != nil {
+				if err := send.Send(Event{Type: EventDone}); err != nil {
 					return err
 				}
 				return nil
@@ -1134,7 +1120,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 					cancel()
 				}
 			}
-			if err := sendEvent(Event{Type: EventDone}); err != nil {
+			if err := send.Send(Event{Type: EventDone}); err != nil {
 				return err
 			}
 			return nil
@@ -1183,16 +1169,12 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			DebugToolCall(req.Debug, call)
 			info := e.getToolPreview(call)
 
-			if events != nil {
-				if !safeSendEvent(ctx, events, Event{Type: EventToolExecStart, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info, ToolArgs: call.Arguments}) {
-					if err := ctx.Err(); err != nil {
-						return err
-					}
-				}
+			if err := send.Send(Event{Type: EventToolExecStart, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info, ToolArgs: call.Arguments}); err != nil {
+				return err
 			}
 		}
 
-		toolResults, err := e.executeToolCalls(ctx, registered, events, req.Debug, req.DebugRaw)
+		toolResults, err := e.executeToolCalls(ctx, registered, send, req.Debug, req.DebugRaw)
 		if err != nil {
 			return err
 		}
@@ -1243,7 +1225,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 		}
 
 		if finishingToolExecuted {
-			if err := sendEvent(Event{Type: EventDone}); err != nil {
+			if err := send.Send(Event{Type: EventDone}); err != nil {
 				return err
 			}
 			return nil
@@ -1261,10 +1243,8 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 				cancel()
 			}
 			// Emit event so TUI can display the interjection inline
-			if events != nil {
-				if err := sendEvent(Event{Type: EventInterjection, Text: text}); err != nil {
-					return err
-				}
+			if err := send.Send(Event{Type: EventInterjection, Text: text}); err != nil {
+				return err
 			}
 		}
 	}
@@ -1301,10 +1281,10 @@ func buildAssistantMessageWithReasoningMetadata(text string, toolCalls []ToolCal
 // are emitted from concurrent goroutines. While the channel is thread-safe, events
 // may arrive in non-deterministic order. Consumers should use ToolCallID to correlate
 // start/end events rather than relying on ordering.
-func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, events chan<- Event, debug bool, debugRaw bool) ([]Message, error) {
+func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, send eventSender, debug bool, debugRaw bool) ([]Message, error) {
 	// Fast path: single call, no concurrency overhead
 	if len(calls) == 1 {
-		return e.executeSingleToolCallSafe(ctx, calls[0], events, debug, debugRaw)
+		return e.executeSingleToolCallSafe(ctx, calls[0], send, debug, debugRaw)
 	}
 
 	// Parallel execution for multiple calls (events may arrive out of order)
@@ -1323,13 +1303,11 @@ func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, events 
 			defer func() {
 				if r := recover(); r != nil {
 					errMsg := fmt.Sprintf("Error: tool panicked: %v", r)
-					if events != nil {
-						_ = safeSendEvent(ctx, events, Event{Type: EventToolExecEnd, ToolCallID: c.ID, ToolName: c.Name, ToolSuccess: false})
-					}
+					_ = send.Send(Event{Type: EventToolExecEnd, ToolCallID: c.ID, ToolName: c.Name, ToolSuccess: false})
 					resultChan <- toolResult{index: idx, message: ToolErrorMessage(c.ID, c.Name, errMsg, c.ThoughtSig)}
 				}
 			}()
-			msgs, _ := e.executeSingleToolCall(ctx, c, events, debug, debugRaw)
+			msgs, _ := e.executeSingleToolCall(ctx, c, send, debug, debugRaw)
 			msg := ToolErrorMessage(c.ID, c.Name, "tool returned no result", c.ThoughtSig)
 			if len(msgs) > 0 {
 				msg = msgs[0]
@@ -1354,29 +1332,25 @@ func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, events 
 }
 
 // executeSingleToolCallSafe wraps executeSingleToolCall with panic recovery.
-func (e *Engine) executeSingleToolCallSafe(ctx context.Context, call ToolCall, events chan<- Event, debug bool, debugRaw bool) (msgs []Message, err error) {
+func (e *Engine) executeSingleToolCallSafe(ctx context.Context, call ToolCall, send eventSender, debug bool, debugRaw bool) (msgs []Message, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			errMsg := fmt.Sprintf("Error: tool panicked: %v", r)
-			if events != nil {
-				_ = safeSendEvent(ctx, events, Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolSuccess: false})
-			}
+			_ = send.Send(Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolSuccess: false})
 			msgs = []Message{ToolErrorMessage(call.ID, call.Name, errMsg, call.ThoughtSig)}
 			err = nil
 		}
 	}()
-	return e.executeSingleToolCall(ctx, call, events, debug, debugRaw)
+	return e.executeSingleToolCall(ctx, call, send, debug, debugRaw)
 }
 
 // executeSingleToolCall executes a single tool call and returns the result message.
-func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, events chan<- Event, debug bool, debugRaw bool) ([]Message, error) {
+func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, send eventSender, debug bool, debugRaw bool) ([]Message, error) {
 	tool, ok := e.tools.Get(call.Name)
 	if !ok {
 		errMsg := fmt.Sprintf("Error: tool not registered: %s", call.Name)
 		DebugToolResult(debug, call.ID, call.Name, errMsg)
-		if events != nil {
-			_ = safeSendEvent(ctx, events, Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false})
-		}
+		_ = send.Send(Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false})
 		return []Message{ToolErrorMessage(call.ID, call.Name, errMsg, call.ThoughtSig)}, nil
 	}
 
@@ -1384,9 +1358,7 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, event
 	if !e.IsToolAllowed(call.Name) {
 		errMsg := fmt.Sprintf("Error: tool '%s' is not in the active skill's allowed-tools list", call.Name)
 		DebugToolResult(debug, call.ID, call.Name, errMsg)
-		if events != nil {
-			_ = safeSendEvent(ctx, events, Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false})
-		}
+		_ = send.Send(Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false})
 		return []Message{ToolErrorMessage(call.ID, call.Name, errMsg, call.ThoughtSig)}, nil
 	}
 
@@ -1394,25 +1366,20 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, event
 	toolCtx := ContextWithCallID(ctx, call.ID)
 
 	heartbeatDone := make(chan struct{})
-	if events != nil {
-		go func() {
-			ticker := time.NewTicker(10 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					select {
-					case events <- Event{Type: EventHeartbeat, ToolCallID: call.ID, ToolName: call.Name}:
-					default:
-					}
-				case <-heartbeatDone:
-					return
-				case <-ctx.Done():
-					return
-				}
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				send.TrySend(Event{Type: EventHeartbeat, ToolCallID: call.ID, ToolName: call.Name})
+			case <-heartbeatDone:
+				return
+			case <-ctx.Done():
+				return
 			}
-		}()
-	}
+		}
+	}()
 	defer close(heartbeatDone)
 
 	output, err := tool.Execute(toolCtx, call.Arguments)
@@ -1426,26 +1393,22 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, event
 	if err != nil {
 		errMsg := fmt.Sprintf("Error: %v", err)
 		DebugToolResult(debug, call.ID, call.Name, errMsg)
-		if events != nil {
-			_ = safeSendEvent(ctx, events, Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info, ToolSuccess: false})
-		}
+		_ = send.Send(Event{Type: EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info, ToolSuccess: false})
 		return []Message{ToolErrorMessage(call.ID, call.Name, errMsg, call.ThoughtSig)}, nil
 	}
 
 	DebugToolResult(debug, call.ID, call.Name, output.Content)
 	DebugRawToolResult(debugRaw, call.ID, call.Name, output.Content)
-	if events != nil {
-		_ = safeSendEvent(ctx, events, Event{
-			Type:        EventToolExecEnd,
-			ToolCallID:  call.ID,
-			ToolName:    call.Name,
-			ToolInfo:    info,
-			ToolSuccess: !output.TimedOut,
-			ToolOutput:  output.Content,
-			ToolDiffs:   output.Diffs,
-			ToolImages:  output.Images,
-		})
-	}
+	_ = send.Send(Event{
+		Type:        EventToolExecEnd,
+		ToolCallID:  call.ID,
+		ToolName:    call.Name,
+		ToolInfo:    info,
+		ToolSuccess: !output.TimedOut,
+		ToolOutput:  output.Content,
+		ToolDiffs:   output.Diffs,
+		ToolImages:  output.Images,
+	})
 	return []Message{ToolResultMessageFromOutput(call.ID, call.Name, output, call.ThoughtSig)}, nil
 }
 
@@ -1453,7 +1416,7 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call ToolCall, event
 // It emits EventToolExecStart/End to the outer channel (for TUI) and sends the result
 // back to the provider via the response channel.
 // Returns the tool call, result content string, and any error that occurred during execution.
-func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, events chan<- Event, debug bool, debugRaw bool) (ToolCall, ToolOutput, error) {
+func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, send eventSender, debug bool, debugRaw bool) (ToolCall, ToolOutput, error) {
 	call := event.Tool
 	callID := event.ToolCallID
 	if callID == "" {
@@ -1467,19 +1430,13 @@ func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, event
 	}
 
 	// Emit start event to TUI (non-blocking to avoid deadlock if consumer is slow)
-	if events != nil {
-		select {
-		case events <- Event{
-			Type:       EventToolExecStart,
-			ToolCallID: callID,
-			ToolName:   call.Name,
-			ToolInfo:   info,
-			ToolArgs:   call.Arguments,
-		}:
-		default:
-			// Event dropped due to slow consumer
-		}
-	}
+	send.TrySend(Event{
+		Type:       EventToolExecStart,
+		ToolCallID: callID,
+		ToolName:   call.Name,
+		ToolInfo:   info,
+		ToolArgs:   call.Arguments,
+	})
 
 	// Look up and execute the tool
 	tool, ok := e.tools.Get(call.Name)
@@ -1514,22 +1471,16 @@ func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, event
 		DebugRawToolResult(debugRaw, callID, call.Name, result.Content)
 	}
 	// Emit end event to TUI (non-blocking to avoid deadlock if consumer is slow)
-	if events != nil {
-		select {
-		case events <- Event{
-			Type:        EventToolExecEnd,
-			ToolCallID:  callID,
-			ToolName:    call.Name,
-			ToolInfo:    info,
-			ToolSuccess: err == nil && !result.TimedOut,
-			ToolOutput:  result.Content,
-			ToolDiffs:   result.Diffs,
-			ToolImages:  result.Images,
-		}:
-		default:
-			// Event dropped due to slow consumer
-		}
-	}
+	send.TrySend(Event{
+		Type:        EventToolExecEnd,
+		ToolCallID:  callID,
+		ToolName:    call.Name,
+		ToolInfo:    info,
+		ToolSuccess: err == nil && !result.TimedOut,
+		ToolOutput:  result.Content,
+		ToolDiffs:   result.Diffs,
+		ToolImages:  result.Images,
+	})
 
 	// Send result back to provider (claude_bin MCP handler)
 	// Use select to avoid blocking if context is canceled and receiver has exited

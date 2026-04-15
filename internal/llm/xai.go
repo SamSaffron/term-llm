@@ -119,7 +119,7 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 		return nil, fmt.Errorf("xAI API error (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
+	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 		defer resp.Body.Close()
 
 		scanner := bufio.NewScanner(resp.Body)
@@ -172,7 +172,9 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 					if content, ok := choice.Delta.Content.(string); ok && content != "" {
 						// Use buffered tag stripper to handle tags split across chunks
 						if stripped := tagStripper.Add(content); stripped != "" {
-							events <- Event{Type: EventTextDelta, Text: stripped}
+							if err := send.Send(Event{Type: EventTextDelta, Text: stripped}); err != nil {
+								return err
+							}
 						}
 					}
 					if len(choice.Delta.ToolCalls) > 0 {
@@ -182,7 +184,9 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 				if choice.Message != nil {
 					if content, ok := choice.Message.Content.(string); ok && content != "" {
 						if stripped := tagStripper.Add(content); stripped != "" {
-							events <- Event{Type: EventTextDelta, Text: stripped}
+							if err := send.Send(Event{Type: EventTextDelta, Text: stripped}); err != nil {
+								return err
+							}
 						}
 					}
 				}
@@ -193,7 +197,9 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 
 		// Flush any remaining buffered content
 		if remaining := tagStripper.Flush(); remaining != "" {
-			events <- Event{Type: EventTextDelta, Text: remaining}
+			if err := send.Send(Event{Type: EventTextDelta, Text: remaining}); err != nil {
+				return err
+			}
 		}
 
 		if err := scanner.Err(); err != nil {
@@ -201,13 +207,16 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 		}
 
 		for _, call := range toolState.Calls() {
-			events <- Event{Type: EventToolCall, Tool: &call}
+			if err := send.Send(Event{Type: EventToolCall, Tool: &call}); err != nil {
+				return err
+			}
 		}
 		if lastUsage != nil {
-			events <- Event{Type: EventUsage, Use: lastUsage}
+			if err := send.Send(Event{Type: EventUsage, Use: lastUsage}); err != nil {
+				return err
+			}
 		}
-		events <- Event{Type: EventDone}
-		return nil
+		return send.Send(Event{Type: EventDone})
 	}), nil
 }
 
@@ -251,7 +260,7 @@ func (p *XAIProvider) streamWithSearch(ctx context.Context, req Request) (Stream
 		return nil, fmt.Errorf("xAI Responses API error (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
+	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 		defer resp.Body.Close()
 
 		scanner := bufio.NewScanner(resp.Body)
@@ -282,19 +291,25 @@ func (p *XAIProvider) streamWithSearch(ctx context.Context, req Request) (Stream
 				if event.Item != nil && (event.Item.Type == "web_search_call" || event.Item.Type == "x_search_call") {
 					if !searchStarted {
 						searchStarted = true
-						events <- Event{Type: EventToolExecStart, ToolName: event.Item.Type}
+						if err := send.Send(Event{Type: EventToolExecStart, ToolName: event.Item.Type}); err != nil {
+							return err
+						}
 					}
 				}
 
 			case "response.output_item.done":
 				// Search tool completed
 				if event.Item != nil && (event.Item.Type == "web_search_call" || event.Item.Type == "x_search_call") {
-					events <- Event{Type: EventToolExecEnd, ToolName: event.Item.Type}
+					if err := send.Send(Event{Type: EventToolExecEnd, ToolName: event.Item.Type}); err != nil {
+						return err
+					}
 				}
 
 			case "response.output_text.delta":
 				if event.Delta != "" {
-					events <- Event{Type: EventTextDelta, Text: event.Delta}
+					if err := send.Send(Event{Type: EventTextDelta, Text: event.Delta}); err != nil {
+						return err
+					}
 				}
 
 			case "response.completed":
@@ -315,10 +330,11 @@ func (p *XAIProvider) streamWithSearch(ctx context.Context, req Request) (Stream
 		}
 
 		if lastUsage != nil {
-			events <- Event{Type: EventUsage, Use: lastUsage}
+			if err := send.Send(Event{Type: EventUsage, Use: lastUsage}); err != nil {
+				return err
+			}
 		}
-		events <- Event{Type: EventDone}
-		return nil
+		return send.Send(Event{Type: EventDone})
 	}), nil
 }
 
@@ -451,23 +467,6 @@ func buildXAIInput(messages []Message) []xaiResponsesInput {
 		})
 	}
 	return result
-}
-
-// stripXAITags removes leaked internal xAI tags from model output.
-// This is a workaround for a known Grok model bug where internal
-// function call markers leak into visible response text.
-func stripXAITags(s string) string {
-	// Known leaked tags from xAI models
-	tags := []string{
-		"<has_function_call>",
-		"</has_function_call>",
-		"<xai:function_call>",
-		"</xai:function_call>",
-	}
-	for _, tag := range tags {
-		s = strings.ReplaceAll(s, tag, "")
-	}
-	return s
 }
 
 // xaiTagStripper buffers streaming content to strip xAI internal tags

@@ -581,9 +581,9 @@ func TestHandleAnthropicStartBlockContent_TextBlockEmitsTextDelta(t *testing.T) 
 	events := make(chan Event, 1)
 	acc := newToolCallAccumulator()
 
-	if err := handleAnthropicStartBlockContent(context.Background(), anthropic.TextBlock{
+	if err := handleAnthropicStartBlockContent(eventSender{ctx: context.Background(), ch: events}, anthropic.TextBlock{
 		Text: "hello from start block",
-	}, 0, acc, events); err != nil {
+	}, 0, acc); err != nil {
 		t.Fatalf("handleAnthropicStartBlockContent error: %v", err)
 	}
 
@@ -604,11 +604,11 @@ func TestHandleAnthropicStartBlockContent_ToolUseStartsAccumulator(t *testing.T)
 	events := make(chan Event, 1)
 	acc := newToolCallAccumulator()
 
-	if err := handleAnthropicStartBlockContent(context.Background(), anthropic.ToolUseBlock{
+	if err := handleAnthropicStartBlockContent(eventSender{ctx: context.Background(), ch: events}, anthropic.ToolUseBlock{
 		ID:    "call-1",
 		Name:  "read_file",
 		Input: json.RawMessage(`{"path":"README.md"}`),
-	}, 1, acc, events); err != nil {
+	}, 1, acc); err != nil {
 		t.Fatalf("handleAnthropicStartBlockContent error: %v", err)
 	}
 
@@ -626,9 +626,9 @@ func TestHandleAnthropicBetaStartBlockContent_TextBlockEmitsTextDelta(t *testing
 	events := make(chan Event, 1)
 	acc := newToolCallAccumulator()
 
-	if err := handleAnthropicBetaStartBlockContent(context.Background(), anthropic.BetaTextBlock{
+	if err := handleAnthropicBetaStartBlockContent(eventSender{ctx: context.Background(), ch: events}, anthropic.BetaTextBlock{
 		Text: "hello from beta start block",
-	}, 0, acc, events); err != nil {
+	}, 0, acc); err != nil {
 		t.Fatalf("handleAnthropicBetaStartBlockContent error: %v", err)
 	}
 
@@ -648,7 +648,7 @@ func TestHandleAnthropicBetaStartBlockContent_TextBlockEmitsTextDelta(t *testing
 func TestEmitReasoningDelta_ProducesReasoningEvent(t *testing.T) {
 	events := make(chan Event, 1)
 
-	if err := emitReasoningDelta(context.Background(), events, "thinking chunk", "sig-123"); err != nil {
+	if err := emitReasoningDelta(eventSender{ctx: context.Background(), ch: events}, "thinking chunk", "sig-123"); err != nil {
 		t.Fatalf("emitReasoningDelta error: %v", err)
 	}
 

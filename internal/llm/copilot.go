@@ -290,7 +290,7 @@ func (p *CopilotProvider) streamChatCompletions(ctx context.Context, req Request
 
 	// Create async stream - HTTP request is made inside the goroutine to ensure
 	// proper ownership of resp.Body (fixes potential resource leak)
-	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
+	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 		httpReq, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(body))
 		if err != nil {
 			return fmt.Errorf("failed to create request: %w", err)
@@ -396,7 +396,9 @@ func (p *CopilotProvider) streamChatCompletions(ctx context.Context, req Request
 			for _, choice := range chatResp.Choices {
 				if choice.Delta != nil {
 					if content, ok := choice.Delta.Content.(string); ok && content != "" {
-						events <- Event{Type: EventTextDelta, Text: content}
+						if err := send.Send(Event{Type: EventTextDelta, Text: content}); err != nil {
+							return err
+						}
 					}
 					if len(choice.Delta.ToolCalls) > 0 {
 						toolState.Add(choice.Delta.ToolCalls)
@@ -412,13 +414,16 @@ func (p *CopilotProvider) streamChatCompletions(ctx context.Context, req Request
 		}
 
 		for _, call := range toolState.Calls() {
-			events <- Event{Type: EventToolCall, Tool: &call}
+			if err := send.Send(Event{Type: EventToolCall, Tool: &call}); err != nil {
+				return err
+			}
 		}
 		if lastUsage != nil {
-			events <- Event{Type: EventUsage, Use: lastUsage}
+			if err := send.Send(Event{Type: EventUsage, Use: lastUsage}); err != nil {
+				return err
+			}
 		}
-		events <- Event{Type: EventDone}
-		return nil
+		return send.Send(Event{Type: EventDone})
 	}), nil
 }
 

@@ -583,7 +583,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 	client := c
 
 	// Create async stream for successful response
-	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
+	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 		defer resp.Body.Close()
 
 		reader := bufio.NewReader(resp.Body)
@@ -594,14 +594,6 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 		var lastUsage *Usage
 		var lastEventType string
 		sawTextDelta := false // Track if any text deltas were emitted
-		emit := func(event Event) error {
-			select {
-			case events <- event:
-				return nil
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
 
 		for {
 			line, eof, err := readSSELine(reader)
@@ -642,7 +634,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 				}
 				if err := json.Unmarshal([]byte(data), &deltaEvent); err == nil && deltaEvent.Delta != "" {
 					sawTextDelta = true
-					if err := emit(Event{Type: EventTextDelta, Text: deltaEvent.Delta}); err != nil {
+					if err := send.Send(Event{Type: EventTextDelta, Text: deltaEvent.Delta}); err != nil {
 						return err
 					}
 				}
@@ -682,7 +674,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 					} else if doneEvent.Item.Type == "reasoning" {
 						reasoningState.Finish(doneEvent.OutputIndex, doneEvent.Item.ID, doneEvent.Item.EncryptedContent, doneEvent.Item.Summary)
 						if part := reasoningState.Part(doneEvent.OutputIndex); part != nil {
-							if err := emit(Event{
+							if err := send.Send(Event{
 								Type:                      EventReasoningDelta,
 								Text:                      part.ReasoningContent,
 								ReasoningItemID:           part.ReasoningItemID,
@@ -697,11 +689,11 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 						// Always emit refusals since those may not be streamed.
 						for _, content := range doneEvent.Item.Content {
 							if content.Type == "output_text" && content.Text != "" && !sawTextDelta {
-								if err := emit(Event{Type: EventTextDelta, Text: content.Text}); err != nil {
+								if err := send.Send(Event{Type: EventTextDelta, Text: content.Text}); err != nil {
 									return err
 								}
 							} else if content.Type == "refusal" && content.Refusal != "" {
-								if err := emit(Event{Type: EventTextDelta, Text: content.Refusal}); err != nil {
+								if err := send.Send(Event{Type: EventTextDelta, Text: content.Refusal}); err != nil {
 									return err
 								}
 							}
@@ -768,16 +760,16 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 
 		// Emit completed tool calls
 		for _, call := range toolState.Calls() {
-			if err := emit(Event{Type: EventToolCall, Tool: &call}); err != nil {
+			if err := send.Send(Event{Type: EventToolCall, Tool: &call}); err != nil {
 				return err
 			}
 		}
 		if lastUsage != nil {
-			if err := emit(Event{Type: EventUsage, Use: lastUsage}); err != nil {
+			if err := send.Send(Event{Type: EventUsage, Use: lastUsage}); err != nil {
 				return err
 			}
 		}
-		if err := emit(Event{Type: EventDone}); err != nil {
+		if err := send.Send(Event{Type: EventDone}); err != nil {
 			return err
 		}
 		return nil

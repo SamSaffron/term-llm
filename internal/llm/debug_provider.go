@@ -213,10 +213,10 @@ func (d *DebugProvider) Capabilities() Capabilities {
 // If tool results are present, emits completion text.
 // Otherwise, streams the debug markdown content.
 func (d *DebugProvider) Stream(ctx context.Context, req Request) (Stream, error) {
-	return newEventStream(ctx, func(ctx context.Context, ch chan<- Event) error {
+	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 		// If tool results are present, stream completion text
 		if hasToolResults(req.Messages) {
-			return d.streamCompletionText(ctx, ch)
+			return d.streamCompletionText(ctx, send)
 		}
 
 		// Parse prompt for tool command(s)
@@ -230,37 +230,30 @@ func (d *DebugProvider) Stream(ctx context.Context, req Request) (Stream, error)
 
 		// Try DSL sequence first (comma-separated actions)
 		if actions := parseSequenceDSL(prompt, req.Tools); len(actions) > 0 {
-			return d.streamActionSequence(ctx, ch, actions)
+			return d.streamActionSequence(ctx, send, actions)
 		}
 
 		// Try single command
 		if calls := parseCommand(prompt, req.Tools); len(calls) > 0 {
 			for _, call := range calls {
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case ch <- Event{Type: EventToolCall, Tool: call}:
+				if err := send.Send(Event{Type: EventToolCall, Tool: call}); err != nil {
+					return err
 				}
 			}
 			// Emit usage
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case ch <- Event{Type: EventUsage, Use: &Usage{
+			return send.Send(Event{Type: EventUsage, Use: &Usage{
 				InputTokens:  len(prompt) / 4,
 				OutputTokens: 10 * len(calls),
-			}}:
-			}
-			return nil
+			}})
 		}
 
 		// Fall back to debug markdown
-		return d.streamDebugMarkdown(ctx, ch)
+		return d.streamDebugMarkdown(ctx, send)
 	}), nil
 }
 
 // streamDebugMarkdown streams the standard debug markdown content.
-func (d *DebugProvider) streamDebugMarkdown(ctx context.Context, ch chan<- Event) error {
+func (d *DebugProvider) streamDebugMarkdown(ctx context.Context, send eventSender) error {
 	text := debugMarkdown
 	chunkSize := d.preset.ChunkSize
 	delay := d.preset.Delay
@@ -275,10 +268,8 @@ func (d *DebugProvider) streamDebugMarkdown(ctx context.Context, ch chan<- Event
 		chunk := text[:end]
 		text = text[end:]
 
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case ch <- Event{Type: EventTextDelta, Text: chunk}:
+		if err := send.Send(Event{Type: EventTextDelta, Text: chunk}); err != nil {
+			return err
 		}
 
 		if delay > 0 && len(text) > 0 {
@@ -291,20 +282,14 @@ func (d *DebugProvider) streamDebugMarkdown(ctx context.Context, ch chan<- Event
 	}
 
 	// Emit usage stats
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case ch <- Event{Type: EventUsage, Use: &Usage{
+	return send.Send(Event{Type: EventUsage, Use: &Usage{
 		InputTokens:  10,
 		OutputTokens: len(debugMarkdown) / 4, // Approximate tokens
-	}}:
-	}
-
-	return nil
+	}})
 }
 
 // streamCompletionText streams a simple completion message after tool execution.
-func (d *DebugProvider) streamCompletionText(ctx context.Context, ch chan<- Event) error {
+func (d *DebugProvider) streamCompletionText(ctx context.Context, send eventSender) error {
 	text := "Debug: Tool execution completed successfully."
 	chunkSize := d.preset.ChunkSize
 	delay := d.preset.Delay
@@ -318,10 +303,8 @@ func (d *DebugProvider) streamCompletionText(ctx context.Context, ch chan<- Even
 		chunk := text[:end]
 		text = text[end:]
 
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case ch <- Event{Type: EventTextDelta, Text: chunk}:
+		if err := send.Send(Event{Type: EventTextDelta, Text: chunk}); err != nil {
+			return err
 		}
 
 		if delay > 0 && len(text) > 0 {
@@ -334,20 +317,14 @@ func (d *DebugProvider) streamCompletionText(ctx context.Context, ch chan<- Even
 	}
 
 	// Emit usage
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case ch <- Event{Type: EventUsage, Use: &Usage{
+	return send.Send(Event{Type: EventUsage, Use: &Usage{
 		InputTokens:  50,
 		OutputTokens: 10,
-	}}:
-	}
-
-	return nil
+	}})
 }
 
 // streamActionSequence streams a sequence of interleaved text and tool calls.
-func (d *DebugProvider) streamActionSequence(ctx context.Context, ch chan<- Event, actions []debugAction) error {
+func (d *DebugProvider) streamActionSequence(ctx context.Context, send eventSender, actions []debugAction) error {
 	chunkSize := d.preset.ChunkSize
 	delay := d.preset.Delay
 	var totalTextLen, toolCount int
@@ -365,10 +342,8 @@ func (d *DebugProvider) streamActionSequence(ctx context.Context, ch chan<- Even
 				chunk := text[:end]
 				text = text[end:]
 
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case ch <- Event{Type: EventTextDelta, Text: chunk}:
+				if err := send.Send(Event{Type: EventTextDelta, Text: chunk}); err != nil {
+					return err
 				}
 
 				if delay > 0 && len(text) > 0 {
@@ -382,25 +357,17 @@ func (d *DebugProvider) streamActionSequence(ctx context.Context, ch chan<- Even
 
 		case actionTool:
 			toolCount++
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case ch <- Event{Type: EventToolCall, Tool: action.ToolCall}:
+			if err := send.Send(Event{Type: EventToolCall, Tool: action.ToolCall}); err != nil {
+				return err
 			}
 		}
 	}
 
 	// Emit usage stats
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case ch <- Event{Type: EventUsage, Use: &Usage{
+	return send.Send(Event{Type: EventUsage, Use: &Usage{
 		InputTokens:  10,
 		OutputTokens: totalTextLen/4 + toolCount*10,
-	}}:
-	}
-
-	return nil
+	}})
 }
 
 // GetDebugPresets returns a copy of available presets for testing.

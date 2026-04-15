@@ -134,7 +134,7 @@ func TestDispatchClaudeEvents_PrioritizesTextOverToolRequest(t *testing.T) {
 	toolReqs <- req
 	close(lines)
 
-	_, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, events)
+	_, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestDispatchClaudeEvents_PrioritizesSlightlyDelayedTextOverToolRequest(t *t
 		close(lines)
 	}()
 
-	_, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, events)
+	_, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestDispatchClaudeEvents_FallsBackToAssistantTextWhenNoDeltas(t *testing.T)
 	lines <- `{"type":"result","is_error":false,"result":"ok","usage":{"input_tokens":1,"output_tokens":2,"cache_read_input_tokens":0}}`
 	close(lines)
 
-	_, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, events)
+	_, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -233,7 +233,7 @@ func TestDispatchClaudeEvents_FallsBackToResultTextWhenNoAssistantOrDeltas(t *te
 	lines <- `{"type":"result","subtype":"success","is_error":false,"result":"result fallback text","usage":{"input_tokens":1,"output_tokens":3,"cache_read_input_tokens":0}}`
 	close(lines)
 
-	_, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, events)
+	_, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestDispatchClaudeEvents_EmitsStreamlinedText(t *testing.T) {
 	lines <- `{"type":"result","subtype":"success","is_error":false,"result":"ignored final result","usage":{"input_tokens":1,"output_tokens":3,"cache_read_input_tokens":0}}`
 	close(lines)
 
-	_, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, events)
+	_, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -290,7 +290,7 @@ func TestDispatchClaudeEvents_DoesNotDuplicateAssistantFallbackWhenDeltasPresent
 	lines <- `{"type":"result","is_error":false,"result":"ok","usage":{"input_tokens":1,"output_tokens":2,"cache_read_input_tokens":0}}`
 	close(lines)
 
-	_, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, events)
+	_, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -322,7 +322,7 @@ func TestDispatchClaudeEvents_SeparatesCachedInputTokensInUsage(t *testing.T) {
 	lines <- `{"type":"result","is_error":false,"result":"ok","usage":{"input_tokens":11,"output_tokens":7,"cache_read_input_tokens":5}}`
 	close(lines)
 
-	usage, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, events)
+	usage, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -354,7 +354,7 @@ func TestHandleClaudeToolRequest_ClosedStreamReturnsError(t *testing.T) {
 		ack:      make(chan error, 1),
 	}
 
-	provider.handleClaudeToolRequest(req, events)
+	provider.handleClaudeToolRequest(req, eventSender{ctx: context.Background(), ch: events})
 	if err := <-req.ack; err == nil {
 		t.Fatal("expected closed stream error")
 	}
@@ -373,7 +373,7 @@ func TestHandleClaudeLine_ContextCancelledDoesNotBlock(t *testing.T) {
 		cancelled,
 		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"x"}}}`,
 		false,
-		events,
+		eventSender{ctx: cancelled, ch: events},
 		&usage,
 		&sawTextDelta,
 		&assistantFallbackText,
@@ -471,7 +471,7 @@ func TestClaudeBinProvider_NameWithEffort(t *testing.T) {
 func TestClaudeBinProvider_BuildArgsDisablesHooksByDefault(t *testing.T) {
 	p := NewClaudeBinProvider("sonnet", nil)
 
-	args, _ := p.buildArgs(context.Background(), Request{}, nil)
+	args, _ := p.buildArgs(context.Background(), Request{}, eventSender{})
 	joined := strings.Join(args, "\n")
 
 	if !strings.Contains(joined, "--settings") {
@@ -489,7 +489,7 @@ func TestClaudeBinProvider_BuildArgsDangerousPermissionsRespectsEuid(t *testing.
 	t.Run("non-root includes dangerous skip flag", func(t *testing.T) {
 		getEuid = func() int { return 1000 }
 		p := NewClaudeBinProvider("sonnet", nil)
-		args, _ := p.buildArgs(context.Background(), Request{}, nil)
+		args, _ := p.buildArgs(context.Background(), Request{}, eventSender{})
 		joined := strings.Join(args, "\n")
 		if !strings.Contains(joined, "--dangerously-skip-permissions") {
 			t.Fatal("expected --dangerously-skip-permissions for non-root")
@@ -502,7 +502,7 @@ func TestClaudeBinProvider_BuildArgsDangerousPermissionsRespectsEuid(t *testing.
 	t.Run("root sandbox uses bypass permission mode", func(t *testing.T) {
 		getEuid = func() int { return 0 }
 		p := NewClaudeBinProvider("sonnet", map[string]string{"IS_SANDBOX": "1"})
-		args, _ := p.buildArgs(context.Background(), Request{}, nil)
+		args, _ := p.buildArgs(context.Background(), Request{}, eventSender{})
 		joined := strings.Join(args, "\n")
 		if strings.Contains(joined, "--dangerously-skip-permissions") {
 			t.Fatal("expected claude-bin args to omit --dangerously-skip-permissions when running as root")
@@ -515,7 +515,7 @@ func TestClaudeBinProvider_BuildArgsDangerousPermissionsRespectsEuid(t *testing.
 	t.Run("root outside sandbox omits bypass flags", func(t *testing.T) {
 		getEuid = func() int { return 0 }
 		p := NewClaudeBinProvider("sonnet", nil)
-		args, _ := p.buildArgs(context.Background(), Request{}, nil)
+		args, _ := p.buildArgs(context.Background(), Request{}, eventSender{})
 		joined := strings.Join(args, "\n")
 		if strings.Contains(joined, "--dangerously-skip-permissions") {
 			t.Fatal("expected claude-bin args to omit --dangerously-skip-permissions when running as root")
@@ -530,7 +530,7 @@ func TestClaudeBinProvider_BuildArgsCanEnableHooks(t *testing.T) {
 	p := NewClaudeBinProvider("sonnet", nil)
 	p.SetEnableHooks(true)
 
-	args, _ := p.buildArgs(context.Background(), Request{}, nil)
+	args, _ := p.buildArgs(context.Background(), Request{}, eventSender{})
 	joined := strings.Join(args, "\n")
 
 	if strings.Contains(joined, `{"disableAllHooks":true}`) {

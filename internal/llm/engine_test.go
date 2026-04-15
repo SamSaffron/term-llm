@@ -1337,7 +1337,7 @@ func TestRunLoopDoesNotDeadlockOnBlockedToolCallForwardingWhenCancelled(t *testi
 	go func() {
 		errCh <- engine.runLoop(ctx, Request{
 			Messages: []Message{UserText("test")},
-		}, events)
+		}, eventSender{ctx: ctx, ch: events})
 	}()
 
 	select {
@@ -1382,7 +1382,7 @@ func TestRunLoopDoesNotDeadlockOnBlockedToolExecStartWhenCancelled(t *testing.T)
 		errCh <- engine.runLoop(ctx, Request{
 			Messages: []Message{UserText("test")},
 			Tools:    []ToolSpec{tool.Spec()},
-		}, events)
+		}, eventSender{ctx: ctx, ch: events})
 	}()
 
 	deadline := time.After(5 * time.Second)
@@ -1433,7 +1433,7 @@ func TestExecuteSingleToolCallDoesNotDeadlockOnBlockedToolExecEndWhenCancelled(t
 			ID:        "call-1",
 			Name:      "signal_tool",
 			Arguments: json.RawMessage(`{}`),
-		}, events, false, false)
+		}, eventSender{ctx: ctx, ch: events}, false, false)
 		resultCh <- result{msgs: msgs, err: err}
 	}()
 

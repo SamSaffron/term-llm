@@ -135,7 +135,7 @@ func (m *MockProvider) Stream(ctx context.Context, req Request) (Stream, error) 
 	m.turnIndex++
 	m.mu.Unlock()
 
-	return newEventStream(ctx, func(ctx context.Context, ch chan<- Event) error {
+	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 		// Apply delay if configured
 		if turn.Delay > 0 {
 			select {
@@ -153,31 +153,21 @@ func (m *MockProvider) Stream(ctx context.Context, req Request) (Stream, error) 
 		// Emit text in chunks (simulates realistic streaming)
 		if turn.Text != "" {
 			for _, chunk := range chunkText(turn.Text, 10) {
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case ch <- Event{Type: EventTextDelta, Text: chunk}:
+				if err := send.Send(Event{Type: EventTextDelta, Text: chunk}); err != nil {
+					return err
 				}
 			}
 		}
 
 		// Emit tool calls
 		for i := range turn.ToolCalls {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case ch <- Event{Type: EventToolCall, Tool: &turn.ToolCalls[i]}:
+			if err := send.Send(Event{Type: EventToolCall, Tool: &turn.ToolCalls[i]}); err != nil {
+				return err
 			}
 		}
 
 		// Emit usage
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case ch <- Event{Type: EventUsage, Use: &turn.Usage}:
-		}
-
-		return nil
+		return send.Send(Event{Type: EventUsage, Use: &turn.Usage})
 	}), nil
 }
 

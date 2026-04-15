@@ -79,7 +79,7 @@ func (r *RetryProvider) CleanupMCP() {
 }
 
 func (r *RetryProvider) Stream(ctx context.Context, req Request) (Stream, error) {
-	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
+	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 		var lastErr error
 
 		for attempt := 1; attempt <= r.config.MaxAttempts; attempt++ {
@@ -91,7 +91,7 @@ func (r *RetryProvider) Stream(ctx context.Context, req Request) (Stream, error)
 				}
 				lastErr = err
 			} else {
-				err = r.forwardAttempt(ctx, stream, events)
+				err = r.forwardAttempt(ctx, stream, send)
 				if err == nil {
 					return nil // Success!
 				}
@@ -114,15 +114,13 @@ func (r *RetryProvider) Stream(ctx context.Context, req Request) (Stream, error)
 			wait := r.calculateBackoff(attempt, lastErr)
 
 			// Emit retry event so UI can show progress
-			select {
-			case events <- Event{
+			if err := send.Send(Event{
 				Type:             EventRetry,
 				RetryAttempt:     attempt,
 				RetryMaxAttempts: r.config.MaxAttempts,
 				RetryWaitSecs:    wait.Seconds(),
-			}:
-			case <-ctx.Done():
-				return ctx.Err()
+			}); err != nil {
+				return err
 			}
 			select {
 			case <-ctx.Done():
@@ -151,14 +149,16 @@ func (e *committedError) Unwrap() error { return e.err }
 //
 // Buffering stops once the attempt has visibly committed to the caller:
 //   - assistant text deltas
+//   - reasoning deltas (streamed to the user in real time)
 //   - warning-prefixed phase updates (rendered as visible warnings)
 //   - interjections injected into the conversation
 //   - synchronous tool requests (EventToolCall with ToolResponse)
+//   - provider-native tool execution (EventToolExecStart/End, e.g. web_search)
 //
 // After that point the attempt has already escaped, so retrying would duplicate
 // visible output or side effects. Any subsequent error is wrapped in
 // committedError so the retry loop will not retry.
-func (r *RetryProvider) forwardAttempt(ctx context.Context, stream Stream, events chan<- Event) error {
+func (r *RetryProvider) forwardAttempt(ctx context.Context, stream Stream, send eventSender) error {
 	defer stream.Close()
 
 	var buffered []Event
@@ -174,7 +174,7 @@ func (r *RetryProvider) forwardAttempt(ctx context.Context, stream Stream, event
 		event, err := stream.Recv()
 		if err == io.EOF {
 			if !live {
-				return flushEvents(ctx, events, buffered)
+				return flushEvents(send, buffered)
 			}
 			return nil
 		}
@@ -194,7 +194,7 @@ func (r *RetryProvider) forwardAttempt(ctx context.Context, stream Stream, event
 		}
 
 		if !live && eventRequiresImmediateForwarding(event) {
-			if err := flushEvents(ctx, events, buffered); err != nil {
+			if err := flushEvents(send, buffered); err != nil {
 				return err
 			}
 			buffered = nil
@@ -202,10 +202,8 @@ func (r *RetryProvider) forwardAttempt(ctx context.Context, stream Stream, event
 		}
 
 		if live {
-			select {
-			case events <- event:
-			case <-ctx.Done():
-				return ctx.Err()
+			if err := send.Send(event); err != nil {
+				return err
 			}
 			continue
 		}
@@ -216,7 +214,8 @@ func (r *RetryProvider) forwardAttempt(ctx context.Context, stream Stream, event
 
 func eventRequiresImmediateForwarding(event Event) bool {
 	switch event.Type {
-	case EventTextDelta, EventInterjection:
+	case EventTextDelta, EventInterjection, EventReasoningDelta,
+		EventToolExecStart, EventToolExecEnd:
 		return true
 	case EventPhase:
 		return strings.HasPrefix(event.Text, WarningPhasePrefix)
@@ -227,12 +226,10 @@ func eventRequiresImmediateForwarding(event Event) bool {
 	}
 }
 
-func flushEvents(ctx context.Context, events chan<- Event, buffered []Event) error {
+func flushEvents(send eventSender, buffered []Event) error {
 	for _, event := range buffered {
-		select {
-		case events <- event:
-		case <-ctx.Done():
-			return ctx.Err()
+		if err := send.Send(event); err != nil {
+			return err
 		}
 	}
 	return nil

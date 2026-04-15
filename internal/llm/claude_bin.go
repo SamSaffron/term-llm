@@ -202,10 +202,10 @@ func (p *ClaudeBinProvider) Capabilities() Capabilities {
 }
 
 func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, error) {
-	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
+	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 		// Build the command arguments, passing events channel for tool execution routing.
 		// MCP server is kept alive across turns - caller should call CleanupMCP() when done.
-		args, effort := p.buildArgs(ctx, req, events)
+		args, effort := p.buildArgs(ctx, req, send)
 
 		// Always extract system prompt from full messages (it should persist across turns)
 		systemPrompt := p.extractSystemPrompt(req.Messages)
@@ -242,7 +242,7 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 
 		debug := req.Debug || req.DebugRaw
 
-		err := p.runClaudeCommand(ctx, args, effort, userPrompt, debug, events)
+		err := p.runClaudeCommand(ctx, args, effort, userPrompt, debug, send)
 		if err != nil && isPromptTooLong(err) {
 			// Retry with progressively more aggressive truncation
 			retryLimits := []int{maxToolResultCharsOnRetry, maxToolResultCharsOnAggressiveRetry}
@@ -258,7 +258,7 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 				slog.Info("prompt too long, retrying with truncated tool results",
 					"original_len", prevLen, "truncated_len", len(retryPrompt), "limit", limit)
 				prevLen = len(retryPrompt)
-				err = p.runClaudeCommand(ctx, args, effort, retryPrompt, debug, events)
+				err = p.runClaudeCommand(ctx, args, effort, retryPrompt, debug, send)
 				if err == nil || !isPromptTooLong(err) {
 					break
 				}
@@ -271,8 +271,7 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 		// Track messages sent so we don't re-send them on resume
 		p.messagesSent = len(req.Messages)
 
-		events <- Event{Type: EventDone}
-		return nil
+		return send.Send(Event{Type: EventDone})
 	}), nil
 }
 
@@ -320,7 +319,7 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 	effort string,
 	userPrompt string,
 	debug bool,
-	events chan<- Event,
+	send eventSender,
 ) error {
 	// Note: We pass the prompt via stdin instead of command line args
 	// to avoid "argument list too long" errors with large tool results (e.g., base64 images)
@@ -364,7 +363,7 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 	}
 	p.eventsMu.Lock()
 	p.currentBridge = bridge
-	p.currentEvents = events
+	p.currentEvents = send.ch
 	p.eventsMu.Unlock()
 	defer func() {
 		p.eventsMu.Lock()
@@ -420,7 +419,7 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		scanErrCh <- scanner.Err()
 	}()
 
-	lastUsage, toolsExecuted, err := p.dispatchClaudeEvents(ctx, lineCh, bridge.toolReqCh, debug, events)
+	lastUsage, toolsExecuted, err := p.dispatchClaudeEvents(ctx, lineCh, bridge.toolReqCh, debug, send)
 	if err != nil {
 		// Kill the process if dispatch failed (e.g., context cancelled)
 		// to avoid orphan processes.
@@ -448,7 +447,9 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 	}
 
 	if lastUsage != nil {
-		events <- Event{Type: EventUsage, Use: lastUsage}
+		if err := send.Send(Event{Type: EventUsage, Use: lastUsage}); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -458,7 +459,7 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 	lineCh <-chan string,
 	toolReqCh <-chan claudeToolRequest,
 	debug bool,
-	events chan<- Event,
+	send eventSender,
 ) (*Usage, bool, error) {
 	var (
 		lastUsage             *Usage
@@ -479,7 +480,7 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 					break
 				}
 				hadLine = true
-				if err := p.handleClaudeLine(ctx, line, debug, events, &lastUsage, &sawTextDelta, &assistantFallbackText); err != nil {
+				if err := p.handleClaudeLine(ctx, line, debug, send, &lastUsage, &sawTextDelta, &assistantFallbackText); err != nil {
 					return nil, false, err
 				}
 			default:
@@ -497,15 +498,15 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 				linesOpen = false
 				continue
 			}
-			if err := p.handleClaudeLine(ctx, line, debug, events, &lastUsage, &sawTextDelta, &assistantFallbackText); err != nil {
+			if err := p.handleClaudeLine(ctx, line, debug, send, &lastUsage, &sawTextDelta, &assistantFallbackText); err != nil {
 				return nil, false, err
 			}
 		case req := <-toolReqCh:
-			if err := p.drainClaudeLinesWithGrace(ctx, lineCh, debug, events, &lastUsage, &sawTextDelta, &assistantFallbackText); err != nil {
+			if err := p.drainClaudeLinesWithGrace(ctx, lineCh, debug, send, &lastUsage, &sawTextDelta, &assistantFallbackText); err != nil {
 				return nil, false, err
 			}
 			toolsExecuted = true
-			p.handleClaudeToolRequest(req, events)
+			p.handleClaudeToolRequest(req, send)
 		case <-ctx.Done():
 			return nil, false, ctx.Err()
 		}
@@ -516,7 +517,7 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 		select {
 		case req := <-toolReqCh:
 			toolsExecuted = true
-			p.handleClaudeToolRequest(req, events)
+			p.handleClaudeToolRequest(req, send)
 		default:
 			goto drained
 		}
@@ -530,7 +531,7 @@ func (p *ClaudeBinProvider) handleClaudeLine(
 	ctx context.Context,
 	line string,
 	debug bool,
-	events chan<- Event,
+	send eventSender,
 	lastUsage **Usage,
 	sawTextDelta *bool,
 	assistantFallbackText *string,
@@ -566,11 +567,8 @@ func (p *ClaudeBinProvider) handleClaudeLine(
 		if streamEvent.Event.Type == "content_block_delta" &&
 			streamEvent.Event.Delta.Type == "text_delta" &&
 			streamEvent.Event.Delta.Text != "" {
-			if !safeSendEvent(ctx, events, Event{Type: EventTextDelta, Text: streamEvent.Event.Delta.Text}) {
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
-				return fmt.Errorf("failed to emit claude text delta: stream closed")
+			if err := send.Send(Event{Type: EventTextDelta, Text: streamEvent.Event.Delta.Text}); err != nil {
+				return err
 			}
 			if sawTextDelta != nil {
 				*sawTextDelta = true
@@ -583,11 +581,8 @@ func (p *ClaudeBinProvider) handleClaudeLine(
 			return nil
 		}
 		if streamlinedMsg.Text != "" {
-			if !safeSendEvent(ctx, events, Event{Type: EventTextDelta, Text: streamlinedMsg.Text}) {
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
-				return fmt.Errorf("failed to emit claude streamlined text: stream closed")
+			if err := send.Send(Event{Type: EventTextDelta, Text: streamlinedMsg.Text}); err != nil {
+				return err
 			}
 			if sawTextDelta != nil {
 				*sawTextDelta = true
@@ -620,11 +615,8 @@ func (p *ClaudeBinProvider) handleClaudeLine(
 				fallbackText = strings.TrimSpace(resultMsg.Result)
 			}
 			if sawTextDelta != nil && !*sawTextDelta && fallbackText != "" {
-				if !safeSendEvent(ctx, events, Event{Type: EventTextDelta, Text: fallbackText}) {
-					if ctx.Err() != nil {
-						return ctx.Err()
-					}
-					return fmt.Errorf("failed to emit claude result fallback text: stream closed")
+				if err := send.Send(Event{Type: EventTextDelta, Text: fallbackText}); err != nil {
+					return err
 				}
 				*sawTextDelta = true
 			}
@@ -639,7 +631,7 @@ func (p *ClaudeBinProvider) handleClaudeLine(
 	return nil
 }
 
-func (p *ClaudeBinProvider) handleClaudeToolRequest(req claudeToolRequest, events chan<- Event) {
+func (p *ClaudeBinProvider) handleClaudeToolRequest(req claudeToolRequest, send eventSender) {
 	event := Event{
 		Type:         EventToolCall,
 		ToolCallID:   req.callID,
@@ -648,12 +640,8 @@ func (p *ClaudeBinProvider) handleClaudeToolRequest(req claudeToolRequest, event
 		ToolResponse: req.response,
 	}
 
-	if !safeSendEvent(req.ctx, events, event) {
-		if req.ctx.Err() != nil {
-			req.ack <- req.ctx.Err()
-			return
-		}
-		req.ack <- fmt.Errorf("tool execution rejected: stream closed during tool call %q", req.name)
+	if err := send.Send(event); err != nil {
+		req.ack <- err
 		return
 	}
 	req.ack <- nil
@@ -663,7 +651,7 @@ func (p *ClaudeBinProvider) drainClaudeLinesWithGrace(
 	ctx context.Context,
 	lineCh <-chan string,
 	debug bool,
-	events chan<- Event,
+	send eventSender,
 	lastUsage **Usage,
 	sawTextDelta *bool,
 	assistantFallbackText *string,
@@ -675,7 +663,7 @@ func (p *ClaudeBinProvider) drainClaudeLinesWithGrace(
 			if !ok {
 				return nil
 			}
-			if err := p.handleClaudeLine(ctx, line, debug, events, lastUsage, sawTextDelta, assistantFallbackText); err != nil {
+			if err := p.handleClaudeLine(ctx, line, debug, send, lastUsage, sawTextDelta, assistantFallbackText); err != nil {
 				return err
 			}
 		default:
@@ -693,7 +681,7 @@ wait:
 			if !ok {
 				return nil
 			}
-			if err := p.handleClaudeLine(ctx, line, debug, events, lastUsage, sawTextDelta, assistantFallbackText); err != nil {
+			if err := p.handleClaudeLine(ctx, line, debug, send, lastUsage, sawTextDelta, assistantFallbackText); err != nil {
 				return err
 			}
 			if !timer.Stop() {
@@ -725,7 +713,7 @@ func (p *ClaudeBinProvider) claudeSandboxEnabled() bool {
 	return strings.TrimSpace(os.Getenv("IS_SANDBOX")) == "1" || strings.TrimSpace(os.Getenv("CLAUDE_CODE_BUBBLEWRAP")) == "1"
 }
 
-func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request, events chan<- Event) ([]string, string) {
+func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request, send eventSender) ([]string, string) {
 	args := []string{
 		"--print",
 		"--output-format", "stream-json",
@@ -767,7 +755,7 @@ func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request, events c
 			slog.Warn("tools requested but no tool executor configured", "tool_count", len(req.Tools))
 		} else {
 			// Reuse existing MCP server if available, otherwise create new one
-			mcpConfig := p.getOrCreateMCPConfig(ctx, req.Tools, events, debug)
+			mcpConfig := p.getOrCreateMCPConfig(ctx, req.Tools, debug)
 			if mcpConfig != "" {
 				args = append(args, "--mcp-config", mcpConfig)
 			} else if debug {
@@ -786,8 +774,7 @@ func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request, events c
 
 // getOrCreateMCPConfig returns the MCP config path, reusing existing server if available.
 // This ensures the MCP server URL/token stays constant across turns in a multi-turn conversation.
-func (p *ClaudeBinProvider) getOrCreateMCPConfig(ctx context.Context, tools []ToolSpec, events chan<- Event, debug bool) string {
-	_ = events
+func (p *ClaudeBinProvider) getOrCreateMCPConfig(ctx context.Context, tools []ToolSpec, debug bool) string {
 
 	// If we already have a running MCP server, reuse its config
 	if p.mcpServer != nil && p.mcpConfigPath != "" {
@@ -1160,25 +1147,6 @@ func extractClaudeAssistantText(msg claudeAssistantMessage) string {
 		}
 	}
 	return b.String()
-}
-
-// safeSendEvent attempts to send an event to the channel, returning false if
-// the channel is closed or context is cancelled. This prevents panics when
-// the stream is closed while MCP tool execution is still in progress.
-func safeSendEvent(ctx context.Context, ch chan<- Event, event Event) (sent bool) {
-	// Recover from panic if channel is closed
-	defer func() {
-		if r := recover(); r != nil {
-			sent = false
-		}
-	}()
-
-	select {
-	case ch <- event:
-		return true
-	case <-ctx.Done():
-		return false
-	}
 }
 
 // isPromptTooLong checks whether the error from claude CLI indicates the

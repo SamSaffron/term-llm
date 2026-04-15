@@ -105,7 +105,7 @@ func (p *VeniceProvider) Stream(ctx context.Context, req Request) (Stream, error
 		return nil, fmt.Errorf("%s API error (status %d): %s", p.name, resp.StatusCode, string(body))
 	}
 
-	return newEventStream(ctx, func(ctx context.Context, events chan<- Event) error {
+	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 		defer resp.Body.Close()
 
 		scanner := bufio.NewScanner(resp.Body)
@@ -153,11 +153,15 @@ func (p *VeniceProvider) Stream(ctx context.Context, req Request) (Stream, error
 			for _, choice := range chatResp.Choices {
 				if choice.Delta != nil {
 					if content, ok := choice.Delta.Content.(string); ok && content != "" {
-						events <- Event{Type: EventTextDelta, Text: content}
+						if err := send.Send(Event{Type: EventTextDelta, Text: content}); err != nil {
+							return err
+						}
 					}
 					if choice.Delta.Reasoning != "" {
 						reasoningBuilder.WriteString(choice.Delta.Reasoning)
-						events <- Event{Type: EventReasoningDelta, Text: choice.Delta.Reasoning}
+						if err := send.Send(Event{Type: EventReasoningDelta, Text: choice.Delta.Reasoning}); err != nil {
+							return err
+						}
 					}
 					if len(choice.Delta.ToolCalls) > 0 {
 						toolState.Add(choice.Delta.ToolCalls)
@@ -170,13 +174,16 @@ func (p *VeniceProvider) Stream(ctx context.Context, req Request) (Stream, error
 			return fmt.Errorf("%s streaming error: %w", p.name, err)
 		}
 		for _, call := range toolState.Calls() {
-			events <- Event{Type: EventToolCall, Tool: &call}
+			if err := send.Send(Event{Type: EventToolCall, Tool: &call}); err != nil {
+				return err
+			}
 		}
 		if lastUsage != nil {
-			events <- Event{Type: EventUsage, Use: lastUsage}
+			if err := send.Send(Event{Type: EventUsage, Use: lastUsage}); err != nil {
+				return err
+			}
 		}
-		events <- Event{Type: EventDone}
-		return nil
+		return send.Send(Event{Type: EventDone})
 	}), nil
 }
 

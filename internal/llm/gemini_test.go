@@ -69,7 +69,7 @@ func TestEmitGeminiUsage_DoesNotBlockAfterCancellation(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- emitGeminiUsage(ctx, events, resp)
+		done <- emitGeminiUsage(eventSender{ctx: ctx, ch: events}, resp)
 	}()
 
 	select {
