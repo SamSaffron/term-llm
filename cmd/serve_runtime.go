@@ -108,13 +108,15 @@ func (rt *serveRuntime) configureContextManagementForRequest(req llm.Request) {
 }
 
 func (rt *serveRuntime) Close() {
+	rt.interruptMu.Lock()
+	state := rt.activeInterrupt
+	rt.interruptMu.Unlock()
+	if state != nil && state.cancel != nil {
+		state.cancel()
+	}
+
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	rt.interruptMu.Lock()
-	if rt.activeInterrupt != nil && rt.activeInterrupt.cancel != nil {
-		rt.activeInterrupt.cancel()
-	}
-	rt.interruptMu.Unlock()
 	rt.clearPendingAskUsers()
 	rt.clearPendingApprovals()
 	if rt.mcpManager != nil {

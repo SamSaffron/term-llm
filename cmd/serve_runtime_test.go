@@ -296,6 +296,103 @@ func serveRuntimeTextMessage(role llm.Role, text string) llm.Message {
 	}
 }
 
+type serveRuntimeBlockingStream struct {
+	ctx context.Context
+}
+
+func (s *serveRuntimeBlockingStream) Recv() (llm.Event, error) {
+	<-s.ctx.Done()
+	return llm.Event{}, s.ctx.Err()
+}
+
+func (s *serveRuntimeBlockingStream) Close() error {
+	return nil
+}
+
+type serveRuntimeBlockingProvider struct {
+	startOnce     sync.Once
+	streamStarted chan struct{}
+}
+
+func (p *serveRuntimeBlockingProvider) Name() string {
+	return "serve-runtime-blocking"
+}
+
+func (p *serveRuntimeBlockingProvider) Credential() string {
+	return "test"
+}
+
+func (p *serveRuntimeBlockingProvider) Capabilities() llm.Capabilities {
+	return llm.Capabilities{}
+}
+
+func (p *serveRuntimeBlockingProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	p.startOnce.Do(func() {
+		close(p.streamStarted)
+	})
+	return &serveRuntimeBlockingStream{ctx: ctx}, nil
+}
+
+func TestServeRuntimeCloseCancelsActiveRun(t *testing.T) {
+	provider := &serveRuntimeBlockingProvider{streamStarted: make(chan struct{})}
+	engine := llm.NewEngine(provider, llm.NewToolRegistry())
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  provider.Name(),
+		engine:       engine,
+		defaultModel: "test-model",
+	}
+
+	runErrCh := make(chan error, 1)
+	go func() {
+		_, err := rt.Run(context.Background(), false, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "hello")}, llm.Request{
+			SessionID: "sess-close",
+		})
+		runErrCh <- err
+	}()
+
+	select {
+	case <-provider.streamStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("run did not start streaming")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		rt.interruptMu.Lock()
+		active := rt.activeInterrupt
+		rt.interruptMu.Unlock()
+		if active != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("run did not publish interrupt state")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	closeDone := make(chan struct{})
+	go func() {
+		rt.Close()
+		close(closeDone)
+	}()
+
+	select {
+	case <-closeDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not return after canceling active run")
+	}
+
+	select {
+	case err := <-runErrCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("run did not exit after Close")
+	}
+}
+
 func TestServeRuntimeRetriesInitialSnapshotBeforeAppending(t *testing.T) {
 	store := newServeRuntimeTestStore()
 	store.replaceFailures[1] = errors.New("initial snapshot failed")
