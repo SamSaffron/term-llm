@@ -1962,26 +1962,33 @@
     }
 
     .lightbox {
-      display: none;
       position: fixed;
       inset: 0;
       z-index: 100;
+      display: flex;
       align-items: center;
       justify-content: center;
+      visibility: hidden;
+      pointer-events: none;
     }
 
     .lightbox.active {
-      display: flex;
-      animation: lightbox-in 0.2s ease-out;
+      visibility: visible;
+      pointer-events: auto;
     }
 
     .lightbox-backdrop {
       position: absolute;
       inset: 0;
       background: rgba(0, 0, 0, 0.85);
-      backdrop-filter: blur(8px);
-      -webkit-backdrop-filter: blur(8px);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
       cursor: zoom-out;
+      opacity: 0;
+      transition: opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .lightbox.active .lightbox-backdrop {
+      opacity: 1;
     }
 
     .lightbox-content {
@@ -1994,6 +2001,14 @@
       max-width: 100vw;
       max-height: 100vh;
       box-sizing: border-box;
+      opacity: 0;
+      transform: scale(0.92);
+      transition: opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+                  transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .lightbox.active .lightbox-content {
+      opacity: 1;
+      transform: scale(1);
     }
 
     .lightbox-content img,
@@ -2024,6 +2039,14 @@
       background: rgba(0, 0, 0, 0.5);
       border-radius: 999px;
       padding: 0.25rem;
+      opacity: 0;
+      transform: translateY(-8px);
+      transition: opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1) 0.08s,
+                  transform 0.2s cubic-bezier(0.4, 0, 0.2, 1) 0.08s;
+    }
+    .lightbox.active .lightbox-toolbar {
+      opacity: 1;
+      transform: translateY(0);
     }
 
     .lightbox-btn {
@@ -2044,11 +2067,6 @@
     }
     .lightbox-btn.copied {
       color: #4ade80;
-    }
-
-    @keyframes lightbox-in {
-      from { opacity: 0; transform: scale(0.95); }
-      to { opacity: 1; transform: scale(1); }
     }
 
     @media (max-width: 767px) {

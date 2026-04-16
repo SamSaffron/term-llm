@@ -990,11 +990,7 @@ const openLightbox = (src, type = 'image') => {
 
 const closeLightbox = () => {
   elements.lightbox.classList.remove('active', 'lightbox-maximized');
-  elements.lightboxImg.src = '';
-  elements.lightboxImg.style.display = '';
   elements.lightboxVideo.pause();
-  elements.lightboxVideo.src = '';
-  elements.lightboxVideo.style.display = 'none';
   document.body.style.overflow = '';
   resetCopyButton();
   lightboxSrc = '';
@@ -1002,6 +998,15 @@ const closeLightbox = () => {
     lightboxPrevFocus.focus();
     lightboxPrevFocus = null;
   }
+  // Defer source clearing until the CSS fade-out transition finishes
+  setTimeout(() => {
+    if (!elements.lightbox.classList.contains('active')) {
+      elements.lightboxImg.src = '';
+      elements.lightboxImg.style.display = '';
+      elements.lightboxVideo.src = '';
+      elements.lightboxVideo.style.display = 'none';
+    }
+  }, 300);
 };
 
 elements.lightboxBackdrop.addEventListener('click', closeLightbox);
