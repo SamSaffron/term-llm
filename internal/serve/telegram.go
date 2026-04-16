@@ -913,19 +913,8 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 			case llm.InterruptInterject:
 				sess.runtime.Engine.Interject(newMsgText)
 				_, _ = bot.Send(tgbotapi.NewMessage(chatID, "📝 Noted. I will incorporate that while I continue."))
-				if m.store != nil && sess.meta != nil {
-					text := newMsgText
-					m.runStoreOp(ctx, sess.meta.ID, "AddMessage(interjection)", func(storeCtx context.Context) error {
-						return m.store.AddMessage(storeCtx, sess.meta.ID, &session.Message{
-							SessionID:   sess.meta.ID,
-							Role:        llm.RoleUser,
-							Parts:       []llm.Part{{Type: llm.PartText, Text: text}},
-							TextContent: text,
-							CreatedAt:   time.Now(),
-							Sequence:    -1,
-						})
-					})
-				}
+				// Do not persist here: the engine persists the interjection exactly once
+				// when it drains it into the conversation via TurnCompletedCallback.
 				return
 			}
 		case <-ctx.Done():
