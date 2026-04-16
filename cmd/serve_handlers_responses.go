@@ -86,17 +86,19 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 	defaultProvider := ""
 	if s.cfgRef != nil {
-		defaultProvider = s.cfgRef.DefaultProvider
+		defaultProvider = strings.TrimSpace(s.cfgRef.DefaultProvider)
 	}
 	var runtime *serveRuntime
 	var stateful bool
-	freshProviderRequest := req.PreviousResponseID == "" && reqProvider != "" && reqProvider != defaultProvider
+	freshConversation := req.PreviousResponseID == ""
+	freshProvider := reqProvider
+	if freshConversation && freshProvider == "" {
+		freshProvider = defaultProvider
+	}
 	if req.PreviousResponseID != "" {
 		runtime, stateful, err = s.runtimeForProviderRequest(ctx, sessionID, reqProvider)
-	} else if !freshProviderRequest {
-		runtime, stateful, err = s.runtimeForRequest(ctx, sessionID)
 	} else {
-		runtime, stateful, err = s.runtimeForFreshProviderRequest(ctx, sessionID, reqProvider)
+		runtime, stateful, err = s.runtimeForFreshProviderRequest(ctx, sessionID, freshProvider)
 	}
 	if err != nil {
 		if errors.Is(err, errServeSessionBusy) || errors.Is(err, errServeSessionLimitReached) {
@@ -106,7 +108,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
-	if freshProviderRequest {
+	if freshConversation {
 		s.syncPersistedSessionRuntime(ctx, sessionID, runtime)
 	}
 
