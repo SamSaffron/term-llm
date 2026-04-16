@@ -138,6 +138,24 @@ func TestIsRetryable_500InternalServerError(t *testing.T) {
 	}
 }
 
+func TestIsRetryable_APIErrorTerminated(t *testing.T) {
+	cases := []struct {
+		msg       string
+		retryable bool
+	}{
+		{"claude API error: API Error: terminated", true},
+		{"claude api error: api error: terminated", true},
+		{"API Error: terminated", true},
+		{"some other api error: bad request", false},
+	}
+	for _, tc := range cases {
+		got := isRetryable(errors.New(tc.msg))
+		if got != tc.retryable {
+			t.Errorf("isRetryable(%q) = %v, want %v", tc.msg, got, tc.retryable)
+		}
+	}
+}
+
 // toolThenErrorProvider emits a synchronous tool call then a retryable error.
 // The retry loop must NOT retry after the tool call has been committed.
 type toolThenErrorProvider struct {

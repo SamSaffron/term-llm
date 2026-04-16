@@ -270,7 +270,8 @@ func isRetryable(err error) bool {
 		strings.Contains(errStr, "bad gateway") ||
 		strings.Contains(errStr, "503") ||
 		strings.Contains(errStr, "service unavailable") ||
-		strings.Contains(errStr, "overloaded") {
+		strings.Contains(errStr, "overloaded") ||
+		strings.Contains(errStr, "api error: terminated") {
 		return true
 	}
 
