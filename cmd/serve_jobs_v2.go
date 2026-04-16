@@ -2137,7 +2137,7 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 		// Setup skills and inject metadata into settings.SystemPrompt before
 		// constructing serveRuntime; skills.Setup is then passed to the engine
 		// factory for per-session activate_skill tool registration.
-		jobSkillsSetup := SetupSkills(&jobCfg.Skills, "", io.Discard)
+		jobSkillsSetup := SetupSkills(&jobCfg.Skills, "", agent.Skills, io.Discard)
 		settings.SystemPrompt = InjectSkillsMetadata(settings.SystemPrompt, jobSkillsSetup)
 
 		modelName := activeModel(jobCfg)

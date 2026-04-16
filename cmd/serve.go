@@ -292,7 +292,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// and the Telegram serveSettings pick it up correctly. Per-session engine
 	// registration (activate_skill tool) still happens inside the factory via
 	// newServeEngineWithTools.
-	skillsSetup := SetupSkills(&cfg.Skills, "", cmd.ErrOrStderr())
+	agentSkills := ""
+	if agent != nil {
+		agentSkills = agent.Skills
+	}
+	skillsSetup := SetupSkills(&cfg.Skills, "", agentSkills, cmd.ErrOrStderr())
 	settings.SystemPrompt = InjectSkillsMetadata(settings.SystemPrompt, skillsSetup)
 
 	agentName := ""

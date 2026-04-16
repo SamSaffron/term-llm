@@ -602,8 +602,13 @@ func resetSessionDatabase(pathOverride string) error {
 
 // SetupSkills initializes the skills system if enabled.
 // Returns the setup (may be nil) and logs warnings to errWriter on errors.
-func SetupSkills(cfg *config.SkillsConfig, skillsFlag string, errWriter io.Writer) *skills.Setup {
-	skillsCfg := applySkillsFlag(cfg, skillsFlag)
+// Precedence: CLI --skills flag > agent skills config > global config.
+func SetupSkills(cfg *config.SkillsConfig, skillsFlag string, agentSkills string, errWriter io.Writer) *skills.Setup {
+	effectiveFlag := skillsFlag
+	if effectiveFlag == "" {
+		effectiveFlag = agentSkills
+	}
+	skillsCfg := applySkillsFlag(cfg, effectiveFlag)
 	if !skillsCfg.Enabled {
 		return nil
 	}
@@ -653,6 +658,12 @@ func RegisterSkillToolWithEngine(engine *llm.Engine, toolMgr *tools.ToolManager,
 		})
 	}
 	engine.Tools().Register(skillTool)
+
+	// Register search_skills tool when there are more skills than shown in the prompt
+	if skillsSetup.HasOverflow {
+		searchTool := tools.NewSearchSkillsTool(skillsSetup.Registry)
+		engine.Tools().Register(searchTool)
+	}
 }
 
 // InjectSkillsMetadata appends <available_skills> metadata to instructions when available.

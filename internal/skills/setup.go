@@ -10,9 +10,11 @@ import (
 
 // Setup holds the initialized skills system for a session.
 type Setup struct {
-	Registry *Registry
-	XML      string   // Pregenerated <available_skills> XML
-	Skills   []*Skill // Skills included in metadata
+	Registry    *Registry
+	XML         string   // Pregenerated <available_skills> XML
+	Skills      []*Skill // Skills included in metadata
+	TotalSkills int      // Total auto-invocable skills discovered
+	HasOverflow bool     // True when more skills exist than are shown
 }
 
 // NewSetup initializes the skills system from config.
@@ -25,7 +27,7 @@ func NewSetup(cfg *config.SkillsConfig) (*Setup, error) {
 	registry, err := NewRegistry(RegistryConfig{
 		AutoInvoke:            cfg.AutoInvoke,
 		MetadataBudgetTokens:  cfg.MetadataBudgetTokens,
-		MaxActive:             cfg.MaxActive,
+		MaxVisibleSkills:      cfg.MaxVisibleSkills,
 		IncludeProjectSkills:  cfg.IncludeProjectSkills,
 		IncludeEcosystemPaths: cfg.IncludeEcosystemPaths,
 		AlwaysEnabled:         cfg.AlwaysEnabled,
@@ -58,16 +60,22 @@ func NewSetup(cfg *config.SkillsConfig) (*Setup, error) {
 		autoSkills,
 		cfg.AlwaysEnabled,
 		cfg.MetadataBudgetTokens,
-		cfg.MaxActive,
+		cfg.MaxVisibleSkills,
 	)
 
 	// Generate XML
 	xml := GenerateAvailableSkillsXML(skills)
 
+	totalAutoSkills := len(autoSkills)
+	if len(skills) < totalAutoSkills {
+		xml += GenerateSearchHint(len(skills), totalAutoSkills)
+	}
 	return &Setup{
-		Registry: registry,
-		XML:      xml,
-		Skills:   skills,
+		Registry:    registry,
+		XML:         xml,
+		Skills:      skills,
+		TotalSkills: totalAutoSkills,
+		HasOverflow: len(skills) < totalAutoSkills,
 	}, nil
 }
 

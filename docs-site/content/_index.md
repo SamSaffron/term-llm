@@ -7,6 +7,7 @@ new_here: |
   - [Providers and setup](/getting-started/providers-and-setup/) to wire up OpenAI, Anthropic, Gemini, Ollama, OpenRouter, and the rest
   - [Usage guide](/guides/usage/) when you want the mental model for `exec`, `ask`, and `chat`
 common_workflows: |
+  - [Skills](/guides/skills/) for portable instruction bundles that add task-specific context
   - [Agents](/guides/agents/) for built-in agents and when to use them
   - [File editing](/guides/file-editing/) for safe edit workflows from the terminal
   - [MCP servers](/guides/mcp-servers/) to connect external tools and services

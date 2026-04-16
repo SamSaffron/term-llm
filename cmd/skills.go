@@ -237,7 +237,7 @@ func getSkillsRegistry() (*skills.Registry, error) {
 	return skills.NewRegistry(skills.RegistryConfig{
 		AutoInvoke:            cfg.Skills.AutoInvoke,
 		MetadataBudgetTokens:  cfg.Skills.MetadataBudgetTokens,
-		MaxActive:             cfg.Skills.MaxActive,
+		MaxVisibleSkills:      cfg.Skills.MaxVisibleSkills,
 		IncludeProjectSkills:  true, // Always include for CLI listing
 		IncludeEcosystemPaths: cfg.Skills.IncludeEcosystemPaths,
 		AlwaysEnabled:         cfg.Skills.AlwaysEnabled,

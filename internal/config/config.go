@@ -193,7 +193,7 @@ type SkillsConfig struct {
 	Enabled              bool `mapstructure:"enabled"`                // Enable the skills system
 	AutoInvoke           bool `mapstructure:"auto_invoke"`            // Allow model-driven activation
 	MetadataBudgetTokens int  `mapstructure:"metadata_budget_tokens"` // Max tokens for skill metadata
-	MaxActive            int  `mapstructure:"max_active"`             // Max skills in metadata injection
+	MaxVisibleSkills     int  `mapstructure:"max_visible_skills"`     // Max skills shown in system prompt
 
 	IncludeProjectSkills  bool `mapstructure:"include_project_skills"`  // Discover from project-local paths
 	IncludeEcosystemPaths bool `mapstructure:"include_ecosystem_paths"` // Include ~/.codex/skills, ~/.claude/skills, ~/.gemini/skills, .skills/
@@ -1195,7 +1195,7 @@ var KnownKeys = map[string]bool{
 	"skills.enabled":                 true,
 	"skills.auto_invoke":             true,
 	"skills.metadata_budget_tokens":  true,
-	"skills.max_active":              true,
+	"skills.max_visible_skills":      true,
 	"skills.include_project_skills":  true,
 	"skills.include_ecosystem_paths": true,
 	"skills.always_enabled":          true,
@@ -1293,7 +1293,7 @@ func GetDefaults() map[string]any {
 		"skills.enabled":                  false,
 		"skills.auto_invoke":              true,
 		"skills.metadata_budget_tokens":   8000,
-		"skills.max_active":               50,
+		"skills.max_visible_skills":       50,
 		"skills.include_project_skills":   true,
 		"skills.include_ecosystem_paths":  true,
 		"skills.always_enabled":           []string{},

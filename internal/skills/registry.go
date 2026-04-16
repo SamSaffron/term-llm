@@ -40,8 +40,8 @@ type RegistryConfig struct {
 	// MetadataBudgetTokens limits skill metadata in system prompt
 	MetadataBudgetTokens int
 
-	// MaxActive limits skills included in metadata injection
-	MaxActive int
+	// MaxVisibleSkills limits skills shown in system prompt metadata
+	MaxVisibleSkills int
 
 	// Ecosystem integration
 	IncludeProjectSkills  bool // Discover from project-local paths
@@ -57,7 +57,7 @@ func DefaultRegistryConfig() RegistryConfig {
 	return RegistryConfig{
 		AutoInvoke:            true,
 		MetadataBudgetTokens:  8000,
-		MaxActive:             8,
+		MaxVisibleSkills:      50,
 		IncludeProjectSkills:  true,
 		IncludeEcosystemPaths: true,
 	}
@@ -392,6 +392,73 @@ func (r *Registry) scanDir(dir string, source SkillSource) ([]*Skill, error) {
 	}
 
 	return skills, nil
+}
+
+// Search finds skills matching a query string by fuzzy matching on name and description.
+// Skills in the never_auto set are excluded since this is called by the model, not the user.
+// Returns up to maxResults matches, sorted by relevance.
+func (r *Registry) Search(query string, maxResults int) ([]*Skill, error) {
+	allSkills, err := r.List()
+	if err != nil {
+		return nil, err
+	}
+
+	if query == "" || maxResults <= 0 {
+		return nil, nil
+	}
+
+	queryLower := strings.ToLower(query)
+	queryTerms := strings.Fields(queryLower)
+
+	type scored struct {
+		skill *Skill
+		score int
+	}
+
+	var matches []scored
+	for _, skill := range allSkills {
+		// Respect never_auto — these skills require explicit user activation
+		if r.IsNeverAuto(skill.Name) {
+			continue
+		}
+		nameLower := strings.ToLower(skill.Name)
+		descLower := strings.ToLower(skill.Description)
+
+		score := 0
+		for _, term := range queryTerms {
+			// Exact name match is highest value
+			if nameLower == term {
+				score += 100
+			} else if strings.Contains(nameLower, term) {
+				score += 50
+			}
+			if strings.Contains(descLower, term) {
+				score += 25
+			}
+		}
+
+		if score > 0 {
+			matches = append(matches, scored{skill: skill, score: score})
+		}
+	}
+
+	// Sort by score descending, then name ascending for stability
+	sort.Slice(matches, func(i, j int) bool {
+		if matches[i].score != matches[j].score {
+			return matches[i].score > matches[j].score
+		}
+		return matches[i].skill.Name < matches[j].skill.Name
+	})
+
+	if len(matches) > maxResults {
+		matches = matches[:maxResults]
+	}
+
+	result := make([]*Skill, len(matches))
+	for i, m := range matches {
+		result[i] = m.skill
+	}
+	return result, nil
 }
 
 // IsNeverAuto checks if a skill requires explicit activation.

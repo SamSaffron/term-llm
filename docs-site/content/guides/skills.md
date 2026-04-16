@@ -22,10 +22,10 @@ term-llm edit --skills refactoring -f main.go "refactor this"
 ### Managing Skills
 
 ```bash
-term-llm skills                              # List all skills
-term-llm skills list                         # Same as above
-term-llm skills list --local                 # Only local skills
-term-llm skills list --user                  # Only user skills
+term-llm skills                              # List all available skills
+term-llm skills --local                      # Only local (project) skills
+term-llm skills --user                       # Only user-global skills
+term-llm skills --source claude              # Only Claude Code ecosystem skills
 term-llm skills new my-skill                 # Create new skill
 term-llm skills show git                     # Show skill content
 term-llm skills edit git                     # Edit skill
@@ -56,6 +56,67 @@ When helping with Git:
 ```
 
 **Skill search order:** local (project) → user (`~/.config/term-llm/skills/`) → built-in
+
+### Configuration
+
+Skills are disabled by default. Enable them in `~/.config/term-llm/config.yaml`:
+
+```yaml
+skills:
+  enabled: true
+```
+
+The `--skills` flag on any command implicitly enables the system for that invocation, so `term-llm ask --skills git "..."` works without touching config. Agents can also enable skills via their `skills` field — all built-in agents set `skills: "all"`, so skills are active whenever you use a built-in agent. For auto-invocation outside of an agent (where the model decides to activate skills on its own), you need `enabled: true` in config.
+
+Full configuration reference:
+
+```yaml
+skills:
+  enabled: false                  # Master switch (default: off)
+  auto_invoke: true               # Let the model call activate_skill on its own
+  metadata_budget_tokens: 8000    # Max tokens for skill metadata in system prompt
+  max_visible_skills: 50           # Max skills shown in system prompt (0 = search only)
+  include_project_skills: true    # Discover from .skills/ in project tree
+  include_ecosystem_paths: true   # Discover from ~/.claude/skills/, ~/.codex/skills/, etc.
+  always_enabled: []              # Always include these skills in metadata
+  never_auto: []                  # Require explicit --skills or activate_skill call
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | `false` | Master switch. Must be `true` for auto-invocation to work. |
+| `auto_invoke` | `true` | When enabled, the model can call `activate_skill` without being asked. |
+| `metadata_budget_tokens` | `8000` | Token budget for the `<available_skills>` block injected into the system prompt. |
+| `max_visible_skills` | `50` | Maximum number of skills shown in the system prompt. When more skills exist, `search_skills` is registered automatically. Set to `0` for pure search mode. |
+| `include_project_skills` | `true` | Scan `.skills/` directories from CWD up to the repo root. |
+| `include_ecosystem_paths` | `true` | Also scan `.claude/skills/`, `.codex/skills/`, `.gemini/skills/`, `.cursor/skills/` at both project and user scope. |
+| `always_enabled` | `[]` | Skills that are always included in metadata, even if they would exceed the budget. |
+| `never_auto` | `[]` | Skills excluded from auto-discovery metadata. They can still be activated with `--skills name` or explicit `activate_skill` calls. |
+
+### The `--skills` flag
+
+The `--skills` flag overrides config for a single invocation:
+
+| Value | Effect |
+|-------|--------|
+| `--skills git` | Enable skills system, load `git` as always-enabled, disable auto-invoke for others |
+| `--skills git,docker` | Same, with multiple skills |
+| `--skills git,+` | Load `git` explicitly **and** keep auto-invoke on for remaining skills |
+| `--skills all` | Enable all skills with auto-invoke |
+| `--skills none` | Disable skills entirely for this command |
+
+### How auto-loading works
+
+When `skills.enabled` is `true`, this happens at startup:
+
+1. The registry scans all search paths (project-local, user, ecosystem) and discovers available skills
+2. Skills in `never_auto` are excluded from the metadata list
+3. The remaining skills are truncated to fit `max_visible_skills` and `metadata_budget_tokens` (skills in `always_enabled` are never truncated)
+4. An `<available_skills>` XML block is injected into the system prompt with skill names and descriptions
+5. The `activate_skill` tool is registered — when the model calls it, the full skill body is loaded and returned
+6. If there are more skills than shown, the `search_skills` tool is also registered and a hint is added to the system prompt telling the model to use it
+
+When `auto_invoke` is `false`, the `<available_skills>` block is still injected but the model won't call `activate_skill` on its own — it only fires when you pass `--skills name`.
 
 ### Skill Tools
 

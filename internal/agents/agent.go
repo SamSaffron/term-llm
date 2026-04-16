@@ -60,6 +60,13 @@ type Agent struct {
 	Read  ReadConfig  `yaml:"read,omitempty"`
 	Spawn SpawnConfig `yaml:"spawn,omitempty"`
 
+	// Skills override for this agent.
+	// Values: "" (use global config), "all"/"*" (enable all), "none" (disable),
+	// or comma-separated skill names (e.g. "git,docker").
+	// When set, overrides the global skills.enabled config for this agent.
+	// CLI --skills flag takes precedence over this.
+	Skills string `yaml:"skills,omitempty"`
+
 	// Behavior
 	MaxTurns int  `yaml:"max_turns,omitempty"`
 	Search   bool `yaml:"search,omitempty"` // Enable web search tools

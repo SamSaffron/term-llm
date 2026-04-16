@@ -343,7 +343,11 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	}
 
 	// Initialize skills system
-	skillsSetup := SetupSkills(&cfg.Skills, chatSkills, cmd.ErrOrStderr())
+	agentSkills := ""
+	if agent != nil {
+		agentSkills = agent.Skills
+	}
+	skillsSetup := SetupSkills(&cfg.Skills, chatSkills, agentSkills, cmd.ErrOrStderr())
 
 	RegisterSkillToolWithEngine(engine, toolMgr, skillsSetup)
 

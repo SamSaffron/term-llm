@@ -32,7 +32,7 @@ A typical config has a few major parts:
 - `default_provider` for the global LLM default
 - `providers` for model-specific credentials and routing
 - per-command blocks such as `exec`, `ask`, and `edit`
-- feature-specific blocks such as `image`, `embed`, `search`, `sessions`, and `tools`
+- feature-specific blocks such as `image`, `embed`, `search`, `sessions`, `tools`, and `skills`
 
 ## Example
 
@@ -225,6 +225,22 @@ serve:
 
 These values match the `--webrtc-*` CLI flags. See the [WebRTC direct routing](/guides/webrtc-direct-routing/) guide for full details.
 
+## Skills config
+
+```yaml
+skills:
+  enabled: true
+  auto_invoke: true
+  metadata_budget_tokens: 8000
+  max_visible_skills: 50
+  include_project_skills: true
+  include_ecosystem_paths: true
+  always_enabled: [git, code-review]
+  never_auto: [expensive-api-skill]
+```
+
+Controls the skills system — portable instruction bundles that inject task-specific context into the system prompt. Skills are disabled by default; set `enabled: true` to allow auto-invocation, or use `--skills` on any command for one-off activation. See [Skills](/guides/skills/) for the full guide.
+
 ## Diagnostics
 
 ```yaml
@@ -239,4 +255,5 @@ When edit retries fail, diagnostics can capture prompts, partial responses, and 
 - [Providers and models](/reference/providers-and-models/)
 - [Search](/guides/search/)
 - [Sessions](/reference/sessions/)
+- [Skills](/guides/skills/)
 - [Text embeddings](/guides/text-embeddings/)

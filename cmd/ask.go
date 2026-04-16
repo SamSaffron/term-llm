@@ -226,7 +226,11 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initialize skills system
-	skillsSetup := SetupSkills(&cfg.Skills, askSkills, cmd.ErrOrStderr())
+	agentSkills := ""
+	if agent != nil {
+		agentSkills = agent.Skills
+	}
+	skillsSetup := SetupSkills(&cfg.Skills, askSkills, agentSkills, cmd.ErrOrStderr())
 
 	// Resolve all settings: CLI > agent > config
 	settings, err := ResolveSettings(cfg, agent, CLIFlags{

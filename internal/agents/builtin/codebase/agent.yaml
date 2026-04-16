@@ -1,6 +1,7 @@
 name: codebase
 description: "Answer questions about source code repositories"
 agents_md: "true"
+skills: "all"
 
 tools:
   enabled: [read_file, glob, grep, shell]

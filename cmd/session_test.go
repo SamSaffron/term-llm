@@ -286,7 +286,7 @@ Fixture content.
 					Enabled:               true,
 					AutoInvoke:            true,
 					MetadataBudgetTokens:  8000,
-					MaxActive:             8,
+					MaxVisibleSkills:      8,
 					IncludeProjectSkills:  true,
 					IncludeEcosystemPaths: false,
 				},
@@ -303,7 +303,7 @@ Fixture content.
 				t.Fatalf("SetupToolManager() error = %v", err)
 			}
 
-			skillsSetup := SetupSkills(&cfg.Skills, "", io.Discard)
+			skillsSetup := SetupSkills(&cfg.Skills, "", "", io.Discard)
 			if skillsSetup == nil {
 				t.Fatal("SetupSkills() = nil, want non-nil")
 			}

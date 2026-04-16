@@ -1,6 +1,7 @@
 name: reviewer
 description: "Code review assistant (read-only)"
 agents_md: "true"
+skills: "all"
 
 default_prompt: "Review the current uncommitted changes"
 

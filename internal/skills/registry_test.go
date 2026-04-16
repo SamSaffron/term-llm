@@ -433,8 +433,8 @@ func TestDefaultRegistryConfig(t *testing.T) {
 		t.Errorf("expected MetadataBudgetTokens 8000, got %d", cfg.MetadataBudgetTokens)
 	}
 
-	if cfg.MaxActive != 8 {
-		t.Errorf("expected MaxActive 8, got %d", cfg.MaxActive)
+	if cfg.MaxVisibleSkills != 50 {
+		t.Errorf("expected MaxVisibleSkills 50, got %d", cfg.MaxVisibleSkills)
 	}
 
 	if !cfg.IncludeProjectSkills {

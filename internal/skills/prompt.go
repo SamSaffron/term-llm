@@ -27,7 +27,7 @@ How to invoke:
 - Base directory provided in output for resolving bundled resources (references/, scripts/, assets/)
 
 Usage notes:
-- Only use skills listed below
+- Only use skills listed below or found via search_skills
 - Do not invoke a skill that is already loaded in your context
 </usage>
 
@@ -45,6 +45,12 @@ Usage notes:
 	sb.WriteString("</available_skills>")
 
 	return sb.String()
+}
+
+// GenerateSearchHint returns a note to append to the system prompt when more skills
+// are available than shown. This tells the model to use search_skills.
+func GenerateSearchHint(shown, total int) string {
+	return fmt.Sprintf("\n\n<skills_search_hint>%d of %d skills are shown above. Use the search_skills tool to find additional skills by keyword.</skills_search_hint>", shown, total)
 }
 
 // GenerateActivationResponse generates the tool response when a skill is activated.
@@ -127,7 +133,7 @@ func TruncateSkillsToTokenBudget(skills []*Skill, alwaysEnabled []string, budget
 	// Warn if any skills were dropped due to limits
 	if len(result) < len(skills) {
 		dropped := len(skills) - len(result)
-		fmt.Fprintf(os.Stderr, "warning: %d skill(s) not shown (max_active=%d, token_budget=%d); increase skills.max_active or skills.metadata_budget_tokens in config\n",
+		fmt.Fprintf(os.Stderr, "warning: %d skill(s) not shown (max_visible_skills=%d, token_budget=%d); increase skills.max_visible_skills or skills.metadata_budget_tokens in config\n",
 			dropped, maxSkills, budgetTokens)
 	}
 
