@@ -865,15 +865,15 @@ func (m *jobsV2Manager) executeRun(run jobsV2Run) {
 	closed := m.closed
 	m.cancels[run.ID] = cancel
 	m.mu.Unlock()
-	if closed {
-		cancel()
-	}
 	defer func() {
 		cancel()
 		m.mu.Lock()
 		delete(m.cancels, run.ID)
 		m.mu.Unlock()
 	}()
+	if closed {
+		return
+	}
 
 	started := time.Now().UTC()
 	res, err := m.db.Exec(`UPDATE job_runs_v2 SET status = ?, started_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?`, jobsV2RunRunning, started, run.ID, jobsV2RunClaimed)

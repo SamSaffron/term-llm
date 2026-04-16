@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -750,5 +751,83 @@ func TestJobsV2ClaimNextRunSkipsFutureScheduledQueuedRuns(t *testing.T) {
 	}
 	if ok {
 		t.Fatal("claimNextRun should not claim future-scheduled queued runs")
+	}
+}
+
+type testJobsV2Runner struct {
+	called bool
+}
+
+func (r *testJobsV2Runner) Run(ctx context.Context, job jobsV2Job, pw progressWriter) (jobsV2RunResult, error) {
+	r.called = true
+	return jobsV2RunResult{}, nil
+}
+
+func TestJobsV2ExecuteRunDoesNotStartWhenManagerClosed(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("sql.Open failed: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	db.SetMaxOpenConns(1)
+	if err := execJobsV2Schema(db); err != nil {
+		t.Fatalf("execJobsV2Schema failed: %v", err)
+	}
+
+	runner := &testJobsV2Runner{}
+	mgr := &jobsV2Manager{
+		db:       db,
+		workerID: "worker_test",
+		runners: map[jobsV2RunnerType]jobsV2Runner{
+			jobsV2RunnerProgram: runner,
+		},
+		cancels: make(map[string]context.CancelFunc),
+		closed:  true,
+	}
+
+	job, err := mgr.CreateJob(jobsV2Job{
+		Name:           "closed-execute-run",
+		Enabled:        true,
+		RunnerType:     jobsV2RunnerProgram,
+		RunnerConfig:   json.RawMessage(`{}`),
+		TriggerType:    jobsV2TriggerManual,
+		TriggerConfig:  json.RawMessage(`{}`),
+		TimeoutSeconds: 30,
+	})
+	if err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+
+	run, err := mgr.TriggerJob(job.ID)
+	if err != nil {
+		t.Fatalf("TriggerJob failed: %v", err)
+	}
+	_, err = mgr.db.Exec(`UPDATE job_runs_v2 SET status = ?, worker_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, jobsV2RunClaimed, mgr.workerID, run.ID)
+	if err != nil {
+		t.Fatalf("mark run claimed failed: %v", err)
+	}
+	run, err = mgr.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("GetRun failed: %v", err)
+	}
+
+	mgr.executeRun(run)
+
+	if runner.called {
+		t.Fatal("runner was invoked after manager shutdown")
+	}
+	if len(mgr.cancels) != 0 {
+		t.Fatalf("cancels still tracked after early return: %d", len(mgr.cancels))
+	}
+
+	updated, err := mgr.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("GetRun after executeRun failed: %v", err)
+	}
+	if updated.Status != jobsV2RunClaimed {
+		t.Fatalf("status = %s, want %s", updated.Status, jobsV2RunClaimed)
+	}
+	if updated.StartedAt != nil {
+		t.Fatal("started_at was set even though closed manager should not start the run")
 	}
 }
