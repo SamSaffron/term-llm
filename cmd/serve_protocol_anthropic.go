@@ -230,6 +230,18 @@ func anthropicToolsToSpecs(tools []anthropicToolDef) []llm.ToolSpec {
 	return specs
 }
 
+func parseAnthropicRequestedToolNames(tools []anthropicToolDef) map[string]bool {
+	requested := make(map[string]bool, len(tools))
+	for _, t := range tools {
+		name := strings.TrimSpace(t.Name)
+		if name == "" {
+			continue
+		}
+		requested[name] = true
+	}
+	return requested
+}
+
 // parseAnthropicToolChoice parses Anthropic-format tool_choice into llm.ToolChoice.
 func parseAnthropicToolChoice(raw json.RawMessage) llm.ToolChoice {
 	if len(raw) == 0 {

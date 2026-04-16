@@ -6318,6 +6318,102 @@ func TestHandleAnthropicMessages_NonStreaming(t *testing.T) {
 	}
 }
 
+func TestHandleAnthropicMessages_DoesNotExposeUnrequestedServerTools(t *testing.T) {
+	provider := llm.NewMockProvider("mock").AddTextResponse("ok")
+	registry := llm.NewToolRegistry()
+	registry.Register(&echoTool{})
+	engine := llm.NewEngine(provider, registry)
+
+	factory := func(_ context.Context) (*serveRuntime, error) {
+		rt := &serveRuntime{
+			provider:     provider,
+			engine:       engine,
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		return rt, nil
+	}
+	mgr := newServeSessionManager(time.Minute, 100, factory)
+	srv := &serveServer{sessionMgr: mgr}
+
+	body := `{
+		"model": "test",
+		"max_tokens": 1024,
+		"messages": [{"role": "user", "content": "Hi"}],
+		"tools": [{
+			"name": "client_tool",
+			"description": "Client-defined passthrough tool",
+			"input_schema": {
+				"type": "object",
+				"properties": {
+					"query": {"type": "string"}
+				},
+				"required": ["query"]
+			}
+		}]
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleAnthropicMessages(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("expected 1 provider request, got %d", len(provider.Requests))
+	}
+	tools := provider.Requests[0].Tools
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 passthrough tool, got %d", len(tools))
+	}
+	if tools[0].Name != "client_tool" {
+		t.Fatalf("expected tool name client_tool, got %q", tools[0].Name)
+	}
+	if tools[0].Description != "Client-defined passthrough tool" {
+		t.Fatalf("unexpected tool description: %q", tools[0].Description)
+	}
+}
+
+func TestHandleAnthropicMessages_NoToolsDoesNotExposeServerTools(t *testing.T) {
+	provider := llm.NewMockProvider("mock").AddTextResponse("ok")
+	registry := llm.NewToolRegistry()
+	registry.Register(&echoTool{})
+	engine := llm.NewEngine(provider, registry)
+
+	factory := func(_ context.Context) (*serveRuntime, error) {
+		rt := &serveRuntime{
+			provider:     provider,
+			engine:       engine,
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		return rt, nil
+	}
+	mgr := newServeSessionManager(time.Minute, 100, factory)
+	srv := &serveServer{sessionMgr: mgr}
+
+	body := `{
+		"model": "test",
+		"max_tokens": 1024,
+		"messages": [{"role": "user", "content": "Hi"}]
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleAnthropicMessages(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("expected 1 provider request, got %d", len(provider.Requests))
+	}
+	if got := len(provider.Requests[0].Tools); got != 0 {
+		t.Fatalf("expected 0 tools, got %d", got)
+	}
+}
+
 func TestHandleAnthropicMessages_StreamText(t *testing.T) {
 	srv := newTestServeServer("streamed text")
 	body := `{"model":"test","max_tokens":1024,"stream":true,"messages":[{"role":"user","content":"Hi"}]}`
