@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -1030,14 +1031,29 @@ func (s *serveServer) runtimeForProviderRequest(ctx context.Context, sessionID s
 	return rt, true, nil
 }
 
-// runtimeForFreshProviderRequest starts a fresh conversation for a non-default
-// provider, even when the caller reuses an existing session ID.
+// runtimeForFreshProviderRequest starts a fresh conversation, optionally using
+// a specific provider, even when the caller reuses an existing session ID.
 func (s *serveServer) runtimeForFreshProviderRequest(ctx context.Context, sessionID string, providerName string) (*serveRuntime, bool, error) {
-	if s.runtimeFactory == nil {
-		return s.runtimeForRequest(ctx, sessionID)
+	defaultProvider := ""
+	if s.cfgRef != nil {
+		defaultProvider = strings.TrimSpace(s.cfgRef.DefaultProvider)
+	}
+	providerName = strings.TrimSpace(providerName)
+	desiredProvider := providerName
+	if desiredProvider == "" {
+		desiredProvider = defaultProvider
+	}
+	if s.runtimeFactory == nil && providerName != "" && providerName != defaultProvider {
+		desiredProvider = ""
+	}
+	create := s.sessionMgr.factory
+	if s.runtimeFactory != nil && providerName != "" && providerName != defaultProvider {
+		create = func(ctx context.Context) (*serveRuntime, error) {
+			return s.runtimeFactory(ctx, providerName, "")
+		}
 	}
 	if sessionID == "" {
-		rt, err := s.runtimeFactory(ctx, providerName, "")
+		rt, err := create(ctx)
 		if err != nil {
 			return nil, false, err
 		}
@@ -1045,19 +1061,21 @@ func (s *serveServer) runtimeForFreshProviderRequest(ctx context.Context, sessio
 	}
 	rt, err := s.sessionMgr.ReplaceIdleWith(ctx, sessionID,
 		func(existing *serveRuntime) bool {
-			ep := runtimeProviderKey(existing)
-			return ep != "" && providerName != "" && ep != providerName
+			return true
 		},
-		func(ctx context.Context) (*serveRuntime, error) {
-			return s.runtimeFactory(ctx, providerName, "")
-		},
+		create,
 	)
 	if err != nil {
+		if errors.Is(err, errServeSessionBusy) {
+			if existing, ok := s.sessionMgr.Get(sessionID); ok {
+				return existing, true, nil
+			}
+		}
 		return nil, false, err
 	}
 	existingProvider := runtimeProviderKey(rt)
-	if existingProvider != "" && providerName != "" && existingProvider != providerName {
-		return nil, false, fmt.Errorf("session %q already uses provider %q (requested %q)", sessionID, existingProvider, providerName)
+	if existingProvider != "" && desiredProvider != "" && existingProvider != desiredProvider {
+		return nil, false, fmt.Errorf("session %q already uses provider %q (requested %q)", sessionID, existingProvider, desiredProvider)
 	}
 	return rt, true, nil
 }

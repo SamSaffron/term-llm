@@ -3386,6 +3386,31 @@ func doResponsesWithHeader(t *testing.T, srv *serveServer, bodyJSON, sessionID s
 	return rr.Code, result
 }
 
+func responseOutputText(t *testing.T, resp map[string]any) string {
+	t.Helper()
+	output, ok := resp["output"].([]any)
+	if !ok || len(output) == 0 {
+		t.Fatalf("response output = %#v, want assistant message", resp["output"])
+	}
+	msg, ok := output[0].(map[string]any)
+	if !ok {
+		t.Fatalf("first output item = %#v, want object", output[0])
+	}
+	content, ok := msg["content"].([]any)
+	if !ok || len(content) == 0 {
+		t.Fatalf("message content = %#v, want output_text", msg["content"])
+	}
+	part, ok := content[0].(map[string]any)
+	if !ok {
+		t.Fatalf("first content part = %#v, want object", content[0])
+	}
+	text, _ := part["text"].(string)
+	if text == "" {
+		t.Fatalf("response text missing from %#v", part)
+	}
+	return text
+}
+
 // waitForServeCondition polls until fn returns true or timeout elapses.
 func waitForServeCondition(t *testing.T, timeout time.Duration, fn func() bool, description string) {
 	t.Helper()
@@ -4069,6 +4094,105 @@ func TestHandleResponses_FreshProviderRequestCanReuseSessionID(t *testing.T) {
 	}
 }
 
+func TestHandleResponses_FreshDefaultProviderRequestReplacesExistingRuntime(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	var defaultCreates atomic.Int32
+	var otherCreates atomic.Int32
+
+	newRuntime := func(providerName string, createNum int32) *serveRuntime {
+		provider := llm.NewMockProvider(providerName)
+		provider.AddTextResponse(fmt.Sprintf("%s runtime %d response 1", providerName, createNum))
+		provider.AddTextResponse(fmt.Sprintf("%s runtime %d response 2", providerName, createNum))
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			providerKey:  providerName,
+			engine:       engine,
+			defaultModel: providerName + "-model",
+			store:        store,
+		}
+		rt.Touch()
+		return rt
+	}
+
+	manager := newServeSessionManager(time.Minute, 100, func(ctx context.Context) (*serveRuntime, error) {
+		createNum := defaultCreates.Add(1)
+		return newRuntime("default", createNum), nil
+	})
+	defer manager.Close()
+
+	srv := &serveServer{
+		cfgRef:     &config.Config{DefaultProvider: "default"},
+		sessionMgr: manager,
+		store:      store,
+		runtimeFactory: func(ctx context.Context, providerName string, model string) (*serveRuntime, error) {
+			if providerName == "" || providerName == "default" {
+				t.Fatalf("unexpected runtimeFactory call for default provider %q", providerName)
+			}
+			createNum := otherCreates.Add(1)
+			return newRuntime(providerName, createNum), nil
+		},
+	}
+
+	code, resp := doResponsesWithHeader(t, srv, `{"input":"hello","provider":"other"}`, "provider-default-reuse")
+	if code != http.StatusOK {
+		t.Fatalf("first request status = %d, want 200", code)
+	}
+	if got := responseOutputText(t, resp); got != "other runtime 1 response 1" {
+		t.Fatalf("first response text = %q, want %q", got, "other runtime 1 response 1")
+	}
+
+	code, resp = doResponsesWithHeader(t, srv, `{"input":"fresh"}`, "provider-default-reuse")
+	if code != http.StatusOK {
+		t.Fatalf("fresh default request status = %d, want 200", code)
+	}
+	if got := responseOutputText(t, resp); got != "default runtime 1 response 1" {
+		t.Fatalf("fresh default response text = %q, want %q", got, "default runtime 1 response 1")
+	}
+
+	sess, err := store.Get(context.Background(), "provider-default-reuse")
+	if err != nil {
+		t.Fatalf("Get session after implicit default: %v", err)
+	}
+	if sess == nil {
+		t.Fatal("expected persisted session after implicit default request")
+	}
+	if sess.ProviderKey != "default" {
+		t.Fatalf("ProviderKey after implicit default = %q, want default", sess.ProviderKey)
+	}
+
+	code, resp = doResponsesWithHeader(t, srv, `{"input":"fresh again","provider":"default"}`, "provider-default-reuse")
+	if code != http.StatusOK {
+		t.Fatalf("fresh explicit default request status = %d, want 200", code)
+	}
+	if got := responseOutputText(t, resp); got != "default runtime 2 response 1" {
+		t.Fatalf("fresh explicit default response text = %q, want %q", got, "default runtime 2 response 1")
+	}
+
+	sess, err = store.Get(context.Background(), "provider-default-reuse")
+	if err != nil {
+		t.Fatalf("Get session after explicit default: %v", err)
+	}
+	if sess == nil {
+		t.Fatal("expected persisted session after explicit default request")
+	}
+	if sess.ProviderKey != "default" {
+		t.Fatalf("ProviderKey after explicit default = %q, want default", sess.ProviderKey)
+	}
+	if got := defaultCreates.Load(); got != 2 {
+		t.Fatalf("default provider factory calls = %d, want 2", got)
+	}
+	if got := otherCreates.Load(); got != 1 {
+		t.Fatalf("other provider factory calls = %d, want 1", got)
+	}
+}
+
 func TestFreshProviderRequest_ConcurrentReplace(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
@@ -4165,7 +4289,6 @@ func TestFreshProviderRequest_ConcurrentReplace(t *testing.T) {
 }
 
 func TestHandleResponses_NoPreviousResponseIDStartsFresh(t *testing.T) {
-	// Each runtime gets 2 responses so it can handle being reused
 	srv := newTestServeServer("reply1", "reply2")
 	defer srv.sessionMgr.Close()
 
@@ -4175,42 +4298,44 @@ func TestHandleResponses_NoPreviousResponseIDStartsFresh(t *testing.T) {
 		t.Fatalf("msg1 status = %d, want 200", code1)
 	}
 	respID1, _ := resp1["id"].(string)
+	if got := responseOutputText(t, resp1); got != "reply1" {
+		t.Fatalf("first response text = %q, want %q", got, "reply1")
+	}
 
 	// Second request with same session_id header but no previous_response_id.
-	// Should start fresh (replaceHistory=true), clearing prior conversation.
+	// Should start a fresh conversation with a fresh runtime.
 	code2, resp2 := doResponsesWithHeader(t, srv, `{"input":"msg2"}`, "same-session")
 	if code2 != http.StatusOK {
 		t.Fatalf("msg2 status = %d, want 200; without previous_response_id should start fresh", code2)
 	}
 
-	// Both should succeed and have different response IDs
+	// Both should succeed and have different response IDs.
 	respID2, _ := resp2["id"].(string)
 	if respID1 == respID2 {
 		t.Fatalf("response IDs should differ, both are %q", respID1)
 	}
+	if got := responseOutputText(t, resp2); got != "reply1" {
+		t.Fatalf("second response text = %q, want %q from a fresh runtime", got, "reply1")
+	}
 
-	// Verify that the runtime's history was reset: the second request should
-	// NOT have seen the first request's messages. We check the mock provider's
-	// recorded requests — the second request should have only the system prompt
-	// (if any) + the new user message, not the accumulated history.
+	// Verify that the current runtime only saw the fresh request.
 	rt, err := srv.sessionMgr.GetOrCreate(context.Background(), "same-session")
 	if err != nil {
 		t.Fatalf("GetOrCreate: %v", err)
 	}
 	provider := rt.provider.(*llm.MockProvider)
-	if len(provider.Requests) < 2 {
-		t.Fatalf("expected 2 provider requests, got %d", len(provider.Requests))
+	if len(provider.Requests) != 1 {
+		t.Fatalf("expected 1 provider request on the fresh runtime, got %d", len(provider.Requests))
 	}
-	secondReq := provider.Requests[1]
-	// Count user messages in the second request — should be exactly 1 (fresh start)
+	freshReq := provider.Requests[0]
 	userMsgCount := 0
-	for _, msg := range secondReq.Messages {
+	for _, msg := range freshReq.Messages {
 		if msg.Role == llm.RoleUser {
 			userMsgCount++
 		}
 	}
 	if userMsgCount != 1 {
-		t.Fatalf("second request has %d user messages, want 1 (fresh start)", userMsgCount)
+		t.Fatalf("fresh request has %d user messages, want 1", userMsgCount)
 	}
 }
 
