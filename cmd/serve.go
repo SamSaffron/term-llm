@@ -824,6 +824,7 @@ type serveServer struct {
 	modelsMu          sync.Mutex
 	modelsProviders   map[string]llm.Provider // keyed by provider name
 	responseToSession sync.Map                // response_id (string) → session_id (string)
+	sessionToResponse sync.Map                // session_id (string) → latest response_id (string)
 	responseRunsOnce  sync.Once
 	responseRuns      *responseRunManager
 	webrtcHeadSnippet string // injected into index.html <head>; empty when WebRTC disabled

@@ -978,6 +978,9 @@ func sseKeepalive(w http.ResponseWriter, flusher http.Flusher, interval time.Dur
 func (s *serveServer) registerResponseID(rt *serveRuntime, respID, sessionID string) {
 	pruned := rt.addResponseID(respID)
 	s.responseToSession.Store(respID, sessionID)
+	if sessionID != "" {
+		s.sessionToResponse.Store(sessionID, respID)
+	}
 	for _, old := range pruned {
 		s.responseToSession.Delete(old)
 	}

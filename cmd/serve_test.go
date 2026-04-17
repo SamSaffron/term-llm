@@ -3785,6 +3785,43 @@ func TestHandleResponses_StalePreviousResponseIDReturnsConflict(t *testing.T) {
 	}
 }
 
+func TestHandleResponses_StalePreviousResponseIDReturnsConflictAfterRuntimeRecreation(t *testing.T) {
+	srv := newTestServeServer("reply1", "reply2", "reply3")
+	defer srv.sessionMgr.Close()
+
+	code, resp1 := doResponsesWithHeader(t, srv, `{"input":"msg1"}`, "stale-recreate")
+	if code != http.StatusOK {
+		t.Fatalf("msg1 status = %d, want 200", code)
+	}
+	respID1, _ := resp1["id"].(string)
+	if respID1 == "" {
+		t.Fatal("first response missing id")
+	}
+
+	code, resp2 := doResponses(t, srv, `{"input":"msg2","previous_response_id":"`+respID1+`"}`)
+	if code != http.StatusOK {
+		t.Fatalf("msg2 status = %d, want 200", code)
+	}
+	respID2, _ := resp2["id"].(string)
+	if respID2 == "" {
+		t.Fatal("second response missing id")
+	}
+
+	// Simulate runtime recreation without cleaning the server-wide response map.
+	srv.sessionMgr.mu.Lock()
+	evicted := srv.sessionMgr.sessions["stale-recreate"]
+	delete(srv.sessionMgr.sessions, "stale-recreate")
+	srv.sessionMgr.mu.Unlock()
+	if evicted != nil {
+		evicted.Close()
+	}
+
+	code, _ = doResponses(t, srv, `{"input":"msg3","previous_response_id":"`+respID1+`"}`)
+	if code != http.StatusConflict {
+		t.Fatalf("stale previous_response_id after recreation status = %d, want 409", code)
+	}
+}
+
 func TestHandleResponses_PreviousResponseIDChainsSession(t *testing.T) {
 	// Each runtime gets 2 text responses so it can handle 2 messages
 	srv := newTestServeServer("first reply", "second reply")
