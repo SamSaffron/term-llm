@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -322,5 +323,99 @@ Fixture content.
 				t.Fatalf("instructions missing test skill entry: %q", instructions)
 			}
 		})
+	}
+}
+
+func TestRegisterSkillToolWithEngine_AllowsSkillDeclaredToolsInAllowedToolsFilter(t *testing.T) {
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(origWD) }()
+
+	tmp := t.TempDir()
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+
+	// Isolate user-level skill paths so this test only sees the local fixture.
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, ".config"))
+	t.Setenv("CODEX_HOME", filepath.Join(tmp, ".codex"))
+
+	skillDir := filepath.Join(tmp, ".skills", "test-skill")
+	if err := os.MkdirAll(filepath.Join(skillDir, "scripts"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "scripts", "echo.sh"), []byte("#!/bin/sh\necho ok\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	skillMD := `---
+name: test-skill
+description: "Skill fixture with a bundled tool"
+allowed-tools:
+  - test_echo
+tools:
+  - name: test_echo
+    description: "Echo fixture"
+    script: scripts/echo.sh
+---
+
+# Test Skill
+`
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillMD), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		Skills: config.SkillsConfig{
+			Enabled:               true,
+			AutoInvoke:            true,
+			MetadataBudgetTokens:  8000,
+			MaxVisibleSkills:      8,
+			IncludeProjectSkills:  true,
+			IncludeEcosystemPaths: false,
+		},
+	}
+
+	settings, err := ResolveSettings(cfg, nil, CLIFlags{Tools: tools.ReadFileToolName}, "", "", "tool instructions", 0, 20)
+	if err != nil {
+		t.Fatalf("ResolveSettings() error = %v", err)
+	}
+
+	engine := newEngine(llm.NewMockProvider("mock"), cfg)
+	toolMgr, err := settings.SetupToolManager(cfg, engine)
+	if err != nil {
+		t.Fatalf("SetupToolManager() error = %v", err)
+	}
+	if toolMgr == nil {
+		t.Fatal("SetupToolManager() = nil, want non-nil")
+	}
+
+	skillsSetup := SetupSkills(&cfg.Skills, "", "", io.Discard)
+	if skillsSetup == nil {
+		t.Fatal("SetupSkills() = nil, want non-nil")
+	}
+
+	RegisterSkillToolWithEngine(engine, toolMgr, skillsSetup)
+
+	activateTool, ok := engine.Tools().Get(tools.ActivateSkillToolName)
+	if !ok {
+		t.Fatalf("expected %q tool to be registered", tools.ActivateSkillToolName)
+	}
+
+	if _, err := activateTool.Execute(context.Background(), json.RawMessage(`{"name":"test-skill"}`)); err != nil {
+		t.Fatalf("activate_skill Execute() error = %v", err)
+	}
+
+	if _, ok := engine.Tools().Get("test_echo"); !ok {
+		t.Fatal("expected skill-declared tool to be registered with engine")
+	}
+	if !engine.IsToolAllowed("test_echo") {
+		t.Fatal("expected skill-declared tool to remain allowed after activation")
+	}
+	if engine.IsToolAllowed(tools.ReadFileToolName) {
+		t.Fatalf("expected %q to be disallowed by skill allowlist", tools.ReadFileToolName)
 	}
 }
