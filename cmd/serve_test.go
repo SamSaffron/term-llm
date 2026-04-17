@@ -3249,6 +3249,48 @@ func TestHandleSessionMessages_OmitsSystemAndDeveloperMessages(t *testing.T) {
 	}
 }
 
+func TestRun_PersistsInjectedSystemPromptInHistoryAndStore(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	provider := llm.NewMockProvider("mock").AddTextResponse("hi there")
+	rt := &serveRuntime{
+		store:        store,
+		provider:     provider,
+		engine:       llm.NewEngine(provider, nil),
+		defaultModel: "mock-model",
+		systemPrompt: "server system prompt",
+	}
+
+	ctx := context.Background()
+	_, err = rt.Run(ctx, true, false, []llm.Message{llm.UserText("hello")}, llm.Request{SessionID: "persist-system"})
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	if len(rt.history) != 3 {
+		t.Fatalf("history len = %d, want 3", len(rt.history))
+	}
+	if rt.history[0].Role != llm.RoleSystem || rt.history[0].Parts[0].Text != "server system prompt" {
+		t.Fatalf("history[0] = %+v, want injected system prompt", rt.history[0])
+	}
+
+	msgs, err := store.GetMessages(ctx, "persist-system", 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("stored message count = %d, want 3", len(msgs))
+	}
+	if msgs[0].Role != llm.RoleSystem || msgs[0].TextContent != "server system prompt" {
+		t.Fatalf("stored first message = %+v, want injected system prompt", msgs[0])
+	}
+}
+
 func TestEnsurePersistedSession_RestoresHistory(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})

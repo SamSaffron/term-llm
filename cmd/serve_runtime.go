@@ -581,7 +581,8 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	}()
 
 	messages := make([]llm.Message, 0, len(baseHistory)+len(inputMessages)+1)
-	if rt.systemPrompt != "" && !containsSystemMessage(baseHistory) && !containsSystemMessage(inputMessages) {
+	systemPromptInjected := rt.systemPrompt != "" && !containsSystemMessage(baseHistory) && !containsSystemMessage(inputMessages)
+	if systemPromptInjected {
 		messages = append(messages, llm.SystemText(rt.systemPrompt))
 	}
 	messages = append(messages, baseHistory...)
@@ -602,7 +603,10 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		}
 	}
 	buildSnapshotLocked := func() []llm.Message {
-		snapshot := make([]llm.Message, 0, len(baseHistory)+len(inputMessages)+len(produced))
+		snapshot := make([]llm.Message, 0, len(baseHistory)+len(inputMessages)+len(produced)+1)
+		if systemPromptInjected {
+			snapshot = append(snapshot, llm.SystemText(rt.systemPrompt))
+		}
 		snapshot = append(snapshot, baseHistory...)
 		snapshot = append(snapshot, inputMessages...)
 		snapshot = append(snapshot, produced...)
@@ -637,7 +641,10 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 			// On the first callback, persist the full base snapshot so
 			// incremental AddMessage calls have the correct starting state.
 			if !initialPersisted {
-				initialSnapshot := make([]llm.Message, 0, len(baseHistory)+len(inputMessages))
+				initialSnapshot := make([]llm.Message, 0, len(baseHistory)+len(inputMessages)+1)
+				if systemPromptInjected {
+					initialSnapshot = append(initialSnapshot, llm.SystemText(rt.systemPrompt))
+				}
 				initialSnapshot = append(initialSnapshot, baseHistory...)
 				initialSnapshot = append(initialSnapshot, inputMessages...)
 				initialPersisted = rt.persistSnapshot(persistCtx, req.SessionID, initialSnapshot)
