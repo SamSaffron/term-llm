@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -184,6 +185,17 @@ func (l *DebugLogger) LogRequest(provider, model string, req Request) {
 	if logModel == "" {
 		logModel = model
 	}
+	if logModel == "" {
+		if s := strings.Index(provider, "("); s >= 0 {
+			if e := strings.LastIndex(provider, ")"); e > s {
+				m := strings.TrimSpace(provider[s+1 : e])
+				if ci := strings.Index(m, ","); ci >= 0 {
+					m = strings.TrimSpace(m[:ci])
+				}
+				logModel = m
+			}
+		}
+	}
 	replayParts, encryptedParts := countReasoningReplayParts(req.Messages)
 
 	entry := debugRequestEntry{
@@ -240,6 +252,17 @@ func (l *DebugLogger) LogTurnRequest(turn int, provider, model string, req Reque
 	logModel := req.Model
 	if logModel == "" {
 		logModel = model
+	}
+	if logModel == "" {
+		if s := strings.Index(provider, "("); s >= 0 {
+			if e := strings.LastIndex(provider, ")"); e > s {
+				m := strings.TrimSpace(provider[s+1 : e])
+				if ci := strings.Index(m, ","); ci >= 0 {
+					m = strings.TrimSpace(m[:ci])
+				}
+				logModel = m
+			}
+		}
 	}
 	replayParts, encryptedParts := countReasoningReplayParts(req.Messages)
 
