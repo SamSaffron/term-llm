@@ -841,6 +841,73 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 		var finishingToolExecuted bool // Track if a finishing tool was executed (agent done)
 		var syncToolCalls []ToolCall   // Track sync tool calls for message building
 		var syncToolResults []Message  // Track sync tool results for message building
+		persistPartialAssistant := func() {
+			hasTextOrReasoning := textBuilder.Len() > 0 || reasoningBuilder.Len() > 0 || reasoningItemID != "" || reasoningEncryptedContent != ""
+			if !hasTextOrReasoning && len(toolCalls) == 0 && len(syncToolCalls) == 0 {
+				return
+			}
+
+			if len(toolCalls) == 0 {
+				if syncToolsExecuted {
+					assistantMsg := buildAssistantMessageWithReasoningMetadata(
+						textBuilder.String(),
+						e.withToolPreview(syncToolCalls),
+						reasoningBuilder.String(),
+						reasoningItemID,
+						reasoningEncryptedContent,
+					)
+					if turnCallback != nil {
+						turnMetrics.ToolCalls = len(syncToolCalls)
+						turnMessages := []Message{assistantMsg}
+						turnMessages = append(turnMessages, syncToolResults...)
+						cbCtx, cancel := callbackContext(ctx)
+						_ = turnCallback(cbCtx, attempt, turnMessages, turnMetrics)
+						cancel()
+					}
+					return
+				}
+				if turnCallback != nil && hasTextOrReasoning {
+					finalMsg := Message{
+						Role: RoleAssistant,
+						Parts: []Part{{
+							Type:                      PartText,
+							Text:                      textBuilder.String(),
+							ReasoningContent:          reasoningBuilder.String(),
+							ReasoningItemID:           reasoningItemID,
+							ReasoningEncryptedContent: reasoningEncryptedContent,
+						}},
+					}
+					cbCtx, cancel := callbackContext(ctx)
+					_ = turnCallback(cbCtx, attempt, []Message{finalMsg}, turnMetrics)
+					cancel()
+				}
+				return
+			}
+
+			partialToolCalls := ensureToolCallIDs(toolCalls)
+			partialToolCalls = dedupeToolCalls(partialToolCalls)
+			assistantMsg := buildAssistantMessageWithReasoningMetadata(
+				textBuilder.String(),
+				e.withToolPreview(partialToolCalls),
+				reasoningBuilder.String(),
+				reasoningItemID,
+				reasoningEncryptedContent,
+			)
+			if len(assistantMsg.Parts) == 0 {
+				return
+			}
+			if responseCallback != nil {
+				cbCtx, cancel := callbackContext(ctx)
+				_ = responseCallback(cbCtx, attempt, assistantMsg, turnMetrics)
+				cancel()
+				return
+			}
+			if turnCallback != nil {
+				cbCtx, cancel := callbackContext(ctx)
+				_ = turnCallback(cbCtx, attempt, []Message{assistantMsg}, turnMetrics)
+				cancel()
+			}
+		}
 		for {
 			event, err := stream.Recv()
 			if err == io.EOF {
@@ -848,10 +915,12 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 			}
 			if err != nil {
 				stream.Close()
+				persistPartialAssistant()
 				return err
 			}
 			if event.Type == EventError && event.Err != nil {
 				stream.Close()
+				persistPartialAssistant()
 				return event.Err
 			}
 			if req.DebugRaw {

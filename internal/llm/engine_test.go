@@ -30,6 +30,30 @@ func (s *sliceStream) Close() error {
 	return nil
 }
 
+type errAfterEventsStream struct {
+	events []Event
+	err    error
+	index  int
+}
+
+func (s *errAfterEventsStream) Recv() (Event, error) {
+	if s.index < len(s.events) {
+		event := s.events[s.index]
+		s.index++
+		return event, nil
+	}
+	if s.err != nil {
+		err := s.err
+		s.err = nil
+		return Event{}, err
+	}
+	return Event{}, io.EOF
+}
+
+func (s *errAfterEventsStream) Close() error {
+	return nil
+}
+
 type concurrentCloseStream struct {
 	mu          sync.Mutex
 	calls       int
@@ -1224,6 +1248,150 @@ func TestEnginePersistsToolInfoInAssistantMessage(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected assistant tool call with persisted tool info in next request")
+	}
+}
+
+func TestRunLoopPersistsPartialAssistantMessageOnStreamRecvError(t *testing.T) {
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &streamProvider{
+		stream: &errAfterEventsStream{
+			events: []Event{{Type: EventTextDelta, Text: "partial"}},
+			err:    errors.New("stream recv failed"),
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+
+	var (
+		callbackCount int
+		persisted     []Message
+	)
+	engine.SetTurnCompletedCallback(func(ctx context.Context, turnIndex int, messages []Message, metrics TurnMetrics) error {
+		callbackCount++
+		persisted = append([]Message(nil), messages...)
+		return nil
+	})
+
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{UserText("test")},
+		Tools:    []ToolSpec{tool.Spec()},
+	})
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	var streamErr error
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+		if event.Type == EventError && event.Err != nil {
+			streamErr = event.Err
+			break
+		}
+	}
+
+	if streamErr == nil || !strings.Contains(streamErr.Error(), "stream recv failed") {
+		t.Fatalf("expected stream error to contain recv failure, got %v", streamErr)
+	}
+	if callbackCount != 1 {
+		t.Fatalf("turn callback count = %d, want 1", callbackCount)
+	}
+	if len(persisted) != 1 || persisted[0].Role != RoleAssistant {
+		t.Fatalf("persisted messages = %#v, want single assistant message", persisted)
+	}
+	if len(persisted[0].Parts) != 1 || persisted[0].Parts[0].Type != PartText {
+		t.Fatalf("persisted parts = %#v, want single text part", persisted[0].Parts)
+	}
+	if persisted[0].Parts[0].Text != "partial" {
+		t.Fatalf("persisted text = %q, want %q", persisted[0].Parts[0].Text, "partial")
+	}
+}
+
+func TestRunLoopPersistsPartialAssistantMessageOnEventErrorAfterToolCall(t *testing.T) {
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			return []Event{
+				{Type: EventTextDelta, Text: "partial"},
+				{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "count_tool", Arguments: json.RawMessage(`{}`)}},
+				{Type: EventError, Err: errors.New("provider stream failed")},
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+
+	var (
+		responseCount int
+		turnCount     int
+		persisted     Message
+	)
+	engine.SetResponseCompletedCallback(func(ctx context.Context, turnIndex int, assistantMsg Message, metrics TurnMetrics) error {
+		responseCount++
+		persisted = assistantMsg
+		return nil
+	})
+	engine.SetTurnCompletedCallback(func(ctx context.Context, turnIndex int, messages []Message, metrics TurnMetrics) error {
+		turnCount++
+		return nil
+	})
+
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{UserText("test")},
+		Tools:    []ToolSpec{tool.Spec()},
+	})
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	var streamErr error
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+		if event.Type == EventError && event.Err != nil {
+			streamErr = event.Err
+			break
+		}
+	}
+
+	if streamErr == nil || !strings.Contains(streamErr.Error(), "provider stream failed") {
+		t.Fatalf("expected stream error to contain provider failure, got %v", streamErr)
+	}
+	if responseCount != 1 {
+		t.Fatalf("response callback count = %d, want 1", responseCount)
+	}
+	if turnCount != 0 {
+		t.Fatalf("turn callback count = %d, want 0", turnCount)
+	}
+	if len(persisted.Parts) != 2 {
+		t.Fatalf("persisted part count = %d, want 2", len(persisted.Parts))
+	}
+	if persisted.Parts[0].Type != PartText || persisted.Parts[0].Text != "partial" {
+		t.Fatalf("persisted text part = %#v, want partial text", persisted.Parts[0])
+	}
+	if persisted.Parts[1].Type != PartToolCall || persisted.Parts[1].ToolCall == nil {
+		t.Fatalf("persisted tool part = %#v, want tool call", persisted.Parts[1])
+	}
+	if persisted.Parts[1].ToolCall.ID != "call-1" {
+		t.Fatalf("persisted tool call ID = %q, want %q", persisted.Parts[1].ToolCall.ID, "call-1")
 	}
 }
 
