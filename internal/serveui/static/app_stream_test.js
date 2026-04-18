@@ -191,6 +191,7 @@ function createHarness(options = {}) {
     sessionSlug(s) { return s ? s.id : ''; },
     updateURL() {},
     persistAndRefreshShell() {},
+    updateHeader() {},
     updateSessionUsageDisplay() {},
     refreshRelativeTimes() {},
     updateAssistantNode() {},

@@ -264,7 +264,19 @@ func lookupPrefix(model string, table []limitEntry) int {
 	best := 0
 	bestLen := 0
 	for _, e := range table {
-		if strings.HasPrefix(model, e.prefix) && len(e.prefix) > bestLen {
+		if !strings.HasPrefix(model, e.prefix) {
+			continue
+		}
+		// Require a token boundary after the prefix: exact match or the next char
+		// must be non-alphanumeric (e.g. '-', '.'). Without this check,
+		// "gpt-5.4-minimal" would wrongly match the longer prefix "gpt-5.4-mini".
+		if len(model) != len(e.prefix) {
+			c := model[len(e.prefix)]
+			if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
+				continue
+			}
+		}
+		if len(e.prefix) > bestLen {
 			best = e.tokens
 			bestLen = len(e.prefix)
 		}

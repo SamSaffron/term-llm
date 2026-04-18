@@ -629,6 +629,22 @@
       font-weight: 600;
     }
 
+    .stats-provider {
+      color: var(--text);
+      font-weight: 500;
+    }
+
+    .stats-effort {
+      color: var(--text-muted);
+      font-variant: small-caps;
+      letter-spacing: 0.05em;
+    }
+
+    .stats-muted {
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+
     .stats-tokens {
       font-variant-numeric: tabular-nums;
     }

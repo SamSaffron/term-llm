@@ -240,6 +240,68 @@ func TestStaticAssetsSupportSessionStreamDetachOnSwitch(t *testing.T) {
 	}
 }
 
+func TestStaticAssetsSupportEffortDropdown(t *testing.T) {
+	indexHTML, err := StaticAsset("index.html")
+	if err != nil {
+		t.Fatalf("StaticAsset(index.html): %v", err)
+	}
+	indexSrc := string(indexHTML)
+	for _, want := range []string{
+		`id="effortSelect"`,
+		`<option value="minimal">minimal</option>`,
+		`<option value="low">low</option>`,
+		`<option value="medium">medium</option>`,
+		`<option value="high">high</option>`,
+		`<option value="xhigh">xhigh</option>`,
+		`<option value="max">max</option>`,
+	} {
+		if !strings.Contains(indexSrc, want) {
+			t.Fatalf("index.html missing %q", want)
+		}
+	}
+	// "default" was removed because it is redundant with the empty "Auto
+	// (server default)" option and was rejected by every upstream provider.
+	if strings.Contains(indexSrc, `<option value="default">`) {
+		t.Fatalf(`index.html must not offer an effort "default" option (redundant with "" and rejected by providers)`)
+	}
+
+	coreJS, err := StaticAsset("app-core.js")
+	if err != nil {
+		t.Fatalf("StaticAsset(app-core.js): %v", err)
+	}
+	coreSrc := string(coreJS)
+	for _, want := range []string{
+		"selectedEffort: 'term_llm_selected_effort'",
+		"selectedEffort: localStorage.getItem(STORAGE_KEYS.selectedEffort) || ''",
+		"effortSelect: document.getElementById('effortSelect')",
+	} {
+		if !strings.Contains(coreSrc, want) {
+			t.Fatalf("app-core.js missing %q", want)
+		}
+	}
+
+	streamJS, err := StaticAsset("app-stream.js")
+	if err != nil {
+		t.Fatalf("StaticAsset(app-stream.js): %v", err)
+	}
+	streamSrc := string(streamJS)
+	for _, want := range []string{
+		"elements.effortSelect.value = state.selectedEffort",
+		"localStorage.setItem(STORAGE_KEYS.selectedEffort, newEffort)",
+		"localStorage.removeItem(STORAGE_KEYS.selectedEffort)",
+		"body.reasoning_effort = state.selectedEffort",
+	} {
+		if !strings.Contains(streamSrc, want) {
+			t.Fatalf("app-stream.js missing %q", want)
+		}
+	}
+	// Effort must not commit on change — Cancel has to discard the pending
+	// value. Commit happens only inside connectToken() on Save.
+	if strings.Contains(streamSrc, "elements.effortSelect?.addEventListener('change'") {
+		t.Fatalf("app-stream.js must not wire a change listener on effortSelect (would persist pending value on Cancel)")
+	}
+}
+
 func TestStaticAssetsSupportIncrementalMarkdownStreaming(t *testing.T) {
 	indexHTML, err := StaticAsset("index.html")
 	if err != nil {

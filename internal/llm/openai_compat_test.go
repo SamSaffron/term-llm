@@ -1132,6 +1132,7 @@ func TestOpenAICompatProviderStreamSendsReasoningEffort(t *testing.T) {
 		providerModel  string
 		providerEffort string // set directly on provider
 		requestModel   string // model override in Request
+		requestEffort  string // req.ReasoningEffort field
 		wantModel      string
 		wantEffort     string
 	}{
@@ -1155,12 +1156,28 @@ func TestOpenAICompatProviderStreamSendsReasoningEffort(t *testing.T) {
 			wantEffort:    "",
 		},
 		{
-			name:           "provider effort takes priority over request suffix",
+			name:           "request suffix wins over provider effort",
 			providerModel:  "openai/gpt-5.4",
 			providerEffort: "low",
 			requestModel:   "openai/gpt-5.4-high",
 			wantModel:      "openai/gpt-5.4",
-			wantEffort:     "low",
+			wantEffort:     "high",
+		},
+		{
+			name:           "request reasoning_effort field wins over provider effort and suffix",
+			providerModel:  "openai/gpt-5.4",
+			providerEffort: "low",
+			requestModel:   "openai/gpt-5.4-medium",
+			requestEffort:  "high",
+			wantModel:      "openai/gpt-5.4",
+			wantEffort:     "high",
+		},
+		{
+			name:          "minimal effort passes through",
+			providerModel: "openai/gpt-5.4",
+			requestEffort: "minimal",
+			wantModel:     "openai/gpt-5.4",
+			wantEffort:    "minimal",
 		},
 	}
 
@@ -1188,8 +1205,9 @@ func TestOpenAICompatProviderStreamSendsReasoningEffort(t *testing.T) {
 			}
 
 			stream, err := provider.Stream(context.Background(), Request{
-				Model:    tt.requestModel,
-				Messages: []Message{UserText("hello")},
+				Model:           tt.requestModel,
+				Messages:        []Message{UserText("hello")},
+				ReasoningEffort: tt.requestEffort,
 			})
 			if err != nil {
 				t.Fatalf("Stream() error = %v", err)

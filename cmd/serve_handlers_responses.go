@@ -155,6 +155,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	llmReq := llm.Request{
 		SessionID:           sessionID,
 		Model:               strings.TrimSpace(req.Model),
+		ReasoningEffort:     normalizeReasoningEffort(req.ReasoningEffort),
 		Tools:               tools,
 		ToolChoice:          toolChoice,
 		ParallelToolCalls:   parallel,

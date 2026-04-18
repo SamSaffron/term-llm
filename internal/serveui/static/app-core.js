@@ -31,6 +31,7 @@ const STORAGE_KEYS = {
   draftSessionActive: 'term_llm_draft_session_active',
   selectedModel: 'term_llm_selected_model',
   selectedProvider: 'term_llm_selected_provider',
+  selectedEffort: 'term_llm_selected_effort',
   sidebarCollapsed: 'term_llm_sidebar_collapsed',
   showHiddenSessions: 'term_llm_show_hidden_sessions',
   notificationsEnabled: 'term_llm_notifications_enabled',
@@ -51,6 +52,7 @@ const state = {
   selectedProvider: localStorage.getItem(STORAGE_KEYS.selectedProvider) || '',
   models: [],
   selectedModel: localStorage.getItem(STORAGE_KEYS.selectedModel) || '',
+  selectedEffort: localStorage.getItem(STORAGE_KEYS.selectedEffort) || '',
   sidebarCollapsed: localStorage.getItem(STORAGE_KEYS.sidebarCollapsed) === '1',
   sidebarSessionCategories: parseSidebarSessionCategories(window.TERM_LLM_SIDEBAR_SESSIONS),
   showHiddenSessions: localStorage.getItem(STORAGE_KEYS.showHiddenSessions) === '1',
@@ -143,6 +145,7 @@ const elements = {
   headerStats: document.getElementById('headerStats'),
   providerSelect: document.getElementById('providerSelect'),
   modelSelect: document.getElementById('modelSelect'),
+  effortSelect: document.getElementById('effortSelect'),
   approvalModal: document.getElementById('approvalModal'),
   approvalTitle: document.getElementById('approvalTitle'),
   approvalPath: document.getElementById('approvalPath'),
@@ -395,17 +398,22 @@ const escapeHTML = (str) => {
 const updateSessionUsageDisplay = (session) => {
   const el = elements?.headerStats;
   if (!el) return;
-  const model = session?.activeModel || '';
   const lu = session?.lastUsage;
-
-  if (!lu && !model) {
-    el.innerHTML = '';
-    return;
-  }
+  const model = session?.activeModel || state.selectedModel || '';
+  const provider = session?.provider || state.selectedProvider || '';
+  const effort = state.selectedEffort || '';
 
   const parts = [];
+  if (provider) {
+    parts.push(`<span class="stats-provider">${escapeHTML(provider)}</span>`);
+  }
   if (model) {
     parts.push(`<span class="stats-model">${escapeHTML(model)}</span>`);
+  } else if (!provider) {
+    parts.push(`<span class="stats-model stats-muted">Auto</span>`);
+  }
+  if (effort) {
+    parts.push(`<span class="stats-effort">${escapeHTML(effort)}</span>`);
   }
 
   if (lu) {

@@ -185,12 +185,15 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 		}
 	}
 
-	// Strip effort suffix from req.Model if present
+	// Effort precedence: req.ReasoningEffort wins over model suffix, which wins over provider-level effort.
 	reqModel, reqEffort := parseModelEffort(req.Model)
 	model := chooseModel(reqModel, p.model)
 	effort := p.effort
-	if effort == "" && reqEffort != "" {
+	if reqEffort != "" {
 		effort = reqEffort
+	}
+	if v := strings.TrimSpace(req.ReasoningEffort); v != "" {
+		effort = v
 	}
 
 	// Build tools

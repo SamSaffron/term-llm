@@ -6,7 +6,7 @@ require (
 	github.com/BourgeoisBear/rasterm v1.1.2
 	github.com/SherClockHolmes/webpush-go v1.4.0
 	github.com/alecthomas/chroma/v2 v2.23.0
-	github.com/anthropics/anthropic-sdk-go v1.23.0
+	github.com/anthropics/anthropic-sdk-go v1.37.0
 	github.com/aws/aws-sdk-go-v2/config v1.32.12
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.12
 	github.com/bmatcuk/doublestar/v4 v4.9.2
@@ -124,6 +124,7 @@ require (
 	golang.org/x/crypto v0.48.0 // indirect
 	golang.org/x/exp v0.0.0-20260112195511-716be5621a96 // indirect
 	golang.org/x/oauth2 v0.34.0 // indirect
+	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
 	golang.org/x/time v0.14.0 // indirect

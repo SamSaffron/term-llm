@@ -352,15 +352,15 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 		return nil, err
 	}
 
-	// Strip effort suffix from req.Model if present, use it if no provider-level effort set
+	// Effort precedence: req.ReasoningEffort wins over model suffix, which wins over provider-level effort.
 	reqModel, reqEffort := parseModelEffort(req.Model)
 	model := chooseModel(reqModel, p.model)
 	effort := p.effort
-	if effort == "" && reqEffort != "" {
+	if reqEffort != "" {
 		effort = reqEffort
 	}
-	if effort == "" && req.ReasoningEffort != "" {
-		effort = req.ReasoningEffort
+	if v := strings.TrimSpace(req.ReasoningEffort); v != "" {
+		effort = v
 	}
 
 	chatReq := oaiChatRequest{

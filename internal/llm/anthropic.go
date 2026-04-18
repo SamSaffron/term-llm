@@ -224,9 +224,8 @@ func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (St
 
 		if p.useAdaptive {
 			params.MaxTokens = maxTokens(req.MaxOutputTokens, 16000)
-			adaptive := anthropic.NewThinkingConfigAdaptiveParam()
 			params.Thinking = anthropic.ThinkingConfigParamUnion{
-				OfAdaptive: &adaptive,
+				OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{},
 			}
 		} else if p.thinkingBudget > 0 {
 			params.MaxTokens = maxTokens(req.MaxOutputTokens, 16000)
@@ -237,6 +236,11 @@ func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (St
 			}
 			params.OutputConfig = anthropic.OutputConfigParam{
 				Effort: anthropic.OutputConfigEffortMax,
+			}
+		}
+		if eff := strings.TrimSpace(req.ReasoningEffort); eff != "" {
+			params.OutputConfig = anthropic.OutputConfigParam{
+				Effort: anthropic.OutputConfigEffort(strings.ToLower(eff)),
 			}
 		}
 
@@ -376,9 +380,8 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 
 		if p.useAdaptive {
 			params.MaxTokens = maxTokens(req.MaxOutputTokens, 16000)
-			adaptive := anthropic.NewBetaThinkingConfigAdaptiveParam()
 			params.Thinking = anthropic.BetaThinkingConfigParamUnion{
-				OfAdaptive: &adaptive,
+				OfAdaptive: &anthropic.BetaThinkingConfigAdaptiveParam{},
 			}
 		} else if p.thinkingBudget > 0 {
 			params.MaxTokens = maxTokens(req.MaxOutputTokens, 16000)
@@ -389,6 +392,11 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 			}
 			params.OutputConfig = anthropic.BetaOutputConfigParam{
 				Effort: anthropic.BetaOutputConfigEffortMax,
+			}
+		}
+		if eff := strings.TrimSpace(req.ReasoningEffort); eff != "" {
+			params.OutputConfig = anthropic.BetaOutputConfigParam{
+				Effort: anthropic.BetaOutputConfigEffort(strings.ToLower(eff)),
 			}
 		}
 

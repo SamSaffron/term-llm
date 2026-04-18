@@ -229,8 +229,7 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 		// MCP server is kept alive across turns - caller should call CleanupMCP() when done.
 		args, effort := p.buildArgs(ctx, req, send)
 
-		// Always extract system prompt from full messages (it should persist across turns)
-		systemPrompt := p.extractSystemPrompt(req.Messages)
+		systemPrompt := p.systemPromptForTurn(req.Messages)
 
 		// When resuming a session, only send new messages (claude CLI has the rest)
 		messagesToSend := req.Messages
@@ -758,12 +757,15 @@ func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request, send eve
 	// Always limit to 1 turn - term-llm handles tool execution loop
 	args = append(args, "--max-turns", "1")
 
-	// Model selection — parse effort from the chosen model, fall back to provider-level effort
+	// Effort precedence: req.ReasoningEffort wins over model suffix, which wins over provider-level effort.
 	model := chooseModel(req.Model, p.model)
 	strippedModel, reqEffort := parseClaudeEffort(model)
 	effort := p.effort
-	if effort == "" && reqEffort != "" {
+	if reqEffort != "" {
 		effort = reqEffort
+	}
+	if v := strings.TrimSpace(req.ReasoningEffort); v != "" {
+		effort = v
 	}
 	if strippedModel != "" {
 		args = append(args, "--model", mapModelToClaudeArg(strippedModel))
@@ -973,9 +975,7 @@ func (p *ClaudeBinProvider) createHTTPMCPConfig(ctx context.Context, tools []Too
 	return configPath
 }
 
-// extractSystemPrompt extracts system messages from the full message list.
-// This should always be called with the complete messages to ensure the system
-// prompt persists across turns in multi-turn conversations.
+// extractSystemPrompt joins all RoleSystem message parts into a single string.
 func (p *ClaudeBinProvider) extractSystemPrompt(messages []Message) string {
 	var systemParts []string
 	for _, msg := range messages {
@@ -984,6 +984,18 @@ func (p *ClaudeBinProvider) extractSystemPrompt(messages []Message) string {
 		}
 	}
 	return strings.TrimSpace(strings.Join(systemParts, "\n\n"))
+}
+
+// systemPromptForTurn returns the system prompt to pass to Claude CLI for this
+// turn. On resume (sessionID set) it returns "" because Claude CLI already
+// holds the original system prompt in the session; re-sending it would
+// duplicate it in text mode and override Claude's own system (defeating
+// template expansion) in stream-json mode.
+func (p *ClaudeBinProvider) systemPromptForTurn(messages []Message) string {
+	if p.sessionID != "" {
+		return ""
+	}
+	return p.extractSystemPrompt(messages)
 }
 
 // buildConversationPrompt constructs the conversation prompt from messages.

@@ -1112,3 +1112,128 @@ func TestAnthropicStreamCloseDoesNotDeadlockWhenConsumerStopsDraining(t *testing
 		t.Fatal("stream.Close() blocked for >2s — probable deadlock")
 	}
 }
+
+// minimalAnthropicSSE returns a valid-but-empty SSE stream sufficient to let a
+// Stream call complete without errors. Used by request-serialization tests
+// that only care about the outbound HTTP body.
+func minimalAnthropicSSE() string {
+	return "event: message_start\n" +
+		`data: {"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-6","usage":{"input_tokens":1,"output_tokens":0}}}` + "\n\n" +
+		"event: message_delta\n" +
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}` + "\n\n" +
+		"event: message_stop\n" +
+		`data: {"type":"message_stop"}` + "\n\n"
+}
+
+func TestAnthropicStreamSerializesReasoningEffort(t *testing.T) {
+	tests := []struct {
+		name       string
+		reqEffort  string
+		wantEffort string
+	}{
+		{"low", "low", "low"},
+		{"medium", "medium", "medium"},
+		{"high", "high", "high"},
+		{"xhigh", "xhigh", "xhigh"},
+		{"max", "max", "max"},
+		{"uppercase_gets_lowercased", "HIGH", "high"},
+		{"mixed_case_gets_lowercased", "XHigh", "xhigh"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body map[string]json.RawMessage
+
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprint(w, minimalAnthropicSSE())
+			}))
+			defer ts.Close()
+
+			client := anthropic.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(ts.URL))
+			provider := &AnthropicProvider{client: &client, model: "claude-sonnet-4-6"}
+
+			stream, err := provider.Stream(context.Background(), Request{
+				Messages:        []Message{UserText("hello")},
+				ReasoningEffort: tt.reqEffort,
+			})
+			if err != nil {
+				t.Fatalf("Stream() error: %v", err)
+			}
+			defer stream.Close()
+
+			for {
+				ev, err := stream.Recv()
+				if err != nil {
+					t.Fatalf("Recv() error: %v", err)
+				}
+				if ev.Type == EventDone {
+					break
+				}
+			}
+
+			rawOutput, ok := body["output_config"]
+			if !ok {
+				t.Fatalf("request missing output_config; body keys = %v", keys(body))
+			}
+			var outputConfig struct {
+				Effort string `json:"effort"`
+			}
+			if err := json.Unmarshal(rawOutput, &outputConfig); err != nil {
+				t.Fatalf("decode output_config: %v", err)
+			}
+			if outputConfig.Effort != tt.wantEffort {
+				t.Errorf("output_config.effort = %q, want %q", outputConfig.Effort, tt.wantEffort)
+			}
+		})
+	}
+}
+
+func TestAnthropicStreamOmitsOutputConfigWhenEffortEmpty(t *testing.T) {
+	var body map[string]json.RawMessage
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, minimalAnthropicSSE())
+	}))
+	defer ts.Close()
+
+	client := anthropic.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(ts.URL))
+	provider := &AnthropicProvider{client: &client, model: "claude-sonnet-4-6"}
+
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{UserText("hello")},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	defer stream.Close()
+
+	for {
+		ev, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv() error: %v", err)
+		}
+		if ev.Type == EventDone {
+			break
+		}
+	}
+
+	if _, present := body["output_config"]; present {
+		t.Errorf("output_config should not be sent when ReasoningEffort is empty; body = %v", body)
+	}
+}
+
+func keys(m map[string]json.RawMessage) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}

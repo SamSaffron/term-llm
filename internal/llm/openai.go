@@ -25,7 +25,7 @@ type OpenAIProvider struct {
 // "gpt-5.2" -> ("gpt-5.2", "")
 func parseModelEffort(model string) (string, string) {
 	// Check suffixes in order from longest to shortest to avoid "-high" matching "-xhigh"
-	suffixes := []string{"xhigh", "medium", "high", "low"}
+	suffixes := []string{"xhigh", "minimal", "medium", "high", "low", "max"}
 	for _, effort := range suffixes {
 		suffix := "-" + effort
 		if strings.HasSuffix(model, suffix) {
@@ -95,12 +95,15 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 		}
 	}
 
-	// Strip effort suffix from req.Model if present, use it if no provider-level effort set
+	// Effort precedence: req.ReasoningEffort wins over model suffix, which wins over provider-level effort.
 	reqModel, reqEffort := parseModelEffort(req.Model)
 	model := chooseModel(reqModel, p.model)
 	effort := p.effort
-	if effort == "" && reqEffort != "" {
+	if reqEffort != "" {
 		effort = reqEffort
+	}
+	if v := strings.TrimSpace(req.ReasoningEffort); v != "" {
+		effort = v
 	}
 
 	// Build tools - add web search tool first if requested

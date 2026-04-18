@@ -231,6 +231,101 @@ func TestVeniceProviderPlainTextErrorEventSurfacesError(t *testing.T) {
 	}
 }
 
+func TestVeniceProviderReasoningEffortPrecedence(t *testing.T) {
+	tests := []struct {
+		name           string
+		providerModel  string
+		providerEffort string
+		requestModel   string
+		requestEffort  string
+		wantEffort     string
+	}{
+		{
+			name:          "provider suffix sets effort",
+			providerModel: "venice-uncensored-high",
+			wantEffort:    "high",
+		},
+		{
+			name:           "request suffix overrides provider effort",
+			providerModel:  "venice-uncensored",
+			providerEffort: "low",
+			requestModel:   "venice-uncensored-high",
+			wantEffort:     "high",
+		},
+		{
+			name:           "request reasoning_effort field wins over provider effort and suffix",
+			providerModel:  "venice-uncensored",
+			providerEffort: "low",
+			requestModel:   "venice-uncensored-medium",
+			requestEffort:  "high",
+			wantEffort:     "high",
+		},
+		{
+			name:          "minimal effort passes through",
+			providerModel: "venice-uncensored",
+			requestEffort: "minimal",
+			wantEffort:    "minimal",
+		},
+		{
+			name:          "max suffix on request model passes through",
+			providerModel: "venice-uncensored",
+			requestModel:  "claude-opus-4-7-max",
+			wantEffort:    "max",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got struct {
+				ReasoningEffort string `json:"reasoning_effort"`
+			}
+
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/chat/completions" {
+					t.Fatalf("unexpected path %q", r.URL.Path)
+				}
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			}))
+			defer ts.Close()
+
+			actualModel, effort := parseModelEffort(tt.providerModel)
+			provider := &VeniceProvider{OpenAICompatProvider: NewOpenAICompatProvider(ts.URL, "test-key", actualModel, "Venice")}
+			provider.effort = effort
+			if tt.providerEffort != "" {
+				provider.effort = tt.providerEffort
+			}
+
+			stream, err := provider.Stream(context.Background(), Request{
+				Model:           tt.requestModel,
+				Messages:        []Message{UserText("hello")},
+				ReasoningEffort: tt.requestEffort,
+			})
+			if err != nil {
+				t.Fatalf("Stream() error = %v", err)
+			}
+			defer stream.Close()
+
+			for {
+				ev, err := stream.Recv()
+				if err != nil {
+					t.Fatalf("Recv() error = %v", err)
+				}
+				if ev.Type == EventDone {
+					break
+				}
+			}
+
+			if got.ReasoningEffort != tt.wantEffort {
+				t.Errorf("reasoning_effort = %q, want %q", got.ReasoningEffort, tt.wantEffort)
+			}
+		})
+	}
+}
+
 func TestVeniceProviderExplicitXSearchUsesVeniceParameters(t *testing.T) {
 	var got struct {
 		Model            string                 `json:"model"`

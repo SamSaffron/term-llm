@@ -5508,6 +5508,77 @@ func TestParsePreviousResponseID(t *testing.T) {
 	}
 }
 
+func TestResponsesHandler_ReasoningEffortFlowsToProvider(t *testing.T) {
+	var capturedProvider *llm.MockProvider
+	factory := func(ctx context.Context) (*serveRuntime, error) {
+		provider := llm.NewMockProvider("mock").AddTextResponse("ok")
+		capturedProvider = provider
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			engine:       engine,
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		return rt, nil
+	}
+	mgr := newServeSessionManager(time.Minute, 100, factory)
+	srv := &serveServer{sessionMgr: mgr}
+
+	body := `{"input":"hello","reasoning_effort":"high"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleResponses(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if capturedProvider == nil {
+		t.Fatal("expected runtime factory to have been called")
+	}
+	if len(capturedProvider.Requests) != 1 {
+		t.Fatalf("request count = %d, want 1", len(capturedProvider.Requests))
+	}
+	if got := capturedProvider.Requests[0].ReasoningEffort; got != "high" {
+		t.Fatalf("ReasoningEffort = %q, want %q", got, "high")
+	}
+}
+
+func TestResponsesHandler_ReasoningEffortDefaultNormalizedToEmpty(t *testing.T) {
+	var capturedProvider *llm.MockProvider
+	factory := func(ctx context.Context) (*serveRuntime, error) {
+		provider := llm.NewMockProvider("mock").AddTextResponse("ok")
+		capturedProvider = provider
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			engine:       engine,
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		return rt, nil
+	}
+	mgr := newServeSessionManager(time.Minute, 100, factory)
+	srv := &serveServer{sessionMgr: mgr}
+
+	body := `{"input":"hello","reasoning_effort":"default"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleResponses(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if len(capturedProvider.Requests) != 1 {
+		t.Fatalf("request count = %d, want 1", len(capturedProvider.Requests))
+	}
+	if got := capturedProvider.Requests[0].ReasoningEffort; got != "" {
+		t.Fatalf("ReasoningEffort = %q, want empty (normalized from %q)", got, "default")
+	}
+}
+
 func TestServeRuntime_CumulativeUsageAccumulates(t *testing.T) {
 	provider := llm.NewMockProvider("mock").
 		AddTurn(llm.MockTurn{Text: "a", Usage: llm.Usage{InputTokens: 10, OutputTokens: 5}}).

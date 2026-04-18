@@ -1222,10 +1222,10 @@ func TestEffortVariantsFor(t *testing.T) {
 		model    string
 		expected int // number of variants (0 = nil)
 	}{
-		{"gpt-5", 4},
-		{"gpt-5.3-codex", 4},
-		{"gpt-5-mini", 4},
-		{"gpt-5.2-chat", 4},
+		{"gpt-5", 5},
+		{"gpt-5.3-codex", 5},
+		{"gpt-5-mini", 5},
+		{"gpt-5.2-chat", 5},
 		{"claude-sonnet-4-5", 0},
 		{"gpt-4o", 0},
 		{"o3-mini", 0},
@@ -1241,7 +1241,7 @@ func TestEffortVariantsFor(t *testing.T) {
 
 	// Check the actual variant values
 	variants := EffortVariantsFor("gpt-5")
-	expected := []string{"low", "medium", "high", "xhigh"}
+	expected := []string{"minimal", "low", "medium", "high", "xhigh"}
 	for i, v := range variants {
 		if v != expected[i] {
 			t.Errorf("EffortVariantsFor variant[%d] = %q, want %q", i, v, expected[i])
@@ -1253,18 +1253,18 @@ func TestExpandWithEffortVariants(t *testing.T) {
 	models := []string{"gpt-5", "claude-sonnet-4-5"}
 	expanded := ExpandWithEffortVariants(models)
 
-	// gpt-5 + 4 variants + claude-sonnet-4-5 (no variants) = 6
-	if len(expanded) != 6 {
-		t.Errorf("ExpandWithEffortVariants returned %d entries, want 6", len(expanded))
+	// gpt-5 + 5 variants + claude-sonnet-4-5 (no variants) = 7
+	if len(expanded) != 7 {
+		t.Errorf("ExpandWithEffortVariants returned %d entries, want 7", len(expanded))
 	}
 	if expanded[0] != "gpt-5" {
 		t.Errorf("first entry should be base model, got %q", expanded[0])
 	}
-	if expanded[1] != "gpt-5-low" {
-		t.Errorf("second entry should be gpt-5-low, got %q", expanded[1])
+	if expanded[1] != "gpt-5-minimal" {
+		t.Errorf("second entry should be gpt-5-minimal, got %q", expanded[1])
 	}
-	if expanded[5] != "claude-sonnet-4-5" {
-		t.Errorf("last entry should be claude-sonnet-4-5, got %q", expanded[5])
+	if expanded[6] != "claude-sonnet-4-5" {
+		t.Errorf("last entry should be claude-sonnet-4-5, got %q", expanded[6])
 	}
 }
 

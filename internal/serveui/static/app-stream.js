@@ -1414,6 +1414,9 @@ const openAuthModal = (errorText = '', required = !state.token) => {
   elements.authCancelBtn.style.display = required ? 'none' : 'inline-flex';
   elements.providerSelect.value = state.selectedProvider;
   elements.modelSelect.value = state.selectedModel;
+  if (elements.effortSelect) {
+    elements.effortSelect.value = state.selectedEffort;
+  }
   if (elements.showHiddenSessionsInput) {
     elements.showHiddenSessionsInput.checked = state.showHiddenSessions;
   }
@@ -1421,6 +1424,7 @@ const openAuthModal = (errorText = '', required = !state.token) => {
   elements.authModal.classList.remove('hidden');
   elements.providerSelect.removeAttribute('tabindex');
   elements.modelSelect.removeAttribute('tabindex');
+  elements.effortSelect?.removeAttribute('tabindex');
   elements.authTokenInput.removeAttribute('tabindex');
   elements.showHiddenSessionsInput?.removeAttribute('tabindex');
 
@@ -1438,6 +1442,7 @@ const closeAuthModal = () => {
   elements.authError.textContent = '';
   elements.providerSelect.setAttribute('tabindex', '-1');
   elements.modelSelect.setAttribute('tabindex', '-1');
+  elements.effortSelect?.setAttribute('tabindex', '-1');
   elements.authTokenInput.setAttribute('tabindex', '-1');
   elements.showHiddenSessionsInput?.setAttribute('tabindex', '-1');
 };
@@ -1471,9 +1476,17 @@ const connectToken = async () => {
   } else {
     localStorage.removeItem(STORAGE_KEYS.selectedModel);
   }
+  const newEffort = elements.effortSelect ? elements.effortSelect.value : '';
+  state.selectedEffort = newEffort;
+  if (newEffort) {
+    localStorage.setItem(STORAGE_KEYS.selectedEffort, newEffort);
+  } else {
+    localStorage.removeItem(STORAGE_KEYS.selectedEffort);
+  }
   const showHiddenChanged = nextShowHiddenSessions !== state.showHiddenSessions;
   state.showHiddenSessions = nextShowHiddenSessions;
   localStorage.setItem(STORAGE_KEYS.showHiddenSessions, state.showHiddenSessions ? '1' : '0');
+  app.updateHeader();
 
   if (state.authRequired && !token) {
     elements.authError.textContent = 'Token is required.';
@@ -1593,7 +1606,24 @@ elements.providerSelect.addEventListener('change', async () => {
     state.models = providerInfo?.models?.length ? providerInfo.models : [];
   }
   renderModelOptions();
+  app.updateHeader();
 });
+
+elements.modelSelect?.addEventListener('change', () => {
+  const model = elements.modelSelect.value;
+  state.selectedModel = model;
+  if (model) {
+    localStorage.setItem(STORAGE_KEYS.selectedModel, model);
+  } else {
+    localStorage.removeItem(STORAGE_KEYS.selectedModel);
+  }
+  app.updateHeader();
+});
+
+// Effort is a staged modal value: the dropdown only reflects the pending choice
+// inside the settings modal and is committed to state/localStorage on Save
+// (connectToken). Cancelling the modal discards the pending value; the next
+// openAuthModal() resets the select from state.selectedEffort.
 
 // ===== Model picker =====
 const renderModelOptions = () => {
@@ -2347,6 +2377,9 @@ const sendMessage = async (options = {}) => {
 
   if (state.selectedModel) {
     body.model = state.selectedModel;
+  }
+  if (state.selectedEffort) {
+    body.reasoning_effort = state.selectedEffort;
   }
   if (!session.provider && state.selectedProvider) {
     session.provider = state.selectedProvider;

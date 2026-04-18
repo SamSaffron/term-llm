@@ -291,7 +291,7 @@ var ImageProviderModels = map[string][]string{
 }
 
 // defaultEffortVariants are the standard effort levels for reasoning-capable models.
-var defaultEffortVariants = []string{"low", "medium", "high", "xhigh"}
+var defaultEffortVariants = []string{"minimal", "low", "medium", "high", "xhigh"}
 
 // EffortVariantsFor returns the effort suffixes for a model, or nil if none.
 // All GPT-5 family models are reasoning-capable and support effort levels.

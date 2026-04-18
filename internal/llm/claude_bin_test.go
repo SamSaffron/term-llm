@@ -584,6 +584,53 @@ func TestClaudeBinProvider_BuildArgsCanEnableHooks(t *testing.T) {
 	}
 }
 
+func TestClaudeBinProvider_BuildArgsEffortPrecedence(t *testing.T) {
+	tests := []struct {
+		name          string
+		providerModel string
+		requestModel  string
+		requestEffort string
+		wantEffort    string
+	}{
+		{
+			name:          "provider model suffix sets effort",
+			providerModel: "opus-high",
+			wantEffort:    "high",
+		},
+		{
+			name:          "request model suffix overrides provider effort",
+			providerModel: "opus-low",
+			requestModel:  "opus-high",
+			wantEffort:    "high",
+		},
+		{
+			name:          "request reasoning_effort field wins over model suffix and provider effort",
+			providerModel: "opus-low",
+			requestModel:  "opus-medium",
+			requestEffort: "max",
+			wantEffort:    "max",
+		},
+		{
+			name:          "no effort when not specified",
+			providerModel: "sonnet",
+			wantEffort:    "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := NewClaudeBinProvider(tt.providerModel, nil)
+			_, effort := p.buildArgs(context.Background(), Request{
+				Model:           tt.requestModel,
+				ReasoningEffort: tt.requestEffort,
+			}, eventSender{})
+			if effort != tt.wantEffort {
+				t.Errorf("effort = %q, want %q", effort, tt.wantEffort)
+			}
+		})
+	}
+}
+
 func TestClaudeBinProvider_CombinePromptIncludesSystemOnStdin(t *testing.T) {
 	p := NewClaudeBinProvider("sonnet", nil)
 
@@ -609,6 +656,23 @@ func TestClaudeBinProvider_CombinePromptHandlesEmptySystem(t *testing.T) {
 	got := p.combinePrompt("", "User: hello")
 	if got != "User: hello" {
 		t.Fatalf("combinePrompt() with empty system = %q", got)
+	}
+}
+
+func TestClaudeBinProvider_SystemPromptForTurn(t *testing.T) {
+	msgs := []Message{
+		{Role: RoleSystem, Parts: []Part{{Type: PartText, Text: "You are helpful."}}},
+		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "Hi"}}},
+	}
+
+	p := NewClaudeBinProvider("sonnet", nil)
+	if got := p.systemPromptForTurn(msgs); got != "You are helpful." {
+		t.Fatalf("initial turn systemPromptForTurn = %q, want %q", got, "You are helpful.")
+	}
+
+	p.sessionID = "resume-abc"
+	if got := p.systemPromptForTurn(msgs); got != "" {
+		t.Fatalf("resume turn systemPromptForTurn = %q, want empty (Claude CLI already has the system prompt via --resume)", got)
 	}
 }
 

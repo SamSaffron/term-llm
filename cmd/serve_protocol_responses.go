@@ -21,6 +21,7 @@ type responsesCreateRequest struct {
 	TopP               *float32          `json:"top_p,omitempty"`
 	Stream             bool              `json:"stream,omitempty"`
 	PreviousResponseID string            `json:"previous_response_id,omitempty"`
+	ReasoningEffort    string            `json:"reasoning_effort,omitempty"`
 }
 
 func parseResponsesInput(input json.RawMessage) ([]llm.Message, bool, error) {
@@ -96,6 +97,18 @@ func parseResponsesInput(input json.RawMessage) ([]llm.Message, bool, error) {
 		replaceHistory = true
 	}
 	return messages, replaceHistory, nil
+}
+
+// normalizeReasoningEffort trims whitespace and folds the literal "default"
+// value (sent by older clients and stale localStorage entries) to an empty
+// string so that providers receive "" meaning "use the provider default"
+// rather than a bogus "default" value that would produce an upstream 400.
+func normalizeReasoningEffort(value string) string {
+	v := strings.TrimSpace(value)
+	if strings.EqualFold(v, "default") {
+		return ""
+	}
+	return v
 }
 
 func parseRequestedTools(raw []json.RawMessage) (bool, map[string]bool, []llm.ToolSpec) {
