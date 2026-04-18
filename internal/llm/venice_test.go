@@ -80,7 +80,7 @@ func TestVeniceProviderListModelsUsesProviderScopedLimits(t *testing.T) {
 			t.Fatalf("unexpected path %q", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{"id":"grok-code-fast-1","object":"model","created":1,"owned_by":"venice.ai"},{"id":"minimax-m27","object":"model","created":1,"owned_by":"venice.ai"}]}`))
+		_, _ = w.Write([]byte(`{"data":[{"id":"grok-4-20","object":"model","created":1,"owned_by":"venice.ai"},{"id":"minimax-m27","object":"model","created":1,"owned_by":"venice.ai"}]}`))
 	}))
 	defer ts.Close()
 
@@ -92,8 +92,8 @@ func TestVeniceProviderListModelsUsesProviderScopedLimits(t *testing.T) {
 	if len(models) != 2 {
 		t.Fatalf("ListModels() returned %d models, want 2", len(models))
 	}
-	if models[0].InputLimit != 256_000 {
-		t.Fatalf("grok-code-fast-1 InputLimit = %d, want 256000", models[0].InputLimit)
+	if models[0].InputLimit != 2_000_000 {
+		t.Fatalf("grok-4-20 InputLimit = %d, want 2000000", models[0].InputLimit)
 	}
 	if models[1].InputLimit != 198_000 {
 		t.Fatalf("minimax-m27 InputLimit = %d, want 198000", models[1].InputLimit)
@@ -101,9 +101,9 @@ func TestVeniceProviderListModelsUsesProviderScopedLimits(t *testing.T) {
 }
 
 func TestParseVeniceModelSuffix(t *testing.T) {
-	base, params := parseVeniceModelSuffix("grok-4-20-beta:enable_x_search=true&enable_web_citations=true")
-	if base != "grok-4-20-beta" {
-		t.Fatalf("base model = %q, want grok-4-20-beta", base)
+	base, params := parseVeniceModelSuffix("grok-4-20:enable_x_search=true&enable_web_citations=true")
+	if base != "grok-4-20" {
+		t.Fatalf("base model = %q, want grok-4-20", base)
 	}
 	if params["enable_x_search"] != true {
 		t.Fatalf("expected enable_x_search=true, got %#v", params["enable_x_search"])
@@ -114,9 +114,9 @@ func TestParseVeniceModelSuffix(t *testing.T) {
 }
 
 func TestBuildVeniceModelAndParams_PreservesExplicitXSearch(t *testing.T) {
-	model, params := buildVeniceModelAndParams("grok-4-20-beta:enable_x_search=true", true)
-	if model != "grok-4-20-beta" {
-		t.Fatalf("model = %q, want grok-4-20-beta", model)
+	model, params := buildVeniceModelAndParams("grok-4-20:enable_x_search=true", true)
+	if model != "grok-4-20" {
+		t.Fatalf("model = %q, want grok-4-20", model)
 	}
 	if params["enable_x_search"] != true {
 		t.Fatalf("expected enable_x_search=true, got %#v", params["enable_x_search"])
@@ -346,7 +346,7 @@ func TestVeniceProviderExplicitXSearchUsesVeniceParameters(t *testing.T) {
 	stream, err := provider.Stream(context.Background(), Request{
 		Messages: []Message{UserText("find recent posts")},
 		Search:   true,
-		Model:    "grok-4-20-beta:enable_x_search=true",
+		Model:    "grok-4-20:enable_x_search=true",
 	})
 	if err != nil {
 		t.Fatalf("Stream() error = %v", err)
@@ -362,7 +362,7 @@ func TestVeniceProviderExplicitXSearchUsesVeniceParameters(t *testing.T) {
 		}
 	}
 
-	if got.Model != "grok-4-20-beta" {
+	if got.Model != "grok-4-20" {
 		t.Fatalf("expected stripped base model, got %q", got.Model)
 	}
 	if got.VeniceParameters["enable_x_search"] != true {

@@ -1427,6 +1427,9 @@ func configValueCompletions(key, toComplete string) []string {
 	if key == "image.flux.model" {
 		return filterPrefix(llm.ImageProviderModels["flux"], toComplete)
 	}
+	if key == "image.venice.model" {
+		return filterPrefix(llm.ImageProviderModels["venice"], toComplete)
+	}
 
 	return nil
 }
