@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -17,6 +18,11 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/mcphttp"
 )
+
+// claudeStderrTailMaxLines caps the number of trailing stderr lines we retain
+// from the claude CLI subprocess for inclusion in error logs. Older lines are
+// discarded so memory stays bounded even if the CLI is chatty.
+const claudeStderrTailMaxLines = 40
 
 // mcpCallCounter generates unique IDs for MCP tool calls
 var mcpCallCounter atomic.Int64
@@ -398,8 +404,16 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		close(bridge.done)
 	}()
 
-	// Log stderr in background (claude CLI outputs progress/errors here)
+	// Capture stderr in a bounded ring buffer so we can include a tail
+	// in error logs when claude exits non-zero. Also forward live to our
+	// stderr in debug mode.
+	var (
+		stderrMu   sync.Mutex
+		stderrTail []string
+	)
+	stderrDone := make(chan struct{})
 	go func() {
+		defer close(stderrDone)
 		stderrScanner := bufio.NewScanner(stderr)
 		stderrScanner.Buffer(make([]byte, 64*1024), 1024*1024)
 		for stderrScanner.Scan() {
@@ -407,6 +421,12 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 			if debug {
 				fmt.Fprintf(os.Stderr, "[claude stderr] %s\n", line)
 			}
+			stderrMu.Lock()
+			stderrTail = append(stderrTail, line)
+			if len(stderrTail) > claudeStderrTailMaxLines {
+				stderrTail = stderrTail[len(stderrTail)-claudeStderrTailMaxLines:]
+			}
+			stderrMu.Unlock()
 		}
 	}()
 
@@ -456,17 +476,44 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 	// Now safe to call Wait() — all pipe reads are done.
 	cmdErr := cmd.Wait()
 
+	// Wait for the stderr scanner goroutine to finish so the tail buffer
+	// is fully populated before we format error messages or log diagnostics.
+	<-stderrDone
+
 	if err != nil {
 		return err
 	}
 	if scanErr != nil {
 		return fmt.Errorf("error reading claude output: %w", scanErr)
 	}
-	// When MCP tools were executed, the CLI exits with code 1 because
-	// --max-turns 1 is exhausted after the tool call. This is expected;
-	// the engine's outer loop will re-invoke us with the tool results.
-	if cmdErr != nil && !toolsExecuted {
-		return fmt.Errorf("claude command failed: %w", cmdErr)
+	if cmdErr != nil {
+		exitCode := -1
+		var exitErr *exec.ExitError
+		if errors.As(cmdErr, &exitErr) {
+			exitCode = exitErr.ExitCode()
+		}
+		stderrMu.Lock()
+		tail := strings.Join(stderrTail, "\n")
+		stderrMu.Unlock()
+
+		// When MCP tools were executed, the CLI exits with code 1 because
+		// --max-turns 1 is exhausted after the tool call. This is expected;
+		// the engine's outer loop will re-invoke us with the tool results.
+		// Any other non-zero exit (crashes, OOMs, auth failures, etc.) must
+		// still surface — don't swallow those just because tools ran.
+		expectedToolExit := toolsExecuted && exitCode == 1
+		if !expectedToolExit {
+			slog.Error("claude command failed",
+				"exit_code", exitCode,
+				"tools_executed", toolsExecuted,
+				"effort", effort,
+				"stderr_tail", tail,
+			)
+			if tail != "" {
+				return fmt.Errorf("claude command failed (exit %d): %w\nstderr:\n%s", exitCode, cmdErr, tail)
+			}
+			return fmt.Errorf("claude command failed (exit %d): %w", exitCode, cmdErr)
+		}
 	}
 
 	if lastUsage != nil {
