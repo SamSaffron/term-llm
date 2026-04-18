@@ -1461,18 +1461,19 @@ const connectToken = async () => {
   const token = elements.authTokenInput.value.trim();
   const nextShowHiddenSessions = Boolean(elements.showHiddenSessionsInput?.checked);
 
-  // Save provider and model selection regardless of token
-  const newProvider = elements.providerSelect.value;
-  state.selectedProvider = newProvider;
-  if (newProvider) {
-    localStorage.setItem(STORAGE_KEYS.selectedProvider, newProvider);
+  // Provider/model selections are committed live via the change handlers.
+  // Re-reading the modal DOM here can clobber a valid in-memory choice if the
+  // selects are temporarily stale (for example while startup/model refresh work
+  // is still settling). Persist the current state instead.
+  const persistedProvider = state.selectedProvider;
+  if (persistedProvider) {
+    localStorage.setItem(STORAGE_KEYS.selectedProvider, persistedProvider);
   } else {
     localStorage.removeItem(STORAGE_KEYS.selectedProvider);
   }
-  const newModel = elements.modelSelect.value;
-  state.selectedModel = newModel;
-  if (newModel) {
-    localStorage.setItem(STORAGE_KEYS.selectedModel, newModel);
+  const persistedModel = state.selectedModel;
+  if (persistedModel) {
+    localStorage.setItem(STORAGE_KEYS.selectedModel, persistedModel);
   } else {
     localStorage.removeItem(STORAGE_KEYS.selectedModel);
   }

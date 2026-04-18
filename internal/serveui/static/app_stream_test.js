@@ -97,6 +97,19 @@ function createHarness(options = {}) {
     addEventListener() {},
   };
 
+  const storage = new Map();
+  const localStorage = {
+    getItem(key) {
+      return storage.has(key) ? storage.get(key) : null;
+    },
+    setItem(key, value) {
+      storage.set(String(key), String(value));
+    },
+    removeItem(key) {
+      storage.delete(String(key));
+    },
+  };
+
   const elements = {
     promptInput: {
       value: '',
@@ -121,6 +134,33 @@ function createHarness(options = {}) {
       removeAttribute() {},
       setAttribute() {},
     },
+    modelSelect: {
+      value: '',
+      innerHTML: '',
+      appendChild() {},
+      addEventListener() {},
+      removeAttribute() {},
+      setAttribute() {},
+    },
+    effortSelect: {
+      value: '',
+      addEventListener() {},
+      removeAttribute() {},
+      setAttribute() {},
+    },
+    authTokenInput: {
+      value: '',
+      focus() {},
+      removeAttribute() {},
+      setAttribute() {},
+    },
+    authModal: {
+      classList: makeClassList(),
+    },
+    authError: { textContent: '' },
+    authCancelBtn: { style: {}, removeAttribute() {}, setAttribute() {} },
+    authConnectBtn: { disabled: false, textContent: 'Save' },
+    showHiddenSessionsInput: { checked: false, removeAttribute() {}, setAttribute() {} },
     voiceBtn: null,
     voiceStatus: null,
     askUserModal: makeNode(),
@@ -134,6 +174,7 @@ function createHarness(options = {}) {
   const state = {
     token: '',
     connected: true,
+    authRequired: false,
     streaming: false,
     streamGeneration: 0,
     attachments: [],
@@ -151,6 +192,8 @@ function createHarness(options = {}) {
     approval: null,
     selectedModel: '',
     selectedProvider: '',
+    selectedEffort: '',
+    showHiddenSessions: false,
     providers: [],
     lastEventTime: 0,
     expectCanceledRun: false,
@@ -158,7 +201,13 @@ function createHarness(options = {}) {
 
   const app = {
     UI_PREFIX: '/ui',
-    STORAGE_KEYS: {},
+    STORAGE_KEYS: {
+      selectedProvider: 'selectedProvider',
+      selectedModel: 'selectedModel',
+      selectedEffort: 'selectedEffort',
+      showHiddenSessions: 'showHiddenSessions',
+      token: 'token',
+    },
     state,
     elements,
     __busyTransitions: [],
@@ -259,6 +308,7 @@ function createHarness(options = {}) {
     window: windowObj,
     document,
     console,
+    localStorage,
     setTimeout,
     clearTimeout,
     setInterval,
@@ -282,8 +332,13 @@ function createHarness(options = {}) {
   };
   context.globalThis = context;
   windowObj.document = document;
+  windowObj.localStorage = localStorage;
   windowObj.fetch = async function fetch(url, options = {}) {
-    fetchCalls.push({ url, method: options.method || 'GET' });
+    fetchCalls.push({
+      url,
+      method: options.method || 'GET',
+      body: typeof options.body === 'string' ? options.body : null,
+    });
     if (url === '/ui/v1/responses') {
       return new Response(new ReadableStream({
         start(controller) {
@@ -334,6 +389,7 @@ function createHarness(options = {}) {
     elements,
     state,
     fetchCalls,
+    localStorage,
     getEventsStarted: () => getEventsStarted,
     postStreamCanceled: () => postStreamCanceled,
     closeEventsStream: () => {
@@ -655,12 +711,76 @@ async function testDrainInterruptQueueAfterResumeCompletes() {
   pass(name);
 }
 
+async function testConnectTokenPreservesSelectedModelAndProviderFromState() {
+  const name = 'connectToken preserves in-memory provider/model selection when modal DOM is stale';
+  const harness = createHarness();
+  const { app, elements, state, fetchCalls, cleanup } = harness;
+
+  state.token = 'token-123';
+  state.connected = true;
+  state.selectedProvider = 'venice';
+  state.selectedModel = 'claude-opus-4';
+  elements.authTokenInput.value = 'token-123';
+
+  // Simulate a stale modal DOM (for example, before async model loading has
+  // caught up). The live state already reflects the user's real choice.
+  elements.providerSelect.value = '';
+  elements.modelSelect.value = 'claude-sonnet-4-6';
+
+  await app.connectToken();
+
+  if (state.selectedProvider !== 'venice') {
+    fail(name, `selectedProvider = ${JSON.stringify(state.selectedProvider)}, want "venice"`);
+    await cleanup();
+    return;
+  }
+  if (state.selectedModel !== 'claude-opus-4') {
+    fail(name, `selectedModel = ${JSON.stringify(state.selectedModel)}, want "claude-opus-4"`);
+    await cleanup();
+    return;
+  }
+
+  elements.promptInput.value = 'hello';
+  await app.sendMessage();
+
+  const postCall = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  if (!postCall || !postCall.body) {
+    fail(name, 'missing POST /ui/v1/responses body', JSON.stringify(fetchCalls));
+    await cleanup();
+    return;
+  }
+
+  let body;
+  try {
+    body = JSON.parse(postCall.body);
+  } catch (err) {
+    fail(name, 'response POST body was not valid JSON', String(err));
+    await cleanup();
+    return;
+  }
+
+  if (body.provider !== 'venice') {
+    fail(name, `request provider = ${JSON.stringify(body.provider)}, want "venice"`, postCall.body);
+    await cleanup();
+    return;
+  }
+  if (body.model !== 'claude-opus-4') {
+    fail(name, `request model = ${JSON.stringify(body.model)}, want "claude-opus-4"`, postCall.body);
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
 (async () => {
   await testSendMessageHandsOffToEventsStream();
   await testSendMessageIgnoresPostBodyAfterHandoff();
   await testNewChatDuringStreamingClearsStreamingState();
   await testSendMessageMarksSessionBusyImmediately();
   await testDrainInterruptQueueAfterResumeCompletes();
+  await testConnectTokenPreservesSelectedModelAndProviderFromState();
 
   if (failures > 0) {
     console.error(`\n${failures} test(s) failed`);
