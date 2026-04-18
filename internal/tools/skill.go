@@ -108,14 +108,14 @@ func (t *ActivateSkillTool) Execute(ctx context.Context, args json.RawMessage) (
 	// For now, we'll trust the skill since it was discovered via the registry
 	// Future: Add approval flow for skill directory access
 
+	// Register skill-declared tools first so any allowed-tools filter can include them.
+	if t.onToolsActivated != nil && skill.HasTools() {
+		t.onToolsActivated(skill.Tools, skill.SourcePath)
+	}
+
 	// Notify callback about allowed-tools (if callback is set and skill has restrictions)
 	if t.onActivated != nil && len(skill.AllowedTools) > 0 {
 		t.onActivated(skill.AllowedTools)
-	}
-
-	// Register skill-declared tools if present
-	if t.onToolsActivated != nil && skill.HasTools() {
-		t.onToolsActivated(skill.Tools, skill.SourcePath)
 	}
 
 	// Generate the activation response
