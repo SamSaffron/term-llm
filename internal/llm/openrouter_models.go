@@ -5,12 +5,15 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/cache"
 )
 
 const openRouterCacheKey = "openrouter"
+
+var openRouterCacheRefreshInFlight atomic.Bool
 
 func GetCachedOpenRouterModels(apiKey string) []string {
 	cached, err := cache.ReadModelCache(openRouterCacheKey)
@@ -29,7 +32,9 @@ func GetCachedOpenRouterModels(apiKey string) []string {
 	}
 
 	if cached != nil && len(cached.Models) > 0 {
-		go refreshOpenRouterCache(apiKey)
+		if openRouterCacheRefreshInFlight.CompareAndSwap(false, true) {
+			go refreshOpenRouterCache(apiKey)
+		}
 		return cached.Models
 	}
 
@@ -57,6 +62,7 @@ func fetchOpenRouterModelsSync(apiKey string) []string {
 }
 
 func refreshOpenRouterCache(apiKey string) {
+	defer openRouterCacheRefreshInFlight.Store(false)
 	_ = fetchOpenRouterModelsSync(apiKey)
 }
 
