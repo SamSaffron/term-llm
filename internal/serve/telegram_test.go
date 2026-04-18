@@ -858,6 +858,132 @@ func TestTelegramSessionMgrResetSessionIfCurrent_RestoresHistoryFromDB(t *testin
 	}
 }
 
+func TestTelegramSessionMgrResetSessionIfCurrent_RestoresSanitizedCarryoverHistory(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	defer store.Close()
+
+	mgr := &telegramSessionMgr{
+		sessions: make(map[int64]*telegramSession),
+		store:    store,
+		settings: Settings{
+			TelegramCarryoverChars: 200,
+			Store:                  store,
+			NewSession: func(ctx context.Context) (*SessionRuntime, error) {
+				return &SessionRuntime{
+					ProviderName: "mock",
+					ModelName:    "model",
+				}, nil
+			},
+		},
+	}
+
+	ctx := context.Background()
+	original, err := mgr.getOrCreate(ctx, 42)
+	if err != nil {
+		t.Fatalf("getOrCreate failed: %v", err)
+	}
+
+	hugeBase64 := strings.Repeat("a", 128*1024)
+	persisted := []llm.Message{
+		llm.UserImageMessage("image/jpeg", hugeBase64, "caption text"),
+		{
+			Role: llm.RoleAssistant,
+			Parts: []llm.Part{{
+				Type: llm.PartToolCall,
+				ToolCall: &llm.ToolCall{
+					ID:        "call-1",
+					Name:      "view_image",
+					Arguments: json.RawMessage(`{"file_path":"photo.jpg"}`),
+				},
+			}},
+		},
+		{
+			Role: llm.RoleTool,
+			Parts: []llm.Part{{
+				Type: llm.PartToolResult,
+				ToolResult: &llm.ToolResult{
+					ID:      "call-1",
+					Name:    "view_image",
+					Content: "loaded",
+					ContentParts: []llm.ToolContentPart{{
+						Type: llm.ToolContentPartImageData,
+						ImageData: &llm.ToolImageData{
+							MediaType: "image/jpeg",
+							Base64:    hugeBase64,
+						},
+					}},
+				},
+			}},
+		},
+	}
+	for _, msg := range persisted {
+		if err := store.AddMessage(ctx, original.meta.ID, session.NewMessage(original.meta.ID, msg, -1)); err != nil {
+			t.Fatalf("add message: %v", err)
+		}
+	}
+
+	replacement, replaced, err := mgr.resetSessionIfCurrent(ctx, 42, original)
+	if err != nil {
+		t.Fatalf("resetSessionIfCurrent failed: %v", err)
+	}
+	if !replaced {
+		t.Fatalf("expected reset to replace session")
+	}
+	if len(replacement.history) != len(persisted) {
+		t.Fatalf("expected %d restored messages, got %d", len(persisted), len(replacement.history))
+	}
+
+	userMsg := replacement.history[0]
+	if userMsg.Role != llm.RoleUser {
+		t.Fatalf("expected first restored message role %q, got %q", llm.RoleUser, userMsg.Role)
+	}
+	userText := collectUserText(userMsg)
+	if !strings.Contains(userText, "[image uploaded]") {
+		t.Fatalf("expected user carryover placeholder, got %q", userText)
+	}
+	if !strings.Contains(userText, "caption text") {
+		t.Fatalf("expected user carryover caption, got %q", userText)
+	}
+	for _, part := range userMsg.Parts {
+		if part.Type == llm.PartImage {
+			t.Fatalf("restored carryover should not keep image parts: %+v", userMsg.Parts)
+		}
+	}
+
+	assistantMsg := replacement.history[1]
+	if assistantMsg.Role != llm.RoleAssistant {
+		t.Fatalf("expected second restored message role %q, got %q", llm.RoleAssistant, assistantMsg.Role)
+	}
+	if len(assistantMsg.Parts) != 1 || assistantMsg.Parts[0].Type != llm.PartToolCall || assistantMsg.Parts[0].ToolCall == nil {
+		t.Fatalf("expected assistant tool call to be preserved, got %+v", assistantMsg.Parts)
+	}
+	if assistantMsg.Parts[0].ToolCall.ID != "call-1" {
+		t.Fatalf("expected preserved tool call id call-1, got %q", assistantMsg.Parts[0].ToolCall.ID)
+	}
+
+	toolMsg := replacement.history[2]
+	if toolMsg.Role != llm.RoleTool {
+		t.Fatalf("expected third restored message role %q, got %q", llm.RoleTool, toolMsg.Role)
+	}
+	if len(toolMsg.Parts) != 1 || toolMsg.Parts[0].Type != llm.PartToolResult || toolMsg.Parts[0].ToolResult == nil {
+		t.Fatalf("expected tool result to be preserved, got %+v", toolMsg.Parts)
+	}
+	toolResult := toolMsg.Parts[0].ToolResult
+	if !strings.Contains(toolResult.Content, "loaded") || !strings.Contains(toolResult.Content, "[image uploaded]") {
+		t.Fatalf("expected sanitized tool result content with placeholder, got %q", toolResult.Content)
+	}
+	if len(toolResult.ContentParts) != 0 {
+		t.Fatalf("expected sanitized tool result to drop content parts, got %+v", toolResult.ContentParts)
+	}
+	if len(toolResult.Images) != 0 {
+		t.Fatalf("expected sanitized tool result to drop images, got %+v", toolResult.Images)
+	}
+}
+
 func TestTelegramSessionMgrResetSession_ZeroCarryoverDisablesHistory(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
