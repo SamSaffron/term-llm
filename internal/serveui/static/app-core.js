@@ -395,6 +395,25 @@ const escapeHTML = (str) => {
   return div.innerHTML;
 };
 
+const splitHeaderModelEffort = (model, effort) => {
+  const rawModel = String(model || '').trim();
+  const rawEffort = String(effort || '').trim();
+  if (!rawModel || !rawEffort) {
+    return { model: rawModel, effort: rawEffort };
+  }
+
+  const normalizedEffort = rawEffort.toLowerCase();
+  const suffix = new RegExp(`[-_ ]${normalizedEffort}$`, 'i');
+  if (!suffix.test(rawModel)) {
+    return { model: rawModel, effort: rawEffort };
+  }
+
+  return {
+    model: rawModel.replace(suffix, ''),
+    effort: rawEffort
+  };
+};
+
 const updateSessionUsageDisplay = (session) => {
   const el = elements?.headerStats;
   if (!el) return;
@@ -402,18 +421,19 @@ const updateSessionUsageDisplay = (session) => {
   const model = session?.activeModel || state.selectedModel || '';
   const provider = session?.provider || state.selectedProvider || '';
   const effort = state.selectedEffort || '';
+  const headerModelEffort = splitHeaderModelEffort(model, effort);
 
   const parts = [];
   if (provider) {
     parts.push(`<span class="stats-provider">${escapeHTML(provider)}</span>`);
   }
-  if (model) {
-    parts.push(`<span class="stats-model">${escapeHTML(model)}</span>`);
+  if (headerModelEffort.model) {
+    parts.push(`<span class="stats-model">${escapeHTML(headerModelEffort.model)}</span>`);
   } else if (!provider) {
     parts.push(`<span class="stats-model stats-muted">Auto</span>`);
   }
-  if (effort) {
-    parts.push(`<span class="stats-effort">${escapeHTML(effort)}</span>`);
+  if (headerModelEffort.effort) {
+    parts.push(`<span class="stats-effort">${escapeHTML(headerModelEffort.effort)}</span>`);
   }
 
   if (lu) {
@@ -1067,6 +1087,7 @@ Object.assign(app, {
   toolIcon,
   formatUsage,
   renderMath,
+  splitHeaderModelEffort,
   updateSessionUsageDisplay,
   isNearBottom,
   scrollToBottom,
