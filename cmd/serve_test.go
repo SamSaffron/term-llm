@@ -3646,6 +3646,89 @@ func TestHandleSessionState_ConsumesDeferredUIRunError(t *testing.T) {
 	}
 }
 
+func TestHandleSessionState_ReturnsModelAndEffortFromRuntime(t *testing.T) {
+	rt := &serveRuntime{
+		providerKey:  "anthropic",
+		defaultModel: "claude-3-5-sonnet",
+	}
+	rt.mu.Lock()
+	rt.sessionMeta = &session.Session{
+		Model:           "claude-opus-4",
+		ReasoningEffort: "high",
+	}
+	rt.mu.Unlock()
+
+	mgr := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
+		return rt, nil
+	})
+	defer mgr.Close()
+	mgr.mu.Lock()
+	mgr.sessions["sess-model"] = rt
+	mgr.mu.Unlock()
+
+	srv := &serveServer{sessionMgr: mgr}
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/sess-model/state", nil)
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `"model":"claude-opus-4"`) {
+		t.Errorf("expected model from sessionMeta in state, got %s", body)
+	}
+	if !strings.Contains(body, `"reasoning_effort":"high"`) {
+		t.Errorf("expected reasoning_effort from sessionMeta in state, got %s", body)
+	}
+	if !strings.Contains(body, `"provider":"anthropic"`) {
+		t.Errorf("expected provider in state, got %s", body)
+	}
+}
+
+func TestHandleSessionState_FallsBackToDBWhenRuntimeNotLoaded(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer store.Close()
+
+	sess := &session.Session{
+		ID:              "sess-db-fallback",
+		ProviderKey:     "openai",
+		Model:           "gpt-5",
+		ReasoningEffort: "medium",
+		Mode:            session.ModeChat,
+		Origin:          session.OriginWeb,
+	}
+	if err := store.Create(context.Background(), sess); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	mgr := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
+		return &serveRuntime{}, nil
+	})
+	defer mgr.Close()
+
+	srv := &serveServer{sessionMgr: mgr, store: store}
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/sess-db-fallback/state", nil)
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `"model":"gpt-5"`) {
+		t.Errorf("expected model from DB fallback in state, got %s", body)
+	}
+	if !strings.Contains(body, `"reasoning_effort":"medium"`) {
+		t.Errorf("expected reasoning_effort from DB fallback in state, got %s", body)
+	}
+	if !strings.Contains(body, `"provider":"openai"`) {
+		t.Errorf("expected provider from DB fallback in state, got %s", body)
+	}
+}
+
 func TestHandleResponses_ReturnsStableResponseID(t *testing.T) {
 	srv := newTestServeServer("hello")
 	defer srv.sessionMgr.Close()

@@ -420,7 +420,7 @@ const updateSessionUsageDisplay = (session) => {
   const lu = session?.lastUsage;
   const model = session?.activeModel || state.selectedModel || '';
   const provider = session?.provider || state.selectedProvider || '';
-  const effort = state.selectedEffort || '';
+  const effort = session?.activeEffort || state.selectedEffort || '';
   const headerModelEffort = splitHeaderModelEffort(model, effort);
 
   const parts = [];
@@ -801,7 +801,8 @@ const sanitizeSession = (session) => {
     lastSequenceNumber: Number.isFinite(Number(session.lastSequenceNumber)) ? Number(session.lastSequenceNumber) : 0,
     sessionUsage: session.sessionUsage && typeof session.sessionUsage === 'object' ? session.sessionUsage : null,
     lastUsage: session.lastUsage && typeof session.lastUsage === 'object' ? session.lastUsage : null,
-    activeModel: typeof session.activeModel === 'string' ? session.activeModel : ''
+    activeModel: typeof session.activeModel === 'string' ? session.activeModel : '',
+    activeEffort: typeof session.activeEffort === 'string' ? session.activeEffort : ''
   };
   if (session._serverOnly) result._serverOnly = true;
   if (typeof session.number === 'number' && session.number > 0) result.number = session.number;

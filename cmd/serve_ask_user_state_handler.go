@@ -12,6 +12,8 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 		"active_run": false,
 	}
 
+	var persistedProvider, persistedModel, persistedEffort string
+
 	if s.sessionMgr != nil {
 		if rt, ok := s.sessionMgr.Get(sessionID); ok && rt != nil {
 			activeRun := rt.hasActiveRun()
@@ -25,15 +27,21 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 				resp["pending_approval"] = approvals[0]
 			}
 			if pk := strings.TrimSpace(rt.providerKey); pk != "" {
-				resp["provider"] = pk
+				persistedProvider = pk
 			} else if rt.provider != nil {
-				// Resolve display label to canonical key.
 				resolved := resolveSessionProviderKey(s.cfgRef, &session.Session{
 					Provider: strings.TrimSpace(rt.provider.Name()),
 				})
-				if resolved != "" {
-					resp["provider"] = resolved
-				}
+				persistedProvider = resolved
+			}
+			rt.mu.Lock()
+			if rt.sessionMeta != nil {
+				persistedModel = strings.TrimSpace(rt.sessionMeta.Model)
+				persistedEffort = strings.TrimSpace(rt.sessionMeta.ReasoningEffort)
+			}
+			rt.mu.Unlock()
+			if persistedModel == "" {
+				persistedModel = strings.TrimSpace(rt.defaultModel)
 			}
 			if !activeRun {
 				if lastErr := rt.consumeLastUIRunError(); lastErr != "" {
@@ -42,11 +50,38 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 			}
 		}
 	}
+
+	// Fall back to DB when the runtime is not loaded (e.g. after a page reload).
+	if s.store != nil && (persistedProvider == "" || persistedModel == "") {
+		if sess, err := s.store.Get(r.Context(), sessionID); err == nil && sess != nil {
+			if persistedProvider == "" {
+				pk := strings.TrimSpace(sess.ProviderKey)
+				if pk == "" {
+					pk = resolveSessionProviderKey(s.cfgRef, sess)
+				}
+				persistedProvider = pk
+			}
+			if persistedModel == "" {
+				persistedModel = strings.TrimSpace(sess.Model)
+			}
+			if persistedEffort == "" {
+				persistedEffort = strings.TrimSpace(sess.ReasoningEffort)
+			}
+		}
+	}
+
+	if persistedProvider != "" {
+		resp["provider"] = persistedProvider
+	}
+	if persistedModel != "" {
+		resp["model"] = persistedModel
+	}
+	if persistedEffort != "" {
+		resp["reasoning_effort"] = persistedEffort
+	}
+
 	if s.responseRuns != nil {
 		if activeResponseID := s.responseRuns.activeRunID(sessionID); activeResponseID != "" {
-			// Detached response runs outlive the browser request, so they are the
-			// durable source of truth for reload/reconnect even if runtime polling
-			// has not observed the active run yet.
 			resp["active_run"] = true
 			resp["active_response_id"] = activeResponseID
 		}

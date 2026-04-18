@@ -2376,11 +2376,13 @@ const sendMessage = async (options = {}) => {
     body.input = rebuildInputFromSession(session, inputContent);
   }
 
-  if (state.selectedModel) {
-    body.model = state.selectedModel;
+  const activeModel = session.activeModel || state.selectedModel;
+  if (activeModel) {
+    body.model = activeModel;
   }
-  if (state.selectedEffort) {
-    body.reasoning_effort = state.selectedEffort;
+  const activeEffort = session.activeEffort || state.selectedEffort;
+  if (activeEffort) {
+    body.reasoning_effort = activeEffort;
   }
   if (!session.provider && state.selectedProvider) {
     session.provider = state.selectedProvider;

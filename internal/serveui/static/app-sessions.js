@@ -371,8 +371,23 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false) => {
   const runtimeState = await loadServerSessionState(session.id);
   if (!runtimeState) return null;
 
+  let sessionChanged = false;
   if (runtimeState.provider && runtimeState.provider !== session.provider) {
     session.provider = runtimeState.provider;
+    sessionChanged = true;
+  }
+  if (runtimeState.model && runtimeState.model !== session.activeModel) {
+    session.activeModel = runtimeState.model;
+    sessionChanged = true;
+  }
+  if (runtimeState.reasoning_effort !== undefined) {
+    const effort = String(runtimeState.reasoning_effort || '');
+    if (effort !== (session.activeEffort || '')) {
+      session.activeEffort = effort;
+      sessionChanged = true;
+    }
+  }
+  if (sessionChanged) {
     saveSessions();
   }
 
