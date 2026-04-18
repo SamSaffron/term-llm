@@ -58,19 +58,20 @@ type Session struct {
 	TitleBasisMsgSeq    int                `json:"title_basis_msg_seq,omitempty"`
 	TitleSkippedAt      time.Time          `json:"title_skipped_at,omitempty"` // Set when autotitle considers session untitlable; cleared when session is updated
 
-	Provider    string        `json:"provider"`               // Provider display label
-	ProviderKey string        `json:"provider_key,omitempty"` // Canonical provider key (e.g. openai, chatgpt, custom alias)
-	Model       string        `json:"model"`
-	Mode        SessionMode   `json:"mode,omitempty"`   // Session mode (chat, ask, plan, exec)
-	Origin      SessionOrigin `json:"origin,omitempty"` // Session surface/origin (tui, web, telegram)
-	Agent       string        `json:"agent,omitempty"`  // Agent name used for this session
-	CWD         string        `json:"cwd,omitempty"`    // Working directory at session start
-	CreatedAt   time.Time     `json:"created_at"`
-	UpdatedAt   time.Time     `json:"updated_at"`
-	Archived    bool          `json:"archived,omitempty"`
-	Pinned      bool          `json:"pinned,omitempty"`
-	ParentID    string        `json:"parent_id,omitempty"`   // For session branching
-	IsSubagent  bool          `json:"is_subagent,omitempty"` // True if this is a subagent session
+	Provider        string        `json:"provider"`               // Provider display label
+	ProviderKey     string        `json:"provider_key,omitempty"` // Canonical provider key (e.g. openai, chatgpt, custom alias)
+	Model           string        `json:"model"`
+	ReasoningEffort string        `json:"reasoning_effort,omitempty"` // Reasoning effort pinned at session creation (web only)
+	Mode            SessionMode   `json:"mode,omitempty"`             // Session mode (chat, ask, plan, exec)
+	Origin          SessionOrigin `json:"origin,omitempty"`           // Session surface/origin (tui, web, telegram)
+	Agent           string        `json:"agent,omitempty"`            // Agent name used for this session
+	CWD             string        `json:"cwd,omitempty"`              // Working directory at session start
+	CreatedAt       time.Time     `json:"created_at"`
+	UpdatedAt       time.Time     `json:"updated_at"`
+	Archived        bool          `json:"archived,omitempty"`
+	Pinned          bool          `json:"pinned,omitempty"`
+	ParentID        string        `json:"parent_id,omitempty"`   // For session branching
+	IsSubagent      bool          `json:"is_subagent,omitempty"` // True if this is a subagent session
 
 	// Session settings (restored on resume unless overridden)
 	Search bool   `json:"search,omitempty"` // Web search enabled

@@ -1112,12 +1112,17 @@ func (s *serveServer) runtimeForFreshProviderRequest(ctx context.Context, sessio
 	return rt, true, nil
 }
 
-func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID string, rt *serveRuntime) {
+// syncPersistedSessionRuntime pins the provider, model, and reasoning_effort
+// on the session row for the first message of a web session. Fields already
+// set on the row are never overwritten; once saved on first message, these
+// values are locked for the remainder of the session. Later requests must use
+// the locked values — cross-provider or cross-model swaps mid-session corrupt
+// saved state (tool call shapes, response chaining, reasoning trace), and
+// handover is a future feature. If the row does not yet exist, it is created
+// here so the client-supplied model and effort are persisted (rather than the
+// runtime defaults that rt would otherwise use when Run creates the row).
+func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID string, rt *serveRuntime, clientModel, reasoningEffort string) {
 	if s.store == nil || sessionID == "" || rt == nil {
-		return
-	}
-	sess, err := s.store.Get(ctx, sessionID)
-	if err != nil || sess == nil {
 		return
 	}
 	providerKey := strings.TrimSpace(rt.providerKey)
@@ -1127,18 +1132,71 @@ func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID
 			providerName = name
 		}
 	}
-	modelName := strings.TrimSpace(rt.defaultModel)
+	// Prefer the client-requested model: the client's first-message choice is
+	// what gets locked. Fall back to the runtime's default only when the
+	// client didn't send one.
+	modelName := strings.TrimSpace(clientModel)
+	if modelName == "" {
+		modelName = strings.TrimSpace(rt.defaultModel)
+	}
+	effort := strings.TrimSpace(reasoningEffort)
+
+	sess, err := s.store.Get(ctx, sessionID)
+	if err != nil {
+		return
+	}
+	if sess == nil {
+		sess = &session.Session{
+			ID:          sessionID,
+			Provider:    providerName,
+			ProviderKey: providerKey,
+			Model:       modelName,
+			Mode:        session.ModeChat,
+			Origin:      session.OriginWeb,
+			Agent:       rt.agentName,
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+			Search:      rt.search,
+			Tools:       rt.toolsSetting,
+			MCP:         rt.mcpSetting,
+			Status:      session.StatusActive,
+		}
+		if effort != "" {
+			sess.ReasoningEffort = effort
+		}
+		if cwd, cwdErr := os.Getwd(); cwdErr == nil {
+			sess.CWD = cwd
+		}
+		if createErr := s.store.Create(ctx, sess); createErr != nil {
+			if existing, getErr := s.store.Get(ctx, sessionID); getErr == nil && existing != nil {
+				sess = existing
+			} else {
+				log.Printf("[serve] session Create failed for %s: %v", sessionID, createErr)
+				return
+			}
+		} else {
+			rt.mu.Lock()
+			rt.sessionMeta = sess
+			rt.mu.Unlock()
+			return
+		}
+	}
+
 	changed := false
-	if providerName != "" && sess.Provider != providerName {
+	if providerName != "" && strings.TrimSpace(sess.Provider) == "" {
 		sess.Provider = providerName
 		changed = true
 	}
-	if providerKey != "" && sess.ProviderKey != providerKey {
+	if providerKey != "" && strings.TrimSpace(sess.ProviderKey) == "" {
 		sess.ProviderKey = providerKey
 		changed = true
 	}
-	if modelName != "" && sess.Model != modelName {
+	if modelName != "" && strings.TrimSpace(sess.Model) == "" {
 		sess.Model = modelName
+		changed = true
+	}
+	if effort != "" && strings.TrimSpace(sess.ReasoningEffort) == "" {
+		sess.ReasoningEffort = effort
 		changed = true
 	}
 	if !changed {

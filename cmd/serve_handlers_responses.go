@@ -72,15 +72,28 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("x-session-id", sessionID)
 		replaceHistory = true
 	}
-	// Use requested provider for new sessions only. For chained requests,
-	// recover the persisted session provider so runtime recreation preserves
-	// the original provider/model continuity after eviction.
+	// Lock provider/model/reasoning_effort to whatever was persisted on the
+	// session row: these fields are only honored from the client on the first
+	// message of a session. Once the row exists with a provider, every later
+	// request for that session uses the saved values, regardless of what the
+	// client sent. Cross-provider or cross-model swaps mid-session corrupt
+	// saved state (tool result shapes, response chaining, reasoning) — the
+	// silent override prevents that. Handover is a future feature.
 	reqProvider := strings.TrimSpace(req.Provider)
-	if req.PreviousResponseID != "" && reqProvider == "" && s.store != nil {
+	if s.store != nil {
 		if sess, getErr := s.store.Get(ctx, sessionID); getErr == nil && sess != nil {
-			reqProvider = strings.TrimSpace(sess.ProviderKey)
-			if reqProvider == "" {
-				reqProvider = resolveSessionProviderKey(s.cfgRef, sess)
+			persistedProvider := strings.TrimSpace(sess.ProviderKey)
+			if persistedProvider == "" {
+				persistedProvider = resolveSessionProviderKey(s.cfgRef, sess)
+			}
+			if persistedProvider != "" {
+				reqProvider = persistedProvider
+				if m := strings.TrimSpace(sess.Model); m != "" {
+					req.Model = m
+				}
+				if e := strings.TrimSpace(sess.ReasoningEffort); e != "" {
+					req.ReasoningEffort = e
+				}
 			}
 		}
 	}
@@ -109,7 +122,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if freshConversation {
-		s.syncPersistedSessionRuntime(ctx, sessionID, runtime)
+		s.syncPersistedSessionRuntime(ctx, sessionID, runtime, strings.TrimSpace(req.Model), normalizeReasoningEffort(req.ReasoningEffort))
 	}
 
 	// Enforce chaining from the latest response only. Stale response IDs that
