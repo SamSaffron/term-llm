@@ -875,13 +875,25 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	seen := map[string]bool{}
-	items := make([]map[string]any, 0, len(models))
+	ids := make([]string, 0, len(models))
+	byID := make(map[string]llm.ModelInfo, len(models))
 	for _, m := range models {
-		if m.ID == "" || seen[m.ID] {
+		if m.ID == "" {
 			continue
 		}
-		seen[m.ID] = true
+		if _, ok := byID[m.ID]; ok {
+			continue
+		}
+		byID[m.ID] = m
+		ids = append(ids, m.ID)
+	}
+	// The web UI has a dedicated reasoning-effort selector, so drop
+	// "<base>-<effort>" aliases when the base model is also present.
+	ids = llm.DedupeEffortVariants(ids)
+
+	items := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
+		m := byID[id]
 		items = append(items, map[string]any{
 			"id":      m.ID,
 			"object":  "model",

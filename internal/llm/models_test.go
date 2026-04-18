@@ -307,6 +307,41 @@ func TestEffortVariantLimitsMatchBase(t *testing.T) {
 	}
 }
 
+func TestDedupeEffortVariants(t *testing.T) {
+	// claude-bin curated list has base + effort-suffixed aliases; the
+	// suffixed ones should be dropped when the base is present.
+	in := []string{
+		"opus", "opus-low", "opus-medium", "opus-high", "opus-xhigh", "opus-max",
+		"sonnet", "sonnet-low", "sonnet-medium", "sonnet-high",
+		"haiku",
+	}
+	got := DedupeEffortVariants(in)
+	want := []string{"opus", "sonnet", "haiku"}
+	if len(got) != len(want) {
+		t.Fatalf("DedupeEffortVariants: got %v, want %v", got, want)
+	}
+	for i, id := range want {
+		if got[i] != id {
+			t.Errorf("index %d: got %q, want %q", i, got[i], id)
+		}
+	}
+
+	// Effort-suffixed entries without a base are preserved (e.g. some
+	// provider might expose only the suffixed variant).
+	in2 := []string{"gpt-5.4-high", "gpt-5.4-mini"}
+	got2 := DedupeEffortVariants(in2)
+	if len(got2) != 2 || got2[0] != "gpt-5.4-high" || got2[1] != "gpt-5.4-mini" {
+		t.Errorf("expected both entries preserved, got %v", got2)
+	}
+
+	// Unrelated "-high"/"-low"/etc. suffixes without a base are preserved.
+	in3 := []string{"claude-sonnet-4-6", "gpt-5.4"}
+	got3 := DedupeEffortVariants(in3)
+	if len(got3) != 2 {
+		t.Errorf("expected both entries preserved, got %v", got3)
+	}
+}
+
 func containsModelID(items []string, want string) bool {
 	for _, item := range items {
 		if item == want {

@@ -6422,6 +6422,51 @@ func TestHandleModels_WithProviderParam(t *testing.T) {
 	}
 }
 
+func TestHandleModels_DropsEffortSuffixDuplicates(t *testing.T) {
+	cfg := &config.Config{
+		DefaultProvider: "claude-bin",
+		Providers:       map[string]config.ProviderConfig{"claude-bin": {}},
+	}
+	// Use the MockProvider so ListModels returns nothing and we fall back
+	// to the curated claude-bin list (which contains opus-low/medium/high/...).
+	mock := llm.NewMockProvider("claude-bin")
+	srv := &serveServer{
+		cfgRef:          cfg,
+		modelsProviders: map[string]llm.Provider{"claude-bin": mock},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models?provider=claude-bin", nil)
+	rr := httptest.NewRecorder()
+	srv.handleModels(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+	var result struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
+		t.Fatalf("json decode: %v", err)
+	}
+	got := make(map[string]bool, len(result.Data))
+	for _, m := range result.Data {
+		id, _ := m["id"].(string)
+		got[id] = true
+	}
+	// Base models must remain.
+	for _, want := range []string{"opus", "sonnet", "haiku"} {
+		if !got[want] {
+			t.Errorf("expected %q in models response, got %v", want, got)
+		}
+	}
+	// Effort-suffixed aliases must be filtered out — the web UI has a
+	// dedicated reasoning-effort selector for these.
+	for _, banned := range []string{"opus-low", "opus-medium", "opus-high", "opus-xhigh", "opus-max", "sonnet-low", "sonnet-medium", "sonnet-high"} {
+		if got[banned] {
+			t.Errorf("unexpected %q in models response (should be deduped by effort selector)", banned)
+		}
+	}
+}
+
 func TestHandleResponses_WithProviderField(t *testing.T) {
 	provider := llm.NewMockProvider("mock").AddTextResponse("ok")
 	factory := func(ctx context.Context) (*serveRuntime, error) {

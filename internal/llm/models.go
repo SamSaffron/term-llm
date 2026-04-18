@@ -336,6 +336,38 @@ func hasEffortSuffix(model string) bool {
 	return false
 }
 
+// knownEffortSuffixes is the union of reasoning-effort suffixes recognised
+// across providers (gpt-5, claude-bin opus/sonnet). Used to detect
+// "<base>-<effort>" aliases that duplicate a base model when effort is
+// picked separately.
+var knownEffortSuffixes = []string{"minimal", "low", "medium", "high", "xhigh", "max"}
+
+// DedupeEffortVariants removes effort-suffixed aliases (e.g. "opus-high",
+// "gpt-5.4-medium") when the base model is also present in the list.
+// Used by UIs that expose reasoning effort through a dedicated selector,
+// where "<base>-<effort>" entries just duplicate what the selector covers.
+// Order is preserved; entries without a matching base are kept as-is.
+func DedupeEffortVariants(ids []string) []string {
+	have := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		have[id] = true
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		drop := false
+		for _, suffix := range knownEffortSuffixes {
+			if strings.HasSuffix(id, "-"+suffix) && have[strings.TrimSuffix(id, "-"+suffix)] {
+				drop = true
+				break
+			}
+		}
+		if !drop {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 // GetBuiltInProviderNames returns the built-in provider type names
 func GetBuiltInProviderNames() []string {
 	return []string{"anthropic", "bedrock", "openai", "chatgpt", "copilot", "openrouter", "gemini", "gemini-cli", "zen", "claude-bin", "xai", "venice"}
