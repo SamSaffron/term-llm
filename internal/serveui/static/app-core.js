@@ -395,6 +395,15 @@ const escapeHTML = (str) => {
   return div.innerHTML;
 };
 
+const normalizeHeaderStatToken = (value) => String(value || '').trim().toLowerCase();
+
+const modelAlreadyImpliesEffort = (model, effort) => {
+  const normalizedEffort = normalizeHeaderStatToken(effort);
+  if (!normalizedEffort) return false;
+  const modelTokens = normalizeHeaderStatToken(model).split(/[^a-z0-9]+/).filter(Boolean);
+  return modelTokens.includes(normalizedEffort);
+};
+
 const updateSessionUsageDisplay = (session) => {
   const el = elements?.headerStats;
   if (!el) return;
@@ -412,7 +421,7 @@ const updateSessionUsageDisplay = (session) => {
   } else if (!provider) {
     parts.push(`<span class="stats-model stats-muted">Auto</span>`);
   }
-  if (effort) {
+  if (effort && !modelAlreadyImpliesEffort(model, effort)) {
     parts.push(`<span class="stats-effort">${escapeHTML(effort)}</span>`);
   }
 
