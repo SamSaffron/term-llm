@@ -66,6 +66,24 @@ func TestClaudeBinProvider_CleanupMCP_Safe(t *testing.T) {
 	provider.CleanupMCP()
 }
 
+func TestClaudeBinProvider_CleanupMCP_RemovesTrackedTempFiles(t *testing.T) {
+	provider := NewClaudeBinProvider("sonnet", nil)
+
+	path := provider.imageDataToTempFile("image/png", "aGVsbG8=")
+	if path == "" {
+		t.Fatal("expected temp file path")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected temp file to exist before cleanup: %v", err)
+	}
+
+	provider.CleanupMCP()
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected temp file to be removed, got err=%v", err)
+	}
+}
+
 func TestSafeSendEvent_ClosedChannel(t *testing.T) {
 	// Test that safeSendEvent doesn't panic on closed channel
 	ch := make(chan Event)
