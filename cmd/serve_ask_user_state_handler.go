@@ -13,6 +13,8 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 	}
 
 	var persistedProvider, persistedModel, persistedEffort string
+	var runtimeDefaultModel string
+	runtimeMetaRead := false
 
 	if s.sessionMgr != nil {
 		if rt, ok := s.sessionMgr.Get(sessionID); ok && rt != nil {
@@ -34,14 +36,17 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 				})
 				persistedProvider = resolved
 			}
-			rt.mu.Lock()
-			if rt.sessionMeta != nil {
-				persistedModel = strings.TrimSpace(rt.sessionMeta.Model)
-				persistedEffort = strings.TrimSpace(rt.sessionMeta.ReasoningEffort)
-			}
-			rt.mu.Unlock()
-			if persistedModel == "" {
-				persistedModel = strings.TrimSpace(rt.defaultModel)
+			runtimeDefaultModel = strings.TrimSpace(rt.defaultModel)
+			// rt.mu is held for the entire duration of a run; take it only
+			// non-blockingly so state polls never stall a busy session. When
+			// the lock is held, fall through to the DB for model/effort.
+			if rt.mu.TryLock() {
+				if rt.sessionMeta != nil {
+					persistedModel = strings.TrimSpace(rt.sessionMeta.Model)
+					persistedEffort = strings.TrimSpace(rt.sessionMeta.ReasoningEffort)
+				}
+				rt.mu.Unlock()
+				runtimeMetaRead = true
 			}
 			if !activeRun {
 				if lastErr := rt.consumeLastUIRunError(); lastErr != "" {
@@ -51,8 +56,10 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 		}
 	}
 
-	// Fall back to DB when the runtime is not loaded (e.g. after a page reload).
-	if s.store != nil && (persistedProvider == "" || persistedModel == "") {
+	// Fall back to the DB when the runtime was not loaded (e.g. after a
+	// page reload) or we could not read sessionMeta because a run held
+	// rt.mu. The DB has the last persisted model/effort for the session.
+	if s.store != nil && (!runtimeMetaRead || persistedProvider == "" || persistedModel == "") {
 		if sess, err := s.store.Get(r.Context(), sessionID); err == nil && sess != nil {
 			if persistedProvider == "" {
 				pk := strings.TrimSpace(sess.ProviderKey)
@@ -68,6 +75,10 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 				persistedEffort = strings.TrimSpace(sess.ReasoningEffort)
 			}
 		}
+	}
+
+	if persistedModel == "" {
+		persistedModel = runtimeDefaultModel
 	}
 
 	if persistedProvider != "" {

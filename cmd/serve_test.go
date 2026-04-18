@@ -3729,6 +3729,85 @@ func TestHandleSessionState_FallsBackToDBWhenRuntimeNotLoaded(t *testing.T) {
 	}
 }
 
+func TestHandleSessionState_DoesNotBlockWhileRunHoldsRuntimeMutex(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer store.Close()
+
+	sess := &session.Session{
+		ID:              "sess-busy",
+		ProviderKey:     "openai",
+		Model:           "gpt-5",
+		ReasoningEffort: "medium",
+		Mode:            session.ModeChat,
+		Origin:          session.OriginWeb,
+	}
+	if err := store.Create(context.Background(), sess); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	rt := &serveRuntime{
+		providerKey:  "openai",
+		defaultModel: "gpt-5",
+		store:        store,
+		sessionMeta:  sess,
+	}
+
+	mgr := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
+		return rt, nil
+	})
+	defer mgr.Close()
+	mgr.mu.Lock()
+	mgr.sessions[sess.ID] = rt
+	mgr.mu.Unlock()
+
+	srv := &serveServer{sessionMgr: mgr, store: store}
+
+	// Simulate an active run by holding rt.mu while the handler runs. Release
+	// before mgr.Close() so the runtime can finalize without deadlocking.
+	rt.mu.Lock()
+	lockReleased := false
+	releaseLock := func() {
+		if !lockReleased {
+			lockReleased = true
+			rt.mu.Unlock()
+		}
+	}
+	defer releaseLock()
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sess.ID+"/state", nil)
+		rr := httptest.NewRecorder()
+		srv.handleSessionByID(rr, req)
+		done <- rr
+	}()
+
+	select {
+	case rr := <-done:
+		releaseLock()
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d", rr.Code)
+		}
+		body := rr.Body.String()
+		if !strings.Contains(body, `"model":"gpt-5"`) {
+			t.Errorf("expected model from DB fallback while rt.mu held, got %s", body)
+		}
+		if !strings.Contains(body, `"reasoning_effort":"medium"`) {
+			t.Errorf("expected reasoning_effort from DB fallback while rt.mu held, got %s", body)
+		}
+		if !strings.Contains(body, `"provider":"openai"`) {
+			t.Errorf("expected provider while rt.mu held, got %s", body)
+		}
+	case <-time.After(2 * time.Second):
+		releaseLock()
+		t.Fatal("handleSessionState blocked while rt.mu was held by a run")
+	}
+}
+
 func TestHandleResponses_ReturnsStableResponseID(t *testing.T) {
 	srv := newTestServeServer("hello")
 	defer srv.sessionMgr.Close()
