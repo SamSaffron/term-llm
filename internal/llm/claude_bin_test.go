@@ -676,6 +676,26 @@ func TestClaudeBinProvider_SystemPromptForTurn(t *testing.T) {
 	}
 }
 
+func TestClaudeBinProvider_ResetConversationClearsResumeState(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+	p.sessionID = "resume-abc"
+	p.messagesSent = 3
+
+	p.ResetConversation()
+
+	if p.sessionID != "" {
+		t.Fatalf("sessionID = %q, want empty after reset", p.sessionID)
+	}
+	if p.messagesSent != 0 {
+		t.Fatalf("messagesSent = %d, want 0 after reset", p.messagesSent)
+	}
+
+	args, _ := p.buildArgs(context.Background(), Request{}, eventSender{})
+	if joined := strings.Join(args, " "); strings.Contains(joined, "--resume") {
+		t.Fatalf("buildArgs() = %q, want no --resume after reset", joined)
+	}
+}
+
 func TestClaudeBinProvider_BuildCommandEnv(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "should-be-cleared")
 	t.Setenv("CLAUDE_CODE_EFFORT_LEVEL", "medium")

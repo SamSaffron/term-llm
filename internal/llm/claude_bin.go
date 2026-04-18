@@ -204,6 +204,13 @@ func (p *ClaudeBinProvider) SetToolExecutor(executor func(ctx context.Context, n
 	}
 }
 
+// ResetConversation clears Claude CLI resume state so the next turn starts a
+// fresh conversation instead of resuming the previous CLI session.
+func (p *ClaudeBinProvider) ResetConversation() {
+	p.sessionID = ""
+	p.messagesSent = 0
+}
+
 func (p *ClaudeBinProvider) Name() string {
 	model := p.model
 	if model == "" {
