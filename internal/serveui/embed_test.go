@@ -289,7 +289,8 @@ func TestStaticAssetsSupportEffortDropdown(t *testing.T) {
 		"elements.effortSelect.value = state.selectedEffort",
 		"localStorage.setItem(STORAGE_KEYS.selectedEffort, newEffort)",
 		"localStorage.removeItem(STORAGE_KEYS.selectedEffort)",
-		"body.reasoning_effort = state.selectedEffort",
+		"const activeEffort = session.activeEffort || state.selectedEffort",
+		"body.reasoning_effort = activeEffort",
 	} {
 		if !strings.Contains(streamSrc, want) {
 			t.Fatalf("app-stream.js missing %q", want)
