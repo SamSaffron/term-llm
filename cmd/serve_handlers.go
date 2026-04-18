@@ -199,6 +199,46 @@ func serveRoutePath(baseRoute, baseDir, servedPath string) string {
 	return baseRoute + filepath.ToSlash(relPath)
 }
 
+func canonicalizeServeExistingPath(p string) (string, error) {
+	absPath, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(resolved), nil
+}
+
+func canonicalizeServeDirForWrite(dir string) (string, error) {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(absDir)
+	if err == nil {
+		return filepath.Clean(resolved), nil
+	}
+	if !os.IsNotExist(err) {
+		return "", err
+	}
+
+	parent := filepath.Dir(absDir)
+	resolvedParent, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return filepath.Clean(absDir), nil
+		}
+		return "", err
+	}
+	return filepath.Join(filepath.Clean(resolvedParent), filepath.Base(absDir)), nil
+}
+
+func pathWithinDir(path, dir string) bool {
+	return path == dir || strings.HasPrefix(path, dir+string(filepath.Separator))
+}
+
 func (s *serveServer) handleImage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
@@ -242,29 +282,51 @@ func (s *serveServer) handleFile(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, absFile)
 }
 
-// ensureFileServeable copies the given file into the configured files-dir
-// so that the files handler can serve it. Returns the serveable path and true
-// on success, or ("", false) if the file could not be made serveable.
+// ensureFileServeable makes the given file available from the configured
+// files-dir when it already comes from an approved output directory. Returns
+// the serveable path and true on success, or ("", false) if the file could
+// not be made serveable.
 func (s *serveServer) ensureFileServeable(filePath string) (string, bool) {
 	filesDir := s.cfg.filesDir
 	if filesDir == "" {
 		return "", false
 	}
 
-	absDir, err := filepath.Abs(filesDir)
+	absDir, err := canonicalizeServeDirForWrite(filesDir)
 	if err != nil {
-		log.Printf("[serve] ensureFileServeable: abs(%s): %v", filesDir, err)
+		log.Printf("[serve] ensureFileServeable: resolve dir %s: %v", filesDir, err)
 		return "", false
 	}
-	absFile, err := filepath.Abs(filePath)
+	absFile, err := canonicalizeServeExistingPath(filePath)
 	if err != nil {
-		log.Printf("[serve] ensureFileServeable: abs(%s): %v", filePath, err)
+		log.Printf("[serve] ensureFileServeable: resolve %s: %v", filePath, err)
 		return "", false
 	}
 
-	// Already under the files dir — nothing to do.
-	if strings.HasPrefix(absFile, absDir+string(filepath.Separator)) {
-		return filePath, true
+	if pathWithinDir(absFile, absDir) {
+		return absFile, true
+	}
+
+	approvedSourceDirs := []string{absDir}
+	if imageOutputDir := s.imageOutputDir(); imageOutputDir != "" {
+		absImageOutputDir, err := canonicalizeServeDirForWrite(imageOutputDir)
+		if err != nil {
+			log.Printf("[serve] ensureFileServeable: resolve image output dir %s: %v", imageOutputDir, err)
+			return "", false
+		}
+		approvedSourceDirs = append(approvedSourceDirs, absImageOutputDir)
+	}
+
+	approved := false
+	for _, dir := range approvedSourceDirs {
+		if pathWithinDir(absFile, dir) {
+			approved = true
+			break
+		}
+	}
+	if !approved {
+		log.Printf("[serve] ensureFileServeable: rejecting %s outside approved dirs", absFile)
+		return "", false
 	}
 
 	if err := os.MkdirAll(absDir, 0755); err != nil {
@@ -301,64 +363,29 @@ func (s *serveServer) ensureFileServeable(filePath string) (string, bool) {
 	return destPath, true
 }
 
-// ensureImageServeable ensures the given image path is under the serveable
-// image output directory. If the file is already there, the path is returned
-// as-is. Otherwise the file is copied into the output dir so that the
-// images handler (mounted at basePath/images/) can serve it. Returns the
-// serveable path and true on success, or ("", false) if the image could not
-// be made serveable.
+// ensureImageServeable ensures the given image path is already under the
+// configured image output directory. Returns the serveable path and true on
+// success, or ("", false) if the image could not be made serveable.
 func (s *serveServer) ensureImageServeable(imgPath string) (string, bool) {
 	outputDir := s.imageOutputDir()
 
-	absDir, err := filepath.Abs(outputDir)
+	absDir, err := canonicalizeServeDirForWrite(outputDir)
 	if err != nil {
-		log.Printf("[serve] ensureImageServeable: abs(%s): %v", outputDir, err)
+		log.Printf("[serve] ensureImageServeable: resolve dir %s: %v", outputDir, err)
 		return "", false
 	}
-	absImg, err := filepath.Abs(imgPath)
+	absImg, err := canonicalizeServeExistingPath(imgPath)
 	if err != nil {
-		log.Printf("[serve] ensureImageServeable: abs(%s): %v", imgPath, err)
+		log.Printf("[serve] ensureImageServeable: resolve %s: %v", imgPath, err)
 		return "", false
 	}
 
-	// Already under the output dir — nothing to do.
-	if strings.HasPrefix(absImg, absDir+string(filepath.Separator)) {
-		return imgPath, true
-	}
-
-	// Copy the file into the output dir with a unique prefix to avoid collisions.
-	if err := os.MkdirAll(absDir, 0755); err != nil {
-		log.Printf("[serve] ensureImageServeable: mkdir %s: %v", absDir, err)
+	if !pathWithinDir(absImg, absDir) {
+		log.Printf("[serve] ensureImageServeable: rejecting %s outside %s", absImg, absDir)
 		return "", false
 	}
 
-	src, err := os.Open(absImg)
-	if err != nil {
-		log.Printf("[serve] ensureImageServeable: open %s: %v", absImg, err)
-		return "", false
-	}
-	defer src.Close()
-
-	destName := fmt.Sprintf("serve-%s-%s", randomSuffix(), filepath.Base(absImg))
-	destPath := filepath.Join(absDir, destName)
-	dst, err := os.Create(destPath)
-	if err != nil {
-		log.Printf("[serve] ensureImageServeable: create %s: %v", destPath, err)
-		return "", false
-	}
-	if _, err := io.Copy(dst, src); err != nil {
-		dst.Close()
-		os.Remove(destPath)
-		log.Printf("[serve] ensureImageServeable: copy to %s: %v", destPath, err)
-		return "", false
-	}
-	if err := dst.Close(); err != nil {
-		os.Remove(destPath)
-		log.Printf("[serve] ensureImageServeable: close %s: %v", destPath, err)
-		return "", false
-	}
-
-	return destPath, true
+	return absImg, true
 }
 
 func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {

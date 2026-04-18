@@ -2420,17 +2420,17 @@ func TestHandleImage_ServesFileAndRejectsTraversal(t *testing.T) {
 	}
 }
 
-func TestEnsureImageServeable_CopiesExternalFile(t *testing.T) {
+func TestEnsureImageServeable_RejectsExternalFile(t *testing.T) {
 	outputDir := t.TempDir()
 	externalDir := t.TempDir()
 
-	// Create a file outside the image output directory
+	// Create a file outside the image output directory.
 	externalImg := filepath.Join(externalDir, "photo.png")
 	if err := os.WriteFile(externalImg, []byte("external-image-data"), 0644); err != nil {
 		t.Fatalf("write external image: %v", err)
 	}
 
-	// Create a file already inside the output directory
+	// Create a file already inside the output directory.
 	internalImg := filepath.Join(outputDir, "generated.png")
 	if err := os.WriteFile(internalImg, []byte("internal-image-data"), 0644); err != nil {
 		t.Fatalf("write internal image: %v", err)
@@ -2439,48 +2439,30 @@ func TestEnsureImageServeable_CopiesExternalFile(t *testing.T) {
 	srv := &serveServer{cfg: serveServerConfig{basePath: "/ui"}, cfgRef: &config.Config{}}
 	srv.cfgRef.Image.OutputDir = outputDir
 
-	// External file should be copied
-	result, ok := srv.ensureImageServeable(externalImg)
-	if !ok {
-		t.Fatal("ensureImageServeable should succeed for external image")
-	}
-	if result == externalImg {
-		t.Fatal("external image should have been copied, but path is unchanged")
-	}
-	absResult, _ := filepath.Abs(result)
-	absOutputDir, _ := filepath.Abs(outputDir)
-	if !strings.HasPrefix(absResult, absOutputDir+string(filepath.Separator)) {
-		t.Fatalf("copied image %q should be under output dir %q", absResult, absOutputDir)
-	}
-	// Verify the copied file contains the correct data
-	data, err := os.ReadFile(result)
-	if err != nil {
-		t.Fatalf("read copied image: %v", err)
-	}
-	if string(data) != "external-image-data" {
-		t.Fatalf("copied data = %q, want %q", string(data), "external-image-data")
+	// External files should be rejected instead of republished.
+	if result, ok := srv.ensureImageServeable(externalImg); ok || result != "" {
+		t.Fatalf("ensureImageServeable should reject external image, got result=%q ok=%v", result, ok)
 	}
 
-	// Internal file should be returned as-is
-	result, ok = srv.ensureImageServeable(internalImg)
+	// Internal file should be returned as an absolute, serveable path.
+	result, ok := srv.ensureImageServeable(internalImg)
 	if !ok {
 		t.Fatal("ensureImageServeable should succeed for internal image")
 	}
-	if result != internalImg {
-		t.Fatalf("internal image should be unchanged, got %q want %q", result, internalImg)
+	absInternalImg, err := filepath.EvalSymlinks(internalImg)
+	if err != nil {
+		t.Fatalf("resolve internal image: %v", err)
+	}
+	if result != absInternalImg {
+		t.Fatalf("internal image should be unchanged apart from canonicalization, got %q want %q", result, absInternalImg)
 	}
 
-	// Verify the copied file is actually serveable via handleImage
-	copied, ok := srv.ensureImageServeable(externalImg)
-	if !ok {
-		t.Fatal("ensureImageServeable should succeed for second external copy")
-	}
-	copiedName := filepath.Base(copied)
-	req := httptest.NewRequest(http.MethodGet, "/images/"+copiedName, nil)
+	// Verify the internal file is actually serveable via handleImage.
+	req := httptest.NewRequest(http.MethodGet, "/images/"+filepath.Base(result), nil)
 	rr := httptest.NewRecorder()
 	srv.handleImage(rr, req)
 	if rr.Code != http.StatusOK {
-		t.Fatalf("serve copied image: status = %d, want 200", rr.Code)
+		t.Fatalf("serve internal image: status = %d, want 200", rr.Code)
 	}
 }
 
@@ -2566,7 +2548,7 @@ func TestServeRoutePath_PreservesNestedRelativePaths(t *testing.T) {
 	}
 }
 
-func TestEnsureFileServeable_CopiesExternalFile(t *testing.T) {
+func TestEnsureFileServeable_RejectsExternalFile(t *testing.T) {
 	filesDir := t.TempDir()
 	externalDir := t.TempDir()
 
@@ -2582,16 +2564,61 @@ func TestEnsureFileServeable_CopiesExternalFile(t *testing.T) {
 
 	srv := &serveServer{cfg: serveServerConfig{basePath: "/ui", filesDir: filesDir}}
 
-	// External file should be copied
-	result, ok := srv.ensureFileServeable(externalFile)
+	// External files should be rejected instead of republished.
+	if result, ok := srv.ensureFileServeable(externalFile); ok || result != "" {
+		t.Fatalf("ensureFileServeable should reject external file, got result=%q ok=%v", result, ok)
+	}
+
+	// Internal file should be returned as an absolute, serveable path.
+	result, ok := srv.ensureFileServeable(internalFile)
 	if !ok {
-		t.Fatal("ensureFileServeable should succeed for external file")
+		t.Fatal("ensureFileServeable should succeed for internal file")
 	}
-	if result == externalFile {
-		t.Fatal("external file should have been copied, but path is unchanged")
+	absInternalFile, err := filepath.EvalSymlinks(internalFile)
+	if err != nil {
+		t.Fatalf("resolve internal file: %v", err)
 	}
-	absResult, _ := filepath.Abs(result)
-	absFilesDir, _ := filepath.Abs(filesDir)
+	if result != absInternalFile {
+		t.Fatalf("internal file should be unchanged apart from canonicalization, got %q want %q", result, absInternalFile)
+	}
+
+	// No files-dir → fails.
+	srv2 := &serveServer{cfg: serveServerConfig{basePath: "/ui"}}
+	_, ok = srv2.ensureFileServeable(externalFile)
+	if ok {
+		t.Fatal("ensureFileServeable should fail when filesDir is empty")
+	}
+}
+
+func TestEnsureFileServeable_CopiesFromImageOutputDir(t *testing.T) {
+	filesDir := t.TempDir()
+	outputDir := t.TempDir()
+	generatedImg := filepath.Join(outputDir, "generated.png")
+	if err := os.WriteFile(generatedImg, []byte("image-data"), 0644); err != nil {
+		t.Fatalf("write generated image: %v", err)
+	}
+
+	srv := &serveServer{
+		cfg:    serveServerConfig{basePath: "/ui", filesDir: filesDir},
+		cfgRef: &config.Config{},
+	}
+	srv.cfgRef.Image.OutputDir = outputDir
+
+	result, ok := srv.ensureFileServeable(generatedImg)
+	if !ok {
+		t.Fatal("ensureFileServeable should allow files from image output dir")
+	}
+	if result == generatedImg {
+		t.Fatal("image output file should have been copied into filesDir")
+	}
+	absResult, err := filepath.EvalSymlinks(result)
+	if err != nil {
+		t.Fatalf("resolve copied file: %v", err)
+	}
+	absFilesDir, err := filepath.EvalSymlinks(filesDir)
+	if err != nil {
+		t.Fatalf("resolve files dir: %v", err)
+	}
 	if !strings.HasPrefix(absResult, absFilesDir+string(filepath.Separator)) {
 		t.Fatalf("copied file %q should be under files dir %q", absResult, absFilesDir)
 	}
@@ -2599,24 +2626,8 @@ func TestEnsureFileServeable_CopiesExternalFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read copied file: %v", err)
 	}
-	if string(data) != "pdf-data" {
-		t.Fatalf("copied data = %q, want %q", string(data), "pdf-data")
-	}
-
-	// Internal file should be returned as-is
-	result, ok = srv.ensureFileServeable(internalFile)
-	if !ok {
-		t.Fatal("ensureFileServeable should succeed for internal file")
-	}
-	if result != internalFile {
-		t.Fatalf("internal file should be unchanged, got %q want %q", result, internalFile)
-	}
-
-	// No files-dir → fails
-	srv2 := &serveServer{cfg: serveServerConfig{basePath: "/ui"}}
-	_, ok = srv2.ensureFileServeable(externalFile)
-	if ok {
-		t.Fatal("ensureFileServeable should fail when filesDir is empty")
+	if string(data) != "image-data" {
+		t.Fatalf("copied data = %q, want %q", string(data), "image-data")
 	}
 }
 
