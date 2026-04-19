@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -85,7 +86,10 @@ func NewChatGPTProviderWithCreds(creds *credentials.ChatGPTCredentials, model st
 	}
 }
 
-// promptForChatGPTAuth prompts the user to authenticate with ChatGPT
+// promptForChatGPTAuth prompts the user to authenticate with ChatGPT.
+// Prefers the device-code flow so auth works on headless/remote/containerized
+// boxes; falls back to the localhost browser flow if the backend doesn't
+// advertise device-code support.
 func promptForChatGPTAuth() (*credentials.ChatGPTCredentials, error) {
 	// Check if stdin is a terminal - if not, we can't do interactive auth
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
@@ -94,39 +98,63 @@ func promptForChatGPTAuth() (*credentials.ChatGPTCredentials, error) {
 	}
 
 	fmt.Println("ChatGPT provider requires authentication.")
-	fmt.Print("Press Enter to open browser and sign in with your ChatGPT account...")
 
-	if err := waitForEnterOrInterrupt(); err != nil {
-		return nil, err
-	}
-
-	// Wire Ctrl-C through to the OAuth wait so the user can cancel
-	// while we're blocked waiting for the browser callback.
+	// Wire Ctrl-C through to the full auth wait (device-code poll OR
+	// browser callback). The 15-minute cap matches the server-side
+	// device-code expiry.
 	sigCtx, stopSig := signal.NotifyContext()
 	defer stopSig()
-	ctx, cancel := context.WithTimeout(sigCtx, 5*time.Minute)
+	ctx, cancel := context.WithTimeout(sigCtx, 15*time.Minute)
 	defer cancel()
 
-	oauthCreds, err := oauth.AuthenticateChatGPT(ctx)
+	oauthCreds, err := runChatGPTDeviceCodeFlow(ctx)
+	if errors.Is(err, oauth.ErrChatGPTDeviceCodeNotEnabled) {
+		fmt.Println("(device-code login unavailable — falling back to browser flow)")
+		oauthCreds, err = runChatGPTBrowserFlow(ctx)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("authentication failed: %w", err)
 	}
 
-	// Convert oauth credentials to stored credentials format
 	creds := &credentials.ChatGPTCredentials{
 		AccessToken:  oauthCreds.AccessToken,
 		RefreshToken: oauthCreds.RefreshToken,
 		ExpiresAt:    oauthCreds.ExpiresAt,
 		AccountID:    oauthCreds.AccountID,
 	}
-
-	// Save credentials
 	if err := credentials.SaveChatGPTCredentials(creds); err != nil {
 		return nil, fmt.Errorf("failed to save credentials: %w", err)
 	}
 
 	fmt.Println("Authentication successful!")
 	return creds, nil
+}
+
+func runChatGPTDeviceCodeFlow(ctx context.Context) (*oauth.ChatGPTCredentials, error) {
+	dc, err := oauth.RequestChatGPTDeviceCode(ctx)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Printf("\nTo sign in with ChatGPT:\n")
+	fmt.Printf("  1. Open this URL in any browser: %s\n", dc.VerificationURL)
+	fmt.Printf("  2. Enter this one-time code:     %s\n\n", dc.UserCode)
+	fmt.Print("Waiting for approval (Ctrl-C to cancel)...")
+
+	creds, err := oauth.AuthenticateChatGPTDevice(ctx, dc)
+	if err != nil {
+		fmt.Println()
+		return nil, err
+	}
+	fmt.Println(" done!")
+	return creds, nil
+}
+
+func runChatGPTBrowserFlow(ctx context.Context) (*oauth.ChatGPTCredentials, error) {
+	fmt.Print("Press Enter to open browser and sign in with your ChatGPT account...")
+	if err := waitForEnterOrInterrupt(); err != nil {
+		return nil, err
+	}
+	return oauth.AuthenticateChatGPT(ctx)
 }
 
 func (p *ChatGPTProvider) Name() string {
