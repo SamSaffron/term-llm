@@ -321,9 +321,13 @@ func AuthenticateChatGPT(ctx context.Context) (*ChatGPTCredentials, error) {
 
 	defer server.Shutdown(context.Background())
 
-	// Open browser
+	// Always print the URL so the user has a fallback if the browser
+	// doesn't actually open (e.g. headless container, xdg-open returning
+	// success with no DISPLAY, remote SSH session).
+	fmt.Printf("\nIf your browser does not open automatically, visit this URL to sign in:\n\n  %s\n\n", authURL)
+
 	if err := openBrowser(authURL); err != nil {
-		fmt.Printf("Could not open browser. Please visit this URL:\n%s\n", authURL)
+		fmt.Printf("(Could not launch browser automatically: %v)\n", err)
 	}
 
 	// Wait for callback or timeout
