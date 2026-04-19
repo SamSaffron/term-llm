@@ -85,8 +85,8 @@ func (t *CustomScriptTool) Execute(ctx context.Context, args json.RawMessage) (l
 	if t.def.TimeoutSeconds > 0 {
 		timeout = t.def.TimeoutSeconds
 	}
-	if timeout > 86400 {
-		timeout = 86400
+	if timeout > 3600 {
+		timeout = 3600
 	}
 
 	// Working directory: same as the term-llm process cwd
