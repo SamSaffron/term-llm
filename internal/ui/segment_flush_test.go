@@ -393,15 +393,21 @@ func TestPartialTextFlushSpacing(t *testing.T) {
 	}
 }
 
-func TestRenderUnflushed_ShowsPendingParagraphContent(t *testing.T) {
+func TestRenderUnflushed_HidesPendingParagraphContent(t *testing.T) {
 	tracker := NewToolTracker()
 	width := 80
 
-	tracker.AddTextSegment("This paragraph should stream before block completion", width)
+	tracker.AddTextSegment("This paragraph should stay hidden before block completion", width)
 
 	output := stripAnsi(tracker.RenderUnflushed(width, RenderMarkdown, false))
-	if !strings.Contains(output, "This paragraph should stream before block completion") {
-		t.Fatalf("expected pending paragraph content to be visible, got %q", output)
+	if strings.Contains(output, "This paragraph should stay hidden before block completion") {
+		t.Fatalf("expected pending paragraph content to stay hidden, got %q", output)
+	}
+
+	tracker.AddTextSegment("\n\n", width)
+	output = stripAnsi(tracker.RenderUnflushed(width, RenderMarkdown, false))
+	if !strings.Contains(output, "This paragraph should stay hidden before block completion") {
+		t.Fatalf("expected paragraph content to appear after block boundary, got %q", output)
 	}
 }
 
@@ -429,15 +435,15 @@ func TestRenderUnflushed_HidesPendingListMarkerContent(t *testing.T) {
 	}
 }
 
-func TestRenderUnflushed_ShowsPendingAsteriskPrefix(t *testing.T) {
+func TestRenderUnflushed_HidesPendingAsteriskPrefix(t *testing.T) {
 	tracker := NewToolTracker()
 	width := 80
 
 	tracker.AddTextSegment("*", width)
 
 	output := stripAnsi(tracker.RenderUnflushed(width, RenderMarkdown, false))
-	if !strings.Contains(output, "*") {
-		t.Fatalf("expected pending asterisk prefix to remain visible, got %q", output)
+	if strings.Contains(output, "*") {
+		t.Fatalf("expected pending asterisk prefix to stay hidden, got %q", output)
 	}
 }
 
@@ -942,44 +948,6 @@ func TestStreamingFlush_HeadingThenText(t *testing.T) {
 	}
 	if !strings.Contains(output, "Next item") {
 		t.Fatalf("Expected following list item to be present in output.\nOutput:\n%s", output)
-	}
-}
-
-func TestRenderUnflushed_BoldBlockThenPendingText_HasNewlineSeparator(t *testing.T) {
-	// Regression test: when the streaming renderer has committed a block
-	// (e.g. "**BOLD**\n\n") and there is pending raw text ("new text"),
-	// there must be a \n between the rendered block output and the pending
-	// preview. Without the separator they run together visually.
-	tracker := NewToolTracker()
-	width := 80
-
-	// Feed "**BOLD**\n\n" — this completes a paragraph block in the
-	// streaming renderer, so RenderedUnflushed() returns the rendered bold
-	tracker.AddTextSegment("**BOLD**\n\n", width)
-
-	// Feed "new text" — still pending (no block boundary yet), so
-	// PendingMarkdown() returns "new text".
-	tracker.AddTextSegment("new text", width)
-
-	output := tracker.RenderUnflushed(width, RenderMarkdown, false)
-	stripped := stripAnsiForTest(output)
-
-	// Both pieces must be present
-	if !strings.Contains(stripped, "BOLD") {
-		t.Fatalf("expected BOLD in output, got %q", stripped)
-	}
-	if !strings.Contains(stripped, "new text") {
-		t.Fatalf("expected 'new text' in output, got %q", stripped)
-	}
-
-	// Find the boundary between the rendered block and pending preview.
-	boldIdx := strings.Index(stripped, "BOLD")
-	newTextIdx := strings.Index(stripped, "new text")
-	between := stripped[boldIdx+len("BOLD") : newTextIdx]
-
-	// There must be at least one \n in the gap — spaces alone are not enough.
-	if !strings.Contains(between, "\n") {
-		t.Errorf("expected \\n between rendered block and pending preview, got only %q\nfull output: %q", between, stripped)
 	}
 }
 
