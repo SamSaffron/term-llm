@@ -253,7 +253,7 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 	}
 
 	// Check for timeout
-	if execCtx.Err() == context.DeadlineExceeded {
+	if execCtx.Err() != nil {
 		result.TimedOut = true
 		return llm.ToolOutput{Content: warning + formatShellResult(result, t.limits), TimedOut: true}, nil
 	}

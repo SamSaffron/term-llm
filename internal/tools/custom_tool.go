@@ -80,10 +80,13 @@ func (t *CustomScriptTool) Execute(ctx context.Context, args json.RawMessage) (l
 		return llm.TextOutput(formatToolError(err.(*ToolError))), nil
 	}
 
-	// Determine timeout
+	// Determine timeout; cap at 24h as a safety net
 	timeout := 30
 	if t.def.TimeoutSeconds > 0 {
 		timeout = t.def.TimeoutSeconds
+	}
+	if timeout > 86400 {
+		timeout = 86400
 	}
 
 	// Working directory: same as the term-llm process cwd
@@ -136,7 +139,7 @@ func (t *CustomScriptTool) Execute(ctx context.Context, args json.RawMessage) (l
 		StderrTruncated: stderr.Truncated(),
 	}
 
-	if execCtx.Err() == context.DeadlineExceeded {
+	if execCtx.Err() != nil {
 		result.TimedOut = true
 		return llm.ToolOutput{Content: formatShellResult(result, t.limits), TimedOut: true}, nil
 	}

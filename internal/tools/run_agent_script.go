@@ -190,7 +190,7 @@ func (t *RunAgentScriptTool) Execute(ctx context.Context, args json.RawMessage) 
 		StderrTruncated: stderr.Truncated(),
 	}
 
-	if execCtx.Err() == context.DeadlineExceeded {
+	if execCtx.Err() != nil {
 		result.TimedOut = true
 		return llm.ToolOutput{Content: formatShellResult(result, t.limits), TimedOut: true}, nil
 	}
