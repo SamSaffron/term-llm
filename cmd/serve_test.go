@@ -2535,6 +2535,16 @@ func TestHandleFile_ServesFileAndRejectsTraversal(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "qwen36-go-benchmark", "board.html"), []byte("<html>nested-board</html>"), 0644); err != nil {
 		t.Fatalf("write nested file: %v", err)
 	}
+	// index.html must be served verbatim — http.ServeFile would otherwise
+	// 301-redirect any URL ending in /index.html to "./", which then hits
+	// the SPA catch-all and returns the app shell.
+	indexHTML := "<html>served-file-index</html>"
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte(indexHTML), 0644); err != nil {
+		t.Fatalf("write index.html: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "qwen36-go-benchmark", "index.html"), []byte("<html>nested-index</html>"), 0644); err != nil {
+		t.Fatalf("write nested index.html: %v", err)
+	}
 
 	srv := &serveServer{cfg: serveServerConfig{basePath: "/ui", filesDir: dir}}
 
@@ -2561,6 +2571,28 @@ func TestHandleFile_ServesFileAndRejectsTraversal(t *testing.T) {
 	}
 	if got := rr.Body.String(); got != "<html>nested-board</html>" {
 		t.Fatalf("nested body = %q, want %q", got, "<html>nested-board</html>")
+	}
+
+	// index.html at the root of files-dir — must not redirect to "./".
+	req = httptest.NewRequest(http.MethodGet, "/files/index.html", nil)
+	rr = httptest.NewRecorder()
+	srv.handleFile(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("index.html: status = %d, want 200 (body=%q, location=%q)", rr.Code, rr.Body.String(), rr.Header().Get("Location"))
+	}
+	if got := rr.Body.String(); got != indexHTML {
+		t.Fatalf("index.html body = %q, want %q", got, indexHTML)
+	}
+
+	// Nested index.html — same redirect trap.
+	req = httptest.NewRequest(http.MethodGet, "/files/qwen36-go-benchmark/index.html", nil)
+	rr = httptest.NewRecorder()
+	srv.handleFile(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("nested index.html: status = %d, want 200 (location=%q)", rr.Code, rr.Header().Get("Location"))
+	}
+	if got := rr.Body.String(); got != "<html>nested-index</html>" {
+		t.Fatalf("nested index.html body = %q, want %q", got, "<html>nested-index</html>")
 	}
 
 	// Path traversal

@@ -255,7 +255,27 @@ func (s *serveServer) handleImage(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Cache-Control", "private, max-age=86400")
 	w.Header().Add("Vary", "Authorization, Cookie")
-	http.ServeFile(w, r, absFile)
+	serveResolvedFile(w, r, absFile)
+}
+
+// serveResolvedFile serves a file whose absolute path has already been
+// resolved and validated. It avoids http.ServeFile's implicit
+// "/index.html"→"./" redirect and directory-index handling, which would
+// otherwise cause requests for a file literally named index.html (or any
+// path ending in that segment) to 301 back to the SPA catch-all.
+func serveResolvedFile(w http.ResponseWriter, r *http.Request, absFile string) {
+	f, err := os.Open(absFile)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || info.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
 }
 
 // handleFile serves arbitrary files from the configured files-dir.
@@ -278,7 +298,7 @@ func (s *serveServer) handleFile(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "private, max-age=86400")
 	w.Header().Add("Vary", "Authorization, Cookie")
-	http.ServeFile(w, r, absFile)
+	serveResolvedFile(w, r, absFile)
 }
 
 // ensureFileServeable makes the given file available from the configured
