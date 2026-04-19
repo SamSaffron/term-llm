@@ -177,7 +177,44 @@
           <span class="connection-state" id="connectionState">Checking token…</span>
         </div>
         <div class="header-right">
-          <span class="header-stats" id="headerStats"></span>
+          <div class="header-stats" id="headerStats">
+            <div class="model-picker" id="modelPicker">
+              <div class="model-chip" data-chip="provider" id="chipProvider">
+                <button type="button" class="chip-trigger" id="chipProviderTrigger" aria-haspopup="listbox" aria-expanded="false" aria-label="Provider">
+                  <span class="chip-label" id="chipProviderLabel">—</span>
+                </button>
+                <select class="chip-select-hidden" id="chipProviderSelect" aria-hidden="true" tabindex="-1">
+                  <option value="">Auto (server default)</option>
+                </select>
+              </div>
+              <span class="chip-sep" id="chipSepProviderModel" data-sep="provider-model">·</span>
+              <div class="model-chip model-chip-primary" data-chip="model" id="chipModel">
+                <button type="button" class="chip-trigger" id="chipModelTrigger" aria-haspopup="listbox" aria-expanded="false" aria-label="Model">
+                  <span class="chip-label" id="chipModelLabel">—</span>
+                </button>
+                <select class="chip-select-hidden" id="chipModelSelect" aria-hidden="true" tabindex="-1">
+                  <option value="">Auto (server default)</option>
+                </select>
+              </div>
+              <span class="chip-sep" id="chipSepModelEffort" data-sep="model-effort">·</span>
+              <div class="model-chip" data-chip="effort" id="chipEffort">
+                <button type="button" class="chip-trigger" id="chipEffortTrigger" aria-haspopup="listbox" aria-expanded="false" aria-label="Reasoning effort">
+                  <span class="chip-label" id="chipEffortLabel">auto</span>
+                </button>
+                <select class="chip-select-hidden" id="chipEffortSelect" aria-hidden="true" tabindex="-1">
+                  <option value="">Auto (server default)</option>
+                  <option value="minimal">minimal</option>
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                  <option value="xhigh">xhigh</option>
+                  <option value="max">max</option>
+                </select>
+              </div>
+            </div>
+            <span class="chip-sep header-tokens-sep" id="headerTokensSep" hidden>·</span>
+            <span class="header-tokens" id="headerTokens"></span>
+          </div>
         </div>
       </header>
 
@@ -331,6 +368,9 @@
       </button>
     </div>
   </div>
+
+  <div class="chip-popover-backdrop" id="chipPopoverBackdrop" hidden></div>
+  <div class="chip-popover" id="chipPopover" role="listbox" hidden></div>
 
   <script src="vendor/katex/katex.min.js?v=0.16.38"></script>
   <script src="vendor/katex/auto-render.min.js?v=0.16.38"></script>

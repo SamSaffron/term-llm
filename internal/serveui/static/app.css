@@ -624,25 +624,246 @@
       white-space: nowrap;
     }
 
-    .stats-model {
+    .model-picker {
+      display: inline-flex;
+      align-items: center;
+      gap: 0;
+      min-width: 0;
+    }
+
+    .model-chip {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      max-width: 100%;
+      min-width: 0;
+    }
+
+    .model-chip[hidden] {
+      display: none;
+    }
+
+    .chip-trigger {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      padding: 0.2rem 0.5rem;
+      border-radius: 7px;
+      border: 0;
+      background: transparent;
+      color: var(--text-muted);
+      font: inherit;
+      font-weight: 500;
+      cursor: pointer;
+      max-width: 100%;
+      min-width: 0;
+      transition: background 0.12s ease, color 0.12s ease;
+    }
+
+    .chip-trigger:hover,
+    .chip-trigger:focus-visible,
+    .chip-trigger[aria-expanded="true"] {
+      background: var(--surface-3);
+      color: var(--text);
+      outline: none;
+    }
+
+    .chip-trigger[disabled] {
+      cursor: default;
+      background: transparent !important;
+      color: var(--text-muted);
+    }
+
+    .chip-trigger[disabled] .chip-label {
+      color: inherit;
+    }
+
+    .model-picker.locked .model-chip-primary .chip-label,
+    .model-picker.locked .model-chip[data-chip="provider"] .chip-label {
+      color: var(--text);
+    }
+
+    .model-chip-primary .chip-label {
       color: var(--text);
       font-weight: 600;
     }
 
-    .stats-provider {
+    .model-chip[data-chip="provider"] .chip-label {
       color: var(--text);
       font-weight: 500;
     }
 
-    .stats-effort {
-      color: var(--text-muted);
+    .model-chip[data-chip="effort"] .chip-label {
       font-variant: small-caps;
       letter-spacing: 0.05em;
     }
 
-    .stats-muted {
+    .chip-label {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+    }
+
+    .chip-label.stats-muted {
       color: var(--text-muted);
       font-weight: 500;
+    }
+
+    .chip-select-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+      pointer-events: none;
+    }
+
+    .chip-popover-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 999;
+      background: transparent;
+    }
+
+    .chip-popover-backdrop[hidden] {
+      display: none;
+    }
+
+    .chip-popover {
+      position: fixed;
+      z-index: 1000;
+      min-width: 180px;
+      max-width: min(360px, calc(100vw - 1rem));
+      max-height: min(320px, calc(100vh - 8rem));
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.3);
+      padding: 0.25rem;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      font-size: 0.85rem;
+      animation: chip-popover-in 0.12s ease-out;
+    }
+
+    .chip-popover[hidden] {
+      display: none;
+    }
+
+    @keyframes chip-popover-in {
+      from { opacity: 0; transform: translateY(-2px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .chip-popover-filter {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 0.4rem 0.55rem;
+      margin-bottom: 0.35rem;
+      border: 1px solid var(--surface-border, var(--surface-3));
+      border-radius: 6px;
+      background: var(--surface-1, transparent);
+      color: var(--text);
+      font: inherit;
+      font-size: 0.85rem;
+      outline: none;
+    }
+
+    .chip-popover-filter:focus {
+      border-color: var(--accent, var(--surface-3));
+    }
+
+    .chip-popover-item[hidden] {
+      display: none;
+    }
+
+    .chip-popover-item {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.45rem 0.6rem;
+      border-radius: 6px;
+      cursor: pointer;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      user-select: none;
+    }
+
+    .chip-popover-item:hover,
+    .chip-popover-item.focused,
+    .chip-popover-item:focus {
+      background: var(--surface-3);
+      outline: none;
+    }
+
+    .chip-popover-item[aria-selected="true"]::before {
+      content: "✓";
+      color: var(--accent, var(--text));
+      flex: none;
+      width: 1em;
+      text-align: center;
+    }
+
+    .chip-popover-item:not([aria-selected="true"])::before {
+      content: "";
+      flex: none;
+      width: 1em;
+    }
+
+    .chip-popover-item-label {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+      flex: 1;
+    }
+
+    .chip-popover-item-meta {
+      color: var(--text-muted);
+      font-size: 0.78rem;
+      flex: none;
+    }
+
+    @media (max-width: 540px) {
+      .chip-popover-backdrop {
+        background: rgba(0, 0, 0, 0.4);
+      }
+      .chip-popover {
+        position: fixed;
+        left: 0.5rem;
+        right: 0.5rem;
+        bottom: max(0.5rem, env(safe-area-inset-bottom, 0.5rem));
+        top: auto;
+        max-width: none;
+        max-height: 60vh;
+        font-size: 0.95rem;
+      }
+      .chip-popover-item {
+        padding: 0.7rem 0.75rem;
+      }
+    }
+
+    .chip-sep {
+      margin: 0 0.1rem;
+      opacity: 0.4;
+      flex: none;
+    }
+
+    .header-tokens {
+      display: inline-flex;
+      align-items: center;
+      gap: 0;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .header-tokens-sep[hidden] {
+      display: none;
     }
 
     .stats-tokens {
@@ -656,6 +877,11 @@
     .stats-sep {
       margin: 0 0.45rem;
       opacity: 0.4;
+    }
+
+    .stats-muted {
+      color: var(--text-muted);
+      font-weight: 500;
     }
 
     .settings-field {
@@ -2166,7 +2392,31 @@
       }
 
       .header-stats {
+        font-size: 0.78rem;
+        min-width: 0;
+        flex-shrink: 1;
+      }
+
+      .header-tokens,
+      .header-tokens-sep {
         display: none;
+      }
+
+      .model-picker {
+        flex-wrap: nowrap;
+        min-width: 0;
+      }
+
+      .chip-trigger {
+        padding: 0.32rem 0.45rem;
+      }
+
+      .model-chip[data-chip="model"] .chip-label {
+        max-width: 38vw;
+      }
+
+      .model-chip[data-chip="provider"] .chip-label {
+        max-width: 22vw;
       }
 
       .chat-scroll {

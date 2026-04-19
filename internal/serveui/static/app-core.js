@@ -143,6 +143,22 @@ const elements = {
   voiceBtn: document.getElementById('voiceBtn'),
   dropOverlay: document.getElementById('dropOverlay'),
   headerStats: document.getElementById('headerStats'),
+  modelPicker: document.getElementById('modelPicker'),
+  headerTokens: document.getElementById('headerTokens'),
+  headerTokensSep: document.getElementById('headerTokensSep'),
+  chipProviderLabel: document.getElementById('chipProviderLabel'),
+  chipModelLabel: document.getElementById('chipModelLabel'),
+  chipEffortLabel: document.getElementById('chipEffortLabel'),
+  chipProviderSelect: document.getElementById('chipProviderSelect'),
+  chipModelSelect: document.getElementById('chipModelSelect'),
+  chipEffortSelect: document.getElementById('chipEffortSelect'),
+  chipProviderTrigger: document.getElementById('chipProviderTrigger'),
+  chipModelTrigger: document.getElementById('chipModelTrigger'),
+  chipEffortTrigger: document.getElementById('chipEffortTrigger'),
+  chipPopover: document.getElementById('chipPopover'),
+  chipPopoverBackdrop: document.getElementById('chipPopoverBackdrop'),
+  chipSepProviderModel: document.getElementById('chipSepProviderModel'),
+  chipSepModelEffort: document.getElementById('chipSepModelEffort'),
   providerSelect: document.getElementById('providerSelect'),
   modelSelect: document.getElementById('modelSelect'),
   effortSelect: document.getElementById('effortSelect'),
@@ -395,23 +411,62 @@ const escapeHTML = (str) => {
   return div.innerHTML;
 };
 
+const KNOWN_EFFORT_SUFFIXES = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+
 const splitHeaderModelEffort = (model, effort) => {
   const rawModel = String(model || '').trim();
   const rawEffort = String(effort || '').trim();
-  if (!rawModel || !rawEffort) {
+  if (!rawModel) {
     return { model: rawModel, effort: rawEffort };
   }
 
-  const normalizedEffort = rawEffort.toLowerCase();
-  const suffix = new RegExp(`[-_ ]${normalizedEffort}$`, 'i');
-  if (!suffix.test(rawModel)) {
+  if (rawEffort) {
+    const suffix = new RegExp(`[-_ ]${rawEffort.toLowerCase()}$`, 'i');
+    if (suffix.test(rawModel)) {
+      return { model: rawModel.replace(suffix, ''), effort: rawEffort };
+    }
     return { model: rawModel, effort: rawEffort };
   }
 
-  return {
-    model: rawModel.replace(suffix, ''),
-    effort: rawEffort
-  };
+  for (const candidate of KNOWN_EFFORT_SUFFIXES) {
+    const suffix = new RegExp(`[-_ ]${candidate}$`, 'i');
+    if (suffix.test(rawModel)) {
+      return { model: rawModel.replace(suffix, ''), effort: candidate };
+    }
+  }
+
+  return { model: rawModel, effort: rawEffort };
+};
+
+const setChipSelectValue = (sel, value) => {
+  if (!sel) return;
+  if (sel.value === value) return;
+  const has = Array.from(sel.options).some((opt) => opt.value === value);
+  sel.value = has ? value : '';
+};
+
+const getDefaultProviderName = () => {
+  const def = (state.providers || []).find((p) => p && p.is_default);
+  return def ? def.name : '';
+};
+
+const getDefaultModelForProvider = (providerName) => {
+  if (!providerName) return '';
+  const info = (state.providers || []).find((p) => p && p.name === providerName);
+  if (!info) return '';
+  if (info.default_model) return info.default_model;
+  if (Array.isArray(info.models) && info.models.length > 0) return info.models[0];
+  return '';
+};
+
+const setChipLabel = (labelEl, sepEl, text, { muted = false, hidden = false } = {}) => {
+  if (sepEl) sepEl.hidden = hidden;
+  if (!labelEl) return;
+  const chip = labelEl.closest('.model-chip');
+  if (chip) chip.hidden = hidden;
+  if (hidden) return;
+  labelEl.textContent = text;
+  labelEl.classList.toggle('stats-muted', muted);
 };
 
 const updateSessionUsageDisplay = (session) => {
@@ -423,32 +478,81 @@ const updateSessionUsageDisplay = (session) => {
   const effort = session?.activeEffort || state.selectedEffort || '';
   const headerModelEffort = splitHeaderModelEffort(model, effort);
 
-  const parts = [];
-  if (provider) {
-    parts.push(`<span class="stats-provider">${escapeHTML(provider)}</span>`);
-  }
-  if (headerModelEffort.model) {
-    parts.push(`<span class="stats-model">${escapeHTML(headerModelEffort.model)}</span>`);
-  } else if (!provider) {
-    parts.push(`<span class="stats-model stats-muted">Auto</span>`);
-  }
-  if (headerModelEffort.effort) {
-    parts.push(`<span class="stats-effort">${escapeHTML(headerModelEffort.effort)}</span>`);
-  }
+  const defaultProvider = getDefaultProviderName();
+  const resolvedProvider = provider || defaultProvider;
+  const providerIsDefault = !provider && Boolean(defaultProvider);
+  const defaultModel = getDefaultModelForProvider(resolvedProvider);
+  const resolvedModel = headerModelEffort.model || defaultModel;
+  const modelIsDefault = !headerModelEffort.model && Boolean(defaultModel);
 
-  if (lu) {
-    const inTok = Number(lu.input_tokens || 0);
-    const outTok = Number(lu.output_tokens || 0);
-    const cached = Number(lu.input_tokens_details?.cached_tokens || 0);
-    const context = inTok + outTok;
-    let s = `${fmtTokens(inTok)} in`;
-    if (cached > 0) s += ` <span class="stats-cached">(${fmtTokens(cached)} cached)</span>`;
-    s += ` → ${fmtTokens(outTok)} out`;
-    parts.push(`<span class="stats-tokens">${s}</span>`);
-    parts.push(`<span class="stats-context">context ${fmtTokens(context)}</span>`);
-  }
+  setChipLabel(
+    elements.chipProviderLabel,
+    null,
+    resolvedProvider || '—',
+    { muted: providerIsDefault || !resolvedProvider, hidden: false }
+  );
 
-  el.innerHTML = parts.join('<span class="stats-sep">·</span>');
+  setChipLabel(
+    elements.chipModelLabel,
+    elements.chipSepProviderModel,
+    resolvedModel || '—',
+    { muted: modelIsDefault || !resolvedModel, hidden: false }
+  );
+
+  // Effort has no server-side default, so when unset we show a muted "auto"
+  // placeholder. Keeping the chip visible ensures users can always tap to pick.
+  const effortHasValue = Boolean(headerModelEffort.effort);
+  setChipLabel(
+    elements.chipEffortLabel,
+    elements.chipSepModelEffort,
+    effortHasValue ? headerModelEffort.effort : 'auto',
+    { muted: !effortHasValue, hidden: false }
+  );
+
+  setChipSelectValue(elements.chipProviderSelect, state.selectedProvider || '');
+  setChipSelectValue(elements.chipModelSelect, state.selectedModel || '');
+  setChipSelectValue(elements.chipEffortSelect, state.selectedEffort || '');
+
+  // Lock the chips once a conversation is underway — switching mid-stream is
+  // not supported by the backend, so we hide the affordance instead of failing.
+  const locked = Boolean(session);
+  const lockTitle = locked ? 'Start a new chat to switch provider, model, or effort' : '';
+  [
+    elements.chipProviderTrigger,
+    elements.chipModelTrigger,
+    elements.chipEffortTrigger,
+  ].forEach((trigger) => {
+    if (!trigger) return;
+    if (locked) {
+      trigger.setAttribute('disabled', 'disabled');
+      trigger.setAttribute('aria-disabled', 'true');
+      trigger.setAttribute('title', lockTitle);
+    } else {
+      trigger.removeAttribute('disabled');
+      trigger.removeAttribute('aria-disabled');
+      trigger.removeAttribute('title');
+    }
+  });
+  elements.modelPicker?.classList.toggle('locked', locked);
+
+  const tokensEl = elements.headerTokens;
+  const tokensSep = elements.headerTokensSep;
+  if (tokensEl) {
+    if (lu) {
+      const inTok = Number(lu.input_tokens || 0);
+      const outTok = Number(lu.output_tokens || 0);
+      const cached = Number(lu.input_tokens_details?.cached_tokens || 0);
+      const context = inTok + outTok;
+      let s = `${fmtTokens(inTok)} in`;
+      if (cached > 0) s += ` <span class="stats-cached">(${fmtTokens(cached)} cached)</span>`;
+      s += ` → ${fmtTokens(outTok)} out`;
+      tokensEl.innerHTML = `<span class="stats-tokens">${s}</span><span class="stats-sep">·</span><span class="stats-context">context ${fmtTokens(context)}</span>`;
+      if (tokensSep) tokensSep.hidden = false;
+    } else {
+      tokensEl.innerHTML = '';
+      if (tokensSep) tokensSep.hidden = true;
+    }
+  }
 };
 
 const isNearBottom = () => {

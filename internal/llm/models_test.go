@@ -379,3 +379,100 @@ func findProviderModelEntry(provider, model string) (ModelEntry, bool) {
 	}
 	return ModelEntry{}, false
 }
+
+func TestSortModelIDsByPopularity(t *testing.T) {
+	t.Run("respects curated order regardless of input order", func(t *testing.T) {
+		// openai curated list is gpt-5.4 first, then gpt-5.4-mini, etc.
+		// Feed in reverse-alpha to prove curated rank wins over input order.
+		in := []string{"o3-mini", "gpt-5", "gpt-5.4-mini", "gpt-5.4"}
+		got := SortModelIDsByPopularity("openai", "", in)
+		want := []string{"gpt-5.4", "gpt-5.4-mini", "gpt-5", "o3-mini"}
+		if !equalSlice(got, want) {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("pins defaultModel even when not in curated list", func(t *testing.T) {
+		// User configured a custom fine-tune; it should still appear first
+		// so the picker stays usable when the upstream API drops it.
+		got := SortModelIDsByPopularity("openai", "my-finetune", []string{"gpt-5.4", "gpt-5"})
+		if len(got) < 1 || got[0] != "my-finetune" {
+			t.Errorf("expected configured default at position 0, got %v", got)
+		}
+		// The rest should be in curated order.
+		if got[1] != "gpt-5.4" || got[2] != "gpt-5" {
+			t.Errorf("expected curated order after pinned default, got %v", got)
+		}
+	})
+
+	t.Run("dedupes when defaultModel is also in ids", func(t *testing.T) {
+		got := SortModelIDsByPopularity("openai", "gpt-5.4", []string{"gpt-5.4", "gpt-5", "gpt-5.4"})
+		count := 0
+		for _, id := range got {
+			if id == "gpt-5.4" {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Errorf("expected gpt-5.4 to appear exactly once, got %d in %v", count, got)
+		}
+		if got[0] != "gpt-5.4" {
+			t.Errorf("expected pinned default first, got %v", got)
+		}
+	})
+
+	t.Run("alpha-sorts unknown models after curated", func(t *testing.T) {
+		// "zzz-future" and "aaa-future" are not in the openai curated list,
+		// so they should appear after every curated hit, alpha-sorted.
+		got := SortModelIDsByPopularity("openai", "", []string{"zzz-future", "gpt-5.4", "aaa-future"})
+		if got[0] != "gpt-5.4" {
+			t.Errorf("expected curated model first, got %v", got)
+		}
+		// aaa-future must precede zzz-future at the tail.
+		var aaaIdx, zzzIdx int
+		for i, id := range got {
+			if id == "aaa-future" {
+				aaaIdx = i
+			}
+			if id == "zzz-future" {
+				zzzIdx = i
+			}
+		}
+		if aaaIdx >= zzzIdx {
+			t.Errorf("expected alpha order for unknowns: aaa before zzz, got %v", got)
+		}
+	})
+
+	t.Run("resolves provider aliases for ranking", func(t *testing.T) {
+		// Map a custom name "acme" → built-in "venice" so the venice curated
+		// ranking applies to alias inputs.
+		RegisterProviderAliases(map[string]string{"acme": "venice"})
+		defer RegisterProviderAliases(nil)
+
+		veniceIDs := ResolveProviderModelIDs("acme")
+		if len(veniceIDs) < 2 {
+			t.Skip("venice curated list too small for this test")
+		}
+		// Reverse the curated list and confirm it gets re-ordered correctly.
+		reversed := make([]string, len(veniceIDs))
+		for i, id := range veniceIDs {
+			reversed[len(veniceIDs)-1-i] = id
+		}
+		got := SortModelIDsByPopularity("acme", "", reversed)
+		if !equalSlice(got, veniceIDs) {
+			t.Errorf("alias-resolved ranking failed:\n got=%v\nwant=%v", got, veniceIDs)
+		}
+	})
+}
+
+func equalSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

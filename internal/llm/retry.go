@@ -86,6 +86,26 @@ func (r *RetryProvider) CleanupTurn() {
 	}
 }
 
+// ErrListModelsUnsupported is returned by RetryProvider.ListModels when the
+// inner provider does not implement model listing. Callers that prefer a
+// curated fallback (the web /v1/models handler) can detect this and fall
+// through, while callers that want to surface the limitation (cmd/models.go)
+// can report it.
+var ErrListModelsUnsupported = errors.New("provider does not support model listing")
+
+// ListModels forwards to the inner provider if it implements model listing.
+// Without this forwarder, callers that type-assert on a ListModels interface
+// would silently miss it on any retry-wrapped provider — and every provider
+// built via NewProvider/NewProviderByName is retry-wrapped.
+func (r *RetryProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
+	if lister, ok := r.inner.(interface {
+		ListModels(context.Context) ([]ModelInfo, error)
+	}); ok {
+		return lister.ListModels(ctx)
+	}
+	return nil, ErrListModelsUnsupported
+}
+
 func (r *RetryProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 		var lastErr error

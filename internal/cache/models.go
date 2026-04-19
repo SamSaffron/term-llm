@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	ModelCacheTTL = 30 * time.Minute
+	ModelCacheTTL = 6 * time.Hour
 	cacheDir      = "term-llm"
 )
 

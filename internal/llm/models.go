@@ -378,6 +378,61 @@ func DedupeEffortVariants(ids []string) []string {
 	return out
 }
 
+// SortModelIDsByPopularity orders ids so the picker shows the models a user
+// is most likely to pick first, then everything else alpha-sorted for easy
+// scanning. The ranking signal comes from the curated ProviderModels list
+// (authored newest/best-first), with defaultModel pinned to the very top —
+// always included even if absent from ids, so the user's configured model
+// stays reachable when an upstream provider drops it from /v1/models.
+// IDs not in the curated list fall through to alpha-sort.
+//
+// Centralizing this here means the web picker, TUI picker, and CLI completion
+// all agree on what "popular first" means.
+func SortModelIDsByPopularity(provider, defaultModel string, ids []string) []string {
+	curated := ResolveProviderModelIDs(provider)
+	rank := make(map[string]int, len(curated))
+	for i, id := range curated {
+		rank[id] = i
+	}
+
+	seen := make(map[string]bool, len(ids)+1)
+	out := make([]string, 0, len(ids)+1)
+
+	pin := strings.TrimSpace(defaultModel)
+	if pin != "" {
+		out = append(out, pin)
+		seen[pin] = true
+	}
+
+	type ranked struct {
+		id   string
+		rank int
+	}
+	var curatedHits []ranked
+	var others []string
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		if r, ok := rank[id]; ok {
+			curatedHits = append(curatedHits, ranked{id, r})
+		} else {
+			others = append(others, id)
+		}
+	}
+	sort.Slice(curatedHits, func(i, j int) bool {
+		return curatedHits[i].rank < curatedHits[j].rank
+	})
+	sort.Strings(others)
+
+	for _, c := range curatedHits {
+		out = append(out, c.id)
+	}
+	out = append(out, others...)
+	return out
+}
+
 // GetBuiltInProviderNames returns the built-in provider type names
 func GetBuiltInProviderNames() []string {
 	return []string{"anthropic", "bedrock", "openai", "chatgpt", "copilot", "openrouter", "gemini", "gemini-cli", "zen", "claude-bin", "xai", "venice"}

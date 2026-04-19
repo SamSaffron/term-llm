@@ -451,3 +451,62 @@ func TestRetryProvider_ForwardsSyncToolCallsImmediately(t *testing.T) {
 		t.Fatalf("got event %+v, want text_delta alpha", event)
 	}
 }
+
+type listModelsProvider struct {
+	models []ModelInfo
+	err    error
+	calls  int
+}
+
+func (p *listModelsProvider) Name() string               { return "list-models" }
+func (p *listModelsProvider) Credential() string         { return "mock" }
+func (p *listModelsProvider) Capabilities() Capabilities { return Capabilities{} }
+func (p *listModelsProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	return nil, errors.New("not used in this test")
+}
+func (p *listModelsProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
+	p.calls++
+	return p.models, p.err
+}
+
+type noListModelsProvider struct{}
+
+func (p *noListModelsProvider) Name() string               { return "no-list-models" }
+func (p *noListModelsProvider) Credential() string         { return "mock" }
+func (p *noListModelsProvider) Capabilities() Capabilities { return Capabilities{} }
+func (p *noListModelsProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	return nil, errors.New("not used in this test")
+}
+
+func TestRetryProviderForwardsListModels(t *testing.T) {
+	inner := &listModelsProvider{models: []ModelInfo{{ID: "a"}, {ID: "b"}}}
+	wrapped := WrapWithRetry(inner, DefaultRetryConfig())
+
+	lister, ok := wrapped.(interface {
+		ListModels(context.Context) ([]ModelInfo, error)
+	})
+	if !ok {
+		t.Fatal("wrapped provider does not satisfy ListModels interface")
+	}
+	got, err := lister.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels returned error: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != "a" || got[1].ID != "b" {
+		t.Fatalf("ListModels returned %+v, want [{a} {b}]", got)
+	}
+	if inner.calls != 1 {
+		t.Fatalf("inner.ListModels called %d times, want 1", inner.calls)
+	}
+}
+
+func TestRetryProviderListModelsUnsupportedWhenInnerLacksMethod(t *testing.T) {
+	wrapped := WrapWithRetry(&noListModelsProvider{}, DefaultRetryConfig())
+	lister := wrapped.(interface {
+		ListModels(context.Context) ([]ModelInfo, error)
+	})
+	_, err := lister.ListModels(context.Background())
+	if !errors.Is(err, ErrListModelsUnsupported) {
+		t.Fatalf("got err %v, want ErrListModelsUnsupported", err)
+	}
+}

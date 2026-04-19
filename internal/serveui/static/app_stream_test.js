@@ -151,6 +151,50 @@ function createHarness(options = {}) {
       removeAttribute() {},
       setAttribute() {},
     },
+    chipProviderSelect: {
+      value: '',
+      innerHTML: '',
+      appendChild() {},
+      addEventListener() {},
+    },
+    chipModelSelect: {
+      value: '',
+      innerHTML: '',
+      appendChild() {},
+      addEventListener() {},
+    },
+    chipEffortSelect: {
+      value: '',
+      addEventListener() {},
+    },
+    chipProviderTrigger: {
+      addEventListener() {},
+      setAttribute() {},
+      removeAttribute() {},
+      getBoundingClientRect() { return { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 }; },
+    },
+    chipModelTrigger: {
+      addEventListener() {},
+      setAttribute() {},
+      removeAttribute() {},
+      getBoundingClientRect() { return { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 }; },
+    },
+    chipEffortTrigger: {
+      addEventListener() {},
+      setAttribute() {},
+      removeAttribute() {},
+      getBoundingClientRect() { return { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 }; },
+    },
+    chipPopover: {
+      hidden: true,
+      innerHTML: '',
+      style: {},
+      classList: makeClassList(),
+      addEventListener() {},
+      appendChild() {},
+      contains() { return false; },
+      getBoundingClientRect() { return { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 }; },
+    },
     authTokenInput: {
       value: '',
       focus() {},
@@ -304,6 +348,10 @@ function createHarness(options = {}) {
     cancelAnimationFrame(handle) {
       clearTimeout(handle);
     },
+    addEventListener() {},
+    removeEventListener() {},
+    innerWidth: 1280,
+    innerHeight: 800,
     location: { search: '', origin: 'https://example.test' },
   };
 

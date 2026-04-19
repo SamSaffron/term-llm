@@ -641,29 +641,22 @@ func GetAvailableProviders(cfg *config.Config) []ProviderInfo {
 
 	// Add built-in providers first, merging any configured model
 	for _, name := range llm.GetBuiltInProviderNames() {
-		if modelList := llm.ProviderModelIDs(name); len(modelList) > 0 {
-			// If config has a model for this provider, prepend it if not already present
-			if cfg != nil {
-				if providerCfg, ok := cfg.Providers[name]; ok && providerCfg.Model != "" {
-					found := false
-					for _, m := range modelList {
-						if m == providerCfg.Model {
-							found = true
-							break
-						}
-					}
-					if !found {
-						modelList = append([]string{providerCfg.Model}, modelList...)
-					}
-				}
-			}
-
-			providers = append(providers, ProviderInfo{
-				Name:   name,
-				Models: llm.ExpandWithEffortVariants(modelList),
-			})
-			seen[name] = true
+		curated := llm.ProviderModelIDs(name)
+		if len(curated) == 0 {
+			continue
 		}
+		var defaultModel string
+		if cfg != nil {
+			if providerCfg, ok := cfg.Providers[name]; ok {
+				defaultModel = providerCfg.Model
+			}
+		}
+		ordered := llm.SortModelIDsByPopularity(name, defaultModel, curated)
+		providers = append(providers, ProviderInfo{
+			Name:   name,
+			Models: llm.ExpandWithEffortVariants(ordered),
+		})
+		seen[name] = true
 	}
 
 	// Add custom configured providers from config
@@ -672,22 +665,18 @@ func GetAvailableProviders(cfg *config.Config) []ProviderInfo {
 			if seen[name] {
 				continue
 			}
-			var models []string
-			if len(providerCfg.Models) > 0 {
-				models = providerCfg.Models
-			} else if providerCfg.Model != "" {
-				models = []string{providerCfg.Model}
+			source := providerCfg.Models
+			if len(source) == 0 {
+				source = llm.ResolveProviderModelIDs(name)
 			}
-			// Fall back to curated models for the resolved provider type
-			if len(models) == 0 {
-				models = llm.ResolveProviderModelIDs(name)
+			ordered := llm.SortModelIDsByPopularity(name, providerCfg.Model, source)
+			if len(ordered) == 0 {
+				continue
 			}
-			if len(models) > 0 {
-				providers = append(providers, ProviderInfo{
-					Name:   name,
-					Models: llm.ExpandWithEffortVariants(models),
-				})
-			}
+			providers = append(providers, ProviderInfo{
+				Name:   name,
+				Models: llm.ExpandWithEffortVariants(ordered),
+			})
 		}
 	}
 

@@ -14,7 +14,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -921,13 +920,18 @@ func (s *serveServer) handleProviders(w http.ResponseWriter, r *http.Request) {
 		if models == nil {
 			models = []string{}
 		}
+		defaultModel := ""
+		if pc, ok := s.cfgRef.Providers[p.Name]; ok {
+			defaultModel = strings.TrimSpace(pc.Model)
+		}
 		items = append(items, map[string]any{
-			"name":       p.Name,
-			"type":       p.Type,
-			"models":     models,
-			"configured": p.Configured,
-			"is_builtin": p.IsBuiltin,
-			"is_default": p.Name == s.cfgRef.DefaultProvider,
+			"name":          p.Name,
+			"type":          p.Type,
+			"models":        models,
+			"configured":    p.Configured,
+			"is_builtin":    p.IsBuiltin,
+			"is_default":    p.Name == s.cfgRef.DefaultProvider,
+			"default_model": defaultModel,
 		})
 	}
 
@@ -955,11 +959,30 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	models := make([]llm.ModelInfo, 0)
-	if lister, ok := provider.(interface {
-		ListModels(context.Context) ([]llm.ModelInfo, error)
-	}); ok {
-		if listed, err := lister.ListModels(ctx); err == nil {
-			models = listed
+	// Openrouter ships hundreds of models — going to the upstream API on every
+	// popover open would block the UI and cost tokens. The warm cache (6h TTL,
+	// background refresh on stale) gives us snappy opens after the first hit.
+	pc, hasCfg := s.cfgRef.Providers[effectiveName]
+	isOpenRouter := effectiveName == "openrouter" || (hasCfg && string(pc.Type) == "openrouter")
+	if isOpenRouter {
+		apiKey := ""
+		if hasCfg {
+			apiKey = pc.ResolvedAPIKey
+		}
+		for _, id := range llm.GetCachedOpenRouterModels(apiKey) {
+			models = append(models, llm.ModelInfo{ID: id})
+		}
+	}
+	if len(models) == 0 {
+		if lister, ok := provider.(interface {
+			ListModels(context.Context) ([]llm.ModelInfo, error)
+		}); ok {
+			listed, err := lister.ListModels(ctx)
+			if err == nil {
+				models = listed
+			} else if !errors.Is(err, llm.ErrListModelsUnsupported) {
+				s.verboseLog("ListModels(%q) failed: %v", effectiveName, err)
+			}
 		}
 	}
 
@@ -998,6 +1021,15 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 	// "<base>-<effort>" aliases when the base model is also present.
 	ids = llm.DedupeEffortVariants(ids)
 
+	// Order: configured default first, then curated models in their authored
+	// (popular-first) order, then anything else alpha-sorted. Pure alpha sort
+	// buries the most-used models behind less-used variants.
+	defaultModel := ""
+	if pc, ok := s.cfgRef.Providers[effectiveName]; ok {
+		defaultModel = pc.Model
+	}
+	ids = llm.SortModelIDsByPopularity(effectiveName, defaultModel, ids)
+
 	items := make([]map[string]any, 0, len(ids))
 	for _, id := range ids {
 		m := byID[id]
@@ -1013,11 +1045,6 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 			}(),
 		})
 	}
-	sort.Slice(items, func(i, j int) bool {
-		idi, _ := items[i]["id"].(string)
-		idj, _ := items[j]["id"].(string)
-		return idi < idj
-	})
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"object": "list",

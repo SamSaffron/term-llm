@@ -1577,88 +1577,434 @@ const normalizeSelectedProvider = () => {
   }
 };
 
-const renderProviderOptions = () => {
-  const previous = state.selectedProvider;
-  elements.providerSelect.innerHTML = '';
+const populateProviderSelectOptions = (sel, providers, previous) => {
+  if (!sel) return;
+  sel.innerHTML = '';
 
   const autoOption = document.createElement('option');
   autoOption.value = '';
   autoOption.textContent = 'Auto (server default)';
-  elements.providerSelect.appendChild(autoOption);
+  sel.appendChild(autoOption);
 
-  state.providers.filter((p) => p.configured || p.is_default).forEach((p) => {
+  providers.filter((p) => p.configured || p.is_default).forEach((p) => {
     const option = document.createElement('option');
     option.value = p.name;
     option.textContent = p.name + (p.is_default ? ' (default)' : '');
-    elements.providerSelect.appendChild(option);
+    sel.appendChild(option);
   });
 
-  elements.providerSelect.value = previous;
+  sel.value = previous;
 };
 
-elements.providerSelect.addEventListener('change', async () => {
-  const provider = elements.providerSelect.value;
+const renderProviderOptions = () => {
+  const previous = state.selectedProvider;
+  populateProviderSelectOptions(elements.providerSelect, state.providers, previous);
+  populateProviderSelectOptions(elements.chipProviderSelect, state.providers, previous);
+};
+
+const applyProviderChange = async (provider) => {
   state.selectedProvider = provider;
   if (provider) {
     localStorage.setItem(STORAGE_KEYS.selectedProvider, provider);
   } else {
     localStorage.removeItem(STORAGE_KEYS.selectedProvider);
   }
-  // Reset model selection when provider changes
   state.selectedModel = '';
   localStorage.removeItem(STORAGE_KEYS.selectedModel);
   try {
     state.models = await fetchModels('', provider);
   } catch {
-    // Fall back to curated models from provider metadata
     const providerInfo = state.providers.find((p) => p.name === provider);
     state.models = providerInfo?.models?.length ? providerInfo.models : [];
   }
   renderModelOptions();
+  syncSettingsSelectValues();
   app.updateHeader();
-});
+};
 
-elements.modelSelect?.addEventListener('change', () => {
-  const model = elements.modelSelect.value;
+const applyModelChange = (model) => {
   state.selectedModel = model;
   if (model) {
     localStorage.setItem(STORAGE_KEYS.selectedModel, model);
   } else {
     localStorage.removeItem(STORAGE_KEYS.selectedModel);
   }
+  syncSettingsSelectValues();
   app.updateHeader();
+};
+
+const applyEffortChange = (effort) => {
+  state.selectedEffort = effort;
+  if (effort) {
+    localStorage.setItem(STORAGE_KEYS.selectedEffort, effort);
+  } else {
+    localStorage.removeItem(STORAGE_KEYS.selectedEffort);
+  }
+  syncSettingsSelectValues();
+  app.updateHeader();
+};
+
+// Keep modal selects mirroring the live state so opening the settings cog never
+// shows a stale value vs. what the header chips committed.
+const syncSettingsSelectValues = () => {
+  if (elements.providerSelect) elements.providerSelect.value = state.selectedProvider || '';
+  if (elements.modelSelect) elements.modelSelect.value = state.selectedModel || '';
+  if (elements.effortSelect) elements.effortSelect.value = state.selectedEffort || '';
+  if (elements.chipProviderSelect) elements.chipProviderSelect.value = state.selectedProvider || '';
+  if (elements.chipModelSelect) elements.chipModelSelect.value = state.selectedModel || '';
+  if (elements.chipEffortSelect) elements.chipEffortSelect.value = state.selectedEffort || '';
+};
+
+elements.providerSelect.addEventListener('change', () => {
+  void applyProviderChange(elements.providerSelect.value);
 });
 
-// Effort is a staged modal value: the dropdown only reflects the pending choice
-// inside the settings modal and is committed to state/localStorage on Save
-// (connectToken). Cancelling the modal discards the pending value; the next
-// openAuthModal() resets the select from state.selectedEffort.
+elements.modelSelect?.addEventListener('change', () => {
+  applyModelChange(elements.modelSelect.value);
+});
+
+// Modal effort intentionally has no change listener: Cancel must discard the
+// pending value. The settings modal commits effort only on Save (connectToken).
+// The header chip below commits live, matching provider/model behavior.
+
+elements.chipProviderSelect?.addEventListener('change', () => {
+  void applyProviderChange(elements.chipProviderSelect.value);
+});
+
+elements.chipModelSelect?.addEventListener('change', () => {
+  applyModelChange(elements.chipModelSelect.value);
+});
+
+elements.chipEffortSelect?.addEventListener('change', () => {
+  applyEffortChange(elements.chipEffortSelect.value);
+});
+
+// ===== Custom chip popover =====
+// Replaces the native <select> dropdown UI: native pickers are inconsistent
+// across OSes, ugly, and can render off-screen. The underlying <select> is kept
+// for state/sync — popover items dispatch a 'change' event on it on selection.
+const chipPopoverState = { selectEl: null, triggerEl: null, filterInput: null };
+
+const buildChipOptionLabel = (opt) => {
+  const text = opt.textContent || opt.value || '';
+  const value = opt.value || '';
+  if (!value) {
+    return { primary: text, meta: '' };
+  }
+  const defaultMatch = text.match(/^(.*?)\s*\((.+)\)\s*$/);
+  if (defaultMatch) {
+    return { primary: defaultMatch[1], meta: defaultMatch[2] };
+  }
+  return { primary: text, meta: '' };
+};
+
+const positionChipPopover = (triggerEl) => {
+  const pop = elements.chipPopover;
+  if (!pop || !triggerEl?.getBoundingClientRect) return;
+  pop.hidden = false;
+  if (window.innerWidth <= 540) {
+    pop.style.top = '';
+    pop.style.left = '';
+    pop.style.right = '';
+    pop.style.bottom = '';
+    pop.style.minWidth = '';
+    return;
+  }
+  const rect = triggerEl.getBoundingClientRect();
+  const margin = 6;
+  pop.style.minWidth = `${Math.max(180, rect.width)}px`;
+  pop.style.right = '';
+  pop.style.bottom = '';
+  const popRect = pop.getBoundingClientRect();
+  let left = rect.left;
+  if (left + popRect.width > window.innerWidth - margin) {
+    left = Math.max(margin, window.innerWidth - margin - popRect.width);
+  }
+  let top = rect.bottom + 4;
+  if (top + popRect.height > window.innerHeight - margin) {
+    const above = rect.top - 4 - popRect.height;
+    top = above >= margin ? above : Math.max(margin, window.innerHeight - margin - popRect.height);
+  }
+  pop.style.left = `${Math.max(margin, left)}px`;
+  pop.style.top = `${Math.max(margin, top)}px`;
+};
+
+const closeChipPopover = () => {
+  const pop = elements.chipPopover;
+  if (!pop || pop.hidden) return;
+  pop.hidden = true;
+  pop.innerHTML = '';
+  if (elements.chipPopoverBackdrop) elements.chipPopoverBackdrop.hidden = true;
+  if (chipPopoverState.triggerEl) {
+    chipPopoverState.triggerEl.setAttribute('aria-expanded', 'false');
+  }
+  chipPopoverState.selectEl = null;
+  chipPopoverState.triggerEl = null;
+  chipPopoverState.filterInput = null;
+};
+
+const focusChipPopoverItem = (item) => {
+  if (!item) return;
+  const pop = elements.chipPopover;
+  pop?.querySelectorAll?.('.chip-popover-item.focused').forEach((el) => {
+    el.classList.remove('focused');
+  });
+  item.classList.add('focused');
+  item.focus?.({ preventScroll: false });
+};
+
+// Items matching the active filter (or all items when no filter is shown).
+// Keyboard navigation skips items hidden by the filter.
+const visibleChipPopoverItems = () => {
+  const pop = elements.chipPopover;
+  const items = pop?.querySelectorAll?.('.chip-popover-item');
+  if (!items) return [];
+  return Array.from(items).filter((el) => !el.hidden);
+};
+
+const moveChipPopoverFocus = (direction) => {
+  const pop = elements.chipPopover;
+  if (!pop) return;
+  const items = visibleChipPopoverItems();
+  if (items.length === 0) return;
+  const current = pop.querySelector('.chip-popover-item.focused')
+    || pop.querySelector('.chip-popover-item[aria-selected="true"]');
+  let idx = current ? items.indexOf(current) : -1;
+  idx = idx + direction;
+  if (idx < 0) idx = items.length - 1;
+  if (idx >= items.length) idx = 0;
+  focusChipPopoverItem(items[idx]);
+};
+
+// Show this many items before adding a filter input. Below this threshold the
+// filter just adds noise to small pickers (effort, provider list).
+const CHIP_POPOVER_FILTER_THRESHOLD = 10;
+
+const applyChipPopoverFilter = (query) => {
+  const pop = elements.chipPopover;
+  if (!pop) return;
+  const q = (query || '').trim().toLowerCase();
+  const items = pop.querySelectorAll?.('.chip-popover-item') || [];
+  let firstVisible = null;
+  items.forEach((el) => {
+    const haystack = el.dataset?.search || '';
+    const match = !q || haystack.includes(q);
+    el.hidden = !match;
+    if (match && !firstVisible) firstVisible = el;
+  });
+  // Re-focus the first visible item so Enter/ArrowDown work intuitively after
+  // typing — without this, focus could be on a now-hidden item.
+  pop.querySelectorAll('.chip-popover-item.focused').forEach((el) => {
+    if (el.hidden) el.classList.remove('focused');
+  });
+  if (firstVisible && !pop.querySelector('.chip-popover-item.focused')) {
+    firstVisible.classList.add('focused');
+  }
+};
+
+const commitChipPopoverItem = (item) => {
+  const selectEl = chipPopoverState.selectEl;
+  if (!item || !selectEl) return;
+  const value = item.dataset.value || '';
+  if (selectEl.value !== value) {
+    selectEl.value = value;
+    selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  closeChipPopover();
+};
+
+const openChipPopover = (selectEl, triggerEl) => {
+  const pop = elements.chipPopover;
+  if (!pop || !selectEl) return;
+  if (chipPopoverState.triggerEl === triggerEl) {
+    closeChipPopover();
+    return;
+  }
+  closeChipPopover();
+  chipPopoverState.selectEl = selectEl;
+  chipPopoverState.triggerEl = triggerEl;
+  pop.innerHTML = '';
+
+  const options = Array.from(selectEl.options);
+  let filterInput = null;
+  if (options.length > CHIP_POPOVER_FILTER_THRESHOLD) {
+    filterInput = document.createElement('input');
+    filterInput.type = 'text';
+    filterInput.className = 'chip-popover-filter';
+    filterInput.placeholder = 'Filter…';
+    filterInput.setAttribute('aria-label', 'Filter options');
+    filterInput.setAttribute('autocomplete', 'off');
+    filterInput.setAttribute('spellcheck', 'false');
+    filterInput.addEventListener('input', () => applyChipPopoverFilter(filterInput.value));
+    filterInput.addEventListener('keydown', (e) => {
+      switch (e.key) {
+        case 'ArrowDown':
+          e.preventDefault();
+          moveChipPopoverFocus(1);
+          return;
+        case 'ArrowUp':
+          e.preventDefault();
+          moveChipPopoverFocus(-1);
+          return;
+        case 'Enter': {
+          e.preventDefault();
+          const focused = pop.querySelector('.chip-popover-item.focused');
+          if (focused && !focused.hidden) commitChipPopoverItem(focused);
+          return;
+        }
+        case 'Escape':
+          e.preventDefault();
+          closeChipPopover();
+          chipPopoverState.triggerEl?.focus?.();
+          return;
+      }
+    });
+    chipPopoverState.filterInput = filterInput;
+    pop.appendChild(filterInput);
+  } else {
+    chipPopoverState.filterInput = null;
+  }
+
+  const currentValue = selectEl.value;
+  options.forEach((opt) => {
+    const item = document.createElement('div');
+    item.className = 'chip-popover-item';
+    item.setAttribute('role', 'option');
+    item.tabIndex = -1;
+    item.dataset.value = opt.value;
+    const { primary, meta } = buildChipOptionLabel(opt);
+    item.dataset.search = `${primary} ${meta} ${opt.value}`.toLowerCase();
+    if (opt.value === currentValue) item.setAttribute('aria-selected', 'true');
+    const label = document.createElement('span');
+    label.className = 'chip-popover-item-label';
+    label.textContent = primary;
+    item.appendChild(label);
+    if (meta) {
+      const metaEl = document.createElement('span');
+      metaEl.className = 'chip-popover-item-meta';
+      metaEl.textContent = meta;
+      item.appendChild(metaEl);
+    }
+    item.addEventListener('click', () => commitChipPopoverItem(item));
+    item.addEventListener('mouseenter', () => focusChipPopoverItem(item));
+    pop.appendChild(item);
+  });
+  triggerEl.setAttribute('aria-expanded', 'true');
+  if (elements.chipPopoverBackdrop) elements.chipPopoverBackdrop.hidden = false;
+  positionChipPopover(triggerEl);
+  const initial = pop.querySelector('.chip-popover-item[aria-selected="true"]')
+    || pop.querySelector('.chip-popover-item');
+  focusChipPopoverItem(initial);
+  // Focus the filter input last so the user can type immediately. The selected
+  // item is still highlighted (visually focused) without stealing input focus.
+  if (filterInput) filterInput.focus?.();
+};
+
+elements.chipPopoverBackdrop?.addEventListener('click', () => {
+  closeChipPopover();
+});
+
+const wireChipTrigger = (triggerEl, selectEl) => {
+  if (!triggerEl || !selectEl) return;
+  triggerEl.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openChipPopover(selectEl, triggerEl);
+  });
+};
+
+wireChipTrigger(elements.chipProviderTrigger, elements.chipProviderSelect);
+wireChipTrigger(elements.chipModelTrigger, elements.chipModelSelect);
+wireChipTrigger(elements.chipEffortTrigger, elements.chipEffortSelect);
+
+document.addEventListener('click', (e) => {
+  const pop = elements.chipPopover;
+  if (!pop || pop.hidden) return;
+  if (pop.contains?.(e.target)) return;
+  if (chipPopoverState.triggerEl?.contains?.(e.target)) return;
+  closeChipPopover();
+});
+
+document.addEventListener('keydown', (e) => {
+  const pop = elements.chipPopover;
+  if (!pop || pop.hidden) return;
+  // The filter input owns its own keydown handler for navigation/commit. Don't
+  // run the document-level handler when it's focused — otherwise Space would be
+  // preventDefault'd and the user couldn't type spaces.
+  if (e.target === chipPopoverState.filterInput) return;
+  switch (e.key) {
+    case 'Escape':
+      e.preventDefault();
+      closeChipPopover();
+      chipPopoverState.triggerEl?.focus?.();
+      return;
+    case 'ArrowDown':
+      e.preventDefault();
+      moveChipPopoverFocus(1);
+      return;
+    case 'ArrowUp':
+      e.preventDefault();
+      moveChipPopoverFocus(-1);
+      return;
+    case 'Home': {
+      e.preventDefault();
+      const items = visibleChipPopoverItems();
+      focusChipPopoverItem(items[0]);
+      return;
+    }
+    case 'End': {
+      e.preventDefault();
+      const items = visibleChipPopoverItems();
+      focusChipPopoverItem(items[items.length - 1]);
+      return;
+    }
+    case 'Enter':
+    case ' ': {
+      e.preventDefault();
+      const focused = pop.querySelector('.chip-popover-item.focused');
+      if (focused && !focused.hidden) commitChipPopoverItem(focused);
+      return;
+    }
+    case 'Tab':
+      closeChipPopover();
+      return;
+  }
+});
+
+window.addEventListener('resize', () => {
+  if (chipPopoverState.triggerEl) positionChipPopover(chipPopoverState.triggerEl);
+});
 
 // ===== Model picker =====
-const renderModelOptions = () => {
-  const previous = state.selectedModel;
-  elements.modelSelect.innerHTML = '';
+const populateModelSelectOptions = (sel, models, previous) => {
+  if (!sel) return;
+  sel.innerHTML = '';
 
   const autoOption = document.createElement('option');
   autoOption.value = '';
   autoOption.textContent = 'Auto (server default)';
-  elements.modelSelect.appendChild(autoOption);
+  sel.appendChild(autoOption);
 
-  state.models.forEach((id) => {
+  models.forEach((id) => {
     const option = document.createElement('option');
     option.value = id;
     option.textContent = id;
-    elements.modelSelect.appendChild(option);
+    sel.appendChild(option);
   });
 
-  if (previous && !state.models.includes(previous)) {
+  if (previous && !models.includes(previous)) {
     const custom = document.createElement('option');
     custom.value = previous;
     custom.textContent = `${previous} (custom)`;
-    elements.modelSelect.appendChild(custom);
+    sel.appendChild(custom);
   }
 
-  elements.modelSelect.value = previous;
+  sel.value = previous;
+};
+
+const renderModelOptions = () => {
+  const previous = state.selectedModel;
+  populateModelSelectOptions(elements.modelSelect, state.models, previous);
+  populateModelSelectOptions(elements.chipModelSelect, state.models, previous);
 };
 
 // ===== Composer logic =====

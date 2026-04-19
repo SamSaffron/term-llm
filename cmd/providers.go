@@ -8,9 +8,27 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/credentials"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/spf13/cobra"
 )
+
+// builtinHasOAuthCredentials reports whether a built-in OAuth provider has
+// usable credentials stashed on disk. OAuth providers don't require a
+// [providers.<name>] block in config, so without this check the web picker
+// hides them even when the user is signed in.
+func builtinHasOAuthCredentials(name string) bool {
+	switch name {
+	case "chatgpt":
+		return credentials.ChatGPTCredentialsExist()
+	case "copilot":
+		return credentials.CopilotCredentialsExist()
+	case "gemini-cli":
+		_, err := credentials.GetGeminiOAuthCredentials()
+		return err == nil
+	}
+	return false
+}
 
 var (
 	providersJSON       bool
@@ -202,6 +220,9 @@ func buildProviderList(cfg *config.Config) []ProviderInfo {
 			if cfg.DefaultProvider == name {
 				info.Configured = true
 			}
+		}
+		if !info.Configured && builtinHasOAuthCredentials(name) {
+			info.Configured = true
 		}
 
 		providers = append(providers, info)
