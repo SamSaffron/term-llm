@@ -104,6 +104,7 @@ See [Skills](/guides/skills/) for the full guide on creating, sharing, and exten
 | `--print-only` | `-p` | Print the command instead of executing it |
 | `--debug` | `-d` | Show provider debug information |
 | `--debug-raw` | | Emit raw debug logs with timestamps (tool calls/results, raw requests) |
+| `--json` | | Emit JSONL event stream on stdout, one event per line (ask only; see below) |
 | `--system-message` | `-m` | Custom system message/instructions |
 | `--stats` | | Show session statistics (time, tokens, tool calls) |
 | `--no-session` | | Disable session persistence for this command |
@@ -145,6 +146,7 @@ term-llm ask -f code.go:50-100 "explain this function"  # specific lines
 term-llm ask -f clipboard "what is this?"       # from clipboard
 cat README.md | term-llm ask "summarize this"   # pipe stdin
 term-llm ask --debug-raw "latest zig release"   # raw debug logs with timestamps
+term-llm ask --json "explain git rebase" | jq -c .   # JSONL event stream
 
 # Edit files
 term-llm edit "add error handling" -f main.go
@@ -162,3 +164,37 @@ term-llm video "a corgi surfing at sunset"
 term-llm video "make Romeo blink" -i romeo.png
 term-llm video "astronaut on mars" --quote-only
 ```
+
+### JSON event stream (`ask --json`)
+
+`term-llm ask --json` emits a newline-delimited JSON (JSONL) event stream on
+stdout — one event per line — for scripting and automation. It implies `--text`
+(no rich terminal rendering) and is incompatible with `--debug-raw`. Human
+progress and warnings stay on stderr.
+
+Every event shares an envelope:
+
+```json
+{"type": "text.delta", "seq": 3, "ts": "2026-04-19T10:30:00.123456789Z", "text": "Hello"}
+```
+
+Event types, in typical order:
+
+| Type | Payload |
+|------|---------|
+| `session.started` | `session_id`, `provider`, `model`, `agent`, `tools`, `mcp`, `yolo`, `search`, `resuming` |
+| `text.delta` | `text` — one chunk of streamed response |
+| `tool.started` | `call_id`, `name`, `info`, `args` (raw JSON or `null`) |
+| `tool.completed` | `call_id`, `name`, `info`, `success` |
+| `usage` | `input_tokens`, `output_tokens`, `cached_input_tokens`, `cache_write_tokens` |
+| `phase` | `phase` |
+| `retry` | `attempt`, `max`, `wait_seconds` |
+| `image` | `path` |
+| `diff` | `path`, `old`, `new`, `line` |
+| `progressive.result` | `exit_reason`, `finalized`, plus optional `session_id`/`sequence`/`reason`/`message`/`progress`/`final_response`/`fallback_text` (only with `--progressive`) |
+| `error` | `message` |
+| `stats` | `duration_ms`, `llm_ms`, `tool_ms`, token counts, `tool_calls`, `llm_calls` |
+| `done` | `tokens` |
+
+The last two events are always `stats` then `done`, even on context cancellation
+or errors. `seq` starts at 0 and strictly increments.

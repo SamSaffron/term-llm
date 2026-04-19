@@ -36,6 +36,7 @@ var (
 	askSearch          bool
 	askText            bool
 	askPorcelain       bool
+	askJSON            bool
 	askProgressive     bool
 	askProvider        string
 	askFiles           []string
@@ -77,6 +78,7 @@ Examples:
   term-llm ask "What is the latest version of Node.js?" -s
   term-llm ask "Explain the difference between TCP and UDP" -d
   term-llm ask "List 5 programming languages" --text
+  term-llm ask "Explain git rebase" --json | jq -c .
   term-llm ask -f code.go "Explain this code"
   term-llm ask -f code.go:10-50 "Explain this function"
   term-llm ask -f clipboard "What is this?"
@@ -117,6 +119,7 @@ func init() {
 	// Ask-specific flags
 	askCmd.Flags().BoolVarP(&askText, "text", "t", false, "Output plain text instead of rendered markdown")
 	askCmd.Flags().BoolVar(&askPorcelain, "porcelain", false, "Output plain text without tool status lines (implies --text)")
+	askCmd.Flags().BoolVar(&askJSON, "json", false, "Emit JSONL event stream on stdout (one event per line, implies --text)")
 	askCmd.Flags().BoolVar(&askProgressive, "progressive", false, "Enable progressive execution with persisted best-so-far progress")
 	askCmd.Flags().DurationVar(&askTimeout, "timeout", 0, "Set a hard deadline for the run (used by progressive execution for finalization budget)")
 	askCmd.Flags().StringVar(&askStopWhen, "stop-when", "", "Progressive stop condition: done or timeout (defaults to done in progressive mode)")
@@ -479,8 +482,19 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	if askPorcelain {
 		askText = true
 	}
+	if askJSON {
+		if debugRaw {
+			return fmt.Errorf("--json is incompatible with --debug-raw (both write to stdout)")
+		}
+		askText = true
+		askPorcelain = false
+	}
 	isTTY := term.IsTerminal(int(os.Stdout.Fd()))
 	useRichRenderer := !askText && isTTY && !debugRaw
+	var jsonEmit *jsonEmitter
+	if askJSON {
+		jsonEmit = newJSONEmitter(cmd.OutOrStdout())
+	}
 
 	// Create stream adapter for unified event handling with proper buffering
 	adapter := ui.NewStreamAdapter(ui.DefaultStreamBufferSize)
@@ -598,20 +612,39 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	engine.ConfigureContextManagement(provider, cfg.DefaultProvider, activeModel(cfg), cfg.AutoCompact)
 	applyPersistedContextEstimate(engine, sess)
 
+	var jsonInfo sessionInfo
+	if askJSON {
+		agentName := ""
+		if agent != nil {
+			agentName = agent.Name
+		}
+		jsonInfo = sessionInfo{
+			SessionID: sessionID,
+			Provider:  provider.Name(),
+			Model:     activeModel(cfg),
+			Agent:     agentName,
+			Tools:     settings.Tools,
+			MCP:       settings.MCP,
+			Yolo:      askYolo,
+			Search:    settings.Search,
+			Resuming:  resuming,
+		}
+	}
+
 	var stats *ui.SessionStats
 	var progressiveResult progressiveRunResult
 
 	if askProgressive {
 		var bridge *askProgressiveBridge
 		var events <-chan ui.StreamEvent
-		if !askPorcelain || showStats || needsCollector {
+		if !askPorcelain || askJSON || showStats || needsCollector {
 			bridge = newAskProgressiveBridge(ui.DefaultStreamBufferSize)
 			if sess != nil {
 				bridge.Stats().SeedTotals(sess.InputTokens, sess.OutputTokens, sess.CachedInputTokens, sess.CacheWriteTokens, sess.ToolCalls, sess.LLMTurns)
 			}
 			stats = bridge.Stats()
 			events = wrapStreamEvents(bridge.Events())
-			if askPorcelain {
+			if askPorcelain && !askJSON {
 				go func() {
 					for range events {
 					}
@@ -649,7 +682,14 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 
 		var progressiveRun askProgressiveRunResult
-		if askPorcelain {
+		var jsonStreamErr error
+		var jsonTotalTokens int
+		if askJSON {
+			if err := emitSessionStarted(jsonEmit, jsonInfo); err != nil {
+				return err
+			}
+		}
+		if askPorcelain && !askJSON {
 			progressiveRun = runProgressive()
 		} else {
 			runCh := make(chan askProgressiveRunResult, 1)
@@ -657,9 +697,14 @@ func runAsk(cmd *cobra.Command, args []string) error {
 				runCh <- runProgressive()
 			}()
 			displayCtx := context.WithoutCancel(ctx)
-			if useRichRenderer {
+			switch {
+			case askJSON:
+				var writeErr error
+				jsonTotalTokens, jsonStreamErr, writeErr = streamJSONEvents(displayCtx, events, jsonEmit)
+				err = writeErr
+			case useRichRenderer:
 				err = runRenderer(displayCtx, events)
-			} else {
+			default:
 				err = streamPlainText(displayCtx, events, false)
 			}
 			progressiveRun = <-runCh
@@ -667,6 +712,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		tools.ClearAskUserHooks() // Safe to call even if hooks weren't set
 
 		if err != nil {
+			if askJSON {
+				_ = emitFatalError(jsonEmit, stats, err)
+			}
 			return err
 		}
 
@@ -684,7 +732,17 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			_ = store.SetCurrent(context.Background(), sess.ID)
 		}
 
-		if askPorcelain {
+		if askJSON {
+			if err := emitProgressiveResult(jsonEmit, progressiveResult); err != nil {
+				return fmt.Errorf("emit progressive result: %w", err)
+			}
+			if err := emitFinal(jsonEmit, stats, jsonTotalTokens); err != nil {
+				return fmt.Errorf("emit final: %w", err)
+			}
+			if jsonStreamErr != nil {
+				return jsonStreamErr
+			}
+		} else if askPorcelain {
 			if err := json.NewEncoder(cmd.OutOrStdout()).Encode(progressiveResult); err != nil {
 				return fmt.Errorf("encode progressive result: %w", err)
 			}
@@ -720,14 +778,20 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			errChan <- nil
 		}()
 
-		if useRichRenderer {
+		switch {
+		case askJSON:
+			err = streamJSON(ctx, streamEvents, jsonEmit, stats, jsonInfo)
+		case useRichRenderer:
 			err = runRenderer(ctx, streamEvents)
-		} else {
+		default:
 			err = streamPlainText(ctx, streamEvents, askPorcelain)
 		}
 		tools.ClearAskUserHooks() // Safe to call even if hooks weren't set
 
 		if err != nil {
+			if askJSON && !isTerminalFlushed(err) {
+				_ = emitFatalError(jsonEmit, stats, err)
+			}
 			return err
 		}
 
@@ -796,7 +860,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if showStats && stats != nil {
+	if showStats && stats != nil && !askJSON {
 		stats.Finalize()
 		fmt.Fprintln(cmd.ErrOrStderr(), stats.Render())
 	}
