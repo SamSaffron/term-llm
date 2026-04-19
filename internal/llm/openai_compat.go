@@ -416,7 +416,12 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, fmt.Errorf("%s API error (status %d): %s", p.name, resp.StatusCode, string(body))
+		errMsg := string(body)
+		var errResp oaiChatResponse
+		if json.Unmarshal(body, &errResp) == nil && errResp.Error != nil && errResp.Error.Message != "" {
+			errMsg = errResp.Error.Message
+		}
+		return nil, fmt.Errorf("%s API error (status %d): %s", p.name, resp.StatusCode, errMsg)
 	}
 
 	// Only create async stream for successful HTTP responses
