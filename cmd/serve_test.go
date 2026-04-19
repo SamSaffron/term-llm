@@ -1195,6 +1195,14 @@ func TestServeAuthMiddleware(t *testing.T) {
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204", rr.Code)
 	}
+
+	req = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "bearer secret")
+	rr = httptest.NewRecorder()
+	h(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("lowercase bearer: status = %d, want 204", rr.Code)
+	}
 }
 
 func TestServeSessionManager_GetOrCreateSingleFactoryCall(t *testing.T) {

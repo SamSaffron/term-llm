@@ -855,10 +855,9 @@ func (s *serveServer) auth(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		var gotToken string
-		const prefix = "Bearer "
-		auth := r.Header.Get("Authorization")
-		if strings.HasPrefix(auth, prefix) {
-			gotToken = strings.TrimSpace(strings.TrimPrefix(auth, prefix))
+		auth := strings.TrimSpace(r.Header.Get("Authorization"))
+		if scheme, rest, ok := strings.Cut(auth, " "); ok && strings.EqualFold(scheme, "Bearer") {
+			gotToken = strings.TrimSpace(rest)
 		}
 		if gotToken == "" {
 			if xKey := strings.TrimSpace(r.Header.Get("x-api-key")); xKey != "" {
