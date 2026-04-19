@@ -28,6 +28,11 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 				resp["pending_approvals"] = approvals
 				resp["pending_approval"] = approvals[0]
 			}
+			if rt.engine != nil {
+				if text := rt.engine.PeekInterjection(); text != "" {
+					resp["pending_interjection"] = map[string]any{"text": text}
+				}
+			}
 			if pk := strings.TrimSpace(rt.providerKey); pk != "" {
 				persistedProvider = pk
 			} else if rt.provider != nil {

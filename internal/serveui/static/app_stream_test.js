@@ -198,6 +198,7 @@ function createHarness(options = {}) {
     authTokenInput: {
       value: '',
       focus() {},
+      select() {},
       removeAttribute() {},
       setAttribute() {},
     },
@@ -210,6 +211,7 @@ function createHarness(options = {}) {
     showHiddenSessionsInput: { checked: false, removeAttribute() {}, setAttribute() {} },
     voiceBtn: null,
     voiceStatus: null,
+    pendingInterjectionBanner: null,
     askUserModal: makeNode(),
     askUserModalBody: makeNode(),
     askUserError: { textContent: '' },
@@ -234,6 +236,7 @@ function createHarness(options = {}) {
     restorePromptFocus: false,
     queuedInterrupts: [],
     pendingInterruptCommits: [],
+    pendingInterjections: [],
     voice: { chunks: [] },
     askUser: null,
     approval: null,
@@ -896,6 +899,260 @@ async function testCancelActiveResponseTearsDownLocallyBeforeServerPost() {
   pass(name);
 }
 
+async function testInterjectionClosesToolGroupAndInsertsUserMessageAtTail() {
+  const name = 'response.interjection closes tool group and inserts user message at DOM tail';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+
+  const session = {
+    id: 'session_interject',
+    title: 'Interject test',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: 'resp_int',
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+
+  state.pendingInterjections = [
+    { sessionId: session.id, prompt: 'please also check X', messageId: 'msg_pending', action: 'interject' },
+  ];
+  state.pendingInterruptCommits = [
+    { sessionId: session.id, prompt: 'please also check X', messageId: 'msg_pending' },
+  ];
+
+  const streamState = app.createResponseStreamState(session);
+  const fakeToolGroup = { id: 'grp_1', role: 'tool-group', tools: [], status: 'running' };
+  streamState.currentToolGroup = fakeToolGroup;
+  streamState.currentAssistantMessage = null;
+
+  app.applyResponseStreamEvent(session, streamState, 'response.interjection', {
+    text: 'please also check X',
+  });
+
+  if (streamState.currentToolGroup) {
+    fail(name, 'streamState.currentToolGroup should be null after interjection', JSON.stringify(streamState.currentToolGroup));
+    await cleanup();
+    return;
+  }
+
+  const userMessages = session.messages.filter((m) => m.role === 'user');
+  if (userMessages.length !== 1) {
+    fail(name, `expected 1 user message, got ${userMessages.length}`);
+    await cleanup();
+    return;
+  }
+  if (userMessages[0].id !== 'msg_pending') {
+    fail(name, `user message id = ${userMessages[0].id}, want "msg_pending"`);
+    await cleanup();
+    return;
+  }
+  if (userMessages[0].interruptState !== 'interject') {
+    fail(name, `interruptState = ${userMessages[0].interruptState}, want "interject"`);
+    await cleanup();
+    return;
+  }
+  if (state.pendingInterjections.length !== 0) {
+    fail(name, 'pendingInterjections should be drained after matching interjection');
+    await cleanup();
+    return;
+  }
+  if (state.pendingInterruptCommits.length !== 0) {
+    fail(name, 'pendingInterruptCommits should be drained after matching interjection');
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
+async function testRecoverInterruptConflictQueuesWhenRunStillActive() {
+  const name = 'recoverInterruptConflict queues follow-up when server still reports active run';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+
+  const session = {
+    id: 'session_409_active',
+    title: '409 active',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: 'resp_still_running',
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+
+  state.pendingInterjections = [
+    { sessionId: session.id, prompt: 'late thought', messageId: 'msg_late', action: 'deciding' },
+  ];
+  state.pendingInterruptCommits = [
+    { sessionId: session.id, prompt: 'late thought', messageId: 'msg_late' },
+  ];
+
+  app.syncActiveSessionFromServer = async () => ({ active_run: true, active_response_id: 'resp_still_running' });
+
+  const recovered = await app.recoverInterruptConflict(session, 'late thought', 'msg_late');
+  if (!recovered) {
+    fail(name, 'recoverInterruptConflict returned false');
+    await cleanup();
+    return;
+  }
+
+  if (state.pendingInterjections.length !== 0) {
+    fail(name, 'pendingInterjections should be cleared after 409 recovery', JSON.stringify(state.pendingInterjections));
+    await cleanup();
+    return;
+  }
+  if (state.pendingInterruptCommits.length !== 0) {
+    fail(name, 'pendingInterruptCommits should be cleared after 409 recovery', JSON.stringify(state.pendingInterruptCommits));
+    await cleanup();
+    return;
+  }
+
+  if (state.queuedInterrupts.length !== 1 || state.queuedInterrupts[0].prompt !== 'late thought') {
+    fail(name, 'expected follow-up queued for later delivery', JSON.stringify(state.queuedInterrupts));
+    await cleanup();
+    return;
+  }
+
+  const userMessages = session.messages.filter((m) => m.role === 'user');
+  if (userMessages.length !== 1 || userMessages[0].id !== 'msg_late') {
+    fail(name, 'expected one inline user message with reused id', JSON.stringify(userMessages));
+    await cleanup();
+    return;
+  }
+  if (userMessages[0].interruptState !== 'queue') {
+    fail(name, `inline message interruptState = ${userMessages[0].interruptState}, want "queue"`);
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
+async function testRecoverInterruptConflictClearsPendingWhenRunFinished() {
+  const name = 'recoverInterruptConflict clears pending entries without queueing when run is finished';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+
+  const session = {
+    id: 'session_409_idle',
+    title: '409 idle',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+
+  state.pendingInterjections = [
+    { sessionId: session.id, prompt: 'now please', messageId: 'msg_idle', action: 'deciding' },
+  ];
+  state.pendingInterruptCommits = [
+    { sessionId: session.id, prompt: 'now please', messageId: 'msg_idle' },
+  ];
+
+  app.syncActiveSessionFromServer = async () => ({ active_run: false });
+
+  // sendMessage is called internally by recoverInterruptConflict in the
+  // idle branch. Force sendMessage to bail out by flipping state.connected —
+  // it then calls openAuthModal, which in turn calls app.refreshNotificationUI,
+  // so stub that too to avoid a no-DOM crash.
+  harness.state.connected = false;
+  app.refreshNotificationUI = () => {};
+
+  const recovered = await app.recoverInterruptConflict(session, 'now please', 'msg_idle');
+
+  if (!recovered) {
+    fail(name, 'recoverInterruptConflict returned false');
+    await cleanup();
+    return;
+  }
+
+  if (state.pendingInterjections.length !== 0) {
+    fail(name, 'pendingInterjections should be cleared', JSON.stringify(state.pendingInterjections));
+    await cleanup();
+    return;
+  }
+  if (state.pendingInterruptCommits.length !== 0) {
+    fail(name, 'pendingInterruptCommits should be cleared', JSON.stringify(state.pendingInterruptCommits));
+    await cleanup();
+    return;
+  }
+
+  // No inline "queue" message should have been added — the run is finished,
+  // so we hand off to sendMessage (not the inline-queue path).
+  const inlineQueued = session.messages.find((m) => m.role === 'user' && m.interruptState === 'queue');
+  if (inlineQueued) {
+    fail(name, 'should not add inline queue message when run is finished', JSON.stringify(inlineQueued));
+    await cleanup();
+    return;
+  }
+
+  if (state.queuedInterrupts.length !== 0) {
+    fail(name, 'should not queue follow-up when run is finished', JSON.stringify(state.queuedInterrupts));
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
+async function testRunCompletesWithoutInterjectionQueuesOrphan() {
+  const name = 'response.completed with orphaned pending interjection queues it as follow-up';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+
+  const session = {
+    id: 'session_orphan',
+    title: 'Orphan test',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: 'resp_orphan',
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+
+  state.pendingInterjections = [
+    { sessionId: session.id, prompt: 'dropped thought', messageId: 'msg_orphan', action: 'interject' },
+  ];
+
+  const streamState = app.createResponseStreamState(session);
+  app.applyResponseStreamEvent(session, streamState, 'response.completed', {
+    response: { id: 'resp_orphan', model: 'test', status: 'completed' },
+    sequence_number: 5,
+  });
+
+  if (state.pendingInterjections.length !== 0) {
+    fail(name, 'pendingInterjections should be drained on run completion');
+    await cleanup();
+    return;
+  }
+  if (state.queuedInterrupts.length !== 1) {
+    fail(name, `expected 1 queued interrupt, got ${state.queuedInterrupts.length}`);
+    await cleanup();
+    return;
+  }
+  if (state.queuedInterrupts[0].prompt !== 'dropped thought') {
+    fail(name, `queuedInterrupts[0].prompt = ${state.queuedInterrupts[0].prompt}, want "dropped thought"`);
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
 (async () => {
   await testSendMessageHandsOffToEventsStream();
   await testSendMessageIgnoresPostBodyAfterHandoff();
@@ -904,6 +1161,10 @@ async function testCancelActiveResponseTearsDownLocallyBeforeServerPost() {
   await testDrainInterruptQueueAfterResumeCompletes();
   await testConnectTokenPreservesSelectedModelAndProviderFromState();
   await testCancelActiveResponseTearsDownLocallyBeforeServerPost();
+  await testInterjectionClosesToolGroupAndInsertsUserMessageAtTail();
+  await testRunCompletesWithoutInterjectionQueuesOrphan();
+  await testRecoverInterruptConflictQueuesWhenRunStillActive();
+  await testRecoverInterruptConflictClearsPendingWhenRunFinished();
 
   if (failures > 0) {
     console.error(`\n${failures} test(s) failed`);

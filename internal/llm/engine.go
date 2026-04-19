@@ -428,18 +428,43 @@ func (e *Engine) DrainInterjection() string {
 	return e.drainInterjection()
 }
 
+// PeekInterjection returns the currently pending interjection text without
+// consuming it. Returns "" if none. Safe to call from any goroutine.
+func (e *Engine) PeekInterjection() string {
+	e.callbackMu.Lock()
+	defer e.callbackMu.Unlock()
+
+	if e.interjection == nil {
+		return ""
+	}
+	ch := e.interjection
+	select {
+	case text := <-ch:
+		// Put it back. We hold the write lock, so no concurrent Interject
+		// can fill the (size-1) buffer between the receive and re-send.
+		ch <- text
+		return text
+	default:
+		return ""
+	}
+}
+
 // drainInterjection returns the pending interjection text, or "" if none.
 // Non-blocking. Called within runLoop between turns.
+//
+// Takes the exclusive lock (matching Interject and PeekInterjection) so a
+// concurrent PeekInterjection cannot temporarily empty the channel between
+// our channel-read and the peek's put-back, which would cause us to return ""
+// when text was actually pending.
 func (e *Engine) drainInterjection() string {
-	e.callbackMu.RLock()
-	ch := e.interjection
-	e.callbackMu.RUnlock()
+	e.callbackMu.Lock()
+	defer e.callbackMu.Unlock()
 
-	if ch == nil {
+	if e.interjection == nil {
 		return ""
 	}
 	select {
-	case text := <-ch:
+	case text := <-e.interjection:
 		return text
 	default:
 		return ""

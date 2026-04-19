@@ -497,8 +497,27 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
   if (event === 'response.interjection') {
     const interjectionText = String(payload.text || '').trim();
     if (interjectionText) {
+      streamState.closeToolGroup();
+      if (streamState.currentAssistantMessage) {
+        finalizeAssistantStreamRender(streamState.currentAssistantMessage);
+        streamState.currentAssistantMessage = null;
+      }
+      const pending = consumePendingInterjectionByText(session.id, interjectionText);
+      const messageId = pending?.messageId || generateId('msg');
+      const emptyState = elements.messages.querySelector('.empty-state');
+      if (emptyState) emptyState.remove();
+      const message = {
+        id: messageId,
+        role: 'user',
+        content: interjectionText,
+        created: Date.now(),
+        interruptState: 'interject'
+      };
+      session.messages.push(message);
+      elements.messages.appendChild(createMessageNode(message));
       resolvePendingInterruptCommit(session.id, interjectionText);
       saveSessions();
+      scrollToBottom(true);
     }
     return { terminal: false };
   }
@@ -507,6 +526,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     const usage = payload?.response?.usage;
     streamState.closeToolGroup();
     markToolGroupsDone(session);
+    requeuePendingInterjections(session);
 
     const responseId = String(payload?.response?.id || session.activeResponseId || state.currentStreamResponseId || '').trim();
     if (responseId) {
@@ -554,6 +574,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
 
     streamState.closeToolGroup();
     markToolGroupsDone(session);
+    requeuePendingInterjections(session);
     clearActiveResponseTracking(session, session.activeResponseId || state.currentStreamResponseId);
     setSessionOptimisticBusy(session, false);
     setSessionServerActiveRun(session, false);
@@ -656,10 +677,12 @@ const applyResponseRecoverySnapshot = (session, payload) => {
     clearActiveResponseTracking(session, responseId);
     setSessionOptimisticBusy(session, false);
     setSessionServerActiveRun(session, false);
+    requeuePendingInterjections(session);
   } else if (payload.status === 'failed') {
     clearActiveResponseTracking(session, responseId);
     setSessionOptimisticBusy(session, false);
     setSessionServerActiveRun(session, false);
+    requeuePendingInterjections(session);
   } else if (responseId) {
     setActiveResponseTracking(session, responseId, session.lastSequenceNumber);
     setSessionOptimisticBusy(session, true);
@@ -2392,6 +2415,7 @@ const drainInterruptQueueIfIdle = (session) => {
   if (!session || session.id !== state.activeSessionId) return;
   if (state.streaming || state.abortController) return;
   requeueUncommittedInterrupts(session);
+  requeuePendingInterjections(session);
   if (state.queuedInterrupts.length > 0) {
     const queued = state.queuedInterrupts.shift();
     elements.promptInput.value = queued.prompt;
@@ -2410,13 +2434,14 @@ const setInterruptMessageState = (session, messageId, interruptState) => {
   updateUserNode(message);
 };
 
-const createPendingInterruptMessage = (session, prompt) => {
+const addInlineInterruptMessage = (session, prompt, messageId, interruptState) => {
+  const normalized = sanitizeInterruptState(interruptState) || 'evaluating';
   const message = {
-    id: generateId('msg'),
+    id: messageId || generateId('msg'),
     role: 'user',
     content: prompt,
     created: Date.now(),
-    interruptState: 'evaluating'
+    interruptState: normalized
   };
   session.messages.push(message);
 
@@ -2424,6 +2449,122 @@ const createPendingInterruptMessage = (session, prompt) => {
   if (emptyState) emptyState.remove();
   elements.messages.appendChild(createMessageNode(message));
   return message;
+};
+
+const PENDING_INTERJECTION_LABELS = {
+  deciding: 'deciding…',
+  interject: 'will incorporate',
+  queue: 'queued',
+  cancel: 'cancelling'
+};
+
+const truncateForBanner = (text, max = 80) => {
+  const value = String(text || '').replace(/\s+/g, ' ').trim();
+  if (value.length <= max) return value;
+  return value.slice(0, max - 1) + '…';
+};
+
+const refreshPendingInterjectionBanner = () => {
+  const banner = elements.pendingInterjectionBanner;
+  if (!banner) return;
+  const activeId = String(state.activeSessionId || '').trim();
+  if (!activeId) {
+    banner.classList.add('hidden');
+    banner.innerHTML = '';
+    return;
+  }
+  let latest = null;
+  for (const entry of state.pendingInterjections) {
+    if (entry.sessionId !== activeId) continue;
+    latest = entry;
+  }
+  if (!latest) {
+    banner.classList.add('hidden');
+    banner.innerHTML = '';
+    return;
+  }
+  const label = PENDING_INTERJECTION_LABELS[latest.action] || PENDING_INTERJECTION_LABELS.deciding;
+  banner.innerHTML = '';
+  const icon = document.createElement('span');
+  icon.className = 'pending-interjection-icon';
+  icon.textContent = '⏳';
+  const text = document.createElement('span');
+  text.className = 'pending-interjection-text';
+  text.textContent = truncateForBanner(latest.prompt);
+  const tag = document.createElement('span');
+  tag.className = 'pending-interjection-label';
+  tag.textContent = `(${label})`;
+  banner.appendChild(icon);
+  banner.appendChild(text);
+  banner.appendChild(tag);
+  banner.classList.remove('hidden');
+};
+
+const trackPendingInterjection = (sessionId, prompt, messageId, action) => {
+  if (!sessionId || !messageId) return;
+  const existing = state.pendingInterjections.find(entry => entry.messageId === messageId);
+  if (existing) {
+    existing.prompt = prompt;
+    existing.action = action;
+  } else {
+    state.pendingInterjections.push({ sessionId, prompt, messageId, action });
+  }
+  refreshPendingInterjectionBanner();
+};
+
+const updatePendingInterjectionAction = (messageId, action) => {
+  if (!messageId) return;
+  const entry = state.pendingInterjections.find(item => item.messageId === messageId);
+  if (!entry) return;
+  entry.action = action;
+  refreshPendingInterjectionBanner();
+};
+
+const removePendingInterjectionById = (messageId) => {
+  if (!messageId) return null;
+  const idx = state.pendingInterjections.findIndex(entry => entry.messageId === messageId);
+  if (idx < 0) return null;
+  const [entry] = state.pendingInterjections.splice(idx, 1);
+  refreshPendingInterjectionBanner();
+  return entry;
+};
+
+const consumePendingInterjectionByText = (sessionId, text) => {
+  if (!sessionId) return null;
+  const normalized = String(text || '').trim();
+  let idx = -1;
+  for (let i = 0; i < state.pendingInterjections.length; i += 1) {
+    const entry = state.pendingInterjections[i];
+    if (entry.sessionId !== sessionId) continue;
+    if (String(entry.prompt || '').trim() === normalized) {
+      idx = i;
+      break;
+    }
+  }
+  if (idx < 0) {
+    for (let i = 0; i < state.pendingInterjections.length; i += 1) {
+      const entry = state.pendingInterjections[i];
+      if (entry.sessionId === sessionId) { idx = i; break; }
+    }
+  }
+  if (idx < 0) return null;
+  const [entry] = state.pendingInterjections.splice(idx, 1);
+  refreshPendingInterjectionBanner();
+  return entry;
+};
+
+const requeuePendingInterjections = (session) => {
+  if (!session?.id) return;
+  const remaining = [];
+  for (const entry of state.pendingInterjections) {
+    if (entry.sessionId !== session.id) {
+      remaining.push(entry);
+      continue;
+    }
+    queueInterruptFollowUp(entry.prompt, entry.messageId);
+  }
+  state.pendingInterjections = remaining;
+  refreshPendingInterjectionBanner();
 };
 
 const interruptActiveRun = async (session, prompt, messageId) => {
@@ -2442,12 +2583,11 @@ const interruptActiveRun = async (session, prompt, messageId) => {
     ? actionRaw
     : 'queue';
 
-  setInterruptMessageState(session, messageId, action);
-
   if (action === 'interject') {
-    trackPendingInterruptCommit(session.id, prompt, messageId);
+    updatePendingInterjectionAction(messageId, 'interject');
   } else {
-    discardPendingInterruptCommit(messageId);
+    removePendingInterjectionById(messageId);
+    addInlineInterruptMessage(session, prompt, messageId, action);
   }
 
   if (action === 'cancel' || action === 'queue') {
@@ -2497,7 +2637,8 @@ const recoverInterruptConflict = async (session, prompt, messageId) => {
   }
   if (runtimeHasActiveRun(runtimeState)) {
     discardPendingInterruptCommit(messageId);
-    setInterruptMessageState(session, messageId, 'queue');
+    removePendingInterjectionById(messageId);
+    addInlineInterruptMessage(session, prompt, messageId, 'queue');
     queueInterruptFollowUp(prompt, messageId);
     persistAndRefreshShell();
     scrollToBottom(true);
@@ -2505,10 +2646,10 @@ const recoverInterruptConflict = async (session, prompt, messageId) => {
   }
 
   discardPendingInterruptCommit(messageId);
+  removePendingInterjectionById(messageId);
   await sendMessage({
     prompt,
-    attachments: [],
-    reuseMessageId: messageId
+    attachments: []
   });
   return true;
 };
@@ -2595,7 +2736,9 @@ const sendMessage = async (options = {}) => {
       return;
     }
 
-    const pendingMessage = createPendingInterruptMessage(session, prompt);
+    const pendingMessageId = generateId('msg');
+    trackPendingInterruptCommit(session.id, prompt, pendingMessageId);
+    trackPendingInterjection(session.id, prompt, pendingMessageId, 'deciding');
     persistAndRefreshShell();
     scrollToBottom(true);
 
@@ -2603,11 +2746,11 @@ const sendMessage = async (options = {}) => {
     autoGrowPrompt();
 
     try {
-      await interruptActiveRun(session, prompt, pendingMessage.id);
+      await interruptActiveRun(session, prompt, pendingMessageId);
     } catch (err) {
       if (err?.status === 409) {
         try {
-          const recovered = await recoverInterruptConflict(session, prompt, pendingMessage.id);
+          const recovered = await recoverInterruptConflict(session, prompt, pendingMessageId);
           if (recovered) {
             return;
           }
@@ -2616,8 +2759,9 @@ const sendMessage = async (options = {}) => {
         }
       }
 
-      discardPendingInterruptCommit(pendingMessage.id);
-      setInterruptMessageState(session, pendingMessage.id, 'error');
+      discardPendingInterruptCommit(pendingMessageId);
+      removePendingInterjectionById(pendingMessageId);
+      addInlineInterruptMessage(session, prompt, pendingMessageId, 'error');
       const message = err?.message || 'Failed to interrupt active run.';
       addErrorMessage(message, session);
       if (err?.status === 401) {
@@ -2880,6 +3024,7 @@ const sendMessage = async (options = {}) => {
     if (!stillActive) {
       setSessionOptimisticBusy(session, false);
       app.refreshSidebarStatusPoll?.();
+      requeuePendingInterjections(session);
     }
     setStreaming(stillActive);
     refreshRelativeTimes();
@@ -2948,8 +3093,15 @@ Object.assign(app, {
   requeueUncommittedInterrupts,
   drainInterruptQueueIfIdle,
   setInterruptMessageState,
-  createPendingInterruptMessage,
+  addInlineInterruptMessage,
+  trackPendingInterjection,
+  updatePendingInterjectionAction,
+  removePendingInterjectionById,
+  consumePendingInterjectionByText,
+  refreshPendingInterjectionBanner,
+  requeuePendingInterjections,
   interruptActiveRun,
+  recoverInterruptConflict,
   addErrorMessage,
   markToolGroupsDone,
   sendMessage

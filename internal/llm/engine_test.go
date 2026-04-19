@@ -2188,6 +2188,38 @@ func TestEngineInterjection_DrainOnNoPending(t *testing.T) {
 	}
 }
 
+// TestEnginePeekInterjection verifies that PeekInterjection returns the pending
+// text non-destructively: the channel retains the value so DrainInterjection
+// can still consume it afterwards.
+func TestEnginePeekInterjection(t *testing.T) {
+	engine := NewEngine(NewMockProvider("test"), nil)
+
+	// Before any Interject: channel is nil, should return ""
+	if text := engine.PeekInterjection(); text != "" {
+		t.Fatalf("expected empty peek before Interject, got %q", text)
+	}
+
+	engine.Interject("hello world")
+
+	// Peek twice — both should return the same value, neither should consume.
+	if text := engine.PeekInterjection(); text != "hello world" {
+		t.Fatalf("first peek = %q, want %q", text, "hello world")
+	}
+	if text := engine.PeekInterjection(); text != "hello world" {
+		t.Fatalf("second peek = %q, want %q", text, "hello world")
+	}
+
+	// Drain should still return it.
+	if text := engine.DrainInterjection(); text != "hello world" {
+		t.Fatalf("drain after peek = %q, want %q", text, "hello world")
+	}
+
+	// Peek after drain: empty.
+	if text := engine.PeekInterjection(); text != "" {
+		t.Fatalf("peek after drain = %q, want empty", text)
+	}
+}
+
 func TestCallbackStream_CloseWhileDrainingFiresCallbackOnce(t *testing.T) {
 	inner := newConcurrentCloseStream()
 

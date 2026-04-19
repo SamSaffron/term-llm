@@ -138,6 +138,11 @@ function defaultAppStubs(app, overrides = {}) {
     detachResponseStream() {},
     requeueUncommittedInterrupts() {},
     drainInterruptQueueIfIdle() {},
+    requeuePendingInterjections() {},
+    trackPendingInterjection() {},
+    removePendingInterjectionById() {},
+    trackPendingInterruptCommit() {},
+    refreshPendingInterjectionBanner() {},
     HEARTBEAT_STALE_THRESHOLD: 45000,
     HEARTBEAT_ABORT_REASON: 'heartbeat stale',
     applyDesktopSidebarState() {},
@@ -870,6 +875,126 @@ async function testResumeAndDrainFiringViaSync() {
   pass(name);
 }
 
+async function testTerminalSyncRequeuesPendingInterjectionAsFollowUp() {
+  const name = 'idle sync with pending_interjection requeues it as follow-up via requeuePendingInterjections';
+  const requeueCalls = [];
+  const sendCalls = [];
+  let appRef = null;
+
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({ sessions: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (url === '/ui/v1/sessions/sess_reload/state') {
+        return new Response(JSON.stringify({
+          active_run: false,
+          pending_interjection: { text: 'rescued prompt' }
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/sess_reload/messages') {
+        return new Response(JSON.stringify({ messages: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (url === '/ui/v1/sessions/status') {
+        return new Response(JSON.stringify({ sessions: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    },
+    appOverrides: {
+      trackPendingInterjection(sessionId, prompt, messageId, action) {
+        appRef.state.pendingInterjections.push({ sessionId, prompt, messageId, action });
+      },
+      removePendingInterjectionById(messageId) {
+        const idx = appRef.state.pendingInterjections.findIndex(e => e.messageId === messageId);
+        if (idx >= 0) appRef.state.pendingInterjections.splice(idx, 1);
+      },
+      trackPendingInterruptCommit(sessionId, prompt, messageId) {
+        appRef.state.pendingInterruptCommits.push({ sessionId, prompt, messageId });
+      },
+      refreshPendingInterjectionBanner() {},
+      requeuePendingInterjections(session) {
+        requeueCalls.push(session.id);
+        const remaining = [];
+        for (const entry of appRef.state.pendingInterjections) {
+          if (entry.sessionId === session.id) {
+            appRef.state.queuedInterrupts.push({ prompt: entry.prompt, messageId: entry.messageId });
+          } else {
+            remaining.push(entry);
+          }
+        }
+        appRef.state.pendingInterjections = remaining;
+      },
+      requeueUncommittedInterrupts() {},
+      drainInterruptQueueIfIdle(session) {
+        if (!session || session.id !== appRef.state.activeSessionId) return;
+        if (appRef.state.streaming || appRef.state.abortController) return;
+        if (appRef.state.queuedInterrupts.length > 0) {
+          const queued = appRef.state.queuedInterrupts.shift();
+          void appRef.sendMessage({ prompt: queued.prompt, attachments: [], reuseMessageId: queued.messageId });
+        }
+      },
+      sendMessage(payload) {
+        sendCalls.push(payload);
+        return Promise.resolve();
+      },
+    }
+  });
+  appRef = app;
+
+  const session = {
+    id: 'sess_reload',
+    title: 'Reload test',
+    origin: 'web',
+    created: 1710000000000,
+    messages: [],
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  await app.syncActiveSessionFromServer(session, false);
+
+  // The /state response says pending_interjection but active_run=false.
+  // syncActiveSessionFromServer should:
+  //   1. trackPendingInterjection (picks up pending_interjection from server)
+  //   2. in the terminal branch, requeuePendingInterjections → moves to queuedInterrupts
+  //   3. drainInterruptQueueIfIdle → sendMessage fires
+  if (requeueCalls.length === 0 || requeueCalls[0] !== session.id) {
+    fail(name, 'expected requeuePendingInterjections to be called on terminal state', JSON.stringify(requeueCalls));
+    return;
+  }
+
+  if (app.state.pendingInterjections.length !== 0) {
+    fail(name, 'pendingInterjections should be drained', JSON.stringify(app.state.pendingInterjections));
+    return;
+  }
+
+  if (sendCalls.length !== 1) {
+    fail(name, `expected 1 follow-up sendMessage, got ${sendCalls.length}`, JSON.stringify(sendCalls));
+    return;
+  }
+  if (sendCalls[0].prompt !== 'rescued prompt') {
+    fail(name, `follow-up prompt = ${sendCalls[0].prompt}, want "rescued prompt"`);
+    return;
+  }
+
+  pass(name);
+}
+
 (async () => {
   await testNumericDeepLinkResolvesRealSessionId();
   await testDeveloperMessagesAreHidden();
@@ -878,6 +1003,7 @@ async function testResumeAndDrainFiringViaSync() {
   await testIdleSessionSyncRescuesPendingInterruptCommit();
   await testSessionProgressStatePrefersLocalAndServerSignals();
   await testResumeAndDrainFiringViaSync();
+  await testTerminalSyncRequeuesPendingInterjectionAsFollowUp();
 
   if (failures > 0) process.exit(1);
   process.exit(0);

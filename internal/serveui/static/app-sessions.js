@@ -13,7 +13,8 @@ const {
   requestNotificationPermission, shouldAutoSubscribeToPush, detachResponseStream, HEARTBEAT_STALE_THRESHOLD, HEARTBEAT_ABORT_REASON,
   applyDesktopSidebarState, toggleSidebarCollapsed, flushStreamPersistence, requestHeaders, normalizeError, renderAttachments,
   updateSidebarStatus, sessionHasInProgressState, hasAnySessionInProgressState, setSessionServerActiveRun, setSessionOptimisticBusy,
-  moveSessionProgressState, requeueUncommittedInterrupts, drainInterruptQueueIfIdle
+  moveSessionProgressState, requeueUncommittedInterrupts, drainInterruptQueueIfIdle, requeuePendingInterjections,
+  trackPendingInterjection, removePendingInterjectionById, trackPendingInterruptCommit, refreshPendingInterjectionBanner
 } = app;
 let sessionStatePollTimer = null;
 
@@ -129,6 +130,7 @@ const switchToDraftSession = async (options = {}) => {
     autoGrowPrompt();
   }
 
+  refreshPendingInterjectionBanner();
   persistAndRefreshShell();
   renderMessages(true);
 
@@ -167,6 +169,7 @@ const switchToSession = async (sessionId, options = {}) => {
   state.activeSessionId = nextId;
   state.draftSessionActive = false;
   updateURL(sessionSlug(session));
+  refreshPendingInterjectionBanner();
 
   if (session._serverOnly) {
     const msgs = await loadServerSessionMessages(session.id);
@@ -420,6 +423,24 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false) => {
     closeApprovalModal();
   }
 
+  const pendingInterjection = runtimeState.pending_interjection || null;
+  const pendingInterjectionText = pendingInterjection ? String(pendingInterjection.text || '').trim() : '';
+  if (pendingInterjectionText) {
+    const exists = state.pendingInterjections.some(entry =>
+      entry.sessionId === session.id && entry.prompt === pendingInterjectionText);
+    if (!exists) {
+      const syntheticId = `msg_pending_${session.id}_${pendingInterjectionText.length}`;
+      trackPendingInterjection(session.id, pendingInterjectionText, syntheticId, 'interject');
+      trackPendingInterruptCommit(session.id, pendingInterjectionText, syntheticId);
+    }
+  } else {
+    for (const entry of [...state.pendingInterjections]) {
+      if (entry.sessionId === session.id) {
+        removePendingInterjectionById(entry.messageId);
+      }
+    }
+  }
+
   const activeResponseId = String(runtimeState.active_response_id || '').trim();
   if (activeResponseId) {
     const responseChanged = session.activeResponseId !== activeResponseId;
@@ -484,6 +505,7 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false) => {
     }
     setConnectionState('', '');
     setStreaming(false);
+    requeuePendingInterjections(session);
     drainInterruptQueueIfIdle(session);
   }
 

@@ -3843,6 +3843,47 @@ func TestHandleSessionState_ReturnsModelAndEffortFromRuntime(t *testing.T) {
 	}
 }
 
+func TestHandleSessionState_ExposesPendingInterjection(t *testing.T) {
+	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
+	engine.Interject("hi there")
+
+	rt := &serveRuntime{engine: engine}
+	mgr := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
+		return rt, nil
+	})
+	defer mgr.Close()
+	mgr.mu.Lock()
+	mgr.sessions["sess-interject"] = rt
+	mgr.mu.Unlock()
+
+	srv := &serveServer{sessionMgr: mgr}
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/sess-interject/state", nil)
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `"pending_interjection"`) {
+		t.Fatalf("expected pending_interjection in body, got %s", body)
+	}
+	if !strings.Contains(body, `"text":"hi there"`) {
+		t.Fatalf("expected pending_interjection text, got %s", body)
+	}
+
+	// Peek must be non-destructive: a subsequent call should still see it.
+	rr2 := httptest.NewRecorder()
+	srv.handleSessionByID(rr2, req)
+	if !strings.Contains(rr2.Body.String(), `"text":"hi there"`) {
+		t.Fatalf("expected pending_interjection to survive repeated peeks, got %s", rr2.Body.String())
+	}
+
+	// DrainInterjection should still return the value.
+	if got := engine.DrainInterjection(); got != "hi there" {
+		t.Fatalf("drain after peeks = %q, want %q", got, "hi there")
+	}
+}
+
 func TestHandleSessionState_FallsBackToDBWhenRuntimeNotLoaded(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
