@@ -15,6 +15,11 @@ import (
 
 const veniceBaseURL = "https://api.venice.ai/api/v1"
 
+// veniceModelRenames maps retired Venice model IDs to their current replacements.
+var veniceModelRenames = map[string]string{
+	"kimi-2.7": "kimi-k2-5",
+}
+
 type VeniceProvider struct {
 	*OpenAICompatProvider
 }
@@ -23,6 +28,9 @@ func NewVeniceProvider(apiKey, model string) *VeniceProvider {
 	apiKey = config.NormalizeVeniceAPIKey(apiKey)
 	if model == "" {
 		model = "venice-uncensored"
+	}
+	if replacement, ok := veniceModelRenames[model]; ok {
+		model = replacement
 	}
 	return &VeniceProvider{OpenAICompatProvider: NewOpenAICompatProvider(veniceBaseURL, apiKey, model, "Venice")}
 }

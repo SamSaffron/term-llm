@@ -11,6 +11,13 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 )
 
+func TestNewVeniceProviderRemapsRenamedModel(t *testing.T) {
+	provider := NewVeniceProvider("test-key", "kimi-2.7")
+	if provider.model != "kimi-k2-5" {
+		t.Fatalf("model = %q, want %q", provider.model, "kimi-k2-5")
+	}
+}
+
 func TestNewVeniceProviderTrimsAPIKey(t *testing.T) {
 	provider := NewVeniceProvider("  test-key\n", "")
 	if provider.apiKey != "test-key" {
