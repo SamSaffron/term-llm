@@ -122,6 +122,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if freshConversation {
+		s.sessionToResponse.Delete(sessionID)
 		s.syncPersistedSessionRuntime(ctx, sessionID, runtime, strings.TrimSpace(req.Model), normalizeReasoningEffort(req.ReasoningEffort))
 	}
 
@@ -131,6 +132,13 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	// expects from that response).
 	if req.PreviousResponseID != "" {
 		lastRespID := runtime.getLastResponseID()
+		if lastRespID == "" {
+			if latest, ok := s.sessionToResponse.Load(sessionID); ok {
+				if latestStr, ok := latest.(string); ok {
+					lastRespID = strings.TrimSpace(latestStr)
+				}
+			}
+		}
 		if lastRespID != "" && req.PreviousResponseID != lastRespID {
 			writeOpenAIError(w, http.StatusConflict, "conflict_error",
 				fmt.Sprintf("previous_response_id %q is stale; latest is %q", req.PreviousResponseID, lastRespID))

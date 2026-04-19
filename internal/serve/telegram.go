@@ -586,7 +586,7 @@ func (m *telegramSessionMgr) restoreHistoryFromDB(ctx context.Context, chatID in
 			all = append(all, msg.ToLLMMessage())
 		}
 
-		history := tailMessages(all, maxChars)
+		history := sanitizeCarryoverMessages(tailMessages(all, maxChars))
 		if len(history) > 0 {
 			sess.history = history
 			log.Printf("[telegram] restored %d messages (of %d) from session %s for chat %d",
@@ -617,6 +617,63 @@ func tailMessages(msgs []llm.Message, maxChars int) []llm.Message {
 		start = i
 	}
 	return msgs[start:]
+}
+
+func sanitizeCarryoverMessages(msgs []llm.Message) []llm.Message {
+	if len(msgs) == 0 {
+		return nil
+	}
+
+	sanitized := make([]llm.Message, 0, len(msgs))
+	for _, msg := range msgs {
+		sanitized = append(sanitized, sanitizeCarryoverMessage(msg))
+	}
+	return sanitized
+}
+
+func sanitizeCarryoverMessage(msg llm.Message) llm.Message {
+	sanitized := llm.Message{
+		Role:        msg.Role,
+		CacheAnchor: msg.CacheAnchor,
+		Parts:       make([]llm.Part, 0, len(msg.Parts)),
+	}
+
+	for _, part := range msg.Parts {
+		switch part.Type {
+		case llm.PartImage:
+			sanitized.Parts = append(sanitized.Parts, llm.Part{Type: llm.PartText, Text: "[image uploaded]"})
+		case llm.PartToolCall:
+			if part.ToolCall == nil {
+				continue
+			}
+			call := *part.ToolCall
+			if len(call.Arguments) > 0 {
+				call.Arguments = append([]byte(nil), call.Arguments...)
+			}
+			if len(call.ThoughtSig) > 0 {
+				call.ThoughtSig = append([]byte(nil), call.ThoughtSig...)
+			}
+			sanitized.Parts = append(sanitized.Parts, llm.Part{Type: llm.PartToolCall, ToolCall: &call})
+		case llm.PartToolResult:
+			if part.ToolResult == nil {
+				continue
+			}
+			result := &llm.ToolResult{
+				ID:      part.ToolResult.ID,
+				Name:    part.ToolResult.Name,
+				Content: extractToolResultTextWithPlaceholders(part.ToolResult),
+				IsError: part.ToolResult.IsError,
+			}
+			if len(part.ToolResult.ThoughtSig) > 0 {
+				result.ThoughtSig = append([]byte(nil), part.ToolResult.ThoughtSig...)
+			}
+			sanitized.Parts = append(sanitized.Parts, llm.Part{Type: llm.PartToolResult, ToolResult: result})
+		default:
+			sanitized.Parts = append(sanitized.Parts, part)
+		}
+	}
+
+	return sanitized
 }
 
 func (m *telegramSessionMgr) newSession(ctx context.Context, chatID int64) (*telegramSession, error) {
@@ -1650,6 +1707,36 @@ func buildHistoryContextTail(history []llm.Message, maxChars int) string {
 	return tailRunes(strings.Join(lines, "\n"), maxChars)
 }
 
+func extractToolResultTextWithPlaceholders(result *llm.ToolResult) string {
+	if result == nil {
+		return ""
+	}
+
+	var parts []string
+	// Prefer structured ContentParts when present; fall back to flat Content
+	// only when absent. Tools that populate ContentParts typically set
+	// Content to the flattened text form of the text parts (see view_image),
+	// so consuming both would duplicate text and waste carryover budget.
+	if len(result.ContentParts) > 0 {
+		for _, p := range result.ContentParts {
+			switch p.Type {
+			case llm.ToolContentPartText:
+				if strings.TrimSpace(p.Text) != "" {
+					parts = append(parts, p.Text)
+				}
+			case llm.ToolContentPartImageData:
+				parts = append(parts, "[image uploaded]")
+			}
+		}
+	} else if strings.TrimSpace(result.Content) != "" {
+		parts = append(parts, result.Content)
+	}
+	for range result.Images {
+		parts = append(parts, "[image uploaded]")
+	}
+	return strings.Join(parts, "\n")
+}
+
 func extractMessageTextWithPlaceholders(msg llm.Message) string {
 	var parts []string
 	for _, part := range msg.Parts {
@@ -1661,25 +1748,8 @@ func extractMessageTextWithPlaceholders(msg llm.Message) string {
 		case llm.PartImage:
 			parts = append(parts, "[image uploaded]")
 		case llm.PartToolResult:
-			if part.ToolResult == nil {
-				continue
-			}
-			result := part.ToolResult
-			if strings.TrimSpace(result.Content) != "" {
-				parts = append(parts, result.Content)
-			}
-			for _, p := range result.ContentParts {
-				switch p.Type {
-				case llm.ToolContentPartText:
-					if strings.TrimSpace(p.Text) != "" {
-						parts = append(parts, p.Text)
-					}
-				case llm.ToolContentPartImageData:
-					parts = append(parts, "[image uploaded]")
-				}
-			}
-			for range result.Images {
-				parts = append(parts, "[image uploaded]")
+			if text := extractToolResultTextWithPlaceholders(part.ToolResult); strings.TrimSpace(text) != "" {
+				parts = append(parts, text)
 			}
 		}
 	}

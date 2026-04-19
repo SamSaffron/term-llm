@@ -104,8 +104,17 @@ type ToolExecutorSetter interface {
 
 // ProviderCleaner is an optional interface for providers that need cleanup
 // after a conversation ends (e.g., claude-bin's persistent MCP server).
+// Call sites: runtime eviction, server shutdown. Do NOT call per-turn.
 type ProviderCleaner interface {
 	CleanupMCP()
+}
+
+// ProviderTurnCleaner is an optional interface for providers that need cleanup
+// after each turn's stream ends (e.g., temp image files materialised for a
+// single turn). Engine wraps agentic streams to invoke this on stream
+// termination as a safety net for consumers that drop streams without Close().
+type ProviderTurnCleaner interface {
+	CleanupTurn()
 }
 
 func NewEngine(provider Provider, tools *ToolRegistry) *Engine {
@@ -542,9 +551,11 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 		stream = wrapLoggingStream(stream, e.provider.Name(), req.Model)
 		stream = e.wrapDebugLoggingStream(stream)
 
-		// Wrap with cleanup for providers that need it (e.g., claude-bin MCP server)
-		if cleaner, ok := e.provider.(ProviderCleaner); ok {
-			stream = &cleanupStream{inner: stream, cleanup: cleaner.CleanupMCP}
+		// Wrap with per-turn cleanup for providers that need it (e.g. claude-bin
+		// temp image files). Conversation-scoped cleanup (CleanupMCP) is NOT
+		// invoked here — it runs on runtime eviction / server shutdown.
+		if cleaner, ok := e.provider.(ProviderTurnCleaner); ok {
+			stream = &cleanupStream{inner: stream, cleanup: cleaner.CleanupTurn}
 		}
 
 		return stream, nil
@@ -841,6 +852,73 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 		var finishingToolExecuted bool // Track if a finishing tool was executed (agent done)
 		var syncToolCalls []ToolCall   // Track sync tool calls for message building
 		var syncToolResults []Message  // Track sync tool results for message building
+		persistPartialAssistant := func() {
+			hasTextOrReasoning := textBuilder.Len() > 0 || reasoningBuilder.Len() > 0 || reasoningItemID != "" || reasoningEncryptedContent != ""
+			if !hasTextOrReasoning && len(toolCalls) == 0 && len(syncToolCalls) == 0 {
+				return
+			}
+
+			if len(toolCalls) == 0 {
+				if syncToolsExecuted {
+					assistantMsg := buildAssistantMessageWithReasoningMetadata(
+						textBuilder.String(),
+						e.withToolPreview(syncToolCalls),
+						reasoningBuilder.String(),
+						reasoningItemID,
+						reasoningEncryptedContent,
+					)
+					if turnCallback != nil {
+						turnMetrics.ToolCalls = len(syncToolCalls)
+						turnMessages := []Message{assistantMsg}
+						turnMessages = append(turnMessages, syncToolResults...)
+						cbCtx, cancel := callbackContext(ctx)
+						_ = turnCallback(cbCtx, attempt, turnMessages, turnMetrics)
+						cancel()
+					}
+					return
+				}
+				if turnCallback != nil && hasTextOrReasoning {
+					finalMsg := Message{
+						Role: RoleAssistant,
+						Parts: []Part{{
+							Type:                      PartText,
+							Text:                      textBuilder.String(),
+							ReasoningContent:          reasoningBuilder.String(),
+							ReasoningItemID:           reasoningItemID,
+							ReasoningEncryptedContent: reasoningEncryptedContent,
+						}},
+					}
+					cbCtx, cancel := callbackContext(ctx)
+					_ = turnCallback(cbCtx, attempt, []Message{finalMsg}, turnMetrics)
+					cancel()
+				}
+				return
+			}
+
+			partialToolCalls := ensureToolCallIDs(toolCalls)
+			partialToolCalls = dedupeToolCalls(partialToolCalls)
+			assistantMsg := buildAssistantMessageWithReasoningMetadata(
+				textBuilder.String(),
+				e.withToolPreview(partialToolCalls),
+				reasoningBuilder.String(),
+				reasoningItemID,
+				reasoningEncryptedContent,
+			)
+			if len(assistantMsg.Parts) == 0 {
+				return
+			}
+			if responseCallback != nil {
+				cbCtx, cancel := callbackContext(ctx)
+				_ = responseCallback(cbCtx, attempt, assistantMsg, turnMetrics)
+				cancel()
+				return
+			}
+			if turnCallback != nil {
+				cbCtx, cancel := callbackContext(ctx)
+				_ = turnCallback(cbCtx, attempt, []Message{assistantMsg}, turnMetrics)
+				cancel()
+			}
+		}
 		for {
 			event, err := stream.Recv()
 			if err == io.EOF {
@@ -848,10 +926,12 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 			}
 			if err != nil {
 				stream.Close()
+				persistPartialAssistant()
 				return err
 			}
 			if event.Type == EventError && event.Err != nil {
 				stream.Close()
+				persistPartialAssistant()
 				return event.Err
 			}
 			if req.DebugRaw {
@@ -1742,10 +1822,10 @@ func (s *debugLoggingStream) Close() error {
 	return s.inner.Close()
 }
 
-// cleanupStream wraps a stream to call provider cleanup when closed.
-// Used to ensure MCP servers are cleaned up after multi-turn conversations.
-// Cleanup runs on Close() OR when Recv() returns io.EOF/EventDone to handle
-// consumers that only loop until EOF without calling Close().
+// cleanupStream wraps a stream to call provider per-turn cleanup on terminal
+// conditions (io.EOF, EventDone, or Close). Used for per-turn resources such
+// as claude-bin's per-turn temp image files. MCP servers and other
+// conversation-scoped state are cleaned up elsewhere (runtime eviction).
 type cleanupStream struct {
 	inner     Stream
 	cleanup   func()

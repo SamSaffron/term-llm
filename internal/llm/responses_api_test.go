@@ -1147,6 +1147,115 @@ func TestResponsesClientStream_AllowsLargeSSEDataLines(t *testing.T) {
 	t.Fatal("expected EventDone")
 }
 
+func TestResponsesClientResetConversationIgnoresLateStreamCompletion(t *testing.T) {
+	type capturedRequest struct {
+		PreviousResponseID string `json:"previous_response_id"`
+	}
+
+	allowCompletion := make(chan struct{})
+	callCount := 0
+	requests := make([]capturedRequest, 0, 2)
+	httpClient := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			callCount++
+			defer r.Body.Close()
+
+			var payload capturedRequest
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read request body: %w", err)
+			}
+			if err := json.Unmarshal(body, &payload); err != nil {
+				return nil, fmt.Errorf("failed to decode request body: %w", err)
+			}
+			requests = append(requests, payload)
+
+			if callCount == 1 {
+				pr, pw := io.Pipe()
+				go func() {
+					defer pw.Close()
+					_, _ = io.WriteString(pw,
+						"event: response.output_text.delta\n"+
+							"data: {\"delta\":\"hello\"}\n\n",
+					)
+					<-allowCompletion
+					_, _ = io.WriteString(pw,
+						"event: response.completed\n"+
+							"data: {\"response\":{\"id\":\"resp_old\"}}\n\n"+
+							"data: [DONE]\n\n",
+					)
+				}()
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+					Body:       pr,
+				}, nil
+			}
+
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+			}, nil
+		}),
+	}
+
+	client := &ResponsesClient{
+		BaseURL:       "https://example.test/v1/responses",
+		GetAuthHeader: func() string { return "Bearer test-token" },
+		HTTPClient:    httpClient,
+	}
+
+	stream, err := client.Stream(context.Background(), ResponsesRequest{
+		Model:  "gpt-5.2",
+		Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "hello"}},
+		Stream: true,
+	}, false)
+	if err != nil {
+		t.Fatalf("stream creation failed: %v", err)
+	}
+	defer stream.Close()
+
+	event, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("stream recv failed: %v", err)
+	}
+	if event.Type != EventTextDelta || event.Text != "hello" {
+		t.Fatalf("expected initial text delta, got %+v", event)
+	}
+
+	client.ResetConversation()
+	close(allowCompletion)
+	drainStreamToDone(t, stream)
+
+	if client.LastResponseID != "" {
+		t.Fatalf("expected ResetConversation to keep LastResponseID cleared, got %q", client.LastResponseID)
+	}
+
+	nextStream, err := client.Stream(context.Background(), ResponsesRequest{
+		Model:  "gpt-5.2",
+		Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "new conversation"}},
+		Stream: true,
+	}, false)
+	if err != nil {
+		t.Fatalf("second stream creation failed: %v", err)
+	}
+	defer nextStream.Close()
+	drainStreamToDone(t, nextStream)
+
+	if callCount != 2 {
+		t.Fatalf("expected 2 HTTP calls, got %d", callCount)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("expected 2 captured requests, got %d", len(requests))
+	}
+	if requests[1].PreviousResponseID != "" {
+		t.Fatalf("expected new conversation request to omit previous_response_id, got %q", requests[1].PreviousResponseID)
+	}
+}
+
 func assertResponsesAPIErrorBodyTruncated(t *testing.T, err error, prefix string) {
 	t.Helper()
 

@@ -66,6 +66,70 @@ func TestClaudeBinProvider_CleanupMCP_Safe(t *testing.T) {
 	provider.CleanupMCP()
 }
 
+func TestClaudeBinProvider_CleanupMCP_RemovesTrackedTempFiles(t *testing.T) {
+	provider := NewClaudeBinProvider("sonnet", nil)
+
+	path := provider.imageDataToTempFile("image/png", "aGVsbG8=")
+	if path == "" {
+		t.Fatal("expected temp file path")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected temp file to exist before cleanup: %v", err)
+	}
+
+	provider.CleanupMCP()
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected temp file to be removed, got err=%v", err)
+	}
+}
+
+func TestClaudeBinProvider_ImplementsProviderTurnCleaner(t *testing.T) {
+	provider := NewClaudeBinProvider("sonnet", nil)
+
+	if _, ok := interface{}(provider).(ProviderTurnCleaner); !ok {
+		t.Fatal("ClaudeBinProvider does not implement ProviderTurnCleaner - per-turn temp file cleanup will not run")
+	}
+}
+
+func TestRetryProvider_ForwardsProviderTurnCleaner(t *testing.T) {
+	provider := NewClaudeBinProvider("sonnet", nil)
+	wrapped := WrapWithRetry(provider, DefaultRetryConfig())
+
+	if _, ok := wrapped.(ProviderTurnCleaner); !ok {
+		t.Fatal("RetryProvider does not implement ProviderTurnCleaner - per-turn cleanup will not work with wrapped providers")
+	}
+}
+
+func TestClaudeBinProvider_CleanupTurn_RemovesTrackedTempFiles(t *testing.T) {
+	provider := NewClaudeBinProvider("sonnet", nil)
+
+	path := provider.imageDataToTempFile("image/png", "aGVsbG8=")
+	if path == "" {
+		t.Fatal("expected temp file path")
+	}
+
+	provider.CleanupTurn()
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected temp file to be removed, got err=%v", err)
+	}
+}
+
+func TestClaudeBinProvider_CleanupTurn_DoesNotStopMCPServer(t *testing.T) {
+	provider := NewClaudeBinProvider("sonnet", nil)
+	// Simulate a mid-conversation state by populating the config path field.
+	// CleanupTurn must leave the MCP config path untouched so the persistent
+	// MCP bridge survives across turns; only CleanupMCP tears it down.
+	provider.mcpConfigPath = "/tmp/does-not-exist-cleanup-turn-test.json"
+
+	provider.CleanupTurn()
+
+	if provider.mcpConfigPath == "" {
+		t.Fatal("CleanupTurn cleared mcpConfigPath - it must be left for CleanupMCP (conversation scope)")
+	}
+}
+
 func TestSafeSendEvent_ClosedChannel(t *testing.T) {
 	// Test that safeSendEvent doesn't panic on closed channel
 	ch := make(chan Event)
@@ -673,6 +737,26 @@ func TestClaudeBinProvider_SystemPromptForTurn(t *testing.T) {
 	p.sessionID = "resume-abc"
 	if got := p.systemPromptForTurn(msgs); got != "" {
 		t.Fatalf("resume turn systemPromptForTurn = %q, want empty (Claude CLI already has the system prompt via --resume)", got)
+	}
+}
+
+func TestClaudeBinProvider_ResetConversationClearsResumeState(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+	p.sessionID = "resume-abc"
+	p.messagesSent = 3
+
+	p.ResetConversation()
+
+	if p.sessionID != "" {
+		t.Fatalf("sessionID = %q, want empty after reset", p.sessionID)
+	}
+	if p.messagesSent != 0 {
+		t.Fatalf("messagesSent = %d, want 0 after reset", p.messagesSent)
+	}
+
+	args, _ := p.buildArgs(context.Background(), Request{}, eventSender{})
+	if joined := strings.Join(args, " "); strings.Contains(joined, "--resume") {
+		t.Fatalf("buildArgs() = %q, want no --resume after reset", joined)
 	}
 }
 

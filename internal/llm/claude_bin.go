@@ -60,6 +60,11 @@ type ClaudeBinProvider struct {
 	// currentEvents is kept for fallback/direct execution paths.
 	currentEvents chan<- Event
 	eventsMu      sync.Mutex
+
+	// tempFiles tracks image files materialised for Claude CLI prompts/tool results
+	// so they can be removed when the current turn finishes.
+	tempFiles   []string
+	tempFilesMu sync.Mutex
 }
 
 type claudeToolRequest struct {
@@ -204,6 +209,13 @@ func (p *ClaudeBinProvider) SetToolExecutor(executor func(ctx context.Context, n
 	}
 }
 
+// ResetConversation clears Claude CLI resume state so the next turn starts a
+// fresh conversation instead of resuming the previous CLI session.
+func (p *ClaudeBinProvider) ResetConversation() {
+	p.sessionID = ""
+	p.messagesSent = 0
+}
+
 func (p *ClaudeBinProvider) Name() string {
 	model := p.model
 	if model == "" {
@@ -231,6 +243,8 @@ func (p *ClaudeBinProvider) Capabilities() Capabilities {
 
 func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
+		defer p.cleanupTempFiles()
+
 		// Build the command arguments, passing events channel for tool execution routing.
 		// MCP server is kept alive across turns - caller should call CleanupMCP() when done.
 		args, effort := p.buildArgs(ctx, req, send)
@@ -870,7 +884,11 @@ func (p *ClaudeBinProvider) getOrCreateMCPConfig(ctx context.Context, tools []To
 }
 
 // CleanupMCP stops the MCP server and removes the config file.
-// This should be called when the conversation is complete.
+// This should be called when the conversation is complete (runtime eviction
+// or server shutdown) — NOT per turn, because the MCP server is deliberately
+// kept alive across turns so Claude CLI can reuse the same URL/token.
+// Also removes any remaining tracked temp files as a safety net in case
+// CleanupTurn was not invoked (e.g. mid-turn abort before stream terminates).
 func (p *ClaudeBinProvider) CleanupMCP() {
 	if p.mcpServer != nil {
 		p.mcpServer.Stop(context.Background())
@@ -880,6 +898,15 @@ func (p *ClaudeBinProvider) CleanupMCP() {
 		os.Remove(p.mcpConfigPath)
 		p.mcpConfigPath = ""
 	}
+	p.cleanupTempFiles()
+}
+
+// CleanupTurn removes per-turn resources (currently: tracked temp image
+// files). Safe to call multiple times. Invoked by the engine stream wrapper
+// on stream termination; also runs via defer inside Stream() so it is
+// guaranteed even if the consumer drops the stream.
+func (p *ClaudeBinProvider) CleanupTurn() {
+	p.cleanupTempFiles()
 }
 
 // createHTTPMCPConfig starts an HTTP MCP server and creates a config file pointing to it.
@@ -1077,7 +1104,7 @@ func (p *ClaudeBinProvider) buildConversationPrompt(messages []Message) string {
 					// base64 data into a temp file so Claude CLI can read the image.
 					path := part.ImagePath
 					if path == "" && part.ImageData != nil && part.ImageData.Base64 != "" {
-						path = imageDataToTempFile(part.ImageData.MediaType, part.ImageData.Base64)
+						path = p.imageDataToTempFile(part.ImageData.MediaType, part.ImageData.Base64)
 					}
 					if path != "" {
 						userParts = append(userParts, path)
@@ -1176,7 +1203,7 @@ func (p *ClaudeBinProvider) processToolResultContent(result *ToolResult) string 
 			if !ok {
 				continue
 			}
-			path := imageDataToTempFile(mediaType, base64Data)
+			path := p.imageDataToTempFile(mediaType, base64Data)
 			if path != "" {
 				parts = append(parts, path)
 			}
@@ -1189,8 +1216,8 @@ func (p *ClaudeBinProvider) processToolResultContent(result *ToolResult) string 
 }
 
 // imageDataToTempFile decodes base64 image data, writes it to a temporary file,
-// and returns the file path. Returns empty string on any error.
-func imageDataToTempFile(mediaType, base64Data string) string {
+// tracks it for cleanup, and returns the file path. Returns empty string on any error.
+func (p *ClaudeBinProvider) imageDataToTempFile(mediaType, base64Data string) string {
 	raw, err := base64.StdEncoding.DecodeString(base64Data)
 	if err != nil {
 		return ""
@@ -1205,7 +1232,30 @@ func imageDataToTempFile(mediaType, base64Data string) string {
 		os.Remove(f.Name())
 		return ""
 	}
-	return f.Name()
+	return p.trackTempFile(f.Name())
+}
+
+func (p *ClaudeBinProvider) trackTempFile(path string) string {
+	if path == "" {
+		return ""
+	}
+	p.tempFilesMu.Lock()
+	p.tempFiles = append(p.tempFiles, path)
+	p.tempFilesMu.Unlock()
+	return path
+}
+
+func (p *ClaudeBinProvider) cleanupTempFiles() {
+	p.tempFilesMu.Lock()
+	paths := p.tempFiles
+	p.tempFiles = nil
+	p.tempFilesMu.Unlock()
+
+	for _, path := range paths {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			slog.Warn("claude-bin failed to remove temp image file", "path", path, "err", err)
+		}
+	}
 }
 
 // mediaTypeToExt maps an image MIME type to a file extension.

@@ -514,6 +514,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 				sidebarSessions:     append([]string(nil), sidebarSessions...),
 				corsOrigins:         append([]string(nil), serveCORSOrigins...),
 				filesDir:            resolveFilesDir(serveFilesDir, cfg),
+				writeDirs:           resolveServeWriteDirs(serveWriteDirs, cfg),
 			},
 			sessionMgr:     sessionMgr,
 			jobsV2:         jobsV2,
@@ -774,7 +775,8 @@ type serveServerConfig struct {
 	basePath            string // e.g. "/ui" or "/chat", always without trailing slash
 	sidebarSessions     []string
 	corsOrigins         []string
-	filesDir            string // opt-in directory for serving arbitrary files (videos, PDFs, etc)
+	filesDir            string   // opt-in directory for serving arbitrary files (videos, PDFs, etc)
+	writeDirs           []string // tool write-dirs (CLI + config); tool-reported files inside these are trusted sources for ensureFileServeable
 }
 
 // uiRoute returns the base-path with trailing slash, e.g. "/ui/" or "/chat/".
@@ -792,6 +794,36 @@ func resolveFilesDir(flagVal string, cfg *config.Config) string {
 		return flagVal
 	}
 	return cfg.Serve.FilesDir
+}
+
+// resolveServeWriteDirs returns the merged effective write-dirs for the serve runtime,
+// preserving order and de-duplicating.
+func resolveServeWriteDirs(cliWriteDirs []string, cfg *config.Config) []string {
+	seen := make(map[string]struct{}, len(cliWriteDirs)+len(cfg.Tools.WriteDirs))
+	var out []string
+	for _, d := range cfg.Tools.WriteDirs {
+		d = strings.TrimSpace(d)
+		if d == "" {
+			continue
+		}
+		if _, ok := seen[d]; ok {
+			continue
+		}
+		seen[d] = struct{}{}
+		out = append(out, d)
+	}
+	for _, d := range cliWriteDirs {
+		d = strings.TrimSpace(d)
+		if d == "" {
+			continue
+		}
+		if _, ok := seen[d]; ok {
+			continue
+		}
+		seen[d] = struct{}{}
+		out = append(out, d)
+	}
+	return out
 }
 
 // normalizeBasePath validates and normalizes a base-path value.
@@ -824,6 +856,7 @@ type serveServer struct {
 	modelsMu          sync.Mutex
 	modelsProviders   map[string]llm.Provider // keyed by provider name
 	responseToSession sync.Map                // response_id (string) → session_id (string)
+	sessionToResponse sync.Map                // session_id (string) → latest response_id (string)
 	responseRunsOnce  sync.Once
 	responseRuns      *responseRunManager
 	webrtcHeadSnippet string // injected into index.html <head>; empty when WebRTC disabled

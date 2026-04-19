@@ -78,6 +78,14 @@ func (r *RetryProvider) CleanupMCP() {
 	}
 }
 
+// CleanupTurn forwards to the inner provider if it implements
+// ProviderTurnCleaner so per-turn cleanup survives retry wrapping.
+func (r *RetryProvider) CleanupTurn() {
+	if cleaner, ok := r.inner.(ProviderTurnCleaner); ok {
+		cleaner.CleanupTurn()
+	}
+}
+
 func (r *RetryProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 		var lastErr error

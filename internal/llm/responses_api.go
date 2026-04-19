@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 )
 
 const maxResponsesAPIErrorBodyBytes = 64 * 1024
@@ -33,6 +34,9 @@ type ResponsesClient struct {
 	// If it returns nil (success), the request is retried with fresh credentials.
 	// If it returns an error, that error is returned to the caller.
 	OnAuthRetry func(ctx context.Context) error
+
+	responseStateMu         sync.Mutex
+	responseStateGeneration uint64
 }
 
 // ResponsesRequest follows the Open Responses spec
@@ -428,13 +432,38 @@ func readResponsesAPIErrorBody(resp *http.Response) []byte {
 	return truncated
 }
 
+func (c *ResponsesClient) responseState() (lastResponseID string, generation uint64) {
+	c.responseStateMu.Lock()
+	defer c.responseStateMu.Unlock()
+	return c.LastResponseID, c.responseStateGeneration
+}
+
+func (c *ResponsesClient) clearLastResponseIDIfGeneration(generation uint64) {
+	c.responseStateMu.Lock()
+	defer c.responseStateMu.Unlock()
+	if c.responseStateGeneration != generation {
+		return
+	}
+	c.LastResponseID = ""
+}
+
+func (c *ResponsesClient) setLastResponseIDIfGeneration(generation uint64, responseID string) {
+	c.responseStateMu.Lock()
+	defer c.responseStateMu.Unlock()
+	if c.responseStateGeneration != generation {
+		return
+	}
+	c.LastResponseID = responseID
+}
+
 // Stream makes a streaming request to the Responses API and returns events via a Stream
 func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debugRaw bool) (Stream, error) {
 	fullInput := req.Input
+	lastResponseID, responseStateGeneration := c.responseState()
 
 	// Use server state: send previous_response_id if we have one (unless disabled)
-	if !c.DisableServerState && c.LastResponseID != "" {
-		req.PreviousResponseID = c.LastResponseID
+	if !c.DisableServerState && lastResponseID != "" {
+		req.PreviousResponseID = lastResponseID
 		// When continuing a conversation, only send the new input items for this turn.
 		req.Input = filterToNewInput(req.Input)
 	}
@@ -509,9 +538,9 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 		}
 
 		// Check for previous_response_id not found error
-		if resp.StatusCode == http.StatusNotFound && c.LastResponseID != "" {
+		if resp.StatusCode == http.StatusNotFound && lastResponseID != "" {
 			// Clear state and retry with full history
-			c.LastResponseID = ""
+			c.clearLastResponseIDIfGeneration(responseStateGeneration)
 			req.PreviousResponseID = ""
 			req.Input = fullInput
 			// Re-marshal without previous_response_id
@@ -728,7 +757,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 				if err := json.Unmarshal([]byte(data), &completedEvent); err == nil {
 					// Store response ID for conversation continuity (unless disabled)
 					if !client.DisableServerState && completedEvent.Response.ID != "" {
-						client.LastResponseID = completedEvent.Response.ID
+						client.setLastResponseIDIfGeneration(responseStateGeneration, completedEvent.Response.ID)
 					}
 					if completedEvent.Response.Usage != nil {
 						cached := completedEvent.Response.Usage.InputTokensDetails.CachedTokens
@@ -778,6 +807,9 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 
 // ResetConversation clears server state (called on /clear or new conversation)
 func (c *ResponsesClient) ResetConversation() {
+	c.responseStateMu.Lock()
+	defer c.responseStateMu.Unlock()
+	c.responseStateGeneration++
 	c.LastResponseID = ""
 }
 

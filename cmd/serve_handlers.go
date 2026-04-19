@@ -199,6 +199,46 @@ func serveRoutePath(baseRoute, baseDir, servedPath string) string {
 	return baseRoute + filepath.ToSlash(relPath)
 }
 
+func canonicalizeServeExistingPath(p string) (string, error) {
+	absPath, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(resolved), nil
+}
+
+func canonicalizeServeDirForWrite(dir string) (string, error) {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(absDir)
+	if err == nil {
+		return filepath.Clean(resolved), nil
+	}
+	if !os.IsNotExist(err) {
+		return "", err
+	}
+
+	parent := filepath.Dir(absDir)
+	resolvedParent, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return filepath.Clean(absDir), nil
+		}
+		return "", err
+	}
+	return filepath.Join(filepath.Clean(resolvedParent), filepath.Base(absDir)), nil
+}
+
+func pathWithinDir(path, dir string) bool {
+	return path == dir || strings.HasPrefix(path, dir+string(filepath.Separator))
+}
+
 func (s *serveServer) handleImage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
@@ -242,29 +282,63 @@ func (s *serveServer) handleFile(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, absFile)
 }
 
-// ensureFileServeable copies the given file into the configured files-dir
-// so that the files handler can serve it. Returns the serveable path and true
-// on success, or ("", false) if the file could not be made serveable.
+// ensureFileServeable makes the given file available from the configured
+// files-dir when it already comes from an approved source directory. Approved
+// sources are: the files-dir itself, the image output directory, the uploads
+// directory used by saveUploadedFile, and any directory granted to tools via
+// --write-dir or cfg.Tools.WriteDirs. Tool output in those locations is
+// operator- or server-sanctioned, so republishing it under /files/ respects
+// the documented --files-dir contract while still blocking tool results that
+// report paths outside any approved location. Returns the serveable path and
+// true on success, or ("", false) otherwise.
 func (s *serveServer) ensureFileServeable(filePath string) (string, bool) {
 	filesDir := s.cfg.filesDir
 	if filesDir == "" {
 		return "", false
 	}
 
-	absDir, err := filepath.Abs(filesDir)
+	absDir, err := canonicalizeServeDirForWrite(filesDir)
 	if err != nil {
-		log.Printf("[serve] ensureFileServeable: abs(%s): %v", filesDir, err)
+		log.Printf("[serve] ensureFileServeable: resolve dir %s: %v", filesDir, err)
 		return "", false
 	}
-	absFile, err := filepath.Abs(filePath)
+	absFile, err := canonicalizeServeExistingPath(filePath)
 	if err != nil {
-		log.Printf("[serve] ensureFileServeable: abs(%s): %v", filePath, err)
+		log.Printf("[serve] ensureFileServeable: resolve %s: %v", filePath, err)
 		return "", false
 	}
 
-	// Already under the files dir — nothing to do.
-	if strings.HasPrefix(absFile, absDir+string(filepath.Separator)) {
-		return filePath, true
+	if pathWithinDir(absFile, absDir) {
+		return absFile, true
+	}
+
+	approvedSourceDirs := []string{absDir}
+	if imageOutputDir := s.imageOutputDir(); imageOutputDir != "" {
+		if absImageOutputDir, err := canonicalizeServeDirForWrite(imageOutputDir); err == nil {
+			approvedSourceDirs = append(approvedSourceDirs, absImageOutputDir)
+		}
+	}
+	if uploadsDir := serveUploadsDir(); uploadsDir != "" {
+		if absUploads, err := canonicalizeServeDirForWrite(uploadsDir); err == nil {
+			approvedSourceDirs = append(approvedSourceDirs, absUploads)
+		}
+	}
+	for _, wd := range s.cfg.writeDirs {
+		if absWriteDir, err := canonicalizeServeDirForWrite(wd); err == nil {
+			approvedSourceDirs = append(approvedSourceDirs, absWriteDir)
+		}
+	}
+
+	approved := false
+	for _, dir := range approvedSourceDirs {
+		if pathWithinDir(absFile, dir) {
+			approved = true
+			break
+		}
+	}
+	if !approved {
+		log.Printf("[serve] ensureFileServeable: rejecting %s outside approved dirs", absFile)
+		return "", false
 	}
 
 	if err := os.MkdirAll(absDir, 0755); err != nil {
@@ -301,32 +375,55 @@ func (s *serveServer) ensureFileServeable(filePath string) (string, bool) {
 	return destPath, true
 }
 
-// ensureImageServeable ensures the given image path is under the serveable
-// image output directory. If the file is already there, the path is returned
-// as-is. Otherwise the file is copied into the output dir so that the
-// images handler (mounted at basePath/images/) can serve it. Returns the
-// serveable path and true on success, or ("", false) if the image could not
-// be made serveable.
+// ensureImageServeable makes the given image path servable via /images/ by
+// copying it into the configured image output directory when the source is
+// already under an approved location (image output dir itself, the uploads
+// dir used by saveUploadedFile, or any operator-granted tool write-dir).
+// Tool-reported paths outside every approved dir are rejected so arbitrary
+// host files can't be republished through /images/. Returns the serveable
+// path and true on success, or ("", false) otherwise.
 func (s *serveServer) ensureImageServeable(imgPath string) (string, bool) {
 	outputDir := s.imageOutputDir()
 
-	absDir, err := filepath.Abs(outputDir)
+	absDir, err := canonicalizeServeDirForWrite(outputDir)
 	if err != nil {
-		log.Printf("[serve] ensureImageServeable: abs(%s): %v", outputDir, err)
+		log.Printf("[serve] ensureImageServeable: resolve dir %s: %v", outputDir, err)
 		return "", false
 	}
-	absImg, err := filepath.Abs(imgPath)
+	absImg, err := canonicalizeServeExistingPath(imgPath)
 	if err != nil {
-		log.Printf("[serve] ensureImageServeable: abs(%s): %v", imgPath, err)
+		log.Printf("[serve] ensureImageServeable: resolve %s: %v", imgPath, err)
 		return "", false
 	}
 
-	// Already under the output dir — nothing to do.
-	if strings.HasPrefix(absImg, absDir+string(filepath.Separator)) {
-		return imgPath, true
+	if pathWithinDir(absImg, absDir) {
+		return absImg, true
 	}
 
-	// Copy the file into the output dir with a unique prefix to avoid collisions.
+	approvedSourceDirs := []string{absDir}
+	if uploadsDir := serveUploadsDir(); uploadsDir != "" {
+		if absUploads, err := canonicalizeServeDirForWrite(uploadsDir); err == nil {
+			approvedSourceDirs = append(approvedSourceDirs, absUploads)
+		}
+	}
+	for _, wd := range s.cfg.writeDirs {
+		if absWriteDir, err := canonicalizeServeDirForWrite(wd); err == nil {
+			approvedSourceDirs = append(approvedSourceDirs, absWriteDir)
+		}
+	}
+
+	approved := false
+	for _, dir := range approvedSourceDirs {
+		if pathWithinDir(absImg, dir) {
+			approved = true
+			break
+		}
+	}
+	if !approved {
+		log.Printf("[serve] ensureImageServeable: rejecting %s outside approved dirs", absImg)
+		return "", false
+	}
+
 	if err := os.MkdirAll(absDir, 0755); err != nil {
 		log.Printf("[serve] ensureImageServeable: mkdir %s: %v", absDir, err)
 		return "", false
@@ -359,6 +456,16 @@ func (s *serveServer) ensureImageServeable(imgPath string) (string, bool) {
 	}
 
 	return destPath, true
+}
+
+// serveUploadsDir returns the first-party uploads directory used by
+// saveUploadedFile. Returns empty string if the data dir is unavailable.
+func serveUploadsDir() string {
+	dataDir, err := session.GetDataDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dataDir, "uploads")
 }
 
 func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
@@ -990,6 +1097,9 @@ func sseKeepalive(w http.ResponseWriter, flusher http.Flusher, interval time.Dur
 func (s *serveServer) registerResponseID(rt *serveRuntime, respID, sessionID string) {
 	pruned := rt.addResponseID(respID)
 	s.responseToSession.Store(respID, sessionID)
+	if sessionID != "" {
+		s.sessionToResponse.Store(sessionID, respID)
+	}
 	for _, old := range pruned {
 		s.responseToSession.Delete(old)
 	}
