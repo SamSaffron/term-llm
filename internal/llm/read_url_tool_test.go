@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 type failAfterNReadCloser struct {
@@ -96,19 +97,80 @@ func TestReadURLToolExecuteLimitsBodyReadBeforeTruncating(t *testing.T) {
 		t.Fatalf("expected limited read to avoid body read error, got %q", out.Content)
 	}
 
-	const truncationSuffix = "\n\n[Content truncated at 50,000 characters]"
-	if !strings.HasSuffix(out.Content, truncationSuffix) {
-		start := len(out.Content) - len(truncationSuffix) - 20
+	if !strings.HasSuffix(out.Content, readURLTruncationSuffix) {
+		start := len(out.Content) - len(readURLTruncationSuffix) - 20
 		if start < 0 {
 			start = 0
 		}
 		t.Fatalf("expected truncated content suffix, got %q", out.Content[start:])
 	}
-	if got, want := len(out.Content), maxReadURLChars+len(truncationSuffix); got != want {
+	if got, want := len(out.Content), maxReadURLChars+len(readURLTruncationSuffix); got != want {
 		t.Fatalf("expected content length %d, got %d", want, got)
 	}
 	if out.Content[:32] != strings.Repeat("a", 32) {
 		t.Fatalf("expected response body prefix to be preserved")
+	}
+}
+
+func TestReadURLToolExecuteTruncatesByRunes(t *testing.T) {
+	origLookup := readURLLookupIP
+	readURLLookupIP = func(ctx context.Context, host string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("93.184.216.34")}, nil
+	}
+	defer func() { readURLLookupIP = origLookup }()
+
+	body := strings.Repeat("界", maxReadURLChars) + "🙂tail"
+
+	tool := NewReadURLTool()
+	tool.client = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			switch req.URL.Host {
+			case "example.com":
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader("ok")),
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			case "r.jina.ai":
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader(body)),
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			default:
+				t.Fatalf("unexpected host %q", req.URL.Host)
+				return nil, nil
+			}
+		}),
+	}
+
+	args, err := json.Marshal(map[string]string{"url": "example.com/article"})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+
+	out, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if !utf8.ValidString(out.Content) {
+		t.Fatalf("expected valid UTF-8 output")
+	}
+	if !strings.HasSuffix(out.Content, readURLTruncationSuffix) {
+		t.Fatalf("expected truncation suffix")
+	}
+
+	content := strings.TrimSuffix(out.Content, readURLTruncationSuffix)
+	if got, want := utf8.RuneCountInString(content), maxReadURLChars; got != want {
+		t.Fatalf("expected %d runes before suffix, got %d", want, got)
+	}
+	if strings.ContainsRune(content, '🙂') {
+		t.Fatalf("expected content to exclude runes past the limit")
+	}
+	if strings.ContainsRune(content, '\uFFFD') {
+		t.Fatalf("expected truncation not to introduce replacement characters")
 	}
 }
 

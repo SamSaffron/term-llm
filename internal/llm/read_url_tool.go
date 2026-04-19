@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -13,9 +14,10 @@ import (
 )
 
 const (
-	ReadURLToolName     = "read_url"
-	maxReadURLChars     = 50000
-	maxReadURLRedirects = 10
+	ReadURLToolName         = "read_url"
+	maxReadURLChars         = 50000
+	maxReadURLRedirects     = 10
+	readURLTruncationSuffix = "\n\n[Content truncated at 50,000 characters]"
 )
 
 var readURLLookupIP = func(ctx context.Context, host string) ([]net.IP, error) {
@@ -108,19 +110,42 @@ func (t *ReadURLTool) Execute(ctx context.Context, args json.RawMessage) (ToolOu
 		return TextOutput(fmt.Sprintf("Error: HTTP %d %s - Unable to fetch this URL.", resp.StatusCode, statusText)), nil
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxReadURLChars+1))
+	content, truncated, err := readURLContent(resp.Body)
 	if err != nil {
 		return TextOutput(fmt.Sprintf("Error reading response: %v", err)), nil
 	}
 
-	content := string(body)
-
-	// Truncate if too long
-	if len(content) > maxReadURLChars {
-		content = content[:maxReadURLChars] + "\n\n[Content truncated at 50,000 characters]"
+	if truncated {
+		content += readURLTruncationSuffix
 	}
 
 	return TextOutput(content), nil
+}
+
+func readURLContent(r io.Reader) (string, bool, error) {
+	reader := bufio.NewReader(r)
+	var content strings.Builder
+
+	for i := 0; i < maxReadURLChars; i++ {
+		r, _, err := reader.ReadRune()
+		if err != nil {
+			if err == io.EOF {
+				return content.String(), false, nil
+			}
+			return "", false, err
+		}
+		content.WriteRune(r)
+	}
+
+	_, _, err := reader.ReadRune()
+	if err != nil {
+		if err == io.EOF {
+			return content.String(), false, nil
+		}
+		return "", false, err
+	}
+
+	return content.String(), true, nil
 }
 
 func resolveReadURLTarget(ctx context.Context, client *http.Client, rawURL string) (string, error) {
