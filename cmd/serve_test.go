@@ -4215,6 +4215,53 @@ func TestHandleResponses_StalePreviousResponseIDReturnsConflictAfterRuntimeRecre
 	}
 }
 
+func TestHandleResponses_FreshConversationResetRemovesStalePreviousResponseIDs(t *testing.T) {
+	srv := newTestServeServer("reply1", "reply2")
+	defer srv.sessionMgr.Close()
+
+	code, resp1 := doResponsesWithHeader(t, srv, `{"input":"msg1"}`, "fresh-reset")
+	if code != http.StatusOK {
+		t.Fatalf("msg1 status = %d, want 200", code)
+	}
+	respID1, _ := resp1["id"].(string)
+	if respID1 == "" {
+		t.Fatal("first response missing id")
+	}
+
+	// Simulate a recreated runtime while the old response ID mapping survives.
+	srv.sessionMgr.mu.Lock()
+	evicted := srv.sessionMgr.sessions["fresh-reset"]
+	delete(srv.sessionMgr.sessions, "fresh-reset")
+	srv.sessionMgr.mu.Unlock()
+	if evicted != nil {
+		evicted.Close()
+	}
+	if _, ok := srv.responseToSession.Load(respID1); !ok {
+		t.Fatalf("responseToSession should still contain %q before reset", respID1)
+	}
+
+	code, resp2 := doResponsesWithHeader(t, srv, `{"input":"reset"}`, "fresh-reset")
+	if code != http.StatusOK {
+		t.Fatalf("reset status = %d, want 200", code)
+	}
+	respID2, _ := resp2["id"].(string)
+	if respID2 == "" {
+		t.Fatal("reset response missing id")
+	}
+
+	if _, ok := srv.responseToSession.Load(respID1); ok {
+		t.Fatalf("stale previous_response_id %q should be removed after fresh reset", respID1)
+	}
+	latest, ok := srv.sessionToResponse.Load("fresh-reset")
+	if !ok {
+		t.Fatal("sessionToResponse missing fresh-reset after reset")
+	}
+	latestID, _ := latest.(string)
+	if latestID != respID2 {
+		t.Fatalf("sessionToResponse = %q, want %q", latestID, respID2)
+	}
+}
+
 func TestHandleResponses_PreviousResponseIDChainsSession(t *testing.T) {
 	// Each runtime gets 2 text responses so it can handle 2 messages
 	srv := newTestServeServer("first reply", "second reply")

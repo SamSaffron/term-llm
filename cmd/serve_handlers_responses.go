@@ -122,7 +122,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if freshConversation {
-		s.sessionToResponse.Delete(sessionID)
+		s.unregisterSessionResponseIDs(sessionID)
 		s.syncPersistedSessionRuntime(ctx, sessionID, runtime, strings.TrimSpace(req.Model), normalizeReasoningEffort(req.ReasoningEffort))
 	}
 

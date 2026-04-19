@@ -1161,6 +1161,20 @@ func (s *serveServer) unregisterResponseIDs(rt *serveRuntime) {
 	}
 }
 
+func (s *serveServer) unregisterSessionResponseIDs(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	s.sessionToResponse.Delete(sessionID)
+	s.responseToSession.Range(func(key, value any) bool {
+		sid, ok := value.(string)
+		if ok && sid == sessionID {
+			s.responseToSession.Delete(key)
+		}
+		return true
+	})
+}
+
 func (s *serveServer) runtimeForRequest(ctx context.Context, sessionID string) (*serveRuntime, bool, error) {
 	if sessionID == "" {
 		// Ephemeral stateless runtime (fresh per request for isolation)
