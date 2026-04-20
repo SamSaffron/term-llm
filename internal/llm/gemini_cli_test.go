@@ -50,3 +50,16 @@ func TestBuildGeminiCLIContents_DropsDanglingToolCalls(t *testing.T) {
 		t.Fatalf("expected assistant text to be preserved, got %#v", parts)
 	}
 }
+
+func TestCollectGeminiCLITextParts_ConcatenatesAllTextParts(t *testing.T) {
+	got := collectGeminiCLITextParts([]geminiCLITextPart{
+		{Text: "first"},
+		{Text: " second"},
+		{Text: ""},
+		{Text: " third"},
+	})
+
+	if got != "first second third" {
+		t.Fatalf("collectGeminiCLITextParts() = %q, want %q", got, "first second third")
+	}
+}

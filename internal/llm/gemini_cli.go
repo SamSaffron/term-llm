@@ -61,6 +61,20 @@ type geminiOAuthClientCreds struct {
 	clientSecret string
 }
 
+type geminiCLITextPart struct {
+	Text string `json:"text"`
+}
+
+func collectGeminiCLITextParts(parts []geminiCLITextPart) string {
+	var b strings.Builder
+	for _, part := range parts {
+		if part.Text != "" {
+			b.WriteString(part.Text)
+		}
+	}
+	return b.String()
+}
+
 func loadClientCredsFromCache(debug bool) (*geminiOAuthClientCreds, bool) {
 	start := time.Now()
 	var cache codeAssistClientCredsCache
@@ -526,9 +540,7 @@ func (p *GeminiCLIProvider) Stream(ctx context.Context, req Request) (Stream, er
 				Response struct {
 					Candidates []struct {
 						Content struct {
-							Parts []struct {
-								Text string `json:"text"`
-							} `json:"parts"`
+							Parts []geminiCLITextPart `json:"parts"`
 						} `json:"content"`
 						GroundingMetadata *struct {
 							GroundingChunks []struct {
@@ -548,12 +560,9 @@ func (p *GeminiCLIProvider) Stream(ctx context.Context, req Request) (Stream, er
 
 			if len(chunk.Response.Candidates) > 0 {
 				candidate := chunk.Response.Candidates[0]
-				if len(candidate.Content.Parts) > 0 {
-					text := candidate.Content.Parts[0].Text
-					if text != "" {
-						if err := emit(Event{Type: EventTextDelta, Text: text}); err != nil {
-							return err
-						}
+				if text := collectGeminiCLITextParts(candidate.Content.Parts); text != "" {
+					if err := emit(Event{Type: EventTextDelta, Text: text}); err != nil {
+						return err
 					}
 				}
 
@@ -901,9 +910,7 @@ func (p *GeminiCLIProvider) performSearch(ctx context.Context, query string, deb
 		Response struct {
 			Candidates []struct {
 				Content struct {
-					Parts []struct {
-						Text string `json:"text"`
-					} `json:"parts"`
+					Parts []geminiCLITextPart `json:"parts"`
 				} `json:"content"`
 			} `json:"candidates"`
 		} `json:"response"`
@@ -917,7 +924,7 @@ func (p *GeminiCLIProvider) performSearch(ctx context.Context, query string, deb
 		return "", fmt.Errorf("no search results from model")
 	}
 
-	searchResult := genResp.Response.Candidates[0].Content.Parts[0].Text
+	searchResult := collectGeminiCLITextParts(genResp.Response.Candidates[0].Content.Parts)
 
 	if debug {
 		fmt.Fprintln(os.Stderr, "=== DEBUG: Code Assist Search Response ===")
