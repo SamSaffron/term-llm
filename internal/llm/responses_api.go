@@ -456,6 +456,30 @@ func (c *ResponsesClient) setLastResponseIDIfGeneration(generation uint64, respo
 	c.LastResponseID = responseID
 }
 
+func cloneResponsesClientFreshConversation(c *ResponsesClient) *ResponsesClient {
+	if c == nil {
+		return nil
+	}
+
+	var extraHeaders map[string]string
+	if c.ExtraHeaders != nil {
+		extraHeaders = make(map[string]string, len(c.ExtraHeaders))
+		for key, value := range c.ExtraHeaders {
+			extraHeaders[key] = value
+		}
+	}
+
+	return &ResponsesClient{
+		BaseURL:            c.BaseURL,
+		GetAuthHeader:      c.GetAuthHeader,
+		ExtraHeaders:       extraHeaders,
+		HTTPClient:         c.HTTPClient,
+		DisableServerState: c.DisableServerState,
+		HandleError:        c.HandleError,
+		OnAuthRetry:        c.OnAuthRetry,
+	}
+}
+
 // Stream makes a streaming request to the Responses API and returns events via a Stream
 func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debugRaw bool) (Stream, error) {
 	fullInput := req.Input

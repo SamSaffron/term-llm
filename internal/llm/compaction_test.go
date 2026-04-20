@@ -2,9 +2,13 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestEstimateTokens(t *testing.T) {
@@ -644,6 +648,140 @@ func TestCompactRecompactsAlreadyCompacted(t *testing.T) {
 	}
 	if !strings.Contains(result.NewMessages[1].Parts[0].Text, "New combined summary") {
 		t.Error("new summary should contain the LLM's response")
+	}
+}
+
+func newIsolatedResponsesProvider(t *testing.T, responseText, responseID string) (Provider, *OpenAIProvider, <-chan struct {
+	PreviousResponseID string
+	Input              []ResponsesInputItem
+}) {
+	t.Helper()
+
+	captured := make(chan struct {
+		PreviousResponseID string
+		Input              []ResponsesInputItem
+	}, 1)
+
+	sse := strings.Join([]string{
+		"event: response.output_text.delta",
+		fmt.Sprintf(`data: {"delta":%q}`, responseText),
+		"",
+		"event: response.completed",
+		fmt.Sprintf(`data: {"response":{"id":%q}}`, responseID),
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	httpClient := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			defer r.Body.Close()
+
+			var payload struct {
+				PreviousResponseID string               `json:"previous_response_id"`
+				Input              []ResponsesInputItem `json:"input"`
+			}
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				return nil, err
+			}
+			if err := json.Unmarshal(body, &payload); err != nil {
+				return nil, err
+			}
+			captured <- struct {
+				PreviousResponseID string
+				Input              []ResponsesInputItem
+			}{
+				PreviousResponseID: payload.PreviousResponseID,
+				Input:              payload.Input,
+			}
+
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header: http.Header{
+					"Content-Type": []string{"text/event-stream"},
+				},
+				Body: io.NopCloser(strings.NewReader(sse)),
+			}, nil
+		}),
+	}
+
+	provider := &OpenAIProvider{
+		apiKey: "test-key",
+		model:  "gpt-5.2",
+		responsesClient: &ResponsesClient{
+			BaseURL:        "https://example.test/v1/responses",
+			GetAuthHeader:  func() string { return "Bearer test-key" },
+			HTTPClient:     httpClient,
+			LastResponseID: "resp_live",
+		},
+	}
+
+	return WrapWithRetry(provider, DefaultRetryConfig()), provider, captured
+}
+
+func TestCompactUsesIsolatedProviderConversationState(t *testing.T) {
+	provider, liveProvider, captured := newIsolatedResponsesProvider(t, "summary", "resp_compact")
+
+	result, err := Compact(context.Background(), provider, "gpt-5.2", "sys", []Message{
+		UserText("hello"),
+		AssistantText("hi"),
+		UserText("please summarize"),
+	}, DefaultCompactionConfig())
+	if err != nil {
+		t.Fatalf("Compact failed: %v", err)
+	}
+	if result.Summary != "summary" {
+		t.Fatalf("summary = %q, want %q", result.Summary, "summary")
+	}
+
+	if liveProvider.responsesClient.LastResponseID != "resp_live" {
+		t.Fatalf("live LastResponseID = %q, want %q", liveProvider.responsesClient.LastResponseID, "resp_live")
+	}
+
+	select {
+	case req := <-captured:
+		if req.PreviousResponseID != "" {
+			t.Fatalf("compaction previous_response_id = %q, want empty", req.PreviousResponseID)
+		}
+		if len(req.Input) < 4 {
+			t.Fatalf("compaction input length = %d, want full history plus prompt", len(req.Input))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for compaction request capture")
+	}
+}
+
+func TestHandoverUsesIsolatedProviderConversationState(t *testing.T) {
+	provider, liveProvider, captured := newIsolatedResponsesProvider(t, "handover doc", "resp_handover")
+
+	result, err := Handover(context.Background(), provider, "gpt-5.2", "current sys", "new sys", []Message{
+		UserText("hello"),
+		AssistantText("hi"),
+		UserText("prepare handover"),
+	}, "source", "target", DefaultCompactionConfig())
+	if err != nil {
+		t.Fatalf("Handover failed: %v", err)
+	}
+	if result.Document != "handover doc" {
+		t.Fatalf("document = %q, want %q", result.Document, "handover doc")
+	}
+
+	if liveProvider.responsesClient.LastResponseID != "resp_live" {
+		t.Fatalf("live LastResponseID = %q, want %q", liveProvider.responsesClient.LastResponseID, "resp_live")
+	}
+
+	select {
+	case req := <-captured:
+		if req.PreviousResponseID != "" {
+			t.Fatalf("handover previous_response_id = %q, want empty", req.PreviousResponseID)
+		}
+		if len(req.Input) < 4 {
+			t.Fatalf("handover input length = %d, want full history plus prompt", len(req.Input))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for handover request capture")
 	}
 }
 

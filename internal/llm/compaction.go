@@ -88,6 +88,30 @@ A previous conversation was compacted to fit within the context window. Below is
 Summary:
 `
 
+// isolatedConversationProvider returns a provider instance that can service
+// helper requests like compaction/handover without mutating the live
+// provider-side conversation state.
+func isolatedConversationProvider(provider Provider) Provider {
+	switch p := provider.(type) {
+	case *RetryProvider:
+		return &RetryProvider{inner: isolatedConversationProvider(p.inner), config: p.config}
+	case *OpenAIProvider:
+		clone := *p
+		clone.responsesClient = cloneResponsesClientFreshConversation(p.responsesClient)
+		return &clone
+	case *ChatGPTProvider:
+		clone := *p
+		clone.responsesClient = cloneResponsesClientFreshConversation(p.responsesClient)
+		return &clone
+	case *CopilotProvider:
+		clone := *p
+		clone.responsesClient = cloneResponsesClientFreshConversation(p.responsesClient)
+		return &clone
+	default:
+		return provider
+	}
+}
+
 // Compact generates a summary of the conversation history and returns a
 // compacted message list: [system] + [summary as user] + [recent user messages].
 //
@@ -142,8 +166,10 @@ func Compact(ctx context.Context, provider Provider, model, systemPrompt string,
 	// individually, but doing it here provides belt-and-suspenders safety.
 	budget = ClampOutputTokens(budget, model)
 
-	// Call provider with no tools, enforcing output budget.
-	stream, err := provider.Stream(ctx, Request{
+	// Call provider with no tools, enforcing output budget. Use an isolated
+	// provider instance so the helper turn doesn't overwrite live server-side
+	// conversation state (for example previous_response_id on Responses API clients).
+	stream, err := isolatedConversationProvider(provider).Stream(ctx, Request{
 		Model:           model,
 		Messages:        reqMessages,
 		MaxOutputTokens: budget,
@@ -254,7 +280,7 @@ func Handover(ctx context.Context, provider Provider, model, currentSystemPrompt
 	budget := 12_000 // Slightly larger budget than compaction for handover precision
 	budget = ClampOutputTokens(budget, model)
 
-	stream, err := provider.Stream(ctx, Request{
+	stream, err := isolatedConversationProvider(provider).Stream(ctx, Request{
 		Model:           model,
 		Messages:        reqMessages,
 		MaxOutputTokens: budget,
