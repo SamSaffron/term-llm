@@ -878,18 +878,62 @@ func TestBuildCompatMessages_TrailingDeveloperMessage(t *testing.T) {
 	oaiMsgs := buildCompatMessages(messages)
 
 	if len(oaiMsgs) != 3 {
-		t.Fatalf("expected 3 messages (user, assistant, synthetic user), got %d", len(oaiMsgs))
+		t.Fatalf("expected 3 messages (user, assistant, synthetic system), got %d", len(oaiMsgs))
 	}
 	trailing := oaiMsgs[2]
-	if trailing.Role != "user" {
-		t.Errorf("expected trailing message role 'user', got %q", trailing.Role)
+	if trailing.Role != "system" {
+		t.Errorf("expected trailing message role 'system', got %q", trailing.Role)
 	}
 	content, ok := trailing.Content.(string)
 	if !ok {
 		t.Fatalf("expected trailing content to be string, got %T", trailing.Content)
 	}
 	if !strings.Contains(content, "<developer>") || !strings.Contains(content, "Be concise from now on.") {
-		t.Errorf("expected developer text in trailing user message, got %q", content)
+		t.Errorf("expected developer text in trailing system message, got %q", content)
+	}
+}
+
+func TestBuildCompatMessages_DeveloperMessagePreservesOrderingBeforeAssistant(t *testing.T) {
+	messages := []Message{
+		{
+			Role:  RoleUser,
+			Parts: []Part{{Type: PartText, Text: "Hello"}},
+		},
+		{
+			Role:  RoleDeveloper,
+			Parts: []Part{{Type: PartText, Text: "Be concise from now on."}},
+		},
+		{
+			Role:  RoleAssistant,
+			Parts: []Part{{Type: PartText, Text: "Working on it."}},
+		},
+		{
+			Role:  RoleUser,
+			Parts: []Part{{Type: PartText, Text: "Continue"}},
+		},
+	}
+
+	oaiMsgs := buildCompatMessages(messages)
+
+	if len(oaiMsgs) != 4 {
+		t.Fatalf("expected 4 messages, got %d", len(oaiMsgs))
+	}
+	if oaiMsgs[1].Role != "system" {
+		t.Fatalf("expected developer message to flush as system before assistant, got %q", oaiMsgs[1].Role)
+	}
+	devContent, ok := oaiMsgs[1].Content.(string)
+	if !ok {
+		t.Fatalf("expected developer flush content to be string, got %T", oaiMsgs[1].Content)
+	}
+	if !strings.Contains(devContent, "Be concise from now on.") {
+		t.Fatalf("expected developer text to be preserved, got %q", devContent)
+	}
+	userContent, ok := oaiMsgs[3].Content.(string)
+	if !ok {
+		t.Fatalf("expected final user content to be string, got %T", oaiMsgs[3].Content)
+	}
+	if strings.Contains(userContent, "Be concise from now on.") {
+		t.Fatalf("expected later user turn not to absorb delayed developer text, got %q", userContent)
 	}
 }
 

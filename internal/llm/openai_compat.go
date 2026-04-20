@@ -537,12 +537,23 @@ func buildCompatMessages(messages []Message) []oaiMessage {
 
 	var result []oaiMessage
 	var pendingDev string
+	flushPendingDev := func() {
+		if pendingDev == "" {
+			return
+		}
+		result = append(result, oaiMessage{
+			Role:    "system",
+			Content: fmt.Sprintf("<developer>\n%s\n</developer>", pendingDev),
+		})
+		pendingDev = ""
+	}
 	for _, msg := range messages {
 		switch msg.Role {
 		case RoleDeveloper:
 			// OpenAI-compatible backends have no native developer role.
 			// Buffer the text and prepend it into the next user turn
-			// wrapped in <developer> tags.
+			// wrapped in <developer> tags. If there is no following user turn,
+			// flush it as a synthetic system message to preserve ordering.
 			text, _, _ := splitParts(msg.Parts)
 			if text != "" {
 				if pendingDev != "" {
@@ -555,6 +566,8 @@ func buildCompatMessages(messages []Message) []oaiMessage {
 			if msg.Role == RoleUser && pendingDev != "" {
 				text = fmt.Sprintf("<developer>\n%s\n</developer>\n\n", pendingDev) + text
 				pendingDev = ""
+			} else if pendingDev != "" {
+				flushPendingDev()
 			}
 			if msg.Role == RoleAssistant && len(toolCalls) > 0 {
 				result = append(result, oaiMessage{
@@ -593,6 +606,7 @@ func buildCompatMessages(messages []Message) []oaiMessage {
 			role := string(msg.Role)
 			result = append(result, oaiMessage{Role: role, Content: text, ReasoningContent: reasoning})
 		case RoleTool:
+			flushPendingDev()
 			for _, part := range msg.Parts {
 				if part.Type != PartToolResult || part.ToolResult == nil {
 					continue
@@ -630,12 +644,7 @@ func buildCompatMessages(messages []Message) []oaiMessage {
 		}
 	}
 	// Trailing developer message with no following user turn.
-	if pendingDev != "" {
-		result = append(result, oaiMessage{
-			Role:    "user",
-			Content: fmt.Sprintf("<developer>\n%s\n</developer>", pendingDev),
-		})
-	}
+	flushPendingDev()
 	return result
 }
 
