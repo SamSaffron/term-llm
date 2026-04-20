@@ -3,10 +3,12 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
 )
@@ -370,5 +372,59 @@ func TestVeniceProviderExplicitXSearchUsesVeniceParameters(t *testing.T) {
 	}
 	if _, ok := got.VeniceParameters["enable_web_search"]; ok {
 		t.Fatalf("did not expect enable_web_search alongside explicit x search: %#v", got.VeniceParameters)
+	}
+}
+
+func TestVeniceProvider429IsRetried(t *testing.T) {
+	callCount := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount < 3 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":"The model is currently overloaded. Please try again later."}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer ts.Close()
+
+	inner := &VeniceProvider{OpenAICompatProvider: NewOpenAICompatProvider(ts.URL, "test-key", "venice-uncensored", "Venice")}
+	provider := WrapWithRetry(inner, RetryConfig{MaxAttempts: 5, BaseBackoff: time.Millisecond, MaxBackoff: 10 * time.Millisecond})
+
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{UserText("hello")},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+
+	var text string
+	for {
+		ev, err := stream.Recv()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			t.Fatalf("Recv() error = %v", err)
+		}
+		if ev.Type == EventError {
+			t.Fatalf("unexpected EventError after retry: %v", ev.Err)
+		}
+		if ev.Type == EventDone {
+			break
+		}
+		if ev.Type == EventTextDelta {
+			text += ev.Text
+		}
+	}
+
+	if callCount != 3 {
+		t.Fatalf("callCount = %d, want 3 (2 × 429 then success)", callCount)
+	}
+	if text != "ok" {
+		t.Fatalf("text = %q, want %q", text, "ok")
 	}
 }
