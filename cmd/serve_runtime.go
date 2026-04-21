@@ -633,6 +633,47 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	// On the first callback, it eagerly persists baseHistory + inputMessages and
 	// only starts incremental appends after that snapshot succeeds.
 	initialPersisted := false
+	currentTurnText := ""
+	var currentTurnToolCalls []llm.ToolCall
+	pendingAssistantIdx := -1
+	toolCallsMatch := func(a, b llm.ToolCall) bool {
+		if strings.TrimSpace(a.ID) != "" && strings.TrimSpace(b.ID) != "" {
+			return strings.TrimSpace(a.ID) == strings.TrimSpace(b.ID)
+		}
+		return strings.TrimSpace(a.Name) == strings.TrimSpace(b.Name) &&
+			strings.TrimSpace(string(a.Arguments)) == strings.TrimSpace(string(b.Arguments))
+	}
+	hasProducedToolCallLocked := func(call llm.ToolCall) bool {
+		for i := len(produced) - 1; i >= 0; i-- {
+			msg := produced[i]
+			if msg.Role != llm.RoleAssistant {
+				continue
+			}
+			for _, part := range msg.Parts {
+				if part.Type != llm.PartToolCall || part.ToolCall == nil {
+					continue
+				}
+				if toolCallsMatch(*part.ToolCall, call) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	buildPendingAssistantLocked := func() (llm.Message, bool) {
+		parts := make([]llm.Part, 0, 1+len(currentTurnToolCalls))
+		if currentTurnText != "" {
+			parts = append(parts, llm.Part{Type: llm.PartText, Text: currentTurnText})
+		}
+		for i := range currentTurnToolCalls {
+			call := currentTurnToolCalls[i]
+			parts = append(parts, llm.Part{Type: llm.PartToolCall, ToolCall: &call})
+		}
+		if len(parts) == 0 {
+			return llm.Message{}, false
+		}
+		return llm.Message{Role: llm.RoleAssistant, Parts: parts}, true
+	}
 	updateStateAndAppendLocked := func(persistCtx context.Context) {
 		if stateful {
 			rt.history = buildSnapshotLocked()
@@ -656,18 +697,49 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		}
 		persistPlatformInjectionLocked()
 	}
+	persistPendingAssistantLocked := func(persistCtx context.Context) {
+		assistantMsg, ok := buildPendingAssistantLocked()
+		if !ok {
+			return
+		}
+		if pendingAssistantIdx >= 0 {
+			produced[pendingAssistantIdx] = assistantMsg
+		} else {
+			produced = append(produced, assistantMsg)
+			pendingAssistantIdx = len(produced) - 1
+		}
+		if stateful {
+			rt.history = buildSnapshotLocked()
+		}
+		if persisted {
+			if rt.persistSnapshot(persistCtx, req.SessionID, buildSnapshotLocked()) {
+				initialPersisted = true
+				lastAppendedIdx = len(produced)
+			}
+		}
+		persistPlatformInjectionLocked()
+	}
 	appendProducedAndUpdateState := func(persistCtx context.Context, msgs ...llm.Message) {
 		producedMu.Lock()
 		defer producedMu.Unlock()
 
-		produced = append(produced, msgs...)
+		if len(msgs) > 0 && msgs[0].Role == llm.RoleAssistant && pendingAssistantIdx >= 0 {
+			produced[pendingAssistantIdx] = msgs[0]
+			pendingAssistantIdx = -1
+			msgs = msgs[1:]
+		}
+		currentTurnText = ""
+		currentTurnToolCalls = nil
+		if len(msgs) > 0 {
+			produced = append(produced, msgs...)
+		}
 		updateStateAndAppendLocked(persistCtx)
 	}
 
-	// ResponseCompletedCallback receives the assistant message (with tool call parts)
-	// immediately after streaming, BEFORE tool execution. Without this, tool calls
-	// are missing from persisted sessions because TurnCompletedCallback only receives
-	// tool results.
+	// ResponseCompletedCallback receives the completed assistant message before
+	// tool execution. EventToolCall snapshots already make tool calls durable as
+	// they stream in; this callback upgrades that provisional assistant message to
+	// the final turn content without duplicating rows.
 	rt.engine.SetResponseCompletedCallback(func(cbCtx context.Context, _ int, assistantMsg llm.Message, _ llm.TurnMetrics) error {
 		appendProducedAndUpdateState(cbCtx, assistantMsg)
 		return nil
@@ -738,9 +810,26 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		switch ev.Type {
 		case llm.EventTextDelta:
 			result.Text.WriteString(ev.Text)
+			producedMu.Lock()
+			currentTurnText += ev.Text
+			if pendingAssistantIdx >= 0 {
+				if assistantMsg, ok := buildPendingAssistantLocked(); ok {
+					produced[pendingAssistantIdx] = assistantMsg
+					if stateful {
+						rt.history = buildSnapshotLocked()
+					}
+				}
+			}
+			producedMu.Unlock()
 		case llm.EventToolCall:
 			if ev.Tool != nil {
 				result.ToolCalls = append(result.ToolCalls, *ev.Tool)
+				producedMu.Lock()
+				if !hasProducedToolCallLocked(*ev.Tool) {
+					currentTurnToolCalls = append(currentTurnToolCalls, *ev.Tool)
+					persistPendingAssistantLocked(ctx)
+				}
+				producedMu.Unlock()
 			}
 		case llm.EventUsage:
 			if ev.Use != nil {

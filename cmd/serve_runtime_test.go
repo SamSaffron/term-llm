@@ -31,8 +31,53 @@ func (s *serveRuntimeTestStream) Close() error {
 	return nil
 }
 
+type serveRuntimeErrorAfterEventsStream struct {
+	events []llm.Event
+	index  int
+	err    error
+}
+
+func (s *serveRuntimeErrorAfterEventsStream) Recv() (llm.Event, error) {
+	if s.index < len(s.events) {
+		event := s.events[s.index]
+		s.index++
+		return event, nil
+	}
+	return llm.Event{}, s.err
+}
+
+func (s *serveRuntimeErrorAfterEventsStream) Close() error {
+	return nil
+}
+
 type serveRuntimeTestProvider struct {
 	calls int
+}
+
+type serveRuntimeToolCallThenErrorProvider struct {
+	err error
+}
+
+func (p *serveRuntimeToolCallThenErrorProvider) Name() string {
+	return "serve-runtime-toolcall-error"
+}
+
+func (p *serveRuntimeToolCallThenErrorProvider) Credential() string {
+	return "test"
+}
+
+func (p *serveRuntimeToolCallThenErrorProvider) Capabilities() llm.Capabilities {
+	return llm.Capabilities{ToolCalls: true}
+}
+
+func (p *serveRuntimeToolCallThenErrorProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	return &serveRuntimeErrorAfterEventsStream{
+		events: []llm.Event{{
+			Type: llm.EventToolCall,
+			Tool: &llm.ToolCall{ID: "call-err", Name: "serve_runtime_test_tool", Arguments: json.RawMessage(`{"value":1}`)},
+		}},
+		err: p.err,
+	}, nil
 }
 
 func (p *serveRuntimeTestProvider) Name() string {
@@ -525,5 +570,101 @@ func TestServeRuntimeReplaceHistoryClearsPersistedMessagesBeforeEarlyFailure(t *
 	}
 	if got := rt.history; len(got) != 0 {
 		t.Fatalf("runtime history length = %d, want 0", len(got))
+	}
+}
+
+func TestServeRuntimeSnapshotsStreamedToolCallWithoutDuplicatingAssistant(t *testing.T) {
+	store := newServeRuntimeTestStore()
+	provider := &serveRuntimeTestProvider{}
+	tool := &serveRuntimeTestTool{}
+	registry := llm.NewToolRegistry()
+	registry.Register(tool)
+	engine := llm.NewEngine(provider, registry)
+
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  provider.Name(),
+		engine:       engine,
+		store:        store,
+		defaultModel: "test-model",
+	}
+
+	result, err := rt.Run(context.Background(), true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "current user")}, llm.Request{
+		SessionID:   "sess-streaming-toolcall",
+		Tools:       []llm.ToolSpec{tool.Spec()},
+		ToolChoice:  llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+		MaxTurns:    4,
+		Search:      false,
+		Debug:       false,
+		DebugRaw:    false,
+		Temperature: 0,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if got := result.Text.String(); got != "done" {
+		t.Fatalf("result text = %q, want %q", got, "done")
+	}
+
+	msgs, err := store.GetMessages(context.Background(), "sess-streaming-toolcall", 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages() error = %v", err)
+	}
+	if len(msgs) != 4 {
+		t.Fatalf("stored message count = %d, want 4", len(msgs))
+	}
+	if msgs[0].Role != llm.RoleUser || msgs[0].TextContent != "current user" {
+		t.Fatalf("message[0] = %+v, want current user message", msgs[0])
+	}
+	if msgs[1].Role != llm.RoleAssistant || len(msgs[1].Parts) != 1 || msgs[1].Parts[0].Type != llm.PartToolCall {
+		t.Fatalf("message[1] = %+v, want assistant tool call message", msgs[1])
+	}
+	if msgs[2].Role != llm.RoleTool || len(msgs[2].Parts) != 1 || msgs[2].Parts[0].Type != llm.PartToolResult {
+		t.Fatalf("message[2] = %+v, want tool result message", msgs[2])
+	}
+	if msgs[3].Role != llm.RoleAssistant || msgs[3].TextContent != "done" {
+		t.Fatalf("message[3] = %+v, want final assistant message", msgs[3])
+	}
+}
+
+func TestServeRuntimePersistsStreamedToolCallBeforeCallbacks(t *testing.T) {
+	store := newServeRuntimeTestStore()
+	providerErr := errors.New("provider stream failed after tool call")
+	provider := &serveRuntimeToolCallThenErrorProvider{err: providerErr}
+	engine := llm.NewEngine(provider, llm.NewToolRegistry())
+
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  provider.Name(),
+		engine:       engine,
+		store:        store,
+		defaultModel: "test-model",
+	}
+
+	_, err := rt.Run(context.Background(), true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "current user")}, llm.Request{
+		SessionID: "sess-toolcall-error",
+	})
+	if !errors.Is(err, providerErr) {
+		t.Fatalf("Run() error = %v, want %v", err, providerErr)
+	}
+
+	msgs, err := store.GetMessages(context.Background(), "sess-toolcall-error", 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages() error = %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("stored message count = %d, want 2", len(msgs))
+	}
+	if msgs[0].Role != llm.RoleUser || msgs[0].TextContent != "current user" {
+		t.Fatalf("message[0] = %+v, want current user message", msgs[0])
+	}
+	if msgs[1].Role != llm.RoleAssistant || len(msgs[1].Parts) != 1 || msgs[1].Parts[0].Type != llm.PartToolCall {
+		t.Fatalf("message[1] = %+v, want assistant tool call message", msgs[1])
+	}
+	if msgs[1].Parts[0].ToolCall == nil || msgs[1].Parts[0].ToolCall.ID != "call-err" {
+		t.Fatalf("message[1] tool call = %+v, want call-err", msgs[1].Parts[0].ToolCall)
+	}
+	if len(rt.history) != 2 {
+		t.Fatalf("runtime history length = %d, want 2", len(rt.history))
 	}
 }
