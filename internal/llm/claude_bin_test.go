@@ -368,12 +368,104 @@ func TestDispatchClaudeEvents_DoesNotDuplicateAssistantFallbackWhenDeltasPresent
 			goto drained
 		}
 	}
+
 drained:
 	if len(got) != 1 {
 		t.Fatalf("expected exactly 1 text event, got %d: %+v", len(got), got)
 	}
 	if got[0].Type != EventTextDelta || got[0].Text != "delta text" {
 		t.Fatalf("unexpected event: %+v", got[0])
+	}
+}
+
+func TestDispatchClaudeEvents_ReplaysObservedInvalidToolUseWithoutMCPCallback(t *testing.T) {
+	provider := NewClaudeBinProvider("sonnet", nil)
+	events := make(chan Event, 8)
+	lines := make(chan string, 2)
+	toolReqs := make(chan claudeToolRequest, 1)
+
+	lines <- `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_bad","name":"mcp__term-llm","input":{}}]}}`
+	close(lines)
+
+	_, toolsExecuted, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
+	if err != nil {
+		t.Fatalf("dispatch failed: %v", err)
+	}
+	if !toolsExecuted {
+		t.Fatal("expected observed tool_use replay to count as tool execution")
+	}
+
+	select {
+	case ev := <-events:
+		if ev.Type != EventToolCall {
+			t.Fatalf("expected EventToolCall, got %+v", ev)
+		}
+		if ev.ToolName != "mcp__term-llm" {
+			t.Fatalf("tool name = %q, want invalid observed name preserved", ev.ToolName)
+		}
+		if ev.ToolCallID != "toolu_bad" {
+			t.Fatalf("tool call id = %q, want observed assistant tool_use id", ev.ToolCallID)
+		}
+		if ev.ToolResponse == nil {
+			t.Fatal("expected replayed tool call to include ToolResponse for sync recovery")
+		}
+	default:
+		t.Fatal("expected replayed tool call event")
+	}
+}
+
+func TestDispatchClaudeEvents_DoesNotReplayObservedToolUseWhenMCPCallbackMatches(t *testing.T) {
+	provider := NewClaudeBinProvider("sonnet", nil)
+	events := make(chan Event, 8)
+	lines := make(chan string, 2)
+	toolReqs := make(chan claudeToolRequest, 1)
+
+	lines <- `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_shell","name":"mcp__term-llm__shell","input":{"command":"pwd"}}]}}`
+	close(lines)
+
+	req := claudeToolRequest{
+		ctx:      context.Background(),
+		callID:   "mcp-shell-1",
+		name:     "shell",
+		args:     json.RawMessage(`{"command":"pwd"}`),
+		response: make(chan ToolExecutionResponse, 1),
+		ack:      make(chan error, 1),
+	}
+	toolReqs <- req
+
+	_, toolsExecuted, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
+	if err != nil {
+		t.Fatalf("dispatch failed: %v", err)
+	}
+	if !toolsExecuted {
+		t.Fatal("expected actual MCP callback to count as tool execution")
+	}
+	if ackErr := <-req.ack; ackErr != nil {
+		t.Fatalf("expected tool request ack to succeed, got %v", ackErr)
+	}
+
+	var got []Event
+	for {
+		select {
+		case ev := <-events:
+			got = append(got, ev)
+		default:
+			goto drainedObserved
+		}
+	}
+
+drainedObserved:
+	if len(got) != 1 {
+		t.Fatalf("expected exactly 1 tool event, got %d: %+v", len(got), got)
+	}
+	if got[0].Type != EventToolCall {
+		t.Fatalf("expected EventToolCall, got %+v", got[0])
+	}
+	if got[0].ToolCallID != "mcp-shell-1" {
+		t.Fatalf("tool call id = %q, want actual MCP callback id", got[0].ToolCallID)
+	}
+	if got[0].ToolName != "shell" {
+		t.Fatalf("tool name = %q, want mapped local tool name", got[0].ToolName)
 	}
 }
 
@@ -441,6 +533,8 @@ func TestHandleClaudeLine_ContextCancelledDoesNotBlock(t *testing.T) {
 		&usage,
 		&sawTextDelta,
 		&assistantFallbackText,
+		nil,
+		nil,
 	)
 	if err == nil {
 		t.Fatal("expected cancellation error")

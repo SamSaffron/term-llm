@@ -2,6 +2,7 @@ package llm
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -85,6 +86,12 @@ type claudeTurnBridge struct {
 	toolReqCh chan claudeToolRequest
 	// done closes when the active runClaudeCommand turn exits.
 	done chan struct{}
+}
+
+type observedClaudeToolUse struct {
+	id   string
+	name string
+	args json.RawMessage
 }
 
 const (
@@ -550,6 +557,8 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 		linesOpen             = true
 		sawTextDelta          bool
 		assistantFallbackText string
+		observedToolUses      []observedClaudeToolUse
+		executedToolUses      []observedClaudeToolUse
 		toolsExecuted         bool
 	)
 
@@ -564,7 +573,7 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 					break
 				}
 				hadLine = true
-				if err := p.handleClaudeLine(ctx, line, debug, send, &lastUsage, &sawTextDelta, &assistantFallbackText); err != nil {
+				if err := p.handleClaudeLine(ctx, line, debug, send, &lastUsage, &sawTextDelta, &assistantFallbackText, &observedToolUses, executedToolUses); err != nil {
 					return nil, false, err
 				}
 			default:
@@ -582,13 +591,15 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 				linesOpen = false
 				continue
 			}
-			if err := p.handleClaudeLine(ctx, line, debug, send, &lastUsage, &sawTextDelta, &assistantFallbackText); err != nil {
+			if err := p.handleClaudeLine(ctx, line, debug, send, &lastUsage, &sawTextDelta, &assistantFallbackText, &observedToolUses, executedToolUses); err != nil {
 				return nil, false, err
 			}
 		case req := <-toolReqCh:
-			if err := p.drainClaudeLinesWithGrace(ctx, lineCh, debug, send, &lastUsage, &sawTextDelta, &assistantFallbackText); err != nil {
+			if err := p.drainClaudeLinesWithGrace(ctx, lineCh, debug, send, &lastUsage, &sawTextDelta, &assistantFallbackText, &observedToolUses, executedToolUses); err != nil {
 				return nil, false, err
 			}
+			consumeObservedClaudeToolUse(&observedToolUses, req.name, req.args)
+			executedToolUses = append(executedToolUses, observedClaudeToolUse{name: strings.TrimSpace(req.name), args: req.args})
 			toolsExecuted = true
 			p.handleClaudeToolRequest(req, send)
 		case <-ctx.Done():
@@ -600,6 +611,8 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 	for {
 		select {
 		case req := <-toolReqCh:
+			consumeObservedClaudeToolUse(&observedToolUses, req.name, req.args)
+			executedToolUses = append(executedToolUses, observedClaudeToolUse{name: strings.TrimSpace(req.name), args: req.args})
 			toolsExecuted = true
 			p.handleClaudeToolRequest(req, send)
 		default:
@@ -608,9 +621,15 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 	}
 drained:
 
+	if len(observedToolUses) > 0 {
+		if err := p.replayObservedClaudeToolUses(observedToolUses, send); err != nil {
+			return nil, false, err
+		}
+		toolsExecuted = true
+	}
+
 	return lastUsage, toolsExecuted, nil
 }
-
 func (p *ClaudeBinProvider) handleClaudeLine(
 	ctx context.Context,
 	line string,
@@ -619,6 +638,8 @@ func (p *ClaudeBinProvider) handleClaudeLine(
 	lastUsage **Usage,
 	sawTextDelta *bool,
 	assistantFallbackText *string,
+	observedToolUses *[]observedClaudeToolUse,
+	executedToolUses []observedClaudeToolUse,
 ) error {
 	var baseMsg struct {
 		Type string `json:"type"`
@@ -675,11 +696,16 @@ func (p *ClaudeBinProvider) handleClaudeLine(
 
 	case "assistant":
 		// Buffer assistant text as a fallback for providers/versions that
-		// don't emit stream_event text deltas.
+		// don't emit stream_event text deltas, and record any tool_use blocks.
 		var assistantMsg claudeAssistantMessage
-		if err := json.Unmarshal([]byte(line), &assistantMsg); err == nil && assistantFallbackText != nil {
-			if text := extractClaudeAssistantText(assistantMsg); text != "" {
-				*assistantFallbackText = text
+		if err := json.Unmarshal([]byte(line), &assistantMsg); err == nil {
+			if assistantFallbackText != nil {
+				if text := extractClaudeAssistantText(assistantMsg); text != "" {
+					*assistantFallbackText = text
+				}
+			}
+			if observedToolUses != nil {
+				recordObservedClaudeToolUses(observedToolUses, extractClaudeAssistantToolUses(assistantMsg), executedToolUses)
 			}
 		}
 
@@ -731,6 +757,116 @@ func (p *ClaudeBinProvider) handleClaudeToolRequest(req claudeToolRequest, send 
 	req.ack <- nil
 }
 
+func recordObservedClaudeToolUses(dst *[]observedClaudeToolUse, calls []observedClaudeToolUse, executed []observedClaudeToolUse) {
+	if dst == nil || len(calls) == 0 {
+		return
+	}
+	for _, call := range calls {
+		if hasObservedClaudeToolUse(executed, call.name, call.args) {
+			continue
+		}
+		duplicate := false
+		for _, existing := range *dst {
+			if existing.id != "" && existing.id == call.id {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			*dst = append(*dst, call)
+		}
+	}
+}
+
+func hasObservedClaudeToolUse(calls []observedClaudeToolUse, name string, args json.RawMessage) bool {
+	wantName := strings.TrimSpace(name)
+	wantArgs := canonicalClaudeToolArgs(args)
+	for _, call := range calls {
+		if call.name == wantName && canonicalClaudeToolArgs(call.args) == wantArgs {
+			return true
+		}
+	}
+	return false
+}
+
+func consumeObservedClaudeToolUse(dst *[]observedClaudeToolUse, name string, args json.RawMessage) {
+	if dst == nil || len(*dst) == 0 {
+		return
+	}
+	wantName := strings.TrimSpace(name)
+	wantArgs := canonicalClaudeToolArgs(args)
+	for i, call := range *dst {
+		if call.name == wantName && canonicalClaudeToolArgs(call.args) == wantArgs {
+			*dst = append((*dst)[:i], (*dst)[i+1:]...)
+			return
+		}
+	}
+}
+
+func (p *ClaudeBinProvider) replayObservedClaudeToolUses(calls []observedClaudeToolUse, send eventSender) error {
+	if len(calls) == 0 {
+		return nil
+	}
+	slog.Warn("claude-bin replaying tool_use blocks without MCP callbacks", "count", len(calls))
+	for i, call := range calls {
+		callID := strings.TrimSpace(call.id)
+		if callID == "" {
+			callID = fmt.Sprintf("observed-tool-%d", i+1)
+		}
+		if len(call.args) == 0 {
+			call.args = json.RawMessage(`{}`)
+		}
+		req := claudeToolRequest{
+			ctx:      context.Background(),
+			callID:   callID,
+			name:     call.name,
+			args:     call.args,
+			response: make(chan ToolExecutionResponse, 1),
+			ack:      make(chan error, 1),
+		}
+		p.handleClaudeToolRequest(req, send)
+		if err := <-req.ack; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func canonicalClaudeToolArgs(args json.RawMessage) string {
+	trimmed := strings.TrimSpace(string(args))
+	if trimmed == "" {
+		return "{}"
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, []byte(trimmed)); err == nil {
+		return compact.String()
+	}
+	return trimmed
+}
+
+func extractClaudeAssistantToolUses(msg claudeAssistantMessage) []observedClaudeToolUse {
+	var calls []observedClaudeToolUse
+	for _, block := range msg.Message.Content {
+		if block.Type != "tool_use" {
+			continue
+		}
+		name := mapClaudeToolName(strings.TrimSpace(block.Name))
+		if name == "" {
+			continue
+		}
+		args := block.Input
+		if len(args) == 0 {
+			args = json.RawMessage(`{}`)
+		}
+		calls = append(calls, observedClaudeToolUse{
+			id:   strings.TrimSpace(block.ID),
+			name: name,
+			args: args,
+		})
+	}
+	return calls
+}
+
 func (p *ClaudeBinProvider) drainClaudeLinesWithGrace(
 	ctx context.Context,
 	lineCh <-chan string,
@@ -739,6 +875,8 @@ func (p *ClaudeBinProvider) drainClaudeLinesWithGrace(
 	lastUsage **Usage,
 	sawTextDelta *bool,
 	assistantFallbackText *string,
+	observedToolUses *[]observedClaudeToolUse,
+	executedToolUses []observedClaudeToolUse,
 ) error {
 	// First, drain any already-buffered lines.
 	for {
@@ -747,7 +885,7 @@ func (p *ClaudeBinProvider) drainClaudeLinesWithGrace(
 			if !ok {
 				return nil
 			}
-			if err := p.handleClaudeLine(ctx, line, debug, send, lastUsage, sawTextDelta, assistantFallbackText); err != nil {
+			if err := p.handleClaudeLine(ctx, line, debug, send, lastUsage, sawTextDelta, assistantFallbackText, observedToolUses, executedToolUses); err != nil {
 				return err
 			}
 		default:
@@ -765,7 +903,7 @@ wait:
 			if !ok {
 				return nil
 			}
-			if err := p.handleClaudeLine(ctx, line, debug, send, lastUsage, sawTextDelta, assistantFallbackText); err != nil {
+			if err := p.handleClaudeLine(ctx, line, debug, send, lastUsage, sawTextDelta, assistantFallbackText, observedToolUses, executedToolUses); err != nil {
 				return err
 			}
 			if !timer.Stop() {
