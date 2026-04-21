@@ -488,7 +488,7 @@ CREATE INDEX IF NOT EXISTS idx_job_run_events_v2_run_id ON job_run_events_v2(run
 `
 
 func newJobsV2Manager(dbPath string, workers int, llmExec serveJobsExecutor) (*jobsV2Manager, error) {
-	if workers <= 0 {
+	if workers < 0 {
 		workers = 1
 	}
 	if strings.TrimSpace(dbPath) == "" {

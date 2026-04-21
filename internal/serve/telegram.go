@@ -28,8 +28,8 @@ import (
 const telegramMaxMessageLen = 4000 // Telegram limit is 4096; leave margin
 const minEditInterval = 3 * time.Second
 
-// var so tests can shorten the watchdog without waiting 10 minutes.
-var streamEventTimeout = 10 * time.Minute
+// defaultStreamEventTimeout is used when telegramSessionMgr.streamEventTimeout is zero.
+const defaultStreamEventTimeout = 10 * time.Minute
 
 const telegramMaxConcurrentHandlers = 8
 const telegramMaxPhotoDownloadBytes int64 = 25 << 20
@@ -466,6 +466,10 @@ type telegramSessionMgr struct {
 	allowedUsernames map[string]struct{}
 	messageSlots     chan struct{}
 	tickerInterval   time.Duration // 0 means use default (500ms); overridden in tests
+
+	// streamEventTimeout bounds how long the stream watchdog waits between events
+	// before declaring the stream dead. 0 means use defaultStreamEventTimeout.
+	streamEventTimeout time.Duration
 }
 
 func (m *telegramSessionMgr) newFastProvider() llm.Provider {
@@ -1214,9 +1218,14 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		watchdogTimedOut atomic.Bool
 	)
 
-	// Watchdog: cancel stream if no events arrive for streamEventTimeout.
+	watchdogTimeout := m.streamEventTimeout
+	if watchdogTimeout <= 0 {
+		watchdogTimeout = defaultStreamEventTimeout
+	}
+
+	// Watchdog: cancel stream if no events arrive for watchdogTimeout.
 	go func() {
-		t := time.NewTimer(streamEventTimeout)
+		t := time.NewTimer(watchdogTimeout)
 		defer t.Stop()
 		for {
 			select {
@@ -1227,11 +1236,11 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 					default:
 					}
 				}
-				t.Reset(streamEventTimeout)
+				t.Reset(watchdogTimeout)
 			case <-t.C:
 				watchdogTimedOut.Store(true)
 				select {
-				case streamDone <- fmt.Errorf("stream timed out: no events for %s", streamEventTimeout):
+				case streamDone <- fmt.Errorf("stream timed out: no events for %s", watchdogTimeout):
 				default:
 				}
 				streamCancel()
@@ -1383,10 +1392,20 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 	}
 
 	var streamErr error
+	userInterrupted := false
+	streamDoneDrained := false
 loop:
 	for {
 		select {
 		case err := <-streamDone:
+			streamDoneDrained = true
+			// If streamCtx was cancelled by user interrupt (not parent ctx, not
+			// watchdog), the error from Recv is a consequence of the cancel, not
+			// a real stream failure. Treat as interrupt instead.
+			if ctx.Err() == nil && !watchdogTimedOut.Load() && streamCtx.Err() != nil {
+				userInterrupted = true
+				break loop
+			}
 			streamErr = err
 			break loop
 		case <-ticker.C:
@@ -1465,63 +1484,71 @@ loop:
 			if watchdogTimedOut.Load() {
 				select {
 				case streamErr = <-streamDone:
+					streamDoneDrained = true
 				default:
-					streamErr = fmt.Errorf("stream timed out: no events for %s", streamEventTimeout)
+					streamErr = fmt.Errorf("stream timed out: no events for %s", watchdogTimeout)
 				}
 				break loop
 			}
 
-			// User interrupt: cancel the stream and preserve partial state.
-			stream.Close()
-			// Wait for the Recv goroutine to finish draining anything already in-flight
-			// so history snapshots include the final partial text and callback-produced
-			// messages from the interrupted turn.
-			<-streamDone
-
-			textMu.Lock()
-			partial := textBuf.String()
-			textMu.Unlock()
-			producedMu.Lock()
-			producedSnapshot := append([]llm.Message(nil), produced...)
-			producedMu.Unlock()
-
-			// Edit the Telegram message to show partial text + interrupted marker.
-			display := ""
-			if msgStart < len(partial) {
-				display = partial[msgStart:]
-			}
-			if display == "" {
-				display = "(interrupted)"
-			} else {
-				display += "\n\n_(interrupted)_"
-			}
-			if needNewMsg {
-				newMsg, sendErr := bot.Send(tgbotapi.NewMessage(chatID, "⏳"))
-				if sendErr == nil {
-					currentMsgID = newMsg.MessageID
-				}
-			}
-			sendEdit(currentMsgID, display, true)
-
-			// Preserve partial history so conversation context isn't lost.
-			newHistory := make([]llm.Message, 0, len(sess.history)+2+len(producedSnapshot))
-			newHistory = append(newHistory, sess.history...)
-			newHistory = append(newHistory, normalizeUserMessageForHistory(userMsg))
-			newHistory = append(newHistory, producedSnapshot...)
-			// If we have partial text but no tool turns completed, save it.
-			if len(producedSnapshot) == 0 && partial != "" {
-				newHistory = append(newHistory, llm.AssistantText(partial))
-			}
-			sess.history = newHistory
-			sess.lastActivity = time.Now()
-
-			if m.store != nil && sess.meta != nil {
-				m.runStoreOpWithTimeout(sess.meta.ID, "UpdateStatus(interrupted)", func(storeCtx context.Context) error {
-					return m.store.UpdateStatus(storeCtx, sess.meta.ID, session.StatusInterrupted)
-				})
-			}
-			return nil
+			// User interrupt: handled below after the loop exits.
+			userInterrupted = true
+			break loop
 		}
+	}
+
+	if userInterrupted {
+		// Close the stream and wait for the Recv goroutine to finish draining
+		// anything already in-flight so history snapshots include the final
+		// partial text and callback-produced messages from the interrupted turn.
+		stream.Close()
+		if !streamDoneDrained {
+			<-streamDone
+		}
+
+		textMu.Lock()
+		partial := textBuf.String()
+		textMu.Unlock()
+		producedMu.Lock()
+		producedSnapshot := append([]llm.Message(nil), produced...)
+		producedMu.Unlock()
+
+		// Edit the Telegram message to show partial text + interrupted marker.
+		display := ""
+		if msgStart < len(partial) {
+			display = partial[msgStart:]
+		}
+		if display == "" {
+			display = "(interrupted)"
+		} else {
+			display += "\n\n_(interrupted)_"
+		}
+		if needNewMsg {
+			newMsg, sendErr := bot.Send(tgbotapi.NewMessage(chatID, "⏳"))
+			if sendErr == nil {
+				currentMsgID = newMsg.MessageID
+			}
+		}
+		sendEdit(currentMsgID, display, true)
+
+		// Preserve partial history so conversation context isn't lost.
+		newHistory := make([]llm.Message, 0, len(sess.history)+2+len(producedSnapshot))
+		newHistory = append(newHistory, sess.history...)
+		newHistory = append(newHistory, normalizeUserMessageForHistory(userMsg))
+		newHistory = append(newHistory, producedSnapshot...)
+		// If we have partial text but no tool turns completed, save it.
+		if len(producedSnapshot) == 0 && partial != "" {
+			newHistory = append(newHistory, llm.AssistantText(partial))
+		}
+		sess.history = newHistory
+		sess.lastActivity = time.Now()
+
+		if m.store != nil && sess.meta != nil {
+			m.runStoreOpWithTimeout(sess.meta.ID, "UpdateStatus(interrupted)", func(storeCtx context.Context) error {
+				return m.store.UpdateStatus(storeCtx, sess.meta.ID, session.StatusInterrupted)
+			})
+		}
+		return nil
 	}
 
 	if streamErr != nil {

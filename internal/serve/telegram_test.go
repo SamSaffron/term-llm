@@ -1343,16 +1343,11 @@ func TestHandleMessage_InterruptWaitsForToolCallbackBeforePersistingHistory(t *t
 }
 
 func TestStreamReply_WatchdogTimeoutIsNotTreatedAsUserInterrupt(t *testing.T) {
-	oldTimeout := streamEventTimeout
-	streamEventTimeout = 25 * time.Millisecond
-	defer func() {
-		streamEventTimeout = oldTimeout
-	}()
-
 	h := testutil.NewEngineHarness()
 	h.Provider.AddTurn(llm.MockTurn{Delay: 200 * time.Millisecond, Text: "late reply"})
 
 	mgr, sess := newTestMgrAndSession(h)
+	mgr.streamEventTimeout = 25 * time.Millisecond
 	bot := &fakeBotSender{}
 
 	sess.history = []llm.Message{
