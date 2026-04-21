@@ -1810,44 +1810,45 @@ type loggingStream struct {
 	model           string
 	trackedExternal string // "claude-code", "codex", "gemini-cli", or "" for direct API
 
-	// Accumulated usage (multiple EventUsage events in agentic loops)
+	// mu guards the accumulator/logged fields against concurrent Recv/Close.
+	mu              sync.Mutex
 	totalInput      int
 	totalOutput     int
 	totalCacheRead  int
 	totalCacheWrite int
-	logged          bool // Prevent double-logging
+	logged          bool
 }
 
 func (s *loggingStream) Recv() (Event, error) {
 	event, err := s.inner.Recv()
 
-	// Accumulate usage from each EventUsage
+	s.mu.Lock()
 	if err == nil && event.Type == EventUsage && event.Use != nil {
 		s.totalInput += event.Use.InputTokens
 		s.totalOutput += event.Use.OutputTokens
 		s.totalCacheRead += event.Use.CachedInputTokens
 		s.totalCacheWrite += event.Use.CacheWriteTokens
 	}
-
-	// Log on EOF (stream complete) or EventDone
 	if (err == io.EOF || (err == nil && event.Type == EventDone)) && !s.logged {
-		s.flush()
+		s.flushLocked()
 	}
+	s.mu.Unlock()
 
 	return event, err
 }
 
 func (s *loggingStream) Close() error {
-	// Also flush on explicit close (in case EOF wasn't received)
+	s.mu.Lock()
 	if !s.logged {
-		s.flush()
+		s.flushLocked()
 	}
+	s.mu.Unlock()
 	return s.inner.Close()
 }
 
-func (s *loggingStream) flush() {
+func (s *loggingStream) flushLocked() {
 	if s.totalInput == 0 && s.totalOutput == 0 {
-		return // Nothing to log
+		return
 	}
 	s.logged = true
 	_ = s.logger.Log(usage.LogEntry{
