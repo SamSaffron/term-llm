@@ -108,9 +108,30 @@ const (
 	maxAttachmentBytes = 20 << 20 // 20 MB per file (decoded)
 )
 
+func decodedBase64Len(b64Data string) int {
+	decodedLen := base64.StdEncoding.DecodedLen(len(b64Data))
+	if strings.HasSuffix(b64Data, "==") {
+		decodedLen -= 2
+	} else if strings.HasSuffix(b64Data, "=") {
+		decodedLen--
+	}
+	if decodedLen < 0 {
+		return 0
+	}
+	return decodedLen
+}
+
+func attachmentTooLargeError(filename string) error {
+	return fmt.Errorf("file %q exceeds %d MB limit", filename, maxAttachmentBytes>>20)
+}
+
 // saveUploadedFile decodes base64 data and writes it to the uploads directory,
 // returning the full filesystem path. Uses O_CREATE|O_EXCL for atomic uniqueness.
 func saveUploadedFile(filename, b64Data string) (string, error) {
+	if decodedBase64Len(b64Data) > maxAttachmentBytes {
+		return "", attachmentTooLargeError(filename)
+	}
+
 	dataDir, err := session.GetDataDir()
 	if err != nil {
 		return "", fmt.Errorf("get data dir: %w", err)
@@ -118,14 +139,6 @@ func saveUploadedFile(filename, b64Data string) (string, error) {
 	uploadsDir := filepath.Join(dataDir, "uploads")
 	if err := os.MkdirAll(uploadsDir, 0o700); err != nil {
 		return "", fmt.Errorf("create uploads dir: %w", err)
-	}
-
-	raw, err := base64.StdEncoding.DecodeString(b64Data)
-	if err != nil {
-		return "", fmt.Errorf("decode base64: %w", err)
-	}
-	if len(raw) > maxAttachmentBytes {
-		return "", fmt.Errorf("file %q exceeds %d MB limit", filename, maxAttachmentBytes>>20)
 	}
 
 	safeName := filepath.Base(filename)
@@ -146,10 +159,18 @@ func saveUploadedFile(filename, b64Data string) (string, error) {
 		os.Remove(dest)
 		return "", fmt.Errorf("chmod: %w", err)
 	}
-	if _, err := f.Write(raw); err != nil {
+
+	decoded := base64.NewDecoder(base64.StdEncoding, strings.NewReader(b64Data))
+	written, err := io.Copy(f, io.LimitReader(decoded, maxAttachmentBytes+1))
+	if err != nil {
 		f.Close()
 		os.Remove(dest)
-		return "", fmt.Errorf("write file: %w", err)
+		return "", fmt.Errorf("decode base64: %w", err)
+	}
+	if written > maxAttachmentBytes {
+		f.Close()
+		os.Remove(dest)
+		return "", attachmentTooLargeError(filename)
 	}
 	if err := f.Close(); err != nil {
 		os.Remove(dest)
@@ -202,15 +223,18 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 				if mt == "" || b64 == "" {
 					continue
 				}
+				if filename == "" {
+					filename = "image"
+				}
+				if decodedBase64Len(b64) > maxAttachmentBytes {
+					return llm.Message{}, attachmentTooLargeError(filename)
+				}
 				if isLLMImageType(mt) {
 					fileCount++
 					if fileCount > maxAttachments {
 						return llm.Message{}, fmt.Errorf("too many attachments (max %d)", maxAttachments)
 					}
 					// Always save the original to disk first.
-					if filename == "" {
-						filename = "image"
-					}
 					savedPath := ""
 					if path, err := saveUploadedFile(filename, b64); err != nil {
 						log.Printf("[web] warning: could not save uploaded image %q: %v", filename, err)
@@ -247,9 +271,6 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 					if fileCount > maxAttachments {
 						return llm.Message{}, fmt.Errorf("too many attachments (max %d)", maxAttachments)
 					}
-					if filename == "" {
-						filename = "image"
-					}
 					path, err := saveUploadedFile(filename, b64)
 					if err != nil {
 						return llm.Message{}, fmt.Errorf("save attachment %q: %w", filename, err)
@@ -271,6 +292,9 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 				_, b64 := parseDataURL(fileData)
 				if b64 == "" {
 					continue
+				}
+				if decodedBase64Len(b64) > maxAttachmentBytes {
+					return llm.Message{}, attachmentTooLargeError(filename)
 				}
 				fileCount++
 				if fileCount > maxAttachments {

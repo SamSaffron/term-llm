@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -37,6 +38,50 @@ func TestParseUserMessageContent_RejectsTooManyInlineImages(t *testing.T) {
 	}
 }
 
+func TestParseUserMessageContent_RejectsOversizedInlineImage(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	oversizedB64 := oversizedBase64Data()
+	content, err := json.Marshal([]map[string]any{{
+		"type":      "input_image",
+		"image_url": "data:image/png;base64," + oversizedB64,
+		"filename":  "huge.png",
+	}})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	_, err = parseUserMessageContent(content)
+	if err == nil {
+		t.Fatal("parseUserMessageContent() error = nil, want size limit error")
+	}
+	if !strings.Contains(err.Error(), `file "huge.png" exceeds 20 MB limit`) {
+		t.Fatalf("parseUserMessageContent() error = %v, want size limit error", err)
+	}
+}
+
+func TestParseUserMessageContent_RejectsOversizedInputFile(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	oversizedB64 := oversizedBase64Data()
+	content, err := json.Marshal([]map[string]any{{
+		"type":      "input_file",
+		"file_data": "data:application/pdf;base64," + oversizedB64,
+		"filename":  "huge.pdf",
+	}})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	_, err = parseUserMessageContent(content)
+	if err == nil {
+		t.Fatal("parseUserMessageContent() error = nil, want size limit error")
+	}
+	if !strings.Contains(err.Error(), `file "huge.pdf" exceeds 20 MB limit`) {
+		t.Fatalf("parseUserMessageContent() error = %v, want size limit error", err)
+	}
+}
+
 func marshalInlineImageParts(t *testing.T, count int) json.RawMessage {
 	t.Helper()
 
@@ -54,4 +99,8 @@ func marshalInlineImageParts(t *testing.T, count int) json.RawMessage {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
 	return content
+}
+
+func oversizedBase64Data() string {
+	return strings.Repeat("A", base64.StdEncoding.EncodedLen(maxAttachmentBytes+1))
 }
