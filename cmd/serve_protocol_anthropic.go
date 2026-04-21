@@ -163,20 +163,29 @@ func parseAnthropicMessages(msgs []anthropicMessage) ([]llm.Message, error) {
 			// Anthropic puts tool_result blocks in user messages.
 			// Split them out into RoleTool messages so the OpenAI-compat
 			// provider can emit proper {"role":"tool"} entries.
-			var userParts, toolParts []llm.Part
-			for _, p := range parts {
-				if p.Type == llm.PartToolResult {
-					toolParts = append(toolParts, p)
-				} else {
-					userParts = append(userParts, p)
+			// Preserve the original block ordering by flushing contiguous
+			// runs of tool_result vs non-tool_result parts as separate messages.
+			var currentRole llm.Role
+			var currentParts []llm.Part
+			flush := func() {
+				if len(currentParts) == 0 {
+					return
 				}
+				result = append(result, llm.Message{Role: currentRole, Parts: currentParts})
+				currentParts = nil
 			}
-			if len(toolParts) > 0 {
-				result = append(result, llm.Message{Role: llm.RoleTool, Parts: toolParts})
+			for _, p := range parts {
+				nextRole := llm.RoleUser
+				if p.Type == llm.PartToolResult {
+					nextRole = llm.RoleTool
+				}
+				if len(currentParts) > 0 && currentRole != nextRole {
+					flush()
+				}
+				currentRole = nextRole
+				currentParts = append(currentParts, p)
 			}
-			if len(userParts) > 0 {
-				result = append(result, llm.Message{Role: llm.RoleUser, Parts: userParts})
-			}
+			flush()
 		case "assistant":
 			result = append(result, llm.Message{Role: llm.RoleAssistant, Parts: parts})
 		default:
