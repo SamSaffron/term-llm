@@ -189,45 +189,68 @@ func (rt *serveRuntime) Interrupt(ctx context.Context, msg string, fastProvider 
 }
 
 // ensureSessionInStore creates the session record in the database if it doesn't
-// exist yet and returns the assigned session number. Unlike ensurePersistedSession,
-// this does NOT mutate runtime state (sessionMeta, history), so it is safe to call
-// without holding rt.mu.
+// exist yet and returns the assigned session number. It never mutates runtime
+// state. When the runtime lock is unavailable because a run is active, it
+// falls back to store-only lookup rather than racing live runtime fields.
 func (rt *serveRuntime) ensureSessionInStore(ctx context.Context, sessionID string, inputMessages []llm.Message) int64 {
 	if rt.store == nil || sessionID == "" {
 		return 0
 	}
-	// Fast path: runtime already hydrated under rt.mu by a prior run.
-	if meta := rt.sessionMeta; meta != nil && meta.ID == sessionID {
-		return meta.Number
+
+	providerName := "unknown"
+	modelName := "unknown"
+	providerKey := ""
+	agentName := ""
+	toolsSetting := ""
+	mcpSetting := ""
+	search := false
+	haveSnapshot := false
+
+	if rt.mu.TryLock() {
+		if meta := rt.sessionMeta; meta != nil && meta.ID == sessionID {
+			number := meta.Number
+			rt.mu.Unlock()
+			return number
+		}
+		if rt.provider != nil {
+			if name := strings.TrimSpace(rt.provider.Name()); name != "" {
+				providerName = name
+			}
+		}
+		if name := strings.TrimSpace(rt.defaultModel); name != "" {
+			modelName = name
+		}
+		providerKey = strings.TrimSpace(rt.providerKey)
+		agentName = rt.agentName
+		search = rt.search
+		toolsSetting = rt.toolsSetting
+		mcpSetting = rt.mcpSetting
+		haveSnapshot = true
+		rt.mu.Unlock()
 	}
+
 	// Check DB for existing session.
 	if existing, err := rt.store.Get(ctx, sessionID); err == nil && existing != nil {
 		return existing.Number
 	}
+	if !haveSnapshot {
+		return 0
+	}
+
 	// Build and insert a new session record.
-	providerName := "unknown"
-	if rt.provider != nil {
-		if name := strings.TrimSpace(rt.provider.Name()); name != "" {
-			providerName = name
-		}
-	}
-	modelName := strings.TrimSpace(rt.defaultModel)
-	if modelName == "" {
-		modelName = "unknown"
-	}
 	sess := &session.Session{
 		ID:          sessionID,
 		Provider:    providerName,
-		ProviderKey: strings.TrimSpace(rt.providerKey),
+		ProviderKey: providerKey,
 		Model:       modelName,
 		Mode:        session.ModeChat,
 		Origin:      session.OriginWeb,
-		Agent:       rt.agentName,
+		Agent:       agentName,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
-		Search:      rt.search,
-		Tools:       rt.toolsSetting,
-		MCP:         rt.mcpSetting,
+		Search:      search,
+		Tools:       toolsSetting,
+		MCP:         mcpSetting,
 		Status:      session.StatusActive,
 	}
 	if cwd, err := os.Getwd(); err == nil {

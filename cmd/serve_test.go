@@ -2214,6 +2214,47 @@ func TestHandleResponses_GeneratesSessionIDHeaderWhenMissing(t *testing.T) {
 	}
 }
 
+func TestEnsureSessionInStore_BusyRuntimeFallsBackToStore(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	sess := &session.Session{
+		ID:        "busy-session",
+		Provider:  "mock",
+		Model:     "mock-model",
+		Mode:      session.ModeChat,
+		Origin:    session.OriginWeb,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Status:    session.StatusActive,
+	}
+	if err := store.Create(context.Background(), sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	rt := &serveRuntime{store: store}
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+
+	resultCh := make(chan int64, 1)
+	go func() {
+		resultCh <- rt.ensureSessionInStore(context.Background(), sess.ID, nil)
+	}()
+
+	select {
+	case num := <-resultCh:
+		if num != sess.Number {
+			t.Fatalf("ensureSessionInStore = %d, want %d", num, sess.Number)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ensureSessionInStore blocked on busy runtime")
+	}
+}
+
 func TestStreamUIResponses_SetsSessionNumberHeader(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
