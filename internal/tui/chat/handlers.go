@@ -400,8 +400,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.streaming = false
 
 			// Clear callbacks and update status
-			m.engine.SetResponseCompletedCallback(nil)
-			m.engine.SetTurnCompletedCallback(nil)
+			m.clearStreamCallbacks()
 			if m.store != nil {
 				_ = m.store.UpdateStatus(context.Background(), m.sess.ID, session.StatusInterrupted)
 			}
@@ -445,8 +444,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.streaming = false
 
 			// Clear callbacks and update status
-			m.engine.SetResponseCompletedCallback(nil)
-			m.engine.SetTurnCompletedCallback(nil)
+			m.clearStreamCallbacks()
 			if m.store != nil {
 				_ = m.store.UpdateStatus(context.Background(), m.sess.ID, session.StatusInterrupted)
 			}

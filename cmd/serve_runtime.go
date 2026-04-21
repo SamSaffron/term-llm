@@ -597,6 +597,15 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	var produced []llm.Message
 	var producedMu sync.Mutex
 	var lastAppendedIdx int // tracks how many produced messages have been incrementally persisted
+
+	// Persist-as-we-go: snapshot callback fires per streamed tool call. The
+	// pending row lives at produced[pendingAssistantIdx] and is upserted in
+	// place via UpdateMessage once it has been added — so repeated snapshots
+	// replace a single logical row instead of appending duplicates. After a
+	// turn completes (turn callback for async tools, or first upsert for
+	// text-only turns) both fields reset so the next turn starts fresh.
+	pendingAssistantIdx := -1
+	var pendingAssistantMsgID int64
 	persistPlatformInjectionLocked := func() {
 		if injectedPlatform != "" && (stateful || persisted) {
 			rt.lastInjectedPlatform = injectedPlatform
@@ -656,27 +665,105 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		}
 		persistPlatformInjectionLocked()
 	}
-	appendProducedAndUpdateState := func(persistCtx context.Context, msgs ...llm.Message) {
-		producedMu.Lock()
-		defer producedMu.Unlock()
-
-		produced = append(produced, msgs...)
-		updateStateAndAppendLocked(persistCtx)
+	// upsertPendingAssistantLocked writes (or rewrites) the in-progress
+	// assistant row for the current turn. First call inserts, subsequent calls
+	// update the same row; on ErrNotFound it re-inserts. Must hold producedMu.
+	upsertPendingAssistantLocked := func(persistCtx context.Context, assistantMsg llm.Message) {
+		firstInsert := pendingAssistantIdx < 0
+		if firstInsert {
+			pendingAssistantIdx = len(produced)
+			produced = append(produced, assistantMsg)
+		} else {
+			produced[pendingAssistantIdx] = assistantMsg
+		}
+		if stateful {
+			rt.history = buildSnapshotLocked()
+		}
+		if !persisted {
+			persistPlatformInjectionLocked()
+			return
+		}
+		if !initialPersisted {
+			initialSnapshot := make([]llm.Message, 0, len(baseHistory)+len(inputMessages)+1)
+			if systemPromptInjected {
+				initialSnapshot = append(initialSnapshot, llm.SystemText(rt.systemPrompt))
+			}
+			initialSnapshot = append(initialSnapshot, baseHistory...)
+			initialSnapshot = append(initialSnapshot, inputMessages...)
+			initialPersisted = rt.persistSnapshot(persistCtx, req.SessionID, initialSnapshot)
+			if !initialPersisted {
+				persistPlatformInjectionLocked()
+				return
+			}
+		}
+		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(persistCtx), 10*time.Second)
+		defer cancel()
+		sessionMsg := session.NewMessage(req.SessionID, assistantMsg, -1)
+		if pendingAssistantMsgID != 0 {
+			sessionMsg.ID = pendingAssistantMsgID
+			err := rt.store.UpdateMessage(dbCtx, req.SessionID, sessionMsg)
+			if err == nil {
+				persistPlatformInjectionLocked()
+				return
+			}
+			if !errors.Is(err, session.ErrNotFound) {
+				log.Printf("[serve] session UpdateMessage failed for %s: %v", req.SessionID, err)
+				persistPlatformInjectionLocked()
+				return
+			}
+			// Row missing (e.g., compaction). Fall through to re-insert.
+			pendingAssistantMsgID = 0
+			sessionMsg = session.NewMessage(req.SessionID, assistantMsg, -1)
+		}
+		if err := rt.store.AddMessage(dbCtx, req.SessionID, sessionMsg); err != nil {
+			log.Printf("[serve] session AddMessage failed for %s: %v", req.SessionID, err)
+			persistPlatformInjectionLocked()
+			return
+		}
+		pendingAssistantMsgID = sessionMsg.ID
+		// Reserve produced[pendingAssistantIdx] so plain append-path writes
+		// skip it on subsequent callbacks.
+		if pendingAssistantIdx+1 > lastAppendedIdx {
+			lastAppendedIdx = pendingAssistantIdx + 1
+		}
+		persistPlatformInjectionLocked()
 	}
 
-	// ResponseCompletedCallback receives the assistant message (with tool call parts)
-	// immediately after streaming, BEFORE tool execution. Without this, tool calls
-	// are missing from persisted sessions because TurnCompletedCallback only receives
-	// tool results.
+	// Snapshot fires before each EventToolCall so partial content survives a
+	// consumer cancellation mid-turn.
+	rt.engine.SetAssistantSnapshotCallback(func(cbCtx context.Context, _ int, assistantMsg llm.Message) error {
+		producedMu.Lock()
+		defer producedMu.Unlock()
+		upsertPendingAssistantLocked(cbCtx, assistantMsg)
+		return nil
+	})
+	defer rt.engine.SetAssistantSnapshotCallback(nil)
+
 	rt.engine.SetResponseCompletedCallback(func(cbCtx context.Context, _ int, assistantMsg llm.Message, _ llm.TurnMetrics) error {
-		appendProducedAndUpdateState(cbCtx, assistantMsg)
+		producedMu.Lock()
+		defer producedMu.Unlock()
+		upsertPendingAssistantLocked(cbCtx, assistantMsg)
 		return nil
 	})
 	defer rt.engine.SetResponseCompletedCallback(nil)
-	// TurnCompletedCallback receives tool results after execution, or the final
-	// assistant message when no tools are used (ResponseCompletedCallback never fires).
+
+	// Turn callback: upsert the assistant row if present as first element, then
+	// plain-append the rest (tool results or interjections). Reset pending at
+	// end of turn.
 	rt.engine.SetTurnCompletedCallback(func(cbCtx context.Context, _ int, msgs []llm.Message, _ llm.TurnMetrics) error {
-		appendProducedAndUpdateState(cbCtx, msgs...)
+		producedMu.Lock()
+		defer producedMu.Unlock()
+		appendStart := 0
+		if len(msgs) > 0 && msgs[0].Role == llm.RoleAssistant {
+			upsertPendingAssistantLocked(cbCtx, msgs[0])
+			appendStart = 1
+		}
+		if appendStart < len(msgs) {
+			produced = append(produced, msgs[appendStart:]...)
+			updateStateAndAppendLocked(cbCtx)
+		}
+		pendingAssistantIdx = -1
+		pendingAssistantMsgID = 0
 		return nil
 	})
 	defer rt.engine.SetTurnCompletedCallback(nil)

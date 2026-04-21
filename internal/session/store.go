@@ -4,12 +4,17 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 )
+
+// ErrNotFound is returned when a lookup or update targets a row that does not
+// exist (e.g., UpdateMessage against a deleted/never-persisted message ID).
+var ErrNotFound = errors.New("session: not found")
 
 // Store is the interface for session persistence.
 type Store interface {
@@ -28,6 +33,11 @@ type Store interface {
 
 	// Message operations - stores full llm.Message with Parts
 	AddMessage(ctx context.Context, sessionID string, msg *Message) error
+	// UpdateMessage replaces the content of an existing message (by msg.ID) with
+	// the supplied msg (role, parts, text, duration, sequence are updated in
+	// place). Used for "persist as we go" upserts of an in-progress assistant
+	// message during streaming. Returns ErrNotFound if the row does not exist.
+	UpdateMessage(ctx context.Context, sessionID string, msg *Message) error
 	GetMessages(ctx context.Context, sessionID string, limit, offset int) ([]Message, error)
 	GetMessagesFrom(ctx context.Context, sessionID string, fromSeq int) ([]Message, error)
 	ReplaceMessages(ctx context.Context, sessionID string, messages []Message) error

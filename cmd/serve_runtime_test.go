@@ -82,14 +82,16 @@ func (t *serveRuntimeTestTool) Preview(args json.RawMessage) string {
 }
 
 type serveRuntimeTestStore struct {
-	mu                sync.Mutex
-	sessions          map[string]*session.Session
-	messages          map[string][]session.Message
-	current           string
-	replaceCalls      int
-	replaceFailures   map[int]error
-	addMessageCalls   int
-	updateStatusCalls int
+	mu                 sync.Mutex
+	sessions           map[string]*session.Session
+	messages           map[string][]session.Message
+	current            string
+	replaceCalls       int
+	replaceFailures    map[int]error
+	addMessageCalls    int
+	updateMessageCalls int
+	updateStatusCalls  int
+	nextID             int64
 }
 
 var _ session.Store = (*serveRuntimeTestStore)(nil)
@@ -166,6 +168,8 @@ func (s *serveRuntimeTestStore) Search(ctx context.Context, query string, limit 
 func (s *serveRuntimeTestStore) AddMessage(ctx context.Context, sessionID string, msg *session.Message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.nextID++
+	msg.ID = s.nextID
 	copyMsg := *msg
 	if copyMsg.Sequence < 0 {
 		copyMsg.Sequence = len(s.messages[sessionID])
@@ -173,6 +177,29 @@ func (s *serveRuntimeTestStore) AddMessage(ctx context.Context, sessionID string
 	s.messages[sessionID] = append(s.messages[sessionID], copyMsg)
 	s.addMessageCalls++
 	return nil
+}
+
+func (s *serveRuntimeTestStore) UpdateMessage(ctx context.Context, sessionID string, msg *session.Message) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if msg == nil || msg.ID == 0 {
+		return session.ErrNotFound
+	}
+	msgs := s.messages[sessionID]
+	for i := range msgs {
+		if msgs[i].ID == msg.ID {
+			updated := *msg
+			updated.Sequence = msgs[i].Sequence
+			if updated.CreatedAt.IsZero() {
+				updated.CreatedAt = msgs[i].CreatedAt
+			}
+			msgs[i] = updated
+			s.messages[sessionID] = msgs
+			s.updateMessageCalls++
+			return nil
+		}
+	}
+	return session.ErrNotFound
 }
 
 func (s *serveRuntimeTestStore) GetMessages(ctx context.Context, sessionID string, limit, offset int) ([]session.Message, error) {
@@ -525,5 +552,99 @@ func TestServeRuntimeReplaceHistoryClearsPersistedMessagesBeforeEarlyFailure(t *
 	}
 	if got := rt.history; len(got) != 0 {
 		t.Fatalf("runtime history length = %d, want 0", len(got))
+	}
+}
+
+type serveRuntimeSnapshotErrProvider struct {
+	err error
+}
+
+func (p *serveRuntimeSnapshotErrProvider) Name() string { return "serve-runtime-snap-err" }
+
+func (p *serveRuntimeSnapshotErrProvider) Credential() string { return "test" }
+
+func (p *serveRuntimeSnapshotErrProvider) Capabilities() llm.Capabilities {
+	return llm.Capabilities{ToolCalls: true}
+}
+
+func (p *serveRuntimeSnapshotErrProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	return &serveRuntimeTestStream{events: []llm.Event{
+		{Type: llm.EventTextDelta, Text: "partial text"},
+		{Type: llm.EventToolCall, Tool: &llm.ToolCall{
+			ID:        "call-mid-err",
+			Name:      "serve_runtime_test_tool",
+			Arguments: json.RawMessage(`{}`),
+		}},
+		{Type: llm.EventError, Err: p.err},
+	}}, nil
+}
+
+func TestServeRuntimeSnapshotPersistsAssistantOnMidTurnError(t *testing.T) {
+	store := newServeRuntimeTestStore()
+	sess := &session.Session{ID: "sess-mid-err", Status: session.StatusActive}
+	if err := store.Create(context.Background(), sess); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	providerErr := errors.New("mid-turn stream failure")
+	provider := &serveRuntimeSnapshotErrProvider{err: providerErr}
+	tool := &serveRuntimeTestTool{}
+	registry := llm.NewToolRegistry()
+	registry.Register(tool)
+	engine := llm.NewEngine(provider, registry)
+
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  provider.Name(),
+		engine:       engine,
+		store:        store,
+		defaultModel: "test-model",
+	}
+
+	_, err := rt.Run(context.Background(), true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "hello")}, llm.Request{
+		SessionID:  "sess-mid-err",
+		Tools:      []llm.ToolSpec{tool.Spec()},
+		ToolChoice: llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+		MaxTurns:   4,
+	})
+	if !errors.Is(err, providerErr) {
+		t.Fatalf("Run() error = %v, want %v", err, providerErr)
+	}
+
+	if store.addMessageCalls < 1 {
+		t.Fatalf("addMessageCalls = %d, want >= 1 (AssistantSnapshotCallback must persist before mid-turn error)", store.addMessageCalls)
+	}
+
+	msgs, err := store.GetMessages(context.Background(), "sess-mid-err", 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages() error = %v", err)
+	}
+	var assistant *session.Message
+	for i := range msgs {
+		if msgs[i].Role == llm.RoleAssistant {
+			assistant = &msgs[i]
+			break
+		}
+	}
+	if assistant == nil {
+		t.Fatalf("no assistant message found; messages=%+v", msgs)
+	}
+
+	var gotText, gotToolCallID string
+	for _, p := range assistant.Parts {
+		switch p.Type {
+		case llm.PartText:
+			gotText = p.Text
+		case llm.PartToolCall:
+			if p.ToolCall != nil {
+				gotToolCallID = p.ToolCall.ID
+			}
+		}
+	}
+	if gotText != "partial text" {
+		t.Fatalf("assistant text = %q, want %q", gotText, "partial text")
+	}
+	if gotToolCallID != "call-mid-err" {
+		t.Fatalf("assistant tool call ID = %q, want %q", gotToolCallID, "call-mid-err")
 	}
 }

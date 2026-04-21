@@ -1438,6 +1438,62 @@ func (s *SQLiteStore) AddMessage(ctx context.Context, sessionID string, msg *Mes
 	})
 }
 
+// UpdateMessage replaces the content of an existing message (keyed by msg.ID
+// within sessionID). Returns ErrNotFound if no row matches. Used by the
+// "persist as we go" upsert path: the caller first calls AddMessage to stamp
+// an ID, then subsequent snapshots call UpdateMessage with the same ID.
+func (s *SQLiteStore) UpdateMessage(ctx context.Context, sessionID string, msg *Message) error {
+	if msg == nil {
+		return fmt.Errorf("update message: nil msg")
+	}
+	if msg.ID == 0 {
+		return fmt.Errorf("update message: missing id")
+	}
+
+	partsJSON, err := msg.PartsJSON()
+	if err != nil {
+		return fmt.Errorf("serialize parts: %w", err)
+	}
+
+	return retryOnBusy(ctx, 5, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin transaction: %w", err)
+		}
+		defer tx.Rollback()
+
+		result, err := tx.ExecContext(ctx, `
+			UPDATE messages
+			SET role = ?, parts = ?, text_content = ?, duration_ms = ?
+			WHERE id = ? AND session_id = ?`,
+			string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.ID, sessionID)
+		if err != nil {
+			return fmt.Errorf("update message: %w", err)
+		}
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("rows affected: %w", err)
+		}
+		if rowsAffected == 0 {
+			return ErrNotFound
+		}
+
+		// Bump session updated_at so sidebar sort reflects the snapshot.
+		// Intentionally do NOT touch last_message_at — the message was
+		// already counted at AddMessage time; updates shouldn't re-order.
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE sessions SET updated_at = ? WHERE id = ?",
+			time.Now(), sessionID); err != nil {
+			return fmt.Errorf("update session timestamp: %w", err)
+		}
+
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit transaction: %w", err)
+		}
+		return nil
+	})
+}
+
 // ReplaceMessages deletes all existing messages for the session and inserts
 // the new set in a single transaction. Used after context compaction.
 func (s *SQLiteStore) ReplaceMessages(ctx context.Context, sessionID string, messages []Message) error {

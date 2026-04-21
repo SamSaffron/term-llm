@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -15,6 +16,84 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
+
+// clearStreamCallbacks detaches every engine callback wired in startStream
+// and resets the per-turn "persist as we go" state. Safe to call even when
+// streaming never started; safe to call from any goroutine.
+func (m *Model) clearStreamCallbacks() {
+	m.engine.SetAssistantSnapshotCallback(nil)
+	m.engine.SetResponseCompletedCallback(nil)
+	m.engine.SetTurnCompletedCallback(nil)
+	m.pendingMu.Lock()
+	m.pendingAssistantMsgID = 0
+	m.pendingMu.Unlock()
+}
+
+// setupStreamPersistenceCallbacks wires snapshot/response/turn callbacks on the
+// engine so assistant messages and tool results persist incrementally as the
+// turn progresses. The snapshot and response callbacks upsert the same pending
+// row so a mid-stream crash still leaves something on disk. The turn callback
+// skips RoleUser messages (interjections) because the ui.StreamEventInterjection
+// handler persists those — appending them here would create duplicate rows.
+func (m *Model) setupStreamPersistenceCallbacks(streamStart time.Time) {
+	if m.store == nil || m.sess == nil {
+		return
+	}
+	upsertPendingAssistant := func(ctx context.Context, assistantMsg llm.Message) {
+		sessionMsg := session.NewMessage(m.sess.ID, assistantMsg, -1)
+		sessionMsg.DurationMs = time.Since(streamStart).Milliseconds()
+		m.pendingMu.Lock()
+		defer m.pendingMu.Unlock()
+		if m.pendingAssistantMsgID != 0 {
+			sessionMsg.ID = m.pendingAssistantMsgID
+			err := m.store.UpdateMessage(ctx, m.sess.ID, sessionMsg)
+			if err == nil {
+				return
+			}
+			if !errors.Is(err, session.ErrNotFound) {
+				return
+			}
+			m.pendingAssistantMsgID = 0
+			sessionMsg = session.NewMessage(m.sess.ID, assistantMsg, -1)
+			sessionMsg.DurationMs = time.Since(streamStart).Milliseconds()
+		}
+		if err := m.store.AddMessage(ctx, m.sess.ID, sessionMsg); err != nil {
+			return
+		}
+		m.pendingAssistantMsgID = sessionMsg.ID
+	}
+
+	m.engine.SetAssistantSnapshotCallback(func(ctx context.Context, _ int, assistantMsg llm.Message) error {
+		upsertPendingAssistant(ctx, assistantMsg)
+		return nil
+	})
+
+	m.engine.SetResponseCompletedCallback(func(ctx context.Context, _ int, assistantMsg llm.Message, _ llm.TurnMetrics) error {
+		upsertPendingAssistant(ctx, assistantMsg)
+		return nil
+	})
+
+	m.engine.SetTurnCompletedCallback(func(ctx context.Context, _ int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
+		appendStart := 0
+		if len(turnMessages) > 0 && turnMessages[0].Role == llm.RoleAssistant {
+			upsertPendingAssistant(ctx, turnMessages[0])
+			appendStart = 1
+		}
+		for _, msg := range turnMessages[appendStart:] {
+			if msg.Role == llm.RoleUser {
+				continue
+			}
+			sessionMsg := session.NewMessage(m.sess.ID, msg, -1)
+			_ = m.store.AddMessage(ctx, m.sess.ID, sessionMsg)
+		}
+		m.pendingMu.Lock()
+		m.pendingAssistantMsgID = 0
+		m.pendingMu.Unlock()
+		_ = m.store.UpdateMetrics(ctx, m.sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens)
+		m.persistContextEstimate(ctx)
+		return nil
+	})
+}
 
 func (m *Model) shouldInjectPlatformDeveloperMessage() bool {
 	if strings.TrimSpace(m.platformDeveloperMessage) == "" {
@@ -312,37 +391,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 		}
 
 		// Set up callbacks for incremental message saving (sequence auto-allocated)
-		// Capture streamStartTime for duration calculation
-		streamStart := m.streamStartTime
-		if m.store != nil && m.sess != nil {
-			// Response callback saves assistant message immediately (before tool execution)
-			// This ensures the message is persisted even if tool execution fails/crashes
-			m.engine.SetResponseCompletedCallback(func(ctx context.Context, turnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
-				// Calculate duration from stream start
-				durationMs := time.Since(streamStart).Milliseconds()
-
-				sessionMsg := session.NewMessage(m.sess.ID, assistantMsg, -1)
-				sessionMsg.DurationMs = durationMs
-				_ = m.store.AddMessage(ctx, m.sess.ID, sessionMsg)
-				return nil
-			})
-
-			// Turn callback saves messages and updates metrics
-			// Note: When tools are used, TurnCompletedCallback receives tool results only (assistant saved by ResponseCompletedCallback)
-			// When no tools are used, TurnCompletedCallback receives the assistant message (ResponseCompletedCallback never fires)
-			m.engine.SetTurnCompletedCallback(func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
-				for _, msg := range turnMessages {
-					sessionMsg := session.NewMessage(m.sess.ID, msg, -1)
-					if msg.Role == llm.RoleAssistant {
-						sessionMsg.DurationMs = time.Since(streamStart).Milliseconds()
-					}
-					_ = m.store.AddMessage(ctx, m.sess.ID, sessionMsg)
-				}
-				_ = m.store.UpdateMetrics(ctx, m.sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens)
-				m.persistContextEstimate(ctx)
-				return nil
-			})
-		}
+		m.setupStreamPersistenceCallbacks(m.streamStartTime)
 
 		// Enable context compaction or tracking for models with known input limits.
 		// Re-set each turn in case the provider/model changed mid-session.
@@ -360,6 +409,13 @@ func (m *Model) startStream(content string) tea.Cmd {
 			m.messages = append(m.messages, newSessionMsgs...)
 			m.messagesMu.Unlock()
 			m.invalidateHistoryCache()
+			// Any pending assistant row that snapshot had upserted is now stale:
+			// compaction rewrote the message table. Clear the tracking so the
+			// next snapshot/response inserts fresh instead of trying to update
+			// a row that no longer exists.
+			m.pendingMu.Lock()
+			m.pendingAssistantMsgID = 0
+			m.pendingMu.Unlock()
 			if m.store != nil {
 				return m.store.CompactMessages(ctx, m.sess.ID, newSessionMsgs)
 			}

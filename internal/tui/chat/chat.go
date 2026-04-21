@@ -62,6 +62,11 @@ type Model struct {
 	tracker          *ui.ToolTracker     // Tool and segment tracking (shared component)
 	subagentTracker  *ui.SubagentTracker // Subagent progress tracking
 
+	// Persist-as-we-go: row ID of the in-progress assistant message (0 = none).
+	// Written from engine callbacks on a non-UI goroutine; protected by pendingMu.
+	pendingAssistantMsgID int64
+	pendingMu             sync.Mutex
+
 	// Streaming channels
 	streamChan <-chan ui.StreamEvent
 
@@ -1098,8 +1103,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 
 				// Clear callbacks and update status
-				m.engine.SetResponseCompletedCallback(nil)
-				m.engine.SetTurnCompletedCallback(nil)
+				m.clearStreamCallbacks()
 				if m.store != nil {
 					// Use interrupted for cancellation, error for other failures
 					status := session.StatusError
@@ -1348,8 +1352,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			// Clear callbacks
-			m.engine.SetResponseCompletedCallback(nil)
-			m.engine.SetTurnCompletedCallback(nil)
+			m.clearStreamCallbacks()
 
 			// Mark all text segments as complete and render
 			if m.tracker != nil {

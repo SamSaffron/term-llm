@@ -49,6 +49,16 @@ type TurnCompletedCallback func(ctx context.Context, turnIndex int, messages []M
 // The message contains only the assistant's response (no tool results yet).
 type ResponseCompletedCallback func(ctx context.Context, turnIndex int, assistantMsg Message, metrics TurnMetrics) error
 
+// AssistantSnapshotCallback is called during streaming whenever accumulated
+// assistant state materially changes (typically right before each EventToolCall
+// emission, sync or async). Multiple fires per turn are expected; implementations
+// MUST upsert the same logical row, not append. assistantMsg contains the
+// in-progress message built from accumulated text/reasoning/toolCalls at the
+// moment of firing. Used to persist "as we go" so content survives process
+// death mid-turn (e.g., consumer cancels context between EventToolCall emission
+// and tool execution).
+type AssistantSnapshotCallback func(ctx context.Context, turnIndex int, assistantMsg Message) error
+
 // CompactionCallback is called after context compaction to allow callers to
 // update their state (e.g., replace in-memory messages, persist changes).
 type CompactionCallback func(ctx context.Context, result *CompactionResult) error
@@ -71,6 +81,10 @@ type Engine struct {
 	// onResponseCompleted is called immediately after LLM streaming completes,
 	// BEFORE tool execution. Used for incremental persistence of assistant messages.
 	onResponseCompleted ResponseCompletedCallback
+	// onAssistantSnapshot is called during streaming whenever accumulated
+	// assistant state materially changes (typically right before each EventToolCall
+	// emission). Implementations MUST upsert the same logical row.
+	onAssistantSnapshot AssistantSnapshotCallback
 	// onCompaction is called after context compaction completes.
 	onCompaction CompactionCallback
 	callbackMu   sync.RWMutex
@@ -251,6 +265,17 @@ func (e *Engine) SetResponseCompletedCallback(cb ResponseCompletedCallback) {
 	e.callbackMu.Unlock()
 }
 
+// SetAssistantSnapshotCallback sets the callback fired during streaming whenever
+// accumulated assistant state materially changes. Implementations MUST upsert
+// the same logical row (keyed by turn index), not append. Used to persist "as we
+// go" so content survives process death mid-turn.
+// Thread-safe: can be called while streaming is in progress.
+func (e *Engine) SetAssistantSnapshotCallback(cb AssistantSnapshotCallback) {
+	e.callbackMu.Lock()
+	e.onAssistantSnapshot = cb
+	e.callbackMu.Unlock()
+}
+
 // getTurnCallback returns the current turn callback under read lock.
 func (e *Engine) getTurnCallback() TurnCompletedCallback {
 	e.callbackMu.RLock()
@@ -263,6 +288,14 @@ func (e *Engine) getTurnCallback() TurnCompletedCallback {
 func (e *Engine) getResponseCallback() ResponseCompletedCallback {
 	e.callbackMu.RLock()
 	cb := e.onResponseCompleted
+	e.callbackMu.RUnlock()
+	return cb
+}
+
+// getSnapshotCallback returns the current assistant-snapshot callback under read lock.
+func (e *Engine) getSnapshotCallback() AssistantSnapshotCallback {
+	e.callbackMu.RLock()
+	cb := e.onAssistantSnapshot
 	e.callbackMu.RUnlock()
 	return cb
 }
@@ -737,6 +770,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 	// from a new startStream while a previous stream is finishing).
 	turnCallback := e.getTurnCallback()
 	responseCallback := e.getResponseCallback()
+	snapshotCallback := e.getSnapshotCallback()
 
 	e.callbackMu.RLock()
 	compactionConfig := e.compactionConfig
@@ -944,6 +978,30 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 				cancel()
 			}
 		}
+		// fireSnapshot invokes the AssistantSnapshotCallback with the currently
+		// accumulated assistant state plus the supplied tool calls. Called before
+		// each EventToolCall send so consumers persist "as we go" — content
+		// survives process death between emission and tool execution.
+		fireSnapshot := func(calls []ToolCall) {
+			if snapshotCallback == nil {
+				return
+			}
+			partial := ensureToolCallIDs(calls)
+			partial = dedupeToolCalls(partial)
+			msg := buildAssistantMessageWithReasoningMetadata(
+				textBuilder.String(),
+				e.withToolPreview(partial),
+				reasoningBuilder.String(),
+				reasoningItemID,
+				reasoningEncryptedContent,
+			)
+			if len(msg.Parts) == 0 {
+				return
+			}
+			cbCtx, cancel := callbackContext(ctx)
+			_ = snapshotCallback(cbCtx, attempt, msg)
+			cancel()
+		}
 		for {
 			event, err := stream.Recv()
 			if err == io.EOF {
@@ -1013,6 +1071,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 						ToolName:   event.ToolName,
 						Tool:       event.Tool,
 					}
+					fireSnapshot(append(append([]ToolCall(nil), syncToolCalls...), *event.Tool))
 					if err := send.Send(forwardEvent); err != nil {
 						return err
 					}
@@ -1059,6 +1118,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 				event.Tool.ToolInfo = info
 				toolCalls = append(toolCalls, *event.Tool)
 
+				fireSnapshot(toolCalls)
 				if err := send.Send(Event{
 					Type:       EventToolCall,
 					ToolCallID: toolCallID,

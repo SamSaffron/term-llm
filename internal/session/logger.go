@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"sync"
 )
 
@@ -62,6 +63,17 @@ func (s *LoggingStore) Update(ctx context.Context, sess *Session) error {
 func (s *LoggingStore) AddMessage(ctx context.Context, sessionID string, msg *Message) error {
 	err := s.Store.AddMessage(ctx, sessionID, msg)
 	s.logOnce("AddMessage", err)
+	return err
+}
+
+// UpdateMessage wraps Store.UpdateMessage with error logging.
+// ErrNotFound is returned to the caller verbatim (no logging) so upsert
+// callers can fall back to AddMessage without noise.
+func (s *LoggingStore) UpdateMessage(ctx context.Context, sessionID string, msg *Message) error {
+	err := s.Store.UpdateMessage(ctx, sessionID, msg)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		s.logOnce("UpdateMessage", err)
+	}
 	return err
 }
 
