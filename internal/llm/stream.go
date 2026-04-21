@@ -91,7 +91,6 @@ func newEventStream(ctx context.Context, run func(context.Context, eventSender) 
 			// terminal error for Recv() rather than dropping it and reporting clean EOF.
 			select {
 			case ch <- Event{Type: EventError, Err: err}:
-			case <-streamCtx.Done():
 			default:
 				terminalErr <- err
 			}
