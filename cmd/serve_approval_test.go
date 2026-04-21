@@ -43,11 +43,13 @@ func TestAwaitApproval_WithTransport_EmitsEventAndBlocks(t *testing.T) {
 
 	var capturedEvent string
 	var capturedData map[string]any
+	eventFired := make(chan struct{})
 
 	rt.approvalMu.Lock()
 	rt.approvalEventFunc = func(event string, data map[string]any) error {
 		capturedEvent = event
 		capturedData = data
+		close(eventFired)
 		return nil
 	}
 	rt.approvalCtx = ctx
@@ -62,21 +64,12 @@ func TestAwaitApproval_WithTransport_EmitsEventAndBlocks(t *testing.T) {
 		close(done)
 	}()
 
-	// Wait for the pending approval to appear
-	deadline := time.After(2 * time.Second)
-	for {
-		prompts := rt.pendingApprovalPrompts()
-		if len(prompts) > 0 {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("timeout waiting for pending approval")
-		case <-time.After(10 * time.Millisecond):
-		}
+	select {
+	case <-eventFired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for approval event")
 	}
 
-	// Verify SSE event was emitted
 	if capturedEvent != "response.approval.prompt" {
 		t.Errorf("expected event 'response.approval.prompt', got %q", capturedEvent)
 	}
