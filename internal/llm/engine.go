@@ -1642,7 +1642,14 @@ func (e *Engine) handleSyncToolExecution(ctx context.Context, event Event, send 
 		err = fmt.Errorf("tool '%s' is not in the active skill's allowed-tools list", call.Name)
 	} else {
 		toolCtx := ContextWithCallID(ctx, callID)
-		result, err = tool.Execute(toolCtx, call.Arguments)
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					err = fmt.Errorf("tool panicked: %v", r)
+				}
+			}()
+			result, err = tool.Execute(toolCtx, call.Arguments)
+		}()
 	}
 
 	// Truncate large tool outputs (global limit, then compaction limit).

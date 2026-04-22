@@ -2637,6 +2637,68 @@ func (t *panickingTool) Preview(args json.RawMessage) string {
 	return ""
 }
 
+func TestEngineHandleSyncToolExecutionRecoversFromPanics(t *testing.T) {
+	tool := &panickingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	engine := NewEngine(NewMockProvider("test"), registry)
+	responseCh := make(chan ToolExecutionResponse, 1)
+	events := make(chan Event, 2)
+
+	call := &ToolCall{ID: "call-1", Name: "panic_tool", Arguments: json.RawMessage(`{}`)}
+	returnedCall, result, err := engine.handleSyncToolExecution(
+		context.Background(),
+		Event{
+			Type:         EventToolCall,
+			ToolCallID:   "call-1",
+			ToolName:     "panic_tool",
+			Tool:         call,
+			ToolResponse: responseCh,
+		},
+		eventSender{ctx: context.Background(), ch: events},
+		false,
+		false,
+	)
+
+	if err == nil {
+		t.Fatal("expected panic to be converted into an error")
+	}
+	if !strings.Contains(err.Error(), "tool panicked") {
+		t.Fatalf("expected panic error, got %v", err)
+	}
+	if returnedCall.ID != "call-1" {
+		t.Fatalf("returned call ID = %q, want %q", returnedCall.ID, "call-1")
+	}
+	if result.Content != "" {
+		t.Fatalf("result content = %q, want empty", result.Content)
+	}
+
+	select {
+	case resp := <-responseCh:
+		if resp.Err == nil {
+			t.Fatal("expected response error")
+		}
+		if !strings.Contains(resp.Err.Error(), "tool panicked") {
+			t.Fatalf("expected panic error in response, got %v", resp.Err)
+		}
+	default:
+		t.Fatal("expected synchronous tool response")
+	}
+
+	start := <-events
+	end := <-events
+	if start.Type != EventToolExecStart {
+		t.Fatalf("first event type = %v, want %v", start.Type, EventToolExecStart)
+	}
+	if end.Type != EventToolExecEnd {
+		t.Fatalf("second event type = %v, want %v", end.Type, EventToolExecEnd)
+	}
+	if end.ToolSuccess {
+		t.Fatal("expected end event to report failed execution")
+	}
+}
+
 func TestEnginePanickingToolSingleCall(t *testing.T) {
 	tool := &panickingTool{}
 	registry := NewToolRegistry()
