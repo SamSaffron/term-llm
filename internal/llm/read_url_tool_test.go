@@ -35,6 +35,39 @@ func (r *failAfterNReadCloser) Close() error {
 	return nil
 }
 
+func TestCloneReadURLPinnedTransportPinsValidatedIPs(t *testing.T) {
+	origDial := readURLDialContext
+	capturedAddrs := []string{}
+	readURLDialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		capturedAddrs = append(capturedAddrs, addr)
+		return nil, errors.New("dial failed")
+	}
+	defer func() { readURLDialContext = origDial }()
+
+	transport, ok := cloneReadURLPinnedTransport(nil, []net.IP{
+		net.ParseIP("93.184.216.34"),
+		net.ParseIP("93.184.216.35"),
+	})
+	if !ok {
+		t.Fatalf("expected pinned transport to be created")
+	}
+
+	_, err := transport.(*http.Transport).DialContext(context.Background(), "tcp", "rebound.example.com:443")
+	if err == nil || !strings.Contains(err.Error(), "dial failed") {
+		t.Fatalf("expected dial failure, got %v", err)
+	}
+
+	want := []string{"93.184.216.34:443", "93.184.216.35:443"}
+	if len(capturedAddrs) != len(want) {
+		t.Fatalf("expected dial attempts %v, got %v", want, capturedAddrs)
+	}
+	for i := range want {
+		if capturedAddrs[i] != want[i] {
+			t.Fatalf("expected dial attempts %v, got %v", want, capturedAddrs)
+		}
+	}
+}
+
 func TestReadURLToolExecuteLimitsBodyReadBeforeTruncating(t *testing.T) {
 	origLookup := readURLLookupIP
 	readURLLookupIP = func(ctx context.Context, host string) ([]net.IP, error) {

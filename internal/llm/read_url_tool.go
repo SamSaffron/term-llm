@@ -24,6 +24,13 @@ var readURLLookupIP = func(ctx context.Context, host string) ([]net.IP, error) {
 	return net.DefaultResolver.LookupIP(ctx, "ip", host)
 }
 
+var readURLDialContext = (&net.Dialer{}).DialContext
+
+type normalizedReadURLTarget struct {
+	url string
+	ips []net.IP
+}
+
 // ReadURLTool fetches web pages using Jina AI Reader.
 type ReadURLTool struct {
 	client *http.Client
@@ -149,7 +156,7 @@ func readURLContent(r io.Reader) (string, bool, error) {
 }
 
 func resolveReadURLTarget(ctx context.Context, client *http.Client, rawURL string) (string, error) {
-	targetURL, err := normalizeReadURLTarget(ctx, rawURL)
+	target, err := normalizeReadURLTarget(ctx, rawURL)
 	if err != nil {
 		return "", err
 	}
@@ -160,7 +167,11 @@ func resolveReadURLTarget(ctx context.Context, client *http.Client, rawURL strin
 	}
 
 	for range maxReadURLRedirects {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+		if transport, ok := cloneReadURLPinnedTransport(client.Transport, target.ips); ok {
+			redirectClient.Transport = transport
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.url, nil)
 		if err != nil {
 			return "", fmt.Errorf("create redirect check request: %w", err)
 		}
@@ -172,7 +183,7 @@ func resolveReadURLTarget(ctx context.Context, client *http.Client, rawURL strin
 		_ = resp.Body.Close()
 
 		if resp.StatusCode < 300 || resp.StatusCode >= 400 {
-			return targetURL, nil
+			return target.url, nil
 		}
 
 		location := resp.Header.Get("Location")
@@ -185,7 +196,7 @@ func resolveReadURLTarget(ctx context.Context, client *http.Client, rawURL strin
 			return "", fmt.Errorf("parse redirect location: %w", err)
 		}
 
-		targetURL, err = normalizeReadURLTarget(ctx, nextURL.String())
+		target, err = normalizeReadURLTarget(ctx, nextURL.String())
 		if err != nil {
 			return "", err
 		}
@@ -194,7 +205,46 @@ func resolveReadURLTarget(ctx context.Context, client *http.Client, rawURL strin
 	return "", fmt.Errorf("too many redirects")
 }
 
-func normalizeReadURLTarget(ctx context.Context, rawURL string) (string, error) {
+func cloneReadURLPinnedTransport(base http.RoundTripper, ips []net.IP) (http.RoundTripper, bool) {
+	var baseTransport *http.Transport
+	switch t := base.(type) {
+	case nil:
+		baseTransport = http.DefaultTransport.(*http.Transport)
+	case *http.Transport:
+		baseTransport = t
+	default:
+		return nil, false
+	}
+
+	transport := baseTransport.Clone()
+	transport.Proxy = nil
+	transport.DialTLSContext = nil
+	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		_, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, fmt.Errorf("split dial address: %w", err)
+		}
+
+		var lastErr error
+		for _, ip := range ips {
+			conn, err := readURLDialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			if err == nil {
+				return conn, nil
+			}
+			lastErr = err
+		}
+
+		if lastErr != nil {
+			return nil, lastErr
+		}
+
+		return nil, fmt.Errorf("no resolved ip addresses")
+	}
+
+	return transport, true
+}
+
+func normalizeReadURLTarget(ctx context.Context, rawURL string) (normalizedReadURLTarget, error) {
 	targetURL := rawURL
 	if !strings.HasPrefix(strings.ToLower(targetURL), "http://") && !strings.HasPrefix(strings.ToLower(targetURL), "https://") {
 		targetURL = "https://" + targetURL
@@ -202,38 +252,38 @@ func normalizeReadURLTarget(ctx context.Context, rawURL string) (string, error) 
 
 	parsedURL, err := url.Parse(targetURL)
 	if err != nil {
-		return "", fmt.Errorf("invalid url: %w", err)
+		return normalizedReadURLTarget{}, fmt.Errorf("invalid url: %w", err)
 	}
 	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-		return "", fmt.Errorf("url scheme must be http or https")
+		return normalizedReadURLTarget{}, fmt.Errorf("url scheme must be http or https")
 	}
 
 	host := strings.TrimSuffix(strings.ToLower(parsedURL.Hostname()), ".")
 	if host == "" {
-		return "", fmt.Errorf("url host is required")
+		return normalizedReadURLTarget{}, fmt.Errorf("url host is required")
 	}
 	if isBlockedReadURLHost(host) {
-		return "", fmt.Errorf("url host is not allowed")
+		return normalizedReadURLTarget{}, fmt.Errorf("url host is not allowed")
 	}
 
 	if ip := net.ParseIP(host); ip != nil {
 		if isBlockedReadURLIP(ip) {
-			return "", fmt.Errorf("url host is not allowed")
+			return normalizedReadURLTarget{}, fmt.Errorf("url host is not allowed")
 		}
-		return targetURL, nil
+		return normalizedReadURLTarget{url: targetURL, ips: []net.IP{ip}}, nil
 	}
 
 	ips, err := readURLLookupIP(ctx, host)
 	if err != nil {
-		return "", fmt.Errorf("resolve url host: %w", err)
+		return normalizedReadURLTarget{}, fmt.Errorf("resolve url host: %w", err)
 	}
 	for _, ip := range ips {
 		if isBlockedReadURLIP(ip) {
-			return "", fmt.Errorf("url host is not allowed")
+			return normalizedReadURLTarget{}, fmt.Errorf("url host is not allowed")
 		}
 	}
 
-	return targetURL, nil
+	return normalizedReadURLTarget{url: targetURL, ips: ips}, nil
 }
 
 func isBlockedReadURLHost(host string) bool {
