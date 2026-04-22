@@ -8,10 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/samsaffron/term-llm/internal/skills"
+	"github.com/samsaffron/term-llm/internal/ui"
 	"golang.org/x/term"
 )
 
@@ -115,7 +116,7 @@ func (m *AddModel) Init() tea.Cmd {
 // Update implements tea.Model
 func (m *AddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 
 	case tea.WindowSizeMsg:
@@ -152,7 +153,7 @@ func (m *AddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *AddModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *AddModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c", "q":
 		return m, tea.Quit
@@ -181,7 +182,7 @@ func (m *AddModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *AddModel) handleSkillSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *AddModel) handleSkillSelection(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "k":
 		if m.skillCursor > 0 {
@@ -191,7 +192,7 @@ func (m *AddModel) handleSkillSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.skillCursor < len(m.discoveredSkills)-1 {
 			m.skillCursor++
 		}
-	case " ":
+	case " ", "space":
 		// Toggle selection
 		if m.skillCursor < len(m.skillSelected) {
 			m.skillSelected[m.skillCursor] = !m.skillSelected[m.skillCursor]
@@ -223,7 +224,7 @@ func (m *AddModel) handleSkillSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *AddModel) handlePathSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *AddModel) handlePathSelection(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "k":
 		if m.installCursor > 0 {
@@ -233,7 +234,7 @@ func (m *AddModel) handlePathSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.installCursor < len(m.installPaths)-1 {
 			m.installCursor++
 		}
-	case " ":
+	case " ", "space":
 		// Toggle selection
 		if m.installCursor < len(m.installPaths) {
 			m.installPaths[m.installCursor].Selected = !m.installPaths[m.installCursor].Selected
@@ -256,7 +257,7 @@ func (m *AddModel) handlePathSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // View implements tea.Model
-func (m *AddModel) View() string {
+func (m *AddModel) View() tea.View {
 	var b strings.Builder
 
 	switch m.phase {
@@ -272,7 +273,7 @@ func (m *AddModel) View() string {
 		b.WriteString(m.viewDone())
 	}
 
-	return b.String()
+	return ui.NewAltScreenView(b.String())
 }
 
 func (m *AddModel) viewDiscovering() string {
@@ -290,19 +291,21 @@ func (m *AddModel) viewDiscovering() string {
 }
 
 func (m *AddModel) viewSelectSkills() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render(fmt.Sprintf("Skills in %s/%s", m.repoRef.Owner, m.repoRef.Repo)))
-	b.WriteString("\n\n")
-
-	// Count selected
 	selectedCount := 0
 	for _, selected := range m.skillSelected {
 		if selected {
 			selectedCount++
 		}
 	}
-	b.WriteString(fmt.Sprintf("Found %d skill(s), %d selected:\n\n", len(m.discoveredSkills), selectedCount))
 
+	header := titleStyle.Render(fmt.Sprintf("Skills in %s/%s", m.repoRef.Owner, m.repoRef.Repo)) +
+		"\n\n" +
+		fmt.Sprintf("Found %d skill(s), %d selected:\n\n", len(m.discoveredSkills), selectedCount)
+	footer := "\n" + helpStyle.Render("[Space] toggle  [a] all  [n] none  [Enter] install  [q] quit")
+	availableRows := ui.RemainingHeight(m.height, header, footer)
+
+	blocks := make([]string, 0, len(m.discoveredSkills))
+	heights := make([]int, 0, len(m.discoveredSkills))
 	for i, skill := range m.discoveredSkills {
 		cursor := "  "
 		if i == m.skillCursor {
@@ -316,43 +319,55 @@ func (m *AddModel) viewSelectSkills() string {
 
 		line := fmt.Sprintf("%s%s %s", cursor, checkbox, skill.Name)
 		if i == m.skillCursor {
-			b.WriteString(selectedStyle.Render(line))
-		} else {
-			b.WriteString(line)
+			line = selectedStyle.Render(line)
 		}
 
-		// Show file count
-		b.WriteString(mutedStyle.Render(fmt.Sprintf(" (%d files)", skill.FileCount)))
-		b.WriteString("\n")
+		var item strings.Builder
+		item.WriteString(line)
+		item.WriteString(mutedStyle.Render(fmt.Sprintf(" (%d files)", skill.FileCount)))
+		item.WriteString("\n")
 
-		// Show description if available
 		if skill.Description != "" {
-			b.WriteString(mutedStyle.Render(fmt.Sprintf("      %s", skill.Description)))
-			b.WriteString("\n")
+			item.WriteString(mutedStyle.Render(fmt.Sprintf("      %s", skill.Description)))
+			item.WriteString("\n")
 		}
+
+		block := item.String()
+		blocks = append(blocks, block)
+		heights = append(heights, lipgloss.Height(block))
 	}
 
-	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("[Space] toggle  [a] all  [n] none  [Enter] install  [q] quit"))
+	start, end := ui.VisibleRangeByHeights(heights, m.skillCursor, availableRows)
+
+	var b strings.Builder
+	b.WriteString(header)
+	for i := start; i < end; i++ {
+		b.WriteString(blocks[i])
+	}
+	b.WriteString(footer)
 
 	return b.String()
 }
 
 func (m *AddModel) viewSelectPaths() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("Select Install Location"))
-	b.WriteString("\n\n")
-
-	// Count selected skills
 	selectedCount := 0
 	for _, selected := range m.skillSelected {
 		if selected {
 			selectedCount++
 		}
 	}
-	b.WriteString(fmt.Sprintf("Install %d skill(s) to:\n\n", selectedCount))
 
-	for i, p := range m.installPaths {
+	header := titleStyle.Render("Select Install Location") +
+		"\n\n" +
+		fmt.Sprintf("Install %d skill(s) to:\n\n", selectedCount)
+	footer := "\n" + helpStyle.Render("[Space] toggle  [Enter] confirm  [Esc] back  [q] quit")
+	availableRows := ui.RemainingHeight(m.height, header, footer)
+	start, end := ui.VisibleRange(len(m.installPaths), m.installCursor, availableRows)
+
+	var b strings.Builder
+	b.WriteString(header)
+	for i := start; i < end; i++ {
+		p := m.installPaths[i]
 		cursor := "  "
 		if i == m.installCursor {
 			cursor = "> "
@@ -363,7 +378,6 @@ func (m *AddModel) viewSelectPaths() string {
 			checkbox = "[x]"
 		}
 
-		// Shorten path for display
 		displayPath := p.Path
 		if home, _ := os.UserHomeDir(); home != "" {
 			displayPath = strings.Replace(displayPath, home, "~", 1)
@@ -379,9 +393,7 @@ func (m *AddModel) viewSelectPaths() string {
 		b.WriteString(mutedStyle.Render(fmt.Sprintf(" (%s)", p.Label)))
 		b.WriteString("\n")
 	}
-
-	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("[Space] toggle  [Enter] confirm  [Esc] back  [q] quit"))
+	b.WriteString(footer)
 
 	return b.String()
 }
@@ -510,7 +522,7 @@ func (m *AddModel) installSkills() tea.Cmd {
 // RunAdd starts the add TUI workflow
 func RunAdd(ref skills.GitHubRepoRef) error {
 	model := NewAddModel(ref)
-	p := tea.NewProgram(model, tea.WithAltScreen())
+	p := tea.NewProgram(model)
 	_, err := p.Run()
 	return err
 }

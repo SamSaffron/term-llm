@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tui/inspector"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -144,7 +144,7 @@ func New(store session.Store, width, height int, styles *ui.Styles) *Model {
 	ti := textinput.New()
 	ti.Placeholder = "Search..."
 	ti.CharLimit = 100
-	ti.Width = 30
+	ti.SetWidth(30)
 
 	m := &Model{
 		width:       width,
@@ -200,7 +200,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.inspector, cmd = m.inspector.Update(msg)
 			return m, cmd
-		case tea.KeyMsg:
+		case tea.MouseMsg:
+			var cmd tea.Cmd
+			m.inspector, cmd = m.inspector.Update(msg)
+			return m, cmd
+		case tea.KeyPressMsg:
 			var cmd tea.Cmd
 			m.inspector, cmd = m.inspector.Update(msg)
 			return m, cmd
@@ -209,8 +213,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKeyMsg(msg)
+
+	case tea.PasteMsg:
+		if m.searching {
+			var cmd tea.Cmd
+			m.searchInput, cmd = m.searchInput.Update(msg)
+			return m, cmd
+		}
+		return m, nil
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -235,7 +247,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // handleKeyMsg handles keyboard input
-func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// If searching, handle search input
 	if m.searching {
 		switch msg.String() {
@@ -350,7 +362,7 @@ func (m *Model) moveCursor(delta int) {
 // viewportHeight returns the number of visible session rows
 func (m *Model) viewportHeight() int {
 	// Header (1) + filter bar (1) + column header (1) + separator (1) + footer (1) = 5 lines reserved
-	return max(1, m.height-5)
+	return ui.RemainingLines(m.height, 5)
 }
 
 // doRefresh fetches sessions from the store
@@ -507,7 +519,7 @@ func (m *Model) doDelete(sessionID string) (tea.Model, tea.Cmd) {
 }
 
 // View renders the model
-func (m *Model) View() string {
+func (m *Model) View() tea.View {
 	// If inspecting, show inspector
 	if m.inspecting && m.inspector != nil {
 		return m.inspector.View()
@@ -577,16 +589,7 @@ func (m *Model) View() string {
 
 	// Session list
 	vpHeight := m.viewportHeight()
-
-	// Calculate visible range with cursor in view
-	start := 0
-	if m.cursor >= vpHeight {
-		start = m.cursor - vpHeight + 1
-	}
-	end := start + vpHeight
-	if end > len(m.sessions) {
-		end = len(m.sessions)
-	}
+	start, end := ui.VisibleRange(len(m.sessions), m.cursor, vpHeight)
 
 	for i := start; i < end; i++ {
 		row := fitToDisplayWidth(renderSessionRow(m.sessions[i], i == m.cursor, cols), renderWidth)
@@ -624,7 +627,7 @@ func (m *Model) View() string {
 		b.WriteString(mutedStyle.Render(fitToDisplayWidth(help, renderWidth)))
 	}
 
-	return b.String()
+	return ui.NewAltScreenView(b.String())
 }
 
 type sessionColumns struct {

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
+	"charm.land/bubbles/v2/spinner"
 )
 
 func TestChatSpinnerUsesReducedDefaultFPS(t *testing.T) {

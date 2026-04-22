@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -23,7 +23,7 @@ func TestEmbeddedQuitEmitsCloseMsg(t *testing.T) {
 	m := New(nil, 80, 24, nil)
 	m.SetEmbedded(true)
 
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
 	if cmd == nil {
 		t.Fatal("expected quit key to return a command")
 	}
@@ -61,7 +61,7 @@ func TestView_EmbeddedModeUsesResumeCopy(t *testing.T) {
 		UpdatedAt: time.Now(),
 	}}
 
-	out := m.View()
+	out := m.View().Content
 	if !strings.Contains(out, "Resume Session") {
 		t.Fatalf("expected embedded header in view, got %q", out)
 	}

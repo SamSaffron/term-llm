@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -162,7 +162,7 @@ func TestViewAltScreen_RefreshesWhenMessagesReplacedWithSameCount(t *testing.T) 
 		},
 	}
 
-	first := ui.StripANSI(m.View())
+	first := ui.StripANSI(m.View().Content)
 	if !strings.Contains(first, "old reply") {
 		t.Fatalf("expected initial render to include old reply, got %q", first)
 	}
@@ -193,12 +193,33 @@ func TestViewAltScreen_RefreshesWhenMessagesReplacedWithSameCount(t *testing.T) 
 		messages: replacement,
 	})
 
-	second := ui.StripANSI(m.View())
+	second := ui.StripANSI(m.View().Content)
 	if strings.Contains(second, "old reply") {
 		t.Fatalf("expected stale history cache to be invalidated, got %q", second)
 	}
 	if !strings.Contains(second, "new final reply") {
 		t.Fatalf("expected refreshed render to include replacement message, got %q", second)
+	}
+}
+
+func TestViewAltScreen_CompletionsOverlayStaysOnScreen(t *testing.T) {
+	m := newTestChatModel(true)
+	_, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.completions.Show()
+	m.setTextareaValue("/")
+	m.updateCompletions()
+
+	view := m.View().Content
+	stripped := ui.StripANSI(view)
+
+	if got := lipgloss.Height(view); got > m.height {
+		t.Fatalf("alt-screen view height = %d, want <= %d when completions are visible", got, m.height)
+	}
+	if !strings.Contains(stripped, "/help") {
+		t.Fatalf("expected completions popup to remain visible, got %q", stripped)
+	}
+	if !strings.Contains(stripped, "mock-model") {
+		t.Fatalf("expected footer to remain visible with completions popup, got %q", stripped)
 	}
 }
 
@@ -217,8 +238,8 @@ func TestViewAltScreen_ViewportHeightAccountsForMultilineFooter(t *testing.T) {
 	if wantHeight < 1 {
 		wantHeight = 1
 	}
-	if m.viewport.Height != wantHeight {
-		t.Fatalf("viewport height = %d, want %d for footer height %d", m.viewport.Height, wantHeight, footerHeight)
+	if m.viewport.Height() != wantHeight {
+		t.Fatalf("viewport height = %d, want %d for footer height %d", m.viewport.Height(), wantHeight, footerHeight)
 	}
 }
 
@@ -253,7 +274,7 @@ func TestViewAltScreen_HeightOnlyResizePreservesLastMessage(t *testing.T) {
 
 	// First render — history cache is built with the skip (last turn excluded),
 	// but completedStream supplies it. Content should include "world".
-	first := ui.StripANSI(m.View())
+	first := ui.StripANSI(m.View().Content)
 	if !strings.Contains(first, "world") {
 		t.Fatalf("expected first render to contain 'world', got %q", first)
 	}
@@ -263,7 +284,7 @@ func TestViewAltScreen_HeightOnlyResizePreservesLastMessage(t *testing.T) {
 
 	// After resize, completedStream is cleared. The history cache must be
 	// invalidated so renderHistory() re-includes the last assistant turn.
-	second := ui.StripANSI(m.View())
+	second := ui.StripANSI(m.View().Content)
 	if !strings.Contains(second, "world") {
 		t.Fatalf("expected 'world' to remain visible after height-only resize, got %q", second)
 	}

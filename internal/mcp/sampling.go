@@ -8,10 +8,11 @@ import (
 	"strings"
 	"sync"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/tuiutil"
 	"golang.org/x/term"
 )
 
@@ -266,7 +267,7 @@ func (m samplingApprovalModel) Init() tea.Cmd {
 
 func (m samplingApprovalModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "ctrl+c", "esc":
 			m.done = true
@@ -288,7 +289,7 @@ func (m samplingApprovalModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor = 0 // Wrap to Allow
 			}
 
-		case "enter", " ":
+		case "enter", " ", "space":
 			m.done = true
 			if m.cursor == 0 {
 				m.choice = SamplingChoiceAllow
@@ -315,42 +316,24 @@ func (m samplingApprovalModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m samplingApprovalModel) View() string {
+func (m samplingApprovalModel) View() tea.View {
 	if m.done {
-		return ""
+		return tea.NewView("")
 	}
 
 	var b strings.Builder
 
-	containerStyle := lipgloss.NewStyle().
-		BorderStyle(lipgloss.NormalBorder()).
-		BorderLeft(true).
-		BorderForeground(samplingColor).
-		PaddingLeft(1).
-		PaddingRight(2).
-		PaddingTop(1).
-		PaddingBottom(1)
-
-	titleStyle := lipgloss.NewStyle().
-		Foreground(samplingColor).
-		Bold(true).
-		MarginBottom(1)
-
+	containerStyle := tuiutil.AccentPanelStyle(samplingColor)
+	titleStyle := tuiutil.AccentTitleStyle(samplingColor)
 	labelStyle := lipgloss.NewStyle().
 		Foreground(samplingMutedColor)
-
 	valueStyle := lipgloss.NewStyle().
 		Foreground(samplingTextColor)
-
 	optionStyle := lipgloss.NewStyle().
 		Foreground(samplingTextColor)
-
 	selectedStyle := lipgloss.NewStyle().
 		Foreground(samplingColor)
-
-	helpStyle := lipgloss.NewStyle().
-		Foreground(samplingMutedColor).
-		MarginTop(1)
+	helpStyle := tuiutil.MutedHelpStyle(samplingMutedColor)
 
 	// Title
 	b.WriteString(titleStyle.Render("MCP Sampling Request"))
@@ -395,20 +378,15 @@ func (m samplingApprovalModel) View() string {
 			style = selectedStyle
 		}
 
-		prefix := fmt.Sprintf("  %d. ", i+1)
-		if isSelected {
-			prefix = fmt.Sprintf("> %d. ", i+1)
-		}
-
+		prefix := tuiutil.NumberedOptionPrefix(i, isSelected)
 		b.WriteString(style.Render(prefix + opt))
 		b.WriteString("\n")
 	}
 
 	// Help bar
-	helpText := "\u2191\u2193 select  1-2 quick  enter confirm  esc cancel"
-	b.WriteString(helpStyle.Render(helpText))
+	b.WriteString(helpStyle.Render(tuiutil.QuickSelectHelpText(len(options))))
 
-	return containerStyle.Render(b.String())
+	return tea.NewView(containerStyle.Render(b.String()))
 }
 
 func (m samplingApprovalModel) renderSummary() string {
@@ -421,7 +399,7 @@ func (m samplingApprovalModel) renderSummary() string {
 	labelStyle := lipgloss.NewStyle().Foreground(samplingMutedColor)
 	valueStyle := lipgloss.NewStyle().Foreground(samplingTextColor)
 
-	b.WriteString(checkStyle.Render("\u2713 "))
+	b.WriteString(checkStyle.Render("✓ "))
 	b.WriteString(labelStyle.Render("MCP Sampling: "))
 	if m.choice == SamplingChoiceAllow {
 		b.WriteString(valueStyle.Render(fmt.Sprintf("Allowed for %s (session)", m.serverName)))
@@ -429,12 +407,5 @@ func (m samplingApprovalModel) renderSummary() string {
 		b.WriteString(valueStyle.Render(fmt.Sprintf("Denied for %s", m.serverName)))
 	}
 
-	containerStyle := lipgloss.NewStyle().
-		BorderStyle(lipgloss.NormalBorder()).
-		BorderLeft(true).
-		BorderForeground(samplingColor).
-		PaddingLeft(1).
-		PaddingRight(2)
-
-	return "\n" + containerStyle.Render(b.String()) + "\n"
+	return "\n" + tuiutil.CompactAccentPanelStyle(samplingColor).Render(b.String()) + "\n"
 }

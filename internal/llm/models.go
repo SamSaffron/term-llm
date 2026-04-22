@@ -231,7 +231,6 @@ var ProviderModels = map[string][]ModelEntry{
 		{ID: "arcee-trinity-large-thinking", InputLimit: 256_000, OutputLimit: 65_536},
 		{ID: "kimi-k2-5", InputLimit: 256_000, OutputLimit: 65_536},
 		{ID: "kimi-k2-6", InputLimit: 256_000, OutputLimit: 65_536},
-		{ID: "kimi-k2-thinking", InputLimit: 256_000, OutputLimit: 65_536},
 		{ID: "deepseek-v3.2", InputLimit: 160_000, OutputLimit: 32_768},
 		// E2EE variants
 		{ID: "e2ee-gemma-3-27b-p", InputLimit: 198_000, OutputLimit: 16_384},

@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -119,7 +119,7 @@ func (m *Model) Init() tea.Cmd {
 // Update handles messages
 func (m *Model) Update(msg tea.Msg) (*Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKeyMsg(msg)
 
 	case tea.MouseMsg:
@@ -136,13 +136,12 @@ func (m *Model) Update(msg tea.Msg) (*Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleMouseMsg handles mouse input
 func (m *Model) handleMouseMsg(msg tea.MouseMsg) (*Model, tea.Cmd) {
-	switch msg.Button {
-	case tea.MouseButtonWheelUp:
+	switch msg.Mouse().Button {
+	case tea.MouseWheelUp:
 		m.scrollY -= 3
 		m.clampScroll()
-	case tea.MouseButtonWheelDown:
+	case tea.MouseWheelDown:
 		m.scrollY += 3
 		m.clampScroll()
 	}
@@ -150,7 +149,7 @@ func (m *Model) handleMouseMsg(msg tea.MouseMsg) (*Model, tea.Cmd) {
 }
 
 // handleKeyMsg handles keyboard input
-func (m *Model) handleKeyMsg(msg tea.KeyMsg) (*Model, tea.Cmd) {
+func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (*Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keyMap.Quit):
 		return m, func() tea.Msg { return CloseMsg{} }
@@ -264,9 +263,8 @@ func (m *Model) toggleVisibleItems() {
 
 // viewportHeight returns the available height for content
 func (m *Model) viewportHeight() int {
-	// Reserve 3 lines for header and footer
-	// Clamp to at least 1 to avoid invalid slice bounds on very small terminals
-	return max(1, m.height-3)
+	// Reserve 3 lines for header and footer.
+	return ui.RemainingLines(m.height, 3)
 }
 
 // maxScroll returns the maximum scroll position
@@ -290,7 +288,7 @@ func (m *Model) clampScroll() {
 }
 
 // View renders the model
-func (m *Model) View() string {
+func (m *Model) View() tea.View {
 	theme := m.styles.Theme()
 	var b strings.Builder
 
@@ -369,5 +367,5 @@ func (m *Model) View() string {
 	footerStyle := lipgloss.NewStyle().Foreground(theme.Muted)
 	b.WriteString(footerStyle.Render(footer))
 
-	return b.String()
+	return ui.NewAltScreenMouseView(b.String())
 }

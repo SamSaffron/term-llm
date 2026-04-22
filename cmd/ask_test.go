@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -413,7 +413,7 @@ func TestAskToolStartViewDefersPendingToolRowUntilBoundaryFlushAck(t *testing.T)
 		t.Fatal("expected command from tool-start boundary flush")
 	}
 
-	beforeAck := stripAnsi(model.View())
+	beforeAck := stripAnsi(model.View().Content)
 	if strings.Contains(beforeAck, "read_file") {
 		t.Fatalf("expected pending tool row to be hidden before boundary flush ack, got: %q", beforeAck)
 	}
@@ -421,7 +421,7 @@ func TestAskToolStartViewDefersPendingToolRowUntilBoundaryFlushAck(t *testing.T)
 	updated, _ = model.Update(askBoundaryFlushedMsg{CallID: "call-1", Name: "read_file"})
 	model = updated.(askStreamModel)
 
-	afterAck := stripAnsi(model.View())
+	afterAck := stripAnsi(model.View().Content)
 	if !strings.Contains(afterAck, "read_file") {
 		t.Fatalf("expected pending tool row after boundary flush ack, got: %q", afterAck)
 	}
@@ -461,7 +461,7 @@ func TestAskViewNoForcedTrailingNewline(t *testing.T) {
 	model.cachedContent = "content"
 	model.contentDirty = false
 
-	view := model.View()
+	view := model.View().Content
 	if strings.HasSuffix(view, "\n") {
 		t.Fatalf("unexpected trailing newline in view output: %q", view)
 	}

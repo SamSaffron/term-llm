@@ -1,6 +1,24 @@
 package ui
 
-import rendermarkdown "github.com/samsaffron/term-llm/internal/render/markdown"
+import (
+	"fmt"
+	"image/color"
+
+	rendermarkdown "github.com/samsaffron/term-llm/internal/render/markdown"
+)
+
+// colorHex converts a color.Color to a hex string (#rrggbb) for use with
+// downstream renderers (chroma, goldmark) that take hex color strings.
+func colorHex(c color.Color) string {
+	if c == nil {
+		return ""
+	}
+	r, g, b, a := c.RGBA()
+	if a == 0 {
+		return ""
+	}
+	return fmt.Sprintf("#%02x%02x%02x", uint8(r>>8), uint8(g>>8), uint8(b>>8))
+}
 
 // MarkdownRenderOptions controls legacy caller-specific markdown rendering quirks.
 type MarkdownRenderOptions struct {
@@ -23,12 +41,12 @@ func defaultMarkdownRenderOptions() MarkdownRenderOptions {
 func currentMarkdownPalette() rendermarkdown.Palette {
 	theme := GetTheme()
 	return rendermarkdown.Palette{
-		Primary:   string(theme.Primary),
-		Secondary: string(theme.Secondary),
-		Success:   string(theme.Success),
-		Warning:   string(theme.Warning),
-		Muted:     string(theme.Muted),
-		Text:      string(theme.Text),
+		Primary:   colorHex(theme.Primary),
+		Secondary: colorHex(theme.Secondary),
+		Success:   colorHex(theme.Success),
+		Warning:   colorHex(theme.Warning),
+		Muted:     colorHex(theme.Muted),
+		Text:      colorHex(theme.Text),
 	}
 }
 

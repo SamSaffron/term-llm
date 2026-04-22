@@ -1,36 +1,44 @@
 package ui
 
 import (
+	"image/color"
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
+func colorsEqual(a, b color.Color) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	ar, ag, ab, aa := a.RGBA()
+	br, bg, bb, ba := b.RGBA()
+	return ar == br && ag == bg && ab == bb && aa == ba
+}
+
 func TestThemeFromConfig_Default(t *testing.T) {
-	// Empty config should return default theme
 	cfg := ThemeConfig{}
 	theme := ThemeFromConfig(cfg)
 
 	defaultTheme := DefaultTheme()
-	if theme.Primary != defaultTheme.Primary {
-		t.Errorf("expected Primary=%q, got %q", defaultTheme.Primary, theme.Primary)
+	if !colorsEqual(theme.Primary, defaultTheme.Primary) {
+		t.Errorf("expected Primary=%v, got %v", defaultTheme.Primary, theme.Primary)
 	}
-	if theme.UserMsgBg != defaultTheme.UserMsgBg {
-		t.Errorf("expected UserMsgBg=%q, got %q", defaultTheme.UserMsgBg, theme.UserMsgBg)
+	if !colorsEqual(theme.UserMsgBg, defaultTheme.UserMsgBg) {
+		t.Errorf("expected UserMsgBg=%v, got %v", defaultTheme.UserMsgBg, theme.UserMsgBg)
 	}
 }
 
 func TestThemeFromConfig_UserMsgBgOverride(t *testing.T) {
-	// UserMsgBg should be overridable via config
 	cfg := ThemeConfig{
 		UserMsgBg: "#ff0000",
 	}
 	theme := ThemeFromConfig(cfg)
 
 	expected := lipgloss.Color("#ff0000")
-	if theme.UserMsgBg != expected {
-		t.Errorf("expected UserMsgBg=%q, got %q", expected, theme.UserMsgBg)
+	if !colorsEqual(theme.UserMsgBg, expected) {
+		t.Errorf("expected UserMsgBg=%v, got %v", expected, theme.UserMsgBg)
 	}
 }
 
@@ -50,8 +58,8 @@ func TestThemeFromConfig_AllOverrides(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		got      lipgloss.Color
-		expected lipgloss.Color
+		got      color.Color
+		expected color.Color
 	}{
 		{"Primary", theme.Primary, lipgloss.Color("#111111")},
 		{"Secondary", theme.Secondary, lipgloss.Color("#222222")},
@@ -65,40 +73,35 @@ func TestThemeFromConfig_AllOverrides(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		if tt.got != tt.expected {
-			t.Errorf("%s: expected %q, got %q", tt.name, tt.expected, tt.got)
+		if !colorsEqual(tt.got, tt.expected) {
+			t.Errorf("%s: expected %v, got %v", tt.name, tt.expected, tt.got)
 		}
 	}
 }
 
 func TestThemeFromConfig_SecondarySetsBorder(t *testing.T) {
-	// When Secondary is set, Border should also be set to the same value
 	cfg := ThemeConfig{
 		Secondary: "#abcdef",
 	}
 	theme := ThemeFromConfig(cfg)
 
 	expected := lipgloss.Color("#abcdef")
-	if theme.Border != expected {
-		t.Errorf("expected Border to follow Secondary=%q, got %q", expected, theme.Border)
+	if !colorsEqual(theme.Border, expected) {
+		t.Errorf("expected Border to follow Secondary=%v, got %v", expected, theme.Border)
 	}
 }
 
 func TestErrorCircle_ContainsRedColor(t *testing.T) {
-	// ErrorCircle should return ANSI-styled red circle
 	result := ErrorCircle()
 
-	// Should contain the filled circle character
 	if !strings.Contains(result, "●") {
 		t.Error("expected ErrorCircle to contain filled circle character ●")
 	}
 
-	// Should contain ANSI escape for red color (RGB 239,68,68)
 	if !strings.Contains(result, "\033[38;2;239;68;68m") {
 		t.Error("expected ErrorCircle to contain red ANSI color code")
 	}
 
-	// Should contain reset code
 	if !strings.Contains(result, "\033[0m") {
 		t.Error("expected ErrorCircle to contain ANSI reset code")
 	}
@@ -111,7 +114,6 @@ func TestSuccessCircle_ContainsGreenColor(t *testing.T) {
 		t.Error("expected SuccessCircle to contain filled circle character ●")
 	}
 
-	// Should contain ANSI escape for green color (RGB 79,185,101)
 	if !strings.Contains(result, "\033[38;2;79;185;101m") {
 		t.Error("expected SuccessCircle to contain green ANSI color code")
 	}
@@ -120,7 +122,6 @@ func TestSuccessCircle_ContainsGreenColor(t *testing.T) {
 func TestPendingCircle_ContainsHollowCircle(t *testing.T) {
 	result := PendingCircle()
 
-	// Should contain hollow circle character
 	if !strings.Contains(result, "○") {
 		t.Error("expected PendingCircle to contain hollow circle character ○")
 	}
@@ -133,7 +134,6 @@ func TestWorkingCircle_ContainsOrangeColor(t *testing.T) {
 		t.Error("expected WorkingCircle to contain filled circle character ●")
 	}
 
-	// Should contain ANSI escape for orange color (RGB 255,165,0)
 	if !strings.Contains(result, "\033[38;2;255;165;0m") {
 		t.Error("expected WorkingCircle to contain orange ANSI color code")
 	}
@@ -142,14 +142,12 @@ func TestWorkingCircle_ContainsOrangeColor(t *testing.T) {
 func TestDefaultTheme_HasUserMsgBg(t *testing.T) {
 	theme := DefaultTheme()
 
-	// UserMsgBg should be set to a non-empty value
-	if theme.UserMsgBg == "" {
-		t.Error("expected DefaultTheme to have non-empty UserMsgBg")
+	if theme.UserMsgBg == nil {
+		t.Error("expected DefaultTheme to have non-nil UserMsgBg")
 	}
 
-	// Should be the gruvbox dark gray
 	expected := lipgloss.Color("#3c3836")
-	if theme.UserMsgBg != expected {
-		t.Errorf("expected UserMsgBg=%q, got %q", expected, theme.UserMsgBg)
+	if !colorsEqual(theme.UserMsgBg, expected) {
+		t.Errorf("expected UserMsgBg=%v, got %v", expected, theme.UserMsgBg)
 	}
 }

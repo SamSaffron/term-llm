@@ -7,8 +7,9 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/reflow/wordwrap"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
@@ -22,9 +23,9 @@ import (
 const maxViewLines = 8
 
 // View renders the model
-func (m *Model) View() string {
+func (m *Model) View() tea.View {
 	if m.quitting {
-		return ""
+		return m.newView("")
 	}
 	m.textareaBoundsValid = false
 
@@ -48,12 +49,12 @@ func (m *Model) View() string {
 
 	// Alt screen mode: use viewport for scrollable content
 	if m.altScreen {
-		return titleSeq + m.viewAltScreen()
+		return m.newView(titleSeq + m.viewAltScreen())
 	}
 
 	// Auto-send mode: minimal rendering for benchmarking (skip expensive UI)
 	if m.autoSendQueue != nil {
-		return titleSeq + m.viewAutoSend()
+		return m.newView(titleSeq + m.viewAutoSend())
 	}
 
 	// Inline mode: traditional rendering
@@ -107,7 +108,19 @@ func (m *Model) View() string {
 	m.applyFooterLayout(renderedLines, footer)
 	b.WriteString(footer.view)
 
-	return titleSeq + b.String()
+	return m.newView(titleSeq + b.String())
+}
+
+// newView wraps content in a tea.View with the model's declarative flags.
+func (m *Model) newView(content string) tea.View {
+	v := tea.NewView(content)
+	if m.altScreen {
+		v.AltScreen = true
+	}
+	if m.autoSendQueue == nil {
+		v.MouseMode = tea.MouseModeCellMotion
+	}
+	return v
 }
 
 // viewAltScreen renders the full-screen alt screen view with scrollable viewport
@@ -189,9 +202,9 @@ func (m *Model) viewAltScreen() string {
 			streamingContent := m.renderStreamingInline()
 			contentStr = m.viewCache.historyContent + streamingContent
 			if m.approvalModel != nil {
-				contentStr += "\n" + m.approvalModel.View()
+				contentStr += "\n" + m.approvalModel.View().Content
 			} else if m.askUserModel != nil {
-				contentStr += "\n" + m.askUserModel.View()
+				contentStr += "\n" + m.askUserModel.View().Content
 			} else if m.handoverPreview != nil {
 				contentStr += m.handoverPreview.View()
 			}
@@ -236,8 +249,8 @@ func (m *Model) viewAltScreen() string {
 
 	// Cache viewport.View() output - only regenerate if content, scroll position, or size changed
 	// Check YOffset after GotoBottom() since it modifies the offset
-	yOffsetChanged := m.viewport.YOffset != m.viewCache.lastYOffset
-	sizeChanged := m.viewport.Width != m.viewCache.lastVPWidth || m.viewport.Height != m.viewCache.lastVPHeight
+	yOffsetChanged := m.viewport.YOffset() != m.viewCache.lastYOffset
+	sizeChanged := m.viewport.Width() != m.viewCache.lastVPWidth || m.viewport.Height() != m.viewCache.lastVPHeight
 
 	// Force re-render when selection changes
 	selectionChanged := m.selection != m.viewCache.lastSelection
@@ -248,9 +261,9 @@ func (m *Model) viewAltScreen() string {
 		if m.streamPerf != nil {
 			m.streamPerf.RecordDuration(durationMetricViewportView, time.Since(viewStart))
 		}
-		m.viewCache.lastYOffset = m.viewport.YOffset
-		m.viewCache.lastVPWidth = m.viewport.Width
-		m.viewCache.lastVPHeight = m.viewport.Height
+		m.viewCache.lastYOffset = m.viewport.YOffset()
+		m.viewCache.lastVPWidth = m.viewport.Width()
+		m.viewCache.lastVPHeight = m.viewport.Height()
 		m.viewCache.lastSelection = m.selection
 	}
 
@@ -273,28 +286,88 @@ func (m *Model) viewAltScreen() string {
 	b.WriteString("\n")
 	renderedLines++
 
-	// Completions popup (if visible) - overlaid on content
-	if m.completions.IsVisible() {
-		completions := m.completions.View()
-		b.WriteString(completions)
-		renderedLines += lipgloss.Height(completions)
-		b.WriteString("\n")
-		renderedLines++
-	}
-
-	// Dialog (if open) - overlaid on content
-	if m.dialog.IsOpen() {
-		dialog := m.dialog.View()
-		b.WriteString(dialog)
-		renderedLines += lipgloss.Height(dialog)
-		b.WriteString("\n")
-		renderedLines++
-	}
-
 	m.applyFooterLayout(renderedLines, footer)
 	b.WriteString(footer.view)
 
-	return b.String()
+	return m.overlayAltScreenPanels(b.String(), footer)
+}
+
+func (m *Model) overlayAltScreenPanels(base string, footer footerLayout) string {
+	// In alt-screen mode Bubble Tea v2 clips anything that extends beyond the
+	// fixed terminal height, so popups must be composited into the existing frame
+	// instead of being appended below it.
+	if !m.completions.IsVisible() && !m.dialog.IsOpen() {
+		return base
+	}
+
+	screenWidth := m.width
+	if screenWidth <= 0 {
+		screenWidth = lipgloss.Width(base)
+	}
+	if screenWidth <= 0 {
+		screenWidth = 1
+	}
+
+	lines := strings.Split(base, "\n")
+	targetHeight := m.height
+	if targetHeight <= 0 {
+		targetHeight = len(lines)
+	}
+	if targetHeight <= 0 {
+		targetHeight = 1
+	}
+
+	blankLine := strings.Repeat(" ", screenWidth)
+	for len(lines) < targetHeight {
+		lines = append(lines, blankLine)
+	}
+	if len(lines) > targetHeight {
+		lines = lines[:targetHeight]
+	}
+
+	bottomY := targetHeight - footer.height
+	if bottomY < 0 {
+		bottomY = 0
+	}
+
+	stackPanel := func(panel string) {
+		if panel == "" {
+			return
+		}
+		panelLines := strings.Split(panel, "\n")
+		y := bottomY - len(panelLines)
+		if y < 0 {
+			y = 0
+		}
+		for i, panelLine := range panelLines {
+			row := y + i
+			if row < 0 || row >= len(lines) {
+				continue
+			}
+			overlayWidth := lipgloss.Width(panelLine)
+			if overlayWidth <= 0 {
+				continue
+			}
+			overlay := ansi.Cut(panelLine, 0, screenWidth)
+			if overlayWidth > screenWidth {
+				overlayWidth = screenWidth
+			}
+			remainder := ansi.Cut(lines[row], overlayWidth, screenWidth)
+			lines[row] = overlay + remainder
+		}
+		bottomY = y
+	}
+
+	// Preserve the existing visual order above the footer:
+	// completions above dialog above footer.
+	if m.dialog.IsOpen() {
+		stackPanel(m.dialog.View())
+	}
+	if m.completions.IsVisible() {
+		stackPanel(m.completions.View())
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 type footerLayout struct {

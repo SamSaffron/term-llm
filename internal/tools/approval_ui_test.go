@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 func TestBuildFileOptions_InGitRepo(t *testing.T) {
@@ -192,6 +194,43 @@ func TestApprovalModel_Keyboard(t *testing.T) {
 	// Test that we have options
 	if len(m.options) == 0 {
 		t.Fatal("model should have options")
+	}
+}
+
+func TestApprovalModel_SpaceSelectsCurrentOption(t *testing.T) {
+	repoInfo := &GitRepoInfo{
+		IsRepo:   true,
+		Root:     "/repo",
+		RepoName: "repo",
+	}
+	m := newApprovalModel("/repo/file.go", repoInfo, false)
+	m.cursor = 1
+
+	model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	updated := model.(*ApprovalModel)
+
+	if !updated.Done {
+		t.Fatal("expected space to complete approval prompt")
+	}
+	if got, want := updated.Result().Choice, updated.options[1].Choice; got != want {
+		t.Fatalf("expected choice %v, got %v", want, got)
+	}
+}
+
+func TestApprovalModel_UpdateEmbeddedSpaceSelectsCurrentOption(t *testing.T) {
+	repoInfo := &GitRepoInfo{
+		IsRepo:   true,
+		Root:     "/repo",
+		RepoName: "repo",
+	}
+	m := newApprovalModel("/repo/file.go", repoInfo, false)
+	m.cursor = 2
+
+	if !m.UpdateEmbedded(tea.KeyPressMsg{Code: tea.KeySpace}) {
+		t.Fatal("expected embedded approval prompt to finish on space")
+	}
+	if got, want := m.Result().Choice, m.options[2].Choice; got != want {
+		t.Fatalf("expected choice %v, got %v", want, got)
 	}
 }
 

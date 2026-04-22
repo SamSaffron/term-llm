@@ -3,10 +3,11 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
@@ -46,6 +47,8 @@ var (
 	// Text mode (no markdown rendering)
 	chatTextMode bool
 )
+
+var chatOpenTTY = tea.OpenTTY
 
 var chatCmd = &cobra.Command{
 	Use:   "chat [@agent]",
@@ -151,6 +154,38 @@ func runChat(cmd *cobra.Command, args []string) error {
 		initialText = ""
 		handoverAutoSend = nextAutoSend
 	}
+}
+
+type chatProgramInput struct {
+	reader       io.Reader
+	disableInput bool
+	cleanup      func()
+}
+
+func buildChatProgramInput(autoSendMode bool) (chatProgramInput, error) {
+	if autoSendMode {
+		return chatProgramInput{
+			disableInput: true,
+			cleanup:      func() {},
+		}, nil
+	}
+
+	// Keep interactive chat bound to the terminal TTY so redirected stdin can
+	// still provide initial content without stealing live keyboard input.
+	ttyIn, ttyOut, err := chatOpenTTY()
+	if err != nil {
+		return chatProgramInput{}, fmt.Errorf("open chat TTY: %w", err)
+	}
+
+	return chatProgramInput{
+		reader: ttyIn,
+		cleanup: func() {
+			_ = ttyIn.Close()
+			if ttyOut != nil && ttyOut != ttyIn {
+				_ = ttyOut.Close()
+			}
+		},
+	}, nil
 }
 
 func buildChatHandoverApprovalManager(cfg *config.Config, settings SessionSettings) (*tools.ApprovalManager, error) {
@@ -425,17 +460,18 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		model.SetCurrentAgent(agent)
 	}
 
-	// Build program options
-	var opts []tea.ProgramOption
-	if useAltScreen {
-		opts = append(opts, tea.WithAltScreen())
+	// Build program options. AltScreen and mouse mode are declarative on the View in v2.
+	programInput, err := buildChatProgramInput(autoSendMode)
+	if err != nil {
+		return "", "", err
 	}
-	if autoSendMode {
-		// In auto-send mode, don't require TTY input (allows piped/non-interactive use)
+	defer programInput.cleanup()
+
+	var opts []tea.ProgramOption
+	if programInput.disableInput {
 		opts = append(opts, tea.WithInput(nil))
-	} else {
-		opts = append(opts, tea.WithMouseCellMotion()) // Enable mouse support
-		opts = append(opts, tea.WithInputTTY())
+	} else if programInput.reader != nil {
+		opts = append(opts, tea.WithInput(programInput.reader))
 	}
 
 	// Run the TUI

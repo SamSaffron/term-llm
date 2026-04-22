@@ -13,10 +13,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/huh"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/huh/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -1426,7 +1426,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		if msg.String() == "ctrl+c" || msg.String() == "esc" {
 			return m, func() tea.Msg { return askCancelledMsg{} }
 		}
@@ -1442,7 +1442,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(messages) > 0 {
 				m.inspectorMode = true
 				m.inspectorModel = inspector.NewWithStore(messages, m.width, m.height, m.styles, m.store)
-				return m, tea.EnterAltScreen
+				return m, nil
 			}
 		}
 
@@ -1850,7 +1850,7 @@ func (m askStreamModel) updateInspectorMode(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		// Pass to inspector
 		if m.inspectorModel != nil {
 			var cmd tea.Cmd
@@ -1863,7 +1863,7 @@ func (m askStreamModel) updateInspectorMode(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Exit inspector mode and return to stream UI
 		m.inspectorMode = false
 		m.inspectorModel = nil
-		return m, tea.ExitAltScreen
+		return m, nil
 
 	default:
 		// Pass through to inspector
@@ -1884,7 +1884,7 @@ func (m askStreamModel) updateInspectorMode(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m askStreamModel) View() string {
+func (m askStreamModel) View() tea.View {
 	// Inspector mode uses alternate screen
 	if m.inspectorMode && m.inspectorModel != nil {
 		return m.inspectorModel.View()
@@ -1892,7 +1892,7 @@ func (m askStreamModel) View() string {
 
 	// When done, return empty string so flushed content isn't duplicated
 	if m.done {
-		return ""
+		return tea.NewView("")
 	}
 
 	var b strings.Builder
@@ -1922,7 +1922,7 @@ func (m askStreamModel) View() string {
 			b.WriteString(m.tracker.FlushLeadingSeparator(ui.SegmentTool))
 		}
 		b.WriteString(m.approvalForm.View())
-		return b.String()
+		return tea.NewView(b.String())
 	}
 
 	// Show spinner when idle (no activity for >1s) or when tools are active
@@ -1961,7 +1961,7 @@ func (m askStreamModel) View() string {
 		b.WriteString(indicator)
 	}
 
-	return b.String()
+	return tea.NewView(b.String())
 }
 
 // streamWithRenderer renders markdown progressively as content streams in.

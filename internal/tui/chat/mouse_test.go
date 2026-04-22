@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 func TestMouseClickMovesCursorSingleLine(t *testing.T) {
@@ -15,11 +15,10 @@ func TestMouseClickMovesCursorSingleLine(t *testing.T) {
 	clickX := m.textareaLeftX + m.textareaPromptWidth + 5
 	clickY := m.textareaTopY
 
-	_, _ = m.Update(tea.MouseMsg{
+	_, _ = m.Update(tea.MouseClickMsg{
 		X:      clickX,
 		Y:      clickY,
-		Button: tea.MouseButtonLeft,
-		Action: tea.MouseActionPress,
+		Button: tea.MouseLeft,
 	})
 
 	if got := m.textarea.Line(); got != 0 {
@@ -44,11 +43,10 @@ func TestMouseClickMovesCursorWrappedLine(t *testing.T) {
 	clickX := m.textareaLeftX + m.textareaPromptWidth + 2
 	clickY := m.textareaTopY + 1
 
-	_, _ = m.Update(tea.MouseMsg{
+	_, _ = m.Update(tea.MouseClickMsg{
 		X:      clickX,
 		Y:      clickY,
-		Button: tea.MouseButtonLeft,
-		Action: tea.MouseActionPress,
+		Button: tea.MouseLeft,
 	})
 
 	if got := m.textarea.Line(); got != 0 {
@@ -66,17 +64,16 @@ func TestMouseShiftClickDoesNotMoveCursor(t *testing.T) {
 	m := newTestChatModel(false)
 	m.setTextareaValue("hello world")
 	_ = m.View()
-	m.textarea.SetCursor(0)
+	m.textarea.CursorStart()
 
 	clickX := m.textareaLeftX + m.textareaPromptWidth + 5
 	clickY := m.textareaTopY
 
-	_, _ = m.Update(tea.MouseMsg{
+	_, _ = m.Update(tea.MouseClickMsg{
 		X:      clickX,
 		Y:      clickY,
-		Shift:  true,
-		Button: tea.MouseButtonLeft,
-		Action: tea.MouseActionPress,
+		Mod:    tea.ModShift,
+		Button: tea.MouseLeft,
 	})
 
 	if got := m.textarea.LineInfo().CharOffset; got != 0 {
@@ -92,11 +89,10 @@ func TestMouseClickMovesCursorInAltScreen(t *testing.T) {
 	clickX := m.textareaLeftX + m.textareaPromptWidth + 4
 	clickY := m.textareaTopY
 
-	_, _ = m.Update(tea.MouseMsg{
+	_, _ = m.Update(tea.MouseClickMsg{
 		X:      clickX,
 		Y:      clickY,
-		Button: tea.MouseButtonLeft,
-		Action: tea.MouseActionPress,
+		Button: tea.MouseLeft,
 	})
 
 	if got := m.textarea.LineInfo().CharOffset; got != 4 {
@@ -113,14 +109,13 @@ func TestMouseWheelScrollStillWorksInAltScreen(t *testing.T) {
 	m.viewport.SetContent(strings.Join(lines, "\n"))
 	m.viewport.GotoTop()
 
-	_, _ = m.Update(tea.MouseMsg{
+	_, _ = m.Update(tea.MouseWheelMsg{
 		X:      0,
 		Y:      0,
-		Button: tea.MouseButtonWheelDown,
-		Action: tea.MouseActionPress,
+		Button: tea.MouseWheelDown,
 	})
 
-	if m.viewport.YOffset == 0 {
+	if m.viewport.YOffset() == 0 {
 		t.Fatal("expected viewport to scroll on mouse wheel down")
 	}
 }

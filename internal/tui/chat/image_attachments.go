@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/clipboard"
 	"github.com/samsaffron/term-llm/internal/llm"
 )
@@ -21,11 +21,14 @@ type ImageAttachment struct {
 	Data      []byte
 }
 
-func (m *Model) maybeAttachImageFromPaste(msg tea.KeyMsg) bool {
+func (m *Model) maybeAttachImageFromPaste(msg tea.KeyPressMsg) bool {
 	if !isImagePasteAttempt(msg) {
 		return false
 	}
+	return m.maybeAttachImageFromClipboard()
+}
 
+func (m *Model) maybeAttachImageFromClipboard() bool {
 	imgData, err := readClipboardImage()
 	if err != nil || len(imgData) == 0 {
 		return false
@@ -48,38 +51,29 @@ func (m *Model) maybeAttachImageFromPaste(msg tea.KeyMsg) bool {
 	return true
 }
 
-func isImagePasteAttempt(msg tea.KeyMsg) bool {
-	// Bracketed paste with actual text content means the terminal already
-	// resolved the clipboard/selection to text — don't probe CLIPBOARD for
-	// an image (which may differ from the PRIMARY selection the user intended).
-	if msg.Paste && len(msg.Runes) > 0 {
-		return false
-	}
-	if msg.Paste || msg.Type == tea.KeyCtrlV {
-		return true
-	}
+func isImagePasteAttempt(msg tea.KeyPressMsg) bool {
 	switch strings.ToLower(msg.String()) {
-	case "ctrl+shift+v", "shift+insert", "super+v", "cmd+v":
+	case "ctrl+v", "ctrl+shift+v", "shift+insert", "super+v", "cmd+v":
 		return true
 	default:
 		return false
 	}
 }
 
-func (m *Model) handleImageAttachmentKeys(msg tea.KeyMsg) bool {
+func (m *Model) handleImageAttachmentKeys(msg tea.KeyPressMsg) bool {
 	if len(m.images) == 0 || m.textarea.Value() != "" {
 		return false
 	}
 
-	switch msg.Type {
-	case tea.KeyUp:
+	switch msg.String() {
+	case "up":
 		if m.selectedImage < 0 {
 			m.selectedImage = 0
 		} else if m.selectedImage > 0 {
 			m.selectedImage--
 		}
 		return true
-	case tea.KeyDown:
+	case "down":
 		if m.selectedImage >= 0 {
 			if m.selectedImage < len(m.images)-1 {
 				m.selectedImage++
@@ -88,17 +82,17 @@ func (m *Model) handleImageAttachmentKeys(msg tea.KeyMsg) bool {
 			}
 			return true
 		}
-	case tea.KeyLeft:
+	case "left":
 		if m.selectedImage > 0 {
 			m.selectedImage--
 			return true
 		}
-	case tea.KeyRight:
+	case "right":
 		if m.selectedImage >= 0 && m.selectedImage < len(m.images)-1 {
 			m.selectedImage++
 			return true
 		}
-	case tea.KeyDelete, tea.KeyBackspace:
+	case "delete", "backspace":
 		if m.selectedImage >= 0 {
 			idx := m.selectedImage
 			m.images = append(m.images[:idx], m.images[idx+1:]...)

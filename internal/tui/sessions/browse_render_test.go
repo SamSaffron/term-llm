@@ -44,7 +44,7 @@ func TestView_Truncation_PreservesUTF8(t *testing.T) {
 		},
 	}
 
-	out := m.View()
+	out := m.View().Content
 	if !utf8.ValidString(out) {
 		t.Fatalf("View output must be valid UTF-8, got invalid bytes")
 	}

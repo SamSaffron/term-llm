@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -48,36 +48,40 @@ func (m *handoverPreviewModel) Instructions() string {
 	return strings.TrimSpace(m.instructions)
 }
 
-// UpdateEmbedded handles key input. Returns (done, handled).
-func (m *handoverPreviewModel) UpdateEmbedded(msg tea.KeyMsg) (done bool, handled bool) {
+// UpdateEmbedded handles key and paste input. Returns (done, handled).
+func (m *handoverPreviewModel) UpdateEmbedded(msg tea.Msg) (done bool, handled bool) {
 	// Text editing mode for instructions
 	if m.editing {
-		switch {
-		case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
-			// Submit instructions and confirm handover
-			m.done = true
-			m.confirmed = true
-			return true, true
-		case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
-			// Cancel editing, go back to option selection
-			m.editing = false
-			return false, true
-		case key.Matches(msg, key.NewBinding(key.WithKeys("backspace"))):
-			if len(m.instructions) > 0 {
-				m.instructions = m.instructions[:len(m.instructions)-1]
-			}
-			return false, true
-		default:
-			ch := msg.String()
-			if len(ch) == 1 || msg.Type == tea.KeySpace {
-				if msg.Type == tea.KeySpace {
-					ch = " "
-				}
-				m.instructions += ch
+		switch msg := msg.(type) {
+		case tea.KeyPressMsg:
+			switch {
+			case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+				// Submit instructions and confirm handover
+				m.done = true
+				m.confirmed = true
+				return true, true
+			case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+				// Cancel editing, go back to option selection
+				m.editing = false
 				return false, true
+			case key.Matches(msg, key.NewBinding(key.WithKeys("backspace"))):
+				if len(m.instructions) > 0 {
+					m.instructions = m.instructions[:len(m.instructions)-1]
+				}
+				return false, true
+			default:
+				if msg.Text != "" {
+					m.instructions += msg.Text
+					return false, true
+				}
+				if msg.Code == tea.KeySpace {
+					m.instructions += " "
+					return false, true
+				}
 			}
-			if msg.Paste {
-				m.instructions += string(msg.Runes)
+		case tea.PasteMsg:
+			if msg.Content != "" {
+				m.instructions += msg.Content
 				return false, true
 			}
 		}
@@ -85,8 +89,13 @@ func (m *handoverPreviewModel) UpdateEmbedded(msg tea.KeyMsg) (done bool, handle
 	}
 
 	// Option selection mode
+	keyMsg, ok := msg.(tea.KeyPressMsg)
+	if !ok {
+		return false, false
+	}
+
 	switch {
-	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("enter"))):
 		if m.cursor == handoverOptionInstructions {
 			m.editing = true
 			return false, true
@@ -94,16 +103,16 @@ func (m *handoverPreviewModel) UpdateEmbedded(msg tea.KeyMsg) (done bool, handle
 		m.done = true
 		m.confirmed = m.cursor == handoverOptionConfirm
 		return true, true
-	case key.Matches(msg, key.NewBinding(key.WithKeys("esc", "ctrl+c"))):
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("esc", "ctrl+c"))):
 		m.done = true
 		m.confirmed = false
 		return true, true
-	case key.Matches(msg, key.NewBinding(key.WithKeys("up"))):
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("up"))):
 		if m.cursor > 0 {
 			m.cursor--
 		}
 		return false, true
-	case key.Matches(msg, key.NewBinding(key.WithKeys("down"))):
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("down"))):
 		if m.cursor < handoverOptionCount-1 {
 			m.cursor++
 		}

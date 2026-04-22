@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textarea"
+	"charm.land/bubbles/v2/textarea"
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"

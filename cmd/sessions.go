@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/agents/gist"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tui/sessions"
@@ -773,7 +773,7 @@ func runSessionsBrowse(cmd *cobra.Command, args []string) error {
 	styles := ui.DefaultStyles()
 	model := sessions.New(store, width, height, styles)
 
-	p := tea.NewProgram(model, tea.WithAltScreen())
+	p := tea.NewProgram(model)
 	finalModel, err := p.Run()
 	if err != nil {
 		return fmt.Errorf("failed to run browser: %w", err)

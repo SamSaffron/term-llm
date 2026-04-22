@@ -5,6 +5,7 @@ import (
 	"io"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/samsaffron/term-llm/internal/llm"
 )
@@ -394,5 +395,20 @@ func TestSamplingHandlerSystemPrompt(t *testing.T) {
 	}
 	if len(capturedRequest.Messages[0].Parts) == 0 || capturedRequest.Messages[0].Parts[0].Text != "You are a helpful assistant." {
 		t.Error("system prompt not correctly included in request")
+	}
+}
+
+func TestSamplingApprovalModel_SpaceConfirmsSelection(t *testing.T) {
+	m := newSamplingApprovalModel("test-server", &mcp.CreateMessageParams{}, 80)
+	m.cursor = 1
+
+	model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	updated := model.(samplingApprovalModel)
+
+	if !updated.done {
+		t.Fatal("expected space to complete sampling approval")
+	}
+	if got := updated.choice; got != SamplingChoiceDeny {
+		t.Fatalf("expected deny choice from cursor 1, got %v", got)
 	}
 }

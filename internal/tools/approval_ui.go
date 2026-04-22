@@ -2,12 +2,14 @@ package tools
 
 import (
 	"fmt"
+	"image/color"
 	"os"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/muesli/reflow/wordwrap"
+	"github.com/samsaffron/term-llm/internal/tuiutil"
 	"golang.org/x/term"
 )
 
@@ -67,7 +69,7 @@ type ApprovalModel struct {
 	isShell     bool             // Whether this is a shell request
 	Done        bool             // Prompt completed
 	result      ApprovalResult   // The result of the prompt
-	accentColor lipgloss.Color   // Color for the border accent
+	accentColor color.Color      // Color for the border accent
 }
 
 // Result returns the user's selection after the prompt is done.
@@ -324,77 +326,9 @@ func BuildShellOptions(command string, repoInfo *GitRepoInfo) []ApprovalOption {
 	return options
 }
 
-func (m *ApprovalModel) Init() tea.Cmd {
-	return nil
-}
-
-// Update handles messages for standalone tea.Program use (calls tea.Quit on completion).
-func (m *ApprovalModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *ApprovalModel) applyMessage(msg tea.Msg) bool {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "esc":
-			m.Done = true
-			m.result = ApprovalResult{
-				Choice:    ApprovalChoiceCancelled,
-				Cancelled: true,
-			}
-			return m, tea.Quit
-
-		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-			} else {
-				m.cursor = len(m.options) - 1
-			}
-
-		case "down", "j":
-			if m.cursor < len(m.options)-1 {
-				m.cursor++
-			} else {
-				m.cursor = 0
-			}
-
-		case "enter", " ":
-			opt := m.options[m.cursor]
-			m.Done = true
-			m.result = ApprovalResult{
-				Choice:     opt.Choice,
-				Path:       opt.Path,
-				Pattern:    opt.Pattern,
-				SaveToRepo: opt.SaveToRepo,
-			}
-			return m, tea.Quit
-
-		// Quick number selection (1-9)
-		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
-			idx := int(msg.String()[0] - '1')
-			if idx < len(m.options) {
-				m.cursor = idx
-				opt := m.options[m.cursor]
-				m.Done = true
-				m.result = ApprovalResult{
-					Choice:     opt.Choice,
-					Path:       opt.Path,
-					Pattern:    opt.Pattern,
-					SaveToRepo: opt.SaveToRepo,
-				}
-				return m, tea.Quit
-			}
-		}
-
-	case tea.WindowSizeMsg:
-		m.width = msg.Width
-	}
-
-	return m, nil
-}
-
-// UpdateEmbedded handles messages for embedded use (does not call tea.Quit).
-// Returns true if the model finished (user made a selection or cancelled).
-func (m *ApprovalModel) UpdateEmbedded(msg tea.Msg) bool {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "ctrl+c", "esc":
 			m.Done = true
@@ -418,7 +352,7 @@ func (m *ApprovalModel) UpdateEmbedded(msg tea.Msg) bool {
 				m.cursor = 0
 			}
 
-		case "enter", " ":
+		case "enter", " ", "space":
 			opt := m.options[m.cursor]
 			m.Done = true
 			m.result = ApprovalResult{
@@ -453,9 +387,27 @@ func (m *ApprovalModel) UpdateEmbedded(msg tea.Msg) bool {
 	return false
 }
 
-func (m *ApprovalModel) View() string {
+func (m *ApprovalModel) Init() tea.Cmd {
+	return nil
+}
+
+// Update handles messages for standalone tea.Program use (calls tea.Quit on completion).
+func (m *ApprovalModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.applyMessage(msg) {
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+// UpdateEmbedded handles messages for embedded use (does not call tea.Quit).
+// Returns true if the model finished (user made a selection or cancelled).
+func (m *ApprovalModel) UpdateEmbedded(msg tea.Msg) bool {
+	return m.applyMessage(msg)
+}
+
+func (m *ApprovalModel) View() tea.View {
 	if m.Done {
-		return ""
+		return tea.NewView("")
 	}
 
 	var b strings.Builder
@@ -466,43 +418,22 @@ func (m *ApprovalModel) View() string {
 		innerWidth = 20
 	}
 
-	// Build styles with accent color
-	containerStyle := lipgloss.NewStyle().
-		BorderStyle(lipgloss.NormalBorder()).
-		BorderLeft(true).
-		BorderForeground(m.accentColor).
-		PaddingLeft(1).
-		PaddingRight(2).
-		PaddingTop(1).
-		PaddingBottom(1).
-		Width(m.width)
-
-	titleStyle := lipgloss.NewStyle().
-		Foreground(m.accentColor).
-		Bold(true).
-		MarginBottom(1)
-
+	containerStyle := tuiutil.AccentPanelStyle(m.accentColor).Width(m.width)
+	titleStyle := tuiutil.AccentTitleStyle(m.accentColor)
 	pathStyle := lipgloss.NewStyle().
 		Foreground(approvalTextColor).
 		MarginBottom(1)
-
 	repoStyle := lipgloss.NewStyle().
 		Foreground(approvalMutedColor).
 		MarginBottom(1)
-
 	optionStyle := lipgloss.NewStyle().
 		Foreground(approvalTextColor)
-
 	selectedStyle := lipgloss.NewStyle().
 		Foreground(m.accentColor)
-
 	descStyle := lipgloss.NewStyle().
 		Foreground(approvalMutedColor).
 		PaddingLeft(3)
-
-	helpStyle := lipgloss.NewStyle().
-		Foreground(approvalMutedColor).
-		MarginTop(1)
+	helpStyle := tuiutil.MutedHelpStyle(approvalMutedColor)
 
 	// Title
 	b.WriteString(titleStyle.Render(m.title))
@@ -529,21 +460,12 @@ func (m *ApprovalModel) View() string {
 	// Options
 	for i, opt := range m.options {
 		isSelected := i == m.cursor
-
-		// Option line: "1. Label"
 		style := optionStyle
 		if isSelected {
 			style = selectedStyle
 		}
 
-		prefix := fmt.Sprintf("%d. ", i+1)
-		if isSelected {
-			prefix = "> " + prefix[0:len(prefix)-2] // Remove space, will re-add
-			prefix = fmt.Sprintf("> %d. ", i+1)
-		} else {
-			prefix = fmt.Sprintf("  %d. ", i+1)
-		}
-
+		prefix := tuiutil.NumberedOptionPrefix(i, isSelected)
 		b.WriteString(style.Render(wordwrap.String(prefix+opt.Label, innerWidth)))
 		b.WriteString("\n")
 
@@ -553,10 +475,9 @@ func (m *ApprovalModel) View() string {
 	}
 
 	// Help bar
-	helpText := "↑↓ select  1-" + fmt.Sprintf("%d", len(m.options)) + " quick  enter confirm  esc cancel"
-	b.WriteString(helpStyle.Render(helpText))
+	b.WriteString(helpStyle.Render(tuiutil.QuickSelectHelpText(len(m.options))))
 
-	return containerStyle.Render(b.String())
+	return tea.NewView(containerStyle.Render(b.String()))
 }
 
 // RenderSummary returns a summary of the user's choice for display after the UI closes.
@@ -576,12 +497,7 @@ func (m *ApprovalModel) RenderSummary() string {
 	b.WriteString(labelStyle.Render(m.title + ": "))
 	b.WriteString(valueStyle.Render(opt.Label))
 
-	containerStyle := lipgloss.NewStyle().
-		BorderStyle(lipgloss.NormalBorder()).
-		BorderLeft(true).
-		BorderForeground(m.accentColor).
-		PaddingLeft(1).
-		PaddingRight(2)
+	containerStyle := tuiutil.CompactAccentPanelStyle(m.accentColor)
 
 	return "\n" + containerStyle.Render(b.String()) + "\n"
 }

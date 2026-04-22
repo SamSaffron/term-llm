@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/samsaffron/term-llm/internal/image"
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/signal"
@@ -273,7 +273,7 @@ func (m imageSpinnerModel) Init() tea.Cmd {
 
 func (m imageSpinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		if msg.String() == "ctrl+c" || msg.String() == "q" {
 			return m, tea.Quit
 		}
@@ -293,16 +293,17 @@ func (m imageSpinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m imageSpinnerModel) View() string {
+func (m imageSpinnerModel) View() tea.View {
 	if m.done {
-		return ""
+		return tea.NewView("")
 	}
-	return ui.StreamingIndicator{
+	s := ui.StreamingIndicator{
 		Spinner:    m.spinner.View(),
 		Phase:      m.message,
 		Elapsed:    time.Since(m.start),
 		ShowCancel: true,
 	}.Render(m.styles) + "\n"
+	return tea.NewView(s)
 }
 
 func runImageWithSpinner(_ context.Context, provider image.ImageProvider, generate func() (*image.ImageResult, error), message string) (*image.ImageResult, error) {

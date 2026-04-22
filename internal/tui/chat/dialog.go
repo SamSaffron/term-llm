@@ -4,9 +4,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
@@ -303,7 +303,7 @@ func (d *DialogModel) Update(msg tea.Msg) (*DialogModel, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("up", "k"))):
 			if d.cursor > 0 {
@@ -381,16 +381,7 @@ func (d *DialogModel) viewModelPicker() string {
 	}
 
 	maxVisible := 12
-
-	// Calculate visible window based on cursor position
-	startIdx := 0
-	if d.cursor >= maxVisible {
-		startIdx = d.cursor - maxVisible + 1
-	}
-	endIdx := startIdx + maxVisible
-	if endIdx > len(d.filtered) {
-		endIdx = len(d.filtered)
-	}
+	startIdx, endIdx := ui.VisibleRange(len(d.filtered), d.cursor, maxVisible)
 	items := d.filtered[startIdx:endIdx]
 
 	for i, item := range items {
@@ -428,16 +419,8 @@ func (d *DialogModel) viewStandardDialog() string {
 	if len(items) == 0 {
 		items = d.items
 	}
-	startIdx := 0
-	if len(items) > maxItems {
-		if d.cursor >= maxItems {
-			startIdx = d.cursor - maxItems + 1
-		}
-		items = items[startIdx:]
-		if len(items) > maxItems {
-			items = items[:maxItems]
-		}
-	}
+	startIdx, endIdx := ui.VisibleRange(len(items), d.cursor, maxItems)
+	items = items[startIdx:endIdx]
 
 	borderStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -557,16 +540,8 @@ func (d *DialogModel) viewMCPPicker() string {
 
 	maxItems := 15
 	items := d.filtered
-	startIdx := 0
-	if len(items) > maxItems {
-		if d.cursor >= maxItems {
-			startIdx = d.cursor - maxItems + 1
-		}
-		items = items[startIdx:]
-		if len(items) > maxItems {
-			items = items[:maxItems]
-		}
-	}
+	startIdx, endIdx := ui.VisibleRange(len(items), d.cursor, maxItems)
+	items = items[startIdx:endIdx]
 
 	for i, item := range items {
 		actualIdx := startIdx + i

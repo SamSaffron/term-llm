@@ -7,12 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/cursor"
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/huh"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/huh/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"golang.org/x/term"
 )
@@ -107,8 +106,8 @@ func (m spinnerModel) listenProgress() tea.Cmd {
 
 func (m spinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		if msg.Type == tea.KeyEscape || msg.String() == "ctrl+c" {
+	case tea.KeyPressMsg:
+		if msg.String() == "esc" || msg.String() == "ctrl+c" {
 			m.cancelled = true
 			m.cancel()
 			return m, tea.Quit
@@ -155,24 +154,20 @@ func (m spinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m spinnerModel) View() string {
-	// When paused (e.g., during approval prompt), hide the spinner
+func (m spinnerModel) View() tea.View {
 	if m.paused {
-		return ""
+		return tea.NewView("")
 	}
 
 	var b strings.Builder
 
-	// Print completed milestones above spinner
 	for _, ms := range m.milestones {
 		b.WriteString(ms)
 		b.WriteString("\n")
 	}
 
-	// Calculate elapsed time, excluding paused duration
 	elapsed := time.Since(m.startTime) - m.pausedTotal
 
-	// Streaming indicator
 	b.WriteString(StreamingIndicator{
 		Spinner:    m.spinner.View(),
 		Phase:      m.phase,
@@ -182,7 +177,7 @@ func (m spinnerModel) View() string {
 		ShowCancel: true,
 	}.Render(m.styles))
 
-	return b.String()
+	return tea.NewView(b.String())
 }
 
 func runWithSpinnerInternal(ctx context.Context, debug bool, progress <-chan ProgressUpdate, run func(context.Context) (any, error)) (any, error) {
@@ -299,23 +294,19 @@ func newSelectModel(suggestions []llm.CommandSuggestion, tty *os.File) selectMod
 
 	styles := NewStyles(tty)
 
-	// Create a renderer bound to the TTY for proper color output
-	renderer := lipgloss.NewRenderer(tty)
-
-	// Colors matching the theme
 	mutedColor := styles.theme.Muted
 
 	ti := textinput.New()
 	ti.Placeholder = "What else should I know?"
 	ti.CharLimit = 500
-	ti.Width = min(60, width-10)
+	ti.SetWidth(min(60, width-10))
 	ti.Prompt = ""
-	// Use renderer-bound styles so colors work correctly with the TTY
-	ti.PromptStyle = renderer.NewStyle()
-	ti.TextStyle = renderer.NewStyle() // Use terminal's default text color
-	ti.PlaceholderStyle = renderer.NewStyle().Foreground(mutedColor)
-	ti.Cursor.Style = renderer.NewStyle() // Use terminal's default cursor
-	ti.Cursor.SetMode(cursor.CursorBlink)
+	tiStyles := ti.Styles()
+	tiStyles.Focused.Prompt = lipgloss.NewStyle()
+	tiStyles.Focused.Text = lipgloss.NewStyle()
+	tiStyles.Focused.Placeholder = lipgloss.NewStyle().Foreground(mutedColor)
+	tiStyles.Blurred = tiStyles.Focused
+	ti.SetStyles(tiStyles)
 
 	return selectModel{
 		suggestions: suggestions,
@@ -339,8 +330,8 @@ func (m selectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
-		m.textInput.Width = min(60, m.width-10)
-	case tea.KeyMsg:
+		m.textInput.SetWidth(min(60, m.width-10))
+	case tea.KeyPressMsg:
 		// When on "something else", handle text input
 		if m.isOnSomethingElse() {
 			switch msg.String() {
@@ -438,7 +429,7 @@ func wrapText(text string, maxWidth int, indent string) string {
 	return strings.Join(lines, "\n")
 }
 
-func (m selectModel) View() string {
+func (m selectModel) View() tea.View {
 	var b strings.Builder
 
 	b.WriteString(m.styles.Bold.Render("Select a command to run"))
@@ -478,14 +469,13 @@ func (m selectModel) View() string {
 		b.WriteString("\n")
 	}
 
-	// Show command being executed when done
 	if m.done {
 		b.WriteString("\n$ ")
 		b.WriteString(m.selected)
 		b.WriteString("\n")
 	}
 
-	return b.String()
+	return tea.NewView(b.String())
 }
 
 // SelectCommand presents the user with a list of command suggestions and returns the selected one.

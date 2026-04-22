@@ -6,9 +6,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/spf13/cobra"
@@ -175,7 +175,7 @@ func (m themeSelectorModel) Init() tea.Cmd {
 
 func (m themeSelectorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("up", "k"))):
 			if m.cursor > 0 {
@@ -201,9 +201,9 @@ func (m themeSelectorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m themeSelectorModel) View() string {
+func (m themeSelectorModel) View() tea.View {
 	if len(m.presets) == 0 {
-		return "No themes available"
+		return tea.NewView("No themes available")
 	}
 
 	// Get the hovered theme for preview
@@ -244,7 +244,7 @@ func (m themeSelectorModel) View() string {
 	// Combine columns side by side with spacing
 	listCol := lipgloss.NewStyle().Width(30).Render(listBuilder.String())
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, listCol, "  ", preview)
+	return tea.NewView(lipgloss.JoinHorizontal(lipgloss.Top, listCol, "  ", preview))
 }
 
 // renderThemePreview renders a preview panel showing the theme colors

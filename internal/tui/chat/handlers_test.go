@@ -7,9 +7,10 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/tools"
 	sessionsui "github.com/samsaffron/term-llm/internal/tui/sessions"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -26,7 +27,7 @@ func TestHandleKeyMsg_SessionListEnterResumesSession(t *testing.T) {
 		{ID: sessionID, Label: "picked session"},
 	}, "")
 
-	result, _ := m.handleKeyMsg(tea.KeyMsg{Type: tea.KeyEnter})
+	result, _ := m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
 	rm := result.(*Model)
 
 	if rm.dialog.IsOpen() {
@@ -56,7 +57,7 @@ func TestResumeBrowserEnterRequestsRelaunch(t *testing.T) {
 	result, _ := m.cmdResume(nil)
 	rm := result.(*Model)
 
-	result, cmd := rm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	result, cmd := rm.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	rm = result.(*Model)
 	if cmd == nil {
 		t.Fatal("expected enter to return a resume selection command")
@@ -100,7 +101,7 @@ func TestResumeBrowserCloseReturnsToChatWithoutLosingDraft(t *testing.T) {
 	result, _ := m.cmdResume(nil)
 	rm := result.(*Model)
 
-	result, cmd := rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	result, cmd := rm.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
 	rm = result.(*Model)
 	if cmd == nil {
 		t.Fatal("expected q to return a close command")
@@ -136,7 +137,7 @@ func TestHandleKeyMsg_StreamingCancelInterjectionRestoresComposerAndShowsStoppin
 		cancelCalls++
 	}
 
-	_, _ = m.handleKeyMsg(tea.KeyMsg{Type: tea.KeyEnter})
+	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	if cancelCalls != 1 {
 		t.Fatalf("expected stream cancel to be called once, got %d", cancelCalls)
@@ -166,7 +167,7 @@ func TestHandleKeyMsg_StreamingEnterOnEmptyComposerShowsHint(t *testing.T) {
 		cancelCalls++
 	}
 
-	_, _ = m.handleKeyMsg(tea.KeyMsg{Type: tea.KeyEnter})
+	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	if cancelCalls != 0 {
 		t.Fatalf("expected empty enter to avoid cancellation, got %d cancel calls", cancelCalls)
@@ -183,7 +184,7 @@ func TestHandleKeyMsg_StreamingAsyncClassificationFeelsImmediate(t *testing.T) {
 	m.fastProvider = llm.NewMockProvider("fast").AddTextResponse("interject")
 	m.setTextareaValue("also check the schema")
 
-	_, cmd := m.handleKeyMsg(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd := m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("expected async classification command")
 	}
@@ -299,7 +300,7 @@ func TestHandleKeyMsg_StreamingEscCancelsActiveStream(t *testing.T) {
 		cancelCalls++
 	}
 
-	_, _ = m.handleKeyMsg(tea.KeyMsg{Type: tea.KeyEsc})
+	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyEsc})
 
 	if cancelCalls != 1 {
 		t.Fatalf("expected esc to call stream cancel once, got %d", cancelCalls)
@@ -315,6 +316,87 @@ func stubClipboard(t *testing.T) {
 	t.Cleanup(func() { readClipboardImage = orig })
 }
 
+func TestUpdate_PasteMsg_RoutedToEmbeddedAskUserModel(t *testing.T) {
+	m := newTestChatModel(false)
+	m.setTextareaValue("draft")
+	m.askUserModel = tools.NewEmbeddedAskUserModel([]tools.AskUserQuestion{{
+		Header:   "Q1",
+		Question: "Choose",
+		Options: []tools.AskUserOption{
+			{Label: "A"},
+			{Label: "B"},
+		},
+	}}, 80)
+	m.askUserDoneCh = make(chan []tools.AskUserAnswer, 1)
+	m.askUserModel.UpdateEmbedded(tea.KeyPressMsg{Code: tea.KeyDown})
+	m.askUserModel.UpdateEmbedded(tea.KeyPressMsg{Code: tea.KeyDown})
+
+	result, _ := m.Update(tea.PasteMsg{Content: "custom answer"})
+	rm := result.(*Model)
+
+	if got := rm.textarea.Value(); got != "draft" {
+		t.Fatalf("expected composer draft to remain unchanged, got %q", got)
+	}
+	view := ui.StripANSI(rm.askUserModel.View().Content)
+	if !strings.Contains(view, "custom answer") {
+		t.Fatalf("expected pasted text in ask_user view, got %q", view)
+	}
+}
+
+func TestUpdate_PasteMsg_RoutedToHandoverInstructionsEditor(t *testing.T) {
+	m := newTestChatModel(false)
+	m.setTextareaValue("draft")
+	m.handoverPreview = newHandoverPreviewModel("document", "developer", "", 80, m.styles)
+	m.handoverPreview.editing = true
+
+	result, _ := m.Update(tea.PasteMsg{Content: "extra context"})
+	rm := result.(*Model)
+
+	if got := rm.textarea.Value(); got != "draft" {
+		t.Fatalf("expected composer draft to remain unchanged, got %q", got)
+	}
+	if got := rm.handoverPreview.Instructions(); got != "extra context" {
+		t.Fatalf("expected pasted handover instructions, got %q", got)
+	}
+}
+
+func TestUpdate_PasteMsg_RoutedToModelPickerFilter(t *testing.T) {
+	m := newTestChatModel(false)
+	m.setTextareaValue("draft")
+	m.dialog.ShowModelPicker("mock:mock-model", []ProviderInfo{{
+		Name:   "mock",
+		Models: []string{"mock-model", "other-model"},
+	}}, nil)
+
+	result, _ := m.Update(tea.PasteMsg{Content: "other"})
+	rm := result.(*Model)
+
+	if got := rm.textarea.Value(); got != "draft" {
+		t.Fatalf("expected composer draft to remain unchanged, got %q", got)
+	}
+	if got := rm.dialog.Query(); got != "other" {
+		t.Fatalf("expected pasted model filter query, got %q", got)
+	}
+}
+
+func TestUpdate_PasteMsg_RoutedToMCPPickerFilter(t *testing.T) {
+	m := newTestChatModel(false)
+	m.setTextareaValue("draft")
+	m.dialog.dialogType = DialogMCPPicker
+	m.dialog.items = []DialogItem{{ID: "server-one", Label: "server-one"}}
+	m.dialog.filtered = m.dialog.items
+
+	result, _ := m.Update(tea.PasteMsg{Content: "server"})
+	rm := result.(*Model)
+
+	if got := rm.textarea.Value(); got != "draft" {
+		t.Fatalf("expected composer draft to remain unchanged, got %q", got)
+	}
+	if got := rm.dialog.Query(); got != "server" {
+		t.Fatalf("expected pasted MCP filter query, got %q", got)
+	}
+}
+
 func TestPasteCollapse_LargePasteBecomesInlinePlaceholder(t *testing.T) {
 	stubClipboard(t)
 	m := newTestChatModel(false)
@@ -322,11 +404,7 @@ func TestPasteCollapse_LargePasteBecomesInlinePlaceholder(t *testing.T) {
 	// 100+ chars to trigger collapse
 	pasteText := strings.Repeat("abcdefghij", 11) // 110 chars
 
-	_, _ = m.handleKeyMsg(tea.KeyMsg{
-		Type:  tea.KeyRunes,
-		Runes: []rune(pasteText),
-		Paste: true,
-	})
+	_, _ = m.handlePasteMsg(tea.PasteMsg{Content: pasteText})
 
 	// Placeholder should be in the textarea, not the literal paste
 	got := m.textarea.Value()
@@ -353,11 +431,7 @@ func TestPasteCollapse_SmallPasteGoesToTextarea(t *testing.T) {
 	// Under 100 chars — should pass through
 	pasteText := "short paste that is under the hundred char threshold"
 
-	_, _ = m.handleKeyMsg(tea.KeyMsg{
-		Type:  tea.KeyRunes,
-		Runes: []rune(pasteText),
-		Paste: true,
-	})
+	_, _ = m.handlePasteMsg(tea.PasteMsg{Content: pasteText})
 
 	if len(m.pasteChunks) != 0 {
 		t.Fatalf("expected no collapsed paste for short text, got %d", len(m.pasteChunks))
@@ -373,11 +447,7 @@ func TestPasteCollapse_MultiplePastesGetUniquePlaceholders(t *testing.T) {
 
 	longPaste := strings.Repeat("x", 101)
 	for i := 0; i < 3; i++ {
-		_, _ = m.handleKeyMsg(tea.KeyMsg{
-			Type:  tea.KeyRunes,
-			Runes: []rune(longPaste),
-			Paste: true,
-		})
+		_, _ = m.handlePasteMsg(tea.PasteMsg{Content: longPaste})
 	}
 
 	if len(m.pasteChunks) != 3 {
@@ -419,14 +489,24 @@ func TestPasteCollapse_MultilinePlaceholderShowsLines(t *testing.T) {
 	// Multi-line paste over 100 chars
 	pasteText := "line one is here with some extra text to pad\nline two also has plenty of content in it\nline three as well with more words\nline four rounds it out nicely"
 
-	_, _ = m.handleKeyMsg(tea.KeyMsg{
-		Type:  tea.KeyRunes,
-		Runes: []rune(pasteText),
-		Paste: true,
-	})
+	_, _ = m.handlePasteMsg(tea.PasteMsg{Content: pasteText})
 
 	got := m.textarea.Value()
 	if !strings.Contains(got, "+4 lines]") {
 		t.Fatalf("expected '+4 lines' in placeholder, got %q", got)
+	}
+}
+
+func TestHandlePasteMsg_ShowsCommandCompletionsForPastedSlashCommand(t *testing.T) {
+	stubClipboard(t)
+	m := newTestChatModel(false)
+
+	_, _ = m.Update(tea.PasteMsg{Content: "/"})
+
+	if got := m.textarea.Value(); got != "/" {
+		t.Fatalf("expected pasted slash in composer, got %q", got)
+	}
+	if !m.completions.IsVisible() {
+		t.Fatal("expected completions to be visible after pasting a slash command")
 	}
 }

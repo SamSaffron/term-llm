@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/samsaffron/term-llm/internal/ui"
 )
 
 func TestStreamingBlock_AddText(t *testing.T) {
@@ -41,7 +42,7 @@ func TestStreamingBlock_ToolTracking(t *testing.T) {
 		t.Error("Should have pending tools after StartTool")
 	}
 
-	output := sb.Render(0, false, false)
+	output := ui.StripANSI(sb.Render(0, false, false))
 	textIdx := strings.Index(output, "Thinking...")
 	if textIdx == -1 {
 		t.Fatalf("expected text in render output, got %q", output)

@@ -1,6 +1,6 @@
 package sessions
 
-import "github.com/charmbracelet/bubbles/key"
+import "charm.land/bubbles/v2/key"
 
 // KeyMap defines keybindings for the sessions browser
 type KeyMap struct {

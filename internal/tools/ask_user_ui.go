@@ -5,10 +5,11 @@ import (
 	"os"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/muesli/reflow/wordwrap"
+	"github.com/samsaffron/term-llm/internal/tuiutil"
 	"golang.org/x/term"
 )
 
@@ -23,14 +24,7 @@ var (
 // Styles
 var (
 	// Container with left border accent (for interactive UI)
-	askContainerStyle = lipgloss.NewStyle().
-				BorderStyle(lipgloss.NormalBorder()).
-				BorderLeft(true).
-				BorderForeground(askAccentColor).
-				PaddingLeft(1).
-				PaddingRight(2).
-				PaddingTop(1).
-				PaddingBottom(1)
+	askContainerStyle = tuiutil.AccentPanelStyle(askAccentColor)
 
 	// Compact container for summary display (no vertical padding)
 	askSummaryStyle = lipgloss.NewStyle().
@@ -76,9 +70,7 @@ var (
 			Foreground(askAccentColor)
 
 	// Help bar
-	askHelpStyle = lipgloss.NewStyle().
-			Foreground(askMutedColor).
-			MarginTop(1)
+	askHelpStyle = tuiutil.MutedHelpStyle(askMutedColor)
 
 	// Review/confirm styles
 	askReviewLabelStyle = lipgloss.NewStyle().
@@ -112,6 +104,11 @@ type AskUserModel struct {
 	Cancelled  bool
 }
 
+// askInputWidth returns the width used for the custom-answer text input.
+func askInputWidth(width int) int {
+	return max(10, min(50, width-10))
+}
+
 // IsDone returns true if the user has completed all questions.
 func (m *AskUserModel) IsDone() bool {
 	return m.Done
@@ -125,7 +122,7 @@ func (m *AskUserModel) IsCancelled() bool {
 // SetWidth updates the width for rendering.
 func (m *AskUserModel) SetWidth(width int) {
 	m.width = width
-	m.textInput.Width = min(50, width-10)
+	m.textInput.SetWidth(askInputWidth(width))
 }
 
 // Answers returns the collected answers after the user completes the dialog.
@@ -165,16 +162,23 @@ func (m *AskUserModel) Answers() []AskUserAnswer {
 	return answers
 }
 
-// NewEmbeddedAskUserModel creates an ask_user model for embedding in a parent TUI.
-func NewEmbeddedAskUserModel(questions []AskUserQuestion, width int) *AskUserModel {
+// applyAskInputStyles applies the ask-user textinput styles for both focus states.
+func applyAskInputStyles(ti *textinput.Model) {
+	ts := ti.Styles()
+	ts.Focused.Prompt = lipgloss.NewStyle()
+	ts.Focused.Text = lipgloss.NewStyle().Foreground(askTextColor)
+	ts.Focused.Placeholder = lipgloss.NewStyle().Foreground(askMutedColor)
+	ts.Blurred = ts.Focused
+	ti.SetStyles(ts)
+}
+
+func newAskUserModelWithWidth(questions []AskUserQuestion, width int) *AskUserModel {
 	ti := textinput.New()
 	ti.Placeholder = "Type your own answer"
 	ti.CharLimit = 500
-	ti.Width = min(50, width-10)
-	ti.PromptStyle = lipgloss.NewStyle()
-	ti.TextStyle = lipgloss.NewStyle().Foreground(askTextColor)
-	ti.PlaceholderStyle = lipgloss.NewStyle().Foreground(askMutedColor)
+	ti.SetWidth(askInputWidth(width))
 	ti.Prompt = ""
+	applyAskInputStyles(&ti)
 
 	m := &AskUserModel{
 		questions:  questions,
@@ -185,12 +189,16 @@ func NewEmbeddedAskUserModel(questions []AskUserQuestion, width int) *AskUserMod
 		width:      width,
 	}
 
-	// Initialize answer indices
 	for i := range m.answers {
 		m.answers[i].questionIndex = i
 	}
 
 	return m
+}
+
+// NewEmbeddedAskUserModel creates an ask_user model for embedding in a parent TUI.
+func NewEmbeddedAskUserModel(questions []AskUserQuestion, width int) *AskUserModel {
+	return newAskUserModelWithWidth(questions, width)
 }
 
 // isOnCustomOption returns true if cursor is on "Type your own answer"
@@ -239,30 +247,7 @@ func (m *AskUserModel) toggleOption(idx int) {
 }
 
 func newAskModel(questions []AskUserQuestion) *AskUserModel {
-	ti := textinput.New()
-	ti.Placeholder = "Type your own answer"
-	ti.CharLimit = 500
-	ti.Width = 50
-	ti.PromptStyle = lipgloss.NewStyle()
-	ti.TextStyle = lipgloss.NewStyle().Foreground(askTextColor)
-	ti.PlaceholderStyle = lipgloss.NewStyle().Foreground(askMutedColor)
-	ti.Prompt = ""
-
-	m := &AskUserModel{
-		questions:  questions,
-		answers:    make([]askUIAnswer, len(questions)),
-		currentTab: 0,
-		cursor:     0,
-		textInput:  ti,
-		width:      80,
-	}
-
-	// Initialize answer indices
-	for i := range m.answers {
-		m.answers[i].questionIndex = i
-	}
-
-	return m
+	return newAskUserModelWithWidth(questions, 80)
 }
 
 func (m *AskUserModel) Init() tea.Cmd {
@@ -300,357 +285,207 @@ func (m *AskUserModel) totalTabs() int {
 	return len(m.questions) + 1 // questions + confirm tab
 }
 
-// Update handles messages for standalone tea.Program use (calls tea.Quit on completion).
-func (m *AskUserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.textInput.Width = min(50, m.width-10)
+type askUpdateMode int
 
-	case tea.KeyMsg:
-		// Handle cancel
-		if msg.String() == "ctrl+c" || msg.String() == "esc" {
-			m.Cancelled = true
-			return m, tea.Quit
-		}
+const (
+	askUpdateStandalone askUpdateMode = iota
+	askUpdateEmbedded
+)
 
-		// When on custom input option, handle text input
-		if m.isOnCustomOption() {
-			switch msg.String() {
-			case "enter":
-				text := strings.TrimSpace(m.textInput.Value())
-				if text != "" {
-					m.answers[m.currentTab].text = text
-					m.answers[m.currentTab].isCustom = true
-					m.textInput.Blur()
-					return m.advanceToNext()
-				}
-				return m, nil
-			case "up":
-				// Move up from custom option (only arrow key, not 'k' which should type)
-				q := m.questions[m.currentTab]
-				m.cursor = len(q.Options) - 1
-				m.textInput.Blur()
-				return m, nil
-			case "tab":
-				// Tab to next question
-				newTab := (m.currentTab + 1) % m.totalTabs()
-				return m.switchTab(newTab)
-			case "shift+tab":
-				newTab := (m.currentTab - 1 + m.totalTabs()) % m.totalTabs()
-				return m.switchTab(newTab)
-			}
-			// Pass other keys to text input
-			var cmd tea.Cmd
-			m.textInput, cmd = m.textInput.Update(msg)
-			return m, cmd
-		}
-
-		// Tab navigation (when not on custom option)
-		switch msg.String() {
-		case "left", "h":
-			newTab := (m.currentTab - 1 + m.totalTabs()) % m.totalTabs()
-			return m.switchTab(newTab)
-		case "right", "l":
-			newTab := (m.currentTab + 1) % m.totalTabs()
-			return m.switchTab(newTab)
-		case "tab":
-			newTab := (m.currentTab + 1) % m.totalTabs()
-			return m.switchTab(newTab)
-		case "shift+tab":
-			newTab := (m.currentTab - 1 + m.totalTabs()) % m.totalTabs()
-			return m.switchTab(newTab)
-		}
-
-		// On confirm tab
-		if m.isOnConfirmTab() {
-			if msg.String() == "enter" {
-				if m.allAnswered() {
-					m.Done = true
-					return m, tea.Quit
-				}
-			}
-			return m, nil
-		}
-
-		// Question navigation
-		q := m.questions[m.currentTab]
-		// Multi-select questions don't have "Type your own" option
-		totalOptions := len(q.Options)
-		if !q.MultiSelect {
-			totalOptions++ // +1 for "Type your own"
-		}
-
-		switch msg.String() {
-		case "up", "k":
-			m.cursor = (m.cursor - 1 + totalOptions) % totalOptions
-			// If moved to custom option (single-select only), focus the input
-			if !q.MultiSelect && m.cursor == len(q.Options) {
-				m.textInput.Focus()
-				return m, textinput.Blink
-			}
-		case "down", "j":
-			m.cursor = (m.cursor + 1) % totalOptions
-			// If moved to custom option (single-select only), focus the input
-			if !q.MultiSelect && m.cursor == len(q.Options) {
-				m.textInput.Focus()
-				return m, textinput.Blink
-			}
-		case " ":
-			if q.MultiSelect {
-				// Multi-select: toggle the current option
-				m.toggleOption(m.cursor)
-				return m, nil
-			}
-			// Single-select: select and advance
-			m.answers[m.currentTab].text = q.Options[m.cursor].Label
-			m.answers[m.currentTab].isCustom = false
-			return m.advanceToNext()
-		case "enter":
-			if q.MultiSelect {
-				// Single-question multi-select has no confirm tab, so enter submits.
-				if m.isSingleQuestion() && m.isAnswered(m.currentTab) {
-					m.Done = true
-					return m, tea.Quit
-				}
-				// Multi-select: toggle the current option
-				m.toggleOption(m.cursor)
-				return m, nil
-			}
-			// Single-select: select and advance
-			m.answers[m.currentTab].text = q.Options[m.cursor].Label
-			m.answers[m.currentTab].isCustom = false
-			return m.advanceToNext()
+func (m *AskUserModel) nextUnansweredTab() int {
+	for i := m.currentTab + 1; i < len(m.questions); i++ {
+		if !m.isAnswered(i) {
+			return i
 		}
 	}
+	for i := 0; i < m.currentTab; i++ {
+		if !m.isAnswered(i) {
+			return i
+		}
+	}
+	return len(m.questions)
+}
 
-	return m, nil
+func (m *AskUserModel) switchTabTo(newTab int) {
+	m.currentTab = newTab
+	m.cursor = 0
+	m.textInput.Blur()
+	m.textInput.SetValue("")
+}
+
+func (m *AskUserModel) advanceToNext(mode askUpdateMode) (tea.Cmd, bool) {
+	if m.isSingleQuestion() {
+		m.Done = true
+		return nil, true
+	}
+	m.switchTabTo(m.nextUnansweredTab())
+	return nil, false
+}
+
+func (m *AskUserModel) moveQuestionCursor(delta int, totalOptions int) tea.Cmd {
+	m.cursor = (m.cursor + delta + totalOptions) % totalOptions
+	if !m.isMultiSelect() && m.cursor == len(m.questions[m.currentTab].Options) {
+		m.textInput.Focus()
+		return textinput.Blink
+	}
+	return nil
+}
+
+func (m *AskUserModel) handleCustomInputMessage(msg tea.KeyPressMsg, mode askUpdateMode) (tea.Cmd, bool) {
+	switch msg.String() {
+	case "enter":
+		text := strings.TrimSpace(m.textInput.Value())
+		if text == "" {
+			return nil, false
+		}
+		m.answers[m.currentTab].text = text
+		m.answers[m.currentTab].isCustom = true
+		m.textInput.Blur()
+		return m.advanceToNext(mode)
+	case "up":
+		q := m.questions[m.currentTab]
+		m.cursor = len(q.Options) - 1
+		m.textInput.Blur()
+		return nil, false
+	case "tab":
+		m.switchTabTo((m.currentTab + 1) % m.totalTabs())
+		return nil, false
+	case "shift+tab":
+		m.switchTabTo((m.currentTab - 1 + m.totalTabs()) % m.totalTabs())
+		return nil, false
+	default:
+		var cmd tea.Cmd
+		m.textInput, cmd = m.textInput.Update(msg)
+		return cmd, false
+	}
+}
+
+func (m *AskUserModel) handleQuestionMessage(msg tea.KeyPressMsg, mode askUpdateMode) (tea.Cmd, bool) {
+	q := m.questions[m.currentTab]
+	totalOptions := len(q.Options)
+	if !q.MultiSelect {
+		totalOptions++
+	}
+
+	switch msg.String() {
+	case "up", "k":
+		return m.moveQuestionCursor(-1, totalOptions), false
+	case "down", "j":
+		return m.moveQuestionCursor(1, totalOptions), false
+	case " ", "space":
+		if q.MultiSelect {
+			m.toggleOption(m.cursor)
+			return nil, false
+		}
+		m.answers[m.currentTab].text = q.Options[m.cursor].Label
+		m.answers[m.currentTab].isCustom = false
+		return m.advanceToNext(mode)
+	case "enter":
+		if q.MultiSelect {
+			if m.isSingleQuestion() && m.isAnswered(m.currentTab) {
+				m.Done = true
+				return nil, true
+			}
+			m.toggleOption(m.cursor)
+			return nil, false
+		}
+		m.answers[m.currentTab].text = q.Options[m.cursor].Label
+		m.answers[m.currentTab].isCustom = false
+		return m.advanceToNext(mode)
+	}
+
+	return nil, false
+}
+
+func (m *AskUserModel) applyMessage(msg tea.Msg, mode askUpdateMode) (tea.Cmd, bool) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.SetWidth(msg.Width)
+		return nil, false
+
+	case tea.PasteMsg:
+		if !m.isOnCustomOption() {
+			return nil, false
+		}
+		var cmd tea.Cmd
+		m.textInput, cmd = m.textInput.Update(msg)
+		return cmd, false
+
+	case tea.KeyPressMsg:
+		if msg.String() == "ctrl+c" || msg.String() == "esc" {
+			m.Cancelled = true
+			return nil, true
+		}
+
+		if m.isOnCustomOption() {
+			return m.handleCustomInputMessage(msg, mode)
+		}
+
+		switch msg.String() {
+		case "left", "h":
+			m.switchTabTo((m.currentTab - 1 + m.totalTabs()) % m.totalTabs())
+			return nil, false
+		case "right", "l", "tab":
+			m.switchTabTo((m.currentTab + 1) % m.totalTabs())
+			return nil, false
+		case "shift+tab":
+			m.switchTabTo((m.currentTab - 1 + m.totalTabs()) % m.totalTabs())
+			return nil, false
+		}
+
+		if m.isOnConfirmTab() {
+			if msg.String() == "enter" && m.allAnswered() {
+				m.Done = true
+				return nil, true
+			}
+			return nil, false
+		}
+
+		return m.handleQuestionMessage(msg, mode)
+	}
+
+	return nil, false
+}
+
+// Update handles messages for standalone tea.Program use (calls tea.Quit on completion).
+func (m *AskUserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	cmd, done := m.applyMessage(msg, askUpdateStandalone)
+	if done {
+		return m, tea.Quit
+	}
+	return m, cmd
 }
 
 // UpdateEmbedded handles messages for embedded use (does not call tea.Quit).
 // Returns a tea.Cmd if one is needed (e.g., for text input blinking).
 func (m *AskUserModel) UpdateEmbedded(msg tea.Msg) tea.Cmd {
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.textInput.Width = min(50, m.width-10)
-
-	case tea.KeyMsg:
-		// Handle cancel
-		if msg.String() == "ctrl+c" || msg.String() == "esc" {
-			m.Cancelled = true
-			return nil
-		}
-
-		// When on custom input option, handle text input
-		if m.isOnCustomOption() {
-			switch msg.String() {
-			case "enter":
-				text := strings.TrimSpace(m.textInput.Value())
-				if text != "" {
-					m.answers[m.currentTab].text = text
-					m.answers[m.currentTab].isCustom = true
-					m.textInput.Blur()
-					return m.advanceToNextEmbedded()
-				}
-				return nil
-			case "up":
-				// Move up from custom option (only arrow key, not 'k' which should type)
-				q := m.questions[m.currentTab]
-				m.cursor = len(q.Options) - 1
-				m.textInput.Blur()
-				return nil
-			case "tab":
-				// Tab to next question
-				newTab := (m.currentTab + 1) % m.totalTabs()
-				m.switchTabEmbedded(newTab)
-				return nil
-			case "shift+tab":
-				newTab := (m.currentTab - 1 + m.totalTabs()) % m.totalTabs()
-				m.switchTabEmbedded(newTab)
-				return nil
-			}
-			// Pass other keys to text input
-			var cmd tea.Cmd
-			m.textInput, cmd = m.textInput.Update(msg)
-			return cmd
-		}
-
-		// Tab navigation (when not on custom option)
-		switch msg.String() {
-		case "left", "h":
-			newTab := (m.currentTab - 1 + m.totalTabs()) % m.totalTabs()
-			m.switchTabEmbedded(newTab)
-			return nil
-		case "right", "l":
-			newTab := (m.currentTab + 1) % m.totalTabs()
-			m.switchTabEmbedded(newTab)
-			return nil
-		case "tab":
-			newTab := (m.currentTab + 1) % m.totalTabs()
-			m.switchTabEmbedded(newTab)
-			return nil
-		case "shift+tab":
-			newTab := (m.currentTab - 1 + m.totalTabs()) % m.totalTabs()
-			m.switchTabEmbedded(newTab)
-			return nil
-		}
-
-		// On confirm tab
-		if m.isOnConfirmTab() {
-			if msg.String() == "enter" {
-				if m.allAnswered() {
-					m.Done = true
-				}
-			}
-			return nil
-		}
-
-		// Question navigation
-		q := m.questions[m.currentTab]
-		// Multi-select questions don't have "Type your own" option
-		totalOptions := len(q.Options)
-		if !q.MultiSelect {
-			totalOptions++ // +1 for "Type your own"
-		}
-
-		switch msg.String() {
-		case "up", "k":
-			m.cursor = (m.cursor - 1 + totalOptions) % totalOptions
-			// If moved to custom option (single-select only), focus the input
-			if !q.MultiSelect && m.cursor == len(q.Options) {
-				m.textInput.Focus()
-				return textinput.Blink
-			}
-		case "down", "j":
-			m.cursor = (m.cursor + 1) % totalOptions
-			// If moved to custom option (single-select only), focus the input
-			if !q.MultiSelect && m.cursor == len(q.Options) {
-				m.textInput.Focus()
-				return textinput.Blink
-			}
-		case " ":
-			if q.MultiSelect {
-				// Multi-select: toggle the current option
-				m.toggleOption(m.cursor)
-				return nil
-			}
-			// Single-select: select and advance
-			m.answers[m.currentTab].text = q.Options[m.cursor].Label
-			m.answers[m.currentTab].isCustom = false
-			return m.advanceToNextEmbedded()
-		case "enter":
-			if q.MultiSelect {
-				// Single-question multi-select has no confirm tab, so enter submits.
-				if m.isSingleQuestion() && m.isAnswered(m.currentTab) {
-					m.Done = true
-					return nil
-				}
-				// Multi-select: toggle the current option
-				m.toggleOption(m.cursor)
-				return nil
-			}
-			// Single-select: select and advance
-			m.answers[m.currentTab].text = q.Options[m.cursor].Label
-			m.answers[m.currentTab].isCustom = false
-			return m.advanceToNextEmbedded()
-		}
-	}
-
-	return nil
+	cmd, _ := m.applyMessage(msg, askUpdateEmbedded)
+	return cmd
 }
 
-func (m *AskUserModel) switchTab(newTab int) (tea.Model, tea.Cmd) {
-	m.currentTab = newTab
-	m.cursor = 0
-	m.textInput.Blur()
-	m.textInput.SetValue("")
-	return m, nil
-}
-
-func (m *AskUserModel) switchTabEmbedded(newTab int) {
-	m.currentTab = newTab
-	m.cursor = 0
-	m.textInput.Blur()
-	m.textInput.SetValue("")
-}
-
-func (m *AskUserModel) advanceToNext() (tea.Model, tea.Cmd) {
-	// Single question - submit immediately
-	if m.isSingleQuestion() {
-		m.Done = true
-		return m, tea.Quit
-	}
-
-	// Find next unanswered question
-	for i := m.currentTab + 1; i < len(m.questions); i++ {
-		if !m.isAnswered(i) {
-			return m.switchTab(i)
-		}
-	}
-	// Check from beginning
-	for i := 0; i < m.currentTab; i++ {
-		if !m.isAnswered(i) {
-			return m.switchTab(i)
-		}
-	}
-	// All answered - go to confirm tab
-	return m.switchTab(len(m.questions))
-}
-
-func (m *AskUserModel) advanceToNextEmbedded() tea.Cmd {
-	// Single question - submit immediately
-	if m.isSingleQuestion() {
-		m.Done = true
-		return nil
-	}
-
-	// Find next unanswered question
-	for i := m.currentTab + 1; i < len(m.questions); i++ {
-		if !m.isAnswered(i) {
-			m.switchTabEmbedded(i)
-			return nil
-		}
-	}
-	// Check from beginning
-	for i := 0; i < m.currentTab; i++ {
-		if !m.isAnswered(i) {
-			m.switchTabEmbedded(i)
-			return nil
-		}
-	}
-	// All answered - go to confirm tab
-	m.switchTabEmbedded(len(m.questions))
-	return nil
-}
-
-func (m *AskUserModel) View() string {
+func (m *AskUserModel) View() tea.View {
 	if m.Done {
-		// Summary is printed separately after program quits to persist through TUI redraw
-		return ""
+		return tea.NewView("")
 	}
 
 	var b strings.Builder
 
-	// Tabs (only show if multiple questions)
 	if !m.isSingleQuestion() {
 		b.WriteString(m.renderTabs())
 		b.WriteString("\n\n")
 	}
 
-	// Content
 	if m.isOnConfirmTab() {
 		b.WriteString(m.renderConfirm())
 	} else {
 		b.WriteString(m.renderQuestion())
 	}
 
-	// Help bar
 	b.WriteString("\n")
 	b.WriteString(m.renderHelp())
 
 	style := askContainerStyle.Width(m.width)
-	return style.Render(b.String())
+	return tea.NewView(style.Render(b.String()))
 }
 
 func (m *AskUserModel) renderTabs() string {
@@ -931,36 +766,9 @@ func RunAskUser(questions []AskUserQuestion) ([]AskUserAnswer, error) {
 	// Use plain text summary - styling is applied at render time to avoid ANSI corruption.
 	SetLastAskUserResult(result.RenderPlainSummary())
 
-	// Convert internal answers to external format
-	answers := make([]AskUserAnswer, len(result.answers))
-	for i, a := range result.answers {
-		q := questions[i]
-		if q.MultiSelect {
-			// Build list of selected option labels
-			var labels []string
-			for _, idx := range a.selected {
-				if idx >= 0 && idx < len(q.Options) {
-					labels = append(labels, q.Options[idx].Label)
-				}
-			}
-			answers[i] = AskUserAnswer{
-				QuestionIndex: a.questionIndex,
-				Header:        q.Header,
-				Selected:      strings.Join(labels, ", "),
-				SelectedList:  labels,
-				IsCustom:      false,
-				IsMultiSelect: true,
-			}
-		} else {
-			answers[i] = AskUserAnswer{
-				QuestionIndex: a.questionIndex,
-				Header:        q.Header,
-				Selected:      a.text,
-				IsCustom:      a.isCustom,
-				IsMultiSelect: false,
-			}
-		}
+	answers := result.Answers()
+	if answers == nil {
+		return nil, fmt.Errorf("ask_user finished without answers")
 	}
-
 	return answers, nil
 }

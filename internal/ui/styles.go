@@ -1,36 +1,37 @@
 package ui
 
 import (
+	"image/color"
 	"os"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 // Theme defines the color palette for the UI
 type Theme struct {
 	// Primary colors
-	Primary   lipgloss.Color // main accent color (commands, highlights)
-	Secondary lipgloss.Color // secondary accent (headers, borders)
+	Primary   color.Color // main accent color (commands, highlights)
+	Secondary color.Color // secondary accent (headers, borders)
 
 	// Semantic colors
-	Success lipgloss.Color // success states, enabled
-	Error   lipgloss.Color // error states, disabled
-	Warning lipgloss.Color // warnings
-	Muted   lipgloss.Color // dimmed/secondary text
-	Text    lipgloss.Color // primary text
+	Success color.Color // success states, enabled
+	Error   color.Color // error states, disabled
+	Warning color.Color // warnings
+	Muted   color.Color // dimmed/secondary text
+	Text    color.Color // primary text
 
 	// UI element colors
-	Spinner    lipgloss.Color // loading spinner
-	Border     lipgloss.Color // borders and dividers
-	Background lipgloss.Color // background (if needed)
+	Spinner    color.Color // loading spinner
+	Border     color.Color // borders and dividers
+	Background color.Color // background (if needed)
 
 	// Diff backgrounds
-	DiffAddBg     lipgloss.Color // background for added lines
-	DiffRemoveBg  lipgloss.Color // background for removed lines
-	DiffContextBg lipgloss.Color // background for context lines
+	DiffAddBg     color.Color // background for added lines
+	DiffRemoveBg  color.Color // background for removed lines
+	DiffContextBg color.Color // background for context lines
 
 	// Message backgrounds
-	UserMsgBg lipgloss.Color // background for user messages in chat
+	UserMsgBg color.Color // background for user messages in chat
 }
 
 // DefaultTheme returns the default color theme (gruvbox)
@@ -129,10 +130,9 @@ const (
 	FailIcon     = "✗"
 )
 
-// Styles returns styled text helpers bound to a renderer
+// Styles returns styled text helpers
 type Styles struct {
-	renderer *lipgloss.Renderer
-	theme    *Theme
+	theme *Theme
 
 	// Text styles
 	Title       lipgloss.Style
@@ -167,69 +167,67 @@ func NewStyles(output *os.File) *Styles {
 
 // NewStyledWithTheme creates styles with a specific theme
 func NewStyledWithTheme(output *os.File, theme *Theme) *Styles {
-	r := lipgloss.NewRenderer(output)
-
+	_ = output
 	return &Styles{
-		renderer: r,
-		theme:    theme,
+		theme: theme,
 
-		Title: r.NewStyle().
+		Title: lipgloss.NewStyle().
 			Bold(true).
 			Foreground(theme.Text),
 
-		Subtitle: r.NewStyle().
+		Subtitle: lipgloss.NewStyle().
 			Foreground(theme.Muted),
 
-		Success: r.NewStyle().
+		Success: lipgloss.NewStyle().
 			Foreground(theme.Success),
 
-		Error: r.NewStyle().
+		Error: lipgloss.NewStyle().
 			Foreground(theme.Error),
 
-		Muted: r.NewStyle().
+		Muted: lipgloss.NewStyle().
 			Foreground(theme.Muted),
 
-		Bold: r.NewStyle().
+		Bold: lipgloss.NewStyle().
 			Bold(true),
 
-		Highlighted: r.NewStyle().
+		Highlighted: lipgloss.NewStyle().
 			Bold(true).
 			Foreground(theme.Primary),
 
-		TableHeader: r.NewStyle().
+		TableHeader: lipgloss.NewStyle().
 			Bold(true).
 			Foreground(theme.Text).
 			Padding(0, 1),
 
-		TableCell: r.NewStyle().
+		TableCell: lipgloss.NewStyle().
 			Padding(0, 1),
 
-		TableBorder: r.NewStyle().
+		TableBorder: lipgloss.NewStyle().
 			Foreground(theme.Border),
 
-		Spinner: r.NewStyle().
+		Spinner: lipgloss.NewStyle().
 			Foreground(theme.Spinner),
 
-		Command: r.NewStyle().
+		Command: lipgloss.NewStyle().
 			Bold(true).
 			Foreground(theme.Primary),
 
-		Footer: r.NewStyle().
+		Footer: lipgloss.NewStyle().
 			Foreground(theme.Muted),
 
-		DiffAdd: r.NewStyle().
+		DiffAdd: lipgloss.NewStyle().
 			Foreground(theme.Success).
 			Background(theme.DiffAddBg),
 
-		DiffRemove: r.NewStyle().
+		DiffRemove: lipgloss.NewStyle().
 			Foreground(theme.Error).
 			Background(theme.DiffRemoveBg),
 
-		DiffContext: r.NewStyle().
+		DiffContext: lipgloss.NewStyle().
 			Foreground(theme.Muted).
 			Background(theme.DiffContextBg),
 
-		DiffHeader: r.NewStyle().
+		DiffHeader: lipgloss.NewStyle().
 			Foreground(theme.Secondary).
 			Bold(true),
 	}

@@ -10,11 +10,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/clipboard"
 	"github.com/samsaffron/term-llm/internal/config"
@@ -363,12 +363,14 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 	ta.CharLimit = 0 // No limit
 	ta.SetWidth(width)
 	ta.SetHeight(1) // Start with single line
-	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	ta.FocusedStyle.Base = lipgloss.NewStyle()
-	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(styles.Theme().Muted)
-	ta.FocusedStyle.EndOfBuffer = lipgloss.NewStyle()
-	ta.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(styles.Theme().Primary).Bold(true)
-	ta.BlurredStyle = ta.FocusedStyle
+	taStyles := ta.Styles()
+	taStyles.Focused.CursorLine = lipgloss.NewStyle()
+	taStyles.Focused.Base = lipgloss.NewStyle()
+	taStyles.Focused.Placeholder = lipgloss.NewStyle().Foreground(styles.Theme().Muted)
+	taStyles.Focused.EndOfBuffer = lipgloss.NewStyle()
+	taStyles.Focused.Prompt = lipgloss.NewStyle().Foreground(styles.Theme().Primary).Bold(true)
+	taStyles.Blurred = taStyles.Focused
+	ta.SetStyles(taStyles)
 	ta.Focus()
 
 	// Prefill with initial text if provided
@@ -444,11 +446,8 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 
 	// Create viewport for alt screen scrolling
 	// Reserve space for input (3 lines) and status line (1 line)
-	vpHeight := height - 4
-	if vpHeight < 1 {
-		vpHeight = 1
-	}
-	vp := viewport.New(width, vpHeight)
+	vpHeight := ui.RemainingLines(height, 4)
+	vp := viewport.New(viewport.WithWidth(width), viewport.WithHeight(vpHeight))
 	vp.Style = lipgloss.NewStyle()
 
 	// Create chat renderer for virtualized history rendering
@@ -486,7 +485,7 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 		currentOrigin:            session.OriginTUI,
 		yolo:                     yolo,
 		phase:                    "Thinking",
-		viewportRows:             height - 8, // Reserve space for input and status
+		viewportRows:             ui.RemainingLines(height, 8), // Reserve space for input and status
 		tracker:                  tracker,
 		subagentTracker:          subagentTracker,
 		smoothBuffer:             ui.NewSmoothBuffer(),
@@ -576,7 +575,7 @@ func (m *Model) applyWindowSize(msg tea.WindowSizeMsg) {
 	m.selection = Selection{}
 	m.width = msg.Width
 	m.height = msg.Height
-	m.viewportRows = m.height - 8
+	m.viewportRows = ui.RemainingLines(m.height, 8)
 	m.textarea.SetWidth(m.width)
 	m.updateTextareaHeight()
 	if m.completions != nil {
@@ -617,7 +616,7 @@ func (m *Model) applyWindowSize(msg tea.WindowSizeMsg) {
 	}
 
 	// Resize viewport for alt screen mode.
-	m.viewport.Width = m.width
+	m.viewport.SetWidth(m.width)
 
 	// Propagate size to embedded dialogs if active.
 	if m.approvalModel != nil {
@@ -636,14 +635,11 @@ func (m *Model) applyWindowSize(msg tea.WindowSizeMsg) {
 }
 
 func (m *Model) syncAltScreenViewportHeight(footerHeight int) {
-	vpHeight := m.height - footerHeight
-	if vpHeight < 1 {
-		vpHeight = 1
-	}
-	m.viewport.Width = m.width
-	m.viewport.Height = vpHeight
+	vpHeight := ui.RemainingLines(m.height, footerHeight)
+	m.viewport.SetWidth(m.width)
+	m.viewport.SetHeight(vpHeight)
 	m.viewportRows = vpHeight
-	m.viewport.SetYOffset(m.viewport.YOffset)
+	m.viewport.SetYOffset(m.viewport.YOffset())
 	if m.chatRenderer != nil {
 		m.chatRenderer.SetSize(m.width, vpHeight)
 	}
@@ -817,8 +813,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.ClearScreen
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKeyMsg(msg)
+
+	case tea.PasteMsg:
+		return m.handlePasteMsg(msg)
 
 	case tea.MouseMsg:
 		// Text selection in alt-screen viewport (before textarea handling)
@@ -829,15 +828,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		// Handle middle-click paste: read primary selection and route through
-		// the same KeyMsg path as bracketed paste so collapse logic applies.
-		if msg.Button == tea.MouseButtonMiddle && msg.Action == tea.MouseActionPress {
+		// the PasteMsg path so collapse logic applies.
+		if click, ok := msg.(tea.MouseClickMsg); ok && click.Button == tea.MouseMiddle {
 			text, err := clipboard.ReadPrimarySelection()
 			if err == nil && text != "" {
-				return m.handleKeyMsg(tea.KeyMsg{
-					Type:  tea.KeyRunes,
-					Runes: []rune(text),
-					Paste: true,
-				})
+				return m.handlePasteMsg(tea.PasteMsg{Content: text})
 			}
 			return m, nil
 		}

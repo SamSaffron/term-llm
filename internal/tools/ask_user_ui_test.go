@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 func testAskQuestion(header string, multiSelect bool) []AskUserQuestion {
@@ -25,7 +25,7 @@ func TestAskUserUI_SingleMultiSelect_EnterSubmitsWhenAnswered_Standalone(t *test
 	m := newAskModel(testAskQuestion("Q1", true))
 
 	// Select first option.
-	model, _ := m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeySpace})
 	m = model.(*AskUserModel)
 
 	if len(m.answers[0].selected) != 1 {
@@ -33,7 +33,7 @@ func TestAskUserUI_SingleMultiSelect_EnterSubmitsWhenAnswered_Standalone(t *test
 	}
 
 	// Submit.
-	model, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = model.(*AskUserModel)
 
 	if !m.Done {
@@ -58,7 +58,7 @@ func TestAskUserUI_SingleMultiSelect_EnterSubmitsWhenAnswered_Standalone(t *test
 func TestAskUserUI_SingleMultiSelect_EnterDoesNotSubmitWhenEmpty_Standalone(t *testing.T) {
 	m := newAskModel(testAskQuestion("Q1", true))
 
-	model, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = model.(*AskUserModel)
 
 	if m.Done {
@@ -69,13 +69,13 @@ func TestAskUserUI_SingleMultiSelect_EnterDoesNotSubmitWhenEmpty_Standalone(t *t
 func TestAskUserUI_SingleMultiSelect_SpaceToggles_Standalone(t *testing.T) {
 	m := newAskModel(testAskQuestion("Q1", true))
 
-	model, _ := m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeySpace})
 	m = model.(*AskUserModel)
 	if len(m.answers[0].selected) != 1 || m.answers[0].selected[0] != 0 {
 		t.Fatalf("expected selection [0] after first space, got %#v", m.answers[0].selected)
 	}
 
-	model, _ = m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	model, _ = m.Update(tea.KeyPressMsg{Code: tea.KeySpace})
 	m = model.(*AskUserModel)
 	if len(m.answers[0].selected) != 0 {
 		t.Fatalf("expected empty selection after second space, got %#v", m.answers[0].selected)
@@ -85,12 +85,12 @@ func TestAskUserUI_SingleMultiSelect_SpaceToggles_Standalone(t *testing.T) {
 func TestAskUserUI_SingleMultiSelect_EnterSubmitsWhenAnswered_Embedded(t *testing.T) {
 	m := NewEmbeddedAskUserModel(testAskQuestion("Q1", true), 80)
 
-	m.UpdateEmbedded(tea.KeyMsg{Type: tea.KeySpace})
+	m.UpdateEmbedded(tea.KeyPressMsg{Code: tea.KeySpace})
 	if len(m.answers[0].selected) != 1 {
 		t.Fatalf("expected one selected option after space, got %d", len(m.answers[0].selected))
 	}
 
-	m.UpdateEmbedded(tea.KeyMsg{Type: tea.KeyEnter})
+	m.UpdateEmbedded(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if !m.Done {
 		t.Fatal("expected Done=true after pressing enter with a selected option")
 	}
@@ -120,7 +120,7 @@ func TestAskUserUI_MultiQuestionMultiSelect_EnterStillToggles(t *testing.T) {
 	m := newAskModel(questions)
 
 	// In multi-question mode, enter should continue toggling selection for multi-select.
-	model, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = model.(*AskUserModel)
 
 	if m.Done {
@@ -143,5 +143,120 @@ func TestAskUserUI_HelpText_SingleMultiSelect_ShowsSubmitHint(t *testing.T) {
 	}
 	if !strings.Contains(help, "enter submit") {
 		t.Fatalf("expected help to contain %q, got %q", "enter submit", help)
+	}
+}
+
+func TestAskUserUI_CustomInputAcceptsPaste_Standalone(t *testing.T) {
+	m := newAskModel(testAskQuestion("Q1", false))
+	m.cursor = len(m.questions[0].Options)
+	m.textInput.Focus()
+
+	model, _ := m.Update(tea.PasteMsg{Content: "custom answer"})
+	m = model.(*AskUserModel)
+
+	view := m.View().Content
+	if !strings.Contains(view, "custom answer") {
+		t.Fatalf("expected pasted custom answer in view, got %q", view)
+	}
+}
+
+func TestAskUserUI_CustomInputAcceptsPaste_Embedded(t *testing.T) {
+	m := NewEmbeddedAskUserModel(testAskQuestion("Q1", false), 80)
+	m.cursor = len(m.questions[0].Options)
+	m.textInput.Focus()
+
+	m.UpdateEmbedded(tea.PasteMsg{Content: "custom answer"})
+
+	view := m.View().Content
+	if !strings.Contains(view, "custom answer") {
+		t.Fatalf("expected pasted custom answer in view, got %q", view)
+	}
+}
+
+func TestAskUserUI_NextUnansweredTab(t *testing.T) {
+	questions := []AskUserQuestion{
+		{
+			Header:      "Q1",
+			Question:    "Question 1",
+			MultiSelect: false,
+			Options:     []AskUserOption{{Label: "A"}},
+		},
+		{
+			Header:      "Q2",
+			Question:    "Question 2",
+			MultiSelect: false,
+			Options:     []AskUserOption{{Label: "B"}},
+		},
+		{
+			Header:      "Q3",
+			Question:    "Question 3",
+			MultiSelect: false,
+			Options:     []AskUserOption{{Label: "C"}},
+		},
+	}
+	m := newAskModel(questions)
+	m.currentTab = 0
+	m.answers[0].text = "A"
+	m.answers[2].text = "C"
+
+	if got, want := m.nextUnansweredTab(), 1; got != want {
+		t.Fatalf("nextUnansweredTab() = %d, want %d", got, want)
+	}
+
+	m.answers[1].text = "B"
+	if got, want := m.nextUnansweredTab(), len(questions); got != want {
+		t.Fatalf("nextUnansweredTab() when all answered = %d, want %d", got, want)
+	}
+}
+
+func TestAskUserUI_StandaloneAndEmbeddedStayInSyncForCustomAnswerFlow(t *testing.T) {
+	questions := []AskUserQuestion{
+		{
+			Header:      "Q1",
+			Question:    "Question 1",
+			MultiSelect: false,
+			Options: []AskUserOption{
+				{Label: "A"},
+				{Label: "B"},
+			},
+		},
+		{
+			Header:      "Q2",
+			Question:    "Question 2",
+			MultiSelect: false,
+			Options: []AskUserOption{
+				{Label: "C"},
+				{Label: "D"},
+			},
+		},
+	}
+
+	standalone := newAskModel(questions)
+	embedded := NewEmbeddedAskUserModel(questions, 80)
+
+	messages := []tea.Msg{
+		tea.KeyPressMsg{Code: tea.KeyDown},
+		tea.KeyPressMsg{Code: tea.KeyDown},
+		tea.PasteMsg{Content: "custom answer"},
+		tea.KeyPressMsg{Code: tea.KeyEnter},
+	}
+
+	for _, msg := range messages {
+		model, _ := standalone.Update(msg)
+		standalone = model.(*AskUserModel)
+		embedded.UpdateEmbedded(msg)
+	}
+
+	if standalone.currentTab != embedded.currentTab {
+		t.Fatalf("currentTab standalone=%d embedded=%d", standalone.currentTab, embedded.currentTab)
+	}
+	if standalone.cursor != embedded.cursor {
+		t.Fatalf("cursor standalone=%d embedded=%d", standalone.cursor, embedded.cursor)
+	}
+	if standalone.answers[0].text != embedded.answers[0].text {
+		t.Fatalf("answer text standalone=%q embedded=%q", standalone.answers[0].text, embedded.answers[0].text)
+	}
+	if standalone.answers[0].isCustom != embedded.answers[0].isCustom {
+		t.Fatalf("isCustom standalone=%v embedded=%v", standalone.answers[0].isCustom, embedded.answers[0].isCustom)
 	}
 }

@@ -5,9 +5,10 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/samsaffron/term-llm/internal/clipboard"
+	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/samsaffron/term-llm/internal/ui/ansisafe"
 )
 
@@ -37,16 +38,17 @@ func (s Selection) Normalized() (start, end ContentPos) {
 // handleSelectionMouse processes mouse events for text selection in the viewport.
 // Returns true if the event was consumed.
 func (m *Model) handleSelectionMouse(msg tea.MouseMsg) bool {
-	switch msg.Action {
-	case tea.MouseActionPress:
+	mouse := msg.Mouse()
+	switch msg.(type) {
+	case tea.MouseClickMsg:
 		// Only start selection on left button
-		if msg.Button != tea.MouseButtonLeft {
+		if mouse.Button != tea.MouseLeft {
 			return false
 		}
-		if !m.isInViewportArea(msg.X, msg.Y) {
+		if !m.isInViewportArea(mouse.X, mouse.Y) {
 			return false
 		}
-		contentLine, col := m.screenToContent(msg.X, msg.Y)
+		contentLine, col := m.screenToContent(mouse.X, mouse.Y)
 		m.copyStatus = "" // Clear stale copy status
 		m.selection = Selection{
 			Active:   true,
@@ -56,22 +58,19 @@ func (m *Model) handleSelectionMouse(msg tea.MouseMsg) bool {
 		}
 		return true
 
-	case tea.MouseActionMotion:
-		// bubbletea sets Button to MouseButtonNone during motion,
-		// so we track drag state via selection.Dragging instead.
+	case tea.MouseMotionMsg:
 		if !m.selection.Dragging {
 			return false
 		}
-		contentLine, col := m.screenToContent(msg.X, msg.Y)
+		contentLine, col := m.screenToContent(mouse.X, mouse.Y)
 		m.selection.Cursor = ContentPos{Line: contentLine, Col: col}
 		return true
 
-	case tea.MouseActionRelease:
-		// bubbletea sets Button to MouseButtonNone on release too.
+	case tea.MouseReleaseMsg:
 		if !m.selection.Dragging {
 			return false
 		}
-		contentLine, col := m.screenToContent(msg.X, msg.Y)
+		contentLine, col := m.screenToContent(mouse.X, mouse.Y)
 		m.selection.Cursor = ContentPos{Line: contentLine, Col: col}
 		m.selection.Dragging = false
 		// Keep selection visible; user copies explicitly with ctrl+y
@@ -89,12 +88,12 @@ func (m *Model) handleSelectionMouse(msg tea.MouseMsg) bool {
 
 // isInViewportArea checks if screen coordinates are in the viewport.
 func (m *Model) isInViewportArea(x, y int) bool {
-	return y >= 0 && y < m.viewport.Height
+	return y >= 0 && y < m.viewport.Height()
 }
 
 // screenToContent maps screen coordinates to content line and column.
 func (m *Model) screenToContent(x, y int) (line, col int) {
-	line = m.viewport.YOffset + y
+	line = m.viewport.YOffset() + y
 	col = x
 	return
 }
@@ -107,7 +106,7 @@ func (m *Model) applySelectionHighlight(viewOutput string) string {
 
 	start, end := m.selection.Normalized()
 	lines := strings.Split(viewOutput, "\n")
-	yOff := m.viewport.YOffset
+	yOff := m.viewport.YOffset()
 
 	for i, line := range lines {
 		contentLine := yOff + i
@@ -184,14 +183,14 @@ func (m *Model) extractSelectedText() string {
 
 		if start.Line == end.Line {
 			// Single line: extract visual column range
-			s := clampInt(start.Col, 0, w)
-			e := clampInt(end.Col, s, w)
+			s := ui.ClampInt(start.Col, 0, w)
+			e := ui.ClampInt(end.Col, s, w)
 			b.WriteString(cutVisual(stripped, s, e))
 		} else if line == start.Line {
-			s := clampInt(start.Col, 0, w)
+			s := ui.ClampInt(start.Col, 0, w)
 			b.WriteString(cutVisual(stripped, s, w))
 		} else if line == end.Line {
-			e := clampInt(end.Col, 0, w)
+			e := ui.ClampInt(end.Col, 0, w)
 			b.WriteString(cutVisual(stripped, 0, e))
 		} else {
 			b.WriteString(stripped)
@@ -210,14 +209,4 @@ func cutVisual(s string, startCol, endCol int) string {
 		return ""
 	}
 	return ansi.Cut(s, startCol, endCol)
-}
-
-func clampInt(v, lo, hi int) int {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
 }

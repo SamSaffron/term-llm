@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/huh"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/huh/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/samsaffron/term-llm/internal/testutil"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -46,7 +46,7 @@ func TestApprovalScreen_ActualRender(t *testing.T) {
 	model.approvalForm.Init()
 
 	// NOW RENDER - this is exactly what the user sees
-	rendered := model.View()
+	rendered := model.View().Content
 	plain := testutil.StripANSI(rendered)
 
 	t.Logf("\n=== ACTUAL APPROVAL SCREEN ===\n%s\n=== END ===", plain)
@@ -97,7 +97,7 @@ func TestAfterApproval_ToolSuccess(t *testing.T) {
 	model.tracker.LastActivity = time.Now().Add(-2 * time.Second)
 
 	// Render
-	rendered := model.View()
+	rendered := model.View().Content
 	plain := testutil.StripANSI(rendered)
 
 	t.Logf("\n=== AFTER TOOL SUCCESS ===\n%s\n=== END ===", plain)
@@ -133,7 +133,7 @@ func TestAfterApproval_ToolError(t *testing.T) {
 	model.tracker.LastActivity = time.Now().Add(-2 * time.Second)
 
 	// Render
-	rendered := model.View()
+	rendered := model.View().Content
 	plain := testutil.StripANSI(rendered)
 
 	t.Logf("\n=== AFTER TOOL ERROR ===\n%s\n=== END ===", plain)
@@ -160,7 +160,7 @@ func TestPendingTool_ShowsWaveAnimation(t *testing.T) {
 	model.tracker.WavePos = 5 // Mid-wave animation
 
 	// Render
-	rendered := model.View()
+	rendered := model.View().Content
 	plain := testutil.StripANSI(rendered)
 
 	t.Logf("\n=== PENDING TOOL ===\n%s\n=== END ===", plain)
@@ -183,7 +183,7 @@ func TestThinkingState(t *testing.T) {
 	// Initial state: idle (no activity for >1s triggers thinking state)
 	model.tracker.LastActivity = time.Now().Add(-2 * time.Second)
 
-	rendered := model.View()
+	rendered := model.View().Content
 	plain := testutil.StripANSI(rendered)
 
 	t.Logf("\n=== THINKING STATE ===\n%s\n=== END ===", plain)
@@ -221,7 +221,7 @@ func TestTextStreaming(t *testing.T) {
 	// Recent activity - not idle (text just streamed)
 	model.tracker.LastActivity = time.Now()
 
-	rendered := model.View()
+	rendered := model.View().Content
 	plain := testutil.StripANSI(rendered)
 
 	t.Logf("\n=== TEXT STREAMING ===\n%s\n=== END ===", plain)
@@ -265,7 +265,7 @@ func TestMultipleSegments(t *testing.T) {
 	// Recent activity - not idle (text just streamed)
 	model.tracker.LastActivity = time.Now()
 
-	rendered := model.View()
+	rendered := model.View().Content
 	plain := testutil.StripANSI(rendered)
 
 	t.Logf("\n=== MULTIPLE SEGMENTS ===\n%s\n=== END ===", plain)
@@ -300,7 +300,7 @@ func TestView_TextToPendingToolUsesBlankLine(t *testing.T) {
 	}
 	model.tracker.LastActivity = time.Now()
 
-	plain := testutil.StripANSI(model.View())
+	plain := testutil.StripANSI(model.View().Content)
 	toolLabel := "read_file(test.go)"
 	textIdx := strings.Index(plain, "Let me check that file.")
 	if textIdx == -1 {

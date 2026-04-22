@@ -1,6 +1,6 @@
 package ui
 
-import tea "github.com/charmbracelet/bubbletea"
+import tea "charm.land/bubbletea/v2"
 
 // ComposeFlushFirstCommands builds a command pipeline where flush commands run
 // first in-order, and all non-flush commands run afterward.

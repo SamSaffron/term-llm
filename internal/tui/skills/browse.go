@@ -11,11 +11,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/samsaffron/term-llm/internal/skills"
+	"github.com/samsaffron/term-llm/internal/ui"
 	"golang.org/x/term"
 )
 
@@ -162,7 +163,7 @@ func New(initialQuery string, useAISearch bool) *Model {
 	ti.Placeholder = "Type to search skills..."
 	ti.Focus()
 	ti.CharLimit = 100
-	ti.Width = width - 20 // Leave room for AI toggle indicator
+	ti.SetWidth(max(1, width-20))
 	ti.SetValue(initialQuery)
 
 	// Create spinner
@@ -174,7 +175,7 @@ func New(initialQuery string, useAISearch bool) *Model {
 	installNameInput := textinput.New()
 	installNameInput.Placeholder = "skill-name"
 	installNameInput.CharLimit = 50
-	installNameInput.Width = 40
+	installNameInput.SetWidth(max(10, min(40, width-8)))
 
 	// Build install paths
 	installPaths := BuildInstallPaths()
@@ -383,10 +384,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.input.Width = m.width - 20
+		m.input.SetWidth(max(1, m.width-20))
+		m.installName.SetWidth(max(10, min(40, m.width-8)))
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		key := msg.String()
 
 		// Global keys
@@ -405,6 +407,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			return m.updateBrowseView(key, msg)
 		}
+
+	case tea.PasteMsg:
+		switch m.viewMode {
+		case ViewInstall:
+			return m.updateInstallView("", msg)
+		case ViewBrowse:
+			return m.updateBrowseView("", msg)
+		}
+		return m, nil
 
 	case spinner.TickMsg:
 		if m.loading || m.searching || m.installing || m.loadingContent || m.deleting {
@@ -481,7 +492,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // updateBrowseView handles keys in browse mode
-func (m *Model) updateBrowseView(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *Model) updateBrowseView(key string, msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	// Tab toggles focus
@@ -601,7 +612,7 @@ func (m *Model) updateBrowseView(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd
 }
 
 // updateInstallView handles keys in install picker mode
-func (m *Model) updateInstallView(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *Model) updateInstallView(key string, msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Handle name input when focused
 	if m.installName.Focused() {
 		switch key {
@@ -646,7 +657,7 @@ func (m *Model) updateInstallView(key string, msg tea.KeyMsg) (tea.Model, tea.Cm
 		} else {
 			m.installName.Focus()
 		}
-	case " ": // Space to toggle
+	case " ", "space": // Space to toggle
 		m.installPaths[m.installCursor].Selected = !m.installPaths[m.installCursor].Selected
 	case "enter":
 		// Install to selected paths
@@ -717,17 +728,19 @@ func (m *Model) updateDeleteView(key string) (tea.Model, tea.Cmd) {
 }
 
 // View renders the model
-func (m *Model) View() string {
+func (m *Model) View() tea.View {
+	var s string
 	switch m.viewMode {
 	case ViewInstall:
-		return m.viewInstall()
+		s = m.viewInstall()
 	case ViewShow:
-		return m.viewShow()
+		s = m.viewShow()
 	case ViewDelete:
-		return m.viewDelete()
+		s = m.viewDelete()
 	default:
-		return m.viewBrowse()
+		s = m.viewBrowse()
 	}
+	return ui.NewAltScreenView(s)
 }
 
 // viewBrowse renders the browse view
@@ -785,27 +798,21 @@ func (m *Model) viewBrowse() string {
 
 	// Skills list
 	if len(m.filteredList) > 0 {
-		availableHeight := m.height - 10
+		reserved := 10
 		if m.err != nil {
-			availableHeight--
+			reserved++
 		}
 		if m.message != "" {
-			availableHeight--
+			reserved++
 		}
+		availableHeight := ui.RemainingLines(m.height, reserved)
 
 		visibleSkills := availableHeight / 3 // Each skill takes ~3 lines
 		if visibleSkills < 2 {
 			visibleSkills = 2
 		}
 
-		startIdx := 0
-		if m.cursor >= visibleSkills {
-			startIdx = m.cursor - visibleSkills + 1
-		}
-		endIdx := startIdx + visibleSkills
-		if endIdx > len(m.filteredList) {
-			endIdx = len(m.filteredList)
-		}
+		startIdx, endIdx := ui.VisibleRange(len(m.filteredList), m.cursor, visibleSkills)
 
 		for i := startIdx; i < endIdx; i++ {
 			skill := m.filteredList[i]
@@ -898,54 +905,63 @@ func (m *Model) viewBrowse() string {
 
 // viewInstall renders the install destination picker
 func (m *Model) viewInstall() string {
-	var b strings.Builder
+	if len(m.filteredList) == 0 || m.cursor >= len(m.filteredList) {
+		return titleStyle.Render("Install skill") + "\n\n" + mutedStyle.Render("No skill selected.")
+	}
 
 	skill := m.filteredList[m.cursor]
 
-	b.WriteString(titleStyle.Render(fmt.Sprintf("Install \"%s\"", skill.Name)))
-	b.WriteString("\n\n")
+	var header strings.Builder
+	header.WriteString(titleStyle.Render(fmt.Sprintf("Install %q", skill.Name)))
+	header.WriteString("\n\n")
 
 	if m.installing {
-		b.WriteString(m.spinner.View())
-		b.WriteString(" Installing...")
-		b.WriteString("\n\n")
+		header.WriteString(m.spinner.View())
+		header.WriteString(" Installing...")
+		header.WriteString("\n\n")
 	}
 
-	// Name input
-	b.WriteString(mutedStyle.Render("Name: "))
-	b.WriteString(m.installName.View())
-	b.WriteString("\n")
+	header.WriteString(mutedStyle.Render("Name: "))
+	header.WriteString(m.installName.View())
+	header.WriteString("\n")
 
-	// Conflict warning
 	if m.installConflict != "" {
-		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render(
-			fmt.Sprintf("⚠ Warning: \"%s\" already exists locally (will overwrite)", m.installConflict)))
-		b.WriteString("\n")
+		header.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render(
+			fmt.Sprintf("⚠ Warning: %q already exists locally (will overwrite)", m.installConflict)))
+		header.WriteString("\n")
 	}
-	b.WriteString("\n")
+	header.WriteString("\n")
+	header.WriteString(mutedStyle.Render("Install to:"))
+	header.WriteString("\n")
 
-	// Destinations header
-	b.WriteString(mutedStyle.Render("Install to:"))
-	b.WriteString("\n")
+	footer := "\n"
+	if m.installName.Focused() {
+		footer += helpStyle.Render("[Tab/↓] destinations  [Enter] confirm  [Esc] cancel")
+	} else {
+		footer += helpStyle.Render("[Tab/↑] edit name  [Space] toggle  [Enter] confirm  [Esc] cancel")
+	}
+	footer += "\n"
 
-	for i, path := range m.installPaths {
-		// Cursor (only show when name input not focused)
+	availableRows := ui.RemainingHeight(m.height, header.String(), footer)
+	start, end := ui.VisibleRange(len(m.installPaths), m.installCursor, availableRows)
+
+	var b strings.Builder
+	b.WriteString(header.String())
+	for i := start; i < end; i++ {
+		path := m.installPaths[i]
 		cursor := "  "
 		if i == m.installCursor && !m.installName.Focused() {
 			cursor = selectedStyle.Render("> ")
 		}
 		b.WriteString(cursor)
 
-		// Checkbox
 		if path.Selected {
 			b.WriteString(installedStyle.Render("[x] "))
 		} else {
 			b.WriteString("[ ] ")
 		}
 
-		// Path display
 		displayPath := path.Path
-		// Shorten home directory
 		if home, _ := os.UserHomeDir(); home != "" {
 			displayPath = strings.Replace(displayPath, home, "~", 1)
 		}
@@ -956,20 +972,12 @@ func (m *Model) viewInstall() string {
 			b.WriteString(displayPath)
 		}
 
-		// Label
 		b.WriteString("  ")
 		b.WriteString(mutedStyle.Render("(" + path.Label + ")"))
 		b.WriteString("\n")
 	}
 
-	b.WriteString("\n")
-	if m.installName.Focused() {
-		b.WriteString(helpStyle.Render("[Tab/↓] destinations  [Enter] confirm  [Esc] cancel"))
-	} else {
-		b.WriteString(helpStyle.Render("[Tab/↑] edit name  [Space] toggle  [Enter] confirm  [Esc] cancel"))
-	}
-	b.WriteString("\n")
-
+	b.WriteString(footer)
 	return b.String()
 }
 
@@ -1054,10 +1062,7 @@ func (m *Model) viewShow() string {
 	lines := strings.Split(content.String(), "\n")
 
 	// Calculate visible area (leave room for help bar)
-	visibleLines := m.height - 4
-	if visibleLines < 5 {
-		visibleLines = 5
-	}
+	visibleLines := max(5, ui.RemainingLines(m.height, 4))
 
 	// Clamp scroll position
 	maxScroll := len(lines) - visibleLines
@@ -1096,33 +1101,44 @@ func (m *Model) viewShow() string {
 
 // viewDelete renders the delete confirmation view
 func (m *Model) viewDelete() string {
-	var b strings.Builder
+	var header strings.Builder
 	skill := m.deleteSkill
 	paths := m.installed[skill.Name]
 
-	b.WriteString(titleStyle.Render(fmt.Sprintf("Delete \"%s\"?", skill.Name)))
-	b.WriteString("\n\n")
+	header.WriteString(titleStyle.Render(fmt.Sprintf("Delete %q?", skill.Name)))
+	header.WriteString("\n\n")
 
 	if m.deleting {
-		b.WriteString(m.spinner.View())
-		b.WriteString(" Deleting...")
-		b.WriteString("\n\n")
+		header.WriteString(m.spinner.View())
+		header.WriteString(" Deleting...")
+		header.WriteString("\n\n")
 	}
 
-	b.WriteString(mutedStyle.Render("This will remove the skill from:"))
-	b.WriteString("\n\n")
+	header.WriteString(mutedStyle.Render("This will remove the skill from:"))
+	header.WriteString("\n\n")
 
-	for _, p := range paths {
+	footer := "\n" + helpStyle.Render("[y] confirm delete  [n/Esc] cancel") + "\n"
+	availableRows := ui.RemainingHeight(m.height, header.String(), footer)
+
+	visibleCount := min(len(paths), availableRows)
+	showMore := len(paths) > visibleCount
+	if showMore && visibleCount > 0 {
+		visibleCount--
+	}
+	var b strings.Builder
+	b.WriteString(header.String())
+	for i := 0; i < visibleCount; i++ {
 		b.WriteString("    ")
 		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("✗ "))
-		b.WriteString(p)
+		b.WriteString(paths[i])
+		b.WriteString("\n")
+	}
+	if showMore {
+		b.WriteString(mutedStyle.Render(fmt.Sprintf("    … and %d more", len(paths)-visibleCount)))
 		b.WriteString("\n")
 	}
 
-	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("[y] confirm delete  [n/Esc] cancel"))
-	b.WriteString("\n")
-
+	b.WriteString(footer)
 	return b.String()
 }
 
@@ -1591,7 +1607,7 @@ func openBrowser(url string) {
 // RunBrowser runs the skills browser TUI
 func RunBrowser(initialQuery string, useAISearch bool) error {
 	model := New(initialQuery, useAISearch)
-	p := tea.NewProgram(model, tea.WithAltScreen())
+	p := tea.NewProgram(model)
 	_, err := p.Run()
 	return err
 }

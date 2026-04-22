@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/sahilm/fuzzy"
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
@@ -1519,10 +1519,6 @@ func (m *Model) cmdInspect() (tea.Model, tea.Cmd) {
 
 	m.inspectorMode = true
 	m.inspectorModel = inspector.NewWithStore(m.messages, m.width, m.height, m.styles, m.store)
-	// Only enter alt screen if chat isn't already in alt screen mode
-	if !m.altScreen {
-		return m, tea.EnterAltScreen
-	}
 	return m, nil
 }
 

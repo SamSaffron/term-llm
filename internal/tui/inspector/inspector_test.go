@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -78,25 +78,25 @@ func TestScrolling(t *testing.T) {
 	}
 
 	// Scroll down
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
 	if m.scrollY != 1 {
 		t.Errorf("expected scrollY 1 after scrolling down, got %d", m.scrollY)
 	}
 
 	// Scroll up
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'k', Text: "k"})
 	if m.scrollY != 0 {
 		t.Errorf("expected scrollY 0 after scrolling up, got %d", m.scrollY)
 	}
 
 	// Go to bottom
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}})
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'G', Text: "G"})
 	if m.scrollY != m.maxScroll() {
 		t.Errorf("expected scrollY %d (maxScroll) after G, got %d", m.maxScroll(), m.scrollY)
 	}
 
 	// Go to top
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'g', Text: "g"})
 	if m.scrollY != 0 {
 		t.Errorf("expected scrollY 0 after g, got %d", m.scrollY)
 	}
@@ -118,7 +118,7 @@ func TestQuit(t *testing.T) {
 	m := New(messages, 80, 24, ui.DefaultStyles())
 
 	// Test q key
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
 	if cmd == nil {
 		t.Error("expected non-nil command from q key")
 	}
@@ -144,7 +144,7 @@ func TestView(t *testing.T) {
 	}
 
 	m := New(messages, 80, 24, ui.DefaultStyles())
-	view := m.View()
+	view := m.View().Content
 
 	if view == "" {
 		t.Error("View() returned empty string")
@@ -158,6 +158,15 @@ func TestView(t *testing.T) {
 	// Check for help text
 	if !contains(view, "q:close") {
 		t.Error("View() should contain help text")
+	}
+}
+
+func TestView_EnablesMouseModeForWheelScroll(t *testing.T) {
+	m := New(nil, 80, 24, ui.DefaultStyles())
+	view := m.View()
+
+	if view.MouseMode != tea.MouseModeCellMotion {
+		t.Fatalf("expected inspector view mouse mode %v, got %v", tea.MouseModeCellMotion, view.MouseMode)
 	}
 }
 
@@ -316,7 +325,7 @@ func TestViewWithModelInfo(t *testing.T) {
 	}
 
 	m := NewWithConfig(messages, 80, 24, ui.DefaultStyles(), nil, cfg)
-	view := m.View()
+	view := m.View().Content
 
 	// Check for model info section
 	if !contains(view, "Model Information") {
@@ -353,7 +362,7 @@ func TestViewWithToolDefinitions(t *testing.T) {
 	}
 
 	m := NewWithConfig(messages, 80, 24, ui.DefaultStyles(), nil, cfg)
-	view := m.View()
+	view := m.View().Content
 
 	// Check for tool definitions section
 	if !contains(view, "Tool Definitions") {
@@ -401,7 +410,7 @@ func TestViewWithSystemMessage(t *testing.T) {
 	}
 
 	m := NewWithConfig(messages, 80, 24, ui.DefaultStyles(), nil, cfg)
-	view := m.View()
+	view := m.View().Content
 
 	// Check for system prompt section
 	if !contains(view, "System Prompt") {

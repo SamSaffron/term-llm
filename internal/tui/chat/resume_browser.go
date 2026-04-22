@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	sessionsui "github.com/samsaffron/term-llm/internal/tui/sessions"
 )
 
@@ -23,9 +23,6 @@ func (m *Model) openResumeBrowser() (tea.Model, tea.Cmd) {
 	m.resumeBrowserMode = true
 	m.resumeBrowserModel = browser
 
-	if !m.altScreen {
-		return m, tea.EnterAltScreen
-	}
 	return m, nil
 }
 
@@ -33,9 +30,6 @@ func (m *Model) closeResumeBrowser() (tea.Model, tea.Cmd) {
 	m.resumeBrowserMode = false
 	m.resumeBrowserModel = nil
 	m.textarea.Focus()
-	if !m.altScreen {
-		return m, tea.ExitAltScreen
-	}
 	return m, nil
 }
 

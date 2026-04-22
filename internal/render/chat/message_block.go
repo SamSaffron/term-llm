@@ -3,12 +3,12 @@ package chat
 import (
 	"encoding/json"
 	"fmt"
+	"image/color"
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 	"github.com/muesli/reflow/wordwrap"
-	"github.com/muesli/termenv"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -43,8 +43,6 @@ type MessageBlockRenderer struct {
 
 // Shared theme instance to avoid allocations
 var sharedTheme = ui.DefaultStyles().Theme()
-
-const ansi256UserMsgBg = "235"
 
 // NewMessageBlockRenderer creates a new renderer for message blocks.
 func NewMessageBlockRenderer(width int, mdRenderer MarkdownRenderer, toolsExpanded bool) *MessageBlockRenderer {
@@ -185,10 +183,7 @@ func extractTextParts(parts []llm.Part) string {
 	return strings.Join(texts, "\n")
 }
 
-func (r *MessageBlockRenderer) userMessageBackground() lipgloss.TerminalColor {
-	if lipgloss.ColorProfile() == termenv.ANSI256 {
-		return lipgloss.Color(ansi256UserMsgBg)
-	}
+func (r *MessageBlockRenderer) userMessageBackground() color.Color {
 	return r.theme.UserMsgBg
 }
 

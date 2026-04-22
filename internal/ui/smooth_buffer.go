@@ -6,7 +6,7 @@ import (
 	"time"
 	"unicode"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 // Smooth buffer constants for 60fps adaptive rendering

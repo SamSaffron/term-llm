@@ -7,8 +7,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
 	"golang.org/x/term"
 )
 
@@ -615,10 +615,7 @@ func ShowEditInfo(aboutText string) {
 	}
 	defer tty.Close()
 
-	// Create program with alternate screen
 	p := tea.NewProgram(m,
-		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
 		tea.WithInput(tty),
 		tea.WithOutput(tty),
 		tea.WithoutSignalHandler(),
@@ -639,7 +636,7 @@ type infoModel struct {
 func newInfoModel(content string, width, height int) infoModel {
 	styles := DefaultStyles()
 
-	vp := viewport.New(width, height-1) // -1 for footer
+	vp := NewViewportWithFooter(width, height, 1)
 
 	// Render markdown content
 	rendered := renderInfoMarkdown(content, width)
@@ -660,7 +657,7 @@ func (m infoModel) Init() tea.Cmd {
 
 func (m infoModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "q", "Q", "esc", "enter", "i", "I":
 			return m, tea.Quit
@@ -671,21 +668,19 @@ func (m infoModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.viewport.Width = msg.Width
-		m.viewport.Height = msg.Height - 1
+		ResizeViewportWithFooter(&m.viewport, msg.Width, msg.Height, 1)
 		m.viewport.SetContent(renderInfoMarkdown(m.content, m.width))
 	}
 
-	// Update viewport for scrolling
 	var cmd tea.Cmd
 	m.viewport, cmd = m.viewport.Update(msg)
 
 	return m, cmd
 }
 
-func (m infoModel) View() string {
+func (m infoModel) View() tea.View {
 	footer := m.styles.Footer.Render("↑/↓ scroll • q/Esc/Enter to exit")
-	return m.viewport.View() + "\n" + footer
+	return NewAltScreenMouseView(m.viewport.View() + "\n" + footer)
 }
 
 // renderInfoMarkdown renders content with the shared terminal markdown renderer.

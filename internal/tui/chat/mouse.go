@@ -3,8 +3,8 @@ package chat
 import (
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 type wrappedLineSegment struct {
@@ -46,24 +46,27 @@ func (m *Model) handleTextareaMouse(msg tea.MouseMsg) bool {
 	if !m.textareaBoundsValid {
 		return false
 	}
-	if msg.Button != tea.MouseButtonLeft {
+	mouse := msg.Mouse()
+	if mouse.Button != tea.MouseLeft {
 		return false
 	}
-	if msg.Action != tea.MouseActionPress && msg.Action != tea.MouseActionMotion {
+	switch msg.(type) {
+	case tea.MouseClickMsg, tea.MouseMotionMsg:
+	default:
 		return false
 	}
-	if msg.Shift {
+	if mouse.Mod&tea.ModShift != 0 {
 		return false
 	}
-	if msg.Y < m.textareaTopY || msg.Y > m.textareaBottomY {
+	if mouse.Y < m.textareaTopY || mouse.Y > m.textareaBottomY {
 		return false
 	}
-	if msg.X < m.textareaLeftX || msg.X > m.textareaRightX {
+	if mouse.X < m.textareaLeftX || mouse.X > m.textareaRightX {
 		return false
 	}
 
-	visualRow := msg.Y - m.textareaTopY
-	targetX := msg.X - m.textareaLeftX - m.textareaPromptWidth
+	visualRow := mouse.Y - m.textareaTopY
+	targetX := mouse.X - m.textareaLeftX - m.textareaPromptWidth
 	if targetX < 0 {
 		targetX = 0
 	}
@@ -71,7 +74,7 @@ func (m *Model) handleTextareaMouse(msg tea.MouseMsg) bool {
 	line, col := m.cursorFromVisualPosition(visualRow, targetX)
 	m.textarea.Focus()
 	m.moveCursorToLine(line)
-	m.textarea.SetCursor(col)
+	m.textarea.SetCursorColumn(col)
 
 	return true
 }

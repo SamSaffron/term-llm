@@ -1,6 +1,10 @@
 package chat
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/samsaffron/term-llm/internal/ui"
+)
 
 func TestSelectionNormalized(t *testing.T) {
 	tests := []struct {
@@ -76,9 +80,9 @@ func TestClampInt(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := clampInt(tt.v, tt.lo, tt.hi)
+		got := ui.ClampInt(tt.v, tt.lo, tt.hi)
 		if got != tt.want {
-			t.Errorf("clampInt(%d, %d, %d) = %d, want %d", tt.v, tt.lo, tt.hi, got, tt.want)
+			t.Errorf("ClampInt(%d, %d, %d) = %d, want %d", tt.v, tt.lo, tt.hi, got, tt.want)
 		}
 	}
 }

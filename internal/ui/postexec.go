@@ -7,9 +7,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/prompt"
 	"golang.org/x/term"
@@ -42,10 +42,7 @@ func ShowCommandHelp(command, shell string, engine *llm.Engine) error {
 	// Create the model
 	m := newHelpModel(width, height)
 
-	// Create program with TTY
 	p := tea.NewProgram(m,
-		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
 		tea.WithInput(tty),
 		tea.WithOutput(tty),
 		tea.WithoutSignalHandler(),
@@ -109,7 +106,7 @@ func newHelpModel(width, height int) helpModel {
 	sp.Spinner = spinner.Dot
 	sp.Style = styles.Spinner
 
-	vp := viewport.New(width, height-1) // -1 for footer
+	vp := NewViewportWithFooter(width, height, 1)
 
 	return helpModel{
 		viewport: vp,
@@ -130,7 +127,7 @@ func (m helpModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "q", "Q", "esc", "enter":
 			return m, tea.Quit
@@ -141,8 +138,7 @@ func (m helpModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.viewport.Width = msg.Width
-		m.viewport.Height = msg.Height - 1
+		ResizeViewportWithFooter(&m.viewport, msg.Width, msg.Height, 1)
 		// Re-render content for new width
 		if m.content.Len() > 0 {
 			m.rendered = renderMarkdown(m.content.String(), m.width)
@@ -180,7 +176,7 @@ func (m helpModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-func (m helpModel) View() string {
+func (m helpModel) View() tea.View {
 	var footer string
 
 	if m.err != nil {
@@ -193,7 +189,7 @@ func (m helpModel) View() string {
 		footer = m.styles.Footer.Render("↑/↓ scroll • q/Esc/Enter to exit")
 	}
 
-	return m.viewport.View() + "\n" + footer
+	return NewAltScreenMouseView(m.viewport.View() + "\n" + footer)
 }
 
 // renderMarkdown renders content with the shared terminal markdown renderer.

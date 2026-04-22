@@ -7,11 +7,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/samsaffron/term-llm/internal/ui"
 	"golang.org/x/term"
 )
 
@@ -107,7 +108,7 @@ func New(initialQuery string) *Model {
 	ti.Placeholder = "Type to filter/search..."
 	ti.Focus()
 	ti.CharLimit = 100
-	ti.Width = width - 4
+	ti.SetWidth(max(1, width-4))
 	ti.SetValue(initialQuery)
 
 	// Create spinner
@@ -175,10 +176,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.input.Width = m.width - 4
+		m.input.SetWidth(max(1, m.width-4))
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		key := msg.String()
 
 		// Global keys that always work
@@ -213,23 +214,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
-			// All other keys go to text input
-			var cmd tea.Cmd
-			m.input, cmd = m.input.Update(msg)
-			cmds = append(cmds, cmd)
-
-			// Apply filter on every keystroke and schedule debounced search
-			if m.input.Value() != m.filterText {
-				m.filterText = m.input.Value()
-				m.applyFilter()
-
-				// Schedule a debounced search if filter text is non-empty
-				if m.filterText != "" && m.filterText != m.lastSearchText {
-					m.searching = true
-					cmds = append(cmds, m.debounceSearch(m.filterText))
-				}
-			}
-			return m, tea.Batch(cmds...)
+			return m.updateInput(msg)
 		}
 
 		// Input NOT focused - handle navigation and action keys
@@ -257,6 +242,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.testing = true
 				return m, m.testServer(m.cursor)
 			}
+		}
+		return m, nil
+
+	case tea.PasteMsg:
+		if m.input.Focused() {
+			return m.updateInput(msg)
 		}
 		return m, nil
 
@@ -329,8 +320,28 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
+func (m *Model) updateInput(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	cmds = append(cmds, cmd)
+
+	if m.input.Value() != m.filterText {
+		m.filterText = m.input.Value()
+		m.applyFilter()
+
+		if m.filterText != "" && m.filterText != m.lastSearchText {
+			m.searching = true
+			cmds = append(cmds, m.debounceSearch(m.filterText))
+		}
+	}
+
+	return m, tea.Batch(cmds...)
+}
+
 // View renders the model
-func (m *Model) View() string {
+func (m *Model) View() tea.View {
 	var b strings.Builder
 
 	// Title
@@ -375,13 +386,14 @@ func (m *Model) View() string {
 	if len(m.servers) > 0 {
 		// Calculate visible rows - each server takes 2 lines (name + description)
 		// Reserve: title(2) + input(1) + status(1) + pagination(2) + help(2) = 8 lines
-		availableHeight := m.height - 8
+		reserved := 8
 		if m.err != nil {
-			availableHeight--
+			reserved++
 		}
 		if m.message != "" {
-			availableHeight--
+			reserved++
 		}
+		availableHeight := ui.RemainingLines(m.height, reserved)
 
 		// Each server entry is 2 lines
 		visibleServers := availableHeight / 2
@@ -389,15 +401,7 @@ func (m *Model) View() string {
 			visibleServers = 2
 		}
 
-		// Calculate scroll offset to keep cursor visible
-		startIdx := 0
-		if m.cursor >= visibleServers {
-			startIdx = m.cursor - visibleServers + 1
-		}
-		endIdx := startIdx + visibleServers
-		if endIdx > len(m.servers) {
-			endIdx = len(m.servers)
-		}
+		startIdx, endIdx := ui.VisibleRange(len(m.servers), m.cursor, visibleServers)
 
 		for i := startIdx; i < endIdx; i++ {
 			s := m.servers[i].Server
@@ -458,7 +462,7 @@ func (m *Model) View() string {
 	}
 	b.WriteString("\n")
 
-	return b.String()
+	return ui.NewAltScreenView(b.String())
 }
 
 // debounceSearch returns a command that fires after a delay
@@ -694,7 +698,7 @@ func (m *Model) isServerInstalled(server *mcp.RegistryServer) bool {
 // RunBrowser runs the MCP browser TUI
 func RunBrowser(initialQuery string) error {
 	model := New(initialQuery)
-	p := tea.NewProgram(model, tea.WithAltScreen())
+	p := tea.NewProgram(model)
 	_, err := p.Run()
 	return err
 }

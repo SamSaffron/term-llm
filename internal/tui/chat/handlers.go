@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
@@ -69,7 +69,7 @@ func (m *Model) updateInspectorMode(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		// Pass to inspector
 		if m.inspectorModel != nil {
 			var cmd tea.Cmd
@@ -83,10 +83,6 @@ func (m *Model) updateInspectorMode(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.inspectorMode = false
 		m.inspectorModel = nil
 		m.textarea.Focus()
-		// Only exit alt screen if chat isn't in alt screen mode
-		if !m.altScreen {
-			return m, tea.ExitAltScreen
-		}
 		return m, nil
 
 	default:
@@ -101,7 +97,7 @@ func (m *Model) updateInspectorMode(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Handle embedded approval UI first if active
 	if m.approvalModel != nil {
 		done := m.approvalModel.UpdateEmbedded(msg)
@@ -503,10 +499,6 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.inspectorMode = true
 			m.inspectorModel = inspector.NewWithConfig(m.messages, m.width, m.height, m.styles, m.store, cfg)
-			// Only enter alt screen if chat isn't already in alt screen mode
-			if !m.altScreen {
-				return m, tea.EnterAltScreen
-			}
 			return m, nil
 		}
 		return m, nil
@@ -547,14 +539,23 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				scrollAmount = 5
 			}
 			if key.Matches(msg, m.keyMap.HistoryUp) {
-				m.viewport.LineUp(scrollAmount)
+				m.viewport.ScrollUp(scrollAmount)
 				return m, nil
 			}
 			if key.Matches(msg, m.keyMap.HistoryDown) {
-				m.viewport.LineDown(scrollAmount)
+				m.viewport.ScrollDown(scrollAmount)
 				return m, nil
 			}
 		}
+	}
+
+	// Newline insertion (ctrl+j, alt+enter, shift+enter) — works in both the
+	// streaming interjection composer and the normal composer. Must precede
+	// any Send handler so shift+enter is caught before a plain "enter" match.
+	if key.Matches(msg, m.keyMap.Newline) || key.Matches(msg, m.keyMap.NewlineAlt) {
+		m.textarea.InsertString("\n")
+		m.updateTextareaHeight()
+		return m, nil
 	}
 
 	// During streaming: allow typing and interjection (send queues message for next turn)
@@ -618,13 +619,6 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Handle clear
 	if key.Matches(msg, m.keyMap.Clear) {
 		return m.cmdClear()
-	}
-
-	// Handle newline (must be before Send since shift+enter contains enter)
-	if key.Matches(msg, m.keyMap.Newline) || key.Matches(msg, m.keyMap.NewlineAlt) {
-		m.textarea.InsertString("\n")
-		m.updateTextareaHeight()
-		return m, nil
 	}
 
 	// Handle tab completion for /mcp commands
@@ -762,37 +756,12 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Update textarea for other keys (skip during streaming - no text input needed)
 	if !m.streaming {
-		// Intercept large pastes: replace content with an inline placeholder
-		// so the textarea stays compact. The placeholder is inserted at the
-		// cursor position and expanded back on send.
-		if msg.Paste {
-			text := string(msg.Runes)
-			if len(text) > pasteCollapseThreshold {
-				m.pasteSeq++
-				id := m.pasteSeq
-				if m.pasteChunks == nil {
-					m.pasteChunks = make(map[int]string)
-				}
-				m.pasteChunks[id] = text
-				placeholder := pastePlaceholder(id, text)
-				msg = tea.KeyMsg{
-					Type:  tea.KeyRunes,
-					Runes: []rune(placeholder),
-					Paste: true,
-				}
-			}
-		}
-
 		old := m.textarea.Value()
 		var cmd tea.Cmd
 		m.textarea, cmd = m.textarea.Update(msg)
 		// Clear selection when user starts typing
 		if m.selection.Active && m.textarea.Value() != old {
 			m.selection = Selection{}
-		}
-		// After paste, re-wrap long lines so content is visible in the textarea.
-		if msg.Paste && m.textarea.Value() != old {
-			m.reflowTextarea()
 		}
 		m.updateTextareaHeight()
 		// Show argument completions for commands that support them
@@ -802,6 +771,101 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 	}
+	return m, nil
+}
+
+func (m *Model) handleDialogPasteMsg(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
+	if !m.dialog.IsOpen() {
+		return m, nil
+	}
+
+	switch m.dialog.Type() {
+	case DialogModelPicker, DialogMCPPicker:
+		if msg.Content != "" {
+			m.dialog.SetQuery(m.dialog.Query() + msg.Content)
+		}
+	}
+
+	return m, nil
+}
+
+// handlePasteMsg handles bracketed-paste events, collapsing large pastes
+// into inline placeholders that expand on send.
+func (m *Model) handlePasteMsg(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
+	if m.approvalModel != nil {
+		return m, nil
+	}
+	if m.askUserModel != nil {
+		cmd := m.askUserModel.UpdateEmbedded(msg)
+		if m.askUserModel.IsDone() || m.askUserModel.IsCancelled() {
+			if m.tracker != nil && !m.askUserModel.IsCancelled() {
+				m.tracker.AddExternalUIResult(m.askUserModel.RenderPlainSummary())
+			}
+			if m.askUserModel.IsCancelled() {
+				m.askUserDoneCh <- nil
+			} else {
+				m.askUserDoneCh <- m.askUserModel.Answers()
+			}
+			m.askUserModel = nil
+			m.askUserDoneCh = nil
+			m.pausedForExternalUI = false
+			return m, m.spinner.Tick
+		}
+		return m, cmd
+	}
+	if m.handoverPreview != nil {
+		done, handled := m.handoverPreview.UpdateEmbedded(msg)
+		if done {
+			if m.handoverPreview.confirmed {
+				return m.Update(handoverConfirmMsg{})
+			}
+			return m.Update(handoverCancelMsg{})
+		}
+		if handled {
+			return m, nil
+		}
+		return m, nil
+	}
+	if m.dialog.IsOpen() {
+		return m.handleDialogPasteMsg(msg)
+	}
+	if m.streaming {
+		return m, nil
+	}
+	if msg.Content == "" {
+		if m.maybeAttachImageFromClipboard() {
+			return m, nil
+		}
+		return m, nil
+	}
+	text := msg.Content
+	if len(text) > pasteCollapseThreshold {
+		m.pasteSeq++
+		id := m.pasteSeq
+		if m.pasteChunks == nil {
+			m.pasteChunks = make(map[int]string)
+		}
+		m.pasteChunks[id] = text
+		text = pastePlaceholder(id, text)
+	}
+
+	old := m.textarea.Value()
+	m.textarea.InsertString(text)
+	if m.selection.Active && m.textarea.Value() != old {
+		m.selection = Selection{}
+	}
+	if newVal := m.textarea.Value(); newVal != old {
+		m.reflowTextarea()
+		if strings.HasPrefix(newVal, "/") {
+			if !m.completions.IsVisible() {
+				m.completions.Show()
+			}
+			m.updateCompletions()
+		} else if m.completions.IsVisible() {
+			m.completions.Hide()
+		}
+	}
+	m.updateTextareaHeight()
 	return m, nil
 }
 

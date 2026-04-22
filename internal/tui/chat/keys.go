@@ -1,6 +1,6 @@
 package chat
 
-import "github.com/charmbracelet/bubbles/key"
+import "charm.land/bubbles/v2/key"
 
 // KeyMap defines keybindings for the chat TUI
 type KeyMap struct {
