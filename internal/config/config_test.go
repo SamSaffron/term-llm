@@ -246,6 +246,21 @@ func TestGetDefaultsEnablesAutoCompact(t *testing.T) {
 	}
 }
 
+func TestGetDefaultsIncludeChatGPTImageModel(t *testing.T) {
+	defaults := GetDefaults()
+
+	got, ok := defaults["image.chatgpt.model"].(string)
+	if !ok {
+		t.Fatalf("image.chatgpt.model default has unexpected type %T", defaults["image.chatgpt.model"])
+	}
+	if got != "gpt-5.4-mini" {
+		t.Fatalf("image.chatgpt.model = %q, want %q", got, "gpt-5.4-mini")
+	}
+	if !KnownKeys["image.chatgpt.model"] {
+		t.Fatal("KnownKeys missing image.chatgpt.model")
+	}
+}
+
 func TestSave_QuotesSpecialYAMLValues(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 

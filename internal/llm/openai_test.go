@@ -8,6 +8,33 @@ import (
 	"testing"
 )
 
+func TestParseModelEffort(t *testing.T) {
+	tests := []struct {
+		in         string
+		wantModel  string
+		wantEffort string
+	}{
+		{"gpt-5.4-mini", "gpt-5.4-mini", ""},
+		{"gpt-5.4", "gpt-5.4", ""},
+		{"gpt-5.4-high", "gpt-5.4", "high"},
+		{"gpt-5.4-xhigh", "gpt-5.4", "xhigh"},
+		{"gpt-5.4-medium", "gpt-5.4", "medium"},
+		{"gpt-5.4-low", "gpt-5.4", "low"},
+		{"gpt-5.4-minimal", "gpt-5.4", "minimal"},
+		{"gpt-5.4-max", "gpt-5.4", "max"},
+		{"", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			gotModel, gotEffort := ParseModelEffort(tt.in)
+			if gotModel != tt.wantModel || gotEffort != tt.wantEffort {
+				t.Errorf("ParseModelEffort(%q) = (%q, %q), want (%q, %q)",
+					tt.in, gotModel, gotEffort, tt.wantModel, tt.wantEffort)
+			}
+		})
+	}
+}
+
 func TestOpenAIProviderStreamSendsExplicitParallelToolCallsFalse(t *testing.T) {
 	var got struct {
 		ParallelToolCalls *bool             `json:"parallel_tool_calls,omitempty"`
@@ -190,7 +217,7 @@ func TestOpenAIProviderStreamReasoningEffortPrecedence(t *testing.T) {
 			}))
 			defer ts.Close()
 
-			actualModel, effort := parseModelEffort(tt.providerModel)
+			actualModel, effort := ParseModelEffort(tt.providerModel)
 			provider := &OpenAIProvider{
 				apiKey: "test-key",
 				model:  actualModel,

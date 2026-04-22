@@ -41,6 +41,42 @@ func TestNewImageProviderGeminiModelPrecedence(t *testing.T) {
 	}
 }
 
+func TestNewImageProviderOpenAIModelPrecedence(t *testing.T) {
+	tests := []struct {
+		name      string
+		override  string
+		cfgModel  string
+		wantModel string
+	}{
+		{"override model wins", "openai:gpt-image-2", "gpt-image-1-mini", "gpt-image-2"},
+		{"config model used when no override", "openai", "gpt-image-1.5", "gpt-image-1.5"},
+		{"default model when both empty", "openai", "", openaiDefaultModel},
+		{"empty override falls back to config", "", "gpt-image-2", "gpt-image-2"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{}
+			cfg.Image.Provider = "openai"
+			cfg.Image.OpenAI.APIKey = "test-key"
+			cfg.Image.OpenAI.Model = tt.cfgModel
+
+			p, err := NewImageProvider(cfg, tt.override)
+			if err != nil {
+				t.Fatalf("NewImageProvider failed: %v", err)
+			}
+
+			op, ok := p.(*OpenAIProvider)
+			if !ok {
+				t.Fatalf("expected *OpenAIProvider, got %T", p)
+			}
+			if op.model != tt.wantModel {
+				t.Errorf("model=%q, want %q", op.model, tt.wantModel)
+			}
+		})
+	}
+}
+
 func TestNewImageProviderGeminiSizePrecedence(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Image.Gemini.APIKey = "test-key"

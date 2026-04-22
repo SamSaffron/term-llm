@@ -61,7 +61,7 @@ func (p *VeniceProvider) Stream(ctx context.Context, req Request) (Stream, error
 
 	// Effort precedence: req.ReasoningEffort wins over model suffix, which wins over provider-level effort.
 	baseModel := chooseModel(req.Model, p.model)
-	strippedModel, reqEffort := parseModelEffort(baseModel)
+	strippedModel, reqEffort := ParseModelEffort(baseModel)
 	effort := p.effort
 	if reqEffort != "" {
 		effort = reqEffort

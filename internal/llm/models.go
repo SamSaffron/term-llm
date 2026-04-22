@@ -306,7 +306,8 @@ var ProviderFastModels = map[string]string{
 var ImageProviderModels = map[string][]string{
 	"debug":      {"random"},
 	"gemini":     {"gemini-2.5-flash-image", "gemini-3-pro-image-preview", "gemini-3.1-flash-image-preview"},
-	"openai":     {"gpt-image-1.5", "gpt-image-1-mini"},
+	"openai":     {"gpt-image-2", "gpt-image-1.5", "gpt-image-1-mini"},
+	"chatgpt":    {"gpt-5.4-mini", "gpt-5.4"},
 	"xai":        {"grok-2-image", "grok-2-image-1212"},
 	"venice":     {"nano-banana-pro", "nano-banana-2", "flux-2-pro", "flux-2-max", "gpt-image-1-5", "imagineart-1.5-pro", "recraft-v4", "recraft-v4-pro", "seedream-v4", "seedream-v5-lite", "qwen-image", "qwen-image-2", "qwen-image-2-pro", "grok-imagine-image", "grok-imagine-image-pro", "hunyuan-image-v3", "venice-sd35", "hidream", "chroma", "z-image-turbo", "wan-2-7-text-to-image", "wan-2-7-pro-text-to-image", "lustify-sdxl", "lustify-v7", "lustify-v8", "wai-Illustrious", "bria-bg-remover", "qwen-edit", "nano-banana-pro-edit", "nano-banana-2-edit", "flux-2-max-edit", "gpt-image-1-5-edit", "seedream-v4-edit", "seedream-v5-lite-edit", "qwen-image-2-edit", "qwen-image-2-pro-edit", "grok-imagine-edit", "firered-image-edit"},
 	"flux":       {"flux-2-pro", "flux-kontext-pro", "flux-2-max"},
@@ -479,7 +480,7 @@ func GetProviderNames(cfg *config.Config) []string {
 
 // GetImageProviderNames returns valid provider names for image generation
 func GetImageProviderNames() []string {
-	return []string{"debug", "gemini", "openai", "xai", "venice", "flux", "openrouter"}
+	return []string{"debug", "gemini", "openai", "chatgpt", "xai", "venice", "flux", "openrouter"}
 }
 
 // GetProviderCompletions returns completions for the --provider flag

@@ -353,7 +353,7 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 	}
 
 	// Effort precedence: req.ReasoningEffort wins over model suffix, which wins over provider-level effort.
-	reqModel, reqEffort := parseModelEffort(req.Model)
+	reqModel, reqEffort := ParseModelEffort(req.Model)
 	model := chooseModel(reqModel, p.model)
 	effort := p.effort
 	if reqEffort != "" {

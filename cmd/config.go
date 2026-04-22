@@ -851,7 +851,7 @@ edit:
 
 # Image generation settings
 image:
-  provider: gemini  # gemini, openai, xai, venice, flux, or openrouter
+  provider: gemini  # gemini, openai, chatgpt, xai, venice, flux, or openrouter
   output_dir: ~/Pictures/term-llm
 
   gemini:
@@ -859,8 +859,13 @@ image:
     # api_key: uses GEMINI_API_KEY env var
 
   openai:
-    model: gpt-image-1
+    model: gpt-image-2
     # api_key: uses OPENAI_API_KEY env var
+
+  chatgpt:
+    model: gpt-5.4-mini
+    # uses your existing ChatGPT OAuth login (see: term-llm ask --provider chatgpt)
+    # try gpt-5.4 for higher-quality image generation
 
   xai:
     model: grok-2-image-1212
@@ -1423,6 +1428,9 @@ func configValueCompletions(key, toComplete string) []string {
 	}
 	if key == "image.openai.model" {
 		return filterPrefix(llm.ImageProviderModels["openai"], toComplete)
+	}
+	if key == "image.chatgpt.model" {
+		return filterPrefix(llm.ImageProviderModels["chatgpt"], toComplete)
 	}
 	if key == "image.flux.model" {
 		return filterPrefix(llm.ImageProviderModels["flux"], toComplete)

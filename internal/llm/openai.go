@@ -19,11 +19,11 @@ type OpenAIProvider struct {
 	responsesClient *ResponsesClient // Shared client for Responses API with server state
 }
 
-// parseModelEffort extracts effort suffix from model name.
+// ParseModelEffort extracts effort suffix from model name.
 // "gpt-5.2-high" -> ("gpt-5.2", "high")
 // "gpt-5.2-xhigh" -> ("gpt-5.2", "xhigh")
 // "gpt-5.2" -> ("gpt-5.2", "")
-func parseModelEffort(model string) (string, string) {
+func ParseModelEffort(model string) (string, string) {
 	// Check suffixes in order from longest to shortest to avoid "-high" matching "-xhigh"
 	suffixes := []string{"xhigh", "minimal", "medium", "high", "low", "max"}
 	for _, effort := range suffixes {
@@ -36,7 +36,7 @@ func parseModelEffort(model string) (string, string) {
 }
 
 func NewOpenAIProvider(apiKey, model string) *OpenAIProvider {
-	actualModel, effort := parseModelEffort(model)
+	actualModel, effort := ParseModelEffort(model)
 	client := openai.NewClient(option.WithAPIKey(apiKey))
 	return &OpenAIProvider{
 		client: &client,
@@ -96,7 +96,7 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 	}
 
 	// Effort precedence: req.ReasoningEffort wins over model suffix, which wins over provider-level effort.
-	reqModel, reqEffort := parseModelEffort(req.Model)
+	reqModel, reqEffort := ParseModelEffort(req.Model)
 	model := chooseModel(reqModel, p.model)
 	effort := p.effort
 	if reqEffort != "" {

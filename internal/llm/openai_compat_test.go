@@ -1197,7 +1197,7 @@ func TestOpenAICompatProviderStreamSendsReasoningEffort(t *testing.T) {
 			}))
 			defer ts.Close()
 
-			actualModel, effort := parseModelEffort(tt.providerModel)
+			actualModel, effort := ParseModelEffort(tt.providerModel)
 			provider := NewOpenAICompatProvider(ts.URL, "test-key", actualModel, "Test")
 			provider.effort = effort
 			if tt.providerEffort != "" {

@@ -89,7 +89,16 @@ func NewImageProvider(cfg *config.Config, providerOverride string) (ImageProvide
 		if apiKey == "" {
 			return nil, fmt.Errorf("OPENAI_API_KEY not configured. Set environment variable or add to image.openai.api_key in config")
 		}
-		return NewOpenAIProvider(apiKey), nil
+		if model == "" {
+			model = cfg.Image.OpenAI.Model
+		}
+		return NewOpenAIProvider(apiKey, model), nil
+
+	case "chatgpt":
+		if model == "" {
+			model = cfg.Image.ChatGPT.Model
+		}
+		return NewChatGPTProvider(model)
 
 	case "xai", "grok":
 		apiKey := cfg.Image.XAI.APIKey
@@ -133,7 +142,7 @@ func NewImageProvider(cfg *config.Config, providerOverride string) (ImageProvide
 		return NewDebugProvider(cfg.Image.Debug.Delay), nil
 
 	default:
-		return nil, fmt.Errorf("unknown image provider: %s (valid: debug, gemini, openai, xai, venice, flux, openrouter)", provider)
+		return nil, fmt.Errorf("unknown image provider: %s (valid: debug, gemini, openai, chatgpt, xai, venice, flux, openrouter)", provider)
 	}
 }
 

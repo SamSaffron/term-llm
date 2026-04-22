@@ -14,7 +14,7 @@ func NewOpenRouterProvider(apiKey, model, appURL, appTitle string) *OpenAICompat
 	if len(headers) == 0 {
 		headers = nil
 	}
-	actualModel, effort := parseModelEffort(model)
+	actualModel, effort := ParseModelEffort(model)
 	p := NewOpenAICompatProviderWithHeaders(openRouterBaseURL, apiKey, actualModel, "OpenRouter", headers)
 	p.effort = effort
 	return p

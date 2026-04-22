@@ -41,7 +41,7 @@ func NewChatGPTProvider(model string) (*ChatGPTProvider, error) {
 	if model == "" {
 		model = chatGPTDefaultModel
 	}
-	actualModel, effort := parseModelEffort(model)
+	actualModel, effort := ParseModelEffort(model)
 
 	// Try to load existing credentials
 	creds, err := credentials.GetChatGPTCredentials()
@@ -78,7 +78,7 @@ func NewChatGPTProviderWithCreds(creds *credentials.ChatGPTCredentials, model st
 	if model == "" {
 		model = chatGPTDefaultModel
 	}
-	actualModel, effort := parseModelEffort(model)
+	actualModel, effort := ParseModelEffort(model)
 	return &ChatGPTProvider{
 		creds:  creds,
 		model:  actualModel,
@@ -186,40 +186,11 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 
 	// Reuse client across requests
 	if p.responsesClient == nil {
-		p.responsesClient = &ResponsesClient{
-			BaseURL: chatGPTResponsesURL,
-			GetAuthHeader: func() string {
-				return "Bearer " + p.creds.AccessToken
-			},
-			ExtraHeaders: map[string]string{
-				"ChatGPT-Account-ID": p.creds.AccountID,
-				"OpenAI-Beta":        "responses=experimental",
-				"originator":         "term-llm",
-			},
-			HTTPClient:         chatGPTHTTPClient,
-			DisableServerState: true,
-			HandleError: func(statusCode int, body []byte, headers http.Header) error {
-				if statusCode == http.StatusTooManyRequests {
-					return parseChatGPTRateLimitError(body, headers)
-				}
-				return nil // fall through to default handling
-			},
-			OnAuthRetry: func(_ context.Context) error {
-				// Try silent token refresh
-				if err := credentials.RefreshChatGPTCredentials(p.creds); err == nil {
-					return nil
-				}
-				// Clear stale credentials so next run triggers interactive auth
-				if clearErr := credentials.ClearChatGPTCredentials(); clearErr != nil {
-					return fmt.Errorf("ChatGPT session expired and failed to clear credentials: %w", clearErr)
-				}
-				return fmt.Errorf("ChatGPT session expired — please re-run your command to re-authenticate")
-			},
-		}
+		p.responsesClient = NewChatGPTResponsesClient(p.creds)
 	}
 
 	// Effort precedence: req.ReasoningEffort wins over model suffix, which wins over provider-level effort.
-	reqModel, reqEffort := parseModelEffort(req.Model)
+	reqModel, reqEffort := ParseModelEffort(req.Model)
 	model := chooseModel(reqModel, p.model)
 	effort := p.effort
 	if reqEffort != "" {
@@ -268,6 +239,41 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 func (p *ChatGPTProvider) ResetConversation() {
 	if p.responsesClient != nil {
 		p.responsesClient.ResetConversation()
+	}
+}
+
+// NewChatGPTResponsesClient builds a ResponsesClient pre-configured for the
+// chatgpt.com backend endpoint, handling auth, refresh, and rate-limit error
+// parsing. Shared by the LLM provider and the image provider so both pick up
+// the same headers, token-refresh behaviour, and 429 handling.
+func NewChatGPTResponsesClient(creds *credentials.ChatGPTCredentials) *ResponsesClient {
+	return &ResponsesClient{
+		BaseURL: chatGPTResponsesURL,
+		GetAuthHeader: func() string {
+			return "Bearer " + creds.AccessToken
+		},
+		ExtraHeaders: map[string]string{
+			"ChatGPT-Account-ID": creds.AccountID,
+			"OpenAI-Beta":        "responses=experimental",
+			"originator":         "term-llm",
+		},
+		HTTPClient:         chatGPTHTTPClient,
+		DisableServerState: true,
+		HandleError: func(statusCode int, body []byte, headers http.Header) error {
+			if statusCode == http.StatusTooManyRequests {
+				return parseChatGPTRateLimitError(body, headers)
+			}
+			return nil
+		},
+		OnAuthRetry: func(_ context.Context) error {
+			if err := credentials.RefreshChatGPTCredentials(creds); err == nil {
+				return nil
+			}
+			if clearErr := credentials.ClearChatGPTCredentials(); clearErr != nil {
+				return fmt.Errorf("ChatGPT session expired and failed to clear credentials: %w", clearErr)
+			}
+			return fmt.Errorf("ChatGPT session expired — please re-run your command to re-authenticate")
+		},
 	}
 }
 

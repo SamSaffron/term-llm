@@ -228,8 +228,9 @@ const (
 	EventPhase          EventType = "phase" // Emitted for high-level phase changes (Thinking, Searching, etc.)
 	EventDone           EventType = "done"
 	EventError          EventType = "error"
-	EventRetry          EventType = "retry"        // Emitted when retrying after rate limit
-	EventInterjection   EventType = "interjection" // User interjected a message mid-stream
+	EventRetry          EventType = "retry"           // Emitted when retrying after rate limit
+	EventInterjection   EventType = "interjection"    // User interjected a message mid-stream
+	EventImageGenerated EventType = "image_generated" // Emitted when a built-in image_generation tool returns an image
 )
 
 // WarningPhasePrefix is the prefix for warning-level phase events.
@@ -268,6 +269,10 @@ type Event struct {
 	// ToolResponse is set when a provider needs synchronous tool execution (claude_bin MCP).
 	// The engine will execute the tool and send the result back on this channel.
 	ToolResponse chan<- ToolExecutionResponse
+	// Image fields (for EventImageGenerated)
+	ImageData     []byte // Raw decoded image bytes
+	ImageMimeType string // e.g. "image/png"
+	RevisedPrompt string // Model's revised prompt, if any
 }
 
 // Usage captures token usage if available.

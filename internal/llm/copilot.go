@@ -78,7 +78,7 @@ func NewCopilotProvider(model string) (*CopilotProvider, error) {
 	if model == "" {
 		model = copilotDefaultModel
 	}
-	actualModel, effort := parseModelEffort(model)
+	actualModel, effort := ParseModelEffort(model)
 
 	// Try to load existing credentials
 	creds, err := credentials.GetCopilotCredentials()
@@ -112,7 +112,7 @@ func NewCopilotProviderWithCreds(creds *credentials.CopilotCredentials, model st
 	if model == "" {
 		model = copilotDefaultModel
 	}
-	actualModel, effort := parseModelEffort(model)
+	actualModel, effort := ParseModelEffort(model)
 	return &CopilotProvider{
 		creds:  creds,
 		model:  actualModel,

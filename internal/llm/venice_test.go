@@ -294,7 +294,7 @@ func TestVeniceProviderReasoningEffortPrecedence(t *testing.T) {
 			}))
 			defer ts.Close()
 
-			actualModel, effort := parseModelEffort(tt.providerModel)
+			actualModel, effort := ParseModelEffort(tt.providerModel)
 			provider := &VeniceProvider{OpenAICompatProvider: NewOpenAICompatProvider(ts.URL, "test-key", actualModel, "Venice")}
 			provider.effort = effort
 			if tt.providerEffort != "" {

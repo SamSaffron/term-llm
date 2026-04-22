@@ -1,7 +1,9 @@
 package llm
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1444,5 +1446,89 @@ func TestBuildResponsesInputWithInstructions_DeveloperStaysInline(t *testing.T) 
 	}
 	if input[1].Role != "user" {
 		t.Errorf("expected user role, got %q", input[1].Role)
+	}
+}
+
+func TestResponsesClientStream_EmitsImageGeneratedEvent(t *testing.T) {
+	imageBytes := []byte("fake-png-bytes")
+	encoded := base64.StdEncoding.EncodeToString(imageBytes)
+	revised := "a red square on a white background"
+
+	doneItem := map[string]any{
+		"type": "response.output_item.done",
+		"item": map[string]any{
+			"type":           "image_generation_call",
+			"result":         encoded,
+			"revised_prompt": revised,
+		},
+	}
+	doneJSON, err := json.Marshal(doneItem)
+	if err != nil {
+		t.Fatalf("marshal done item: %v", err)
+	}
+
+	sse := fmt.Sprintf(
+		"event: response.output_item.done\ndata: %s\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_img_1\"}}\n\n",
+		string(doneJSON),
+	)
+
+	httpClient := &http.Client{
+		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader(sse)),
+			}, nil
+		}),
+	}
+
+	client := &ResponsesClient{
+		BaseURL:       "https://example.test/v1/responses",
+		GetAuthHeader: func() string { return "Bearer test-token" },
+		HTTPClient:    httpClient,
+	}
+
+	stream, err := client.Stream(context.Background(), ResponsesRequest{
+		Model: "gpt-5.2",
+		Input: []ResponsesInputItem{
+			{Type: "message", Role: "user", Content: "draw"},
+		},
+		Stream: true,
+	}, false)
+	if err != nil {
+		t.Fatalf("stream request failed: %v", err)
+	}
+	defer stream.Close()
+
+	var seen *Event
+	for {
+		event, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			t.Fatalf("stream recv failed: %v", recvErr)
+		}
+		if event.Type == EventImageGenerated {
+			copy := event
+			seen = &copy
+		}
+		if event.Type == EventDone {
+			break
+		}
+	}
+
+	if seen == nil {
+		t.Fatal("expected EventImageGenerated, got none")
+	}
+	if !bytes.Equal(seen.ImageData, imageBytes) {
+		t.Fatalf("ImageData mismatch: got %q, want %q", seen.ImageData, imageBytes)
+	}
+	if seen.ImageMimeType != "image/png" {
+		t.Fatalf("ImageMimeType = %q, want image/png", seen.ImageMimeType)
+	}
+	if seen.RevisedPrompt != revised {
+		t.Fatalf("RevisedPrompt = %q, want %q", seen.RevisedPrompt, revised)
 	}
 }

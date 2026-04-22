@@ -59,11 +59,12 @@ export PERPLEXITY_API_KEY=your-key
 
 ### Option 3: Use ChatGPT (Plus/Pro subscription)
 
-If you have a ChatGPT Plus or Pro subscription, you can use the `chatgpt` provider with native OAuth authentication:
+If you have a ChatGPT Plus or Pro subscription, you can use the `chatgpt` provider with native OAuth authentication for both text and image workflows:
 
 ```bash
 term-llm ask --provider chatgpt "explain this code"
 term-llm ask --provider chatgpt:gpt-5.2-codex "code question"
+term-llm image --provider chatgpt:gpt-5.4 "storybook fox in the snow"
 ```
 
 On first use, you'll be prompted to authenticate via browser. Credentials are stored locally and refreshed automatically.

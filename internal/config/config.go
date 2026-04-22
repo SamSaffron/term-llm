@@ -286,10 +286,11 @@ type EditConfig struct {
 
 // ImageConfig configures image generation settings
 type ImageConfig struct {
-	Provider   string                `mapstructure:"provider"`   // default image provider: gemini, openai, xai, venice, flux, openrouter, debug
+	Provider   string                `mapstructure:"provider"`   // default image provider: gemini, openai, chatgpt, xai, venice, flux, openrouter, debug
 	OutputDir  string                `mapstructure:"output_dir"` // default save directory
 	Gemini     ImageGeminiConfig     `mapstructure:"gemini"`
 	OpenAI     ImageOpenAIConfig     `mapstructure:"openai"`
+	ChatGPT    ImageChatGPTConfig    `mapstructure:"chatgpt"`
 	XAI        ImageXAIConfig        `mapstructure:"xai"`
 	Venice     ImageVeniceConfig     `mapstructure:"venice"`
 	Flux       ImageFluxConfig       `mapstructure:"flux"`
@@ -308,6 +309,12 @@ type ImageGeminiConfig struct {
 type ImageOpenAIConfig struct {
 	APIKey string `mapstructure:"api_key"`
 	Model  string `mapstructure:"model"`
+}
+
+// ImageChatGPTConfig configures ChatGPT image generation via the chatgpt.com
+// backend's built-in image_generation tool (OAuth, no API key required).
+type ImageChatGPTConfig struct {
+	Model string `mapstructure:"model"` // e.g., gpt-5.4-mini (default) or gpt-5.4
 }
 
 // ImageXAIConfig configures xAI (Grok) image generation
@@ -1110,6 +1117,8 @@ var KnownKeys = map[string]bool{
 	"image.openai":             true,
 	"image.openai.api_key":     true,
 	"image.openai.model":       true,
+	"image.chatgpt":            true,
+	"image.chatgpt.model":      true,
 	"image.xai":                true,
 	"image.xai.api_key":        true,
 	"image.xai.model":          true,
@@ -1261,7 +1270,8 @@ func GetDefaults() map[string]any {
 		"image.provider":                  "gemini",
 		"image.output_dir":                "~/Pictures/term-llm",
 		"image.gemini.model":              "gemini-2.5-flash-image",
-		"image.openai.model":              "gpt-image-1",
+		"image.openai.model":              "gpt-image-2",
+		"image.chatgpt.model":             "gpt-5.4-mini",
 		"image.xai.model":                 "grok-2-image-1212",
 		"image.venice.model":              "nano-banana-pro",
 		"image.venice.resolution":         "2K",

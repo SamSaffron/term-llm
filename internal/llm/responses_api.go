@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -62,6 +63,13 @@ type ResponsesRequest struct {
 // ResponsesWebSearchTool represents the web search tool for OpenAI
 type ResponsesWebSearchTool struct {
 	Type string `json:"type"` // "web_search_preview"
+}
+
+// ResponsesImageGenerationTool represents the built-in image_generation tool.
+// See https://platform.openai.com/docs/guides/tools-image-generation
+type ResponsesImageGenerationTool struct {
+	Type         string `json:"type"`                    // "image_generation"
+	OutputFormat string `json:"output_format,omitempty"` // "png", "jpeg", "webp"
 }
 
 // ResponsesInputItem represents an input item in the Open Responses format
@@ -123,6 +131,9 @@ type responsesOutputItem struct {
 	CallID    string `json:"call_id,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
+	// For image_generation_call
+	Result        string `json:"result,omitempty"`         // base64-encoded image payload
+	RevisedPrompt string `json:"revised_prompt,omitempty"` // model's revised prompt
 }
 
 type responsesReasoningSummaryPart struct {
@@ -749,6 +760,21 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 								if err := send.Send(Event{Type: EventTextDelta, Text: content.Refusal}); err != nil {
 									return err
 								}
+							}
+						}
+					} else if doneEvent.Item.Type == "image_generation_call" {
+						if doneEvent.Item.Result != "" {
+							decoded, err := base64.StdEncoding.DecodeString(doneEvent.Item.Result)
+							if err != nil {
+								return fmt.Errorf("decode image_generation_call result: %w", err)
+							}
+							if err := send.Send(Event{
+								Type:          EventImageGenerated,
+								ImageData:     decoded,
+								ImageMimeType: "image/png",
+								RevisedPrompt: doneEvent.Item.RevisedPrompt,
+							}); err != nil {
+								return err
 							}
 						}
 					}
