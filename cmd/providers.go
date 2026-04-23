@@ -134,6 +134,13 @@ var builtinProviderMeta = map[string]struct {
 		supportsListModels: true,
 		description:        "Venice AI (private, uncensored inference — OpenAI-compatible)",
 	},
+	"ollama": {
+		credential:         "none",
+		envVar:             "",
+		requiresKey:        false,
+		supportsListModels: true,
+		description:        "Ollama local inference (native /api/chat, supports think/options.*)",
+	},
 }
 
 var providersCmd = &cobra.Command{

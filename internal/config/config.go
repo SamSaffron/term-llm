@@ -28,6 +28,7 @@ const (
 	ProviderTypeXAI          ProviderType = "xai"
 	ProviderTypeVenice       ProviderType = "venice"
 	ProviderTypeBedrock      ProviderType = "bedrock"
+	ProviderTypeOllama       ProviderType = "ollama"
 )
 
 // builtInProviderTypes maps known provider names to their types
@@ -44,6 +45,7 @@ var builtInProviderTypes = map[string]ProviderType{
 	"xai":        ProviderTypeXAI,
 	"venice":     ProviderTypeVenice,
 	"bedrock":    ProviderTypeBedrock,
+	"ollama":     ProviderTypeOllama,
 }
 
 // InferProviderType returns the provider type for a given provider name
@@ -96,6 +98,14 @@ type ProviderConfig struct {
 	SecretKey    string            `mapstructure:"secret_access_key"` // Explicit AWS secret access key
 	SessionToken string            `mapstructure:"session_token"`     // Optional AWS session token (temporary creds)
 	ModelMap     map[string]string `mapstructure:"model_map"`         // Friendly name -> Bedrock model ID/ARN
+
+	// Ollama-native sampling options (type: ollama only)
+	Think           *bool    `mapstructure:"think"`            // Enable extended thinking / reasoning
+	TopK            *int     `mapstructure:"top_k"`            // Top-K sampling
+	MinP            *float64 `mapstructure:"min_p"`            // Min-P sampling
+	PresencePenalty *float64 `mapstructure:"presence_penalty"` // Presence penalty
+	NumCtx          *int     `mapstructure:"num_ctx"`          // Context window size in tokens
+	NumPredict      *int     `mapstructure:"num_predict"`      // Max tokens to generate (-1 = unlimited)
 
 	// Runtime fields (populated after credential resolution)
 	ResolvedAPIKey string                              `mapstructure:"-"`
@@ -1235,6 +1245,13 @@ var KnownProviderKeys = map[string]bool{
 	"context_window":    true,
 	"max_output_tokens": true,
 	"enable_hooks":      true,
+	// Ollama-native options
+	"think":            true,
+	"top_k":            true,
+	"min_p":            true,
+	"presence_penalty": true,
+	"num_ctx":          true,
+	"num_predict":      true,
 }
 
 // GetDefaults returns a map of all default configuration values

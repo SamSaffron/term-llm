@@ -161,6 +161,26 @@ var ProviderModels = map[string][]ModelEntry{
 		// Grok 2
 		{ID: "grok-2", InputLimit: 123_000, OutputLimit: 8_192},
 	},
+	"ollama": {
+		// Qwen3 coding/agent (think suffix enables extended reasoning via -think flag)
+		{ID: "qwen2.5-coder:7b", InputLimit: 30_000, OutputLimit: 8_192},
+		{ID: "qwen2.5-coder:14b", InputLimit: 30_000, OutputLimit: 8_192},
+		{ID: "qwen2.5-coder:32b", InputLimit: 30_000, OutputLimit: 8_192},
+		{ID: "qwen3:8b", InputLimit: 30_000, OutputLimit: 8_192},
+		{ID: "qwen3:8b-think", InputLimit: 30_000, OutputLimit: 8_192},
+		{ID: "qwen3:14b", InputLimit: 30_000, OutputLimit: 8_192},
+		{ID: "qwen3:14b-think", InputLimit: 30_000, OutputLimit: 8_192},
+		{ID: "qwen3:32b", InputLimit: 30_000, OutputLimit: 8_192},
+		{ID: "qwen3:32b-think", InputLimit: 30_000, OutputLimit: 8_192},
+		// Llama
+		{ID: "llama3.3:70b", InputLimit: 120_000, OutputLimit: 8_192},
+		{ID: "llama3.2:3b", InputLimit: 120_000, OutputLimit: 8_192},
+		{ID: "llama3.2:1b", InputLimit: 120_000, OutputLimit: 8_192},
+		// DeepSeek-R1 (think is always on)
+		{ID: "deepseek-r1:7b", InputLimit: 30_000, OutputLimit: 8_192},
+		{ID: "deepseek-r1:14b", InputLimit: 30_000, OutputLimit: 8_192},
+		{ID: "deepseek-r1:32b", InputLimit: 30_000, OutputLimit: 8_192},
+	},
 	"bedrock": {
 		// AWS Bedrock: same friendly names as anthropic (translated to Bedrock IDs internally)
 		{ID: "claude-opus-4-7", InputLimit: 180_000, OutputLimit: 64_000},
@@ -449,7 +469,7 @@ func SortModelIDsByPopularity(provider, defaultModel string, ids []string) []str
 
 // GetBuiltInProviderNames returns the built-in provider type names
 func GetBuiltInProviderNames() []string {
-	return []string{"anthropic", "bedrock", "openai", "chatgpt", "copilot", "openrouter", "gemini", "gemini-cli", "zen", "claude-bin", "xai", "venice"}
+	return []string{"anthropic", "bedrock", "openai", "chatgpt", "copilot", "openrouter", "gemini", "gemini-cli", "zen", "claude-bin", "xai", "venice", "ollama"}
 }
 
 // GetProviderNames returns valid provider names from config plus built-in types.

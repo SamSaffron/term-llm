@@ -141,6 +141,10 @@ func NewProviderByName(cfg *config.Config, name string, model string) (Provider,
 			}
 			provider := NewGeminiCLIProvider(creds, model)
 			return WrapWithRetry(provider, DefaultRetryConfig()), nil
+		case config.ProviderTypeOllama:
+			// ollama connects to a local server; no credentials needed
+			provider := NewOllamaChatProvider("", model, OllamaOptions{})
+			return WrapWithRetry(provider, DefaultRetryConfig()), nil
 		default:
 			return nil, fmt.Errorf("provider %q not configured", name)
 		}
@@ -248,6 +252,9 @@ func newProviderInternal(cfg *config.Config) (Provider, error) {
 				return nil, fmt.Errorf("provider gemini-cli: %w", err)
 			}
 			return NewGeminiCLIProvider(creds, ""), nil
+		case config.ProviderTypeOllama:
+			// ollama connects to a local server; no credentials needed
+			return NewOllamaChatProvider("", "", OllamaOptions{}), nil
 		default:
 			return nil, fmt.Errorf("provider %q not configured", cfg.DefaultProvider)
 		}
@@ -327,6 +334,17 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 		provider := NewClaudeBinProvider(cfg.Model, cfg.Env)
 		provider.SetEnableHooks(cfg.EnableHooks)
 		return provider, nil
+
+	case config.ProviderTypeOllama:
+		opts := OllamaOptions{
+			Think:           cfg.Think,
+			TopK:            cfg.TopK,
+			MinP:            cfg.MinP,
+			PresencePenalty: cfg.PresencePenalty,
+			NumCtx:          cfg.NumCtx,
+			NumPredict:      cfg.NumPredict,
+		}
+		return NewOllamaChatProvider(cfg.BaseURL, cfg.Model, opts), nil
 
 	case config.ProviderTypeOpenAICompat:
 		// Use ResolvedURL if available (from srv:// or $() resolution), otherwise use config values
