@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"io"
@@ -1229,6 +1230,61 @@ func TestOpenAICompatProviderStreamSendsReasoningEffort(t *testing.T) {
 			}
 			if got.ReasoningEffort != tt.wantEffort {
 				t.Errorf("reasoning_effort = %q, want %q", got.ReasoningEffort, tt.wantEffort)
+			}
+		})
+	}
+}
+
+// unexpectedEOFReader wraps a reader and substitutes io.ErrUnexpectedEOF for
+// the final io.EOF, mimicking Go's HTTP chunked-encoding transport when a local
+// inference server (e.g. Ollama) drops the connection without a proper terminator.
+type unexpectedEOFReader struct {
+	r io.Reader
+}
+
+func (u *unexpectedEOFReader) Read(p []byte) (int, error) {
+	n, err := u.r.Read(p)
+	if err == io.EOF {
+		return n, io.ErrUnexpectedEOF
+	}
+	return n, err
+}
+
+func TestReadSSELine_TreatsUnexpectedEOFAsEOF(t *testing.T) {
+	cases := []struct {
+		name     string
+		input    string
+		wantLine string
+	}{
+		{
+			name:     "done marker without trailing newline",
+			input:    "data: [DONE]",
+			wantLine: "data: [DONE]",
+		},
+		{
+			name:     "data line without trailing newline",
+			input:    `data: {"choices":[]}`,
+			wantLine: `data: {"choices":[]}`,
+		},
+		{
+			name:     "empty input",
+			input:    "",
+			wantLine: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := bufio.NewReader(&unexpectedEOFReader{r: strings.NewReader(tc.input)})
+			line, eof, err := readSSELine(r)
+			if err != nil {
+				t.Fatalf("expected nil error for io.ErrUnexpectedEOF, got %v", err)
+			}
+			if !eof {
+				t.Fatal("expected eof=true")
+			}
+			if line != tc.wantLine {
+				t.Fatalf("expected line %q, got %q", tc.wantLine, line)
 			}
 		})
 	}
