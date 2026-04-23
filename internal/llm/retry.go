@@ -304,8 +304,7 @@ func isRetryable(err error) bool {
 	}
 
 	// Connection errors
-	if strings.Contains(errStr, "connection refused") ||
-		strings.Contains(errStr, "connection reset") ||
+	if strings.Contains(errStr, "connection reset") ||
 		strings.Contains(errStr, "timeout") ||
 		strings.Contains(errStr, "deadline exceeded") ||
 		strings.Contains(errStr, "temporary failure") ||

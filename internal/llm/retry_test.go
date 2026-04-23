@@ -118,6 +118,23 @@ func (p *syncToolProvider) Stream(ctx context.Context, req Request) (Stream, err
 	}), nil
 }
 
+func TestIsRetryable_ConnectionRefused(t *testing.T) {
+	cases := []struct {
+		msg       string
+		retryable bool
+	}{
+		{`Qwen36local API request failed: Post "http://127.0.0.1:8001/v1/chat/completions": dial tcp 127.0.0.1:8001: connect: connection refused`, false},
+		{`openai API request failed: Post "http://localhost:11434/v1/chat/completions": dial tcp [::1]:11434: connect: connection refused`, false},
+		{"connection reset by peer", true},
+	}
+	for _, tc := range cases {
+		got := isRetryable(errors.New(tc.msg))
+		if got != tc.retryable {
+			t.Errorf("isRetryable(%q) = %v, want %v", tc.msg, got, tc.retryable)
+		}
+	}
+}
+
 func TestIsRetryable_500InternalServerError(t *testing.T) {
 	cases := []struct {
 		msg       string
