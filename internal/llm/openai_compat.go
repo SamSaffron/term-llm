@@ -331,7 +331,7 @@ func (p *OpenAICompatProvider) ListModels(ctx context.Context) ([]ModelInfo, err
 func readSSELine(reader *bufio.Reader) (line string, eof bool, err error) {
 	line, err = reader.ReadString('\n')
 	if err != nil {
-		if err == io.EOF {
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			return strings.TrimRight(line, "\r\n"), true, nil
 		}
 		return "", false, err
