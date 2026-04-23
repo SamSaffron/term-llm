@@ -2,4 +2,5 @@
 exec /usr/local/bin/term-llm serve jobs \
   --agent "${AGENT_NAME:-agent}" \
   --auth none \
+  --yolo \
   2>&1
