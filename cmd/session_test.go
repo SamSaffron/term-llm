@@ -178,6 +178,17 @@ func TestResolveSettings_ExpandsPlatformTokenWhenProvided(t *testing.T) {
 	}
 }
 
+func TestResolveSettings_ExpandsLLMTokensWhenProvided(t *testing.T) {
+	cfg := &config.Config{}
+	settings, err := ResolveSettings(cfg, nil, CLIFlags{}, "chatgpt", "gpt-5.4-medium", "surface={{provider}}/{{model}}/{{provider_model}}", 0, 20)
+	if err != nil {
+		t.Fatalf("ResolveSettings() error = %v", err)
+	}
+	if settings.SystemPrompt != "surface=chatgpt/gpt-5.4-medium/chatgpt:gpt-5.4-medium" {
+		t.Fatalf("SystemPrompt = %q, want %q", settings.SystemPrompt, "surface=chatgpt/gpt-5.4-medium/chatgpt:gpt-5.4-medium")
+	}
+}
+
 func TestResolveSettings_LeavesPlatformTokenWhenPlatformUnavailable(t *testing.T) {
 	cfg := &config.Config{}
 	settings, err := ResolveSettings(cfg, nil, CLIFlags{}, "", "", "surface={{platform}}", 0, 20)
@@ -186,6 +197,17 @@ func TestResolveSettings_LeavesPlatformTokenWhenPlatformUnavailable(t *testing.T
 	}
 	if settings.SystemPrompt != "surface={{platform}}" {
 		t.Fatalf("SystemPrompt = %q, want %q", settings.SystemPrompt, "surface={{platform}}")
+	}
+}
+
+func TestResolveSettings_LeavesLLMTokensWhenUnavailable(t *testing.T) {
+	cfg := &config.Config{}
+	settings, err := ResolveSettings(cfg, nil, CLIFlags{}, "", "", "surface={{provider}}/{{model}}/{{provider_model}}", 0, 20)
+	if err != nil {
+		t.Fatalf("ResolveSettings() error = %v", err)
+	}
+	if settings.SystemPrompt != "surface={{provider}}/{{model}}/{{provider_model}}" {
+		t.Fatalf("SystemPrompt = %q, want %q", settings.SystemPrompt, "surface={{provider}}/{{model}}/{{provider_model}}")
 	}
 }
 

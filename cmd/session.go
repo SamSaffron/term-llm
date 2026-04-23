@@ -219,7 +219,7 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 
 	// System prompt: CLI > agent > config
 	if cli.SystemMessage != "" {
-		templateCtx := agents.NewTemplateContextForTemplate(cli.SystemMessage).WithFiles(cli.Files).WithPlatform(cli.Platform)
+		templateCtx := agents.NewTemplateContextForTemplate(cli.SystemMessage).WithFiles(cli.Files).WithPlatform(cli.Platform).WithLLM(s.Provider, s.Model)
 		cwd, err := systemPromptCWDBaseDir()
 		if err != nil {
 			return s, err
@@ -234,7 +234,7 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 		if err != nil {
 			return s, fmt.Errorf("prepare agent system prompt context: %w", err)
 		}
-		templateCtx = templateCtx.WithPlatform(cli.Platform)
+		templateCtx = templateCtx.WithPlatform(cli.Platform).WithLLM(s.Provider, s.Model)
 		expanded, err := expandSystemPromptWithIncludes(agent.SystemPrompt, templateCtx, includeBaseDir)
 		if err != nil {
 			return s, fmt.Errorf("expand agent system prompt: %w", err)
@@ -248,7 +248,7 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 			}
 		}
 	} else {
-		templateCtx := agents.NewTemplateContextForTemplate(configInstructions).WithFiles(cli.Files).WithPlatform(cli.Platform)
+		templateCtx := agents.NewTemplateContextForTemplate(configInstructions).WithFiles(cli.Files).WithPlatform(cli.Platform).WithLLM(s.Provider, s.Model)
 		cwd, err := systemPromptCWDBaseDir()
 		if err != nil {
 			return s, err

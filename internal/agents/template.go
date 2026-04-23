@@ -43,6 +43,11 @@ type TemplateContext struct {
 	// Runtime surface (chat, console, web, telegram, jobs)
 	Platform string
 
+	// Active LLM
+	Provider      string // Current provider name/key
+	Model         string // Current model name
+	ProviderModel string // Combined provider:model string
+
 	// Agent context
 	ResourceDir  string // Directory containing agent resources (for builtin agents)
 	HandoverDir  string // XDG handover directory for the current project
@@ -166,6 +171,23 @@ func (c TemplateContext) WithPlatform(platform string) TemplateContext {
 	return c
 }
 
+// WithLLM sets the active provider/model for template expansion.
+func (c TemplateContext) WithLLM(provider, model string) TemplateContext {
+	c.Provider = strings.TrimSpace(provider)
+	c.Model = strings.TrimSpace(model)
+	switch {
+	case c.Provider != "" && c.Model != "":
+		c.ProviderModel = c.Provider + ":" + c.Model
+	case c.Provider != "":
+		c.ProviderModel = c.Provider
+	case c.Model != "":
+		c.ProviderModel = c.Model
+	default:
+		c.ProviderModel = ""
+	}
+	return c
+}
+
 // ExpandTemplate replaces {{variable}} placeholders with values from context.
 func ExpandTemplate(text string, ctx TemplateContext) string {
 	// Match {{variable}} patterns
@@ -210,6 +232,24 @@ func ExpandTemplate(text string, ctx TemplateContext) string {
 				return match
 			}
 			return ctx.Platform
+		case "provider":
+			if ctx.Provider == "" {
+				// Leave token untouched when provider context is unavailable.
+				return match
+			}
+			return ctx.Provider
+		case "model":
+			if ctx.Model == "" {
+				// Leave token untouched when model context is unavailable.
+				return match
+			}
+			return ctx.Model
+		case "provider_model":
+			if ctx.ProviderModel == "" {
+				// Leave token untouched when provider/model context is unavailable.
+				return match
+			}
+			return ctx.ProviderModel
 		case "resource_dir":
 			return ctx.ResourceDir
 		case "handover_dir":

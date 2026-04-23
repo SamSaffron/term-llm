@@ -66,6 +66,7 @@ mcp:
 - `{{git_branch}}`, `{{git_repo}}`, `{{git_diff_stat}}`
 - `{{files}}`, `{{file_count}}` (from -f flags)
 - `{{os}}`, `{{platform}}`, `{{resource_dir}}`
+- `{{provider}}`, `{{model}}`, `{{provider_model}}`
 - `{{agents}}` - Loads project instructions (hierarchical AGENTS.md + fallbacks)
 
 **The `{{agents}}` variable** loads project instructions using:
