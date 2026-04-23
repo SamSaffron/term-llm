@@ -1726,19 +1726,36 @@ const positionChipPopover = (triggerEl) => {
   const pop = elements.chipPopover;
   if (!pop || !triggerEl?.getBoundingClientRect) return;
   pop.hidden = false;
-  if (window.innerWidth <= 540) {
-    pop.style.top = '';
-    pop.style.left = '';
-    pop.style.right = '';
-    pop.style.bottom = '';
+
+  const vv = window.visualViewport;
+  const viewportWidth = vv ? Math.round(vv.width) : window.innerWidth;
+  const viewportHeight = vv ? Math.round(vv.height) : window.innerHeight;
+  const viewportOffsetLeft = vv ? Math.max(0, Math.round(vv.offsetLeft)) : 0;
+  const viewportOffsetTop = vv ? Math.max(0, Math.round(vv.offsetTop)) : 0;
+
+  if (viewportWidth <= 540) {
+    // On iPhone Safari the on-screen keyboard shrinks the visual viewport, but
+    // CSS vh units and fixed bottom sheets can still end up underneath it. Pin
+    // the picker to the visible viewport instead of the layout viewport so the
+    // whole sheet stays inside the safe area while typing in the filter box.
+    pop.style.left = `calc(${viewportOffsetLeft}px + 0.5rem + var(--safe-left))`;
+    pop.style.top = `calc(${viewportOffsetTop}px + 0.5rem + var(--safe-top))`;
+    pop.style.right = 'auto';
+    pop.style.bottom = 'auto';
+    pop.style.width = `calc(${viewportWidth}px - 1rem - var(--safe-left) - var(--safe-right))`;
     pop.style.minWidth = '';
+    pop.style.maxWidth = 'none';
+    pop.style.maxHeight = `calc(${viewportHeight}px - 1rem - var(--safe-top) - var(--safe-bottom))`;
     return;
   }
+
+  pop.style.width = '';
   const rect = triggerEl.getBoundingClientRect();
   const margin = 6;
   pop.style.minWidth = `${Math.max(180, rect.width)}px`;
-  pop.style.right = '';
-  pop.style.bottom = '';
+  pop.style.maxWidth = '';
+  pop.style.right = 'auto';
+  pop.style.bottom = 'auto';
   const popRect = pop.getBoundingClientRect();
   let left = rect.left;
   if (left + popRect.width > window.innerWidth - margin) {
@@ -1751,6 +1768,7 @@ const positionChipPopover = (triggerEl) => {
   }
   pop.style.left = `${Math.max(margin, left)}px`;
   pop.style.top = `${Math.max(margin, top)}px`;
+  pop.style.maxHeight = '';
 };
 
 const closeChipPopover = () => {
@@ -1994,9 +2012,16 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-window.addEventListener('resize', () => {
+const repositionChipPopover = () => {
   if (chipPopoverState.triggerEl) positionChipPopover(chipPopoverState.triggerEl);
-});
+};
+
+window.addEventListener('resize', repositionChipPopover);
+window.addEventListener('orientationchange', repositionChipPopover);
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', repositionChipPopover);
+  window.visualViewport.addEventListener('scroll', repositionChipPopover);
+}
 
 // ===== Model picker =====
 const populateModelSelectOptions = (sel, models, previous) => {

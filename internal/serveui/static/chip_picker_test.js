@@ -33,6 +33,18 @@ function makeClassList() {
   };
 }
 
+function makeStyle(initial = {}) {
+  const style = Object.assign({}, initial);
+  style.setProperty = (key, value) => {
+    style[key] = String(value);
+  };
+  style.getPropertyValue = (key) => style[key] || '';
+  style.removeProperty = (key) => {
+    delete style[key];
+  };
+  return style;
+}
+
 function makeNode(extra = {}) {
   const attrs = {};
   const listeners = {};
@@ -87,7 +99,7 @@ function makeNode(extra = {}) {
     focus() {},
     classList: makeClassList(),
     children: [],
-    style: {},
+    style: makeStyle(),
     dataset: {},
     options: [],
     value: '',
@@ -124,7 +136,7 @@ function makeOption(value, text) {
   return { value, textContent: text || value };
 }
 
-function makeContext() {
+function makeContext(options = {}) {
   const elementMap = {};
   const document = {
     activeElement: null,
@@ -172,6 +184,7 @@ function makeContext() {
     history: { replaceState() {}, pushState() {} },
     fetch: async () => ({ ok: true, status: 200, headers: { get: () => null }, json: async () => ({}), text: async () => '' }),
   };
+  Object.assign(windowObj, options.window || {});
   windowObj.document = document;
   windowObj.localStorage = localStorage;
 
@@ -205,15 +218,15 @@ function makeContext() {
   return { ctx, document, localStorage, windowObj, elementMap };
 }
 
-function loadCore() {
-  const { ctx, elementMap, windowObj } = makeContext();
+function loadCore(options = {}) {
+  const { ctx, elementMap, windowObj } = makeContext(options);
   vm.runInNewContext(coreSource, ctx, { filename: 'app-core.js' });
   const app = ctx.window.TermLLMApp;
   return { ctx, app, elementMap, windowObj };
 }
 
-function loadCoreAndStream() {
-  const { ctx, elementMap, windowObj } = makeContext();
+function loadCoreAndStream(options = {}) {
+  const { ctx, elementMap, windowObj } = makeContext(options);
   vm.runInNewContext(coreSource, ctx, { filename: 'app-core.js' });
   vm.runInNewContext(streamSource, ctx, { filename: 'app-stream.js' });
   const app = ctx.window.TermLLMApp;
@@ -494,6 +507,58 @@ function testFilterInputHidesNonMatchingItems() {
   pass(name);
 }
 
+function testMobilePopoverUsesVisualViewportSafeBounds() {
+  const name = 'mobile popover tracks the visual viewport so it stays above the iPhone keyboard';
+  const vvListeners = { resize: [], scroll: [] };
+  const visualViewport = {
+    width: 390,
+    height: 720,
+    offsetTop: 12,
+    offsetLeft: 0,
+    addEventListener(type, fn) {
+      (vvListeners[type] = vvListeners[type] || []).push(fn);
+    },
+    removeEventListener() {},
+  };
+
+  const { app, elementMap } = loadCoreAndStream({
+    window: {
+      innerWidth: 390,
+      innerHeight: 844,
+      visualViewport,
+    },
+  });
+  app.updateHeader = () => {};
+
+  const opts = [];
+  for (let i = 0; i < 15; i++) opts.push(makeOption(`gpt-${i}`, `gpt-${i}`));
+  const popover = openModelPopover(elementMap, opts);
+  if (!popover) return fail(name, 'no click listener on chipModelTrigger');
+
+  if (popover.style.top !== 'calc(12px + 0.5rem + var(--safe-top))') {
+    fail(name, `expected mobile top to use visual viewport offset, got ${popover.style.top}`);
+    return;
+  }
+  if (popover.style.width !== 'calc(390px - 1rem - var(--safe-left) - var(--safe-right))') {
+    fail(name, `expected mobile width to fit safe area, got ${popover.style.width}`);
+    return;
+  }
+  if (popover.style.maxHeight !== 'calc(720px - 1rem - var(--safe-top) - var(--safe-bottom))') {
+    fail(name, `expected mobile maxHeight to use visual viewport height, got ${popover.style.maxHeight}`);
+    return;
+  }
+
+  visualViewport.height = 352;
+  vvListeners.resize.forEach((fn) => fn());
+
+  if (popover.style.maxHeight !== 'calc(352px - 1rem - var(--safe-top) - var(--safe-bottom))') {
+    fail(name, `expected popover to shrink after keyboard resize, got ${popover.style.maxHeight}`);
+    return;
+  }
+  pass(name);
+}
+
+
 testSplitHeaderModelEffortDetectsKnownEffortSuffix();
 testUpdateSessionUsageDisplayUsesProviderDefaultModel();
 testUpdateSessionUsageDisplayFallsBackToFirstModelWithoutDefault();
@@ -502,6 +567,7 @@ testPopoverItemSelectionDispatchesChangeAndCloses();
 testPopoverHidesFilterInputBelowThreshold();
 testPopoverShowsFilterInputAboveThreshold();
 testFilterInputHidesNonMatchingItems();
+testMobilePopoverUsesVisualViewportSafeBounds();
 
 if (failures > 0) {
   console.error(`\n${failures} test(s) failed`);
