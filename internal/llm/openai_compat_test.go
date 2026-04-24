@@ -154,6 +154,91 @@ func TestOpenAICompatStream_CloseDoesNotHangWhenConsumerStopsReceiving(t *testin
 	}
 }
 
+func TestOpenAICompatStream_ReturnsErrorForMalformedFinalJSONChunk(t *testing.T) {
+	firstChunk := oaiChatResponse{
+		Choices: []oaiChoice{{
+			Delta: &oaiMessage{ToolCalls: []oaiToolCall{{}}},
+		}},
+	}
+	firstChunk.Choices[0].Delta.ToolCalls[0].ID = "call-1"
+	firstChunk.Choices[0].Delta.ToolCalls[0].Function.Name = "search"
+	firstChunk.Choices[0].Delta.ToolCalls[0].Function.Arguments = `{"query":"wea`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+
+		data, err := json.Marshal(firstChunk)
+		if err != nil {
+			t.Fatalf("marshal chunk: %v", err)
+		}
+		if _, err := w.Write([]byte("data: ")); err != nil {
+			t.Fatalf("write prefix: %v", err)
+		}
+		if _, err := w.Write(data); err != nil {
+			t.Fatalf("write chunk: %v", err)
+		}
+		if _, err := w.Write([]byte("\n\n")); err != nil {
+			t.Fatalf("write separator: %v", err)
+		}
+		if _, err := w.Write([]byte(`data: {"choices":[`)); err != nil {
+			t.Fatalf("write malformed chunk: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatProvider(server.URL, "", "test-model", "Test")
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{{
+			Role:  RoleUser,
+			Parts: []Part{{Type: PartText, Text: "hello"}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	var toolCalls []ToolCall
+	var sawDone bool
+	var sawError bool
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv: %v", err)
+		}
+		switch event.Type {
+		case EventToolCall:
+			if event.Tool == nil {
+				t.Fatal("expected tool call event to include tool")
+			}
+			toolCalls = append(toolCalls, *event.Tool)
+		case EventDone:
+			sawDone = true
+		case EventError:
+			sawError = true
+			if event.Err == nil {
+				t.Fatal("expected error event to include error")
+			}
+			if !strings.Contains(event.Err.Error(), "invalid JSON chunk") {
+				t.Fatalf("expected invalid JSON chunk error, got %v", event.Err)
+			}
+		}
+	}
+
+	if !sawError {
+		t.Fatal("expected EventError")
+	}
+	if sawDone {
+		t.Fatal("did not expect EventDone")
+	}
+	if len(toolCalls) != 0 {
+		t.Fatalf("expected no tool calls, got %d: %#v", len(toolCalls), toolCalls)
+	}
+}
+
 func TestOpenAICompatStream_KeepsToolCallsSeparateWhenIndexesAreOmitted(t *testing.T) {
 	firstChunk := oaiChatResponse{
 		Choices: []oaiChoice{{

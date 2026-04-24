@@ -464,10 +464,7 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 
 			var chatResp oaiChatResponse
 			if err := json.Unmarshal([]byte(data), &chatResp); err != nil {
-				if eof {
-					break
-				}
-				continue
+				return fmt.Errorf("%s streaming error: invalid JSON chunk: %w", p.name, err)
 			}
 
 			if lastEventType == "error" || chatResp.Error != nil {
