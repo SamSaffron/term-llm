@@ -401,7 +401,7 @@ type EmbedVoyageConfig struct {
 
 // EmbedOllamaConfig configures Ollama embedding generation
 type EmbedOllamaConfig struct {
-	BaseURL string `mapstructure:"base_url"` // default: http://localhost:11434
+	BaseURL string `mapstructure:"base_url"` // default: http://127.0.0.1:11434
 	Model   string `mapstructure:"model"`    // nomic-embed-text (default)
 }
 
@@ -1300,7 +1300,7 @@ func GetDefaults() map[string]any {
 		"embed.jina.model":                "jina-embeddings-v3",
 		"embed.voyage.model":              "voyage-3.5",
 		"embed.ollama.model":              "nomic-embed-text",
-		"embed.ollama.base_url":           "http://localhost:11434",
+		"embed.ollama.base_url":           "http://127.0.0.1:11434",
 		"search.provider":                 "duckduckgo",
 		"search.force_external":           false,
 		"tools.enabled":                   []string{},

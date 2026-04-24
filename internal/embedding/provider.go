@@ -113,7 +113,7 @@ func NewEmbeddingProvider(cfg *config.Config, providerOverride string) (Embeddin
 	case "ollama":
 		baseURL := cfg.Embed.Ollama.BaseURL
 		if baseURL == "" {
-			baseURL = "http://localhost:11434"
+			baseURL = "http://127.0.0.1:11434"
 		}
 		p := NewOllamaProvider(baseURL)
 		if model != "" {
