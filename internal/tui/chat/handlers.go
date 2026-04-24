@@ -11,6 +11,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/tui/inspector"
 	sessionsui "github.com/samsaffron/term-llm/internal/tui/sessions"
 )
@@ -97,7 +98,68 @@ func (m *Model) updateInspectorMode(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *Model) isYoloToggleKey(msg tea.KeyPressMsg) bool {
+	return key.Matches(msg, m.keyMap.ToggleYolo)
+}
+
+func (m *Model) isYoloModeActive() bool {
+	if m.yolo {
+		return true
+	}
+	if m.approvalMgr != nil && m.approvalMgr.YoloEnabled() {
+		return true
+	}
+	if m.handoverApprovalMgr != nil && m.handoverApprovalMgr.YoloEnabled() {
+		return true
+	}
+	return false
+}
+
+func (m *Model) setApprovalYoloMode(enabled bool) {
+	if m.approvalMgr != nil {
+		m.approvalMgr.SetYoloMode(enabled)
+	}
+	if m.handoverApprovalMgr != nil && m.handoverApprovalMgr != m.approvalMgr {
+		m.handoverApprovalMgr.SetYoloMode(enabled)
+	}
+	if m.mcpManager != nil {
+		m.mcpManager.SetSamplingYoloMode(enabled)
+	}
+}
+
+func (m *Model) toggleYoloMode() (tea.Model, tea.Cmd) {
+	m.yolo = !m.yolo
+	m.setApprovalYoloMode(m.yolo)
+
+	var cmds []tea.Cmd
+	if m.yolo && m.approvalModel != nil && m.approvalDoneCh != nil {
+		m.approvalDoneCh <- tools.ApprovalResult{Choice: tools.ApprovalChoiceOnce}
+		m.approvalModel = nil
+		m.approvalDoneCh = nil
+		m.pausedForExternalUI = false
+		cmds = append(cmds, m.spinner.Tick)
+	}
+
+	message := "Yolo mode disabled. Tool approvals will prompt."
+	tone := "muted"
+	if m.yolo {
+		message = "Yolo mode enabled. Tool approvals will auto-approve."
+		tone = "success"
+	}
+	_, footerCmd := m.showFooterMessageWithTone(message, tone)
+	if footerCmd != nil {
+		cmds = append(cmds, footerCmd)
+	}
+	return m, tea.Batch(cmds...)
+}
+
 func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	// Shift+Tab toggles yolo mode globally, including while a reply is streaming
+	// or an inline approval prompt is visible.
+	if m.isYoloToggleKey(msg) {
+		return m.toggleYoloMode()
+	}
+
 	// Handle embedded approval UI first if active
 	if m.approvalModel != nil {
 		done := m.approvalModel.UpdateEmbedded(msg)

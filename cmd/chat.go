@@ -74,6 +74,7 @@ Keyboard shortcuts:
   Ctrl+C       - Quit
   Ctrl+K       - Clear conversation
   Ctrl+S       - Toggle web search
+  Shift+Tab    - Toggle yolo mode
   Ctrl+P       - Command palette
   Esc          - Cancel streaming
 

@@ -199,6 +199,7 @@ type ApprovalManager struct {
 
 	// YoloMode when true, auto-approves all tool executions without prompting.
 	// Intended for CI/container environments where interactive approval isn't possible.
+	yoloMu   sync.RWMutex
 	YoloMode bool
 
 	// IgnoreProjectApprovals when true, skips persisted project-level approvals
@@ -272,7 +273,26 @@ func (m *ApprovalManager) PromptLock() *sync.Mutex {
 // SetYoloMode enables or disables yolo mode.
 // Yolo mode auto-approves all tool executions without prompting.
 func (m *ApprovalManager) SetYoloMode(enabled bool) {
+	m.yoloMu.Lock()
 	m.YoloMode = enabled
+	m.yoloMu.Unlock()
+}
+
+// YoloEnabled reports whether this manager or any parent manager is in yolo mode.
+func (m *ApprovalManager) YoloEnabled() bool {
+	if m == nil {
+		return false
+	}
+	m.yoloMu.RLock()
+	enabled := m.YoloMode
+	m.yoloMu.RUnlock()
+	if enabled {
+		return true
+	}
+	if m.parent != nil {
+		return m.parent.YoloEnabled()
+	}
+	return false
 }
 
 // getProjectApprovals returns or loads project approvals for the given path.
@@ -417,7 +437,7 @@ func (m *ApprovalManager) checkShellApprovalNoPrompt(command, workDir string) (C
 // toolInfo is optional context for display (e.g., filename being accessed).
 func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isWrite bool) (ConfirmOutcome, error) {
 	// 0. Yolo mode - auto-approve everything
-	if m.YoloMode {
+	if m.YoloEnabled() {
 		if m.DebugApproval {
 			log.Printf("[approval] CheckPathApproval tool=%s path=%q isWrite=%v → yolo auto-approve", toolName, path, isWrite)
 		}
@@ -458,6 +478,15 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 	promptLock := m.PromptLock()
 	promptLock.Lock()
 	defer promptLock.Unlock()
+
+	// Recheck yolo now that we hold the prompt lock; the user may have toggled it
+	// while this request was waiting behind another prompt.
+	if m.YoloEnabled() {
+		if m.DebugApproval {
+			log.Printf("[approval] CheckPathApproval tool=%s path=%q isWrite=%v → yolo auto-approve after lock", toolName, path, isWrite)
+		}
+		return ProceedOnce, nil
+	}
 
 	// Recheck now that we hold the prompt lock to avoid duplicate prompts
 	outcome, ok, err = m.checkPathApprovalNoPrompt(toolName, absPath, absPath, isWrite)
@@ -624,7 +653,7 @@ func getDirectoryForApproval(path string) string {
 // workDir is the directory where the command will execute (may be empty for cwd).
 func (m *ApprovalManager) CheckShellApproval(command, workDir string) (ConfirmOutcome, error) {
 	// Yolo mode - auto-approve everything
-	if m.YoloMode {
+	if m.YoloEnabled() {
 		if m.DebugApproval {
 			log.Printf("[approval] CheckShellApproval cmd=%q → yolo auto-approve", command)
 		}
@@ -643,6 +672,15 @@ func (m *ApprovalManager) CheckShellApproval(command, workDir string) (ConfirmOu
 	promptLock := m.PromptLock()
 	promptLock.Lock()
 	defer promptLock.Unlock()
+
+	// Recheck yolo now that we hold the prompt lock; the user may have toggled it
+	// while this request was waiting behind another prompt.
+	if m.YoloEnabled() {
+		if m.DebugApproval {
+			log.Printf("[approval] CheckShellApproval cmd=%q → yolo auto-approve after lock", command)
+		}
+		return ProceedOnce, nil
+	}
 
 	// Recheck now that we hold the prompt lock to avoid duplicate prompts
 	if outcome, ok := m.checkShellApprovalNoPrompt(command, workDir); ok {

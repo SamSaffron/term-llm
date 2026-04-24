@@ -26,6 +26,7 @@ type KeyMap struct {
 	// Shortcuts
 	SwitchModel key.Binding
 	ToggleWeb   key.Binding
+	ToggleYolo  key.Binding
 	AttachFile  key.Binding
 	Clear       key.Binding
 	NewSession  key.Binding
@@ -92,6 +93,10 @@ func DefaultKeyMap() KeyMap {
 		ToggleWeb: key.NewBinding(
 			key.WithKeys("ctrl+s"),
 			key.WithHelp("ctrl+s", "web search"),
+		),
+		ToggleYolo: key.NewBinding(
+			key.WithKeys("shift+tab"),
+			key.WithHelp("shift+tab", "toggle yolo"),
 		),
 		AttachFile: key.NewBinding(
 			key.WithKeys("ctrl+f"),

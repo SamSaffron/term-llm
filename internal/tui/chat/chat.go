@@ -79,6 +79,7 @@ type Model struct {
 
 	// External UI state
 	pausedForExternalUI bool // True when paused for ask_user or approval prompts
+	approvalMgr         *tools.ApprovalManager
 
 	// Embedded inline approval UI (alt screen mode only)
 	approvalModel  *tools.ApprovalModel
@@ -681,9 +682,16 @@ func (m *Model) SetCurrentAgent(agent *agents.Agent) {
 	m.currentAgent = agent
 }
 
+// SetApprovalManager configures the active approval manager used by chat-level
+// controls such as the yolo-mode toggle.
+func (m *Model) SetApprovalManager(mgr *tools.ApprovalManager) {
+	m.approvalMgr = mgr
+	m.handoverApprovalMgr = mgr
+}
+
 // SetHandoverApprovalManager configures shell approval checks for handover scripts.
 func (m *Model) SetHandoverApprovalManager(mgr *tools.ApprovalManager) {
-	m.handoverApprovalMgr = mgr
+	m.SetApprovalManager(mgr)
 }
 
 // SetRootContext configures the parent context for long-running chat commands.
@@ -796,6 +804,12 @@ func chatSpinnerFPSFromEnv() time.Duration {
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	var flushCmds []tea.Cmd
+
+	// The yolo toggle is intentionally global so it works while streaming,
+	// inspecting, or browsing embedded views.
+	if keyMsg, ok := msg.(tea.KeyPressMsg); ok && m.isYoloToggleKey(keyMsg) {
+		return m.toggleYoloMode()
+	}
 
 	// Handle resume browser mode
 	if m.resumeBrowserMode {
@@ -1598,6 +1612,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.spinner.Tick
 
 	case ApprovalRequestMsg:
+		if m.isYoloModeActive() {
+			msg.DoneCh <- tools.ApprovalResult{Choice: tools.ApprovalChoiceOnce}
+			m.pausedForExternalUI = false
+			m.approvalModel = nil
+			m.approvalDoneCh = nil
+			return m, nil
+		}
+
 		// In alt screen mode, render approval UI inline
 		if m.altScreen {
 			m.pausedForExternalUI = true

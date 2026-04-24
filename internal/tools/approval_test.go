@@ -135,6 +135,23 @@ func TestMatchAnyShellPattern(t *testing.T) {
 	}
 }
 
+func TestApprovalManager_YoloModeInheritedFromParent(t *testing.T) {
+	parent := NewApprovalManager(NewToolPermissions())
+	child := NewApprovalManager(NewToolPermissions())
+	if err := child.SetParent(parent); err != nil {
+		t.Fatalf("SetParent() error = %v", err)
+	}
+
+	parent.SetYoloMode(true)
+	outcome, err := child.CheckShellApproval("definitely-not-allowlisted", "")
+	if err != nil {
+		t.Fatalf("CheckShellApproval() error = %v", err)
+	}
+	if outcome != ProceedOnce {
+		t.Fatalf("CheckShellApproval() = %v, want %v", outcome, ProceedOnce)
+	}
+}
+
 func TestApprovalManager_CheckPathApproval_PreApproved(t *testing.T) {
 	// Create temp directory structure
 	tempDir, err := os.MkdirTemp("", "test-approval-*")

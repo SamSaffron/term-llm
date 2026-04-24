@@ -15,6 +15,91 @@ import (
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
+func TestHandleKeyMsg_ShiftTabTogglesYoloDuringStreaming(t *testing.T) {
+	m := newTestChatModel(false)
+	approvalMgr := tools.NewApprovalManager(tools.NewToolPermissions())
+	m.SetApprovalManager(approvalMgr)
+	m.streaming = true
+	m.phase = "Thinking"
+	m.setTextareaValue("draft interjection")
+
+	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+
+	if !m.streaming {
+		t.Fatal("expected stream to keep running")
+	}
+	if !m.yolo {
+		t.Fatal("expected model yolo mode to be enabled")
+	}
+	if !approvalMgr.YoloEnabled() {
+		t.Fatal("expected approval manager yolo mode to be enabled")
+	}
+	if got := m.textarea.Value(); got != "draft interjection" {
+		t.Fatalf("expected composer draft to remain unchanged, got %q", got)
+	}
+
+	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	if m.yolo {
+		t.Fatal("expected second Shift+Tab to disable yolo mode")
+	}
+	if approvalMgr.YoloEnabled() {
+		t.Fatal("expected approval manager yolo mode to be disabled")
+	}
+}
+
+func TestHandleKeyMsg_ShiftTabAutoApprovesActiveApprovalPrompt(t *testing.T) {
+	m := newTestChatModel(true)
+	approvalMgr := tools.NewApprovalManager(tools.NewToolPermissions())
+	m.SetApprovalManager(approvalMgr)
+	m.approvalModel = tools.NewEmbeddedApprovalModel(t.TempDir()+"/file.go", false, 80)
+	doneCh := make(chan tools.ApprovalResult, 1)
+	m.approvalDoneCh = doneCh
+	m.pausedForExternalUI = true
+
+	_, _ = m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+
+	select {
+	case result := <-doneCh:
+		if result.Choice != tools.ApprovalChoiceOnce {
+			t.Fatalf("expected active approval to proceed once, got %q", result.Choice)
+		}
+	default:
+		t.Fatal("expected active approval prompt to receive a result")
+	}
+	if m.approvalModel != nil {
+		t.Fatal("expected active approval model to be cleared")
+	}
+	if m.approvalDoneCh != nil {
+		t.Fatal("expected approval done channel to be cleared")
+	}
+	if m.pausedForExternalUI {
+		t.Fatal("expected external UI pause to clear")
+	}
+}
+
+func TestUpdate_ApprovalRequestAutoApprovesWhenYoloAlreadyEnabled(t *testing.T) {
+	m := newTestChatModel(true)
+	m.yolo = true
+	doneCh := make(chan tools.ApprovalResult, 1)
+
+	_, _ = m.Update(ApprovalRequestMsg{
+		Path:   t.TempDir() + "/file.go",
+		DoneCh: doneCh,
+	})
+
+	select {
+	case result := <-doneCh:
+		if result.Choice != tools.ApprovalChoiceOnce {
+			t.Fatalf("expected yolo approval to proceed once, got %q", result.Choice)
+		}
+	default:
+		t.Fatal("expected approval request to auto-approve in yolo mode")
+	}
+	if m.approvalModel != nil {
+		t.Fatal("expected no embedded approval model in yolo mode")
+	}
+}
+
 func TestHandleKeyMsg_SessionListEnterResumesSession(t *testing.T) {
 	sessionID := "sess-handler-resume-1"
 	sess := &session.Session{ID: sessionID, Number: 11, Name: "picked session"}

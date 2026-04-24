@@ -437,6 +437,7 @@ func (m *Model) cmdHelp() (tea.Model, tea.Cmd) {
 	b.WriteString("- `Ctrl+C` - Quit\n")
 	b.WriteString("- `Ctrl+K` - Clear conversation\n")
 	b.WriteString("- `Ctrl+S` - Toggle web search\n")
+	b.WriteString("- `Shift+Tab` - Toggle yolo mode\n")
 	b.WriteString("- `Ctrl+T` - MCP servers (tools)\n")
 	b.WriteString("- `Ctrl+P` - Command palette\n")
 	b.WriteString("- `Ctrl+L` - Switch model\n")

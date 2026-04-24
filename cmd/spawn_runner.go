@@ -399,8 +399,10 @@ func (r *SpawnAgentRunner) setupAgentTools(cfg *config.Config, engine *llm.Engin
 		}
 	}
 
-	// Set yolo mode for sub-agents (they inherit from parent)
-	if r.yoloMode {
+	// Set yolo mode for standalone sub-agent runners. When a parent approval
+	// manager exists, inherit yolo dynamically from the parent instead so a
+	// Shift+Tab toggle in the chat can affect already-created descendants.
+	if r.yoloMode && r.parentApprovalMgr == nil {
 		toolMgr.ApprovalMgr.SetYoloMode(true)
 	}
 

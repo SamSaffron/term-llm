@@ -92,6 +92,19 @@ func (m *Manager) SetSamplingProvider(provider llm.Provider, model string, yoloM
 	m.samplingHandler.SetYoloMode(yoloMode)
 }
 
+// SetSamplingYoloMode updates yolo mode for the current MCP sampling handler.
+func (m *Manager) SetSamplingYoloMode(enabled bool) {
+	if m == nil {
+		return
+	}
+	m.mu.RLock()
+	handler := m.samplingHandler
+	m.mu.RUnlock()
+	if handler != nil {
+		handler.SetYoloMode(enabled)
+	}
+}
+
 // GetSamplingHandler returns the current sampling handler.
 func (m *Manager) GetSamplingHandler() *SamplingHandler {
 	m.mu.RLock()
