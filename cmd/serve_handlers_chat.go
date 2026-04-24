@@ -172,6 +172,9 @@ func (s *serveServer) streamChatCompletions(ctx context.Context, w http.Response
 
 	pingMu, stopPing := sseKeepalive(w, flusher, 20*time.Second)
 
+	ctx, cancelShutdown := s.contextWithShutdown(ctx)
+	defer cancelShutdown()
+
 	first := true
 	toolCallSeen := false
 	toolCallIndex := 0
