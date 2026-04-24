@@ -763,6 +763,131 @@ func TestResponsesToolState_MultipleToolCalls(t *testing.T) {
 	}
 }
 
+func TestResponsesClientStream_ErrorsOnMalformedToolCallDelta(t *testing.T) {
+	sse := strings.Join([]string{
+		"event: response.output_item.added",
+		"data: {\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_bad\",\"name\":\"search\"}}",
+		"",
+		"event: response.function_call_arguments.delta",
+		"data: {\"output_index\":0,\"delta\":",
+		"",
+	}, "\n")
+
+	httpClient := &http.Client{
+		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader(sse)),
+			}, nil
+		}),
+	}
+
+	client := &ResponsesClient{
+		BaseURL:       "https://example.test/v1/responses",
+		GetAuthHeader: func() string { return "Bearer test-token" },
+		HTTPClient:    httpClient,
+	}
+
+	stream, err := client.Stream(context.Background(), ResponsesRequest{
+		Model:  "gpt-5.2",
+		Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "hello"}},
+		Stream: true,
+	}, false)
+	if err != nil {
+		t.Fatalf("stream request failed: %v", err)
+	}
+	defer stream.Close()
+
+	toolCalls := 0
+	for {
+		event, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			t.Fatal("expected stream error, got EOF")
+		}
+		if recvErr != nil {
+			t.Fatalf("stream recv failed: %v", recvErr)
+		}
+		switch event.Type {
+		case EventToolCall:
+			toolCalls++
+		case EventDone:
+			t.Fatal("expected stream error, got EventDone")
+		case EventError:
+			if event.Err == nil {
+				t.Fatal("expected EventError.Err to be set")
+			}
+			if !strings.Contains(event.Err.Error(), "decode Responses API response.function_call_arguments.delta event") {
+				t.Fatalf("expected decode error, got: %v", event.Err)
+			}
+			if toolCalls != 0 {
+				t.Fatalf("expected no tool calls before error, got %d", toolCalls)
+			}
+			return
+		}
+	}
+}
+
+func TestResponsesClientStream_ErrorsOnIncompleteToolCallAtEOF(t *testing.T) {
+	sse := strings.Join([]string{
+		"event: response.output_item.added",
+		"data: {\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_partial\",\"name\":\"search\"}}",
+		"",
+	}, "\n")
+
+	httpClient := &http.Client{
+		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader(sse)),
+			}, nil
+		}),
+	}
+
+	client := &ResponsesClient{
+		BaseURL:       "https://example.test/v1/responses",
+		GetAuthHeader: func() string { return "Bearer test-token" },
+		HTTPClient:    httpClient,
+	}
+
+	stream, err := client.Stream(context.Background(), ResponsesRequest{
+		Model:  "gpt-5.2",
+		Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "hello"}},
+		Stream: true,
+	}, false)
+	if err != nil {
+		t.Fatalf("stream request failed: %v", err)
+	}
+	defer stream.Close()
+
+	for {
+		event, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			t.Fatal("expected stream error, got EOF")
+		}
+		if recvErr != nil {
+			t.Fatalf("stream recv failed: %v", recvErr)
+		}
+		switch event.Type {
+		case EventToolCall:
+			t.Fatal("expected incomplete stream to fail before emitting tool call")
+		case EventDone:
+			t.Fatal("expected stream error, got EventDone")
+		case EventError:
+			if event.Err == nil {
+				t.Fatal("expected EventError.Err to be set")
+			}
+			if !strings.Contains(event.Err.Error(), "ended before tool call 0 completed") {
+				t.Fatalf("expected incomplete tool call error, got: %v", event.Err)
+			}
+			return
+		}
+	}
+}
+
 func TestBuildResponsesInput_ConvertsDanglingToolCalls(t *testing.T) {
 	messages := []Message{
 		{
