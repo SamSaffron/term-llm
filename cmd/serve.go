@@ -951,6 +951,25 @@ func (s *serveServer) httpHandler() http.Handler {
 	return mux
 }
 
+// contextWithShutdown returns a derived context that is cancelled when either
+// the parent context is done or shutdownCh is closed. This lets streaming
+// handlers exit promptly on server shutdown rather than holding server.Shutdown
+// open until the full timeout expires.
+func (s *serveServer) contextWithShutdown(ctx context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(ctx)
+	if s.shutdownCh == nil {
+		return ctx, cancel
+	}
+	go func() {
+		select {
+		case <-s.shutdownCh:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
+}
+
 func (s *serveServer) Stop(ctx context.Context) error {
 	if s.server == nil {
 		return nil

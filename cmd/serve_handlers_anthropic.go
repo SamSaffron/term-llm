@@ -193,6 +193,9 @@ func (s *serveServer) streamAnthropicMessages(ctx context.Context, w http.Respon
 
 	pingMu, stopPing := sseKeepalive(w, flusher, 20*time.Second)
 
+	ctx, cancelShutdown := s.contextWithShutdown(ctx)
+	defer cancelShutdown()
+
 	var (
 		blockIndex int
 		openBlock  string // "", "text", or "thinking"
