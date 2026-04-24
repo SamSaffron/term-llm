@@ -211,12 +211,11 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 					if filename == "" {
 						filename = "image"
 					}
-					savedPath := ""
-					if path, err := saveUploadedFile(filename, b64); err != nil {
-						log.Printf("[web] warning: could not save uploaded image %q: %v", filename, err)
-					} else {
-						savedPath = path
+					path, err := saveUploadedFile(filename, b64)
+					if err != nil {
+						return llm.Message{}, fmt.Errorf("save attachment %q: %w", filename, err)
 					}
+					savedPath := path
 
 					// Decode raw bytes for possible resize.
 					raw, err := base64.StdEncoding.DecodeString(b64)
