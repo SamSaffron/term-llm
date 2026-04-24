@@ -38,10 +38,18 @@ type OllamaProvider struct {
 }
 
 // NewOllamaChatProvider creates a native Ollama chat provider.
-// baseURL defaults to http://localhost:11434 and model defaults to qwen2.5-coder:7b.
+// baseURL defaults to the OLLAMA_HOST env var, then http://localhost:11434.
+// model defaults to qwen2.5-coder:7b.
 func NewOllamaChatProvider(baseURL, model string, opts OllamaOptions) *OllamaProvider {
 	if baseURL == "" {
-		baseURL = ollamaChatDefaultBaseURL
+		if host := strings.TrimSpace(os.Getenv("OLLAMA_HOST")); host != "" {
+			if !strings.HasPrefix(host, "http://") && !strings.HasPrefix(host, "https://") {
+				host = "http://" + host
+			}
+			baseURL = host
+		} else {
+			baseURL = ollamaChatDefaultBaseURL
+		}
 	}
 	baseURL = strings.TrimSuffix(baseURL, "/")
 	if model == "" {
