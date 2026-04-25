@@ -2133,18 +2133,18 @@ func handoverSystemPrompt(messages []llm.Message) string {
 }
 
 // executeHandover performs the actual agent switch after user confirmation.
-// It persists the handover messages and session metadata, then triggers a TUI
-// restart so the target agent's full runtime configuration (tools, permissions,
-// MCP, shell allowlists) is applied via the normal startup path.
+// It creates a brand-new session containing only the reconstructed handover
+// context, then triggers a TUI restart so the target agent's full runtime
+// configuration (tools, permissions, MCP, shell allowlists) is applied via the
+// normal startup path. The source session is left intact to avoid cross-talk.
 func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 	if m.pendingHandover == nil {
 		return m, nil
 	}
 
 	pending := m.pendingHandover
-	m.pendingHandover = nil
 
-	// Step 1: Resolve target agent before any mutations
+	// Step 1: Resolve target agent before any mutations.
 	targetAgent, resolveErr := m.agentResolver(pending.agentName, m.config)
 	if resolveErr != nil || targetAgent == nil {
 		m.cancelHandoverTool()
@@ -2160,66 +2160,55 @@ func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 		m.cancelHandoverTool()
 		return m.showFooterError("Handover failed: no result returned.")
 	}
-
-	// Step 2: Persist handover messages
-	var newSessionMsgs []session.Message
-	for _, msg := range result.NewMessages {
-		newSessionMsgs = append(newSessionMsgs, *session.NewMessage(m.sess.ID, msg, -1))
+	if m.store == nil {
+		m.cancelHandoverTool()
+		return m.showFooterError("Handover failed to persist: session storage is not configured")
 	}
 
-	if err := m.store.CompactMessages(context.Background(), m.sess.ID, newSessionMsgs); err != nil {
+	ctx := context.Background()
+
+	// Step 2: Build a fresh target session. Handover must never compact or mutate
+	// the current session: the new agent gets a clean DB session whose history is
+	// only the reconstructed handover context.
+	newSess := m.buildHandoverSession(pending, targetAgent)
+
+	if err := m.store.Create(ctx, newSess); err != nil {
 		m.cancelHandoverTool()
 		return m.showFooterError(fmt.Sprintf("Handover failed to persist: %v", err))
 	}
-
-	// Step 3: Update session metadata with target agent's runtime settings.
-	// On restart, cmd/chat.go:205-211 overwrites resolved settings with session
-	// values (Tools, Search, MCP, Provider, Model), so we must persist the
-	// target agent's values here — otherwise the old agent's config survives.
-	m.sess.Agent = pending.agentName
-	m.sess.Search = targetAgent.Search
-	m.sess.Tools = resolveAgentTools(targetAgent)
-
-	mcpNames := targetAgent.GetMCPServerNames()
-	if len(mcpNames) > 0 {
-		m.sess.MCP = strings.Join(mcpNames, ",")
-	} else {
-		m.sess.MCP = ""
+	cleanupNewSession := func() {
+		_ = m.store.Delete(context.Background(), newSess.ID)
 	}
 
-	// Provider/model: explicit override > target agent > keep current
-	if pending.providerStr != "" {
-		parts := strings.SplitN(pending.providerStr, ":", 2)
-		if len(parts) == 2 {
-			m.sess.ProviderKey = parts[0]
-			m.sess.Model = parts[1]
-		}
-	} else {
-		// Apply agent provider and model independently (matching ResolveSettings behavior)
-		if targetAgent.Provider != "" {
-			m.sess.ProviderKey = targetAgent.Provider
-		}
-		if targetAgent.Model != "" {
-			m.sess.Model = targetAgent.Model
+	for _, msg := range result.NewMessages {
+		newMsg := session.NewMessage(newSess.ID, msg, -1)
+		if err := m.store.AddMessage(ctx, newSess.ID, newMsg); err != nil {
+			cleanupNewSession()
+			m.cancelHandoverTool()
+			return m.showFooterError(fmt.Sprintf("Handover failed to persist: %v", err))
 		}
 	}
 
-	if err := m.store.Update(context.Background(), m.sess); err != nil {
+	if err := m.store.SetCurrent(ctx, newSess.ID); err != nil {
+		cleanupNewSession()
 		m.cancelHandoverTool()
-		return m.showFooterError(fmt.Sprintf("Handover failed to persist session metadata: %v", err))
+		return m.showFooterError(fmt.Sprintf("Handover failed to set current session: %v", err))
 	}
 
-	// Step 4: Update in-memory state only after both writes succeed
-	m.messagesMu.Lock()
-	m.compactionIdx = len(m.messages)
-	m.messages = append(m.messages, newSessionMsgs...)
-	m.messagesMu.Unlock()
-	m.invalidateHistoryCache()
+	// Mark the source session complete only after the target session is fully
+	// committed and current. Failure here is best-effort and should not undo the
+	// successful handover.
+	if m.sess != nil && m.sess.ID != "" {
+		_ = m.store.UpdateStatus(ctx, m.sess.ID, session.StatusComplete)
+	}
+	m.pendingHandover = nil
 
-	// Step 5: Trigger TUI restart via the same resume mechanism used by /resume.
-	// This causes runChatOnce to exit and the outer loop to re-enter with
-	// the updated session, running the full agent setup path.
-	m.pendingResumeSessionID = m.sess.ID
+	// Step 3: Trigger TUI restart via the same resume mechanism used by /resume.
+	// This causes runChatOnce to exit and the outer loop to re-enter with the new
+	// session, running the full agent setup path. Do not append handover messages
+	// into the source session's in-memory scrollback; the dying model should not
+	// show or later persist target-agent context under the source session.
+	m.pendingResumeSessionID = newSess.ID
 	if prompt := strings.TrimSpace(targetAgent.DefaultPrompt); prompt != "" {
 		m.pendingHandoverAutoSend = prompt
 	} else if pending != nil && pending.result != nil {
@@ -2234,11 +2223,81 @@ func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 		m.handoverToolDoneCh <- true
 		m.handoverToolDoneCh = nil
 	}
-	// Cancel the engine stream now that the tool is unblocked
+	// Cancel the engine stream now that the tool is unblocked.
 	if m.streamCancelFunc != nil {
 		m.streamCancelFunc()
 		m.streamCancelFunc = nil
 	}
 	m.quitting = true
 	return m, tea.Quit
+}
+
+func (m *Model) buildHandoverSession(pending *handoverDoneMsg, targetAgent *agents.Agent) *session.Session {
+	agentName := strings.TrimSpace(pending.agentName)
+	if agentName == "" && targetAgent != nil {
+		agentName = targetAgent.Name
+	}
+
+	providerKey := m.providerKey
+	modelName := m.modelName
+	if pending.providerStr != "" {
+		parts := strings.SplitN(pending.providerStr, ":", 2)
+		if len(parts) == 2 {
+			providerKey = parts[0]
+			modelName = parts[1]
+		}
+	} else if targetAgent != nil {
+		// Apply agent provider and model independently (matching ResolveSettings behavior).
+		if targetAgent.Provider != "" {
+			providerKey = targetAgent.Provider
+		}
+		if targetAgent.Model != "" {
+			modelName = targetAgent.Model
+		}
+	}
+
+	providerLabel := m.providerName
+	if providerKey != m.providerKey || modelName != m.modelName {
+		providerLabel = providerKey
+		if modelName != "" {
+			providerLabel = fmt.Sprintf("%s (%s)", providerKey, modelName)
+		}
+	}
+	if providerLabel == "" {
+		providerLabel = providerKey
+	}
+
+	toolsStr := ""
+	searchEnabled := false
+	mcpStr := ""
+	if targetAgent != nil {
+		searchEnabled = targetAgent.Search
+		toolsStr = resolveAgentTools(targetAgent)
+		mcpNames := targetAgent.GetMCPServerNames()
+		if len(mcpNames) > 0 {
+			mcpStr = strings.Join(mcpNames, ",")
+		}
+	}
+
+	now := time.Now()
+	newSess := &session.Session{
+		ID:            session.NewID(),
+		Provider:      providerLabel,
+		ProviderKey:   providerKey,
+		Model:         modelName,
+		Mode:          session.ModeChat,
+		Origin:        session.OriginTUI,
+		Agent:         agentName,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		Search:        searchEnabled,
+		Tools:         toolsStr,
+		MCP:           mcpStr,
+		Status:        session.StatusActive,
+		CompactionSeq: -1,
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		newSess.CWD = cwd
+	}
+	return newSess
 }

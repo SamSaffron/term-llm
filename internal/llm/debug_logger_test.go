@@ -93,7 +93,15 @@ func TestDebugLogger_LogEvent(t *testing.T) {
 	// Log various events
 	events := []Event{
 		{Type: EventTextDelta, Text: "Hello"},
-		{Type: EventUsage, Use: &Usage{InputTokens: 100, OutputTokens: 50}},
+		{Type: EventUsage, Use: &Usage{
+			InputTokens:            100,
+			OutputTokens:           50,
+			CachedInputTokens:      25,
+			CacheWriteTokens:       10,
+			ProviderRawInputTokens: 125,
+			ProviderTotalTokens:    175,
+			ReasoningTokens:        7,
+		}},
 		{Type: EventDone},
 	}
 
@@ -123,6 +131,28 @@ func TestDebugLogger_LogEvent(t *testing.T) {
 		}
 		if entry["type"] != "event" {
 			t.Errorf("expected type=event, got %v", entry["type"])
+		}
+		if entry["event_type"] == "usage" {
+			data, ok := entry["data"].(map[string]any)
+			if !ok {
+				t.Fatalf("usage data missing or wrong type: %T", entry["data"])
+			}
+			want := map[string]float64{
+				"provider_input_tokens":  125,
+				"provider_total_tokens":  175,
+				"request_context_tokens": 135,
+				"next_context_baseline":  185,
+				"input_tokens":           100,
+				"output_tokens":          50,
+				"cached_input_tokens":    25,
+				"cache_write_tokens":     10,
+				"reasoning_tokens":       7,
+			}
+			for key, expected := range want {
+				if got, _ := data[key].(float64); got != expected {
+					t.Fatalf("usage data[%s] = %v, want %v (data=%v)", key, data[key], expected, data)
+				}
+			}
 		}
 		count++
 	}

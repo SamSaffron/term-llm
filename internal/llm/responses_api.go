@@ -155,6 +155,10 @@ type responsesUsage struct {
 	InputTokensDetails struct {
 		CachedTokens int `json:"cached_tokens"`
 	} `json:"input_tokens_details"`
+	OutputTokensDetails struct {
+		ReasoningTokens int `json:"reasoning_tokens"`
+	} `json:"output_tokens_details"`
+	TotalTokens int `json:"total_tokens"`
 }
 
 type responsesError struct {
@@ -831,9 +835,12 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 					lastUsage = &Usage{
 						// OpenAI Responses API input_tokens includes cached; subtract to normalise.
 						// CachedInputTokens + InputTokens = total context size.
-						InputTokens:       completedEvent.Response.Usage.InputTokens - cached,
-						OutputTokens:      completedEvent.Response.Usage.OutputTokens,
-						CachedInputTokens: cached,
+						InputTokens:            completedEvent.Response.Usage.InputTokens - cached,
+						OutputTokens:           completedEvent.Response.Usage.OutputTokens,
+						CachedInputTokens:      cached,
+						ProviderRawInputTokens: completedEvent.Response.Usage.InputTokens,
+						ProviderTotalTokens:    completedEvent.Response.Usage.TotalTokens,
+						ReasoningTokens:        completedEvent.Response.Usage.OutputTokensDetails.ReasoningTokens,
 					}
 				}
 

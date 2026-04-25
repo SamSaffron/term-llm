@@ -165,11 +165,25 @@ func DebugRawEvent(enabled bool, event Event) {
 		}
 	case EventUsage:
 		if event.Use != nil {
+			providerInputTokens := event.Use.ProviderRawInputTokens
+			if providerInputTokens == 0 {
+				providerInputTokens = event.Use.InputTokens + event.Use.CachedInputTokens
+			}
+			providerTotalTokens := event.Use.ProviderTotalTokens
+			if providerTotalTokens == 0 {
+				providerTotalTokens = providerInputTokens + event.Use.OutputTokens
+			}
 			body := fmt.Sprintf(
-				"input_tokens: %d\noutput_tokens: %d\ncached_input_tokens: %d",
+				"provider_input_tokens: %d\nprovider_total_tokens: %d\nrequest_context_tokens: %d\nnext_context_baseline: %d\ninput_tokens: %d\noutput_tokens: %d\ncached_input_tokens: %d\ncache_write_tokens: %d\nreasoning_tokens: %d",
+				providerInputTokens,
+				providerTotalTokens,
+				event.Use.InputTokens+event.Use.CachedInputTokens+event.Use.CacheWriteTokens,
+				event.Use.InputTokens+event.Use.CachedInputTokens+event.Use.CacheWriteTokens+event.Use.OutputTokens,
 				event.Use.InputTokens,
 				event.Use.OutputTokens,
 				event.Use.CachedInputTokens,
+				event.Use.CacheWriteTokens,
+				event.Use.ReasoningTokens,
 			)
 			DebugRawSection(enabled, "Event Usage", body)
 		} else {

@@ -192,6 +192,9 @@ type oaiUsage struct {
 	PromptTokensDetails struct {
 		CachedTokens int `json:"cached_tokens"`
 	} `json:"prompt_tokens_details"`
+	CompletionTokensDetails struct {
+		ReasoningTokens int `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
 }
 
 type oaiAPIError struct {
@@ -487,9 +490,12 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 				lastUsage = &Usage{
 					// OpenAI prompt_tokens includes cached; subtract to get non-cached portion.
 					// CachedInputTokens + InputTokens = total context size.
-					InputTokens:       chatResp.Usage.PromptTokens - cached,
-					OutputTokens:      chatResp.Usage.CompletionTokens,
-					CachedInputTokens: cached,
+					InputTokens:            chatResp.Usage.PromptTokens - cached,
+					OutputTokens:           chatResp.Usage.CompletionTokens,
+					CachedInputTokens:      cached,
+					ProviderRawInputTokens: chatResp.Usage.PromptTokens,
+					ProviderTotalTokens:    chatResp.Usage.TotalTokens,
+					ReasoningTokens:        chatResp.Usage.CompletionTokensDetails.ReasoningTokens,
 				}
 			}
 

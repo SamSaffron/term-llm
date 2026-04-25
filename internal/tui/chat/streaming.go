@@ -17,6 +17,59 @@ import (
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
+func copyLLMMessages(messages []llm.Message) []llm.Message {
+	if len(messages) == 0 {
+		return nil
+	}
+	copied := make([]llm.Message, len(messages))
+	copy(copied, messages)
+	return copied
+}
+
+func (m *Model) setStreamingContextMessages(messages []llm.Message) {
+	m.contextEstimateMu.Lock()
+	m.streamingContextMessages = copyLLMMessages(messages)
+	m.streamingContextPendingAssistant = false
+	m.contextEstimateMu.Unlock()
+}
+
+func (m *Model) clearStreamingContextMessages() {
+	m.contextEstimateMu.Lock()
+	m.streamingContextMessages = nil
+	m.streamingContextPendingAssistant = false
+	m.contextEstimateMu.Unlock()
+}
+
+func (m *Model) updateStreamingContextAssistant(assistantMsg llm.Message) {
+	m.contextEstimateMu.Lock()
+	defer m.contextEstimateMu.Unlock()
+	if m.streamingContextPendingAssistant && len(m.streamingContextMessages) > 0 {
+		m.streamingContextMessages[len(m.streamingContextMessages)-1] = assistantMsg
+		return
+	}
+	m.streamingContextMessages = append(m.streamingContextMessages, assistantMsg)
+	m.streamingContextPendingAssistant = true
+}
+
+func (m *Model) appendStreamingContextTurnMessages(turnMessages []llm.Message) {
+	m.contextEstimateMu.Lock()
+	defer m.contextEstimateMu.Unlock()
+
+	appendStart := 0
+	if len(turnMessages) > 0 && turnMessages[0].Role == llm.RoleAssistant {
+		if m.streamingContextPendingAssistant && len(m.streamingContextMessages) > 0 {
+			m.streamingContextMessages[len(m.streamingContextMessages)-1] = turnMessages[0]
+		} else {
+			m.streamingContextMessages = append(m.streamingContextMessages, turnMessages[0])
+		}
+		appendStart = 1
+	}
+	if appendStart < len(turnMessages) {
+		m.streamingContextMessages = append(m.streamingContextMessages, turnMessages[appendStart:]...)
+	}
+	m.streamingContextPendingAssistant = false
+}
+
 // clearStreamCallbacks detaches every engine callback wired in startStream
 // and resets the per-turn "persist as we go" state. Safe to call even when
 // streaming never started; safe to call from any goroutine.
@@ -27,6 +80,7 @@ func (m *Model) clearStreamCallbacks() {
 	m.pendingMu.Lock()
 	m.pendingAssistantMsgID = 0
 	m.pendingMu.Unlock()
+	m.clearStreamingContextMessages()
 }
 
 // setupStreamPersistenceCallbacks wires snapshot/response/turn callbacks on the
@@ -36,10 +90,10 @@ func (m *Model) clearStreamCallbacks() {
 // skips RoleUser messages (interjections) because the ui.StreamEventInterjection
 // handler persists those — appending them here would create duplicate rows.
 func (m *Model) setupStreamPersistenceCallbacks(streamStart time.Time) {
-	if m.store == nil || m.sess == nil {
-		return
-	}
-	upsertPendingAssistant := func(ctx context.Context, assistantMsg llm.Message) {
+	persistPendingAssistant := func(ctx context.Context, assistantMsg llm.Message) {
+		if m.store == nil || m.sess == nil {
+			return
+		}
 		sessionMsg := session.NewMessage(m.sess.ID, assistantMsg, -1)
 		sessionMsg.DurationMs = time.Since(streamStart).Milliseconds()
 		m.pendingMu.Lock()
@@ -64,33 +118,43 @@ func (m *Model) setupStreamPersistenceCallbacks(streamStart time.Time) {
 	}
 
 	m.engine.SetAssistantSnapshotCallback(func(ctx context.Context, _ int, assistantMsg llm.Message) error {
-		upsertPendingAssistant(ctx, assistantMsg)
+		m.updateStreamingContextAssistant(assistantMsg)
+		persistPendingAssistant(ctx, assistantMsg)
 		return nil
 	})
 
 	m.engine.SetResponseCompletedCallback(func(ctx context.Context, _ int, assistantMsg llm.Message, _ llm.TurnMetrics) error {
-		upsertPendingAssistant(ctx, assistantMsg)
+		m.updateStreamingContextAssistant(assistantMsg)
+		persistPendingAssistant(ctx, assistantMsg)
 		return nil
 	})
 
 	m.engine.SetTurnCompletedCallback(func(ctx context.Context, _ int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
+		m.appendStreamingContextTurnMessages(turnMessages)
+
 		appendStart := 0
 		if len(turnMessages) > 0 && turnMessages[0].Role == llm.RoleAssistant {
-			upsertPendingAssistant(ctx, turnMessages[0])
+			// The estimate snapshot was already updated above. Persist/update the
+			// pending assistant row separately.
+			persistPendingAssistant(ctx, turnMessages[0])
 			appendStart = 1
 		}
-		for _, msg := range turnMessages[appendStart:] {
-			if msg.Role == llm.RoleUser {
-				continue
+		if m.store != nil && m.sess != nil {
+			for _, msg := range turnMessages[appendStart:] {
+				if msg.Role == llm.RoleUser {
+					continue
+				}
+				sessionMsg := session.NewMessage(m.sess.ID, msg, -1)
+				_ = m.store.AddMessage(ctx, m.sess.ID, sessionMsg)
 			}
-			sessionMsg := session.NewMessage(m.sess.ID, msg, -1)
-			_ = m.store.AddMessage(ctx, m.sess.ID, sessionMsg)
 		}
 		m.pendingMu.Lock()
 		m.pendingAssistantMsgID = 0
 		m.pendingMu.Unlock()
-		_ = m.store.UpdateMetrics(ctx, m.sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens)
-		m.persistContextEstimate(ctx)
+		if m.store != nil && m.sess != nil {
+			_ = m.store.UpdateMetrics(ctx, m.sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens)
+			m.persistContextEstimate(ctx)
+		}
 		return nil
 	})
 }
@@ -338,6 +402,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 
 		// Build messages from conversation history
 		messages := m.buildMessagesForStream()
+		m.setStreamingContextMessages(messages)
 
 		// Collect MCP tools if available and register them with the engine
 		var reqTools []llm.ToolSpec
@@ -405,6 +470,11 @@ func (m *Model) startStream(content string) tea.Cmd {
 			for _, msg := range result.NewMessages {
 				newSessionMsgs = append(newSessionMsgs, *session.NewMessage(m.sess.ID, msg, -1))
 			}
+			if m.store != nil {
+				if err := m.store.CompactMessages(ctx, m.sess.ID, newSessionMsgs); err != nil {
+					return err
+				}
+			}
 			m.messagesMu.Lock()
 			m.compactionIdx = len(m.messages)
 			m.messages = append(m.messages, newSessionMsgs...)
@@ -417,9 +487,6 @@ func (m *Model) startStream(content string) tea.Cmd {
 			m.pendingMu.Lock()
 			m.pendingAssistantMsgID = 0
 			m.pendingMu.Unlock()
-			if m.store != nil {
-				return m.store.CompactMessages(ctx, m.sess.ID, newSessionMsgs)
-			}
 			return nil
 		})
 
@@ -498,6 +565,13 @@ func (m *Model) buildMessagesForStream() []llm.Message {
 }
 
 func (m *Model) buildMessagesForContextEstimate() []llm.Message {
+	m.contextEstimateMu.Lock()
+	if m.streaming && len(m.streamingContextMessages) > 0 {
+		messages := copyLLMMessages(m.streamingContextMessages)
+		m.contextEstimateMu.Unlock()
+		return messages
+	}
+	m.contextEstimateMu.Unlock()
 	return m.buildMessages()
 }
 

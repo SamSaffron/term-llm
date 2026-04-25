@@ -5,14 +5,80 @@ import (
 	"encoding/json"
 	"io"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/ui"
 )
 
 type interjectionTestTool struct{}
+
+func TestStatusLineContextEstimateUsesInProgressStreamingSnapshot(t *testing.T) {
+	m := newTestChatModel(false)
+	m.width = 120
+	m.providerName = "openai"
+	m.modelName = "gpt-5"
+	m.engine.ConfigureContextManagement(m.provider, m.providerName, m.modelName, false)
+
+	baseMessages := []llm.Message{
+		llm.UserText("hello"),
+		llm.AssistantText("hi"),
+	}
+	m.engine.SetContextEstimateBaseline(1000, len(baseMessages))
+	m.messages = []session.Message{
+		{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "hello"}}, TextContent: "hello"},
+		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "hi"}}, TextContent: "hi"},
+	}
+
+	baseline := m.engine.EstimateTokens(m.buildMessagesForContextEstimate())
+	if baseline != 1000 {
+		t.Fatalf("baseline estimate = %d, want 1000", baseline)
+	}
+
+	largeToolResult := llm.ToolResultMessage("call-1", "read_file", strings.Repeat("tool output ", 1200), nil)
+	m.streaming = true
+	m.setStreamingContextMessages(append(baseMessages, largeToolResult))
+
+	inProgress := m.engine.EstimateTokens(m.buildMessagesForContextEstimate())
+	if inProgress <= baseline {
+		t.Fatalf("in-progress estimate = %d, want > baseline %d", inProgress, baseline)
+	}
+
+	status := ui.StripANSI(m.renderStatusLine())
+	wantUsage := "~" + llm.FormatTokenCount(inProgress) + "/" + llm.FormatTokenCount(m.engine.InputLimit())
+	if !strings.Contains(status, wantUsage) {
+		t.Fatalf("status line %q does not contain updated usage %q", status, wantUsage)
+	}
+}
+
+func TestStreamingContextCallbacksUpdateEstimateSnapshotWithoutMutatingMessages(t *testing.T) {
+	m := newTestChatModel(false)
+	m.messages = []session.Message{{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "base"}}, TextContent: "base"}}
+	baseMessages := []llm.Message{llm.UserText("base")}
+	m.streaming = true
+	m.setStreamingContextMessages(baseMessages)
+
+	m.updateStreamingContextAssistant(llm.AssistantText("I'll inspect that."))
+	m.updateStreamingContextAssistant(llm.AssistantText("I'll inspect that now."))
+	m.appendStreamingContextTurnMessages([]llm.Message{
+		llm.AssistantText("I'll inspect that now."),
+		llm.ToolResultMessage("call-1", "read_file", "file contents", nil),
+	})
+
+	got := m.buildMessagesForContextEstimate()
+	if len(got) != 3 {
+		t.Fatalf("context estimate message count = %d, want 3", len(got))
+	}
+	if got[1].Role != llm.RoleAssistant || got[2].Role != llm.RoleTool {
+		t.Fatalf("context estimate roles = %v, %v; want assistant, tool", got[1].Role, got[2].Role)
+	}
+	if len(m.messages) != 1 {
+		t.Fatalf("m.messages was mutated; len = %d, want 1", len(m.messages))
+	}
+}
 
 func (t *interjectionTestTool) Spec() llm.ToolSpec {
 	return llm.ToolSpec{

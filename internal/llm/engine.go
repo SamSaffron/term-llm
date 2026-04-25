@@ -93,12 +93,13 @@ type Engine struct {
 	maxToolOutputChars int // 0 = disabled; truncate tool output to this many runes
 
 	// Context compaction
-	compactionConfig     *CompactionConfig // nil = compaction disabled
-	inputLimit           int               // 0 = unknown/disabled
-	lastTotalTokens      int               // cached+input+output from most recent API response
-	lastMessageCount     int               // len(req.Messages) at time of last API call
-	systemPrompt         string            // Captured for re-injection after compaction
-	contextNoticeEmitted atomic.Bool       // one-shot flag: WARNING emitted once per session
+	compactionConfig         *CompactionConfig // nil = compaction disabled
+	inputLimit               int               // 0 = unknown/disabled
+	lastTotalTokens          int               // cached+input+output from most recent API response
+	lastMessageCount         int               // len(req.Messages) at time of last API call
+	lastMessageTokenEstimate int               // heuristic token estimate of messages included in lastTotalTokens
+	systemPrompt             string            // Captured for re-injection after compaction
+	contextNoticeEmitted     atomic.Bool       // one-shot flag: WARNING emitted once per session
 
 	// Interjection support: user can send a message while the agent is streaming.
 	// The message is injected after the current turn's tool results, before the next LLM turn.
@@ -211,6 +212,7 @@ func (e *Engine) ResetConversation() {
 	e.callbackMu.Lock()
 	e.lastTotalTokens = 0
 	e.lastMessageCount = 0
+	e.lastMessageTokenEstimate = 0
 	e.systemPrompt = ""
 	e.contextNoticeEmitted.Store(false)
 	e.callbackMu.Unlock()
@@ -402,6 +404,7 @@ func (e *Engine) SetContextEstimateBaseline(lastTotalTokens, lastMessageCount in
 	e.callbackMu.Lock()
 	e.lastTotalTokens = lastTotalTokens
 	e.lastMessageCount = lastMessageCount
+	e.lastMessageTokenEstimate = 0
 	e.callbackMu.Unlock()
 }
 
@@ -413,7 +416,20 @@ func (e *Engine) EstimateTokens(messages []Message) int {
 	e.callbackMu.RLock()
 	lastTotalTokens := e.lastTotalTokens
 	lastMessageCount := e.lastMessageCount
+	lastMessageTokenEstimate := e.lastMessageTokenEstimate
 	e.callbackMu.RUnlock()
+
+	if lastTotalTokens > 0 && lastMessageTokenEstimate > 0 {
+		// Prefer token-estimate checkpoints over message-count checkpoints. The
+		// provider baseline already includes the prompt plus assistant output from
+		// the checkpointed turn; only add heuristic tokens for content that appears
+		// after that checkpoint. This is robust to message-count drift from
+		// persistence details (e.g. assistant rows being upserted/reloaded).
+		if delta := EstimateMessageTokens(messages) - lastMessageTokenEstimate; delta > 0 {
+			return lastTotalTokens + delta
+		}
+		return lastTotalTokens
+	}
 
 	if lastTotalTokens > 0 && lastMessageCount > 0 {
 		switch {
@@ -421,6 +437,12 @@ func (e *Engine) EstimateTokens(messages []Message) int {
 			return lastTotalTokens
 		case lastMessageCount < len(messages):
 			return lastTotalTokens + EstimateMessageTokens(messages[lastMessageCount:])
+		case lastMessageCount > len(messages):
+			// The latest provider usage can arrive before the UI/session has appended
+			// the assistant output that the usage already includes. In that transient
+			// state, the provider baseline is more accurate than falling back to a full
+			// heuristic estimate, which can badly inflate the status-line meter.
+			return lastTotalTokens
 		}
 	}
 	return EstimateMessageTokens(messages)
@@ -821,6 +843,21 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 	}
 
 	var reactiveCompactionDone bool // prevents infinite retry if compacted context still overflows
+	applyCompaction := func(result *CompactionResult) bool {
+		if cb := e.getCompactionCallback(); cb != nil {
+			if cbErr := cb(ctx, result); cbErr != nil {
+				slog.Warn("compaction callback failed", "error", cbErr)
+				return false
+			}
+		}
+		req.Messages = result.NewMessages
+		e.callbackMu.Lock()
+		e.lastTotalTokens = 0
+		e.lastMessageCount = 0
+		e.lastMessageTokenEstimate = 0
+		e.callbackMu.Unlock()
+		return true
+	}
 	for attempt := 0; attempt < maxTurns; attempt++ {
 		// Inject any tool specs registered mid-loop (e.g. via skill activation)
 		if pending := e.drainPendingToolSpecs(); len(pending) > 0 {
@@ -840,16 +877,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 				}
 				result, err := Compact(ctx, e.provider, req.Model, systemPrompt, nonSystemMessages(req.Messages), *compactionConfig)
 				if err == nil {
-					req.Messages = result.NewMessages
-					e.callbackMu.Lock()
-					e.lastTotalTokens = 0
-					e.lastMessageCount = 0
-					e.callbackMu.Unlock()
-					if cb := e.getCompactionCallback(); cb != nil {
-						if cbErr := cb(ctx, result); cbErr != nil {
-							slog.Warn("compaction callback failed", "error", cbErr)
-						}
-					}
+					applyCompaction(result)
 				}
 				// On error: continue with full context (best effort)
 			}
@@ -897,17 +925,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 					return err
 				}
 				result, compactErr := Compact(ctx, e.provider, req.Model, systemPrompt, nonSystemMessages(req.Messages), *compactionConfig)
-				if compactErr == nil {
-					req.Messages = result.NewMessages
-					e.callbackMu.Lock()
-					e.lastTotalTokens = 0
-					e.lastMessageCount = 0
-					e.callbackMu.Unlock()
-					if cb := e.getCompactionCallback(); cb != nil {
-						if cbErr := cb(ctx, result); cbErr != nil {
-							slog.Warn("compaction callback failed", "error", cbErr)
-						}
-					}
+				if compactErr == nil && applyCompaction(result) {
 					attempt-- // Retry this turn
 					continue
 				}
@@ -1055,9 +1073,36 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 				// (the model's output becomes assistant-message input on the next turn).
 				// All providers normalise to this convention — see Usage type docs.
 				if inputLimit > 0 {
+					checkpointMessages := append([]Message(nil), req.Messages...)
+					messageCount := len(checkpointMessages)
+					// Usage total includes the assistant output from this provider turn.
+					// That output becomes assistant-message input on the next request, so
+					// include the accumulated assistant state in the checkpoint. Later
+					// estimates can then add only heuristic deltas that appear after this
+					// checkpoint (for example tool results or a new user message).
+					if event.Use.OutputTokens > 0 || textBuilder.Len() > 0 || reasoningBuilder.Len() > 0 || len(toolCalls) > 0 || len(syncToolCalls) > 0 || reasoningItemID != "" || reasoningEncryptedContent != "" {
+						assistantCalls := toolCalls
+						if len(assistantCalls) == 0 && len(syncToolCalls) > 0 {
+							assistantCalls = syncToolCalls
+						}
+						assistantMsg := buildAssistantMessageWithReasoningMetadata(
+							textBuilder.String(),
+							e.withToolPreview(ensureToolCallIDs(dedupeToolCalls(assistantCalls))),
+							reasoningBuilder.String(),
+							reasoningItemID,
+							reasoningEncryptedContent,
+						)
+						if len(assistantMsg.Parts) > 0 {
+							checkpointMessages = append(checkpointMessages, assistantMsg)
+							messageCount = len(checkpointMessages)
+						} else if event.Use.OutputTokens > 0 {
+							messageCount++
+						}
+					}
 					e.callbackMu.Lock()
 					e.lastTotalTokens = event.Use.InputTokens + event.Use.CachedInputTokens + event.Use.OutputTokens
-					e.lastMessageCount = len(req.Messages)
+					e.lastMessageCount = messageCount
+					e.lastMessageTokenEstimate = EstimateMessageTokens(checkpointMessages)
 					e.callbackMu.Unlock()
 				}
 			}

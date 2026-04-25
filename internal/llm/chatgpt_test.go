@@ -53,7 +53,7 @@ func TestChatGPTStream_ReasoningSummaryByOutputIndex(t *testing.T) {
 		`event: response.output_item.done`,
 		`data: {"type":"response.output_item.done","output_index":1,"item":{"type":"reasoning","id":"rs_chatgpt_idx","encrypted_content":"enc_chatgpt_idx"}}`,
 		`event: response.completed`,
-		`data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":2,"input_tokens_details":{"cached_tokens":4}}}}`,
+		`data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":2,"input_tokens_details":{"cached_tokens":4},"output_tokens_details":{"reasoning_tokens":1},"total_tokens":12}}}`,
 		`data: [DONE]`,
 	}, "\n")
 
@@ -83,6 +83,7 @@ func TestChatGPTStream_ReasoningSummaryByOutputIndex(t *testing.T) {
 	defer stream.Close()
 
 	var reasoningEvent *Event
+	var usageEvent *Event
 	for {
 		event, recvErr := stream.Recv()
 		if recvErr == io.EOF {
@@ -94,6 +95,10 @@ func TestChatGPTStream_ReasoningSummaryByOutputIndex(t *testing.T) {
 		if event.Type == EventReasoningDelta {
 			ev := event
 			reasoningEvent = &ev
+		}
+		if event.Type == EventUsage {
+			ev := event
+			usageEvent = &ev
 		}
 		if event.Type == EventDone {
 			break
@@ -111,5 +116,17 @@ func TestChatGPTStream_ReasoningSummaryByOutputIndex(t *testing.T) {
 	}
 	if reasoningEvent.ReasoningEncryptedContent != "enc_chatgpt_idx" {
 		t.Fatalf("expected encrypted content enc_chatgpt_idx, got %q", reasoningEvent.ReasoningEncryptedContent)
+	}
+	if usageEvent == nil || usageEvent.Use == nil {
+		t.Fatal("expected usage event")
+	}
+	if usageEvent.Use.ProviderRawInputTokens != 10 {
+		t.Fatalf("provider raw input tokens = %d, want 10", usageEvent.Use.ProviderRawInputTokens)
+	}
+	if usageEvent.Use.ProviderTotalTokens != 12 {
+		t.Fatalf("provider total tokens = %d, want 12", usageEvent.Use.ProviderTotalTokens)
+	}
+	if usageEvent.Use.ReasoningTokens != 1 {
+		t.Fatalf("reasoning tokens = %d, want 1", usageEvent.Use.ReasoningTokens)
 	}
 }

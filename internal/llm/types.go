@@ -291,6 +291,17 @@ type Usage struct {
 	OutputTokens      int
 	CachedInputTokens int // Tokens read from cache (additive with InputTokens, NOT a subset)
 	CacheWriteTokens  int // Tokens written to cache (cache_creation_input_tokens)
+
+	// ProviderRawInputTokens is the provider-reported input/prompt token count
+	// before term-llm normalization. For OpenAI-family APIs this includes cached
+	// tokens; for providers that already report non-cached input separately this
+	// may be zero or equal to InputTokens.
+	ProviderRawInputTokens int
+	// ProviderTotalTokens is the provider-reported total_tokens when available.
+	// For OpenAI Responses/Chat Completions this is input_tokens + output_tokens.
+	ProviderTotalTokens int
+	// ReasoningTokens is provider-reported reasoning output tokens when available.
+	ReasoningTokens int
 }
 
 // CommandSuggestion represents a single command suggestion from the LLM.

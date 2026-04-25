@@ -1147,6 +1147,28 @@ func TestCompactAppendsSafeUserMessage(t *testing.T) {
 	})
 }
 
+func TestEstimatedTokensUsesTokenCheckpointDelta(t *testing.T) {
+	e := NewEngine(NewMockProvider("test"), nil)
+
+	checkpoint := []Message{
+		SystemText("system prompt"),
+		UserText("hello world"),
+		AssistantText(strings.Repeat("response from model ", 100)),
+	}
+	e.lastTotalTokens = 150
+	e.lastMessageCount = len(checkpoint)
+	e.lastMessageTokenEstimate = EstimateMessageTokens(checkpoint)
+
+	msgs := append([]Message(nil), checkpoint...)
+	msgs = append(msgs, UserText("follow-up question"))
+
+	got := e.estimatedTokens(msgs)
+	want := 150 + EstimateMessageTokens([]Message{UserText("follow-up question")})
+	if got != want {
+		t.Errorf("estimatedTokens (token checkpoint) = %d, want %d", got, want)
+	}
+}
+
 func TestEstimatedTokens(t *testing.T) {
 	e := NewEngine(NewMockProvider("test"), nil)
 
@@ -1179,18 +1201,20 @@ func TestEstimatedTokens(t *testing.T) {
 	}
 }
 
-func TestEstimatedTokensFallback(t *testing.T) {
+func TestEstimatedTokensUsesBaselineWhenMessageCountAhead(t *testing.T) {
 	e := NewEngine(NewMockProvider("test"), nil)
 
-	// Edge case: lastMessageCount >= len(messages) — should fall back
+	// Usage events can report a baseline that includes assistant output before
+	// the UI/session message list has appended that assistant message. Prefer the
+	// provider baseline over a full heuristic fallback to avoid inflated live
+	// status-line estimates.
 	e.lastTotalTokens = 100
 	e.lastMessageCount = 5
 
 	msgs := []Message{UserText("short")}
 	got := e.estimatedTokens(msgs)
-	want := EstimateMessageTokens(msgs)
-	if got != want {
-		t.Errorf("estimatedTokens (stale data) = %d, want fallback %d", got, want)
+	if got != 100 {
+		t.Errorf("estimatedTokens (baseline ahead) = %d, want baseline 100", got)
 	}
 }
 

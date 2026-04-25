@@ -368,10 +368,32 @@ func (l *DebugLogger) LogEvent(event Event) {
 		entry.Data = data
 	case EventUsage:
 		if event.Use != nil {
+			providerInputTokens := event.Use.ProviderRawInputTokens
+			if providerInputTokens == 0 {
+				providerInputTokens = event.Use.InputTokens + event.Use.CachedInputTokens
+			}
+			providerTotalTokens := event.Use.ProviderTotalTokens
+			if providerTotalTokens == 0 {
+				providerTotalTokens = providerInputTokens + event.Use.OutputTokens
+			}
 			entry.Data = map[string]int{
+				// Provider/raw accounting mirrors API fields when available. For
+				// OpenAI Responses, provider_input_tokens is usage.input_tokens and
+				// provider_total_tokens is usage.total_tokens.
+				"provider_input_tokens": providerInputTokens,
+				"provider_total_tokens": providerTotalTokens,
+				"reasoning_tokens":      event.Use.ReasoningTokens,
+
+				// Normalized accounting is what term-llm uses internally. OpenAI-family
+				// input tokens are split into non-cached + cached to avoid double-counting.
 				"input_tokens":        event.Use.InputTokens,
 				"output_tokens":       event.Use.OutputTokens,
 				"cached_input_tokens": event.Use.CachedInputTokens,
+				"cache_write_tokens":  event.Use.CacheWriteTokens,
+
+				// Derived context numbers used to reason about the status-line meter.
+				"request_context_tokens": event.Use.InputTokens + event.Use.CachedInputTokens + event.Use.CacheWriteTokens,
+				"next_context_baseline":  event.Use.InputTokens + event.Use.CachedInputTokens + event.Use.CacheWriteTokens + event.Use.OutputTokens,
 			}
 		}
 	case EventPhase:

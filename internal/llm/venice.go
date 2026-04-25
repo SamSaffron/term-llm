@@ -161,7 +161,14 @@ func (p *VeniceProvider) Stream(ctx context.Context, req Request) (Stream, error
 			}
 			if chatResp.Usage != nil {
 				cached := chatResp.Usage.PromptTokensDetails.CachedTokens
-				lastUsage = &Usage{InputTokens: chatResp.Usage.PromptTokens - cached, OutputTokens: chatResp.Usage.CompletionTokens, CachedInputTokens: cached}
+				lastUsage = &Usage{
+					InputTokens:            chatResp.Usage.PromptTokens - cached,
+					OutputTokens:           chatResp.Usage.CompletionTokens,
+					CachedInputTokens:      cached,
+					ProviderRawInputTokens: chatResp.Usage.PromptTokens,
+					ProviderTotalTokens:    chatResp.Usage.TotalTokens,
+					ReasoningTokens:        chatResp.Usage.CompletionTokensDetails.ReasoningTokens,
+				}
 			}
 			for _, choice := range chatResp.Choices {
 				if choice.Delta != nil {

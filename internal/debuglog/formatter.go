@@ -19,6 +19,58 @@ type FormatOptions struct {
 	ShowTimestamp bool // Show timestamp for each entry
 }
 
+func usageDebugLine(data map[string]any) string {
+	intField := func(name string) int {
+		switch v := data[name].(type) {
+		case float64:
+			return int(v)
+		case int:
+			return v
+		case json.Number:
+			i, _ := v.Int64()
+			return int(i)
+		default:
+			return 0
+		}
+	}
+
+	providerInput := intField("provider_input_tokens")
+	providerTotal := intField("provider_total_tokens")
+	reasoning := intField("reasoning_tokens")
+	input := intField("input_tokens")
+	output := intField("output_tokens")
+	cached := intField("cached_input_tokens")
+	cacheWrite := intField("cache_write_tokens")
+	requestContext := intField("request_context_tokens")
+	nextBaseline := intField("next_context_baseline")
+
+	// Backward compatibility for older logs that only had normalized fields.
+	if providerInput == 0 {
+		providerInput = input + cached
+	}
+	if providerTotal == 0 {
+		providerTotal = providerInput + output
+	}
+	if requestContext == 0 {
+		requestContext = input + cached + cacheWrite
+	}
+	if nextBaseline == 0 {
+		nextBaseline = requestContext + output
+	}
+
+	return fmt.Sprintf("provider_input=%d provider_total=%d context=%d next=%d normalized_input=%d output=%d cached=%d cache_write=%d reasoning=%d",
+		providerInput,
+		providerTotal,
+		requestContext,
+		nextBaseline,
+		input,
+		output,
+		cached,
+		cacheWrite,
+		reasoning,
+	)
+}
+
 // FormatSessionList formats a list of sessions as a table
 func FormatSessionList(w io.Writer, sessions []SessionSummary, days int) {
 	if len(sessions) == 0 {
@@ -321,15 +373,10 @@ func formatEventEntry(w io.Writer, evt EventEntry, opts FormatOptions, styles *u
 		fmt.Fprintf(w, "%s%s %s (%s)\n", ts, styles.Muted.Render("TOOL_END"), name, status)
 
 	case "usage":
-		input, _ := evt.Data["input_tokens"].(float64)
-		output, _ := evt.Data["output_tokens"].(float64)
-		cached, _ := evt.Data["cached_input_tokens"].(float64)
-		fmt.Fprintf(w, "%s%s input=%d output=%d cached=%d\n",
+		fmt.Fprintf(w, "%s%s %s\n",
 			ts,
 			styles.Muted.Render("USAGE"),
-			int(input),
-			int(output),
-			int(cached),
+			usageDebugLine(evt.Data),
 		)
 
 	case "reasoning_delta":
@@ -453,15 +500,10 @@ func FormatTailEntry(w io.Writer, line []byte) {
 			fmt.Fprintf(w, "[%s] TOOL_END %s (%s)\n", timeStr, name, status)
 
 		case "usage":
-			input, _ := data["input_tokens"].(float64)
-			output, _ := data["output_tokens"].(float64)
-			cached, _ := data["cached_input_tokens"].(float64)
-			fmt.Fprintf(w, "[%s] %s input=%d output=%d cached=%d\n",
+			fmt.Fprintf(w, "[%s] %s %s\n",
 				timeStr,
 				styles.Muted.Render("USAGE"),
-				int(input),
-				int(output),
-				int(cached),
+				usageDebugLine(data),
 			)
 
 		case "reasoning_delta":

@@ -175,9 +175,12 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 				cached := chatResp.Usage.PromptTokensDetails.CachedTokens
 				lastUsage = &Usage{
 					// XAI prompt_tokens includes cached; subtract to get non-cached portion.
-					InputTokens:       chatResp.Usage.PromptTokens - cached,
-					OutputTokens:      chatResp.Usage.CompletionTokens,
-					CachedInputTokens: cached,
+					InputTokens:            chatResp.Usage.PromptTokens - cached,
+					OutputTokens:           chatResp.Usage.CompletionTokens,
+					CachedInputTokens:      cached,
+					ProviderRawInputTokens: chatResp.Usage.PromptTokens,
+					ProviderTotalTokens:    chatResp.Usage.TotalTokens,
+					ReasoningTokens:        chatResp.Usage.CompletionTokensDetails.ReasoningTokens,
 				}
 			}
 			for _, choice := range chatResp.Choices {

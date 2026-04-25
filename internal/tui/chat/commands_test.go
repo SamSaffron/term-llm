@@ -93,14 +93,30 @@ func TestAllCommandsRemovesLoadAndKeepsResume(t *testing.T) {
 // mockStore implements session.Store for testing resume behavior.
 type mockStore struct {
 	session.NoopStore
-	sessions   map[string]*session.Session
-	messages   map[string][]session.Message
-	summaries  []session.SessionSummary
-	msgErr     error
-	updated    *session.Session
-	updateErr  error
-	compacted  []session.Message
-	compactErr error
+	sessions        map[string]*session.Session
+	messages        map[string][]session.Message
+	summaries       []session.SessionSummary
+	msgErr          error
+	updated         *session.Session
+	updateErr       error
+	created         []*session.Session
+	createErr       error
+	added           []session.Message
+	addErr          error
+	currentID       string
+	setCurrentErr   error
+	deleted         []string
+	deleteErr       error
+	statusUpdates   []statusUpdate
+	updateStatusErr error
+	compacted       []session.Message
+	compactSession  string
+	compactErr      error
+}
+
+type statusUpdate struct {
+	id     string
+	status session.SessionStatus
 }
 
 func (s *mockStore) Get(_ context.Context, id string) (*session.Session, error) {
@@ -136,10 +152,72 @@ func (s *mockStore) Update(_ context.Context, sess *session.Session) error {
 	return nil
 }
 
-func (s *mockStore) CompactMessages(_ context.Context, _ string, messages []session.Message) error {
+func (s *mockStore) Create(_ context.Context, sess *session.Session) error {
+	if s.createErr != nil {
+		return s.createErr
+	}
+	if sess.ID == "" {
+		sess.ID = session.NewID()
+	}
+	if s.sessions == nil {
+		s.sessions = make(map[string]*session.Session)
+	}
+	cp := *sess
+	s.created = append(s.created, &cp)
+	s.sessions[sess.ID] = sess
+	return nil
+}
+
+func (s *mockStore) AddMessage(_ context.Context, sessionID string, msg *session.Message) error {
+	if s.addErr != nil {
+		return s.addErr
+	}
+	if s.messages == nil {
+		s.messages = make(map[string][]session.Message)
+	}
+	msg.SessionID = sessionID
+	if msg.Sequence < 0 {
+		msg.Sequence = len(s.messages[sessionID])
+	}
+	cp := *msg
+	s.added = append(s.added, cp)
+	s.messages[sessionID] = append(s.messages[sessionID], cp)
+	return nil
+}
+
+func (s *mockStore) SetCurrent(_ context.Context, sessionID string) error {
+	if s.setCurrentErr != nil {
+		return s.setCurrentErr
+	}
+	s.currentID = sessionID
+	return nil
+}
+
+func (s *mockStore) Delete(_ context.Context, id string) error {
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
+	s.deleted = append(s.deleted, id)
+	if s.sessions != nil {
+		delete(s.sessions, id)
+	}
+	delete(s.messages, id)
+	return nil
+}
+
+func (s *mockStore) UpdateStatus(_ context.Context, id string, status session.SessionStatus) error {
+	if s.updateStatusErr != nil {
+		return s.updateStatusErr
+	}
+	s.statusUpdates = append(s.statusUpdates, statusUpdate{id: id, status: status})
+	return nil
+}
+
+func (s *mockStore) CompactMessages(_ context.Context, sessionID string, messages []session.Message) error {
 	if s.compactErr != nil {
 		return s.compactErr
 	}
+	s.compactSession = sessionID
 	s.compacted = append([]session.Message(nil), messages...)
 	return nil
 }
@@ -490,6 +568,40 @@ func TestUpdate_CompactDone_SuccessUsesFooterMessage(t *testing.T) {
 	}
 }
 
+func TestUpdate_CompactDone_PersistErrorDoesNotMutateMemory(t *testing.T) {
+	store := &mockStore{compactErr: errors.New("disk full")}
+	m := newTestChatModel(false)
+	m.store = store
+	m.sess = &session.Session{ID: "sess-compact-fail"}
+	m.streaming = true
+	m.messages = []session.Message{
+		*session.NewMessage(m.sess.ID, llm.UserText("old user"), 0),
+		*session.NewMessage(m.sess.ID, llm.AssistantText("old assistant"), 1),
+	}
+	oldMessages := append([]session.Message(nil), m.messages...)
+
+	result, cmd := m.Update(compactDoneMsg{result: &llm.CompactionResult{NewMessages: []llm.Message{llm.UserText("summary")}}})
+	rm := result.(*Model)
+
+	if got := rm.footerMessage; got != "Compaction finished, but saving failed: disk full" {
+		t.Fatalf("expected compact persist error footer message, got %q", got)
+	}
+	if cmd == nil {
+		t.Fatal("expected compact persist error footer clear command")
+	}
+	if rm.compactionIdx != 0 {
+		t.Fatalf("compactionIdx changed on persist failure: got %d want 0", rm.compactionIdx)
+	}
+	if len(rm.messages) != len(oldMessages) {
+		t.Fatalf("messages changed on persist failure: got %d want %d", len(rm.messages), len(oldMessages))
+	}
+	for i := range oldMessages {
+		if rm.messages[i].TextContent != oldMessages[i].TextContent || rm.messages[i].SessionID != oldMessages[i].SessionID {
+			t.Fatalf("message %d changed on persist failure: got %#v want %#v", i, rm.messages[i], oldMessages[i])
+		}
+	}
+}
+
 func TestCmdHandover_StartDoesNotPrintStatusLine(t *testing.T) {
 	m := newTestChatModel(false)
 	m.store = &mockStore{}
@@ -612,15 +724,16 @@ func TestExecuteHandover_ResolveErrorUsesFooterMessage(t *testing.T) {
 	}
 }
 
-func TestExecuteHandover_PersistErrorUsesFooterMessage(t *testing.T) {
-	store := &mockStore{compactErr: errors.New("disk full")}
+func TestExecuteHandover_CreateErrorUsesFooterMessage(t *testing.T) {
+	store := &mockStore{createErr: errors.New("disk full")}
 	m := newCmdTestModel(store)
 	m.config = &config.Config{}
 	m.sess = &session.Session{ID: "sess-handover-persist"}
 	targetAgent := &agents.Agent{Name: "target", SystemPrompt: "You are target."}
+	expectedResult := llm.HandoverFromFile("handover doc", targetAgent.SystemPrompt, "source", targetAgent.Name)
 	m.pendingHandover = &handoverDoneMsg{
 		agentName: "target",
-		result:    llm.HandoverFromFile("handover doc", targetAgent.SystemPrompt, "source", targetAgent.Name),
+		result:    expectedResult,
 	}
 	m.agentResolver = func(name string, cfg *config.Config) (*agents.Agent, error) {
 		return targetAgent, nil
@@ -637,6 +750,223 @@ func TestExecuteHandover_PersistErrorUsesFooterMessage(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Fatal("expected executeHandover persist error footer clear command")
+	}
+	if len(store.compacted) != 0 {
+		t.Fatalf("handover must not compact source session, compacted %d messages", len(store.compacted))
+	}
+	if len(store.statusUpdates) != 0 {
+		t.Fatalf("source session should not be marked complete on create failure, got %#v", store.statusUpdates)
+	}
+	if rm.pendingHandover == nil {
+		t.Fatal("expected pending handover to remain available for retry")
+	}
+}
+
+func TestExecuteHandover_CreatesNewIsolatedSessionAndRequestsResume(t *testing.T) {
+	store := &mockStore{}
+	m := newCmdTestModel(store)
+	m.config = &config.Config{}
+	oldSess := &session.Session{
+		ID:          "old-session",
+		Provider:    "Old Provider",
+		ProviderKey: "old-provider",
+		Model:       "old-model",
+		Agent:       "source",
+		Search:      false,
+		Tools:       "read_file",
+		MCP:         "old-mcp",
+		CreatedAt:   time.Now().Add(-time.Hour),
+	}
+	m.sess = oldSess
+	m.providerName = "Old Provider"
+	m.providerKey = "old-provider"
+	m.modelName = "old-model"
+	m.messages = []session.Message{
+		*session.NewMessage(oldSess.ID, llm.UserText("old user content"), 0),
+		*session.NewMessage(oldSess.ID, llm.AssistantText("old assistant content"), 1),
+	}
+	oldMessages := append([]session.Message(nil), m.messages...)
+
+	targetAgent := &agents.Agent{
+		Name:          "target",
+		SystemPrompt:  "You are target.",
+		Provider:      "gemini",
+		Model:         "gemini-2.5-pro",
+		Search:        true,
+		DefaultPrompt: "Continue from handover.",
+		Tools:         agents.ToolsConfig{Enabled: []string{"read_file", "edit_file"}},
+		MCP:           []agents.MCPConfig{{Name: "server-a"}, {Name: "server-b"}},
+	}
+	expectedResult := llm.HandoverFromFile("handover doc", targetAgent.SystemPrompt, "source", targetAgent.Name)
+	m.pendingHandover = &handoverDoneMsg{
+		agentName: "target",
+		result:    expectedResult,
+	}
+	m.agentResolver = func(name string, cfg *config.Config) (*agents.Agent, error) {
+		if name != "target" {
+			t.Fatalf("resolver called with %q, want target", name)
+		}
+		return targetAgent, nil
+	}
+
+	result, cmd := m.executeHandover()
+	rm := result.(*Model)
+
+	if cmd == nil {
+		t.Fatal("expected executeHandover to quit for relaunch")
+	}
+	if !rm.quitting {
+		t.Fatal("expected model to be quitting for handover relaunch")
+	}
+	if len(store.created) != 1 {
+		t.Fatalf("expected exactly one new session, got %d", len(store.created))
+	}
+	newSess := store.created[0]
+	if newSess.ID == "" || newSess.ID == oldSess.ID {
+		t.Fatalf("expected a fresh session ID distinct from %q, got %q", oldSess.ID, newSess.ID)
+	}
+	if got := rm.RequestedResumeSessionID(); got != newSess.ID {
+		t.Fatalf("resume session ID = %q, want new session %q", got, newSess.ID)
+	}
+	if store.currentID != newSess.ID {
+		t.Fatalf("current session = %q, want %q", store.currentID, newSess.ID)
+	}
+	if newSess.Agent != "target" {
+		t.Fatalf("new session agent = %q, want target", newSess.Agent)
+	}
+	if !newSess.Search {
+		t.Fatal("expected target search setting on new session")
+	}
+	if newSess.Tools != "read_file,edit_file" {
+		t.Fatalf("new session tools = %q, want read_file,edit_file", newSess.Tools)
+	}
+	if newSess.MCP != "server-a,server-b" {
+		t.Fatalf("new session MCP = %q, want server-a,server-b", newSess.MCP)
+	}
+	if newSess.ProviderKey != "gemini" || newSess.Model != "gemini-2.5-pro" {
+		t.Fatalf("new provider/model = %q/%q, want gemini/gemini-2.5-pro", newSess.ProviderKey, newSess.Model)
+	}
+	if newSess.Provider == "Old Provider" || newSess.Provider == "" {
+		t.Fatalf("new provider label = %q, want target provider label", newSess.Provider)
+	}
+	if newSess.Status != session.StatusActive {
+		t.Fatalf("new session status = %q, want active", newSess.Status)
+	}
+	if newSess.CompactionSeq != -1 {
+		t.Fatalf("new session compaction seq = %d, want -1", newSess.CompactionSeq)
+	}
+	if len(store.statusUpdates) != 1 || store.statusUpdates[0].id != oldSess.ID || store.statusUpdates[0].status != session.StatusComplete {
+		t.Fatalf("expected source session to be marked complete, got %#v", store.statusUpdates)
+	}
+	if len(store.compacted) != 0 || store.compactSession != "" {
+		t.Fatalf("handover must not compact any session, compactSession=%q compacted=%d", store.compactSession, len(store.compacted))
+	}
+	if len(store.added) != len(expectedResult.NewMessages) {
+		t.Fatalf("expected %d reconstructed messages to be added, got %d", len(expectedResult.NewMessages), len(store.added))
+	}
+	for i, msg := range store.added {
+		if msg.SessionID != newSess.ID {
+			t.Fatalf("added message %d session ID = %q, want %q", i, msg.SessionID, newSess.ID)
+		}
+	}
+	if store.added[0].Role != llm.RoleSystem || store.added[0].TextContent != targetAgent.SystemPrompt {
+		t.Fatalf("first added message = role %q text %q, want target system prompt", store.added[0].Role, store.added[0].TextContent)
+	}
+	if !strings.Contains(store.added[1].TextContent, "handover doc") || !strings.Contains(store.added[1].TextContent, "@source -> @target") {
+		t.Fatalf("handover message missing document/source-target prefix: %q", store.added[1].TextContent)
+	}
+	if len(rm.messages) != len(oldMessages) {
+		t.Fatalf("old in-memory messages length changed: got %d want %d", len(rm.messages), len(oldMessages))
+	}
+	for i := range oldMessages {
+		if rm.messages[i].SessionID != oldMessages[i].SessionID || rm.messages[i].TextContent != oldMessages[i].TextContent {
+			t.Fatalf("old in-memory message %d changed: got %#v want %#v", i, rm.messages[i], oldMessages[i])
+		}
+	}
+	if oldSess.Agent != "source" || oldSess.ProviderKey != "old-provider" || oldSess.Model != "old-model" || oldSess.Tools != "read_file" || oldSess.MCP != "old-mcp" {
+		t.Fatalf("source session metadata was mutated: %#v", oldSess)
+	}
+	if rm.pendingHandover != nil {
+		t.Fatal("expected successful handover to clear pending handover")
+	}
+}
+
+func TestExecuteHandover_ProviderOverrideStoredOnNewSession(t *testing.T) {
+	store := &mockStore{}
+	m := newCmdTestModel(store)
+	m.config = &config.Config{}
+	m.sess = &session.Session{ID: "old-session", ProviderKey: "old-provider", Model: "old-model"}
+	m.providerName = "Old Provider"
+	m.providerKey = "old-provider"
+	m.modelName = "old-model"
+	targetAgent := &agents.Agent{Name: "target", SystemPrompt: "You are target.", Provider: "gemini", Model: "gemini-2.5-pro"}
+	m.pendingHandover = &handoverDoneMsg{
+		agentName:   "target",
+		providerStr: "openai:gpt-5",
+		result:      llm.HandoverFromFile("handover doc", targetAgent.SystemPrompt, "source", targetAgent.Name),
+	}
+	m.agentResolver = func(name string, cfg *config.Config) (*agents.Agent, error) {
+		return targetAgent, nil
+	}
+
+	result, _ := m.executeHandover()
+	rm := result.(*Model)
+
+	if rm.footerMessage != "" {
+		t.Fatalf("unexpected footer error: %s", rm.footerMessage)
+	}
+	if len(store.created) != 1 {
+		t.Fatalf("expected one created session, got %d", len(store.created))
+	}
+	newSess := store.created[0]
+	if newSess.ProviderKey != "openai" || newSess.Model != "gpt-5" {
+		t.Fatalf("new provider/model = %q/%q, want openai/gpt-5", newSess.ProviderKey, newSess.Model)
+	}
+	if newSess.Provider == "Old Provider" || !strings.Contains(newSess.Provider, "openai") {
+		t.Fatalf("new provider label = %q, want openai label", newSess.Provider)
+	}
+}
+
+func TestExecuteHandover_AddMessageErrorUsesFooterMessage(t *testing.T) {
+	store := &mockStore{addErr: errors.New("write failed")}
+	m := newCmdTestModel(store)
+	m.config = &config.Config{}
+	m.sess = &session.Session{ID: "old-session"}
+	targetAgent := &agents.Agent{Name: "target", SystemPrompt: "You are target."}
+	m.pendingHandover = &handoverDoneMsg{
+		agentName: "target",
+		result:    llm.HandoverFromFile("handover doc", targetAgent.SystemPrompt, "source", targetAgent.Name),
+	}
+	m.agentResolver = func(name string, cfg *config.Config) (*agents.Agent, error) {
+		return targetAgent, nil
+	}
+
+	result, cmd := m.executeHandover()
+	rm := result.(*Model)
+
+	if got := rm.footerMessage; got != "Handover failed to persist: write failed" {
+		t.Fatalf("expected add-message error in footer, got %q", got)
+	}
+	if cmd == nil {
+		t.Fatal("expected footer clear command")
+	}
+	if rm.quitting {
+		t.Fatal("should not quit when message persistence fails")
+	}
+	if store.currentID != "" {
+		t.Fatalf("should not set current session on failed handover, got %q", store.currentID)
+	}
+	if len(store.statusUpdates) != 0 {
+		t.Fatalf("source session should not be marked complete on failed handover, got %#v", store.statusUpdates)
+	}
+	if len(store.created) != 1 {
+		t.Fatalf("expected target session to have been created before add failure, got %d", len(store.created))
+	}
+	if len(store.deleted) != 1 || store.deleted[0] != store.created[0].ID {
+		t.Fatalf("expected failed target session cleanup, deleted=%#v created=%q", store.deleted, store.created[0].ID)
+	}
+	if rm.pendingHandover == nil {
+		t.Fatal("expected pending handover to remain available for retry")
 	}
 }
 
@@ -860,17 +1190,32 @@ func TestHandoverScriptCmd_UsesAgentSourcePathAndPersistsResult(t *testing.T) {
 	if !rm.quitting {
 		t.Fatal("expected model to request restart after confirmed handover")
 	}
-	if got := rm.RequestedResumeSessionID(); got != "sess-handover-confirm" {
-		t.Fatalf("RequestedResumeSessionID() = %q, want %q", got, "sess-handover-confirm")
+	if got := rm.RequestedResumeSessionID(); got == "" || got == "sess-handover-confirm" {
+		t.Fatalf("RequestedResumeSessionID() = %q, want a fresh target session", got)
+	}
+	if store.currentID != rm.RequestedResumeSessionID() {
+		t.Fatalf("current session = %q, want requested resume session %q", store.currentID, rm.RequestedResumeSessionID())
 	}
 	if got := rm.RequestedHandoverAutoSend(); got != "review changes" {
 		t.Fatalf("RequestedHandoverAutoSend() = %q, want %q", got, "review changes")
 	}
-	if len(store.compacted) == 0 {
-		t.Fatal("expected compacted handover messages to be persisted")
+	if len(store.created) != 1 {
+		t.Fatalf("expected one fresh handover session to be created, got %d", len(store.created))
+	}
+	if store.created[0].ID != rm.RequestedResumeSessionID() {
+		t.Fatalf("created session ID = %q, want resume session %q", store.created[0].ID, rm.RequestedResumeSessionID())
+	}
+	if len(store.compacted) != 0 {
+		t.Fatalf("handover must not compact the source session, compacted %d messages", len(store.compacted))
+	}
+	if len(store.added) == 0 {
+		t.Fatal("expected handover messages to be added to fresh session")
 	}
 	var combined strings.Builder
-	for _, msg := range store.compacted {
+	for _, msg := range store.added {
+		if msg.SessionID != rm.RequestedResumeSessionID() {
+			t.Fatalf("persisted message session ID = %q, want %q", msg.SessionID, rm.RequestedResumeSessionID())
+		}
 		if msg.TextContent == "" {
 			continue
 		}

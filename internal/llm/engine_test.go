@@ -1874,6 +1874,9 @@ func TestEngineResetConversation(t *testing.T) {
 	if e.lastMessageCount != 0 {
 		t.Errorf("expected lastMessageCount=0, got %d", e.lastMessageCount)
 	}
+	if e.lastMessageTokenEstimate != 0 {
+		t.Errorf("expected lastMessageTokenEstimate=0, got %d", e.lastMessageTokenEstimate)
+	}
 	if e.systemPrompt != "" {
 		t.Errorf("expected systemPrompt=\"\", got %q", e.systemPrompt)
 	}
@@ -1971,6 +1974,54 @@ func TestLastTotalTokensIncludesCachedTokens(t *testing.T) {
 	want := 51500
 	if got != want {
 		t.Errorf("LastTotalTokens() = %d, want %d (cached 50000 + input 1000 + output 500; cache_write excluded)", got, want)
+	}
+}
+
+func TestContextEstimateBaselineMessageCountIncludesAssistantOutput(t *testing.T) {
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			return []Event{
+				{Type: EventTextDelta, Text: "hello"},
+				{Type: EventUsage, Use: &Usage{InputTokens: 1000, OutputTokens: 500}},
+				{Type: EventDone},
+			}
+		},
+	}
+	e := NewEngine(provider, nil)
+	e.inputLimit = 200000
+
+	dummyTool := &countingSearchTool{}
+	e.RegisterTool(dummyTool)
+
+	stream, err := e.Stream(context.Background(), Request{
+		Model:    "test-model",
+		Messages: []Message{UserText("hi")},
+		Tools:    []ToolSpec{dummyTool.Spec()},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv() error: %v", err)
+		}
+	}
+
+	total, count := e.ContextEstimateBaseline()
+	if total != 1500 {
+		t.Fatalf("ContextEstimateBaseline total = %d, want 1500", total)
+	}
+	if count != 2 {
+		t.Fatalf("ContextEstimateBaseline count = %d, want 2 (user + assistant)", count)
+	}
+
+	messagesAfterPersistence := []Message{UserText("hi"), AssistantText("hello")}
+	if got := e.EstimateTokens(messagesAfterPersistence); got != 1500 {
+		t.Fatalf("EstimateTokens after persisted assistant = %d, want baseline 1500 without double-counting assistant", got)
 	}
 }
 

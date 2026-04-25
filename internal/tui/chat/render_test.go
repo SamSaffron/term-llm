@@ -312,6 +312,31 @@ func TestRenderStatusLine_FitsViewportWidth(t *testing.T) {
 	}
 }
 
+func TestRenderStatusLine_IdleUsesProviderBaselineWithoutHeuristicInflation(t *testing.T) {
+	m := newTestChatModel(false)
+	m.width = 120
+	m.providerName = "openai"
+	m.modelName = "gpt-5"
+	m.engine.ConfigureContextManagement(m.provider, m.providerName, m.modelName, false)
+	m.engine.SetContextEstimateBaseline(130_715, 1)
+	m.messages = []session.Message{
+		{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "hello"}}, TextContent: "hello"},
+		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: strings.Repeat("large heuristic text ", 2500)}}, TextContent: strings.Repeat("large heuristic text ", 2500)},
+	}
+
+	if inflated := m.engine.EstimateTokens(m.buildMessagesForContextEstimate()); inflated <= 130_715 {
+		t.Fatalf("test setup expected heuristic estimate > provider baseline, got %d", inflated)
+	}
+
+	line := ui.StripANSI(m.renderStatusLine())
+	if !strings.Contains(line, "~131K/272K") {
+		t.Fatalf("expected idle status line to use provider baseline ~131K/272K, got %q", line)
+	}
+	if strings.Contains(line, "~142K/272K") {
+		t.Fatalf("idle status line used inflated heuristic estimate, got %q", line)
+	}
+}
+
 func TestStreamEventDiffFlushUsesOrderedCommandComposition(t *testing.T) {
 	provider := llm.NewMockProvider("mock")
 	engine := llm.NewEngine(provider, nil)

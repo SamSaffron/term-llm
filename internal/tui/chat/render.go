@@ -742,7 +742,18 @@ func (m *Model) renderStatusLine() string {
 	// Token usage counter (e.g., ~45K/136K) with optional cached segment
 	usagePart := ""
 	if m.engine != nil && m.engine.InputLimit() > 0 {
-		contextTokens := m.engine.EstimateTokens(m.buildMessagesForContextEstimate())
+		contextTokens := 0
+		if !m.streaming {
+			// Once a turn is complete, provider-reported usage is authoritative for
+			// current context occupancy. Avoid adding heuristic deltas from persisted
+			// message-shape differences; those can inflate the idle status line until
+			// reload. During streaming, use EstimateTokens so tool-result deltas still
+			// move live before the next provider usage event arrives.
+			contextTokens = m.engine.LastTotalTokens()
+		}
+		if contextTokens <= 0 {
+			contextTokens = m.engine.EstimateTokens(m.buildMessagesForContextEstimate())
+		}
 		limit := m.engine.InputLimit()
 		if contextTokens > 0 && limit > 0 {
 			usagePart = fmt.Sprintf("~%s/%s",

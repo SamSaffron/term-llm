@@ -67,6 +67,15 @@ type Model struct {
 	pendingAssistantMsgID int64
 	pendingMu             sync.Mutex
 
+	// In-progress LLM context used only for the status-line token estimate while
+	// a stream is active. The persisted session messages are not updated until
+	// stream completion, so callbacks maintain this snapshot as assistant/tool
+	// messages are produced. Written from engine callbacks; protected by
+	// contextEstimateMu.
+	contextEstimateMu                sync.Mutex
+	streamingContextMessages         []llm.Message
+	streamingContextPendingAssistant bool
+
 	// Streaming channels
 	streamChan <-chan ui.StreamEvent
 
@@ -913,16 +922,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for _, msg := range msg.result.NewMessages {
 			newSessionMsgs = append(newSessionMsgs, *session.NewMessage(m.sess.ID, msg, -1))
 		}
-		m.messagesMu.Lock()
-		m.compactionIdx = len(m.messages)
-		m.messages = append(m.messages, newSessionMsgs...)
-		m.messagesMu.Unlock()
-		m.invalidateHistoryCache()
 		if m.store != nil {
 			if err := m.store.CompactMessages(context.Background(), m.sess.ID, newSessionMsgs); err != nil {
 				return m.showFooterError(fmt.Sprintf("Compaction finished, but saving failed: %v", err))
 			}
 		}
+		m.messagesMu.Lock()
+		m.compactionIdx = len(m.messages)
+		m.messages = append(m.messages, newSessionMsgs...)
+		m.messagesMu.Unlock()
+		m.invalidateHistoryCache()
 
 		if m.engine != nil {
 			m.engine.ResetConversation()
@@ -1360,6 +1369,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.smoothBuffer.MarkDone()
 			}
 
+			m.persistContextEstimate(context.Background())
 			m.streaming = false
 
 			// Flag to scroll to bottom after response completes (alt screen mode)

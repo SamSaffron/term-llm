@@ -186,10 +186,7 @@ func exportEventMarkdown(w io.Writer, evt EventEntry, opts ExportOptions) {
 		fmt.Fprintf(w, "**Error:** %s\n\n", errMsg)
 
 	case "usage":
-		input, _ := evt.Data["input_tokens"].(float64)
-		output, _ := evt.Data["output_tokens"].(float64)
-		cached, _ := evt.Data["cached_input_tokens"].(float64)
-		fmt.Fprintf(w, "**Usage:** input=%d, output=%d, cached=%d\n\n", int(input), int(output), int(cached))
+		fmt.Fprintf(w, "**Usage:** %s\n\n", usageDebugLine(evt.Data))
 
 	case "reasoning_delta":
 		itemID, _ := evt.Data["reasoning_item_id"].(string)
