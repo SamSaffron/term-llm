@@ -661,59 +661,58 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 		reasoningState := newResponsesReasoningState()
 		var lastUsage *Usage
 		var lastEventType string
+		var eventData []string
 		sawTextDelta := false // Track if any text deltas were emitted
 
-		for {
-			line, eof, err := readSSELine(reader)
-			if err != nil {
-				return fmt.Errorf("Responses API streaming error: %w", err)
-			}
-			if eof && line == "" {
-				break
+		flushEvent := func() (bool, error) {
+			if len(eventData) == 0 {
+				lastEventType = ""
+				return false, nil
 			}
 
-			if strings.HasPrefix(line, "event: ") {
-				lastEventType = strings.TrimPrefix(line, "event: ")
-				if eof {
-					break
+			data := strings.Join(eventData, "\n")
+			eventType := lastEventType
+			if eventType == "" {
+				var sseEvent responsesSSEEvent
+				if err := json.Unmarshal([]byte(data), &sseEvent); err == nil && sseEvent.Type != "" {
+					eventType = sseEvent.Type
 				}
-				continue
 			}
-			if !strings.HasPrefix(line, "data: ") {
-				if eof {
-					break
-				}
-				continue
-			}
-			data := strings.TrimPrefix(line, "data: ")
+			eventData = nil
+			lastEventType = ""
+
 			if data == "[DONE]" {
-				break
+				return true, nil
 			}
 
+			eventLabel := eventType
+			if eventLabel == "" {
+				eventLabel = "unknown"
+			}
 			if debugRaw {
-				DebugRawSection(debugRaw, "Responses API SSE Line (event="+lastEventType+")", data)
+				DebugRawSection(debugRaw, "Responses API SSE Event (event="+eventLabel+")", data)
 			}
 
 			unmarshalEvent := func(dst any) error {
 				if err := json.Unmarshal([]byte(data), dst); err != nil {
-					return fmt.Errorf("decode Responses API %s event: %w", lastEventType, err)
+					return fmt.Errorf("decode Responses API %s event: %w", eventLabel, err)
 				}
 				return nil
 			}
 
 			// Handle different SSE event types based on event name
-			switch lastEventType {
+			switch eventType {
 			case "response.output_text.delta":
 				var deltaEvent struct {
 					Delta string `json:"delta"`
 				}
 				if err := unmarshalEvent(&deltaEvent); err != nil {
-					return err
+					return false, err
 				}
 				if deltaEvent.Delta != "" {
 					sawTextDelta = true
 					if err := send.Send(Event{Type: EventTextDelta, Text: deltaEvent.Delta}); err != nil {
-						return err
+						return false, err
 					}
 				}
 
@@ -723,7 +722,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 					OutputIndex int                 `json:"output_index"`
 				}
 				if err := unmarshalEvent(&itemEvent); err != nil {
-					return err
+					return false, err
 				}
 				if itemEvent.Item.Type == "function_call" {
 					// Use output_index as tracking key (stable across events), Item.CallID as the actual call ID
@@ -738,7 +737,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 					Delta       string `json:"delta"`
 				}
 				if err := unmarshalEvent(&argEvent); err != nil {
-					return err
+					return false, err
 				}
 				toolState.AppendArguments(argEvent.OutputIndex, argEvent.Delta)
 
@@ -748,7 +747,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 					OutputIndex int                 `json:"output_index"`
 				}
 				if err := unmarshalEvent(&doneEvent); err != nil {
-					return err
+					return false, err
 				}
 				if doneEvent.Item.Type == "function_call" {
 					// Complete the tool call with final arguments using output_index
@@ -762,7 +761,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 							ReasoningItemID:           part.ReasoningItemID,
 							ReasoningEncryptedContent: part.ReasoningEncryptedContent,
 						}); err != nil {
-							return err
+							return false, err
 						}
 					}
 				} else if doneEvent.Item.Type == "message" {
@@ -772,11 +771,11 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 					for _, content := range doneEvent.Item.Content {
 						if content.Type == "output_text" && content.Text != "" && !sawTextDelta {
 							if err := send.Send(Event{Type: EventTextDelta, Text: content.Text}); err != nil {
-								return err
+								return false, err
 							}
 						} else if content.Type == "refusal" && content.Refusal != "" {
 							if err := send.Send(Event{Type: EventTextDelta, Text: content.Refusal}); err != nil {
-								return err
+								return false, err
 							}
 						}
 					}
@@ -784,7 +783,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 					if doneEvent.Item.Result != "" {
 						decoded, err := base64.StdEncoding.DecodeString(doneEvent.Item.Result)
 						if err != nil {
-							return fmt.Errorf("decode image_generation_call result: %w", err)
+							return false, fmt.Errorf("decode image_generation_call result: %w", err)
 						}
 						if err := send.Send(Event{
 							Type:          EventImageGenerated,
@@ -792,7 +791,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 							ImageMimeType: "image/png",
 							RevisedPrompt: doneEvent.Item.RevisedPrompt,
 						}); err != nil {
-							return err
+							return false, err
 						}
 					}
 				}
@@ -802,7 +801,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 					OutputIndex int `json:"output_index"`
 				}
 				if err := unmarshalEvent(&partEvent); err != nil {
-					return err
+					return false, err
 				}
 				reasoningState.Ensure(partEvent.OutputIndex)
 
@@ -812,7 +811,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 					Delta       string `json:"delta"`
 				}
 				if err := unmarshalEvent(&summaryDeltaEvent); err != nil {
-					return err
+					return false, err
 				}
 				reasoningState.AppendSummary(summaryDeltaEvent.OutputIndex, summaryDeltaEvent.Delta)
 
@@ -824,7 +823,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 					} `json:"response"`
 				}
 				if err := unmarshalEvent(&completedEvent); err != nil {
-					return err
+					return false, err
 				}
 				// Store response ID for conversation continuity (unless disabled)
 				if !client.DisableServerState && completedEvent.Response.ID != "" {
@@ -849,16 +848,83 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 					Error *responsesError `json:"error"`
 				}
 				if err := unmarshalEvent(&errorEvent); err != nil {
-					return err
+					return false, err
 				}
 				if errorEvent.Error != nil {
-					return fmt.Errorf("Responses API error: %s", errorEvent.Error.Message)
+					return false, fmt.Errorf("Responses API error: %s", errorEvent.Error.Message)
 				}
-				return fmt.Errorf("Responses API error: unknown error")
+				return false, fmt.Errorf("Responses API error: unknown error")
 			}
 
-			lastEventType = ""
+			return false, nil
+		}
+
+		for {
+			line, eof, err := readSSELine(reader)
+			if err != nil {
+				return fmt.Errorf("Responses API streaming error: %w", err)
+			}
+
+			if line == "" {
+				stop, err := flushEvent()
+				if err != nil {
+					return err
+				}
+				if stop || eof {
+					break
+				}
+				continue
+			}
+
+			field, value, ok := strings.Cut(line, ":")
+			if ok {
+				if strings.HasPrefix(value, " ") {
+					value = value[1:]
+				}
+				if field == "event" && len(eventData) > 0 {
+					stop, err := flushEvent()
+					if err != nil {
+						return err
+					}
+					if stop {
+						break
+					}
+				}
+				if field == "data" && value == "[DONE]" && len(eventData) > 0 {
+					stop, err := flushEvent()
+					if err != nil {
+						return err
+					}
+					if stop {
+						break
+					}
+				}
+				switch field {
+				case "event":
+					lastEventType = value
+				case "data":
+					eventData = append(eventData, value)
+				}
+				if field == "data" && value == "[DONE]" {
+					stop, err := flushEvent()
+					if err != nil {
+						return err
+					}
+					if stop || eof {
+						break
+					}
+					continue
+				}
+			}
+
 			if eof {
+				stop, err := flushEvent()
+				if err != nil {
+					return err
+				}
+				if stop {
+					break
+				}
 				break
 			}
 		}
