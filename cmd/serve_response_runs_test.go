@@ -1,9 +1,15 @@
 package cmd
 
 import (
+	"bytes"
+	"context"
+	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/llm"
 )
 
 func TestResponseRunSubscriberSurvivesUpToBufferLimit(t *testing.T) {
@@ -136,5 +142,91 @@ func TestResponseRunConcurrentAppendsPreserveOrder(t *testing.T) {
 		if seq != expected {
 			t.Fatalf("gap at index %d: expected seq %d, got %d", i, expected, seq)
 		}
+	}
+}
+
+type blockingResponseWriter struct {
+	header http.Header
+	gate   <-chan struct{}
+	buf    bytes.Buffer
+}
+
+func (w *blockingResponseWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *blockingResponseWriter) WriteHeader(statusCode int) {}
+
+func (w *blockingResponseWriter) Write(p []byte) (int, error) {
+	<-w.gate
+	return w.buf.Write(p)
+}
+
+func (w *blockingResponseWriter) Flush() {}
+
+func waitForResponseRunCondition(t *testing.T, timeout time.Duration, fn func() bool, message string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal(message)
+}
+
+func TestStreamResponseRunEventsDoesNotWriteDoneWhenSubscriberOverflows(t *testing.T) {
+	srv := &serveServer{shutdownCh: make(chan struct{})}
+	run := newResponseRun("resp_overflow", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	gate := make(chan struct{})
+	w := &blockingResponseWriter{header: make(http.Header), gate: gate}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	streamDone := make(chan struct{})
+	go func() {
+		srv.streamResponseRunEvents(ctx, w, run, 0)
+		close(streamDone)
+	}()
+
+	waitForResponseRunCondition(t, time.Second, func() bool {
+		run.mu.Lock()
+		defer run.mu.Unlock()
+		return len(run.subscribers) == 1
+	}, "timed out waiting for stream subscriber")
+
+	for i := 0; i < defaultResponseRunSubscriberBuffer+16; i++ {
+		if err := run.appendEvent("response.output_text.delta", map[string]any{"delta": "x"}); err != nil {
+			t.Fatalf("appendEvent failed at %d: %v", i, err)
+		}
+	}
+
+	waitForResponseRunCondition(t, time.Second, func() bool {
+		run.mu.Lock()
+		defer run.mu.Unlock()
+		return len(run.subscribers) == 0
+	}, "timed out waiting for subscriber drop")
+
+	if err := run.complete(map[string]any{
+		"response": map[string]any{"id": run.id},
+	}, llm.Usage{}, llm.Usage{}); err != nil {
+		t.Fatalf("complete failed: %v", err)
+	}
+
+	close(gate)
+
+	select {
+	case <-streamDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for overflowed stream to finish")
+	}
+
+	body := w.buf.String()
+	if !strings.Contains(body, "event: response.output_text.delta\n") {
+		t.Fatalf("stream body missing replayed delta events: %q", body)
+	}
+	if strings.Contains(body, "data: [DONE]\n\n") {
+		t.Fatalf("overflowed stream should not emit [DONE], got: %q", body)
 	}
 }
