@@ -42,6 +42,7 @@ type responseRunRecoveryMessage struct {
 }
 
 type responseRunSubscribeResult struct {
+	id               int
 	replay           []responseRunEvent
 	ch               <-chan responseRunEvent
 	snapshotRequired bool
@@ -72,6 +73,7 @@ type responseRun struct {
 	compactionEnabled  bool
 	subscribers        map[int]chan responseRunEvent
 	subscriberWarned   map[int]bool // tracks whether 75% buffer warning was logged
+	subscriberDropped  map[int]bool // tracks subscribers dropped after their live buffer overflowed
 	nextSubscriberID   int
 	cancel             context.CancelFunc
 	cancelRequested    bool
@@ -96,6 +98,7 @@ func newResponseRun(respID, sessionID, previousResponseID, model string, created
 		compactionEnabled:  true,
 		subscribers:        make(map[int]chan responseRunEvent),
 		subscriberWarned:   make(map[int]bool),
+		subscriberDropped:  make(map[int]bool),
 		cancel:             cancel,
 	}
 }
@@ -183,6 +186,7 @@ func (r *responseRun) appendEventLocked(event string, payload map[string]any, te
 			}
 		default:
 			log.Printf("response run %s subscriber fell behind at sequence %d; closing stream", r.id, stored.Sequence)
+			r.subscriberDropped[id] = true
 			close(ch)
 			delete(r.subscribers, id)
 			delete(r.subscriberWarned, id)
@@ -412,7 +416,17 @@ func (r *responseRun) subscribe(after int64) responseRunSubscribeResult {
 	r.nextSubscriberID++
 	ch := make(chan responseRunEvent, defaultResponseRunSubscriberBuffer)
 	r.subscribers[id] = ch
-	return responseRunSubscribeResult{replay: replay, ch: ch}
+	return responseRunSubscribeResult{id: id, replay: replay, ch: ch}
+}
+
+func (r *responseRun) subscriberWasDropped(id int) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.subscriberDropped[id] {
+		return false
+	}
+	delete(r.subscriberDropped, id)
+	return true
 }
 
 func (r *responseRun) unsubscribe(ch <-chan responseRunEvent) {
@@ -982,6 +996,7 @@ func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.Respon
 	flusher.Flush()
 	replay := subscription.replay
 	ch := subscription.ch
+	subscriberID := subscription.id
 
 	pingMu, stopPing := sseKeepalive(w, flusher, 20*time.Second)
 	var stopPingOnce sync.Once
@@ -1028,6 +1043,9 @@ func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.Respon
 			return
 		case ev, ok := <-ch:
 			if !ok {
+				if run.subscriberWasDropped(subscriberID) {
+					return
+				}
 				writeDone()
 				return
 			}
