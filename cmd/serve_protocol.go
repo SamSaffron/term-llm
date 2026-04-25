@@ -23,6 +23,8 @@ type sessionInterruptRequest struct {
 	Message string `json:"message"`
 }
 
+var remoteImageURLHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
 func writeChatStreamChunk(w io.Writer, payload any) error {
 	b, err := json.Marshal(payload)
 	if err != nil {
@@ -91,6 +93,70 @@ func parseDataURL(dataURL string) (mediaType, base64Data string) {
 		return "", ""
 	}
 	return rest[:idx], rest[idx+8:]
+}
+
+func fetchRemoteImageURL(imageURL string) (mediaType, base64Data, filename string, err error) {
+	req, err := http.NewRequest(http.MethodGet, imageURL, nil)
+	if err != nil {
+		return "", "", "", fmt.Errorf("invalid image URL: %w", err)
+	}
+	if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
+		return "", "", "", fmt.Errorf("unsupported image URL scheme %q", req.URL.Scheme)
+	}
+
+	resp, err := remoteImageURLHTTPClient.Do(req)
+	if err != nil {
+		return "", "", "", fmt.Errorf("download image: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		return "", "", "", fmt.Errorf("download image: unexpected status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	if resp.ContentLength > maxAttachmentBytes {
+		return "", "", "", fmt.Errorf("image file too large: %d bytes (max %d)", resp.ContentLength, maxAttachmentBytes)
+	}
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxAttachmentBytes+1))
+	if err != nil {
+		return "", "", "", fmt.Errorf("read image data: %w", err)
+	}
+	if len(raw) > maxAttachmentBytes {
+		return "", "", "", fmt.Errorf("image file too large: exceeds %d bytes", maxAttachmentBytes)
+	}
+
+	mediaType = strings.TrimSpace(resp.Header.Get("Content-Type"))
+	if mediaType != "" {
+		parsedType, _, parseErr := mime.ParseMediaType(mediaType)
+		if parseErr == nil {
+			mediaType = parsedType
+		}
+	}
+	if mediaType == "" || mediaType == "application/octet-stream" {
+		mediaType = http.DetectContentType(raw)
+	}
+	if !strings.HasPrefix(mediaType, "image/") {
+		detected := http.DetectContentType(raw)
+		if strings.HasPrefix(detected, "image/") {
+			mediaType = detected
+		} else {
+			return "", "", "", fmt.Errorf("download image: unexpected content type %q", mediaType)
+		}
+	}
+
+	filename = filepath.Base(req.URL.Path)
+	if filename == "." || filename == "/" || filename == "" {
+		filename = "image"
+	}
+	if filepath.Ext(filename) == "" {
+		extensions, extErr := mime.ExtensionsByType(mediaType)
+		if extErr == nil && len(extensions) > 0 {
+			filename += extensions[0]
+		}
+	}
+
+	return mediaType, base64.StdEncoding.EncodeToString(raw), filename, nil
 }
 
 // isLLMImageType returns true for image media types that LLM providers handle natively.
@@ -195,10 +261,23 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 			case "input_image", "image_url":
 				imageURL := jsonImageURL(part["image_url"])
 				filename := jsonString(part["filename"])
-				if !strings.HasPrefix(imageURL, "data:") {
-					continue
+				var mt, b64 string
+				if strings.HasPrefix(imageURL, "data:") {
+					mt, b64 = parseDataURL(imageURL)
+					if mt == "" || b64 == "" {
+						continue
+					}
+				} else {
+					var fetchedFilename string
+					var err error
+					mt, b64, fetchedFilename, err = fetchRemoteImageURL(imageURL)
+					if err != nil {
+						return llm.Message{}, fmt.Errorf("fetch image_url %q: %w", imageURL, err)
+					}
+					if filename == "" {
+						filename = fetchedFilename
+					}
 				}
-				mt, b64 := parseDataURL(imageURL)
 				if mt == "" || b64 == "" {
 					continue
 				}
