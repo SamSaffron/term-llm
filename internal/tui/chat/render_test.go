@@ -137,6 +137,45 @@ func TestViewAltScreen_FirstRenderAnchorsToBottom(t *testing.T) {
 	}
 }
 
+func TestSendMessage_AltScreen_ScrollsToBottomEvenWhenScrolledUp(t *testing.T) {
+	m := newTestChatModel(true)
+	_, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	for i := 0; i < 120; i++ {
+		role := llm.RoleUser
+		if i%2 == 1 {
+			role = llm.RoleAssistant
+		}
+		text := "message " + strconv.Itoa(i) + " " + strings.Repeat("content ", 20)
+		m.messages = append(m.messages, session.Message{
+			ID:          int64(i + 1),
+			SessionID:   m.sess.ID,
+			Role:        role,
+			TextContent: text,
+			Parts:       []llm.Part{{Type: llm.PartText, Text: text}},
+			CreatedAt:   time.Now(),
+			Sequence:    i,
+		})
+	}
+
+	_ = m.View()
+	if !m.viewport.AtBottom() {
+		t.Fatalf("precondition: expected viewport at bottom after first render")
+	}
+
+	m.viewport.ScrollUp(20)
+	if m.viewport.AtBottom() {
+		t.Fatalf("precondition: expected viewport not at bottom after ScrollUp(20)")
+	}
+
+	_, _ = m.sendMessage("new prompt")
+	_ = m.View()
+
+	if !m.viewport.AtBottom() {
+		t.Fatalf("expected viewport to scroll to bottom after submitting a new message while scrolled up")
+	}
+}
+
 func TestViewAltScreen_RefreshesWhenMessagesReplacedWithSameCount(t *testing.T) {
 	m := newTestChatModel(true)
 	sessionID := m.sess.ID

@@ -351,6 +351,9 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	m.streaming = true
 	m.phase = "Thinking"
 	m.streamStartTime = time.Now()
+	if m.altScreen {
+		m.scrollToBottom = true
+	}
 	if m.streamPerf != nil && m.sess != nil {
 		m.streamPerf.StartTurn(m.sess.ID, m.streamStartTime)
 	}

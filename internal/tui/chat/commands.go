@@ -1616,6 +1616,9 @@ func (m *Model) cmdCompress() (tea.Model, tea.Cmd) {
 	m.streaming = true
 	m.phase = "Compacting"
 	m.streamStartTime = time.Now()
+	if m.altScreen {
+		m.scrollToBottom = true
+	}
 
 	return m, tea.Batch(
 		func() tea.Msg {
@@ -1866,6 +1869,9 @@ func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
 	m.streaming = true
 	m.phase = "Handover"
 	m.streamStartTime = time.Now()
+	if m.altScreen {
+		m.scrollToBottom = true
+	}
 
 	return m, tea.Batch(
 		func() tea.Msg {
@@ -2002,6 +2008,9 @@ func (m *Model) startHandoverScriptHandover(scriptAgent *agents.Agent, sourceAge
 	m.streaming = true
 	m.phase = "Handover"
 	m.streamStartTime = time.Now()
+	if m.altScreen {
+		m.scrollToBottom = true
+	}
 
 	return m, tea.Batch(
 		handoverScriptCmd(ctx, m.handoverApprovalMgr, scriptAgent, sourceAgent, targetAgent, providerStr, confirmed, instructions),
