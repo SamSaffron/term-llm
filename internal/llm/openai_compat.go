@@ -69,6 +69,11 @@ func NewOpenAICompatProviderFull(baseURL, chatURL, apiKey, model, name string, h
 		baseURL = strings.TrimSuffix(baseURL, "/")
 		baseURL = strings.TrimSuffix(baseURL, "/chat/completions")
 		baseURL = strings.TrimSuffix(baseURL, "/") // In case URL was .../v1/chat/completions
+		// Local LLM servers (Ollama, LM Studio, vLLM, etc.) bind to 127.0.0.1
+		// (IPv4) by default. If the user passes "localhost", Go may resolve it to
+		// ::1 (IPv6) on dual-stack systems, causing connection refused even when
+		// the server is running. Normalise to the explicit IPv4 loopback address.
+		baseURL = strings.Replace(baseURL, "://localhost:", "://127.0.0.1:", 1)
 	}
 	// Normalize chatURL - just strip trailing slash
 	if chatURL != "" {

@@ -31,6 +31,13 @@ func TestOllamaProviderDefaults(t *testing.T) {
 	}
 }
 
+func TestOllamaProviderLocalhostNormalization(t *testing.T) {
+	p := NewOllamaChatProvider("http://localhost:11434", "test", OllamaOptions{})
+	if p.baseURL != "http://127.0.0.1:11434" {
+		t.Errorf("expected localhost to be normalised to 127.0.0.1, got %q", p.baseURL)
+	}
+}
+
 func TestOllamaProviderCredential(t *testing.T) {
 	p := NewOllamaChatProvider("", "", OllamaOptions{})
 	if p.Credential() != "free" {
