@@ -85,6 +85,114 @@ func TestOpenAICompatStream_AllowsLargeSSEDataLines(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatStream_HandlesMultiLineSSEPayload(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w,
+			"data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}],\n"+
+				"data: \"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2,\"prompt_tokens_details\":{\"cached_tokens\":0},\"completion_tokens_details\":{\"reasoning_tokens\":0}}}\n\n"+
+				"data: [DONE]\n\n",
+		)
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatProvider(server.URL, "", "test-model", "Test")
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{{
+			Role:  RoleUser,
+			Parts: []Part{{Type: PartText, Text: "hello"}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	var gotText string
+	var gotUsage *Usage
+	var sawDone bool
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv: %v", err)
+		}
+		switch event.Type {
+		case EventTextDelta:
+			gotText += event.Text
+		case EventUsage:
+			gotUsage = event.Use
+		case EventDone:
+			sawDone = true
+		case EventError:
+			t.Fatalf("unexpected stream error: %v", event.Err)
+		}
+	}
+
+	if gotText != "hello" {
+		t.Fatalf("expected streamed text %q, got %q", "hello", gotText)
+	}
+	if gotUsage == nil {
+		t.Fatal("expected usage event")
+	}
+	if gotUsage.InputTokens != 1 || gotUsage.OutputTokens != 1 || gotUsage.ProviderTotalTokens != 2 {
+		t.Fatalf("unexpected usage: %+v", gotUsage)
+	}
+	if !sawDone {
+		t.Fatal("expected EventDone")
+	}
+}
+
+func TestOpenAICompatStream_HandlesMultiLineErrorEvent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w,
+			"event: error\n"+
+				"data: {\"error\":\n"+
+				"data: {\"message\":\"split backend failure\"}}\n\n",
+		)
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatProvider(server.URL, "", "test-model", "Test")
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{{
+			Role:  RoleUser,
+			Parts: []Part{{Type: PartText, Text: "hello"}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv: %v", err)
+		}
+		switch event.Type {
+		case EventError:
+			if event.Err == nil {
+				t.Fatal("expected stream error")
+			}
+			if !strings.Contains(event.Err.Error(), "split backend failure") {
+				t.Fatalf("expected backend error, got %v", event.Err)
+			}
+			return
+		case EventDone:
+			t.Fatal("expected EventError before EventDone")
+		}
+	}
+
+	t.Fatal("expected EventError")
+}
+
 func TestOpenAICompatStream_CloseDoesNotHangWhenConsumerStopsReceiving(t *testing.T) {
 	chunk, err := json.Marshal(oaiChatResponse{
 		Choices: []oaiChoice{{

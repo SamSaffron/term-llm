@@ -343,6 +343,28 @@ func readSSELine(reader *bufio.Reader) (line string, eof bool, err error) {
 	return strings.TrimRight(line, "\r\n"), false, nil
 }
 
+func readSSEEvent(reader *bufio.Reader) (eventType, data string, eof bool, err error) {
+	var dataLines []string
+
+	for {
+		line, lineEOF, err := readSSELine(reader)
+		if err != nil {
+			return "", "", false, err
+		}
+		if line == "" {
+			return eventType, strings.Join(dataLines, "\n"), lineEOF, nil
+		}
+		if strings.HasPrefix(line, "event: ") {
+			eventType = strings.TrimPrefix(line, "event: ")
+		} else if strings.HasPrefix(line, "data: ") {
+			dataLines = append(dataLines, strings.TrimPrefix(line, "data: "))
+		}
+		if lineEOF {
+			return eventType, strings.Join(dataLines, "\n"), true, nil
+		}
+	}
+}
+
 func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	req.MaxOutputTokens = ClampOutputTokens(req.MaxOutputTokens, chooseModel(req.Model, p.model))
 	// Build messages and tools synchronously
@@ -436,32 +458,16 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 
 		toolState := newCompatToolState()
 		var lastUsage *Usage
-		var lastEventType string
 		var reasoningBuilder strings.Builder
 
 		for {
-			line, eof, err := readSSELine(reader)
+			eventType, data, eof, err := readSSEEvent(reader)
 			if err != nil {
 				return fmt.Errorf("%s streaming error: %w", p.name, err)
 			}
-			if eof && line == "" {
+			if eof && eventType == "" && data == "" {
 				break
 			}
-
-			if strings.HasPrefix(line, "event: ") {
-				lastEventType = strings.TrimPrefix(line, "event: ")
-				if eof {
-					break
-				}
-				continue
-			}
-			if !strings.HasPrefix(line, "data: ") {
-				if eof {
-					break
-				}
-				continue
-			}
-			data := strings.TrimPrefix(line, "data: ")
 			if strings.TrimSpace(data) == "" {
 				if eof {
 					break
@@ -477,7 +483,7 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 				return fmt.Errorf("%s streaming error: invalid JSON chunk: %w", p.name, err)
 			}
 
-			if lastEventType == "error" || chatResp.Error != nil {
+			if eventType == "error" || chatResp.Error != nil {
 				errMsg := "unknown error"
 				if chatResp.Error != nil {
 					errMsg = chatResp.Error.Message
@@ -519,7 +525,6 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 				}
 			}
 
-			lastEventType = ""
 			if eof {
 				break
 			}
