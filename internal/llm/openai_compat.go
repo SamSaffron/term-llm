@@ -410,6 +410,14 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 	// Make HTTP request synchronously - this allows retry wrapper to catch errors like 429
 	resp, err := p.makeChatRequest(ctx, chatReq)
 	if err != nil {
+		var netErr *net.OpError
+		if errors.As(err, &netErr) {
+			serviceURL := p.chatURL
+			if serviceURL == "" {
+				serviceURL = p.baseURL
+			}
+			return nil, fmt.Errorf("%s API request failed (is the service running at %s?): %w", p.name, serviceURL, err)
+		}
 		return nil, fmt.Errorf("%s API request failed: %w", p.name, err)
 	}
 

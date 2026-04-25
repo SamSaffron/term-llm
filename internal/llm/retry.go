@@ -304,8 +304,10 @@ func isRetryable(err error) bool {
 	}
 
 	// Connection errors
-	if strings.Contains(errStr, "connection refused") ||
-		strings.Contains(errStr, "connection reset") ||
+	// Note: "connection refused" (ECONNREFUSED) is intentionally excluded — it means
+	// nothing is listening on that port, which is a hard failure, not a transient one.
+	// Local services like Ollama won't start just because we retry.
+	if strings.Contains(errStr, "connection reset") ||
 		strings.Contains(errStr, "timeout") ||
 		strings.Contains(errStr, "deadline exceeded") ||
 		strings.Contains(errStr, "temporary failure") ||

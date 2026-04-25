@@ -138,6 +138,26 @@ func TestIsRetryable_500InternalServerError(t *testing.T) {
 	}
 }
 
+func TestIsRetryable_ConnectionRefused(t *testing.T) {
+	cases := []struct {
+		msg       string
+		retryable bool
+	}{
+		// connection refused is a hard OS-level rejection — not retryable
+		{`Qwen36ollama API request failed: Post "http://127.0.0.1:11434/v1/chat/completions": dial tcp 127.0.0.1:11434: connect: connection refused`, false},
+		{"dial tcp 127.0.0.1:11434: connect: connection refused", false},
+		{"connection refused", false},
+		// connection reset is transient — still retryable
+		{"connection reset by peer", true},
+	}
+	for _, tc := range cases {
+		got := isRetryable(errors.New(tc.msg))
+		if got != tc.retryable {
+			t.Errorf("isRetryable(%q) = %v, want %v", tc.msg, got, tc.retryable)
+		}
+	}
+}
+
 func TestIsRetryable_APIErrorTerminated(t *testing.T) {
 	cases := []struct {
 		msg       string
