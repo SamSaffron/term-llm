@@ -239,10 +239,14 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 
 	setSessionNumberHeader(w, runtime)
 
-	respID := "resp_" + randomSuffix()
-	s.registerResponseID(runtime, respID, sessionID)
+	created := time.Now().Unix()
+	respID, err := s.storeCompletedResponseRun(runtime, sessionID, req.PreviousResponseID, model, created, result)
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
+		return
+	}
 
-	writeJSON(w, http.StatusOK, responsesFinalResponse(result, model, respID))
+	writeJSON(w, http.StatusOK, responsesFinalResponse(result, model, respID, created))
 }
 
 func (s *serveServer) populateResponsesToolResultNames(ctx context.Context, sessionID string, runtime *serveRuntime, messages []llm.Message) {
