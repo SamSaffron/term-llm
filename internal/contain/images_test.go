@@ -51,10 +51,15 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 			t.Fatalf("entrypoint missing ChatGPT image provider bootstrap")
 		}
 		if rel == "entrypoint.sh" {
-			for _, want := range []string{"TERM_LLM_CLAUDE_CODE_OAUTH_TOKEN", `provider" = "claude-bin"`, "providers:", "CLAUDE_CODE_OAUTH_TOKEN:"} {
+			for _, want := range []string{"default_provider", "model: opus-xhigh", "skills:"} {
 				if !strings.Contains(string(data), want) {
-					t.Fatalf("entrypoint missing claude-bin token bootstrap %q", want)
+					t.Fatalf("entrypoint missing first-boot config content %q", want)
 				}
+			}
+		}
+		if rel == "entrypoint.sh" {
+			if strings.Contains(string(data), "CLAUDE_CODE_OAUTH_TOKEN:") || strings.Contains(string(data), "claude_code_oauth_token:") {
+				t.Fatalf("entrypoint should not persist Claude OAuth token under providers.env in config.yaml")
 			}
 		}
 		if rel == "bootstrap/bootstrap.yaml" && (!strings.Contains(string(data), "image_generate") || !strings.Contains(string(data), "show_image") || !strings.Contains(string(data), "view_image")) {

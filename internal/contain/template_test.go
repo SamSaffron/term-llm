@@ -290,8 +290,10 @@ func TestCreateWorkspaceClaudeBinNoInputRendersEmptyToken(t *testing.T) {
 	if !strings.Contains(string(envData), "TERM_LLM_PROVIDER=claude-bin") {
 		t.Fatalf(".env did not select claude-bin provider:\n%s", envData)
 	}
-	if !strings.Contains(string(envData), "TERM_LLM_CLAUDE_CODE_OAUTH_TOKEN=") {
-		t.Fatalf(".env missing CLAUDE_CODE_OAUTH_TOKEN line:\n%s", envData)
+	for _, want := range []string{"TERM_LLM_CLAUDE_CODE_OAUTH_TOKEN=", "CLAUDE_CODE_OAUTH_TOKEN="} {
+		if !strings.Contains(string(envData), want) {
+			t.Fatalf(".env missing %s line:\n%s", want, envData)
+		}
 	}
 	if strings.Contains(string(envData), "{{") {
 		t.Fatalf(".env still contains placeholders:\n%s", envData)
@@ -322,8 +324,10 @@ func TestCreateWorkspaceClaudeBinUsesProvidedToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(envData), "TERM_LLM_CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-test-token-value") {
-		t.Fatalf(".env did not include provided token:\n%s", envData)
+	for _, want := range []string{"TERM_LLM_CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-test-token-value", "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-test-token-value"} {
+		if !strings.Contains(string(envData), want) {
+			t.Fatalf(".env did not include provided token as %s:\n%s", want, envData)
+		}
 	}
 }
 

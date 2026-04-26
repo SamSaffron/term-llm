@@ -83,7 +83,6 @@ hydrate_chatgpt_oauth_from_env_once() {
 write_default_config_once() {
   local provider="${TERM_LLM_PROVIDER:-}"
   local config_file="$CONFIG_DIR/config.yaml"
-  local claude_token="${TERM_LLM_CLAUDE_CODE_OAUTH_TOKEN:-}"
 
   if [ -e "$config_file" ]; then
     echo "bootstrap: keeping existing term-llm config at $config_file"
@@ -101,13 +100,12 @@ image:
   provider: "chatgpt:gpt-5.4-mini"
 CONFIG_YAML
     fi
-    if [ "$provider" = "claude-bin" ] && [ -n "$claude_token" ]; then
-      cat <<CLAUDE_BIN_YAML
+    if [ "$provider" = "claude-bin" ]; then
+      cat <<'CONFIG_YAML'
 providers:
   claude-bin:
-    env:
-      CLAUDE_CODE_OAUTH_TOKEN: "$claude_token"
-CLAUDE_BIN_YAML
+    model: opus-xhigh
+CONFIG_YAML
     fi
     cat <<'CONFIG_YAML'
 skills:
