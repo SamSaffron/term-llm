@@ -1,9 +1,0 @@
-#!/bin/bash
-# Usage: agent_shell [agent_name]  (default: jarvis)
-AGENT="${1:-jarvis}"
-docker exec -it \
-  -e TERM="${TERM:-xterm-256color}" \
-  -e COLORTERM="${COLORTERM:-truecolor}" \
-  -e TMUX="${TMUX:-}" \
-  -e STY="${STY:-}" \
-  "$AGENT" bash
