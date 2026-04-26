@@ -85,7 +85,7 @@ func TestCreateWorkspaceBuiltinAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"bot agent workspace", "AGENT_NAME: \"bot\"", "term-llm-agent:bot-" + hash} {
+	for _, want := range []string{"bot agent workspace", "AGENT_NAME: \"bot\"", "restart: unless-stopped", "term-llm-agent:bot-" + hash} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("agent compose missing %q:\n%s", want, text)
 		}
@@ -324,6 +324,27 @@ func TestCreateWorkspaceClaudeBinUsesProvidedToken(t *testing.T) {
 	}
 	if !strings.Contains(string(envData), "TERM_LLM_CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-test-token-value") {
 		t.Fatalf(".env did not include provided token:\n%s", envData)
+	}
+}
+
+func TestDefaultClaudeSetupTokenRunnerCapturesNonTerminalOutput(t *testing.T) {
+	tmp := t.TempDir()
+	script := filepath.Join(tmp, "claude")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho setup starting\necho sk-ant-oat01-scripted-token-value-1234567890\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tmp+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var stdout bytes.Buffer
+	out, err := defaultClaudeSetupTokenRunner(CreateOptions{Stdin: strings.NewReader(""), Stdout: &stdout})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "sk-ant-oat01-scripted-token-value-1234567890") {
+		t.Fatalf("captured output missing token: %q", out)
+	}
+	if !strings.Contains(stdout.String(), "setup starting") {
+		t.Fatalf("stdout was not teed: %q", stdout.String())
 	}
 }
 

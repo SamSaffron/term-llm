@@ -300,6 +300,13 @@ func defaultClaudeSetupTokenRunner(opts CreateOptions) (string, error) {
 	if stdin == nil {
 		stdin = os.Stdin
 	}
+	if out, ok, err := runClaudeSetupTokenInPTY(stdin, stdout); ok {
+		return out, err
+	}
+	return runClaudeSetupTokenBuffered(stdin, stdout)
+}
+
+func runClaudeSetupTokenBuffered(stdin io.Reader, stdout io.Writer) (string, error) {
 	cmd := exec.Command("claude", "setup-token")
 	cmd.Stdin = stdin
 	cmd.Stderr = os.Stderr

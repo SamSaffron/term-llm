@@ -25,7 +25,7 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, want := range []string{managedImageMarker, "FROM archlinux:latest", "curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh", "TERM_LLM_INSTALL_DIR=/usr/local/bin sh", "git clone https://github.com/samsaffron/term-llm.git /root/source/term-llm", "COPY bootstrap/ /opt/term-llm/bootstrap/", "COPY entrypoint.sh /entrypoint.sh", "ENTRYPOINT [\"/entrypoint.sh\"]", "https://claude.ai/install.sh", "/usr/local/bin/claude --version"} {
+	for _, want := range []string{managedImageMarker, "FROM archlinux:latest", "bash-completion", "term-llm config completion bash > /usr/share/bash-completion/completions/term-llm", "curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh", "TERM_LLM_INSTALL_DIR=/usr/local/bin sh", "git clone https://github.com/samsaffron/term-llm.git /root/source/term-llm", "COPY bootstrap/ /opt/term-llm/bootstrap/", "COPY entrypoint.sh /entrypoint.sh", "ENTRYPOINT [\"/entrypoint.sh\"]", "https://claude.ai/install.sh", "/usr/local/bin/claude --version"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("Dockerfile missing %q", want)
 		}

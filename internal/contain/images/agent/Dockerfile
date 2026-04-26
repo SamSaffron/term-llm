@@ -6,8 +6,8 @@ ARG TERM_LLM_VERSION=latest
 RUN pacman -Syu --noconfirm && \
     pacman -S --noconfirm \
       base-devel \
-      git \
       bash \
+      bash-completion \
       curl \
       wget \
       jq \
@@ -100,6 +100,12 @@ RUN if [ "${TERM_LLM_VERSION}" = "latest" ]; then \
       curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | \
         TERM_LLM_INSTALL_DIR=/usr/local/bin sh -s -- --version "${TERM_LLM_VERSION}"; \
     fi
+
+# Install bash completion for term-llm in interactive container shells.
+RUN mkdir -p /usr/share/bash-completion/completions && \
+    term-llm config completion bash > /usr/share/bash-completion/completions/term-llm && \
+    grep -q '/usr/share/bash-completion/bash_completion' /etc/bash.bashrc || \
+      printf '\n# Enable bash-completion for interactive shells.\n[ -r /usr/share/bash-completion/bash_completion ] && . /usr/share/bash-completion/bash_completion\n' >> /etc/bash.bashrc
 
 # Install Claude Code CLI so the claude-bin provider works inside the container.
 # The official installer drops the binary in /root/.local/bin; we symlink to

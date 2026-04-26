@@ -14,6 +14,7 @@ services:
       args:
         TERM_LLM_VERSION: "${TERM_LLM_VERSION:-latest}"
     image: term-llm-agent:{{name}}-{{agent_image_hash}}
+    restart: unless-stopped
     env_file: .env
     environment:
       AGENT_NAME: "{{name}}"
