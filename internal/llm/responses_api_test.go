@@ -544,6 +544,147 @@ func TestResponsesClientStream_CloseReturnsPromptlyWhenConsumerStopsDraining(t *
 	}
 }
 
+func TestResponsesClientStream_ParsesMultilineSSEEvents(t *testing.T) {
+	sse := strings.Join([]string{
+		"event: response.output_text.delta",
+		"data: {",
+		`data:   "delta": "hello"`,
+		"data: }",
+		"",
+		"event: response.completed",
+		"data: {",
+		`data:   "response": {`,
+		`data:     "id": "resp_multiline",`,
+		`data:     "usage": {`,
+		`data:       "input_tokens": 11,`,
+		`data:       "output_tokens": 22,`,
+		`data:       "input_tokens_details": {"cached_tokens": 3},`,
+		`data:       "output_tokens_details": {"reasoning_tokens": 4},`,
+		`data:       "total_tokens": 33`,
+		`data:     }`,
+		`data:   }`,
+		"data: }",
+		"",
+	}, "\n")
+
+	httpClient := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header: http.Header{
+					"Content-Type": []string{"text/event-stream"},
+				},
+				Body: io.NopCloser(strings.NewReader(sse)),
+			}, nil
+		}),
+	}
+
+	client := &ResponsesClient{
+		BaseURL:       "https://example.test/v1/responses",
+		GetAuthHeader: func() string { return "Bearer test-token" },
+		HTTPClient:    httpClient,
+	}
+
+	stream, err := client.Stream(context.Background(), ResponsesRequest{
+		Model:  "gpt-5.2",
+		Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "hello"}},
+		Stream: true,
+	}, false)
+	if err != nil {
+		t.Fatalf("stream request failed: %v", err)
+	}
+	defer stream.Close()
+
+	var gotText strings.Builder
+	var gotUsage *Usage
+	for {
+		event, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			t.Fatalf("stream recv failed: %v", recvErr)
+		}
+		switch event.Type {
+		case EventTextDelta:
+			gotText.WriteString(event.Text)
+		case EventUsage:
+			gotUsage = event.Use
+		case EventError:
+			t.Fatalf("stream returned error event: %v", event.Err)
+		case EventDone:
+			goto done
+		}
+	}
+
+done:
+	if gotText.String() != "hello" {
+		t.Fatalf("expected streamed text hello, got %q", gotText.String())
+	}
+	if client.LastResponseID != "resp_multiline" {
+		t.Fatalf("expected last response id resp_multiline, got %q", client.LastResponseID)
+	}
+	if gotUsage == nil {
+		t.Fatal("expected usage event from response.completed")
+	}
+	if gotUsage.InputTokens != 8 || gotUsage.CachedInputTokens != 3 || gotUsage.OutputTokens != 22 || gotUsage.ProviderTotalTokens != 33 || gotUsage.ReasoningTokens != 4 {
+		t.Fatalf("unexpected usage: %+v", gotUsage)
+	}
+}
+
+func TestResponsesClientStream_ParsesMultilineSSEErrorEvent(t *testing.T) {
+	sse := strings.Join([]string{
+		"event: error",
+		"data: {",
+		`data:   "error": {`,
+		`data:     "message": "boom"`,
+		`data:   }`,
+		"data: }",
+		"",
+	}, "\n")
+
+	httpClient := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header: http.Header{
+					"Content-Type": []string{"text/event-stream"},
+				},
+				Body: io.NopCloser(strings.NewReader(sse)),
+			}, nil
+		}),
+	}
+
+	client := &ResponsesClient{
+		BaseURL:       "https://example.test/v1/responses",
+		GetAuthHeader: func() string { return "Bearer test-token" },
+		HTTPClient:    httpClient,
+	}
+
+	stream, err := client.Stream(context.Background(), ResponsesRequest{
+		Model:  "gpt-5.2",
+		Input:  []ResponsesInputItem{{Type: "message", Role: "user", Content: "hello"}},
+		Stream: true,
+	}, false)
+	if err != nil {
+		t.Fatalf("stream request failed: %v", err)
+	}
+	defer stream.Close()
+
+	event, recvErr := stream.Recv()
+	if recvErr != nil {
+		t.Fatalf("stream recv failed: %v", recvErr)
+	}
+	if event.Type != EventError {
+		t.Fatalf("expected error event, got %+v", event)
+	}
+	if event.Err == nil || !strings.Contains(event.Err.Error(), "boom") {
+		t.Fatalf("expected boom error, got %v", event.Err)
+	}
+}
+
 func TestOpenAIProviderStream_UsesSessionIDForResponsesCaching(t *testing.T) {
 	type capturedRequest struct {
 		SessionID      string
