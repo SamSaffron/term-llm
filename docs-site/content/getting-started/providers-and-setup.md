@@ -343,7 +343,7 @@ providers:
   claude-bin:
     model: sonnet  # opus, sonnet, or haiku
     env:
-      IS_SANDBOX: "1"  # useful when running term-llm as root in a trusted container
+      IS_SANDBOX: "1"  # useful in trusted/sandboxed containers
       # Generate a long-lived token with: claude setup-token
       # Useful in CI or headless environments where interactive login isn't possible
       CLAUDE_CODE_OAUTH_TOKEN: "your-oauth-token-here"

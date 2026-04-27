@@ -165,6 +165,11 @@ func Exec(ctx context.Context, runner Runner, name string, cmdArgs []string, std
 	proxyEnv, cleanup := startPrimarySelectionProxy(ctx, runner, args, service, dir)
 	defer cleanup()
 	args = append(args, "exec")
+	user := info.DefaultUser(service)
+	if user != "" {
+		args = append(args, "--user", user)
+		args = appendContainUserEnvironment(args, user, info.Hints.Workspace)
+	}
 	args = appendConsoleEnvExecArgs(args)
 	args = append(args, proxyEnv...)
 	args = append(args, service)
@@ -195,11 +200,24 @@ func ShellWithOptions(ctx context.Context, runner Runner, name string, opts Shel
 	}
 	if user != "" {
 		args = append(args, "--user", user)
+		args = appendContainUserEnvironment(args, user, info.Hints.Workspace)
 	}
 	args = appendConsoleEnvExecArgs(args)
 	args = append(args, proxyEnv...)
 	args = append(args, service, info.Shell())
 	return runner.Run(ctx, "docker", args, RunOptions{Stdin: stdin, Stdout: stdout, Stderr: stderr, Dir: dir})
+}
+
+func appendContainUserEnvironment(args []string, user, workspace string) []string {
+	workspace = strings.TrimSpace(workspace)
+	if user == "" || user == "root" || workspace == "" || !strings.HasPrefix(workspace, "/") {
+		return args
+	}
+	args = append(args, "--workdir", workspace)
+	args = append(args, "-e", "HOME="+workspace)
+	args = append(args, "-e", "USER="+user)
+	args = append(args, "-e", "LOGNAME="+user)
+	return args
 }
 
 func appendConsoleEnvExecArgs(args []string) []string {

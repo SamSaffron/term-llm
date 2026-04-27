@@ -1,4 +1,13 @@
 #!/bin/sh
+if [ "$(id -un)" != "agent" ]; then
+  exec sudo -Hu agent env \
+    AGENT_NAME="${AGENT_NAME:-agent}" \
+    WEB_BASE_PATH="${WEB_BASE_PATH:-/chat}" \
+    WEB_TOKEN="${WEB_TOKEN:-}" \
+    TERM_LLM_PROVIDER="${TERM_LLM_PROVIDER:-}" \
+    "$0" "$@"
+fi
+
 set -- serve web \
   --agent "${AGENT_NAME:-agent}" \
   --base-path "${WEB_BASE_PATH:-/chat}" \
@@ -7,7 +16,7 @@ set -- serve web \
   --auth bearer \
   --token "${WEB_TOKEN:?Set WEB_TOKEN in .env}" \
   --yolo \
-  --files-dir /root/Files
+  --files-dir /home/agent/Files
 
 if [ -n "${TERM_LLM_PROVIDER:-}" ] && [ "${TERM_LLM_PROVIDER}" != "skip" ]; then
   set -- "$@" --provider "${TERM_LLM_PROVIDER}"

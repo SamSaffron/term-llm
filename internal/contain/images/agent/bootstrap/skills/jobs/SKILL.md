@@ -7,7 +7,7 @@ description: "Work with scheduled jobs and container services. Use when creating
 
 The container uses two related systems:
 
-- **Services** are long-running runit processes. Definitions live in `/root/.config/term-llm/services/<name>/run` and are reinstalled into `/etc/sv` on container start by `/root/.config/term-llm/init.sh`.
+- **Services** are long-running runit processes. Definitions live in `/home/agent/.config/term-llm/services/<name>/run` and are reinstalled into `/etc/sv` on container start by `/home/agent/.config/term-llm/init.sh`.
 - **Jobs** are scheduled or manual units managed by `term-llm serve jobs`, exposed on `http://127.0.0.1:8080`, and controlled through `term-llm jobs`.
 
 Default services:
@@ -25,7 +25,7 @@ Default jobs:
 | `mine-sessions` | every 30 min | Mine session transcripts into memory fragments. |
 | `update-recent` | every 10 min | Promote fragments into `recent.md`. |
 | `memory-gc` | daily 04:00 UTC | Garbage-collect stale or duplicate memory fragments. |
-| `pacman-upgrade` | daily 05:00 UTC | Run `pacman -Syu --noconfirm`. |
+| `pacman-upgrade` | daily 05:00 UTC | Run `sudo pacman -Syu --noconfirm`. |
 
 ## Inspecting jobs
 
@@ -102,10 +102,10 @@ Prefer `update` over delete/recreate when preserving run history matters.
 
 ## Service changes
 
-To add or change a long-running service, edit files under `/root/.config/term-llm/services`. Each service directory needs an executable `run` script. Then restart the container or run the init hook:
+To add or change a long-running service, edit files under `/home/agent/.config/term-llm/services`. Each service directory needs an executable `run` script. Then restart the container or run the init hook:
 
 ```bash
-bash /root/.config/term-llm/init.sh
+bash /home/agent/.config/term-llm/init.sh
 ```
 
 Debug service logs through Docker output for the workspace, or enter the container and inspect `/etc/sv`, `/etc/runit/runsvdir`, and the service `run` script.

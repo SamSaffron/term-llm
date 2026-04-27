@@ -35,7 +35,7 @@ bash "$AGENT_DIR/scripts/patch-system.sh" /tmp/new-system.md
 bash "$AGENT_DIR/scripts/patch-agent.sh" /tmp/new-agent.yaml
 ```
 
-Where `AGENT_DIR` is `/root/.config/term-llm/agents/$AGENT_NAME`.
+Where `AGENT_DIR` is `/home/agent/.config/term-llm/agents/$AGENT_NAME`.
 
 ## File Locations
 
@@ -50,7 +50,7 @@ Where `AGENT_DIR` is `/root/.config/term-llm/agents/$AGENT_NAME`.
 ## Adding a New Skill
 
 ```bash
-mkdir -p /root/.config/term-llm/skills/<name>
+mkdir -p /home/agent/.config/term-llm/skills/<name>
 # Write SKILL.md with frontmatter: name, description, tools (if needed)
 term-llm skills  # verify it appears
 ```

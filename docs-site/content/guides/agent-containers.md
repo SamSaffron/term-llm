@@ -112,6 +112,8 @@ On first boot, the entrypoint:
 
 After the first boot, the state volume owns all agent config. Your local `agents/` directory remains the seed — edit it and delete the volume to re-seed, or edit the live files inside the container directly.
 
+The built-in `term-llm contain new` agent image keeps PID 1 and runit supervision as root so services can be linked under `/etc`, but the Web UI, jobs service, bootstrap jobs, interactive shells, and normal agent work run as the non-root Linux user `agent` with home `/home/agent`. Use explicit passwordless `sudo` inside the container for package maintenance or other root-only operations.
+
 ### Services
 
 | Service | What it does |

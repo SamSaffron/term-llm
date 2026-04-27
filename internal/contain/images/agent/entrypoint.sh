@@ -2,7 +2,9 @@
 set -euo pipefail
 
 export AGENT_NAME="${AGENT_NAME:-agent}"
-CONFIG_DIR="/root/.config/term-llm"
+AGENT_USER="agent"
+AGENT_HOME="/home/agent"
+CONFIG_DIR="$AGENT_HOME/.config/term-llm"
 AGENT_DIR="$CONFIG_DIR/agents/$AGENT_NAME"
 BOOTSTRAP_SENTINEL="$CONFIG_DIR/.seed-bootstrapped"
 IMAGE_BOOTSTRAP_DIR="/opt/term-llm/bootstrap"
@@ -136,7 +138,7 @@ write_default_volume_init() {
 #!/bin/bash
 set -euo pipefail
 
-CONFIG_DIR="/root/.config/term-llm"
+CONFIG_DIR="/home/agent/.config/term-llm"
 SERVICES_DIR="$CONFIG_DIR/services"
 SV_DIR="/etc/sv"
 RUNSVDIR="/etc/runit/runsvdir"
@@ -158,6 +160,43 @@ fi
 VOLUME_INIT
   chmod 755 "$init_file"
   echo "bootstrap: wrote default volume init at $init_file"
+}
+
+ensure_agent_ownership() {
+  mkdir -p "$AGENT_HOME" "$CONFIG_DIR"
+  if [ ! -e "$AGENT_HOME/.zshrc" ]; then
+    cat > "$AGENT_HOME/.zshrc" <<'ZSHRC'
+# term-llm shell niceties
+alias tl=term-llm
+if ! infocmp "$TERM" >/dev/null 2>&1; then export TERM=xterm-256color; fi
+autoload -Uz compinit && compinit
+compdef tl=term-llm 2>/dev/null || true
+setopt prompt_subst
+autoload -Uz colors && colors
+bindkey -e
+bindkey '^?' backward-delete-char
+bindkey '^H' backward-delete-char
+PROMPT='%F{cyan}${AGENT_NAME:-agent}%f:%F{yellow}%~%f %# '
+ZSHRC
+  else
+    if ! grep -Eq '^[[:space:]]*alias[[:space:]]+tl=' "$AGENT_HOME/.zshrc"; then
+      printf '\n# term-llm convenience alias\nalias tl=term-llm\n' >> "$AGENT_HOME/.zshrc"
+    fi
+    if ! grep -q 'term-llm shell niceties' "$AGENT_HOME/.zshrc"; then
+      cat >> "$AGENT_HOME/.zshrc" <<'ZSHRC'
+
+# term-llm shell niceties
+if ! infocmp "$TERM" >/dev/null 2>&1; then export TERM=xterm-256color; fi
+setopt prompt_subst
+autoload -Uz colors && colors
+bindkey -e
+bindkey '^?' backward-delete-char
+bindkey '^H' backward-delete-char
+PROMPT='%F{cyan}${AGENT_NAME:-agent}%f:%F{yellow}%~%f %# '
+ZSHRC
+    fi
+  fi
+  chown -R "$AGENT_USER:$AGENT_USER" "$AGENT_HOME"
 }
 
 bootstrap_seed_once() {
@@ -190,10 +229,12 @@ bootstrap_seed_once() {
 }
 
 bootstrap_seed_once
+ensure_agent_ownership
 
 # Volume init hook (runs every container start after first-boot bootstrap).
 if [ -f "$CONFIG_DIR/init.sh" ]; then
   bash "$CONFIG_DIR/init.sh"
+  ensure_agent_ownership
 fi
 
 # No command → boot runit as PID 1

@@ -49,7 +49,7 @@ go build \
     ./main.go
 
 log "Installing binary to $BINARY_DEST..."
-install -m 755 /tmp/term-llm-new "$BINARY_DEST"
+sudo install -m 755 /tmp/term-llm-new "$BINARY_DEST"
 rm -f /tmp/term-llm-new
 
 log "Done! Installed:"
@@ -65,7 +65,7 @@ if command -v sv >/dev/null 2>&1 && [ -d /etc/runit/runsvdir ]; then
             log "Skipping (no term-llm): $svc_name"
             continue
         fi
-        if ! sv status "$svc" 2>/dev/null | grep -q "^run:"; then
+        if ! sudo sv status "$svc" 2>/dev/null | grep -q "^run:"; then
             log "Skipping (not running): $svc_name"
             continue
         fi
@@ -73,16 +73,16 @@ if command -v sv >/dev/null 2>&1 && [ -d /etc/runit/runsvdir ]; then
             log "Scheduling detached SIGKILL restart in 3s: $svc_name"
             setsid nohup bash -c "
                 sleep 3
-                sv stop '$svc' 2>/dev/null || true
+                sudo sv stop '$svc' 2>/dev/null || true
                 sleep 1
                 if [ -f '$svc/supervise/pid' ]; then
-                    kill -9 \$(cat '$svc/supervise/pid') 2>/dev/null || true
+                    sudo kill -9 \$(cat '$svc/supervise/pid') 2>/dev/null || true
                 fi
-                sv start '$svc'
+                sudo sv start '$svc'
             " >/dev/null 2>&1 &
         else
             log "Scheduling detached restart in 3s: $svc_name"
-            setsid nohup bash -c "sleep 3 && sv restart '$svc'" >/dev/null 2>&1 &
+            setsid nohup bash -c "sleep 3 && sudo sv restart '$svc'" >/dev/null 2>&1 &
         fi
     done
     log "All restarts scheduled — services will cycle in ~3s"

@@ -25,18 +25,30 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, want := range []string{managedImageMarker, "FROM archlinux:latest", "bash-completion", "term-llm config completion bash > /usr/share/bash-completion/completions/term-llm", "curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh", "TERM_LLM_INSTALL_DIR=/usr/local/bin sh", "git clone https://github.com/samsaffron/term-llm.git /root/source/term-llm", "COPY bootstrap/ /opt/term-llm/bootstrap/", "COPY entrypoint.sh /entrypoint.sh", "ENTRYPOINT [\"/entrypoint.sh\"]", "https://claude.ai/install.sh", "/usr/local/bin/claude --version"} {
+	for _, want := range []string{managedImageMarker, "FROM archlinux:latest", "bash-completion", "zsh", "kitty-terminfo", "alias tl=term-llm", "compdef tl=term-llm", "term-llm config completion bash > /usr/share/bash-completion/completions/term-llm", "term-llm config completion zsh > /usr/share/zsh/site-functions/_term-llm", "curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh", "TERM_LLM_INSTALL_DIR=/usr/local/bin sh", "useradd -m -s /bin/zsh -G wheel agent", "agent ALL=(ALL) NOPASSWD: ALL", "sudo -Hu agent playwright install chromium", "git clone https://github.com/samsaffron/term-llm.git /home/agent/source/term-llm", "COPY bootstrap/ /opt/term-llm/bootstrap/", "COPY entrypoint.sh /entrypoint.sh", "ENTRYPOINT [\"/entrypoint.sh\"]", "https://claude.ai/install.sh", "/home/agent/.local/bin/claude", "/usr/local/bin/claude --version"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("Dockerfile missing %q", want)
 		}
 	}
-	for _, rel := range []string{"entrypoint.sh", "bootstrap/bootstrap.yaml", "bootstrap/system.md", "bootstrap/soul.md", "bootstrap/services/webui/run", "bootstrap/services/jobs/run", "bootstrap/skills/memory/SKILL.md", "bootstrap/skills/jobs/SKILL.md", "bootstrap/memory/recent.md", "bootstrap/scripts/update.sh"} {
+	for _, rel := range []string{"entrypoint.sh", "bootstrap/bootstrap.yaml", "bootstrap/system.md", "bootstrap/soul.md", "bootstrap/services/webui/run", "bootstrap/services/jobs/run", "bootstrap/services/bootstrap-jobs/run", "bootstrap/skills/memory/SKILL.md", "bootstrap/skills/jobs/SKILL.md", "bootstrap/memory/recent.md", "bootstrap/scripts/update.sh"} {
 		data, err := os.ReadFile(filepath.Join(result.Dir, rel))
 		if err != nil {
 			t.Fatalf("missing synced asset %s: %v", rel, err)
 		}
 		if strings.Contains(string(data), managedImageMarker) {
 			t.Fatalf("synced non-Dockerfile asset %s should not contain managed marker", rel)
+		}
+		if rel == "entrypoint.sh" && !strings.Contains(string(data), "CONFIG_DIR=\"/home/agent/.config/term-llm\"") {
+			t.Fatalf("entrypoint should use agent home for persistent config")
+		}
+		if rel == "entrypoint.sh" && !strings.Contains(string(data), "alias tl=term-llm") {
+			t.Fatalf("entrypoint should seed tl alias for persisted agent home")
+		}
+		if rel == "entrypoint.sh" && (!strings.Contains(string(data), "PROMPT='%F{cyan}${AGENT_NAME:-agent}%f:%F{yellow}%~%f %# '") || !strings.Contains(string(data), "bindkey '^?' backward-delete-char") || !strings.Contains(string(data), "infocmp \"$TERM\"") || !strings.Contains(string(data), "compdef tl=term-llm")) {
+			t.Fatalf("entrypoint should seed a friendly zsh prompt and backspace bindings")
+		}
+		if rel == "entrypoint.sh" && !strings.Contains(string(data), "chown -R \"$AGENT_USER:$AGENT_USER\" \"$AGENT_HOME\"") {
+			t.Fatalf("entrypoint should ensure agent owns persistent home")
 		}
 		if rel == "entrypoint.sh" && !strings.Contains(string(data), "TERM_LLM_CHATGPT_OAUTH_JSON_B64") {
 			t.Fatalf("entrypoint missing ChatGPT OAuth hydration")
@@ -73,6 +85,15 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 		}
 		if (rel == "bootstrap/services/webui/run" || rel == "bootstrap/services/jobs/run") && !strings.Contains(string(data), "TERM_LLM_PROVIDER") {
 			t.Fatalf("service %s missing TERM_LLM_PROVIDER forwarding", rel)
+		}
+		if (rel == "bootstrap/services/webui/run" || rel == "bootstrap/services/jobs/run") && !strings.Contains(string(data), "exec sudo -Hu agent") {
+			t.Fatalf("service %s should re-exec as agent user", rel)
+		}
+		if rel == "bootstrap/services/webui/run" && !strings.Contains(string(data), "--files-dir /home/agent/Files") {
+			t.Fatalf("webui should serve files from agent home")
+		}
+		if rel == "bootstrap/services/bootstrap-jobs/run" && (!strings.Contains(string(data), "exec sudo -Hu agent") || !strings.Contains(string(data), `\"command\": \"sudo\"`) || !strings.Contains(string(data), `\"pacman\"`)) {
+			t.Fatalf("bootstrap jobs should run as agent and use sudo for package upgrades")
 		}
 		if rel == "bootstrap/system.md" {
 			if !strings.Contains(string(data), "~/source/term-llm") {

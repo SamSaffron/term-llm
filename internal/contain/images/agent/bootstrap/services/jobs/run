@@ -1,4 +1,11 @@
 #!/bin/sh
+if [ "$(id -un)" != "agent" ]; then
+  exec sudo -Hu agent env \
+    AGENT_NAME="${AGENT_NAME:-agent}" \
+    TERM_LLM_PROVIDER="${TERM_LLM_PROVIDER:-}" \
+    "$0" "$@"
+fi
+
 set -- serve jobs \
   --agent "${AGENT_NAME:-agent}" \
   --auth none \

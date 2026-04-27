@@ -3,7 +3,11 @@
 # After bootstrapping, sleeps forever — runit keeps it "up" with no churn.
 # Jobs are user-owned after creation: edit/delete via term-llm jobs CLI.
 
-SENTINEL="/root/.config/term-llm/.jobs-bootstrapped"
+if [ "$(id -un)" != "agent" ]; then
+  exec sudo -Hu agent env AGENT_NAME="${AGENT_NAME:-agent}" "$0" "$@"
+fi
+
+SENTINEL="/home/agent/.config/term-llm/.jobs-bootstrapped"
 AGENT="${AGENT_NAME:-agent}"
 
 # Already bootstrapped — nothing to do
@@ -72,8 +76,8 @@ term-llm jobs create --data "{
   \"enabled\": true,
   \"runner_type\": \"program\",
   \"runner_config\": {
-    \"command\": \"pacman\",
-    \"args\": [\"-Syu\", \"--noconfirm\"]
+    \"command\": \"sudo\",
+    \"args\": [\"pacman\", \"-Syu\", \"--noconfirm\"]
   },
   \"trigger_type\": \"cron\",
   \"trigger_config\": { \"expression\": \"0 5 * * *\", \"timezone\": \"UTC\" },

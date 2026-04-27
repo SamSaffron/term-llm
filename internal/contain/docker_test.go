@@ -114,7 +114,7 @@ services:
 	}
 }
 
-func TestShellUsesServiceDefaultUserLabel(t *testing.T) {
+func TestExecAndShellUseServiceDefaultUserLabel(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	clearConsoleEnvForContainTest(t)
 	dir := writeComposeForDockerTest(t, "labelbox", `x-term-llm:
@@ -130,10 +130,19 @@ services:
 	base := []string{"compose", "-f", compose, "--project-directory", dir, "-p", "term-llm-contain-labelbox"}
 
 	r := &fakeRunner{}
+	if err := Exec(context.Background(), r, "labelbox", []string{"id", "-un"}, nil, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	want := append(append([]string{}, base...), "exec", "--user", "appuser", "web", "id", "-un")
+	if !reflect.DeepEqual(r.args, want) {
+		t.Fatalf("exec args = %#v\nwant %#v", r.args, want)
+	}
+
+	r = &fakeRunner{}
 	if err := Shell(context.Background(), r, "labelbox", nil, io.Discard, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	want := append(append([]string{}, base...), "exec", "--user", "appuser", "web", "/bin/bash")
+	want = append(append([]string{}, base...), "exec", "--user", "appuser", "web", "/bin/bash")
 	if !reflect.DeepEqual(r.args, want) {
 		t.Fatalf("args = %#v\nwant %#v", r.args, want)
 	}
@@ -145,6 +154,41 @@ services:
 	want = append(append([]string{}, base...), "exec", "--user", "root", "web", "/bin/bash")
 	if !reflect.DeepEqual(r.args, want) {
 		t.Fatalf("override args = %#v\nwant %#v", r.args, want)
+	}
+}
+
+func TestExecAndShellUseWorkspaceForDefaultUserHome(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	clearConsoleEnvForContainTest(t)
+	dir := writeComposeForDockerTest(t, "homebox", `x-term-llm:
+  default_service: web
+  shell: /bin/zsh
+  workspace: /home/agent
+services:
+  web:
+    image: alpine
+    labels:
+      org.term-llm.contain.user: agent
+`)
+	compose := filepath.Join(dir, "compose.yaml")
+	base := []string{"compose", "-f", compose, "--project-directory", dir, "-p", "term-llm-contain-homebox"}
+
+	r := &fakeRunner{}
+	if err := Shell(context.Background(), r, "homebox", nil, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	want := append(append([]string{}, base...), "exec", "--user", "agent", "--workdir", "/home/agent", "-e", "HOME=/home/agent", "-e", "USER=agent", "-e", "LOGNAME=agent", "web", "/bin/zsh")
+	if !reflect.DeepEqual(r.args, want) {
+		t.Fatalf("shell args = %#v\nwant %#v", r.args, want)
+	}
+
+	r = &fakeRunner{}
+	if err := Exec(context.Background(), r, "homebox", []string{"pwd"}, nil, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	want = append(append([]string{}, base...), "exec", "--user", "agent", "--workdir", "/home/agent", "-e", "HOME=/home/agent", "-e", "USER=agent", "-e", "LOGNAME=agent", "web", "pwd")
+	if !reflect.DeepEqual(r.args, want) {
+		t.Fatalf("exec args = %#v\nwant %#v", r.args, want)
 	}
 }
 

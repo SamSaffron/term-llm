@@ -164,7 +164,7 @@ Providers that shell out to local CLIs can accept extra subprocess environment v
 
 For `claude-bin`, term-llm also disables Claude Code hooks by default so user-level Claude automation does not leak into inference sessions. Set `providers.claude-bin.enable_hooks: true` if you explicitly want Claude Code hooks to run.
 
-Example for Claude Code when term-llm itself runs as root inside a trusted container:
+Example for Claude Code when term-llm runs inside a trusted sandboxed container:
 
 ```yaml
 providers:

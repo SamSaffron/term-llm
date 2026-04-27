@@ -5,7 +5,7 @@
 set -euo pipefail
 
 AGENT="${AGENT_NAME:-agent}"
-AGENT_DIR="/root/.config/term-llm/agents/$AGENT"
+AGENT_DIR="/home/agent/.config/term-llm/agents/$AGENT"
 SYSTEM_FILE="$AGENT_DIR/system.md"
 BACKUP_FILE="$SYSTEM_FILE.bak"
 NEW_FILE="${1:-}"

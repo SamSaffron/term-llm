@@ -115,7 +115,7 @@ func TestCreateWorkspaceBuiltinAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"bot agent workspace", "AGENT_NAME: \"bot\"", "restart: unless-stopped", "term-llm-agent:bot-" + hash} {
+	for _, want := range []string{"bot agent workspace", "workspace: /home/agent", "shell: /bin/zsh", "AGENT_NAME: \"bot\"", "user: root", "- bot-state:/home/agent", "org.term-llm.contain.user: \"agent\"", "restart: unless-stopped", "term-llm-agent:bot-" + hash} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("agent compose missing %q:\n%s", want, text)
 		}

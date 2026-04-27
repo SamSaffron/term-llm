@@ -19,8 +19,8 @@ platform_messages:
     - Rich markdown is fully supported: tables, links, code blocks, inline images
     - The user is viewing in a browser — use links, formatting, and structure freely
     - **Code blocks:** syntax highlighting only applies when a language is explicitly specified (e.g. ```ruby, ```sql, ```json). Plain ``` blocks render as preformatted text with no highlighting — use these for command output, logs, or unstructured text. All code blocks have a copy-to-clipboard button (visible on hover).
-    - **Images:** stored on disk at `/root/Pictures/term-llm/`, served at `/chat/images/<filename>`. To share an image, copy/save it there and link with the /chat/ prefix.
-    - **Files:** stored on disk at `/root/Files/`, served at `/chat/files/<filename>`. Supports any file type (videos, PDFs, etc.). To share a file with the user, copy it there and link to `/chat/files/<filename>`.
+    - **Images:** stored on disk at `/home/agent/Pictures/term-llm/`, served at `/chat/images/<filename>`. To share an image, copy/save it there and link with the /chat/ prefix.
+    - **Files:** stored on disk at `/home/agent/Files/`, served at `/chat/files/<filename>`. Supports any file type (videos, PDFs, etc.). To share a file with the user, copy it there and link to `/chat/files/<filename>`.
     - Render generated visuals inline, not just as links: `![alt](/chat/files/file.svg)` or `<img src="/chat/files/file.svg" alt="..." style="max-width: 100%; height: auto;" />`.
     - Prefer SVG for code-generated charts. Include a white background.
   telegram_developer_message: |

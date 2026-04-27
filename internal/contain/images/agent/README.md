@@ -12,7 +12,7 @@ build, set `TERM_LLM_VERSION` in the workspace `.env`.
 
 On first boot, if `TERM_LLM_CHATGPT_OAUTH_JSON_B64` is present in the
 container environment, the entrypoint decodes it once into
-`/root/.config/term-llm/chatgpt_oauth.json` with mode `0600`. This lets the
+`/home/agent/.config/term-llm/chatgpt_oauth.json` with mode `0600`. This lets the
 agent template bootstrap ChatGPT OAuth credentials without baking them into the
 image.
 
@@ -34,7 +34,10 @@ If a container mounts a static `/seed` directory containing `bootstrap.yaml`, th
 seed directory replaces the image bootstrap source for first boot only. There is
 no `/seed/agents/<name>` convention in the managed image.
 
-On first boot, bootstrap files are rendered/copied into the persistent `/root`
-volume. A default `/root/.config/term-llm/init.sh` is written if one does not
+On first boot, bootstrap files are rendered/copied into the persistent `/home/agent`
+volume. A default `/home/agent/.config/term-llm/init.sh` is written if one does not
 already exist. Future boots ignore `/seed` and image bootstrap files, then run
-that persistent init script.
+that persistent init script. PID 1/runit supervision stays root for service
+installation under `/etc`, but the Web UI, jobs service, bootstrap jobs,
+interactive shells, and normal agent work run as the non-root `agent` user with
+passwordless `sudo` available for explicit privilege escalation.
