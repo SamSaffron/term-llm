@@ -197,9 +197,13 @@ func (rt *serveRuntime) ensureSessionInStore(ctx context.Context, sessionID stri
 		return 0
 	}
 	// Fast path: runtime already hydrated under rt.mu by a prior run.
+	rt.mu.Lock()
 	if meta := rt.sessionMeta; meta != nil && meta.ID == sessionID {
-		return meta.Number
+		number := meta.Number
+		rt.mu.Unlock()
+		return number
 	}
+	rt.mu.Unlock()
 	// Check DB for existing session.
 	if existing, err := rt.store.Get(ctx, sessionID); err == nil && existing != nil {
 		return existing.Number
