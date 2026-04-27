@@ -129,7 +129,7 @@ On first boot, the `bootstrap-jobs` service waits for the jobs API, then creates
 | `mine-sessions` | Every 30 min | Extracts memory fragments from session transcripts |
 | `update-recent` | Every 10 min | Promotes recent fragments into the agent's context |
 | `memory-gc` | Daily at 4am UTC | Garbage-collects stale or duplicate memory fragments |
-| `pacman-upgrade` | Daily at 5am | Keeps the container's Arch packages current |
+| `system-upgrade` | Daily at 5am | Keeps the container's distro packages current (`pacman` on Arch, `dnf` on Fedora) |
 
 These jobs are yours after creation — edit or delete them with `term-llm jobs list` and `term-llm jobs update`.
 

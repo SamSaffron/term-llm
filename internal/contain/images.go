@@ -52,8 +52,8 @@ func ImageDir(name string) (string, error) {
 	return filepath.Join(root, name), nil
 }
 
-// AgentImageDockerfilePath returns the stable managed Dockerfile path for the
-// built-in agent runtime image.
+// AgentImageDockerfilePath returns the stable managed legacy Arch Dockerfile
+// path for the built-in agent runtime image.
 func AgentImageDockerfilePath() (string, error) {
 	dir, err := ImageDir("agent")
 	if err != nil {
@@ -132,13 +132,20 @@ func SyncImage(name string, force bool) (ImageSyncResult, error) {
 	}
 
 	result := ImageSyncResult{Name: name, Dir: dir}
-	// The managed marker intentionally lives only in the Dockerfile so it cannot
-	// leak into bootstrap prompts. A managed Dockerfile marks the whole image
+	// The managed marker intentionally lives only in Dockerfiles so it cannot
+	// leak into bootstrap prompts. Any managed Dockerfile marks the whole image
 	// directory as safe for updating marker-free companion assets.
 	managedDir := false
-	if existing, err := os.ReadFile(filepath.Join(dir, "Dockerfile")); err == nil {
-		managedDir = isManagedImageFile(existing)
-	} else if !os.IsNotExist(err) {
+	if matches, err := filepath.Glob(filepath.Join(dir, "Dockerfile*")); err == nil {
+		for _, path := range matches {
+			if existing, err := os.ReadFile(path); err == nil && isManagedImageFile(existing) {
+				managedDir = true
+				break
+			} else if err != nil && !os.IsNotExist(err) {
+				return ImageSyncResult{}, err
+			}
+		}
+	} else {
 		return ImageSyncResult{}, err
 	}
 	base := filepath.ToSlash(filepath.Join("images", name))
@@ -212,7 +219,8 @@ func addManagedImageHeader(rel string, data []byte) []byte {
 }
 
 func isImageDockerfile(rel string) bool {
-	return filepath.ToSlash(rel) == "Dockerfile"
+	base := filepath.Base(filepath.ToSlash(rel))
+	return base == "Dockerfile" || strings.HasPrefix(base, "Dockerfile.")
 }
 
 func isManagedImageFile(data []byte) bool {

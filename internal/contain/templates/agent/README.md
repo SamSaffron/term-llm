@@ -25,11 +25,19 @@ Open shell:
 term-llm contain shell {{name}}
 ```
 
-Rebuild after changing `TERM_LLM_VERSION` or when you want a fresh managed image:
+Rebuild after changing `TERM_LLM_VERSION`, `AGENT_DISTRO`, `AGENT_PLATFORM`,
+`AGENT_BASE_IMAGE`, or when you want a fresh managed image:
 
 ```sh
 term-llm contain rebuild {{name}}
 ```
+
+The managed image supports `AGENT_DISTRO=arch` and `AGENT_DISTRO=fedora`.
+Arch keeps the original pacman/AUR-based environment and defaults to
+`linux/amd64` because Docker's official `archlinux:latest` image is amd64.
+Fedora uses official multi-arch images and defaults to native `linux/arm64`,
+which is the recommended Apple Silicon path. `AGENT_BASE_IMAGE` can be changed
+to a compatible base image for the selected distro.
 
 Stop without deleting state:
 

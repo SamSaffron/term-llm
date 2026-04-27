@@ -12,6 +12,14 @@ prompts:
     default:
       generate: hex
       bytes: 24
+  - id: agent_distro
+    label: "Agent image distro"
+    type: select
+    default:
+      generate: agent_distro
+    options:
+      - arch
+      - fedora
   - id: provider
     label: "LLM provider"
     type: select

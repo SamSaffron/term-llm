@@ -25,7 +25,7 @@ Default jobs:
 | `mine-sessions` | every 30 min | Mine session transcripts into memory fragments. |
 | `update-recent` | every 10 min | Promote fragments into `recent.md`. |
 | `memory-gc` | daily 04:00 UTC | Garbage-collect stale or duplicate memory fragments. |
-| `pacman-upgrade` | daily 05:00 UTC | Run `sudo pacman -Syu --noconfirm`. |
+| `system-upgrade` | Daily 05:00 UTC | Run the distro package upgrade (`pacman -Syu` on Arch, `dnf upgrade` on Fedora). |
 
 ## Inspecting jobs
 

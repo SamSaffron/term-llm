@@ -142,6 +142,9 @@ func resolvePromptDefault(raw any) (string, error) {
 }
 
 func resolveGeneratedDefault(m map[string]any) (string, error) {
+	if m["generate"] == "agent_distro" {
+		return defaultAgentDistro(), nil
+	}
 	if m["generate"] == "hex" {
 		bytesN := 24
 		if b, ok := m["bytes"]; ok {

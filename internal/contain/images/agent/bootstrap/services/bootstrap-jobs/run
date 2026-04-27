@@ -4,7 +4,7 @@
 # Jobs are user-owned after creation: edit/delete via term-llm jobs CLI.
 
 if [ "$(id -un)" != "agent" ]; then
-  exec sudo -Hu agent env AGENT_NAME="${AGENT_NAME:-agent}" "$0" "$@"
+  exec sudo -Hu agent env AGENT_NAME="${AGENT_NAME:-agent}" AGENT_DISTRO="${AGENT_DISTRO:-arch}" "$0" "$@"
 fi
 
 SENTINEL="/home/agent/.config/term-llm/.jobs-bootstrapped"
@@ -70,14 +70,27 @@ term-llm jobs create --data "{
   \"misfire_policy\": \"skip\"
 }"
 
-# pacman-upgrade — keep the container's Arch packages current
+SYSTEM_UPGRADE_ARGS='["pacman", "-Syu", "--noconfirm"]'
+case "${AGENT_DISTRO:-arch}" in
+  arch)
+    SYSTEM_UPGRADE_ARGS='["pacman", "-Syu", "--noconfirm"]'
+    ;;
+  fedora)
+    SYSTEM_UPGRADE_ARGS='["dnf", "-y", "upgrade"]'
+    ;;
+  *)
+    echo "bootstrap-jobs: unknown AGENT_DISTRO=${AGENT_DISTRO}; defaulting system-upgrade to pacman" >&2
+    ;;
+esac
+
+# system-upgrade — keep the container distro packages current
 term-llm jobs create --data "{
-  \"name\": \"pacman-upgrade\",
+  \"name\": \"system-upgrade\",
   \"enabled\": true,
   \"runner_type\": \"program\",
   \"runner_config\": {
     \"command\": \"sudo\",
-    \"args\": [\"pacman\", \"-Syu\", \"--noconfirm\"]
+    \"args\": $SYSTEM_UPGRADE_ARGS
   },
   \"trigger_type\": \"cron\",
   \"trigger_config\": { \"expression\": \"0 5 * * *\", \"timezone\": \"UTC\" },

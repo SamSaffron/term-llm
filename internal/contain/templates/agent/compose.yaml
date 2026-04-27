@@ -10,10 +10,12 @@ services:
   app:
     build:
       context: "{{agent_image_dir}}"
-      dockerfile: Dockerfile
+      dockerfile: "Dockerfile.${AGENT_DISTRO:-arch}"
       args:
+        AGENT_BASE_IMAGE: "${AGENT_BASE_IMAGE:-archlinux:latest}"
         TERM_LLM_VERSION: "${TERM_LLM_VERSION:-latest}"
-    image: term-llm-agent:{{name}}-{{agent_image_hash}}
+    platform: "${AGENT_PLATFORM:-linux/amd64}"
+    image: term-llm-agent:${AGENT_DISTRO:-arch}-{{name}}-{{agent_image_hash}}
     user: root
     restart: unless-stopped
     env_file: .env

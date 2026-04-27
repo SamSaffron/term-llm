@@ -25,9 +25,26 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, want := range []string{managedImageMarker, "FROM archlinux:latest", "bash-completion", "zsh", "kitty-terminfo", "alias tl=term-llm", "compdef tl=term-llm", "term-llm config completion bash > /usr/share/bash-completion/completions/term-llm", "term-llm config completion zsh > /usr/share/zsh/site-functions/_term-llm", "curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh", "TERM_LLM_INSTALL_DIR=/usr/local/bin sh", "useradd -m -s /bin/zsh -G wheel agent", "agent ALL=(ALL) NOPASSWD: ALL", "sudo -Hu agent playwright install chromium", "git clone https://github.com/samsaffron/term-llm.git /home/agent/source/term-llm", "COPY bootstrap/ /opt/term-llm/bootstrap/", "COPY entrypoint.sh /entrypoint.sh", "ENTRYPOINT [\"/entrypoint.sh\"]", "https://claude.ai/install.sh", "/home/agent/.local/bin/claude", "/usr/local/bin/claude --version"} {
+	for _, want := range []string{managedImageMarker, "ARG AGENT_BASE_IMAGE=archlinux:latest", "FROM ${AGENT_BASE_IMAGE}", "bash-completion", "zsh", "kitty-terminfo", "alias tl=term-llm", "compdef tl=term-llm", "term-llm config completion bash > /usr/share/bash-completion/completions/term-llm", "term-llm config completion zsh > /usr/share/zsh/site-functions/_term-llm", "curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh", "TERM_LLM_INSTALL_DIR=/usr/local/bin sh", "useradd -m -s /bin/zsh -G wheel agent", "agent ALL=(ALL) NOPASSWD: ALL", "sudo -Hu agent playwright install chromium", "git clone https://github.com/samsaffron/term-llm.git /home/agent/source/term-llm", "COPY bootstrap/ /opt/term-llm/bootstrap/", "COPY entrypoint.sh /entrypoint.sh", "ENTRYPOINT [\"/entrypoint.sh\"]", "https://claude.ai/install.sh", "/home/agent/.local/bin/claude", "/usr/local/bin/claude --version"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("Dockerfile missing %q", want)
+		}
+	}
+	archData, err := os.ReadFile(filepath.Join(result.Dir, "Dockerfile.arch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(archData), managedImageMarker) || !strings.Contains(string(archData), "ARG AGENT_BASE_IMAGE=archlinux:latest") {
+		t.Fatalf("Dockerfile.arch was not synced as managed Arch Dockerfile")
+	}
+	fedoraData, err := os.ReadFile(filepath.Join(result.Dir, "Dockerfile.fedora"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fedoraText := string(fedoraData)
+	for _, want := range []string{managedImageMarker, "ARG AGENT_BASE_IMAGE=fedora:43", "FROM ${AGENT_BASE_IMAGE}", "dnf -y upgrade", "git", "gcc-c++", "diffutils", "uv pip install playwright --system", "https://github.com/void-linux/runit.git", "gcc -std=gnu17 -O2 -Wall -Wno-error=incompatible-pointer-types -Wno-error=implicit-function-declaration", "sed -i '1i#include <grp.h>' chkshsgr.c", "make runsvdir runsv sv utmpset", "install -m 0755 runsvdir runsv sv utmpset", "/etc/bashrc", "/etc/zshrc"} {
+		if !strings.Contains(fedoraText, want) {
+			t.Fatalf("Dockerfile.fedora missing %q", want)
 		}
 	}
 	for _, rel := range []string{"entrypoint.sh", "bootstrap/bootstrap.yaml", "bootstrap/system.md", "bootstrap/soul.md", "bootstrap/services/webui/run", "bootstrap/services/jobs/run", "bootstrap/services/bootstrap-jobs/run", "bootstrap/skills/memory/SKILL.md", "bootstrap/skills/jobs/SKILL.md", "bootstrap/memory/recent.md", "bootstrap/scripts/update.sh"} {
@@ -92,7 +109,7 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 		if rel == "bootstrap/services/webui/run" && !strings.Contains(string(data), "--files-dir /home/agent/Files") {
 			t.Fatalf("webui should serve files from agent home")
 		}
-		if rel == "bootstrap/services/bootstrap-jobs/run" && (!strings.Contains(string(data), "exec sudo -Hu agent") || !strings.Contains(string(data), `\"command\": \"sudo\"`) || !strings.Contains(string(data), `\"pacman\"`)) {
+		if rel == "bootstrap/services/bootstrap-jobs/run" && (!strings.Contains(string(data), "exec sudo -Hu agent") || !strings.Contains(string(data), `\"command\": \"sudo\"`) || !strings.Contains(string(data), `\"system-upgrade\"`) || !strings.Contains(string(data), `"pacman"`) || !strings.Contains(string(data), `"dnf"`)) {
 			t.Fatalf("bootstrap jobs should run as agent and use sudo for package upgrades")
 		}
 		if rel == "bootstrap/system.md" {

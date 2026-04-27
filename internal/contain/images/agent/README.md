@@ -3,7 +3,7 @@ Managed term-llm agent runtime image asset.
 This directory is written by `term-llm contain image sync`.
 Fork it if you want custom image behavior.
 
-The default Dockerfile installs `term-llm` with the official release installer:
+The selected Dockerfile installs `term-llm` with the official release installer:
 
     curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh
 
@@ -18,7 +18,9 @@ image.
 
 This directory is a complete Docker build context. It contains:
 
-    Dockerfile
+    Dockerfile              # legacy Arch entrypoint for existing workspaces
+    Dockerfile.arch
+    Dockerfile.fedora
     entrypoint.sh
     bootstrap/bootstrap.yaml
     bootstrap/system.md

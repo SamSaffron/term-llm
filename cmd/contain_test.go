@@ -110,7 +110,7 @@ func TestContainNewDefaultTemplateIsAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(compose), "term-llm-agent:defaultagent-"+hash) {
+	if !strings.Contains(string(compose), "term-llm-agent:${AGENT_DISTRO:-arch}-defaultagent-"+hash) {
 		t.Fatalf("default template did not render agent compose with image hash %q: %s", hash, compose)
 	}
 }
@@ -296,7 +296,7 @@ func TestContainNewAgentTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(compose), "term-llm-agent:agentbox-"+hash) {
+	if !strings.Contains(string(compose), "term-llm-agent:${AGENT_DISTRO:-arch}-agentbox-"+hash) {
 		t.Fatalf("compose missing agent image tag with hash %q:\n%s", hash, compose)
 	}
 	envData, err := os.ReadFile(filepath.Join(filepath.Dir(composePath), ".env"))

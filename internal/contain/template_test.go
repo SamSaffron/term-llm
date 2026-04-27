@@ -100,8 +100,9 @@ func TestCreateWorkspaceBuiltinAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir, err := CreateWorkspace("bot", CreateOptions{Template: "agent", CWD: t.TempDir(), NoInput: true, Values: map[string]string{
-		"provider": "chatgpt",
-		"web_port": "9090",
+		"agent_distro": "arch",
+		"provider":     "chatgpt",
+		"web_port":     "9090",
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -115,7 +116,7 @@ func TestCreateWorkspaceBuiltinAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"bot agent workspace", "workspace: /home/agent", "shell: /bin/zsh", "AGENT_NAME: \"bot\"", "user: root", "- bot-state:/home/agent", "org.term-llm.contain.user: \"agent\"", "restart: unless-stopped", "term-llm-agent:bot-" + hash} {
+	for _, want := range []string{"bot agent workspace", "workspace: /home/agent", "shell: /bin/zsh", "dockerfile: \"Dockerfile.${AGENT_DISTRO:-arch}\"", "AGENT_BASE_IMAGE: \"${AGENT_BASE_IMAGE:-archlinux:latest}\"", "TERM_LLM_VERSION: \"${TERM_LLM_VERSION:-latest}\"", "platform: \"${AGENT_PLATFORM:-linux/amd64}\"", "image: term-llm-agent:${AGENT_DISTRO:-arch}-bot-" + hash, "AGENT_NAME: \"bot\"", "user: root", "- bot-state:/home/agent", "org.term-llm.contain.user: \"agent\"", "restart: unless-stopped"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("agent compose missing %q:\n%s", want, text)
 		}
@@ -131,7 +132,7 @@ func TestCreateWorkspaceBuiltinAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantOAuth := "TERM_LLM_CHATGPT_OAUTH_JSON_B64=" + base64.StdEncoding.EncodeToString(oauthJSON)
-	if !strings.Contains(string(envData), "WEB_PORT=9090") || !strings.Contains(string(envData), "TERM_LLM_PROVIDER=chatgpt") || !strings.Contains(string(envData), wantOAuth) || strings.Contains(string(envData), "{{") {
+	if !strings.Contains(string(envData), "WEB_PORT=9090") || !strings.Contains(string(envData), "TERM_LLM_PROVIDER=chatgpt") || !strings.Contains(string(envData), "AGENT_DISTRO=arch") || !strings.Contains(string(envData), "AGENT_PLATFORM=linux/amd64") || !strings.Contains(string(envData), "AGENT_BASE_IMAGE=archlinux:latest") || !strings.Contains(string(envData), wantOAuth) || strings.Contains(string(envData), "{{") {
 		t.Fatalf("env not rendered correctly:\n%s", envData)
 	}
 	envInfo, err := os.Stat(filepath.Join(dir, ".env"))
@@ -147,6 +148,90 @@ func TestCreateWorkspaceBuiltinAgent(t *testing.T) {
 	}
 	if !strings.Contains(string(imageData), managedImageMarker) {
 		t.Fatalf("agent template did not sync managed image; Dockerfile = %s", imageData)
+	}
+}
+
+func TestCreateWorkspaceBuiltinAgentDefaultDistro(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir, err := CreateWorkspace("defaultbot", CreateOptions{Template: "agent", CWD: t.TempDir(), NoInput: true, Values: map[string]string{
+		"provider": "skip",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envData, err := os.ReadFile(filepath.Join(dir, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	envText := string(envData)
+	wantDistro := defaultAgentDistro()
+	if !strings.Contains(envText, "AGENT_DISTRO="+wantDistro) {
+		t.Fatalf("default env missing AGENT_DISTRO=%s:\n%s", wantDistro, envText)
+	}
+	if wantDistro == "fedora" && (!strings.Contains(envText, "AGENT_PLATFORM="+nativeLinuxPlatform()) || !strings.Contains(envText, "AGENT_BASE_IMAGE=fedora:43")) {
+		t.Fatalf("fedora default env not rendered correctly:\n%s", envText)
+	}
+	if wantDistro == "arch" && (!strings.Contains(envText, "AGENT_PLATFORM=linux/amd64") || !strings.Contains(envText, "AGENT_BASE_IMAGE=archlinux:latest")) {
+		t.Fatalf("arch default env not rendered correctly:\n%s", envText)
+	}
+}
+
+func TestCreateWorkspaceBuiltinAgentFedora(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir, err := CreateWorkspace("fedorabot", CreateOptions{Template: "agent", CWD: t.TempDir(), NoInput: true, Values: map[string]string{
+		"agent_distro": "fedora",
+		"provider":     "skip",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compose, err := os.ReadFile(filepath.Join(dir, "compose.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(compose)
+	hash, err := AgentImageHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"dockerfile: \"Dockerfile.${AGENT_DISTRO:-arch}\"", "image: term-llm-agent:${AGENT_DISTRO:-arch}-fedorabot-" + hash, "platform: \"${AGENT_PLATFORM:-linux/amd64}\""} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("fedora compose missing %q:\n%s", want, text)
+		}
+	}
+	envData, err := os.ReadFile(filepath.Join(dir, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	envText := string(envData)
+	for _, want := range []string{"AGENT_DISTRO=fedora", "AGENT_PLATFORM=" + nativeLinuxPlatform(), "AGENT_BASE_IMAGE=fedora:43", "TERM_LLM_PROVIDER=skip"} {
+		if !strings.Contains(envText, want) {
+			t.Fatalf("fedora env missing %q:\n%s", want, envText)
+		}
+	}
+	fedoraDockerfile := filepath.Join(filepath.Dir(AgentImageDockerfilePathMust(t)), "Dockerfile.fedora")
+	if _, err := os.Stat(fedoraDockerfile); err != nil {
+		t.Fatalf("fedora Dockerfile was not synced: %v", err)
+	}
+}
+
+func AgentImageDockerfilePathMust(t *testing.T) string {
+	t.Helper()
+	path, err := AgentImageDockerfilePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestCreateWorkspaceRejectsUnknownAgentDistro(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	_, err := CreateWorkspace("badbot", CreateOptions{Template: "agent", CWD: t.TempDir(), NoInput: true, Values: map[string]string{
+		"agent_distro": "gentoo",
+		"provider":     "skip",
+	}})
+	if err == nil || !strings.Contains(err.Error(), "unsupported agent_distro") {
+		t.Fatalf("CreateWorkspace error = %v", err)
 	}
 }
 

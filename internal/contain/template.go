@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
@@ -209,6 +210,9 @@ func addAgentTemplateValues(values map[string]string, opts CreateOptions) error 
 	if values == nil {
 		return nil
 	}
+	if err := addAgentDistroTemplateValues(values); err != nil {
+		return err
+	}
 	if err := addChatGPTOAuthTemplateValue(values); err != nil {
 		return err
 	}
@@ -216,6 +220,49 @@ func addAgentTemplateValues(values map[string]string, opts CreateOptions) error 
 		return err
 	}
 	return nil
+}
+
+func addAgentDistroTemplateValues(values map[string]string) error {
+	distro := values["agent_distro"]
+	if distro == "" {
+		distro = defaultAgentDistro()
+		values["agent_distro"] = distro
+	}
+	switch distro {
+	case "arch":
+		setDefaultTemplateValue(values, "agent_platform", "linux/amd64")
+		setDefaultTemplateValue(values, "agent_base_image", "archlinux:latest")
+	case "fedora":
+		setDefaultTemplateValue(values, "agent_platform", nativeLinuxPlatform())
+		setDefaultTemplateValue(values, "agent_base_image", "fedora:43")
+	default:
+		return fmt.Errorf("unsupported agent_distro %q: expected arch or fedora", distro)
+	}
+	return nil
+}
+
+func defaultAgentDistro() string {
+	if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
+		return "fedora"
+	}
+	return "arch"
+}
+
+func nativeLinuxPlatform() string {
+	switch runtime.GOARCH {
+	case "arm64":
+		return "linux/arm64"
+	case "amd64":
+		return "linux/amd64"
+	default:
+		return "linux/amd64"
+	}
+}
+
+func setDefaultTemplateValue(values map[string]string, key, value string) {
+	if values[key] == "" {
+		values[key] = value
+	}
 }
 
 func addChatGPTOAuthTemplateValue(values map[string]string) error {
