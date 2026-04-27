@@ -356,6 +356,9 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 		if baseURL == "" && chatURL == "" {
 			return nil, fmt.Errorf("provider %q requires base_url or url", name)
 		}
+		if name == "" {
+			return nil, fmt.Errorf("openai-compatible provider requires a non-empty name")
+		}
 		// Use provider name as display name, with first letter capitalized
 		displayName := strings.ToUpper(name[:1]) + name[1:]
 		p := NewOpenAICompatProviderFull(baseURL, chatURL, cfg.ResolvedAPIKey, cfg.Model, displayName, nil)
