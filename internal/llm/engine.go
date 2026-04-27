@@ -1512,8 +1512,13 @@ func buildAssistantMessageWithReasoningMetadata(text string, toolCalls []ToolCal
 // Note: When executing in parallel, EventToolExecStart/EventToolExecEnd events
 // are emitted from concurrent goroutines. While the channel is thread-safe, events
 // may arrive in non-deterministic order. Consumers should use ToolCallID to correlate
-// start/end events rather than relying on ordering.
+// start/end events rather than relying on ordering. If ctx is canceled during
+// parallel execution, it returns promptly without waiting for context-ignoring tools.
 func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, parallel bool, send eventSender, debug bool, debugRaw bool) ([]Message, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	// Fast path: single call, no concurrency overhead
 	if len(calls) == 1 {
 		return e.executeSingleToolCallSafe(ctx, calls[0], send, debug, debugRaw)
@@ -1522,6 +1527,9 @@ func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, paralle
 	if !parallel {
 		results := make([]Message, 0, len(calls))
 		for _, call := range calls {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			msgs, err := e.executeSingleToolCallSafe(ctx, call, send, debug, debugRaw)
 			if err != nil {
 				return nil, err
@@ -1541,13 +1549,10 @@ func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, paralle
 		message Message
 	}
 
-	var wg sync.WaitGroup
 	resultChan := make(chan toolResult, len(calls))
 
 	for i, call := range calls {
-		wg.Add(1)
 		go func(idx int, c ToolCall) {
-			defer wg.Done()
 			defer func() {
 				if r := recover(); r != nil {
 					errMsg := fmt.Sprintf("Error: tool panicked: %v", r)
@@ -1564,16 +1569,17 @@ func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, paralle
 		}(i, call)
 	}
 
-	// Close channel when all goroutines complete
-	go func() {
-		wg.Wait()
-		close(resultChan)
-	}()
-
-	// Collect results and maintain original order
+	// Collect results and maintain original order. The result channel is buffered
+	// to len(calls), so if the caller cancels we can return immediately without
+	// stranding tool goroutines on their final result send.
 	results := make([]Message, len(calls))
-	for r := range resultChan {
-		results[r.index] = r.message
+	for remaining := len(calls); remaining > 0; remaining-- {
+		select {
+		case r := <-resultChan:
+			results[r.index] = r.message
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 
 	return results, nil
