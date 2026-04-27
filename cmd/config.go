@@ -218,6 +218,7 @@ func printAnnotatedConfig(defaults map[string]any, rawKeys, unknownKeys map[stri
 			nested: map[string][]string{
 				"gemini":     {"model", "api_key"},
 				"openai":     {"model", "api_key"},
+				"chatgpt":    {"model"},
 				"xai":        {"model", "api_key"},
 				"venice":     {"model", "edit_model", "resolution", "api_key"},
 				"flux":       {"model", "api_key"},
