@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -402,6 +403,7 @@ func formatEventEntry(w io.Writer, evt EventEntry, opts FormatOptions, styles *u
 	case "error":
 		errMsg, _ := evt.Data["error"].(string)
 		fmt.Fprintf(w, "%s%s %s\n", ts, styles.Error.Render("ERROR"), errMsg)
+		formatProviderErrorDetails(w, evt.Data, styles)
 
 	case "retry":
 		attempt, _ := evt.Data["attempt"].(float64)
@@ -426,6 +428,118 @@ func formatEventEntry(w io.Writer, evt EventEntry, opts FormatOptions, styles *u
 			fmt.Fprintf(w, "%s%s %s\n", ts, evt.EventType, string(data))
 		}
 	}
+}
+
+func formatProviderErrorDetails(w io.Writer, data map[string]any, styles *ui.Styles) {
+	providerType, _ := data["provider_error_type"].(string)
+	if providerType != "claude_cli_command" {
+		return
+	}
+
+	fmt.Fprintf(w, "         %s\n", styles.Muted.Render("Claude CLI repro details:"))
+	if cwd, _ := data["cwd"].(string); cwd != "" {
+		fmt.Fprintf(w, "           cwd: %s\n", cwd)
+	}
+	if commandLine, _ := data["command_line"].(string); commandLine != "" {
+		fmt.Fprintf(w, "           command: %s\n", commandLine)
+	}
+	if env := formatEnvField(data["env"]); env != "" {
+		fmt.Fprintf(w, "           env: %s\n", env)
+	}
+	if preferOAuth, _ := data["prefer_oauth"].(bool); preferOAuth {
+		fmt.Fprintf(w, "           auth: prefer Claude OAuth (ANTHROPIC_API_KEY removed when present)\n")
+	}
+	if removed := formatStringSliceField(data["removed_env"]); removed != "" {
+		fmt.Fprintf(w, "           removed env: %s\n", removed)
+	}
+
+	stdinLen := intField(data, "stdin_len")
+	stdinHash, _ := data["stdin_sha256"].(string)
+	stdinTruncated, _ := data["stdin_truncated"].(bool)
+	if stdinLen > 0 || stdinHash != "" {
+		line := fmt.Sprintf("           stdin: %d bytes", stdinLen)
+		if stdinHash != "" {
+			line += " sha256=" + stdinHash
+		}
+		if stdinTruncated {
+			line += " (truncated in log)"
+		}
+		fmt.Fprintln(w, line)
+	}
+	if stdin, _ := data["stdin"].(string); strings.TrimSpace(stdin) != "" {
+		preview := stdin
+		if len(preview) > 1200 {
+			preview = preview[:1200] + "\n...[preview truncated]"
+		}
+		fmt.Fprintf(w, "           stdin preview:\n%s\n", indentBlock(preview, "             "))
+	}
+	if stdoutTail, _ := data["stdout_tail"].(string); strings.TrimSpace(stdoutTail) != "" {
+		fmt.Fprintf(w, "           stdout tail:\n%s\n", indentBlock(stdoutTail, "             "))
+	}
+	if stderrTail, _ := data["stderr_tail"].(string); strings.TrimSpace(stderrTail) != "" {
+		fmt.Fprintf(w, "           stderr tail:\n%s\n", indentBlock(stderrTail, "             "))
+	}
+	fmt.Fprintf(w, "           %s\n", styles.Muted.Render("Tip: use `term-llm debug-log show --raw <session>` for the full JSON fields."))
+}
+
+func intField(data map[string]any, name string) int {
+	switch v := data[name].(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case json.Number:
+		i, _ := v.Int64()
+		return int(i)
+	default:
+		return 0
+	}
+}
+
+func formatEnvField(v any) string {
+	m, ok := v.(map[string]any)
+	if !ok || len(m) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%v", k, m[k]))
+	}
+	return strings.Join(parts, " ")
+}
+
+func formatStringSliceField(v any) string {
+	switch values := v.(type) {
+	case []any:
+		parts := make([]string, 0, len(values))
+		for _, value := range values {
+			if s, ok := value.(string); ok && s != "" {
+				parts = append(parts, s)
+			}
+		}
+		return strings.Join(parts, ", ")
+	case []string:
+		return strings.Join(values, ", ")
+	default:
+		return ""
+	}
+}
+
+func indentBlock(s, prefix string) string {
+	s = strings.TrimRight(s, "\n")
+	if s == "" {
+		return prefix + "(empty)"
+	}
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		lines[i] = prefix + line
+	}
+	return strings.Join(lines, "\n")
 }
 
 // FormatTailEntry formats a single entry for tail mode (compact)

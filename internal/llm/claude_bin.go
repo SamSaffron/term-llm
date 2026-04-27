@@ -3,7 +3,9 @@ package llm
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +25,18 @@ import (
 // from the claude CLI subprocess for inclusion in error logs. Older lines are
 // discarded so memory stays bounded even if the CLI is chatty.
 const claudeStderrTailMaxLines = 40
+
+// claudeStdoutTailMaxLines caps trailing stdout lines captured for failed
+// claude CLI runs. These are the raw stream-json lines before term-llm parsing.
+const claudeStdoutTailMaxLines = 40
+
+// claudeDiagnosticLineMaxBytes caps any single captured stdout/stderr line so
+// a single huge JSON event cannot make the debug log unparsable.
+const claudeDiagnosticLineMaxBytes = 4 * 1024
+
+// claudeDiagnosticStdinMaxBytes is the maximum stdin payload embedded directly
+// in a failure event. The full length and SHA-256 are always logged.
+const claudeDiagnosticStdinMaxBytes = 128 * 1024
 
 // mcpCallCounter generates unique IDs for MCP tool calls
 var mcpCallCounter atomic.Int64
@@ -65,6 +79,84 @@ type ClaudeBinProvider struct {
 	// so they can be removed when the current turn finishes.
 	tempFiles   []string
 	tempFilesMu sync.Mutex
+}
+
+// ClaudeCommandError carries enough diagnostics for debug logs to reproduce or
+// inspect a failed claude CLI invocation without dumping the whole process
+// environment (which may contain secrets).
+type ClaudeCommandError struct {
+	ExitCode       int
+	Err            error
+	Args           []string
+	CommandLine    string
+	Cwd            string
+	Effort         string
+	ToolsExecuted  bool
+	PreferOAuth    bool
+	Env            map[string]string
+	RemovedEnv     []string
+	Stdin          string
+	StdinLen       int
+	StdinSHA256    string
+	StdinTruncated bool
+	StdoutTail     string
+	StderrTail     string
+}
+
+func (e *ClaudeCommandError) Error() string {
+	if e == nil {
+		return "claude command failed"
+	}
+	msg := fmt.Sprintf("claude command failed (exit %d): %v", e.ExitCode, e.Err)
+	if e.StderrTail != "" {
+		msg += "\nstderr:\n" + e.StderrTail
+	}
+	return msg
+}
+
+func (e *ClaudeCommandError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+// DebugFields is consumed by DebugLogger when this error is emitted as an
+// EventError. Keep field values JSON-friendly.
+func (e *ClaudeCommandError) DebugFields() map[string]any {
+	if e == nil {
+		return nil
+	}
+	fields := map[string]any{
+		"provider_error_type": "claude_cli_command",
+		"exit_code":           e.ExitCode,
+		"command":             "claude",
+		"args":                e.Args,
+		"command_line":        e.CommandLine,
+		"cwd":                 e.Cwd,
+		"tools_executed":      e.ToolsExecuted,
+		"prefer_oauth":        e.PreferOAuth,
+		"stdin_len":           e.StdinLen,
+		"stdin_sha256":        e.StdinSHA256,
+		"stdin_truncated":     e.StdinTruncated,
+		"stdin":               e.Stdin,
+	}
+	if e.Effort != "" {
+		fields["effort"] = e.Effort
+	}
+	if len(e.Env) > 0 {
+		fields["env"] = e.Env
+	}
+	if len(e.RemovedEnv) > 0 {
+		fields["removed_env"] = e.RemovedEnv
+	}
+	if e.StdoutTail != "" {
+		fields["stdout_tail"] = e.StdoutTail
+	}
+	if e.StderrTail != "" {
+		fields["stderr_tail"] = e.StderrTail
+	}
+	return fields
 }
 
 type claudeToolRequest struct {
@@ -352,6 +444,128 @@ func (p *ClaudeBinProvider) buildCommandEnv(effort string) []string {
 	return filtered
 }
 
+func (p *ClaudeBinProvider) newClaudeCommandError(cmdErr error, exitCode int, args []string, effort, userPrompt string, toolsExecuted bool, stdoutTail, stderrTail []string) *ClaudeCommandError {
+	cwd, _ := os.Getwd()
+	stdin, stdinTruncated := truncateClaudeDiagnosticString(userPrompt, claudeDiagnosticStdinMaxBytes)
+	sum := sha256.Sum256([]byte(userPrompt))
+	env, removedEnv := p.commandEnvDebugFields(effort)
+	return &ClaudeCommandError{
+		ExitCode:       exitCode,
+		Err:            cmdErr,
+		Args:           append([]string(nil), args...),
+		CommandLine:    shellJoin(append([]string{"claude"}, args...)),
+		Cwd:            cwd,
+		Effort:         effort,
+		ToolsExecuted:  toolsExecuted,
+		PreferOAuth:    p.preferOAuth,
+		Env:            env,
+		RemovedEnv:     removedEnv,
+		Stdin:          stdin,
+		StdinLen:       len(userPrompt),
+		StdinSHA256:    hex.EncodeToString(sum[:]),
+		StdinTruncated: stdinTruncated,
+		StdoutTail:     strings.Join(normalizeClaudeTail(stdoutTail), "\n"),
+		StderrTail:     strings.Join(normalizeClaudeTail(stderrTail), "\n"),
+	}
+}
+
+func (p *ClaudeBinProvider) commandEnvDebugFields(effort string) (map[string]string, []string) {
+	env := make(map[string]string)
+	removed := make([]string, 0, 2)
+	if p.preferOAuth {
+		if os.Getenv("ANTHROPIC_API_KEY") != "" {
+			removed = append(removed, "ANTHROPIC_API_KEY")
+		}
+		if _, ok := p.extraEnv["ANTHROPIC_API_KEY"]; ok {
+			removed = append(removed, "ANTHROPIC_API_KEY (provider env)")
+		}
+	}
+	if effort != "" {
+		env["CLAUDE_CODE_EFFORT_LEVEL"] = effort
+	}
+	for k, v := range p.extraEnv {
+		if p.preferOAuth && k == "ANTHROPIC_API_KEY" {
+			continue
+		}
+		if effort != "" && k == "CLAUDE_CODE_EFFORT_LEVEL" {
+			continue
+		}
+		env[k] = redactEnvValue(k, v)
+	}
+	if len(env) == 0 {
+		env = nil
+	}
+	if len(removed) == 0 {
+		removed = nil
+	}
+	return env, removed
+}
+
+func redactEnvValue(key, value string) string {
+	upper := strings.ToUpper(key)
+	for _, marker := range []string{"KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL"} {
+		if strings.Contains(upper, marker) {
+			if value == "" {
+				return ""
+			}
+			return "[redacted]"
+		}
+	}
+	return value
+}
+
+func recordClaudeTailLine(mu *sync.Mutex, tail *[]string, line string, maxLines int) {
+	line, _ = truncateClaudeDiagnosticString(line, claudeDiagnosticLineMaxBytes)
+	mu.Lock()
+	defer mu.Unlock()
+	*tail = append(*tail, line)
+	if len(*tail) > maxLines {
+		*tail = (*tail)[len(*tail)-maxLines:]
+	}
+}
+
+func snapshotClaudeTail(mu *sync.Mutex, tail []string) []string {
+	mu.Lock()
+	defer mu.Unlock()
+	return append([]string(nil), tail...)
+}
+
+func normalizeClaudeTail(tail []string) []string {
+	out := make([]string, len(tail))
+	for i, line := range tail {
+		out[i], _ = truncateClaudeDiagnosticString(line, claudeDiagnosticLineMaxBytes)
+	}
+	return out
+}
+
+func truncateClaudeDiagnosticString(s string, maxBytes int) (string, bool) {
+	if maxBytes <= 0 || len(s) <= maxBytes {
+		return s, false
+	}
+	return s[:maxBytes] + fmt.Sprintf("\n...[truncated %d bytes]", len(s)-maxBytes), true
+}
+
+func shellJoin(args []string) string {
+	quoted := make([]string, len(args))
+	for i, arg := range args {
+		quoted[i] = shellQuote(arg)
+	}
+	return strings.Join(quoted, " ")
+}
+
+func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || strings.ContainsRune("_+-./:=,@%", r) {
+			continue
+		}
+		return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+	}
+	return s
+}
+
 // runClaudeCommand executes the claude CLI binary with the given arguments and prompt,
 // parsing its streaming JSON output into events. Returns nil on success.
 func (p *ClaudeBinProvider) runClaudeCommand(
@@ -435,12 +649,7 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 			if debug {
 				fmt.Fprintf(os.Stderr, "[claude stderr] %s\n", line)
 			}
-			stderrMu.Lock()
-			stderrTail = append(stderrTail, line)
-			if len(stderrTail) > claudeStderrTailMaxLines {
-				stderrTail = stderrTail[len(stderrTail)-claudeStderrTailMaxLines:]
-			}
-			stderrMu.Unlock()
+			recordClaudeTailLine(&stderrMu, &stderrTail, line, claudeStderrTailMaxLines)
 		}
 	}()
 
@@ -452,12 +661,17 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 
 	lineCh := make(chan string, 256)
 	scanErrCh := make(chan error, 1)
+	var (
+		stdoutMu   sync.Mutex
+		stdoutTail []string
+	)
 	go func() {
 		scanner := bufio.NewScanner(stdout)
 		// Increase buffer size for large JSON messages
 		scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
 		for scanner.Scan() {
 			line := scanner.Text()
+			recordClaudeTailLine(&stdoutMu, &stdoutTail, line, claudeStdoutTailMaxLines)
 			if line != "" {
 				select {
 				case lineCh <- line:
@@ -506,9 +720,8 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		if errors.As(cmdErr, &exitErr) {
 			exitCode = exitErr.ExitCode()
 		}
-		stderrMu.Lock()
-		tail := strings.Join(stderrTail, "\n")
-		stderrMu.Unlock()
+		stderrSnapshot := snapshotClaudeTail(&stderrMu, stderrTail)
+		stdoutSnapshot := snapshotClaudeTail(&stdoutMu, stdoutTail)
 
 		// When MCP tools were executed, the CLI exits with code 1 because
 		// --max-turns 1 is exhausted after the tool call. This is expected;
@@ -517,16 +730,18 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		// still surface — don't swallow those just because tools ran.
 		expectedToolExit := toolsExecuted && exitCode == 1
 		if !expectedToolExit {
+			claudeErr := p.newClaudeCommandError(cmdErr, exitCode, args, effort, userPrompt, toolsExecuted, stdoutSnapshot, stderrSnapshot)
 			slog.Error("claude command failed",
 				"exit_code", exitCode,
 				"tools_executed", toolsExecuted,
 				"effort", effort,
-				"stderr_tail", tail,
+				"command_line", claudeErr.CommandLine,
+				"stdin_len", claudeErr.StdinLen,
+				"stdin_sha256", claudeErr.StdinSHA256,
+				"stderr_tail", claudeErr.StderrTail,
+				"stdout_tail", claudeErr.StdoutTail,
 			)
-			if tail != "" {
-				return fmt.Errorf("claude command failed (exit %d): %w\nstderr:\n%s", exitCode, cmdErr, tail)
-			}
-			return fmt.Errorf("claude command failed (exit %d): %w", exitCode, cmdErr)
+			return claudeErr
 		}
 	}
 

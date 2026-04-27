@@ -3,6 +3,7 @@ package llm
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -159,6 +160,65 @@ func TestDebugLogger_LogEvent(t *testing.T) {
 
 	if count != 3 {
 		t.Errorf("expected 3 events, got %d", count)
+	}
+}
+
+func TestDebugLogger_LogEventIncludesErrorDebugFields(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessionID := "test-error-debug-fields"
+
+	logger, err := NewDebugLogger(tmpDir, sessionID)
+	if err != nil {
+		t.Fatalf("failed to create debug logger: %v", err)
+	}
+	defer logger.Close()
+
+	logger.LogEvent(Event{Type: EventError, Err: debugFieldsTestError{err: errors.New("boom")}})
+	if err := logger.Close(); err != nil {
+		t.Fatalf("failed to close logger: %v", err)
+	}
+
+	logFile := filepath.Join(tmpDir, sessionID+".jsonl")
+	file, err := os.Open(logFile)
+	if err != nil {
+		t.Fatalf("failed to open log file: %v", err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	if !scanner.Scan() {
+		t.Fatal("expected at least one line in log file")
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+		t.Fatalf("failed to parse log entry: %v", err)
+	}
+	data, ok := entry["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected event data object, got %#v", entry["data"])
+	}
+	if got := data["error"]; got != "boom" {
+		t.Fatalf("error = %#v, want boom", got)
+	}
+	if got := data["command_line"]; got != "claude --print" {
+		t.Fatalf("command_line = %#v, want claude --print", got)
+	}
+	if got := data["stdin_len"]; got != float64(12) {
+		t.Fatalf("stdin_len = %#v, want 12", got)
+	}
+}
+
+type debugFieldsTestError struct {
+	err error
+}
+
+func (e debugFieldsTestError) Error() string { return e.err.Error() }
+
+func (e debugFieldsTestError) DebugFields() map[string]any {
+	return map[string]any{
+		"error":        "should not override canonical error",
+		"command_line": "claude --print",
+		"stdin_len":    12,
 	}
 }
 

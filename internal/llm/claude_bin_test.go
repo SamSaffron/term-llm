@@ -795,6 +795,72 @@ func TestClaudeBinProvider_BuildCommandEnv(t *testing.T) {
 	}
 }
 
+func TestClaudeBinProvider_CommandErrorDebugFields(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "secret")
+	p := NewClaudeBinProvider("opus-max", map[string]string{
+		"CUSTOM_ENV":        "value with spaces",
+		"SENSITIVE_TOKEN":   "super-secret",
+		"ANTHROPIC_API_KEY": "config-secret",
+	})
+
+	err := p.newClaudeCommandError(
+		fmt.Errorf("exit status 7"),
+		7,
+		[]string{"--print", "--model", "opus", "--settings", `{"disableAllHooks":true}`},
+		"max",
+		"User: hello",
+		false,
+		[]string{`{"type":"system","subtype":"init"}`},
+		[]string{"fatal problem"},
+	)
+
+	if !strings.Contains(err.Error(), "claude command failed (exit 7)") {
+		t.Fatalf("unexpected error string: %s", err.Error())
+	}
+	fields := err.DebugFields()
+	if got := fields["command_line"].(string); !strings.Contains(got, "claude --print --model opus --settings") || !strings.Contains(got, `'`+`{"disableAllHooks":true}`+`'`) {
+		t.Fatalf("command_line not shell quoted as expected: %q", got)
+	}
+	if got := fields["stdin"].(string); got != "User: hello" {
+		t.Fatalf("stdin = %q", got)
+	}
+	if got := fields["stdin_len"].(int); got != len("User: hello") {
+		t.Fatalf("stdin_len = %d", got)
+	}
+	if got := fields["stderr_tail"].(string); got != "fatal problem" {
+		t.Fatalf("stderr_tail = %q", got)
+	}
+	env := fields["env"].(map[string]string)
+	if env["CLAUDE_CODE_EFFORT_LEVEL"] != "max" {
+		t.Fatalf("missing effort env: %#v", env)
+	}
+	if env["SENSITIVE_TOKEN"] != "[redacted]" {
+		t.Fatalf("sensitive env was not redacted: %#v", env)
+	}
+	removed := fields["removed_env"].([]string)
+	if len(removed) != 2 {
+		t.Fatalf("removed_env = %#v, want inherited and provider ANTHROPIC_API_KEY entries", removed)
+	}
+}
+
+func TestClaudeBinProvider_CommandErrorTruncatesDiagnostics(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+	longPrompt := strings.Repeat("x", claudeDiagnosticStdinMaxBytes+10)
+	longLine := strings.Repeat("y", claudeDiagnosticLineMaxBytes+10)
+
+	err := p.newClaudeCommandError(fmt.Errorf("exit status 1"), 1, []string{"--print"}, "", longPrompt, false, []string{longLine}, []string{longLine})
+	fields := err.DebugFields()
+	if truncated, _ := fields["stdin_truncated"].(bool); !truncated {
+		t.Fatal("expected stdin_truncated=true")
+	}
+	if got := fields["stdin"].(string); len(got) <= claudeDiagnosticStdinMaxBytes || !strings.Contains(got, "...[truncated 10 bytes]") {
+		t.Fatalf("stdin truncation missing: len=%d tail=%q", len(got), got[len(got)-40:])
+	}
+	if got := fields["stdout_tail"].(string); len(got) <= claudeDiagnosticLineMaxBytes || !strings.Contains(got, "...[truncated 10 bytes]") {
+		t.Fatalf("stdout tail truncation missing: len=%d", len(got))
+	}
+}
+
 func TestMapModelToClaudeArg(t *testing.T) {
 	tests := []struct {
 		input string

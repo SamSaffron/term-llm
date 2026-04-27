@@ -400,7 +400,16 @@ func (l *DebugLogger) LogEvent(event Event) {
 		entry.Data = map[string]string{"phase": event.Text}
 	case EventError:
 		if event.Err != nil {
-			entry.Data = map[string]string{"error": event.Err.Error()}
+			data := map[string]any{"error": event.Err.Error()}
+			if fieldsErr, ok := event.Err.(interface{ DebugFields() map[string]any }); ok {
+				for k, v := range fieldsErr.DebugFields() {
+					if k == "" || k == "error" {
+						continue
+					}
+					data[k] = v
+				}
+			}
+			entry.Data = data
 		}
 	case EventRetry:
 		entry.Data = map[string]any{
