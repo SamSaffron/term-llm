@@ -30,7 +30,7 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 			t.Fatalf("Dockerfile missing %q", want)
 		}
 	}
-	for _, rel := range []string{"entrypoint.sh", "bootstrap/bootstrap.yaml", "bootstrap/system.md", "bootstrap/services/webui/run", "bootstrap/services/jobs/run", "bootstrap/skills/memory/SKILL.md", "bootstrap/skills/jobs/SKILL.md", "bootstrap/scripts/update.sh"} {
+	for _, rel := range []string{"entrypoint.sh", "bootstrap/bootstrap.yaml", "bootstrap/system.md", "bootstrap/soul.md", "bootstrap/services/webui/run", "bootstrap/services/jobs/run", "bootstrap/skills/memory/SKILL.md", "bootstrap/skills/jobs/SKILL.md", "bootstrap/memory/recent.md", "bootstrap/scripts/update.sh"} {
 		data, err := os.ReadFile(filepath.Join(result.Dir, rel))
 		if err != nil {
 			t.Fatalf("missing synced asset %s: %v", rel, err)
@@ -40,6 +40,9 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 		}
 		if rel == "entrypoint.sh" && !strings.Contains(string(data), "TERM_LLM_CHATGPT_OAUTH_JSON_B64") {
 			t.Fatalf("entrypoint missing ChatGPT OAuth hydration")
+		}
+		if rel == "entrypoint.sh" && !strings.Contains(string(data), "copy_tree_once \"$BOOTSTRAP_DIR/memory\" \"$AGENT_DIR/memory\"") {
+			t.Fatalf("entrypoint missing memory seed copy")
 		}
 		if rel == "entrypoint.sh" && !strings.Contains(string(data), "default_provider") {
 			t.Fatalf("entrypoint missing first-boot default_provider config generation")
@@ -72,9 +75,26 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 			if !strings.Contains(string(data), "~/source/term-llm") {
 				t.Fatalf("system prompt missing term-llm source path")
 			}
-			for _, want := range []string{"## Jobs and Services", "term-llm jobs list", "bootstrap-jobs", "runit"} {
+			for _, want := range []string{"## REMOVE AFTER ONBOARDING", "Learn what the user prefers to be called", "persistent memory", "## /REMOVE AFTER ONBOARDING"} {
+				if !strings.Contains(string(data), want) {
+					t.Fatalf("system prompt missing onboarding detail %q", want)
+				}
+			}
+			for _, want := range []string{"## Action Discipline", "inspect, act, verify, summarize", "vague future-tense promises"} {
+				if !strings.Contains(string(data), want) {
+					t.Fatalf("system prompt missing action discipline detail %q", want)
+				}
+			}
+			for _, want := range []string{"## Jobs and Services", "term-llm jobs list", "bootstrap-jobs", "runit", "memory/recent.md"} {
 				if !strings.Contains(string(data), want) {
 					t.Fatalf("system prompt missing jobs/services detail %q", want)
+				}
+			}
+		}
+		if rel == "bootstrap/soul.md" {
+			for _, want := range []string{"Never announce work and then stop", "promise without", "worse than silence"} {
+				if !strings.Contains(string(data), want) {
+					t.Fatalf("soul prompt missing action discipline detail %q", want)
 				}
 			}
 		}

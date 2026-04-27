@@ -170,6 +170,7 @@ bootstrap_seed_once() {
   render_file_once "$BOOTSTRAP_DIR/soul.md" "$AGENT_DIR/soul.md" "soul"
   copy_tree_once "$BOOTSTRAP_DIR/services" "$CONFIG_DIR/services" "services"
   copy_tree_once "$BOOTSTRAP_DIR/skills" "$CONFIG_DIR/skills" "skills"
+  copy_tree_once "$BOOTSTRAP_DIR/memory" "$AGENT_DIR/memory" "memory"
   copy_tree_once "$BOOTSTRAP_DIR/scripts" "$AGENT_DIR/scripts" "agent scripts"
 
   if [ ! -f "$AGENT_DIR/agent.yaml" ]; then
