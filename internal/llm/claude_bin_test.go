@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -337,7 +338,7 @@ func TestDispatchClaudeEvents_SurfacesPermissionDenialResult(t *testing.T) {
 		if ev.Type != EventTextDelta {
 			t.Fatalf("expected EventTextDelta, got %+v", ev)
 		}
-		if ev.Text != "Permission denied to use mcp__term_llm__shell" {
+		if ev.Text != "Claude Code denied `mcp__term_llm__shell` before term-llm could execute it.\nterm-llm did not execute the tool call." {
 			t.Fatalf("unexpected permission denial text: %q", ev.Text)
 		}
 	default:
@@ -882,6 +883,40 @@ func TestClaudeBinProvider_BuildCommandEnvRootPreservesBubblewrapMarker(t *testi
 	}
 	if !strings.Contains(joined, "CLAUDE_CODE_BUBBLEWRAP=1") {
 		t.Fatal("expected inherited CLAUDE_CODE_BUBBLEWRAP=1 to be preserved")
+	}
+}
+
+func TestClaudeBinProvider_UserFacingCommandErrorKeepsDiagnosticsOutOfErrorString(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+	claudeErr := p.newClaudeCommandError(
+		fmt.Errorf("exit status 1"),
+		1,
+		[]string{"--print"},
+		"",
+		"User: hello",
+		false,
+		[]string{`{"type":"result","is_error":true}`},
+		[]string{"", "permission denied by managed policy", "extra stderr detail"},
+	)
+
+	err := p.userFacingClaudeCommandError(claudeErr)
+	msg := err.Error()
+	if !strings.Contains(msg, "Claude Code denied a tool call before term-llm could execute it") {
+		t.Fatalf("unexpected user-facing error: %q", msg)
+	}
+	if strings.Contains(msg, "extra stderr detail") || strings.Contains(msg, `{"type":"result"}`) {
+		t.Fatalf("user-facing error leaked diagnostic tail: %q", msg)
+	}
+	fieldsErr, ok := err.(interface{ DebugFields() map[string]any })
+	if !ok {
+		t.Fatal("expected user-facing error to expose debug fields")
+	}
+	fields := fieldsErr.DebugFields()
+	if got := fields["stderr_tail"].(string); !strings.Contains(got, "extra stderr detail") {
+		t.Fatalf("debug fields lost stderr tail: %q", got)
+	}
+	if !errors.Is(err, claudeErr) {
+		t.Fatal("expected user-facing error to unwrap to ClaudeCommandError")
 	}
 }
 

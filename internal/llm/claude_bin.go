@@ -103,6 +103,40 @@ type ClaudeCommandError struct {
 	StderrTail     string
 }
 
+type UserFacingProviderError struct {
+	Summary string
+	Detail  string
+	Cause   error
+}
+
+func (e *UserFacingProviderError) Error() string {
+	if e == nil {
+		return "provider error"
+	}
+	if e.Detail != "" {
+		return e.Summary + ": " + e.Detail
+	}
+	return e.Summary
+}
+
+func (e *UserFacingProviderError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+func (e *UserFacingProviderError) DebugFields() map[string]any {
+	if e == nil || e.Cause == nil {
+		return nil
+	}
+	fieldsErr, ok := e.Cause.(interface{ DebugFields() map[string]any })
+	if !ok {
+		return nil
+	}
+	return fieldsErr.DebugFields()
+}
+
 func (e *ClaudeCommandError) Error() string {
 	if e == nil {
 		return "claude command failed"
@@ -493,6 +527,65 @@ func (p *ClaudeBinProvider) newClaudeCommandError(cmdErr error, exitCode int, ar
 	}
 }
 
+func (p *ClaudeBinProvider) userFacingClaudeCommandError(err *ClaudeCommandError) error {
+	if err == nil {
+		return nil
+	}
+	detail := firstUsefulClaudeDiagnosticLine(err.StderrTail)
+	if detail == "" {
+		detail = firstUsefulClaudeDiagnosticLine(err.StdoutTail)
+	}
+	if detail == "" && err.Err != nil {
+		detail = err.Err.Error()
+	}
+
+	combined := strings.ToLower(strings.TrimSpace(err.StderrTail + "\n" + err.StdoutTail))
+	summary := fmt.Sprintf("Claude Code exited before completing the turn (exit %d)", err.ExitCode)
+	switch {
+	case strings.Contains(combined, "cannot be used with root/sudo privileges"):
+		summary = "Claude Code refused permission bypass while running as root"
+		if detail == "" {
+			detail = "term-llm should set IS_SANDBOX=1 for root claude-bin runs"
+		}
+	case strings.Contains(combined, "not logged in") || strings.Contains(combined, "please run /login"):
+		summary = "Claude Code is not logged in"
+	case strings.Contains(combined, "bypasspermissions") &&
+		(strings.Contains(combined, "policy") || strings.Contains(combined, "managed") || strings.Contains(combined, "disabled")):
+		summary = "Claude Code managed policy blocked permission bypass"
+	case strings.Contains(combined, "permission") &&
+		(strings.Contains(combined, "denied") || strings.Contains(combined, "requires approval") || strings.Contains(combined, "refused")):
+		summary = "Claude Code denied a tool call before term-llm could execute it"
+	}
+
+	return &UserFacingProviderError{
+		Summary: summary,
+		Detail:  detail,
+		Cause:   err,
+	}
+}
+
+func firstUsefulClaudeDiagnosticLine(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "{") {
+			continue
+		}
+		return truncateOneLine(line, 240)
+	}
+	return ""
+}
+
+func truncateOneLine(text string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+	return string(runes[:maxRunes]) + "…"
+}
+
 func (p *ClaudeBinProvider) commandEnvDebugFields(effort string) (map[string]string, []string) {
 	env := make(map[string]string)
 	removed := make([]string, 0, 2)
@@ -766,7 +859,7 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 				"stderr_tail", claudeErr.StderrTail,
 				"stdout_tail", claudeErr.StdoutTail,
 			)
-			return claudeErr
+			return p.userFacingClaudeCommandError(claudeErr)
 		}
 	}
 
@@ -937,7 +1030,9 @@ func (p *ClaudeBinProvider) handleClaudeLine(
 			}
 
 			fallbackText := ""
-			if assistantFallbackText != nil {
+			if permissionDenied {
+				fallbackText = resultMsg.permissionDenialText()
+			} else if assistantFallbackText != nil {
 				fallbackText = strings.TrimSpace(*assistantFallbackText)
 			}
 			if fallbackText == "" {
@@ -1828,6 +1923,48 @@ func (m claudeResultMessage) hasPermissionDenial() bool {
 	text := strings.ToLower(strings.TrimSpace(m.Result))
 	return strings.Contains(text, "permission") &&
 		(strings.Contains(text, "denied") || strings.Contains(text, "requires approval"))
+}
+
+func (m claudeResultMessage) permissionDenialText() string {
+	tools := m.permissionDenialTools()
+	if len(tools) == 0 {
+		result := strings.TrimSpace(m.Result)
+		if result != "" {
+			return result
+		}
+		return "Claude Code denied a tool call before term-llm could execute it."
+	}
+
+	quoted := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		quoted = append(quoted, "`"+tool+"`")
+	}
+	return fmt.Sprintf("Claude Code denied %s before term-llm could execute it.\nterm-llm did not execute the tool call.", strings.Join(quoted, ", "))
+}
+
+func (m claudeResultMessage) permissionDenialTools() []string {
+	seen := make(map[string]struct{}, len(m.PermissionDenials))
+	var tools []string
+	for _, raw := range m.PermissionDenials {
+		var denial map[string]any
+		if err := json.Unmarshal(raw, &denial); err != nil {
+			continue
+		}
+		for _, key := range []string{"tool_name", "toolName", "name", "tool"} {
+			tool, ok := denial[key].(string)
+			tool = strings.TrimSpace(tool)
+			if !ok || tool == "" {
+				continue
+			}
+			if _, exists := seen[tool]; exists {
+				continue
+			}
+			seen[tool] = struct{}{}
+			tools = append(tools, tool)
+			break
+		}
+	}
+	return tools
 }
 
 type claudeStreamEvent struct {
