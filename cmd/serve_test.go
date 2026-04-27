@@ -4187,6 +4187,94 @@ func TestHandleResponses_ReturnsStableResponseID(t *testing.T) {
 	}
 }
 
+func TestHandleResponses_NonStreamingResponseIDCanBeFetchedAndReplayed(t *testing.T) {
+	srv := newTestServeServer("hello")
+	defer srv.sessionMgr.Close()
+
+	ts := newServeHTTPTestServer(srv)
+	defer ts.Close()
+
+	code, resp := doResponses(t, srv, `{"input":"hi"}`)
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+
+	responseID, _ := resp["id"].(string)
+	if responseID == "" {
+		t.Fatal("response missing id")
+	}
+
+	statusResp, err := ts.Client().Get(ts.URL + "/v1/responses/" + responseID)
+	if err != nil {
+		t.Fatalf("get response by id failed: %v", err)
+	}
+	statusBody, _ := io.ReadAll(statusResp.Body)
+	statusResp.Body.Close()
+	if statusResp.StatusCode != http.StatusOK {
+		t.Fatalf("status code = %d, want 200 (body=%s)", statusResp.StatusCode, string(statusBody))
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal(statusBody, &snapshot); err != nil {
+		t.Fatalf("unmarshal response snapshot: %v", err)
+	}
+	if got, _ := snapshot["id"].(string); got != responseID {
+		t.Fatalf("snapshot id = %q, want %q", got, responseID)
+	}
+	if got, _ := snapshot["status"].(string); got != "completed" {
+		t.Fatalf("snapshot status = %q, want completed", got)
+	}
+
+	eventsResp, err := ts.Client().Get(ts.URL + "/v1/responses/" + responseID + "/events")
+	if err != nil {
+		t.Fatalf("get response events failed: %v", err)
+	}
+	defer eventsResp.Body.Close()
+	if eventsResp.StatusCode != http.StatusOK {
+		eventsBody, _ := io.ReadAll(eventsResp.Body)
+		t.Fatalf("events status code = %d, want 200 (body=%s)", eventsResp.StatusCode, string(eventsBody))
+	}
+
+	scanner := bufio.NewScanner(eventsResp.Body)
+	sawCreated := false
+	sawDelta := false
+	sawCompleted := false
+	for {
+		eventName, data, ok := readSSEEvent(t, scanner)
+		if !ok {
+			break
+		}
+		if data == "[DONE]" {
+			break
+		}
+
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			t.Fatalf("unmarshal SSE payload: %v", err)
+		}
+		switch eventName {
+		case "response.created":
+			sawCreated = true
+			response, _ := payload["response"].(map[string]any)
+			if got, _ := response["id"].(string); got != responseID {
+				t.Fatalf("created event id = %q, want %q", got, responseID)
+			}
+		case "response.output_text.delta":
+			sawDelta = fmt.Sprint(payload["delta"]) == "hello"
+		case "response.completed":
+			sawCompleted = true
+		}
+	}
+	if !sawCreated {
+		t.Fatal("response.created event not found")
+	}
+	if !sawDelta {
+		t.Fatal("response.output_text.delta event not found")
+	}
+	if !sawCompleted {
+		t.Fatal("response.completed event not found")
+	}
+}
+
 func TestHandleResponses_IncludesSessionUsage(t *testing.T) {
 	srv := newTestServeServer("hello")
 	defer srv.sessionMgr.Close()

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 )
@@ -188,7 +187,7 @@ func parseRequestedFunctionTool(generic map[string]json.RawMessage) (llm.ToolSpe
 	return spec, true
 }
 
-func responsesFinalResponse(result serveRunResult, model string, respID string) map[string]any {
+func responsesFinalResponse(result serveRunResult, model string, respID string, created int64) map[string]any {
 	output := []map[string]any{}
 	if result.Text.Len() > 0 {
 		output = append(output, map[string]any{
@@ -214,7 +213,7 @@ func responsesFinalResponse(result serveRunResult, model string, respID string) 
 	return map[string]any{
 		"id":      respID,
 		"object":  "response",
-		"created": time.Now().Unix(),
+		"created": created,
 		"model":   model,
 		"output":  output,
 		"usage": map[string]any{

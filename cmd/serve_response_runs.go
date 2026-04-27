@@ -909,6 +909,59 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 	}
 }
 
+func (s *serveServer) storeCompletedResponseRun(runtime *serveRuntime, sessionID, previousResponseID, model string, created int64, result serveRunResult) (string, error) {
+	mgr := s.ensureResponseRuns()
+
+	respID := "resp_" + randomSuffix()
+	run := newResponseRun(respID, sessionID, previousResponseID, model, created, nil)
+	if err := mgr.create(run); err != nil {
+		return "", err
+	}
+
+	cleanup := func() {
+		mgr.delete(respID)
+	}
+	if err := run.appendEvent("response.created", map[string]any{
+		"response": map[string]any{
+			"id":      respID,
+			"object":  "response",
+			"created": created,
+			"model":   model,
+			"status":  "in_progress",
+		},
+	}); err != nil {
+		cleanup()
+		return "", err
+	}
+	if result.Text.Len() > 0 {
+		if err := run.appendEvent("response.output_text.delta", map[string]any{
+			"output_index": 0,
+			"delta":        result.Text.String(),
+		}); err != nil {
+			cleanup()
+			return "", err
+		}
+	}
+	if err := run.complete(map[string]any{
+		"response": map[string]any{
+			"id":            respID,
+			"object":        "response",
+			"created":       created,
+			"model":         model,
+			"status":        "completed",
+			"usage":         usagePayload(result.Usage),
+			"session_usage": usagePayload(result.SessionUsage),
+		},
+	}, result.Usage, result.SessionUsage); err != nil {
+		cleanup()
+		return "", err
+	}
+
+	mgr.scheduleCleanup(respID)
+	s.registerResponseID(runtime, respID, sessionID)
+	return respID, nil
+}
+
 func (s *serveServer) handleResponseByID(w http.ResponseWriter, r *http.Request) {
 	mgr := s.ensureResponseRuns()
 
