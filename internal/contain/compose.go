@@ -23,6 +23,13 @@ type Hints struct {
 	Shell          string
 	PreferredCLI   string
 	Agent          string
+	ExecRecipes    map[string]ExecRecipe
+}
+
+type ExecRecipe struct {
+	Name        string
+	Description string
+	Command     []string
 }
 
 const containUserLabel = "org.term-llm.contain.user"
@@ -84,6 +91,7 @@ func ReadComposeInfo(path string) (ComposeInfo, error) {
 			Shell:          stringValue(hintsMap["shell"]),
 			PreferredCLI:   stringValue(hintsMap["preferred_cli"]),
 			Agent:          stringValue(hintsMap["agent"]),
+			ExecRecipes:    parseExecRecipes(hintsMap["exec_recipes"]),
 		}
 	}
 
@@ -102,6 +110,66 @@ func ReadComposeInfo(path string) (ComposeInfo, error) {
 		info.Services[name] = service
 	}
 	return info, nil
+}
+
+func parseExecRecipes(raw any) map[string]ExecRecipe {
+	recipes := map[string]ExecRecipe{}
+	recipesMap, ok := asStringMap(raw)
+	if !ok {
+		return recipes
+	}
+	for name, value := range recipesMap {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		recipe := ExecRecipe{Name: name}
+		if recipeMap, ok := asStringMap(value); ok {
+			recipe.Description = stringValue(recipeMap["description"])
+			recipe.Command = stringSliceValue(recipeMap["command"])
+		} else {
+			recipe.Command = stringSliceValue(value)
+		}
+		if len(recipe.Command) == 0 {
+			continue
+		}
+		recipes[name] = recipe
+	}
+	return recipes
+}
+
+func stringSliceValue(v any) []string {
+	if v == nil {
+		return nil
+	}
+	switch values := v.(type) {
+	case []any:
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			text := strings.TrimSpace(stringValue(value))
+			if text != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	case []string:
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			text := strings.TrimSpace(value)
+			if text != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	case string:
+		return strings.Fields(values)
+	default:
+		text := strings.TrimSpace(stringValue(values))
+		if text == "" {
+			return nil
+		}
+		return []string{text}
+	}
 }
 
 func parseBuildContext(raw any) string {

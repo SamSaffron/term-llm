@@ -366,6 +366,84 @@ func TestContainNewExternalFileAndDir(t *testing.T) {
 	}
 }
 
+func TestContainExecResolvesRecipeAndAllowsRawOverride(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir, err := contain.ContainerDir("recipebox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	composePath := filepath.Join(dir, "compose.yaml")
+	compose := `x-term-llm:
+  default_service: app
+  workspace: /home/agent
+  exec_recipes:
+    agent:
+      description: Chat with agent
+      command:
+        - term-llm
+        - chat
+        - "@recipebox"
+        - --yolo
+services:
+  app:
+    image: alpine
+    labels:
+      org.term-llm.contain.user: agent
+`
+	if err := os.WriteFile(composePath, []byte(compose), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	old := containRunner
+	r := &containFakeRunner{output: []byte("\n")}
+	containRunner = r
+	t.Cleanup(func() { containRunner = old })
+
+	if _, stderr, err := executeRootForContainTest(t, "contain", "exec", "recipebox", "agent", "hello"); err != nil {
+		t.Fatalf("exec recipe error = %v stderr=%s", err, stderr)
+	}
+	if _, stderr, err := executeRootForContainTest(t, "contain", "exec", "recipebox", "--", "agent", "hello"); err != nil {
+		t.Fatalf("exec raw override error = %v stderr=%s", err, stderr)
+	}
+	if len(r.calls) != 2 {
+		t.Fatalf("runner calls = %#v", r.calls)
+	}
+	if !strings.Contains(r.calls[0], " app term-llm chat @recipebox --yolo hello") {
+		t.Fatalf("recipe call = %q", r.calls[0])
+	}
+	if !strings.Contains(r.calls[1], " app agent hello") || strings.Contains(r.calls[1], "term-llm chat") {
+		t.Fatalf("raw override call = %q", r.calls[1])
+	}
+}
+
+func TestContainNewAgentPrintsNextStepsLastWithWebUI(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	containNewTemplate = "agent"
+	if err := containNewCmd.Flags().Set("template", "agent"); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, err := executeRootForContainTest(t, "contain", "new", "tipbox", "--no-input", "--set", "provider=skip", "--set", "web_port=8383")
+	if err != nil {
+		t.Fatalf("contain new error = %v stderr=%s", err, stderr)
+	}
+	if !strings.Contains(stdout, "Chat with agent: term-llm contain exec tipbox agent") {
+		t.Fatalf("stdout missing recipe tip: %q", stdout)
+	}
+	if !strings.Contains(stdout, "Force raw command if a recipe collides: term-llm contain exec tipbox -- <cmd...>") {
+		t.Fatalf("stdout missing raw override tip: %q", stdout)
+	}
+	if !strings.Contains(stdout, "Web UI: http://localhost:8383/chat") || !strings.Contains(stdout, "Web UI bearer token:") {
+		t.Fatalf("stdout missing web UI tip: %q", stdout)
+	}
+	last := strings.TrimSpace(stdout)
+	if !strings.Contains(last[strings.LastIndex(last, "Next steps:"):], "Web UI bearer token:") {
+		t.Fatalf("next-step tip should include final web UI token, got: %q", stdout)
+	}
+}
+
 func TestContainImageSyncCommand(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	containImageSyncForce = false

@@ -153,9 +153,22 @@ func Exec(ctx context.Context, runner Runner, name string, cmdArgs []string, std
 	if len(cmdArgs) == 0 {
 		return Shell(ctx, runner, name, stdin, stdout, stderr)
 	}
+	forceRaw := false
+	if cmdArgs[0] == "--" {
+		forceRaw = true
+		cmdArgs = cmdArgs[1:]
+		if len(cmdArgs) == 0 {
+			return Shell(ctx, runner, name, stdin, stdout, stderr)
+		}
+	}
 	info, dir, err := composeInfoForCommand(name)
 	if err != nil {
 		return err
+	}
+	if !forceRaw {
+		if recipe, ok := info.Hints.ExecRecipes[cmdArgs[0]]; ok {
+			cmdArgs = append(append([]string{}, recipe.Command...), cmdArgs[1:]...)
+		}
 	}
 	args, _, err := ComposeBaseArgs(name)
 	if err != nil {

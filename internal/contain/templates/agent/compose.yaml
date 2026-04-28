@@ -5,6 +5,14 @@ x-term-llm:
   shell: /bin/zsh
   preferred_cli: term-llm
   agent: "{{name}}"
+  exec_recipes:
+    agent:
+      description: "Chat with this term-llm agent"
+      command:
+        - term-llm
+        - chat
+        - "@{{name}}"
+        - --yolo
 
 services:
   app:

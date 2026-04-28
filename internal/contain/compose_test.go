@@ -13,6 +13,15 @@ func TestReadComposeInfoHintsAndLabels(t *testing.T) {
   shell: /bin/bash
   preferred_cli: term-llm
   agent: developer
+  exec_recipes:
+    agent:
+      description: Chat with agent
+      command:
+        - term-llm
+        - chat
+        - "@developer"
+    redis:
+      command: redis-cli -h redis
 services:
   web:
     build:
@@ -38,6 +47,12 @@ services:
 	}
 	if info.DefaultService() != "web" || info.Shell() != "/bin/bash" {
 		t.Fatalf("hints = %+v", info.Hints)
+	}
+	if got := info.Hints.ExecRecipes["agent"].Command; len(got) != 3 || got[0] != "term-llm" || got[2] != "@developer" {
+		t.Fatalf("agent recipe command = %#v", got)
+	}
+	if got := info.Hints.ExecRecipes["redis"].Command; len(got) != 3 || got[0] != "redis-cli" || got[2] != "redis" {
+		t.Fatalf("redis recipe command = %#v", got)
 	}
 	if got := info.Services["web"].Labels["org.term-llm.contain.name"]; got != "app" {
 		t.Fatalf("map label = %q", got)

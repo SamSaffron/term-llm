@@ -25,6 +25,20 @@ Open shell:
 term-llm contain shell {{name}}
 ```
 
+Chat with the agent in your terminal using the workspace exec recipe:
+
+```sh
+term-llm contain exec {{name}} agent
+```
+
+`contain exec` first checks `x-term-llm.exec_recipes` in `compose.yaml`; if
+there is no matching recipe it runs the command directly in the container. Use
+`--` after the workspace name to force a raw command when a recipe name collides.
+
+```sh
+term-llm contain exec {{name}} -- term-llm --version
+```
+
 Rebuild after changing `TERM_LLM_VERSION`, `AGENT_DISTRO`, `AGENT_PLATFORM`,
 `AGENT_BASE_IMAGE`, or when you want a fresh managed image:
 

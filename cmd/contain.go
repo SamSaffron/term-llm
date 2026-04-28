@@ -52,16 +52,12 @@ var containNewCmd = &cobra.Command{
 			return err
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "Created contain workspace %q at %s\n", name, dir)
-		printContainWebUIInfo(cmd, dir)
 		fmt.Fprintf(cmd.OutOrStdout(), "Edit compose.yaml directly.\n")
 		started, err := promptAndMaybeStartContainWorkspace(cmd, name)
 		if err != nil {
 			return err
 		}
-		if !started {
-			fmt.Fprintf(cmd.OutOrStdout(), "Start with: term-llm contain start %s\n", name)
-		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Open shell with: term-llm contain shell %s\n", name)
+		printContainNextSteps(cmd, name, started)
 		return nil
 	},
 }
@@ -158,9 +154,6 @@ var containExecCmd = &cobra.Command{
 	ValidArgsFunction:  containWorkspaceNameCompletion,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cmdArgs := args[1:]
-		if len(cmdArgs) > 0 && cmdArgs[0] == "--" {
-			cmdArgs = cmdArgs[1:]
-		}
 		return contain.Exec(cmd.Context(), containRunner, args[0], cmdArgs, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 	},
 }
@@ -316,7 +309,11 @@ func parseContainSetFlags(values []string) (map[string]string, error) {
 	return out, nil
 }
 
-func printContainWebUIInfo(cmd *cobra.Command, dir string) {
+func printContainWebUIInfo(cmd *cobra.Command, name string) {
+	dir, err := contain.ContainerDir(name)
+	if err != nil {
+		return
+	}
 	envPath := filepath.Join(dir, ".env")
 	values, err := readContainEnvFile(envPath)
 	if err != nil {
@@ -337,8 +334,36 @@ func printContainWebUIInfo(cmd *cobra.Command, dir string) {
 	if !strings.HasPrefix(basePath, "/") {
 		basePath = "/" + basePath
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Web UI: http://localhost:%s%s\n", port, basePath)
-	fmt.Fprintf(cmd.OutOrStdout(), "Web UI bearer token: %s\n", token)
+	fmt.Fprintf(cmd.OutOrStdout(), "  Web UI: http://localhost:%s%s\n", port, basePath)
+	fmt.Fprintf(cmd.OutOrStdout(), "  Web UI bearer token: %s\n", token)
+}
+
+func printContainNextSteps(cmd *cobra.Command, name string, started bool) {
+	fmt.Fprintln(cmd.OutOrStdout())
+	fmt.Fprintln(cmd.OutOrStdout(), "Next steps:")
+	if !started {
+		fmt.Fprintf(cmd.OutOrStdout(), "  Start: term-llm contain start %s\n", name)
+	}
+	if hasContainExecRecipe(name, "agent") {
+		fmt.Fprintf(cmd.OutOrStdout(), "  Chat with agent: term-llm contain exec %s agent\n", name)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "  Open shell: term-llm contain shell %s\n", name)
+	fmt.Fprintf(cmd.OutOrStdout(), "  Run command/recipe: term-llm contain exec %s <cmd-or-recipe> [args...]\n", name)
+	fmt.Fprintf(cmd.OutOrStdout(), "  Force raw command if a recipe collides: term-llm contain exec %s -- <cmd...>\n", name)
+	printContainWebUIInfo(cmd, name)
+}
+
+func hasContainExecRecipe(name, recipeName string) bool {
+	composePath, err := contain.ComposePath(name)
+	if err != nil {
+		return false
+	}
+	info, err := contain.ReadComposeInfo(composePath)
+	if err != nil || info.Invalid {
+		return false
+	}
+	_, ok := info.Hints.ExecRecipes[recipeName]
+	return ok
 }
 
 func promptAndMaybeStartContainWorkspace(cmd *cobra.Command, name string) (bool, error) {
