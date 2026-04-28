@@ -83,12 +83,10 @@ func parseResponsesInput(input json.RawMessage) ([]llm.Message, bool, error) {
 				Type:     llm.PartToolCall,
 				ToolCall: &llm.ToolCall{ID: id, Name: name, Arguments: json.RawMessage(args)},
 			}}})
-			replaceHistory = true
 		case "function_call_output":
 			id := jsonString(item["call_id"])
 			out := jsonString(item["output"])
 			messages = append(messages, llm.ToolResultMessage(id, callNameByID[id], out, nil))
-			replaceHistory = true
 		}
 	}
 

@@ -1072,7 +1072,7 @@ func TestParseDataURL(t *testing.T) {
 	}
 }
 
-func TestParseResponsesInput_FunctionCallOutput(t *testing.T) {
+func TestParseResponsesInput_FunctionCallOutputDoesNotReplaceHistory(t *testing.T) {
 	payload := json.RawMessage(`[
 		{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{\"path\":\"a.txt\"}"},
 		{"type":"function_call_output","call_id":"call_1","output":"content"}
@@ -1081,8 +1081,8 @@ func TestParseResponsesInput_FunctionCallOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseResponsesInput failed: %v", err)
 	}
-	if !replaceHistory {
-		t.Fatalf("replaceHistory = false, want true")
+	if replaceHistory {
+		t.Fatalf("replaceHistory = true, want false")
 	}
 	if len(msgs) != 2 {
 		t.Fatalf("len(msgs) = %d, want 2", len(msgs))
@@ -4555,14 +4555,28 @@ func TestHandleResponses_PreviousResponseIDFunctionCallOutputUsesPriorToolName(t
 		t.Fatalf("provider request count = %d, want 2", len(provider.Requests))
 	}
 
+	var sawUserHi bool
+	var sawToolCall bool
 	var toolResultName string
 	for _, msg := range provider.Requests[1].Messages {
+		if msg.Role == llm.RoleUser && len(msg.Parts) > 0 && msg.Parts[0].Type == llm.PartText && msg.Parts[0].Text == "hi" {
+			sawUserHi = true
+		}
 		for _, part := range msg.Parts {
+			if part.Type == llm.PartToolCall && part.ToolCall != nil && part.ToolCall.ID == "call_1" && part.ToolCall.Name == "read_file" {
+				sawToolCall = true
+			}
 			if part.Type != llm.PartToolResult || part.ToolResult == nil || part.ToolResult.ID != "call_1" {
 				continue
 			}
 			toolResultName = part.ToolResult.Name
 		}
+	}
+	if !sawUserHi {
+		t.Fatal("second provider request missing prior user message")
+	}
+	if !sawToolCall {
+		t.Fatal("second provider request missing prior assistant tool call")
 	}
 	if toolResultName != "read_file" {
 		t.Fatalf("tool result name = %q, want %q", toolResultName, "read_file")
