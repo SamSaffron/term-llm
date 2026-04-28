@@ -664,6 +664,40 @@ func TestUpdateDoesNotClobberTokenMetrics(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreCreatesMessagesSessionRoleIndex(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	rows, err := store.db.Query(`PRAGMA index_list(messages)`)
+	if err != nil {
+		t.Fatalf("PRAGMA index_list(messages): %v", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var seq int
+		var name string
+		var unique int
+		var origin string
+		var partial int
+		if err := rows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
+			t.Fatalf("scan index_list row: %v", err)
+		}
+		if name == "idx_messages_session_role" {
+			return
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate index_list: %v", err)
+	}
+	t.Fatal("idx_messages_session_role index was not created")
+}
+
 func TestSQLiteStoreCustomPath(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "custom", "sessions.db")
 

@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_mode ON sessions(mode);
 CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_messages_session_role ON messages(session_id, role);
 
 -- Metadata table for current session tracking
 CREATE TABLE IF NOT EXISTS metadata (
@@ -203,7 +204,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 20
+const schemaVersion = 21
 
 // migration represents a schema migration.
 type migration struct {
@@ -669,6 +670,23 @@ var migrations = []migration{
 			_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_sessions_last_message ON sessions(last_message_at DESC)`)
 			if err != nil {
 				return fmt.Errorf("create last_message_at index: %w", err)
+			}
+			return nil
+		},
+	},
+	{
+		// Migration 21: Add a covering index for List()'s per-session visible
+		// message counts. The existing (session_id, sequence) index is ideal for
+		// ordered history reads, but COUNT(*) WHERE session_id=? AND role IN (...)
+		// otherwise has to visit every row for the session and read role from the
+		// table. Keeping role in the index lets SQLite satisfy the sidebar count
+		// subquery from the index alone.
+		version:     21,
+		description: "add covering index for visible message counts",
+		up: func(db *sql.DB) error {
+			_, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_session_role ON messages(session_id, role)`)
+			if err != nil {
+				return fmt.Errorf("create messages session role index: %w", err)
 			}
 			return nil
 		},
