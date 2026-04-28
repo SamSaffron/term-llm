@@ -1100,6 +1100,24 @@ const formatToolArgs = (tool) => {
     ]);
   }
 
+  // image_generate may carry internal upload paths before the model's prompt
+  // arrives; hide those incidental args until the prompt is available.
+  if (name === 'image_generate') {
+    if (isBlankToolArgValue(args.prompt)) return [];
+    const entries = [['prompt', args.prompt]];
+    ['aspect_ratio', 'size'].forEach((key) => {
+      if (Object.prototype.hasOwnProperty.call(args, key) && !isBlankToolArgValue(args[key])) {
+        entries.push([key, args[key]]);
+      }
+    });
+    const inputCount = (Array.isArray(args.input_images) ? args.input_images.length : 0)
+      + (isBlankToolArgValue(args.input_image) ? 0 : 1);
+    if (inputCount > 0) {
+      entries.push(['input', `${inputCount} attached image${inputCount === 1 ? '' : 's'}`]);
+    }
+    return entries.slice(0, 4);
+  }
+
   // Pick the most relevant key(s) per tool type
   const priorityKeys = {
     'shell': ['command'],
@@ -1111,7 +1129,6 @@ const formatToolArgs = (tool) => {
     'search': ['query'],
     'grep': ['pattern', 'path'],
     'glob': ['pattern', 'path'],
-    'image_generate': ['prompt', 'aspect_ratio', 'size', 'input_image', 'input_images', 'output_path'],
   };
 
   const allEntries = Object.entries(args).filter(([, value]) => !isBlankToolArgValue(value));
@@ -1252,7 +1269,7 @@ const formatToolClipboardLines = (tool) => {
   const lines = [`- ${name} [${status}]`];
   let entries = formatToolArgs(tool || {});
 
-  if ((!entries || entries.length === 0) && tool?.arguments) {
+  if (entries == null && tool?.arguments) {
     entries = [['arguments', tool.arguments]];
   }
 

@@ -1389,6 +1389,113 @@ async function testRunCompletesWithoutInterjectionQueuesOrphan() {
   pass(name);
 }
 
+async function testFunctionCallArgumentDeltasFillToolPrompt() {
+  const name = 'function_call_arguments.delta fills image prompt before tool finishes';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+
+  const session = {
+    id: 'session_arg_delta',
+    title: 'arg delta',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: 'resp_delta',
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+
+  const streamState = app.createResponseStreamState(session);
+  app.applyResponseStreamEvent(session, streamState, 'response.output_item.added', {
+    output_index: 2,
+    item: { type: 'function_call', call_id: 'call_img', name: 'image_generate' },
+  });
+  app.applyResponseStreamEvent(session, streamState, 'response.function_call_arguments.delta', {
+    output_index: 2,
+    delta: '{"aspect_ratio":"4:3","input_image":"/root/.local/share/term-llm/uploads/image.png",',
+  });
+  app.applyResponseStreamEvent(session, streamState, 'response.function_call_arguments.delta', {
+    output_index: 2,
+    delta: '"prompt":"turn this sketch into watercolor"}',
+  });
+
+  const group = session.messages.find((message) => message.role === 'tool-group');
+  const tool = group && group.tools && group.tools[0];
+  if (!tool || !String(tool.arguments || '').includes('turn this sketch into watercolor')) {
+    fail(name, 'tool arguments did not accumulate prompt deltas', JSON.stringify(tool));
+    await cleanup();
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(tool.arguments);
+  } catch (err) {
+    fail(name, 'accumulated tool arguments should be valid JSON', String(err));
+    await cleanup();
+    return;
+  }
+  if (parsed.prompt !== 'turn this sketch into watercolor') {
+    fail(name, 'accumulated arguments should include prompt', JSON.stringify(parsed));
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
+async function testArgumentDeltaWithoutOutputIndexUsesLastRunningTool() {
+  const name = 'function_call_arguments.delta without output_index uses last running tool';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+
+  const session = {
+    id: 'session_arg_delta_no_index',
+    title: 'arg delta no index',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: 'resp_delta_no_index',
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+
+  const streamState = app.createResponseStreamState(session);
+  app.applyResponseStreamEvent(session, streamState, 'response.output_item.added', {
+    item: { type: 'function_call', call_id: 'call_first', name: 'shell' },
+  });
+  app.applyResponseStreamEvent(session, streamState, 'response.output_item.added', {
+    item: { type: 'function_call', call_id: 'call_second', name: 'grep' },
+  });
+  app.applyResponseStreamEvent(session, streamState, 'response.function_call_arguments.delta', {
+    delta: '{"pattern":"needle"}',
+  });
+
+  const group = session.messages.find((message) => message.role === 'tool-group');
+  const tools = group && group.tools;
+  if (!tools || tools.length !== 2) {
+    fail(name, 'expected two tools in group', JSON.stringify(group));
+    await cleanup();
+    return;
+  }
+  if (tools[0].arguments) {
+    fail(name, 'first tool should not receive missing-index delta', JSON.stringify(tools));
+    await cleanup();
+    return;
+  }
+  if (tools[1].arguments !== '{"pattern":"needle"}') {
+    fail(name, 'second/latest running tool should receive missing-index delta', JSON.stringify(tools));
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
 (async () => {
   await testSendMessageHandsOffToEventsStream();
   await testSendMessageIgnoresPostBodyAfterHandoff();
@@ -1396,6 +1503,8 @@ async function testRunCompletesWithoutInterjectionQueuesOrphan() {
   await testSendMessageMarksSessionBusyImmediately();
   await testDrainInterruptQueueAfterResumeCompletes();
   await testResumeActiveResponseRecoversFromSnapshotBeforeReplaying();
+  await testFunctionCallArgumentDeltasFillToolPrompt();
+  await testArgumentDeltaWithoutOutputIndexUsesLastRunningTool();
   await testResumeActiveResponseFallsBackToReplayWhenSnapshotUnavailable();
   await testResumeActiveResponseClearsTerminalTrackingWhen409SnapshotHasNoRecovery();
   await testConnectTokenPreservesSelectedModelAndProviderFromState();

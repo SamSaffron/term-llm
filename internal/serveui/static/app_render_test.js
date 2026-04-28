@@ -463,6 +463,55 @@ async function run(name, fn) {
     assert(!entries.some(([key]) => key === 'output_path'), 'blank output_path should be hidden');
   });
 
+  await run('image generation tool summaries wait for prompt before showing incidental args', () => {
+    const { app } = createHarness();
+    const entries = app.formatToolArgs({
+      name: 'image_generate',
+      status: 'running',
+      arguments: JSON.stringify({
+        aspect_ratio: '4:3',
+        input_image: '/root/.local/share/term-llm/uploads/image.png',
+        input_images: [],
+        output_path: '',
+      }),
+    });
+
+    assertEqual(entries.length, 0, 'image args without prompt should be hidden');
+  });
+
+  await run('image generation clipboard summaries do not fall back to hidden raw args', () => {
+    const { app } = createHarness();
+    const lines = app.formatToolClipboardLines({
+      name: 'image_generate',
+      status: 'running',
+      arguments: JSON.stringify({
+        aspect_ratio: '4:3',
+        input_image: '/root/.local/share/term-llm/uploads/image.png',
+        input_images: [],
+        output_path: '',
+      }),
+    });
+
+    assertEqual(lines.length, 1, 'clipboard should include only summary line when image prompt is unavailable');
+    assert(!lines.join('\n').includes('/root/.local/share'), 'clipboard should not include hidden internal upload path');
+  });
+
+  await run('image generation tool summaries describe attachments without internal upload paths', () => {
+    const { app } = createHarness();
+    const entries = app.formatToolArgs({
+      name: 'image_generate',
+      status: 'running',
+      arguments: JSON.stringify({
+        prompt: 'turn this sketch into watercolor',
+        aspect_ratio: '4:3',
+        input_image: '/root/.local/share/term-llm/uploads/image.png',
+      }),
+    });
+
+    assert(entries.some(([key, value]) => key === 'input' && value === '1 attached image'), 'attached image should be summarized');
+    assert(!entries.some(([, value]) => String(value).includes('/root/.local/share')), 'internal upload path should not be shown');
+  });
+
   await run('askUser messages do not split assistant turns', () => {
     const { app, session } = createHarness();
     session.messages = [

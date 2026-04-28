@@ -404,7 +404,8 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
         name: String(item.name || 'tool'),
         arguments: String(item.arguments || ''),
         status: 'running',
-        created: Date.now()
+        created: Date.now(),
+        outputIndex: payload.output_index
       };
 
       if (!streamState.currentToolGroup) {
@@ -426,6 +427,38 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       streamState.currentAssistantMessage = null;
       saveSessions();
       scrollToBottom();
+    }
+    return { terminal: false };
+  }
+
+  if (event === 'response.function_call_arguments.delta') {
+    if (streamState.currentToolGroup) {
+      const outputIndex = payload.output_index;
+      const delta = String(payload.delta || '');
+      if (delta) {
+        const tools = streamState.currentToolGroup.tools;
+        const exactEntry = outputIndex == null
+          ? null
+          : tools.find((tool) => tool.outputIndex === outputIndex);
+        const entry = exactEntry
+          || [...tools].reverse().find((tool) => tool.status !== 'done')
+          || tools[tools.length - 1];
+        if (entry) {
+          const current = String(entry.arguments || '');
+          let currentIsCompleteJSON = false;
+          if (current) {
+            try {
+              JSON.parse(current);
+              currentIsCompleteJSON = true;
+            } catch {}
+          }
+          if (!currentIsCompleteJSON) {
+            entry.arguments = current + delta;
+            updateToolGroupNode(streamState.currentToolGroup);
+            scheduleStreamPersistence();
+          }
+        }
+      }
     }
     return { terminal: false };
   }
