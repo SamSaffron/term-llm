@@ -80,8 +80,9 @@ type responseRun struct {
 }
 
 type startResponseRunOptions struct {
-	previousResponseID string
-	uiSession          bool
+	previousResponseID        string
+	uiSession                 bool
+	resetResponseIDsOnSuccess bool
 }
 
 func newResponseRun(respID, sessionID, previousResponseID, model string, created int64, cancel context.CancelFunc) *responseRun {
@@ -909,7 +910,7 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 	}
 }
 
-func (s *serveServer) storeCompletedResponseRun(runtime *serveRuntime, sessionID, previousResponseID, model string, created int64, result serveRunResult) (string, error) {
+func (s *serveServer) storeCompletedResponseRun(runtime *serveRuntime, sessionID, previousResponseID, model string, created int64, result serveRunResult, resetResponseIDsOnSuccess bool) (string, error) {
 	mgr := s.ensureResponseRuns()
 
 	respID := "resp_" + randomSuffix()
@@ -958,6 +959,9 @@ func (s *serveServer) storeCompletedResponseRun(runtime *serveRuntime, sessionID
 	}
 
 	mgr.scheduleCleanup(respID)
+	if resetResponseIDsOnSuccess {
+		s.unregisterSessionResponseIDs(sessionID)
+	}
 	s.registerResponseID(runtime, respID, sessionID)
 	return respID, nil
 }
@@ -1238,6 +1242,9 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 
 		if options.uiSession {
 			runtime.clearLastUIRunError()
+		}
+		if options.resetResponseIDsOnSuccess {
+			s.unregisterSessionResponseIDs(sessionID)
 		}
 		s.registerResponseID(runtime, respID, sessionID)
 		if err := run.complete(map[string]any{

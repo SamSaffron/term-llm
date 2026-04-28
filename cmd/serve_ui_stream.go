@@ -14,7 +14,7 @@ func isServeUIRequest(r *http.Request) bool {
 	return value == "1" || value == "true" || value == "yes"
 }
 
-func (s *serveServer) streamUIResponses(w http.ResponseWriter, r *http.Request, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string) {
+func (s *serveServer) streamUIResponses(w http.ResponseWriter, r *http.Request, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool) {
 	// Persist session in the store so the client gets the session number in
 	// headers before the streaming body begins. This is a store-only operation
 	// that does NOT mutate runtime state (safe without rt.mu).
@@ -23,8 +23,9 @@ func (s *serveServer) streamUIResponses(w http.ResponseWriter, r *http.Request, 
 	}
 
 	s.streamResponseRun(r.Context(), w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, startResponseRunOptions{
-		previousResponseID: previousResponseID,
-		uiSession:          true,
+		previousResponseID:        previousResponseID,
+		uiSession:                 true,
+		resetResponseIDsOnSuccess: resetResponseIDsOnSuccess,
 	})
 }
 

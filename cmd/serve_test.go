@@ -4486,6 +4486,55 @@ func TestHandleResponses_FreshConversationResetRemovesStalePreviousResponseIDs(t
 	}
 }
 
+func TestHandleResponses_FreshConversationResetPreservesPreviousResponseIDsWhenRunFails(t *testing.T) {
+	srv := newTestServeServer("reply1", "reply2")
+	defer srv.sessionMgr.Close()
+
+	code, resp1 := doResponsesWithHeader(t, srv, `{"input":"msg1"}`, "fresh-reset-busy")
+	if code != http.StatusOK {
+		t.Fatalf("msg1 status = %d, want 200", code)
+	}
+	respID1, _ := resp1["id"].(string)
+	if respID1 == "" {
+		t.Fatal("first response missing id")
+	}
+
+	rt, ok := srv.sessionMgr.Get("fresh-reset-busy")
+	if !ok || rt == nil {
+		t.Fatal("expected runtime for fresh-reset-busy")
+	}
+
+	busyState := &runtimeInterruptState{cancel: func() {}, done: make(chan struct{})}
+	rt.mu.Lock()
+	rt.setActiveInterrupt(busyState)
+	defer func() {
+		rt.clearActiveInterrupt(busyState)
+		rt.mu.Unlock()
+	}()
+
+	code, _ = doResponsesWithHeader(t, srv, `{"input":"reset"}`, "fresh-reset-busy")
+	if code != http.StatusConflict {
+		t.Fatalf("reset status = %d, want 409", code)
+	}
+
+	mapped, ok := srv.responseToSession.Load(respID1)
+	if !ok {
+		t.Fatalf("responseToSession missing %q after failed fresh reset", respID1)
+	}
+	mappedSessionID, _ := mapped.(string)
+	if mappedSessionID != "fresh-reset-busy" {
+		t.Fatalf("responseToSession[%q] = %q, want %q", respID1, mappedSessionID, "fresh-reset-busy")
+	}
+	latest, ok := srv.sessionToResponse.Load("fresh-reset-busy")
+	if !ok {
+		t.Fatal("sessionToResponse missing fresh-reset-busy after failed reset")
+	}
+	latestID, _ := latest.(string)
+	if latestID != respID1 {
+		t.Fatalf("sessionToResponse = %q, want %q", latestID, respID1)
+	}
+}
+
 func TestHandleResponses_PreviousResponseIDChainsSession(t *testing.T) {
 	// Each runtime gets 2 text responses so it can handle 2 messages
 	srv := newTestServeServer("first reply", "second reply")

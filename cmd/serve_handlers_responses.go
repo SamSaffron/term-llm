@@ -120,7 +120,6 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if freshConversation {
-		s.unregisterSessionResponseIDs(sessionID)
 		s.syncPersistedSessionRuntime(ctx, sessionID, runtime, strings.TrimSpace(req.Model), normalizeReasoningEffort(req.ReasoningEffort))
 	}
 
@@ -200,9 +199,9 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 
 	if req.Stream {
 		if isServeUIRequest(r) && stateful {
-			s.streamUIResponses(w, r, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, req.PreviousResponseID)
+			s.streamUIResponses(w, r, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, req.PreviousResponseID, freshConversation)
 		} else {
-			started := s.streamResponses(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, req.PreviousResponseID)
+			started := s.streamResponses(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, req.PreviousResponseID, freshConversation)
 			if !stateful && started {
 				cleanupRuntime = false
 			}
@@ -238,7 +237,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	setSessionNumberHeader(w, runtime)
 
 	created := time.Now().Unix()
-	respID, err := s.storeCompletedResponseRun(runtime, sessionID, req.PreviousResponseID, model, created, result)
+	respID, err := s.storeCompletedResponseRun(runtime, sessionID, req.PreviousResponseID, model, created, result, freshConversation)
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
 		return
@@ -342,8 +341,9 @@ func appendResponsePassthroughTools(serverTools []llm.ToolSpec, passthroughTools
 	return serverTools
 }
 
-func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string) bool {
+func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool) bool {
 	return s.streamResponseRun(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, startResponseRunOptions{
-		previousResponseID: previousResponseID,
+		previousResponseID:        previousResponseID,
+		resetResponseIDsOnSuccess: resetResponseIDsOnSuccess,
 	})
 }
