@@ -34,7 +34,7 @@ type readURLTarget struct {
 	ips []net.IP
 }
 
-// ReadURLTool fetches web pages using Jina AI Reader.
+// ReadURLTool fetches web pages with SSRF protections.
 type ReadURLTool struct {
 	client *http.Client
 }
@@ -65,7 +65,7 @@ func (t *ReadURLTool) Preview(args json.RawMessage) string {
 func ReadURLToolSpec() ToolSpec {
 	return ToolSpec{
 		Name:        ReadURLToolName,
-		Description: "Fetch and read a web page. Returns the page content as clean markdown. Use this to read full content from URLs found in search results.",
+		Description: "Fetch and read a web page. Returns the page content. Use this to read full content from URLs found in search results.",
 		Schema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -92,20 +92,19 @@ func (t *ReadURLTool) Execute(ctx context.Context, args json.RawMessage) (ToolOu
 		return ToolOutput{}, fmt.Errorf("url is required")
 	}
 
-	url, err := resolveReadURLTarget(ctx, t.client, payload.URL)
+	target, err := resolveReadURLTarget(ctx, t.client, payload.URL)
 	if err != nil {
 		return ToolOutput{}, err
 	}
 
-	// Fetch via Jina AI Reader
-	jinaURL := "https://r.jina.ai/" + url
+	fetchClient := newReadURLRedirectClient(t.client, target.ips)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", jinaURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.url, nil)
 	if err != nil {
 		return ToolOutput{}, fmt.Errorf("create request: %w", err)
 	}
 
-	resp, err := t.client.Do(req)
+	resp, err := fetchClient.Do(req)
 	if err != nil {
 		return TextOutput(fmt.Sprintf("Error fetching URL: %v", err)), nil
 	}
@@ -158,10 +157,10 @@ func readURLContent(r io.Reader) (string, bool, error) {
 	return content.String(), true, nil
 }
 
-func resolveReadURLTarget(ctx context.Context, client *http.Client, rawURL string) (string, error) {
+func resolveReadURLTarget(ctx context.Context, client *http.Client, rawURL string) (readURLTarget, error) {
 	target, err := normalizeReadURLTarget(ctx, rawURL)
 	if err != nil {
-		return "", err
+		return readURLTarget{}, err
 	}
 
 	for range maxReadURLRedirects {
@@ -169,36 +168,36 @@ func resolveReadURLTarget(ctx context.Context, client *http.Client, rawURL strin
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.url, nil)
 		if err != nil {
-			return "", fmt.Errorf("create redirect check request: %w", err)
+			return readURLTarget{}, fmt.Errorf("create redirect check request: %w", err)
 		}
 
 		resp, err := redirectClient.Do(req)
 		if err != nil {
-			return "", fmt.Errorf("check url redirects: %w", err)
+			return readURLTarget{}, fmt.Errorf("check url redirects: %w", err)
 		}
 		_ = resp.Body.Close()
 
 		if resp.StatusCode < 300 || resp.StatusCode >= 400 {
-			return target.url, nil
+			return target, nil
 		}
 
 		location := resp.Header.Get("Location")
 		if location == "" {
-			return "", fmt.Errorf("redirect response missing location header")
+			return readURLTarget{}, fmt.Errorf("redirect response missing location header")
 		}
 
 		nextURL, err := req.URL.Parse(location)
 		if err != nil {
-			return "", fmt.Errorf("parse redirect location: %w", err)
+			return readURLTarget{}, fmt.Errorf("parse redirect location: %w", err)
 		}
 
 		target, err = normalizeReadURLTarget(ctx, nextURL.String())
 		if err != nil {
-			return "", err
+			return readURLTarget{}, err
 		}
 	}
 
-	return "", fmt.Errorf("too many redirects")
+	return readURLTarget{}, fmt.Errorf("too many redirects")
 }
 
 func newReadURLRedirectClient(client *http.Client, ips []net.IP) *http.Client {

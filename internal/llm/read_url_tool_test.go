@@ -2,11 +2,13 @@ package llm
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -43,22 +45,24 @@ func TestReadURLToolExecuteLimitsBodyReadBeforeTruncating(t *testing.T) {
 	defer func() { readURLLookupIP = origLookup }()
 
 	readErr := errors.New("read past limit")
-	capturedJinaURL := ""
 	capturedTargetURLs := []string{}
 	tool := NewReadURLTool()
 	tool.client = &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			switch req.URL.Host {
-			case "example.com":
-				capturedTargetURLs = append(capturedTargetURLs, req.URL.String())
+			if req.URL.Host != "example.com" {
+				t.Fatalf("unexpected host %q", req.URL.Host)
+			}
+
+			capturedTargetURLs = append(capturedTargetURLs, req.URL.String())
+			switch len(capturedTargetURLs) {
+			case 1:
 				return &http.Response{
 					StatusCode: http.StatusOK,
 					Body:       io.NopCloser(strings.NewReader("ok")),
 					Header:     make(http.Header),
 					Request:    req,
 				}, nil
-			case "r.jina.ai":
-				capturedJinaURL = req.URL.String()
+			case 2:
 				return &http.Response{
 					StatusCode: http.StatusOK,
 					Body: &failAfterNReadCloser{
@@ -69,7 +73,7 @@ func TestReadURLToolExecuteLimitsBodyReadBeforeTruncating(t *testing.T) {
 					Request: req,
 				}, nil
 			default:
-				t.Fatalf("unexpected host %q", req.URL.Host)
+				t.Fatalf("unexpected request count %d", len(capturedTargetURLs))
 				return nil, nil
 			}
 		}),
@@ -84,14 +88,13 @@ func TestReadURLToolExecuteLimitsBodyReadBeforeTruncating(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
-	if got, want := len(capturedTargetURLs), 1; got != want {
-		t.Fatalf("expected %d target preflight request, got %d (%v)", want, got, capturedTargetURLs)
+	if got, want := len(capturedTargetURLs), 2; got != want {
+		t.Fatalf("expected %d target requests, got %d (%v)", want, got, capturedTargetURLs)
 	}
-	if got, want := capturedTargetURLs[0], "https://example.com/article"; got != want {
-		t.Fatalf("expected preflight URL %q, got %q", want, got)
-	}
-	if got, want := capturedJinaURL, "https://r.jina.ai/https://example.com/article"; got != want {
-		t.Fatalf("expected fetch URL %q, got %q", want, got)
+	for i, got := range capturedTargetURLs {
+		if want := "https://example.com/article"; got != want {
+			t.Fatalf("expected request %d URL %q, got %q", i, want, got)
+		}
 	}
 	if strings.Contains(out.Content, readErr.Error()) {
 		t.Fatalf("expected limited read to avoid body read error, got %q", out.Content)
@@ -120,19 +123,25 @@ func TestReadURLToolExecuteTruncatesByRunes(t *testing.T) {
 	defer func() { readURLLookupIP = origLookup }()
 
 	body := strings.Repeat("界", maxReadURLChars) + "🙂tail"
+	requests := 0
 
 	tool := NewReadURLTool()
 	tool.client = &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			switch req.URL.Host {
-			case "example.com":
+			if req.URL.Host != "example.com" {
+				t.Fatalf("unexpected host %q", req.URL.Host)
+			}
+
+			requests++
+			switch requests {
+			case 1:
 				return &http.Response{
 					StatusCode: http.StatusOK,
 					Body:       io.NopCloser(strings.NewReader("ok")),
 					Header:     make(http.Header),
 					Request:    req,
 				}, nil
-			case "r.jina.ai":
+			case 2:
 				return &http.Response{
 					StatusCode: http.StatusOK,
 					Body:       io.NopCloser(strings.NewReader(body)),
@@ -140,7 +149,7 @@ func TestReadURLToolExecuteTruncatesByRunes(t *testing.T) {
 					Request:    req,
 				}, nil
 			default:
-				t.Fatalf("unexpected host %q", req.URL.Host)
+				t.Fatalf("unexpected request count %d", requests)
 				return nil, nil
 			}
 		}),
@@ -290,7 +299,7 @@ func TestReadURLToolExecuteRejectsRedirectsToBlockedHosts(t *testing.T) {
 	}
 }
 
-func TestReadURLToolExecuteFollowsAllowedRedirectsBeforeJinaFetch(t *testing.T) {
+func TestReadURLToolExecuteFollowsAllowedRedirectsBeforeFetchingContent(t *testing.T) {
 	origLookup := readURLLookupIP
 	readURLLookupIP = func(ctx context.Context, host string) ([]net.IP, error) {
 		switch host {
@@ -306,7 +315,7 @@ func TestReadURLToolExecuteFollowsAllowedRedirectsBeforeJinaFetch(t *testing.T) 
 	defer func() { readURLLookupIP = origLookup }()
 
 	requests := []string{}
-	capturedJinaURL := ""
+	wwwRequests := 0
 	tool := NewReadURLTool()
 	tool.client = &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -322,17 +331,14 @@ func TestReadURLToolExecuteFollowsAllowedRedirectsBeforeJinaFetch(t *testing.T) 
 					Request: req,
 				}, nil
 			case "www.example.com":
+				wwwRequests++
+				body := "ok"
+				if wwwRequests == 2 {
+					body = "content"
+				}
 				return &http.Response{
 					StatusCode: http.StatusOK,
-					Body:       io.NopCloser(strings.NewReader("ok")),
-					Header:     make(http.Header),
-					Request:    req,
-				}, nil
-			case "r.jina.ai":
-				capturedJinaURL = req.URL.String()
-				return &http.Response{
-					StatusCode: http.StatusOK,
-					Body:       io.NopCloser(strings.NewReader("content")),
+					Body:       io.NopCloser(strings.NewReader(body)),
 					Header:     make(http.Header),
 					Request:    req,
 				}, nil
@@ -352,14 +358,73 @@ func TestReadURLToolExecuteFollowsAllowedRedirectsBeforeJinaFetch(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
-	if got, want := capturedJinaURL, "https://r.jina.ai/https://www.example.com/article"; got != want {
-		t.Fatalf("expected Jina fetch URL %q, got %q", want, got)
-	}
 	if got, want := out.Content, "content"; got != want {
 		t.Fatalf("expected content %q, got %q", want, got)
 	}
 	if got, want := len(requests), 3; got != want {
 		t.Fatalf("expected %d total requests, got %d (%v)", want, got, requests)
+	}
+	if got, want := requests[0], "https://example.com/start"; got != want {
+		t.Fatalf("expected first request %q, got %q", want, got)
+	}
+	if got, want := requests[1], "https://www.example.com/article"; got != want {
+		t.Fatalf("expected second request %q, got %q", want, got)
+	}
+	if got, want := requests[2], "https://www.example.com/article"; got != want {
+		t.Fatalf("expected third request %q, got %q", want, got)
+	}
+}
+
+func TestReadURLToolExecutePinsValidatedIPsDuringFetch(t *testing.T) {
+	origLookup := readURLLookupIP
+	readURLLookupIP = func(ctx context.Context, host string) ([]net.IP, error) {
+		if host != "example.com" {
+			t.Fatalf("unexpected host lookup %q", host)
+		}
+		return []net.IP{net.ParseIP("93.184.216.34")}, nil
+	}
+	defer func() { readURLLookupIP = origLookup }()
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "content")
+	}))
+	defer server.Close()
+
+	origDial := readURLDialContext
+	dialedAddrs := []string{}
+	readURLDialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		dialedAddrs = append(dialedAddrs, address)
+		var dialer net.Dialer
+		return dialer.DialContext(ctx, network, server.Listener.Addr().String())
+	}
+	defer func() { readURLDialContext = origDial }()
+
+	tool := NewReadURLTool()
+	tool.client = &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+
+	args, err := json.Marshal(map[string]string{"url": "https://example.com/article"})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+
+	out, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if got, want := out.Content, "content"; got != want {
+		t.Fatalf("expected content %q, got %q", want, got)
+	}
+	if got, want := len(dialedAddrs), 2; got != want {
+		t.Fatalf("expected %d dial attempts, got %d (%v)", want, got, dialedAddrs)
+	}
+	for i, got := range dialedAddrs {
+		if want := "93.184.216.34:443"; got != want {
+			t.Fatalf("expected dial %d address %q, got %q", i, want, got)
+		}
 	}
 }
 
