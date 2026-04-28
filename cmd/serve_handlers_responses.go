@@ -72,15 +72,14 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("x-session-id", sessionID)
 		replaceHistory = true
 	}
-	// Lock provider/model/reasoning_effort to whatever was persisted on the
-	// session row: these fields are only honored from the client on the first
-	// message of a session. Once the row exists with a provider, every later
-	// request for that session uses the saved values, regardless of what the
-	// client sent. Cross-provider or cross-model swaps mid-session corrupt
-	// saved state (tool result shapes, response chaining, reasoning) — the
-	// silent override prevents that. Handover is a future feature.
+	// Chained requests are locked to the persisted provider/model/
+	// reasoning_effort. A bare session_id header starts a fresh conversation,
+	// even when the client reuses an existing session ID, so fresh conversations
+	// may choose new runtime settings and syncPersistedSessionRuntime will
+	// update the session row before the run.
+	freshConversation := req.PreviousResponseID == ""
 	reqProvider := strings.TrimSpace(req.Provider)
-	if s.store != nil {
+	if !freshConversation && s.store != nil {
 		if sess, getErr := s.store.Get(ctx, sessionID); getErr == nil && sess != nil {
 			persistedProvider := strings.TrimSpace(sess.ProviderKey)
 			if persistedProvider == "" {
@@ -103,7 +102,6 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 	var runtime *serveRuntime
 	var stateful bool
-	freshConversation := req.PreviousResponseID == ""
 	freshProvider := reqProvider
 	if freshConversation && freshProvider == "" {
 		freshProvider = defaultProvider

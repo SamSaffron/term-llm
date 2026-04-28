@@ -4771,12 +4771,11 @@ func TestHandleResponses_PreviousResponseIDRestoresPersistedProviderAfterRuntime
 	}
 }
 
-// After the first message of a web session pins provider=default, a later
-// request on the same session ID that asks for provider=other must be
-// silently overridden back to the persisted provider. Cross-provider swaps
-// mid-session corrupt saved state; the client's provider field is only
-// honored on the very first message.
-func TestHandleResponses_ProviderLockedAfterFirstMessage(t *testing.T) {
+// A fresh conversation may reuse an existing session ID and switch to a new
+// provider. The replacement runtime must also update the persisted session row
+// so later chained requests resume on the new provider instead of jumping back
+// to stale DB metadata.
+func TestHandleResponses_FreshConversationReusedSessionIDUpdatesPersistedProvider(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
 	if err != nil {
@@ -4822,13 +4821,16 @@ func TestHandleResponses_ProviderLockedAfterFirstMessage(t *testing.T) {
 		t.Fatalf("first request status = %d, want 200", code)
 	}
 
-	code, resp := doResponsesWithHeader(t, srv, `{"input":"fresh","provider":"other"}`, "provider-reuse")
+	code, resp2 := doResponsesWithHeader(t, srv, `{"input":"fresh","provider":"other"}`, "provider-reuse")
 	if code != http.StatusOK {
 		t.Fatalf("fresh provider request status = %d, want 200", code)
 	}
-
-	if got := responseOutputText(t, resp); got != "default response 2" {
-		t.Fatalf("response text = %q, want %q (provider override should be silently locked to default)", got, "default response 2")
+	if got := responseOutputText(t, resp2); got != "other response 1" {
+		t.Fatalf("response text = %q, want %q", got, "other response 1")
+	}
+	respID2, _ := resp2["id"].(string)
+	if respID2 == "" {
+		t.Fatal("fresh provider response missing id")
 	}
 
 	sess, err := store.Get(context.Background(), "provider-reuse")
@@ -4838,22 +4840,37 @@ func TestHandleResponses_ProviderLockedAfterFirstMessage(t *testing.T) {
 	if sess == nil {
 		t.Fatal("expected persisted session")
 	}
-	if sess.ProviderKey != "default" {
-		t.Fatalf("ProviderKey = %q, want default (locked from first message)", sess.ProviderKey)
+	if sess.ProviderKey != "other" {
+		t.Fatalf("ProviderKey = %q, want other", sess.ProviderKey)
 	}
-	if got := defaultCreates.Load(); got != 2 {
-		t.Fatalf("default provider factory calls = %d, want 2", got)
+
+	manager.mu.Lock()
+	evicted := manager.sessions["provider-reuse"]
+	delete(manager.sessions, "provider-reuse")
+	manager.mu.Unlock()
+	if evicted != nil {
+		evicted.Close()
 	}
-	if got := otherCreates.Load(); got != 0 {
-		t.Fatalf("other provider factory calls = %d, want 0 (client provider must be ignored)", got)
+
+	code, resp3 := doResponses(t, srv, `{"input":"resume","previous_response_id":"`+respID2+`"}`)
+	if code != http.StatusOK {
+		t.Fatalf("resume request status = %d, want 200", code)
+	}
+	if got := responseOutputText(t, resp3); got != "other response 2" {
+		t.Fatalf("resume response text = %q, want %q", got, "other response 2")
+	}
+	if got := defaultCreates.Load(); got != 1 {
+		t.Fatalf("default provider factory calls = %d, want 1", got)
+	}
+	if got := otherCreates.Load(); got != 2 {
+		t.Fatalf("other provider factory calls = %d, want 2", got)
 	}
 }
 
-// After the first message of a web session pins provider=other, a later
-// request on the same session ID that omits provider (defaulting client-side
-// to "default") must be silently overridden back to the persisted provider,
-// rather than creating a runtime with the server default.
-func TestHandleResponses_ImplicitDefaultLockedToPersistedProvider(t *testing.T) {
+// When a fresh conversation reuses an old session ID but omits provider, it
+// should fall back to the server default provider rather than inheriting the
+// persisted provider from the prior conversation.
+func TestHandleResponses_FreshConversationWithoutProviderUsesDefaultNotPersistedProvider(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
 	if err != nil {
@@ -4892,7 +4909,8 @@ func TestHandleResponses_ImplicitDefaultLockedToPersistedProvider(t *testing.T) 
 		store:      store,
 		runtimeFactory: func(ctx context.Context, providerName string, model string) (*serveRuntime, error) {
 			if providerName == "" || providerName == "default" {
-				t.Fatalf("unexpected runtimeFactory call for default provider %q", providerName)
+				createNum := defaultCreates.Add(1)
+				return newRuntime("default", createNum), nil
 			}
 			createNum := otherCreates.Add(1)
 			return newRuntime(providerName, createNum), nil
@@ -4911,8 +4929,12 @@ func TestHandleResponses_ImplicitDefaultLockedToPersistedProvider(t *testing.T) 
 	if code != http.StatusOK {
 		t.Fatalf("fresh default request status = %d, want 200", code)
 	}
-	if got := responseOutputText(t, resp); got != "other runtime 2 response 1" {
-		t.Fatalf("fresh default response text = %q, want %q (should stay locked to other)", got, "other runtime 2 response 1")
+	if got := responseOutputText(t, resp); got != "default runtime 1 response 1" {
+		t.Fatalf("fresh default response text = %q, want %q", got, "default runtime 1 response 1")
+	}
+	respID, _ := resp["id"].(string)
+	if respID == "" {
+		t.Fatal("fresh default response missing id")
 	}
 
 	sess, err := store.Get(context.Background(), "provider-default-reuse")
@@ -4922,36 +4944,30 @@ func TestHandleResponses_ImplicitDefaultLockedToPersistedProvider(t *testing.T) 
 	if sess == nil {
 		t.Fatal("expected persisted session after implicit default request")
 	}
-	if sess.ProviderKey != "other" {
-		t.Fatalf("ProviderKey after implicit default = %q, want other (locked from first message)", sess.ProviderKey)
-	}
-	if got := defaultCreates.Load(); got != 0 {
-		t.Fatalf("default provider factory calls = %d, want 0 (client default must be overridden)", got)
+	if sess.ProviderKey != "default" {
+		t.Fatalf("ProviderKey after implicit default = %q, want default", sess.ProviderKey)
 	}
 
-	code, resp = doResponsesWithHeader(t, srv, `{"input":"fresh again","provider":"default"}`, "provider-default-reuse")
+	manager.mu.Lock()
+	evicted := manager.sessions["provider-default-reuse"]
+	delete(manager.sessions, "provider-default-reuse")
+	manager.mu.Unlock()
+	if evicted != nil {
+		evicted.Close()
+	}
+
+	code, resp = doResponses(t, srv, `{"input":"resume","previous_response_id":"`+respID+`"}`)
 	if code != http.StatusOK {
-		t.Fatalf("fresh explicit default request status = %d, want 200", code)
+		t.Fatalf("resume request status = %d, want 200", code)
 	}
-	if got := responseOutputText(t, resp); got != "other runtime 3 response 1" {
-		t.Fatalf("fresh explicit default response text = %q, want %q (should stay locked to other)", got, "other runtime 3 response 1")
+	if got := responseOutputText(t, resp); got != "default runtime 2 response 1" {
+		t.Fatalf("resume response text = %q, want %q", got, "default runtime 2 response 1")
 	}
-
-	sess, err = store.Get(context.Background(), "provider-default-reuse")
-	if err != nil {
-		t.Fatalf("Get session after explicit default: %v", err)
+	if got := defaultCreates.Load(); got != 2 {
+		t.Fatalf("default provider factory calls = %d, want 2", got)
 	}
-	if sess == nil {
-		t.Fatal("expected persisted session after explicit default request")
-	}
-	if sess.ProviderKey != "other" {
-		t.Fatalf("ProviderKey after explicit default = %q, want other (locked from first message)", sess.ProviderKey)
-	}
-	if got := defaultCreates.Load(); got != 0 {
-		t.Fatalf("default provider factory calls = %d, want 0 (client default must be overridden)", got)
-	}
-	if got := otherCreates.Load(); got != 3 {
-		t.Fatalf("other provider factory calls = %d, want 3", got)
+	if got := otherCreates.Load(); got != 1 {
+		t.Fatalf("other provider factory calls = %d, want 1", got)
 	}
 }
 
@@ -6257,10 +6273,10 @@ func TestResponsesHandler_ReasoningEffortFlowsToProvider(t *testing.T) {
 }
 
 // After the first message of a web session pins reasoning_effort=high and
-// model=first-model, later requests on the same session ID that send
-// different values must be silently overridden back to the persisted ones.
-// Mid-session switches of effort/model are disallowed — the first message
-// is the only place where client values are honored.
+// model=first-model, chained requests on the same session must be silently
+// overridden back to the persisted values. Mid-session switches of
+// effort/model are disallowed — the first message of a conversation is the
+// only place where client values are honored.
 func TestHandleResponses_ModelAndEffortLockedAfterFirstMessage(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
@@ -6297,12 +6313,16 @@ func TestHandleResponses_ModelAndEffortLockedAfterFirstMessage(t *testing.T) {
 		store:      store,
 	}
 
-	code, _ := doResponsesWithHeader(t, srv, `{"input":"hi","model":"first-model","reasoning_effort":"high"}`, "lock-effort")
+	code, resp1 := doResponsesWithHeader(t, srv, `{"input":"hi","model":"first-model","reasoning_effort":"high"}`, "lock-effort")
 	if code != http.StatusOK {
 		t.Fatalf("first status = %d", code)
 	}
+	respID1, _ := resp1["id"].(string)
+	if respID1 == "" {
+		t.Fatal("first response missing id")
+	}
 
-	code, _ = doResponsesWithHeader(t, srv, `{"input":"again","model":"second-model","reasoning_effort":"low"}`, "lock-effort")
+	code, _ = doResponses(t, srv, `{"input":"again","model":"second-model","reasoning_effort":"low","previous_response_id":"`+respID1+`"}`)
 	if code != http.StatusOK {
 		t.Fatalf("second status = %d", code)
 	}
@@ -6331,6 +6351,97 @@ func TestHandleResponses_ModelAndEffortLockedAfterFirstMessage(t *testing.T) {
 	}
 	if sess.ReasoningEffort != "high" {
 		t.Fatalf("persisted ReasoningEffort = %q, want high", sess.ReasoningEffort)
+	}
+}
+
+func TestHandleResponses_FreshConversationReusedSessionIDUpdatesPersistedModelAndEffort(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	providers := make([]*llm.MockProvider, 0, 4)
+	var createNum atomic.Int32
+	newRuntime := func() *serveRuntime {
+		n := createNum.Add(1)
+		provider := llm.NewMockProvider("mock").AddTextResponse(fmt.Sprintf("runtime %d", n))
+		providers = append(providers, provider)
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			providerKey:  "mock",
+			engine:       engine,
+			defaultModel: "mock-default-model",
+			store:        store,
+		}
+		rt.Touch()
+		return rt
+	}
+
+	manager := newServeSessionManager(time.Minute, 100, func(ctx context.Context) (*serveRuntime, error) {
+		return newRuntime(), nil
+	})
+	defer manager.Close()
+
+	srv := &serveServer{
+		cfgRef:     &config.Config{DefaultProvider: "mock"},
+		sessionMgr: manager,
+		store:      store,
+	}
+
+	code, _ := doResponsesWithHeader(t, srv, `{"input":"hi","model":"first-model","reasoning_effort":"high"}`, "reuse-model-effort")
+	if code != http.StatusOK {
+		t.Fatalf("first status = %d", code)
+	}
+
+	code, resp2 := doResponsesWithHeader(t, srv, `{"input":"restart","model":"second-model","reasoning_effort":"low"}`, "reuse-model-effort")
+	if code != http.StatusOK {
+		t.Fatalf("fresh status = %d", code)
+	}
+	respID2, _ := resp2["id"].(string)
+	if respID2 == "" {
+		t.Fatal("fresh response missing id")
+	}
+
+	sess, err := store.Get(context.Background(), "reuse-model-effort")
+	if err != nil || sess == nil {
+		t.Fatalf("Get session: err=%v sess=%v", err, sess)
+	}
+	if sess.Model != "second-model" {
+		t.Fatalf("persisted Model after fresh restart = %q, want second-model", sess.Model)
+	}
+	if sess.ReasoningEffort != "low" {
+		t.Fatalf("persisted ReasoningEffort after fresh restart = %q, want low", sess.ReasoningEffort)
+	}
+
+	manager.mu.Lock()
+	evicted := manager.sessions["reuse-model-effort"]
+	delete(manager.sessions, "reuse-model-effort")
+	manager.mu.Unlock()
+	if evicted != nil {
+		evicted.Close()
+	}
+
+	code, _ = doResponses(t, srv, `{"input":"continue","model":"ignored-model","reasoning_effort":"high","previous_response_id":"`+respID2+`"}`)
+	if code != http.StatusOK {
+		t.Fatalf("resume status = %d", code)
+	}
+
+	if len(providers) < 3 {
+		t.Fatalf("provider count = %d, want at least 3 runtimes", len(providers))
+	}
+	last := providers[len(providers)-1]
+	if len(last.Requests) == 0 {
+		t.Fatal("expected a provider request on resumed call")
+	}
+	lastReq := last.Requests[len(last.Requests)-1]
+	if lastReq.Model != "second-model" {
+		t.Fatalf("Model on resumed request = %q, want second-model", lastReq.Model)
+	}
+	if lastReq.ReasoningEffort != "low" {
+		t.Fatalf("ReasoningEffort on resumed request = %q, want low", lastReq.ReasoningEffort)
 	}
 }
 
