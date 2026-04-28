@@ -58,7 +58,14 @@ type chatToolCall struct {
 func parseChatMessages(msgs []chatMessage) ([]llm.Message, bool, error) {
 	callNameByID := make(map[string]string)
 	result := make([]llm.Message, 0, len(msgs))
-	replaceHistory := len(msgs) > 1
+	allToolMessages := len(msgs) > 0
+	for _, msg := range msgs {
+		if strings.ToLower(strings.TrimSpace(msg.Role)) != "tool" {
+			allToolMessages = false
+			break
+		}
+	}
+	replaceHistory := len(msgs) > 1 && !allToolMessages
 
 	for _, msg := range msgs {
 		role := strings.ToLower(strings.TrimSpace(msg.Role))
@@ -111,7 +118,6 @@ func parseChatMessages(msgs []chatMessage) ([]llm.Message, bool, error) {
 				name = callNameByID[callID]
 			}
 			result = append(result, llm.ToolResultMessage(callID, name, extractMessageText(msg.Content), nil))
-			replaceHistory = true
 		default:
 			return nil, false, fmt.Errorf("unsupported message role: %s", msg.Role)
 		}

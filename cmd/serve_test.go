@@ -1139,13 +1139,16 @@ func TestParseChatMessages_ToolCallAndToolResult(t *testing.T) {
 }
 
 func TestPopulateMissingToolResultNames_UsesHistory(t *testing.T) {
-	messages, _, err := parseChatMessages([]chatMessage{{
+	messages, replaceHistory, err := parseChatMessages([]chatMessage{{
 		Role:       "tool",
 		ToolCallID: "call_1",
 		Content:    json.RawMessage(`"done"`),
 	}})
 	if err != nil {
 		t.Fatalf("parseChatMessages failed: %v", err)
+	}
+	if replaceHistory {
+		t.Fatalf("replaceHistory = true, want false for tool-only follow-up")
 	}
 
 	history := []llm.Message{{
@@ -7799,6 +7802,18 @@ func TestChatCompletions_ToolResultWithoutReplayedToolCallKeepsNameFromSessionHi
 
 	if len(provider.Requests) != 2 {
 		t.Fatalf("provider request count = %d, want 2", len(provider.Requests))
+	}
+	if len(provider.Requests[1].Messages) != 3 {
+		t.Fatalf("second provider request message count = %d, want 3", len(provider.Requests[1].Messages))
+	}
+	if provider.Requests[1].Messages[0].Role != llm.RoleUser || len(provider.Requests[1].Messages[0].Parts) != 1 || provider.Requests[1].Messages[0].Parts[0].Type != llm.PartText || provider.Requests[1].Messages[0].Parts[0].Text != "Hi" {
+		t.Fatalf("second request message[0] = %+v, want original user message", provider.Requests[1].Messages[0])
+	}
+	if provider.Requests[1].Messages[1].Role != llm.RoleAssistant || len(provider.Requests[1].Messages[1].Parts) != 1 || provider.Requests[1].Messages[1].Parts[0].Type != llm.PartToolCall || provider.Requests[1].Messages[1].Parts[0].ToolCall == nil || provider.Requests[1].Messages[1].Parts[0].ToolCall.ID != "call-1" {
+		t.Fatalf("second request message[1] = %+v, want assistant tool call", provider.Requests[1].Messages[1])
+	}
+	if provider.Requests[1].Messages[2].Role != llm.RoleTool || len(provider.Requests[1].Messages[2].Parts) != 1 || provider.Requests[1].Messages[2].Parts[0].Type != llm.PartToolResult || provider.Requests[1].Messages[2].Parts[0].ToolResult == nil || provider.Requests[1].Messages[2].Parts[0].ToolResult.ID != "call-1" {
+		t.Fatalf("second request message[2] = %+v, want tool result", provider.Requests[1].Messages[2])
 	}
 
 	var toolResultName string
