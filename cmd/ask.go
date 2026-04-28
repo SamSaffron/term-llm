@@ -587,8 +587,15 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 		// Set up turn callback for tool result messages and metrics
 		persistTurnCompleted = func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
-			// Save messages (tool results, or assistant message when no tools were executed)
-			for _, msg := range turnMessages {
+			// ResponseCompleted already persisted the assistant message for tool turns,
+			// so skip it here when the engine includes it at the start of turnMessages.
+			appendStart := 0
+			if metrics.ToolCalls > 0 && len(turnMessages) > 0 && turnMessages[0].Role == llm.RoleAssistant {
+				appendStart = 1
+			}
+
+			// Save tool results, or the assistant message when no tools were executed.
+			for _, msg := range turnMessages[appendStart:] {
 				sessionMsg := session.NewMessage(sess.ID, msg, -1)
 				// Set duration for assistant messages (when responseCallback didn't run)
 				if msg.Role == llm.RoleAssistant {
