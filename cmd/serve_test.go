@@ -6523,6 +6523,61 @@ func TestStartResponseRun_StatelessCleanupRemovesResponseIDMapping(t *testing.T)
 	}, "stateless response ID cleanup")
 }
 
+func TestStartResponseRun_BusyConcurrentRunKeepsActiveSessionTracking(t *testing.T) {
+	provider := newStagedProvider("hello ", "world")
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  "staged",
+		engine:       llm.NewEngine(provider, nil),
+		defaultModel: "mock-model",
+	}
+	rt.Touch()
+
+	srv := &serveServer{responseRuns: newServeResponseRunManager()}
+	defer srv.responseRuns.Close()
+
+	const sessionID = "sess_busy_active_tracking"
+	run1, err := srv.startResponseRun(rt, true, false, []llm.Message{
+		llm.UserText("first"),
+	}, llm.Request{SessionID: sessionID}, sessionID, startResponseRunOptions{})
+	if err != nil {
+		t.Fatalf("startResponseRun first: %v", err)
+	}
+
+	waitForServeCondition(t, time.Second, func() bool {
+		return rt.hasActiveRun() && srv.responseRuns.activeRunID(sessionID) == run1.id
+	}, "first response run to become active")
+
+	run2, err := srv.startResponseRun(rt, true, false, []llm.Message{
+		llm.UserText("second"),
+	}, llm.Request{SessionID: sessionID}, sessionID, startResponseRunOptions{})
+	if err != nil {
+		t.Fatalf("startResponseRun second: %v", err)
+	}
+
+	waitForServeCondition(t, time.Second, func() bool {
+		snapshot := run2.snapshot()
+		status, _ := snapshot["status"].(string)
+		return status == "failed"
+	}, "second busy response run failure")
+
+	if got := srv.responseRuns.activeRunID(sessionID); got != run1.id {
+		t.Fatalf("activeRunID after concurrent busy run = %q, want %q", got, run1.id)
+	}
+
+	close(provider.releaseSecond)
+
+	waitForServeCondition(t, time.Second, func() bool {
+		snapshot := run1.snapshot()
+		status, _ := snapshot["status"].(string)
+		return status == "completed"
+	}, "first response run completion")
+
+	waitForServeCondition(t, time.Second, func() bool {
+		return srv.responseRuns.activeRunID(sessionID) == ""
+	}, "active response run cleanup")
+}
+
 func TestServeSessionManager_Get_ExistingSession(t *testing.T) {
 	factory := func(ctx context.Context) (*serveRuntime, error) {
 		rt := &serveRuntime{}

@@ -523,18 +523,25 @@ var (
 )
 
 func (rt *serveRuntime) Run(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request) (serveRunResult, error) {
-	return rt.run(ctx, stateful, replaceHistory, inputMessages, req, nil)
+	return rt.run(ctx, stateful, replaceHistory, inputMessages, req, nil, nil)
 }
 
 func (rt *serveRuntime) RunWithEvents(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request, onEvent func(llm.Event) error) (serveRunResult, error) {
-	return rt.run(ctx, stateful, replaceHistory, inputMessages, req, onEvent)
+	return rt.run(ctx, stateful, replaceHistory, inputMessages, req, nil, onEvent)
 }
 
-func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request, onEvent func(llm.Event) error) (serveRunResult, error) {
+func (rt *serveRuntime) RunWithEventsAndStart(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request, onStart func(), onEvent func(llm.Event) error) (serveRunResult, error) {
+	return rt.run(ctx, stateful, replaceHistory, inputMessages, req, onStart, onEvent)
+}
+
+func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory bool, inputMessages []llm.Message, req llm.Request, onStart func(), onEvent func(llm.Event) error) (serveRunResult, error) {
 	if !rt.mu.TryLock() {
 		return serveRunResult{}, errServeSessionBusy
 	}
 	defer rt.mu.Unlock()
+	if onStart != nil {
+		onStart()
+	}
 	rt.Touch()
 	persisted := rt.ensurePersistedSession(ctx, req.SessionID, inputMessages)
 	if persisted {

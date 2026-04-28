@@ -1133,7 +1133,6 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		cancel()
 		return nil, err
 	}
-	mgr.setActiveRun(sessionID, respID)
 
 	if options.uiSession {
 		runtime.clearLastUIRunError()
@@ -1181,7 +1180,9 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		}()
 
 		streamState := &responseRunStreamState{}
-		result, err := runtime.RunWithEvents(runCtx, stateful, replaceHistory, inputMessages, llmReq, func(ev llm.Event) error {
+		result, err := runtime.RunWithEventsAndStart(runCtx, stateful, replaceHistory, inputMessages, llmReq, func() {
+			mgr.setActiveRun(sessionID, respID)
+		}, func(ev llm.Event) error {
 			return s.appendResponseRunEvent(runtime, run, streamState, ev)
 		})
 		if err != nil {
