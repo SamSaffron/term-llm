@@ -7501,6 +7501,38 @@ func TestParseAnthropicMessages_ToolUseRoundTrip(t *testing.T) {
 	}
 }
 
+func TestParseAnthropicMessages_PreservesMixedUserToolResultOrdering(t *testing.T) {
+	msgs, err := parseAnthropicMessages([]anthropicMessage{
+		{Role: "user", Content: json.RawMessage(`[
+			{"type":"text","text":"before"},
+			{"type":"tool_result","tool_use_id":"call_1","content":"result 1"},
+			{"type":"tool_result","tool_use_id":"call_2","content":"result 2"},
+			{"type":"text","text":"after"}
+		]`)},
+	})
+	if err != nil {
+		t.Fatalf("parseAnthropicMessages: %v", err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("len = %d, want 3", len(msgs))
+	}
+	if msgs[0].Role != llm.RoleUser || len(msgs[0].Parts) != 1 || msgs[0].Parts[0].Text != "before" {
+		t.Fatalf("message[0] = %+v, want initial user text", msgs[0])
+	}
+	if msgs[1].Role != llm.RoleTool || len(msgs[1].Parts) != 2 {
+		t.Fatalf("message[1] = %+v, want grouped tool results", msgs[1])
+	}
+	if msgs[1].Parts[0].ToolResult == nil || msgs[1].Parts[0].ToolResult.ID != "call_1" || msgs[1].Parts[0].ToolResult.Content != "result 1" {
+		t.Fatalf("message[1].parts[0] = %+v, want first tool result", msgs[1].Parts[0])
+	}
+	if msgs[1].Parts[1].ToolResult == nil || msgs[1].Parts[1].ToolResult.ID != "call_2" || msgs[1].Parts[1].ToolResult.Content != "result 2" {
+		t.Fatalf("message[1].parts[1] = %+v, want second tool result", msgs[1].Parts[1])
+	}
+	if msgs[2].Role != llm.RoleUser || len(msgs[2].Parts) != 1 || msgs[2].Parts[0].Text != "after" {
+		t.Fatalf("message[2] = %+v, want trailing user text", msgs[2])
+	}
+}
+
 func TestParseAnthropicSystem(t *testing.T) {
 	// String form
 	if got := parseAnthropicSystem(json.RawMessage(`"Be helpful"`)); got != "Be helpful" {
