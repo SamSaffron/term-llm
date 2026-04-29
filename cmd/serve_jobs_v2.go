@@ -352,14 +352,16 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 	cfg.StopWhen = string(progressiveOpts.StopWhen)
 	cfg.ContinueWith = progressiveOpts.ContinueWith
 	res := jobsV2RunResult{SessionID: cfg.SessionID}
+	var thinkingBuilder strings.Builder
+	var responseBuilder strings.Builder
 	progressTracker := newProgressTracker()
 	execResult, err := r.exec(ctx, cfg, func(ev llm.Event) {
 		switch ev.Type {
 		case llm.EventReasoningDelta:
-			res.Thinking += ev.Text
+			thinkingBuilder.WriteString(ev.Text)
 		case llm.EventTextDelta:
 			if !cfg.Progressive {
-				res.Response += ev.Text
+				responseBuilder.WriteString(ev.Text)
 			}
 		case llm.EventToolCall:
 			if ev.Tool != nil && cfg.Progressive && isProgressToolName(ev.Tool.Name) {
@@ -373,7 +375,7 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 				// Flush accumulated response to DB after each turn so callers can see partial output.
 				if pw != nil {
 					if !cfg.Progressive {
-						pw("response_flush", res.Response, nil)
+						pw("response_flush", responseBuilder.String(), nil)
 					}
 					pw("turn_complete", fmt.Sprintf("turn %d complete (%d in, %d out tokens)", res.TurnCount, ev.Use.InputTokens, ev.Use.OutputTokens), map[string]any{
 						"turn":          res.TurnCount,
@@ -404,7 +406,7 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 					if message == "" {
 						message = "progress updated"
 					}
-					envelope := buildProgressiveRunResult(cfg.SessionID, "", commit.Final, commit, res.Response)
+					envelope := buildProgressiveRunResult(cfg.SessionID, "", commit.Final, commit, responseBuilder.String())
 					pw("progress_update", message, envelope)
 				}
 				return
@@ -426,6 +428,10 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 			}
 		}
 	})
+	res.Thinking = thinkingBuilder.String()
+	if !cfg.Progressive {
+		res.Response = responseBuilder.String()
+	}
 	if execResult.Progressive != nil {
 		if strings.TrimSpace(execResult.Progressive.SessionID) == "" {
 			execResult.Progressive.SessionID = cfg.SessionID

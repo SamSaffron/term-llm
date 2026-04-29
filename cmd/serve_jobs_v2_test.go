@@ -971,3 +971,62 @@ func TestJobsV2ExecuteRunDoesNotStartWhenManagerClosed(t *testing.T) {
 		t.Fatal("started_at was set even though closed manager should not start the run")
 	}
 }
+
+func TestJobsV2LLMRunnerAccumulatesStreamingDeltas(t *testing.T) {
+	runner := &jobsV2LLMRunner{exec: func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(llm.Event)) (serveJobsExecResult, error) {
+		onEvent(llm.Event{Type: llm.EventReasoningDelta, Text: "thinking"})
+		onEvent(llm.Event{Type: llm.EventTextDelta, Text: "hel"})
+		onEvent(llm.Event{Type: llm.EventTextDelta, Text: "lo"})
+		onEvent(llm.Event{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 3, OutputTokens: 5}})
+		return serveJobsExecResult{}, nil
+	}}
+	job := jobsV2Job{RunnerConfig: json.RawMessage(`{"agent_name":"test","instructions":"say hello"}`)}
+
+	var flushes []string
+	res, err := runner.Run(context.Background(), job, func(eventType, message string, data any) {
+		if eventType == "response_flush" {
+			flushes = append(flushes, message)
+		}
+	})
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	if res.Response != "hello" {
+		t.Fatalf("Response = %q, want %q", res.Response, "hello")
+	}
+	if res.Thinking != "thinking" {
+		t.Fatalf("Thinking = %q, want %q", res.Thinking, "thinking")
+	}
+	if len(flushes) != 1 || flushes[0] != "hello" {
+		t.Fatalf("response flushes = %#v, want [hello]", flushes)
+	}
+	if res.TurnCount != 1 || res.InputTokens != 3 || res.OutputTokens != 5 {
+		t.Fatalf("usage = turns:%d input:%d output:%d, want turns:1 input:3 output:5", res.TurnCount, res.InputTokens, res.OutputTokens)
+	}
+}
+
+func BenchmarkJobsV2LLMRunnerTextDeltaAccumulation(b *testing.B) {
+	const deltas = 4096
+	const delta = "0123456789abcdef"
+	wantLen := deltas * len(delta)
+
+	runner := &jobsV2LLMRunner{exec: func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(llm.Event)) (serveJobsExecResult, error) {
+		for i := 0; i < deltas; i++ {
+			onEvent(llm.Event{Type: llm.EventTextDelta, Text: delta})
+		}
+		return serveJobsExecResult{}, nil
+	}}
+	job := jobsV2Job{RunnerConfig: json.RawMessage(`{"agent_name":"bench","instructions":"bench"}`)}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		res, err := runner.Run(context.Background(), job, nil)
+		if err != nil {
+			b.Fatalf("Run failed: %v", err)
+		}
+		if len(res.Response) != wantLen {
+			b.Fatalf("response length = %d, want %d", len(res.Response), wantLen)
+		}
+	}
+}
