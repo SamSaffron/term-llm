@@ -4486,6 +4486,98 @@ func TestHandleResponses_FreshConversationResetRemovesStalePreviousResponseIDs(t
 	}
 }
 
+func TestHandleResponses_PreviousResponseIDChainsAfterRuntimeEviction(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	var created atomic.Int32
+	providers := map[int32]*llm.MockProvider{}
+
+	manager := newServeSessionManager(time.Minute, 100, func(ctx context.Context) (*serveRuntime, error) {
+		createNum := created.Add(1)
+		provider := llm.NewMockProvider("mock").AddTextResponse(fmt.Sprintf("reply%d", createNum))
+		providers[createNum] = provider
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			providerKey:  "mock",
+			engine:       engine,
+			defaultModel: "mock-model",
+			store:        store,
+		}
+		rt.Touch()
+		return rt, nil
+	})
+	defer manager.Close()
+
+	srv := &serveServer{sessionMgr: manager, store: store}
+	manager.onEvict = func(rt *serveRuntime) {
+		for _, rid := range rt.getResponseIDs() {
+			srv.responseToSession.Delete(rid)
+		}
+	}
+
+	code, resp1 := doResponsesWithHeader(t, srv, `{"input":"msg1"}`, "resume-after-evict")
+	if code != http.StatusOK {
+		t.Fatalf("msg1 status = %d, want 200", code)
+	}
+	respID1, _ := resp1["id"].(string)
+	if respID1 == "" {
+		t.Fatal("first response missing id")
+	}
+
+	manager.mu.Lock()
+	evicted := manager.sessions["resume-after-evict"]
+	delete(manager.sessions, "resume-after-evict")
+	manager.mu.Unlock()
+	if evicted != nil {
+		if manager.onEvict != nil {
+			manager.onEvict(evicted)
+		}
+		evicted.Close()
+	}
+	if _, ok := srv.responseToSession.Load(respID1); ok {
+		t.Fatalf("responseToSession should not contain %q after eviction", respID1)
+	}
+
+	code, _ = doResponses(t, srv, `{"input":"msg2","previous_response_id":"`+respID1+`"}`)
+	if code != http.StatusOK {
+		t.Fatalf("msg2 status after eviction = %d, want 200", code)
+	}
+
+	provider := providers[2]
+	if provider == nil {
+		t.Fatal("expected recreated runtime provider")
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("recreated provider request count = %d, want 1", len(provider.Requests))
+	}
+
+	var sawMsg1, sawReply1, sawMsg2 bool
+	for _, msg := range provider.Requests[0].Messages {
+		for _, part := range msg.Parts {
+			if part.Type != llm.PartText {
+				continue
+			}
+			switch part.Text {
+			case "msg1":
+				sawMsg1 = true
+			case "reply1":
+				sawReply1 = true
+			case "msg2":
+				sawMsg2 = true
+			}
+		}
+	}
+	if !sawMsg1 || !sawReply1 || !sawMsg2 {
+		t.Fatalf("rehydrated request missing persisted history: sawMsg1=%v sawReply1=%v sawMsg2=%v", sawMsg1, sawReply1, sawMsg2)
+	}
+}
+
 func TestHandleResponses_PreviousResponseIDChainsSession(t *testing.T) {
 	// Each runtime gets 2 text responses so it can handle 2 messages
 	srv := newTestServeServer("first reply", "second reply")

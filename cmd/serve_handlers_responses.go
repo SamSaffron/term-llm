@@ -12,6 +12,28 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
+func (s *serveServer) resolveResponseSessionID(respID string) (string, bool) {
+	if sid, ok := s.responseToSession.Load(respID); ok {
+		if sidStr, isStr := sid.(string); isStr && sidStr != "" {
+			return sidStr, true
+		}
+	}
+
+	// Keep previous_response_id chaining working after idle runtime eviction:
+	// the runtime may be gone, but the retained /v1/responses object still knows
+	// which persisted session it belongs to.
+	run, ok := s.ensureResponseRuns().get(respID)
+	if !ok || run == nil {
+		return "", false
+	}
+	sessionID := strings.TrimSpace(run.sessionID)
+	if sessionID == "" {
+		return "", false
+	}
+	s.responseToSession.Store(respID, sessionID)
+	return sessionID, true
+}
+
 func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
@@ -50,15 +72,10 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	// an existing conversation without explicit chaining.
 	sessionID := ""
 	if req.PreviousResponseID != "" {
-		sid, ok := s.responseToSession.Load(req.PreviousResponseID)
+		sidStr, ok := s.resolveResponseSessionID(req.PreviousResponseID)
 		if !ok {
 			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error",
 				fmt.Sprintf("previous_response_id %q not found (session may have expired)", req.PreviousResponseID))
-			return
-		}
-		sidStr, isStr := sid.(string)
-		if !isStr || sidStr == "" {
-			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "corrupted session mapping")
 			return
 		}
 		sessionID = sidStr
