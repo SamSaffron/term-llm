@@ -1,11 +1,15 @@
 package tools
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -110,71 +114,171 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.T
 		return textOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
 	}
 
-	// Read file
-	data, err := os.ReadFile(resolvedPath)
+	output, err := readLineNumberedFile(ctx, resolvedPath, a.Path, a.StartLine, a.EndLine, t.limits)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return textOutput(formatToolError(NewToolError(ErrFileNotFound, a.Path))), nil
+		if toolErr, ok := err.(*ToolError); ok {
+			return textOutput(formatToolError(toolErr)), nil
 		}
 		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "read error: %v", err))), nil
 	}
 
-	// Check for binary file
-	if isBinaryContent(data) {
-		return textOutput(formatToolError(NewToolErrorf(ErrBinaryFile, "%s appears to be a binary file", a.Path))), nil
+	return textOutput(output), nil
+}
+
+func readLineNumberedFile(ctx context.Context, resolvedPath, displayPath string, startLine, endLine int, limits OutputLimits) (string, error) {
+	file, err := os.Open(resolvedPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", NewToolError(ErrFileNotFound, displayPath)
+		}
+		return "", fmt.Errorf("open: %w", err)
+	}
+	defer file.Close()
+
+	reader := bufio.NewReader(file)
+
+	// Check for binary file using only the sniffing prefix.  Peek leaves the
+	// bytes buffered so paged reads can continue without a second read or seek,
+	// and without requiring the path to be seekable.
+	sample, err := reader.Peek(512)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, bufio.ErrBufferFull) {
+		return "", fmt.Errorf("read sample: %w", err)
+	}
+	if isBinaryContent(sample) {
+		return "", NewToolErrorf(ErrBinaryFile, "%s appears to be a binary file", displayPath)
 	}
 
-	content := string(data)
-	lines := strings.Split(content, "\n")
-	totalLines := len(lines)
+	return streamLineNumberedRange(ctx, reader, startLine, endLine, limits)
+}
 
-	// Handle line range
-	start := 0
-	if a.StartLine > 0 {
-		start = a.StartLine - 1
-	}
-	if start >= totalLines {
-		return textOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "start_line %d exceeds file length %d", a.StartLine, totalLines))), nil
+func streamLineNumberedRange(ctx context.Context, reader *bufio.Reader, startLine, endLine int, limits OutputLimits) (string, error) {
+	requestedStart := startLine
+	if startLine <= 0 {
+		startLine = 1
 	}
 
-	end := totalLines
-	if a.EndLine > 0 && a.EndLine < totalLines {
-		end = a.EndLine
-	}
-
-	if start >= end {
-		return textOutput("No content in requested range."), nil
-	}
-
-	selectedLines := lines[start:end]
-
-	// Check limits
-	truncated := false
-	if len(selectedLines) > t.limits.MaxLines {
-		selectedLines = selectedLines[:t.limits.MaxLines]
-		truncated = true
-	}
-
-	// Format output with line numbers
 	var sb strings.Builder
-	for i, line := range selectedLines {
-		lineNum := start + i + 1 // 1-indexed
-		sb.WriteString(fmt.Sprintf("%d: %s\n", lineNum, line))
+	if limits.MaxBytes > 0 {
+		grow := limits.MaxBytes
+		if grow > 4*1024 {
+			grow = 4 * 1024
+		}
+		sb.Grow(int(grow))
 	}
 
-	output := strings.TrimSuffix(sb.String(), "\n")
+	totalLines := 0
+	selectedLines := 0
+	writtenLines := 0
+	truncated := false
+	byteCapped := false
+	emittedAny := false
+	lastEndedNewline := false
 
-	// Check byte limit
-	if int64(len(output)) > t.limits.MaxBytes {
-		output = output[:t.limits.MaxBytes]
-		truncated = true
+	appendOutput := func(s string) {
+		if byteCapped {
+			return
+		}
+		if limits.MaxBytes <= 0 {
+			if len(s) > 0 {
+				truncated = true
+				byteCapped = true
+			}
+			return
+		}
+		remaining := int(limits.MaxBytes) - sb.Len()
+		if remaining <= 0 {
+			if len(s) > 0 {
+				truncated = true
+				byteCapped = true
+			}
+			return
+		}
+		if len(s) > remaining {
+			sb.WriteString(s[:remaining])
+			truncated = true
+			byteCapped = true
+			return
+		}
+		sb.WriteString(s)
 	}
 
+	processLine := func(line string) bool {
+		totalLines++
+		lineNum := totalLines
+
+		inRange := lineNum >= startLine && (endLine <= 0 || lineNum <= endLine)
+		if inRange {
+			selectedLines++
+			if selectedLines > limits.MaxLines {
+				truncated = true
+			} else {
+				if writtenLines > 0 {
+					appendOutput("\n")
+				}
+				appendOutput(strconv.Itoa(lineNum))
+				appendOutput(": ")
+				appendOutput(line)
+				writtenLines++
+			}
+		}
+
+		if truncated {
+			return true // Keep scanning so the truncation note can report total lines.
+		}
+		if endLine > 0 {
+			if startLine <= endLine && lineNum >= endLine {
+				return false
+			}
+			if startLine > endLine && lineNum >= startLine {
+				return false
+			}
+		}
+		return true
+	}
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+
+		line, readErr := reader.ReadString('\n')
+		if len(line) > 0 {
+			emittedAny = true
+			if strings.HasSuffix(line, "\n") {
+				line = strings.TrimSuffix(line, "\n")
+				lastEndedNewline = true
+			} else {
+				lastEndedNewline = false
+			}
+			if !processLine(line) {
+				break
+			}
+		}
+
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				if !emittedAny || lastEndedNewline {
+					processLine("")
+				}
+				break
+			}
+			return "", readErr
+		}
+	}
+
+	if requestedStart > 0 && startLine > totalLines {
+		return "", NewToolErrorf(ErrInvalidParams, "start_line %d exceeds file length %d", requestedStart, totalLines)
+	}
+
+	if selectedLines == 0 {
+		return "No content in requested range.", nil
+	}
+
+	output := sb.String()
 	if truncated {
 		output += fmt.Sprintf("\n\n[Output truncated. Total lines: %d. Use start_line/end_line for pagination.]", totalLines)
 	}
-
-	return textOutput(output), nil
+	return output, nil
 }
 
 // isBinaryContent detects if content is binary using http.DetectContentType.
