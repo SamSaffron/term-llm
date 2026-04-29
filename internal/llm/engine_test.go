@@ -1949,6 +1949,55 @@ func TestEngineResetConversationSkipsNonResettableProvider(t *testing.T) {
 	e.ResetConversation()
 }
 
+func TestConfigureContextManagementClearsUnknownLimit(t *testing.T) {
+	RegisterConfigLimits([]ConfigModelLimit{{Provider: "mock", Model: "known-model", InputLimit: 1234}})
+	defer RegisterConfigLimits(nil)
+
+	provider := NewMockProvider("mock")
+	e := NewEngine(provider, nil)
+
+	e.ConfigureContextManagement(provider, "mock", "known-model", true)
+	if got := e.InputLimit(); got != 1234 {
+		t.Fatalf("InputLimit() after known model = %d, want 1234", got)
+	}
+	if e.compactionConfig == nil {
+		t.Fatal("compactionConfig = nil after known model, want enabled")
+	}
+
+	e.ConfigureContextManagement(provider, "mock", "unknown-model", true)
+	if got := e.InputLimit(); got != 0 {
+		t.Fatalf("InputLimit() after unknown model = %d, want 0", got)
+	}
+	if e.compactionConfig != nil {
+		t.Fatal("compactionConfig != nil after unknown model, want cleared")
+	}
+}
+
+func TestConfigureContextManagementClearsManagedContextProvider(t *testing.T) {
+	RegisterConfigLimits([]ConfigModelLimit{{Provider: "mock", Model: "known-model", InputLimit: 1234}})
+	defer RegisterConfigLimits(nil)
+
+	provider := NewMockProvider("mock")
+	e := NewEngine(provider, nil)
+
+	e.ConfigureContextManagement(provider, "mock", "known-model", true)
+	if got := e.InputLimit(); got != 1234 {
+		t.Fatalf("InputLimit() after known model = %d, want 1234", got)
+	}
+	if e.compactionConfig == nil {
+		t.Fatal("compactionConfig = nil after known model, want enabled")
+	}
+
+	managedProvider := provider.WithCapabilities(Capabilities{ToolCalls: true, ManagesOwnContext: true})
+	e.ConfigureContextManagement(managedProvider, "mock", "known-model", true)
+	if got := e.InputLimit(); got != 0 {
+		t.Fatalf("InputLimit() after managed-context provider = %d, want 0", got)
+	}
+	if e.compactionConfig != nil {
+		t.Fatal("compactionConfig != nil after managed-context provider, want cleared")
+	}
+}
+
 func TestLastTotalTokensIncludesCachedTokens(t *testing.T) {
 	// Provider returns a text response with usage that has cached tokens.
 	// Uses a tool spec so the engine enters the agentic runLoop path

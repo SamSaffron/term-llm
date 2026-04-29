@@ -345,24 +345,24 @@ func (e *Engine) SetContextTracking(inputLimit int) {
 
 // ConfigureContextManagement enables compaction or context tracking based on
 // the provider/model's input limit and the autoCompact setting.
-// Skips setup if the provider manages its own context (e.g., claude-bin).
+// Providers that manage their own context, or models without a known limit,
+// clear engine-side tracking/compaction to avoid leaking stale settings.
 // Both inputLimit and compactionConfig are set atomically under a single lock.
 func (e *Engine) ConfigureContextManagement(provider Provider, providerName, modelName string, autoCompact bool) {
-	if provider.Capabilities().ManagesOwnContext {
-		return
+	limit := 0
+	var compactionConfig *CompactionConfig
+
+	if !provider.Capabilities().ManagesOwnContext {
+		limit = InputLimitForProviderModel(providerName, modelName)
+		if limit > 0 && autoCompact {
+			cfg := DefaultCompactionConfig()
+			compactionConfig = &cfg
+		}
 	}
-	limit := InputLimitForProviderModel(providerName, modelName)
-	if limit <= 0 {
-		return
-	}
+
 	e.callbackMu.Lock()
 	e.inputLimit = limit
-	if autoCompact {
-		cfg := DefaultCompactionConfig()
-		e.compactionConfig = &cfg
-	} else {
-		e.compactionConfig = nil
-	}
+	e.compactionConfig = compactionConfig
 	e.callbackMu.Unlock()
 }
 
