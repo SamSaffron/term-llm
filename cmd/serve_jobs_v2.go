@@ -481,10 +481,11 @@ type jobsV2Manager struct {
 	cleanupInterval      time.Duration
 	lastCleanupCompleted time.Time
 
-	mu      sync.Mutex
-	closed  bool
-	wg      sync.WaitGroup
-	cancels map[string]context.CancelFunc
+	enqueueMu sync.Mutex
+	mu        sync.Mutex
+	closed    bool
+	wg        sync.WaitGroup
+	cancels   map[string]context.CancelFunc
 }
 
 const jobsV2Schema = `
@@ -840,35 +841,61 @@ func (m *jobsV2Manager) countActiveRuns(jobID string) (int, error) {
 	return active, nil
 }
 
+func (m *jobsV2Manager) enqueueRunWithConcurrencyLimit(job jobsV2Job, trigger string, scheduledFor time.Time, onLimit func() error, afterInsert func(string) error) (string, int, bool, error) {
+	m.enqueueMu.Lock()
+	defer m.enqueueMu.Unlock()
+
+	active, err := m.countActiveRuns(job.ID)
+	if err != nil {
+		return "", 0, false, err
+	}
+	limit := jobsV2ConcurrencyLimit(job)
+	if active >= limit {
+		if onLimit != nil {
+			if err := onLimit(); err != nil {
+				return "", 0, false, err
+			}
+		}
+		return "", active, false, nil
+	}
+
+	runID := "run_" + randomSuffix()
+	_, err = m.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, runID, job.ID, trigger, scheduledFor.UTC(), jobsV2RunQueued)
+	if err != nil {
+		return "", 0, false, err
+	}
+	if afterInsert != nil {
+		if err := afterInsert(runID); err != nil {
+			return "", 0, false, err
+		}
+	}
+	return runID, active + 1, true, nil
+}
+
 func (m *jobsV2Manager) scheduleOne(job jobsV2Job, now time.Time) error {
 	next, err := computeNextRunAt(job, now)
 	if err != nil {
 		return err
 	}
 
-	active, err := m.countActiveRuns(job.ID)
+	runID, _, queued, err := m.enqueueRunWithConcurrencyLimit(job, "schedule", now, func() error {
+		_, err := m.db.Exec(`UPDATE jobs_v2 SET next_run_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, next, job.ID)
+		return err
+	}, func(string) error {
+		if job.TriggerType == jobsV2TriggerOnce {
+			_, err := m.db.Exec(`UPDATE jobs_v2 SET enabled = 0, next_run_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, job.ID)
+			return err
+		}
+		_, err := m.db.Exec(`UPDATE jobs_v2 SET next_run_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, next, job.ID)
+		return err
+	})
 	if err != nil {
 		return err
 	}
-	if active >= jobsV2ConcurrencyLimit(job) {
-		_, err = m.db.Exec(`UPDATE jobs_v2 SET next_run_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, next, job.ID)
-		return err
+	if queued {
+		_ = m.addRunEvent(runID, "queued", "scheduled run queued", map[string]any{"trigger": "schedule", "attempt": 1})
 	}
-
-	runID := "run_" + randomSuffix()
-	_, err = m.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, runID, job.ID, "schedule", now.UTC(), jobsV2RunQueued)
-	if err != nil {
-		return err
-	}
-	_ = m.addRunEvent(runID, "queued", "scheduled run queued", map[string]any{"trigger": "schedule", "attempt": 1})
-
-	if job.TriggerType == jobsV2TriggerOnce {
-		_, err = m.db.Exec(`UPDATE jobs_v2 SET enabled = 0, next_run_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, job.ID)
-		return err
-	}
-
-	_, err = m.db.Exec(`UPDATE jobs_v2 SET next_run_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, next, job.ID)
-	return err
+	return nil
 }
 
 func (m *jobsV2Manager) claimNextRun() (jobsV2Run, bool, error) {
@@ -1371,24 +1398,18 @@ func (m *jobsV2Manager) TriggerJob(id string) (jobsV2Run, error) {
 		return jobsV2Run{}, fmt.Errorf("job is disabled")
 	}
 
-	active, err := m.countActiveRuns(id)
+	runID, active, queued, err := m.enqueueRunWithConcurrencyLimit(job, "manual", time.Now().UTC(), nil, nil)
 	if err != nil {
 		return jobsV2Run{}, err
 	}
-	limit := jobsV2ConcurrencyLimit(job)
-	if active >= limit {
+	if !queued {
+		limit := jobsV2ConcurrencyLimit(job)
 		if limit == 1 {
 			return jobsV2Run{}, fmt.Errorf("job already has an active run")
 		}
 		return jobsV2Run{}, fmt.Errorf("job already has %d active runs (max %d)", active, limit)
 	}
 
-	runID := "run_" + randomSuffix()
-	now := time.Now().UTC()
-	_, err = m.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, runID, id, "manual", now, jobsV2RunQueued)
-	if err != nil {
-		return jobsV2Run{}, err
-	}
 	_ = m.addRunEvent(runID, "queued", "manual run queued", map[string]any{"trigger": "manual", "attempt": 1})
 	return m.GetRun(runID)
 }

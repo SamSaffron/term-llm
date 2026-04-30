@@ -790,6 +790,113 @@ func TestJobsV2TriggerJobRespectsMaxConcurrentRuns(t *testing.T) {
 	}
 }
 
+func TestJobsV2EnqueueRunWithConcurrencyLimitSerializesConcurrentEnqueues(t *testing.T) {
+	mgr, err := newJobsV2Manager(":memory:", 0, nil)
+	if err != nil {
+		t.Fatalf("newJobsV2Manager failed: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+
+	job, err := mgr.CreateJob(jobsV2Job{
+		Name:              "serialized-concurrency-gate",
+		Enabled:           true,
+		RunnerType:        jobsV2RunnerProgram,
+		RunnerConfig:      json.RawMessage(`{"command":"echo","args":["x"]}`),
+		TriggerType:       jobsV2TriggerManual,
+		TriggerConfig:     json.RawMessage(`{}`),
+		ConcurrencyPolicy: "forbid",
+		MaxConcurrentRuns: 1,
+		TimeoutSeconds:    30,
+	})
+	if err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	firstDone := make(chan struct{})
+
+	var firstRunID string
+	var firstQueued bool
+	var firstErr error
+	go func() {
+		defer close(firstDone)
+		firstRunID, _, firstQueued, firstErr = mgr.enqueueRunWithConcurrencyLimit(job, "manual", time.Now().UTC(), nil, func(string) error {
+			close(started)
+			<-release
+			return nil
+		})
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first enqueue to hold the concurrency gate")
+	}
+
+	type enqueueResult struct {
+		runID  string
+		active int
+		queued bool
+		err    error
+	}
+	secondCh := make(chan enqueueResult, 1)
+	go func() {
+		runID, active, queued, err := mgr.enqueueRunWithConcurrencyLimit(job, "manual", time.Now().UTC(), nil, nil)
+		secondCh <- enqueueResult{runID: runID, active: active, queued: queued, err: err}
+	}()
+
+	select {
+	case result := <-secondCh:
+		t.Fatalf("second enqueue returned before first released the concurrency gate: %+v", result)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first enqueue to finish")
+	}
+	if firstErr != nil {
+		t.Fatalf("first enqueue failed: %v", firstErr)
+	}
+	if !firstQueued {
+		t.Fatal("first enqueue should queue a run")
+	}
+	if firstRunID == "" {
+		t.Fatal("first enqueue returned empty run ID")
+	}
+
+	var second enqueueResult
+	select {
+	case second = <-secondCh:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for second enqueue result")
+	}
+	if second.err != nil {
+		t.Fatalf("second enqueue failed: %v", second.err)
+	}
+	if second.queued {
+		t.Fatal("second enqueue should observe the queued run and refuse to queue another")
+	}
+	if second.active != 1 {
+		t.Fatalf("second enqueue saw %d active runs, want 1", second.active)
+	}
+	if second.runID != "" {
+		t.Fatalf("second enqueue returned run ID %q, want empty", second.runID)
+	}
+
+	active, err := mgr.countActiveRuns(job.ID)
+	if err != nil {
+		t.Fatalf("countActiveRuns failed: %v", err)
+	}
+	if active != 1 {
+		t.Fatalf("active runs = %d, want 1", active)
+	}
+}
+
 func TestJobsV2ScheduleOneRespectsMaxConcurrentRuns(t *testing.T) {
 	mgr, err := newJobsV2Manager(":memory:", 1, nil)
 	if err != nil {
