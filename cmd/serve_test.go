@@ -1095,6 +1095,27 @@ func TestParseResponsesInput_FunctionCallOutputDoesNotReplaceHistory(t *testing.
 	}
 }
 
+func TestParseResponsesInput_FunctionCallHistoryWithUserReplacesHistory(t *testing.T) {
+	payload := json.RawMessage(`[
+		{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{\"path\":\"a.txt\"}"},
+		{"type":"function_call_output","call_id":"call_1","output":"content"},
+		{"type":"message","role":"user","content":"what next?"}
+	]`)
+	msgs, replaceHistory, err := parseResponsesInput(payload)
+	if err != nil {
+		t.Fatalf("parseResponsesInput failed: %v", err)
+	}
+	if !replaceHistory {
+		t.Fatalf("replaceHistory = false, want true")
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("len(msgs) = %d, want 3", len(msgs))
+	}
+	if msgs[2].Role != llm.RoleUser {
+		t.Fatalf("third role = %s, want user", msgs[2].Role)
+	}
+}
+
 func TestParseChatMessages_ToolCallAndToolResult(t *testing.T) {
 	msgs, replaceHistory, err := parseChatMessages([]chatMessage{
 		{

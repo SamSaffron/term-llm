@@ -45,7 +45,15 @@ func parseResponsesInput(input json.RawMessage) ([]llm.Message, bool, error) {
 
 	var messages []llm.Message
 	callNameByID := map[string]string{}
-	replaceHistory := false
+	allToolItems := len(items) > 0
+	for _, item := range items {
+		itemType := jsonString(item["type"])
+		if itemType != "function_call" && itemType != "function_call_output" {
+			allToolItems = false
+			break
+		}
+	}
+	replaceHistory := len(items) > 1 && !allToolItems
 	userCount := 0
 
 	for _, item := range items {
