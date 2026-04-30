@@ -208,3 +208,151 @@ func TestXAIStreamWithSearch_AllowsLargeSSEDataLines(t *testing.T) {
 		t.Fatal("expected EventDone")
 	}
 }
+
+func TestXAIProviderStreamSendsExplicitParallelToolCallsFalse(t *testing.T) {
+	origClient := defaultHTTPClient
+	defer func() {
+		defaultHTTPClient = origClient
+	}()
+
+	var got struct {
+		ParallelToolCalls *bool             `json:"parallel_tool_calls,omitempty"`
+		Tools             []json.RawMessage `json:"tools,omitempty"`
+		Stream            bool              `json:"stream"`
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	serverURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+
+	defaultHTTPClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			cloned := req.Clone(req.Context())
+			urlCopy := *req.URL
+			cloned.URL = &urlCopy
+			cloned.URL.Scheme = serverURL.Scheme
+			cloned.URL.Host = serverURL.Host
+			return server.Client().Transport.RoundTrip(cloned)
+		}),
+	}
+
+	provider := NewXAIProvider("test-key", "test-model")
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{UserText("hello")},
+		Tools: []ToolSpec{{
+			Name:        "echo",
+			Description: "Echo input",
+			Schema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"text": map[string]interface{}{"type": "string"},
+				},
+			},
+		}},
+		ParallelToolCalls: false,
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+
+	drainStreamToDone(t, stream)
+
+	if got.ParallelToolCalls == nil {
+		t.Fatal("expected parallel_tool_calls to be sent explicitly")
+	}
+	if *got.ParallelToolCalls {
+		t.Fatalf("expected parallel_tool_calls=false, got %v", *got.ParallelToolCalls)
+	}
+	if len(got.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(got.Tools))
+	}
+	if !got.Stream {
+		t.Fatal("expected stream=true")
+	}
+}
+
+func TestXAIProviderStreamSendsExplicitZeroTemperatureAndTopP(t *testing.T) {
+	origClient := defaultHTTPClient
+	defer func() {
+		defaultHTTPClient = origClient
+	}()
+
+	var got struct {
+		Temperature *float64 `json:"temperature,omitempty"`
+		TopP        *float64 `json:"top_p,omitempty"`
+		Stream      bool     `json:"stream"`
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	serverURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+
+	defaultHTTPClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			cloned := req.Clone(req.Context())
+			urlCopy := *req.URL
+			cloned.URL = &urlCopy
+			cloned.URL.Scheme = serverURL.Scheme
+			cloned.URL.Host = serverURL.Host
+			return server.Client().Transport.RoundTrip(cloned)
+		}),
+	}
+
+	provider := NewXAIProvider("test-key", "test-model")
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages:       []Message{UserText("hello")},
+		Temperature:    0,
+		TemperatureSet: true,
+		TopP:           0,
+		TopPSet:        true,
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+
+	drainStreamToDone(t, stream)
+
+	if got.Temperature == nil {
+		t.Fatal("expected temperature=0 to be sent explicitly")
+	}
+	if *got.Temperature != 0 {
+		t.Fatalf("expected temperature=0, got %v", *got.Temperature)
+	}
+	if got.TopP == nil {
+		t.Fatal("expected top_p=0 to be sent explicitly")
+	}
+	if *got.TopP != 0 {
+		t.Fatalf("expected top_p=0, got %v", *got.TopP)
+	}
+	if !got.Stream {
+		t.Fatal("expected stream=true")
+	}
+}
