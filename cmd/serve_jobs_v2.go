@@ -221,6 +221,15 @@ var (
 	jobsV2ProgramWaitDelay   time.Duration = time.Second
 )
 
+const (
+	jobsV2SchedulerMinDelay   = 100 * time.Millisecond
+	jobsV2SchedulerIdleDelay  = time.Minute
+	jobsV2SchedulerErrorDelay = 200 * time.Millisecond
+	jobsV2WorkerMinDelay      = 100 * time.Millisecond
+	jobsV2WorkerIdleDelay     = time.Minute
+	jobsV2WorkerErrorDelay    = 200 * time.Millisecond
+)
+
 type jobsV2ProgramConfig struct {
 	Command string   `json:"command"`
 	Args    []string `json:"args,omitempty"`
@@ -473,7 +482,9 @@ type jobsV2Manager struct {
 	workers  int
 	workerID string
 	runners  map[jobsV2RunnerType]jobsV2Runner
-	tick     time.Duration
+	// Idle timers are only fallbacks; job/run mutations wake the loops immediately.
+	schedulerIdleDelay time.Duration
+	workerIdleDelay    time.Duration
 	// Retention settings for protecting disk usage.
 	retentionRunDays     int
 	retentionEventDays   int
@@ -481,11 +492,14 @@ type jobsV2Manager struct {
 	cleanupInterval      time.Duration
 	lastCleanupCompleted time.Time
 
-	enqueueMu sync.Mutex
-	mu        sync.Mutex
-	closed    bool
-	wg        sync.WaitGroup
-	cancels   map[string]context.CancelFunc
+	enqueueMu     sync.Mutex
+	mu            sync.Mutex
+	closed        bool
+	done          chan struct{}
+	schedulerWake chan struct{}
+	workerWake    chan struct{}
+	wg            sync.WaitGroup
+	cancels       map[string]context.CancelFunc
 }
 
 const jobsV2Schema = `
@@ -599,10 +613,11 @@ func newJobsV2Manager(dbPath string, workers int, llmExec serveJobsExecutor) (*j
 	}
 
 	mgr := &jobsV2Manager{
-		db:       db,
-		workers:  workers,
-		workerID: "worker_" + randomSuffix(),
-		tick:     time.Second,
+		db:                 db,
+		workers:            workers,
+		workerID:           "worker_" + randomSuffix(),
+		schedulerIdleDelay: jobsV2SchedulerIdleDelay,
+		workerIdleDelay:    jobsV2WorkerIdleDelay,
 		// Conservative defaults: enough history for debugging without unbounded growth.
 		retentionRunDays:    30,
 		retentionEventDays:  30,
@@ -612,7 +627,10 @@ func newJobsV2Manager(dbPath string, workers int, llmExec serveJobsExecutor) (*j
 			jobsV2RunnerProgram: &jobsV2ProgramRunner{},
 			jobsV2RunnerLLM:     &jobsV2LLMRunner{exec: llmExec},
 		},
-		cancels: make(map[string]context.CancelFunc),
+		done:          make(chan struct{}),
+		schedulerWake: make(chan struct{}, 1),
+		workerWake:    make(chan struct{}, max(1, workers)),
+		cancels:       make(map[string]context.CancelFunc),
 	}
 
 	if err := mgr.recoverRuns(); err != nil {
@@ -674,6 +692,9 @@ func (m *jobsV2Manager) Close() error {
 		return nil
 	}
 	m.closed = true
+	if m.done != nil {
+		close(m.done)
+	}
 	cancels := make([]context.CancelFunc, 0, len(m.cancels))
 	for _, cancel := range m.cancels {
 		cancels = append(cancels, cancel)
@@ -689,22 +710,121 @@ func (m *jobsV2Manager) Close() error {
 
 func (m *jobsV2Manager) schedulerLoop() {
 	defer m.wg.Done()
-	ticker := time.NewTicker(m.tick)
-	defer ticker.Stop()
+	timer := time.NewTimer(0)
+	defer timer.Stop()
 
 	for {
+		select {
+		case <-m.doneChan():
+			return
+		case <-timer.C:
+		case <-m.schedulerWake:
+			stopTimer(timer)
+		}
 		if m.isClosed() {
 			return
 		}
-		now := time.Now()
-		_ = m.scheduleDueRuns(now)
-		_ = m.maybeRunCleanup(now)
+
+		now := time.Now().UTC()
+		if err := m.scheduleDueRuns(now); err != nil {
+			resetTimer(timer, jobsV2SchedulerErrorDelay)
+			continue
+		}
+		if err := m.maybeRunCleanup(now); err != nil {
+			resetTimer(timer, jobsV2SchedulerErrorDelay)
+			continue
+		}
+		delay, err := m.nextSchedulerDelayWithError(time.Now().UTC())
+		if err != nil {
+			delay = jobsV2SchedulerErrorDelay
+		}
+		resetTimer(timer, delay)
+	}
+}
+
+func (m *jobsV2Manager) doneChan() <-chan struct{} {
+	if m.done == nil {
+		return nil
+	}
+	return m.done
+}
+
+func stopTimer(timer *time.Timer) {
+	if timer == nil {
+		return
+	}
+	if !timer.Stop() {
 		select {
-		case <-ticker.C:
+		case <-timer.C:
 		default:
-			time.Sleep(100 * time.Millisecond)
 		}
 	}
+}
+
+func resetTimer(timer *time.Timer, delay time.Duration) {
+	stopTimer(timer)
+	timer.Reset(delay)
+}
+
+func clampJobsV2Delay(delay, minDelay, idleDelay time.Duration) time.Duration {
+	if idleDelay <= 0 {
+		idleDelay = time.Minute
+	}
+	if delay < 0 {
+		delay = 0
+	}
+	if delay > idleDelay {
+		delay = idleDelay
+	}
+	if minDelay > 0 && delay < minDelay {
+		delay = minDelay
+	}
+	return delay
+}
+
+func (m *jobsV2Manager) nextSchedulerDelay(now time.Time) time.Duration {
+	delay, err := m.nextSchedulerDelayWithError(now)
+	if err != nil {
+		return jobsV2SchedulerErrorDelay
+	}
+	return delay
+}
+
+func (m *jobsV2Manager) nextSchedulerDelayWithError(now time.Time) (time.Duration, error) {
+	idleDelay := m.schedulerIdleDelay
+	if idleDelay <= 0 {
+		idleDelay = jobsV2SchedulerIdleDelay
+	}
+	delay := idleDelay
+
+	var nextRun sql.NullTime
+	err := m.db.QueryRow(`SELECT next_run_at FROM jobs_v2 WHERE enabled = 1 AND next_run_at IS NOT NULL ORDER BY next_run_at ASC LIMIT 1`).Scan(&nextRun)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+	if err == nil && nextRun.Valid {
+		delay = minDuration(delay, nextRun.Time.UTC().Sub(now.UTC()))
+	}
+
+	if m.cleanupInterval > 0 {
+		m.mu.Lock()
+		lastCleanup := m.lastCleanupCompleted
+		m.mu.Unlock()
+		cleanupDelay := time.Duration(0)
+		if !lastCleanup.IsZero() {
+			cleanupDelay = lastCleanup.Add(m.cleanupInterval).Sub(now.UTC())
+		}
+		delay = minDuration(delay, cleanupDelay)
+	}
+
+	return clampJobsV2Delay(delay, jobsV2SchedulerMinDelay, idleDelay), nil
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if b < a {
+		return b
+	}
+	return a
 }
 
 func (m *jobsV2Manager) maybeRunCleanup(now time.Time) error {
@@ -773,26 +893,97 @@ func (m *jobsV2Manager) pruneOldData(now time.Time) error {
 func (m *jobsV2Manager) workerLoop() {
 	defer m.wg.Done()
 	for {
-		if m.isClosed() {
+		select {
+		case <-m.doneChan():
 			return
+		default:
 		}
+
 		run, ok, err := m.claimNextRun()
 		if err != nil {
-			time.Sleep(200 * time.Millisecond)
+			if !m.waitForWorkerWake(jobsV2WorkerErrorDelay) {
+				return
+			}
 			continue
 		}
-		if !ok {
-			time.Sleep(200 * time.Millisecond)
+		if ok {
+			m.executeRun(run)
 			continue
 		}
-		m.executeRun(run)
+		delay, err := m.nextWorkerDelayWithError(time.Now().UTC())
+		if err != nil {
+			delay = jobsV2WorkerErrorDelay
+		}
+		if !m.waitForWorkerWake(delay) {
+			return
+		}
 	}
+}
+
+func (m *jobsV2Manager) waitForWorkerWake(delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer stopTimer(timer)
+	select {
+	case <-m.doneChan():
+		return false
+	case <-m.workerWake:
+		return true
+	case <-timer.C:
+		return true
+	}
+}
+
+func (m *jobsV2Manager) nextWorkerDelay(now time.Time) time.Duration {
+	delay, err := m.nextWorkerDelayWithError(now)
+	if err != nil {
+		return jobsV2WorkerErrorDelay
+	}
+	return delay
+}
+
+func (m *jobsV2Manager) nextWorkerDelayWithError(now time.Time) (time.Duration, error) {
+	idleDelay := m.workerIdleDelay
+	if idleDelay <= 0 {
+		idleDelay = jobsV2WorkerIdleDelay
+	}
+	delay := idleDelay
+
+	var nextRun sql.NullTime
+	err := m.db.QueryRow(`SELECT scheduled_for FROM job_runs_v2 WHERE status = ? ORDER BY scheduled_for ASC LIMIT 1`, jobsV2RunQueued).Scan(&nextRun)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+	if err == nil && nextRun.Valid {
+		delay = minDuration(delay, nextRun.Time.UTC().Sub(now.UTC()))
+	}
+
+	return clampJobsV2Delay(delay, jobsV2WorkerMinDelay, idleDelay), nil
 }
 
 func (m *jobsV2Manager) isClosed() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.closed
+}
+
+func (m *jobsV2Manager) notifyScheduler() {
+	select {
+	case m.schedulerWake <- struct{}{}:
+	default:
+	}
+}
+
+func (m *jobsV2Manager) notifyWorkers(n int) {
+	if n <= 0 {
+		n = 1
+	}
+	for i := 0; i < n; i++ {
+		select {
+		case m.workerWake <- struct{}{}:
+		default:
+			return
+		}
+	}
 }
 
 func (m *jobsV2Manager) scheduleDueRuns(now time.Time) error {
@@ -894,6 +1085,7 @@ func (m *jobsV2Manager) scheduleOne(job jobsV2Job, now time.Time) error {
 	}
 	if queued {
 		_ = m.addRunEvent(runID, "queued", "scheduled run queued", map[string]any{"trigger": "schedule", "attempt": 1})
+		m.notifyWorkers(1)
 	}
 	return nil
 }
@@ -1068,6 +1260,7 @@ func (m *jobsV2Manager) finishRun(runID string, status jobsV2RunStatus, result j
 				"trigger": "retry",
 				"attempt": attempt + 1,
 			})
+			m.notifyWorkers(1)
 		}
 	}
 
@@ -1251,7 +1444,12 @@ func (m *jobsV2Manager) CreateJob(req jobsV2Job) (jobsV2Job, error) {
 	if err != nil {
 		return jobsV2Job{}, err
 	}
-	return m.GetJob(id)
+	created, err := m.GetJob(id)
+	if err != nil {
+		return jobsV2Job{}, err
+	}
+	m.notifyScheduler()
+	return created, nil
 }
 
 func (m *jobsV2Manager) GetJob(id string) (jobsV2Job, error) {
@@ -1371,7 +1569,12 @@ func (m *jobsV2Manager) UpdateJobPatch(id string, req jobsV2JobRequest) (jobsV2J
 	if err != nil {
 		return jobsV2Job{}, err
 	}
-	return m.GetJob(id)
+	updated, err := m.GetJob(id)
+	if err != nil {
+		return jobsV2Job{}, err
+	}
+	m.notifyScheduler()
+	return updated, nil
 }
 
 func (m *jobsV2Manager) DeleteJob(id string, cancelActive bool) error {
@@ -1386,6 +1589,9 @@ func (m *jobsV2Manager) DeleteJob(id string, cancelActive bool) error {
 		}
 	}
 	_, err := m.db.Exec(`DELETE FROM jobs_v2 WHERE id = ?`, id)
+	if err == nil {
+		m.notifyScheduler()
+	}
 	return err
 }
 
@@ -1411,6 +1617,7 @@ func (m *jobsV2Manager) TriggerJob(id string) (jobsV2Run, error) {
 	}
 
 	_ = m.addRunEvent(runID, "queued", "manual run queued", map[string]any{"trigger": "manual", "attempt": 1})
+	m.notifyWorkers(1)
 	return m.GetRun(runID)
 }
 

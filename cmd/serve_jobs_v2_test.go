@@ -1001,6 +1001,95 @@ func TestJobsV2ClaimNextRunSkipsFutureScheduledQueuedRuns(t *testing.T) {
 	}
 }
 
+func TestJobsV2SchedulerAndWorkerDelayUseTimers(t *testing.T) {
+	mgr := newJobsV2ManagerWithoutLoops(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	if got := mgr.nextSchedulerDelay(now); got != jobsV2SchedulerIdleDelay {
+		t.Fatalf("empty scheduler delay = %v, want %v", got, jobsV2SchedulerIdleDelay)
+	}
+	if got := mgr.nextWorkerDelay(now); got != jobsV2WorkerIdleDelay {
+		t.Fatalf("empty worker delay = %v, want %v", got, jobsV2WorkerIdleDelay)
+	}
+
+	nextJobRun := now.Add(2500 * time.Millisecond)
+	_, err := mgr.db.Exec(`INSERT INTO jobs_v2 (id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, concurrency_policy, max_concurrent_runs, timeout_seconds, misfire_policy, next_run_at, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'forbid', 1, 30, 'skip', ?, ?, ?)`,
+		"job_timer_delay", "timer-delay", jobsV2RunnerProgram, `{"command":"echo","args":["x"]}`, jobsV2TriggerOnce, `{}`, nextJobRun, now, now)
+	if err != nil {
+		t.Fatalf("insert scheduled job: %v", err)
+	}
+	if got := mgr.nextSchedulerDelay(now); got < 2*time.Second || got > 3*time.Second {
+		t.Fatalf("future scheduler delay = %v, want about 2.5s", got)
+	}
+	_, err = mgr.db.Exec(`UPDATE jobs_v2 SET next_run_at = ? WHERE id = ?`, now.Add(-time.Second), "job_timer_delay")
+	if err != nil {
+		t.Fatalf("mark scheduled job overdue: %v", err)
+	}
+	if got := mgr.nextSchedulerDelay(now); got != jobsV2SchedulerMinDelay {
+		t.Fatalf("overdue scheduler delay = %v, want %v", got, jobsV2SchedulerMinDelay)
+	}
+
+	nextQueuedRun := now.Add(1500 * time.Millisecond)
+	_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, created_at, updated_at) VALUES (?, ?, 1, 'retry', ?, ?, ?, ?)`,
+		"run_timer_delay", "job_timer_delay", nextQueuedRun, jobsV2RunQueued, now, now)
+	if err != nil {
+		t.Fatalf("insert queued run: %v", err)
+	}
+	if got := mgr.nextWorkerDelay(now); got < time.Second || got > 2*time.Second {
+		t.Fatalf("future worker delay = %v, want about 1.5s", got)
+	}
+	_, err = mgr.db.Exec(`UPDATE job_runs_v2 SET scheduled_for = ? WHERE id = ?`, now.Add(-time.Second), "run_timer_delay")
+	if err != nil {
+		t.Fatalf("mark queued run overdue: %v", err)
+	}
+	if got := mgr.nextWorkerDelay(now); got != jobsV2WorkerMinDelay {
+		t.Fatalf("overdue worker delay = %v, want %v", got, jobsV2WorkerMinDelay)
+	}
+}
+
+func TestJobsV2DelayQueriesUseShortErrorDelay(t *testing.T) {
+	mgr := newJobsV2ManagerWithoutLoops(t)
+	if err := mgr.db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	if _, err := mgr.nextSchedulerDelayWithError(time.Now().UTC()); err == nil {
+		t.Fatal("nextSchedulerDelayWithError returned nil error for closed DB")
+	}
+	if got := mgr.nextSchedulerDelay(time.Now().UTC()); got != jobsV2SchedulerErrorDelay {
+		t.Fatalf("scheduler delay after query error = %v, want %v", got, jobsV2SchedulerErrorDelay)
+	}
+
+	if _, err := mgr.nextWorkerDelayWithError(time.Now().UTC()); err == nil {
+		t.Fatal("nextWorkerDelayWithError returned nil error for closed DB")
+	}
+	if got := mgr.nextWorkerDelay(time.Now().UTC()); got != jobsV2WorkerErrorDelay {
+		t.Fatalf("worker delay after query error = %v, want %v", got, jobsV2WorkerErrorDelay)
+	}
+}
+
+func newJobsV2ManagerWithoutLoops(t *testing.T) *jobsV2Manager {
+	t.Helper()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("sql.Open failed: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	if err := execJobsV2Schema(db); err != nil {
+		_ = db.Close()
+		t.Fatalf("execJobsV2Schema failed: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return &jobsV2Manager{
+		db:                 db,
+		workerID:           "worker_test",
+		schedulerIdleDelay: jobsV2SchedulerIdleDelay,
+		workerIdleDelay:    jobsV2WorkerIdleDelay,
+		cleanupInterval:    0,
+		cancels:            make(map[string]context.CancelFunc),
+	}
+}
+
 type testJobsV2Runner struct {
 	called bool
 }
