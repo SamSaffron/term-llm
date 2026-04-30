@@ -878,3 +878,31 @@ func TestFormatGrepResults_ByteCap(t *testing.T) {
 		t.Errorf("first file missing from capped output:\n%s", result)
 	}
 }
+
+func BenchmarkParseRipgrepOutputStopsAtMaxResults(b *testing.B) {
+	output := buildSyntheticRipgrepJSON(5000)
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(output)))
+	for i := 0; i < b.N; i++ {
+		matches, err := parseRipgrepOutput(output, 100, 0)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(matches) != 100 {
+			b.Fatalf("expected 100 matches, got %d", len(matches))
+		}
+	}
+}
+
+func buildSyntheticRipgrepJSON(matchCount int) []byte {
+	var sb strings.Builder
+	sb.Grow(matchCount * 220)
+	for i := 0; i < matchCount; i++ {
+		path := fmt.Sprintf("f%05d.go", i)
+		line := fmt.Sprintf("needle %05d\n", i)
+		fmt.Fprintf(&sb, `{"type":"match","data":{"path":{"text":%q},"lines":{"text":%q},"line_number":1,"absolute_offset":0,"submatches":[]}}`+"\n", path, line)
+		fmt.Fprintf(&sb, `{"type":"end","data":{"path":{"text":%q}}}`+"\n", path)
+	}
+	return []byte(sb.String())
+}

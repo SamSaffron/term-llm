@@ -442,14 +442,23 @@ func parseToPending(output []byte, maxResults, maxAfterContext int) ([]pendingMa
 		return len(result) >= maxResults
 	}
 
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		if line == "" {
+	// Walk the raw buffer line-by-line instead of strings.Split(string(output), "\n").
+	// This avoids copying/splitting the entire ripgrep stream up front and lets
+	// maxResults stop parsing after the useful prefix.
+	for len(output) > 0 {
+		line := output
+		if i := bytes.IndexByte(output, '\n'); i >= 0 {
+			line = output[:i]
+			output = output[i+1:]
+		} else {
+			output = nil
+		}
+		if len(line) == 0 {
 			continue
 		}
 
 		var msg rgMatch
-		if err := json.Unmarshal([]byte(line), &msg); err != nil {
+		if err := json.Unmarshal(line, &msg); err != nil {
 			continue
 		}
 
