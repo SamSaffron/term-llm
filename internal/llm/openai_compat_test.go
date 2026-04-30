@@ -19,6 +19,39 @@ func TestDefaultHTTPClient_HasNoOverallTimeout(t *testing.T) {
 	}
 }
 
+func TestReadSSEEvent_AllowsEventAndDataLinesWithoutSpace(t *testing.T) {
+	reader := bufio.NewReader(strings.NewReader("event:error\ndata:{\"error\":{\"message\":\"boom\"}}\n\n"))
+
+	eventType, data, eof, err := readSSEEvent(reader)
+	if err != nil {
+		t.Fatalf("readSSEEvent: %v", err)
+	}
+	if eof {
+		t.Fatal("expected event separator, not EOF")
+	}
+	if eventType != "error" {
+		t.Fatalf("expected event type %q, got %q", "error", eventType)
+	}
+	if data != "{\"error\":{\"message\":\"boom\"}}" {
+		t.Fatalf("expected data %q, got %q", "{\"error\":{\"message\":\"boom\"}}", data)
+	}
+}
+
+func TestReadSSEEvent_StripsOnlyOptionalSingleSpaceAfterColon(t *testing.T) {
+	reader := bufio.NewReader(strings.NewReader("data:  leading-space\n\n"))
+
+	_, data, eof, err := readSSEEvent(reader)
+	if err != nil {
+		t.Fatalf("readSSEEvent: %v", err)
+	}
+	if eof {
+		t.Fatal("expected event separator, not EOF")
+	}
+	if data != " leading-space" {
+		t.Fatalf("expected data %q, got %q", " leading-space", data)
+	}
+}
+
 func TestOpenAICompatStream_AllowsLargeSSEDataLines(t *testing.T) {
 	largeText := strings.Repeat("a", 1024*1024+1024)
 

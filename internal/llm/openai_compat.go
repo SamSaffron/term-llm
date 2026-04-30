@@ -359,10 +359,12 @@ func readSSEEvent(reader *bufio.Reader) (eventType, data string, eof bool, err e
 		if line == "" {
 			return eventType, strings.Join(dataLines, "\n"), lineEOF, nil
 		}
-		if strings.HasPrefix(line, "event: ") {
-			eventType = strings.TrimPrefix(line, "event: ")
-		} else if strings.HasPrefix(line, "data: ") {
-			dataLines = append(dataLines, strings.TrimPrefix(line, "data: "))
+		if strings.HasPrefix(line, "event:") {
+			eventType = strings.TrimPrefix(line, "event:")
+			eventType = strings.TrimPrefix(eventType, " ")
+		} else if strings.HasPrefix(line, "data:") {
+			dataLine := strings.TrimPrefix(line, "data:")
+			dataLines = append(dataLines, strings.TrimPrefix(dataLine, " "))
 		}
 		if lineEOF {
 			return eventType, strings.Join(dataLines, "\n"), true, nil
