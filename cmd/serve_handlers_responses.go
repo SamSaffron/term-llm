@@ -112,7 +112,21 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		runtime, stateful, err = s.runtimeForFreshProviderRequest(ctx, sessionID, freshProvider)
 	}
 	if err != nil {
-		if errors.Is(err, errServeSessionBusy) || errors.Is(err, errServeSessionLimitReached) {
+		if errors.Is(err, errServeSessionBusy) {
+			if req.Stream {
+				model := strings.TrimSpace(req.Model)
+				if model == "" {
+					if existing, ok := s.sessionMgr.Get(sessionID); ok && existing != nil {
+						model = existing.defaultModel
+					}
+				}
+				s.streamFailedResponseRun(ctx, w, sessionID, req.PreviousResponseID, model, "conflict_error", err.Error())
+				return
+			}
+			writeOpenAIError(w, http.StatusConflict, "conflict_error", err.Error())
+			return
+		}
+		if errors.Is(err, errServeSessionLimitReached) {
 			writeOpenAIError(w, http.StatusConflict, "conflict_error", err.Error())
 			return
 		}

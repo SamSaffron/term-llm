@@ -1389,11 +1389,6 @@ func (s *serveServer) runtimeForFreshProviderRequest(ctx context.Context, sessio
 		create,
 	)
 	if err != nil {
-		if errors.Is(err, errServeSessionBusy) {
-			if existing, ok := s.sessionMgr.Get(sessionID); ok {
-				return existing, true, nil
-			}
-		}
 		return nil, false, err
 	}
 	existingProvider := runtimeProviderKey(rt)

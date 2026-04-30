@@ -4535,6 +4535,90 @@ func TestHandleResponses_FreshConversationResetPreservesPreviousResponseIDsWhenR
 	}
 }
 
+func TestHandleResponses_FreshConversationBusySessionDoesNotOverwritePersistedRuntimeMetadata(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	factory := func(ctx context.Context) (*serveRuntime, error) {
+		provider := llm.NewMockProvider("mock")
+		provider.AddTextResponse("reply1")
+		provider.AddTextResponse("reply2")
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			engine:       engine,
+			store:        store,
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		return rt, nil
+	}
+	mgr := newServeSessionManager(time.Minute, 100, factory)
+	srv := &serveServer{sessionMgr: mgr, store: store}
+	mgr.onEvict = func(rt *serveRuntime) {
+		for _, rid := range rt.getResponseIDs() {
+			srv.responseToSession.Delete(rid)
+		}
+	}
+	defer mgr.Close()
+
+	code, resp := doResponsesWithHeader(t, srv, `{"input":"msg1","model":"original-model"}`, "fresh-reset-metadata")
+	if code != http.StatusOK {
+		t.Fatalf("msg1 status = %d, want 200", code)
+	}
+	respID, _ := resp["id"].(string)
+	if respID == "" {
+		t.Fatal("first response missing id")
+	}
+
+	sess, err := store.Get(context.Background(), "fresh-reset-metadata")
+	if err != nil {
+		t.Fatalf("Get before busy reset: %v", err)
+	}
+	if sess == nil {
+		t.Fatal("expected persisted session before busy reset")
+	}
+	if got := strings.TrimSpace(sess.Model); got != "original-model" {
+		t.Fatalf("persisted model before busy reset = %q, want %q", got, "original-model")
+	}
+
+	rt, ok := srv.sessionMgr.Get("fresh-reset-metadata")
+	if !ok || rt == nil {
+		t.Fatal("expected runtime for fresh-reset-metadata")
+	}
+	busyState := &runtimeInterruptState{cancel: func() {}, done: make(chan struct{})}
+	rt.setActiveInterrupt(busyState)
+	defer rt.clearActiveInterrupt(busyState)
+
+	code, _ = doResponsesWithHeader(t, srv, `{"input":"reset","model":"replacement-model"}`, "fresh-reset-metadata")
+	if code != http.StatusConflict {
+		t.Fatalf("reset status = %d, want 409", code)
+	}
+
+	sess, err = store.Get(context.Background(), "fresh-reset-metadata")
+	if err != nil {
+		t.Fatalf("Get after busy reset: %v", err)
+	}
+	if sess == nil {
+		t.Fatal("expected persisted session after busy reset")
+	}
+	if got := strings.TrimSpace(sess.Model); got != "original-model" {
+		t.Fatalf("persisted model after busy reset = %q, want %q", got, "original-model")
+	}
+	mapped, ok := srv.responseToSession.Load(respID)
+	if !ok {
+		t.Fatalf("responseToSession missing %q after busy reset", respID)
+	}
+	mappedSessionID, _ := mapped.(string)
+	if mappedSessionID != "fresh-reset-metadata" {
+		t.Fatalf("responseToSession[%q] = %q, want %q", respID, mappedSessionID, "fresh-reset-metadata")
+	}
+}
+
 func TestHandleResponses_PreviousResponseIDChainsSession(t *testing.T) {
 	// Each runtime gets 2 text responses so it can handle 2 messages
 	srv := newTestServeServer("first reply", "second reply")

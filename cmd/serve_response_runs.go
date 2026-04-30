@@ -966,6 +966,47 @@ func (s *serveServer) storeCompletedResponseRun(runtime *serveRuntime, sessionID
 	return respID, nil
 }
 
+func (s *serveServer) streamFailedResponseRun(ctx context.Context, w http.ResponseWriter, sessionID, previousResponseID, model, errType, errMessage string) {
+	mgr := s.ensureResponseRuns()
+
+	respID := "resp_" + randomSuffix()
+	created := time.Now().Unix()
+	run := newResponseRun(respID, sessionID, previousResponseID, model, created, nil)
+	if err := mgr.create(run); err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
+		return
+	}
+
+	cleanup := func() {
+		mgr.delete(respID)
+	}
+	if err := run.appendEvent("response.created", map[string]any{
+		"response": map[string]any{
+			"id":      respID,
+			"object":  "response",
+			"created": created,
+			"model":   model,
+			"status":  "in_progress",
+		},
+	}); err != nil {
+		cleanup()
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
+		return
+	}
+	if _, err := run.fail(map[string]any{
+		"error": map[string]any{
+			"message": errMessage,
+			"type":    errType,
+		},
+	}, errType, errMessage); err != nil {
+		cleanup()
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
+		return
+	}
+	mgr.scheduleCleanup(respID)
+	s.streamResponseRunEvents(ctx, w, run, 0)
+}
+
 func (s *serveServer) handleResponseByID(w http.ResponseWriter, r *http.Request) {
 	mgr := s.ensureResponseRuns()
 
