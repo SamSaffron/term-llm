@@ -1577,14 +1577,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Continue listening for more events unless we're done or got an error.
-		// When smooth text is already buffered behind a pending render tick,
-		// defer the next stream read until that tick gets a chance to run.
+		// Smooth ticks should only pace rendering, not stream ingestion, otherwise
+		// fast providers can fill the bounded stream buffer and block later events
+		// behind the UI frame rate.
 		if ev.Type != ui.StreamEventDone && ev.Type != ui.StreamEventError {
-			if ev.Type == ui.StreamEventText && m.smoothTickPending {
-				m.deferredStreamRead = true
-			} else {
-				cmds = append(cmds, m.listenForStreamEvents())
-			}
+			m.deferredStreamRead = false
+			cmds = append(cmds, m.listenForStreamEvents())
 		}
 		if m.streamPerf != nil {
 			m.streamPerf.RecordDuration(durationMetricStreamEvent, time.Since(streamEventStart))
