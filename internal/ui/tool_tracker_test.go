@@ -129,8 +129,11 @@ func TestTextSnapshotNotCorrupted(t *testing.T) {
 	tracker.AddTextSegment("How are you?", 80)
 
 	// text1 should still be "Hello " (not corrupted)
-	// NOTE: We can't check text1 directly since the snapshot was updated,
-	// but we verify the current snapshot is correct
+	if text1 != "Hello " {
+		t.Fatalf("original snapshot corrupted after append: got %q", text1)
+	}
+
+	// Verify the lazily refreshed snapshot is correct.
 	text2 := seg.GetText()
 	expected := "Hello world! How are you?"
 	if text2 != expected {
@@ -145,6 +148,52 @@ func TestTextSnapshotNotCorrupted(t *testing.T) {
 	}
 	if !strings.HasPrefix(text2, "Hello ") {
 		t.Error("detected corruption: prefix corrupted")
+	}
+}
+
+func TestTextSnapshotRefreshIsDeferredUntilNeeded(t *testing.T) {
+	tracker := NewToolTracker()
+	tracker.AddTextSegment("Hello", 80)
+
+	seg := &tracker.Segments[0]
+	if got := seg.GetText(); got != "Hello" {
+		t.Fatalf("initial GetText = %q, want %q", got, "Hello")
+	}
+
+	tracker.AddTextSegment(" world", 80)
+
+	if seg.TextSnapshot != "Hello" {
+		t.Fatalf("snapshot updated eagerly = %q, want previous stable clone", seg.TextSnapshot)
+	}
+	if seg.TextSnapshotLen == seg.TextBuilder.Len() {
+		t.Fatalf("snapshot unexpectedly refreshed on append: len=%d", seg.TextSnapshotLen)
+	}
+
+	if got := seg.GetText(); got != "Hello world" {
+		t.Fatalf("GetText after append = %q, want %q", got, "Hello world")
+	}
+	if seg.TextSnapshotLen != len("Hello world") {
+		t.Fatalf("snapshot len = %d, want %d after lazy refresh", seg.TextSnapshotLen, len("Hello world"))
+	}
+}
+
+func TestRenderSegmentsDoesNotRefreshStreamingSnapshot(t *testing.T) {
+	tracker := NewToolTracker()
+	tracker.AddTextSegment("Hello", 80)
+
+	seg := &tracker.Segments[0]
+	if seg.StreamRenderer == nil {
+		t.Fatal("expected streaming renderer for width > 0")
+	}
+	if got := seg.GetText(); got != "Hello" {
+		t.Fatalf("initial GetText = %q, want %q", got, "Hello")
+	}
+
+	tracker.AddTextSegment(" world", 80)
+	RenderSegments([]*Segment{seg}, 80, -1, nil, true, false)
+
+	if seg.TextSnapshotLen == seg.TextBuilder.Len() {
+		t.Fatalf("RenderSegments eagerly refreshed snapshot during streaming")
 	}
 }
 

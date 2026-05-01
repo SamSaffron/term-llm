@@ -323,8 +323,7 @@ func (t *ToolTracker) AddTextSegment(text string, width int) bool {
 				last.Text = ""
 			}
 			last.TextBuilder.WriteString(text)
-			last.TextSnapshot = strings.Clone(last.TextBuilder.String())
-			last.TextSnapshotLen = last.TextBuilder.Len()
+			last.TextSnapshotLen = -1
 
 			// Write to streaming renderer if present
 			if last.StreamRenderer != nil {

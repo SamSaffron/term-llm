@@ -58,9 +58,9 @@ type Segment struct {
 	// Streaming text accumulation (O(1) append instead of O(n) string concat)
 	TextBuilder *strings.Builder // Used during streaming; nil when Complete
 
-	// Text snapshot cache - updated on append to avoid repeated String() calls
-	TextSnapshot    string // Cached result of TextBuilder.String()
-	TextSnapshotLen int    // Length when snapshot was taken (0 = invalid)
+	// Text snapshot cache - refreshed lazily when callers need stable text.
+	TextSnapshot    string // Cached clone of TextBuilder contents
+	TextSnapshotLen int    // Builder length when TextSnapshot was captured (-1 = stale)
 
 	// Streaming markdown renderer - renders complete blocks as they arrive
 	StreamRenderer *TextSegmentRenderer // Active streaming renderer; nil when Complete
@@ -99,16 +99,15 @@ type SubagentDiff struct {
 }
 
 // GetText returns the current text content of a segment.
-// During streaming, it uses the cached TextSnapshot; after completion, it reads from Text.
-// The snapshot is updated by AddTextSegment when content changes, avoiding
-// repeated O(n) String() allocations on every render tick.
+// During streaming, it uses a cached cloned snapshot when one matches the
+// current builder length; otherwise it refreshes the snapshot lazily.
 func (s *Segment) GetText() string {
 	if s.TextBuilder != nil {
 		// Return cached snapshot if valid (length matches current builder length)
 		if s.TextSnapshotLen == s.TextBuilder.Len() {
 			return s.TextSnapshot
 		}
-		// Snapshot is stale - update it (should rarely happen, AddTextSegment updates it)
+		// Snapshot is stale - update it on demand.
 		// IMPORTANT: Clone to prevent corruption from subsequent WriteString calls
 		// (strings.Builder.String() shares memory with internal buffer)
 		s.TextSnapshot = strings.Clone(s.TextBuilder.String())
@@ -575,19 +574,20 @@ func RenderSegmentsWithLeading(leading *Segment, segments []*Segment, width int,
 		var rendered string
 		switch seg.Type {
 		case SegmentText:
-			text := seg.GetText()
-			if text == "" {
-				continue
-			}
-
 			if seg.Complete && seg.Rendered != "" {
 				rendered = seg.Rendered
 			} else if seg.StreamRenderer != nil {
 				rendered = seg.StreamRenderer.RenderedUnflushed()
-			} else if seg.Complete && renderMarkdown != nil {
-				rendered = renderMarkdown(text, width)
 			} else {
-				rendered = text
+				text := seg.GetText()
+				if text == "" {
+					continue
+				}
+				if seg.Complete && renderMarkdown != nil {
+					rendered = renderMarkdown(text, width)
+				} else {
+					rendered = text
+				}
 			}
 
 			// If this is a completed segment that was partially flushed,
