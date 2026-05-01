@@ -15,6 +15,8 @@ import (
 // the shell tool returns. The tool call is cancelled mid-flight and the
 // grandchild must be reaped regardless.
 func TestShellTool_BackgroundedChildKilled(t *testing.T) {
+	t.Parallel()
+
 	sentinel := uniqueSentinel(t, "bg")
 	logPath := fmt.Sprintf("/tmp/%s.log", sentinel)
 	defer os.Remove(logPath)
@@ -37,6 +39,7 @@ func TestShellTool_SetsidDescendantKilled(t *testing.T) {
 	if _, err := os.Stat("/proc/self/environ"); err != nil {
 		t.Skip("no /proc — nonce-based descendant reap is Linux-only")
 	}
+	t.Parallel()
 
 	sentinel := uniqueSentinel(t, "setsid")
 	logPath := fmt.Sprintf("/tmp/%s.log", sentinel)

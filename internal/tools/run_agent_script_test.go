@@ -224,6 +224,8 @@ func TestRunAgentScriptTool_ScriptPathWithSpaces(t *testing.T) {
 }
 
 func TestRunAgentScriptTool_TimeoutKillsGrandchildren(t *testing.T) {
+	t.Parallel()
+
 	agentDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(agentDir, "hang.sh"), []byte("#!/bin/sh\nsleep 60 & wait\n"), 0755); err != nil {
 		t.Fatalf("write script: %v", err)
