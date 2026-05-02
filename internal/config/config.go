@@ -130,6 +130,7 @@ type Config struct {
 	Chat            ChatConfig                `mapstructure:"chat"`
 	Edit            EditConfig                `mapstructure:"edit"`
 	Image           ImageConfig               `mapstructure:"image"`
+	Audio           AudioConfig               `mapstructure:"audio"`
 	Transcription   TranscriptionConfig       `mapstructure:"transcription"`
 	Embed           EmbedConfig               `mapstructure:"embed"`
 	Search          SearchConfig              `mapstructure:"search"`
@@ -360,6 +361,21 @@ type ImageDebugConfig struct {
 	Delay float64 `mapstructure:"delay"` // delay in seconds before returning (e.g., 1.5)
 }
 
+// AudioConfig configures speech/audio generation settings.
+type AudioConfig struct {
+	Provider  string            `mapstructure:"provider"`   // default audio provider: venice
+	OutputDir string            `mapstructure:"output_dir"` // default save directory
+	Venice    AudioVeniceConfig `mapstructure:"venice"`
+}
+
+// AudioVeniceConfig configures Venice AI text-to-speech generation.
+type AudioVeniceConfig struct {
+	APIKey string `mapstructure:"api_key"`
+	Model  string `mapstructure:"model"`
+	Voice  string `mapstructure:"voice"`
+	Format string `mapstructure:"format"`
+}
+
 // TranscriptionConfig configures audio transcription settings.
 type TranscriptionConfig struct {
 	Provider string `mapstructure:"provider"` // named provider from providers map; default "openai"
@@ -492,6 +508,7 @@ func Load() (*Config, error) {
 	}
 
 	resolveImageCredentials(&cfg.Image)
+	resolveAudioCredentials(&cfg.Audio)
 	resolveEmbedCredentials(&cfg.Embed)
 	resolveSearchCredentials(&cfg.Search)
 
@@ -1019,6 +1036,14 @@ func resolveImageCredentials(cfg *ImageConfig) {
 	}
 }
 
+// resolveAudioCredentials resolves API credentials for audio providers.
+func resolveAudioCredentials(cfg *AudioConfig) {
+	cfg.Venice.APIKey = expandEnv(cfg.Venice.APIKey)
+	if cfg.Venice.APIKey == "" {
+		cfg.Venice.APIKey = os.Getenv("VENICE_API_KEY")
+	}
+}
+
 // resolveEmbedCredentials resolves API credentials for all embedding providers
 func resolveEmbedCredentials(cfg *EmbedConfig) {
 	// OpenAI embed credentials
@@ -1181,6 +1206,7 @@ var KnownKeys = map[string]bool{
 	"chat":             true,
 	"edit":             true,
 	"image":            true,
+	"audio":            true,
 	"transcription":    true,
 	"search":           true,
 	"theme":            true,
@@ -1259,6 +1285,15 @@ var KnownKeys = map[string]bool{
 	"image.openrouter.model":   true,
 	"image.debug":              true,
 	"image.debug.delay":        true,
+
+	// Audio
+	"audio.provider":       true,
+	"audio.output_dir":     true,
+	"audio.venice":         true,
+	"audio.venice.api_key": true,
+	"audio.venice.model":   true,
+	"audio.venice.voice":   true,
+	"audio.venice.format":  true,
 
 	// Transcription
 	"transcription.provider": true,
@@ -1411,6 +1446,11 @@ func GetDefaults() map[string]any {
 		"image.flux.model":                "flux-2-pro",
 		"image.openrouter.model":          "google/gemini-2.5-flash-image",
 		"image.debug.delay":               0.0,
+		"audio.provider":                  "venice",
+		"audio.output_dir":                "~/Music/term-llm",
+		"audio.venice.model":              "tts-kokoro",
+		"audio.venice.voice":              "af_sky",
+		"audio.venice.format":             "mp3",
 		"embed.openai.model":              "text-embedding-3-small",
 		"embed.gemini.model":              "gemini-embedding-001",
 		"embed.jina.model":                "jina-embeddings-v3",

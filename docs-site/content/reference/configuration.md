@@ -32,7 +32,7 @@ A typical config has a few major parts:
 - `default_provider` for the global LLM default
 - `providers` for model-specific credentials and routing
 - per-command blocks such as `exec`, `ask`, and `edit`
-- feature-specific blocks such as `image`, `embed`, `search`, `sessions`, `tools`, and `skills`
+- feature-specific blocks such as `image`, `audio`, `embed`, `search`, `sessions`, `tools`, and `skills`
 
 ## Example
 
@@ -145,18 +145,27 @@ search:
 
 Search is large enough to deserve its own page; see [Search](/guides/search/).
 
-## Image and embedding config
+## Image, audio, and embedding config
 
 ```yaml
 image:
   provider: gemini
   output_dir: ~/Pictures/term-llm
 
+audio:
+  provider: venice
+  output_dir: ~/Music/term-llm
+  venice:
+    api_key: ${VENICE_API_KEY}
+    model: tts-kokoro
+    voice: af_sky
+    format: mp3
+
 embed:
   provider: gemini
 ```
 
-Each feature block can hold provider-specific credentials and defaults. The image and embedding providers are independent of the main text provider.
+Each feature block can hold provider-specific credentials and defaults. The image, audio, and embedding providers are independent of the main text provider.
 
 ## Provider-specific environment overrides
 
