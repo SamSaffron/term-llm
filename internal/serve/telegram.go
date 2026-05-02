@@ -1119,12 +1119,14 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 	// before tool execution. TurnCompletedCallback captures tool results after
 	// execution, or the final assistant message when no tools are used.
 	var (
-		producedMu sync.Mutex
-		produced   []llm.Message
+		producedMu                 sync.Mutex
+		produced                   []llm.Message
+		assistantCapturedForTurnCB bool
 	)
 	sess.runtime.Engine.SetResponseCompletedCallback(func(cbCtx context.Context, _ int, assistantMsg llm.Message, _ llm.TurnMetrics) error {
 		producedMu.Lock()
 		produced = append(produced, assistantMsg)
+		assistantCapturedForTurnCB = true
 		producedMu.Unlock()
 		if m.store != nil && sess.meta != nil {
 			sessionMsg := session.NewMessage(sess.meta.ID, assistantMsg, -1)
@@ -1136,11 +1138,18 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 	})
 	defer sess.runtime.Engine.SetResponseCompletedCallback(nil)
 	sess.runtime.Engine.SetTurnCompletedCallback(func(cbCtx context.Context, _ int, msgs []llm.Message, metrics llm.TurnMetrics) error {
+		appendStart := 0
 		producedMu.Lock()
-		produced = append(produced, msgs...)
+		if assistantCapturedForTurnCB && len(msgs) > 0 && msgs[0].Role == llm.RoleAssistant {
+			appendStart = 1
+		}
+		if appendStart < len(msgs) {
+			produced = append(produced, msgs[appendStart:]...)
+		}
+		assistantCapturedForTurnCB = false
 		producedMu.Unlock()
 		if m.store != nil && sess.meta != nil {
-			for _, msg := range msgs {
+			for _, msg := range msgs[appendStart:] {
 				sessionMsg := session.NewMessage(sess.meta.ID, msg, -1)
 				m.runStoreOp(cbCtx, sess.meta.ID, "AddMessage(turn)", func(storeCtx context.Context) error {
 					return m.store.AddMessage(storeCtx, sess.meta.ID, sessionMsg)
