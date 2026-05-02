@@ -14,6 +14,66 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
+func TestBuildInsightTranscriptWeightsUserTextOverAssistantAndSummarizesTools(t *testing.T) {
+	messages := []session.Message{
+		{Role: llm.RoleSystem, TextContent: strings.Repeat("system ", 100)},
+		{Role: llm.RoleUser, TextContent: "fix it"},
+		{
+			Role:        llm.RoleAssistant,
+			TextContent: strings.Repeat("assistant explanation with lots of irrelevant details ", 200),
+			Parts: []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{
+				Name:     "read_file",
+				ToolInfo: "(memory_mine.go)",
+			}}},
+		},
+		{
+			Role:        llm.RoleTool,
+			TextContent: strings.Repeat("TOOL_SENTINEL should never appear ", 200),
+			Parts: []llm.Part{{Type: llm.PartToolResult, ToolResult: &llm.ToolResult{
+				Name:    "read_file",
+				Content: strings.Repeat("TOOL_SENTINEL should never appear ", 200),
+			}}},
+		},
+		{Role: llm.RoleAssistant, TextContent: strings.Repeat("second assistant dump ", 200)},
+		{Role: llm.RoleUser, TextContent: "no, mine the user discussion, not the bulky execution transcript"},
+		{Role: llm.RoleAssistant, TextContent: strings.Repeat("third assistant dump ", 200)},
+	}
+
+	got := buildInsightTranscript(messages)
+	var userTokens, nonUserTokens int
+	var sawToolCall, sawToolResult bool
+	for _, msg := range got {
+		if msg.Role == string(llm.RoleSystem) {
+			t.Fatalf("transcript included system message: %+v", msg)
+		}
+		if strings.Contains(msg.Text, "TOOL_SENTINEL") {
+			t.Fatalf("transcript leaked tool output: %q", msg.Text)
+		}
+		if strings.Contains(msg.Text, "tool called: read_file") {
+			sawToolCall = true
+		}
+		if strings.Contains(msg.Text, "tool result: read_file ok") {
+			sawToolResult = true
+		}
+		switch msg.Role {
+		case string(llm.RoleUser):
+			userTokens += llm.EstimateTokens(msg.Text)
+		default:
+			nonUserTokens += llm.EstimateTokens(msg.Text)
+		}
+	}
+
+	if userTokens == 0 {
+		t.Fatalf("expected user tokens in transcript: %+v", got)
+	}
+	if !sawToolCall || !sawToolResult {
+		t.Fatalf("expected abbreviated tool call/result summaries, got %+v", got)
+	}
+	if nonUserTokens > userTokens {
+		t.Fatalf("non-user tokens = %d, user tokens = %d; context must not dominate\n%+v", nonUserTokens, userTokens, got)
+	}
+}
+
 func TestValidateFragmentPath(t *testing.T) {
 	for _, tc := range []struct {
 		path    string

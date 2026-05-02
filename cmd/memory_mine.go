@@ -1039,33 +1039,173 @@ type insightExtractionItem struct {
 	Confidence float64 `json:"confidence"`
 }
 
-// buildInsightTranscript builds a lean transcript for insight extraction.
-// Sam's observation: insight extraction only needs user words + minimal buffer.
-// We include user messages in full (up to 800 chars) and assistant text at 200 chars,
-// stripping all tool output. This keeps the prompt compact while preserving the
-// signal that matters — what the user actually typed.
+// buildInsightTranscript builds a lean, user-weighted transcript for insight extraction.
+// Insight extraction learns from what the user said: corrections, preferences,
+// and redirects. Assistant text and tool events are context only, so they are
+// aggressively abbreviated and globally capped so non-user tokens never exceed
+// user tokens. Tool results are summarized by action/outcome only; full output is
+// noise for behavioral mining and can dwarf the actual conversation signal.
 func buildInsightTranscript(messages []session.Message) []transcriptMessage {
-	const maxUser = 800
-	const maxAssistant = 200
-	out := make([]transcriptMessage, 0, len(messages))
+	const maxUserChars = 1200
+	const maxAssistantChars = 120
+	const maxToolEventChars = 80
+
+	type pendingMessage struct {
+		role string
+		text string
+	}
+
+	pending := make([]pendingMessage, 0, len(messages))
+	userTokenBudget := 0
 	for _, msg := range messages {
-		if msg.Role == llm.RoleTool || msg.Role == llm.RoleSystem {
+		if msg.Role == llm.RoleSystem {
 			continue
 		}
+		if msg.Role == llm.RoleTool {
+			for _, summary := range summarizeInsightToolResults(msg) {
+				pending = append(pending, pendingMessage{role: string(llm.RoleTool), text: summary})
+			}
+			continue
+		}
+
 		text := strings.TrimSpace(msg.TextContent)
-		if text == "" {
+		if msg.Role == llm.RoleUser {
+			if text == "" {
+				continue
+			}
+			text = truncateForInsightTranscript(text, maxUserChars)
+			userTokenBudget += llm.EstimateTokens(text)
+			pending = append(pending, pendingMessage{role: string(msg.Role), text: text})
 			continue
 		}
-		limit := maxAssistant
-		if msg.Role == llm.RoleUser {
-			limit = maxUser
+
+		if text != "" {
+			pending = append(pending, pendingMessage{role: string(msg.Role), text: text})
 		}
-		if len(text) > limit {
-			text = text[:limit] + "..."
+		for _, summary := range summarizeInsightToolCalls(msg) {
+			pending = append(pending, pendingMessage{role: string(llm.RoleTool), text: summary})
 		}
-		out = append(out, transcriptMessage{Role: string(msg.Role), Text: text})
+	}
+
+	toolBudget := 0
+	for _, msg := range pending {
+		if msg.role != string(llm.RoleTool) {
+			continue
+		}
+		toolText := truncateForInsightTranscript(msg.text, maxToolEventChars)
+		toolBudget += llm.EstimateTokens(toolText)
+		if toolBudget >= userTokenBudget {
+			toolBudget = userTokenBudget
+			break
+		}
+	}
+	assistantBudget := userTokenBudget - toolBudget
+	out := make([]transcriptMessage, 0, len(pending))
+	for _, msg := range pending {
+		text := msg.text
+		switch msg.role {
+		case string(llm.RoleUser):
+			// User text defines the signal; include it outside the non-user budget.
+		case string(llm.RoleTool):
+			if toolBudget <= 0 {
+				continue
+			}
+			text = truncateForInsightTranscript(text, maxToolEventChars)
+			text = trimTextToTokenBudget(text, toolBudget)
+			if strings.TrimSpace(text) == "" {
+				continue
+			}
+			toolBudget -= llm.EstimateTokens(text)
+		default:
+			if assistantBudget <= 0 {
+				continue
+			}
+			text = truncateForInsightTranscript(text, maxAssistantChars)
+			text = trimTextToTokenBudget(text, assistantBudget)
+			if strings.TrimSpace(text) == "" {
+				continue
+			}
+			assistantBudget -= llm.EstimateTokens(text)
+		}
+		out = append(out, transcriptMessage{Role: msg.role, Text: text})
 	}
 	return out
+}
+
+func summarizeInsightToolCalls(msg session.Message) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, part := range msg.Parts {
+		if part.Type != llm.PartToolCall || part.ToolCall == nil {
+			continue
+		}
+		name := strings.TrimSpace(part.ToolCall.Name)
+		if name == "" || seen["call:"+name] {
+			continue
+		}
+		seen["call:"+name] = true
+		info := strings.TrimSpace(part.ToolCall.ToolInfo)
+		if info != "" {
+			out = append(out, fmt.Sprintf("tool called: %s %s", name, info))
+		} else {
+			out = append(out, fmt.Sprintf("tool called: %s", name))
+		}
+	}
+	return out
+}
+
+func summarizeInsightToolResults(msg session.Message) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, part := range msg.Parts {
+		if part.Type != llm.PartToolResult || part.ToolResult == nil {
+			continue
+		}
+		name := strings.TrimSpace(part.ToolResult.Name)
+		if name == "" || seen["result:"+name] {
+			continue
+		}
+		seen["result:"+name] = true
+		status := "ok"
+		if part.ToolResult.IsError {
+			status = "error"
+		}
+		out = append(out, fmt.Sprintf("tool result: %s %s", name, status))
+	}
+	return out
+}
+
+func truncateForInsightTranscript(text string, maxChars int) string {
+	if maxChars <= 0 || len(text) <= maxChars {
+		return text
+	}
+	return strings.TrimSpace(text[:maxChars]) + "..."
+}
+
+func trimTextToTokenBudget(text string, budget int) string {
+	if budget <= 0 || strings.TrimSpace(text) == "" {
+		return ""
+	}
+	if llm.EstimateTokens(text) <= budget {
+		return text
+	}
+
+	lo, hi := 0, len(text)
+	best := ""
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		candidate := strings.TrimSpace(text[:mid])
+		if candidate != "" {
+			candidate += "..."
+		}
+		if candidate != "" && llm.EstimateTokens(candidate) <= budget {
+			best = candidate
+			lo = mid + 1
+		} else {
+			hi = mid - 1
+		}
+	}
+	return best
 }
 
 func buildInsightExtractionPrompt(agent string, messages []session.Message, existing []*memorydb.Insight) string {
