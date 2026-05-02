@@ -353,6 +353,14 @@ func BenchmarkRender500MessagesCached(b *testing.B) {
 	}
 }
 
+func BenchmarkMessageHistorySignature500(b *testing.B) {
+	messages := generateMessages(500)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = MessageHistorySignature(messages)
+	}
+}
+
 // TestMessageBlockRenderer_DiffsOnHydration tests that edit_file diffs are rendered
 // when loading messages from the session store (hydration).
 func TestMessageBlockRenderer_DiffsOnHydration(t *testing.T) {

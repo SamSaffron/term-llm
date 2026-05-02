@@ -1,9 +1,6 @@
 package chat
 
 import (
-	"encoding/binary"
-	"hash"
-	"hash/fnv"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +14,11 @@ import (
 var historyBuilderPool = sync.Pool{
 	New: func() any { return new(strings.Builder) },
 }
+
+const (
+	fnv64Offset = 14695981039346656037
+	fnv64Prime  = 1099511628211
+)
 
 // RenderMode determines how content is displayed
 type RenderMode int
@@ -364,18 +366,16 @@ func (r *Renderer) renderHistory(state RenderState) string {
 // MessageHistorySignature fingerprints rendered message history so cache validity
 // does not rely on message count alone.
 func MessageHistorySignature(messages []session.Message) uint64 {
-	h := fnv.New64a()
-	var buf [8]byte
+	h := uint64(fnv64Offset)
 	for i := range messages {
 		msg := &messages[i]
-		writeStringHash(h, strconv.FormatInt(msg.ID, 10))
-		writeStringHash(h, strconv.Itoa(msg.Sequence))
-		writeStringHash(h, string(msg.Role))
-		writeStringHash(h, msg.TextContent)
-		binary.LittleEndian.PutUint64(buf[:], messagePartsSignature(msg))
-		_, _ = h.Write(buf[:])
+		h = writeInt64Hash(h, msg.ID)
+		h = writeIntHash(h, msg.Sequence)
+		h = writeStringHash(h, string(msg.Role))
+		h = writeStringHash(h, msg.TextContent)
+		h = writeUint64Hash(h, messagePartsSignature(msg))
 	}
-	return h.Sum64()
+	return h
 }
 
 // getOrRenderBlock gets a rendered block from cache or renders it.
@@ -431,85 +431,122 @@ func (r *Renderer) cachedPartsSignature(msg *session.Message) uint64 {
 // hashing on every frame for large messages. Uses inline FNV-1a to avoid
 // heap allocations from fnv.New64a() and []byte conversions.
 func quickTextHash(s string) uint64 {
-	const (
-		offset64 = 14695981039346656037
-		prime64  = 1099511628211
-	)
-	h := uint64(offset64)
+	h := uint64(fnv64Offset)
 	n := len(s)
 	if n <= 128 {
 		for i := 0; i < n; i++ {
 			h ^= uint64(s[i])
-			h *= prime64
+			h *= fnv64Prime
 		}
 	} else {
 		for i := 0; i < 64; i++ {
 			h ^= uint64(s[i])
-			h *= prime64
+			h *= fnv64Prime
 		}
 		for i := n - 64; i < n; i++ {
 			h ^= uint64(s[i])
-			h *= prime64
+			h *= fnv64Prime
 		}
 	}
 	h ^= uint64(n)
-	h *= prime64
+	h *= fnv64Prime
 	return h
 }
 
 func messagePartsSignature(msg *session.Message) uint64 {
-	h := fnv.New64a()
-	writeStringHash(h, msg.TextContent)
-	writeStringHash(h, strconv.Itoa(len(msg.Parts)))
+	h := uint64(fnv64Offset)
+	h = writeStringHash(h, msg.TextContent)
+	h = writeIntHash(h, len(msg.Parts))
 	for i := range msg.Parts {
 		part := &msg.Parts[i]
-		writeStringHash(h, string(part.Type))
-		writeStringHash(h, part.Text)
-		writeStringHash(h, part.ReasoningContent)
-		writeStringHash(h, part.ReasoningItemID)
-		writeStringHash(h, part.ReasoningEncryptedContent)
-		writeStringHash(h, part.ImagePath)
+		h = writeStringHash(h, string(part.Type))
+		h = writeStringHash(h, part.Text)
+		h = writeStringHash(h, part.ReasoningContent)
+		h = writeStringHash(h, part.ReasoningItemID)
+		h = writeStringHash(h, part.ReasoningEncryptedContent)
+		h = writeStringHash(h, part.ImagePath)
 		if part.ImageData != nil {
-			writeStringHash(h, part.ImageData.MediaType)
-			writeStringHash(h, part.ImageData.Base64)
+			h = writeStringHash(h, part.ImageData.MediaType)
+			h = writeStringHash(h, part.ImageData.Base64)
 		}
 		if part.ToolCall != nil {
-			writeStringHash(h, part.ToolCall.ID)
-			writeStringHash(h, part.ToolCall.Name)
-			writeStringHash(h, string(part.ToolCall.Arguments))
+			h = writeStringHash(h, part.ToolCall.ID)
+			h = writeStringHash(h, part.ToolCall.Name)
+			h = writeBytesHash(h, part.ToolCall.Arguments)
 		}
 		if part.ToolResult != nil {
-			writeStringHash(h, part.ToolResult.ID)
-			writeStringHash(h, part.ToolResult.Name)
-			writeStringHash(h, part.ToolResult.Content)
-			writeStringHash(h, part.ToolResult.Display)
-			writeStringHash(h, strconv.FormatBool(part.ToolResult.IsError))
+			h = writeStringHash(h, part.ToolResult.ID)
+			h = writeStringHash(h, part.ToolResult.Name)
+			h = writeStringHash(h, part.ToolResult.Content)
+			h = writeStringHash(h, part.ToolResult.Display)
+			h = writeBoolHash(h, part.ToolResult.IsError)
 			for _, diff := range part.ToolResult.Diffs {
-				writeStringHash(h, diff.File)
-				writeStringHash(h, diff.Old)
-				writeStringHash(h, diff.New)
-				writeStringHash(h, strconv.Itoa(diff.Line))
-				writeStringHash(h, diff.Operation)
+				h = writeStringHash(h, diff.File)
+				h = writeStringHash(h, diff.Old)
+				h = writeStringHash(h, diff.New)
+				h = writeIntHash(h, diff.Line)
+				h = writeStringHash(h, diff.Operation)
 			}
 			for _, image := range part.ToolResult.Images {
-				writeStringHash(h, image)
+				h = writeStringHash(h, image)
 			}
 			for _, contentPart := range part.ToolResult.ContentParts {
-				writeStringHash(h, string(contentPart.Type))
-				writeStringHash(h, contentPart.Text)
+				h = writeStringHash(h, string(contentPart.Type))
+				h = writeStringHash(h, contentPart.Text)
 				if contentPart.ImageData != nil {
-					writeStringHash(h, contentPart.ImageData.MediaType)
-					writeStringHash(h, contentPart.ImageData.Base64)
+					h = writeStringHash(h, contentPart.ImageData.MediaType)
+					h = writeStringHash(h, contentPart.ImageData.Base64)
 				}
 			}
 		}
 	}
-	return h.Sum64()
+	return h
 }
 
-func writeStringHash(h hash.Hash64, s string) {
-	_, _ = h.Write([]byte(s))
-	_, _ = h.Write([]byte{0})
+// write*Hash helpers inline FNV-1a over primitive fields on the render
+// cache path. They avoid hash.Hash64 interface dispatch and []byte(s)
+// conversions, and length-prefix variable-width fields to avoid delimiter
+// ambiguities without allocating.
+func writeStringHash(h uint64, s string) uint64 {
+	h = writeUint64Hash(h, uint64(len(s)))
+	for i := 0; i < len(s); i++ {
+		h ^= uint64(s[i])
+		h *= fnv64Prime
+	}
+	return h
+}
+
+func writeBytesHash(h uint64, b []byte) uint64 {
+	h = writeUint64Hash(h, uint64(len(b)))
+	for i := 0; i < len(b); i++ {
+		h ^= uint64(b[i])
+		h *= fnv64Prime
+	}
+	return h
+}
+
+func writeBoolHash(h uint64, v bool) uint64 {
+	if v {
+		return writeUint64Hash(h, 1)
+	}
+	return writeUint64Hash(h, 0)
+}
+
+func writeIntHash(h uint64, v int) uint64 {
+	return writeUint64Hash(h, uint64(v))
+}
+
+func writeInt64Hash(h uint64, v int64) uint64 {
+	return writeUint64Hash(h, uint64(v))
+}
+
+func writeUint64Hash(h uint64, v uint64) uint64 {
+	for i := 0; i < 8; i++ {
+		h ^= uint64(byte(v))
+		h *= fnv64Prime
+		v >>= 8
+	}
+	return h
 }
 
 // renderMessageBlock renders a single message to a block.
