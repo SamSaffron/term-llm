@@ -52,6 +52,7 @@ Examples:
   term-llm video "cute dog, influencer reacts" -i romeo.png -r pose1.png -r pose2.png
   term-llm video "cyberpunk city, slow dolly shot" --model kling-o3-pro-text-to-video
   term-llm image "robot cat" -o - | term-llm video "animate it" -i -
+  term-llm image "character portrait" -o - | term-llm video "make @Image1 wave" --model happyhorse-1-0-reference-to-video -r - --aspect-ratio 16:9
   term-llm video "cute dog, influencer reacts" -i romeo.png --aspect-ratio 9:16 --duration 10s
   term-llm video "astronaut on mars" --quote-only --json`,
 	Args: cobra.ArbitraryArgs,
@@ -81,8 +82,11 @@ func init() {
 }
 
 func runVideo(cmd *cobra.Command, args []string) error {
-	if videoInput == "-" && len(args) == 0 {
-		return fmt.Errorf("prompt required as an argument when --input - reads image data from stdin")
+	if videoInput == "-" && referencesUseStdin(videoReferences) {
+		return fmt.Errorf("stdin can only be used for one media input: use either --input - or one --reference -")
+	}
+	if (videoInput == "-" || referencesUseStdin(videoReferences)) && len(args) == 0 {
+		return fmt.Errorf("prompt required as an argument when stdin is used for media input")
 	}
 
 	prompt, err := resolveVideoPrompt(args)
@@ -130,7 +134,7 @@ func runVideo(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	references, err := loadVideoReferences(videoReferences)
+	references, err := loadVideoReferences(cmd, videoReferences)
 	if err != nil {
 		return err
 	}
@@ -284,20 +288,49 @@ func loadVideoInput(cmd *cobra.Command, path string) ([]byte, error) {
 	return video.LoadInputImage(path)
 }
 
-func loadVideoReferences(paths []string) ([]video.InputImage, error) {
+func loadVideoReferences(cmd *cobra.Command, paths []string) ([]video.InputImage, error) {
 	if len(paths) == 0 {
 		return nil, nil
+	}
+	if countStdinReferences(paths) > 1 {
+		return nil, fmt.Errorf("only one --reference - is allowed")
 	}
 
 	references := make([]video.InputImage, 0, len(paths))
 	for _, path := range paths {
-		data, err := video.LoadInputImage(path)
-		if err != nil {
-			return nil, err
+		var data []byte
+		var err error
+		if path == "-" {
+			data, err = io.ReadAll(cmd.InOrStdin())
+			if err != nil {
+				return nil, fmt.Errorf("read reference image from stdin: %w", err)
+			}
+			if len(data) == 0 {
+				return nil, fmt.Errorf("read reference image from stdin: no data")
+			}
+		} else {
+			data, err = video.LoadInputImage(path)
+			if err != nil {
+				return nil, err
+			}
 		}
 		references = append(references, video.InputImage{Path: path, Data: data})
 	}
 	return references, nil
+}
+
+func referencesUseStdin(paths []string) bool {
+	return countStdinReferences(paths) > 0
+}
+
+func countStdinReferences(paths []string) int {
+	count := 0
+	for _, path := range paths {
+		if path == "-" {
+			count++
+		}
+	}
+	return count
 }
 
 func saveVideoOutput(defaultDir, prompt, explicitPath string, data []byte) (string, error) {

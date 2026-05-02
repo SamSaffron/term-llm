@@ -59,7 +59,7 @@ func TestLoadVideoReferences(t *testing.T) {
 		t.Fatalf("write second: %v", err)
 	}
 
-	references, err := loadVideoReferences([]string{first, second})
+	references, err := loadVideoReferences(&cobra.Command{}, []string{first, second})
 	if err != nil {
 		t.Fatalf("loadVideoReferences: %v", err)
 	}
@@ -71,6 +71,78 @@ func TestLoadVideoReferences(t *testing.T) {
 	}
 	if references[1].Path != second || string(references[1].Data) != "two" {
 		t.Fatalf("unexpected second reference: %+v", references[1])
+	}
+}
+
+func TestLoadVideoReferencesFromStdin(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.SetIn(bytes.NewReader([]byte("reference-bytes")))
+
+	references, err := loadVideoReferences(cmd, []string{"-"})
+	if err != nil {
+		t.Fatalf("loadVideoReferences stdin: %v", err)
+	}
+	if len(references) != 1 {
+		t.Fatalf("len(references) = %d, want 1", len(references))
+	}
+	if references[0].Path != "-" || string(references[0].Data) != "reference-bytes" {
+		t.Fatalf("unexpected reference: %+v", references[0])
+	}
+}
+
+func TestLoadVideoReferencesFromEmptyStdin(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.SetIn(bytes.NewReader(nil))
+
+	_, err := loadVideoReferences(cmd, []string{"-"})
+	if err == nil {
+		t.Fatal("expected empty stdin error")
+	}
+}
+
+func TestLoadVideoReferencesRejectsMultipleStdinReferences(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.SetIn(bytes.NewReader([]byte("reference-bytes")))
+
+	_, err := loadVideoReferences(cmd, []string{"-", "-"})
+	if err == nil {
+		t.Fatal("expected multiple stdin references error")
+	}
+	if !strings.Contains(err.Error(), "only one --reference -") {
+		t.Fatalf("error = %v, want only one --reference -", err)
+	}
+}
+
+func TestRunVideoRequiresArgPromptWhenReferenceUsesStdin(t *testing.T) {
+	oldReferences := videoReferences
+	videoReferences = []string{"-"}
+	defer func() { videoReferences = oldReferences }()
+
+	err := runVideo(&cobra.Command{}, nil)
+	if err == nil {
+		t.Fatal("expected prompt-required error")
+	}
+	if !strings.Contains(err.Error(), "prompt required") {
+		t.Fatalf("error = %v, want prompt required", err)
+	}
+}
+
+func TestRunVideoRejectsInputAndReferenceBothUsingStdin(t *testing.T) {
+	oldInput := videoInput
+	oldReferences := videoReferences
+	videoInput = "-"
+	videoReferences = []string{"-"}
+	defer func() {
+		videoInput = oldInput
+		videoReferences = oldReferences
+	}()
+
+	err := runVideo(&cobra.Command{}, []string{"animate"})
+	if err == nil {
+		t.Fatal("expected stdin conflict error")
+	}
+	if !strings.Contains(err.Error(), "stdin can only be used for one media input") {
+		t.Fatalf("error = %v, want stdin conflict", err)
 	}
 }
 
