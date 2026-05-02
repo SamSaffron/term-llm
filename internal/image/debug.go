@@ -3,6 +3,7 @@ package image
 import (
 	"bytes"
 	"context"
+	"hash/fnv"
 	"image"
 	"image/color"
 	"image/png"
@@ -35,15 +36,14 @@ func (p *DebugProvider) SupportsMultiImage() bool {
 }
 
 func (p *DebugProvider) Generate(ctx context.Context, req GenerateRequest) (*ImageResult, error) {
-	return p.generateRandomImage(ctx)
+	return p.generateImage(ctx, req.Prompt)
 }
 
 func (p *DebugProvider) Edit(ctx context.Context, req EditRequest) (*ImageResult, error) {
-	// Edit just generates a random image (ignores input)
-	return p.generateRandomImage(ctx)
+	return p.generateImage(ctx, req.Prompt)
 }
 
-func (p *DebugProvider) generateRandomImage(ctx context.Context) (*ImageResult, error) {
+func (p *DebugProvider) generateImage(ctx context.Context, prompt string) (*ImageResult, error) {
 	// Apply configured delay
 	if p.delay > 0 {
 		select {
@@ -57,8 +57,10 @@ func (p *DebugProvider) generateRandomImage(ctx context.Context) (*ImageResult, 
 	width, height := 512, 512
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 
-	// Fill with random colored rectangles
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	// Fill with deterministic pseudo-random colored rectangles derived from the prompt.
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(prompt))
+	rng := rand.New(rand.NewSource(int64(h.Sum64())))
 
 	// Background color
 	bgColor := color.RGBA{

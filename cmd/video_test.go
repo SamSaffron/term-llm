@@ -5,10 +5,48 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 )
+
+func TestLoadVideoInputFromStdin(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.SetIn(bytes.NewReader([]byte("image-bytes")))
+
+	data, err := loadVideoInput(cmd, "-")
+	if err != nil {
+		t.Fatalf("loadVideoInput stdin: %v", err)
+	}
+	if string(data) != "image-bytes" {
+		t.Fatalf("data = %q, want image-bytes", string(data))
+	}
+}
+
+func TestLoadVideoInputFromEmptyStdin(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.SetIn(bytes.NewReader(nil))
+
+	_, err := loadVideoInput(cmd, "-")
+	if err == nil {
+		t.Fatal("expected empty stdin error")
+	}
+}
+
+func TestRunVideoRequiresArgPromptWhenInputUsesStdin(t *testing.T) {
+	oldInput := videoInput
+	videoInput = "-"
+	defer func() { videoInput = oldInput }()
+
+	err := runVideo(&cobra.Command{}, nil)
+	if err == nil {
+		t.Fatal("expected prompt-required error")
+	}
+	if !strings.Contains(err.Error(), "prompt required") {
+		t.Fatalf("error = %v, want prompt required", err)
+	}
+}
 
 func TestLoadVideoReferences(t *testing.T) {
 	dir := t.TempDir()

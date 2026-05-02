@@ -56,6 +56,13 @@ func TestValidateEnums(t *testing.T) {
 	}
 }
 
+func TestDataURLSniffsMimeWhenPathHasNoExtension(t *testing.T) {
+	url := dataURL("-", []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'})
+	if !strings.HasPrefix(url, "data:image/png;base64,") {
+		t.Fatalf("dataURL = %q, want image/png prefix", url)
+	}
+}
+
 func TestVeniceProviderQuoteQueueRetrieve(t *testing.T) {
 	var queueSawImageURL bool
 	var queueSawReferences bool
