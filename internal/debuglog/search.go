@@ -1,7 +1,6 @@
 package debuglog
 
 import (
-	"bufio"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -153,9 +152,7 @@ func firstSessionTimestamp(filePath string) (time.Time, error) {
 	}
 	defer file.Close()
 
-	scanner := bufio.NewScanner(file)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
+	scanner := newDebugLogScanner(file)
 	for scanner.Scan() {
 		var entry rawEntry
 		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
@@ -182,9 +179,7 @@ func searchSessionTextQuery(filePath, query string) ([]SearchResult, error) {
 	queryASCII := isASCII(queryLower)
 
 	var results []SearchResult
-	scanner := bufio.NewScanner(file)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
+	scanner := newDebugLogScanner(file)
 
 	lineNum := 0
 	for scanner.Scan() {
@@ -347,9 +342,7 @@ func searchSession(filePath string, opts SearchOptions) ([]SearchResult, error) 
 	sessionID := strings.TrimSuffix(filepath.Base(filePath), ".jsonl")
 
 	var results []SearchResult
-	scanner := bufio.NewScanner(file)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
+	scanner := newDebugLogScanner(file)
 
 	lineNum := 0
 	for scanner.Scan() {

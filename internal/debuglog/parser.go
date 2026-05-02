@@ -1,7 +1,6 @@
 package debuglog
 
 import (
-	"bufio"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -80,10 +79,7 @@ func parseSessionSummary(filePath string) (SessionSummary, error) {
 		FileSize: info.Size(),
 	}
 
-	scanner := bufio.NewScanner(file)
-	// Increase buffer size for large log lines
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
+	scanner := newDebugLogScanner(file)
 
 	requestSeen := false
 
@@ -145,9 +141,7 @@ func ParseSession(filePath string) (*Session, error) {
 		FilePath: filePath,
 	}
 
-	scanner := bufio.NewScanner(file)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
+	scanner := newDebugLogScanner(file)
 
 	for scanner.Scan() {
 		var entry rawEntry
@@ -316,9 +310,7 @@ func ParseRawLines(filePath string) ([]json.RawMessage, error) {
 	defer file.Close()
 
 	var lines []json.RawMessage
-	scanner := bufio.NewScanner(file)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
+	scanner := newDebugLogScanner(file)
 
 	for scanner.Scan() {
 		line := scanner.Bytes()

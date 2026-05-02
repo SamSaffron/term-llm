@@ -39,6 +39,27 @@ func TestSearchTextQueryFiltersByDaysAndReturnsMatches(t *testing.T) {
 	}
 }
 
+func TestSearchTextQueryHandlesLargeLogLine(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UTC().Truncate(time.Second)
+	largeText := strings.Repeat("x", 70*1024) + " NeedLe past the old initial scanner buffer"
+
+	writeDebugSearchFixture(t, dir, "large", now.Add(-time.Minute), []string{
+		debugSearchEventLine(now.Add(-30*time.Second), "large", "text_delta", fmt.Sprintf(`{"text":%q}`, largeText)),
+	})
+
+	results, err := Search(dir, SearchOptions{Query: "needle", Days: 1})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1: %#v", len(results), results)
+	}
+	if !strings.Contains(strings.ToLower(results[0].Match), "needle") {
+		t.Fatalf("Match = %q, want snippet containing needle", results[0].Match)
+	}
+}
+
 func BenchmarkSearchTextQuery(b *testing.B) {
 	dir := b.TempDir()
 	base := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
