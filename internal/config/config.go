@@ -363,13 +363,22 @@ type ImageDebugConfig struct {
 
 // AudioConfig configures speech/audio generation settings.
 type AudioConfig struct {
-	Provider  string            `mapstructure:"provider"`   // default audio provider: venice
+	Provider  string            `mapstructure:"provider"`   // default audio provider: venice or gemini
 	OutputDir string            `mapstructure:"output_dir"` // default save directory
 	Venice    AudioVeniceConfig `mapstructure:"venice"`
+	Gemini    AudioGeminiConfig `mapstructure:"gemini"`
 }
 
 // AudioVeniceConfig configures Venice AI text-to-speech generation.
 type AudioVeniceConfig struct {
+	APIKey string `mapstructure:"api_key"`
+	Model  string `mapstructure:"model"`
+	Voice  string `mapstructure:"voice"`
+	Format string `mapstructure:"format"`
+}
+
+// AudioGeminiConfig configures Gemini text-to-speech generation.
+type AudioGeminiConfig struct {
 	APIKey string `mapstructure:"api_key"`
 	Model  string `mapstructure:"model"`
 	Voice  string `mapstructure:"voice"`
@@ -1041,6 +1050,10 @@ func resolveAudioCredentials(cfg *AudioConfig) {
 	cfg.Venice.APIKey = expandEnv(cfg.Venice.APIKey)
 	if cfg.Venice.APIKey == "" {
 		cfg.Venice.APIKey = os.Getenv("VENICE_API_KEY")
+	}
+	cfg.Gemini.APIKey = expandEnv(cfg.Gemini.APIKey)
+	if cfg.Gemini.APIKey == "" {
+		cfg.Gemini.APIKey = os.Getenv("GEMINI_API_KEY")
 	}
 }
 

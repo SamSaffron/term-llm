@@ -1,11 +1,11 @@
 ---
 title: "Audio generation"
 weight: 5
-description: "Generate speech audio with Venice AI text-to-speech models."
+description: "Generate speech audio with Venice AI and Gemini text-to-speech models."
 kicker: "Media"
 ---
 
-Generate speech audio using Venice AI's text-to-speech API.
+Generate speech audio using a configured text-to-speech provider.
 
 ```bash
 term-llm audio "hello from term-llm"
@@ -16,23 +16,35 @@ By default, audio clips are:
 - Generated with Venice `tts-kokoro`
 - Rendered as MP3 using voice `af_sky`
 
+You can also use Gemini TTS:
+
+```bash
+term-llm audio "Say cheerfully: hello from Gemini" --provider gemini --voice Kore
+```
+
 ### Audio Flags
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--provider` | `-p` | Audio provider override; currently `venice` |
+| `--provider` | `-p` | Audio provider override: `venice`, `gemini` |
 | `--output` | `-o` | Custom output path, or `-` for stdout |
-| `--model` | | Venice TTS model override |
+| `--model` | | TTS model override |
 | `--voice` | | Model-specific voice, or a Venice cloned voice handle like `vv_<id>` |
-| `--language` | | Optional language hint (`English`, `en`, etc.; model-specific) |
+| `--voice1` | | Gemini multi-speaker voice for `--speaker1` |
+| `--voice2` | | Gemini multi-speaker voice for `--speaker2` |
+| `--speaker1` | | Gemini multi-speaker label for the first speaker |
+| `--speaker2` | | Gemini multi-speaker label for the second speaker |
+| `--language` | | Optional Venice language hint (`English`, `en`, etc.; model-specific) |
 | `--prompt` | | Style/emotion prompt for models that support it |
-| `--format` | | Response format: `mp3`, `opus`, `aac`, `flac`, `wav`, `pcm` |
-| `--speed` | | Speech speed, `0.25` to `4.0` |
+| `--format` | | Venice: `mp3`, `opus`, `aac`, `flac`, `wav`, `pcm`; Gemini: `wav`, `pcm` |
+| `--speed` | | Venice speech speed, `0.25` to `4.0` |
 | `--streaming` | | Ask Venice to stream sentence-by-sentence; term-llm still collects before saving |
 | `--temperature` | | Sampling temperature for supported models, `0` to `2`; omitted by default |
 | `--top-p` | | Nucleus sampling for supported models, `0` to `1`; omitted by default |
 | `--json` | | Emit machine-readable JSON to stdout |
 | `--debug` | `-d` | Show debug information |
+
+`--model`, `--voice`, `--voice1`, `--voice2`, `--format`, and `--provider` include shell completion candidates.
 
 ### Examples
 
@@ -44,6 +56,17 @@ term-llm audio "sad robot noises" \
   --model tts-qwen3-0-6b \
   --voice Vivian \
   --prompt "Sad and slow."
+
+term-llm audio "Say cheerfully: have a wonderful day" \
+  --provider gemini \
+  --model gemini-3.1-flash-tts-preview \
+  --voice Kore \
+  --format wav
+
+term-llm audio "TTS the following conversation between Joe and Jane: Joe: Hi Jane. Jane: Hi Joe." \
+  --provider gemini \
+  --speaker1 Joe --voice1 Kore \
+  --speaker2 Jane --voice2 Puck
 
 echo "pipe me" | term-llm audio --voice af_bella -o - > out.mp3
 ```
@@ -67,6 +90,20 @@ term-llm includes the Venice text-to-speech model catalog:
 
 Voices are model-specific. If a model rejects a voice, Venice returns the API error directly.
 
+### Gemini TTS Models
+
+| Model | Single speaker | Multi-speaker |
+|-------|----------------|---------------|
+| `gemini-3.1-flash-tts-preview` | Yes | Yes |
+| `gemini-2.5-flash-preview-tts` | Yes | Yes |
+| `gemini-2.5-pro-preview-tts` | Yes | Yes |
+
+Gemini TTS returns 24 kHz mono PCM. term-llm can save it directly as `pcm`, or wrap it as a `wav` file. Gemini TTS does not support streaming; language is auto-detected.
+
+Gemini prebuilt voices:
+
+`Zephyr`, `Puck`, `Charon`, `Kore`, `Fenrir`, `Leda`, `Orus`, `Aoede`, `Callirrhoe`, `Autonoe`, `Enceladus`, `Iapetus`, `Umbriel`, `Algieba`, `Despina`, `Erinome`, `Algenib`, `Rasalgethi`, `Laomedeia`, `Achernar`, `Alnilam`, `Schedar`, `Gacrux`, `Pulcherrima`, `Achird`, `Zubenelgenubi`, `Vindemiatrix`, `Sadachbia`, `Sadaltager`, `Sulafat`.
+
 ### JSON Output
 
 `--json` prints a single structured object to stdout after saving the file.
@@ -88,7 +125,9 @@ Voices are model-specific. If a model rejects a voice, Venice returns the API er
 
 ### Credentials and Config
 
-`term-llm audio` reads credentials from `VENICE_API_KEY`, `audio.venice.api_key`, or the existing `image.venice.api_key` fallback.
+`term-llm audio` reads Venice credentials from `VENICE_API_KEY`, `audio.venice.api_key`, or the existing `image.venice.api_key` fallback.
+
+Gemini credentials are read from `GEMINI_API_KEY`, `audio.gemini.api_key`, `image.gemini.api_key`, or the configured `providers.gemini` API key.
 
 ```yaml
 audio:
@@ -99,4 +138,9 @@ audio:
     model: tts-kokoro
     voice: af_sky
     format: mp3
+  gemini:
+    api_key: $GEMINI_API_KEY
+    model: gemini-3.1-flash-tts-preview
+    voice: Kore
+    format: wav
 ```

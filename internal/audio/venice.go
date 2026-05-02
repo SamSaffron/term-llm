@@ -68,6 +68,10 @@ type Request struct {
 	Input          string
 	Model          string
 	Voice          string
+	Voice1         string
+	Voice2         string
+	Speaker1       string
+	Speaker2       string
 	Language       string
 	Prompt         string
 	ResponseFormat string
