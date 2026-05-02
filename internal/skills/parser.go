@@ -3,6 +3,7 @@ package skills
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,22 +25,34 @@ type frontmatterData struct {
 // ParseSkillMD parses a SKILL.md file and returns a Skill.
 // The loadBody parameter controls whether to load the full Markdown body.
 func ParseSkillMD(path string, loadBody bool) (*Skill, error) {
+	if !loadBody {
+		frontmatter, err := readSkillMDFrontmatter(path)
+		if err != nil {
+			return nil, err
+		}
+		return parseSkillFrontmatter(frontmatter, "", false)
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read SKILL.md: %w", err)
 	}
 
-	return ParseSkillMDContent(string(data), loadBody)
+	return ParseSkillMDContent(string(data), true)
 }
 
 // ParseSkillMDContent parses SKILL.md content from a string.
 func ParseSkillMDContent(content string, loadBody bool) (*Skill, error) {
 	// Split frontmatter and body
-	frontmatter, body, err := splitFrontmatter(content)
+	frontmatter, body, err := splitFrontmatter(content, loadBody)
 	if err != nil {
 		return nil, err
 	}
 
+	return parseSkillFrontmatter(frontmatter, body, loadBody)
+}
+
+func parseSkillFrontmatter(frontmatter, body string, loadBody bool) (*Skill, error) {
 	// Parse frontmatter into known fields
 	var fm frontmatterData
 	if err := yaml.Unmarshal([]byte(frontmatter), &fm); err != nil {
@@ -77,7 +90,7 @@ func ParseSkillMDContent(content string, loadBody bool) (*Skill, error) {
 
 // splitFrontmatter extracts YAML frontmatter and Markdown body.
 // Frontmatter must be delimited by --- on its own lines.
-func splitFrontmatter(content string) (frontmatter, body string, err error) {
+func splitFrontmatter(content string, loadBody bool) (frontmatter, body string, err error) {
 	scanner := bufio.NewScanner(strings.NewReader(content))
 
 	// Look for opening ---
@@ -106,6 +119,10 @@ func splitFrontmatter(content string) (frontmatter, body string, err error) {
 		return "", "", fmt.Errorf("empty frontmatter in SKILL.md")
 	}
 
+	if !loadBody {
+		return strings.Join(fmLines, "\n"), "", nil
+	}
+
 	// Rest is body
 	var bodyLines []string
 	for scanner.Scan() {
@@ -113,6 +130,55 @@ func splitFrontmatter(content string) (frontmatter, body string, err error) {
 	}
 
 	return strings.Join(fmLines, "\n"), strings.Join(bodyLines, "\n"), nil
+}
+
+func readSkillMDFrontmatter(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("read SKILL.md: %w", err)
+	}
+	defer file.Close()
+
+	reader := bufio.NewReader(file)
+	var fmLines []string
+	inFrontmatter := false
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil && err != io.EOF {
+			return "", fmt.Errorf("read SKILL.md: %w", err)
+		}
+		if err == io.EOF && line == "" {
+			break
+		}
+
+		line = strings.TrimRight(line, "\r\n")
+		trimmed := strings.TrimSpace(line)
+
+		if !inFrontmatter {
+			if trimmed == "---" {
+				inFrontmatter = true
+			} else if trimmed != "" {
+				return "", fmt.Errorf("SKILL.md must start with YAML frontmatter (---)")
+			}
+		} else if trimmed == "---" {
+			if len(fmLines) == 0 {
+				return "", fmt.Errorf("empty frontmatter in SKILL.md")
+			}
+			return strings.Join(fmLines, "\n"), nil
+		} else {
+			fmLines = append(fmLines, line)
+		}
+
+		if err == io.EOF {
+			break
+		}
+	}
+
+	if len(fmLines) == 0 {
+		return "", fmt.Errorf("empty frontmatter in SKILL.md")
+	}
+	return strings.Join(fmLines, "\n"), nil
 }
 
 // parseAllowedTools handles the various formats for allowed-tools:

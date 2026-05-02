@@ -3,8 +3,45 @@ package skills
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func BenchmarkParseSkillMDMetadataOnlyLargeBody(b *testing.B) {
+	tmpDir := b.TempDir()
+	skillDir := filepath.Join(tmpDir, "large-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		b.Fatal(err)
+	}
+
+	var content strings.Builder
+	content.WriteString("---\n")
+	content.WriteString("name: large-skill\n")
+	content.WriteString("description: metadata-only parsing should not read this large body\n")
+	content.WriteString("allowed-tools: read grep glob\n")
+	content.WriteString("---\n\n")
+	chunk := strings.Repeat("Large body content that should be skipped during discovery.\n", 1024)
+	for i := 0; i < 128; i++ {
+		content.WriteString(chunk)
+	}
+
+	path := filepath.Join(skillDir, "SKILL.md")
+	if err := os.WriteFile(path, []byte(content.String()), 0o644); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		skill, err := ParseSkillMD(path, false)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if skill.Body != "" || skill.IsLoaded() {
+			b.Fatalf("metadata-only parse loaded body: loaded=%v bodyLen=%d", skill.IsLoaded(), len(skill.Body))
+		}
+	}
+}
 
 func TestParseSkillMDContent_Valid(t *testing.T) {
 	content := `---
