@@ -569,6 +569,49 @@ async function run(name, fn) {
     assert(!button.classList.contains('copied'), 'copied class resets');
   });
 
+  await run('stream updates only resync the affected turn action panel', () => {
+    const { app, session, messages } = createHarness();
+    const streamingMessage = {
+      id: 'a3',
+      role: 'assistant',
+      content: '',
+      created: Date.now(),
+    };
+    session.messages = [
+      { id: 'u1', role: 'user', content: 'first' },
+      { id: 'a1', role: 'assistant', content: 'First turn answer' },
+      { id: 'u2', role: 'user', content: 'second' },
+      { id: 'a2', role: 'assistant', content: 'Earlier assistant in active turn' },
+      { id: 'tg1', role: 'tool-group', tools: [
+        { id: 't1', name: 'grep', status: 'done', arguments: '{"pattern":"needle"}' },
+      ] },
+      streamingMessage,
+    ];
+    ['a1', 'a2', 'a3'].forEach((id) => messages.appendChild(messageNode(id, 'assistant')));
+
+    app.syncTurnActionPanels();
+
+    const firstTurnPanel = messages.children[0].querySelector('.turn-action-panel');
+    const activeTurnPanel = messages.children[1].querySelector('.turn-action-panel');
+    assert(firstTurnPanel, 'first turn panel rendered');
+    assert(activeTurnPanel, 'active turn panel starts on earlier assistant while stream is empty');
+    assertEqual(messages.children[2].querySelectorAll('.turn-action-panel').length, 0, 'empty streaming assistant has no panel yet');
+
+    streamingMessage.content = 'Streaming reply';
+    app.enqueueAssistantStreamUpdate(streamingMessage);
+
+    const streamedPanel = messages.children[2].querySelector('.turn-action-panel');
+    assertEqual(messages.children[0].querySelector('.turn-action-panel'), firstTurnPanel, 'unrelated earlier turn panel preserved');
+    assertEqual(messages.children[1].querySelectorAll('.turn-action-panel').length, 0, 'panel removed from earlier assistant in same turn');
+    assert(streamedPanel, 'panel moved onto streaming assistant');
+
+    streamingMessage.content += ' with more text';
+    app.enqueueAssistantStreamUpdate(streamingMessage);
+
+    assertEqual(messages.children[0].querySelector('.turn-action-panel'), firstTurnPanel, 'earlier turn panel still preserved on later stream ticks');
+    assertEqual(messages.children[2].querySelector('.turn-action-panel'), streamedPanel, 'streaming assistant panel is reused across ticks');
+  });
+
   await run('renders markdown without eager optional libraries for plain markdown', () => {
     const { app, document } = createHarness();
     const target = new Element('div');
