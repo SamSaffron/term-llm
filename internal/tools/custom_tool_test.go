@@ -288,6 +288,8 @@ echo "$INPUT" | grep -o '"name":"[^"]*"'
 }
 
 func TestCustomScriptTool_TimeoutKillsGrandchildren(t *testing.T) {
+	t.Parallel()
+
 	dir := t.TempDir()
 	writeScript(t, dir, "hang.sh", "#!/bin/sh\nsleep 60 & wait\n")
 

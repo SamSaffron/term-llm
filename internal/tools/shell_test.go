@@ -259,6 +259,8 @@ func TestShellTool_WorkingDirIsFile(t *testing.T) {
 }
 
 func TestShellTool_Timeout(t *testing.T) {
+	t.Parallel()
+
 	t.Run("default timeout is 30 seconds", func(t *testing.T) {
 		tool := NewShellTool(nil, nil, DefaultOutputLimits())
 		// Just verify the tool executes a fast command successfully
@@ -388,6 +390,8 @@ func TestEnvMap_EmptyKeyReturnsError(t *testing.T) {
 }
 
 func TestShellTool_TimeoutKillsGrandchildren(t *testing.T) {
+	t.Parallel()
+
 	tool := NewShellTool(nil, nil, DefaultOutputLimits())
 	// sh -c spawns sleep as a grandchild; without the fix cmd.Run() blocks forever
 	// because the grandchild holds the pipe write-ends open after the shell is killed.
