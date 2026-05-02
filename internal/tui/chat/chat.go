@@ -881,13 +881,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.toggleYoloMode()
 	}
 
+	// Chat-owned self-scheduling ticks must keep running even while an embedded
+	// modal is active. If a spinner tick is forwarded to the inspector/session
+	// browser, the child ignores it and the spinner never schedules its next tick,
+	// so it appears frozen after returning to chat.
+	_, isSpinnerTick := msg.(spinner.TickMsg)
+
 	// Handle resume browser mode
-	if m.resumeBrowserMode {
+	if m.resumeBrowserMode && !isSpinnerTick {
 		return m.updateResumeBrowserMode(msg)
 	}
 
 	// Handle inspector mode
-	if m.inspectorMode {
+	if m.inspectorMode && !isSpinnerTick {
 		return m.updateInspectorMode(msg)
 	}
 

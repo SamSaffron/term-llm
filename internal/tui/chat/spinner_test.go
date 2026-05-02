@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/spinner"
+	"github.com/samsaffron/term-llm/internal/tui/inspector"
 )
 
 func TestChatSpinnerUsesReducedDefaultFPS(t *testing.T) {
@@ -42,5 +43,23 @@ func TestChatSpinnerTickIgnoredWhilePausedForExternalUI(t *testing.T) {
 	}
 	if after != before {
 		t.Fatalf("spinner frame advanced while paused: before=%q after=%q", before, after)
+	}
+}
+
+func TestChatSpinnerTickContinuesWhileInspectorModeActive(t *testing.T) {
+	m := newTestChatModel(true)
+	m.streaming = true
+	m.inspectorMode = true
+	m.inspectorModel = inspector.New(nil, m.width, m.height, m.styles)
+
+	before := m.spinner.View()
+	_, cmd := m.Update(spinner.TickMsg{ID: m.spinner.ID()})
+	after := m.spinner.View()
+
+	if cmd == nil {
+		t.Fatal("expected spinner tick to be re-scheduled while inspector is active")
+	}
+	if after == before {
+		t.Fatalf("expected spinner frame to advance while inspector is active, still %q", after)
 	}
 }
