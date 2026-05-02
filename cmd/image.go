@@ -48,6 +48,7 @@ Examples:
   term-llm image "combine these" -i a.png -i b.png  # multi-image (Gemini/OpenRouter)
   term-llm image "sunset over mountains" --provider flux
   term-llm image "logo design" -o ./output.png --no-display
+  term-llm image "robot cat" -o - | term-llm video "animate it" -i -
   echo "a sunset" | term-llm image                  # prompt from stdin`,
 	Args: cobra.ArbitraryArgs,
 	RunE: runImage,
@@ -55,7 +56,7 @@ Examples:
 
 func init() {
 	imageCmd.Flags().StringArrayVarP(&imageInputs, "input", "i", nil, "Input image(s) to edit (can be specified multiple times)")
-	imageCmd.Flags().StringVarP(&imageProvider, "provider", "p", "", "Override provider (gemini, openai, chatgpt, xai, venice, flux, openrouter)")
+	imageCmd.Flags().StringVarP(&imageProvider, "provider", "p", "", "Override provider (debug, gemini, openai, chatgpt, xai, venice, flux, openrouter)")
 	imageCmd.Flags().StringVarP(&imageOutput, "output", "o", "", "Custom output path")
 	imageCmd.Flags().StringVarP(&imageSize, "size", "s", "", "Image resolution (must be 1K, 2K, or 4K)")
 	imageCmd.Flags().BoolVar(&imageNoDisplay, "no-display", false, "Skip terminal display")
@@ -188,7 +189,12 @@ func runImage(cmd *cobra.Command, args []string) error {
 
 	// Determine output path
 	var outputPath string
-	if imageOutput != "" {
+	if imageOutput == "-" {
+		if _, err := cmd.OutOrStdout().Write(result.Data); err != nil {
+			return fmt.Errorf("failed to write image to stdout: %w", err)
+		}
+		return nil
+	} else if imageOutput != "" {
 		// Custom output path specified
 		outputPath = imageOutput
 		if err := os.WriteFile(outputPath, result.Data, 0644); err != nil {

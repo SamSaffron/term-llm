@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,6 +51,7 @@ Examples:
   term-llm video "make Romeo blink and wag his tail" -i romeo.png
   term-llm video "cute dog, influencer reacts" -i romeo.png -r pose1.png -r pose2.png
   term-llm video "cyberpunk city, slow dolly shot" --model kling-o3-pro-text-to-video
+  term-llm image "robot cat" -o - | term-llm video "animate it" -i -
   term-llm video "cute dog, influencer reacts" -i romeo.png --aspect-ratio 9:16 --duration 10s
   term-llm video "astronaut on mars" --quote-only --json`,
 	Args: cobra.ArbitraryArgs,
@@ -79,6 +81,10 @@ func init() {
 }
 
 func runVideo(cmd *cobra.Command, args []string) error {
+	if videoInput == "-" && len(args) == 0 {
+		return fmt.Errorf("prompt required as an argument when --input - reads image data from stdin")
+	}
+
 	prompt, err := resolveVideoPrompt(args)
 	if err != nil {
 		return err
@@ -118,7 +124,7 @@ func runVideo(cmd *cobra.Command, args []string) error {
 
 	var inputData []byte
 	if videoInput != "" {
-		inputData, err = video.LoadInputImage(videoInput)
+		inputData, err = loadVideoInput(cmd, videoInput)
 		if err != nil {
 			return err
 		}
@@ -262,6 +268,20 @@ func resolveVideoPrompt(args []string) (string, error) {
 		return "", fmt.Errorf("prompt required: provide as argument or via stdin")
 	}
 	return prompt, nil
+}
+
+func loadVideoInput(cmd *cobra.Command, path string) ([]byte, error) {
+	if path == "-" {
+		data, err := io.ReadAll(cmd.InOrStdin())
+		if err != nil {
+			return nil, fmt.Errorf("read input image from stdin: %w", err)
+		}
+		if len(data) == 0 {
+			return nil, fmt.Errorf("read input image from stdin: no data")
+		}
+		return data, nil
+	}
+	return video.LoadInputImage(path)
 }
 
 func loadVideoReferences(paths []string) ([]video.InputImage, error) {
