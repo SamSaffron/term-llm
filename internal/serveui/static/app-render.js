@@ -817,7 +817,7 @@ const enqueueAssistantStreamUpdate = (message) => {
   streamState.latestContent = String(message.content || '');
   streamState.dirty = true;
   syncAssistantUsageNode(node, message);
-  syncTurnActionPanels();
+  syncTurnActionPanelForAssistant(message.id);
   scheduleAssistantStreamRender(streamState);
 };
 
@@ -826,11 +826,11 @@ const finalizeAssistantStreamRender = (message) => {
   if (!node) {
     node = createMessageNode(message);
     elements.messages.appendChild(node);
-    syncTurnActionPanels();
+    syncTurnActionPanelForAssistant(message.id);
     return;
   }
   renderAssistantNodeFully(node, message);
-  syncTurnActionPanels();
+  syncTurnActionPanelForAssistant(message.id);
 };
 
 const createToolCard = (message) => {
@@ -953,11 +953,11 @@ const updateAssistantNode = (message) => {
   if (!node) {
     node = createMessageNode(message);
     elements.messages.appendChild(node);
-    syncTurnActionPanels();
+    syncTurnActionPanelForAssistant(message.id);
     return;
   }
   renderAssistantNodeFully(node, message);
-  syncTurnActionPanels();
+  syncTurnActionPanelForAssistant(message.id);
 };
 
 const updateUserNode = (message) => {
@@ -1404,6 +1404,82 @@ const createTurnActionPanel = (turn) => {
   return panel;
 };
 
+const removeTurnActionPanel = (node) => {
+  node?.querySelector('.turn-action-panel')?.remove();
+};
+
+const ensureTurnActionPanel = (node, turn) => {
+  if (!node || !turn?.lastAssistantId) return;
+
+  let panel = node.querySelector('.turn-action-panel');
+  if (!panel) {
+    panel = createTurnActionPanel(turn);
+    const meta = node.querySelector('.message-meta');
+    if (meta) {
+      node.insertBefore(panel, meta);
+    } else {
+      node.appendChild(panel);
+    }
+    return;
+  }
+
+  panel.dataset.turnAssistantId = turn.lastAssistantId;
+  const button = panel.querySelector('.turn-copy-btn');
+  if (button) {
+    button.dataset.turnAssistantId = turn.lastAssistantId;
+  }
+};
+
+const syncTurnActionPanelForAssistant = (assistantId) => {
+  const root = elements.messages;
+  if (!root || !assistantId) return;
+
+  const session = ensureActiveSession();
+  const messages = Array.isArray(session?.messages) ? session.messages : [];
+  let assistantIndex = -1;
+
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i]?.id === assistantId) {
+      assistantIndex = i;
+      break;
+    }
+  }
+
+  if (assistantIndex === -1) return;
+
+  let start = assistantIndex;
+  while (start > 0 && !isNormalUserBoundary(messages[start - 1])) {
+    start -= 1;
+  }
+
+  let end = assistantIndex;
+  while (end + 1 < messages.length && !isNormalUserBoundary(messages[end + 1])) {
+    end += 1;
+  }
+
+  const assistantMessageIds = [];
+  let lastAssistantWithContent = null;
+
+  for (let i = start; i <= end; i += 1) {
+    const message = messages[i];
+    if (message?.role !== 'assistant' || !message.id) continue;
+    assistantMessageIds.push(message.id);
+    if (String(message.content || '').trim()) {
+      lastAssistantWithContent = message;
+    }
+  }
+
+  assistantMessageIds.forEach((id) => {
+    const node = findMessageElement(id);
+    if (!node || !node.classList?.contains('assistant')) return;
+    if (!lastAssistantWithContent || id !== lastAssistantWithContent.id) {
+      removeTurnActionPanel(node);
+      return;
+    }
+    ensureTurnActionPanel(node, { lastAssistantId: lastAssistantWithContent.id });
+  });
+};
+
 const syncTurnActionPanels = () => {
   const root = elements.messages;
   if (!root) return;
@@ -1414,13 +1490,7 @@ const syncTurnActionPanels = () => {
     if (!turn.lastAssistantId) return;
     const node = findMessageElement(turn.lastAssistantId);
     if (!node || !node.classList?.contains('assistant')) return;
-    const panel = createTurnActionPanel(turn);
-    const meta = node.querySelector('.message-meta');
-    if (meta) {
-      node.insertBefore(panel, meta);
-    } else {
-      node.appendChild(panel);
-    }
+    ensureTurnActionPanel(node, turn);
   });
 };
 
