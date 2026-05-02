@@ -833,6 +833,23 @@ const setSessionPinned = async (session, pinned) => {
 };
 
 // ===== Initialization =====
+const hydrateActiveSessionAfterStartup = async () => {
+  const active = getActiveSession();
+  if (!active) return;
+
+  if (active._serverOnly) {
+    const msgs = await loadServerSessionMessages(active.id);
+    if (msgs !== null) {
+      mergeServerMessagesWithLocalState(active, msgs);
+      saveSessions();
+      renderSidebar();
+      renderMessages(true);
+    }
+  }
+
+  await syncActiveSessionFromServer(active, true);
+};
+
 const initialize = async () => {
   setStartupStatus('Loading your chat shell…');
   state.sessions = loadSessions();
@@ -887,19 +904,20 @@ const initialize = async () => {
     setStartupStatus(state.token ? 'Checking your token…' : 'Connecting…');
     setConnectionState(state.token ? 'Validating token…' : 'Connecting…');
 
+    const sessionsPromise = mergeServerSessions();
+
     // Fetch providers first so we can validate the stored selection.
     state.providers = await fetchProviders();
     normalizeSelectedProvider();
     renderProviderOptions();
 
-    state.models = await fetchModels('', state.selectedProvider);
+    const modelsPromise = fetchModels('', state.selectedProvider);
+    setStartupStatus('Syncing sessions…');
+
+    [state.models] = await Promise.all([modelsPromise, sessionsPromise]);
     state.connected = true;
     renderModelOptions();
     setConnectionState('', '');
-    setStartupStatus('Syncing sessions…');
-
-    // Merge server-side sessions after successful auth
-    await mergeServerSessions();
     startSidebarStatusPoll();
     if (!state.draftSessionActive && !getActiveSession()) {
       ensureActiveSession();
@@ -913,20 +931,8 @@ const initialize = async () => {
       subscribeToPush();
     }
 
-    // Lazy-load messages for URL-targeted server session
-    const active = getActiveSession();
-    if (active && active._serverOnly) {
-      const msgs = await loadServerSessionMessages(active.id);
-      if (msgs !== null) {
-        mergeServerMessagesWithLocalState(active, msgs);
-        saveSessions();
-        renderSidebar();
-        renderMessages(true);
-      }
-    }
-    if (active) {
-      await syncActiveSessionFromServer(active, true);
-    }
+    hideStartupSplash();
+    await hydrateActiveSessionAfterStartup().catch(() => {});
   } catch (err) {
     const message = err?.message || 'Unable to validate token.';
     setStartupStatus(message);
