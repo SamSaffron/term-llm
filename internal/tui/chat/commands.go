@@ -515,6 +515,7 @@ func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
 	m.viewCache.historyValid = false
 	m.viewCache.completedStream = ""
 	m.viewCache.lastSetContentAt = time.Time{}
+	m.resetAltScreenStreamingAppendCache()
 	m.bumpContentVersion()
 
 	return m.showFooterSuccess("Started a new session.")
@@ -869,6 +870,7 @@ func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
 	m.viewCache.historyValid = false
 	m.viewCache.completedStream = ""
 	m.viewCache.lastSetContentAt = time.Time{}
+	m.resetAltScreenStreamingAppendCache()
 	m.bumpContentVersion()
 
 	return m.showFooterSuccess("Started a new session.")

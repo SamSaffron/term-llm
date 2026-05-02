@@ -216,9 +216,11 @@ type Model struct {
 		// persist after streaming ends. Cleared when a new prompt is sent.
 		completedStream string
 		// Content versioning to avoid expensive string comparisons
-		contentVersion      uint64 // Incremented when content changes
-		lastRenderedVersion uint64 // Version that was last rendered to viewport
-		lastTrackerVersion  uint64 // Last seen tracker.Version (to detect content changes)
+		contentVersion               uint64 // Incremented when content changes
+		lastRenderedVersion          uint64 // Version that was last rendered to viewport
+		lastTrackerVersion           uint64 // Last seen tracker.Version (to detect content changes)
+		lastStreamingContent         string // Last rendered streaming tail in alt-screen mode
+		lastContentHistoryPlusStream bool   // Whether the rendered viewport is exactly history + streaming tail
 		// Caching for streaming segments to avoid re-rendering on every frame
 		cachedCompletedContent string // Rendered completed segments
 		cachedTrackerVersion   uint64 // Tracker version when cache was built
@@ -671,6 +673,7 @@ func (m *Model) applyWindowSize(msg tea.WindowSizeMsg) {
 	// Also invalidate history cache because renderHistory() skips the last turn
 	// when completedStream is non-empty — clearing it without rebuilding history
 	// would leave a stale cache that excludes the last assistant message.
+	m.resetAltScreenStreamingAppendCache()
 	if m.viewCache.completedStream != "" {
 		m.viewCache.completedStream = ""
 		m.invalidateHistoryCache()

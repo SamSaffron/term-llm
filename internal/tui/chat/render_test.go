@@ -3,6 +3,7 @@ package chat
 import (
 	"errors"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -40,6 +41,57 @@ func TestRenderMarkdown_NarrowWidth_DoesNotFallbackToRaw(t *testing.T) {
 
 	if strings.TrimSpace(got) == strings.TrimSpace(input) {
 		t.Fatalf("expected narrow-width markdown rendering, got raw fallback: %q", got)
+	}
+}
+
+func TestTryAppendAltScreenStreamingContent_AppendsTailLines(t *testing.T) {
+	m := &Model{}
+	m.viewCache.lastContentHistoryPlusStream = true
+	m.viewCache.lastContentStr = "history\nassistant"
+	m.viewCache.lastStreamingContent = "assistant"
+
+	got, ok := m.tryAppendAltScreenStreamingContent("assistant more\nnext")
+	if !ok {
+		t.Fatal("expected append-only streaming update to be reused incrementally")
+	}
+
+	want := []string{"history", "assistant more", "next"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("unexpected content lines\nwant: %#v\n got: %#v", want, got)
+	}
+}
+
+func TestInvalidateHistoryCache_ResetsAltScreenStreamingAppendCache(t *testing.T) {
+	m := &Model{}
+	m.viewCache.lastContentHistoryPlusStream = true
+	m.viewCache.lastContentStr = "old history\nassistant"
+	m.viewCache.lastStreamingContent = "assistant"
+	m.contentLines = []string{"old history", "assistant"}
+
+	m.invalidateHistoryCache()
+
+	if m.viewCache.lastContentHistoryPlusStream {
+		t.Fatal("expected append cache to be disabled after history invalidation")
+	}
+	if m.viewCache.lastStreamingContent != "" {
+		t.Fatalf("expected last streaming content to be cleared, got %q", m.viewCache.lastStreamingContent)
+	}
+	if m.viewCache.lastContentStr != "" {
+		t.Fatalf("expected cached content string to be cleared, got %q", m.viewCache.lastContentStr)
+	}
+	if m.contentLines != nil {
+		t.Fatalf("expected cached content lines to be cleared, got %#v", m.contentLines)
+	}
+}
+
+func TestTryAppendAltScreenStreamingContent_FallsBackOnRewrite(t *testing.T) {
+	m := &Model{}
+	m.viewCache.lastContentHistoryPlusStream = true
+	m.viewCache.lastContentStr = "history\nassistant"
+	m.viewCache.lastStreamingContent = "assistant"
+
+	if _, ok := m.tryAppendAltScreenStreamingContent("rewritten assistant"); ok {
+		t.Fatal("expected rewrite to force full viewport rebuild")
 	}
 }
 

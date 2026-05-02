@@ -146,6 +146,7 @@ func (m *Model) viewAltScreen() string {
 			// Content unchanged despite invalidation (e.g. scroll offset change) — restore validity.
 			m.viewCache.historyScrollOffset = m.scrollOffset
 		} else {
+			m.resetAltScreenStreamingAppendCache()
 			m.viewCache.historyContent = m.renderHistory()
 			m.viewCache.historyMsgCount = len(m.messages)
 			m.viewCache.historySignature = historySig
@@ -160,6 +161,9 @@ func (m *Model) viewAltScreen() string {
 	// When throttled, we intentionally skip expensive content reconstruction and
 	// keep the previous viewport content until the next render tick.
 	var contentStr string
+	var contentLines []string
+	var streamingContent string
+	usedIncrementalAppend := false
 	if m.streaming {
 		// Only increment version when tracker content or wave position changes
 		// The completed segment rendering is cached, but we still need SetContent
@@ -200,14 +204,19 @@ func (m *Model) viewAltScreen() string {
 
 	if contentChanged {
 		if m.streaming {
-			streamingContent := m.renderStreamingInline()
-			contentStr = m.viewCache.historyContent + streamingContent
-			if m.approvalModel != nil {
-				contentStr += "\n" + m.approvalModel.View().Content
-			} else if m.askUserModel != nil {
-				contentStr += "\n" + m.askUserModel.View().Content
-			} else if m.handoverPreview != nil {
-				contentStr += m.handoverPreview.View()
+			streamingContent = m.renderStreamingInline()
+			if m.approvalModel == nil && m.askUserModel == nil && m.handoverPreview == nil {
+				contentLines, usedIncrementalAppend = m.tryAppendAltScreenStreamingContent(streamingContent)
+			}
+			if !usedIncrementalAppend {
+				contentStr = m.viewCache.historyContent + streamingContent
+				if m.approvalModel != nil {
+					contentStr += "\n" + m.approvalModel.View().Content
+				} else if m.askUserModel != nil {
+					contentStr += "\n" + m.askUserModel.View().Content
+				} else if m.handoverPreview != nil {
+					contentStr += m.handoverPreview.View()
+				}
 			}
 		} else {
 			contentStr = m.viewCache.historyContent + m.viewCache.completedStream
@@ -223,7 +232,11 @@ func (m *Model) viewAltScreen() string {
 		wasAtBottom := m.viewport.AtBottom()
 		firstRender := m.viewCache.lastViewportView == ""
 		setContentStart := time.Now()
-		m.viewport.SetContent(contentStr)
+		if usedIncrementalAppend {
+			m.viewport.SetContentLines(contentLines)
+		} else {
+			m.viewport.SetContent(contentStr)
+		}
 		setContentEnd := time.Now()
 		if m.streamPerf != nil {
 			m.streamPerf.RecordDuration(durationMetricSetContent, setContentEnd.Sub(setContentStart))
@@ -273,8 +286,20 @@ func (m *Model) viewAltScreen() string {
 	// Invalidate content lines when content changes — they'll be rebuilt
 	// lazily on demand in extractSelectedText (only needed for selection).
 	if contentChanged {
-		m.viewCache.lastContentStr = contentStr
-		m.contentLines = nil
+		if usedIncrementalAppend {
+			m.viewCache.lastContentStr = ""
+			m.contentLines = contentLines
+			m.viewCache.lastContentHistoryPlusStream = true
+		} else {
+			m.viewCache.lastContentStr = contentStr
+			m.contentLines = nil
+			m.viewCache.lastContentHistoryPlusStream = m.streaming && m.approvalModel == nil && m.askUserModel == nil && m.handoverPreview == nil
+		}
+		if m.streaming {
+			m.viewCache.lastStreamingContent = streamingContent
+		} else {
+			m.viewCache.lastStreamingContent = ""
+		}
 	}
 
 	// Post-process: apply selection highlight
@@ -1354,6 +1379,54 @@ func (m *Model) shouldThrottleSetContent(now time.Time) bool {
 		return false
 	}
 	return now.Sub(m.viewCache.lastSetContentAt) < m.streamRenderMinInterval
+}
+
+// tryAppendAltScreenStreamingContent reuses the previously rendered viewport
+// lines only when that viewport is known to be exactly historyContent plus the
+// previous streaming tail. Call resetAltScreenStreamingAppendCache whenever
+// history, width, or turn state changes so stale history cannot be retained by
+// this append-only fast path.
+func (m *Model) tryAppendAltScreenStreamingContent(streamingContent string) ([]string, bool) {
+	if !m.viewCache.lastContentHistoryPlusStream {
+		return nil, false
+	}
+	if !strings.HasPrefix(streamingContent, m.viewCache.lastStreamingContent) {
+		return nil, false
+	}
+
+	contentLines := m.contentLines
+	if contentLines == nil {
+		contentLines = splitViewportContentLines(m.viewCache.lastContentStr)
+	}
+	if contentLines == nil && m.viewCache.lastContentStr == "" {
+		return nil, false
+	}
+
+	delta := streamingContent[len(m.viewCache.lastStreamingContent):]
+	return appendViewportContentLines(contentLines, delta), true
+}
+
+func splitViewportContentLines(content string) []string {
+	if content == "" {
+		return nil
+	}
+	return strings.Split(content, "\n")
+}
+
+func appendViewportContentLines(lines []string, delta string) []string {
+	if len(lines) == 0 {
+		return splitViewportContentLines(delta)
+	}
+	if delta == "" {
+		return lines
+	}
+
+	parts := strings.Split(delta, "\n")
+	lines[len(lines)-1] += parts[0]
+	if len(parts) > 1 {
+		lines = append(lines, parts[1:]...)
+	}
+	return lines
 }
 
 // GetBundledServers returns bundled MCP servers (wrapper for mcp package)

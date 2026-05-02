@@ -362,6 +362,7 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	m.webSearchUsed = false
 	m.viewCache.completedStream = "" // Clear previous response's diffs/tools
 	m.viewCache.lastSetContentAt = time.Time{}
+	m.resetAltScreenStreamingAppendCache()
 	m.bumpContentVersion()
 	if m.smoothBuffer != nil {
 		m.smoothBuffer.Reset()
@@ -659,6 +660,7 @@ func (m *Model) invalidateViewCache() {
 	m.viewCache.lastTrackerVersion = 0
 	m.viewCache.lastWavePos = 0
 	m.viewCache.lastSetContentAt = time.Time{}
+	m.resetAltScreenStreamingAppendCache()
 	if m.chatRenderer != nil {
 		m.chatRenderer.InvalidateCache()
 	}
@@ -667,10 +669,18 @@ func (m *Model) invalidateViewCache() {
 
 func (m *Model) invalidateHistoryCache() {
 	m.viewCache.historyValid = false
+	m.resetAltScreenStreamingAppendCache()
 	if m.chatRenderer != nil {
 		m.chatRenderer.InvalidateCache()
 	}
 	m.bumpContentVersion()
+}
+
+func (m *Model) resetAltScreenStreamingAppendCache() {
+	m.viewCache.lastStreamingContent = ""
+	m.viewCache.lastContentHistoryPlusStream = false
+	m.viewCache.lastContentStr = ""
+	m.contentLines = nil
 }
 
 func (m *Model) bumpContentVersion() {
