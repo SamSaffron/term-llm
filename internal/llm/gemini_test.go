@@ -52,6 +52,70 @@ func TestBuildGeminiContents_DropsDanglingToolCalls(t *testing.T) {
 	}
 }
 
+func TestGeminiStreamEmitState_StreamsToolTurnsIncrementally(t *testing.T) {
+	ctx := context.Background()
+	events := make(chan Event, 8)
+	sender := eventSender{ctx: ctx, ch: events}
+	thoughtSig := []byte("thought-sig")
+
+	var state geminiStreamEmitState
+	if err := state.emit(sender, &genai.GenerateContentResponse{
+		Candidates: []*genai.Candidate{{
+			Content: &genai.Content{Parts: []*genai.Part{
+				{Text: "Thinking out loud..."},
+				{Thought: true, ThoughtSignature: thoughtSig},
+			}},
+		}},
+	}); err != nil {
+		t.Fatalf("emit first chunk: %v", err)
+	}
+
+	toolChunk := &genai.GenerateContentResponse{
+		Candidates: []*genai.Candidate{{
+			Content: &genai.Content{Parts: []*genai.Part{{
+				FunctionCall: &genai.FunctionCall{
+					ID:   "call-1",
+					Name: "lookup_weather",
+					Args: map[string]any{"city": "Sydney"},
+				},
+			}}},
+		}},
+	}
+	if err := state.emit(sender, toolChunk); err != nil {
+		t.Fatalf("emit tool chunk: %v", err)
+	}
+	if err := state.emit(sender, toolChunk); err != nil {
+		t.Fatalf("emit duplicate tool chunk: %v", err)
+	}
+	close(events)
+
+	var got []Event
+	for event := range events {
+		got = append(got, event)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 events, got %d: %#v", len(got), got)
+	}
+	if got[0].Type != EventTextDelta || got[0].Text != "Thinking out loud..." {
+		t.Fatalf("first event = %#v, want text delta", got[0])
+	}
+	if got[1].Type != EventToolCall {
+		t.Fatalf("second event = %#v, want tool call", got[1])
+	}
+	if got[1].Tool == nil {
+		t.Fatal("expected tool call payload")
+	}
+	if got[1].Tool.Name != "lookup_weather" {
+		t.Fatalf("tool name = %q, want lookup_weather", got[1].Tool.Name)
+	}
+	if string(got[1].Tool.Arguments) != `{"city":"Sydney"}` {
+		t.Fatalf("tool args = %s, want %s", got[1].Tool.Arguments, `{"city":"Sydney"}`)
+	}
+	if string(got[1].Tool.ThoughtSig) != string(thoughtSig) {
+		t.Fatalf("tool thought signature = %q, want %q", got[1].Tool.ThoughtSig, thoughtSig)
+	}
+}
+
 func TestEmitGeminiUsage_DoesNotBlockAfterCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
