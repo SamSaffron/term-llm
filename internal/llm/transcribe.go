@@ -9,13 +9,15 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 )
 
-// TranscribeWithConfig transcribes an audio file using the provider configured in cfg.
-// providerOverride, if non-empty, overrides cfg.Transcription.Provider.
-//
-// Supported provider names: "openai" (default), "mistral" (Voxtral), "local" (whisper.cpp server),
-// "whisper-cli" (whisper.cpp CLI binary). The whisper-cli case is delegated back to cmd via
-// the transcribeWhisperCLI function — callers that don't support it (e.g. Telegram) will get
-// an unsupported-provider error, which is intentional.
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func transcribeAndTruncate(ctx context.Context, filePath string, opts TranscribeOptions) (string, error) {
 	transcript, err := TranscribeFile(ctx, filePath, opts)
 	if err != nil {
@@ -24,6 +26,13 @@ func transcribeAndTruncate(ctx context.Context, filePath string, opts Transcribe
 	return TruncateTranscriptIfImplausible(ctx, filePath, transcript), nil
 }
 
+// TranscribeWithConfig transcribes an audio file using the provider configured in cfg.
+// providerOverride, if non-empty, overrides cfg.Transcription.Provider.
+//
+// Supported provider names: "openai" (default), "mistral" (Voxtral), "venice", "elevenlabs", "local" (whisper.cpp server),
+// "whisper-cli" (whisper.cpp CLI binary). The whisper-cli case is delegated back to cmd via
+// the transcribeWhisperCLI function — callers that don't support it (e.g. Telegram) will get
+// an unsupported-provider error, which is intentional.
 func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, language, providerOverride string) (string, error) {
 	providerName := providerOverride
 	if providerName == "" {
@@ -82,6 +91,83 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 			Language: language,
 		})
 
+	case "venice":
+		apiKey := cfg.Transcription.Venice.APIKey
+		if apiKey == "" {
+			apiKey = cfg.Audio.Venice.APIKey
+		}
+		if apiKey == "" {
+			apiKey = cfg.Image.Venice.APIKey
+		}
+		if apiKey == "" {
+			if p, ok := cfg.Providers["venice"]; ok {
+				apiKey = p.ResolvedAPIKey
+			}
+		}
+		if apiKey == "" {
+			apiKey = os.Getenv("VENICE_API_KEY")
+		}
+		if apiKey == "" {
+			return "", fmt.Errorf("transcription provider %q has no API key configured (transcription.venice.api_key, VENICE_API_KEY, audio.venice.api_key, image.venice.api_key, or providers.venice.api_key)", providerName)
+		}
+		endpoint := "https://api.venice.ai/api/v1/audio/transcriptions"
+		if p, ok := cfg.Providers["venice"]; ok {
+			baseURL := p.ResolvedURL
+			if baseURL == "" {
+				baseURL = p.BaseURL
+			}
+			if baseURL != "" {
+				endpoint = strings.TrimRight(baseURL, "/") + "/audio/transcriptions"
+			}
+		}
+		model := firstNonEmptyString(modelOverride, cfg.Transcription.Venice.Model, "nvidia/parakeet-tdt-0.6b-v3")
+		return transcribeAndTruncate(ctx, filePath, TranscribeOptions{
+			APIKey:     apiKey,
+			Endpoint:   endpoint,
+			Model:      model,
+			Language:   language,
+			Provider:   "venice",
+			Timestamps: cfg.Transcription.Timestamps,
+		})
+
+	case "elevenlabs":
+		apiKey := cfg.Transcription.ElevenLabs.APIKey
+		if apiKey == "" {
+			apiKey = cfg.Audio.ElevenLabs.APIKey
+		}
+		if apiKey == "" {
+			if p, ok := cfg.Providers["elevenlabs"]; ok {
+				apiKey = p.ResolvedAPIKey
+			}
+		}
+		if apiKey == "" {
+			apiKey = os.Getenv("ELEVENLABS_API_KEY")
+		}
+		if apiKey == "" {
+			apiKey = os.Getenv("XI_API_KEY")
+		}
+		if apiKey == "" {
+			return "", fmt.Errorf("transcription provider %q has no API key configured (transcription.elevenlabs.api_key, ELEVENLABS_API_KEY, XI_API_KEY, audio.elevenlabs.api_key, or providers.elevenlabs.api_key)", providerName)
+		}
+		endpoint := "https://api.elevenlabs.io/v1/speech-to-text"
+		if p, ok := cfg.Providers["elevenlabs"]; ok {
+			baseURL := p.ResolvedURL
+			if baseURL == "" {
+				baseURL = p.BaseURL
+			}
+			if baseURL != "" {
+				endpoint = strings.TrimRight(baseURL, "/") + "/speech-to-text"
+			}
+		}
+		model := firstNonEmptyString(modelOverride, cfg.Transcription.ElevenLabs.Model, "scribe_v2")
+		return transcribeAndTruncate(ctx, filePath, TranscribeOptions{
+			APIKey:   apiKey,
+			Endpoint: endpoint,
+			Model:    model,
+			Language: language,
+			Provider: "elevenlabs",
+		})
+
 	case "openai":
 		// Named provider entry takes precedence over env var
 		if p, ok := cfg.Providers[string(config.ProviderTypeOpenAI)]; ok && p.ResolvedAPIKey != "" {
@@ -132,6 +218,6 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 				Language: language,
 			})
 		}
-		return "", fmt.Errorf("transcription provider %q not found in providers config (supported builtins: openai, mistral, local, whisper-cli)", providerName)
+		return "", fmt.Errorf("transcription provider %q not found in providers config (supported builtins: openai, mistral, venice, elevenlabs, local, whisper-cli)", providerName)
 	}
 }

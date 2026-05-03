@@ -419,9 +419,24 @@ type MusicElevenLabsConfig struct {
 
 // TranscriptionConfig configures audio transcription settings.
 type TranscriptionConfig struct {
-	Provider string `mapstructure:"provider"` // named provider from providers map; default "openai"
-	Model    string `mapstructure:"model"`    // optional model override
-	SaveDir  string `mapstructure:"save_dir"` // if set, persist each uploaded audio file here
+	Provider   string                        `mapstructure:"provider"`   // named provider from providers map; default "openai"
+	Model      string                        `mapstructure:"model"`      // optional model override
+	SaveDir    string                        `mapstructure:"save_dir"`   // if set, persist each uploaded audio file here
+	Timestamps bool                          `mapstructure:"timestamps"` // Venice: request timestamp metadata
+	Venice     TranscriptionVeniceConfig     `mapstructure:"venice"`
+	ElevenLabs TranscriptionElevenLabsConfig `mapstructure:"elevenlabs"`
+}
+
+// TranscriptionVeniceConfig configures Venice speech-to-text.
+type TranscriptionVeniceConfig struct {
+	APIKey string `mapstructure:"api_key"`
+	Model  string `mapstructure:"model"`
+}
+
+// TranscriptionElevenLabsConfig configures ElevenLabs speech-to-text.
+type TranscriptionElevenLabsConfig struct {
+	APIKey string `mapstructure:"api_key"`
+	Model  string `mapstructure:"model"`
 }
 
 // EmbedConfig configures text embedding generation
@@ -551,6 +566,7 @@ func Load() (*Config, error) {
 	resolveImageCredentials(&cfg.Image)
 	resolveAudioCredentials(&cfg.Audio)
 	resolveMusicCredentials(&cfg.Music)
+	resolveTranscriptionCredentials(&cfg.Transcription)
 	resolveEmbedCredentials(&cfg.Embed)
 	resolveSearchCredentials(&cfg.Search)
 
@@ -1112,7 +1128,22 @@ func resolveMusicCredentials(cfg *MusicConfig) {
 	}
 }
 
-// resolveEmbedCredentials resolves API credentials for all embedding providers
+// resolveTranscriptionCredentials resolves API credentials for transcription providers.
+func resolveTranscriptionCredentials(cfg *TranscriptionConfig) {
+	cfg.Venice.APIKey = expandEnv(cfg.Venice.APIKey)
+	if cfg.Venice.APIKey == "" {
+		cfg.Venice.APIKey = os.Getenv("VENICE_API_KEY")
+	}
+	cfg.ElevenLabs.APIKey = expandEnv(cfg.ElevenLabs.APIKey)
+	if cfg.ElevenLabs.APIKey == "" {
+		cfg.ElevenLabs.APIKey = os.Getenv("ELEVENLABS_API_KEY")
+	}
+	if cfg.ElevenLabs.APIKey == "" {
+		cfg.ElevenLabs.APIKey = os.Getenv("XI_API_KEY")
+	}
+}
+
+// resolveEmbedCredentials resolves credentials for all embedding providers
 func resolveEmbedCredentials(cfg *EmbedConfig) {
 	// OpenAI embed credentials
 	cfg.OpenAI.APIKey = expandEnv(cfg.OpenAI.APIKey)
@@ -1364,9 +1395,14 @@ var KnownKeys = map[string]bool{
 	"audio.venice.format":  true,
 
 	// Transcription
-	"transcription.provider": true,
-	"transcription.model":    true,
-	"transcription.save_dir": true,
+	"transcription.provider":           true,
+	"transcription.model":              true,
+	"transcription.save_dir":           true,
+	"transcription.timestamps":         true,
+	"transcription.venice.api_key":     true,
+	"transcription.venice.model":       true,
+	"transcription.elevenlabs.api_key": true,
+	"transcription.elevenlabs.model":   true,
 
 	// Embed
 	"embed.provider":        true,
@@ -1519,6 +1555,9 @@ func GetDefaults() map[string]any {
 		"audio.venice.model":              "tts-kokoro",
 		"audio.venice.voice":              "af_sky",
 		"audio.venice.format":             "mp3",
+		"transcription.provider":          "openai",
+		"transcription.venice.model":      "nvidia/parakeet-tdt-0.6b-v3",
+		"transcription.elevenlabs.model":  "scribe_v2",
 		"embed.openai.model":              "text-embedding-3-small",
 		"embed.gemini.model":              "gemini-embedding-001",
 		"embed.jina.model":                "jina-embeddings-v3",

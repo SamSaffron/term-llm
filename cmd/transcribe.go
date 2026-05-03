@@ -22,6 +22,8 @@ var (
 	transcribeLanguage       string
 	transcribePorcelain      bool
 	transcribeProvider       string
+	transcribeModel          string
+	transcribeTimestamps     bool
 	transcribeCLIOutputLimit int64         = 1 << 20
 	transcribeCLIWaitDelay   time.Duration = time.Second
 	transcribeTruncator                    = llm.TruncateTranscriptIfImplausible
@@ -29,7 +31,7 @@ var (
 
 var transcribeCmd = &cobra.Command{
 	Use:   "transcribe <file>",
-	Short: "Transcribe an audio file to text using Whisper",
+	Short: "Transcribe an audio file to text",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runTranscribe,
 }
@@ -114,10 +116,27 @@ func transcribeWhisperCLI(ctx context.Context, cfg *config.Config, filePath, lan
 
 func init() {
 	transcribeCmd.Flags().StringVar(&transcribeLanguage, "language", "", "Language hint for transcription (e.g. \"en\", \"ja\")")
+	transcribeCmd.Flags().StringVar(&transcribeModel, "model", "", "Transcription model override")
+	transcribeCmd.Flags().BoolVar(&transcribeTimestamps, "timestamps", false, "Venice: request timestamp metadata before extracting transcript text")
 	transcribeCmd.Flags().BoolVar(&transcribePorcelain, "porcelain", false, "Output only the transcript text")
-	transcribeCmd.Flags().StringVar(&transcribeProvider, "provider", "", `Transcription provider override: "openai", "mistral" (Voxtral), "local" (whisper.cpp server), "whisper-cli". Defaults to transcription.provider in config, or "openai".`)
+	transcribeCmd.Flags().StringVar(&transcribeProvider, "provider", "", `Transcription provider override: "openai", "mistral" (Voxtral), "venice", "elevenlabs", "local" (whisper.cpp server), "whisper-cli". Defaults to transcription.provider in config, or "openai".`)
+	_ = transcribeCmd.RegisterFlagCompletionFunc("provider", staticCompletion("openai", "mistral", "venice", "elevenlabs", "local", "whisper-cli"))
+	_ = transcribeCmd.RegisterFlagCompletionFunc("model", transcribeModelCompletion)
 
 	rootCmd.AddCommand(transcribeCmd)
+}
+
+func transcribeModelCompletion(cmd *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+	switch completionProvider(cmd) {
+	case "venice":
+		return []string{"nvidia/parakeet-tdt-0.6b-v3", "openai/whisper-large-v3", "fal-ai/wizper", "elevenlabs/scribe-v2", "stt-xai-v1"}, cobra.ShellCompDirectiveNoFileComp
+	case "elevenlabs":
+		return []string{"scribe_v2", "scribe_v1"}, cobra.ShellCompDirectiveNoFileComp
+	case "mistral":
+		return []string{"voxtral-mini-latest", "voxtral-small-latest"}, cobra.ShellCompDirectiveNoFileComp
+	default:
+		return []string{"whisper-1", "gpt-4o-transcribe", "gpt-4o-mini-transcribe"}, cobra.ShellCompDirectiveNoFileComp
+	}
 }
 
 func runTranscribe(cmd *cobra.Command, args []string) error {
@@ -178,5 +197,11 @@ func detectAudioMimeType(filePath string) (string, error) {
 
 func transcribeAudio(ctx context.Context, cfg *config.Config, filePath, language string) (string, error) {
 	providerOverride := strings.TrimSpace(transcribeProvider)
+	if strings.TrimSpace(transcribeModel) != "" {
+		cfg.Transcription.Model = strings.TrimSpace(transcribeModel)
+	}
+	if transcribeTimestamps {
+		cfg.Transcription.Timestamps = true
+	}
 	return llm.TranscribeWithConfig(ctx, cfg, filePath, language, providerOverride)
 }

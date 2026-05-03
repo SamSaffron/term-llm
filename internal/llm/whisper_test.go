@@ -111,6 +111,156 @@ func TestTranscribeFile_StreamsMultipartBody(t *testing.T) {
 	}
 }
 
+func TestTranscribeFile_ElevenLabsDialect(t *testing.T) {
+	origClient := defaultHTTPClient
+	defer func() {
+		defaultHTTPClient = origClient
+	}()
+
+	audioFile, err := os.CreateTemp(t.TempDir(), "audio-*.mp3")
+	if err != nil {
+		t.Fatalf("CreateTemp failed: %v", err)
+	}
+	if _, err := audioFile.WriteString("audio-bytes"); err != nil {
+		t.Fatalf("write temp audio: %v", err)
+	}
+	if err := audioFile.Close(); err != nil {
+		t.Fatalf("close temp audio: %v", err)
+	}
+
+	var contentType string
+	var bodyBytes []byte
+	defaultHTTPClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if got := req.Header.Get("xi-api-key"); got != "test-key" {
+				t.Fatalf("xi-api-key = %q, want test-key", got)
+			}
+			if got := req.Header.Get("Authorization"); got != "" {
+				t.Fatalf("Authorization = %q, want empty", got)
+			}
+			contentType = req.Header.Get("Content-Type")
+			bodyBytes, _ = io.ReadAll(req.Body)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"text":"hello"}`)),
+			}, nil
+		}),
+	}
+
+	text, err := TranscribeFile(context.Background(), audioFile.Name(), TranscribeOptions{
+		APIKey:   "test-key",
+		Endpoint: "https://api.elevenlabs.io/v1/speech-to-text",
+		Model:    "scribe_v2",
+		Language: "en",
+		Provider: "elevenlabs",
+	})
+	if err != nil {
+		t.Fatalf("TranscribeFile failed: %v", err)
+	}
+	if text != "hello" {
+		t.Fatalf("text = %q, want hello", text)
+	}
+
+	fields := readMultipartFields(t, contentType, bodyBytes)
+	if fields["model_id"] != "scribe_v2" {
+		t.Fatalf("model_id = %q, want scribe_v2", fields["model_id"])
+	}
+	if fields["language_code"] != "en" {
+		t.Fatalf("language_code = %q, want en", fields["language_code"])
+	}
+	if _, ok := fields["response_format"]; ok {
+		t.Fatalf("response_format should not be sent to ElevenLabs")
+	}
+}
+
+func TestTranscribeFile_VeniceDialect(t *testing.T) {
+	origClient := defaultHTTPClient
+	defer func() {
+		defaultHTTPClient = origClient
+	}()
+
+	audioFile, err := os.CreateTemp(t.TempDir(), "audio-*.mp3")
+	if err != nil {
+		t.Fatalf("CreateTemp failed: %v", err)
+	}
+	if _, err := audioFile.WriteString("audio-bytes"); err != nil {
+		t.Fatalf("write temp audio: %v", err)
+	}
+	if err := audioFile.Close(); err != nil {
+		t.Fatalf("close temp audio: %v", err)
+	}
+
+	var contentType string
+	var bodyBytes []byte
+	defaultHTTPClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if got := req.Header.Get("Authorization"); got != "Bearer test-key" {
+				t.Fatalf("Authorization = %q, want Bearer test-key", got)
+			}
+			contentType = req.Header.Get("Content-Type")
+			bodyBytes, _ = io.ReadAll(req.Body)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"text":"hello"}`)),
+			}, nil
+		}),
+	}
+
+	_, err = TranscribeFile(context.Background(), audioFile.Name(), TranscribeOptions{
+		APIKey:     "test-key",
+		Endpoint:   "https://api.venice.ai/api/v1/audio/transcriptions",
+		Model:      "nvidia/parakeet-tdt-0.6b-v3",
+		Provider:   "venice",
+		Timestamps: true,
+	})
+	if err != nil {
+		t.Fatalf("TranscribeFile failed: %v", err)
+	}
+
+	fields := readMultipartFields(t, contentType, bodyBytes)
+	if fields["model"] != "nvidia/parakeet-tdt-0.6b-v3" {
+		t.Fatalf("model = %q, want nvidia/parakeet-tdt-0.6b-v3", fields["model"])
+	}
+	if fields["response_format"] != "json" {
+		t.Fatalf("response_format = %q, want json", fields["response_format"])
+	}
+	if fields["timestamps"] != "true" {
+		t.Fatalf("timestamps = %q, want true", fields["timestamps"])
+	}
+}
+
+func readMultipartFields(t *testing.T, contentType string, bodyBytes []byte) map[string]string {
+	t.Helper()
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		t.Fatalf("ParseMediaType failed: %v", err)
+	}
+	if mediaType != "multipart/form-data" {
+		t.Fatalf("media type = %q, want multipart/form-data", mediaType)
+	}
+	reader := multipart.NewReader(bytes.NewReader(bodyBytes), params["boundary"])
+	fields := map[string]string{}
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("NextPart failed: %v", err)
+		}
+		data, err := io.ReadAll(part)
+		if err != nil {
+			t.Fatalf("ReadAll part failed: %v", err)
+		}
+		if part.FormName() != "file" {
+			fields[part.FormName()] = string(data)
+		}
+	}
+	return fields
+}
+
 func TestTranscribeFile_LimitsErrorBody(t *testing.T) {
 	origClient := defaultHTTPClient
 	defer func() {

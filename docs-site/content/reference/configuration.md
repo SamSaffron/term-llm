@@ -145,7 +145,7 @@ search:
 
 Search is large enough to deserve its own page; see [Search](/guides/search/).
 
-## Image, audio, music, and embedding config
+## Image, audio, music, transcription, and embedding config
 
 ```yaml
 image:
@@ -173,11 +173,20 @@ music:
     model: music_v1
     format: mp3_44100_128
 
+transcription:
+  provider: venice
+  venice:
+    api_key: ${VENICE_API_KEY}
+    model: nvidia/parakeet-tdt-0.6b-v3
+  elevenlabs:
+    api_key: ${ELEVENLABS_API_KEY}
+    model: scribe_v2
+
 embed:
   provider: gemini
 ```
 
-Each feature block can hold provider-specific credentials and defaults. The image, audio, music, and embedding providers are independent of the main text provider.
+Each feature block can hold provider-specific credentials and defaults. The image, audio, music, transcription, and embedding providers are independent of the main text provider.
 
 ## Provider-specific environment overrides
 
