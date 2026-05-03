@@ -143,8 +143,8 @@ func NewRenderer(width, height int) *Renderer {
 	cacheSize := (height / 5) * 3
 	if cacheSize < 50 {
 		cacheSize = 50
-	} else if cacheSize > 2000 {
-		cacheSize = 2000
+	} else if cacheSize > maxBlockCacheSize {
+		cacheSize = maxBlockCacheSize
 	}
 	r := &Renderer{
 		width:      width,
@@ -340,6 +340,13 @@ func (r *Renderer) renderHistory(state RenderState) string {
 		vp := NewVirtualViewport(r.width, state.Viewport.Height)
 		start, end = vp.GetVisibleRange(state.Messages, state.Viewport.ScrollOffset)
 	}
+
+	// Alt-screen renders the full history into Bubble Tea's viewport. A viewport-sized
+	// cache thrashes in that mode because one render pass evicts blocks needed by
+	// the next pass. Grow the cache to cover the current rendered range (bounded by
+	// maxBlockCacheSize) so warm frames reuse rendered markdown instead of
+	// re-rendering every message on each View().
+	r.blockCache.EnsureCapacity(end - start)
 
 	// Render only visible messages using cache
 	// Skip system and tool messages (they render as empty anyway)

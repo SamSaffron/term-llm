@@ -95,6 +95,24 @@ func TestBlockCache_Remove(t *testing.T) {
 	}
 }
 
+func TestBlockCache_EnsureCapacityGrowsOnly(t *testing.T) {
+	cache := NewBlockCache(3)
+	cache.EnsureCapacity(5)
+	if cache.MaxSize() != 5 {
+		t.Fatalf("MaxSize() after grow = %d, want 5", cache.MaxSize())
+	}
+
+	cache.EnsureCapacity(2)
+	if cache.MaxSize() != 5 {
+		t.Fatalf("MaxSize() after smaller ensure = %d, want 5", cache.MaxSize())
+	}
+
+	cache.EnsureCapacity(maxBlockCacheSize + 100)
+	if cache.MaxSize() != maxBlockCacheSize {
+		t.Fatalf("MaxSize() after capped grow = %d, want %d", cache.MaxSize(), maxBlockCacheSize)
+	}
+}
+
 func TestBlockCache_InvalidateAll(t *testing.T) {
 	cache := NewBlockCache(10)
 
