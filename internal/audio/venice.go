@@ -65,22 +65,38 @@ var (
 )
 
 type Request struct {
-	Input          string
-	Model          string
-	Voice          string
-	Voice1         string
-	Voice2         string
-	Speaker1       string
-	Speaker2       string
-	Language       string
-	Prompt         string
-	ResponseFormat string
-	Speed          float64
-	Streaming      bool
-	Temperature    *float64
-	TopP           *float64
-	Debug          bool
-	DebugRaw       bool
+	Input                          string
+	Model                          string
+	Voice                          string
+	Voice1                         string
+	Voice2                         string
+	Speaker1                       string
+	Speaker2                       string
+	Language                       string
+	Prompt                         string
+	ResponseFormat                 string
+	Speed                          float64
+	Streaming                      bool
+	Temperature                    *float64
+	TopP                           *float64
+	Stability                      float64
+	SimilarityBoost                float64
+	Style                          float64
+	UseSpeakerBoost                bool
+	UseSpeakerBoostSet             bool
+	Seed                           string
+	PreviousText                   string
+	NextText                       string
+	PreviousRequestIDs             string
+	NextRequestIDs                 string
+	PronunciationDictionaries      string
+	UsePVCAsIVC                    bool
+	ApplyTextNormalization         string
+	ApplyLanguageTextNormalization bool
+	OptimizeStreamingLatency       int
+	EnableLogging                  bool
+	Debug                          bool
+	DebugRaw                       bool
 }
 
 type Result struct {
@@ -242,19 +258,23 @@ func Save(data []byte, outputDir, text, format string) (string, error) {
 }
 
 func MimeTypeForFormat(format string) string {
-	switch format {
-	case "mp3":
+	switch {
+	case format == "mp3" || strings.HasPrefix(format, "mp3_"):
 		return "audio/mpeg"
-	case "opus":
+	case format == "opus" || strings.HasPrefix(format, "opus_"):
 		return "audio/opus"
-	case "aac":
+	case format == "aac":
 		return "audio/aac"
-	case "flac":
+	case format == "flac":
 		return "audio/flac"
-	case "wav":
+	case format == "wav" || strings.HasPrefix(format, "wav_"):
 		return "audio/wav"
-	case "pcm":
+	case format == "pcm" || strings.HasPrefix(format, "pcm_"):
 		return "audio/L16"
+	case strings.HasPrefix(format, "ulaw_"):
+		return "audio/basic"
+	case strings.HasPrefix(format, "alaw_"):
+		return "audio/alaw"
 	default:
 		return "application/octet-stream"
 	}
@@ -263,6 +283,9 @@ func MimeTypeForFormat(format string) string {
 func ExtensionForFormat(format string) string {
 	if format == "" {
 		return veniceDefaultFormat
+	}
+	if idx := strings.Index(format, "_"); idx > 0 {
+		return format[:idx]
 	}
 	return format
 }

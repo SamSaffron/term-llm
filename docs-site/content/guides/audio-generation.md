@@ -1,7 +1,7 @@
 ---
 title: "Audio generation"
 weight: 5
-description: "Generate speech audio with Venice AI and Gemini text-to-speech models."
+description: "Generate speech audio with Venice AI, Gemini, and ElevenLabs text-to-speech models."
 kicker: "Media"
 ---
 
@@ -16,35 +16,49 @@ By default, audio clips are:
 - Generated with Venice `tts-kokoro`
 - Rendered as MP3 using voice `af_sky`
 
-You can also use Gemini TTS:
+You can also use Gemini or ElevenLabs TTS:
 
 ```bash
 term-llm audio "Say cheerfully: hello from Gemini" --provider gemini --voice Kore
+term-llm audio "Hello from ElevenLabs" --provider elevenlabs --voice Rachel --model eleven_flash_v2_5
 ```
 
 ### Audio Flags
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--provider` | `-p` | Audio provider override: `venice`, `gemini` |
+| `--provider` | `-p` | Audio provider override: `venice`, `gemini`, `elevenlabs` |
 | `--output` | `-o` | Custom output path, or `-` for stdout |
 | `--model` | | TTS model override |
-| `--voice` | | Model-specific voice, or a Venice cloned voice handle like `vv_<id>` |
+| `--voice` | | Model-specific voice; ElevenLabs accepts a voice ID or account voice name; Venice accepts cloned voice handles like `vv_<id>` |
 | `--voice1` | | Gemini multi-speaker voice for `--speaker1` |
 | `--voice2` | | Gemini multi-speaker voice for `--speaker2` |
 | `--speaker1` | | Gemini multi-speaker label for the first speaker |
 | `--speaker2` | | Gemini multi-speaker label for the second speaker |
-| `--language` | | Optional Venice language hint (`English`, `en`, etc.; model-specific) |
+| `--language` | | Optional provider language hint (`English`, `en`, etc.; provider/model-specific) |
 | `--prompt` | | Style/emotion prompt for models that support it |
-| `--format` | | Venice: `mp3`, `opus`, `aac`, `flac`, `wav`, `pcm`; Gemini: `wav`, `pcm` |
-| `--speed` | | Venice speech speed, `0.25` to `4.0` |
-| `--streaming` | | Ask Venice to stream sentence-by-sentence; term-llm still collects before saving |
+| `--format` | | Venice: `mp3`, `opus`, `aac`, `flac`, `wav`, `pcm`; Gemini: `wav`, `pcm`; ElevenLabs: `mp3_44100_128`, `pcm_24000`, `wav_44100`, etc. |
+| `--speed` | | Venice speech speed `0.25` to `4.0`; ElevenLabs voice speed `0.7` to `1.2` |
+| `--streaming` | | Ask supported providers to stream; term-llm still collects before saving |
 | `--temperature` | | Sampling temperature for supported models, `0` to `2`; omitted by default |
 | `--top-p` | | Nucleus sampling for supported models, `0` to `1`; omitted by default |
+| `--stability` | | ElevenLabs voice stability, `0` to `1`; omitted by default |
+| `--similarity-boost` | | ElevenLabs similarity boost, `0` to `1`; omitted by default |
+| `--style` | | ElevenLabs style exaggeration, `0` to `1`; omitted by default |
+| `--speaker-boost` | | ElevenLabs speaker boost voice setting |
+| `--seed` | | ElevenLabs deterministic seed |
+| `--previous-text` / `--next-text` | | ElevenLabs continuity context |
+| `--previous-request-ids` / `--next-request-ids` | | ElevenLabs comma-separated request IDs for continuity |
+| `--pronunciation-dictionaries` | | ElevenLabs comma-separated pronunciation dictionary IDs, optionally `id:version` |
+| `--use-pvc-as-ivc` | | ElevenLabs lower-latency PVC workaround |
+| `--apply-text-normalization` | | ElevenLabs text normalization: `auto`, `on`, `off` |
+| `--apply-language-text-normalization` | | ElevenLabs language text normalization |
+| `--optimize-streaming-latency` | | ElevenLabs latency optimization level, `0` to `4` |
+| `--enable-logging` | | ElevenLabs request logging/history; set false for zero-retention-capable accounts |
 | `--json` | | Emit machine-readable JSON to stdout |
 | `--debug` | `-d` | Show debug information |
 
-`--model`, `--voice`, `--voice1`, `--voice2`, `--format`, and `--provider` include shell completion candidates.
+`--model`, `--voice`, `--voice1`, `--voice2`, `--format`, `--provider`, and `--apply-text-normalization` include shell completion candidates.
 
 ### Examples
 
@@ -67,6 +81,14 @@ term-llm audio "TTS the following conversation between Joe and Jane: Joe: Hi Jan
   --provider gemini \
   --speaker1 Joe --voice1 Kore \
   --speaker2 Jane --voice2 Puck
+
+term-llm audio "A one second ElevenLabs smoke test." \
+  --provider elevenlabs \
+  --model eleven_flash_v2_5 \
+  --voice Rachel \
+  --format mp3_44100_128 \
+  --stability 0.5 \
+  --similarity-boost 0.75
 
 echo "pipe me" | term-llm audio --voice af_bella -o - > out.mp3
 ```
@@ -104,6 +126,27 @@ Gemini prebuilt voices:
 
 `Zephyr`, `Puck`, `Charon`, `Kore`, `Fenrir`, `Leda`, `Orus`, `Aoede`, `Callirrhoe`, `Autonoe`, `Enceladus`, `Iapetus`, `Umbriel`, `Algieba`, `Despina`, `Erinome`, `Algenib`, `Rasalgethi`, `Laomedeia`, `Achernar`, `Alnilam`, `Schedar`, `Gacrux`, `Pulcherrima`, `Achird`, `Zubenelgenubi`, `Vindemiatrix`, `Sadachbia`, `Sadaltager`, `Sulafat`.
 
+### ElevenLabs TTS Models
+
+term-llm includes the documented ElevenLabs text-to-speech models:
+
+| Model | Notes |
+|-------|-------|
+| `eleven_v3` | Latest expressive speech model |
+| `eleven_multilingual_v2` | Default high-quality multilingual speech |
+| `eleven_flash_v2_5` | Low-latency multilingual speech |
+| `eleven_flash_v2` | Low-latency English speech |
+| `eleven_turbo_v2_5` | Deprecated predecessor of Flash v2.5 |
+| `eleven_turbo_v2` | Deprecated predecessor of Flash v2 |
+| `eleven_monolingual_v1` | Deprecated English-only model |
+| `eleven_multilingual_v1` | Deprecated multilingual model |
+
+ElevenLabs voices are account-specific. `--voice` accepts either a raw `voice_id` or an exact voice name from the account; name lookup uses the ElevenLabs voices API before generating speech.
+
+ElevenLabs output formats:
+
+`alaw_8000`, `mp3_22050_32`, `mp3_24000_48`, `mp3_44100_32`, `mp3_44100_64`, `mp3_44100_96`, `mp3_44100_128`, `mp3_44100_192`, `opus_48000_32`, `opus_48000_64`, `opus_48000_96`, `opus_48000_128`, `opus_48000_192`, `pcm_8000`, `pcm_16000`, `pcm_22050`, `pcm_24000`, `pcm_32000`, `pcm_44100`, `pcm_48000`, `ulaw_8000`, `wav_8000`, `wav_16000`, `wav_22050`, `wav_24000`, `wav_32000`, `wav_44100`, `wav_48000`.
+
 ### JSON Output
 
 `--json` prints a single structured object to stdout after saving the file.
@@ -129,6 +172,8 @@ Gemini prebuilt voices:
 
 Gemini credentials are read from `GEMINI_API_KEY`, `audio.gemini.api_key`, `image.gemini.api_key`, or the configured `providers.gemini` API key.
 
+ElevenLabs credentials are read from `ELEVENLABS_API_KEY`, `XI_API_KEY`, or `audio.elevenlabs.api_key`.
+
 ```yaml
 audio:
   provider: venice
@@ -143,4 +188,9 @@ audio:
     model: gemini-3.1-flash-tts-preview
     voice: Kore
     format: wav
+  elevenlabs:
+    api_key: $ELEVENLABS_API_KEY
+    model: eleven_multilingual_v2
+    voice: JBFqnCBsd6RMkjVDRZzb
+    format: mp3_44100_128
 ```

@@ -363,10 +363,11 @@ type ImageDebugConfig struct {
 
 // AudioConfig configures speech/audio generation settings.
 type AudioConfig struct {
-	Provider  string            `mapstructure:"provider"`   // default audio provider: venice or gemini
-	OutputDir string            `mapstructure:"output_dir"` // default save directory
-	Venice    AudioVeniceConfig `mapstructure:"venice"`
-	Gemini    AudioGeminiConfig `mapstructure:"gemini"`
+	Provider   string                `mapstructure:"provider"`   // default audio provider: venice, gemini, or elevenlabs
+	OutputDir  string                `mapstructure:"output_dir"` // default save directory
+	Venice     AudioVeniceConfig     `mapstructure:"venice"`
+	Gemini     AudioGeminiConfig     `mapstructure:"gemini"`
+	ElevenLabs AudioElevenLabsConfig `mapstructure:"elevenlabs"`
 }
 
 // AudioVeniceConfig configures Venice AI text-to-speech generation.
@@ -379,6 +380,14 @@ type AudioVeniceConfig struct {
 
 // AudioGeminiConfig configures Gemini text-to-speech generation.
 type AudioGeminiConfig struct {
+	APIKey string `mapstructure:"api_key"`
+	Model  string `mapstructure:"model"`
+	Voice  string `mapstructure:"voice"`
+	Format string `mapstructure:"format"`
+}
+
+// AudioElevenLabsConfig configures ElevenLabs text-to-speech generation.
+type AudioElevenLabsConfig struct {
 	APIKey string `mapstructure:"api_key"`
 	Model  string `mapstructure:"model"`
 	Voice  string `mapstructure:"voice"`
@@ -1054,6 +1063,13 @@ func resolveAudioCredentials(cfg *AudioConfig) {
 	cfg.Gemini.APIKey = expandEnv(cfg.Gemini.APIKey)
 	if cfg.Gemini.APIKey == "" {
 		cfg.Gemini.APIKey = os.Getenv("GEMINI_API_KEY")
+	}
+	cfg.ElevenLabs.APIKey = expandEnv(cfg.ElevenLabs.APIKey)
+	if cfg.ElevenLabs.APIKey == "" {
+		cfg.ElevenLabs.APIKey = os.Getenv("ELEVENLABS_API_KEY")
+	}
+	if cfg.ElevenLabs.APIKey == "" {
+		cfg.ElevenLabs.APIKey = os.Getenv("XI_API_KEY")
 	}
 }
 
