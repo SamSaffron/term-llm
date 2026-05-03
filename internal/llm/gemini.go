@@ -150,53 +150,7 @@ func (p *GeminiProvider) Stream(ctx context.Context, req Request) (Stream, error
 			fmt.Fprintln(os.Stderr, "====================================")
 		}
 
-		if len(req.Tools) > 0 {
-			resp, err := client.Models.GenerateContent(ctx, chooseModel(req.Model, p.model), contents, config)
-			if err != nil {
-				return fmt.Errorf("gemini API error: %w", err)
-			}
-			// Extract text and function calls with thought signatures from Parts
-			// Gemini 3 returns thought signature that must be passed back with tool results
-			var lastThoughtSig []byte
-			if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
-				for _, part := range resp.Candidates[0].Content.Parts {
-					// Capture thought signature from thought parts
-					if part.Thought && len(part.ThoughtSignature) > 0 {
-						lastThoughtSig = part.ThoughtSignature
-					}
-					// Emit text parts (skip thought parts which are internal)
-					if part.Text != "" && !part.Thought {
-						if err := send.Send(Event{Type: EventTextDelta, Text: part.Text}); err != nil {
-							return err
-						}
-					}
-					if part.FunctionCall != nil {
-						argsJSON, _ := jsonMarshal(part.FunctionCall.Args)
-						// Use thought signature from this part or preceding thought part
-						thoughtSig := part.ThoughtSignature
-						if thoughtSig == nil {
-							thoughtSig = lastThoughtSig
-						}
-						if err := send.Send(Event{Type: EventToolCall, Tool: &ToolCall{
-							ID:         part.FunctionCall.ID,
-							Name:       part.FunctionCall.Name,
-							Arguments:  argsJSON,
-							ThoughtSig: thoughtSig,
-						}}); err != nil {
-							return err
-						}
-					}
-				}
-			}
-			if err := emitGeminiUsage(send, resp); err != nil {
-				return err
-			}
-			if err := send.Send(Event{Type: EventDone}); err != nil {
-				return err
-			}
-			return nil
-		}
-
+		var lastThoughtSig []byte
 		var sources []string
 		var lastResp *genai.GenerateContentResponse
 		for resp, err := range client.Models.GenerateContentStream(ctx, chooseModel(req.Model, p.model), contents, config) {
@@ -204,8 +158,8 @@ func (p *GeminiProvider) Stream(ctx context.Context, req Request) (Stream, error
 				return fmt.Errorf("gemini streaming error: %w", err)
 			}
 			lastResp = resp
-			if text := resp.Text(); text != "" {
-				if err := send.Send(Event{Type: EventTextDelta, Text: text}); err != nil {
+			if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
+				if err := emitGeminiParts(send, resp.Candidates[0].Content.Parts, &lastThoughtSig); err != nil {
 					return err
 				}
 			}
@@ -247,6 +201,57 @@ func (p *GeminiProvider) Stream(ctx context.Context, req Request) (Stream, error
 		}
 		return nil
 	}), nil
+}
+
+func emitGeminiParts(send eventSender, parts []*genai.Part, lastThoughtSig *[]byte) error {
+	var text strings.Builder
+	flushText := func() error {
+		if text.Len() == 0 {
+			return nil
+		}
+		if err := send.Send(Event{Type: EventTextDelta, Text: text.String()}); err != nil {
+			return err
+		}
+		text.Reset()
+		return nil
+	}
+
+	for _, part := range parts {
+		if part == nil {
+			continue
+		}
+		if part.Thought && len(part.ThoughtSignature) > 0 {
+			*lastThoughtSig = append((*lastThoughtSig)[:0], part.ThoughtSignature...)
+		}
+		if part.Text != "" && !part.Thought {
+			text.WriteString(part.Text)
+			continue
+		}
+		if part.FunctionCall == nil {
+			continue
+		}
+		if err := flushText(); err != nil {
+			return err
+		}
+		argsJSON, _ := jsonMarshal(part.FunctionCall.Args)
+		thoughtSig := part.ThoughtSignature
+		if len(thoughtSig) == 0 {
+			thoughtSig = *lastThoughtSig
+		}
+		if len(thoughtSig) > 0 {
+			thoughtSig = append([]byte(nil), thoughtSig...)
+		}
+		if err := send.Send(Event{Type: EventToolCall, Tool: &ToolCall{
+			ID:         part.FunctionCall.ID,
+			Name:       part.FunctionCall.Name,
+			Arguments:  argsJSON,
+			ThoughtSig: thoughtSig,
+		}}); err != nil {
+			return err
+		}
+	}
+
+	return flushText()
 }
 
 func emitGeminiUsage(send eventSender, resp *genai.GenerateContentResponse) error {
