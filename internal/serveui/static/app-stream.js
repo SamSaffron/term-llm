@@ -24,6 +24,9 @@ const requestHeaders = (sessionId, tokenOverride = '') => {
   if (sessionId) {
     headers.session_id = sessionId;
   }
+  if (app.UI_VERSION) {
+    headers['X-Term-LLM-UI-Version'] = app.UI_VERSION;
+  }
 
   return headers;
 };

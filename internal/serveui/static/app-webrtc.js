@@ -502,7 +502,11 @@
       pendingRequests.set(reqId, {
         onHeaders(headers, status) {
           markGotResponse();
-          resolveOnce(new Response(nullBodyStatus(status) ? null : stream, { status, headers: new Headers(headers) }));
+          const response = new Response(nullBodyStatus(status) ? null : stream, { status, headers: new Headers(headers) });
+          if (typeof app?.maybeReloadForUIVersion === 'function') {
+            app.maybeReloadForUIVersion(response);
+          }
+          resolveOnce(response);
         },
         onChunk(fragment) {
           markGotResponse();

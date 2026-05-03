@@ -387,6 +387,9 @@ func TestCustomBasePath_EndToEnd(t *testing.T) {
 	if !strings.Contains(body, `TERM_LLM_SIDEBAR_SESSIONS=["chat","web"]`) {
 		t.Error("/ should inject TERM_LLM_SIDEBAR_SESSIONS")
 	}
+	if !strings.Contains(body, `TERM_LLM_UI_VERSION=`) {
+		t.Error("/ should inject TERM_LLM_UI_VERSION")
+	}
 
 	// 2. /app.css serves static assets
 	req = httptest.NewRequest(http.MethodGet, "/app.css", nil)
@@ -435,6 +438,32 @@ func TestServeHTTPHandler_MountsJobsOnlyAtRoot(t *testing.T) {
 	h.ServeHTTP(rr, req)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("/ui/healthz status = %d, want 404", rr.Code)
+	}
+}
+
+func TestServeCORSExposesUIVersionHeader(t *testing.T) {
+	srv := &serveServer{
+		cfg: serveServerConfig{
+			corsOrigins: []string{"https://example.com"},
+		},
+	}
+	h := srv.cors(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	req := httptest.NewRequest(http.MethodGet, "/v1/providers", nil)
+	req.Header.Set("Origin", "https://example.com")
+	rr := httptest.NewRecorder()
+
+	h(rr, req)
+
+	if got := rr.Header().Get("X-Term-LLM-UI-Version"); got == "" {
+		t.Fatal("X-Term-LLM-UI-Version header missing")
+	}
+	if got := rr.Header().Get("Access-Control-Expose-Headers"); !strings.Contains(strings.ToLower(got), "x-term-llm-ui-version") {
+		t.Fatalf("Access-Control-Expose-Headers = %q, want x-term-llm-ui-version", got)
+	}
+	if got := rr.Header().Get("Access-Control-Allow-Headers"); !strings.Contains(strings.ToLower(got), "x-term-llm-ui-version") {
+		t.Fatalf("Access-Control-Allow-Headers = %q, want x-term-llm-ui-version", got)
 	}
 }
 

@@ -216,6 +216,8 @@ func (s *serveServer) renderIndexHTML() []byte {
 	var headSnippet string
 	escaped, _ := json.Marshal(s.cfg.basePath)
 	headSnippet += `<script>window.TERM_LLM_UI_PREFIX=` + string(escaped) + `;</script>`
+	versionEscaped, _ := json.Marshal(serveui.AssetVersion())
+	headSnippet += `<script>window.TERM_LLM_UI_VERSION=` + string(versionEscaped) + `;</script>`
 	sidebarSessions := s.cfg.sidebarSessions
 	if len(sidebarSessions) == 0 {
 		sidebarSessions = []string{"all"}
@@ -1018,9 +1020,11 @@ func (s *serveServer) cors(next http.HandlerFunc) http.HandlerFunc {
 				w.Header().Add("Vary", "Origin")
 			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, session_id, X-Term-LLM-UI, X-API-Key, anthropic-version")
-			w.Header().Set("Access-Control-Expose-Headers", "x-session-id, x-session-number")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, session_id, X-Term-LLM-UI, X-Term-LLM-UI-Version, X-API-Key, anthropic-version")
+			w.Header().Set("Access-Control-Expose-Headers", "x-session-id, x-session-number, x-response-id, x-term-llm-ui-version")
 		}
+
+		w.Header().Set("X-Term-LLM-UI-Version", serveui.AssetVersion())
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

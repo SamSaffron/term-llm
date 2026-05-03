@@ -8,6 +8,7 @@ app.markdownStreaming = window.TermLLMMarkdownStreaming || null;
 // UI_PREFIX is the base path for all routes (UI + API). Injected by the server
 // into index.html as window.TERM_LLM_UI_PREFIX, defaults to '/ui'.
 const UI_PREFIX = (window.TERM_LLM_UI_PREFIX || '/ui');
+const UI_VERSION = String(window.TERM_LLM_UI_VERSION || '');
 const LEGACY_DRAFT_SESSION_ID = '__draft__';
 
 const parseSidebarSessionCategories = (raw) => {
@@ -95,6 +96,48 @@ const state = {
 if (state.token) {
   document.cookie = `term_llm_token=${encodeURIComponent(state.token)}; path=${UI_PREFIX}/images; SameSite=Strict; max-age=31536000`;
 }
+
+let uiVersionReloading = false;
+
+const apiPathForURL = (url) => {
+  try {
+    const parsed = new URL(typeof url === 'string' ? url : url?.url || String(url), window.location.origin);
+    if (parsed.origin !== window.location.origin) return false;
+    return parsed.pathname.startsWith(`${UI_PREFIX}/v1/`) || parsed.pathname.startsWith(`${UI_PREFIX}/v2/`);
+  } catch {
+    return false;
+  }
+};
+
+const maybeReloadForUIVersion = (response) => {
+  if (!response || !UI_VERSION || uiVersionReloading) return false;
+  const serverVersion = response.headers?.get?.('x-term-llm-ui-version') || '';
+  if (!serverVersion || serverVersion === UI_VERSION) return false;
+
+  uiVersionReloading = true;
+  try { setConnectionState('Updated — reloading…', 'bad'); } catch (_) { /* app may still be booting */ }
+  window.setTimeout(() => window.location.reload(), 50);
+  return true;
+};
+
+const installUIVersionFetchGuard = () => {
+  if (typeof window.fetch !== 'function') return;
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = async (resource, options = {}) => {
+    const tagged = apiPathForURL(resource);
+    let nextOptions = options;
+    if (tagged && UI_VERSION) {
+      const headers = new Headers(options?.headers || (resource instanceof Request ? resource.headers : undefined));
+      headers.set('X-Term-LLM-UI-Version', UI_VERSION);
+      nextOptions = { ...options, headers };
+    }
+    const response = await nativeFetch(resource, nextOptions);
+    if (tagged) maybeReloadForUIVersion(response);
+    return response;
+  };
+};
+
+installUIVersionFetchGuard();
 
 const elements = {
   appShell: document.getElementById('appShell'),
@@ -1206,6 +1249,8 @@ Object.assign(app, {
   updateDocumentTitle,
   syncViewportShell,
   UI_PREFIX,
+  UI_VERSION,
+  maybeReloadForUIVersion,
   parseSidebarSessionCategories,
   isStandalone,
   shouldSuppressPromptAutoFocus,
