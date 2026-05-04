@@ -7,18 +7,28 @@ import (
 
 const maxBlockCacheSize = 2000
 
+// blockCacheKey identifies a cached render without allocating per-frame key
+// strings. It is intentionally fixed-width/comparable so map lookups in the
+// hot View() path don't need strconv or string concatenation for every message.
+type blockCacheKey struct {
+	messageID      int64
+	width          int
+	toolsExpanded  bool
+	partsSignature uint64
+}
+
 // BlockCache is an LRU cache for rendered MessageBlocks.
 // It keeps memory bounded while avoiding re-rendering unchanged messages.
 type BlockCache struct {
 	mu      sync.RWMutex
 	maxSize int
-	cache   map[string]*list.Element
+	cache   map[blockCacheKey]*list.Element
 	lruList *list.List
 }
 
 // cacheEntry holds a cache key-value pair for the LRU list.
 type cacheEntry struct {
-	key   string
+	key   blockCacheKey
 	block *MessageBlock
 }
 
@@ -32,14 +42,14 @@ func NewBlockCache(maxSize int) *BlockCache {
 	}
 	return &BlockCache{
 		maxSize: maxSize,
-		cache:   make(map[string]*list.Element),
+		cache:   make(map[blockCacheKey]*list.Element),
 		lruList: list.New(),
 	}
 }
 
 // Get retrieves a block from the cache, returning nil if not found.
 // Accessing a block moves it to the front of the LRU list.
-func (c *BlockCache) Get(key string) *MessageBlock {
+func (c *BlockCache) Get(key blockCacheKey) *MessageBlock {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -53,7 +63,7 @@ func (c *BlockCache) Get(key string) *MessageBlock {
 
 // Put adds a block to the cache, evicting the least recently used
 // block if the cache is at capacity.
-func (c *BlockCache) Put(key string, block *MessageBlock) {
+func (c *BlockCache) Put(key blockCacheKey, block *MessageBlock) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -88,7 +98,7 @@ func (c *BlockCache) evictOldest() {
 }
 
 // Remove removes a specific key from the cache.
-func (c *BlockCache) Remove(key string) {
+func (c *BlockCache) Remove(key blockCacheKey) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -129,7 +139,7 @@ func (c *BlockCache) InvalidateAll() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.cache = make(map[string]*list.Element)
+	c.cache = make(map[blockCacheKey]*list.Element)
 	c.lruList.Init()
 }
 
