@@ -338,36 +338,131 @@ func (p *OpenAICompatProvider) ListModels(ctx context.Context) ([]ModelInfo, err
 }
 
 func readSSELine(reader *bufio.Reader) (line string, eof bool, err error) {
-	line, err = reader.ReadString('\n')
+	lineBytes, eof, err := readSSELineBytes(reader)
 	if err != nil {
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return strings.TrimRight(line, "\r\n"), true, nil
-		}
 		return "", false, err
 	}
-	return strings.TrimRight(line, "\r\n"), false, nil
+	return string(lineBytes), eof, nil
 }
 
+func readSSELineBytes(reader *bufio.Reader) (line []byte, eof bool, err error) {
+	var owned []byte
+	for {
+		chunk, readErr := reader.ReadSlice('\n')
+		if len(chunk) > 0 {
+			if owned != nil {
+				owned = append(owned, chunk...)
+			} else if errors.Is(readErr, bufio.ErrBufferFull) {
+				owned = append(owned, chunk...)
+			} else {
+				line = chunk
+			}
+		}
+
+		switch {
+		case readErr == nil:
+			if owned != nil {
+				line = owned
+			}
+			return bytes.TrimRight(line, "\r\n"), false, nil
+		case errors.Is(readErr, bufio.ErrBufferFull):
+			continue
+		case errors.Is(readErr, io.EOF) || errors.Is(readErr, io.ErrUnexpectedEOF):
+			if owned != nil {
+				line = owned
+			} else if len(chunk) > 0 {
+				line = chunk
+			}
+			return bytes.TrimRight(line, "\r\n"), true, nil
+		default:
+			return nil, false, readErr
+		}
+	}
+}
+
+var (
+	sseEventField = []byte("event")
+	sseDataField  = []byte("data")
+	sseDoneData   = []byte("[DONE]")
+)
+
 func readSSEEvent(reader *bufio.Reader) (eventType, data string, eof bool, err error) {
-	var dataLines []string
+	var dataBuilder strings.Builder
+	dataLines := 0
+
+	appendData := func(value []byte) {
+		if dataLines == 0 {
+			data = string(value)
+			dataLines = 1
+			return
+		}
+		if dataLines == 1 {
+			dataBuilder.WriteString(data)
+			data = ""
+		}
+		dataBuilder.WriteByte('\n')
+		dataBuilder.Write(value)
+		dataLines++
+	}
 
 	for {
-		line, lineEOF, err := readSSELine(reader)
+		line, lineEOF, err := readSSELineBytes(reader)
 		if err != nil {
 			return "", "", false, err
 		}
-		if line == "" {
-			return eventType, strings.Join(dataLines, "\n"), lineEOF, nil
+		if len(line) == 0 {
+			if dataLines > 1 {
+				data = dataBuilder.String()
+			}
+			return eventType, data, lineEOF, nil
 		}
-		if strings.HasPrefix(line, "event:") {
-			eventType = strings.TrimPrefix(line, "event:")
-			eventType = strings.TrimPrefix(eventType, " ")
-		} else if strings.HasPrefix(line, "data:") {
-			dataLine := strings.TrimPrefix(line, "data:")
-			dataLines = append(dataLines, strings.TrimPrefix(dataLine, " "))
+		if i := bytes.IndexByte(line, ':'); i >= 0 {
+			field, value := line[:i], line[i+1:]
+			if len(value) > 0 && value[0] == ' ' {
+				value = value[1:]
+			}
+			switch {
+			case bytes.Equal(field, sseEventField):
+				eventType = string(value)
+			case bytes.Equal(field, sseDataField):
+				appendData(value)
+			}
 		}
 		if lineEOF {
-			return eventType, strings.Join(dataLines, "\n"), true, nil
+			if dataLines > 1 {
+				data = dataBuilder.String()
+			}
+			return eventType, data, true, nil
+		}
+	}
+}
+
+func readSSEEventBytes(reader *bufio.Reader) (eventType string, data []byte, eof bool, err error) {
+	for {
+		line, lineEOF, err := readSSELineBytes(reader)
+		if err != nil {
+			return "", nil, false, err
+		}
+		if len(line) == 0 {
+			return eventType, data, lineEOF, nil
+		}
+		if i := bytes.IndexByte(line, ':'); i >= 0 {
+			field, value := line[:i], line[i+1:]
+			if len(value) > 0 && value[0] == ' ' {
+				value = value[1:]
+			}
+			switch {
+			case bytes.Equal(field, sseEventField):
+				eventType = string(value)
+			case bytes.Equal(field, sseDataField):
+				if len(data) > 0 {
+					data = append(data, '\n')
+				}
+				data = append(data, value...)
+			}
+		}
+		if lineEOF {
+			return eventType, data, true, nil
 		}
 	}
 }
@@ -468,25 +563,25 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 		var reasoningBuilder strings.Builder
 
 		for {
-			eventType, data, eof, err := readSSEEvent(reader)
+			eventType, data, eof, err := readSSEEventBytes(reader)
 			if err != nil {
 				return fmt.Errorf("%s streaming error: %w", p.name, err)
 			}
-			if eof && eventType == "" && data == "" {
+			if eof && eventType == "" && len(data) == 0 {
 				break
 			}
-			if strings.TrimSpace(data) == "" {
+			if len(bytes.TrimSpace(data)) == 0 {
 				if eof {
 					break
 				}
 				continue
 			}
-			if data == "[DONE]" {
+			if bytes.Equal(data, sseDoneData) {
 				break
 			}
 
 			var chatResp oaiChatResponse
-			if err := json.Unmarshal([]byte(data), &chatResp); err != nil {
+			if err := json.Unmarshal(data, &chatResp); err != nil {
 				return fmt.Errorf("%s streaming error: invalid JSON chunk: %w", p.name, err)
 			}
 

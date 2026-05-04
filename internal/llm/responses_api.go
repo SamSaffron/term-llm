@@ -714,7 +714,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 		reader := bufio.NewReader(resp.Body)
 
 		var lastEventType string
-		var eventData []string
+		var eventData []byte
 		handler := newResponsesStreamEventHandler(client, responseStateGeneration, debugRaw, "Responses API SSE", !client.DisableServerState)
 
 		flushEvent := func() (bool, error) {
@@ -723,21 +723,22 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 				return false, nil
 			}
 
-			data := strings.Join(eventData, "\n")
+			data := eventData
 			eventType := lastEventType
-			eventData = nil
 			lastEventType = ""
 
-			return handler.HandleJSONEvent([]byte(data), eventType, send)
+			stop, err := handler.HandleJSONEvent(data, eventType, send)
+			eventData = data[:0]
+			return stop, err
 		}
 
 		for {
-			line, eof, err := readSSELine(reader)
+			line, eof, err := readSSELineBytes(reader)
 			if err != nil {
 				return fmt.Errorf("Responses API streaming error: %w", err)
 			}
 
-			if line == "" {
+			if len(line) == 0 {
 				stop, err := flushEvent()
 				if err != nil {
 					return err
@@ -748,12 +749,12 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 				continue
 			}
 
-			field, value, ok := strings.Cut(line, ":")
-			if ok {
-				if strings.HasPrefix(value, " ") {
+			if i := bytes.IndexByte(line, ':'); i >= 0 {
+				field, value := line[:i], line[i+1:]
+				if len(value) > 0 && value[0] == ' ' {
 					value = value[1:]
 				}
-				if field == "event" && len(eventData) > 0 {
+				if bytes.Equal(field, sseEventField) && len(eventData) > 0 {
 					stop, err := flushEvent()
 					if err != nil {
 						return err
@@ -762,7 +763,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 						break
 					}
 				}
-				if field == "data" && value == "[DONE]" && len(eventData) > 0 {
+				if bytes.Equal(field, sseDataField) && bytes.Equal(value, sseDoneData) && len(eventData) > 0 {
 					stop, err := flushEvent()
 					if err != nil {
 						return err
@@ -771,13 +772,16 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 						break
 					}
 				}
-				switch field {
-				case "event":
-					lastEventType = value
-				case "data":
-					eventData = append(eventData, value)
+				switch {
+				case bytes.Equal(field, sseEventField):
+					lastEventType = string(value)
+				case bytes.Equal(field, sseDataField):
+					if len(eventData) > 0 {
+						eventData = append(eventData, '\n')
+					}
+					eventData = append(eventData, value...)
 				}
-				if field == "data" && value == "[DONE]" {
+				if bytes.Equal(field, sseDataField) && bytes.Equal(value, sseDoneData) {
 					stop, err := flushEvent()
 					if err != nil {
 						return err

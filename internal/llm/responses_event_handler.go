@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -40,7 +41,7 @@ func (h *responsesStreamEventHandler) OutputItems() []ResponsesInputItem {
 }
 
 func (h *responsesStreamEventHandler) HandleJSONEvent(data []byte, eventType string, send eventSender) (bool, error) {
-	if string(data) == "[DONE]" {
+	if bytes.Equal(data, sseDoneData) {
 		return true, nil
 	}
 	if eventType == "" {
