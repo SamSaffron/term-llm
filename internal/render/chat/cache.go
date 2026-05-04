@@ -5,6 +5,8 @@ import (
 	"sync"
 )
 
+const maxBlockCacheSize = 2000
+
 // BlockCache is an LRU cache for rendered MessageBlocks.
 // It keeps memory bounded while avoiding re-rendering unchanged messages.
 type BlockCache struct {
@@ -24,6 +26,9 @@ type cacheEntry struct {
 func NewBlockCache(maxSize int) *BlockCache {
 	if maxSize <= 0 {
 		maxSize = 100
+	}
+	if maxSize > maxBlockCacheSize {
+		maxSize = maxBlockCacheSize
 	}
 	return &BlockCache{
 		maxSize: maxSize,
@@ -91,6 +96,31 @@ func (c *BlockCache) Remove(key string) {
 		delete(c.cache, key)
 		c.lruList.Remove(elem)
 	}
+}
+
+// EnsureCapacity grows the cache capacity, capped by maxBlockCacheSize.
+// It never shrinks the cache: renders can move between small and large histories,
+// and shrinking would evict warm blocks only to re-grow on the next full-history view.
+func (c *BlockCache) EnsureCapacity(size int) {
+	if size <= 0 {
+		return
+	}
+	if size > maxBlockCacheSize {
+		size = maxBlockCacheSize
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if size > c.maxSize {
+		c.maxSize = size
+	}
+}
+
+// MaxSize returns the configured maximum number of cached blocks.
+func (c *BlockCache) MaxSize() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.maxSize
 }
 
 // InvalidateAll clears the entire cache.

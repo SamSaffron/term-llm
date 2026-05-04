@@ -154,6 +154,38 @@ func TestRenderer_CacheHit(t *testing.T) {
 	}
 }
 
+func TestRenderer_AltScreenLargeHistoryCacheDoesNotThrash(t *testing.T) {
+	renderer := NewRenderer(80, 24)
+	markdownCalls := 0
+	renderer.SetMarkdownRenderer(func(content string, width int) string {
+		markdownCalls++
+		return simpleMarkdownRenderer(content, width)
+	})
+
+	messages := generateMessages(120)
+	state := RenderState{
+		Messages: messages,
+		Viewport: ViewportState{Height: 24},
+		Mode:     RenderModeAltScreen,
+		Width:    80,
+		Height:   24,
+	}
+
+	renderer.Render(state)
+	firstCalls := markdownCalls
+	if firstCalls == 0 {
+		t.Fatal("first render made no markdown calls; test setup is invalid")
+	}
+	if got := renderer.blockCache.MaxSize(); got < len(messages) {
+		t.Fatalf("block cache max size = %d, want at least %d", got, len(messages))
+	}
+
+	renderer.Render(state)
+	if markdownCalls != firstCalls {
+		t.Fatalf("warm render made %d additional markdown calls; cache thrashed for large alt-screen history", markdownCalls-firstCalls)
+	}
+}
+
 func TestRenderer_CacheInvalidateOnResize(t *testing.T) {
 	renderer := NewRenderer(80, 24)
 	renderer.SetMarkdownRenderer(simpleMarkdownRenderer)
