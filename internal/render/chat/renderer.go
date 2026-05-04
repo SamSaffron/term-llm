@@ -1,7 +1,6 @@
 package chat
 
 import (
-	"strconv"
 	"strings"
 	"sync"
 
@@ -405,12 +404,13 @@ func (r *Renderer) getOrRenderBlock(msg *session.Message, index int, messages []
 // blockCacheKey generates a cache key for a message.
 // Key includes a content fingerprint, not just message ID, so stale blocks
 // cannot survive same-ID content changes.
-func (r *Renderer) blockCacheKey(msg *session.Message, index int) string {
-	expanded := "0"
-	if r.toolsExpanded {
-		expanded = "1"
+func (r *Renderer) blockCacheKey(msg *session.Message, index int) blockCacheKey {
+	return blockCacheKey{
+		messageID:      msg.ID,
+		width:          r.width,
+		toolsExpanded:  r.toolsExpanded,
+		partsSignature: r.cachedPartsSignature(msg),
 	}
-	return strconv.FormatInt(msg.ID, 10) + ":" + strconv.Itoa(r.width) + ":" + expanded + ":" + strconv.FormatUint(r.cachedPartsSignature(msg), 16)
 }
 
 // cachedPartsSignature returns the parts signature for a message, using a
