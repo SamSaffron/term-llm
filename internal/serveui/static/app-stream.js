@@ -2425,6 +2425,104 @@ const autoGrowPrompt = () => {
 };
 
 // ===== File attachment =====
+const getAttachmentPreviewURL = (att) => String(att?.previewURL || att?.dataURL || '');
+
+const createAttachmentPreviewURL = (file) => {
+  const urlAPI = window.URL || globalThis.URL;
+  if (!urlAPI || typeof urlAPI.createObjectURL !== 'function') return '';
+  try {
+    return urlAPI.createObjectURL(file);
+  } catch {
+    return '';
+  }
+};
+
+const revokeAttachmentPreviewURL = (att) => {
+  const previewURL = String(att?.previewURL || '');
+  if (!previewURL || previewURL === att?.dataURL) return;
+  const urlAPI = window.URL || globalThis.URL;
+  if (!urlAPI || typeof urlAPI.revokeObjectURL !== 'function') return;
+  try {
+    urlAPI.revokeObjectURL(previewURL);
+  } catch {
+    // Ignore preview cleanup failures.
+  }
+};
+
+const discardPendingAttachments = () => {
+  state.attachments.forEach(revokeAttachmentPreviewURL);
+  state.attachments = [];
+  renderAttachments();
+};
+
+const readFileAsDataURL = (file, signal) => new Promise((resolve, reject) => {
+  if (!file) {
+    resolve('');
+    return;
+  }
+  if (signal?.aborted) {
+    reject(new DOMException('The operation was aborted.', 'AbortError'));
+    return;
+  }
+  if (typeof FileReader !== 'function') {
+    reject(new Error('File uploads are not supported in this browser.'));
+    return;
+  }
+
+  const reader = new FileReader();
+  if (typeof reader.readAsDataURL !== 'function') {
+    reject(new Error('File uploads are not supported in this browser.'));
+    return;
+  }
+  let settled = false;
+
+  const cleanupAbort = () => {
+    if (signal) signal.removeEventListener('abort', handleAbort);
+  };
+
+  const fail = (err) => {
+    if (settled) return;
+    settled = true;
+    cleanupAbort();
+    reject(err);
+  };
+
+  const succeed = (value) => {
+    if (settled) return;
+    settled = true;
+    cleanupAbort();
+    resolve(value);
+  };
+
+  const handleAbort = () => {
+    try {
+      reader.abort();
+    } catch {
+      fail(new DOMException('The operation was aborted.', 'AbortError'));
+    }
+  };
+
+  if (signal) signal.addEventListener('abort', handleAbort, { once: true });
+
+  reader.onload = () => succeed(typeof reader.result === 'string' ? reader.result : '');
+  reader.onerror = () => fail(reader.error || new Error(`Failed to read ${file.name || 'attachment'}.`));
+  reader.onabort = () => fail(new DOMException('The operation was aborted.', 'AbortError'));
+  reader.readAsDataURL(file);
+});
+
+const materializeAttachmentDataURL = async (att, signal) => {
+  if (att?.dataURL) return att.dataURL;
+  const dataURL = await readFileAsDataURL(att?.file, signal);
+  if (!dataURL) {
+    throw new Error(`Failed to read ${att?.name || 'attachment'}.`);
+  }
+  att.dataURL = dataURL;
+  revokeAttachmentPreviewURL(att);
+  att.previewURL = dataURL;
+  delete att.file;
+  return dataURL;
+};
+
 const renderAttachments = () => {
   const strip = elements.attachmentsStrip;
   strip.innerHTML = '';
@@ -2438,10 +2536,13 @@ const renderAttachments = () => {
     chip.className = 'attachment-chip';
 
     if (att.type.startsWith('image/')) {
-      const img = document.createElement('img');
-      img.src = att.dataURL;
-      img.alt = att.name;
-      chip.appendChild(img);
+      const previewURL = getAttachmentPreviewURL(att);
+      if (previewURL) {
+        const img = document.createElement('img');
+        img.src = previewURL;
+        img.alt = att.name;
+        chip.appendChild(img);
+      }
     }
 
     const name = document.createElement('span');
@@ -2455,6 +2556,7 @@ const renderAttachments = () => {
     remove.textContent = '\u00d7';
     remove.title = 'Remove';
     remove.addEventListener('click', () => {
+      revokeAttachmentPreviewURL(att);
       state.attachments = state.attachments.filter(a => a.id !== att.id);
       renderAttachments();
     });
@@ -2478,20 +2580,15 @@ const handleFiles = (fileList) => {
       alert(`${file.name} exceeds the 20 MB file size limit.`);
       continue;
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (state.attachments.length >= MAX_ATTACHMENTS) return;
-      const dataURL = reader.result;
-      state.attachments.push({
-        id: generateId('att'),
-        name: file.name,
-        type: file.type || 'application/octet-stream',
-        size: file.size,
-        dataURL
-      });
-      renderAttachments();
-    };
-    reader.readAsDataURL(file);
+    state.attachments.push({
+      id: generateId('att'),
+      name: file.name,
+      type: file.type || 'application/octet-stream',
+      size: file.size,
+      file,
+      previewURL: createAttachmentPreviewURL(file)
+    });
+    renderAttachments();
   }
 };
 
@@ -2950,11 +3047,7 @@ const sendMessage = async (options = {}) => {
   session.lastMessageAt = Date.now();
 
   if (pendingAttachments.length > 0) {
-    userMessage.attachments = pendingAttachments.map(a => ({
-      name: a.name,
-      type: a.type,
-      dataURL: a.dataURL
-    }));
+    userMessage.attachments = pendingAttachments.slice();
   } else {
     delete userMessage.attachments;
   }
@@ -2992,76 +3085,80 @@ const sendMessage = async (options = {}) => {
   app.refreshSidebarStatusPoll?.();
   const streamState = createResponseStreamState(session);
 
-  // Build input content: plain string or array with file/image parts
-  let inputContent;
-  if (pendingAttachments.length > 0) {
-    const contentParts = [];
-    for (const att of pendingAttachments) {
-      if (att.type.startsWith('image/')) {
-        contentParts.push({ type: 'input_image', image_url: att.dataURL, filename: att.name });
-      } else {
-        contentParts.push({ type: 'input_file', file_data: att.dataURL, filename: att.name });
+  try {
+    // Build input content: plain string or array with file/image parts
+    let inputContent;
+    if (pendingAttachments.length > 0) {
+      for (const att of pendingAttachments) {
+        await materializeAttachmentDataURL(att, controller.signal);
+      }
+
+      const contentParts = [];
+      for (const att of pendingAttachments) {
+        if (att.type.startsWith('image/')) {
+          contentParts.push({ type: 'input_image', image_url: att.dataURL, filename: att.name });
+        } else {
+          contentParts.push({ type: 'input_file', file_data: att.dataURL, filename: att.name });
+        }
+      }
+      if (prompt) {
+        contentParts.push({ type: 'input_text', text: prompt });
+      }
+      inputContent = contentParts;
+    } else {
+      inputContent = prompt;
+    }
+
+    const body = {
+      stream: true,
+      input: [{ type: 'message', role: 'user', content: inputContent }]
+    };
+
+    if (session.lastResponseId) {
+      body.previous_response_id = session.lastResponseId;
+    } else if (session.messages.length > 1) {
+      body.input = rebuildInputFromSession(session, inputContent);
+    }
+
+    const normalizeEffortForCompare = (value) => {
+      const normalized = String(value || '').trim();
+      return normalized.toLowerCase() === 'default' ? '' : normalized;
+    };
+    const currentProvider = session.provider || '';
+    const currentModel = session.activeModel || '';
+    const currentEffort = session.activeEffort || '';
+    const targetProvider = state.selectedProvider || currentProvider;
+    const targetModel = state.selectedModel || currentModel;
+    const targetEffort = state.selectedEffort || '';
+    const hasPriorContext = Boolean(session.lastResponseId || session.messages.length > 1);
+    const targetDiffers = hasPriorContext && Boolean(
+      (targetProvider || '') !== (currentProvider || '')
+      || (targetModel || '') !== (currentModel || '')
+      || normalizeEffortForCompare(targetEffort) !== normalizeEffortForCompare(currentEffort)
+    );
+
+    if (targetModel) {
+      body.model = targetModel;
+    }
+    if (targetDiffers) {
+      body.provider = targetProvider || currentProvider;
+      if (targetEffort) {
+        body.reasoning_effort = targetEffort;
+      }
+      body.model_swap = { mode: 'auto', fallback: 'handover' };
+    } else {
+      const activeEffort = currentEffort || state.selectedEffort;
+      if (activeEffort) {
+        body.reasoning_effort = activeEffort;
+      }
+      if (!session.provider && state.selectedProvider) {
+        session.provider = state.selectedProvider;
+      }
+      if (session.provider) {
+        body.provider = session.provider;
       }
     }
-    if (prompt) {
-      contentParts.push({ type: 'input_text', text: prompt });
-    }
-    inputContent = contentParts;
-  } else {
-    inputContent = prompt;
-  }
 
-  const body = {
-    stream: true,
-    input: [{ type: 'message', role: 'user', content: inputContent }]
-  };
-
-  if (session.lastResponseId) {
-    body.previous_response_id = session.lastResponseId;
-  } else if (session.messages.length > 1) {
-    body.input = rebuildInputFromSession(session, inputContent);
-  }
-
-  const normalizeEffortForCompare = (value) => {
-    const normalized = String(value || '').trim();
-    return normalized.toLowerCase() === 'default' ? '' : normalized;
-  };
-  const currentProvider = session.provider || '';
-  const currentModel = session.activeModel || '';
-  const currentEffort = session.activeEffort || '';
-  const targetProvider = state.selectedProvider || currentProvider;
-  const targetModel = state.selectedModel || currentModel;
-  const targetEffort = state.selectedEffort || '';
-  const hasPriorContext = Boolean(session.lastResponseId || session.messages.length > 1);
-  const targetDiffers = hasPriorContext && Boolean(
-    (targetProvider || '') !== (currentProvider || '')
-    || (targetModel || '') !== (currentModel || '')
-    || normalizeEffortForCompare(targetEffort) !== normalizeEffortForCompare(currentEffort)
-  );
-
-  if (targetModel) {
-    body.model = targetModel;
-  }
-  if (targetDiffers) {
-    body.provider = targetProvider || currentProvider;
-    if (targetEffort) {
-      body.reasoning_effort = targetEffort;
-    }
-    body.model_swap = { mode: 'auto', fallback: 'handover' };
-  } else {
-    const activeEffort = currentEffort || state.selectedEffort;
-    if (activeEffort) {
-      body.reasoning_effort = activeEffort;
-    }
-    if (!session.provider && state.selectedProvider) {
-      session.provider = state.selectedProvider;
-    }
-    if (session.provider) {
-      body.provider = session.provider;
-    }
-  }
-
-  try {
     let response = await fetch(`${UI_PREFIX}/v1/responses`, {
       method: 'POST',
       headers: {
@@ -3252,6 +3349,7 @@ Object.assign(app, {
   stopVoiceRecording,
   toggleVoiceRecording,
   renderAttachments,
+  discardPendingAttachments,
   MAX_ATTACHMENTS,
   MAX_FILE_BYTES,
   handleFiles,

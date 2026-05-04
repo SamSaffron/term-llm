@@ -938,12 +938,13 @@ const createMessageNode = (message) => {
       const attDiv = document.createElement('div');
       attDiv.className = 'message-attachments';
       message.attachments.forEach(att => {
-        if (att.type && att.type.startsWith('image/') && att.dataURL) {
+        const previewURL = att.previewURL || att.dataURL || '';
+        if (att.type && att.type.startsWith('image/') && previewURL) {
           const img = document.createElement('img');
-          img.src = att.dataURL;
+          img.src = previewURL;
           img.alt = att.name || 'Attached image';
           img.style.cursor = 'pointer';
-          img.addEventListener('click', () => app.openLightbox(att.dataURL));
+          img.addEventListener('click', () => app.openLightbox(previewURL));
           attDiv.appendChild(img);
         } else {
           const badge = document.createElement('span');

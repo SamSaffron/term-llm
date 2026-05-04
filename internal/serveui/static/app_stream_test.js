@@ -390,6 +390,8 @@ function createHarness(options = {}) {
   };
 
   const encoder = new TextEncoder();
+  const fileReaderClass = options.FileReader || class {};
+  const urlAPI = options.urlAPI || URL;
   const context = {
     window: windowObj,
     document,
@@ -406,19 +408,20 @@ function createHarness(options = {}) {
     ReadableStream,
     Response,
     Headers,
-    URL,
+    URL: urlAPI,
     URLSearchParams,
     Blob,
     performance: { now: () => Date.now() },
     navigator: { mediaDevices: null },
     MediaRecorder: undefined,
-    FileReader: class {},
+    FileReader: fileReaderClass,
     alert() {},
     crypto: webcrypto,
   };
   context.globalThis = context;
   windowObj.document = document;
   windowObj.localStorage = localStorage;
+  windowObj.URL = urlAPI;
   windowObj.fetch = async function fetch(url, options = {}) {
     fetchCalls.push({
       url,
@@ -1686,8 +1689,150 @@ async function testArgumentDeltaWithoutOutputIndexUsesLastRunningTool() {
   pass(name);
 }
 
+async function testSendMessageLazilyMaterializesAttachmentDataURLs() {
+  const name = 'sendMessage lazily materializes attachment data URLs only when sending';
+  let readCount = 0;
+  const revokedURLs = [];
+
+  class MockFileReader {
+    constructor() {
+      this.result = null;
+      this.error = null;
+      this.onload = null;
+      this.onerror = null;
+      this.onabort = null;
+    }
+
+    readAsDataURL(file) {
+      readCount += 1;
+      this.result = file.mockDataURL;
+      setTimeout(() => {
+        if (this.onload) this.onload();
+      }, 0);
+    }
+
+    abort() {
+      if (this.onabort) this.onabort();
+    }
+  }
+
+  const harness = createHarness({
+    FileReader: MockFileReader,
+    urlAPI: {
+      createObjectURL(file) {
+        return `blob:${file.name}`;
+      },
+      revokeObjectURL(url) {
+        revokedURLs.push(url);
+      }
+    }
+  });
+  const { app, elements, state, fetchCalls, cleanup } = harness;
+
+  const file = {
+    name: 'cat.png',
+    type: 'image/png',
+    size: 4,
+    mockDataURL: 'data:image/png;base64,Y2F0'
+  };
+
+  app.handleFiles([file]);
+
+  if (readCount !== 0) {
+    fail(name, `expected FileReader reads before send = 0, got ${readCount}`);
+    await cleanup();
+    return;
+  }
+  if (state.attachments.length !== 1) {
+    fail(name, `expected 1 pending attachment, got ${state.attachments.length}`);
+    await cleanup();
+    return;
+  }
+  if (state.attachments[0].dataURL) {
+    fail(name, 'pending attachment should not store a dataURL before send', JSON.stringify(state.attachments[0]));
+    await cleanup();
+    return;
+  }
+  if (state.attachments[0].previewURL !== 'blob:cat.png') {
+    fail(name, `previewURL = ${JSON.stringify(state.attachments[0].previewURL)}, want "blob:cat.png"`);
+    await cleanup();
+    return;
+  }
+
+  elements.promptInput.value = 'describe this image';
+  await app.sendMessage();
+
+  if (readCount !== 1) {
+    fail(name, `expected FileReader reads after send = 1, got ${readCount}`);
+    await cleanup();
+    return;
+  }
+  if (state.attachments.length !== 0) {
+    fail(name, `expected pending attachments to be cleared after send, got ${state.attachments.length}`);
+    await cleanup();
+    return;
+  }
+  if (!revokedURLs.includes('blob:cat.png')) {
+    fail(name, 'expected blob preview URL to be revoked after send', JSON.stringify(revokedURLs));
+    await cleanup();
+    return;
+  }
+
+  const session = state.sessions[0];
+  const userMessage = session && session.messages.find((message) => message.role === 'user');
+  const storedAttachment = userMessage && userMessage.attachments && userMessage.attachments[0];
+  if (!storedAttachment) {
+    fail(name, 'expected stored user attachment after send', JSON.stringify(session));
+    await cleanup();
+    return;
+  }
+  if (storedAttachment.dataURL !== file.mockDataURL) {
+    fail(name, `stored attachment dataURL = ${JSON.stringify(storedAttachment.dataURL)}, want ${JSON.stringify(file.mockDataURL)}`);
+    await cleanup();
+    return;
+  }
+  if (storedAttachment.previewURL !== file.mockDataURL) {
+    fail(name, `stored attachment previewURL = ${JSON.stringify(storedAttachment.previewURL)}, want ${JSON.stringify(file.mockDataURL)}`);
+    await cleanup();
+    return;
+  }
+  if (Object.prototype.hasOwnProperty.call(storedAttachment, 'file')) {
+    fail(name, 'stored attachment should drop the original File reference after materializing', JSON.stringify(storedAttachment));
+    await cleanup();
+    return;
+  }
+
+  const postCall = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  if (!postCall || !postCall.body) {
+    fail(name, 'missing POST /ui/v1/responses body', JSON.stringify(fetchCalls));
+    await cleanup();
+    return;
+  }
+
+  let body;
+  try {
+    body = JSON.parse(postCall.body);
+  } catch (err) {
+    fail(name, 'response POST body was not valid JSON', String(err));
+    await cleanup();
+    return;
+  }
+
+  const parts = body.input?.[0]?.content;
+  const imagePart = Array.isArray(parts) ? parts.find((part) => part.type === 'input_image') : null;
+  if (!imagePart || imagePart.image_url !== file.mockDataURL) {
+    fail(name, 'request body should include lazily materialized image data URL', JSON.stringify(body));
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
 (async () => {
   await testSendMessageConsumesPostStreamWhenAvailable();
+  await testSendMessageLazilyMaterializesAttachmentDataURLs();
   await testSendMessageResumesFromEventsAfterPostStreamDrops();
   await testNewChatDuringStreamingClearsStreamingState();
   await testSendMessageMarksSessionBusyImmediately();
