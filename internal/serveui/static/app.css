@@ -975,6 +975,7 @@
 
     .message.assistant,
     .message.tool,
+    .message.model-swap,
     .message.error {
       align-self: flex-start;
     }
@@ -1012,6 +1013,13 @@
       background: rgba(248,113,113,0.08);
       border-color: rgba(248,113,113,0.25);
       color: var(--error-text);
+    }
+
+    .message.model-swap .message-body {
+      background: rgba(125,211,252,0.08);
+      border-color: rgba(125,211,252,0.22);
+      color: var(--muted);
+      font-size: 0.9rem;
     }
 
     .markdown-body {

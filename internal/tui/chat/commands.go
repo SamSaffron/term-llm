@@ -1644,6 +1644,12 @@ func (m *Model) switchModel(providerModel string) (tea.Model, tea.Cmd) {
 	providerName := parts[0]
 	modelName := parts[1]
 
+	oldProvider := strings.TrimSpace(m.providerKey)
+	if oldProvider == "" {
+		oldProvider = strings.TrimSpace(m.providerName)
+	}
+	oldModel := strings.TrimSpace(m.modelName)
+
 	// Create new provider using the centralized factory
 	provider, err := llm.NewProviderByName(m.config, providerName, modelName)
 	if err != nil {
@@ -1672,7 +1678,25 @@ func (m *Model) switchModel(providerModel string) (tea.Model, tea.Cmd) {
 	m.recordCurrentModelUse()
 	m.setTextareaValue("")
 
-	return m, nil
+	if m.sess != nil && len(m.messages) > 0 {
+		marker := llm.ModelSwapEventMessage(llm.ModelSwapMarker{
+			FromProvider: oldProvider,
+			FromModel:    oldModel,
+			ToProvider:   providerName,
+			ToModel:      modelName,
+			Status:       "started",
+		})
+		sm := *session.NewMessage(m.sess.ID, marker, -1)
+		m.messagesMu.Lock()
+		m.messages = append(m.messages, sm)
+		m.messagesMu.Unlock()
+		if m.store != nil {
+			_ = m.store.AddMessage(context.Background(), m.sess.ID, &sm)
+		}
+		m.invalidateHistoryCache()
+	}
+
+	return m.showFooterMuted(fmt.Sprintf("Switched model to %s:%s. Next response will try the existing context; if incompatible, use /handover to prepare a compact handoff.", providerName, modelName))
 }
 
 // cmdHandover handles /handover @agent [provider:model]

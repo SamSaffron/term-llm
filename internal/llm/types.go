@@ -83,6 +83,9 @@ const (
 	RoleUser      Role = "user"
 	RoleAssistant Role = "assistant"
 	RoleTool      Role = "tool"
+	// RoleEvent is a durable UI/session timeline marker. It is never sent to
+	// providers as conversation context.
+	RoleEvent Role = "event"
 	// RoleDeveloper is a privileged instruction role injected by the platform layer.
 	// OpenAI/Responses API providers send it as a "developer" role message; Anthropic
 	// providers have no native equivalent, so the text is prepended into the next user turn

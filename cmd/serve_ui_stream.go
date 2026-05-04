@@ -14,7 +14,7 @@ func isServeUIRequest(r *http.Request) bool {
 	return value == "1" || value == "true" || value == "yes"
 }
 
-func (s *serveServer) streamUIResponses(w http.ResponseWriter, r *http.Request, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool) {
+func (s *serveServer) streamUIResponses(w http.ResponseWriter, r *http.Request, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool, modelSwap *responseModelSwapExecution) {
 	// Persist session in the store so the client gets the session number in
 	// headers before the streaming body begins. This is a store-only operation
 	// that does NOT mutate runtime state (safe without rt.mu).
@@ -26,12 +26,17 @@ func (s *serveServer) streamUIResponses(w http.ResponseWriter, r *http.Request, 
 		previousResponseID:        previousResponseID,
 		uiSession:                 true,
 		resetResponseIDsOnSuccess: resetResponseIDsOnSuccess,
+		modelSwap:                 modelSwap,
 	})
 }
 
 func (s *serveServer) streamResponseRun(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, options startResponseRunOptions) bool {
 	run, err := s.startResponseRun(runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, options)
 	if err != nil {
+		if options.modelSwap != nil && options.modelSwap.plan.enabled {
+			options.modelSwap.markRolledBack()
+			s.restoreModelSwapRollback(ctx, sessionID, options.modelSwap, runtime, "failed", "naive")
+		}
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
 		return false
 	}

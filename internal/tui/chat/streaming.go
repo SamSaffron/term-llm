@@ -561,7 +561,7 @@ func (m *Model) buildMessages() []llm.Message {
 		messages = append(messages, msg.ToLLMMessage())
 	}
 
-	return messages
+	return llm.FilterConversationMessages(messages)
 }
 
 func (m *Model) buildMessagesForStream() []llm.Message {

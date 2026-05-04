@@ -241,6 +241,18 @@ const convertServerMessages = (serverMessages) => {
 
     if (msg.role === 'system' || msg.role === 'developer') continue;
 
+    if (msg.role === 'event') {
+      flushGroup();
+      const marker = parts.find((part) => part.type === 'model_swap') || parts.find((part) => part.type === 'text');
+      result.push({
+        id: generateId('msg'),
+        role: 'model-swap',
+        content: marker?.text || '↔ Model switch',
+        created
+      });
+      continue;
+    }
+
     if (msg.role === 'user') {
       flushGroup();
 

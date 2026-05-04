@@ -48,6 +48,7 @@ func EstimateTokens(text string) int {
 // EstimateMessageTokens returns an approximate token count for a slice of
 // messages by summing all text content across parts.
 func EstimateMessageTokens(msgs []Message) int {
+	msgs = FilterConversationMessages(msgs)
 	if len(msgs) == 0 {
 		return 0
 	}

@@ -278,6 +278,7 @@ function createHarness(options = {}) {
   };
 
   const connectionStates = [];
+  let modelSwapUpdateCount = 0;
   const app = {
     UI_PREFIX: '/ui',
     STORAGE_KEYS: {
@@ -328,6 +329,7 @@ function createHarness(options = {}) {
     updateToolGroupNode() {},
     createMessageNode() { return makeNode(); },
     createToolGroupNode() { return makeNode(); },
+    updateModelSwapNode() { modelSwapUpdateCount += 1; },
     renderSidebar() {},
     renderMessages() {},
     maybeNotifyResponseComplete: async () => {},
@@ -510,6 +512,7 @@ function createHarness(options = {}) {
     getEventsStarted: () => getEventsStarted,
     postStreamCanceled: () => postStreamCanceled,
     connectionStates,
+    getModelSwapUpdateCount: () => modelSwapUpdateCount,
     getCancelRequested: () => cancelRequested,
     releaseCancel: () => {
       if (cancelResolve) {
@@ -1066,6 +1069,151 @@ async function testResumeActiveResponseClearsTerminalTrackingWhen409SnapshotHasN
   pass(name);
 }
 
+async function testSendMessageIncludesModelSwapForChangedTarget() {
+  const name = 'sendMessage includes model_swap when active session target differs';
+  const harness = createHarness();
+  const { app, elements, state, fetchCalls, cleanup } = harness;
+  const session = {
+    id: 'session_swap',
+    title: 'Swap test',
+    provider: 'old-provider',
+    activeModel: 'old-model',
+    activeEffort: 'medium',
+    messages: [
+      { id: 'u1', role: 'user', content: 'hello', created: 1 },
+      { id: 'a1', role: 'assistant', content: 'hi', created: 2 },
+    ],
+    lastResponseId: 'resp_previous',
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.selectedProvider = 'new-provider';
+  state.selectedModel = 'new-model';
+  state.selectedEffort = 'high';
+  elements.promptInput.value = 'continue';
+
+  await app.sendMessage();
+  await cleanup();
+
+  const postCall = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  if (!postCall || !postCall.body) {
+    fail(name, 'missing POST /ui/v1/responses body', JSON.stringify(fetchCalls));
+    return;
+  }
+  const body = JSON.parse(postCall.body);
+  if (!body.model_swap || body.model_swap.mode !== 'auto' || body.model_swap.fallback !== 'handover') {
+    fail(name, 'expected model_swap auto/handover in request body', postCall.body);
+    return;
+  }
+  if (body.provider !== 'new-provider' || body.model !== 'new-model' || body.reasoning_effort !== 'high') {
+    fail(name, 'request did not use selected target runtime', postCall.body);
+    return;
+  }
+  if (body.previous_response_id !== 'resp_previous') {
+    fail(name, `previous_response_id = ${JSON.stringify(body.previous_response_id)}, want resp_previous`, postCall.body);
+    return;
+  }
+  pass(name);
+}
+
+async function testSendMessageOmitsModelSwapWhenTargetUnchanged() {
+  const name = 'sendMessage omits model_swap when active session target is unchanged';
+  const harness = createHarness();
+  const { app, elements, state, fetchCalls, cleanup } = harness;
+  const session = {
+    id: 'session_no_swap',
+    title: 'No swap test',
+    provider: 'old-provider',
+    activeModel: 'old-model',
+    activeEffort: 'medium',
+    messages: [
+      { id: 'u1', role: 'user', content: 'hello', created: 1 },
+      { id: 'a1', role: 'assistant', content: 'hi', created: 2 },
+    ],
+    lastResponseId: 'resp_previous',
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.selectedProvider = 'old-provider';
+  state.selectedModel = 'old-model';
+  state.selectedEffort = 'medium';
+  elements.promptInput.value = 'continue';
+
+  await app.sendMessage();
+  await cleanup();
+
+  const postCall = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  if (!postCall || !postCall.body) {
+    fail(name, 'missing POST /ui/v1/responses body', JSON.stringify(fetchCalls));
+    return;
+  }
+  const body = JSON.parse(postCall.body);
+  if (body.model_swap) {
+    fail(name, 'did not expect model_swap for unchanged selection', postCall.body);
+    return;
+  }
+  if (body.provider !== 'old-provider' || body.model !== 'old-model' || body.reasoning_effort !== 'medium') {
+    fail(name, 'request should stay pinned to current runtime', postCall.body);
+    return;
+  }
+  pass(name);
+}
+
+function testModelSwapProgressEventUpdatesTransientMarker() {
+  const name = 'model swap progress event updates transient marker without assistant text';
+  const harness = createHarness();
+  const { app, state } = harness;
+  const session = {
+    id: 'session_progress',
+    title: 'Progress test',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  const streamState = app.createResponseStreamState(session);
+
+  app.applyResponseStreamEvent(session, streamState, 'response.model_swap.progress', {
+    stage: 'naive_start',
+    message: 'Switching model: old → new; trying existing context…',
+    sequence_number: 1,
+  });
+  app.applyResponseStreamEvent(session, streamState, 'response.model_swap.progress', {
+    stage: 'handover_start',
+    message: 'Naive continuation failed; preparing handover…',
+    sequence_number: 2,
+  });
+
+  const markers = session.messages.filter((message) => message.role === 'model-swap');
+  const assistants = session.messages.filter((message) => message.role === 'assistant');
+  if (markers.length !== 1) {
+    fail(name, `expected one model-swap marker, got ${markers.length}`, JSON.stringify(session.messages));
+    return;
+  }
+  if (!markers[0].transient || markers[0].content !== 'Naive continuation failed; preparing handover…') {
+    fail(name, 'progress marker was not updated in place', JSON.stringify(markers[0]));
+    return;
+  }
+  if (assistants.length !== 0) {
+    fail(name, 'progress event should not create assistant messages', JSON.stringify(assistants));
+    return;
+  }
+  if (harness.getModelSwapUpdateCount() !== 1) {
+    fail(name, `expected updateModelSwapNode to be called once, got ${harness.getModelSwapUpdateCount()}`);
+    return;
+  }
+  pass(name);
+}
+
 async function testConnectTokenPreservesSelectedModelAndProviderFromState() {
   const name = 'connectToken preserves in-memory provider/model selection when modal DOM is stale';
   const harness = createHarness();
@@ -1549,6 +1697,9 @@ async function testArgumentDeltaWithoutOutputIndexUsesLastRunningTool() {
   await testArgumentDeltaWithoutOutputIndexUsesLastRunningTool();
   await testResumeActiveResponseFallsBackToReplayWhenSnapshotUnavailable();
   await testResumeActiveResponseClearsTerminalTrackingWhen409SnapshotHasNoRecovery();
+  await testSendMessageIncludesModelSwapForChangedTarget();
+  await testSendMessageOmitsModelSwapWhenTargetUnchanged();
+  testModelSwapProgressEventUpdatesTransientMarker();
   await testConnectTokenPreservesSelectedModelAndProviderFromState();
   await testCancelActiveResponseTearsDownLocallyBeforeServerPost();
   await testInterjectionClosesToolGroupAndInsertsUserMessageAtTail();

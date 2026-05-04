@@ -60,6 +60,42 @@ func TestSQLiteStorePersistsDeveloperMessages(t *testing.T) {
 	}
 }
 
+func TestSQLiteStorePersistsEventMessages(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("failed to create sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	marker := llm.ModelSwapEventMessage(llm.ModelSwapMarker{FromProvider: "old", FromModel: "a", ToProvider: "new", ToModel: "b", Status: "succeeded", Strategy: "naive"})
+	msg := NewMessage(sess.ID, marker, -1)
+	if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
+		t.Fatalf("AddMessage event: %v", err)
+	}
+
+	msgs, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].Role != llm.RoleEvent {
+		t.Fatalf("message role = %q, want %q", msgs[0].Role, llm.RoleEvent)
+	}
+	if parsed, ok := llm.ParseModelSwapMarker(msgs[0].ToLLMMessage()); !ok || parsed.Status != "succeeded" {
+		t.Fatalf("failed to parse persisted model-swap marker: ok=%v parsed=%#v", ok, parsed)
+	}
+}
+
 func TestSQLiteStoreAddMessageBumpsLastMessageAt(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 

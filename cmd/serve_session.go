@@ -404,6 +404,132 @@ func (m *serveSessionManager) ReplaceIdleWith(ctx context.Context, id string, sh
 	return inflight.rt, nil
 }
 
+// BeginSwap creates and installs a candidate runtime for id while retaining the
+// previous idle runtime for commit/rollback. State/approval/ask_user endpoints
+// see the candidate after this returns. The previous runtime is not closed until
+// commit; rollback restores it if the session still points at the candidate.
+func (m *serveSessionManager) BeginSwap(ctx context.Context, id string, create func(context.Context) (*serveRuntime, error)) (candidate *serveRuntime, previous *serveRuntime, commit func(), rollback func(), err error) {
+	for {
+		m.mu.Lock()
+		if m.closed {
+			m.mu.Unlock()
+			return nil, nil, nil, nil, fmt.Errorf("session manager closed")
+		}
+		previous = m.sessions[id]
+		if previous != nil && previous.hasActiveRun() {
+			m.mu.Unlock()
+			return nil, nil, nil, nil, errServeSessionBusy
+		}
+		if inflight, ok := m.creating[id]; ok {
+			m.mu.Unlock()
+			select {
+			case <-inflight.done:
+			case <-ctx.Done():
+				return nil, nil, nil, nil, ctx.Err()
+			}
+			if inflight.err != nil {
+				return nil, nil, nil, nil, inflight.err
+			}
+			continue
+		}
+		inflight := &sessionCreateInFlight{done: make(chan struct{})}
+		m.creating[id] = inflight
+		m.mu.Unlock()
+
+		rt, createErr := create(ctx)
+
+		m.mu.Lock()
+		delete(m.creating, id)
+		var evicted *serveRuntime
+		var closeCandidate *serveRuntime
+		if createErr != nil {
+			inflight.err = createErr
+		} else if m.closed {
+			inflight.err = fmt.Errorf("session manager closed")
+			closeCandidate = rt
+		} else {
+			current := m.sessions[id]
+			if current != previous {
+				previous = current
+			}
+			if previous != nil && previous.hasActiveRun() {
+				inflight.err = errServeSessionBusy
+				closeCandidate = rt
+			} else {
+				rt.Touch()
+				if previous == nil {
+					evicted, inflight.err = m.makeRoomForNewSessionLocked()
+				}
+				if inflight.err == nil {
+					m.sessions[id] = rt
+					inflight.rt = rt
+				}
+			}
+		}
+		close(inflight.done)
+		m.mu.Unlock()
+
+		if closeCandidate != nil {
+			closeCandidate.Close()
+		}
+		if evicted != nil {
+			if m.onEvict != nil {
+				m.onEvict(evicted)
+			}
+			evicted.Close()
+		}
+		if inflight.err != nil {
+			if rt != nil && closeCandidate == nil && inflight.rt == nil {
+				rt.Close()
+			}
+			return nil, nil, nil, nil, inflight.err
+		}
+		if inflight.rt == nil {
+			if rt != nil {
+				rt.Close()
+			}
+			return nil, nil, nil, nil, fmt.Errorf("failed to initialize session runtime")
+		}
+
+		candidate = inflight.rt
+		var once sync.Once
+		commit = func() {
+			once.Do(func() {
+				m.mu.Lock()
+				if current := m.sessions[id]; current == candidate {
+					candidate.Touch()
+				}
+				m.mu.Unlock()
+				if previous != nil && previous != candidate {
+					if m.onEvict != nil {
+						m.onEvict(previous)
+					}
+					previous.Close()
+				}
+			})
+		}
+		rollback = func() {
+			once.Do(func() {
+				restored := false
+				m.mu.Lock()
+				if current := m.sessions[id]; current == candidate {
+					if previous != nil {
+						previous.Touch()
+						m.sessions[id] = previous
+					} else {
+						delete(m.sessions, id)
+					}
+					restored = true
+				}
+				m.mu.Unlock()
+				_ = restored // kept for readability; candidate is retired regardless.
+				candidate.Close()
+			})
+		}
+		return candidate, previous, commit, rollback, nil
+	}
+}
+
 // ActiveSessionIDs returns the set of session IDs that currently have an
 // active run (activeInterrupt != nil). Unlike Get, this does NOT touch
 // runtimes, so it won't extend their TTL.

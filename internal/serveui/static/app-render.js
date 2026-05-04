@@ -890,9 +890,34 @@ const createToolCard = (message) => {
   return wrapper;
 };
 
+const createModelSwapNode = (message) => {
+  const article = document.createElement('article');
+  article.className = 'message model-swap';
+  article.dataset.messageId = message.id;
+
+  const body = document.createElement('div');
+  body.className = 'message-body model-swap-body';
+  body.textContent = message.content || '↔ Model switch';
+  article.appendChild(body);
+  article.appendChild(createMetaNode(message.created, message));
+  return article;
+};
+
+const updateModelSwapNode = (message) => {
+  let node = findMessageElement(message.id);
+  if (!node) {
+    node = createModelSwapNode(message);
+    elements.messages.appendChild(node);
+    return;
+  }
+  const body = node.querySelector('.message-body');
+  if (body) body.textContent = message.content || '↔ Model switch';
+};
+
 const createMessageNode = (message) => {
   if (message.role === 'tool') return createToolCard(message);
   if (message.role === 'tool-group') return createToolGroupNode(message);
+  if (message.role === 'model-swap') return createModelSwapNode(message);
 
   const article = document.createElement('article');
   article.className = `message ${message.role}`;
@@ -1646,6 +1671,8 @@ Object.assign(app, {
   enqueueAssistantStreamUpdate,
   finalizeAssistantStreamRender,
   createToolCard,
+  createModelSwapNode,
+  updateModelSwapNode,
   createMessageNode,
   updateAssistantNode,
   updateUserNode,

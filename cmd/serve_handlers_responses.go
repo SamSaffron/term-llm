@@ -73,45 +73,45 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		replaceHistory = true
 	}
 	// Chained requests are locked to the persisted provider/model/
-	// reasoning_effort. A bare session_id header starts a fresh conversation,
-	// even when the client reuses an existing session ID, so fresh conversations
-	// may choose new runtime settings and syncPersistedSessionRuntime will
-	// update the session row before the run.
+	// reasoning_effort unless the client explicitly asks for a mid-conversation
+	// model swap. A bare session_id header starts a fresh conversation, even when
+	// the client reuses an existing session ID, so fresh conversations may choose
+	// new runtime settings and syncPersistedSessionRuntime will update the row.
 	freshConversation := req.PreviousResponseID == ""
-	reqProvider := strings.TrimSpace(req.Provider)
-	if !freshConversation && s.store != nil {
-		if sess, getErr := s.store.Get(ctx, sessionID); getErr == nil && sess != nil {
-			persistedProvider := strings.TrimSpace(sess.ProviderKey)
-			if persistedProvider == "" {
-				persistedProvider = resolveSessionProviderKey(s.cfgRef, sess)
-			}
-			if persistedProvider != "" {
-				reqProvider = persistedProvider
-				if m := strings.TrimSpace(sess.Model); m != "" {
-					req.Model = m
-				}
-				if e := strings.TrimSpace(sess.ReasoningEffort); e != "" {
-					req.ReasoningEffort = e
-				}
-			}
-		}
-	}
 	defaultProvider := ""
 	if s.cfgRef != nil {
 		defaultProvider = strings.TrimSpace(s.cfgRef.DefaultProvider)
 	}
-	var runtime *serveRuntime
-	var stateful bool
-	freshProvider := reqProvider
-	if freshConversation && freshProvider == "" {
-		freshProvider = defaultProvider
+	requestedRuntime := responseRequestedRuntime(req, defaultProvider)
+	persistedRuntime := requestedRuntime
+	if !freshConversation {
+		persistedRuntime = s.persistedRuntimeSettings(ctx, sessionID, defaultProvider)
 	}
-	if req.PreviousResponseID != "" {
-		runtime, stateful, err = s.runtimeForProviderRequest(ctx, sessionID, reqProvider)
-	} else {
-		runtime, stateful, err = s.runtimeForFreshProviderRequest(ctx, sessionID, freshProvider)
+	swapPlan := responseModelSwapPlan{}
+	if !freshConversation {
+		swapPlan = buildResponseModelSwapPlan(req, persistedRuntime, requestedRuntime)
 	}
-	if err != nil {
+
+	reqProvider := strings.TrimSpace(req.Provider)
+	if !freshConversation && !swapPlan.enabled && s.store != nil {
+		if persistedRuntime.provider != "" {
+			reqProvider = persistedRuntime.provider
+			if persistedRuntime.model != "" {
+				req.Model = persistedRuntime.model
+			}
+			req.ReasoningEffort = persistedRuntime.effort
+		}
+	}
+	if swapPlan.enabled {
+		reqProvider = swapPlan.requestedProvider
+		req.Model = swapPlan.requestedModel
+		req.ReasoningEffort = swapPlan.requestedEffort
+	}
+
+	handleRuntimeErr := func(err error) bool {
+		if err == nil {
+			return false
+		}
 		if errors.Is(err, errServeSessionBusy) {
 			if req.Stream {
 				model := strings.TrimSpace(req.Model)
@@ -121,45 +121,95 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 				s.streamFailedResponseRun(ctx, w, sessionID, req.PreviousResponseID, model, "conflict_error", err.Error())
-				return
+				return true
 			}
 			writeOpenAIError(w, http.StatusConflict, "conflict_error", err.Error())
-			return
+			return true
 		}
 		if errors.Is(err, errServeSessionLimitReached) {
 			writeOpenAIError(w, http.StatusConflict, "conflict_error", err.Error())
-			return
+			return true
 		}
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
-		return
-	}
-	if freshConversation {
-		s.syncPersistedSessionRuntime(ctx, sessionID, runtime, strings.TrimSpace(req.Model), normalizeReasoningEffort(req.ReasoningEffort))
+		return true
 	}
 
-	// Enforce chaining from the latest response only. Stale response IDs that
-	// map to a valid session but don't match the runtime's last response would
-	// produce incorrect branching (the context wouldn't match what the client
-	// expects from that response).
-	if req.PreviousResponseID != "" {
-		lastRespID := runtime.getLastResponseID()
-		if lastRespID == "" {
-			if latest, ok := s.sessionToResponse.Load(sessionID); ok {
-				if latestStr, ok := latest.(string); ok {
-					lastRespID = strings.TrimSpace(latestStr)
-				}
-			}
-		}
-		if lastRespID != "" && req.PreviousResponseID != lastRespID {
-			writeOpenAIError(w, http.StatusConflict, "conflict_error",
-				fmt.Sprintf("previous_response_id %q is stale; latest is %q", req.PreviousResponseID, lastRespID))
-			if !stateful {
-				s.unregisterResponseIDs(runtime)
-				runtime.Close()
-			}
+	var runtime *serveRuntime
+	var stateful bool
+	var modelSwapExec *responseModelSwapExecution
+	freshProvider := reqProvider
+	if freshConversation && freshProvider == "" {
+		freshProvider = defaultProvider
+	}
+	if swapPlan.enabled {
+		previousRuntime, previousStateful, getErr := s.runtimeForProviderModelRequest(ctx, sessionID, swapPlan.previousProvider, swapPlan.previousModel)
+		if handleRuntimeErr(getErr) {
 			return
 		}
-		s.populateResponsesToolResultNames(ctx, sessionID, runtime, inputMessages)
+		// Enforce chaining from the latest response before replacing the session runtime.
+		if req.PreviousResponseID != "" {
+			lastRespID := previousRuntime.getLastResponseID()
+			if lastRespID == "" {
+				if latest, ok := s.sessionToResponse.Load(sessionID); ok {
+					if latestStr, ok := latest.(string); ok {
+						lastRespID = strings.TrimSpace(latestStr)
+					}
+				}
+			}
+			if lastRespID != "" && req.PreviousResponseID != lastRespID {
+				writeOpenAIError(w, http.StatusConflict, "conflict_error",
+					fmt.Sprintf("previous_response_id %q is stale; latest is %q", req.PreviousResponseID, lastRespID))
+				if !previousStateful {
+					s.unregisterResponseIDs(previousRuntime)
+					previousRuntime.Close()
+				}
+				return
+			}
+			s.populateResponsesToolResultNames(ctx, sessionID, previousRuntime, inputMessages)
+		}
+		modelSwapExec, err = s.beginResponseModelSwap(ctx, sessionID, swapPlan, inputMessages)
+		if handleRuntimeErr(err) {
+			return
+		}
+		runtime = modelSwapExec.candidate
+		stateful = true
+	} else {
+		if req.PreviousResponseID != "" {
+			runtime, stateful, err = s.runtimeForProviderRequest(ctx, sessionID, reqProvider)
+		} else {
+			runtime, stateful, err = s.runtimeForFreshProviderRequest(ctx, sessionID, freshProvider)
+		}
+		if handleRuntimeErr(err) {
+			return
+		}
+		if freshConversation {
+			s.syncPersistedSessionRuntime(ctx, sessionID, runtime, strings.TrimSpace(req.Model), normalizeReasoningEffort(req.ReasoningEffort))
+		}
+
+		// Enforce chaining from the latest response only. Stale response IDs that
+		// map to a valid session but don't match the runtime's last response would
+		// produce incorrect branching (the context wouldn't match what the client
+		// expects from that response).
+		if req.PreviousResponseID != "" {
+			lastRespID := runtime.getLastResponseID()
+			if lastRespID == "" {
+				if latest, ok := s.sessionToResponse.Load(sessionID); ok {
+					if latestStr, ok := latest.(string); ok {
+						lastRespID = strings.TrimSpace(latestStr)
+					}
+				}
+			}
+			if lastRespID != "" && req.PreviousResponseID != lastRespID {
+				writeOpenAIError(w, http.StatusConflict, "conflict_error",
+					fmt.Sprintf("previous_response_id %q is stale; latest is %q", req.PreviousResponseID, lastRespID))
+				if !stateful {
+					s.unregisterResponseIDs(runtime)
+					runtime.Close()
+				}
+				return
+			}
+			s.populateResponsesToolResultNames(ctx, sessionID, runtime, inputMessages)
+		}
 	}
 	cleanupRuntime := !stateful
 	if cleanupRuntime {
@@ -211,11 +261,12 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		llmReq.TopPSet = true
 	}
 
+	resetResponseIDsOnSuccess := freshConversation || swapPlan.enabled
 	if req.Stream {
 		if isServeUIRequest(r) && stateful {
-			s.streamUIResponses(w, r, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, req.PreviousResponseID, freshConversation)
+			s.streamUIResponses(w, r, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, req.PreviousResponseID, resetResponseIDsOnSuccess, modelSwapExec)
 		} else {
-			started := s.streamResponses(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, req.PreviousResponseID, freshConversation)
+			started := s.streamResponses(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, req.PreviousResponseID, resetResponseIDsOnSuccess, modelSwapExec)
 			if !stateful && started {
 				cleanupRuntime = false
 			}
@@ -223,7 +274,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := runtime.Run(ctx, stateful, replaceHistory, inputMessages, llmReq)
+	result, _, err := s.runResponseWithModelSwapFallback(ctx, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, modelSwapExec)
 	if err != nil {
 		if errors.Is(err, errServeSessionBusy) {
 			writeOpenAIError(w, http.StatusConflict, "conflict_error", err.Error())
@@ -251,7 +302,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	setSessionNumberHeader(w, runtime)
 
 	created := time.Now().Unix()
-	respID, err := s.storeCompletedResponseRun(runtime, sessionID, req.PreviousResponseID, model, created, result, freshConversation)
+	respID, err := s.storeCompletedResponseRun(runtime, sessionID, req.PreviousResponseID, model, created, result, resetResponseIDsOnSuccess)
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
 		return
@@ -355,9 +406,10 @@ func appendResponsePassthroughTools(serverTools []llm.ToolSpec, passthroughTools
 	return serverTools
 }
 
-func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool) bool {
+func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool, modelSwap *responseModelSwapExecution) bool {
 	return s.streamResponseRun(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, startResponseRunOptions{
 		previousResponseID:        previousResponseID,
 		resetResponseIDsOnSuccess: resetResponseIDsOnSuccess,
+		modelSwap:                 modelSwap,
 	})
 }

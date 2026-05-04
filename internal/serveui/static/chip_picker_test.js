@@ -308,8 +308,8 @@ function testUpdateSessionUsageDisplayFallsBackToFirstModelWithoutDefault() {
   pass(name);
 }
 
-function testChipLockEngagesWithActiveSession() {
-  const name = 'updateSessionUsageDisplay locks chip triggers when an active session exists';
+function testChipLockAllowsIdleSessionAndLocksBusyState() {
+  const name = 'updateSessionUsageDisplay allows idle session swaps and locks busy sessions';
   const { app, elementMap } = loadCore();
   app.state.providers = [{ name: 'openai', is_default: true, default_model: 'gpt-5', models: ['gpt-5'] }];
 
@@ -322,11 +322,20 @@ function testChipLockEngagesWithActiveSession() {
     }
   }
 
-  // Active session — chips locked.
+  // Idle active session — chips stay unlocked so the next turn can request a swap.
   app.updateSessionUsageDisplay({ id: 'sess-1', activeModel: 'gpt-5' });
   for (const id of ['chipProviderTrigger', 'chipModelTrigger', 'chipEffortTrigger']) {
+    if (elementMap[id].hasAttribute('disabled')) {
+      fail(name, `${id} should not be disabled for an idle active session`);
+      return;
+    }
+  }
+
+  // Busy active session — chips locked.
+  app.updateSessionUsageDisplay({ id: 'sess-1', activeModel: 'gpt-5', activeResponseId: 'resp_1' });
+  for (const id of ['chipProviderTrigger', 'chipModelTrigger', 'chipEffortTrigger']) {
     if (!elementMap[id].hasAttribute('disabled')) {
-      fail(name, `${id} should be disabled when session is active`);
+      fail(name, `${id} should be disabled when a response is active`);
       return;
     }
     if (elementMap[id].getAttribute('aria-disabled') !== 'true') {
@@ -562,7 +571,7 @@ function testMobilePopoverUsesVisualViewportSafeBounds() {
 testSplitHeaderModelEffortDetectsKnownEffortSuffix();
 testUpdateSessionUsageDisplayUsesProviderDefaultModel();
 testUpdateSessionUsageDisplayFallsBackToFirstModelWithoutDefault();
-testChipLockEngagesWithActiveSession();
+testChipLockAllowsIdleSessionAndLocksBusyState();
 testPopoverItemSelectionDispatchesChangeAndCloses();
 testPopoverHidesFilterInputBelowThreshold();
 testPopoverShowsFilterInputAboveThreshold();

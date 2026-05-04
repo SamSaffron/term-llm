@@ -558,10 +558,16 @@ const updateSessionUsageDisplay = (session) => {
   setChipSelectValue(elements.chipModelSelect, state.selectedModel || '');
   setChipSelectValue(elements.chipEffortSelect, state.selectedEffort || '');
 
-  // Lock the chips once a conversation is underway — switching mid-stream is
-  // not supported by the backend, so we hide the affordance instead of failing.
-  const locked = Boolean(session);
-  const lockTitle = locked ? 'Start a new chat to switch provider, model, or effort' : '';
+  // Lock the chips only while a response or modal interaction is active. Idle
+  // sessions may request an explicit mid-conversation model swap.
+  const locked = Boolean(
+    state.streaming
+    || session?.activeResponseId
+    || state.askUser
+    || state.approval
+    || sessionHasInProgressState(session)
+  );
+  const lockTitle = locked ? 'Cannot switch while a response is running' : '';
   [
     elements.chipProviderTrigger,
     elements.chipModelTrigger,
@@ -901,6 +907,13 @@ const sanitizeMessage = (msg) => {
         }));
       }
     }
+    return base;
+  }
+
+  if (role === 'model-swap') {
+    base.content = String(msg.content || '↔ Model switch');
+    base.stage = String(msg.stage || '');
+    base.transient = Boolean(msg.transient);
     return base;
   }
 

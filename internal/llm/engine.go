@@ -608,6 +608,7 @@ func (e *Engine) IsToolAllowed(name string) bool {
 
 // Stream returns a stream, applying external tools when needed.
 func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
+	req.Messages = FilterConversationMessages(req.Messages)
 	if req.DebugRaw {
 		DebugRawRequest(req.DebugRaw, e.provider.Name(), e.provider.Credential(), req, "Request")
 	}

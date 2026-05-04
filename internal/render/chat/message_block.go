@@ -78,6 +78,8 @@ func (r *MessageBlockRenderer) Render(msg *session.Message) *MessageBlock {
 		content = r.renderUserMessage(msg)
 	case llm.RoleAssistant:
 		content = r.renderAssistantMessage(msg)
+	case llm.RoleEvent:
+		content = r.renderEventMessage(msg)
 	case llm.RoleSystem:
 		// Skip system messages - users can view them via Ctrl+O inspector
 		content = ""
@@ -136,6 +138,18 @@ func (r *MessageBlockRenderer) renderUserMessage(msg *session.Message) string {
 	b.WriteString("\n") // Extra blank line after user messages
 
 	return b.String()
+}
+
+func (r *MessageBlockRenderer) renderEventMessage(msg *session.Message) string {
+	text := strings.TrimSpace(msg.TextContent)
+	if marker, ok := llm.ParseModelSwapMarker(msg.ToLLMMessage()); ok {
+		text = marker.DisplayText
+	}
+	if text == "" {
+		text = "↔ Session event"
+	}
+	style := lipgloss.NewStyle().Foreground(r.theme.Muted).Italic(true)
+	return style.Render(text) + "\n\n"
 }
 
 func renderUserMessageLine(prefix string, prefixStyle lipgloss.Style, content string, contentStyle lipgloss.Style, width int) string {

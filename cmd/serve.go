@@ -345,7 +345,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		provKey := cfg.DefaultProvider
 		rtModelName := modelName
 
-		if providerName != "" && providerName != cfg.DefaultProvider {
+		if providerName != "" && (providerName != cfg.DefaultProvider || providerModel != "") {
 			provider, err = llm.NewProviderByName(cfg, providerName, providerModel)
 			provKey = providerName
 			if providerModel != "" {
@@ -360,6 +360,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 			}
 		} else {
 			provider, err = llm.NewProvider(cfg)
+			if providerModel != "" {
+				rtModelName = providerModel
+			}
 		}
 		if err != nil {
 			return nil, err

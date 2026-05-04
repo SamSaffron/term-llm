@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system', 'tool', 'developer')),
+    role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system', 'tool', 'developer', 'event')),
     parts TEXT NOT NULL,
     text_content TEXT,
     duration_ms INTEGER,
@@ -122,7 +122,7 @@ const messagesTableSchema = `
 CREATE TABLE messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system', 'tool', 'developer')),
+    role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system', 'tool', 'developer', 'event')),
     parts TEXT NOT NULL,
     text_content TEXT,
     duration_ms INTEGER,
@@ -204,7 +204,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 21
+const schemaVersion = 22
 
 // migration represents a schema migration.
 type migration struct {
@@ -603,7 +603,7 @@ var migrations = []migration{
 		version:     17,
 		description: "allow developer messages in messages table",
 		up: func(db *sql.DB) error {
-			return rebuildMessagesTableForDeveloperRole(db)
+			return rebuildMessagesTableForCurrentRoles(db)
 		},
 	},
 	{
@@ -691,15 +691,26 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		// Migration 22: Allow durable event-role timeline markers (for example
+		// model-switch separators) in persisted chat history. These rows are
+		// rendered by clients but filtered before provider requests.
+		version:     22,
+		description: "allow event messages in messages table",
+		up: func(db *sql.DB) error {
+			return rebuildMessagesTableForCurrentRoles(db)
+		},
+	},
 }
 
-func rebuildMessagesTableForDeveloperRole(db *sql.DB) error {
+func rebuildMessagesTableForCurrentRoles(db *sql.DB) error {
 	stmts := []string{
 		`DROP TRIGGER IF EXISTS messages_ai`,
 		`DROP TRIGGER IF EXISTS messages_ad`,
 		`DROP TRIGGER IF EXISTS messages_au`,
 		`DROP INDEX IF EXISTS idx_messages_session_id`,
 		`DROP INDEX IF EXISTS idx_messages_session_sequence`,
+		`DROP INDEX IF EXISTS idx_messages_session_role`,
 		`DROP TABLE IF EXISTS messages_fts`,
 		`ALTER TABLE messages RENAME TO messages_old`,
 		messagesTableSchema,
@@ -709,6 +720,7 @@ func rebuildMessagesTableForDeveloperRole(db *sql.DB) error {
 		`DROP TABLE messages_old`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, sequence)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_session_sequence ON messages(session_id, sequence)`,
+		`CREATE INDEX IF NOT EXISTS idx_messages_session_role ON messages(session_id, role)`,
 		`CREATE VIRTUAL TABLE messages_fts USING fts5(
 			text_content,
 			content='messages',
@@ -1433,8 +1445,8 @@ func (s *SQLiteStore) AddMessage(ctx context.Context, sessionID string, msg *Mes
 
 		// Update session's updated_at. Also bump last_message_at for visible
 		// conversation messages (user/assistant) so the web sidebar sort stays
-		// aligned with message_count. Tool/developer/system rows are excluded
-		// so they don't jostle order without a visible change.
+		// aligned with message_count. Tool/developer/system/event rows are excluded
+		// so they don't jostle order without a visible user/assistant change.
 		bumpLastMessageAt := s.hasLastMessageAt && (msg.Role == "user" || msg.Role == "assistant")
 		if bumpLastMessageAt {
 			_, err = tx.ExecContext(ctx,

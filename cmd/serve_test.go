@@ -1720,6 +1720,138 @@ func TestServeSessionManager_ReplaceIdleWith_RestoresExistingSessionWhenCreateFa
 	}
 }
 
+type serveSessionCloseTrackingProvider struct {
+	closed atomic.Bool
+}
+
+func (p *serveSessionCloseTrackingProvider) Name() string       { return "close-tracking" }
+func (p *serveSessionCloseTrackingProvider) Credential() string { return "test" }
+func (p *serveSessionCloseTrackingProvider) Capabilities() llm.Capabilities {
+	return llm.Capabilities{}
+}
+func (p *serveSessionCloseTrackingProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	return &serveRuntimeTestStream{}, nil
+}
+func (p *serveSessionCloseTrackingProvider) CleanupMCP() { p.closed.Store(true) }
+
+func newCloseTrackingServeRuntime() (*serveRuntime, *serveSessionCloseTrackingProvider) {
+	provider := &serveSessionCloseTrackingProvider{}
+	rt := &serveRuntime{provider: provider}
+	rt.Touch()
+	return rt, provider
+}
+
+func TestServeSessionManager_BeginSwapInstallsCandidateAndReturnsPrevious(t *testing.T) {
+	manager := newServeSessionManager(time.Minute, 10, nil)
+	defer manager.Close()
+
+	previous, _ := newCloseTrackingServeRuntime()
+	candidate, _ := newCloseTrackingServeRuntime()
+	putTestSession(manager, "swap", previous)
+
+	gotCandidate, gotPrevious, commit, rollback, err := manager.BeginSwap(context.Background(), "swap", func(ctx context.Context) (*serveRuntime, error) {
+		return candidate, nil
+	})
+	if err != nil {
+		t.Fatalf("BeginSwap error: %v", err)
+	}
+	defer rollback()
+	if gotCandidate != candidate {
+		t.Fatalf("candidate = %p, want %p", gotCandidate, candidate)
+	}
+	if gotPrevious != previous {
+		t.Fatalf("previous = %p, want %p", gotPrevious, previous)
+	}
+	current, ok := manager.Get("swap")
+	if !ok || current != candidate {
+		t.Fatalf("manager current = %p ok=%v, want candidate %p", current, ok, candidate)
+	}
+	if commit == nil || rollback == nil {
+		t.Fatal("expected commit and rollback callbacks")
+	}
+}
+
+func TestServeSessionManager_BeginSwapRollbackRestoresPreviousAndClosesCandidate(t *testing.T) {
+	manager := newServeSessionManager(time.Minute, 10, nil)
+	defer manager.Close()
+
+	previous, prevProvider := newCloseTrackingServeRuntime()
+	candidate, candProvider := newCloseTrackingServeRuntime()
+	putTestSession(manager, "swap", previous)
+
+	_, _, _, rollback, err := manager.BeginSwap(context.Background(), "swap", func(ctx context.Context) (*serveRuntime, error) {
+		return candidate, nil
+	})
+	if err != nil {
+		t.Fatalf("BeginSwap error: %v", err)
+	}
+	rollback()
+	current, ok := manager.Get("swap")
+	if !ok || current != previous {
+		t.Fatalf("manager current = %p ok=%v, want previous %p", current, ok, previous)
+	}
+	if !candProvider.closed.Load() {
+		t.Fatal("expected rollback to close candidate")
+	}
+	if prevProvider.closed.Load() {
+		t.Fatal("expected rollback to keep previous open")
+	}
+}
+
+func TestServeSessionManager_BeginSwapCommitKeepsCandidateAndClosesPrevious(t *testing.T) {
+	manager := newServeSessionManager(time.Minute, 10, nil)
+	defer manager.Close()
+
+	previous, prevProvider := newCloseTrackingServeRuntime()
+	candidate, candProvider := newCloseTrackingServeRuntime()
+	putTestSession(manager, "swap", previous)
+
+	_, _, commit, _, err := manager.BeginSwap(context.Background(), "swap", func(ctx context.Context) (*serveRuntime, error) {
+		return candidate, nil
+	})
+	if err != nil {
+		t.Fatalf("BeginSwap error: %v", err)
+	}
+	commit()
+	current, ok := manager.Get("swap")
+	if !ok || current != candidate {
+		t.Fatalf("manager current = %p ok=%v, want candidate %p", current, ok, candidate)
+	}
+	if !prevProvider.closed.Load() {
+		t.Fatal("expected commit to close previous")
+	}
+	if candProvider.closed.Load() {
+		t.Fatal("expected commit to keep candidate open")
+	}
+}
+
+func TestServeSessionManager_BeginSwapBusyPreviousReturnsBusy(t *testing.T) {
+	manager := newServeSessionManager(time.Minute, 10, nil)
+	defer manager.Close()
+
+	previous, _ := newCloseTrackingServeRuntime()
+	busyState := &runtimeInterruptState{cancel: func() {}, done: make(chan struct{})}
+	previous.setActiveInterrupt(busyState)
+	defer previous.clearActiveInterrupt(busyState)
+	putTestSession(manager, "swap", previous)
+
+	created := false
+	candidate, previousOut, commit, rollback, err := manager.BeginSwap(context.Background(), "swap", func(ctx context.Context) (*serveRuntime, error) {
+		created = true
+		rt, _ := newCloseTrackingServeRuntime()
+		return rt, nil
+	})
+	if !errors.Is(err, errServeSessionBusy) {
+		t.Fatalf("BeginSwap error = %v, want %v", err, errServeSessionBusy)
+	}
+	if created {
+		t.Fatal("factory should not be called for busy previous runtime")
+	}
+	if candidate != nil || previousOut != nil || commit != nil || rollback != nil {
+		t.Fatalf("expected nil results on busy error")
+	}
+}
+
 func TestRequireJSONContentType(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
 	if err := requireJSONContentType(req); err == nil {
@@ -4952,6 +5084,392 @@ func TestHandleResponses_PreviousResponseIDRestoresPersistedProviderAfterRuntime
 	if got := otherCreates.Load(); got != 2 {
 		t.Fatalf("other provider factory calls = %d, want 2", got)
 	}
+}
+
+func TestHandleResponses_ChainedRequestWithoutModelSwapRemainsPinnedToPersistedRuntime(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	var mu sync.Mutex
+	providers := map[string]*llm.MockProvider{}
+	creates := map[string]int{}
+	newRuntime := func(providerName, modelName string) *serveRuntime {
+		mu.Lock()
+		defer mu.Unlock()
+		creates[providerName]++
+		provider := llm.NewMockProvider(providerName)
+		provider.AddTextResponse(providerName + "-1")
+		provider.AddTextResponse(providerName + "-2")
+		providers[providerName] = provider
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{provider: provider, providerKey: providerName, engine: engine, defaultModel: providerName + "-default", store: store}
+		rt.Touch()
+		return rt
+	}
+	manager := newServeSessionManager(time.Minute, 100, func(ctx context.Context) (*serveRuntime, error) {
+		return newRuntime("default", ""), nil
+	})
+	defer manager.Close()
+	srv := &serveServer{
+		cfgRef:     &config.Config{DefaultProvider: "default"},
+		sessionMgr: manager,
+		store:      store,
+		runtimeFactory: func(ctx context.Context, providerName string, modelName string) (*serveRuntime, error) {
+			return newRuntime(providerName, modelName), nil
+		},
+	}
+
+	code, resp1 := doResponsesWithHeader(t, srv, `{"input":"hello","provider":"old","model":"old-model"}`, "swap-pin")
+	if code != http.StatusOK {
+		t.Fatalf("first status = %d, want 200", code)
+	}
+	respID, _ := resp1["id"].(string)
+	if respID == "" {
+		t.Fatal("first response missing id")
+	}
+	code, resp2 := doResponses(t, srv, `{"input":"continue","previous_response_id":"`+respID+`","provider":"new","model":"new-model"}`)
+	if code != http.StatusOK {
+		t.Fatalf("second status = %d, want 200", code)
+	}
+	if got := responseOutputText(t, resp2); got != "old-2" {
+		t.Fatalf("response text = %q, want old-2", got)
+	}
+	oldProvider := providers["old"]
+	oldRequests := 0
+	if oldProvider != nil {
+		oldRequests = len(oldProvider.Requests)
+	}
+	if oldRequests != 2 {
+		t.Fatalf("old provider requests = %d, want 2", oldRequests)
+	}
+	if got := oldProvider.Requests[1].Model; got != "old-model" {
+		t.Fatalf("second request model = %q, want old-model", got)
+	}
+	if creates["new"] != 0 {
+		t.Fatalf("new provider creates = %d, want 0 without model_swap", creates["new"])
+	}
+}
+
+func TestHandleResponses_ModelSwapNaiveSuccessCommitsTargetRuntime(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	var mu sync.Mutex
+	providers := map[string]*llm.MockProvider{}
+	newRuntime := func(providerName, modelName string) *serveRuntime {
+		mu.Lock()
+		defer mu.Unlock()
+		provider := llm.NewMockProvider(providerName)
+		switch providerName {
+		case "old":
+			provider.AddTextResponse("old-1")
+		case "new":
+			provider.AddTextResponse("new-1")
+			provider.AddTextResponse("new-2")
+		default:
+			provider.AddTextResponse(providerName + "-1")
+		}
+		providers[providerName] = provider
+		engine := llm.NewEngine(provider, nil)
+		if modelName == "" {
+			modelName = providerName + "-default"
+		}
+		rt := &serveRuntime{provider: provider, providerKey: providerName, engine: engine, defaultModel: modelName, store: store}
+		rt.Touch()
+		return rt
+	}
+	manager := newServeSessionManager(time.Minute, 100, func(ctx context.Context) (*serveRuntime, error) {
+		return newRuntime("default", ""), nil
+	})
+	defer manager.Close()
+	srv := &serveServer{
+		cfgRef:     &config.Config{DefaultProvider: "default"},
+		sessionMgr: manager,
+		store:      store,
+		runtimeFactory: func(ctx context.Context, providerName string, modelName string) (*serveRuntime, error) {
+			return newRuntime(providerName, modelName), nil
+		},
+	}
+
+	code, resp1 := doResponsesWithHeader(t, srv, `{"input":"hello","provider":"old","model":"old-model"}`, "swap-naive")
+	if code != http.StatusOK {
+		t.Fatalf("first status = %d, want 200", code)
+	}
+	respID := resp1["id"].(string)
+	code, resp2 := doResponses(t, srv, `{"input":"continue","previous_response_id":"`+respID+`","provider":"new","model":"new-model","model_swap":{"mode":"auto","fallback":"handover"}}`)
+	if code != http.StatusOK {
+		t.Fatalf("swap status = %d, want 200", code)
+	}
+	if got := responseOutputText(t, resp2); got != "new-1" {
+		t.Fatalf("response text = %q, want new-1", got)
+	}
+	newProvider := providers["new"]
+	newRequests := 0
+	if newProvider != nil {
+		newRequests = len(newProvider.Requests)
+	}
+	if newRequests != 1 {
+		t.Fatalf("new provider requests = %d, want 1", newRequests)
+	}
+	if got := newProvider.Requests[0].Model; got != "new-model" {
+		t.Fatalf("target request model = %q, want new-model", got)
+	}
+	if !requestContainsText(newProvider.Requests[0], "hello") || !requestContainsText(newProvider.Requests[0], "continue") {
+		t.Fatalf("target request did not receive prior context plus pending user: %#v", newProvider.Requests[0].Messages)
+	}
+	sess, err := store.Get(context.Background(), "swap-naive")
+	if err != nil || sess == nil {
+		t.Fatalf("Get session after swap: %v", err)
+	}
+	if sess.ProviderKey != "new" || sess.Model != "new-model" {
+		t.Fatalf("session runtime = %s/%s, want new/new-model", sess.ProviderKey, sess.Model)
+	}
+	storedMessages, err := store.GetMessages(context.Background(), "swap-naive", 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages after swap: %v", err)
+	}
+	foundMarker := false
+	for _, msg := range storedMessages {
+		if msg.Role == llm.RoleEvent {
+			foundMarker = true
+			if marker, ok := llm.ParseModelSwapMarker(msg.ToLLMMessage()); !ok || marker.Status != "succeeded" || marker.Strategy != "naive" {
+				t.Fatalf("unexpected model-swap marker: ok=%v marker=%#v", ok, marker)
+			}
+		}
+	}
+	if !foundMarker {
+		t.Fatalf("expected persisted model-swap event marker, messages=%#v", storedMessages)
+	}
+
+	respID2 := resp2["id"].(string)
+	code, resp3 := doResponses(t, srv, `{"input":"again","previous_response_id":"`+respID2+`"}`)
+	if code != http.StatusOK {
+		t.Fatalf("third status = %d, want 200 body=%#v", code, resp3)
+	}
+	if got := responseOutputText(t, resp3); got != "new-2" {
+		t.Fatalf("third response text = %q, want new-2", got)
+	}
+	if len(newProvider.Requests) != 2 {
+		t.Fatalf("new provider requests after third turn = %d, want 2", len(newProvider.Requests))
+	}
+	for _, msg := range newProvider.Requests[1].Messages {
+		if msg.Role == llm.RoleEvent {
+			t.Fatalf("provider request included event marker: %#v", newProvider.Requests[1].Messages)
+		}
+	}
+}
+
+func TestHandleResponses_ModelSwapNaiveFailureFallsBackToHandover(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	var mu sync.Mutex
+	providersByCreate := map[string][]*llm.MockProvider{}
+	newRuntime := func(providerName, modelName string) *serveRuntime {
+		mu.Lock()
+		defer mu.Unlock()
+		provider := llm.NewMockProvider(providerName)
+		providersByCreate[providerName] = append(providersByCreate[providerName], provider)
+		switch providerName {
+		case "old":
+			if len(providersByCreate[providerName]) == 1 {
+				provider.AddTextResponse("old-1")
+			} else {
+				provider.AddTextResponse("handover doc")
+			}
+		case "new":
+			provider.AddError(errors.New("400 invalid_request: messages contain incompatible reasoning"))
+			provider.AddTextResponse("retry-ok")
+		default:
+			provider.AddTextResponse(providerName + "-1")
+		}
+		engine := llm.NewEngine(provider, nil)
+		if modelName == "" {
+			modelName = providerName + "-default"
+		}
+		rt := &serveRuntime{provider: provider, providerKey: providerName, engine: engine, defaultModel: modelName, store: store}
+		rt.Touch()
+		return rt
+	}
+	manager := newServeSessionManager(time.Minute, 100, func(ctx context.Context) (*serveRuntime, error) {
+		return newRuntime("default", ""), nil
+	})
+	defer manager.Close()
+	srv := &serveServer{
+		cfgRef:     &config.Config{DefaultProvider: "default"},
+		sessionMgr: manager,
+		store:      store,
+		runtimeFactory: func(ctx context.Context, providerName string, modelName string) (*serveRuntime, error) {
+			return newRuntime(providerName, modelName), nil
+		},
+	}
+
+	code, resp1 := doResponsesWithHeader(t, srv, `{"input":"hello","provider":"old","model":"old-model"}`, "swap-handover")
+	if code != http.StatusOK {
+		t.Fatalf("first status = %d, want 200", code)
+	}
+	respID := resp1["id"].(string)
+	code, resp2 := doResponses(t, srv, `{"input":"continue","previous_response_id":"`+respID+`","provider":"new","model":"new-model","model_swap":{"mode":"auto","fallback":"handover"}}`)
+	if code != http.StatusOK {
+		t.Fatalf("swap status = %d, want 200 body=%#v", code, resp2)
+	}
+	if got := responseOutputText(t, resp2); got != "retry-ok" {
+		t.Fatalf("response text = %q, want retry-ok", got)
+	}
+	newProvider := providersByCreate["new"][0]
+	if len(newProvider.Requests) != 2 {
+		t.Fatalf("new provider requests = %d, want naive + retry", len(newProvider.Requests))
+	}
+	if !requestContainsText(newProvider.Requests[1], "handover doc") || !requestContainsText(newProvider.Requests[1], "continue") {
+		t.Fatalf("fallback request missing handover doc or pending user: %#v", newProvider.Requests[1].Messages)
+	}
+	if len(providersByCreate["old"]) < 2 || len(providersByCreate["old"][1].Requests) != 1 {
+		t.Fatalf("expected helper old provider to generate handover")
+	}
+}
+
+func TestHandleResponses_ModelSwapFallbackFailureRollsBackOriginalRuntimeAndHistory(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	var mu sync.Mutex
+	providersByCreate := map[string][]*llm.MockProvider{}
+	newRuntime := func(providerName, modelName string) *serveRuntime {
+		mu.Lock()
+		defer mu.Unlock()
+		provider := llm.NewMockProvider(providerName)
+		providersByCreate[providerName] = append(providersByCreate[providerName], provider)
+		switch providerName {
+		case "old":
+			if len(providersByCreate[providerName]) == 1 {
+				provider.AddTextResponse("old-1")
+				provider.AddTextResponse("old-2")
+			} else {
+				provider.AddTextResponse("handover doc")
+			}
+		case "new":
+			provider.AddError(errors.New("400 invalid_request: messages contain incompatible reasoning"))
+			provider.AddError(errors.New("400 invalid_request: retry still rejected"))
+		default:
+			provider.AddTextResponse(providerName + "-1")
+		}
+		engine := llm.NewEngine(provider, nil)
+		if modelName == "" {
+			modelName = providerName + "-default"
+		}
+		rt := &serveRuntime{provider: provider, providerKey: providerName, engine: engine, defaultModel: modelName, store: store}
+		rt.Touch()
+		return rt
+	}
+	manager := newServeSessionManager(time.Minute, 100, func(ctx context.Context) (*serveRuntime, error) {
+		return newRuntime("default", ""), nil
+	})
+	defer manager.Close()
+	srv := &serveServer{
+		cfgRef:     &config.Config{DefaultProvider: "default"},
+		sessionMgr: manager,
+		store:      store,
+		runtimeFactory: func(ctx context.Context, providerName string, modelName string) (*serveRuntime, error) {
+			return newRuntime(providerName, modelName), nil
+		},
+	}
+
+	code, resp1 := doResponsesWithHeader(t, srv, `{"input":"hello","provider":"old","model":"old-model"}`, "swap-fail")
+	if code != http.StatusOK {
+		t.Fatalf("first status = %d, want 200", code)
+	}
+	respID := resp1["id"].(string)
+	code, resp2 := doResponses(t, srv, `{"input":"continue","previous_response_id":"`+respID+`","provider":"new","model":"new-model","model_swap":{"mode":"auto","fallback":"handover"}}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("swap failure status = %d, want 400 body=%#v", code, resp2)
+	}
+	current, ok := manager.Get("swap-fail")
+	if !ok || current.providerKey != "old" {
+		t.Fatalf("session manager current provider = %v ok=%v, want old", func() string {
+			if current == nil {
+				return ""
+			}
+			return current.providerKey
+		}(), ok)
+	}
+	sess, err := store.Get(context.Background(), "swap-fail")
+	if err != nil || sess == nil {
+		t.Fatalf("Get session after failed swap: %v", err)
+	}
+	if sess.ProviderKey != "old" || sess.Model != "old-model" {
+		t.Fatalf("session runtime after rollback = %s/%s, want old/old-model", sess.ProviderKey, sess.Model)
+	}
+	storedMessages, err := store.GetMessages(context.Background(), "swap-fail", 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages after failed swap: %v", err)
+	}
+	if !sessionMessagesContainText(storedMessages, "hello") || !sessionMessagesContainText(storedMessages, "old-1") {
+		t.Fatalf("rollback did not restore original conversation messages: %#v", storedMessages)
+	}
+	if sessionMessagesContainText(storedMessages, "handover doc") {
+		t.Fatalf("rollback history should not persist handover retry context: %#v", storedMessages)
+	}
+	foundFailedMarker := false
+	for _, msg := range storedMessages {
+		if msg.Role == llm.RoleEvent {
+			marker, ok := llm.ParseModelSwapMarker(msg.ToLLMMessage())
+			if ok && marker.Status == "failed" {
+				foundFailedMarker = true
+			}
+		}
+	}
+	if !foundFailedMarker {
+		t.Fatalf("expected failed model-swap marker after rollback: %#v", storedMessages)
+	}
+
+	code, resp3 := doResponses(t, srv, `{"input":"still old","previous_response_id":"`+respID+`"}`)
+	if code != http.StatusOK {
+		t.Fatalf("post-rollback status = %d, want 200 body=%#v", code, resp3)
+	}
+	if got := responseOutputText(t, resp3); got != "old-2" {
+		t.Fatalf("post-rollback response text = %q, want old-2", got)
+	}
+}
+
+func sessionMessagesContainText(messages []session.Message, needle string) bool {
+	for _, msg := range messages {
+		if strings.Contains(msg.TextContent, needle) {
+			return true
+		}
+		for _, part := range msg.Parts {
+			if strings.Contains(part.Text, needle) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func requestContainsText(req llm.Request, needle string) bool {
+	for _, msg := range req.Messages {
+		for _, part := range msg.Parts {
+			if strings.Contains(part.Text, needle) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // A fresh conversation may reuse an existing session ID and switch to a new

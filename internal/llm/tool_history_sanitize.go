@@ -10,9 +10,27 @@ type toolCallRef struct {
 	partIndex    int
 }
 
+// FilterConversationMessages removes durable UI/session event markers and other
+// non-conversation rows before context is sent to providers, compaction, handover,
+// or token estimation. It returns a shallow copy preserving cache anchors.
+func FilterConversationMessages(messages []Message) []Message {
+	if len(messages) == 0 {
+		return nil
+	}
+	filtered := make([]Message, 0, len(messages))
+	for _, msg := range messages {
+		if msg.Role == RoleEvent {
+			continue
+		}
+		filtered = append(filtered, msg)
+	}
+	return filtered
+}
+
 // sanitizeToolHistory removes dangling tool calls and orphan tool results.
 // It preserves non-tool content while enforcing call/result pair integrity.
 func sanitizeToolHistory(messages []Message) []Message {
+	messages = FilterConversationMessages(messages)
 	if len(messages) == 0 {
 		return nil
 	}

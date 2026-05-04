@@ -80,6 +80,23 @@ func TestStreamingContextCallbacksUpdateEstimateSnapshotWithoutMutatingMessages(
 	}
 }
 
+func TestModelSwapPhaseEventUpdatesStreamingStatus(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streaming = true
+	m.phase = "Thinking"
+
+	updated, _ := m.Update(streamEventMsg{event: ui.PhaseEvent("Switching model: old → new; trying existing context…")})
+	got := updated.(*Model)
+	if got.phase != "Switching model: old → new; trying existing context…" {
+		t.Fatalf("phase = %q, want model-swap progress", got.phase)
+	}
+	got.width = 120
+	status := ui.StripANSI(got.renderStatusLine())
+	if !strings.Contains(status, "Switching model") {
+		t.Fatalf("rendered streaming status %q does not include model-swap phase", status)
+	}
+}
+
 func (t *interjectionTestTool) Spec() llm.ToolSpec {
 	return llm.ToolSpec{
 		Name:        "noop_tool",

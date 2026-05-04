@@ -800,6 +800,22 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 			Role:      string(msg.Role),
 			CreatedAt: msg.CreatedAt.UnixMilli(),
 		}
+		if msg.Role == llm.RoleEvent {
+			if marker, ok := llm.ParseModelSwapMarker(msg.ToLLMMessage()); ok {
+				entry.Parts = append(entry.Parts, partEntry{Type: "model_swap", Text: marker.DisplayText})
+			} else {
+				for _, p := range msg.Parts {
+					if p.Type == llm.PartText && p.Text != "" {
+						entry.Parts = append(entry.Parts, partEntry{Type: "text", Text: p.Text})
+					}
+				}
+			}
+			if len(entry.Parts) == 0 {
+				entry.Parts = []partEntry{}
+			}
+			result = append(result, entry)
+			continue
+		}
 		for _, p := range msg.Parts {
 			switch p.Type {
 			case llm.PartText:
@@ -1318,11 +1334,17 @@ func runtimeProviderKey(rt *serveRuntime) string {
 
 // runtimeForProviderRequest creates a runtime using a specific (non-default) provider.
 func (s *serveServer) runtimeForProviderRequest(ctx context.Context, sessionID string, providerName string) (*serveRuntime, bool, error) {
+	return s.runtimeForProviderModelRequest(ctx, sessionID, providerName, "")
+}
+
+func (s *serveServer) runtimeForProviderModelRequest(ctx context.Context, sessionID string, providerName string, modelName string) (*serveRuntime, bool, error) {
 	if s.runtimeFactory == nil {
 		return s.runtimeForRequest(ctx, sessionID)
 	}
+	providerName = strings.TrimSpace(providerName)
+	modelName = strings.TrimSpace(modelName)
 	if sessionID == "" {
-		rt, err := s.runtimeFactory(ctx, providerName, "")
+		rt, err := s.runtimeFactory(ctx, providerName, modelName)
 		if err != nil {
 			return nil, false, err
 		}
@@ -1344,7 +1366,7 @@ func (s *serveServer) runtimeForProviderRequest(ctx context.Context, sessionID s
 	}
 	// Use GetOrCreateWith to get proper in-flight deduplication.
 	rt, err := s.sessionMgr.GetOrCreateWith(ctx, sessionID, func(ctx context.Context) (*serveRuntime, error) {
-		return s.runtimeFactory(ctx, providerName, "")
+		return s.runtimeFactory(ctx, providerName, modelName)
 	})
 	if err != nil {
 		return nil, false, err

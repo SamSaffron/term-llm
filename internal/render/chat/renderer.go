@@ -349,7 +349,7 @@ func (r *Renderer) renderHistory(state RenderState) string {
 	for i := start; i < end; i++ {
 		msg := &state.Messages[i]
 		// Skip non-renderable roles
-		if msg.Role != "user" && msg.Role != "assistant" {
+		if msg.Role != "user" && msg.Role != "assistant" && msg.Role != "event" {
 			continue
 		}
 		block := r.getOrRenderBlock(msg, i, state.Messages)

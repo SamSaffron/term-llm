@@ -6,7 +6,7 @@ const {
   UI_PREFIX, STORAGE_KEYS, state, elements, generateId, sanitizeInterruptState, sanitizeMessage, syncTokenCookie, truncate, saveSessions,
   getActiveSession, createSession, scrollToBottom, setConnectionState, sessionSlug, updateURL,
   persistAndRefreshShell, updateSessionUsageDisplay, refreshRelativeTimes, requestHeaders: _unusedRequestHeaders, updateAssistantNode, updateUserNode,
-  updateToolNode, updateToolGroupNode, createMessageNode, createToolGroupNode, renderSidebar, renderMessages, maybeNotifyResponseComplete,
+  updateToolNode, updateToolGroupNode, createMessageNode, createToolGroupNode, updateModelSwapNode, renderSidebar, renderMessages, maybeNotifyResponseComplete,
   enqueueAssistantStreamUpdate, finalizeAssistantStreamRender, syncTurnActionPanels,
   subscribeToPush, shouldAutoSubscribeToPush, applyTextDirection, shouldSuppressPromptAutoFocus, setSessionOptimisticBusy, setSessionServerActiveRun
 } = app;
@@ -360,7 +360,59 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     const model = payload?.response?.model;
     if (model) {
       session.activeModel = model;
+    }
+    const provider = payload?.response?.provider;
+    if (provider) {
+      session.provider = provider;
+    }
+    if (Object.prototype.hasOwnProperty.call(payload?.response || {}, 'reasoning_effort')) {
+      session.activeEffort = payload.response.reasoning_effort || '';
+    }
+    if (model || provider || Object.prototype.hasOwnProperty.call(payload?.response || {}, 'reasoning_effort')) {
       updateSessionUsageDisplay(session);
+    }
+    return { terminal: false };
+  }
+
+  if (event === 'response.model_swap.progress') {
+    const stage = String(payload?.stage || '').trim();
+    const message = String(payload?.message || '').trim();
+    if (stage === 'failed') {
+      if (payload?.previous_provider) session.provider = String(payload.previous_provider);
+      if (payload?.previous_model) session.activeModel = String(payload.previous_model);
+      if (Object.prototype.hasOwnProperty.call(payload || {}, 'previous_effort')) {
+        session.activeEffort = payload.previous_effort || '';
+      }
+      updateSessionUsageDisplay(session);
+    } else if (stage === 'complete') {
+      if (payload?.target_provider) session.provider = String(payload.target_provider);
+      if (payload?.target_model) session.activeModel = String(payload.target_model);
+      if (Object.prototype.hasOwnProperty.call(payload || {}, 'target_effort')) {
+        session.activeEffort = payload.target_effort || '';
+      }
+      updateSessionUsageDisplay(session);
+    }
+    if (message) {
+      let marker = streamState.modelSwapProgressMessage || null;
+      if (!marker) {
+        marker = {
+          id: generateId('swap'),
+          role: 'model-swap',
+          content: message,
+          stage: payload?.stage || '',
+          created: Date.now(),
+          transient: true
+        };
+        streamState.modelSwapProgressMessage = marker;
+        session.messages.push(marker);
+        elements.messages.appendChild(createMessageNode(marker));
+      } else {
+        marker.content = message;
+        marker.stage = payload?.stage || marker.stage || '';
+        updateModelSwapNode(marker);
+      }
+      scheduleStreamPersistence();
+      scrollToBottom();
     }
     return { terminal: false };
   }
@@ -568,6 +620,11 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     if (usage) session.lastUsage = usage;
     const completedModel = payload?.response?.model;
     if (completedModel) session.activeModel = completedModel;
+    const completedProvider = payload?.response?.provider;
+    if (completedProvider) session.provider = completedProvider;
+    if (Object.prototype.hasOwnProperty.call(payload?.response || {}, 'reasoning_effort')) {
+      session.activeEffort = payload.response.reasoning_effort || '';
+    }
     updateSessionUsageDisplay(session);
 
     const lastAssistant = [...session.messages].reverse().find((message) => message.role === 'assistant');
@@ -2965,19 +3022,43 @@ const sendMessage = async (options = {}) => {
     body.input = rebuildInputFromSession(session, inputContent);
   }
 
-  const activeModel = session.activeModel || state.selectedModel;
-  if (activeModel) {
-    body.model = activeModel;
+  const normalizeEffortForCompare = (value) => {
+    const normalized = String(value || '').trim();
+    return normalized.toLowerCase() === 'default' ? '' : normalized;
+  };
+  const currentProvider = session.provider || '';
+  const currentModel = session.activeModel || '';
+  const currentEffort = session.activeEffort || '';
+  const targetProvider = state.selectedProvider || currentProvider;
+  const targetModel = state.selectedModel || currentModel;
+  const targetEffort = state.selectedEffort || '';
+  const hasPriorContext = Boolean(session.lastResponseId || session.messages.length > 1);
+  const targetDiffers = hasPriorContext && Boolean(
+    (targetProvider || '') !== (currentProvider || '')
+    || (targetModel || '') !== (currentModel || '')
+    || normalizeEffortForCompare(targetEffort) !== normalizeEffortForCompare(currentEffort)
+  );
+
+  if (targetModel) {
+    body.model = targetModel;
   }
-  const activeEffort = session.activeEffort || state.selectedEffort;
-  if (activeEffort) {
-    body.reasoning_effort = activeEffort;
-  }
-  if (!session.provider && state.selectedProvider) {
-    session.provider = state.selectedProvider;
-  }
-  if (session.provider) {
-    body.provider = session.provider;
+  if (targetDiffers) {
+    body.provider = targetProvider || currentProvider;
+    if (targetEffort) {
+      body.reasoning_effort = targetEffort;
+    }
+    body.model_swap = { mode: 'auto', fallback: 'handover' };
+  } else {
+    const activeEffort = currentEffort || state.selectedEffort;
+    if (activeEffort) {
+      body.reasoning_effort = activeEffort;
+    }
+    if (!session.provider && state.selectedProvider) {
+      session.provider = state.selectedProvider;
+    }
+    if (session.provider) {
+      body.provider = session.provider;
+    }
   }
 
   try {

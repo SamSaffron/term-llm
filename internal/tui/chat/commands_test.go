@@ -1100,8 +1100,49 @@ func TestSwitchModel_UpdatesSessionMetadata(t *testing.T) {
 	if got := rm.textarea.Value(); got != "" {
 		t.Fatalf("expected switchModel to clear the composer, got %q", got)
 	}
-	if cmd != nil {
-		t.Fatal("expected switchModel success to rely on footer update without printing a system message")
+	if cmd == nil {
+		t.Fatal("expected switchModel success to show a model-switch notice")
+	}
+	if !strings.Contains(rm.footerMessage, "Switched model to debug:fast") {
+		t.Fatalf("expected footer model-switch notice, got %q", rm.footerMessage)
+	}
+}
+
+func TestSwitchModel_WithExistingHistoryPersistsModelSwapEventMarker(t *testing.T) {
+	store := &mockStore{}
+	m := newCmdTestModel(store)
+	m.config = &config.Config{}
+	m.sess = &session.Session{ID: "sess-model-switch-marker", Provider: "old", ProviderKey: "old", Model: "old-model"}
+	m.providerName = "old"
+	m.providerKey = "old"
+	m.modelName = "old-model"
+	m.engine = llm.NewEngine(llm.NewMockProvider("old"), nil)
+	m.messages = []session.Message{*session.NewMessage(m.sess.ID, llm.UserText("hello"), 0)}
+
+	result, _ := m.switchModel("debug:fast")
+	rm := result.(*Model)
+	if len(rm.messages) != 2 {
+		t.Fatalf("messages len = %d, want user + event marker", len(rm.messages))
+	}
+	markerMsg := rm.messages[1]
+	if markerMsg.Role != llm.RoleEvent {
+		t.Fatalf("marker role = %q, want event", markerMsg.Role)
+	}
+	marker, ok := llm.ParseModelSwapMarker(markerMsg.ToLLMMessage())
+	if !ok {
+		t.Fatalf("failed to parse model-swap marker: %#v", markerMsg)
+	}
+	if marker.FromProvider != "old" || marker.FromModel != "old-model" || marker.ToProvider != "debug" || marker.ToModel != "fast" || marker.Status != "started" {
+		t.Fatalf("unexpected marker: %#v", marker)
+	}
+	if len(store.added) != 1 || store.added[0].Role != llm.RoleEvent {
+		t.Fatalf("expected store AddMessage event marker, got %#v", store.added)
+	}
+	built := rm.buildMessages()
+	for _, msg := range built {
+		if msg.Role == llm.RoleEvent {
+			t.Fatalf("buildMessages included event marker in provider context: %#v", built)
+		}
 	}
 }
 

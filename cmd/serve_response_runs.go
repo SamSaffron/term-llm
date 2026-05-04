@@ -83,6 +83,7 @@ type startResponseRunOptions struct {
 	previousResponseID        string
 	uiSession                 bool
 	resetResponseIDsOnSuccess bool
+	modelSwap                 *responseModelSwapExecution
 }
 
 func newResponseRun(respID, sessionID, previousResponseID, model string, created int64, cancel context.CancelFunc) *responseRun {
@@ -922,14 +923,15 @@ func (s *serveServer) storeCompletedResponseRun(runtime *serveRuntime, sessionID
 	cleanup := func() {
 		mgr.delete(respID)
 	}
+	createdResponse := map[string]any{
+		"id":      respID,
+		"object":  "response",
+		"created": created,
+		"model":   model,
+		"status":  "in_progress",
+	}
 	if err := run.appendEvent("response.created", map[string]any{
-		"response": map[string]any{
-			"id":      respID,
-			"object":  "response",
-			"created": created,
-			"model":   model,
-			"status":  "in_progress",
-		},
+		"response": createdResponse,
 	}); err != nil {
 		cleanup()
 		return "", err
@@ -980,14 +982,15 @@ func (s *serveServer) streamFailedResponseRun(ctx context.Context, w http.Respon
 	cleanup := func() {
 		mgr.delete(respID)
 	}
+	createdResponse := map[string]any{
+		"id":      respID,
+		"object":  "response",
+		"created": created,
+		"model":   model,
+		"status":  "in_progress",
+	}
 	if err := run.appendEvent("response.created", map[string]any{
-		"response": map[string]any{
-			"id":      respID,
-			"object":  "response",
-			"created": created,
-			"model":   model,
-			"status":  "in_progress",
-		},
+		"response": createdResponse,
 	}); err != nil {
 		cleanup()
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
@@ -1183,14 +1186,21 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		runtime.clearLastUIRunError()
 	}
 
+	createdResponse := map[string]any{
+		"id":      respID,
+		"object":  "response",
+		"created": created,
+		"model":   model,
+		"status":  "in_progress",
+	}
+	if options.modelSwap != nil && options.modelSwap.plan.enabled {
+		createdResponse["provider"] = options.modelSwap.plan.requestedProvider
+		if effort := strings.TrimSpace(options.modelSwap.plan.requestedEffort); effort != "" {
+			createdResponse["reasoning_effort"] = effort
+		}
+	}
 	if err := run.appendEvent("response.created", map[string]any{
-		"response": map[string]any{
-			"id":      respID,
-			"object":  "response",
-			"created": created,
-			"model":   model,
-			"status":  "in_progress",
-		},
+		"response": createdResponse,
 	}); err != nil {
 		cancel()
 		mgr.clearActiveRun(sessionID, respID)
@@ -1223,6 +1233,11 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			runtime.approvalCtx = nil
 			runtime.approvalMu.Unlock()
 		}()
+
+		if options.modelSwap != nil && options.modelSwap.plan.enabled {
+			s.executeResponseRunModelSwap(runCtx, runtime, run, stateful, replaceHistory, inputMessages, llmReq, sessionID, respID, model, created, options)
+			return
+		}
 
 		streamState := &responseRunStreamState{}
 		result, err := runtime.RunWithEventsAndStart(runCtx, stateful, replaceHistory, inputMessages, llmReq, func() {
