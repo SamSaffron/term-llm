@@ -2437,9 +2437,10 @@ const renderAttachments = () => {
     const chip = document.createElement('div');
     chip.className = 'attachment-chip';
 
-    if (att.type.startsWith('image/')) {
+    const previewSrc = att.previewURL || att.dataURL;
+    if (att.type.startsWith('image/') && previewSrc) {
       const img = document.createElement('img');
-      img.src = att.dataURL;
+      img.src = previewSrc;
       img.alt = att.name;
       chip.appendChild(img);
     }
@@ -2455,6 +2456,7 @@ const renderAttachments = () => {
     remove.textContent = '\u00d7';
     remove.title = 'Remove';
     remove.addEventListener('click', () => {
+      revokeAttachmentPreview(att);
       state.attachments = state.attachments.filter(a => a.id !== att.id);
       renderAttachments();
     });
@@ -2467,6 +2469,54 @@ const renderAttachments = () => {
 const MAX_ATTACHMENTS = 10;
 const MAX_FILE_BYTES = 20 * 1024 * 1024; // 20 MB
 
+const revokeAttachmentPreview = (att) => {
+  const previewURL = String(att?.previewURL || '');
+  if (previewURL.startsWith('blob:')) {
+    URL.revokeObjectURL(previewURL);
+  }
+};
+
+const clearPendingAttachments = () => {
+  state.attachments.forEach(revokeAttachmentPreview);
+  state.attachments = [];
+  renderAttachments();
+};
+
+const readFileAsDataURL = (file) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => {
+    if (typeof reader.result === 'string' && reader.result) {
+      resolve(reader.result);
+      return;
+    }
+    reject(new Error(`Failed to read ${file?.name || 'attachment'}.`));
+  };
+  reader.onerror = () => reject(reader.error || new Error(`Failed to read ${file?.name || 'attachment'}.`));
+  reader.readAsDataURL(file);
+});
+
+const resolveAttachmentDataURL = async (att) => {
+  if (typeof att?.dataURL === 'string' && att.dataURL) {
+    return att.dataURL;
+  }
+  if (typeof att?.uploadDataURL === 'string' && att.uploadDataURL) {
+    return att.uploadDataURL;
+  }
+  if (att?.file instanceof Blob) {
+    const dataURL = await readFileAsDataURL(att.file);
+    att.uploadDataURL = dataURL;
+    return dataURL;
+  }
+  throw new Error(`Attachment ${att?.name || 'upload'} is unavailable.`);
+};
+
+const materializeAttachmentPayloads = async (attachments) => Promise.all(attachments.map(async (att) => ({
+  name: att.name,
+  type: att.type || 'application/octet-stream',
+  size: att.size || 0,
+  dataURL: await resolveAttachmentDataURL(att)
+})));
+
 const handleFiles = (fileList) => {
   const files = Array.from(fileList);
   for (const file of files) {
@@ -2478,20 +2528,15 @@ const handleFiles = (fileList) => {
       alert(`${file.name} exceeds the 20 MB file size limit.`);
       continue;
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (state.attachments.length >= MAX_ATTACHMENTS) return;
-      const dataURL = reader.result;
-      state.attachments.push({
-        id: generateId('att'),
-        name: file.name,
-        type: file.type || 'application/octet-stream',
-        size: file.size,
-        dataURL
-      });
-      renderAttachments();
-    };
-    reader.readAsDataURL(file);
+    state.attachments.push({
+      id: generateId('att'),
+      name: file.name,
+      type: file.type || 'application/octet-stream',
+      size: file.size,
+      file,
+      previewURL: file.type.startsWith('image/') ? URL.createObjectURL(file) : ''
+    });
+    renderAttachments();
   }
 };
 
@@ -2921,6 +2966,16 @@ const sendMessage = async (options = {}) => {
     return;
   }
 
+  let attachmentPayloads = [];
+  if (pendingAttachments.length > 0) {
+    try {
+      attachmentPayloads = await materializeAttachmentPayloads(pendingAttachments);
+    } catch (err) {
+      alert(err?.message || 'Failed to read attachments.');
+      return;
+    }
+  }
+
   if (!session) {
     session = createSession();
     state.sessions.unshift(session);
@@ -2949,12 +3004,8 @@ const sendMessage = async (options = {}) => {
   }
   session.lastMessageAt = Date.now();
 
-  if (pendingAttachments.length > 0) {
-    userMessage.attachments = pendingAttachments.map(a => ({
-      name: a.name,
-      type: a.type,
-      dataURL: a.dataURL
-    }));
+  if (attachmentPayloads.length > 0) {
+    userMessage.attachments = attachmentPayloads;
   } else {
     delete userMessage.attachments;
   }
@@ -2978,8 +3029,7 @@ const sendMessage = async (options = {}) => {
 
   elements.promptInput.value = '';
   if (!Array.isArray(options.attachments)) {
-    state.attachments = [];
-    renderAttachments();
+    clearPendingAttachments();
   }
   autoGrowPrompt();
   scrollToBottom(true);
@@ -2994,9 +3044,9 @@ const sendMessage = async (options = {}) => {
 
   // Build input content: plain string or array with file/image parts
   let inputContent;
-  if (pendingAttachments.length > 0) {
+  if (attachmentPayloads.length > 0) {
     const contentParts = [];
-    for (const att of pendingAttachments) {
+    for (const att of attachmentPayloads) {
       if (att.type.startsWith('image/')) {
         contentParts.push({ type: 'input_image', image_url: att.dataURL, filename: att.name });
       } else {
