@@ -1693,7 +1693,11 @@ func (m *Model) switchModel(providerModel string) (tea.Model, tea.Cmd) {
 		if m.store != nil {
 			_ = m.store.AddMessage(context.Background(), m.sess.ID, &sm)
 		}
-		m.invalidateHistoryCache()
+		// completedStream is an alt-screen-only cache of the response that was just
+		// streamed. Once we append a model-switch marker after that assistant turn,
+		// the cache is no longer a tail replacement; leaving it in place renders the
+		// persisted assistant from history plus the cached stream again.
+		m.invalidateViewCache()
 	}
 
 	return m.showFooterMuted(fmt.Sprintf("Switched model to %s:%s. Next response will try the existing context; if incompatible, use /handover to prepare a compact handoff.", providerName, modelName))

@@ -1118,6 +1118,9 @@ func TestSwitchModel_WithExistingHistoryPersistsModelSwapEventMarker(t *testing.
 	m.modelName = "old-model"
 	m.engine = llm.NewEngine(llm.NewMockProvider("old"), nil)
 	m.messages = []session.Message{*session.NewMessage(m.sess.ID, llm.UserText("hello"), 0)}
+	m.altScreen = true
+	m.viewCache.completedStream = "cached previous assistant"
+	m.viewCache.historyValid = true
 
 	result, _ := m.switchModel("debug:fast")
 	rm := result.(*Model)
@@ -1137,6 +1140,12 @@ func TestSwitchModel_WithExistingHistoryPersistsModelSwapEventMarker(t *testing.
 	}
 	if len(store.added) != 1 || store.added[0].Role != llm.RoleEvent {
 		t.Fatalf("expected store AddMessage event marker, got %#v", store.added)
+	}
+	if rm.viewCache.completedStream != "" {
+		t.Fatalf("expected model switch to clear completed stream cache, got %q", rm.viewCache.completedStream)
+	}
+	if rm.viewCache.historyValid {
+		t.Fatal("expected model switch to invalidate history cache")
 	}
 	built := rm.buildMessages()
 	for _, msg := range built {
