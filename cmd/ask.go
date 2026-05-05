@@ -546,7 +546,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	var persistResponseCompleted llm.ResponseCompletedCallback
 	var persistTurnCompleted llm.TurnCompletedCallback
 	var persistSyntheticUserMessage func(context.Context, llm.Message) error
+	var persistQueue *asyncCallbackQueue
 	if store != nil && sess != nil {
+		persistQueue = newAsyncCallbackQueue()
 		// Save system message first if this is a new session with instructions
 		if instructions != "" && !historyHasSystem {
 			sysMsg := &session.Message{
@@ -583,31 +585,62 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		persistResponseCompleted = func(ctx context.Context, turnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
 			// Calculate duration from stream start
 			durationMs := time.Since(turnStartTime).Milliseconds()
-
-			sessionMsg := session.NewMessage(sess.ID, assistantMsg, -1)
-			sessionMsg.DurationMs = durationMs
-			_ = store.AddMessage(ctx, sess.ID, sessionMsg)
+			queuedAssistantMsg := assistantMsg
+			if persistQueue == nil {
+				sessionMsg := session.NewMessage(sess.ID, queuedAssistantMsg, -1)
+				sessionMsg.DurationMs = durationMs
+				_ = store.AddMessage(ctx, sess.ID, sessionMsg)
+				return nil
+			}
+			persistQueue.Enqueue(func() {
+				cbCtx, cancel := asyncCallbackContext(ctx)
+				defer cancel()
+				sessionMsg := session.NewMessage(sess.ID, queuedAssistantMsg, -1)
+				sessionMsg.DurationMs = durationMs
+				_ = store.AddMessage(cbCtx, sess.ID, sessionMsg)
+			})
 			return nil
 		}
 
 		// Set up turn callback for tool result messages and metrics
 		persistTurnCompleted = func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
-			// Save messages (tool results, or assistant message when no tools were executed)
-			for _, msg := range turnMessages {
-				sessionMsg := session.NewMessage(sess.ID, msg, -1)
-				// Set duration for assistant messages (when responseCallback didn't run)
-				if msg.Role == llm.RoleAssistant {
-					sessionMsg.DurationMs = time.Since(turnStartTime).Milliseconds()
+			queuedMessages := append([]llm.Message(nil), turnMessages...)
+			assistantDurationMs := time.Since(turnStartTime).Milliseconds()
+			total, count := engine.ContextEstimateBaseline()
+			if persistQueue == nil {
+				for _, msg := range queuedMessages {
+					sessionMsg := session.NewMessage(sess.ID, msg, -1)
+					if msg.Role == llm.RoleAssistant {
+						sessionMsg.DurationMs = assistantDurationMs
+					}
+					_ = store.AddMessage(ctx, sess.ID, sessionMsg)
 				}
-				_ = store.AddMessage(ctx, sess.ID, sessionMsg)
+				_ = store.UpdateMetrics(ctx, sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens)
+				if total > 0 && count > 0 {
+					_ = store.UpdateContextEstimate(ctx, sess.ID, total, count)
+					sess.LastTotalTokens = total
+					sess.LastMessageCount = count
+				}
+				return nil
 			}
-			// Update metrics
-			_ = store.UpdateMetrics(ctx, sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens)
-			if total, count := engine.ContextEstimateBaseline(); total > 0 && count > 0 {
-				_ = store.UpdateContextEstimate(ctx, sess.ID, total, count)
-				sess.LastTotalTokens = total
-				sess.LastMessageCount = count
-			}
+			persistQueue.Enqueue(func() {
+				cbCtx, cancel := asyncCallbackContext(ctx)
+				defer cancel()
+				for _, msg := range queuedMessages {
+					sessionMsg := session.NewMessage(sess.ID, msg, -1)
+					// Set duration for assistant messages (when responseCallback didn't run)
+					if msg.Role == llm.RoleAssistant {
+						sessionMsg.DurationMs = assistantDurationMs
+					}
+					_ = store.AddMessage(cbCtx, sess.ID, sessionMsg)
+				}
+				_ = store.UpdateMetrics(cbCtx, sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens)
+				if total > 0 && count > 0 {
+					_ = store.UpdateContextEstimate(cbCtx, sess.ID, total, count)
+					sess.LastTotalTokens = total
+					sess.LastMessageCount = count
+				}
+			})
 			return nil
 		}
 		persistSyntheticUserMessage = func(ctx context.Context, msg llm.Message) error {
@@ -621,6 +654,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	applyPersistedContextEstimate(engine, sess)
 
 	var jsonInfo sessionInfo
+	if persistQueue != nil {
+		defer persistQueue.Drain()
+	}
 	if askJSON {
 		agentName := ""
 		if agent != nil {
@@ -726,6 +762,10 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			return err
 		}
 
+		if persistQueue != nil {
+			persistQueue.Drain()
+		}
+
 		progressiveResult = progressiveRun.Result
 		progressiveStatus := session.StatusComplete
 		switch progressiveResult.ExitReason {
@@ -808,6 +848,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		engine.SetTurnCompletedCallback(nil)
 
 		streamErr := <-errChan
+		if persistQueue != nil {
+			persistQueue.Drain()
+		}
 		if streamErr != nil {
 			// Update session status based on error type
 			if store != nil && sess != nil {

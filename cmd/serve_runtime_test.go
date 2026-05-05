@@ -92,6 +92,8 @@ type serveRuntimeTestStore struct {
 	updateMessageCalls int
 	updateStatusCalls  int
 	nextID             int64
+	blockAddMessage    <-chan struct{}
+	addMessageStarted  chan struct{}
 }
 
 var _ session.Store = (*serveRuntimeTestStore)(nil)
@@ -166,6 +168,20 @@ func (s *serveRuntimeTestStore) Search(ctx context.Context, query string, limit 
 }
 
 func (s *serveRuntimeTestStore) AddMessage(ctx context.Context, sessionID string, msg *session.Message) error {
+	if s.addMessageStarted != nil {
+		select {
+		case s.addMessageStarted <- struct{}{}:
+		default:
+		}
+	}
+	if s.blockAddMessage != nil {
+		select {
+		case <-s.blockAddMessage:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nextID++
@@ -437,6 +453,74 @@ func TestServeRuntimeCloseCancelsActiveRun(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("run did not exit after Close")
+	}
+}
+
+func TestServeRuntimeToolCallEventNotBlockedBySlowPersistence(t *testing.T) {
+	blockAddMessage := make(chan struct{})
+	store := newServeRuntimeTestStore()
+	store.blockAddMessage = blockAddMessage
+	store.addMessageStarted = make(chan struct{}, 1)
+
+	provider := &serveRuntimeTestProvider{}
+	tool := &serveRuntimeTestTool{}
+	registry := llm.NewToolRegistry()
+	registry.Register(tool)
+	engine := llm.NewEngine(provider, registry)
+
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  provider.Name(),
+		engine:       engine,
+		store:        store,
+		defaultModel: "test-model",
+	}
+
+	toolEventSeen := make(chan struct{}, 1)
+	runDone := make(chan error, 1)
+	go func() {
+		_, err := rt.RunWithEvents(context.Background(), true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "current user")}, llm.Request{
+			SessionID:   "sess-slow-persist",
+			Tools:       []llm.ToolSpec{tool.Spec()},
+			ToolChoice:  llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+			MaxTurns:    4,
+			Search:      false,
+			Debug:       false,
+			DebugRaw:    false,
+			Temperature: 0,
+		}, func(ev llm.Event) error {
+			if ev.Type == llm.EventToolCall {
+				select {
+				case toolEventSeen <- struct{}{}:
+				default:
+				}
+			}
+			return nil
+		})
+		runDone <- err
+	}()
+
+	select {
+	case <-store.addMessageStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for queued persistence to start")
+	}
+
+	select {
+	case <-toolEventSeen:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("tool call event was blocked by persistence callback")
+	}
+
+	close(blockAddMessage)
+
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("RunWithEvents() error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for runtime to finish")
 	}
 }
 

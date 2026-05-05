@@ -223,38 +223,54 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 	// Set up callbacks to save messages incrementally (after tools setup)
 	// Track when streaming starts for duration calculation
 	streamStartTime := time.Now()
+	var persistQueue *asyncCallbackQueue
 	if persistChildSession {
+		persistQueue = newAsyncCallbackQueue()
+		defer persistQueue.Drain()
 		// Response callback saves assistant message immediately (before tool execution)
 		// This ensures the message is persisted even if tool execution fails/crashes
 		engine.SetResponseCompletedCallback(func(ctx context.Context, turnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
-			sessionMsg := session.NewMessage(childSessionID, assistantMsg, -1)
-			sessionMsg.DurationMs = time.Since(streamStartTime).Milliseconds()
-			if err := r.store.AddMessage(ctx, childSessionID, sessionMsg); err != nil {
-				r.warn("session AddMessage failed: %v", err)
-			}
+			durationMs := time.Since(streamStartTime).Milliseconds()
+			queuedAssistantMsg := assistantMsg
+			persistQueue.Enqueue(func() {
+				cbCtx, cancel := asyncCallbackContext(ctx)
+				defer cancel()
+				sessionMsg := session.NewMessage(childSessionID, queuedAssistantMsg, -1)
+				sessionMsg.DurationMs = durationMs
+				if err := r.store.AddMessage(cbCtx, childSessionID, sessionMsg); err != nil {
+					r.warn("session AddMessage failed: %v", err)
+				}
+			})
 			return nil
 		})
 
 		// Turn callback saves tool result messages and updates metrics
 		engine.SetTurnCompletedCallback(func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
-			for _, msg := range turnMessages {
-				sessionMsg := session.NewMessage(childSessionID, msg, -1)
-				// Set duration for assistant messages (when responseCallback didn't run)
-				if msg.Role == llm.RoleAssistant {
-					sessionMsg.DurationMs = time.Since(streamStartTime).Milliseconds()
+			queuedMessages := append([]llm.Message(nil), turnMessages...)
+			assistantDurationMs := time.Since(streamStartTime).Milliseconds()
+			total, count := engine.ContextEstimateBaseline()
+			persistQueue.Enqueue(func() {
+				cbCtx, cancel := asyncCallbackContext(ctx)
+				defer cancel()
+				for _, msg := range queuedMessages {
+					sessionMsg := session.NewMessage(childSessionID, msg, -1)
+					// Set duration for assistant messages (when responseCallback didn't run)
+					if msg.Role == llm.RoleAssistant {
+						sessionMsg.DurationMs = assistantDurationMs
+					}
+					if err := r.store.AddMessage(cbCtx, childSessionID, sessionMsg); err != nil {
+						r.warn("session AddMessage failed: %v", err)
+					}
 				}
-				if err := r.store.AddMessage(ctx, childSessionID, sessionMsg); err != nil {
-					r.warn("session AddMessage failed: %v", err)
+				if err := r.store.UpdateMetrics(cbCtx, childSessionID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens); err != nil {
+					r.warn("session UpdateMetrics failed: %v", err)
 				}
-			}
-			if err := r.store.UpdateMetrics(ctx, childSessionID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens); err != nil {
-				r.warn("session UpdateMetrics failed: %v", err)
-			}
-			if total, count := engine.ContextEstimateBaseline(); total > 0 && count > 0 {
-				if err := r.store.UpdateContextEstimate(ctx, childSessionID, total, count); err != nil {
-					r.warn("session UpdateContextEstimate failed: %v", err)
+				if total > 0 && count > 0 {
+					if err := r.store.UpdateContextEstimate(cbCtx, childSessionID, total, count); err != nil {
+						r.warn("session UpdateContextEstimate failed: %v", err)
+					}
 				}
-			}
+			})
 			return nil
 		})
 	}

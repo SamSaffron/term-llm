@@ -740,20 +740,47 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		persistPlatformInjectionLocked()
 	}
 
+	var persistQueue *asyncCallbackQueue
+	if persisted {
+		persistQueue = newAsyncCallbackQueue()
+	}
+
 	// Snapshot fires before each EventToolCall so partial content survives a
 	// consumer cancellation mid-turn.
 	rt.engine.SetAssistantSnapshotCallback(func(cbCtx context.Context, _ int, assistantMsg llm.Message) error {
-		producedMu.Lock()
-		defer producedMu.Unlock()
-		upsertPendingAssistantLocked(cbCtx, assistantMsg)
+		queuedAssistantMsg := assistantMsg
+		if persistQueue == nil {
+			producedMu.Lock()
+			defer producedMu.Unlock()
+			upsertPendingAssistantLocked(cbCtx, queuedAssistantMsg)
+			return nil
+		}
+		persistQueue.Enqueue(func() {
+			persistCtx, cancel := asyncCallbackContext(cbCtx)
+			defer cancel()
+			producedMu.Lock()
+			defer producedMu.Unlock()
+			upsertPendingAssistantLocked(persistCtx, queuedAssistantMsg)
+		})
 		return nil
 	})
 	defer rt.engine.SetAssistantSnapshotCallback(nil)
 
 	rt.engine.SetResponseCompletedCallback(func(cbCtx context.Context, _ int, assistantMsg llm.Message, _ llm.TurnMetrics) error {
-		producedMu.Lock()
-		defer producedMu.Unlock()
-		upsertPendingAssistantLocked(cbCtx, assistantMsg)
+		queuedAssistantMsg := assistantMsg
+		if persistQueue == nil {
+			producedMu.Lock()
+			defer producedMu.Unlock()
+			upsertPendingAssistantLocked(cbCtx, queuedAssistantMsg)
+			return nil
+		}
+		persistQueue.Enqueue(func() {
+			persistCtx, cancel := asyncCallbackContext(cbCtx)
+			defer cancel()
+			producedMu.Lock()
+			defer producedMu.Unlock()
+			upsertPendingAssistantLocked(persistCtx, queuedAssistantMsg)
+		})
 		return nil
 	})
 	defer rt.engine.SetResponseCompletedCallback(nil)
@@ -762,19 +789,31 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	// plain-append the rest (tool results or interjections). Reset pending at
 	// end of turn.
 	rt.engine.SetTurnCompletedCallback(func(cbCtx context.Context, _ int, msgs []llm.Message, _ llm.TurnMetrics) error {
-		producedMu.Lock()
-		defer producedMu.Unlock()
-		appendStart := 0
-		if len(msgs) > 0 && msgs[0].Role == llm.RoleAssistant {
-			upsertPendingAssistantLocked(cbCtx, msgs[0])
-			appendStart = 1
+		queuedMsgs := append([]llm.Message(nil), msgs...)
+		persistTurn := func(persistCtx context.Context) {
+			producedMu.Lock()
+			defer producedMu.Unlock()
+			appendStart := 0
+			if len(queuedMsgs) > 0 && queuedMsgs[0].Role == llm.RoleAssistant {
+				upsertPendingAssistantLocked(persistCtx, queuedMsgs[0])
+				appendStart = 1
+			}
+			if appendStart < len(queuedMsgs) {
+				produced = append(produced, queuedMsgs[appendStart:]...)
+				updateStateAndAppendLocked(persistCtx)
+			}
+			pendingAssistantIdx = -1
+			pendingAssistantMsgID = 0
 		}
-		if appendStart < len(msgs) {
-			produced = append(produced, msgs[appendStart:]...)
-			updateStateAndAppendLocked(cbCtx)
+		if persistQueue == nil {
+			persistTurn(cbCtx)
+			return nil
 		}
-		pendingAssistantIdx = -1
-		pendingAssistantMsgID = 0
+		persistQueue.Enqueue(func() {
+			persistCtx, cancel := asyncCallbackContext(cbCtx)
+			defer cancel()
+			persistTurn(persistCtx)
+		})
 		return nil
 	})
 	defer rt.engine.SetTurnCompletedCallback(nil)
@@ -803,6 +842,10 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		defer cancel()
 		persistProducedSnapshot(deferCtx)
 	}()
+
+	if persistQueue != nil {
+		defer persistQueue.Drain()
+	}
 
 	stream, err := rt.engine.Stream(runCtx, req)
 	if err != nil {
@@ -861,6 +904,10 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 				return serveRunResult{}, ev.Err
 			}
 		}
+	}
+
+	if persistQueue != nil {
+		persistQueue.Drain()
 	}
 
 	if text := rt.engine.DrainInterjection(); text != "" {
