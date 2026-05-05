@@ -131,6 +131,78 @@ func TestServerAuthMiddleware(t *testing.T) {
 	}
 }
 
+// TestServerStopRespectsContextDeadline verifies that Stop returns within the
+// caller-supplied context deadline even when an in-flight tool call's executor
+// is blocked indefinitely.
+//
+// Regression test: ClaudeBinProvider.CleanupMCP previously passed
+// context.Background() to Stop. When a tool call was mid-flight (e.g. a long
+// shell command) and the parent stream had already been cancelled so no writer
+// remained for the result channel, http.Server.Shutdown blocked forever waiting
+// for the active handler — deadlocking process exit on SIGTERM during runit
+// restarts.
+func TestServerStopRespectsContextDeadline(t *testing.T) {
+	executorEntered := make(chan struct{})
+	executor := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
+		close(executorEntered)
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+
+	server := NewServer(executor)
+	tools := []ToolSpec{
+		{
+			Name:        "blocking_tool",
+			Description: "A tool whose executor never returns until ctx fires",
+			Schema:      map[string]interface{}{"type": "object"},
+		},
+	}
+
+	url, token, err := server.Start(context.Background(), tools)
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Issue a tool/call that will land in the blocking executor and stay
+	// active. The request body is the minimal MCP JSON-RPC payload that the
+	// stateless StreamableHTTPHandler accepts without prior session setup.
+	go func() {
+		body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"blocking_tool","arguments":{}}}`
+		req, _ := http.NewRequest("POST", url, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			resp.Body.Close()
+		}
+	}()
+
+	// Wait until the executor is actually running so server.Shutdown will
+	// see an active handler. Without this we'd race the request setup.
+	select {
+	case <-executorEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("executor never entered — request setup failed; cannot test Stop deadline")
+	}
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	stopDone := make(chan error, 1)
+	go func() {
+		stopDone <- server.Stop(stopCtx)
+	}()
+
+	select {
+	case <-stopDone:
+		// Stop returned — graceful shutdown timed out and forced close, exactly
+		// what the production fix relies on.
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not return within 2s of a 200ms context deadline — server is wedged on active handler")
+	}
+}
+
 func TestServerCannotStartTwice(t *testing.T) {
 	executor := func(ctx context.Context, name string, args json.RawMessage) (string, error) {
 		return "executed", nil

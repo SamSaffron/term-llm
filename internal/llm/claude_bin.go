@@ -1226,6 +1226,13 @@ func (p *ClaudeBinProvider) getOrCreateMCPConfig(ctx context.Context, tools []To
 	return configPath
 }
 
+// mcpStopTimeout bounds how long CleanupMCP will wait for the in-process MCP
+// HTTP server to drain in-flight tool calls before forcibly closing connections.
+// Without this bound, an in-flight tool whose result channel has no remaining
+// writer (e.g. the parent stream was cancelled) deadlocks server.Shutdown
+// indefinitely, blocking process exit on SIGTERM during runit-managed restarts.
+const mcpStopTimeout = 5 * time.Second
+
 // CleanupMCP stops the MCP server and removes the config file.
 // This should be called when the conversation is complete (runtime eviction
 // or server shutdown) — NOT per turn, because the MCP server is deliberately
@@ -1234,7 +1241,9 @@ func (p *ClaudeBinProvider) getOrCreateMCPConfig(ctx context.Context, tools []To
 // CleanupTurn was not invoked (e.g. mid-turn abort before stream terminates).
 func (p *ClaudeBinProvider) CleanupMCP() {
 	if p.mcpServer != nil {
-		p.mcpServer.Stop(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), mcpStopTimeout)
+		p.mcpServer.Stop(ctx)
+		cancel()
 		p.mcpServer = nil
 	}
 	if p.mcpConfigPath != "" {
