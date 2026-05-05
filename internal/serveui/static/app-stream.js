@@ -134,6 +134,86 @@ const parseSSEStream = async (stream, onEvent) => {
 
 const sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
+const DRAFT_MESSAGE_LIMIT = 20;
+const draftMessagesStorageKey = () => STORAGE_KEYS.draftMessages || 'term_llm_draft_messages';
+
+const loadDraftMessages = () => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(draftMessagesStorageKey()) || '[]');
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((item) => ({
+        id: String(item?.id || '').trim(),
+        sessionId: String(item?.sessionId || '').trim(),
+        prompt: String(item?.prompt || ''),
+        created: Number(item?.created || 0) || Date.now()
+      }))
+      .filter((item) => item.id && item.prompt.trim());
+  } catch {
+    return [];
+  }
+};
+
+const saveDraftMessages = (drafts) => {
+  const cleaned = (Array.isArray(drafts) ? drafts : [])
+    .filter((item) => item?.id && String(item?.prompt || '').trim())
+    .sort((a, b) => Number(b.created || 0) - Number(a.created || 0))
+    .slice(0, DRAFT_MESSAGE_LIMIT);
+  try {
+    localStorage.setItem(draftMessagesStorageKey(), JSON.stringify(cleaned));
+  } catch (err) {
+    // localStorage can be full or disabled; draft preservation is best-effort.
+    console.warn('[drafts] failed to save draft messages', err);
+  }
+  return cleaned;
+};
+
+const stageDraftMessage = (prompt, sessionId = '', draftId = '') => {
+  const trimmed = String(prompt || '').trim();
+  if (!trimmed) return '';
+  const id = draftId || generateId('draft');
+  const normalizedSessionId = String(sessionId || '').trim();
+  const next = loadDraftMessages().filter((item) => (
+    item.id !== id && String(item.sessionId || '').trim() !== normalizedSessionId
+  ));
+  next.unshift({
+    id,
+    sessionId: normalizedSessionId,
+    prompt: trimmed,
+    created: Date.now()
+  });
+  saveDraftMessages(next);
+  return id;
+};
+
+const removeDraftMessage = (draftId) => {
+  const id = String(draftId || '').trim();
+  if (!id) return;
+  saveDraftMessages(loadDraftMessages().filter((item) => item.id !== id));
+};
+
+const restoreDraftMessageForSession = (sessionId = state.activeSessionId, options = {}) => {
+  if (!options.replace && String(elements.promptInput.value || '').trim()) return false;
+  const id = String(sessionId || '').trim();
+  const drafts = loadDraftMessages();
+  const draft = drafts.find((item) => String(item.sessionId || '').trim() === id);
+  if (!draft) {
+    if (options.replace) {
+      elements.promptInput.value = '';
+      autoGrowPrompt();
+    }
+    return false;
+  }
+  elements.promptInput.value = draft.prompt;
+  autoGrowPrompt();
+  setConnectionState('Restored unsent draft message.', 'bad');
+  return true;
+};
+
+const restoreLatestDraftMessage = () => {
+  return restoreDraftMessageForSession(state.activeSessionId);
+};
+
 const setActiveResponseTracking = (session, responseId, sequenceNumber = null) => {
   if (!session) return;
   const normalized = String(responseId || '').trim();
@@ -3066,6 +3146,7 @@ const sendMessage = async (options = {}) => {
     }
 
     const pendingMessageId = generateId('msg');
+    const draftId = stageDraftMessage(prompt, session.id);
     trackPendingInterruptCommit(session.id, prompt, pendingMessageId);
     trackPendingInterjection(session.id, prompt, pendingMessageId, 'deciding');
     persistAndRefreshShell();
@@ -3076,11 +3157,13 @@ const sendMessage = async (options = {}) => {
 
     try {
       await interruptActiveRun(session, prompt, pendingMessageId);
+      removeDraftMessage(draftId);
     } catch (err) {
       if (err?.status === 409) {
         try {
           const recovered = await recoverInterruptConflict(session, prompt, pendingMessageId);
           if (recovered) {
+            removeDraftMessage(draftId);
             return;
           }
         } catch (recoveryErr) {
@@ -3138,6 +3221,7 @@ const sendMessage = async (options = {}) => {
   }
 
   const reuseMessageId = typeof options.reuseMessageId === 'string' ? options.reuseMessageId : '';
+  const draftId = stageDraftMessage(prompt, session.id);
   let userMessage = reuseMessageId
     ? session.messages.find(m => m.id === reuseMessageId && m.role === 'user') || null
     : null;
@@ -3310,6 +3394,7 @@ const sendMessage = async (options = {}) => {
     if (!response.ok) {
       throw await normalizeError(response);
     }
+    removeDraftMessage(draftId);
 
     if (headerResponseId) {
       setActiveResponseTracking(session, headerResponseId, 0);
@@ -3380,6 +3465,10 @@ const sendMessage = async (options = {}) => {
     if (err?.status === 401) {
       handleAuthFailure();
     }
+    if (!String(elements.promptInput.value || '').trim()) {
+      elements.promptInput.value = prompt;
+      autoGrowPrompt();
+    }
 
     persistAndRefreshShell();
     scrollToBottom(true);
@@ -3414,6 +3503,10 @@ const sendMessage = async (options = {}) => {
   }
 };
 
+// Recover text that was submitted locally but never acknowledged by the server
+// (for example a dropped POST, stale tab, or reload while the request was in flight).
+restoreLatestDraftMessage();
+
 Object.assign(app, {
   requestHeaders,
   normalizeError,
@@ -3421,6 +3514,10 @@ Object.assign(app, {
   fetchModels,
   parseSSEStream,
   sleep,
+  stageDraftMessage,
+  removeDraftMessage,
+  restoreLatestDraftMessage,
+  restoreDraftMessageForSession,
   setActiveResponseTracking,
   attachResponseStream,
   detachResponseStream,

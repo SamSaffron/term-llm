@@ -14,7 +14,8 @@ const {
   applyDesktopSidebarState, toggleSidebarCollapsed, flushStreamPersistence, requestHeaders, normalizeError, discardPendingAttachments,
   updateSidebarStatus, sessionHasInProgressState, hasAnySessionInProgressState, setSessionServerActiveRun, setSessionOptimisticBusy,
   moveSessionProgressState, requeueUncommittedInterrupts, drainInterruptQueueIfIdle, requeuePendingInterjections,
-  trackPendingInterjection, removePendingInterjectionById, trackPendingInterruptCommit, refreshPendingInterjectionBanner
+  trackPendingInterjection, removePendingInterjectionById, trackPendingInterruptCommit, refreshPendingInterjectionBanner,
+  restoreDraftMessageForSession, stageDraftMessage
 } = app;
 let sessionStatePollTimer = null;
 
@@ -136,8 +137,16 @@ const createAndSwitchToFreshSession = async () => {
   await switchToDraftSession({ clearComposer: true, focusPrompt: true });
 };
 
+const stageCurrentComposerForSession = (sessionId) => {
+  const prompt = String(elements.promptInput.value || '').trim();
+  if (!prompt) return;
+  stageDraftMessage(prompt, sessionId);
+};
+
 const switchToDraftSession = async (options = {}) => {
   const previousActiveSessionId = String(state.activeSessionId || '').trim();
+  const previousComposerSessionId = state.draftSessionActive ? '' : previousActiveSessionId;
+  stageCurrentComposerForSession(previousComposerSessionId);
 
   stopSessionStatePoll();
   closeRenameSessionModal();
@@ -162,6 +171,7 @@ const switchToDraftSession = async (options = {}) => {
   refreshPendingInterjectionBanner();
   persistAndRefreshShell();
   renderMessages(true);
+  restoreDraftMessageForSession('', { replace: true });
 
   if (options.focusPrompt) {
     elements.promptInput.focus();
@@ -177,6 +187,8 @@ const switchToSession = async (sessionId, options = {}) => {
   if (!nextId) return null;
 
   const previousActiveSessionId = String(state.activeSessionId || '').trim();
+  const previousComposerSessionId = state.draftSessionActive ? '' : previousActiveSessionId;
+  stageCurrentComposerForSession(previousComposerSessionId);
   const session = state.sessions.find((item) => item.id === nextId);
   if (!session) return null;
 
@@ -209,6 +221,7 @@ const switchToSession = async (sessionId, options = {}) => {
 
   persistAndRefreshShell();
   renderMessages(true);
+  restoreDraftMessageForSession(session.id, { replace: true });
 
   if (options.sync !== false) {
     await syncActiveSessionFromServer(session, true);

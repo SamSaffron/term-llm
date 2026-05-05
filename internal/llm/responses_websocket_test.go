@@ -313,6 +313,116 @@ func TestResponsesClientWebSocketConnectFailureFallsBackToHTTP(t *testing.T) {
 	}
 }
 
+func TestResponsesClientWebSocketReadFailureBeforeEventsRetriesWebSocketThenFallsBackToHTTP(t *testing.T) {
+	var wsAttempts atomic.Int32
+	var httpAttempts atomic.Int32
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			wsAttempts.Add(1)
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Errorf("upgrade: %v", err)
+				return
+			}
+			_ = conn.Close()
+			return
+		}
+		httpAttempts.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.output_text.delta\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"fallback after read\"}\n\n"))
+		_, _ = w.Write([]byte("event: response.completed\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_http\"}}\n\n"))
+	}))
+	defer server.Close()
+
+	client := &ResponsesClient{BaseURL: server.URL, UseWebSocket: true}
+	stream, err := client.Stream(context.Background(), ResponsesRequest{Model: "gpt-test", Input: []ResponsesInputItem{{Type: "message", Role: "user", Content: "hi"}}, Stream: true}, false)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	var text string
+	for {
+		event, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+		switch event.Type {
+		case EventTextDelta:
+			text += event.Text
+		case EventDone:
+			if text != "fallback after read" {
+				t.Fatalf("text = %q, want fallback after read", text)
+			}
+			if wsAttempts.Load() != 2 || httpAttempts.Load() != 1 {
+				t.Fatalf("attempts ws=%d http=%d, want 2/1", wsAttempts.Load(), httpAttempts.Load())
+			}
+			return
+		case EventError:
+			t.Fatalf("stream error: %v", event.Err)
+		}
+	}
+}
+
+func TestResponsesClientWebSocketReadFailureBeforeEventsRetryCanRecover(t *testing.T) {
+	var wsAttempts atomic.Int32
+	var httpAttempts atomic.Int32
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			attempt := wsAttempts.Add(1)
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Errorf("upgrade: %v", err)
+				return
+			}
+			defer conn.Close()
+			if attempt == 1 {
+				return
+			}
+			_, _, _ = conn.ReadMessage()
+			_ = conn.WriteJSON(map[string]any{"type": "response.output_text.delta", "delta": "websocket retry"})
+			_ = conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_ws_retry"}})
+			return
+		}
+		httpAttempts.Add(1)
+		t.Fatal("HTTP fallback should not be used when the WebSocket retry succeeds")
+	}))
+	defer server.Close()
+
+	client := &ResponsesClient{BaseURL: server.URL, UseWebSocket: true}
+	stream, err := client.Stream(context.Background(), ResponsesRequest{Model: "gpt-test", Input: []ResponsesInputItem{{Type: "message", Role: "user", Content: "hi"}}, Stream: true}, false)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	var text string
+	for {
+		event, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+		switch event.Type {
+		case EventTextDelta:
+			text += event.Text
+		case EventDone:
+			if text != "websocket retry" {
+				t.Fatalf("text = %q, want websocket retry", text)
+			}
+			if wsAttempts.Load() != 2 || httpAttempts.Load() != 0 {
+				t.Fatalf("attempts ws=%d http=%d, want 2/0", wsAttempts.Load(), httpAttempts.Load())
+			}
+			return
+		case EventError:
+			t.Fatalf("stream error: %v", event.Err)
+		}
+	}
+}
+
 func TestResponsesClientHTTPFallbackWithWebSocketOnlyServerStateSendsFullInput(t *testing.T) {
 	var httpReq map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

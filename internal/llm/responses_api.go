@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -554,7 +555,25 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 	if c.UseWebSocket && !c.websocketDisabled {
 		stream, err := c.streamWebSocketPrepared(ctx, wsReq, fullInput, debugRaw, responseStateGeneration)
 		if err == nil {
-			return stream, nil
+			return &responsesWebSocketFallbackStream{
+				current: stream,
+				fallbacks: []func() (Stream, error){
+					func() (Stream, error) {
+						if debugRaw {
+							DebugRawSection(debugRaw, "Responses WebSocket Retry", "stream failed before emitting events")
+						}
+						return c.streamWebSocketPrepared(ctx, wsReq, fullInput, debugRaw, responseStateGeneration)
+					},
+					func() (Stream, error) {
+						c.websocketDisabled = true
+						c.closeWebSocket()
+						if debugRaw {
+							DebugRawSection(debugRaw, "Responses WebSocket Fallback", "stream failed before emitting events")
+						}
+						return c.streamHTTPPrepared(ctx, httpPayload, fullInput, lastResponseID, responseStateGeneration, debugRaw)
+					},
+				},
+			}, nil
 		}
 		c.websocketDisabled = true
 		c.closeWebSocket()
@@ -563,6 +582,10 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 		}
 	}
 
+	return c.streamHTTPPrepared(ctx, httpPayload, fullInput, lastResponseID, responseStateGeneration, debugRaw)
+}
+
+func (c *ResponsesClient) streamHTTPPrepared(ctx context.Context, httpPayload ResponsesRequest, fullInput []ResponsesInputItem, lastResponseID string, responseStateGeneration uint64, debugRaw bool) (Stream, error) {
 	body, err := json.Marshal(httpPayload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
@@ -807,6 +830,50 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 
 		return handler.Finish(send)
 	}), nil
+}
+
+type responsesWebSocketFallbackStream struct {
+	current   Stream
+	fallbacks []func() (Stream, error)
+	emitted   bool
+}
+
+func (s *responsesWebSocketFallbackStream) Recv() (Event, error) {
+	event, err := s.current.Recv()
+	if err != nil {
+		if err == io.EOF || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || s.emitted || len(s.fallbacks) == 0 {
+			return event, err
+		}
+		return s.switchToNextFallback(err)
+	}
+	if event.Type == EventError && !s.emitted && len(s.fallbacks) > 0 {
+		return s.switchToNextFallback(event.Err)
+	}
+	if event.Type != EventHeartbeat && event.Type != EventRetry {
+		s.emitted = true
+	}
+	return event, nil
+}
+
+func (s *responsesWebSocketFallbackStream) switchToNextFallback(previousErr error) (Event, error) {
+	_ = s.current.Close()
+	lastErr := previousErr
+	for len(s.fallbacks) > 0 {
+		next := s.fallbacks[0]
+		s.fallbacks = s.fallbacks[1:]
+		stream, err := next()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		s.current = stream
+		return s.Recv()
+	}
+	return Event{}, lastErr
+}
+
+func (s *responsesWebSocketFallbackStream) Close() error {
+	return s.current.Close()
 }
 
 // ResetConversation clears server state (called on /clear or new conversation)

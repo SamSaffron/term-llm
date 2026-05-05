@@ -36,7 +36,8 @@ const STORAGE_KEYS = {
   sidebarCollapsed: 'term_llm_sidebar_collapsed',
   showHiddenSessions: 'term_llm_show_hidden_sessions',
   notificationsEnabled: 'term_llm_notifications_enabled',
-  lastNotifiedResponseId: 'term_llm_last_notified_response_id'
+  lastNotifiedResponseId: 'term_llm_last_notified_response_id',
+  draftMessages: 'term_llm_draft_messages'
 };
 
 const initialStoredActiveSessionId = localStorage.getItem(STORAGE_KEYS.activeSession) || '';

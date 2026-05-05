@@ -143,6 +143,8 @@ function defaultAppStubs(app, overrides = {}) {
     removePendingInterjectionById() {},
     trackPendingInterruptCommit() {},
     refreshPendingInterjectionBanner() {},
+    restoreDraftMessageForSession() {},
+    stageDraftMessage() {},
     HEARTBEAT_STALE_THRESHOLD: 45000,
     HEARTBEAT_ABORT_REASON: 'heartbeat stale',
     applyDesktopSidebarState() {},
@@ -243,6 +245,51 @@ async function createSessionsHarness(options = {}) {
   await windowObj.__termllmInitializePromise;
 
   return { app, storage, windowObj };
+}
+
+async function testSwitchingSessionsStagesCurrentComposerBeforeRestore() {
+  const name = 'switching sessions stages current composer before restoring target draft';
+  const drafts = new Map();
+  const { app } = await createSessionsHarness({
+    fetchImpl: async () => new Response(JSON.stringify({ sessions: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    }),
+    appOverrides: {
+      stageDraftMessage(prompt, sessionId) {
+        drafts.set(String(sessionId || ''), String(prompt || '').trim());
+      },
+      restoreDraftMessageForSession(sessionId, options = {}) {
+        const key = String(sessionId || '');
+        if (!drafts.has(key)) {
+          if (options.replace) app.elements.promptInput.value = '';
+          return false;
+        }
+        app.elements.promptInput.value = drafts.get(key);
+        return true;
+      }
+    }
+  });
+
+  const sessionA = { id: 'sess_a', title: 'A', messages: [], lastResponseId: null, activeResponseId: null, lastSequenceNumber: 0 };
+  const sessionB = { id: 'sess_b', title: 'B', messages: [], lastResponseId: null, activeResponseId: null, lastSequenceNumber: 0 };
+  app.state.sessions = [sessionA, sessionB];
+  app.state.activeSessionId = sessionA.id;
+  app.state.draftSessionActive = false;
+  app.elements.promptInput.value = 'unsent in A';
+
+  await app.switchToSession(sessionB.id, { sync: false });
+  if (drafts.get(sessionA.id) !== 'unsent in A') {
+    fail(name, 'expected session A composer to be staged before switching', JSON.stringify(Array.from(drafts.entries())));
+    return;
+  }
+
+  await app.switchToSession(sessionA.id, { sync: false });
+  if (app.elements.promptInput.value !== 'unsent in A') {
+    fail(name, 'expected staged session A composer to be restored when switching back', app.elements.promptInput.value);
+    return;
+  }
+  pass(name);
 }
 
 async function testNumericDeepLinkResolvesRealSessionId() {
@@ -1230,6 +1277,7 @@ async function testSanitizeSessionPreservesLastMessageAt() {
 }
 
 (async () => {
+  await testSwitchingSessionsStagesCurrentComposerBeforeRestore();
   await testNumericDeepLinkResolvesRealSessionId();
   await testDeveloperMessagesAreHidden();
   await testSwitchToSessionSyncsWithoutTokenAndResumes();

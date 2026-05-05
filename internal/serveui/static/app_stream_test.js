@@ -101,6 +101,8 @@ function createHarness(options = {}) {
       messages: []
     }
   };
+  const postStatus = Number.isFinite(Number(options.postStatus)) ? Number(options.postStatus) : 200;
+  const postErrorPayload = options.postErrorPayload || { error: { message: `post failed (${postStatus})` } };
   const eventsStatus = Number.isFinite(Number(options.eventsStatus)) ? Number(options.eventsStatus) : 200;
   const eventsErrorPayload = options.eventsErrorPayload || {
     error: { message: `events failed (${eventsStatus})` }
@@ -297,6 +299,7 @@ function createHarness(options = {}) {
       selectedEffort: 'selectedEffort',
       showHiddenSessions: 'showHiddenSessions',
       token: 'token',
+      draftMessages: 'draftMessages',
     },
     state,
     elements,
@@ -439,6 +442,12 @@ function createHarness(options = {}) {
       body: typeof options.body === 'string' ? options.body : null,
     });
     if (url === '/ui/v1/responses') {
+      if (postStatus !== 200) {
+        return new Response(JSON.stringify(postErrorPayload), {
+          status: postStatus,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
       const signal = options.signal || null;
       return new Response(new ReadableStream({
         start(controller) {
@@ -2224,6 +2233,110 @@ async function testNonImageAttachmentsDoNotCreatePreviewObjectURLs() {
   pass(name);
 }
 
+async function testFailedSendKeepsSessionDraftAndRestagesComposer() {
+  const name = 'failed send keeps a session-bound draft and restores the composer';
+  const harness = createHarness({ postStatus: 503, postErrorPayload: { error: { message: 'server unavailable' } } });
+  const { app, elements, state, localStorage, cleanup } = harness;
+  const session = {
+    id: 'session_failed_draft',
+    title: 'Draft failure',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  elements.promptInput.value = 'do not lose me';
+
+  await app.sendMessage();
+  await cleanup();
+
+  const drafts = JSON.parse(localStorage.getItem('draftMessages') || '[]');
+  if (drafts.length !== 1 || drafts[0].sessionId !== session.id || drafts[0].prompt !== 'do not lose me') {
+    fail(name, 'expected failed message to remain staged for its session', JSON.stringify(drafts));
+    return;
+  }
+  if (elements.promptInput.value !== 'do not lose me') {
+    fail(name, 'composer should be restaged after failed send', elements.promptInput.value);
+    return;
+  }
+  pass(name);
+}
+
+async function testSuccessfulSendRemovesOnlyMatchingDraft() {
+  const name = 'successful send removes only the acknowledged session draft';
+  const harness = createHarness();
+  const { app, elements, state, localStorage, cleanup } = harness;
+  const session = {
+    id: 'session_success_draft',
+    title: 'Draft success',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  localStorage.setItem('draftMessages', JSON.stringify([
+    { id: 'old_same_session_draft', sessionId: session.id, prompt: 'acknowledged text', created: 1 },
+    { id: 'other_draft', sessionId: 'other_session', prompt: 'other text', created: 2 },
+  ]));
+  elements.promptInput.value = 'acknowledged text';
+
+  await app.sendMessage();
+  await cleanup();
+
+  const drafts = JSON.parse(localStorage.getItem('draftMessages') || '[]');
+  if (drafts.length !== 1 || drafts[0].id !== 'other_draft') {
+    fail(name, 'only unrelated session drafts should remain', JSON.stringify(drafts));
+    return;
+  }
+  pass(name);
+}
+
+function testRestoreDraftMessageForSessionIsSessionBound() {
+  const name = 'restoreDraftMessageForSession restores only the active session draft';
+  const harness = createHarness();
+  const { app, elements, localStorage } = harness;
+  localStorage.setItem('draftMessages', JSON.stringify([
+    { id: 'd1', sessionId: 'session_a', prompt: 'draft A', created: 10 },
+    { id: 'd2', sessionId: 'session_b', prompt: 'draft B', created: 20 },
+  ]));
+
+  app.restoreDraftMessageForSession('session_a', { replace: true });
+  if (elements.promptInput.value !== 'draft A') {
+    fail(name, `session_a restored ${JSON.stringify(elements.promptInput.value)}`);
+    return;
+  }
+  app.restoreDraftMessageForSession('session_b', { replace: true });
+  if (elements.promptInput.value !== 'draft B') {
+    fail(name, `session_b restored ${JSON.stringify(elements.promptInput.value)}`);
+    return;
+  }
+  pass(name);
+}
+
+function testRestoreLatestDraftMessageDoesNotCrossSessionBoundary() {
+  const name = 'restoreLatestDraftMessage does not restore another session draft';
+  const harness = createHarness();
+  const { app, elements, state, localStorage } = harness;
+  state.activeSessionId = 'session_b';
+  elements.promptInput.value = '';
+  localStorage.setItem('draftMessages', JSON.stringify([
+    { id: 'd1', sessionId: 'session_a', prompt: 'draft A', created: 20 },
+  ]));
+
+  const restored = app.restoreLatestDraftMessage();
+  if (restored || elements.promptInput.value !== '') {
+    fail(name, 'should not restore session_a draft into session_b', JSON.stringify({ restored, value: elements.promptInput.value }));
+    return;
+  }
+  pass(name);
+}
+
 (async () => {
   await testInactiveSessionStreamEventsDoNotAppendToVisibleDOM();
   await testInactiveSessionPromptEventsRemainActionable();
@@ -2233,6 +2346,10 @@ async function testNonImageAttachmentsDoNotCreatePreviewObjectURLs() {
   await testSendMessageConsumesPostStreamWhenAvailable();
   await testSendMessageLazilyMaterializesAttachmentDataURLs();
   await testSendMessageKeepsComposerWhenAttachmentMaterializationFails();
+  await testFailedSendKeepsSessionDraftAndRestagesComposer();
+  await testSuccessfulSendRemovesOnlyMatchingDraft();
+  testRestoreDraftMessageForSessionIsSessionBound();
+  testRestoreLatestDraftMessageDoesNotCrossSessionBoundary();
   await testNonImageAttachmentsDoNotCreatePreviewObjectURLs();
   await testSendMessageResumesFromEventsAfterPostStreamDrops();
   await testNewChatDuringStreamingClearsStreamingState();
