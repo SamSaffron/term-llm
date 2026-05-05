@@ -21,6 +21,16 @@ go run ./benchmarks/codegen \
   -tasks go_fizzbuzz,go_binary_search
 ```
 
+Run the optional Zig task when `zig` is installed:
+
+```bash
+go run ./benchmarks/codegen \
+  -provider claude-bin \
+  -tasks zig_sum_positive_perf
+```
+
+`-tasks all` runs the default suite and intentionally excludes optional toolchain-dependent tasks like Zig.
+
 Run another provider/model:
 
 ```bash
@@ -55,15 +65,16 @@ Current suite:
 | `go_json_format` | Go | stdlib/API correctness and error handling |
 | `go_concurrent_counter` | Go | concurrency correctness under `-race` |
 | `go_dedupe_perf` | Go | correctness plus `go test -bench -benchmem` output |
-| `go_web_chat_1000` | Go | in-memory HTTP chat handler with 1000 concurrent users under `-race`, plus post-warmup runtime/allocation/memory metrics |
-| `node_web_chat_1000` | JavaScript/Node | equivalent 1000-concurrent-user HTTP chat server using only Node stdlib, with warmup and RSS memory |
-| `ruby_web_chat_1000` | Ruby | equivalent 1000-thread in-memory chat callable using only Ruby stdlib, with warmup and RSS memory |
-| `python_web_chat_1000` | Python | equivalent 1000-thread in-memory chat callable using only Python stdlib, with warmup and max RSS memory |
+| `go_web_chat_1000` | Go | generated chat server exercised over real localhost HTTP by the common Go harness |
+| `node_web_chat_1000` | JavaScript/Node | same common localhost HTTP harness against a generated Node stdlib server |
+| `ruby_web_chat_1000` | Ruby | same common localhost HTTP harness against a Ruby stdlib adapter around the generated callable |
+| `python_web_chat_1000` | Python | same common localhost HTTP harness against a Python stdlib adapter around the generated callable |
 | `asm_sum_positive_perf` | x86-64 assembly | System V ABI assembly correctness plus warmed perf loop and max RSS memory |
+| `zig_sum_positive_perf` | Zig | optional explicit task; exported C ABI function linked to the same C perf harness as assembly; requires `zig` installed |
 
-The web chat tasks are intentionally heavier than the toy tasks. Go drives one generated `http.Handler` with warmup traffic, then 1000 concurrent `POST /rooms/{room}/messages` requests through `httptest`, verifies per-room sequence ordering and message retention, then fetches the room under `go test -race`. Node starts a generated stdlib HTTP listener on localhost and drives the same API with warmup traffic plus 1000 concurrent `fetch()` calls. Ruby and Python use the same semantic contract through an in-memory callable so we can hammer 1000 threads without turning the benchmark into a framework shootout. The scorers record post-warmup runtime and memory where the runtime exposes it. If you run them on a slow box, raise `-score-timeout` rather than weakening the concurrency signal.
+The web chat tasks are intentionally heavier than the toy tasks and now use one common performance harness. Each generated solution is launched as a localhost HTTP server on `127.0.0.1:$PORT`; the same Go load driver sends the bad-input check, 100-post warmup, 1000 concurrent `POST /rooms/{room}/messages` requests, a validating `GET`, and the empty-room check. That means Go, Node, Ruby, and Python are measured through the same client, the same concurrency shape, and the same correctness assertions. Ruby/Python still generate a small callable to avoid framework lottery; checked-in stdlib adapters expose that callable over real HTTP for the shared harness.
 
-Assembly is deliberately not pretending to be a web stack. It tests whether the model can emit linkable x86-64 System V ABI code that survives a C harness, then records warmed loop runtime and process RSS. Different beast, same dashboard: quality, cost, speed, memory.
+Assembly and Zig are deliberately not pretending to be web stacks. They test whether the model can emit linkable low-level code that survives a C harness, then records warmed loop runtime and process RSS. Zig is registered as an explicit optional task (`-tasks zig_sum_positive_perf`) because this container/CI may not have `zig` installed. Different beast, same dashboard: quality, cost, speed, memory.
 
 This is deliberately repo-local and boring to run. Add Ruby/Rails, SQL/Postgres, and TypeScript suites the same way: prompt, isolated workspace, deterministic scorer.
 

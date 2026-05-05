@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func allTasks() []Task {
+func defaultTasks() []Task {
 	return []Task{
 		fizzBuzzTask{},
 		binarySearchTask{},
@@ -22,10 +22,20 @@ func allTasks() []Task {
 	}
 }
 
+func optionalTasks() []Task {
+	return []Task{
+		zigSumPositiveTask{},
+	}
+}
+
+func allTasks() []Task {
+	return append(defaultTasks(), optionalTasks()...)
+}
+
 func selectTasks(spec string) ([]Task, error) {
 	tasks := allTasks()
 	if strings.TrimSpace(spec) == "" || strings.EqualFold(strings.TrimSpace(spec), "all") {
-		return tasks, nil
+		return defaultTasks(), nil
 	}
 	byName := make(map[string]Task, len(tasks))
 	var names []string

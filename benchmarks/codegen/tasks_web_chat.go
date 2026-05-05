@@ -32,110 +32,28 @@ The handler must be safe for 1000 concurrent users posting at the same time. Do 
 }
 
 func (webChat1000Task) Score(response string, timeout time.Duration) ScoreResult {
-	return scoreGoFunctionWithRace(response, timeout, `
-type chatMessage struct {
-	Seq  int    `+"`"+`json:"seq"`+"`"+`
-	User string `+"`"+`json:"user"`+"`"+`
-	Text string `+"`"+`json:"text"`+"`"+`
+	return scoreHTTPServer(response, timeout, httpServerSpec{
+		Prefix: "term-llm-codegen-bench-go-http",
+		Files: map[string]string{
+			"solution.go": "{{CODE}}",
+			"go.mod":      "module benchsolution\n\ngo 1.22\n",
+			"main.go": `package main
+
+import (
+	"log"
+	"net/http"
+	"os"
+)
+
+func main() {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	log.Fatal(http.ListenAndServe("127.0.0.1:"+port, NewChatServer()))
 }
-
-func TestGenerated(t *testing.T) {
-	h := NewChatServer()
-	warmStart := time.Now()
-	exerciseGoChatHandler(t, h, "warmup", 100)
-	fmt.Printf("BENCH_WARMUP_MS=%.3f\n", float64(time.Since(warmStart).Microseconds())/1000.0)
-	started := time.Now()
-	exerciseGoChatHandler(t, h, "lobby", 1000)
-	fmt.Printf("BENCH_RUNTIME_MS=%.3f\n", float64(time.Since(started).Microseconds())/1000.0)
-	var mem runtime.MemStats
-	runtime.ReadMemStats(&mem)
-	fmt.Printf("BENCH_MEMORY_KB=%.0f\n", float64(mem.Alloc)/1024.0)
-}
-
-func BenchmarkGenerated(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		h := NewChatServer()
-		exerciseGoChatHandler(b, h, "lobby", 1000)
-	}
-}
-
-func exerciseGoChatHandler(tb testing.TB, h http.Handler, room string, users int) {
-	tb.Helper()
-	// Basic validation first: bad JSON and empty fields should not be accepted.
-	badReq := httptest.NewRequest(http.MethodPost, "/rooms/"+room+"/messages", strings.NewReader(`+"`"+`{"user":"","text":"hello"}`+"`"+`))
-	badReq.Header.Set("Content-Type", "application/json")
-	badRec := httptest.NewRecorder()
-	h.ServeHTTP(badRec, badReq)
-	if badRec.Code < 400 || badRec.Code > 499 {
-		tb.Fatalf("empty user status = %d, want 4xx", badRec.Code)
-	}
-
-	var wg sync.WaitGroup
-	for i := 0; i < users; i++ {
-		i := i
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			body := fmt.Sprintf("{\"user\":\"user-%d\",\"text\":\"hello-%d\"}", i, i)
-			req := httptest.NewRequest(http.MethodPost, "/rooms/"+room+"/messages", strings.NewReader(body))
-			req.Header.Set("Content-Type", "application/json")
-			rec := httptest.NewRecorder()
-			h.ServeHTTP(rec, req)
-			if rec.Code != http.StatusCreated {
-				tb.Errorf("POST status = %d body=%s", rec.Code, rec.Body.String())
-				return
-			}
-			var msg chatMessage
-			if err := json.NewDecoder(rec.Body).Decode(&msg); err != nil {
-				tb.Errorf("decode POST response: %v", err)
-				return
-			}
-			if msg.Seq < 1 || msg.Seq > users || msg.User != fmt.Sprintf("user-%d", i) || msg.Text != fmt.Sprintf("hello-%d", i) {
-				tb.Errorf("bad stored message: %#v", msg)
-			}
-		}()
-	}
-	wg.Wait()
-
-	req := httptest.NewRequest(http.MethodGet, "/rooms/"+room+"/messages", nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		tb.Fatalf("GET status = %d body=%s", rec.Code, rec.Body.String())
-	}
-	var messages []chatMessage
-	if err := json.NewDecoder(rec.Body).Decode(&messages); err != nil {
-		tb.Fatalf("decode GET response: %v", err)
-	}
-	if len(messages) != users {
-		tb.Fatalf("message count = %d, want %d", len(messages), users)
-	}
-	seenSeq := make(map[int]bool, users)
-	seenUsers := make(map[string]bool, users)
-	lastSeq := 0
-	for _, msg := range messages {
-		if msg.Seq <= lastSeq {
-			tb.Fatalf("messages not in seq order around seq %d after %d", msg.Seq, lastSeq)
-		}
-		lastSeq = msg.Seq
-		if msg.Seq < 1 || msg.Seq > users || seenSeq[msg.Seq] {
-			tb.Fatalf("bad or duplicate seq: %d", msg.Seq)
-		}
-		seenSeq[msg.Seq] = true
-		seenUsers[msg.User] = true
-	}
-	for i := 0; i < users; i++ {
-		if !seenUsers[fmt.Sprintf("user-%d", i)] {
-		tb.Fatalf("missing user-%d", i)
-		}
-	}
-
-	req = httptest.NewRequest(http.MethodGet, "/rooms/empty/messages", nil)
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "[]" {
-		tb.Fatalf("empty room = status %d body %q, want 200 []", rec.Code, rec.Body.String())
-	}
-}
-`, "encoding/json", "fmt", "net/http", "net/http/httptest", "runtime", "strings", "sync", "time")
+`,
+		},
+		Cmd: []string{"go", "run", "."},
+	})
 }

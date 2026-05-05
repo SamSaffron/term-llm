@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -270,6 +271,28 @@ sum_positive:
     ret
 `
 	result := assemblySumPositiveTask{}.Score(code, 60*time.Second)
+	if !result.Pass || result.Score != 1 || result.Metrics.RuntimeMS <= 0 || result.Metrics.WarmupMS <= 0 || result.Metrics.MemoryKB <= 0 {
+		t.Fatalf("expected pass with runtime/warmup/memory, detail=%s stdout=%s stderr=%s", result.Details, result.Stdout, result.Stderr)
+	}
+}
+
+func TestZigSumPositiveTaskReferenceImplementationPasses(t *testing.T) {
+	if _, err := exec.LookPath("zig"); err != nil {
+		t.Skip("zig not installed")
+	}
+	code := `
+export fn sum_positive(xs: [*]const i64, n: isize) i64 {
+    if (n <= 0) return 0;
+    var sum: i64 = 0;
+    var i: isize = 0;
+    while (i < n) : (i += 1) {
+        const v = xs[@intCast(i)];
+        if (v > 0) sum += v;
+    }
+    return sum;
+}
+`
+	result := zigSumPositiveTask{}.Score(code, 60*time.Second)
 	if !result.Pass || result.Score != 1 || result.Metrics.RuntimeMS <= 0 || result.Metrics.WarmupMS <= 0 || result.Metrics.MemoryKB <= 0 {
 		t.Fatalf("expected pass with runtime/warmup/memory, detail=%s stdout=%s stderr=%s", result.Details, result.Stdout, result.Stderr)
 	}

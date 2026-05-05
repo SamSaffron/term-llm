@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-var fencedBlockRe = regexp.MustCompile("(?s)```(?:go|golang|javascript|js|node|ruby|rb|python|py|asm|assembly|x86_64-assembly|s)?\\s*\\n(.*?)\\n```")
+var fencedBlockRe = regexp.MustCompile("(?s)```(?:go|golang|javascript|js|node|ruby|rb|python|py|asm|assembly|x86_64-assembly|zig|s)?\\s*\\n(.*?)\\n```")
 var goBenchRe = regexp.MustCompile(`BenchmarkGenerated\S*\s+\d+\s+([0-9.]+)\s+ns/op(?:\s+([0-9.]+)\s+B/op)?(?:\s+([0-9.]+)\s+allocs/op)?`)
 var runtimeBenchRe = regexp.MustCompile(`BENCH_RUNTIME_MS=([0-9.]+)`)
 var warmupBenchRe = regexp.MustCompile(`BENCH_WARMUP_MS=([0-9.]+)`)
@@ -29,7 +29,7 @@ func extractCode(response string) (string, error) {
 		return strings.TrimSpace(matches[1]), nil
 	}
 	// Accept raw code as a convenience for providers that obey "no prose" literally.
-	if strings.Contains(response, "func ") || strings.Contains(response, "type ") || strings.Contains(response, "export function") || strings.Contains(response, "module.exports") || strings.Contains(response, "def ") || strings.Contains(response, "class ") || strings.Contains(response, ".globl") || strings.Contains(response, ".global") {
+	if strings.Contains(response, "func ") || strings.Contains(response, "type ") || strings.Contains(response, "export function") || strings.Contains(response, "module.exports") || strings.Contains(response, "def ") || strings.Contains(response, "class ") || strings.Contains(response, ".globl") || strings.Contains(response, ".global") || strings.Contains(response, "export fn") {
 		return response, nil
 	}
 	return "", fmt.Errorf("no code block found")
@@ -200,6 +200,36 @@ func scoreAssembly(response string, timeout time.Duration, testSource string) Sc
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "bash", "-lc", "gcc -O2 -Wall -Wextra -no-pie solution.s test.c -o test && ./test")
+	cmd.Dir = dir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err = cmd.Run()
+	return scriptResult(ctx, err, stdout.String(), stderr.String(), code)
+}
+
+func scoreZig(response string, timeout time.Duration, testSource string) ScoreResult {
+	if _, err := exec.LookPath("zig"); err != nil {
+		return ScoreResult{Pass: false, Score: 0, Details: "zig executable not found", GeneratedCode: response}
+	}
+	code, err := extractCode(response)
+	if err != nil {
+		return ScoreResult{Pass: false, Score: 0, Details: err.Error(), GeneratedCode: response}
+	}
+	dir, err := os.MkdirTemp("", "term-llm-codegen-bench-zig-*")
+	if err != nil {
+		return ScoreResult{Pass: false, Score: 0, Details: err.Error(), GeneratedCode: code}
+	}
+	defer os.RemoveAll(dir)
+	if err := os.WriteFile(filepath.Join(dir, "solution.zig"), []byte(code), 0o644); err != nil {
+		return ScoreResult{Pass: false, Score: 0, Details: err.Error(), GeneratedCode: code}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "test.c"), []byte(testSource), 0o644); err != nil {
+		return ScoreResult{Pass: false, Score: 0, Details: err.Error(), GeneratedCode: code}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bash", "-lc", "zig build-lib -O ReleaseFast -dynamic -femit-bin=libsolution.so solution.zig && gcc -O2 -Wall -Wextra test.c -L. -lsolution -Wl,-rpath,. -o test && ./test")
 	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
