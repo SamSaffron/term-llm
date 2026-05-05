@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"testing"
 )
 
@@ -63,4 +64,44 @@ func BenchmarkExecuteSingleToolCallFast(b *testing.B) {
 	b.StopTimer()
 	cancel()
 	<-drained
+}
+
+type benchmarkEventStream struct {
+	events []Event
+	idx    int
+}
+
+func (s *benchmarkEventStream) Recv() (Event, error) {
+	if s.idx >= len(s.events) {
+		return Event{}, io.EOF
+	}
+	event := s.events[s.idx]
+	s.idx++
+	return event, nil
+}
+
+func (s *benchmarkEventStream) Close() error { return nil }
+
+func BenchmarkLoggingStreamTextDeltas(b *testing.B) {
+	const textEvents = 2048
+	events := make([]Event, 0, textEvents+1)
+	for i := 0; i < textEvents; i++ {
+		events = append(events, Event{Type: EventTextDelta, Text: "x"})
+	}
+	events = append(events, Event{Type: EventDone})
+
+	b.SetBytes(textEvents)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		stream := &loggingStream{inner: &benchmarkEventStream{events: events}}
+		for {
+			_, err := stream.Recv()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				b.Fatalf("Recv returned error: %v", err)
+			}
+		}
+	}
 }
