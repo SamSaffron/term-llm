@@ -1050,6 +1050,38 @@ func TestEngineParallelToolExecution(t *testing.T) {
 	t.Logf("Parallel execution: peak concurrent=%d, elapsed=%v", tool.concurrentAt, elapsed)
 }
 
+func TestExecuteToolCallsParallelCapsConcurrency(t *testing.T) {
+	tool := &overlapDetectTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+	engine := NewEngine(&fakeProvider{}, registry)
+
+	expectedLimit := parallelToolExecutionLimit(maxParallelToolExecutions*2 + 1)
+	if expectedLimit < 2 {
+		t.Fatalf("parallelToolExecutionLimit returned %d, want at least 2", expectedLimit)
+	}
+
+	calls := make([]ToolCall, 0, expectedLimit*2+1)
+	for i := 0; i < cap(calls); i++ {
+		calls = append(calls, ToolCall{
+			ID:        fmt.Sprintf("call-%d", i),
+			Name:      "overlap_tool",
+			Arguments: json.RawMessage(`{}`),
+		})
+	}
+
+	if _, err := engine.executeToolCalls(context.Background(), calls, true, eventSender{}, false, false); err != nil {
+		t.Fatalf("executeToolCalls error: %v", err)
+	}
+
+	if got := tool.maxActive.Load(); got > int64(expectedLimit) {
+		t.Fatalf("parallel tool execution reached max concurrency %d, want <= %d", got, expectedLimit)
+	}
+	if got := tool.maxActive.Load(); got < 2 {
+		t.Fatalf("expected parallel tool execution, got max concurrency %d", got)
+	}
+}
+
 func TestExecuteToolCallsParallelReturnsOnContextCancel(t *testing.T) {
 	tool := &delayingTool{delay: 300 * time.Millisecond}
 	registry := NewToolRegistry()

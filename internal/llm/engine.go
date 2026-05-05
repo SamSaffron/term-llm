@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -16,10 +17,12 @@ import (
 )
 
 const (
-	defaultMaxTurns       = 20
-	stopSearchToolHint    = "IMPORTANT: Do not call any tools. Use the information already retrieved and answer directly."
-	callbackTimeout       = 5 * time.Second
-	toolHeartbeatInterval = 10 * time.Second
+	defaultMaxTurns           = 20
+	stopSearchToolHint        = "IMPORTANT: Do not call any tools. Use the information already retrieved and answer directly."
+	callbackTimeout           = 5 * time.Second
+	toolHeartbeatInterval     = 10 * time.Second
+	maxParallelToolExecutions = 8
+	minParallelToolExecutions = 2
 )
 
 // getMaxTurns returns the max turns from request, with fallback to default
@@ -1510,6 +1513,24 @@ func buildAssistantMessageWithReasoningMetadata(text string, toolCalls []ToolCal
 	return Message{Role: RoleAssistant, Parts: parts}
 }
 
+func parallelToolExecutionLimit(callCount int) int {
+	if callCount <= 1 {
+		return callCount
+	}
+
+	limit := runtime.GOMAXPROCS(0)
+	if limit < minParallelToolExecutions {
+		limit = minParallelToolExecutions
+	}
+	if limit > maxParallelToolExecutions {
+		limit = maxParallelToolExecutions
+	}
+	if limit > callCount {
+		limit = callCount
+	}
+	return limit
+}
+
 // executeToolCalls executes multiple tool calls, potentially in parallel.
 // Note: When executing in parallel, EventToolExecStart/EventToolExecEnd events
 // are emitted from concurrent goroutines. While the channel is thread-safe, events
@@ -1545,37 +1566,67 @@ func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, paralle
 	}
 
 	// Parallel execution for multiple calls (events may arrive out of order)
+	type toolJob struct {
+		index int
+		call  ToolCall
+	}
 	type toolResult struct {
 		index   int
 		message Message
 	}
 
+	workerCount := parallelToolExecutionLimit(len(calls))
+	jobs := make(chan toolJob, workerCount)
 	resultChan := make(chan toolResult, len(calls))
+
+	var wg sync.WaitGroup
+	wg.Add(workerCount)
+	for i := 0; i < workerCount; i++ {
+		go func() {
+			defer wg.Done()
+			for job := range jobs {
+				c := job.call
+				result := toolResult{index: job.index, message: ToolErrorMessage(c.ID, c.Name, "tool returned no result", c.ThoughtSig)}
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							errMsg := fmt.Sprintf("Error: tool panicked: %v", r)
+							_ = send.Send(Event{Type: EventToolExecEnd, ToolCallID: c.ID, ToolName: c.Name, ToolSuccess: false})
+							result.message = ToolErrorMessage(c.ID, c.Name, errMsg, c.ThoughtSig)
+						}
+					}()
+					msgs, _ := e.executeSingleToolCall(ctx, c, send, debug, debugRaw)
+					if len(msgs) > 0 {
+						result.message = msgs[0]
+					}
+				}()
+
+				select {
+				case resultChan <- result:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
 
 	for i, call := range calls {
 		if err := ctx.Err(); err != nil {
+			close(jobs)
 			return nil, err
 		}
-		go func(idx int, c ToolCall) {
-			defer func() {
-				if r := recover(); r != nil {
-					errMsg := fmt.Sprintf("Error: tool panicked: %v", r)
-					_ = send.Send(Event{Type: EventToolExecEnd, ToolCallID: c.ID, ToolName: c.Name, ToolSuccess: false})
-					resultChan <- toolResult{index: idx, message: ToolErrorMessage(c.ID, c.Name, errMsg, c.ThoughtSig)}
-				}
-			}()
-			msgs, _ := e.executeSingleToolCall(ctx, c, send, debug, debugRaw)
-			msg := ToolErrorMessage(c.ID, c.Name, "tool returned no result", c.ThoughtSig)
-			if len(msgs) > 0 {
-				msg = msgs[0]
-			}
-			resultChan <- toolResult{index: idx, message: msg}
-		}(i, call)
+		select {
+		case jobs <- toolJob{index: i, call: call}:
+		case <-ctx.Done():
+			close(jobs)
+			return nil, ctx.Err()
+		}
 	}
+	close(jobs)
 
 	// Collect results and maintain original order. If the caller cancels while
 	// non-cooperative tools are still running, return promptly instead of waiting
-	// for every goroutine to finish. The buffered channel is sized for one result
+	// for every worker to finish. The buffered channel is sized for one result
 	// per tool, so late tool completions cannot block after cancellation.
 	results := make([]Message, len(calls))
 	for remaining := len(calls); remaining > 0; remaining-- {
@@ -1586,6 +1637,7 @@ func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, paralle
 			return nil, ctx.Err()
 		}
 	}
+	wg.Wait()
 
 	return results, nil
 }
