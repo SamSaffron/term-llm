@@ -294,6 +294,50 @@ const updateResponseSequence = (session, payload) => {
   session.lastSequenceNumber = Math.max(current, seq);
 };
 
+// Visible-session render guards: stream events may arrive after the user has
+// switched discussions, so session data can update while DOM work is limited to
+// the conversation currently mounted in elements.messages.
+const isSessionVisible = (session) => {
+  const sessionId = String(session?.id || '').trim();
+  return Boolean(sessionId && !state.draftSessionActive && state.activeSessionId === sessionId);
+};
+
+const appendStreamMessageNode = (session, message, createNode = createMessageNode) => {
+  if (!isSessionVisible(session)) return null;
+  const node = createNode(message);
+  elements.messages.appendChild(node);
+  return node;
+};
+
+const updateVisibleToolGroupNode = (session, message) => {
+  if (isSessionVisible(session)) updateToolGroupNode(message);
+};
+
+const updateVisibleModelSwapNode = (session, message) => {
+  if (isSessionVisible(session)) updateModelSwapNode(message);
+};
+
+const enqueueVisibleAssistantStreamUpdate = (session, message) => {
+  if (isSessionVisible(session)) enqueueAssistantStreamUpdate(message);
+};
+
+const finalizeVisibleAssistantStreamRender = (session, message) => {
+  if (isSessionVisible(session)) finalizeAssistantStreamRender(message);
+};
+
+const scrollVisibleStreamToBottom = (session, force = false) => {
+  if (!isSessionVisible(session)) return;
+  if (force) {
+    scrollToBottom(true);
+  } else {
+    scrollToBottom();
+  }
+};
+
+const scheduleVisibleStreamScroll = (session) => {
+  if (isSessionVisible(session)) scheduleStreamScroll();
+};
+
 const createResponseStreamState = (session) => {
   let currentToolGroup = [...session.messages].reverse().find((message) => (
     message.role === 'tool-group' && message.status === 'running'
@@ -316,7 +360,7 @@ const createResponseStreamState = (session) => {
       created: Date.now()
     };
     session.messages.push(msg);
-    elements.messages.appendChild(createMessageNode(msg));
+    appendStreamMessageNode(session, msg);
     currentAssistantMessage = msg;
     return msg;
   };
@@ -325,7 +369,7 @@ const createResponseStreamState = (session) => {
     if (!currentToolGroup) return;
     currentToolGroup.tools.forEach((tool) => { tool.status = 'done'; });
     currentToolGroup.status = 'done';
-    updateToolGroupNode(currentToolGroup);
+    updateVisibleToolGroupNode(session, currentToolGroup);
     currentToolGroup = null;
   };
 
@@ -405,14 +449,14 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
         };
         streamState.modelSwapProgressMessage = marker;
         session.messages.push(marker);
-        elements.messages.appendChild(createMessageNode(marker));
+        appendStreamMessageNode(session, marker);
       } else {
         marker.content = message;
         marker.stage = payload?.stage || marker.stage || '';
-        updateModelSwapNode(marker);
+        updateVisibleModelSwapNode(session, marker);
       }
       scheduleStreamPersistence();
-      scrollToBottom();
+      scrollVisibleStreamToBottom(session);
     }
     return { terminal: false };
   }
@@ -424,7 +468,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       const msg = streamState.ensureAssistantMessage();
       msg.content += delta;
       scheduleStreamPersistence();
-      enqueueAssistantStreamUpdate(msg);
+      enqueueVisibleAssistantStreamUpdate(session, msg);
     }
     return { terminal: false };
   }
@@ -432,7 +476,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
   if (event === 'response.output_text.new_segment') {
     streamState.closeToolGroup();
     if (streamState.currentAssistantMessage?.content) {
-      finalizeAssistantStreamRender(streamState.currentAssistantMessage);
+      finalizeVisibleAssistantStreamRender(session, streamState.currentAssistantMessage);
     }
     streamState.currentAssistantMessage = null;
     return { terminal: false };
@@ -442,7 +486,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     const item = payload.item;
     if (item?.type === 'function_call') {
       if (streamState.currentAssistantMessage?.content) {
-        finalizeAssistantStreamRender(streamState.currentAssistantMessage);
+        finalizeVisibleAssistantStreamRender(session, streamState.currentAssistantMessage);
       }
       const toolEntry = {
         id: item.call_id || generateId('tool'),
@@ -463,15 +507,15 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
           created: Date.now()
         };
         session.messages.push(streamState.currentToolGroup);
-        elements.messages.appendChild(createToolGroupNode(streamState.currentToolGroup));
+        appendStreamMessageNode(session, streamState.currentToolGroup, createToolGroupNode);
       } else {
         streamState.currentToolGroup.tools.push(toolEntry);
-        updateToolGroupNode(streamState.currentToolGroup);
+        updateVisibleToolGroupNode(session, streamState.currentToolGroup);
       }
 
       streamState.currentAssistantMessage = null;
       saveSessions();
-      scrollToBottom();
+      scrollVisibleStreamToBottom(session);
     }
     return { terminal: false };
   }
@@ -499,7 +543,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
           }
           if (!currentIsCompleteJSON) {
             entry.arguments = current + delta;
-            updateToolGroupNode(streamState.currentToolGroup);
+            updateVisibleToolGroupNode(session, streamState.currentToolGroup);
             scheduleStreamPersistence();
           }
         }
@@ -518,7 +562,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       if (entry) {
         entry.arguments = String(item.arguments || entry.arguments || '');
       }
-      updateToolGroupNode(streamState.currentToolGroup);
+      updateVisibleToolGroupNode(session, streamState.currentToolGroup);
       saveSessions();
     }
     return { terminal: false };
@@ -553,11 +597,11 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       const entry = streamState.currentToolGroup.tools.find((tool) => tool.id === callId);
       if (entry) {
         entry.status = 'done';
-        updateToolGroupNode(streamState.currentToolGroup);
+        updateVisibleToolGroupNode(session, streamState.currentToolGroup);
       }
       if (streamState.currentToolGroup.tools.every((tool) => tool.status === 'done')) {
         streamState.currentToolGroup.status = 'done';
-        updateToolGroupNode(streamState.currentToolGroup);
+        updateVisibleToolGroupNode(session, streamState.currentToolGroup);
       }
     }
     if (payload.images && payload.images.length > 0) {
@@ -565,10 +609,10 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       payload.images.forEach((url) => {
         msg.content += `\n\n![Generated Image](${url})\n`;
       });
-      enqueueAssistantStreamUpdate(msg);
+      enqueueVisibleAssistantStreamUpdate(session, msg);
     }
     saveSessions();
-    scheduleStreamScroll();
+    scheduleVisibleStreamScroll(session);
     return { terminal: false };
   }
 
@@ -577,13 +621,15 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     if (interjectionText) {
       streamState.closeToolGroup();
       if (streamState.currentAssistantMessage) {
-        finalizeAssistantStreamRender(streamState.currentAssistantMessage);
+        finalizeVisibleAssistantStreamRender(session, streamState.currentAssistantMessage);
         streamState.currentAssistantMessage = null;
       }
       const pending = consumePendingInterjectionByText(session.id, interjectionText);
       const messageId = pending?.messageId || generateId('msg');
-      const emptyState = elements.messages.querySelector('.empty-state');
-      if (emptyState) emptyState.remove();
+      if (isSessionVisible(session)) {
+        const emptyState = elements.messages.querySelector('.empty-state');
+        if (emptyState) emptyState.remove();
+      }
       const message = {
         id: messageId,
         role: 'user',
@@ -592,11 +638,11 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
         interruptState: 'interject'
       };
       session.messages.push(message);
-      elements.messages.appendChild(createMessageNode(message));
-      syncTurnActionPanels();
+      appendStreamMessageNode(session, message);
+      if (isSessionVisible(session)) syncTurnActionPanels();
       resolvePendingInterruptCommit(session.id, interjectionText);
       saveSessions();
-      scrollToBottom(true);
+      scrollVisibleStreamToBottom(session, true);
     }
     return { terminal: false };
   }
@@ -630,7 +676,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     const lastAssistant = [...session.messages].reverse().find((message) => message.role === 'assistant');
     if (lastAssistant) {
       if (usage) lastAssistant.usage = usage;
-      finalizeAssistantStreamRender(lastAssistant);
+      finalizeVisibleAssistantStreamRender(session, lastAssistant);
     }
     session.lastMessageAt = Date.now();
     flushStreamPersistence();
@@ -638,7 +684,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     renderSidebar();
     app.refreshSidebarStatusPoll?.();
     void maybeNotifyResponseComplete(session, lastAssistant, responseId);
-    scrollToBottom();
+    scrollVisibleStreamToBottom(session);
     return { terminal: true };
   }
 
@@ -665,23 +711,41 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     setSessionServerActiveRun(session, false);
 
     const lastAssistant = [...session.messages].reverse().find((message) => message.role === 'assistant');
-    if (lastAssistant) finalizeAssistantStreamRender(lastAssistant);
+    if (lastAssistant) finalizeVisibleAssistantStreamRender(session, lastAssistant);
     flushStreamPersistence();
     saveSessions();
     renderSidebar();
     app.refreshSidebarStatusPoll?.();
-    scrollToBottom(true);
+    scrollVisibleStreamToBottom(session, true);
     return { terminal: true };
   }
 
   return { terminal: false };
 };
 
-const consumeResponseStream = async (stream, session, streamState) => {
+const consumeResponseStream = async (stream, session, streamState, options = {}) => {
   let sawTerminal = false;
   let sawDone = false;
+  let stale = false;
+  const generation = Number.isFinite(Number(options.generation)) ? Number(options.generation) : state.streamGeneration;
+  const sessionId = String(session?.id || '').trim();
+  const expectedResponseId = String(options.responseId || '').trim();
+
+  const streamIsCurrent = () => {
+    if (generation !== state.streamGeneration) return false;
+    const currentSessionId = String(state.currentStreamSessionId || '').trim();
+    if (currentSessionId && sessionId && currentSessionId !== sessionId) return false;
+    const currentResponseId = String(state.currentStreamResponseId || '').trim();
+    if (expectedResponseId && currentResponseId && currentResponseId !== expectedResponseId) return false;
+    return true;
+  };
 
   await parseSSEStream(stream, async (event, data) => {
+    if (!streamIsCurrent()) {
+      stale = true;
+      return false;
+    }
+
     if (data === '[DONE]') {
       sawDone = true;
       streamState.closeToolGroup();
@@ -699,14 +763,22 @@ const consumeResponseStream = async (stream, session, streamState) => {
       return true;
     }
 
+    if (!streamIsCurrent()) {
+      stale = true;
+      return false;
+    }
     const result = applyResponseStreamEvent(session, streamState, event, payload);
     if (result?.terminal) {
       sawTerminal = true;
     }
+    if (!streamIsCurrent()) {
+      stale = true;
+      return false;
+    }
     return true;
   });
 
-  return sawTerminal || sawDone || !session.activeResponseId;
+  return { terminal: sawTerminal || sawDone || !session.activeResponseId, stale };
 };
 
 const fetchResponseSnapshot = async (session, responseId) => {
@@ -903,16 +975,21 @@ const resumeActiveResponseInner = async (session, responseId, options) => {
 
       consecutiveHttpFailures = 0;
       setConnectionState('', '');
-      const terminal = await consumeResponseStream(response.body, session, streamState);
+      const streamGeneration = state.streamGeneration;
+      const result = await consumeResponseStream(response.body, session, streamState, { generation: streamGeneration, responseId });
       if (state.abortController === controller) {
         state.abortController = null;
       }
 
+      if (result.stale) {
+        setStreaming(Boolean(state.currentStreamResponseId));
+        return false;
+      }
       if (session.activeResponseId !== responseId) {
         setStreaming(Boolean(state.currentStreamResponseId));
         return true;
       }
-      if (terminal) {
+      if (result.terminal) {
         setStreaming(Boolean(state.currentStreamResponseId));
         return true;
       }
@@ -2914,7 +2991,7 @@ const addErrorMessage = (text, session) => {
     created: Date.now()
   };
   session.messages.push(message);
-  elements.messages.appendChild(createMessageNode(message));
+  appendStreamMessageNode(session, message);
 };
 
 const markToolGroupsDone = (session) => {
@@ -2922,11 +2999,11 @@ const markToolGroupsDone = (session) => {
     if (m.role === 'tool-group' && m.status === 'running') {
       m.tools.forEach(t => { t.status = 'done'; });
       m.status = 'done';
-      updateToolGroupNode(m);
+      updateVisibleToolGroupNode(session, m);
     }
     if (m.role === 'tool' && m.status === 'running') {
       m.status = 'done';
-      updateToolNode(m);
+      if (isSessionVisible(session)) updateToolNode(m);
     }
   });
 };
@@ -3246,9 +3323,10 @@ const sendMessage = async (options = {}) => {
       }
       await resumeActiveResponse(session, { streamState, responseId: headerResponseId || session.activeResponseId });
     } else {
-      const terminal = await consumeResponseStream(response.body, session, streamState);
-      if (!terminal && session.activeResponseId) {
-        await resumeActiveResponse(session, { streamState, responseId: headerResponseId || session.activeResponseId });
+      const responseId = headerResponseId || session.activeResponseId;
+      const result = await consumeResponseStream(response.body, session, streamState, { generation: sendGeneration, responseId });
+      if (!result.stale && !result.terminal && sendGeneration === state.streamGeneration && session.activeResponseId) {
+        await resumeActiveResponse(session, { streamState, responseId });
       }
     }
 

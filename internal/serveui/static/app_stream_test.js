@@ -48,6 +48,7 @@ function makeNode() {
     textContent: '',
     innerHTML: '',
     disabled: false,
+    dataset: {},
   };
 }
 
@@ -241,10 +242,19 @@ function createHarness(options = {}) {
     voiceStatus: null,
     pendingInterjectionBanner: null,
     askUserModal: makeNode(),
+    askUserModalTitle: { textContent: '' },
+    askUserModalSubtitle: { textContent: '' },
     askUserModalBody: makeNode(),
     askUserError: { textContent: '' },
     askUserSubmitBtn: { disabled: false, textContent: 'Continue' },
     askUserCancelBtn: { disabled: false, textContent: 'Dismiss' },
+    approvalModal: makeNode(),
+    approvalTitle: { textContent: '' },
+    approvalPath: { textContent: '' },
+    approvalError: { textContent: '' },
+    approvalBody: makeNode(),
+    approvalApproveBtn: { disabled: false, textContent: 'Approve' },
+    approvalDenyBtn: { disabled: false, textContent: 'Deny' },
   };
   document.activeElement = elements.promptInput;
 
@@ -556,6 +566,220 @@ async function waitFor(predicate, timeoutMs) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   return false;
+}
+
+async function testInactiveSessionStreamEventsDoNotAppendToVisibleDOM() {
+  const name = 'stream events for inactive session update data without appending to visible DOM';
+  const harness = createHarness();
+  const { app, state, elements, cleanup } = harness;
+
+  const sessionA = {
+    id: 'session_a',
+    title: 'A',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: 'resp_a',
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  const sessionB = {
+    id: 'session_b',
+    title: 'B',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+    number: 2,
+  };
+  state.sessions.push(sessionA, sessionB);
+  state.activeSessionId = sessionB.id;
+  state.currentStreamSessionId = '';
+  state.currentStreamResponseId = '';
+
+  const streamState = app.createResponseStreamState(sessionA);
+  app.applyResponseStreamEvent(sessionA, streamState, 'response.output_text.delta', {
+    delta: 'leaked assistant text',
+    sequence_number: 1,
+  });
+  app.applyResponseStreamEvent(sessionA, streamState, 'response.output_item.added', {
+    item: { type: 'function_call', call_id: 'call_leak', name: 'read_file', arguments: '{"path":"secret"}' },
+    sequence_number: 2,
+  });
+
+  const assistant = sessionA.messages.find((message) => message.role === 'assistant');
+  const toolGroup = sessionA.messages.find((message) => message.role === 'tool-group');
+  if (!assistant || assistant.content !== 'leaked assistant text') {
+    fail(name, 'inactive session assistant data was not preserved', JSON.stringify(sessionA.messages));
+    await cleanup();
+    return;
+  }
+  if (!toolGroup || toolGroup.tools.length !== 1) {
+    fail(name, 'inactive session tool data was not preserved', JSON.stringify(sessionA.messages));
+    await cleanup();
+    return;
+  }
+  if (elements.messages.children.length !== 0) {
+    fail(name, `expected visible DOM to stay empty, got ${elements.messages.children.length} appended nodes`);
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
+async function testInactiveSessionPromptEventsRemainActionable() {
+  const name = 'inactive ask-user and approval prompt events still create actionable modal state';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+
+  const sessionA = { id: 'session_prompt_a', title: 'A', messages: [], activeResponseId: 'resp_prompt', lastSequenceNumber: 0, number: 1 };
+  const sessionB = { id: 'session_prompt_b', title: 'B', messages: [], activeResponseId: null, lastSequenceNumber: 0, number: 2 };
+  state.sessions.push(sessionA, sessionB);
+  state.activeSessionId = sessionB.id;
+
+  let streamState = app.createResponseStreamState(sessionA);
+  app.applyResponseStreamEvent(sessionA, streamState, 'response.ask_user.prompt', {
+    call_id: 'call_question',
+    questions: [{ question: 'Pick one', options: [{ label: 'A', description: 'Option A' }, { label: 'B', description: 'Option B' }] }],
+    sequence_number: 7,
+  });
+
+  if (!state.askUser || state.askUser.sessionId !== sessionA.id || state.askUser.callId !== 'call_question') {
+    fail(name, 'inactive ask-user prompt did not create modal state', JSON.stringify(state.askUser));
+    await cleanup();
+    return;
+  }
+  if (sessionA.lastSequenceNumber !== 7) {
+    fail(name, `ask-user sequence not recorded, got ${sessionA.lastSequenceNumber}`);
+    await cleanup();
+    return;
+  }
+
+  streamState = app.createResponseStreamState(sessionA);
+  app.applyResponseStreamEvent(sessionA, streamState, 'response.approval.prompt', {
+    approval_id: 'approval_1',
+    title: 'Approve tool',
+    path: '/tmp/file',
+    options: [{ index: 0, label: 'Allow', choice: 'allow' }, { index: 1, label: 'Deny', choice: 'deny' }],
+    sequence_number: 8,
+  });
+
+  if (!state.approval || state.approval.sessionId !== sessionA.id || state.approval.approvalId !== 'approval_1') {
+    fail(name, 'inactive approval prompt did not create modal state', JSON.stringify(state.approval));
+    await cleanup();
+    return;
+  }
+  if (sessionA.lastSequenceNumber !== 8) {
+    fail(name, `approval sequence not recorded, got ${sessionA.lastSequenceNumber}`);
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
+async function testInactiveSessionFailureDoesNotAppendToVisibleDOM() {
+  const name = 'response.failed for inactive session stores error without appending to visible DOM';
+  const harness = createHarness();
+  const { app, state, elements, cleanup } = harness;
+
+  const sessionA = { id: 'session_fail_a', title: 'A', messages: [], activeResponseId: 'resp_fail', lastSequenceNumber: 0, number: 1 };
+  const sessionB = { id: 'session_fail_b', title: 'B', messages: [], activeResponseId: null, lastSequenceNumber: 0, number: 2 };
+  state.sessions.push(sessionA, sessionB);
+  state.activeSessionId = sessionB.id;
+
+  const streamState = app.createResponseStreamState(sessionA);
+  app.applyResponseStreamEvent(sessionA, streamState, 'response.failed', {
+    error: { message: 'tool exploded' },
+    sequence_number: 3,
+  });
+
+  const error = sessionA.messages.find((message) => message.role === 'error');
+  if (!error || error.content !== 'tool exploded') {
+    fail(name, 'inactive failure error was not preserved on the owning session', JSON.stringify(sessionA.messages));
+    await cleanup();
+    return;
+  }
+  if (elements.messages.children.length !== 0) {
+    fail(name, `expected visible DOM to stay empty, got ${elements.messages.children.length} appended nodes`);
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
+async function testConsumeResponseStreamReportsStaleWithoutApplyingEvents() {
+  const name = 'consumeResponseStream reports stale streams without applying events';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+  const encoder = new TextEncoder();
+
+  const session = { id: 'session_stale', title: 'Stale', messages: [], activeResponseId: 'resp_stale', lastSequenceNumber: 0, number: 1 };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.currentStreamSessionId = 'other_session';
+  state.currentStreamResponseId = 'resp_stale';
+
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode('event: response.output_text.delta\ndata: {"delta":"should not apply","sequence_number":1}\n\n'));
+      controller.close();
+    },
+  });
+
+  const result = await app.consumeResponseStream(stream, session, app.createResponseStreamState(session), {
+    generation: state.streamGeneration,
+    responseId: 'resp_stale',
+  });
+
+  if (!result || result.stale !== true || result.terminal !== false) {
+    fail(name, 'expected stale non-terminal result', JSON.stringify(result));
+    await cleanup();
+    return;
+  }
+  if (session.messages.length !== 0 || session.lastSequenceNumber !== 0) {
+    fail(name, 'stale stream should not apply events to the session', JSON.stringify(session));
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
+async function testSendMessageDoesNotResumeAfterStalePostStream() {
+  const name = 'sendMessage does not resume a response after POST stream becomes stale';
+  let harness;
+  harness = createHarness({
+    postBody: [
+      'id: 1\n',
+      'event: response.created\n',
+      'data: {"response":{"id":"resp_test","model":"test-model","status":"in_progress"},"sequence_number":1}\n\n',
+      'id: 2\n',
+      'event: response.output_text.delta\n',
+      'data: {"delta":"hello","sequence_number":2}\n\n',
+    ].join(''),
+    onCreateMessageNode(message) {
+      if (message.role === 'assistant') harness.app.detachResponseStream();
+    },
+  });
+  const { app, elements, fetchCalls, cleanup } = harness;
+  elements.promptInput.value = 'hello';
+
+  await app.sendMessage().catch(() => {});
+  await cleanup();
+
+  const eventCalls = fetchCalls.filter((call) => call.url.includes('/events?after='));
+  if (eventCalls.length !== 0) {
+    fail(name, 'stale POST stream should not be resumed via /events', JSON.stringify(fetchCalls));
+    return;
+  }
+
+  pass(name);
 }
 
 async function testSendMessageConsumesPostStreamWhenAvailable() {
@@ -2001,6 +2225,11 @@ async function testNonImageAttachmentsDoNotCreatePreviewObjectURLs() {
 }
 
 (async () => {
+  await testInactiveSessionStreamEventsDoNotAppendToVisibleDOM();
+  await testInactiveSessionPromptEventsRemainActionable();
+  await testInactiveSessionFailureDoesNotAppendToVisibleDOM();
+  await testConsumeResponseStreamReportsStaleWithoutApplyingEvents();
+  await testSendMessageDoesNotResumeAfterStalePostStream();
   await testSendMessageConsumesPostStreamWhenAvailable();
   await testSendMessageLazilyMaterializesAttachmentDataURLs();
   await testSendMessageKeepsComposerWhenAttachmentMaterializationFails();
