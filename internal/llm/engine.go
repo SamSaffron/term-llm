@@ -1942,17 +1942,34 @@ type loggingStream struct {
 func (s *loggingStream) Recv() (Event, error) {
 	event, err := s.inner.Recv()
 
-	s.mu.Lock()
-	if err == nil && event.Type == EventUsage && event.Use != nil {
-		s.totalInput += event.Use.InputTokens
-		s.totalOutput += event.Use.OutputTokens
-		s.totalCacheRead += event.Use.CachedInputTokens
-		s.totalCacheWrite += event.Use.CacheWriteTokens
+	if err == nil {
+		switch event.Type {
+		case EventUsage:
+			if event.Use != nil {
+				s.mu.Lock()
+				s.totalInput += event.Use.InputTokens
+				s.totalOutput += event.Use.OutputTokens
+				s.totalCacheRead += event.Use.CachedInputTokens
+				s.totalCacheWrite += event.Use.CacheWriteTokens
+				s.mu.Unlock()
+			}
+		case EventDone:
+			s.mu.Lock()
+			if !s.logged {
+				s.flushLocked()
+			}
+			s.mu.Unlock()
+		}
+		return event, nil
 	}
-	if (err == io.EOF || (err == nil && event.Type == EventDone)) && !s.logged {
-		s.flushLocked()
+
+	if err == io.EOF {
+		s.mu.Lock()
+		if !s.logged {
+			s.flushLocked()
+		}
+		s.mu.Unlock()
 	}
-	s.mu.Unlock()
 
 	return event, err
 }
