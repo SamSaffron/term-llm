@@ -167,6 +167,7 @@ func streamLineNumberedRange(ctx context.Context, reader *bufio.Reader, startLin
 	}
 
 	totalLines := 0
+	totalLinesKnown := false
 	selectedLines := 0
 	writtenLines := 0
 	truncated := false
@@ -223,7 +224,7 @@ func streamLineNumberedRange(ctx context.Context, reader *bufio.Reader, startLin
 		}
 
 		if truncated {
-			return true // Keep scanning so the truncation note can report total lines.
+			return false // Stop immediately once truncation is known; don't scan the rest of the file.
 		}
 		if endLine > 0 {
 			if startLine <= endLine && lineNum >= endLine {
@@ -260,13 +261,14 @@ func streamLineNumberedRange(ctx context.Context, reader *bufio.Reader, startLin
 				if !emittedAny || lastEndedNewline {
 					processLine("")
 				}
+				totalLinesKnown = true
 				break
 			}
 			return "", readErr
 		}
 	}
 
-	if requestedStart > 0 && startLine > totalLines {
+	if totalLinesKnown && requestedStart > 0 && startLine > totalLines {
 		return "", NewToolErrorf(ErrInvalidParams, "start_line %d exceeds file length %d", requestedStart, totalLines)
 	}
 
@@ -276,7 +278,11 @@ func streamLineNumberedRange(ctx context.Context, reader *bufio.Reader, startLin
 
 	output := sb.String()
 	if truncated {
-		output += fmt.Sprintf("\n\n[Output truncated. Total lines: %d. Use start_line/end_line for pagination.]", totalLines)
+		if totalLinesKnown {
+			output += fmt.Sprintf("\n\n[Output truncated. Total lines: %d. Use start_line/end_line for pagination.]", totalLines)
+		} else {
+			output += "\n\n[Output truncated. Use start_line/end_line for pagination.]"
+		}
 	}
 	return output, nil
 }
