@@ -36,13 +36,13 @@ const copilotTokenURL = "https://api.github.com/copilot_internal/v2/token"
 // for specific client identifiers. We use the VS Code Copilot extension's identifiers
 // as this is the standard approach used by third-party Copilot clients.
 const (
-	copilotUserAgent        = "GitHubCopilotChat/0.26.7"
-	copilotEditorVersion    = "vscode/1.96.0"
-	copilotPluginVersion    = "copilot-chat/0.26.7"
-	copilotIntegrationID    = "vscode-chat"
-	copilotAPIVersion       = "2025-04-01"
-	copilotOpenAIIntent     = "conversation-panel"
-	copilotSessionRefreshIn = 20 * time.Minute // Refresh session token before expiry (tokens last ~25min)
+	copilotUserAgent          = "GitHubCopilotChat/0.26.7"
+	copilotEditorVersion      = "vscode/1.96.0"
+	copilotPluginVersion      = "copilot-chat/0.26.7"
+	copilotIntegrationID      = "vscode-chat"
+	copilotAPIVersion         = "2025-04-01"
+	copilotOpenAIIntent       = "conversation-panel"
+	copilotSessionRefreshSkew = 1 * time.Minute // Refresh shortly before expiry to avoid unnecessary token roundtrips.
 )
 
 // copilotHTTPClient is a shared HTTP client with transport-level timeouts.
@@ -610,8 +610,8 @@ func (e *copilotAPIError) Is404() bool {
 // ensureValidSession ensures we have a valid session token, refreshing if needed.
 // Session tokens typically expire after ~25 minutes.
 func (p *CopilotProvider) ensureValidSession(ctx context.Context) error {
-	// Check if we need to refresh (no token, or approaching expiry)
-	if p.sessionToken == "" || time.Now().After(p.sessionTokenExpiry.Add(-copilotSessionRefreshIn)) {
+	// Check if we need to refresh (no token, missing expiry, or close to expiry).
+	if p.sessionToken == "" || p.sessionTokenExpiry.IsZero() || time.Until(p.sessionTokenExpiry) <= copilotSessionRefreshSkew {
 		return p.refreshSession(ctx)
 	}
 	return nil

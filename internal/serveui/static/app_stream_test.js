@@ -324,10 +324,10 @@ function createHarness(options = {}) {
     updateSessionUsageDisplay() {},
     refreshRelativeTimes() {},
     updateAssistantNode() {},
-    updateUserNode() {},
+    updateUserNode(message) { if (typeof options.onUpdateUserNode === 'function') options.onUpdateUserNode(message); },
     updateToolNode() {},
     updateToolGroupNode() {},
-    createMessageNode() { return makeNode(); },
+    createMessageNode(message) { if (typeof options.onCreateMessageNode === 'function') options.onCreateMessageNode(message); return makeNode(); },
     createToolGroupNode() { return makeNode(); },
     updateModelSwapNode() { modelSwapUpdateCount += 1; },
     renderSidebar() {},
@@ -390,6 +390,8 @@ function createHarness(options = {}) {
   };
 
   const encoder = new TextEncoder();
+  const fileReaderClass = options.FileReader || class {};
+  const urlAPI = options.urlAPI || URL;
   const context = {
     window: windowObj,
     document,
@@ -406,19 +408,20 @@ function createHarness(options = {}) {
     ReadableStream,
     Response,
     Headers,
-    URL,
+    URL: urlAPI,
     URLSearchParams,
     Blob,
     performance: { now: () => Date.now() },
     navigator: { mediaDevices: null },
     MediaRecorder: undefined,
-    FileReader: class {},
-    alert() {},
+    FileReader: fileReaderClass,
+    alert(message) { if (typeof options.onAlert === 'function') options.onAlert(message); },
     crypto: webcrypto,
   };
   context.globalThis = context;
   windowObj.document = document;
   windowObj.localStorage = localStorage;
+  windowObj.URL = urlAPI;
   windowObj.fetch = async function fetch(url, options = {}) {
     fetchCalls.push({
       url,
@@ -1686,8 +1689,322 @@ async function testArgumentDeltaWithoutOutputIndexUsesLastRunningTool() {
   pass(name);
 }
 
+async function testSendMessageLazilyMaterializesAttachmentDataURLs() {
+  const name = 'sendMessage lazily materializes attachment data URLs only when sending';
+  let readCount = 0;
+  const revokedURLs = [];
+  const lifecycleEvents = [];
+
+  class MockFileReader {
+    constructor() {
+      this.result = null;
+      this.error = null;
+      this.onload = null;
+      this.onerror = null;
+      this.onabort = null;
+    }
+
+    readAsDataURL(file) {
+      readCount += 1;
+      this.result = file.mockDataURL;
+      setTimeout(() => {
+        if (this.onload) this.onload();
+      }, 0);
+    }
+
+    abort() {
+      if (this.onabort) this.onabort();
+    }
+  }
+
+  const harness = createHarness({
+    FileReader: MockFileReader,
+    onCreateMessageNode(message) {
+      if (message?.role !== 'user') return;
+      const previewURL = message?.attachments?.[0]?.previewURL || '';
+      lifecycleEvents.push(`create:${previewURL}`);
+    },
+    onUpdateUserNode(message) {
+      const previewURL = message?.attachments?.[0]?.previewURL || '';
+      lifecycleEvents.push(`update:${previewURL}`);
+    },
+    urlAPI: {
+      createObjectURL(file) {
+        return `blob:${file.name}`;
+      },
+      revokeObjectURL(url) {
+        lifecycleEvents.push(`revoke:${url}`);
+        revokedURLs.push(url);
+      }
+    }
+  });
+  const { app, elements, state, fetchCalls, cleanup } = harness;
+
+  const file = {
+    name: 'cat.png',
+    type: 'image/png',
+    size: 4,
+    mockDataURL: 'data:image/png;base64,Y2F0'
+  };
+
+  app.handleFiles([file]);
+
+  if (readCount !== 0) {
+    fail(name, `expected FileReader reads before send = 0, got ${readCount}`);
+    await cleanup();
+    return;
+  }
+  if (state.attachments.length !== 1) {
+    fail(name, `expected 1 pending attachment, got ${state.attachments.length}`);
+    await cleanup();
+    return;
+  }
+  if (state.attachments[0].dataURL) {
+    fail(name, 'pending attachment should not store a dataURL before send', JSON.stringify(state.attachments[0]));
+    await cleanup();
+    return;
+  }
+  if (state.attachments[0].previewURL !== 'blob:cat.png') {
+    fail(name, `previewURL = ${JSON.stringify(state.attachments[0].previewURL)}, want "blob:cat.png"`);
+    await cleanup();
+    return;
+  }
+
+  elements.promptInput.value = 'describe this image';
+  await app.sendMessage();
+
+  if (readCount !== 1) {
+    fail(name, `expected FileReader reads after send = 1, got ${readCount}`);
+    await cleanup();
+    return;
+  }
+  if (state.attachments.length !== 0) {
+    fail(name, `expected pending attachments to be cleared after send, got ${state.attachments.length}`);
+    await cleanup();
+    return;
+  }
+  if (!revokedURLs.includes('blob:cat.png')) {
+    fail(name, 'expected blob preview URL to be revoked after send', JSON.stringify(revokedURLs));
+    await cleanup();
+    return;
+  }
+  const createIndex = lifecycleEvents.indexOf(`create:${file.mockDataURL}`);
+  const revokeIndex = lifecycleEvents.indexOf('revoke:blob:cat.png');
+  if (createIndex === -1 || revokeIndex === -1 || createIndex > revokeIndex) {
+    fail(name, 'expected user message to render with data URL before revoking blob preview URL', JSON.stringify(lifecycleEvents));
+    await cleanup();
+    return;
+  }
+
+  const session = state.sessions[0];
+  const userMessage = session && session.messages.find((message) => message.role === 'user');
+  const storedAttachment = userMessage && userMessage.attachments && userMessage.attachments[0];
+  if (!storedAttachment) {
+    fail(name, 'expected stored user attachment after send', JSON.stringify(session));
+    await cleanup();
+    return;
+  }
+  if (storedAttachment.dataURL !== file.mockDataURL) {
+    fail(name, `stored attachment dataURL = ${JSON.stringify(storedAttachment.dataURL)}, want ${JSON.stringify(file.mockDataURL)}`);
+    await cleanup();
+    return;
+  }
+  if (storedAttachment.previewURL !== file.mockDataURL) {
+    fail(name, `stored attachment previewURL = ${JSON.stringify(storedAttachment.previewURL)}, want ${JSON.stringify(file.mockDataURL)}`);
+    await cleanup();
+    return;
+  }
+  if (Object.prototype.hasOwnProperty.call(storedAttachment, 'file')) {
+    fail(name, 'stored attachment should drop the original File reference after materializing', JSON.stringify(storedAttachment));
+    await cleanup();
+    return;
+  }
+
+  const postCall = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  if (!postCall || !postCall.body) {
+    fail(name, 'missing POST /ui/v1/responses body', JSON.stringify(fetchCalls));
+    await cleanup();
+    return;
+  }
+
+  let body;
+  try {
+    body = JSON.parse(postCall.body);
+  } catch (err) {
+    fail(name, 'response POST body was not valid JSON', String(err));
+    await cleanup();
+    return;
+  }
+
+  const parts = body.input?.[0]?.content;
+  const imagePart = Array.isArray(parts) ? parts.find((part) => part.type === 'input_image') : null;
+  if (!imagePart || imagePart.image_url !== file.mockDataURL) {
+    fail(name, 'request body should include lazily materialized image data URL', JSON.stringify(body));
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
+async function testSendMessageKeepsComposerWhenAttachmentMaterializationFails() {
+  const name = 'sendMessage keeps composer and pending attachments when attachment materialization fails';
+  let readCount = 0;
+  const revokedURLs = [];
+  const alerts = [];
+
+  class MockFileReader {
+    constructor() {
+      this.result = null;
+      this.error = null;
+      this.onload = null;
+      this.onerror = null;
+      this.onabort = null;
+    }
+
+    readAsDataURL(file) {
+      readCount += 1;
+      setTimeout(() => {
+        if (file.mockError) {
+          this.error = new Error(`cannot read ${file.name}`);
+          if (this.onerror) this.onerror();
+          return;
+        }
+        this.result = file.mockDataURL;
+        if (this.onload) this.onload();
+      }, 0);
+    }
+
+    abort() {
+      if (this.onabort) this.onabort();
+    }
+  }
+
+  const harness = createHarness({
+    FileReader: MockFileReader,
+    onAlert(message) {
+      alerts.push(String(message || ''));
+    },
+    urlAPI: {
+      createObjectURL(file) {
+        return `blob:${file.name}`;
+      },
+      revokeObjectURL(url) {
+        revokedURLs.push(url);
+      }
+    }
+  });
+  const { app, elements, state, fetchCalls, cleanup } = harness;
+
+  const firstFile = {
+    name: 'ok.png',
+    type: 'image/png',
+    size: 4,
+    mockDataURL: 'data:image/png;base64,b2s='
+  };
+  const secondFile = {
+    name: 'bad.png',
+    type: 'image/png',
+    size: 4,
+    mockError: true
+  };
+
+  app.handleFiles([firstFile, secondFile]);
+  elements.promptInput.value = 'please inspect these';
+  await app.sendMessage();
+
+  if (readCount !== 2) {
+    fail(name, `expected FileReader reads = 2, got ${readCount}`);
+    await cleanup();
+    return;
+  }
+  if (fetchCalls.some((call) => call.url === '/ui/v1/responses')) {
+    fail(name, 'request should not be sent when attachment materialization fails', JSON.stringify(fetchCalls));
+    await cleanup();
+    return;
+  }
+  if (state.sessions.length !== 0) {
+    fail(name, 'session should not be created when attachment materialization fails', JSON.stringify(state.sessions));
+    await cleanup();
+    return;
+  }
+  if (elements.promptInput.value !== 'please inspect these') {
+    fail(name, `prompt was not preserved, got ${JSON.stringify(elements.promptInput.value)}`);
+    await cleanup();
+    return;
+  }
+  if (state.attachments.length !== 2) {
+    fail(name, `expected pending attachments to remain, got ${state.attachments.length}`);
+    await cleanup();
+    return;
+  }
+  if (state.attachments[0].dataURL !== firstFile.mockDataURL || Object.prototype.hasOwnProperty.call(state.attachments[0], 'file')) {
+    fail(name, 'successfully read attachment should remain pending as materialized data URL', JSON.stringify(state.attachments[0]));
+    await cleanup();
+    return;
+  }
+  if (state.attachments[1].previewURL !== 'blob:bad.png' || !Object.prototype.hasOwnProperty.call(state.attachments[1], 'file')) {
+    fail(name, 'failed attachment should remain pending with its original file/blob preview', JSON.stringify(state.attachments[1]));
+    await cleanup();
+    return;
+  }
+  if (!revokedURLs.includes('blob:ok.png')) {
+    fail(name, 'old blob URL for materialized attachment should be revoked on later materialization failure', JSON.stringify(revokedURLs));
+    await cleanup();
+    return;
+  }
+  if (revokedURLs.includes('blob:bad.png')) {
+    fail(name, 'blob URL for still-pending failed attachment should not be revoked', JSON.stringify(revokedURLs));
+    await cleanup();
+    return;
+  }
+  if (!alerts.some((message) => message.includes('cannot read bad.png'))) {
+    fail(name, 'expected read failure to be shown to the user', JSON.stringify(alerts));
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
+async function testNonImageAttachmentsDoNotCreatePreviewObjectURLs() {
+  const name = 'non-image attachments do not create unused preview object URLs';
+  const createdURLs = [];
+  const harness = createHarness({
+    urlAPI: {
+      createObjectURL(file) {
+        createdURLs.push(file.name);
+        return `blob:${file.name}`;
+      },
+      revokeObjectURL() {}
+    }
+  });
+  const { app, state, cleanup } = harness;
+
+  app.handleFiles([{ name: 'notes.txt', type: 'text/plain', size: 4 }]);
+
+  if (createdURLs.length !== 0) {
+    fail(name, 'text attachment should not get an object URL', JSON.stringify(createdURLs));
+    await cleanup();
+    return;
+  }
+  if (state.attachments.length !== 1 || state.attachments[0].previewURL !== '') {
+    fail(name, 'text attachment should be stored without preview URL', JSON.stringify(state.attachments));
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
 (async () => {
   await testSendMessageConsumesPostStreamWhenAvailable();
+  await testSendMessageLazilyMaterializesAttachmentDataURLs();
+  await testSendMessageKeepsComposerWhenAttachmentMaterializationFails();
+  await testNonImageAttachmentsDoNotCreatePreviewObjectURLs();
   await testSendMessageResumesFromEventsAfterPostStreamDrops();
   await testNewChatDuringStreamingClearsStreamingState();
   await testSendMessageMarksSessionBusyImmediately();
