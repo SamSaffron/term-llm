@@ -1,8 +1,12 @@
 package ui
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/mattn/go-runewidth"
+	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 func TestBuildSubagentPreview_Nil(t *testing.T) {
@@ -197,5 +201,79 @@ func TestBuildSubagentPreview_MixedSuccessAndError(t *testing.T) {
 	}
 	if !strings.Contains(result[2], SuccessCircle()) {
 		t.Errorf("Edit should have success circle: %s", result[2])
+	}
+}
+
+func TestRenderSubagentPromptLines_WrapsAndTruncatesCollapsed(t *testing.T) {
+	prompt := "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen"
+	result := renderSubagentPromptLines(prompt, 16, false)
+	if len(result) != 4 {
+		t.Fatalf("expected 4 wrapped prompt lines, got %d: %#v", len(result), result)
+	}
+	if strings.Contains(strings.Join(result, "\n"), "Question:") {
+		t.Fatalf("prompt lines should not include Question: label: %#v", result)
+	}
+	if !strings.HasSuffix(result[3], "...") {
+		t.Fatalf("expected truncated last prompt line to end with ellipsis: %#v", result)
+	}
+}
+
+func TestRenderSubagentPromptLines_ExpandedShowsAllLines(t *testing.T) {
+	prompt := "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen"
+	collapsed := renderSubagentPromptLines(prompt, 16, false)
+	expanded := renderSubagentPromptLines(prompt, 16, true)
+	if len(expanded) <= len(collapsed) {
+		t.Fatalf("expanded prompt lines = %#v, collapsed = %#v", expanded, collapsed)
+	}
+	if strings.HasSuffix(expanded[len(expanded)-1], "...") {
+		t.Fatalf("expanded prompt should not be ellipsized: %#v", expanded)
+	}
+}
+
+func TestRenderSubagentPromptLines_UnicodeWidth(t *testing.T) {
+	prompt := "調査して 調査して 調査して 調査して 調査して 調査して 調査して 調査して 調査して"
+	width := 20
+	contentWidth := width - runewidth.StringWidth(subagentPromptPrefix)
+	result := renderSubagentPromptLines(prompt, width, false)
+	if len(result) != 4 {
+		t.Fatalf("expected 4 wrapped prompt lines, got %d: %#v", len(result), result)
+	}
+	for i, line := range result {
+		if got := runewidth.StringWidth(line); got > contentWidth {
+			t.Fatalf("line %d display width = %d, want <= %d: %q", i, got, contentWidth, line)
+		}
+	}
+	if !strings.HasSuffix(result[3], "...") {
+		t.Fatalf("expected truncated last prompt line to end with ellipsis: %#v", result)
+	}
+}
+
+func TestHandleSubagentProgress_ExtractsPromptFromSpawnArgs(t *testing.T) {
+	args, err := json.Marshal(tools.SpawnAgentArgs{
+		AgentName: "codebase",
+		Prompt:    "Find where subagent progress is rendered",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracker := NewToolTracker()
+	tracker.Segments = append(tracker.Segments, Segment{
+		Type:       SegmentTool,
+		ToolCallID: "call-1",
+		ToolName:   "spawn_agent",
+		ToolInfo:   "@codebase: Find where subagent progress is rendered",
+		ToolArgs:   args,
+		ToolStatus: ToolPending,
+	})
+	subagents := NewSubagentTracker()
+
+	HandleSubagentProgress(tracker, subagents, "call-1", tools.SubagentEvent{Type: tools.SubagentEventInit})
+
+	seg := FindSegmentByCallID(tracker, "call-1")
+	if seg == nil {
+		t.Fatal("segment missing")
+	}
+	if seg.SubagentPrompt != "Find where subagent progress is rendered" {
+		t.Fatalf("SubagentPrompt = %q", seg.SubagentPrompt)
 	}
 }

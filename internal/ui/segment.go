@@ -9,6 +9,9 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/mattn/go-runewidth"
+	"github.com/muesli/reflow/truncate"
+	"github.com/muesli/reflow/wordwrap"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui/ansisafe"
@@ -81,6 +84,7 @@ type Segment struct {
 	SubagentHasProgress bool           // True if we have progress from this subagent
 	SubagentProvider    string         // Provider name if different from parent
 	SubagentModel       string         // Model name if different from parent
+	SubagentPrompt      string         // Prompt/task passed to the subagent
 	SubagentPreview     []string       // Preview lines (active tools + last few text lines)
 	SubagentStartTime   time.Time      // Start time for elapsed time display
 	SubagentEndTime     time.Time      // When subagent completed (zero if still running)
@@ -555,7 +559,45 @@ func FlushSegmentSeparator(prevType, currType SegmentType) string {
 	return sep
 }
 
-// RenderSegments renders a list of segments with proper spacing.
+func renderSubagentPromptLines(prompt string, width int, expanded bool) []string {
+	prompt = strings.Join(strings.Fields(prompt), " ")
+	if prompt == "" {
+		return nil
+	}
+
+	wrapWidth := width - runewidth.StringWidth(subagentPromptPrefix)
+	if wrapWidth <= 0 {
+		wrapWidth = 80
+	}
+	wrapped := wordwrap.String(prompt, wrapWidth)
+	lines := strings.Split(wrapped, "\n")
+	if expanded {
+		return lines
+	}
+	const maxPromptLines = 4
+	if len(lines) <= maxPromptLines {
+		return lines
+	}
+	lines = append([]string(nil), lines[:maxPromptLines]...)
+	lines[maxPromptLines-1] = appendEllipsis(lines[maxPromptLines-1], wrapWidth)
+	return lines
+}
+
+func appendEllipsis(line string, width int) string {
+	const tail = "..."
+	tailWidth := runewidth.StringWidth(tail)
+	if width <= tailWidth {
+		return tail
+	}
+	if runewidth.StringWidth(line)+tailWidth <= width {
+		return line + tail
+	}
+	return truncate.String(line, uint(width-tailWidth)) + tail
+}
+
+const subagentPromptPrefix = "  │ "
+
+// RenderSegments renders a list of segments to a string.
 func RenderSegments(segments []*Segment, width int, wavePos int, renderMarkdown func(string, int) string, includeImages bool, expanded bool) string {
 	return RenderSegmentsWithLeading(nil, segments, width, wavePos, renderMarkdown, includeImages, expanded)
 }
@@ -601,12 +643,18 @@ func RenderSegmentsWithLeading(leading *Segment, segments []*Segment, width int,
 
 		case SegmentTool:
 			rendered = RenderToolSegment(seg, wavePos, width, expanded)
-			// Render subagent preview lines beneath spawn_agent tools
-			if seg.ToolName == "spawn_agent" && len(seg.SubagentPreview) > 0 {
+			// Render subagent prompt and preview lines beneath spawn_agent tools.
+			if seg.ToolName == "spawn_agent" && (seg.SubagentPrompt != "" || len(seg.SubagentPreview) > 0) {
 				var sb strings.Builder
 				sb.WriteString(rendered)
+				for _, line := range renderSubagentPromptLines(seg.SubagentPrompt, width, expanded) {
+					sb.WriteString("\n")
+					sb.WriteString(subagentPromptPrefix)
+					sb.WriteString(line)
+				}
 				for _, line := range seg.SubagentPreview {
-					sb.WriteString("\n  │ ")
+					sb.WriteString("\n")
+					sb.WriteString(subagentPromptPrefix)
 					sb.WriteString(line)
 				}
 				rendered = sb.String()

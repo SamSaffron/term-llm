@@ -16,6 +16,7 @@ const maxTextBufferBytes = 64 * 1024 // 64KB
 type SubagentProgress struct {
 	ToolCallID     string          // Links to parent's spawn_agent call
 	AgentName      string          // e.g., "reviewer"
+	Prompt         string          // Task/question passed to the subagent
 	TextBuffer     strings.Builder // Text output (capped at maxTextBufferBytes)
 	ActiveTools    []ToolSegment   // Currently running tools
 	CompletedTools []ToolSegment   // Completed tools (for expanded view)

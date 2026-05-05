@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -21,15 +23,26 @@ func HandleSubagentProgress(tracker *ToolTracker, subagentTracker *SubagentTrack
 
 	// Get or create subagent progress entry
 	var agentName string
-	// Extract agent name from tool info (format: "agent_name")
-	if seg := FindSegmentByCallID(tracker, callID); seg != nil && seg.ToolInfo != "" {
-		agentName = seg.ToolInfo
+	var prompt string
+	// Extract agent name from tool info (format: "agent_name") and prompt from raw args.
+	if seg := FindSegmentByCallID(tracker, callID); seg != nil {
+		if seg.ToolInfo != "" {
+			agentName = seg.ToolInfo
+		}
+		agentNameFromArgs, promptFromArgs := extractSpawnAgentArgs(seg)
+		if agentName == "" {
+			agentName = agentNameFromArgs
+		}
+		prompt = promptFromArgs
 	}
 	p := subagentTracker.GetOrCreate(callID, agentName)
 
 	// If p is nil, the subagent was already removed (late async event) - ignore it
 	if p == nil {
 		return
+	}
+	if p.Prompt == "" && prompt != "" {
+		p.Prompt = prompt
 	}
 
 	// Update subagent state based on event type
@@ -92,6 +105,7 @@ func UpdateSegmentFromSubagentProgress(tracker *ToolTracker, callID string, p *S
 			tracker.Segments[i].SubagentTotalTokens = p.InputTokens + p.OutputTokens
 			tracker.Segments[i].SubagentProvider = p.Provider
 			tracker.Segments[i].SubagentModel = p.Model
+			tracker.Segments[i].SubagentPrompt = p.Prompt
 			tracker.Segments[i].SubagentPreview = BuildSubagentPreview(p, 4)
 			tracker.Segments[i].SubagentStartTime = p.StartTime
 			break
@@ -151,6 +165,17 @@ func BuildSubagentPreview(p *SubagentProgress, maxLines int) []string {
 	}
 
 	return preview
+}
+
+func extractSpawnAgentArgs(seg *Segment) (agentName, prompt string) {
+	if seg == nil || len(seg.ToolArgs) == 0 {
+		return "", ""
+	}
+	var args tools.SpawnAgentArgs
+	if err := json.Unmarshal(seg.ToolArgs, &args); err != nil {
+		return "", ""
+	}
+	return args.AgentName, strings.TrimSpace(args.Prompt)
 }
 
 // addDiffToSpawnAgentSegment adds a diff to the spawn_agent segment for display after the preview.
