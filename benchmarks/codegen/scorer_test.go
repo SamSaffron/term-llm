@@ -7,6 +7,21 @@ import (
 	"time"
 )
 
+func TestBuildPromptRequiresSelfValidation(t *testing.T) {
+	prompt := buildPrompt(fizzBuzzTask{})
+	checks := []string{
+		"Self-validation requirement before final output",
+		"required function/type/export name",
+		"includes every required import/header",
+		"If you find a problem, fix it before returning the code block",
+	}
+	for _, check := range checks {
+		if !strings.Contains(prompt, check) {
+			t.Fatalf("prompt missing %q:\n%s", check, prompt)
+		}
+	}
+}
+
 func TestExtractCodeFencedGoBlock(t *testing.T) {
 	code, err := extractCode("prose\n```go\npackage main\nfunc X() {}\n```\nmore")
 	if err != nil {

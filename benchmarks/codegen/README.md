@@ -54,6 +54,8 @@ Each task produces a JSON record with:
 
 The summary includes cost and cost-per-pass. That number is intentionally crude but useful: a model that gets 5/5 for $0.03 and one that gets 5/5 for $3.00 are not the same beast.
 
+The prompt explicitly tells every provider to self-validate before returning code: exact signature/export, imports/header, syntax, edge/error cases, concurrency safety, and stated perf constraints. The model still returns only code; the benchmark records whether that private check was worth a damn by running the scorer. Nice because it encourages agentic discipline without turning failures into a model-judged therapy session.
+
 ## Tasks
 
 Current suite:

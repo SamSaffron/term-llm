@@ -248,7 +248,7 @@ func ask(ctx context.Context, provider llm.Provider, model, prompt string, prici
 	stream, err := provider.Stream(ctx, llm.Request{
 		Model: model,
 		Messages: []llm.Message{
-			llm.SystemText("You are in a code-generation benchmark. Follow the requested function signatures exactly. Return only a single fenced code block in the requested language, no explanation."),
+			llm.SystemText("You are in a code-generation benchmark. Follow the requested function signatures exactly. Before answering, privately self-validate the solution against the prompt: required signature/export, imports, syntax, edge cases, concurrency safety, and the stated performance constraints. Fix any issue you find. Return only a single fenced code block in the requested language, no explanation."),
 			llm.UserText(prompt),
 		},
 		Temperature:     0,
@@ -329,7 +329,14 @@ Difficulty: %s
 
 %s
 
-Return only one fenced %s code block containing a complete source file when the language has imports/package declarations. Include every import your code needs. No prose.`, task.Name(), task.Language(), task.Difficulty(), task.Prompt(), task.Language())
+Return only one fenced %s code block containing a complete source file when the language has imports/package declarations. Include every import your code needs. No prose.
+
+Self-validation requirement before final output:
+- Check that the required function/type/export name is present exactly as specified.
+- Check that the code is syntactically valid for %s and includes every required import/header.
+- Check the listed edge cases and error cases against your implementation.
+- Check any concurrency or performance requirement explicitly, including locking/shared state where relevant.
+- If you find a problem, fix it before returning the code block.`, task.Name(), task.Language(), task.Difficulty(), task.Prompt(), task.Language(), task.Language())
 }
 
 func summarize(report *RunReport) {
