@@ -114,7 +114,7 @@ func TestBuiltinAgentConfigs(t *testing.T) {
 		{"codebase", true, 200, true, true, true, false},
 		{"commit-message", true, 200, true, true, true, false},
 		{"contain", true, 100, true, true, false, true},
-		{"developer", true, 200, true, false, false, true},
+		{"developer", true, 300, true, false, false, true},
 		{"editor", true, 200, false, false, false, true},
 		{"file-organizer", true, 200, true, true, false, false},
 		{"planner", true, 50, true, false, false, true},
@@ -158,6 +158,52 @@ func TestBuiltinAgentConfigs(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDeveloperBuiltinCanSpawnDocumentedSubagents(t *testing.T) {
+	agent, err := getBuiltinAgent("developer")
+	if err != nil {
+		t.Fatalf("getBuiltinAgent(developer): %v", err)
+	}
+
+	if !stringSliceContains(agent.Tools.Enabled, "spawn_agent") {
+		t.Fatalf("developer tools.enabled = %#v, want spawn_agent", agent.Tools.Enabled)
+	}
+
+	wantAllowed := []string{"codebase", "web-researcher", "reviewer"}
+	for _, name := range wantAllowed {
+		if !stringSliceContains(agent.Spawn.AllowedAgents, name) {
+			t.Errorf("developer spawn.allowed_agents = %#v, missing %q", agent.Spawn.AllowedAgents, name)
+		}
+		if !strings.Contains(agent.SystemPrompt, "`"+name+"`") {
+			t.Errorf("developer prompt should document subagent %q", name)
+		}
+	}
+	if agent.Spawn.MaxParallel != 3 {
+		t.Errorf("developer spawn.max_parallel = %d, want 3", agent.Spawn.MaxParallel)
+	}
+	if agent.Spawn.MaxDepth != 1 {
+		t.Errorf("developer spawn.max_depth = %d, want 1", agent.Spawn.MaxDepth)
+	}
+	if agent.Spawn.DefaultTimeout != 600 {
+		t.Errorf("developer spawn.timeout = %d, want 600", agent.Spawn.DefaultTimeout)
+	}
+
+	if !strings.Contains(agent.SystemPrompt, "`spawn_agent`") {
+		t.Errorf("developer prompt should name the actual spawn_agent tool")
+	}
+	if strings.Contains(agent.SystemPrompt, "`run_agent`") {
+		t.Errorf("developer prompt should not refer to nonexistent run_agent tool")
+	}
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestExtractBuiltinResourcesContainRecipes(t *testing.T) {

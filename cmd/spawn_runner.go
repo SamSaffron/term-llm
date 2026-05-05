@@ -365,22 +365,12 @@ func (r *SpawnAgentRunner) setupAgentTools(cfg *config.Config, engine *llm.Engin
 		}
 	}
 
-	// Apply spawn config from agent (with depth tracking)
-	toolConfig.Spawn = tools.SpawnConfig{
+	applySpawnConfig(&toolConfig, tools.SpawnConfig{
 		MaxParallel:    agent.Spawn.MaxParallel,
 		MaxDepth:       agent.Spawn.MaxDepth,
 		DefaultTimeout: agent.Spawn.DefaultTimeout,
 		AllowedAgents:  agent.Spawn.AllowedAgents,
-	}
-	if toolConfig.Spawn.MaxParallel <= 0 {
-		toolConfig.Spawn.MaxParallel = 3
-	}
-	if toolConfig.Spawn.MaxDepth <= 0 {
-		toolConfig.Spawn.MaxDepth = 2
-	}
-	if toolConfig.Spawn.DefaultTimeout <= 0 {
-		toolConfig.Spawn.DefaultTimeout = 300
-	}
+	})
 
 	if errs := toolConfig.Validate(); len(errs) > 0 {
 		return nil, fmt.Errorf("invalid tool config: %v", errs[0])

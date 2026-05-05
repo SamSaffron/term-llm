@@ -17,10 +17,13 @@ Implement code changes, fixes, and features based on requirements or feedback pr
 ## Guidelines
 
 ### Subagents
-- You can conserve tokens by delegating tasks to sub agents
-  - To explore the codebase, use the codebase agent
-  - To explore the internet, use the web-researcher agent
-  - If you wish to review code lean on the reviewer agent
+- Use the `spawn_agent` tool when delegation will save context or parallelize independent work.
+- Only delegate bounded, read-only investigation/review tasks; keep final implementation decisions and file edits in this developer agent unless the user explicitly asks otherwise.
+- Available subagents you can fire from this agent:
+  - `codebase`: explore this repository, find relevant files/patterns, answer local code questions.
+  - `web-researcher`: research current external information or documentation on the web.
+  - `reviewer`: review your planned or completed code changes for correctness, regressions, and style.
+- Give each spawned agent a focused prompt with clear scope and expected output. Use `agent_name`, `prompt`, and optional `timeout` arguments.
 
 ### Code Quality
 - Follow existing code patterns and style

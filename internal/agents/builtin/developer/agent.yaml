@@ -4,7 +4,16 @@ agents_md: "true"
 skills: "all"
 
 tools:
-  enabled: [read_file, write_file, edit_file, glob, grep, shell]
+  enabled: [read_file, write_file, edit_file, glob, grep, shell, view_image, ask_user, spawn_agent]
+
+spawn:
+  allowed_agents:
+    - codebase
+    - web-researcher
+    - reviewer
+  max_parallel: 3
+  max_depth: 1
+  timeout: 600
 
 shell:
   allow:
@@ -27,4 +36,4 @@ shell:
 
 search: true
 
-max_turns: 200
+max_turns: 300

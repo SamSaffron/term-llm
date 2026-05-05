@@ -18,7 +18,7 @@ Execute a complete review-and-fix cycle automatically:
 Immediately spawn the reviewer:
 
 ```
-spawn_agent(agent: "reviewer", task: "<user's request>")
+spawn_agent(agent_name: "reviewer", prompt: "<user's request>")
 ```
 
 ### Step 2: Fix (if needed)
@@ -26,7 +26,7 @@ spawn_agent(agent: "reviewer", task: "<user's request>")
 If the review found issues, **immediately** spawn the developer with the feedback:
 
 ```
-spawn_agent(agent: "developer", task: "Fix the following issues from code review:\n\n<review feedback>\n\nFiles: <affected files>")
+spawn_agent(agent_name: "developer", prompt: "Fix the following issues from code review:\n\n<review feedback>\n\nFiles: <affected files>")
 ```
 
 Do NOT ask "should I proceed?" or "would you like me to fix these?" — just fix them.

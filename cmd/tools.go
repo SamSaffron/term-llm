@@ -61,6 +61,21 @@ func buildToolConfig(toolsFlag string, readDirs, writeDirs, shellAllow []string,
 	return tc
 }
 
+func applySpawnConfig(toolConfig *tools.ToolConfig, spawn tools.SpawnConfig) {
+	if spawn.MaxParallel > 0 {
+		toolConfig.Spawn.MaxParallel = spawn.MaxParallel
+	}
+	if spawn.MaxDepth > 0 {
+		toolConfig.Spawn.MaxDepth = spawn.MaxDepth
+	}
+	if spawn.DefaultTimeout > 0 {
+		toolConfig.Spawn.DefaultTimeout = spawn.DefaultTimeout
+	}
+	if len(spawn.AllowedAgents) > 0 {
+		toolConfig.Spawn.AllowedAgents = append([]string(nil), spawn.AllowedAgents...)
+	}
+}
+
 // filterOutTools removes specified tools from the enabled list.
 func filterOutTools(enabled []string, exclude ...string) []string {
 	excludeSet := make(map[string]bool)

@@ -39,6 +39,7 @@ type SessionSettings struct {
 	ShellAllow   []string
 	ShellAutoRun bool
 	Scripts      []string
+	Spawn        tools.SpawnConfig
 
 	// Agent directory (for run_agent_script and custom tools)
 	AgentDir string
@@ -191,7 +192,7 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 		s.ShellAllow = agent.Shell.Allow
 	}
 
-	// Shell auto-run and scripts from agent only
+	// Shell auto-run, scripts, and spawn settings from agent only
 	if agent != nil {
 		s.ShellAutoRun = agent.Shell.AutoRun
 		// Extract script commands from map (sorted for determinism)
@@ -202,6 +203,12 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 		sort.Strings(keys)
 		for _, k := range keys {
 			s.Scripts = append(s.Scripts, agent.Shell.Scripts[k])
+		}
+		s.Spawn = tools.SpawnConfig{
+			MaxParallel:    agent.Spawn.MaxParallel,
+			MaxDepth:       agent.Spawn.MaxDepth,
+			DefaultTimeout: agent.Spawn.DefaultTimeout,
+			AllowedAgents:  append([]string(nil), agent.Spawn.AllowedAgents...),
 		}
 		s.AgentDir = agent.SourcePath
 		s.CustomTools = agent.Tools.Custom
@@ -385,6 +392,7 @@ func (s *SessionSettings) SetupToolManager(cfg *config.Config, engine *llm.Engin
 	if s.ShellAutoRun {
 		toolConfig.ShellAutoRun = true
 	}
+	applySpawnConfig(&toolConfig, s.Spawn)
 	if len(s.Scripts) > 0 {
 		toolConfig.ScriptCommands = append(toolConfig.ScriptCommands, s.Scripts...)
 	}

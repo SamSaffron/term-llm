@@ -48,6 +48,66 @@ func TestResolveSettings_ConfigSystemPromptExpandsIncludeThenTemplate(t *testing
 	}
 }
 
+func TestResolveSettings_AgentSpawnConfigAppliesToToolManager(t *testing.T) {
+	agent := &agents.Agent{
+		Name: "spawn-limited",
+		Tools: agents.ToolsConfig{
+			Enabled: []string{tools.SpawnAgentToolName},
+		},
+		Spawn: agents.SpawnConfig{
+			AllowedAgents:  []string{"codebase", "reviewer"},
+			MaxParallel:    2,
+			MaxDepth:       1,
+			DefaultTimeout: 600,
+		},
+	}
+
+	settings, err := ResolveSettings(&config.Config{}, agent, CLIFlags{}, "", "", "", 0, 20)
+	if err != nil {
+		t.Fatalf("ResolveSettings() error = %v", err)
+	}
+
+	if settings.Spawn.MaxParallel != 2 {
+		t.Fatalf("settings.Spawn.MaxParallel = %d, want 2", settings.Spawn.MaxParallel)
+	}
+	if settings.Spawn.MaxDepth != 1 {
+		t.Fatalf("settings.Spawn.MaxDepth = %d, want 1", settings.Spawn.MaxDepth)
+	}
+	if settings.Spawn.DefaultTimeout != 600 {
+		t.Fatalf("settings.Spawn.DefaultTimeout = %d, want 600", settings.Spawn.DefaultTimeout)
+	}
+	if !sessionTestStringSliceContains(settings.Spawn.AllowedAgents, "codebase") || !sessionTestStringSliceContains(settings.Spawn.AllowedAgents, "reviewer") {
+		t.Fatalf("settings.Spawn.AllowedAgents = %#v, want codebase and reviewer", settings.Spawn.AllowedAgents)
+	}
+
+	engine := llm.NewEngine(nil, nil)
+	toolMgr, err := settings.SetupToolManager(&config.Config{}, engine)
+	if err != nil {
+		t.Fatalf("SetupToolManager() error = %v", err)
+	}
+	spawnTool := toolMgr.GetSpawnAgentTool()
+	if spawnTool == nil {
+		t.Fatal("spawn_agent tool was not enabled")
+	}
+
+	out, err := spawnTool.Execute(context.Background(), json.RawMessage(`{"agent_name":"developer","prompt":"do work"}`))
+	if err != nil {
+		t.Fatalf("spawn_agent Execute() error = %v", err)
+	}
+	if !strings.Contains(out.Content, "not in the allowed list") {
+		t.Fatalf("spawn_agent output = %q, want allowed-list denial", out.Content)
+	}
+}
+
+func sessionTestStringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestResolveSettings_AgentSystemPromptIncludeUsesAgentDir(t *testing.T) {
 	origWD, err := os.Getwd()
 	if err != nil {
