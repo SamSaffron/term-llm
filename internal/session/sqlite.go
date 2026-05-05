@@ -175,19 +175,15 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 
 	store := &SQLiteStore{db: db, cfg: cfg}
 
-	// Probe for optional columns. Read-write mode always has them after
-	// migration, but read-only mode skips migrations and may open an older DB.
-	store.hasGeneratedTitles = store.probeColumn("generated_short_title")
-	store.hasCompactionSeq = store.probeColumn("compaction_seq")
-	store.hasCacheWriteTokens = store.probeColumn("cache_write_tokens")
-	store.hasOrigin = store.probeColumn("origin")
-	store.hasPinned = store.probeColumn("pinned")
-	store.hasTitleSkippedAt = store.probeColumn("title_skipped_at")
-	store.hasLastUserMessageAt = store.probeColumn("last_user_message_at")
-	store.hasLastMessageAt = store.probeColumn("last_message_at")
-	store.hasLastTotalTokens = store.probeColumn("last_total_tokens")
-	store.hasLastMessageCount = store.probeColumn("last_message_count")
-	store.hasReasoningEffort = store.probeColumn("reasoning_effort")
+	// Read-write stores have just created or migrated the schema above, so the
+	// current optional columns are known to be present. Read-only stores skip
+	// migrations and may be pointed at an older DB, so probe the sessions table
+	// once and derive every compatibility flag from that single scan.
+	if cfg.ReadOnly {
+		store.probeSessionColumns()
+	} else {
+		store.setCurrentSessionColumns()
+	}
 
 	// Run cleanup if configured (read-write mode only).
 	if !cfg.ReadOnly {
@@ -1791,15 +1787,33 @@ func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
 
-// probeColumn checks whether the sessions table has a given column.
-// This is necessary for read-only mode, which skips migrations and
-// may open a database created before the column was added.
-func (s *SQLiteStore) probeColumn(colName string) bool {
+// setCurrentSessionColumns records optional columns that are guaranteed to
+// exist after read-write initialization/migration reaches the current schema.
+func (s *SQLiteStore) setCurrentSessionColumns() {
+	s.hasGeneratedTitles = true
+	s.hasCompactionSeq = true
+	s.hasCacheWriteTokens = true
+	s.hasOrigin = true
+	s.hasPinned = true
+	s.hasTitleSkippedAt = true
+	s.hasLastUserMessageAt = true
+	s.hasLastMessageAt = true
+	s.hasLastTotalTokens = true
+	s.hasLastMessageCount = true
+	s.hasReasoningEffort = true
+}
+
+// probeSessionColumns checks optional session columns in a single PRAGMA scan.
+// Read-only mode skips migrations and may open a database created before one or
+// more optional columns existed, so callers use these flags to build compatible
+// SELECT/UPDATE statements.
+func (s *SQLiteStore) probeSessionColumns() {
 	rows, err := s.db.Query("PRAGMA table_info(sessions)")
 	if err != nil {
-		return false
+		return
 	}
 	defer rows.Close()
+
 	for rows.Next() {
 		var cid int
 		var name, typ string
@@ -1807,13 +1821,33 @@ func (s *SQLiteStore) probeColumn(colName string) bool {
 		var dfltValue sql.NullString
 		var pk int
 		if err := rows.Scan(&cid, &name, &typ, &notnull, &dfltValue, &pk); err != nil {
-			return false
+			return
 		}
-		if name == colName {
-			return true
+		switch name {
+		case "generated_short_title":
+			s.hasGeneratedTitles = true
+		case "compaction_seq":
+			s.hasCompactionSeq = true
+		case "cache_write_tokens":
+			s.hasCacheWriteTokens = true
+		case "origin":
+			s.hasOrigin = true
+		case "pinned":
+			s.hasPinned = true
+		case "title_skipped_at":
+			s.hasTitleSkippedAt = true
+		case "last_user_message_at":
+			s.hasLastUserMessageAt = true
+		case "last_message_at":
+			s.hasLastMessageAt = true
+		case "last_total_tokens":
+			s.hasLastTotalTokens = true
+		case "last_message_count":
+			s.hasLastMessageCount = true
+		case "reasoning_effort":
+			s.hasReasoningEffort = true
 		}
 	}
-	return false
 }
 
 // sessionSelectCols returns the SELECT column list for session queries.

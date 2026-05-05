@@ -34,6 +34,28 @@ func BenchmarkSQLiteStoreListWithLargeHistories(b *testing.B) {
 	}
 }
 
+func BenchmarkNewSQLiteStoreExistingDB(b *testing.B) {
+	dbPath := filepath.Join(b.TempDir(), "sessions.db")
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		b.Fatalf("NewSQLiteStore setup: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		b.Fatalf("Close setup store: %v", err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		store, err := NewSQLiteStore(Config{Enabled: true, Path: dbPath})
+		if err != nil {
+			b.Fatalf("NewSQLiteStore: %v", err)
+		}
+		if err := store.Close(); err != nil {
+			b.Fatalf("Close: %v", err)
+		}
+	}
+}
+
 func seedSQLiteStoreListBenchmark(b *testing.B, ctx context.Context, store *SQLiteStore, sessionCount, messagesPerSession int, base time.Time) {
 	b.Helper()
 	tx, err := store.db.BeginTx(ctx, nil)
