@@ -1,0 +1,20 @@
+{
+  "name": "codegen-benchmark",
+  "enabled": true,
+  "runner_type": "program",
+  "runner_config": {
+    "command": "cd \"${TERM_LLM_REPO:-/root/source/term-llm}\" && exec bash benchmarks/codegen/jobs/run-codegen-benchmark.sh",
+    "shell": true,
+    "env": [
+      "BENCH_PROVIDER=claude-bin",
+      "BENCH_CONCURRENCY=2",
+      "BENCH_BUDGET=4h",
+      "BENCH_OUT=/root/.local/share/term-llm/codegen-benchmark/results"
+    ]
+  },
+  "trigger_type": "manual",
+  "trigger_config": {},
+  "concurrency_policy": "forbid",
+  "timeout_seconds": 14400,
+  "misfire_policy": "skip"
+}

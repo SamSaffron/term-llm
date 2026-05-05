@@ -1,0 +1,5 @@
+*.json
+*.jsonl
+*.log
+!.gitignore
+!.gitkeep
