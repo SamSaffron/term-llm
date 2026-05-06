@@ -135,7 +135,7 @@ Supported platform keys:
 | `chat_developer_message` | CLI chat | `term-llm chat` |
 | `jobs_developer_message` | Scheduled/background jobs | `term-llm serve --platform jobs` |
 
-Messages are injected as `developer` role messages before the first user turn. If no message is configured for the active platform, nothing is injected. Each key is optional — define only the platforms you need.
+Messages are injected as `developer` role messages before the first user turn. If no message is configured for the active platform, nothing is injected. Each key is optional. Define only the platforms you need.
 
 ## System prompt file includes
 

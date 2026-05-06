@@ -8,7 +8,7 @@ next:
   label: Job runner
   url: /guides/job-runner/
 ---
-Run an agent in a loop until a completion condition is met. State persists in the filesystem—the agent reads/writes files to track progress, and each iteration starts with fresh context.
+Run an agent in a loop until a completion condition is met. State persists in the filesystem. The agent reads/writes files to track progress, and each iteration starts with fresh context.
 
 ```bash
 # Run until tests pass

@@ -215,7 +215,7 @@ providers:
     model: claude-sonnet-4-6-thinking
 ```
 
-**Application inference profiles** — use `model_map` to alias friendly model names to Bedrock ARNs or model IDs. The `-thinking` and `-1m` suffixes work with mapped names:
+**Application inference profiles**: use `model_map` to alias friendly model names to Bedrock ARNs or model IDs. The `-thinking` and `-1m` suffixes work with mapped names:
 
 ```yaml
 providers:
@@ -232,7 +232,7 @@ providers:
 
 With this config, `--provider bedrock:claude-opus-4-6-1m-thinking` strips the suffixes, resolves `claude-opus-4-6` through `model_map` to the ARN, and enables adaptive thinking + 1M context.
 
-**Available models** (same as direct Anthropic — translated to Bedrock IDs automatically):
+**Available models** (same as direct Anthropic, translated to Bedrock IDs automatically):
 
 | Model | Suffixes | Description |
 |-------|----------|-------------|
@@ -240,11 +240,11 @@ With this config, `--provider bedrock:claude-opus-4-6-1m-thinking` strips the su
 | `claude-opus-4-6` | `-thinking`, `-1m` | Latest Opus |
 | `claude-haiku-4-5` | `-thinking` | Fast, lightweight |
 
-The geographic prefix (`us.`, `eu.`, `ap.`) is derived from your configured region — `eu-west-1` produces `eu.anthropic.*` IDs, etc. This ensures data residency matches your region.
+The geographic prefix (`us.`, `eu.`, `ap.`) is derived from your configured region. For example, `eu-west-1` produces `eu.anthropic.*` IDs, etc. This ensures data residency matches your region.
 
-You can also pass raw Bedrock model IDs directly (e.g., `us.anthropic.claude-sonnet-4-6` or full ARNs) — these bypass the translation layer.
+You can also pass raw Bedrock model IDs directly (e.g., `us.anthropic.claude-sonnet-4-6` or full ARNs). These bypass the translation layer.
 
-**Features:** full parity with the direct Anthropic provider — streaming, tool use, extended thinking, 1M context, images, prompt caching, web search/fetch all work through Bedrock.
+**Features:** full parity with the direct Anthropic provider: streaming, tool use, extended thinking, 1M context, images, prompt caching, web search/fetch all work through Bedrock.
 
 | Config field | Description |
 |---|---|

@@ -112,7 +112,7 @@ Use `base_url` when the standard `/chat/completions` path should be appended aut
 | `fast_provider` | string | Provider key to use for `fast_model` if it lives on a different provider. |
 | `context_window` | int | Override context window size in tokens. Use this for self-hosted models not in the built-in token limit tables. |
 | `max_output_tokens` | int | Override maximum output tokens. Same use case as `context_window`. |
-| `no_stream_options` | bool | When `true`, don't send `stream_options` in the request. Use this for servers that reject the field. Default `false` — most OpenAI-compatible servers (vLLM, Ollama, LM Studio) support it and need it to report token usage. |
+| `no_stream_options` | bool | When `true`, don't send `stream_options` in the request. Use this for servers that reject the field. Default `false`; most OpenAI-compatible servers (vLLM, Ollama, LM Studio) support it and need it to report token usage. |
 | `use_websocket` | bool | Reserved for providers with native Responses WebSocket support. Defaults to `true` only for built-in `openai` and `chatgpt`; OpenAI-compatible providers default to HTTP/SSE. |
 
 ### Full example
@@ -204,7 +204,7 @@ providers:
 
 Suffixes are stripped before lookup, so `claude-sonnet-4-6-1m-thinking` strips to `claude-sonnet-4-6`, resolves through `model_map`, then re-applies thinking and 1M context.
 
-The geographic prefix (`us.`, `eu.`, `ap.`) is derived from the configured region automatically — `eu-west-1` produces `eu.anthropic.*` IDs, `ap-southeast-1` produces `ap.anthropic.*`, etc. This ensures data residency matches your region without manual override.
+The geographic prefix (`us.`, `eu.`, `ap.`) is derived from the configured region automatically. For example, `eu-west-1` produces `eu.anthropic.*` IDs, `ap-southeast-1` produces `ap.anthropic.*`, etc. This ensures data residency matches your region without manual override.
 
 Raw Bedrock model IDs (`us.anthropic.claude-sonnet-4-6`, `anthropic.claude-sonnet-4-6`) and full ARNs are passed through without translation.
 

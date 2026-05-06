@@ -9,7 +9,7 @@ next:
   label: Agents
   url: /guides/agents/
 ---
-[MCP (Model Context Protocol)](https://modelcontextprotocol.io) lets you extend term-llm with external tools—browser automation, database access, API integrations, and more.
+[MCP (Model Context Protocol)](https://modelcontextprotocol.io) lets you extend term-llm with external tools: browser automation, database access, API integrations, and more.
 
 ```bash
 # Add from registry
@@ -133,6 +133,6 @@ HTTP transport uses [Streamable HTTP](https://modelcontextprotocol.io/specificat
 
 ### Serving tools via MCP
 
-`term-llm serve mcp` runs an MCP server over HTTP, exposing term-llm's tools to any MCP client. This is the inverse of the client workflows above — instead of consuming external tools, you are publishing your local tools for remote use.
+`term-llm serve mcp` runs an MCP server over HTTP, exposing term-llm's tools to any MCP client. This is the inverse of the client workflows above. Instead of consuming external tools, you are publishing your local tools for remote use.
 
 See the dedicated [Serving tools via MCP](/guides/serve-mcp/) guide for full details, flags, and examples.

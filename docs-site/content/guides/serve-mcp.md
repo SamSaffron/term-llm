@@ -33,7 +33,7 @@ auth token: abc123...
 tools: edit_file, glob, grep, read_file, shell, web_search, write_file, ...
 ```
 
-When binding to a wildcard address (`0.0.0.0` or `::`), the printed URL uses `127.0.0.1` for convenience — remote clients should use the machine's actual hostname or IP.
+When binding to a wildcard address (`0.0.0.0` or `::`), the printed URL uses `127.0.0.1` for convenience. Remote clients should use the machine's actual hostname or IP.
 
 ## Connecting a client
 
@@ -55,7 +55,7 @@ term-llm mcp add http://localhost:8080/mcp
 
 ## Available tools
 
-The `--tools` flag is **required**. Pass a comma-separated list of tool names, or `all`. Only the tools listed below are accepted — internal tools like `ask_user`, `spawn_agent`, and `view_image` are not available in MCP server mode.
+The `--tools` flag is **required**. Pass a comma-separated list of tool names, or `all`. Only the tools listed below are accepted. Internal tools like `ask_user`, `spawn_agent`, and `view_image` are not available in MCP server mode.
 
 ### File & search
 
@@ -95,7 +95,7 @@ Tools whose backing provider isn't configured (e.g. `web_search` without a searc
 |------|---------|-------------|
 | `--tools` | *(required)* | Comma-separated tool names or `all` |
 | `--edit-format` | `edit_file` | Edit tool flavor: `edit_file` (find/replace) or `diff` (unified diff) |
-| `--host` | `127.0.0.1` | Bind address — use `0.0.0.0` for remote access |
+| `--host` | `127.0.0.1` | Bind address; use `0.0.0.0` for remote access |
 | `--port` | `8080` | Bind port |
 | `--token` | *(auto-generated)* | Bearer token for auth |
 | `--read-dir` | *(none)* | Allowed read directories (repeatable) |
@@ -119,9 +119,9 @@ term-llm serve mcp --tools all --edit-format diff
 ## Security
 
 - **Auth**: Bearer token authentication on every request (constant-time comparison). Token is auto-generated if not provided.
-- **Localhost by default**: Binds to `127.0.0.1` — you must explicitly pass `--host 0.0.0.0` to accept remote connections.
+- **Localhost by default**: Binds to `127.0.0.1`. You must explicitly pass `--host 0.0.0.0` to accept remote connections.
 - **Transport security**: The server uses plain HTTP. When exposing beyond localhost, use an SSH tunnel, VPN, or TLS-terminating reverse proxy to protect traffic in transit.
-- **Permissions**: `--read-dir`, `--write-dir`, and `--shell-allow` restrict what the tools can access. Without these flags (and without `--yolo`), tools will prompt for approval — but since the server is non-interactive, you should pre-configure permissions via flags.
+- **Permissions**: `--read-dir`, `--write-dir`, and `--shell-allow` restrict what the tools can access. Without these flags (and without `--yolo`), tools will prompt for approval. Since the server is non-interactive, you should pre-configure permissions via flags.
 - **No `ask_user`**: The server runs non-interactively. Use `--yolo` or permission flags to pre-authorize operations.
 
 ## Examples
@@ -137,7 +137,7 @@ term-llm serve mcp --tools all \
   --write-dir ~/project \
   --shell-allow "go *" --shell-allow "git *" --shell-allow "make *"
 
-# CI/container use — auto-approve everything
+# CI/container use: auto-approve everything
 term-llm serve mcp --tools all --yolo
 
 # Custom port and token

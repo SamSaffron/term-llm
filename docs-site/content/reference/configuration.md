@@ -288,7 +288,7 @@ skills:
   never_auto: [expensive-api-skill]
 ```
 
-Controls the skills system — portable instruction bundles that inject task-specific context into the system prompt. Skills are disabled by default; set `enabled: true` to allow auto-invocation, or use `--skills` on any command for one-off activation. See [Skills](/guides/skills/) for the full guide.
+Controls the skills system: portable instruction bundles that inject task-specific context into the system prompt. Skills are disabled by default; set `enabled: true` to allow auto-invocation, or use `--skills` on any command for one-off activation. See [Skills](/guides/skills/) for the full guide.
 
 ## Diagnostics
 

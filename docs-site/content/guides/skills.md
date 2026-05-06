@@ -9,7 +9,7 @@ next:
   label: Built-in tools
   url: /reference/built-in-tools/
 ---
-Skills are portable instruction bundles that provide specialized knowledge for specific tasks. Unlike agents, skills don't change the provider or model—they just add context.
+Skills are portable instruction bundles that provide specialized knowledge for specific tasks. Unlike agents, skills don't change the provider or model. They just add context.
 
 ### Using Skills
 
@@ -66,7 +66,7 @@ skills:
   enabled: false
 ```
 
-The `--skills` flag on any command implicitly enables the system for that invocation, so `term-llm ask --skills git "..."` works even when skills are disabled in config. Agents can also enable skills via their `skills` field — all built-in agents set `skills: "all"`, so skills are active whenever you use a built-in agent.
+The `--skills` flag on any command implicitly enables the system for that invocation, so `term-llm ask --skills git "..."` works even when skills are disabled in config. Agents can also enable skills via their `skills` field. All built-in agents set `skills: "all"`, so skills are active whenever you use a built-in agent.
 
 Full configuration reference:
 
@@ -113,14 +113,14 @@ When `skills.enabled` is `true`, this happens at startup:
 2. Skills in `never_auto` are excluded from the metadata list
 3. The remaining skills are truncated to fit `max_visible_skills` and `metadata_budget_tokens` (skills in `always_enabled` are never truncated)
 4. An `<available_skills>` XML block is injected into the system prompt with skill names and descriptions
-5. The `activate_skill` tool is registered — when the model calls it, the full skill body is loaded and returned
+5. The `activate_skill` tool is registered. When the model calls it, the full skill body is loaded and returned
 6. If there are more skills than shown, the `search_skills` tool is also registered and a hint is added to the system prompt telling the model to use it
 
-When `auto_invoke` is `false`, the `<available_skills>` block is still injected but the model won't call `activate_skill` on its own — it only fires when you pass `--skills name`.
+When `auto_invoke` is `false`, the `<available_skills>` block is still injected but the model won't call `activate_skill` on its own. It only fires when you pass `--skills name`.
 
 ### Skill Tools
 
-Skills can declare script-backed tools in their frontmatter. When the skill is activated via `activate_skill`, those tools are dynamically registered with the engine—the LLM can then call them directly, with no hardcoded paths anywhere.
+Skills can declare script-backed tools in their frontmatter. When the skill is activated via `activate_skill`, those tools are dynamically registered with the engine. The LLM can then call them directly, with no hardcoded paths anywhere.
 
 ```markdown
 ---
@@ -161,7 +161,7 @@ tools:
 
 # Google Maps Skill
 
-API key is embedded in the scripts—no need to handle it here.
+API key is embedded in the scripts. No need to handle it here.
 ...
 ```
 
@@ -176,7 +176,7 @@ MODE=$(echo "$INPUT" | jq -r '.mode // "DRIVE"')
 # ... call the API
 ```
 
-This is the recommended pattern for skills that need API keys or other secrets—the key lives only in the script, never in the SKILL.md body that gets injected into the LLM context.
+This is the recommended pattern for skills that need API keys or other secrets. The key lives only in the script, never in the SKILL.md body that gets injected into the LLM context.
 
 **Field reference** (same as agent custom tools):
 
@@ -189,4 +189,4 @@ This is the recommended pattern for skills that need API keys or other secrets�
 | `timeout_seconds` | | Execution timeout (default 30, max 300) |
 | `env` | | Extra environment variables when running the script |
 
-Scripts run with `TERM_LLM_AGENT_DIR` set to the skill's directory and `TERM_LLM_TOOL_NAME` set to the tool name. Symlinks are resolved and containment-checked—scripts cannot escape the skill directory.
+Scripts run with `TERM_LLM_AGENT_DIR` set to the skill's directory and `TERM_LLM_TOOL_NAME` set to the tool name. Symlinks are resolved and containment-checked. Scripts cannot escape the skill directory.

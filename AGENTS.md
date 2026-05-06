@@ -42,8 +42,8 @@
 - Add permission checks in `internal/tools/permissions.go`
 
 ## Web UI (internal/serveui/static/)
-- `markdown-setup.js` — **single source of truth for marked.js configuration**. Both the browser (loaded as a `<script>` before `app-core.js`) and the Node.js test suite (`require()`) use this file. Do not put `marked.use(...)` calls anywhere else.
-- `markdown_test.js` — Node.js test runner for markdown rendering rules; run via `TestMarkdownSetupJS` in `embed_test.go`. Add cases here when changing markdown behaviour.
+- `markdown-setup.js`: **single source of truth for marked.js configuration**. Both the browser (loaded as a `<script>` before `app-core.js`) and the Node.js test suite (`require()`) use this file. Do not put `marked.use(...)` calls anywhere else.
+- `markdown_test.js`: Node.js test runner for markdown rendering rules; run via `TestMarkdownSetupJS` in `embed_test.go`. Add cases here when changing markdown behaviour.
 - When adding a new first-party JS file, wire it into: `index.html` (script tag), `sw.js` (SHELL_ASSETS), `embed.go` (`RenderIndexHTML` and `RenderServiceWorker` replacement tables).
 - JS tests run automatically as part of `go test ./...` if `node` is in PATH.
 
