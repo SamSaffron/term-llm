@@ -64,6 +64,90 @@ type memoryMineCandidate struct {
 	Agent   string
 }
 
+type memoryAgentFragmentStore interface {
+	ListFragments(ctx context.Context, opts memorydb.ListOptions) ([]memorydb.Fragment, error)
+	GetFragment(ctx context.Context, agent, path string) (*memorydb.Fragment, error)
+}
+
+type memoryAgentFragmentCache struct {
+	maxTokens int
+	corpora   map[string]*memoryAgentFragmentCorpus
+}
+
+type memoryAgentFragmentCorpus struct {
+	fragments   []memorydb.Fragment
+	taxonomyMap string
+	byPath      map[string]int
+}
+
+func newMemoryAgentFragmentCache(maxTokens int) *memoryAgentFragmentCache {
+	return &memoryAgentFragmentCache{
+		maxTokens: maxTokens,
+		corpora:   map[string]*memoryAgentFragmentCorpus{},
+	}
+}
+
+func (c *memoryAgentFragmentCache) get(ctx context.Context, store memoryAgentFragmentStore, agent string) ([]memorydb.Fragment, string, error) {
+	agent = strings.TrimSpace(agent)
+	if corpus, ok := c.corpora[agent]; ok {
+		return corpus.fragments, corpus.taxonomyMap, nil
+	}
+
+	fragments, err := store.ListFragments(ctx, memorydb.ListOptions{Agent: agent})
+	if err != nil {
+		return nil, "", err
+	}
+
+	corpus := &memoryAgentFragmentCorpus{
+		fragments:   fragments,
+		taxonomyMap: buildTaxonomyMap(fragments, c.maxTokens),
+		byPath:      make(map[string]int, len(fragments)),
+	}
+	for i, frag := range fragments {
+		corpus.byPath[frag.Path] = i
+	}
+	c.corpora[agent] = corpus
+	return corpus.fragments, corpus.taxonomyMap, nil
+}
+
+func (c *memoryAgentFragmentCache) applyChanges(ctx context.Context, store memoryAgentFragmentStore, agent string, paths []string) error {
+	agent = strings.TrimSpace(agent)
+	corpus, ok := c.corpora[agent]
+	if !ok || len(paths) == 0 {
+		return nil
+	}
+
+	for _, fragPath := range paths {
+		fragPath = strings.TrimSpace(fragPath)
+		if fragPath == "" {
+			continue
+		}
+
+		frag, err := store.GetFragment(ctx, agent, fragPath)
+		if err != nil {
+			return fmt.Errorf("get fragment %s: %w", fragPath, err)
+		}
+		if frag == nil {
+			continue
+		}
+
+		if idx, exists := corpus.byPath[fragPath]; exists {
+			corpus.fragments[idx] = *frag
+			continue
+		}
+
+		corpus.byPath[fragPath] = len(corpus.fragments)
+		corpus.fragments = append(corpus.fragments, *frag)
+	}
+
+	corpus.taxonomyMap = buildTaxonomyMap(corpus.fragments, c.maxTokens)
+	return nil
+}
+
+func (c *memoryAgentFragmentCache) invalidate(agent string) {
+	delete(c.corpora, strings.TrimSpace(agent))
+}
+
 type transcriptMessage struct {
 	Role      string   `json:"role"`
 	Text      string   `json:"text,omitempty"`
@@ -199,6 +283,7 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 
 	var totalCreated, totalUpdated, totalSkipped int
 	var summaryStats memoryMineSummaryStats
+	fragmentCache := newMemoryAgentFragmentCache(memoryMineTaxonomyMaxTokens)
 
 	for i, candidate := range candidates {
 		state, err := memStore.GetState(ctx, candidate.Session.ID)
@@ -217,11 +302,10 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 			continue
 		}
 
-		existing, err := memStore.ListFragments(ctx, memorydb.ListOptions{Agent: candidate.Agent})
+		existing, taxonomyMap, err := fragmentCache.get(ctx, memStore, candidate.Agent)
 		if err != nil {
 			return fmt.Errorf("list existing fragments for agent %s: %w", candidate.Agent, err)
 		}
-		taxonomyMap := buildTaxonomyMap(existing, memoryMineTaxonomyMaxTokens)
 
 		loadResult, err := loadMessagesForMining(ctx, sessStore, candidate, startOffset, taxonomyMap)
 		if err != nil {
@@ -237,6 +321,7 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 		batchStart := time.Now()
 		extractionResult, err := runExtractionRequest(ctx, engine, memStore, candidate.Agent, promptParts.Prompt, &batchStats)
 		if err != nil {
+			fragmentCache.invalidate(candidate.Agent)
 			fmt.Fprintf(os.Stderr, "warning: skipping session %s batch at offset %d: %v\n", candidate.Session.ID, startOffset, err)
 			continue
 		}
@@ -257,6 +342,10 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 				MinedAt:         time.Now(),
 			}); err != nil {
 				return fmt.Errorf("update mining state for session %s: %w", candidate.Session.ID, err)
+			}
+			if err := fragmentCache.applyChanges(ctx, memStore, candidate.Agent, affectedPaths); err != nil {
+				fragmentCache.invalidate(candidate.Agent)
+				fmt.Fprintf(os.Stderr, "warning: refresh fragment cache for agent %s: %v\n", candidate.Agent, err)
 			}
 		}
 

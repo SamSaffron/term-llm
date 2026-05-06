@@ -14,6 +14,32 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
+type fakeMemoryAgentFragmentStore struct {
+	listCalls int
+	getCalls  int
+	listByKey map[string][]memorydb.Fragment
+	getByKey  map[string]map[string]memorydb.Fragment
+}
+
+func (s *fakeMemoryAgentFragmentStore) ListFragments(ctx context.Context, opts memorydb.ListOptions) ([]memorydb.Fragment, error) {
+	s.listCalls++
+	fragments := s.listByKey[strings.TrimSpace(opts.Agent)]
+	out := make([]memorydb.Fragment, len(fragments))
+	copy(out, fragments)
+	return out, nil
+}
+
+func (s *fakeMemoryAgentFragmentStore) GetFragment(ctx context.Context, agent, path string) (*memorydb.Fragment, error) {
+	s.getCalls++
+	fragments := s.getByKey[strings.TrimSpace(agent)]
+	frag, ok := fragments[strings.TrimSpace(path)]
+	if !ok {
+		return nil, nil
+	}
+	copyFrag := frag
+	return &copyFrag, nil
+}
+
 func TestBuildInsightTranscriptWeightsUserTextOverAssistantAndSummarizesTools(t *testing.T) {
 	messages := []session.Message{
 		{Role: llm.RoleSystem, TextContent: strings.Repeat("system ", 100)},
@@ -224,6 +250,88 @@ func TestMemoryExtractionCollectorAndTools(t *testing.T) {
 	}
 	if len(res.AffectedPaths) != 1 || res.AffectedPaths[0] != "fragments/new.md" {
 		t.Fatalf("affected paths = %+v", res.AffectedPaths)
+	}
+}
+
+func TestMemoryAgentFragmentCache_ReusesLoadedCorpusAndAppliesIncrementalChanges(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+	initial := memorydb.Fragment{
+		Agent:     "jarvis",
+		Path:      "fragments/a.md",
+		Content:   "old content",
+		UpdatedAt: now.Add(-time.Minute),
+	}
+	updated := memorydb.Fragment{
+		Agent:     "jarvis",
+		Path:      "fragments/a.md",
+		Content:   "updated content",
+		UpdatedAt: now,
+	}
+	created := memorydb.Fragment{
+		Agent:     "jarvis",
+		Path:      "fragments/b.md",
+		Content:   "new content",
+		UpdatedAt: now.Add(30 * time.Second),
+	}
+	store := &fakeMemoryAgentFragmentStore{
+		listByKey: map[string][]memorydb.Fragment{
+			"jarvis": {initial},
+		},
+		getByKey: map[string]map[string]memorydb.Fragment{
+			"jarvis": {
+				initial.Path: initial,
+			},
+		},
+	}
+
+	cache := newMemoryAgentFragmentCache(200)
+	fragments, taxonomy, err := cache.get(ctx, store, "jarvis")
+	if err != nil {
+		t.Fatalf("cache.get(initial): %v", err)
+	}
+	if store.listCalls != 1 {
+		t.Fatalf("listCalls after first get = %d, want 1", store.listCalls)
+	}
+	if len(fragments) != 1 || fragments[0].Content != "old content" {
+		t.Fatalf("initial fragments = %+v", fragments)
+	}
+	if !strings.Contains(taxonomy, "total_fragments: 1") {
+		t.Fatalf("initial taxonomy = %q, want total_fragments: 1", taxonomy)
+	}
+
+	store.getByKey["jarvis"][updated.Path] = updated
+	store.getByKey["jarvis"][created.Path] = created
+	if err := cache.applyChanges(ctx, store, "jarvis", []string{updated.Path, created.Path}); err != nil {
+		t.Fatalf("cache.applyChanges: %v", err)
+	}
+
+	fragments, taxonomy, err = cache.get(ctx, store, "jarvis")
+	if err != nil {
+		t.Fatalf("cache.get(updated): %v", err)
+	}
+	if store.listCalls != 1 {
+		t.Fatalf("listCalls after cache reuse = %d, want 1", store.listCalls)
+	}
+	if store.getCalls != 2 {
+		t.Fatalf("getCalls after incremental refresh = %d, want 2", store.getCalls)
+	}
+	if len(fragments) != 2 {
+		t.Fatalf("len(fragments) = %d, want 2", len(fragments))
+	}
+
+	seen := map[string]string{}
+	for _, frag := range fragments {
+		seen[frag.Path] = frag.Content
+	}
+	if seen[updated.Path] != updated.Content {
+		t.Fatalf("updated fragment content = %q, want %q", seen[updated.Path], updated.Content)
+	}
+	if seen[created.Path] != created.Content {
+		t.Fatalf("created fragment content = %q, want %q", seen[created.Path], created.Content)
+	}
+	if !strings.Contains(taxonomy, "total_fragments: 2") {
+		t.Fatalf("updated taxonomy = %q, want total_fragments: 2", taxonomy)
 	}
 }
 
