@@ -84,6 +84,61 @@ Common entry points:
 - [Transcription](https://term-llm.com/guides/transcription/)
 - [Notifications](https://term-llm.com/guides/notifications/)
 
+## Proxied Widgets
+
+Widgets are local web apps that are mounted inside the chat UI and proxied by term-llm. They are opt-in and disabled by default.
+
+### Enabling widgets
+
+```bash
+term-llm serve web --enable-widgets
+```
+
+Widgets are discovered from `~/.config/term-llm/widgets/` (override with `--widgets-dir` or `serve.widgets_dir` in config.yaml). Each sub-directory with a `widget.yaml` manifest becomes a widget.
+
+### widget.yaml
+
+```yaml
+title: "Sam's Hebrew Keyboard"
+mount: hebrew                          # optional; defaults to directory name
+description: "On-screen Hebrew keyboard"
+command: ["uv", "run", "python", "server.py", "--socket", "$SOCKET"]
+```
+
+```yaml
+title: "Dev Server Widget"
+command: ["npm", "run", "dev", "--", "--port", "$PORT"]
+```
+
+**Required fields:** `title`, `command`
+
+**`command`** must contain exactly one of:
+- `$SOCKET` — term-llm creates a Unix domain socket and passes the path in argv and as env vars `TERM_LLM_WIDGET_SOCKET` / `SOCKET`
+- `$PORT` — term-llm allocates a free localhost port and passes it as `TERM_LLM_WIDGET_PORT` / `PORT`
+
+The widget process is started lazily on first request and stopped after 10 minutes of idle time.
+
+### Environment variables set for widget processes
+
+| Variable | Value |
+|---|---|
+| `TERM_LLM_WIDGET_ID` | directory basename |
+| `TERM_LLM_WIDGET_MOUNT` | mount path segment |
+| `TERM_LLM_WIDGET_BASE_PATH` / `BASE_PATH` | full URL prefix for the widget |
+| `TERM_LLM_WIDGET_SOCKET` / `SOCKET` | socket path (socket mode) |
+| `TERM_LLM_WIDGET_HOST` / `HOST` | `127.0.0.1` (port mode) |
+| `TERM_LLM_WIDGET_PORT` / `PORT` | allocated port (port mode) |
+
+### Routes (under `--base-path`, default `/ui`)
+
+| Path | Description |
+|---|---|
+| `GET {base}/widgets/` | HTML index listing all widgets |
+| `{base}/widgets/<mount>/` | Proxied widget (lazy-started on first hit) |
+| `GET {base}/admin/widgets/status` | JSON status of all widgets |
+| `POST {base}/admin/widgets/reload` | Re-scan widgets directory |
+| `POST {base}/admin/widgets/<mount>/stop` | Stop a running widget process |
+
 ## License
 
 MIT

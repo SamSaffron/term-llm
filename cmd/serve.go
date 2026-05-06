@@ -23,6 +23,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/samsaffron/term-llm/internal/widgets"
 	"github.com/spf13/cobra"
 )
 
@@ -58,6 +59,8 @@ var (
 	serveSidebarSessions        string
 	serveToolMap                []string
 	serveFilesDir               string
+	serveEnableWidgets          bool
+	serveWidgetsDir             string
 )
 
 var serveCmd = &cobra.Command{
@@ -133,6 +136,8 @@ func init() {
 	serveCmd.Flags().StringArrayVar(&serveToolMap, "tool-map", nil, "Map client tool name to server tool (repeatable, format ClientName:ServerName)")
 	serveCmd.Flags().BoolVar(&serveFilterServerTools, "suppress-server-tool-calls", false, "Hide server-executed tool calls from API responses (use when proxying to external clients)")
 	serveCmd.Flags().StringVar(&serveFilesDir, "files-dir", "", "Directory for serving arbitrary files (videos, PDFs, etc) at {base}/files/")
+	serveCmd.Flags().BoolVar(&serveEnableWidgets, "enable-widgets", false, "Enable local widget apps proxied under {base}/widgets/<mount>/")
+	serveCmd.Flags().StringVar(&serveWidgetsDir, "widgets-dir", "", "Directory containing widget sub-directories (default: ~/.config/term-llm/widgets)")
 
 	AddCommonFlags(serveCmd,
 		CommonCoreFlags|CommonSearch|CommonNativeSearch|CommonMaxTurns|CommonAgent,
@@ -512,6 +517,17 @@ func runServe(cmd *cobra.Command, args []string) error {
 			}
 		}
 		serveUI := hasWeb
+
+		var widgetsMgr *widgets.Manager
+		if serveEnableWidgets && (hasWeb || hasAPI) {
+			wDir, wErr := resolveWidgetsDir(serveWidgetsDir, cfg)
+			if wErr != nil {
+				return wErr
+			}
+			widgetsMgr = widgets.NewManager(wDir, serveBasePath)
+			log.Printf("widgets enabled, dir: %s", wDir)
+		}
+
 		s = &serveServer{
 			cfg: serveServerConfig{
 				host:                serveHost,
@@ -527,12 +543,15 @@ func runServe(cmd *cobra.Command, args []string) error {
 				corsOrigins:         append([]string(nil), serveCORSOrigins...),
 				filesDir:            resolveFilesDir(serveFilesDir, cfg),
 				writeDirs:           resolveServeWriteDirs(serveWriteDirs, cfg),
+				enableWidgets:       serveEnableWidgets,
+				widgetsDir:          serveWidgetsDir,
 			},
 			sessionMgr:     sessionMgr,
 			jobsV2:         jobsV2,
 			cfgRef:         cfg,
 			store:          store,
 			runtimeFactory: runtimeFactory,
+			widgetsMgr:     widgetsMgr,
 		}
 		sessionMgr.onEvict = func(rt *serveRuntime) {
 			for _, rid := range rt.getResponseIDs() {
@@ -789,6 +808,8 @@ type serveServerConfig struct {
 	corsOrigins         []string
 	filesDir            string   // opt-in directory for serving arbitrary files (videos, PDFs, etc)
 	writeDirs           []string // tool write-dirs (CLI + config); tool-reported files inside these are trusted sources for ensureFileServeable
+	enableWidgets       bool
+	widgetsDir          string
 }
 
 // uiRoute returns the base-path with trailing slash, e.g. "/ui/" or "/chat/".
@@ -806,6 +827,21 @@ func resolveFilesDir(flagVal string, cfg *config.Config) string {
 		return flagVal
 	}
 	return cfg.Serve.FilesDir
+}
+
+// resolveWidgetsDir returns the widgets directory, defaulting to ~/.config/term-llm/widgets.
+func resolveWidgetsDir(flagVal string, cfg *config.Config) (string, error) {
+	if flagVal != "" {
+		return flagVal, nil
+	}
+	if cfg.Serve.WidgetsDir != "" {
+		return cfg.Serve.WidgetsDir, nil
+	}
+	cfgDir, err := config.GetConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve widgets dir: %w", err)
+	}
+	return cfgDir + "/widgets", nil
 }
 
 // resolveServeWriteDirs returns the merged effective write-dirs for the serve runtime,
@@ -873,6 +909,7 @@ type serveServer struct {
 	responseRuns      *responseRunManager
 	webrtcHeadSnippet string // injected into index.html <head>; empty when WebRTC disabled
 	runtimeFactory    func(ctx context.Context, providerName string, model string) (*serveRuntime, error)
+	widgetsMgr        *widgets.Manager
 }
 
 func (s *serveServer) Start() error {
@@ -927,6 +964,9 @@ func (s *serveServer) httpHandler() http.Handler {
 	inner.HandleFunc("/images/", s.auth(s.cors(s.handleImage)))
 	if s.cfg.filesDir != "" {
 		inner.HandleFunc("/files/", s.auth(s.cors(s.handleFile)))
+	}
+	if s.widgetsMgr != nil {
+		s.registerWidgetRoutes(inner)
 	}
 	inner.HandleFunc("/v1/sessions/status", s.auth(s.cors(s.handleSessionsStatus)))
 	inner.HandleFunc("/v1/sessions/", s.auth(s.cors(s.handleSessionByID)))
@@ -998,6 +1038,9 @@ func (s *serveServer) Stop(ctx context.Context) error {
 	}
 	if s.responseRuns != nil {
 		s.responseRuns.Close()
+	}
+	if s.widgetsMgr != nil {
+		s.widgetsMgr.Close()
 	}
 	s.modelsMu.Lock()
 	for _, p := range s.modelsProviders {

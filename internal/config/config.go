@@ -147,11 +147,12 @@ type Config struct {
 
 // ServeConfig holds configuration for the serve command platforms.
 type ServeConfig struct {
-	Platforms []string            `mapstructure:"platforms" yaml:"platforms,omitempty"`
-	BasePath  string              `mapstructure:"base_path" yaml:"base_path,omitempty"`
-	FilesDir  string              `mapstructure:"files_dir" yaml:"files_dir,omitempty"`
-	Telegram  TelegramServeConfig `mapstructure:"telegram" yaml:"telegram,omitempty"`
-	WebPush   WebPushConfig       `mapstructure:"web_push" yaml:"web_push,omitempty"`
+	Platforms  []string            `mapstructure:"platforms" yaml:"platforms,omitempty"`
+	BasePath   string              `mapstructure:"base_path" yaml:"base_path,omitempty"`
+	FilesDir   string              `mapstructure:"files_dir" yaml:"files_dir,omitempty"`
+	WidgetsDir string              `mapstructure:"widgets_dir" yaml:"widgets_dir,omitempty"`
+	Telegram   TelegramServeConfig `mapstructure:"telegram" yaml:"telegram,omitempty"`
+	WebPush    WebPushConfig       `mapstructure:"web_push" yaml:"web_push,omitempty"`
 }
 
 // WebPushConfig holds VAPID keys for Web Push notifications.
