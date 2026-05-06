@@ -40,17 +40,6 @@ type transcriptFitResult struct {
 }
 
 func buildTaxonomyMap(fragments []memorydb.Fragment, maxTokens int) string {
-	if maxTokens <= 0 {
-		return "(omitted)"
-	}
-	if len(fragments) == 0 {
-		base := "Memory fragment map:\n- total_fragments: 0\n- no existing fragments"
-		if llm.EstimateTokens(base) <= maxTokens {
-			return base
-		}
-		return "fragment_count=0; use lookup tools"
-	}
-
 	byPath := make([]memorydb.Fragment, len(fragments))
 	copy(byPath, fragments)
 	sort.Slice(byPath, func(i, j int) bool {
@@ -60,9 +49,28 @@ func buildTaxonomyMap(fragments []memorydb.Fragment, maxTokens int) string {
 		return byPath[i].UpdatedAt.After(byPath[j].UpdatedAt)
 	})
 
-	dirCounts := map[string]int{}
+	paths := make([]string, 0, len(byPath))
 	for _, frag := range byPath {
-		dir := path.Dir(frag.Path)
+		paths = append(paths, frag.Path)
+	}
+	return buildTaxonomyMapFromPaths(paths, maxTokens)
+}
+
+func buildTaxonomyMapFromPaths(paths []string, maxTokens int) string {
+	if maxTokens <= 0 {
+		return "(omitted)"
+	}
+	if len(paths) == 0 {
+		base := "Memory fragment map:\n- total_fragments: 0\n- no existing fragments"
+		if llm.EstimateTokens(base) <= maxTokens {
+			return base
+		}
+		return "fragment_count=0; use lookup tools"
+	}
+
+	dirCounts := map[string]int{}
+	for _, fragPath := range paths {
+		dir := path.Dir(fragPath)
 		if dir == "." {
 			dir = "(root)"
 		}
@@ -81,10 +89,10 @@ func buildTaxonomyMap(fragments []memorydb.Fragment, maxTokens int) string {
 
 	var b strings.Builder
 	b.WriteString("Memory fragment map:\n")
-	b.WriteString(fmt.Sprintf("- total_fragments: %d\n", len(byPath)))
+	b.WriteString(fmt.Sprintf("- total_fragments: %d\n", len(paths)))
 	b.WriteString("- note: compact map only; use lookup tools for exact duplicate checks or content inspection\n")
 	if llm.EstimateTokens(b.String()) > maxTokens {
-		return fmt.Sprintf("fragment_count=%d; use lookup tools", len(byPath))
+		return fmt.Sprintf("fragment_count=%d; use lookup tools", len(paths))
 	}
 
 	dirBudget := maxTokens / 3
@@ -107,15 +115,15 @@ func buildTaxonomyMap(fragments []memorydb.Fragment, maxTokens int) string {
 
 	b.WriteString("Known fragment paths (recent-first, partial if needed):\n")
 	addedPaths := 0
-	for _, frag := range byPath {
-		line := "- " + frag.Path + "\n"
+	for _, fragPath := range paths {
+		line := "- " + fragPath + "\n"
 		if llm.EstimateTokens(b.String()+line) > maxTokens {
 			break
 		}
 		b.WriteString(line)
 		addedPaths++
 	}
-	if omitted := len(byPath) - addedPaths; omitted > 0 {
+	if omitted := len(paths) - addedPaths; omitted > 0 {
 		line := fmt.Sprintf("- ... %d more path(s) omitted from map; use lookup tools\n", omitted)
 		if llm.EstimateTokens(b.String()+line) <= maxTokens {
 			b.WriteString(line)

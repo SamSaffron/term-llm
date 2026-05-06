@@ -70,6 +70,72 @@ type transcriptMessage struct {
 	ToolCalls []string `json:"tool_calls,omitempty"`
 }
 
+type memoryMineFragmentCache struct {
+	maxTokens int
+	byAgent   map[string]*memoryMineFragmentCacheEntry
+}
+
+type memoryMineFragmentCacheEntry struct {
+	paths       []string
+	seen        map[string]struct{}
+	taxonomyMap string
+}
+
+func newMemoryMineFragmentCache(maxTokens int) *memoryMineFragmentCache {
+	return &memoryMineFragmentCache{
+		maxTokens: maxTokens,
+		byAgent:   map[string]*memoryMineFragmentCacheEntry{},
+	}
+}
+
+func (c *memoryMineFragmentCache) get(ctx context.Context, store *memorydb.Store, agent string) (*memoryMineFragmentCacheEntry, error) {
+	if entry, ok := c.byAgent[agent]; ok {
+		return entry, nil
+	}
+
+	paths, err := store.ListFragmentPaths(ctx, agent, "", 0)
+	if err != nil {
+		return nil, err
+	}
+	entry := newMemoryMineFragmentCacheEntry(paths, c.maxTokens)
+	c.byAgent[agent] = entry
+	return entry, nil
+}
+
+func newMemoryMineFragmentCacheEntry(paths []string, maxTokens int) *memoryMineFragmentCacheEntry {
+	copyPaths := append([]string(nil), paths...)
+	seen := make(map[string]struct{}, len(copyPaths))
+	for _, fragPath := range copyPaths {
+		seen[fragPath] = struct{}{}
+	}
+	return &memoryMineFragmentCacheEntry{
+		paths:       copyPaths,
+		seen:        seen,
+		taxonomyMap: buildTaxonomyMapFromPaths(copyPaths, maxTokens),
+	}
+}
+
+func (e *memoryMineFragmentCacheEntry) noteAffectedPaths(paths []string, maxTokens int) {
+	newPaths := make([]string, 0, len(paths))
+	for _, fragPath := range paths {
+		fragPath = strings.TrimSpace(fragPath)
+		if fragPath == "" {
+			continue
+		}
+		if _, ok := e.seen[fragPath]; ok {
+			continue
+		}
+		e.seen[fragPath] = struct{}{}
+		newPaths = append(newPaths, fragPath)
+	}
+	if len(newPaths) == 0 {
+		return
+	}
+
+	e.paths = append(newPaths, e.paths...)
+	e.taxonomyMap = buildTaxonomyMapFromPaths(e.paths, maxTokens)
+}
+
 func init() {
 	memoryMineCmd.Flags().StringVar(&memoryMineModel, "model", "", "Override model used for memory extraction")
 	memoryMineCmd.Flags().DurationVar(&memoryMineSince, "since", 0, "Only mine sessions updated within this duration (e.g. 24h)")
@@ -199,6 +265,7 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 
 	var totalCreated, totalUpdated, totalSkipped int
 	var summaryStats memoryMineSummaryStats
+	fragmentCache := newMemoryMineFragmentCache(memoryMineTaxonomyMaxTokens)
 
 	for i, candidate := range candidates {
 		state, err := memStore.GetState(ctx, candidate.Session.ID)
@@ -217,11 +284,11 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 			continue
 		}
 
-		existing, err := memStore.ListFragments(ctx, memorydb.ListOptions{Agent: candidate.Agent})
+		fragmentCacheEntry, err := fragmentCache.get(ctx, memStore, candidate.Agent)
 		if err != nil {
-			return fmt.Errorf("list existing fragments for agent %s: %w", candidate.Agent, err)
+			return fmt.Errorf("list existing fragment paths for agent %s: %w", candidate.Agent, err)
 		}
-		taxonomyMap := buildTaxonomyMap(existing, memoryMineTaxonomyMaxTokens)
+		taxonomyMap := fragmentCacheEntry.taxonomyMap
 
 		loadResult, err := loadMessagesForMining(ctx, sessStore, candidate, startOffset, taxonomyMap)
 		if err != nil {
@@ -233,7 +300,7 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 		}
 
 		promptParts := buildExtractionPromptParts(candidate, startOffset, loadResult.NextOffset, loadResult.Messages, taxonomyMap)
-		batchStats := newMemoryExtractionStats(candidate, startOffset, loadResult.NextOffset, len(existing), loadResult, promptParts)
+		batchStats := newMemoryExtractionStats(candidate, startOffset, loadResult.NextOffset, len(fragmentCacheEntry.paths), loadResult, promptParts)
 		batchStart := time.Now()
 		extractionResult, err := runExtractionRequest(ctx, engine, memStore, candidate.Agent, promptParts.Prompt, &batchStats)
 		if err != nil {
@@ -258,6 +325,7 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 			}); err != nil {
 				return fmt.Errorf("update mining state for session %s: %w", candidate.Session.ID, err)
 			}
+			fragmentCacheEntry.noteAffectedPaths(affectedPaths, memoryMineTaxonomyMaxTokens)
 		}
 
 		totalCreated += created

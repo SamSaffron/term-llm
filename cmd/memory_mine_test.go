@@ -244,6 +244,21 @@ func TestBuildTaxonomyMap_RespectsBudget(t *testing.T) {
 	}
 }
 
+func TestMemoryMineFragmentCacheEntryAddsOnlyNewPaths(t *testing.T) {
+	entry := newMemoryMineFragmentCacheEntry([]string{"projects/existing.md"}, 200)
+	entry.noteAffectedPaths([]string{"projects/existing.md", "prefs/new.md", "prefs/new.md"}, 200)
+
+	if len(entry.paths) != 2 {
+		t.Fatalf("len(paths) = %d, want 2 (%#v)", len(entry.paths), entry.paths)
+	}
+	if entry.paths[0] != "prefs/new.md" {
+		t.Fatalf("new path not promoted into cache front: %#v", entry.paths)
+	}
+	if !strings.Contains(entry.taxonomyMap, "total_fragments: 2") {
+		t.Fatalf("taxonomy map not updated with new count: %s", entry.taxonomyMap)
+	}
+}
+
 func TestLoadMessagesForMining_RespectsPromptBudget(t *testing.T) {
 	ctx := context.Background()
 	sessStore, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
