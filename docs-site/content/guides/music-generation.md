@@ -27,8 +27,8 @@ echo "cinematic whoosh" | term-llm music -o - > whoosh.mp3
 
 `term-llm music` supports:
 
-- `venice` — Venice async audio queue for music, songs, sound effects, and Venice-hosted TTS audio models
-- `elevenlabs` — ElevenLabs `/v1/music`, `/v1/music/stream`, and `/v1/music/detailed`
+- `venice`: Venice async audio queue for music, songs, sound effects, and Venice-hosted TTS audio models
+- `elevenlabs`: ElevenLabs `/v1/music`, `/v1/music/stream`, and `/v1/music/detailed`
 
 ### Music flags
 

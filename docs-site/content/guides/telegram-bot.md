@@ -17,7 +17,7 @@ A Telegram bot that runs your agent. You send a message from your phone or deskt
 
 1. Open Telegram and start a chat with [@BotFather](https://t.me/BotFather)
 2. Send `/newbot` and follow the prompts (name + username)
-3. Copy the token BotFather gives you — it looks like `123456789:ABCdef...`
+3. Copy the token BotFather gives you. It looks like `123456789:ABCdef...`
 
 ## Step 2: Configure the token
 
@@ -123,6 +123,6 @@ serve:
 
 ## Related pages
 
-- [Notifications](/guides/notifications/) — send one-off Telegram messages via `term-llm notify`
-- [Web UI and API](/guides/web-ui-and-api/) — run the browser UI alongside the bot
-- [Agents](/guides/agents/) — configure which agent handles bot conversations
+- [Notifications](/guides/notifications/): send one-off Telegram messages via `term-llm notify`
+- [Web UI and API](/guides/web-ui-and-api/): run the browser UI alongside the bot
+- [Agents](/guides/agents/): configure which agent handles bot conversations

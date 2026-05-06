@@ -53,7 +53,7 @@ term-llm embed "query text" -f corpus.txt
 term-llm embed "hello"
 # → {"model": "gemini-embedding-001", "dimensions": 3072, "embeddings": [...]}
 
-# Bare JSON array(s) — one per input, for piping
+# Bare JSON array(s), one per input, for piping
 term-llm embed "hello" --format array
 # → [0.0023, -0.0094, 0.0156, ...]
 
@@ -114,7 +114,7 @@ term-llm embed -f doc.txt --task-type RETRIEVAL_DOCUMENT -p gemini
 
 Embedding providers use their own credentials, separate from text and image providers. The default provider is auto-detected from your LLM provider (Gemini users → Gemini, OpenAI users → OpenAI, Anthropic users → Voyage if configured, otherwise Gemini).
 
-**Jina AI** is a great choice for getting started — sign up at [jina.ai/embeddings](https://jina.ai/embeddings/) for a free API key with 10M tokens, no credit card required.
+**Jina AI** is a great choice for getting started. Sign up at [jina.ai/embeddings](https://jina.ai/embeddings/) for a free API key with 10M tokens, no credit card required.
 
 **Voyage AI** is Anthropic's recommended embedding partner (acquired by MongoDB, Feb 2025). The API remains fully available.
 

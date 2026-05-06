@@ -113,8 +113,8 @@ command: ["npm", "run", "dev", "--", "--port", "$PORT"]
 **Required fields:** `title`, `command`
 
 **`command`** must contain exactly one of:
-- `$SOCKET` — term-llm creates a Unix domain socket and passes the path in argv and as env vars `TERM_LLM_WIDGET_SOCKET` / `SOCKET`
-- `$PORT` — term-llm allocates a free localhost port and passes it as `TERM_LLM_WIDGET_PORT` / `PORT`
+- `$SOCKET`: term-llm creates a Unix domain socket and passes the path in argv and as env vars `TERM_LLM_WIDGET_SOCKET` / `SOCKET`
+- `$PORT`: term-llm allocates a free localhost port and passes it as `TERM_LLM_WIDGET_PORT` / `PORT`
 
 The widget process is started lazily on first request and stopped after 10 minutes of idle time.
 

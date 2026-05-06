@@ -168,7 +168,7 @@ term-llm video "astronaut on mars" --quote-only
 ### JSON event stream (`ask --json`)
 
 `term-llm ask --json` emits a newline-delimited JSON (JSONL) event stream on
-stdout — one event per line — for scripting and automation. It implies `--text`
+stdout, one event per line, for scripting and automation. It implies `--text`
 (no rich terminal rendering) and is incompatible with `--debug-raw`. Human
 progress and warnings stay on stderr.
 
@@ -183,7 +183,7 @@ Event types, in typical order:
 | Type | Payload |
 |------|---------|
 | `session.started` | `session_id`, `provider`, `model`, `agent`, `tools`, `mcp`, `yolo`, `search`, `resuming` |
-| `text.delta` | `text` — one chunk of streamed response |
+| `text.delta` | `text`, one chunk of streamed response |
 | `tool.started` | `call_id`, `name`, `info`, `args` (raw JSON or `null`) |
 | `tool.completed` | `call_id`, `name`, `info`, `success` |
 | `usage` | `input_tokens`, `output_tokens`, `cached_input_tokens`, `cache_write_tokens` |

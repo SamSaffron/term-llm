@@ -35,7 +35,7 @@ term-llm exec --tools read_file,write_file,edit_file,shell,grep,glob,view_image
 
 ### Custom Tools
 
-Agents can declare named, schema-bearing tools backed by shell scripts in the agent directory. These appear to the LLM as first-class tools with their own descriptions and typed parameters—no more asking the LLM to invoke `run_agent_script` with a magic filename.
+Agents can declare named, schema-bearing tools backed by shell scripts in the agent directory. These appear to the LLM as first-class tools with their own descriptions and typed parameters. No more asking the LLM to invoke `run_agent_script` with a magic filename.
 
 ```yaml
 tools:
@@ -97,7 +97,7 @@ sqlite3 "$DB_PATH" \
 | `timeout_seconds` | | Execution timeout (default 30, max 300) |
 | `env` | | Extra environment variables to set when running the script |
 
-Scripts run with `TERM_LLM_AGENT_DIR` and `TERM_LLM_TOOL_NAME` set. Symlinks are resolved and containment-checked—scripts cannot escape the agent directory. No approval prompt is shown; scripts in the agent directory are implicitly trusted.
+Scripts run with `TERM_LLM_AGENT_DIR` and `TERM_LLM_TOOL_NAME` set. Symlinks are resolved and containment-checked. Scripts cannot escape the agent directory. No approval prompt is shown; scripts in the agent directory are implicitly trusted.
 
 ### Tool Permissions
 

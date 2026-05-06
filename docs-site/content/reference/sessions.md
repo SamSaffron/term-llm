@@ -77,7 +77,7 @@ term-llm sessions autotitle --force
 term-llm sessions autotitle --min-age 10m
 ```
 
-The command is safe to run repeatedly — it skips sessions that already have a generated title or a custom name (unless `--force` is used), and does not contact the LLM provider when there is nothing to do. Sessions updated less than 3 minutes ago are skipped by default (`--min-age 3m`) so the conversation has time to develop before titling.
+The command is safe to run repeatedly. It skips sessions that already have a generated title or a custom name (unless `--force` is used), and does not contact the LLM provider when there is nothing to do. Sessions updated less than 3 minutes ago are skipped by default (`--min-age 3m`) so the conversation has time to develop before titling.
 
 When displaying sessions (in `list`, `show`, `export`, and `browse`), titles are chosen in priority order:
 

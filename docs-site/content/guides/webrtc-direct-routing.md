@@ -87,8 +87,8 @@ WebRTC direct routing does not weaken the existing auth model:
 
 The signaling server needs to implement two endpoints:
 
-1. **`POST /session`** — creates a session and returns `{ "session_id": "..." }` along with optional STUN/TURN credentials.
-2. **`POST /signal`** and **`GET /signal`** — exchange SDP offers and answers keyed by session ID.
+1. **`POST /session`**: creates a session and returns `{ "session_id": "..." }` along with optional STUN/TURN credentials.
+2. **`POST /signal`** and **`GET /signal`**: exchange SDP offers and answers keyed by session ID.
 
 The browser creates a WebRTC offer, posts it via the signaling server. term-llm polls for offers, generates an answer, and posts it back. Once both sides have each other's SDP (which includes ICE candidates), they establish a direct UDP connection. After that, the signaling server is no longer involved.
 
@@ -114,16 +114,16 @@ This logs the full connection lifecycle with timestamps:
 [webrtc] +6217ms answer received
 [webrtc] +6218ms ICE state=checking
 [webrtc] +6224ms ICE state=connected
-[webrtc] +6243ms data channel open — fetch patched
+[webrtc] +6243ms data channel open; fetch patched
 [webrtc] +9904ms → GET /chat/v1/sessions/abc123/state (0b)
 [webrtc] +9922ms ← 200 GET /chat/v1/sessions/abc123/state (512b, 17ms)
 ```
 
 Key things to look for:
 
-- **ICE candidates** — `host` means a local interface, `srflx` is a STUN-discovered public address (direct), `relay` is a TURN relay. Direct connections use host or srflx candidates.
-- **Signaling timing** — the `(Nms)` after session creation and offer sent shows how long the signaling server took. High values suggest network latency to the signaling server.
-- **Per-request latency** — each `←` line shows status, response size, and round-trip time. Compare against the HTTPS path to confirm WebRTC is faster.
+- **ICE candidates**: `host` means a local interface, `srflx` is a STUN-discovered public address (direct), `relay` is a TURN relay. Direct connections use host or srflx candidates.
+- **Signaling timing**: the `(Nms)` after session creation and offer sent shows how long the signaling server took. High values suggest network latency to the signaling server.
+- **Per-request latency**: each `←` line shows status, response size, and round-trip time. Compare against the HTTPS path to confirm WebRTC is faster.
 
 You can also set `window.__WEBRTC_DIAGNOSTICS__ = true` in the browser console before page load for the same effect.
 
@@ -141,7 +141,7 @@ This sets `iceTransportPolicy=relay` on the RTCPeerConnection. Only relay (TURN)
 - Verifying your TURN server is working
 - Testing the fallback path without leaving your LAN
 
-With diagnostics enabled, you'll see only `relay` candidates gathered — no `host` or `srflx`.
+With diagnostics enabled, you'll see only `relay` candidates gathered, with no `host` or `srflx`.
 
 ### Server-side logging
 
@@ -158,14 +158,14 @@ If connections fail silently, check these logs for DTLS handshake errors or SCTP
 
 ## Troubleshooting
 
-**No lightning bolt in the UI** — WebRTC negotiation failed silently. Check:
+**No lightning bolt in the UI**: WebRTC negotiation failed silently. Check:
 - The signaling URL is reachable from both the browser and the home machine
 - The signaling token is correct
 - STUN servers are reachable (corporate firewalls sometimes block UDP)
 - Both sides can reach each other via UDP (symmetric NAT on both sides will prevent direct connections without a TURN relay)
 - Enable `?webrtc_diag=1` to see where the process stalls
 
-**Works locally but not remotely** — you likely need a TURN relay for NAT traversal. Add a TURN server URL via `--webrtc-stun`:
+**Works locally but not remotely**: you likely need a TURN relay for NAT traversal. Add a TURN server URL via `--webrtc-stun`:
 
 ```bash
 term-llm serve web --webrtc \
@@ -173,14 +173,14 @@ term-llm serve web --webrtc \
   --webrtc-stun "turn:turn.example.com:3478?transport=udp"
 ```
 
-**High latency despite direct connection** — enable `?webrtc_diag=1` and check:
+**High latency despite direct connection**: enable `?webrtc_diag=1` and check:
 - The ICE candidate pair should use `host` or `srflx`, not `relay`
 - If you see only `relay` candidates, your STUN server may be unreachable
 - Use `?webrtc_turn=1` to confirm TURN adds measurable latency, then compare without it
 
-**ICE gathering takes 40+ seconds** — likely IPv6 STUN timeouts or TCP TURN candidates. Ensure your TURN URL includes `?transport=udp` to prevent TCP fallback attempts. The browser caps gathering at 4 seconds to mitigate this, but broken STUN servers can still delay the process.
+**ICE gathering takes 40+ seconds**: likely IPv6 STUN timeouts or TCP TURN candidates. Ensure your TURN URL includes `?transport=udp` to prevent TCP fallback attempts. The browser caps gathering at 4 seconds to mitigate this, but broken STUN servers can still delay the process.
 
-**Data channel opens then immediately closes** — check server logs for panics. Common causes include missing SRTP protection profiles in the DTLS config (Chrome always negotiates `use_srtp` even for data channels) or nil pointer dereferences in pion library initialization.
+**Data channel opens then immediately closes**: check server logs for panics. Common causes include missing SRTP protection profiles in the DTLS config (Chrome always negotiates `use_srtp` even for data channels) or nil pointer dereferences in pion library initialization.
 
 ## Related pages
 

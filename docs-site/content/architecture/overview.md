@@ -47,7 +47,7 @@ That gives term-llm a way to accumulate reusable context without pretending ever
 
 Built-in tools handle common filesystem and shell tasks. MCP servers extend that with external capabilities such as browser automation, GitHub, or custom APIs.
 
-In practice that means the model is not just generating text — it can interrogate files, run commands, call external tools, and then keep going.
+In practice that means the model is not just generating text. It can interrogate files, run commands, call external tools, and then keep going.
 
 ## Jobs turn it into a runtime, not just a CLI
 

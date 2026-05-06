@@ -1,7 +1,7 @@
 ---
 title: "Agent Containers"
 weight: 15
-description: "Run independent term-llm agents in Docker — one container per agent, fully isolated, no image rebuild needed."
+description: "Run independent term-llm agents in Docker: one container per agent, fully isolated, no image rebuild needed."
 kicker: "Deploy agents"
 ---
 
@@ -61,10 +61,10 @@ The `.env` file also has a pre-generated `WEB_TOKEN` for authenticating the web 
 
 The scaffold separates personality from operations:
 
-- **`soul.md`** — voice, values, and boundaries. This is who the agent *is*. Edit it to change tone, principles, or guardrails.
-- **`system.md`** — operational context. Who the user is, what tools are available, domain-specific instructions. Edit it to change what the agent *knows about its environment*.
+- **`soul.md`**: voice, values, and boundaries. This is who the agent *is*. Edit it to change tone, principles, or guardrails.
+- **`system.md`**: operational context. Who the user is, what tools are available, domain-specific instructions. Edit it to change what the agent *knows about its environment*.
 
-Both files are bind-mounted into the container as seed files. On first boot they are copied into the agent's config directory on the state volume. After that, the container owns them — your local copies are the seed, not the live version.
+Both files are bind-mounted into the container as seed files. On first boot they are copied into the agent's config directory on the state volume. After that, the container owns them. Your local copies are the seed, not the live version.
 
 ### Agent settings
 
@@ -110,7 +110,7 @@ On first boot, the entrypoint:
 2. Runs `/seed/init.sh` which installs runit services (web UI, job scheduler, job bootstrapper)
 3. Starts runit as PID 1
 
-After the first boot, the state volume owns all agent config. Your local `agents/` directory remains the seed — edit it and delete the volume to re-seed, or edit the live files inside the container directly.
+After the first boot, the state volume owns all agent config. Your local `agents/` directory remains the seed. Edit it and delete the volume to re-seed, or edit the live files inside the container directly.
 
 The built-in `term-llm contain new` agent image keeps PID 1 and runit supervision as root so services can be linked under `/etc`, but the Web UI, jobs service, bootstrap jobs, interactive shells, and normal agent work run as the non-root Linux user `agent` with home `/home/agent`. Use explicit passwordless `sudo` inside the container for package maintenance or other root-only operations.
 
@@ -131,7 +131,7 @@ On first boot, the `bootstrap-jobs` service waits for the jobs API, then creates
 | `memory-gc` | Daily at 4am UTC | Garbage-collects stale or duplicate memory fragments |
 | `system-upgrade` | Daily at 5am | Keeps the container's distro packages current (`pacman` on Arch, `dnf` on Fedora) |
 
-These jobs are yours after creation — edit or delete them with `term-llm jobs list` and `term-llm jobs update`.
+These jobs are yours after creation. Edit or delete them with `term-llm jobs list` and `term-llm jobs update`.
 
 All services are managed by runit. Check status:
 
@@ -169,7 +169,7 @@ cd myagent
 docker compose up -d --build
 ```
 
-The state volume persists across rebuilds — agent config, memory, and session history are preserved. The `init.sh` boot hook re-installs runit services on every boot, so new services added to your `services/` directory will be picked up automatically.
+The state volume persists across rebuilds. Agent config, memory, and session history are preserved. The `init.sh` boot hook re-installs runit services on every boot, so new services added to your `services/` directory will be picked up automatically.
 
 ## Transcript access
 
