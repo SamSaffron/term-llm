@@ -825,6 +825,54 @@ func TestHandleUI_ServiceWorkerVersionsShellCache(t *testing.T) {
 	}
 }
 
+func TestUiAssetCacheReusesGzipAcrossRequests(t *testing.T) {
+	data := []byte("compressible content for cache test: " + strings.Repeat("abcdefgh", 64))
+	e1 := uiGetOrBuildEntry(data, true)
+	e2 := uiGetOrBuildEntry(data, true)
+	if e1 != e2 {
+		t.Fatal("expected same *uiAssetCacheEntry pointer on repeated call with same content")
+	}
+	if e1.etag == "" {
+		t.Fatal("expected non-empty ETag")
+	}
+	if len(e1.compressed) == 0 {
+		t.Fatal("expected non-empty compressed bytes")
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(e1.compressed))
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	got, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	_ = zr.Close()
+	if !bytes.Equal(got, data) {
+		t.Fatalf("decompressed bytes mismatch")
+	}
+	// Non-compressible entry (different data) must have nil compressed bytes.
+	nonCompData := []byte("binary-like content for non-compressible test")
+	e3 := uiGetOrBuildEntry(nonCompData, false)
+	if e3.compressed != nil {
+		t.Fatal("expected nil compressed bytes for non-compressible entry")
+	}
+}
+
+func TestServeServer_RenderIndexHTMLCached(t *testing.T) {
+	srv := &serveServer{cfg: serveServerConfig{ui: true, basePath: "/chat"}}
+	a := srv.renderIndexHTML()
+	b := srv.renderIndexHTML()
+	if len(a) == 0 {
+		t.Fatal("renderIndexHTML returned empty slice")
+	}
+	if &a[0] != &b[0] {
+		t.Fatal("expected renderIndexHTML to return the same cached backing array on repeated calls")
+	}
+	if !bytes.Contains(a, []byte(`window.TERM_LLM_UI_PREFIX`)) {
+		t.Fatal("rendered index HTML missing UI prefix script")
+	}
+}
+
 func TestParseResponsesInput_String(t *testing.T) {
 	msgs, replaceHistory, err := parseResponsesInput(json.RawMessage(`"hello"`))
 	if err != nil {
