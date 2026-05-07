@@ -49,6 +49,23 @@ func uiAssetETag(data []byte) string {
 	return `"` + hex.EncodeToString(sum[:]) + `"`
 }
 
+var uiGzipAssetCache sync.Map // map[string][]byte keyed by the uncompressed body ETag
+
+func uiGzipAsset(data []byte) []byte {
+	cacheKey := uiAssetETag(data)
+	if cached, ok := uiGzipAssetCache.Load(cacheKey); ok {
+		return cached.([]byte)
+	}
+
+	var compressed bytes.Buffer
+	gz := gzip.NewWriter(&compressed)
+	_, _ = gz.Write(data)
+	_ = gz.Close()
+	body := compressed.Bytes()
+	cached, _ := uiGzipAssetCache.LoadOrStore(cacheKey, body)
+	return cached.([]byte)
+}
+
 func uiETagMatches(headerValue, etag string) bool {
 	if headerValue == "" || etag == "" {
 		return false
@@ -135,11 +152,7 @@ func serveEmbeddedUIBytes(w http.ResponseWriter, r *http.Request, data []byte, c
 	body := data
 	if compressible {
 		if uiAcceptsGzip(r.Header.Get("Accept-Encoding")) {
-			var compressed bytes.Buffer
-			gz := gzip.NewWriter(&compressed)
-			_, _ = gz.Write(data)
-			_ = gz.Close()
-			body = compressed.Bytes()
+			body = uiGzipAsset(data)
 			header.Set("Content-Encoding", "gzip")
 		}
 	}

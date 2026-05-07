@@ -728,6 +728,32 @@ func TestHandleUI_StaticAssetCompressionAndConditionalCaching(t *testing.T) {
 	}
 }
 
+func TestUIGzipAssetCachesCompressedBodies(t *testing.T) {
+	body := []byte("body unique to gzip cache test body unique to gzip cache test")
+	first := uiGzipAsset(body)
+	second := uiGzipAsset(body)
+	if len(first) == 0 || len(second) == 0 {
+		t.Fatalf("expected compressed bodies")
+	}
+	if &first[0] != &second[0] {
+		t.Fatalf("expected second gzip call to reuse cached body")
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(first))
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	decompressed, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatalf("ReadAll gzip: %v", err)
+	}
+	if err := zr.Close(); err != nil {
+		t.Fatalf("Close gzip: %v", err)
+	}
+	if !bytes.Equal(decompressed, body) {
+		t.Fatalf("decompressed body mismatch")
+	}
+}
+
 func TestHandleUI_ServiceWorkerCompressionKeepsNoCache(t *testing.T) {
 	srv := &serveServer{cfg: serveServerConfig{ui: true, basePath: "/ui"}}
 
