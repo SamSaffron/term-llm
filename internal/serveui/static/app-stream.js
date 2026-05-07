@@ -419,7 +419,7 @@ const scheduleVisibleStreamScroll = (session) => {
 };
 
 const createResponseStreamState = (session) => {
-  let currentToolGroup = [...session.messages].reverse().find((message) => (
+  let currentToolGroup = session.messages.findLast((message) => (
     message.role === 'tool-group' && message.status === 'running'
   )) || null;
   let currentAssistantMessage = null;
@@ -610,7 +610,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
           ? null
           : tools.find((tool) => tool.outputIndex === outputIndex);
         const entry = exactEntry
-          || [...tools].reverse().find((tool) => tool.status !== 'done')
+          || tools.findLast((tool) => tool.status !== 'done')
           || tools[tools.length - 1];
         if (entry) {
           const current = String(entry.arguments || '');
@@ -753,7 +753,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     }
     updateSessionUsageDisplay(session);
 
-    const lastAssistant = [...session.messages].reverse().find((message) => message.role === 'assistant');
+    const lastAssistant = session.messages.findLast((message) => message.role === 'assistant');
     if (lastAssistant) {
       if (usage) lastAssistant.usage = usage;
       finalizeVisibleAssistantStreamRender(session, lastAssistant);
@@ -790,7 +790,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     setSessionOptimisticBusy(session, false);
     setSessionServerActiveRun(session, false);
 
-    const lastAssistant = [...session.messages].reverse().find((message) => message.role === 'assistant');
+    const lastAssistant = session.messages.findLast((message) => message.role === 'assistant');
     if (lastAssistant) finalizeVisibleAssistantStreamRender(session, lastAssistant);
     flushStreamPersistence();
     saveSessions();
@@ -3416,7 +3416,7 @@ const sendMessage = async (options = {}) => {
     }
 
     if (sendGeneration === state.streamGeneration) {
-      const lastAssistant = [...session.messages].reverse().find(m => m.role === 'assistant');
+      const lastAssistant = session.messages.findLast(m => m.role === 'assistant');
       if (lastAssistant) updateAssistantNode(lastAssistant);
       persistAndRefreshShell();
       scrollToBottom();
@@ -3436,7 +3436,7 @@ const sendMessage = async (options = {}) => {
       return;
     }
 
-    const lastAssistant = [...session.messages].reverse().find(m => m.role === 'assistant');
+    const lastAssistant = session.messages.findLast(m => m.role === 'assistant');
     if (lastAssistant) updateAssistantNode(lastAssistant);
 
     if (session.activeResponseId) {
