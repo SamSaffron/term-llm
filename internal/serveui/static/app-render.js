@@ -141,7 +141,7 @@ const renderSidebar = () => {
     Older: []
   };
 
-  const sorted = [...visibleSessions()].sort((a, b) => {
+  const sorted = visibleSessions().sort((a, b) => {
     const aAt = a.lastMessageAt || a.created;
     const bAt = b.lastMessageAt || b.created;
     return bAt - aAt;
@@ -816,7 +816,7 @@ const enqueueAssistantStreamUpdate = (message) => {
   const streamState = getOrCreateAssistantStreamState(message, body);
   streamState.latestContent = String(message.content || '');
   streamState.dirty = true;
-  syncAssistantUsageNode(node, message);
+  if (message.usage) syncAssistantUsageNode(node, message);
   syncTurnActionPanelForAssistant(message.id);
   scheduleAssistantStreamRender(streamState);
 };
