@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -131,7 +130,7 @@ func TestModelCoalescesSmoothTickSchedulingForBurstTextEvents(t *testing.T) {
 	}
 }
 
-func TestModelKeepsStreamReadsAheadOfSmoothTick(t *testing.T) {
+func TestModelDefersNextStreamReadUntilSmoothTick(t *testing.T) {
 	model := newTestChatModel(false)
 	model.streaming = true
 	model.streamChan = make(chan ui.StreamEvent)
@@ -143,17 +142,16 @@ func TestModelKeepsStreamReadsAheadOfSmoothTick(t *testing.T) {
 	if !model.smoothTickPending {
 		t.Fatal("expected smooth tick to be pending after text event")
 	}
-	if model.deferredStreamRead {
-		t.Fatal("expected next stream read to be re-armed immediately")
+	if !model.deferredStreamRead {
+		t.Fatal("expected next stream read to be deferred until the smooth tick")
 	}
 
-	msg := cmd()
-	batch, ok := msg.(tea.BatchMsg)
-	if !ok {
-		t.Fatalf("expected smooth tick and stream read to be batched together, got %T", msg)
+	_, cmd = model.Update(ui.SmoothTickMsg{})
+	if model.deferredStreamRead {
+		t.Fatal("expected deferred stream read to clear after smooth tick")
 	}
-	if len(batch) != 2 {
-		t.Fatalf("expected exactly two follow-up commands (smooth tick + stream read), got %d", len(batch))
+	if cmd == nil {
+		t.Fatal("expected smooth tick to resume stream reading")
 	}
 }
 
