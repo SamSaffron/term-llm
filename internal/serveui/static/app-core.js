@@ -1131,7 +1131,7 @@ const ensureActiveSession = () => {
 const findMessageElement = (id) => elements.messages.querySelector(`[data-message-id="${id}"]`);
 
 const refreshRelativeTimes = () => {
-  document.querySelectorAll('[data-created]').forEach((node) => {
+  elements.messages.querySelectorAll('[data-created]').forEach((node) => {
     const ts = Number(node.getAttribute('data-created'));
     if (!Number.isFinite(ts)) return;
     node.textContent = relativeTime(ts);

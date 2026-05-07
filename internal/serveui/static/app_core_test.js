@@ -63,8 +63,8 @@ function makeNode() {
   };
 }
 
-function loadAppCore() {
-  const nodes = new Map();
+function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [] } = {}) {
+  const nodes = new Map(Object.entries(nodeOverrides));
   const document = {
     body: makeNode(),
     documentElement: makeNode(),
@@ -75,7 +75,7 @@ function loadAppCore() {
     },
     createElement() { return makeNode(); },
     querySelector() { return null; },
-    querySelectorAll() { return []; },
+    querySelectorAll: docQSTracker,
     addEventListener() {},
     removeEventListener() {},
   };
@@ -147,6 +147,10 @@ function loadAppCore() {
   return context.window.TermLLMApp;
 }
 
+function loadAppCore() {
+  return loadAppCoreWith();
+}
+
 const app = loadAppCore();
 
 (function testStripsDuplicateEffortSuffix() {
@@ -174,6 +178,51 @@ const app = loadAppCore();
   const result = app.splitHeaderModelEffort('foo_bar_medium', 'medium');
   if (result.model !== 'foo_bar' || result.effort !== 'medium') {
     fail(name, `got ${JSON.stringify(result)}`, 'want {"model":"foo_bar","effort":"medium"}');
+    return;
+  }
+  pass(name);
+})();
+
+(function testRefreshRelativeTimesUsesMessagesScope() {
+  const name = 'refreshRelativeTimes scopes query to elements.messages';
+
+  const ts = 1_700_000_000_000;
+  const timeNode = {
+    textContent: '',
+    title: '',
+    getAttribute(attr) { return attr === 'data-created' ? String(ts) : null; },
+  };
+
+  let messagesQueried = false;
+  let documentQueried = false;
+
+  const messagesEl = Object.assign(makeNode(), {
+    querySelectorAll(sel) {
+      if (sel === '[data-created]') { messagesQueried = true; return [timeNode]; }
+      return [];
+    },
+  });
+
+  const testApp = loadAppCoreWith({
+    nodeOverrides: { messages: messagesEl },
+    docQSTracker(sel) {
+      if (sel === '[data-created]') documentQueried = true;
+      return [];
+    },
+  });
+
+  testApp.refreshRelativeTimes();
+
+  if (!messagesQueried) {
+    fail(name, 'elements.messages.querySelectorAll was not called with [data-created]');
+    return;
+  }
+  if (documentQueried) {
+    fail(name, 'document.querySelectorAll was consulted — query must be scoped to elements.messages');
+    return;
+  }
+  if (!timeNode.textContent) {
+    fail(name, 'time node textContent was not updated');
     return;
   }
   pass(name);
