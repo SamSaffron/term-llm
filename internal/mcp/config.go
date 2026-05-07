@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 )
 
 // Config represents the mcp.json configuration file.
@@ -155,6 +156,7 @@ func (c *Config) ServerNames() []string {
 	for name := range c.Servers {
 		names = append(names, name)
 	}
+	sort.Strings(names)
 	return names
 }
 

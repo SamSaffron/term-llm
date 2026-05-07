@@ -164,7 +164,8 @@ func mcpList(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Configured MCP servers (%d):\n\n", len(cfg.Servers))
-	for name, server := range cfg.Servers {
+	for _, name := range cfg.ServerNames() {
+		server := cfg.Servers[name]
 		fmt.Printf("  %s\n", name)
 		if server.TransportType() == "http" {
 			fmt.Printf("    url: %s\n", server.URL)
