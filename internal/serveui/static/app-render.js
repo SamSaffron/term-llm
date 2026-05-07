@@ -1595,8 +1595,20 @@ const updateSidebarStatus = (statusSessions) => {
   if (!Array.isArray(statusSessions)) return false;
   let changed = false;
   let orderChanged = false;
+
+  // Build O(1) lookup maps once to avoid O(n) find and per-entry querySelector calls.
+  const localById = new Map(state.sessions.map((s) => [s.id, s]));
+  const rowDataById = new Map();
+  elements.sessionGroups.querySelectorAll('.session-row[data-session-id]').forEach((row) => {
+    rowDataById.set(row.dataset.sessionId, {
+      row,
+      titleEl: row.querySelector('.session-title'),
+      metaEl: row.querySelector('.session-meta'),
+    });
+  });
+
   for (const entry of statusSessions) {
-    const local = state.sessions.find((session) => session.id === entry.id) || null;
+    const local = localById.get(entry.id) || null;
     const busyTarget = local || entry.id;
     const wasActive = sessionHasInProgressState(busyTarget);
     setSessionServerActiveRun(busyTarget, Boolean(entry.active_run));
@@ -1613,7 +1625,8 @@ const updateSidebarStatus = (statusSessions) => {
       }
     }
 
-    const row = elements.sessionGroups.querySelector(`.session-row[data-session-id="${CSS.escape(entry.id)}"]`);
+    const rowData = rowDataById.get(entry.id);
+    const row = rowData?.row;
     if (row) {
       row.classList.toggle('is-active', nextActive);
     }
@@ -1621,14 +1634,13 @@ const updateSidebarStatus = (statusSessions) => {
 
     if (!row) continue;
 
-    const titleEl = row.querySelector('.session-title');
+    const { titleEl, metaEl } = rowData;
     if (titleEl && entry.short_title && titleEl.textContent !== entry.short_title) {
       titleEl.textContent = entry.short_title;
       if (entry.long_title) titleEl.title = entry.long_title;
       changed = true;
     }
 
-    const metaEl = row.querySelector('.session-meta');
     if (metaEl && entry.message_count != null) {
       const count = entry.message_count;
       if (local) {
