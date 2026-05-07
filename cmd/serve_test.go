@@ -6610,6 +6610,139 @@ func TestHandleResponseByID_CancelStopsActiveToolRun(t *testing.T) {
 	}
 }
 
+func TestResolveServeResponseTimeout(t *testing.T) {
+	tests := []struct {
+		name      string
+		flagSet   bool
+		flagVal   time.Duration
+		configVal string
+		want      time.Duration
+		wantErr   string
+	}{
+		{
+			name: "default",
+			want: defaultServeRequestTimeout,
+		},
+		{
+			name:    "flag wins",
+			flagSet: true,
+			flagVal: 90 * time.Minute,
+			want:    90 * time.Minute,
+		},
+		{
+			name:      "config",
+			configVal: "1h15m",
+			want:      75 * time.Minute,
+		},
+		{
+			name:      "invalid config",
+			configVal: "eventually",
+			wantErr:   "invalid serve.response_timeout",
+		},
+		{
+			name:      "non-positive config",
+			configVal: "0s",
+			wantErr:   "must be > 0",
+		},
+		{
+			name:    "non-positive flag",
+			flagSet: true,
+			flagVal: 0,
+			wantErr: "invalid --response-timeout",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveServeResponseTimeout(tt.flagSet, tt.flagVal, tt.configVal)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error = %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("timeout = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStartResponseRunDeadlineExceededFailsWithHelpfulTimeoutMessage(t *testing.T) {
+	provider := llm.NewMockProvider("mock").AddError(context.DeadlineExceeded)
+	engine := llm.NewEngine(provider, nil)
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  "mock",
+		engine:       engine,
+		defaultModel: "mock-model",
+	}
+	rt.Touch()
+
+	srv := &serveServer{
+		cfg: serveServerConfig{
+			responseTimeout: 45 * time.Minute,
+		},
+		responseRuns: newServeResponseRunManager(),
+	}
+	defer srv.responseRuns.Close()
+
+	run, err := srv.startResponseRun(rt, true, false, []llm.Message{
+		llm.UserText("take too long"),
+	}, llm.Request{SessionID: "sess_timeout"}, "sess_timeout", startResponseRunOptions{})
+	if err != nil {
+		t.Fatalf("startResponseRun failed: %v", err)
+	}
+
+	waitForServeCondition(t, time.Second, func() bool {
+		snapshot := run.snapshot()
+		status, _ := snapshot["status"].(string)
+		return status == "failed"
+	}, "deadline-exceeded response run to fail")
+
+	snapshot := run.snapshot()
+	if status, _ := snapshot["status"].(string); status != "failed" {
+		t.Fatalf("run status = %q, want failed: %#v", status, snapshot)
+	}
+	errPayload, _ := snapshot["error"].(map[string]any)
+	if got := errPayload["type"]; got != "timeout_error" {
+		t.Fatalf("error type = %v, want timeout_error: %#v", got, snapshot)
+	}
+	message, _ := errPayload["message"].(string)
+	if !strings.Contains(message, "timed out after 45 minutes") {
+		t.Fatalf("timeout message = %q, want configured 45 minute explanation", message)
+	}
+	if strings.Contains(message, "context deadline exceeded") {
+		t.Fatalf("timeout message leaked raw context error: %q", message)
+	}
+
+	subscription := run.subscribe(0)
+	if subscription.ch != nil {
+		t.Fatal("terminal failed run should replay without live subscription channel")
+	}
+	var sawFailed bool
+	for _, event := range subscription.replay {
+		if event.Event != "response.failed" {
+			continue
+		}
+		sawFailed = true
+		var payload map[string]any
+		if err := json.Unmarshal(event.Data, &payload); err != nil {
+			t.Fatalf("unmarshal response.failed payload: %v", err)
+		}
+		eventErr, _ := payload["error"].(map[string]any)
+		if got := eventErr["message"]; got != message {
+			t.Fatalf("response.failed message = %v, want %q", got, message)
+		}
+	}
+	if !sawFailed {
+		t.Fatal("deadline-exceeded run replay missing response.failed terminal event")
+	}
+}
+
 func TestHandleResponseByID_CancelStopsShellToolRun(t *testing.T) {
 	provider := llm.NewMockProvider("mock")
 	provider.AddToolCall("call_1", tools.ShellToolName, map[string]any{

@@ -22,7 +22,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Minute)
+	ctx, cancel := context.WithTimeout(r.Context(), s.responseTimeout())
 	defer cancel()
 
 	var req responsesCreateRequest
@@ -278,6 +278,10 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, errServeSessionBusy) {
 			writeOpenAIError(w, http.StatusConflict, "conflict_error", err.Error())
+			return
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			writeOpenAIError(w, http.StatusRequestTimeout, "timeout_error", responseRunTimeoutMessage(s.responseTimeout()))
 			return
 		}
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())

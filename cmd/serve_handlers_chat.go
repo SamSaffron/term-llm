@@ -21,7 +21,7 @@ func (s *serveServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		writeOpenAIError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Minute)
+	ctx, cancel := context.WithTimeout(r.Context(), s.responseTimeout())
 	defer cancel()
 
 	var req chatCompletionsRequest
@@ -131,6 +131,10 @@ func (s *serveServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		if errors.Is(err, errServeSessionBusy) {
 			writeOpenAIError(w, http.StatusConflict, "conflict_error", err.Error())
+			return
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			writeOpenAIError(w, http.StatusRequestTimeout, "timeout_error", responseRunTimeoutMessage(s.responseTimeout()))
 			return
 		}
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
@@ -272,18 +276,13 @@ func (s *serveServer) streamChatCompletions(ctx context.Context, w http.Response
 	stopPing() // wait for keepalive goroutine before any final writes
 
 	if err != nil {
+		errType := "invalid_request_error"
+		errMessage := err.Error()
 		if errors.Is(err, errServeSessionBusy) {
-			_ = writeChatStreamChunk(w, map[string]any{
-				"id":      respID,
-				"object":  "chat.completion.chunk",
-				"created": created,
-				"model":   model,
-				"choices": []map[string]any{{"index": 0, "finish_reason": "error", "delta": map[string]any{}}},
-				"error":   map[string]any{"message": err.Error(), "type": "conflict_error"},
-			})
-			_, _ = io.WriteString(w, "data: [DONE]\n\n")
-			flusher.Flush()
-			return
+			errType = "conflict_error"
+		} else if errors.Is(err, context.DeadlineExceeded) {
+			errType = "timeout_error"
+			errMessage = responseRunTimeoutMessage(s.responseTimeout())
 		}
 		_ = writeChatStreamChunk(w, map[string]any{
 			"id":      respID,
@@ -291,6 +290,7 @@ func (s *serveServer) streamChatCompletions(ctx context.Context, w http.Response
 			"created": created,
 			"model":   model,
 			"choices": []map[string]any{{"index": 0, "finish_reason": "error", "delta": map[string]any{}}},
+			"error":   map[string]any{"message": errMessage, "type": errType},
 		})
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 		flusher.Flush()

@@ -147,12 +147,13 @@ type Config struct {
 
 // ServeConfig holds configuration for the serve command platforms.
 type ServeConfig struct {
-	Platforms  []string            `mapstructure:"platforms" yaml:"platforms,omitempty"`
-	BasePath   string              `mapstructure:"base_path" yaml:"base_path,omitempty"`
-	FilesDir   string              `mapstructure:"files_dir" yaml:"files_dir,omitempty"`
-	WidgetsDir string              `mapstructure:"widgets_dir" yaml:"widgets_dir,omitempty"`
-	Telegram   TelegramServeConfig `mapstructure:"telegram" yaml:"telegram,omitempty"`
-	WebPush    WebPushConfig       `mapstructure:"web_push" yaml:"web_push,omitempty"`
+	Platforms       []string            `mapstructure:"platforms" yaml:"platforms,omitempty"`
+	BasePath        string              `mapstructure:"base_path" yaml:"base_path,omitempty"`
+	FilesDir        string              `mapstructure:"files_dir" yaml:"files_dir,omitempty"`
+	WidgetsDir      string              `mapstructure:"widgets_dir" yaml:"widgets_dir,omitempty"`
+	ResponseTimeout string              `mapstructure:"response_timeout" yaml:"response_timeout,omitempty"` // Go duration string, e.g. "30m" or "1h"
+	Telegram        TelegramServeConfig `mapstructure:"telegram" yaml:"telegram,omitempty"`
+	WebPush         WebPushConfig       `mapstructure:"web_push" yaml:"web_push,omitempty"`
 }
 
 // WebPushConfig holds VAPID keys for Web Push notifications.
@@ -1478,6 +1479,24 @@ var KnownKeys = map[string]bool{
 	// AGENTS.md
 	"agents_md.enabled": true,
 
+	// Serve
+	"serve":                            true,
+	"serve.platforms":                  true,
+	"serve.base_path":                  true,
+	"serve.files_dir":                  true,
+	"serve.widgets_dir":                true,
+	"serve.response_timeout":           true,
+	"serve.telegram":                   true,
+	"serve.telegram.token":             true,
+	"serve.telegram.allowed_user_ids":  true,
+	"serve.telegram.allowed_usernames": true,
+	"serve.telegram.idle_timeout":      true,
+	"serve.telegram.interrupt_timeout": true,
+	"serve.web_push":                   true,
+	"serve.web_push.vapid_public_key":  true,
+	"serve.web_push.vapid_private_key": true,
+	"serve.web_push.subject":           true,
+
 	// Auto-compaction
 	"auto_compact": true,
 }
@@ -1593,6 +1612,7 @@ func GetDefaults() map[string]any {
 		"skills.always_enabled":           []string{},
 		"skills.never_auto":               []string{},
 		"agents_md.enabled":               true,
+		"serve.response_timeout":          "30m",
 		"auto_compact":                    true,
 	}
 }

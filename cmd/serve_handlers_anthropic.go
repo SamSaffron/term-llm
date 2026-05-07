@@ -19,7 +19,7 @@ func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 		writeAnthropicError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Minute)
+	ctx, cancel := context.WithTimeout(r.Context(), s.responseTimeout())
 	defer cancel()
 
 	var req anthropicMessagesRequest
@@ -152,6 +152,10 @@ func (s *serveServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 		s.verboseLog("✗ POST /v1/messages error: %v", err)
 		if errors.Is(err, errServeSessionBusy) {
 			writeAnthropicError(w, http.StatusConflict, "api_error", err.Error())
+			return
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			writeAnthropicError(w, http.StatusRequestTimeout, "timeout_error", responseRunTimeoutMessage(s.responseTimeout()))
 			return
 		}
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
@@ -343,22 +347,17 @@ func (s *serveServer) streamAnthropicMessages(ctx context.Context, w http.Respon
 	}
 	if err != nil {
 		s.verboseLog("✗ POST /v1/messages stream error: %v", err)
-		if errors.Is(err, errServeSessionBusy) {
-			_ = writeAnthropicSSE(w, "error", map[string]any{
-				"type": "error",
-				"error": map[string]any{
-					"type":    "api_error",
-					"message": err.Error(),
-				},
-			})
-			flusher.Flush()
-			return
+		errType := "api_error"
+		errMessage := err.Error()
+		if errors.Is(err, context.DeadlineExceeded) {
+			errType = "timeout_error"
+			errMessage = responseRunTimeoutMessage(s.responseTimeout())
 		}
 		_ = writeAnthropicSSE(w, "error", map[string]any{
 			"type": "error",
 			"error": map[string]any{
-				"type":    "api_error",
-				"message": err.Error(),
+				"type":    errType,
+				"message": errMessage,
 			},
 		})
 		flusher.Flush()

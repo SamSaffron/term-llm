@@ -61,6 +61,7 @@ var (
 	serveFilesDir               string
 	serveEnableWidgets          bool
 	serveWidgetsDir             string
+	serveResponseTimeout        time.Duration
 )
 
 var serveCmd = &cobra.Command{
@@ -138,6 +139,7 @@ func init() {
 	serveCmd.Flags().StringVar(&serveFilesDir, "files-dir", "", "Directory for serving arbitrary files (videos, PDFs, etc) at {base}/files/")
 	serveCmd.Flags().BoolVar(&serveEnableWidgets, "enable-widgets", false, "Enable local widget apps proxied under {base}/widgets/<mount>/")
 	serveCmd.Flags().StringVar(&serveWidgetsDir, "widgets-dir", "", "Directory containing widget sub-directories (default: ~/.config/term-llm/widgets)")
+	serveCmd.Flags().DurationVar(&serveResponseTimeout, "response-timeout", defaultServeRequestTimeout, "Maximum duration for API/web response runs before timing out")
 
 	AddCommonFlags(serveCmd,
 		CommonCoreFlags|CommonSearch|CommonNativeSearch|CommonMaxTurns|CommonAgent,
@@ -198,6 +200,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 	if serveJobsWorkers <= 0 {
 		return fmt.Errorf("invalid --jobs-workers %d (must be > 0)", serveJobsWorkers)
+	}
+	if cmd.Flags().Changed("response-timeout") && serveResponseTimeout <= 0 {
+		return fmt.Errorf("invalid --response-timeout %s (must be > 0)", serveResponseTimeout)
 	}
 	sidebarSessions, err := parseSidebarSessionCategories(serveSidebarSessions, true)
 	if err != nil {
@@ -262,6 +267,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 		serveBasePath = cfg.Serve.BasePath
 	}
 	serveBasePath, err = normalizeBasePath(serveBasePath)
+	if err != nil {
+		return err
+	}
+
+	responseTimeout, err := resolveServeResponseTimeout(cmd.Flags().Changed("response-timeout"), serveResponseTimeout, cfg.Serve.ResponseTimeout)
 	if err != nil {
 		return err
 	}
@@ -545,6 +555,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 				writeDirs:           resolveServeWriteDirs(serveWriteDirs, cfg),
 				enableWidgets:       serveEnableWidgets,
 				widgetsDir:          serveWidgetsDir,
+				responseTimeout:     responseTimeout,
 			},
 			sessionMgr:     sessionMgr,
 			jobsV2:         jobsV2,
@@ -580,6 +591,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		if modelName != "" {
 			fmt.Fprintf(cmd.ErrOrStderr(), "model: %s\n", modelName)
 		}
+		fmt.Fprintf(cmd.ErrOrStderr(), "response timeout: %s\n", humanDuration(responseTimeout))
 	}
 
 	// Start non-web platforms concurrently.
@@ -810,6 +822,7 @@ type serveServerConfig struct {
 	writeDirs           []string // tool write-dirs (CLI + config); tool-reported files inside these are trusted sources for ensureFileServeable
 	enableWidgets       bool
 	widgetsDir          string
+	responseTimeout     time.Duration
 }
 
 // uiRoute returns the base-path with trailing slash, e.g. "/ui/" or "/chat/".
@@ -842,6 +855,33 @@ func resolveWidgetsDir(flagVal string, cfg *config.Config) (string, error) {
 		return "", fmt.Errorf("resolve widgets dir: %w", err)
 	}
 	return cfgDir + "/widgets", nil
+}
+
+func resolveServeResponseTimeout(flagSet bool, flagVal time.Duration, configVal string) (time.Duration, error) {
+	if flagSet {
+		if flagVal <= 0 {
+			return 0, fmt.Errorf("invalid --response-timeout %s (must be > 0)", flagVal)
+		}
+		return flagVal, nil
+	}
+	if strings.TrimSpace(configVal) == "" {
+		return defaultServeRequestTimeout, nil
+	}
+	timeout, err := time.ParseDuration(strings.TrimSpace(configVal))
+	if err != nil {
+		return 0, fmt.Errorf("invalid serve.response_timeout %q (use a Go duration like 30m or 1h): %w", configVal, err)
+	}
+	if timeout <= 0 {
+		return 0, fmt.Errorf("invalid serve.response_timeout %q (must be > 0)", configVal)
+	}
+	return timeout, nil
+}
+
+func (s *serveServer) responseTimeout() time.Duration {
+	if s == nil || s.cfg.responseTimeout <= 0 {
+		return defaultServeRequestTimeout
+	}
+	return s.cfg.responseTimeout
 }
 
 // resolveServeWriteDirs returns the merged effective write-dirs for the serve runtime,

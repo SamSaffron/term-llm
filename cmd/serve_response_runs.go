@@ -564,8 +564,30 @@ const (
 	defaultResponseRunRetention        = 5 * time.Minute
 	defaultResponseRunReplayLimit      = 2048
 	defaultResponseRunSubscriberBuffer = 256
-	defaultResponseRunTimeout          = 15 * time.Minute
+	defaultServeRequestTimeout         = 30 * time.Minute
 )
+
+func responseRunTimeoutMessage(timeout time.Duration) string {
+	return fmt.Sprintf("Response run timed out after %s. Continue to resume from saved progress, or move long-running investigations to a background job.", humanDuration(timeout))
+}
+
+func humanDuration(d time.Duration) string {
+	if d%time.Hour == 0 {
+		hours := int(d / time.Hour)
+		if hours == 1 {
+			return "1 hour"
+		}
+		return fmt.Sprintf("%d hours", hours)
+	}
+	if d%time.Minute == 0 {
+		minutes := int(d / time.Minute)
+		if minutes == 1 {
+			return "1 minute"
+		}
+		return fmt.Sprintf("%d minutes", minutes)
+	}
+	return d.String()
+}
 
 func newServeResponseRunManager() *responseRunManager {
 	return newServeResponseRunManagerWithRetention(defaultResponseRunRetention)
@@ -1174,8 +1196,8 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	//  - Clients reconnect via GET /v1/responses/{id}/events?after=N and replay
 	//    events they missed, which only works if the run kept going.
 	//  - Explicit cancellation is available via POST /v1/responses/{id}/cancel.
-	//  - defaultResponseRunTimeout bounds orphan-run lifetime.
-	runCtx, cancel := context.WithTimeout(context.Background(), defaultResponseRunTimeout)
+	//  - serve.response_timeout bounds orphan-run lifetime.
+	runCtx, cancel := context.WithTimeout(context.Background(), s.responseTimeout())
 	run := newResponseRun(respID, sessionID, options.previousResponseID, model, created, cancel)
 	if err := mgr.create(run); err != nil {
 		cancel()
@@ -1246,7 +1268,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			return s.appendResponseRunEvent(runtime, run, streamState, ev)
 		})
 		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			if errors.Is(err, context.Canceled) {
 				cancelled, cancelErr := run.finishCancelled(map[string]any{
 					"response": map[string]any{
 						"id":      respID,
@@ -1267,31 +1289,34 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 				}
 			}
 			errType := "invalid_request_error"
-			if errors.Is(err, errServeSessionBusy) {
+			errMessage := err.Error()
+			if errors.Is(err, context.DeadlineExceeded) {
+				errType = "timeout_error"
+				errMessage = responseRunTimeoutMessage(s.responseTimeout())
+			} else if errors.Is(err, errServeSessionBusy) {
 				errType = "conflict_error"
 			}
 			hadSubscribers, failErr := run.fail(map[string]any{
 				"error": map[string]any{
-					"message": err.Error(),
+					"message": errMessage,
 					"type":    errType,
 				},
-			}, errType, err.Error())
+			}, errType, errMessage)
 			if options.uiSession {
 				switch {
 				case hadSubscribers:
 					runtime.clearLastUIRunError()
-				case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+				case errors.Is(err, context.Canceled):
 					runtime.clearLastUIRunError()
 				default:
-					runtime.setLastUIRunError(err.Error())
+					runtime.setLastUIRunError(errMessage)
 				}
 			}
 			if failErr != nil {
 				log.Printf("response run %s failed to append terminal event: %v", respID, failErr)
 			}
-			if failErr != nil && options.uiSession &&
-				!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-				runtime.setLastUIRunError(err.Error())
+			if failErr != nil && options.uiSession && !errors.Is(err, context.Canceled) {
+				runtime.setLastUIRunError(errMessage)
 			}
 			return
 		}
