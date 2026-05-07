@@ -33,7 +33,7 @@ type responseRunRecoveryTool struct {
 type responseRunRecoveryMessage struct {
 	ID       string
 	Role     string
-	Content  string
+	Content  []byte
 	Created  int64
 	Tools    []responseRunRecoveryTool
 	Expanded bool
@@ -240,7 +240,7 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 		}
 		r.closeToolGroupLocked()
 		idx := r.ensureAssistantMessageLocked()
-		r.recoveryMessages[idx].Content += delta
+		r.recoveryMessages[idx].Content = append(r.recoveryMessages[idx].Content, delta...)
 	case "response.output_text.new_segment":
 		r.closeToolGroupLocked()
 		r.currentAssistant = -1
@@ -324,7 +324,7 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 		}
 		idx := r.ensureAssistantMessageLocked()
 		for _, url := range images {
-			r.recoveryMessages[idx].Content += fmt.Sprintf("\n\n![Generated Image](%s)\n", url)
+			r.recoveryMessages[idx].Content = append(r.recoveryMessages[idx].Content, fmt.Sprintf("\n\n![Generated Image](%s)\n", url)...)
 		}
 	case "response.completed":
 		r.closeToolGroupLocked()
@@ -351,7 +351,7 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 		r.recoveryMessages = append(r.recoveryMessages, responseRunRecoveryMessage{
 			ID:      r.nextRecoveryMessageIDLocked("error"),
 			Role:    "error",
-			Content: message,
+			Content: []byte(message),
 			Created: time.Now().UnixMilli(),
 		})
 		r.currentAssistant = -1
@@ -490,8 +490,8 @@ func (r *responseRun) recoveryPayloadLocked() map[string]any {
 			"role":    msg.Role,
 			"created": msg.Created,
 		}
-		if msg.Content != "" {
-			entry["content"] = msg.Content
+		if len(msg.Content) > 0 {
+			entry["content"] = string(msg.Content)
 		}
 		if msg.Status != "" {
 			entry["status"] = msg.Status
