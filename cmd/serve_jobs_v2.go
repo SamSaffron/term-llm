@@ -1579,7 +1579,7 @@ func (m *jobsV2Manager) UpdateJobPatch(id string, req jobsV2JobRequest) (jobsV2J
 
 func (m *jobsV2Manager) DeleteJob(id string, cancelActive bool) error {
 	if cancelActive {
-		runs, _, err := m.ListRuns(id, 200, 0)
+		runs, _, err := m.ListRunSummaries(id, 200, 0)
 		if err == nil {
 			for _, run := range runs {
 				if run.Status == jobsV2RunRunning || run.Status == jobsV2RunClaimed || run.Status == jobsV2RunQueued {
@@ -1627,6 +1627,18 @@ func (m *jobsV2Manager) GetRun(id string) (jobsV2Run, error) {
 }
 
 func (m *jobsV2Manager) ListRuns(jobID string, limit, offset int) ([]jobsV2Run, int, error) {
+	return m.listRuns(jobID, limit, offset, true)
+}
+
+func (m *jobsV2Manager) ListRunSummaries(jobID string, limit, offset int) ([]jobsV2Run, int, error) {
+	return m.listRuns(jobID, limit, offset, false)
+}
+
+const jobsV2RunFullColumns = "id, job_id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, stdout, stderr, thinking, response, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at"
+
+const jobsV2RunSummaryColumns = "id, job_id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, NULL AS stdout, NULL AS stderr, NULL AS thinking, NULL AS response, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at"
+
+func (m *jobsV2Manager) listRuns(jobID string, limit, offset int, includeOutput bool) ([]jobsV2Run, int, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -1647,14 +1659,18 @@ func (m *jobsV2Manager) ListRuns(jobID string, limit, offset int) ([]jobsV2Run, 
 	if err := m.db.QueryRow(countQuery, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	query := "SELECT id, job_id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, stdout, stderr, thinking, response, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at FROM job_runs_v2" + where + " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+	columns := jobsV2RunSummaryColumns
+	if includeOutput {
+		columns = jobsV2RunFullColumns
+	}
+	query := "SELECT " + columns + " FROM job_runs_v2" + where + " ORDER BY created_at DESC LIMIT ? OFFSET ?"
 	args = append(args, limit, offset)
 	rows, err := m.db.Query(query, args...)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer rows.Close()
-	runs := make([]jobsV2Run, 0)
+	runs := make([]jobsV2Run, 0, limit)
 	for rows.Next() {
 		run, err := scanRunV2(rows)
 		if err != nil {
@@ -2273,7 +2289,13 @@ func (s *serveServer) handleRunsV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jobID := strings.TrimSpace(r.URL.Query().Get("job_id"))
-	items, total, err := s.jobsV2.ListRuns(jobID, limit, offset)
+	var items []jobsV2Run
+	var total int
+	if queryBool(r, "summary") {
+		items, total, err = s.jobsV2.ListRunSummaries(jobID, limit, offset)
+	} else {
+		items, total, err = s.jobsV2.ListRuns(jobID, limit, offset)
+	}
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
@@ -2374,6 +2396,11 @@ func (s *serveServer) handleRunV2ByID(w http.ResponseWriter, r *http.Request) {
 func newServeJobsV2Manager(cfg *config.Config, workers int) (*jobsV2Manager, error) {
 	_ = cfg
 	return newJobsV2Manager("", workers, newServeJobsExecutor(cfg))
+}
+
+func queryBool(r *http.Request, key string) bool {
+	value := strings.TrimSpace(r.URL.Query().Get(key))
+	return strings.EqualFold(value, "1") || strings.EqualFold(value, "true") || strings.EqualFold(value, "yes")
 }
 
 func parseNonNegativeIntQuery(r *http.Request, key string, defaultValue int) (int, error) {

@@ -95,6 +95,72 @@ func TestJobsV2OnceProgramRunLifecycle(t *testing.T) {
 	}
 }
 
+func TestJobsV2RunsSummaryOmitsOutputPayload(t *testing.T) {
+	mgr, err := newJobsV2Manager(":memory:", 0, nil)
+	if err != nil {
+		t.Fatalf("newJobsV2Manager failed: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+
+	job, err := mgr.CreateJob(jobsV2Job{
+		Name:          "summary-payload",
+		Enabled:       true,
+		RunnerType:    jobsV2RunnerProgram,
+		RunnerConfig:  json.RawMessage(`{"command":"echo","args":["x"]}`),
+		TriggerType:   jobsV2TriggerManual,
+		TriggerConfig: json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	now := time.Now().UTC()
+	payload := strings.Repeat("payload", 1024)
+	_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, started_at, finished_at, exit_code, error, stdout, stderr, thinking, response, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at) VALUES (?, ?, 1, 'manual', ?, ?, ?, ?, 7, 'sample error', ?, ?, ?, ?, ?, 1, 3, 100, 20, ?, ?)`,
+		"run_summary_payload", job.ID, now, jobsV2RunFailed, now, now, payload, payload, payload, payload, exitReasonException, now, now)
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+
+	srv := &serveServer{jobsV2: mgr}
+	listReq := httptest.NewRequest(http.MethodGet, "/v2/runs?summary=1&job_id="+job.ID, nil)
+	listRR := httptest.NewRecorder()
+	srv.handleRunsV2(listRR, listReq)
+	if listRR.Code != http.StatusOK {
+		t.Fatalf("summary runs status = %d, want 200 body=%s", listRR.Code, listRR.Body.String())
+	}
+	var listResp struct {
+		Data []jobsV2Run `json:"data"`
+	}
+	if err := json.Unmarshal(listRR.Body.Bytes(), &listResp); err != nil {
+		t.Fatalf("decode summary runs list: %v", err)
+	}
+	if len(listResp.Data) != 1 {
+		t.Fatalf("summary runs len = %d, want 1", len(listResp.Data))
+	}
+	summary := listResp.Data[0]
+	if summary.Stdout != "" || summary.Stderr != "" || summary.Thinking != "" || summary.Response != "" {
+		t.Fatalf("summary included output payloads: stdout=%d stderr=%d thinking=%d response=%d", len(summary.Stdout), len(summary.Stderr), len(summary.Thinking), len(summary.Response))
+	}
+	if summary.Error != "sample error" || summary.ExitReason != exitReasonException || !summary.Truncated || summary.TurnCount != 3 || summary.InputTokens != 100 || summary.OutputTokens != 20 {
+		t.Fatalf("summary lost metadata: %+v", summary)
+	}
+
+	detailReq := httptest.NewRequest(http.MethodGet, "/v2/runs/run_summary_payload", nil)
+	detailRR := httptest.NewRecorder()
+	srv.handleRunV2ByID(detailRR, detailReq)
+	if detailRR.Code != http.StatusOK {
+		t.Fatalf("detail run status = %d, want 200 body=%s", detailRR.Code, detailRR.Body.String())
+	}
+	var detail jobsV2Run
+	if err := json.Unmarshal(detailRR.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("decode detail run: %v", err)
+	}
+	if detail.Stdout != payload || detail.Stderr != payload || detail.Thinking != payload || detail.Response != payload {
+		t.Fatalf("detail run did not preserve full payloads")
+	}
+}
+
 func TestJobsV2ManualTriggerAndCancel(t *testing.T) {
 	mgr, err := newJobsV2Manager(":memory:", 1, nil)
 	if err != nil {

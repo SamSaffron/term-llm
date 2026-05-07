@@ -310,7 +310,18 @@ func (c *jobsClient) listJobs(ctx context.Context) ([]jobsV2Job, error) {
 }
 
 func (c *jobsClient) listRuns(ctx context.Context, jobID string, limit, offset int) ([]jobsV2Run, error) {
+	return c.listRunsWithSummary(ctx, jobID, limit, offset, false)
+}
+
+func (c *jobsClient) listRunSummaries(ctx context.Context, jobID string, limit, offset int) ([]jobsV2Run, error) {
+	return c.listRunsWithSummary(ctx, jobID, limit, offset, true)
+}
+
+func (c *jobsClient) listRunsWithSummary(ctx context.Context, jobID string, limit, offset int, summary bool) ([]jobsV2Run, error) {
 	path := fmt.Sprintf("/v2/runs?limit=%d&offset=%d", limit, offset)
+	if summary {
+		path += "&summary=true"
+	}
 	if strings.TrimSpace(jobID) != "" {
 		path += "&job_id=" + jobID
 	}
@@ -331,7 +342,7 @@ func (c *jobsClient) listActiveRuns(ctx context.Context) ([]jobsActiveRun, error
 	for _, job := range jobs {
 		offset := 0
 		for {
-			runs, err := c.listRuns(ctx, job.ID, jobsActiveRunsPageSize, offset)
+			runs, err := c.listRunSummaries(ctx, job.ID, jobsActiveRunsPageSize, offset)
 			if err != nil {
 				return nil, err
 			}
@@ -531,7 +542,7 @@ func runJobsList(cmd *cobra.Command, args []string) error {
 		lastRun   *jobsV2Run // most recent terminal run
 	}
 	summaries := make(map[string]*jobRunSummary)
-	recentRuns, _ := client.listRuns(ctx, "", 500, 0)
+	recentRuns, _ := client.listRunSummaries(ctx, "", 500, 0)
 	for i := range recentRuns {
 		r := &recentRuns[i]
 		s, ok := summaries[r.JobID]
@@ -846,7 +857,12 @@ func runJobsRuns(cmd *cobra.Command, args []string) error {
 			return err
 		}
 	}
-	items, err := client.listRuns(cmd.Context(), jobID, jobsRunsLimit, jobsRunsOffset)
+	var items []jobsV2Run
+	if jobsJSON {
+		items, err = client.listRuns(cmd.Context(), jobID, jobsRunsLimit, jobsRunsOffset)
+	} else {
+		items, err = client.listRunSummaries(cmd.Context(), jobID, jobsRunsLimit, jobsRunsOffset)
+	}
 	if err != nil {
 		return err
 	}
@@ -948,7 +964,7 @@ func runsArgCompletion(cmd *cobra.Command, args []string, toComplete string) ([]
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	runs, err := client.listRuns(ctx, "", 200, 0)
+	runs, err := client.listRunSummaries(ctx, "", 200, 0)
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}

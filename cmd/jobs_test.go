@@ -180,10 +180,10 @@ func TestRunJobsActive_JSONFiltersActiveRunsAndUsesPagedRequests(t *testing.T) {
 
 	expectedRequests := []string{
 		"/v2/jobs?limit=500",
-		"/v2/runs?limit=10&offset=0&job_id=job_alpha",
-		"/v2/runs?limit=10&offset=10&job_id=job_alpha",
-		"/v2/runs?limit=10&offset=20&job_id=job_alpha",
-		"/v2/runs?limit=10&offset=0&job_id=job_beta",
+		"/v2/runs?limit=10&offset=0&summary=true&job_id=job_alpha",
+		"/v2/runs?limit=10&offset=10&summary=true&job_id=job_alpha",
+		"/v2/runs?limit=10&offset=20&summary=true&job_id=job_alpha",
+		"/v2/runs?limit=10&offset=0&summary=true&job_id=job_beta",
 	}
 	if !reflect.DeepEqual(requests, expectedRequests) {
 		t.Fatalf("requests = %#v, want %#v", requests, expectedRequests)
