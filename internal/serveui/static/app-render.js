@@ -1569,21 +1569,62 @@ const updateToolGroupNode = (message) => {
   }
 };
 
+let _lastRenderedSessionId = null;
+let _lastRenderedMessageIds = [];
+
 const renderMessages = (forceScroll = false) => {
   const session = ensureActiveSession();
   resetAssistantStreamRenders();
-  elements.messages.innerHTML = '';
 
-  if (!session || !session.messages.length) {
+  const sessionId = session ? session.id : null;
+  const messages = session ? session.messages : [];
+
+  if (!session || !messages.length) {
+    elements.messages.innerHTML = '';
     const empty = document.createElement('div');
     empty.className = 'empty-state';
     empty.textContent = 'How can I help you today?';
     elements.messages.appendChild(empty);
-  } else {
-    session.messages.forEach((message) => {
-      elements.messages.appendChild(createMessageNode(message));
-    });
+    _lastRenderedSessionId = sessionId;
+    _lastRenderedMessageIds = [];
+    syncTurnActionPanels();
+    refreshRelativeTimes();
+    scrollToBottom(forceScroll);
+    updateHeader();
+    return;
   }
+
+  // Fast path: same session, messages only appended at the end
+  if (sessionId === _lastRenderedSessionId && messages.length >= _lastRenderedMessageIds.length) {
+    let canAppend = true;
+    for (let i = 0; i < _lastRenderedMessageIds.length; i++) {
+      if (_lastRenderedMessageIds[i] !== messages[i].id) {
+        canAppend = false;
+        break;
+      }
+    }
+    if (canAppend) {
+      const emptyState = elements.messages.querySelector('.empty-state');
+      if (emptyState) emptyState.remove();
+      for (let i = _lastRenderedMessageIds.length; i < messages.length; i++) {
+        elements.messages.appendChild(createMessageNode(messages[i]));
+        _lastRenderedMessageIds.push(messages[i].id);
+      }
+      syncTurnActionPanels();
+      refreshRelativeTimes();
+      scrollToBottom(forceScroll);
+      updateHeader();
+      return;
+    }
+  }
+
+  // Full rebuild
+  elements.messages.innerHTML = '';
+  messages.forEach((message) => {
+    elements.messages.appendChild(createMessageNode(message));
+  });
+  _lastRenderedSessionId = sessionId;
+  _lastRenderedMessageIds = messages.map((m) => m.id);
 
   syncTurnActionPanels();
   refreshRelativeTimes();

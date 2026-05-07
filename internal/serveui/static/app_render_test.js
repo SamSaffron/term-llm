@@ -710,6 +710,64 @@ async function run(name, fn) {
     assert(body.innerHTML.includes('First paragraph'), 'full markdown render remains');
   });
 
+  await run('renderMessages: incremental append reuses existing nodes', () => {
+    const { app, session, messages } = createHarness();
+    session.messages = [
+      { id: 'm1', role: 'user', content: 'hello', created: Date.now() },
+      { id: 'm2', role: 'assistant', content: 'hi', created: Date.now() },
+    ];
+    app.renderMessages();
+    assertEqual(messages.children.length, 2, 'two nodes after first render');
+    const firstNode = messages.children[0];
+
+    // Append a new message and re-render
+    session.messages.push({ id: 'm3', role: 'user', content: 'again', created: Date.now() });
+    app.renderMessages();
+    assertEqual(messages.children.length, 3, 'three nodes after incremental render');
+    assert(messages.children[0] === firstNode, 'first node is the same object (not recreated)');
+    assertEqual(messages.children[2].dataset.messageId, 'm3', 'new node has correct id');
+  });
+
+  await run('renderMessages: full rebuild on session switch', () => {
+    const { app, session, messages } = createHarness();
+    session.messages = [
+      { id: 'a1', role: 'user', content: 'first', created: Date.now() },
+    ];
+    app.renderMessages();
+    assertEqual(messages.children.length, 1, 'one node for session s1');
+    const originalNode = messages.children[0];
+
+    // Simulate switching sessions by mutating the session object the harness returns
+    session.id = 's2';
+    session.messages = [
+      { id: 'b1', role: 'user', content: 'other', created: Date.now() },
+    ];
+    app.renderMessages();
+    assertEqual(messages.children.length, 1, 'one node after session switch');
+    assert(messages.children[0] !== originalNode, 'node was recreated after session switch');
+    assertEqual(messages.children[0].dataset.messageId, 'b1', 'new session node has correct id');
+  });
+
+  await run('renderMessages: full rebuild when message list changes non-incrementally', () => {
+    const { app, session, messages } = createHarness();
+    session.messages = [
+      { id: 'x1', role: 'user', content: 'a', created: Date.now() },
+      { id: 'x2', role: 'assistant', content: 'b', created: Date.now() },
+    ];
+    app.renderMessages();
+    assertEqual(messages.children.length, 2, 'two nodes initially');
+    const firstNode = messages.children[0];
+
+    // Replace the messages (non-append: different IDs)
+    session.messages = [
+      { id: 'y1', role: 'user', content: 'new', created: Date.now() },
+    ];
+    app.renderMessages();
+    assertEqual(messages.children.length, 1, 'one node after non-incremental update');
+    assert(messages.children[0] !== firstNode, 'node was recreated');
+    assertEqual(messages.children[0].dataset.messageId, 'y1', 'rebuilt node has correct id');
+  });
+
   if (failures > 0) {
     process.exit(1);
   }
