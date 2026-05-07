@@ -808,13 +808,13 @@ func cloneJSONValue(value any) any {
 }
 
 func writeStoredResponseEvent(w io.Writer, ev responseRunEvent) error {
-	if _, err := fmt.Fprintf(w, "id: %d\n", ev.Sequence); err != nil {
+	if _, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: ", ev.Sequence, ev.Event); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(w, "event: %s\n", ev.Event); err != nil {
+	if _, err := w.Write(ev.Data); err != nil {
 		return err
 	}
-	_, err := fmt.Fprintf(w, "data: %s\n\n", ev.Data)
+	_, err := io.WriteString(w, "\n\n")
 	return err
 }
 
