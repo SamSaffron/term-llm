@@ -70,8 +70,12 @@ exec:
     I prefer ripgrep over grep and fd over find.
 
 ask:
+  max_turns: 50
   instructions: |
     Be concise. I'm an experienced developer.
+
+chat:
+  max_turns: 200
 
 edit:
   model: gpt-5.2-codex
@@ -116,6 +120,32 @@ Precedence is:
 1. CLI flag such as `--provider openai:gpt-5.2`
 2. per-command config such as `exec.provider` or `ask.model`
 3. global provider selection via `default_provider` and `providers.<name>.model`
+
+## Agentic turn limits
+
+Agentic commands can make multiple provider calls while they execute tools and feed results back to the model. `max_turns` caps that loop.
+
+Defaults:
+
+- `ask.max_turns`: `50`
+- `exec` CLI flag default: `50`
+- `chat.max_turns`: `200`
+- Agent YAML `max_turns` overrides command/config defaults when an agent is selected.
+- A CLI `--max-turns N` flag overrides both config and agent YAML.
+
+```yaml
+ask:
+  max_turns: 50
+
+chat:
+  max_turns: 200
+```
+
+## Parallel tool execution
+
+Models may request many independent tool calls in a single turn, such as several `read_file`, `grep`, or `glob` calls. term-llm executes independent tool calls concurrently when parallel tool calls are enabled by the provider/request, but caps one model turn at **20 concurrently running tool calls**. Additional tool calls from the same turn are queued and run as earlier calls finish.
+
+This is a built-in safety limit rather than a config option today. It preserves useful batching while preventing a single response from spawning an unbounded number of shells, greps, reads, or subagents at once.
 
 ## Sessions config
 

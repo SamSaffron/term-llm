@@ -102,7 +102,7 @@ shell:
     build: "npm run build"
 
 search: true   # enables web_search and read_url tools
-max_turns: 50
+max_turns: 50   # agentic loop limit; CLI --max-turns overrides this
 
 mcp:
   - name: github

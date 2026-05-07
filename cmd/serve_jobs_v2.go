@@ -2464,7 +2464,7 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 			MaxTurns:      serveMaxTurns,
 			Search:        serveSearch,
 			Platform:      "jobs",
-		}, jobCfg.Ask.Provider, jobCfg.Ask.Model, jobCfg.Ask.Instructions, jobCfg.Ask.MaxTurns, 20)
+		}, jobCfg.Ask.Provider, jobCfg.Ask.Model, jobCfg.Ask.Instructions, jobCfg.Ask.MaxTurns, 50)
 		if err != nil {
 			return serveJobsExecResult{}, err
 		}

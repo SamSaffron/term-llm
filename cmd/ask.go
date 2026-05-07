@@ -113,7 +113,7 @@ func init() {
 			NoWebFetch:       &askNoWebFetch,
 			MCP:              &askMCP,
 			MaxTurns:         &askMaxTurns,
-			MaxTurnsDefault:  20,
+			MaxTurnsDefault:  50,
 			MaxOutputTokens:  &askMaxOutputTokens,
 			Tools:            &askTools,
 			ReadDirs:         &askReadDirs,
@@ -255,7 +255,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		Search:          askSearch,
 		Files:           askFiles,
 		Platform:        "console",
-	}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 20)
+	}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 50)
 	if err != nil {
 		return err
 	}

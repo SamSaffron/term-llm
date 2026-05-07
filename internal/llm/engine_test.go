@@ -943,6 +943,63 @@ func (t *delayingTool) Preview(args json.RawMessage) string {
 	return ""
 }
 
+// blockingTool simulates a tool that blocks until released so tests can
+// deterministically observe peak concurrency.
+type blockingTool struct {
+	started chan struct{}
+	release chan struct{}
+
+	mu           sync.Mutex
+	calls        int
+	concurrentAt int
+	current      int
+}
+
+func newBlockingTool(buffer int) *blockingTool {
+	return &blockingTool{
+		started: make(chan struct{}, buffer),
+		release: make(chan struct{}),
+	}
+}
+
+func (t *blockingTool) Spec() ToolSpec {
+	return ToolSpec{
+		Name:        "blocking_tool",
+		Description: "A tool that blocks until released",
+		Schema:      map[string]any{"type": "object"},
+	}
+}
+
+func (t *blockingTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
+	t.mu.Lock()
+	t.current++
+	if t.current > t.concurrentAt {
+		t.concurrentAt = t.current
+	}
+	t.calls++
+	t.mu.Unlock()
+
+	t.started <- struct{}{}
+
+	select {
+	case <-t.release:
+	case <-ctx.Done():
+	}
+
+	t.mu.Lock()
+	t.current--
+	t.mu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		return ToolOutput{}, err
+	}
+	return TextOutput("done"), nil
+}
+
+func (t *blockingTool) Preview(args json.RawMessage) string {
+	return ""
+}
+
 type cancellableDelayTool struct {
 	delay time.Duration
 }
@@ -1048,6 +1105,102 @@ func TestEngineParallelToolExecution(t *testing.T) {
 	}
 
 	t.Logf("Parallel execution: peak concurrent=%d, elapsed=%v", tool.concurrentAt, elapsed)
+}
+
+func TestEngineParallelToolExecutionRespectsDefaultLimit(t *testing.T) {
+	totalCalls := defaultMaxParallelToolCalls + 3
+	tool := newBlockingTool(totalCalls)
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				events := make([]Event, 0, totalCalls+1)
+				for i := 0; i < totalCalls; i++ {
+					events = append(events, Event{Type: EventToolCall, Tool: &ToolCall{ID: fmt.Sprintf("call-%d", i), Name: "blocking_tool", Arguments: json.RawMessage(`{}`)}})
+				}
+				events = append(events, Event{Type: EventDone})
+				return events
+			default:
+				return []Event{
+					{Type: EventTextDelta, Text: "done"},
+					{Type: EventDone},
+				}
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages:          []Message{UserText("run tools")},
+		Tools:             []ToolSpec{tool.Spec()},
+		ParallelToolCalls: true,
+		ToolChoice:        ToolChoice{Mode: ToolChoiceAuto},
+	})
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	drainDone := make(chan error, 1)
+	go func() {
+		for {
+			event, err := stream.Recv()
+			if err == io.EOF {
+				drainDone <- nil
+				return
+			}
+			if err != nil {
+				drainDone <- err
+				return
+			}
+			if event.Type == EventError && event.Err != nil {
+				drainDone <- event.Err
+				return
+			}
+		}
+	}()
+
+	for i := 0; i < defaultMaxParallelToolCalls; i++ {
+		select {
+		case <-tool.started:
+		case <-time.After(500 * time.Millisecond):
+			t.Fatalf("timed out waiting for tool start %d", i+1)
+		}
+	}
+
+	select {
+	case <-tool.started:
+		t.Fatalf("started more than %d tools before release", defaultMaxParallelToolCalls)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	tool.mu.Lock()
+	peak := tool.concurrentAt
+	tool.mu.Unlock()
+	if peak != defaultMaxParallelToolCalls {
+		t.Fatalf("peak concurrency = %d, want %d", peak, defaultMaxParallelToolCalls)
+	}
+
+	close(tool.release)
+
+	select {
+	case err := <-drainDone:
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for stream to finish")
+	}
+
+	tool.mu.Lock()
+	calls := tool.calls
+	tool.mu.Unlock()
+	if calls != totalCalls {
+		t.Fatalf("executed %d tools, want %d", calls, totalCalls)
+	}
 }
 
 func TestExecuteToolCallsParallelReturnsOnContextCancel(t *testing.T) {

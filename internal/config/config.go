@@ -1534,7 +1534,7 @@ func GetDefaults() map[string]any {
 		"default_provider":                "anthropic",
 		"exec.suggestions":                3,
 		"exec.instructions":               "",
-		"ask.max_turns":                   20,
+		"ask.max_turns":                   50,
 		"ask.instructions":                "You are a helpful assistant. Today's date is {{date}}.",
 		"chat.max_turns":                  200,
 		"chat.instructions":               "You are a helpful assistant. Today's date is {{date}}.",

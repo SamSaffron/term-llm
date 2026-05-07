@@ -16,10 +16,11 @@ import (
 )
 
 const (
-	defaultMaxTurns       = 20
-	stopSearchToolHint    = "IMPORTANT: Do not call any tools. Use the information already retrieved and answer directly."
-	callbackTimeout       = 5 * time.Second
-	toolHeartbeatInterval = 10 * time.Second
+	defaultMaxTurns             = 50
+	defaultMaxParallelToolCalls = 20
+	stopSearchToolHint          = "IMPORTANT: Do not call any tools. Use the information already retrieved and answer directly."
+	callbackTimeout             = 5 * time.Second
+	toolHeartbeatInterval       = 10 * time.Second
 )
 
 // getMaxTurns returns the max turns from request, with fallback to default
@@ -28,6 +29,13 @@ func getMaxTurns(req Request) int {
 		return req.MaxTurns
 	}
 	return defaultMaxTurns
+}
+
+func maxParallelToolWorkers(callCount int) int {
+	if callCount <= 0 {
+		return 0
+	}
+	return min(callCount, defaultMaxParallelToolCalls)
 }
 
 // TurnMetrics contains metrics collected during a turn.
@@ -1544,33 +1552,43 @@ func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, paralle
 		return results, nil
 	}
 
-	// Parallel execution for multiple calls (events may arrive out of order)
+	// Parallel execution for multiple calls (events may arrive out of order), but
+	// cap worker count so a single model turn cannot flood the process with tool
+	// executions all at once.
 	type toolResult struct {
 		index   int
 		message Message
 	}
 
 	resultChan := make(chan toolResult, len(calls))
+	workerCount := maxParallelToolWorkers(len(calls))
+	var nextCall atomic.Uint32
 
-	for i, call := range calls {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		go func(idx int, c ToolCall) {
-			defer func() {
-				if r := recover(); r != nil {
-					errMsg := fmt.Sprintf("Error: tool panicked: %v", r)
-					_ = send.Send(Event{Type: EventToolExecEnd, ToolCallID: c.ID, ToolName: c.Name, ToolSuccess: false})
-					resultChan <- toolResult{index: idx, message: ToolErrorMessage(c.ID, c.Name, errMsg, c.ThoughtSig)}
+	for worker := 0; worker < workerCount; worker++ {
+		go func() {
+			for {
+				if err := ctx.Err(); err != nil {
+					return
 				}
-			}()
-			msgs, _ := e.executeSingleToolCall(ctx, c, send, debug, debugRaw)
-			msg := ToolErrorMessage(c.ID, c.Name, "tool returned no result", c.ThoughtSig)
-			if len(msgs) > 0 {
-				msg = msgs[0]
+
+				idx := int(nextCall.Add(1)) - 1
+				if idx >= len(calls) {
+					return
+				}
+
+				if err := ctx.Err(); err != nil {
+					return
+				}
+
+				call := calls[idx]
+				msgs, _ := e.executeSingleToolCallSafe(ctx, call, send, debug, debugRaw)
+				msg := ToolErrorMessage(call.ID, call.Name, "tool returned no result", call.ThoughtSig)
+				if len(msgs) > 0 {
+					msg = msgs[0]
+				}
+				resultChan <- toolResult{index: idx, message: msg}
 			}
-			resultChan <- toolResult{index: idx, message: msg}
-		}(i, call)
+		}()
 	}
 
 	// Collect results and maintain original order. If the caller cancels while

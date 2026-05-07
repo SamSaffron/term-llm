@@ -306,7 +306,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		MaxTurnsSet:   cmd.Flags().Changed("max-turns"),
 		Search:        serveSearch,
 		Platform:      singleServeTemplatePlatform(platformNames),
-	}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 20)
+	}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 50)
 	if err != nil {
 		return err
 	}

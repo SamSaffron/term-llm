@@ -84,7 +84,7 @@ func init() {
 			NoWebFetch:       &execNoWebFetch,
 			MCP:              &execMCP,
 			MaxTurns:         &execMaxTurns,
-			MaxTurnsDefault:  20,
+			MaxTurnsDefault:  50,
 			Tools:            &execTools,
 			ReadDirs:         &execReadDirs,
 			WriteDirs:        &execWriteDirs,

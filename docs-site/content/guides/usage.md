@@ -109,7 +109,8 @@ See [Skills](/guides/skills/) for the full guide on creating, sharing, and exten
 | `--stats` | | Show session statistics (time, tokens, tool calls) |
 | `--no-session` | | Disable session persistence for this command |
 | `--session-db` | | Override sessions database path (supports `:memory:`) |
-| `--max-turns` | | Max agentic turns for tool execution (default: 20 for exec, 200 for chat) |
+| `--max-turns` | | Max agentic turns for tool execution (default: 50 for ask/exec, 200 for chat) |
+| Tool concurrency | | When a model emits many parallel tool calls in one turn, term-llm runs at most 20 tool calls concurrently and queues the rest for that turn. |
 | `--yolo` | | Auto-approve all tool operations (for unattended runs) |
 
 **Note:** The `-a` short flag has different meanings:
