@@ -623,7 +623,6 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
           }
           if (!currentIsCompleteJSON) {
             entry.arguments = current + delta;
-            updateVisibleToolGroupNode(session, streamState.currentToolGroup);
             scheduleStreamPersistence();
           }
         }
