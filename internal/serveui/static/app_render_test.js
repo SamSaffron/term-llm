@@ -765,6 +765,34 @@ async function run(name, fn) {
     assert(!tail.className.includes('streaming-plain-text'), 'tail leaves plain-text mode once markdown arrives');
   });
 
+  await run('directionForText returns ltr for latin text', () => {
+    const { app } = createHarness();
+    assertEqual(app.directionForText('Hello world'), 'ltr', 'latin text');
+    assertEqual(app.directionForText('Café'), 'ltr', 'accented latin');
+  });
+
+  await run('directionForText returns rtl for RTL-first text', () => {
+    const { app } = createHarness();
+    // Hebrew character א (alef)
+    assertEqual(app.directionForText('אבג'), 'rtl', 'Hebrew text');
+    // Arabic character ا (alef)
+    assertEqual(app.directionForText('ابت'), 'rtl', 'Arabic text');
+  });
+
+  await run('directionForText returns auto when no strong bidi chars present', () => {
+    const { app } = createHarness();
+    assertEqual(app.directionForText(''), 'auto', 'empty string');
+    assertEqual(app.directionForText('123 !@# ...'), 'auto', 'digits and punctuation only');
+  });
+
+  await run('directionForText first strong char determines direction', () => {
+    const { app } = createHarness();
+    // LTR char appears before RTL
+    assertEqual(app.directionForText('Aא'), 'ltr', 'ltr wins when first');
+    // RTL char appears before LTR
+    assertEqual(app.directionForText('אA'), 'rtl', 'rtl wins when first');
+  });
+
   if (failures > 0) {
     process.exit(1);
   }
