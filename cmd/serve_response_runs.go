@@ -163,12 +163,17 @@ func (r *responseRun) appendEventLocked(event string, payload map[string]any, te
 	}
 
 	r.applyRecoveryEventLocked(event, payload)
-
-	stored := responseRunEvent{
+	r.storeEventLocked(responseRunEvent{
 		Sequence: r.lastSequenceNumber,
 		Event:    event,
 		Data:     data,
-	}
+	}, terminal)
+	return nil
+}
+
+// storeEventLocked appends stored to r.events, compacts the buffer, and fans
+// out to all live subscribers. Must be called with r.mu held.
+func (r *responseRun) storeEventLocked(stored responseRunEvent, terminal bool) {
 	r.events = append(r.events, stored)
 	r.compactEventsLocked()
 
@@ -202,7 +207,42 @@ func (r *responseRun) appendEventLocked(event string, payload map[string]any, te
 			delete(r.subscriberWarned, id)
 		}
 	}
+}
 
+type textDeltaPayload struct {
+	OutputIndex    int    `json:"output_index"`
+	Delta          string `json:"delta"`
+	SequenceNumber int64  `json:"sequence_number"`
+}
+
+// appendTextDeltaEvent is a typed fast-path for response.output_text.delta.
+// Using a struct avoids the map-key sort that json.Marshal performs on
+// map[string]any, which fires on every streamed text token.
+func (r *responseRun) appendTextDeltaEvent(outputIndex int, delta string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lastSequenceNumber++
+
+	data, err := json.Marshal(textDeltaPayload{
+		OutputIndex:    outputIndex,
+		Delta:          delta,
+		SequenceNumber: r.lastSequenceNumber,
+	})
+	if err != nil {
+		return err
+	}
+
+	if delta != "" {
+		r.closeToolGroupLocked()
+		idx := r.ensureAssistantMessageLocked()
+		r.recoveryMessages[idx].Content += delta
+	}
+
+	r.storeEventLocked(responseRunEvent{
+		Sequence: r.lastSequenceNumber,
+		Event:    "response.output_text.delta",
+		Data:     data,
+	}, false)
 	return nil
 }
 
@@ -834,10 +874,7 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 			}
 			state.toolsSeen = false
 		}
-		return run.appendEvent("response.output_text.delta", map[string]any{
-			"output_index": state.outputIndex,
-			"delta":        ev.Text,
-		})
+		return run.appendTextDeltaEvent(state.outputIndex, ev.Text)
 	case llm.EventToolCall:
 		if ev.Tool == nil {
 			return nil
