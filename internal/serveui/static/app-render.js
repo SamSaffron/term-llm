@@ -135,6 +135,175 @@ document.addEventListener('click', (event) => {
   }
 });
 
+// ===== Incremental sidebar render =====
+// Caches keyed by session ID / group label so DOM nodes are reused across
+// renders instead of being destroyed and recreated on every call.
+const sidebarRowCache = new Map();
+const sidebarGroupCache = new Map();
+let sidebarRenderKey = '';
+
+const computeSidebarKey = (sorted) =>
+  sorted.map((s) =>
+    [
+      s.id, s.title, s.longTitle || '',
+      s.pinned ? 1 : 0, s.archived ? 1 : 0,
+      s.messageCount || s.messages.length || 0,
+      s.lastMessageAt || s.created,
+      sessionHasInProgressState(s) ? 1 : 0,
+      s.id === state.activeSessionId ? 1 : 0
+    ].join(':')
+  ).join('|');
+
+const getOrCreateGroupSection = (label) => {
+  if (sidebarGroupCache.has(label)) return sidebarGroupCache.get(label);
+  const section = document.createElement('section');
+  section.className = 'session-group';
+  const h3 = document.createElement('h3');
+  h3.textContent = label;
+  section.appendChild(h3);
+  sidebarGroupCache.set(label, section);
+  return section;
+};
+
+const buildCachedSessionRow = (session) => {
+  const row = document.createElement('div');
+  row.className = 'session-row';
+  row.dataset.sessionId = session.id;
+  row.classList.toggle('is-active', sessionHasInProgressState(session));
+
+  const btn = document.createElement('button');
+  btn.className = 'session-btn';
+  if (session.id === state.activeSessionId) btn.classList.add('active');
+
+  const titleEl = document.createElement('div');
+  titleEl.className = 'session-title';
+  titleEl.textContent = session.title || 'New chat';
+  if (session.longTitle) titleEl.title = session.longTitle;
+
+  const metaEl = document.createElement('div');
+  metaEl.className = 'session-meta';
+  const msgCount = session.messageCount || session.messages.filter(m => m.role !== 'tool-group').length || 0;
+  const metaParts = [`${msgCount} message${msgCount === 1 ? '' : 's'}`];
+  if (session.archived) metaParts.push('hidden');
+  const activityAt = session.lastMessageAt || session.created;
+  metaParts.push(relativeTime(activityAt));
+  metaEl.textContent = metaParts.join(' · ');
+  metaEl.title = fullDate(activityAt);
+
+  btn.appendChild(titleEl);
+  btn.appendChild(metaEl);
+  btn.addEventListener('click', async () => {
+    await app.switchToSession(session.id);
+  });
+
+  const menuWrap = document.createElement('div');
+  menuWrap.className = 'session-row-menu';
+
+  const actionBtn = document.createElement('button');
+  actionBtn.className = 'session-menu-trigger';
+  actionBtn.type = 'button';
+  actionBtn.textContent = '⋯';
+  actionBtn.title = 'Session actions';
+  actionBtn.setAttribute('aria-label', 'Session actions');
+  actionBtn.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const willOpen = !row.classList.contains('menu-open');
+    closeAllSessionMenus();
+    row.classList.toggle('menu-open', willOpen);
+  });
+
+  const menu = document.createElement('div');
+  menu.className = 'session-menu';
+
+  const renameBtn = createSessionMenuButton('Rename', 'rename', async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    closeAllSessionMenus();
+    await app.promptRenameSession(session);
+  });
+
+  const pinBtn = createSessionMenuButton(
+    session.pinned ? 'Unpin' : 'Pin',
+    session.pinned ? 'unpin' : 'pin',
+    async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      closeAllSessionMenus();
+      await app.setSessionPinned(session, !session.pinned);
+    }
+  );
+  const pinIconEl = pinBtn.querySelector('.session-menu-icon');
+  const pinLabelEl = pinBtn.querySelector('.session-menu-label');
+
+  const archiveBtn = createSessionMenuButton(
+    session.archived ? 'Unhide' : 'Hide',
+    session.archived ? 'unhide' : 'hide',
+    async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      closeAllSessionMenus();
+      await app.setSessionArchived(session, !session.archived);
+    }
+  );
+  const archiveIconEl = archiveBtn.querySelector('.session-menu-icon');
+  const archiveLabelEl = archiveBtn.querySelector('.session-menu-label');
+
+  menu.appendChild(renameBtn);
+  menu.appendChild(pinBtn);
+  menu.appendChild(archiveBtn);
+  menuWrap.appendChild(actionBtn);
+  menuWrap.appendChild(menu);
+
+  row.appendChild(btn);
+  row.appendChild(menuWrap);
+
+  sidebarRowCache.set(session.id, {
+    row, btn, titleEl, metaEl,
+    pinIconEl, pinLabelEl,
+    archiveIconEl, archiveLabelEl,
+    prevPinned: session.pinned,
+    prevArchived: session.archived
+  });
+
+  return row;
+};
+
+const updateCachedSessionRow = (session, cached) => {
+  const { row, btn, titleEl, metaEl, pinIconEl, pinLabelEl, archiveIconEl, archiveLabelEl } = cached;
+
+  row.classList.toggle('is-active', sessionHasInProgressState(session));
+  btn.classList.toggle('active', session.id === state.activeSessionId);
+
+  const newTitle = session.title || 'New chat';
+  if (titleEl.textContent !== newTitle) titleEl.textContent = newTitle;
+  const newLongTitle = session.longTitle || '';
+  if (titleEl.title !== newLongTitle) titleEl.title = newLongTitle;
+
+  const msgCount = session.messageCount || session.messages.filter(m => m.role !== 'tool-group').length || 0;
+  const metaParts = [`${msgCount} message${msgCount === 1 ? '' : 's'}`];
+  if (session.archived) metaParts.push('hidden');
+  const activityAt = session.lastMessageAt || session.created;
+  metaParts.push(relativeTime(activityAt));
+  const newMeta = metaParts.join(' · ');
+  if (metaEl.textContent !== newMeta) {
+    metaEl.textContent = newMeta;
+    metaEl.title = fullDate(activityAt);
+  }
+
+  if (session.pinned !== cached.prevPinned) {
+    pinLabelEl.textContent = session.pinned ? 'Unpin' : 'Pin';
+    pinIconEl.innerHTML = SESSION_MENU_ICONS[session.pinned ? 'unpin' : 'pin'];
+    cached.prevPinned = session.pinned;
+  }
+
+  if (session.archived !== cached.prevArchived) {
+    archiveLabelEl.textContent = session.archived ? 'Unhide' : 'Hide';
+    archiveIconEl.innerHTML = SESSION_MENU_ICONS[session.archived ? 'unhide' : 'hide'];
+    cached.prevArchived = session.archived;
+  }
+};
+
 const renderSidebar = () => {
   const grouped = {
     Pinned: [],
@@ -157,112 +326,40 @@ const renderSidebar = () => {
     }
   });
 
-  const sidebarFrag = document.createDocumentFragment();
+  const key = computeSidebarKey(sorted);
+  if (key === sidebarRenderKey) return;
+  sidebarRenderKey = key;
+
+  const newGroupSections = [];
+  const visibleIds = new Set();
 
   Object.entries(grouped).forEach(([label, sessions]) => {
     if (!sessions.length) return;
 
-    const groupEl = document.createElement('section');
-    groupEl.className = 'session-group';
-
-    const heading = document.createElement('h3');
-    heading.textContent = label;
-    groupEl.appendChild(heading);
+    const groupEl = getOrCreateGroupSection(label);
+    // Detach all session rows from this group section, keeping only the h3 heading.
+    groupEl.replaceChildren(groupEl.firstElementChild);
 
     sessions.forEach((session) => {
-      const row = document.createElement('div');
-      row.className = 'session-row';
-      row.dataset.sessionId = session.id;
-      row.classList.toggle('is-active', sessionHasInProgressState(session));
-
-      const btn = document.createElement('button');
-      btn.className = 'session-btn';
-      if (session.id === state.activeSessionId) {
-        btn.classList.add('active');
+      visibleIds.add(session.id);
+      const cached = sidebarRowCache.get(session.id);
+      if (cached) {
+        updateCachedSessionRow(session, cached);
+        groupEl.appendChild(cached.row);
+      } else {
+        groupEl.appendChild(buildCachedSessionRow(session));
       }
-
-      const title = document.createElement('div');
-      title.className = 'session-title';
-      title.textContent = session.title || 'New chat';
-      if (session.longTitle) {
-        title.title = session.longTitle;
-      }
-
-      const meta = document.createElement('div');
-      meta.className = 'session-meta';
-      const msgCount = session.messageCount || session.messages.filter(m => m.role !== 'tool-group').length || 0;
-      const metaParts = [`${msgCount} message${msgCount === 1 ? '' : 's'}`];
-      if (session.archived) {
-        metaParts.push('hidden');
-      }
-      const activityAt = session.lastMessageAt || session.created;
-      metaParts.push(relativeTime(activityAt));
-      meta.textContent = metaParts.join(' · ');
-      meta.title = fullDate(activityAt);
-
-      btn.appendChild(title);
-      btn.appendChild(meta);
-      btn.addEventListener('click', async () => {
-        await app.switchToSession(session.id);
-      });
-
-      const menuWrap = document.createElement('div');
-      menuWrap.className = 'session-row-menu';
-
-      const actionBtn = document.createElement('button');
-      actionBtn.className = 'session-menu-trigger';
-      actionBtn.type = 'button';
-      actionBtn.textContent = '⋯';
-      actionBtn.title = 'Session actions';
-      actionBtn.setAttribute('aria-label', 'Session actions');
-      actionBtn.addEventListener('click', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        const willOpen = !row.classList.contains('menu-open');
-        closeAllSessionMenus();
-        row.classList.toggle('menu-open', willOpen);
-      });
-
-      const menu = document.createElement('div');
-      menu.className = 'session-menu';
-
-      const renameBtn = createSessionMenuButton('Rename', 'rename', async (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        closeAllSessionMenus();
-        await app.promptRenameSession(session);
-      });
-
-      const pinBtn = createSessionMenuButton(session.pinned ? 'Unpin' : 'Pin', session.pinned ? 'unpin' : 'pin', async (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        closeAllSessionMenus();
-        await app.setSessionPinned(session, !session.pinned);
-      });
-
-      const archiveBtn = createSessionMenuButton(session.archived ? 'Unhide' : 'Hide', session.archived ? 'unhide' : 'hide', async (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        closeAllSessionMenus();
-        await app.setSessionArchived(session, !session.archived);
-      });
-
-      menu.appendChild(renameBtn);
-      menu.appendChild(pinBtn);
-      menu.appendChild(archiveBtn);
-      menuWrap.appendChild(actionBtn);
-      menuWrap.appendChild(menu);
-
-      row.appendChild(btn);
-      row.appendChild(menuWrap);
-      groupEl.appendChild(row);
     });
 
-    sidebarFrag.appendChild(groupEl);
+    newGroupSections.push(groupEl);
   });
 
-  elements.sessionGroups.innerHTML = '';
-  elements.sessionGroups.appendChild(sidebarFrag);
+  elements.sessionGroups.replaceChildren(...newGroupSections);
+
+  // Prune cache entries for sessions no longer visible.
+  for (const id of sidebarRowCache.keys()) {
+    if (!visibleIds.has(id)) sidebarRowCache.delete(id);
+  }
 };
 
 // ===== Message rendering =====

@@ -108,10 +108,24 @@ class Element {
     }
   }
 
+  get firstElementChild() {
+    return this.children[0] || null;
+  }
+
   appendChild(child) {
+    if (child.parentNode) {
+      const idx = child.parentNode.children.indexOf(child);
+      if (idx !== -1) child.parentNode.children.splice(idx, 1);
+    }
     child.parentNode = this;
     this.children.push(child);
     return child;
+  }
+
+  replaceChildren(...nodes) {
+    this.children.forEach((child) => { child.parentNode = null; });
+    this.children = [];
+    nodes.forEach((node) => { if (node != null) this.appendChild(node); });
   }
 
   insertBefore(child, reference) {
@@ -249,7 +263,7 @@ function findByMessageId(root, id) {
   return null;
 }
 
-function createHarness() {
+function createHarness(appOverrides = {}) {
   const document = createDocument();
   const messages = new Element('div');
   document.body.appendChild(messages);
@@ -292,6 +306,7 @@ function createHarness() {
     sessionHasInProgressState() { return false; },
     setSessionServerActiveRun() {},
     openLightbox() {},
+    ...appOverrides,
   };
 
   const windowObj = {
@@ -807,6 +822,105 @@ async function run(name, fn) {
     for (const [text, expected, label] of cases) {
       assertEqual(app.directionForText(text), expected, label);
     }
+  });
+
+  await run('renderSidebar creates group sections and session rows', () => {
+    const sessions = [
+      { id: 'a', title: 'Alpha', created: 2000, messages: [], pinned: false, archived: false, messageCount: 3, lastMessageAt: 2000 },
+      { id: 'b', title: 'Beta',  created: 1000, messages: [], pinned: false, archived: false, messageCount: 1, lastMessageAt: 1000 },
+    ];
+    const { app } = createHarness({ visibleSessions: () => sessions });
+
+    app.renderSidebar();
+
+    const groups = app.elements.sessionGroups.children;
+    assertEqual(groups.length, 1, 'one group section');
+    const rows = groups[0].querySelectorAll('.session-row');
+    assertEqual(rows.length, 2, 'two session rows');
+    assertEqual(rows[0].querySelector('.session-title').textContent, 'Alpha', 'first row title');
+    assertEqual(rows[1].querySelector('.session-title').textContent, 'Beta', 'second row title');
+  });
+
+  await run('renderSidebar skips re-render when nothing changed', () => {
+    const session = { id: 'a', title: 'Alpha', created: 1000, messages: [], pinned: false, archived: false, messageCount: 2, lastMessageAt: 1000 };
+    const { app } = createHarness({ visibleSessions: () => [session] });
+
+    app.renderSidebar();
+    const rowBefore = app.elements.sessionGroups.children[0].querySelectorAll('.session-row')[0];
+
+    app.renderSidebar();
+    const rowAfter = app.elements.sessionGroups.children[0].querySelectorAll('.session-row')[0];
+
+    assert(rowBefore === rowAfter, 'identical fingerprint: no DOM change, same row node');
+  });
+
+  await run('renderSidebar updates title in-place, reusing the row DOM node', () => {
+    const session = { id: 'a', title: 'Before', created: 1000, messages: [], pinned: false, archived: false, messageCount: 0, lastMessageAt: 1000 };
+    const { app } = createHarness({ visibleSessions: () => [session] });
+
+    app.renderSidebar();
+    const rowBefore = app.elements.sessionGroups.children[0].querySelectorAll('.session-row')[0];
+
+    session.title = 'After';
+    app.renderSidebar();
+    const rowAfter = app.elements.sessionGroups.children[0].querySelectorAll('.session-row')[0];
+
+    assert(rowBefore === rowAfter, 'same row DOM node reused');
+    assertEqual(rowAfter.querySelector('.session-title').textContent, 'After', 'title updated in-place');
+  });
+
+  await run('renderSidebar updates active button class on session switch', () => {
+    const sessions = [
+      { id: 'a', title: 'A', created: 2000, messages: [], pinned: false, archived: false, messageCount: 0, lastMessageAt: 2000 },
+      { id: 'b', title: 'B', created: 1000, messages: [], pinned: false, archived: false, messageCount: 0, lastMessageAt: 1000 },
+    ];
+    const { app } = createHarness({ visibleSessions: () => sessions });
+    app.state.activeSessionId = 'a';
+
+    app.renderSidebar();
+
+    const rows = app.elements.sessionGroups.querySelectorAll('.session-row');
+    assert(rows[0].querySelector('.session-btn').classList.contains('active'), 'session A btn is active initially');
+    assert(!rows[1].querySelector('.session-btn').classList.contains('active'), 'session B btn is not active');
+
+    app.state.activeSessionId = 'b';
+    app.renderSidebar();
+
+    assert(!rows[0].querySelector('.session-btn').classList.contains('active'), 'session A btn no longer active');
+    assert(rows[1].querySelector('.session-btn').classList.contains('active'), 'session B btn now active');
+  });
+
+  await run('renderSidebar marks in-progress session row with is-active', () => {
+    const sessions = [
+      { id: 'a', title: 'A', created: 2000, messages: [], pinned: false, archived: false, messageCount: 0, lastMessageAt: 2000 },
+      { id: 'b', title: 'B', created: 1000, messages: [], pinned: false, archived: false, messageCount: 0, lastMessageAt: 1000 },
+    ];
+    const { app } = createHarness({
+      visibleSessions: () => sessions,
+      sessionHasInProgressState: (s) => s.id === 'a',
+    });
+
+    app.renderSidebar();
+    const rows = app.elements.sessionGroups.querySelectorAll('.session-row');
+    assert(rows[0].classList.contains('is-active'), 'in-progress row has is-active');
+    assert(!rows[1].classList.contains('is-active'), 'idle row does not have is-active');
+  });
+
+  await run('renderSidebar separates pinned sessions into their own group', () => {
+    const sessions = [
+      { id: 'p', title: 'Pinned', created: 1000, messages: [], pinned: true,  archived: false, messageCount: 0, lastMessageAt: 1000 },
+      { id: 'n', title: 'Normal', created: 900,  messages: [], pinned: false, archived: false, messageCount: 0, lastMessageAt: 900 },
+    ];
+    const { app } = createHarness({ visibleSessions: () => sessions });
+
+    app.renderSidebar();
+
+    const groups = app.elements.sessionGroups.children;
+    assertEqual(groups.length, 2, 'two groups: Pinned and Today');
+    assertEqual(groups[0].querySelector('h3').textContent, 'Pinned', 'first group is Pinned');
+    assertEqual(groups[1].querySelector('h3').textContent, 'Today', 'second group is Today');
+    assertEqual(groups[0].querySelectorAll('.session-row').length, 1, 'one pinned row');
+    assertEqual(groups[1].querySelectorAll('.session-row').length, 1, 'one today row');
   });
 
   if (failures > 0) {
