@@ -562,7 +562,8 @@ CREATE TABLE IF NOT EXISTS job_run_events_v2 (
 	created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_job_run_events_v2_run_id ON job_run_events_v2(run_id, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_job_run_events_v2_run_id_id ON job_run_events_v2(run_id, id);
+DROP INDEX IF EXISTS idx_job_run_events_v2_run_id;
 `
 
 func newJobsV2Manager(dbPath string, workers int, llmExec serveJobsExecutor) (*jobsV2Manager, error) {
@@ -1317,7 +1318,10 @@ func (m *jobsV2Manager) ListRunEvents(runID string, sinceID int64, limit, offset
 	}
 
 	rowsArgs := append(append([]any{}, args...), limit, offset)
-	query := fmt.Sprintf(`SELECT id, run_id, event_type, message, data, created_at FROM job_run_events_v2 %s ORDER BY created_at ASC, id ASC LIMIT ? OFFSET ?`, where)
+	// Event IDs are AUTOINCREMENT and match insertion order. Ordering by id lets
+	// since_id polling seek into idx_job_run_events_v2_run_id_id instead of
+	// walking the full per-run created_at timeline on every incremental poll.
+	query := fmt.Sprintf(`SELECT id, run_id, event_type, message, data, created_at FROM job_run_events_v2 %s ORDER BY id ASC LIMIT ? OFFSET ?`, where)
 	rows, err := m.db.Query(query, rowsArgs...)
 	if err != nil {
 		return nil, 0, err
