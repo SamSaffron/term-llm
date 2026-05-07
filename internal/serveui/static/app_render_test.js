@@ -923,6 +923,71 @@ async function run(name, fn) {
     assertEqual(groups[1].querySelectorAll('.session-row').length, 1, 'one today row');
   });
 
+  await run('updateSidebarStatus updates title and meta via cache', () => {
+    const session = { id: 'x', title: 'Old', created: 1000, messages: [], pinned: false, archived: false, messageCount: 1, lastMessageAt: 1000 };
+    const { app } = createHarness({ visibleSessions: () => [session] });
+    app.state.sessions = [session];
+
+    app.renderSidebar();
+
+    const result = app.updateSidebarStatus([{
+      id: 'x',
+      short_title: 'New Title',
+      long_title: 'Full new title',
+      message_count: 7,
+      active_run: false,
+    }]);
+
+    assert(result === true || result === false, 'updateSidebarStatus returns a boolean');
+    const rows = app.elements.sessionGroups.querySelectorAll('.session-row');
+    assertEqual(rows.length, 1, 'one row rendered');
+    const titleEl = rows[0].querySelector('.session-title');
+    assertEqual(titleEl.textContent, 'New Title', 'title updated from status');
+    assertEqual(titleEl.title, 'Full new title', 'long title set on title element');
+    const metaEl = rows[0].querySelector('.session-meta');
+    assert(metaEl.textContent.startsWith('7 messages'), 'meta shows updated message count');
+  });
+
+  await run('updateSidebarStatus toggles is-active class on cached row', () => {
+    const session = { id: 'y', title: 'Busy', created: 2000, messages: [], pinned: false, archived: false, messageCount: 0, lastMessageAt: 2000 };
+    let activeRun = false;
+    const { app } = createHarness({
+      visibleSessions: () => [session],
+      sessionHasInProgressState: () => activeRun,
+      setSessionServerActiveRun: (_target, val) => { activeRun = val; },
+    });
+    app.state.sessions = [session];
+
+    app.renderSidebar();
+    const row = app.elements.sessionGroups.querySelector('.session-row');
+    assert(!row.classList.contains('is-active'), 'not active before status update');
+
+    activeRun = false;
+    app.updateSidebarStatus([{ id: 'y', active_run: true }]);
+    assert(row.classList.contains('is-active'), 'row gains is-active when active_run is set');
+
+    app.updateSidebarStatus([{ id: 'y', active_run: false }]);
+    assert(!row.classList.contains('is-active'), 'row loses is-active when active_run cleared');
+  });
+
+  await run('updateSidebarStatus ignores sessions not in cache', () => {
+    const session = { id: 'z', title: 'Z', created: 3000, messages: [], pinned: false, archived: false, messageCount: 0, lastMessageAt: 3000 };
+    const { app } = createHarness({ visibleSessions: () => [session] });
+    app.state.sessions = [session];
+
+    app.renderSidebar();
+
+    let threw = false;
+    try {
+      app.updateSidebarStatus([{ id: 'unknown-id', short_title: 'Ghost', message_count: 99 }]);
+    } catch (_) {
+      threw = true;
+    }
+    assert(!threw, 'updateSidebarStatus must not throw for unknown session id');
+    const row = app.elements.sessionGroups.querySelector('.session-row');
+    assertEqual(row.querySelector('.session-title').textContent, 'Z', 'known session row unchanged');
+  });
+
   if (failures > 0) {
     process.exit(1);
   }

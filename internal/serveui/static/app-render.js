@@ -1769,16 +1769,8 @@ const updateSidebarStatus = (statusSessions) => {
   let changed = false;
   let orderChanged = false;
 
-  // Build O(1) lookup maps once to avoid O(n) find and per-entry querySelector calls.
+  // Build O(1) lookup once to avoid O(n) find calls per status entry.
   const localById = new Map(state.sessions.map((s) => [s.id, s]));
-  const rowDataById = new Map();
-  elements.sessionGroups.querySelectorAll('.session-row[data-session-id]').forEach((row) => {
-    rowDataById.set(row.dataset.sessionId, {
-      row,
-      titleEl: row.querySelector('.session-title'),
-      metaEl: row.querySelector('.session-meta'),
-    });
-  });
 
   for (const entry of statusSessions) {
     const local = localById.get(entry.id) || null;
@@ -1798,23 +1790,22 @@ const updateSidebarStatus = (statusSessions) => {
       }
     }
 
-    const rowData = rowDataById.get(entry.id);
-    const row = rowData?.row;
-    if (row) {
-      row.classList.toggle('is-active', nextActive);
+    const cached = sidebarRowCache.get(entry.id);
+    if (cached) {
+      cached.row.classList.toggle('is-active', nextActive);
     }
     if (wasActive !== nextActive) changed = true;
 
-    if (!row) continue;
+    if (!cached) continue;
 
-    const { titleEl, metaEl } = rowData;
-    if (titleEl && entry.short_title && titleEl.textContent !== entry.short_title) {
+    const { titleEl, metaEl } = cached;
+    if (entry.short_title && titleEl.textContent !== entry.short_title) {
       titleEl.textContent = entry.short_title;
       if (entry.long_title) titleEl.title = entry.long_title;
       changed = true;
     }
 
-    if (metaEl && entry.message_count != null) {
+    if (entry.message_count != null) {
       const count = entry.message_count;
       if (local) {
         if (entry.short_title) local.title = entry.short_title;
