@@ -869,11 +869,12 @@ const enqueueAssistantStreamUpdate = (message) => {
   if (!body) return;
 
   body.classList.add('markdown-body');
+  const isNewStream = !assistantStreamStates.has(message.id);
   const streamState = getOrCreateAssistantStreamState(message, body);
   streamState.latestContent = String(message.content || '');
   streamState.dirty = true;
   syncAssistantUsageNode(node, message);
-  syncTurnActionPanelForAssistant(message.id);
+  if (isNewStream) syncTurnActionPanelForAssistant(message.id);
   scheduleAssistantStreamRender(streamState);
 };
 
