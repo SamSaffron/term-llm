@@ -442,7 +442,7 @@ const scheduleSessionStatePoll = (sessionId, delay = 1200) => {
   }, delay);
 };
 
-const syncActiveSessionFromServer = async (session, pollOnActive = false) => {
+const syncActiveSessionFromServer = async (session, pollOnActive = false, { skipMessagesFetch = false } = {}) => {
   if (!session) return null;
 
   const busyBefore = sessionHasInProgressState(session);
@@ -563,12 +563,14 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false) => {
     setSessionOptimisticBusy(session, false);
     setSessionServerActiveRun(session, false);
     updateBusySidebar();
-    const serverMessages = await loadServerSessionMessages(session.id);
-    if (Array.isArray(serverMessages)) {
-      mergeServerMessagesWithLocalState(session, serverMessages);
-      persistAndRefreshShell();
-      if (session.id === state.activeSessionId) {
-        renderMessages(true);
+    if (!skipMessagesFetch) {
+      const serverMessages = await loadServerSessionMessages(session.id);
+      if (Array.isArray(serverMessages)) {
+        mergeServerMessagesWithLocalState(session, serverMessages);
+        persistAndRefreshShell();
+        if (session.id === state.activeSessionId) {
+          renderMessages(true);
+        }
       }
     }
     if (runtimeState.last_error) {
@@ -868,6 +870,7 @@ const hydrateActiveSessionAfterStartup = async () => {
   const active = getActiveSession();
   if (!active) return;
 
+  let messagesPreloaded = false;
   if (active._serverOnly) {
     const msgs = await loadServerSessionMessages(active.id);
     if (Array.isArray(msgs)) {
@@ -875,10 +878,11 @@ const hydrateActiveSessionAfterStartup = async () => {
       saveSessions();
       renderSidebar();
       renderMessages(true);
+      messagesPreloaded = true;
     }
   }
 
-  await syncActiveSessionFromServer(active, true);
+  await syncActiveSessionFromServer(active, true, { skipMessagesFetch: messagesPreloaded });
 };
 
 const initialize = async () => {
