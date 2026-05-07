@@ -1820,9 +1820,22 @@ const connectToken = async () => {
   elements.authError.textContent = '';
 
   try {
+    // Speculative models fetch in parallel with providers — same pattern as startup.
+    const speculativeProvider = state.selectedProvider;
+    const speculativeModelsPromise = speculativeProvider
+      ? fetchModels(token, speculativeProvider)
+      : null;
+
     state.providers = await fetchProviders(token);
     normalizeSelectedProvider();
-    const models = await fetchModels(token, state.selectedProvider);
+
+    let models;
+    if (speculativeModelsPromise !== null && state.selectedProvider === speculativeProvider) {
+      models = await speculativeModelsPromise;
+    } else {
+      if (speculativeModelsPromise !== null) speculativeModelsPromise.catch(() => {});
+      models = await fetchModels(token, state.selectedProvider);
+    }
     state.token = token;
     state.models = models;
     state.connected = true;
