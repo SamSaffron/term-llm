@@ -798,6 +798,50 @@ func TestAutoEnrich_SingleMatch(t *testing.T) {
 	}
 }
 
+func TestEnrichGrepMatchesFromFilesExpandsAndMerges(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "target.go")
+
+	var content strings.Builder
+	for i := 1; i <= 50; i++ {
+		switch i {
+		case 20:
+			content.WriteString("first TOKEN\n")
+		case 32:
+			content.WriteString("second TOKEN\n")
+		default:
+			content.WriteString(fmt.Sprintf("padding line %d\n", i))
+		}
+	}
+	if err := os.WriteFile(path, []byte(content.String()), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	matches := []GrepMatch{
+		{FilePath: path, LineNumber: 20, Match: "first TOKEN", Context: "> 20: first TOKEN"},
+		{FilePath: path, LineNumber: 32, Match: "second TOKEN", Context: "> 32: second TOKEN"},
+	}
+	enriched, err := enrichGrepMatchesFromFiles(context.Background(), matches, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(enriched) != 1 {
+		t.Fatalf("expected overlapping enriched windows to merge into 1 block, got %d: %+v", len(enriched), enriched)
+	}
+
+	ctx := enriched[0].Context
+	for _, want := range []string{
+		"  10: padding line 10",
+		"> 20: first TOKEN",
+		"> 32: second TOKEN",
+		"  42: padding line 42",
+	} {
+		if !strings.Contains(ctx, want) {
+			t.Fatalf("missing %q in enriched context:\n%s", want, ctx)
+		}
+	}
+}
+
 // TestSortGrepMatchesByMtime verifies that matches from the most recently
 // modified file appear first in the output.
 func TestSortGrepMatchesByMtime(t *testing.T) {
@@ -905,4 +949,42 @@ func buildSyntheticRipgrepJSON(matchCount int) []byte {
 		fmt.Fprintf(&sb, `{"type":"end","data":{"path":{"text":%q}}}`+"\n", path)
 	}
 	return []byte(sb.String())
+}
+
+func BenchmarkGrepToolAutoEnrichSingleMatchLargeTree(b *testing.B) {
+	if !ripgrepAvailable() {
+		b.Skip("ripgrep not available")
+	}
+
+	dir := b.TempDir()
+	const token = "BENCH_AUTOENRICH_TOKEN"
+	for i := 0; i < 800; i++ {
+		var content strings.Builder
+		for line := 1; line <= 80; line++ {
+			if i == 799 && line == 40 {
+				content.WriteString(token + "\n")
+			} else {
+				fmt.Fprintf(&content, "file %03d filler line %02d\n", i, line)
+			}
+		}
+		path := filepath.Join(dir, fmt.Sprintf("file%04d.go", i))
+		if err := os.WriteFile(path, []byte(content.String()), 0644); err != nil {
+			b.Fatal(err)
+		}
+	}
+
+	tool := NewGrepTool(nil, DefaultOutputLimits())
+	args, _ := json.Marshal(GrepArgs{Pattern: token, Path: dir, ContextLines: 0})
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		out, err := tool.Execute(context.Background(), args)
+		if err != nil {
+			b.Fatalf("Execute returned error: %v", err)
+		}
+		if !strings.Contains(out.Content, token) || !strings.Contains(out.Content, "filler line 10") {
+			b.Fatalf("auto-enriched output missing expected content:\n%s", out.Content)
+		}
+	}
 }

@@ -539,6 +539,202 @@ func parseRipgrepOutput(output []byte, maxResults, maxAfterContext int) ([]GrepM
 	return matches, nil
 }
 
+// enrichGrepMatchesFromFiles expands small ripgrep result sets by reading only
+// the matched line windows from the files already found by the first rg pass.
+// This preserves auto-enriched context without spawning a second full-tree rg.
+func enrichGrepMatchesFromFiles(ctx context.Context, matches []GrepMatch, contextLines int) ([]GrepMatch, error) {
+	if len(matches) == 0 || contextLines <= 0 {
+		return matches, nil
+	}
+
+	groups := groupMatchesByFile(matches)
+	enriched := make([]GrepMatch, 0, len(matches))
+	for _, g := range groups {
+		blocks, err := enrichFileGrepGroup(ctx, g, contextLines)
+		if err != nil {
+			return nil, err
+		}
+		if len(blocks) == 0 {
+			enriched = append(enriched, g.matches...)
+			continue
+		}
+		for _, b := range blocks {
+			enriched = append(enriched, blockToGrepMatch(b))
+		}
+	}
+	return enriched, nil
+}
+
+type lineWindow struct {
+	start int
+	end   int
+}
+
+func windowAroundLine(line, contextLines int) lineWindow {
+	start := line - contextLines
+	if start < 1 {
+		start = 1
+	}
+	return lineWindow{start: start, end: line + contextLines}
+}
+
+func enrichFileGrepGroup(ctx context.Context, group fileGroup, contextLines int) ([]matchBlock, error) {
+	matchLines := make(map[int]struct{}, len(group.matches))
+	var centers []int
+	for _, m := range group.matches {
+		for _, line := range grepMatchLineNumbers(m) {
+			if line <= 0 {
+				continue
+			}
+			if _, seen := matchLines[line]; !seen {
+				centers = append(centers, line)
+				matchLines[line] = struct{}{}
+			}
+		}
+	}
+	if len(centers) == 0 {
+		return nil, nil
+	}
+	sort.Ints(centers)
+
+	windows := make([]lineWindow, len(centers))
+	for i, line := range centers {
+		windows[i] = windowAroundLine(line, contextLines)
+	}
+
+	lines, err := readLineWindows(ctx, group.path, windows)
+	if err != nil {
+		return nil, err
+	}
+
+	blocks := make([]matchBlock, 0, len(centers))
+	for _, center := range centers {
+		w := windowAroundLine(center, contextLines)
+		block := matchBlock{filePath: group.path}
+		for line := w.start; line <= w.end; line++ {
+			text, ok := lines[line]
+			if !ok {
+				continue
+			}
+			_, isMatch := matchLines[line]
+			block.lines = append(block.lines, blockLine{number: line, text: text, isMatch: isMatch})
+		}
+		if len(block.lines) > 0 {
+			blocks = append(blocks, block)
+		}
+	}
+
+	merged := make([]matchBlock, 0, len(blocks))
+	for _, b := range blocks {
+		if len(merged) > 0 {
+			last := merged[len(merged)-1]
+			lastLine := last.lines[len(last.lines)-1].number
+			firstLine := b.lines[0].number
+			if firstLine <= lastLine+1 {
+				merged[len(merged)-1] = mergeBlocks(last, b)
+				continue
+			}
+		}
+		merged = append(merged, b)
+	}
+	return merged, nil
+}
+
+func grepMatchLineNumbers(m GrepMatch) []int {
+	seen := make(map[int]struct{})
+	add := func(line int) {
+		if line > 0 {
+			seen[line] = struct{}{}
+		}
+	}
+	for _, line := range strings.Split(m.Context, "\n") {
+		if !strings.HasPrefix(line, "> ") {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(line, "> "))
+		idx := strings.IndexByte(rest, ':')
+		if idx <= 0 {
+			continue
+		}
+		lineNum, err := strconv.Atoi(strings.TrimSpace(rest[:idx]))
+		if err == nil {
+			add(lineNum)
+		}
+	}
+	if len(seen) == 0 {
+		add(m.LineNumber)
+	}
+
+	lines := make([]int, 0, len(seen))
+	for line := range seen {
+		lines = append(lines, line)
+	}
+	sort.Ints(lines)
+	return lines
+}
+
+func readLineWindows(ctx context.Context, path string, windows []lineWindow) (map[int]string, error) {
+	if len(windows) == 0 {
+		return nil, nil
+	}
+
+	minStart := windows[0].start
+	maxEnd := windows[0].end
+	for _, w := range windows[1:] {
+		if w.start < minStart {
+			minStart = w.start
+		}
+		if w.end > maxEnd {
+			maxEnd = w.end
+		}
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	lines := make(map[int]string)
+	reader := bufio.NewReader(file)
+	lineNum := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		line, readErr := reader.ReadString('\n')
+		if len(line) > 0 {
+			lineNum++
+			if lineNum >= minStart && lineInWindows(lineNum, windows) {
+				line = strings.TrimSuffix(line, "\n")
+				lines[lineNum] = line
+			}
+			if lineNum >= maxEnd {
+				break
+			}
+		}
+
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return nil, readErr
+		}
+	}
+
+	return lines, nil
+}
+
+func lineInWindows(line int, windows []lineWindow) bool {
+	for _, w := range windows {
+		if line >= w.start && line <= w.end {
+			return true
+		}
+	}
+	return false
+}
+
 // truncateLine trims leading/trailing whitespace and caps the line at
 // maxLineDisplayLen runes, appending "…" when truncated.  Leading whitespace
 // is preserved up to the cap so indentation remains meaningful.
@@ -731,12 +927,21 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 			}
 			// Auto-enrich: when the result set is small and the caller didn't
 			// request explicit context, bump the context window so the model can
-			// understand the match without an extra read_file round-trip.
+			// understand the match without an extra read_file round-trip.  The
+			// initial ripgrep pass has already found the matched files and line
+			// numbers, so enrich directly from those files instead of spawning and
+			// scanning a second full-tree ripgrep process.
 			if a.ContextLines <= 0 {
 				if enriched := autoEnrichContextLines(len(matches)); enriched > contextLines {
-					if richer, err2 := t.executeRipgrep(ctx, a, resolvedSearchPath, enriched, maxResults); err2 == nil && len(richer.matches) > 0 {
-						matches = richer.matches
-						result.truncated = richer.truncated
+					if a.Multiline {
+						// Multiline matches can span several physical lines in a
+						// single rg event, so keep rg's own context expansion there.
+						if richer, err2 := t.executeRipgrep(ctx, a, resolvedSearchPath, enriched, maxResults); err2 == nil && len(richer.matches) > 0 {
+							matches = richer.matches
+							result.truncated = richer.truncated
+						}
+					} else if richer, err2 := enrichGrepMatchesFromFiles(ctx, matches, enriched); err2 == nil && len(richer) > 0 {
+						matches = richer
 					}
 				}
 			}
