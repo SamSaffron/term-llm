@@ -9127,3 +9127,131 @@ func TestNonStreamingResponses_FiltersServerExecutedToolCalls(t *testing.T) {
 		t.Fatalf("expected 1 output item (text), got %d", len(output))
 	}
 }
+
+func TestWriteJSONGzip_CompressesLargeResponse(t *testing.T) {
+	// Build a payload large enough to trigger compression (>512 B).
+	items := make([]map[string]any, 30)
+	for i := range items {
+		items[i] = map[string]any{"id": fmt.Sprintf("provider/model-name-%04d", i), "object": "model"}
+	}
+	payload := map[string]any{"object": "list", "data": items}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	rr := httptest.NewRecorder()
+
+	writeJSONGzip(rr, req, http.StatusOK, payload)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if got := rr.Header().Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want gzip", got)
+	}
+	if got := rr.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+	if got := rr.Header().Get("Vary"); got != "Accept-Encoding" {
+		t.Fatalf("Vary = %q, want Accept-Encoding", got)
+	}
+
+	gr, err := gzip.NewReader(rr.Body)
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	defer gr.Close()
+	var decoded map[string]any
+	if err := json.NewDecoder(gr).Decode(&decoded); err != nil {
+		t.Fatalf("decode gzipped body: %v", err)
+	}
+	data, ok := decoded["data"].([]any)
+	if !ok || len(data) != 30 {
+		t.Fatalf("data len = %d, want 30", len(data))
+	}
+}
+
+func TestWriteJSONGzip_NoCompressionWithoutAcceptEncoding(t *testing.T) {
+	items := make([]map[string]any, 30)
+	for i := range items {
+		items[i] = map[string]any{"id": fmt.Sprintf("provider/model-name-%04d", i)}
+	}
+	payload := map[string]any{"object": "list", "data": items}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	rr := httptest.NewRecorder()
+
+	writeJSONGzip(rr, req, http.StatusOK, payload)
+
+	if enc := rr.Header().Get("Content-Encoding"); enc != "" {
+		t.Fatalf("Content-Encoding = %q, want empty (no gzip)", enc)
+	}
+	var decoded map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&decoded); err != nil {
+		t.Fatalf("decode plain body: %v", err)
+	}
+}
+
+func TestWriteJSONGzip_SkipsCompressionForSmallPayload(t *testing.T) {
+	payload := map[string]any{"status": "ok"}
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	rr := httptest.NewRecorder()
+
+	writeJSONGzip(rr, req, http.StatusOK, payload)
+
+	if enc := rr.Header().Get("Content-Encoding"); enc != "" {
+		t.Fatalf("Content-Encoding = %q, want empty for small payload", enc)
+	}
+}
+
+func TestHandleSessions_GzipCompressed(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	for i := 0; i < 10; i++ {
+		sess := &session.Session{
+			ID:        fmt.Sprintf("sess-%02d", i),
+			Summary:   fmt.Sprintf("Session number %d with a somewhat long title to pad the payload size", i),
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+		if err := store.Create(ctx, sess); err != nil {
+			t.Fatalf("create session %d: %v", i, err)
+		}
+	}
+
+	srv := &serveServer{store: store}
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	rr := httptest.NewRecorder()
+	srv.handleSessions(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if got := rr.Header().Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want gzip", got)
+	}
+
+	gr, err := gzip.NewReader(rr.Body)
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	defer gr.Close()
+	var decoded map[string]any
+	if err := json.NewDecoder(gr).Decode(&decoded); err != nil {
+		t.Fatalf("decode gzipped sessions: %v", err)
+	}
+	sessions, ok := decoded["sessions"].([]any)
+	if !ok {
+		t.Fatalf("sessions key missing or wrong type")
+	}
+	if len(sessions) != 10 {
+		t.Fatalf("sessions len = %d, want 10", len(sessions))
+	}
+}

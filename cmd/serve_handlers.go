@@ -96,6 +96,32 @@ func uiCompressibleContentType(contentType string) bool {
 	}
 }
 
+// writeJSONGzip marshals payload as JSON and sends it gzip-compressed when
+// the client advertises Accept-Encoding: gzip and the payload exceeds 512 B.
+// Used for large startup-path API responses (sessions, models, providers).
+func writeJSONGzip(w http.ResponseWriter, r *http.Request, status int, payload any) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", "application/json")
+	if len(body) > 512 && uiAcceptsGzip(r.Header.Get("Accept-Encoding")) {
+		h.Set("Vary", "Accept-Encoding")
+		var buf bytes.Buffer
+		gz, _ := gzip.NewWriterLevel(&buf, gzip.BestSpeed)
+		_, _ = gz.Write(body)
+		_ = gz.Close()
+		h.Set("Content-Encoding", "gzip")
+		w.WriteHeader(status)
+		_, _ = w.Write(buf.Bytes())
+		return
+	}
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
 func uiAddVary(header http.Header, value string) {
 	for _, existing := range strings.Split(header.Get("Vary"), ",") {
 		if strings.EqualFold(strings.TrimSpace(existing), value) {
@@ -663,7 +689,7 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"sessions": result})
+	writeJSONGzip(w, r, http.StatusOK, map[string]any{"sessions": result})
 }
 
 func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) {
@@ -1083,7 +1109,7 @@ func (s *serveServer) handleProviders(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	writeJSONGzip(w, r, http.StatusOK, map[string]any{
 		"object": "list",
 		"data":   items,
 	})
@@ -1194,7 +1220,7 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	writeJSONGzip(w, r, http.StatusOK, map[string]any{
 		"object": "list",
 		"data":   items,
 	})
