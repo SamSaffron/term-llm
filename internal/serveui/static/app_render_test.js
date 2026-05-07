@@ -710,6 +710,61 @@ async function run(name, fn) {
     assert(body.innerHTML.includes('First paragraph'), 'full markdown render remains');
   });
 
+  await run('plain text streaming renders tail as text node and stays in that mode across extends', () => {
+    const { app, session, messages, timers } = createHarness();
+    const message = {
+      id: 'plain-cache',
+      role: 'assistant',
+      content: 'Hello world, this is plain text.',
+      created: Date.now(),
+    };
+    session.messages = [message];
+
+    app.enqueueAssistantStreamUpdate(message);
+    runAllPendingTimers(timers);
+
+    const node = messages.children[0];
+    const body = node.querySelector('.message-body');
+    const tail = body.querySelector('.markdown-stream-tail');
+    assert(tail, 'tail container exists');
+    assert(tail.className.includes('streaming-plain-text'), 'tail uses plain-text mode for plain text');
+
+    // Extend with more plain text (no markdown chars) — cache fast path
+    message.content += ' More words with no special characters at all.';
+    app.enqueueAssistantStreamUpdate(message);
+    runAllPendingTimers(timers);
+
+    assert(tail.className.includes('streaming-plain-text'), 'tail stays in plain-text mode after plain extend');
+    // The plain-text path writes into a child text node, not the container's own textContent
+    const textNode = tail.children[0];
+    assert(textNode && textNode.textContent.includes('More words'), 'extended content is rendered in text node');
+  });
+
+  await run('plain text streaming switches to markdown tail when markdown chars arrive', () => {
+    const { app, session, messages, timers } = createHarness();
+    const message = {
+      id: 'plain-to-md',
+      role: 'assistant',
+      content: 'Plain text so far.',
+      created: Date.now(),
+    };
+    session.messages = [message];
+
+    app.enqueueAssistantStreamUpdate(message);
+    runAllPendingTimers(timers);
+
+    const body = messages.children[0].querySelector('.message-body');
+    const tail = body.querySelector('.markdown-stream-tail');
+    assert(tail.className.includes('streaming-plain-text'), 'plain-text mode initially');
+
+    // Append markdown — cache must invalidate and run full check
+    message.content += ' Now **bold** text appears.';
+    app.enqueueAssistantStreamUpdate(message);
+    runAllPendingTimers(timers);
+
+    assert(!tail.className.includes('streaming-plain-text'), 'tail leaves plain-text mode once markdown arrives');
+  });
+
   if (failures > 0) {
     process.exit(1);
   }

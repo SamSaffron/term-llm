@@ -613,6 +613,8 @@ const getOrCreateAssistantStreamState = (message, body) => {
   streamState.body = body;
   streamState.stableContainer = containers.stableContainer;
   streamState.tailContainer = containers.tailContainer;
+  streamState._canPlainCached = null;
+  streamState._canPlainCachedAt = 0;
   assistantStreamStates.set(message.id, streamState);
   return streamState;
 };
@@ -655,6 +657,8 @@ const resetAssistantStableRender = (streamState) => {
   streamState.lastTailContent = '';
   streamState.lastTailSource = '';
   streamState.tailTextNode = null;
+  streamState._canPlainCached = null;
+  streamState._canPlainCachedAt = 0;
 };
 
 const appendAssistantStableMarkdown = (streamState, source) => {
@@ -724,6 +728,40 @@ const renderAssistantTailMarkdown = (streamState, tail) => {
   streamState.lastTailSource = tail;
 };
 
+// Returns true when content qualifies for the fast plain-text tail path,
+// using a two-level cache to avoid O(n) re-scans on every render frame:
+//   false result: permanent — structural markdown (block syntax, inline
+//     markers, math delimiters) can never be removed by appending, so false
+//     stays false for the lifetime of the message.
+//   true result: reused when the new delta contains no markdown-triggering
+//     characters, skipping the full six-pass scan entirely.
+const hasPotentialMarkdownChars = (text) => /[`*_~[\]!<>\\$|#\n]/.test(text);
+
+const cachedCanStreamPlainText = (streamState, content, ms) => {
+  const prev = streamState._canPlainCached;
+  const prevLen = streamState._canPlainCachedAt || 0;
+
+  if (prev !== null && content.length === prevLen) return prev;
+
+  if (prev === false && content.length > prevLen) {
+    streamState._canPlainCachedAt = content.length;
+    return false;
+  }
+
+  if (prev === true && content.length > prevLen) {
+    const delta = content.slice(prevLen);
+    if (!hasPotentialMarkdownChars(delta)) {
+      streamState._canPlainCachedAt = content.length;
+      return true;
+    }
+  }
+
+  const result = ms.canStreamPlainTextTail(content);
+  streamState._canPlainCached = result;
+  streamState._canPlainCachedAt = content.length;
+  return result;
+};
+
 const performAssistantStreamRender = (streamState) => {
   if (!streamState || !streamState.body) return;
   streamState.rafId = 0;
@@ -751,10 +789,11 @@ const performAssistantStreamRender = (streamState) => {
     if (content) {
       // When stable markdown has already been promoted (stableLength > 0) the
       // plain-text path is unreachable — skip the O(n) eligibility scan.
+      // Otherwise use the incremental cache to avoid re-scanning unchanged prefixes.
+      const ms = app.markdownStreaming;
       const renderPlainTail = !(streamState.stableLength > 0) && Boolean(
-        app.markdownStreaming
-        && typeof app.markdownStreaming.canStreamPlainTextTail === 'function'
-        && app.markdownStreaming.canStreamPlainTextTail(content)
+        ms && typeof ms.canStreamPlainTextTail === 'function'
+        && cachedCanStreamPlainText(streamState, content, ms)
       );
 
       if (renderPlainTail) {
