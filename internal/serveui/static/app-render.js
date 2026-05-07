@@ -12,13 +12,9 @@ const isMobileViewport = () => window.matchMedia('(max-width: 767px)').matches;
 
 const directionForText = (value) => {
   const text = String(value || '');
-  const strongChars = text.match(/[A-Za-z\u00C0-\u02AF\u0370-\u03FF\u0400-\u052F\u0590-\u08FF]/g);
-  if (!strongChars || strongChars.length === 0) return 'auto';
-  for (const ch of strongChars) {
-    if (/[\u0590-\u08FF]/.test(ch)) return 'rtl';
-    if (/[A-Za-z\u00C0-\u02AF\u0370-\u03FF\u0400-\u052F]/.test(ch)) return 'ltr';
-  }
-  return 'auto';
+  const m = text.match(/[A-Za-z\u00C0-\u02AF\u0370-\u03FF\u0400-\u052F\u0590-\u08FF]/);
+  if (!m) return 'auto';
+  return /[\u0590-\u08FF]/.test(m[0]) ? 'rtl' : 'ltr';
 };
 
 const applyTextDirection = (element, value) => {
@@ -613,12 +609,15 @@ const getOrCreateAssistantStreamState = (message, body) => {
   streamState.body = body;
   streamState.stableContainer = containers.stableContainer;
   streamState.tailContainer = containers.tailContainer;
+  streamState._canPlainCached = null;
+  streamState._canPlainCachedAt = 0;
+  streamState._stableCheckedAt = 0;
   assistantStreamStates.set(message.id, streamState);
   return streamState;
 };
 
 const scheduleAssistantStreamRender = (streamState) => {
-  if (!streamState) return;
+  if (!streamState || streamState.rendering || streamState.rafId || streamState.timerId) return;
   const renderDelay = app.markdownStreaming && typeof app.markdownStreaming.nextStreamingRenderDelay === 'function'
     ? app.markdownStreaming.nextStreamingRenderDelay(streamState.latestContent.length)
     : 33;
@@ -628,8 +627,6 @@ const scheduleAssistantStreamRender = (streamState) => {
     if (streamState.rafId) return;
     streamState.rafId = window.requestAnimationFrame(() => performAssistantStreamRender(streamState));
   };
-
-  if (streamState.rendering || streamState.rafId || streamState.timerId) return;
   if (elapsed >= renderDelay) {
     enqueueFrame();
     return;
@@ -655,6 +652,9 @@ const resetAssistantStableRender = (streamState) => {
   streamState.lastTailContent = '';
   streamState.lastTailSource = '';
   streamState.tailTextNode = null;
+  streamState._canPlainCached = null;
+  streamState._canPlainCachedAt = 0;
+  streamState._stableCheckedAt = 0;
 };
 
 const appendAssistantStableMarkdown = (streamState, source) => {
@@ -706,8 +706,9 @@ const renderAssistantTailPlainText = (streamState, tail) => {
     streamState.lastTailSource = '';
   }
 
-  if (tail.startsWith(streamState.lastTailSource || '')) {
-    textNode.textContent += tail.slice(streamState.lastTailSource.length);
+  const prevLen = (streamState.lastTailSource || '').length;
+  if (prevLen > 0 && tail.length > prevLen) {
+    textNode.textContent += tail.slice(prevLen);
   } else {
     textNode.textContent = tail;
   }
@@ -722,6 +723,51 @@ const renderAssistantTailMarkdown = (streamState, tail) => {
   streamState.tailTextNode = null;
   renderAssistantMarkdown(container, tail, { streaming: true });
   streamState.lastTailSource = tail;
+};
+
+// Returns true when content qualifies for the fast plain-text tail path,
+// using a two-level cache to avoid O(n) re-scans on every render frame:
+//   false result: permanent — structural markdown (block syntax, inline
+//     markers, math delimiters) can never be removed by appending, so false
+//     stays false for the lifetime of the message.
+//   true result: reused when the new delta contains no markdown-triggering
+//     characters, skipping the full six-pass scan entirely.
+const hasPotentialMarkdownChars = (text) => /[`*_~[\]!<>\\$|#\n]/.test(text);
+
+const cachedCanStreamPlainText = (streamState, content, ms) => {
+  const prev = streamState._canPlainCached;
+  const prevLen = streamState._canPlainCachedAt || 0;
+
+  if (prev !== null && content.length === prevLen) return prev;
+
+  if (prev === false && content.length > prevLen) {
+    streamState._canPlainCachedAt = content.length;
+    return false;
+  }
+
+  if (prev === true && content.length > prevLen) {
+    const delta = content.slice(prevLen);
+    if (!hasPotentialMarkdownChars(delta)) {
+      streamState._canPlainCachedAt = content.length;
+      return true;
+    }
+  }
+
+  const result = ms.canStreamPlainTextTail(content);
+  streamState._canPlainCached = result;
+  streamState._canPlainCachedAt = content.length;
+  return result;
+};
+
+const maybePromoteAssistantStableMarkdown = (streamState, content) => {
+  const prevAt = streamState._stableCheckedAt || 0;
+  if (prevAt > 0 && content.length > prevAt && !content.slice(prevAt).includes('\n')) {
+    streamState._stableCheckedAt = content.length;
+    return false;
+  }
+  const result = promoteAssistantStableMarkdown(streamState, content);
+  streamState._stableCheckedAt = content.length;
+  return result;
 };
 
 const performAssistantStreamRender = (streamState) => {
@@ -740,22 +786,31 @@ const performAssistantStreamRender = (streamState) => {
   const content = String(streamState.latestContent || '');
 
   try {
-    applyTextDirection(streamState.body, content);
+    // Skip the O(n) direction scan once the body direction is locked in.
+    // Direction is determined by the first strong bidi character and never
+    // changes as more text is appended, so one scan per element is enough.
+    const bodyDir = streamState.body.getAttribute('dir');
+    if (bodyDir !== 'ltr' && bodyDir !== 'rtl') {
+      applyTextDirection(streamState.body, content);
+    }
 
     if (content) {
-      const renderPlainTail = Boolean(
-        app.markdownStreaming
-        && typeof app.markdownStreaming.canStreamPlainTextTail === 'function'
-        && app.markdownStreaming.canStreamPlainTextTail(content)
+      // When stable markdown has already been promoted (stableLength > 0) the
+      // plain-text path is unreachable — skip the O(n) eligibility scan.
+      // Otherwise use the incremental cache to avoid re-scanning unchanged prefixes.
+      const ms = app.markdownStreaming;
+      const renderPlainTail = !(streamState.stableLength > 0) && Boolean(
+        ms && typeof ms.canStreamPlainTextTail === 'function'
+        && cachedCanStreamPlainText(streamState, content, ms)
       );
 
-      if (renderPlainTail && !(streamState.stableLength > 0)) {
+      if (renderPlainTail) {
         if (content !== streamState.lastTailContent) {
           renderAssistantTailPlainText(streamState, content);
           streamState.lastTailContent = content;
         }
       } else {
-        const promoted = promoteAssistantStableMarkdown(streamState, content);
+        const promoted = maybePromoteAssistantStableMarkdown(streamState, content);
         const tail = content.slice(streamState.stableLength || 0);
         if (promoted || tail !== streamState.lastTailContent) {
           if (tail) {
@@ -800,6 +855,15 @@ const enqueueAssistantStreamUpdate = (message) => {
     } else {
       scrollToBottom();
     }
+    return;
+  }
+
+  // Fast path: state exists — skip all DOM queries on every delta after the first.
+  const existingState = assistantStreamStates.get(message.id);
+  if (existingState) {
+    existingState.latestContent = String(message.content || '');
+    existingState.dirty = true;
+    scheduleAssistantStreamRender(existingState);
     return;
   }
 
