@@ -813,9 +813,9 @@ const consumeResponseStream = async (stream, session, streamState, options = {})
 
   const streamIsCurrent = () => {
     if (generation !== state.streamGeneration) return false;
-    const currentSessionId = String(state.currentStreamSessionId || '').trim();
+    const currentSessionId = state.currentStreamSessionId;
     if (currentSessionId && sessionId && currentSessionId !== sessionId) return false;
-    const currentResponseId = String(state.currentStreamResponseId || '').trim();
+    const currentResponseId = state.currentStreamResponseId;
     if (expectedResponseId && currentResponseId && currentResponseId !== expectedResponseId) return false;
     return true;
   };
