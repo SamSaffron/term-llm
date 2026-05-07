@@ -182,7 +182,11 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if assetName == "sw.js" {
-		serveEmbeddedUIBytes(w, r, serveui.RenderServiceWorker(), "text/javascript", "no-cache", true)
+		sw := serveui.RenderServiceWorker()
+		if s.webrtcHeadSnippet == "" {
+			sw = dropSWShellAssetContaining(sw, "app-webrtc.js")
+		}
+		serveEmbeddedUIBytes(w, r, sw, "text/javascript", "no-cache", true)
 		return
 	}
 	if assetName != "" && !strings.Contains(assetName, "..") {
@@ -210,6 +214,64 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 	serveEmbeddedUIBytes(w, r, s.renderIndexHTML(), "text/html; charset=utf-8", "no-cache, no-store, must-revalidate", false)
 }
 
+// dropScriptTagContaining removes the first <script> tag whose src attribute
+// contains needle from html. Used to omit app-webrtc.js when WebRTC is off.
+func dropScriptTagContaining(html []byte, needle string) []byte {
+	open := []byte(`<script src="`)
+	close := []byte(`</script>`)
+	for i := 0; i < len(html); {
+		j := bytes.Index(html[i:], open)
+		if j < 0 {
+			break
+		}
+		j += i
+		k := bytes.Index(html[j:], close)
+		if k < 0 {
+			break
+		}
+		end := j + k + len(close)
+		if bytes.Contains(html[j:end], []byte(needle)) {
+			// Also consume a trailing newline so we don't leave a blank line.
+			if end < len(html) && html[end] == '\n' {
+				end++
+			}
+			html = append(html[:j], html[end:]...)
+			return html
+		}
+		i = end
+	}
+	return html
+}
+
+// dropSWShellAssetContaining removes the first quoted entry in the service
+// worker's SHELL_ASSETS array whose value contains needle.
+func dropSWShellAssetContaining(sw []byte, needle string) []byte {
+	i := bytes.Index(sw, []byte(needle))
+	if i < 0 {
+		return sw
+	}
+	// Walk back to the opening quote of the entry.
+	start := i
+	for start > 0 && sw[start] != '\'' {
+		start--
+	}
+	// Walk forward to the closing quote + comma.
+	end := i + len(needle)
+	for end < len(sw) && sw[end] != '\'' {
+		end++
+	}
+	if end < len(sw) {
+		end++ // consume closing '
+	}
+	if end < len(sw) && sw[end] == ',' {
+		end++ // consume trailing comma
+	}
+	if end < len(sw) && sw[end] == '\n' {
+		end++ // consume trailing newline
+	}
+	return append(sw[:start], sw[end:]...)
+}
+
 func (s *serveServer) renderIndexHTML() []byte {
 	// Inject UI prefix so JS can prefix all API calls with it.
 	// Also inject VAPID public key for web push if configured.
@@ -231,7 +293,11 @@ func (s *serveServer) renderIndexHTML() []byte {
 		}
 	}
 	headSnippet += s.webrtcHeadSnippet
-	return serveui.RenderIndexHTML(s.cfg.basePath, headSnippet)
+	html := serveui.RenderIndexHTML(s.cfg.basePath, headSnippet)
+	if s.webrtcHeadSnippet == "" {
+		html = dropScriptTagContaining(html, "app-webrtc.js")
+	}
+	return html
 }
 
 func (s *serveServer) imageOutputDir() string {
