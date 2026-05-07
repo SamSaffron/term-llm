@@ -612,20 +612,10 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
         const entry = exactEntry
           || [...tools].reverse().find((tool) => tool.status !== 'done')
           || tools[tools.length - 1];
-        if (entry) {
-          const current = String(entry.arguments || '');
-          let currentIsCompleteJSON = false;
-          if (current) {
-            try {
-              JSON.parse(current);
-              currentIsCompleteJSON = true;
-            } catch {}
-          }
-          if (!currentIsCompleteJSON) {
-            entry.arguments = current + delta;
-            updateVisibleToolGroupNode(session, streamState.currentToolGroup);
-            scheduleStreamPersistence();
-          }
+        if (entry && !entry.argumentsFinalized) {
+          entry.arguments = (entry.arguments || '') + delta;
+          updateVisibleToolGroupNode(session, streamState.currentToolGroup);
+          scheduleStreamPersistence();
         }
       }
     }
@@ -641,6 +631,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
         : streamState.currentToolGroup.tools.find((tool) => tool.name === String(item.name || '') && tool.status === 'running');
       if (entry) {
         entry.arguments = String(item.arguments || entry.arguments || '');
+        entry.argumentsFinalized = true;
       }
       updateVisibleToolGroupNode(session, streamState.currentToolGroup);
       saveSessions();
