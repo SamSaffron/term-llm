@@ -123,15 +123,13 @@ func (r *responseRun) appendTextDeltaEvent(outputIndex int, delta string) error 
 func (r *responseRun) appendTextDeltaEventLocked(outputIndex int, delta string) error {
 	r.lastSequenceNumber++
 
-	deltaJSON, err := json.Marshal(delta)
-	if err != nil {
-		return err
-	}
-	data := make([]byte, 0, 64+len(deltaJSON))
+	// Build the JSON payload into a single allocation; appendJSONString avoids
+	// the extra []byte that json.Marshal(delta) would allocate.
+	data := make([]byte, 0, 80+len(delta))
 	data = append(data, `{"output_index":`...)
 	data = strconv.AppendInt(data, int64(outputIndex), 10)
 	data = append(data, `,"delta":`...)
-	data = append(data, deltaJSON...)
+	data = appendJSONString(data, delta)
 	data = append(data, `,"sequence_number":`...)
 	data = strconv.AppendInt(data, r.lastSequenceNumber, 10)
 	data = append(data, '}')
@@ -817,6 +815,40 @@ func usagePayload(usage llm.Usage) map[string]any {
 func stringValue(v any) string {
 	s, _ := v.(string)
 	return s
+}
+
+// appendJSONString appends a JSON-encoded string to dst without allocating a
+// separate []byte (unlike json.Marshal). Handles all characters that require
+// escaping in JSON strings; non-ASCII UTF-8 bytes pass through unchanged.
+func appendJSONString(dst []byte, s string) []byte {
+	const hexChars = "0123456789abcdef"
+	dst = append(dst, '"')
+	start := 0
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if b >= 0x20 && b != '"' && b != '\\' {
+			continue
+		}
+		dst = append(dst, s[start:i]...)
+		start = i + 1
+		switch b {
+		case '"':
+			dst = append(dst, '\\', '"')
+		case '\\':
+			dst = append(dst, '\\', '\\')
+		case '\n':
+			dst = append(dst, '\\', 'n')
+		case '\r':
+			dst = append(dst, '\\', 'r')
+		case '\t':
+			dst = append(dst, '\\', 't')
+		default:
+			dst = append(dst, '\\', 'u', '0', '0', hexChars[b>>4], hexChars[b&0xf])
+		}
+	}
+	dst = append(dst, s[start:]...)
+	dst = append(dst, '"')
+	return dst
 }
 
 func mapValue(v any) map[string]any {
