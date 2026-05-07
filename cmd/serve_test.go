@@ -9255,3 +9255,62 @@ func TestHandleSessions_GzipCompressed(t *testing.T) {
 		t.Fatalf("sessions len = %d, want 10", len(sessions))
 	}
 }
+
+func TestHandleSessionByID_MessagesGzipCompressed(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	sess := &session.Session{
+		ID:        "msg-sess-gzip",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	// Write enough messages to exceed the 512-byte gzip threshold.
+	for i := 0; i < 10; i++ {
+		msg := session.NewMessage("msg-sess-gzip", llm.Message{
+			Role:  llm.RoleUser,
+			Parts: []llm.Part{{Type: llm.PartText, Text: fmt.Sprintf("This is message number %d with enough content to pad the payload for gzip testing purposes.", i)}},
+		}, -1)
+		if err := store.AddMessage(ctx, "msg-sess-gzip", msg); err != nil {
+			t.Fatalf("add message %d: %v", i, err)
+		}
+	}
+
+	srv := &serveServer{store: store}
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/msg-sess-gzip/messages", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want gzip", got)
+	}
+
+	gr, err := gzip.NewReader(rr.Body)
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	defer gr.Close()
+	var decoded map[string]any
+	if err := json.NewDecoder(gr).Decode(&decoded); err != nil {
+		t.Fatalf("decode gzipped messages: %v", err)
+	}
+	msgs, ok := decoded["messages"].([]any)
+	if !ok {
+		t.Fatalf("messages key missing or wrong type")
+	}
+	if len(msgs) != 10 {
+		t.Fatalf("messages len = %d, want 10", len(msgs))
+	}
+}

@@ -881,7 +881,7 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		result = append(result, entry)
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"messages": result})
+	writeJSONGzip(w, r, http.StatusOK, map[string]any{"messages": result})
 }
 
 func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Request, sessionID string) {
