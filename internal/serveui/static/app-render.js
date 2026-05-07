@@ -817,7 +817,10 @@ const enqueueAssistantStreamUpdate = (message) => {
   streamState.latestContent = String(message.content || '');
   streamState.dirty = true;
   syncAssistantUsageNode(node, message);
-  syncTurnActionPanelForAssistant(message.id);
+  if (!streamState.turnPanelSynced) {
+    syncTurnActionPanelForAssistant(message.id);
+    if (String(message.content || '').trim()) streamState.turnPanelSynced = true;
+  }
   scheduleAssistantStreamRender(streamState);
 };
 
