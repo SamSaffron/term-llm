@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,7 +70,7 @@ func TestReadFileToolStartLineBeyondEOF(t *testing.T) {
 	}
 }
 
-func TestReadFileToolTruncatesWithTotalLines(t *testing.T) {
+func TestReadFileToolTruncatesWithoutScanningToEOF(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sample.txt")
 	if err := os.WriteFile(path, []byte("one\ntwo\nthree\nfour"), 0o644); err != nil {
 		t.Fatal(err)
@@ -83,9 +85,27 @@ func TestReadFileToolTruncatesWithTotalLines(t *testing.T) {
 		t.Fatalf("Execute returned error: %v", err)
 	}
 
-	want := "1: one\n2: two\n\n[Output truncated. Total lines: 4. Use start_line/end_line for pagination.]"
+	want := "1: one\n2: two\n\n[Output truncated. Use start_line/end_line for pagination.]"
 	if out.Content != want {
 		t.Fatalf("unexpected output:\nwant %q\n got %q", want, out.Content)
+	}
+}
+
+func TestStreamLineNumberedRangeStopsReadingAfterTruncation(t *testing.T) {
+	limits := DefaultOutputLimits()
+	limits.MaxLines = 2
+
+	got, err := streamLineNumberedRange(context.Background(), bufio.NewReader(&chunkReader{
+		chunks: []string{"one\n", "two\n", "three\n"},
+		err:    errors.New("read past truncation point"),
+	}), 1, 0, limits)
+	if err != nil {
+		t.Fatalf("streamLineNumberedRange returned error: %v", err)
+	}
+
+	want := "1: one\n2: two\n\n[Output truncated. Use start_line/end_line for pagination.]"
+	if got != want {
+		t.Fatalf("unexpected output:\nwant %q\n got %q", want, got)
 	}
 }
 
@@ -173,7 +193,7 @@ func legacyReadFileFormatting(content string, startLine, endLine int, limits Out
 	}
 
 	if truncated {
-		output += fmt.Sprintf("\n\n[Output truncated. Total lines: %d. Use start_line/end_line for pagination.]", totalLines)
+		output += "\n\n[Output truncated. Use start_line/end_line for pagination.]"
 	}
 
 	return output, nil
@@ -214,4 +234,23 @@ func BenchmarkReadFileToolStartRangeLargeFile(b *testing.B) {
 			b.Fatalf("range output missing final line: %q", out.Content)
 		}
 	}
+}
+
+type chunkReader struct {
+	chunks []string
+	index  int
+	err    error
+}
+
+func (r *chunkReader) Read(p []byte) (int, error) {
+	if r.index >= len(r.chunks) {
+		if r.err != nil {
+			return 0, r.err
+		}
+		return 0, io.EOF
+	}
+
+	n := copy(p, r.chunks[r.index])
+	r.index++
+	return n, nil
 }
