@@ -947,6 +947,8 @@ type serveServer struct {
 	sessionToResponse sync.Map                // session_id (string) → latest response_id (string)
 	responseRunsOnce  sync.Once
 	responseRuns      *responseRunManager
+	indexHTMLOnce     sync.Once
+	indexHTMLBytes    []byte
 	webrtcHeadSnippet string // injected into index.html <head>; empty when WebRTC disabled
 	runtimeFactory    func(ctx context.Context, providerName string, model string) (*serveRuntime, error)
 	widgetsMgr        *widgets.Manager

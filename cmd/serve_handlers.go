@@ -211,27 +211,30 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *serveServer) renderIndexHTML() []byte {
-	// Inject UI prefix so JS can prefix all API calls with it.
-	// Also inject VAPID public key for web push if configured.
-	var headSnippet string
-	escaped, _ := json.Marshal(s.cfg.basePath)
-	headSnippet += `<script>window.TERM_LLM_UI_PREFIX=` + string(escaped) + `;</script>`
-	versionEscaped, _ := json.Marshal(serveui.AssetVersion())
-	headSnippet += `<script>window.TERM_LLM_UI_VERSION=` + string(versionEscaped) + `;</script>`
-	sidebarSessions := s.cfg.sidebarSessions
-	if len(sidebarSessions) == 0 {
-		sidebarSessions = []string{"all"}
-	}
-	sidebarEscaped, _ := json.Marshal(sidebarSessions)
-	headSnippet += `<script>window.TERM_LLM_SIDEBAR_SESSIONS=` + string(sidebarEscaped) + `;</script>`
-	if s.cfgRef != nil {
-		if vapidKey := s.cfgRef.Serve.WebPush.VAPIDPublicKey; vapidKey != "" {
-			vapidEscaped, _ := json.Marshal(vapidKey)
-			headSnippet += `<script>window.TERM_LLM_VAPID_PUBLIC_KEY=` + string(vapidEscaped) + `;</script>`
+	s.indexHTMLOnce.Do(func() {
+		// Inject UI prefix so JS can prefix all API calls with it.
+		// Also inject VAPID public key for web push if configured.
+		var headSnippet string
+		escaped, _ := json.Marshal(s.cfg.basePath)
+		headSnippet += `<script>window.TERM_LLM_UI_PREFIX=` + string(escaped) + `;</script>`
+		versionEscaped, _ := json.Marshal(serveui.AssetVersion())
+		headSnippet += `<script>window.TERM_LLM_UI_VERSION=` + string(versionEscaped) + `;</script>`
+		sidebarSessions := s.cfg.sidebarSessions
+		if len(sidebarSessions) == 0 {
+			sidebarSessions = []string{"all"}
 		}
-	}
-	headSnippet += s.webrtcHeadSnippet
-	return serveui.RenderIndexHTML(s.cfg.basePath, headSnippet)
+		sidebarEscaped, _ := json.Marshal(sidebarSessions)
+		headSnippet += `<script>window.TERM_LLM_SIDEBAR_SESSIONS=` + string(sidebarEscaped) + `;</script>`
+		if s.cfgRef != nil {
+			if vapidKey := s.cfgRef.Serve.WebPush.VAPIDPublicKey; vapidKey != "" {
+				vapidEscaped, _ := json.Marshal(vapidKey)
+				headSnippet += `<script>window.TERM_LLM_VAPID_PUBLIC_KEY=` + string(vapidEscaped) + `;</script>`
+			}
+		}
+		headSnippet += s.webrtcHeadSnippet
+		s.indexHTMLBytes = serveui.RenderIndexHTML(s.cfg.basePath, headSnippet)
+	})
+	return s.indexHTMLBytes
 }
 
 func (s *serveServer) imageOutputDir() string {
