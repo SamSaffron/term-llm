@@ -19,6 +19,12 @@ var staticFiles embed.FS
 var (
 	assetVersionOnce sync.Once
 	assetVersion     string
+
+	manifestOnce  sync.Once
+	manifestBytes []byte
+
+	serviceWorkerOnce  sync.Once
+	serviceWorkerBytes []byte
 )
 
 // AssetVersion returns a stable hash of the embedded UI assets.
@@ -96,37 +102,43 @@ func RenderIndexHTML(basePath, headSnippet string) []byte {
 
 // RenderManifest returns the manifest with versioned icon URLs.
 func RenderManifest() []byte {
-	data, err := StaticAsset("manifest.webmanifest")
-	if err != nil {
-		return nil
-	}
-	return bytes.ReplaceAll(data, []byte(`"./icon-512.png"`), []byte(`"./`+versioned("icon-512.png")+`"`))
+	manifestOnce.Do(func() {
+		data, err := StaticAsset("manifest.webmanifest")
+		if err != nil {
+			return
+		}
+		manifestBytes = bytes.ReplaceAll(data, []byte(`"./icon-512.png"`), []byte(`"./`+versioned("icon-512.png")+`"`))
+	})
+	return manifestBytes
 }
 
 // RenderServiceWorker returns the service worker with a versioned cache key and shell asset URLs.
 func RenderServiceWorker() []byte {
-	data, err := StaticAsset("sw.js")
-	if err != nil {
-		return nil
-	}
-	replacements := []struct{ old, new string }{
-		{"term-llm-shell-v2", "term-llm-shell-" + AssetVersion()},
-		{"'./manifest.webmanifest'", "'./" + versioned("manifest.webmanifest") + "'"},
-		{"'./icon-512.png'", "'./" + versioned("icon-512.png") + "'"},
-		{"'./app.css'", "'./" + versioned("app.css") + "'"},
-		{"'./markdown-setup.js'", "'./" + versioned("markdown-setup.js") + "'"},
-		{"'./markdown-streaming.js'", "'./" + versioned("markdown-streaming.js") + "'"},
-		{"'./decoration.js'", "'./" + versioned("decoration.js") + "'"},
-		{"'./app-core.js'", "'./" + versioned("app-core.js") + "'"},
-		{"'./app-render.js'", "'./" + versioned("app-render.js") + "'"},
-		{"'./app-stream.js'", "'./" + versioned("app-stream.js") + "'"},
-		{"'./app-sessions.js'", "'./" + versioned("app-sessions.js") + "'"},
-		{"'./app-webrtc.js'", "'./" + versioned("app-webrtc.js") + "'"},
-	}
-	for _, replacement := range replacements {
-		data = bytes.ReplaceAll(data, []byte(replacement.old), []byte(replacement.new))
-	}
-	return data
+	serviceWorkerOnce.Do(func() {
+		data, err := StaticAsset("sw.js")
+		if err != nil {
+			return
+		}
+		replacements := []struct{ old, new string }{
+			{"term-llm-shell-v2", "term-llm-shell-" + AssetVersion()},
+			{"'./manifest.webmanifest'", "'./" + versioned("manifest.webmanifest") + "'"},
+			{"'./icon-512.png'", "'./" + versioned("icon-512.png") + "'"},
+			{"'./app.css'", "'./" + versioned("app.css") + "'"},
+			{"'./markdown-setup.js'", "'./" + versioned("markdown-setup.js") + "'"},
+			{"'./markdown-streaming.js'", "'./" + versioned("markdown-streaming.js") + "'"},
+			{"'./decoration.js'", "'./" + versioned("decoration.js") + "'"},
+			{"'./app-core.js'", "'./" + versioned("app-core.js") + "'"},
+			{"'./app-render.js'", "'./" + versioned("app-render.js") + "'"},
+			{"'./app-stream.js'", "'./" + versioned("app-stream.js") + "'"},
+			{"'./app-sessions.js'", "'./" + versioned("app-sessions.js") + "'"},
+			{"'./app-webrtc.js'", "'./" + versioned("app-webrtc.js") + "'"},
+		}
+		for _, replacement := range replacements {
+			data = bytes.ReplaceAll(data, []byte(replacement.old), []byte(replacement.new))
+		}
+		serviceWorkerBytes = data
+	})
+	return serviceWorkerBytes
 }
 
 // StaticAsset returns a copy of an embedded serve-ui asset.
