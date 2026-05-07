@@ -740,16 +740,24 @@ const performAssistantStreamRender = (streamState) => {
   const content = String(streamState.latestContent || '');
 
   try {
-    applyTextDirection(streamState.body, content);
+    // Skip the O(n) direction scan once the body direction is locked in.
+    // Direction is determined by the first strong bidi character and never
+    // changes as more text is appended, so one scan per element is enough.
+    const bodyDir = streamState.body.getAttribute('dir');
+    if (bodyDir !== 'ltr' && bodyDir !== 'rtl') {
+      applyTextDirection(streamState.body, content);
+    }
 
     if (content) {
-      const renderPlainTail = Boolean(
+      // When stable markdown has already been promoted (stableLength > 0) the
+      // plain-text path is unreachable — skip the O(n) eligibility scan.
+      const renderPlainTail = !(streamState.stableLength > 0) && Boolean(
         app.markdownStreaming
         && typeof app.markdownStreaming.canStreamPlainTextTail === 'function'
         && app.markdownStreaming.canStreamPlainTextTail(content)
       );
 
-      if (renderPlainTail && !(streamState.stableLength > 0)) {
+      if (renderPlainTail) {
         if (content !== streamState.lastTailContent) {
           renderAssistantTailPlainText(streamState, content);
           streamState.lastTailContent = content;
