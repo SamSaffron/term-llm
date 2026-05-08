@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -117,6 +118,74 @@ func TestExpandTemplate(t *testing.T) {
 				t.Errorf("ExpandTemplate() = %q, want %q", result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestNewTemplateContextForTemplate_SkipsGitWhenTemplateDoesNotUseGitFields(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("git PATH shim test requires a POSIX shell")
+	}
+
+	shimDir := t.TempDir()
+	logPath := filepath.Join(shimDir, "git.log")
+	gitPath := filepath.Join(shimDir, "git")
+	script := "#!/bin/sh\necho invoked >> \"" + logPath + "\"\nprintf 'feature/test\\n/tmp/fake-repo\\n'\n"
+	if err := os.WriteFile(gitPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write git shim: %v", err)
+	}
+
+	origPath := os.Getenv("PATH")
+	if err := os.Setenv("PATH", shimDir+string(os.PathListSeparator)+origPath); err != nil {
+		t.Fatalf("set PATH: %v", err)
+	}
+	defer os.Setenv("PATH", origPath)
+
+	ctx := NewTemplateContextForTemplate("You are a helpful assistant. Today's date is {{date}}.")
+	if ctx.GitBranch != "" {
+		t.Fatalf("GitBranch = %q, want empty", ctx.GitBranch)
+	}
+	if ctx.GitRepo != "" {
+		t.Fatalf("GitRepo = %q, want empty", ctx.GitRepo)
+	}
+	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
+		t.Fatalf("expected git shim to not be invoked, stat err = %v", err)
+	}
+}
+
+func TestNewTemplateContextForTemplate_CoalescesGitLookups(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("git PATH shim test requires a POSIX shell")
+	}
+
+	shimDir := t.TempDir()
+	logPath := filepath.Join(shimDir, "git.log")
+	gitPath := filepath.Join(shimDir, "git")
+	script := "#!/bin/sh\necho invoked >> \"" + logPath + "\"\nprintf 'feature/test\\n/tmp/fake-repo\\n'\n"
+	if err := os.WriteFile(gitPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write git shim: %v", err)
+	}
+
+	origPath := os.Getenv("PATH")
+	if err := os.Setenv("PATH", shimDir+string(os.PathListSeparator)+origPath); err != nil {
+		t.Fatalf("set PATH: %v", err)
+	}
+	defer os.Setenv("PATH", origPath)
+
+	ctx := NewTemplateContextForTemplate("{{git_repo}}/{{git_branch}}")
+	if ctx.GitBranch != "feature/test" {
+		t.Fatalf("GitBranch = %q, want %q", ctx.GitBranch, "feature/test")
+	}
+	if ctx.GitRepo != "fake-repo" {
+		t.Fatalf("GitRepo = %q, want %q", ctx.GitRepo, "fake-repo")
+	}
+
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read git log: %v", err)
+	}
+	invocations := strings.Count(strings.TrimSpace(string(logData)), "invoked")
+	if invocations != 1 {
+		t.Fatalf("git invoked %d times, want 1", invocations)
 	}
 }
 

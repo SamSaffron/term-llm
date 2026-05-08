@@ -63,20 +63,21 @@ type TemplateContext struct {
 // Deprecated: Use NewTemplateContextForTemplate instead to avoid expensive operations
 // when template variables are not used.
 func NewTemplateContext() TemplateContext {
-	return newTemplateContext(true, true, false)
+	return newTemplateContext(true, true, true, false)
 }
 
 // NewTemplateContextForTemplate creates a context, only computing expensive values
-// (like git_diff_stat, agents, handover_dir) if they are actually used in the template.
+// (like git fields, git_diff_stat, agents, handover_dir) if they are actually used in the template.
 func NewTemplateContextForTemplate(template string) TemplateContext {
+	needsGitInfo := strings.Contains(template, "{{git_branch}}") || strings.Contains(template, "{{git_repo}}")
 	needsGitDiffStat := strings.Contains(template, "{{git_diff_stat}}")
 	needsAgents := strings.Contains(template, "{{agents}}")
 	needsHandoverDir := strings.Contains(template, "{{handover_dir}}") || strings.Contains(template, "{{handover_path}}")
-	return newTemplateContext(needsGitDiffStat, needsAgents, needsHandoverDir)
+	return newTemplateContext(needsGitInfo, needsGitDiffStat, needsAgents, needsHandoverDir)
 }
 
 // newTemplateContext creates a context with optional expensive computations.
-func newTemplateContext(computeGitDiffStat, computeAgents, computeHandoverDir bool) TemplateContext {
+func newTemplateContext(computeGitInfo, computeGitDiffStat, computeAgents, computeHandoverDir bool) TemplateContext {
 	now := time.Now()
 
 	ctx := TemplateContext{
@@ -104,8 +105,9 @@ func newTemplateContext(computeGitDiffStat, computeAgents, computeHandoverDir bo
 	}
 
 	// Git info
-	ctx.GitBranch = getGitBranch()
-	ctx.GitRepo = getGitRepoName()
+	if computeGitInfo {
+		ctx.GitBranch, ctx.GitRepo = getGitInfo()
+	}
 
 	// Only compute git diff stat if needed (expensive: runs two git commands)
 	if computeGitDiffStat {
@@ -265,24 +267,22 @@ func ExpandTemplate(text string, ctx TemplateContext) string {
 	})
 }
 
-// getGitBranch returns the current git branch, or empty string if not in a git repo.
-func getGitBranch() string {
-	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+// getGitInfo returns the current git branch and repository name, or empty strings if not in a git repo.
+func getGitInfo() (string, string) {
+	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD", "--show-toplevel")
 	output, err := cmd.Output()
 	if err != nil {
-		return ""
+		return "", ""
 	}
-	return strings.TrimSpace(string(output))
-}
 
-// getGitRepoName returns the repository name, or empty string if not in a git repo.
-func getGitRepoName() string {
-	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
-	output, err := cmd.Output()
-	if err != nil {
-		return ""
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(lines) < 2 {
+		return "", ""
 	}
-	return filepath.Base(strings.TrimSpace(string(output)))
+
+	branch := strings.TrimSpace(lines[0])
+	repo := filepath.Base(strings.TrimSpace(lines[len(lines)-1]))
+	return branch, repo
 }
 
 // getGitDiffStat returns a summary of changed files and line counts.
