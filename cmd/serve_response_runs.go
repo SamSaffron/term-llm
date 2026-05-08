@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -812,13 +813,15 @@ func cloneJSONValue(value any) any {
 }
 
 func writeStoredResponseEvent(w io.Writer, ev responseRunEvent) error {
-	if _, err := fmt.Fprintf(w, "id: %d\n", ev.Sequence); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(w, "event: %s\n", ev.Event); err != nil {
-		return err
-	}
-	_, err := fmt.Fprintf(w, "data: %s\n\n", ev.Data)
+	b := make([]byte, 0, 4+20+1+7+len(ev.Event)+1+6+len(ev.Data)+2)
+	b = append(b, "id: "...)
+	b = strconv.AppendInt(b, ev.Sequence, 10)
+	b = append(b, "\nevent: "...)
+	b = append(b, ev.Event...)
+	b = append(b, "\ndata: "...)
+	b = append(b, ev.Data...)
+	b = append(b, "\n\n"...)
+	_, err := w.Write(b)
 	return err
 }
 
