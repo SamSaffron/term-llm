@@ -613,19 +613,6 @@ const applyServerSessionSummary = (target, serverSession) => {
   return target;
 };
 
-const findMatchingServerSessionStub = (serverSession) => {
-  if (!serverSession) return null;
-
-  const exact = state.sessions.find((item) => item.id === serverSession.id) || null;
-  if (exact) return exact;
-
-  const num = Number(serverSession.number || 0);
-  if (num <= 0) return null;
-
-  return state.sessions.find((item) => Number(item.number || 0) === num
-    && /^\d+$/.test(item.id)) || null;
-};
-
 const reconcileServerSessionIdentity = (session, serverSession) => {
   if (!session || !serverSession) return session;
 
@@ -664,8 +651,18 @@ const mergeServerSessions = async (options = {}) => {
     const data = await resp.json();
     if (!Array.isArray(data.sessions)) return;
 
+    const localById = new Map(state.sessions.map(s => [s.id, s]));
+    const localByNumber = new Map(
+      state.sessions
+        .filter(s => Number(s.number) > 0 && /^\d+$/.test(s.id))
+        .map(s => [Number(s.number), s])
+    );
+
     for (const serverSession of data.sessions) {
-      let local = findMatchingServerSessionStub(serverSession);
+      const sNum = Number(serverSession.number || 0);
+      let local = localById.get(serverSession.id) ||
+        (sNum > 0 ? localByNumber.get(sNum) : null) ||
+        null;
       if (local) {
         reconcileServerSessionIdentity(local, serverSession);
         applyServerSessionSummary(local, serverSession);
