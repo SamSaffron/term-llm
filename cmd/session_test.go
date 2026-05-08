@@ -205,6 +205,64 @@ func TestInjectSkillsMetadata_KeepsInsightsAtTail(t *testing.T) {
 	}
 }
 
+func TestInjectSkillsMetadata_SkipsLazyDiscoveryWhenAgentsProvidesSkills(t *testing.T) {
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(origWD) }()
+
+	tmp := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmp, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(tmp, ".skills", "demo"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, ".skills", "demo", "SKILL.md"), []byte(`---
+name: demo
+description: Demo skill
+---
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "AGENTS.md"), []byte("<available_skills>managed elsewhere</available_skills>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+
+	setup, err := skills.NewSetup(&config.SkillsConfig{
+		Enabled:               true,
+		AutoInvoke:            true,
+		MetadataBudgetTokens:  8000,
+		MaxVisibleSkills:      8,
+		IncludeProjectSkills:  true,
+		IncludeEcosystemPaths: false,
+	})
+	if err != nil {
+		t.Fatalf("NewSetup() error = %v", err)
+	}
+	if setup == nil {
+		t.Fatal("NewSetup() = nil, want non-nil")
+	}
+
+	got := InjectSkillsMetadata("Base prompt", setup)
+	if got != "Base prompt" {
+		t.Fatalf("InjectSkillsMetadata() = %q, want unchanged instructions", got)
+	}
+	if setup.XML != "" {
+		t.Fatalf("setup.XML = %q, want empty because AGENTS.md short-circuits metadata discovery", setup.XML)
+	}
+	if len(setup.Skills) != 0 {
+		t.Fatalf("len(setup.Skills) = %d, want 0 because metadata discovery should be skipped", len(setup.Skills))
+	}
+	if setup.TotalSkills != 0 {
+		t.Fatalf("setup.TotalSkills = %d, want 0 because metadata discovery should be skipped", setup.TotalSkills)
+	}
+}
+
 func TestResolveSettings_MissingIncludeIsLeftUnchanged(t *testing.T) {
 	origWD, err := os.Getwd()
 	if err != nil {
@@ -395,6 +453,9 @@ Fixture content.
 
 			if _, ok := engine.Tools().Get(tools.ActivateSkillToolName); !ok {
 				t.Fatalf("expected %q tool to be registered", tools.ActivateSkillToolName)
+			}
+			if _, ok := engine.Tools().Get(tools.SearchSkillsToolName); !ok {
+				t.Fatalf("expected %q tool to be registered", tools.SearchSkillsToolName)
 			}
 
 			instructions := InjectSkillsMetadata(settings.SystemPrompt, skillsSetup)

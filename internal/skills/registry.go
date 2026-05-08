@@ -306,6 +306,40 @@ func (r *Registry) Get(name string) (*Skill, error) {
 	return nil, fmt.Errorf("skill not found: %s", name)
 }
 
+// HasAvailableSkills returns true when at least one valid skill is discoverable.
+// It stops after the first valid metadata load instead of parsing the entire catalog.
+func (r *Registry) HasAvailableSkills() (bool, error) {
+	for _, sp := range r.searchPaths {
+		entries, err := os.ReadDir(sp.path)
+		if err != nil {
+			continue
+		}
+
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+
+			skillDir := filepath.Join(sp.path, entry.Name())
+			if !IsSkillDir(skillDir) {
+				continue
+			}
+
+			skill, err := LoadFromDir(skillDir, sp.source, false)
+			if err != nil {
+				continue
+			}
+			if err := skill.Validate(); err != nil {
+				continue
+			}
+
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
 // List returns all available skills (metadata only).
 // Each skill appears only once, with first-found taking precedence.
 func (r *Registry) List() ([]*Skill, error) {

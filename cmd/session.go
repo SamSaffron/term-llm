@@ -667,16 +667,19 @@ func RegisterSkillToolWithEngine(engine *llm.Engine, toolMgr *tools.ToolManager,
 	}
 	engine.Tools().Register(skillTool)
 
-	// Register search_skills tool when there are more skills than shown in the prompt
-	if skillsSetup.HasOverflow {
-		searchTool := tools.NewSearchSkillsTool(skillsSetup.Registry)
-		engine.Tools().Register(searchTool)
-	}
+	// Register search_skills whenever the skills system is available. This avoids
+	// eager startup discovery just to determine whether the prompt metadata will
+	// overflow, while still letting the model search the catalog on demand.
+	searchTool := tools.NewSearchSkillsTool(skillsSetup.Registry)
+	engine.Tools().Register(searchTool)
 }
 
 // InjectSkillsMetadata appends <available_skills> metadata to instructions when available.
 func InjectSkillsMetadata(instructions string, skillsSetup *skills.Setup) string {
-	if skillsSetup == nil || !skillsSetup.HasSkillsXML() || skills.CheckAgentsMdForSkills() {
+	if skillsSetup == nil || skills.CheckAgentsMdForSkills() {
+		return instructions
+	}
+	if !skillsSetup.HasSkillsXML() {
 		return instructions
 	}
 
