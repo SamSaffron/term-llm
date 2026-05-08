@@ -1,9 +1,11 @@
 package skills
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/samsaffron/term-llm/internal/config"
 )
@@ -11,10 +13,17 @@ import (
 // Setup holds the initialized skills system for a session.
 type Setup struct {
 	Registry    *Registry
-	XML         string   // Pregenerated <available_skills> XML
-	Skills      []*Skill // Skills included in metadata
-	TotalSkills int      // Total auto-invocable skills discovered
-	HasOverflow bool     // True when more skills exist than are shown
+	XML         string   // Pregenerated <available_skills> XML (populated lazily)
+	Skills      []*Skill // Skills included in metadata (populated lazily)
+	TotalSkills int      // Total auto-invocable skills discovered (populated lazily)
+	HasOverflow bool     // True when more skills exist than are shown (populated lazily)
+
+	alwaysEnabled        []string
+	metadataBudgetTokens int
+	maxVisibleSkills     int
+
+	metadataOnce sync.Once
+	metadataErr  error
 }
 
 // NewSetup initializes the skills system from config.
@@ -37,46 +46,69 @@ func NewSetup(cfg *config.SkillsConfig) (*Setup, error) {
 		return nil, err
 	}
 
-	// List all available skills
-	allSkills, err := registry.List()
+	hasAnySkills, err := registry.HasAnySkill()
 	if err != nil {
 		return nil, err
 	}
-
-	if len(allSkills) == 0 {
+	if !hasAnySkills {
 		return nil, nil
 	}
 
-	// Filter by never_auto for metadata injection (explicit only skills excluded)
-	var autoSkills []*Skill
-	for _, skill := range allSkills {
-		if !registry.IsNeverAuto(skill.Name) {
-			autoSkills = append(autoSkills, skill)
-		}
-	}
-
-	// Apply token budget and max count
-	skills := TruncateSkillsToTokenBudget(
-		autoSkills,
-		cfg.AlwaysEnabled,
-		cfg.MetadataBudgetTokens,
-		cfg.MaxVisibleSkills,
-	)
-
-	// Generate XML
-	xml := GenerateAvailableSkillsXML(skills)
-
-	totalAutoSkills := len(autoSkills)
-	if len(skills) < totalAutoSkills {
-		xml += GenerateSearchHint(len(skills), totalAutoSkills)
-	}
 	return &Setup{
-		Registry:    registry,
-		XML:         xml,
-		Skills:      skills,
-		TotalSkills: totalAutoSkills,
-		HasOverflow: len(skills) < totalAutoSkills,
+		Registry:             registry,
+		alwaysEnabled:        append([]string(nil), cfg.AlwaysEnabled...),
+		metadataBudgetTokens: cfg.MetadataBudgetTokens,
+		maxVisibleSkills:     cfg.MaxVisibleSkills,
 	}, nil
+}
+
+// EnsurePromptMetadata loads and caches prompt-facing skill metadata on demand.
+func (s *Setup) EnsurePromptMetadata() error {
+	if s == nil {
+		return nil
+	}
+	if s.XML != "" || s.Registry == nil {
+		return nil
+	}
+
+	s.metadataOnce.Do(func() {
+		allSkills, err := s.Registry.List()
+		if err != nil {
+			s.metadataErr = fmt.Errorf("list skills: %w", err)
+			return
+		}
+
+		// Filter by never_auto for metadata injection (explicit only skills excluded)
+		var autoSkills []*Skill
+		for _, skill := range allSkills {
+			if !s.Registry.IsNeverAuto(skill.Name) {
+				autoSkills = append(autoSkills, skill)
+			}
+		}
+
+		// Apply token budget and max count
+		skills := TruncateSkillsToTokenBudget(
+			autoSkills,
+			s.alwaysEnabled,
+			s.metadataBudgetTokens,
+			s.maxVisibleSkills,
+		)
+
+		// Generate XML
+		xml := GenerateAvailableSkillsXML(skills)
+
+		totalAutoSkills := len(autoSkills)
+		if len(skills) < totalAutoSkills {
+			xml += GenerateSearchHint(len(skills), totalAutoSkills)
+		}
+
+		s.XML = xml
+		s.Skills = skills
+		s.TotalSkills = totalAutoSkills
+		s.HasOverflow = len(skills) < totalAutoSkills
+	})
+
+	return s.metadataErr
 }
 
 // HasSkillsXML returns true if the setup has skill XML to inject.

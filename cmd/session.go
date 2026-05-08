@@ -676,7 +676,14 @@ func RegisterSkillToolWithEngine(engine *llm.Engine, toolMgr *tools.ToolManager,
 
 // InjectSkillsMetadata appends <available_skills> metadata to instructions when available.
 func InjectSkillsMetadata(instructions string, skillsSetup *skills.Setup) string {
-	if skillsSetup == nil || !skillsSetup.HasSkillsXML() || skills.CheckAgentsMdForSkills() {
+	if skillsSetup == nil || skills.CheckAgentsMdForSkills() {
+		return instructions
+	}
+	if err := skillsSetup.EnsurePromptMetadata(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: skills metadata generation failed: %v\n", err)
+		return instructions
+	}
+	if !skillsSetup.HasSkillsXML() {
 		return instructions
 	}
 
