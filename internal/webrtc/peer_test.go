@@ -136,6 +136,22 @@ func TestDispatchRequest_AuthTokenForwarded(t *testing.T) {
 	}
 }
 
+func TestDispatchRequest_StripsAcceptEncoding(t *testing.T) {
+	var gotAcceptEncoding string
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAcceptEncoding = r.Header.Get("Accept-Encoding")
+		w.WriteHeader(http.StatusOK)
+	})
+	p := newTestPeer("/ui", handler)
+	hdrs := map[string]string{"Accept-Encoding": "gzip", "Authorization": "Bearer secrettoken"}
+	raw := encodeRequest("req-encoding", "GET", "/ui/v1/models", hdrs, "")
+	collectFrames(p, raw)
+
+	if gotAcceptEncoding != "" {
+		t.Errorf("Accept-Encoding should not be forwarded over WebRTC: got %q", gotAcceptEncoding)
+	}
+}
+
 func TestDispatchRequest_AuthTokenMissing(t *testing.T) {
 	// Simulate an auth middleware that rejects requests without a token.
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"bytes"
+	"compress/gzip"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -331,6 +333,45 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
+const jsonGzipMinBytes = 512
+
+// writeJSONGzip writes payload as JSON and gzip-compresses the response when
+// the client advertises gzip support and the marshaled payload is larger than
+// jsonGzipMinBytes. Small responses stay uncompressed to avoid gzip overhead.
+func writeJSONGzip(w http.ResponseWriter, r *http.Request, status int, payload any) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSONGzipBody(w, r, status, body)
+}
+
+func writeJSONGzipBody(w http.ResponseWriter, r *http.Request, status int, body []byte) {
+	h := w.Header()
+	h.Set("Content-Type", "application/json")
+	uiAddVary(h, "Accept-Encoding")
+
+	if len(body) > jsonGzipMinBytes && uiAcceptsGzip(r.Header.Get("Accept-Encoding")) {
+		var buf bytes.Buffer
+		gz, err := gzip.NewWriterLevel(&buf, gzip.BestSpeed)
+		if err == nil {
+			_, err = gz.Write(body)
+			if closeErr := gz.Close(); err == nil {
+				err = closeErr
+			}
+		}
+		if err == nil {
+			body = buf.Bytes()
+			h.Set("Content-Encoding", "gzip")
+		}
+	}
+
+	h.Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
 // writeJSONConditional marshals payload, sets an ETag, and returns 304 Not
 // Modified when the client's If-None-Match header already holds the current
 // ETag. Cache-Control: no-cache tells browsers to always revalidate, so they
@@ -347,16 +388,16 @@ func writeJSONConditional(w http.ResponseWriter, r *http.Request, status int, pa
 		return
 	}
 	h := w.Header()
-	h.Set("Content-Type", "application/json")
 	h.Set("Cache-Control", "no-cache")
 	etag := jsonPayloadETag(body)
 	h.Set("ETag", etag)
 	if uiETagMatches(r.Header.Get("If-None-Match"), etag) {
+		h.Set("Content-Type", "application/json")
+		uiAddVary(h, "Accept-Encoding")
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
-	w.WriteHeader(status)
-	_, _ = w.Write(body)
+	writeJSONGzipBody(w, r, status, body)
 }
 
 func decodeJSONBody(r *http.Request, dst any) error {

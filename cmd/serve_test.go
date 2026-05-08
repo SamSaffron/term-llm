@@ -858,6 +858,91 @@ func TestUiAssetCacheReusesGzipAcrossRequests(t *testing.T) {
 	}
 }
 
+func TestWriteJSONGzip_CompressesLargeResponse(t *testing.T) {
+	payload := map[string]any{"data": strings.Repeat("abcdef", 200)}
+	req := httptest.NewRequest(http.MethodGet, "/v1/test", nil)
+	req.Header.Set("Accept-Encoding", "br, gzip")
+	rr := httptest.NewRecorder()
+
+	writeJSONGzip(rr, req, http.StatusOK, payload)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if got := rr.Header().Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("content-encoding = %q, want gzip", got)
+	}
+	if got := rr.Header().Get("Vary"); !strings.Contains(got, "Accept-Encoding") {
+		t.Fatalf("vary = %q, want Accept-Encoding", got)
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(rr.Body.Bytes()))
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	decompressed, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatalf("ReadAll gzip: %v", err)
+	}
+	if err := zr.Close(); err != nil {
+		t.Fatalf("Close gzip: %v", err)
+	}
+	var got map[string]string
+	if err := json.Unmarshal(decompressed, &got); err != nil {
+		t.Fatalf("decode decompressed JSON: %v", err)
+	}
+	if got["data"] != payload["data"] {
+		t.Fatalf("round trip mismatch")
+	}
+}
+
+func TestWriteJSONGzip_NoCompressionWithoutAcceptEncoding(t *testing.T) {
+	payload := map[string]any{"data": strings.Repeat("abcdef", 200)}
+	req := httptest.NewRequest(http.MethodGet, "/v1/test", nil)
+	rr := httptest.NewRecorder()
+
+	writeJSONGzip(rr, req, http.StatusOK, payload)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if got := rr.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("content-encoding = %q, want empty", got)
+	}
+	var got map[string]string
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode plain JSON: %v", err)
+	}
+	if got["data"] != payload["data"] {
+		t.Fatalf("round trip mismatch")
+	}
+}
+
+func TestWriteJSONGzip_SkipsCompressionForSmallPayload(t *testing.T) {
+	payload := map[string]any{"ok": true}
+	req := httptest.NewRequest(http.MethodGet, "/v1/test", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	rr := httptest.NewRecorder()
+
+	writeJSONGzip(rr, req, http.StatusOK, payload)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if got := rr.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("content-encoding = %q, want empty", got)
+	}
+	if rr.Body.Len() > jsonGzipMinBytes {
+		t.Fatalf("test payload is not small: %d", rr.Body.Len())
+	}
+	var got map[string]bool
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode plain JSON: %v", err)
+	}
+	if !got["ok"] {
+		t.Fatalf("round trip mismatch")
+	}
+}
+
 func TestServeServer_RenderIndexHTMLCached(t *testing.T) {
 	srv := &serveServer{cfg: serveServerConfig{ui: true, basePath: "/chat"}}
 	a := srv.renderIndexHTML()
@@ -3187,6 +3272,76 @@ func TestHandleSessions_ListsFromStore(t *testing.T) {
 	}
 	if body.Sessions[0].LastMessageAt != body.Sessions[0].CreatedAt {
 		t.Fatalf("last_message_at = %d, want %d (fallback to created_at when no messages)", body.Sessions[0].LastMessageAt, body.Sessions[0].CreatedAt)
+	}
+}
+
+func TestHandleSessions_GzipCompressed(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	now := time.Now()
+	for i := range 12 {
+		sess := &session.Session{
+			ID:          fmt.Sprintf("test-session-%02d", i),
+			Provider:    "mock",
+			ProviderKey: "mock",
+			Model:       "mock-model",
+			Mode:        session.ModeChat,
+			Summary:     "compressible session title " + strings.Repeat("abc", 20),
+			CreatedAt:   now.Add(time.Duration(i) * time.Second),
+			UpdatedAt:   now.Add(time.Duration(i) * time.Second),
+			Status:      session.StatusActive,
+		}
+		if err := store.Create(ctx, sess); err != nil {
+			t.Fatalf("Create session %d: %v", i, err)
+		}
+	}
+
+	srv := &serveServer{store: store}
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	rr := httptest.NewRecorder()
+	srv.handleSessions(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if got := rr.Header().Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("content-encoding = %q, want gzip", got)
+	}
+	if got := rr.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Fatalf("cache-control = %q, want no-cache", got)
+	}
+	if rr.Header().Get("ETag") == "" {
+		t.Fatalf("expected ETag")
+	}
+
+	zr, err := gzip.NewReader(bytes.NewReader(rr.Body.Bytes()))
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	decompressed, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatalf("ReadAll gzip: %v", err)
+	}
+	if err := zr.Close(); err != nil {
+		t.Fatalf("Close gzip: %v", err)
+	}
+	var body struct {
+		Sessions []struct {
+			ID string `json:"id"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(decompressed, &body); err != nil {
+		t.Fatalf("decode decompressed JSON: %v", err)
+	}
+	if len(body.Sessions) != 12 {
+		t.Fatalf("session count = %d, want 12", len(body.Sessions))
 	}
 }
 

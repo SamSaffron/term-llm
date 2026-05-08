@@ -614,6 +614,14 @@ func (p *peer) dispatchRequest(ctx context.Context, send func(string) error, raw
 		return
 	}
 	for k, v := range frame.Headers {
+		// The data-channel response format carries body chunks as UTF-8 JSON
+		// strings, not arbitrary bytes. Browser fetch would normally decode gzip
+		// transparently, but our synthetic Response would receive raw compressed
+		// bytes. Keep WebRTC responses uncompressed unless/until the transport is
+		// made byte-clean or the JS client explicitly decompresses.
+		if strings.EqualFold(k, "Accept-Encoding") {
+			continue
+		}
 		req.Header.Set(k, v)
 	}
 
