@@ -91,28 +91,33 @@ const parseSSEStream = async (stream, onEvent) => {
   let buffer = '';
 
   const processBlock = async (block) => {
-    if (!block.trim()) return true;
-
     let eventName = '';
-    const dataLines = [];
-    const lines = block.split('\n');
+    let data = '';
+    let start = 0;
+    const len = block.length;
 
-    for (const line of lines) {
-      if (line.startsWith('event:')) {
-        eventName = line.slice(6).trim();
-      } else if (line.startsWith('data:')) {
-        dataLines.push(line.slice(5).trimStart());
+    while (start < len) {
+      let end = block.indexOf('\n', start);
+      if (end === -1) end = len;
+      const c = block.charCodeAt(start);
+      if (c === 101 /* 'e' */ && block.startsWith('event:', start)) {
+        eventName = block.slice(start + 6, end).trim();
+      } else if (c === 100 /* 'd' */ && block.startsWith('data:', start)) {
+        const chunk = block.slice(start + 5, end).trimStart();
+        data = data ? data + '\n' + chunk : chunk;
       }
+      start = end + 1;
     }
 
-    return onEvent(eventName, dataLines.join('\n'));
+    return onEvent(eventName, data);
   };
 
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
 
-    buffer += decoder.decode(value, { stream: true }).replace(/\r/g, '');
+    const decoded = decoder.decode(value, { stream: true });
+    buffer += decoded.includes('\r') ? decoded.replace(/\r/g, '') : decoded;
     state.lastEventTime = Date.now();
 
     let idx;
