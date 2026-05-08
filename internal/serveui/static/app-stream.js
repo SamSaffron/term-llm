@@ -594,7 +594,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       }
 
       streamState.currentAssistantMessage = null;
-      saveSessions();
+      scheduleStreamPersistence();
       scrollVisibleStreamToBottom(session);
     }
     return { terminal: false };
@@ -643,7 +643,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
         entry.arguments = String(item.arguments || entry.arguments || '');
       }
       updateVisibleToolGroupNode(session, streamState.currentToolGroup);
-      saveSessions();
+      scheduleStreamPersistence();
     }
     return { terminal: false };
   }
