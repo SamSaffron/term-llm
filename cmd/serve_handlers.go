@@ -209,7 +209,7 @@ func (s *serveServer) handleUI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if assetName == "sw.js" {
-		serveEmbeddedUIBytes(w, r, serveui.RenderServiceWorker(), "text/javascript", "no-cache", true)
+		serveEmbeddedUIBytes(w, r, serveui.RenderServiceWorker(serveui.RenderOptions{WebRTC: s.webrtcEnabled}), "text/javascript", "no-cache", true)
 		return
 	}
 	if assetName != "" && !strings.Contains(assetName, "..") {
@@ -265,7 +265,7 @@ func (s *serveServer) buildIndexHTML() []byte {
 		}
 	}
 	headSnippet += s.webrtcHeadSnippet
-	return serveui.RenderIndexHTML(s.cfg.basePath, headSnippet)
+	return serveui.RenderIndexHTML(s.cfg.basePath, headSnippet, serveui.RenderOptions{WebRTC: s.webrtcEnabled})
 }
 
 // prewarmUIAssetCache pre-compresses the service-worker shell assets in a
@@ -275,18 +275,22 @@ func (s *serveServer) prewarmUIAssetCache() {
 	go func() {
 		// Rendered assets: build + cache in one shot.
 		_ = s.renderIndexHTML()
-		uiGetOrBuildEntry(serveui.RenderServiceWorker(), true)
+		uiGetOrBuildEntry(serveui.RenderServiceWorker(serveui.RenderOptions{WebRTC: s.webrtcEnabled}), true)
 		uiGetOrBuildEntry(serveui.RenderManifest(), true)
 
 		// Static shell assets (SW precache list minus the PNG icon).
-		for _, name := range []string{
+		assetNames := []string{
 			"app.css",
 			"app-core.js", "app-render.js", "app-stream.js",
-			"app-sessions.js", "app-webrtc.js",
+			"app-sessions.js",
 			"markdown-setup.js", "markdown-streaming.js", "decoration.js",
 			"vendor/marked/marked.umd.min.js",
 			"vendor/dompurify/purify.min.js",
-		} {
+		}
+		if s.webrtcEnabled {
+			assetNames = append(assetNames, "app-webrtc.js")
+		}
+		for _, name := range assetNames {
 			if data, err := serveui.StaticAsset(name); err == nil {
 				uiGetOrBuildEntry(data, true)
 			}

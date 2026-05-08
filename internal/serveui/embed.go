@@ -62,8 +62,14 @@ func IndexHTML() []byte {
 	return data
 }
 
-// RenderIndexHTML returns the index page with versioned first-party assets and caller-supplied head markup.
-func RenderIndexHTML(basePath, headSnippet string) []byte {
+// RenderOptions controls optional UI features included in rendered UI assets.
+type RenderOptions struct {
+	WebRTC bool
+}
+
+// RenderIndexHTML returns the index page with versioned first-party assets,
+// caller-supplied head markup, and optional feature scripts.
+func RenderIndexHTML(basePath, headSnippet string, opts RenderOptions) []byte {
 	html := IndexHTML()
 	if len(html) == 0 {
 		return nil
@@ -80,11 +86,16 @@ func RenderIndexHTML(basePath, headSnippet string) []byte {
 		{`src="app-render.js"`, `src="` + versioned("app-render.js") + `"`},
 		{`src="app-stream.js"`, `src="` + versioned("app-stream.js") + `"`},
 		{`src="app-sessions.js"`, `src="` + versioned("app-sessions.js") + `"`},
-		{`src="app-webrtc.js"`, `src="` + versioned("app-webrtc.js") + `"`},
 	}
 	for _, replacement := range replacements {
 		html = bytes.ReplaceAll(html, []byte(replacement.old), []byte(replacement.new))
 	}
+
+	webrtcScript := ""
+	if opts.WebRTC {
+		webrtcScript = `<script src="` + versioned("app-webrtc.js") + `"></script>`
+	}
+	html = bytes.Replace(html, []byte(`<!-- term-llm:webrtc-script -->`), []byte(webrtcScript), 1)
 
 	baseTag := `<base href="` + htmlpkg.EscapeString(basePath) + `/">`
 	html = bytes.Replace(html, []byte(`<meta charset="utf-8">`), []byte(`<meta charset="utf-8">`+"\n  "+baseTag), 1)
@@ -103,8 +114,9 @@ func RenderManifest() []byte {
 	return bytes.ReplaceAll(data, []byte(`"./icon-512.png"`), []byte(`"./`+versioned("icon-512.png")+`"`))
 }
 
-// RenderServiceWorker returns the service worker with a versioned cache key and shell asset URLs.
-func RenderServiceWorker() []byte {
+// RenderServiceWorker returns the service worker with a versioned cache key,
+// shell asset URLs, and optional feature assets.
+func RenderServiceWorker(opts RenderOptions) []byte {
 	data, err := StaticAsset("sw.js")
 	if err != nil {
 		return nil
@@ -121,11 +133,16 @@ func RenderServiceWorker() []byte {
 		{"'./app-render.js'", "'./" + versioned("app-render.js") + "'"},
 		{"'./app-stream.js'", "'./" + versioned("app-stream.js") + "'"},
 		{"'./app-sessions.js'", "'./" + versioned("app-sessions.js") + "'"},
-		{"'./app-webrtc.js'", "'./" + versioned("app-webrtc.js") + "'"},
 	}
 	for _, replacement := range replacements {
 		data = bytes.ReplaceAll(data, []byte(replacement.old), []byte(replacement.new))
 	}
+
+	webrtcAsset := ""
+	if opts.WebRTC {
+		webrtcAsset = "'./" + versioned("app-webrtc.js") + "',"
+	}
+	data = bytes.Replace(data, []byte(`// term-llm:webrtc-shell-asset`), []byte(webrtcAsset), 1)
 	return data
 }
 

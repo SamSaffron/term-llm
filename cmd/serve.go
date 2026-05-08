@@ -571,6 +571,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 
 		if hasWeb {
+			s.webrtcEnabled = serveWebRTC
 			s.webrtcHeadSnippet = webrtcHTMLSnippet()
 			runWebRTCPeer(ctx, s)
 		}
@@ -947,6 +948,7 @@ type serveServer struct {
 	sessionToResponse sync.Map                // session_id (string) → latest response_id (string)
 	responseRunsOnce  sync.Once
 	responseRuns      *responseRunManager
+	webrtcEnabled     bool
 	webrtcHeadSnippet string // injected into index.html <head>; empty when WebRTC disabled
 	runtimeFactory    func(ctx context.Context, providerName string, model string) (*serveRuntime, error)
 	widgetsMgr        *widgets.Manager

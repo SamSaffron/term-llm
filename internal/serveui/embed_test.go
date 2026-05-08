@@ -504,3 +504,39 @@ func TestStaticAssetsSupportIncrementalMarkdownStreaming(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderIndexHTMLWebRTCOption(t *testing.T) {
+	disabled := string(RenderIndexHTML("/ui", "", RenderOptions{}))
+	if strings.Contains(disabled, "app-webrtc.js") {
+		t.Fatal("disabled WebRTC option should omit app-webrtc.js")
+	}
+	if strings.Contains(disabled, "term-llm:webrtc-script") {
+		t.Fatal("disabled WebRTC option should remove the WebRTC script placeholder")
+	}
+
+	enabled := string(RenderIndexHTML("/ui", "", RenderOptions{WebRTC: true}))
+	if !strings.Contains(enabled, "app-webrtc.js?v=") {
+		t.Fatal("enabled WebRTC option should include versioned app-webrtc.js")
+	}
+	if strings.Contains(enabled, "term-llm:webrtc-script") {
+		t.Fatal("enabled WebRTC option should remove the WebRTC script placeholder")
+	}
+}
+
+func TestRenderServiceWorkerWebRTCOption(t *testing.T) {
+	disabled := string(RenderServiceWorker(RenderOptions{}))
+	if strings.Contains(disabled, "app-webrtc.js") {
+		t.Fatal("disabled WebRTC option should omit app-webrtc.js from service worker")
+	}
+	if strings.Contains(disabled, "term-llm:webrtc-shell-asset") {
+		t.Fatal("disabled WebRTC option should remove the WebRTC shell asset placeholder")
+	}
+
+	enabled := string(RenderServiceWorker(RenderOptions{WebRTC: true}))
+	if !strings.Contains(enabled, "app-webrtc.js?v=") {
+		t.Fatal("enabled WebRTC option should include versioned app-webrtc.js")
+	}
+	if strings.Contains(enabled, "term-llm:webrtc-shell-asset") {
+		t.Fatal("enabled WebRTC option should remove the WebRTC shell asset placeholder")
+	}
+}
