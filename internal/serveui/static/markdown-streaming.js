@@ -32,7 +32,9 @@
       rendering: false,
       rafId: 0,
       timerId: 0,
-      lastRenderAt: 0
+      lastRenderAt: 0,
+      plainTextScanSource: '',
+      plainTextEligible: true
     };
   }
 
@@ -253,6 +255,36 @@
     return true;
   }
 
+  function appendedTextIsPlainSafe(text) {
+    // If a streamed delta contains only ordinary prose characters, it cannot
+    // introduce markdown/math syntax by itself or complete syntax that began
+    // in a previously plain prefix. Newlines and punctuation with markdown
+    // meaning fall back to the full scanner.
+    return !/[`\[\]()!*_~<\\$|#>\r\n]/.test(String(text || ''));
+  }
+
+  function canStreamPlainTextTailIncremental(streamState, text) {
+    const value = String(text || '');
+    if (!streamState) return canStreamPlainTextTail(value);
+
+    const previous = String(streamState.plainTextScanSource || '');
+    if (value.startsWith(previous)) {
+      if (streamState.plainTextEligible === false) {
+        streamState.plainTextScanSource = value;
+        return false;
+      }
+      if (streamState.plainTextEligible === true && appendedTextIsPlainSafe(value.slice(previous.length))) {
+        streamState.plainTextScanSource = value;
+        return true;
+      }
+    }
+
+    const eligible = canStreamPlainTextTail(value);
+    streamState.plainTextScanSource = value;
+    streamState.plainTextEligible = eligible;
+    return eligible;
+  }
+
   function containsListOrTableSyntax(text) {
     const value = String(text || '');
     return /^\s{0,3}(?:[-+*]\s|\d+[.)]\s)/m.test(value)
@@ -303,6 +335,8 @@
     areInlineMarkersBalanced,
     areMathDelimitersBalanced,
     findStableMarkdownBoundary,
-    canStreamPlainTextTail
+    canStreamPlainTextTail,
+    canStreamPlainTextTailIncremental,
+    appendedTextIsPlainSafe
   };
 });

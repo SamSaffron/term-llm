@@ -326,6 +326,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 	sessionID = ensureRequestSessionID(sessionID, resuming)
 	settings.SessionID = sessionID
+	settings.SystemPrompt = InjectSkillsMetadata(settings.SystemPrompt, skillsSetup)
 
 	// Initialize local tools if we have any
 	toolMgr, err := settings.SetupToolManager(cfg, engine)
@@ -440,8 +441,6 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	// Use system prompt from resolved settings (already expanded)
 	instructions := settings.SystemPrompt
-
-	instructions = InjectSkillsMetadata(instructions, skillsSetup)
 
 	// Build messages in correct order: system -> history -> new user
 	// Providers expect system message first

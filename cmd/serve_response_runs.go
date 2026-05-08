@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -210,25 +211,34 @@ func (r *responseRun) storeEventLocked(stored responseRunEvent, terminal bool) {
 	}
 }
 
-type textDeltaPayload struct {
-	OutputIndex    int    `json:"output_index"`
-	Delta          string `json:"delta"`
-	SequenceNumber int64  `json:"sequence_number"`
+func encodeTextDeltaPayload(outputIndex int, delta string, sequenceNumber int64) ([]byte, error) {
+	data := make([]byte, 0, 80+len(delta))
+	data = append(data, `{"output_index":`...)
+	data = strconv.AppendInt(data, int64(outputIndex), 10)
+	data = append(data, `,"delta":`...)
+	if utf8.ValidString(delta) {
+		data = appendJSONString(data, delta)
+	} else {
+		encoded, err := json.Marshal(delta)
+		if err != nil {
+			return nil, err
+		}
+		data = append(data, encoded...)
+	}
+	data = append(data, `,"sequence_number":`...)
+	data = strconv.AppendInt(data, sequenceNumber, 10)
+	data = append(data, '}')
+	return data, nil
 }
 
-// appendTextDeltaEvent is a typed fast-path for response.output_text.delta.
-// Using a struct avoids the map-key sort that json.Marshal performs on
-// map[string]any, which fires on every streamed text token.
+// appendTextDeltaEvent is a fast path for response.output_text.delta that avoids
+// allocating a map[string]any or a typed payload on every streamed token.
 func (r *responseRun) appendTextDeltaEvent(outputIndex int, delta string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.lastSequenceNumber++
 
-	data, err := json.Marshal(textDeltaPayload{
-		OutputIndex:    outputIndex,
-		Delta:          delta,
-		SequenceNumber: r.lastSequenceNumber,
-	})
+	data, err := encodeTextDeltaPayload(outputIndex, delta, r.lastSequenceNumber)
 	if err != nil {
 		return err
 	}
@@ -800,6 +810,40 @@ func usagePayload(usage llm.Usage) map[string]any {
 func stringValue(v any) string {
 	s, _ := v.(string)
 	return s
+}
+
+// appendJSONString appends a JSON-encoded string to dst without allocating a
+// separate []byte (unlike json.Marshal). Handles all characters that require
+// escaping in JSON strings; non-ASCII UTF-8 bytes pass through unchanged.
+func appendJSONString(dst []byte, s string) []byte {
+	const hexChars = "0123456789abcdef"
+	dst = append(dst, '"')
+	start := 0
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if b >= 0x20 && b != '"' && b != '\\' {
+			continue
+		}
+		dst = append(dst, s[start:i]...)
+		start = i + 1
+		switch b {
+		case '"':
+			dst = append(dst, '\\', '"')
+		case '\\':
+			dst = append(dst, '\\', '\\')
+		case '\n':
+			dst = append(dst, '\\', 'n')
+		case '\r':
+			dst = append(dst, '\\', 'r')
+		case '\t':
+			dst = append(dst, '\\', 't')
+		default:
+			dst = append(dst, '\\', 'u', '0', '0', hexChars[b>>4], hexChars[b&0xf])
+		}
+	}
+	dst = append(dst, s[start:]...)
+	dst = append(dst, '"')
+	return dst
 }
 
 func mapValue(v any) map[string]any {

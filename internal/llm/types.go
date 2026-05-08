@@ -124,6 +124,10 @@ type Part struct {
 }
 
 // ToolSpec describes a callable tool.
+//
+// Tool specs are treated as immutable after registration. In particular, Schema
+// maps returned from registries may be shared across calls; provider code that
+// needs to rewrite a schema must copy it first.
 type ToolSpec struct {
 	Name        string
 	Description string

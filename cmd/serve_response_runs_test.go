@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"sync"
@@ -11,6 +12,25 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/llm"
 )
+
+func TestEncodeTextDeltaPayloadMatchesJSONMarshalForInvalidUTF8(t *testing.T) {
+	delta := string([]byte{'o', 'k', 0xff, '!'})
+	data, err := encodeTextDeltaPayload(2, delta, 7)
+	if err != nil {
+		t.Fatalf("encodeTextDeltaPayload() error = %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("encoded payload is invalid JSON: %v; data=%q", err, data)
+	}
+	if got["delta"] != "ok�!" {
+		t.Fatalf("delta = %q, want replacement-char-normalized string", got["delta"])
+	}
+	if got["output_index"] != float64(2) || got["sequence_number"] != float64(7) {
+		t.Fatalf("payload = %#v, want output_index=2 sequence_number=7", got)
+	}
+}
 
 func TestResponseRunSubscriberSurvivesUpToBufferLimit(t *testing.T) {
 	run := newResponseRun("resp_test1", "sess_test", "", "mock", time.Now().Unix(), func() {})

@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,12 +13,15 @@ import (
 // Setup holds the initialized skills system for a session.
 type Setup struct {
 	Registry    *Registry
-	XML         string   // Pregenerated <available_skills> XML
-	Skills      []*Skill // Skills included in metadata
-	TotalSkills int      // Total auto-invocable skills discovered
-	HasOverflow bool     // True when more skills exist than are shown
+	XML         string   // Pregenerated <available_skills> XML (populated lazily)
+	Skills      []*Skill // Skills included in metadata (populated lazily)
+	TotalSkills int      // Total auto-invocable skills discovered (populated lazily)
+	HasOverflow bool     // True when more skills exist than are shown (populated lazily)
 
-	cfg          config.SkillsConfig
+	alwaysEnabled        []string
+	metadataBudgetTokens int
+	maxVisibleSkills     int
+
 	metadataOnce sync.Once
 	metadataErr  error
 }
@@ -42,29 +46,35 @@ func NewSetup(cfg *config.SkillsConfig) (*Setup, error) {
 		return nil, err
 	}
 
-	hasSkills, err := registry.HasAvailableSkills()
+	hasAnySkills, err := registry.HasAnySkill()
 	if err != nil {
 		return nil, err
 	}
-	if !hasSkills {
+	if !hasAnySkills {
 		return nil, nil
 	}
 
 	return &Setup{
-		Registry: registry,
-		cfg:      *cfg,
+		Registry:             registry,
+		alwaysEnabled:        append([]string(nil), cfg.AlwaysEnabled...),
+		metadataBudgetTokens: cfg.MetadataBudgetTokens,
+		maxVisibleSkills:     cfg.MaxVisibleSkills,
 	}, nil
 }
 
-func (s *Setup) ensureMetadata() error {
+// EnsurePromptMetadata loads and caches prompt-facing skill metadata on demand.
+func (s *Setup) EnsurePromptMetadata() error {
 	if s == nil {
+		return nil
+	}
+	if s.XML != "" || s.Registry == nil {
 		return nil
 	}
 
 	s.metadataOnce.Do(func() {
 		allSkills, err := s.Registry.List()
 		if err != nil {
-			s.metadataErr = err
+			s.metadataErr = fmt.Errorf("list skills: %w", err)
 			return
 		}
 
@@ -79,9 +89,9 @@ func (s *Setup) ensureMetadata() error {
 		// Apply token budget and max count
 		skills := TruncateSkillsToTokenBudget(
 			autoSkills,
-			s.cfg.AlwaysEnabled,
-			s.cfg.MetadataBudgetTokens,
-			s.cfg.MaxVisibleSkills,
+			s.alwaysEnabled,
+			s.metadataBudgetTokens,
+			s.maxVisibleSkills,
 		)
 
 		// Generate XML
@@ -106,13 +116,7 @@ func (s *Setup) HasSkillsXML() bool {
 	if s == nil {
 		return false
 	}
-	if s.XML != "" {
-		return true
-	}
-	if s.Registry == nil {
-		return false
-	}
-	return s.ensureMetadata() == nil && s.XML != ""
+	return s.XML != ""
 }
 
 // CheckAgentsMdForSkills checks if AGENTS.md contains skill system markup.
@@ -123,22 +127,24 @@ func CheckAgentsMdForSkills() bool {
 		return false
 	}
 
-	// Find repo root
+	// Bound the search to the repository root. Walking past the repo can pick up
+	// unrelated parent AGENTS.md files and incorrectly suppress skill metadata.
 	repoRoot := findRepoRoot(cwd)
 	if repoRoot == "" {
 		repoRoot = cwd
 	}
 
-	// Check AGENTS.md and AGENTS.override.md
 	for _, name := range []string{"AGENTS.md", "AGENTS.override.md"} {
 		path := filepath.Join(repoRoot, name)
 		content, err := os.ReadFile(path)
 		if err != nil {
 			continue
 		}
-		contentStr := string(content)
-		if strings.Contains(contentStr, "<skills_system") ||
-			strings.Contains(contentStr, "<available_skills>") {
+		text := string(content)
+		if strings.Contains(text, "<skills_system") ||
+			strings.Contains(text, "<available_skills>") ||
+			strings.Contains(text, "activate_skill") ||
+			strings.Contains(text, "<skill>") {
 			return true
 		}
 	}

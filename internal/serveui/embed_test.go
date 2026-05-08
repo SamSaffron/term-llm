@@ -540,3 +540,43 @@ func TestRenderServiceWorkerWebRTCOption(t *testing.T) {
 		t.Fatal("enabled WebRTC option should remove the WebRTC shell asset placeholder")
 	}
 }
+
+func TestRenderIndexHTML_PreloadHintsMatchScriptSrc(t *testing.T) {
+	html := string(RenderIndexHTML("/", "", RenderOptions{}))
+	if html == "" {
+		t.Fatal("RenderIndexHTML returned empty")
+	}
+
+	scripts := []string{"app-core.js", "app-render.js", "app-stream.js", "app-sessions.js"}
+	for _, name := range scripts {
+		// Find the versioned URL used in the <script src="..."> tag.
+		srcMarker := `src="`
+		idx := strings.Index(html, srcMarker+name)
+		if idx < 0 {
+			t.Fatalf("no <script src=%q> found in rendered HTML", name)
+		}
+		start := idx + len(srcMarker)
+		end := strings.Index(html[start:], `"`)
+		if end < 0 {
+			t.Fatalf("unterminated src attribute for %q", name)
+		}
+		scriptURL := html[start : start+end]
+
+		// Find the preload href for the same file.
+		hrefMarker := `href="`
+		pidx := strings.Index(html, hrefMarker+name)
+		if pidx < 0 {
+			t.Fatalf("no preload href=%q found in rendered HTML", name)
+		}
+		pstart := pidx + len(hrefMarker)
+		pend := strings.Index(html[pstart:], `"`)
+		if pend < 0 {
+			t.Fatalf("unterminated href attribute for preload %q", name)
+		}
+		preloadURL := html[pstart : pstart+pend]
+
+		if scriptURL != preloadURL {
+			t.Fatalf("%s: script src=%q but preload href=%q (URLs must match for browser to reuse fetch)", name, scriptURL, preloadURL)
+		}
+	}
+}

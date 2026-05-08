@@ -679,6 +679,10 @@ func InjectSkillsMetadata(instructions string, skillsSetup *skills.Setup) string
 	if skillsSetup == nil || skills.CheckAgentsMdForSkills() {
 		return instructions
 	}
+	if err := skillsSetup.EnsurePromptMetadata(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: skills metadata generation failed: %v\n", err)
+		return instructions
+	}
 	if !skillsSetup.HasSkillsXML() {
 		return instructions
 	}

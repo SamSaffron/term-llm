@@ -382,10 +382,7 @@ const updateResponseSequence = (session, payload) => {
 // Visible-session render guards: stream events may arrive after the user has
 // switched discussions, so session data can update while DOM work is limited to
 // the conversation currently mounted in elements.messages.
-const isSessionVisible = (session) => {
-  const sessionId = String(session?.id || '').trim();
-  return Boolean(sessionId && !state.draftSessionActive && state.activeSessionId === sessionId);
-};
+const isSessionVisible = (session) => !state.draftSessionActive && state.activeSessionId === session.id;
 
 const appendStreamMessageNode = (session, message, createNode = createMessageNode) => {
   if (!isSessionVisible(session)) return null;

@@ -165,7 +165,10 @@ const getOrCreateGroupSection = (label) => {
   return section;
 };
 
+const resolveSidebarSession = (sessionId) => state.sessions.find((s) => s.id === sessionId) || null;
+
 const buildCachedSessionRow = (session) => {
+  const sessionId = session.id;
   const row = document.createElement('div');
   row.className = 'session-row';
   row.dataset.sessionId = session.id;
@@ -193,7 +196,7 @@ const buildCachedSessionRow = (session) => {
   btn.appendChild(titleEl);
   btn.appendChild(metaEl);
   btn.addEventListener('click', async () => {
-    await app.switchToSession(session.id);
+    await app.switchToSession(sessionId);
   });
 
   const menuWrap = document.createElement('div');
@@ -220,7 +223,8 @@ const buildCachedSessionRow = (session) => {
     event.preventDefault();
     event.stopPropagation();
     closeAllSessionMenus();
-    await app.promptRenameSession(session);
+    const current = resolveSidebarSession(sessionId);
+    if (current) await app.promptRenameSession(current);
   });
 
   const pinBtn = createSessionMenuButton(
@@ -230,7 +234,8 @@ const buildCachedSessionRow = (session) => {
       event.preventDefault();
       event.stopPropagation();
       closeAllSessionMenus();
-      await app.setSessionPinned(session, !session.pinned);
+      const current = resolveSidebarSession(sessionId);
+      if (current) await app.setSessionPinned(current, !current.pinned);
     }
   );
   const pinIconEl = pinBtn.querySelector('.session-menu-icon');
@@ -243,7 +248,8 @@ const buildCachedSessionRow = (session) => {
       event.preventDefault();
       event.stopPropagation();
       closeAllSessionMenus();
-      await app.setSessionArchived(session, !session.archived);
+      const current = resolveSidebarSession(sessionId);
+      if (current) await app.setSessionArchived(current, !current.archived);
     }
   );
   const archiveIconEl = archiveBtn.querySelector('.session-menu-icon');
@@ -709,7 +715,9 @@ const getOrCreateAssistantStreamState = (message, body) => {
       rendering: false,
       rafId: 0,
       timerId: 0,
-      lastRenderAt: 0
+      lastRenderAt: 0,
+      plainTextScanSource: '',
+      plainTextEligible: true
     };
   const containers = createAssistantStreamContainers(body);
   streamState.messageId = message.id;
@@ -907,8 +915,12 @@ const performAssistantStreamRender = (streamState) => {
       // Otherwise use the incremental cache to avoid re-scanning unchanged prefixes.
       const ms = app.markdownStreaming;
       const renderPlainTail = !(streamState.stableLength > 0) && Boolean(
-        ms && typeof ms.canStreamPlainTextTail === 'function'
-        && cachedCanStreamPlainText(streamState, content, ms)
+        ms && (
+          (typeof ms.canStreamPlainTextTailIncremental === 'function'
+            && ms.canStreamPlainTextTailIncremental(streamState, content))
+          || (typeof ms.canStreamPlainTextTail === 'function'
+            && cachedCanStreamPlainText(streamState, content, ms))
+        )
       );
 
       if (renderPlainTail) {
@@ -970,6 +982,8 @@ const enqueueAssistantStreamUpdate = (message) => {
   if (existingState) {
     existingState.latestContent = String(message.content || '');
     existingState.dirty = true;
+    if (existingState.node) syncAssistantUsageNode(existingState.node, message);
+    syncTurnActionPanelForAssistant(message.id);
     scheduleAssistantStreamRender(existingState);
     return;
   }
@@ -985,6 +999,7 @@ const enqueueAssistantStreamUpdate = (message) => {
 
   body.classList.add('markdown-body');
   const streamState = getOrCreateAssistantStreamState(message, body);
+  streamState.node = node;
   streamState.latestContent = String(message.content || '');
   streamState.dirty = true;
   if (message.usage) syncAssistantUsageNode(node, message);
@@ -1740,23 +1755,62 @@ const updateToolGroupNode = (message) => {
   }
 };
 
+let _lastRenderedSessionId = null;
+let _lastRenderedMessageIds = [];
+
 const renderMessages = (forceScroll = false) => {
   const session = ensureActiveSession();
   resetAssistantStreamRenders();
-  elements.messages.innerHTML = '';
 
-  const msgFrag = document.createDocumentFragment();
-  if (!session || !session.messages.length) {
+  const sessionId = session ? session.id : null;
+  const messages = session ? session.messages : [];
+
+  if (!session || !messages.length) {
+    elements.messages.innerHTML = '';
     const empty = document.createElement('div');
     empty.className = 'empty-state';
     empty.textContent = 'How can I help you today?';
-    msgFrag.appendChild(empty);
-  } else {
-    session.messages.forEach((message) => {
-      msgFrag.appendChild(createMessageNode(message));
-    });
+    elements.messages.appendChild(empty);
+    _lastRenderedSessionId = sessionId;
+    _lastRenderedMessageIds = [];
+    syncTurnActionPanels();
+    refreshRelativeTimes();
+    scrollToBottom(forceScroll);
+    updateHeader();
+    return;
   }
-  elements.messages.appendChild(msgFrag);
+
+  // Fast path: same session, messages only appended at the end
+  if (sessionId === _lastRenderedSessionId && messages.length >= _lastRenderedMessageIds.length) {
+    let canAppend = true;
+    for (let i = 0; i < _lastRenderedMessageIds.length; i++) {
+      if (_lastRenderedMessageIds[i] !== messages[i].id) {
+        canAppend = false;
+        break;
+      }
+    }
+    if (canAppend) {
+      const emptyState = elements.messages.querySelector('.empty-state');
+      if (emptyState) emptyState.remove();
+      for (let i = _lastRenderedMessageIds.length; i < messages.length; i++) {
+        elements.messages.appendChild(createMessageNode(messages[i]));
+        _lastRenderedMessageIds.push(messages[i].id);
+      }
+      syncTurnActionPanels();
+      refreshRelativeTimes();
+      scrollToBottom(forceScroll);
+      updateHeader();
+      return;
+    }
+  }
+
+  // Full rebuild
+  elements.messages.innerHTML = '';
+  messages.forEach((message) => {
+    elements.messages.appendChild(createMessageNode(message));
+  });
+  _lastRenderedSessionId = sessionId;
+  _lastRenderedMessageIds = messages.map((m) => m.id);
 
   syncTurnActionPanels();
   refreshRelativeTimes();

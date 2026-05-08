@@ -247,9 +247,45 @@ func (r *Registry) addUserPaths(home, configDir string) {
 	})
 }
 
+// HasAnySkill returns true as soon as a valid skill is found in any search path.
+// This avoids a full catalog scan during startup when callers only need to know
+// whether the skills system should be enabled at all.
+func (r *Registry) HasAnySkill() (bool, error) {
+	for _, sp := range r.searchPaths {
+		entries, err := os.ReadDir(sp.path)
+		if err != nil {
+			continue // Skip directories that don't exist or can't be read
+		}
+
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+
+			skillDir := filepath.Join(sp.path, entry.Name())
+			if !IsSkillDir(skillDir) {
+				continue
+			}
+
+			skill, err := LoadFromDir(skillDir, sp.source, false)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "warning: skipping invalid skill %s: %v\n", skillDir, err)
+				continue
+			}
+			if err := skill.Validate(); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: skipping invalid skill %s: %v\n", skillDir, err)
+				continue
+			}
+
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
 // Get retrieves a skill by name, loading full content.
 func (r *Registry) Get(name string) (*Skill, error) {
-	// Check cache first
 	if skill, ok := r.cache[name]; ok {
 		// If we have metadata only, load full content
 		if !skill.IsLoaded() {
@@ -304,40 +340,6 @@ func (r *Registry) Get(name string) (*Skill, error) {
 	}
 
 	return nil, fmt.Errorf("skill not found: %s", name)
-}
-
-// HasAvailableSkills returns true when at least one valid skill is discoverable.
-// It stops after the first valid metadata load instead of parsing the entire catalog.
-func (r *Registry) HasAvailableSkills() (bool, error) {
-	for _, sp := range r.searchPaths {
-		entries, err := os.ReadDir(sp.path)
-		if err != nil {
-			continue
-		}
-
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-
-			skillDir := filepath.Join(sp.path, entry.Name())
-			if !IsSkillDir(skillDir) {
-				continue
-			}
-
-			skill, err := LoadFromDir(skillDir, sp.source, false)
-			if err != nil {
-				continue
-			}
-			if err := skill.Validate(); err != nil {
-				continue
-			}
-
-			return true, nil
-		}
-	}
-
-	return false, nil
 }
 
 // List returns all available skills (metadata only).

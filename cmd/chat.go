@@ -389,11 +389,10 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	}
 	skillsSetup := SetupSkills(&cfg.Skills, chatSkills, agentSkills, cmd.ErrOrStderr())
 
-	RegisterSkillToolWithEngine(engine, toolMgr, skillsSetup)
-
 	// Store resolved instructions in config for chat TUI
-	cfg.Chat.Instructions = settings.SystemPrompt
-	cfg.Chat.Instructions = InjectSkillsMetadata(cfg.Chat.Instructions, skillsSetup)
+	cfg.Chat.Instructions = InjectSkillsMetadata(settings.SystemPrompt, skillsSetup)
+
+	RegisterSkillToolWithEngine(engine, toolMgr, skillsSetup)
 
 	// Determine model name
 	modelName := getModelName(cfg)

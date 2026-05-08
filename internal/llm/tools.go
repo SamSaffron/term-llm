@@ -40,18 +40,23 @@ type FinishingTool interface {
 
 // ToolRegistry stores tools by name for execution.
 type ToolRegistry struct {
-	mu    sync.RWMutex
-	tools map[string]Tool
+	mu         sync.RWMutex
+	tools      map[string]Tool
+	specsCache []ToolSpec
+	specsDirty bool
 }
 
 func NewToolRegistry() *ToolRegistry {
-	return &ToolRegistry{tools: make(map[string]Tool)}
+	return &ToolRegistry{tools: make(map[string]Tool), specsDirty: true}
 }
 
 func (r *ToolRegistry) Register(tool Tool) {
+	spec := tool.Spec()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.tools[tool.Spec().Name] = tool
+	r.tools[spec.Name] = tool
+	r.specsDirty = true
 }
 
 func (r *ToolRegistry) Get(name string) (Tool, bool) {
@@ -78,25 +83,48 @@ func (r *ToolRegistry) IsFinishingTool(name string) bool {
 func (r *ToolRegistry) Unregister(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.tools, name)
+	if _, ok := r.tools[name]; ok {
+		delete(r.tools, name)
+		r.specsDirty = true
+	}
 }
 
 // AllSpecs returns the specs for all registered tools in deterministic name order.
 func (r *ToolRegistry) AllSpecs() []ToolSpec {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	names := make([]string, 0, len(r.tools))
-	for name := range r.tools {
-		names = append(names, name)
+	if !r.specsDirty {
+		specs := copyToolSpecs(r.specsCache)
+		r.mu.RUnlock()
+		return specs
 	}
-	sort.Strings(names)
+	r.mu.RUnlock()
 
-	specs := make([]ToolSpec, 0, len(names))
-	for _, name := range names {
-		specs = append(specs, r.tools[name].Spec())
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.specsDirty {
+		names := make([]string, 0, len(r.tools))
+		for name := range r.tools {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+
+		specs := make([]ToolSpec, 0, len(names))
+		for _, name := range names {
+			specs = append(specs, r.tools[name].Spec())
+		}
+		r.specsCache = specs
+		r.specsDirty = false
 	}
-	return specs
+	return copyToolSpecs(r.specsCache)
+}
+
+// copyToolSpecs protects callers from mutating the cached slice or top-level
+// ToolSpec values. ToolSpec.Schema maps are intentionally shared by the
+// immutability contract on ToolSpec.
+func copyToolSpecs(specs []ToolSpec) []ToolSpec {
+	out := make([]ToolSpec, len(specs))
+	copy(out, specs)
+	return out
 }
 
 // ToolSpecsForRequest returns the tool specs to include in a request,

@@ -923,6 +923,34 @@ async function run(name, fn) {
     assertEqual(groups[1].querySelectorAll('.session-row').length, 1, 'one today row');
   });
 
+  await run('cached sidebar menu actions resolve latest session object by id', async () => {
+    const original = { id: 'stale', title: 'Old', created: 1000, messages: [], pinned: false, archived: false, messageCount: 0, lastMessageAt: 1000 };
+    const replacement = { id: 'stale', title: 'New', created: 1000, messages: [], pinned: true, archived: true, messageCount: 0, lastMessageAt: 2000 };
+    const calls = [];
+    const { app } = createHarness({
+      visibleSessions: () => app.state.sessions,
+      async promptRenameSession(session) { calls.push(['rename', session]); },
+      async setSessionPinned(session, pinned) { calls.push(['pin', session, pinned]); },
+      async setSessionArchived(session, archived) { calls.push(['archive', session, archived]); },
+    });
+    app.state.sessions = [original];
+    app.renderSidebar();
+
+    // Simulate a sync path replacing the session object while reusing the cached row.
+    app.state.sessions = [replacement];
+    app.renderSidebar();
+    const buttons = app.elements.sessionGroups.querySelectorAll('button');
+    const event = () => ({ type: 'click', preventDefault() {}, stopPropagation() {} });
+
+    await buttons[2].dispatchEvent(event());
+    await buttons[3].dispatchEvent(event());
+    await buttons[4].dispatchEvent(event());
+
+    assert(calls[0][0] === 'rename' && calls[0][1] === replacement, 'rename uses latest session object');
+    assert(calls[1][0] === 'pin' && calls[1][1] === replacement && calls[1][2] === false, 'pin toggle uses latest pinned state');
+    assert(calls[2][0] === 'archive' && calls[2][1] === replacement && calls[2][2] === false, 'archive toggle uses latest archived state');
+  });
+
   await run('updateSidebarStatus updates title and meta via cache', () => {
     const session = { id: 'x', title: 'Old', created: 1000, messages: [], pinned: false, archived: false, messageCount: 1, lastMessageAt: 1000 };
     const { app } = createHarness({ visibleSessions: () => [session] });
@@ -986,6 +1014,97 @@ async function run(name, fn) {
     assert(!threw, 'updateSidebarStatus must not throw for unknown session id');
     const row = app.elements.sessionGroups.querySelector('.session-row');
     assertEqual(row.querySelector('.session-title').textContent, 'Z', 'known session row unchanged');
+  });
+
+  await run('renderMessages: incremental append reuses existing nodes', () => {
+    const { app, session, messages } = createHarness();
+    session.messages = [
+      { id: 'm1', role: 'user', content: 'hello', created: Date.now() },
+      { id: 'm2', role: 'assistant', content: 'hi', created: Date.now() },
+    ];
+    app.renderMessages();
+    assertEqual(messages.children.length, 2, 'two nodes after first render');
+    const firstNode = messages.children[0];
+
+    // Append a new message and re-render
+    session.messages.push({ id: 'm3', role: 'user', content: 'again', created: Date.now() });
+    app.renderMessages();
+    assertEqual(messages.children.length, 3, 'three nodes after incremental render');
+    assert(messages.children[0] === firstNode, 'first node is the same object (not recreated)');
+    assertEqual(messages.children[2].dataset.messageId, 'm3', 'new node has correct id');
+  });
+
+  await run('renderMessages: full rebuild on session switch', () => {
+    const { app, session, messages } = createHarness();
+    session.messages = [
+      { id: 'a1', role: 'user', content: 'first', created: Date.now() },
+    ];
+    app.renderMessages();
+    assertEqual(messages.children.length, 1, 'one node for session s1');
+    const originalNode = messages.children[0];
+
+    // Simulate switching sessions by mutating the session object the harness returns
+    session.id = 's2';
+    session.messages = [
+      { id: 'b1', role: 'user', content: 'other', created: Date.now() },
+    ];
+    app.renderMessages();
+    assertEqual(messages.children.length, 1, 'one node after session switch');
+    assert(messages.children[0] !== originalNode, 'node was recreated after session switch');
+    assertEqual(messages.children[0].dataset.messageId, 'b1', 'new session node has correct id');
+  });
+
+  await run('renderMessages: full rebuild when message list changes non-incrementally', () => {
+    const { app, session, messages } = createHarness();
+    session.messages = [
+      { id: 'x1', role: 'user', content: 'a', created: Date.now() },
+      { id: 'x2', role: 'assistant', content: 'b', created: Date.now() },
+    ];
+    app.renderMessages();
+    assertEqual(messages.children.length, 2, 'two nodes initially');
+    const firstNode = messages.children[0];
+
+    // Replace the messages (non-append: different IDs)
+    session.messages = [
+      { id: 'y1', role: 'user', content: 'new', created: Date.now() },
+    ];
+    app.renderMessages();
+    assertEqual(messages.children.length, 1, 'one node after non-incremental update');
+    assert(messages.children[0] !== firstNode, 'node was recreated');
+    assertEqual(messages.children[0].dataset.messageId, 'y1', 'rebuilt node has correct id');
+  });
+
+  await run('updateSidebarStatus finds local session by id using Map lookup', () => {
+    const s1 = { id: 'aaa', title: 'A', created: 1000, messages: [], pinned: false, archived: false, messageCount: 0, lastMessageAt: 1000 };
+    const s2 = { id: 'bbb', title: 'B', created: 2000, messages: [], pinned: false, archived: false, messageCount: 0, lastMessageAt: 2000 };
+    const s3 = { id: 'ccc', title: 'C', created: 3000, messages: [], pinned: false, archived: false, messageCount: 0, lastMessageAt: 3000 };
+    const { app } = createHarness({ visibleSessions: () => [s1, s2, s3] });
+    app.state.sessions = [s1, s2, s3];
+
+    const result = app.updateSidebarStatus([{ id: 'bbb', last_message_at: 9999, active_run: false }]);
+
+    assert(result === true, 'returns true when order changed');
+    assertEqual(s2.lastMessageAt, 9999, 'lastMessageAt updated on the matched session');
+    assertEqual(s1.lastMessageAt, 1000, 'first session unchanged');
+    assertEqual(s3.lastMessageAt, 3000, 'third session unchanged');
+  });
+
+  await run('enqueueAssistantStreamUpdate reuses cached node on subsequent calls', () => {
+    const { app, session, messages } = createHarness();
+    const message = { id: 'cached-node', role: 'assistant', content: 'hello', created: Date.now() };
+    session.messages = [message];
+
+    app.enqueueAssistantStreamUpdate(message);
+    assertEqual(messages.children.length, 1, 'node created on first call');
+
+    // Remove node from DOM: old code would re-query (find null) and create a new node;
+    // new code uses existingState.node directly and adds nothing.
+    messages.children[0].remove();
+    assertEqual(messages.children.length, 0, 'node removed from messages');
+
+    message.content = 'hello world';
+    app.enqueueAssistantStreamUpdate(message);
+    assertEqual(messages.children.length, 0, 'fast path does not re-query or create a new node');
   });
 
   if (failures > 0) {

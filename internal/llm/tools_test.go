@@ -111,3 +111,58 @@ func TestToolRegistryConcurrentAccess(t *testing.T) {
 	close(start)
 	wg.Wait()
 }
+
+func TestToolRegistryAllSpecsReturnedSliceIsIndependent(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(&namedTestTool{name: "alpha"})
+	registry.Register(&namedTestTool{name: "beta"})
+
+	specs := registry.AllSpecs()
+	if len(specs) != 2 {
+		t.Fatalf("len(AllSpecs()) = %d, want 2", len(specs))
+	}
+	specs[0].Name = "mutated"
+
+	got := registry.AllSpecs()
+	if got[0].Name != "alpha" {
+		t.Fatalf("AllSpecs() reused caller-mutated slice, got first name %q", got[0].Name)
+	}
+}
+
+func TestToolRegistryAllSpecsInvalidatesCache(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(&namedTestTool{name: "alpha"})
+
+	_ = registry.AllSpecs()
+	registry.Register(&namedTestTool{name: "beta"})
+	got := registry.AllSpecs()
+	if len(got) != 2 || got[0].Name != "alpha" || got[1].Name != "beta" {
+		t.Fatalf("after Register, AllSpecs() = %#v, want alpha,beta", got)
+	}
+
+	registry.Unregister("alpha")
+	got = registry.AllSpecs()
+	if len(got) != 1 || got[0].Name != "beta" {
+		t.Fatalf("after Unregister, AllSpecs() = %#v, want beta", got)
+	}
+}
+
+func BenchmarkToolRegistryAllSpecs(b *testing.B) {
+	registry := NewToolRegistry()
+	const toolCount = 128
+	for i := 0; i < toolCount; i++ {
+		registry.Register(&namedTestTool{name: fmt.Sprintf("tool-%03d", i)})
+	}
+
+	b.ReportAllocs()
+	if specs := registry.AllSpecs(); len(specs) != toolCount {
+		b.Fatalf("len(AllSpecs()) = %d, want %d", len(specs), toolCount)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		specs := registry.AllSpecs()
+		if len(specs) != toolCount {
+			b.Fatalf("len(AllSpecs()) = %d, want %d", len(specs), toolCount)
+		}
+	}
+}

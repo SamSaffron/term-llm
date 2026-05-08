@@ -101,9 +101,8 @@ const pollSidebarStatus = async () => {
       if (Array.isArray(data.sessions)) {
         updateSidebarStatus(data.sessions);
         // Discover sessions created in other tabs/devices
-        const hasUnknown = data.sessions.some(
-          (entry) => !state.sessions.find((s) => s.id === entry.id)
-        );
+        const localIds = new Set(state.sessions.map((s) => s.id));
+        const hasUnknown = data.sessions.some((entry) => !localIds.has(entry.id));
         if (hasUnknown) mergeServerSessions();
       }
     }
@@ -867,7 +866,12 @@ const hydrateActiveSessionAfterStartup = async () => {
   const active = getActiveSession();
   if (!active) return;
 
-  let messagesPreloaded = false;
+  // Start state sync immediately so the server round-trip overlaps with the
+  // messages fetch instead of serialising after it. For server-only sessions,
+  // the explicit message preload below owns the message fetch to avoid a double
+  // request.
+  const statePromise = syncActiveSessionFromServer(active, true, { skipMessagesFetch: Boolean(active._serverOnly) });
+
   if (active._serverOnly) {
     const msgs = await loadServerSessionMessages(active.id);
     if (Array.isArray(msgs)) {
@@ -875,11 +879,10 @@ const hydrateActiveSessionAfterStartup = async () => {
       saveSessions();
       renderSidebar();
       renderMessages(true);
-      messagesPreloaded = true;
     }
   }
 
-  await syncActiveSessionFromServer(active, true, { skipMessagesFetch: messagesPreloaded });
+  await statePromise;
 };
 
 const initialize = async () => {

@@ -103,6 +103,33 @@ expectFalse(
   streaming.canStreamPlainTextTail('Value: \\(x + y\\)')
 );
 
+expectTrue(
+  'canStreamPlainTextTailIncremental reuses a safe growing plain prefix',
+  (() => {
+    const state = streaming.createStreamingState();
+    if (!streaming.canStreamPlainTextTailIncremental(state, 'plain words')) return false;
+    if (state.plainTextScanSource !== 'plain words') return false;
+    if (!streaming.canStreamPlainTextTailIncremental(state, 'plain words keep growing')) return false;
+    return state.plainTextScanSource === 'plain words keep growing' && state.plainTextEligible === true;
+  })()
+);
+expectFalse(
+  'canStreamPlainTextTailIncremental falls back when punctuation completes a link',
+  (() => {
+    const state = streaming.createStreamingState();
+    if (!streaming.canStreamPlainTextTailIncremental(state, 'See [docs]')) return true;
+    return streaming.canStreamPlainTextTailIncremental(state, 'See [docs](https://example.com)');
+  })()
+);
+expectFalse(
+  'canStreamPlainTextTailIncremental keeps a growing markdown tail in markdown mode',
+  (() => {
+    const state = streaming.createStreamingState();
+    if (streaming.canStreamPlainTextTailIncremental(state, 'This has *emphasis*')) return true;
+    return streaming.canStreamPlainTextTailIncremental(state, 'This has *emphasis* and more plain words');
+  })()
+);
+
 expectEqual(
   'findStableMarkdownBoundary finds blank-line paragraph break',
   streaming.findStableMarkdownBoundary('First paragraph.\n\nSecond paragraph still streaming', 10),
