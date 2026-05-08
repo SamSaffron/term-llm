@@ -12,9 +12,16 @@ const isMobileViewport = () => window.matchMedia('(max-width: 767px)').matches;
 
 const directionForText = (value) => {
   const text = String(value || '');
-  const m = text.match(/[A-Za-z\u00C0-\u02AF\u0370-\u03FF\u0400-\u052F\u0590-\u08FF]/);
-  if (!m) return 'auto';
-  return /[\u0590-\u08FF]/.test(m[0]) ? 'rtl' : 'ltr';
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code >= 0x0590 && code <= 0x08FF) return 'rtl';
+    if ((code >= 0x0041 && code <= 0x005A) || (code >= 0x0061 && code <= 0x007A) ||
+      (code >= 0x00C0 && code <= 0x02AF) || (code >= 0x0370 && code <= 0x03FF) ||
+      (code >= 0x0400 && code <= 0x052F)) {
+      return 'ltr';
+    }
+  }
+  return 'auto';
 };
 
 const applyTextDirection = (element, value) => {

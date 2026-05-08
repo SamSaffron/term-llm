@@ -793,6 +793,22 @@ async function run(name, fn) {
     assertEqual(app.directionForText('אA'), 'rtl', 'rtl wins when first');
   });
 
+  await run('directionForText covers supported Unicode direction ranges', () => {
+    const { app } = createHarness();
+    const cases = [
+      ['À', 'ltr', 'Latin Extended'],
+      ['Ω', 'ltr', 'Greek'],
+      ['Ж', 'ltr', 'Cyrillic'],
+      ['א', 'rtl', 'Hebrew'],
+      ['ا', 'rtl', 'Arabic'],
+      ['   ... Ωא', 'ltr', 'first strong char after neutrals is Greek'],
+      ['   ... אΩ', 'rtl', 'first strong char after neutrals is Hebrew'],
+    ];
+    for (const [text, expected, label] of cases) {
+      assertEqual(app.directionForText(text), expected, label);
+    }
+  });
+
   if (failures > 0) {
     process.exit(1);
   }
