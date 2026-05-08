@@ -205,7 +205,11 @@ func runGeminiAudio(cmd *cobra.Command, cfg *config.Config, text string, tempera
 		apiKey = strings.TrimSpace(cfg.Image.Gemini.APIKey)
 	}
 	if apiKey == "" {
-		if geminiProvider := cfg.GetProviderConfig("gemini"); geminiProvider != nil {
+		geminiProvider, err := cfg.GetResolvedProviderConfig("gemini")
+		if err != nil {
+			return fmt.Errorf("gemini provider: %w", err)
+		}
+		if geminiProvider != nil {
 			apiKey = strings.TrimSpace(geminiProvider.ResolvedAPIKey)
 		}
 	}
@@ -254,7 +258,11 @@ func runGeminiAudio(cmd *cobra.Command, cfg *config.Config, text string, tempera
 func runElevenLabsAudio(cmd *cobra.Command, cfg *config.Config, text string) error {
 	apiKey := strings.TrimSpace(cfg.Audio.ElevenLabs.APIKey)
 	if apiKey == "" {
-		if elevenLabsProvider := cfg.GetProviderConfig("elevenlabs"); elevenLabsProvider != nil {
+		elevenLabsProvider, err := cfg.GetResolvedProviderConfig("elevenlabs")
+		if err != nil {
+			return fmt.Errorf("elevenlabs provider: %w", err)
+		}
+		if elevenLabsProvider != nil {
 			apiKey = strings.TrimSpace(elevenLabsProvider.ResolvedAPIKey)
 		}
 	}

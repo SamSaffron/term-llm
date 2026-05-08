@@ -116,7 +116,9 @@ type ProviderConfig struct {
 	OAuthCreds     *credentials.GeminiOAuthCredentials `mapstructure:"-"`
 	ResolvedURL    string                              `mapstructure:"-"` // Resolved URL (after srv:// lookup)
 
-	// Lazy resolution tracking - these are resolved on-demand before inference
+	// Resolution tracking - provider credential discovery is deferred until needed,
+	// and expensive values are resolved lazily before inference.
+	credentialsResolved bool `mapstructure:"-"`
 	needsLazyResolution bool `mapstructure:"-"`
 }
 
@@ -558,12 +560,8 @@ func Load() (*Config, error) {
 		cfg.Providers = make(map[string]ProviderConfig)
 	}
 
-	// Resolve credentials for all providers
-	for name, providerCfg := range cfg.Providers {
-		if err := resolveProviderCredentials(name, &providerCfg); err != nil {
-			return nil, fmt.Errorf("%s credentials: %w", name, err)
-		}
-		cfg.Providers[name] = providerCfg
+	if err := cfg.ResolveProviderCredentials(cfg.DefaultProvider); err != nil {
+		return nil, fmt.Errorf("%s credentials: %w", cfg.DefaultProvider, err)
 	}
 
 	resolveImageCredentials(&cfg.Image)
@@ -760,6 +758,36 @@ func (c *Config) ApplyOverrides(provider, model string) {
 	}
 }
 
+// ResolveProviderCredentials resolves and caches credentials for the named provider.
+// Missing providers are ignored.
+func (c *Config) ResolveProviderCredentials(name string) error {
+	if c == nil || name == "" {
+		return nil
+	}
+	providerCfg, ok := c.Providers[name]
+	if !ok {
+		return nil
+	}
+	if err := resolveProviderCredentials(name, &providerCfg); err != nil {
+		return err
+	}
+	c.Providers[name] = providerCfg
+	return nil
+}
+
+// GetResolvedProviderConfig returns the config for the specified provider name
+// after resolving any deferred credential discovery needed for that provider.
+// Returns nil if the provider is not configured.
+func (c *Config) GetResolvedProviderConfig(name string) (*ProviderConfig, error) {
+	if err := c.ResolveProviderCredentials(name); err != nil {
+		return nil, err
+	}
+	if cfg, ok := c.Providers[name]; ok {
+		return &cfg, nil
+	}
+	return nil, nil
+}
+
 // GetProviderConfig returns the config for the specified provider name.
 // Returns nil if the provider is not configured.
 func (c *Config) GetProviderConfig(name string) *ProviderConfig {
@@ -786,6 +814,11 @@ func needsLazyResolve(value string) bool {
 // resolveProviderCredentials resolves credentials for a provider based on its type.
 // Expensive operations (op://, file://, srv://, $()) are deferred - call ResolveForInference() before use.
 func resolveProviderCredentials(name string, cfg *ProviderConfig) error {
+	if cfg.credentialsResolved || cfg.ResolvedAPIKey != "" || cfg.ResolvedURL != "" || cfg.OAuthCreds != nil {
+		cfg.credentialsResolved = true
+		return nil
+	}
+
 	providerType := InferProviderType(name, cfg.Type)
 
 	// Check if URL fields need lazy resolution
@@ -806,6 +839,7 @@ func resolveProviderCredentials(name string, cfg *ProviderConfig) error {
 	// If so, defer resolution until inference time
 	if cfg.APIKey != "" && needsLazyResolve(cfg.APIKey) {
 		cfg.needsLazyResolution = true
+		cfg.credentialsResolved = true
 		return nil
 	}
 
@@ -890,6 +924,7 @@ func resolveProviderCredentials(name string, cfg *ProviderConfig) error {
 		}
 	}
 
+	cfg.credentialsResolved = true
 	return nil
 }
 

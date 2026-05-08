@@ -61,6 +61,12 @@ func runModels(cmd *cobra.Command, args []string) error {
 
 	// Get provider config - handle built-in providers that may not be explicitly configured
 	providerCfg, ok := cfg.Providers[providerName]
+	if ok {
+		if err := cfg.ResolveProviderCredentials(providerName); err != nil {
+			return fmt.Errorf("provider %q: %w", providerName, err)
+		}
+		providerCfg = cfg.Providers[providerName]
+	}
 
 	// Infer provider type - only use config type if provider is configured
 	var providerType config.ProviderType

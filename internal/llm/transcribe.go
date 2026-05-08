@@ -43,12 +43,23 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 	}
 
 	modelOverride := cfg.Transcription.Model
+	getProviderConfig := func(name string) (*config.ProviderConfig, error) {
+		providerCfg, err := cfg.GetResolvedProviderConfig(name)
+		if err != nil {
+			return nil, fmt.Errorf("provider %q: %w", name, err)
+		}
+		return providerCfg, nil
+	}
 
 	switch providerName {
 	case "local":
 		// whisper.cpp HTTP server — OpenAI-compatible endpoint, typically no auth required
 		endpoint := "http://localhost:8080/inference"
-		if providerCfg, ok := cfg.Providers["local_whisper"]; ok {
+		providerCfg, err := getProviderConfig("local_whisper")
+		if err != nil {
+			return "", err
+		}
+		if providerCfg != nil {
 			baseURL := providerCfg.ResolvedURL
 			if baseURL == "" {
 				baseURL = providerCfg.BaseURL
@@ -64,7 +75,13 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 		})
 
 	case "mistral":
-		mistralCfg := cfg.Providers["mistral"]
+		mistralCfg, err := getProviderConfig("mistral")
+		if err != nil {
+			return "", err
+		}
+		if mistralCfg == nil {
+			mistralCfg = &config.ProviderConfig{}
+		}
 		apiKey := mistralCfg.ResolvedAPIKey
 		if apiKey == "" {
 			apiKey = os.Getenv("MISTRAL_API_KEY")
@@ -92,6 +109,10 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 		})
 
 	case "venice":
+		veniceProvider, err := getProviderConfig("venice")
+		if err != nil {
+			return "", err
+		}
 		apiKey := cfg.Transcription.Venice.APIKey
 		if apiKey == "" {
 			apiKey = cfg.Audio.Venice.APIKey
@@ -99,10 +120,8 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 		if apiKey == "" {
 			apiKey = cfg.Image.Venice.APIKey
 		}
-		if apiKey == "" {
-			if p, ok := cfg.Providers["venice"]; ok {
-				apiKey = p.ResolvedAPIKey
-			}
+		if apiKey == "" && veniceProvider != nil {
+			apiKey = veniceProvider.ResolvedAPIKey
 		}
 		if apiKey == "" {
 			apiKey = os.Getenv("VENICE_API_KEY")
@@ -111,10 +130,10 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 			return "", fmt.Errorf("transcription provider %q has no API key configured (transcription.venice.api_key, VENICE_API_KEY, audio.venice.api_key, image.venice.api_key, or providers.venice.api_key)", providerName)
 		}
 		endpoint := "https://api.venice.ai/api/v1/audio/transcriptions"
-		if p, ok := cfg.Providers["venice"]; ok {
-			baseURL := p.ResolvedURL
+		if veniceProvider != nil {
+			baseURL := veniceProvider.ResolvedURL
 			if baseURL == "" {
-				baseURL = p.BaseURL
+				baseURL = veniceProvider.BaseURL
 			}
 			if baseURL != "" {
 				endpoint = strings.TrimRight(baseURL, "/") + "/audio/transcriptions"
@@ -131,14 +150,16 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 		})
 
 	case "elevenlabs":
+		elevenLabsProvider, err := getProviderConfig("elevenlabs")
+		if err != nil {
+			return "", err
+		}
 		apiKey := cfg.Transcription.ElevenLabs.APIKey
 		if apiKey == "" {
 			apiKey = cfg.Audio.ElevenLabs.APIKey
 		}
-		if apiKey == "" {
-			if p, ok := cfg.Providers["elevenlabs"]; ok {
-				apiKey = p.ResolvedAPIKey
-			}
+		if apiKey == "" && elevenLabsProvider != nil {
+			apiKey = elevenLabsProvider.ResolvedAPIKey
 		}
 		if apiKey == "" {
 			apiKey = os.Getenv("ELEVENLABS_API_KEY")
@@ -150,10 +171,10 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 			return "", fmt.Errorf("transcription provider %q has no API key configured (transcription.elevenlabs.api_key, ELEVENLABS_API_KEY, XI_API_KEY, audio.elevenlabs.api_key, or providers.elevenlabs.api_key)", providerName)
 		}
 		endpoint := "https://api.elevenlabs.io/v1/speech-to-text"
-		if p, ok := cfg.Providers["elevenlabs"]; ok {
-			baseURL := p.ResolvedURL
+		if elevenLabsProvider != nil {
+			baseURL := elevenLabsProvider.ResolvedURL
 			if baseURL == "" {
-				baseURL = p.BaseURL
+				baseURL = elevenLabsProvider.BaseURL
 			}
 			if baseURL != "" {
 				endpoint = strings.TrimRight(baseURL, "/") + "/speech-to-text"
@@ -170,17 +191,21 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 
 	case "openai":
 		// Named provider entry takes precedence over env var
-		if p, ok := cfg.Providers[string(config.ProviderTypeOpenAI)]; ok && p.ResolvedAPIKey != "" {
+		openAIProvider, err := getProviderConfig(string(config.ProviderTypeOpenAI))
+		if err != nil {
+			return "", err
+		}
+		if openAIProvider != nil && openAIProvider.ResolvedAPIKey != "" {
 			endpoint := ""
-			baseURL := p.ResolvedURL
+			baseURL := openAIProvider.ResolvedURL
 			if baseURL == "" {
-				baseURL = p.BaseURL
+				baseURL = openAIProvider.BaseURL
 			}
 			if baseURL != "" {
 				endpoint = strings.TrimRight(baseURL, "/") + "/audio/transcriptions"
 			}
 			return transcribeAndTruncate(ctx, filePath, TranscribeOptions{
-				APIKey:   p.ResolvedAPIKey,
+				APIKey:   openAIProvider.ResolvedAPIKey,
 				Endpoint: endpoint,
 				Model:    modelOverride,
 				Language: language,
@@ -199,17 +224,21 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 
 	default:
 		// Try looking up by name in providers map (allows any openai_compatible provider)
-		if p, ok := cfg.Providers[providerName]; ok {
-			apiKey := p.ResolvedAPIKey
+		providerCfg, err := getProviderConfig(providerName)
+		if err != nil {
+			return "", err
+		}
+		if providerCfg != nil {
+			apiKey := providerCfg.ResolvedAPIKey
 			if apiKey == "" {
 				return "", fmt.Errorf("transcription provider %q has no API key configured", providerName)
 			}
 			endpoint := ""
-			resolvedURL := p.ResolvedURL
+			resolvedURL := providerCfg.ResolvedURL
 			if resolvedURL != "" {
 				endpoint = strings.TrimRight(resolvedURL, "/") + "/audio/transcriptions"
-			} else if p.BaseURL != "" {
-				endpoint = strings.TrimRight(p.BaseURL, "/") + "/audio/transcriptions"
+			} else if providerCfg.BaseURL != "" {
+				endpoint = strings.TrimRight(providerCfg.BaseURL, "/") + "/audio/transcriptions"
 			}
 			return transcribeAndTruncate(ctx, filePath, TranscribeOptions{
 				APIKey:   apiKey,

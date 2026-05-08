@@ -150,6 +150,11 @@ func NewProviderByName(cfg *config.Config, name string, model string) (Provider,
 		}
 	}
 
+	if err := cfg.ResolveProviderCredentials(name); err != nil {
+		return nil, fmt.Errorf("provider %q: %w", name, err)
+	}
+	providerCfg = cfg.Providers[name]
+
 	// Apply model override if provided
 	if model != "" {
 		providerCfg.Model = model
@@ -259,6 +264,10 @@ func newProviderInternal(cfg *config.Config) (Provider, error) {
 			return nil, fmt.Errorf("provider %q not configured", cfg.DefaultProvider)
 		}
 	}
+	if err := cfg.ResolveProviderCredentials(cfg.DefaultProvider); err != nil {
+		return nil, fmt.Errorf("provider %q: %w", cfg.DefaultProvider, err)
+	}
+	providerCfg = cfg.Providers[cfg.DefaultProvider]
 	return createProviderFromConfig(cfg.DefaultProvider, &providerCfg)
 }
 

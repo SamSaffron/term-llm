@@ -191,7 +191,11 @@ func runElevenLabsMusic(cmd *cobra.Command, cfg *config.Config, req music.Reques
 		apiKey = strings.TrimSpace(cfg.Audio.ElevenLabs.APIKey)
 	}
 	if apiKey == "" {
-		if elevenLabsProvider := cfg.GetProviderConfig("elevenlabs"); elevenLabsProvider != nil {
+		elevenLabsProvider, err := cfg.GetResolvedProviderConfig("elevenlabs")
+		if err != nil {
+			return fmt.Errorf("elevenlabs provider: %w", err)
+		}
+		if elevenLabsProvider != nil {
 			apiKey = strings.TrimSpace(elevenLabsProvider.ResolvedAPIKey)
 		}
 	}

@@ -117,6 +117,47 @@ providers:
 	}
 }
 
+func TestLoad_OnlyResolvesDefaultProviderCredentials(t *testing.T) {
+	viper.Reset()
+	defer viper.Reset()
+
+	homeDir := t.TempDir()
+	configHome := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("OPENAI_API_KEY", "sk-openai-test")
+
+	configDir := filepath.Join(configHome, "term-llm")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	configYAML := `default_provider: openai
+providers:
+  openai:
+    model: gpt-5.2
+  gemini-cli:
+    model: gemini-2.5-pro
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Providers["openai"].ResolvedAPIKey; got != "sk-openai-test" {
+		t.Fatalf("openai ResolvedAPIKey = %q, want %q", got, "sk-openai-test")
+	}
+	if cfg.Providers["gemini-cli"].OAuthCreds != nil {
+		t.Fatal("expected gemini-cli OAuth creds to remain unresolved until used")
+	}
+	if err := cfg.ResolveProviderCredentials("gemini-cli"); err == nil {
+		t.Fatal("expected deferred gemini-cli credential resolution to fail without oauth creds")
+	}
+}
+
 func TestLoad_PreservesProviderEnvKeyCase(t *testing.T) {
 	viper.Reset()
 	defer viper.Reset()

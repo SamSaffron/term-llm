@@ -13,6 +13,31 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 )
 
+func TestNewProviderByName_ResolvesConfiguredVeniceCredentialsOnDemand(t *testing.T) {
+	t.Setenv("VENICE_API_KEY", "")
+
+	cfg := &config.Config{
+		DefaultProvider: "openai",
+		Providers: map[string]config.ProviderConfig{
+			"venice": {
+				APIKey: "  test-key\n",
+				Model:  "venice-uncensored",
+			},
+		},
+	}
+
+	provider, err := NewProviderByName(cfg, "venice", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if provider == nil {
+		t.Fatal("expected provider")
+	}
+	if got := strings.TrimSpace(cfg.Providers["venice"].ResolvedAPIKey); got != "test-key" {
+		t.Fatalf("ResolvedAPIKey = %q, want %q", got, "test-key")
+	}
+}
+
 func TestNewVeniceProviderTrimsAPIKey(t *testing.T) {
 	provider := NewVeniceProvider("  test-key\n", "")
 	if provider.apiKey != "test-key" {
