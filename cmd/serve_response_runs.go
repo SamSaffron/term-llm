@@ -221,9 +221,13 @@ func (r *responseRun) compactEventsLocked() {
 		r.minReplayAfter = nextReplayAfter
 	}
 
-	trimmed := make([]responseRunEvent, len(r.events)-dropCount)
-	copy(trimmed, r.events[dropCount:])
-	r.events = trimmed
+	keep := len(r.events) - dropCount
+	copy(r.events, r.events[dropCount:])
+	tail := r.events[keep:]
+	for i := range tail {
+		tail[i] = responseRunEvent{}
+	}
+	r.events = r.events[:keep]
 }
 
 func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]any) {
