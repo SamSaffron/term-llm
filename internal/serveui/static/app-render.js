@@ -880,7 +880,7 @@ const enqueueAssistantStreamUpdate = (message) => {
   const streamState = getOrCreateAssistantStreamState(message, body);
   streamState.latestContent = String(message.content || '');
   streamState.dirty = true;
-  syncAssistantUsageNode(node, message);
+  if (message.usage) syncAssistantUsageNode(node, message);
   syncTurnActionPanelForAssistant(message.id);
   scheduleAssistantStreamRender(streamState);
 };
