@@ -477,6 +477,20 @@ const createResponseStreamState = (session) => {
 };
 
 const applyResponseStreamEvent = (session, streamState, event, payload) => {
+  if (event === 'response.output_text.delta') {
+    const seq = payload.sequence_number;
+    if (seq > session.lastSequenceNumber) session.lastSequenceNumber = seq;
+    const delta = payload.delta || '';
+    if (delta) {
+      streamState.closeToolGroup();
+      const msg = streamState.ensureAssistantMessage();
+      msg.content += delta;
+      scheduleStreamPersistence();
+      enqueueVisibleAssistantStreamUpdate(session, msg);
+    }
+    return { terminal: false };
+  }
+
   updateResponseSequence(session, payload);
 
   if (event === 'response.created') {
@@ -542,18 +556,6 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       }
       scheduleStreamPersistence();
       scrollVisibleStreamToBottom(session);
-    }
-    return { terminal: false };
-  }
-
-  if (event === 'response.output_text.delta') {
-    const delta = String(payload.delta || '');
-    if (delta) {
-      streamState.closeToolGroup();
-      const msg = streamState.ensureAssistantMessage();
-      msg.content += delta;
-      scheduleStreamPersistence();
-      enqueueVisibleAssistantStreamUpdate(session, msg);
     }
     return { terminal: false };
   }
