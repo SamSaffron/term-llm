@@ -236,7 +236,7 @@ func (r *responseRun) appendTextDeltaEvent(outputIndex int, delta string) error 
 	if delta != "" {
 		r.closeToolGroupLocked()
 		idx := r.ensureAssistantMessageLocked()
-		r.recoveryMessages[idx].Content += delta
+		r.recoveryMessages[idx].Content = append(r.recoveryMessages[idx].Content, delta...)
 	}
 
 	r.storeEventLocked(responseRunEvent{
