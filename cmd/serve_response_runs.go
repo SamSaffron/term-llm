@@ -64,8 +64,10 @@ type responseRun struct {
 	usage              llm.Usage
 	sessionUsage       llm.Usage
 	lastSequenceNumber int64
-	// Retain the raw event stream until the run expires so reconnecting clients can replay by sequence number.
+	// events[eventStart:] is the retained replay window; dropped prefix slots
+	// are zeroed and reclaimed in batches to avoid per-token slice copies.
 	events             []responseRunEvent
+	eventStart         int
 	minReplayAfter     int64
 	maxRetainedEvents  int
 	recoveryMessages   []responseRunRecoveryMessage
@@ -258,27 +260,53 @@ func (r *responseRun) appendTextDeltaEvent(outputIndex int, delta string) error 
 }
 
 func (r *responseRun) compactEventsLocked() {
-	if !r.compactionEnabled || r.maxRetainedEvents <= 0 || len(r.events) <= r.maxRetainedEvents {
+	if !r.compactionEnabled || r.maxRetainedEvents <= 0 {
 		return
 	}
 
-	dropCount := len(r.events) - r.maxRetainedEvents
-	if dropCount <= 0 {
+	activeLen := len(r.events) - r.eventStart
+	if activeLen <= r.maxRetainedEvents {
 		return
 	}
 
-	nextReplayAfter := r.events[dropCount].Sequence - 1
+	dropCount := activeLen - r.maxRetainedEvents
+	firstKept := r.eventStart + dropCount
+
+	nextReplayAfter := r.events[firstKept].Sequence - 1
 	if nextReplayAfter > r.minReplayAfter {
 		r.minReplayAfter = nextReplayAfter
 	}
 
-	keep := len(r.events) - dropCount
-	copy(r.events, r.events[dropCount:])
-	tail := r.events[keep:]
+	for i := r.eventStart; i < firstKept; i++ {
+		r.events[i] = responseRunEvent{}
+	}
+	r.eventStart = firstKept
+	r.compactEventStorageLocked()
+}
+
+// compactEventStorageLocked reclaims the dropped prefix in batches so steady
+// streaming appends avoid copying the replay window on every token while still
+// keeping the backing array bounded to roughly twice maxRetainedEvents.
+func (r *responseRun) compactEventStorageLocked() {
+	if r.eventStart == 0 {
+		return
+	}
+	if r.maxRetainedEvents > 0 && r.eventStart < r.maxRetainedEvents {
+		return
+	}
+
+	activeLen := len(r.events) - r.eventStart
+	copy(r.events, r.events[r.eventStart:])
+	tail := r.events[activeLen:]
 	for i := range tail {
 		tail[i] = responseRunEvent{}
 	}
-	r.events = r.events[:keep]
+	r.events = r.events[:activeLen]
+	r.eventStart = 0
+}
+
+func (r *responseRun) activeEventsLocked() []responseRunEvent {
+	return r.events[r.eventStart:]
 }
 
 func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]any) {
@@ -458,8 +486,9 @@ func (r *responseRun) subscribe(after int64) responseRunSubscribeResult {
 		}
 	}
 
-	replay := make([]responseRunEvent, 0, len(r.events))
-	for _, ev := range r.events {
+	replayEvents := r.activeEventsLocked()
+	replay := make([]responseRunEvent, 0, len(replayEvents))
+	for _, ev := range replayEvents {
 		if ev.Sequence > after {
 			replay = append(replay, ev)
 		}

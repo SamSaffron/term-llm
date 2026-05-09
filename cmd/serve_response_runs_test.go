@@ -102,6 +102,62 @@ func TestResponseRunSubscriberDroppedWhenBufferFull(t *testing.T) {
 	}
 }
 
+func TestResponseRunCompactionKeepsReplayWindowInOrder(t *testing.T) {
+	run := newResponseRun("resp_compact", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	run.maxRetainedEvents = 3
+
+	for i := 0; i < 8; i++ {
+		if err := run.appendTextDeltaEvent(0, ""); err != nil {
+			t.Fatalf("appendTextDeltaEvent failed at %d: %v", i, err)
+		}
+	}
+
+	run.mu.Lock()
+	activeLen := len(run.events) - run.eventStart
+	storageLen := len(run.events)
+	minReplayAfter := run.minReplayAfter
+	run.mu.Unlock()
+
+	if activeLen != 3 {
+		t.Fatalf("active retained events = %d, want 3", activeLen)
+	}
+	if storageLen > 6 {
+		t.Fatalf("storage length = %d, want bounded near replay window", storageLen)
+	}
+	if minReplayAfter != 5 {
+		t.Fatalf("minReplayAfter = %d, want 5", minReplayAfter)
+	}
+
+	stale := run.subscribe(4)
+	if !stale.snapshotRequired || stale.minReplayAfter != 5 {
+		t.Fatalf("subscribe before replay window = %#v, want snapshot required at 5", stale)
+	}
+
+	fresh := run.subscribe(5)
+	if fresh.snapshotRequired {
+		t.Fatalf("subscribe at replay window unexpectedly required snapshot: %#v", fresh)
+	}
+	if len(fresh.replay) != 3 {
+		t.Fatalf("replay length = %d, want 3", len(fresh.replay))
+	}
+	for i, ev := range fresh.replay {
+		expected := int64(i + 6)
+		if ev.Sequence != expected {
+			t.Fatalf("replay[%d].Sequence = %d, want %d", i, ev.Sequence, expected)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(ev.Data, &payload); err != nil {
+			t.Fatalf("replay[%d] payload is invalid JSON: %v", i, err)
+		}
+		if payload["sequence_number"] != float64(expected) {
+			t.Fatalf("replay[%d] payload sequence_number = %v, want %d", i, payload["sequence_number"], expected)
+		}
+	}
+	if fresh.ch != nil {
+		run.unsubscribe(fresh.ch)
+	}
+}
+
 func TestResponseRunConcurrentAppendsPreserveOrder(t *testing.T) {
 	const totalEvents = 200
 	const numWriters = 4
