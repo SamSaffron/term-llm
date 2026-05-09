@@ -211,10 +211,12 @@ const switchToSession = async (sessionId, options = {}) => {
   updateURL(sessionSlug(session));
   refreshPendingInterjectionBanner();
 
+  let didPreloadServerMessages = false;
   if (session._serverOnly) {
     const msgs = await loadServerSessionMessages(session.id);
     if (Array.isArray(msgs)) {
       mergeServerMessagesWithLocalState(session, msgs);
+      didPreloadServerMessages = true;
     }
   }
 
@@ -223,7 +225,7 @@ const switchToSession = async (sessionId, options = {}) => {
   restoreDraftMessageForSession(session.id, { replace: true });
 
   if (options.sync !== false) {
-    await syncActiveSessionFromServer(session, true);
+    await syncActiveSessionFromServer(session, true, { skipMessagesFetch: didPreloadServerMessages });
   }
   if (options.focusPrompt) {
     elements.promptInput.focus();

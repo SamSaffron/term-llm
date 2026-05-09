@@ -654,6 +654,106 @@ async function testSwitchToSessionRecoversChangedActiveResponseFromSnapshot() {
   pass(name);
 }
 
+async function testSwitchToLazyLoadedSessionFetchesMessagesOnce() {
+  const name = 'sidebar session switch fetches lazy-loaded session messages once';
+  const fetchCalls = [];
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      fetchCalls.push(url);
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({ sessions: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (url === '/ui/v1/sessions/sess_lazy/state') {
+        return new Response(JSON.stringify({ active_run: false }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (url === '/ui/v1/sessions/sess_lazy/messages') {
+        return new Response(JSON.stringify({
+          messages: [
+            {
+              role: 'user',
+              created_at: 1710000002000,
+              parts: [{ type: 'text', text: 'lazy hello' }],
+            },
+            {
+              role: 'assistant',
+              created_at: 1710000003000,
+              parts: [{ type: 'text', text: 'loaded once' }],
+            },
+          ]
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (url === '/ui/v1/sessions/status') {
+        return new Response(JSON.stringify({ sessions: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify({ messages: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    },
+  });
+
+  app.state.sessions = [
+    {
+      id: 'sess_other',
+      title: 'Other session',
+      origin: 'web',
+      created: 1710000000000,
+      messages: [],
+    },
+    {
+      id: 'sess_lazy',
+      title: 'Lazy session',
+      origin: 'tui',
+      created: 1710000001000,
+      messages: [],
+      _serverOnly: true,
+    },
+  ];
+  app.state.activeSessionId = 'sess_other';
+  app.state.draftSessionActive = false;
+  fetchCalls.length = 0;
+
+  await app.switchToSession('sess_lazy');
+
+  const messageFetches = fetchCalls.filter((url) => url === '/ui/v1/sessions/sess_lazy/messages');
+  if (messageFetches.length !== 1) {
+    fail(name, 'expected exactly one lazy session messages fetch during switch', JSON.stringify(fetchCalls));
+    return;
+  }
+  if (!fetchCalls.includes('/ui/v1/sessions/sess_lazy/state')) {
+    fail(name, 'expected lazy session switch to still sync runtime state', JSON.stringify(fetchCalls));
+    return;
+  }
+
+  const session = app.state.sessions.find((item) => item.id === 'sess_lazy');
+  if (!session) {
+    fail(name, 'lazy session missing after switch');
+    return;
+  }
+  if (session._serverOnly) {
+    fail(name, 'expected lazy session to be hydrated after message preload');
+    return;
+  }
+  if (session.messages.length !== 2 || session.messages[1].content !== 'loaded once') {
+    fail(name, 'expected preloaded lazy session messages to be preserved', JSON.stringify(session.messages));
+    return;
+  }
+
+  pass(name);
+}
+
 async function testSwitchToSessionClearsStaleActiveResponseWithoutToken() {
   const name = 'sidebar session switch clears stale active response without token';
   const fetchCalls = [];
@@ -1282,6 +1382,7 @@ async function testSanitizeSessionPreservesLastMessageAt() {
   await testDeveloperMessagesAreHidden();
   await testSwitchToSessionSyncsWithoutTokenAndResumes();
   await testSwitchToSessionRecoversChangedActiveResponseFromSnapshot();
+  await testSwitchToLazyLoadedSessionFetchesMessagesOnce();
   await testSwitchToSessionClearsStaleActiveResponseWithoutToken();
   await testIdleSessionSyncRescuesPendingInterruptCommit();
   await testSessionProgressStatePrefersLocalAndServerSignals();
