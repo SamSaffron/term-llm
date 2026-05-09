@@ -1383,14 +1383,69 @@ func waitForProcessExit(t *testing.T, pid int) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		err := syscall.Kill(pid, 0)
-		if err != nil && errors.Is(err, syscall.ESRCH) {
+		if processHasExited(pid) {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 
 	t.Fatalf("timed out waiting for process %d to exit", pid)
+}
+
+func processHasExited(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	if err != nil {
+		return errors.Is(err, syscall.ESRCH)
+	}
+	if runtime.GOOS == "linux" {
+		state, ok := linuxProcState(pid)
+		return ok && state == 'Z'
+	}
+	return false
+}
+
+func linuxProcState(pid int) (byte, bool) {
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return 0, false
+	}
+	return procStatState(data)
+}
+
+func procStatState(data []byte) (byte, bool) {
+	stat := string(data)
+	end := strings.LastIndex(stat, ")")
+	if end == -1 {
+		return 0, false
+	}
+	rest := strings.TrimSpace(stat[end+1:])
+	if rest == "" {
+		return 0, false
+	}
+	return rest[0], true
+}
+
+func TestProcStatState(t *testing.T) {
+	tests := []struct {
+		name string
+		stat string
+		want byte
+		ok   bool
+	}{
+		{name: "running", stat: "123 (sleep) S 1 2 3", want: 'S', ok: true},
+		{name: "zombie", stat: "123 (sleep) Z 1 2 3", want: 'Z', ok: true},
+		{name: "command with paren", stat: "123 (odd)name) R 1 2 3", want: 'R', ok: true},
+		{name: "missing close paren", stat: "123 sleep S 1 2 3", ok: false},
+		{name: "missing state", stat: "123 (sleep)", ok: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := procStatState([]byte(tt.stat))
+			if ok != tt.ok || got != tt.want {
+				t.Fatalf("procStatState(%q) = %q, %v; want %q, %v", tt.stat, got, ok, tt.want, tt.ok)
+			}
+		})
+	}
 }
 
 func TestStreamDoneReloadRespectsCompactionSeq(t *testing.T) {
