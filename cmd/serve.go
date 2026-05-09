@@ -944,8 +944,9 @@ type serveServer struct {
 	shutdownOnce      sync.Once
 	modelsMu          sync.Mutex
 	modelsProviders   map[string]llm.Provider // keyed by provider name
-	responseToSession sync.Map                // response_id (string) → session_id (string)
-	sessionToResponse sync.Map                // session_id (string) → latest response_id (string)
+	modelsCache       map[string]serveModelsCacheEntry
+	responseToSession sync.Map // response_id (string) → session_id (string)
+	sessionToResponse sync.Map // session_id (string) → latest response_id (string)
 	responseRunsOnce  sync.Once
 	responseRuns      *responseRunManager
 	webrtcEnabled     bool
@@ -1097,6 +1098,7 @@ func (s *serveServer) Stop(ctx context.Context) error {
 		}
 	}
 	s.modelsProviders = nil
+	s.modelsCache = nil
 	s.modelsMu.Unlock()
 	return s.server.Shutdown(ctx)
 }

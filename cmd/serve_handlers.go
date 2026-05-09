@@ -1164,6 +1164,13 @@ func (s *serveServer) handleProviders(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+const serveModelsCacheTTL = 15 * time.Minute
+
+type serveModelsCacheEntry struct {
+	models    []llm.ModelInfo
+	expiresAt time.Time
+}
+
 func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
@@ -1178,11 +1185,8 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-
 	models := make([]llm.ModelInfo, 0)
-	// Openrouter ships hundreds of models — going to the upstream API on every
+	// OpenRouter ships hundreds of models — going to the upstream API on every
 	// popover open would block the UI and cost tokens. The warm cache (6h TTL,
 	// background refresh on stale) gives us snappy opens after the first hit.
 	pc, hasCfg := s.cfgRef.Providers[effectiveName]
@@ -1197,33 +1201,26 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(models) == 0 {
+		models = s.getCachedModelsForProvider(effectiveName)
+	}
+	if len(models) == 0 {
+		// Prefer the already-available local model lists exposed by /v1/providers
+		// (config + curated defaults) so the web UI can finish booting without
+		// waiting on an upstream model-list round trip.
+		models = s.getLocalModelsForProvider(effectiveName, queryProvider)
+	}
+	if len(models) == 0 {
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
 		if lister, ok := provider.(interface {
 			ListModels(context.Context) ([]llm.ModelInfo, error)
 		}); ok {
 			listed, err := lister.ListModels(ctx)
 			if err == nil {
+				s.setCachedModelsForProvider(effectiveName, listed)
 				models = listed
 			} else if !errors.Is(err, llm.ErrListModelsUnsupported) {
 				s.verboseLog("ListModels(%q) failed: %v", effectiveName, err)
-			}
-		}
-	}
-
-	if len(models) == 0 {
-		if pc, ok := s.cfgRef.Providers[effectiveName]; ok {
-			if pc.Model != "" {
-				models = append(models, llm.ModelInfo{ID: pc.Model})
-			}
-		} else if queryProvider == "" {
-			if providerCfg := s.cfgRef.GetActiveProviderConfig(); providerCfg != nil {
-				if providerCfg.Model != "" {
-					models = append(models, llm.ModelInfo{ID: providerCfg.Model})
-				}
-			}
-		}
-		if curated := llm.ResolveProviderModelIDs(effectiveName); len(curated) > 0 {
-			for _, id := range curated {
-				models = append(models, llm.ModelInfo{ID: id})
 			}
 		}
 	}
@@ -1273,6 +1270,74 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 		"object": "list",
 		"data":   items,
 	})
+}
+
+func appendModelIDs(dst []llm.ModelInfo, ids []string) []llm.ModelInfo {
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		dst = append(dst, llm.ModelInfo{ID: id})
+	}
+	return dst
+}
+
+func cloneModelInfos(models []llm.ModelInfo) []llm.ModelInfo {
+	if len(models) == 0 {
+		return nil
+	}
+	cloned := make([]llm.ModelInfo, len(models))
+	copy(cloned, models)
+	return cloned
+}
+
+func (s *serveServer) getLocalModelsForProvider(effectiveName, queryProvider string) []llm.ModelInfo {
+	models := make([]llm.ModelInfo, 0)
+	if pc, ok := s.cfgRef.Providers[effectiveName]; ok {
+		models = appendModelIDs(models, pc.Models)
+		if id := strings.TrimSpace(pc.Model); id != "" {
+			models = append(models, llm.ModelInfo{ID: id})
+		}
+	} else if queryProvider == "" {
+		if providerCfg := s.cfgRef.GetActiveProviderConfig(); providerCfg != nil {
+			models = appendModelIDs(models, providerCfg.Models)
+			if id := strings.TrimSpace(providerCfg.Model); id != "" {
+				models = append(models, llm.ModelInfo{ID: id})
+			}
+		}
+	}
+	return appendModelIDs(models, llm.ResolveProviderModelIDs(effectiveName))
+}
+
+func (s *serveServer) getCachedModelsForProvider(name string) []llm.ModelInfo {
+	s.modelsMu.Lock()
+	defer s.modelsMu.Unlock()
+
+	if entry, ok := s.modelsCache[name]; ok {
+		if time.Now().Before(entry.expiresAt) {
+			return cloneModelInfos(entry.models)
+		}
+		delete(s.modelsCache, name)
+	}
+	return nil
+}
+
+func (s *serveServer) setCachedModelsForProvider(name string, models []llm.ModelInfo) {
+	if len(models) == 0 {
+		return
+	}
+
+	s.modelsMu.Lock()
+	defer s.modelsMu.Unlock()
+
+	if s.modelsCache == nil {
+		s.modelsCache = make(map[string]serveModelsCacheEntry)
+	}
+	s.modelsCache[name] = serveModelsCacheEntry{
+		models:    cloneModelInfos(models),
+		expiresAt: time.Now().Add(serveModelsCacheTTL),
+	}
 }
 
 func (s *serveServer) getModelsProvider(name string) (llm.Provider, string, error) {

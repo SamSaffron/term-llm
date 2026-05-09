@@ -78,6 +78,33 @@ type stagedProvider struct {
 	closeFirst    sync.Once
 }
 
+type countingListModelsProvider struct {
+	name   string
+	models []llm.ModelInfo
+	calls  int32
+}
+
+func (p *countingListModelsProvider) Name() string { return p.name }
+
+func (p *countingListModelsProvider) Credential() string { return "mock" }
+
+func (p *countingListModelsProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
+
+func (p *countingListModelsProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	return nil, errors.New("not used in test")
+}
+
+func (p *countingListModelsProvider) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
+	atomic.AddInt32(&p.calls, 1)
+	out := make([]llm.ModelInfo, len(p.models))
+	copy(out, p.models)
+	return out, nil
+}
+
+func (p *countingListModelsProvider) CallCount() int {
+	return int(atomic.LoadInt32(&p.calls))
+}
+
 func newStagedProvider(firstChunk, secondChunk string) *stagedProvider {
 	return &stagedProvider{
 		firstChunk:    firstChunk,
@@ -8260,6 +8287,87 @@ func TestHandleModels_WithProviderParam(t *testing.T) {
 	srv.handleModels(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 for unknown provider", rr.Code)
+	}
+}
+
+func TestHandleModels_PrefersLocalModelsWithoutUpstreamList(t *testing.T) {
+	provider := &countingListModelsProvider{
+		name:   "acme",
+		models: []llm.ModelInfo{{ID: "from-upstream"}},
+	}
+	srv := &serveServer{
+		cfgRef: &config.Config{
+			DefaultProvider: "acme",
+			Providers: map[string]config.ProviderConfig{
+				"acme": {
+					Type:    config.ProviderTypeOpenAICompat,
+					BaseURL: "http://example.invalid/v1",
+					Model:   "acme-pro",
+					Models:  []string{"acme-fast", "acme-pro"},
+				},
+			},
+		},
+		modelsProviders: map[string]llm.Provider{"acme": provider},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	rr := httptest.NewRecorder()
+	srv.handleModels(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+	if calls := provider.CallCount(); calls != 0 {
+		t.Fatalf("ListModels call count = %d, want 0", calls)
+	}
+
+	var result struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
+		t.Fatalf("json decode: %v", err)
+	}
+	got := make([]string, 0, len(result.Data))
+	for _, item := range result.Data {
+		got = append(got, item.ID)
+	}
+	if !reflect.DeepEqual(got, []string{"acme-pro", "acme-fast"}) {
+		t.Fatalf("model ids = %v, want [acme-pro acme-fast]", got)
+	}
+}
+
+func TestHandleModels_CachesUpstreamListResults(t *testing.T) {
+	provider := &countingListModelsProvider{
+		name: "custom",
+		models: []llm.ModelInfo{
+			{ID: "custom-a"},
+			{ID: "custom-b"},
+		},
+	}
+	srv := &serveServer{
+		cfgRef: &config.Config{
+			DefaultProvider: "custom",
+			Providers: map[string]config.ProviderConfig{
+				"custom": {
+					Type:    config.ProviderTypeOpenAICompat,
+					BaseURL: "http://example.invalid/v1",
+				},
+			},
+		},
+		modelsProviders: map[string]llm.Provider{"custom": provider},
+	}
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		rr := httptest.NewRecorder()
+		srv.handleModels(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("request %d status = %d, want 200; body: %s", i+1, rr.Code, rr.Body.String())
+		}
+	}
+	if calls := provider.CallCount(); calls != 1 {
+		t.Fatalf("ListModels call count = %d, want 1", calls)
 	}
 }
 
