@@ -35,6 +35,67 @@ func TestParseModelEffort(t *testing.T) {
 	}
 }
 
+func TestOpenAIProviderStreamUsesMessagesForContinuationRequests(t *testing.T) {
+	var got struct {
+		PreviousResponseID string               `json:"previous_response_id,omitempty"`
+		Input              []ResponsesInputItem `json:"input"`
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.completed\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_next\"}}\n\n"))
+	}))
+	defer ts.Close()
+
+	provider := &OpenAIProvider{
+		apiKey: "test-key",
+		model:  "gpt-4.1",
+		responsesClient: &ResponsesClient{
+			BaseURL:        ts.URL,
+			GetAuthHeader:  func() string { return "Bearer test-key" },
+			HTTPClient:     ts.Client(),
+			LastResponseID: "resp_prev",
+		},
+	}
+
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{
+			SystemText("Be concise"),
+			UserText("old question"),
+			AssistantText("old answer"),
+			UserText("new question"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+
+	for {
+		ev, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv() error = %v", err)
+		}
+		if ev.Type == EventDone {
+			break
+		}
+	}
+
+	if got.PreviousResponseID != "resp_prev" {
+		t.Fatalf("previous_response_id = %q, want %q", got.PreviousResponseID, "resp_prev")
+	}
+	if len(got.Input) != 1 {
+		t.Fatalf("expected only latest user item, got %d items: %+v", len(got.Input), got.Input)
+	}
+	if got.Input[0].Type != "message" || got.Input[0].Role != "user" || got.Input[0].Content != "new question" {
+		t.Fatalf("unexpected continuation input: %+v", got.Input[0])
+	}
+}
+
 func TestOpenAIProviderStreamSendsExplicitParallelToolCallsFalse(t *testing.T) {
 	var got struct {
 		ParallelToolCalls *bool             `json:"parallel_tool_calls,omitempty"`

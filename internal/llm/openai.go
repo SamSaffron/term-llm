@@ -126,7 +126,7 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 
 	responsesReq := ResponsesRequest{
 		Model:          model,
-		Input:          BuildResponsesInput(req.Messages),
+		Messages:       req.Messages,
 		Tools:          tools,
 		Include:        []string{"reasoning.encrypted_content"},
 		PromptCacheKey: req.SessionID,
@@ -157,6 +157,7 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 	}
 
 	if req.Debug {
+		responsesReq.Input = BuildResponsesInput(req.Messages)
 		systemPreview := collectRoleText(req.Messages, RoleSystem)
 		userPreview := collectRoleText(req.Messages, RoleUser)
 		fmt.Fprintln(os.Stderr, "=== DEBUG: OpenAI Stream Request ===")

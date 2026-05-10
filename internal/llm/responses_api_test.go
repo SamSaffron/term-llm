@@ -1210,6 +1210,61 @@ func TestFilterToNewInput_ToolFollowUpPreservesTrailingOutputsAndUserMessages(t 
 	}
 }
 
+func TestBuildResponsesContinuationInput_ReturnsLatestUserTurn(t *testing.T) {
+	messages := []Message{
+		SystemText("Be concise"),
+		UserText("old question"),
+		AssistantText("old answer"),
+		UserText("new question"),
+	}
+
+	got := BuildResponsesContinuationInput(messages)
+
+	if len(got) != 1 {
+		t.Fatalf("expected only latest user item, got %d items: %+v", len(got), got)
+	}
+	if got[0].Type != "message" || got[0].Role != "user" || got[0].Content != "new question" {
+		t.Fatalf("unexpected continuation input: %+v", got[0])
+	}
+}
+
+func TestBuildResponsesContinuationInput_PreservesTrailingToolResults(t *testing.T) {
+	messages := []Message{
+		SystemText("Be concise"),
+		UserText("describe this image"),
+		{
+			Role: RoleAssistant,
+			Parts: []Part{{
+				Type: PartToolCall,
+				ToolCall: &ToolCall{
+					ID:        "call_img",
+					Name:      "view_image",
+					Arguments: []byte(`{"path":"img.png"}`),
+				},
+			}},
+		},
+		ToolResultMessageFromOutput("call_img", "view_image", ToolOutput{
+			Content: "loaded",
+			ContentParts: []ToolContentPart{{
+				Type:      ToolContentPartImageData,
+				ImageData: &ToolImageData{MediaType: "image/png", Base64: "aGVsbG8="},
+			}},
+		}, nil),
+	}
+
+	got := BuildResponsesContinuationInput(messages)
+
+	if len(got) != 2 {
+		t.Fatalf("expected trailing tool output and synthetic user message, got %d items: %+v", len(got), got)
+	}
+	if got[0].Type != "function_call_output" || got[0].CallID != "call_img" {
+		t.Fatalf("expected first item function_call_output for call_img, got %+v", got[0])
+	}
+	if got[1].Type != "message" || got[1].Role != "user" {
+		t.Fatalf("expected second item trailing user message, got %+v", got[1])
+	}
+}
+
 func TestResponsesClientStream_Retries404WithFullHistory(t *testing.T) {
 	type capturedRequest struct {
 		PreviousResponseID string               `json:"previous_response_id"`

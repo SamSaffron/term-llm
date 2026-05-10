@@ -102,9 +102,9 @@ func (c *ResponsesClient) writeResponsesWebSocketRequestLocked(conn *websocket.C
 	return nil
 }
 
-func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req ResponsesRequest, fullInput []ResponsesInputItem, debugRaw bool, responseStateGeneration uint64) (Stream, error) {
+func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req ResponsesRequest, buildFullInput func() []ResponsesInputItem, debugRaw bool, responseStateGeneration uint64) (Stream, error) {
 	c.wsMu.Lock()
-	wireReq := c.prepareWebSocketContinuationLocked(req, fullInput)
+	wireReq := c.prepareWebSocketContinuationLocked(req, buildFullInput)
 
 	conn, reused, err := c.ensureWebSocket(ctx, wireReq)
 	if err != nil {
@@ -180,7 +180,7 @@ func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req Respo
 					c.wsLastRequest = nil
 					c.wsLastResponseItems = nil
 					wireReq.PreviousResponseID = ""
-					wireReq.Input = fullInput
+					wireReq.Input = buildFullInput()
 					handler = newResponsesStreamEventHandler(c, responseStateGeneration, debugRaw, "Responses WebSocket", c.websocketServerStateEnabled())
 					if debugRaw {
 						DebugRawSection(debugRaw, "Responses WebSocket Full-State Retry", err.Error())
@@ -203,7 +203,7 @@ func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req Respo
 			return err
 		}
 		fullReq := wireReq
-		fullReq.Input = append([]ResponsesInputItem(nil), fullInput...)
+		fullReq.Input = append([]ResponsesInputItem(nil), buildFullInput()...)
 		fullReq.PreviousResponseID = ""
 		c.wsLastRequest = &fullReq
 		c.wsLastResponseItems = handler.OutputItems()
@@ -224,30 +224,39 @@ func isPreviousResponseIDRejected(err error) bool {
 	return strings.Contains(msg, "previous_response_id") && (strings.Contains(msg, "unsupported") || strings.Contains(msg, "not found"))
 }
 
-func (c *ResponsesClient) prepareWebSocketContinuationLocked(req ResponsesRequest, fullInput []ResponsesInputItem) ResponsesRequest {
+func (c *ResponsesClient) prepareWebSocketContinuationLocked(req ResponsesRequest, buildFullInput func() []ResponsesInputItem) ResponsesRequest {
 	if !c.websocketServerStateEnabled() || c.LastResponseID == "" {
+		if req.Input == nil {
+			req.Input = buildFullInput()
+		}
 		return req
 	}
 
-	fullReq := req
-	fullReq.Input = append([]ResponsesInputItem(nil), fullInput...)
-	fullReq.PreviousResponseID = ""
+	if req.PreviousResponseID == "" {
+		req.PreviousResponseID = c.LastResponseID
+	}
 
 	if c.wsLastRequest == nil {
 		req.PreviousResponseID = ""
-		req.Input = fullInput
+		req.Input = buildFullInput()
 		return req
 	}
 
 	prevComparable := responsesRequestNonInputComparable(*c.wsLastRequest)
-	currentComparable := responsesRequestNonInputComparable(fullReq)
+	currentComparable := responsesRequestNonInputComparable(req)
 	if !reflect.DeepEqual(prevComparable, currentComparable) {
 		// Tool schemas, model parameters, or other non-input fields changed. Start a
 		// fresh chain instead of risking previous_response_id with incompatible state.
 		req.PreviousResponseID = ""
-		req.Input = fullInput
+		req.Input = buildFullInput()
 		return req
 	}
+
+	if req.Input != nil {
+		return req
+	}
+
+	fullInput := buildFullInput()
 
 	baseline := append([]ResponsesInputItem{}, c.wsLastRequest.Input...)
 	baseline = append(baseline, c.wsLastResponseItems...)

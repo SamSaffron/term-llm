@@ -65,6 +65,7 @@ type ResponsesRequest struct {
 	Model              string               `json:"model"`
 	Instructions       string               `json:"instructions,omitempty"` // System instructions (alternative to developer-role input items)
 	Input              []ResponsesInputItem `json:"input"`
+	Messages           []Message            `json:"-"`               // Optional raw transcript for lazy input materialization
 	Tools              []any                `json:"tools,omitempty"` // Can contain ResponsesTool or ResponsesWebSearchTool
 	ToolChoice         any                  `json:"tool_choice,omitempty"`
 	ParallelToolCalls  *bool                `json:"parallel_tool_calls,omitempty"`
@@ -237,9 +238,7 @@ func BuildResponsesInputWithInstructions(messages []Message) (instructions strin
 	return strings.Join(systemParts, "\n\n"), input
 }
 
-// BuildResponsesInput converts []Message to Open Responses input format
-func BuildResponsesInput(messages []Message) []ResponsesInputItem {
-	messages = sanitizeToolHistory(messages)
+func buildResponsesInputItems(messages []Message) []ResponsesInputItem {
 	var inputItems []ResponsesInputItem
 	for _, msg := range messages {
 		if msg.Role == RoleSystem || msg.Role == RoleDeveloper {
@@ -249,6 +248,49 @@ func BuildResponsesInput(messages []Message) []ResponsesInputItem {
 		}
 	}
 	return inputItems
+}
+
+// BuildResponsesInput converts []Message to Open Responses input format.
+func BuildResponsesInput(messages []Message) []ResponsesInputItem {
+	return buildResponsesInputItems(sanitizeToolHistory(messages))
+}
+
+// BuildResponsesContinuationInput converts only the newest turn payload needed for a
+// server-state continuation. Unlike BuildResponsesInput it intentionally skips
+// whole-transcript tool-history sanitization so trailing tool results can be sent
+// back against server-side conversation state without rebuilding earlier turns.
+func BuildResponsesContinuationInput(messages []Message) []ResponsesInputItem {
+	messages = FilterConversationMessages(messages)
+	if len(messages) == 0 {
+		return nil
+	}
+
+	start := len(messages)
+	sawToolResult := false
+	for start > 0 {
+		msg := messages[start-1]
+		if msg.Role == RoleUser && !sawToolResult {
+			start--
+			continue
+		}
+		if msg.Role == RoleTool {
+			sawToolResult = true
+			start--
+			continue
+		}
+		break
+	}
+	if !sawToolResult {
+		start = 0
+		for i := len(messages) - 1; i >= 0; i-- {
+			if messages[i].Role == RoleUser {
+				start = i
+				break
+			}
+		}
+	}
+
+	return buildResponsesInputItems(messages[start:])
 }
 
 // buildResponsesInputForRole converts a single non-system message to input items.
@@ -536,18 +578,55 @@ func cloneResponsesClientFreshConversation(c *ResponsesClient) *ResponsesClient 
 // Stream makes a streaming request to the Responses API and returns events via a Stream
 func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debugRaw bool) (Stream, error) {
 	fullInput := req.Input
+	fullInputBuilt := req.Input != nil
+	buildFullInput := func() []ResponsesInputItem {
+		if fullInputBuilt {
+			return fullInput
+		}
+		fullInput = BuildResponsesInput(req.Messages)
+		fullInputBuilt = true
+		return fullInput
+	}
+
+	continuationInput := []ResponsesInputItem(nil)
+	continuationBuilt := false
+	buildContinuationInput := func() []ResponsesInputItem {
+		if continuationBuilt {
+			return continuationInput
+		}
+		if len(req.Messages) > 0 {
+			continuationInput = BuildResponsesContinuationInput(req.Messages)
+		} else {
+			continuationInput = filterToNewInput(buildFullInput())
+		}
+		continuationBuilt = true
+		return continuationInput
+	}
+
 	lastResponseID, responseStateGeneration := c.responseState()
 
 	wsReq := req
-
 	httpPayload := req
-	if !c.DisableServerState && lastResponseID != "" {
-		httpPayload.PreviousResponseID = lastResponseID
-		httpPayload.Input = filterToNewInput(httpPayload.Input)
+	if lastResponseID != "" {
+		if c.websocketServerStateEnabled() {
+			wsReq.PreviousResponseID = lastResponseID
+			wsReq.Input = buildContinuationInput()
+		} else {
+			wsReq.Input = buildFullInput()
+		}
+		if !c.DisableServerState {
+			httpPayload.PreviousResponseID = lastResponseID
+			httpPayload.Input = buildContinuationInput()
+		} else {
+			httpPayload.Input = buildFullInput()
+		}
+	} else {
+		wsReq.Input = buildFullInput()
+		httpPayload.Input = fullInput
 	}
 
 	if c.UseWebSocket && !c.websocketDisabled {
-		stream, err := c.streamWebSocketPrepared(ctx, wsReq, fullInput, debugRaw, responseStateGeneration)
+		stream, err := c.streamWebSocketPrepared(ctx, wsReq, buildFullInput, debugRaw, responseStateGeneration)
 		if err == nil {
 			return &responsesWebSocketFallbackStream{
 				current: stream,
@@ -556,7 +635,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 						if debugRaw {
 							DebugRawSection(debugRaw, "Responses WebSocket Retry", "stream failed before emitting events")
 						}
-						return c.streamWebSocketPrepared(ctx, wsReq, fullInput, debugRaw, responseStateGeneration)
+						return c.streamWebSocketPrepared(ctx, wsReq, buildFullInput, debugRaw, responseStateGeneration)
 					},
 					func() (Stream, error) {
 						c.websocketDisabled = true
@@ -564,7 +643,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 						if debugRaw {
 							DebugRawSection(debugRaw, "Responses WebSocket Fallback", "stream failed before emitting events")
 						}
-						return c.streamHTTPPrepared(ctx, httpPayload, fullInput, lastResponseID, responseStateGeneration, debugRaw)
+						return c.streamHTTPPrepared(ctx, httpPayload, buildFullInput, lastResponseID, responseStateGeneration, debugRaw)
 					},
 				},
 			}, nil
@@ -576,10 +655,10 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 		}
 	}
 
-	return c.streamHTTPPrepared(ctx, httpPayload, fullInput, lastResponseID, responseStateGeneration, debugRaw)
+	return c.streamHTTPPrepared(ctx, httpPayload, buildFullInput, lastResponseID, responseStateGeneration, debugRaw)
 }
 
-func (c *ResponsesClient) streamHTTPPrepared(ctx context.Context, httpPayload ResponsesRequest, fullInput []ResponsesInputItem, lastResponseID string, responseStateGeneration uint64, debugRaw bool) (Stream, error) {
+func (c *ResponsesClient) streamHTTPPrepared(ctx context.Context, httpPayload ResponsesRequest, buildFullInput func() []ResponsesInputItem, lastResponseID string, responseStateGeneration uint64, debugRaw bool) (Stream, error) {
 	body, err := json.Marshal(httpPayload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
@@ -655,7 +734,7 @@ func (c *ResponsesClient) streamHTTPPrepared(ctx context.Context, httpPayload Re
 			c.clearLastResponseIDIfGeneration(responseStateGeneration)
 			retryPayload := httpPayload
 			retryPayload.PreviousResponseID = ""
-			retryPayload.Input = fullInput
+			retryPayload.Input = buildFullInput()
 			// Re-marshal without previous_response_id
 			body, err = json.Marshal(retryPayload)
 			if err != nil {
