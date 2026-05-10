@@ -550,7 +550,6 @@ CREATE TABLE IF NOT EXISTS job_runs_v2 (
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_v2_next_run_at ON jobs_v2(next_run_at);
-CREATE INDEX IF NOT EXISTS idx_job_runs_v2_job_id ON job_runs_v2(job_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_job_runs_v2_status ON job_runs_v2(status, scheduled_for);
 
 CREATE TABLE IF NOT EXISTS job_run_events_v2 (
@@ -614,6 +613,15 @@ func newJobsV2Manager(dbPath string, workers int, llmExec serveJobsExecutor) (*j
 	for _, migration := range migrations {
 		_, _ = db.Exec(migration)
 	}
+	// Replace the narrow job_id/created_at index with a covering index for the
+	// run-summary API. Large stdout/stderr/thinking/response columns sit before
+	// summary metadata in the table record; without a covering index, SQLite
+	// walks overflow payload pages just to list recent runs.
+	if _, err := db.Exec(jobsV2RunSummaryIndexSQL); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("init jobs run summary index: %w", err)
+	}
+	_, _ = db.Exec(`DROP INDEX IF EXISTS idx_job_runs_v2_job_id`)
 
 	mgr := &jobsV2Manager{
 		db:                 db,
@@ -1640,9 +1648,13 @@ func (m *jobsV2Manager) ListRunSummaries(jobID string, limit, offset int) ([]job
 	return m.listRuns(jobID, limit, offset, false)
 }
 
+const jobsV2RunSummaryIndexName = "idx_job_runs_v2_summary_by_job_created"
+
+const jobsV2RunSummaryIndexSQL = "CREATE INDEX IF NOT EXISTS " + jobsV2RunSummaryIndexName + " ON job_runs_v2(job_id, created_at DESC, id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, exit_reason, truncated, turn_count, input_tokens, output_tokens, updated_at)"
+
 const jobsV2RunFullColumns = "id, job_id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, stdout, stderr, thinking, response, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at"
 
-const jobsV2RunSummaryColumns = "id, job_id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, NULL AS stdout, NULL AS stderr, NULL AS thinking, NULL AS response, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at"
+const jobsV2RunSummaryColumns = "id, job_id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at"
 
 func (m *jobsV2Manager) listRuns(jobID string, limit, offset int, includeOutput bool) ([]jobsV2Run, int, error) {
 	if limit <= 0 {
@@ -1678,7 +1690,13 @@ func (m *jobsV2Manager) listRuns(jobID string, limit, offset int, includeOutput 
 	defer rows.Close()
 	runs := make([]jobsV2Run, 0, limit)
 	for rows.Next() {
-		run, err := scanRunV2(rows)
+		var run jobsV2Run
+		var err error
+		if includeOutput {
+			run, err = scanRunV2(rows)
+		} else {
+			run, err = scanRunSummaryV2(rows)
+		}
 		if err != nil {
 			return nil, 0, err
 		}
@@ -1816,6 +1834,65 @@ func scanRunV2(scanner interface{ Scan(dest ...any) error }) (jobsV2Run, error) 
 	if err != nil {
 		return jobsV2Run{}, err
 	}
+	applyRunV2NullableFields(&run, status, workerID, sessionID, startedAt, finishedAt, exitCode, errText, exitReason, truncatedInt, turnCount, inputTokens, outputTokens)
+	if stdout.Valid {
+		run.Stdout = stdout.String
+	}
+	if stderr.Valid {
+		run.Stderr = stderr.String
+	}
+	if thinking.Valid {
+		run.Thinking = thinking.String
+	}
+	if response.Valid {
+		run.Response = response.String
+	}
+	return run, nil
+}
+
+func scanRunSummaryV2(scanner interface{ Scan(dest ...any) error }) (jobsV2Run, error) {
+	var run jobsV2Run
+	var status string
+	var workerID sql.NullString
+	var sessionID sql.NullString
+	var startedAt sql.NullTime
+	var finishedAt sql.NullTime
+	var exitCode sql.NullInt64
+	var errText sql.NullString
+	var exitReason sql.NullString
+	var truncatedInt sql.NullInt64
+	var turnCount sql.NullInt64
+	var inputTokens sql.NullInt64
+	var outputTokens sql.NullInt64
+	err := scanner.Scan(
+		&run.ID,
+		&run.JobID,
+		&run.Attempt,
+		&run.Trigger,
+		&run.ScheduledFor,
+		&status,
+		&workerID,
+		&sessionID,
+		&startedAt,
+		&finishedAt,
+		&exitCode,
+		&errText,
+		&exitReason,
+		&truncatedInt,
+		&turnCount,
+		&inputTokens,
+		&outputTokens,
+		&run.CreatedAt,
+		&run.UpdatedAt,
+	)
+	if err != nil {
+		return jobsV2Run{}, err
+	}
+	applyRunV2NullableFields(&run, status, workerID, sessionID, startedAt, finishedAt, exitCode, errText, exitReason, truncatedInt, turnCount, inputTokens, outputTokens)
+	return run, nil
+}
+
+func applyRunV2NullableFields(run *jobsV2Run, status string, workerID, sessionID sql.NullString, startedAt, finishedAt sql.NullTime, exitCode sql.NullInt64, errText, exitReason sql.NullString, truncatedInt, turnCount, inputTokens, outputTokens sql.NullInt64) {
 	run.Status = jobsV2RunStatus(status)
 	if workerID.Valid {
 		run.WorkerID = workerID.String
@@ -1838,18 +1915,6 @@ func scanRunV2(scanner interface{ Scan(dest ...any) error }) (jobsV2Run, error) 
 	if errText.Valid {
 		run.Error = errText.String
 	}
-	if stdout.Valid {
-		run.Stdout = stdout.String
-	}
-	if stderr.Valid {
-		run.Stderr = stderr.String
-	}
-	if thinking.Valid {
-		run.Thinking = thinking.String
-	}
-	if response.Valid {
-		run.Response = response.String
-	}
 	if exitReason.Valid {
 		run.ExitReason = exitReason.String
 	}
@@ -1865,7 +1930,6 @@ func scanRunV2(scanner interface{ Scan(dest ...any) error }) (jobsV2Run, error) 
 	if outputTokens.Valid {
 		run.OutputTokens = int(outputTokens.Int64)
 	}
-	return run, nil
 }
 
 func parseTriggerConfig(tt jobsV2TriggerType, raw json.RawMessage, scheduleTZ string) (jobsV2TriggerConfig, error) {

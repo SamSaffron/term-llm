@@ -27,6 +27,38 @@ func TestNewJobsV2ManagerDoesNotForceSingleConnectionForFileBackedDB(t *testing.
 	}
 }
 
+func TestJobsV2RunSummaryUsesCoveringIndex(t *testing.T) {
+	mgr, err := newJobsV2Manager(":memory:", 0, nil)
+	if err != nil {
+		t.Fatalf("newJobsV2Manager failed: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+
+	rows, err := mgr.db.Query("EXPLAIN QUERY PLAN SELECT "+jobsV2RunSummaryColumns+" FROM job_runs_v2 WHERE job_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?", "job_test", 50, 0)
+	if err != nil {
+		t.Fatalf("explain summary query: %v", err)
+	}
+	defer rows.Close()
+
+	var details []string
+	for rows.Next() {
+		var id, parent, notused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+			t.Fatalf("scan explain row: %v", err)
+		}
+		details = append(details, detail)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("explain rows: %v", err)
+	}
+
+	plan := strings.Join(details, "\n")
+	if !strings.Contains(plan, "USING COVERING INDEX "+jobsV2RunSummaryIndexName) {
+		t.Fatalf("summary query plan = %q, want covering summary index", plan)
+	}
+}
+
 func TestJobsV2OnceProgramRunLifecycle(t *testing.T) {
 	mgr, err := newJobsV2Manager(":memory:", 1, nil)
 	if err != nil {
