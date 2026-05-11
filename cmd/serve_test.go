@@ -3095,6 +3095,47 @@ func TestEnsureImageServeable_CopiesFromWriteDir(t *testing.T) {
 	}
 }
 
+func TestEnsureImageServeable_ReusesExistingMaterializedCopyWithoutDirectoryWrites(t *testing.T) {
+	outputDir := t.TempDir()
+	writeDir := t.TempDir()
+	writeDirImg := filepath.Join(writeDir, "tool-output.png")
+	if err := os.WriteFile(writeDirImg, []byte("tool-png"), 0644); err != nil {
+		t.Fatalf("write writeDir image: %v", err)
+	}
+
+	srv := &serveServer{
+		cfg:    serveServerConfig{writeDirs: []string{writeDir}},
+		cfgRef: &config.Config{},
+	}
+	srv.cfgRef.Image.OutputDir = outputDir
+
+	result, ok := srv.ensureImageServeable(writeDirImg)
+	if !ok {
+		t.Fatal("first ensureImageServeable should accept images from configured writeDirs")
+	}
+
+	fixedTime := time.Unix(123, 0)
+	if err := os.Chtimes(outputDir, fixedTime, fixedTime); err != nil {
+		t.Fatalf("set output dir times: %v", err)
+	}
+
+	resultAgain, ok := srv.ensureImageServeable(writeDirImg)
+	if !ok {
+		t.Fatal("second ensureImageServeable should accept images from configured writeDirs")
+	}
+	if resultAgain != result {
+		t.Fatalf("second ensureImageServeable result = %q, want stable %q", resultAgain, result)
+	}
+
+	info, err := os.Stat(outputDir)
+	if err != nil {
+		t.Fatalf("stat output dir: %v", err)
+	}
+	if !info.ModTime().Equal(fixedTime) {
+		t.Fatalf("output dir modtime = %v, want unchanged %v", info.ModTime(), fixedTime)
+	}
+}
+
 func TestHandleFile_ServesFileAndRejectsTraversal(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "video.mp4"), []byte("fake-video"), 0644); err != nil {

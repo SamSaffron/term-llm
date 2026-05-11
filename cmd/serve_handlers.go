@@ -636,15 +636,38 @@ func (s *serveServer) ensureImageServeable(imgPath string) (string, bool) {
 
 	// Use a deterministic content-derived name so repeated history fetches
 	// don't mint fresh image URLs or leak duplicate copies into the output dir.
+	hash := sha256.New()
+	limited := &io.LimitedReader{R: src, N: maxMaterializedSessionImageBytes + 1}
+	written, err := io.Copy(hash, limited)
+	if err != nil {
+		log.Printf("[serve] ensureImageServeable: hash %s: %v", absImg, err)
+		return "", false
+	}
+	if written > maxMaterializedSessionImageBytes {
+		log.Printf("[serve] ensureImageServeable: refusing image larger than %d bytes: %s", maxMaterializedSessionImageBytes, absImg)
+		return "", false
+	}
+
+	sum := hash.Sum(nil)
+	destName := fmt.Sprintf("serve-%s-%s", hex.EncodeToString(sum[:16]), filepath.Base(absImg))
+	destPath := filepath.Join(absDir, destName)
+	if info, err := os.Stat(destPath); err == nil && !info.IsDir() {
+		return destPath, true
+	}
+	if _, err := src.Seek(0, io.SeekStart); err != nil {
+		log.Printf("[serve] ensureImageServeable: rewind %s: %v", absImg, err)
+		return "", false
+	}
+
 	tmpPath := filepath.Join(absDir, fmt.Sprintf("serve-%s-%s.tmp", randomSuffix(), filepath.Base(absImg)))
 	dst, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		log.Printf("[serve] ensureImageServeable: create %s: %v", tmpPath, err)
 		return "", false
 	}
-	hash := sha256.New()
-	limited := &io.LimitedReader{R: src, N: maxMaterializedSessionImageBytes + 1}
-	written, err := io.Copy(io.MultiWriter(dst, hash), limited)
+	copyHash := sha256.New()
+	limited = &io.LimitedReader{R: src, N: maxMaterializedSessionImageBytes + 1}
+	written, err = io.Copy(io.MultiWriter(dst, copyHash), limited)
 	if err != nil {
 		dst.Close()
 		os.Remove(tmpPath)
@@ -657,19 +680,18 @@ func (s *serveServer) ensureImageServeable(imgPath string) (string, bool) {
 		log.Printf("[serve] ensureImageServeable: refusing image larger than %d bytes: %s", maxMaterializedSessionImageBytes, absImg)
 		return "", false
 	}
+	if !bytes.Equal(copyHash.Sum(nil), sum) {
+		dst.Close()
+		os.Remove(tmpPath)
+		log.Printf("[serve] ensureImageServeable: source changed while materializing %s", absImg)
+		return "", false
+	}
 	if err := dst.Close(); err != nil {
 		os.Remove(tmpPath)
 		log.Printf("[serve] ensureImageServeable: close %s: %v", tmpPath, err)
 		return "", false
 	}
 
-	sum := hash.Sum(nil)
-	destName := fmt.Sprintf("serve-%s-%s", hex.EncodeToString(sum[:16]), filepath.Base(absImg))
-	destPath := filepath.Join(absDir, destName)
-	if info, err := os.Stat(destPath); err == nil && !info.IsDir() {
-		os.Remove(tmpPath)
-		return destPath, true
-	}
 	if err := os.Rename(tmpPath, destPath); err != nil {
 		if _, statErr := os.Stat(destPath); statErr == nil {
 			os.Remove(tmpPath)
