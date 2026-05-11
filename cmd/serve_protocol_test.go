@@ -63,6 +63,42 @@ func TestParseUserMessageContent_RejectsOversizedInlineImage(t *testing.T) {
 	}
 }
 
+func TestParseUserMessageContent_RejectsInvalidSmallInlineImage(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	content, err := json.Marshal([]map[string]any{{
+		"type":      "input_image",
+		"image_url": "data:image/png;base64,!!!=",
+		"filename":  "bad.png",
+	}})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	_, err = parseUserMessageContent(content)
+	if err == nil {
+		t.Fatal("parseUserMessageContent() error = nil, want decode error")
+	}
+	if !strings.Contains(err.Error(), "bad.png") || !strings.Contains(err.Error(), "decode base64") {
+		t.Fatalf("parseUserMessageContent() error = %v, want filename + decode error", err)
+	}
+}
+
+func TestDecodeUploadedFile_RejectsOversizedPayloadBeforeDecode(t *testing.T) {
+	b64 := strings.Repeat("A", base64.StdEncoding.EncodedLen(maxAttachmentBytes+1)-1) + "!"
+
+	_, err := decodeUploadedFile("too-large.bin", b64)
+	if err == nil {
+		t.Fatal("decodeUploadedFile() error = nil, want size limit error")
+	}
+	if !strings.Contains(err.Error(), fmt.Sprintf("exceeds %d MB limit", maxAttachmentBytes>>20)) {
+		t.Fatalf("decodeUploadedFile() error = %v, want size limit error", err)
+	}
+	if strings.Contains(err.Error(), "decode base64") {
+		t.Fatalf("decodeUploadedFile() error = %v, want size check before base64 decode", err)
+	}
+}
+
 func TestParseUserMessageContent_InlineImagesDoNotHitUploadsDir(t *testing.T) {
 	dataHome := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", dataHome)

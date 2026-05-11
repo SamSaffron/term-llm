@@ -111,15 +111,46 @@ const (
 	maxAttachmentBytes = 20 << 20 // 20 MB per file (decoded)
 )
 
+func decodedBase64Len(b64Data string) (int, error) {
+	if b64Data == "" {
+		return 0, nil
+	}
+	if len(b64Data)%4 != 0 {
+		return 0, fmt.Errorf("decode base64: invalid length %d", len(b64Data))
+	}
+	decodedLen := base64.StdEncoding.DecodedLen(len(b64Data))
+	if strings.HasSuffix(b64Data, "=") {
+		decodedLen--
+	}
+	if strings.HasSuffix(b64Data, "==") {
+		decodedLen--
+	}
+	return decodedLen, nil
+}
+
+func validateBase64Data(b64Data string) error {
+	decoder := base64.NewDecoder(base64.StdEncoding, strings.NewReader(b64Data))
+	var buf [4096]byte
+	if _, err := io.CopyBuffer(io.Discard, decoder, buf[:]); err != nil {
+		return fmt.Errorf("decode base64: %w", err)
+	}
+	return nil
+}
+
 func decodeUploadedFile(filename, b64Data string) ([]byte, error) {
-	raw, err := base64.StdEncoding.DecodeString(b64Data)
+	decodedLen, err := decodedBase64Len(b64Data)
+	if err != nil {
+		return nil, err
+	}
+	if decodedLen > maxAttachmentBytes {
+		return nil, fmt.Errorf("file %q exceeds %d MB limit", filename, maxAttachmentBytes>>20)
+	}
+	raw := make([]byte, decodedLen)
+	n, err := base64.StdEncoding.Decode(raw, []byte(b64Data))
 	if err != nil {
 		return nil, fmt.Errorf("decode base64: %w", err)
 	}
-	if len(raw) > maxAttachmentBytes {
-		return nil, fmt.Errorf("file %q exceeds %d MB limit", filename, maxAttachmentBytes>>20)
-	}
-	return raw, nil
+	return raw[:n], nil
 }
 
 // saveUploadedFile decodes base64 data and writes it to the uploads directory,
@@ -226,6 +257,24 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 					}
 					if filename == "" {
 						filename = "image"
+					}
+
+					decodedLen, err := decodedBase64Len(b64)
+					if err != nil {
+						return llm.Message{}, fmt.Errorf("decode attachment %q: %w", filename, err)
+					}
+					if decodedLen > maxAttachmentBytes {
+						return llm.Message{}, fmt.Errorf("file %q exceeds %d MB limit", filename, maxAttachmentBytes>>20)
+					}
+					if decodedLen <= maxLLMImageBytes {
+						if err := validateBase64Data(b64); err != nil {
+							return llm.Message{}, fmt.Errorf("decode attachment %q: %w", filename, err)
+						}
+						llmParts = append(llmParts, llm.Part{
+							Type:      llm.PartImage,
+							ImageData: &llm.ToolImageData{MediaType: mt, Base64: b64},
+						})
+						continue
 					}
 
 					raw, err := decodeUploadedFile(filename, b64)
