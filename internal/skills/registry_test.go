@@ -757,36 +757,8 @@ func TestDefaultRegistryConfig(t *testing.T) {
 func BenchmarkRegistryListRepeated(b *testing.B) {
 	const skillCount = 200
 
-	tmpDir := b.TempDir()
-	skillsDir := filepath.Join(tmpDir, "skills")
-	for i := 0; i < skillCount; i++ {
-		name := fmt.Sprintf("bench-skill-%03d", i)
-		skillDir := filepath.Join(skillsDir, name)
-		if err := os.MkdirAll(skillDir, 0o755); err != nil {
-			b.Fatalf("mkdir skill dir: %v", err)
-		}
-		content := fmt.Sprintf(`---
-name: %s
-description: "Benchmark skill %03d for repeated registry listing"
----
-
-# %s
-
-Instructions.
-`, name, i, name)
-		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
-			b.Fatalf("write SKILL.md: %v", err)
-		}
-	}
-
-	registry, err := NewRegistry(RegistryConfig{
-		IncludeProjectSkills:  false,
-		IncludeEcosystemPaths: false,
-	})
-	if err != nil {
-		b.Fatalf("NewRegistry: %v", err)
-	}
-	registry.searchPaths = []searchPath{{path: skillsDir, source: SourceUser}}
+	skillsDir := createBenchmarkSkills(b, skillCount)
+	registry := newBenchmarkRegistry(b, skillsDir)
 
 	if skills, err := registry.List(); err != nil {
 		b.Fatalf("warm List: %v", err)
@@ -805,4 +777,64 @@ Instructions.
 			b.Fatalf("List returned %d skills, want %d", len(skills), skillCount)
 		}
 	}
+}
+
+func BenchmarkRegistryListCold(b *testing.B) {
+	const skillCount = 200
+
+	skillsDir := createBenchmarkSkills(b, skillCount)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		registry := newBenchmarkRegistry(b, skillsDir)
+		skills, err := registry.List()
+		if err != nil {
+			b.Fatalf("List: %v", err)
+		}
+		if len(skills) != skillCount {
+			b.Fatalf("List returned %d skills, want %d", len(skills), skillCount)
+		}
+	}
+}
+
+func createBenchmarkSkills(b *testing.B, skillCount int) string {
+	b.Helper()
+
+	tmpDir := b.TempDir()
+	skillsDir := filepath.Join(tmpDir, "skills")
+	for i := 0; i < skillCount; i++ {
+		name := fmt.Sprintf("bench-skill-%03d", i)
+		skillDir := filepath.Join(skillsDir, name)
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			b.Fatalf("mkdir skill dir: %v", err)
+		}
+		content := fmt.Sprintf(`---
+name: %s
+description: "Benchmark skill %03d for registry listing"
+---
+
+# %s
+
+Instructions.
+`, name, i, name)
+		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+			b.Fatalf("write SKILL.md: %v", err)
+		}
+	}
+	return skillsDir
+}
+
+func newBenchmarkRegistry(b *testing.B, skillsDir string) *Registry {
+	b.Helper()
+
+	registry, err := NewRegistry(RegistryConfig{
+		IncludeProjectSkills:  false,
+		IncludeEcosystemPaths: false,
+	})
+	if err != nil {
+		b.Fatalf("NewRegistry: %v", err)
+	}
+	registry.searchPaths = []searchPath{{path: skillsDir, source: SourceUser}}
+	return registry
 }

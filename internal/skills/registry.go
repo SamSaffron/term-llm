@@ -271,11 +271,12 @@ func (r *Registry) HasAnySkill() (bool, error) {
 			}
 
 			skillDir := filepath.Join(sp.path, entry.Name())
-			if !IsSkillDir(skillDir) {
+			manifest, ok := findSkillManifest(skillDir)
+			if !ok {
 				continue
 			}
 
-			skill, err := LoadFromDir(skillDir, sp.source, false)
+			skill, err := loadFromSkillManifest(skillDir, manifest, sp.source, false)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "warning: skipping invalid skill %s: %v\n", skillDir, err)
 				continue
@@ -298,19 +299,24 @@ func (r *Registry) Get(name string) (*Skill, error) {
 		// If we have metadata only, load full content. If that cached path went
 		// stale, discard it and fall through to normal search-path resolution.
 		if !skill.IsLoaded() {
-			fullSkill, err := LoadFromDir(skill.SourcePath, skill.Source, true)
-			if err == nil {
-				if err := fullSkill.Validate(); err != nil {
-					delete(r.cache, name)
+			manifest, ok := findSkillManifest(skill.SourcePath)
+			if ok {
+				fullSkill, err := loadFromSkillManifest(skill.SourcePath, manifest, skill.Source, true)
+				if err == nil {
+					if err := fullSkill.Validate(); err != nil {
+						delete(r.cache, name)
+					} else {
+						r.cache[name] = fullSkill
+						return fullSkill, nil
+					}
 				} else {
-					r.cache[name] = fullSkill
-					return fullSkill, nil
+					delete(r.cache, name)
 				}
 			} else {
 				delete(r.cache, name)
 			}
 		} else {
-			if !IsSkillDir(skill.SourcePath) {
+			if _, ok := findSkillManifest(skill.SourcePath); !ok {
 				delete(r.cache, name)
 			} else {
 				return skill, nil
@@ -321,8 +327,9 @@ func (r *Registry) Get(name string) (*Skill, error) {
 	// The common case is a directory named after the skill.
 	for _, sp := range r.searchPaths {
 		skillDir := filepath.Join(sp.path, name)
-		if IsSkillDir(skillDir) {
-			skill, err := LoadFromDir(skillDir, sp.source, true)
+		manifest, ok := findSkillManifest(skillDir)
+		if ok {
+			skill, err := loadFromSkillManifest(skillDir, manifest, sp.source, true)
 			if err != nil {
 				return nil, fmt.Errorf("load skill %s: %w", name, err)
 			}
@@ -364,19 +371,27 @@ func (r *Registry) Get(name string) (*Skill, error) {
 // List returns all available skills (metadata only).
 // Each skill appears only once, with first-found taking precedence.
 func (r *Registry) List() ([]*Skill, error) {
-	fingerprint := r.searchPathsFingerprint()
-	if r.listCache != nil && fingerprint == r.listCacheFingerprint {
-		return cloneSkillSlice(r.listCache), nil
+	if r.listCache != nil {
+		fingerprint := r.searchPathsFingerprint()
+		if fingerprint == r.listCacheFingerprint {
+			return cloneSkillSlice(r.listCache), nil
+		}
 	}
 
 	seen := make(map[string]bool)
 	r.shadowCounts = make(map[string]int)
 	var skills []*Skill
+	var fingerprint strings.Builder
 
-	// Scan filesystem paths
+	// Scan filesystem paths, building the cache fingerprint from the same stat
+	// calls used to discover manifests. The first List() call is usually on a CLI
+	// startup path, so avoid an eager fingerprint pass that rereads every directory
+	// and stats every SKILL.md before immediately scanning again.
 	for _, sp := range r.searchPaths {
-		found, err := r.scanDir(sp.path, sp.source)
+		writeSearchPathFingerprintHeader(&fingerprint, sp)
+		found, err := r.scanDirWithFingerprint(sp.path, sp.source, &fingerprint)
 		if err != nil {
+			fingerprint.WriteString("!missing\n")
 			continue // Skip directories that don't exist or can't be read
 		}
 
@@ -398,7 +413,7 @@ func (r *Registry) List() ([]*Skill, error) {
 		return skills[i].Name < skills[j].Name
 	})
 
-	r.listCacheFingerprint = fingerprint
+	r.listCacheFingerprint = fingerprint.String()
 	r.listCache = cloneSkillSlice(skills)
 
 	return cloneSkillSlice(skills), nil
@@ -551,10 +566,7 @@ func cloneSkillToolDefs(in []SkillToolDef) []SkillToolDef {
 func (r *Registry) searchPathsFingerprint() string {
 	var sb strings.Builder
 	for _, sp := range r.searchPaths {
-		sb.WriteString(sp.path)
-		sb.WriteByte('\x00')
-		sb.WriteString(sp.source.SourceName())
-		sb.WriteByte('\n')
+		writeSearchPathFingerprintHeader(&sb, sp)
 
 		entries, err := os.ReadDir(sp.path)
 		if err != nil {
@@ -565,35 +577,40 @@ func (r *Registry) searchPathsFingerprint() string {
 			if !entry.IsDir() {
 				continue
 			}
-			fileName, info, ok := skillFileInfo(filepath.Join(sp.path, entry.Name()))
+			manifest, ok := findSkillManifest(filepath.Join(sp.path, entry.Name()))
 			if !ok {
 				continue
 			}
-			sb.WriteString(entry.Name())
-			sb.WriteByte('\x00')
-			sb.WriteString(fileName)
-			sb.WriteByte('\x00')
-			sb.WriteString(strconv.FormatInt(info.ModTime().UnixNano(), 10))
-			sb.WriteByte('\x00')
-			sb.WriteString(strconv.FormatInt(info.Size(), 10))
-			sb.WriteByte('\n')
+			writeSkillFingerprint(&sb, entry.Name(), manifest)
 		}
 	}
 	return sb.String()
 }
 
-func skillFileInfo(dir string) (string, os.FileInfo, bool) {
-	for _, fileName := range []string{"SKILL.md", "skill.md"} {
-		info, err := os.Stat(filepath.Join(dir, fileName))
-		if err == nil && !info.IsDir() {
-			return fileName, info, true
-		}
-	}
-	return "", nil, false
+func writeSearchPathFingerprintHeader(sb *strings.Builder, sp searchPath) {
+	sb.WriteString(sp.path)
+	sb.WriteByte('\x00')
+	sb.WriteString(sp.source.SourceName())
+	sb.WriteByte('\n')
+}
+
+func writeSkillFingerprint(sb *strings.Builder, dirName string, manifest skillManifest) {
+	sb.WriteString(dirName)
+	sb.WriteByte('\x00')
+	sb.WriteString(manifest.fileName)
+	sb.WriteByte('\x00')
+	sb.WriteString(strconv.FormatInt(manifest.info.ModTime().UnixNano(), 10))
+	sb.WriteByte('\x00')
+	sb.WriteString(strconv.FormatInt(manifest.info.Size(), 10))
+	sb.WriteByte('\n')
 }
 
 // scanDir scans a directory for skill subdirectories.
 func (r *Registry) scanDir(dir string, source SkillSource) ([]*Skill, error) {
+	return r.scanDirWithFingerprint(dir, source, nil)
+}
+
+func (r *Registry) scanDirWithFingerprint(dir string, source SkillSource, fingerprint *strings.Builder) ([]*Skill, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -606,12 +623,16 @@ func (r *Registry) scanDir(dir string, source SkillSource) ([]*Skill, error) {
 		}
 
 		skillDir := filepath.Join(dir, entry.Name())
-		if !IsSkillDir(skillDir) {
+		manifest, ok := findSkillManifest(skillDir)
+		if !ok {
 			continue
+		}
+		if fingerprint != nil {
+			writeSkillFingerprint(fingerprint, entry.Name(), manifest)
 		}
 
 		// Load metadata only for listing
-		skill, err := LoadFromDir(skillDir, source, false)
+		skill, err := loadFromSkillManifest(skillDir, manifest, source, false)
 		if err != nil {
 			// Skip invalid skills with a diagnostic
 			fmt.Fprintf(os.Stderr, "warning: skipping invalid skill %s: %v\n", skillDir, err)

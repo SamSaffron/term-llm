@@ -280,7 +280,10 @@ func extractExtrasFromNode(node *yaml.Node) (map[string]any, error) {
 // LoadFromDir loads a skill from a directory containing SKILL.md.
 // If loadBody is false, only metadata is loaded (for discovery).
 func LoadFromDir(dir string, source SkillSource, loadBody bool) (*Skill, error) {
-	// Try SKILL.md first, then skill.md (with warning)
+	// Try SKILL.md first, then skill.md (with warning). Preserve the historical
+	// behavior of falling back to lowercase only when the preferred file is known
+	// to be absent, so permission/symlink errors on SKILL.md are surfaced by the
+	// open below instead of being masked by skill.md.
 	skillPath := filepath.Join(dir, "SKILL.md")
 	if _, err := os.Stat(skillPath); os.IsNotExist(err) {
 		lowerPath := filepath.Join(dir, "skill.md")
@@ -291,7 +294,46 @@ func LoadFromDir(dir string, source SkillSource, loadBody bool) (*Skill, error) 
 			return nil, fmt.Errorf("SKILL.md not found in %s", dir)
 		}
 	}
+	return loadFromSkillFile(skillPath, dir, source, loadBody)
+}
 
+var skillManifestNames = [...]string{"SKILL.md", "skill.md"}
+
+type skillManifest struct {
+	fileName string
+	path     string
+	info     os.FileInfo
+}
+
+func findSkillManifest(dir string) (skillManifest, bool) {
+	upperPath := filepath.Join(dir, skillManifestNames[0])
+	info, err := os.Stat(upperPath)
+	if err == nil {
+		if !info.IsDir() {
+			return skillManifest{fileName: skillManifestNames[0], path: upperPath, info: info}, true
+		}
+		return skillManifest{}, false
+	}
+	if !os.IsNotExist(err) {
+		return skillManifest{}, false
+	}
+
+	lowerPath := filepath.Join(dir, skillManifestNames[1])
+	info, err = os.Stat(lowerPath)
+	if err == nil && !info.IsDir() {
+		return skillManifest{fileName: skillManifestNames[1], path: lowerPath, info: info}, true
+	}
+	return skillManifest{}, false
+}
+
+func loadFromSkillManifest(dir string, manifest skillManifest, source SkillSource, loadBody bool) (*Skill, error) {
+	if manifest.fileName == "skill.md" {
+		fmt.Fprintf(os.Stderr, "warning: skill.md should be SKILL.md: %s\n", manifest.path)
+	}
+	return loadFromSkillFile(manifest.path, dir, source, loadBody)
+}
+
+func loadFromSkillFile(skillPath, dir string, source SkillSource, loadBody bool) (*Skill, error) {
 	skill, err := ParseSkillMD(skillPath, loadBody)
 	if err != nil {
 		return nil, err
@@ -340,13 +382,11 @@ func discoverFiles(skillDir, subdir string) []string {
 
 // IsSkillDir checks if a directory contains a SKILL.md file.
 func IsSkillDir(dir string) bool {
-	// Check for SKILL.md (preferred)
-	if info, err := os.Stat(filepath.Join(dir, "SKILL.md")); err == nil && !info.IsDir() {
-		return true
-	}
-	// Check for skill.md (lowercase, allowed with warning)
-	if info, err := os.Stat(filepath.Join(dir, "skill.md")); err == nil && !info.IsDir() {
-		return true
+	for _, fileName := range skillManifestNames {
+		info, err := os.Stat(filepath.Join(dir, fileName))
+		if err == nil && !info.IsDir() {
+			return true
+		}
 	}
 	return false
 }
