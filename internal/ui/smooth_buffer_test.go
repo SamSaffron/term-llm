@@ -149,6 +149,59 @@ func TestSmoothBuffer_EmptyBuffer(t *testing.T) {
 	}
 }
 
+func TestSmoothBuffer_WriteAfterPartialRead(t *testing.T) {
+	b := NewSmoothBuffer()
+	b.Write("one two three")
+
+	first := b.NextWords()
+	if first == "" {
+		t.Fatal("expected first chunk")
+	}
+	if b.readOffset == 0 {
+		t.Fatal("expected non-zero readOffset after partial read")
+	}
+
+	b.Write(" four")
+	if got := first + b.FlushAll(); got != "one two three four" {
+		t.Fatalf("combined output = %q, want original order", got)
+	}
+}
+
+func TestSmoothBuffer_CompactPreservesUnreadAndShrinksLargeBacking(t *testing.T) {
+	remaining := " tail one two"
+	backing := make([]byte, smoothBufferCompactThreshold+len(remaining), 64*1024)
+	for i := 0; i < smoothBufferCompactThreshold; i++ {
+		backing[i] = 'x'
+	}
+	copy(backing[smoothBufferCompactThreshold:], remaining)
+
+	b := &SmoothBuffer{
+		buffer:     backing,
+		readOffset: smoothBufferCompactThreshold,
+	}
+	oldCap := cap(b.buffer)
+
+	b.compactIfNeeded()
+
+	if b.readOffset != 0 {
+		t.Fatalf("readOffset = %d, want 0", b.readOffset)
+	}
+	if got := string(b.buffer); got != remaining {
+		t.Fatalf("buffer = %q, want %q", got, remaining)
+	}
+	if got := b.Len(); got != len(remaining) {
+		t.Fatalf("Len() = %d, want %d", got, len(remaining))
+	}
+	if cap(b.buffer) >= oldCap {
+		t.Fatalf("cap after compact = %d, want less than old cap %d", cap(b.buffer), oldCap)
+	}
+
+	b.Write(" three")
+	if got := b.FlushAll(); got != " tail one two three" {
+		t.Fatalf("FlushAll after compact/write = %q", got)
+	}
+}
+
 func TestExtractWords_Basic(t *testing.T) {
 	tests := []struct {
 		content   string
@@ -185,6 +238,18 @@ func TestExtractWords_LongWord(t *testing.T) {
 	}
 	if rem != longWord[SmoothMaxWordLength:] {
 		t.Errorf("remaining = %q, want %q", rem, longWord[SmoothMaxWordLength:])
+	}
+}
+
+func TestExtractWords_LongWordChunksByRune(t *testing.T) {
+	longWord := strings.Repeat("界", SmoothMaxWordLength+3)
+	got, rem := extractWords(longWord, 1)
+
+	if got != strings.Repeat("界", SmoothMaxWordLength) {
+		t.Errorf("got %q, want first %d runes", got, SmoothMaxWordLength)
+	}
+	if rem != strings.Repeat("界", 3) {
+		t.Errorf("remaining = %q, want 3 runes", rem)
 	}
 }
 
