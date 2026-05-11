@@ -63,7 +63,7 @@ func (p *GeminiProvider) Edit(ctx context.Context, req EditRequest) (*ImageResul
 		parts = append(parts, geminiPart{
 			InlineData: &geminiInlineData{
 				MimeType: mimeType,
-				Data:     base64.StdEncoding.EncodeToString(img.Data),
+				Data:     img.Data,
 			},
 		})
 	}
@@ -87,22 +87,23 @@ func (p *GeminiProvider) doRequest(ctx context.Context, parts []geminiPart, size
 		genCfg.ImageConfig = &geminiImageConfig{ImageSize: effectiveSize}
 	}
 
-	reqBody := geminiRequest{
-		Contents:         []geminiContent{{Parts: parts}},
-		GenerationConfig: genCfg,
-	}
-
-	jsonBody, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
 	endpoint := geminiBaseURL + p.model + ":generateContent"
-	if debug {
-		debugRawImageLog(debug, "Gemini Request", "POST %s\n%s", endpoint, truncateBase64InJSON(jsonBody))
+
+	var bodyReader io.Reader
+	if debug || !geminiHasInlineData(parts) {
+		jsonBody, err := buildGeminiRequestBody(parts, genCfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build request: %w", err)
+		}
+		if debug {
+			debugRawImageLog(debug, "Gemini Request", "POST %s\n%s", endpoint, truncateBase64InJSON(jsonBody))
+		}
+		bodyReader = bytes.NewReader(jsonBody)
+	} else {
+		bodyReader = streamGeminiRequestBody(parts, genCfg)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonBody))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -158,6 +159,102 @@ func (p *GeminiProvider) doRequest(ctx context.Context, parts []geminiPart, size
 	return nil, fmt.Errorf("no image data in response")
 }
 
+func geminiHasInlineData(parts []geminiPart) bool {
+	for _, part := range parts {
+		if part.InlineData != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func buildGeminiRequestBody(parts []geminiPart, genCfg geminiGenerationConfig) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := writeGeminiRequestJSON(&buf, parts, genCfg); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func streamGeminiRequestBody(parts []geminiPart, genCfg geminiGenerationConfig) io.Reader {
+	pr, pw := io.Pipe()
+	go func() {
+		pw.CloseWithError(writeGeminiRequestJSON(pw, parts, genCfg))
+	}()
+	return pr
+}
+
+func writeGeminiRequestJSON(w io.Writer, parts []geminiPart, genCfg geminiGenerationConfig) error {
+	if _, err := io.WriteString(w, `{"contents":[{"parts":[`); err != nil {
+		return err
+	}
+
+	for i, part := range parts {
+		if i > 0 {
+			if _, err := io.WriteString(w, ","); err != nil {
+				return err
+			}
+		}
+
+		if part.InlineData != nil {
+			mimeType, err := json.Marshal(part.InlineData.MimeType)
+			if err != nil {
+				return fmt.Errorf("marshal mime type: %w", err)
+			}
+			if _, err := io.WriteString(w, `{"inlineData":{"mimeType":`); err != nil {
+				return err
+			}
+			if _, err := w.Write(mimeType); err != nil {
+				return err
+			}
+			if _, err := io.WriteString(w, `,"data":"`); err != nil {
+				return err
+			}
+			encoder := base64.NewEncoder(base64.StdEncoding, w)
+			if _, err := encoder.Write(part.InlineData.Data); err != nil {
+				encoder.Close()
+				return err
+			}
+			if err := encoder.Close(); err != nil {
+				return err
+			}
+			if _, err := io.WriteString(w, `"}}`); err != nil {
+				return err
+			}
+			continue
+		}
+
+		text, err := json.Marshal(part.Text)
+		if err != nil {
+			return fmt.Errorf("marshal text: %w", err)
+		}
+		if _, err := io.WriteString(w, `{"text":`); err != nil {
+			return err
+		}
+		if _, err := w.Write(text); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(w, `}`); err != nil {
+			return err
+		}
+	}
+
+	if _, err := io.WriteString(w, `]}],"generationConfig":`); err != nil {
+		return err
+	}
+	cfg, err := json.Marshal(genCfg)
+	if err != nil {
+		return fmt.Errorf("marshal generation config: %w", err)
+	}
+	if _, err := w.Write(cfg); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(w, `}`); err != nil {
+		return err
+	}
+	return nil
+}
+
 // Gemini API types
 type geminiRequest struct {
 	Contents         []geminiContent        `json:"contents"`
@@ -175,7 +272,7 @@ type geminiPart struct {
 
 type geminiInlineData struct {
 	MimeType string `json:"mimeType"`
-	Data     string `json:"data"`
+	Data     []byte `json:"data"`
 }
 
 type geminiGenerationConfig struct {
