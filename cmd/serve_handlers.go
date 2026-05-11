@@ -541,22 +541,42 @@ func (s *serveServer) ensureFileServeable(filePath string) (string, bool) {
 	}
 	defer src.Close()
 
-	destName := fmt.Sprintf("serve-%s-%s", randomSuffix(), filepath.Base(absFile))
-	destPath := filepath.Join(absDir, destName)
-	dst, err := os.Create(destPath)
+	// Use a deterministic content-derived name so repeated tool-event emits or
+	// history replays don't mint fresh file URLs or leak duplicate copies into
+	// the files dir.
+	tmpPath := filepath.Join(absDir, fmt.Sprintf("serve-%s-%s.tmp", randomSuffix(), filepath.Base(absFile)))
+	dst, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
-		log.Printf("[serve] ensureFileServeable: create %s: %v", destPath, err)
+		log.Printf("[serve] ensureFileServeable: create %s: %v", tmpPath, err)
 		return "", false
 	}
-	if _, err := io.Copy(dst, src); err != nil {
+	hash := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(dst, hash), src); err != nil {
 		dst.Close()
-		os.Remove(destPath)
-		log.Printf("[serve] ensureFileServeable: copy to %s: %v", destPath, err)
+		os.Remove(tmpPath)
+		log.Printf("[serve] ensureFileServeable: copy to %s: %v", tmpPath, err)
 		return "", false
 	}
 	if err := dst.Close(); err != nil {
-		os.Remove(destPath)
-		log.Printf("[serve] ensureFileServeable: close %s: %v", destPath, err)
+		os.Remove(tmpPath)
+		log.Printf("[serve] ensureFileServeable: close %s: %v", tmpPath, err)
+		return "", false
+	}
+
+	sum := hash.Sum(nil)
+	destName := fmt.Sprintf("serve-%s-%s", hex.EncodeToString(sum[:16]), filepath.Base(absFile))
+	destPath := filepath.Join(absDir, destName)
+	if info, err := os.Stat(destPath); err == nil && !info.IsDir() {
+		os.Remove(tmpPath)
+		return destPath, true
+	}
+	if err := os.Rename(tmpPath, destPath); err != nil {
+		if _, statErr := os.Stat(destPath); statErr == nil {
+			os.Remove(tmpPath)
+			return destPath, true
+		}
+		os.Remove(tmpPath)
+		log.Printf("[serve] ensureFileServeable: rename %s -> %s: %v", tmpPath, destPath, err)
 		return "", false
 	}
 

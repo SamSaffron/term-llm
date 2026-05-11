@@ -3290,6 +3290,21 @@ func TestEnsureFileServeable_CopiesFromImageOutputDir(t *testing.T) {
 	if string(data) != "image-data" {
 		t.Fatalf("copied data = %q, want %q", string(data), "image-data")
 	}
+
+	secondResult, ok := srv.ensureFileServeable(generatedImg)
+	if !ok {
+		t.Fatal("second ensureFileServeable should also succeed")
+	}
+	if secondResult != result {
+		t.Fatalf("repeat ensureFileServeable should reuse the same copied path, got %q want %q", secondResult, result)
+	}
+	entries, err := os.ReadDir(filesDir)
+	if err != nil {
+		t.Fatalf("read files dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("files dir should contain exactly one copied file after repeat calls, got %d", len(entries))
+	}
 }
 
 func TestEnsureFileServeable_CopiesFromWriteDir(t *testing.T) {
