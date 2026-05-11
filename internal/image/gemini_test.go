@@ -1,10 +1,20 @@
 package image
 
 import (
+	"context"
+	"encoding/base64"
 	"encoding/json"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 )
+
+type geminiImageRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f geminiImageRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
 
 func TestNewGeminiProviderDefaults(t *testing.T) {
 	p := NewGeminiProvider("key", "", "")
@@ -73,6 +83,88 @@ func TestGeminiImageConfigSerialization(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestGeminiProviderEditStreamsInlineImages(t *testing.T) {
+	oldClient := geminiHTTPClient
+	defer func() { geminiHTTPClient = oldClient }()
+
+	var (
+		capturedBody        []byte
+		capturedContentType string
+		streamedBody        bool
+	)
+	geminiHTTPClient = &http.Client{
+		Transport: geminiImageRoundTripper(func(req *http.Request) (*http.Response, error) {
+			capturedContentType = req.Header.Get("Content-Type")
+			streamedBody = req.GetBody == nil
+			if req.Body != nil {
+				var err error
+				capturedBody, err = io.ReadAll(req.Body)
+				if err != nil {
+					return nil, err
+				}
+			}
+			resp := `{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"` + base64.StdEncoding.EncodeToString([]byte("edited")) + `"}}]}}]}`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(resp)),
+			}, nil
+		}),
+	}
+
+	prompt := "combine \"these\"\nplease"
+	result, err := NewGeminiProvider("test-key", "", "").Edit(context.Background(), EditRequest{
+		Prompt: prompt,
+		InputImages: []InputImage{
+			{Path: "one.png", Data: []byte("img-1")},
+			{Path: "two.jpg", Data: []byte("img-2")},
+		},
+		Size: "2K",
+	})
+	if err != nil {
+		t.Fatalf("Edit returned error: %v", err)
+	}
+
+	if !streamedBody {
+		t.Fatal("expected edit request with inline images to stream request body")
+	}
+	if capturedContentType != "application/json" {
+		t.Fatalf("content type = %q, want application/json", capturedContentType)
+	}
+
+	body := string(capturedBody)
+	if !strings.Contains(body, `"mimeType":"image/png"`) {
+		t.Fatalf("request body missing png mime type: %s", body)
+	}
+	if !strings.Contains(body, `"mimeType":"image/jpeg"`) {
+		t.Fatalf("request body missing jpeg mime type: %s", body)
+	}
+	if !strings.Contains(body, base64.StdEncoding.EncodeToString([]byte("img-1"))) {
+		t.Fatalf("request body missing first image data: %s", body)
+	}
+	if !strings.Contains(body, base64.StdEncoding.EncodeToString([]byte("img-2"))) {
+		t.Fatalf("request body missing second image data: %s", body)
+	}
+	promptJSON, err := json.Marshal(prompt)
+	if err != nil {
+		t.Fatalf("Marshal(prompt): %v", err)
+	}
+	if !strings.Contains(body, `"text":`+string(promptJSON)) {
+		t.Fatalf("request body missing escaped prompt: %s", body)
+	}
+	if !strings.Contains(body, `"imageSize":"2K"`) {
+		t.Fatalf("request body missing image size: %s", body)
+	}
+
+	if string(result.Data) != "edited" {
+		t.Fatalf("result data = %q, want %q", string(result.Data), "edited")
+	}
+	if result.MimeType != "image/png" {
+		t.Fatalf("result mime type = %q, want %q", result.MimeType, "image/png")
 	}
 }
 
