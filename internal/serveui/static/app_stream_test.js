@@ -2401,6 +2401,69 @@ async function testRebuildInputFromSessionReMaterializesStoredAttachments() {
   pass(name);
 }
 
+async function testRebuildInputFromSessionSkipsUnavailableStoredAttachments() {
+  const name = 'rebuildInputFromSession skips unavailable stored attachments';
+  const harness = createHarness();
+  const { app, elements, state, fetchCalls, cleanup } = harness;
+
+  elements.promptInput.value = 'first turn';
+  await app.sendMessage();
+
+  const session = state.sessions[0];
+  if (!session || !session.messages[0]) {
+    fail(name, 'expected first send to create a session message');
+    await cleanup();
+    return;
+  }
+  session.messages[0].attachments = [{
+    id: 'old-att',
+    name: 'old.png',
+    type: 'image/png',
+    previewURL: 'blob:old.png'
+  }];
+  session.lastResponseId = null;
+
+  elements.promptInput.value = 'second turn';
+  await app.sendMessage();
+
+  const postCalls = fetchCalls.filter((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  if (postCalls.length < 2 || !postCalls[1].body) {
+    fail(name, 'expected a second POST body for the rebuilt conversation', JSON.stringify(fetchCalls));
+    await cleanup();
+    return;
+  }
+
+  let body;
+  try {
+    body = JSON.parse(postCalls[1].body);
+  } catch (err) {
+    fail(name, 'rebuilt response POST body was not valid JSON', String(err));
+    await cleanup();
+    return;
+  }
+
+  const firstUserParts = body.input?.[0]?.content;
+  if (!Array.isArray(firstUserParts)) {
+    fail(name, 'expected rebuilt first user content to be parts array', JSON.stringify(body));
+    await cleanup();
+    return;
+  }
+  if (firstUserParts.some((part) => part.type === 'input_image' || part.type === 'input_file')) {
+    fail(name, 'unavailable historical attachment should be skipped during rebuild', JSON.stringify(body));
+    await cleanup();
+    return;
+  }
+  const textPart = firstUserParts.find((part) => part.type === 'input_text');
+  if (!textPart || textPart.text !== 'first turn') {
+    fail(name, 'rebuilt conversation should preserve historical message text', JSON.stringify(body));
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
 async function testNonImageAttachmentsDoNotCreatePreviewObjectURLs() {
   const name = 'non-image attachments do not create unused preview object URLs';
   const createdURLs = [];
@@ -2546,6 +2609,7 @@ function testRestoreLatestDraftMessageDoesNotCrossSessionBoundary() {
   await testSendMessageLazilyMaterializesAttachmentDataURLs();
   await testSendMessageKeepsComposerWhenAttachmentMaterializationFails();
   await testRebuildInputFromSessionReMaterializesStoredAttachments();
+  await testRebuildInputFromSessionSkipsUnavailableStoredAttachments();
   await testFailedSendKeepsSessionDraftAndRestagesComposer();
   await testSuccessfulSendRemovesOnlyMatchingDraft();
   testRestoreDraftMessageForSessionIsSessionBound();

@@ -140,6 +140,23 @@ func TestSmoothBuffer_AdaptiveSpeed(t *testing.T) {
 	}
 }
 
+func TestSmoothBuffer_HoldsIncompleteUTF8AcrossWrites(t *testing.T) {
+	b := NewSmoothBuffer()
+	b.Write(string([]byte{0xe4, 0xb8}))
+
+	if got := b.NextWords(); got != "" {
+		t.Fatalf("NextWords() with incomplete UTF-8 = %q, want empty", got)
+	}
+	if got := b.Len(); got != 2 {
+		t.Fatalf("Len() after holding incomplete UTF-8 = %d, want 2", got)
+	}
+
+	b.Write(string([]byte{0x96, ' ', 'o', 'k'}))
+	if got := b.FlushAll(); got != "世 ok" {
+		t.Fatalf("FlushAll after completing UTF-8 = %q, want %q", got, "世 ok")
+	}
+}
+
 func TestSmoothBuffer_EmptyBuffer(t *testing.T) {
 	b := NewSmoothBuffer()
 

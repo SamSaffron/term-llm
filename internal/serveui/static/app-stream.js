@@ -2685,20 +2685,24 @@ const readFileAsDataURL = (file, signal) => new Promise((resolve, reject) => {
   reader.readAsDataURL(file);
 });
 
-const materializeAttachmentDataURL = async (att, signal) => {
+const materializeAttachmentDataURL = async (att, signal, options = {}) => {
   const name = String(att?.name || 'attachment');
   const type = String(att?.type || '');
   if (att?.dataURL) return { name, type, dataURL: att.dataURL };
-  const dataURL = await readFileAsDataURL(att?.file, signal);
+  if (!att?.file) {
+    if (options.skipUnavailable) return null;
+    throw new Error(`Failed to read ${name}.`);
+  }
+  const dataURL = await readFileAsDataURL(att.file, signal);
   if (!dataURL) {
     throw new Error(`Failed to read ${name}.`);
   }
   return { name, type, dataURL };
 };
 
-const buildAttachmentInputParts = async (attachments, signal) => {
-  const materialized = await Promise.all((attachments || []).map(att => materializeAttachmentDataURL(att, signal)));
-  return materialized.map(att => (
+const buildAttachmentInputParts = async (attachments, signal, options = {}) => {
+  const materialized = await Promise.all((attachments || []).map(att => materializeAttachmentDataURL(att, signal, options)));
+  return materialized.filter(Boolean).map(att => (
     att.type.startsWith('image/')
       ? { type: 'input_image', image_url: att.dataURL, filename: att.name }
       : { type: 'input_file', file_data: att.dataURL, filename: att.name }
@@ -3133,7 +3137,7 @@ const rebuildInputFromSession = async (session, currentInput, signal) => {
   for (const msg of session.messages) {
     if (msg.role === 'user' && !msg.askUser) {
       if (msg.attachments && msg.attachments.length > 0) {
-        const parts = await buildAttachmentInputParts(msg.attachments, signal);
+        const parts = await buildAttachmentInputParts(msg.attachments, signal, { skipUnavailable: true });
         if (msg.content) parts.push({ type: 'input_text', text: msg.content });
         input.push({ type: 'message', role: 'user', content: parts });
       } else {

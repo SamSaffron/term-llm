@@ -543,18 +543,41 @@ func (s *serveServer) ensureFileServeable(filePath string) (string, bool) {
 
 	// Use a deterministic content-derived name so repeated tool-event emits or
 	// history replays don't mint fresh file URLs or leak duplicate copies into
-	// the files dir.
+	// the files dir. Hash first so cache hits do not create temporary files or
+	// rewrite the destination directory.
+	hash := sha256.New()
+	if _, err := io.Copy(hash, src); err != nil {
+		log.Printf("[serve] ensureFileServeable: hash %s: %v", absFile, err)
+		return "", false
+	}
+	sum := hash.Sum(nil)
+	destName := fmt.Sprintf("serve-%s-%s", hex.EncodeToString(sum[:16]), filepath.Base(absFile))
+	destPath := filepath.Join(absDir, destName)
+	if info, err := os.Stat(destPath); err == nil && !info.IsDir() {
+		return destPath, true
+	}
+	if _, err := src.Seek(0, io.SeekStart); err != nil {
+		log.Printf("[serve] ensureFileServeable: rewind %s: %v", absFile, err)
+		return "", false
+	}
+
 	tmpPath := filepath.Join(absDir, fmt.Sprintf("serve-%s-%s.tmp", randomSuffix(), filepath.Base(absFile)))
 	dst, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		log.Printf("[serve] ensureFileServeable: create %s: %v", tmpPath, err)
 		return "", false
 	}
-	hash := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(dst, hash), src); err != nil {
+	copyHash := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(dst, copyHash), src); err != nil {
 		dst.Close()
 		os.Remove(tmpPath)
 		log.Printf("[serve] ensureFileServeable: copy to %s: %v", tmpPath, err)
+		return "", false
+	}
+	if !bytes.Equal(copyHash.Sum(nil), sum) {
+		dst.Close()
+		os.Remove(tmpPath)
+		log.Printf("[serve] ensureFileServeable: source changed while materializing %s", absFile)
 		return "", false
 	}
 	if err := dst.Close(); err != nil {
@@ -563,15 +586,8 @@ func (s *serveServer) ensureFileServeable(filePath string) (string, bool) {
 		return "", false
 	}
 
-	sum := hash.Sum(nil)
-	destName := fmt.Sprintf("serve-%s-%s", hex.EncodeToString(sum[:16]), filepath.Base(absFile))
-	destPath := filepath.Join(absDir, destName)
-	if info, err := os.Stat(destPath); err == nil && !info.IsDir() {
-		os.Remove(tmpPath)
-		return destPath, true
-	}
 	if err := os.Rename(tmpPath, destPath); err != nil {
-		if _, statErr := os.Stat(destPath); statErr == nil {
+		if info, statErr := os.Stat(destPath); statErr == nil && !info.IsDir() {
 			os.Remove(tmpPath)
 			return destPath, true
 		}
@@ -713,7 +729,7 @@ func (s *serveServer) ensureImageServeable(imgPath string) (string, bool) {
 	}
 
 	if err := os.Rename(tmpPath, destPath); err != nil {
-		if _, statErr := os.Stat(destPath); statErr == nil {
+		if info, statErr := os.Stat(destPath); statErr == nil && !info.IsDir() {
 			os.Remove(tmpPath)
 			return destPath, true
 		}

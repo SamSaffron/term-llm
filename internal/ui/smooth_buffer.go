@@ -103,8 +103,9 @@ func (b *SmoothBuffer) NextWords() string {
 
 	numWords := b.wordsPerFrame()
 
-	// Extract words with preserved whitespace.
-	result, consumed := extractWordsFromBytes(b.buffer[b.readOffset:], numWords)
+	// Extract words with preserved whitespace. Hold an incomplete trailing UTF-8
+	// sequence until either more bytes arrive or the stream is marked done.
+	result, consumed := extractWordsFromBytes(b.buffer[b.readOffset:], numWords, !b.inputDone)
 	b.readOffset += consumed
 	b.compactIfNeeded()
 
@@ -169,11 +170,11 @@ func extractWords(content string, n int) (string, string) {
 		return "", content
 	}
 
-	result, consumed := extractWordsFromBytes([]byte(content), n)
+	result, consumed := extractWordsFromBytes([]byte(content), n, false)
 	return result, content[consumed:]
 }
 
-func extractWordsFromBytes(content []byte, n int) (string, int) {
+func extractWordsFromBytes(content []byte, n int, holdIncompleteUTF8 bool) (string, int) {
 	if len(content) == 0 || n <= 0 {
 		return "", 0
 	}
@@ -187,7 +188,10 @@ func extractWordsFromBytes(content []byte, n int) (string, int) {
 		// Skip and collect leading whitespace
 		wsStart := pos
 		for pos < len(content) {
-			r, size := decodeSmoothRune(content[pos:])
+			r, size, ok := decodeSmoothRune(content[pos:], holdIncompleteUTF8)
+			if !ok {
+				return result.String(), pos
+			}
 			if !unicode.IsSpace(r) {
 				break
 			}
@@ -206,7 +210,10 @@ func extractWordsFromBytes(content []byte, n int) (string, int) {
 		chunkEnd := pos
 		wordRunes := 0
 		for pos < len(content) {
-			r, size := decodeSmoothRune(content[pos:])
+			r, size, ok := decodeSmoothRune(content[pos:], holdIncompleteUTF8)
+			if !ok {
+				return result.String(), pos
+			}
 			if unicode.IsSpace(r) {
 				break
 			}
@@ -230,8 +237,12 @@ func extractWordsFromBytes(content []byte, n int) (string, int) {
 	return result.String(), pos
 }
 
-func decodeSmoothRune(content []byte) (rune, int) {
-	return utf8.DecodeRune(content)
+func decodeSmoothRune(content []byte, holdIncompleteUTF8 bool) (rune, int, bool) {
+	if holdIncompleteUTF8 && !utf8.FullRune(content) {
+		return 0, 0, false
+	}
+	r, size := utf8.DecodeRune(content)
+	return r, size, true
 }
 
 func initialSmoothResultCapacity(contentLen, n int) int {

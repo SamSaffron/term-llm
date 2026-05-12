@@ -111,7 +111,15 @@ const (
 	maxAttachmentBytes = 20 << 20 // 20 MB per file (decoded)
 )
 
+func stripBase64Newlines(b64Data string) string {
+	if !strings.ContainsAny(b64Data, "\r\n") {
+		return b64Data
+	}
+	return strings.NewReplacer("\r", "", "\n", "").Replace(b64Data)
+}
+
 func decodedBase64Len(b64Data string) (int, error) {
+	b64Data = stripBase64Newlines(b64Data)
 	if b64Data == "" {
 		return 0, nil
 	}
@@ -138,6 +146,7 @@ func validateBase64Data(b64Data string) error {
 }
 
 func decodeUploadedFile(filename, b64Data string) ([]byte, error) {
+	b64Data = stripBase64Newlines(b64Data)
 	decodedLen, err := decodedBase64Len(b64Data)
 	if err != nil {
 		return nil, err
@@ -259,6 +268,7 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 						filename = "image"
 					}
 
+					b64 = stripBase64Newlines(b64)
 					decodedLen, err := decodedBase64Len(b64)
 					if err != nil {
 						return llm.Message{}, fmt.Errorf("decode attachment %q: %w", filename, err)

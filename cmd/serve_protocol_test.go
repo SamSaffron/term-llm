@@ -84,6 +84,17 @@ func TestParseUserMessageContent_RejectsInvalidSmallInlineImage(t *testing.T) {
 	}
 }
 
+func TestDecodeUploadedFile_AllowsWrappedBase64(t *testing.T) {
+	wrapped := "aGVs\r\nbG8="
+	raw, err := decodeUploadedFile("hello.txt", wrapped)
+	if err != nil {
+		t.Fatalf("decodeUploadedFile() error = %v", err)
+	}
+	if string(raw) != "hello" {
+		t.Fatalf("decodeUploadedFile() = %q, want hello", string(raw))
+	}
+}
+
 func TestDecodeUploadedFile_RejectsOversizedPayloadBeforeDecode(t *testing.T) {
 	b64 := strings.Repeat("A", base64.StdEncoding.EncodedLen(maxAttachmentBytes+1)-1) + "!"
 

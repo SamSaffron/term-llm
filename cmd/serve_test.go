@@ -7,7 +7,9 @@ import (
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -3136,6 +3138,34 @@ func TestEnsureImageServeable_ReusesExistingMaterializedCopyWithoutDirectoryWrit
 	}
 }
 
+func deterministicServeName(data []byte, base string) string {
+	sum := sha256.Sum256(data)
+	return fmt.Sprintf("serve-%s-%s", hex.EncodeToString(sum[:16]), base)
+}
+
+func TestEnsureImageServeable_RejectsDirectoryAtDeterministicDestination(t *testing.T) {
+	outputDir := t.TempDir()
+	writeDir := t.TempDir()
+	data := []byte("tool-png")
+	writeDirImg := filepath.Join(writeDir, "tool-output.png")
+	if err := os.WriteFile(writeDirImg, data, 0644); err != nil {
+		t.Fatalf("write writeDir image: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(outputDir, deterministicServeName(data, filepath.Base(writeDirImg))), 0755); err != nil {
+		t.Fatalf("create directory at deterministic destination: %v", err)
+	}
+
+	srv := &serveServer{
+		cfg:    serveServerConfig{writeDirs: []string{writeDir}},
+		cfgRef: &config.Config{},
+	}
+	srv.cfgRef.Image.OutputDir = outputDir
+
+	if result, ok := srv.ensureImageServeable(writeDirImg); ok || result != "" {
+		t.Fatalf("ensureImageServeable should reject directory destination, got result=%q ok=%v", result, ok)
+	}
+}
+
 func TestHandleFile_ServesFileAndRejectsTraversal(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "video.mp4"), []byte("fake-video"), 0644); err != nil {
@@ -3345,6 +3375,71 @@ func TestEnsureFileServeable_CopiesFromImageOutputDir(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Fatalf("files dir should contain exactly one copied file after repeat calls, got %d", len(entries))
+	}
+}
+
+func TestEnsureFileServeable_ReusesExistingMaterializedCopyWithoutDirectoryWrites(t *testing.T) {
+	filesDir := t.TempDir()
+	outputDir := t.TempDir()
+	data := []byte("image-data")
+	generatedImg := filepath.Join(outputDir, "generated.png")
+	if err := os.WriteFile(generatedImg, data, 0644); err != nil {
+		t.Fatalf("write generated image: %v", err)
+	}
+
+	srv := &serveServer{
+		cfg:    serveServerConfig{basePath: "/ui", filesDir: filesDir},
+		cfgRef: &config.Config{},
+	}
+	srv.cfgRef.Image.OutputDir = outputDir
+
+	result, ok := srv.ensureFileServeable(generatedImg)
+	if !ok {
+		t.Fatal("first ensureFileServeable should allow files from image output dir")
+	}
+
+	fixedTime := time.Unix(456, 0)
+	if err := os.Chtimes(filesDir, fixedTime, fixedTime); err != nil {
+		t.Fatalf("set files dir times: %v", err)
+	}
+
+	resultAgain, ok := srv.ensureFileServeable(generatedImg)
+	if !ok {
+		t.Fatal("second ensureFileServeable should allow files from image output dir")
+	}
+	if resultAgain != result {
+		t.Fatalf("second ensureFileServeable result = %q, want stable %q", resultAgain, result)
+	}
+
+	info, err := os.Stat(filesDir)
+	if err != nil {
+		t.Fatalf("stat files dir: %v", err)
+	}
+	if !info.ModTime().Equal(fixedTime) {
+		t.Fatalf("files dir modtime = %v, want unchanged %v", info.ModTime(), fixedTime)
+	}
+}
+
+func TestEnsureFileServeable_RejectsDirectoryAtDeterministicDestination(t *testing.T) {
+	filesDir := t.TempDir()
+	outputDir := t.TempDir()
+	data := []byte("image-data")
+	generatedImg := filepath.Join(outputDir, "generated.png")
+	if err := os.WriteFile(generatedImg, data, 0644); err != nil {
+		t.Fatalf("write generated image: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(filesDir, deterministicServeName(data, filepath.Base(generatedImg))), 0755); err != nil {
+		t.Fatalf("create directory at deterministic destination: %v", err)
+	}
+
+	srv := &serveServer{
+		cfg:    serveServerConfig{basePath: "/ui", filesDir: filesDir},
+		cfgRef: &config.Config{},
+	}
+	srv.cfgRef.Image.OutputDir = outputDir
+
+	if result, ok := srv.ensureFileServeable(generatedImg); ok || result != "" {
+		t.Fatalf("ensureFileServeable should reject directory destination, got result=%q ok=%v", result, ok)
 	}
 }
 
