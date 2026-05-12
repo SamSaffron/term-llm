@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -21,6 +22,8 @@ import (
 // spawned by a tool command so descendants that escape the process group (via
 // setsid, daemonisation, etc.) can still be reliably reaped on cleanup.
 const shellNonceEnvVar = "TERMLLM_SHELL_NONCE"
+
+var killTaggedDescendantsFunc = killTaggedDescendants
 
 type limitedBuffer struct {
 	buf   bytes.Buffer
@@ -68,9 +71,23 @@ func prepareToolCommand(cmd *exec.Cmd) (func(), error) {
 	}
 
 	configureCommandProcessGroup(cmd)
+
+	var wasCanceled atomic.Bool
+	if originalCancel := cmd.Cancel; originalCancel != nil {
+		cmd.Cancel = func() error {
+			wasCanceled.Store(true)
+			return originalCancel()
+		}
+	}
+
 	nonce := tagCommandWithNonce(cmd)
+	stopMonitor := startEscapedDescendantMonitor(cmd)
 
 	cleanup := func() {
+		needsNonceScan := wasCanceled.Load()
+		if stopMonitor != nil {
+			needsNonceScan = stopMonitor() || needsNonceScan
+		}
 		// Tools must leave the world clean: after the command returns (success,
 		// failure, timeout, or cancellation) reap every descendant it spawned.
 		//
@@ -79,12 +96,11 @@ func prepareToolCommand(cmd *exec.Cmd) (func(), error) {
 		if cmd.Process != nil {
 			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		}
-		// Second pass: walk /proc for any process still alive that inherited
-		// the nonce env var. This catches descendants that escaped the pgroup
-		// via setsid, double-fork daemonisation, or explicit setpgid. We retry
-		// a few times because a process may be mid-exec when we scan.
-		if nonce != "" {
-			killTaggedDescendants(nonce)
+		// Second pass: only pay for a host-wide /proc scan when cancellation
+		// occurred or when we observed a descendant escape the command's process
+		// group while the tool was still running.
+		if nonce != "" && needsNonceScan {
+			killTaggedDescendantsFunc(nonce)
 		}
 		if stdinCloser != nil {
 			stdinCloser()
@@ -110,6 +126,133 @@ func tagCommandWithNonce(cmd *exec.Cmd) string {
 		cmd.Env = append(cmd.Env, entry)
 	}
 	return nonce
+}
+
+func startEscapedDescendantMonitor(cmd *exec.Cmd) func() bool {
+	if _, err := os.Stat("/proc/thread-self/children"); err != nil {
+		if _, procErr := os.Stat("/proc/self"); procErr == nil {
+			return func() bool { return true }
+		}
+		return nil
+	}
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	var needsNonceScan atomic.Bool
+
+	go func() {
+		defer close(done)
+
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+
+			pid := 0
+			if cmd.Process != nil {
+				pid = cmd.Process.Pid
+			}
+			if pid > 1 {
+				escaped, exited := commandHasEscapedDescendant(pid)
+				if escaped {
+					needsNonceScan.Store(true)
+					return
+				}
+				if exited {
+					return
+				}
+			}
+
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+
+	return func() bool {
+		close(stop)
+		<-done
+		return needsNonceScan.Load()
+	}
+}
+
+func commandHasEscapedDescendant(rootPID int) (escaped bool, exited bool) {
+	if _, err := os.Stat(filepath.Join("/proc", strconv.Itoa(rootPID))); err != nil {
+		return false, true
+	}
+
+	rootPGID := rootPID
+	queue := []int{rootPID}
+	seen := map[int]struct{}{rootPID: {}}
+
+	for len(queue) > 0 {
+		pid := queue[0]
+		queue = queue[1:]
+
+		children, err := readProcChildren(pid)
+		if err != nil {
+			continue
+		}
+		for _, child := range children {
+			if _, ok := seen[child]; ok {
+				continue
+			}
+			seen[child] = struct{}{}
+
+			pgid, err := readProcGroupID(child)
+			if err == nil && pgid != rootPGID {
+				return true, false
+			}
+			queue = append(queue, child)
+		}
+	}
+
+	return false, false
+}
+
+func readProcChildren(pid int) ([]int, error) {
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "task", strconv.Itoa(pid), "children"))
+	if err != nil {
+		return nil, err
+	}
+	fields := strings.Fields(string(data))
+	children := make([]int, 0, len(fields))
+	for _, field := range fields {
+		childPID, err := strconv.Atoi(field)
+		if err != nil || childPID <= 1 {
+			continue
+		}
+		children = append(children, childPID)
+	}
+	return children, nil
+}
+
+func readProcGroupID(pid int) (int, error) {
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return 0, err
+	}
+	line := string(data)
+	end := strings.LastIndex(line, ") ")
+	if end == -1 {
+		return 0, fmt.Errorf("parse /proc/%d/stat", pid)
+	}
+	fields := strings.Fields(line[end+2:])
+	if len(fields) < 3 {
+		return 0, fmt.Errorf("parse /proc/%d/stat", pid)
+	}
+	pgid, err := strconv.Atoi(fields[2])
+	if err != nil {
+		return 0, fmt.Errorf("parse /proc/%d/stat pgid: %w", pid, err)
+	}
+	return pgid, nil
 }
 
 // killTaggedDescendants SIGKILLs every process whose environment contains the
