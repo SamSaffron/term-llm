@@ -65,35 +65,57 @@ func (a *StreamAdapter) Stats() *SessionStats {
 //
 //	go adapter.ProcessStream(ctx, stream)
 func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	defer close(a.events)
+
+	emit := func(event StreamEvent) bool {
+		if ctx.Err() != nil {
+			return false
+		}
+		select {
+		case a.events <- event:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
 
 	var totalTokens int
 	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
 		event, err := stream.Recv()
 		if err == io.EOF {
-			a.events <- DoneEvent(totalTokens)
+			emit(DoneEvent(totalTokens))
 			return
 		}
 		if err != nil {
 			// Check if context was cancelled
 			if ctx.Err() != nil {
-				a.events <- DoneEvent(totalTokens)
 				return
 			}
-			a.events <- ErrorEvent(err)
+			emit(ErrorEvent(err))
 			return
 		}
 
 		switch event.Type {
 		case llm.EventError:
 			if event.Err != nil {
-				a.events <- ErrorEvent(event.Err)
+				emit(ErrorEvent(event.Err))
 				return
 			}
 
 		case llm.EventTextDelta:
 			if event.Text != "" {
-				a.events <- TextEvent(event.Text)
+				if !emit(TextEvent(event.Text)) {
+					return
+				}
 			}
 
 		case llm.EventToolCall:
@@ -120,7 +142,9 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 					toolArgs = event.Tool.Arguments
 				}
 				a.stats.ToolStart()
-				a.events <- ToolStartEvent(toolCallID, event.Tool.Name, toolInfo, toolArgs)
+				if !emit(ToolStartEvent(toolCallID, event.Tool.Name, toolInfo, toolArgs)) {
+					return
+				}
 			}
 
 		case llm.EventToolExecStart:
@@ -132,7 +156,9 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 				a.seenToolStarts[event.ToolCallID] = struct{}{}
 			}
 			a.stats.ToolStart()
-			a.events <- ToolStartEvent(event.ToolCallID, event.ToolName, event.ToolInfo, event.ToolArgs)
+			if !emit(ToolStartEvent(event.ToolCallID, event.ToolName, event.ToolInfo, event.ToolArgs)) {
+				return
+			}
 
 		case llm.EventToolExecEnd:
 			// Skip if already seen. If toolCallID is empty, don't dedupe - treat as unique.
@@ -143,35 +169,49 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 				a.seenToolEnds[event.ToolCallID] = struct{}{}
 			}
 			a.stats.ToolEnd()
-			a.events <- ToolEndEvent(event.ToolCallID, event.ToolName, event.ToolInfo, event.ToolSuccess)
+			if !emit(ToolEndEvent(event.ToolCallID, event.ToolName, event.ToolInfo, event.ToolSuccess)) {
+				return
+			}
 
 			// Emit image events from structured data
 			for _, imagePath := range event.ToolImages {
-				a.events <- ImageEvent(imagePath)
+				if !emit(ImageEvent(imagePath)) {
+					return
+				}
 			}
 			// Emit diff events from structured data
 			for _, d := range event.ToolDiffs {
-				a.events <- DiffEventWithOperation(d.File, d.Old, d.New, d.Line, d.Operation)
+				if !emit(DiffEventWithOperation(d.File, d.Old, d.New, d.Line, d.Operation)) {
+					return
+				}
 			}
 
 		case llm.EventRetry:
-			a.events <- RetryEvent(event.RetryAttempt, event.RetryMaxAttempts, event.RetryWaitSecs)
+			if !emit(RetryEvent(event.RetryAttempt, event.RetryMaxAttempts, event.RetryWaitSecs)) {
+				return
+			}
 
 		case llm.EventUsage:
 			if event.Use != nil {
 				totalTokens = event.Use.OutputTokens
 				a.stats.AddUsage(event.Use.InputTokens, event.Use.OutputTokens, event.Use.CachedInputTokens, event.Use.CacheWriteTokens)
-				a.events <- UsageEvent(event.Use.InputTokens, event.Use.OutputTokens, event.Use.CachedInputTokens, event.Use.CacheWriteTokens)
+				if !emit(UsageEvent(event.Use.InputTokens, event.Use.OutputTokens, event.Use.CachedInputTokens, event.Use.CacheWriteTokens)) {
+					return
+				}
 			}
 
 		case llm.EventPhase:
 			if event.Text != "" {
-				a.events <- PhaseEvent(event.Text)
+				if !emit(PhaseEvent(event.Text)) {
+					return
+				}
 			}
 
 		case llm.EventInterjection:
 			if event.Text != "" {
-				a.events <- InterjectionEvent(event.Text, event.InterjectionID)
+				if !emit(InterjectionEvent(event.Text, event.InterjectionID)) {
+					return
+				}
 			}
 		}
 	}

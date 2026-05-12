@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"testing"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 )
@@ -160,6 +161,43 @@ func TestStreamAdapter_PropagatesInterjectionID(t *testing.T) {
 	}
 	if ev.InterjectionID != "adapter-interject-1" {
 		t.Fatalf("event interjection ID = %q, want %q", ev.InterjectionID, "adapter-interject-1")
+	}
+}
+
+func TestStreamAdapterCancellationUnblocksBlockedSend(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stream := &testStream{
+		events: []llm.Event{
+			{Type: llm.EventTextDelta, Text: "first"},
+			{Type: llm.EventTextDelta, Text: "second"},
+		},
+	}
+	adapter := NewStreamAdapter(1)
+	done := make(chan struct{})
+	go func() {
+		adapter.ProcessStream(ctx, stream)
+		close(done)
+	}()
+
+	deadline := time.After(500 * time.Millisecond)
+	for len(adapter.events) != 1 {
+		select {
+		case <-done:
+			t.Fatal("ProcessStream returned before filling the event buffer")
+		case <-deadline:
+			t.Fatal("timed out waiting for ProcessStream to fill the event buffer")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("ProcessStream did not return after context cancellation while blocked on send")
 	}
 }
 
