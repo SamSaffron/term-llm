@@ -555,18 +555,15 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 
 	baseHistory := make([]llm.Message, len(rt.history))
 	copy(baseHistory, rt.history)
+	replaceHistoryBackup := baseHistory
+	replaceUsageBackup := rt.cumulativeUsage
+	replacePlatformBackup := rt.lastInjectedPlatform
 	if replaceHistory {
 		baseHistory = nil
 		rt.history = nil
 		rt.engine.ResetConversation()
 		rt.cumulativeUsage = llm.Usage{}
 		rt.lastInjectedPlatform = ""
-		if persisted {
-			// Clear any previously persisted conversation state immediately so a
-			// fresh run that fails before callbacks or the final snapshot cannot
-			// silently leave stale DB history behind.
-			rt.persistSnapshot(ctx, req.SessionID, nil)
-		}
 	}
 
 	var injectedPlatform string
@@ -794,7 +791,15 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	result := serveRunResult{}
 	var runErr error
 	defer func() {
-		if runErr == nil || !persisted {
+		if runErr == nil {
+			return
+		}
+		if !persisted {
+			if replaceHistory {
+				rt.history = replaceHistoryBackup
+				rt.cumulativeUsage = replaceUsageBackup
+				rt.lastInjectedPlatform = replacePlatformBackup
+			}
 			return
 		}
 		producedMu.Lock()
@@ -804,6 +809,11 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		hasProduced := len(produced) > 0
 		producedMu.Unlock()
 		if !hasProduced {
+			if replaceHistory && !initialPersisted {
+				rt.history = replaceHistoryBackup
+				rt.cumulativeUsage = replaceUsageBackup
+				rt.lastInjectedPlatform = replacePlatformBackup
+			}
 			return
 		}
 		deferCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)

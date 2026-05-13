@@ -460,7 +460,7 @@ function createHarness(options = {}) {
         headers: { 'Content-Type': 'application/json' },
       });
     }
-    if (url === '/ui/v1/responses') {
+    if (url.startsWith('/ui/v1/sessions/') && url.endsWith('/messages')) {
       if (postStatus !== 200) {
         return new Response(JSON.stringify(postErrorPayload), {
           status: postStatus,
@@ -1100,10 +1100,10 @@ async function testDrainInterruptQueueAfterResumeCompletes() {
     return;
   }
 
-  // sendMessage should have been called — look for a POST to /ui/v1/responses.
-  const postCalls = fetchCalls.filter(c => c.url === '/ui/v1/responses' && c.method === 'POST');
+  // sendMessage should have been called — look for a POST to the explicit session append endpoint.
+  const postCalls = fetchCalls.filter(c => c.url === '/ui/v1/sessions/session_resume/messages' && c.method === 'POST');
   if (postCalls.length < 1) {
-    fail(name, 'expected sendMessage to POST /ui/v1/responses for the queued interrupt', JSON.stringify(fetchCalls));
+    fail(name, 'expected sendMessage to POST /ui/v1/sessions/:id/messages for the queued interrupt', JSON.stringify(fetchCalls));
     await cleanup();
     return;
   }
@@ -1353,9 +1353,9 @@ async function testSendMessageIncludesModelSwapForChangedTarget() {
   await app.sendMessage();
   await cleanup();
 
-  const postCall = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  const postCall = fetchCalls.find((call) => call.url.endsWith('/messages') && call.method === 'POST');
   if (!postCall || !postCall.body) {
-    fail(name, 'missing POST /ui/v1/responses body', JSON.stringify(fetchCalls));
+    fail(name, 'missing POST /ui/v1/sessions/:id/messages body', JSON.stringify(fetchCalls));
     return;
   }
   const body = JSON.parse(postCall.body);
@@ -1367,8 +1367,8 @@ async function testSendMessageIncludesModelSwapForChangedTarget() {
     fail(name, 'request did not use selected target runtime', postCall.body);
     return;
   }
-  if (body.previous_response_id !== 'resp_previous') {
-    fail(name, `previous_response_id = ${JSON.stringify(body.previous_response_id)}, want resp_previous`, postCall.body);
+  if (Object.prototype.hasOwnProperty.call(body, 'previous_response_id')) {
+    fail(name, `previous_response_id should not be sent by first-party UI`, postCall.body);
     return;
   }
   pass(name);
@@ -1403,9 +1403,9 @@ async function testSendMessageOmitsModelSwapWhenTargetUnchanged() {
   await app.sendMessage();
   await cleanup();
 
-  const postCall = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  const postCall = fetchCalls.find((call) => call.url.endsWith('/messages') && call.method === 'POST');
   if (!postCall || !postCall.body) {
-    fail(name, 'missing POST /ui/v1/responses body', JSON.stringify(fetchCalls));
+    fail(name, 'missing POST /ui/v1/sessions/:id/messages body', JSON.stringify(fetchCalls));
     return;
   }
   const body = JSON.parse(postCall.body);
@@ -1501,9 +1501,9 @@ async function testConnectTokenPreservesSelectedModelAndProviderFromState() {
   elements.promptInput.value = 'hello';
   await app.sendMessage();
 
-  const postCall = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  const postCall = fetchCalls.find((call) => call.url.endsWith('/messages') && call.method === 'POST');
   if (!postCall || !postCall.body) {
-    fail(name, 'missing POST /ui/v1/responses body', JSON.stringify(fetchCalls));
+    fail(name, 'missing POST /ui/v1/sessions/:id/messages body', JSON.stringify(fetchCalls));
     await cleanup();
     return;
   }
@@ -1512,7 +1512,7 @@ async function testConnectTokenPreservesSelectedModelAndProviderFromState() {
   try {
     body = JSON.parse(postCall.body);
   } catch (err) {
-    fail(name, 'response POST body was not valid JSON', String(err));
+    fail(name, 'session message POST body was not valid JSON', String(err));
     await cleanup();
     return;
   }
@@ -2171,9 +2171,9 @@ async function testSendMessageLazilyMaterializesAttachmentDataURLs() {
     return;
   }
 
-  const postCall = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  const postCall = fetchCalls.find((call) => call.url.endsWith('/messages') && call.method === 'POST');
   if (!postCall || !postCall.body) {
-    fail(name, 'missing POST /ui/v1/responses body', JSON.stringify(fetchCalls));
+    fail(name, 'missing POST /ui/v1/sessions/:id/messages body', JSON.stringify(fetchCalls));
     await cleanup();
     return;
   }
@@ -2182,12 +2182,12 @@ async function testSendMessageLazilyMaterializesAttachmentDataURLs() {
   try {
     body = JSON.parse(postCall.body);
   } catch (err) {
-    fail(name, 'response POST body was not valid JSON', String(err));
+    fail(name, 'session message POST body was not valid JSON', String(err));
     await cleanup();
     return;
   }
 
-  const parts = body.input?.[0]?.content;
+  const parts = body.message;
   const imagePart = Array.isArray(parts) ? parts.find((part) => part.type === 'input_image') : null;
   if (!imagePart || imagePart.image_url !== file.mockDataURL) {
     fail(name, 'request body should include lazily materialized image data URL', JSON.stringify(body));
@@ -2270,7 +2270,7 @@ async function testSendMessageKeepsComposerWhenAttachmentMaterializationFails() 
     await cleanup();
     return;
   }
-  if (fetchCalls.some((call) => call.url === '/ui/v1/responses')) {
+  if (fetchCalls.some((call) => call.url.endsWith('/messages'))) {
     fail(name, 'request should not be sent when attachment materialization fails', JSON.stringify(fetchCalls));
     await cleanup();
     return;
@@ -2312,169 +2312,6 @@ async function testSendMessageKeepsComposerWhenAttachmentMaterializationFails() 
   }
   if (!alerts.some((message) => message.includes('cannot read bad.png'))) {
     fail(name, 'expected read failure to be shown to the user', JSON.stringify(alerts));
-    await cleanup();
-    return;
-  }
-
-  await cleanup();
-  pass(name);
-}
-
-async function testRebuildInputFromSessionReMaterializesStoredAttachments() {
-  const name = 'rebuildInputFromSession rematerializes stored attachments without retaining data URLs on messages';
-  let readCount = 0;
-
-  class MockFileReader {
-    constructor() {
-      this.result = null;
-      this.error = null;
-      this.onload = null;
-      this.onerror = null;
-      this.onabort = null;
-    }
-
-    readAsDataURL(file) {
-      readCount += 1;
-      this.result = file.mockDataURL;
-      setTimeout(() => {
-        if (this.onload) this.onload();
-      }, 0);
-    }
-
-    abort() {
-      if (this.onabort) this.onabort();
-    }
-  }
-
-  const harness = createHarness({
-    FileReader: MockFileReader,
-    urlAPI: {
-      createObjectURL(file) {
-        return `blob:${file.name}`;
-      },
-      revokeObjectURL() {}
-    }
-  });
-  const { app, elements, state, fetchCalls, cleanup } = harness;
-
-  const file = {
-    name: 'cat.png',
-    type: 'image/png',
-    size: 4,
-    mockDataURL: 'data:image/png;base64,Y2F0'
-  };
-
-  app.handleFiles([file]);
-  elements.promptInput.value = 'first turn';
-  await app.sendMessage();
-
-  const session = state.sessions[0];
-  if (!session) {
-    fail(name, 'expected first send to create a session');
-    await cleanup();
-    return;
-  }
-  session.lastResponseId = null;
-
-  elements.promptInput.value = 'second turn';
-  await app.sendMessage();
-
-  if (readCount !== 2) {
-    fail(name, `expected attachment to be reread for rebuild = 2 total reads, got ${readCount}`);
-    await cleanup();
-    return;
-  }
-
-  const postCalls = fetchCalls.filter((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
-  if (postCalls.length < 2 || !postCalls[1].body) {
-    fail(name, 'expected a second POST body for the rebuilt conversation', JSON.stringify(fetchCalls));
-    await cleanup();
-    return;
-  }
-
-  let body;
-  try {
-    body = JSON.parse(postCalls[1].body);
-  } catch (err) {
-    fail(name, 'rebuilt response POST body was not valid JSON', String(err));
-    await cleanup();
-    return;
-  }
-
-  const firstUserParts = body.input?.[0]?.content;
-  const imagePart = Array.isArray(firstUserParts) ? firstUserParts.find((part) => part.type === 'input_image') : null;
-  if (!imagePart || imagePart.image_url !== file.mockDataURL) {
-    fail(name, 'rebuilt conversation should include the prior image attachment', JSON.stringify(body));
-    await cleanup();
-    return;
-  }
-
-  const storedAttachment = session.messages[0]?.attachments?.[0];
-  if (!storedAttachment || Object.prototype.hasOwnProperty.call(storedAttachment, 'dataURL')) {
-    fail(name, 'stored session attachment should remain lightweight after rebuild', JSON.stringify(storedAttachment));
-    await cleanup();
-    return;
-  }
-
-  await cleanup();
-  pass(name);
-}
-
-async function testRebuildInputFromSessionSkipsUnavailableStoredAttachments() {
-  const name = 'rebuildInputFromSession skips unavailable stored attachments';
-  const harness = createHarness();
-  const { app, elements, state, fetchCalls, cleanup } = harness;
-
-  elements.promptInput.value = 'first turn';
-  await app.sendMessage();
-
-  const session = state.sessions[0];
-  if (!session || !session.messages[0]) {
-    fail(name, 'expected first send to create a session message');
-    await cleanup();
-    return;
-  }
-  session.messages[0].attachments = [{
-    id: 'old-att',
-    name: 'old.png',
-    type: 'image/png',
-    previewURL: 'blob:old.png'
-  }];
-  session.lastResponseId = null;
-
-  elements.promptInput.value = 'second turn';
-  await app.sendMessage();
-
-  const postCalls = fetchCalls.filter((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
-  if (postCalls.length < 2 || !postCalls[1].body) {
-    fail(name, 'expected a second POST body for the rebuilt conversation', JSON.stringify(fetchCalls));
-    await cleanup();
-    return;
-  }
-
-  let body;
-  try {
-    body = JSON.parse(postCalls[1].body);
-  } catch (err) {
-    fail(name, 'rebuilt response POST body was not valid JSON', String(err));
-    await cleanup();
-    return;
-  }
-
-  const firstUserParts = body.input?.[0]?.content;
-  if (!Array.isArray(firstUserParts)) {
-    fail(name, 'expected rebuilt first user content to be parts array', JSON.stringify(body));
-    await cleanup();
-    return;
-  }
-  if (firstUserParts.some((part) => part.type === 'input_image' || part.type === 'input_file')) {
-    fail(name, 'unavailable historical attachment should be skipped during rebuild', JSON.stringify(body));
-    await cleanup();
-    return;
-  }
-  const textPart = firstUserParts.find((part) => part.type === 'input_text');
-  if (!textPart || textPart.text !== 'first turn') {
-    fail(name, 'rebuilt conversation should preserve historical message text', JSON.stringify(body));
     await cleanup();
     return;
   }
@@ -2564,13 +2401,13 @@ async function testStaleInterrupt404RefreshesAndSendsMessage() {
     fail(name, 'expected initial send to attempt interrupt once', JSON.stringify(fetchCalls));
     return;
   }
-  const postCalls = fetchCalls.filter((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  const postCalls = fetchCalls.filter((call) => call.url.endsWith('/messages') && call.method === 'POST');
   if (postCalls.length !== 1) {
-    fail(name, 'expected recovery to POST /ui/v1/responses once', JSON.stringify(fetchCalls));
+    fail(name, 'expected recovery to POST /ui/v1/sessions/:id/messages once', JSON.stringify(fetchCalls));
     return;
   }
   const body = JSON.parse(postCalls[0].body || '{}');
-  const content = body.input?.[0]?.content;
+  const content = body.message;
   if (content !== 'send after restart') {
     fail(name, 'recovered POST did not preserve prompt', postCalls[0].body);
     return;
@@ -2696,8 +2533,6 @@ function testRestoreLatestDraftMessageDoesNotCrossSessionBoundary() {
   await testSendMessageConsumesPostStreamWhenAvailable();
   await testSendMessageLazilyMaterializesAttachmentDataURLs();
   await testSendMessageKeepsComposerWhenAttachmentMaterializationFails();
-  await testRebuildInputFromSessionReMaterializesStoredAttachments();
-  await testRebuildInputFromSessionSkipsUnavailableStoredAttachments();
   await testStaleInterrupt404RefreshesAndSendsMessage();
   await testFailedSendKeepsSessionDraftAndRestagesComposer();
   await testSuccessfulSendRemovesOnlyMatchingDraft();

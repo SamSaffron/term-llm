@@ -3144,34 +3144,6 @@ const markToolGroupsDone = (session) => {
   });
 };
 
-// Rebuild a full conversation input array from locally-stored session messages.
-// Used to recover when previous_response_id has expired server-side.
-const rebuildInputFromSession = async (session, currentInput, signal) => {
-  const input = [];
-  for (const msg of session.messages) {
-    if (msg.role === 'user' && !msg.askUser) {
-      if (msg.attachments && msg.attachments.length > 0) {
-        const parts = await buildAttachmentInputParts(msg.attachments, signal, { skipUnavailable: true });
-        if (msg.content) parts.push({ type: 'input_text', text: msg.content });
-        input.push({ type: 'message', role: 'user', content: parts });
-      } else {
-        input.push({ type: 'message', role: 'user', content: msg.content || '' });
-      }
-    } else if (msg.role === 'assistant') {
-      input.push({ type: 'message', role: 'assistant', content: msg.content || '' });
-    }
-    // Skip tool/tool-group/error messages — they're internal
-  }
-  // Replace the last user message input with the current one (which may have
-  // attachments encoded differently), or append if not already present.
-  if (input.length > 0 && input[input.length - 1].role === 'user') {
-    input[input.length - 1].content = currentInput;
-  } else {
-    input.push({ type: 'message', role: 'user', content: currentInput });
-  }
-  return input;
-};
-
 const sendMessage = async (options = {}) => {
   const promptSource = typeof options.prompt === 'string' ? options.prompt : elements.promptInput.value;
   const prompt = String(promptSource || '').trim();
@@ -3338,14 +3310,13 @@ const sendMessage = async (options = {}) => {
 
     const body = {
       stream: true,
-      input: [{ type: 'message', role: 'user', content: inputContent }]
+      message: inputContent
     };
 
-    if (session.lastResponseId) {
-      body.previous_response_id = session.lastResponseId;
-    } else if (session.messages.length > 1) {
-      body.input = await rebuildInputFromSession(session, inputContent, controller.signal);
-    }
+    // First-party UI sessions use the explicit append endpoint: the browser sends
+    // one new user message to the server-owned session. Do not send
+    // previous_response_id and do not replay browser-local history; that turns
+    // the UI into an unreliable shadow database.
 
     const normalizeEffortForCompare = (value) => {
       const normalized = String(value || '').trim();
@@ -3357,7 +3328,7 @@ const sendMessage = async (options = {}) => {
     const targetProvider = state.selectedProvider || currentProvider;
     const targetModel = state.selectedModel || currentModel;
     const targetEffort = state.selectedEffort || '';
-    const hasPriorContext = Boolean(session.lastResponseId || session.messages.length > 1);
+    const hasPriorContext = Boolean(session.messages.length > 1);
     const targetDiffers = hasPriorContext && Boolean(
       (targetProvider || '') !== (currentProvider || '')
       || (targetModel || '') !== (currentModel || '')
@@ -3386,37 +3357,12 @@ const sendMessage = async (options = {}) => {
       }
     }
 
-    let response = await fetch(`${UI_PREFIX}/v1/responses`, {
+    let response = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/messages`, {
       method: 'POST',
-      headers: {
-        ...requestHeaders(session.id),
-        'X-Term-LLM-UI': '1'
-      },
+      headers: requestHeaders(session.id),
       body: JSON.stringify(body),
       signal: controller.signal
     });
-
-    // Recovery: if previous_response_id expired, rebuild conversation from
-    // local messages and retry without chaining.
-    if (!response.ok && body.previous_response_id) {
-      const errData = await response.json().catch(() => null);
-      const errMsg = errData?.error?.message || '';
-      if (errMsg.includes('not found') && errMsg.includes('previous_response_id')) {
-        delete body.previous_response_id;
-        session.lastResponseId = null;
-        body.input = await rebuildInputFromSession(session, inputContent, controller.signal);
-
-        response = await fetch(`${UI_PREFIX}/v1/responses`, {
-          method: 'POST',
-          headers: {
-            ...requestHeaders(session.id),
-            'X-Term-LLM-UI': '1'
-          },
-          body: JSON.stringify(body),
-          signal: controller.signal
-        });
-      }
-    }
 
     const headerResponseId = String(response.headers.get('x-response-id') || '').trim();
     const headerSessionNumber = Number(response.headers.get('x-session-number') || 0);
