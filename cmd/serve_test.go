@@ -2585,7 +2585,7 @@ func TestServeRuntimeRun_ImmediateErrorDoesNotDesyncState(t *testing.T) {
 	}
 }
 
-func TestServeRuntimeRun_ReplaceHistoryClearsInMemoryHistoryOnEarlyFailure(t *testing.T) {
+func TestServeRuntimeRun_ReplaceHistoryRestoresInMemoryHistoryOnEarlyFailure(t *testing.T) {
 	provider := llm.NewMockProvider("mock").
 		AddTextResponse("old reply").
 		AddError(errors.New("fresh-start boom")).
@@ -2617,8 +2617,8 @@ func TestServeRuntimeRun_ReplaceHistoryClearsInMemoryHistoryOnEarlyFailure(t *te
 	if err == nil || !strings.Contains(err.Error(), "fresh-start boom") {
 		t.Fatalf("replaceHistory Run error = %v, want fresh-start boom", err)
 	}
-	if len(rt.history) != 0 {
-		t.Fatalf("history len after failed replaceHistory run = %d, want 0", len(rt.history))
+	if len(rt.history) != 2 {
+		t.Fatalf("history len after failed replaceHistory run = %d, want 2 restored messages", len(rt.history))
 	}
 
 	_, err = rt.Run(context.Background(), true, false, []llm.Message{
@@ -2630,14 +2630,26 @@ func TestServeRuntimeRun_ReplaceHistoryClearsInMemoryHistoryOnEarlyFailure(t *te
 	if len(provider.Requests) != 3 {
 		t.Fatalf("request count = %d, want 3", len(provider.Requests))
 	}
-	if len(provider.Requests[2].Messages) != 1 {
-		t.Fatalf("third request message count = %d, want 1", len(provider.Requests[2].Messages))
+	if len(provider.Requests[2].Messages) != 3 {
+		t.Fatalf("third request message count = %d, want 3 restored-history messages", len(provider.Requests[2].Messages))
 	}
 	if provider.Requests[2].Messages[0].Role != llm.RoleUser {
-		t.Fatalf("third request role = %s, want user", provider.Requests[2].Messages[0].Role)
+		t.Fatalf("third request[0] role = %s, want user", provider.Requests[2].Messages[0].Role)
 	}
-	if got := provider.Requests[2].Messages[0].Parts[0].Text; got != "after failure" {
-		t.Fatalf("third request text = %q, want %q", got, "after failure")
+	if got := provider.Requests[2].Messages[0].Parts[0].Text; got != "old context" {
+		t.Fatalf("third request[0] text = %q, want %q", got, "old context")
+	}
+	if provider.Requests[2].Messages[1].Role != llm.RoleAssistant {
+		t.Fatalf("third request[1] role = %s, want assistant", provider.Requests[2].Messages[1].Role)
+	}
+	if got := provider.Requests[2].Messages[1].Parts[0].Text; got != "old reply" {
+		t.Fatalf("third request[1] text = %q, want %q", got, "old reply")
+	}
+	if provider.Requests[2].Messages[2].Role != llm.RoleUser {
+		t.Fatalf("third request[2] role = %s, want user", provider.Requests[2].Messages[2].Role)
+	}
+	if got := provider.Requests[2].Messages[2].Parts[0].Text; got != "after failure" {
+		t.Fatalf("third request[2] text = %q, want %q", got, "after failure")
 	}
 }
 
@@ -2760,14 +2772,12 @@ func TestStreamUIResponses_SetsSessionNumberHeader(t *testing.T) {
 		responseRuns: newServeResponseRunManager(),
 	}
 
-	body := `{"stream":true,"input":[{"type":"message","role":"user","content":"hello"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	body := `{"stream":true,"message":"hello"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_test_number/messages", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Term-LLM-UI", "1")
-	req.Header.Set("session_id", "sess_test_number")
 	rr := httptest.NewRecorder()
 
-	srv.handleResponses(rr, req)
+	srv.handleSessionByID(rr, req)
 
 	numStr := strings.TrimSpace(rr.Header().Get("x-session-number"))
 	if numStr == "" {
@@ -2776,6 +2786,102 @@ func TestStreamUIResponses_SetsSessionNumberHeader(t *testing.T) {
 	num, parseErr := strconv.ParseInt(numStr, 10, 64)
 	if parseErr != nil || num <= 0 {
 		t.Fatalf("x-session-number = %q, want positive integer", numStr)
+	}
+}
+
+func TestResponsesUIBareSessionIDAppendsServerHistory(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "sess_ui_append"
+	if err := store.Create(context.Background(), &session.Session{ID: sessionID, Status: session.StatusActive}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := store.ReplaceMessages(context.Background(), sessionID, []session.Message{
+		*session.NewMessage(sessionID, llm.UserText("old question"), -1),
+		*session.NewMessage(sessionID, llm.AssistantText("old answer"), -1),
+	}); err != nil {
+		t.Fatalf("seed ReplaceMessages: %v", err)
+	}
+
+	provider := llm.NewMockProvider("mock").AddTextResponse("new answer")
+	manager := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			engine:       engine,
+			store:        store,
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		return rt, nil
+	})
+	defer manager.Close()
+
+	srv := &serveServer{sessionMgr: manager, store: store}
+	body := `{"message":"new question"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sessionID+"/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+
+	msgs, err := store.GetMessages(context.Background(), sessionID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(msgs) != 4 {
+		t.Fatalf("stored message count = %d, want 4 appended messages", len(msgs))
+	}
+	want := []struct {
+		role llm.Role
+		text string
+	}{
+		{llm.RoleUser, "old question"},
+		{llm.RoleAssistant, "old answer"},
+		{llm.RoleUser, "new question"},
+		{llm.RoleAssistant, "new answer"},
+	}
+	for i, w := range want {
+		if msgs[i].Role != w.role || msgs[i].TextContent != w.text {
+			t.Fatalf("message[%d] = (%s, %q), want (%s, %q)", i, msgs[i].Role, msgs[i].TextContent, w.role, w.text)
+		}
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("provider request count = %d, want 1", len(provider.Requests))
+	}
+	if got := len(provider.Requests[0].Messages); got != 3 {
+		t.Fatalf("provider message count = %d, want 3 server-owned history messages", got)
+	}
+}
+
+func TestSessionMessageAppendRejectsResponsesReplayShape(t *testing.T) {
+	provider := llm.NewMockProvider("mock").AddTextResponse("should not run")
+	manager := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
+		engine := llm.NewEngine(provider, nil)
+		return &serveRuntime{provider: provider, engine: engine, defaultModel: "mock-model"}, nil
+	})
+	defer manager.Close()
+
+	srv := &serveServer{sessionMgr: manager}
+	body := `{"input":[{"type":"message","role":"user","content":"old"},{"type":"message","role":"assistant","content":"old answer"},{"type":"message","role":"user","content":"new"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_ui_replay/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rr.Code, rr.Body.String())
+	}
+	if len(provider.Requests) != 0 {
+		t.Fatalf("provider request count = %d, want 0", len(provider.Requests))
 	}
 }
 
@@ -4679,17 +4785,15 @@ func TestHandleResponses_UIAskUserResumeSurvivesDisconnect(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	body := `{"stream":true,"input":"hello"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body)).WithContext(ctx)
+	body := `{"stream":true,"message":"hello"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/resume-session/messages", strings.NewReader(body)).WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("session_id", "resume-session")
-	req.Header.Set("X-Term-LLM-UI", "1")
 	rr := httptest.NewRecorder()
 
 	doneCh := make(chan struct{})
 	go func() {
 		defer close(doneCh)
-		srv.handleResponses(rr, req)
+		srv.handleSessionByID(rr, req)
 	}()
 
 	waitForServeCondition(t, time.Second, func() bool {

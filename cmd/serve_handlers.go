@@ -1185,8 +1185,17 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if suffix == "messages" && r.Method == http.MethodPost {
+		if err := requireJSONContentType(r); err != nil {
+			writeOpenAIError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
+			return
+		}
+		s.handleSessionMessageAppend(w, r, sessionID)
+		return
+	}
+
 	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", "GET")
+		w.Header().Set("Allow", "GET, POST")
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
@@ -1509,7 +1518,7 @@ func (s *serveServer) cors(next http.HandlerFunc) http.HandlerFunc {
 				w.Header().Add("Vary", "Origin")
 			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, session_id, X-Term-LLM-UI, X-Term-LLM-UI-Version, X-API-Key, anthropic-version")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, session_id, X-Term-LLM-UI-Version, X-API-Key, anthropic-version")
 			w.Header().Set("Access-Control-Expose-Headers", "x-session-id, x-session-number, x-response-id, x-term-llm-ui-version")
 		}
 

@@ -626,16 +626,17 @@ func TestServeRuntimeFinalSnapshotReconcilesEarlierAssistantUpdateFailure(t *tes
 	}
 }
 
-func TestServeRuntimeReplaceHistoryClearsPersistedMessagesBeforeEarlyFailure(t *testing.T) {
+func TestServeRuntimeReplaceHistoryPreservesPersistedMessagesBeforeEarlyFailure(t *testing.T) {
 	store := newServeRuntimeTestStore()
 	sess := &session.Session{ID: "sess-replace", Status: session.StatusActive}
 	if err := store.Create(context.Background(), sess); err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if err := store.ReplaceMessages(context.Background(), "sess-replace", []session.Message{
+	staleMessages := []session.Message{
 		*session.NewMessage("sess-replace", serveRuntimeTextMessage(llm.RoleUser, "stale user"), -1),
 		*session.NewMessage("sess-replace", serveRuntimeTextMessage(llm.RoleAssistant, "stale assistant"), -1),
-	}); err != nil {
+	}
+	if err := store.ReplaceMessages(context.Background(), "sess-replace", staleMessages); err != nil {
 		t.Fatalf("ReplaceMessages() error = %v", err)
 	}
 
@@ -648,6 +649,10 @@ func TestServeRuntimeReplaceHistoryClearsPersistedMessagesBeforeEarlyFailure(t *
 		engine:       engine,
 		store:        store,
 		defaultModel: "test-model",
+		history: []llm.Message{
+			serveRuntimeTextMessage(llm.RoleUser, "stale user"),
+			serveRuntimeTextMessage(llm.RoleAssistant, "stale assistant"),
+		},
 	}
 
 	_, err := rt.Run(context.Background(), true, true, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "fresh user")}, llm.Request{
@@ -657,15 +662,25 @@ func TestServeRuntimeReplaceHistoryClearsPersistedMessagesBeforeEarlyFailure(t *
 		t.Fatalf("Run() error = %v, want %v", err, providerErr)
 	}
 
+	if store.replaceCalls != 1 {
+		t.Fatalf("ReplaceMessages call count = %d, want 1 seed call only", store.replaceCalls)
+	}
+
 	msgs, err := store.GetMessages(context.Background(), "sess-replace", 0, 0)
 	if err != nil {
 		t.Fatalf("GetMessages() error = %v", err)
 	}
-	if len(msgs) != 0 {
-		t.Fatalf("stored message count = %d, want 0", len(msgs))
+	if len(msgs) != 2 {
+		t.Fatalf("stored message count = %d, want 2 preserved messages", len(msgs))
 	}
-	if got := rt.history; len(got) != 0 {
-		t.Fatalf("runtime history length = %d, want 0", len(got))
+	if msgs[0].Role != llm.RoleUser || msgs[0].TextContent != "stale user" {
+		t.Fatalf("message[0] = %+v, want preserved stale user", msgs[0])
+	}
+	if msgs[1].Role != llm.RoleAssistant || msgs[1].TextContent != "stale assistant" {
+		t.Fatalf("message[1] = %+v, want preserved stale assistant", msgs[1])
+	}
+	if got := rt.history; len(got) != 2 {
+		t.Fatalf("runtime history length = %d, want 2 restored messages", len(got))
 	}
 }
 

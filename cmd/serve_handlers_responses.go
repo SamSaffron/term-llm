@@ -12,6 +12,16 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
+type resolvedResponsesRequest struct {
+	req                responsesCreateRequest
+	inputMessages      []llm.Message
+	replaceHistory     bool
+	sessionID          string
+	previousResponseID string
+	freshConversation  bool
+	uiStream           bool
+}
+
 func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
@@ -45,9 +55,10 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve session: previous_response_id for chaining, otherwise fresh.
-	// session_id header provides the ID for persistence but does NOT reuse
-	// an existing conversation without explicit chaining.
+	// External /v1/responses callers follow OpenAI-style chaining:
+	// previous_response_id continues a conversation; no previous response means a
+	// fresh conversation, even if a session_id header is reused for persistence.
+	headerSessionID := strings.TrimSpace(r.Header.Get("session_id"))
 	sessionID := ""
 	if req.PreviousResponseID != "" {
 		sid, ok := s.responseToSession.Load(req.PreviousResponseID)
@@ -64,20 +75,100 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		sessionID = sidStr
 	}
 	if sessionID == "" {
-		// No chaining — unconditionally fresh conversation.
-		sessionID = strings.TrimSpace(r.Header.Get("session_id"))
+		sessionID = headerSessionID
 		if sessionID == "" {
 			sessionID = session.NewID()
 		}
 		w.Header().Set("x-session-id", sessionID)
+		// External Responses API semantics: no previous_response_id means the
+		// supplied input is the new whole conversation for this persisted ID.
 		replaceHistory = true
 	}
+
+	s.handleResolvedResponses(w, r, ctx, resolvedResponsesRequest{
+		req:                req,
+		inputMessages:      inputMessages,
+		replaceHistory:     replaceHistory,
+		sessionID:          sessionID,
+		previousResponseID: req.PreviousResponseID,
+		freshConversation:  req.PreviousResponseID == "",
+	})
+}
+
+func (s *serveServer) handleSessionMessageAppend(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		return
+	}
+	if err := requireJSONContentType(r); err != nil {
+		writeOpenAIError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), s.responseTimeout())
+	defer cancel()
+
+	var req sessionAppendMessageRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	if len(req.Message) == 0 || strings.TrimSpace(string(req.Message)) == "" || strings.TrimSpace(string(req.Message)) == "null" {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "message is required")
+		return
+	}
+	msg, err := parseUserMessageContent(req.Message)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+
+	responsesReq := responsesCreateRequest{
+		Model:              req.Model,
+		Provider:           req.Provider,
+		Tools:              req.Tools,
+		IncludeServerTools: req.IncludeServerTools,
+		ToolChoice:         req.ToolChoice,
+		ParallelToolCalls:  req.ParallelToolCalls,
+		MaxOutputTokens:    req.MaxOutputTokens,
+		Temperature:        req.Temperature,
+		TopP:               req.TopP,
+		Stream:             req.Stream,
+		ReasoningEffort:    req.ReasoningEffort,
+		ModelSwap:          req.ModelSwap,
+	}
+
+	reqStart := time.Now()
+	s.verboseLog("→ POST /v1/sessions/%s/messages model=%s tools=%d stream=%v body=%d bytes",
+		sessionID, responsesReq.Model, len(responsesReq.Tools), responsesReq.Stream, r.ContentLength)
+	defer func() {
+		s.verboseLog("← POST /v1/sessions/%s/messages completed in %s", sessionID, time.Since(reqStart))
+	}()
+
+	s.handleResolvedResponses(w, r, ctx, resolvedResponsesRequest{
+		req:                responsesReq,
+		inputMessages:      []llm.Message{msg},
+		replaceHistory:     false,
+		sessionID:          sessionID,
+		previousResponseID: "",
+		freshConversation:  false,
+		uiStream:           true,
+	})
+}
+
+func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Request, ctx context.Context, rr resolvedResponsesRequest) {
+	req := rr.req
+	inputMessages := rr.inputMessages
+	replaceHistory := rr.replaceHistory
+	sessionID := rr.sessionID
+	previousResponseID := rr.previousResponseID
+	freshConversation := rr.freshConversation
 	// Chained requests are locked to the persisted provider/model/
 	// reasoning_effort unless the client explicitly asks for a mid-conversation
-	// model swap. A bare session_id header starts a fresh conversation, even when
-	// the client reuses an existing session ID, so fresh conversations may choose
+	// model swap. External bare session_id requests start a fresh conversation,
+	// even when reusing an existing session ID, so fresh conversations may choose
 	// new runtime settings and syncPersistedSessionRuntime will update the row.
-	freshConversation := req.PreviousResponseID == ""
+	// First-party UI append requests are stateful appends.
 	defaultProvider := ""
 	if s.cfgRef != nil {
 		defaultProvider = strings.TrimSpace(s.cfgRef.DefaultProvider)
@@ -120,7 +211,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 						model = existing.defaultModel
 					}
 				}
-				s.streamFailedResponseRun(ctx, w, sessionID, req.PreviousResponseID, model, "conflict_error", err.Error())
+				s.streamFailedResponseRun(ctx, w, sessionID, previousResponseID, model, "conflict_error", err.Error())
 				return true
 			}
 			writeOpenAIError(w, http.StatusConflict, "conflict_error", err.Error())
@@ -147,7 +238,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Enforce chaining from the latest response before replacing the session runtime.
-		if req.PreviousResponseID != "" {
+		if previousResponseID != "" {
 			lastRespID := previousRuntime.getLastResponseID()
 			if lastRespID == "" {
 				if latest, ok := s.sessionToResponse.Load(sessionID); ok {
@@ -156,9 +247,9 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-			if lastRespID != "" && req.PreviousResponseID != lastRespID {
+			if lastRespID != "" && previousResponseID != lastRespID {
 				writeOpenAIError(w, http.StatusConflict, "conflict_error",
-					fmt.Sprintf("previous_response_id %q is stale; latest is %q", req.PreviousResponseID, lastRespID))
+					fmt.Sprintf("previous_response_id %q is stale; latest is %q", previousResponseID, lastRespID))
 				if !previousStateful {
 					s.unregisterResponseIDs(previousRuntime)
 					previousRuntime.Close()
@@ -167,6 +258,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 			}
 			s.populateResponsesToolResultNames(ctx, sessionID, previousRuntime, inputMessages)
 		}
+		var err error
 		modelSwapExec, err = s.beginResponseModelSwap(ctx, sessionID, swapPlan, inputMessages)
 		if handleRuntimeErr(err) {
 			return
@@ -174,7 +266,8 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		runtime = modelSwapExec.candidate
 		stateful = true
 	} else {
-		if req.PreviousResponseID != "" {
+		var err error
+		if previousResponseID != "" || rr.uiStream {
 			runtime, stateful, err = s.runtimeForProviderRequest(ctx, sessionID, reqProvider)
 		} else {
 			runtime, stateful, err = s.runtimeForFreshProviderRequest(ctx, sessionID, freshProvider)
@@ -190,7 +283,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		// map to a valid session but don't match the runtime's last response would
 		// produce incorrect branching (the context wouldn't match what the client
 		// expects from that response).
-		if req.PreviousResponseID != "" {
+		if previousResponseID != "" {
 			lastRespID := runtime.getLastResponseID()
 			if lastRespID == "" {
 				if latest, ok := s.sessionToResponse.Load(sessionID); ok {
@@ -199,9 +292,9 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-			if lastRespID != "" && req.PreviousResponseID != lastRespID {
+			if lastRespID != "" && previousResponseID != lastRespID {
 				writeOpenAIError(w, http.StatusConflict, "conflict_error",
-					fmt.Sprintf("previous_response_id %q is stale; latest is %q", req.PreviousResponseID, lastRespID))
+					fmt.Sprintf("previous_response_id %q is stale; latest is %q", previousResponseID, lastRespID))
 				if !stateful {
 					s.unregisterResponseIDs(runtime)
 					runtime.Close()
@@ -264,10 +357,10 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 
 	resetResponseIDsOnSuccess := freshConversation || swapPlan.enabled
 	if req.Stream {
-		if isServeUIRequest(r) && stateful {
-			s.streamUIResponses(w, r, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, req.PreviousResponseID, resetResponseIDsOnSuccess, modelSwapExec)
+		if rr.uiStream && stateful {
+			s.streamUIResponses(w, r, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, resetResponseIDsOnSuccess, modelSwapExec)
 		} else {
-			started := s.streamResponses(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, req.PreviousResponseID, resetResponseIDsOnSuccess, modelSwapExec)
+			started := s.streamResponses(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, resetResponseIDsOnSuccess, modelSwapExec)
 			if !stateful && started {
 				cleanupRuntime = false
 			}
@@ -307,7 +400,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	setSessionNumberHeader(w, runtime)
 
 	created := time.Now().Unix()
-	respID, err := s.storeCompletedResponseRun(runtime, sessionID, req.PreviousResponseID, model, created, result, resetResponseIDsOnSuccess)
+	respID, err := s.storeCompletedResponseRun(runtime, sessionID, previousResponseID, model, created, result, resetResponseIDsOnSuccess)
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
 		return

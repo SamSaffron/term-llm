@@ -4,15 +4,9 @@ import (
 	"context"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 )
-
-func isServeUIRequest(r *http.Request) bool {
-	value := strings.TrimSpace(strings.ToLower(r.Header.Get("X-Term-LLM-UI")))
-	return value == "1" || value == "true" || value == "yes"
-}
 
 func (s *serveServer) streamUIResponses(w http.ResponseWriter, r *http.Request, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool, modelSwap *responseModelSwapExecution) {
 	// Persist session in the store so the client gets the session number in
