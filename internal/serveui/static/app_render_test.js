@@ -289,7 +289,6 @@ function createHarness(appOverrides = {}) {
       appShell: new Element('div'),
       activeSessionTitle: new Element('div'),
       widgetsOpenBtn: new Element('button'),
-      widgetsCount: new Element('span'),
       widgetsModal: new Element('div'),
       widgetsModalList: new Element('div'),
       widgetsModalCloseBtn: new Element('button'),

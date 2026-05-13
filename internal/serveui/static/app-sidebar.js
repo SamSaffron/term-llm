@@ -49,7 +49,6 @@ const renderWidgetSidebar = () => {
   const shouldShow = state.showWidgetsSidebar !== false && state.widgetsLoaded && widgets.length > 0;
 
   elements.widgetsOpenBtn?.classList.toggle('hidden', !shouldShow);
-  if (elements.widgetsCount) elements.widgetsCount.textContent = shouldShow ? `(${widgets.length})` : '';
 
   if (!shouldShow) {
     elements.widgetsModalList?.replaceChildren();

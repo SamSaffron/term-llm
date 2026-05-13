@@ -349,7 +349,19 @@
       font: inherit;
       font-size: 0.92rem;
       font-weight: 600;
+      line-height: 1.25;
       transition: background 0.15s ease, border-color 0.15s ease;
+    }
+
+    .widgets-sidebar-btn {
+      display: flex;
+      align-items: center;
+      gap: 0.55rem;
+    }
+
+    .sidebar-action-icon {
+      flex: 0 0 auto;
+      color: currentColor;
     }
 
     .new-chat-btn:hover,
@@ -360,12 +372,6 @@
 
     .widgets-sidebar-btn.hidden {
       display: none;
-    }
-
-    .widgets-count {
-      color: var(--text-muted);
-      font-size: 0.78rem;
-      font-weight: 700;
     }
 
     .sidebar-search-wrap {

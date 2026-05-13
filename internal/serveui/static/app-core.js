@@ -160,7 +160,6 @@ const elements = {
   settingsBtn: document.getElementById('settingsBtn'),
   newChatBtn: document.getElementById('newChatBtn'),
   widgetsOpenBtn: document.getElementById('widgetsOpenBtn'),
-  widgetsCount: document.getElementById('widgetsCount'),
   widgetsModal: document.getElementById('widgetsModal'),
   widgetsModalList: document.getElementById('widgetsModalList'),
   widgetsModalCloseBtn: document.getElementById('widgetsModalCloseBtn'),

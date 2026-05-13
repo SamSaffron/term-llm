@@ -106,7 +106,6 @@ class Element {
 function createHarness(options = {}) {
   const elements = {
     widgetsOpenBtn: new Element('button'),
-    widgetsCount: new Element('span'),
     widgetsModal: new Element('div'),
     widgetsModalList: new Element('div'),
     widgetsModalCloseBtn: new Element('button'),
@@ -168,7 +167,6 @@ async function run(name, fn) {
     app.renderWidgetSidebar();
 
     assert(!elements.widgetsOpenBtn.classList.contains('hidden'), 'widgets button is visible');
-    assertEqual(elements.widgetsCount.textContent, '(2)', 'count is shown');
     const links = elements.widgetsModalList.querySelectorAll('.widget-link');
     assertEqual(links.length, 2, 'modal contains all widgets');
     assertEqual(links[0].href, '/chat/widgets/one/', 'first link points to widget');
