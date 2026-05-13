@@ -40,14 +40,118 @@ func (h *responsesStreamEventHandler) OutputItems() []ResponsesInputItem {
 	return append([]ResponsesInputItem(nil), h.outputItems...)
 }
 
+// responsesJSONEventType reads the top-level Responses event type without
+// unmarshalling the full event envelope on the common WebSocket path where a
+// known "type" is the first object field. Frames still get decoded by
+// HandleJSONEvent below; this avoids an extra json.Unmarshal on hot events while
+// falling back to json.Unmarshal for uncommon field orderings, unknown event
+// types, and malformed JSON.
+func responsesJSONEventType(data []byte) (string, error) {
+	if typ, ok := fastResponsesJSONEventType(data); ok && knownResponsesEventType(typ) {
+		return typ, nil
+	}
+
+	var envelope struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return "", err
+	}
+	return envelope.Type, nil
+}
+
+func knownResponsesEventType(typ string) bool {
+	switch typ {
+	case "response.output_text.delta",
+		"response.output_item.added",
+		"response.function_call_arguments.delta",
+		"response.output_item.done",
+		"response.reasoning_summary_part.added",
+		"response.reasoning_summary_text.delta",
+		"response.completed",
+		"response.failed",
+		"error":
+		return true
+	default:
+		return false
+	}
+}
+
+func fastResponsesJSONEventType(data []byte) (string, bool) {
+	i := skipJSONWhitespace(data, 0)
+	if i >= len(data) || data[i] != '{' {
+		return "", false
+	}
+	i = skipJSONWhitespace(data, i+1)
+	if i >= len(data) || data[i] == '}' {
+		return "", false
+	}
+
+	keyEnd, err := skipJSONString(data, i)
+	if err != nil {
+		return "", false
+	}
+	if !bytes.Equal(data[i:keyEnd], []byte(`"type"`)) {
+		return "", false
+	}
+	i = skipJSONWhitespace(data, keyEnd)
+	if i >= len(data) || data[i] != ':' {
+		return "", false
+	}
+	i = skipJSONWhitespace(data, i+1)
+
+	valueEnd, err := skipJSONString(data, i)
+	if err != nil {
+		return "", false
+	}
+	raw := data[i:valueEnd]
+	if len(raw) >= 2 && bytes.IndexByte(raw[1:len(raw)-1], '\\') < 0 {
+		return string(raw[1 : len(raw)-1]), true
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", false
+	}
+	return value, true
+}
+
+func skipJSONWhitespace(data []byte, i int) int {
+	for i < len(data) {
+		switch data[i] {
+		case ' ', '\n', '\r', '\t':
+			i++
+		default:
+			return i
+		}
+	}
+	return i
+}
+
+func skipJSONString(data []byte, i int) (int, error) {
+	if i >= len(data) || data[i] != '"' {
+		return 0, fmt.Errorf("expected JSON string")
+	}
+	for i++; i < len(data); i++ {
+		switch data[i] {
+		case '\\':
+			i++
+			if i >= len(data) {
+				return 0, fmt.Errorf("unterminated JSON escape")
+			}
+		case '"':
+			return i + 1, nil
+		}
+	}
+	return 0, fmt.Errorf("unterminated JSON string")
+}
+
 func (h *responsesStreamEventHandler) HandleJSONEvent(data []byte, eventType string, send eventSender) (bool, error) {
 	if bytes.Equal(data, sseDoneData) {
 		return true, nil
 	}
 	if eventType == "" {
-		var sseEvent responsesSSEEvent
-		if err := json.Unmarshal(data, &sseEvent); err == nil && sseEvent.Type != "" {
-			eventType = sseEvent.Type
+		if typ, err := responsesJSONEventType(data); err == nil && typ != "" {
+			eventType = typ
 		}
 	}
 	eventLabel := eventType

@@ -61,6 +61,73 @@ func TestResponsesWebSocketRequestOmitsTransportFields(t *testing.T) {
 	}
 }
 
+func TestResponsesJSONEventType(t *testing.T) {
+	tests := []struct {
+		name    string
+		data    string
+		want    string
+		wantErr bool
+	}{
+		{
+			name: "top level first",
+			data: `{"type":"response.output_text.delta","delta":"hello"}`,
+			want: "response.output_text.delta",
+		},
+		{
+			name: "whitespace around first field",
+			data: " { \n \t \"type\" : \"response.completed\", \"response\": {\"id\": \"resp_1\"} } ",
+			want: "response.completed",
+		},
+		{
+			name: "escaped first type",
+			data: `{"type":"response.output_text.\u0064elta","delta":"hello"}`,
+			want: "response.output_text.delta",
+		},
+		{
+			name: "nested type before top level",
+			data: `{"item":{"type":"function_call"},"output_index":0,"type":"response.output_item.added"}`,
+			want: "response.output_item.added",
+		},
+		{
+			name: "unknown first type falls back to unmarshal semantics",
+			data: `{"type":"unknown.event","type":"response.completed","response":{"id":"resp_1"}}`,
+			want: "response.completed",
+		},
+		{
+			name: "missing type",
+			data: `{"delta":"hello"}`,
+		},
+		{
+			name:    "malformed",
+			data:    `{"type":`,
+			wantErr: true,
+		},
+		{
+			name:    "unknown malformed first type falls back to validation",
+			data:    `{"type":"unknown.event",`,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := responsesJSONEventType([]byte(tt.data))
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("responsesJSONEventType: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("type = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestResponsesWebSocketPrepareClearsStalePreviousResponseID(t *testing.T) {
 	client := &ResponsesClient{LastResponseID: ""}
 	fullInput := []ResponsesInputItem{
