@@ -190,6 +190,7 @@ const (
 type ToolImageData struct {
 	MediaType string `json:"media_type,omitempty"`
 	Base64    string `json:"base64,omitempty"`
+	Detail    string `json:"detail,omitempty"` // Optional vision detail hint: low, high, or auto.
 }
 
 // ToolContentPart represents one structured piece of tool result content.

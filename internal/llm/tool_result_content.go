@@ -92,7 +92,8 @@ func toolResultResponsesImageParts(result *ToolResult) (parts []ResponsesContent
 		}
 		hasImage = true
 		dataURL := fmt.Sprintf("data:%s;base64,%s", mimeType, base64Data)
-		parts = append(parts, ResponsesContentPart{Type: "input_image", ImageURL: dataURL})
+		detail := normalizeVisionDetail(contentPart.ImageData.Detail)
+		parts = append(parts, ResponsesContentPart{Type: "input_image", ImageURL: dataURL, Detail: detail})
 	}
 	return parts, hasImage
 }

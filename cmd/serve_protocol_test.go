@@ -110,7 +110,7 @@ func TestDecodeUploadedFile_RejectsOversizedPayloadBeforeDecode(t *testing.T) {
 	}
 }
 
-func TestParseUserMessageContent_InlineImagesDoNotHitUploadsDir(t *testing.T) {
+func TestParseUserMessageContent_InlineImagesAreSavedForToolReuse(t *testing.T) {
 	dataHome := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", dataHome)
 
@@ -123,13 +123,20 @@ func TestParseUserMessageContent_InlineImagesDoNotHitUploadsDir(t *testing.T) {
 	if len(msg.Parts) != 1 {
 		t.Fatalf("len(msg.Parts) = %d, want 1", len(msg.Parts))
 	}
-	if msg.Parts[0].ImagePath != "" {
-		t.Fatalf("msg.Parts[0].ImagePath = %q, want empty", msg.Parts[0].ImagePath)
+	if msg.Parts[0].ImagePath == "" {
+		t.Fatal("msg.Parts[0].ImagePath is empty, want saved upload path")
+	}
+	if msg.Parts[0].ImageData == nil || msg.Parts[0].ImageData.Detail != "high" {
+		t.Fatalf("image detail = %#v, want high", msg.Parts[0].ImageData)
 	}
 
 	uploadsDir := filepath.Join(dataHome, "term-llm", "uploads")
-	if _, err := os.Stat(uploadsDir); !os.IsNotExist(err) {
-		t.Fatalf("uploads dir stat err = %v, want not exist", err)
+	entries, err := os.ReadDir(uploadsDir)
+	if err != nil {
+		t.Fatalf("read uploads dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("uploads dir has %d files, want 1", len(entries))
 	}
 }
 

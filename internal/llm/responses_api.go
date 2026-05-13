@@ -116,6 +116,7 @@ type ResponsesContentPart struct {
 	Type     string `json:"type"`
 	Text     string `json:"text,omitempty"`
 	ImageURL string `json:"image_url,omitempty"` // Plain URL string for Responses API (not object)
+	Detail   string `json:"detail,omitempty"`
 }
 
 // ResponsesTool represents a tool definition in Open Responses format
@@ -357,7 +358,8 @@ func buildResponsesMessageItems(role string, parts []Part) []ResponsesInputItem 
 			if part.ImageData != nil {
 				flushText()
 				dataURL := fmt.Sprintf("data:%s;base64,%s", part.ImageData.MediaType, part.ImageData.Base64)
-				imageParts := []ResponsesContentPart{{Type: "input_image", ImageURL: dataURL}}
+				detail := normalizeVisionDetail(part.ImageData.Detail)
+				imageParts := []ResponsesContentPart{{Type: "input_image", ImageURL: dataURL, Detail: detail}}
 				if part.ImagePath != "" {
 					imageParts = append(imageParts, ResponsesContentPart{Type: "input_text", Text: "[image saved at: " + part.ImagePath + "]"})
 				}

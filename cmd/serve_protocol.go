@@ -276,20 +276,23 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 					if decodedLen > maxAttachmentBytes {
 						return llm.Message{}, fmt.Errorf("file %q exceeds %d MB limit", filename, maxAttachmentBytes>>20)
 					}
-					if decodedLen <= maxLLMImageBytes {
-						if err := validateBase64Data(b64); err != nil {
-							return llm.Message{}, fmt.Errorf("decode attachment %q: %w", filename, err)
-						}
-						llmParts = append(llmParts, llm.Part{
-							Type:      llm.PartImage,
-							ImageData: &llm.ToolImageData{MediaType: mt, Base64: b64},
-						})
-						continue
-					}
 
 					raw, err := decodeUploadedFile(filename, b64)
 					if err != nil {
 						return llm.Message{}, fmt.Errorf("decode attachment %q: %w", filename, err)
+					}
+					path, err := saveUploadedBytes(filename, raw)
+					if err != nil {
+						return llm.Message{}, fmt.Errorf("save attachment %q: %w", filename, err)
+					}
+
+					if decodedLen <= maxLLMImageBytes {
+						llmParts = append(llmParts, llm.Part{
+							Type:      llm.PartImage,
+							ImageData: &llm.ToolImageData{MediaType: mt, Base64: b64, Detail: "high"},
+							ImagePath: path,
+						})
+						continue
 					}
 
 					// Resize if over 1 MB before sending to the model.
@@ -300,7 +303,8 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 					}
 					llmParts = append(llmParts, llm.Part{
 						Type:      llm.PartImage,
-						ImageData: &llm.ToolImageData{MediaType: resMT, Base64: sendB64},
+						ImageData: &llm.ToolImageData{MediaType: resMT, Base64: sendB64, Detail: "high"},
+						ImagePath: path,
 					})
 				} else {
 					fileCount++
