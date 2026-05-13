@@ -163,6 +163,17 @@
           <div class="new-chat-wrap">
             <button class="new-chat-btn" id="newChatBtn">+ New chat</button>
           </div>
+          <section class="widgets-section hidden" id="widgetsSection" aria-labelledby="widgetsSectionTitle">
+            <button class="widgets-header" id="widgetsToggleBtn" type="button" aria-expanded="true">
+              <span id="widgetsSectionTitle">Widgets</span>
+              <span class="widgets-count" id="widgetsCount"></span>
+              <span class="widgets-chevron" aria-hidden="true">⌄</span>
+            </button>
+            <div class="widgets-body" id="widgetsBody">
+              <div class="widgets-list" id="widgetsList"></div>
+              <button class="widgets-more-btn hidden" id="widgetsMoreBtn" type="button"></button>
+            </div>
+          </section>
           <div class="session-groups" id="sessionGroups"></div>
         </div>
       </div>
@@ -300,6 +311,15 @@
             <span class="settings-help">Reveal sessions hidden from the default sidebar so you can rename or unhide them.</span>
           </span>
           <input id="showHiddenSessionsInput" type="checkbox" tabindex="-1">
+        </label>
+      </div>
+      <div class="settings-field">
+        <label class="settings-toggle" for="showWidgetsSidebarInput">
+          <span>
+            <span class="settings-label settings-label-inline">Show widgets in sidebar</span>
+            <span class="settings-help">Display loaded local widgets near the top of the sidebar.</span>
+          </span>
+          <input id="showWidgetsSidebarInput" type="checkbox" tabindex="-1">
         </label>
       </div>
       <div class="modal-error" id="authError"></div>

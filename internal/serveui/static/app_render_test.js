@@ -278,6 +278,7 @@ function createHarness(appOverrides = {}) {
 
   const app = {
     STORAGE_KEYS: { sidebarCollapsed: 'sidebar' },
+    UI_PREFIX: '/chat',
     state,
     elements: {
       messages,
@@ -287,6 +288,12 @@ function createHarness(appOverrides = {}) {
       sidebarPanelToggleBtn: new Element('button'),
       appShell: new Element('div'),
       activeSessionTitle: new Element('div'),
+      widgetsSection: new Element('section'),
+      widgetsToggleBtn: new Element('button'),
+      widgetsCount: new Element('span'),
+      widgetsBody: new Element('div'),
+      widgetsList: new Element('div'),
+      widgetsMoreBtn: new Element('button'),
       sessionGroups: new Element('div'),
     },
     INTERRUPT_BADGE_META: {},
@@ -860,6 +867,59 @@ async function run(name, fn) {
     for (const [text, expected, label] of cases) {
       assertEqual(app.directionForText(text), expected, label);
     }
+  });
+
+  await run('renderWidgetSidebar shows top five widgets and more button expands', () => {
+    const widgets = Array.from({ length: 7 }, (_, index) => ({
+      id: `w${index + 1}`,
+      mount: `widget-${index + 1}`,
+      title: `Widget ${index + 1}`,
+      description: `Description ${index + 1}`,
+      state: index === 0 ? 'running' : 'stopped',
+    }));
+    const { app } = createHarness();
+    app.state.widgets = widgets;
+    app.state.widgetsLoaded = true;
+    app.state.showWidgetsSidebar = true;
+    app.state.widgetsCollapsed = false;
+    app.state.widgetsShowAll = false;
+
+    app.renderWidgetSidebar();
+
+    assert(!app.elements.widgetsSection.classList.contains('hidden'), 'widgets section is visible when widgets are loaded');
+    assertEqual(app.elements.widgetsCount.textContent, '7', 'count shows loaded widgets');
+    assertEqual(app.elements.widgetsList.querySelectorAll('.widget-link').length, 5, 'only top five widgets are shown');
+    assert(!app.elements.widgetsMoreBtn.classList.contains('hidden'), 'more button is visible');
+    assertEqual(app.elements.widgetsMoreBtn.textContent, 'More widgets (2)', 'more button shows remaining count');
+
+    app.state.widgetsShowAll = true;
+    app.renderWidgetSidebar();
+
+    assertEqual(app.elements.widgetsList.querySelectorAll('.widget-link').length, 7, 'all widgets are shown after expanding');
+    assertEqual(app.elements.widgetsMoreBtn.textContent, 'Show fewer widgets', 'more button toggles to show fewer');
+  });
+
+  await run('renderWidgetSidebar hides section when no widgets are loaded', () => {
+    const { app } = createHarness();
+    app.state.widgets = [];
+    app.state.widgetsLoaded = true;
+
+    app.renderWidgetSidebar();
+
+    assert(app.elements.widgetsSection.classList.contains('hidden'), 'empty widgets section is hidden');
+    assertEqual(app.elements.widgetsList.children.length, 0, 'widget list is cleared');
+  });
+
+  await run('renderWidgetSidebar hides section when user preference is off', () => {
+    const { app } = createHarness();
+    app.state.widgets = [{ id: 'w1', mount: 'widget-1', title: 'Widget 1', state: 'running' }];
+    app.state.widgetsLoaded = true;
+    app.state.showWidgetsSidebar = false;
+
+    app.renderWidgetSidebar();
+
+    assert(app.elements.widgetsSection.classList.contains('hidden'), 'widgets section is hidden by preference');
+    assertEqual(app.elements.widgetsList.children.length, 0, 'widget list is cleared');
   });
 
   await run('renderSidebar creates group sections and session rows', () => {

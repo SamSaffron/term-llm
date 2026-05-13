@@ -6,7 +6,7 @@ const {
   UI_PREFIX, STORAGE_KEYS, state, elements, generateId, truncate, asTimestamp, loadSessions, saveSessions, getActiveSession, createSession, ensureActiveSession,
   sessionIdFromURL, sessionSlug, findSessionBySlug, updateURL, scrollToBottom, setConnectionState, setStartupStatus, hideStartupSplash, persistAndRefreshShell, refreshRelativeTimes,
   openAuthModal, closeAuthModal, handleAuthFailure, closeAskUserModal, openAskUserModal, setActiveResponseTracking,
-  clearActiveResponseTracking, setStreaming, resumeActiveResponse, renderSidebar, renderMessages, renderProviderOptions, renderModelOptions, normalizeSelectedProvider,
+  clearActiveResponseTracking, setStreaming, resumeActiveResponse, renderSidebar, renderWidgetSidebar, renderMessages, renderProviderOptions, renderModelOptions, normalizeSelectedProvider,
   autoGrowPrompt, updateVoiceUI, toggleVoiceRecording, fetchProviders, fetchModels, addErrorMessage, sendMessage, openSidebar, closeSidebar, closeSidebarIfMobile,
   connectToken, submitAskUserModal, cancelActiveResponse, handleFiles, isNearBottom,
   openApprovalModal, closeApprovalModal, submitApprovalModal, registerServiceWorker, subscribeToPush, refreshNotificationUI,
@@ -61,6 +61,28 @@ const SIDEBAR_POLL_IDLE = 30000;
 let sidebarStatusTimer = null;
 let sidebarStatusEtag = null;
 let sidebarHasActive = false;
+
+const refreshWidgetsSidebar = async () => {
+  if (!renderWidgetSidebar) return;
+  try {
+    const resp = await fetch(`${UI_PREFIX}/admin/widgets/status`, {
+      headers: requestHeaders('')
+    });
+    if (resp.status === 404) {
+      state.widgets = [];
+      state.widgetsLoaded = false;
+      if (renderWidgetSidebar) renderWidgetSidebar();
+      return;
+    }
+    if (!resp.ok) return;
+    const data = await resp.json();
+    state.widgets = Array.isArray(data.widgets) ? data.widgets : [];
+    state.widgetsLoaded = true;
+    if (renderWidgetSidebar) renderWidgetSidebar();
+  } catch (_) {
+    // Widgets are optional; leave the section hidden if the admin route is unavailable.
+  }
+};
 
 const stopSidebarStatusPoll = () => {
   if (sidebarStatusTimer !== null) {
@@ -982,6 +1004,7 @@ const initialize = async () => {
   ensureActiveSession();
 
   renderSidebar();
+  if (renderWidgetSidebar) renderWidgetSidebar();
   renderMessages(true);
   renderProviderOptions();
   renderModelOptions();
@@ -1024,6 +1047,7 @@ const initialize = async () => {
     renderModelOptions();
     setConnectionState('', '');
     startSidebarStatusPoll();
+    void refreshWidgetsSidebar();
     if (!state.draftSessionActive && !getActiveSession()) {
       ensureActiveSession();
       renderMessages(true);
@@ -1052,6 +1076,18 @@ const initialize = async () => {
 
 // ===== Event listeners =====
 elements.newChatBtn.addEventListener('click', createAndSwitchToFreshSession);
+if (elements.widgetsToggleBtn) {
+  elements.widgetsToggleBtn.addEventListener('click', () => {
+    state.widgetsCollapsed = !state.widgetsCollapsed;
+    if (renderWidgetSidebar) renderWidgetSidebar();
+  });
+}
+if (elements.widgetsMoreBtn) {
+  elements.widgetsMoreBtn.addEventListener('click', () => {
+    state.widgetsShowAll = !state.widgetsShowAll;
+    if (renderWidgetSidebar) renderWidgetSidebar();
+  });
+}
 elements.sidebarRailNewChatBtn.addEventListener('click', async () => {
   await createAndSwitchToFreshSession();
 });

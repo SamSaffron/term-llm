@@ -5,7 +5,7 @@ const app = window.TermLLMApp;
 const {
   STORAGE_KEYS, state, elements, INTERRUPT_BADGE_META, sanitizeInterruptState, relativeTime, fullDate, sessionBucket, toolIcon, formatUsage,
   saveSessions, findMessageElement, scrollToBottom, refreshRelativeTimes, ensureActiveSession, updateDocumentTitle,
-  updateSessionUsageDisplay, renderMath, visibleSessions, sessionHasInProgressState, setSessionServerActiveRun
+  updateSessionUsageDisplay, renderMath, visibleSessions, sessionHasInProgressState, setSessionServerActiveRun, UI_PREFIX
 } = app;
 
 const isMobileViewport = () => window.matchMedia('(max-width: 767px)').matches;
@@ -166,6 +166,70 @@ const getOrCreateGroupSection = (label) => {
 };
 
 const resolveSidebarSession = (sessionId) => state.sessions.find((s) => s.id === sessionId) || null;
+
+const WIDGET_SIDEBAR_LIMIT = 5;
+
+const widgetTitle = (widget) => String(widget?.title || widget?.mount || widget?.id || 'Widget');
+const widgetMount = (widget) => String(widget?.mount || widget?.id || '').replace(/^\/+|\/+$/g, '');
+
+const renderWidgetSidebar = () => {
+  if (!elements.widgetsSection || !elements.widgetsList) return;
+
+  const widgets = Array.isArray(state.widgets) ? state.widgets.filter((widget) => widgetMount(widget)) : [];
+  const shouldShow = state.showWidgetsSidebar !== false && state.widgetsLoaded && widgets.length > 0;
+  elements.widgetsSection.classList.toggle('hidden', !shouldShow);
+  if (!shouldShow) {
+    elements.widgetsList.replaceChildren();
+    if (elements.widgetsMoreBtn) elements.widgetsMoreBtn.classList.add('hidden');
+    return;
+  }
+
+  elements.widgetsSection.classList.toggle('is-collapsed', Boolean(state.widgetsCollapsed));
+  elements.widgetsToggleBtn?.setAttribute('aria-expanded', state.widgetsCollapsed ? 'false' : 'true');
+  if (elements.widgetsCount) elements.widgetsCount.textContent = String(widgets.length);
+
+  const visibleWidgets = state.widgetsShowAll ? widgets : widgets.slice(0, WIDGET_SIDEBAR_LIMIT);
+  const rows = visibleWidgets.map((widget) => {
+    const mount = widgetMount(widget);
+    const link = document.createElement('a');
+    link.className = 'widget-link';
+    link.href = `${UI_PREFIX}/widgets/${encodeURIComponent(mount)}/`;
+    link.title = widget.description || widgetTitle(widget);
+
+    const titleRow = document.createElement('div');
+    titleRow.className = 'widget-title-row';
+
+    const title = document.createElement('span');
+    title.className = 'widget-title';
+    title.textContent = widgetTitle(widget);
+
+    const stateBadge = document.createElement('span');
+    const status = String(widget.state || 'stopped');
+    const statusClass = status.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+    stateBadge.className = `widget-state ${statusClass}`;
+    stateBadge.textContent = status;
+
+    titleRow.appendChild(title);
+    titleRow.appendChild(stateBadge);
+    link.appendChild(titleRow);
+
+    const meta = document.createElement('div');
+    meta.className = 'widget-meta';
+    meta.textContent = widget.description || mount;
+    link.appendChild(meta);
+
+    return link;
+  });
+  elements.widgetsList.replaceChildren(...rows);
+
+  if (elements.widgetsMoreBtn) {
+    const remaining = widgets.length - WIDGET_SIDEBAR_LIMIT;
+    const hasMore = remaining > 0;
+    elements.widgetsMoreBtn.classList.toggle('hidden', !hasMore);
+    elements.widgetsMoreBtn.textContent = state.widgetsShowAll ? 'Show fewer widgets' : `More widgets (${remaining})`;
+    elements.widgetsMoreBtn.setAttribute('aria-expanded', state.widgetsShowAll ? 'true' : 'false');
+  }
+};
 
 const buildCachedSessionRow = (session) => {
   const sessionId = session.id;
@@ -1904,6 +1968,7 @@ Object.assign(app, {
   toggleSidebarCollapsed,
   updateHeader,
   renderSidebar,
+  renderWidgetSidebar,
   updateSidebarStatus,
   directionForText,
   applyTextDirection,

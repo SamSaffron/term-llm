@@ -1727,6 +1727,9 @@ const openAuthModal = (errorText = '', required = !state.token) => {
   if (elements.showHiddenSessionsInput) {
     elements.showHiddenSessionsInput.checked = state.showHiddenSessions;
   }
+  if (elements.showWidgetsSidebarInput) {
+    elements.showWidgetsSidebarInput.checked = state.showWidgetsSidebar !== false;
+  }
   app.refreshNotificationUI();
   elements.authModal.classList.remove('hidden');
   elements.providerSelect.removeAttribute('tabindex');
@@ -1734,6 +1737,7 @@ const openAuthModal = (errorText = '', required = !state.token) => {
   elements.effortSelect?.removeAttribute('tabindex');
   elements.authTokenInput.removeAttribute('tabindex');
   elements.showHiddenSessionsInput?.removeAttribute('tabindex');
+  elements.showWidgetsSidebarInput?.removeAttribute('tabindex');
 
   setTimeout(() => {
     if (required) {
@@ -1752,6 +1756,7 @@ const closeAuthModal = () => {
   elements.effortSelect?.setAttribute('tabindex', '-1');
   elements.authTokenInput.setAttribute('tabindex', '-1');
   elements.showHiddenSessionsInput?.setAttribute('tabindex', '-1');
+  elements.showWidgetsSidebarInput?.setAttribute('tabindex', '-1');
 };
 
 const handleAuthFailure = () => {
@@ -1767,6 +1772,7 @@ const handleAuthFailure = () => {
 const connectToken = async () => {
   const token = elements.authTokenInput.value.trim();
   const nextShowHiddenSessions = Boolean(elements.showHiddenSessionsInput?.checked);
+  const nextShowWidgetsSidebar = elements.showWidgetsSidebarInput ? Boolean(elements.showWidgetsSidebarInput.checked) : true;
 
   // Provider/model selections are committed live via the change handlers.
   // Re-reading the modal DOM here can clobber a valid in-memory choice if the
@@ -1794,6 +1800,10 @@ const connectToken = async () => {
   const showHiddenChanged = nextShowHiddenSessions !== state.showHiddenSessions;
   state.showHiddenSessions = nextShowHiddenSessions;
   localStorage.setItem(STORAGE_KEYS.showHiddenSessions, state.showHiddenSessions ? '1' : '0');
+  const showWidgetsChanged = nextShowWidgetsSidebar !== (state.showWidgetsSidebar !== false);
+  state.showWidgetsSidebar = nextShowWidgetsSidebar;
+  localStorage.setItem(STORAGE_KEYS.showWidgetsSidebar, state.showWidgetsSidebar ? '1' : '0');
+  if (showWidgetsChanged && app.renderWidgetSidebar) app.renderWidgetSidebar();
   app.updateHeader();
 
   if (state.authRequired && !token) {
