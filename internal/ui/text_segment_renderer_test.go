@@ -73,6 +73,43 @@ func TestTextSegmentRenderer_Streaming(t *testing.T) {
 	}
 }
 
+func TestTextSegmentRenderer_ShowsPartialPlainTextWithoutNewline(t *testing.T) {
+	renderer, err := NewTextSegmentRenderer(80)
+	if err != nil {
+		t.Fatalf("Failed to create renderer: %v", err)
+	}
+
+	if err := renderer.Write("Hello"); err != nil {
+		t.Fatalf("Failed to write partial text: %v", err)
+	}
+
+	got := stripANSI(renderer.RenderedUnflushed())
+	if got != "Hello" {
+		t.Fatalf("RenderedUnflushed() = %q, want %q", got, "Hello")
+	}
+}
+
+func TestTextSegmentRenderer_PartialMarkdownStaysVisibleAcrossSyntaxCompletion(t *testing.T) {
+	renderer, err := NewTextSegmentRenderer(80)
+	if err != nil {
+		t.Fatalf("Failed to create renderer: %v", err)
+	}
+
+	if err := renderer.Write("Hello **wor"); err != nil {
+		t.Fatalf("Failed to write incomplete markdown: %v", err)
+	}
+	if got := stripANSI(renderer.RenderedUnflushed()); got != "Hello" {
+		t.Fatalf("RenderedUnflushed() after incomplete markdown = %q, want %q", got, "Hello")
+	}
+
+	if err := renderer.Write("ld**"); err != nil {
+		t.Fatalf("Failed to complete markdown: %v", err)
+	}
+	if got := stripANSI(renderer.RenderedUnflushed()); got != "Hello world" {
+		t.Fatalf("RenderedUnflushed() after markdown completion = %q, want %q", got, "Hello world")
+	}
+}
+
 func TestTextSegmentRenderer_Width(t *testing.T) {
 	renderer, err := NewTextSegmentRenderer(80)
 	if err != nil {

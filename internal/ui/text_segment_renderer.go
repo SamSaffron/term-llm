@@ -20,7 +20,7 @@ type TextSegmentRenderer struct {
 }
 
 // NewTextSegmentRenderer creates a new TextSegmentRenderer with the given width.
-// Uses flowing mode (no cursor control) since Bubble Tea owns the terminal.
+// Uses partial flowing snapshots (no cursor control) since Bubble Tea owns the terminal.
 func NewTextSegmentRenderer(width int) (*TextSegmentRenderer, error) {
 	var output bytes.Buffer
 	renderer := rendermarkdown.NewANSI(rendermarkdown.Config{
@@ -28,7 +28,13 @@ func NewTextSegmentRenderer(width int) (*TextSegmentRenderer, error) {
 		Width:   width,
 	})
 
-	sr, err := streaming.NewRenderer(&output, renderer)
+	sr, err := streaming.NewRendererWithOptions(
+		&output,
+		renderer,
+		[]streaming.StreamRendererOption{
+			streaming.WithPartialRendering(),
+		},
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -86,6 +92,15 @@ func (r *TextSegmentRenderer) RenderedAll() string {
 	return r.output.String()
 }
 
+// RenderedCommitted returns the latest rendered snapshot that contains only
+// committed markdown blocks and excludes any active partial preview.
+func (r *TextSegmentRenderer) RenderedCommitted() string {
+	if r.sr == nil {
+		return ""
+	}
+	return r.sr.CommittedRendered()
+}
+
 // RenderedUnflushed returns only the portion of rendered output that hasn't
 // been flushed to scrollback yet. Use this in View() to avoid duplicating
 // content that was already printed via FlushStreamingText.
@@ -97,10 +112,14 @@ func (r *TextSegmentRenderer) RenderedUnflushed() string {
 	return safeANSISlice(output, r.flushedRenderedPos)
 }
 
-// MarkFlushed marks the current rendered output length as flushed.
+// MarkFlushed marks the current committed rendered output as flushed.
 // Call this after successfully flushing content to scrollback.
 func (r *TextSegmentRenderer) MarkFlushed() {
-	r.flushedRenderedPos = r.output.Len()
+	if r.sr == nil {
+		r.flushedRenderedPos = r.output.Len()
+		return
+	}
+	r.flushedRenderedPos = len(r.sr.CommittedRendered())
 }
 
 // FlushedRenderedPos returns the current flushed position in the rendered output.

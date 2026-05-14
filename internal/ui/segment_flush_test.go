@@ -393,21 +393,21 @@ func TestPartialTextFlushSpacing(t *testing.T) {
 	}
 }
 
-func TestRenderUnflushed_HidesPendingParagraphContent(t *testing.T) {
+func TestRenderUnflushed_ShowsPendingParagraphContent(t *testing.T) {
 	tracker := NewToolTracker()
 	width := 80
 
-	tracker.AddTextSegment("This paragraph should stay hidden before block completion", width)
+	tracker.AddTextSegment("This paragraph should stream before block completion", width)
 
 	output := stripAnsi(tracker.RenderUnflushed(width, RenderMarkdown, false))
-	if strings.Contains(output, "This paragraph should stay hidden before block completion") {
-		t.Fatalf("expected pending paragraph content to stay hidden, got %q", output)
+	if !strings.Contains(output, "This paragraph should stream before block completion") {
+		t.Fatalf("expected pending paragraph content to be visible, got %q", output)
 	}
 
 	tracker.AddTextSegment("\n\n", width)
 	output = stripAnsi(tracker.RenderUnflushed(width, RenderMarkdown, false))
-	if !strings.Contains(output, "This paragraph should stay hidden before block completion") {
-		t.Fatalf("expected paragraph content to appear after block boundary, got %q", output)
+	if !strings.Contains(output, "This paragraph should stream before block completion") {
+		t.Fatalf("expected paragraph content to remain visible after block boundary, got %q", output)
 	}
 }
 
