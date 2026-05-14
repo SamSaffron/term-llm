@@ -26,16 +26,25 @@ const buildWidgetLink = (widget) => {
   title.className = 'widget-title';
   title.textContent = widgetTitle(widget);
 
-  const stateBadge = document.createElement('span');
-  const status = String(widget.state || 'stopped');
-  const statusClass = status.toLowerCase().replace(/[^a-z0-9_-]/g, '');
-  stateBadge.className = `widget-state ${statusClass}`;
-  stateBadge.textContent = status;
+  const normalizedStatus = String(widget.state || 'stopped').toLowerCase();
+  const statusClass = normalizedStatus.replace(/[^a-z0-9_-]/g, '');
+  const showRunningIndicator = statusClass === 'running' || statusClass === 'starting' || statusClass === 'started';
+  const showTextBadge = statusClass && statusClass !== 'stopped' && !showRunningIndicator;
 
   titleRow.appendChild(title);
-  titleRow.appendChild(stateBadge);
+  if (showRunningIndicator) {
+    const stateBadge = document.createElement('span');
+    stateBadge.className = `widget-state ${statusClass}`;
+    stateBadge.title = 'Running';
+    stateBadge.setAttribute('aria-label', 'Running');
+    titleRow.appendChild(stateBadge);
+  } else if (showTextBadge) {
+    const stateBadge = document.createElement('span');
+    stateBadge.className = `widget-state ${statusClass}`;
+    stateBadge.textContent = normalizedStatus;
+    titleRow.appendChild(stateBadge);
+  }
   link.appendChild(titleRow);
-
   const meta = document.createElement('div');
   meta.className = 'widget-meta';
   meta.textContent = widget.description || mount;

@@ -473,9 +473,13 @@
     }
 
     .widget-state.running,
-    .widget-state.starting {
-      color: #22c55e;
-      background: rgba(34, 197, 94, 0.12);
+    .widget-state.starting,
+    .widget-state.started {
+      width: 0.48rem;
+      height: 0.48rem;
+      padding: 0;
+      background: #22c55e;
+      box-shadow: 0 0 0 0.18rem rgba(34, 197, 94, 0.12);
     }
 
     .widget-state.error {

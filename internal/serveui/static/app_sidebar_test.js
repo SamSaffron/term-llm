@@ -170,6 +170,11 @@ async function run(name, fn) {
     const links = elements.widgetsModalList.querySelectorAll('.widget-link');
     assertEqual(links.length, 2, 'modal contains all widgets');
     assertEqual(links[0].href, '/chat/widgets/one/', 'first link points to widget');
+    const badges = elements.widgetsModalList.querySelectorAll('.widget-state');
+    assertEqual(badges.length, 1, 'only running widgets render a state indicator');
+    assert(badges[0].classList.contains('running'), 'running widget renders green dot class');
+    assertEqual(badges[0].textContent, '', 'running indicator has no repeated status text');
+    assertEqual(badges[0].getAttribute('aria-label'), 'Running', 'running indicator is accessible');
   });
 
   await run('renderWidgetSidebar hides button when preference is off', () => {
