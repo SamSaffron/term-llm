@@ -586,6 +586,23 @@ func TestDebugStreamingSimulation(t *testing.T) {
 	}
 }
 
+func TestStreamingTextSegmentsAreVisibleBetweenBlockBoundaries(t *testing.T) {
+	tracker := NewToolTracker()
+	width := 80
+
+	tracker.AddTextSegment("# Header\n\n", width)
+	tracker.AddTextSegment("Trailing prose is still streaming", width)
+
+	segments := tracker.CompletedSegments()
+	content := StripANSI(RenderSegments(segments, width, -1, nil, false, false))
+	if !strings.Contains(content, "Header") {
+		t.Fatalf("expected rendered heading during streaming, got %q", content)
+	}
+	if !strings.Contains(content, "Trailing prose is still streaming") {
+		t.Fatalf("expected pending prose preview during streaming, got %q", content)
+	}
+}
+
 // TestStreamingThenComplete verifies that streaming text is rendered progressively
 // by the streaming renderer, then finalized on completion.
 func TestStreamingThenComplete(t *testing.T) {

@@ -701,7 +701,7 @@ func RenderSegmentsWithLeadingAndImageRenderer(leading *Segment, segments []*Seg
 			if seg.Complete && seg.Rendered != "" {
 				rendered = seg.Rendered
 			} else if seg.StreamRenderer != nil {
-				rendered = seg.StreamRenderer.RenderedUnflushed()
+				rendered = seg.StreamRenderer.PreviewUnflushed()
 			} else {
 				text := seg.GetText()
 				if text == "" {

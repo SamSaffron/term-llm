@@ -97,6 +97,22 @@ func (r *TextSegmentRenderer) RenderedUnflushed() string {
 	return safeANSISlice(output, r.flushedRenderedPos)
 }
 
+// PreviewUnflushed returns the unflushed rendered output plus a raw preview of
+// the current incomplete block when it is safe to do so. This keeps prose
+// streaming smoothly between markdown block boundaries without forcing a full
+// text snapshot refresh in the hot View() path.
+func (r *TextSegmentRenderer) PreviewUnflushed() string {
+	rendered := r.RenderedUnflushed()
+	pending := r.PendingMarkdown()
+	if pending == "" || r.PendingIsTable() || r.PendingIsList() {
+		return rendered
+	}
+	if rendered == "" {
+		return pending
+	}
+	return rendered + pending
+}
+
 // MarkFlushed marks the current rendered output length as flushed.
 // Call this after successfully flushing content to scrollback.
 func (r *TextSegmentRenderer) MarkFlushed() {
