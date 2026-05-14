@@ -112,16 +112,11 @@ func validateDurableContinuationInput(inputMessages []llm.Message) error {
 }
 
 func getMessageByID(ctx context.Context, store session.Store, msgID int64) (session.Message, error) {
-	if getter, ok := store.(interface {
-		GetMessageByID(context.Context, int64) (*session.Message, error)
-	}); ok {
-		msg, err := getter.GetMessageByID(ctx, msgID)
-		if msg != nil {
-			return *msg, err
-		}
-		return session.Message{}, err
+	msg, err := store.GetMessageByID(ctx, msgID)
+	if msg != nil {
+		return *msg, err
 	}
-	return session.Message{}, session.ErrNotFound
+	return session.Message{}, err
 }
 
 func (s *serveServer) latestDurableResponseIDForSession(ctx context.Context, sessionID string) string {

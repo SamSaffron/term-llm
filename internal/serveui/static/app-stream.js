@@ -2823,6 +2823,7 @@ const setStreaming = (streaming) => {
   elements.sendBtn.classList.toggle('loading', streaming);
   elements.stopBtn.classList.toggle('visible', streaming && (Boolean(state.abortController) || Boolean(state.currentStreamResponseId)));
   updateVoiceUI();
+  updateSessionUsageDisplay(getActiveSession());
   if (!streaming) {
     flushStreamPersistence();
     const shouldRestoreFocus = state.restorePromptFocus;

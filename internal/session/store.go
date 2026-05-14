@@ -40,6 +40,8 @@ type Store interface {
 	UpdateMessage(ctx context.Context, sessionID string, msg *Message) error
 	GetMessages(ctx context.Context, sessionID string, limit, offset int) ([]Message, error)
 	GetMessagesFrom(ctx context.Context, sessionID string, fromSeq int) ([]Message, error)
+	// GetMessageByID retrieves a single message by its global message id.
+	GetMessageByID(ctx context.Context, msgID int64) (*Message, error)
 	ReplaceMessages(ctx context.Context, sessionID string, messages []Message) error
 	CompactMessages(ctx context.Context, sessionID string, messages []Message) error
 

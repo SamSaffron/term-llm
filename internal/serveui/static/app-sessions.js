@@ -203,6 +203,50 @@ const switchToDraftSession = async (options = {}) => {
   return null;
 };
 
+const syncSelectedRuntimeFromSession = (session) => {
+  if (!session) return false;
+  const provider = String(session.provider || '').trim();
+  const model = String(session.activeModel || '').trim();
+  const effort = String(session.activeEffort || '').trim();
+  if (!provider && !model && !Object.prototype.hasOwnProperty.call(session, 'activeEffort')) {
+    return false;
+  }
+
+  let changed = false;
+  if (state.selectedProvider !== provider) {
+    state.selectedProvider = provider;
+    changed = true;
+  }
+  if (state.selectedModel !== model) {
+    state.selectedModel = model;
+    changed = true;
+  }
+  if (state.selectedEffort !== effort) {
+    state.selectedEffort = effort;
+    changed = true;
+  }
+  if (!changed) return false;
+
+  const persistValue = (key, value) => {
+    if (value) {
+      localStorage.setItem(key, value);
+    } else {
+      localStorage.removeItem(key);
+    }
+  };
+  persistValue(STORAGE_KEYS.selectedProvider, state.selectedProvider);
+  persistValue(STORAGE_KEYS.selectedModel, state.selectedModel);
+  persistValue(STORAGE_KEYS.selectedEffort, state.selectedEffort);
+
+  if (elements.providerSelect) elements.providerSelect.value = state.selectedProvider || '';
+  if (elements.modelSelect) elements.modelSelect.value = state.selectedModel || '';
+  if (elements.effortSelect) elements.effortSelect.value = state.selectedEffort || '';
+  if (elements.chipProviderSelect) elements.chipProviderSelect.value = state.selectedProvider || '';
+  if (elements.chipModelSelect) elements.chipModelSelect.value = state.selectedModel || '';
+  if (elements.chipEffortSelect) elements.chipEffortSelect.value = state.selectedEffort || '';
+  return true;
+};
+
 const switchToSession = async (sessionId, options = {}) => {
   const nextId = String(sessionId || '').trim();
   if (!nextId) return null;
@@ -248,6 +292,9 @@ const switchToSession = async (sessionId, options = {}) => {
 
   if (options.sync !== false) {
     await syncActiveSessionFromServer(session, true, { skipMessagesFetch: didPreloadServerMessages });
+  }
+  if (syncSelectedRuntimeFromSession(session)) {
+    app.updateHeader();
   }
   if (options.focusPrompt) {
     elements.promptInput.focus();
@@ -972,6 +1019,9 @@ const hydrateActiveSessionAfterStartup = async () => {
   }
 
   await statePromise;
+  if (syncSelectedRuntimeFromSession(active)) {
+    app.updateHeader();
+  }
 };
 
 const initialize = async () => {
@@ -1387,6 +1437,7 @@ Object.assign(app, {
   stopSessionStatePoll,
   scheduleSessionStatePoll,
   syncActiveSessionFromServer,
+  syncSelectedRuntimeFromSession,
   applyServerSessionSummary,
   mergeServerSessions,
   startSidebarStatusPoll,

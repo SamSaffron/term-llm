@@ -340,7 +340,11 @@ function createHarness(options = {}) {
     updateURL() {},
     persistAndRefreshShell() {},
     updateHeader() {},
-    updateSessionUsageDisplay() {},
+    updateSessionUsageDisplay(session) {
+      if (typeof options.onUpdateSessionUsageDisplay === 'function') {
+        options.onUpdateSessionUsageDisplay(session, state.streaming);
+      }
+    },
     refreshRelativeTimes() {},
     updateAssistantNode() {},
     updateUserNode(message) { if (typeof options.onUpdateUserNode === 'function') options.onUpdateUserNode(message); },
@@ -845,6 +849,34 @@ async function testSendMessageConsumesPostStreamWhenAvailable() {
     return;
   }
 
+  pass(name);
+}
+
+async function testSendMessageRefreshesHeaderAfterCompletionUnlocksModelPicker() {
+  const name = 'sendMessage refreshes header after completion unlocks model picker';
+  const streamingStates = [];
+  const harness = createHarness({
+    onUpdateSessionUsageDisplay(_session, streaming) {
+      streamingStates.push(Boolean(streaming));
+    },
+  });
+  const { app, elements, cleanup } = harness;
+  elements.promptInput.value = 'hello';
+
+  let sendErr = null;
+  await app.sendMessage().catch((err) => {
+    sendErr = err;
+  });
+  await cleanup();
+
+  if (sendErr) {
+    fail(name, 'sendMessage rejected unexpectedly', String(sendErr));
+    return;
+  }
+  if (streamingStates.length === 0 || streamingStates[streamingStates.length - 1] !== false) {
+    fail(name, 'expected final header refresh after streaming=false', JSON.stringify(streamingStates));
+    return;
+  }
   pass(name);
 }
 
@@ -2531,6 +2563,7 @@ function testRestoreLatestDraftMessageDoesNotCrossSessionBoundary() {
   await testConsumeResponseStreamReportsStaleWithoutApplyingEvents();
   await testSendMessageDoesNotResumeAfterStalePostStream();
   await testSendMessageConsumesPostStreamWhenAvailable();
+  await testSendMessageRefreshesHeaderAfterCompletionUnlocksModelPicker();
   await testSendMessageLazilyMaterializesAttachmentDataURLs();
   await testSendMessageKeepsComposerWhenAttachmentMaterializationFails();
   await testStaleInterrupt404RefreshesAndSendsMessage();

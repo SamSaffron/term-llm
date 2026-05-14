@@ -154,6 +154,7 @@ function defaultAppStubs(app, overrides = {}) {
     normalizeError: async (resp) => ({ status: resp.status, message: `HTTP ${resp.status}` }),
     renderAttachments() {},
     updateSidebarStatus() {},
+    updateHeader() {},
     ...overrides,
   };
 }
@@ -287,6 +288,61 @@ async function testSwitchingSessionsStagesCurrentComposerBeforeRestore() {
   await app.switchToSession(sessionA.id, { sync: false });
   if (app.elements.promptInput.value !== 'unsent in A') {
     fail(name, 'expected staged session A composer to be restored when switching back', app.elements.promptInput.value);
+    return;
+  }
+  pass(name);
+}
+
+async function testSwitchToSessionSyncsSelectedRuntime() {
+  const name = 'switching sessions syncs selected runtime to active session';
+  const { app, storage } = await createSessionsHarness({
+    initialStorage: {
+      term_llm_selected_provider: 'chatgpt',
+      term_llm_selected_model: 'gpt-5.4',
+      term_llm_selected_effort: 'xhigh',
+    },
+    fetchImpl: async () => new Response(JSON.stringify({ sessions: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    }),
+  });
+
+  const session = {
+    id: 'sess_mini',
+    title: 'Mini session',
+    messages: [{ id: 'u1', role: 'user', content: 'hi', created: 1 }],
+    provider: 'chatgpt',
+    activeModel: 'gpt-5.4-mini',
+    activeEffort: '',
+    lastResponseId: 'resp_msg_1',
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+  };
+  app.state.sessions = [session];
+  app.state.selectedProvider = 'chatgpt';
+  app.state.selectedModel = 'gpt-5.4';
+  app.state.selectedEffort = 'xhigh';
+
+  await app.switchToSession(session.id, { sync: false });
+
+  if (app.state.selectedProvider !== 'chatgpt') {
+    fail(name, `selectedProvider = ${JSON.stringify(app.state.selectedProvider)}, want chatgpt`);
+    return;
+  }
+  if (app.state.selectedModel !== 'gpt-5.4-mini') {
+    fail(name, `selectedModel = ${JSON.stringify(app.state.selectedModel)}, want gpt-5.4-mini`);
+    return;
+  }
+  if (app.state.selectedEffort !== '') {
+    fail(name, `selectedEffort = ${JSON.stringify(app.state.selectedEffort)}, want empty`);
+    return;
+  }
+  if (storage.get('term_llm_selected_model') !== 'gpt-5.4-mini') {
+    fail(name, 'expected selected model to be persisted for the active session', storage.get('term_llm_selected_model'));
+    return;
+  }
+  if (storage.has('term_llm_selected_effort')) {
+    fail(name, 'expected stale selected effort to be cleared', storage.get('term_llm_selected_effort'));
     return;
   }
   pass(name);
@@ -1577,6 +1633,7 @@ async function testSanitizeSessionPreservesLastMessageAt() {
 
 (async () => {
   await testSwitchingSessionsStagesCurrentComposerBeforeRestore();
+  await testSwitchToSessionSyncsSelectedRuntime();
   await testNumericDeepLinkResolvesRealSessionId();
   await testDeveloperMessagesAreHidden();
   await testSessionHistoryPaginationLoadsAdditionalPages();

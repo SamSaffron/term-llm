@@ -64,6 +64,10 @@ func (s *NoopStore) GetMessagesFrom(ctx context.Context, sessionID string, fromS
 	return nil, nil
 }
 
+func (s *NoopStore) GetMessageByID(ctx context.Context, msgID int64) (*Message, error) {
+	return nil, ErrNotFound
+}
+
 func (s *NoopStore) ReplaceMessages(ctx context.Context, sessionID string, messages []Message) error {
 	return nil
 }

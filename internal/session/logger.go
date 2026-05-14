@@ -77,6 +77,15 @@ func (s *LoggingStore) UpdateMessage(ctx context.Context, sessionID string, msg 
 	return err
 }
 
+// GetMessageByID wraps Store.GetMessageByID with error logging.
+func (s *LoggingStore) GetMessageByID(ctx context.Context, msgID int64) (*Message, error) {
+	msg, err := s.Store.GetMessageByID(ctx, msgID)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		s.logOnce("GetMessageByID", err)
+	}
+	return msg, err
+}
+
 // UpdateMetrics wraps Store.UpdateMetrics with error logging.
 func (s *LoggingStore) UpdateMetrics(ctx context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int) error {
 	err := s.Store.UpdateMetrics(ctx, id, llmTurns, toolCalls, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens)

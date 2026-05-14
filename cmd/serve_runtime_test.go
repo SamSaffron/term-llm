@@ -229,6 +229,20 @@ func (s *serveRuntimeTestStore) GetMessagesFrom(ctx context.Context, sessionID s
 	return out, nil
 }
 
+func (s *serveRuntimeTestStore) GetMessageByID(ctx context.Context, msgID int64) (*session.Message, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, msgs := range s.messages {
+		for i := range msgs {
+			if msgs[i].ID == msgID {
+				copyMsg := msgs[i]
+				return &copyMsg, nil
+			}
+		}
+	}
+	return nil, session.ErrNotFound
+}
+
 func (s *serveRuntimeTestStore) ReplaceMessages(ctx context.Context, sessionID string, messages []session.Message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -2986,6 +2986,47 @@ func TestResponsesMessageBackedPreviousResponseRejectsStaleTail(t *testing.T) {
 	}
 }
 
+func TestResponsesMessageBackedPreviousResponseResolvesThroughLoggingStore(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "sess_logging_wrapper"
+	if err := store.Create(context.Background(), &session.Session{ID: sessionID, Status: session.StatusActive}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := store.ReplaceMessages(context.Background(), sessionID, []session.Message{
+		*session.NewMessage(sessionID, llm.UserText("hello"), -1),
+		*session.NewMessage(sessionID, llm.AssistantText("hi"), -1),
+	}); err != nil {
+		t.Fatalf("seed ReplaceMessages: %v", err)
+	}
+	seed, err := store.GetMessages(context.Background(), sessionID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	previousID := durableResponseIDForMessageID(seed[len(seed)-1].ID)
+
+	wrapped := session.NewLoggingStore(store, t.Logf)
+	srv := &serveServer{store: wrapped}
+	body := fmt.Sprintf(`{"input":"wrong session","previous_response_id":%q}`, previousID)
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("session_id", "other-session")
+	rr := httptest.NewRecorder()
+
+	srv.handleResponses(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 after durable ID resolves through LoggingStore; body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "conflicts with previous_response_id session") {
+		t.Fatalf("body = %s, want session conflict", rr.Body.String())
+	}
+}
+
 func TestResponsesMessageBackedPreviousResponseRejectsConflictingSessionHeader(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
