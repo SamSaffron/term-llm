@@ -352,7 +352,7 @@ const clearActiveResponseTracking = (session, responseId = '') => {
   const currentId = String(session.activeResponseId || '').trim();
   const targetId = String(responseId || '').trim();
 
-  if (!targetId || currentId === targetId) {
+  if (!targetId || currentId === targetId || targetId.startsWith('resp_msg_')) {
     session.activeResponseId = null;
     session.lastSequenceNumber = 0;
   }
@@ -360,7 +360,7 @@ const clearActiveResponseTracking = (session, responseId = '') => {
     !targetId
     || (
       state.currentStreamSessionId === String(session.id || '').trim()
-      && (!state.currentStreamResponseId || state.currentStreamResponseId === targetId)
+      && (!state.currentStreamResponseId || state.currentStreamResponseId === targetId || targetId.startsWith('resp_msg_'))
     )
   ) {
     state.currentStreamSessionId = '';
@@ -3310,13 +3310,13 @@ const sendMessage = async (options = {}) => {
 
     const body = {
       stream: true,
-      message: inputContent
+      input: [{ type: 'message', role: 'user', content: inputContent }]
     };
 
-    // First-party UI sessions use the explicit append endpoint: the browser sends
-    // one new user message to the server-owned session. Do not send
-    // previous_response_id and do not replay browser-local history; that turns
-    // the UI into an unreliable shadow database.
+    const previousResponseId = String(session.lastResponseId || '').trim();
+    if (previousResponseId) {
+      body.previous_response_id = previousResponseId;
+    }
 
     const normalizeEffortForCompare = (value) => {
       const normalized = String(value || '').trim();
@@ -3357,7 +3357,7 @@ const sendMessage = async (options = {}) => {
       }
     }
 
-    let response = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/messages`, {
+    let response = await fetch(`${UI_PREFIX}/v1/responses`, {
       method: 'POST',
       headers: requestHeaders(session.id),
       body: JSON.stringify(body),

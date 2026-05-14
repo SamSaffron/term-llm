@@ -2783,12 +2783,13 @@ func TestStreamUIResponses_SetsSessionNumberHeader(t *testing.T) {
 		responseRuns: newServeResponseRunManager(),
 	}
 
-	body := `{"stream":true,"message":"hello"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_test_number/messages", strings.NewReader(body))
+	body := `{"stream":true,"input":"hello"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req.Header.Set("session_id", "sess_test_number")
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 
-	srv.handleSessionByID(rr, req)
+	srv.handleResponses(rr, req)
 
 	numStr := strings.TrimSpace(rr.Header().Get("x-session-number"))
 	if numStr == "" {
@@ -2833,13 +2834,19 @@ func TestResponsesUIBareSessionIDAppendsServerHistory(t *testing.T) {
 	})
 	defer manager.Close()
 
+	seed, err := store.GetMessages(context.Background(), sessionID, 0, 0)
+	if err != nil {
+		t.Fatalf("seed GetMessages: %v", err)
+	}
+	previousID := durableResponseIDForMessageID(seed[len(seed)-1].ID)
 	srv := &serveServer{sessionMgr: manager, store: store}
-	body := `{"message":"new question"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sessionID+"/messages", strings.NewReader(body))
+	body := fmt.Sprintf(`{"input":"new question","previous_response_id":%q}`, previousID)
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req.Header.Set("session_id", sessionID)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 
-	srv.handleSessionByID(rr, req)
+	srv.handleResponses(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
 	}
@@ -2873,26 +2880,149 @@ func TestResponsesUIBareSessionIDAppendsServerHistory(t *testing.T) {
 	}
 }
 
-func TestSessionMessageAppendRejectsResponsesReplayShape(t *testing.T) {
+func TestResponsesMessageBackedPreviousResponseRejectsReplayShape(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+	const sessionID = "sess_ui_replay"
+	if err := store.Create(context.Background(), &session.Session{ID: sessionID, Status: session.StatusActive}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := store.ReplaceMessages(context.Background(), sessionID, []session.Message{
+		*session.NewMessage(sessionID, llm.UserText("old"), -1),
+		*session.NewMessage(sessionID, llm.AssistantText("old answer"), -1),
+	}); err != nil {
+		t.Fatalf("seed ReplaceMessages: %v", err)
+	}
+	seed, err := store.GetMessages(context.Background(), sessionID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	previousID := durableResponseIDForMessageID(seed[len(seed)-1].ID)
 	provider := llm.NewMockProvider("mock").AddTextResponse("should not run")
 	manager := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
 		engine := llm.NewEngine(provider, nil)
-		return &serveRuntime{provider: provider, engine: engine, defaultModel: "mock-model"}, nil
+		return &serveRuntime{provider: provider, engine: engine, store: store, defaultModel: "mock-model"}, nil
 	})
 	defer manager.Close()
 
-	srv := &serveServer{sessionMgr: manager}
-	body := `{"input":[{"type":"message","role":"user","content":"old"},{"type":"message","role":"assistant","content":"old answer"},{"type":"message","role":"user","content":"new"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess_ui_replay/messages", strings.NewReader(body))
+	srv := &serveServer{sessionMgr: manager, store: store}
+	body := fmt.Sprintf(`{"previous_response_id":%q,"input":[{"type":"message","role":"user","content":"old"},{"type":"message","role":"assistant","content":"old answer"},{"type":"message","role":"user","content":"new"}]}`, previousID)
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 
-	srv.handleSessionByID(rr, req)
+	srv.handleResponses(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body=%s", rr.Code, rr.Body.String())
 	}
 	if len(provider.Requests) != 0 {
 		t.Fatalf("provider request count = %d, want 0", len(provider.Requests))
+	}
+	msgs, err := store.GetMessages(context.Background(), sessionID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages after reject: %v", err)
+	}
+	if len(msgs) != 2 || msgs[0].TextContent != "old" || msgs[1].TextContent != "old answer" {
+		t.Fatalf("messages changed after rejected replay: %#v", msgs)
+	}
+}
+
+func TestResponsesMessageBackedPreviousResponseRejectsStaleTail(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "sess_stale_durable"
+	if err := store.Create(context.Background(), &session.Session{ID: sessionID, Status: session.StatusActive}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := store.ReplaceMessages(context.Background(), sessionID, []session.Message{
+		*session.NewMessage(sessionID, llm.UserText("first"), -1),
+		*session.NewMessage(sessionID, llm.AssistantText("first answer"), -1),
+		*session.NewMessage(sessionID, llm.UserText("second"), -1),
+		*session.NewMessage(sessionID, llm.AssistantText("second answer"), -1),
+	}); err != nil {
+		t.Fatalf("seed ReplaceMessages: %v", err)
+	}
+	seed, err := store.GetMessages(context.Background(), sessionID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	staleID := durableResponseIDForMessageID(seed[1].ID)
+
+	provider := llm.NewMockProvider("mock").AddTextResponse("should not run")
+	manager := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
+		engine := llm.NewEngine(provider, nil)
+		return &serveRuntime{provider: provider, engine: engine, store: store, defaultModel: "mock-model"}, nil
+	})
+	defer manager.Close()
+
+	srv := &serveServer{sessionMgr: manager, store: store}
+	body := fmt.Sprintf(`{"input":"third","previous_response_id":%q}`, staleID)
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	srv.handleResponses(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body=%s", rr.Code, rr.Body.String())
+	}
+	if len(provider.Requests) != 0 {
+		t.Fatalf("provider request count = %d, want 0", len(provider.Requests))
+	}
+	msgs, err := store.GetMessages(context.Background(), sessionID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages after stale reject: %v", err)
+	}
+	if len(msgs) != len(seed) {
+		t.Fatalf("message count changed after stale reject: got %d want %d", len(msgs), len(seed))
+	}
+}
+
+func TestResponsesMessageBackedPreviousResponseRejectsConflictingSessionHeader(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	const sessionA = "sess_conflict_a"
+	const sessionB = "sess_conflict_b"
+	for _, id := range []string{sessionA, sessionB} {
+		if err := store.Create(context.Background(), &session.Session{ID: id, Status: session.StatusActive}); err != nil {
+			t.Fatalf("Create %s: %v", id, err)
+		}
+	}
+	if err := store.ReplaceMessages(context.Background(), sessionA, []session.Message{
+		*session.NewMessage(sessionA, llm.UserText("hello"), -1),
+		*session.NewMessage(sessionA, llm.AssistantText("hi"), -1),
+	}); err != nil {
+		t.Fatalf("seed ReplaceMessages: %v", err)
+	}
+	seed, err := store.GetMessages(context.Background(), sessionA, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	previousID := durableResponseIDForMessageID(seed[len(seed)-1].ID)
+
+	srv := &serveServer{store: store}
+	body := fmt.Sprintf(`{"input":"wrong session","previous_response_id":%q}`, previousID)
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("session_id", sessionB)
+	rr := httptest.NewRecorder()
+
+	srv.handleResponses(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body=%s", rr.Code, rr.Body.String())
 	}
 }
 
@@ -4689,10 +4819,8 @@ func doResponses(t *testing.T, srv *serveServer, bodyJSON string) (int, map[stri
 	rr := httptest.NewRecorder()
 	srv.handleResponses(rr, req)
 	var result map[string]any
-	if rr.Code == http.StatusOK {
-		if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
-			t.Fatalf("unmarshal response: %v", err)
-		}
+	if rr.Body.Len() > 0 {
+		_ = json.Unmarshal(rr.Body.Bytes(), &result)
 	}
 	return rr.Code, result
 }
@@ -4708,10 +4836,8 @@ func doResponsesWithHeader(t *testing.T, srv *serveServer, bodyJSON, sessionID s
 	rr := httptest.NewRecorder()
 	srv.handleResponses(rr, req)
 	var result map[string]any
-	if rr.Code == http.StatusOK {
-		if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
-			t.Fatalf("unmarshal response: %v", err)
-		}
+	if rr.Body.Len() > 0 {
+		_ = json.Unmarshal(rr.Body.Bytes(), &result)
 	}
 	return rr.Code, result
 }
@@ -4796,15 +4922,16 @@ func TestHandleResponses_UIAskUserResumeSurvivesDisconnect(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	body := `{"stream":true,"message":"hello"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/resume-session/messages", strings.NewReader(body)).WithContext(ctx)
+	body := `{"stream":true,"input":"hello"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body)).WithContext(ctx)
+	req.Header.Set("session_id", "resume-session")
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 
 	doneCh := make(chan struct{})
 	go func() {
 		defer close(doneCh)
-		srv.handleSessionByID(rr, req)
+		srv.handleResponses(rr, req)
 	}()
 
 	waitForServeCondition(t, time.Second, func() bool {

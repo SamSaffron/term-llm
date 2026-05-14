@@ -460,7 +460,7 @@ function createHarness(options = {}) {
         headers: { 'Content-Type': 'application/json' },
       });
     }
-    if (url.startsWith('/ui/v1/sessions/') && url.endsWith('/messages')) {
+    if (url === '/ui/v1/responses' && (options.method || 'GET') === 'POST') {
       if (postStatus !== 200) {
         return new Response(JSON.stringify(postErrorPayload), {
           status: postStatus,
@@ -1101,9 +1101,9 @@ async function testDrainInterruptQueueAfterResumeCompletes() {
   }
 
   // sendMessage should have been called — look for a POST to the explicit session append endpoint.
-  const postCalls = fetchCalls.filter(c => c.url === '/ui/v1/sessions/session_resume/messages' && c.method === 'POST');
+  const postCalls = fetchCalls.filter(c => c.url === '/ui/v1/responses' && c.method === 'POST');
   if (postCalls.length < 1) {
-    fail(name, 'expected sendMessage to POST /ui/v1/sessions/:id/messages for the queued interrupt', JSON.stringify(fetchCalls));
+    fail(name, 'expected sendMessage to POST /ui/v1/responses for the queued interrupt', JSON.stringify(fetchCalls));
     await cleanup();
     return;
   }
@@ -1353,9 +1353,9 @@ async function testSendMessageIncludesModelSwapForChangedTarget() {
   await app.sendMessage();
   await cleanup();
 
-  const postCall = fetchCalls.find((call) => call.url.endsWith('/messages') && call.method === 'POST');
+  const postCall = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
   if (!postCall || !postCall.body) {
-    fail(name, 'missing POST /ui/v1/sessions/:id/messages body', JSON.stringify(fetchCalls));
+    fail(name, 'missing POST /ui/v1/responses body', JSON.stringify(fetchCalls));
     return;
   }
   const body = JSON.parse(postCall.body);
@@ -1367,8 +1367,8 @@ async function testSendMessageIncludesModelSwapForChangedTarget() {
     fail(name, 'request did not use selected target runtime', postCall.body);
     return;
   }
-  if (Object.prototype.hasOwnProperty.call(body, 'previous_response_id')) {
-    fail(name, `previous_response_id should not be sent by first-party UI`, postCall.body);
+  if (body.previous_response_id !== 'resp_previous') {
+    fail(name, 'expected previous_response_id when continuing', postCall.body);
     return;
   }
   pass(name);
@@ -1403,9 +1403,9 @@ async function testSendMessageOmitsModelSwapWhenTargetUnchanged() {
   await app.sendMessage();
   await cleanup();
 
-  const postCall = fetchCalls.find((call) => call.url.endsWith('/messages') && call.method === 'POST');
+  const postCall = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
   if (!postCall || !postCall.body) {
-    fail(name, 'missing POST /ui/v1/sessions/:id/messages body', JSON.stringify(fetchCalls));
+    fail(name, 'missing POST /ui/v1/responses body', JSON.stringify(fetchCalls));
     return;
   }
   const body = JSON.parse(postCall.body);
@@ -1501,9 +1501,9 @@ async function testConnectTokenPreservesSelectedModelAndProviderFromState() {
   elements.promptInput.value = 'hello';
   await app.sendMessage();
 
-  const postCall = fetchCalls.find((call) => call.url.endsWith('/messages') && call.method === 'POST');
+  const postCall = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
   if (!postCall || !postCall.body) {
-    fail(name, 'missing POST /ui/v1/sessions/:id/messages body', JSON.stringify(fetchCalls));
+    fail(name, 'missing POST /ui/v1/responses body', JSON.stringify(fetchCalls));
     await cleanup();
     return;
   }
@@ -2171,9 +2171,9 @@ async function testSendMessageLazilyMaterializesAttachmentDataURLs() {
     return;
   }
 
-  const postCall = fetchCalls.find((call) => call.url.endsWith('/messages') && call.method === 'POST');
+  const postCall = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
   if (!postCall || !postCall.body) {
-    fail(name, 'missing POST /ui/v1/sessions/:id/messages body', JSON.stringify(fetchCalls));
+    fail(name, 'missing POST /ui/v1/responses body', JSON.stringify(fetchCalls));
     await cleanup();
     return;
   }
@@ -2187,7 +2187,7 @@ async function testSendMessageLazilyMaterializesAttachmentDataURLs() {
     return;
   }
 
-  const parts = body.message;
+	const parts = body.input?.[0]?.content;
   const imagePart = Array.isArray(parts) ? parts.find((part) => part.type === 'input_image') : null;
   if (!imagePart || imagePart.image_url !== file.mockDataURL) {
     fail(name, 'request body should include lazily materialized image data URL', JSON.stringify(body));
@@ -2270,7 +2270,7 @@ async function testSendMessageKeepsComposerWhenAttachmentMaterializationFails() 
     await cleanup();
     return;
   }
-  if (fetchCalls.some((call) => call.url.endsWith('/messages'))) {
+  if (fetchCalls.some((call) => call.url === '/ui/v1/responses')) {
     fail(name, 'request should not be sent when attachment materialization fails', JSON.stringify(fetchCalls));
     await cleanup();
     return;
@@ -2401,13 +2401,13 @@ async function testStaleInterrupt404RefreshesAndSendsMessage() {
     fail(name, 'expected initial send to attempt interrupt once', JSON.stringify(fetchCalls));
     return;
   }
-  const postCalls = fetchCalls.filter((call) => call.url.endsWith('/messages') && call.method === 'POST');
+  const postCalls = fetchCalls.filter((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
   if (postCalls.length !== 1) {
-    fail(name, 'expected recovery to POST /ui/v1/sessions/:id/messages once', JSON.stringify(fetchCalls));
+    fail(name, 'expected recovery to POST /ui/v1/responses once', JSON.stringify(fetchCalls));
     return;
   }
   const body = JSON.parse(postCalls[0].body || '{}');
-  const content = body.message;
+  const content = body.input?.[0]?.content;
   if (content !== 'send after restart') {
     fail(name, 'recovered POST did not preserve prompt', postCalls[0].body);
     return;

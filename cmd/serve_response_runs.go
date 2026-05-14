@@ -1084,9 +1084,14 @@ func (s *serveServer) storeCompletedResponseRun(runtime *serveRuntime, sessionID
 			return "", err
 		}
 	}
+	durableID := s.latestDurableResponseIDForSession(context.Background(), sessionID)
+	completedID := respID
+	if durableID != "" {
+		completedID = durableID
+	}
 	if err := run.complete(map[string]any{
 		"response": map[string]any{
-			"id":            respID,
+			"id":            completedID,
 			"object":        "response",
 			"created":       created,
 			"model":         model,
@@ -1103,8 +1108,11 @@ func (s *serveServer) storeCompletedResponseRun(runtime *serveRuntime, sessionID
 	if resetResponseIDsOnSuccess {
 		s.unregisterSessionResponseIDs(sessionID)
 	}
-	s.registerResponseID(runtime, respID, sessionID)
-	return respID, nil
+	if completedID != respID {
+		s.registerResponseID(runtime, respID, sessionID)
+	}
+	s.registerResponseID(runtime, completedID, sessionID)
+	return completedID, nil
 }
 
 func (s *serveServer) streamFailedResponseRun(ctx context.Context, w http.ResponseWriter, sessionID, previousResponseID, model, errType, errMessage string) {
@@ -1471,10 +1479,18 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		if options.resetResponseIDsOnSuccess {
 			s.unregisterSessionResponseIDs(sessionID)
 		}
-		s.registerResponseID(runtime, respID, sessionID)
+		durableID := s.latestDurableResponseIDForSession(context.Background(), sessionID)
+		completedID := respID
+		if durableID != "" {
+			completedID = durableID
+		}
+		if completedID != respID {
+			s.registerResponseID(runtime, respID, sessionID)
+		}
+		s.registerResponseID(runtime, completedID, sessionID)
 		if err := run.complete(map[string]any{
 			"response": map[string]any{
-				"id":            respID,
+				"id":            completedID,
 				"object":        "response",
 				"created":       created,
 				"model":         model,

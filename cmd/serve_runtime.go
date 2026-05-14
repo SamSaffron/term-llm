@@ -398,7 +398,7 @@ func (rt *serveRuntime) persistSnapshot(ctx context.Context, sessionID string, s
 // appends new messages, making each callback commit a small atomic write that
 // survives kill -9. Returns the number of messages successfully written so
 // callers can track progress accurately.
-func (rt *serveRuntime) appendMessages(ctx context.Context, sessionID string, messages []llm.Message) int {
+func (rt *serveRuntime) appendMessages(ctx context.Context, sessionID string, messages []llm.Message, turnIndex int) int {
 	if rt.store == nil || sessionID == "" || len(messages) == 0 {
 		return 0
 	}
@@ -411,6 +411,7 @@ func (rt *serveRuntime) appendMessages(ctx context.Context, sessionID string, me
 			continue
 		}
 		sessionMsg := session.NewMessage(sessionID, msg, -1)
+		sessionMsg.TurnIndex = turnIndex
 		if err := rt.store.AddMessage(dbCtx, sessionID, sessionMsg); err != nil {
 			log.Printf("[serve] session AddMessage failed for %s: %v", sessionID, err)
 			return written
@@ -565,6 +566,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		rt.cumulativeUsage = llm.Usage{}
 		rt.lastInjectedPlatform = ""
 	}
+	turnIndex := countUserMessages(baseHistory)
 
 	var injectedPlatform string
 	if devText := rt.platformMessages.For(rt.platform); devText != "" && rt.lastInjectedPlatform != rt.platform {
@@ -669,7 +671,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 				initialPersisted = rt.persistSnapshot(persistCtx, req.SessionID, initialSnapshot)
 			}
 			if initialPersisted && lastAppendedIdx < len(produced) {
-				written := rt.appendMessages(persistCtx, req.SessionID, produced[lastAppendedIdx:])
+				written := rt.appendMessages(persistCtx, req.SessionID, produced[lastAppendedIdx:], turnIndex)
 				lastAppendedIdx += written
 			}
 		}
@@ -710,6 +712,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(persistCtx), 10*time.Second)
 		defer cancel()
 		sessionMsg := session.NewMessage(req.SessionID, assistantMsg, -1)
+		sessionMsg.TurnIndex = turnIndex
 		if pendingAssistantMsgID != 0 {
 			sessionMsg.ID = pendingAssistantMsgID
 			err := rt.store.UpdateMessage(dbCtx, req.SessionID, sessionMsg)
@@ -727,6 +730,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 			// Row missing (e.g., compaction). Fall through to re-insert.
 			pendingAssistantMsgID = 0
 			sessionMsg = session.NewMessage(req.SessionID, assistantMsg, -1)
+			sessionMsg.TurnIndex = turnIndex
 		}
 		if err := rt.store.AddMessage(dbCtx, req.SessionID, sessionMsg); err != nil {
 			assistantSnapshotNeedsReconcile = true
@@ -943,6 +947,16 @@ func (rt *serveRuntime) isServerExecutedTool(name string) bool {
 	}
 	_, ok := rt.engine.Tools().Get(lookupName)
 	return ok
+}
+
+func countUserMessages(messages []llm.Message) int {
+	count := 0
+	for _, msg := range messages {
+		if msg.Role == llm.RoleUser {
+			count++
+		}
+	}
+	return count
 }
 
 func lastUserText(messages []llm.Message) string {

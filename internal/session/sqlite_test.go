@@ -1091,4 +1091,10 @@ func TestSQLiteStoreMigratesCompactionCountColumn(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("compaction_count column count = %d, want 1", count)
 	}
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'turn_index'").Scan(&count); err != nil {
+		t.Fatalf("query message table info: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("turn_index column count = %d, want 1", count)
+	}
 }

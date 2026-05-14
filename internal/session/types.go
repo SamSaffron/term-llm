@@ -104,6 +104,7 @@ type Message struct {
 	Parts       []llm.Part `json:"parts"`        // Full parts array
 	TextContent string     `json:"text_content"` // Extracted text for display/FTS
 	DurationMs  int64      `json:"duration_ms,omitempty"`
+	TurnIndex   int        `json:"turn_index,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
 	Sequence    int        `json:"sequence"`
 }

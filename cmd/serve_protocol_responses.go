@@ -30,22 +30,6 @@ type responsesCreateRequest struct {
 	ModelSwap          *responsesModelSwapRequest `json:"model_swap,omitempty"`
 }
 
-type sessionAppendMessageRequest struct {
-	Model              string                     `json:"model"`
-	Provider           string                     `json:"provider"`
-	Message            json.RawMessage            `json:"message"`
-	Tools              []json.RawMessage          `json:"tools,omitempty"`
-	IncludeServerTools bool                       `json:"include_server_tools,omitempty"`
-	ToolChoice         json.RawMessage            `json:"tool_choice,omitempty"`
-	ParallelToolCalls  *bool                      `json:"parallel_tool_calls,omitempty"`
-	MaxOutputTokens    int                        `json:"max_output_tokens,omitempty"`
-	Temperature        *float32                   `json:"temperature,omitempty"`
-	TopP               *float32                   `json:"top_p,omitempty"`
-	Stream             bool                       `json:"stream,omitempty"`
-	ReasoningEffort    string                     `json:"reasoning_effort,omitempty"`
-	ModelSwap          *responsesModelSwapRequest `json:"model_swap,omitempty"`
-}
-
 func parseResponsesInput(input json.RawMessage) ([]llm.Message, bool, error) {
 	trimmed := strings.TrimSpace(string(input))
 	if trimmed == "" || trimmed == "null" {

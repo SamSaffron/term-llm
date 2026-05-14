@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -61,18 +62,34 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	headerSessionID := strings.TrimSpace(r.Header.Get("session_id"))
 	sessionID := ""
 	if req.PreviousResponseID != "" {
-		sid, ok := s.responseToSession.Load(req.PreviousResponseID)
-		if !ok {
-			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error",
-				fmt.Sprintf("previous_response_id %q not found (session may have expired)", req.PreviousResponseID))
+		if durable, status, msg := s.resolveDurablePreviousResponseID(ctx, req.PreviousResponseID, headerSessionID, inputMessages); status != 0 {
+			errType := "invalid_request_error"
+			if status == http.StatusConflict {
+				errType = "conflict_error"
+			}
+			writeOpenAIError(w, status, errType, msg)
 			return
+		} else if durable.sessionID != "" {
+			sessionID = durable.sessionID
+		} else {
+			sid, ok := s.responseToSession.Load(req.PreviousResponseID)
+			if !ok {
+				writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error",
+					fmt.Sprintf("previous_response_id %q not found (session may have expired)", req.PreviousResponseID))
+				return
+			}
+			sidStr, isStr := sid.(string)
+			if !isStr || sidStr == "" {
+				writeOpenAIError(w, http.StatusInternalServerError, "server_error", "corrupted session mapping")
+				return
+			}
+			if headerSessionID != "" && headerSessionID != sidStr {
+				writeOpenAIError(w, http.StatusConflict, "conflict_error",
+					fmt.Sprintf("session_id %q conflicts with previous_response_id session %q", headerSessionID, sidStr))
+				return
+			}
+			sessionID = sidStr
 		}
-		sidStr, isStr := sid.(string)
-		if !isStr || sidStr == "" {
-			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "corrupted session mapping")
-			return
-		}
-		sessionID = sidStr
 	}
 	if sessionID == "" {
 		sessionID = headerSessionID
@@ -92,67 +109,6 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		sessionID:          sessionID,
 		previousResponseID: req.PreviousResponseID,
 		freshConversation:  req.PreviousResponseID == "",
-	})
-}
-
-func (s *serveServer) handleSessionMessageAppend(w http.ResponseWriter, r *http.Request, sessionID string) {
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", "POST")
-		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
-		return
-	}
-	if err := requireJSONContentType(r); err != nil {
-		writeOpenAIError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), s.responseTimeout())
-	defer cancel()
-
-	var req sessionAppendMessageRequest
-	if err := decodeJSONBody(r, &req); err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
-		return
-	}
-	if len(req.Message) == 0 || strings.TrimSpace(string(req.Message)) == "" || strings.TrimSpace(string(req.Message)) == "null" {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "message is required")
-		return
-	}
-	msg, err := parseUserMessageContent(req.Message)
-	if err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
-		return
-	}
-
-	responsesReq := responsesCreateRequest{
-		Model:              req.Model,
-		Provider:           req.Provider,
-		Tools:              req.Tools,
-		IncludeServerTools: req.IncludeServerTools,
-		ToolChoice:         req.ToolChoice,
-		ParallelToolCalls:  req.ParallelToolCalls,
-		MaxOutputTokens:    req.MaxOutputTokens,
-		Temperature:        req.Temperature,
-		TopP:               req.TopP,
-		Stream:             req.Stream,
-		ReasoningEffort:    req.ReasoningEffort,
-		ModelSwap:          req.ModelSwap,
-	}
-
-	reqStart := time.Now()
-	s.verboseLog("→ POST /v1/sessions/%s/messages model=%s tools=%d stream=%v body=%d bytes",
-		sessionID, responsesReq.Model, len(responsesReq.Tools), responsesReq.Stream, r.ContentLength)
-	defer func() {
-		s.verboseLog("← POST /v1/sessions/%s/messages completed in %s", sessionID, time.Since(reqStart))
-	}()
-
-	s.handleResolvedResponses(w, r, ctx, resolvedResponsesRequest{
-		req:                responsesReq,
-		inputMessages:      []llm.Message{msg},
-		replaceHistory:     false,
-		sessionID:          sessionID,
-		previousResponseID: "",
-		freshConversation:  false,
-		uiStream:           true,
 	})
 }
 
@@ -356,6 +312,11 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 	}
 
 	resetResponseIDsOnSuccess := freshConversation || swapPlan.enabled
+	if req.Stream && s.store != nil {
+		if num := runtime.ensureSessionInStore(r.Context(), sessionID, inputMessages); num > 0 {
+			w.Header().Set("x-session-number", strconv.FormatInt(num, 10))
+		}
+	}
 	if req.Stream {
 		if rr.uiStream && stateful {
 			s.streamUIResponses(w, r, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, resetResponseIDsOnSuccess, modelSwapExec)

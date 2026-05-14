@@ -1185,15 +1185,6 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if suffix == "messages" && r.Method == http.MethodPost {
-		if err := requireJSONContentType(r); err != nil {
-			writeOpenAIError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
-			return
-		}
-		s.handleSessionMessageAppend(w, r, sessionID)
-		return
-	}
-
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET, POST")
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
@@ -1233,15 +1224,17 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 	}
 
 	type messageEntry struct {
+		ID        int64       `json:"id"`
 		Role      string      `json:"role"`
 		Parts     []partEntry `json:"parts"`
 		CreatedAt int64       `json:"created_at"`
 	}
 
 	type messagesResponse struct {
-		Messages   []messageEntry `json:"messages"`
-		HasMore    bool           `json:"has_more"`
-		NextOffset int            `json:"next_offset,omitempty"`
+		LastResponseID string         `json:"lastResponseId,omitempty"`
+		Messages       []messageEntry `json:"messages"`
+		HasMore        bool           `json:"has_more"`
+		NextOffset     int            `json:"next_offset,omitempty"`
 	}
 
 	result := make([]messageEntry, 0, len(msgs))
@@ -1251,6 +1244,7 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 			continue
 		}
 		entry := messageEntry{
+			ID:        msg.ID,
 			Role:      string(msg.Role),
 			CreatedAt: msg.CreatedAt.UnixMilli(),
 		}
@@ -1313,7 +1307,7 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		result = append(result, entry)
 	}
 
-	resp := messagesResponse{Messages: result, HasMore: hasMore}
+	resp := messagesResponse{LastResponseID: latestDurableResponseID(msgs), Messages: result, HasMore: hasMore}
 	if hasMore {
 		resp.NextOffset = nextOffset
 	}

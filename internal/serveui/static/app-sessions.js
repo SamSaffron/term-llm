@@ -418,6 +418,8 @@ const loadServerSessionMessages = async (sessionId) => {
     }
 
     const converted = convertServerMessages(allMessages);
+    const lastResponseId = String(first.data.lastResponseId || '').trim();
+    if (lastResponseId) converted.lastResponseId = lastResponseId;
     if (first.etag) sessionMessagesEtag.set(sessionId, first.etag);
     return converted;
   } catch {
@@ -465,6 +467,9 @@ const mergeServerMessagesWithLocalState = (session, serverMessages) => {
     merged.splice(insertAfter, 0, ...syntheticAskUserMessages.filter((message) => !merged.some((existing) => existing.askUser && existing.content === message.content)));
   }
 
+  if (serverMessages.lastResponseId) {
+    session.lastResponseId = String(serverMessages.lastResponseId);
+  }
   session.messages = merged;
   delete session._serverOnly;
   if (merged.length > 0 && (!session.title || session.title === 'New chat')) {
@@ -530,6 +535,13 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
     const effort = String(runtimeState.reasoning_effort || '');
     if (effort !== (session.activeEffort || '')) {
       session.activeEffort = effort;
+      sessionChanged = true;
+    }
+  }
+  if (runtimeState.lastResponseId !== undefined) {
+    const lastResponseId = String(runtimeState.lastResponseId || '').trim();
+    if (lastResponseId && lastResponseId !== session.lastResponseId) {
+      session.lastResponseId = lastResponseId;
       sessionChanged = true;
     }
   }

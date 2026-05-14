@@ -96,6 +96,10 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 		resp["reasoning_effort"] = persistedEffort
 	}
 
+	if lastResponseID := s.latestDurableResponseIDForSession(r.Context(), sessionID); lastResponseID != "" {
+		resp["lastResponseId"] = lastResponseID
+	}
+
 	if s.responseRuns != nil {
 		if activeResponseID := s.responseRuns.activeRunID(sessionID); activeResponseID != "" {
 			resp["active_run"] = true
