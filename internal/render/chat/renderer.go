@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/ui"
 )
 
 // historyBuilderPool reuses strings.Builder instances across renderHistory
@@ -105,6 +106,9 @@ type ChatRenderer interface {
 
 	// SetMarkdownRenderer sets the function used to render markdown.
 	SetMarkdownRenderer(renderer MarkdownRenderer)
+
+	// SetImageRenderer sets the function used to render generated-image artifacts.
+	SetImageRenderer(renderer ui.ImageArtifactRenderer)
 }
 
 // sigCacheEntry caches the expensive messagePartsSignature result for a message.
@@ -133,6 +137,7 @@ type Renderer struct {
 	// Configuration
 	markdownRenderer MarkdownRenderer
 	toolsExpanded    bool
+	imageRenderer    ui.ImageArtifactRenderer
 }
 
 // NewRenderer creates a new chat renderer with the given dimensions.
@@ -183,6 +188,15 @@ func (r *Renderer) SetToolsExpanded(v bool) {
 	}
 }
 
+// SetImageRenderer configures how generated-image artifacts are rendered.
+func (r *Renderer) SetImageRenderer(renderer ui.ImageArtifactRenderer) {
+	r.imageRenderer = renderer
+	r.blockCache.InvalidateAll()
+	if r.streaming != nil {
+		r.streaming.SetImageRenderer(renderer)
+	}
+}
+
 // InvalidateCache forces re-rendering of all cached content.
 func (r *Renderer) InvalidateCache() {
 	r.blockCache.InvalidateAll()
@@ -195,6 +209,7 @@ func (r *Renderer) HandleEvent(event RenderEvent) tea.Cmd {
 	case RenderEventStreamStart:
 		r.streaming = NewStreamingBlock(r.width, r.markdownRenderer)
 		r.streaming.SetToolsExpanded(r.toolsExpanded)
+		r.streaming.SetImageRenderer(r.imageRenderer)
 		return r.streaming.StartWaveAnimation()
 
 	case RenderEventStreamText:
@@ -559,6 +574,7 @@ func writeUint64Hash(h uint64, v uint64) uint64 {
 // renderMessageBlock renders a single message to a block.
 func (r *Renderer) renderMessageBlock(msg *session.Message, index int, messages []session.Message) *MessageBlock {
 	rb := NewMessageBlockRendererWithContext(r.width, r.markdownRenderer, messages, index, r.toolsExpanded)
+	rb.SetImageRenderer(r.imageRenderer)
 	return rb.Render(msg)
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -484,6 +485,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 
 	// Run the TUI
 	p := tea.NewProgram(model, opts...)
+	model.SetProgram(p)
 
 	// Set up spawn_agent event callback for subagent progress visibility
 	if toolMgr != nil {
@@ -644,11 +646,27 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	// Re-fetch the session so we get the latest LLMTurns written during streaming.
 	if nextResumeID == "" && store != nil && sess != nil && sess.ID != "" {
 		if refreshed, fetchErr := store.Get(context.Background(), sess.ID); fetchErr == nil && refreshed != nil && refreshed.LLMTurns >= 1 {
-			fmt.Fprintf(os.Stdout, "\n💬 Resume: term-llm chat --resume %s\n", session.ShortID(refreshed.ID))
+			fmt.Fprintf(os.Stdout, "\n💬 Resume: %s\n", chatResumeCommand(refreshed))
 		}
 	}
 
 	return nextResumeID, nextHandoverAutoSend, nil
+}
+
+func chatResumeCommand(sess *session.Session) string {
+	resumeID := ""
+	if sess != nil {
+		if sess.Number > 0 {
+			resumeID = strconv.FormatInt(sess.Number, 10)
+		} else {
+			id := strings.TrimSpace(sess.ID)
+			resumeID = id
+			if !session.ParseIDTime(id).IsZero() {
+				resumeID = session.ShortID(id)
+			}
+		}
+	}
+	return "term-llm chat --resume=" + resumeID
 }
 
 func resolveChatResumeSession(ctx context.Context, store session.Store, resumeID string) (*session.Session, error) {

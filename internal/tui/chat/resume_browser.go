@@ -43,5 +43,5 @@ func (m *Model) requestResumeSession(sessionID string) (tea.Model, tea.Cmd) {
 	}
 	m.pendingResumeSessionID = sessionID
 	m.quitting = true
-	return m, tea.Quit
+	return m, m.quitCmd()
 }

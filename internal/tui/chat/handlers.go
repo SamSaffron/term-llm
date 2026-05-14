@@ -471,9 +471,9 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// Print stats if enabled
 		if m.showStats && m.stats.LLMCallCount > 0 {
 			m.stats.Finalize()
-			return m, tea.Sequence(tea.Println(m.stats.Render()), tea.Quit)
+			return m, m.quitCmd(tea.Println(m.stats.Render()))
 		}
-		return m, tea.Quit
+		return m, m.quitCmd()
 	}
 
 	// Clear stale copy status on any keypress

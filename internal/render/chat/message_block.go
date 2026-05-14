@@ -40,6 +40,7 @@ type MessageBlockRenderer struct {
 	messages         []session.Message // Full message list for tool result lookup
 	currentIndex     int               // Current message index in the list
 	toolsExpanded    bool
+	imageRenderer    ui.ImageArtifactRenderer
 }
 
 // Shared theme instance to avoid allocations
@@ -67,6 +68,11 @@ func NewMessageBlockRendererWithContext(width int, mdRenderer MarkdownRenderer, 
 		currentIndex:     index,
 		toolsExpanded:    toolsExpanded,
 	}
+}
+
+// SetImageRenderer configures the renderer used for generated-image artifacts.
+func (r *MessageBlockRenderer) SetImageRenderer(renderer ui.ImageArtifactRenderer) {
+	r.imageRenderer = renderer
 }
 
 // Render converts a session.Message to a MessageBlock.
@@ -335,7 +341,7 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 func (r *MessageBlockRenderer) renderToolImages(images []string) string {
 	var b strings.Builder
 	for _, imagePath := range images {
-		if rendered := ui.RenderImageArtifact(imagePath); rendered != "" {
+		if rendered := ui.RenderImageArtifactWithRenderer(imagePath, r.imageRenderer); rendered != "" {
 			b.WriteString(rendered)
 			if !strings.HasSuffix(rendered, "\n") {
 				b.WriteString("\n")

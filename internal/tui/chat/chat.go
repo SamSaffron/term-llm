@@ -261,6 +261,16 @@ type Model struct {
 	textareaPromptWidth    int
 	textareaEffectiveWidth int
 
+	// Alt-screen terminal image rendering. Raw upload/control bytes are emitted
+	// outside the Bubble Tea viewport; viewport content only contains captions plus
+	// line-clipping-safe image display text (Kitty placeholders or ANSI blocks).
+	// pendingImageUploads contains raw terminal image upload bytes that must be
+	// emitted with tea.Raw, not embedded in View content (Bubble Tea parses View
+	// content into cells and drops non-styling control sequences).
+	pendingImageUploads       []string
+	uploadedImageKeys         map[string]struct{}
+	imageUploadFlushScheduled bool
+
 	// Text selection state (alt-screen only)
 	selection         Selection
 	contentLines      []string // full viewport content split by \n
@@ -591,8 +601,10 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 		autoSendQueue:            autoSendQueue,
 		autoSendExitOnDone:       autoSendExitOnDone,
 		textMode:                 textMode,
+		uploadedImageKeys:        make(map[string]struct{}),
 		selectedImage:            -1,
 	}
+	model.configureImageRenderer()
 	model.configureContextManagementForSession()
 	return model
 }
@@ -795,6 +807,12 @@ func (m *Model) SetRootContext(ctx context.Context) {
 		ctx = context.Background()
 	}
 	m.rootCtx = ctx
+}
+
+// SetProgram gives the model a handle to the running Bubble Tea program for
+// scheduling raw terminal writes that are discovered during View rendering.
+func (m *Model) SetProgram(p *tea.Program) {
+	m.program = p
 }
 
 func (m *Model) rootContext() context.Context {
@@ -1021,6 +1039,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// No explicit action is needed here: Bubble Tea re-renders after each Update.
 		// This tick exists to ensure View() runs again after the throttle window, so
 		// pending content can pass shouldThrottleSetContent().
+
+	case imageUploadFlushMsg:
+		if cmd := m.drainPendingImageUploadCmd(); cmd != nil {
+			return m, cmd
+		}
+		return m, nil
 
 	case footerMessageClearMsg:
 		if msg.Seq == m.footerMessageSeq {
@@ -1424,6 +1448,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Add image segment for inline display
 			if m.tracker != nil && ev.ImagePath != "" {
 				m.tracker.AddImageSegment(ev.ImagePath)
+				// In alt-screen mode, pre-render now so the Kitty/iTerm/etc. upload
+				// can be emitted with tea.Raw from this Update. Rendering again in
+				// View() will hit the image cache and reuse the same display cells.
+				if m.altScreen {
+					_ = m.renderViewportImageArtifact(ev.ImagePath)
+				}
 				// Flush to scrollback so image appears
 				if m.scrollOffset == 0 {
 					if cmd := m.maybeFlushToScrollback(); cmd != nil {
@@ -1530,7 +1560,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// This preserves the correct position of images/diffs relative to text.
 					// The last assistant message will be skipped in renderHistory() to avoid duplication.
 					completed := m.tracker.CompletedSegments()
-					m.viewCache.completedStream = ui.RenderSegments(completed, m.width, -1, m.renderMd, true, m.toolsExpanded)
+					m.viewCache.completedStream = ui.RenderSegmentsWithImageRenderer(completed, m.width, -1, m.renderMd, true, m.toolsExpanded, m.imageArtifactRenderer())
 					m.bumpContentVersion()
 				} else {
 					// In inline mode, print remaining content to scrollback
@@ -1626,9 +1656,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.quitting = true
 					if m.showStats && m.stats.LLMCallCount > 0 {
 						m.stats.Finalize()
-						return m, tea.Sequence(tea.Println(m.stats.Render()), tea.Quit)
+						return m, m.quitCmd(tea.Println(m.stats.Render()))
 					}
-					return m, tea.Quit
+					return m, m.quitCmd()
 				}
 
 				// Queue exhausted, continue in interactive mode
@@ -1848,6 +1878,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	if cmd := m.maybeScheduleStreamRenderTick(); cmd != nil {
 		cmds = append(cmds, cmd)
+	}
+
+	if cmd := m.drainPendingImageUploadCmd(); cmd != nil {
+		flushCmds = append(flushCmds, cmd)
 	}
 
 	return m, ui.ComposeFlushFirstCommands(flushCmds, cmds)

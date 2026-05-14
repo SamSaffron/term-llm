@@ -22,6 +22,7 @@ var builderPool = sync.Pool{
 type StreamingBlock struct {
 	width            int
 	markdownRenderer MarkdownRenderer
+	imageRenderer    ui.ImageArtifactRenderer
 
 	// Segments from the streaming response
 	tracker *ui.ToolTracker
@@ -71,6 +72,11 @@ func (s *StreamingBlock) SetToolsExpanded(v bool) {
 	if s.tracker != nil {
 		s.tracker.SetExpanded(v)
 	}
+}
+
+// SetImageRenderer configures how generated-image artifacts are rendered.
+func (s *StreamingBlock) SetImageRenderer(renderer ui.ImageArtifactRenderer) {
+	s.imageRenderer = renderer
 }
 
 func (s *StreamingBlock) AddText(text string) {
@@ -194,7 +200,7 @@ func (s *StreamingBlock) Render(wavePos int, pausedForUI bool, includeImages boo
 		}
 
 		// Render completed segments
-		content := ui.RenderSegments(completed, s.width, -1, s.mdRenderFunc(), true, s.toolsExpanded)
+		content := ui.RenderSegmentsWithImageRenderer(completed, s.width, -1, s.mdRenderFunc(), true, s.toolsExpanded, s.imageRenderer)
 		if content != "" {
 			b.WriteString(content)
 			// Add separator before active tools if needed
@@ -288,7 +294,7 @@ func (s *StreamingBlock) GetCompletedContent() string {
 	}
 
 	// Render images and diffs (these need to persist after streaming)
-	return ui.RenderImagesAndDiffs(segments, s.width)
+	return ui.RenderImagesAndDiffsWithRenderer(segments, s.width, s.imageRenderer)
 }
 
 // renderFunc returns the markdown render function for completing text segments.

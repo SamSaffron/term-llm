@@ -607,29 +607,85 @@ func appendEllipsis(line string, width int) string {
 
 const subagentPromptPrefix = "  │ "
 
+// ImageArtifact is a rendered generated-image artifact split into a safe display
+// portion and any out-of-band terminal upload bytes.
+type ImageArtifact struct {
+	Caption  string
+	Display  string
+	Upload   string
+	CacheKey string
+	Height   int
+	Warnings []string
+}
+
+// ImageArtifactRenderer renders a generated image path for a particular output
+// surface. Viewport renderers should return raw terminal protocol bytes in
+// Upload and keep Display line-clipping safe. RenderImageArtifactWithRenderer
+// never embeds Upload in returned text; callers that need out-of-band upload
+// emission should collect/queue Upload in the renderer or surrounding render context.
+type ImageArtifactRenderer func(path string) ImageArtifact
+
+// ImageArtifactCaption returns the standard visible caption for a generated image.
+func ImageArtifactCaption(path string) string {
+	return paramStyle.Render(fmt.Sprintf("[Generated image: %s]", path))
+}
+
+// DefaultImageArtifactRenderer renders images for normal inline/scrollback use.
+func DefaultImageArtifactRenderer(path string) ImageArtifact {
+	return ImageArtifact{
+		Caption: ImageArtifactCaption(path),
+		Display: RenderInlineImage(path),
+	}
+}
+
 // RenderImageArtifact renders an image for terminal output and always includes a
 // textual path caption. Some terminals advertise an image protocol but render the
 // escape/placeholder area as blank (for example through multiplexers); the
 // caption keeps generated-image artifacts visible and actionable in those cases.
 func RenderImageArtifact(path string) string {
+	return RenderImageArtifactWithRenderer(path, nil)
+}
+
+// RenderImageArtifactWithRenderer renders an image artifact using renderer. If
+// renderer is nil, the normal inline/scrollback renderer is used.
+func RenderImageArtifactWithRenderer(path string, renderer ImageArtifactRenderer) string {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return ""
 	}
-	caption := paramStyle.Render(fmt.Sprintf("[Generated image: %s]", path))
-	if r := RenderInlineImage(path); r != "" {
-		return caption + "\r\n" + r
+	if renderer == nil {
+		renderer = DefaultImageArtifactRenderer
+	}
+	artifact := renderer(path)
+	caption := artifact.Caption
+	if caption == "" {
+		caption = ImageArtifactCaption(path)
+	}
+	if artifact.Display != "" {
+		return caption + "\r\n" + artifact.Display
 	}
 	return caption
 }
 
 // RenderSegments renders a list of segments to a string.
 func RenderSegments(segments []*Segment, width int, wavePos int, renderMarkdown func(string, int) string, includeImages bool, expanded bool) string {
-	return RenderSegmentsWithLeading(nil, segments, width, wavePos, renderMarkdown, includeImages, expanded)
+	return RenderSegmentsWithImageRenderer(segments, width, wavePos, renderMarkdown, includeImages, expanded, nil)
+}
+
+// RenderSegmentsWithImageRenderer renders segments using renderer for image segments.
+// When renderer is nil, images use the default inline/scrollback renderer.
+func RenderSegmentsWithImageRenderer(segments []*Segment, width int, wavePos int, renderMarkdown func(string, int) string, includeImages bool, expanded bool, renderer ImageArtifactRenderer) string {
+	return RenderSegmentsWithLeadingAndImageRenderer(nil, segments, width, wavePos, renderMarkdown, includeImages, expanded, renderer)
 }
 
 // RenderSegmentsWithLeading renders a list of segments, optionally using a leading segment for initial spacing.
 func RenderSegmentsWithLeading(leading *Segment, segments []*Segment, width int, wavePos int, renderMarkdown func(string, int) string, includeImages bool, expanded bool) string {
+	return RenderSegmentsWithLeadingAndImageRenderer(leading, segments, width, wavePos, renderMarkdown, includeImages, expanded, nil)
+}
+
+// RenderSegmentsWithLeadingAndImageRenderer renders a list of segments, optionally
+// using a leading segment for initial spacing and renderer for image segments.
+func RenderSegmentsWithLeadingAndImageRenderer(leading *Segment, segments []*Segment, width int, wavePos int, renderMarkdown func(string, int) string, includeImages bool, expanded bool, renderer ImageArtifactRenderer) string {
 	var b strings.Builder
 	lastType := SegmentText
 	hasPrev := false
@@ -706,7 +762,7 @@ func RenderSegmentsWithLeading(leading *Segment, segments []*Segment, width int,
 			rendered = renderAskUserResult(seg.Text)
 		case SegmentImage:
 			if includeImages {
-				if r := RenderImageArtifact(seg.ImagePath); r != "" {
+				if r := RenderImageArtifactWithRenderer(seg.ImagePath, renderer); r != "" {
 					rendered = r + "\r\n"
 				}
 			}
@@ -737,6 +793,12 @@ func RenderSegmentsWithLeading(leading *Segment, segments []*Segment, width int,
 // This is used for alt screen mode to preserve images/diffs after streaming ends,
 // since text content is already stored in message history.
 func RenderImagesAndDiffs(segments []*Segment, width int) string {
+	return RenderImagesAndDiffsWithRenderer(segments, width, nil)
+}
+
+// RenderImagesAndDiffsWithRenderer renders only image and diff segments using
+// renderer for images. When renderer is nil, images use the default renderer.
+func RenderImagesAndDiffsWithRenderer(segments []*Segment, width int, renderer ImageArtifactRenderer) string {
 	var b strings.Builder
 	first := true
 
@@ -746,7 +808,7 @@ func RenderImagesAndDiffs(segments []*Segment, width int) string {
 			if !first {
 				b.WriteString("\n")
 			}
-			if rendered := RenderImageArtifact(seg.ImagePath); rendered != "" {
+			if rendered := RenderImageArtifactWithRenderer(seg.ImagePath, renderer); rendered != "" {
 				b.WriteString(rendered)
 				b.WriteString("\r\n")
 				first = false

@@ -317,7 +317,8 @@ func (m *Model) viewAltScreen() string {
 	m.applyFooterLayout(renderedLines, footer)
 	b.WriteString(footer.view)
 
-	return m.overlayAltScreenPanels(b.String(), footer)
+	frame := m.overlayAltScreenPanels(b.String(), footer)
+	return frame
 }
 
 func (m *Model) overlayAltScreenPanels(base string, footer footerLayout) string {
@@ -583,8 +584,9 @@ func (m *Model) renderStreamingInline() string {
 		content = m.viewCache.cachedCompletedContent
 	} else if m.tracker != nil {
 		// Render completed segments (segment-based tracking handles what's already flushed)
-		// In alt screen mode, include images since we never flush to scrollback
-		content = m.tracker.RenderUnflushed(m.width, m.renderMd, m.altScreen)
+		// In alt screen mode, include images since we never flush to scrollback.
+		// The alt-screen image renderer keeps raw upload/control bytes out of the viewport.
+		content = m.tracker.RenderUnflushedWithImageRenderer(m.width, m.renderMd, m.altScreen, m.imageArtifactRenderer())
 		m.viewCache.cachedCompletedContent = content
 		m.viewCache.cachedTrackerVersion = m.tracker.Version
 	}

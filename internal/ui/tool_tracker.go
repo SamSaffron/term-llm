@@ -1188,6 +1188,12 @@ func SplitLines(content string) []string {
 
 // RenderUnflushed renders all non-pending, non-flushed segments with proper leading spacing.
 func (t *ToolTracker) RenderUnflushed(width int, renderMd func(string, int) string, includeImages bool) string {
+	return t.RenderUnflushedWithImageRenderer(width, renderMd, includeImages, nil)
+}
+
+// RenderUnflushedWithImageRenderer renders all non-pending, non-flushed segments
+// with proper leading spacing, using renderer for image segments.
+func (t *ToolTracker) RenderUnflushedWithImageRenderer(width int, renderMd func(string, int) string, includeImages bool, renderer ImageArtifactRenderer) string {
 	unflushed := t.CompletedSegments()
 	if len(unflushed) == 0 {
 		return ""
@@ -1199,7 +1205,7 @@ func (t *ToolTracker) RenderUnflushed(width int, renderMd func(string, int) stri
 		leading = &Segment{Type: t.LastFlushedType}
 	}
 
-	return RenderSegmentsWithLeading(leading, unflushed, width, -1, renderMd, includeImages, t.expanded)
+	return RenderSegmentsWithLeadingAndImageRenderer(leading, unflushed, width, -1, renderMd, includeImages, t.expanded, renderer)
 }
 
 // LeadingSeparator returns the full spacing before a segment of the given type,

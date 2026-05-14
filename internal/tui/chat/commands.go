@@ -550,6 +550,10 @@ func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
 		m.stats = ui.NewSessionStats()
 	}
 
+	// Reset image renderer caches for this terminal session.
+	ui.ClearRenderedImages()
+	m.resetImageUploadState()
+
 	// Invalidate view cache so stale content doesn't bleed through
 	m.viewCache.historyValid = false
 	m.viewCache.completedStream = ""
@@ -574,7 +578,7 @@ func (m *Model) cmdQuit() (tea.Model, tea.Cmd) {
 		m.streamCancelFunc = nil
 	}
 	m.quitting = true
-	return m, tea.Quit
+	return m, m.quitCmd()
 }
 
 func (m *Model) cmdReload() (tea.Model, tea.Cmd) {
@@ -587,7 +591,7 @@ func (m *Model) cmdReload() (tea.Model, tea.Cmd) {
 	if m.sess != nil {
 		m.reloadSessionID = m.sess.ID
 	}
-	return m, tea.Quit
+	return m, m.quitCmd()
 }
 
 func (m *Model) cmdModel(args []string) (tea.Model, tea.Cmd) {
@@ -904,6 +908,10 @@ func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
 	if m.stats != nil {
 		m.stats = ui.NewSessionStats()
 	}
+
+	// Reset image renderer caches for this terminal session.
+	ui.ClearRenderedImages()
+	m.resetImageUploadState()
 
 	// Invalidate view cache so stale content doesn't bleed through
 	m.viewCache.historyValid = false
@@ -2307,7 +2315,7 @@ func (m *Model) executeHandover() (tea.Model, tea.Cmd) {
 		m.streamCancelFunc = nil
 	}
 	m.quitting = true
-	return m, tea.Quit
+	return m, m.quitCmd()
 }
 
 func (m *Model) buildHandoverSession(pending *handoverDoneMsg, targetAgent *agents.Agent) *session.Session {
