@@ -19,6 +19,7 @@ type resolvedResponsesRequest struct {
 	replaceHistory     bool
 	sessionID          string
 	previousResponseID string
+	previousDurable    bool
 	freshConversation  bool
 	uiStream           bool
 }
@@ -61,6 +62,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 	// fresh conversation, even if a session_id header is reused for persistence.
 	headerSessionID := strings.TrimSpace(r.Header.Get("session_id"))
 	sessionID := ""
+	previousDurable := false
 	if req.PreviousResponseID != "" {
 		if durable, status, msg := s.resolveDurablePreviousResponseID(ctx, req.PreviousResponseID, headerSessionID, inputMessages); status != 0 {
 			errType := "invalid_request_error"
@@ -71,6 +73,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 			return
 		} else if durable.sessionID != "" {
 			sessionID = durable.sessionID
+			previousDurable = true
 		} else {
 			sid, ok := s.responseToSession.Load(req.PreviousResponseID)
 			if !ok {
@@ -108,6 +111,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		replaceHistory:     replaceHistory,
 		sessionID:          sessionID,
 		previousResponseID: req.PreviousResponseID,
+		previousDurable:    previousDurable,
 		freshConversation:  req.PreviousResponseID == "",
 	})
 }
@@ -118,6 +122,7 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 	replaceHistory := rr.replaceHistory
 	sessionID := rr.sessionID
 	previousResponseID := rr.previousResponseID
+	previousDurable := rr.previousDurable
 	freshConversation := rr.freshConversation
 	// Chained requests are locked to the persisted provider/model/
 	// reasoning_effort unless the client explicitly asks for a mid-conversation
@@ -193,24 +198,29 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		if handleRuntimeErr(getErr) {
 			return
 		}
-		// Enforce chaining from the latest response before replacing the session runtime.
+		// Durable message-backed response IDs were already validated against the
+		// persisted session tail before we selected a runtime. Do not reject them
+		// because an in-memory runtime still remembers an older ephemeral response
+		// ID from before a restart/resume.
 		if previousResponseID != "" {
-			lastRespID := previousRuntime.getLastResponseID()
-			if lastRespID == "" {
-				if latest, ok := s.sessionToResponse.Load(sessionID); ok {
-					if latestStr, ok := latest.(string); ok {
-						lastRespID = strings.TrimSpace(latestStr)
+			if !previousDurable {
+				lastRespID := previousRuntime.getLastResponseID()
+				if lastRespID == "" {
+					if latest, ok := s.sessionToResponse.Load(sessionID); ok {
+						if latestStr, ok := latest.(string); ok {
+							lastRespID = strings.TrimSpace(latestStr)
+						}
 					}
 				}
-			}
-			if lastRespID != "" && previousResponseID != lastRespID {
-				writeOpenAIError(w, http.StatusConflict, "conflict_error",
-					fmt.Sprintf("previous_response_id %q is stale; latest is %q", previousResponseID, lastRespID))
-				if !previousStateful {
-					s.unregisterResponseIDs(previousRuntime)
-					previousRuntime.Close()
+				if lastRespID != "" && previousResponseID != lastRespID {
+					writeOpenAIError(w, http.StatusConflict, "conflict_error",
+						fmt.Sprintf("previous_response_id %q is stale; latest is %q", previousResponseID, lastRespID))
+					if !previousStateful {
+						s.unregisterResponseIDs(previousRuntime)
+						previousRuntime.Close()
+					}
+					return
 				}
-				return
 			}
 			s.populateResponsesToolResultNames(ctx, sessionID, previousRuntime, inputMessages)
 		}
@@ -235,27 +245,29 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 			s.syncPersistedSessionRuntime(ctx, sessionID, runtime, strings.TrimSpace(req.Model), normalizeReasoningEffort(req.ReasoningEffort))
 		}
 
-		// Enforce chaining from the latest response only. Stale response IDs that
-		// map to a valid session but don't match the runtime's last response would
-		// produce incorrect branching (the context wouldn't match what the client
-		// expects from that response).
+		// Enforce chaining from the latest in-memory response only for ephemeral
+		// response IDs. Durable message-backed IDs are checked against the persisted
+		// message tail in resolveDurablePreviousResponseID; the runtime can have an
+		// older lastResponseID after a restart or history reload.
 		if previousResponseID != "" {
-			lastRespID := runtime.getLastResponseID()
-			if lastRespID == "" {
-				if latest, ok := s.sessionToResponse.Load(sessionID); ok {
-					if latestStr, ok := latest.(string); ok {
-						lastRespID = strings.TrimSpace(latestStr)
+			if !previousDurable {
+				lastRespID := runtime.getLastResponseID()
+				if lastRespID == "" {
+					if latest, ok := s.sessionToResponse.Load(sessionID); ok {
+						if latestStr, ok := latest.(string); ok {
+							lastRespID = strings.TrimSpace(latestStr)
+						}
 					}
 				}
-			}
-			if lastRespID != "" && previousResponseID != lastRespID {
-				writeOpenAIError(w, http.StatusConflict, "conflict_error",
-					fmt.Sprintf("previous_response_id %q is stale; latest is %q", previousResponseID, lastRespID))
-				if !stateful {
-					s.unregisterResponseIDs(runtime)
-					runtime.Close()
+				if lastRespID != "" && previousResponseID != lastRespID {
+					writeOpenAIError(w, http.StatusConflict, "conflict_error",
+						fmt.Sprintf("previous_response_id %q is stale; latest is %q", previousResponseID, lastRespID))
+					if !stateful {
+						s.unregisterResponseIDs(runtime)
+						runtime.Close()
+					}
+					return
 				}
-				return
 			}
 			s.populateResponsesToolResultNames(ctx, sessionID, runtime, inputMessages)
 		}

@@ -2880,6 +2880,67 @@ func TestResponsesUIBareSessionIDAppendsServerHistory(t *testing.T) {
 	}
 }
 
+func TestResponsesMessageBackedPreviousResponseIgnoresStaleRuntimeTail(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "sess_durable_runtime_tail"
+	if err := store.Create(context.Background(), &session.Session{ID: sessionID, Status: session.StatusActive}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := store.ReplaceMessages(context.Background(), sessionID, []session.Message{
+		*session.NewMessage(sessionID, llm.UserText("old question"), -1),
+		*session.NewMessage(sessionID, llm.AssistantText("old answer"), -1),
+		*session.NewMessage(sessionID, llm.UserText("newer question"), -1),
+		*session.NewMessage(sessionID, llm.AssistantText("newer answer"), -1),
+	}); err != nil {
+		t.Fatalf("seed ReplaceMessages: %v", err)
+	}
+	seed, err := store.GetMessages(context.Background(), sessionID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	staleRuntimeID := durableResponseIDForMessageID(seed[1].ID)
+	previousID := durableResponseIDForMessageID(seed[len(seed)-1].ID)
+
+	provider := llm.NewMockProvider("mock").AddTextResponse("continued")
+	manager := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			engine:       engine,
+			store:        store,
+			defaultModel: "mock-model",
+		}
+		rt.addResponseID(staleRuntimeID)
+		rt.Touch()
+		return rt, nil
+	})
+	defer manager.Close()
+
+	srv := &serveServer{sessionMgr: manager, store: store}
+	srv.responseToSession.Store(staleRuntimeID, sessionID)
+	srv.sessionToResponse.Store(sessionID, staleRuntimeID)
+
+	body := fmt.Sprintf(`{"input":"continue","previous_response_id":%q}`, previousID)
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req.Header.Set("session_id", sessionID)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	srv.handleResponses(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("provider request count = %d, want 1", len(provider.Requests))
+	}
+}
+
 func TestResponsesMessageBackedPreviousResponseRejectsReplayShape(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
