@@ -64,6 +64,7 @@ func TestTryAppendAltScreenStreamingContent_AppendsTailLines(t *testing.T) {
 
 func TestInvalidateHistoryCache_ResetsAltScreenStreamingAppendCache(t *testing.T) {
 	m := &Model{}
+	m.viewCache.historyLines = []string{"old history"}
 	m.viewCache.lastContentHistoryPlusStream = true
 	m.viewCache.lastContentStr = "old history\nassistant"
 	m.viewCache.lastStreamingContent = "assistant"
@@ -71,6 +72,9 @@ func TestInvalidateHistoryCache_ResetsAltScreenStreamingAppendCache(t *testing.T
 
 	m.invalidateHistoryCache()
 
+	if m.viewCache.historyLines != nil {
+		t.Fatalf("expected cached history lines to be cleared, got %#v", m.viewCache.historyLines)
+	}
 	if m.viewCache.lastContentHistoryPlusStream {
 		t.Fatal("expected append cache to be disabled after history invalidation")
 	}
@@ -93,6 +97,37 @@ func TestTryAppendAltScreenStreamingContent_FallsBackOnRewrite(t *testing.T) {
 
 	if _, ok := m.tryAppendAltScreenStreamingContent("rewritten assistant"); ok {
 		t.Fatal("expected rewrite to force full viewport rebuild")
+	}
+}
+
+func TestViewAltScreen_WaveTickRerendersWithoutSetContent(t *testing.T) {
+	m := newTestChatModel(true)
+	m.width = 80
+	m.height = 20
+	m.syncAltScreenViewportHeight(m.buildFooterLayout().height)
+	m.streaming = true
+	m.tracker.HandleToolStart("call-1", "read_file", "(very-long-file-name.go)", nil)
+	m.tracker.WavePos = 0
+
+	first := m.View().Content
+	firstContentVersion := m.viewCache.contentVersion
+	firstRenderedVersion := m.viewCache.lastRenderedVersion
+	firstSetContentAt := m.viewCache.lastSetContentAt
+
+	_, _ = m.Update(ui.WaveTickMsg{})
+	second := m.View().Content
+
+	if m.viewCache.contentVersion != firstContentVersion {
+		t.Fatalf("wave-only tick should not bump contentVersion: before=%d after=%d", firstContentVersion, m.viewCache.contentVersion)
+	}
+	if m.viewCache.lastRenderedVersion != firstRenderedVersion {
+		t.Fatalf("wave-only tick should not advance lastRenderedVersion: before=%d after=%d", firstRenderedVersion, m.viewCache.lastRenderedVersion)
+	}
+	if !m.viewCache.lastSetContentAt.Equal(firstSetContentAt) {
+		t.Fatalf("wave-only tick should not call SetContent: before=%v after=%v", firstSetContentAt, m.viewCache.lastSetContentAt)
+	}
+	if first == second {
+		t.Fatal("expected wave-only tick to change rendered output")
 	}
 }
 

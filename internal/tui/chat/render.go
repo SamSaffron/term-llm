@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -148,6 +149,7 @@ func (m *Model) viewAltScreen() string {
 		} else {
 			m.resetAltScreenStreamingAppendCache()
 			m.viewCache.historyContent = m.renderHistory()
+			m.viewCache.historyLines = splitViewportContentLines(m.viewCache.historyContent)
 			m.viewCache.historyMsgCount = len(m.messages)
 			m.viewCache.historySignature = historySig
 			m.viewCache.historyWidth = m.width
@@ -164,22 +166,23 @@ func (m *Model) viewAltScreen() string {
 	var contentLines []string
 	var streamingContent string
 	usedIncrementalAppend := false
+	waveOnlyChanged := false
 	if m.streaming {
-		// Only increment version when tracker content or wave position changes
-		// The completed segment rendering is cached, but we still need SetContent
-		// for wave animation updates
 		if m.tracker != nil {
 			trackerVersion := m.tracker.Version
 			if m.streamPerf != nil {
 				m.streamPerf.RecordTrackerVersion(trackerVersion)
 			}
 			wavePos := m.tracker.WavePos
-			contentChanged := trackerVersion != m.viewCache.lastTrackerVersion
+			trackerChanged := trackerVersion != m.viewCache.lastTrackerVersion
 			waveChanged := wavePos != m.viewCache.lastWavePos && m.tracker.HasPending()
-			if contentChanged || waveChanged {
+			if trackerChanged {
 				m.viewCache.lastTrackerVersion = trackerVersion
 				m.viewCache.lastWavePos = wavePos
 				m.bumpContentVersion()
+			} else if waveChanged {
+				m.viewCache.lastWavePos = wavePos
+				waveOnlyChanged = true
 			}
 		}
 	}
@@ -187,10 +190,12 @@ func (m *Model) viewAltScreen() string {
 	// Only call SetContent if content actually changed (expensive operation)
 	// Use version comparison instead of O(n) string comparison
 	contentChanged := m.viewCache.contentVersion != m.viewCache.lastRenderedVersion
+	contentDirty := contentChanged
 
 	// Force update if embedded UI is active (since it's interactive and doesn't affect tracker version)
 	if m.approvalModel != nil || m.askUserModel != nil || m.handoverPreview != nil {
 		contentChanged = true
+		contentDirty = true
 	}
 	if contentChanged {
 		now := time.Now()
@@ -269,10 +274,20 @@ func (m *Model) viewAltScreen() string {
 
 	// Force re-render when selection changes
 	selectionChanged := m.selection != m.viewCache.lastSelection
-	needViewRender := contentChanged || yOffsetChanged || xOffsetChanged || sizeChanged || selectionChanged || m.viewCache.lastViewportView == ""
+	needViewRender := contentChanged || waveOnlyChanged || yOffsetChanged || xOffsetChanged || sizeChanged || selectionChanged || m.viewCache.lastViewportView == ""
 	if needViewRender {
 		viewStart := time.Now()
-		m.viewCache.lastViewportView = m.viewport.View()
+		if waveOnlyChanged && !contentDirty {
+			streamingContent = m.renderStreamingInline()
+			contentLines = m.renderAltScreenStreamingContentLines(streamingContent)
+			m.viewCache.lastViewportView = m.renderAltScreenViewportLines(contentLines)
+			m.viewCache.lastContentStr = ""
+			m.contentLines = contentLines
+			m.viewCache.lastContentHistoryPlusStream = true
+			m.viewCache.lastStreamingContent = streamingContent
+		} else {
+			m.viewCache.lastViewportView = m.viewport.View()
+		}
 		if m.streamPerf != nil {
 			m.streamPerf.RecordDuration(durationMetricViewportView, time.Since(viewStart))
 		}
@@ -1417,6 +1432,62 @@ func (m *Model) shouldThrottleSetContent(now time.Time) bool {
 		return false
 	}
 	return now.Sub(m.viewCache.lastSetContentAt) < m.streamRenderMinInterval
+}
+
+func (m *Model) renderAltScreenStreamingContentLines(streamingContent string) []string {
+	return appendViewportContentLines(slices.Clone(m.viewCache.historyLines), streamingContent)
+}
+
+// renderAltScreenViewportLines renders the chat viewport directly from pre-wrapped
+// content lines. It's only used for wave-only tool animation frames, where the
+// visible text changes but the underlying viewport content/line count does not.
+func (m *Model) renderAltScreenViewportLines(lines []string) string {
+	w, h := m.viewport.Width(), m.viewport.Height()
+	if sw := m.viewport.Style.GetWidth(); sw != 0 && sw < w {
+		w = sw
+	}
+	if sh := m.viewport.Style.GetHeight(); sh != 0 && sh < h {
+		h = sh
+	}
+	if w == 0 || h == 0 {
+		return ""
+	}
+
+	contentWidth := w - m.viewport.Style.GetHorizontalFrameSize()
+	contentHeight := h - m.viewport.Style.GetVerticalFrameSize()
+	if contentWidth < 0 {
+		contentWidth = 0
+	}
+	if contentHeight < 0 {
+		contentHeight = 0
+	}
+
+	yOffset := m.viewport.YOffset()
+	if yOffset < 0 {
+		yOffset = 0
+	}
+	if yOffset > len(lines) {
+		yOffset = len(lines)
+	}
+	bottom := yOffset + contentHeight
+	if bottom > len(lines) {
+		bottom = len(lines)
+	}
+
+	visible := slices.Clone(lines[yOffset:bottom])
+	if xOffset := m.viewport.XOffset(); xOffset > 0 && contentWidth > 0 {
+		for i := range visible {
+			visible[i] = ansi.Cut(visible[i], xOffset, xOffset+contentWidth)
+		}
+	}
+
+	rendered := lipgloss.NewStyle().
+		Width(contentWidth).
+		Height(contentHeight).
+		Render(strings.Join(visible, "\n"))
+	return m.viewport.Style.
+		UnsetWidth().UnsetHeight().
+		Render(rendered)
 }
 
 // tryAppendAltScreenStreamingContent reuses the previously rendered viewport
