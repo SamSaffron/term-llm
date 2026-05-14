@@ -1230,7 +1230,8 @@ func newAskRendererProgram(cfg *config.Config, toolMgr *tools.ToolManager, store
 
 	if spawnTool := toolMgr.GetSpawnAgentTool(); spawnTool != nil {
 		spawnTool.SetEventCallback(func(callID string, event tools.SubagentEvent) {
-			go teaProgram.Send(askSubagentProgressMsg{CallID: callID, Event: event})
+			// Send synchronously so the TUI naturally backpressures bursty subagent updates.
+			teaProgram.Send(askSubagentProgressMsg{CallID: callID, Event: event})
 		})
 	}
 

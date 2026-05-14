@@ -491,8 +491,8 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	if toolMgr != nil {
 		if spawnTool := toolMgr.GetSpawnAgentTool(); spawnTool != nil {
 			spawnTool.SetEventCallback(func(callID string, event tools.SubagentEvent) {
-				// Use goroutine to avoid blocking subagent execution if TUI message channel backs up
-				go p.Send(chat.SubagentProgressMsg{CallID: callID, Event: event})
+				// Send synchronously so the TUI naturally backpressures bursty subagent updates.
+				p.Send(chat.SubagentProgressMsg{CallID: callID, Event: event})
 			})
 		}
 	}
