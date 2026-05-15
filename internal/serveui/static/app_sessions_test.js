@@ -1685,6 +1685,84 @@ async function testSanitizeSessionPreservesLastMessageAt() {
   pass(name);
 }
 
+async function testSwitchToSearchOnlySessionHydratesResult() {
+  const name = 'switching to a search-only session adds it to local state before hydration';
+  const fetchCalls = [];
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      fetchCalls.push(String(url));
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({ sessions: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (url === '/ui/v1/sessions/sess_search_only/messages') {
+        return new Response(JSON.stringify({
+          messages: [
+            { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'waterparks' }], created_at: 1710000000000 },
+            { id: 'a1', role: 'assistant', parts: [{ type: 'text', text: 'loaded from server' }], created_at: 1710000001000 }
+          ]
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+  });
+
+  app.state.sessions = Array.from({ length: 101 }, (_, index) => ({
+    id: `sess_existing_${index}`,
+    title: `Existing ${index}`,
+    created: 1800000000000 + index,
+    lastMessageAt: 1800000000000 + index,
+    messages: [],
+    origin: 'web',
+  }));
+  app.state.sidebarSearchQuery = 'waterparks';
+  app.state.sidebarSearchResults = [{
+    id: 'sess_search_only',
+    title: 'top 10 waterparks in the us',
+    created: 1710000000000,
+    lastMessageAt: 1710000001000,
+    messages: [],
+    _serverOnly: true,
+  }];
+
+  const session = await app.switchToSession('sess_search_only', { sync: false });
+
+  if (!session) {
+    fail(name, 'expected switchToSession to return the search result session');
+    return;
+  }
+  if (!app.state.sessions.some((item) => item.id === 'sess_search_only')) {
+    fail(name, 'expected search-only session to be added to state.sessions');
+    return;
+  }
+  if (app.state.activeSessionId !== 'sess_search_only') {
+    fail(name, `activeSessionId=${app.state.activeSessionId}, want sess_search_only`);
+    return;
+  }
+  if (session._serverOnly) {
+    fail(name, 'expected search-only session to be hydrated and no longer server-only');
+    return;
+  }
+  if (session.messages.length !== 2 || session.messages[1].content !== 'loaded from server') {
+    fail(name, 'expected hydrated server messages to be loaded', JSON.stringify(session.messages));
+    return;
+  }
+  if (!fetchCalls.includes('/ui/v1/sessions/sess_search_only/messages')) {
+    fail(name, 'expected messages endpoint to be fetched', JSON.stringify(fetchCalls));
+    return;
+  }
+
+  pass(name);
+}
+
 (async () => {
   await testSwitchingSessionsStagesCurrentComposerBeforeRestore();
   await testSwitchToSessionSyncsSelectedRuntime();
@@ -1696,6 +1774,7 @@ async function testSanitizeSessionPreservesLastMessageAt() {
   await testSwitchToSessionSyncsWithoutTokenAndResumes();
   await testSwitchToSessionRecoversChangedActiveResponseFromSnapshot();
   await testSwitchToLazyLoadedSessionFetchesMessagesOnce();
+  await testSwitchToSearchOnlySessionHydratesResult();
   await testSwitchToSessionClearsStaleActiveResponseWithoutToken();
   await testSessionState404ClearsStaleActiveResponse();
   await testIdleSessionSyncRescuesPendingInterruptCommit();

@@ -254,7 +254,14 @@ const switchToSession = async (sessionId, options = {}) => {
   const previousActiveSessionId = String(state.activeSessionId || '').trim();
   const previousComposerSessionId = state.draftSessionActive ? '' : previousActiveSessionId;
   stageCurrentComposerForSession(previousComposerSessionId);
-  const session = state.sessions.find((item) => item.id === nextId);
+  let session = state.sessions.find((item) => item.id === nextId);
+  if (!session && Array.isArray(state.sidebarSearchResults)) {
+    const searchResult = state.sidebarSearchResults.find((item) => item?.id === nextId) || null;
+    if (searchResult) {
+      session = { ...searchResult };
+      state.sessions.push(session);
+    }
+  }
   if (!session) return null;
 
   stopSessionStatePoll();

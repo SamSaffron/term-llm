@@ -1072,6 +1072,10 @@ let _savedDraftActive = /** @type {string|null} */ (null);
 
 const saveSessions = () => {
   if (state.sessions.length > 100) {
+    const activeSessionId = state.activeSessionId || '';
+    const activeSession = activeSessionId
+      ? state.sessions.find((s) => s.id === activeSessionId) || null
+      : null;
     state.sessions.sort((a, b) => {
       if (Boolean(a.pinned) !== Boolean(b.pinned)) {
         return Number(Boolean(a.pinned)) - Number(Boolean(b.pinned));
@@ -1079,6 +1083,10 @@ const saveSessions = () => {
       return a.created - b.created;
     });
     state.sessions = state.sessions.slice(-100);
+    if (activeSession && !state.sessions.find((s) => s.id === activeSession.id)) {
+      state.sessions = state.sessions.slice(1);
+      state.sessions.push(activeSession);
+    }
     if (!state.draftSessionActive && !state.sessions.find((s) => s.id === state.activeSessionId)) {
       state.activeSessionId = '';
     }
