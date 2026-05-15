@@ -147,6 +147,85 @@ func TestResolveSettings_AgentSystemPromptIncludeUsesAgentDir(t *testing.T) {
 	}
 }
 
+func TestAgentPromptTemplateContextAndBaseDir_BuiltinWithoutExtractedResourcesSkipsExtraction(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	agent := &agents.Agent{
+		Name:         "developer",
+		Source:       agents.SourceBuiltin,
+		SystemPrompt: "Today is {{date}}.",
+	}
+
+	templateCtx, baseDir, err := agentPromptTemplateContextAndBaseDir(agent, nil)
+	if err != nil {
+		t.Fatalf("agentPromptTemplateContextAndBaseDir() error = %v", err)
+	}
+	if templateCtx.ResourceDir != "" {
+		t.Fatalf("templateCtx.ResourceDir = %q, want empty", templateCtx.ResourceDir)
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if baseDir != cwd {
+		t.Fatalf("baseDir = %q, want %q", baseDir, cwd)
+	}
+
+	resourceRoot, err := agents.GetBuiltinResourceDir()
+	if err != nil {
+		t.Fatalf("GetBuiltinResourceDir() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(resourceRoot, agent.Name)); !os.IsNotExist(err) {
+		t.Fatalf("expected builtin resource extraction to be skipped, stat err = %v", err)
+	}
+}
+
+func TestResolveSettings_BuiltinAgentResourceDirStillExtractsResources(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	agent := &agents.Agent{
+		Name:         "artist",
+		Source:       agents.SourceBuiltin,
+		SystemPrompt: "Read {{resource_dir}}/styles.md",
+	}
+
+	settings, err := ResolveSettings(&config.Config{}, agent, CLIFlags{}, "", "", "", 0, 20)
+	if err != nil {
+		t.Fatalf("ResolveSettings() error = %v", err)
+	}
+
+	resourceRoot, err := agents.GetBuiltinResourceDir()
+	if err != nil {
+		t.Fatalf("GetBuiltinResourceDir() error = %v", err)
+	}
+	expectedPath := filepath.Join(resourceRoot, "artist", "styles.md")
+	if !strings.HasPrefix(settings.SystemPrompt, "Read "+expectedPath) {
+		t.Fatalf("SystemPrompt = %q, want prefix %q", settings.SystemPrompt, "Read "+expectedPath)
+	}
+	if _, err := os.Stat(expectedPath); err != nil {
+		t.Fatalf("expected extracted resource at %q: %v", expectedPath, err)
+	}
+}
+
+func TestResolveSettings_BuiltinAgentFileIncludeStillExtractsResources(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	agent := &agents.Agent{
+		Name:         "artist",
+		Source:       agents.SourceBuiltin,
+		SystemPrompt: "X {{ file:styles.md }} Y",
+	}
+
+	settings, err := ResolveSettings(&config.Config{}, agent, CLIFlags{}, "", "", "", 0, 20)
+	if err != nil {
+		t.Fatalf("ResolveSettings() error = %v", err)
+	}
+	if !strings.Contains(settings.SystemPrompt, "# Art Styles & Techniques Reference") {
+		t.Fatalf("SystemPrompt = %q, want embedded styles.md content", settings.SystemPrompt)
+	}
+}
+
 func TestResolveSettings_AppendsInsightsToSystemPrompt(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "memory.db")
 	t.Setenv("TERM_LLM_MEMORY_DB", dbPath)

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -18,6 +19,8 @@ import (
 	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
+
+var builtinAgentFileIncludePattern = regexp.MustCompile(`\{\{\s*file\s*:`)
 
 // SessionSettings holds the resolved settings for a session, merged from
 // config defaults, agent settings, and CLI flags.
@@ -353,10 +356,22 @@ func systemPromptCWDBaseDir() (string, error) {
 	return cwd, nil
 }
 
+func builtinAgentPromptNeedsExtractedResources(prompt string) bool {
+	return strings.Contains(prompt, "{{resource_dir}}") || builtinAgentFileIncludePattern.MatchString(prompt)
+}
+
 func agentPromptTemplateContextAndBaseDir(agent *agents.Agent, files []string) (agents.TemplateContext, string, error) {
 	templateCtx := agents.NewTemplateContextForTemplate(agent.SystemPrompt).WithFiles(files)
 
 	if agent.Source == agents.SourceBuiltin {
+		if !builtinAgentPromptNeedsExtractedResources(agent.SystemPrompt) {
+			cwd, err := systemPromptCWDBaseDir()
+			if err != nil {
+				return agents.TemplateContext{}, "", err
+			}
+			return templateCtx, cwd, nil
+		}
+
 		resourceDir, err := agents.ExtractBuiltinResources(agent.Name)
 		if err != nil {
 			return agents.TemplateContext{}, "", fmt.Errorf("extract builtin resources for %q: %w", agent.Name, err)
