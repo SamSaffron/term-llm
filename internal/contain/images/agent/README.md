@@ -40,6 +40,7 @@ On first boot, bootstrap files are rendered/copied into the persistent `/home/ag
 volume. A default `/home/agent/.config/term-llm/init.sh` is written if one does not
 already exist. Future boots ignore `/seed` and image bootstrap files, then run
 that persistent init script. PID 1/runit supervision stays root for service
-installation under `/etc`, but the Web UI, jobs service, bootstrap jobs,
-interactive shells, and normal agent work run as the non-root `agent` user with
-passwordless `sudo` available for explicit privilege escalation.
+installation under `/etc`, but the Web UI, jobs service, the first-boot
+bootstrap-jobs one-shot, interactive shells, and normal agent work run as the
+non-root `agent` user with passwordless `sudo` available for explicit privilege
+escalation.

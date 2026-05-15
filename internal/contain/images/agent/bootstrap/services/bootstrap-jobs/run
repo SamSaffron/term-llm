@@ -1,6 +1,6 @@
 #!/bin/bash
 # One-shot service: bootstraps default jobs on first container launch.
-# After bootstrapping, sleeps forever — runit keeps it "up" with no churn.
+# After bootstrapping, removes its persisted runit service so it does not linger.
 # Jobs are user-owned after creation: edit/delete via term-llm jobs CLI.
 
 if [ "$(id -un)" != "agent" ]; then
@@ -8,11 +8,22 @@ if [ "$(id -un)" != "agent" ]; then
 fi
 
 SENTINEL="/home/agent/.config/term-llm/.jobs-bootstrapped"
+PERSISTED_SERVICE_DIR="/home/agent/.config/term-llm/services/bootstrap-jobs"
+RUNSVDIR_LINK="/etc/runit/runsvdir/bootstrap-jobs"
+SV_SERVICE_DIR="/etc/sv/bootstrap-jobs"
 AGENT="${AGENT_NAME:-agent}"
 
-# Already bootstrapped — nothing to do
+cleanup_and_exit() {
+  echo "bootstrap-jobs: removing one-shot service"
+  rm -rf "$PERSISTED_SERVICE_DIR"
+  sudo rm -f "$RUNSVDIR_LINK" 2>/dev/null || true
+  sudo rm -rf "$SV_SERVICE_DIR" 2>/dev/null || true
+  exit 0
+}
+
+# Already bootstrapped — remove this one-shot service if an older volume kept it.
 if [ -f "$SENTINEL" ]; then
-  exec sleep infinity
+  cleanup_and_exit
 fi
 
 # Wait for jobs API to be ready (starts after runit launches the jobs service)
@@ -101,4 +112,4 @@ term-llm jobs create --data "{
 
 touch "$SENTINEL"
 echo "bootstrap-jobs: done — 4 jobs created. Edit them with: term-llm jobs list / term-llm jobs update"
-exec sleep infinity
+cleanup_and_exit

@@ -118,6 +118,16 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 		if rel == "bootstrap/services/bootstrap-jobs/run" && (!strings.Contains(string(data), "exec sudo -Hu agent") || !strings.Contains(string(data), `\"command\": \"sudo\"`) || !strings.Contains(string(data), `\"system-upgrade\"`) || !strings.Contains(string(data), `"pacman"`) || !strings.Contains(string(data), `"dnf"`)) {
 			t.Fatalf("bootstrap jobs should run as agent and use sudo for package upgrades")
 		}
+		if rel == "bootstrap/services/bootstrap-jobs/run" {
+			for _, want := range []string{"cleanup_and_exit", "rm -rf \"$PERSISTED_SERVICE_DIR\"", "rm -f \"$RUNSVDIR_LINK\"", "rm -rf \"$SV_SERVICE_DIR\""} {
+				if !strings.Contains(string(data), want) {
+					t.Fatalf("bootstrap jobs should self-remove after bootstrapping; missing %q", want)
+				}
+			}
+			if strings.Contains(string(data), "sleep infinity") {
+				t.Fatalf("bootstrap jobs should exit after self-removal, not sleep forever")
+			}
+		}
 		if rel == "bootstrap/system.md" {
 			if !strings.Contains(string(data), "~/source/term-llm") || !strings.Contains(string(data), "/home/agent/source/<project>") || !strings.Contains(string(data), "/home/agent/source/term-llm/docs-site/content") {
 				t.Fatalf("system prompt missing source workspace/docs paths")

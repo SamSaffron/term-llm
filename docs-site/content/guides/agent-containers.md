@@ -101,7 +101,7 @@ Use `/home/agent/source/<project>` for source checkouts and code projects you wa
 
 After first boot, the volume is the source of truth. Future boots ignore image bootstrap files and run `/home/agent/.config/term-llm/init.sh`, which reinstalls persisted runit service definitions into `/etc/sv` and links them into `/etc/runit/runsvdir`.
 
-The service supervisor runs as root. The Web UI, jobs server, bootstrap jobs, shells, and normal agent work run as the `agent` Linux user.
+The service supervisor runs as root. The Web UI, jobs server, first-boot `bootstrap-jobs` one-shot, shells, and normal agent work run as the `agent` Linux user.
 
 ## Services
 
@@ -109,7 +109,7 @@ The service supervisor runs as root. The Web UI, jobs server, bootstrap jobs, sh
 |---|---|
 | `webui` | Runs `term-llm serve web` on port `8081` inside the container. |
 | `jobs` | Runs `term-llm serve jobs` on port `8080` inside the container. |
-| `bootstrap-jobs` | Creates default scheduled jobs on first boot, then sleeps. |
+| `bootstrap-jobs` | Creates default scheduled jobs on first boot, then removes its persisted service definition and exits. |
 
 The Web UI service starts with file serving and widgets enabled:
 
@@ -141,7 +141,7 @@ term-llm contain exec myagent -- sudo sv restart /etc/runit/runsvdir/webui/
 
 ## Default jobs
 
-On first boot, `bootstrap-jobs` waits for the jobs API and creates:
+On first boot, `bootstrap-jobs` waits for the jobs API, creates the defaults, and then removes itself from the persisted service set:
 
 | Job | Schedule | What it does |
 |---|---|---|

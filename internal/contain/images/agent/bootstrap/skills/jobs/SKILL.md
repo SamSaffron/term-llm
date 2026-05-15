@@ -1,6 +1,6 @@
 ---
 name: jobs
-description: "Work with scheduled jobs and container services. Use when creating, updating, pausing, debugging, or inspecting jobs; checking runs/events; or changing runit services like webui, jobs, and bootstrap-jobs."
+description: "Work with scheduled jobs and container services. Use when creating, updating, pausing, debugging, or inspecting jobs; checking runs/events; or changing runit services like webui and jobs."
 ---
 
 # Jobs and Services
@@ -16,7 +16,6 @@ Default services:
 |---|---|
 | `webui` | Runs `term-llm serve web` on port 8081. |
 | `jobs` | Runs `term-llm serve jobs` on port 8080. |
-| `bootstrap-jobs` | One-shot bootstrapper that creates default jobs, then sleeps. |
 
 Default jobs:
 
