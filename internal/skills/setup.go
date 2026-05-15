@@ -21,6 +21,7 @@ type Setup struct {
 	alwaysEnabled        []string
 	metadataBudgetTokens int
 	maxVisibleSkills     int
+	preloadedSkills      []*Skill // Primed startup catalog reused for first prompt metadata build
 
 	metadataOnce sync.Once
 	metadataErr  error
@@ -46,11 +47,13 @@ func NewSetup(cfg *config.SkillsConfig) (*Setup, error) {
 		return nil, err
 	}
 
-	hasAnySkills, err := registry.HasAnySkill()
+	// Prime the startup skill catalog once so prompt metadata generation can
+	// reuse it without rescanning and reparsing before the first prompt.
+	preloadedSkills, err := registry.List()
 	if err != nil {
 		return nil, err
 	}
-	if !hasAnySkills {
+	if len(preloadedSkills) == 0 {
 		return nil, nil
 	}
 
@@ -59,6 +62,7 @@ func NewSetup(cfg *config.SkillsConfig) (*Setup, error) {
 		alwaysEnabled:        append([]string(nil), cfg.AlwaysEnabled...),
 		metadataBudgetTokens: cfg.MetadataBudgetTokens,
 		maxVisibleSkills:     cfg.MaxVisibleSkills,
+		preloadedSkills:      preloadedSkills,
 	}, nil
 }
 
@@ -72,10 +76,15 @@ func (s *Setup) EnsurePromptMetadata() error {
 	}
 
 	s.metadataOnce.Do(func() {
-		allSkills, err := s.Registry.List()
-		if err != nil {
-			s.metadataErr = fmt.Errorf("list skills: %w", err)
-			return
+		allSkills := s.preloadedSkills
+		s.preloadedSkills = nil
+		if allSkills == nil {
+			var err error
+			allSkills, err = s.Registry.List()
+			if err != nil {
+				s.metadataErr = fmt.Errorf("list skills: %w", err)
+				return
+			}
 		}
 
 		// Filter by never_auto for metadata injection (explicit only skills excluded)
