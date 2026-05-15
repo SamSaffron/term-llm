@@ -2889,7 +2889,7 @@ const drainInterruptQueueIfIdle = (session) => {
     const queued = state.queuedInterrupts.shift();
     elements.promptInput.value = queued.prompt;
     autoGrowPrompt();
-    void sendMessage({ prompt: queued.prompt, attachments: [], reuseMessageId: queued.messageId });
+    void sendMessage({ prompt: queued.prompt, attachments: [], reuseMessageId: queued.messageId, _skipContinuationRefresh: true });
   }
 };
 
@@ -3121,7 +3121,8 @@ const recoverInterruptFailure = async (session, prompt, messageId) => {
   removePendingInterjectionById(messageId);
   await sendMessage({
     prompt,
-    attachments: []
+    attachments: [],
+    _skipContinuationRefresh: true
   });
   return true;
 };
@@ -3243,6 +3244,26 @@ const sendMessage = async (options = {}) => {
     state.activeSessionId = session.id;
     state.draftSessionActive = false;
     updateURL(sessionSlug(session));
+  }
+
+  const shouldRefreshContinuation = !options._skipContinuationRefresh && Boolean(
+    session && !session.activeResponseId && (
+      String(session.lastResponseId || '').trim()
+      || Number(session.number || 0) > 0
+      || (Array.isArray(session.messages) && session.messages.length > 0)
+    )
+  );
+  if (shouldRefreshContinuation && typeof app.syncActiveSessionFromServer === 'function') {
+    try {
+      await app.syncActiveSessionFromServer(session, false);
+      session = getActiveSession() || session;
+    } catch (_err) {
+      // Best effort only: the stale-ID guard below still uses the latest
+      // continuation ID we have if the state refresh is unavailable.
+    }
+    if (state.streaming || session.activeResponseId) {
+      return sendMessage({ ...options, _skipContinuationRefresh: true });
+    }
   }
 
   const reuseMessageId = typeof options.reuseMessageId === 'string' ? options.reuseMessageId : '';

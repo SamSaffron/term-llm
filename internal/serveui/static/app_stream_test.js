@@ -364,7 +364,12 @@ function createHarness(options = {}) {
     shouldAutoSubscribeToPush() { return false; },
     applyTextDirection() {},
     shouldSuppressPromptAutoFocus() { return false; },
-    syncActiveSessionFromServer: async () => {},
+    syncActiveSessionFromServer: async (session, pollOnActive, opts) => {
+      if (typeof options.onSyncActiveSessionFromServer === 'function') {
+        return options.onSyncActiveSessionFromServer(session, pollOnActive, opts);
+      }
+      return {};
+    },
     scheduleSessionStatePoll() {},
     setSessionOptimisticBusy(sessionOrId, busy) {
       const id = typeof sessionOrId === 'string'
@@ -808,6 +813,62 @@ async function testSendMessageDoesNotResumeAfterStalePostStream() {
   const eventCalls = fetchCalls.filter((call) => call.url.includes('/events?after='));
   if (eventCalls.length !== 0) {
     fail(name, 'stale POST stream should not be resumed via /events', JSON.stringify(fetchCalls));
+    return;
+  }
+
+  pass(name);
+}
+
+async function testSendMessageRefreshesContinuationIdBeforePosting() {
+  const name = 'sendMessage refreshes stale continuation id before posting';
+  const staleId = 'resp_msg_796607';
+  const latestId = 'resp_msg_796651';
+  let syncCalls = 0;
+  const harness = createHarness({
+    onSyncActiveSessionFromServer(session) {
+      syncCalls += 1;
+      if (session.lastResponseId === staleId) {
+        session.lastResponseId = latestId;
+      }
+      return { active_run: false, lastResponseId: session.lastResponseId };
+    },
+  });
+  const { app, elements, state, fetchCalls, cleanup } = harness;
+  const session = {
+    id: 'session_stale_previous',
+    title: 'Stale previous',
+    messages: [{ id: 'msg_old', role: 'user', content: 'old', created: Date.now() - 1000 }],
+    lastResponseId: staleId,
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+    number: 42,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  elements.promptInput.value = 'follow up';
+
+  let sendErr = null;
+  await app.sendMessage().catch((err) => {
+    sendErr = err;
+  });
+  await cleanup();
+
+  if (sendErr) {
+    fail(name, 'sendMessage rejected unexpectedly', String(sendErr));
+    return;
+  }
+  if (syncCalls !== 1) {
+    fail(name, `expected one preflight sync, got ${syncCalls}`);
+    return;
+  }
+  const postCall = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  if (!postCall || !postCall.body) {
+    fail(name, 'missing POST /ui/v1/responses body', JSON.stringify(fetchCalls));
+    return;
+  }
+  const body = JSON.parse(postCall.body);
+  if (body.previous_response_id !== latestId) {
+    fail(name, `previous_response_id = ${JSON.stringify(body.previous_response_id)}, want ${JSON.stringify(latestId)}`, postCall.body);
     return;
   }
 
@@ -2618,6 +2679,7 @@ function testRestoreLatestDraftMessageDoesNotCrossSessionBoundary() {
   await testInactiveSessionFailureDoesNotAppendToVisibleDOM();
   await testConsumeResponseStreamReportsStaleWithoutApplyingEvents();
   await testSendMessageDoesNotResumeAfterStalePostStream();
+  await testSendMessageRefreshesContinuationIdBeforePosting();
   await testSendMessageConsumesPostStreamWhenAvailable();
   await testSendMessageRefreshesHeaderAfterCompletionUnlocksModelPicker();
   await testSendMessageLazilyMaterializesAttachmentDataURLs();
