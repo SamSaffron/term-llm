@@ -1251,9 +1251,10 @@ func newAskRendererProgram(cfg *config.Config, toolMgr *tools.ToolManager, store
 	}
 
 	if spawnTool := toolMgr.GetSpawnAgentTool(); spawnTool != nil {
-		spawnTool.SetEventCallback(func(callID string, event tools.SubagentEvent) {
-			go teaProgram.Send(askSubagentProgressMsg{CallID: callID, Event: event})
+		dispatcher := newSubagentProgressDispatcher(func(callID string, event tools.SubagentEvent) {
+			teaProgram.Send(askSubagentProgressMsg{CallID: callID, Event: event})
 		})
+		spawnTool.SetEventCallback(dispatcher.Callback)
 	}
 
 	toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {

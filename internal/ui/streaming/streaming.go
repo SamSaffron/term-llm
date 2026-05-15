@@ -66,6 +66,10 @@ type StreamRenderer struct {
 	// Last rendered snapshot that has been written to output.
 	// Used to append deltas safely and recover from non-prefix renders.
 	lastRendered []byte
+	// Last committed rendered snapshot (without any partial preview).
+	// Used by callers that need a stable scrollback-safe view while partial
+	// previews are visible in the active buffer.
+	lastCommittedRendered []byte
 
 	// Current state
 	state state
@@ -184,6 +188,12 @@ func (sr *StreamRenderer) Write(p []byte) (n int, err error) {
 // committed as complete blocks. This excludes any pending/incomplete block content.
 func (sr *StreamRenderer) CommittedMarkdownLen() int {
 	return sr.allMarkdown.Len()
+}
+
+// CommittedRendered returns the latest rendered snapshot that contains only
+// committed markdown blocks and excludes any active partial preview.
+func (sr *StreamRenderer) CommittedRendered() string {
+	return string(sr.lastCommittedRendered)
 }
 
 // PendingMarkdown returns the current incomplete block markdown.
@@ -634,6 +644,7 @@ func (sr *StreamRenderer) emitRendered() error {
 	}
 
 	if sr.allMarkdown.Len() == 0 {
+		sr.lastCommittedRendered = nil
 		return nil
 	}
 
@@ -653,6 +664,7 @@ func (sr *StreamRenderer) emitRendered() error {
 		stableLen--
 	}
 
+	sr.lastCommittedRendered = append(sr.lastCommittedRendered[:0], rendered[:stableLen]...)
 	return sr.applyRenderedSnapshot(rendered[:stableLen], false)
 }
 
@@ -683,6 +695,7 @@ func (sr *StreamRenderer) Flush() error {
 	sr.state = stateReady
 
 	if sr.allMarkdown.Len() == 0 {
+		sr.lastCommittedRendered = nil
 		return nil
 	}
 
@@ -694,6 +707,7 @@ func (sr *StreamRenderer) Flush() error {
 
 	// Normalize consecutive newlines to fix inconsistent header spacing
 	rendered = normalizeNewlines(rendered)
+	sr.lastCommittedRendered = append(sr.lastCommittedRendered[:0], rendered...)
 
 	// Output final render including trailing newlines.
 	return sr.applyRenderedSnapshot(rendered, true)
@@ -744,11 +758,14 @@ func (sr *StreamRenderer) Resize(newWidth int) error {
 			stableLen--
 		}
 
+		sr.lastCommittedRendered = append(sr.lastCommittedRendered[:0], rendered[:stableLen]...)
 		if stableLen > 0 {
 			if err := sr.applyRenderedSnapshot(rendered[:stableLen], true); err != nil {
 				return err
 			}
 		}
+	} else {
+		sr.lastCommittedRendered = nil
 	}
 
 	return nil
@@ -871,6 +888,31 @@ func isOrderedListMarkerPrefix(trimmed string) bool {
 		return false
 	}
 	return i+1 == len(trimmed)
+}
+
+// isListMarkerOnly reports whether trimmed contains just a list marker and
+// optional trailing whitespace, with no item content yet.
+func isListMarkerOnly(trimmed string) bool {
+	if trimmed == "" {
+		return false
+	}
+
+	if (trimmed[0] == '-' || trimmed[0] == '+' || trimmed[0] == '*') && len(trimmed) > 1 {
+		if trimmed[1] == ' ' || trimmed[1] == '\t' {
+			return strings.TrimSpace(trimmed[2:]) == ""
+		}
+	}
+
+	i := 0
+	for i < len(trimmed) && i < 9 && trimmed[i] >= '0' && trimmed[i] <= '9' {
+		i++
+	}
+	if i == 0 || i >= len(trimmed) || (trimmed[i] != '.' && trimmed[i] != ')') {
+		return false
+	}
+
+	rest := strings.TrimSpace(trimmed[i+1:])
+	return rest == ""
 }
 
 // isThematicBreak returns true if the line is a thematic break (---, ***, ___).

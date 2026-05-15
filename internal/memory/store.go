@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"container/heap"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -1068,13 +1069,38 @@ func (s *Store) GetFragmentsNeedingEmbedding(ctx context.Context, agent, provide
 }
 
 const vectorSearchSQL = `
-		SELECT f.id, f.agent, f.path, f.content, f.source, f.created_at, f.updated_at,
-		       f.accessed_at, f.access_count, f.decay_score, f.pinned,
+		SELECT e.fragment_id,
+		       f.updated_at,
 		       e.vector
 		FROM memory_embeddings e
 		JOIN memory_fragments f ON f.id = e.fragment_id
 		WHERE e.provider = ? AND e.model = ? AND e.dimensions = ?
 		  AND (? = '' OR f.agent = ?)`
+
+type vectorSearchCandidate struct {
+	id        string
+	updatedAt time.Time
+	score     float64
+	vector    []float64
+}
+
+type vectorSearchCandidateHeap []vectorSearchCandidate
+
+func (h vectorSearchCandidateHeap) Len() int { return len(h) }
+func (h vectorSearchCandidateHeap) Less(i, j int) bool {
+	return vectorSearchCandidateWorse(h[i], h[j])
+}
+func (h vectorSearchCandidateHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+func (h *vectorSearchCandidateHeap) Push(x any) {
+	*h = append(*h, x.(vectorSearchCandidate))
+}
+func (h *vectorSearchCandidateHeap) Pop() any {
+	old := *h
+	n := len(old)
+	item := old[n-1]
+	*h = old[:n-1]
+	return item
+}
 
 // VectorSearch performs a cosine similarity scan over embeddings matching provider, model, and dimensions.
 func (s *Store) VectorSearch(ctx context.Context, agent, provider, model string, queryVec []float64, limit int) ([]ScoredFragment, error) {
@@ -1097,11 +1123,124 @@ func (s *Store) VectorSearch(ctx context.Context, agent, provider, model string,
 	}
 	defer rows.Close()
 
-	matches := make([]ScoredFragment, 0, limit)
+	// Keep only the best candidates while scanning. The previous implementation
+	// selected every fragment column (including large content bodies), retained a
+	// ScoredFragment for every embedding, sorted the full slice, and then sliced
+	// to limit. Memory search normally asks for the top 24 candidates, so fetch
+	// heavyweight fragment rows only for those winners after scoring.
+	top := make(vectorSearchCandidateHeap, 0, limit)
+	for rows.Next() {
+		var c vectorSearchCandidate
+		var payload []byte
+		if err := rows.Scan(&c.id, &c.updatedAt, &payload); err != nil {
+			return nil, fmt.Errorf("scan vector search row: %w", err)
+		}
+
+		if err := json.Unmarshal(payload, &c.vector); err != nil {
+			return nil, fmt.Errorf("decode stored vector for fragment %s: %w", c.id, err)
+		}
+		c.score = embedding.CosineSimilarity(queryVec, c.vector)
+
+		if top.Len() < limit {
+			heap.Push(&top, c)
+			continue
+		}
+
+		if vectorSearchCandidateBetter(c, top[0]) {
+			top[0] = c
+			heap.Fix(&top, 0)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(top) == 0 {
+		return []ScoredFragment{}, nil
+	}
+
+	sort.Slice(top, func(i, j int) bool {
+		return vectorSearchCandidateBetter(top[i], top[j])
+	})
+
+	ids := make([]string, 0, len(top))
+	for _, c := range top {
+		ids = append(ids, c.id)
+	}
+	fragments, err := s.getFragmentsByIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]ScoredFragment, 0, len(top))
+	for _, c := range top {
+		r, ok := fragments[c.id]
+		if !ok {
+			continue
+		}
+		r.Score = c.score
+		r.Vector = c.vector
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+func vectorSearchCandidateBetter(a, b vectorSearchCandidate) bool {
+	if a.score == b.score {
+		return a.updatedAt.After(b.updatedAt)
+	}
+	return a.score > b.score
+}
+
+func vectorSearchCandidateWorse(a, b vectorSearchCandidate) bool {
+	if a.score == b.score {
+		return a.updatedAt.Before(b.updatedAt)
+	}
+	return a.score < b.score
+}
+
+const fragmentByIDBatchSize = 500
+
+func (s *Store) getFragmentsByIDs(ctx context.Context, ids []string) (map[string]ScoredFragment, error) {
+	out := make(map[string]ScoredFragment, len(ids))
+	for start := 0; start < len(ids); start += fragmentByIDBatchSize {
+		end := start + fragmentByIDBatchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		if err := s.getFragmentsByIDBatch(ctx, ids[start:end], out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func (s *Store) getFragmentsByIDBatch(ctx context.Context, ids []string, out map[string]ScoredFragment) error {
+	if len(ids) == 0 {
+		return nil
+	}
+
+	placeholders := strings.Repeat("?,", len(ids))
+	placeholders = strings.TrimSuffix(placeholders, ",")
+	query := fmt.Sprintf(`
+		SELECT id, agent, path, content, source, created_at, updated_at,
+		       accessed_at, access_count, decay_score, pinned
+		FROM memory_fragments
+		WHERE id IN (%s)`, placeholders)
+
+	args := make([]any, 0, len(ids))
+	for _, id := range ids {
+		args = append(args, id)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("get fragments by ids: %w", err)
+	}
+	defer rows.Close()
+
 	for rows.Next() {
 		var r ScoredFragment
 		var accessedAt sql.NullTime
-		var payload []byte
 		if err := rows.Scan(
 			&r.ID,
 			&r.Agent,
@@ -1114,36 +1253,19 @@ func (s *Store) VectorSearch(ctx context.Context, agent, provider, model string,
 			&r.AccessCount,
 			&r.DecayScore,
 			&r.Pinned,
-			&payload,
 		); err != nil {
-			return nil, fmt.Errorf("scan vector search row: %w", err)
+			return fmt.Errorf("scan fragment by id: %w", err)
 		}
 		if accessedAt.Valid {
 			at := accessedAt.Time
 			r.AccessedAt = &at
 		}
-
-		if err := json.Unmarshal(payload, &r.Vector); err != nil {
-			return nil, fmt.Errorf("decode stored vector for fragment %s: %w", r.ID, err)
-		}
-		r.Score = embedding.CosineSimilarity(queryVec, r.Vector)
-		matches = append(matches, r)
+		out[r.ID] = r
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return err
 	}
-
-	sort.Slice(matches, func(i, j int) bool {
-		if matches[i].Score == matches[j].Score {
-			return matches[i].UpdatedAt.After(matches[j].UpdatedAt)
-		}
-		return matches[i].Score > matches[j].Score
-	})
-
-	if len(matches) > limit {
-		matches = matches[:limit]
-	}
-	return matches, nil
+	return nil
 }
 
 // BumpAccess marks a fragment as recently accessed, increments access_count,

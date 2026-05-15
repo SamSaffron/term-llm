@@ -73,6 +73,130 @@ func TestTextSegmentRenderer_Streaming(t *testing.T) {
 	}
 }
 
+func TestTextSegmentRenderer_ShowsPartialPlainTextWithoutNewline(t *testing.T) {
+	renderer, err := NewTextSegmentRenderer(80)
+	if err != nil {
+		t.Fatalf("Failed to create renderer: %v", err)
+	}
+
+	if err := renderer.Write("Hello"); err != nil {
+		t.Fatalf("Failed to write partial text: %v", err)
+	}
+
+	got := stripANSI(renderer.RenderedUnflushed())
+	if got != "Hello" {
+		t.Fatalf("RenderedUnflushed() = %q, want %q", got, "Hello")
+	}
+}
+
+func TestTextSegmentRenderer_PartialMarkdownStaysVisibleAcrossSyntaxCompletion(t *testing.T) {
+	renderer, err := NewTextSegmentRenderer(80)
+	if err != nil {
+		t.Fatalf("Failed to create renderer: %v", err)
+	}
+
+	if err := renderer.Write("Hello **wor"); err != nil {
+		t.Fatalf("Failed to write incomplete markdown: %v", err)
+	}
+	if got := stripANSI(renderer.RenderedUnflushed()); got != "Hello" {
+		t.Fatalf("RenderedUnflushed() after incomplete markdown = %q, want %q", got, "Hello")
+	}
+
+	if err := renderer.Write("ld**"); err != nil {
+		t.Fatalf("Failed to complete markdown: %v", err)
+	}
+	if got := stripANSI(renderer.RenderedUnflushed()); got != "Hello world" {
+		t.Fatalf("RenderedUnflushed() after markdown completion = %q, want %q", got, "Hello world")
+	}
+}
+
+func TestTextSegmentRenderer_IncompleteDecorationDoesNotLeakRawPreview(t *testing.T) {
+	renderer, err := NewTextSegmentRenderer(80)
+	if err != nil {
+		t.Fatalf("Failed to create renderer: %v", err)
+	}
+
+	if err := renderer.Write("stream **abblkjslksjlkj"); err != nil {
+		t.Fatalf("Failed to write incomplete markdown: %v", err)
+	}
+	got := stripANSI(renderer.RenderedUnflushed())
+	if got != "stream" {
+		t.Fatalf("RenderedUnflushed() with incomplete bold = %q, want %q", got, "stream")
+	}
+	if committed := stripANSI(renderer.RenderedCommitted()); committed != "" {
+		t.Fatalf("RenderedCommitted() with incomplete bold = %q, want empty", committed)
+	}
+
+	if err := renderer.Write("**"); err != nil {
+		t.Fatalf("Failed to close markdown: %v", err)
+	}
+	got = stripANSI(renderer.RenderedUnflushed())
+	if got != "stream abblkjslksjlkj" {
+		t.Fatalf("RenderedUnflushed() after closing bold = %q, want %q", got, "stream abblkjslksjlkj")
+	}
+	if strings.Contains(renderer.RenderedUnflushed(), "**") {
+		t.Fatalf("expected markdown markers to be rendered away after close, got %q", renderer.RenderedUnflushed())
+	}
+}
+
+func TestTextSegmentRenderer_UnclosedDecorationIsNotFlushedToScrollback(t *testing.T) {
+	renderer, err := NewTextSegmentRenderer(80)
+	if err != nil {
+		t.Fatalf("Failed to create renderer: %v", err)
+	}
+
+	if err := renderer.Write("prefix **unstable"); err != nil {
+		t.Fatalf("Failed to write incomplete markdown: %v", err)
+	}
+	renderer.MarkFlushed()
+	if got := stripANSI(renderer.RenderedUnflushed()); got != "prefix" {
+		t.Fatalf("RenderedUnflushed() after MarkFlushed on uncommitted preview = %q, want %q", got, "prefix")
+	}
+
+	if err := renderer.Write("**\n\n"); err != nil {
+		t.Fatalf("Failed to close markdown: %v", err)
+	}
+	if got := stripANSI(renderer.RenderedUnflushed()); !strings.Contains(got, "prefix unstable") {
+		t.Fatalf("expected completed decorated text to remain unflushed, got %q", got)
+	}
+}
+
+func TestTextSegmentRenderer_ChunkedListMarkerClearsStalePreview(t *testing.T) {
+	renderer, err := NewTextSegmentRenderer(80)
+	if err != nil {
+		t.Fatalf("Failed to create renderer: %v", err)
+	}
+
+	if err := renderer.Write("1"); err != nil {
+		t.Fatalf("Failed to write partial marker: %v", err)
+	}
+	if got := stripANSI(renderer.RenderedUnflushed()); got != "1" {
+		t.Fatalf("RenderedUnflushed() after partial marker = %q, want %q", got, "1")
+	}
+	if err := renderer.Write(". "); err != nil {
+		t.Fatalf("Failed to complete marker: %v", err)
+	}
+	if got := stripANSI(renderer.RenderedUnflushed()); got != "" {
+		t.Fatalf("RenderedUnflushed() after marker-only list = %q, want empty", got)
+	}
+}
+
+func TestTextSegmentRenderer_UnderscoreIdentifierStreamsAsPlainText(t *testing.T) {
+	renderer, err := NewTextSegmentRenderer(80)
+	if err != nil {
+		t.Fatalf("Failed to create renderer: %v", err)
+	}
+
+	if err := renderer.Write("use snake_case_variable and snake__case here"); err != nil {
+		t.Fatalf("Failed to write identifier: %v", err)
+	}
+	got := stripANSI(renderer.RenderedUnflushed())
+	want := "use snake_case_variable and snake__case here"
+	if got != want {
+		t.Fatalf("RenderedUnflushed() = %q, want %q", got, want)
+	}
+}
+
 func TestTextSegmentRenderer_Width(t *testing.T) {
 	renderer, err := NewTextSegmentRenderer(80)
 	if err != nil {

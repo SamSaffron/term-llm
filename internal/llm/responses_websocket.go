@@ -159,14 +159,12 @@ func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req Respo
 				return fmt.Errorf("Responses WebSocket returned unsupported frame type %d", messageType)
 			}
 
-			var envelope struct {
-				Type string `json:"type"`
-			}
-			if err := json.Unmarshal(data, &envelope); err != nil {
+			eventType, err := responsesJSONEventType(data)
+			if err != nil {
 				c.discardWebSocketLocked()
 				return fmt.Errorf("decode Responses WebSocket event envelope: %w", err)
 			}
-			completed, err := handler.HandleJSONEvent(data, envelope.Type, send)
+			completed, err := handler.HandleJSONEvent(data, eventType, send)
 			if err != nil {
 				if wsErr, ok := err.(*responsesAPIEventError); ok && wsErr.APIError != nil {
 					switch wsErr.APIError.Code {

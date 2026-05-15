@@ -206,16 +206,17 @@ type Model struct {
 
 	// Render cache for alt screen mode (avoids re-rendering unchanged content)
 	viewCache struct {
-		historyContent      string // Cached rendered history
-		historyMsgCount     int    // Number of messages when cache was built
-		historyWidth        int    // Width when cache was built
-		historyScrollOffset int    // Scroll offset when cache was built
-		historyValid        bool   // Whether cache has been populated
-		lastViewportView    string // Cached viewport.View() output
-		lastYOffset         int    // Viewport Y offset when view was cached
-		lastVPWidth         int    // Viewport width when view was cached
-		lastVPHeight        int    // Viewport height when view was cached
-		lastXOffset         int    // Viewport horizontal offset when view was cached
+		historyContent      string   // Cached rendered history
+		historyLines        []string // Cached split history lines for cheap streaming-tail recomposition
+		historyMsgCount     int      // Number of messages when cache was built
+		historyWidth        int      // Width when cache was built
+		historyScrollOffset int      // Scroll offset when cache was built
+		historyValid        bool     // Whether cache has been populated
+		lastViewportView    string   // Cached viewport.View() output
+		lastYOffset         int      // Viewport Y offset when view was cached
+		lastVPWidth         int      // Viewport width when view was cached
+		lastVPHeight        int      // Viewport height when view was cached
+		lastXOffset         int      // Viewport horizontal offset when view was cached
 		lastSetContentAt    time.Time
 		historySignature    uint64 // Content fingerprint for cached history
 		// completedStream holds rendered streaming content (diffs, tools) that should

@@ -669,14 +669,28 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 			}
 			return FlushStreamingTextResult{}
 		}
-		rendered := seg.StreamRenderer.RenderedUnflushed()
-		if rendered == "" {
+		renderedAll := seg.StreamRenderer.RenderedCommitted()
+		if renderedAll == "" {
 			debugFlushf("stream skip seg=%d reason=empty-rendered committed=%d flushedPos=%d", segIdx, safeBoundary, seg.FlushedPos)
 			// Return any tool content we already flushed
 			if contentBuilder.Len() > 0 {
 				return FlushStreamingTextResult{ToPrint: contentBuilder.String()}
 			}
 			return FlushStreamingTextResult{}
+		}
+
+		rendered := renderedAll
+		flushedRenderedPos := seg.StreamRenderer.FlushedRenderedPos()
+		seg.FlushedRenderedPos = flushedRenderedPos
+		if flushedRenderedPos > 0 {
+			if flushedRenderedPos >= len(renderedAll) {
+				debugFlushf("stream skip seg=%d reason=rendered-pos>=len committed=%d flushedRenderedPos=%d renderedLen=%d", segIdx, safeBoundary, flushedRenderedPos, len(renderedAll))
+				if contentBuilder.Len() > 0 {
+					return FlushStreamingTextResult{ToPrint: contentBuilder.String()}
+				}
+				return FlushStreamingTextResult{}
+			}
+			rendered = safeANSISlice(renderedAll, flushedRenderedPos)
 		}
 
 		if t.HasFlushed && seg.FlushedPos == 0 {
@@ -706,7 +720,7 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 		seg.StreamRenderer.MarkFlushed()
 		seg.FlushedRenderedPos = seg.StreamRenderer.FlushedRenderedPos()
 
-		debugFlushf("stream flush seg=%d committed=%d flushedPos=%d renderedUnflushedLen=%d flushedRenderedPos=%d", segIdx, safeBoundary, seg.FlushedPos, len(rendered), seg.FlushedRenderedPos)
+		debugFlushf("stream flush seg=%d committed=%d flushedPos=%d renderedLen=%d flushedRenderedPos=%d", segIdx, safeBoundary, seg.FlushedPos, len(rendered), seg.FlushedRenderedPos)
 
 		return FlushStreamingTextResult{
 			ToPrint: contentBuilder.String(),

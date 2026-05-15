@@ -1564,6 +1564,14 @@ func (s *SQLiteStore) ReplaceMessages(ctx context.Context, sessionID string, mes
 			return fmt.Errorf("delete existing messages: %w", err)
 		}
 
+		insertStmt, err := tx.PrepareContext(ctx, `
+			INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+		if err != nil {
+			return fmt.Errorf("prepare message insert: %w", err)
+		}
+		defer insertStmt.Close()
+
 		// Insert new messages with sequential sequence numbers
 		for i, msg := range messages {
 			msg.SessionID = sessionID
@@ -1577,9 +1585,7 @@ func (s *SQLiteStore) ReplaceMessages(ctx context.Context, sessionID string, mes
 				return fmt.Errorf("serialize parts for message %d: %w", i, err)
 			}
 
-			_, err = tx.ExecContext(ctx, `
-				INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			_, err = insertStmt.ExecContext(ctx,
 				sessionID, string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.TurnIndex, msg.CreatedAt, msg.Sequence)
 			if err != nil {
 				return fmt.Errorf("insert message %d: %w", i, err)
@@ -1617,6 +1623,14 @@ func (s *SQLiteStore) CompactMessages(ctx context.Context, sessionID string, mes
 		}
 		startSeq := maxSeq + 1
 
+		insertStmt, err := tx.PrepareContext(ctx, `
+			INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+		if err != nil {
+			return fmt.Errorf("prepare message insert: %w", err)
+		}
+		defer insertStmt.Close()
+
 		// Insert new messages starting after the existing ones
 		for i, msg := range messages {
 			msg.SessionID = sessionID
@@ -1630,9 +1644,7 @@ func (s *SQLiteStore) CompactMessages(ctx context.Context, sessionID string, mes
 				return fmt.Errorf("serialize parts for message %d: %w", i, err)
 			}
 
-			_, err = tx.ExecContext(ctx, `
-				INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			_, err = insertStmt.ExecContext(ctx,
 				sessionID, string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.TurnIndex, msg.CreatedAt, msg.Sequence)
 			if err != nil {
 				return fmt.Errorf("insert message %d: %w", i, err)

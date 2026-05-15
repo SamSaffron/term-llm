@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"bytes"
 	"strings"
 )
 
@@ -26,19 +27,19 @@ func (sr *StreamRenderer) currentBlockContent() string {
 }
 
 // renderPartialBlock renders safe content from an incomplete block.
-// In altscreen mode (with termCtrl), it clears and re-renders.
-// In flowing mode (no termCtrl), partial rendering is disabled since
-// there is no cursor control to clear and re-render.
+// In altscreen mode (with termCtrl), it clears and re-renders the partial block
+// in place. For resettable flowing outputs (like TextSegmentRenderer's buffer),
+// it rewrites the full rendered snapshot so View() can show token-by-token text
+// without terminal cursor control.
 func (sr *StreamRenderer) renderPartialBlock() error {
-	// Disable partial rendering in flowing mode - it provides no benefit
-	// without cursor control to clear and re-render
-	if sr.termCtrl == nil {
-		return nil
-	}
-
 	content := sr.currentBlockContent()
 	if len(content) == 0 {
 		return nil
+	}
+
+	firstPending := sr.firstPendingLine()
+	if strings.HasPrefix(firstPending, "|") || isListMarkerOnly(firstPending) {
+		return sr.suppressPartialPreview()
 	}
 
 	// Find where incomplete inline syntax starts
@@ -50,29 +51,63 @@ func (sr *StreamRenderer) renderPartialBlock() error {
 		return nil
 	}
 
-	// Clear previous partial output if any
-	if sr.partialState.lineCount > 0 {
-		if err := sr.termCtrl.ClearLines(sr.partialState.lineCount); err != nil {
-			return err
-		}
-	}
-
-	// Render the safe content
+	// Render the safe content so both terminal and flowing paths share
+	// the same inline-safety behavior.
 	rendered, err := sr.renderPartial(safeContent)
 	if err != nil {
 		return err
 	}
 
-	// Write to output
-	if _, err := sr.output.Write([]byte(rendered)); err != nil {
-		return err
+	if sr.termCtrl != nil {
+		// Clear previous partial output if any.
+		if sr.partialState.lineCount > 0 {
+			if err := sr.termCtrl.ClearLines(sr.partialState.lineCount); err != nil {
+				return err
+			}
+		}
+
+		if _, err := sr.output.Write([]byte(rendered)); err != nil {
+			return err
+		}
+		sr.partialState.lineCount = sr.termCtrl.CountLines(rendered)
+	} else {
+		snapshot, err := sr.renderPartialSnapshot(safeContent)
+		if err != nil {
+			return err
+		}
+		if err := sr.applyRenderedSnapshot(snapshot, false); err != nil {
+			return err
+		}
+		sr.partialState.outputLen = len(snapshot)
 	}
 
 	// Update state
 	sr.partialState.safeMarkdown = safeContent
 	sr.partialState.safeRendered = rendered
-	sr.partialState.lineCount = sr.termCtrl.CountLines(rendered)
 	return nil
+}
+
+func (sr *StreamRenderer) renderPartialSnapshot(safeContent string) ([]byte, error) {
+	markdown := append([]byte(nil), sr.normalizedMarkdown()...)
+	if sr.hasTabs {
+		markdown = append(markdown, bytes.ReplaceAll([]byte(safeContent), []byte("\t"), []byte("  "))...)
+	} else {
+		markdown = append(markdown, safeContent...)
+	}
+
+	rendered, err := sr.renderer.Render(markdown)
+	if err != nil {
+		return nil, err
+	}
+
+	rendered = normalizeNewlines(rendered)
+
+	stableLen := len(rendered)
+	for stableLen > 0 && rendered[stableLen-1] == '\n' {
+		stableLen--
+	}
+
+	return rendered[:stableLen], nil
 }
 
 // renderPartial renders safe content with appropriate context.
@@ -156,6 +191,11 @@ func (sr *StreamRenderer) findSafePoint(content string) int {
 
 		// Check for ** or __ (bold)
 		if (content[i] == '*' || content[i] == '_') && i+1 < n && content[i+1] == content[i] {
+			if content[i] == '_' && isASCIIAlnum(byteBefore(content, i)) && isASCIIAlnum(byteAfter(content, i+1)) {
+				i += 2
+				continue
+			}
+
 			marker := string([]byte{content[i], content[i]})
 			start := i
 			i += 2
@@ -176,6 +216,14 @@ func (sr *StreamRenderer) findSafePoint(content string) int {
 
 		// Check for * or _ (italic) - single marker
 		if content[i] == '*' || content[i] == '_' {
+			// CommonMark does not treat underscores inside words as emphasis
+			// delimiters. Avoid hiding common identifiers like snake_case while
+			// streaming partial prose.
+			if content[i] == '_' && isASCIIAlnum(byteBefore(content, i)) && isASCIIAlnum(byteAfter(content, i)) {
+				i++
+				continue
+			}
+
 			marker := string(content[i])
 			start := i
 			i++
@@ -191,8 +239,10 @@ func (sr *StreamRenderer) findSafePoint(content string) int {
 				actualPos := searchPos + pos
 				// Make sure it's not ** or __
 				if actualPos+1 >= n || content[actualPos+1] != content[actualPos] {
-					// Also make sure the previous char isn't the same marker
-					if actualPos == searchPos || content[actualPos-1] != content[actualPos] {
+					// Also make sure the previous char isn't the same marker, and
+					// ignore underscores inside words.
+					if (actualPos == searchPos || content[actualPos-1] != content[actualPos]) &&
+						!(content[actualPos] == '_' && isASCIIAlnum(byteBefore(content, actualPos)) && isASCIIAlnum(byteAfter(content, actualPos))) {
 						closePos = actualPos
 						break
 					}
@@ -296,6 +346,24 @@ func (sr *StreamRenderer) findSafePoint(content string) int {
 	return safePoint
 }
 
+func byteBefore(s string, i int) byte {
+	if i <= 0 || i > len(s) {
+		return 0
+	}
+	return s[i-1]
+}
+
+func byteAfter(s string, i int) byte {
+	if i+1 >= len(s) {
+		return 0
+	}
+	return s[i+1]
+}
+
+func isASCIIAlnum(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
+}
+
 // clearPartialState clears the partial rendering state and
 // removes partial output from terminal before emitting complete block.
 func (sr *StreamRenderer) clearPartialState() error {
@@ -305,6 +373,22 @@ func (sr *StreamRenderer) clearPartialState() error {
 		}
 	}
 
+	sr.partialState = partialState{}
+	return nil
+}
+
+func (sr *StreamRenderer) suppressPartialPreview() error {
+	if sr.partialState == (partialState{}) && bytes.Equal(sr.lastRendered, sr.lastCommittedRendered) {
+		return nil
+	}
+
+	if sr.termCtrl != nil {
+		return sr.clearPartialState()
+	}
+
+	if err := sr.applyRenderedSnapshot(sr.lastCommittedRendered, false); err != nil {
+		return err
+	}
 	sr.partialState = partialState{}
 	return nil
 }

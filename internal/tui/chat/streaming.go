@@ -723,6 +723,7 @@ func (m *Model) maybeRenameHandoverCmd() tea.Cmd {
 
 func (m *Model) invalidateViewCache() {
 	m.viewCache.historyValid = false
+	m.viewCache.historyLines = nil
 	m.viewCache.completedStream = ""
 	m.viewCache.cachedCompletedContent = ""
 	m.viewCache.cachedTrackerVersion = 0
@@ -739,6 +740,7 @@ func (m *Model) invalidateViewCache() {
 
 func (m *Model) invalidateHistoryCache() {
 	m.viewCache.historyValid = false
+	m.viewCache.historyLines = nil
 	m.resetAltScreenStreamingAppendCache()
 	m.invalidateContextEstimateCache()
 	if m.chatRenderer != nil {

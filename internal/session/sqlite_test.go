@@ -28,6 +28,44 @@ func TestSessionPreferredTitlePrecedence(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreReplaceMessagesPreservesTurnIndex(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	messages := []Message{
+		*NewMessage(sess.ID, llm.Message{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "hello"}}}, 0),
+		*NewMessage(sess.ID, llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "hi"}}}, 1),
+	}
+	messages[0].TurnIndex = 11
+	messages[1].TurnIndex = 12
+
+	if err := store.ReplaceMessages(ctx, sess.ID, messages); err != nil {
+		t.Fatalf("ReplaceMessages: %v", err)
+	}
+
+	got, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d messages, want 2", len(got))
+	}
+	if got[0].TurnIndex != 11 || got[1].TurnIndex != 12 {
+		t.Fatalf("turn indexes = [%d %d], want [11 12]", got[0].TurnIndex, got[1].TurnIndex)
+	}
+}
+
 func TestSQLiteStorePersistsDeveloperMessages(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
