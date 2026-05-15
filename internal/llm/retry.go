@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"math/rand"
+	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
@@ -323,8 +324,38 @@ func isRetryable(err error) bool {
 	return false
 }
 
-// retryAfterRegex matches Retry-After values in error messages.
-var retryAfterRegex = regexp.MustCompile(`(?i)retry[- ]?after[:\s]+(\d+)`)
+// retryAfterHeaderRegex matches Retry-After header-like values in error messages.
+var retryAfterHeaderRegex = regexp.MustCompile(`(?im)retry[- ]?after[:\s]+([^\r\n]+)`)
+
+func parseRetryAfterDelay(message string, now time.Time) (time.Duration, bool) {
+	matches := retryAfterHeaderRegex.FindStringSubmatch(message)
+	if len(matches) <= 1 {
+		return 0, false
+	}
+	value := strings.TrimSpace(matches[1])
+	if value == "" {
+		return 0, false
+	}
+	if secs, err := strconv.Atoi(value); err == nil && secs > 0 {
+		return time.Duration(secs) * time.Second, true
+	}
+	if fields := strings.Fields(value); len(fields) > 0 {
+		first := strings.Trim(fields[0], ",;.")
+		if secs, err := strconv.Atoi(first); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second, true
+		}
+	}
+	if when, err := http.ParseTime(value); err == nil {
+		wait := time.Until(when)
+		if !now.IsZero() {
+			wait = when.Sub(now)
+		}
+		if wait > 0 {
+			return wait, true
+		}
+	}
+	return 0, false
+}
 
 // calculateBackoff computes the wait duration for a retry attempt.
 func (r *RetryProvider) calculateBackoff(attempt int, err error) time.Duration {
@@ -338,23 +369,22 @@ func (r *RetryProvider) calculateBackoff(attempt int, err error) time.Duration {
 		return wait
 	}
 
-	// Try to parse Retry-After from error message
+	// Try to parse Retry-After from error message. Accept both numeric
+	// seconds and HTTP-date forms because gateways/providers commonly
+	// surface raw header text in wrapped errors.
 	if err != nil {
-		if matches := retryAfterRegex.FindStringSubmatch(err.Error()); len(matches) > 1 {
-			if secs, parseErr := strconv.Atoi(matches[1]); parseErr == nil && secs > 0 {
-				wait := time.Duration(secs) * time.Second
-				// Cap at max backoff
-				if wait > r.config.MaxBackoff {
-					wait = r.config.MaxBackoff
-				}
-				return wait
+		if wait, ok := parseRetryAfterDelay(err.Error(), time.Now()); ok {
+			if wait > r.config.MaxBackoff {
+				wait = r.config.MaxBackoff
 			}
+			return wait
 		}
 	}
 
-	// Linear backoff with jitter: base * attempt * jitter (jitter in [0.5, 1.5])
+	// Exponential backoff with jitter: base * 2^(attempt-1) * jitter (jitter in [0.5, 1.5])
 	jitter := 0.5 + rand.Float64()
-	delay := time.Duration(float64(r.config.BaseBackoff) * float64(attempt) * jitter)
+	multiplier := 1 << max(attempt-1, 0)
+	delay := time.Duration(float64(r.config.BaseBackoff) * float64(multiplier) * jitter)
 
 	// Cap at max backoff
 	if delay > r.config.MaxBackoff {

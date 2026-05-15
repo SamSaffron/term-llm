@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"testing"
 	"time"
 )
@@ -476,6 +477,64 @@ func (p *noListModelsProvider) Credential() string         { return "mock" }
 func (p *noListModelsProvider) Capabilities() Capabilities { return Capabilities{} }
 func (p *noListModelsProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	return nil, errors.New("not used in this test")
+}
+
+func TestRetryProvider_BackoffIsExponentialWithJitter(t *testing.T) {
+	provider := &RetryProvider{config: RetryConfig{
+		BaseBackoff: time.Second,
+		MaxBackoff:  time.Minute,
+	}}
+
+	// attempt 6 => base * 2^(6-1) = 32s, jittered into [16s, 48s].
+	// The old linear formula would be capped to [3s, 9s], so this range
+	// catches regressions without depending on a fixed random seed.
+	got := provider.calculateBackoff(6, errors.New("502 bad gateway"))
+	if got < 16*time.Second || got > 48*time.Second {
+		t.Fatalf("backoff = %s, want exponential jitter range [16s, 48s]", got)
+	}
+}
+
+func TestRetryProvider_BackoffParsesRetryAfterNumericText(t *testing.T) {
+	provider := &RetryProvider{config: RetryConfig{
+		BaseBackoff: time.Second,
+		MaxBackoff:  time.Minute,
+	}}
+
+	for _, message := range []string{
+		"upstream 429: Retry-After: 7",
+		"upstream 429: retry after 7 seconds",
+	} {
+		if got := provider.calculateBackoff(2, errors.New(message)); got != 7*time.Second {
+			t.Fatalf("backoff for %q = %s, want 7s", message, got)
+		}
+	}
+}
+
+func TestRetryProvider_BackoffParsesRetryAfterHTTPDate(t *testing.T) {
+	provider := &RetryProvider{config: RetryConfig{
+		BaseBackoff: time.Second,
+		MaxBackoff:  2 * time.Hour,
+	}}
+	retryAt := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	err := errors.New("upstream 429: Retry-After: " + retryAt.Format(http.TimeFormat))
+
+	got := provider.calculateBackoff(3, err)
+	if got < 59*time.Minute || got > 61*time.Minute {
+		t.Fatalf("backoff = %s, want about 1h from Retry-After HTTP-date", got)
+	}
+}
+
+func TestRetryProvider_BackoffCapsRetryAfterHTTPDate(t *testing.T) {
+	provider := &RetryProvider{config: RetryConfig{
+		BaseBackoff: time.Second,
+		MaxBackoff:  30 * time.Second,
+	}}
+	retryAt := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	err := errors.New("upstream 429: Retry-After: " + retryAt.Format(http.TimeFormat))
+
+	if got := provider.calculateBackoff(1, err); got != 30*time.Second {
+		t.Fatalf("backoff = %s, want max backoff cap 30s", got)
+	}
 }
 
 func TestRetryProviderForwardsListModels(t *testing.T) {

@@ -363,12 +363,14 @@ func TestResponsesClientWebSocketConnectFailureFallsBackToHTTP(t *testing.T) {
 	defer func() { responsesWebSocketBaseBackoff = oldBackoff }()
 
 	var wsAttempts atomic.Int32
+	var httpAttempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
 			wsAttempts.Add(1)
 			http.Error(w, "no websocket", http.StatusBadGateway)
 			return
 		}
+		httpAttempts.Add(1)
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("event: response.output_text.delta\n"))
 		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"fallback\"}\n\n"))
@@ -399,9 +401,42 @@ func TestResponsesClientWebSocketConnectFailureFallsBackToHTTP(t *testing.T) {
 			if wsAttempts.Load() != 3 {
 				t.Fatalf("websocket attempts = %d, want 3", wsAttempts.Load())
 			}
+			if httpAttempts.Load() != 1 {
+				t.Fatalf("http attempts = %d, want 1", httpAttempts.Load())
+			}
+			assertSecondStreamUsesHTTPFallbackOnly(t, client, &wsAttempts, &httpAttempts)
 			return
 		case EventError:
 			t.Fatalf("stream error: %v", event.Err)
+		}
+	}
+}
+
+func assertSecondStreamUsesHTTPFallbackOnly(t *testing.T, client *ResponsesClient, wsAttempts, httpAttempts *atomic.Int32) {
+	t.Helper()
+	wsBefore := wsAttempts.Load()
+	httpBefore := httpAttempts.Load()
+	stream, err := client.Stream(context.Background(), ResponsesRequest{Model: "gpt-test", Input: []ResponsesInputItem{{Type: "message", Role: "user", Content: "again"}}, Stream: true}, false)
+	if err != nil {
+		t.Fatalf("second Stream: %v", err)
+	}
+	defer stream.Close()
+	for {
+		event, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("second Recv: %v", err)
+		}
+		switch event.Type {
+		case EventDone:
+			if got := wsAttempts.Load(); got != wsBefore {
+				t.Fatalf("websocket attempts after fallback disable = %d, want unchanged %d", got, wsBefore)
+			}
+			if got := httpAttempts.Load(); got != httpBefore+1 {
+				t.Fatalf("http attempts after second stream = %d, want %d", got, httpBefore+1)
+			}
+			return
+		case EventError:
+			t.Fatalf("second stream error: %v", event.Err)
 		}
 	}
 }
