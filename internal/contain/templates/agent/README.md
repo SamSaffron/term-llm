@@ -61,9 +61,11 @@ term-llm contain stop {{name}}
 
 ## Widgets
 
-The Web UI starts with term-llm widgets enabled. Add widget apps under
-`/home/agent/.config/term-llm/widgets/` inside the container and open them from
-`/chat/widgets/` (or your configured `WEB_BASE_PATH` plus `/widgets/`).
+The Web UI starts with term-llm widgets enabled and uses
+`/home/agent/.config/term-llm/widgets/` as the widget directory. Add widget apps
+there and open them from `/chat/widgets/` (or your configured `WEB_BASE_PATH`
+plus `/widgets/`). The bundled `widgets` skill contains the operational workflow
+for creating, inspecting, restarting, and smoke-testing widget apps.
 
 ## Bootstrap model
 

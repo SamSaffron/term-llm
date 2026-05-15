@@ -47,7 +47,7 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 			t.Fatalf("Dockerfile.fedora missing %q", want)
 		}
 	}
-	for _, rel := range []string{"entrypoint.sh", "bootstrap/bootstrap.yaml", "bootstrap/system.md", "bootstrap/soul.md", "bootstrap/services/webui/run", "bootstrap/services/jobs/run", "bootstrap/services/bootstrap-jobs/run", "bootstrap/skills/memory/SKILL.md", "bootstrap/skills/jobs/SKILL.md", "bootstrap/memory/recent.md", "bootstrap/scripts/update.sh"} {
+	for _, rel := range []string{"entrypoint.sh", "bootstrap/bootstrap.yaml", "bootstrap/system.md", "bootstrap/soul.md", "bootstrap/services/webui/run", "bootstrap/services/jobs/run", "bootstrap/services/bootstrap-jobs/run", "bootstrap/skills/memory/SKILL.md", "bootstrap/skills/jobs/SKILL.md", "bootstrap/skills/self/SKILL.md", "bootstrap/skills/widgets/SKILL.md", "bootstrap/memory/recent.md", "bootstrap/scripts/update.sh"} {
 		data, err := os.ReadFile(filepath.Join(result.Dir, rel))
 		if err != nil {
 			t.Fatalf("missing synced asset %s: %v", rel, err)
@@ -103,14 +103,17 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 		if (rel == "bootstrap/services/webui/run" || rel == "bootstrap/services/jobs/run") && !strings.Contains(string(data), "TERM_LLM_PROVIDER") {
 			t.Fatalf("service %s missing TERM_LLM_PROVIDER forwarding", rel)
 		}
-		if (rel == "bootstrap/services/webui/run" || rel == "bootstrap/services/jobs/run") && !strings.Contains(string(data), "exec sudo -Hu agent") {
-			t.Fatalf("service %s should re-exec as agent user", rel)
+		if (rel == "bootstrap/services/webui/run" || rel == "bootstrap/services/jobs/run") && !strings.Contains(string(data), "exec sudo -E -Hu agent") {
+			t.Fatalf("service %s should re-exec as agent user while preserving provider credentials", rel)
 		}
 		if rel == "bootstrap/services/webui/run" && !strings.Contains(string(data), "--files-dir /home/agent/Files") {
 			t.Fatalf("webui should serve files from agent home")
 		}
 		if rel == "bootstrap/services/webui/run" && !strings.Contains(string(data), "--enable-widgets") {
 			t.Fatalf("webui should enable widgets")
+		}
+		if rel == "bootstrap/services/webui/run" && !strings.Contains(string(data), "--widgets-dir /home/agent/.config/term-llm/widgets") {
+			t.Fatalf("webui should use the persistent agent widgets dir")
 		}
 		if rel == "bootstrap/services/bootstrap-jobs/run" && (!strings.Contains(string(data), "exec sudo -Hu agent") || !strings.Contains(string(data), `\"command\": \"sudo\"`) || !strings.Contains(string(data), `\"system-upgrade\"`) || !strings.Contains(string(data), `"pacman"`) || !strings.Contains(string(data), `"dnf"`)) {
 			t.Fatalf("bootstrap jobs should run as agent and use sudo for package upgrades")
@@ -146,6 +149,13 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 			for _, want := range []string{"name: jobs", "term-llm jobs create", "term-llm jobs runs", "runner_type"} {
 				if !strings.Contains(string(data), want) {
 					t.Fatalf("jobs skill missing %q", want)
+				}
+			}
+		}
+		if rel == "bootstrap/skills/widgets/SKILL.md" {
+			for _, want := range []string{"name: widgets", "--enable-widgets", "--widgets-dir /home/agent/.config/term-llm/widgets", "/chat/widgets/<widget-name>/", "sudo sv restart /etc/runit/runsvdir/webui"} {
+				if !strings.Contains(string(data), want) {
+					t.Fatalf("widgets skill missing %q", want)
 				}
 			}
 		}

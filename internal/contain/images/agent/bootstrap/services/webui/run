@@ -1,6 +1,6 @@
 #!/bin/sh
 if [ "$(id -un)" != "agent" ]; then
-  exec sudo -Hu agent env \
+  exec sudo -E -Hu agent env \
     AGENT_NAME="${AGENT_NAME:-agent}" \
     WEB_BASE_PATH="${WEB_BASE_PATH:-/chat}" \
     WEB_TOKEN="${WEB_TOKEN:-}" \
@@ -17,7 +17,8 @@ set -- serve web \
   --token "${WEB_TOKEN:?Set WEB_TOKEN in .env}" \
   --yolo \
   --files-dir /home/agent/Files \
-  --enable-widgets
+  --enable-widgets \
+  --widgets-dir /home/agent/.config/term-llm/widgets
 
 if [ -n "${TERM_LLM_PROVIDER:-}" ] && [ "${TERM_LLM_PROVIDER}" != "skip" ]; then
   set -- "$@" --provider "${TERM_LLM_PROVIDER}"

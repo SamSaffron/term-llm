@@ -1,6 +1,6 @@
 #!/bin/sh
 if [ "$(id -un)" != "agent" ]; then
-  exec sudo -Hu agent env \
+  exec sudo -E -Hu agent env \
     AGENT_NAME="${AGENT_NAME:-agent}" \
     TERM_LLM_PROVIDER="${TERM_LLM_PROVIDER:-}" \
     "$0" "$@"

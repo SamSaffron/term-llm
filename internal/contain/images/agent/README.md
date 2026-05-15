@@ -26,7 +26,7 @@ This directory is a complete Docker build context. It contains:
     bootstrap/system.md
     bootstrap/soul.md
     bootstrap/services/
-    bootstrap/skills/
+    bootstrap/skills/          # default skills: jobs, memory, self, widgets
     bootstrap/scripts/
 
 The image bakes those bootstrap files into `/opt/term-llm/bootstrap`.
