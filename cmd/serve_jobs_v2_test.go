@@ -34,9 +34,33 @@ func TestJobsV2RunSummaryUsesCoveringIndex(t *testing.T) {
 	}
 	defer func() { _ = mgr.Close() }()
 
-	rows, err := mgr.db.Query("EXPLAIN QUERY PLAN SELECT "+jobsV2RunSummaryColumns+" FROM job_runs_v2 WHERE job_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?", "job_test", 50, 0)
+	plan := jobsV2ExplainPlan(t, mgr.db, "EXPLAIN QUERY PLAN SELECT "+jobsV2RunSummaryColumns+" FROM job_runs_v2 WHERE job_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?", "job_test", 50, 0)
+	if !strings.Contains(plan, "USING COVERING INDEX "+jobsV2RunSummaryIndexName) {
+		t.Fatalf("summary query plan = %q, want covering summary index", plan)
+	}
+}
+
+func TestJobsV2GlobalRunSummaryUsesCoveringIndex(t *testing.T) {
+	mgr, err := newJobsV2Manager(":memory:", 0, nil)
 	if err != nil {
-		t.Fatalf("explain summary query: %v", err)
+		t.Fatalf("newJobsV2Manager failed: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+
+	plan := jobsV2ExplainPlan(t, mgr.db, "EXPLAIN QUERY PLAN SELECT "+jobsV2RunSummaryColumns+" FROM job_runs_v2 ORDER BY created_at DESC LIMIT ? OFFSET ?", 50, 0)
+	if !strings.Contains(plan, "USING COVERING INDEX "+jobsV2RunGlobalSummaryIndexName) {
+		t.Fatalf("global summary query plan = %q, want covering global summary index", plan)
+	}
+	if strings.Contains(plan, "USE TEMP B-TREE") {
+		t.Fatalf("global summary query plan = %q, want no temp sort", plan)
+	}
+}
+
+func jobsV2ExplainPlan(t *testing.T, db *sql.DB, query string, args ...any) string {
+	t.Helper()
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		t.Fatalf("explain query: %v", err)
 	}
 	defer rows.Close()
 
@@ -52,11 +76,7 @@ func TestJobsV2RunSummaryUsesCoveringIndex(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("explain rows: %v", err)
 	}
-
-	plan := strings.Join(details, "\n")
-	if !strings.Contains(plan, "USING COVERING INDEX "+jobsV2RunSummaryIndexName) {
-		t.Fatalf("summary query plan = %q, want covering summary index", plan)
-	}
+	return strings.Join(details, "\n")
 }
 
 func TestJobsV2OnceProgramRunLifecycle(t *testing.T) {

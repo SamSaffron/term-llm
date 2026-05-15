@@ -613,13 +613,23 @@ func newJobsV2Manager(dbPath string, workers int, llmExec serveJobsExecutor) (*j
 	for _, migration := range migrations {
 		_, _ = db.Exec(migration)
 	}
-	// Replace the narrow job_id/created_at index with a covering index for the
+	// Replace the narrow job_id/created_at index with covering indexes for the
 	// run-summary API. Large stdout/stderr/thinking/response columns sit before
-	// summary metadata in the table record; without a covering index, SQLite
-	// walks overflow payload pages just to list recent runs.
-	if _, err := db.Exec(jobsV2RunSummaryIndexSQL); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("init jobs run summary index: %w", err)
+	// summary metadata in the table record; without covering indexes, SQLite
+	// walks overflow payload pages just to list recent runs. The job-scoped index
+	// serves /v2/runs?job_id=..., while the global index avoids a temp sort for
+	// all-job summaries used by the jobs CLI/status views.
+	for _, index := range []struct {
+		name string
+		sql  string
+	}{
+		{name: jobsV2RunSummaryIndexName, sql: jobsV2RunSummaryIndexSQL},
+		{name: jobsV2RunGlobalSummaryIndexName, sql: jobsV2RunGlobalSummaryIndexSQL},
+	} {
+		if _, err := db.Exec(index.sql); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("init jobs run summary index %s: %w", index.name, err)
+		}
 	}
 	_, _ = db.Exec(`DROP INDEX IF EXISTS idx_job_runs_v2_job_id`)
 
@@ -1651,6 +1661,10 @@ func (m *jobsV2Manager) ListRunSummaries(jobID string, limit, offset int) ([]job
 const jobsV2RunSummaryIndexName = "idx_job_runs_v2_summary_by_job_created"
 
 const jobsV2RunSummaryIndexSQL = "CREATE INDEX IF NOT EXISTS " + jobsV2RunSummaryIndexName + " ON job_runs_v2(job_id, created_at DESC, id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, exit_reason, truncated, turn_count, input_tokens, output_tokens, updated_at)"
+
+const jobsV2RunGlobalSummaryIndexName = "idx_job_runs_v2_summary_created"
+
+const jobsV2RunGlobalSummaryIndexSQL = "CREATE INDEX IF NOT EXISTS " + jobsV2RunGlobalSummaryIndexName + " ON job_runs_v2(created_at DESC, id, job_id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, exit_reason, truncated, turn_count, input_tokens, output_tokens, updated_at)"
 
 const jobsV2RunFullColumns = "id, job_id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, finished_at, exit_code, error, stdout, stderr, thinking, response, exit_reason, truncated, turn_count, input_tokens, output_tokens, created_at, updated_at"
 
