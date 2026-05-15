@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,12 +17,13 @@ import (
 )
 
 const (
-	defaultMaxTurns             = 50
-	defaultMaxParallelToolCalls = 20
-	stopSearchToolHint          = "IMPORTANT: Do not call any tools. Use the information already retrieved and answer directly."
-	contextRushFinishPrompt     = "Context budget is getting tight. Please stop opening new tool work and finish the current turn now with a concise answer or a short handoff of exactly what remains. Do not call tools unless absolutely necessary."
-	callbackTimeout             = 5 * time.Second
-	toolHeartbeatInterval       = 10 * time.Second
+	defaultMaxTurns                    = 50
+	defaultMaxParallelToolCalls        = 20
+	defaultUncommittedStreamMaxRetries = 5
+	stopSearchToolHint                 = "IMPORTANT: Do not call any tools. Use the information already retrieved and answer directly."
+	contextRushFinishPrompt            = "Context budget is getting tight. Please stop opening new tool work and finish the current turn now with a concise answer or a short handoff of exactly what remains. Do not call tools unless absolutely necessary."
+	callbackTimeout                    = 5 * time.Second
+	toolHeartbeatInterval              = 10 * time.Second
 )
 
 // getMaxTurns returns the max turns from request, with fallback to default
@@ -115,6 +117,10 @@ type Engine struct {
 	// The message is injected after the current turn's tool results, before the next LLM turn.
 	interjection chan queuedInterjection // Buffered channel (size 1) for mid-stream user interjections
 
+	// chaosFailNext is armed by TERM_LLM_CHAOS_MONKEY UI shortcuts to inject a
+	// replayable stream failure at the next provider receive boundary.
+	chaosFailNext atomic.Bool
+
 	// pendingToolSpecs holds tool specs registered mid-loop (e.g. via skill activation)
 	// that should be injected into req.Tools at the start of the next loop iteration.
 	pendingToolSpecs []ToolSpec
@@ -174,6 +180,23 @@ func NewEngine(provider Provider, tools *ToolRegistry) *Engine {
 	}
 
 	return e
+}
+
+// TriggerChaosFailure arms a one-shot synthetic replayable stream failure. It is
+// intentionally tiny and transport-shaped so UI/debug flows exercise the same
+// recovery paths as a prematurely closed SSE/WebSocket stream.
+func (e *Engine) TriggerChaosFailure() {
+	if e == nil {
+		return
+	}
+	e.chaosFailNext.Store(true)
+}
+
+func (e *Engine) consumeChaosFailure() error {
+	if e == nil || !e.chaosFailNext.Swap(false) {
+		return nil
+	}
+	return &StreamIncompleteError{Transport: "simulated stream", Terminal: "completion"}
 }
 
 // RegisterTool adds a tool to the engine's registry.
@@ -674,26 +697,18 @@ func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 		return stream, nil
 	}
 
-	// 3. Simple stream (no tools or no provider support for tools)
-	// Log request for non-agentic requests too
+	// 3. Simple stream (no tools or no provider support for tools). Model output is
+	// staged in an attempt-local scratchpad until the stream completes; if the
+	// transport fails first, we can discard the scratchpad and replay safely.
 	if e.debugLogger != nil {
 		e.debugLogger.LogRequest(e.provider.Name(), req.Model, req)
 	}
-
-	stream, err := e.provider.Stream(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	stream = WrapDebugStream(req.DebugRaw, stream)
+	stream := newEventStream(ctx, func(ctx context.Context, send eventSender) error {
+		return e.runSimpleScratchpad(ctx, req, send)
+	})
 	stream = wrapLoggingStream(stream, e.provider.Name(), req.Model)
-
-	// Wrap to call turn callback even for simple streams
-	// Copy callback under lock to avoid race with SetTurnCompletedCallback
-	if cb := e.getTurnCallback(); cb != nil {
-		stream = wrapCallbackStream(ctx, stream, cb)
-	}
-
-	return e.wrapDebugLoggingStream(stream), nil
+	stream = e.wrapDebugLoggingStream(stream)
+	return stream, nil
 }
 
 // wrapCallbackStream wraps a stream to call the turn callback on completion.
@@ -742,6 +757,14 @@ func (s *callbackStream) Recv() (Event, error) {
 	defer s.mu.Unlock()
 
 	// Accumulate text and usage
+	if event.Type == EventAttemptDiscard {
+		s.text.Reset()
+		s.reasoning.Reset()
+		s.reasoningItemID = ""
+		s.reasoningEncrypted = ""
+		s.metrics = TurnMetrics{}
+		return event, nil
+	}
 	if event.Type == EventTextDelta && event.Text != "" {
 		s.text.WriteString(event.Text)
 	}
@@ -815,6 +838,161 @@ func hasToolNamed(tools []ToolSpec, name string) bool {
 	return false
 }
 
+func isUncommittedReplayableStreamError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var incomplete *StreamIncompleteError
+	if errors.As(err, &incomplete) {
+		return true
+	}
+	var nonRecoverable *NonRecoverableStreamError
+	return errors.As(err, &nonRecoverable)
+}
+
+func isCommittedStreamRecoveryError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var incomplete *StreamIncompleteError
+	if errors.As(err, &incomplete) {
+		return true
+	}
+	var nonRecoverable *NonRecoverableStreamError
+	return errors.As(err, &nonRecoverable)
+}
+
+func (e *Engine) runSimpleScratchpad(ctx context.Context, req Request, send eventSender) error {
+	turnCallback := e.getTurnCallback()
+	var priorErr error
+	for retry := 0; ; retry++ {
+		stream, err := e.provider.Stream(ctx, req)
+		if err != nil {
+			return err
+		}
+
+		var scratchpad []Event
+		var textBuilder strings.Builder
+		var reasoningBuilder strings.Builder
+		var reasoningItemID string
+		var reasoningEncryptedContent string
+		var metrics TurnMetrics
+		var failed error
+
+		for {
+			if err := e.consumeChaosFailure(); err != nil {
+				failed = err
+				break
+			}
+			event, err := stream.Recv()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				failed = err
+				break
+			}
+			if event.Type == EventError && event.Err != nil {
+				failed = event.Err
+				break
+			}
+			if req.DebugRaw {
+				DebugRawEvent(true, event)
+			}
+			switch event.Type {
+			case EventTextDelta:
+				if event.Text != "" {
+					textBuilder.WriteString(event.Text)
+				}
+				scratchpad = append(scratchpad, event)
+				if err := send.Send(event); err != nil {
+					_ = stream.Close()
+					return err
+				}
+			case EventReasoningDelta:
+				if event.Text != "" {
+					reasoningBuilder.WriteString(event.Text)
+				}
+				if event.ReasoningItemID != "" {
+					reasoningItemID = event.ReasoningItemID
+				}
+				if event.ReasoningEncryptedContent != "" {
+					reasoningEncryptedContent = event.ReasoningEncryptedContent
+				}
+				scratchpad = append(scratchpad, event)
+				if err := send.Send(event); err != nil {
+					_ = stream.Close()
+					return err
+				}
+			case EventUsage:
+				if event.Use != nil {
+					metrics.InputTokens += event.Use.InputTokens
+					metrics.OutputTokens += event.Use.OutputTokens
+					metrics.CachedInputTokens += event.Use.CachedInputTokens
+					metrics.CacheWriteTokens += event.Use.CacheWriteTokens
+				}
+				scratchpad = append(scratchpad, event)
+				if err := send.Send(event); err != nil {
+					_ = stream.Close()
+					return err
+				}
+			case EventImageGenerated:
+				scratchpad = append(scratchpad, event)
+				if err := send.Send(event); err != nil {
+					_ = stream.Close()
+					return err
+				}
+			case EventDone:
+				// The engine emits one done event after committing the scratchpad.
+			default:
+				if err := send.Send(event); err != nil {
+					_ = stream.Close()
+					return err
+				}
+			}
+		}
+		_ = stream.Close()
+
+		if failed != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			priorErr = failed
+			if retry >= defaultUncommittedStreamMaxRetries || !isUncommittedReplayableStreamError(failed) {
+				return failed
+			}
+			attempt := retry + 1
+			if len(scratchpad) > 0 {
+				if err := send.Send(Event{Type: EventAttemptDiscard}); err != nil {
+					return err
+				}
+			}
+			if err := send.Send(Event{Type: EventRetry, RetryAttempt: attempt, RetryMaxAttempts: defaultUncommittedStreamMaxRetries, RetryWaitSecs: 0}); err != nil {
+				return err
+			}
+			slog.Debug("retrying failed uncommitted model stream", "attempt", attempt, "error", failed)
+			continue
+		}
+
+		if textBuilder.Len() == 0 && reasoningBuilder.Len() == 0 && reasoningItemID == "" && reasoningEncryptedContent == "" && priorErr != nil {
+			return priorErr
+		}
+		if turnCallback != nil && (textBuilder.Len() > 0 || reasoningBuilder.Len() > 0 || reasoningItemID != "" || reasoningEncryptedContent != "") {
+			finalMsg := Message{Role: RoleAssistant, Parts: []Part{{
+				Type:                      PartText,
+				Text:                      textBuilder.String(),
+				ReasoningContent:          reasoningBuilder.String(),
+				ReasoningItemID:           reasoningItemID,
+				ReasoningEncryptedContent: reasoningEncryptedContent,
+			}}}
+			cbCtx, cancel := callbackContext(ctx)
+			_ = turnCallback(cbCtx, 0, []Message{finalMsg}, metrics)
+			cancel()
+		}
+		return send.Send(Event{Type: EventDone})
+	}
+}
+
 func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) error {
 	maxTurns := getMaxTurns(req)
 	originalToolChoice := req.ToolChoice
@@ -854,6 +1032,12 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 	}
 
 	var reactiveCompactionDone bool // prevents infinite retry if compacted context still overflows
+	var recoveredToolWork bool      // tracks whether any tool-work recovery happened this run
+	var recoveredToolCallIDs map[string]bool
+	var recoveredAtMessageCount = -1
+	var recoveryPriorErr error
+	var uncommittedStreamRetries int // retries for failed provider attempts whose assistant output never crossed a commit boundary
+	var uncommittedPriorErr error
 	var rushFinishInjected bool
 	softThresholdRatio := defaultSoftThresholdRatio
 	hardThresholdRatio := defaultHardThresholdRatio
@@ -894,7 +1078,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 	applyCompaction := func(result *CompactionResult) bool {
 		if cb := e.getCompactionCallback(); cb != nil {
 			if cbErr := cb(ctx, result); cbErr != nil {
-				slog.Warn("compaction callback failed", "error", cbErr)
+				slog.Debug("compaction callback failed", "error", cbErr)
 				return false
 			}
 		}
@@ -936,12 +1120,12 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 			return false
 		}
 		if err := send.Send(Event{Type: EventPhase, Text: "Compacting context..."}); err != nil {
-			slog.Warn("send compaction phase failed", "error", err)
+			slog.Debug("send compaction phase failed", "error", err)
 			return false
 		}
 		result, err := Compact(ctx, e.provider, req.Model, systemPrompt, nonSystemMessages(req.Messages), *compactionConfig)
 		if err != nil {
-			slog.Warn("post-response compaction failed", "error", err)
+			slog.Debug("post-response compaction failed", "error", err)
 			return false
 		}
 		return applyCompaction(result)
@@ -1051,72 +1235,18 @@ turnLoop:
 		var finishingToolExecuted bool // Track if a finishing tool was executed (agent done)
 		var syncToolCalls []ToolCall   // Track sync tool calls for message building
 		var syncToolResults []Message  // Track sync tool results for message building
-		persistPartialAssistant := func() {
-			hasTextOrReasoning := textBuilder.Len() > 0 || reasoningBuilder.Len() > 0 || reasoningItemID != "" || reasoningEncryptedContent != ""
-			if !hasTextOrReasoning && len(toolCalls) == 0 && len(syncToolCalls) == 0 {
-				return
+		var scratchpadEvents []Event   // Attempt-local visible model output that can be discarded/replayed until a tool boundary.
+		scratchpadCommitted := false   // True after provider completion or after a tool-call boundary makes assistant work durable.
+		stageOrSendModelEvent := func(event Event) error {
+			if !scratchpadCommitted {
+				scratchpadEvents = append(scratchpadEvents, event)
 			}
-
-			if len(toolCalls) == 0 {
-				if syncToolsExecuted {
-					assistantMsg := buildAssistantMessageWithReasoningMetadata(
-						textBuilder.String(),
-						e.withToolPreview(syncToolCalls),
-						reasoningBuilder.String(),
-						reasoningItemID,
-						reasoningEncryptedContent,
-					)
-					if turnCallback != nil {
-						turnMetrics.ToolCalls = len(syncToolCalls)
-						turnMessages := []Message{assistantMsg}
-						turnMessages = append(turnMessages, syncToolResults...)
-						cbCtx, cancel := callbackContext(ctx)
-						_ = turnCallback(cbCtx, attempt, turnMessages, turnMetrics)
-						cancel()
-					}
-					return
-				}
-				if turnCallback != nil && hasTextOrReasoning {
-					finalMsg := Message{
-						Role: RoleAssistant,
-						Parts: []Part{{
-							Type:                      PartText,
-							Text:                      textBuilder.String(),
-							ReasoningContent:          reasoningBuilder.String(),
-							ReasoningItemID:           reasoningItemID,
-							ReasoningEncryptedContent: reasoningEncryptedContent,
-						}},
-					}
-					cbCtx, cancel := callbackContext(ctx)
-					_ = turnCallback(cbCtx, attempt, []Message{finalMsg}, turnMetrics)
-					cancel()
-				}
-				return
-			}
-
-			partialToolCalls := ensureToolCallIDs(toolCalls)
-			partialToolCalls = dedupeToolCalls(partialToolCalls)
-			assistantMsg := buildAssistantMessageWithReasoningMetadata(
-				textBuilder.String(),
-				e.withToolPreview(partialToolCalls),
-				reasoningBuilder.String(),
-				reasoningItemID,
-				reasoningEncryptedContent,
-			)
-			if len(assistantMsg.Parts) == 0 {
-				return
-			}
-			if responseCallback != nil {
-				cbCtx, cancel := callbackContext(ctx)
-				_ = responseCallback(cbCtx, attempt, assistantMsg, turnMetrics)
-				cancel()
-				return
-			}
-			if turnCallback != nil {
-				cbCtx, cancel := callbackContext(ctx)
-				_ = turnCallback(cbCtx, attempt, []Message{assistantMsg}, turnMetrics)
-				cancel()
-			}
+			return send.Send(event)
+		}
+		flushScratchpad := func() error {
+			scratchpadEvents = nil
+			scratchpadCommitted = true
+			return nil
 		}
 		// fireSnapshot invokes the AssistantSnapshotCallback with the currently
 		// accumulated assistant state plus the supplied tool calls. Called before
@@ -1142,7 +1272,260 @@ turnLoop:
 			_ = snapshotCallback(cbCtx, attempt, msg)
 			cancel()
 		}
+		// recoverCommittedToolWork journals completed tool-call requests and their
+		// results, then continues the agent loop from the updated transcript. This
+		// mirrors Codex's recovery model: if a stream dies after the model has asked
+		// for a side-effecting tool, do not abandon the turn and do not retry from the
+		// stale original prompt. Record the assistant tool call, execute/drain the
+		// tool result, append both to req.Messages, and let the next loop iteration
+		// continue from that journaled state.
+		recoveryCompleted := false
+		recoverCommittedToolWork := func(cause error) (bool, error) {
+			if !isCommittedStreamRecoveryError(cause) {
+				return false, nil
+			}
+			if len(toolCalls) == 0 && !syncToolsExecuted {
+				return false, nil
+			}
+
+			if len(toolCalls) > 0 {
+				candidate := ensureToolCallIDs(dedupeToolCalls(toolCalls))
+				allRecovered := len(candidate) > 0 && recoveredToolCallIDs != nil
+				for _, call := range candidate {
+					if !recoveredToolCallIDs[call.ID] {
+						allRecovered = false
+						break
+					}
+				}
+				if allRecovered {
+					return false, nil
+				}
+			}
+
+			if err := send.Send(Event{Type: EventRetry, RetryAttempt: 1, RetryMaxAttempts: 1, RetryWaitSecs: 0}); err != nil {
+				return false, err
+			}
+			if cause != nil {
+				slog.Debug("recovering stream failure from journaled tool work", "error", cause)
+			}
+			recoveredToolWork = true
+			recoveredAtMessageCount = len(req.Messages)
+			recoveryPriorErr = cause
+
+			if len(toolCalls) == 0 && syncToolsExecuted {
+				assistantMsg := buildAssistantMessageWithReasoningMetadata(
+					textBuilder.String(),
+					e.withToolPreview(syncToolCalls),
+					reasoningBuilder.String(),
+					reasoningItemID,
+					reasoningEncryptedContent,
+				)
+				maybeCompactAfterLLMCall(append([]Message{assistantMsg}, syncToolResults...))
+				req.Messages = append(req.Messages, assistantMsg)
+				req.Messages = append(req.Messages, syncToolResults...)
+				recoveredAtMessageCount = len(req.Messages)
+				if turnCallback != nil {
+					turnMetrics.ToolCalls = len(syncToolCalls)
+					turnMessages := []Message{assistantMsg}
+					turnMessages = append(turnMessages, syncToolResults...)
+					cbCtx, cancel := callbackContext(ctx)
+					_ = turnCallback(cbCtx, attempt, turnMessages, turnMetrics)
+					cancel()
+				}
+				return true, nil
+			}
+
+			toolCalls = ensureToolCallIDs(toolCalls)
+			toolCalls = dedupeToolCalls(toolCalls)
+			if recoveredToolCallIDs == nil {
+				recoveredToolCallIDs = make(map[string]bool)
+			}
+			for _, call := range toolCalls {
+				recoveredToolCallIDs[call.ID] = true
+			}
+
+			var registered, unregistered []ToolCall
+			for _, call := range toolCalls {
+				lookupName := call.Name
+				if req.ToolMap != nil {
+					if mapped, ok := req.ToolMap[call.Name]; ok {
+						lookupName = mapped
+					}
+				}
+				if _, ok := e.tools.Get(lookupName); ok {
+					registered = append(registered, call)
+				} else {
+					unregistered = append(unregistered, call)
+				}
+			}
+
+			if len(registered) == 0 {
+				// Nothing local can be executed, but the assistant tool-call item is still
+				// a completed model item. Journal it so a caller/session can resume with
+				// the exact model-visible state that existed at the disconnect.
+				unregisteredWithInfo := e.withToolPreview(unregistered)
+				assistantMsg := buildAssistantMessageWithReasoningMetadata(
+					textBuilder.String(),
+					unregisteredWithInfo,
+					reasoningBuilder.String(),
+					reasoningItemID,
+					reasoningEncryptedContent,
+				)
+				if len(assistantMsg.Parts) > 0 {
+					maybeCompactAfterLLMCall([]Message{assistantMsg})
+					req.Messages = append(req.Messages, assistantMsg)
+					recoveredAtMessageCount = len(req.Messages)
+					if turnCallback != nil {
+						cbCtx, cancel := callbackContext(ctx)
+						_ = turnCallback(cbCtx, attempt, []Message{assistantMsg}, turnMetrics)
+						cancel()
+					}
+				}
+				return false, cause
+			}
+
+			assistantMsg := buildAssistantMessageWithReasoningMetadata(
+				textBuilder.String(),
+				e.withToolPreview(registered),
+				reasoningBuilder.String(),
+				reasoningItemID,
+				reasoningEncryptedContent,
+			)
+			maybeCompactAfterLLMCall([]Message{assistantMsg})
+			if responseCallback != nil {
+				cbCtx, cancel := callbackContext(ctx)
+				_ = responseCallback(cbCtx, attempt, assistantMsg, turnMetrics)
+				cancel()
+			}
+
+			var origNameByID map[string]string
+			if req.ToolMap != nil {
+				for i := range registered {
+					if mapped, ok := req.ToolMap[registered[i].Name]; ok {
+						if origNameByID == nil {
+							origNameByID = make(map[string]string)
+						}
+						origNameByID[registered[i].ID] = registered[i].Name
+						registered[i].Name = mapped
+					}
+				}
+			}
+
+			for _, call := range registered {
+				DebugToolCall(req.Debug, call)
+				info := e.getToolPreview(call)
+				if err := send.Send(Event{Type: EventToolExecStart, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info, ToolArgs: call.Arguments}); err != nil {
+					return false, err
+				}
+			}
+
+			toolResults, err := e.executeToolCalls(ctx, registered, req.ParallelToolCalls, send, req.Debug, req.DebugRaw)
+			if err != nil {
+				return false, err
+			}
+
+			finishingToolExecuted = false
+			for _, call := range registered {
+				if e.tools.IsFinishingTool(call.Name) {
+					finishingToolExecuted = true
+					break
+				}
+			}
+
+			if origNameByID != nil {
+				for i := range registered {
+					if orig, ok := origNameByID[registered[i].ID]; ok {
+						registered[i].Name = orig
+					}
+				}
+				for i := range toolResults {
+					for j := range toolResults[i].Parts {
+						if toolResults[i].Parts[j].ToolResult != nil {
+							if orig, ok := origNameByID[toolResults[i].Parts[j].ToolResult.ID]; ok {
+								toolResults[i].Parts[j].ToolResult.Name = orig
+							}
+						}
+					}
+				}
+			}
+
+			req.Messages = append(req.Messages, assistantMsg)
+			req.Messages = append(req.Messages, toolResults...)
+			recoveredAtMessageCount = len(req.Messages)
+			if turnCallback != nil {
+				turnMetrics.ToolCalls = len(registered)
+				turnMessages := toolResults
+				if responseCallback == nil {
+					turnMessages = append([]Message{assistantMsg}, toolResults...)
+				}
+				cbCtx, cancel := callbackContext(ctx)
+				_ = turnCallback(cbCtx, attempt, turnMessages, turnMetrics)
+				cancel()
+			}
+			if err := ctx.Err(); err != nil {
+				return false, err
+			}
+			if finishingToolExecuted {
+				if err := send.Send(Event{Type: EventDone}); err != nil {
+					return false, err
+				}
+				recoveryCompleted = true
+				return true, nil
+			}
+			return true, nil
+		}
+		retryUncommittedAttempt := func(cause error) (bool, error) {
+			if cause == nil || errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) || !isUncommittedReplayableStreamError(cause) {
+				return false, nil
+			}
+			if recoveredToolWork || len(toolCalls) > 0 || syncToolsExecuted || scratchpadCommitted {
+				return false, nil
+			}
+			if uncommittedStreamRetries >= defaultUncommittedStreamMaxRetries {
+				return false, nil
+			}
+			uncommittedStreamRetries++
+			uncommittedPriorErr = cause
+			if len(scratchpadEvents) > 0 {
+				if err := send.Send(Event{Type: EventAttemptDiscard}); err != nil {
+					return false, err
+				}
+			}
+			if err := send.Send(Event{
+				Type:             EventRetry,
+				RetryAttempt:     uncommittedStreamRetries,
+				RetryMaxAttempts: defaultUncommittedStreamMaxRetries,
+				RetryWaitSecs:    0,
+			}); err != nil {
+				return false, err
+			}
+			slog.Debug("retrying failed uncommitted model stream", "attempt", uncommittedStreamRetries, "error", cause)
+			// Drop all attempt-local assistant output. Nothing from this provider
+			// attempt crossed a durable boundary, so replaying the same request is safe.
+			scratchpadEvents = nil
+			return true, nil
+		}
 		for {
+			if chaosErr := e.consumeChaosFailure(); chaosErr != nil {
+				stream.Close()
+				if recoveredToolWork && len(req.Messages) == recoveredAtMessageCount && len(toolCalls) == 0 && !syncToolsExecuted {
+					return chaosErr
+				}
+				if retried, retryErr := retryUncommittedAttempt(chaosErr); retryErr != nil {
+					return retryErr
+				} else if retried {
+					attempt--
+					continue turnLoop
+				}
+				if recovered, recoverErr := recoverCommittedToolWork(chaosErr); recoverErr != nil {
+					return recoverErr
+				} else if recoveryCompleted {
+					return nil
+				} else if recovered {
+					continue turnLoop
+				}
+				return chaosErr
+			}
 			event, err := stream.Recv()
 			if err == io.EOF {
 				break
@@ -1160,7 +1543,22 @@ turnLoop:
 						continue turnLoop
 					}
 				}
-				persistPartialAssistant()
+				if recoveredToolWork && len(req.Messages) == recoveredAtMessageCount && len(toolCalls) == 0 && !syncToolsExecuted {
+					return err
+				}
+				if retried, retryErr := retryUncommittedAttempt(err); retryErr != nil {
+					return retryErr
+				} else if retried {
+					attempt--
+					continue turnLoop
+				}
+				if recovered, recoverErr := recoverCommittedToolWork(err); recoverErr != nil {
+					return recoverErr
+				} else if recoveryCompleted {
+					return nil
+				} else if recovered {
+					continue turnLoop
+				}
 				return err
 			}
 			if event.Type == EventError && event.Err != nil {
@@ -1176,7 +1574,22 @@ turnLoop:
 						continue turnLoop
 					}
 				}
-				persistPartialAssistant()
+				if recoveredToolWork && len(req.Messages) == recoveredAtMessageCount && len(toolCalls) == 0 && !syncToolsExecuted {
+					return event.Err
+				}
+				if retried, retryErr := retryUncommittedAttempt(event.Err); retryErr != nil {
+					return retryErr
+				} else if retried {
+					attempt--
+					continue turnLoop
+				}
+				if recovered, recoverErr := recoverCommittedToolWork(event.Err); recoverErr != nil {
+					return recoverErr
+				} else if recoveryCompleted {
+					return nil
+				} else if recovered {
+					continue turnLoop
+				}
 				return event.Err
 			}
 			if req.DebugRaw {
@@ -1227,10 +1640,18 @@ turnLoop:
 					e.lastMessageTokenEstimate = EstimateMessageTokens(checkpointMessages)
 					e.callbackMu.Unlock()
 				}
+				if err := stageOrSendModelEvent(event); err != nil {
+					return err
+				}
+				continue
 			}
 			// Accumulate text for callback
 			if event.Type == EventTextDelta && event.Text != "" {
 				textBuilder.WriteString(event.Text)
+				if err := stageOrSendModelEvent(event); err != nil {
+					return err
+				}
+				continue
 			}
 			// Accumulate reasoning for thinking models (OpenRouter)
 			if event.Type == EventReasoningDelta && event.Text != "" {
@@ -1243,8 +1664,15 @@ turnLoop:
 				if event.ReasoningEncryptedContent != "" {
 					reasoningEncryptedContent = event.ReasoningEncryptedContent
 				}
+				if err := stageOrSendModelEvent(event); err != nil {
+					return err
+				}
+				continue
 			}
 			if event.Type == EventToolCall && event.Tool != nil {
+				if err := flushScratchpad(); err != nil {
+					return err
+				}
 				// Check if this is a synchronous tool execution request (from claude_bin MCP)
 				if event.ToolResponse != nil {
 					// Normalize Tool.ID from ToolCallID if the provider didn't set it.
@@ -1319,6 +1747,12 @@ turnLoop:
 				}
 				continue
 			}
+			if event.Type == EventImageGenerated {
+				if err := stageOrSendModelEvent(event); err != nil {
+					return err
+				}
+				continue
+			}
 			if event.Type == EventDone {
 				continue
 			}
@@ -1333,10 +1767,22 @@ turnLoop:
 			return err
 		}
 
+		// The stream reached its provider-defined end without an error. Commit any
+		// attempt-local assistant output before callbacks and final done/tool handling.
+		if err := flushScratchpad(); err != nil {
+			return err
+		}
+
 		// Search is only performed once (either pre-emptively or in first turn)
 		req.Search = false
 
 		if len(toolCalls) == 0 && !syncToolsExecuted {
+			if recoveredToolWork && textBuilder.Len() == 0 && reasoningBuilder.Len() == 0 && reasoningItemID == "" && reasoningEncryptedContent == "" && recoveryPriorErr != nil {
+				return recoveryPriorErr
+			}
+			if uncommittedPriorErr != nil && textBuilder.Len() == 0 && reasoningBuilder.Len() == 0 && reasoningItemID == "" && reasoningEncryptedContent == "" {
+				return uncommittedPriorErr
+			}
 			// No tools called - check if we should restore original tool choice and retry once
 			if originalToolChoice.Mode == ToolChoiceName && !restoredToolChoice && !rushFinishInjected {
 				req.ToolChoice = originalToolChoice

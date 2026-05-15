@@ -993,6 +993,11 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 			state.toolsSeen = false
 		}
 		return run.appendTextDeltaEvent(state.outputIndex, ev.Text)
+	case llm.EventAttemptDiscard:
+		state.toolsSeen = false
+		return run.appendEvent("response.attempt.discard", map[string]any{
+			"output_index": state.outputIndex,
+		})
 	case llm.EventToolCall:
 		if ev.Tool == nil {
 			return nil

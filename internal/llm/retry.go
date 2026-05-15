@@ -180,6 +180,7 @@ func (e *committedError) Unwrap() error { return e.err }
 //   - reasoning deltas (streamed to the user in real time)
 //   - warning-prefixed phase updates (rendered as visible warnings)
 //   - interjections injected into the conversation
+//   - tool calls, which are durable model actions and may be followed by side effects
 //   - synchronous tool requests (EventToolCall with ToolResponse)
 //   - provider-native tool execution (EventToolExecStart/End, e.g. web_search)
 //
@@ -248,7 +249,7 @@ func eventRequiresImmediateForwarding(event Event) bool {
 	case EventPhase:
 		return strings.HasPrefix(event.Text, WarningPhasePrefix)
 	case EventToolCall:
-		return event.ToolResponse != nil
+		return true
 	default:
 		return false
 	}
@@ -278,6 +279,12 @@ func isRetryable(err error) bool {
 	// Never retry if the context itself has been cancelled or deadline exceeded.
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return false
+	}
+
+	// Stream framing / terminal marker failures are transient transport failures.
+	var incomplete *StreamIncompleteError
+	if errors.As(err, &incomplete) {
+		return true
 	}
 
 	// Check for RateLimitError - only retry if it's a short wait

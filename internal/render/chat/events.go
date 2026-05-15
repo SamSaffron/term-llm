@@ -23,6 +23,7 @@ const (
 	RenderEventStreamImage
 	RenderEventStreamDiff
 	RenderEventStreamAskUserResult
+	RenderEventStreamAttemptDiscard
 	RenderEventStreamEnd
 	RenderEventStreamError
 
@@ -126,6 +127,10 @@ func NewStreamTextEvent(text string) RenderEvent {
 	}
 }
 
+func NewStreamAttemptDiscardEvent() RenderEvent {
+	return RenderEvent{Type: RenderEventStreamAttemptDiscard}
+}
+
 // NewStreamToolStartEvent creates an event for when a tool starts executing
 func NewStreamToolStartEvent(callID, name, info string, args json.RawMessage) RenderEvent {
 	return RenderEvent{
@@ -216,8 +221,8 @@ func FromStreamEvent(ev ui.StreamEvent) RenderEvent {
 		return NewStreamToolEndEvent(ev.ToolCallID, ev.ToolName, ev.ToolInfo, ev.ToolSuccess)
 	case ui.StreamEventImage:
 		return NewStreamImageEvent(ev.ImagePath)
-	case ui.StreamEventDiff:
-		return NewStreamDiffEventWithOperation(ev.DiffPath, ev.DiffOld, ev.DiffNew, ev.DiffLine, ev.DiffOperation)
+	case ui.StreamEventAttemptDiscard:
+		return NewStreamAttemptDiscardEvent()
 	case ui.StreamEventDone:
 		return NewStreamEndEvent()
 	case ui.StreamEventError:

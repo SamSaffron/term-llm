@@ -894,8 +894,30 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent, suppress
 	lastPrintedType := ui.SegmentText
 	newlineCompactor := ui.NewStreamingNewlineCompactor(ui.MaxStreamingConsecutiveNewlines)
 	showToolStatus := !suppressToolStatus
+	var pendingText strings.Builder
+
+	flushPendingText := func() {
+		text := pendingText.String()
+		pendingText.Reset()
+		if text == "" {
+			return
+		}
+		if afterToolBoundary {
+			fmt.Print(ui.NewlinePadding(trailingNewlines, ui.FinalSpacerTrailingNewlines))
+			trailingNewlines = ui.FinalSpacerTrailingNewlines
+			text = strings.TrimLeft(text, "\n")
+			afterToolBoundary = false
+		}
+		if text != "" {
+			fmt.Print(text)
+			printedAny = true
+			trailingNewlines = ui.CountTrailingNewlines(text)
+			lastPrintedType = ui.SegmentText
+		}
+	}
 
 	printTools := func() {
+		flushPendingText()
 		if !showToolStatus || len(pendingTools) == 0 {
 			return
 		}
@@ -940,6 +962,13 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent, suppress
 			}
 
 			switch ev.Type {
+			case ui.StreamEventAttemptDiscard:
+				fmt.Fprint(os.Stderr, "\nInterrupted response discarded; retrying...\n")
+				pendingText.Reset()
+				newlineCompactor = ui.NewStreamingNewlineCompactor(ui.MaxStreamingConsecutiveNewlines)
+				afterToolBoundary = false
+				trailingNewlines = 0
+				continue
 			case ui.StreamEventRetry:
 				fmt.Fprintf(os.Stderr, "\rRate limited (%d/%d), waiting %.0fs...\n",
 					ev.RetryAttempt, ev.RetryMax, ev.RetryWait)
@@ -987,6 +1016,7 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent, suppress
 				}
 
 			case ui.StreamEventToolStart:
+				flushPendingText()
 				if !showToolStatus {
 					continue
 				}
@@ -1004,23 +1034,13 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent, suppress
 				})
 
 			case ui.StreamEventText:
-				text := ev.Text
-				if afterToolBoundary && text != "" {
-					// Keep exactly one blank line between tools and following text.
-					fmt.Print(ui.NewlinePadding(trailingNewlines, ui.FinalSpacerTrailingNewlines))
-					trailingNewlines = ui.FinalSpacerTrailingNewlines
-					text = strings.TrimLeft(text, "\n")
-					afterToolBoundary = false
-				}
-				text = newlineCompactor.CompactChunk(text)
+				text := newlineCompactor.CompactChunk(ev.Text)
 				if text != "" {
-					fmt.Print(text)
-					printedAny = true
-					trailingNewlines = ui.CountTrailingNewlines(text)
-					lastPrintedType = ui.SegmentText
+					pendingText.WriteString(text)
 				}
 
 			case ui.StreamEventImage:
+				flushPendingText()
 				// Display image inline in plain text mode
 				if ev.ImagePath != "" {
 					if rendered := ui.RenderInlineImage(ev.ImagePath); rendered != "" {
@@ -1033,6 +1053,7 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent, suppress
 				}
 
 			case ui.StreamEventDone:
+				flushPendingText()
 				if showToolStatus && len(pendingTools) > 0 {
 					printTools()
 				}
@@ -1126,6 +1147,7 @@ const (
 )
 
 type askContentMsg string
+type askAttemptDiscardMsg struct{}
 type askStreamEventMsg struct {
 	event ui.StreamEvent
 }
@@ -1488,6 +1510,8 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			innerMsg = askToolStartMsg{CallID: ev.ToolCallID, Name: ev.ToolName, Info: ev.ToolInfo, ToolArgs: ev.ToolArgs}
 		case ui.StreamEventText:
 			innerMsg = askContentMsg(ev.Text)
+		case ui.StreamEventAttemptDiscard:
+			innerMsg = askAttemptDiscardMsg{}
 		case ui.StreamEventImage:
 			innerMsg = askImageMsg(ev.ImagePath)
 		case ui.StreamEventDiff:
@@ -1530,6 +1554,17 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Fallback: direct append if smooth buffer is unavailable.
 		m.tracker.AddTextSegment(string(msg), m.width)
 		m.contentDirty = true
+
+	case askAttemptDiscardMsg:
+		if m.smoothBuffer != nil {
+			m.smoothBuffer.Reset()
+		}
+		m.smoothTickPending = false
+		m.deferredStreamRead = false
+		m.tracker.DiscardAttempt()
+		m.contentDirty = true
+		m.retryStatus = "Discarded interrupted partial response; retrying..."
+		return m, nil
 
 	case askDoneMsg:
 		m.done = true // Prevent spinner from showing in final View()
@@ -2220,9 +2255,14 @@ func (tc *textCollector) wrapEvents(events <-chan ui.StreamEvent) <-chan ui.Stre
 		defer close(wrapped)
 		defer close(tc.done)
 		for ev := range events {
-			if ev.Type == ui.StreamEventText {
+			switch ev.Type {
+			case ui.StreamEventText:
 				tc.mu.Lock()
 				tc.text.WriteString(ev.Text)
+				tc.mu.Unlock()
+			case ui.StreamEventAttemptDiscard:
+				tc.mu.Lock()
+				tc.text.Reset()
 				tc.mu.Unlock()
 			}
 			wrapped <- ev

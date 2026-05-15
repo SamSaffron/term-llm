@@ -76,7 +76,7 @@ type ProviderConfig struct {
 	Credentials  string            `mapstructure:"credentials"`   // "api_key", "codex", "gemini-cli"
 	Env          map[string]string `mapstructure:"env"`           // Extra subprocess env vars for providers that shell out (e.g. claude-bin)
 	EnableHooks  bool              `mapstructure:"enable_hooks"`  // Opt in to Claude Code hooks for claude-bin (disabled by default)
-	UseWebSocket bool              `mapstructure:"use_websocket"` // Opt in to Responses-over-WebSocket for providers that support it
+	UseWebSocket bool              `mapstructure:"use_websocket"` // Enable Responses-over-WebSocket for providers that support it
 
 	// Search behavior - nil means auto (use native if available)
 	UseNativeSearch *bool `mapstructure:"use_native_search"`
@@ -1584,7 +1584,7 @@ func GetDefaults() map[string]any {
 		"providers.openai.use_websocket":  false,
 		"providers.chatgpt.model":         "gpt-5.5-medium",
 		"providers.chatgpt.fast_model":    "gpt-5.4-mini",
-		"providers.chatgpt.use_websocket": false,
+		"providers.chatgpt.use_websocket": true,
 		"providers.xai.model":             "grok-4-1-fast",
 		"providers.xai.fast_model":        "grok-3-mini-fast",
 		"providers.venice.model":          "venice-uncensored",

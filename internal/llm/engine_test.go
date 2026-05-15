@@ -902,6 +902,16 @@ func countToolCalls(messages []Message) int {
 	return count
 }
 
+func countAssistantMessages(messages []Message) int {
+	count := 0
+	for _, msg := range messages {
+		if msg.Role == RoleAssistant {
+			count++
+		}
+	}
+	return count
+}
+
 func hasSystemText(messages []Message, text string) bool {
 	for _, msg := range messages {
 		if msg.Role != RoleSystem {
@@ -1591,17 +1601,11 @@ func TestRunLoopPersistsPartialAssistantMessageOnStreamRecvError(t *testing.T) {
 	if streamErr == nil || !strings.Contains(streamErr.Error(), "stream recv failed") {
 		t.Fatalf("expected stream error to contain recv failure, got %v", streamErr)
 	}
-	if callbackCount != 1 {
-		t.Fatalf("turn callback count = %d, want 1", callbackCount)
+	if callbackCount != 0 {
+		t.Fatalf("turn callback count = %d, want 0 for discarded scratchpad", callbackCount)
 	}
-	if len(persisted) != 1 || persisted[0].Role != RoleAssistant {
-		t.Fatalf("persisted messages = %#v, want single assistant message", persisted)
-	}
-	if len(persisted[0].Parts) != 1 || persisted[0].Parts[0].Type != PartText {
-		t.Fatalf("persisted parts = %#v, want single text part", persisted[0].Parts)
-	}
-	if persisted[0].Parts[0].Text != "partial" {
-		t.Fatalf("persisted text = %q, want %q", persisted[0].Parts[0].Text, "partial")
+	if len(persisted) != 0 {
+		t.Fatalf("persisted messages = %#v, want none for discarded scratchpad", persisted)
 	}
 }
 
@@ -1612,10 +1616,11 @@ func TestRunLoopPersistsPartialAssistantMessageOnEventErrorAfterToolCall(t *test
 
 	provider := &fakeProvider{
 		script: func(call int, req Request) []Event {
+			err := &NonRecoverableStreamError{Err: errors.New("provider stream failed")}
 			return []Event{
 				{Type: EventTextDelta, Text: "partial"},
 				{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "count_tool", Arguments: json.RawMessage(`{}`)}},
-				{Type: EventError, Err: errors.New("provider stream failed")},
+				{Type: EventError, Err: err},
 			}
 		},
 	}
@@ -1667,8 +1672,8 @@ func TestRunLoopPersistsPartialAssistantMessageOnEventErrorAfterToolCall(t *test
 	if responseCount != 1 {
 		t.Fatalf("response callback count = %d, want 1", responseCount)
 	}
-	if turnCount != 0 {
-		t.Fatalf("turn callback count = %d, want 0", turnCount)
+	if turnCount != 1 {
+		t.Fatalf("turn callback count = %d, want 1 (tool result journaled during recovery)", turnCount)
 	}
 	if len(persisted.Parts) != 2 {
 		t.Fatalf("persisted part count = %d, want 2", len(persisted.Parts))
@@ -3604,5 +3609,425 @@ func TestEngineNormalizesToolCallID(t *testing.T) {
 	}
 	if ev1.ToolCallID != ev1.Tool.ID {
 		t.Errorf("event[1].ToolCallID (%q) != event[1].Tool.ID (%q)", ev1.ToolCallID, ev1.Tool.ID)
+	}
+}
+
+func TestEngineRetriesUncommittedTextScratchpadAfterStreamError(t *testing.T) {
+	provider := &recoverTextProvider{}
+	engine := NewEngine(provider, NewToolRegistry())
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{UserText("hello")},
+		MaxTurns: 3,
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+
+	var text strings.Builder
+	var retryEvents int
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv() error = %v", err)
+		}
+		switch event.Type {
+		case EventError:
+			t.Fatalf("unexpected stream error event: %v", event.Err)
+		case EventAttemptDiscard:
+			text.Reset()
+		case EventRetry:
+			retryEvents++
+		case EventTextDelta:
+			text.WriteString(event.Text)
+		}
+	}
+
+	if retryEvents == 0 {
+		t.Fatalf("expected retry event")
+	}
+	if got := text.String(); got != "good" {
+		t.Fatalf("text = %q, want only committed retry output %q", got, "good")
+	}
+	if got := len(provider.calls); got != 2 {
+		t.Fatalf("provider calls = %d, want 2", got)
+	}
+	if countToolCalls(provider.calls[1].Messages) != 0 || countToolResults(provider.calls[1].Messages) != 0 || countAssistantMessages(provider.calls[1].Messages) != 0 {
+		t.Fatalf("uncommitted text retry should replay original request without reconstructed assistant/tool history: %#v", provider.calls[1].Messages)
+	}
+}
+
+func TestEngineRetriesAgenticUncommittedTextAfterStreamError(t *testing.T) {
+	provider := &recoverTextProvider{}
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+	engine := NewEngine(provider, registry)
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{UserText("hello")},
+		Tools:    []ToolSpec{tool.Spec()},
+		MaxTurns: 3,
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+
+	var text strings.Builder
+	var retryEvents int
+	var discardEvents int
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv() error = %v", err)
+		}
+		switch event.Type {
+		case EventError:
+			t.Fatalf("unexpected stream error event: %v", event.Err)
+		case EventAttemptDiscard:
+			discardEvents++
+			text.Reset()
+		case EventRetry:
+			retryEvents++
+		case EventTextDelta:
+			text.WriteString(event.Text)
+		}
+	}
+
+	if retryEvents == 0 {
+		t.Fatalf("expected retry event")
+	}
+	if discardEvents == 0 {
+		t.Fatalf("expected discard event for visible provisional text")
+	}
+	if got := text.String(); got != "good" {
+		t.Fatalf("text = %q, want only committed retry output %q", got, "good")
+	}
+	if got := len(provider.calls); got != 2 {
+		t.Fatalf("provider calls = %d, want 2", got)
+	}
+	if countToolCalls(provider.calls[1].Messages) != 0 || countToolResults(provider.calls[1].Messages) != 0 || countAssistantMessages(provider.calls[1].Messages) != 0 {
+		t.Fatalf("agentic uncommitted retry should replay original request without reconstructed assistant/tool history: %#v", provider.calls[1].Messages)
+	}
+}
+
+type recoverTextProvider struct {
+	calls []Request
+}
+
+func (p *recoverTextProvider) Name() string       { return "recover-text" }
+func (p *recoverTextProvider) Credential() string { return "test" }
+func (p *recoverTextProvider) Capabilities() Capabilities {
+	return Capabilities{ToolCalls: true}
+}
+func (p *recoverTextProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	p.calls = append(p.calls, req)
+	if len(p.calls) == 1 {
+		return &errAfterEventsStream{
+			events: []Event{{Type: EventTextDelta, Text: "bad"}},
+			err:    &StreamIncompleteError{Transport: "test stream", Terminal: "done", Err: errors.New("stream disconnected during text")},
+		}, nil
+	}
+	return &sliceStream{events: []Event{{Type: EventTextDelta, Text: "good"}, {Type: EventDone}}}, nil
+}
+
+func TestEngineRecoveryReconstructsAssistantForTurnCallbackOnly(t *testing.T) {
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &recoverToolCallProvider{err: &NonRecoverableStreamError{Err: errors.New("websocket disconnected after tool call")}}
+	engine := NewEngine(provider, registry)
+	var turns [][]Message
+	engine.SetTurnCompletedCallback(func(ctx context.Context, turnIndex int, messages []Message, metrics TurnMetrics) error {
+		turns = append(turns, append([]Message(nil), messages...))
+		return nil
+	})
+
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{UserText("please write something")},
+		Tools:    []ToolSpec{tool.Spec()},
+		MaxTurns: 4,
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv() error = %v", err)
+		}
+	}
+
+	if len(turns) == 0 {
+		t.Fatal("expected turn callback during recovery")
+	}
+	if countToolCalls(turns[0]) != 1 || countToolResults(turns[0]) != 1 {
+		t.Fatalf("recovered turn callback should reconstruct assistant tool call + result, got %#v", turns[0])
+	}
+}
+
+func TestEngineRecoversDistinctToolFailuresWithReconstructedHistory(t *testing.T) {
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &twoToolFailureProvider{}
+	engine := NewEngine(provider, registry)
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{UserText("do two things")},
+		Tools:    []ToolSpec{tool.Spec()},
+		MaxTurns: 6,
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+
+	var text strings.Builder
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv() error = %v", err)
+		}
+		if event.Type == EventTextDelta {
+			text.WriteString(event.Text)
+		}
+	}
+
+	if got := tool.calls.Load(); got != 2 {
+		t.Fatalf("tool executions = %d, want 2", got)
+	}
+	if got := text.String(); got != "all recovered" {
+		t.Fatalf("text = %q, want all recovered", got)
+	}
+	if len(provider.calls) != 3 {
+		t.Fatalf("provider calls = %d, want 3", len(provider.calls))
+	}
+	if countToolCalls(provider.calls[1].Messages) != 1 || countToolResults(provider.calls[1].Messages) != 1 {
+		t.Fatalf("second request reconstruction = %#v, want 1 tool call + 1 result", provider.calls[1].Messages)
+	}
+	if countToolCalls(provider.calls[2].Messages) != 2 || countToolResults(provider.calls[2].Messages) != 2 {
+		t.Fatalf("third request reconstruction = %#v, want 2 tool calls + 2 results", provider.calls[2].Messages)
+	}
+}
+
+type twoToolFailureProvider struct {
+	calls []Request
+}
+
+func (p *twoToolFailureProvider) Name() string               { return "two-tool-failure" }
+func (p *twoToolFailureProvider) Credential() string         { return "test" }
+func (p *twoToolFailureProvider) Capabilities() Capabilities { return Capabilities{ToolCalls: true} }
+func (p *twoToolFailureProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	p.calls = append(p.calls, req)
+	switch len(p.calls) {
+	case 1:
+		return &errAfterEventsStream{
+			events: []Event{{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "count_tool", Arguments: json.RawMessage(`{}`)}}},
+			err:    &NonRecoverableStreamError{Err: errors.New("websocket disconnected after first tool")},
+		}, nil
+	case 2:
+		return &errAfterEventsStream{
+			events: []Event{{Type: EventToolCall, Tool: &ToolCall{ID: "call-2", Name: "count_tool", Arguments: json.RawMessage(`{}`)}}},
+			err:    &NonRecoverableStreamError{Err: errors.New("websocket disconnected after second tool")},
+		}, nil
+	default:
+		return &sliceStream{events: []Event{{Type: EventTextDelta, Text: "all recovered"}, {Type: EventDone}}}, nil
+	}
+}
+
+func TestEngineRecoversToolCallAfterRetryWrappedStreamError(t *testing.T) {
+	streamErr := &NonRecoverableStreamError{Err: errors.New("websocket disconnected after tool call")}
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	inner := &recoverToolCallProvider{err: streamErr}
+	provider := WrapWithRetry(inner, RetryConfig{MaxAttempts: 1, BaseBackoff: time.Millisecond, MaxBackoff: time.Millisecond})
+	engine := NewEngine(provider, registry)
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages:   []Message{UserText("please write something")},
+		Tools:      []ToolSpec{tool.Spec()},
+		MaxTurns:   4,
+		ToolChoice: ToolChoice{Mode: ToolChoiceAuto},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+
+	var text strings.Builder
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv() error = %v", err)
+		}
+		if event.Type == EventError && event.Err != nil {
+			t.Fatalf("unexpected stream error event: %v", event.Err)
+		}
+		if event.Type == EventTextDelta {
+			text.WriteString(event.Text)
+		}
+	}
+
+	if got := tool.calls.Load(); got != 1 {
+		t.Fatalf("tool executions = %d, want 1", got)
+	}
+	if got := text.String(); got != "recovered" {
+		t.Fatalf("text = %q, want recovered", got)
+	}
+	if len(inner.calls) < 2 {
+		t.Fatalf("provider calls = %d, want at least 2", len(inner.calls))
+	}
+	if countToolCalls(inner.calls[1].Messages) != 1 || countToolResults(inner.calls[1].Messages) != 1 {
+		t.Fatalf("second request should include journaled tool call/result, got %#v", inner.calls[1].Messages)
+	}
+}
+
+func TestEngineRecoversToolCallAfterStreamError(t *testing.T) {
+	streamErr := &NonRecoverableStreamError{Err: errors.New("websocket disconnected after tool call")}
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &recoverToolCallProvider{err: streamErr}
+	engine := NewEngine(provider, registry)
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages:   []Message{UserText("please write something")},
+		Tools:      []ToolSpec{tool.Spec()},
+		MaxTurns:   4,
+		DebugRaw:   false,
+		ToolChoice: ToolChoice{Mode: ToolChoiceAuto},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+
+	var text strings.Builder
+	var retryEvents int
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv() error = %v", err)
+		}
+		switch event.Type {
+		case EventError:
+			t.Fatalf("unexpected stream error event: %v", event.Err)
+		case EventRetry:
+			retryEvents++
+		case EventTextDelta:
+			text.WriteString(event.Text)
+		}
+	}
+
+	if retryEvents == 0 {
+		t.Fatalf("expected retry/recovery event")
+	}
+	if got := tool.calls.Load(); got != 1 {
+		t.Fatalf("tool executions = %d, want 1", got)
+	}
+	if got := text.String(); got != "recovered" {
+		t.Fatalf("text = %q, want recovered", got)
+	}
+	if len(provider.calls) < 2 {
+		t.Fatalf("provider calls = %d, want at least 2", len(provider.calls))
+	}
+	second := provider.calls[1]
+	if countToolCalls(second.Messages) != 1 {
+		t.Fatalf("second request tool calls = %d, want 1", countToolCalls(second.Messages))
+	}
+	if countToolResults(second.Messages) != 1 {
+		t.Fatalf("second request tool results = %d, want 1", countToolResults(second.Messages))
+	}
+}
+
+type recoverToolCallProvider struct {
+	err   error
+	calls []Request
+}
+
+func (p *recoverToolCallProvider) Name() string               { return "recover-tool-call" }
+func (p *recoverToolCallProvider) Credential() string         { return "test" }
+func (p *recoverToolCallProvider) Capabilities() Capabilities { return Capabilities{ToolCalls: true} }
+func (p *recoverToolCallProvider) Stream(ctx context.Context, req Request) (Stream, error) {
+	p.calls = append(p.calls, req)
+	if len(p.calls) == 1 {
+		return &errAfterEventsStream{
+			events: []Event{{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "count_tool", Arguments: json.RawMessage(`{}`)}}},
+			err:    p.err,
+		}, nil
+	}
+	return &sliceStream{events: []Event{{Type: EventTextDelta, Text: "recovered"}, {Type: EventDone}}}, nil
+}
+
+func TestEngineDoesNotRecoverToolCallAfterSemanticProviderError(t *testing.T) {
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+	provider := &fakeProvider{script: func(call int, req Request) []Event {
+		if call != 0 {
+			t.Fatalf("unexpected provider retry call %d", call)
+		}
+		return []Event{
+			{Type: EventToolCall, ToolCallID: "call-1", Tool: &ToolCall{ID: "call-1", Name: "count_tool", Arguments: json.RawMessage(`{}`)}},
+			{Type: EventError, Err: errors.New("provider rejected tool call")},
+		}
+	}}
+	engine := NewEngine(provider, registry)
+	stream, err := engine.Stream(context.Background(), Request{Messages: []Message{UserText("run tool")}, Tools: []ToolSpec{tool.Spec()}})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+
+	var sawToolCall bool
+	var sawError bool
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv() error = %v", err)
+		}
+		switch event.Type {
+		case EventToolCall:
+			sawToolCall = true
+		case EventError:
+			sawError = true
+			if event.Err == nil || !strings.Contains(event.Err.Error(), "provider rejected tool call") {
+				t.Fatalf("unexpected error event: %+v", event)
+			}
+		}
+	}
+	if !sawToolCall || !sawError {
+		t.Fatalf("sawToolCall=%v sawError=%v, want both", sawToolCall, sawError)
+	}
+	if got := tool.calls.Load(); got != 0 {
+		t.Fatalf("tool executions = %d, want 0 for semantic provider error", got)
+	}
+	if got := len(provider.calls); got != 1 {
+		t.Fatalf("provider calls = %d, want no recovery retry", got)
 	}
 }

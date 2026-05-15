@@ -752,6 +752,7 @@ func (m *Model) renderStatusLine() string {
 	mutedStyle := lipgloss.NewStyle().Foreground(theme.Muted)
 	successStyle := lipgloss.NewStyle().Foreground(theme.Success)
 	errorStyle := lipgloss.NewStyle().Foreground(theme.Error)
+	warningStyle := lipgloss.NewStyle().Foreground(theme.Warning)
 
 	if m.footerMessage != "" {
 		style := mutedStyle
@@ -760,6 +761,8 @@ func (m *Model) renderStatusLine() string {
 			style = mutedStyle
 		case "success":
 			style = successStyle
+		case "warning":
+			style = warningStyle
 		case "error":
 			style = errorStyle
 		default:

@@ -276,8 +276,15 @@ type Model struct {
 	contentLines      []string // full viewport content split by \n
 	copyStatus        string   // transient status message after copy attempt
 	footerMessage     string   // transient footer message for short system notices
-	footerMessageTone string   // "", "muted", "success", or "error"
+	footerMessageTone string   // "", "muted", "success", "warning", or "error"
 	footerMessageSeq  uint64   // monotonically increasing footer message timer token
+
+	attemptInput          int
+	attemptOutput         int
+	attemptCached         int
+	attemptCacheWrite     int
+	attemptUsageCalls     int
+	attemptUsageCommitted bool
 }
 
 // streamEventMsg wraps ui.StreamEvent for bubbletea
@@ -739,6 +746,45 @@ func (m *Model) applyWindowSize(msg tea.WindowSizeMsg) {
 	} else if m.chatRenderer != nil {
 		m.chatRenderer.SetSize(m.width, m.height)
 	}
+}
+
+func formatStreamErrorFooter(err error) string {
+	if err == nil {
+		return "Stream failed."
+	}
+	if errors.Is(err, context.Canceled) {
+		return "Stream cancelled."
+	}
+	var incomplete *llm.StreamIncompleteError
+	if errors.As(err, &incomplete) {
+		return "Stream interrupted before completion."
+	}
+	return "Stream failed: " + err.Error()
+}
+
+func (m *Model) resetAttemptUsage() {
+	m.attemptInput, m.attemptOutput, m.attemptCached, m.attemptCacheWrite, m.attemptUsageCalls = 0, 0, 0, 0, 0
+	m.attemptUsageCommitted = false
+}
+
+func (m *Model) markAttemptCommitted() {
+	m.attemptInput, m.attemptOutput, m.attemptCached, m.attemptCacheWrite, m.attemptUsageCalls = 0, 0, 0, 0, 0
+	m.attemptUsageCommitted = true
+}
+
+func (m *Model) setRetryStatus(status string) {
+	if m.retryStatus == status {
+		return
+	}
+	m.retryStatus = status
+	if m.altScreen {
+		// Retry status is part of the streaming viewport. Bypass render throttling
+		// so stale retry banners do not linger after forward progress resumes.
+		m.viewCache.lastSetContentAt = time.Time{}
+		m.viewCache.lastViewportView = ""
+		m.resetAltScreenStreamingAppendCache()
+	}
+	m.bumpContentVersion()
 }
 
 func (m *Model) syncAltScreenViewportHeight(footerHeight int) {
@@ -1274,6 +1320,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch ev.Type {
 		case ui.StreamEventError:
 			if ev.Err != nil {
+				m.setRetryStatus("")
 				// Flush any buffered text on error
 				if m.smoothBuffer != nil {
 					remaining := m.smoothBuffer.FlushAll()
@@ -1292,10 +1339,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.streamRenderTickPending = false
 				m.preserveStreamingContentOnError()
 				m.streaming = false
-				m.err = ev.Err
-				// Error line is part of alt-screen viewport content; force refresh.
+				m.err = nil
+				var footerCmd tea.Cmd
+				if !errors.Is(ev.Err, context.Canceled) {
+					_, footerCmd = m.showFooterMessageWithTone(formatStreamErrorFooter(ev.Err), "error")
+				}
+				// Stream errors are transient status, not durable conversation content.
+				// Force the viewport to repaint now so stale streamed rows do not linger
+				// until an external resize invalidates Bubble Tea's render cache.
 				if m.altScreen {
 					m.viewCache.historyValid = false
+					m.viewCache.lastViewportView = ""
+					m.viewCache.cachedCompletedContent = ""
+					m.viewCache.cachedTrackerVersion = 0
 					m.resetAltScreenStreamingAppendCache()
 					m.bumpContentVersion()
 				}
@@ -1324,10 +1380,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.restorePendingInterjectionDraft()
 				m.clearPendingInterjectionState()
 
-				return m, nil
+				if m.altScreen {
+					return m, tea.Batch(tea.ClearScreen, footerCmd)
+				}
+				return m, footerCmd
 			}
 
 		case ui.StreamEventToolStart:
+			m.setRetryStatus("")
+			m.markAttemptCommitted()
 			m.stats.ToolStart()
 			if m.tracker != nil {
 				m.tracker.SetExpandHintShown(m.toolExpandHintShown)
@@ -1370,6 +1431,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case ui.StreamEventToolEnd:
+			m.setRetryStatus("")
+			m.resetAttemptUsage()
 			m.stats.ToolEnd()
 			// Update segment status
 			if m.tracker != nil {
@@ -1412,8 +1475,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if m.stats != nil && (inputTokens > 0 || outputTokens > 0 || cachedTokens > 0 || writeTokens > 0) {
 				m.stats.AddUsage(inputTokens, outputTokens, cachedTokens, writeTokens)
+				if !m.attemptUsageCommitted {
+					m.attemptInput += inputTokens
+					m.attemptOutput += outputTokens
+					m.attemptCached += cachedTokens
+					m.attemptCacheWrite += writeTokens
+					m.attemptUsageCalls++
+				}
 			}
 		case ui.StreamEventText:
+			m.attemptUsageCommitted = false
 			text := ev.Text
 			if m.newlineCompactor == nil {
 				m.newlineCompactor = ui.NewStreamingNewlineCompactor(ui.MaxStreamingConsecutiveNewlines)
@@ -1449,21 +1520,55 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			m.phase = "Responding"
-			m.retryStatus = ""
+			m.setRetryStatus("")
+
+		case ui.StreamEventAttemptDiscard:
+			if m.stats != nil && m.attemptUsageCalls > 0 {
+				m.stats.DiscardUsage(m.attemptInput, m.attemptOutput, m.attemptCached, m.attemptCacheWrite, m.attemptUsageCalls)
+			}
+			m.resetAttemptUsage()
+			m.currentResponse.Reset()
+			if m.smoothBuffer != nil {
+				m.smoothBuffer.Reset()
+			}
+			m.smoothTickPending = false
+			m.deferredStreamRead = false
+			m.streamRenderTickPending = false
+			if m.tracker != nil {
+				m.tracker.DiscardAttempt()
+			}
+			m.newlineCompactor = ui.NewStreamingNewlineCompactor(ui.MaxStreamingConsecutiveNewlines)
+			m.setRetryStatus("Interrupted response discarded; retrying...")
+			m.phase = "Retrying"
+			m.viewCache.cachedCompletedContent = ""
+			m.viewCache.cachedTrackerVersion = 0
+			m.viewCache.lastViewportView = ""
+			m.resetAltScreenStreamingAppendCache()
+			// Discard is a rollback, not another append. Force the very next View to
+			// rebuild viewport content immediately even when streaming render throttling
+			// is active; otherwise stale partial text can remain visible until resize or
+			// the next throttle tick.
+			m.viewCache.lastSetContentAt = time.Time{}
+			m.scrollToBottom = true
+			m.bumpContentVersion()
+			if m.altScreen {
+				cmds = append(cmds, tea.ClearScreen)
+			}
 
 		case ui.StreamEventPhase:
 			m.phase = ev.Phase
-			m.retryStatus = ""
+			m.setRetryStatus("")
 			// Display WARNING phases as visible text in the conversation
 			if strings.HasPrefix(ev.Phase, llm.WarningPhasePrefix) && m.tracker != nil {
 				m.tracker.AddTextSegment(ev.Phase+"\n", m.width)
 			}
 
 		case ui.StreamEventRetry:
-			m.retryStatus = fmt.Sprintf("Retrying stream (%d/%d), waiting %.1fs...",
-				ev.RetryAttempt, ev.RetryMax, ev.RetryWait)
+			m.setRetryStatus(fmt.Sprintf("Retrying stream (%d/%d), waiting %.1fs...",
+				ev.RetryAttempt, ev.RetryMax, ev.RetryWait))
 
 		case ui.StreamEventImage:
+			m.setRetryStatus("")
 			// Add image segment for inline display
 			if m.tracker != nil && ev.ImagePath != "" {
 				m.tracker.AddImageSegment(ev.ImagePath)
@@ -1482,6 +1587,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case ui.StreamEventDiff:
+			m.setRetryStatus("")
 			// Add diff segment for inline display
 			if m.tracker != nil && ev.DiffPath != "" {
 				m.tracker.AddDiffSegmentWithOperation(ev.DiffPath, ev.DiffOld, ev.DiffNew, ev.DiffLine, ev.DiffOperation)
@@ -1494,6 +1600,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case ui.StreamEventInterjection:
+			m.setRetryStatus("")
 			// User interjected a message mid-stream (injected between tool turns).
 			matchedPending := false
 			switch {
@@ -1543,7 +1650,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case ui.StreamEventDone:
+			m.setRetryStatus("")
 			m.currentTokens = ev.Tokens
+			m.resetAttemptUsage()
 
 			// Flush any remaining buffered text and mark done
 			if m.smoothBuffer != nil {
@@ -1631,7 +1740,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.currentResponse.Reset()
 			m.currentTokens = 0
 			m.webSearchUsed = false
-			m.retryStatus = ""
+			m.setRetryStatus("")
 			m.resetTracker()
 			if m.smoothBuffer != nil {
 				m.smoothBuffer.Reset()

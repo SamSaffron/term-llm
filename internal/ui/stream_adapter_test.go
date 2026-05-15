@@ -297,3 +297,38 @@ func TestParseDiffMarkers(t *testing.T) {
 		})
 	}
 }
+
+func TestStreamAdapterDiscardRemovesAttemptUsage(t *testing.T) {
+	stream := &testStream{events: []llm.Event{
+		{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 10, OutputTokens: 5, CachedInputTokens: 2, CacheWriteTokens: 1}},
+		{Type: llm.EventAttemptDiscard},
+		{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 3, OutputTokens: 4}},
+	}}
+	adapter := NewStreamAdapter(10)
+	go adapter.ProcessStream(context.Background(), stream)
+	for range adapter.Events() {
+	}
+	stats := adapter.Stats()
+	if stats.InputTokens != 3 || stats.OutputTokens != 4 || stats.CachedInputTokens != 0 || stats.CacheWriteTokens != 0 || stats.LLMCallCount != 1 {
+		t.Fatalf("stats after discard = %+v, want only second usage", stats)
+	}
+}
+
+func TestStreamAdapterDiscardKeepsCommittedToolUsage(t *testing.T) {
+	stream := &testStream{events: []llm.Event{
+		{Type: llm.EventTextDelta, Text: "before tool"},
+		{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 10, OutputTokens: 5}},
+		{Type: llm.EventToolExecStart, ToolCallID: "call-1", ToolName: "read_file"},
+		{Type: llm.EventToolExecEnd, ToolCallID: "call-1", ToolName: "read_file", ToolSuccess: true},
+		{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 3, OutputTokens: 4}},
+		{Type: llm.EventAttemptDiscard},
+	}}
+	adapter := NewStreamAdapter(20)
+	go adapter.ProcessStream(context.Background(), stream)
+	for range adapter.Events() {
+	}
+	stats := adapter.Stats()
+	if stats.InputTokens != 10 || stats.OutputTokens != 5 || stats.LLMCallCount != 1 {
+		t.Fatalf("stats after committed usage + discard = %+v, want only committed usage", stats)
+	}
+}

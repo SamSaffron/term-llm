@@ -149,7 +149,10 @@ func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req Respo
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
-				return fmt.Errorf("read Responses WebSocket event: %w", err)
+				if finishErr := handler.FinishIncomplete(send); finishErr != nil {
+					return &StreamIncompleteError{Transport: "Responses WebSocket", Terminal: "response.completed", Err: finishErr}
+				}
+				return &StreamIncompleteError{Transport: "Responses WebSocket", Terminal: "response.completed", Err: err}
 			}
 			if messageType != websocket.TextMessage {
 				c.discardWebSocketLocked()

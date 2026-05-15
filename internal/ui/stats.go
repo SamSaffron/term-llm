@@ -69,6 +69,36 @@ func (s *SessionStats) AddUsage(input, output, cached, cacheWrite int) {
 	}
 }
 
+// DiscardUsage removes usage that belonged to an interrupted provisional
+// attempt. Peak/last per-call details are process-local display hints, so reset
+// them conservatively rather than pretending the discarded call committed.
+func (s *SessionStats) DiscardUsage(input, output, cached, cacheWrite, calls int) {
+	s.InputTokens -= input
+	if s.InputTokens < 0 {
+		s.InputTokens = 0
+	}
+	s.OutputTokens -= output
+	if s.OutputTokens < 0 {
+		s.OutputTokens = 0
+	}
+	s.CachedInputTokens -= cached
+	if s.CachedInputTokens < 0 {
+		s.CachedInputTokens = 0
+	}
+	s.CacheWriteTokens -= cacheWrite
+	if s.CacheWriteTokens < 0 {
+		s.CacheWriteTokens = 0
+	}
+	s.LLMCallCount -= calls
+	if s.LLMCallCount < 0 {
+		s.LLMCallCount = 0
+	}
+	s.lastInputTokens = 0
+	s.lastOutputTokens = 0
+	s.peakInputTokens = 0
+	s.hasPerCallUsage = false
+}
+
 // ToolStart marks the start of a tool execution.
 func (s *SessionStats) ToolStart() {
 	now := time.Now()

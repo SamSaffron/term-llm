@@ -259,7 +259,7 @@ func responsesOutputItemToInputItem(item responsesOutputItem) []ResponsesInputIt
 	}
 }
 
-func (h *responsesStreamEventHandler) Finish(send eventSender) error {
+func (h *responsesStreamEventHandler) emitFinalItems(send eventSender) error {
 	if err := h.toolState.Validate(); err != nil {
 		return err
 	}
@@ -272,6 +272,17 @@ func (h *responsesStreamEventHandler) Finish(send eventSender) error {
 		if err := send.Send(Event{Type: EventUsage, Use: h.lastUsage}); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (h *responsesStreamEventHandler) FinishIncomplete(send eventSender) error {
+	return h.emitFinalItems(send)
+}
+
+func (h *responsesStreamEventHandler) Finish(send eventSender) error {
+	if err := h.emitFinalItems(send); err != nil {
+		return err
 	}
 	return send.Send(Event{Type: EventDone})
 }

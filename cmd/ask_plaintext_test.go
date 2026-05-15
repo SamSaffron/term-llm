@@ -196,3 +196,19 @@ func TestStreamPlainText_PorcelainSuppressesToolStatus(t *testing.T) {
 		t.Fatalf("expected text output to remain, got %q", plain)
 	}
 }
+
+func TestStreamPlainText_DiscardDropsUncommittedText(t *testing.T) {
+	output := captureStreamPlainTextOutput(t, []ui.StreamEvent{
+		ui.TextEvent("bad"),
+		ui.AttemptDiscardEvent(),
+		ui.TextEvent("good"),
+		ui.DoneEvent(0),
+	}, true)
+	plain := stripAnsi(output)
+	if strings.Contains(plain, "bad") {
+		t.Fatalf("discarded text leaked to stdout: %q", plain)
+	}
+	if !strings.Contains(plain, "good") {
+		t.Fatalf("committed retry text missing from stdout: %q", plain)
+	}
+}

@@ -151,6 +151,8 @@ func (rt *serveRuntime) updateInterruptFromEvent(ev llm.Event) {
 	switch ev.Type {
 	case llm.EventTextDelta:
 		rt.activeInterrupt.proseLen += len(ev.Text)
+	case llm.EventAttemptDiscard:
+		rt.activeInterrupt.proseLen = 0
 	case llm.EventToolExecStart:
 		rt.activeInterrupt.activeTool = ev.ToolName
 		if ev.ToolName != "" {
@@ -862,6 +864,9 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		switch ev.Type {
 		case llm.EventTextDelta:
 			result.Text.WriteString(ev.Text)
+		case llm.EventAttemptDiscard:
+			result.Text.Reset()
+			result.Usage = llm.Usage{}
 		case llm.EventToolCall:
 			if ev.Tool != nil {
 				result.ToolCalls = append(result.ToolCalls, *ev.Tool)

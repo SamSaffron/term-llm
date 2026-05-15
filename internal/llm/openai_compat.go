@@ -561,6 +561,8 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 		toolState := newCompatToolState()
 		var lastUsage *Usage
 		var reasoningBuilder strings.Builder
+		sawDone := false
+		sawToolCallsFinish := false
 
 		for {
 			eventType, data, eof, err := readSSEEventBytes(reader)
@@ -577,6 +579,7 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 				continue
 			}
 			if bytes.Equal(data, sseDoneData) {
+				sawDone = true
 				break
 			}
 
@@ -608,6 +611,9 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 			}
 
 			for _, choice := range chatResp.Choices {
+				if choice.FinishReason == "tool_calls" {
+					sawToolCallsFinish = true
+				}
 				if choice.Delta != nil {
 					if content, ok := choice.Delta.Content.(string); ok && content != "" {
 						if err := send.Send(Event{Type: EventTextDelta, Text: content}); err != nil {
@@ -632,7 +638,13 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 			}
 		}
 
+		if !sawDone && !sawToolCallsFinish {
+			return &StreamIncompleteError{Transport: p.name + " SSE", Terminal: "[DONE]"}
+		}
 		if err := toolState.Validate(); err != nil {
+			if !sawDone {
+				return &StreamIncompleteError{Transport: p.name + " SSE", Terminal: "[DONE]", Err: err}
+			}
 			return err
 		}
 		for _, call := range toolState.Calls() {
@@ -644,6 +656,9 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 			if err := send.Send(Event{Type: EventUsage, Use: lastUsage}); err != nil {
 				return err
 			}
+		}
+		if !sawDone {
+			return &StreamIncompleteError{Transport: p.name + " SSE", Terminal: "[DONE]"}
 		}
 		if err := send.Send(Event{Type: EventDone}); err != nil {
 			return err

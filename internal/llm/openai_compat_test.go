@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -442,8 +443,12 @@ func TestOpenAICompatStream_ReturnsErrorForPartialToolArgumentsAtEOF(t *testing.
 			if event.Err == nil {
 				t.Fatal("expected error event to include error")
 			}
-			if !strings.Contains(event.Err.Error(), "invalid arguments") {
-				t.Fatalf("expected invalid arguments error, got %v", event.Err)
+			var incomplete *StreamIncompleteError
+			if !errors.As(event.Err, &incomplete) {
+				t.Fatalf("expected StreamIncompleteError for EOF before [DONE], got %T %v", event.Err, event.Err)
+			}
+			if !strings.Contains(event.Err.Error(), "[DONE]") {
+				t.Fatalf("expected missing [DONE] error, got %v", event.Err)
 			}
 		}
 	}
@@ -1695,5 +1700,92 @@ func TestReadSSELine_TreatsWrappedUnexpectedEOFAsEOF(t *testing.T) {
 	}
 	if line != "data: [DONE]" {
 		t.Fatalf("expected line %q, got %q", "data: [DONE]", line)
+	}
+}
+
+func TestOpenAICompatStream_ReturnsIncompleteErrorWithoutDone(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"choices":[{"delta":{"content":"hello"}}]}`+"\n\n")
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatProvider(server.URL, "", "test-model", "Test")
+	stream, err := provider.Stream(context.Background(), Request{Messages: []Message{{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "hello"}}}}})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	event, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("recv text: %v", err)
+	}
+	if event.Type != EventTextDelta || event.Text != "hello" {
+		t.Fatalf("expected text delta hello, got %+v", event)
+	}
+	event, err = stream.Recv()
+	if err != nil {
+		t.Fatalf("recv error event: %v", err)
+	}
+	if event.Type != EventError {
+		t.Fatalf("expected EventError, got %+v", event)
+	}
+	var incomplete *StreamIncompleteError
+	if !errors.As(event.Err, &incomplete) {
+		t.Fatalf("expected StreamIncompleteError, got %T %v", event.Err, event.Err)
+	}
+}
+
+func TestOpenAICompatStream_EmitsToolCallBeforeIncompleteError(t *testing.T) {
+	chunk := oaiChatResponse{
+		Choices: []oaiChoice{{
+			Delta:        &oaiMessage{ToolCalls: []oaiToolCall{{}}},
+			FinishReason: "tool_calls",
+		}},
+	}
+	chunk.Choices[0].Delta.ToolCalls[0].ID = "call-1"
+	chunk.Choices[0].Delta.ToolCalls[0].Function.Name = "search"
+	chunk.Choices[0].Delta.ToolCalls[0].Function.Arguments = `{"query":"weather"}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		data, err := json.Marshal(chunk)
+		if err != nil {
+			t.Fatalf("marshal chunk: %v", err)
+		}
+		_, _ = w.Write([]byte("data: "))
+		_, _ = w.Write(data)
+		_, _ = w.Write([]byte("\n\n"))
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatProvider(server.URL, "", "test-model", "Test")
+	stream, err := provider.Stream(context.Background(), Request{Messages: []Message{{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "hello"}}}}})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	event, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("recv tool call: %v", err)
+	}
+	if event.Type != EventToolCall || event.Tool == nil {
+		t.Fatalf("expected EventToolCall, got %+v", event)
+	}
+	if event.Tool.ID != "call-1" || event.Tool.Name != "search" || string(event.Tool.Arguments) != `{"query":"weather"}` {
+		t.Fatalf("unexpected tool call: %+v", event.Tool)
+	}
+	event, err = stream.Recv()
+	if err != nil {
+		t.Fatalf("recv error event: %v", err)
+	}
+	if event.Type != EventError {
+		t.Fatalf("expected EventError, got %+v", event)
+	}
+	var incomplete *StreamIncompleteError
+	if !errors.As(event.Err, &incomplete) {
+		t.Fatalf("expected StreamIncompleteError, got %T %v", event.Err, event.Err)
 	}
 }

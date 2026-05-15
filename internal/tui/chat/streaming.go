@@ -377,6 +377,7 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 		m.streamPerf.StartTurn(m.sess.ID, m.streamStartTime)
 	}
 	m.currentResponse.Reset()
+	m.resetAttemptUsage()
 	m.err = nil // Clear any previous error
 	m.webSearchUsed = false
 	m.viewCache.completedStream = "" // Clear previous response's diffs/tools

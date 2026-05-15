@@ -469,7 +469,7 @@ func TestResponsesClientWebSocketReadFailureBeforeEventsRetryCanRecover(t *testi
 	}
 }
 
-func TestResponsesClientWebSocketReadFailureAfterEventsIsNonRecoverable(t *testing.T) {
+func TestResponsesClientWebSocketReadFailureAfterEventsReturnsIncomplete(t *testing.T) {
 	oldBackoff := responsesWebSocketBaseBackoff
 	responsesWebSocketBaseBackoff = 0
 	defer func() { responsesWebSocketBaseBackoff = oldBackoff }()
@@ -517,12 +517,12 @@ func TestResponsesClientWebSocketReadFailureAfterEventsIsNonRecoverable(t *testi
 	if event.Type != EventError || event.Err == nil {
 		t.Fatalf("second event = %#v, want error event", event)
 	}
-	var nonRecoverable *NonRecoverableStreamError
-	if !errors.As(event.Err, &nonRecoverable) {
-		t.Fatalf("error type = %T, want NonRecoverableStreamError: %v", event.Err, event.Err)
+	var incomplete *StreamIncompleteError
+	if !errors.As(event.Err, &incomplete) {
+		t.Fatalf("error type = %T, want StreamIncompleteError: %v", event.Err, event.Err)
 	}
-	if !strings.Contains(event.Err.Error(), "Partial response preserved") || !strings.Contains(event.Err.Error(), "automatic retry is unsafe") {
-		t.Fatalf("non-recoverable message not actionable: %v", event.Err)
+	if !strings.Contains(event.Err.Error(), "Responses WebSocket closed before response.completed") {
+		t.Fatalf("incomplete stream message not actionable: %v", event.Err)
 	}
 	if wsAttempts.Load() != 1 || httpAttempts.Load() != 0 {
 		t.Fatalf("attempts ws=%d http=%d, want 1/0", wsAttempts.Load(), httpAttempts.Load())

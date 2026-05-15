@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -115,6 +116,10 @@ func (m *Model) isYoloModeActive() bool {
 	return false
 }
 
+func isChaosMonkeyKey(msg tea.KeyPressMsg) bool {
+	return os.Getenv("TERM_LLM_CHAOS_MONKEY") != "" && key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+m", "ctrl+g")))
+}
+
 func (m *Model) setApprovalYoloMode(enabled bool) {
 	if m.approvalMgr != nil {
 		m.approvalMgr.SetYoloMode(enabled)
@@ -154,6 +159,14 @@ func (m *Model) toggleYoloMode() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if isChaosMonkeyKey(msg) {
+		if m.streaming && m.engine != nil {
+			m.engine.TriggerChaosFailure()
+			return m.showFooterMessageWithTone("Chaos monkey armed: simulating stream failure...", "warning")
+		}
+		return m.showFooterMessageWithTone("Chaos monkey is enabled; start streaming, then press ctrl+m/ctrl+g to fail the stream.", "muted")
+	}
+
 	// Shift+Tab toggles yolo mode globally, including while a reply is streaming
 	// or an inline approval prompt is visible.
 	if m.isYoloToggleKey(msg) {

@@ -17,6 +17,7 @@ const (
 	StreamEventImage        // Image produced by tool
 	StreamEventDiff         // Diff from edit tool
 	StreamEventInterjection // User interjected a message mid-stream
+	StreamEventAttemptDiscard
 )
 
 // StreamEvent represents a unified event from the LLM stream.
@@ -74,6 +75,10 @@ func TextEvent(text string) StreamEvent {
 		Type: StreamEventText,
 		Text: text,
 	}
+}
+
+func AttemptDiscardEvent() StreamEvent {
+	return StreamEvent{Type: StreamEventAttemptDiscard}
 }
 
 // ToolStartEvent creates a tool execution start event

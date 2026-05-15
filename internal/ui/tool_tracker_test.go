@@ -270,6 +270,27 @@ func TestCompleteTextSegments_BumpsVersion(t *testing.T) {
 	}
 }
 
+func TestDiscardAttemptKeepsCommittedToolWork(t *testing.T) {
+	tracker := NewToolTracker()
+	tracker.AddTextSegment("committed intro", 80)
+	tracker.MarkCurrentTextComplete(func(text string) string { return text })
+	tracker.HandleToolStart("call-1", "read_file", "a.go", nil)
+	tracker.HandleToolEnd("call-1", true)
+	tracker.AddTextSegment("provisional retry text", 80)
+
+	tracker.DiscardAttempt()
+
+	if len(tracker.Segments) != 2 {
+		t.Fatalf("expected committed text and tool to remain, got %d segments: %#v", len(tracker.Segments), tracker.Segments)
+	}
+	if tracker.Segments[0].Type != SegmentText || tracker.Segments[0].GetText() != "committed intro" {
+		t.Fatalf("committed text segment was not preserved: %#v", tracker.Segments[0])
+	}
+	if tracker.Segments[1].Type != SegmentTool || tracker.Segments[1].ToolCallID != "call-1" || tracker.Segments[1].ToolStatus != ToolSuccess {
+		t.Fatalf("committed tool segment was not preserved: %#v", tracker.Segments[1])
+	}
+}
+
 // TestAllCompletedSegments_IncludesFlushed verifies that AllCompletedSegments
 // returns both flushed and unflushed segments, unlike CompletedSegments.
 // This is critical for the final View() render to include all content.

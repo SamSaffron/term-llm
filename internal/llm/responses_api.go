@@ -37,7 +37,7 @@ type ResponsesClient struct {
 	LastResponseID     string            // Track for conversation continuity (server state)
 	DisableServerState bool              // Set to true to disable previous_response_id (e.g., for Copilot)
 
-	// Optional Responses-over-WebSocket transport. Disabled by default.
+	// Optional Responses-over-WebSocket transport, controlled by provider config.
 	UseWebSocket bool
 	// WebSocketServerState enables previous_response_id only for the WebSocket
 	// transport while keeping HTTP/SSE full-history. This is used for ChatGPT,
@@ -861,6 +861,7 @@ func (c *ResponsesClient) streamHTTPPrepared(ctx context.Context, httpPayload Re
 		var lastEventType string
 		var eventData []byte
 		handler := newResponsesStreamEventHandler(client, responseStateGeneration, debugRaw, "Responses API SSE", !client.DisableServerState)
+		sawTerminal := false
 
 		flushEvent := func() (bool, error) {
 			if len(eventData) == 0 {
@@ -873,6 +874,9 @@ func (c *ResponsesClient) streamHTTPPrepared(ctx context.Context, httpPayload Re
 			lastEventType = ""
 
 			stop, err := handler.HandleJSONEvent(data, eventType, send)
+			if stop {
+				sawTerminal = true
+			}
 			eventData = data[:0]
 			return stop, err
 		}
@@ -948,6 +952,13 @@ func (c *ResponsesClient) streamHTTPPrepared(ctx context.Context, httpPayload Re
 				}
 				break
 			}
+		}
+
+		if !sawTerminal {
+			if err := handler.FinishIncomplete(send); err != nil {
+				return &StreamIncompleteError{Transport: "Responses API SSE", Terminal: "response.completed or [DONE]", Err: err}
+			}
+			return &StreamIncompleteError{Transport: "Responses API SSE", Terminal: "response.completed or [DONE]"}
 		}
 
 		return handler.Finish(send)
@@ -1026,9 +1037,6 @@ func (s *responsesWebSocketFallbackStream) Recv() (Event, error) {
 	if event.Type == EventError {
 		if !s.emitted && len(s.fallbacks) > 0 {
 			return s.switchToNextFallback(event.Err)
-		}
-		if s.emitted && event.Err != nil {
-			event.Err = &NonRecoverableStreamError{Err: event.Err}
 		}
 	}
 	if event.Type != EventHeartbeat && event.Type != EventRetry {

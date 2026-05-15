@@ -8,6 +8,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -172,6 +173,33 @@ func TestViewAltScreenThrottlesSetContentDuringStreaming(t *testing.T) {
 
 	if model.viewCache.lastRenderedVersion != firstRenderedVersion {
 		t.Fatalf("expected lastRenderedVersion to remain %d when throttled, got %d", firstRenderedVersion, model.viewCache.lastRenderedVersion)
+	}
+}
+
+func TestAttemptDiscardBypassesAltScreenRenderThrottle(t *testing.T) {
+	model := newTestChatModel(true)
+	model.streaming = true
+	model.streamRenderMinInterval = 0
+	model.messages = []session.Message{{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "hello"}}, TextContent: "hello"}}
+	model.bumpContentVersion()
+
+	model.tracker.AddTextSegment("partial", model.width)
+	model.viewCache.lastViewportView = "partial"
+	model.viewCache.lastSetContentAt = time.Now()
+	model.viewCache.lastRenderedVersion = model.viewCache.contentVersion
+	model.streamRenderMinInterval = time.Hour
+	if !strings.Contains(model.viewCache.lastViewportView, "partial") {
+		t.Fatalf("precondition: expected partial text in viewport, got %q", model.viewCache.lastViewportView)
+	}
+
+	_, _ = model.Update(streamEventMsg{event: ui.AttemptDiscardEvent()})
+	_ = model.View()
+
+	if strings.Contains(model.viewCache.lastViewportView, "partial") {
+		t.Fatalf("discarded partial text remained visible after immediate render: %q", model.viewCache.lastViewportView)
+	}
+	if model.viewCache.lastSetContentAt.IsZero() {
+		t.Fatal("expected View to rebuild content immediately after discard")
 	}
 }
 

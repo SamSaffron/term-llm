@@ -150,8 +150,8 @@ func TestUpdate_StreamError_PreservesAltScreenStreamingContent(t *testing.T) {
 	if m.streaming {
 		t.Fatal("streaming should be false after stream error")
 	}
-	if m.err == nil {
-		t.Fatal("expected m.err after stream error")
+	if m.err != nil {
+		t.Fatal("stream error should be transient footer state, not durable m.err")
 	}
 	if !strings.Contains(ui.StripANSI(m.viewCache.completedStream), "partial streamed answer") {
 		t.Fatalf("completedStream should preserve partial content, got %q", m.viewCache.completedStream)
@@ -160,8 +160,8 @@ func TestUpdate_StreamError_PreservesAltScreenStreamingContent(t *testing.T) {
 	if !strings.Contains(view, "partial streamed answer") {
 		t.Fatalf("rendered view should contain partial content, got %q", view)
 	}
-	if !strings.Contains(view, "boom") {
-		t.Fatalf("rendered view should contain error, got %q", view)
+	if !strings.Contains(view, "Stream failed: boom") {
+		t.Fatalf("rendered view should contain transient footer error, got %q", view)
 	}
 	if m.viewCache.contentVersion <= before {
 		t.Fatalf("contentVersion must advance on stream error (before=%d after=%d)", before, m.viewCache.contentVersion)
@@ -185,8 +185,8 @@ func TestUpdate_StreamError_MarksPendingToolsFailed(t *testing.T) {
 		t.Fatalf("pending tool status = %v, want ToolError", m.tracker.Segments[0].ToolStatus)
 	}
 	view := ui.StripANSI(m.View().Content)
-	if !strings.Contains(view, "read_file") || !strings.Contains(view, "boom") {
-		t.Fatalf("rendered view should contain failed tool and error, got %q", view)
+	if !strings.Contains(view, "read_file") || !strings.Contains(view, "Stream failed: boom") {
+		t.Fatalf("rendered view should contain failed tool and transient footer error, got %q", view)
 	}
 }
 
@@ -205,8 +205,8 @@ func TestUpdate_StreamErrorBeforeAssistantOutputKeepsUserVisible(t *testing.T) {
 	if !strings.Contains(view, "hello from user") {
 		t.Fatalf("rendered view should keep user message visible, got %q", view)
 	}
-	if !strings.Contains(view, "boom") {
-		t.Fatalf("rendered view should contain error, got %q", view)
+	if !strings.Contains(view, "Stream failed: boom") {
+		t.Fatalf("rendered view should contain transient footer error, got %q", view)
 	}
 }
 
@@ -220,6 +220,43 @@ func TestUpdate_StreamRetryStatusIsGeneric(t *testing.T) {
 	}
 	if strings.Contains(m.retryStatus, "Rate limited") {
 		t.Fatalf("retry status should not be rate-limit-specific, got %q", m.retryStatus)
+	}
+}
+
+func TestUpdate_StreamRetryStatusClearsOnRecoveryProgress(t *testing.T) {
+	m := newTestChatModel(true)
+	m.streaming = true
+
+	_, _ = m.Update(streamEventMsg{event: ui.RetryEvent(1, 5, 0)})
+	if !strings.Contains(m.retryStatus, "Retrying stream") {
+		t.Fatalf("retry status should be set, got %q", m.retryStatus)
+	}
+	before := m.viewCache.contentVersion
+
+	_, _ = m.Update(streamEventMsg{event: ui.ToolStartEvent("call-1", "read_file", "(a.go)", nil)})
+
+	if m.retryStatus != "" {
+		t.Fatalf("retry status should clear on recovery progress, got %q", m.retryStatus)
+	}
+	if m.viewCache.contentVersion <= before {
+		t.Fatalf("clearing retry status should invalidate rendered content: before=%d after=%d", before, m.viewCache.contentVersion)
+	}
+}
+
+func TestUpdate_AttemptDiscardKeepsCommittedToolUsage(t *testing.T) {
+	m := newTestChatModel(true)
+	m.streaming = true
+	m.stats = ui.NewSessionStats()
+
+	_, _ = m.Update(streamEventMsg{event: ui.TextEvent("before tool")})
+	_, _ = m.Update(streamEventMsg{event: ui.UsageEvent(10, 5, 0, 0)})
+	_, _ = m.Update(streamEventMsg{event: ui.ToolStartEvent("call-1", "read_file", "(a.go)", nil)})
+	_, _ = m.Update(streamEventMsg{event: ui.ToolEndEvent("call-1", "read_file", "(a.go)", true)})
+	_, _ = m.Update(streamEventMsg{event: ui.UsageEvent(3, 4, 0, 0)})
+	_, _ = m.Update(streamEventMsg{event: ui.AttemptDiscardEvent()})
+
+	if m.stats.InputTokens != 10 || m.stats.OutputTokens != 5 || m.stats.LLMCallCount != 1 {
+		t.Fatalf("stats after committed usage + discard = %+v, want only committed usage", m.stats)
 	}
 }
 

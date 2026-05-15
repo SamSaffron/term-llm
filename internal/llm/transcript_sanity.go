@@ -36,7 +36,7 @@ func TruncateTranscriptForDuration(duration time.Duration, transcript string) st
 	if len(words) <= maxWords {
 		return transcript
 	}
-	slog.Warn("transcript implausibly long, truncating",
+	slog.Debug("transcript implausibly long, truncating",
 		"duration_s", int(math.Round(duration.Seconds())),
 		"words", len(words),
 		"max_words", maxWords)

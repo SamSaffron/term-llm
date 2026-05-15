@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -1990,5 +1991,92 @@ func TestResponsesClientStream_EmitsImageGeneratedEvent(t *testing.T) {
 	}
 	if seen.RevisedPrompt != revised {
 		t.Fatalf("RevisedPrompt = %q, want %q", seen.RevisedPrompt, revised)
+	}
+}
+
+func TestResponsesClientStream_ReturnsIncompleteErrorWithoutTerminal(t *testing.T) {
+	sse := "event: response.output_text.delta\ndata: {\"delta\":\"hello\"}\n\n"
+	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader(sse)),
+		}, nil
+	})}
+	client := &ResponsesClient{BaseURL: "https://example.test/v1/responses", GetAuthHeader: func() string { return "Bearer test-token" }, HTTPClient: httpClient}
+	stream, err := client.Stream(context.Background(), ResponsesRequest{Model: "gpt-5.2", Input: []ResponsesInputItem{{Type: "message", Role: "user", Content: "hello"}}, Stream: true}, false)
+	if err != nil {
+		t.Fatalf("stream request failed: %v", err)
+	}
+	defer stream.Close()
+
+	event, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("recv text: %v", err)
+	}
+	if event.Type != EventTextDelta || event.Text != "hello" {
+		t.Fatalf("expected text delta hello, got %+v", event)
+	}
+	event, err = stream.Recv()
+	if err != nil {
+		t.Fatalf("recv error event: %v", err)
+	}
+	if event.Type != EventError {
+		t.Fatalf("expected EventError, got %+v", event)
+	}
+	var incomplete *StreamIncompleteError
+	if !errors.As(event.Err, &incomplete) {
+		t.Fatalf("expected StreamIncompleteError, got %T %v", event.Err, event.Err)
+	}
+}
+
+func TestResponsesClientStream_EmitsToolCallBeforeIncompleteError(t *testing.T) {
+	sse := strings.Join([]string{
+		`event: response.output_item.added`,
+		`data: {"output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"search"}}`,
+		``,
+		`event: response.function_call_arguments.delta`,
+		`data: {"output_index":0,"delta":"{\"query\":\"weather\"}"}`,
+		``,
+		`event: response.output_item.done`,
+		`data: {"output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"search","arguments":"{\"query\":\"weather\"}"}}`,
+		``,
+	}, "\n")
+	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader(sse)),
+		}, nil
+	})}
+	client := &ResponsesClient{BaseURL: "https://example.test/v1/responses", GetAuthHeader: func() string { return "Bearer test-token" }, HTTPClient: httpClient}
+	stream, err := client.Stream(context.Background(), ResponsesRequest{Model: "gpt-5.2", Input: []ResponsesInputItem{{Type: "message", Role: "user", Content: "hello"}}, Stream: true}, false)
+	if err != nil {
+		t.Fatalf("stream request failed: %v", err)
+	}
+	defer stream.Close()
+
+	event, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("recv tool call: %v", err)
+	}
+	if event.Type != EventToolCall || event.Tool == nil {
+		t.Fatalf("expected EventToolCall, got %+v", event)
+	}
+	if event.Tool.ID != "call_1" || event.Tool.Name != "search" || string(event.Tool.Arguments) != `{"query":"weather"}` {
+		t.Fatalf("unexpected tool call: %+v", event.Tool)
+	}
+	event, err = stream.Recv()
+	if err != nil {
+		t.Fatalf("recv error event: %v", err)
+	}
+	if event.Type != EventError {
+		t.Fatalf("expected EventError, got %+v", event)
+	}
+	var incomplete *StreamIncompleteError
+	if !errors.As(event.Err, &incomplete) {
+		t.Fatalf("expected StreamIncompleteError, got %T %v", event.Err, event.Err)
 	}
 }

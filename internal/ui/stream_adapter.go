@@ -24,6 +24,13 @@ type StreamAdapter struct {
 
 	seenToolStarts map[string]struct{}
 	seenToolEnds   map[string]struct{}
+
+	attemptInput          int
+	attemptOutput         int
+	attemptCached         int
+	attemptCacheWrite     int
+	attemptUsageCalls     int
+	attemptUsageCommitted bool
 }
 
 // NewStreamAdapter creates a new StreamAdapter with the specified buffer size.
@@ -38,6 +45,16 @@ func NewStreamAdapter(bufSize int) *StreamAdapter {
 		seenToolStarts: make(map[string]struct{}),
 		seenToolEnds:   make(map[string]struct{}),
 	}
+}
+
+func (a *StreamAdapter) markAttemptCommitted() {
+	a.attemptInput, a.attemptOutput, a.attemptCached, a.attemptCacheWrite, a.attemptUsageCalls = 0, 0, 0, 0, 0
+	a.attemptUsageCommitted = true
+}
+
+func (a *StreamAdapter) resetAttemptUsage() {
+	a.attemptInput, a.attemptOutput, a.attemptCached, a.attemptCacheWrite, a.attemptUsageCalls = 0, 0, 0, 0, 0
+	a.attemptUsageCommitted = false
 }
 
 // Events returns the channel to read events from.
@@ -112,6 +129,7 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 			}
 
 		case llm.EventTextDelta:
+			a.attemptUsageCommitted = false
 			if event.Text != "" {
 				if !emit(TextEvent(event.Text)) {
 					return
@@ -119,6 +137,9 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 			}
 
 		case llm.EventToolCall:
+			// A tool call is a durable boundary. Usage from the provider attempt that
+			// produced it must not be rolled back by a later provisional retry discard.
+			a.markAttemptCommitted()
 			// Tool call announced during streaming - preserves interleaving order
 			if event.Tool != nil {
 				toolCallID := event.ToolCallID
@@ -149,6 +170,8 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 			}
 
 		case llm.EventToolExecStart:
+			// Tool execution is also durable/replayed from the engine journal.
+			a.markAttemptCommitted()
 			// Skip if already seen. If toolCallID is empty, don't dedupe - treat as unique.
 			if event.ToolCallID != "" {
 				if _, ok := a.seenToolStarts[event.ToolCallID]; ok {
@@ -175,6 +198,7 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 				return
 			}
 			a.stats.ToolEnd()
+			a.resetAttemptUsage()
 
 			// Emit image events from structured data
 			for _, imagePath := range event.ToolImages {
@@ -194,6 +218,15 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 				return
 			}
 
+		case llm.EventAttemptDiscard:
+			if a.attemptUsageCalls > 0 {
+				a.stats.DiscardUsage(a.attemptInput, a.attemptOutput, a.attemptCached, a.attemptCacheWrite, a.attemptUsageCalls)
+			}
+			a.resetAttemptUsage()
+			if !emit(AttemptDiscardEvent()) {
+				return
+			}
+
 		case llm.EventUsage:
 			if event.Use != nil {
 				totalTokens = event.Use.OutputTokens
@@ -202,6 +235,13 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 					return
 				}
 				a.stats.AddUsage(event.Use.InputTokens, event.Use.OutputTokens, event.Use.CachedInputTokens, event.Use.CacheWriteTokens)
+				if !a.attemptUsageCommitted {
+					a.attemptInput += event.Use.InputTokens
+					a.attemptOutput += event.Use.OutputTokens
+					a.attemptCached += event.Use.CachedInputTokens
+					a.attemptCacheWrite += event.Use.CacheWriteTokens
+					a.attemptUsageCalls++
+				}
 			}
 
 		case llm.EventPhase:

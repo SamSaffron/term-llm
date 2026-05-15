@@ -218,6 +218,12 @@ func (r *Renderer) HandleEvent(event RenderEvent) tea.Cmd {
 		}
 		return nil
 
+	case RenderEventStreamAttemptDiscard:
+		if r.streaming != nil {
+			r.streaming.DiscardAttempt()
+		}
+		return nil
+
 	case RenderEventStreamToolStart:
 		if r.streaming != nil {
 			started := r.streaming.StartTool(event.ToolCallID, event.ToolName, event.ToolInfo, event.ToolArgs)

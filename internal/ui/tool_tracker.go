@@ -116,6 +116,36 @@ func NewToolTracker() *ToolTracker {
 	}
 }
 
+func (t *ToolTracker) DiscardAttempt() {
+	keep := len(t.Segments)
+	for keep > 0 {
+		seg := t.Segments[keep-1]
+		switch {
+		case seg.Type == SegmentText && !seg.Complete:
+			keep--
+		case seg.Type == SegmentTool && seg.ToolStatus == ToolPending:
+			keep--
+		default:
+			goto done
+		}
+	}
+done:
+	if keep == len(t.Segments) {
+		return
+	}
+	t.Segments = t.Segments[:keep]
+	t.WavePos = 0
+	t.WavePaused = false
+	t.LastActivity = time.Now()
+	if keep == 0 {
+		t.LastFlushedType = SegmentText
+		t.HasFlushed = false
+	} else {
+		t.LastFlushedType = t.Segments[keep-1].Type
+	}
+	t.Version++
+}
+
 // SetExpanded controls whether tool segments render in expanded mode.
 func (t *ToolTracker) SetExpanded(v bool) {
 	t.expanded = v

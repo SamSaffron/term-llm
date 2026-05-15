@@ -85,6 +85,12 @@ func (s *StreamingBlock) AddText(text string) {
 	}
 }
 
+func (s *StreamingBlock) DiscardAttempt() {
+	if s.tracker != nil {
+		s.tracker.DiscardAttempt()
+	}
+}
+
 // StartTool adds a new pending tool segment.
 // Returns true if a new segment was added (for starting wave animation).
 func (s *StreamingBlock) StartTool(callID, name, info string, toolArgs json.RawMessage) bool {
