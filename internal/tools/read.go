@@ -172,8 +172,10 @@ func streamLineNumberedRange(ctx context.Context, reader *bufio.Reader, startLin
 	writtenLines := 0
 	truncated := false
 	byteCapped := false
-	emittedAny := false
+	sawData := false
 	lastEndedNewline := false
+	lineOpen := false
+	lineWriting := false
 
 	appendOutput := func(s string) {
 		if byteCapped {
@@ -203,34 +205,78 @@ func streamLineNumberedRange(ctx context.Context, reader *bufio.Reader, startLin
 		sb.WriteString(s)
 	}
 
-	processLine := func(line string) bool {
+	appendOutputBytes := func(p []byte) {
+		if byteCapped {
+			return
+		}
+		if limits.MaxBytes <= 0 {
+			if len(p) > 0 {
+				truncated = true
+				byteCapped = true
+			}
+			return
+		}
+		remaining := int(limits.MaxBytes) - sb.Len()
+		if remaining <= 0 {
+			if len(p) > 0 {
+				truncated = true
+				byteCapped = true
+			}
+			return
+		}
+		if len(p) > remaining {
+			_, _ = sb.Write(p[:remaining])
+			truncated = true
+			byteCapped = true
+			return
+		}
+		_, _ = sb.Write(p)
+	}
+
+	startNewLine := func() {
 		totalLines++
+		lineOpen = true
+		lineWriting = false
 		lineNum := totalLines
 
 		inRange := lineNum >= startLine && (endLine <= 0 || lineNum <= endLine)
-		if inRange {
-			selectedLines++
-			if selectedLines > limits.MaxLines {
-				truncated = true
-			} else {
-				if writtenLines > 0 {
-					appendOutput("\n")
-				}
-				appendOutput(strconv.Itoa(lineNum))
-				appendOutput(": ")
-				appendOutput(line)
-				writtenLines++
-			}
+		if !inRange {
+			return
 		}
+
+		selectedLines++
+		if selectedLines > limits.MaxLines {
+			truncated = true
+			return
+		}
+
+		if writtenLines > 0 {
+			appendOutput("\n")
+		}
+		appendOutput(strconv.Itoa(lineNum))
+		appendOutput(": ")
+		writtenLines++
+		lineWriting = true
+	}
+
+	writeLineFragment := func(fragment []byte) {
+		if lineWriting && len(fragment) > 0 {
+			appendOutputBytes(fragment)
+		}
+	}
+
+	finishLine := func() bool {
+		lineOpen = false
+		lineWriting = false
 
 		if truncated {
 			return false // Stop immediately once truncation is known; don't scan the rest of the file.
 		}
 		if endLine > 0 {
-			if startLine <= endLine && lineNum >= endLine {
+			if startLine <= endLine && totalLines >= endLine {
 				return false
 			}
-			if startLine > endLine && lineNum >= startLine {
+			if startLine > endLine && totalLines >= startLine {
 				return false
 			}
 		}
@@ -242,30 +288,48 @@ func streamLineNumberedRange(ctx context.Context, reader *bufio.Reader, startLin
 			return "", err
 		}
 
-		line, readErr := reader.ReadString('\n')
-		if len(line) > 0 {
-			emittedAny = true
-			if strings.HasSuffix(line, "\n") {
-				line = strings.TrimSuffix(line, "\n")
+		fragment, readErr := reader.ReadSlice('\n')
+		if len(fragment) > 0 {
+			sawData = true
+			lineEnded := fragment[len(fragment)-1] == '\n'
+			if lineEnded {
+				fragment = fragment[:len(fragment)-1]
 				lastEndedNewline = true
 			} else {
 				lastEndedNewline = false
 			}
-			if !processLine(line) {
+
+			if !lineOpen {
+				startNewLine()
+			}
+			writeLineFragment(fragment)
+
+			if lineEnded {
+				if !finishLine() {
+					break
+				}
+			} else if truncated {
 				break
 			}
 		}
 
-		if readErr != nil {
-			if errors.Is(readErr, io.EOF) {
-				if !emittedAny || lastEndedNewline {
-					processLine("")
-				}
-				totalLinesKnown = true
-				break
-			}
-			return "", readErr
+		if readErr == nil {
+			continue
 		}
+		if errors.Is(readErr, bufio.ErrBufferFull) {
+			continue
+		}
+		if errors.Is(readErr, io.EOF) {
+			if lineOpen {
+				finishLine()
+			} else if !sawData || lastEndedNewline {
+				startNewLine()
+				finishLine()
+			}
+			totalLinesKnown = true
+			break
+		}
+		return "", readErr
 	}
 
 	if totalLinesKnown && requestedStart > 0 && startLine > totalLines {

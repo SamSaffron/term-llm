@@ -109,6 +109,48 @@ func TestStreamLineNumberedRangeStopsReadingAfterTruncation(t *testing.T) {
 	}
 }
 
+func TestStreamLineNumberedRangeStopsReadingLongLineAfterByteCap(t *testing.T) {
+	limits := DefaultOutputLimits()
+	limits.MaxBytes = 10
+
+	reader := &chunkReader{
+		chunks: []string{
+			strings.Repeat("x", 64),
+			strings.Repeat("y", 64),
+			strings.Repeat("z", 64),
+		},
+	}
+	got, err := streamLineNumberedRange(context.Background(), bufio.NewReaderSize(reader, 16), 1, 0, limits)
+	if err != nil {
+		t.Fatalf("streamLineNumberedRange returned error: %v", err)
+	}
+	if reader.index != 1 {
+		t.Fatalf("expected byte cap to stop within first chunk, read %d chunks", reader.index)
+	}
+	if strings.Contains(got, "y") || strings.Contains(got, "z") {
+		t.Fatalf("output includes content read after cap: %q", got)
+	}
+	if !strings.Contains(got, "[Output truncated") {
+		t.Fatalf("expected truncation notice, got %q", got)
+	}
+}
+
+func TestStreamLineNumberedRangeReassemblesBufferedLongLine(t *testing.T) {
+	limits := DefaultOutputLimits()
+	limits.MaxBytes = 512
+	content := strings.Repeat("x", 128)
+
+	got, err := streamLineNumberedRange(context.Background(), bufio.NewReaderSize(strings.NewReader(content), 16), 1, 0, limits)
+	if err != nil {
+		t.Fatalf("streamLineNumberedRange returned error: %v", err)
+	}
+
+	want := "1: " + content
+	if got != want {
+		t.Fatalf("unexpected output:\nwant %q\n got %q", want, got)
+	}
+}
+
 func TestStreamLineNumberedRangeMatchesLegacyFormatting(t *testing.T) {
 	baseLimits := DefaultOutputLimits()
 	smallLineLimit := baseLimits
@@ -232,6 +274,32 @@ func BenchmarkReadFileToolStartRangeLargeFile(b *testing.B) {
 		}
 		if !strings.Contains(out.Content, "20: line 000019") {
 			b.Fatalf("range output missing final line: %q", out.Content)
+		}
+	}
+}
+
+func BenchmarkReadFileToolHugeSingleLineCapped(b *testing.B) {
+	path := filepath.Join(b.TempDir(), "huge-line.txt")
+	const lineSize = 8 * 1024 * 1024
+	if err := os.WriteFile(path, []byte(strings.Repeat("x", lineSize)), 0o644); err != nil {
+		b.Fatal(err)
+	}
+
+	limits := DefaultOutputLimits()
+	limits.MaxBytes = 1024
+	tool := NewReadFileTool(nil, limits)
+	args, _ := json.Marshal(ReadFileArgs{Path: path})
+
+	b.ReportAllocs()
+	b.SetBytes(lineSize)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		out, err := tool.Execute(context.Background(), args)
+		if err != nil {
+			b.Fatalf("Execute returned error: %v", err)
+		}
+		if !strings.Contains(out.Content, "[Output truncated") {
+			b.Fatalf("expected truncation notice, got: %.200q", out.Content)
 		}
 	}
 }
