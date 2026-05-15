@@ -1,183 +1,229 @@
 ---
 title: "Agent Containers"
 weight: 15
-description: "Run independent term-llm agents in Docker: one container per agent, fully isolated, no image rebuild needed."
+description: "Create isolated, persistent term-llm agents with the built-in Docker Compose workspace manager."
 kicker: "Deploy agents"
 ---
 
-Each agent gets its own Docker container, its own compose file, and its own state volume. Adding a new agent never touches an existing one.
+`term-llm contain` creates named Docker Compose workspaces for long-running agents. Each workspace has its own compose file, `.env`, Docker volume, Web UI, jobs service, memory database, sessions, skills, and agent configuration.
+
+The current happy path is `term-llm contain new` followed by `term-llm contain start`. You do not need to clone the term-llm repo or hand-copy seed directories.
 
 ## Prerequisites
 
 - Docker with Compose v2
-- A clone of the term-llm repo
-- At least one LLM API key (Anthropic, OpenAI, Venice, etc.)
+- `term-llm` installed on the host
+- At least one provider credential, or a plan to configure credentials inside the container later
 
-## Scaffold a new agent
-
-From the term-llm repo root:
+## Create an agent workspace
 
 ```bash
-docker/init.sh myagent
+term-llm contain new myagent
 ```
 
-This creates a standalone project directory:
+By default this uses the managed `agent` template. It creates a global workspace under your term-llm config directory:
 
-```
-myagent/
-├── docker-compose.yml
-├── .env                ← API keys, web token
-├── init.sh             ← boot hook (installs runit services)
-├── agents/
-│   └── myagent/
-│       ├── agent.yaml
-│       ├── soul.md      ← voice, values, personality
-│       └── system.md    ← operational context
-└── services/
-    ├── webui/run           ← web UI on port 8081
-    ├── jobs/run            ← job scheduler
-    └── bootstrap-jobs/run  ← creates default jobs on first boot
+```text
+~/.config/term-llm/containers/myagent/
+├── compose.yaml       # source of truth for Docker Compose
+├── .env               # provider credentials, Web UI token/port, image settings
+└── README.md          # workspace-specific commands and notes
 ```
 
-You can also specify a custom output directory:
+`contain new` prompts for provider credentials and useful settings unless you pass `--no-input` and `--set` values:
 
 ```bash
-docker/init.sh myagent ~/agents/myagent
+term-llm contain new myagent \
+  --no-input \
+  --set provider=anthropic \
+  --set web_port=8081
 ```
 
-## Configure
+The generated `.env` is private (`0600`). It contains the selected provider, optional API keys/OAuth bootstrap data, `WEB_PORT`, `WEB_BASE_PATH`, and a generated `WEB_TOKEN` for bearer-authenticated Web UI access.
 
-### API keys
+## Start and open it
 
-Edit `.env` and add at least one API key:
+If you did not start it from the creation prompt:
 
 ```bash
-ANTHROPIC_API_KEY=sk-ant-...
+term-llm contain start myagent
 ```
 
-The `.env` file also has a pre-generated `WEB_TOKEN` for authenticating the web UI and a `WEB_PORT` you can change if running multiple agents.
+The Web UI is exposed at:
 
-### Personality
-
-The scaffold separates personality from operations:
-
-- **`soul.md`**: voice, values, and boundaries. This is who the agent *is*. Edit it to change tone, principles, or guardrails.
-- **`system.md`**: operational context. Who the user is, what tools are available, domain-specific instructions. Edit it to change what the agent *knows about its environment*.
-
-Both files are bind-mounted into the container as seed files. On first boot they are copied into the agent's config directory on the state volume. After that, the container owns them. Your local copies are the seed, not the live version.
-
-### Agent settings
-
-`agent.yaml` controls model, tools, and behavior:
-
-```yaml
-name: myagent
-description: "AI assistant"
-include: ["soul.md"]
-tools:
-  enabled: [read_file, write_file, edit_file, glob, grep, shell, ...]
-shell:
-  auto_run: true
-  allow: ["*"]
-max_turns: 200
-search: true
+```text
+http://localhost:<WEB_PORT>/chat
 ```
 
-The `include` field loads additional markdown files (like `soul.md`) after the system prompt. See [Agents](/guides/agents/) for the full configuration reference.
+Use the bearer token printed by `contain new` or stored in the workspace `.env`.
 
-## Start
+You can also chat from the terminal using the built-in exec recipe:
 
 ```bash
-cd myagent
-docker compose up -d
+term-llm contain exec myagent agent
 ```
 
-The web UI will be at `http://localhost:8081/chat` (or whatever `WEB_PORT` you set).
+Open a shell inside the workspace:
 
-Authenticate with the bearer token from `.env`:
-
-```
-Authorization: Bearer <WEB_TOKEN>
+```bash
+term-llm contain shell myagent
 ```
 
-## How it works
+Shells open as the non-root `agent` user in `/home/agent`. Use explicit passwordless `sudo` when root privileges are needed.
 
-The container uses the same term-llm Docker image for every agent. No agent-specific files are baked into the image.
+## What gets bootstrapped
 
-On first boot, the entrypoint:
+The Compose service builds the managed agent image and mounts one persistent Docker volume at `/home/agent`. On first boot, the image copies bootstrap files from `/opt/term-llm/bootstrap` into that volume:
 
-1. Copies seed files from `/seed/` into the state volume (only if they don't already exist)
-2. Runs `/seed/init.sh` which installs runit services (web UI, job scheduler, job bootstrapper)
-3. Starts runit as PID 1
+```text
+/home/agent/.config/term-llm/
+├── agents/myagent/
+│   ├── agent.yaml
+│   ├── system.md
+│   ├── soul.md
+│   ├── memory/recent.md
+│   └── scripts/
+├── services/
+│   ├── webui/run
+│   ├── jobs/run
+│   └── bootstrap-jobs/run
+├── skills/
+│   ├── jobs/SKILL.md
+│   ├── memory/SKILL.md
+│   ├── self/SKILL.md
+│   └── widgets/SKILL.md
+└── init.sh
+```
 
-After the first boot, the state volume owns all agent config. Your local `agents/` directory remains the seed. Edit it and delete the volume to re-seed, or edit the live files inside the container directly.
+After first boot, the volume is the source of truth. Future boots ignore image bootstrap files and run `/home/agent/.config/term-llm/init.sh`, which reinstalls persisted runit service definitions into `/etc/sv` and links them into `/etc/runit/runsvdir`.
 
-The built-in `term-llm contain new` agent image keeps PID 1 and runit supervision as root so services can be linked under `/etc`, but the Web UI, jobs service, bootstrap jobs, interactive shells, and normal agent work run as the non-root Linux user `agent` with home `/home/agent`. Use explicit passwordless `sudo` inside the container for package maintenance or other root-only operations.
+The service supervisor runs as root. The Web UI, jobs server, bootstrap jobs, shells, and normal agent work run as the `agent` Linux user.
 
-### Services
+## Services
 
 | Service | What it does |
 |---|---|
-| `webui` | Web UI and HTTP API on port 8081 |
-| `jobs` | Background job scheduler |
-| `bootstrap-jobs` | Creates default scheduled jobs on first boot, then sleeps |
+| `webui` | Runs `term-llm serve web` on port `8081` inside the container. |
+| `jobs` | Runs `term-llm serve jobs` on port `8080` inside the container. |
+| `bootstrap-jobs` | Creates default scheduled jobs on first boot, then sleeps. |
 
-On first boot, the `bootstrap-jobs` service waits for the jobs API, then creates four default jobs:
+The Web UI service starts with file serving and widgets enabled:
+
+```bash
+term-llm serve web \
+  --agent myagent \
+  --base-path /chat \
+  --host 0.0.0.0 \
+  --port 8081 \
+  --auth bearer \
+  --yolo \
+  --files-dir /home/agent/Files \
+  --enable-widgets \
+  --widgets-dir /home/agent/.config/term-llm/widgets
+```
+
+Check service status from the host:
+
+```bash
+term-llm contain exec myagent -- sv status /etc/runit/runsvdir/webui/
+term-llm contain exec myagent -- sv status /etc/runit/runsvdir/jobs/
+```
+
+Restart a service:
+
+```bash
+term-llm contain exec myagent -- sudo sv restart /etc/runit/runsvdir/webui/
+```
+
+## Default jobs
+
+On first boot, `bootstrap-jobs` waits for the jobs API and creates:
 
 | Job | Schedule | What it does |
 |---|---|---|
-| `mine-sessions` | Every 30 min | Extracts memory fragments from session transcripts |
-| `update-recent` | Every 10 min | Promotes recent fragments into the agent's context |
-| `memory-gc` | Daily at 4am UTC | Garbage-collects stale or duplicate memory fragments |
-| `system-upgrade` | Daily at 5am | Keeps the container's distro packages current (`pacman` on Arch, `dnf` on Fedora) |
+| `mine-sessions` | Every 30 min | Mines session transcripts into memory fragments. |
+| `update-recent` | Every 10 min | Promotes recent fragments into `memory/recent.md`. |
+| `memory-gc` | Daily at 04:00 UTC | Garbage-collects stale or duplicate memory fragments. |
+| `system-upgrade` | Daily at 05:00 UTC | Upgrades distro packages (`pacman` on Arch, `dnf` on Fedora). |
 
-These jobs are yours after creation. Edit or delete them with `term-llm jobs list` and `term-llm jobs update`.
-
-All services are managed by runit. Check status:
+Inspect and operate them inside the workspace:
 
 ```bash
-docker exec myagent sv status /etc/runit/runsvdir/webui/
+term-llm contain exec myagent -- term-llm jobs list
+term-llm contain exec myagent -- term-llm jobs runs mine-sessions --limit 10
+term-llm contain exec myagent -- term-llm jobs update mine-sessions --data '{"enabled": false}'
 ```
 
-## Running multiple agents
+## Skills and memory
 
-Each scaffolded directory is fully independent. Run as many as you like:
+Fresh agent containers include a small default skill set:
 
-```bash
-docker/init.sh agent-a
-docker/init.sh agent-b ~/agents/agent-b
+| Skill | Purpose |
+|---|---|
+| `jobs` | Inspect and manage jobs and runit services. |
+| `memory` | Search and update persistent memory fragments. |
+| `self` | Safely modify the agent's own prompt/config/scripts. |
+| `widgets` | Build, install, inspect, and debug Web UI widgets. |
+
+Skills are copied to `/home/agent/.config/term-llm/skills/` and the first-boot `config.yaml` enables the skills system with auto-invocation.
+
+Memory fragments live in term-llm's database on the persistent volume. `memory/recent.md` is seeded empty and then maintained by the default jobs; do not edit it directly.
+
+## Widgets
+
+Add widget apps under:
+
+```text
+/home/agent/.config/term-llm/widgets/
 ```
 
-Set different `WEB_PORT` values in each `.env` to avoid port conflicts:
+They are served under:
 
-```bash
-# agent-a/.env
-WEB_PORT=8081
-
-# agent-b/.env
-WEB_PORT=8082
+```text
+/chat/widgets/<widget-name>/
 ```
 
-Each agent gets its own Docker volume for state, its own compose project, and its own container. They share only the term-llm image.
+The bundled `widgets` skill documents the operational workflow: inspect widget support, create manifests, restart `webui` if needed, and smoke-test routes.
 
 ## Updating
 
-When you pull a new version of term-llm, rebuild the image and restart:
+Update the host `term-llm` first, then rebuild/recreate the workspace image:
 
 ```bash
-cd myagent
-docker compose up -d --build
+term-llm contain rebuild myagent
 ```
 
-The state volume persists across rebuilds. Agent config, memory, and session history are preserved. The `init.sh` boot hook re-installs runit services on every boot, so new services added to your `services/` directory will be picked up automatically.
+State is preserved in the Docker volume. Rebuilds update the managed image and binary but do not overwrite the live agent config already copied into `/home/agent`.
 
-## Transcript access
+## Removing a workspace
 
-Session transcripts are stored in the state volume. To access them from the host:
+Stopping preserves state:
 
 ```bash
-docker exec myagent term-llm sessions list --agent myagent
-docker exec myagent term-llm sessions show <session-id> --agent myagent
+term-llm contain stop myagent
 ```
 
-The `mine-sessions` job automatically extracts key facts from transcripts into searchable memory fragments. See the bootstrapped jobs above for the full list of default scheduled tasks.
+Removal is destructive and asks for confirmation:
+
+```bash
+term-llm contain rm myagent
+```
+
+This runs Docker Compose down with volumes and deletes the workspace config directory.
+
+## Running multiple agents
+
+Each workspace is independent:
+
+```bash
+term-llm contain new agent-a --set web_port=8081
+term-llm contain new agent-b --set web_port=8082
+term-llm contain start agent-a
+term-llm contain start agent-b
+```
+
+Each gets its own Compose project, persistent volume, Web UI token, jobs, memory, sessions, and live agent files.
+
+## Advanced: custom bootstrap seed
+
+The managed image supports an optional static `/seed` mount containing `bootstrap.yaml`. If present, `/seed` replaces the image bootstrap source for first boot only. After the bootstrap sentinel exists on the volume, `/seed` is ignored. For normal use, prefer the built-in `contain new` template and edit the live files through the agent's self-modification workflow.

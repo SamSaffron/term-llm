@@ -132,6 +132,16 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 					t.Fatalf("system prompt missing action discipline detail %q", want)
 				}
 			}
+			for _, want := range []string{"Do **not** edit `system.md` or `agent.yaml` directly", "use the self skill", "patch scripts described below"} {
+				if !strings.Contains(string(data), want) {
+					t.Fatalf("system prompt missing self-modification guidance %q", want)
+				}
+			}
+			for _, forbidden := range []string{"Edit this file to add:", "Edit `soul.md` to change"} {
+				if strings.Contains(string(data), forbidden) {
+					t.Fatalf("system prompt still contains direct-edit guidance %q", forbidden)
+				}
+			}
 			for _, want := range []string{"## Jobs and Services", "term-llm jobs list", "bootstrap-jobs", "runit", "memory/recent.md"} {
 				if !strings.Contains(string(data), want) {
 					t.Fatalf("system prompt missing jobs/services detail %q", want)

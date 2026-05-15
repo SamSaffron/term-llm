@@ -73,13 +73,16 @@ Services are runit-managed processes installed under `/home/agent/.config/term-l
 
 ## Getting started
 
-Edit this file to add:
+Use this file to record operational context:
 - Who your user is and what they care about
 - What tools and services you have access to
 - Domain-specific instructions or constraints
 - Anything that should shape how you behave in this context
 
-Edit `soul.md` to change your voice, values, or personality.
+Do **not** edit `system.md` or `agent.yaml` directly. When the user asks you to
+change your behavior, context, tools, or model settings, use the self skill and
+patch scripts described below. Update `soul.md` for voice, values, or personality
+changes, again through the documented self-modification workflow.
 
 ## Memory
 
