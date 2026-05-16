@@ -824,9 +824,11 @@ async function testSendMessageRefreshesContinuationIdBeforePosting() {
   const staleId = 'resp_msg_796607';
   const latestId = 'resp_msg_796651';
   let syncCalls = 0;
+  let skipMessagesFetch = false;
   const harness = createHarness({
-    onSyncActiveSessionFromServer(session) {
+    onSyncActiveSessionFromServer(session, _pollOnActive, opts) {
       syncCalls += 1;
+      skipMessagesFetch = Boolean(opts?.skipMessagesFetch);
       if (session.lastResponseId === staleId) {
         session.lastResponseId = latestId;
       }
@@ -859,6 +861,10 @@ async function testSendMessageRefreshesContinuationIdBeforePosting() {
   }
   if (syncCalls !== 1) {
     fail(name, `expected one preflight sync, got ${syncCalls}`);
+    return;
+  }
+  if (!skipMessagesFetch) {
+    fail(name, 'expected preflight sync to skip the full messages reload');
     return;
   }
   const postCall = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
