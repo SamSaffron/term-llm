@@ -275,6 +275,7 @@ function createHarness(appOverrides = {}) {
   const timers = [];
   let timerId = 0;
   const copied = [];
+  const parseCalls = [];
 
   const app = {
     STORAGE_KEYS: { sidebarCollapsed: 'sidebar' },
@@ -344,6 +345,7 @@ function createHarness(appOverrides = {}) {
     navigator: { clipboard: { async writeText(text) { copied.push(text); } } },
     marked: { parse(text) {
       const value = String(text || '');
+      parseCalls.push(value);
       const code = value.match(/^```([A-Za-z0-9_-]+)?\n([\s\S]*?)\n```\s*$/);
       if (code) {
         const lang = code[1] ? ` class="language-${code[1]}"` : '';
@@ -362,7 +364,7 @@ function createHarness(appOverrides = {}) {
   windowObj.localStorage = context.localStorage;
 
   vm.runInNewContext(source, context, { filename: 'app-render.js' });
-  return { app, session, messages, document, timers, copied };
+  return { app, session, messages, document, timers, copied, parseCalls };
 }
 
 function messageNode(id, role) {
@@ -1122,24 +1124,49 @@ async function run(name, fn) {
     assertEqual(messages.children[0].dataset.messageId, 'b1', 'new session node has correct id');
   });
 
-  await run('renderMessages: full rebuild when message list changes non-incrementally', () => {
-    const { app, session, messages } = createHarness();
+  await run('renderMessages: non-append updates reuse unchanged assistant nodes', () => {
+    const { app, session, messages, parseCalls } = createHarness();
     session.messages = [
-      { id: 'x1', role: 'user', content: 'a', created: Date.now() },
-      { id: 'x2', role: 'assistant', content: 'b', created: Date.now() },
+      { id: 'u1', role: 'user', content: 'a', created: Date.now() },
+      { id: 'a1', role: 'assistant', content: 'b', created: Date.now() },
     ];
     app.renderMessages();
     assertEqual(messages.children.length, 2, 'two nodes initially');
-    const firstNode = messages.children[0];
+    const originalUserNode = messages.children[0];
+    const originalAssistantNode = messages.children[1];
+    assertEqual(parseCalls.length, 1, 'assistant markdown parsed once on initial render');
 
-    // Replace the messages (non-append: different IDs)
     session.messages = [
-      { id: 'y1', role: 'user', content: 'new', created: Date.now() },
+      { id: 'u0', role: 'user', content: 'history', created: Date.now() - 1000 },
+      session.messages[0],
+      session.messages[1],
     ];
     app.renderMessages();
-    assertEqual(messages.children.length, 1, 'one node after non-incremental update');
-    assert(messages.children[0] !== firstNode, 'node was recreated');
-    assertEqual(messages.children[0].dataset.messageId, 'y1', 'rebuilt node has correct id');
+
+    assertEqual(messages.children.length, 3, 'history insert keeps all messages rendered');
+    assertEqual(messages.children[0].dataset.messageId, 'u0', 'new history node inserted at the front');
+    assert(messages.children[1] === originalUserNode, 'existing user node reused after front insertion');
+    assert(messages.children[2] === originalAssistantNode, 'existing assistant node reused after front insertion');
+    assertEqual(parseCalls.length, 1, 'unchanged assistant markdown was not reparsed');
+  });
+
+  await run('renderMessages: same-length updates still refresh changed assistant content', () => {
+    const { app, session, messages, parseCalls } = createHarness();
+    session.messages = [
+      { id: 'u1', role: 'user', content: 'prompt', created: Date.now() },
+      { id: 'a1', role: 'assistant', content: 'old', created: Date.now() },
+    ];
+    app.renderMessages();
+    assertEqual(parseCalls.length, 1, 'assistant parsed on initial render');
+
+    session.messages = [
+      session.messages[0],
+      { ...session.messages[1], content: 'new' },
+    ];
+    app.renderMessages();
+
+    assertEqual(parseCalls.length, 2, 'assistant reparsed when content changes without any append');
+    assertEqual(messages.children[1].querySelector('.message-body').textContent, 'new', 'assistant content updated');
   });
 
   await run('updateSidebarStatus finds local session by id using Map lookup', () => {
