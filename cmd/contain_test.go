@@ -147,7 +147,7 @@ func TestContainNewStartPromptDefaultYesStartsWorkspace(t *testing.T) {
 	if !started {
 		t.Fatal("expected default empty answer to start workspace")
 	}
-	if len(r.calls) != 1 || !strings.Contains(r.calls[0], "up -d --build") {
+	if len(r.calls) != 2 || !strings.Contains(r.calls[0], "ps --all -q") || !strings.Contains(r.calls[1], "up -d") || strings.Contains(r.calls[1], "--build") {
 		t.Fatalf("runner calls = %#v", r.calls)
 	}
 	if !strings.Contains(stdout.String(), "Start container now? [Y/n]") || !strings.Contains(stdout.String(), "Starting contain workspace") {

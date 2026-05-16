@@ -64,11 +64,21 @@ var containNewCmd = &cobra.Command{
 
 var containStartCmd = &cobra.Command{
 	Use:               "start <name>",
-	Short:             "Start a contain workspace with docker compose up -d --build",
+	Short:             "Start an existing contain workspace, creating containers if needed",
 	Args:              requireContainNameArg,
 	ValidArgsFunction: containWorkspaceNameCompletion,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return contain.Start(cmd.Context(), containRunner, args[0], cmd.OutOrStdout(), cmd.ErrOrStderr())
+	},
+}
+
+var containRestartCmd = &cobra.Command{
+	Use:               "restart <name>",
+	Short:             "Restart a contain workspace",
+	Args:              requireContainNameArg,
+	ValidArgsFunction: containWorkspaceNameCompletion,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return contain.Restart(cmd.Context(), containRunner, args[0], cmd.OutOrStdout(), cmd.ErrOrStderr())
 	},
 }
 
@@ -424,6 +434,7 @@ func init() {
 	rootCmd.AddCommand(containCmd)
 	containCmd.AddCommand(containNewCmd)
 	containCmd.AddCommand(containStartCmd)
+	containCmd.AddCommand(containRestartCmd)
 	containCmd.AddCommand(containStopCmd)
 	containCmd.AddCommand(containRmCmd)
 	containCmd.AddCommand(containRebuildCmd)

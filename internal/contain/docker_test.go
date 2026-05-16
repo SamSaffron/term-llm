@@ -11,12 +11,13 @@ import (
 )
 
 type fakeRunner struct {
-	name    string
-	args    []string
-	dir     string
-	runs    [][]string
-	output  []byte
-	outputs [][]byte
+	name       string
+	args       []string
+	dir        string
+	runs       [][]string
+	outputsRun [][]string
+	output     []byte
+	outputs    [][]byte
 }
 
 func (f *fakeRunner) Run(ctx context.Context, name string, args []string, opts RunOptions) error {
@@ -30,6 +31,8 @@ func (f *fakeRunner) Run(ctx context.Context, name string, args []string, opts R
 func (f *fakeRunner) Output(ctx context.Context, name string, args []string, opts RunOptions) ([]byte, error) {
 	f.name = name
 	f.args = append([]string(nil), args...)
+	f.outputsRun = append(f.outputsRun, append([]string{name}, args...))
+	f.dir = opts.Dir
 	if len(f.outputs) > 0 {
 		out := f.outputs[0]
 		f.outputs = f.outputs[1:]
@@ -82,8 +85,9 @@ services:
 		run  func(*fakeRunner) error
 		want []string
 	}{
-		{"start", func(r *fakeRunner) error { return Start(context.Background(), r, "box", io.Discard, io.Discard) }, append(append([]string{}, base...), "up", "-d", "--build")},
+		{"start", func(r *fakeRunner) error { return Start(context.Background(), r, "box", io.Discard, io.Discard) }, append(append([]string{}, base...), "up", "-d")},
 		{"stop", func(r *fakeRunner) error { return Stop(context.Background(), r, "box", io.Discard, io.Discard) }, append(append([]string{}, base...), "stop")},
+		{"restart", func(r *fakeRunner) error { return Restart(context.Background(), r, "box", io.Discard, io.Discard) }, append(append([]string{}, base...), "restart")},
 		{"exec", func(r *fakeRunner) error {
 			return Exec(context.Background(), r, "box", []string{"echo", "hi"}, nil, io.Discard, io.Discard)
 		}, append(append([]string{}, base...), "exec", "web", "echo", "hi")},
@@ -260,6 +264,44 @@ services:
 	}
 	if strings.Contains(args, "TERM_LLM_PRIMARY_SELECTION_TOKEN") {
 		t.Fatalf("unexpected separate proxy token env in args: %#v", r.args)
+	}
+}
+
+func TestStartUsesComposeStartWhenContainersExist(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir := writeComposeForDockerTest(t, "box", "")
+	compose := filepath.Join(dir, "compose.yaml")
+	base := []string{"docker", "compose", "-f", compose, "--project-directory", dir, "-p", "term-llm-contain-box"}
+	r := &fakeRunner{output: []byte("abc123\n")}
+	if err := Start(context.Background(), r, "box", io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	wantOutputs := [][]string{append(append([]string{}, base...), "ps", "--all", "-q")}
+	if !reflect.DeepEqual(r.outputsRun, wantOutputs) {
+		t.Fatalf("outputs = %#v\nwant %#v", r.outputsRun, wantOutputs)
+	}
+	wantRuns := [][]string{append(append([]string{}, base...), "start")}
+	if !reflect.DeepEqual(r.runs, wantRuns) {
+		t.Fatalf("runs = %#v\nwant %#v", r.runs, wantRuns)
+	}
+}
+
+func TestStartUsesComposeUpWhenNoContainersExist(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir := writeComposeForDockerTest(t, "box", "")
+	compose := filepath.Join(dir, "compose.yaml")
+	base := []string{"docker", "compose", "-f", compose, "--project-directory", dir, "-p", "term-llm-contain-box"}
+	r := &fakeRunner{output: []byte("\n")}
+	if err := Start(context.Background(), r, "box", io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	wantOutputs := [][]string{append(append([]string{}, base...), "ps", "--all", "-q")}
+	if !reflect.DeepEqual(r.outputsRun, wantOutputs) {
+		t.Fatalf("outputs = %#v\nwant %#v", r.outputsRun, wantOutputs)
+	}
+	wantRuns := [][]string{append(append([]string{}, base...), "up", "-d")}
+	if !reflect.DeepEqual(r.runs, wantRuns) {
+		t.Fatalf("runs = %#v\nwant %#v", r.runs, wantRuns)
 	}
 }
 

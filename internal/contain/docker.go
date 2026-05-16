@@ -85,11 +85,38 @@ func Start(ctx context.Context, runner Runner, name string, stdout, stderr io.Wr
 	if err := ensureComposeDefinition(name); err != nil {
 		return err
 	}
+	if hasContainers, err := composeHasContainers(ctx, runner, args, dir); err != nil {
+		return err
+	} else if hasContainers {
+		startArgs := append(append([]string{}, args...), "start")
+		return runner.Run(ctx, "docker", startArgs, RunOptions{Stdout: stdout, Stderr: stderr, Dir: dir})
+	}
 	if err := syncManagedImagesForWorkspace(name); err != nil {
 		return err
 	}
-	args = append(args, "up", "-d", "--build")
+	upArgs := append(append([]string{}, args...), "up", "-d")
+	return runner.Run(ctx, "docker", upArgs, RunOptions{Stdout: stdout, Stderr: stderr, Dir: dir})
+}
+
+func Restart(ctx context.Context, runner Runner, name string, stdout, stderr io.Writer) error {
+	args, dir, err := ComposeBaseArgs(name)
+	if err != nil {
+		return err
+	}
+	if err := ensureComposeDefinition(name); err != nil {
+		return err
+	}
+	args = append(args, "restart")
 	return runner.Run(ctx, "docker", args, RunOptions{Stdout: stdout, Stderr: stderr, Dir: dir})
+}
+
+func composeHasContainers(ctx context.Context, runner Runner, args []string, dir string) (bool, error) {
+	psArgs := append(append([]string{}, args...), "ps", "--all", "-q")
+	out, err := runner.Output(ctx, "docker", psArgs, RunOptions{Stderr: io.Discard, Dir: dir})
+	if err != nil {
+		return false, fmt.Errorf("check existing compose containers: %w", err)
+	}
+	return strings.TrimSpace(string(out)) != "", nil
 }
 
 func Stop(ctx context.Context, runner Runner, name string, stdout, stderr io.Writer) error {
