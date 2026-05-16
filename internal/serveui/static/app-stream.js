@@ -52,6 +52,27 @@ const normalizeError = async (response) => {
   return { status: response.status, message };
 };
 
+const hasSessionContinuationContext = (session) => Boolean(
+  session && (
+    Number(session.number || 0) > 0
+    || (Array.isArray(session.messages) && session.messages.length > 0)
+  )
+);
+
+const classifyRecoverableContinuationFailure = (error, previousResponseId = '') => {
+  const status = Number(error?.status || 0);
+  const message = String(error?.message || '').trim();
+  const lowered = message.toLowerCase();
+
+  if (previousResponseId && (status === 400 || status === 409) && lowered.includes('previous_response_id')) {
+    return 'previous_response_id';
+  }
+  if (lowered.includes('session is busy processing another request')) {
+    return 'session_busy';
+  }
+  return '';
+};
+
 const fetchProviders = async (tokenOverride = '') => {
   const headers = {};
   const token = tokenOverride || state.token;
@@ -785,6 +806,10 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
   if (event === 'response.failed') {
     const errorMessage = payload?.error?.message || 'The response failed.';
     const lowered = errorMessage.toLowerCase();
+    const recoverableContinuationFailure = classifyRecoverableContinuationFailure(
+      { message: errorMessage },
+      session.lastResponseId
+    );
     const canceledByInterrupt = state.expectCanceledRun && (
       lowered.includes('context canceled') ||
       lowered.includes('context cancelled') ||
@@ -792,7 +817,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       lowered.includes('canceled')
     );
 
-    if (!canceledByInterrupt) {
+    if (!canceledByInterrupt && !recoverableContinuationFailure) {
       addErrorMessage(errorMessage, session);
     }
     state.expectCanceledRun = false;
@@ -811,7 +836,12 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     renderSidebar();
     app.refreshSidebarStatusPoll?.();
     scrollVisibleStreamToBottom(session, true);
-    return { terminal: true };
+    return {
+      terminal: true,
+      error: recoverableContinuationFailure
+        ? { message: errorMessage, recoverableContinuationFailure }
+        : null
+    };
   }
 
   return { terminal: false };
@@ -821,6 +851,7 @@ const consumeResponseStream = async (stream, session, streamState, options = {})
   let sawTerminal = false;
   let sawDone = false;
   let stale = false;
+  let terminalError = null;
   const generation = Number.isFinite(Number(options.generation)) ? Number(options.generation) : state.streamGeneration;
   const sessionId = String(session?.id || '').trim();
   const expectedResponseId = String(options.responseId || '').trim();
@@ -865,6 +896,9 @@ const consumeResponseStream = async (stream, session, streamState, options = {})
     if (result?.terminal) {
       sawTerminal = true;
     }
+    if (result?.error) {
+      terminalError = result.error;
+    }
     if (!streamIsCurrent()) {
       stale = true;
       return false;
@@ -872,7 +906,7 @@ const consumeResponseStream = async (stream, session, streamState, options = {})
     return true;
   });
 
-  return { terminal: sawTerminal || sawDone || !session.activeResponseId, stale };
+  return { terminal: sawTerminal || sawDone || !session.activeResponseId, stale, error: stale ? null : terminalError };
 };
 
 const fetchResponseSnapshot = async (session, responseId) => {
@@ -3255,20 +3289,19 @@ const sendMessage = async (options = {}) => {
     updateURL(sessionSlug(session));
   }
 
-  const shouldRefreshContinuation = !options._skipContinuationRefresh && Boolean(
-    session && !session.activeResponseId && (
-      String(session.lastResponseId || '').trim()
-      || Number(session.number || 0) > 0
-      || (Array.isArray(session.messages) && session.messages.length > 0)
-    )
+  const shouldRefreshMissingContinuation = !options._skipContinuationRefresh && Boolean(
+    session
+    && !session.activeResponseId
+    && !String(session.lastResponseId || '').trim()
+    && hasSessionContinuationContext(session)
   );
-  if (shouldRefreshContinuation && typeof app.syncActiveSessionFromServer === 'function') {
+  if (shouldRefreshMissingContinuation && typeof app.syncActiveSessionFromServer === 'function') {
     try {
-      await app.syncActiveSessionFromServer(session, false);
+      await app.syncActiveSessionFromServer(session, false, { skipMessagesFetch: true });
       session = getActiveSession() || session;
     } catch (_err) {
-      // Best effort only: the stale-ID guard below still uses the latest
-      // continuation ID we have if the state refresh is unavailable.
+      // Best effort only: if the continuation cursor is still unavailable we
+      // fall back to the local session state below.
     }
     if (state.streaming || session.activeResponseId) {
       return sendMessage({ ...options, _skipContinuationRefresh: true });
@@ -3333,6 +3366,7 @@ const sendMessage = async (options = {}) => {
   setStreaming(true);
   app.refreshSidebarStatusPoll?.();
   const streamState = createResponseStreamState(session);
+  let previousResponseId = '';
 
   try {
     // Build input content: plain string or array with file/image parts
@@ -3352,7 +3386,7 @@ const sendMessage = async (options = {}) => {
       input: [{ type: 'message', role: 'user', content: inputContent }]
     };
 
-    const previousResponseId = String(session.lastResponseId || '').trim();
+    previousResponseId = String(session.lastResponseId || '').trim();
     if (previousResponseId) {
       body.previous_response_id = previousResponseId;
     }
@@ -3431,6 +3465,9 @@ const sendMessage = async (options = {}) => {
     } else {
       const responseId = headerResponseId || session.activeResponseId;
       const result = await consumeResponseStream(response.body, session, streamState, { generation: sendGeneration, responseId });
+      if (!result.stale && result.error) {
+        throw result.error;
+      }
       if (!result.stale && !result.terminal && sendGeneration === state.streamGeneration && session.activeResponseId) {
         await resumeActiveResponse(session, { streamState, responseId });
       }
@@ -3464,6 +3501,51 @@ const sendMessage = async (options = {}) => {
       await resumeActiveResponse(session, { streamState });
       persistAndRefreshShell();
       return;
+    }
+
+    const recoverableContinuationFailure = !options._skipContinuationRefresh
+      ? (err?.recoverableContinuationFailure || classifyRecoverableContinuationFailure(err, previousResponseId))
+      : '';
+    if (recoverableContinuationFailure && typeof app.syncActiveSessionFromServer === 'function') {
+      if (state.abortController === controller) {
+        state.abortController = null;
+      }
+
+      let continuationRefreshed = false;
+      try {
+        await app.syncActiveSessionFromServer(session, false, { skipMessagesFetch: true });
+        session = getActiveSession() || session;
+        continuationRefreshed = true;
+      } catch {
+        continuationRefreshed = false;
+      }
+
+      if (state.streaming || session.activeResponseId) {
+        const retryOptions = {
+          ...options,
+          _skipContinuationRefresh: true,
+          reuseMessageId: userMessage.id
+        };
+        if (Array.isArray(userMessage.attachments) && userMessage.attachments.length > 0) {
+          retryOptions.attachments = userMessage.attachments.map(cloneAttachmentForMessage);
+        }
+        detachResponseStream();
+        return sendMessage(retryOptions);
+      }
+
+      const continuationChanged = String(session.lastResponseId || '').trim() !== previousResponseId;
+      if (continuationRefreshed && (recoverableContinuationFailure === 'session_busy' || continuationChanged)) {
+        const retryOptions = {
+          ...options,
+          _skipContinuationRefresh: true,
+          reuseMessageId: userMessage.id
+        };
+        if (Array.isArray(userMessage.attachments) && userMessage.attachments.length > 0) {
+          retryOptions.attachments = userMessage.attachments.map(cloneAttachmentForMessage);
+        }
+        detachResponseStream();
+        return sendMessage(retryOptions);
+      }
     }
 
     // Clear our own controller so syncActiveSessionFromServer can act on

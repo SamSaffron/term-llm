@@ -451,12 +451,23 @@ function createHarness(options = {}) {
   windowObj.document = document;
   windowObj.localStorage = localStorage;
   windowObj.URL = urlAPI;
-  windowObj.fetch = async function fetch(url, options = {}) {
+  windowObj.fetch = async function fetch(url, requestOptions = {}) {
     fetchCalls.push({
       url,
-      method: options.method || 'GET',
-      body: typeof options.body === 'string' ? options.body : null,
+      method: requestOptions.method || 'GET',
+      body: typeof requestOptions.body === 'string' ? requestOptions.body : null,
     });
+    if (typeof options.fetchImpl === 'function') {
+      return options.fetchImpl(url, requestOptions, {
+        Response,
+        ReadableStream,
+        Headers,
+        TextEncoder,
+        TextDecoder,
+        encoder,
+        responseId,
+      });
+    }
     if (url.includes('/ui/v1/sessions/') && url.endsWith('/interrupt')) {
       if (interruptStatus !== 200) {
         return new Response(JSON.stringify(interruptErrorPayload), {
@@ -469,14 +480,14 @@ function createHarness(options = {}) {
         headers: { 'Content-Type': 'application/json' },
       });
     }
-    if (url === '/ui/v1/responses' && (options.method || 'GET') === 'POST') {
+    if (url === '/ui/v1/responses' && (requestOptions.method || 'GET') === 'POST') {
       if (postStatus !== 200) {
         return new Response(JSON.stringify(postErrorPayload), {
           status: postStatus,
           headers: { 'Content-Type': 'application/json' },
         });
       }
-      const signal = options.signal || null;
+      const signal = requestOptions.signal || null;
       return new Response(new ReadableStream({
         start(controller) {
           postStreamController = controller;
@@ -520,7 +531,7 @@ function createHarness(options = {}) {
     }
     if (url.startsWith(`/ui/v1/responses/${responseId}/events?after=`)) {
       getEventsStarted = true;
-      const signal = options.signal || null;
+      const signal = requestOptions.signal || null;
       if (eventsStatus !== 200) {
         return new Response(JSON.stringify(eventsErrorPayload), {
           status: eventsStatus,
@@ -819,18 +830,107 @@ async function testSendMessageDoesNotResumeAfterStalePostStream() {
   pass(name);
 }
 
-async function testSendMessageRefreshesContinuationIdBeforePosting() {
-  const name = 'sendMessage refreshes stale continuation id before posting';
+async function testSendMessageUsesLocalContinuationIdWithoutPreflightSync() {
+  const name = 'sendMessage uses the local continuation id without preflight sync';
+  const lastResponseId = 'resp_msg_796651';
+  let syncCalls = 0;
+  const harness = createHarness({
+    onSyncActiveSessionFromServer() {
+      syncCalls += 1;
+      return { active_run: false, lastResponseId };
+    },
+  });
+  const { app, elements, state, fetchCalls, cleanup } = harness;
+  const session = {
+    id: 'session_local_previous',
+    title: 'Local previous',
+    messages: [{ id: 'msg_old', role: 'user', content: 'old', created: Date.now() - 1000 }],
+    lastResponseId,
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+    number: 42,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  elements.promptInput.value = 'follow up';
+
+  let sendErr = null;
+  await app.sendMessage().catch((err) => {
+    sendErr = err;
+  });
+  await cleanup();
+
+  if (sendErr) {
+    fail(name, 'sendMessage rejected unexpectedly', String(sendErr));
+    return;
+  }
+  if (syncCalls !== 0) {
+    fail(name, `expected no preflight sync, got ${syncCalls}`);
+    return;
+  }
+  const postCall = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  if (!postCall || !postCall.body) {
+    fail(name, 'missing POST /ui/v1/responses body', JSON.stringify(fetchCalls));
+    return;
+  }
+  const body = JSON.parse(postCall.body);
+  if (body.previous_response_id !== lastResponseId) {
+    fail(name, `previous_response_id = ${JSON.stringify(body.previous_response_id)}, want ${JSON.stringify(lastResponseId)}`, postCall.body);
+    return;
+  }
+
+  pass(name);
+}
+
+async function testSendMessageRecoversStaleContinuationAfterConflict() {
+  const name = 'sendMessage recovers stale continuation after conflict without preflight sync';
   const staleId = 'resp_msg_796607';
   const latestId = 'resp_msg_796651';
   let syncCalls = 0;
+  let syncOpts = null;
+  let postAttempts = 0;
   const harness = createHarness({
-    onSyncActiveSessionFromServer(session) {
-      syncCalls += 1;
-      if (session.lastResponseId === staleId) {
-        session.lastResponseId = latestId;
+    fetchImpl: async (url, requestOptions, helpers) => {
+      if (url === '/ui/v1/responses' && (requestOptions.method || 'GET') === 'POST') {
+        postAttempts += 1;
+        if (postAttempts === 1) {
+          return new helpers.Response(JSON.stringify({
+            error: { message: `previous_response_id ${JSON.stringify(staleId)} is stale; latest is ${JSON.stringify(latestId)}` }
+          }), {
+            status: 409,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        const responseBody = [
+          'id: 1\n',
+          'event: response.created\n',
+          `data: {"response":{"id":"${latestId}","model":"test-model","status":"in_progress"},"sequence_number":1}\n\n`,
+          'id: 2\n',
+          'event: response.output_text.delta\n',
+          'data: {"delta":"hello","sequence_number":2}\n\n',
+          'id: 3\n',
+          'event: response.completed\n',
+          `data: {"response":{"id":"${latestId}","model":"test-model","status":"completed"},"sequence_number":3}\n\n`,
+          'data: [DONE]\n\n',
+        ].join('');
+        return new helpers.Response(new helpers.ReadableStream({
+          start(controller) {
+            controller.enqueue(helpers.encoder.encode(responseBody));
+            controller.close();
+          },
+        }), {
+          status: 200,
+          headers: { 'x-response-id': latestId },
+        });
       }
-      return { active_run: false, lastResponseId: session.lastResponseId };
+      throw new Error(`unexpected fetch: ${url}`);
+    },
+    onSyncActiveSessionFromServer(session, _pollOnActive, opts) {
+      syncCalls += 1;
+      syncOpts = opts || null;
+      session.lastResponseId = latestId;
+      return { active_run: false, lastResponseId: latestId };
     },
   });
   const { app, elements, state, fetchCalls, cleanup } = harness;
@@ -858,17 +958,30 @@ async function testSendMessageRefreshesContinuationIdBeforePosting() {
     return;
   }
   if (syncCalls !== 1) {
-    fail(name, `expected one preflight sync, got ${syncCalls}`);
+    fail(name, `expected one recovery sync, got ${syncCalls}`);
     return;
   }
-  const postCall = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
-  if (!postCall || !postCall.body) {
-    fail(name, 'missing POST /ui/v1/responses body', JSON.stringify(fetchCalls));
+  if (!syncOpts || syncOpts.skipMessagesFetch !== true) {
+    fail(name, 'expected recovery sync to skip message fetches', JSON.stringify(syncOpts));
     return;
   }
-  const body = JSON.parse(postCall.body);
-  if (body.previous_response_id !== latestId) {
-    fail(name, `previous_response_id = ${JSON.stringify(body.previous_response_id)}, want ${JSON.stringify(latestId)}`, postCall.body);
+  if (postAttempts !== 2) {
+    fail(name, `expected two POST attempts, got ${postAttempts}`);
+    return;
+  }
+  const postCalls = fetchCalls.filter((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  if (postCalls.length !== 2) {
+    fail(name, 'expected two POST /ui/v1/responses calls', JSON.stringify(fetchCalls));
+    return;
+  }
+  const firstBody = JSON.parse(postCalls[0].body || '{}');
+  const secondBody = JSON.parse(postCalls[1].body || '{}');
+  if (firstBody.previous_response_id !== staleId) {
+    fail(name, `first previous_response_id = ${JSON.stringify(firstBody.previous_response_id)}, want ${JSON.stringify(staleId)}`, postCalls[0].body);
+    return;
+  }
+  if (secondBody.previous_response_id !== latestId) {
+    fail(name, `second previous_response_id = ${JSON.stringify(secondBody.previous_response_id)}, want ${JSON.stringify(latestId)}`, postCalls[1].body);
     return;
   }
 
@@ -2801,7 +2914,8 @@ function testRestoreLatestDraftMessageDoesNotCrossSessionBoundary() {
   await testInactiveSessionFailureDoesNotAppendToVisibleDOM();
   await testConsumeResponseStreamReportsStaleWithoutApplyingEvents();
   await testSendMessageDoesNotResumeAfterStalePostStream();
-  await testSendMessageRefreshesContinuationIdBeforePosting();
+  await testSendMessageUsesLocalContinuationIdWithoutPreflightSync();
+  await testSendMessageRecoversStaleContinuationAfterConflict();
   await testSendMessageConsumesPostStreamWhenAvailable();
   await testSendMessageRefreshesHeaderAfterCompletionUnlocksModelPicker();
   await testSendMessageLazilyMaterializesAttachmentDataURLs();
