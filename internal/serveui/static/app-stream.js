@@ -3264,7 +3264,10 @@ const sendMessage = async (options = {}) => {
   );
   if (shouldRefreshContinuation && typeof app.syncActiveSessionFromServer === 'function') {
     try {
-      await app.syncActiveSessionFromServer(session, false);
+      // Before posting a continuation, refresh lightweight runtime state so we
+      // pick up a newer lastResponseId or newly-active run without blocking on a
+      // full paginated history reload.
+      await app.syncActiveSessionFromServer(session, false, { skipMessagesFetch: true });
       session = getActiveSession() || session;
     } catch (_err) {
       // Best effort only: the stale-ID guard below still uses the latest
