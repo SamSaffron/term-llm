@@ -287,18 +287,35 @@ const switchToSession = async (sessionId, options = {}) => {
   updateURL(sessionSlug(session));
   refreshPendingInterjectionBanner();
 
-  let didPreloadServerMessages = false;
+  let preloadServerMessagesPromise = null;
   if (session._serverOnly) {
-    const msgs = await loadServerSessionMessages(session.id);
-    if (Array.isArray(msgs)) {
-      mergeServerMessagesWithLocalState(session, msgs);
-      didPreloadServerMessages = true;
-    }
+    preloadServerMessagesPromise = loadServerSessionMessages(session.id, {
+      onInitialMessages: (messages) => {
+        mergeServerMessagesWithLocalState(session, messages);
+        persistAndRefreshShell();
+        if (session.id === state.activeSessionId) {
+          renderMessages(true);
+        }
+      }
+    });
   }
 
   persistAndRefreshShell();
   renderMessages(true);
   restoreDraftMessageForSession(session.id, { replace: true });
+
+  let didPreloadServerMessages = false;
+  if (preloadServerMessagesPromise) {
+    const msgs = await preloadServerMessagesPromise;
+    if (Array.isArray(msgs)) {
+      mergeServerMessagesWithLocalState(session, msgs);
+      persistAndRefreshShell();
+      if (session.id === state.activeSessionId) {
+        renderMessages(true);
+      }
+      didPreloadServerMessages = true;
+    }
+  }
 
   if (options.sync !== false) {
     await syncActiveSessionFromServer(session, true, { skipMessagesFetch: didPreloadServerMessages });
@@ -476,6 +493,9 @@ const convertServerMessages = (serverMessages) => {
 
 const sessionMessagesEtag = new Map();
 const SESSION_MESSAGES_PAGE_SIZE = 200;
+// The serve UI session API uses stable offset pagination with a fixed page
+// size, so prefetch a small window of pages to avoid one RTT per history page.
+const SESSION_MESSAGES_PREFETCH_PAGES = 4;
 
 const fetchServerSessionMessagesPage = async (sessionId, { limit = 0, offset = 0, etag = '' } = {}) => {
   const headers = {};
@@ -499,7 +519,7 @@ const fetchServerSessionMessagesPage = async (sessionId, { limit = 0, offset = 0
   };
 };
 
-const loadServerSessionMessages = async (sessionId) => {
+const loadServerSessionMessages = async (sessionId, { onInitialMessages } = {}) => {
   try {
     const first = await fetchServerSessionMessagesPage(sessionId, { etag: sessionMessagesEtag.get(sessionId) || '' });
     if (first === false) return false;
@@ -508,26 +528,61 @@ const loadServerSessionMessages = async (sessionId) => {
     const allMessages = first.data.messages.slice();
     let hasMore = first.data.has_more === true;
     let nextOffset = Number(first.data.next_offset);
+    const lastResponseId = String(first.data.lastResponseId || '').trim();
     const seenOffsets = new Set();
 
+    if (hasMore && typeof onInitialMessages === 'function') {
+      const initialMessages = convertServerMessages(allMessages);
+      if (lastResponseId) initialMessages.lastResponseId = lastResponseId;
+      onInitialMessages(initialMessages);
+    }
+
     while (hasMore) {
-      if (!Number.isFinite(nextOffset) || nextOffset < 0 || seenOffsets.has(nextOffset)) {
-        sessionMessagesEtag.delete(sessionId);
-        return null;
+      const offsets = [];
+      let candidateOffset = nextOffset;
+      while (offsets.length < SESSION_MESSAGES_PREFETCH_PAGES) {
+        if (!Number.isFinite(candidateOffset) || candidateOffset < 0 || seenOffsets.has(candidateOffset)) {
+          sessionMessagesEtag.delete(sessionId);
+          return null;
+        }
+        seenOffsets.add(candidateOffset);
+        offsets.push(candidateOffset);
+        candidateOffset += SESSION_MESSAGES_PAGE_SIZE;
       }
-      seenOffsets.add(nextOffset);
-      const page = await fetchServerSessionMessagesPage(sessionId, { limit: SESSION_MESSAGES_PAGE_SIZE, offset: nextOffset });
-      if (!page) {
-        sessionMessagesEtag.delete(sessionId);
-        return null;
+
+      const pages = await Promise.all(offsets.map((offset) => (
+        fetchServerSessionMessagesPage(sessionId, { limit: SESSION_MESSAGES_PAGE_SIZE, offset })
+      )));
+
+      let reachedEnd = false;
+      for (let index = 0; index < pages.length; index += 1) {
+        const page = pages[index];
+        const offset = offsets[index];
+        if (!page) {
+          sessionMessagesEtag.delete(sessionId);
+          return null;
+        }
+        allMessages.push(...page.data.messages);
+        if (page.data.has_more === true) {
+          nextOffset = Number(page.data.next_offset);
+          if (!Number.isFinite(nextOffset) || nextOffset <= offset) {
+            sessionMessagesEtag.delete(sessionId);
+            return null;
+          }
+          continue;
+        }
+        hasMore = false;
+        nextOffset = Number(page.data.next_offset);
+        reachedEnd = true;
+        break;
       }
-      allMessages.push(...page.data.messages);
-      hasMore = page.data.has_more === true;
-      nextOffset = Number(page.data.next_offset);
+
+      if (!reachedEnd) {
+        hasMore = true;
+      }
     }
 
     const converted = convertServerMessages(allMessages);
-    const lastResponseId = String(first.data.lastResponseId || '').trim();
     if (lastResponseId) converted.lastResponseId = lastResponseId;
     if (first.etag) sessionMessagesEtag.set(sessionId, first.etag);
     return converted;
@@ -1070,8 +1125,21 @@ const hydrateActiveSessionAfterStartup = async () => {
   // request.
   const statePromise = syncActiveSessionFromServer(active, true, { skipMessagesFetch: Boolean(active._serverOnly) });
 
-  if (active._serverOnly) {
-    const msgs = await loadServerSessionMessages(active.id);
+  const preloadMessagesPromise = active._serverOnly
+    ? loadServerSessionMessages(active.id, {
+      onInitialMessages: (messages) => {
+        mergeServerMessagesWithLocalState(active, messages);
+        saveSessions();
+        renderSidebar();
+        if (active.id === state.activeSessionId) {
+          renderMessages(true);
+        }
+      }
+    })
+    : null;
+
+  if (preloadMessagesPromise) {
+    const msgs = await preloadMessagesPromise;
     if (Array.isArray(msgs)) {
       mergeServerMessagesWithLocalState(active, msgs);
       saveSessions();
