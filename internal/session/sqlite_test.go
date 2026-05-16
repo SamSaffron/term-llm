@@ -166,6 +166,9 @@ func TestSQLiteStoreAddMessageBumpsLastMessageAt(t *testing.T) {
 	if !summaries[0].LastMessageAt.Equal(userTime) {
 		t.Fatalf("LastMessageAt after user msg = %v, want %v", summaries[0].LastMessageAt, userTime)
 	}
+	if summaries[0].MessageCount != 1 {
+		t.Fatalf("MessageCount after user msg = %d, want 1", summaries[0].MessageCount)
+	}
 
 	assistantTime := userTime.Add(10 * time.Second)
 	assistantMsg := NewMessage(sess.ID, llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "hello"}}}, -1)
@@ -180,6 +183,9 @@ func TestSQLiteStoreAddMessageBumpsLastMessageAt(t *testing.T) {
 	}
 	if !summaries[0].LastMessageAt.Equal(assistantTime) {
 		t.Fatalf("LastMessageAt after assistant msg = %v, want %v", summaries[0].LastMessageAt, assistantTime)
+	}
+	if summaries[0].MessageCount != 2 {
+		t.Fatalf("MessageCount after assistant msg = %d, want 2", summaries[0].MessageCount)
 	}
 
 	// Tool/developer/system messages must not bump last_message_at so it
@@ -207,6 +213,9 @@ func TestSQLiteStoreAddMessageBumpsLastMessageAt(t *testing.T) {
 	}
 	if !summaries[0].LastMessageAt.Equal(assistantTime) {
 		t.Fatalf("LastMessageAt should not move for non-visible roles: got %v, want %v", summaries[0].LastMessageAt, assistantTime)
+	}
+	if summaries[0].MessageCount != 2 {
+		t.Fatalf("MessageCount after non-visible msgs = %d, want 2", summaries[0].MessageCount)
 	}
 }
 
@@ -308,6 +317,9 @@ func TestSQLiteStoreMigration20BackfillsLastMessageAt(t *testing.T) {
 	}
 	if summaries[0].LastMessageAt.Day() != 2 {
 		t.Fatalf("LastMessageAt day = %d, want 2 (assistant message)", summaries[0].LastMessageAt.Day())
+	}
+	if summaries[0].MessageCount != 2 {
+		t.Fatalf("MessageCount = %d, want 2 after migration backfill", summaries[0].MessageCount)
 	}
 }
 

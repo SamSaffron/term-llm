@@ -78,6 +78,53 @@ func TestSQLiteStoreUpdateMessageOverwrites(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreUpdateMessageAdjustsVisibleMessageCountOnRoleChange(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	msg := NewMessage(sess.ID, llm.Message{
+		Role:  llm.RoleAssistant,
+		Parts: []llm.Part{{Type: llm.PartText, Text: "visible"}},
+	}, -1)
+	if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+
+	summaries, err := store.List(ctx, ListOptions{Limit: 5})
+	if err != nil {
+		t.Fatalf("List before role change: %v", err)
+	}
+	if summaries[0].MessageCount != 1 {
+		t.Fatalf("MessageCount before role change = %d, want 1", summaries[0].MessageCount)
+	}
+
+	msg.Role = llm.RoleTool
+	msg.Parts = []llm.Part{{Type: llm.PartText, Text: "tool result"}}
+	msg.TextContent = "tool result"
+	if err := store.UpdateMessage(ctx, sess.ID, msg); err != nil {
+		t.Fatalf("UpdateMessage to tool: %v", err)
+	}
+
+	summaries, err = store.List(ctx, ListOptions{Limit: 5})
+	if err != nil {
+		t.Fatalf("List after role change: %v", err)
+	}
+	if summaries[0].MessageCount != 0 {
+		t.Fatalf("MessageCount after role change = %d, want 0", summaries[0].MessageCount)
+	}
+}
+
 // TestSQLiteStoreUpdateMessageReturnsErrNotFound verifies that UpdateMessage
 // targeting a missing row returns ErrNotFound (used for the
 // compaction-race fallback path in the upsert callback).

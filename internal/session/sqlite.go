@@ -29,6 +29,7 @@ type SQLiteStore struct {
 	hasLastMessageAt     bool // true if sessions table has last_message_at column
 	hasLastTotalTokens   bool // true if sessions table has last_total_tokens column
 	hasLastMessageCount  bool // true if sessions table has last_message_count column
+	hasMessageCount      bool // true if sessions table has message_count column
 	hasReasoningEffort   bool // true if sessions table has reasoning_effort column
 }
 
@@ -71,6 +72,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     output_tokens INTEGER DEFAULT 0,
     last_total_tokens INTEGER DEFAULT 0,
     last_message_count INTEGER DEFAULT 0,
+    message_count INTEGER DEFAULT 0,
     status TEXT DEFAULT 'active',
     tags TEXT,
     compaction_seq INTEGER DEFAULT -1,
@@ -176,6 +178,10 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 			db.Close()
 			return nil, fmt.Errorf("initialize schema: %w", err)
 		}
+		if err := createMessageCountTriggers(db); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("initialize message_count triggers: %w", err)
+		}
 	}
 
 	store := &SQLiteStore{db: db, cfg: cfg}
@@ -205,7 +211,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 24
+const schemaVersion = 25
 
 // migration represents a schema migration.
 type migration struct {
@@ -726,6 +732,75 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		// Migration 25: Persist visible user/assistant message counts on the
+		// sessions row so sidebar/session listings can read them directly instead
+		// of running a COUNT(*) subquery per returned session.
+		version:     25,
+		description: "add persisted session message_count column",
+		up: func(db *sql.DB) error {
+			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN message_count INTEGER DEFAULT 0")
+			if err != nil && !isDuplicateColumnError(err) {
+				return err
+			}
+			_, err = db.Exec(`
+				UPDATE sessions
+				SET message_count = COALESCE((
+					SELECT COUNT(*) FROM messages m
+					WHERE m.session_id = sessions.id
+					  AND m.role IN ('user', 'assistant')
+				), 0)`)
+			if err != nil {
+				return fmt.Errorf("backfill message_count: %w", err)
+			}
+			if err := createMessageCountTriggers(db); err != nil {
+				return fmt.Errorf("create message_count triggers: %w", err)
+			}
+			return nil
+		},
+	},
+}
+
+func createMessageCountTriggers(db *sql.DB) error {
+	stmts := []string{
+		`CREATE TRIGGER IF NOT EXISTS messages_count_ai AFTER INSERT ON messages
+		WHEN new.role IN ('user', 'assistant')
+		BEGIN
+		    UPDATE sessions
+		    SET message_count = COALESCE(message_count, 0) + 1
+		    WHERE id = new.session_id;
+		END;`,
+		`CREATE TRIGGER IF NOT EXISTS messages_count_ad AFTER DELETE ON messages
+		WHEN old.role IN ('user', 'assistant')
+		BEGIN
+		    UPDATE sessions
+		    SET message_count = COALESCE(message_count, 0) - 1
+		    WHERE id = old.session_id;
+		END;`,
+		`CREATE TRIGGER IF NOT EXISTS messages_count_au AFTER UPDATE ON messages
+		WHEN old.session_id <> new.session_id
+		  OR (old.role IN ('user', 'assistant')) <> (new.role IN ('user', 'assistant'))
+		BEGIN
+		    UPDATE sessions
+		    SET message_count = COALESCE(message_count, 0) - CASE
+		        WHEN old.role IN ('user', 'assistant') THEN 1
+		        ELSE 0
+		    END
+		    WHERE id = old.session_id;
+		    UPDATE sessions
+		    SET message_count = COALESCE(message_count, 0) + CASE
+		        WHEN new.role IN ('user', 'assistant') THEN 1
+		        ELSE 0
+		    END
+		    WHERE id = new.session_id;
+		END;`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func rebuildMessagesTableForCurrentRoles(db *sql.DB) error {
@@ -1223,10 +1298,14 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	if s.hasLastMessageAt {
 		lastMessageAtCol = "s.last_message_at"
 	}
+	messageCountCol := "COALESCE(s.message_count, 0)"
+	if !s.hasMessageCount {
+		messageCountCol = "(SELECT COUNT(*) FROM messages WHERE session_id = s.id AND role IN ('user', 'assistant'))"
+	}
 	query := `
 		SELECT s.id, s.number, s.name, s.summary, ` + generatedShortCol + `, ` + generatedLongCol + `, ` + titleSourceCol + `,
 		       s.provider, COALESCE(s.provider_key, ''), s.model, s.mode, ` + originCol + `, s.archived, ` + pinnedCol + `, s.created_at, s.updated_at, ` + lastMessageAtCol + `,
-		       (SELECT COUNT(*) FROM messages WHERE session_id = s.id AND role IN ('user', 'assistant')) as message_count,
+		       ` + messageCountCol + ` as message_count,
 		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.cached_input_tokens, ` + cacheWriteCol + `, s.output_tokens, s.status, s.tags
 		FROM sessions s
 		WHERE 1=1`
@@ -1875,6 +1954,7 @@ func (s *SQLiteStore) setCurrentSessionColumns() {
 	s.hasLastMessageAt = true
 	s.hasLastTotalTokens = true
 	s.hasLastMessageCount = true
+	s.hasMessageCount = true
 	s.hasReasoningEffort = true
 }
 
@@ -1921,6 +2001,8 @@ func (s *SQLiteStore) probeSessionColumns() {
 			s.hasLastTotalTokens = true
 		case "last_message_count":
 			s.hasLastMessageCount = true
+		case "message_count":
+			s.hasMessageCount = true
 		case "reasoning_effort":
 			s.hasReasoningEffort = true
 		}
