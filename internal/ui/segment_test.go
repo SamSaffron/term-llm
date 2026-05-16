@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	xansi "github.com/charmbracelet/x/ansi"
 	"github.com/samsaffron/term-llm/internal/llm"
 )
 
@@ -209,6 +210,51 @@ func TestRenderToolCallFromPart_FallsBackToExtractedArgsWhenToolInfoMissing(t *t
 	}
 	if !strings.Contains(rendered, "path:main.go") {
 		t.Fatalf("expected fallback raw arg path in rendered output, got %q", rendered)
+	}
+}
+
+func TestRenderSegmentsWrapsLongSubagentPreviewLines(t *testing.T) {
+	const width = 30
+	seg := &Segment{
+		Type:                SegmentTool,
+		ToolName:            "spawn_agent",
+		ToolStatus:          ToolPending,
+		ToolInfo:            "reviewer",
+		SubagentHasProgress: true,
+		SubagentPreview: []string{
+			SuccessCircle() + " read_file " + strings.Repeat("very-long-file-name-", 4),
+		},
+	}
+
+	rendered := RenderSegments([]*Segment{seg}, width, -1, nil, false, false)
+	for i, line := range strings.Split(rendered, "\n") {
+		if w := xansi.StringWidth(line); w > width {
+			t.Fatalf("line %d exceeds width %d (got %d): %q\nfull render:\n%s", i, width, w, StripANSI(line), StripANSI(rendered))
+		}
+		if strings.Contains(StripANSI(line), "38;2;") {
+			t.Fatalf("line %d appears to contain leaked ANSI fragment: %q", i, StripANSI(line))
+		}
+	}
+}
+
+func TestRenderSegmentsWrapsSubagentPreviewAtVeryNarrowWidths(t *testing.T) {
+	const width = 5
+	seg := &Segment{
+		Type:                SegmentTool,
+		ToolName:            "spawn_agent",
+		ToolStatus:          ToolPending,
+		ToolInfo:            "r",
+		SubagentHasProgress: true,
+		SubagentPreview:     []string{SuccessCircle() + " abcdef"},
+	}
+
+	rendered := RenderSegments([]*Segment{seg}, width, -1, nil, false, false)
+	for i, line := range strings.Split(rendered, "\n") {
+		if strings.HasPrefix(StripANSI(line), subagentPromptPrefix) {
+			if w := xansi.StringWidth(line); w > width {
+				t.Fatalf("preview line %d exceeds width %d (got %d): %q\nfull render:\n%s", i, width, w, StripANSI(line), StripANSI(rendered))
+			}
+		}
 	}
 }
 

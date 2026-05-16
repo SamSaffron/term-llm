@@ -2,6 +2,7 @@ package ui
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"time"
 
@@ -70,7 +71,11 @@ func HandleSubagentProgress(tracker *ToolTracker, subagentTracker *SubagentTrack
 		subagentTracker.MarkDone(callID)
 		// Store completion time so elapsed timer freezes
 		if seg := FindSegmentByCallID(tracker, callID); seg != nil {
-			seg.SubagentEndTime = time.Now()
+			if seg.SubagentEndTime.IsZero() {
+				seg.SubagentEndTime = time.Now()
+				tracker.RecordActivity()
+				tracker.Version++
+			}
 		}
 	}
 
@@ -100,14 +105,29 @@ func UpdateSegmentFromSubagentProgress(tracker *ToolTracker, callID string, p *S
 	}
 	for i := range tracker.Segments {
 		if tracker.Segments[i].ToolCallID == callID && tracker.Segments[i].ToolName == "spawn_agent" {
-			tracker.Segments[i].SubagentHasProgress = true
-			tracker.Segments[i].SubagentToolCalls = p.ToolCalls
-			tracker.Segments[i].SubagentTotalTokens = p.InputTokens + p.OutputTokens
-			tracker.Segments[i].SubagentProvider = p.Provider
-			tracker.Segments[i].SubagentModel = p.Model
-			tracker.Segments[i].SubagentPrompt = p.Prompt
-			tracker.Segments[i].SubagentPreview = BuildSubagentPreview(p, 4)
-			tracker.Segments[i].SubagentStartTime = p.StartTime
+			seg := &tracker.Segments[i]
+			preview := BuildSubagentPreview(p, 4)
+			changed := !seg.SubagentHasProgress ||
+				seg.SubagentToolCalls != p.ToolCalls ||
+				seg.SubagentTotalTokens != p.InputTokens+p.OutputTokens ||
+				seg.SubagentProvider != p.Provider ||
+				seg.SubagentModel != p.Model ||
+				seg.SubagentPrompt != p.Prompt ||
+				!slices.Equal(seg.SubagentPreview, preview) ||
+				!seg.SubagentStartTime.Equal(p.StartTime)
+
+			seg.SubagentHasProgress = true
+			seg.SubagentToolCalls = p.ToolCalls
+			seg.SubagentTotalTokens = p.InputTokens + p.OutputTokens
+			seg.SubagentProvider = p.Provider
+			seg.SubagentModel = p.Model
+			seg.SubagentPrompt = p.Prompt
+			seg.SubagentPreview = preview
+			seg.SubagentStartTime = p.StartTime
+			if changed {
+				tracker.RecordActivity()
+				tracker.Version++
+			}
 			break
 		}
 	}
@@ -198,6 +218,8 @@ func addDiffToSpawnAgentSegment(tracker *ToolTracker, callID string, path, old, 
 				Line:      line,
 				Operation: operation,
 			})
+			tracker.RecordActivity()
+			tracker.Version++
 			break
 		}
 	}

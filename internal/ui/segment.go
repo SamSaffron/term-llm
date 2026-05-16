@@ -12,6 +12,7 @@ import (
 	"github.com/mattn/go-runewidth"
 	"github.com/muesli/reflow/truncate"
 	"github.com/muesli/reflow/wordwrap"
+	"github.com/muesli/reflow/wrap"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui/ansisafe"
@@ -576,8 +577,8 @@ func renderSubagentPromptLines(prompt string, width int, expanded bool) []string
 	}
 
 	wrapWidth := width - runewidth.StringWidth(subagentPromptPrefix)
-	if wrapWidth <= 0 {
-		wrapWidth = 80
+	if wrapWidth < 1 {
+		wrapWidth = 1
 	}
 	wrapped := wordwrap.String(prompt, wrapWidth)
 	lines := strings.Split(wrapped, "\n")
@@ -603,6 +604,26 @@ func appendEllipsis(line string, width int) string {
 		return line + tail
 	}
 	return truncate.String(line, uint(width-tailWidth)) + tail
+}
+
+func renderSubagentPreviewLines(preview []string, width int) []string {
+	if len(preview) == 0 {
+		return nil
+	}
+	wrapWidth := width - runewidth.StringWidth(subagentPromptPrefix)
+	if wrapWidth <= 0 {
+		wrapWidth = 80
+	}
+	var lines []string
+	for _, line := range preview {
+		if line == "" {
+			lines = append(lines, "")
+			continue
+		}
+		wrapped := wrap.String(line, wrapWidth)
+		lines = append(lines, strings.Split(wrapped, "\n")...)
+	}
+	return lines
 }
 
 const subagentPromptPrefix = "  │ "
@@ -734,7 +755,7 @@ func RenderSegmentsWithLeadingAndImageRenderer(leading *Segment, segments []*Seg
 					sb.WriteString(subagentPromptPrefix)
 					sb.WriteString(line)
 				}
-				for _, line := range seg.SubagentPreview {
+				for _, line := range renderSubagentPreviewLines(seg.SubagentPreview, width) {
 					sb.WriteString("\n")
 					sb.WriteString(subagentPromptPrefix)
 					sb.WriteString(line)

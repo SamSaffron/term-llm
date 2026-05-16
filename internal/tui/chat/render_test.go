@@ -131,6 +131,48 @@ func TestViewAltScreen_WaveTickRerendersWithoutSetContent(t *testing.T) {
 	}
 }
 
+func TestViewAltScreen_SubagentProgressRebuildsViewportContent(t *testing.T) {
+	m := newTestChatModel(true)
+	m.width = 80
+	m.height = 20
+	m.syncAltScreenViewportHeight(m.buildFooterLayout().height)
+	m.streaming = true
+	m.streamRenderMinInterval = 0
+
+	args, err := json.Marshal(tools.SpawnAgentArgs{AgentName: "reviewer", Prompt: "review the code"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.tracker.HandleToolStart("call-1", "spawn_agent", "reviewer", args)
+
+	_ = m.View().Content
+	initialTrackerVersion := m.tracker.Version
+	initialContentVersion := m.viewCache.contentVersion
+	initialSetContentAt := m.viewCache.lastSetContentAt
+
+	_, _ = m.Update(SubagentProgressMsg{
+		CallID: "call-1",
+		Event:  tools.SubagentEvent{Type: tools.SubagentEventText, Text: "subagent output that adds a visible preview line"},
+	})
+	if m.tracker.Version <= initialTrackerVersion {
+		t.Fatalf("subagent progress should bump tracker version: before=%d after=%d", initialTrackerVersion, m.tracker.Version)
+	}
+
+	content := m.View().Content
+	if m.viewCache.lastRenderedVersion != m.viewCache.contentVersion {
+		t.Fatalf("expected subagent progress to be rendered: lastRenderedVersion=%d contentVersion=%d", m.viewCache.lastRenderedVersion, m.viewCache.contentVersion)
+	}
+	if m.viewCache.contentVersion <= initialContentVersion {
+		t.Fatalf("subagent progress render should bump content version: before=%d after=%d", initialContentVersion, m.viewCache.contentVersion)
+	}
+	if !m.viewCache.lastSetContentAt.After(initialSetContentAt) {
+		t.Fatalf("subagent progress should rebuild viewport content: before=%v after=%v", initialSetContentAt, m.viewCache.lastSetContentAt)
+	}
+	if !strings.Contains(ui.StripANSI(content), "subagent output") {
+		t.Fatalf("expected rendered content to include subagent progress, got %q", ui.StripANSI(content))
+	}
+}
+
 func TestUpdate_StreamError_BumpsContentVersion(t *testing.T) {
 	provider := llm.NewMockProvider("mock")
 	engine := llm.NewEngine(provider, nil)
