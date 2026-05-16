@@ -13,7 +13,12 @@ import (
 	"sync"
 )
 
-//go:embed static/*
+//go:embed static/index.html static/manifest.webmanifest static/icon-512.png static/sw.js
+//go:embed static/app.css
+//go:embed static/app-core.js static/app-render.js static/app-sessions.js static/app-sidebar.js
+//go:embed static/app-stream.js static/app-webrtc.js
+//go:embed static/decoration.js static/markdown-setup.js static/markdown-streaming.js
+//go:embed static/vendor
 var staticFiles embed.FS
 
 var (

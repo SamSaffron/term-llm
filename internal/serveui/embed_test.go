@@ -1,10 +1,12 @@
 package serveui
 
 import (
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -62,6 +64,68 @@ func TestStaticAssetsUseStrictMathDelimiters(t *testing.T) {
 	}
 	if strings.Contains(coreSrc, "{ left: '$', right: '$', display: false }") {
 		t.Fatal("app-core.js still enables single-dollar inline math")
+	}
+}
+
+func TestStaticAssetsEmbedProductionFilesOnly(t *testing.T) {
+	embedded := make(map[string]bool)
+	var testFixtures []string
+	err := fs.WalkDir(staticFiles, "static", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		embedded[path] = true
+		if strings.HasSuffix(path, "_test.js") {
+			testFixtures = append(testFixtures, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk embedded static assets: %v", err)
+	}
+	if len(testFixtures) > 0 {
+		sort.Strings(testFixtures)
+		t.Fatalf("embedded JS test fixtures: %s", strings.Join(testFixtures, ", "))
+	}
+	if _, err := StaticAsset("app_stream_test.js"); err == nil {
+		t.Fatal("StaticAsset(app_stream_test.js) succeeded; JS test fixtures should not be embedded")
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file path")
+	}
+	testDir := filepath.Dir(thisFile)
+	var missing []string
+	err = filepath.WalkDir(filepath.Join(testDir, "static"), func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(testDir, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if strings.HasSuffix(rel, "_test.js") {
+			return nil
+		}
+		if !embedded[rel] {
+			missing = append(missing, rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk source static assets: %v", err)
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		t.Fatalf("production static assets not embedded: %s", strings.Join(missing, ", "))
 	}
 }
 
