@@ -76,12 +76,13 @@ type ShellArgs struct {
 
 // ShellResult contains the result of a shell command.
 type ShellResult struct {
-	Stdout          string `json:"stdout"`
-	Stderr          string `json:"stderr"`
-	ExitCode        int    `json:"exit_code"`
-	TimedOut        bool   `json:"timed_out,omitempty"`
-	StdoutTruncated bool   `json:"stdout_truncated,omitempty"`
-	StderrTruncated bool   `json:"stderr_truncated,omitempty"`
+	Stdout              string `json:"stdout"`
+	Stderr              string `json:"stderr"`
+	ExitCode            int    `json:"exit_code"`
+	TimedOut            bool   `json:"timed_out,omitempty"`
+	OutputLimitExceeded bool   `json:"output_limit_exceeded,omitempty"`
+	StdoutTruncated     bool   `json:"stdout_truncated,omitempty"`
+	StderrTruncated     bool   `json:"stderr_truncated,omitempty"`
 }
 
 func (t *ShellTool) Spec() llm.ToolSpec {
@@ -236,8 +237,9 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 	}
 	defer cleanup()
 
-	stdout := newLimitedBuffer(t.limits.MaxBytes)
-	stderr := newLimitedBuffer(t.limits.MaxBytes)
+	outputLimiter := newOutputLimitCanceler(commandOutputHardLimit(t.limits), cancel)
+	stdout := newLimitedBufferWithLimiter(t.limits.MaxBytes, outputLimiter)
+	stderr := newLimitedBufferWithLimiter(t.limits.MaxBytes, outputLimiter)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
@@ -245,26 +247,36 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 	err := cmd.Run()
 
 	result := ShellResult{
-		Stdout:          stdout.String(),
-		Stderr:          stderr.String(),
-		ExitCode:        0,
-		StdoutTruncated: stdout.Truncated(),
-		StderrTruncated: stderr.Truncated(),
+		Stdout:              stdout.String(),
+		Stderr:              stderr.String(),
+		ExitCode:            0,
+		OutputLimitExceeded: outputLimiter.Exceeded(),
+		StdoutTruncated:     stdout.Truncated(),
+		StderrTruncated:     stderr.Truncated(),
 	}
 
-	// Check for timeout
-	if execCtx.Err() != nil {
+	// Get exit code when the process was terminated by the shell or our output cap.
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			result.ExitCode = exitErr.ExitCode()
+		} else if !result.OutputLimitExceeded && execCtx.Err() == nil {
+			return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "command error: %v", err))), nil
+		}
+	}
+
+	if execCtx.Err() == context.DeadlineExceeded {
 		result.TimedOut = true
 		return llm.ToolOutput{Content: warning + formatShellResult(result, t.limits), TimedOut: true}, nil
 	}
 
-	// Get exit code
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			result.ExitCode = exitErr.ExitCode()
-		} else {
-			return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "command error: %v", err))), nil
-		}
+	if result.OutputLimitExceeded {
+		return textOutput(formatShellResult(result, t.limits)), nil
+	}
+
+	// Preserve the existing cancellation behavior for parent context cancellation.
+	if execCtx.Err() != nil {
+		result.TimedOut = true
+		return llm.ToolOutput{Content: warning + formatShellResult(result, t.limits), TimedOut: true}, nil
 	}
 
 	return textOutput(formatShellResult(result, t.limits)), nil
@@ -290,6 +302,8 @@ func formatShellResult(result ShellResult, limits OutputLimits) string {
 
 	if result.TimedOut {
 		sb.WriteString("[Command timed out]\n\n")
+	} else if result.OutputLimitExceeded {
+		sb.WriteString("[Command stopped after exceeding output limit]\n\n")
 	}
 
 	if stdout != "" {

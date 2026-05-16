@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -22,21 +24,85 @@ import (
 // setsid, daemonisation, etc.) can still be reliably reaped on cleanup.
 const shellNonceEnvVar = "TERMLLM_SHELL_NONCE"
 
+// outputLimitCanceler shares a raw-output budget across stdout and stderr.
+// Once the budget is crossed it invokes onLimit exactly once, allowing callers
+// to stop commands that would otherwise keep streaming discarded bytes until a
+// timeout fires.
+type outputLimitCanceler struct {
+	limit    int64
+	onLimit  func()
+	total    atomic.Int64
+	exceeded atomic.Bool
+	once     sync.Once
+}
+
+func newOutputLimitCanceler(limit int64, onLimit func()) *outputLimitCanceler {
+	if limit <= 0 {
+		return nil
+	}
+	return &outputLimitCanceler{limit: limit, onLimit: onLimit}
+}
+
+func (c *outputLimitCanceler) add(n int) {
+	if c == nil || n <= 0 {
+		return
+	}
+	if c.total.Add(int64(n)) <= c.limit {
+		return
+	}
+	c.exceeded.Store(true)
+	c.once.Do(func() {
+		if c.onLimit != nil {
+			c.onLimit()
+		}
+	})
+}
+
+func (c *outputLimitCanceler) Exceeded() bool {
+	return c != nil && c.exceeded.Load()
+}
+
 type limitedBuffer struct {
-	buf   bytes.Buffer
-	limit int64
-	total int64
+	buf     bytes.Buffer
+	limit   int64
+	total   int64
+	limiter *outputLimitCanceler
 }
 
 func newLimitedBuffer(limit int64) *limitedBuffer {
+	return newLimitedBufferWithLimiter(limit, nil)
+}
+
+func newLimitedBufferWithLimiter(limit int64, limiter *outputLimitCanceler) *limitedBuffer {
 	if limit < 0 {
 		limit = 0
 	}
-	return &limitedBuffer{limit: limit}
+	return &limitedBuffer{limit: limit, limiter: limiter}
+}
+
+// commandOutputHardLimit returns the raw bytes a command may emit before the
+// tool cancels it. MaxBytes remains the capture/display cap; the hard drain cap
+// is intentionally much larger so normal over-limit commands can finish while
+// runaway output producers return promptly.
+func commandOutputHardLimit(limits OutputLimits) int64 {
+	hard := limits.CumulativeHard
+	if limits.MaxBytes > 0 {
+		scaled := limits.MaxBytes * 128
+		if hard < scaled {
+			hard = scaled
+		}
+	}
+	if limits.MaxBytes > 0 && hard < limits.MaxBytes {
+		hard = limits.MaxBytes
+	}
+	return hard
 }
 
 func (b *limitedBuffer) Write(p []byte) (int, error) {
 	origLen := len(p)
+	if b.limiter != nil {
+		b.limiter.add(origLen)
+	}
 	b.total += int64(origLen)
 
 	remaining := b.limit - int64(b.buf.Len())
