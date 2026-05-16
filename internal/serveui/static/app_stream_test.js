@@ -2569,6 +2569,54 @@ async function testStaleInterrupt404RefreshesAndSendsMessage() {
   pass(name);
 }
 
+async function testStaleInterruptRecoveryFailedPostKeepsDraft() {
+  const name = 'interrupt recovery keeps draft when fresh POST fails';
+  const harness = createHarness({
+    interruptStatus: 404,
+    interruptErrorPayload: { error: { message: 'session runtime not found' } },
+    postStatus: 503,
+    postErrorPayload: { error: { message: 'server unavailable' } },
+  });
+  const { app, elements, state, localStorage, cleanup } = harness;
+  const session = {
+    id: 'session_stale_interrupt_failed_post',
+    title: 'Stale interrupt failed post',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: 'resp_stale',
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.streaming = true;
+  state.currentStreamSessionId = session.id;
+  state.currentStreamResponseId = 'resp_stale';
+  elements.promptInput.value = 'keep after failed recovery';
+
+  app.syncActiveSessionFromServer = async () => {
+    app.clearActiveResponseTracking(session, session.activeResponseId || state.currentStreamResponseId);
+    app.setSessionOptimisticBusy(session, false);
+    app.setSessionServerActiveRun(session, false);
+    app.setStreaming(false);
+    return { active_run: false, active_response_id: '' };
+  };
+
+  await app.sendMessage();
+  await cleanup();
+
+  const drafts = JSON.parse(localStorage.getItem('draftMessages') || '[]');
+  if (drafts.length !== 1 || drafts[0].sessionId !== session.id || drafts[0].prompt !== 'keep after failed recovery') {
+    fail(name, 'failed recovered POST should leave session draft staged', JSON.stringify(drafts));
+    return;
+  }
+  if (elements.promptInput.value !== 'keep after failed recovery') {
+    fail(name, 'composer should be restored after failed recovered POST', elements.promptInput.value);
+    return;
+  }
+  pass(name);
+}
+
 async function testFailedSendKeepsSessionDraftAndRestagesComposer() {
   const name = 'failed send keeps a session-bound draft and restores the composer';
   const harness = createHarness({ postStatus: 503, postErrorPayload: { error: { message: 'server unavailable' } } });
@@ -2633,6 +2681,80 @@ async function testSuccessfulSendRemovesOnlyMatchingDraft() {
   pass(name);
 }
 
+async function testSuccessfulNewChatSendClearsNewConversationDraft() {
+  const name = 'successful New Chat send clears the new-conversation draft';
+  const harness = createHarness();
+  const { app, elements, state, localStorage, cleanup } = harness;
+  state.draftSessionActive = true;
+  state.activeSessionId = '';
+  localStorage.setItem('draftMessages', JSON.stringify([
+    { id: 'new_draft', sessionId: '', prompt: 'hello from new chat', created: 1 },
+    { id: 'other_draft', sessionId: 'other_session', prompt: 'other text', created: 2 },
+  ]));
+  app.restoreDraftMessageForSession('', { replace: true });
+
+  await app.sendMessage();
+  await cleanup();
+
+  const drafts = JSON.parse(localStorage.getItem('draftMessages') || '[]');
+  const createdSession = state.sessions[0];
+  if (drafts.some((draft) => String(draft.sessionId || '') === '')) {
+    fail(name, 'new-conversation draft should be cleared after successful send', JSON.stringify(drafts));
+    return;
+  }
+  if (createdSession && drafts.some((draft) => draft.sessionId === createdSession.id)) {
+    fail(name, 'created session draft should also be cleared after successful send', JSON.stringify(drafts));
+    return;
+  }
+  if (drafts.length !== 1 || drafts[0].id !== 'other_draft') {
+    fail(name, 'only unrelated session drafts should remain', JSON.stringify(drafts));
+    return;
+  }
+  pass(name);
+}
+
+function testClearDraftMessageForSessionRemovesLogicalBucket() {
+  const name = 'clearDraftMessageForSession removes the matching conversation draft';
+  const harness = createHarness();
+  const { app, localStorage } = harness;
+  localStorage.setItem('draftMessages', JSON.stringify([
+    { id: 'd1', sessionId: 'session_a', prompt: 'draft A', created: 1 },
+    { id: 'd2', sessionId: 'session_b', prompt: 'draft B', created: 2 },
+    { id: 'd3', sessionId: '', prompt: 'new draft', created: 3 },
+  ]));
+
+  app.clearDraftMessageForSession('session_a');
+  const drafts = JSON.parse(localStorage.getItem('draftMessages') || '[]');
+  if (drafts.some((draft) => draft.sessionId === 'session_a')) {
+    fail(name, 'session_a draft should be removed', JSON.stringify(drafts));
+    return;
+  }
+  if (!drafts.some((draft) => draft.sessionId === 'session_b') || !drafts.some((draft) => String(draft.sessionId || '') === '')) {
+    fail(name, 'unrelated drafts should remain', JSON.stringify(drafts));
+    return;
+  }
+  pass(name);
+}
+
+function testDraftMessageLimitIsTen() {
+  const name = 'draft messages are capped at ten LRU entries';
+  const harness = createHarness();
+  const { app, localStorage } = harness;
+  for (let i = 0; i < 12; i += 1) {
+    app.stageDraftMessage(`draft ${i}`, `session_${i}`);
+  }
+  const drafts = JSON.parse(localStorage.getItem('draftMessages') || '[]');
+  if (drafts.length !== 10) {
+    fail(name, `expected 10 drafts, got ${drafts.length}`, JSON.stringify(drafts));
+    return;
+  }
+  if (drafts.some((draft) => draft.sessionId === 'session_0' || draft.sessionId === 'session_1')) {
+    fail(name, 'oldest drafts should be evicted first', JSON.stringify(drafts));
+    return;
+  }
+  pass(name);
+}
+
 function testRestoreDraftMessageForSessionIsSessionBound() {
   const name = 'restoreDraftMessageForSession restores only the active session draft';
   const harness = createHarness();
@@ -2685,8 +2807,12 @@ function testRestoreLatestDraftMessageDoesNotCrossSessionBoundary() {
   await testSendMessageLazilyMaterializesAttachmentDataURLs();
   await testSendMessageKeepsComposerWhenAttachmentMaterializationFails();
   await testStaleInterrupt404RefreshesAndSendsMessage();
+  await testStaleInterruptRecoveryFailedPostKeepsDraft();
   await testFailedSendKeepsSessionDraftAndRestagesComposer();
   await testSuccessfulSendRemovesOnlyMatchingDraft();
+  await testSuccessfulNewChatSendClearsNewConversationDraft();
+  testClearDraftMessageForSessionRemovesLogicalBucket();
+  testDraftMessageLimitIsTen();
   testRestoreDraftMessageForSessionIsSessionBound();
   testRestoreLatestDraftMessageDoesNotCrossSessionBoundary();
   await testNonImageAttachmentsDoNotCreatePreviewObjectURLs();

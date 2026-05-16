@@ -14,6 +14,9 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
+// templateVarPattern matches {{variable}} tokens, allowing optional whitespace inside delimiters.
+var templateVarPattern = regexp.MustCompile(`\{\{\s*(\w+)\s*\}\}`)
+
 // TemplateContext holds values for template variable expansion.
 type TemplateContext struct {
 	// Time-related
@@ -69,11 +72,22 @@ func NewTemplateContext() TemplateContext {
 // NewTemplateContextForTemplate creates a context, only computing expensive values
 // (like git fields, git_diff_stat, agents, handover_dir) if they are actually used in the template.
 func NewTemplateContextForTemplate(template string) TemplateContext {
-	needsGitInfo := strings.Contains(template, "{{git_branch}}") || strings.Contains(template, "{{git_repo}}")
-	needsGitDiffStat := strings.Contains(template, "{{git_diff_stat}}")
-	needsAgents := strings.Contains(template, "{{agents}}")
-	needsHandoverDir := strings.Contains(template, "{{handover_dir}}") || strings.Contains(template, "{{handover_path}}")
+	vars := templateVariables(template)
+	needsGitInfo := vars["git_branch"] || vars["git_repo"]
+	needsGitDiffStat := vars["git_diff_stat"]
+	needsAgents := vars["agents"]
+	needsHandoverDir := vars["handover_dir"] || vars["handover_path"]
 	return newTemplateContext(needsGitInfo, needsGitDiffStat, needsAgents, needsHandoverDir)
+}
+
+func templateVariables(template string) map[string]bool {
+	vars := make(map[string]bool)
+	for _, match := range templateVarPattern.FindAllStringSubmatch(template, -1) {
+		if len(match) == 2 {
+			vars[match[1]] = true
+		}
+	}
+	return vars
 }
 
 // newTemplateContext creates a context with optional expensive computations.
@@ -192,12 +206,13 @@ func (c TemplateContext) WithLLM(provider, model string) TemplateContext {
 
 // ExpandTemplate replaces {{variable}} placeholders with values from context.
 func ExpandTemplate(text string, ctx TemplateContext) string {
-	// Match {{variable}} patterns
-	re := regexp.MustCompile(`\{\{(\w+)\}\}`)
-
-	return re.ReplaceAllStringFunc(text, func(match string) string {
-		// Extract variable name
-		varName := strings.Trim(match, "{}")
+	return templateVarPattern.ReplaceAllStringFunc(text, func(match string) string {
+		// Extract variable name.
+		matches := templateVarPattern.FindStringSubmatch(match)
+		if len(matches) != 2 {
+			return match
+		}
+		varName := matches[1]
 
 		switch varName {
 		case "date":

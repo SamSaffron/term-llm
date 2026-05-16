@@ -139,7 +139,7 @@ const parseSSEStream = async (stream, onEvent) => {
 
 const sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
-const DRAFT_MESSAGE_LIMIT = 20;
+const DRAFT_MESSAGE_LIMIT = 10;
 const draftMessagesStorageKey = () => STORAGE_KEYS.draftMessages || 'term_llm_draft_messages';
 
 const loadDraftMessages = () => {
@@ -195,6 +195,13 @@ const removeDraftMessage = (draftId) => {
   const id = String(draftId || '').trim();
   if (!id) return;
   saveDraftMessages(loadDraftMessages().filter((item) => item.id !== id));
+};
+
+const clearDraftMessageForSession = (sessionId = state.activeSessionId) => {
+  const normalizedSessionId = String(sessionId || '').trim();
+  saveDraftMessages(loadDraftMessages().filter((item) => (
+    String(item.sessionId || '').trim() !== normalizedSessionId
+  )));
 };
 
 const restoreDraftMessageForSession = (sessionId = state.activeSessionId, options = {}) => {
@@ -3112,6 +3119,7 @@ const recoverInterruptFailure = async (session, prompt, messageId) => {
     queueInterruptFollowUp(prompt, messageId);
     persistAndRefreshShell();
     scrollToBottom(true);
+    clearDraftMessageForSession(session.id);
     return true;
   }
 
@@ -3177,7 +3185,7 @@ const sendMessage = async (options = {}) => {
     }
 
     const pendingMessageId = generateId('msg');
-    const draftId = stageDraftMessage(prompt, session.id);
+    stageDraftMessage(prompt, session.id);
     trackPendingInterruptCommit(session.id, prompt, pendingMessageId);
     trackPendingInterjection(session.id, prompt, pendingMessageId, 'deciding');
     persistAndRefreshShell();
@@ -3188,7 +3196,7 @@ const sendMessage = async (options = {}) => {
 
     try {
       await interruptActiveRun(session, prompt, pendingMessageId);
-      removeDraftMessage(draftId);
+      clearDraftMessageForSession(session.id);
     } catch (err) {
       // Interrupt can fail after backend restart or stale runtime state. For any
       // non-auth HTTP failure, resync server truth before deciding whether to
@@ -3197,7 +3205,6 @@ const sendMessage = async (options = {}) => {
         try {
           const recovered = await recoverInterruptFailure(session, prompt, pendingMessageId);
           if (recovered) {
-            removeDraftMessage(draftId);
             return;
           }
         } catch (recoveryErr) {
@@ -3238,6 +3245,8 @@ const sendMessage = async (options = {}) => {
     }
   }
 
+  const wasDraftSessionSend = !session || state.draftSessionActive;
+
   if (!session) {
     session = createSession();
     state.sessions.unshift(session);
@@ -3267,7 +3276,7 @@ const sendMessage = async (options = {}) => {
   }
 
   const reuseMessageId = typeof options.reuseMessageId === 'string' ? options.reuseMessageId : '';
-  const draftId = stageDraftMessage(prompt, session.id);
+  stageDraftMessage(prompt, session.id);
   let userMessage = reuseMessageId
     ? session.messages.find(m => m.id === reuseMessageId && m.role === 'user') || null
     : null;
@@ -3403,7 +3412,10 @@ const sendMessage = async (options = {}) => {
     if (!response.ok) {
       throw await normalizeError(response);
     }
-    removeDraftMessage(draftId);
+    clearDraftMessageForSession(session.id);
+    if (wasDraftSessionSend) {
+      clearDraftMessageForSession('');
+    }
 
     if (headerResponseId) {
       setActiveResponseTracking(session, headerResponseId, 0);
@@ -3525,6 +3537,7 @@ Object.assign(app, {
   sleep,
   stageDraftMessage,
   removeDraftMessage,
+  clearDraftMessageForSession,
   restoreLatestDraftMessage,
   restoreDraftMessageForSession,
   setActiveResponseTracking,

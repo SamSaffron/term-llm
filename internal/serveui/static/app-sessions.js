@@ -15,7 +15,7 @@ const {
   updateSidebarStatus, sessionHasInProgressState, hasAnySessionInProgressState, setSessionServerActiveRun, setSessionOptimisticBusy,
   moveSessionProgressState, requeueUncommittedInterrupts, drainInterruptQueueIfIdle, requeuePendingInterjections,
   trackPendingInterjection, removePendingInterjectionById, trackPendingInterruptCommit, refreshPendingInterjectionBanner,
-  restoreDraftMessageForSession, stageDraftMessage
+  restoreDraftMessageForSession, stageDraftMessage, clearDraftMessageForSession
 } = app;
 let sessionStatePollTimer = null;
 
@@ -160,8 +160,11 @@ const createAndSwitchToFreshSession = async () => {
 
 const stageCurrentComposerForSession = (sessionId) => {
   const prompt = String(elements.promptInput.value || '').trim();
-  if (!prompt) return;
-  stageDraftMessage(prompt, sessionId);
+  if (prompt) {
+    stageDraftMessage(prompt, sessionId);
+    return;
+  }
+  clearDraftMessageForSession(sessionId);
 };
 
 const switchToDraftSession = async (options = {}) => {

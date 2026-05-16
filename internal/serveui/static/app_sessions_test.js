@@ -145,6 +145,7 @@ function defaultAppStubs(app, overrides = {}) {
     refreshPendingInterjectionBanner() {},
     restoreDraftMessageForSession() {},
     stageDraftMessage() {},
+    clearDraftMessageForSession() {},
     HEARTBEAT_STALE_THRESHOLD: 45000,
     HEARTBEAT_ABORT_REASON: 'heartbeat stale',
     applyDesktopSidebarState() {},
@@ -288,6 +289,54 @@ async function testSwitchingSessionsStagesCurrentComposerBeforeRestore() {
   await app.switchToSession(sessionA.id, { sync: false });
   if (app.elements.promptInput.value !== 'unsent in A') {
     fail(name, 'expected staged session A composer to be restored when switching back', app.elements.promptInput.value);
+    return;
+  }
+  pass(name);
+}
+
+async function testSwitchingSessionsClearsEmptyComposerDraft() {
+  const name = 'switching sessions clears stored draft when composer was emptied';
+  const drafts = new Map([['sess_a', 'old draft in A']]);
+  const { app } = await createSessionsHarness({
+    fetchImpl: async () => new Response(JSON.stringify({ sessions: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    }),
+    appOverrides: {
+      stageDraftMessage(prompt, sessionId) {
+        drafts.set(String(sessionId || ''), String(prompt || '').trim());
+      },
+      clearDraftMessageForSession(sessionId) {
+        drafts.delete(String(sessionId || ''));
+      },
+      restoreDraftMessageForSession(sessionId, options = {}) {
+        const key = String(sessionId || '');
+        if (!drafts.has(key)) {
+          if (options.replace) app.elements.promptInput.value = '';
+          return false;
+        }
+        app.elements.promptInput.value = drafts.get(key);
+        return true;
+      }
+    }
+  });
+
+  const sessionA = { id: 'sess_a', title: 'A', messages: [], lastResponseId: null, activeResponseId: null, lastSequenceNumber: 0 };
+  const sessionB = { id: 'sess_b', title: 'B', messages: [], lastResponseId: null, activeResponseId: null, lastSequenceNumber: 0 };
+  app.state.sessions = [sessionA, sessionB];
+  app.state.activeSessionId = sessionA.id;
+  app.state.draftSessionActive = false;
+  app.elements.promptInput.value = '';
+
+  await app.switchToSession(sessionB.id, { sync: false });
+  if (drafts.has(sessionA.id)) {
+    fail(name, 'expected empty composer to clear session A draft', JSON.stringify(Array.from(drafts.entries())));
+    return;
+  }
+
+  await app.switchToSession(sessionA.id, { sync: false });
+  if (app.elements.promptInput.value !== '') {
+    fail(name, 'cleared draft should not restore when switching back', app.elements.promptInput.value);
     return;
   }
   pass(name);
@@ -1765,6 +1814,7 @@ async function testSwitchToSearchOnlySessionHydratesResult() {
 
 (async () => {
   await testSwitchingSessionsStagesCurrentComposerBeforeRestore();
+  await testSwitchingSessionsClearsEmptyComposerDraft();
   await testSwitchToSessionSyncsSelectedRuntime();
   await testNumericDeepLinkResolvesRealSessionId();
   await testDeveloperMessagesAreHidden();

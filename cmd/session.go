@@ -20,7 +20,10 @@ import (
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
-var builtinAgentFileIncludePattern = regexp.MustCompile(`\{\{\s*file\s*:`)
+var (
+	builtinAgentFileIncludePattern = regexp.MustCompile(`\{\{\s*file\s*:`)
+	builtinAgentResourceDirPattern = regexp.MustCompile(`\{\{\s*resource_dir\s*\}\}`)
+)
 
 // SessionSettings holds the resolved settings for a session, merged from
 // config defaults, agent settings, and CLI flags.
@@ -345,7 +348,20 @@ func expandSystemPromptWithIncludes(prompt string, templateCtx agents.TemplateCo
 	if err != nil {
 		return "", err
 	}
+	templateCtx = templateContextForExpandedPrompt(withIncludes, templateCtx)
 	return agents.ExpandTemplate(withIncludes, templateCtx), nil
+}
+
+func templateContextForExpandedPrompt(prompt string, base agents.TemplateContext) agents.TemplateContext {
+	ctx := agents.NewTemplateContextForTemplate(prompt)
+	ctx.Files = base.Files
+	ctx.FileCount = base.FileCount
+	ctx.ResourceDir = base.ResourceDir
+	ctx.Platform = base.Platform
+	ctx.Provider = base.Provider
+	ctx.Model = base.Model
+	ctx.ProviderModel = base.ProviderModel
+	return ctx
 }
 
 func systemPromptCWDBaseDir() (string, error) {
@@ -357,7 +373,7 @@ func systemPromptCWDBaseDir() (string, error) {
 }
 
 func builtinAgentPromptNeedsExtractedResources(prompt string) bool {
-	return strings.Contains(prompt, "{{resource_dir}}") || builtinAgentFileIncludePattern.MatchString(prompt)
+	return builtinAgentResourceDirPattern.MatchString(prompt) || builtinAgentFileIncludePattern.MatchString(prompt)
 }
 
 func agentPromptTemplateContextAndBaseDir(agent *agents.Agent, files []string) (agents.TemplateContext, string, error) {

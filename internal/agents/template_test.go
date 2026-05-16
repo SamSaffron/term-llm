@@ -100,6 +100,11 @@ func TestExpandTemplate(t *testing.T) {
 			expected: "Read styles at /home/user/.cache/term-llm/agents/artist/styles.md",
 		},
 		{
+			name:     "variable with whitespace",
+			template: "Read styles at {{ resource_dir }}/styles.md",
+			expected: "Read styles at /home/user/.cache/term-llm/agents/artist/styles.md",
+		},
+		{
 			name:     "adjacent variables",
 			template: "{{git_repo}}/{{git_branch}}",
 			expected: "term-llm/main",
@@ -160,7 +165,7 @@ func TestNewTemplateContextForTemplate_CoalescesGitLookups(t *testing.T) {
 	shimDir := t.TempDir()
 	logPath := filepath.Join(shimDir, "git.log")
 	gitPath := filepath.Join(shimDir, "git")
-	script := "#!/bin/sh\necho invoked >> \"" + logPath + "\"\nprintf 'feature/test\\n/tmp/fake-repo\\n'\n"
+	script := "#!/bin/sh\necho invoked >> \"" + logPath + "\"\nprintf 'feature/test\n/tmp/fake-repo\n'\n"
 	if err := os.WriteFile(gitPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write git shim: %v", err)
 	}
@@ -171,7 +176,7 @@ func TestNewTemplateContextForTemplate_CoalescesGitLookups(t *testing.T) {
 	}
 	defer os.Setenv("PATH", origPath)
 
-	ctx := NewTemplateContextForTemplate("{{git_repo}}/{{git_branch}}")
+	ctx := NewTemplateContextForTemplate("{{ git_repo }}/{{ git_branch }}")
 	if ctx.GitBranch != "feature/test" {
 		t.Fatalf("GitBranch = %q, want %q", ctx.GitBranch, "feature/test")
 	}
@@ -186,6 +191,15 @@ func TestNewTemplateContextForTemplate_CoalescesGitLookups(t *testing.T) {
 	invocations := strings.Count(strings.TrimSpace(string(logData)), "invoked")
 	if invocations != 1 {
 		t.Fatalf("git invoked %d times, want 1", invocations)
+	}
+}
+
+func TestTemplateVariablesAllowsWhitespace(t *testing.T) {
+	vars := templateVariables("{{ git_repo }}/{{git_branch}} {{ git_diff_stat }} {{ agents }} {{ handover_dir }} {{ handover_path }}")
+	for _, name := range []string{"git_repo", "git_branch", "git_diff_stat", "agents", "handover_dir", "handover_path"} {
+		if !vars[name] {
+			t.Fatalf("templateVariables missing %q in %#v", name, vars)
+		}
 	}
 }
 

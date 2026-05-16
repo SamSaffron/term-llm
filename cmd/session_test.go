@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +46,47 @@ func TestResolveSettings_ConfigSystemPromptExpandsIncludeThenTemplate(t *testing
 	}
 	if !strings.Contains(settings.SystemPrompt, "Year="+time.Now().Format("2006")) {
 		t.Fatalf("SystemPrompt did not include expanded year: %q", settings.SystemPrompt)
+	}
+}
+
+func TestResolveSettings_ConfigSystemPromptComputesContextAfterIncludes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("git PATH shim test requires a POSIX shell")
+	}
+
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(origWD) }()
+
+	tmp := t.TempDir()
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "inc.md"), []byte("Repo={{ git_repo }} Branch={{ git_branch }}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	shimDir := t.TempDir()
+	gitPath := filepath.Join(shimDir, "git")
+	script := "#!/bin/sh\nprintf 'feature/include\n/tmp/include-repo\n'\n"
+	if err := os.WriteFile(gitPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write git shim: %v", err)
+	}
+	origPath := os.Getenv("PATH")
+	if err := os.Setenv("PATH", shimDir+string(os.PathListSeparator)+origPath); err != nil {
+		t.Fatalf("set PATH: %v", err)
+	}
+	defer os.Setenv("PATH", origPath)
+
+	settings, err := ResolveSettings(&config.Config{}, nil, CLIFlags{}, "", "", "Start {{file:inc.md}} End", 0, 20)
+	if err != nil {
+		t.Fatalf("ResolveSettings() error = %v", err)
+	}
+
+	if want := "Start Repo=include-repo Branch=feature/include End"; settings.SystemPrompt != want {
+		t.Fatalf("SystemPrompt = %q, want %q", settings.SystemPrompt, want)
 	}
 }
 
@@ -187,7 +229,7 @@ func TestResolveSettings_BuiltinAgentResourceDirStillExtractsResources(t *testin
 	agent := &agents.Agent{
 		Name:         "artist",
 		Source:       agents.SourceBuiltin,
-		SystemPrompt: "Read {{resource_dir}}/styles.md",
+		SystemPrompt: "Read {{ resource_dir }}/styles.md",
 	}
 
 	settings, err := ResolveSettings(&config.Config{}, agent, CLIFlags{}, "", "", "", 0, 20)
