@@ -108,8 +108,9 @@ Use `base_url` when the standard `/chat/completions` path should be appended aut
 | `api_key` | string | API key. Supports `${ENV_VAR}`, `op://`, `file://`, and `$()` resolution. If omitted, term-llm tries `<PROVIDER_NAME>_API_KEY` from the environment. |
 | `model` | string | Default model name sent to the server. |
 | `models` | list | Optional list of model names for shell tab completion with `--provider name:<TAB>`. |
-| `fast_model` | string | Lightweight model used for control-plane tasks (e.g., title generation). |
+| `fast_model` | string | Lightweight model used for control-plane tasks (e.g., title generation). This is separate from service-tier fast mode. |
 | `fast_provider` | string | Provider key to use for `fast_model` if it lives on a different provider. |
+| `service_tier` | string | Optional Responses API service tier for built-in `openai` and `chatgpt` providers. Use `fast` or `priority` to request fast/priority service where the selected model supports it. Omit the field to send no service tier. |
 | `context_window` | int | Override context window size in tokens. Use this for self-hosted models not in the built-in token limit tables. |
 | `max_output_tokens` | int | Override maximum output tokens. Same use case as `context_window`. |
 | `no_stream_options` | bool | When `true`, don't send `stream_options` in the request. Use this for servers that reject the field. Default `false`; most OpenAI-compatible servers (vLLM, Ollama, LM Studio) support it and need it to report token usage. |
@@ -136,6 +137,25 @@ providers:
     model: custom-finetune
     no_stream_options: true  # this server rejects stream_options
 ```
+
+## Service tiers and fast mode
+
+Built-in `openai` and `chatgpt` text providers can send the Responses API `service_tier` field. To request fast/priority service for all turns through a provider, set `service_tier` in that provider config:
+
+```yaml
+providers:
+  openai:
+    model: gpt-5.4
+    service_tier: fast      # alias for API value "priority"
+
+  chatgpt:
+    model: gpt-5.5-medium
+    service_tier: priority  # equivalent to "fast"
+```
+
+Leave `service_tier` unset to omit the field entirely. Only some models/accounts support fast service; unsupported requests may be ignored or rejected by the provider. In chat, `/fast` toggles the fast service tier for the current session. The status line shows `fast` when it is currently active.
+
+This is different from `fast_model` / `fast_provider`, which choose a lightweight model for term-llm control-plane tasks such as summaries or title generation.
 
 ## Reasoning and model suffixes
 

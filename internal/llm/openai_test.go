@@ -322,3 +322,76 @@ func TestOpenAIProviderStreamReasoningEffortPrecedence(t *testing.T) {
 		})
 	}
 }
+
+func TestOpenAIProviderStreamIncludesProviderDefaultServiceTier(t *testing.T) {
+	var got ResponsesRequest
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.completed\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{}}\n\n"))
+	}))
+	defer ts.Close()
+
+	provider := &OpenAIProvider{
+		apiKey:      "test-key",
+		model:       "gpt-5.4",
+		serviceTier: ServiceTierFast,
+		responsesClient: &ResponsesClient{
+			BaseURL:       ts.URL,
+			GetAuthHeader: func() string { return "Bearer test-key" },
+			HTTPClient:    ts.Client(),
+		},
+	}
+
+	stream, err := provider.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+	drainStreamToDone(t, stream)
+
+	if got.ServiceTier != ServiceTierFast {
+		t.Fatalf("service_tier = %q, want %q", got.ServiceTier, ServiceTierFast)
+	}
+}
+
+func TestOpenAIProviderStreamServiceTierOmittedByDefaultAndClearOverride(t *testing.T) {
+	var got ResponsesRequest
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.completed\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{}}\n\n"))
+	}))
+	defer ts.Close()
+
+	provider := &OpenAIProvider{
+		apiKey:      "test-key",
+		model:       "gpt-5.4",
+		serviceTier: ServiceTierFast,
+		responsesClient: &ResponsesClient{
+			BaseURL:       ts.URL,
+			GetAuthHeader: func() string { return "Bearer test-key" },
+			HTTPClient:    ts.Client(),
+		},
+	}
+
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages:       []Message{UserText("hello")},
+		ServiceTierSet: true,
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+	drainStreamToDone(t, stream)
+
+	if got.ServiceTier != "" {
+		t.Fatalf("service_tier = %q, want omitted", got.ServiceTier)
+	}
+}

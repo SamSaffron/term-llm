@@ -34,10 +34,12 @@ type ChatGPTProvider struct {
 	effort          string // reasoning effort: "low", "medium", "high", "xhigh", or ""
 	useWebSocket    bool
 	responsesClient *ResponsesClient
+	serviceTier     string
 }
 
 type ChatGPTProviderOptions struct {
 	UseWebSocket bool
+	ServiceTier  string
 }
 
 // NewChatGPTProvider creates a new ChatGPT provider.
@@ -81,6 +83,7 @@ func NewChatGPTProviderWithOptions(model string, opts ChatGPTProviderOptions) (*
 		model:        actualModel,
 		effort:       effort,
 		useWebSocket: opts.UseWebSocket,
+		serviceTier:  NormalizeServiceTier(opts.ServiceTier),
 	}, nil
 }
 
@@ -100,6 +103,7 @@ func NewChatGPTProviderWithCredsAndOptions(creds *credentials.ChatGPTCredentials
 		model:        actualModel,
 		effort:       effort,
 		useWebSocket: opts.UseWebSocket,
+		serviceTier:  NormalizeServiceTier(opts.ServiceTier),
 	}
 }
 
@@ -244,6 +248,15 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 		Store:          boolPtr(false),
 		Stream:         true,
 		SessionID:      req.SessionID,
+	}
+
+	if serviceTier := p.serviceTier; req.ServiceTierSet || strings.TrimSpace(req.ServiceTier) != "" {
+		serviceTier = NormalizeServiceTier(req.ServiceTier)
+		if serviceTier != "" {
+			responsesReq.ServiceTier = serviceTier
+		}
+	} else if serviceTier != "" {
+		responsesReq.ServiceTier = serviceTier
 	}
 
 	if req.ToolChoice.Mode != "" {

@@ -85,8 +85,11 @@ See [Skills](/guides/skills/) for the full guide on creating, sharing, and exten
 | `/clear` | Clear conversation |
 | `/model` | Show current model |
 | `/search` | Toggle web search |
+| `/fast` | Toggle fast/priority service tier for supported OpenAI/ChatGPT models |
 | `/mcp` | Manage MCP servers |
 | `/quit` | Exit chat |
+
+When web search is enabled, the chat status line shows `web`; when fast service tier is enabled, it shows `fast`.
 
 ### Flags
 

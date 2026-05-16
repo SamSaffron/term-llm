@@ -133,18 +133,26 @@ type Model struct {
 	pasteChunks             map[int]string // Collapsed paste placeholders → actual content
 	pasteSeq                int            // Incrementing ID for paste placeholders
 	searchEnabled           bool           // Web search toggle
-	forceExternalSearch     bool           // Force external search tools even if provider supports native
-	disableExternalWebFetch bool           // Disable external read_url injection even when provider lacks native fetch
-	localTools              []string       // Names of enabled local tools (read, write, etc.)
-	toolsStr                string         // Original tools setting (for session persistence)
-	mcpStr                  string         // Original MCP setting (for session persistence)
-	pendingInterjection     string         // Interrupt text waiting to be injected or cancelled
-	pendingInterjectionID   string         // Stable ID for the currently displayed pending interjection
-	interjectionSeq         uint64         // Monotonic sequence for locally generated interjection IDs
-	interruptRequestSeq     uint64         // Monotonic sequence for async interrupt classification
-	activeInterruptSeq      uint64         // Currently active async interrupt classification request
-	pendingInterruptUI      string         // UI state: "", "deciding", "interject"
-	interruptNotice         string         // One-line UI notice for recent interrupt actions
+	fastMode                bool           // Effective ChatGPT/OpenAI fast service-tier state shown in the footer
+	fastProviderDefault     bool           // Provider config requests fast by default; inherited unless overridden in-session
+	fastOverride            serviceTierOverride
+	fastMetadataLoaded      bool // ChatGPT model metadata has been loaded
+	fastMetadataStale       bool // Loaded metadata came from stale cache and should refresh in background
+	fastMetadataLoading     bool // Metadata load command is in flight
+	pendingFastToggle       bool // User requested /fast while waiting for metadata
+	modelMetadata           []llm.ModelInfo
+	forceExternalSearch     bool     // Force external search tools even if provider supports native
+	disableExternalWebFetch bool     // Disable external read_url injection even when provider lacks native fetch
+	localTools              []string // Names of enabled local tools (read, write, etc.)
+	toolsStr                string   // Original tools setting (for session persistence)
+	mcpStr                  string   // Original MCP setting (for session persistence)
+	pendingInterjection     string   // Interrupt text waiting to be injected or cancelled
+	pendingInterjectionID   string   // Stable ID for the currently displayed pending interjection
+	interjectionSeq         uint64   // Monotonic sequence for locally generated interjection IDs
+	interruptRequestSeq     uint64   // Monotonic sequence for async interrupt classification
+	activeInterruptSeq      uint64   // Currently active async interrupt classification request
+	pendingInterruptUI      string   // UI state: "", "deciding", "interject"
+	interruptNotice         string   // One-line UI notice for recent interrupt actions
 	// MCP (Model Context Protocol)
 	mcpManager    *mcp.Manager
 	mcpStatusChan chan mcp.StatusUpdate
@@ -362,6 +370,12 @@ type ResumeFromExternalUIMsg struct{}
 // autoSendMsg triggers automatic message send (for benchmarking mode)
 type autoSendMsg struct{}
 
+type chatGPTModelsLoadedMsg struct {
+	models []llm.ModelInfo
+	fresh  bool
+	err    error
+}
+
 // ApprovalRequestMsg triggers an inline approval prompt.
 type ApprovalRequestMsg struct {
 	Path    string
@@ -559,6 +573,29 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 		mcpManager.SetStatusChannel(mcpStatusChan)
 	}
 
+	fastProviderDefault := false
+	fastMode := false
+	var modelMetadata []llm.ModelInfo
+	fastMetadataLoaded := false
+	providerIsChatGPT := false
+	providerType := config.ProviderType("")
+	if pc, ok := cfg.Providers[providerKey]; ok {
+		providerType = config.InferProviderType(providerKey, pc.Type)
+		fastProviderDefault = llm.NormalizeServiceTier(pc.ServiceTier) == llm.ServiceTierFast
+	} else {
+		providerType = config.InferProviderType(providerKey, "")
+	}
+	providerIsChatGPT = providerType == config.ProviderTypeChatGPT
+	fastMode = fastProviderDefault
+	fastMetadataStale := false
+	if providerIsChatGPT {
+		if cached, fresh, err := llm.CachedChatGPTModels(); err == nil {
+			modelMetadata = cached
+			fastMetadataLoaded = true
+			fastMetadataStale = !fresh
+		}
+	}
+
 	model := &Model{
 		width:                    width,
 		height:                   height,
@@ -595,6 +632,11 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 		forceExternalSearch:      forceExternalSearch,
 		disableExternalWebFetch:  disableExternalWebFetch,
 		searchEnabled:            searchEnabled,
+		fastMode:                 fastMode,
+		fastProviderDefault:      fastProviderDefault,
+		fastMetadataLoaded:       fastMetadataLoaded,
+		fastMetadataStale:        fastMetadataStale,
+		modelMetadata:            modelMetadata,
 		localTools:               localTools,
 		toolsStr:                 toolsStr,
 		mcpStr:                   mcpStr,
@@ -891,6 +933,11 @@ func (m *Model) Init() tea.Cmd {
 	m.updateTextareaHeight()
 
 	baseCmds := []tea.Cmd{textarea.Blink, m.spinner.Tick}
+	if (!m.fastMetadataLoaded || m.fastMetadataStale) && !m.fastMetadataLoading {
+		if cmd := m.loadChatGPTModelsCmd(); cmd != nil {
+			baseCmds = append(baseCmds, cmd)
+		}
+	}
 	if cmd := m.listenForMCPStatusUpdates(); cmd != nil {
 		baseCmds = append(baseCmds, cmd)
 	}
@@ -1113,6 +1160,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Seq == m.footerMessageSeq {
 			m.clearFooterMessage()
 		}
+
+	case chatGPTModelsLoadedMsg:
+		return m.applyChatGPTModelsLoaded(msg)
 
 	case mcpStatusUpdateMsg:
 		m.refreshMCPPickerIfOpen()

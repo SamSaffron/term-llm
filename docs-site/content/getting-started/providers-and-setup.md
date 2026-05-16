@@ -76,6 +76,9 @@ default_provider: chatgpt
 providers:
   chatgpt:
     model: gpt-5.2-codex
+    # Request fast/priority service tier for supported ChatGPT models/accounts.
+    # Omit this field to send no service_tier.
+    service_tier: fast
     # Enabled by default for ChatGPT text requests; set false to force HTTP/SSE.
     use_websocket: true
 ```

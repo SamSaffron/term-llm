@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -51,6 +52,126 @@ func TestNewChatGPTProviderWithCredsDefaultsToGPT55Medium(t *testing.T) {
 	}
 	if provider.effort != "medium" {
 		t.Fatalf("effort = %q, want %q", provider.effort, "medium")
+	}
+}
+
+func TestChatGPTStream_IncludesNormalizedServiceTier(t *testing.T) {
+	origClient := chatGPTHTTPClient
+	defer func() { chatGPTHTTPClient = origClient }()
+
+	var captured ResponsesRequest
+	chatGPTHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(req.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+				`event: response.completed`,
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+				`data: [DONE]`,
+			}, "\n"))),
+			Header: make(http.Header),
+		}, nil
+	})}
+
+	provider := NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{
+		AccessToken: "test-token",
+		AccountID:   "test-account",
+		ExpiresAt:   time.Now().Add(1 * time.Hour).Unix(),
+	}, "gpt-5.5-medium")
+
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages:    []Message{UserText("hello")},
+		ServiceTier: "fast",
+	})
+	if err != nil {
+		t.Fatalf("stream creation failed: %v", err)
+	}
+	defer stream.Close()
+	drainStreamToDone(t, stream)
+
+	if captured.ServiceTier != ServiceTierFast {
+		t.Fatalf("service_tier = %q, want %q", captured.ServiceTier, ServiceTierFast)
+	}
+}
+
+func TestChatGPTStream_IncludesProviderDefaultServiceTier(t *testing.T) {
+	origClient := chatGPTHTTPClient
+	defer func() { chatGPTHTTPClient = origClient }()
+
+	var captured ResponsesRequest
+	chatGPTHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(req.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+				`event: response.completed`,
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+				`data: [DONE]`,
+			}, "\n"))),
+			Header: make(http.Header),
+		}, nil
+	})}
+
+	provider := NewChatGPTProviderWithCredsAndOptions(&credentials.ChatGPTCredentials{
+		AccessToken: "test-token",
+		AccountID:   "test-account",
+		ExpiresAt:   time.Now().Add(1 * time.Hour).Unix(),
+	}, "gpt-5.5-medium", ChatGPTProviderOptions{ServiceTier: "fast"})
+
+	stream, err := provider.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}})
+	if err != nil {
+		t.Fatalf("stream creation failed: %v", err)
+	}
+	defer stream.Close()
+	drainStreamToDone(t, stream)
+
+	if captured.ServiceTier != ServiceTierFast {
+		t.Fatalf("service_tier = %q, want %q", captured.ServiceTier, ServiceTierFast)
+	}
+}
+
+func TestChatGPTStream_ServiceTierOverrideCanClearProviderDefault(t *testing.T) {
+	origClient := chatGPTHTTPClient
+	defer func() { chatGPTHTTPClient = origClient }()
+
+	var captured ResponsesRequest
+	chatGPTHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(req.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+				`event: response.completed`,
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+				`data: [DONE]`,
+			}, "\n"))),
+			Header: make(http.Header),
+		}, nil
+	})}
+
+	provider := NewChatGPTProviderWithCredsAndOptions(&credentials.ChatGPTCredentials{
+		AccessToken: "test-token",
+		AccountID:   "test-account",
+		ExpiresAt:   time.Now().Add(1 * time.Hour).Unix(),
+	}, "gpt-5.5-medium", ChatGPTProviderOptions{ServiceTier: "fast"})
+
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages:       []Message{UserText("hello")},
+		ServiceTierSet: true,
+	})
+	if err != nil {
+		t.Fatalf("stream creation failed: %v", err)
+	}
+	defer stream.Close()
+	drainStreamToDone(t, stream)
+
+	if captured.ServiceTier != "" {
+		t.Fatalf("service_tier = %q, want omitted", captured.ServiceTier)
 	}
 }
 

@@ -72,6 +72,7 @@ type ProviderConfig struct {
 	Model        string            `mapstructure:"model"`
 	FastModel    string            `mapstructure:"fast_model"`    // Lightweight model for control-plane tasks
 	FastProvider string            `mapstructure:"fast_provider"` // Optional provider key override for FastModel
+	ServiceTier  string            `mapstructure:"service_tier"`  // Optional model service tier (e.g. "fast"/"priority" for ChatGPT)
 	Models       []string          `mapstructure:"models"`        // Available models for autocomplete
 	Credentials  string            `mapstructure:"credentials"`   // "api_key", "codex", "gemini-cli"
 	Env          map[string]string `mapstructure:"env"`           // Extra subprocess env vars for providers that shell out (e.g. claude-bin)
@@ -1543,6 +1544,7 @@ var KnownProviderKeys = map[string]bool{
 	"model":             true,
 	"fast_model":        true,
 	"fast_provider":     true,
+	"service_tier":      true,
 	"models":            true,
 	"credentials":       true,
 	"env":               true,
@@ -1743,6 +1745,7 @@ func Save(cfg *Config) error {
 		Model        string       `yaml:"model,omitempty"`
 		FastModel    string       `yaml:"fast_model,omitempty"`
 		FastProvider string       `yaml:"fast_provider,omitempty"`
+		ServiceTier  string       `yaml:"service_tier,omitempty"`
 		BaseURL      string       `yaml:"base_url,omitempty"`
 		AppURL       string       `yaml:"app_url,omitempty"`
 		AppTitle     string       `yaml:"app_title,omitempty"`
@@ -1774,6 +1777,7 @@ func Save(cfg *Config) error {
 			Model:        p.Model,
 			FastModel:    p.FastModel,
 			FastProvider: p.FastProvider,
+			ServiceTier:  p.ServiceTier,
 			BaseURL:      p.BaseURL,
 			AppURL:       p.AppURL,
 			AppTitle:     p.AppTitle,

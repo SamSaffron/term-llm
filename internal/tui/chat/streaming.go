@@ -469,6 +469,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 			}
 		}
 
+		serviceTier, serviceTierSet := m.currentServiceTier()
 		req := llm.Request{
 			SessionID:               m.sess.ID,
 			Messages:                messages,
@@ -477,6 +478,8 @@ func (m *Model) startStream(content string) tea.Cmd {
 			ForceExternalSearch:     m.forceExternalSearch,
 			DisableExternalWebFetch: m.disableExternalWebFetch,
 			ParallelToolCalls:       true,
+			ServiceTier:             serviceTier,
+			ServiceTierSet:          serviceTierSet,
 			MaxTurns:                m.maxTurns,
 		}
 

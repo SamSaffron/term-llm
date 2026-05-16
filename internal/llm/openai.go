@@ -17,11 +17,13 @@ type OpenAIProvider struct {
 	model           string
 	effort          string           // reasoning effort: "low", "medium", "high", "xhigh", or ""
 	useWebSocket    bool             // Responses-over-WebSocket transport
+	serviceTier     string           // Optional Responses API service tier default
 	responsesClient *ResponsesClient // Shared client for Responses API with server state
 }
 
 type OpenAIProviderOptions struct {
 	UseWebSocket bool
+	ServiceTier  string
 }
 
 // ParseModelEffort extracts effort suffix from model name.
@@ -53,6 +55,7 @@ func NewOpenAIProviderWithOptions(apiKey, model string, opts OpenAIProviderOptio
 		model:        actualModel,
 		effort:       effort,
 		useWebSocket: opts.UseWebSocket,
+		serviceTier:  NormalizeServiceTier(opts.ServiceTier),
 	}
 }
 
@@ -132,6 +135,15 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (Stream, error
 		PromptCacheKey: req.SessionID,
 		Stream:         true,
 		SessionID:      req.SessionID,
+	}
+
+	if serviceTier := p.serviceTier; req.ServiceTierSet || strings.TrimSpace(req.ServiceTier) != "" {
+		serviceTier = NormalizeServiceTier(req.ServiceTier)
+		if serviceTier != "" {
+			responsesReq.ServiceTier = serviceTier
+		}
+	} else if serviceTier != "" {
+		responsesReq.ServiceTier = serviceTier
 	}
 
 	if req.ToolChoice.Mode != "" {

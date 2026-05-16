@@ -69,6 +69,8 @@ type Request struct {
 	TemperatureSet          bool // If true, Temperature was explicitly provided, including zero
 	TopP                    float32
 	TopPSet                 bool              // If true, TopP was explicitly provided, including zero
+	ServiceTier             string            // Optional Responses API service tier; "priority" enables ChatGPT fast mode
+	ServiceTierSet          bool              // If true, ServiceTier overrides any provider-level default; empty clears it
 	MaxTurns                int               // Max agentic turns for tool execution (0 = use default)
 	ToolMap                 map[string]string // Maps client tool names to server tool names (e.g. "WebSearch" → "search")
 	Debug                   bool
@@ -336,13 +338,15 @@ type EditToolCall struct {
 
 // ModelInfo represents a model available from a provider.
 type ModelInfo struct {
-	ID          string  `json:"id"`
-	DisplayName string  `json:"display_name,omitempty"`
-	Created     int64   `json:"created,omitempty"`
-	OwnedBy     string  `json:"owned_by,omitempty"`
-	InputLimit  int     `json:"input_limit,omitempty"` // Max input tokens (0 = unknown)
-	InputPrice  float64 `json:"input_price"`           // Pricing per 1M tokens (0 = free, -1 = unknown)
-	OutputPrice float64 `json:"output_price"`          // Pricing per 1M tokens (0 = free, -1 = unknown)
+	ID                   string             `json:"id"`
+	DisplayName          string             `json:"display_name,omitempty"`
+	Created              int64              `json:"created,omitempty"`
+	OwnedBy              string             `json:"owned_by,omitempty"`
+	InputLimit           int                `json:"input_limit,omitempty"` // Max input tokens (0 = unknown)
+	InputPrice           float64            `json:"input_price"`           // Pricing per 1M tokens (0 = free, -1 = unknown)
+	OutputPrice          float64            `json:"output_price"`          // Pricing per 1M tokens (0 = free, -1 = unknown)
+	ServiceTiers         []ModelServiceTier `json:"service_tiers,omitempty"`
+	AdditionalSpeedTiers []string           `json:"additional_speed_tiers,omitempty"`
 }
 
 func SystemText(text string) Message {

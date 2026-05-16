@@ -79,6 +79,11 @@ func AllCommands() []Command {
 			Usage:       "/search",
 		},
 		{
+			Name:        "fast",
+			Description: "Toggle ChatGPT fast mode",
+			Usage:       "/fast",
+		},
+		{
 			Name:        "new",
 			Aliases:     []string{"n"},
 			Description: "Start a new session (saves current)",
@@ -344,6 +349,8 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 		return m.cmdModel(args)
 	case "search":
 		return m.cmdSearch()
+	case "fast":
+		return m.cmdFast()
 	case "new":
 		return m.cmdNew()
 	case "save":
@@ -425,6 +432,10 @@ func (m *Model) showFooterSuccess(content string) (tea.Model, tea.Cmd) {
 	return m.showFooterMessageWithTone(content, "success")
 }
 
+func (m *Model) showFooterWarning(content string) (tea.Model, tea.Cmd) {
+	return m.showFooterMessageWithTone(content, "warning")
+}
+
 func (m *Model) showFooterError(content string) (tea.Model, tea.Cmd) {
 	return m.showFooterMessageWithTone(content, "error")
 }
@@ -441,6 +452,11 @@ func (m *Model) showFooterMessageWithTone(content string, tone string) (tea.Mode
 	return m, tea.Tick(transientFooterMessageDuration, func(time.Time) tea.Msg {
 		return footerMessageClearMsg{Seq: seq}
 	})
+}
+
+func (m *Model) showFooterMutedWithCmd(content string, cmd tea.Cmd) (tea.Model, tea.Cmd) {
+	_, footerCmd := m.showFooterMuted(content)
+	return m, tea.Batch(footerCmd, cmd)
 }
 
 // cancelHandoverTool signals false on the tool-initiated handover channel
@@ -845,6 +861,51 @@ func (m *Model) cmdSearch() (tea.Model, tea.Cmd) {
 		status = "enabled"
 	}
 	return m.showFooterMuted(fmt.Sprintf("Web search %s.", status))
+}
+
+func (m *Model) cmdFast() (tea.Model, tea.Cmd) {
+	m.setTextareaValue("")
+	if m.streaming {
+		return m.showFooterWarning("Fast mode can be toggled after the current response finishes.")
+	}
+	if !m.supportsServiceTierToggle() {
+		return m.showFooterError(fmt.Sprintf("Fast mode is not supported for %s:%s.", m.providerKey, m.modelName))
+	}
+
+	// If fast is currently effective (from provider config or a prior /fast), /fast
+	// explicitly clears the provider default for this chat.
+	m.refreshEffectiveFastMode()
+	if m.fastMode {
+		m.fastOverride = serviceTierClear
+		m.refreshEffectiveFastMode()
+		return m.showFooterMuted("Fast mode disabled.")
+	}
+
+	// OpenAI supports service_tier at the request layer, but term-llm does not
+	// currently have model metadata for it. Let users opt in and let the API reject
+	// unsupported models, just as provider-level config does.
+	if m.providerType() == config.ProviderTypeOpenAI {
+		m.fastOverride = serviceTierFast
+		m.refreshEffectiveFastMode()
+		return m.showFooterSuccess("Fast mode enabled.")
+	}
+
+	if !m.fastMetadataLoaded {
+		m.pendingFastToggle = true
+		if m.fastMetadataLoading {
+			return m.showFooterMuted("Loading model metadata…")
+		}
+		if cmd := m.loadChatGPTModelsCmd(); cmd != nil {
+			return m.showFooterMutedWithCmd("Loading model metadata…", cmd)
+		}
+		return m.showFooterError("Could not load model metadata; fast support unknown.")
+	}
+	if !m.currentModelSupportsFast() {
+		return m.showFooterError(fmt.Sprintf("Fast mode is not supported for %s:%s.", m.providerKey, m.modelName))
+	}
+	m.fastOverride = serviceTierFast
+	m.refreshEffectiveFastMode()
+	return m.showFooterSuccess("Fast mode enabled.")
 }
 
 func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
@@ -1711,6 +1772,19 @@ func (m *Model) switchModel(providerModel string) (tea.Model, tea.Cmd) {
 	m.providerKey = providerName
 	m.modelName = modelName
 
+	// Recompute fast/service-tier state for the new provider. /fast overrides are
+	// per-provider-session state, so switching models/providers returns to config.
+	var fastMetadataCmd tea.Cmd
+	m.fastOverride = serviceTierInherit
+	m.fastProviderDefault = m.configuredFastDefault()
+	m.pendingFastToggle = false
+	m.refreshEffectiveFastMode()
+	if m.canUseFastMetadata() && (!m.fastMetadataLoaded || m.fastMetadataStale) {
+		fastMetadataCmd = m.loadChatGPTModelsCmd()
+	} else if !m.supportsServiceTierToggle() {
+		m.fastMode = false
+	}
+
 	// Keep session metadata aligned so future resume restores correct runtime.
 	if m.sess != nil {
 		m.sess.Provider = m.providerName
@@ -1747,7 +1821,12 @@ func (m *Model) switchModel(providerModel string) (tea.Model, tea.Cmd) {
 		m.invalidateViewCache()
 	}
 
-	return m.showFooterMuted(fmt.Sprintf("Switched model to %s:%s. Next response will try the existing context; if incompatible, use /handover to prepare a compact handoff.", providerName, modelName))
+	msg := fmt.Sprintf("Switched model to %s:%s. Next response will try the existing context; if incompatible, use /handover to prepare a compact handoff.", providerName, modelName)
+	if fastMetadataCmd != nil {
+		_, footerCmd := m.showFooterMuted(msg)
+		return m, tea.Batch(footerCmd, fastMetadataCmd)
+	}
+	return m.showFooterMuted(msg)
 }
 
 // cmdHandover handles /handover @agent [provider:model]

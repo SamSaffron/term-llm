@@ -712,7 +712,7 @@ func TestRenderStatusLine_NarrowDropsNonEssentialParts(t *testing.T) {
 	if strings.Contains(line, "\n") || lipgloss.Width(line) > m.width {
 		t.Fatalf("expected one narrow status line within width %d, got width %d: %q", m.width, lipgloss.Width(line), line)
 	}
-	for _, omitted := range []string{"tools:", "web:on", "mcp:off"} {
+	for _, omitted := range []string{"tools:", "web", "mcp:off"} {
 		if strings.Contains(line, omitted) {
 			t.Fatalf("expected narrow status line to omit %q, got %q", omitted, line)
 		}
@@ -1286,5 +1286,16 @@ func TestRenderStreamingInline_TextToPendingToolUsesBlankLine(t *testing.T) {
 	between := plain[textIdx+len("Let me check that file.") : toolIdx]
 	if got := strings.Count(between, "\n"); got != 2 {
 		t.Fatalf("expected exactly 2 newlines between text and pending tool, got %d; between=%q output=%q", got, between, plain)
+	}
+}
+
+func TestRenderStatusLineShowsFastMode(t *testing.T) {
+	m := newTestChatModel(true)
+	m.width = 80
+	m.fastMode = true
+
+	line := ui.StripANSI(m.renderStatusLine())
+	if !strings.Contains(line, "fast") {
+		t.Fatalf("expected fast in status line, got %q", line)
 	}
 }

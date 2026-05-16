@@ -398,7 +398,7 @@ func printProvidersSection(defaults map[string]any, rawKeys map[string]bool, raw
 	providerNames := make(map[string]bool)
 
 	// Default providers
-	defaultProviders := []string{"anthropic", "openai", "xai", "venice", "openrouter", "gemini", "zen"}
+	defaultProviders := []string{"anthropic", "openai", "chatgpt", "xai", "venice", "openrouter", "gemini", "zen"}
 	for _, p := range defaultProviders {
 		providerNames[p] = true
 	}
@@ -439,7 +439,7 @@ func printProvidersSection(defaults map[string]any, rawKeys map[string]bool, raw
 
 // printProviderConfig prints a single provider's config
 func printProviderConfig(name string, defaults map[string]any, rawKeys map[string]bool, rawValues map[string]string, hasFile bool, cfg *config.Config) {
-	providerKeys := []string{"type", "model", "fast_model", "fast_provider", "api_key", "credentials", "base_url", "url", "app_url", "app_title", "use_native_search", "models", "context_window", "max_output_tokens"}
+	providerKeys := []string{"type", "model", "fast_model", "fast_provider", "service_tier", "models", "api_key", "credentials", "base_url", "url", "app_url", "app_title", "use_native_search", "context_window", "max_output_tokens"}
 
 	// Check if provider has any values
 	hasValues := false
@@ -1277,6 +1277,7 @@ func configKeyCompletions(toComplete string) []string {
 		keySet["providers."+name+".model"] = true
 		keySet["providers."+name+".fast_model"] = true
 		keySet["providers."+name+".fast_provider"] = true
+		keySet["providers."+name+".service_tier"] = true
 		keySet["providers."+name+".credentials"] = true
 		keySet["providers."+name+".api_key"] = true
 	}

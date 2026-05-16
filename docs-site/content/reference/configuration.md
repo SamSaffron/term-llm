@@ -252,6 +252,23 @@ providers:
 
 This is passed only to the provider subprocess. It does not mutate your parent shell environment.
 
+## Provider service tier
+
+Built-in `openai` and `chatgpt` text providers support the Responses API `service_tier` field. Omit `service_tier` to send no service tier. Set it to `fast` (or the API value `priority`) to request fast/priority service for supported models and accounts:
+
+```yaml
+providers:
+  openai:
+    model: gpt-5.4
+    service_tier: fast
+
+  chatgpt:
+    model: gpt-5.5-medium
+    service_tier: priority
+```
+
+In chat mode, `/fast` toggles this service tier for the current session. It does not rewrite your config file.
+
 ## Provider WebSocket transport
 
 Built-in `openai` and `chatgpt` text providers use the Responses WebSocket transport by default for lower-latency agent/tool loops. The WebSocket path keeps a persistent connection and, when safe, continues turns with `previous_response_id` plus only the new user/tool input. If the WebSocket connect/write step fails, term-llm falls back to HTTP/SSE; if a WebSocket continuation is rejected because the prior response state is unavailable, it retries that turn once with full state.

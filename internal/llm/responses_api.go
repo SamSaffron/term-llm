@@ -86,6 +86,7 @@ type ResponsesRequest struct {
 	Generate           *bool                `json:"generate,omitempty"` // WebSocket warmup support; omitted for normal HTTP/WS requests
 	Stream             bool                 `json:"stream"`
 	PreviousResponseID string               `json:"previous_response_id,omitempty"`
+	ServiceTier        string               `json:"service_tier,omitempty"`
 	SessionID          string               `json:"-"`
 }
 

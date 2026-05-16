@@ -820,7 +820,10 @@ func (m *Model) renderStatusLine() string {
 		baseSegments = append(baseSegments, statusSegment{text: mutedStyle.Render("yolo"), priority: 40})
 	}
 	if m.searchEnabled {
-		baseSegments = append(baseSegments, statusSegment{text: successStyle.Render("web:on"), priority: 30})
+		baseSegments = append(baseSegments, statusSegment{text: successStyle.Render("web"), priority: 30})
+	}
+	if m.fastMode {
+		baseSegments = append(baseSegments, statusSegment{text: successStyle.Render("fast"), priority: 30})
 	}
 	if len(m.files) > 0 {
 		baseSegments = append(baseSegments, statusSegment{text: mutedStyle.Render(fmt.Sprintf("%d file(s)", len(m.files))), priority: 55})

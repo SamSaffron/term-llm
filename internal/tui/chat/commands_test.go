@@ -1642,3 +1642,122 @@ func TestStreamDoneRefreshFailureDoesNotReloadFullCompactedHistory(t *testing.T)
 		t.Fatalf("expected refresh failure footer, got %q", got)
 	}
 }
+
+func TestFastCommandTogglesWhenMetadataSupportsModel(t *testing.T) {
+	m := newTestChatModel(true)
+	m.providerKey = "chatgpt"
+	m.modelName = "gpt-5.5-medium"
+	m.fastMetadataLoaded = true
+	m.modelMetadata = []llm.ModelInfo{{
+		ID:           "gpt-5.5",
+		ServiceTiers: []llm.ModelServiceTier{{ID: llm.ServiceTierFast, Name: "fast"}},
+	}}
+	m.setTextareaValue("/fast")
+
+	_, cmd := m.ExecuteCommand("/fast")
+	if cmd == nil {
+		t.Fatal("expected footer clear command")
+	}
+	if !m.fastMode {
+		t.Fatal("expected fast mode enabled")
+	}
+	if got := m.textarea.Value(); got != "" {
+		t.Fatalf("textarea = %q, want empty", got)
+	}
+	if !strings.Contains(m.footerMessage, "enabled") {
+		t.Fatalf("footer = %q, want enabled message", m.footerMessage)
+	}
+
+	_, _ = m.ExecuteCommand("/fast")
+	if m.fastMode {
+		t.Fatal("expected fast mode disabled")
+	}
+}
+
+func TestFastCommandRejectsUnsupportedModel(t *testing.T) {
+	m := newTestChatModel(true)
+	m.providerKey = "chatgpt"
+	m.modelName = "gpt-5.5-medium"
+	m.fastMetadataLoaded = true
+	m.modelMetadata = []llm.ModelInfo{{ID: "gpt-5.5"}}
+
+	_, _ = m.ExecuteCommand("/fast")
+	if m.fastMode {
+		t.Fatal("expected fast mode to remain disabled")
+	}
+	if !strings.Contains(m.footerMessage, "not supported") {
+		t.Fatalf("footer = %q, want unsupported message", m.footerMessage)
+	}
+}
+
+func TestFastCommandWhileMetadataLoadingKeepsPendingToggle(t *testing.T) {
+	m := newTestChatModel(true)
+	m.providerKey = "chatgpt"
+	m.modelName = "gpt-5.5-medium"
+	m.fastMetadataLoading = true
+
+	_, _ = m.ExecuteCommand("/fast")
+	if !m.pendingFastToggle {
+		t.Fatal("expected pending fast toggle while metadata is loading")
+	}
+	if !strings.Contains(m.footerMessage, "Loading model metadata") {
+		t.Fatalf("footer = %q, want loading message", m.footerMessage)
+	}
+}
+
+func TestFastCommandSupportsChatGPTProviderAlias(t *testing.T) {
+	m := newTestChatModel(true)
+	m.config = &config.Config{Providers: map[string]config.ProviderConfig{
+		"work": {Type: config.ProviderTypeChatGPT},
+	}}
+	m.providerKey = "work"
+	m.modelName = "gpt-5.5-medium"
+	m.fastMetadataLoaded = true
+	m.modelMetadata = []llm.ModelInfo{{
+		ID:           "gpt-5.5",
+		ServiceTiers: []llm.ModelServiceTier{{ID: llm.ServiceTierFast, Name: "fast"}},
+	}}
+
+	_, _ = m.ExecuteCommand("/fast")
+	if !m.fastMode {
+		t.Fatal("expected fast mode enabled for chatgpt provider alias")
+	}
+}
+
+func TestFastCommandClearsProviderDefaultWithoutMetadata(t *testing.T) {
+	m := newTestChatModel(true)
+	m.config = &config.Config{Providers: map[string]config.ProviderConfig{
+		"chatgpt": {Type: config.ProviderTypeChatGPT, ServiceTier: "fast"},
+	}}
+	m.providerKey = "chatgpt"
+	m.modelName = "gpt-unknown"
+	m.fastProviderDefault = true
+	m.fastMode = true
+
+	_, _ = m.ExecuteCommand("/fast")
+	if m.fastMode {
+		t.Fatal("expected fast mode disabled")
+	}
+	serviceTier, set := m.currentServiceTier()
+	if !set || serviceTier != "" {
+		t.Fatalf("currentServiceTier() = (%q, %v), want explicit clear", serviceTier, set)
+	}
+}
+
+func TestFastCommandTogglesOpenAIWithoutMetadata(t *testing.T) {
+	m := newTestChatModel(true)
+	m.config = &config.Config{Providers: map[string]config.ProviderConfig{
+		"openai": {Type: config.ProviderTypeOpenAI},
+	}}
+	m.providerKey = "openai"
+	m.modelName = "gpt-5.4"
+
+	_, _ = m.ExecuteCommand("/fast")
+	if !m.fastMode {
+		t.Fatal("expected fast mode enabled for OpenAI")
+	}
+	serviceTier, set := m.currentServiceTier()
+	if !set || serviceTier != llm.ServiceTierFast {
+		t.Fatalf("currentServiceTier() = (%q, %v), want fast override", serviceTier, set)
+	}
+}
