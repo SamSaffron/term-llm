@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -265,9 +264,7 @@ func (c *ResponsesClient) prepareWebSocketContinuationLocked(req ResponsesReques
 		return useFullInput()
 	}
 
-	prevComparable := responsesRequestNonInputComparable(*c.wsLastRequest)
-	currentComparable := responsesRequestNonInputComparable(req)
-	if !reflect.DeepEqual(prevComparable, currentComparable) {
+	if !responsesRequestNonInputEqual(*c.wsLastRequest, req) {
 		// Tool schemas, model parameters, or other non-input fields changed. Start a
 		// fresh chain instead of risking previous_response_id with incompatible state.
 		return useFullInput()
@@ -287,80 +284,250 @@ func (c *ResponsesClient) prepareWebSocketContinuationLocked(req ResponsesReques
 	return useFullInput()
 }
 
-func responsesRequestNonInputComparable(req ResponsesRequest) any {
-	return struct {
-		Model             string
-		Instructions      string
-		Tools             any
-		ToolChoice        any
-		ParallelToolCalls *bool
-		MaxOutputTokens   int
-		Temperature       *float64
-		TopP              *float64
-		Reasoning         *ResponsesReasoning
-		Include           []string
-		PromptCacheKey    string
-		Store             *bool
-		Generate          *bool
-	}{
-		Model:             req.Model,
-		Instructions:      req.Instructions,
-		Tools:             normalizeJSONLikeForCompare(req.Tools),
-		ToolChoice:        normalizeJSONLikeForCompare(req.ToolChoice),
-		ParallelToolCalls: req.ParallelToolCalls,
-		MaxOutputTokens:   req.MaxOutputTokens,
-		Temperature:       req.Temperature,
-		TopP:              req.TopP,
-		Reasoning:         req.Reasoning,
-		Include:           req.Include,
-		PromptCacheKey:    req.PromptCacheKey,
-		Store:             req.Store,
-		Generate:          req.Generate,
-	}
+func responsesRequestNonInputEqual(prev, current ResponsesRequest) bool {
+	return prev.Model == current.Model &&
+		prev.Instructions == current.Instructions &&
+		jsonLikeEqualForCompare(prev.Tools, current.Tools) &&
+		jsonLikeEqualForCompare(prev.ToolChoice, current.ToolChoice) &&
+		reflect.DeepEqual(prev.ParallelToolCalls, current.ParallelToolCalls) &&
+		prev.MaxOutputTokens == current.MaxOutputTokens &&
+		reflect.DeepEqual(prev.Temperature, current.Temperature) &&
+		reflect.DeepEqual(prev.TopP, current.TopP) &&
+		reflect.DeepEqual(prev.Reasoning, current.Reasoning) &&
+		reflect.DeepEqual(prev.Include, current.Include) &&
+		prev.PromptCacheKey == current.PromptCacheKey &&
+		reflect.DeepEqual(prev.Store, current.Store) &&
+		reflect.DeepEqual(prev.Generate, current.Generate)
 }
 
-func normalizeJSONLikeForCompare(v any) any {
-	if v == nil {
-		return nil
-	}
-	body, err := json.Marshal(v)
-	if err != nil {
-		return v
-	}
-	var decoded any
-	if err := json.Unmarshal(body, &decoded); err != nil {
-		return v
-	}
-	return normalizeDecodedJSONForCompare(decoded)
+func jsonLikeEqualForCompare(a, b any) bool {
+	return jsonLikeValueEqualForCompare(reflect.ValueOf(a), reflect.ValueOf(b))
 }
 
-func normalizeDecodedJSONForCompare(v any) any {
-	switch x := v.(type) {
-	case map[string]any:
-		for key, value := range x {
-			x[key] = normalizeDecodedJSONForCompare(value)
-		}
-		return x
-	case []any:
-		for i, value := range x {
-			x[i] = normalizeDecodedJSONForCompare(value)
-		}
-		if allStrings(x) {
-			sort.Slice(x, func(i, j int) bool { return x[i].(string) < x[j].(string) })
-		}
-		return x
+func jsonLikeValueEqualForCompare(a, b reflect.Value) bool {
+	a = indirectJSONLikeValueForCompare(a)
+	b = indirectJSONLikeValueForCompare(b)
+	if !a.IsValid() || !b.IsValid() {
+		return !a.IsValid() && !b.IsValid()
+	}
+
+	if av, ok := jsonNumberValueForCompare(a); ok {
+		bv, ok := jsonNumberValueForCompare(b)
+		return ok && av == bv
+	}
+
+	if jsonLikeObjectForCompare(a) && jsonLikeObjectForCompare(b) {
+		return jsonLikeObjectsEqualForCompare(a, b)
+	}
+	if jsonLikeArrayForCompare(a) && jsonLikeArrayForCompare(b) {
+		return jsonLikeArraysEqualForCompare(a, b)
+	}
+	if a.Kind() != b.Kind() {
+		return false
+	}
+
+	switch a.Kind() {
+	case reflect.String:
+		return a.String() == b.String()
+	case reflect.Bool:
+		return a.Bool() == b.Bool()
 	default:
-		return v
+		return reflect.DeepEqual(a.Interface(), b.Interface())
 	}
 }
 
-func allStrings(values []any) bool {
-	for _, value := range values {
-		if _, ok := value.(string); !ok {
+func indirectJSONLikeValueForCompare(v reflect.Value) reflect.Value {
+	for v.IsValid() && (v.Kind() == reflect.Interface || v.Kind() == reflect.Pointer) {
+		if v.IsNil() {
+			return reflect.Value{}
+		}
+		v = v.Elem()
+	}
+	return v
+}
+
+func jsonNumberValueForCompare(v reflect.Value) (float64, bool) {
+	switch v.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return float64(v.Int()), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return float64(v.Uint()), true
+	case reflect.Float32, reflect.Float64:
+		return v.Float(), true
+	default:
+		return 0, false
+	}
+}
+
+func jsonLikeObjectForCompare(v reflect.Value) bool {
+	return v.Kind() == reflect.Struct || (v.Kind() == reflect.Map && v.Type().Key().Kind() == reflect.String)
+}
+
+func jsonLikeObjectsEqualForCompare(a, b reflect.Value) bool {
+	if a.Kind() == reflect.Map && b.Kind() == reflect.Map {
+		if a.Len() != b.Len() {
+			return false
+		}
+		iter := a.MapRange()
+		for iter.Next() {
+			key := iter.Key()
+			other := b.MapIndex(key)
+			if !other.IsValid() || !jsonLikeValueEqualForCompare(iter.Value(), other) {
+				return false
+			}
+		}
+		return true
+	}
+
+	aFields, ok := jsonLikeObjectFieldsForCompare(a)
+	if !ok {
+		return reflect.DeepEqual(a.Interface(), b.Interface())
+	}
+	bFields, ok := jsonLikeObjectFieldsForCompare(b)
+	if !ok {
+		return reflect.DeepEqual(a.Interface(), b.Interface())
+	}
+	if len(aFields) != len(bFields) {
+		return false
+	}
+	for key, value := range aFields {
+		other, ok := bFields[key]
+		if !ok || !jsonLikeValueEqualForCompare(value, other) {
 			return false
 		}
 	}
 	return true
+}
+
+func jsonLikeObjectFieldsForCompare(v reflect.Value) (map[string]reflect.Value, bool) {
+	switch v.Kind() {
+	case reflect.Map:
+		if v.Type().Key().Kind() != reflect.String {
+			return nil, false
+		}
+		fields := make(map[string]reflect.Value, v.Len())
+		iter := v.MapRange()
+		for iter.Next() {
+			fields[iter.Key().String()] = iter.Value()
+		}
+		return fields, true
+	case reflect.Struct:
+		typ := v.Type()
+		fields := make(map[string]reflect.Value, typ.NumField())
+		for i := 0; i < typ.NumField(); i++ {
+			field := typ.Field(i)
+			name, omitEmpty, ok := jsonFieldNameForCompare(field)
+			if !ok {
+				continue
+			}
+			value := v.Field(i)
+			if omitEmpty && jsonIsEmptyValueForCompare(value) {
+				continue
+			}
+			fields[name] = value
+		}
+		return fields, true
+	default:
+		return nil, false
+	}
+}
+
+func jsonFieldNameForCompare(field reflect.StructField) (name string, omitEmpty bool, ok bool) {
+	if field.PkgPath != "" {
+		return "", false, false
+	}
+
+	name = field.Name
+	tag := field.Tag.Get("json")
+	if tag == "-" {
+		return "", false, false
+	}
+	if tag != "" {
+		parts := strings.Split(tag, ",")
+		if parts[0] != "" {
+			name = parts[0]
+		}
+		for _, option := range parts[1:] {
+			if option == "omitempty" {
+				omitEmpty = true
+			}
+		}
+	}
+	return name, omitEmpty, true
+}
+
+func jsonIsEmptyValueForCompare(v reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.Array, reflect.Map, reflect.Slice, reflect.String:
+		return v.Len() == 0
+	case reflect.Bool:
+		return !v.Bool()
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return v.Int() == 0
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return v.Uint() == 0
+	case reflect.Float32, reflect.Float64:
+		return v.Float() == 0
+	case reflect.Interface, reflect.Pointer:
+		return v.IsNil()
+	default:
+		return false
+	}
+}
+
+func jsonLikeArrayForCompare(v reflect.Value) bool {
+	return v.Kind() == reflect.Array || v.Kind() == reflect.Slice
+}
+
+func jsonLikeArraysEqualForCompare(a, b reflect.Value) bool {
+	if a.Len() != b.Len() {
+		return false
+	}
+	if jsonLikeStringArrayForCompare(a) && jsonLikeStringArrayForCompare(b) {
+		return jsonLikeStringArraysEqualForCompare(a, b)
+	}
+	for i := 0; i < a.Len(); i++ {
+		if !jsonLikeValueEqualForCompare(a.Index(i), b.Index(i)) {
+			return false
+		}
+	}
+	return true
+}
+
+func jsonLikeStringArrayForCompare(v reflect.Value) bool {
+	for i := 0; i < v.Len(); i++ {
+		if _, ok := jsonStringValueForCompare(v.Index(i)); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func jsonLikeStringArraysEqualForCompare(a, b reflect.Value) bool {
+	counts := make(map[string]int, a.Len())
+	for i := 0; i < a.Len(); i++ {
+		value, _ := jsonStringValueForCompare(a.Index(i))
+		counts[value]++
+	}
+	for i := 0; i < b.Len(); i++ {
+		value, ok := jsonStringValueForCompare(b.Index(i))
+		if !ok || counts[value] == 0 {
+			return false
+		}
+		counts[value]--
+		if counts[value] == 0 {
+			delete(counts, value)
+		}
+	}
+	return len(counts) == 0
+}
+
+func jsonStringValueForCompare(v reflect.Value) (string, bool) {
+	v = indirectJSONLikeValueForCompare(v)
+	if !v.IsValid() || v.Kind() != reflect.String {
+		return "", false
+	}
+	return v.String(), true
 }
 
 func (c *ResponsesClient) ensureWebSocket(ctx context.Context, req ResponsesRequest) (*websocket.Conn, bool, error) {
