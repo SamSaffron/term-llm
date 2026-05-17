@@ -1,6 +1,9 @@
 package llm
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestParseToolJSONSchemaMap_SanitizesAndPreservesExtras(t *testing.T) {
 	schema := map[string]interface{}{
@@ -66,5 +69,29 @@ func TestSanitizedResponsesParametersSchema_DefaultsEmptyObject(t *testing.T) {
 	props, ok := got["properties"].(map[string]interface{})
 	if !ok || len(props) != 0 {
 		t.Fatalf("properties = %#v, want empty map", got["properties"])
+	}
+}
+
+func TestOpenAIParametersFromToolSchema_CachesLoweredParametersBySchemaIdentityAndStrictness(t *testing.T) {
+	schema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"name": map[string]interface{}{"type": "string"},
+		},
+	}
+
+	firstStrict := openAIParametersFromToolSchema(schema, true)
+	secondStrict := openAIParametersFromToolSchema(schema, true)
+	if reflect.ValueOf(firstStrict).Pointer() != reflect.ValueOf(secondStrict).Pointer() {
+		t.Fatalf("strict cache miss: first=%#v second=%#v", firstStrict, secondStrict)
+	}
+
+	firstNonStrict := openAIParametersFromToolSchema(schema, false)
+	secondNonStrict := openAIParametersFromToolSchema(schema, false)
+	if reflect.ValueOf(firstNonStrict).Pointer() != reflect.ValueOf(secondNonStrict).Pointer() {
+		t.Fatalf("non-strict cache miss: first=%#v second=%#v", firstNonStrict, secondNonStrict)
+	}
+	if reflect.ValueOf(firstStrict).Pointer() == reflect.ValueOf(firstNonStrict).Pointer() {
+		t.Fatalf("strict and non-strict schemas should be cached separately")
 	}
 }

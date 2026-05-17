@@ -1,5 +1,10 @@
 package llm
 
+import (
+	"reflect"
+	"sync"
+)
+
 // ToOpenResponsesParameters serializes the typed schema into the provider-neutral
 // Open Responses function-tool `parameters` shape. It intentionally avoids
 // OpenAI-specific strict-schema rewrites such as forcing every property into
@@ -66,10 +71,36 @@ func scrubUnsupportedOpenAISchemaKeywords(value interface{}) {
 	}
 }
 
+type openAIParametersCacheKey struct {
+	schemaPtr uintptr
+	strict    bool
+}
+
+type openAIParametersCacheEntry struct {
+	// Hold a strong reference to the immutable schema map so its identity cannot
+	// be reused for a different schema while the cached lowered parameters remain
+	// live.
+	schema map[string]interface{}
+	once   sync.Once
+	params map[string]interface{}
+}
+
+var openAIParametersCache sync.Map
+
 func openAIParametersFromToolSchema(schema map[string]interface{}, strict bool) map[string]interface{} {
-	parsed, err := ParseToolJSONSchemaMap(schema)
-	if err != nil {
-		parsed, _ = ParseToolJSONSchemaMap(nil)
+	key := openAIParametersCacheKey{strict: strict}
+	if len(schema) > 0 {
+		key.schemaPtr = reflect.ValueOf(schema).Pointer()
 	}
-	return parsed.ToOpenAIParameters(strict)
+
+	cached, _ := openAIParametersCache.LoadOrStore(key, &openAIParametersCacheEntry{schema: schema})
+	entry := cached.(*openAIParametersCacheEntry)
+	entry.once.Do(func() {
+		parsed, err := ParseToolJSONSchemaMap(schema)
+		if err != nil {
+			parsed, _ = ParseToolJSONSchemaMap(nil)
+		}
+		entry.params = parsed.ToOpenAIParameters(strict)
+	})
+	return entry.params
 }
