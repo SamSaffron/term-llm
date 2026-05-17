@@ -2,9 +2,14 @@ package termimage
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
+	"hash/fnv"
 	stdimage "image"
 	imagedraw "image/draw"
+	"image/png"
+	"os"
+	"path/filepath"
 )
 
 // rowColDiacritics contains Unicode combining characters used to encode
@@ -162,32 +167,20 @@ func KittyPlacementForPath(req Request, imageID uint32) (Result, error) {
 
 func renderKittyDirect(img stdimage.Image, cols, rows int, cacheKey string) (Result, error) {
 	imageID := nextImageID()
-	b64Data, err := encodePNGBase64(img)
+	path, err := writeKittyTempPNG(img, cacheKey)
 	if err != nil {
-		return Result{}, fmt.Errorf("encode PNG: %w", err)
+		return Result{}, fmt.Errorf("write Kitty temp PNG: %w", err)
 	}
+	pathData := base64.StdEncoding.EncodeToString([]byte(path))
 
 	var out bytes.Buffer
-	// One-shot Kitty rendering is used for normal scrollback/CLI output, not for
-	// Bubble Tea viewports. Do not use Unicode placeholders here: a direct visible
-	// placement avoids the double-rendering behavior seen when placeholder grids are
-	// printed in ordinary terminal output.
+	// One-shot Kitty rendering is used for normal scrollback/CLI output and for
+	// the chat post-frame compositor. Send a file reference instead of inline PNG
+	// bytes so redraws/scrolled slices do not flood the terminal with base64 image
+	// payloads. The terminal process runs on the same host and can read the temp
+	// file directly.
 	fmt.Fprintf(&out, "\x1b_Ga=d,i=%d,q=2\x1b\\", imageID)
-	const chunkSize = 4096
-	for i := 0; i < len(b64Data); i += chunkSize {
-		end := i + chunkSize
-		more := 1
-		if end >= len(b64Data) {
-			end = len(b64Data)
-			more = 0
-		}
-		chunk := b64Data[i:end]
-		if i == 0 {
-			fmt.Fprintf(&out, "\x1b_Ga=T,t=d,f=100,i=%d,c=%d,r=%d,q=2,m=%d;%s\x1b\\", imageID, cols, rows, more, chunk)
-		} else {
-			fmt.Fprintf(&out, "\x1b_Gm=%d;%s\x1b\\", more, chunk)
-		}
-	}
+	fmt.Fprintf(&out, "\x1b_Ga=T,t=f,f=100,i=%d,c=%d,r=%d,q=2;%s\x1b\\", imageID, cols, rows, pathData)
 
 	s := out.String()
 	return Result{
@@ -200,6 +193,32 @@ func renderKittyDirect(img stdimage.Image, cols, rows int, cacheKey string) (Res
 		PlacementID: 0,
 		CacheKey:    fmt.Sprintf("%s|kitty-id=%d", cacheKey, imageID),
 	}, nil
+}
+
+func writeKittyTempPNG(img stdimage.Image, cacheKey string) (string, error) {
+	dir := filepath.Join(os.TempDir(), "term-llm-kitty-images")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(cacheKey))
+	path := filepath.Join(dir, fmt.Sprintf("%x.png", h.Sum64()))
+	if _, err := os.Stat(path); err == nil {
+		return path, nil
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if os.IsExist(err) {
+			return path, nil
+		}
+		return "", err
+	}
+	defer f.Close()
+	if err := png.Encode(f, img); err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	return path, nil
 }
 
 func kittyPlaceholderGrid(imageID uint32, cols, rows int) string {
