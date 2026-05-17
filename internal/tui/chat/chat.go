@@ -290,6 +290,8 @@ type Model struct {
 	imagePlaceholdersSuppressed bool
 	viewportImageArtifacts      map[string]viewportImageArtifact
 	viewportImageBlocks         []viewportImageBlock
+	postFrameImageSeq           string
+	postFrameImageMu            sync.Mutex
 
 	// Text selection state (alt-screen only)
 	selection         Selection

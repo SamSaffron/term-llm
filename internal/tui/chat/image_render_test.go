@@ -29,23 +29,15 @@ func drainPendingImageRawForTest(t *testing.T, m *Model) string {
 	return fmt.Sprint(raw.Msg)
 }
 
-func settleVisibleKittyImagesForTest(t *testing.T, m *Model) {
+func settleVisibleKittyImagesForTest(t *testing.T, m *Model) string {
 	t.Helper()
-	for i := 0; i < 5; i++ {
-		if len(m.pendingImageUploads) > 0 {
-			cmd := m.drainPendingImageUploadCmd()
-			if cmd == nil {
-				t.Fatal("expected resize cleanup command")
-			}
-			_ = cmd()
-		}
-		m.viewCache.lastSetContentAt = time.Time{}
-		_ = m.viewAltScreen()
-		if len(m.pendingImageUploads) == 0 && strings.Contains(m.viewCache.lastViewportView, "\U0010eeee") {
-			return
-		}
+	m.viewCache.lastSetContentAt = time.Time{}
+	_ = m.viewAltScreen()
+	seq := m.TakePostFrameImageSequence()
+	if !strings.Contains(seq, "\x1b_G") {
+		t.Fatalf("Kitty image did not settle; post-frame=%q viewport=%q", seq, m.viewCache.lastViewportView)
 	}
-	t.Fatalf("Kitty image did not settle; pending=%q viewport=%q", strings.Join(m.pendingImageUploads, ""), m.viewCache.lastViewportView)
+	return seq
 }
 
 func TestAltScreenKittyImageUploadsStayOutOfViewportContent(t *testing.T) {
@@ -59,22 +51,20 @@ func TestAltScreenKittyImageUploadsStayOutOfViewportContent(t *testing.T) {
 	m.syncAltScreenViewportHeight(m.buildFooterLayout().height)
 	m.tracker = ui.NewToolTracker()
 	m.tracker.AddImageSegment(path)
-	m.tracker.AddImageSegment(path) // duplicate references should share one upload
+	m.tracker.AddImageSegment(path)
 	m.streaming = true
 	m.bumpContentVersion()
 
 	first := m.viewAltScreen()
 	if strings.Contains(first, "\x1b_G") {
-		t.Fatalf("alt-screen View content must not embed raw Kitty upload bytes; got %q", first)
+		t.Fatalf("alt-screen View content must not embed raw Kitty bytes; got %q", first)
 	}
-	// Inspect queued bytes without draining them so the first viewport content can
-	// still be checked with its final placeholder layout intact.
-	upload := strings.Join(m.pendingImageUploads, "")
-	if !strings.Contains(upload, "\x1b_G") {
-		t.Fatalf("first alt-screen render should queue Kitty upload out-of-band; got %q", upload)
+	if upload := strings.Join(m.pendingImageUploads, ""); upload != "" {
+		t.Fatalf("post-frame compositor should not queue legacy image uploads; got %q", upload)
 	}
-	if got := strings.Count(upload, "a=T,t=d,f=100"); got != 1 {
-		t.Fatalf("duplicate image references should be uploaded once, got %d transmit commands in %q", got, upload)
+	postFrame := m.TakePostFrameImageSequence()
+	if !strings.Contains(postFrame, "\x1b_G") {
+		t.Fatalf("first alt-screen render should queue Kitty bytes for post-frame composition; got %q", postFrame)
 	}
 
 	content := m.viewCache.lastContentStr
@@ -85,24 +75,19 @@ func TestAltScreenKittyImageUploadsStayOutOfViewportContent(t *testing.T) {
 		t.Fatal("expected viewport content cache to be populated")
 	}
 	if strings.Contains(content, "\x1b_G") {
-		t.Fatalf("viewport content must not contain raw Kitty APC upload bytes: %q", content)
+		t.Fatalf("viewport content must not contain raw Kitty APC bytes: %q", content)
 	}
 	if strings.Contains(m.viewport.View(), "\x1b_G") {
-		t.Fatalf("rendered viewport must not contain raw Kitty APC upload bytes: %q", m.viewport.View())
+		t.Fatalf("rendered viewport must not contain raw Kitty APC bytes: %q", m.viewport.View())
 	}
 	if strings.Contains(content, "\U0010eeee") {
 		t.Fatalf("backing viewport content should keep Kitty placeholders out of Bubble Tea cache: %q", content)
 	}
 	if strings.Contains(m.viewCache.lastViewportView, "\U0010eeee") {
-		t.Fatalf("first render should reserve blank rows until Kitty upload is flushed: %q", m.viewCache.lastViewportView)
+		t.Fatalf("post-frame compositor should not inject Kitty placeholder cells into viewport text: %q", m.viewCache.lastViewportView)
 	}
 	if captions := strings.Count(content, "[Generated image: "+path+"]"); captions != 2 {
 		t.Fatalf("viewport content should include one visible caption per image reference, got %d in %q", captions, content)
-	}
-
-	firstRaw := drainPendingImageRawForTest(t, m)
-	if !strings.Contains(firstRaw, "a=T,t=d,f=100") {
-		t.Fatalf("first flush should transmit Kitty PNG data, got %q", firstRaw)
 	}
 
 	second := m.viewAltScreen()
@@ -110,32 +95,11 @@ func TestAltScreenKittyImageUploadsStayOutOfViewportContent(t *testing.T) {
 		t.Fatalf("unchanged image view should not contain raw upload bytes: %q", second)
 	}
 	if strings.Contains(m.viewCache.lastViewportView, "\U0010eeee") {
-		t.Fatalf("second render should wait for Kitty placement flush before placeholders: %q", m.viewCache.lastViewportView)
-	}
-	placeRaw := drainPendingImageRawForTest(t, m)
-	if !strings.Contains(placeRaw, "a=p,U=1") {
-		t.Fatalf("second flush should create Kitty Unicode-placeholder placement, got %q", placeRaw)
-	}
-	third := m.viewAltScreen()
-	if strings.Contains(third, "\x1b_G") {
-		t.Fatalf("placed image view should not contain raw placement bytes: %q", third)
-	}
-	if upload := m.drainPendingImageUploads(); upload != "" {
-		t.Fatalf("placed image should not be re-uploaded/re-placed on the next frame: %q", upload)
-	}
-	content = m.viewCache.lastContentStr
-	if content == "" && len(m.contentLines) > 0 {
-		content = strings.Join(m.contentLines, "\n")
-	}
-	if strings.Contains(content, "\U0010eeee") {
-		t.Fatalf("backing viewport content should keep Kitty placeholders out of Bubble Tea cache after upload flush: %q", content)
-	}
-	if !strings.Contains(m.viewCache.lastViewportView, "\U0010eeee") {
-		t.Fatalf("rendered viewport should retain injected Kitty placeholder cells after upload flush: %q", m.viewCache.lastViewportView)
+		t.Fatalf("post-frame compositor should keep viewport text placeholder-free: %q", m.viewCache.lastViewportView)
 	}
 }
 
-func TestAltScreenImageUploadCmdUsesTeaRaw(t *testing.T) {
+func TestAltScreenImageUploadCmdUsesPostFrameComposition(t *testing.T) {
 	t.Setenv("TERM_LLM_IMAGE_PROTOCOL", "kitty")
 	termimage.ClearCache()
 
@@ -153,18 +117,12 @@ func TestAltScreenImageUploadCmdUsesTeaRaw(t *testing.T) {
 	content, blocks := m.extractViewportImageBlocks(artifact.Display)
 	m.viewportImageBlocks = blocks
 	_ = m.renderAltScreenViewportLines(splitViewportContentLines(content))
-	cmd := m.drainPendingImageUploadCmd()
-	if cmd == nil {
-		t.Fatal("expected pending image upload command")
+	if cmd := m.drainPendingImageUploadCmd(); cmd != nil {
+		t.Fatalf("post-frame image composition should not use legacy tea.Raw upload command, got %T", cmd)
 	}
-	msg := cmd()
-	raw, ok := msg.(tea.RawMsg)
-	if !ok {
-		t.Fatalf("upload command message = %T, want tea.RawMsg", msg)
-	}
-	upload := fmt.Sprint(raw.Msg)
-	if !strings.Contains(upload, "\x1b_G") {
-		t.Fatalf("tea.Raw upload should contain Kitty APC bytes, got %q", upload)
+	seq := m.TakePostFrameImageSequence()
+	if !strings.Contains(seq, "\x1b_G") {
+		t.Fatalf("post-frame image sequence should contain Kitty APC bytes, got %q", seq)
 	}
 }
 
@@ -209,15 +167,15 @@ func TestAltScreenKittyUploadQueuedOnlyWhenImageVisible(t *testing.T) {
 	m.viewport.SetContent(content)
 	m.viewport.SetYOffset(0)
 	_ = m.renderAltScreenViewportLines(splitViewportContentLines(content))
-	if upload := strings.Join(m.pendingImageUploads, ""); strings.Contains(upload, "a=T,t=d,f=100") {
-		t.Fatalf("offscreen Kitty image should not upload yet, got %q", upload)
+	if seq := m.TakePostFrameImageSequence(); strings.Contains(seq, "a=T,t=d,f=100") {
+		t.Fatalf("offscreen Kitty image should not render yet, got %q", seq)
 	}
 
 	m.viewport.SetYOffset(20)
 	_ = m.renderAltScreenViewportLines(splitViewportContentLines(content))
-	upload := strings.Join(m.pendingImageUploads, "")
-	if !strings.Contains(upload, "a=T,t=d,f=100") {
-		t.Fatalf("visible Kitty image should queue upload, got %q", upload)
+	seq := m.TakePostFrameImageSequence()
+	if !strings.Contains(seq, "a=T,t=d,f=100") {
+		t.Fatalf("visible Kitty image should queue post-frame render, got %q", seq)
 	}
 }
 
@@ -291,9 +249,9 @@ func TestAltScreenImageResizeQueuesCleanupAndReupload(t *testing.T) {
 
 	m.viewCache.lastSetContentAt = time.Time{}
 	_ = m.viewAltScreen()
-	upload = strings.Join(m.pendingImageUploads, "")
-	if !strings.Contains(upload, "a=T,t=d,f=100") {
-		t.Fatalf("post-cleanup frame should queue Kitty reupload for new dimensions, got %q", upload)
+	seq := m.TakePostFrameImageSequence()
+	if !strings.Contains(seq, "a=T,t=d,f=100") {
+		t.Fatalf("post-cleanup frame should queue Kitty post-frame render for new dimensions, got %q", seq)
 	}
 	content = m.viewCache.lastContentStr
 	if content == "" && len(m.contentLines) > 0 {
@@ -305,7 +263,6 @@ func TestAltScreenImageResizeQueuesCleanupAndReupload(t *testing.T) {
 	if strings.Contains(m.viewCache.lastViewportView, "\U0010eeee") {
 		t.Fatalf("post-cleanup upload frame should still wait for upload/place flush before placeholders: %q", m.viewCache.lastViewportView)
 	}
-	settleVisibleKittyImagesForTest(t, m)
 }
 
 func TestAltScreenResizeKeepsImageBlocksWhileSuppressingPlaceholders(t *testing.T) {
@@ -400,12 +357,12 @@ func TestAltScreenNewImageDoesNotCleanupExistingImages(t *testing.T) {
 	m.viewCache.lastSetContentAt = time.Time{}
 	m.bumpContentVersion()
 	_ = m.viewAltScreen()
-	upload := strings.Join(m.pendingImageUploads, "")
-	if strings.Contains(upload, "a=d,d=A") {
-		t.Fatalf("adding a later image must not globally cleanup/delete already-visible images: %q", upload)
+	seq := m.TakePostFrameImageSequence()
+	if strings.Contains(seq, "a=d,d=A") {
+		t.Fatalf("adding a later image must not globally cleanup/delete already-visible images: %q", seq)
 	}
-	if got := strings.Count(upload, "a=T,t=d,f=100"); got != 1 {
-		t.Fatalf("later image should queue exactly one upload, got %d in %q", got, upload)
+	if got := strings.Count(seq, "a=T,t=d,f=100"); got == 0 {
+		t.Fatalf("later image should queue post-frame Kitty render, got %d in %q", got, seq)
 	}
 }
 

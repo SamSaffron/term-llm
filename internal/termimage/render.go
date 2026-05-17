@@ -157,7 +157,7 @@ func putCached(key string, result Result) {
 
 func buildCacheKey(req Request, protocol Protocol, modTime int64, size int64, cellW, cellH int) string {
 	bg := normalizeBackground(req.Background)
-	return fmt.Sprintf("%s|%d|%d|%s|%s|%dx%d|cell=%dx%d|bg=%d,%d,%d,%d", req.Path, modTime, size, req.Mode, protocol, req.MaxCols, req.MaxRows, cellW, cellH, bg.R, bg.G, bg.B, bg.A)
+	return fmt.Sprintf("%s|%d|%d|%s|%s|%dx%d|cell=%dx%d|slice=%d,%d|bg=%d,%d,%d,%d", req.Path, modTime, size, req.Mode, protocol, req.MaxCols, req.MaxRows, cellW, cellH, req.SliceStartRow, req.SliceRows, bg.R, bg.G, bg.B, bg.A)
 }
 
 func resolveCellSize(req Request) (int, int) {

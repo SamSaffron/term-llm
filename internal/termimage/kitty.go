@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	stdimage "image"
+	imagedraw "image/draw"
 )
 
 // rowColDiacritics contains Unicode combining characters used to encode
@@ -47,9 +48,31 @@ var rowColDiacritics = []rune{
 func renderKitty(img stdimage.Image, req Request, cellW, cellH int, cacheKey string) (Result, error) {
 	cols, rows := fitCells(img, req, cellW, cellH)
 	img = scaledForCells(img, cols, rows, cellW, cellH)
-	if normalizeMode(req.Mode) != ModeViewport {
-		return renderKittyDirect(img, cols, rows, cacheKey)
+
+	displayRows := rows
+	if req.SliceRows > 0 {
+		sliceStart := req.SliceStartRow
+		if sliceStart < 0 {
+			sliceStart = 0
+		}
+		if sliceStart >= rows {
+			return Result{Protocol: ProtocolKitty, WidthCells: cols, HeightCells: 0, CacheKey: cacheKey}, nil
+		}
+		displayRows = min(req.SliceRows, rows-sliceStart)
+		if displayRows < 1 {
+			displayRows = 1
+		}
+		y0 := sliceStart * cellH
+		y1 := min((sliceStart+displayRows)*cellH, img.Bounds().Max.Y)
+		if y1 <= y0 {
+			y1 = min(y0+cellH, img.Bounds().Max.Y)
+		}
+		img = cropImage(img, stdimage.Rect(img.Bounds().Min.X, y0, img.Bounds().Min.X+cols*cellW, y1))
 	}
+	if normalizeMode(req.Mode) != ModeViewport {
+		return renderKittyDirect(img, cols, displayRows, cacheKey)
+	}
+
 	imageID := nextImageID()
 
 	b64Data, err := encodePNGBase64(img)
@@ -83,8 +106,8 @@ func renderKitty(img stdimage.Image, req Request, cellW, cellH int, cacheKey str
 			fmt.Fprintf(&upload, "\x1b_Gm=%d;%s\x1b\\", more, chunk)
 		}
 	}
-	place := KittyPlaceSequence(imageID, cols, rows)
-	display := kittyPlaceholderGrid(imageID, cols, rows)
+	place := KittyPlaceSequence(imageID, cols, displayRows)
+	display := kittyPlaceholderGrid(imageID, cols, displayRows)
 	uploadStr := upload.String()
 	return Result{
 		Protocol:    ProtocolKitty,
@@ -93,11 +116,21 @@ func renderKitty(img stdimage.Image, req Request, cellW, cellH int, cacheKey str
 		Display:     display,
 		Full:        uploadStr + place + display,
 		WidthCells:  cols,
-		HeightCells: rows,
+		HeightCells: displayRows,
 		ImageID:     imageID,
 		PlacementID: 0,
 		CacheKey:    fmt.Sprintf("%s|kitty-id=%d", cacheKey, imageID),
 	}, nil
+}
+
+func cropImage(img stdimage.Image, rect stdimage.Rectangle) stdimage.Image {
+	rect = rect.Intersect(img.Bounds())
+	if rect.Empty() {
+		return img
+	}
+	dst := stdimage.NewRGBA(stdimage.Rect(0, 0, rect.Dx(), rect.Dy()))
+	imagedraw.Draw(dst, dst.Bounds(), img, rect.Min, imagedraw.Src)
+	return dst
 }
 
 // KittyPlaceSequence creates or updates a virtual Unicode-placeholder placement

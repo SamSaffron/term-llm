@@ -117,11 +117,26 @@ func (m *Model) newView(content string) tea.View {
 	v := tea.NewView(content)
 	if m.altScreen {
 		v.AltScreen = true
+		v.Cursor = m.imageSafeCursor()
 	}
 	if m.autoSendQueue == nil && m.mouseMode {
 		v.MouseMode = tea.MouseModeCellMotion
 	}
 	return v
+}
+
+func (m *Model) needsImageSafeCursor() bool {
+	return m != nil && m.altScreen && (len(m.viewportImageArtifacts) > 0 || len(m.pendingImageUploads) > 0 || len(m.uploadedImageKeys) > 0 || len(m.placedImageKeys) > 0)
+}
+
+func (m *Model) imageSafeCursor() *tea.Cursor {
+	if !m.needsImageSafeCursor() {
+		return nil
+	}
+	cur := tea.NewCursor(0, max(0, m.height-1))
+	cur.Shape = tea.CursorBar
+	cur.Blink = false
+	return cur
 }
 
 // viewAltScreen renders the full-screen alt screen view with scrollable viewport
@@ -1507,7 +1522,13 @@ func (m *Model) renderAltScreenViewportLines(lines []string) string {
 	}
 
 	visible := slices.Clone(lines[yOffset:bottom])
-	m.overlayVisibleViewportImages(visible, yOffset)
+	if len(m.viewportImageBlocks) > 0 && m.usePostFrameImageComposition() {
+		m.beginPostFrameImageComposition()
+		m.overlayVisibleViewportImages(visible, yOffset)
+		m.finishPostFrameImageComposition()
+	} else {
+		m.overlayVisibleViewportImages(visible, yOffset)
+	}
 	if xOffset := m.viewport.XOffset(); xOffset > 0 && contentWidth > 0 {
 		for i := range visible {
 			visible[i] = ansi.Cut(visible[i], xOffset, xOffset+contentWidth)
@@ -1534,49 +1555,79 @@ func (m *Model) overlayVisibleViewportImages(visible []string, yOffset int) {
 	viewportBottom := yOffset + len(visible)
 	for _, block := range m.viewportImageBlocks {
 		art, ok := m.viewportImageArtifacts[block.Key]
-		if !ok || len(art.Rows) == 0 {
+		if !ok {
 			continue
 		}
 		blockBottom := block.StartLine + block.HeightCells
 		if blockBottom <= yOffset || block.StartLine >= viewportBottom {
 			continue
 		}
-		uploadKey := m.viewportImageUploadKey(block.Key)
-		if art.Upload != "" {
+
+		visibleTop := max(block.StartLine, yOffset)
+		visibleBottom := min(blockBottom, viewportBottom)
+		sliceStart := visibleTop - block.StartLine
+		sliceRows := visibleBottom - visibleTop
+		if sliceRows <= 0 {
+			continue
+		}
+
+		displayArt := art
+		if art.Path != "" && m.usePostFrameImageComposition() {
+			m.queuePostFrameViewportImage(art, sliceStart, sliceRows, visibleTop-yOffset)
+			continue
+		} else if art.Path != "" {
+			var rendered bool
+			displayArt, rendered = m.renderViewportImageSliceArtifact(art, sliceStart, sliceRows)
+			if !rendered {
+				continue
+			}
+		} else if len(displayArt.Rows) == 0 {
+			continue
+		}
+
+		uploadKey := m.viewportImageUploadKey(displayArt.Key)
+		if displayArt.Upload != "" {
 			if m.uploadedImageKeys == nil {
 				m.uploadedImageKeys = make(map[string]struct{})
 			}
 			if _, uploaded := m.uploadedImageKeys[uploadKey]; !uploaded {
-				m.queueImageUpload(uploadKey, art.Upload)
+				m.queueImageUpload(uploadKey, displayArt.Upload)
 				// Keep the reserved blank rows from the backing viewport content.
 				// Placeholders are injected only after the upload has been flushed.
 				continue
 			}
 		}
 		placeKey := uploadKey + ":place"
-		if art.Place != "" {
+		if displayArt.Place != "" {
 			if m.placedImageKeys == nil {
 				m.placedImageKeys = make(map[string]struct{})
 			}
 			if _, placed := m.placedImageKeys[placeKey]; !placed {
-				m.queueImagePlacement(placeKey, art.Place)
+				m.queueImagePlacement(placeKey, displayArt.Place)
 				// The virtual placement must be acknowledged by our flush bookkeeping
 				// before placeholders enter the viewport, so resize/redraw ordering cannot
 				// bind a new image to stale placeholder cells.
 				continue
 			}
 		}
-		firstRow := max(0, yOffset-block.StartLine)
-		lastRow := min(block.HeightCells, viewportBottom-block.StartLine)
-		if lastRow > len(art.Rows) {
-			lastRow = len(art.Rows)
+
+		rows := displayArt.Rows
+		if art.Path == "" && sliceStart > 0 {
+			if sliceStart >= len(rows) {
+				continue
+			}
+			rows = rows[sliceStart:]
 		}
-		for imageRow := firstRow; imageRow < lastRow; imageRow++ {
-			screenRow := block.StartLine + imageRow - yOffset
+		for i := 0; i < sliceRows && i < len(rows); i++ {
+			screenRow := visibleTop + i - yOffset
 			if screenRow < 0 || screenRow >= len(visible) {
 				continue
 			}
-			visible[screenRow] = art.Rows[imageRow]
+			row := rows[i]
+			if width := lipgloss.Width(row); width < m.viewport.Width() {
+				row += strings.Repeat(" ", m.viewport.Width()-width)
+			}
+			visible[screenRow] = row
 		}
 	}
 }

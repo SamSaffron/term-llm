@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/config"
@@ -207,6 +208,52 @@ func buildChatHandoverApprovalManager(cfg *config.Config, settings SessionSettin
 		perms.AddScriptCommand(script)
 	}
 	return tools.NewApprovalManager(perms), nil
+}
+
+type postFrameWriter struct {
+	w     io.Writer
+	after func() string
+	mu    sync.Mutex
+}
+
+func newPostFrameWriter(w io.Writer, after func() string) io.Writer {
+	return &postFrameWriter{w: w, after: after}
+}
+
+func (w *postFrameWriter) Read(p []byte) (int, error) {
+	if r, ok := w.w.(io.Reader); ok {
+		return r.Read(p)
+	}
+	return 0, io.EOF
+}
+
+func (w *postFrameWriter) Close() error {
+	// Do not close stdout/stderr; Bubble Tea owns terminal state, not the fd.
+	return nil
+}
+
+func (w *postFrameWriter) Fd() uintptr {
+	if f, ok := w.w.(interface{ Fd() uintptr }); ok {
+		return f.Fd()
+	}
+	return os.Stdout.Fd()
+}
+
+func (w *postFrameWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n, err := w.w.Write(p)
+	if err != nil {
+		return n, err
+	}
+	if w.after != nil {
+		if seq := w.after(); seq != "" {
+			if _, err := io.WriteString(w.w, seq); err != nil {
+				return n, err
+			}
+		}
+	}
+	return n, nil
 }
 
 func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent string, resumeRequested bool, resumeID, handoverAutoSend string) (string, string, error) {
@@ -484,6 +531,9 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	}
 
 	// Run the TUI
+	if useAltScreen {
+		opts = append(opts, tea.WithOutput(newPostFrameWriter(os.Stdout, model.TakePostFrameImageSequence)))
+	}
 	p := tea.NewProgram(model, opts...)
 	model.SetProgram(p)
 

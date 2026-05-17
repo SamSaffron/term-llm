@@ -172,6 +172,140 @@ func viewportImageMarkerGrid(token string, width, height int) string {
 	return b.String()
 }
 
+func (m *Model) usePostFrameImageComposition() bool {
+	return m != nil && m.altScreen
+}
+
+func (m *Model) beginPostFrameImageComposition() {
+	if m == nil || !m.altScreen {
+		return
+	}
+	m.postFrameImageMu.Lock()
+	defer m.postFrameImageMu.Unlock()
+	seq := ""
+	if len(m.ownedKittyImageIDs) > 0 {
+		if cleanup := termimage.KittyDeleteImageSequence(mapKeys(m.ownedKittyImageIDs)...); cleanup != "" {
+			seq += cleanup
+		}
+	}
+	m.ownedKittyImageIDs = make(map[uint32]struct{})
+	m.postFrameImageSeq = seq
+}
+
+func mapKeys[K comparable, V any](m map[K]V) []K {
+	keys := make([]K, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func (m *Model) queuePostFrameViewportImage(art viewportImageArtifact, startRow, rows, screenRow int) {
+	if m == nil || art.Path == "" || rows <= 0 || screenRow < 0 {
+		return
+	}
+	result, err := termimage.Render(termimage.Request{
+		Path:               art.Path,
+		MaxCols:            m.imageMaxCols(),
+		MaxRows:            m.imageMaxRows(),
+		Mode:               termimage.ModeOneShot,
+		Protocol:           termimage.ProtocolKitty,
+		Background:         m.imageBackground(),
+		AllowEscapeUploads: true,
+		SliceStartRow:      startRow,
+		SliceRows:          rows,
+	})
+	if err != nil || result.Full == "" {
+		if err != nil {
+			termimage.Debugf(termimage.DefaultEnvironment(), "chat post-frame image render failed path=%s start=%d rows=%d err=%v", art.Path, startRow, rows, err)
+		}
+		return
+	}
+	m.postFrameImageMu.Lock()
+	defer m.postFrameImageMu.Unlock()
+	m.postFrameImageSeq += fmt.Sprintf("\x1b[%d;1H%s", screenRow+1, result.Full)
+	if result.ImageID != 0 {
+		if m.ownedKittyImageIDs == nil {
+			m.ownedKittyImageIDs = make(map[uint32]struct{})
+		}
+		m.ownedKittyImageIDs[result.ImageID] = struct{}{}
+	}
+}
+
+func (m *Model) finishPostFrameImageComposition() {
+	if m == nil || !m.altScreen {
+		return
+	}
+	m.postFrameImageMu.Lock()
+	defer m.postFrameImageMu.Unlock()
+	if m.postFrameImageSeq != "" {
+		m.postFrameImageSeq += fmt.Sprintf("\x1b[%d;1H", max(1, m.height))
+	}
+}
+
+func (m *Model) TakePostFrameImageSequence() string {
+	if m == nil {
+		return ""
+	}
+	m.postFrameImageMu.Lock()
+	defer m.postFrameImageMu.Unlock()
+	seq := m.postFrameImageSeq
+	m.postFrameImageSeq = ""
+	return seq
+}
+
+func (m *Model) renderViewportImageSliceArtifact(art viewportImageArtifact, startRow, rows int) (viewportImageArtifact, bool) {
+	if m == nil || art.Path == "" || rows <= 0 {
+		return viewportImageArtifact{}, false
+	}
+	if startRow < 0 {
+		startRow = 0
+	}
+	key := fmt.Sprintf("%s:slice:%d:%d", art.Key, startRow, rows)
+	if existing, ok := m.viewportImageArtifacts[key]; ok {
+		return existing, true
+	}
+	result, err := termimage.Render(termimage.Request{
+		Path:               art.Path,
+		MaxCols:            m.imageMaxCols(),
+		MaxRows:            m.imageMaxRows(),
+		Mode:               termimage.ModeViewport,
+		Protocol:           termimage.ProtocolAuto,
+		Background:         m.imageBackground(),
+		AllowEscapeUploads: true,
+		SliceStartRow:      startRow,
+		SliceRows:          rows,
+	})
+	if err != nil || result.Protocol != termimage.ProtocolKitty || result.Display == "" {
+		if err != nil {
+			termimage.Debugf(termimage.DefaultEnvironment(), "chat render image slice failed path=%s start=%d rows=%d err=%v", art.Path, startRow, rows, err)
+		}
+		return viewportImageArtifact{}, false
+	}
+	slice := viewportImageArtifact{
+		Key:         key,
+		Path:        art.Path,
+		Upload:      result.Upload,
+		Place:       result.Place,
+		Rows:        strings.Split(result.Display, "\n"),
+		WidthCells:  result.WidthCells,
+		HeightCells: result.HeightCells,
+		ImageID:     result.ImageID,
+	}
+	if m.viewportImageArtifacts == nil {
+		m.viewportImageArtifacts = make(map[string]viewportImageArtifact)
+	}
+	m.viewportImageArtifacts[key] = slice
+	if result.ImageID != 0 {
+		if m.ownedKittyImageIDs == nil {
+			m.ownedKittyImageIDs = make(map[uint32]struct{})
+		}
+		m.ownedKittyImageIDs[result.ImageID] = struct{}{}
+	}
+	termimage.Debugf(termimage.DefaultEnvironment(), "chat render image slice path=%s start=%d rows=%d cells=%dx%d upload=%d display=%d", art.Path, startRow, rows, result.WidthCells, result.HeightCells, len(result.Upload), len(result.Display))
+	return slice, true
+}
+
 func (m *Model) viewportImageUploadKey(token string) string {
 	if m == nil {
 		return token

@@ -56,6 +56,12 @@ type Request struct {
 	// When zero, the renderer tries to detect the size and falls back to 10x20.
 	CellWidthPx  int
 	CellHeightPx int
+
+	// SliceStartRow/SliceRows request a vertical cell slice of the scaled image.
+	// This is used by redrawable viewport integrations that need to display only
+	// the visible portion of an image. Zero SliceRows means render the full image.
+	SliceStartRow int
+	SliceRows     int
 }
 
 // Result is the normalized output shape returned by all rendering strategies.
