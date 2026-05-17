@@ -14,6 +14,13 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+func withResponsesWebSocketBaseBackoff(t *testing.T, backoff time.Duration) {
+	t.Helper()
+	oldBackoff := responsesWebSocketBaseBackoff
+	responsesWebSocketBaseBackoff = backoff
+	t.Cleanup(func() { responsesWebSocketBaseBackoff = oldBackoff })
+}
+
 func TestResponsesWebSocketURL(t *testing.T) {
 	tests := []struct {
 		in   string
@@ -358,9 +365,7 @@ func TestResponsesClientWebSocketFunctionCall(t *testing.T) {
 }
 
 func TestResponsesClientWebSocketConnectFailureFallsBackToHTTP(t *testing.T) {
-	oldBackoff := responsesWebSocketBaseBackoff
-	responsesWebSocketBaseBackoff = 0
-	defer func() { responsesWebSocketBaseBackoff = oldBackoff }()
+	withResponsesWebSocketBaseBackoff(t, 0)
 
 	var wsAttempts atomic.Int32
 	var httpAttempts atomic.Int32
@@ -442,9 +447,7 @@ func assertSecondStreamUsesHTTPFallbackOnly(t *testing.T, client *ResponsesClien
 }
 
 func TestResponsesClientWebSocketReadFailureBeforeEventsRetriesWebSocketThenFallsBackToHTTP(t *testing.T) {
-	oldBackoff := responsesWebSocketBaseBackoff
-	responsesWebSocketBaseBackoff = 0
-	defer func() { responsesWebSocketBaseBackoff = oldBackoff }()
+	withResponsesWebSocketBaseBackoff(t, 0)
 
 	var wsAttempts atomic.Int32
 	var httpAttempts atomic.Int32
@@ -506,9 +509,7 @@ func TestResponsesClientWebSocketReadFailureBeforeEventsRetriesWebSocketThenFall
 }
 
 func TestResponsesClientWebSocketReadFailureBeforeEventsRetryCanRecover(t *testing.T) {
-	oldBackoff := responsesWebSocketBaseBackoff
-	responsesWebSocketBaseBackoff = 0
-	defer func() { responsesWebSocketBaseBackoff = oldBackoff }()
+	withResponsesWebSocketBaseBackoff(t, 0)
 
 	var wsAttempts atomic.Int32
 	var httpAttempts atomic.Int32
@@ -572,9 +573,7 @@ func TestResponsesClientWebSocketReadFailureBeforeEventsRetryCanRecover(t *testi
 }
 
 func TestResponsesClientWebSocketReadFailureAfterEventsReturnsIncomplete(t *testing.T) {
-	oldBackoff := responsesWebSocketBaseBackoff
-	responsesWebSocketBaseBackoff = 0
-	defer func() { responsesWebSocketBaseBackoff = oldBackoff }()
+	withResponsesWebSocketBaseBackoff(t, 0)
 
 	var wsAttempts atomic.Int32
 	var httpAttempts atomic.Int32
@@ -632,9 +631,7 @@ func TestResponsesClientWebSocketReadFailureAfterEventsReturnsIncomplete(t *test
 }
 
 func TestResponsesClientWebSocketBackoffHonorsContextCancellation(t *testing.T) {
-	oldBackoff := responsesWebSocketBaseBackoff
-	responsesWebSocketBaseBackoff = time.Hour
-	defer func() { responsesWebSocketBaseBackoff = oldBackoff }()
+	withResponsesWebSocketBaseBackoff(t, time.Hour)
 
 	var wsAttempts atomic.Int32
 	upgrader := websocket.Upgrader{}
@@ -679,6 +676,8 @@ func TestResponsesClientWebSocketBackoffHonorsContextCancellation(t *testing.T) 
 }
 
 func TestResponsesClientHTTPFallbackWithWebSocketOnlyServerStateSendsFullInput(t *testing.T) {
+	withResponsesWebSocketBaseBackoff(t, 0)
+
 	var httpReq map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
