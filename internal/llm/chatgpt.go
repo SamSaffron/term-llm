@@ -235,19 +235,22 @@ func (p *ChatGPTProvider) Stream(ctx context.Context, req Request) (Stream, erro
 		tools = append([]any{ResponsesWebSearchTool{Type: "web_search"}}, tools...)
 	}
 
-	// Build input with system messages extracted as instructions
-	instructions, input := BuildResponsesInputWithInstructions(req.Messages)
+	// Send system messages via the instructions field but leave the transcript in
+	// raw message form so the Responses client can lazily build a continuation-only
+	// suffix on follow-up WebSocket turns.
+	instructions := collectRoleText(req.Messages, RoleSystem)
 
 	responsesReq := ResponsesRequest{
-		Model:          model,
-		Instructions:   instructions,
-		Input:          input,
-		Tools:          tools,
-		Include:        []string{"reasoning.encrypted_content"},
-		PromptCacheKey: req.SessionID,
-		Store:          boolPtr(false),
-		Stream:         true,
-		SessionID:      req.SessionID,
+		Model:                           model,
+		Instructions:                    instructions,
+		Messages:                        req.Messages,
+		ExtractInstructionsFromMessages: true,
+		Tools:                           tools,
+		Include:                         []string{"reasoning.encrypted_content"},
+		PromptCacheKey:                  req.SessionID,
+		Store:                           boolPtr(false),
+		Stream:                          true,
+		SessionID:                       req.SessionID,
 	}
 
 	if serviceTier := p.serviceTier; req.ServiceTierSet || strings.TrimSpace(req.ServiceTier) != "" {

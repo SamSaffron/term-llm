@@ -69,25 +69,26 @@ type ResponsesClient struct {
 
 // ResponsesRequest follows the Open Responses spec
 type ResponsesRequest struct {
-	Model              string               `json:"model"`
-	Instructions       string               `json:"instructions,omitempty"` // System instructions (alternative to developer-role input items)
-	Input              []ResponsesInputItem `json:"input"`
-	Messages           []Message            `json:"-"`               // Optional raw transcript for lazy input materialization
-	Tools              []any                `json:"tools,omitempty"` // Can contain ResponsesTool or ResponsesWebSearchTool
-	ToolChoice         any                  `json:"tool_choice,omitempty"`
-	ParallelToolCalls  *bool                `json:"parallel_tool_calls,omitempty"`
-	MaxOutputTokens    int                  `json:"max_output_tokens,omitempty"`
-	Temperature        *float64             `json:"temperature,omitempty"`
-	TopP               *float64             `json:"top_p,omitempty"`
-	Reasoning          *ResponsesReasoning  `json:"reasoning,omitempty"`
-	Include            []string             `json:"include,omitempty"`
-	PromptCacheKey     string               `json:"prompt_cache_key,omitempty"`
-	Store              *bool                `json:"store,omitempty"`
-	Generate           *bool                `json:"generate,omitempty"` // WebSocket warmup support; omitted for normal HTTP/WS requests
-	Stream             bool                 `json:"stream"`
-	PreviousResponseID string               `json:"previous_response_id,omitempty"`
-	ServiceTier        string               `json:"service_tier,omitempty"`
-	SessionID          string               `json:"-"`
+	Model                           string               `json:"model"`
+	Instructions                    string               `json:"instructions,omitempty"` // System instructions (alternative to developer-role input items)
+	Input                           []ResponsesInputItem `json:"input"`
+	Messages                        []Message            `json:"-"`               // Optional raw transcript for lazy input materialization
+	ExtractInstructionsFromMessages bool                 `json:"-"`               // When lazily materializing Input from Messages, omit system messages because they are sent via Instructions.
+	Tools                           []any                `json:"tools,omitempty"` // Can contain ResponsesTool or ResponsesWebSearchTool
+	ToolChoice                      any                  `json:"tool_choice,omitempty"`
+	ParallelToolCalls               *bool                `json:"parallel_tool_calls,omitempty"`
+	MaxOutputTokens                 int                  `json:"max_output_tokens,omitempty"`
+	Temperature                     *float64             `json:"temperature,omitempty"`
+	TopP                            *float64             `json:"top_p,omitempty"`
+	Reasoning                       *ResponsesReasoning  `json:"reasoning,omitempty"`
+	Include                         []string             `json:"include,omitempty"`
+	PromptCacheKey                  string               `json:"prompt_cache_key,omitempty"`
+	Store                           *bool                `json:"store,omitempty"`
+	Generate                        *bool                `json:"generate,omitempty"` // WebSocket warmup support; omitted for normal HTTP/WS requests
+	Stream                          bool                 `json:"stream"`
+	PreviousResponseID              string               `json:"previous_response_id,omitempty"`
+	ServiceTier                     string               `json:"service_tier,omitempty"`
+	SessionID                       string               `json:"-"`
 }
 
 // ResponsesWebSearchTool represents the web search tool for OpenAI
@@ -592,7 +593,11 @@ func (c *ResponsesClient) Stream(ctx context.Context, req ResponsesRequest, debu
 		if fullInputBuilt {
 			return fullInput
 		}
-		fullInput = BuildResponsesInput(req.Messages)
+		if req.ExtractInstructionsFromMessages {
+			_, fullInput = BuildResponsesInputWithInstructions(req.Messages)
+		} else {
+			fullInput = BuildResponsesInput(req.Messages)
+		}
 		fullInputBuilt = true
 		return fullInput
 	}

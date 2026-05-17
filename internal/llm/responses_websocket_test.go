@@ -804,6 +804,94 @@ func TestResponsesClientWebSocketPreviousResponseRejectedRetriesFullState(t *tes
 	}
 }
 
+func TestResponsesClientWebSocketReusesConnectionAndPreviousResponseIDWithInstructionExtraction(t *testing.T) {
+	var handshakeCount atomic.Int32
+	var requests []map[string]any
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handshakeCount.Add(1)
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+		for i := 0; i < 2; i++ {
+			_, msg, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var req map[string]any
+			_ = json.Unmarshal(msg, &req)
+			requests = append(requests, req)
+			_ = conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_" + string(rune('1'+i))}})
+		}
+	}))
+	defer server.Close()
+
+	client := &ResponsesClient{BaseURL: server.URL, UseWebSocket: true, WebSocketServerState: true, DisableServerState: true}
+	requestsToSend := []ResponsesRequest{
+		{
+			Model:                           "gpt-test",
+			Instructions:                    "Be concise",
+			Messages:                        []Message{SystemText("Be concise"), UserText("one")},
+			ExtractInstructionsFromMessages: true,
+			Stream:                          true,
+		},
+		{
+			Model:        "gpt-test",
+			Instructions: "Be concise",
+			Messages: []Message{
+				SystemText("Be concise"),
+				UserText("one"),
+				AssistantText("old"),
+				UserText("two"),
+			},
+			ExtractInstructionsFromMessages: true,
+			Stream:                          true,
+		},
+	}
+	for i, req := range requestsToSend {
+		stream, err := client.Stream(context.Background(), req, false)
+		if err != nil {
+			t.Fatalf("Stream %d: %v", i, err)
+		}
+		for {
+			event, err := stream.Recv()
+			if err != nil {
+				t.Fatalf("Recv %d: %v", i, err)
+			}
+			if event.Type == EventDone {
+				break
+			}
+			if event.Type == EventError {
+				t.Fatalf("stream error: %v", event.Err)
+			}
+		}
+		_ = stream.Close()
+	}
+	if handshakeCount.Load() != 1 {
+		t.Fatalf("handshakes = %d, want 1", handshakeCount.Load())
+	}
+	if len(requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(requests))
+	}
+	if requests[0]["instructions"] != "Be concise" {
+		t.Fatalf("first instructions = %#v, want Be concise", requests[0]["instructions"])
+	}
+	firstInput, ok := requests[0]["input"].([]any)
+	if !ok || len(firstInput) != 1 || strings.Contains(toJSON(firstInput[0]), "developer") || !strings.Contains(toJSON(firstInput[0]), "one") {
+		t.Fatalf("first input = %#v, want only user message without duplicated system prompt", requests[0]["input"])
+	}
+	if requests[1]["previous_response_id"] != "resp_1" {
+		t.Fatalf("previous_response_id = %#v", requests[1]["previous_response_id"])
+	}
+	secondInput, ok := requests[1]["input"].([]any)
+	if !ok || len(secondInput) != 1 || !strings.Contains(toJSON(secondInput[0]), "two") {
+		t.Fatalf("second input = %#v, want only newest user item", requests[1]["input"])
+	}
+}
+
 func TestResponsesClientWebSocketReusesConnectionAndPreviousResponseID(t *testing.T) {
 	var handshakeCount atomic.Int32
 	var requests []map[string]any
