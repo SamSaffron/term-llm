@@ -80,6 +80,20 @@ func TestEstimateMessageTokensEmpty(t *testing.T) {
 	}
 }
 
+func TestEstimateMessageTokensSkipsEventMessages(t *testing.T) {
+	msgs := []Message{
+		UserText("hello world"),
+		{Role: RoleEvent, Parts: []Part{{Type: PartText, Text: strings.Repeat("x", 100)}}},
+		AssistantText("goodbye world"),
+	}
+
+	got := EstimateMessageTokens(msgs)
+	want := EstimateMessageTokens([]Message{msgs[0], msgs[2]})
+	if got != want {
+		t.Errorf("EstimateMessageTokens should ignore event messages, got %d want %d", got, want)
+	}
+}
+
 func TestReconstructHistory(t *testing.T) {
 	recentUser := []Message{UserText("recent question")}
 

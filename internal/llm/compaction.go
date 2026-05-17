@@ -55,23 +55,28 @@ func EstimateTokens(text string) int {
 // EstimateMessageTokens returns an approximate token count for a slice of
 // messages by summing all text content across parts.
 func EstimateMessageTokens(msgs []Message) int {
-	msgs = FilterConversationMessages(msgs)
 	if len(msgs) == 0 {
 		return 0
 	}
 	total := 0
 	for _, msg := range msgs {
-		if len(msg.Parts) == 0 {
-			continue
+		total += estimateSingleMessageTokens(msg)
+	}
+	return total
+}
+
+func estimateSingleMessageTokens(msg Message) int {
+	if msg.Role == RoleEvent || len(msg.Parts) == 0 {
+		return 0
+	}
+	total := 0
+	for _, part := range msg.Parts {
+		total += EstimateTokens(part.Text)
+		if part.ToolCall != nil {
+			total += EstimateTokens(string(part.ToolCall.Arguments))
 		}
-		for _, part := range msg.Parts {
-			total += EstimateTokens(part.Text)
-			if part.ToolCall != nil {
-				total += EstimateTokens(string(part.ToolCall.Arguments))
-			}
-			if part.ToolResult != nil {
-				total += EstimateTokens(part.ToolResult.Content)
-			}
+		if part.ToolResult != nil {
+			total += EstimateTokens(part.ToolResult.Content)
 		}
 	}
 	return total
@@ -417,14 +422,16 @@ func trimMessagesToFit(messages []Message, maxTokens int) []Message {
 func doTrim(messages []Message, preserveEnd, maxTokens int) []Message {
 	prefix := messages[:preserveEnd]
 	conv := messages[preserveEnd:]
-	for len(conv) > 1 && EstimateMessageTokens(prefix)+EstimateMessageTokens(conv) > maxTokens {
+	prefixTokens := EstimateMessageTokens(prefix)
+	convTokens := EstimateMessageTokens(conv)
+	for len(conv) > 1 && prefixTokens+convTokens > maxTokens {
+		convTokens -= estimateSingleMessageTokens(conv[0])
 		conv = conv[1:]
 	}
 
 	// If a single message exceeds budget, truncate its text/tool content.
 	if len(conv) == 1 {
-		prefixTokens := EstimateMessageTokens(prefix)
-		if prefixTokens+EstimateMessageTokens(conv) > maxTokens {
+		if prefixTokens+convTokens > maxTokens {
 			remaining := maxTokens - prefixTokens
 			if remaining > 0 {
 				maxChars := remaining * approxBytesPerToken
