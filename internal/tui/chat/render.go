@@ -1573,7 +1573,7 @@ func (m *Model) overlayVisibleViewportImages(visible []string, yOffset int) {
 
 		displayArt := art
 		if art.Path != "" && m.usePostFrameImageComposition() {
-			m.queuePostFrameViewportImage(art, sliceStart, sliceRows, visibleTop-yOffset)
+			m.queuePostFrameViewportImage(art, block.StartLine, sliceStart, sliceRows, visibleTop-yOffset)
 			continue
 		} else if art.Path != "" {
 			var rendered bool

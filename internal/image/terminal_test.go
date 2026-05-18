@@ -23,8 +23,8 @@ func TestTerminalImageWrapperUsesTermimageKittyImplementation(t *testing.T) {
 	if result.Full == "" {
 		t.Fatal("expected Kitty terminal image output")
 	}
-	if result.Upload != "" {
-		t.Fatalf("direct terminal wrapper should not split Kitty upload/display bytes, got upload %q", result.Upload)
+	if result.Upload == "" || !strings.Contains(result.Upload, "a=t") {
+		t.Fatalf("direct terminal wrapper should expose reusable Kitty upload bytes, got upload %q", result.Upload)
 	}
 	if !strings.Contains(result.Full, "\x1b_G") {
 		t.Fatalf("expected delegated Kitty graphics command, got %q", result.Full)

@@ -188,10 +188,13 @@ func TestRenderKittyOneShotUsesDirectPlacement(t *testing.T) {
 	if result.Protocol != ProtocolKitty || result.Full == "" {
 		t.Fatalf("expected Kitty one-shot output, got protocol=%s full=%q", result.Protocol, result.Full)
 	}
-	if result.Upload != "" {
-		t.Fatalf("one-shot Kitty should keep all bytes in Full/Display, got Upload=%q", result.Upload)
+	if result.Upload == "" || !strings.Contains(result.Upload, "a=t") {
+		t.Fatalf("one-shot Kitty should expose reusable file upload bytes, got Upload=%q", result.Upload)
 	}
-	if strings.Contains(result.Full, "\U0010eeee") || strings.Contains(result.Full, "a=p,U=1") {
+	if !strings.Contains(result.Full, "a=p") {
+		t.Fatalf("one-shot Kitty should place transmitted file images explicitly: %q", result.Full)
+	}
+	if strings.Contains(result.Full, "\U0010eeee") || strings.Contains(result.Full, "U=1") {
 		t.Fatalf("one-shot Kitty should not use Unicode placeholders: %q", result.Full)
 	}
 }

@@ -291,7 +291,13 @@ type Model struct {
 	viewportImageArtifacts      map[string]viewportImageArtifact
 	viewportImageBlocks         []viewportImageBlock
 	postFrameImageSeq           string
+	postFrameImageUploadSeq     string
+	postFrameImagePlaceSeq      string
 	postFrameImageMu            sync.Mutex
+	postFrameVisibleImages      map[string]postFrameImageState
+	postFrameCurrentImages      map[string]postFrameImageState
+	postFrameQueuedImages       map[uint32]struct{}
+	postFrameTransmittedImages  map[uint32]struct{}
 
 	// Text selection state (alt-screen only)
 	selection         Selection
@@ -591,69 +597,71 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 	}
 
 	model := &Model{
-		width:                    width,
-		height:                   height,
-		textarea:                 ta,
-		spinner:                  s,
-		styles:                   styles,
-		keyMap:                   DefaultKeyMap(),
-		store:                    store,
-		sess:                     sess,
-		messages:                 messages,
-		compactionIdx:            compactionIdx,
-		rootCtx:                  context.Background(),
-		provider:                 provider,
-		fastProvider:             fastProvider,
-		engine:                   engine,
-		config:                   cfg,
-		providerName:             provider.Name(),
-		providerKey:              providerKey,
-		modelName:                modelName,
-		agentName:                agentName,
-		platformDeveloperMessage: strings.TrimSpace(platformDeveloperMessage),
-		currentOrigin:            session.OriginTUI,
-		yolo:                     yolo,
-		phase:                    "Thinking",
-		viewportRows:             ui.RemainingLines(height, 8), // Reserve space for input and status
-		tracker:                  tracker,
-		subagentTracker:          subagentTracker,
-		smoothBuffer:             ui.NewSmoothBuffer(),
-		completions:              completions,
-		dialog:                   dialog,
-		approvedDirs:             approvedDirs,
-		mcpManager:               mcpManager,
-		mcpStatusChan:            mcpStatusChan,
-		maxTurns:                 maxTurns,
-		forceExternalSearch:      forceExternalSearch,
-		disableExternalWebFetch:  disableExternalWebFetch,
-		searchEnabled:            searchEnabled,
-		fastMode:                 fastMode,
-		fastProviderDefault:      fastProviderDefault,
-		fastMetadataLoaded:       fastMetadataLoaded,
-		fastMetadataStale:        fastMetadataStale,
-		modelMetadata:            modelMetadata,
-		localTools:               localTools,
-		toolsStr:                 toolsStr,
-		mcpStr:                   mcpStr,
-		showStats:                showStats,
-		stats:                    stats,
-		streamPerf:               newStreamPerfTelemetryFromEnv(),
-		altScreen:                altScreen,
-		mouseMode:                chatMouseModeFromEnv(),
-		viewport:                 vp,
-		streamRenderMinInterval:  chatRenderMinIntervalFromEnv(),
-		chatRenderer:             chatRenderer,
-		autoSendQueue:            autoSendQueue,
-		autoSendExitOnDone:       autoSendExitOnDone,
-		textMode:                 textMode,
-		uploadedImageKeys:        make(map[string]struct{}),
-		placedImageKeys:          make(map[string]struct{}),
-		pendingImageUploadKeys:   make(map[string]struct{}),
-		pendingImagePlaceKeys:    make(map[string]struct{}),
-		visibleImageKeys:         make(map[string]struct{}),
-		ownedKittyImageIDs:       make(map[uint32]struct{}),
-		viewportImageArtifacts:   make(map[string]viewportImageArtifact),
-		selectedImage:            -1,
+		width:                      width,
+		height:                     height,
+		textarea:                   ta,
+		spinner:                    s,
+		styles:                     styles,
+		keyMap:                     DefaultKeyMap(),
+		store:                      store,
+		sess:                       sess,
+		messages:                   messages,
+		compactionIdx:              compactionIdx,
+		rootCtx:                    context.Background(),
+		provider:                   provider,
+		fastProvider:               fastProvider,
+		engine:                     engine,
+		config:                     cfg,
+		providerName:               provider.Name(),
+		providerKey:                providerKey,
+		modelName:                  modelName,
+		agentName:                  agentName,
+		platformDeveloperMessage:   strings.TrimSpace(platformDeveloperMessage),
+		currentOrigin:              session.OriginTUI,
+		yolo:                       yolo,
+		phase:                      "Thinking",
+		viewportRows:               ui.RemainingLines(height, 8), // Reserve space for input and status
+		tracker:                    tracker,
+		subagentTracker:            subagentTracker,
+		smoothBuffer:               ui.NewSmoothBuffer(),
+		completions:                completions,
+		dialog:                     dialog,
+		approvedDirs:               approvedDirs,
+		mcpManager:                 mcpManager,
+		mcpStatusChan:              mcpStatusChan,
+		maxTurns:                   maxTurns,
+		forceExternalSearch:        forceExternalSearch,
+		disableExternalWebFetch:    disableExternalWebFetch,
+		searchEnabled:              searchEnabled,
+		fastMode:                   fastMode,
+		fastProviderDefault:        fastProviderDefault,
+		fastMetadataLoaded:         fastMetadataLoaded,
+		fastMetadataStale:          fastMetadataStale,
+		modelMetadata:              modelMetadata,
+		localTools:                 localTools,
+		toolsStr:                   toolsStr,
+		mcpStr:                     mcpStr,
+		showStats:                  showStats,
+		stats:                      stats,
+		streamPerf:                 newStreamPerfTelemetryFromEnv(),
+		altScreen:                  altScreen,
+		mouseMode:                  chatMouseModeFromEnv(),
+		viewport:                   vp,
+		streamRenderMinInterval:    chatRenderMinIntervalFromEnv(),
+		chatRenderer:               chatRenderer,
+		autoSendQueue:              autoSendQueue,
+		autoSendExitOnDone:         autoSendExitOnDone,
+		textMode:                   textMode,
+		uploadedImageKeys:          make(map[string]struct{}),
+		placedImageKeys:            make(map[string]struct{}),
+		pendingImageUploadKeys:     make(map[string]struct{}),
+		pendingImagePlaceKeys:      make(map[string]struct{}),
+		visibleImageKeys:           make(map[string]struct{}),
+		ownedKittyImageIDs:         make(map[uint32]struct{}),
+		postFrameVisibleImages:     make(map[string]postFrameImageState),
+		postFrameTransmittedImages: make(map[uint32]struct{}),
+		viewportImageArtifacts:     make(map[string]viewportImageArtifact),
+		selectedImage:              -1,
 	}
 	model.configureImageRenderer()
 	model.configureContextManagementForSession()
@@ -819,6 +827,10 @@ func (m *Model) applyWindowSize(msg tea.WindowSizeMsg) {
 			m.viewportImageArtifacts = make(map[string]viewportImageArtifact)
 			m.viewportImageBlocks = nil
 			m.ownedKittyImageIDs = make(map[uint32]struct{})
+			m.postFrameVisibleImages = make(map[string]postFrameImageState)
+			m.postFrameCurrentImages = nil
+			m.postFrameQueuedImages = nil
+			m.postFrameTransmittedImages = make(map[uint32]struct{})
 			m.resetUploadedImageKeys()
 		}
 	} else if m.chatRenderer != nil {

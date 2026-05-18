@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/config"
@@ -210,10 +211,13 @@ func buildChatHandoverApprovalManager(cfg *config.Config, settings SessionSettin
 	return tools.NewApprovalManager(perms), nil
 }
 
+const postFrameFlushDelay = 16 * time.Millisecond
+
 type postFrameWriter struct {
 	w     io.Writer
 	after func() string
 	mu    sync.Mutex
+	timer *time.Timer
 }
 
 func newPostFrameWriter(w io.Writer, after func() string) io.Writer {
@@ -228,6 +232,7 @@ func (w *postFrameWriter) Read(p []byte) (int, error) {
 }
 
 func (w *postFrameWriter) Close() error {
+	w.flushPostFrame()
 	// Do not close stdout/stderr; Bubble Tea owns terminal state, not the fd.
 	return nil
 }
@@ -241,19 +246,36 @@ func (w *postFrameWriter) Fd() uintptr {
 
 func (w *postFrameWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	n, err := w.w.Write(p)
-	if err != nil {
-		return n, err
+	if err == nil {
+		w.schedulePostFrameLocked()
 	}
-	if w.after != nil {
-		if seq := w.after(); seq != "" {
-			if _, err := io.WriteString(w.w, seq); err != nil {
-				return n, err
-			}
-		}
+	w.mu.Unlock()
+	return n, err
+}
+
+func (w *postFrameWriter) schedulePostFrameLocked() {
+	if w.after == nil {
+		return
 	}
-	return n, nil
+	if w.timer == nil {
+		w.timer = time.AfterFunc(postFrameFlushDelay, w.flushPostFrame)
+		return
+	}
+	w.timer.Reset(postFrameFlushDelay)
+}
+
+func (w *postFrameWriter) flushPostFrame() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.after == nil {
+		return
+	}
+	seq := w.after()
+	if seq == "" {
+		return
+	}
+	_, _ = io.WriteString(w.w, seq)
 }
 
 func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent string, resumeRequested bool, resumeID, handoverAutoSend string) (string, string, error) {

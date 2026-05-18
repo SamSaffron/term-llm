@@ -165,6 +165,26 @@ func KittyPlacementForPath(req Request, imageID uint32) (Result, error) {
 	return Result{Protocol: ProtocolKitty, Place: place, Display: display, Full: place + display, WidthCells: cols, HeightCells: rows, ImageID: imageID, TextFallback: req.Path}, nil
 }
 
+// KittyDirectPlaceSequence places an already-transmitted image at the current
+// cursor position. If placementID is non-zero, repeating the same image and
+// placement id moves/replaces that placement instead of creating another one.
+func KittyDirectPlaceSequence(imageID, placementID uint32, cols, rows int) string {
+	placement := ""
+	if placementID != 0 {
+		placement = fmt.Sprintf(",p=%d", placementID)
+	}
+	return fmt.Sprintf("\x1b_Ga=p,i=%d%s,c=%d,r=%d,C=1,q=2\x1b\\", imageID, placement, cols, rows)
+}
+
+// KittyDeletePlacementSequence deletes one direct placement while keeping any
+// underlying image data available for later re-placement.
+func KittyDeletePlacementSequence(imageID, placementID uint32) string {
+	if imageID == 0 || placementID == 0 {
+		return ""
+	}
+	return fmt.Sprintf("\x1b_Ga=d,d=i,i=%d,p=%d,q=2\x1b\\", imageID, placementID)
+}
+
 func renderKittyDirect(img stdimage.Image, cols, rows int, cacheKey string) (Result, error) {
 	imageID := nextImageID()
 	path, err := writeKittyTempPNG(img, cacheKey)
@@ -173,18 +193,28 @@ func renderKittyDirect(img stdimage.Image, cols, rows int, cacheKey string) (Res
 	}
 	pathData := base64.StdEncoding.EncodeToString([]byte(path))
 
-	var out bytes.Buffer
+	var upload bytes.Buffer
 	// One-shot Kitty rendering is used for normal scrollback/CLI output and for
 	// the chat post-frame compositor. Send a file reference instead of inline PNG
 	// bytes so redraws/scrolled slices do not flood the terminal with base64 image
 	// payloads. The terminal process runs on the same host and can read the temp
 	// file directly.
-	fmt.Fprintf(&out, "\x1b_Ga=d,i=%d,q=2\x1b\\", imageID)
-	fmt.Fprintf(&out, "\x1b_Ga=T,t=f,f=100,i=%d,c=%d,r=%d,q=2;%s\x1b\\", imageID, cols, rows, pathData)
+	//
+	// File transfers are asynchronous in Kitty. Combining transmit+display (a=T)
+	// with multiple cursor-positioned images in one frame can race such that only
+	// the final image appears at the final cursor position. Transmit first, then
+	// issue an explicit put placement; Kitty preserves the order and places every
+	// image at the cursor position active for its a=p command.
+	fmt.Fprintf(&upload, "\x1b_Ga=d,i=%d,q=2\x1b\\", imageID)
+	fmt.Fprintf(&upload, "\x1b_Ga=t,t=f,f=100,i=%d,q=2;%s\x1b\\", imageID, pathData)
+	place := KittyDirectPlaceSequence(imageID, 0, cols, rows)
 
-	s := out.String()
+	uploadStr := upload.String()
+	s := uploadStr + place
 	return Result{
 		Protocol:    ProtocolKitty,
+		Upload:      uploadStr,
+		Place:       place,
 		Display:     s,
 		Full:        s,
 		WidthCells:  cols,

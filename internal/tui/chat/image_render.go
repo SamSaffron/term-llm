@@ -35,6 +35,13 @@ type viewportImageBlock struct {
 	HeightCells int
 }
 
+type postFrameImageState struct {
+	ImageID     uint32
+	PlacementID uint32
+	WidthCells  int
+	HeightCells int
+}
+
 func (m *Model) configureImageRenderer() {
 	if m == nil || m.chatRenderer == nil {
 		return
@@ -182,14 +189,14 @@ func (m *Model) beginPostFrameImageComposition() {
 	}
 	m.postFrameImageMu.Lock()
 	defer m.postFrameImageMu.Unlock()
-	seq := ""
-	if len(m.ownedKittyImageIDs) > 0 {
-		if cleanup := termimage.KittyDeleteImageSequence(mapKeys(m.ownedKittyImageIDs)...); cleanup != "" {
-			seq += cleanup
-		}
+	if m.postFrameTransmittedImages == nil {
+		m.postFrameTransmittedImages = make(map[uint32]struct{})
 	}
-	m.ownedKittyImageIDs = make(map[uint32]struct{})
-	m.postFrameImageSeq = seq
+	m.postFrameCurrentImages = make(map[string]postFrameImageState)
+	m.postFrameQueuedImages = make(map[uint32]struct{})
+	m.postFrameImageSeq = ""
+	m.postFrameImageUploadSeq = ""
+	m.postFrameImagePlaceSeq = ""
 }
 
 func mapKeys[K comparable, V any](m map[K]V) []K {
@@ -200,10 +207,12 @@ func mapKeys[K comparable, V any](m map[K]V) []K {
 	return keys
 }
 
-func (m *Model) queuePostFrameViewportImage(art viewportImageArtifact, startRow, rows, screenRow int) {
+func (m *Model) queuePostFrameViewportImage(art viewportImageArtifact, blockStartLine, startRow, rows, screenRow int) {
 	if m == nil || art.Path == "" || rows <= 0 || screenRow < 0 {
 		return
 	}
+	key := fmt.Sprintf("%s:direct:%d:%d:%d", art.Key, blockStartLine, startRow, rows)
+	placementID := postFramePlacementID(key)
 	result, err := termimage.Render(termimage.Request{
 		Path:               art.Path,
 		MaxCols:            m.imageMaxCols(),
@@ -215,15 +224,42 @@ func (m *Model) queuePostFrameViewportImage(art viewportImageArtifact, startRow,
 		SliceStartRow:      startRow,
 		SliceRows:          rows,
 	})
-	if err != nil || result.Full == "" {
+	if err != nil || result.ImageID == 0 {
 		if err != nil {
 			termimage.Debugf(termimage.DefaultEnvironment(), "chat post-frame image render failed path=%s start=%d rows=%d err=%v", art.Path, startRow, rows, err)
 		}
 		return
 	}
+
+	place := termimage.KittyDirectPlaceSequence(result.ImageID, placementID, result.WidthCells, result.HeightCells)
 	m.postFrameImageMu.Lock()
 	defer m.postFrameImageMu.Unlock()
-	m.postFrameImageSeq += fmt.Sprintf("\x1b[%d;1H%s", screenRow+1, result.Full)
+	if m.postFrameCurrentImages == nil {
+		m.postFrameCurrentImages = make(map[string]postFrameImageState)
+	}
+	if m.postFrameTransmittedImages == nil {
+		m.postFrameTransmittedImages = make(map[uint32]struct{})
+	}
+	m.postFrameCurrentImages[key] = postFrameImageState{ImageID: result.ImageID, PlacementID: placementID, WidthCells: result.WidthCells, HeightCells: result.HeightCells}
+	if _, transmitted := m.postFrameTransmittedImages[result.ImageID]; !transmitted {
+		if _, queued := m.postFrameQueuedImages[result.ImageID]; !queued {
+			if result.Upload != "" {
+				m.postFrameImageUploadSeq += result.Upload
+				m.postFrameQueuedImages[result.ImageID] = struct{}{}
+			} else {
+				m.postFrameImageUploadSeq += result.Full
+				m.postFrameQueuedImages[result.ImageID] = struct{}{}
+				if result.ImageID != 0 {
+					if m.ownedKittyImageIDs == nil {
+						m.ownedKittyImageIDs = make(map[uint32]struct{})
+					}
+					m.ownedKittyImageIDs[result.ImageID] = struct{}{}
+				}
+				return
+			}
+		}
+	}
+	m.postFrameImagePlaceSeq += fmt.Sprintf("\x1b[%d;1H%s", screenRow+1, place)
 	if result.ImageID != 0 {
 		if m.ownedKittyImageIDs == nil {
 			m.ownedKittyImageIDs = make(map[uint32]struct{})
@@ -232,15 +268,36 @@ func (m *Model) queuePostFrameViewportImage(art viewportImageArtifact, startRow,
 	}
 }
 
+func postFramePlacementID(key string) uint32 {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(key))
+	id := h.Sum32()
+	if id == 0 {
+		return 1
+	}
+	return id
+}
+
 func (m *Model) finishPostFrameImageComposition() {
 	if m == nil || !m.altScreen {
 		return
 	}
 	m.postFrameImageMu.Lock()
 	defer m.postFrameImageMu.Unlock()
-	if m.postFrameImageSeq != "" {
-		m.postFrameImageSeq += fmt.Sprintf("\x1b[%d;1H", max(1, m.height))
+	for key, previous := range m.postFrameVisibleImages {
+		if _, stillVisible := m.postFrameCurrentImages[key]; !stillVisible && previous.ImageID != 0 {
+			m.postFrameImagePlaceSeq += termimage.KittyDeletePlacementSequence(previous.ImageID, previous.PlacementID)
+		}
 	}
+	m.postFrameVisibleImages = m.postFrameCurrentImages
+	m.postFrameCurrentImages = nil
+	if m.postFrameImageUploadSeq != "" || m.postFrameImagePlaceSeq != "" {
+		m.postFrameImageSeq = m.postFrameImageUploadSeq + "\x1b[s" + m.postFrameImagePlaceSeq + "\x1b[u"
+	} else {
+		m.postFrameImageSeq = ""
+	}
+	m.postFrameImageUploadSeq = ""
+	m.postFrameImagePlaceSeq = ""
 }
 
 func (m *Model) TakePostFrameImageSequence() string {
@@ -250,6 +307,16 @@ func (m *Model) TakePostFrameImageSequence() string {
 	m.postFrameImageMu.Lock()
 	defer m.postFrameImageMu.Unlock()
 	seq := m.postFrameImageSeq
+	if seq != "" {
+		if m.postFrameTransmittedImages == nil {
+			m.postFrameTransmittedImages = make(map[uint32]struct{})
+		}
+		for _, image := range m.postFrameVisibleImages {
+			if image.ImageID != 0 {
+				m.postFrameTransmittedImages[image.ImageID] = struct{}{}
+			}
+		}
+	}
 	m.postFrameImageSeq = ""
 	return seq
 }
@@ -584,6 +651,10 @@ func (m *Model) resetImageUploadState() {
 	m.placedImageKeys = make(map[string]struct{})
 	m.visibleImageKeys = make(map[string]struct{})
 	m.ownedKittyImageIDs = make(map[uint32]struct{})
+	m.postFrameVisibleImages = make(map[string]postFrameImageState)
+	m.postFrameCurrentImages = nil
+	m.postFrameQueuedImages = nil
+	m.postFrameTransmittedImages = make(map[uint32]struct{})
 	m.viewportImageArtifacts = make(map[string]viewportImageArtifact)
 	m.viewportImageBlocks = nil
 	m.imageCleanupQueued = false

@@ -167,15 +167,60 @@ func TestAltScreenKittyUploadQueuedOnlyWhenImageVisible(t *testing.T) {
 	m.viewport.SetContent(content)
 	m.viewport.SetYOffset(0)
 	_ = m.renderAltScreenViewportLines(splitViewportContentLines(content))
-	if seq := m.TakePostFrameImageSequence(); strings.Contains(seq, "a=T") {
+	if seq := m.TakePostFrameImageSequence(); strings.Contains(seq, "a=t") || strings.Contains(seq, "a=p") {
 		t.Fatalf("offscreen Kitty image should not render yet, got %q", seq)
 	}
 
 	m.viewport.SetYOffset(20)
 	_ = m.renderAltScreenViewportLines(splitViewportContentLines(content))
 	seq := m.TakePostFrameImageSequence()
-	if !strings.Contains(seq, "a=T") {
-		t.Fatalf("visible Kitty image should queue post-frame render, got %q", seq)
+	if !strings.Contains(seq, "a=t") || !strings.Contains(seq, "a=p") {
+		t.Fatalf("visible Kitty image should queue post-frame upload and placement, got %q", seq)
+	}
+}
+
+func TestAltScreenPostFrameRendersMultipleVisibleKittyImages(t *testing.T) {
+	t.Setenv("TERM_LLM_IMAGE_PROTOCOL", "kitty")
+	termimage.ClearCache()
+
+	pathA := writeChatTestPNG(t)
+	m := newTestChatModel(true)
+	m.width = 80
+	m.height = 30
+	m.syncAltScreenViewportHeight(m.buildFooterLayout().height)
+
+	artifactA := m.renderViewportImageArtifact(pathA)
+	artifactB := m.renderViewportImageArtifact(pathA)
+	content := strings.Join([]string{
+		"before",
+		artifactA.Display,
+		"between",
+		artifactB.Display,
+		"after",
+	}, "\n")
+	content, blocks := m.extractViewportImageBlocks(content)
+	m.viewportImageBlocks = blocks
+	lines := splitViewportContentLines(content)
+
+	_ = m.renderAltScreenViewportLines(lines)
+	seq := m.TakePostFrameImageSequence()
+	if got := strings.Count(seq, "a=t"); got != 1 {
+		t.Fatalf("first post-frame render should transmit shared image data once, got %d in %q", got, seq)
+	}
+	if got := strings.Count(seq, "a=p"); got != 2 {
+		t.Fatalf("first post-frame render should place both visible images, got %d in %q", got, seq)
+	}
+	if !strings.Contains(seq, "\x1b[s") || !strings.Contains(seq, "\x1b[u") {
+		t.Fatalf("post-frame sequence should preserve Bubble Tea cursor/status position, got %q", seq)
+	}
+
+	_ = m.renderAltScreenViewportLines(lines)
+	seq = m.TakePostFrameImageSequence()
+	if strings.Contains(seq, "a=t") {
+		t.Fatalf("second unchanged frame should reuse transmitted Kitty images, got %q", seq)
+	}
+	if got := strings.Count(seq, "a=p"); got != 2 {
+		t.Fatalf("second unchanged frame should only re-place both images after text repaint, got %d in %q", got, seq)
 	}
 }
 
@@ -237,7 +282,7 @@ func TestAltScreenImageResizeQueuesCleanupAndReupload(t *testing.T) {
 	if !strings.Contains(upload, "a=d") {
 		t.Fatalf("resize should queue Kitty cleanup before reupload, got %q", upload)
 	}
-	if strings.Contains(upload, "a=T") {
+	if strings.Contains(upload, "a=t") || strings.Contains(upload, "a=p") {
 		t.Fatalf("resize cleanup frame must not reupload while old placeholders may still be on screen: %q", upload)
 	}
 	cmd := m.drainPendingImageUploadCmd()
@@ -250,8 +295,8 @@ func TestAltScreenImageResizeQueuesCleanupAndReupload(t *testing.T) {
 	m.viewCache.lastSetContentAt = time.Time{}
 	_ = m.viewAltScreen()
 	seq := m.TakePostFrameImageSequence()
-	if !strings.Contains(seq, "a=T") {
-		t.Fatalf("post-cleanup frame should queue Kitty post-frame render for new dimensions, got %q", seq)
+	if !strings.Contains(seq, "a=t") || !strings.Contains(seq, "a=p") {
+		t.Fatalf("post-cleanup frame should queue Kitty post-frame upload and placement for new dimensions, got %q", seq)
 	}
 	content = m.viewCache.lastContentStr
 	if content == "" && len(m.contentLines) > 0 {
@@ -330,7 +375,7 @@ func TestAltScreenImageHeightResizeQueuesCleanupAndReupload(t *testing.T) {
 	if !strings.Contains(upload, "a=d") {
 		t.Fatalf("height resize should queue Kitty cleanup, got %q", upload)
 	}
-	if strings.Contains(upload, "a=T") {
+	if strings.Contains(upload, "a=t") || strings.Contains(upload, "a=p") {
 		t.Fatalf("height resize cleanup frame must not reupload immediately, got %q", upload)
 	}
 }
@@ -361,8 +406,8 @@ func TestAltScreenNewImageDoesNotCleanupExistingImages(t *testing.T) {
 	if strings.Contains(seq, "a=d,d=A") {
 		t.Fatalf("adding a later image must not globally cleanup/delete already-visible images: %q", seq)
 	}
-	if got := strings.Count(seq, "a=T"); got == 0 {
-		t.Fatalf("later image should queue post-frame Kitty render, got %d in %q", got, seq)
+	if got := strings.Count(seq, "a=t"); got == 0 {
+		t.Fatalf("later image should queue post-frame Kitty upload, got %d in %q", got, seq)
 	}
 }
 
