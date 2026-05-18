@@ -179,6 +179,26 @@ func TestAltScreenKittyUploadQueuedOnlyWhenImageVisible(t *testing.T) {
 	}
 }
 
+func TestAltScreenPostFrameKeepsStaleDeletesUntilFlush(t *testing.T) {
+	m := newTestChatModel(true)
+	m.postFrameVisibleImages = map[string]postFrameImageState{
+		"old": {ImageID: 42, PlacementID: 77, WidthCells: 4, HeightCells: 2},
+	}
+
+	m.beginPostFrameImageComposition()
+	m.finishPostFrameImageComposition()
+	// A second render can happen before the debounced post-frame writer flushes.
+	// The stale placement must still be deleted; otherwise old Kitty images bleed
+	// over later frames while the model has already forgotten them.
+	m.beginPostFrameImageComposition()
+	m.finishPostFrameImageComposition()
+
+	seq := m.TakePostFrameImageSequence()
+	if !strings.Contains(seq, "a=d,d=i,i=42,p=77") {
+		t.Fatalf("stale placement delete should survive pre-flush rerenders, got %q", seq)
+	}
+}
+
 func TestAltScreenPostFrameRendersMultipleVisibleKittyImages(t *testing.T) {
 	t.Setenv("TERM_LLM_IMAGE_PROTOCOL", "kitty")
 	termimage.ClearCache()

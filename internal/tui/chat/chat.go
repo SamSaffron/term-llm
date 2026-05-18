@@ -295,7 +295,9 @@ type Model struct {
 	postFrameImagePlaceSeq      string
 	postFrameImageMu            sync.Mutex
 	postFrameVisibleImages      map[string]postFrameImageState
+	postFramePendingImages      map[string]postFrameImageState
 	postFrameCurrentImages      map[string]postFrameImageState
+	postFrameRenderCache        map[string]postFrameImageState
 	postFrameQueuedImages       map[uint32]struct{}
 	postFrameTransmittedImages  map[uint32]struct{}
 
@@ -659,6 +661,7 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 		visibleImageKeys:           make(map[string]struct{}),
 		ownedKittyImageIDs:         make(map[uint32]struct{}),
 		postFrameVisibleImages:     make(map[string]postFrameImageState),
+		postFrameRenderCache:       make(map[string]postFrameImageState),
 		postFrameTransmittedImages: make(map[uint32]struct{}),
 		viewportImageArtifacts:     make(map[string]viewportImageArtifact),
 		selectedImage:              -1,
@@ -828,7 +831,9 @@ func (m *Model) applyWindowSize(msg tea.WindowSizeMsg) {
 			m.viewportImageBlocks = nil
 			m.ownedKittyImageIDs = make(map[uint32]struct{})
 			m.postFrameVisibleImages = make(map[string]postFrameImageState)
+			m.postFramePendingImages = nil
 			m.postFrameCurrentImages = nil
+			m.postFrameRenderCache = make(map[string]postFrameImageState)
 			m.postFrameQueuedImages = nil
 			m.postFrameTransmittedImages = make(map[uint32]struct{})
 			m.resetUploadedImageKeys()
