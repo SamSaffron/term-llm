@@ -129,6 +129,15 @@ func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req Respo
 		go func() {
 			select {
 			case <-ctx.Done():
+				// If the stream has already reached a clean terminal event, the
+				// caller may close the stream before this watcher is scheduled. In
+				// that case both ctx.Done and ctxDone can be ready; prefer preserving
+				// the reusable WebSocket instead of racing to close it.
+				select {
+				case <-ctxDone:
+					return
+				default:
+				}
 				_ = conn.Close()
 			case <-ctxDone:
 			}
