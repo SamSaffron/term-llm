@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -165,6 +166,128 @@ func TestSQLiteStoreSearchEscapesUserQueryForFTS(t *testing.T) {
 	}
 	if len(results) != 1 {
 		t.Fatalf("Search(term-llm) len = %d, want 1", len(results))
+	}
+}
+
+func TestSQLiteStoreStripsRedundantImageBase64FromStoredParts(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	imgPath := filepath.Join(t.TempDir(), "upload.png")
+	if err := os.WriteFile(imgPath, []byte("fake image bytes"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	userMsg := NewMessage(sess.ID, llm.Message{Role: llm.RoleUser, Parts: []llm.Part{{
+		Type:      llm.PartImage,
+		ImagePath: imgPath,
+		ImageData: &llm.ToolImageData{MediaType: "image/png", Base64: "dXNlci1pbWFnZQ=="},
+	}}}, -1)
+	if err := store.AddMessage(ctx, sess.ID, userMsg); err != nil {
+		t.Fatalf("AddMessage user image: %v", err)
+	}
+
+	toolMsg := NewMessage(sess.ID, llm.ToolResultMessageFromOutput("call-1", "view_image", llm.ToolOutput{
+		Content: "loaded",
+		ContentParts: []llm.ToolContentPart{{
+			Type:      llm.ToolContentPartImageData,
+			ImagePath: imgPath,
+			ImageData: &llm.ToolImageData{MediaType: "image/png", Base64: "dG9vbC1pbWFnZQ=="},
+		}},
+	}, nil), -1)
+	if err := store.AddMessage(ctx, sess.ID, toolMsg); err != nil {
+		t.Fatalf("AddMessage tool image: %v", err)
+	}
+
+	rows, err := store.db.QueryContext(ctx, "SELECT parts FROM messages WHERE session_id = ? ORDER BY sequence ASC", sess.ID)
+	if err != nil {
+		t.Fatalf("query stored parts: %v", err)
+	}
+	defer rows.Close()
+
+	var stored []string
+	for rows.Next() {
+		var partsJSON string
+		if err := rows.Scan(&partsJSON); err != nil {
+			t.Fatalf("scan parts: %v", err)
+		}
+		stored = append(stored, partsJSON)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate stored parts: %v", err)
+	}
+	if len(stored) != 2 {
+		t.Fatalf("stored rows = %d, want 2", len(stored))
+	}
+	if strings.Contains(stored[0], "dXNlci1pbWFnZQ==") {
+		t.Fatalf("user message stored redundant base64 blob: %s", stored[0])
+	}
+	if strings.Contains(stored[1], "dG9vbC1pbWFnZQ==") {
+		t.Fatalf("tool message stored redundant base64 blob: %s", stored[1])
+	}
+	if !strings.Contains(stored[0], imgPath) {
+		t.Fatalf("user message missing image path in stored JSON: %s", stored[0])
+	}
+	if !strings.Contains(stored[1], imgPath) {
+		t.Fatalf("tool message missing image path in stored JSON: %s", stored[1])
+	}
+
+	msgs, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if got := msgs[0].Parts[0].ImageData.Base64; got != "" {
+		t.Fatalf("user image base64 after reload = %q, want empty", got)
+	}
+	toolPart := msgs[1].Parts[0]
+	if toolPart.ToolResult == nil || len(toolPart.ToolResult.ContentParts) != 1 {
+		t.Fatalf("tool result after reload = %#v, want image content part", toolPart.ToolResult)
+	}
+	if got := toolPart.ToolResult.ContentParts[0].ImageData.Base64; got != "" {
+		t.Fatalf("tool image base64 after reload = %q, want empty", got)
+	}
+}
+
+func TestSQLiteStoreKeepsInlineImageBase64WithoutPath(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	msg := NewMessage(sess.ID, llm.Message{Role: llm.RoleUser, Parts: []llm.Part{{
+		Type:      llm.PartImage,
+		ImageData: &llm.ToolImageData{MediaType: "image/png", Base64: "aW5saW5lLWltYWdl"},
+	}}}, -1)
+	if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+
+	var stored string
+	if err := store.db.QueryRowContext(ctx, "SELECT parts FROM messages WHERE session_id = ?", sess.ID).Scan(&stored); err != nil {
+		t.Fatalf("QueryRow parts: %v", err)
+	}
+	if !strings.Contains(stored, "aW5saW5lLWltYWdl") {
+		t.Fatalf("stored JSON removed base64 for pathless image: %s", stored)
 	}
 }
 

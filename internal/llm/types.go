@@ -201,6 +201,7 @@ type ToolContentPart struct {
 	Type      ToolContentPartType `json:"type"`
 	Text      string              `json:"text,omitempty"`
 	ImageData *ToolImageData      `json:"image_data,omitempty"`
+	ImagePath string              `json:"image_path,omitempty"`
 }
 
 // ToolOutput is the structured return type from Tool.Execute().

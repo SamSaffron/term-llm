@@ -232,7 +232,8 @@ Detail: %s`,
 		ContentParts: []llm.ToolContentPart{
 			{Type: llm.ToolContentPartText, Text: textResult},
 			{
-				Type: llm.ToolContentPartImageData,
+				Type:      llm.ToolContentPartImageData,
+				ImagePath: a.FilePath,
 				ImageData: &llm.ToolImageData{
 					MediaType: processedMime,
 					Base64:    encoded,

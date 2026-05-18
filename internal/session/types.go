@@ -95,8 +95,8 @@ type Session struct {
 }
 
 // Message represents a message in a session.
-// The Parts field stores the full llm.Message.Parts as JSON to preserve
-// tool calls and results exactly.
+// The Parts field stores llm.Message.Parts as JSON, omitting redundant image
+// blobs when the same image is already addressable by a persisted file path.
 type Message struct {
 	ID          int64      `json:"id"`
 	SessionID   string     `json:"session_id"`
@@ -205,11 +205,59 @@ func (m *Message) ToLLMMessage() llm.Message {
 
 // PartsJSON returns the Parts field serialized to JSON for database storage.
 func (m *Message) PartsJSON() (string, error) {
-	data, err := json.Marshal(m.Parts)
+	data, err := json.Marshal(partsForStorage(m.Parts))
 	if err != nil {
 		return "", err
 	}
 	return string(data), nil
+}
+
+func partsForStorage(parts []llm.Part) []llm.Part {
+	if len(parts) == 0 {
+		return nil
+	}
+
+	cloned := make([]llm.Part, 0, len(parts))
+	for _, part := range parts {
+		cloned = append(cloned, partForStorage(part))
+	}
+	return cloned
+}
+
+func partForStorage(part llm.Part) llm.Part {
+	cloned := part
+
+	if part.Type == llm.PartImage && part.ImageData != nil && strings.TrimSpace(part.ImagePath) != "" {
+		imageCopy := *part.ImageData
+		imageCopy.Base64 = ""
+		cloned.ImageData = &imageCopy
+	}
+
+	if part.Type == llm.PartToolResult && part.ToolResult != nil {
+		resultCopy := *part.ToolResult
+		resultCopy.ContentParts = toolContentPartsForStorage(part.ToolResult.ContentParts)
+		cloned.ToolResult = &resultCopy
+	}
+
+	return cloned
+}
+
+func toolContentPartsForStorage(parts []llm.ToolContentPart) []llm.ToolContentPart {
+	if len(parts) == 0 {
+		return nil
+	}
+
+	cloned := make([]llm.ToolContentPart, 0, len(parts))
+	for _, part := range parts {
+		copyPart := part
+		if part.Type == llm.ToolContentPartImageData && part.ImageData != nil && strings.TrimSpace(part.ImagePath) != "" {
+			imageCopy := *part.ImageData
+			imageCopy.Base64 = ""
+			copyPart.ImageData = &imageCopy
+		}
+		cloned = append(cloned, copyPart)
+	}
+	return cloned
 }
 
 // SetPartsFromJSON deserializes JSON into the Parts field.

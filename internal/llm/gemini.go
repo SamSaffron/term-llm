@@ -344,12 +344,13 @@ func buildGeminiContent(role string, parts []Part) *genai.Content {
 				content.Parts = append(content.Parts, &genai.Part{Text: part.Text})
 			}
 		case PartImage:
-			if part.ImageData != nil {
-				imageData, err := base64.StdEncoding.DecodeString(part.ImageData.Base64)
+			mimeType, base64Data, ok := partImageData(part)
+			if ok {
+				imageData, err := base64.StdEncoding.DecodeString(base64Data)
 				if err == nil {
 					content.Parts = append(content.Parts, &genai.Part{
 						InlineData: &genai.Blob{
-							MIMEType: part.ImageData.MediaType,
+							MIMEType: mimeType,
 							Data:     imageData,
 						},
 					})

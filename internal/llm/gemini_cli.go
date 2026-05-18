@@ -988,11 +988,12 @@ func buildGeminiCLIUserContent(parts []Part) map[string]interface{} {
 				apiParts = append(apiParts, map[string]interface{}{"text": part.Text})
 			}
 		case PartImage:
-			if part.ImageData != nil {
+			mimeType, base64Data, ok := partImageData(part)
+			if ok {
 				apiParts = append(apiParts, map[string]interface{}{
 					"inline_data": map[string]interface{}{
-						"mime_type": part.ImageData.MediaType,
-						"data":      part.ImageData.Base64,
+						"mime_type": mimeType,
+						"data":      base64Data,
 					},
 				})
 			}

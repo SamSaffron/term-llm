@@ -81,6 +81,9 @@ func TestViewImageToolExecute_ReturnsStructuredImageData(t *testing.T) {
 	if imagePart.ImageData.Detail != "high" {
 		t.Fatalf("expected detail high, got %q", imagePart.ImageData.Detail)
 	}
+	if imagePart.ImagePath != filePath {
+		t.Fatalf("expected image path %q, got %q", filePath, imagePart.ImagePath)
+	}
 	if _, err := base64.StdEncoding.DecodeString(imagePart.ImageData.Base64); err != nil {
 		t.Fatalf("image_data base64 should be valid: %v", err)
 	}

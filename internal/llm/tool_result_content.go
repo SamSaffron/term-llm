@@ -49,6 +49,12 @@ func toolResultImageData(part ToolContentPart) (mediaType, base64Data string, ok
 
 	mediaType = strings.TrimSpace(part.ImageData.MediaType)
 	base64Data = strings.TrimSpace(part.ImageData.Base64)
+	if base64Data == "" && strings.TrimSpace(part.ImagePath) != "" {
+		mediaType, base64Data, ok = imageFileData(part.ImagePath, mediaType)
+		if !ok {
+			return "", "", false
+		}
+	}
 	if !isSupportedToolResultImageMediaType(mediaType) || base64Data == "" {
 		return "", "", false
 	}

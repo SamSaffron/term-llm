@@ -656,13 +656,14 @@ func buildAnthropicBlocks(parts []Part, allowToolUse bool) []anthropic.ContentBl
 				blocks = append(blocks, anthropic.NewTextBlock(part.Text))
 			}
 		case PartImage:
-			if part.ImageData != nil {
+			mimeType, base64Data, ok := partImageData(part)
+			if ok {
 				blocks = append(blocks, anthropic.ContentBlockParamUnion{
 					OfImage: &anthropic.ImageBlockParam{
 						Source: anthropic.ImageBlockParamSourceUnion{
 							OfBase64: &anthropic.Base64ImageSourceParam{
-								Data:      part.ImageData.Base64,
-								MediaType: anthropic.Base64ImageSourceMediaType(part.ImageData.MediaType),
+								Data:      base64Data,
+								MediaType: anthropic.Base64ImageSourceMediaType(mimeType),
 							},
 						},
 					},
@@ -696,13 +697,14 @@ func buildAnthropicBetaBlocks(parts []Part, allowToolUse bool) []anthropic.BetaC
 				blocks = append(blocks, anthropic.NewBetaTextBlock(part.Text))
 			}
 		case PartImage:
-			if part.ImageData != nil {
+			mimeType, base64Data, ok := partImageData(part)
+			if ok {
 				blocks = append(blocks, anthropic.BetaContentBlockParamUnion{
 					OfImage: &anthropic.BetaImageBlockParam{
 						Source: anthropic.BetaImageBlockParamSourceUnion{
 							OfBase64: &anthropic.BetaBase64ImageSourceParam{
-								Data:      part.ImageData.Base64,
-								MediaType: anthropic.BetaBase64ImageSourceMediaType(part.ImageData.MediaType),
+								Data:      base64Data,
+								MediaType: anthropic.BetaBase64ImageSourceMediaType(mimeType),
 							},
 						},
 					},

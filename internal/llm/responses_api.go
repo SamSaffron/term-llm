@@ -365,10 +365,15 @@ func buildResponsesMessageItems(role string, parts []Part) []ResponsesInputItem 
 				textBuf.WriteString(part.Text)
 			}
 		case PartImage:
-			if part.ImageData != nil {
+			mimeType, base64Data, ok := partImageData(part)
+			if ok {
 				flushText()
-				dataURL := fmt.Sprintf("data:%s;base64,%s", part.ImageData.MediaType, part.ImageData.Base64)
-				imageParts := []ResponsesContentPart{{Type: "input_image", ImageURL: dataURL, Detail: imageDetail(part.ImageData.Detail)}}
+				detail := ""
+				if part.ImageData != nil {
+					detail = imageDetail(part.ImageData.Detail)
+				}
+				dataURL := fmt.Sprintf("data:%s;base64,%s", mimeType, base64Data)
+				imageParts := []ResponsesContentPart{{Type: "input_image", ImageURL: dataURL, Detail: detail}}
 				if part.ImagePath != "" {
 					imageParts = append(imageParts, ResponsesContentPart{Type: "input_text", Text: "[image saved at: " + part.ImagePath + "]"})
 				}
