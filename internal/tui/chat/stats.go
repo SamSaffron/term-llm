@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -129,13 +130,65 @@ func (m *Model) renderStatsModal() string {
 		compactionSeq = m.sess.CompactionSeq
 	}
 	b.WriteString(fmt.Sprintf("Compactions:        %d\n", compactionCount))
-	if compactionSeq >= 0 || m.compactionIdx > 0 {
+	if m.stats != nil && m.stats.CompactionLLMCallCount > 0 {
+		b.WriteString(fmt.Sprintf("LLM cost:           %s\n", formatCompactionUsage(m.stats)))
+	}
+	if session.HasCompactionBoundary(m.sess) || m.compactionIdx > 0 {
 		b.WriteString(fmt.Sprintf("Last boundary:      seq %d (%d messages hidden from active context)\n", compactionSeq, m.compactionIdx))
 	} else {
 		b.WriteString("Last boundary:      none\n")
 	}
 
 	return b.String()
+}
+
+func sessionIDOf(sess *session.Session) string {
+	if sess == nil {
+		return ""
+	}
+	return sess.ID
+}
+
+func (m *Model) recordCompactionUsage(ctx context.Context, sessionID string, u llm.Usage) {
+	if m.stats == nil {
+		m.stats = ui.NewSessionStats()
+	}
+	m.stats.AddCompactionUsage(u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
+	if !u.BillableCountersZero() && m.store != nil && sessionID != "" {
+		_ = m.store.UpdateMetrics(ctx, sessionID, 0, 0, u.InputTokens, u.OutputTokens, u.CachedInputTokens, u.CacheWriteTokens)
+	}
+	if !u.BillableCountersZero() && m.sess != nil && (sessionID == "" || m.sess.ID == sessionID) {
+		m.sess.InputTokens += u.InputTokens
+		m.sess.OutputTokens += u.OutputTokens
+		m.sess.CachedInputTokens += u.CachedInputTokens
+		m.sess.CacheWriteTokens += u.CacheWriteTokens
+	}
+}
+
+func formatCompactionUsage(stats *ui.SessionStats) string {
+	if stats == nil || stats.CompactionLLMCallCount <= 0 {
+		return "none"
+	}
+	parts := make([]string, 0, 5)
+	if stats.CompactionCachedInputTokens > 0 {
+		parts = append(parts, fmt.Sprintf("%s cache", ui.FormatTokenCount(stats.CompactionCachedInputTokens)))
+	}
+	if stats.CompactionInputTokens > 0 {
+		parts = append(parts, fmt.Sprintf("%s in", ui.FormatTokenCount(stats.CompactionInputTokens)))
+	}
+	if stats.CompactionCacheWriteTokens > 0 {
+		parts = append(parts, fmt.Sprintf("%s write", ui.FormatTokenCount(stats.CompactionCacheWriteTokens)))
+	}
+	if stats.CompactionOutputTokens > 0 {
+		parts = append(parts, fmt.Sprintf("%s out", ui.FormatTokenCount(stats.CompactionOutputTokens)))
+	}
+	if len(parts) == 0 {
+		parts = append(parts, "usage unknown")
+	}
+	if stats.CompactionLLMCallCount > 1 {
+		parts = append(parts, fmt.Sprintf("%d calls", stats.CompactionLLMCallCount))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func estimateStatsCost(model string, stats *ui.SessionStats) (float64, error) {

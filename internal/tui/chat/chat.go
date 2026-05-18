@@ -411,32 +411,11 @@ type HandoverRequestMsg struct {
 }
 
 func loadSessionMessagesForContext(ctx context.Context, store session.Store, sess *session.Session) ([]session.Message, error) {
-	if sess == nil {
-		return nil, nil
-	}
-	if sess.CompactionSeq >= 0 {
-		return store.GetMessagesFrom(ctx, sess.ID, sess.CompactionSeq)
-	}
-	return store.GetMessages(ctx, sess.ID, 0, 0)
+	return session.LoadActiveMessages(ctx, store, sess)
 }
 
 func loadSessionMessagesForScrollback(ctx context.Context, store session.Store, sess *session.Session) ([]session.Message, int, error) {
-	if sess == nil {
-		return nil, 0, nil
-	}
-	messages, err := store.GetMessages(ctx, sess.ID, 0, 0)
-	if err != nil {
-		return nil, 0, err
-	}
-	if sess.CompactionSeq < 0 {
-		return messages, 0, nil
-	}
-	for i, msg := range messages {
-		if msg.Sequence >= sess.CompactionSeq {
-			return messages, i, nil
-		}
-	}
-	return messages, len(messages), nil
+	return session.LoadScrollbackWithBoundary(ctx, store, sess)
 }
 
 func (m *Model) refreshSessionFromStore(ctx context.Context) error {
@@ -530,13 +509,15 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 	}
 
 	// Load existing messages if resuming.
-	// If the session was compacted, only load post-compaction messages — the
-	// summary + recent context is all the LLM needs, and skipping older messages
-	// avoids a large DB read and memory cost for long-lived sessions.
+	// Keep full persisted scrollback available for the human UI, but remember the
+	// compaction boundary so buildMessages only sends the active post-compaction
+	// window to the LLM.
 	var messages []session.Message
+	var compactionIdx int
 	if store != nil && sess.ID != "" {
-		if loadedMsgs, err := loadSessionMessagesForContext(context.Background(), store, sess); err == nil {
+		if loadedMsgs, idx, err := loadSessionMessagesForScrollback(context.Background(), store, sess); err == nil {
 			messages = loadedMsgs
+			compactionIdx = idx
 		}
 	}
 
@@ -619,6 +600,7 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 		store:                    store,
 		sess:                     sess,
 		messages:                 messages,
+		compactionIdx:            compactionIdx,
 		rootCtx:                  context.Background(),
 		provider:                 provider,
 		fastProvider:             fastProvider,
@@ -731,6 +713,9 @@ func (m *Model) persistContextEstimate(ctx context.Context) {
 	}
 	total, count := m.engine.ContextEstimateBaseline()
 	if total <= 0 || count <= 0 {
+		if m.sess.LastTotalTokens != 0 || m.sess.LastMessageCount != 0 {
+			_ = session.ResetContextEstimate(ctx, m.store, m.sess)
+		}
 		return
 	}
 	_ = m.store.UpdateContextEstimate(ctx, m.sess.ID, total, count)
@@ -1242,26 +1227,34 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.result == nil {
 			return m.showFooterError("Compaction failed: no result returned.")
 		}
-		var newSessionMsgs []session.Message
-		for _, msg := range msg.result.NewMessages {
-			newSessionMsgs = append(newSessionMsgs, *session.NewMessage(m.sess.ID, msg, -1))
-		}
+		m.messagesMu.Lock()
+		full := append([]session.Message(nil), m.messages...)
+		m.messagesMu.Unlock()
+		var updated []session.Message
+		var activeStart int
+		var refreshed *session.Session
 		if m.store != nil {
-			if err := m.store.CompactMessages(context.Background(), m.sess.ID, newSessionMsgs); err != nil {
+			var err error
+			updated, activeStart, refreshed, err = session.ApplyCompaction(context.Background(), m.store, m.sess, full, msg.result)
+			if err != nil {
 				return m.showFooterError(fmt.Sprintf("Compaction finished, but saving failed: %v", err))
 			}
-			if err := m.refreshSessionFromStore(context.Background()); err != nil {
-				return m.showFooterError(fmt.Sprintf("Conversation compacted, but session refresh failed: %v", err))
-			}
+		} else {
+			updated, activeStart, refreshed, _ = session.ApplyCompaction(context.Background(), nil, m.sess, full, msg.result)
 		}
+		if refreshed != nil {
+			m.sess = refreshed
+		}
+		m.recordCompactionUsage(context.Background(), sessionIDOf(m.sess), msg.result.Usage)
 		m.messagesMu.Lock()
-		m.compactionIdx = len(m.messages)
-		m.messages = append(m.messages, newSessionMsgs...)
+		m.messages = updated
+		m.compactionIdx = activeStart
 		m.messagesMu.Unlock()
 		m.invalidateHistoryCache()
 
 		if m.engine != nil {
 			m.engine.ResetConversation()
+			m.engine.SetContextEstimateBaseline(0, 0)
 		}
 		return m.showFooterSuccess("Conversation compacted.")
 

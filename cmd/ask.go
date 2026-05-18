@@ -312,10 +312,11 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			settings.MCP = sess.MCP
 		}
 
-		// Load session history
-		sessionMsgs, _ := store.GetMessages(ctx, sess.ID, 0, 0)
-		for _, msg := range sessionMsgs {
-			sessionMessages = append(sessionMessages, msg.ToLLMMessage())
+		// Load active session history (post-compaction when a boundary exists).
+		if sessionMsgs, loadErr := session.LoadActiveMessages(ctx, store, sess); loadErr == nil {
+			for _, msg := range sessionMsgs {
+				sessionMessages = append(sessionMessages, msg.ToLLMMessage())
+			}
 		}
 	}
 
@@ -618,6 +619,23 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	// Enable context compaction or tracking for models with known context window data.
 	engine.ConfigureContextManagement(provider, cfg.DefaultProvider, activeModel(cfg), cfg.AutoCompact)
 	applyPersistedContextEstimate(engine, sess)
+	if store != nil && sess != nil {
+		engine.SetCompactionCallback(func(cbCtx context.Context, result *llm.CompactionResult) error {
+			_, _, refreshed, err := session.ApplyCompaction(cbCtx, store, sess, nil, result)
+			if err != nil {
+				return err
+			}
+			if refreshed != nil {
+				sess = refreshed
+			}
+			if result != nil && !result.Usage.BillableCountersZero() {
+				_ = store.UpdateMetrics(cbCtx, sess.ID, 0, 0, result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.CachedInputTokens, result.Usage.CacheWriteTokens)
+			}
+			engine.SetContextEstimateBaseline(0, 0)
+			return nil
+		})
+		defer engine.SetCompactionCallback(nil)
+	}
 
 	var jsonInfo sessionInfo
 	if askJSON {

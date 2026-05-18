@@ -307,6 +307,7 @@ func TestCmdStatsOpensModalWithTotalsAndCompactions(t *testing.T) {
 	m.sess = &session.Session{ID: "s1", UserTurns: 2, LLMTurns: 3, CompactionCount: 3, CompactionSeq: 25}
 	m.stats = ui.NewSessionStats()
 	m.stats.SeedTotals(1000, 500, 100, 50, 4, 3)
+	m.stats.AddCompactionUsage(484, 1200, 200000, 0)
 	m.messages = []session.Message{
 		{Role: llm.RoleUser, TextContent: "hello"},
 		{Role: llm.RoleAssistant, TextContent: "hi"},
@@ -321,13 +322,42 @@ func TestCmdStatsOpensModalWithTotalsAndCompactions(t *testing.T) {
 		t.Fatalf("stats should open content dialog, got open=%v type=%v", rm.dialog.IsOpen(), rm.dialog.Type())
 	}
 	content := rm.dialog.Content()
-	for _, want := range []string{"Context Usage", "Current state vs entire history", "Current context", "Entire history", "Input tokens", "Cache write tokens", "Total tokens", "Tool calls", "Compactions:        3", "Last boundary:"} {
+	for _, want := range []string{"Context Usage", "Current state vs entire history", "Current context", "Entire history", "Input tokens", "Cache write tokens", "Total tokens", "Tool calls", "Compactions:        3", "LLM cost:           200k cache, 484 in, 1.2k out", "Last boundary:"} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("stats content missing %q:\n%s", want, content)
 		}
 	}
 	if content := rm.dialog.Content(); strings.Contains(content, "billed-ish") || strings.Contains(content, "build-ish") {
 		t.Fatalf("stats content should not use vague billed/build-ish label:\n%s", content)
+	}
+}
+
+func TestCmdStatsUsesActiveContextAfterCompaction(t *testing.T) {
+	oldEstimator := statsCostEstimator
+	statsCostEstimator = func(model string, stats *ui.SessionStats) (float64, error) { return 0, fmt.Errorf("not tested") }
+	defer func() { statsCostEstimator = oldEstimator }()
+
+	m := newCmdTestModel(&mockStore{})
+	m.sess = &session.Session{ID: "s1", CompactionCount: 2, CompactionSeq: 10}
+	m.stats = ui.NewSessionStats()
+	m.messages = []session.Message{
+		{Role: llm.RoleUser, TextContent: strings.Repeat("old ", 200)},
+		{Role: llm.RoleAssistant, TextContent: strings.Repeat("old reply ", 200)},
+		{Role: llm.RoleUser, TextContent: "summary"},
+		{Role: llm.RoleAssistant, TextContent: "ack"},
+	}
+	m.compactionIdx = 2
+
+	content := m.renderStatsModal()
+	for _, want := range []string{
+		"Compactions:        2",
+		"Last boundary:      seq 10 (2 messages hidden from active context)",
+		"Active messages:    2 (user 1, assistant 1, tool 0)",
+		"Not in context:",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("stats content missing %q:\n%s", want, content)
+		}
 	}
 }
 

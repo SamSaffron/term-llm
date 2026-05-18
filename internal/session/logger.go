@@ -100,6 +100,19 @@ func (s *LoggingStore) UpdateContextEstimate(ctx context.Context, id string, las
 	return err
 }
 
+// ClearCompactionBoundary wraps optional Store.ClearCompactionBoundary with error logging.
+func (s *LoggingStore) ClearCompactionBoundary(ctx context.Context, id string) error {
+	clearer, ok := s.Store.(interface {
+		ClearCompactionBoundary(context.Context, string) error
+	})
+	if !ok {
+		return nil
+	}
+	err := clearer.ClearCompactionBoundary(ctx, id)
+	s.logOnce("ClearCompactionBoundary", err)
+	return err
+}
+
 // UpdateStatus wraps Store.UpdateStatus with error logging.
 func (s *LoggingStore) UpdateStatus(ctx context.Context, id string, status SessionStatus) error {
 	err := s.Store.UpdateStatus(ctx, id, status)

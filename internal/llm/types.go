@@ -322,6 +322,37 @@ type Usage struct {
 	ReasoningTokens int
 }
 
+// Add accumulates another usage value into u.
+func (u *Usage) Add(other Usage) {
+	if u == nil {
+		return
+	}
+	u.InputTokens += other.InputTokens
+	u.OutputTokens += other.OutputTokens
+	u.CachedInputTokens += other.CachedInputTokens
+	u.CacheWriteTokens += other.CacheWriteTokens
+	u.ProviderRawInputTokens += other.ProviderRawInputTokens
+	u.ProviderTotalTokens += other.ProviderTotalTokens
+	u.ReasoningTokens += other.ReasoningTokens
+}
+
+// IsZero reports whether no token usage was reported.
+func (u Usage) IsZero() bool {
+	return u.InputTokens == 0 &&
+		u.OutputTokens == 0 &&
+		u.CachedInputTokens == 0 &&
+		u.CacheWriteTokens == 0 &&
+		u.ProviderRawInputTokens == 0 &&
+		u.ProviderTotalTokens == 0 &&
+		u.ReasoningTokens == 0
+}
+
+// BillableCountersZero reports whether the normalized token counters term-llm
+// persists for usage/cost displays are all zero.
+func (u Usage) BillableCountersZero() bool {
+	return u.InputTokens == 0 && u.OutputTokens == 0 && u.CachedInputTokens == 0 && u.CacheWriteTokens == 0
+}
+
 // CommandSuggestion represents a single command suggestion from the LLM.
 type CommandSuggestion struct {
 	Command     string `json:"command"`

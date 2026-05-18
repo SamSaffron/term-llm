@@ -43,6 +43,7 @@ type CompactionResult struct {
 	NewMessages    []Message
 	OriginalCount  int
 	CompactedCount int
+	Usage          Usage // Token usage/cost of the helper LLM call that produced the summary.
 }
 
 // EstimateTokens returns an approximate token count for a string using a
@@ -188,6 +189,7 @@ func Compact(ctx context.Context, provider Provider, model, systemPrompt string,
 
 	// Collect summary text — entire output is the summary.
 	var summary strings.Builder
+	var usage Usage
 	for {
 		event, err := stream.Recv()
 		if err == io.EOF {
@@ -196,8 +198,16 @@ func Compact(ctx context.Context, provider Provider, model, systemPrompt string,
 		if err != nil {
 			return nil, fmt.Errorf("compaction recv failed: %w", err)
 		}
-		if event.Type == EventTextDelta {
+		switch event.Type {
+		case EventTextDelta:
 			summary.WriteString(event.Text)
+		case EventUsage:
+			if event.Use != nil {
+				usage.Add(*event.Use)
+			}
+		case EventAttemptDiscard:
+			summary.Reset()
+			usage = Usage{}
 		}
 	}
 
@@ -216,6 +226,7 @@ func Compact(ctx context.Context, provider Provider, model, systemPrompt string,
 		NewMessages:    newMessages,
 		OriginalCount:  originalCount,
 		CompactedCount: len(newMessages),
+		Usage:          usage,
 	}, nil
 }
 

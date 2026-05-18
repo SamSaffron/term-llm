@@ -72,7 +72,10 @@ type ResponseCompletedCallback func(ctx context.Context, turnIndex int, assistan
 type AssistantSnapshotCallback func(ctx context.Context, turnIndex int, assistantMsg Message) error
 
 // CompactionCallback is called after context compaction to allow callers to
-// update their state (e.g., replace in-memory messages, persist changes).
+// update their state (e.g., replace in-memory messages, persist changes). The
+// callback must synchronously replace/persist the owner's active context before
+// returning; the engine only updates its in-flight request copy, so owner state
+// that is not updated here can resurrect pre-compaction history later.
 type CompactionCallback func(ctx context.Context, result *CompactionResult) error
 
 // Engine orchestrates provider calls and external tool execution.

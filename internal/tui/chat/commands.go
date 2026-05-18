@@ -536,6 +536,7 @@ func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
 
 	// Clear conversation messages and input
 	m.messages = nil
+	m.compactionIdx = 0
 	m.scrollOffset = 0
 	m.setTextareaValue("")
 	m.clearFiles()
@@ -941,6 +942,7 @@ func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
 
 	// Clear conversation messages and input
 	m.messages = nil
+	m.compactionIdx = 0
 	m.scrollOffset = 0
 	m.setTextareaValue("")
 	m.clearFiles()
@@ -1692,7 +1694,17 @@ func (m *Model) cmdCompress() (tea.Model, tea.Cmd) {
 	m.messagesMu.Lock()
 	snapshot := make([]session.Message, len(m.messages))
 	copy(snapshot, m.messages)
+	compIdx := m.compactionIdx
 	m.messagesMu.Unlock()
+
+	messagesStart := compIdx
+	if messagesStart > 0 {
+		if messagesStart < len(snapshot) {
+			snapshot = snapshot[messagesStart:]
+		} else {
+			snapshot = nil
+		}
+	}
 
 	if len(snapshot) < 2 {
 		return m.showSystemMessage("Not enough conversation history to compress.")

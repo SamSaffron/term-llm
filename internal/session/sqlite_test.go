@@ -66,6 +66,80 @@ func TestSQLiteStoreReplaceMessagesPreservesTurnIndex(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreReplaceMessagesClearsCompactionBoundary(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, "UPDATE sessions SET compaction_seq = 10, compaction_count = 2 WHERE id = ?", sess.ID); err != nil {
+		t.Fatalf("seed compaction boundary: %v", err)
+	}
+
+	messages := []Message{*NewMessage(sess.ID, llm.UserText("replacement"), 0)}
+	if err := store.ReplaceMessages(ctx, sess.ID, messages); err != nil {
+		t.Fatalf("ReplaceMessages: %v", err)
+	}
+
+	got, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.CompactionSeq != -1 || got.CompactionCount != 0 {
+		t.Fatalf("compaction boundary = seq %d count %d, want cleared", got.CompactionSeq, got.CompactionCount)
+	}
+}
+
+func TestLoadActiveMessagesClearsStaleCompactionBoundary(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := store.AddMessage(ctx, sess.ID, NewMessage(sess.ID, llm.UserText("hello"), 0)); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, "UPDATE sessions SET compaction_seq = 99, compaction_count = 1 WHERE id = ?", sess.ID); err != nil {
+		t.Fatalf("seed stale compaction boundary: %v", err)
+	}
+
+	reloaded, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	msgs, err := LoadActiveMessages(ctx, store, reloaded)
+	if err != nil {
+		t.Fatalf("LoadActiveMessages: %v", err)
+	}
+	if len(msgs) != 1 || msgs[0].TextContent != "hello" {
+		t.Fatalf("active messages = %#v, want full fallback history", msgs)
+	}
+
+	repaired, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("Get repaired: %v", err)
+	}
+	if repaired.CompactionSeq != -1 || repaired.CompactionCount != 0 {
+		t.Fatalf("compaction boundary = seq %d count %d, want cleared", repaired.CompactionSeq, repaired.CompactionCount)
+	}
+}
+
 func TestSQLiteStoreSearchEscapesUserQueryForFTS(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 

@@ -15,6 +15,14 @@ type SessionStats struct {
 	ToolCallCount     int
 	LLMCallCount      int // Number of LLM API calls made
 
+	// Compaction usage is included in the cumulative token counters above and
+	// tracked separately so UIs can show how much the summary helper calls cost.
+	CompactionInputTokens       int
+	CompactionOutputTokens      int
+	CompactionCachedInputTokens int
+	CompactionCacheWriteTokens  int
+	CompactionLLMCallCount      int
+
 	// Per-call tracking (current process only, not seeded from persisted data)
 	lastInputTokens  int  // Input tokens from most recent LLM call
 	lastOutputTokens int  // Output tokens from most recent LLM call
@@ -46,6 +54,13 @@ func (s *SessionStats) SeedTotals(input, output, cached, cacheWrite, toolCalls, 
 	s.CacheWriteTokens = cacheWrite
 	s.ToolCallCount = toolCalls
 	s.LLMCallCount = llmCalls
+	// Reset compaction-only fields; persisted sessions store only cumulative
+	// token metrics today, not a separate compaction-cost breakdown.
+	s.CompactionInputTokens = 0
+	s.CompactionOutputTokens = 0
+	s.CompactionCachedInputTokens = 0
+	s.CompactionCacheWriteTokens = 0
+	s.CompactionLLMCallCount = 0
 	// Reset per-call fields so stale data from prior usage doesn't leak through
 	s.lastInputTokens = 0
 	s.lastOutputTokens = 0
@@ -67,6 +82,18 @@ func (s *SessionStats) AddUsage(input, output, cached, cacheWrite int) {
 	if totalContext > s.peakInputTokens {
 		s.peakInputTokens = totalContext
 	}
+}
+
+// AddCompactionUsage records usage for a compaction helper LLM call. The tokens
+// are included in the overall usage counters and also kept as a compaction-only
+// subtotal for display.
+func (s *SessionStats) AddCompactionUsage(input, output, cached, cacheWrite int) {
+	s.AddUsage(input, output, cached, cacheWrite)
+	s.CompactionInputTokens += input
+	s.CompactionOutputTokens += output
+	s.CompactionCachedInputTokens += cached
+	s.CompactionCacheWriteTokens += cacheWrite
+	s.CompactionLLMCallCount++
 }
 
 // DiscardUsage removes usage that belonged to an interrupted provisional

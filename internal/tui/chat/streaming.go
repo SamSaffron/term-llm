@@ -96,6 +96,7 @@ func (m *Model) clearStreamCallbacks() {
 	m.engine.SetAssistantSnapshotCallback(nil)
 	m.engine.SetResponseCompletedCallback(nil)
 	m.engine.SetTurnCompletedCallback(nil)
+	m.engine.SetCompactionCallback(nil)
 	m.pendingMu.Lock()
 	m.pendingAssistantMsgID = 0
 	m.pendingMu.Unlock()
@@ -109,17 +110,25 @@ func (m *Model) clearStreamCallbacks() {
 // skips RoleUser messages (interjections) because the ui.StreamEventInterjection
 // handler persists those — appending them here would create duplicate rows.
 func (m *Model) setupStreamPersistenceCallbacks(streamStart time.Time) {
+	streamSess := m.sess
+	streamSessionID := ""
+	if streamSess != nil {
+		streamSessionID = streamSess.ID
+	}
+	staleStreamSession := func() bool {
+		return streamSessionID != "" && (m.sess == nil || m.sess.ID != streamSessionID)
+	}
 	persistPendingAssistant := func(ctx context.Context, assistantMsg llm.Message) {
-		if m.store == nil || m.sess == nil {
+		if m.store == nil || streamSess == nil || staleStreamSession() {
 			return
 		}
-		sessionMsg := session.NewMessage(m.sess.ID, assistantMsg, -1)
+		sessionMsg := session.NewMessage(streamSess.ID, assistantMsg, -1)
 		sessionMsg.DurationMs = time.Since(streamStart).Milliseconds()
 		m.pendingMu.Lock()
 		defer m.pendingMu.Unlock()
 		if m.pendingAssistantMsgID != 0 {
 			sessionMsg.ID = m.pendingAssistantMsgID
-			err := m.store.UpdateMessage(ctx, m.sess.ID, sessionMsg)
+			err := m.store.UpdateMessage(ctx, streamSess.ID, sessionMsg)
 			if err == nil {
 				return
 			}
@@ -127,28 +136,37 @@ func (m *Model) setupStreamPersistenceCallbacks(streamStart time.Time) {
 				return
 			}
 			m.pendingAssistantMsgID = 0
-			sessionMsg = session.NewMessage(m.sess.ID, assistantMsg, -1)
+			sessionMsg = session.NewMessage(streamSess.ID, assistantMsg, -1)
 			sessionMsg.DurationMs = time.Since(streamStart).Milliseconds()
 		}
-		if err := m.store.AddMessage(ctx, m.sess.ID, sessionMsg); err != nil {
+		if err := m.store.AddMessage(ctx, streamSess.ID, sessionMsg); err != nil {
 			return
 		}
 		m.pendingAssistantMsgID = sessionMsg.ID
 	}
 
 	m.engine.SetAssistantSnapshotCallback(func(ctx context.Context, _ int, assistantMsg llm.Message) error {
+		if staleStreamSession() {
+			return nil
+		}
 		m.updateStreamingContextAssistant(assistantMsg)
 		persistPendingAssistant(ctx, assistantMsg)
 		return nil
 	})
 
 	m.engine.SetResponseCompletedCallback(func(ctx context.Context, _ int, assistantMsg llm.Message, _ llm.TurnMetrics) error {
+		if staleStreamSession() {
+			return nil
+		}
 		m.updateStreamingContextAssistant(assistantMsg)
 		persistPendingAssistant(ctx, assistantMsg)
 		return nil
 	})
 
 	m.engine.SetTurnCompletedCallback(func(ctx context.Context, _ int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
+		if staleStreamSession() {
+			return nil
+		}
 		m.appendStreamingContextTurnMessages(turnMessages)
 
 		appendStart := 0
@@ -158,20 +176,20 @@ func (m *Model) setupStreamPersistenceCallbacks(streamStart time.Time) {
 			persistPendingAssistant(ctx, turnMessages[0])
 			appendStart = 1
 		}
-		if m.store != nil && m.sess != nil {
+		if m.store != nil && streamSess != nil {
 			for _, msg := range turnMessages[appendStart:] {
 				if msg.Role == llm.RoleUser {
 					continue
 				}
-				sessionMsg := session.NewMessage(m.sess.ID, msg, -1)
-				_ = m.store.AddMessage(ctx, m.sess.ID, sessionMsg)
+				sessionMsg := session.NewMessage(streamSess.ID, msg, -1)
+				_ = m.store.AddMessage(ctx, streamSess.ID, sessionMsg)
 			}
 		}
 		m.pendingMu.Lock()
 		m.pendingAssistantMsgID = 0
 		m.pendingMu.Unlock()
-		if m.store != nil && m.sess != nil {
-			_ = m.store.UpdateMetrics(ctx, m.sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens)
+		if m.store != nil && streamSess != nil {
+			_ = m.store.UpdateMetrics(ctx, streamSess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens)
 			m.persistContextEstimate(ctx)
 		}
 		return nil
@@ -492,20 +510,38 @@ func (m *Model) startStream(content string) tea.Cmd {
 
 		// Set up compaction callback to update in-memory state and persist.
 		// This runs on the engine goroutine, so we protect m.messages with a mutex.
+		streamSess := m.sess
+		streamSessionID := ""
+		if streamSess != nil {
+			streamSessionID = streamSess.ID
+		}
 		m.engine.SetCompactionCallback(func(ctx context.Context, result *llm.CompactionResult) error {
-			var newSessionMsgs []session.Message
-			for _, msg := range result.NewMessages {
-				newSessionMsgs = append(newSessionMsgs, *session.NewMessage(m.sess.ID, msg, -1))
-			}
-			if m.store != nil {
-				if err := m.store.CompactMessages(ctx, m.sess.ID, newSessionMsgs); err != nil {
-					return err
-				}
+			if streamSessionID != "" && (m.sess == nil || m.sess.ID != streamSessionID) {
+				return nil
 			}
 			m.messagesMu.Lock()
-			m.compactionIdx = len(m.messages)
-			m.messages = append(m.messages, newSessionMsgs...)
+			full := append([]session.Message(nil), m.messages...)
 			m.messagesMu.Unlock()
+			updated, activeStart, refreshed, err := session.ApplyCompaction(ctx, m.store, streamSess, full, result)
+			if err != nil {
+				return err
+			}
+			m.messagesMu.Lock()
+			m.messages = updated
+			m.compactionIdx = activeStart
+			m.messagesMu.Unlock()
+			if refreshed != nil {
+				m.sess = refreshed
+			}
+			if result != nil {
+				m.recordCompactionUsage(ctx, streamSessionID, result.Usage)
+			}
+			if m.engine != nil {
+				m.engine.SetContextEstimateBaseline(0, 0)
+			}
+			if result != nil {
+				m.setStreamingContextMessages(result.NewMessages)
+			}
 			m.invalidateHistoryCache()
 			// Any pending assistant row that snapshot had upserted is now stale:
 			// compaction rewrote the message table. Clear the tracking so the
@@ -563,28 +599,7 @@ func (m *Model) buildMessages() []llm.Message {
 	compIdx := m.compactionIdx
 	m.messagesMu.Unlock()
 
-	// If there's a compaction boundary, only send post-compaction messages to the LLM.
-	// The older messages are kept in m.messages for scrollback display only.
-	if compIdx > 0 && compIdx < len(snapshot) {
-		snapshot = snapshot[compIdx:]
-	}
-
-	var messages []llm.Message
-
-	// Check if history already starts with a system message
-	historyHasSystem := len(snapshot) > 0 && snapshot[0].Role == llm.RoleSystem
-
-	// Add system instructions if configured and not already in history
-	if m.config.Chat.Instructions != "" && !historyHasSystem {
-		messages = append(messages, llm.SystemText(m.config.Chat.Instructions))
-	}
-
-	// Add conversation history - convert session messages to llm messages
-	for _, msg := range snapshot {
-		messages = append(messages, msg.ToLLMMessage())
-	}
-
-	return llm.FilterConversationMessages(messages)
+	return session.LLMActiveMessages(snapshot, compIdx, m.config.Chat.Instructions)
 }
 
 func (m *Model) buildMessagesForStream() []llm.Message {

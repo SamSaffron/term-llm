@@ -1634,8 +1634,23 @@ func (s *SQLiteStore) UpdateMessage(ctx context.Context, sessionID string, msg *
 	})
 }
 
+func (s *SQLiteStore) ClearCompactionBoundary(ctx context.Context, id string) error {
+	if !s.hasCompactionSeq {
+		return nil
+	}
+	query := "UPDATE sessions SET compaction_seq = -1, updated_at = ? WHERE id = ?"
+	if s.hasCompactionCount {
+		query = "UPDATE sessions SET compaction_seq = -1, compaction_count = 0, updated_at = ? WHERE id = ?"
+	}
+	return retryOnBusy(ctx, 5, func() error {
+		_, err := s.db.ExecContext(ctx, query, time.Now(), id)
+		return err
+	})
+}
+
 // ReplaceMessages deletes all existing messages for the session and inserts
-// the new set in a single transaction. Used after context compaction.
+// the new set in a single transaction. Because the replacement snapshot becomes
+// the complete persisted history, any previous compaction boundary is cleared.
 func (s *SQLiteStore) ReplaceMessages(ctx context.Context, sessionID string, messages []Message) error {
 	return retryOnBusy(ctx, 5, func() error {
 		tx, err := s.db.BeginTx(ctx, nil)
@@ -1677,9 +1692,22 @@ func (s *SQLiteStore) ReplaceMessages(ctx context.Context, sessionID string, mes
 			}
 		}
 
-		// Update session's updated_at
-		if _, err := tx.ExecContext(ctx, "UPDATE sessions SET updated_at = ? WHERE id = ?",
-			time.Now(), sessionID); err != nil {
+		// Update session's updated_at and clear any stale compaction boundary. A
+		// replace is a full-history rewrite; keeping an old compaction_seq could make
+		// future active-context loads start past the end of the rewritten rows.
+		now := time.Now()
+		if s.hasCompactionSeq && s.hasCompactionCount {
+			if _, err := tx.ExecContext(ctx, "UPDATE sessions SET updated_at = ?, compaction_seq = -1, compaction_count = 0 WHERE id = ?",
+				now, sessionID); err != nil {
+				return fmt.Errorf("update session timestamp: %w", err)
+			}
+		} else if s.hasCompactionSeq {
+			if _, err := tx.ExecContext(ctx, "UPDATE sessions SET updated_at = ?, compaction_seq = -1 WHERE id = ?",
+				now, sessionID); err != nil {
+				return fmt.Errorf("update session timestamp: %w", err)
+			}
+		} else if _, err := tx.ExecContext(ctx, "UPDATE sessions SET updated_at = ? WHERE id = ?",
+			now, sessionID); err != nil {
 			return fmt.Errorf("update session timestamp: %w", err)
 		}
 

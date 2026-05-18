@@ -561,6 +561,27 @@ func TestTrimOversizedSingleMessage(t *testing.T) {
 	}
 }
 
+func TestCompactReportsUsage(t *testing.T) {
+	provider := NewMockProvider("test")
+	provider.AddTurn(MockTurn{
+		Text: "Summary.",
+		Usage: Usage{
+			InputTokens:       484,
+			OutputTokens:      1200,
+			CachedInputTokens: 200000,
+			CacheWriteTokens:  32,
+		},
+	})
+
+	result, err := Compact(context.Background(), provider, "test-model", "", []Message{UserText("hello")}, DefaultCompactionConfig())
+	if err != nil {
+		t.Fatalf("Compact failed: %v", err)
+	}
+	if result.Usage.InputTokens != 484 || result.Usage.OutputTokens != 1200 || result.Usage.CachedInputTokens != 200000 || result.Usage.CacheWriteTokens != 32 {
+		t.Fatalf("usage = %+v, want compaction helper usage", result.Usage)
+	}
+}
+
 func TestCompactUsesProviderInputLimit(t *testing.T) {
 	provider := NewMockProvider("test")
 	provider.AddTextResponse("Summary.")
