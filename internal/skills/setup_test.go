@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -70,6 +71,20 @@ description: "A test skill"
 		t.Fatal("HasSkillsXML() = true before metadata generation, want false")
 	}
 
+	secondSkillDir := filepath.Join(tmp, ".skills", "late-skill")
+	if err := os.MkdirAll(secondSkillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(secondSkillDir, "SKILL.md"), []byte(`---
+name: late-skill
+description: "A skill added after setup creation"
+---
+
+# Late Skill
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
 	if err := setup.EnsurePromptMetadata(); err != nil {
 		t.Fatalf("EnsurePromptMetadata() error = %v", err)
 	}
@@ -82,8 +97,11 @@ description: "A test skill"
 	if !strings.Contains(setup.XML, "<name>test-skill</name>") {
 		t.Fatalf("setup.XML missing test skill entry: %q", setup.XML)
 	}
-	if setup.TotalSkills != 1 {
-		t.Fatalf("setup.TotalSkills = %d, want 1", setup.TotalSkills)
+	if !strings.Contains(setup.XML, "<name>late-skill</name>") {
+		t.Fatalf("setup.XML missing late skill entry: %q", setup.XML)
+	}
+	if setup.TotalSkills != 2 {
+		t.Fatalf("setup.TotalSkills = %d, want 2", setup.TotalSkills)
 	}
 	if setup.HasOverflow {
 		t.Fatal("setup.HasOverflow = true, want false")
@@ -130,5 +148,69 @@ name: Broken
 	}
 	if setup != nil {
 		t.Fatalf("NewSetup() = %#v, want nil when no valid skills are available", setup)
+	}
+}
+
+func BenchmarkNewSetupWithoutPromptMetadata(b *testing.B) {
+	const skillCount = 200
+
+	origWD, err := os.Getwd()
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(origWD) }()
+
+	root := b.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		b.Fatalf("mkdir .git: %v", err)
+	}
+	if err := os.Chdir(root); err != nil {
+		b.Fatalf("chdir: %v", err)
+	}
+
+	b.Setenv("HOME", root)
+	b.Setenv("XDG_CONFIG_HOME", filepath.Join(root, ".config"))
+	b.Setenv("CODEX_HOME", filepath.Join(root, ".codex"))
+
+	for i := 0; i < skillCount; i++ {
+		name := fmt.Sprintf("bench-skill-%03d", i)
+		skillDir := filepath.Join(root, ".skills", name)
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			b.Fatalf("mkdir skill dir: %v", err)
+		}
+		content := fmt.Sprintf(`---
+name: %s
+description: "Benchmark skill %03d for lazy setup"
+---
+
+# %s
+`, name, i, name)
+		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+			b.Fatalf("write SKILL.md: %v", err)
+		}
+	}
+
+	cfg := &config.SkillsConfig{
+		Enabled:               true,
+		AutoInvoke:            true,
+		MetadataBudgetTokens:  8000,
+		MaxVisibleSkills:      50,
+		IncludeProjectSkills:  true,
+		IncludeEcosystemPaths: false,
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		setup, err := NewSetup(cfg)
+		if err != nil {
+			b.Fatalf("NewSetup: %v", err)
+		}
+		if setup == nil {
+			b.Fatal("NewSetup returned nil, want setup for discovered skills")
+		}
+		if setup.XML != "" || len(setup.Skills) != 0 || setup.TotalSkills != 0 {
+			b.Fatalf("NewSetup built prompt metadata eagerly: XML=%q skills=%d total=%d", setup.XML, len(setup.Skills), setup.TotalSkills)
+		}
 	}
 }

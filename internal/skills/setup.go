@@ -21,7 +21,6 @@ type Setup struct {
 	alwaysEnabled        []string
 	metadataBudgetTokens int
 	maxVisibleSkills     int
-	preloadedSkills      []*Skill // Primed startup catalog reused for first prompt metadata build
 
 	metadataOnce sync.Once
 	metadataErr  error
@@ -47,13 +46,15 @@ func NewSetup(cfg *config.SkillsConfig) (*Setup, error) {
 		return nil, err
 	}
 
-	// Prime the startup skill catalog once so prompt metadata generation can
-	// reuse it without rescanning and reparsing before the first prompt.
-	preloadedSkills, err := registry.List()
+	// Check availability cheaply. Prompt metadata is generated lazily so commands
+	// whose AGENTS.md already supplies skill markup, or other startup paths that
+	// only need the activation/search tools, do not scan and parse the full skill
+	// catalog before it is actually needed.
+	hasSkills, err := registry.HasAnySkill()
 	if err != nil {
 		return nil, err
 	}
-	if len(preloadedSkills) == 0 {
+	if !hasSkills {
 		return nil, nil
 	}
 
@@ -62,7 +63,6 @@ func NewSetup(cfg *config.SkillsConfig) (*Setup, error) {
 		alwaysEnabled:        append([]string(nil), cfg.AlwaysEnabled...),
 		metadataBudgetTokens: cfg.MetadataBudgetTokens,
 		maxVisibleSkills:     cfg.MaxVisibleSkills,
-		preloadedSkills:      preloadedSkills,
 	}, nil
 }
 
@@ -76,15 +76,10 @@ func (s *Setup) EnsurePromptMetadata() error {
 	}
 
 	s.metadataOnce.Do(func() {
-		allSkills := s.preloadedSkills
-		s.preloadedSkills = nil
-		if allSkills == nil {
-			var err error
-			allSkills, err = s.Registry.List()
-			if err != nil {
-				s.metadataErr = fmt.Errorf("list skills: %w", err)
-				return
-			}
+		allSkills, err := s.Registry.List()
+		if err != nil {
+			s.metadataErr = fmt.Errorf("list skills: %w", err)
+			return
 		}
 
 		// Filter by never_auto for metadata injection (explicit only skills excluded)
