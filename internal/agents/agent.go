@@ -237,9 +237,10 @@ type MemoryConfig struct {
 
 // OutputToolConfig configures a tool for capturing structured output.
 type OutputToolConfig struct {
-	Name        string `yaml:"name"`        // Tool name (e.g., "set_commit_message")
-	Param       string `yaml:"param"`       // Parameter to capture (default: "content")
-	Description string `yaml:"description"` // Tool description
+	Name        string `yaml:"name"`               // Tool name (e.g., "set_commit_message")
+	Param       string `yaml:"param"`              // Parameter to capture (default: "content")
+	Description string `yaml:"description"`        // Tool description
+	Required    bool   `yaml:"required,omitempty"` // When true, ask fails unless this tool captures output
 }
 
 // IsConfigured returns true if the output tool is configured.

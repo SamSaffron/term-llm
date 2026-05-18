@@ -17,6 +17,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -851,15 +852,29 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		collector.Wait()
 	}
 
+	if requiredOutputMissing(agent, outputTool) {
+		var assistantText string
+		if collector != nil {
+			assistantText = collector.Text()
+		} else if askProgressive {
+			assistantText = progressiveOutputText(progressiveResult)
+		}
+		if err := runRequiredOutputFinalization(ctx, provider, req, outputTool, assistantText); err != nil {
+			return err
+		}
+	}
+
 	// Run on_complete handler if configured
 	if agent != nil && agent.OnComplete != "" {
 		var output string
 		if outputTool != nil && outputTool.Value() != "" {
 			output = outputTool.Value() // Tool output (preferred)
-		} else if collector != nil {
-			output = collector.Text() // Fallback to text
-		} else if askProgressive {
-			output = progressiveOutputText(progressiveResult)
+		} else if outputTool == nil || !agent.OutputTool.Required {
+			if collector != nil {
+				output = collector.Text() // Fallback to text
+			} else if askProgressive {
+				output = progressiveOutputText(progressiveResult)
+			}
 		}
 
 		if output != "" {
@@ -891,6 +906,95 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+func requiredOutputMissing(agent *agents.Agent, outputTool *tools.SetOutputTool) bool {
+	return agent != nil && agent.OutputTool.Required && outputTool != nil && outputTool.Value() == ""
+}
+
+func runRequiredOutputFinalization(ctx context.Context, provider llm.Provider, baseReq llm.Request, outputTool *tools.SetOutputTool, assistantText string) error {
+	if outputTool == nil || outputTool.Value() != "" {
+		return nil
+	}
+
+	toolName := outputTool.Name()
+	messages := append([]llm.Message{}, baseReq.Messages...)
+	if strings.TrimSpace(assistantText) != "" {
+		messages = append(messages, llm.AssistantText(assistantText))
+	}
+	messages = append(messages, llm.UserText(fmt.Sprintf(
+		"You completed the task but did not call the required output tool %q. Using only facts already established in this session, call %s now. Do not inspect more files, do not call any other tools, and do not add prose.",
+		toolName,
+		toolName,
+	)))
+
+	registry := llm.NewToolRegistry()
+	registry.Register(outputTool)
+	finalEngine := llm.NewEngine(provider, registry)
+	finalReq := llm.Request{
+		Model:             baseReq.Model,
+		SessionID:         baseReq.SessionID,
+		Messages:          messages,
+		Tools:             []llm.ToolSpec{outputTool.Spec()},
+		ToolChoice:        llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+		ParallelToolCalls: false,
+		MaxTurns:          2,
+		MaxOutputTokens:   baseReq.MaxOutputTokens,
+		Debug:             baseReq.Debug,
+		DebugRaw:          baseReq.DebugRaw,
+	}
+	if provider.Capabilities().SupportsToolChoice {
+		finalReq.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceName, Name: toolName}
+	}
+
+	stream, err := finalEngine.Stream(ctx, finalReq)
+	if err != nil {
+		if outputTool.Value() != "" && isRequiredOutputFinalizationMiss(err) {
+			return nil
+		}
+		if outputTool.Value() == "" && isRequiredOutputFinalizationMiss(err) {
+			return fmt.Errorf("required output tool %q was not called", toolName)
+		}
+		return fmt.Errorf("required output finalization failed: %w", err)
+	}
+	defer stream.Close()
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			if outputTool.Value() != "" && isRequiredOutputFinalizationMiss(err) {
+				break
+			}
+			if outputTool.Value() == "" && isRequiredOutputFinalizationMiss(err) {
+				return fmt.Errorf("required output tool %q was not called", toolName)
+			}
+			return fmt.Errorf("required output finalization failed: %w", err)
+		}
+		if event.Type == llm.EventError && event.Err != nil {
+			if outputTool.Value() != "" && isRequiredOutputFinalizationMiss(event.Err) {
+				break
+			}
+			if outputTool.Value() == "" && isRequiredOutputFinalizationMiss(event.Err) {
+				return fmt.Errorf("required output tool %q was not called", toolName)
+			}
+			return fmt.Errorf("required output finalization failed: %w", event.Err)
+		}
+	}
+
+	if outputTool.Value() == "" {
+		return fmt.Errorf("required output tool %q was not called", toolName)
+	}
+	return nil
+}
+
+func isRequiredOutputFinalizationMiss(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "agentic loop ended unexpectedly") || strings.Contains(msg, "agentic loop exceeded max turns") || strings.Contains(msg, "no more turns configured")
 }
 
 // streamPlainText streams text directly without formatting
