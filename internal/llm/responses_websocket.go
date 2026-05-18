@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -122,6 +123,10 @@ func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req Respo
 		defer c.wsMu.Unlock()
 
 		ctxDone := make(chan struct{})
+		var stopCtxWatcher sync.Once
+		stopWatchingContext := func() {
+			stopCtxWatcher.Do(func() { close(ctxDone) })
+		}
 		go func() {
 			select {
 			case <-ctx.Done():
@@ -129,7 +134,7 @@ func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req Respo
 			case <-ctxDone:
 			}
 		}()
-		defer close(ctxDone)
+		defer stopWatchingContext()
 
 		handler := newResponsesStreamEventHandler(c, responseStateGeneration, debugRaw, "Responses WebSocket", c.websocketServerStateEnabled())
 		retriedFullState := false
@@ -199,6 +204,13 @@ func (c *ResponsesClient) streamWebSocketPrepared(ctx context.Context, req Respo
 				break
 			}
 		}
+
+		// Stop the cancellation watcher before emitting the terminal EventDone.
+		// Consumers commonly call Close immediately after receiving EventDone; if the
+		// watcher is still active, that Close can race with this goroutine returning
+		// and close an otherwise healthy WebSocket that should be reused for the next
+		// turn.
+		stopWatchingContext()
 
 		if err := handler.Finish(send); err != nil {
 			return err
