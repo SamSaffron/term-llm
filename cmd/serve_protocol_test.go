@@ -87,6 +87,37 @@ func TestParseUserMessageContent_RejectsInvalidSmallInlineImage(t *testing.T) {
 	}
 }
 
+func TestParseUserMessageContent_InvalidSmallInlineImageDoesNotLeaveUpload(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+
+	content, err := json.Marshal([]map[string]any{{
+		"type":      "input_image",
+		"image_url": "data:image/png;base64,!!!=",
+		"filename":  "bad.png",
+	}})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	_, err = parseUserMessageContent(content)
+	if err == nil {
+		t.Fatal("parseUserMessageContent() error = nil, want decode error")
+	}
+
+	uploadsDir := filepath.Join(dataHome, "term-llm", "uploads")
+	entries, readErr := os.ReadDir(uploadsDir)
+	if os.IsNotExist(readErr) {
+		return
+	}
+	if readErr != nil {
+		t.Fatalf("read uploads dir: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("uploads dir has %d files, want 0", len(entries))
+	}
+}
+
 func TestDecodeUploadedFile_AllowsWrappedBase64(t *testing.T) {
 	wrapped := "aGVs\r\nbG8="
 	raw, err := decodeUploadedFile("hello.txt", wrapped)

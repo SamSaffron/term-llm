@@ -8,6 +8,7 @@ import (
 	_ "image/png"
 	"log"
 	"math"
+	"os"
 
 	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp"
@@ -32,6 +33,41 @@ func resizeImageForLLM(data []byte, mediaType string) ([]byte, string) {
 		return data, mediaType
 	}
 
+	resized, ok := encodeResizedImageForLLM(img, len(data))
+	if !ok {
+		log.Printf("[web] resizeImageForLLM: all attempts failed — sending original (%d bytes)", len(data))
+		return data, mediaType
+	}
+	return resized, "image/jpeg"
+}
+
+func resizeImageFileForLLM(path string, originalSize int, mediaType string) ([]byte, string, bool) {
+	if originalSize <= maxLLMImageBytes {
+		return nil, mediaType, false
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		log.Printf("[web] resizeImageForLLM: open failed (%v) — sending original (%d bytes)", err, originalSize)
+		return nil, mediaType, false
+	}
+	defer f.Close()
+
+	img, _, err := image.Decode(f)
+	if err != nil {
+		log.Printf("[web] resizeImageForLLM: decode failed (%v) — sending original (%d bytes)", err, originalSize)
+		return nil, mediaType, false
+	}
+
+	resized, ok := encodeResizedImageForLLM(img, originalSize)
+	if !ok {
+		log.Printf("[web] resizeImageForLLM: all attempts failed — sending original (%d bytes)", originalSize)
+		return nil, mediaType, false
+	}
+	return resized, "image/jpeg", true
+}
+
+func encodeResizedImageForLLM(img image.Image, originalSize int) ([]byte, bool) {
 	// Compute scale factor: we want pixel area such that a rough 3-bytes-per-pixel
 	// JPEG estimate fits within the target. Use a conservative 4 bpp for safety.
 	bounds := img.Bounds()
@@ -64,8 +100,8 @@ func resizeImageForLLM(data []byte, mediaType string) ([]byte, string) {
 		}
 		if buf.Len() <= maxLLMImageBytes {
 			log.Printf("[web] resizeImageForLLM: resized %dx%d→%dx%d q=%d (%d→%d bytes)",
-				origW, origH, newW, newH, quality, len(data), buf.Len())
-			return buf.Bytes(), "image/jpeg"
+				origW, origH, newW, newH, quality, originalSize, buf.Len())
+			return buf.Bytes(), true
 		}
 	}
 
@@ -73,9 +109,8 @@ func resizeImageForLLM(data []byte, mediaType string) ([]byte, string) {
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 40}); err == nil {
 		log.Printf("[web] resizeImageForLLM: could not reach ≤1MB, sending best effort (%d bytes)", buf.Len())
-		return buf.Bytes(), "image/jpeg"
+		return buf.Bytes(), true
 	}
 
-	log.Printf("[web] resizeImageForLLM: all attempts failed — sending original (%d bytes)", len(data))
-	return data, mediaType
+	return nil, false
 }
