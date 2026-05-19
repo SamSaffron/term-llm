@@ -363,6 +363,45 @@ func callbackContext(ctx context.Context) (context.Context, context.CancelFunc) 
 	return context.WithTimeout(context.WithoutCancel(ctx), callbackTimeout)
 }
 
+type orderedCallbackQueue struct {
+	mu   sync.Mutex
+	tail <-chan struct{}
+	wg   sync.WaitGroup
+}
+
+func newOrderedCallbackQueue() *orderedCallbackQueue {
+	done := make(chan struct{})
+	close(done)
+	return &orderedCallbackQueue{tail: done}
+}
+
+func (q *orderedCallbackQueue) Go(fn func()) {
+	if q == nil || fn == nil {
+		return
+	}
+
+	done := make(chan struct{})
+	q.mu.Lock()
+	prev := q.tail
+	q.tail = done
+	q.wg.Add(1)
+	q.mu.Unlock()
+
+	go func(prev <-chan struct{}) {
+		defer q.wg.Done()
+		defer close(done)
+		<-prev
+		fn()
+	}(prev)
+}
+
+func (q *orderedCallbackQueue) Wait() {
+	if q == nil {
+		return
+	}
+	q.wg.Wait()
+}
+
 // SetCompaction enables context compaction with the given input token limit
 // and configuration. Only enable for models with known input limits.
 // Must be called before Stream() or between streams (not during).
@@ -1013,6 +1052,38 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 	turnCallback := e.getTurnCallback()
 	responseCallback := e.getResponseCallback()
 	snapshotCallback := e.getSnapshotCallback()
+	callbackQueue := newOrderedCallbackQueue()
+	defer callbackQueue.Wait()
+	queueTurnCallback := func(attempt int, messages []Message, metrics TurnMetrics) {
+		if turnCallback == nil {
+			return
+		}
+		callbackQueue.Go(func() {
+			cbCtx, cancel := callbackContext(ctx)
+			defer cancel()
+			_ = turnCallback(cbCtx, attempt, messages, metrics)
+		})
+	}
+	queueResponseCallback := func(attempt int, assistantMsg Message, metrics TurnMetrics) {
+		if responseCallback == nil {
+			return
+		}
+		callbackQueue.Go(func() {
+			cbCtx, cancel := callbackContext(ctx)
+			defer cancel()
+			_ = responseCallback(cbCtx, attempt, assistantMsg, metrics)
+		})
+	}
+	queueSnapshotCallback := func(attempt int, assistantMsg Message) {
+		if snapshotCallback == nil {
+			return
+		}
+		callbackQueue.Go(func() {
+			cbCtx, cancel := callbackContext(ctx)
+			defer cancel()
+			_ = snapshotCallback(cbCtx, attempt, assistantMsg)
+		})
+	}
 
 	e.callbackMu.RLock()
 	compactionConfig := e.compactionConfig
@@ -1147,6 +1218,13 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 	}
 turnLoop:
 	for attempt := 0; attempt < maxTurns; attempt++ {
+		// Keep persistence callbacks ordered but off the hot path for tool dispatch.
+		// Before starting the next provider turn, wait for prior turn bookkeeping to
+		// catch up so external state (e.g. session history) stays in sync.
+		callbackQueue.Wait()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		// Inject any tool specs registered mid-loop (e.g. via skill activation)
 		if pending := e.drainPendingToolSpecs(); len(pending) > 0 {
 			for _, spec := range pending {
@@ -1284,9 +1362,7 @@ turnLoop:
 			if len(msg.Parts) == 0 {
 				return
 			}
-			cbCtx, cancel := callbackContext(ctx)
-			_ = snapshotCallback(cbCtx, attempt, msg)
-			cancel()
+			queueSnapshotCallback(attempt, msg)
 		}
 		// recoverCommittedToolWork journals completed tool-call requests and their
 		// results, then continues the agent loop from the updated transcript. This
@@ -1344,9 +1420,7 @@ turnLoop:
 					turnMetrics.ToolCalls = len(syncToolCalls)
 					turnMessages := []Message{assistantMsg}
 					turnMessages = append(turnMessages, syncToolResults...)
-					cbCtx, cancel := callbackContext(ctx)
-					_ = turnCallback(cbCtx, attempt, turnMessages, turnMetrics)
-					cancel()
+					queueTurnCallback(attempt, turnMessages, turnMetrics)
 				}
 				return true, nil
 			}
@@ -1392,9 +1466,7 @@ turnLoop:
 					req.Messages = append(req.Messages, assistantMsg)
 					recoveredAtMessageCount = len(req.Messages)
 					if turnCallback != nil {
-						cbCtx, cancel := callbackContext(ctx)
-						_ = turnCallback(cbCtx, attempt, []Message{assistantMsg}, turnMetrics)
-						cancel()
+						queueTurnCallback(attempt, []Message{assistantMsg}, turnMetrics)
 					}
 				}
 				return false, cause
@@ -1408,11 +1480,7 @@ turnLoop:
 				reasoningEncryptedContent,
 			)
 			maybeCompactAfterLLMCall([]Message{assistantMsg})
-			if responseCallback != nil {
-				cbCtx, cancel := callbackContext(ctx)
-				_ = responseCallback(cbCtx, attempt, assistantMsg, turnMetrics)
-				cancel()
-			}
+			queueResponseCallback(attempt, assistantMsg, turnMetrics)
 
 			var origNameByID map[string]string
 			if req.ToolMap != nil {
@@ -1474,9 +1542,7 @@ turnLoop:
 				if responseCallback == nil {
 					turnMessages = append([]Message{assistantMsg}, toolResults...)
 				}
-				cbCtx, cancel := callbackContext(ctx)
-				_ = turnCallback(cbCtx, attempt, turnMessages, turnMetrics)
-				cancel()
+				queueTurnCallback(attempt, turnMessages, turnMetrics)
 			}
 			if err := ctx.Err(); err != nil {
 				return false, err
@@ -1837,9 +1903,7 @@ turnLoop:
 				}
 				maybeCompactAfterLLMCall([]Message{finalMsg})
 				if turnCallback != nil {
-					cbCtx, cancel := callbackContext(ctx)
-					_ = turnCallback(cbCtx, attempt, []Message{finalMsg}, turnMetrics)
-					cancel()
+					queueTurnCallback(attempt, []Message{finalMsg}, turnMetrics)
 				}
 			}
 			if err := send.Send(Event{Type: EventDone}); err != nil {
@@ -1870,9 +1934,7 @@ turnLoop:
 				turnMetrics.ToolCalls = len(syncToolCalls)
 				turnMessages := []Message{assistantMsg}
 				turnMessages = append(turnMessages, syncToolResults...)
-				cbCtx, cancel := callbackContext(ctx)
-				_ = turnCallback(cbCtx, attempt, turnMessages, turnMetrics)
-				cancel()
+				queueTurnCallback(attempt, turnMessages, turnMetrics)
 			}
 
 			// Check for user interjection (MCP sync path)
@@ -1880,9 +1942,7 @@ turnLoop:
 				interjectionMsg := UserText(interjection.Text)
 				req.Messages = append(req.Messages, interjectionMsg)
 				if turnCallback != nil {
-					cbCtx, cancel := callbackContext(ctx)
-					_ = turnCallback(cbCtx, attempt, []Message{interjectionMsg}, TurnMetrics{})
-					cancel()
+					queueTurnCallback(attempt, []Message{interjectionMsg}, TurnMetrics{})
 				}
 				if err := send.Send(Event{Type: EventInterjection, Text: interjection.Text, InterjectionID: interjection.ID}); err != nil {
 					return err
@@ -1952,9 +2012,7 @@ turnLoop:
 				finalMsg := Message{Role: RoleAssistant, Parts: parts}
 				maybeCompactAfterLLMCall([]Message{finalMsg})
 				if turnCallback != nil {
-					cbCtx, cancel := callbackContext(ctx)
-					_ = turnCallback(cbCtx, attempt, []Message{finalMsg}, turnMetrics)
-					cancel()
+					queueTurnCallback(attempt, []Message{finalMsg}, turnMetrics)
 				}
 			}
 			if err := send.Send(Event{Type: EventDone}); err != nil {
@@ -1981,11 +2039,7 @@ turnLoop:
 
 		// Call responseCallback BEFORE tool execution to persist assistant message
 		// This ensures the message is saved even if tool execution fails/crashes
-		if responseCallback != nil {
-			cbCtx, cancel := callbackContext(ctx)
-			_ = responseCallback(cbCtx, attempt, assistantMsg, turnMetrics)
-			cancel()
-		}
+		queueResponseCallback(attempt, assistantMsg, turnMetrics)
 
 		// ToolMap: swap client tool names to mapped server names for execution.
 		// We save original names keyed by call ID so we can restore them on
@@ -2051,9 +2105,7 @@ turnLoop:
 		// Call turn completed callback with tool results for incremental persistence
 		if turnCallback != nil {
 			turnMetrics.ToolCalls = len(registered)
-			cbCtx, cancel := callbackContext(ctx)
-			_ = turnCallback(cbCtx, attempt, toolResults, turnMetrics)
-			cancel()
+			queueTurnCallback(attempt, toolResults, turnMetrics)
 		}
 
 		// Exit promptly if caller cancelled while tools were executing.
@@ -2077,9 +2129,7 @@ turnLoop:
 			req.Messages = append(req.Messages, interjectionMsg)
 			// Fire turn callback so the interjection is persisted
 			if turnCallback != nil {
-				cbCtx, cancel := callbackContext(ctx)
-				_ = turnCallback(cbCtx, attempt, []Message{interjectionMsg}, TurnMetrics{})
-				cancel()
+				queueTurnCallback(attempt, []Message{interjectionMsg}, TurnMetrics{})
 			}
 			// Emit event so TUI can display the interjection inline
 			if err := send.Send(Event{Type: EventInterjection, Text: interjection.Text, InterjectionID: interjection.ID}); err != nil {

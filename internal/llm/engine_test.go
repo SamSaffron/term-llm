@@ -231,6 +231,31 @@ func (t *countingTool) Preview(args json.RawMessage) string {
 	return ""
 }
 
+type startedTool struct {
+	started chan struct{}
+}
+
+func (t *startedTool) Spec() ToolSpec {
+	return ToolSpec{
+		Name:        "started_tool",
+		Description: "Signals when execution begins",
+		Schema:      map[string]any{"type": "object"},
+	}
+}
+
+func (t *startedTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
+	select {
+	case <-t.started:
+	default:
+		close(t.started)
+	}
+	return TextOutput("ok"), nil
+}
+
+func (t *startedTool) Preview(args json.RawMessage) string {
+	return ""
+}
+
 type overlapDetectTool struct {
 	active    atomic.Int64
 	maxActive atomic.Int64
@@ -1692,6 +1717,146 @@ func TestRunLoopPersistsPartialAssistantMessageOnEventErrorAfterToolCall(t *test
 	if persisted.Parts[1].ToolCall.ID != "call-1" {
 		t.Fatalf("persisted tool call ID = %q, want %q", persisted.Parts[1].ToolCall.ID, "call-1")
 	}
+}
+
+func TestRunLoopToolDispatchDoesNotWaitForPersistenceCallbacks(t *testing.T) {
+	newEngine := func(t *startedTool) *Engine {
+		provider := &fakeProvider{
+			script: func(call int, req Request) []Event {
+				switch call {
+				case 0:
+					return []Event{
+						{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "started_tool", Arguments: json.RawMessage(`{}`)}},
+						{Type: EventDone},
+					}
+				default:
+					return []Event{
+						{Type: EventTextDelta, Text: "done"},
+						{Type: EventDone},
+					}
+				}
+			},
+		}
+		registry := NewToolRegistry()
+		registry.Register(t)
+		return NewEngine(provider, registry)
+	}
+
+	t.Run("snapshot callback", func(t *testing.T) {
+		tool := &startedTool{started: make(chan struct{})}
+		engine := newEngine(tool)
+		release := make(chan struct{})
+		snapshotStarted := make(chan struct{})
+		engine.SetAssistantSnapshotCallback(func(ctx context.Context, turnIndex int, assistantMsg Message) error {
+			close(snapshotStarted)
+			<-release
+			return nil
+		})
+
+		stream, err := engine.Stream(context.Background(), Request{
+			Messages: []Message{UserText("test")},
+			Tools:    []ToolSpec{tool.Spec()},
+		})
+		if err != nil {
+			t.Fatalf("stream error: %v", err)
+		}
+		defer stream.Close()
+
+		errCh := make(chan error, 1)
+		go func() {
+			defer close(errCh)
+			for {
+				event, err := stream.Recv()
+				if err == io.EOF {
+					errCh <- nil
+					return
+				}
+				if err != nil {
+					errCh <- err
+					return
+				}
+				if event.Type == EventError && event.Err != nil {
+					errCh <- event.Err
+					return
+				}
+			}
+		}()
+
+		select {
+		case <-snapshotStarted:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for snapshot callback to start")
+		}
+
+		select {
+		case <-tool.started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("tool execution waited for snapshot callback to finish")
+		}
+
+		close(release)
+		if err := <-errCh; err != nil {
+			t.Fatalf("stream recv error: %v", err)
+		}
+	})
+
+	t.Run("response callback", func(t *testing.T) {
+		tool := &startedTool{started: make(chan struct{})}
+		engine := newEngine(tool)
+		release := make(chan struct{})
+		responseStarted := make(chan struct{})
+		engine.SetResponseCompletedCallback(func(ctx context.Context, turnIndex int, assistantMsg Message, metrics TurnMetrics) error {
+			close(responseStarted)
+			<-release
+			return nil
+		})
+
+		stream, err := engine.Stream(context.Background(), Request{
+			Messages: []Message{UserText("test")},
+			Tools:    []ToolSpec{tool.Spec()},
+		})
+		if err != nil {
+			t.Fatalf("stream error: %v", err)
+		}
+		defer stream.Close()
+
+		errCh := make(chan error, 1)
+		go func() {
+			defer close(errCh)
+			for {
+				event, err := stream.Recv()
+				if err == io.EOF {
+					errCh <- nil
+					return
+				}
+				if err != nil {
+					errCh <- err
+					return
+				}
+				if event.Type == EventError && event.Err != nil {
+					errCh <- event.Err
+					return
+				}
+			}
+		}()
+
+		select {
+		case <-responseStarted:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for response callback to start")
+		}
+
+		select {
+		case <-tool.started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("tool execution waited for response callback to finish")
+		}
+
+		close(release)
+		if err := <-errCh; err != nil {
+			t.Fatalf("stream recv error: %v", err)
+		}
+	})
 }
 
 func TestEngineEmitsToolCallAndExecStartForEachTool(t *testing.T) {
