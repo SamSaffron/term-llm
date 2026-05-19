@@ -19,7 +19,25 @@ var multiNewlineRe = regexp.MustCompile(`\n{3,}`)
 
 // normalizeNewlines reduces 3+ consecutive newlines to 2 (one blank line max).
 func normalizeNewlines(s []byte) []byte {
+	if !hasThreeConsecutiveNewlines(s) {
+		return s
+	}
 	return multiNewlineRe.ReplaceAll(s, []byte("\n\n"))
+}
+
+func hasThreeConsecutiveNewlines(s []byte) bool {
+	run := 0
+	for _, b := range s {
+		if b != '\n' {
+			run = 0
+			continue
+		}
+		run++
+		if run >= 3 {
+			return true
+		}
+	}
+	return false
 }
 
 // blockType represents the type of markdown block being processed.
