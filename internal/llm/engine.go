@@ -463,6 +463,19 @@ func (e *Engine) IsToolAllowed(name string) bool {
 	return e.allowedTools[name]
 }
 
+func defaultRequiredToolPrompt(toolName string) string {
+	return fmt.Sprintf("The previous response completed without calling `%s`. Do not answer in prose. Call `%s` now with the final output.", toolName, toolName)
+}
+
+func onlyToolSpec(specs []ToolSpec, name string) ([]ToolSpec, bool) {
+	for _, spec := range specs {
+		if spec.Name == name {
+			return []ToolSpec{spec}, true
+		}
+	}
+	return nil, false
+}
+
 // Stream returns a stream, applying external tools when needed.
 func (e *Engine) Stream(ctx context.Context, req Request) (Stream, error) {
 	if req.DebugRaw {
@@ -681,6 +694,7 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 	}
 
 	var reactiveCompactionDone bool // prevents infinite retry if compacted context still overflows
+	var requiredToolFinalizationAttempted bool
 	for attempt := 0; attempt < maxTurns; attempt++ {
 		// Inject any tool specs registered mid-loop (e.g. via skill activation)
 		if pending := e.drainPendingToolSpecs(); len(pending) > 0 {
@@ -728,8 +742,9 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 			if req.LastTurnToolChoice != nil {
 				req.ToolChoice = *req.LastTurnToolChoice
 			}
-		} else if attempt > 0 {
-			// Ensure we are in Auto mode for follow-up turns in the loop
+		} else if attempt > 0 && !requiredToolFinalizationAttempted {
+			// Ensure we are in Auto mode for follow-up turns in the loop. Preserve a
+			// forced required-tool choice for the synthetic finalization turn.
 			req.ToolChoice = ToolChoice{Mode: ToolChoiceAuto}
 		}
 
@@ -905,6 +920,60 @@ func (e *Engine) runLoop(ctx context.Context, req Request, events chan<- Event) 
 		req.Search = false
 
 		if len(toolCalls) == 0 && !syncToolsExecuted {
+			// No tools called. If a specific output/finalization tool is required,
+			// preserve the natural response in the conversation and give the model one
+			// constrained turn with only that tool available. This makes output-tool
+			// completion contractual instead of allowing assistant prose to silently
+			// stand in for the configured tool value.
+			if req.RequiredToolName != "" {
+				if requiredToolFinalizationAttempted {
+					return fmt.Errorf("output tool %q was not called", req.RequiredToolName)
+				}
+
+				finalMsg := Message{}
+				if textBuilder.Len() > 0 || reasoningBuilder.Len() > 0 || reasoningItemID != "" || reasoningEncryptedContent != "" {
+					finalMsg = Message{
+						Role: RoleAssistant,
+						Parts: []Part{{
+							Type:                      PartText,
+							Text:                      textBuilder.String(),
+							ReasoningContent:          reasoningBuilder.String(),
+							ReasoningItemID:           reasoningItemID,
+							ReasoningEncryptedContent: reasoningEncryptedContent,
+						}},
+					}
+					if turnCallback != nil {
+						cbCtx, cancel := callbackContext(ctx)
+						_ = turnCallback(cbCtx, attempt, []Message{finalMsg}, turnMetrics)
+						cancel()
+					}
+					req.Messages = append(req.Messages, finalMsg)
+				}
+
+				tools, ok := onlyToolSpec(req.Tools, req.RequiredToolName)
+				if !ok {
+					return fmt.Errorf("output tool %q is not available", req.RequiredToolName)
+				}
+				prompt := strings.TrimSpace(req.RequiredToolPrompt)
+				if prompt == "" {
+					prompt = defaultRequiredToolPrompt(req.RequiredToolName)
+				}
+				promptMsg := UserText(prompt)
+				req.Messages = append(req.Messages, promptMsg)
+				if turnCallback != nil {
+					cbCtx, cancel := callbackContext(ctx)
+					_ = turnCallback(cbCtx, attempt, []Message{promptMsg}, TurnMetrics{})
+					cancel()
+				}
+				req.Tools = tools
+				req.ToolChoice = ToolChoice{Mode: ToolChoiceName, Name: req.RequiredToolName}
+				req.ParallelToolCalls = false
+				req.Search = false
+				req.ForceExternalSearch = false
+				requiredToolFinalizationAttempted = true
+				continue
+			}
+
 			// No tools called - check if we should restore original tool choice and retry once
 			if originalToolChoice.Mode == ToolChoiceName && !restoredToolChoice {
 				req.ToolChoice = originalToolChoice

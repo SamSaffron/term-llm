@@ -2091,3 +2091,145 @@ func TestEnginePanickingToolParallelCalls(t *testing.T) {
 		t.Fatal("expected a successful tool result from count_tool")
 	}
 }
+
+type finishingCaptureTool struct {
+	calls int
+}
+
+func (t *finishingCaptureTool) Spec() ToolSpec {
+	return ToolSpec{
+		Name:        "submit_review",
+		Description: "Submit final review",
+		Schema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"review_json": map[string]any{"type": "string"},
+			},
+			"required": []string{"review_json"},
+		},
+	}
+}
+
+func (t *finishingCaptureTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutput, error) {
+	t.calls++
+	return TextOutput("captured"), nil
+}
+
+func (t *finishingCaptureTool) Preview(args json.RawMessage) string { return "" }
+
+func (t *finishingCaptureTool) IsFinishingTool() bool { return true }
+
+func TestEngineForcesRequiredToolAfterNaturalCompletion(t *testing.T) {
+	tool := &finishingCaptureTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		hasCapabilities: true,
+		capabilities:    Capabilities{ToolCalls: true, SupportsToolChoice: true},
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				if req.ToolChoice.Mode != ToolChoiceAuto {
+					t.Fatalf("first turn tool choice = %#v, want auto", req.ToolChoice)
+				}
+				return []Event{{Type: EventTextDelta, Text: "final prose instead of tool"}, {Type: EventDone}}
+			case 1:
+				if req.ToolChoice.Mode != ToolChoiceName || req.ToolChoice.Name != "submit_review" {
+					t.Fatalf("finalization tool choice = %#v, want submit_review", req.ToolChoice)
+				}
+				if len(req.Tools) != 1 || req.Tools[0].Name != "submit_review" {
+					t.Fatalf("finalization tools = %#v, want only submit_review", req.Tools)
+				}
+				last := req.Messages[len(req.Messages)-1]
+				if got := collectTextParts(last.Parts); !strings.Contains(got, "Call `submit_review`") {
+					t.Fatalf("finalization prompt = %q", got)
+				}
+				return []Event{{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "submit_review", Arguments: json.RawMessage(`{"review_json":"{}"}`)}}, {Type: EventDone}}
+			default:
+				t.Fatalf("unexpected provider call %d", call)
+				return nil
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages:         []Message{UserText("review this")},
+		Tools:            []ToolSpec{tool.Spec()},
+		ToolChoice:       ToolChoice{Mode: ToolChoiceAuto},
+		RequiredToolName: "submit_review",
+	})
+	if err != nil {
+		t.Fatalf("Stream returned error: %v", err)
+	}
+	defer stream.Close()
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv returned error: %v", err)
+		}
+	}
+
+	if tool.calls != 1 {
+		t.Fatalf("submit_review calls = %d, want 1", tool.calls)
+	}
+	if len(provider.calls) != 2 {
+		t.Fatalf("provider calls = %d, want 2", len(provider.calls))
+	}
+}
+
+func TestEngineRequiredToolErrorsWhenFinalizationDoesNotCallTool(t *testing.T) {
+	tool := &finishingCaptureTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		hasCapabilities: true,
+		capabilities:    Capabilities{ToolCalls: true, SupportsToolChoice: true},
+		script: func(call int, req Request) []Event {
+			return []Event{{Type: EventTextDelta, Text: "still prose"}, {Type: EventDone}}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages:         []Message{UserText("review this")},
+		Tools:            []ToolSpec{tool.Spec()},
+		ToolChoice:       ToolChoice{Mode: ToolChoiceAuto},
+		RequiredToolName: "submit_review",
+	})
+	if err != nil {
+		t.Fatalf("Stream returned error: %v", err)
+	}
+	defer stream.Close()
+
+	var gotErr error
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			gotErr = err
+			break
+		}
+		if event.Type == EventError && event.Err != nil {
+			gotErr = event.Err
+			break
+		}
+	}
+
+	if gotErr == nil || !strings.Contains(gotErr.Error(), `output tool "submit_review" was not called`) {
+		t.Fatalf("expected missing output-tool error, got %v", gotErr)
+	}
+	if tool.calls != 0 {
+		t.Fatalf("submit_review calls = %d, want 0", tool.calls)
+	}
+	if len(provider.calls) != 2 {
+		t.Fatalf("provider calls = %d, want 2", len(provider.calls))
+	}
+}

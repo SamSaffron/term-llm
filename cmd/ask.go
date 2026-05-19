@@ -298,6 +298,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	var outputTool *tools.SetOutputTool
+	outputToolParam := "content"
 	if toolMgr != nil {
 		// Enable yolo mode if flag is set
 		if askYolo {
@@ -311,6 +312,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			if param == "" {
 				param = "content" // default
 			}
+			outputToolParam = param
 			outputTool = toolMgr.Registry.RegisterOutputTool(agentCfg.Name, param, agentCfg.Description)
 			// Re-register tools with engine after output tool was added
 			toolMgr.SetupEngine(engine)
@@ -444,6 +446,15 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			req.Tools = specs
 			req.ToolChoice = llm.ToolChoice{Mode: llm.ToolChoiceAuto}
 		}
+	}
+	if outputTool != nil {
+		req.RequiredToolName = outputTool.Name()
+		req.RequiredToolPrompt = fmt.Sprintf(
+			"The previous response completed without calling `%s`. Do not inspect more files, run more tools, or answer in prose. Call `%s` now with the final output for the configured `%s` parameter.",
+			outputTool.Name(),
+			outputTool.Name(),
+			outputToolParam,
+		)
 	}
 
 	// Check if we're in a TTY and can use glamour
@@ -768,18 +779,28 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// A configured output tool is contractual. Natural assistant prose is useful
+	// session history, but it must not be treated as the durable output value.
+	if outputTool != nil && !outputTool.Called() {
+		return fmt.Errorf("output tool %q was not called", outputTool.Name())
+	}
+
 	// Run on_complete handler if configured
 	if agent != nil && agent.OnComplete != "" {
 		var output string
-		if outputTool != nil && outputTool.Value() != "" {
-			output = outputTool.Value() // Tool output (preferred)
+		hasOutput := false
+		if outputTool != nil {
+			output = outputTool.Value() // Tool output (preferred, may be empty)
+			hasOutput = true
 		} else if collector != nil {
-			output = collector.Text() // Fallback to text
+			output = collector.Text() // Fallback to text only when no output tool exists
+			hasOutput = output != ""
 		} else if askProgressive {
 			output = progressiveOutputText(progressiveResult)
+			hasOutput = output != ""
 		}
 
-		if output != "" {
+		if hasOutput {
 			if err := runOnComplete(agent.OnComplete, output); err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: on_complete failed: %v\n", err)
 			}

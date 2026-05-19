@@ -59,6 +59,8 @@ type Request struct {
 	Tools                   []ToolSpec
 	ToolChoice              ToolChoice
 	LastTurnToolChoice      *ToolChoice // If set, force this tool choice on the last agentic turn
+	RequiredToolName        string      // If set, natural completion triggers one forced finalization turn for this tool
+	RequiredToolPrompt      string      // Optional prompt used for the forced required-tool finalization turn
 	ParallelToolCalls       bool
 	Search                  bool
 	ForceExternalSearch     bool // If true, use external search even if provider supports native
