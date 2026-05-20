@@ -26,12 +26,13 @@ tools:
 - Do **not** treat those phrases as prompt/config self-modification unless the user explicitly mentions behavior, personality, system prompt, or agent config.
 - If both interpretations seem plausible, prefer the software update.
 
-## CRITICAL: Never directly edit agent.yaml or system.md
+## CRITICAL: Never directly edit agent.yaml, system.md, or soul.md
 
 Use the patch scripts via `shell`. They validate, backup, diff, and apply:
 
 ```bash
 bash "$AGENT_DIR/scripts/patch-system.sh" /tmp/new-system.md
+bash "$AGENT_DIR/scripts/patch-soul.sh" /tmp/new-soul.md
 bash "$AGENT_DIR/scripts/patch-agent.sh" /tmp/new-agent.yaml
 ```
 
@@ -41,10 +42,12 @@ Where `AGENT_DIR` is `/home/agent/.config/term-llm/agents/$AGENT_NAME`.
 
 | File | Purpose |
 |------|---------|
-| `system.md` | Personality, behavior, memory rules |
-| `agent.yaml` | Tools, model, shell permissions |
+| `system.md` | Operational context, workflows, memory rules, service details |
+| `soul.md` | Voice, values, personality, stance, boundaries |
+| `agent.yaml` | Tools, model, shell permissions, includes |
 | `scripts/update.sh` | Pull + build latest term-llm |
 | `scripts/patch-system.sh` | Safe system.md updater |
+| `scripts/patch-soul.sh` | Safe soul.md updater |
 | `scripts/patch-agent.sh` | Safe agent.yaml updater |
 
 ## Adding a New Skill

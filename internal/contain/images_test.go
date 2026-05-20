@@ -47,7 +47,7 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 			t.Fatalf("Dockerfile.fedora missing %q", want)
 		}
 	}
-	for _, rel := range []string{"entrypoint.sh", "bootstrap/bootstrap.yaml", "bootstrap/system.md", "bootstrap/soul.md", "bootstrap/services/webui/run", "bootstrap/services/jobs/run", "bootstrap/services/bootstrap-jobs/run", "bootstrap/skills/memory/SKILL.md", "bootstrap/skills/jobs/SKILL.md", "bootstrap/skills/self/SKILL.md", "bootstrap/skills/widgets/SKILL.md", "bootstrap/memory/recent.md", "bootstrap/scripts/update.sh"} {
+	for _, rel := range []string{"entrypoint.sh", "bootstrap/bootstrap.yaml", "bootstrap/system.md", "bootstrap/soul.md", "bootstrap/services/webui/run", "bootstrap/services/jobs/run", "bootstrap/services/bootstrap-jobs/run", "bootstrap/skills/memory/SKILL.md", "bootstrap/skills/jobs/SKILL.md", "bootstrap/skills/self/SKILL.md", "bootstrap/skills/widgets/SKILL.md", "bootstrap/memory/recent.md", "bootstrap/scripts/update.sh", "bootstrap/scripts/patch-system.sh", "bootstrap/scripts/patch-soul.sh", "bootstrap/scripts/patch-agent.sh"} {
 		data, err := os.ReadFile(filepath.Join(result.Dir, rel))
 		if err != nil {
 			t.Fatalf("missing synced asset %s: %v", rel, err)
@@ -142,7 +142,7 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 					t.Fatalf("system prompt missing action discipline detail %q", want)
 				}
 			}
-			for _, want := range []string{"Do **not** edit `system.md` or `agent.yaml` directly", "use the self skill", "patch scripts described below"} {
+			for _, want := range []string{"Do **not** edit `system.md`, `soul.md`, or `agent.yaml` directly", "use the self skill", "patch scripts described below"} {
 				if !strings.Contains(string(data), want) {
 					t.Fatalf("system prompt missing self-modification guidance %q", want)
 				}
@@ -150,6 +150,11 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 			for _, forbidden := range []string{"Edit this file to add:", "Edit `soul.md` to change"} {
 				if strings.Contains(string(data), forbidden) {
 					t.Fatalf("system prompt still contains direct-edit guidance %q", forbidden)
+				}
+			}
+			for _, want := range []string{"## Soul and Identity", "/home/agent/.config/term-llm/agents/{{AGENT_NAME}}/soul.md", "agent.yaml` includes `soul.md`", "scripts/patch-soul.sh"} {
+				if !strings.Contains(string(data), want) {
+					t.Fatalf("system prompt missing soul guidance %q", want)
 				}
 			}
 			for _, want := range []string{"## Jobs and Services", "term-llm jobs list", "bootstrap-jobs", "runit", "memory/recent.md"} {
