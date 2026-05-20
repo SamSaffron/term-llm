@@ -652,7 +652,11 @@ func SetupSkills(cfg *config.SkillsConfig, skillsFlag string, agentSkills string
 		return nil
 	}
 
-	setup, err := skills.NewSetup(skillsCfg)
+	promptMetadataSuppressed := skills.CheckAgentsMdForSkills()
+	setup, err := skills.NewSetupWithOptions(skillsCfg, skills.SetupOptions{
+		PromptMetadataSuppressed:       promptMetadataSuppressed,
+		PromptMetadataSuppressionKnown: true,
+	})
 	if err != nil {
 		fmt.Fprintf(errWriter, "warning: skills initialization failed: %v\n", err)
 		return nil
@@ -707,7 +711,10 @@ func RegisterSkillToolWithEngine(engine *llm.Engine, toolMgr *tools.ToolManager,
 
 // InjectSkillsMetadata appends <available_skills> metadata to instructions when available.
 func InjectSkillsMetadata(instructions string, skillsSetup *skills.Setup) string {
-	if skillsSetup == nil || skills.CheckAgentsMdForSkills() {
+	if skillsSetup == nil {
+		return instructions
+	}
+	if suppressed, known := skillsSetup.PromptMetadataSuppressed(); suppressed || (!known && skills.CheckAgentsMdForSkills()) {
 		return instructions
 	}
 	if err := skillsSetup.EnsurePromptMetadata(); err != nil {

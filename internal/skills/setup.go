@@ -23,13 +23,36 @@ type Setup struct {
 	maxVisibleSkills     int
 	preloadedSkills      []*Skill // Primed startup catalog reused for first prompt metadata build
 
+	promptMetadataSuppressed       bool
+	promptMetadataSuppressionKnown bool
+
 	metadataOnce sync.Once
 	metadataErr  error
+}
+
+// SetupOptions controls optional startup behavior for NewSetupWithOptions.
+type SetupOptions struct {
+	// PromptMetadataSuppressed means the caller already has <available_skills>
+	// metadata from another source (for example AGENTS.md). In that case setup only
+	// verifies that at least one skill exists so activate_skill/search_skills can be
+	// registered, and skips the full prompt catalog preload.
+	PromptMetadataSuppressed bool
+
+	// PromptMetadataSuppressionKnown records whether PromptMetadataSuppressed came
+	// from an actual check. It lets callers avoid repeating the same AGENTS.md read
+	// before deciding whether to inject metadata.
+	PromptMetadataSuppressionKnown bool
 }
 
 // NewSetup initializes the skills system from config.
 // Returns nil if skills are disabled or no skills are available.
 func NewSetup(cfg *config.SkillsConfig) (*Setup, error) {
+	return NewSetupWithOptions(cfg, SetupOptions{})
+}
+
+// NewSetupWithOptions initializes the skills system from config.
+// Returns nil if skills are disabled or no skills are available.
+func NewSetupWithOptions(cfg *config.SkillsConfig, opts SetupOptions) (*Setup, error) {
 	if !cfg.Enabled {
 		return nil, nil
 	}
@@ -47,6 +70,30 @@ func NewSetup(cfg *config.SkillsConfig) (*Setup, error) {
 		return nil, err
 	}
 
+	setup := &Setup{
+		Registry:                       registry,
+		alwaysEnabled:                  append([]string(nil), cfg.AlwaysEnabled...),
+		metadataBudgetTokens:           cfg.MetadataBudgetTokens,
+		maxVisibleSkills:               cfg.MaxVisibleSkills,
+		promptMetadataSuppressed:       opts.PromptMetadataSuppressed,
+		promptMetadataSuppressionKnown: opts.PromptMetadataSuppressionKnown,
+	}
+
+	if opts.PromptMetadataSuppressed {
+		// AGENTS.md (or an equivalent caller-owned prompt) already carries skill
+		// metadata. Avoid parsing every SKILL.md just to have InjectSkillsMetadata
+		// immediately skip it; a cheap first-valid-skill probe is enough to decide
+		// whether the runtime skill tools should be registered.
+		hasAny, err := registry.HasAnySkill()
+		if err != nil {
+			return nil, err
+		}
+		if !hasAny {
+			return nil, nil
+		}
+		return setup, nil
+	}
+
 	// Prime the startup skill catalog once so prompt metadata generation can
 	// reuse it without rescanning and reparsing before the first prompt.
 	preloadedSkills, err := registry.List()
@@ -56,14 +103,9 @@ func NewSetup(cfg *config.SkillsConfig) (*Setup, error) {
 	if len(preloadedSkills) == 0 {
 		return nil, nil
 	}
+	setup.preloadedSkills = preloadedSkills
 
-	return &Setup{
-		Registry:             registry,
-		alwaysEnabled:        append([]string(nil), cfg.AlwaysEnabled...),
-		metadataBudgetTokens: cfg.MetadataBudgetTokens,
-		maxVisibleSkills:     cfg.MaxVisibleSkills,
-		preloadedSkills:      preloadedSkills,
-	}, nil
+	return setup, nil
 }
 
 // EnsurePromptMetadata loads and caches prompt-facing skill metadata on demand.
@@ -71,7 +113,7 @@ func (s *Setup) EnsurePromptMetadata() error {
 	if s == nil {
 		return nil
 	}
-	if s.XML != "" || s.Registry == nil {
+	if s.XML != "" || s.Registry == nil || s.promptMetadataSuppressed {
 		return nil
 	}
 
@@ -126,6 +168,15 @@ func (s *Setup) HasSkillsXML() bool {
 		return false
 	}
 	return s.XML != ""
+}
+
+// PromptMetadataSuppressed reports whether the caller already supplies skill
+// metadata and whether that decision came from a completed suppression check.
+func (s *Setup) PromptMetadataSuppressed() (suppressed bool, known bool) {
+	if s == nil {
+		return false, false
+	}
+	return s.promptMetadataSuppressed, s.promptMetadataSuppressionKnown
 }
 
 // CheckAgentsMdForSkills checks if AGENTS.md contains skill system markup.

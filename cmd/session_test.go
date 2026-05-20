@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -354,19 +355,19 @@ description: Demo skill
 		t.Fatal(err)
 	}
 
-	setup, err := skills.NewSetup(&config.SkillsConfig{
+	setup := SetupSkills(&config.SkillsConfig{
 		Enabled:               true,
 		AutoInvoke:            true,
 		MetadataBudgetTokens:  8000,
 		MaxVisibleSkills:      8,
 		IncludeProjectSkills:  true,
 		IncludeEcosystemPaths: false,
-	})
-	if err != nil {
-		t.Fatalf("NewSetup() error = %v", err)
-	}
+	}, "", "", io.Discard)
 	if setup == nil {
-		t.Fatal("NewSetup() = nil, want non-nil")
+		t.Fatal("SetupSkills() = nil, want non-nil")
+	}
+	if suppressed, known := setup.PromptMetadataSuppressed(); !known || !suppressed {
+		t.Fatalf("PromptMetadataSuppressed() = (%v, %v), want (true, true)", suppressed, known)
 	}
 
 	got := InjectSkillsMetadata("Base prompt", setup)
@@ -381,6 +382,65 @@ description: Demo skill
 	}
 	if setup.TotalSkills != 0 {
 		t.Fatalf("setup.TotalSkills = %d, want 0 because metadata discovery should be skipped", setup.TotalSkills)
+	}
+}
+
+func BenchmarkSetupSkillsWithAgentsMdSkillMarkup(b *testing.B) {
+	origWD, err := os.Getwd()
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(origWD) }()
+
+	tmp := b.TempDir()
+	if err := os.Mkdir(filepath.Join(tmp, ".git"), 0755); err != nil {
+		b.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "AGENTS.md"), []byte("<available_skills>managed elsewhere</available_skills>"), 0644); err != nil {
+		b.Fatal(err)
+	}
+	for i := 0; i < 500; i++ {
+		skillDir := filepath.Join(tmp, ".skills", fmt.Sprintf("skill-%03d", i))
+		if err := os.MkdirAll(skillDir, 0755); err != nil {
+			b.Fatal(err)
+		}
+		body := fmt.Sprintf(`---
+name: skill-%03d
+description: Skill number %03d
+---
+
+# Skill %03d
+`, i, i, i)
+		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(body), 0644); err != nil {
+			b.Fatal(err)
+		}
+	}
+	if err := os.Chdir(tmp); err != nil {
+		b.Fatal(err)
+	}
+	b.Setenv("HOME", tmp)
+	b.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, ".config"))
+	b.Setenv("CODEX_HOME", filepath.Join(tmp, ".codex"))
+
+	skillsCfg := &config.SkillsConfig{
+		Enabled:               true,
+		AutoInvoke:            true,
+		MetadataBudgetTokens:  8000,
+		MaxVisibleSkills:      50,
+		IncludeProjectSkills:  true,
+		IncludeEcosystemPaths: false,
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		setup := SetupSkills(skillsCfg, "", "", io.Discard)
+		if setup == nil {
+			b.Fatal("SetupSkills() = nil, want non-nil")
+		}
+		if got := InjectSkillsMetadata("Base prompt", setup); got != "Base prompt" {
+			b.Fatalf("InjectSkillsMetadata() = %q, want unchanged prompt", got)
+		}
 	}
 }
 
