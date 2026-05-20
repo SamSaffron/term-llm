@@ -122,16 +122,42 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
 );
 
 CREATE TABLE IF NOT EXISTS memory_embeddings (
-    fragment_id TEXT NOT NULL REFERENCES memory_fragments(id) ON DELETE CASCADE,
-    provider    TEXT NOT NULL,
-    model       TEXT NOT NULL,
-    dimensions  INTEGER NOT NULL,
-    vector      BLOB NOT NULL,
-    embedded_at DATETIME NOT NULL,
+    fragment_id         TEXT NOT NULL REFERENCES memory_fragments(id) ON DELETE CASCADE,
+    provider            TEXT NOT NULL,
+    model               TEXT NOT NULL,
+    dimensions          INTEGER NOT NULL,
+    vector              BLOB NOT NULL,
+    search_prefix_0     REAL NOT NULL DEFAULT 0,
+    search_prefix_1     REAL NOT NULL DEFAULT 0,
+    search_prefix_2     REAL NOT NULL DEFAULT 0,
+    search_prefix_3     REAL NOT NULL DEFAULT 0,
+    search_prefix_4     REAL NOT NULL DEFAULT 0,
+    search_prefix_5     REAL NOT NULL DEFAULT 0,
+    search_prefix_6     REAL NOT NULL DEFAULT 0,
+    search_prefix_7     REAL NOT NULL DEFAULT 0,
+    search_tail_norm    REAL NOT NULL DEFAULT -1,
+    search_vector_norm  REAL NOT NULL DEFAULT -1,
+    embedded_at         DATETIME NOT NULL,
     PRIMARY KEY (fragment_id, provider, model)
 );
 
 CREATE INDEX IF NOT EXISTS idx_memory_embeddings_provider_model_dimensions ON memory_embeddings(provider, model, dimensions);
+CREATE INDEX IF NOT EXISTS idx_memory_embeddings_vector_search_cover ON memory_embeddings(
+    provider,
+    model,
+    dimensions,
+    fragment_id,
+    search_vector_norm,
+    search_tail_norm,
+    search_prefix_0,
+    search_prefix_1,
+    search_prefix_2,
+    search_prefix_3,
+    search_prefix_4,
+    search_prefix_5,
+    search_prefix_6,
+    search_prefix_7
+);
 
 CREATE TABLE IF NOT EXISTS memory_mining_state (
     session_id         TEXT PRIMARY KEY,
@@ -229,6 +255,9 @@ func NewStore(cfg Config) (*Store, error) {
 	}
 
 	dsn := dbPath
+	if dbPath == ":memory:" {
+		dsn = fmt.Sprintf("file:term-llm-memory-%d?mode=memory&cache=shared", time.Now().UnixNano())
+	}
 	if strings.Contains(dsn, "?") {
 		dsn += "&"
 	} else {
@@ -259,6 +288,16 @@ func initSchema(db *sql.DB) error {
 	// we suppress that specific error so initSchema is safe to run on any DB.
 	migrations := []string{
 		`ALTER TABLE memory_insights ADD COLUMN compact_content TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE memory_embeddings ADD COLUMN search_prefix_0 REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE memory_embeddings ADD COLUMN search_prefix_1 REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE memory_embeddings ADD COLUMN search_prefix_2 REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE memory_embeddings ADD COLUMN search_prefix_3 REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE memory_embeddings ADD COLUMN search_prefix_4 REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE memory_embeddings ADD COLUMN search_prefix_5 REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE memory_embeddings ADD COLUMN search_prefix_6 REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE memory_embeddings ADD COLUMN search_prefix_7 REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE memory_embeddings ADD COLUMN search_tail_norm REAL NOT NULL DEFAULT -1`,
+		`ALTER TABLE memory_embeddings ADD COLUMN search_vector_norm REAL NOT NULL DEFAULT -1`,
 	}
 	for _, m := range migrations {
 		if _, err := db.Exec(m); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
@@ -973,6 +1012,38 @@ func parseBinaryEmbeddingVectorHeader(payload []byte) (dims, offset int, err err
 	return dims, headerLen, nil
 }
 
+const (
+	vectorSearchPrefixDims     = 8
+	vectorSearchExactBatchSize = 128
+	vectorSearchUpperBoundEps  = 1e-9
+)
+
+type embeddingSearchSummary struct {
+	prefix     [vectorSearchPrefixDims]float64
+	tailNorm   float64
+	vectorNorm float64
+}
+
+func summarizeEmbeddingSearchVector(vec []float64) embeddingSearchSummary {
+	var s embeddingSearchSummary
+	var tailNormSq float64
+	for i, v := range vec {
+		s.vectorNorm += v * v
+		if i < vectorSearchPrefixDims {
+			s.prefix[i] = v
+		} else {
+			tailNormSq += v * v
+		}
+	}
+	if s.vectorNorm > 0 {
+		s.vectorNorm = math.Sqrt(s.vectorNorm)
+	}
+	if tailNormSq > 0 {
+		s.tailNorm = math.Sqrt(tailNormSq)
+	}
+	return s
+}
+
 func cosineSimilarityPayload(queryVec []float64, payload []byte) (float64, error) {
 	if hasEmbeddingVectorBinaryMagic(payload) {
 		return cosineSimilarityBinaryPayload(queryVec, payload)
@@ -1035,15 +1106,58 @@ func (s *Store) UpsertEmbedding(ctx context.Context, fragmentID, provider, model
 	}
 
 	payload := encodeEmbeddingVector(vec)
+	summary := summarizeEmbeddingSearchVector(vec)
 
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO memory_embeddings(fragment_id, provider, model, dimensions, vector, embedded_at)
-		VALUES(?, ?, ?, ?, ?, ?)
+		INSERT INTO memory_embeddings(
+			fragment_id,
+			provider,
+			model,
+			dimensions,
+			vector,
+			search_prefix_0,
+			search_prefix_1,
+			search_prefix_2,
+			search_prefix_3,
+			search_prefix_4,
+			search_prefix_5,
+			search_prefix_6,
+			search_prefix_7,
+			search_tail_norm,
+			search_vector_norm,
+			embedded_at
+		)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(fragment_id, provider, model) DO UPDATE SET
 			dimensions = excluded.dimensions,
 			vector = excluded.vector,
+			search_prefix_0 = excluded.search_prefix_0,
+			search_prefix_1 = excluded.search_prefix_1,
+			search_prefix_2 = excluded.search_prefix_2,
+			search_prefix_3 = excluded.search_prefix_3,
+			search_prefix_4 = excluded.search_prefix_4,
+			search_prefix_5 = excluded.search_prefix_5,
+			search_prefix_6 = excluded.search_prefix_6,
+			search_prefix_7 = excluded.search_prefix_7,
+			search_tail_norm = excluded.search_tail_norm,
+			search_vector_norm = excluded.search_vector_norm,
 			embedded_at = excluded.embedded_at`,
-		fragmentID, provider, model, dims, payload, time.Now())
+		fragmentID,
+		provider,
+		model,
+		dims,
+		payload,
+		summary.prefix[0],
+		summary.prefix[1],
+		summary.prefix[2],
+		summary.prefix[3],
+		summary.prefix[4],
+		summary.prefix[5],
+		summary.prefix[6],
+		summary.prefix[7],
+		summary.tailNorm,
+		summary.vectorNorm,
+		time.Now())
 	if err != nil {
 		return fmt.Errorf("upsert embedding: %w", err)
 	}
@@ -1144,6 +1258,91 @@ func (s *Store) GetEmbeddingsByIDs(ctx context.Context, fragmentIDs []string, pr
 	return out, nil
 }
 
+type embeddingSearchBackfillRow struct {
+	rowID   int64
+	summary embeddingSearchSummary
+}
+
+func (s *Store) backfillVectorSearchColumns(ctx context.Context, provider, model string, dimensions int) error {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT rowid, vector
+		FROM memory_embeddings
+		WHERE provider = ? AND model = ? AND dimensions = ? AND search_vector_norm < 0`,
+		provider, model, dimensions)
+	if err != nil {
+		return fmt.Errorf("query pending vector search metadata: %w", err)
+	}
+	defer rows.Close()
+
+	var pending []embeddingSearchBackfillRow
+	for rows.Next() {
+		var row embeddingSearchBackfillRow
+		var payload sql.RawBytes
+		if err := rows.Scan(&row.rowID, &payload); err != nil {
+			return fmt.Errorf("scan pending vector search metadata: %w", err)
+		}
+		vec, err := decodeEmbeddingVector(payload)
+		if err != nil {
+			return fmt.Errorf("decode pending vector search vector row %d: %w", row.rowID, err)
+		}
+		row.summary = summarizeEmbeddingSearchVector(vec)
+		pending = append(pending, row)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin vector search metadata backfill: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx, `
+		UPDATE memory_embeddings
+		SET search_prefix_0 = ?,
+		    search_prefix_1 = ?,
+		    search_prefix_2 = ?,
+		    search_prefix_3 = ?,
+		    search_prefix_4 = ?,
+		    search_prefix_5 = ?,
+		    search_prefix_6 = ?,
+		    search_prefix_7 = ?,
+		    search_tail_norm = ?,
+		    search_vector_norm = ?
+		WHERE rowid = ?`)
+	if err != nil {
+		return fmt.Errorf("prepare vector search metadata backfill: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, row := range pending {
+		if _, err := stmt.ExecContext(ctx,
+			row.summary.prefix[0],
+			row.summary.prefix[1],
+			row.summary.prefix[2],
+			row.summary.prefix[3],
+			row.summary.prefix[4],
+			row.summary.prefix[5],
+			row.summary.prefix[6],
+			row.summary.prefix[7],
+			row.summary.tailNorm,
+			row.summary.vectorNorm,
+			row.rowID,
+		); err != nil {
+			return fmt.Errorf("update vector search metadata row %d: %w", row.rowID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit vector search metadata backfill: %w", err)
+	}
+	return nil
+}
+
 // GetFragmentsNeedingEmbedding returns fragments missing an embedding row for provider+model.
 func (s *Store) GetFragmentsNeedingEmbedding(ctx context.Context, agent, provider, model string) ([]Fragment, error) {
 	provider = strings.TrimSpace(provider)
@@ -1182,12 +1381,25 @@ func (s *Store) GetFragmentsNeedingEmbedding(ctx context.Context, agent, provide
 
 const vectorSearchSQL = `
 		SELECT e.fragment_id,
-		       f.updated_at,
-		       e.vector
+		       ((? * e.search_prefix_0) +
+		        (? * e.search_prefix_1) +
+		        (? * e.search_prefix_2) +
+		        (? * e.search_prefix_3) +
+		        (? * e.search_prefix_4) +
+		        (? * e.search_prefix_5) +
+		        (? * e.search_prefix_6) +
+		        (? * e.search_prefix_7) +
+		        (? * e.search_tail_norm)) /
+		       CASE
+		         WHEN e.search_vector_norm > 0 THEN e.search_vector_norm
+		         ELSE 1
+		       END AS upper_bound
 		FROM memory_embeddings e
 		JOIN memory_fragments f ON f.id = e.fragment_id
 		WHERE e.provider = ? AND e.model = ? AND e.dimensions = ?
-		  AND (? = '' OR f.agent = ?)`
+		  AND e.search_vector_norm >= 0
+		  AND (? = '' OR f.agent = ?)
+		ORDER BY upper_bound DESC, f.updated_at DESC`
 
 type vectorSearchCandidate struct {
 	id        string
@@ -1214,13 +1426,82 @@ func (h *vectorSearchCandidateHeap) Pop() any {
 	return item
 }
 
-// VectorSearch performs a cosine similarity scan over embeddings matching provider, model, and dimensions.
+func buildVectorSearchBatchSQL(ids []string) string {
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	return fmt.Sprintf(`
+		SELECT e.fragment_id,
+		       f.updated_at,
+		       e.vector
+		FROM memory_embeddings e
+		JOIN memory_fragments f ON f.id = e.fragment_id
+		WHERE e.provider = ? AND e.model = ? AND e.dimensions = ?
+		  AND e.fragment_id IN (%s)`, placeholders)
+}
+
+func (s *Store) scoreVectorSearchBatch(ctx context.Context, provider, model string, dimensions int, queryVec []float64, ids []string, limit int, top *vectorSearchCandidateHeap) error {
+	if len(ids) == 0 {
+		return nil
+	}
+
+	query := buildVectorSearchBatchSQL(ids)
+	args := make([]any, 0, len(ids)+3)
+	args = append(args, provider, model, dimensions)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("query exact vector search batch: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var c vectorSearchCandidate
+		var payload sql.RawBytes
+		if err := rows.Scan(&c.id, &c.updatedAt, &payload); err != nil {
+			return fmt.Errorf("scan exact vector search row: %w", err)
+		}
+
+		score, err := cosineSimilarityPayload(queryVec, payload)
+		if err != nil {
+			return fmt.Errorf("score stored vector for fragment %s: %w", c.id, err)
+		}
+		c.score = score
+
+		if top.Len() < limit {
+			c.vector, err = decodeEmbeddingVector(payload)
+			if err != nil {
+				return fmt.Errorf("decode stored vector for fragment %s: %w", c.id, err)
+			}
+			heap.Push(top, c)
+			continue
+		}
+
+		if vectorSearchCandidateBetter(c, (*top)[0]) {
+			c.vector, err = decodeEmbeddingVector(payload)
+			if err != nil {
+				return fmt.Errorf("decode stored vector for fragment %s: %w", c.id, err)
+			}
+			(*top)[0] = c
+			heap.Fix(top, 0)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// VectorSearch performs an exact cosine similarity search while using SQL-side
+// prefix/tail upper bounds to avoid loading every embedding blob into Go.
 func (s *Store) VectorSearch(ctx context.Context, agent, provider, model string, queryVec []float64, limit int) ([]ScoredFragment, error) {
 	if len(queryVec) == 0 {
 		return nil, fmt.Errorf("query vector cannot be empty")
 	}
 	provider = strings.TrimSpace(provider)
 	model = strings.TrimSpace(model)
+	agent = strings.TrimSpace(agent)
 	if provider == "" || model == "" {
 		return nil, fmt.Errorf("provider and model are required")
 	}
@@ -1228,51 +1509,66 @@ func (s *Store) VectorSearch(ctx context.Context, agent, provider, model string,
 		limit = 24
 	}
 
+	if err := s.backfillVectorSearchColumns(ctx, provider, model, len(queryVec)); err != nil {
+		return nil, err
+	}
+
+	querySummary := summarizeEmbeddingSearchVector(queryVec)
 	rows, err := s.db.QueryContext(ctx, vectorSearchSQL,
-		provider, model, len(queryVec), strings.TrimSpace(agent), strings.TrimSpace(agent))
+		querySummary.prefix[0],
+		querySummary.prefix[1],
+		querySummary.prefix[2],
+		querySummary.prefix[3],
+		querySummary.prefix[4],
+		querySummary.prefix[5],
+		querySummary.prefix[6],
+		querySummary.prefix[7],
+		querySummary.tailNorm,
+		provider,
+		model,
+		len(queryVec),
+		agent,
+		agent,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("vector search query: %w", err)
 	}
 	defer rows.Close()
 
-	// Keep only the best candidates while scanning. The previous implementation
-	// selected every fragment column (including large content bodies), retained a
-	// ScoredFragment for every embedding, sorted the full slice, and then sliced
-	// to limit. Memory search normally asks for the top 24 candidates, so fetch
-	// heavyweight fragment rows only for those winners after scoring.
 	top := make(vectorSearchCandidateHeap, 0, limit)
+	pending := make([]string, 0, vectorSearchExactBatchSize)
+	flushPending := func() error {
+		if len(pending) == 0 {
+			return nil
+		}
+		if err := s.scoreVectorSearchBatch(ctx, provider, model, len(queryVec), queryVec, pending, limit, &top); err != nil {
+			return err
+		}
+		pending = pending[:0]
+		return nil
+	}
+
 	for rows.Next() {
-		var c vectorSearchCandidate
-		var payload sql.RawBytes
-		if err := rows.Scan(&c.id, &c.updatedAt, &payload); err != nil {
-			return nil, fmt.Errorf("scan vector search row: %w", err)
+		var id string
+		var upperBound float64
+		if err := rows.Scan(&id, &upperBound); err != nil {
+			return nil, fmt.Errorf("scan vector search candidate: %w", err)
+		}
+		if top.Len() >= limit && upperBound+vectorSearchUpperBoundEps < top[0].score {
+			break
 		}
 
-		score, err := cosineSimilarityPayload(queryVec, payload)
-		if err != nil {
-			return nil, fmt.Errorf("score stored vector for fragment %s: %w", c.id, err)
-		}
-		c.score = score
-
-		if top.Len() < limit {
-			c.vector, err = decodeEmbeddingVector(payload)
-			if err != nil {
-				return nil, fmt.Errorf("decode stored vector for fragment %s: %w", c.id, err)
+		pending = append(pending, id)
+		if len(pending) >= vectorSearchExactBatchSize {
+			if err := flushPending(); err != nil {
+				return nil, err
 			}
-			heap.Push(&top, c)
-			continue
-		}
-
-		if vectorSearchCandidateBetter(c, top[0]) {
-			c.vector, err = decodeEmbeddingVector(payload)
-			if err != nil {
-				return nil, fmt.Errorf("decode stored vector for fragment %s: %w", c.id, err)
-			}
-			top[0] = c
-			heap.Fix(&top, 0)
 		}
 	}
 	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := flushPending(); err != nil {
 		return nil, err
 	}
 	if len(top) == 0 {

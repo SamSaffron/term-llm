@@ -654,6 +654,8 @@ func TestStoreVectorSearchUsesProviderModelDimensionsIndex(t *testing.T) {
 	defer store.Close()
 
 	rows, err := store.db.Query("EXPLAIN QUERY PLAN "+vectorSearchSQL,
+		1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+		0.0,
 		"gemini", "gemini-embedding-001", 4, "jarvis", "jarvis")
 	if err != nil {
 		t.Fatalf("EXPLAIN QUERY PLAN error = %v", err)
@@ -674,8 +676,8 @@ func TestStoreVectorSearchUsesProviderModelDimensionsIndex(t *testing.T) {
 	}
 
 	plan := strings.Join(details, "\n")
-	if !strings.Contains(plan, "idx_memory_embeddings_provider_model_dimensions") {
-		t.Fatalf("VectorSearch query plan does not use provider/model/dimensions index:\n%s", plan)
+	if !strings.Contains(plan, "idx_memory_embeddings_vector_search_cover") {
+		t.Fatalf("VectorSearch query plan does not use vector search covering index:\n%s", plan)
 	}
 }
 
