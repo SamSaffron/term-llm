@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/contain"
@@ -161,7 +162,7 @@ var containExecCmd = &cobra.Command{
 	Long:               "Run a command in a contain workspace service. Host PRIMARY selection proxying is disabled by default; set TERM_LLM_ENABLE_PRIMARY_SELECTION_PROXY=1 to opt in for trusted interactive commands.",
 	DisableFlagParsing: true,
 	Args:               requireContainNameArgAllowCommand,
-	ValidArgsFunction:  containWorkspaceNameCompletion,
+	ValidArgsFunction:  containExecArgCompletion,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cmdArgs := args[1:]
 		return contain.Exec(cmd.Context(), containRunner, args[0], cmdArgs, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
@@ -278,6 +279,44 @@ func containWorkspaceNameCompletion(cmd *cobra.Command, args []string, toComplet
 	return completions, cobra.ShellCompDirectiveNoFileComp
 }
 
+func containExecArgCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if len(args) == 0 {
+		return containWorkspaceNameCompletion(cmd, args, toComplete)
+	}
+	if len(args) > 1 || args[0] == "--" {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	return containExecRecipeCompletion(args[0], toComplete), cobra.ShellCompDirectiveNoFileComp
+}
+
+func containExecRecipeCompletion(name, toComplete string) []string {
+	composePath, err := contain.ComposePath(name)
+	if err != nil {
+		return nil
+	}
+	info, err := contain.ReadComposeInfo(composePath)
+	if err != nil || info.Invalid || len(info.Hints.ExecRecipes) == 0 {
+		return nil
+	}
+	recipeNames := make([]string, 0, len(info.Hints.ExecRecipes))
+	for recipeName := range info.Hints.ExecRecipes {
+		if strings.HasPrefix(recipeName, toComplete) {
+			recipeNames = append(recipeNames, recipeName)
+		}
+	}
+	sort.Strings(recipeNames)
+	completions := make([]string, 0, len(recipeNames))
+	for _, recipeName := range recipeNames {
+		recipe := info.Hints.ExecRecipes[recipeName]
+		desc := strings.TrimSpace(recipe.Description)
+		if desc == "" {
+			desc = "exec recipe"
+		}
+		completions = append(completions, recipeName+"\t"+desc)
+	}
+	return completions
+}
+
 func containWorkspaceCompletionDescription(entry contain.ListEntry) string {
 	if entry.Status == "invalid" {
 		return "invalid compose.yaml"
@@ -356,6 +395,7 @@ func printContainNextSteps(cmd *cobra.Command, name string, started bool) {
 	}
 	if hasContainExecRecipe(name, "agent") {
 		fmt.Fprintf(cmd.OutOrStdout(), "  Chat with agent: term-llm contain exec %s agent\n", name)
+		fmt.Fprintf(cmd.OutOrStdout(), "  Tip: use the agent exec recipe with prompts: term-llm contain exec %s agent <prompt>\n", name)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "  Open shell: term-llm contain shell %s\n", name)
 	fmt.Fprintf(cmd.OutOrStdout(), "  Run command/recipe: term-llm contain exec %s <cmd-or-recipe> [args...]\n", name)

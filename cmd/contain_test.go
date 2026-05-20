@@ -419,6 +419,65 @@ services:
 	}
 }
 
+func TestContainExecRecipeCompletion(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir, err := contain.ContainerDir("anton")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	compose := `x-term-llm:
+  default_service: app
+  exec_recipes:
+    agent:
+      description: Chat with agent
+      command: [term-llm, chat, "@anton"]
+    test:
+      command: [go, test, ./...]
+services:
+  app:
+    image: alpine
+`
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte(compose), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	comps, directive := containExecArgCompletion(containExecCmd, []string{"anton"}, "a")
+	if directive != cobra.ShellCompDirectiveNoFileComp {
+		t.Fatalf("directive = %v", directive)
+	}
+	joined := strings.Join(comps, "\n")
+	if !strings.Contains(joined, "agent\tChat with agent") || strings.Contains(joined, "test") {
+		t.Fatalf("recipe completions = %#v", comps)
+	}
+}
+
+func TestContainExecFirstArgCompletesWorkspaces(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if _, err := contain.CreateWorkspace("anton", contain.CreateOptions{Template: "basic", CWD: t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+	comps, directive := containExecArgCompletion(containExecCmd, nil, "an")
+	if directive != cobra.ShellCompDirectiveNoFileComp {
+		t.Fatalf("directive = %v", directive)
+	}
+	if joined := strings.Join(comps, "\n"); !strings.Contains(joined, "anton") {
+		t.Fatalf("workspace completions = %#v", comps)
+	}
+}
+
+func TestContainExecRecipeCompletionStopsAfterRecipe(t *testing.T) {
+	comps, directive := containExecArgCompletion(containExecCmd, []string{"anton", "agent"}, "")
+	if directive != cobra.ShellCompDirectiveNoFileComp {
+		t.Fatalf("directive = %v", directive)
+	}
+	if len(comps) != 0 {
+		t.Fatalf("expected no completions after recipe, got %#v", comps)
+	}
+}
+
 func TestContainNewAgentPrintsNextStepsLastWithWebUI(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	containNewTemplate = "agent"
@@ -431,6 +490,9 @@ func TestContainNewAgentPrintsNextStepsLastWithWebUI(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "Chat with agent: term-llm contain exec tipbox agent") {
 		t.Fatalf("stdout missing recipe tip: %q", stdout)
+	}
+	if !strings.Contains(stdout, "Tip: use the agent exec recipe with prompts: term-llm contain exec tipbox agent <prompt>") {
+		t.Fatalf("stdout missing explicit agent recipe tip: %q", stdout)
 	}
 	if !strings.Contains(stdout, "Force raw command if a recipe collides: term-llm contain exec tipbox -- <cmd...>") {
 		t.Fatalf("stdout missing raw override tip: %q", stdout)
