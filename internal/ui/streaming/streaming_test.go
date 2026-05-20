@@ -105,6 +105,25 @@ func (w *nonResettableWriter) String() string {
 	return w.builder.String()
 }
 
+func TestNormalizeNewlinesNoopReusesInput(t *testing.T) {
+	input := []byte("one\n\ntwo\nthree")
+	got := normalizeNewlines(input)
+	if string(got) != string(input) {
+		t.Fatalf("normalizeNewlines changed no-op input: got %q want %q", got, input)
+	}
+	if &got[0] != &input[0] {
+		t.Fatalf("normalizeNewlines should reuse no-op input backing array")
+	}
+}
+
+func TestNormalizeNewlinesCollapsesRuns(t *testing.T) {
+	got := normalizeNewlines([]byte("one\n\n\ntwo\n\n\n\nthree"))
+	want := "one\n\ntwo\n\nthree"
+	if string(got) != want {
+		t.Fatalf("normalizeNewlines() = %q, want %q", got, want)
+	}
+}
+
 // assertChunkingInvariant verifies that chunked output matches full output.
 func assertChunkingInvariant(t *testing.T, name, input string) {
 	t.Helper()

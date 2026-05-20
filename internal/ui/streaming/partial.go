@@ -119,10 +119,9 @@ func (sr *StreamRenderer) renderPartial(content string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	rendered := string(renderedBytes)
-
 	// Normalize consecutive newlines to fix inconsistent header spacing
-	rendered = string(normalizeNewlines([]byte(rendered)))
+	renderedBytes = normalizeNewlines(renderedBytes)
+	rendered := string(renderedBytes)
 
 	// Strip trailing newlines from partial render since we'll re-render later
 	rendered = strings.TrimRight(rendered, "\n")
