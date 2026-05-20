@@ -21,6 +21,22 @@ type fakeMemoryAgentFragmentStore struct {
 	getByKey  map[string]map[string]memorydb.Fragment
 }
 
+type memoryMiningSeekSpyStore struct {
+	session.Store
+	getMessagesCalls     int
+	getMessagesFromCalls []int
+}
+
+func (s *memoryMiningSeekSpyStore) GetMessages(ctx context.Context, sessionID string, limit, offset int) ([]session.Message, error) {
+	s.getMessagesCalls++
+	return s.Store.GetMessages(ctx, sessionID, limit, offset)
+}
+
+func (s *memoryMiningSeekSpyStore) GetMessagesFrom(ctx context.Context, sessionID string, fromSeq int) ([]session.Message, error) {
+	s.getMessagesFromCalls = append(s.getMessagesFromCalls, fromSeq)
+	return s.Store.GetMessagesFrom(ctx, sessionID, fromSeq)
+}
+
 func (s *fakeMemoryAgentFragmentStore) ListFragments(ctx context.Context, opts memorydb.ListOptions) ([]memorydb.Fragment, error) {
 	s.listCalls++
 	fragments := s.listByKey[strings.TrimSpace(opts.Agent)]
@@ -349,6 +365,68 @@ func TestBuildTaxonomyMap_RespectsBudget(t *testing.T) {
 	}
 	if !strings.Contains(got, "total_fragments") {
 		t.Fatalf("taxonomy map missing summary: %s", got)
+	}
+}
+
+func TestLoadMessagesForMining_UsesSequenceSeekInsteadOfOffsetPagination(t *testing.T) {
+	ctx := context.Background()
+	sessStore, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer sessStore.Close()
+
+	sess := &session.Session{
+		ID:        session.NewID(),
+		Provider:  "test",
+		Model:     "test-model",
+		Mode:      session.ModeChat,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := sessStore.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	for i := 0; i < 5; i++ {
+		msg := session.NewMessage(sess.ID, llm.UserText("message body"), -1)
+		if err := sessStore.AddMessage(ctx, sess.ID, msg); err != nil {
+			t.Fatalf("AddMessage(%d): %v", i, err)
+		}
+	}
+
+	oldPromptMax := memoryMinePromptMaxTokens
+	oldBatchSize := memoryMineBatchSize
+	oldMaxMessages := memoryMineMaxMessages
+	memoryMinePromptMaxTokens = 10_000
+	memoryMineBatchSize = 2
+	memoryMineMaxMessages = 0
+	t.Cleanup(func() {
+		memoryMinePromptMaxTokens = oldPromptMax
+		memoryMineBatchSize = oldBatchSize
+		memoryMineMaxMessages = oldMaxMessages
+	})
+
+	candidate := memoryMineCandidate{
+		Summary: session.SessionSummary{Number: 1},
+		Session: sess,
+		Agent:   "jarvis",
+	}
+	spyStore := &memoryMiningSeekSpyStore{Store: sessStore}
+	loadResult, err := loadMessagesForMining(ctx, spyStore, candidate, 2, "Memory fragment map:\n- total_fragments: 0")
+	if err != nil {
+		t.Fatalf("loadMessagesForMining: %v", err)
+	}
+	if spyStore.getMessagesCalls != 0 {
+		t.Fatalf("GetMessages calls = %d, want 0", spyStore.getMessagesCalls)
+	}
+	if len(spyStore.getMessagesFromCalls) != 1 || spyStore.getMessagesFromCalls[0] != 2 {
+		t.Fatalf("GetMessagesFrom calls = %v, want [2]", spyStore.getMessagesFromCalls)
+	}
+	if loadResult.NextOffset != 5 {
+		t.Fatalf("nextOffset = %d, want 5", loadResult.NextOffset)
+	}
+	if len(loadResult.Messages) != 3 {
+		t.Fatalf("messages loaded = %d, want 3", len(loadResult.Messages))
 	}
 }
 

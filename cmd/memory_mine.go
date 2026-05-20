@@ -623,21 +623,24 @@ func loadMessagesForMining(ctx context.Context, store session.Store, candidate m
 	all := make([]session.Message, 0, memoryMineBatchSize)
 	result := memoryMineLoadResult{}
 
-	for {
+	// Mine from the last processed sequence so SQLite can seek on the
+	// (session_id, sequence) index instead of repeatedly rescanning with OFFSET.
+	msgs, err := store.GetMessagesFrom(ctx, candidate.Session.ID, offset)
+	if err != nil {
+		return result, err
+	}
+
+	for start := 0; start < len(msgs); {
 		limit := memoryMineBatchSize
 		if remaining > 0 && remaining < limit {
 			limit = remaining
 		}
-
-		msgs, err := store.GetMessages(ctx, candidate.Session.ID, limit, currentOffset)
-		if err != nil {
-			return result, err
+		if limit <= 0 || limit > len(msgs)-start {
+			limit = len(msgs) - start
 		}
-		if len(msgs) == 0 {
-			break
-		}
+		batch := msgs[start : start+limit]
 
-		for _, msg := range msgs {
+		for _, msg := range batch {
 			candidateMessages := append(cloneMessages(all), msg)
 			nextOffset := currentOffset + 1
 			fit, ok := fitMessagesForPromptBudget(candidate, offset, nextOffset, candidateMessages, taxonomyMap)
@@ -666,9 +669,7 @@ func loadMessagesForMining(ctx context.Context, store session.Store, candidate m
 			}
 		}
 
-		if len(msgs) < limit {
-			break
-		}
+		start += len(batch)
 	}
 
 	result.Messages = all
