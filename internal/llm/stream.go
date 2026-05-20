@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync"
 )
 
 // eventSender provides safe event sending for stream producers.
@@ -73,12 +74,22 @@ func safeSendEvent(ctx context.Context, ch chan<- Event, event Event) (sent bool
 type channelStream struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
+	cancelHook  func()
+	closeOnce   sync.Once
 	events      <-chan Event
 	terminalErr <-chan error
 	done        <-chan struct{}
 }
 
 func newEventStream(ctx context.Context, run func(context.Context, eventSender) error) Stream {
+	return newEventStreamWithCancelHook(ctx, nil, run)
+}
+
+// newEventStreamWithCancelHook is like newEventStream, with an extra hook
+// invoked by Close after canceling the stream context. Providers that create
+// blocking resources before the stream goroutine (for example, an HTTP response
+// body whose request used the parent context) can use the hook to unblock reads.
+func newEventStreamWithCancelHook(ctx context.Context, cancelHook func(), run func(context.Context, eventSender) error) Stream {
 	streamCtx, cancel := context.WithCancel(ctx)
 	ch := make(chan Event, 16)
 	terminalErr := make(chan error, 1)
@@ -86,7 +97,7 @@ func newEventStream(ctx context.Context, run func(context.Context, eventSender) 
 	go func() {
 		defer close(done)
 		sender := eventSender{ctx: streamCtx, ch: ch}
-		if err := run(streamCtx, sender); err != nil {
+		if err := run(streamCtx, sender); err != nil && streamCtx.Err() == nil {
 			// If the consumer has stopped draining and the buffer is full, preserve the
 			// terminal error for Recv() rather than dropping it and reporting clean EOF.
 			select {
@@ -98,7 +109,7 @@ func newEventStream(ctx context.Context, run func(context.Context, eventSender) 
 		close(terminalErr)
 		close(ch)
 	}()
-	return &channelStream{ctx: streamCtx, cancel: cancel, events: ch, terminalErr: terminalErr, done: done}
+	return &channelStream{ctx: streamCtx, cancel: cancel, cancelHook: cancelHook, events: ch, terminalErr: terminalErr, done: done}
 }
 
 func (s *channelStream) Recv() (Event, error) {
@@ -131,7 +142,12 @@ func (s *channelStream) Recv() (Event, error) {
 }
 
 func (s *channelStream) Close() error {
-	s.cancel()
+	s.closeOnce.Do(func() {
+		s.cancel()
+		if s.cancelHook != nil {
+			s.cancelHook()
+		}
+	})
 	<-s.done
 	return nil
 }

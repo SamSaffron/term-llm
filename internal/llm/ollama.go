@@ -340,7 +340,7 @@ func (p *OllamaProvider) Stream(ctx context.Context, req Request) (Stream, error
 		return nil, fmt.Errorf("Ollama API error (status %d): %s", resp.StatusCode, string(raw))
 	}
 
-	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
+	return newEventStreamWithCancelHook(ctx, func() { _ = resp.Body.Close() }, func(ctx context.Context, send eventSender) error {
 		defer resp.Body.Close()
 
 		scanner := bufio.NewScanner(resp.Body)

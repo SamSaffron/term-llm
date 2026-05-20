@@ -227,6 +227,79 @@ func TestOpenAICompatStream_HandlesMultiLineErrorEvent(t *testing.T) {
 	t.Fatal("expected EventError")
 }
 
+func TestOpenAICompatStream_CloseUnblocksPendingRead(t *testing.T) {
+	origClient := defaultHTTPClient
+	defer func() { defaultHTTPClient = origClient }()
+
+	chunk, err := json.Marshal(oaiChatResponse{
+		Choices: []oaiChoice{{
+			Delta: &oaiMessage{Content: "hello"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal chunk: %v", err)
+	}
+
+	bodyReader, bodyWriter := io.Pipe()
+	defer bodyReader.Close()
+	defer bodyWriter.Close()
+	defaultHTTPClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       bodyReader,
+				Request:    req,
+			}, nil
+		}),
+	}
+
+	provider := NewOpenAICompatProvider("https://example.test/v1", "", "test-model", "Test")
+	stream, err := provider.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+
+	sseChunk := append(append([]byte("data: "), chunk...), []byte("\n\n")...)
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := bodyWriter.Write(sseChunk)
+		writeDone <- err
+	}()
+
+	event, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("recv first event: %v", err)
+	}
+	if event.Type != EventTextDelta || event.Text != "hello" {
+		t.Fatalf("first event = %+v, want text delta %q", event, "hello")
+	}
+
+	select {
+	case err := <-writeDone:
+		if err != nil {
+			t.Fatalf("write initial SSE chunk: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stream goroutine did not consume the initial SSE chunk")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- stream.Close()
+	}()
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("stream.Close() error = %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("stream.Close() blocked while the provider goroutine was waiting for more SSE bytes")
+	}
+}
+
 func TestOpenAICompatStream_CloseDoesNotHangWhenConsumerStopsReceiving(t *testing.T) {
 	chunk, err := json.Marshal(oaiChatResponse{
 		Choices: []oaiChoice{{

@@ -873,7 +873,7 @@ func (c *ResponsesClient) streamHTTPPrepared(ctx context.Context, httpPayload Re
 	client := c
 
 	// Create async stream for successful response
-	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
+	return newEventStreamWithCancelHook(ctx, func() { _ = resp.Body.Close() }, func(ctx context.Context, send eventSender) error {
 		defer resp.Body.Close()
 
 		reader := bufio.NewReader(resp.Body)

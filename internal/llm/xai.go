@@ -119,7 +119,7 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 		return nil, fmt.Errorf("xAI API error (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
+	return newEventStreamWithCancelHook(ctx, func() { _ = resp.Body.Close() }, func(ctx context.Context, send eventSender) error {
 		defer resp.Body.Close()
 
 		reader := bufio.NewReader(resp.Body)
@@ -275,7 +275,7 @@ func (p *XAIProvider) streamWithSearch(ctx context.Context, req Request) (Stream
 		return nil, fmt.Errorf("xAI Responses API error (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
+	return newEventStreamWithCancelHook(ctx, func() { _ = resp.Body.Close() }, func(ctx context.Context, send eventSender) error {
 		defer resp.Body.Close()
 
 		reader := bufio.NewReader(resp.Body)
