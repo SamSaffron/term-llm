@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -240,7 +241,12 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 			case "input_text", "text", "output_text":
 				text := jsonString(part["text"])
 				if text != "" {
-					llmParts = append(llmParts, llm.Part{Type: llm.PartText, Text: text})
+					textParts, attachments, err := buildPartsFromTextWithLocalImages(text, maxAttachments-fileCount)
+					if err != nil {
+						return llm.Message{}, err
+					}
+					fileCount += attachments
+					llmParts = append(llmParts, textParts...)
 				}
 			case "input_image", "image_url":
 				imageURL := jsonImageURL(part["image_url"])
@@ -266,28 +272,11 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 					if err != nil {
 						return llm.Message{}, fmt.Errorf("decode attachment %q: %w", filename, err)
 					}
-					path, err := saveUploadedBytes(filename, raw)
+					part, err := imagePartFromBytes(filename, mt, b64, raw)
 					if err != nil {
 						return llm.Message{}, fmt.Errorf("save attachment %q: %w", filename, err)
 					}
-
-					sendB64 := b64
-					sendMT := mt
-					if len(raw) > maxLLMImageBytes {
-						// Resize only the inline payload sent to the model. Keep ImagePath
-						// pointing at the original upload so tools can inspect high-res data.
-						resized, resMT := resizeImageForLLM(raw, mt)
-						if len(resized) != len(raw) || resMT != mt {
-							sendB64 = base64.StdEncoding.EncodeToString(resized)
-							sendMT = resMT
-						}
-					}
-
-					llmParts = append(llmParts, llm.Part{
-						Type:      llm.PartImage,
-						ImageData: &llm.ToolImageData{MediaType: sendMT, Base64: sendB64},
-						ImagePath: path,
-					})
+					llmParts = append(llmParts, part)
 				} else {
 					fileCount++
 					if fileCount > maxAttachments {
@@ -336,7 +325,188 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 			return llm.Message{Role: llm.RoleUser, Parts: llmParts}, nil
 		}
 	}
-	return llm.UserText(extractItemContent(content)), nil
+	text := extractItemContent(content)
+	if parts, _, err := buildPartsFromTextWithLocalImages(text, maxAttachments); err != nil {
+		return llm.Message{}, err
+	} else if len(parts) > 0 {
+		return llm.Message{Role: llm.RoleUser, Parts: parts}, nil
+	}
+	return llm.UserText(text), nil
+}
+
+func imagePartFromBytes(filename, mediaType, b64 string, raw []byte) (llm.Part, error) {
+	path, err := saveUploadedBytes(filename, raw)
+	if err != nil {
+		return llm.Part{}, err
+	}
+
+	sendB64 := stripBase64Newlines(b64)
+	sendMT := mediaType
+	if len(raw) > maxLLMImageBytes {
+		// Resize only the inline payload sent to the model. Keep ImagePath
+		// pointing at the original upload so tools can inspect high-res data.
+		resized, resMT := resizeImageForLLM(raw, mediaType)
+		if len(resized) != len(raw) || resMT != mediaType {
+			sendB64 = base64.StdEncoding.EncodeToString(resized)
+			sendMT = resMT
+		}
+	}
+
+	return llm.Part{
+		Type:      llm.PartImage,
+		ImageData: &llm.ToolImageData{MediaType: sendMT, Base64: sendB64},
+		ImagePath: path,
+	}, nil
+}
+
+func buildPartsFromTextWithLocalImages(text string, remainingAttachments int) ([]llm.Part, int, error) {
+	if text == "" {
+		return nil, 0, nil
+	}
+	candidates := extractLocalImagePathCandidates(text)
+	if len(candidates) == 0 {
+		return []llm.Part{{Type: llm.PartText, Text: text}}, 0, nil
+	}
+
+	parts := []llm.Part{{Type: llm.PartText, Text: text}}
+	attached := 0
+	for _, path := range candidates {
+		part, ok, err := localImagePathPart(path)
+		if err != nil {
+			return nil, 0, err
+		}
+		if !ok {
+			continue
+		}
+		attached++
+		if attached > remainingAttachments {
+			return nil, 0, fmt.Errorf("too many attachments (max %d)", maxAttachments)
+		}
+		parts = append(parts, part)
+	}
+	return parts, attached, nil
+}
+
+func localImagePathPart(path string) (llm.Part, bool, error) {
+	path = expandHomePath(strings.TrimSpace(path))
+	if path == "" || !filepath.IsAbs(path) || !looksLikeImagePath(path) {
+		return llm.Part{}, false, nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		if looksLikeMacScreenshotTempPath(path) {
+			return llm.Part{}, false, fmt.Errorf("local image path %q is no longer available or cannot be read; macOS TemporaryItems screenshots are short-lived, so paste/drop the image or save it somewhere stable", path)
+		}
+		return llm.Part{}, false, nil
+	}
+	if info.IsDir() {
+		return llm.Part{}, false, nil
+	}
+	if info.Size() > maxAttachmentBytes {
+		return llm.Part{}, false, fmt.Errorf("file %q exceeds %d MB limit", filepath.Base(path), maxAttachmentBytes>>20)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return llm.Part{}, false, fmt.Errorf("read local image %q: %w", path, err)
+	}
+	mediaType := detectImageMediaType(path, raw)
+	if !isLLMImageType(mediaType) {
+		return llm.Part{}, false, nil
+	}
+	part, err := imagePartFromBytes(filepath.Base(path), mediaType, base64.StdEncoding.EncodeToString(raw), raw)
+	if err != nil {
+		return llm.Part{}, false, fmt.Errorf("save local image %q: %w", path, err)
+	}
+	return part, true, nil
+}
+
+func detectImageMediaType(path string, raw []byte) string {
+	if len(raw) > 0 {
+		if mt := http.DetectContentType(raw); isLLMImageType(mt) {
+			return mt
+		}
+	}
+	return strings.TrimSpace(strings.Split(mime.TypeByExtension(filepath.Ext(path)), ";")[0])
+}
+
+func looksLikeImagePath(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".jpg", ".jpeg", ".png", ".gif", ".webp":
+		return true
+	default:
+		return false
+	}
+}
+
+func looksLikeMacScreenshotTempPath(path string) bool {
+	return (strings.HasPrefix(path, "/var/folders/") || strings.HasPrefix(path, "/private/var/folders/")) &&
+		strings.Contains(path, "/TemporaryItems/NSIRD_screencaptureui_") &&
+		looksLikeImagePath(path)
+}
+
+func expandHomePath(path string) string {
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			return filepath.Join(home, strings.TrimPrefix(path, "~/"))
+		}
+	}
+	return path
+}
+
+func extractLocalImagePathCandidates(text string) []string {
+	seen := map[string]bool{}
+	var paths []string
+	add := func(candidate string) {
+		candidate = strings.TrimSpace(candidate)
+		candidate = strings.Trim(candidate, "<>.,;:)]}")
+		if candidate == "" || seen[candidate] {
+			return
+		}
+		seen[candidate] = true
+		paths = append(paths, candidate)
+	}
+
+	for _, candidate := range quotedStrings(text) {
+		add(candidate)
+	}
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "/") || strings.HasPrefix(trimmed, "~/") {
+			add(trimmed)
+		}
+	}
+	for _, field := range strings.FieldsFunc(text, unicode.IsSpace) {
+		if strings.HasPrefix(field, "/") || strings.HasPrefix(field, "~/") {
+			add(field)
+		}
+	}
+	return paths
+}
+
+func quotedStrings(text string) []string {
+	var out []string
+	for i := 0; i < len(text); i++ {
+		quote := text[i]
+		if quote != '\'' && quote != '"' && quote != '`' {
+			continue
+		}
+		start := i + 1
+		var b strings.Builder
+		for j := start; j < len(text); j++ {
+			if text[j] == '\\' && quote != '`' && j+1 < len(text) {
+				j++
+				b.WriteByte(text[j])
+				continue
+			}
+			if text[j] == quote {
+				out = append(out, b.String())
+				i = j
+				break
+			}
+			b.WriteByte(text[j])
+		}
+	}
+	return out
 }
 
 func jsonImageURL(raw json.RawMessage) string {

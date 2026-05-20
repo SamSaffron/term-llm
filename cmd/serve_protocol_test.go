@@ -113,6 +113,106 @@ func TestDecodeUploadedFile_RejectsOversizedPayloadBeforeDecode(t *testing.T) {
 	}
 }
 
+func TestParseUserMessageContent_MaterializesQuotedLocalImagePath(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+
+	dir := t.TempDir()
+	imagePath := filepath.Join(dir, "Screenshot 2026-05-20 at 9.34.41 AM.png")
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(onePixelPNGDataURL, "data:image/png;base64,"))
+	if err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+	if err := os.WriteFile(imagePath, raw, 0o644); err != nil {
+		t.Fatalf("write image: %v", err)
+	}
+	content, err := json.Marshal("please inspect '" + imagePath + "'")
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	msg, err := parseUserMessageContent(content)
+	if err != nil {
+		t.Fatalf("parseUserMessageContent() error = %v", err)
+	}
+	if len(msg.Parts) != 2 {
+		t.Fatalf("len(msg.Parts) = %d, want text + image", len(msg.Parts))
+	}
+	if msg.Parts[0].Type != "text" || !strings.Contains(msg.Parts[0].Text, imagePath) {
+		t.Fatalf("first part = %#v, want original text", msg.Parts[0])
+	}
+	imagePart := msg.Parts[1]
+	if imagePart.Type != "image" {
+		t.Fatalf("second part type = %q, want image", imagePart.Type)
+	}
+	if imagePart.ImagePath == "" {
+		t.Fatal("ImagePath is empty, want saved upload path")
+	}
+	if imagePart.ImagePath == imagePath {
+		t.Fatalf("ImagePath = original temp path, want durable upload copy")
+	}
+	if !strings.HasPrefix(imagePart.ImagePath, filepath.Join(dataHome, "term-llm", "uploads")) {
+		t.Fatalf("ImagePath = %q, want uploads dir", imagePart.ImagePath)
+	}
+	saved, err := os.ReadFile(imagePart.ImagePath)
+	if err != nil {
+		t.Fatalf("read saved image: %v", err)
+	}
+	if !bytes.Equal(saved, raw) {
+		t.Fatalf("saved image differs from original")
+	}
+	if imagePart.ImageData == nil || imagePart.ImageData.MediaType != "image/png" || imagePart.ImageData.Base64 == "" {
+		t.Fatalf("ImageData = %#v, want inline png", imagePart.ImageData)
+	}
+}
+
+func TestParseUserMessageContent_MaterializesLocalImagePathFromTextPart(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	dir := t.TempDir()
+	imagePath := filepath.Join(dir, "sketch.png")
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(onePixelPNGDataURL, "data:image/png;base64,"))
+	if err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+	if err := os.WriteFile(imagePath, raw, 0o644); err != nil {
+		t.Fatalf("write image: %v", err)
+	}
+	content, err := json.Marshal([]map[string]any{{
+		"type": "input_text",
+		"text": "look at `" + imagePath + "`",
+	}})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	msg, err := parseUserMessageContent(content)
+	if err != nil {
+		t.Fatalf("parseUserMessageContent() error = %v", err)
+	}
+	if len(msg.Parts) != 2 || msg.Parts[1].Type != "image" {
+		t.Fatalf("parts = %#v, want text + image", msg.Parts)
+	}
+}
+
+func TestParseUserMessageContent_MissingMacScreenshotTempPathReturnsHelpfulError(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	missing := "/var/folders/xs/rx6d6bjn0zg3611tvc777w0r0000gn/T/TemporaryItems/NSIRD_screencaptureui_7QZXtY/Screenshot 2026-05-20 at 9.34.41 AM.png"
+	content, err := json.Marshal("please inspect '" + missing + "'")
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	_, err = parseUserMessageContent(content)
+	if err == nil {
+		t.Fatal("parseUserMessageContent() error = nil, want missing temp screenshot error")
+	}
+	if !strings.Contains(err.Error(), "no longer available") || !strings.Contains(err.Error(), "TemporaryItems") {
+		t.Fatalf("parseUserMessageContent() error = %v, want helpful TemporaryItems error", err)
+	}
+}
+
 func TestParseUserMessageContent_InlineImagesAreSavedToUploadsDir(t *testing.T) {
 	dataHome := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", dataHome)
