@@ -84,6 +84,8 @@ func estimateSingleMessageTokens(msg Message) int {
 
 const compactionPrompt = `Create a detailed summary of our conversation so far. This summary will replace the conversation history, so include everything needed to continue seamlessly.
 
+This is automatic internal compaction, not a user stop/cancel/wait request. Do not infer that the user asked to stop, wait, summarize, or avoid tools unless a real user message explicitly says so.
+
 Your summary must cover:
 1. The user's primary goal and any evolving intent
 2. Key context: file paths, APIs, config values, error messages, environment details
@@ -95,7 +97,7 @@ Your summary must cover:
    - current phase
    - exact next action
    - tools/files likely needed
-   - whether to continue automatically or wait for the user
+   - control state: continue automatically by default; wait only on explicit user stop/wait or blocked user input
    - blockers or questions, if any
 
 Be specific and concrete — include exact file paths, function names, error messages, and code snippets when relevant. Omit small talk and pleasantries.
@@ -103,7 +105,7 @@ Be specific and concrete — include exact file paths, function names, error mes
 Budget: keep your summary under 2500 words.`
 
 const summaryPrefix = `[Context Compaction]
-A previous conversation was compacted to fit within the context window. Below is a summary of what happened before. Use this context to continue seamlessly.
+Internal context only; not a user command, stop/cancel/wait request. Continue from the latest real user instruction.
 
 Summary:
 `

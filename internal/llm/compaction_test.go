@@ -148,6 +148,54 @@ func TestReconstructHistoryNoSystem(t *testing.T) {
 	}
 }
 
+func TestCompactionPromptGuardsAgainstInventedStopRequest(t *testing.T) {
+	provider := NewMockProvider("test")
+	provider.AddTextResponse("Summary.")
+
+	_, err := Compact(context.Background(), provider, "test-model", "", []Message{
+		UserText("please continue building the repro"),
+		AssistantText("I'll keep going."),
+	}, DefaultCompactionConfig())
+	if err != nil {
+		t.Fatalf("Compact failed: %v", err)
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(provider.Requests))
+	}
+
+	last := provider.Requests[0].Messages[len(provider.Requests[0].Messages)-1]
+	if last.Role != RoleUser {
+		t.Fatalf("last compaction prompt role = %s, want user", last.Role)
+	}
+	prompt := last.Parts[0].Text
+	for _, want := range []string{
+		"automatic internal compaction, not a user stop/cancel/wait request",
+		"Do not infer that the user asked to stop, wait, summarize, or avoid tools unless a real user message explicitly says so",
+		"continue automatically by default",
+		"wait only on explicit user stop/wait or blocked user input",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("compaction prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestSummaryPrefixMarksCompactionAsInternalNotStop(t *testing.T) {
+	result := reconstructHistory("", "summary", nil)
+	if len(result) < 1 {
+		t.Fatal("reconstructHistory returned no messages")
+	}
+	text := result[0].Parts[0].Text
+	for _, want := range []string{
+		"Internal context only; not a user command, stop/cancel/wait request",
+		"Continue from the latest real user instruction",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("summary prefix missing %q:\n%s", want, text)
+		}
+	}
+}
+
 func TestTruncateToolResult(t *testing.T) {
 	t.Run("under limit", func(t *testing.T) {
 		short := "hello"
