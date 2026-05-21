@@ -29,6 +29,7 @@ const (
 	ProviderTypeOpenAICompat ProviderType = "openai_compatible"
 	ProviderTypeXAI          ProviderType = "xai"
 	ProviderTypeVenice       ProviderType = "venice"
+	ProviderTypeNearAI       ProviderType = "nearai"
 	ProviderTypeSambaNova    ProviderType = "sambanova"
 	ProviderTypeBedrock      ProviderType = "bedrock"
 	ProviderTypeOllama       ProviderType = "ollama"
@@ -47,6 +48,7 @@ var builtInProviderTypes = map[string]ProviderType{
 	"claude-bin": ProviderTypeClaudeBin,
 	"xai":        ProviderTypeXAI,
 	"venice":     ProviderTypeVenice,
+	"nearai":     ProviderTypeNearAI,
 	"sambanova":  ProviderTypeSambaNova,
 	"bedrock":    ProviderTypeBedrock,
 	"ollama":     ProviderTypeOllama,
@@ -905,6 +907,12 @@ func resolveProviderCredentials(name string, cfg *ProviderConfig) error {
 			cfg.ResolvedAPIKey = os.Getenv("VENICE_API_KEY")
 		}
 
+	case ProviderTypeNearAI:
+		cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
+		if cfg.ResolvedAPIKey == "" {
+			cfg.ResolvedAPIKey = os.Getenv("NEARAI_API_KEY")
+		}
+
 	case ProviderTypeSambaNova:
 		cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
 		if cfg.ResolvedAPIKey == "" {
@@ -1051,6 +1059,8 @@ func DescribeCredentialSource(name string, cfg *ProviderConfig) (string, bool) {
 		return describeEnvKeyCredential(cfg, "XAI_API_KEY")
 	case ProviderTypeVenice:
 		return describeEnvKeyCredential(cfg, "VENICE_API_KEY")
+	case ProviderTypeNearAI:
+		return describeEnvKeyCredential(cfg, "NEARAI_API_KEY")
 	case ProviderTypeSambaNova:
 		return describeEnvKeyCredential(cfg, "SAMBANOVA_API_KEY")
 	case ProviderTypeClaudeBin:
@@ -1601,6 +1611,8 @@ func GetDefaults() map[string]any {
 		"providers.xai.fast_model":        "grok-3-mini-fast",
 		"providers.venice.model":          "venice-uncensored",
 		"providers.venice.fast_model":     "llama-3.2-3b",
+		"providers.nearai.model":          "zai-org/GLM-5.1-FP8",
+		"providers.nearai.fast_model":     "Qwen/Qwen3.6-35B-A3B-FP8",
 		"providers.sambanova.model":       "gpt-oss-120b",
 		"providers.sambanova.fast_model":  "Meta-Llama-3.3-70B-Instruct",
 		"providers.openrouter.model":      "x-ai/grok-code-fast-1",

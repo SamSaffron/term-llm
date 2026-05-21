@@ -9,7 +9,7 @@ next:
   label: Usage guide
   url: /guides/usage/
 ---
-On first run, term-llm will prompt you to choose a provider (Anthropic, AWS Bedrock, OpenAI, ChatGPT, GitHub Copilot, xAI, Venice, SambaNova, OpenRouter, Gemini, Gemini CLI, Zen, Claude Code (claude-bin), Ollama, or LM Studio).
+On first run, term-llm will prompt you to choose a provider (Anthropic, AWS Bedrock, OpenAI, ChatGPT, GitHub Copilot, xAI, Venice, NEAR AI Cloud, SambaNova, OpenRouter, Gemini, Gemini CLI, Zen, Claude Code (claude-bin), Ollama, or LM Studio).
 
 ### Option 1: Try it free with Zen
 
@@ -46,6 +46,9 @@ export XAI_API_KEY=your-key
 
 # For Venice
 export VENICE_API_KEY=your-key
+
+# For NEAR AI Cloud
+export NEARAI_API_KEY=your-key
 
 # For SambaNova Cloud
 export SAMBANOVA_API_KEY=your-key
@@ -142,7 +145,29 @@ term-llm ask --provider venice:qwen3-coder-480b-a35b-instruct "review this code"
 term-llm models --provider venice
 ```
 
-### Option 6: Use SambaNova Cloud
+### Option 6: Use NEAR AI Cloud
+
+[NEAR AI Cloud](https://cloud.near.ai) provides OpenAI-compatible TEE-backed private inference. Set `NEARAI_API_KEY` or put `api_key` under `providers.nearai`.
+
+```yaml
+# In ~/.config/term-llm/config.yaml
+default_provider: nearai
+
+providers:
+  nearai:
+    model: zai-org/GLM-5.1-FP8
+    fast_model: Qwen/Qwen3.6-35B-A3B-FP8
+```
+
+```bash
+term-llm ask --provider nearai "explain trusted execution environments"
+term-llm ask --provider nearai:Qwen/Qwen3.6-35B-A3B-FP8 "summarize this repository"
+term-llm models --provider nearai
+```
+
+`term-llm models --provider nearai` queries NEAR AI Cloud's public model catalog and shows chat-capable models with context windows and token prices when available.
+
+### Option 7: Use SambaNova Cloud
 
 [SambaNova Cloud](https://cloud.sambanova.ai/) provides fast OpenAI-compatible hosted inference on RDU hardware. Set `SAMBANOVA_API_KEY` or put `api_key` under `providers.sambanova`.
 
@@ -164,7 +189,7 @@ term-llm models --provider sambanova
 
 `term-llm models --provider sambanova` shows known SambaNova token prices when available. The bundled pricing table is synced from SambaNova's public pricing page.
 
-### Option 7: Use OpenRouter
+### Option 8: Use OpenRouter
 
 [OpenRouter](https://openrouter.ai) provides a unified OpenAI-compatible API across many models. term-llm sends attribution headers by default.
 
@@ -186,6 +211,7 @@ List available models from any supported provider:
 ```bash
 term-llm models --provider anthropic  # List Anthropic models
 term-llm models --provider openrouter # List OpenRouter models
+term-llm models --provider nearai     # List NEAR AI Cloud models
 term-llm models --provider sambanova  # List SambaNova models
 term-llm models --provider ollama     # List local Ollama models
 term-llm models --provider lmstudio   # List local LM Studio models
@@ -204,7 +230,7 @@ term-llm providers anthropic       # Show details for specific provider
 term-llm providers --json          # JSON output
 ```
 
-### Option 7: Use AWS Bedrock
+### Option 9: Use AWS Bedrock
 
 [AWS Bedrock](https://aws.amazon.com/bedrock/) provides access to Anthropic Claude models through your AWS account. This is useful for organizations that route AI usage through AWS billing, need VPC/PrivateLink access, or use application inference profiles for rate/cost management.
 
@@ -285,7 +311,7 @@ You can also pass raw Bedrock model IDs directly (e.g., `us.anthropic.claude-son
 | `model_map` | Map of friendly names to Bedrock model IDs or ARNs. |
 | `model` | Default model (friendly name, Bedrock ID, or ARN). |
 
-### Option 8: Use local LLMs (Ollama, LM Studio)
+### Option 10: Use local LLMs (Ollama, LM Studio)
 
 Run models locally with [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai):
 
@@ -354,7 +380,7 @@ providers:
 
 See [Providers and models](/reference/providers-and-models/#configuration-reference) for the full list of OpenAI-compatible provider options.
 
-### Option 9: Use Claude Code (claude-bin)
+### Option 11: Use Claude Code (claude-bin)
 
 If you have [Claude Code](https://claude.ai/code) installed and logged in, you can use the `claude-bin` provider to run completions via the [Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk). This requires no API key - it uses Claude Code's existing authentication.
 
@@ -394,7 +420,7 @@ providers:
 - `providers.<name>.env` values support the same deferred resolution as other config values, including `file://...#json.path`, `op://...`, and `$()`
 - Works immediately if Claude Code is installed and logged in
 
-### Option 10: Use existing CLI credentials (gemini-cli)
+### Option 12: Use existing CLI credentials (gemini-cli)
 
 If you have [gemini-cli](https://github.com/google-gemini/gemini-cli) installed and logged in, term-llm can use those credentials directly:
 
@@ -416,7 +442,7 @@ OpenAI-compatible providers support two URL options:
 
 Use `url` when your endpoint doesn't follow the standard `/chat/completions` path, or to paste URLs directly from API documentation.
 
-### Option 11: Use GitHub Copilot
+### Option 13: Use GitHub Copilot
 
 If you have [GitHub Copilot](https://github.com/features/copilot) (free, Individual, or Business), you can use the `copilot` provider with OAuth device flow authentication:
 

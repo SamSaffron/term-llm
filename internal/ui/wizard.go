@@ -71,6 +71,12 @@ func detectAvailableProviders() []providerOption {
 			hint:      "set VENICE_API_KEY",
 		},
 		{
+			name:      "NEAR AI Cloud - NEARAI_API_KEY",
+			value:     "nearai",
+			available: os.Getenv("NEARAI_API_KEY") != "",
+			hint:      "set NEARAI_API_KEY",
+		},
+		{
 			name:      "SambaNova - SAMBANOVA_API_KEY",
 			value:     "sambanova",
 			available: os.Getenv("SAMBANOVA_API_KEY") != "",
@@ -238,6 +244,7 @@ func RunHeadlessSetup() (*config.Config, error) {
 			"codeassist": {Model: "gemini-3.1-pro"},
 			"xai":        {Model: "grok-4-20"},
 			"venice":     {Model: "minimax-m27"},
+			"nearai":     {Model: "zai-org/GLM-5.1-FP8"},
 			"sambanova":  {Model: "gpt-oss-120b"},
 			"zen":        {Model: "minimax-m2.5-free"},
 		},
@@ -425,6 +432,9 @@ func RunSetupWizard() (*config.Config, error) {
 			},
 			"venice": {
 				Model: "venice-uncensored",
+			},
+			"nearai": {
+				Model: "zai-org/GLM-5.1-FP8",
 			},
 			"sambanova": {
 				Model: "gpt-oss-120b",

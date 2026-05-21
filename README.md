@@ -53,7 +53,7 @@ If you already have a provider key:
 
 ```bash
 export ANTHROPIC_API_KEY=your-key
-# or OPENAI_API_KEY / GEMINI_API_KEY / OPENROUTER_API_KEY / XAI_API_KEY / SAMBANOVA_API_KEY
+# or OPENAI_API_KEY / GEMINI_API_KEY / OPENROUTER_API_KEY / XAI_API_KEY / NEARAI_API_KEY / SAMBANOVA_API_KEY
 ```
 
 ## Read the docs

@@ -111,6 +111,13 @@ func NewProviderByName(cfg *config.Config, name string, model string) (Provider,
 			}
 			provider := NewVeniceProvider(apiKey, model)
 			return WrapWithRetry(provider, DefaultRetryConfig()), nil
+		case config.ProviderTypeNearAI:
+			apiKey := strings.TrimSpace(os.Getenv("NEARAI_API_KEY"))
+			if apiKey == "" {
+				return nil, fmt.Errorf("provider %q requires NEARAI_API_KEY or explicit config", name)
+			}
+			provider := NewNearAIProvider(apiKey, model)
+			return WrapWithRetry(provider, DefaultRetryConfig()), nil
 		case config.ProviderTypeSambaNova:
 			apiKey := strings.TrimSpace(os.Getenv("SAMBANOVA_API_KEY"))
 			if apiKey == "" {
@@ -244,6 +251,12 @@ func newProviderInternal(cfg *config.Config) (Provider, error) {
 				return nil, fmt.Errorf("provider %q requires VENICE_API_KEY environment variable or explicit config", cfg.DefaultProvider)
 			}
 			return NewVeniceProvider(apiKey, ""), nil
+		case config.ProviderTypeNearAI:
+			apiKey := strings.TrimSpace(os.Getenv("NEARAI_API_KEY"))
+			if apiKey == "" {
+				return nil, fmt.Errorf("provider %q requires NEARAI_API_KEY environment variable or explicit config", cfg.DefaultProvider)
+			}
+			return NewNearAIProvider(apiKey, ""), nil
 		case config.ProviderTypeSambaNova:
 			apiKey := strings.TrimSpace(os.Getenv("SAMBANOVA_API_KEY"))
 			if apiKey == "" {
@@ -345,6 +358,16 @@ func createProviderFromConfig(name string, cfg *config.ProviderConfig) (Provider
 			return nil, fmt.Errorf("provider %q requires VENICE_API_KEY or explicit config", name)
 		}
 		return NewVeniceProvider(apiKey, cfg.Model), nil
+
+	case config.ProviderTypeNearAI:
+		apiKey := strings.TrimSpace(cfg.ResolvedAPIKey)
+		if apiKey == "" {
+			apiKey = strings.TrimSpace(os.Getenv("NEARAI_API_KEY"))
+		}
+		if apiKey == "" {
+			return nil, fmt.Errorf("provider %q requires NEARAI_API_KEY or explicit config", name)
+		}
+		return NewNearAIProvider(apiKey, cfg.Model), nil
 
 	case config.ProviderTypeSambaNova:
 		apiKey := strings.TrimSpace(cfg.ResolvedAPIKey)

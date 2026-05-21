@@ -317,6 +317,7 @@ func TestInferProviderType(t *testing.T) {
 		{"openai", "", ProviderTypeOpenAI},
 		{"gemini", "", ProviderTypeGemini},
 		{"openrouter", "", ProviderTypeOpenRouter},
+		{"nearai", "", ProviderTypeNearAI},
 		{"zen", "", ProviderTypeZen},
 		{"cerebras", "", ProviderTypeOpenAICompat},
 		{"groq", "", ProviderTypeOpenAICompat},
@@ -469,6 +470,22 @@ func TestGetDefaultsIncludeSambaNovaProviderModel(t *testing.T) {
 	}
 }
 
+func TestGetDefaultsIncludeNearAIProviderModel(t *testing.T) {
+	defaults := GetDefaults()
+
+	got, ok := defaults["providers.nearai.model"].(string)
+	if !ok || got != "zai-org/GLM-5.1-FP8" {
+		t.Fatalf("providers.nearai.model = %v, want zai-org/GLM-5.1-FP8", defaults["providers.nearai.model"])
+	}
+	fast, ok := defaults["providers.nearai.fast_model"].(string)
+	if !ok || fast != "Qwen/Qwen3.6-35B-A3B-FP8" {
+		t.Fatalf("providers.nearai.fast_model = %v, want Qwen/Qwen3.6-35B-A3B-FP8", defaults["providers.nearai.fast_model"])
+	}
+	if !IsKnownKey("providers.nearai.model") {
+		t.Fatal("providers.nearai.model should be a known key")
+	}
+}
+
 func TestDescribeCredentialSource_SambaNova(t *testing.T) {
 	t.Setenv("SAMBANOVA_API_KEY", "sn-env-key")
 
@@ -479,6 +496,19 @@ func TestDescribeCredentialSource_SambaNova(t *testing.T) {
 	}
 	if !strings.Contains(source, "SAMBANOVA_API_KEY") {
 		t.Fatalf("source = %q, want SAMBANOVA_API_KEY", source)
+	}
+}
+
+func TestDescribeCredentialSource_NearAI(t *testing.T) {
+	t.Setenv("NEARAI_API_KEY", "near-env-key")
+
+	cfg := &ProviderConfig{}
+	source, found := DescribeCredentialSource("nearai", cfg)
+	if !found {
+		t.Fatal("expected credential source")
+	}
+	if !strings.Contains(source, "NEARAI_API_KEY") {
+		t.Fatalf("source = %q, want NEARAI_API_KEY", source)
 	}
 }
 

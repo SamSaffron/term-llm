@@ -33,7 +33,7 @@ If you already use a provider directly, export its API key first:
 
 ```bash
 export ANTHROPIC_API_KEY=your-key
-# or OPENAI_API_KEY / GEMINI_API_KEY / OPENROUTER_API_KEY / XAI_API_KEY / SAMBANOVA_API_KEY
+# or OPENAI_API_KEY / GEMINI_API_KEY / OPENROUTER_API_KEY / XAI_API_KEY / NEARAI_API_KEY / SAMBANOVA_API_KEY
 ```
 
 ## Try the core modes

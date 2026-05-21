@@ -35,6 +35,18 @@ func TestProviderFastModelsUseLatestGPT54LightweightModels(t *testing.T) {
 	}
 }
 
+func TestProviderModelsIncludeNearAICloudDefaults(t *testing.T) {
+	if !containsModelID(ProviderModelIDs("nearai"), "zai-org/GLM-5.1-FP8") {
+		t.Fatalf("nearai models missing zai-org/GLM-5.1-FP8")
+	}
+	if got := ProviderFastModels["nearai"]; got != "Qwen/Qwen3.6-35B-A3B-FP8" {
+		t.Fatalf("ProviderFastModels[nearai] = %q, want Qwen/Qwen3.6-35B-A3B-FP8", got)
+	}
+	if input, output, ok := PricingForProviderModel("nearai", "zai-org/GLM-5.1-FP8"); !ok || input != 0.85 || output != 3.30 {
+		t.Fatalf("NEAR AI GLM pricing = %g/%g ok=%t, want 0.85/3.30 true", input, output, ok)
+	}
+}
+
 func TestProviderModelIDs(t *testing.T) {
 	ids := ProviderModelIDs("anthropic")
 	if len(ids) == 0 {

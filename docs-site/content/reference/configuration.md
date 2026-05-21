@@ -53,6 +53,10 @@ providers:
   xai:
     model: grok-4-1-fast
 
+  nearai:
+    model: zai-org/GLM-5.1-FP8
+    fast_model: Qwen/Qwen3.6-35B-A3B-FP8
+
   sambanova:
     model: gpt-oss-120b
     fast_model: Meta-Llama-3.3-70B-Instruct

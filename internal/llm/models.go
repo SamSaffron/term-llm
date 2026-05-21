@@ -276,6 +276,16 @@ var ProviderModels = map[string][]ModelEntry{
 		{ID: "nvidia-nemotron-3-nano-30b-a3b", InputLimit: 128_000, OutputLimit: 16_384},
 		{ID: "nvidia-nemotron-cascade-2-30b-a3b", InputLimit: 256_000, OutputLimit: 32_768},
 	},
+	"nearai": {
+		// TEE-hosted text models synced from NEAR AI Cloud /model/list on 2026-05-21.
+		// Run `term-llm models --provider nearai` for the full live catalog.
+		{ID: "zai-org/GLM-5.1-FP8", InputLimit: 202_752},
+		{ID: "Qwen/Qwen3.6-35B-A3B-FP8", InputLimit: 262_144},
+		{ID: "Qwen/Qwen3-VL-30B-A3B-Instruct", InputLimit: 256_000},
+		{ID: "Qwen/Qwen3-30B-A3B-Instruct-2507", InputLimit: 262_144},
+		{ID: "openai/gpt-oss-120b", InputLimit: 131_000},
+		{ID: "google/gemma-4-31B-it", InputLimit: 262_144},
+	},
 	"sambanova": {
 		// SambaCloud-hosted models on RDU. Limits/prices synced from:
 		// https://docs.sambanova.ai/docs/en/models/sambacloud-models
@@ -299,6 +309,15 @@ type modelPricing struct {
 }
 
 var providerModelPricing = map[string]map[string]modelPricing{
+	"nearai": {
+		// Synced from https://cloud-api.near.ai/v1/model/list on 2026-05-21.
+		"zai-org/GLM-5.1-FP8":              {InputPrice: 0.85, OutputPrice: 3.30},
+		"Qwen/Qwen3.6-35B-A3B-FP8":         {InputPrice: 0.17, OutputPrice: 1.10},
+		"Qwen/Qwen3-VL-30B-A3B-Instruct":   {InputPrice: 0.15, OutputPrice: 0.55},
+		"Qwen/Qwen3-30B-A3B-Instruct-2507": {InputPrice: 0.15, OutputPrice: 0.55},
+		"openai/gpt-oss-120b":              {InputPrice: 0.15, OutputPrice: 0.55},
+		"google/gemma-4-31B-it":            {InputPrice: 0.13, OutputPrice: 0.40},
+	},
 	"sambanova": {
 		// Synced from https://cloud.sambanova.ai/plans/pricing on 2026-05-21.
 		"DeepSeek-R1-Distill-Llama-70B":      {InputPrice: 0.70, OutputPrice: 1.40},
@@ -368,6 +387,7 @@ var ProviderFastModels = map[string]string{
 	"zen":        "minimax-m2.5-free",
 	"bedrock":    "claude-haiku-4-5",
 	"venice":     "llama-3.2-3b",
+	"nearai":     "Qwen/Qwen3.6-35B-A3B-FP8",
 	"sambanova":  "Meta-Llama-3.3-70B-Instruct",
 	"openrouter": "anthropic/claude-haiku-4-5",
 	"claude-bin": "haiku",
@@ -526,7 +546,7 @@ func SortModelIDsByPopularity(provider, defaultModel string, ids []string) []str
 
 // GetBuiltInProviderNames returns the built-in provider type names
 func GetBuiltInProviderNames() []string {
-	return []string{"anthropic", "bedrock", "openai", "chatgpt", "copilot", "openrouter", "gemini", "gemini-cli", "zen", "claude-bin", "xai", "venice", "sambanova", "ollama"}
+	return []string{"anthropic", "bedrock", "openai", "chatgpt", "copilot", "openrouter", "gemini", "gemini-cli", "zen", "claude-bin", "xai", "venice", "nearai", "sambanova", "ollama"}
 }
 
 // GetProviderNames returns valid provider names from config plus built-in types.

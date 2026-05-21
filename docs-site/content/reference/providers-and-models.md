@@ -17,6 +17,7 @@ term-llm providers anthropic
 
 term-llm models --provider anthropic
 term-llm models --provider openrouter
+term-llm models --provider nearai
 term-llm models --provider sambanova
 term-llm models --provider ollama
 term-llm models --json
@@ -28,7 +29,7 @@ Use `providers` when you want to know what is available and how it is configured
 
 term-llm supports a mix of provider types:
 
-- hosted API providers such as Anthropic, AWS Bedrock, OpenAI, xAI, Gemini, SambaNova, and OpenRouter
+- hosted API providers such as Anthropic, AWS Bedrock, OpenAI, xAI, Gemini, NEAR AI Cloud, SambaNova, and OpenRouter
 - subscription-backed OAuth providers such as ChatGPT, Copilot, and Gemini CLI
 - local or self-hosted OpenAI-compatible providers such as Ollama, LM Studio, vLLM, or custom endpoints
 
@@ -47,6 +48,7 @@ Most providers use API keys via environment variables. Some use OAuth credential
 | `gemini-cli` | `~/.gemini/oauth_creds.json` | gemini-cli OAuth |
 | `xai` | `XAI_API_KEY` | xAI API key |
 | `venice` | `VENICE_API_KEY` | Venice OpenAI-compatible API key |
+| `nearai` | `NEARAI_API_KEY` | NEAR AI Cloud OpenAI-compatible TEE inference key |
 | `sambanova` | `SAMBANOVA_API_KEY` | SambaNova Cloud OpenAI-compatible API key |
 | `openrouter` | `OPENROUTER_API_KEY` | OpenRouter API key |
 | `zen` | `ZEN_API_KEY` optional | empty is valid for free tier |
@@ -94,6 +96,25 @@ providers:
 ```
 
 The provider uses `https://api.sambanova.ai/v1`, supports tool calls, and has a curated fallback model list. `term-llm models --provider sambanova` queries SambaNova's `/models` endpoint; because the OpenAI-compatible model response does not generally include price metadata, term-llm annotates known SambaNova models with bundled public prices from `https://cloud.sambanova.ai/plans/pricing`. These prices are also used by `term-llm usage` cost calculation for matching SambaNova model IDs.
+
+## NEAR AI Cloud
+
+NEAR AI Cloud is available as a built-in OpenAI-compatible provider for TEE-backed private inference:
+
+```bash
+export NEARAI_API_KEY=your-key
+term-llm ask --provider nearai:zai-org/GLM-5.1-FP8 "quick question"
+term-llm models --provider nearai
+```
+
+```yaml
+providers:
+  nearai:
+    model: zai-org/GLM-5.1-FP8
+    fast_model: Qwen/Qwen3.6-35B-A3B-FP8
+```
+
+The provider uses `https://cloud-api.near.ai/v1`, supports tool calls, and has a curated fallback list of TEE-hosted text models. `term-llm models --provider nearai` queries NEAR AI Cloud's public `/model/list` catalog and filters it to chat-capable models, with token prices shown per 1M tokens when available.
 
 ## OpenAI-compatible providers
 
