@@ -60,11 +60,48 @@ var providerPrefixes = []string{
 	"openai/",
 	"google/",
 	"azure/",
+	"sambanova/",
 	"openrouter/openai/",
+}
+
+var bundledPricing = map[string]ModelPricing{
+	// SambaNova official pricing, USD per token. Synced from
+	// https://cloud.sambanova.ai/plans/pricing on 2026-05-21.
+	"sambanova/DeepSeek-R1-Distill-Llama-70B": {
+		InputCostPerToken: 0.70 / 1_000_000, OutputCostPerToken: 1.40 / 1_000_000,
+	},
+	"sambanova/DeepSeek-V3.1-cb": {
+		InputCostPerToken: 0.15 / 1_000_000, OutputCostPerToken: 0.75 / 1_000_000,
+	},
+	"sambanova/DeepSeek-V3.1": {
+		InputCostPerToken: 3.00 / 1_000_000, OutputCostPerToken: 4.50 / 1_000_000,
+	},
+	"sambanova/DeepSeek-V3.2": {
+		InputCostPerToken: 3.00 / 1_000_000, OutputCostPerToken: 4.50 / 1_000_000,
+	},
+	"sambanova/gemma-3-12b-it": {
+		InputCostPerToken: 0.35 / 1_000_000, OutputCostPerToken: 0.59 / 1_000_000,
+	},
+	"sambanova/gpt-oss-120b": {
+		InputCostPerToken: 0.22 / 1_000_000, OutputCostPerToken: 0.59 / 1_000_000,
+	},
+	"sambanova/Llama-4-Maverick-17B-128E-Instruct": {
+		InputCostPerToken: 0.63 / 1_000_000, OutputCostPerToken: 1.80 / 1_000_000,
+	},
+	"sambanova/Meta-Llama-3.3-70B-Instruct": {
+		InputCostPerToken: 0.60 / 1_000_000, OutputCostPerToken: 1.20 / 1_000_000,
+	},
+	"sambanova/MiniMax-M2.7": {
+		InputCostPerToken: 0.60 / 1_000_000, OutputCostPerToken: 2.40 / 1_000_000,
+	},
 }
 
 // GetPricing returns pricing for a model, fetching if necessary
 func (p *PricingFetcher) GetPricing(modelName string) (ModelPricing, error) {
+	if pricing, ok := lookupBundledPricing(modelName); ok {
+		return pricing, nil
+	}
+
 	if err := p.ensureLoaded(); err != nil {
 		return ModelPricing{}, err
 	}
@@ -85,6 +122,10 @@ func (p *PricingFetcher) GetPricing(modelName string) (ModelPricing, error) {
 		}
 	}
 
+	if pricing, ok := lookupBundledPricing(modelName); ok {
+		return pricing, nil
+	}
+
 	// Try case-insensitive partial matching
 	lower := strings.ToLower(modelName)
 	for key, pricing := range p.cache {
@@ -95,6 +136,21 @@ func (p *PricingFetcher) GetPricing(modelName string) (ModelPricing, error) {
 	}
 
 	return ModelPricing{}, fmt.Errorf("pricing not found for model: %s", modelName)
+}
+
+func lookupBundledPricing(modelName string) (ModelPricing, bool) {
+	if pricing, ok := bundledPricing[modelName]; ok {
+		return pricing, true
+	}
+	for _, prefix := range providerPrefixes {
+		if prefix == "" {
+			continue
+		}
+		if pricing, ok := bundledPricing[prefix+modelName]; ok {
+			return pricing, true
+		}
+	}
+	return ModelPricing{}, false
 }
 
 // ensureLoaded ensures pricing data is loaded and fresh

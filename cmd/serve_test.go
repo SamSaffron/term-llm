@@ -9162,7 +9162,7 @@ func TestHandleModels_WithProviderParam(t *testing.T) {
 func TestHandleModels_PrefersUpstreamListOverLocalFallback(t *testing.T) {
 	provider := &countingListModelsProvider{
 		name:   "acme",
-		models: []llm.ModelInfo{{ID: "from-upstream"}},
+		models: []llm.ModelInfo{{ID: "from-upstream", InputPrice: 0.22, OutputPrice: 0.59}},
 	}
 	srv := &serveServer{
 		cfgRef: &config.Config{
@@ -9191,7 +9191,9 @@ func TestHandleModels_PrefersUpstreamListOverLocalFallback(t *testing.T) {
 
 	var result struct {
 		Data []struct {
-			ID string `json:"id"`
+			ID          string  `json:"id"`
+			InputPrice  float64 `json:"input_price"`
+			OutputPrice float64 `json:"output_price"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
@@ -9203,6 +9205,9 @@ func TestHandleModels_PrefersUpstreamListOverLocalFallback(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, []string{"from-upstream"}) {
 		t.Fatalf("model ids = %v, want [from-upstream]", got)
+	}
+	if result.Data[0].InputPrice != 0.22 || result.Data[0].OutputPrice != 0.59 {
+		t.Fatalf("pricing = %g/%g, want 0.22/0.59", result.Data[0].InputPrice, result.Data[0].OutputPrice)
 	}
 }
 

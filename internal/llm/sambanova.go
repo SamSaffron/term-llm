@@ -36,6 +36,13 @@ func (p *SambaNovaProvider) ListModels(ctx context.Context) ([]ModelInfo, error)
 	}
 	for i := range models {
 		models[i].InputLimit = InputLimitForProviderModel("sambanova", models[i].ID)
+		if inputPrice, outputPrice, ok := PricingForProviderModel("sambanova", models[i].ID); ok {
+			models[i].InputPrice = inputPrice
+			models[i].OutputPrice = outputPrice
+		} else {
+			models[i].InputPrice = -1
+			models[i].OutputPrice = -1
+		}
 	}
 	return models, nil
 }

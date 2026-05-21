@@ -53,6 +53,10 @@ providers:
   xai:
     model: grok-4-1-fast
 
+  sambanova:
+    model: gpt-oss-120b
+    fast_model: Meta-Llama-3.3-70B-Instruct
+
   claude-bin:
     model: opus
     env:

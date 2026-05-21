@@ -20,7 +20,7 @@
 
 ## Configuration
 - Config: `~/.config/term-llm/config.yaml`
-- API keys via env: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `BFL_API_KEY`
+- API keys via env: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `XAI_API_KEY`, `SAMBANOVA_API_KEY`, `BFL_API_KEY`
 - **Do not commit API keys or local config**
 
 ## Coding Style

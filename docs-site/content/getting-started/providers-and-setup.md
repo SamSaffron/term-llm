@@ -9,7 +9,7 @@ next:
   label: Usage guide
   url: /guides/usage/
 ---
-On first run, term-llm will prompt you to choose a provider (Anthropic, AWS Bedrock, OpenAI, ChatGPT, GitHub Copilot, xAI, Venice, OpenRouter, Gemini, Gemini CLI, Zen, Claude Code (claude-bin), Ollama, or LM Studio).
+On first run, term-llm will prompt you to choose a provider (Anthropic, AWS Bedrock, OpenAI, ChatGPT, GitHub Copilot, xAI, Venice, SambaNova, OpenRouter, Gemini, Gemini CLI, Zen, Claude Code (claude-bin), Ollama, or LM Studio).
 
 ### Option 1: Try it free with Zen
 
@@ -46,6 +46,9 @@ export XAI_API_KEY=your-key
 
 # For Venice
 export VENICE_API_KEY=your-key
+
+# For SambaNova Cloud
+export SAMBANOVA_API_KEY=your-key
 
 # For OpenRouter
 export OPENROUTER_API_KEY=your-key
@@ -139,7 +142,29 @@ term-llm ask --provider venice:qwen3-coder-480b-a35b-instruct "review this code"
 term-llm models --provider venice
 ```
 
-### Option 6: Use OpenRouter
+### Option 6: Use SambaNova Cloud
+
+[SambaNova Cloud](https://cloud.sambanova.ai/) provides fast OpenAI-compatible hosted inference on RDU hardware. Set `SAMBANOVA_API_KEY` or put `api_key` under `providers.sambanova`.
+
+```yaml
+# In ~/.config/term-llm/config.yaml
+default_provider: sambanova
+
+providers:
+  sambanova:
+    model: gpt-oss-120b
+    fast_model: Meta-Llama-3.3-70B-Instruct
+```
+
+```bash
+term-llm ask --provider sambanova "explain RDUs"
+term-llm ask --provider sambanova:MiniMax-M2.7 "summarize this repository"
+term-llm models --provider sambanova
+```
+
+`term-llm models --provider sambanova` shows known SambaNova token prices when available. The bundled pricing table is synced from SambaNova's public pricing page.
+
+### Option 7: Use OpenRouter
 
 [OpenRouter](https://openrouter.ai) provides a unified OpenAI-compatible API across many models. term-llm sends attribution headers by default.
 
@@ -161,6 +186,7 @@ List available models from any supported provider:
 ```bash
 term-llm models --provider anthropic  # List Anthropic models
 term-llm models --provider openrouter # List OpenRouter models
+term-llm models --provider sambanova  # List SambaNova models
 term-llm models --provider ollama     # List local Ollama models
 term-llm models --provider lmstudio   # List local LM Studio models
 term-llm models --json                # Output as JSON

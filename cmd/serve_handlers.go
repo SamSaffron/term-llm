@@ -1656,7 +1656,7 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			continue
 		}
-		items = append(items, map[string]any{
+		item := map[string]any{
 			"id":      m.ID,
 			"object":  "model",
 			"created": m.Created,
@@ -1666,7 +1666,12 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 				}
 				return "term-llm"
 			}(),
-		})
+		}
+		if m.InputPrice > 0 || m.OutputPrice > 0 {
+			item["input_price"] = m.InputPrice
+			item["output_price"] = m.OutputPrice
+		}
+		items = append(items, item)
 	}
 
 	writeJSONConditional(w, r, http.StatusOK, map[string]any{

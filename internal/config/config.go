@@ -1601,6 +1601,8 @@ func GetDefaults() map[string]any {
 		"providers.xai.fast_model":        "grok-3-mini-fast",
 		"providers.venice.model":          "venice-uncensored",
 		"providers.venice.fast_model":     "llama-3.2-3b",
+		"providers.sambanova.model":       "gpt-oss-120b",
+		"providers.sambanova.fast_model":  "Meta-Llama-3.3-70B-Instruct",
 		"providers.openrouter.model":      "x-ai/grok-code-fast-1",
 		"providers.openrouter.fast_model": "anthropic/claude-haiku-4-5",
 		"providers.openrouter.app_url":    "https://github.com/samsaffron/term-llm",

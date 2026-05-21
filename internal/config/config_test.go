@@ -453,6 +453,35 @@ func TestGetDefaultsIncludeChatGPTProviderModel(t *testing.T) {
 	}
 }
 
+func TestGetDefaultsIncludeSambaNovaProviderModel(t *testing.T) {
+	defaults := GetDefaults()
+
+	got, ok := defaults["providers.sambanova.model"].(string)
+	if !ok || got != "gpt-oss-120b" {
+		t.Fatalf("providers.sambanova.model = %v, want gpt-oss-120b", defaults["providers.sambanova.model"])
+	}
+	fast, ok := defaults["providers.sambanova.fast_model"].(string)
+	if !ok || fast != "Meta-Llama-3.3-70B-Instruct" {
+		t.Fatalf("providers.sambanova.fast_model = %v, want Meta-Llama-3.3-70B-Instruct", defaults["providers.sambanova.fast_model"])
+	}
+	if !IsKnownKey("providers.sambanova.model") {
+		t.Fatal("providers.sambanova.model should be a known key")
+	}
+}
+
+func TestDescribeCredentialSource_SambaNova(t *testing.T) {
+	t.Setenv("SAMBANOVA_API_KEY", "sn-env-key")
+
+	cfg := &ProviderConfig{}
+	source, found := DescribeCredentialSource("sambanova", cfg)
+	if !found {
+		t.Fatal("expected credential source")
+	}
+	if !strings.Contains(source, "SAMBANOVA_API_KEY") {
+		t.Fatalf("source = %q, want SAMBANOVA_API_KEY", source)
+	}
+}
+
 func TestLoadBlankChatGPTProviderUsesDefaultModel(t *testing.T) {
 	viper.Reset()
 	defer viper.Reset()

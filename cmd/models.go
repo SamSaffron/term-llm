@@ -28,6 +28,7 @@ Examples:
   term-llm models                       # list models from current provider
   term-llm models --provider anthropic  # list models from Anthropic
   term-llm models --provider openrouter # list models from OpenRouter
+  term-llm models --provider sambanova  # list models from SambaNova
   term-llm models --provider venice     # list models from Venice
   term-llm models --provider ollama     # list models from Ollama
   term-llm models --provider lmstudio   # list models from LM Studio
@@ -37,7 +38,7 @@ Examples:
 
 func init() {
 	rootCmd.AddCommand(modelsCmd)
-	modelsCmd.Flags().StringVarP(&modelsProvider, "provider", "p", "", "Provider to list models from (anthropic, copilot, openrouter, venice, xai, zen, ollama, lmstudio, openai-compat)")
+	modelsCmd.Flags().StringVarP(&modelsProvider, "provider", "p", "", "Provider to list models from (anthropic, copilot, openrouter, sambanova, venice, xai, zen, ollama, lmstudio, openai-compat)")
 	modelsCmd.Flags().BoolVar(&modelsJSON, "json", false, "Output as JSON")
 	modelsCmd.RegisterFlagCompletionFunc("provider", ProviderFlagCompletion)
 }
@@ -45,6 +46,18 @@ func init() {
 // ModelLister is an interface for providers that can list available models
 type ModelLister interface {
 	ListModels(ctx context.Context) ([]llm.ModelInfo, error)
+}
+
+var modelListSupportedTypes = map[config.ProviderType]bool{
+	config.ProviderTypeAnthropic:    true,
+	config.ProviderTypeOpenAI:       true,
+	config.ProviderTypeCopilot:      true,
+	config.ProviderTypeOpenRouter:   true,
+	config.ProviderTypeOpenAICompat: true,
+	config.ProviderTypeZen:          true,
+	config.ProviderTypeXAI:          true,
+	config.ProviderTypeVenice:       true,
+	config.ProviderTypeSambaNova:    true,
 }
 
 func runModels(cmd *cobra.Command, args []string) error {
@@ -76,23 +89,11 @@ func runModels(cmd *cobra.Command, args []string) error {
 		providerType = config.InferProviderType(providerName, "")
 	}
 
-	// Providers that support dynamic model listing
-	supportedTypes := map[config.ProviderType]bool{
-		config.ProviderTypeAnthropic:    true,
-		config.ProviderTypeOpenAI:       true,
-		config.ProviderTypeCopilot:      true,
-		config.ProviderTypeOpenRouter:   true,
-		config.ProviderTypeOpenAICompat: true,
-		config.ProviderTypeZen:          true,
-		config.ProviderTypeXAI:          true,
-		config.ProviderTypeVenice:       true,
-	}
-
 	// For built-in providers without explicit config, continue for providers that
 	// can authenticate via environment/default credentials. Otherwise fall back to
 	// static model lists when available.
 	if !ok {
-		if !supportedTypes[providerType] {
+		if !modelListSupportedTypes[providerType] {
 			if staticModels := llm.ResolveProviderModelIDs(providerName); len(staticModels) > 0 {
 				return printStaticModels(providerName, staticModels)
 			}
@@ -100,13 +101,13 @@ func runModels(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if !supportedTypes[providerType] {
+	if !modelListSupportedTypes[providerType] {
 		// Fall back to static model list if available
 		if staticModels := llm.ResolveProviderModelIDs(providerName); len(staticModels) > 0 {
 			return printStaticModels(providerName, staticModels)
 		}
 		return fmt.Errorf("provider '%s' (type: %s) does not support model listing.\n"+
-			"Model listing is supported for: anthropic, openai, openrouter, xai, venice, zen, copilot, and openai_compatible providers", providerName, providerType)
+			"Model listing is supported for: anthropic, openai, openrouter, sambanova, xai, venice, zen, copilot, and openai_compatible providers", providerName, providerType)
 	}
 
 	// Create provider to query models
@@ -172,6 +173,15 @@ func runModels(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("Venice API key not configured. Set VENICE_API_KEY or configure api_key")
 		}
 		lister = llm.NewVeniceProvider(apiKey, providerCfg.Model)
+	case config.ProviderTypeSambaNova:
+		apiKey := providerCfg.ResolvedAPIKey
+		if apiKey == "" {
+			apiKey = os.Getenv("SAMBANOVA_API_KEY")
+		}
+		if apiKey == "" {
+			return fmt.Errorf("SambaNova API key not configured. Set SAMBANOVA_API_KEY or configure api_key")
+		}
+		lister = llm.NewSambaNovaProvider(apiKey, providerCfg.Model)
 	}
 
 	// Copilot may need interactive device auth (up to 5 minutes)
@@ -211,8 +221,8 @@ func runModels(cmd *cobra.Command, args []string) error {
 	// Pretty print
 	fmt.Printf("Available models from %s:\n\n", providerName)
 
-	// Only these providers return actual pricing info
-	providerHasPricing := providerType == config.ProviderTypeOpenRouter || providerType == config.ProviderTypeZen
+	// Only these providers return or have known pricing info
+	providerHasPricing := providerType == config.ProviderTypeOpenRouter || providerType == config.ProviderTypeZen || providerType == config.ProviderTypeSambaNova
 
 	for _, m := range models {
 		if m.DisplayName != "" {
@@ -228,7 +238,9 @@ func runModels(cmd *cobra.Command, args []string) error {
 
 		// Show pricing info only if provider returns it
 		if providerHasPricing {
-			if m.InputPrice == 0 && m.OutputPrice == 0 {
+			if m.InputPrice < 0 || m.OutputPrice < 0 {
+				fmt.Printf(" [pricing unknown]")
+			} else if m.InputPrice == 0 && m.OutputPrice == 0 {
 				fmt.Printf(" [FREE]")
 			} else {
 				fmt.Printf(" [$%.2f/$%.2f per 1M tokens]", m.InputPrice, m.OutputPrice)

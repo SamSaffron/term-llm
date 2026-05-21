@@ -398,7 +398,7 @@ func printProvidersSection(defaults map[string]any, rawKeys map[string]bool, raw
 	providerNames := make(map[string]bool)
 
 	// Default providers
-	defaultProviders := []string{"anthropic", "openai", "chatgpt", "xai", "venice", "openrouter", "gemini", "zen"}
+	defaultProviders := []string{"anthropic", "openai", "chatgpt", "xai", "venice", "sambanova", "openrouter", "gemini", "zen"}
 	for _, p := range defaultProviders {
 		providerNames[p] = true
 	}
@@ -785,6 +785,10 @@ providers:
 
   venice:
     model: venice-uncensored
+
+  sambanova:
+    model: gpt-oss-120b
+    fast_model: Meta-Llama-3.3-70B-Instruct
 
   zen:
     model: minimax-m2.1-free

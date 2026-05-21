@@ -105,13 +105,13 @@ func TestSambaNovaProviderCapabilities(t *testing.T) {
 	}
 }
 
-func TestSambaNovaProviderListModelsUsesProviderScopedLimits(t *testing.T) {
+func TestSambaNovaProviderListModelsUsesProviderScopedLimitsAndPricing(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/models" {
 			t.Fatalf("unexpected path %q", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-oss-120b","object":"model","created":1,"owned_by":"sambanova"},{"id":"DeepSeek-V3.1","object":"model","created":1,"owned_by":"sambanova"}]}`))
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-oss-120b","object":"model","created":1,"owned_by":"sambanova"},{"id":"DeepSeek-V3.2","object":"model","created":1,"owned_by":"sambanova"}]}`))
 	}))
 	defer ts.Close()
 
@@ -126,7 +126,13 @@ func TestSambaNovaProviderListModelsUsesProviderScopedLimits(t *testing.T) {
 	if models[0].InputLimit != 131_072 {
 		t.Fatalf("gpt-oss-120b InputLimit = %d, want 131072", models[0].InputLimit)
 	}
-	if models[1].InputLimit != 131_072 {
-		t.Fatalf("DeepSeek-V3.1 InputLimit = %d, want 131072", models[1].InputLimit)
+	if models[0].InputPrice != 0.22 || models[0].OutputPrice != 0.59 {
+		t.Fatalf("gpt-oss-120b pricing = %g/%g, want 0.22/0.59", models[0].InputPrice, models[0].OutputPrice)
+	}
+	if models[1].InputLimit != 32_000 {
+		t.Fatalf("DeepSeek-V3.2 InputLimit = %d, want 32000", models[1].InputLimit)
+	}
+	if models[1].InputPrice != 3.00 || models[1].OutputPrice != 4.50 {
+		t.Fatalf("DeepSeek-V3.2 pricing = %g/%g, want 3/4.5", models[1].InputPrice, models[1].OutputPrice)
 	}
 }

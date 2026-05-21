@@ -277,14 +277,52 @@ var ProviderModels = map[string][]ModelEntry{
 		{ID: "nvidia-nemotron-cascade-2-30b-a3b", InputLimit: 256_000, OutputLimit: 32_768},
 	},
 	"sambanova": {
-		// SambaCloud-hosted models on RDU. Limits per https://docs.sambanova.ai/cloud/docs/get-started/supported-models
+		// SambaCloud-hosted models on RDU. Limits/prices synced from:
+		// https://docs.sambanova.ai/docs/en/models/sambacloud-models
+		// https://cloud.sambanova.ai/plans/pricing
 		{ID: "gpt-oss-120b", InputLimit: 131_072, OutputLimit: 8_192},
-		{ID: "DeepSeek-V3.1", InputLimit: 131_072, OutputLimit: 8_192},
-		{ID: "DeepSeek-V3.2", InputLimit: 131_072, OutputLimit: 8_192},
-		{ID: "Meta-Llama-3.3-70B-Instruct", InputLimit: 131_072, OutputLimit: 8_192},
-		{ID: "MiniMax-M2.5", InputLimit: 131_072, OutputLimit: 8_192},
-		{ID: "MiniMax-M2.7", InputLimit: 131_072, OutputLimit: 8_192},
+		{ID: "MiniMax-M2.7", InputLimit: 192_000, OutputLimit: 8_192},
+		{ID: "DeepSeek-V3.1", InputLimit: 128_000, OutputLimit: 8_192},
+		{ID: "Meta-Llama-3.3-70B-Instruct", InputLimit: 128_000, OutputLimit: 8_192},
+		{ID: "DeepSeek-V3.2", InputLimit: 32_000, OutputLimit: 8_192},
+		{ID: "gemma-3-12b-it", InputLimit: 128_000, OutputLimit: 8_192},
+		{ID: "Llama-4-Maverick-17B-128E-Instruct", InputLimit: 128_000, OutputLimit: 8_192},
 	},
+}
+
+// providerModelPricing contains curated provider-specific prices in USD per
+// million input/output tokens for providers whose /models APIs do not include
+// pricing metadata.
+type modelPricing struct {
+	InputPrice  float64
+	OutputPrice float64
+}
+
+var providerModelPricing = map[string]map[string]modelPricing{
+	"sambanova": {
+		// Synced from https://cloud.sambanova.ai/plans/pricing on 2026-05-21.
+		"DeepSeek-R1-Distill-Llama-70B":      {InputPrice: 0.70, OutputPrice: 1.40},
+		"DeepSeek-V3.1-cb":                   {InputPrice: 0.15, OutputPrice: 0.75},
+		"DeepSeek-V3.1":                      {InputPrice: 3.00, OutputPrice: 4.50},
+		"DeepSeek-V3.2":                      {InputPrice: 3.00, OutputPrice: 4.50},
+		"gemma-3-12b-it":                     {InputPrice: 0.35, OutputPrice: 0.59},
+		"gpt-oss-120b":                       {InputPrice: 0.22, OutputPrice: 0.59},
+		"Llama-4-Maverick-17B-128E-Instruct": {InputPrice: 0.63, OutputPrice: 1.80},
+		"Meta-Llama-3.3-70B-Instruct":        {InputPrice: 0.60, OutputPrice: 1.20},
+		"MiniMax-M2.7":                       {InputPrice: 0.60, OutputPrice: 2.40},
+	},
+}
+
+// PricingForProviderModel returns known provider-specific pricing in USD per
+// million input/output tokens.
+func PricingForProviderModel(provider, model string) (inputPrice, outputPrice float64, ok bool) {
+	provider = resolveProviderType(provider)
+	if byModel := providerModelPricing[provider]; byModel != nil {
+		if pricing, found := byModel[model]; found {
+			return pricing.InputPrice, pricing.OutputPrice, true
+		}
+	}
+	return 0, 0, false
 }
 
 // ProviderModelIDs returns just the model ID strings for a provider.
