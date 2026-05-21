@@ -473,6 +473,11 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 	ta.CharLimit = 0 // No limit
 	ta.SetWidth(width)
 	ta.SetHeight(1) // Start with single line
+	// Use Bubble Tea's real cursor instead of the textarea's virtual cursor so
+	// terminal-level composition/preedit UIs (for example macOS Dictation) have a
+	// physical cursor location inside the composer, even though the status line is
+	// rendered after it.
+	ta.SetVirtualCursor(false)
 	taStyles := ta.Styles()
 	taStyles.Focused.CursorLine = lipgloss.NewStyle()
 	taStyles.Focused.Base = lipgloss.NewStyle()

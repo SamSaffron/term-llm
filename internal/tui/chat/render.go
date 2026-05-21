@@ -117,12 +117,46 @@ func (m *Model) newView(content string) tea.View {
 	v := tea.NewView(content)
 	if m.altScreen {
 		v.AltScreen = true
-		v.Cursor = m.imageSafeCursor()
 	}
 	if m.autoSendQueue == nil && m.mouseMode {
 		v.MouseMode = tea.MouseModeCellMotion
 	}
+	if cur := m.imageSafeCursor(); cur != nil {
+		v.Cursor = cur
+		return v
+	}
+	if cur := m.composerCursor(); cur != nil {
+		v.Cursor = cur
+	}
 	return v
+}
+
+func (m *Model) composerCursor() *tea.Cursor {
+	if m == nil || !m.textareaBoundsValid || !m.textarea.Focused() {
+		return nil
+	}
+	if m.autoSendQueue != nil || m.quitting {
+		return nil
+	}
+	if m.dialog != nil && m.dialog.IsOpen() {
+		return nil
+	}
+	if m.approvalModel != nil || m.askUserModel != nil || m.handoverPreview != nil {
+		return nil
+	}
+	cur := m.textarea.Cursor()
+	if cur == nil {
+		return nil
+	}
+	cur.Position.X += m.textareaLeftX
+	cur.Position.Y += m.textareaTopY
+	if m.width > 0 {
+		cur.Position.X = max(0, min(cur.Position.X, m.width-1))
+	}
+	if m.height > 0 {
+		cur.Position.Y = max(0, min(cur.Position.Y, m.height-1))
+	}
+	return cur
 }
 
 func (m *Model) needsImageSafeCursor() bool {
@@ -367,10 +401,11 @@ func (m *Model) viewAltScreen() string {
 	// Render viewport (scrollable area)
 	b.WriteString(viewOutput)
 	renderedLines += lipgloss.Height(m.viewCache.lastViewportView)
+	footerStartY := renderedLines
 	b.WriteString("\n")
 	renderedLines++
 
-	m.applyFooterLayout(renderedLines, footer)
+	m.applyFooterLayout(footerStartY, footer)
 	b.WriteString(footer.view)
 
 	frame := m.overlayAltScreenPanels(b.String(), footer)

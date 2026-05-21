@@ -45,6 +45,53 @@ func TestRenderMarkdown_NarrowWidth_DoesNotFallbackToRaw(t *testing.T) {
 	}
 }
 
+func TestView_PlacesRealCursorInComposerAfterStatusLine(t *testing.T) {
+	for _, altScreen := range []bool{false, true} {
+		name := "inline"
+		if altScreen {
+			name = "alt-screen"
+		}
+		t.Run(name, func(t *testing.T) {
+			m := newTestChatModel(altScreen)
+			_, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+			m.setTextareaValue("hello from dictation")
+
+			view := m.View()
+			if view.Cursor == nil {
+				t.Fatal("expected a real cursor to be positioned in the composer")
+			}
+			if !m.textareaBoundsValid {
+				t.Fatal("expected textarea bounds to be recorded during render")
+			}
+			if got := view.Cursor.Position.Y; got < m.textareaTopY || got > m.textareaBottomY {
+				t.Fatalf("cursor Y = %d, want within composer rows [%d,%d]", got, m.textareaTopY, m.textareaBottomY)
+			}
+			if altScreen {
+				wantTopY := m.viewport.Height() + 1 // viewport row(s), footer separator, then composer
+				if m.textareaTopY != wantTopY {
+					t.Fatalf("textareaTopY = %d, want %d", m.textareaTopY, wantTopY)
+				}
+			}
+			statusY := m.textareaBottomY + 2 // textarea, separator, then status line
+			if view.Cursor.Position.Y >= statusY {
+				t.Fatalf("cursor Y = %d landed on/after status line row %d", view.Cursor.Position.Y, statusY)
+			}
+		})
+	}
+}
+
+func TestView_DoesNotPlaceComposerCursorWhenDialogOpen(t *testing.T) {
+	m := newTestChatModel(true)
+	_, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.setTextareaValue("hello")
+	m.dialog.ShowContent("Help", "content")
+
+	view := m.View()
+	if view.Cursor != nil {
+		t.Fatalf("expected composer cursor to be suppressed while dialog is open, got %+v", view.Cursor.Position)
+	}
+}
+
 func TestTryAppendAltScreenStreamingContent_AppendsTailLines(t *testing.T) {
 	m := &Model{}
 	m.viewCache.lastContentHistoryPlusStream = true

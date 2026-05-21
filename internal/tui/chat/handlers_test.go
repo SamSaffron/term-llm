@@ -590,12 +590,27 @@ func TestUpdate_PasteMsg_RoutedToMCPPickerFilter(t *testing.T) {
 	}
 }
 
-func TestPasteCollapse_LargePasteBecomesInlinePlaceholder(t *testing.T) {
+func TestPasteCollapse_LargeSingleLinePasteGoesToTextarea(t *testing.T) {
 	stubClipboard(t)
 	m := newTestChatModel(false)
 
-	// 100+ chars to trigger collapse
-	pasteText := strings.Repeat("abcdefghij", 11) // 110 chars
+	pasteText := strings.Repeat("dictated words ", 20)
+
+	_, _ = m.handlePasteMsg(tea.PasteMsg{Content: pasteText})
+
+	if len(m.pasteChunks) != 0 {
+		t.Fatalf("expected no collapsed paste for single-line text, got %d", len(m.pasteChunks))
+	}
+	if got := m.textarea.Value(); strings.Contains(got, "[Pasted text #") || !strings.Contains(got, "dictated words") {
+		t.Fatalf("expected literal single-line paste to be inserted without placeholder, got %q", got)
+	}
+}
+
+func TestPasteCollapse_LargeMultilinePasteBecomesInlinePlaceholder(t *testing.T) {
+	stubClipboard(t)
+	m := newTestChatModel(false)
+
+	pasteText := strings.Repeat("abcdefghij", 6) + "\n" + strings.Repeat("klmnopqrst", 6)
 
 	_, _ = m.handlePasteMsg(tea.PasteMsg{Content: pasteText})
 
@@ -634,11 +649,133 @@ func TestPasteCollapse_SmallPasteGoesToTextarea(t *testing.T) {
 	}
 }
 
+func TestPasteCollapse_StreamingInterjectionExpandsPlaceholderOnSend(t *testing.T) {
+	stubClipboard(t)
+	m := newTestChatModel(false)
+	m.streaming = true
+	pasteText := strings.Repeat("stream alpha ", 12) + "\n" + strings.Repeat("stream beta ", 12)
+
+	_, _ = m.handlePasteMsg(tea.PasteMsg{Content: pasteText})
+	if !strings.Contains(m.textarea.Value(), "[Pasted text #1") {
+		t.Fatalf("precondition: expected collapsed placeholder, got %q", m.textarea.Value())
+	}
+
+	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if len(m.pasteChunks) != 0 {
+		t.Fatalf("expected paste chunks cleared after streaming send, got %d", len(m.pasteChunks))
+	}
+	if got := m.engine.DrainInterjection(); got != pasteText {
+		t.Fatalf("streaming interjection = %q, want expanded paste %q", got, pasteText)
+	}
+}
+
+func TestPasteCollapse_StreamingInterruptClassificationUsesExpandedPlaceholder(t *testing.T) {
+	stubClipboard(t)
+	m := newTestChatModel(false)
+	m.streaming = true
+	m.fastProvider = llm.NewMockProvider("fast").AddTextResponse("interject")
+	pasteText := strings.Repeat("async alpha ", 12) + "\n" + strings.Repeat("async beta ", 12)
+
+	_, _ = m.handlePasteMsg(tea.PasteMsg{Content: pasteText})
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected interrupt classification command")
+	}
+	if len(m.pasteChunks) != 0 {
+		t.Fatalf("expected paste chunks cleared after queueing classification, got %d", len(m.pasteChunks))
+	}
+
+	gotMsg := cmd()
+	msg, ok := gotMsg.(interruptClassifiedMsg)
+	if !ok {
+		t.Fatalf("expected interruptClassifiedMsg, got %T", gotMsg)
+	}
+	if msg.Content != pasteText {
+		t.Fatalf("classification content = %q, want expanded paste %q", msg.Content, pasteText)
+	}
+}
+
+func TestPasteCollapse_CtrlEExpandsPlaceholderAtCursor(t *testing.T) {
+	stubClipboard(t)
+	m := newTestChatModel(false)
+	pasteText := strings.Repeat("alpha ", 20) + "\n" + strings.Repeat("beta ", 20)
+
+	_, _ = m.handlePasteMsg(tea.PasteMsg{Content: pasteText})
+	placeholder := m.textarea.Value()
+	if !strings.Contains(placeholder, "[Pasted text #1") {
+		t.Fatalf("precondition: expected collapsed placeholder, got %q", placeholder)
+	}
+
+	_, _ = m.Update(tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl})
+
+	if m.toolsExpanded {
+		t.Fatal("ctrl+e on a paste placeholder should not toggle tool expansion")
+	}
+	if len(m.pasteChunks) != 0 {
+		t.Fatalf("expected paste chunk to be consumed, got %d", len(m.pasteChunks))
+	}
+	got := m.textarea.Value()
+	if strings.Contains(got, "[Pasted text #") {
+		t.Fatalf("expected placeholder to expand, got %q", got)
+	}
+	if !strings.Contains(got, "alpha") || !strings.Contains(got, "beta") {
+		t.Fatalf("expected expanded paste content in textarea, got %q", got)
+	}
+}
+
+func TestPasteCollapse_CtrlEBubblesWhenCursorNotOnPlaceholder(t *testing.T) {
+	m := newTestChatModel(false)
+	content := "line one\nline two"
+	placeholder := pastePlaceholder(1, content)
+	m.pasteChunks = map[int]string{1: content}
+	m.setTextareaValue("prefix " + placeholder)
+	m.textarea.MoveToBegin()
+
+	_, _ = m.Update(tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl})
+
+	if !m.toolsExpanded {
+		t.Fatal("expected ctrl+e away from placeholder to toggle tool expansion")
+	}
+	if len(m.pasteChunks) != 1 {
+		t.Fatalf("expected paste chunk to remain, got %d", len(m.pasteChunks))
+	}
+	if got := m.textarea.Value(); !strings.Contains(got, placeholder) {
+		t.Fatalf("expected placeholder to remain, got %q", got)
+	}
+}
+
+func TestPasteCollapse_CtrlEAdjacentBoundaryExpandsLeftPlaceholder(t *testing.T) {
+	m := newTestChatModel(false)
+	first := "first line\nfirst line again"
+	second := "second line\nsecond line again"
+	firstPlaceholder := pastePlaceholder(1, first)
+	secondPlaceholder := pastePlaceholder(2, second)
+	m.pasteChunks = map[int]string{1: first, 2: second}
+	m.setTextareaValue(firstPlaceholder + secondPlaceholder)
+	m.moveTextareaCursorToByteOffset(len(firstPlaceholder))
+
+	_, _ = m.Update(tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl})
+
+	if m.toolsExpanded {
+		t.Fatal("ctrl+e on adjacent placeholder boundary should expand instead of toggling tools")
+	}
+	if _, ok := m.pasteChunks[1]; ok {
+		t.Fatal("expected first placeholder chunk to be consumed")
+	}
+	if _, ok := m.pasteChunks[2]; !ok {
+		t.Fatal("expected second placeholder chunk to remain")
+	}
+	if got := m.textarea.Value(); got != first+secondPlaceholder {
+		t.Fatalf("textarea = %q, want %q", got, first+secondPlaceholder)
+	}
+}
+
 func TestPasteCollapse_MultiplePastesGetUniquePlaceholders(t *testing.T) {
 	stubClipboard(t)
 	m := newTestChatModel(false)
 
-	longPaste := strings.Repeat("x", 101)
+	longPaste := strings.Repeat("x", 60) + "\n" + strings.Repeat("y", 60)
 	for i := 0; i < 3; i++ {
 		_, _ = m.handlePasteMsg(tea.PasteMsg{Content: longPaste})
 	}

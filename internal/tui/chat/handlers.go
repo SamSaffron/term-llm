@@ -573,8 +573,13 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Toggle expanded tool display (Ctrl+E) - works even during streaming
+	// Toggle expanded tool display (Ctrl+E) - works even during streaming.
+	// If the cursor is on a collapsed paste placeholder in the composer, expand
+	// that placeholder instead and don't bubble through to the global tool toggle.
 	if key.Matches(msg, m.keyMap.ExpandTools) {
+		if m.expandPastePlaceholderAtCursor() {
+			return m, nil
+		}
 		m.toolsExpanded = !m.toolsExpanded
 		m.invalidateViewCache()
 		if m.chatRenderer != nil {
@@ -630,7 +635,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// During streaming: allow typing and interjection (send queues message for next turn)
 	if m.streaming {
 		if key.Matches(msg, m.keyMap.Send) {
-			content := strings.TrimSpace(m.textarea.Value())
+			content := m.expandPastePlaceholders(strings.TrimSpace(m.textarea.Value()))
 			if content == "" {
 				m.phase = "Type to interject, or press Esc to cancel"
 				return m, nil
@@ -908,7 +913,7 @@ func (m *Model) handlePasteMsg(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	text := msg.Content
-	if len(text) > pasteCollapseThreshold {
+	if shouldCollapsePaste(text) {
 		m.pasteSeq++
 		id := m.pasteSeq
 		if m.pasteChunks == nil {
@@ -938,6 +943,10 @@ func (m *Model) handlePasteMsg(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func shouldCollapsePaste(text string) bool {
+	return len(text) > pasteCollapseThreshold && strings.Contains(text, "\n")
+}
+
 // pastePlaceholder returns the inline placeholder text for a collapsed paste.
 func pastePlaceholder(id int, text string) string {
 	lines := strings.Count(text, "\n") + 1
@@ -945,6 +954,115 @@ func pastePlaceholder(id int, text string) string {
 		return fmt.Sprintf("[Pasted text #%d +%d lines]", id, lines)
 	}
 	return fmt.Sprintf("[Pasted text #%d +%d chars]", id, len(text))
+}
+
+func (m *Model) expandPastePlaceholderAtCursor() bool {
+	if m == nil || len(m.pasteChunks) == 0 {
+		return false
+	}
+	value := m.textarea.Value()
+	if value == "" {
+		return false
+	}
+	cursor := textareaCursorByteOffset(value, m.textarea.Line(), m.textarea.Column())
+	id, text, start, end, ok := m.pastePlaceholderAtCursor(value, cursor)
+	if !ok {
+		return false
+	}
+	value = value[:start] + text + value[end:]
+	delete(m.pasteChunks, id)
+	m.setTextareaValue(value)
+	m.moveTextareaCursorToByteOffset(start + len(text))
+	return true
+}
+
+func (m *Model) pastePlaceholderAtCursor(value string, cursor int) (id int, text string, start int, end int, ok bool) {
+	searchFrom := 0
+	for searchFrom <= len(value) {
+		bestID := 0
+		bestText := ""
+		bestStart := -1
+		bestEnd := -1
+		for candidateID, candidateText := range m.pasteChunks {
+			placeholder := pastePlaceholder(candidateID, candidateText)
+			idx := strings.Index(value[searchFrom:], placeholder)
+			if idx < 0 {
+				continue
+			}
+			candidateStart := searchFrom + idx
+			candidateEnd := candidateStart + len(placeholder)
+			if bestStart == -1 || candidateStart < bestStart || (candidateStart == bestStart && candidateID < bestID) {
+				bestID = candidateID
+				bestText = candidateText
+				bestStart = candidateStart
+				bestEnd = candidateEnd
+			}
+		}
+		if bestStart == -1 {
+			return 0, "", 0, 0, false
+		}
+		if cursor >= bestStart && cursor <= bestEnd {
+			return bestID, bestText, bestStart, bestEnd, true
+		}
+		if cursor < bestStart {
+			return 0, "", 0, 0, false
+		}
+		searchFrom = bestEnd
+	}
+	return 0, "", 0, 0, false
+}
+
+func textareaCursorByteOffset(value string, line, column int) int {
+	if line < 0 {
+		return 0
+	}
+	lines := strings.Split(value, "\n")
+	if line >= len(lines) {
+		return len(value)
+	}
+	offset := 0
+	for i := 0; i < line; i++ {
+		offset += len(lines[i]) + 1
+	}
+	return offset + byteOffsetForRuneColumn(lines[line], column)
+}
+
+func byteOffsetForRuneColumn(s string, column int) int {
+	if column <= 0 {
+		return 0
+	}
+	seen := 0
+	for i := range s {
+		if seen == column {
+			return i
+		}
+		seen++
+	}
+	return len(s)
+}
+
+func (m *Model) moveTextareaCursorToByteOffset(offset int) {
+	if offset < 0 {
+		offset = 0
+	}
+	value := m.textarea.Value()
+	if offset > len(value) {
+		offset = len(value)
+	}
+	before := value[:offset]
+	line := strings.Count(before, "\n")
+	lastNewline := strings.LastIndex(before, "\n")
+	lineStart := 0
+	if lastNewline >= 0 {
+		lineStart = lastNewline + 1
+	}
+	column := len([]rune(before[lineStart:]))
+
+	m.textarea.MoveToBegin()
+	for i := 0; i < line; i++ {
+		m.textarea.CursorDown()
+	}
+	m.textarea.SetCursorColumn(column)
 }
 
 // expandPastePlaceholders replaces all inline paste placeholders with their
