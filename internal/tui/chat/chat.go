@@ -1757,6 +1757,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				rendered := promptStyle.Render("❯") + " " + ev.Text + "\n\n"
 				m.tracker.AddPreRenderedTextSegment(rendered)
 			}
+			// Once the interjection is visibly injected into the transcript, force the
+			// viewport to the bottom so the user sees where it landed.
+			m.scrollToBottom = true
 			// Persist interjected message to session store
 			if m.store != nil {
 				userMsg := &session.Message{
