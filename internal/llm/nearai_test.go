@@ -135,6 +135,14 @@ func TestNearAIProviderListModelsUsesCatalogEndpointAndFiltersNonChatModels(t *t
 					"metadata": {"contextLength": 131000, "modelDisplayName": "GPT OSS 120B", "ownedBy": "nearai"}
 				},
 				{
+					"modelId": "Qwen/Qwen3.6-35B-A3B-FP8",
+					"metadata": {"contextLength": 262144, "architecture": {"inputModalities": ["text"], "outputModalities": ["text"]}}
+				},
+				{
+					"modelId": "unknown/text-model",
+					"metadata": {"architecture": {"inputModalities": ["text"], "outputModalities": ["text"]}}
+				},
+				{
 					"modelId": "black-forest-labs/FLUX.2-klein-4B",
 					"inputCostPerToken": {"amount": 1000, "scale": 9, "currency": "USD"},
 					"outputCostPerToken": {"amount": 1000, "scale": 9, "currency": "USD"},
@@ -160,8 +168,8 @@ func TestNearAIProviderListModelsUsesCatalogEndpointAndFiltersNonChatModels(t *t
 	if err != nil {
 		t.Fatalf("ListModels() error = %v", err)
 	}
-	if len(models) != 2 {
-		t.Fatalf("ListModels() returned %d models, want 2: %#v", len(models), models)
+	if len(models) != 4 {
+		t.Fatalf("ListModels() returned %d models, want 4: %#v", len(models), models)
 	}
 	if models[0].ID != "zai-org/GLM-5.1-FP8" {
 		t.Fatalf("first model = %q, want zai-org/GLM-5.1-FP8", models[0].ID)
@@ -180,6 +188,18 @@ func TestNearAIProviderListModelsUsesCatalogEndpointAndFiltersNonChatModels(t *t
 	}
 	if !nearPriceEqual(models[1].InputPrice, 0.15) || !nearPriceEqual(models[1].OutputPrice, 0.55) {
 		t.Fatalf("gpt-oss pricing = %g/%g, want 0.15/0.55", models[1].InputPrice, models[1].OutputPrice)
+	}
+	if models[2].ID != "Qwen/Qwen3.6-35B-A3B-FP8" {
+		t.Fatalf("third model = %q, want Qwen/Qwen3.6-35B-A3B-FP8", models[2].ID)
+	}
+	if !nearPriceEqual(models[2].InputPrice, 0.17) || !nearPriceEqual(models[2].OutputPrice, 1.10) {
+		t.Fatalf("curated fallback pricing = %g/%g, want 0.17/1.10", models[2].InputPrice, models[2].OutputPrice)
+	}
+	if models[3].ID != "unknown/text-model" {
+		t.Fatalf("fourth model = %q, want unknown/text-model", models[3].ID)
+	}
+	if models[3].InputPrice != -1 || models[3].OutputPrice != -1 {
+		t.Fatalf("missing pricing = %g/%g, want -1/-1", models[3].InputPrice, models[3].OutputPrice)
 	}
 }
 

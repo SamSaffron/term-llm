@@ -89,8 +89,8 @@ type nearAIModelCatalog struct {
 
 type nearAIModel struct {
 	ModelID            string              `json:"modelId"`
-	InputCostPerToken  nearAITokenPrice    `json:"inputCostPerToken"`
-	OutputCostPerToken nearAITokenPrice    `json:"outputCostPerToken"`
+	InputCostPerToken  *nearAITokenPrice   `json:"inputCostPerToken"`
+	OutputCostPerToken *nearAITokenPrice   `json:"outputCostPerToken"`
 	Metadata           nearAIModelMetadata `json:"metadata"`
 }
 
@@ -100,7 +100,10 @@ type nearAITokenPrice struct {
 	Currency string  `json:"currency"`
 }
 
-func (p nearAITokenPrice) perMillionTokens() float64 {
+func (p *nearAITokenPrice) perMillionTokens() float64 {
+	if p == nil || (p.Amount == 0 && p.Scale == 0 && p.Currency == "") {
+		return -1
+	}
 	if p.Currency != "" && p.Currency != "USD" {
 		return -1
 	}
