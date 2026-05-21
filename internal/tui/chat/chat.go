@@ -1930,15 +1930,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Continue listening for more events unless we're done or got an error.
-		// When a smooth tick is already pending for streamed text, defer the next
-		// blocking stream read until that tick so Bubble Tea can coalesce provider
-		// deltas into frame-paced updates.
+		// Keep dequeuing provider events immediately so tiny text deltas don't
+		// build backpressure behind a pending smooth render tick. Rendering is
+		// still coalesced by the smooth buffer/tick path above.
 		if ev.Type != ui.StreamEventDone && ev.Type != ui.StreamEventError {
-			if ev.Type == ui.StreamEventText && m.smoothTickPending {
-				m.deferredStreamRead = true
-			} else {
-				cmds = append(cmds, m.listenForStreamEvents())
-			}
+			cmds = append(cmds, m.listenForStreamEvents())
 		}
 		if m.streamPerf != nil {
 			m.streamPerf.RecordDuration(durationMetricStreamEvent, time.Since(streamEventStart))
