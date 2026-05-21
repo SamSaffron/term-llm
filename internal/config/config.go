@@ -29,6 +29,7 @@ const (
 	ProviderTypeOpenAICompat ProviderType = "openai_compatible"
 	ProviderTypeXAI          ProviderType = "xai"
 	ProviderTypeVenice       ProviderType = "venice"
+	ProviderTypeSambaNova    ProviderType = "sambanova"
 	ProviderTypeBedrock      ProviderType = "bedrock"
 	ProviderTypeOllama       ProviderType = "ollama"
 )
@@ -46,6 +47,7 @@ var builtInProviderTypes = map[string]ProviderType{
 	"claude-bin": ProviderTypeClaudeBin,
 	"xai":        ProviderTypeXAI,
 	"venice":     ProviderTypeVenice,
+	"sambanova":  ProviderTypeSambaNova,
 	"bedrock":    ProviderTypeBedrock,
 	"ollama":     ProviderTypeOllama,
 }
@@ -903,6 +905,12 @@ func resolveProviderCredentials(name string, cfg *ProviderConfig) error {
 			cfg.ResolvedAPIKey = os.Getenv("VENICE_API_KEY")
 		}
 
+	case ProviderTypeSambaNova:
+		cfg.ResolvedAPIKey = expandEnv(cfg.APIKey)
+		if cfg.ResolvedAPIKey == "" {
+			cfg.ResolvedAPIKey = os.Getenv("SAMBANOVA_API_KEY")
+		}
+
 	case ProviderTypeBedrock:
 		// Expand env vars in non-lazy credential fields (skip $() which is resolved later)
 		if !needsLazyResolve(cfg.AccessKey) {
@@ -1043,6 +1051,8 @@ func DescribeCredentialSource(name string, cfg *ProviderConfig) (string, bool) {
 		return describeEnvKeyCredential(cfg, "XAI_API_KEY")
 	case ProviderTypeVenice:
 		return describeEnvKeyCredential(cfg, "VENICE_API_KEY")
+	case ProviderTypeSambaNova:
+		return describeEnvKeyCredential(cfg, "SAMBANOVA_API_KEY")
 	case ProviderTypeClaudeBin:
 		return "claude-bin CLI (no key needed)", true
 	case ProviderTypeChatGPT:

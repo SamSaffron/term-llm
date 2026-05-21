@@ -64,6 +64,12 @@ func detectAvailableProviders() []providerOption {
 			hint:      "set VENICE_API_KEY",
 		},
 		{
+			name:      "SambaNova - SAMBANOVA_API_KEY",
+			value:     "sambanova",
+			available: os.Getenv("SAMBANOVA_API_KEY") != "",
+			hint:      "set SAMBANOVA_API_KEY",
+		},
+		{
 			name:      "OpenRouter - OPENROUTER_API_KEY",
 			value:     "openrouter",
 			available: os.Getenv("OPENROUTER_API_KEY") != "",
@@ -206,6 +212,7 @@ func RunHeadlessSetup() (*config.Config, error) {
 			"codeassist": {Model: "gemini-3.1-pro"},
 			"xai":        {Model: "grok-4-20"},
 			"venice":     {Model: "minimax-m27"},
+			"sambanova":  {Model: "gpt-oss-120b"},
 			"zen":        {Model: "minimax-m2.5-free"},
 		},
 		Exec: config.ExecConfig{
@@ -384,6 +391,9 @@ func RunSetupWizard() (*config.Config, error) {
 			},
 			"venice": {
 				Model: "venice-uncensored",
+			},
+			"sambanova": {
+				Model: "gpt-oss-120b",
 			},
 			"zen": {
 				Model: "minimax-m2.1-free",

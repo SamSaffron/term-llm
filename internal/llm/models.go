@@ -276,6 +276,15 @@ var ProviderModels = map[string][]ModelEntry{
 		{ID: "nvidia-nemotron-3-nano-30b-a3b", InputLimit: 128_000, OutputLimit: 16_384},
 		{ID: "nvidia-nemotron-cascade-2-30b-a3b", InputLimit: 256_000, OutputLimit: 32_768},
 	},
+	"sambanova": {
+		// SambaCloud-hosted models on RDU. Limits per https://docs.sambanova.ai/cloud/docs/get-started/supported-models
+		{ID: "gpt-oss-120b", InputLimit: 131_072, OutputLimit: 8_192},
+		{ID: "DeepSeek-V3.1", InputLimit: 131_072, OutputLimit: 8_192},
+		{ID: "DeepSeek-V3.2", InputLimit: 131_072, OutputLimit: 8_192},
+		{ID: "Meta-Llama-3.3-70B-Instruct", InputLimit: 131_072, OutputLimit: 8_192},
+		{ID: "MiniMax-M2.5", InputLimit: 131_072, OutputLimit: 8_192},
+		{ID: "MiniMax-M2.7", InputLimit: 131_072, OutputLimit: 8_192},
+	},
 }
 
 // ProviderModelIDs returns just the model ID strings for a provider.
@@ -321,6 +330,7 @@ var ProviderFastModels = map[string]string{
 	"zen":        "minimax-m2.5-free",
 	"bedrock":    "claude-haiku-4-5",
 	"venice":     "llama-3.2-3b",
+	"sambanova":  "Meta-Llama-3.3-70B-Instruct",
 	"openrouter": "anthropic/claude-haiku-4-5",
 	"claude-bin": "haiku",
 	"ollama":     ollamaChatDefaultModel,
@@ -478,7 +488,7 @@ func SortModelIDsByPopularity(provider, defaultModel string, ids []string) []str
 
 // GetBuiltInProviderNames returns the built-in provider type names
 func GetBuiltInProviderNames() []string {
-	return []string{"anthropic", "bedrock", "openai", "chatgpt", "copilot", "openrouter", "gemini", "gemini-cli", "zen", "claude-bin", "xai", "venice", "ollama"}
+	return []string{"anthropic", "bedrock", "openai", "chatgpt", "copilot", "openrouter", "gemini", "gemini-cli", "zen", "claude-bin", "xai", "venice", "sambanova", "ollama"}
 }
 
 // GetProviderNames returns valid provider names from config plus built-in types.

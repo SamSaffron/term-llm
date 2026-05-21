@@ -134,6 +134,13 @@ var builtinProviderMeta = map[string]struct {
 		supportsListModels: true,
 		description:        "Venice AI (private, uncensored inference — OpenAI-compatible)",
 	},
+	"sambanova": {
+		credential:         "api_key",
+		envVar:             "SAMBANOVA_API_KEY",
+		requiresKey:        true,
+		supportsListModels: true,
+		description:        "SambaNova Cloud (RDU-hosted inference — OpenAI-compatible)",
+	},
 	"ollama": {
 		credential:         "none",
 		envVar:             "",
