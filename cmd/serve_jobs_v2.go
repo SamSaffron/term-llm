@@ -94,6 +94,7 @@ type jobsV2Job struct {
 	MisfirePolicy     string            `json:"misfire_policy,omitempty"`
 	Labels            json.RawMessage   `json:"labels,omitempty"`
 	NextRunAt         *time.Time        `json:"next_run_at,omitempty"`
+	LastRun           *jobsV2Run        `json:"last_run,omitempty"`
 	CreatedAt         time.Time         `json:"created_at"`
 	UpdatedAt         time.Time         `json:"updated_at"`
 }
@@ -1482,6 +1483,9 @@ func (m *jobsV2Manager) GetJob(id string) (jobsV2Job, error) {
 	if err != nil {
 		return jobsV2Job{}, err
 	}
+	if err := m.attachLastRuns([]*jobsV2Job{&job}); err != nil {
+		return jobsV2Job{}, err
+	}
 	return job, nil
 }
 
@@ -1515,7 +1519,59 @@ func (m *jobsV2Manager) ListJobs(limit, offset int) ([]jobsV2Job, int, error) {
 	if err := rows.Err(); err != nil {
 		return nil, 0, err
 	}
+	jobPtrs := make([]*jobsV2Job, 0, len(jobs))
+	for i := range jobs {
+		jobPtrs = append(jobPtrs, &jobs[i])
+	}
+	if err := m.attachLastRuns(jobPtrs); err != nil {
+		return nil, 0, err
+	}
 	return jobs, total, nil
+}
+
+func (m *jobsV2Manager) attachLastRuns(jobs []*jobsV2Job) error {
+	ids := make([]string, 0, len(jobs))
+	byID := make(map[string]*jobsV2Job, len(jobs))
+	for _, job := range jobs {
+		if job == nil || strings.TrimSpace(job.ID) == "" {
+			continue
+		}
+		ids = append(ids, job.ID)
+		byID[job.ID] = job
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	query := `SELECT ` + jobsV2RunSummaryColumns + ` FROM (
+		SELECT ` + jobsV2RunSummaryColumns + `,
+			ROW_NUMBER() OVER (PARTITION BY job_id ORDER BY created_at DESC, id DESC) AS rn
+		FROM job_runs_v2
+		WHERE job_id IN (` + strings.Join(placeholders, ",") + `)
+	) WHERE rn = 1`
+	rows, err := m.db.Query(query, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		run, err := scanRunSummaryV2(rows)
+		if err != nil {
+			return err
+		}
+		if job := byID[run.JobID]; job != nil {
+			r := run
+			job.LastRun = &r
+		}
+	}
+	return rows.Err()
 }
 
 func (m *jobsV2Manager) UpdateJob(id string, req jobsV2Job) (jobsV2Job, error) {

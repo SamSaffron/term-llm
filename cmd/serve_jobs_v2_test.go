@@ -1406,3 +1406,42 @@ func BenchmarkJobsV2LLMRunnerTextDeltaAccumulation(b *testing.B) {
 		}
 	}
 }
+
+func TestJobsV2ListJobsIncludesLastRunSummary(t *testing.T) {
+	mgr, err := newJobsV2Manager(":memory:", 0, nil)
+	if err != nil {
+		t.Fatalf("newJobsV2Manager failed: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+
+	now := time.Date(2026, 5, 22, 13, 0, 0, 0, time.UTC)
+	_, err = mgr.db.Exec(`INSERT INTO jobs_v2 (id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, concurrency_policy, max_concurrent_runs, timeout_seconds, misfire_policy, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'forbid', 1, 60, 'skip', ?, ?)`,
+		"job_last_run", "last-run", jobsV2RunnerProgram, `{"command":"true"}`, jobsV2TriggerManual, `{}`, now.Add(-time.Hour), now.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("insert job: %v", err)
+	}
+	_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, started_at, finished_at, exit_code, error, created_at, updated_at) VALUES (?, ?, 1, 'schedule', ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"run_old", "job_last_run", now.Add(-2*time.Hour), jobsV2RunSucceeded, now.Add(-2*time.Hour), now.Add(-2*time.Hour).Add(time.Second), 0, "", now.Add(-2*time.Hour), now.Add(-2*time.Hour))
+	if err != nil {
+		t.Fatalf("insert old run: %v", err)
+	}
+	_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, started_at, finished_at, exit_code, error, created_at, updated_at) VALUES (?, ?, 1, 'schedule', ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"run_new", "job_last_run", now, jobsV2RunFailed, now, now.Add(time.Second), 0, "boom", now, now)
+	if err != nil {
+		t.Fatalf("insert new run: %v", err)
+	}
+
+	jobs, _, err := mgr.ListJobs(10, 0)
+	if err != nil {
+		t.Fatalf("ListJobs failed: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("len(jobs) = %d, want 1", len(jobs))
+	}
+	if jobs[0].LastRun == nil {
+		t.Fatalf("LastRun = nil, want latest run summary")
+	}
+	if jobs[0].LastRun.ID != "run_new" || jobs[0].LastRun.Status != jobsV2RunFailed || jobs[0].LastRun.Error != "boom" {
+		t.Fatalf("LastRun = %+v, want failed run_new with error", jobs[0].LastRun)
+	}
+}
