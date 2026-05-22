@@ -29,8 +29,8 @@ func (sr *StreamRenderer) currentBlockContent() string {
 // renderPartialBlock renders safe content from an incomplete block.
 // In altscreen mode (with termCtrl), it clears and re-renders the partial block
 // in place. For resettable flowing outputs (like TextSegmentRenderer's buffer),
-// it rewrites the full rendered snapshot so View() can show token-by-token text
-// without terminal cursor control.
+// it renders the partial block once and then reuses the previously-rendered
+// prefix so smooth ticks don't have to re-render the full committed snapshot.
 func (sr *StreamRenderer) renderPartialBlock() error {
 	content := sr.currentBlockContent()
 	if len(content) == 0 {
@@ -71,7 +71,7 @@ func (sr *StreamRenderer) renderPartialBlock() error {
 		}
 		sr.partialState.lineCount = sr.termCtrl.CountLines(rendered)
 	} else {
-		snapshot, err := sr.renderPartialSnapshot(safeContent)
+		snapshot, err := sr.renderFlowingPartialSnapshot(safeContent, rendered)
 		if err != nil {
 			return err
 		}
@@ -85,6 +85,26 @@ func (sr *StreamRenderer) renderPartialBlock() error {
 	sr.partialState.safeMarkdown = safeContent
 	sr.partialState.safeRendered = rendered
 	return nil
+}
+
+// renderFlowingPartialSnapshot reuses the already-rendered committed prefix once
+// the first flowing preview for a block has established the correct join between
+// committed content and the active partial block.
+func (sr *StreamRenderer) renderFlowingPartialSnapshot(safeContent, rendered string) ([]byte, error) {
+	if sr.partialState.safeMarkdown != "" && bytes.HasSuffix(sr.lastRendered, []byte(sr.partialState.safeRendered)) {
+		prefixLen := len(sr.lastRendered) - len(sr.partialState.safeRendered)
+		snapshot := make([]byte, 0, prefixLen+len(rendered))
+		snapshot = append(snapshot, sr.lastRendered[:prefixLen]...)
+		snapshot = append(snapshot, rendered...)
+		return snapshot, nil
+	}
+
+	snapshot, err := sr.renderPartialSnapshot(safeContent)
+	if err != nil {
+		return nil, err
+	}
+
+	return snapshot, nil
 }
 
 func (sr *StreamRenderer) renderPartialSnapshot(safeContent string) ([]byte, error) {
@@ -114,6 +134,10 @@ func (sr *StreamRenderer) renderPartialSnapshot(safeContent string) ([]byte, err
 // For paragraph content, it renders directly. For other block types,
 // it may need to wrap in appropriate context.
 func (sr *StreamRenderer) renderPartial(content string) (string, error) {
+	if sr.hasTabs {
+		content = strings.ReplaceAll(content, "\t", "  ")
+	}
+
 	// Render the content through the configured markdown renderer.
 	renderedBytes, err := sr.renderer.Render([]byte(content))
 	if err != nil {

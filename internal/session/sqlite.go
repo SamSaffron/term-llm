@@ -1648,10 +1648,17 @@ func (s *SQLiteStore) ClearCompactionBoundary(ctx context.Context, id string) er
 	})
 }
 
-// ReplaceMessages deletes all existing messages for the session and inserts
-// the new set in a single transaction. Because the replacement snapshot becomes
-// the complete persisted history, any previous compaction boundary is cleared.
+// ReplaceMessages reconciles the complete persisted history for a session.
+// It preserves any unchanged prefix and rewrites only the changed suffix, avoiding
+// a DELETE+INSERT of long histories when serve/web persists an appended snapshot.
+// Because the replacement snapshot becomes the complete persisted history, any
+// previous compaction boundary is cleared.
 func (s *SQLiteStore) ReplaceMessages(ctx context.Context, sessionID string, messages []Message) error {
+	partsJSON, err := prepareReplacementMessageParts(messages)
+	if err != nil {
+		return err
+	}
+
 	return retryOnBusy(ctx, 5, func() error {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
@@ -1659,36 +1666,44 @@ func (s *SQLiteStore) ReplaceMessages(ctx context.Context, sessionID string, mes
 		}
 		defer tx.Rollback()
 
-		// Delete all existing messages for this session
-		if _, err := tx.ExecContext(ctx, "DELETE FROM messages WHERE session_id = ?", sessionID); err != nil {
-			return fmt.Errorf("delete existing messages: %w", err)
-		}
-
-		insertStmt, err := tx.PrepareContext(ctx, `
-			INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+		commonPrefix, fullDelete, err := replacementCommonPrefix(ctx, tx, sessionID, messages, partsJSON)
 		if err != nil {
-			return fmt.Errorf("prepare message insert: %w", err)
+			return err
 		}
-		defer insertStmt.Close()
 
-		// Insert new messages with sequential sequence numbers
-		for i, msg := range messages {
-			msg.SessionID = sessionID
-			msg.Sequence = i
-			if msg.CreatedAt.IsZero() {
-				msg.CreatedAt = time.Now()
+		// Drop the first changed row and any stale suffix. Unchanged prefix rows keep
+		// their rowids, FTS entries, and created_at values; triggers update FTS and
+		// message_count only for rows that actually changed. If legacy/corrupt rows
+		// have duplicate or negative sequence numbers, fall back to the old full
+		// rewrite so replacement remains a complete-history operation.
+		if fullDelete {
+			if _, err := tx.ExecContext(ctx, "DELETE FROM messages WHERE session_id = ?", sessionID); err != nil {
+				return fmt.Errorf("delete existing messages: %w", err)
 			}
+		} else if _, err := tx.ExecContext(ctx, "DELETE FROM messages WHERE session_id = ? AND sequence >= ?", sessionID, commonPrefix); err != nil {
+			return fmt.Errorf("delete changed messages: %w", err)
+		}
 
-			partsJSON, err := msg.PartsJSON()
+		if commonPrefix < len(messages) {
+			insertStmt, err := tx.PrepareContext(ctx, `
+				INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
 			if err != nil {
-				return fmt.Errorf("serialize parts for message %d: %w", i, err)
+				return fmt.Errorf("prepare message insert: %w", err)
 			}
+			defer insertStmt.Close()
 
-			_, err = insertStmt.ExecContext(ctx,
-				sessionID, string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.TurnIndex, msg.CreatedAt, msg.Sequence)
-			if err != nil {
-				return fmt.Errorf("insert message %d: %w", i, err)
+			for i := commonPrefix; i < len(messages); i++ {
+				msg := messages[i]
+				createdAt := msg.CreatedAt
+				if createdAt.IsZero() {
+					createdAt = time.Now()
+				}
+				_, err = insertStmt.ExecContext(ctx,
+					sessionID, string(msg.Role), partsJSON[i], msg.TextContent, msg.DurationMs, msg.TurnIndex, createdAt, i)
+				if err != nil {
+					return fmt.Errorf("insert message %d: %w", i, err)
+				}
 			}
 		}
 
@@ -1713,6 +1728,88 @@ func (s *SQLiteStore) ReplaceMessages(ctx context.Context, sessionID string, mes
 
 		return tx.Commit()
 	})
+}
+
+func prepareReplacementMessageParts(messages []Message) ([]string, error) {
+	partsJSON := make([]string, len(messages))
+	for i := range messages {
+		parts, err := messages[i].PartsJSON()
+		if err != nil {
+			return nil, fmt.Errorf("serialize parts for message %d: %w", i, err)
+		}
+		partsJSON[i] = parts
+	}
+	return partsJSON, nil
+}
+
+func replacementCommonPrefix(ctx context.Context, tx *sql.Tx, sessionID string, desired []Message, desiredPartsJSON []string) (prefix int, fullDelete bool, err error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT sequence, role, parts, text_content, duration_ms, turn_index
+		FROM messages
+		WHERE session_id = ?
+		ORDER BY sequence ASC, id ASC`, sessionID)
+	if err != nil {
+		return 0, false, fmt.Errorf("query existing messages: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var sequence int
+		var role, partsJSON string
+		var textContent sql.NullString
+		var durationMs sql.NullInt64
+		var turnIndex sql.NullInt64
+		if err := rows.Scan(&sequence, &role, &partsJSON, &textContent, &durationMs, &turnIndex); err != nil {
+			return 0, false, fmt.Errorf("scan existing message: %w", err)
+		}
+		if sequence < 0 {
+			return 0, true, nil
+		}
+
+		if prefix >= len(desired) {
+			if sequence < prefix {
+				return 0, true, nil
+			}
+			break
+		}
+		if sequence != prefix {
+			// A duplicate/out-of-order sequence below the already accepted prefix
+			// cannot be removed by deleting sequence >= prefix, so fall back to a full
+			// rewrite. Gaps above the prefix are safely truncated from the gap onward.
+			if sequence < prefix {
+				return 0, true, nil
+			}
+			break
+		}
+
+		want := desired[prefix]
+		if role != string(want.Role) ||
+			partsJSON != desiredPartsJSON[prefix] ||
+			nullStringValue(textContent) != want.TextContent ||
+			nullInt64Value(durationMs) != want.DurationMs ||
+			int(nullInt64Value(turnIndex)) != want.TurnIndex {
+			break
+		}
+		prefix++
+	}
+	if err := rows.Err(); err != nil {
+		return 0, false, err
+	}
+	return prefix, false, nil
+}
+
+func nullStringValue(v sql.NullString) string {
+	if !v.Valid {
+		return ""
+	}
+	return v.String
+}
+
+func nullInt64Value(v sql.NullInt64) int64 {
+	if !v.Valid {
+		return 0
+	}
+	return v.Int64
 }
 
 // CompactMessages appends compacted messages to the session, preserving old

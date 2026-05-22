@@ -74,6 +74,165 @@ func TestSQLiteStoreGetMessagesFromHonorsLimit(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreReplaceMessagesPreservesUnchangedPrefix(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	messages := []Message{
+		*NewMessage(sess.ID, llm.UserText("stable user"), 0),
+		*NewMessage(sess.ID, llm.AssistantText("stable assistant"), 1),
+		*NewMessage(sess.ID, llm.UserText("old suffix"), 2),
+	}
+	for i := range messages {
+		messages[i].CreatedAt = base.Add(time.Duration(i) * time.Second)
+		messages[i].TurnIndex = i
+	}
+	if err := store.ReplaceMessages(ctx, sess.ID, messages); err != nil {
+		t.Fatalf("initial ReplaceMessages: %v", err)
+	}
+	before, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages before: %v", err)
+	}
+	if len(before) != 3 {
+		t.Fatalf("initial message count = %d, want 3", len(before))
+	}
+
+	replacement := []Message{
+		*NewMessage(sess.ID, llm.UserText("stable user"), 0),
+		*NewMessage(sess.ID, llm.AssistantText("stable assistant"), 1),
+		*NewMessage(sess.ID, llm.UserText("new suffix"), 2),
+		*NewMessage(sess.ID, llm.AssistantText("new tail"), 3),
+	}
+	for i := range replacement {
+		// Simulate serve/web rebuilding a fresh snapshot for unchanged history: the
+		// content is identical, but CreatedAt is newly allocated and should not force
+		// a full rewrite of the prefix.
+		replacement[i].CreatedAt = base.Add(time.Duration(i+100) * time.Second)
+		replacement[i].TurnIndex = i
+	}
+	if _, err := store.db.ExecContext(ctx, "UPDATE sessions SET compaction_seq = 5, compaction_count = 1 WHERE id = ?", sess.ID); err != nil {
+		t.Fatalf("seed compaction boundary: %v", err)
+	}
+	if err := store.ReplaceMessages(ctx, sess.ID, replacement); err != nil {
+		t.Fatalf("replacement ReplaceMessages: %v", err)
+	}
+
+	after, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages after: %v", err)
+	}
+	if len(after) != 4 {
+		t.Fatalf("final message count = %d, want 4", len(after))
+	}
+	if after[0].ID != before[0].ID || after[1].ID != before[1].ID {
+		t.Fatalf("unchanged prefix row IDs = [%d %d], want [%d %d]", after[0].ID, after[1].ID, before[0].ID, before[1].ID)
+	}
+	if after[2].ID == before[2].ID {
+		t.Fatalf("changed suffix row kept old ID %d; want rewritten suffix", after[2].ID)
+	}
+	if after[2].TextContent != "new suffix" || after[3].TextContent != "new tail" {
+		t.Fatalf("suffix texts = %q, %q; want new suffix/new tail", after[2].TextContent, after[3].TextContent)
+	}
+
+	results, err := store.Search(ctx, "old suffix", 10)
+	if err != nil {
+		t.Fatalf("Search old suffix: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("old suffix still in FTS: %#v", results)
+	}
+	results, err = store.Search(ctx, "new suffix", 10)
+	if err != nil {
+		t.Fatalf("Search new suffix: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("new suffix FTS matches = %d, want 1", len(results))
+	}
+	meta, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("Get meta: %v", err)
+	}
+	if meta.CompactionSeq != -1 || meta.CompactionCount != 0 {
+		t.Fatalf("compaction boundary = seq %d count %d, want cleared", meta.CompactionSeq, meta.CompactionCount)
+	}
+	summaries, err := store.List(ctx, ListOptions{Limit: 5})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(summaries) != 1 || summaries[0].MessageCount != 4 {
+		t.Fatalf("summary count = len %d message_count %d, want len 1 count 4", len(summaries), summaries[0].MessageCount)
+	}
+}
+
+func TestSQLiteStoreReplaceMessagesFallsBackForDuplicateSequences(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	desired := []Message{*NewMessage(sess.ID, llm.UserText("kept message"), 0)}
+	if err := store.ReplaceMessages(ctx, sess.ID, desired); err != nil {
+		t.Fatalf("initial ReplaceMessages: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `DROP INDEX IF EXISTS idx_messages_session_sequence`); err != nil {
+		t.Fatalf("drop sequence index for duplicate fixture: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `
+		INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence)
+		VALUES (?, 'user', ?, 'stale duplicate', 0, 0, ?, 0)`,
+		sess.ID, `[{"type":"text","text":"stale duplicate"}]`, time.Now().UTC()); err != nil {
+		t.Fatalf("insert duplicate sequence row: %v", err)
+	}
+
+	if err := store.ReplaceMessages(ctx, sess.ID, desired); err != nil {
+		t.Fatalf("ReplaceMessages with duplicate sequence: %v", err)
+	}
+
+	got, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(got) != 1 || got[0].TextContent != "kept message" {
+		t.Fatalf("messages after duplicate cleanup = %#v, want one kept message", got)
+	}
+	results, err := store.Search(ctx, "stale duplicate", 10)
+	if err != nil {
+		t.Fatalf("Search stale duplicate: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("stale duplicate still in FTS: %#v", results)
+	}
+	summaries, err := store.List(ctx, ListOptions{Limit: 5})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(summaries) != 1 || summaries[0].MessageCount != 1 {
+		t.Fatalf("summary count = len %d message_count %d, want len 1 count 1", len(summaries), summaries[0].MessageCount)
+	}
+}
+
 func TestSQLiteStoreReplaceMessagesPreservesTurnIndex(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 

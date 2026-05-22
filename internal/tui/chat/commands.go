@@ -571,7 +571,6 @@ func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
 		m.smoothBuffer.Reset()
 	}
 	m.smoothTickPending = false
-	m.deferredStreamRead = false
 	m.streamRenderTickPending = false
 
 	// Reset stats for new session

@@ -473,6 +473,97 @@ func TestPartialRendering_CompleteBoldThenIncomplete(t *testing.T) {
 	}
 }
 
+type recordingRenderer struct {
+	calls [][]byte
+}
+
+func (r *recordingRenderer) Render(source []byte) ([]byte, error) {
+	r.calls = append(r.calls, append([]byte(nil), source...))
+	return append([]byte(nil), source...), nil
+}
+
+func (*recordingRenderer) Resize(int) {}
+
+func (r *recordingRenderer) resetCalls() {
+	r.calls = nil
+}
+
+func TestFlowingPartialPreviewAvoidsFullSnapshotRerenderAfterFirstTick(t *testing.T) {
+	var buf bytes.Buffer
+	renderer := &recordingRenderer{}
+
+	sr, err := NewRendererWithOptions(
+		&buf,
+		renderer,
+		[]StreamRendererOption{WithPartialRendering()},
+	)
+	if err != nil {
+		t.Fatalf("NewRendererWithOptions failed: %v", err)
+	}
+
+	if _, err := sr.Write([]byte("# Title\n\n")); err != nil {
+		t.Fatalf("Write committed block failed: %v", err)
+	}
+
+	renderer.resetCalls()
+	if _, err := sr.Write([]byte("Hello")); err != nil {
+		t.Fatalf("Write first partial failed: %v", err)
+	}
+
+	renderer.resetCalls()
+	if _, err := sr.Write([]byte(" world")); err != nil {
+		t.Fatalf("Write second partial failed: %v", err)
+	}
+
+	if len(renderer.calls) != 1 {
+		var calls []string
+		for _, call := range renderer.calls {
+			calls = append(calls, string(call))
+		}
+		t.Fatalf("expected only the current partial block to be re-rendered, got %d render calls: %q", len(renderer.calls), calls)
+	}
+	if got := string(renderer.calls[0]); got != "Hello world" {
+		t.Fatalf("expected only the current partial markdown to be rendered, got %q", got)
+	}
+	if got := buf.String(); got != "# Title\n\nHello world" {
+		t.Fatalf("buffer = %q, want %q", got, "# Title\n\nHello world")
+	}
+}
+
+func TestFlowingPartialPreviewMatchesFullRenderAcrossUpdates(t *testing.T) {
+	var buf bytes.Buffer
+
+	sr, err := NewRendererWithOptions(
+		&buf,
+		newTestMarkdownRenderer(testRenderWidth),
+		[]StreamRendererOption{WithPartialRendering()},
+	)
+	if err != nil {
+		t.Fatalf("NewRendererWithOptions failed: %v", err)
+	}
+
+	input := "# Title\n\nThis is the first paragraph"
+	for _, chunk := range []string{"# Title\n\n", "This is the first ", "paragraph"} {
+		if _, err := sr.Write([]byte(chunk)); err != nil {
+			t.Fatalf("Write(%q) failed: %v", chunk, err)
+		}
+	}
+
+	want, err := newTestMarkdownRenderer(testRenderWidth).Render([]byte(input))
+	if err != nil {
+		t.Fatalf("direct render failed: %v", err)
+	}
+	want = normalizeNewlines(want)
+	stableLen := len(want)
+	for stableLen > 0 && want[stableLen-1] == '\n' {
+		stableLen--
+	}
+
+	if got := buf.String(); got != string(want[:stableLen]) {
+		t.Fatalf("partial preview mismatch\nwant: %q\ngot:  %q", string(want[:stableLen]), got)
+	}
+}
+
 // stripAnsiHelper removes ANSI escape sequences for test assertions.
 // Note: can't use ui.StripANSI here because ui imports streaming (circular).
 func stripAnsiHelper(s string) string {

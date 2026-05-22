@@ -816,7 +816,7 @@ func buildCompatTools(specs []ToolSpec) ([]oaiTool, error) {
 	}
 	tools := make([]oaiTool, 0, len(specs))
 	for _, spec := range specs {
-		schema, err := json.Marshal(spec.Schema)
+		schema, err := cachedToolSchemaJSON(spec.Schema)
 		if err != nil {
 			return nil, fmt.Errorf("marshal tool schema %s: %w", spec.Name, err)
 		}

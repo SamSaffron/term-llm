@@ -88,7 +88,6 @@ type Model struct {
 	// Smooth text buffer for 60fps rendering
 	smoothBuffer            *ui.SmoothBuffer
 	smoothTickPending       bool
-	deferredStreamRead      bool
 	streamRenderTickPending bool
 	newlineCompactor        *ui.StreamingNewlineCompactor
 
@@ -1421,10 +1420,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					cmds = append(cmds, ui.SmoothTick())
 				}
 			}
-			if m.deferredStreamRead && m.streaming {
-				m.deferredStreamRead = false
-				cmds = append(cmds, m.listenForStreamEvents())
-			}
 			if m.streamPerf != nil {
 				m.streamPerf.RecordSmoothTickHandled(hadWords, m.smoothBuffer.Len())
 				m.streamPerf.RecordDuration(durationMetricSmoothTick, time.Since(tickStart))
@@ -1454,7 +1449,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.smoothBuffer.Reset()
 				}
 				m.smoothTickPending = false
-				m.deferredStreamRead = false
 				// This resets local scheduling state for the next stream.
 				// An already in-flight render tick may still arrive and no-op.
 				m.streamRenderTickPending = false
@@ -1653,7 +1647,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.smoothBuffer.Reset()
 			}
 			m.smoothTickPending = false
-			m.deferredStreamRead = false
 			m.streamRenderTickPending = false
 			if m.tracker != nil {
 				m.tracker.DiscardAttempt()
@@ -1871,7 +1864,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.newlineCompactor = nil
 			m.smoothTickPending = false
-			m.deferredStreamRead = false
 			// This resets local scheduling state for the next stream.
 			// An already in-flight render tick may still arrive and no-op.
 			m.streamRenderTickPending = false
@@ -1930,15 +1922,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Continue listening for more events unless we're done or got an error.
-		// When a smooth tick is already pending for streamed text, defer the next
-		// blocking stream read until that tick so Bubble Tea can coalesce provider
-		// deltas into frame-paced updates.
+		// Keep draining the provider stream immediately even when text rendering is
+		// frame-paced, so bursty deltas don't back up behind the bounded adapter channel.
 		if ev.Type != ui.StreamEventDone && ev.Type != ui.StreamEventError {
-			if ev.Type == ui.StreamEventText && m.smoothTickPending {
-				m.deferredStreamRead = true
-			} else {
-				cmds = append(cmds, m.listenForStreamEvents())
-			}
+			cmds = append(cmds, m.listenForStreamEvents())
 		}
 		if m.streamPerf != nil {
 			m.streamPerf.RecordDuration(durationMetricStreamEvent, time.Since(streamEventStart))
