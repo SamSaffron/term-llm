@@ -19,16 +19,10 @@ import (
 func ShowCommandHelp(command, shell string, engine *llm.Engine) error {
 	ctx := context.Background()
 
-	// Build the help prompt
-	helpPrompt := prompt.HelpPrompt(command, shell)
-
-	req := llm.Request{
-		Messages: []llm.Message{
-			llm.UserText(helpPrompt),
-		},
-		Search: false,
-		Debug:  false,
-	}
+	// Build the help request. Keep detailed instructions in a system message so
+	// Responses-style providers that require an explicit instructions field (for
+	// example ChatGPT/Codex) accept the request.
+	req := buildCommandHelpRequest(command, shell)
 
 	// Get TTY for shell integration
 	tty, err := getTTY()
@@ -79,6 +73,17 @@ func ShowCommandHelp(command, shell string, engine *llm.Engine) error {
 
 	_, err = p.Run()
 	return err
+}
+
+func buildCommandHelpRequest(command, shell string) llm.Request {
+	return llm.Request{
+		Messages: []llm.Message{
+			llm.SystemText(prompt.HelpSystemPrompt(shell)),
+			llm.UserText(prompt.HelpUserPrompt(command)),
+		},
+		Search: false,
+		Debug:  false,
+	}
 }
 
 // Messages
@@ -146,12 +151,16 @@ func (m helpModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case contentMsg:
+		wasAtBottom := m.viewport.AtBottom()
 		m.content.WriteString(string(msg))
 		// Re-render and update viewport
 		m.rendered = renderMarkdown(m.content.String(), m.width)
 		m.viewport.SetContent(m.rendered)
-		// Auto-scroll to bottom while streaming
-		m.viewport.GotoBottom()
+		// Follow streaming output only while the user is already at the bottom.
+		// If they scroll up to read earlier content, preserve their viewport.
+		if wasAtBottom {
+			m.viewport.GotoBottom()
+		}
 
 	case doneMsg:
 		m.loading = false

@@ -2,11 +2,9 @@ package prompt
 
 import "fmt"
 
-// HelpPrompt returns the prompt for generating detailed command help
-func HelpPrompt(command, shell string) string {
-	return fmt.Sprintf(`You are a friendly CLI tutor. Explain the following %s command in detail. Be comprehensive, educational, and memorable.
-
-Command: %s
+// HelpSystemPrompt returns the system instructions for generating detailed command help.
+func HelpSystemPrompt(shell string) string {
+	return fmt.Sprintf(`You are a friendly CLI tutor. Explain %s commands in detail. Be comprehensive, educational, and memorable.
 
 Please cover these sections:
 
@@ -31,5 +29,15 @@ List 2-3 related commands the user might find useful, with a one-line descriptio
 ## More Examples
 Show 2-3 additional practical examples of this command for different use cases.
 
-Format your response in clear, readable markdown. Be concise but thorough.`, shell, command)
+Format your response in clear, readable markdown. Be concise but thorough.`, shell)
+}
+
+// HelpUserPrompt returns the user prompt for generating detailed command help.
+func HelpUserPrompt(command string) string {
+	return fmt.Sprintf("Explain this command:\n\n```sh\n%s\n```", command)
+}
+
+// HelpPrompt returns the prompt for generating detailed command help.
+func HelpPrompt(command, shell string) string {
+	return HelpSystemPrompt(shell) + "\n\n" + HelpUserPrompt(command)
 }
