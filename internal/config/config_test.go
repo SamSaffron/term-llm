@@ -609,3 +609,25 @@ func TestSave_QuotesSpecialYAMLValues(t *testing.T) {
 		t.Fatalf("app_title = %#v, want %q", got, "term-llm: dev")
 	}
 }
+
+func TestResolveSearchCredentialsExaMCPEnvFallbackOnlyForOfficialURL(t *testing.T) {
+	t.Setenv("EXA_API_KEY", "env-key")
+
+	official := SearchConfig{}
+	resolveSearchCredentials(&official)
+	if official.ExaMCP.APIKey != "env-key" {
+		t.Fatalf("official Exa MCP API key = %q, want env fallback", official.ExaMCP.APIKey)
+	}
+
+	custom := SearchConfig{ExaMCP: SearchExaMCPConfig{URL: "https://mcp.example.test/mcp"}}
+	resolveSearchCredentials(&custom)
+	if custom.ExaMCP.APIKey != "" {
+		t.Fatalf("custom Exa MCP API key = %q, want no implicit env fallback", custom.ExaMCP.APIKey)
+	}
+
+	explicit := SearchConfig{ExaMCP: SearchExaMCPConfig{URL: "https://mcp.example.test/mcp", APIKey: "${EXA_API_KEY}"}}
+	resolveSearchCredentials(&explicit)
+	if explicit.ExaMCP.APIKey != "env-key" {
+		t.Fatalf("explicit custom Exa MCP API key = %q, want expanded env value", explicit.ExaMCP.APIKey)
+	}
+}

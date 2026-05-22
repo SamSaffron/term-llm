@@ -19,6 +19,9 @@ term-llm mcp add @anthropic/mcp-server-fetch
 # Add from URL (HTTP transport)
 term-llm mcp add https://developers.openai.com/mcp
 
+# Add a bundled remote server
+term-llm mcp add exa                     # Exa search/fetch MCP
+
 # Use with any command
 term-llm exec --mcp playwright "take a screenshot of google.com"
 term-llm ask --mcp github "list my open PRs"
@@ -51,6 +54,13 @@ term-llm mcp browse                   # interactive browser
 term-llm mcp add https://developers.openai.com/mcp
 term-llm mcp add https://mcp.example.com/api
 ```
+
+**Bundled remote servers**:
+```bash
+term-llm mcp add exa       # Exa web_search_exa and web_fetch_exa over https://mcp.exa.ai/mcp
+```
+
+This adds Exa's free remote MCP endpoint. To use your own Exa key with this manually added MCP server, edit `mcp.json` and add an `x-api-key` header. The `search.exa_mcp.api_key` setting applies to term-llm's built-in `search.provider: exa_mcp` path.
 
 ### Using MCP Tools
 

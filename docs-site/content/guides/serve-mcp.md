@@ -75,7 +75,7 @@ The `--tools` flag is **required**. Pass a comma-separated list of tool names, o
 | `web_search` | Search the web via the server's configured search provider |
 | `read_url` | Fetch a web page and return it as markdown |
 
-`web_search` requires a search provider to be configured. If `all` is specified but no provider is available, a warning is logged and the tool is skipped.
+`web_search` defaults to Exa MCP (`search.provider: exa_mcp`). `read_url` defaults to Jina Reader (`search.fetch_provider: jina`), or can use Exa MCP with `search.fetch_provider: exa_mcp`. If provider configuration is invalid, a warning is logged and the tool is skipped.
 
 ### Image
 
@@ -87,7 +87,7 @@ The `--tools` flag is **required**. Pass a comma-separated list of tool names, o
 
 `--tools all` expands to: `read_file`, `write_file`, `edit_file`, `shell`, `grep`, `glob`, `image_generate`, `web_search`, `read_url`.
 
-Tools whose backing provider isn't configured (e.g. `web_search` without a search provider) are skipped with a warning.
+Tools whose backing provider isn't configured are skipped with a warning.
 
 ## Flags
 

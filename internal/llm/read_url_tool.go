@@ -34,9 +34,15 @@ type readURLTarget struct {
 	ips []net.IP
 }
 
-// ReadURLTool fetches web pages using Jina AI Reader.
+// URLFetcher fetches normalized, public URLs for ReadURLTool.
+type URLFetcher interface {
+	FetchURL(ctx context.Context, url string) (string, error)
+}
+
+// ReadURLTool fetches web pages using Jina AI Reader by default.
 type ReadURLTool struct {
-	client *http.Client
+	client  *http.Client
+	fetcher URLFetcher
 }
 
 func NewReadURLTool() *ReadURLTool {
@@ -45,6 +51,12 @@ func NewReadURLTool() *ReadURLTool {
 			Timeout: 2 * time.Minute,
 		},
 	}
+}
+
+func NewReadURLToolWithFetcher(fetcher URLFetcher) *ReadURLTool {
+	tool := NewReadURLTool()
+	tool.fetcher = fetcher
+	return tool
 }
 
 func (t *ReadURLTool) Spec() ToolSpec {
@@ -95,6 +107,14 @@ func (t *ReadURLTool) Execute(ctx context.Context, args json.RawMessage) (ToolOu
 	url, err := resolveReadURLTarget(ctx, t.client, payload.URL)
 	if err != nil {
 		return ToolOutput{}, err
+	}
+
+	if t.fetcher != nil {
+		content, err := t.fetcher.FetchURL(ctx, url)
+		if err != nil {
+			return TextOutput(fmt.Sprintf("Error fetching URL: %v", err)), nil
+		}
+		return TextOutput(content), nil
 	}
 
 	// Fetch via Jina AI Reader

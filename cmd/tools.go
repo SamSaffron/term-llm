@@ -17,8 +17,24 @@ func defaultToolRegistry(cfg *config.Config) *llm.ToolRegistry {
 		searcher = search.NewDuckDuckGoLite(nil)
 	}
 	registry.Register(llm.NewWebSearchTool(searcher))
-	registry.Register(llm.NewReadURLTool())
+	if readURLTool := newReadURLToolForConfig(cfg); readURLTool != nil {
+		registry.Register(readURLTool)
+	}
 	return registry
+}
+
+func newReadURLToolForConfig(cfg *config.Config) *llm.ReadURLTool {
+	switch cfg.Search.FetchProvider {
+	case "", "jina":
+		return llm.NewReadURLTool()
+	case "exa_mcp":
+		return llm.NewReadURLToolWithFetcher(search.NewExaMCPClient(cfg.Search.ExaMCP.URL, cfg.Search.ExaMCP.APIKey))
+	case "none":
+		return nil
+	default:
+		log.Printf("Warning: unknown fetch provider %q, falling back to Jina", cfg.Search.FetchProvider)
+		return llm.NewReadURLTool()
+	}
 }
 
 // newEngine creates an Engine with the default tool registry and global config

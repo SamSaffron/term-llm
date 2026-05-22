@@ -491,9 +491,11 @@ type EmbedOllamaConfig struct {
 
 // SearchConfig configures web search providers
 type SearchConfig struct {
-	Provider      string                 `mapstructure:"provider"`       // exa, perplexity, tavily, brave, google, duckduckgo (default)
+	Provider      string                 `mapstructure:"provider"`       // exa_mcp (default), exa, perplexity, tavily, brave, google, duckduckgo
+	FetchProvider string                 `mapstructure:"fetch_provider"` // jina (default), exa_mcp, none
 	ForceExternal bool                   `mapstructure:"force_external"` // force external search for all providers
 	Exa           SearchExaConfig        `mapstructure:"exa"`
+	ExaMCP        SearchExaMCPConfig     `mapstructure:"exa_mcp"`
 	Perplexity    SearchPerplexityConfig `mapstructure:"perplexity"`
 	Tavily        SearchTavilyConfig     `mapstructure:"tavily"`
 	Brave         SearchBraveConfig      `mapstructure:"brave"`
@@ -502,6 +504,12 @@ type SearchConfig struct {
 
 // SearchExaConfig configures Exa search
 type SearchExaConfig struct {
+	APIKey string `mapstructure:"api_key"`
+}
+
+// SearchExaMCPConfig configures Exa MCP search/fetch
+type SearchExaMCPConfig struct {
+	URL    string `mapstructure:"url"`
 	APIKey string `mapstructure:"api_key"`
 }
 
@@ -1240,6 +1248,13 @@ func resolveSearchCredentials(cfg *SearchConfig) {
 		cfg.Exa.APIKey = os.Getenv("EXA_API_KEY")
 	}
 
+	// Exa MCP credentials (optional; remote MCP has a free tier without a key)
+	cfg.ExaMCP.URL = expandEnv(cfg.ExaMCP.URL)
+	cfg.ExaMCP.APIKey = expandEnv(cfg.ExaMCP.APIKey)
+	if cfg.ExaMCP.APIKey == "" && (cfg.ExaMCP.URL == "" || cfg.ExaMCP.URL == "https://mcp.exa.ai/mcp") {
+		cfg.ExaMCP.APIKey = os.Getenv("EXA_API_KEY")
+	}
+
 	// Perplexity credentials
 	cfg.Perplexity.APIKey = expandEnv(cfg.Perplexity.APIKey)
 	if cfg.Perplexity.APIKey == "" {
@@ -1483,9 +1498,13 @@ var KnownKeys = map[string]bool{
 
 	// Search
 	"search.provider":           true,
+	"search.fetch_provider":     true,
 	"search.force_external":     true,
 	"search.exa":                true,
 	"search.exa.api_key":        true,
+	"search.exa_mcp":            true,
+	"search.exa_mcp.url":        true,
+	"search.exa_mcp.api_key":    true,
 	"search.perplexity":         true,
 	"search.perplexity.api_key": true,
 	"search.tavily":             true,
@@ -1648,8 +1667,10 @@ func GetDefaults() map[string]any {
 		"embed.voyage.model":              "voyage-3.5",
 		"embed.ollama.model":              "nomic-embed-text",
 		"embed.ollama.base_url":           "http://127.0.0.1:11434",
-		"search.provider":                 "duckduckgo",
+		"search.provider":                 "exa_mcp",
+		"search.fetch_provider":           "jina",
 		"search.force_external":           false,
+		"search.exa_mcp.url":              "https://mcp.exa.ai/mcp",
 		"tools.enabled":                   []string{},
 		"tools.read_dirs":                 []string{},
 		"tools.write_dirs":                []string{},

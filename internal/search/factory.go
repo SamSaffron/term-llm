@@ -7,11 +7,11 @@ import (
 )
 
 // NewSearcher creates a Searcher based on the config.
-// Returns DuckDuckGo as the default if no provider is specified.
+// Returns Exa MCP as the default if no provider is specified.
 func NewSearcher(cfg *config.Config) (Searcher, error) {
 	provider := cfg.Search.Provider
 	if provider == "" {
-		provider = "duckduckgo"
+		provider = "exa_mcp"
 	}
 
 	switch provider {
@@ -20,6 +20,9 @@ func NewSearcher(cfg *config.Config) (Searcher, error) {
 			return nil, fmt.Errorf("exa search requires EXA_API_KEY")
 		}
 		return NewExaSearcher(cfg.Search.Exa.APIKey, nil), nil
+
+	case "exa_mcp":
+		return NewExaMCPClient(cfg.Search.ExaMCP.URL, cfg.Search.ExaMCP.APIKey), nil
 
 	case "perplexity":
 		if cfg.Search.Perplexity.APIKey == "" {
@@ -52,6 +55,6 @@ func NewSearcher(cfg *config.Config) (Searcher, error) {
 		return NewDuckDuckGoLite(nil), nil
 
 	default:
-		return nil, fmt.Errorf("unknown search provider: %s (valid: exa, perplexity, tavily, brave, google, duckduckgo)", provider)
+		return nil, fmt.Errorf("unknown search provider: %s (valid: exa, exa_mcp, perplexity, tavily, brave, google, duckduckgo)", provider)
 	}
 }

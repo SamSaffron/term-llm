@@ -101,7 +101,7 @@ When web search is enabled, the chat status line shows `web`; when fast service 
 | `--agent` | `-a` | Use a specific agent (ask/chat only; see also `@agent` syntax) |
 | `--skills` | | Skills mode: all, none, or comma-separated names |
 | `--max N` | `-n N` | Limit to N options in the selection UI |
-| `--search` | `-s` | Enable web search (configurable: Exa, Brave, Google, DuckDuckGo) and page reading |
+| `--search` | `-s` | Enable web search and page reading (see [Search](/guides/search/) for providers) |
 | `--native-search` | | Use provider's native search (override config) |
 | `--no-native-search` | | Force external search tools instead of native |
 | `--print-only` | `-p` | Print the command instead of executing it |

@@ -31,16 +31,63 @@ term-llm ask "latest news" -s --no-native-search
 
 Use this when you want consistency, debugging clarity, or to work around a provider’s native search behavior.
 
+## Default providers
+
+term-llm defaults to Exa MCP for external search and Jina Reader for page fetch:
+
+```yaml
+search:
+  provider: exa_mcp
+  fetch_provider: jina
+  force_external: false
+
+  exa_mcp:
+    url: https://mcp.exa.ai/mcp # optional; this is the default
+    api_key: ${EXA_API_KEY}    # optional; raises Exa MCP free-tier limits
+```
+
+With these defaults, `web_search` uses Exa's free remote MCP server, while `read_url` continues to use the default Jina markdown reader. You do not need an Exa API key unless you want higher Exa MCP limits.
+
 ## Configure external search
+
+Common configurations:
+
+Default: Exa MCP search + Jina page fetch:
+
+```yaml
+search:
+  provider: exa_mcp
+  fetch_provider: jina
+```
+
+Use Exa MCP for both search and page fetch:
+
+```yaml
+search:
+  provider: exa_mcp
+  fetch_provider: exa_mcp
+```
+
+Use another search provider while keeping Jina for `read_url`:
 
 ```yaml
 search:
   provider: perplexity
-
+  fetch_provider: jina
   perplexity:
     api_key: ${PERPLEXITY_API_KEY}
+```
 
+Provider-specific credentials:
+
+```yaml
+search:
   exa:
+    api_key: ${EXA_API_KEY}
+
+  exa_mcp:
+    # url is optional; defaults to https://mcp.exa.ai/mcp
+    # api_key is optional; set it to raise Exa MCP free-tier limits
     api_key: ${EXA_API_KEY}
 
   brave:
@@ -55,12 +102,23 @@ Available external providers:
 
 | Provider | Credentials | Notes |
 |---|---|---|
-| DuckDuckGo | none | default, free |
+| DuckDuckGo | none | free fallback option |
 | Exa | `EXA_API_KEY` | semantic search |
+| Exa MCP | optional `EXA_API_KEY` | default, free remote MCP-backed search (`provider: exa_mcp`); can also back page fetch with `fetch_provider: exa_mcp` |
 | Perplexity | `PERPLEXITY_API_KEY` | search API with concise answer-oriented results |
 | Tavily | `TAVILY_API_KEY` | agent-oriented search |
 | Brave | `BRAVE_API_KEY` | independent index |
 | Google | `GOOGLE_SEARCH_API_KEY` + `GOOGLE_SEARCH_CX` | Custom Search |
+
+Available fetch providers:
+
+| Provider | Notes |
+|---|---|
+| Jina | default `read_url` implementation (`fetch_provider: jina`) |
+| Exa MCP | use Exa MCP `web_fetch_exa` for `read_url` (`fetch_provider: exa_mcp`) |
+| none | do not expose the external `read_url` tool (`fetch_provider: none`) |
+
+`search.provider` and `search.fetch_provider` are independent. For example, `provider: exa_mcp` with `fetch_provider: jina` gives Exa MCP search results but keeps Jina for reading individual pages.
 
 ## Native versus external priority
 

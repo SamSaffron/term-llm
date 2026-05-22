@@ -227,10 +227,12 @@ func printAnnotatedConfig(defaults map[string]any, rawKeys, unknownKeys map[stri
 		},
 		{
 			name: "search",
-			keys: []string{"provider", "force_external"},
+			keys: []string{"provider", "fetch_provider", "force_external"},
 			nested: map[string][]string{
 				"exa":        {"api_key"},
+				"exa_mcp":    {"url", "api_key"},
 				"perplexity": {"api_key"},
+				"tavily":     {"api_key"},
 				"brave":      {"api_key"},
 				"google":     {"api_key", "cx"},
 			},
@@ -1333,7 +1335,17 @@ func configValueCompletions(key, toComplete string) []string {
 		return completions
 
 	case "search.provider":
-		providers := []string{"duckduckgo", "exa", "perplexity", "brave", "google"}
+		providers := []string{"duckduckgo", "exa", "exa_mcp", "perplexity", "tavily", "brave", "google"}
+		var completions []string
+		for _, p := range providers {
+			if strings.HasPrefix(p, toComplete) {
+				completions = append(completions, p)
+			}
+		}
+		return completions
+
+	case "search.fetch_provider":
+		providers := []string{"jina", "exa_mcp", "none"}
 		var completions []string
 		for _, p := range providers {
 			if strings.HasPrefix(p, toComplete) {

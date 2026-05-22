@@ -198,7 +198,11 @@ func runServeMCP(cmd *cobra.Command, args []string) error {
 
 	var readURLTool *llm.ReadURLTool
 	if wantReadURL {
-		readURLTool = llm.NewReadURLTool()
+		readURLTool = newReadURLToolForConfig(cfg)
+		if readURLTool == nil {
+			log.Printf("warning: skipping read_url because search.fetch_provider is none")
+			wantReadURL = false
+		}
 	}
 
 	// Collect MCP tool specs.

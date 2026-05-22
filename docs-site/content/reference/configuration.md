@@ -90,7 +90,12 @@ edit:
   diff_format: auto
 
 search:
-  provider: duckduckgo
+  provider: exa_mcp
+  fetch_provider: jina
+
+  exa_mcp:
+    url: https://mcp.exa.ai/mcp # optional; this is the default
+    api_key: ${EXA_API_KEY} # optional
 
 tools:
   max_tool_output_chars: 20000
@@ -171,8 +176,13 @@ Use this to control whether sessions are persisted, how long they are kept, and 
 
 ```yaml
 search:
-  provider: perplexity
+  provider: exa_mcp
+  fetch_provider: jina
   force_external: false
+
+  exa_mcp:
+    url: https://mcp.exa.ai/mcp # optional; this is the default
+    api_key: ${EXA_API_KEY} # optional, raises free-tier limits
 
   perplexity:
     api_key: ${PERPLEXITY_API_KEY}
@@ -183,6 +193,8 @@ search:
   brave:
     api_key: ${BRAVE_API_KEY}
 ```
+
+Defaults are `provider: exa_mcp` and `fetch_provider: jina`: external search uses Exa's remote MCP server, while `read_url` uses Jina Reader. Set `fetch_provider: exa_mcp` to fetch pages through Exa MCP as well, or `fetch_provider: none` to omit the external `read_url` tool.
 
 Search is large enough to deserve its own page; see [Search](/guides/search/).
 

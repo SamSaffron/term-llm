@@ -10,6 +10,7 @@ type BundledServer struct {
 	Category    string
 	Official    bool   // true if official/reference implementation
 	URL         string // repository or homepage URL
+	RemoteURL   string // streamable HTTP MCP endpoint, when available
 }
 
 // bundledServers contains curated MCP servers organized by category.
@@ -89,6 +90,17 @@ var bundledServers = []BundledServer{
 		Category:    "Reference",
 		Official:    true,
 		URL:         "https://github.com/modelcontextprotocol/servers",
+	},
+	// === Search ===
+	{
+		Name:        "exa",
+		Description: "Exa web search and page fetching via the free remote MCP server",
+		Package:     "exa-mcp-server",
+		PackageType: "npm",
+		Category:    "Search",
+		Official:    true,
+		URL:         "https://github.com/exa-labs/exa-mcp-server",
+		RemoteURL:   "https://mcp.exa.ai/mcp",
 	},
 
 	// === Browser Automation ===
@@ -691,6 +703,13 @@ func (b *BundledServer) ToRegistryServer() RegistryServer {
 
 // ToServerConfig converts a BundledServer to a local ServerConfig.
 func (b *BundledServer) ToServerConfig() ServerConfig {
+	if b.RemoteURL != "" {
+		return ServerConfig{
+			Type: "http",
+			URL:  b.RemoteURL,
+		}
+	}
+
 	cfg := ServerConfig{
 		Env: make(map[string]string),
 	}
