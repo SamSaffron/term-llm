@@ -5,12 +5,15 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 
 	"github.com/samsaffron/term-llm/internal/config"
 )
 
 // Registry manages agent discovery and resolution.
 type Registry struct {
+	mu sync.RWMutex
+
 	// Search paths in priority order (first match wins)
 	searchPaths []searchPath
 
@@ -81,6 +84,9 @@ func NewRegistry(cfg RegistryConfig) (*Registry, error) {
 // This also invalidates the cache for any agents that have preferences set,
 // ensuring the new preferences are applied on next Get().
 func (r *Registry) SetPreferences(prefs map[string]config.AgentPreference) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	// Invalidate cache for agents with changed preferences
 	if r.preferences != nil || prefs != nil {
 		for name := range r.cache {
@@ -99,6 +105,9 @@ func (r *Registry) SetPreferences(prefs map[string]config.AgentPreference) {
 // Resolution order: local > user > search paths > builtin
 // Preferences are applied on top of the loaded agent config.
 func (r *Registry) Get(name string) (*Agent, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	// Check cache first
 	if agent, ok := r.cache[name]; ok {
 		return agent, nil

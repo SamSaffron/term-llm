@@ -1,9 +1,13 @@
 package agents
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+
+	"github.com/samsaffron/term-llm/internal/config"
 )
 
 func TestRegistry_Get(t *testing.T) {
@@ -322,5 +326,71 @@ func TestIsAgentDir(t *testing.T) {
 	}
 	if isAgentDir(filepath.Join(tmpDir, "nonexistent")) {
 		t.Error("isAgentDir(nonexistent) = true, want false")
+	}
+}
+
+func TestRegistry_GetConcurrentWithPreferenceUpdates(t *testing.T) {
+	r := &Registry{
+		useBuiltin: true,
+		cache:      make(map[string]*Agent),
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				agent, err := r.Get("reviewer")
+				if err != nil {
+					t.Errorf("worker %d Get(reviewer): %v", worker, err)
+					return
+				}
+				if agent.Name != "reviewer" {
+					t.Errorf("worker %d got agent %q, want reviewer", worker, agent.Name)
+					return
+				}
+			}
+		}(i)
+	}
+
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				r.SetPreferences(map[string]config.AgentPreference{
+					"reviewer": {Model: fmt.Sprintf("test-model-%d-%d", worker, j)},
+				})
+			}
+		}(i)
+	}
+
+	wg.Wait()
+}
+
+func TestRegistry_GetConcurrentColdBuiltin(t *testing.T) {
+	for iter := 0; iter < 100; iter++ {
+		r := &Registry{
+			useBuiltin: true,
+			cache:      make(map[string]*Agent),
+		}
+
+		var wg sync.WaitGroup
+		for i := 0; i < 3; i++ {
+			wg.Add(1)
+			go func(worker int) {
+				defer wg.Done()
+				agent, err := r.Get("reviewer")
+				if err != nil {
+					t.Errorf("iteration %d worker %d Get(reviewer): %v", iter, worker, err)
+					return
+				}
+				if agent.Name != "reviewer" {
+					t.Errorf("iteration %d worker %d got agent %q, want reviewer", iter, worker, agent.Name)
+				}
+			}(i)
+		}
+		wg.Wait()
 	}
 }
