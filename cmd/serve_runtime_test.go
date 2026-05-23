@@ -236,6 +236,18 @@ func (s *serveRuntimeTestStore) GetMessagesFrom(ctx context.Context, sessionID s
 	return out, nil
 }
 
+func (s *serveRuntimeTestStore) GetLatestVisibleMessageID(ctx context.Context, sessionID string) (int64, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	msgs := s.messages[sessionID]
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == llm.RoleUser || msgs[i].Role == llm.RoleAssistant {
+			return msgs[i].ID, true, nil
+		}
+	}
+	return 0, false, nil
+}
+
 func (s *serveRuntimeTestStore) GetMessageByID(ctx context.Context, msgID int64) (*session.Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -44,6 +44,9 @@ type Store interface {
 	// GetMessagesFrom returns rows at/after fromSeq in sequence order. When limit
 	// <= 0, all remaining rows are returned.
 	GetMessagesFrom(ctx context.Context, sessionID string, fromSeq, limit int) ([]Message, error)
+	// GetLatestVisibleMessageID returns the newest persisted user/assistant
+	// message id for the session. found=false means no visible message exists.
+	GetLatestVisibleMessageID(ctx context.Context, sessionID string) (id int64, found bool, err error)
 	// GetMessageByID retrieves a single message by its global message id.
 	GetMessageByID(ctx context.Context, msgID int64) (*Message, error)
 	ReplaceMessages(ctx context.Context, sessionID string, messages []Message) error

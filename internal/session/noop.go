@@ -64,6 +64,10 @@ func (s *NoopStore) GetMessagesFrom(ctx context.Context, sessionID string, fromS
 	return nil, nil
 }
 
+func (s *NoopStore) GetLatestVisibleMessageID(ctx context.Context, sessionID string) (int64, bool, error) {
+	return 0, false, nil
+}
+
 func (s *NoopStore) GetMessageByID(ctx context.Context, msgID int64) (*Message, error) {
 	return nil, ErrNotFound
 }

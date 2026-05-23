@@ -83,15 +83,14 @@ func (s *serveServer) resolveDurablePreviousResponseID(ctx context.Context, prev
 	if headerSessionID != "" && headerSessionID != msg.SessionID {
 		return durablePreviousResponseResolution{}, http.StatusConflict, fmt.Sprintf("session_id %q conflicts with previous_response_id session %q", headerSessionID, msg.SessionID)
 	}
-	msgs, err := s.store.GetMessages(ctx, msg.SessionID, 0, 0)
+	latestMsgID, found, err := s.store.GetLatestVisibleMessageID(ctx, msg.SessionID)
 	if err != nil {
 		return durablePreviousResponseResolution{}, http.StatusBadRequest, fmt.Sprintf("previous_response_id %q not found", previousResponseID)
 	}
-	latest, ok := latestVisibleMessage(msgs)
-	if !ok || latest.ID != msg.ID {
+	if !found || latestMsgID != msg.ID {
 		latestID := ""
-		if ok {
-			latestID = durableResponseIDForMessageID(latest.ID)
+		if found {
+			latestID = durableResponseIDForMessageID(latestMsgID)
 		}
 		if latestID == "" {
 			latestID = "unknown"
@@ -123,9 +122,9 @@ func (s *serveServer) latestDurableResponseIDForSession(ctx context.Context, ses
 	if s == nil || s.store == nil || sessionID == "" {
 		return ""
 	}
-	msgs, err := s.store.GetMessages(ctx, sessionID, 0, 0)
-	if err != nil {
+	msgID, found, err := s.store.GetLatestVisibleMessageID(ctx, sessionID)
+	if err != nil || !found {
 		return ""
 	}
-	return latestDurableResponseID(msgs)
+	return durableResponseIDForMessageID(msgID)
 }

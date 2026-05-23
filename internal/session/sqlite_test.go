@@ -74,6 +74,53 @@ func TestSQLiteStoreGetMessagesFromHonorsLimit(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreGetLatestVisibleMessageIDSkipsNonVisibleTail(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	messages := []*Message{
+		NewMessage(sess.ID, llm.UserText("first"), 0),
+		NewMessage(sess.ID, llm.AssistantText("second"), 1),
+		NewMessage(sess.ID, llm.Message{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartText, Text: "tool result"}}}, 2),
+		NewMessage(sess.ID, llm.Message{Role: llm.RoleEvent, Parts: []llm.Part{{Type: llm.PartText, Text: "event marker"}}}, 3),
+	}
+	for i, msg := range messages {
+		if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
+			t.Fatalf("AddMessage(%d): %v", i, err)
+		}
+	}
+
+	gotID, found, err := store.GetLatestVisibleMessageID(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("GetLatestVisibleMessageID: %v", err)
+	}
+	if !found {
+		t.Fatal("GetLatestVisibleMessageID found = false, want true")
+	}
+	if gotID != messages[1].ID {
+		t.Fatalf("latest visible id = %d, want %d", gotID, messages[1].ID)
+	}
+
+	gotID, found, err = store.GetLatestVisibleMessageID(ctx, NewID())
+	if err != nil {
+		t.Fatalf("GetLatestVisibleMessageID missing session: %v", err)
+	}
+	if found || gotID != 0 {
+		t.Fatalf("missing session latest visible = (%d, %v), want (0, false)", gotID, found)
+	}
+}
+
 func TestSQLiteStoreReplaceMessagesPreservesUnchangedPrefix(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 

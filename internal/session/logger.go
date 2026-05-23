@@ -77,6 +77,15 @@ func (s *LoggingStore) UpdateMessage(ctx context.Context, sessionID string, msg 
 	return err
 }
 
+// GetLatestVisibleMessageID wraps Store.GetLatestVisibleMessageID with error logging.
+func (s *LoggingStore) GetLatestVisibleMessageID(ctx context.Context, sessionID string) (int64, bool, error) {
+	id, found, err := s.Store.GetLatestVisibleMessageID(ctx, sessionID)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		s.logOnce("GetLatestVisibleMessageID", err)
+	}
+	return id, found, err
+}
+
 // GetMessageByID wraps Store.GetMessageByID with error logging.
 func (s *LoggingStore) GetMessageByID(ctx context.Context, msgID int64) (*Message, error) {
 	msg, err := s.Store.GetMessageByID(ctx, msgID)

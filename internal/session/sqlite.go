@@ -1923,6 +1923,26 @@ func (s *SQLiteStore) GetMessagesFrom(ctx context.Context, sessionID string, fro
 	return messages, rows.Err()
 }
 
+// GetLatestVisibleMessageID retrieves the newest persisted user/assistant
+// message id for a session without deserializing the full transcript.
+func (s *SQLiteStore) GetLatestVisibleMessageID(ctx context.Context, sessionID string) (int64, bool, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id
+		FROM messages
+		WHERE session_id = ? AND role IN ('user', 'assistant')
+		ORDER BY sequence DESC
+		LIMIT 1`, sessionID)
+	var id int64
+	err := row.Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("scan latest visible message id: %w", err)
+	}
+	return id, true, nil
+}
+
 // GetMessageByID retrieves a single message by its global message id.
 func (s *SQLiteStore) GetMessageByID(ctx context.Context, msgID int64) (*Message, error) {
 	row := s.db.QueryRowContext(ctx, `
