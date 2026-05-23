@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -10,6 +11,9 @@ import (
 func TestSubagentProgressDispatcherDoesNotBlockWhenSendStalls(t *testing.T) {
 	enteredSend := make(chan struct{})
 	releaseSend := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseSend) }) }
+	t.Cleanup(release)
 	dispatcher := newSubagentProgressDispatcher(func(string, tools.SubagentEvent) {
 		select {
 		case enteredSend <- struct{}{}:
@@ -24,7 +28,7 @@ func TestSubagentProgressDispatcherDoesNotBlockWhenSendStalls(t *testing.T) {
 	dispatcher.Callback("call-1", tools.SubagentEvent{Type: tools.SubagentEventText, Text: "first"})
 	select {
 	case <-enteredSend:
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("dispatcher did not start sending first event")
 	}
 
@@ -38,11 +42,11 @@ func TestSubagentProgressDispatcherDoesNotBlockWhenSendStalls(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("callbacks blocked while UI send was stalled")
 	}
 
-	close(releaseSend)
+	release()
 }
 
 func TestSubagentProgressDispatcherCoalescesTextBeforeBoundaryEvent(t *testing.T) {

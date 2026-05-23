@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -93,103 +92,54 @@ func runMemoryUpdateRecent(cmd *cobra.Command, args []string) error {
 	}
 	defer sessStore.Close()
 
-	current, err := sessStore.GetCurrent(ctx)
-	if err != nil {
-		return fmt.Errorf("get current session: %w", err)
-	}
-
-	if _, err := readLastUpdatedRecentAt(ctx, store, agentName); err != nil {
-		return err
-	}
-
-	sessions, err := listUpdateRecentSessions(ctx, sessStore, agentName, current)
-	if err != nil {
-		return err
-	}
-
-	currentID := ""
-	if current != nil {
-		currentID = current.ID
-	}
-
-	trackedOffsets := map[string]int{}
-	var inputBuilder strings.Builder
-
-	for _, sess := range sessions {
-		if currentID != "" && sess.ID == currentID {
-			continue
-		}
-
-		startOffset, err := readUpdateRecentOffset(ctx, store, sess.ID)
-		if err != nil {
-			return err
-		}
-
-		messages, err := sessStore.GetMessagesFrom(ctx, sess.ID, startOffset, 0)
-		if err != nil {
-			return fmt.Errorf("get messages for session %s: %w", sess.ID, err)
-		}
-		if len(messages) == 0 {
-			continue
-		}
-
-		block := formatUpdateRecentSessionBlock(sess, messages)
-		if block == "" {
-			continue
-		}
-
-		if inputBuilder.Len() > 0 {
-			inputBuilder.WriteString("\n\n---\n\n")
-		}
-		inputBuilder.WriteString(block)
-
-		lastMessage := messages[len(messages)-1]
-		trackedOffsets[sess.ID] = lastMessage.Sequence + 1
-		if inputBuilder.Len() >= memoryUpdateRecentMaxInputChars {
-			break
-		}
-	}
-
-	if inputBuilder.Len() == 0 {
-		if memoryDryRun {
-			return nil
-		}
-		if err := store.SetMeta(ctx, memoryUpdateRecentMetaKey(agentName), time.Now().UTC().Format(time.RFC3339)); err != nil {
-			return fmt.Errorf("update last update-recent timestamp: %w", err)
-		}
-		return nil
-	}
-
 	recentPath, err := resolveUpdateRecentPath(cfg, agentName)
 	if err != nil {
 		return err
 	}
-	existingRecent, err := loadRecentContent(recentPath)
-	if err != nil {
-		return err
-	}
 
-	fragmentsText, err := loadRecentFragmentsText(ctx, store, agentName, memoryUpdateRecentFragmentChars)
-	if err != nil {
-		return err
-	}
+	var engine *llm.Engine
+	var reqModel string
+	buildUpdatedRecent := func(sessionSnippets, existingRecent, fragmentsText string) (string, error) {
+		if engine == nil {
+			provider, model, err := newMemoryUpdateRecentProvider(cfg, strings.TrimSpace(memoryUpdateRecentModel))
+			if err != nil {
+				return "", err
+			}
+			reqModel = model
+			engine = newEngine(provider, cfg)
+		}
 
-	provider, reqModel, err := newMemoryUpdateRecentProvider(cfg, strings.TrimSpace(memoryUpdateRecentModel))
-	if err != nil {
-		return err
-	}
-	engine := newEngine(provider, cfg)
-
-	updatedRecent, err := runMemoryUpdateRecentRequest(ctx, engine, reqModel, inputBuilder.String(), existingRecent, fragmentsText, memoryUpdateRecentTargetTokens, targetChars)
-	if err != nil {
-		return err
-	}
-	updatedRecent, err = fitUpdatedRecentWithinBudget(ctx, engine, reqModel, updatedRecent, memoryUpdateRecentTargetTokens, targetChars, highWaterChars)
-	if err != nil {
-		return err
+		updatedRecent, err := runMemoryUpdateRecentRequest(ctx, engine, reqModel, sessionSnippets, existingRecent, fragmentsText, memoryUpdateRecentTargetTokens, targetChars)
+		if err != nil {
+			return "", err
+		}
+		updatedRecent, err = fitUpdatedRecentWithinBudget(ctx, engine, reqModel, updatedRecent, memoryUpdateRecentTargetTokens, targetChars, highWaterChars)
+		if err != nil {
+			return "", err
+		}
+		return updatedRecent, nil
 	}
 
 	if memoryDryRun {
+		input, err := collectMemoryUpdateRecentInput(ctx, store, sessStore, agentName)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(input.Text) == "" {
+			return nil
+		}
+		existingRecent, err := loadRecentContent(recentPath)
+		if err != nil {
+			return err
+		}
+		fragmentsText, err := loadRecentFragmentsText(ctx, store, agentName, memoryUpdateRecentFragmentChars)
+		if err != nil {
+			return err
+		}
+		updatedRecent, err := buildUpdatedRecent(input.Text, existingRecent, fragmentsText)
+		if err != nil {
+			return err
+		}
 		fmt.Print(updatedRecent)
 		if !strings.HasSuffix(updatedRecent, "\n") {
 			fmt.Println()
@@ -197,27 +147,58 @@ func runMemoryUpdateRecent(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	if err := os.MkdirAll(filepath.Dir(recentPath), 0755); err != nil {
-		return fmt.Errorf("create memory directory: %w", err)
-	}
-	if err := os.WriteFile(recentPath, []byte(updatedRecent), 0644); err != nil {
-		return fmt.Errorf("write recent.md: %w", err)
-	}
-
-	sessionIDs := make([]string, 0, len(trackedOffsets))
-	for sessionID := range trackedOffsets {
-		sessionIDs = append(sessionIDs, sessionID)
-	}
-	sort.Strings(sessionIDs)
-	for _, sessionID := range sessionIDs {
-		if err := store.SetMeta(ctx, updateRecentOffsetMetaKey(sessionID), strconv.Itoa(trackedOffsets[sessionID])); err != nil {
-			return fmt.Errorf("persist update-recent offset for session %s: %w", sessionID, err)
+	if err := withLockedRecentFile(recentPath, func() error {
+		if _, err := readLastUpdatedRecentAt(ctx, store, agentName); err != nil {
+			return err
 		}
-	}
 
-	now := time.Now().UTC()
-	if err := store.SetMeta(ctx, memoryUpdateRecentMetaKey(agentName), now.Format(time.RFC3339)); err != nil {
-		return fmt.Errorf("update last update-recent timestamp: %w", err)
+		input, err := collectMemoryUpdateRecentInput(ctx, store, sessStore, agentName)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(input.Text) == "" {
+			if err := store.SetMeta(ctx, memoryUpdateRecentMetaKey(agentName), time.Now().UTC().Format(time.RFC3339)); err != nil {
+				return fmt.Errorf("update last update-recent timestamp: %w", err)
+			}
+			return nil
+		}
+
+		fragmentsText, err := loadRecentFragmentsText(ctx, store, agentName, memoryUpdateRecentFragmentChars)
+		if err != nil {
+			return err
+		}
+		existingRecent, err := loadRecentContent(recentPath)
+		if err != nil {
+			return err
+		}
+
+		updatedRecent, err := buildUpdatedRecent(input.Text, existingRecent, fragmentsText)
+		if err != nil {
+			return err
+		}
+		if err := writeRecentFileAtomically(recentPath, updatedRecent); err != nil {
+			return fmt.Errorf("write recent.md: %w", err)
+		}
+
+		sessionIDs := make([]string, 0, len(input.Offsets))
+		for sessionID := range input.Offsets {
+			sessionIDs = append(sessionIDs, sessionID)
+		}
+		sort.Strings(sessionIDs)
+		for _, sessionID := range sessionIDs {
+			if err := store.SetMeta(ctx, updateRecentOffsetMetaKey(sessionID), strconv.Itoa(input.Offsets[sessionID])); err != nil {
+				return fmt.Errorf("persist update-recent offset for session %s: %w", sessionID, err)
+			}
+		}
+
+		now := time.Now().UTC()
+		if err := store.SetMeta(ctx, memoryUpdateRecentMetaKey(agentName), now.Format(time.RFC3339)); err != nil {
+			return fmt.Errorf("update last update-recent timestamp: %w", err)
+		}
+
+		return nil
+	}); err != nil {
+		return err
 	}
 
 	return nil
@@ -513,6 +494,69 @@ func listUpdateRecentSessions(ctx context.Context, sessStore session.Store, agen
 
 	return sessions, nil
 }
+
+type memoryUpdateRecentInput struct {
+	Text    string
+	Offsets map[string]int
+}
+
+func collectMemoryUpdateRecentInput(ctx context.Context, store *memorydb.Store, sessStore session.Store, agentName string) (memoryUpdateRecentInput, error) {
+	current, err := sessStore.GetCurrent(ctx)
+	if err != nil {
+		return memoryUpdateRecentInput{}, fmt.Errorf("get current session: %w", err)
+	}
+
+	sessions, err := listUpdateRecentSessions(ctx, sessStore, agentName, current)
+	if err != nil {
+		return memoryUpdateRecentInput{}, err
+	}
+
+	currentID := ""
+	if current != nil {
+		currentID = current.ID
+	}
+
+	trackedOffsets := map[string]int{}
+	var inputBuilder strings.Builder
+
+	for _, sess := range sessions {
+		if currentID != "" && sess.ID == currentID {
+			continue
+		}
+
+		startOffset, err := readUpdateRecentOffset(ctx, store, sess.ID)
+		if err != nil {
+			return memoryUpdateRecentInput{}, err
+		}
+
+		messages, err := sessStore.GetMessagesFrom(ctx, sess.ID, startOffset, 0)
+		if err != nil {
+			return memoryUpdateRecentInput{}, fmt.Errorf("get messages for session %s: %w", sess.ID, err)
+		}
+		if len(messages) == 0 {
+			continue
+		}
+
+		block := formatUpdateRecentSessionBlock(sess, messages)
+		if block == "" {
+			continue
+		}
+
+		if inputBuilder.Len() > 0 {
+			inputBuilder.WriteString("\n\n---\n\n")
+		}
+		inputBuilder.WriteString(block)
+
+		lastMessage := messages[len(messages)-1]
+		trackedOffsets[sess.ID] = lastMessage.Sequence + 1
+		if inputBuilder.Len() >= memoryUpdateRecentMaxInputChars {
+			break
+		}
+	}
+
+	return memoryUpdateRecentInput{Text: inputBuilder.String(), Offsets: trackedOffsets}, nil
+}
+
 func formatUpdateRecentSessionBlock(sess memoryUpdateRecentSession, messages []session.Message) string {
 	lines := make([]string, 0, len(messages))
 	for _, msg := range messages {

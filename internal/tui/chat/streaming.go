@@ -428,10 +428,10 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) startStream(content string) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithCancel(context.Background())
-		m.streamCancelFunc = cancel
+	ctx, cancel := context.WithCancel(m.rootContext())
+	m.streamCancelFunc = cancel
 
+	return func() tea.Msg {
 		// Mark session as active when starting a new stream
 		if m.store != nil && m.sess != nil {
 			_ = m.store.UpdateStatus(ctx, m.sess.ID, session.StatusActive)
@@ -733,7 +733,7 @@ func (m *Model) maybeRenameHandoverCmd() tea.Cmd {
 			}
 			return strings.TrimSpace(b.String()), nil
 		}
-		err = session.MaybeRenameHandover(context.Background(), path, slugGen)
+		err = session.MaybeRenameHandover(m.rootContext(), path, slugGen)
 		return handoverRenameDoneMsg{err: err}
 	}
 }

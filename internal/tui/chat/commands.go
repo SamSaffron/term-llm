@@ -1753,10 +1753,11 @@ func (m *Model) cmdCompress() (tea.Model, tea.Cmd) {
 		m.scrollToBottom = true
 	}
 
+	ctx, cancel := context.WithCancel(m.rootContext())
+	m.streamCancelFunc = cancel
+
 	return m, tea.Batch(
 		func() tea.Msg {
-			ctx, cancel := context.WithCancel(context.Background())
-			m.streamCancelFunc = cancel
 			result, err := llm.Compact(ctx, provider, model, systemPrompt, llmMessages, compactConfig)
 			return compactDoneMsg{result: result, err: err}
 		},
@@ -2052,10 +2053,11 @@ func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
 		m.scrollToBottom = true
 	}
 
+	ctx, cancel := context.WithCancel(m.rootContext())
+	m.streamCancelFunc = cancel
+
 	return m, tea.Batch(
 		func() tea.Msg {
-			ctx, cancel := context.WithCancel(context.Background())
-			m.streamCancelFunc = cancel
 			result, err := llm.Handover(ctx, provider, model, currentSystemPrompt, newSystemPrompt, llmMessages, sourceAgent, targetAgent.Name, compactConfig)
 			return handoverDoneMsg{result: result, err: err, agentName: agentName, providerStr: providerStr}
 		},

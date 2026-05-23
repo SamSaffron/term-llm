@@ -114,15 +114,99 @@ func runMemoryPromoteFlow(ctx context.Context, cfg *config.Config, engine *llm.E
 	}
 	maxWords := maxBytes / estimatedCharsPerWord
 
-	now := time.Now().UTC()
-	cutoff, err := resolvePromotionCutoff(ctx, store, agentName, opts.Since, now)
+	recentPath, err := resolveAgentRecentPath(cfg, agentName)
 	if err != nil {
 		return 0, err
 	}
 
+	buildUpdatedRecent := func(changed []memorydb.Fragment, existingRecent string) (string, error) {
+		prompt := buildPromotePrompt(changed, existingRecent)
+		updatedRecent, err := runMemoryPromoteRequest(ctx, engine, strings.TrimSpace(opts.Model), prompt, maxWords)
+		if err != nil {
+			return "", err
+		}
+		return truncatePromotedRecent(updatedRecent, maxBytes), nil
+	}
+
+	if opts.DryRun {
+		now := time.Now().UTC()
+		changed, _, err := collectPromoteChangedFragments(ctx, store, agentName, opts.Since, now)
+		if err != nil {
+			return 0, err
+		}
+		if len(changed) == 0 {
+			if !opts.QuietNothing {
+				fmt.Println("Nothing to promote.")
+			}
+			return 0, nil
+		}
+		existingRecent, err := loadRecentContent(recentPath)
+		if err != nil {
+			return 0, err
+		}
+		updatedRecent, err := buildUpdatedRecent(changed, existingRecent)
+		if err != nil {
+			return 0, err
+		}
+		fmt.Print(updatedRecent)
+		if !strings.HasSuffix(updatedRecent, "\n") {
+			fmt.Println()
+		}
+		return len(changed), nil
+	}
+
+	promotedCount := 0
+	if err := withLockedRecentFile(recentPath, func() error {
+		now := time.Now().UTC()
+		changed, _, err := collectPromoteChangedFragments(ctx, store, agentName, opts.Since, now)
+		if err != nil {
+			return err
+		}
+		if len(changed) == 0 {
+			if !opts.QuietNothing {
+				fmt.Println("Nothing to promote.")
+			}
+			return nil
+		}
+
+		existingRecent, err := loadRecentContent(recentPath)
+		if err != nil {
+			return err
+		}
+
+		updatedRecent, err := buildUpdatedRecent(changed, existingRecent)
+		if err != nil {
+			return err
+		}
+		if err := writeRecentFileAtomically(recentPath, updatedRecent); err != nil {
+			return fmt.Errorf("write recent.md: %w", err)
+		}
+
+		if err := store.SetMeta(ctx, memoryPromoteMetaKey(agentName), now.Format(time.RFC3339)); err != nil {
+			return fmt.Errorf("update last promoted timestamp: %w", err)
+		}
+
+		promotedCount = len(changed)
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+
+	if promotedCount > 0 {
+		fmt.Printf("Promoted %d fragments into recent.md\n", promotedCount)
+	}
+	return promotedCount, nil
+}
+
+func collectPromoteChangedFragments(ctx context.Context, store *memorydb.Store, agentName string, since time.Duration, now time.Time) ([]memorydb.Fragment, time.Time, error) {
+	cutoff, err := resolvePromotionCutoff(ctx, store, agentName, since, now)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+
 	fragments, err := store.ListFragments(ctx, memorydb.ListOptions{Agent: agentName, Since: &cutoff})
 	if err != nil {
-		return 0, fmt.Errorf("list fragments for promote: %w", err)
+		return nil, time.Time{}, fmt.Errorf("list fragments for promote: %w", err)
 	}
 
 	changed := make([]memorydb.Fragment, 0, len(fragments))
@@ -131,51 +215,7 @@ func runMemoryPromoteFlow(ctx context.Context, cfg *config.Config, engine *llm.E
 			changed = append(changed, frag)
 		}
 	}
-	if len(changed) == 0 {
-		if !opts.QuietNothing {
-			fmt.Println("Nothing to promote.")
-		}
-		return 0, nil
-	}
-
-	recentPath, err := resolveAgentRecentPath(cfg, agentName)
-	if err != nil {
-		return 0, err
-	}
-
-	existingRecent, err := loadRecentContent(recentPath)
-	if err != nil {
-		return 0, err
-	}
-
-	prompt := buildPromotePrompt(changed, existingRecent)
-	updatedRecent, err := runMemoryPromoteRequest(ctx, engine, strings.TrimSpace(opts.Model), prompt, maxWords)
-	if err != nil {
-		return 0, err
-	}
-	updatedRecent = truncatePromotedRecent(updatedRecent, maxBytes)
-
-	if opts.DryRun {
-		fmt.Print(updatedRecent)
-		if !strings.HasSuffix(updatedRecent, "\n") {
-			fmt.Println()
-		}
-		return len(changed), nil
-	}
-
-	if err := os.MkdirAll(filepath.Dir(recentPath), 0755); err != nil {
-		return 0, fmt.Errorf("create memory directory: %w", err)
-	}
-	if err := os.WriteFile(recentPath, []byte(updatedRecent), 0644); err != nil {
-		return 0, fmt.Errorf("write recent.md: %w", err)
-	}
-
-	if err := store.SetMeta(ctx, memoryPromoteMetaKey(agentName), now.Format(time.RFC3339)); err != nil {
-		return 0, fmt.Errorf("update last promoted timestamp: %w", err)
-	}
-
-	fmt.Printf("Promoted %d fragments into recent.md\n", len(changed))
-	return len(changed), nil
+	return changed, cutoff, nil
 }
 
 func shouldRunAutoPromote(ctx context.Context, store *memorydb.Store, agent string, every time.Duration) (bool, error) {
