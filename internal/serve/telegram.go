@@ -1521,6 +1521,13 @@ loop:
 		producedMu.Lock()
 		producedSnapshot := append([]llm.Message(nil), produced...)
 		producedMu.Unlock()
+		assistantPersisted := false
+		for _, msg := range producedSnapshot {
+			if msg.Role == llm.RoleAssistant {
+				assistantPersisted = true
+				break
+			}
+		}
 
 		// Edit the Telegram message to show partial text + interrupted marker.
 		display := ""
@@ -1545,8 +1552,21 @@ loop:
 		newHistory = append(newHistory, sess.history...)
 		newHistory = append(newHistory, normalizeUserMessageForHistory(userMsg))
 		newHistory = append(newHistory, producedSnapshot...)
-		// If we have partial text but no tool turns completed, save it.
-		if len(producedSnapshot) == 0 && partial != "" {
+		// If we have partial text but no assistant message was durably captured yet, save it.
+		if !assistantPersisted && partial != "" {
+			if m.store != nil && sess.meta != nil {
+				storeCtx := ctx
+				if storeCtx == nil {
+					storeCtx = context.Background()
+				}
+				persistCtx, cancel := context.WithTimeout(context.WithoutCancel(storeCtx), 5*time.Second)
+				assistantMsg := session.NewMessage(sess.meta.ID, llm.AssistantText(partial), -1)
+				err := m.store.AddMessage(persistCtx, sess.meta.ID, assistantMsg)
+				cancel()
+				if err != nil {
+					log.Printf("[telegram] AddMessage(interrupted_assistant) failed for %s: %v", sess.meta.ID, err)
+				}
+			}
 			newHistory = append(newHistory, llm.AssistantText(partial))
 		}
 		sess.history = newHistory

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -69,6 +70,68 @@ func (f *fakeBotSender) allTexts() []string {
 	out := make([]string, len(f.sent))
 	copy(out, f.sent)
 	return out
+}
+
+type blockingTextProvider struct {
+	text           string
+	firstChunkSent chan struct{}
+}
+
+func newBlockingTextProvider(text string) *blockingTextProvider {
+	return &blockingTextProvider{
+		text:           text,
+		firstChunkSent: make(chan struct{}),
+	}
+}
+
+func (p *blockingTextProvider) Name() string { return "blocking-text" }
+
+func (p *blockingTextProvider) Credential() string { return "mock" }
+
+func (p *blockingTextProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
+
+func (p *blockingTextProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	return &blockingTextStream{
+		ctx:            ctx,
+		text:           p.text,
+		firstChunkSent: p.firstChunkSent,
+		closed:         make(chan struct{}),
+	}, nil
+}
+
+type blockingTextStream struct {
+	ctx            context.Context
+	text           string
+	firstChunkSent chan struct{}
+	closed         chan struct{}
+	closeOnce      sync.Once
+	chunkSent      bool
+	done           bool
+}
+
+func (s *blockingTextStream) Recv() (llm.Event, error) {
+	if !s.chunkSent {
+		s.chunkSent = true
+		close(s.firstChunkSent)
+		return llm.Event{Type: llm.EventTextDelta, Text: s.text}, nil
+	}
+	if s.done {
+		return llm.Event{}, io.EOF
+	}
+	s.done = true
+	select {
+	case <-s.ctx.Done():
+		return llm.Event{}, s.ctx.Err()
+	case <-s.closed:
+		return llm.Event{}, io.EOF
+	}
+}
+
+func (s *blockingTextStream) Close() error {
+	s.closeOnce.Do(func() {
+		close(s.closed)
+	})
+	return nil
 }
 
 // newTestMgrAndSession builds a minimal manager and session backed by h's engine.
@@ -580,6 +643,94 @@ func TestStreamReply_StreamEventErrorReturnsError(t *testing.T) {
 		if text == "(no response)" || text == "(done)" {
 			t.Fatalf("unexpected fallback text after stream error: %q", text)
 		}
+	}
+}
+
+func TestStreamReply_PersistsInterruptedPartialAssistantReply(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "telegram-interrupt.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	defer store.Close()
+
+	provider := newBlockingTextProvider("partial answer")
+	mgr := &telegramSessionMgr{
+		sessions:       make(map[int64]*telegramSession),
+		store:          store,
+		tickerInterval: 5 * time.Millisecond,
+		settings: Settings{
+			MaxTurns: 5,
+			NewSession: func(ctx context.Context) (*SessionRuntime, error) {
+				return &SessionRuntime{
+					Engine:       llm.NewEngine(provider, llm.NewToolRegistry()),
+					ProviderName: "mock",
+					ModelName:    "test",
+				}, nil
+			},
+		},
+	}
+
+	sess, err := mgr.getOrCreate(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("getOrCreate failed: %v", err)
+	}
+
+	bot := &fakeBotSender{}
+	streamDone := make(chan error, 1)
+	go func() {
+		streamDone <- mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hi"))
+	}()
+
+	select {
+	case <-provider.firstChunkSent:
+	case <-time.After(5 * time.Second):
+		t.Fatal("provider never emitted first chunk")
+	}
+
+	sess.cancelMu.Lock()
+	cancel := sess.streamCancel
+	sess.cancelMu.Unlock()
+	if cancel == nil {
+		t.Fatal("expected stream cancel function to be set")
+	}
+	cancel()
+
+	select {
+	case err := <-streamDone:
+		if err != nil {
+			t.Fatalf("streamReply returned error after interrupt: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("streamReply did not return after interrupt")
+	}
+
+	meta, err := store.Get(context.Background(), sess.meta.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if meta.Status != session.StatusInterrupted {
+		t.Fatalf("session status = %s, want %s", meta.Status, session.StatusInterrupted)
+	}
+
+	msgs, err := store.GetMessages(context.Background(), sess.meta.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("get messages: %v", err)
+	}
+
+	var foundAssistant bool
+	for _, msg := range msgs {
+		if msg.Role == llm.RoleAssistant && msg.TextContent == "partial answer" {
+			foundAssistant = true
+			break
+		}
+	}
+	if !foundAssistant {
+		t.Fatalf("expected persisted partial assistant message, got %#v", msgs)
+	}
+
+	if got := bot.lastText(); !strings.Contains(got, "partial answer") || !strings.Contains(got, "(interrupted)") {
+		t.Fatalf("final telegram text = %q, want partial answer with interrupted marker", got)
 	}
 }
 
