@@ -655,6 +655,10 @@ const updateSessionUsageDisplay = (session) => {
 
 const SCROLL_STICKY_THRESHOLD = 96;
 const SCROLL_UP_KEYS = new Set(['ArrowUp', 'PageUp', 'Home']);
+const SCROLL_TO_BOTTOM_MIN_INTERVAL_MS = 500;
+let lastScrollToBottomAt = -SCROLL_TO_BOTTOM_MIN_INTERVAL_MS;
+let pendingScrollToBottomTimer = 0;
+let pendingScrollToBottomForce = false;
 
 const isNearBottom = () => {
   const el = elements.chatScroll;
@@ -664,10 +668,14 @@ const isNearBottom = () => {
 
 const noteUserScrollIntent = () => {
   state.autoScroll = false;
+  clearPendingScrollToBottom();
 };
 
 const noteScrollPositionChanged = () => {
   state.autoScroll = isNearBottom();
+  if (!state.autoScroll) {
+    clearPendingScrollToBottom();
+  }
 };
 
 const isEditableEventTarget = (target) => {
@@ -684,13 +692,50 @@ const shouldDisableAutoScrollForKey = (event) => {
   return event.key === ' ' && event.shiftKey;
 };
 
-const scrollToBottom = (force = false) => {
+const clearPendingScrollToBottom = () => {
+  if (!pendingScrollToBottomTimer) return;
+  window.clearTimeout(pendingScrollToBottomTimer);
+  pendingScrollToBottomTimer = 0;
+  pendingScrollToBottomForce = false;
+};
+
+const performScrollToBottom = (force = false) => {
   if (force) {
     state.autoScroll = true;
   }
   if (force || state.autoScroll) {
     elements.chatScroll.scrollTop = elements.chatScroll.scrollHeight;
+    lastScrollToBottomAt = Date.now();
   }
+};
+
+const scrollToBottom = (force = false) => {
+  if (!elements.chatScroll) return;
+  if (force) {
+    state.autoScroll = true;
+  }
+  if (!(force || state.autoScroll)) {
+    clearPendingScrollToBottom();
+    return;
+  }
+
+  const now = Date.now();
+  const elapsed = now - lastScrollToBottomAt;
+  const remaining = SCROLL_TO_BOTTOM_MIN_INTERVAL_MS - elapsed;
+  if (remaining <= 0) {
+    clearPendingScrollToBottom();
+    performScrollToBottom(force);
+    return;
+  }
+
+  pendingScrollToBottomForce = pendingScrollToBottomForce || force;
+  if (pendingScrollToBottomTimer) return;
+  pendingScrollToBottomTimer = window.setTimeout(() => {
+    pendingScrollToBottomTimer = 0;
+    const shouldForce = pendingScrollToBottomForce;
+    pendingScrollToBottomForce = false;
+    performScrollToBottom(shouldForce);
+  }, remaining);
 };
 
 function hideConnectionState() {

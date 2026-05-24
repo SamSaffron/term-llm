@@ -63,7 +63,7 @@ function makeNode() {
   };
 }
 
-function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], navigatorOverrides = {}, initialStorage = {}, agentName = '' } = {}) {
+function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], navigatorOverrides = {}, initialStorage = {}, agentName = '', now = () => Date.now(), timerOverrides = {} } = {}) {
   const nodes = new Map(Object.entries(nodeOverrides));
   const cookieWrites = [];
   const document = {
@@ -121,12 +121,16 @@ function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], navigato
     },
     requestAnimationFrame(fn) { return 1; },
     cancelAnimationFrame() {},
-    setTimeout(fn) { return 1; },
-    clearTimeout() {},
+    setTimeout: timerOverrides.setTimeout || function setTimeoutStub(fn) { return 1; },
+    clearTimeout: timerOverrides.clearTimeout || function clearTimeoutStub() {},
     location: { pathname: '/chat', href: '/chat' },
     history: { pushState() {} },
     MediaRecorder: undefined,
     focus() {},
+  };
+
+  const DateShim = class extends Date {
+    static now() { return now(); }
   };
 
   const context = {
@@ -144,6 +148,7 @@ function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], navigato
     console,
     setTimeout,
     clearTimeout,
+    Date: DateShim,
     TextEncoder,
     TextDecoder,
   };
@@ -414,7 +419,7 @@ const app = loadAppCore();
 (function testScrollPositionReenablesAutoScrollNearBottom() {
   const name = 'scrolling back near bottom re-enables auto-scroll';
   const chatScroll = Object.assign(makeNode(), {
-    scrollTop: 820,
+    scrollTop: 800,
     scrollHeight: 1000,
     clientHeight: 100,
   });
@@ -431,6 +436,109 @@ const app = loadAppCore();
   testApp.noteScrollPositionChanged();
   if (testApp.state.autoScroll !== true) {
     fail(name, 'autoScroll should re-enable near bottom');
+    return;
+  }
+  pass(name);
+})();
+
+(function testScrollToBottomIsThrottledToTwicePerSecond() {
+  const name = 'scroll to bottom is throttled to twice per second';
+  let nowMs = 1000;
+  const timers = [];
+  const chatScroll = Object.assign(makeNode(), {
+    scrollTop: 0,
+    scrollHeight: 1000,
+    clientHeight: 100,
+  });
+  const testApp = loadAppCoreWith({
+    nodeOverrides: { chatScroll },
+    now: () => nowMs,
+    timerOverrides: {
+      setTimeout(fn, delay) {
+        timers.push({ fn, delay });
+        return timers.length;
+      },
+    },
+  });
+
+  testApp.state.autoScroll = true;
+  testApp.scrollToBottom();
+  if (chatScroll.scrollTop !== 1000) {
+    fail(name, `expected first scroll immediately, got ${chatScroll.scrollTop}`);
+    return;
+  }
+
+  nowMs = 1100;
+  chatScroll.scrollHeight = 1100;
+  testApp.scrollToBottom();
+  if (chatScroll.scrollTop !== 1000) {
+    fail(name, `second scroll inside throttle window should be delayed, got ${chatScroll.scrollTop}`);
+    return;
+  }
+  if (timers.length !== 1 || timers[0].delay !== 400) {
+    fail(name, `expected one trailing timer with 400ms delay, got ${JSON.stringify(timers.map((t) => t.delay))}`);
+    return;
+  }
+
+  nowMs = 1200;
+  chatScroll.scrollHeight = 1200;
+  testApp.scrollToBottom();
+  if (timers.length !== 1) {
+    fail(name, `expected repeated scroll requests to share one timer, got ${timers.length}`);
+    return;
+  }
+
+  nowMs = 1500;
+  timers[0].fn();
+  if (chatScroll.scrollTop !== 1200) {
+    fail(name, `expected trailing scroll to latest bottom, got ${chatScroll.scrollTop}`);
+    return;
+  }
+  pass(name);
+})();
+
+(function testPendingScrollDoesNotFightUserScrollIntent() {
+  const name = 'pending scroll does not fight user scroll intent';
+  let nowMs = 1000;
+  let clearedTimer = 0;
+  const timers = [];
+  const chatScroll = Object.assign(makeNode(), {
+    scrollTop: 0,
+    scrollHeight: 1000,
+    clientHeight: 100,
+  });
+  const testApp = loadAppCoreWith({
+    nodeOverrides: { chatScroll },
+    now: () => nowMs,
+    timerOverrides: {
+      setTimeout(fn, delay) {
+        timers.push({ fn, delay });
+        return timers.length;
+      },
+      clearTimeout(id) {
+        clearedTimer = id;
+      },
+    },
+  });
+
+  testApp.state.autoScroll = true;
+  testApp.scrollToBottom();
+  nowMs = 1100;
+  chatScroll.scrollHeight = 1100;
+  testApp.scrollToBottom();
+  testApp.noteUserScrollIntent();
+
+  if (clearedTimer !== 1) {
+    fail(name, `expected pending scroll timer to be cleared, got ${clearedTimer}`);
+    return;
+  }
+  timers[0].fn();
+  if (chatScroll.scrollTop !== 1000) {
+    fail(name, `stale timer should not move viewport after user intent, got ${chatScroll.scrollTop}`);
+    return;
+  }
+  if (testApp.state.autoScroll !== false) {
+    fail(name, 'autoScroll should remain disabled after stale timer');
     return;
   }
   pass(name);
