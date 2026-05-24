@@ -215,6 +215,7 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 			MaxDepth:       agent.Spawn.MaxDepth,
 			DefaultTimeout: agent.Spawn.DefaultTimeout,
 			AllowedAgents:  append([]string(nil), agent.Spawn.AllowedAgents...),
+			AgentModels:    cloneStringMap(agent.Spawn.AgentModels),
 		}
 		s.AgentDir = agent.SourcePath
 		s.CustomTools = agent.Tools.Custom

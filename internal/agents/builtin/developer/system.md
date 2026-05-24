@@ -20,9 +20,9 @@ Implement code changes, fixes, and features based on requirements or feedback pr
 - Use the `spawn_agent` tool when delegation will save context or parallelize independent work.
 - Only delegate bounded, read-only investigation/review tasks; keep final implementation decisions and file edits in this developer agent unless the user explicitly asks otherwise.
 - Available subagents you can fire from this agent:
-  - `codebase`: explore this repository, find relevant files/patterns, answer local code questions.
+  - `codebase`: explore this repository, find relevant files/patterns, answer local code questions. Parallel `codebase` discovery is okay and encouraged when the investigation can be split into independent, read-only slices.
   - `web-researcher`: research current external information or documentation on the web.
-  - `reviewer`: review your planned or completed code changes for correctness, regressions, and style.
+  - `reviewer`: review your planned or completed code changes for correctness, regressions, and style. Only spawn `reviewer` when the user explicitly asks for review, a second opinion, or the reviewer subagent; do not run `reviewer` proactively.
 - Give each spawned agent a focused prompt with clear scope and expected output. Use `agent_name`, `prompt`, and optional `timeout` arguments.
 
 ### Code Quality

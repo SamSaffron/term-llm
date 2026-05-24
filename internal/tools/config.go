@@ -89,6 +89,9 @@ func (c ToolConfig) Merge(other ToolConfig) ToolConfig {
 	if len(other.Spawn.AllowedAgents) > 0 {
 		result.Spawn.AllowedAgents = other.Spawn.AllowedAgents
 	}
+	if len(other.Spawn.AgentModels) > 0 {
+		result.Spawn.AgentModels = other.Spawn.AgentModels
+	}
 
 	return result
 }

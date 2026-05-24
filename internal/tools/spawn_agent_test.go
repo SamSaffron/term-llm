@@ -1016,3 +1016,44 @@ func findSubstring(s, substr string) bool {
 	}
 	return false
 }
+
+func TestSpawnAgentTool_PassesAgentModelOverride(t *testing.T) {
+	runner := &mockOptionsRunner{mockRunner: newMockRunner()}
+	tool := NewSpawnAgentTool(SpawnConfig{
+		MaxParallel:    3,
+		MaxDepth:       2,
+		DefaultTimeout: 300,
+		AgentModels: map[string]string{
+			"codebase": "fast",
+		},
+	}, 0)
+	tool.SetRunner(runner)
+
+	out, err := tool.Execute(context.Background(), makeSpawnArgs("codebase", "inspect", 0))
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	result := parseResult(t, out.Content)
+	if result.Error != "" {
+		t.Fatalf("Execute returned tool error: %s", result.Error)
+	}
+	if runner.lastOptions.ModelOverride != "fast" {
+		t.Fatalf("ModelOverride = %q, want fast", runner.lastOptions.ModelOverride)
+	}
+}
+
+type mockOptionsRunner struct {
+	*mockRunner
+	lastOptions SpawnAgentRunOptions
+}
+
+func (m *mockOptionsRunner) RunAgentWithOptions(ctx context.Context, agentName string, prompt string, depth int, opts SpawnAgentRunOptions) (SpawnAgentRunResult, error) {
+	m.lastOptions = opts
+	return m.RunAgent(ctx, agentName, prompt, depth)
+}
+
+func (m *mockOptionsRunner) RunAgentWithCallbackAndOptions(ctx context.Context, agentName string, prompt string, depth int,
+	callID string, cb SubagentEventCallback, opts SpawnAgentRunOptions) (SpawnAgentRunResult, error) {
+	m.lastOptions = opts
+	return m.RunAgentWithCallback(ctx, agentName, prompt, depth, callID, cb)
+}

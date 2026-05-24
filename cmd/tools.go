@@ -90,6 +90,20 @@ func applySpawnConfig(toolConfig *tools.ToolConfig, spawn tools.SpawnConfig) {
 	if len(spawn.AllowedAgents) > 0 {
 		toolConfig.Spawn.AllowedAgents = append([]string(nil), spawn.AllowedAgents...)
 	}
+	if len(spawn.AgentModels) > 0 {
+		toolConfig.Spawn.AgentModels = cloneStringMap(spawn.AgentModels)
+	}
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	clone := make(map[string]string, len(values))
+	for k, v := range values {
+		clone[k] = v
+	}
+	return clone
 }
 
 // filterOutTools removes specified tools from the enabled list.

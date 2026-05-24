@@ -214,10 +214,11 @@ type ReadConfig struct {
 
 // SpawnConfig configures spawn_agent behavior for this agent.
 type SpawnConfig struct {
-	MaxParallel    int      `yaml:"max_parallel,omitempty"`   // Max concurrent sub-agents (default 3)
-	MaxDepth       int      `yaml:"max_depth,omitempty"`      // Max nesting level (default 2)
-	DefaultTimeout int      `yaml:"timeout,omitempty"`        // Default timeout in seconds (default 300)
-	AllowedAgents  []string `yaml:"allowed_agents,omitempty"` // Optional whitelist of allowed agents
+	MaxParallel    int               `yaml:"max_parallel,omitempty"`   // Max concurrent sub-agents (default 3)
+	MaxDepth       int               `yaml:"max_depth,omitempty"`      // Max nesting level (default 2)
+	DefaultTimeout int               `yaml:"timeout,omitempty"`        // Default timeout in seconds (default 300)
+	AllowedAgents  []string          `yaml:"allowed_agents,omitempty"` // Optional whitelist of allowed agents
+	AgentModels    map[string]string `yaml:"agent_models,omitempty"`   // Optional per-spawn model overrides by agent name
 }
 
 // MCPConfig specifies an MCP server to connect.

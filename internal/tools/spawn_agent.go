@@ -83,12 +83,24 @@ type SpawnAgentRunner interface {
 		callID string, cb SubagentEventCallback) (SpawnAgentRunResult, error)
 }
 
+type SpawnAgentRunOptions struct {
+	ModelOverride string
+}
+
+// SpawnAgentRunnerWithOptions can run sub-agents with call-specific overrides.
+type SpawnAgentRunnerWithOptions interface {
+	RunAgentWithOptions(ctx context.Context, agentName string, prompt string, depth int, opts SpawnAgentRunOptions) (SpawnAgentRunResult, error)
+	RunAgentWithCallbackAndOptions(ctx context.Context, agentName string, prompt string, depth int,
+		callID string, cb SubagentEventCallback, opts SpawnAgentRunOptions) (SpawnAgentRunResult, error)
+}
+
 // SpawnConfig configures spawn_agent behavior.
 type SpawnConfig struct {
-	MaxParallel    int      // Max concurrent sub-agents (default 3)
-	MaxDepth       int      // Max nesting level (default 2)
-	DefaultTimeout int      // Default timeout in seconds (default 300)
-	AllowedAgents  []string // Optional whitelist of allowed agents
+	MaxParallel    int               // Max concurrent sub-agents (default 3)
+	MaxDepth       int               // Max nesting level (default 2)
+	DefaultTimeout int               // Default timeout in seconds (default 300)
+	AllowedAgents  []string          // Optional whitelist of allowed agents
+	AgentModels    map[string]string // Optional per-spawn model overrides by agent name
 }
 
 // DefaultSpawnConfig returns the default spawn configuration.
@@ -277,13 +289,23 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 	// Get callback and call ID for event bubbling
 	cb := t.GetEventCallback()
 	callID := llm.CallIDFromContext(ctx)
+	opts := SpawnAgentRunOptions{ModelOverride: strings.TrimSpace(t.config.AgentModels[a.AgentName])}
+	runnerWithOptions, supportsOptions := runner.(SpawnAgentRunnerWithOptions)
 
 	if cb != nil && callID != "" {
 		// Use callback version for progress reporting
-		runResult, err = runner.RunAgentWithCallback(childCtx, a.AgentName, a.Prompt, t.depth+1, callID, cb)
+		if supportsOptions {
+			runResult, err = runnerWithOptions.RunAgentWithCallbackAndOptions(childCtx, a.AgentName, a.Prompt, t.depth+1, callID, cb, opts)
+		} else {
+			runResult, err = runner.RunAgentWithCallback(childCtx, a.AgentName, a.Prompt, t.depth+1, callID, cb)
+		}
 	} else {
 		// Fall back to simple version
-		runResult, err = runner.RunAgent(childCtx, a.AgentName, a.Prompt, t.depth+1)
+		if supportsOptions {
+			runResult, err = runnerWithOptions.RunAgentWithOptions(childCtx, a.AgentName, a.Prompt, t.depth+1, opts)
+		} else {
+			runResult, err = runner.RunAgent(childCtx, a.AgentName, a.Prompt, t.depth+1)
+		}
 	}
 	duration := time.Since(start).Milliseconds()
 

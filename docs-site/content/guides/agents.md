@@ -78,6 +78,31 @@ term-llm agents get reviewer
 term-llm agents clear reviewer model
 ```
 
+## Customizing built-ins
+
+A filesystem agent with the same name as a built-in shadows the built-in. For example, to customize the default `developer` behavior, create `term-llm-agents/developer/agent.yaml` in a project or `~/.config/term-llm/agents/developer/agent.yaml` for your user account. You can start from the bundled implementation with:
+
+```bash
+term-llm agents copy developer developer      # copy built-in developer into your user agents dir
+term-llm agents copy developer my-developer   # fork it under a new name instead
+```
+
+Per-agent preferences in your main config can override provider/model choices without copying an agent bundle:
+
+```bash
+term-llm agents set reviewer provider=openai model=gpt-5.2
+```
+
+The special agent model value `fast` resolves through the active provider's fast-model settings: `providers.<active>.fast_model`, or `providers.<active>.fast_provider` plus `fast_model` when the lightweight model should run on a different provider key. It is not sent to the provider as a literal model named `fast`.
+
+Built-in `developer` can spawn up to three subagents in parallel. Its built-in spawn configuration runs spawned `codebase` subagents with `model: fast`, so developer-led repository investigations use the lightweight model without changing direct `@codebase` sessions:
+
+```yaml
+spawn:
+  agent_models:
+    codebase: fast
+```
+
 ## Agent configuration
 
 Agents are YAML files stored in `~/.config/term-llm/agents/`:
@@ -181,4 +206,4 @@ Behavior:
   - Config/CLI system prompts resolve relative to the current working directory
 - Expansion order is include first, then template variables (for example `{{year}}`)
 
-**Agent search order:** user agents → local agents → built-in agents
+**Agent search order:** project-local agents (`./term-llm-agents`) → user agents (`~/.config/term-llm/agents`) → configured `agents.search_paths` → built-in agents

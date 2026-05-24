@@ -85,18 +85,29 @@ func (r *SpawnAgentRunner) Wait() {
 // RunAgent loads and runs a sub-agent with the given prompt.
 // It returns the text output from the agent.
 func (r *SpawnAgentRunner) RunAgent(ctx context.Context, agentName string, prompt string, depth int) (tools.SpawnAgentRunResult, error) {
-	return r.runAgentInternal(ctx, agentName, prompt, depth, "", nil)
+	return r.runAgentInternal(ctx, agentName, prompt, depth, "", nil, tools.SpawnAgentRunOptions{})
+}
+
+// RunAgentWithOptions loads and runs a sub-agent with call-specific overrides.
+func (r *SpawnAgentRunner) RunAgentWithOptions(ctx context.Context, agentName string, prompt string, depth int, opts tools.SpawnAgentRunOptions) (tools.SpawnAgentRunResult, error) {
+	return r.runAgentInternal(ctx, agentName, prompt, depth, "", nil, opts)
 }
 
 // RunAgentWithCallback loads and runs a sub-agent with an event callback for progress reporting.
 func (r *SpawnAgentRunner) RunAgentWithCallback(ctx context.Context, agentName string, prompt string, depth int,
 	callID string, cb tools.SubagentEventCallback) (tools.SpawnAgentRunResult, error) {
-	return r.runAgentInternal(ctx, agentName, prompt, depth, callID, cb)
+	return r.runAgentInternal(ctx, agentName, prompt, depth, callID, cb, tools.SpawnAgentRunOptions{})
+}
+
+// RunAgentWithCallbackAndOptions loads and runs a sub-agent with an event callback and call-specific overrides.
+func (r *SpawnAgentRunner) RunAgentWithCallbackAndOptions(ctx context.Context, agentName string, prompt string, depth int,
+	callID string, cb tools.SubagentEventCallback, opts tools.SpawnAgentRunOptions) (tools.SpawnAgentRunResult, error) {
+	return r.runAgentInternal(ctx, agentName, prompt, depth, callID, cb, opts)
 }
 
 // runAgentInternal is the shared implementation for running sub-agents.
 func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName string, prompt string, depth int,
-	callID string, cb tools.SubagentEventCallback) (tools.SpawnAgentRunResult, error) {
+	callID string, cb tools.SubagentEventCallback, opts tools.SpawnAgentRunOptions) (tools.SpawnAgentRunResult, error) {
 	r.wg.Add(1)
 	defer r.wg.Done()
 
@@ -106,6 +117,12 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 	agent, err := r.registry.Get(agentName)
 	if err != nil {
 		return emptyResult, fmt.Errorf("load agent '%s': %w", agentName, err)
+	}
+
+	if strings.TrimSpace(opts.ModelOverride) != "" {
+		agentCopy := *agent
+		agentCopy.Model = strings.TrimSpace(opts.ModelOverride)
+		agent = &agentCopy
 	}
 
 	if err := agent.Validate(); err != nil {
@@ -145,18 +162,9 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 			cfg.DefaultProvider = agent.Provider
 		}
 		if agent.Model != "" {
-			// Set model on the active provider config.
-			// We must copy the provider config struct and reassign it to the map
-			// to avoid mutating the original (GetActiveProviderConfig returns a
-			// pointer to a copy, but we need to update the map entry).
-			//
-			// If the provider has no explicit entry in cfg.Providers (e.g. "chatgpt"
-			// which uses native OAuth and needs no API key), create a minimal entry so
-			// the model override is not silently dropped. Without this, built-in
-			// providers like chatgpt fall through to their hardcoded default model.
-			providerCfg := cfg.Providers[cfg.DefaultProvider] // zero value if missing
-			providerCfg.Model = agent.Model
-			cfg.Providers[cfg.DefaultProvider] = providerCfg
+			if err := applyAgentModelOverride(cfg, agent.Model); err != nil {
+				return emptyResult, fmt.Errorf("apply model override for agent %q: %w", agentName, err)
+			}
 		}
 	}
 
@@ -168,11 +176,12 @@ func (r *SpawnAgentRunner) runAgentInternal(ctx context.Context, agentName strin
 
 	// Get provider name and model for session tracking
 	providerName := cfg.DefaultProvider
-	modelName := agent.Model
-	if modelName == "" {
-		if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
-			modelName = providerCfg.Model
-		}
+	modelName := ""
+	if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
+		modelName = providerCfg.Model
+	}
+	if modelName == "" && !isAgentFastModelAlias(agent.Model) {
+		modelName = agent.Model
 	}
 
 	// Create child session ID up front so provider-side continuity/cache hints are
@@ -370,6 +379,7 @@ func (r *SpawnAgentRunner) setupAgentTools(cfg *config.Config, engine *llm.Engin
 		MaxDepth:       agent.Spawn.MaxDepth,
 		DefaultTimeout: agent.Spawn.DefaultTimeout,
 		AllowedAgents:  agent.Spawn.AllowedAgents,
+		AgentModels:    cloneStringMap(agent.Spawn.AgentModels),
 	})
 
 	if errs := toolConfig.Validate(); len(errs) > 0 {

@@ -118,7 +118,9 @@ func applyProviderOverridesWithAgent(cfg *config.Config, cmdProvider, cmdModel, 
 			cfg.ApplyOverrides(agentProvider, "")
 		}
 		if agentModel != "" {
-			cfg.ApplyOverrides("", agentModel)
+			if err := applyAgentModelOverride(cfg, agentModel); err != nil {
+				return err
+			}
 		}
 	}
 

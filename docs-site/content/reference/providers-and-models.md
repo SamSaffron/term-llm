@@ -151,8 +151,8 @@ Use `base_url` when the standard `/chat/completions` path should be appended aut
 | `api_key` | string | API key. Supports `${ENV_VAR}`, `op://`, `file://`, and `$()` resolution. If omitted, term-llm tries `<PROVIDER_NAME>_API_KEY` from the environment. |
 | `model` | string | Default model name sent to the server. |
 | `models` | list | Optional list of model names for shell tab completion with `--provider name:<TAB>`. |
-| `fast_model` | string | Lightweight model used for control-plane tasks (e.g., title generation). This is separate from service-tier fast mode. |
-| `fast_provider` | string | Provider key to use for `fast_model` if it lives on a different provider. |
+| `fast_model` | string | Lightweight model used for control-plane tasks (e.g., title generation) and the agent `model: fast` alias. This is separate from service-tier fast mode. Usually this is all you need. |
+| `fast_provider` | string | Optional provider key to use when the `fast_model` should run on a different configured provider than this one. |
 | `service_tier` | string | Optional Responses API service tier for built-in `openai` and `chatgpt` providers. Use `fast` or `priority` to request fast/priority service where the selected model supports it. Omit the field to send no service tier. |
 | `context_window` | int | Override context window size in tokens. Use this for self-hosted models not in the built-in token limit tables. |
 | `max_output_tokens` | int | Override maximum output tokens. Same use case as `context_window`. |
@@ -198,7 +198,7 @@ providers:
 
 Leave `service_tier` unset to omit the field entirely. Only some models/accounts support fast service; unsupported requests may be ignored or rejected by the provider. In chat, `/fast` toggles the fast service tier for the current session. The status line shows `fast` when it is currently active.
 
-This is different from `fast_model` / `fast_provider`, which choose a lightweight model for term-llm control-plane tasks such as summaries or title generation.
+This is different from `fast_model` / optional `fast_provider`, which choose a lightweight model for term-llm control-plane tasks such as summaries or title generation, and for agent configs that use `model: fast`.
 
 ## Reasoning and model suffixes
 

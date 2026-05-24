@@ -188,12 +188,34 @@ func TestDeveloperBuiltinCanSpawnDocumentedSubagents(t *testing.T) {
 	if agent.Spawn.DefaultTimeout != 600 {
 		t.Errorf("developer spawn.timeout = %d, want 600", agent.Spawn.DefaultTimeout)
 	}
+	if agent.Spawn.AgentModels["codebase"] != "fast" {
+		t.Errorf("developer spawn.agent_models[codebase] = %q, want fast", agent.Spawn.AgentModels["codebase"])
+	}
 
 	if !strings.Contains(agent.SystemPrompt, "`spawn_agent`") {
 		t.Errorf("developer prompt should name the actual spawn_agent tool")
 	}
 	if strings.Contains(agent.SystemPrompt, "`run_agent`") {
 		t.Errorf("developer prompt should not refer to nonexistent run_agent tool")
+	}
+	if !strings.Contains(agent.SystemPrompt, "Only spawn `reviewer` when the user explicitly asks") {
+		t.Errorf("developer prompt should gate reviewer spawning on explicit user request")
+	}
+	if !strings.Contains(agent.SystemPrompt, "do not run `reviewer` proactively") {
+		t.Errorf("developer prompt should prohibit proactive reviewer spawning")
+	}
+	if !strings.Contains(agent.SystemPrompt, "Parallel `codebase` discovery is okay and encouraged") {
+		t.Errorf("developer prompt should encourage parallel codebase discovery")
+	}
+}
+
+func TestCodebaseBuiltinDoesNotForceFastModel(t *testing.T) {
+	agent, err := getBuiltinAgent("codebase")
+	if err != nil {
+		t.Fatalf("getBuiltinAgent(codebase): %v", err)
+	}
+	if agent.Model != "" {
+		t.Errorf("codebase model = %q, want empty so direct @codebase uses the normal active model", agent.Model)
 	}
 }
 
