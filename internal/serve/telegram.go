@@ -801,6 +801,73 @@ func (m *telegramSessionMgr) runStoreOpWithTimeout(sessionID, op string, fn func
 	}
 }
 
+func (m *telegramSessionMgr) runStoreOpWithoutCancel(ctx context.Context, sessionID, op string, fn func(context.Context) error) {
+	if m.store == nil || fn == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	storeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := fn(storeCtx); err != nil {
+		log.Printf("[telegram] %s failed for %s: %v", op, sessionID, err)
+	}
+}
+
+func telegramMessageVisibleText(msg llm.Message) string {
+	var b strings.Builder
+	for _, part := range msg.Parts {
+		if part.Type != llm.PartText || part.Text == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(part.Text)
+	}
+	return b.String()
+}
+
+func telegramAssistantTextCaptured(messages []llm.Message, partial string) bool {
+	partial = strings.TrimSpace(partial)
+	if partial == "" {
+		return false
+	}
+	for _, msg := range messages {
+		if msg.Role != llm.RoleAssistant {
+			continue
+		}
+		if strings.TrimSpace(telegramMessageVisibleText(msg)) == partial {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *telegramSessionMgr) persistedAssistantTextMatches(ctx context.Context, sessionID, partial string) bool {
+	if m.store == nil || sessionID == "" || strings.TrimSpace(partial) == "" {
+		return false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	storeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	msgs, err := m.store.GetMessages(storeCtx, sessionID, 0, 0)
+	if err != nil {
+		log.Printf("[telegram] GetMessages(assistant_interrupt_check) failed for %s: %v", sessionID, err)
+		return false
+	}
+	want := strings.TrimSpace(partial)
+	for _, msg := range msgs {
+		if msg.Role == llm.RoleAssistant && strings.TrimSpace(msg.TextContent) == want {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	if msg.From == nil {
 		log.Printf("[telegram] ignoring message with no sender")
@@ -1521,6 +1588,7 @@ loop:
 		producedMu.Lock()
 		producedSnapshot := append([]llm.Message(nil), produced...)
 		producedMu.Unlock()
+		assistantTextCaptured := telegramAssistantTextCaptured(producedSnapshot, partial)
 
 		// Edit the Telegram message to show partial text + interrupted marker.
 		display := ""
@@ -1545,9 +1613,20 @@ loop:
 		newHistory = append(newHistory, sess.history...)
 		newHistory = append(newHistory, normalizeUserMessageForHistory(userMsg))
 		newHistory = append(newHistory, producedSnapshot...)
-		// If we have partial text but no tool turns completed, save it.
-		if len(producedSnapshot) == 0 && partial != "" {
-			newHistory = append(newHistory, llm.AssistantText(partial))
+		// If visible partial assistant text was not captured by normal callbacks, keep
+		// in-memory history aligned with what the user saw. Persist independently: a
+		// callback may append to produced before its cancelled store write completes.
+		if partial != "" {
+			assistantMsg := llm.AssistantText(partial)
+			if m.store != nil && sess.meta != nil && !m.persistedAssistantTextMatches(streamCtx, sess.meta.ID, partial) {
+				storeMsg := session.NewMessage(sess.meta.ID, assistantMsg, -1)
+				m.runStoreOpWithoutCancel(streamCtx, sess.meta.ID, "AddMessage(assistant_interrupt_fallback)", func(storeCtx context.Context) error {
+					return m.store.AddMessage(storeCtx, sess.meta.ID, storeMsg)
+				})
+			}
+			if !assistantTextCaptured {
+				newHistory = append(newHistory, assistantMsg)
+			}
 		}
 		sess.history = newHistory
 		sess.lastActivity = time.Now()

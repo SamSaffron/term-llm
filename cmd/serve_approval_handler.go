@@ -35,14 +35,6 @@ func (s *serveServer) handleSessionApproval(w http.ResponseWriter, r *http.Reque
 		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
 		return
 	}
-	if s.responseRuns != nil {
-		if runID := s.responseRuns.activeRunID(sessionID); runID != "" {
-			if run, ok := s.responseRuns.get(runID); ok {
-				run.disableCompaction()
-			}
-		}
-	}
-
 	choiceIndex := 0
 	if req.Choice != nil {
 		choiceIndex = *req.Choice
@@ -56,6 +48,13 @@ func (s *serveServer) handleSessionApproval(w http.ResponseWriter, r *http.Reque
 			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		}
 		return
+	}
+	if s.responseRuns != nil {
+		if runID := s.responseRuns.activeRunID(sessionID); runID != "" {
+			if run, ok := s.responseRuns.get(runID); ok {
+				run.resolveApprovalRecovery(approvalID)
+			}
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})

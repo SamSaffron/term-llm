@@ -231,6 +231,149 @@ func TestResponseRunRecoveryStoresToolImagesAsArtifacts(t *testing.T) {
 	}
 }
 
+func TestResponseRunInteractiveRecoveryDoesNotDisableCompaction(t *testing.T) {
+	run := newResponseRun("resp_interactive", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	run.maxRetainedEvents = 3
+
+	if err := run.appendEvent("response.ask_user.prompt", map[string]any{
+		"call_id": "call_ask",
+		"questions": []any{
+			map[string]any{"header": "Color", "question": "Pick one"},
+		},
+	}); err != nil {
+		t.Fatalf("append ask_user prompt: %v", err)
+	}
+	if err := run.appendEvent("response.approval.prompt", map[string]any{
+		"approval_id": "appr_1",
+		"path":        "/tmp/file.txt",
+		"options": []any{
+			map[string]any{"index": 0, "choice": "once"},
+		},
+	}); err != nil {
+		t.Fatalf("append approval prompt: %v", err)
+	}
+
+	promptRecovery := run.recoveryPayloadLocked()
+	promptEvents, ok := promptRecovery["events"].([]map[string]any)
+	if !ok {
+		t.Fatalf("prompt recovery events type = %T", promptRecovery["events"])
+	}
+	if len(promptEvents) != 2 {
+		t.Fatalf("prompt recovery event count = %d, want 2", len(promptEvents))
+	}
+
+	for i := 0; i < 6; i++ {
+		if err := run.appendTextDeltaEvent(0, "x"); err != nil {
+			t.Fatalf("appendTextDeltaEvent failed at %d: %v", i, err)
+		}
+	}
+
+	run.mu.Lock()
+	activeLen := len(run.events) - run.eventStart
+	storageLen := len(run.events)
+	minReplayAfter := run.minReplayAfter
+	run.mu.Unlock()
+
+	if activeLen != 3 {
+		t.Fatalf("active retained events = %d, want 3", activeLen)
+	}
+	if storageLen > 6 {
+		t.Fatalf("storage length = %d, want bounded near replay window", storageLen)
+	}
+	if minReplayAfter != 5 {
+		t.Fatalf("minReplayAfter = %d, want 5", minReplayAfter)
+	}
+
+	recovery := run.recoveryPayloadLocked()
+	events, ok := recovery["events"].([]map[string]any)
+	if !ok {
+		t.Fatalf("recovery events type = %T", recovery["events"])
+	}
+	if len(events) != 2 {
+		t.Fatalf("recovery event count = %d, want 2", len(events))
+	}
+	if events[0]["event"] != "response.ask_user.prompt" {
+		t.Fatalf("recovery events[0] = %#v, want ask_user prompt", events[0])
+	}
+	payload, ok := events[0]["payload"].(map[string]any)
+	if !ok || payload["call_id"] != "call_ask" {
+		t.Fatalf("ask_user recovery payload = %#v", events[0]["payload"])
+	}
+	if events[1]["event"] != "response.approval.prompt" {
+		t.Fatalf("recovery events[1] = %#v, want approval prompt", events[1])
+	}
+}
+
+func TestResponseRunInterjectionSplitsRecoveryMessages(t *testing.T) {
+	run := newResponseRun("resp_interjection", "sess_test", "", "mock", time.Now().Unix(), func() {})
+
+	if err := run.appendTextDeltaEvent(0, "before"); err != nil {
+		t.Fatalf("appendTextDeltaEvent before: %v", err)
+	}
+	if err := run.appendEvent("response.interjection", map[string]any{"text": "check X"}); err != nil {
+		t.Fatalf("append interjection: %v", err)
+	}
+	if err := run.appendTextDeltaEvent(0, "after"); err != nil {
+		t.Fatalf("appendTextDeltaEvent after: %v", err)
+	}
+
+	recovery := run.recoveryPayloadLocked()
+	messages, ok := recovery["messages"].([]map[string]any)
+	if !ok {
+		t.Fatalf("recovery messages type = %T", recovery["messages"])
+	}
+	if len(messages) != 3 {
+		t.Fatalf("recovery message count = %d, want 3", len(messages))
+	}
+	if got := messages[0]["role"]; got != "assistant" {
+		t.Fatalf("messages[0].role = %v, want assistant", got)
+	}
+	if got := messages[0]["content"]; got != "before" {
+		t.Fatalf("messages[0].content = %v, want before", got)
+	}
+	if got := messages[1]["role"]; got != "user" {
+		t.Fatalf("messages[1].role = %v, want user", got)
+	}
+	if got := messages[1]["content"]; got != "check X" {
+		t.Fatalf("messages[1].content = %v, want check X", got)
+	}
+	if got := messages[1]["interruptState"]; got != "interject" {
+		t.Fatalf("messages[1].interruptState = %v, want interject", got)
+	}
+	if got := messages[2]["role"]; got != "assistant" {
+		t.Fatalf("messages[2].role = %v, want assistant", got)
+	}
+	if got := messages[2]["content"]; got != "after" {
+		t.Fatalf("messages[2].content = %v, want after", got)
+	}
+}
+
+func TestResponseRunResolvedInteractivePromptIsRemovedFromRecovery(t *testing.T) {
+	run := newResponseRun("resp_resolve", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	if err := run.appendEvent("response.ask_user.prompt", map[string]any{"call_id": "ask_1"}); err != nil {
+		t.Fatalf("append ask prompt: %v", err)
+	}
+	if err := run.appendEvent("response.approval.prompt", map[string]any{"approval_id": "approval_1"}); err != nil {
+		t.Fatalf("append approval prompt: %v", err)
+	}
+
+	run.resolveAskUserRecovery("ask_1")
+	recovery := run.recoveryPayloadLocked()
+	events, ok := recovery["events"].([]map[string]any)
+	if !ok || len(events) != 1 {
+		t.Fatalf("events after ask resolution = %#v, want only approval prompt", recovery["events"])
+	}
+	if events[0]["event"] != "response.approval.prompt" {
+		t.Fatalf("remaining event = %#v, want approval prompt", events[0])
+	}
+
+	run.resolveApprovalRecovery("approval_1")
+	recovery = run.recoveryPayloadLocked()
+	if _, ok := recovery["events"]; ok {
+		t.Fatalf("events after approval resolution = %#v, want none", recovery["events"])
+	}
+}
+
 func TestResponseRunConcurrentAppendsPreserveOrder(t *testing.T) {
 	const totalEvents = 200
 	const numWriters = 4

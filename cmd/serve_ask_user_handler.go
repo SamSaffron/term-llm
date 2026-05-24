@@ -32,14 +32,6 @@ func (s *serveServer) handleSessionAskUser(w http.ResponseWriter, r *http.Reques
 		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
 		return
 	}
-	if s.responseRuns != nil {
-		if runID := s.responseRuns.activeRunID(sessionID); runID != "" {
-			if run, ok := s.responseRuns.get(runID); ok {
-				run.disableCompaction()
-			}
-		}
-	}
-
 	normalized, err := rt.submitAskUser(callID, req.Answers, req.Cancelled)
 	if err != nil {
 		switch {
@@ -49,6 +41,13 @@ func (s *serveServer) handleSessionAskUser(w http.ResponseWriter, r *http.Reques
 			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		}
 		return
+	}
+	if s.responseRuns != nil {
+		if runID := s.responseRuns.activeRunID(sessionID); runID != "" {
+			if run, ok := s.responseRuns.get(runID); ok {
+				run.resolveAskUserRecovery(callID)
+			}
+		}
 	}
 
 	resp := map[string]any{"status": "ok"}

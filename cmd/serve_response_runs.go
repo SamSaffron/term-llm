@@ -34,14 +34,20 @@ type responseRunRecoveryTool struct {
 }
 
 type responseRunRecoveryMessage struct {
-	ID       string
-	Role     string
-	Content  []byte
-	Created  int64
-	Tools    []responseRunRecoveryTool
-	Expanded bool
-	Status   string
-	Usage    map[string]any
+	ID             string
+	Role           string
+	Content        []byte
+	Created        int64
+	Tools          []responseRunRecoveryTool
+	Expanded       bool
+	Status         string
+	Usage          map[string]any
+	InterruptState string
+}
+
+type responseRunRecoveryEvent struct {
+	Event   string
+	Payload map[string]any
 }
 
 type responseRunSubscribeResult struct {
@@ -72,6 +78,7 @@ type responseRun struct {
 	minReplayAfter     int64
 	maxRetainedEvents  int
 	recoveryMessages   []responseRunRecoveryMessage
+	recoveryEvents     []responseRunRecoveryEvent
 	nextMessageOrdinal int64
 	currentAssistant   int
 	currentToolGroup   int
@@ -312,8 +319,26 @@ func (r *responseRun) activeEventsLocked() []responseRunEvent {
 
 func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]any) {
 	switch event {
-	case "response.ask_user.prompt", "response.approval.prompt", "response.interjection":
-		r.compactionEnabled = false
+	case "response.ask_user.prompt", "response.approval.prompt":
+		r.recoveryEvents = append(r.recoveryEvents, responseRunRecoveryEvent{
+			Event:   event,
+			Payload: cloneJSONMap(payload),
+		})
+	case "response.interjection":
+		text := stringValue(payload["text"])
+		if text == "" {
+			return
+		}
+		r.closeToolGroupLocked()
+		r.currentAssistant = -1
+		r.recoveryMessages = append(r.recoveryMessages, responseRunRecoveryMessage{
+			ID:             r.nextRecoveryMessageIDLocked("user"),
+			Role:           "user",
+			Content:        []byte(text),
+			Created:        time.Now().UnixMilli(),
+			InterruptState: "interject",
+		})
+		return
 	}
 
 	switch event {
@@ -558,7 +583,7 @@ func (r *responseRun) recoveryPayloadLocked() map[string]any {
 		"sequence_number":  r.lastSequenceNumber,
 		"min_replay_after": r.minReplayAfter,
 	}
-	if len(r.recoveryMessages) == 0 {
+	if len(r.recoveryMessages) == 0 && len(r.recoveryEvents) == 0 {
 		return recovery
 	}
 
@@ -574,6 +599,9 @@ func (r *responseRun) recoveryPayloadLocked() map[string]any {
 		}
 		if msg.Status != "" {
 			entry["status"] = msg.Status
+		}
+		if msg.InterruptState != "" {
+			entry["interruptState"] = msg.InterruptState
 		}
 		if msg.Expanded {
 			entry["expanded"] = msg.Expanded
@@ -605,6 +633,17 @@ func (r *responseRun) recoveryPayloadLocked() map[string]any {
 		messages = append(messages, entry)
 	}
 	recovery["messages"] = messages
+	if len(r.recoveryEvents) > 0 {
+		events := make([]map[string]any, 0, len(r.recoveryEvents))
+		for _, ev := range r.recoveryEvents {
+			entry := map[string]any{"event": ev.Event}
+			if payload := cloneJSONMap(ev.Payload); len(payload) > 0 {
+				entry["payload"] = payload
+			}
+			events = append(events, entry)
+		}
+		recovery["events"] = events
+	}
 	return recovery
 }
 
@@ -629,10 +668,38 @@ func (r *responseRun) cancelRun() bool {
 	return true
 }
 
-func (r *responseRun) disableCompaction() {
+func responseRunRecoveryEventMatches(ev responseRunRecoveryEvent, event, key, value string) bool {
+	if ev.Event != event || key == "" || value == "" {
+		return false
+	}
+	return stringValue(ev.Payload[key]) == value
+}
+
+func (r *responseRun) resolveRecoveryEvent(event, key, value string) {
 	r.mu.Lock()
-	r.compactionEnabled = false
-	r.mu.Unlock()
+	defer r.mu.Unlock()
+	if len(r.recoveryEvents) == 0 {
+		return
+	}
+	kept := r.recoveryEvents[:0]
+	for _, ev := range r.recoveryEvents {
+		if responseRunRecoveryEventMatches(ev, event, key, value) {
+			continue
+		}
+		kept = append(kept, ev)
+	}
+	for i := len(kept); i < len(r.recoveryEvents); i++ {
+		r.recoveryEvents[i] = responseRunRecoveryEvent{}
+	}
+	r.recoveryEvents = kept
+}
+
+func (r *responseRun) resolveAskUserRecovery(callID string) {
+	r.resolveRecoveryEvent("response.ask_user.prompt", "call_id", strings.TrimSpace(callID))
+}
+
+func (r *responseRun) resolveApprovalRecovery(approvalID string) {
+	r.resolveRecoveryEvent("response.approval.prompt", "approval_id", strings.TrimSpace(approvalID))
 }
 
 type responseRunManager struct {
