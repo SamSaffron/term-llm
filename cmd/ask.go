@@ -697,6 +697,8 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	var stats *ui.SessionStats
 	var progressiveResult progressiveRunResult
+	jsonTotalTokens := 0
+	jsonFinalPending := false
 
 	if askProgressive {
 		var bridge *askProgressiveBridge
@@ -747,7 +749,6 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 		var progressiveRun askProgressiveRunResult
 		var jsonStreamErr error
-		var jsonTotalTokens int
 		if askJSON {
 			if err := emitSessionStarted(jsonEmit, jsonInfo); err != nil {
 				return err
@@ -817,10 +818,12 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			if err := emitProgressiveResult(jsonEmit, progressiveResult); err != nil {
 				return fmt.Errorf("emit progressive result: %w", err)
 			}
-			if err := emitFinal(jsonEmit, stats, jsonTotalTokens); err != nil {
-				return fmt.Errorf("emit final: %w", err)
-			}
+			jsonFinalPending = true
 			if jsonStreamErr != nil {
+				if err := emitFinal(jsonEmit, stats, jsonTotalTokens); err != nil {
+					return fmt.Errorf("emit final: %w", err)
+				}
+				jsonFinalPending = false
 				return jsonStreamErr
 			}
 		} else if askPorcelain {
@@ -855,9 +858,16 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			errChan <- nil
 		}()
 
+		var jsonStreamErr error
 		switch {
 		case askJSON:
-			err = streamJSON(ctx, streamEvents, jsonEmit, stats, jsonInfo)
+			if err := emitSessionStarted(jsonEmit, jsonInfo); err != nil {
+				return err
+			}
+			var writeErr error
+			jsonTotalTokens, jsonStreamErr, writeErr = streamJSONEvents(ctx, streamEvents, jsonEmit)
+			err = writeErr
+			jsonFinalPending = true
 		case useRichRenderer:
 			err = runRenderer(ctx, streamEvents)
 		default:
@@ -868,8 +878,16 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			if askJSON && !isTerminalFlushed(err) {
 				_ = emitFatalError(jsonEmit, stats, err)
+				jsonFinalPending = false
 			}
 			return err
+		}
+		if askJSON && jsonStreamErr != nil {
+			if emitErr := emitFinal(jsonEmit, stats, jsonTotalTokens); emitErr != nil {
+				return fmt.Errorf("emit final: %w", emitErr)
+			}
+			jsonFinalPending = false
+			return &terminalFlushedError{err: jsonStreamErr}
 		}
 
 		// Clear callbacks and update status
@@ -887,9 +905,20 @@ func runAsk(cmd *cobra.Command, args []string) error {
 				}
 			}
 			if errors.Is(streamErr, context.Canceled) {
+				if askJSON && jsonFinalPending {
+					if err := emitFinal(jsonEmit, stats, jsonTotalTokens); err != nil {
+						return fmt.Errorf("emit final: %w", err)
+					}
+					jsonFinalPending = false
+				}
 				return nil
 			}
-			return fmt.Errorf("streaming failed: %w", streamErr)
+			err := fmt.Errorf("streaming failed: %w", streamErr)
+			if askJSON {
+				_ = emitFatalError(jsonEmit, stats, err)
+				jsonFinalPending = false
+			}
+			return err
 		}
 		// Session completion is marked after output_tool finalization below.
 	}
@@ -909,6 +938,10 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			if store != nil && sess != nil {
 				_ = store.UpdateStatus(ctx, sess.ID, session.StatusError)
 			}
+			if askJSON {
+				_ = emitFatalError(jsonEmit, stats, err)
+				jsonFinalPending = false
+			}
 			return err
 		}
 	}
@@ -925,7 +958,12 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		if outputTool != nil {
 			output = outputTool.Value() // Tool output is the required return channel.
 			if !outputTool.Captured() {
-				return fmt.Errorf("output tool %q did not produce a value", outputTool.Name())
+				err := fmt.Errorf("output tool %q did not produce a value", outputTool.Name())
+				if askJSON {
+					_ = emitFatalError(jsonEmit, stats, err)
+					jsonFinalPending = false
+				}
+				return err
 			}
 		} else if collector != nil {
 			output = collector.Text() // Fallback to text when no output tool is configured.
@@ -972,6 +1010,13 @@ func runAsk(cmd *cobra.Command, args []string) error {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Run 'git commit' to use it.\n")
 			}
 		}
+	}
+
+	if askJSON && jsonFinalPending {
+		if err := emitFinal(jsonEmit, stats, jsonTotalTokens); err != nil {
+			return fmt.Errorf("emit final: %w", err)
+		}
+		jsonFinalPending = false
 	}
 
 	if showStats && stats != nil && !askJSON {
