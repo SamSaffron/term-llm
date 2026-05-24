@@ -291,6 +291,47 @@ func emitProgressiveResult(e *jsonEmitter, result progressiveRunResult) error {
 	return e.emit("progressive.result", payload)
 }
 
+// emitOnCompleteStarted writes the lifecycle event for an agent on_complete hook.
+func emitOnCompleteStarted(e *jsonEmitter) error {
+	return e.emit("on_complete.started", map[string]any{})
+}
+
+// emitOnCompleteOutput writes captured on_complete stdout as a typed JSONL event.
+// The raw stdout is always available as text; valid JSON stdout is also decoded
+// into the json field for consumers that want structured output directly.
+func emitOnCompleteOutput(e *jsonEmitter, stdout string) error {
+	payload := map[string]any{"text": stdout}
+	var decoded any
+	if err := json.Unmarshal([]byte(stdout), &decoded); err == nil {
+		payload["json"] = decoded
+	}
+	return e.emit("on_complete.output", payload)
+}
+
+// emitOnCompleteCompleted writes the successful terminal lifecycle event for an
+// agent on_complete hook. stderr is included when present.
+func emitOnCompleteCompleted(e *jsonEmitter, stderr string) error {
+	payload := map[string]any{}
+	if stderr != "" {
+		payload["stderr"] = stderr
+	}
+	return e.emit("on_complete.completed", payload)
+}
+
+// emitOnCompleteFailed writes the failed lifecycle event for an agent
+// on_complete hook. The command failure remains non-fatal to preserve
+// historical ask behavior.
+func emitOnCompleteFailed(e *jsonEmitter, stderr string, err error) error {
+	payload := map[string]any{"message": ""}
+	if err != nil {
+		payload["message"] = err.Error()
+	}
+	if stderr != "" {
+		payload["stderr"] = stderr
+	}
+	return e.emit("on_complete.failed", payload)
+}
+
 // emitFatalError emits a fatal error event, then stats/done so consumers
 // always see a clean terminal record.
 func emitFatalError(e *jsonEmitter, stats *ui.SessionStats, err error) error {

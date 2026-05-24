@@ -506,6 +506,95 @@ func TestEmitProgressiveResult_OmitsEmptyOptionals(t *testing.T) {
 	}
 }
 
+func TestEmitOnCompleteOutput_JSONStdoutIncludesDecodedJSON(t *testing.T) {
+	var buf bytes.Buffer
+	emitter := newJSONEmitter(&buf)
+	stdout := `{"title":"Set","tracks":[{"spotify_uri":"spotify:track:123"}]}`
+
+	if err := emitOnCompleteOutput(emitter, stdout); err != nil {
+		t.Fatalf("emitOnCompleteOutput error: %v", err)
+	}
+
+	events := parseJSONL(t, buf.String())
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	ev := events[0]
+	if ev["type"] != "on_complete.output" {
+		t.Fatalf("type = %v", ev["type"])
+	}
+	if ev["text"] != stdout {
+		t.Errorf("text = %v, want %q", ev["text"], stdout)
+	}
+	decoded, ok := ev["json"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected json object, got %T: %v", ev["json"], ev["json"])
+	}
+	if decoded["title"] != "Set" {
+		t.Errorf("json.title = %v", decoded["title"])
+	}
+}
+
+func TestEmitOnCompleteOutput_TextStdoutOmitsDecodedJSON(t *testing.T) {
+	var buf bytes.Buffer
+	emitter := newJSONEmitter(&buf)
+	stdout := "plain text\n"
+
+	if err := emitOnCompleteOutput(emitter, stdout); err != nil {
+		t.Fatalf("emitOnCompleteOutput error: %v", err)
+	}
+
+	events := parseJSONL(t, buf.String())
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	ev := events[0]
+	if ev["type"] != "on_complete.output" {
+		t.Fatalf("type = %v", ev["type"])
+	}
+	if ev["text"] != stdout {
+		t.Errorf("text = %v, want %q", ev["text"], stdout)
+	}
+	if _, ok := ev["json"]; ok {
+		t.Errorf("expected no json field for plain text stdout, got %v", ev["json"])
+	}
+}
+
+func TestEmitOnCompleteCompletedAndFailedIncludeStderr(t *testing.T) {
+	var buf bytes.Buffer
+	emitter := newJSONEmitter(&buf)
+
+	if err := emitOnCompleteStarted(emitter); err != nil {
+		t.Fatalf("emitOnCompleteStarted error: %v", err)
+	}
+	if err := emitOnCompleteCompleted(emitter, "note\n"); err != nil {
+		t.Fatalf("emitOnCompleteCompleted error: %v", err)
+	}
+	if err := emitOnCompleteFailed(emitter, "bad\n", errors.New("exit status 7")); err != nil {
+		t.Fatalf("emitOnCompleteFailed error: %v", err)
+	}
+
+	events := parseJSONL(t, buf.String())
+	wantTypes := []string{"on_complete.started", "on_complete.completed", "on_complete.failed"}
+	if len(events) != len(wantTypes) {
+		t.Fatalf("events = %v, want %d", events, len(wantTypes))
+	}
+	for i, want := range wantTypes {
+		if events[i]["type"] != want {
+			t.Errorf("event %d type = %v, want %q", i, events[i]["type"], want)
+		}
+	}
+	if events[1]["stderr"] != "note\n" {
+		t.Errorf("completed stderr = %v", events[1]["stderr"])
+	}
+	if events[2]["stderr"] != "bad\n" {
+		t.Errorf("failed stderr = %v", events[2]["stderr"])
+	}
+	if events[2]["message"] != "exit status 7" {
+		t.Errorf("failed message = %v", events[2]["message"])
+	}
+}
+
 // signalWriter wraps an io.Writer and sends (non-blocking) on ready
 // after each successful write. Used in tests to sync on "first flush"
 // without relying on time.Sleep.

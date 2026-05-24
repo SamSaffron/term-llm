@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -933,7 +934,25 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 
 		if output != "" {
-			if err := runOnComplete(agent.OnComplete, output); err != nil {
+			if askJSON {
+				if err := emitOnCompleteStarted(jsonEmit); err != nil {
+					return err
+				}
+				result, err := runOnCompleteCapture(agent.OnComplete, output)
+				if result.Stdout != "" {
+					if emitErr := emitOnCompleteOutput(jsonEmit, result.Stdout); emitErr != nil {
+						return emitErr
+					}
+				}
+				if err != nil {
+					if emitErr := emitOnCompleteFailed(jsonEmit, result.Stderr, err); emitErr != nil {
+						return emitErr
+					}
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: on_complete failed: %v\n", err)
+				} else if err := emitOnCompleteCompleted(jsonEmit, result.Stderr); err != nil {
+					return err
+				}
+			} else if err := runOnComplete(agent.OnComplete, output); err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: on_complete failed: %v\n", err)
 			}
 		}
@@ -2450,10 +2469,14 @@ func writeCommitEditMsg(message string) error {
 	return os.WriteFile(guiPath, data, 0644)
 }
 
-// runOnComplete executes the on_complete shell command with input piped to stdin.
-// Runs in the git repo root if available, else cwd.
-func runOnComplete(command, input string) error {
-	// Run in git repo root if available, else cwd
+type onCompleteResult struct {
+	Stdout string
+	Stderr string
+}
+
+// runOnCompleteCapture executes the on_complete shell command with input piped to stdin
+// and captures stdout/stderr. Runs in the git repo root if available, else cwd.
+func runOnCompleteCapture(command, input string) (onCompleteResult, error) {
 	dir := "."
 	if gitInfo := tools.DetectGitRepo("."); gitInfo.IsRepo {
 		dir = gitInfo.Root
@@ -2462,10 +2485,26 @@ func runOnComplete(command, input string) error {
 	cmd := exec.Command("sh", "-c", command)
 	cmd.Dir = dir
 	cmd.Stdin = strings.NewReader(input)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 
-	return cmd.Run()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	return onCompleteResult{Stdout: stdout.String(), Stderr: stderr.String()}, err
+}
+
+// runOnComplete executes the on_complete shell command with input piped to stdin.
+// Runs in the git repo root if available, else cwd.
+func runOnComplete(command, input string) error {
+	result, err := runOnCompleteCapture(command, input)
+	if result.Stdout != "" {
+		fmt.Fprint(os.Stdout, result.Stdout)
+	}
+	if result.Stderr != "" {
+		fmt.Fprint(os.Stderr, result.Stderr)
+	}
+	return err
 }
 
 func progressiveOutputText(result progressiveRunResult) string {

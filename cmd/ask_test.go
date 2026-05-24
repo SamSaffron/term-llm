@@ -32,6 +32,32 @@ Some nice syntax improvements:
 
 It's an exciting release that balances new experimental features with practical improvements!`
 
+func TestRunOnCompleteCapture_CapturesStdout(t *testing.T) {
+	result, err := runOnCompleteCapture("cat", "hello")
+	if err != nil {
+		t.Fatalf("runOnCompleteCapture error: %v", err)
+	}
+	if result.Stdout != "hello" {
+		t.Errorf("stdout = %q, want %q", result.Stdout, "hello")
+	}
+	if result.Stderr != "" {
+		t.Errorf("stderr = %q, want empty", result.Stderr)
+	}
+}
+
+func TestRunOnCompleteCapture_CapturesStderrAndError(t *testing.T) {
+	result, err := runOnCompleteCapture("echo err >&2; exit 7", "")
+	if err == nil {
+		t.Fatal("expected command error, got nil")
+	}
+	if result.Stdout != "" {
+		t.Errorf("stdout = %q, want empty", result.Stdout)
+	}
+	if result.Stderr != "err\n" {
+		t.Errorf("stderr = %q, want %q", result.Stderr, "err\n")
+	}
+}
+
 func TestMarkdownRendering(t *testing.T) {
 	width := 80
 
