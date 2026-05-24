@@ -548,15 +548,16 @@ func (r *ANSI) collectTableRow(node gast.Node, source []byte, styles ansiStyles,
 		if !ok {
 			continue
 		}
-		text, err := r.renderInlineChildren(cell, source, styles)
+		cellStyles := styles
+		if header {
+			cellStyles = withTextStyle(styles, styles.tableHeader)
+		}
+		text, err := r.renderInlineChildren(cell, source, cellStyles)
 		if err != nil {
 			text = r.plainInlineChildren(cell, source, true)
 		}
 		text = strings.ReplaceAll(text, "\n", " ")
 		text = strings.TrimSpace(text)
-		if header {
-			text = styles.tableHeader.Render(text)
-		}
 		row = append(row, text)
 	}
 	return row
@@ -631,14 +632,12 @@ func (r *ANSI) renderInline(node gast.Node, source []byte, styles ansiStyles) (s
 		}
 		return styles.text.Render(text), nil
 	case *gast.Emphasis:
-		inner, err := r.renderInlineChildren(n, source, styles)
-		if err != nil {
-			return "", err
-		}
 		if n.Level >= 2 {
-			return styles.strong.Render(inner), nil
+			// Apply emphasis at text leaves so wrapped fragments remain
+			// self-contained ANSI spans after table/cell wrapping.
+			return r.renderInlineChildren(n, source, withTextStyle(styles, styles.strong))
 		}
-		return styles.emphasis.Render(inner), nil
+		return r.renderInlineChildren(n, source, withTextStyle(styles, styles.emphasis))
 	case *extast.Strikethrough:
 		inner, err := r.renderInlineChildren(n, source, styles)
 		if err != nil {
@@ -820,9 +819,80 @@ func wrapANSI(text string, width int) string {
 		changed = true
 	}
 	if !changed {
-		return wrapped
+		return containANSIStylesPerLine(wrapped)
 	}
-	return strings.Join(lines, "\n")
+	return containANSIStylesPerLine(strings.Join(lines, "\n"))
+}
+
+func withTextStyle(styles ansiStyles, text ansiStyle) ansiStyles {
+	styles.text = text
+	return styles
+}
+
+func containANSIStylesPerLine(text string) string {
+	if text == "" || !strings.Contains(text, "\x1b[") || !strings.Contains(text, "\n") {
+		return text
+	}
+
+	var b strings.Builder
+	b.Grow(len(text) + strings.Count(text, "\n")*4)
+	activeSeqs := make([]string, 0, 2)
+	activePrefix := func() string {
+		return strings.Join(activeSeqs, "")
+	}
+	lineReplayedActive := false
+	lastWrite := 0
+	for i := 0; i < len(text); {
+		if next, ok := consumeSGR(text, i); ok {
+			seq := text[i:next]
+			if len(activeSeqs) > 0 && !lineReplayedActive && !isSGRReset(seq) {
+				b.WriteString(text[lastWrite:i])
+				b.WriteString(activePrefix())
+				lastWrite = i
+				lineReplayedActive = true
+			}
+			b.WriteString(text[lastWrite:next])
+			if isSGRReset(seq) {
+				activeSeqs = activeSeqs[:0]
+			} else {
+				// Keep the full prefix active so additive SGR sequences such as
+				// "bold" followed by "colour" can both be replayed after a wrap.
+				activeSeqs = append(activeSeqs, seq)
+				lineReplayedActive = true
+			}
+			i = next
+			lastWrite = i
+			continue
+		}
+		if text[i] == '\n' {
+			b.WriteString(text[lastWrite:i])
+			if len(activeSeqs) > 0 {
+				b.WriteString("\x1b[0m")
+			}
+			b.WriteByte('\n')
+			i++
+			lastWrite = i
+			lineReplayedActive = false
+			continue
+		}
+		if len(activeSeqs) > 0 && !lineReplayedActive {
+			b.WriteString(text[lastWrite:i])
+			b.WriteString(activePrefix())
+			lastWrite = i
+			lineReplayedActive = true
+			continue
+		}
+		i++
+	}
+	b.WriteString(text[lastWrite:])
+	if len(activeSeqs) > 0 {
+		b.WriteString("\x1b[0m")
+	}
+	return b.String()
+}
+
+func isSGRReset(seq string) bool {
+	return seq == "\x1b[0m" || seq == "\x1b[m"
 }
 
 func prefixLinesWithStyle(text, firstPrefix, otherPrefix string, style ansiStyle) string {

@@ -423,6 +423,89 @@ func TestRenderTable_StylesHeadersAndBorders(t *testing.T) {
 	}
 }
 
+func TestRenderTable_WrappedStyledCellKeepsStyleOnContinuationLines(t *testing.T) {
+	r := NewANSI(Config{
+		Palette:           testPalette,
+		Width:             80,
+		WrapOffset:        1,
+		NormalizeTabs:     true,
+		NormalizeNewlines: true,
+		TrimSpace:         true,
+	})
+
+	source := []byte("| Movie | Quote |\n|---|---|\n| **The Goonies** | Goonies never say die! |")
+	if _, err := r.Render(source); err != nil {
+		t.Fatalf("wide Render failed: %v", err)
+	}
+
+	// Simulate the terminal being resized narrow enough that the styled first
+	// column wraps across multiple physical table rows. Each continuation line
+	// should carry the cell's strong/body styling itself; otherwise SGR resets
+	// from neighbouring cells/borders can leave part of the wrapped column in the
+	// wrong colour.
+	r.Resize(26)
+	narrowBytes, err := r.Render(source)
+	if err != nil {
+		t.Fatalf("narrow Render failed: %v", err)
+	}
+	narrow := string(narrowBytes)
+	visible := normalizeVisibleOutput(narrow)
+	if !strings.Contains(visible, "│ The") || !strings.Contains(visible, "│ Goonies") {
+		t.Fatalf("expected the styled Movie cell to wrap onto continuation lines\nvisible:\n%s", visible)
+	}
+
+	styles := newANSIStyles(testPalette)
+	for _, fragment := range []string{"The", "Goonies"} {
+		if !strings.Contains(narrow, styles.strong.Render(fragment)) {
+			t.Fatalf("wrapped table cell fragment %q was not rendered as a self-contained strong span\nwant fragment: %q\nrendered: %q\nvisible:\n%s", fragment, styles.strong.Render(fragment), narrow, visible)
+		}
+	}
+}
+
+func TestRenderTable_WrappedPlainCellKeepsTextStyleOnContinuationLines(t *testing.T) {
+	r := NewANSI(Config{
+		Palette:           testPalette,
+		Width:             80,
+		WrapOffset:        1,
+		NormalizeTabs:     true,
+		NormalizeNewlines: true,
+		TrimSpace:         true,
+	})
+
+	source := []byte("| Year | Director | Genre | Quote |\n|---|---|---|---|\n| 1989 | Tim Burton | Superhero / Action | I’m Batman. |")
+	if _, err := r.Render(source); err != nil {
+		t.Fatalf("wide Render failed: %v", err)
+	}
+
+	r.Resize(43)
+	narrowBytes, err := r.Render(source)
+	if err != nil {
+		t.Fatalf("narrow Render failed: %v", err)
+	}
+	narrow := string(narrowBytes)
+	visible := normalizeVisibleOutput(narrow)
+	if !strings.Contains(visible, "Superher") || !strings.Contains(visible, "│ o") {
+		t.Fatalf("expected the plain Genre cell to hard-wrap across continuation lines\nvisible:\n%s", visible)
+	}
+
+	styles := newANSIStyles(testPalette)
+	if !strings.Contains(narrow, styles.text.Render("o")) {
+		t.Fatalf("plain wrapped cell continuation was not rendered as a self-contained text span\nwant fragment: %q\nrendered: %q\nvisible:\n%s", styles.text.Render("o"), narrow, visible)
+	}
+}
+
+func TestContainANSIStylesPerLine_ReplaysAdditiveStylesBeforeContinuationSGR(t *testing.T) {
+	const bold = "\x1b[1m"
+	const red = "\x1b[31m"
+	const reset = "\x1b[0m"
+
+	got := containANSIStylesPerLine(bold + "A\n" + red + "B" + reset)
+	want := bold + "A" + reset + "\n" + bold + red + "B" + reset
+	if got != want {
+		t.Fatalf("containANSIStylesPerLine mismatch\nwant: %q\n got: %q", want, got)
+	}
+}
+
 func TestRenderCodeBlock_HasBackground(t *testing.T) {
 	got, err := RenderString("```\nhello\nworld\n```", Config{
 		Palette:           testPalette,
