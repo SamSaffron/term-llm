@@ -387,6 +387,78 @@ const app = loadAppCore();
   pass(name);
 })();
 
+(function testUserScrollIntentStopsStreamingAutoScroll() {
+  const name = 'user scroll intent stops streaming auto-scroll';
+  const chatScroll = Object.assign(makeNode(), {
+    scrollTop: 900,
+    scrollHeight: 1000,
+    clientHeight: 100,
+  });
+  const testApp = loadAppCoreWith({ nodeOverrides: { chatScroll } });
+
+  testApp.state.autoScroll = true;
+  testApp.noteUserScrollIntent();
+  testApp.scrollToBottom();
+
+  if (chatScroll.scrollTop !== 900) {
+    fail(name, `streaming scroll moved viewport to ${chatScroll.scrollTop}`);
+    return;
+  }
+  if (testApp.state.autoScroll !== false) {
+    fail(name, 'autoScroll should stay disabled after user scroll intent');
+    return;
+  }
+  pass(name);
+})();
+
+(function testScrollPositionReenablesAutoScrollNearBottom() {
+  const name = 'scrolling back near bottom re-enables auto-scroll';
+  const chatScroll = Object.assign(makeNode(), {
+    scrollTop: 820,
+    scrollHeight: 1000,
+    clientHeight: 100,
+  });
+  const testApp = loadAppCoreWith({ nodeOverrides: { chatScroll } });
+
+  testApp.noteUserScrollIntent();
+  testApp.noteScrollPositionChanged();
+  if (testApp.state.autoScroll !== false) {
+    fail(name, 'autoScroll should remain disabled while away from bottom');
+    return;
+  }
+
+  chatScroll.scrollTop = 920;
+  testApp.noteScrollPositionChanged();
+  if (testApp.state.autoScroll !== true) {
+    fail(name, 'autoScroll should re-enable near bottom');
+    return;
+  }
+  pass(name);
+})();
+
+(function testForceScrollRestoresAutoScroll() {
+  const name = 'force scroll restores bottom stickiness';
+  const chatScroll = Object.assign(makeNode(), {
+    scrollTop: 500,
+    scrollHeight: 1000,
+    clientHeight: 100,
+  });
+  const testApp = loadAppCoreWith({ nodeOverrides: { chatScroll } });
+
+  testApp.noteUserScrollIntent();
+  testApp.scrollToBottom(true);
+
+  if (chatScroll.scrollTop !== 1000) {
+    fail(name, `expected forced bottom scroll, got ${chatScroll.scrollTop}`);
+    return;
+  }
+  if (testApp.state.autoScroll !== true) {
+    fail(name, 'forced scroll should restore autoScroll');
+    return;
+  }
+  pass(name);
+})();
+
 if (failures > 0) {
   process.exit(1);
 }

@@ -653,12 +653,41 @@ const updateSessionUsageDisplay = (session) => {
   }
 };
 
+const SCROLL_STICKY_THRESHOLD = 96;
+const SCROLL_UP_KEYS = new Set(['ArrowUp', 'PageUp', 'Home']);
+
 const isNearBottom = () => {
   const el = elements.chatScroll;
-  return (el.scrollHeight - (el.scrollTop + el.clientHeight)) < 96;
+  if (!el) return true;
+  return (el.scrollHeight - (el.scrollTop + el.clientHeight)) < SCROLL_STICKY_THRESHOLD;
+};
+
+const noteUserScrollIntent = () => {
+  state.autoScroll = false;
+};
+
+const noteScrollPositionChanged = () => {
+  state.autoScroll = isNearBottom();
+};
+
+const isEditableEventTarget = (target) => {
+  if (!target) return false;
+  const tag = String(target.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || tag === 'select') return true;
+  if (target.isContentEditable) return true;
+  return typeof target.closest === 'function' && !!target.closest('[contenteditable="true"]');
+};
+
+const shouldDisableAutoScrollForKey = (event) => {
+  if (!event || isEditableEventTarget(event.target)) return false;
+  if (SCROLL_UP_KEYS.has(event.key)) return true;
+  return event.key === ' ' && event.shiftKey;
 };
 
 const scrollToBottom = (force = false) => {
+  if (force) {
+    state.autoScroll = true;
+  }
   if (force || state.autoScroll) {
     elements.chatScroll.scrollTop = elements.chatScroll.scrollHeight;
   }
@@ -1354,6 +1383,9 @@ Object.assign(app, {
   splitHeaderModelEffort,
   updateSessionUsageDisplay,
   isNearBottom,
+  noteUserScrollIntent,
+  noteScrollPositionChanged,
+  shouldDisableAutoScrollForKey,
   scrollToBottom,
   setConnectionState,
   setStartupStatus,

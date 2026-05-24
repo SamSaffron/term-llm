@@ -8,7 +8,7 @@ const {
   openAuthModal, closeAuthModal, handleAuthFailure, closeAskUserModal, openAskUserModal, setActiveResponseTracking,
   clearActiveResponseTracking, setStreaming, resumeActiveResponse, renderSidebar, renderMessages, renderProviderOptions, renderModelOptions, normalizeSelectedProvider,
   autoGrowPrompt, updateVoiceUI, toggleVoiceRecording, fetchProviders, fetchModels, addErrorMessage, sendMessage, openSidebar, closeSidebar, closeSidebarIfMobile,
-  connectToken, submitAskUserModal, cancelActiveResponse, handleFiles, isNearBottom,
+  connectToken, submitAskUserModal, cancelActiveResponse, handleFiles, noteUserScrollIntent, noteScrollPositionChanged, shouldDisableAutoScrollForKey,
   openApprovalModal, closeApprovalModal, submitApprovalModal, registerServiceWorker, subscribeToPush, refreshNotificationUI,
   requestNotificationPermission, shouldAutoSubscribeToPush, detachResponseStream, HEARTBEAT_STALE_THRESHOLD, HEARTBEAT_ABORT_REASON,
   applyDesktopSidebarState, toggleSidebarCollapsed, flushStreamPersistence, requestHeaders, normalizeError, discardPendingAttachments,
@@ -1285,8 +1285,35 @@ elements.sidebarPanelToggleBtn.addEventListener('click', toggleSidebarCollapsed)
 elements.sidebarBackdrop.addEventListener('click', closeSidebar);
 elements.sidebarCloseBtn.addEventListener('click', closeSidebar);
 
+let lastChatTouchY = null;
+
+elements.chatScroll.addEventListener('wheel', (event) => {
+  if (event.deltaY < 0) {
+    noteUserScrollIntent();
+  }
+}, { passive: true });
+
+elements.chatScroll.addEventListener('touchstart', (event) => {
+  lastChatTouchY = event.touches && event.touches.length ? event.touches[0].clientY : null;
+}, { passive: true });
+
+elements.chatScroll.addEventListener('touchmove', (event) => {
+  if (!event.touches || !event.touches.length || lastChatTouchY === null) return;
+  const nextY = event.touches[0].clientY;
+  if (nextY > lastChatTouchY) {
+    noteUserScrollIntent();
+  }
+  lastChatTouchY = nextY;
+}, { passive: true });
+
 elements.chatScroll.addEventListener('scroll', () => {
-  state.autoScroll = isNearBottom();
+  noteScrollPositionChanged();
+});
+
+window.addEventListener('keydown', (event) => {
+  if (shouldDisableAutoScrollForKey(event)) {
+    noteUserScrollIntent();
+  }
 });
 
 elements.promptInput.addEventListener('input', autoGrowPrompt);
