@@ -801,6 +801,20 @@ func (m *telegramSessionMgr) runStoreOpWithTimeout(sessionID, op string, fn func
 	}
 }
 
+func (m *telegramSessionMgr) runStoreOpWithoutCancel(ctx context.Context, sessionID, op string, fn func(context.Context) error) {
+	if m.store == nil || fn == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	storeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := fn(storeCtx); err != nil {
+		log.Printf("[telegram] %s failed for %s: %v", op, sessionID, err)
+	}
+}
+
 func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	if msg.From == nil {
 		log.Printf("[telegram] ignoring message with no sender")
@@ -1547,6 +1561,12 @@ loop:
 		newHistory = append(newHistory, producedSnapshot...)
 		// If we have partial text but no tool turns completed, save it.
 		if len(producedSnapshot) == 0 && partial != "" {
+			if m.store != nil && sess.meta != nil {
+				assistantMsg := session.NewMessage(sess.meta.ID, llm.AssistantText(partial), -1)
+				m.runStoreOpWithoutCancel(streamCtx, sess.meta.ID, "AddMessage(assistant_interrupt_fallback)", func(storeCtx context.Context) error {
+					return m.store.AddMessage(storeCtx, sess.meta.ID, assistantMsg)
+				})
+			}
 			newHistory = append(newHistory, llm.AssistantText(partial))
 		}
 		sess.history = newHistory

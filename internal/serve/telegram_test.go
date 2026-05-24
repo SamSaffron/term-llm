@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -69,6 +70,72 @@ func (f *fakeBotSender) allTexts() []string {
 	out := make([]string, len(f.sent))
 	copy(out, f.sent)
 	return out
+}
+
+type blockingPartialProvider struct {
+	text           string
+	firstChunkSent chan struct{}
+}
+
+func (p *blockingPartialProvider) Name() string { return "blocking-partial" }
+
+func (p *blockingPartialProvider) Credential() string { return "mock" }
+
+func (p *blockingPartialProvider) Capabilities() llm.Capabilities {
+	return llm.Capabilities{ToolCalls: true}
+}
+
+func (p *blockingPartialProvider) Stream(ctx context.Context, _ llm.Request) (llm.Stream, error) {
+	streamCtx, cancel := context.WithCancel(ctx)
+	stream := &blockingPartialStream{
+		ctx:    streamCtx,
+		cancel: cancel,
+		events: make(chan llm.Event, 1),
+		done:   make(chan struct{}),
+	}
+	go func() {
+		defer close(stream.done)
+		select {
+		case stream.events <- llm.Event{Type: llm.EventTextDelta, Text: p.text}:
+			select {
+			case <-p.firstChunkSent:
+			default:
+				close(p.firstChunkSent)
+			}
+		case <-streamCtx.Done():
+		}
+		<-streamCtx.Done()
+		close(stream.events)
+	}()
+	return stream, nil
+}
+
+type blockingPartialStream struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	events chan llm.Event
+	done   chan struct{}
+}
+
+func (s *blockingPartialStream) Recv() (llm.Event, error) {
+	select {
+	case ev, ok := <-s.events:
+		if ok {
+			return ev, nil
+		}
+		if err := s.ctx.Err(); err != nil {
+			return llm.Event{}, err
+		}
+		return llm.Event{}, io.EOF
+	case <-s.ctx.Done():
+		return llm.Event{}, s.ctx.Err()
+	}
+}
+
+func (s *blockingPartialStream) Close() error {
+	s.cancel()
+	<-s.done
+	return nil
 }
 
 // newTestMgrAndSession builds a minimal manager and session backed by h's engine.
@@ -1512,6 +1579,110 @@ func TestStreamReply_PersistsSystemPromptOnlyOncePerSession(t *testing.T) {
 		if !found {
 			t.Fatalf("expected system prompt in provider request %d", i)
 		}
+	}
+}
+
+func TestStreamReply_InterruptPersistsPartialAssistantFallback(t *testing.T) {
+	firstChunkSent := make(chan struct{})
+	provider := &blockingPartialProvider{
+		text:           "partial reply",
+		firstChunkSent: firstChunkSent,
+	}
+	registry := llm.NewToolRegistry()
+	registry.Register(testutil.NewMockTool("noop", "ok"))
+	engine := llm.NewEngine(provider, registry)
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	defer store.Close()
+
+	mgr := &telegramSessionMgr{
+		sessions:       make(map[int64]*telegramSession),
+		store:          store,
+		tickerInterval: 10 * time.Millisecond,
+		settings: Settings{
+			MaxTurns: 5,
+			Store:    store,
+			NewSession: func(ctx context.Context) (*SessionRuntime, error) {
+				return &SessionRuntime{
+					Engine:       engine,
+					ProviderName: "mock",
+					ModelName:    "test",
+				}, nil
+			},
+		},
+	}
+
+	ctx := context.Background()
+	sess, err := mgr.getOrCreate(ctx, 42)
+	if err != nil {
+		t.Fatalf("getOrCreate failed: %v", err)
+	}
+	bot := &fakeBotSender{}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- mgr.streamReply(ctx, bot, sess, 42, llm.UserText("hello"))
+	}()
+
+	select {
+	case <-firstChunkSent:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first partial chunk")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for sess.streamProseLen.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := sess.streamProseLen.Load(); got == 0 {
+		t.Fatal("expected partial prose before interrupt")
+	}
+
+	sess.cancelMu.Lock()
+	cancelFn := sess.streamCancel
+	sess.cancelMu.Unlock()
+	if cancelFn == nil {
+		t.Fatal("expected active stream cancel function")
+	}
+	cancelFn()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("streamReply returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for interrupted streamReply")
+	}
+
+	msgs, err := store.GetMessages(ctx, sess.meta.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages failed: %v", err)
+	}
+
+	var assistantTexts []string
+	for _, msg := range msgs {
+		if msg.Role == llm.RoleAssistant {
+			assistantTexts = append(assistantTexts, msg.TextContent)
+		}
+	}
+	if len(assistantTexts) != 1 {
+		t.Fatalf("expected exactly 1 persisted assistant message, got %d (%v)", len(assistantTexts), assistantTexts)
+	}
+	if assistantTexts[0] != "partial reply" {
+		t.Fatalf("assistant text = %q, want %q", assistantTexts[0], "partial reply")
+	}
+
+	meta, err := store.Get(ctx, sess.meta.ID)
+	if err != nil {
+		t.Fatalf("Get session failed: %v", err)
+	}
+	if meta.Status != session.StatusInterrupted {
+		t.Fatalf("session status = %q, want %q", meta.Status, session.StatusInterrupted)
 	}
 }
 
