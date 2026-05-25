@@ -172,6 +172,11 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
+	if dbPath == ":memory:" {
+		// Required for raw :memory: databases: keep a single connection so
+		// schema and session data stay visible to every operation.
+		db.SetMaxOpenConns(1)
+	}
 
 	// Initialize schema and run migrations.
 	// Read-only mode skips initialization because it cannot write schema changes.

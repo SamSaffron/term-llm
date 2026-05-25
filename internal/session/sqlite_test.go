@@ -29,6 +29,18 @@ func TestSessionPreferredTitlePrecedence(t *testing.T) {
 	}
 }
 
+func TestNewSQLiteStoreMemoryDBUsesSingleConnection(t *testing.T) {
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: ":memory:"})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	if got := store.db.Stats().MaxOpenConnections; got != 1 {
+		t.Fatalf("MaxOpenConnections = %d, want 1 for :memory: databases", got)
+	}
+}
+
 func TestSQLiteStoreGetMessagesFromHonorsLimit(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
