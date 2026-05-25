@@ -244,6 +244,13 @@ function createDocument() {
     createTextNode(text) {
       const node = new Element('#text');
       node.textContent = String(text || '');
+      node.appendData = function appendData(value) {
+        this.textContent += String(value || '');
+      };
+      Object.defineProperty(node, 'data', {
+        get() { return this.textContent; },
+        set(value) { this.textContent = String(value || ''); },
+      });
       return node;
     },
     addEventListener() {},
@@ -692,6 +699,68 @@ async function run(name, fn) {
 
     assertEqual(messages.children[0].querySelector('.turn-action-panel'), firstTurnPanel, 'earlier turn panel still preserved on later stream ticks');
     assertEqual(messages.children[2].querySelector('.turn-action-panel'), streamedPanel, 'streaming assistant panel is reused across ticks');
+  });
+
+  await run('plain streaming tail appends text node data instead of replacing full text', () => {
+    const { app, document, timers } = createHarness();
+    const appended = [];
+    document.createTextNode = (text) => {
+      const node = new Element('#text');
+      node.textContent = String(text || '');
+      node.appendData = (value) => {
+        appended.push(String(value || ''));
+        node.textContent += String(value || '');
+      };
+      Object.defineProperty(node, 'data', {
+        get() { return node.textContent; },
+        set(value) { node.textContent = String(value || ''); },
+      });
+      return node;
+    };
+
+    const message = { id: 'stream-plain', role: 'assistant', content: 'Hello', created: Date.now() };
+    app.enqueueAssistantStreamUpdate(message);
+    runAllPendingTimers(timers);
+
+    message.content = 'Hello world';
+    app.enqueueAssistantStreamUpdate(message);
+    runAllPendingTimers(timers);
+
+    assertEqual(appended.length, 1, 'one incremental text append');
+    assertEqual(appended[0], ' world', 'only new delta is appended');
+  });
+
+  await run('stream render cadence uses mutable tail length after stable markdown promotion', () => {
+    const observedLengths = [];
+    const streamingHelpers = {
+      ...markdownStreaming,
+      nextStreamingRenderDelay(length) {
+        observedLengths.push(length);
+        return markdownStreaming.nextStreamingRenderDelay(length);
+      },
+    };
+    const { app, timers } = createHarness({ markdownStreaming: streamingHelpers });
+    const paragraph = 'Stable paragraph with enough prose to be markdown-rendered later.\n\n';
+    const stablePrefix = paragraph.repeat(180);
+    const message = {
+      id: 'stream-stable-tail',
+      role: 'assistant',
+      content: `${stablePrefix}Live markdown tail with **formatting** that keeps streaming.`,
+      created: Date.now(),
+    };
+
+    app.enqueueAssistantStreamUpdate(message);
+    runAllPendingTimers(timers);
+
+    message.content += ' more plain tail';
+    app.enqueueAssistantStreamUpdate(message);
+
+    const lastObservedLength = observedLengths[observedLengths.length - 1];
+    assert(lastObservedLength > 0, 'scheduler should inspect a non-empty mutable tail');
+    assert(
+      lastObservedLength < 1000,
+      `expected cadence to use mutable tail length, got ${lastObservedLength}`
+    );
   });
 
   await run('done finalized tool args are not rebuilt on later group updates', () => {

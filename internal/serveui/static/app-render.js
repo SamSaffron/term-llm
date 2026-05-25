@@ -804,10 +804,21 @@ const getOrCreateAssistantStreamState = (message, body) => {
   return streamState;
 };
 
+const assistantStreamMutableLength = (streamState) => {
+  const content = String(streamState?.latestContent || '');
+  const stableLength = Math.max(0, Number(streamState?.stableLength) || 0);
+  if (stableLength <= 0) return content.length;
+
+  const stableSource = String(streamState?.stableSource || '');
+  if (stableSource && !content.startsWith(stableSource)) return content.length;
+  return Math.max(0, content.length - Math.min(stableLength, content.length));
+};
+
 const scheduleAssistantStreamRender = (streamState) => {
   if (!streamState || streamState.rendering || streamState.rafId || streamState.timerId) return;
+  const renderLength = assistantStreamMutableLength(streamState);
   const renderDelay = app.markdownStreaming && typeof app.markdownStreaming.nextStreamingRenderDelay === 'function'
-    ? app.markdownStreaming.nextStreamingRenderDelay(streamState.latestContent.length)
+    ? app.markdownStreaming.nextStreamingRenderDelay(renderLength)
     : 33;
   const elapsed = Date.now() - streamState.lastRenderAt;
   if (elapsed >= renderDelay) {
@@ -896,7 +907,14 @@ const renderAssistantTailPlainText = (streamState, tail) => {
 
   const prevLen = (streamState.lastTailSource || '').length;
   if (prevLen > 0 && tail.length > prevLen) {
-    textNode.textContent += tail.slice(prevLen);
+    const delta = tail.slice(prevLen);
+    if (typeof textNode.appendData === 'function') {
+      textNode.appendData(delta);
+    } else {
+      textNode.textContent += delta;
+    }
+  } else if ('data' in textNode) {
+    textNode.data = tail;
   } else {
     textNode.textContent = tail;
   }
