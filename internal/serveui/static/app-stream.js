@@ -778,12 +778,24 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       const pending = payload.interjection_id
         ? removePendingInterjectionById(String(payload.interjection_id))
         : consumePendingInterjectionByText(session.id, interjectionText);
-      const messageId = pending?.messageId || String(payload.interjection_id || '') || generateId('msg');
+      const payloadInterjectionId = String(payload.interjection_id || '').trim();
+      let messageId = pending?.messageId || payloadInterjectionId;
       if (isSessionVisible(session)) {
         const emptyState = elements.messages.querySelector('.empty-state');
         if (emptyState) emptyState.remove();
       }
-      const existingMessage = session.messages.find(m => m.id === messageId && m.role === 'user');
+      let existingMessage = messageId
+        ? session.messages.find(m => m.id === messageId && m.role === 'user')
+        : null;
+      if (!existingMessage && !messageId) {
+        existingMessage = session.messages.find(m => (
+          m.role === 'user'
+          && sanitizeInterruptState(m.interruptState) === 'interject'
+          && String(m.content || '').trim() === interjectionText
+        )) || null;
+        if (existingMessage?.id) messageId = existingMessage.id;
+      }
+      if (!messageId) messageId = generateId('msg');
       const message = existingMessage || {
         id: messageId,
         role: 'user',

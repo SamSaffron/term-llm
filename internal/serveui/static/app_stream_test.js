@@ -1962,6 +1962,61 @@ async function testInterjectionClosesToolGroupAndInsertsUserMessageAtTail() {
   pass(name);
 }
 
+async function testReplayedInterjectionWithoutIdDoesNotDuplicateExistingInjectedMessage() {
+  const name = 'replayed response.interjection without id does not duplicate existing injected user message';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+
+  const session = {
+    id: 'session_interject_replay',
+    title: 'Interject replay test',
+    messages: [
+      {
+        id: 'msg_already_injected',
+        role: 'user',
+        content: 'also format all sql nicely',
+        created: 1000,
+        interruptState: 'interject',
+      },
+    ],
+    lastResponseId: null,
+    activeResponseId: 'resp_int_replay',
+    lastSequenceNumber: 10,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.pendingInterjections = [];
+  state.pendingInterruptCommits = [];
+
+  const streamState = app.createResponseStreamState(session);
+
+  // Simulates a reconnect/replay path where the UI has already rendered the
+  // committed interjection but receives a response.interjection event without
+  // the stable interjection_id needed to match it. The correct behavior should
+  // be to update/reuse the existing injected user message, not append another
+  // identical bubble.
+  app.applyResponseStreamEvent(session, streamState, 'response.interjection', {
+    text: 'also format all sql nicely',
+    sequence_number: 11,
+  });
+
+  const userMessages = session.messages.filter((m) => m.role === 'user' && m.content === 'also format all sql nicely');
+  if (userMessages.length !== 1) {
+    fail(name, `expected 1 injected user message after replay, got ${userMessages.length}`, JSON.stringify(session.messages));
+    await cleanup();
+    return;
+  }
+  if (userMessages[0].id !== 'msg_already_injected') {
+    fail(name, `expected replay to keep existing message id, got ${userMessages[0].id}`);
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
 async function testRecoverInterruptConflictQueuesWhenRunStillActive() {
   const name = 'recoverInterruptConflict queues follow-up when server still reports active run';
   const harness = createHarness();
@@ -3271,6 +3326,7 @@ function testRestoreLatestDraftMessageDoesNotCrossSessionBoundary() {
   await testConnectTokenPreservesSelectedModelAndProviderFromState();
   await testCancelActiveResponseTearsDownLocallyBeforeServerPost();
   await testInterjectionClosesToolGroupAndInsertsUserMessageAtTail();
+  await testReplayedInterjectionWithoutIdDoesNotDuplicateExistingInjectedMessage();
   await testRunCompletesWithoutInterjectionQueuesOrphan();
   await testRecoverInterruptConflictQueuesWhenRunStillActive();
   await testRecoverInterruptConflictClearsPendingWhenRunFinished();
