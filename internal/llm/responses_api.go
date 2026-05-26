@@ -127,6 +127,8 @@ type ResponsesContentPart struct {
 	Text     string `json:"text,omitempty"`
 	ImageURL string `json:"image_url,omitempty"` // Plain URL string for Responses API (not object)
 	Detail   string `json:"detail,omitempty"`
+	Filename string `json:"filename,omitempty"`
+	FileData string `json:"file_data,omitempty"`
 }
 
 // ResponsesTool represents a tool definition in Open Responses format
@@ -377,6 +379,33 @@ func buildResponsesMessageItems(role string, parts []Part) []ResponsesInputItem 
 					Role:    role,
 					Content: imageParts,
 				})
+			}
+		case PartFile:
+			if part.FileData != nil && part.FileData.Base64 != "" {
+				flushText()
+				filename := strings.TrimSpace(part.FileData.Filename)
+				if filename == "" {
+					filename = "upload"
+				}
+				mediaType := strings.TrimSpace(part.FileData.MediaType)
+				if mediaType == "" {
+					mediaType = "application/octet-stream"
+				}
+				fileParts := []ResponsesContentPart{{
+					Type:     "input_file",
+					Filename: filename,
+					FileData: fmt.Sprintf("data:%s;base64,%s", mediaType, part.FileData.Base64),
+				}}
+				if part.FilePath != "" {
+					fileParts = append(fileParts, ResponsesContentPart{Type: "input_text", Text: "[file saved at: " + part.FilePath + "]"})
+				}
+				items = append(items, ResponsesInputItem{
+					Type:    "message",
+					Role:    role,
+					Content: fileParts,
+				})
+			} else if part.Text != "" {
+				textBuf.WriteString(part.Text)
 			}
 		case PartToolCall:
 			if part.ToolCall == nil {

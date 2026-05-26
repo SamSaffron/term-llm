@@ -815,7 +815,7 @@ func splitParts(parts []Part) (string, []oaiToolCall, string) {
 	var reasoning string
 	for _, part := range parts {
 		switch part.Type {
-		case PartText:
+		case PartText, PartFile:
 			if part.Text != "" {
 				textParts = append(textParts, part.Text)
 			}

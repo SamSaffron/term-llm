@@ -1141,8 +1141,17 @@ func TestParseResponsesInput_FileUploadSavesToDisk(t *testing.T) {
 	if len(msg.Parts) != 2 {
 		t.Fatalf("len(parts) = %d, want 2", len(msg.Parts))
 	}
-	if msg.Parts[0].Type != llm.PartText {
-		t.Fatalf("parts[0].type = %s, want text", msg.Parts[0].Type)
+	if msg.Parts[0].Type != llm.PartFile {
+		t.Fatalf("parts[0].type = %s, want file", msg.Parts[0].Type)
+	}
+	if msg.Parts[0].FileData == nil {
+		t.Fatalf("parts[0].FileData = nil")
+	}
+	if msg.Parts[0].FileData.MediaType != "application/pdf" {
+		t.Fatalf("media type = %q, want application/pdf", msg.Parts[0].FileData.MediaType)
+	}
+	if msg.Parts[0].FileData.Base64 != b64 {
+		t.Fatalf("base64 = %q, want %q", msg.Parts[0].FileData.Base64, b64)
 	}
 	if !strings.Contains(msg.Parts[0].Text, "doc.pdf") {
 		t.Fatalf("parts[0].text = %q, should mention doc.pdf", msg.Parts[0].Text)

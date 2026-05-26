@@ -103,6 +103,7 @@ type PartType string
 const (
 	PartText       PartType = "text"
 	PartImage      PartType = "image"
+	PartFile       PartType = "file"
 	PartToolCall   PartType = "tool_call"
 	PartToolResult PartType = "tool_result"
 )
@@ -123,6 +124,8 @@ type Part struct {
 	ReasoningEncryptedContent string         // Responses API encrypted reasoning content for replay
 	ImageData                 *ToolImageData // User-supplied image (base64-encoded)
 	ImagePath                 string         // Local filesystem path to the image (when available, e.g. Telegram uploads)
+	FileData                  *ToolFileData  // User-supplied file (base64-encoded)
+	FilePath                  string         // Local filesystem path to the file (when available)
 	ToolCall                  *ToolCall
 	ToolResult                *ToolResult
 }
@@ -195,6 +198,13 @@ type ToolImageData struct {
 	MediaType string `json:"media_type,omitempty"`
 	Base64    string `json:"base64,omitempty"`
 	Detail    string `json:"detail,omitempty"`
+}
+
+// ToolFileData represents base64-encoded file data in user input.
+type ToolFileData struct {
+	MediaType string `json:"media_type,omitempty"`
+	Base64    string `json:"base64,omitempty"`
+	Filename  string `json:"filename,omitempty"`
 }
 
 // ToolContentPart represents one structured piece of tool result content.
