@@ -390,7 +390,7 @@ func (m *Model) doRefresh() (tea.Model, tea.Cmd) {
 			m.err = err
 			return m, nil
 		}
-		// Convert search results to summaries (need to fetch each session)
+		// Convert search results to summaries using session metadata already returned by search.
 		var summaries []session.SessionSummary
 		seen := make(map[string]bool)
 		for _, r := range results {
@@ -398,28 +398,22 @@ func (m *Model) doRefresh() (tea.Model, tea.Cmd) {
 				continue
 			}
 			seen[r.SessionID] = true
-			// Fetch full session to get summary data
-			sess, err := m.store.Get(ctx, r.SessionID)
-			if err != nil || sess == nil {
-				continue
-			}
 			// Apply status filter
-			if status != "" && sess.Status != status {
+			if status != "" && r.Status != status {
 				continue
 			}
-			msgs, _ := m.store.GetMessages(ctx, sess.ID, 0, 0)
 			summaries = append(summaries, session.SessionSummary{
-				ID:           sess.ID,
-				Number:       sess.Number,
-				Name:         sess.Name,
-				Summary:      sess.Summary,
-				Provider:     sess.Provider,
-				Model:        sess.Model,
-				Mode:         sess.Mode,
-				MessageCount: len(msgs),
-				Status:       sess.Status,
-				CreatedAt:    sess.CreatedAt,
-				UpdatedAt:    sess.UpdatedAt,
+				ID:           r.SessionID,
+				Number:       r.SessionNumber,
+				Name:         r.SessionName,
+				Summary:      r.Summary,
+				Provider:     r.Provider,
+				Model:        r.Model,
+				Mode:         r.Mode,
+				MessageCount: r.MessageCount,
+				Status:       r.Status,
+				CreatedAt:    r.SessionCreatedAt,
+				UpdatedAt:    r.UpdatedAt,
 			})
 		}
 		m.sessions = summaries
