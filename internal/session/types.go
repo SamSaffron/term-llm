@@ -157,15 +157,20 @@ type ListOptions struct {
 
 // SearchResult represents a search match.
 type SearchResult struct {
-	SessionID     string    `json:"session_id"`
-	SessionNumber int64     `json:"session_number"` // Sequential session number
-	MessageID     int64     `json:"message_id"`
-	SessionName   string    `json:"session_name"`
-	Summary       string    `json:"summary"`
-	Snippet       string    `json:"snippet"` // Matched text snippet
-	Provider      string    `json:"provider"`
-	Model         string    `json:"model"`
-	CreatedAt     time.Time `json:"created_at"`
+	SessionID        string        `json:"session_id"`
+	SessionNumber    int64         `json:"session_number"` // Sequential session number
+	MessageID        int64         `json:"message_id"`
+	SessionName      string        `json:"session_name"`
+	Summary          string        `json:"summary"`
+	Snippet          string        `json:"snippet"` // Matched text snippet
+	Provider         string        `json:"provider"`
+	Model            string        `json:"model"`
+	Mode             SessionMode   `json:"mode,omitempty"`
+	Status           SessionStatus `json:"status,omitempty"`
+	MessageCount     int           `json:"message_count"`
+	SessionCreatedAt time.Time     `json:"session_created_at"`
+	UpdatedAt        time.Time     `json:"updated_at"`
+	CreatedAt        time.Time     `json:"created_at"`
 }
 
 // NewMessage creates a new Message from an llm.Message with the given session ID and sequence.

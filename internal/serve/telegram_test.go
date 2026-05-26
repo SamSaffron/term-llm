@@ -134,6 +134,63 @@ func (s *blockingTextStream) Close() error {
 	return nil
 }
 
+type errorAfterTextProvider struct {
+	text           string
+	err            error
+	firstChunkSent chan struct{}
+	allowError     chan struct{}
+}
+
+func newErrorAfterTextProvider(text string, err error) *errorAfterTextProvider {
+	return &errorAfterTextProvider{
+		text:           text,
+		err:            err,
+		firstChunkSent: make(chan struct{}),
+		allowError:     make(chan struct{}),
+	}
+}
+
+func (p *errorAfterTextProvider) Name() string { return "error-after-text" }
+
+func (p *errorAfterTextProvider) Credential() string { return "mock" }
+
+func (p *errorAfterTextProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
+
+func (p *errorAfterTextProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	return &errorAfterTextStream{
+		ctx:            ctx,
+		text:           p.text,
+		err:            p.err,
+		firstChunkSent: p.firstChunkSent,
+		allowError:     p.allowError,
+	}, nil
+}
+
+type errorAfterTextStream struct {
+	ctx            context.Context
+	text           string
+	err            error
+	firstChunkSent chan struct{}
+	allowError     chan struct{}
+	chunkSent      bool
+}
+
+func (s *errorAfterTextStream) Recv() (llm.Event, error) {
+	if !s.chunkSent {
+		s.chunkSent = true
+		close(s.firstChunkSent)
+		return llm.Event{Type: llm.EventTextDelta, Text: s.text}, nil
+	}
+	select {
+	case <-s.ctx.Done():
+		return llm.Event{}, s.ctx.Err()
+	case <-s.allowError:
+		return llm.Event{}, s.err
+	}
+}
+
+func (s *errorAfterTextStream) Close() error { return nil }
+
 // newTestMgrAndSession builds a minimal manager and session backed by h's engine.
 func newTestMgrAndSession(h *testutil.EngineHarness) (*telegramSessionMgr, *telegramSession) {
 	mgr := &telegramSessionMgr{
@@ -759,6 +816,124 @@ func TestStreamReply_PersistsInterruptedPartialAssistantReply(t *testing.T) {
 
 	if got := bot.lastText(); !strings.Contains(got, "partial answer") || !strings.Contains(got, "(interrupted)") {
 		t.Fatalf("final telegram text = %q, want partial answer with interrupted marker", got)
+	}
+}
+
+func TestStreamReply_PersistsErroredPartialAssistantReply(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "telegram-stream-error.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	defer store.Close()
+
+	provider := newErrorAfterTextProvider("partial answer", errors.New("upstream unavailable"))
+	mgr := &telegramSessionMgr{
+		sessions:       make(map[int64]*telegramSession),
+		store:          store,
+		tickerInterval: 5 * time.Millisecond,
+		settings: Settings{
+			MaxTurns: 5,
+			Store:    store,
+			NewSession: func(ctx context.Context) (*SessionRuntime, error) {
+				return &SessionRuntime{
+					Engine:       llm.NewEngine(provider, llm.NewToolRegistry()),
+					ProviderName: "mock",
+					ModelName:    "test",
+				}, nil
+			},
+		},
+	}
+
+	sess, err := mgr.getOrCreate(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("getOrCreate failed: %v", err)
+	}
+
+	bot := &fakeBotSender{}
+	streamDone := make(chan error, 1)
+	go func() {
+		streamDone <- mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hi"))
+	}()
+
+	select {
+	case <-provider.firstChunkSent:
+	case <-time.After(5 * time.Second):
+		t.Fatal("provider never emitted first chunk")
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	visible := false
+	for time.Now().Before(deadline) {
+		for _, text := range bot.allTexts() {
+			if strings.Contains(text, "partial answer") {
+				visible = true
+				break
+			}
+		}
+		if visible {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !visible {
+		t.Fatal("telegram never displayed partial answer before stream error")
+	}
+
+	close(provider.allowError)
+
+	select {
+	case err := <-streamDone:
+		if err == nil {
+			t.Fatal("expected streamReply to return stream error")
+		}
+		if !strings.Contains(err.Error(), "upstream unavailable") {
+			t.Fatalf("expected upstream error in streamReply error, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("streamReply did not return after stream error")
+	}
+
+	meta, err := store.Get(context.Background(), sess.meta.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if meta.Status != session.StatusError {
+		t.Fatalf("session status = %s, want %s", meta.Status, session.StatusError)
+	}
+
+	msgs, err := store.GetMessages(context.Background(), sess.meta.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("get messages: %v", err)
+	}
+
+	assistantPartialCount := 0
+	for _, msg := range msgs {
+		if msg.Role == llm.RoleAssistant && msg.TextContent == "partial answer" {
+			assistantPartialCount++
+		}
+	}
+	if assistantPartialCount != 1 {
+		t.Fatalf("persisted partial assistant count = %d, want 1; msgs=%#v", assistantPartialCount, msgs)
+	}
+
+	if got := len(sess.history); got < 2 {
+		t.Fatalf("history length = %d, want at least 2", got)
+	}
+	if got := collectUserText(sess.history[len(sess.history)-2]); got != "hi" {
+		t.Fatalf("history user text = %q, want hi", got)
+	}
+	if got := telegramMessageVisibleText(sess.history[len(sess.history)-1]); got != "partial answer" {
+		t.Fatalf("history assistant text = %q, want partial answer", got)
+	}
+	assistantHistoryCount := 0
+	for _, msg := range sess.history {
+		if msg.Role == llm.RoleAssistant && telegramMessageVisibleText(msg) == "partial answer" {
+			assistantHistoryCount++
+		}
+	}
+	if assistantHistoryCount != 1 {
+		t.Fatalf("history partial assistant count = %d, want 1; history=%#v", assistantHistoryCount, sess.history)
 	}
 }
 

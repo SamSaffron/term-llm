@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,7 +18,8 @@ import (
 
 // ShowCommandHelp renders scrollable help for a command
 func ShowCommandHelp(command, shell string, engine *llm.Engine) error {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	// Build the help request. Keep detailed instructions in a system message so
 	// Responses-style providers that require an explicit instructions field (for
@@ -42,11 +44,24 @@ func ShowCommandHelp(command, shell string, engine *llm.Engine) error {
 		tea.WithoutSignalHandler(),
 	)
 
-	// Stream content in background, sending chunks to the program
+	streamDone := streamCommandHelp(ctx, engine, req, p.Send)
+
+	_, err = p.Run()
+	cancel()
+	<-streamDone
+	return err
+}
+
+func streamCommandHelp(ctx context.Context, engine *llm.Engine, req llm.Request, send func(tea.Msg)) <-chan struct{} {
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
+
 		stream, err := engine.Stream(ctx, req)
 		if err != nil {
-			p.Send(errorMsg{err})
+			if ctx.Err() == nil {
+				send(errorMsg{err})
+			}
 			return
 		}
 		defer stream.Close()
@@ -54,25 +69,34 @@ func ShowCommandHelp(command, shell string, engine *llm.Engine) error {
 		for {
 			event, err := stream.Recv()
 			if err == io.EOF {
-				p.Send(doneMsg{})
+				if ctx.Err() == nil {
+					send(doneMsg{})
+				}
 				return
 			}
 			if err != nil {
-				p.Send(errorMsg{err})
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+					return
+				}
+				send(errorMsg{err})
 				return
 			}
 			if event.Type == llm.EventError && event.Err != nil {
-				p.Send(errorMsg{event.Err})
+				if errors.Is(event.Err, context.Canceled) || errors.Is(event.Err, context.DeadlineExceeded) || ctx.Err() != nil {
+					return
+				}
+				send(errorMsg{event.Err})
 				return
 			}
 			if event.Type == llm.EventTextDelta && event.Text != "" {
-				p.Send(contentMsg(event.Text))
+				if ctx.Err() != nil {
+					return
+				}
+				send(contentMsg(event.Text))
 			}
 		}
 	}()
-
-	_, err = p.Run()
-	return err
+	return done
 }
 
 func buildCommandHelpRequest(command, shell string) llm.Request {

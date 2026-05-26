@@ -420,6 +420,21 @@ func TestSQLiteStoreSearchEscapesUserQueryForFTS(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("Search(term-llm) len = %d, want 1", len(results))
 	}
+	if results[0].Mode != ModeChat {
+		t.Fatalf("Search(term-llm) mode = %q, want %q", results[0].Mode, ModeChat)
+	}
+	if results[0].Status != StatusActive {
+		t.Fatalf("Search(term-llm) status = %q, want %q", results[0].Status, StatusActive)
+	}
+	if results[0].MessageCount != 1 {
+		t.Fatalf("Search(term-llm) message_count = %d, want 1", results[0].MessageCount)
+	}
+	if results[0].SessionCreatedAt.IsZero() {
+		t.Fatal("Search(term-llm) session_created_at = zero, want populated timestamp")
+	}
+	if results[0].UpdatedAt.IsZero() {
+		t.Fatal("Search(term-llm) updated_at = zero, want populated timestamp")
+	}
 }
 
 func TestSQLiteStorePersistsDeveloperMessages(t *testing.T) {

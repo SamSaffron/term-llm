@@ -1475,9 +1475,14 @@ func (s *SQLiteStore) Search(ctx context.Context, query string, limit int) ([]Se
 		return []SearchResult{}, nil
 	}
 
+	messageCountCol := "COALESCE(s.message_count, 0)"
+	if !s.hasMessageCount {
+		messageCountCol = "(SELECT COUNT(*) FROM messages WHERE session_id = s.id AND role IN ('user', 'assistant'))"
+	}
+
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT m.session_id, s.number, m.id, s.name, s.summary, snippet(messages_fts, 0, '**', '**', '...', 32),
-		       s.provider, s.model, m.created_at
+		       s.provider, s.model, s.mode, s.status, `+messageCountCol+` as message_count, s.created_at, s.updated_at, m.created_at
 		FROM messages_fts f
 		JOIN messages m ON m.id = f.rowid
 		JOIN sessions s ON s.id = m.session_id
@@ -1493,13 +1498,20 @@ func (s *SQLiteStore) Search(ctx context.Context, query string, limit int) ([]Se
 	for rows.Next() {
 		var r SearchResult
 		var number sql.NullInt64
+		var mode, status sql.NullString
 		err := rows.Scan(&r.SessionID, &number, &r.MessageID, &r.SessionName, &r.Summary,
-			&r.Snippet, &r.Provider, &r.Model, &r.CreatedAt)
+			&r.Snippet, &r.Provider, &r.Model, &mode, &status, &r.MessageCount, &r.SessionCreatedAt, &r.UpdatedAt, &r.CreatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("scan search result: %w", err)
 		}
 		if number.Valid {
 			r.SessionNumber = number.Int64
+		}
+		if mode.Valid {
+			r.Mode = SessionMode(mode.String)
+		}
+		if status.Valid {
+			r.Status = SessionStatus(status.String)
 		}
 		results = append(results, r)
 	}

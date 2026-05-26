@@ -1,9 +1,12 @@
 package ui
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/llm"
 )
 
@@ -25,6 +28,48 @@ func TestBuildCommandHelpRequestUsesSystemInstructions(t *testing.T) {
 	user := req.Messages[1].Parts[0].Text
 	if !strings.Contains(user, "ls -la") {
 		t.Fatalf("user prompt missing command: %q", user)
+	}
+}
+
+func TestStreamCommandHelpStopsOnContextCancel(t *testing.T) {
+	provider := &blockingHelpProvider{started: make(chan context.Context, 1)}
+	engine := llm.NewEngine(provider, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sent := make(chan tea.Msg, 1)
+	streamDone := streamCommandHelp(ctx, engine, buildCommandHelpRequest("ls -la", "bash"), func(msg tea.Msg) {
+		select {
+		case sent <- msg:
+		default:
+		}
+	})
+
+	var providerCtx context.Context
+	select {
+	case providerCtx = <-provider.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("provider stream did not start")
+	}
+
+	cancel()
+
+	select {
+	case <-providerCtx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("provider context was not cancelled")
+	}
+
+	select {
+	case <-streamDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("help stream goroutine did not exit after cancellation")
+	}
+
+	select {
+	case msg := <-sent:
+		t.Fatalf("unexpected message after cancellation: %T", msg)
+	default:
 	}
 }
 
@@ -78,3 +123,32 @@ func TestPostexecRenderMarkdown_TabsMatchSharedRenderer(t *testing.T) {
 		t.Fatalf("postexec render must preserve trailing newline, got %q", got)
 	}
 }
+
+type blockingHelpProvider struct {
+	started chan context.Context
+}
+
+func (p *blockingHelpProvider) Name() string { return "blocking-help" }
+
+func (p *blockingHelpProvider) Credential() string { return "test" }
+
+func (p *blockingHelpProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
+
+func (p *blockingHelpProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	select {
+	case p.started <- ctx:
+	default:
+	}
+	return blockingHelpStream{ctx: ctx}, nil
+}
+
+type blockingHelpStream struct {
+	ctx context.Context
+}
+
+func (s blockingHelpStream) Recv() (llm.Event, error) {
+	<-s.ctx.Done()
+	return llm.Event{}, s.ctx.Err()
+}
+
+func (s blockingHelpStream) Close() error { return nil }

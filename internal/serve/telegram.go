@@ -1467,6 +1467,38 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		return true
 	}
 
+	salvagePartialHistory := func(persistCtx context.Context, fallbackOp string) {
+		textMu.Lock()
+		partial := textBuf.String()
+		textMu.Unlock()
+		producedMu.Lock()
+		producedSnapshot := append([]llm.Message(nil), produced...)
+		producedMu.Unlock()
+		if partial == "" && len(producedSnapshot) == 0 {
+			return
+		}
+
+		assistantTextCaptured := telegramAssistantTextCaptured(producedSnapshot, partial)
+		newHistory := make([]llm.Message, 0, len(sess.history)+2+len(producedSnapshot))
+		newHistory = append(newHistory, sess.history...)
+		newHistory = append(newHistory, normalizeUserMessageForHistory(userMsg))
+		newHistory = append(newHistory, producedSnapshot...)
+		if partial != "" {
+			assistantMsg := llm.AssistantText(partial)
+			if m.store != nil && sess.meta != nil && !m.persistedAssistantTextMatches(persistCtx, sess.meta.ID, partial) {
+				storeMsg := session.NewMessage(sess.meta.ID, assistantMsg, -1)
+				m.runStoreOpWithoutCancel(persistCtx, sess.meta.ID, fallbackOp, func(storeCtx context.Context) error {
+					return m.store.AddMessage(storeCtx, sess.meta.ID, storeMsg)
+				})
+			}
+			if !assistantTextCaptured {
+				newHistory = append(newHistory, assistantMsg)
+			}
+		}
+		sess.history = newHistory
+		sess.lastActivity = time.Now()
+	}
+
 	var streamErr error
 	userInterrupted := false
 	streamDoneDrained := false
@@ -1585,10 +1617,6 @@ loop:
 		textMu.Lock()
 		partial := textBuf.String()
 		textMu.Unlock()
-		producedMu.Lock()
-		producedSnapshot := append([]llm.Message(nil), produced...)
-		producedMu.Unlock()
-		assistantTextCaptured := telegramAssistantTextCaptured(producedSnapshot, partial)
 
 		// Edit the Telegram message to show partial text + interrupted marker.
 		display := ""
@@ -1609,27 +1637,7 @@ loop:
 		sendEdit(currentMsgID, display, true)
 
 		// Preserve partial history so conversation context isn't lost.
-		newHistory := make([]llm.Message, 0, len(sess.history)+2+len(producedSnapshot))
-		newHistory = append(newHistory, sess.history...)
-		newHistory = append(newHistory, normalizeUserMessageForHistory(userMsg))
-		newHistory = append(newHistory, producedSnapshot...)
-		// If visible partial assistant text was not captured by normal callbacks, keep
-		// in-memory history aligned with what the user saw. Persist independently: a
-		// callback may append to produced before its cancelled store write completes.
-		if partial != "" {
-			assistantMsg := llm.AssistantText(partial)
-			if m.store != nil && sess.meta != nil && !m.persistedAssistantTextMatches(streamCtx, sess.meta.ID, partial) {
-				storeMsg := session.NewMessage(sess.meta.ID, assistantMsg, -1)
-				m.runStoreOpWithoutCancel(streamCtx, sess.meta.ID, "AddMessage(assistant_interrupt_fallback)", func(storeCtx context.Context) error {
-					return m.store.AddMessage(storeCtx, sess.meta.ID, storeMsg)
-				})
-			}
-			if !assistantTextCaptured {
-				newHistory = append(newHistory, assistantMsg)
-			}
-		}
-		sess.history = newHistory
-		sess.lastActivity = time.Now()
+		salvagePartialHistory(streamCtx, "AddMessage(assistant_interrupt_fallback)")
 
 		if m.store != nil && sess.meta != nil {
 			m.runStoreOpWithTimeout(sess.meta.ID, "UpdateStatus(interrupted)", func(storeCtx context.Context) error {
@@ -1640,6 +1648,7 @@ loop:
 	}
 
 	if streamErr != nil {
+		salvagePartialHistory(streamCtx, "AddMessage(assistant_error_fallback)")
 		if strings.Contains(streamErr.Error(), "stream timed out") {
 			_, _ = bot.Send(tgbotapi.NewMessage(chatID, "⌛ Response timed out — please try again."))
 		}
