@@ -316,21 +316,32 @@ func parseUserMessageContent(content json.RawMessage) (llm.Message, error) {
 				if !strings.HasPrefix(fileData, "data:") {
 					continue
 				}
-				_, b64 := parseDataURL(fileData)
-				if b64 == "" {
+				mt, b64 := parseDataURL(fileData)
+				if mt == "" || b64 == "" {
 					continue
 				}
 				fileCount++
 				if fileCount > maxAttachments {
 					return llm.Message{}, fmt.Errorf("too many attachments (max %d)", maxAttachments)
 				}
-				path, err := saveUploadedFile(filename, b64)
+				cleanB64 := stripBase64Newlines(b64)
+				raw, err := decodeUploadedFile(filename, cleanB64)
+				if err != nil {
+					return llm.Message{}, fmt.Errorf("decode attachment %q: %w", filename, err)
+				}
+				path, err := saveUploadedBytes(filename, raw)
 				if err != nil {
 					return llm.Message{}, fmt.Errorf("save attachment %q: %w", filename, err)
 				}
 				llmParts = append(llmParts, llm.Part{
-					Type: llm.PartText,
+					Type: llm.PartFile,
 					Text: fmt.Sprintf("[User uploaded file: %s — saved to %s]", filename, abbreviatePath(path)),
+					FileData: &llm.ToolFileData{
+						MediaType: mt,
+						Base64:    cleanB64,
+						Filename:  filename,
+					},
+					FilePath: path,
 				})
 			}
 		}
