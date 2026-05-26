@@ -475,8 +475,9 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 
 	// Create textarea with minimal styling for inline REPL
 	ta := textarea.New()
+	composerPrompt := "❯ "
 	ta.Placeholder = "Type a message..."
-	ta.Prompt = "❯ "
+	ta.Prompt = composerPrompt
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0 // No limit
 	ta.SetWidth(width)
@@ -486,6 +487,14 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 	// physical cursor location inside the composer, even though the status line is
 	// rendered after it.
 	ta.SetVirtualCursor(false)
+	// Bubble's textarea currently forgets to apply Prompt style to the extra
+	// end-of-buffer prompt rows unless a prompt func is used; without this the
+	// empty composer prompt at the bottom renders plain while typed prompt rows
+	// are themed. Use a constant prompt func so every prompt row takes the same
+	// styling path.
+	ta.SetPromptFunc(lipgloss.Width(composerPrompt), func(textarea.PromptInfo) string {
+		return composerPrompt
+	})
 	taStyles := ta.Styles()
 	taStyles.Focused.CursorLine = lipgloss.NewStyle()
 	taStyles.Focused.Base = lipgloss.NewStyle()

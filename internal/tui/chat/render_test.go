@@ -92,6 +92,27 @@ func TestView_DoesNotPlaceComposerCursorWhenDialogOpen(t *testing.T) {
 	}
 }
 
+func TestTextareaEndOfBufferPromptKeepsPromptStyle(t *testing.T) {
+	m := newTestChatModel(false)
+	m.textarea.SetWidth(40)
+	m.textarea.SetHeight(4)
+	m.setTextareaValue("one\ntwo\nthree")
+
+	view := m.textarea.View()
+	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+	if len(lines) == 0 {
+		t.Fatal("textarea view is empty")
+	}
+
+	last := lines[len(lines)-1]
+	if !strings.Contains(last, m.textarea.Prompt) {
+		t.Fatalf("last textarea row %q does not contain prompt %q", last, m.textarea.Prompt)
+	}
+	if strings.HasPrefix(last, m.textarea.Prompt) {
+		t.Fatalf("last textarea prompt is unstyled: %q", last)
+	}
+}
+
 func TestTryAppendAltScreenStreamingContent_AppendsTailLines(t *testing.T) {
 	m := &Model{}
 	m.viewCache.lastContentHistoryPlusStream = true
