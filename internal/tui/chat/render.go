@@ -1042,7 +1042,7 @@ func (m *Model) renderStatusLine() string {
 			lines = 0
 		}
 		if lines > 0 {
-			hint := mutedStyle.Render(fmt.Sprintf("%d lines · ctrl+y:copy", lines))
+			hint := mutedStyle.Render(fmt.Sprintf("%d lines · ctrl+c:copy", lines))
 			for i := range candidates {
 				candidates[i] = append(candidates[i], statusSegment{text: hint, priority: 60})
 			}
