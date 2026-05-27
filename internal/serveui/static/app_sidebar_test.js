@@ -129,10 +129,13 @@ function createHarness(options = {}) {
     requestHeaders() { return {}; },
     renderSidebar() { renderSidebarCount += 1; },
   };
-  const document = { createElement: (tag) => new Element(tag) };
+  const document = new Element('document');
+  document.createElement = (tag) => new Element(tag);
+  const navigator = { platform: options.platform || 'Linux x86_64' };
   const context = {
     window: { TermLLMApp: app },
     document,
+    navigator,
     URLSearchParams,
     console,
     clearTimeout,
@@ -143,7 +146,22 @@ function createHarness(options = {}) {
   };
   context.globalThis = context;
   vm.runInNewContext(source, context, { filename: 'app-sidebar.js' });
-  return { app, elements, state, get renderSidebarCount() { return renderSidebarCount; } };
+  return { app, elements, state, document, get renderSidebarCount() { return renderSidebarCount; } };
+}
+
+function keydownEvent(overrides = {}) {
+  let prevented = false;
+  return {
+    type: 'keydown',
+    key: 'k',
+    metaKey: false,
+    ctrlKey: false,
+    altKey: false,
+    shiftKey: false,
+    preventDefault() { prevented = true; },
+    get defaultPrevented() { return prevented; },
+    ...overrides,
+  };
 }
 
 async function run(name, fn) {
@@ -209,6 +227,100 @@ async function run(name, fn) {
     assert(requested.includes('q=linux'), 'query sent');
     assertEqual(state.sidebarSearchResults.length, 1, 'one result mapped');
     assertEqual(state.sidebarSearchResults[0].title, 'Linux', 'result title mapped');
+  });
+
+  await run('cmd+k opens widgets modal on mac', async () => {
+    const { app, elements, state, document } = createHarness({ platform: 'MacIntel' });
+    state.widgets = [{ id: 'w1', mount: 'one', title: 'One' }];
+    state.widgetsLoaded = true;
+    app.renderWidgetSidebar();
+    elements.widgetsModal.classList.add('hidden');
+
+    const event = keydownEvent({ metaKey: true });
+    await document.dispatchEvent(event);
+
+    assert(event.defaultPrevented, 'cmd+k preventDefault called');
+    assert(!elements.widgetsModal.classList.contains('hidden'), 'modal is open');
+  });
+
+  await run('cmd+k closes widgets modal when already open on mac', async () => {
+    const { app, elements, state, document } = createHarness({ platform: 'MacIntel' });
+    state.widgets = [{ id: 'w1', mount: 'one', title: 'One' }];
+    state.widgetsLoaded = true;
+    app.renderWidgetSidebar();
+    // Modal starts open (no 'hidden' class)
+
+    await document.dispatchEvent(keydownEvent({ metaKey: true }));
+
+    assert(elements.widgetsModal.classList.contains('hidden'), 'modal closes on second press');
+  });
+
+  await run('ctrl+k toggles widgets modal on linux', async () => {
+    const { app, elements, state, document } = createHarness({ platform: 'Linux x86_64' });
+    state.widgets = [{ id: 'w1', mount: 'one', title: 'One' }];
+    state.widgetsLoaded = true;
+    app.renderWidgetSidebar();
+    elements.widgetsModal.classList.add('hidden');
+
+    await document.dispatchEvent(keydownEvent({ ctrlKey: true }));
+
+    assert(!elements.widgetsModal.classList.contains('hidden'), 'ctrl+k opens modal on linux');
+  });
+
+  await run('ctrl+k is ignored on mac (preserves emacs kill-line)', async () => {
+    const { app, elements, state, document } = createHarness({ platform: 'MacIntel' });
+    state.widgets = [{ id: 'w1', mount: 'one', title: 'One' }];
+    state.widgetsLoaded = true;
+    app.renderWidgetSidebar();
+    elements.widgetsModal.classList.add('hidden');
+
+    const event = keydownEvent({ ctrlKey: true });
+    await document.dispatchEvent(event);
+
+    assert(!event.defaultPrevented, 'preventDefault NOT called for ctrl+k on mac');
+    assert(elements.widgetsModal.classList.contains('hidden'), 'modal stays closed');
+  });
+
+  await run('cmd+k is ignored when widgets button is hidden', async () => {
+    const { elements, state, document } = createHarness({ platform: 'MacIntel' });
+    state.widgets = [];
+    state.widgetsLoaded = true;
+    // renderWidgetSidebar not called or no widgets => button stays hidden by default
+    elements.widgetsOpenBtn.classList.add('hidden');
+    elements.widgetsModal.classList.add('hidden');
+
+    const event = keydownEvent({ metaKey: true });
+    await document.dispatchEvent(event);
+
+    assert(!event.defaultPrevented, 'preventDefault NOT called when no widgets');
+    assert(elements.widgetsModal.classList.contains('hidden'), 'modal stays closed');
+  });
+
+  await run('cmd+shift+k does not trigger', async () => {
+    const { app, elements, state, document } = createHarness({ platform: 'MacIntel' });
+    state.widgets = [{ id: 'w1', mount: 'one', title: 'One' }];
+    state.widgetsLoaded = true;
+    app.renderWidgetSidebar();
+    elements.widgetsModal.classList.add('hidden');
+
+    const event = keydownEvent({ metaKey: true, shiftKey: true });
+    await document.dispatchEvent(event);
+
+    assert(!event.defaultPrevented, 'shift modifier blocks the binding');
+    assert(elements.widgetsModal.classList.contains('hidden'), 'modal stays closed');
+  });
+
+  await run('cmd+ctrl+k does not trigger on mac', async () => {
+    const { app, elements, state, document } = createHarness({ platform: 'MacIntel' });
+    state.widgets = [{ id: 'w1', mount: 'one', title: 'One' }];
+    state.widgetsLoaded = true;
+    app.renderWidgetSidebar();
+    elements.widgetsModal.classList.add('hidden');
+
+    const event = keydownEvent({ metaKey: true, ctrlKey: true });
+    await document.dispatchEvent(event);
+
+    assert(!event.defaultPrevented, 'both modifiers blocks the binding on mac');
   });
 
   if (failures > 0) process.exit(1);
