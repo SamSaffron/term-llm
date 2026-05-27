@@ -14,6 +14,47 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
+func TestServeRuntimeSessionNumberConcurrentAccess(t *testing.T) {
+	rt := &serveRuntime{
+		sessionMeta: &session.Session{ID: "sess", Number: 1},
+	}
+
+	const readers = 4
+	const iterations = 1000
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+
+	for range readers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for i := 0; i < iterations; i++ {
+				_ = rt.SessionNumber()
+			}
+		}()
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 1; i <= iterations; i++ {
+			rt.mu.Lock()
+			rt.sessionMeta = &session.Session{ID: "sess", Number: int64(i)}
+			rt.mu.Unlock()
+		}
+	}()
+
+	close(start)
+	wg.Wait()
+
+	if got := rt.SessionNumber(); got != iterations {
+		t.Fatalf("SessionNumber() = %d, want %d", got, iterations)
+	}
+}
+
 type serveRuntimeTestStream struct {
 	events []llm.Event
 	index  int
