@@ -489,6 +489,106 @@ func TestJobsV2RecoverRunsCancelsCancelRequestedRuns(t *testing.T) {
 	}
 }
 
+func TestJobsV2RecoverRunsFailsInterruptedRunsAndQueuesRetry(t *testing.T) {
+	mgr, err := newJobsV2Manager(":memory:", 0, nil)
+	if err != nil {
+		t.Fatalf("newJobsV2Manager failed: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+
+	job, err := mgr.CreateJob(jobsV2Job{
+		Name:          "recover-interrupted-runs",
+		Enabled:       true,
+		RunnerType:    jobsV2RunnerProgram,
+		RunnerConfig:  json.RawMessage(`{"command":"echo","args":["x"]}`),
+		TriggerType:   jobsV2TriggerManual,
+		TriggerConfig: json.RawMessage(`{}`),
+		RetryPolicy:   json.RawMessage(`{"max_attempts":2,"initial_delay":"1s"}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+
+	now := time.Now().UTC()
+	startedAt := now.Add(-2 * time.Second)
+	_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, worker_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"run_claimed_recover", job.ID, 1, "manual", now, jobsV2RunClaimed, "worker_old", now, now)
+	if err != nil {
+		t.Fatalf("insert claimed run: %v", err)
+	}
+	_, err = mgr.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, worker_id, session_id, started_at, response, turn_count, input_tokens, output_tokens, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"run_running_recover", job.ID, 1, "manual", now, jobsV2RunRunning, "worker_old", "sess_recover", startedAt, "partial response", 3, 11, 7, now, now)
+	if err != nil {
+		t.Fatalf("insert running run: %v", err)
+	}
+
+	if err := mgr.recoverRuns(); err != nil {
+		t.Fatalf("recoverRuns failed: %v", err)
+	}
+
+	for _, runID := range []string{"run_claimed_recover", "run_running_recover"} {
+		recovered, err := mgr.GetRun(runID)
+		if err != nil {
+			t.Fatalf("GetRun(%s) failed: %v", runID, err)
+		}
+		if recovered.Status != jobsV2RunFailed {
+			t.Fatalf("run %s status = %s, want %s", runID, recovered.Status, jobsV2RunFailed)
+		}
+		if recovered.Error != jobsV2RecoveryWorkerLostError {
+			t.Fatalf("run %s error = %q, want %q", runID, recovered.Error, jobsV2RecoveryWorkerLostError)
+		}
+		if recovered.ExitReason != exitReasonException {
+			t.Fatalf("run %s exit_reason = %q, want %q", runID, recovered.ExitReason, exitReasonException)
+		}
+		if recovered.FinishedAt == nil {
+			t.Fatalf("run %s finished_at was not set", runID)
+		}
+	}
+
+	running, err := mgr.GetRun("run_running_recover")
+	if err != nil {
+		t.Fatalf("GetRun(run_running_recover) failed: %v", err)
+	}
+	if running.Response != "partial response" {
+		t.Fatalf("running response = %q, want partial response", running.Response)
+	}
+
+	var originalQueued int
+	err = mgr.db.QueryRow(`SELECT COUNT(1) FROM job_runs_v2 WHERE id IN (?, ?) AND status = ?`, "run_claimed_recover", "run_running_recover", jobsV2RunQueued).Scan(&originalQueued)
+	if err != nil {
+		t.Fatalf("count original queued runs: %v", err)
+	}
+	if originalQueued != 0 {
+		t.Fatalf("original queued runs = %d, want 0", originalQueued)
+	}
+
+	rows, err := mgr.db.Query(`SELECT attempt, trigger, status FROM job_runs_v2 WHERE job_id = ? AND trigger = ? ORDER BY id`, job.ID, "retry")
+	if err != nil {
+		t.Fatalf("list retry runs: %v", err)
+	}
+	defer rows.Close()
+
+	var retryCount int
+	for rows.Next() {
+		var attempt int
+		var trigger string
+		var status string
+		if err := rows.Scan(&attempt, &trigger, &status); err != nil {
+			t.Fatalf("scan retry run: %v", err)
+		}
+		if attempt != 2 || trigger != "retry" || status != string(jobsV2RunQueued) {
+			t.Fatalf("retry run = attempt:%d trigger:%s status:%s, want attempt 2 trigger retry status queued", attempt, trigger, status)
+		}
+		retryCount++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate retry runs: %v", err)
+	}
+	if retryCount != 2 {
+		t.Fatalf("retry run count = %d, want 2", retryCount)
+	}
+}
+
 func TestJobsV2CronValidation(t *testing.T) {
 	mgr, err := newJobsV2Manager(":memory:", 1, nil)
 	if err != nil {

@@ -229,6 +229,8 @@ const (
 	jobsV2WorkerMinDelay      = 100 * time.Millisecond
 	jobsV2WorkerIdleDelay     = time.Minute
 	jobsV2WorkerErrorDelay    = 200 * time.Millisecond
+
+	jobsV2RecoveryWorkerLostError = "worker lost during crash recovery; run may have partially completed"
 )
 
 type jobsV2ProgramConfig struct {
@@ -686,24 +688,76 @@ func execJobsV2Schema(db *sql.DB) error {
 }
 
 func (m *jobsV2Manager) recoverRuns() error {
-	_, err := m.db.Exec(`
-		UPDATE job_runs_v2
-		SET status = CASE
-				WHEN status = ? THEN ?
-				ELSE ?
-			END,
-			finished_at = CASE
-				WHEN status = ? THEN CURRENT_TIMESTAMP
-				ELSE finished_at
-			END,
-			updated_at = CURRENT_TIMESTAMP
-		WHERE status IN (?, ?, ?, ?)`,
-		jobsV2RunCancelRequested, jobsV2RunCancelled,
-		jobsV2RunQueued,
-		jobsV2RunCancelRequested,
-		jobsV2RunQueued, jobsV2RunClaimed, jobsV2RunRunning, jobsV2RunCancelRequested)
+	rows, err := m.db.Query(`SELECT `+jobsV2RunFullColumns+` FROM job_runs_v2 WHERE status IN (?, ?)`, jobsV2RunClaimed, jobsV2RunRunning)
 	if err != nil {
-		return fmt.Errorf("recover runs: %w", err)
+		return fmt.Errorf("list interrupted runs: %w", err)
+	}
+
+	var interrupted []jobsV2Run
+	for rows.Next() {
+		run, err := scanRunV2(rows)
+		if err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan interrupted run: %w", err)
+		}
+		interrupted = append(interrupted, run)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate interrupted runs: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close interrupted runs: %w", err)
+	}
+
+	_, err = m.db.Exec(`
+		UPDATE job_runs_v2
+		SET status = ?,
+			finished_at = CURRENT_TIMESTAMP,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE status = ?`,
+		jobsV2RunCancelled, jobsV2RunCancelRequested)
+	if err != nil {
+		return fmt.Errorf("recover cancelled runs: %w", err)
+	}
+
+	for _, run := range interrupted {
+		res, err := m.db.Exec(`
+			UPDATE job_runs_v2
+			SET status = ?,
+				error = ?,
+				exit_reason = ?,
+				finished_at = CURRENT_TIMESTAMP,
+				updated_at = CURRENT_TIMESTAMP
+			WHERE id = ? AND status IN (?, ?)`,
+			jobsV2RunFailed,
+			jobsV2RecoveryWorkerLostError,
+			exitReasonException,
+			run.ID,
+			jobsV2RunClaimed,
+			jobsV2RunRunning)
+		if err != nil {
+			return fmt.Errorf("recover interrupted run %s: %w", run.ID, err)
+		}
+		affected, _ := res.RowsAffected()
+		if affected == 0 {
+			continue
+		}
+		_ = m.addRunEvent(run.ID, string(jobsV2RunFailed), "run finished", map[string]any{
+			"status":        jobsV2RunFailed,
+			"attempt":       run.Attempt,
+			"session_id":    run.SessionID,
+			"exit_code":     run.ExitCode,
+			"error":         jobsV2RecoveryWorkerLostError,
+			"exit_reason":   exitReasonException,
+			"truncated":     run.Truncated,
+			"turn_count":    run.TurnCount,
+			"input_tokens":  run.InputTokens,
+			"output_tokens": run.OutputTokens,
+		})
+		if err := m.scheduleRetryIfNeeded(run.ID, jobsV2RunFailed, run.Attempt, time.Now().UTC()); err != nil {
+			return fmt.Errorf("recover interrupted run %s retry: %w", run.ID, err)
+		}
 	}
 	return nil
 }
@@ -1273,33 +1327,44 @@ func (m *jobsV2Manager) finishRun(runID string, status jobsV2RunStatus, result j
 		"output_tokens": result.OutputTokens,
 	})
 
-	if status == jobsV2RunFailed || status == jobsV2RunTimedOut {
-		run, err := m.GetRun(runID)
-		if err != nil {
-			return nil
-		}
-		job, err := m.GetJob(run.JobID)
-		if err != nil {
-			return nil
-		}
-		policy := decodeRetryPolicy(job.RetryPolicy)
-		if attempt < policy.MaxAttempts {
-			delay := computeRetryDelay(policy, attempt)
-			retryID := "run_" + randomSuffix()
-			_, _ = m.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, retryID, job.ID, attempt+1, "retry", now.Add(delay), jobsV2RunQueued)
-			_ = m.addRunEvent(runID, "retry_scheduled", "retry run scheduled", map[string]any{
-				"retry_run_id": retryID,
-				"next_attempt": attempt + 1,
-				"delay":        delay.String(),
-			})
-			_ = m.addRunEvent(retryID, "queued", "retry run queued", map[string]any{
-				"trigger": "retry",
-				"attempt": attempt + 1,
-			})
-			m.notifyWorkers(1)
-		}
+	if err := m.scheduleRetryIfNeeded(runID, status, attempt, now); err != nil {
+		return err
 	}
 
+	return nil
+}
+
+func (m *jobsV2Manager) scheduleRetryIfNeeded(runID string, status jobsV2RunStatus, attempt int, now time.Time) error {
+	if status != jobsV2RunFailed && status != jobsV2RunTimedOut {
+		return nil
+	}
+	run, err := m.GetRun(runID)
+	if err != nil {
+		return nil
+	}
+	job, err := m.GetJob(run.JobID)
+	if err != nil {
+		return nil
+	}
+	policy := decodeRetryPolicy(job.RetryPolicy)
+	if attempt >= policy.MaxAttempts {
+		return nil
+	}
+	delay := computeRetryDelay(policy, attempt)
+	retryID := "run_" + randomSuffix()
+	if _, err := m.db.Exec(`INSERT INTO job_runs_v2 (id, job_id, attempt, trigger, scheduled_for, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, retryID, job.ID, attempt+1, "retry", now.Add(delay), jobsV2RunQueued); err != nil {
+		return err
+	}
+	_ = m.addRunEvent(runID, "retry_scheduled", "retry run scheduled", map[string]any{
+		"retry_run_id": retryID,
+		"next_attempt": attempt + 1,
+		"delay":        delay.String(),
+	})
+	_ = m.addRunEvent(retryID, "queued", "retry run queued", map[string]any{
+		"trigger": "retry",
+		"attempt": attempt + 1,
+	})
+	m.notifyWorkers(1)
 	return nil
 }
 
