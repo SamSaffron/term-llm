@@ -369,6 +369,16 @@ func (rt *serveRuntime) ensurePersistedSession(ctx context.Context, sessionID st
 	return true
 }
 
+func countUserTurns(messages []llm.Message) int {
+	userTurns := 0
+	for _, msg := range messages {
+		if msg.Role == llm.RoleUser {
+			userTurns++
+		}
+	}
+	return userTurns
+}
+
 func (rt *serveRuntime) persistSnapshot(ctx context.Context, sessionID string, snapshot []llm.Message) bool {
 	if rt.store == nil || sessionID == "" {
 		return false
@@ -391,17 +401,28 @@ func (rt *serveRuntime) persistSnapshot(ctx context.Context, sessionID string, s
 		log.Printf("[serve] session ReplaceMessages failed for %s: %v", sessionID, err)
 		return false
 	}
-	if rt.sessionMeta != nil && rt.sessionMeta.Summary == "" {
-		for _, msg := range snapshot {
-			if msg.Role != llm.RoleUser {
-				continue
-			}
-			if text := session.NewMessage(sessionID, msg, -1).TextContent; text != "" {
-				rt.sessionMeta.Summary = session.TruncateSummary(text)
-				if updateErr := rt.store.Update(dbCtx, rt.sessionMeta); updateErr != nil {
-					log.Printf("[serve] session Update failed for %s: %v", sessionID, updateErr)
+	userTurns := countUserTurns(snapshot)
+	sessionMetaNeedsUpdate := false
+	if rt.sessionMeta != nil {
+		if rt.sessionMeta.UserTurns != userTurns {
+			rt.sessionMeta.UserTurns = userTurns
+			sessionMetaNeedsUpdate = true
+		}
+		if rt.sessionMeta.Summary == "" {
+			for _, msg := range snapshot {
+				if msg.Role != llm.RoleUser {
+					continue
 				}
-				break
+				if text := session.NewMessage(sessionID, msg, -1).TextContent; text != "" {
+					rt.sessionMeta.Summary = session.TruncateSummary(text)
+					sessionMetaNeedsUpdate = true
+					break
+				}
+			}
+		}
+		if sessionMetaNeedsUpdate {
+			if updateErr := rt.store.Update(dbCtx, rt.sessionMeta); updateErr != nil {
+				log.Printf("[serve] session Update failed for %s: %v", sessionID, updateErr)
 			}
 		}
 	}
@@ -438,6 +459,13 @@ func (rt *serveRuntime) appendMessages(ctx context.Context, sessionID string, me
 			return written
 		}
 		written++
+		if msg.Role == llm.RoleUser {
+			if err := rt.store.IncrementUserTurns(dbCtx, sessionID); err != nil {
+				log.Printf("[serve] session IncrementUserTurns failed for %s: %v", sessionID, err)
+			} else if rt.sessionMeta != nil && rt.sessionMeta.ID == sessionID {
+				rt.sessionMeta.UserTurns++
+			}
+		}
 	}
 	return written
 }

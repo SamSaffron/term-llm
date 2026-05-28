@@ -354,6 +354,11 @@ func (s *serveRuntimeTestStore) UpdateStatus(ctx context.Context, id string, sta
 }
 
 func (s *serveRuntimeTestStore) IncrementUserTurns(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sess, ok := s.sessions[id]; ok {
+		sess.UserTurns++
+	}
 	return nil
 }
 
@@ -674,6 +679,89 @@ func TestServeRuntimeSuccessfulRunSkipsFinalSnapshotRewrite(t *testing.T) {
 	}
 	if msgs[5].Role != llm.RoleAssistant || msgs[5].TextContent != "done" {
 		t.Fatalf("message[5] = %+v, want final assistant message", msgs[5])
+	}
+}
+
+func TestServeRuntimePersistSnapshotUpdatesUserTurns(t *testing.T) {
+	store := newServeRuntimeTestStore()
+	sess := &session.Session{ID: "sess-snapshot-user-turns", Status: session.StatusActive}
+	if err := store.Create(context.Background(), sess); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	rt := &serveRuntime{
+		store:       store,
+		sessionMeta: sess,
+	}
+
+	snapshot := []llm.Message{
+		serveRuntimeTextMessage(llm.RoleUser, "first user"),
+		serveRuntimeTextMessage(llm.RoleAssistant, "first assistant"),
+		serveRuntimeTextMessage(llm.RoleUser, "second user"),
+	}
+	if ok := rt.persistSnapshot(context.Background(), sess.ID, snapshot); !ok {
+		t.Fatal("persistSnapshot() = false, want true")
+	}
+
+	persisted, err := store.Get(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if persisted == nil {
+		t.Fatal("Get() = nil session")
+	}
+	if persisted.UserTurns != 2 {
+		t.Fatalf("persisted UserTurns = %d, want 2", persisted.UserTurns)
+	}
+	if rt.sessionMeta.UserTurns != 2 {
+		t.Fatalf("runtime UserTurns = %d, want 2", rt.sessionMeta.UserTurns)
+	}
+}
+
+func TestServeRuntimeAppendMessagesIncrementsUserTurns(t *testing.T) {
+	store := newServeRuntimeTestStore()
+	sess := &session.Session{ID: "sess-append-user-turns", Status: session.StatusActive}
+	if err := store.Create(context.Background(), sess); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	rt := &serveRuntime{
+		store:       store,
+		sessionMeta: sess,
+	}
+
+	written := rt.appendMessages(context.Background(), sess.ID, []llm.Message{
+		serveRuntimeTextMessage(llm.RoleUser, "first user"),
+		serveRuntimeTextMessage(llm.RoleAssistant, "assistant"),
+		serveRuntimeTextMessage(llm.RoleUser, "second user"),
+	}, 7)
+	if written != 3 {
+		t.Fatalf("appendMessages() wrote %d messages, want 3", written)
+	}
+
+	persisted, err := store.Get(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if persisted == nil {
+		t.Fatal("Get() = nil session")
+	}
+	if persisted.UserTurns != 2 {
+		t.Fatalf("persisted UserTurns = %d, want 2", persisted.UserTurns)
+	}
+	if rt.sessionMeta.UserTurns != 2 {
+		t.Fatalf("runtime UserTurns = %d, want 2", rt.sessionMeta.UserTurns)
+	}
+
+	msgs, err := store.GetMessages(context.Background(), sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages() error = %v", err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("stored message count = %d, want 3", len(msgs))
+	}
+	if msgs[0].TurnIndex != 7 || msgs[1].TurnIndex != 7 || msgs[2].TurnIndex != 7 {
+		t.Fatalf("stored turn indexes = [%d %d %d], want all 7", msgs[0].TurnIndex, msgs[1].TurnIndex, msgs[2].TurnIndex)
 	}
 }
 
