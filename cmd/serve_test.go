@@ -10555,3 +10555,103 @@ func TestHandleSessions_ETagConditional(t *testing.T) {
 		t.Fatalf("second request (same etag) status = %d, want 304", rr2.Code)
 	}
 }
+
+func TestResolveServeToken(t *testing.T) {
+	gen := func() (string, error) { return "generated-token", nil }
+	genErr := func() (string, error) { return "", errors.New("rng broken") }
+
+	tests := []struct {
+		name        string
+		flag        string
+		env         string
+		requireAuth bool
+		generate    func() (string, error)
+		wantToken   string
+		wantSource  string
+		wantErr     bool
+	}{
+		{
+			name:        "auth disabled returns empty",
+			flag:        "flag-token",
+			env:         "env-token",
+			requireAuth: false,
+			generate:    gen,
+			wantToken:   "",
+			wantSource:  tokenSourceNone,
+		},
+		{
+			name:        "flag wins over env",
+			flag:        "flag-token",
+			env:         "env-token",
+			requireAuth: true,
+			generate:    gen,
+			wantToken:   "flag-token",
+			wantSource:  tokenSourceFlag,
+		},
+		{
+			name:        "env used when no flag",
+			flag:        "",
+			env:         "env-token",
+			requireAuth: true,
+			generate:    gen,
+			wantToken:   "env-token",
+			wantSource:  tokenSourceEnv,
+		},
+		{
+			name:        "env whitespace trimmed",
+			flag:        "",
+			env:         "  env-token  ",
+			requireAuth: true,
+			generate:    gen,
+			wantToken:   "env-token",
+			wantSource:  tokenSourceEnv,
+		},
+		{
+			name:        "flag whitespace falls back to env",
+			flag:        "   ",
+			env:         "env-token",
+			requireAuth: true,
+			generate:    gen,
+			wantToken:   "env-token",
+			wantSource:  tokenSourceEnv,
+		},
+		{
+			name:        "auto-generated when nothing set",
+			flag:        "",
+			env:         "",
+			requireAuth: true,
+			generate:    gen,
+			wantToken:   "generated-token",
+			wantSource:  tokenSourceGenerated,
+		},
+		{
+			name:        "generate error propagates",
+			flag:        "",
+			env:         "",
+			requireAuth: true,
+			generate:    genErr,
+			wantErr:     true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tok, source, err := resolveServeToken(tc.flag, tc.env, tc.requireAuth, tc.generate)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tok != tc.wantToken {
+				t.Errorf("token = %q, want %q", tok, tc.wantToken)
+			}
+			if source != tc.wantSource {
+				t.Errorf("source = %q, want %q", source, tc.wantSource)
+			}
+		})
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -119,7 +120,7 @@ func init() {
 
 	serveCmd.Flags().StringVar(&serveHost, "host", "127.0.0.1", "Bind host")
 	serveCmd.Flags().IntVar(&servePort, "port", 8080, "Bind port")
-	serveCmd.Flags().StringVar(&serveToken, "token", "", "Bearer token for API auth (auto-generated if omitted)")
+	serveCmd.Flags().StringVar(&serveToken, "token", "", "Bearer token for API auth (defaults to $TERM_LLM_SERVE_TOKEN, else auto-generated)")
 	serveCmd.Flags().BoolVar(&serveAllowNoAuth, "no-auth", false, "Disable auth (only allowed on loopback host)")
 	serveCmd.Flags().BoolVar(&serveAllowNoAuth, "allow-no-auth", false, "Disable auth (alias for --no-auth)")
 	_ = serveCmd.Flags().MarkHidden("allow-no-auth")
@@ -218,13 +219,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--auth none is only allowed on loopback hosts (got %q)", serveHost)
 	}
 
-	token := strings.TrimSpace(serveToken)
-	if requireAuth && token == "" {
-		generated, err := generateServeToken()
-		if err != nil {
-			return fmt.Errorf("generate auth token: %w", err)
-		}
-		token = generated
+	token, tokenSource, err := resolveServeToken(serveToken, os.Getenv("TERM_LLM_SERVE_TOKEN"), requireAuth, generateServeToken)
+	if err != nil {
+		return err
 	}
 
 	ctx, stop := signal.NotifyContext()
@@ -584,7 +581,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(cmd.ErrOrStderr(), "term-llm serve listening on http://%s:%d\n", serveHost, servePort)
 		fmt.Fprintf(cmd.ErrOrStderr(), "auth: %s\n", authSummary(requireAuth))
 		if requireAuth {
-			fmt.Fprintf(cmd.ErrOrStderr(), "token: %s\n", token)
+			switch tokenSource {
+			case tokenSourceGenerated:
+				fmt.Fprintf(cmd.ErrOrStderr(), "token: %s (auto-generated; export TERM_LLM_SERVE_TOKEN to persist)\n", token)
+			case tokenSourceEnv:
+				fmt.Fprintf(cmd.ErrOrStderr(), "token: %s (from $TERM_LLM_SERVE_TOKEN)\n", token)
+			default:
+				fmt.Fprintf(cmd.ErrOrStderr(), "token: %s\n", token)
+			}
 		}
 		fmt.Fprintf(cmd.ErrOrStderr(), "ui: %v\n", s.cfg.ui)
 		if hasJobs {
@@ -798,6 +802,34 @@ func resolveServeAuthMode(authFlagSet bool, authMode string, allowNoAuthSet bool
 func isLoopbackHost(host string) bool {
 	h := strings.TrimSpace(strings.ToLower(host))
 	return h == "127.0.0.1" || h == "localhost" || h == "::1"
+}
+
+// Sources reported by resolveServeToken for use in the startup banner.
+const (
+	tokenSourceNone      = ""
+	tokenSourceFlag      = "flag"
+	tokenSourceEnv       = "env"
+	tokenSourceGenerated = "generated"
+)
+
+// resolveServeToken returns the bearer token to use for the serve command.
+// Precedence: --token flag > TERM_LLM_SERVE_TOKEN env > auto-generated.
+// When requireAuth is false, returns an empty token and tokenSourceNone.
+func resolveServeToken(flagValue, envValue string, requireAuth bool, generate func() (string, error)) (string, string, error) {
+	if !requireAuth {
+		return "", tokenSourceNone, nil
+	}
+	if t := strings.TrimSpace(flagValue); t != "" {
+		return t, tokenSourceFlag, nil
+	}
+	if t := strings.TrimSpace(envValue); t != "" {
+		return t, tokenSourceEnv, nil
+	}
+	t, err := generate()
+	if err != nil {
+		return "", tokenSourceNone, fmt.Errorf("generate auth token: %w", err)
+	}
+	return t, tokenSourceGenerated, nil
 }
 
 func generateServeToken() (string, error) {

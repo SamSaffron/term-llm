@@ -89,6 +89,31 @@ term-llm serve web --token "$TOKEN"
 
 If you omit `--token`, term-llm can generate one automatically.
 
+### Persist the token across restarts
+
+Without `--token`, a fresh bearer token is generated on every start, which means any saved client config (browser tabs, scripts, API clients) breaks after a restart. Set `TERM_LLM_SERVE_TOKEN` in your environment to keep the same token across restarts.
+
+Note that `export FOO=...` only persists for the current shell session — close the terminal or reboot and the value is gone. To survive across sessions, add it to your shell's startup file:
+
+```bash
+# bash / zsh: append to your rc file
+echo "export TERM_LLM_SERVE_TOKEN=\"$(openssl rand -hex 32)\"" >> ~/.bashrc
+# (or ~/.zshrc)
+```
+
+```fish
+# fish: -U makes it a universal variable (persists across sessions), -x exports it
+set -Ux TERM_LLM_SERVE_TOKEN (openssl rand -hex 32)
+```
+
+Then start the server in a new shell:
+
+```bash
+term-llm serve web
+```
+
+Precedence: `--token` > `$TERM_LLM_SERVE_TOKEN` > auto-generated.
+
 You can disable auth only on loopback hosts:
 
 ```bash
