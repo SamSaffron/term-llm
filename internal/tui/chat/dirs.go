@@ -109,8 +109,17 @@ func (d *ApprovedDirs) IsPathApproved(path string) bool {
 			continue
 		}
 
+		// Resolve symlinks on the approved dir as well, so the comparison
+		// is apples-to-apples with realPath. Without this, an approved dir
+		// reached via a symlink (e.g. macOS /var -> /private/var) never
+		// matches files whose paths have been canonicalised above.
+		realDir, err := filepath.EvalSymlinks(absDir)
+		if err != nil {
+			realDir = absDir
+		}
+
 		// Check if path is under this directory
-		if strings.HasPrefix(realPath, absDir+string(filepath.Separator)) || realPath == absDir {
+		if strings.HasPrefix(realPath, realDir+string(filepath.Separator)) || realPath == realDir {
 			return true
 		}
 	}

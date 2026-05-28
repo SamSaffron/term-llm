@@ -68,6 +68,29 @@ func TestApprovedDirsExpandTilde(t *testing.T) {
 	}
 }
 
+// TestApprovedDirsResolvesSymlinks ensures that a file under an approved
+// directory is recognized as approved even when the approved directory itself
+// is reached via a symlink (e.g. macOS /var -> /private/var, or a user-created
+// symlink on Linux). Before the fix, only the file path had its symlinks
+// resolved, so the prefix check against an un-resolved approved dir failed.
+func TestApprovedDirsResolvesSymlinks(t *testing.T) {
+	realDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(realDir, "test.txt"), []byte("hi"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	// Create a symlink pointing at realDir and approve the symlink path.
+	linkDir := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	dirs := &ApprovedDirs{Directories: []string{linkDir}}
+	if !dirs.IsPathApproved(filepath.Join(realDir, "test.txt")) {
+		t.Fatal("file under symlinked approved dir should be approved")
+	}
+}
+
 func TestCmdFileClearsComposerAfterAttach(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.txt")
