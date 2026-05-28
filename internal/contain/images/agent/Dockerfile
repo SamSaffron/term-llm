@@ -92,20 +92,16 @@ RUN useradd -m -s /bin/zsh -G wheel agent && \
     chown agent:agent /home/agent/.zshrc && \
     sudo -Hu agent playwright install chromium
 
-# Unprivileged user for AUR builds (makepkg refuses root)
-RUN useradd -m -G wheel aur && \
-    echo "aur ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/aur && \
-    chmod 0440 /etc/sudoers.d/aur
-
-# yay (AUR helper)
-RUN sudo -u aur bash -c " \
-      git clone https://aur.archlinux.org/yay.git /tmp/yay && \
-      cd /tmp/yay && \
-      makepkg -si --noconfirm && \
-      rm -rf /tmp/yay"
-
-# runit is AUR-only on Arch
-RUN sudo -u aur yay -S --noconfirm runit
+# runit from Void Linux's maintained runit tree. Arch's AUR PKGBUILD fetches
+# the upstream tarball from smarden.org, which is frequently unreachable; the
+# Void fork carries modern compiler fixes while preserving runit semantics.
+RUN git clone --depth 1 https://github.com/void-linux/runit.git /tmp/runit && \
+    cd /tmp/runit/src && \
+    printf '%s\n' 'gcc -std=gnu17 -O2 -Wall -Wno-error=incompatible-pointer-types -Wno-error=implicit-function-declaration' > conf-cc && \
+    sed -i '1i#include <grp.h>' chkshsgr.c && \
+    make runsvdir runsv sv utmpset && \
+    install -m 0755 runsvdir runsv sv utmpset /usr/local/bin/ && \
+    rm -rf /tmp/runit
 
 # mise (polyglot version manager — node, python, ruby, etc.)
 RUN curl https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh
