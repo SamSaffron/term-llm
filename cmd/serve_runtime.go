@@ -83,6 +83,11 @@ func (rt *serveRuntime) LastUsed() time.Time {
 }
 
 func (rt *serveRuntime) SessionNumber() int64 {
+	if rt == nil {
+		return 0
+	}
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
 	if rt.sessionMeta != nil {
 		return rt.sessionMeta.Number
 	}

@@ -14,6 +14,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/procutil"
 )
 
 const (
@@ -34,14 +36,15 @@ const (
 type widgetEntry struct {
 	manifest *Manifest
 
-	mu      sync.Mutex
-	startMu sync.Mutex // serializes concurrent start attempts
-	state   processState
-	errMsg  string
-	proc    *os.Process
-	proxy   *httputil.ReverseProxy
-	lastReq time.Time
-	port    int
+	mu       sync.Mutex
+	startMu  sync.Mutex // serializes concurrent start attempts
+	state    processState
+	errMsg   string
+	proc     *os.Process
+	procDone chan struct{}
+	proxy    *httputil.ReverseProxy
+	lastReq  time.Time
+	port     int
 }
 
 func (e *widgetEntry) setError(err error) error {
@@ -309,26 +312,31 @@ func (e *widgetEntry) startProcess(basePath string) error {
 		e.mu.Unlock()
 	}
 
-	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd := exec.CommandContext(context.Background(), argv[0], argv[1:]...)
 	cmd.Dir = mf.Dir
 	cmd.Env = env
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
+	procutil.ConfigureCommandProcessGroup(cmd)
 
 	if err := cmd.Start(); err != nil {
 		return e.setError(fmt.Errorf("start process: %w", err))
 	}
 
+	procDone := make(chan struct{})
 	e.mu.Lock()
 	e.proc = cmd.Process
+	e.procDone = procDone
 	e.mu.Unlock()
 
 	go func() {
+		defer close(procDone)
 		_ = cmd.Wait()
 		e.mu.Lock()
 		if e.state == stateRunning || e.state == stateStarting {
 			e.state = stateStopped
 			e.proc = nil
+			e.procDone = nil
 			e.proxy = nil
 		}
 		e.mu.Unlock()
@@ -360,7 +368,7 @@ func (e *widgetEntry) startProcess(basePath string) error {
 		p := e.proc
 		e.mu.Unlock()
 		if p != nil {
-			_ = p.Kill()
+			killProcessGroup(p, syscall.SIGKILL)
 		}
 		return e.setError(fmt.Errorf("did not respond within %s: %v", startupTimeout, lastErr))
 	}
@@ -382,28 +390,41 @@ func (e *widgetEntry) startProcess(basePath string) error {
 func (e *widgetEntry) stopProcess() {
 	e.mu.Lock()
 	proc := e.proc
+	done := e.procDone
 	e.state = stateStopped
 	e.proc = nil
+	e.procDone = nil
 	e.proxy = nil
 	e.port = 0
 	e.mu.Unlock()
+	defer e.removeSocketIfNeeded()
 
 	if proc == nil {
 		return
 	}
-	_ = proc.Signal(syscall.SIGTERM)
-	done := make(chan struct{})
-	go func() {
-		proc.Wait()
-		close(done)
-	}()
+	killProcessGroup(proc, syscall.SIGTERM)
+	if done == nil {
+		return
+	}
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
-		_ = proc.Kill()
+		killProcessGroup(proc, syscall.SIGKILL)
 	}
+}
+
+func (e *widgetEntry) removeSocketIfNeeded() {
 	if mode, _ := e.manifest.PlaceholderMode(); mode == "socket" {
 		_ = os.Remove(filepath.Join(socketRuntimeDir, e.manifest.ID+".sock"))
+	}
+}
+
+func killProcessGroup(proc *os.Process, sig syscall.Signal) {
+	if proc == nil {
+		return
+	}
+	if err := syscall.Kill(-proc.Pid, sig); err != nil {
+		_ = proc.Signal(sig)
 	}
 }
 

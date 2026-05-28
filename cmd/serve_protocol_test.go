@@ -8,13 +8,24 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/samsaffron/term-llm/internal/session"
 )
 
 const onePixelPNGDataURL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4//8/AwAI/AL+KDvV3wAAAABJRU5ErkJggg=="
+
+func TestSetSessionNumberHeader(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	setSessionNumberHeader(recorder, &serveRuntime{sessionMeta: &session.Session{Number: 42}})
+	if got := recorder.Header().Get("x-session-number"); got != "42" {
+		t.Fatalf("x-session-number = %q, want 42", got)
+	}
+}
 
 func TestParseUserMessageContent_AllowsUpToMaxInlineImages(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())

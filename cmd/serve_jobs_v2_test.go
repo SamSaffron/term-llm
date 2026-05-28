@@ -1248,6 +1248,28 @@ func TestJobsV2DelayQueriesUseShortErrorDelay(t *testing.T) {
 	}
 }
 
+func TestJobsV2MaybeRunCleanupRetriesAfterFailure(t *testing.T) {
+	mgr := newJobsV2ManagerWithoutLoops(t)
+	mgr.cleanupInterval = time.Hour
+	mgr.retentionEventDays = 1
+
+	if err := mgr.db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	now := time.Now().UTC()
+	if err := mgr.maybeRunCleanup(now); err == nil {
+		t.Fatal("maybeRunCleanup returned nil error for closed DB")
+	}
+	if !mgr.lastCleanupCompleted.IsZero() {
+		t.Fatalf("lastCleanupCompleted = %v, want zero after failed cleanup", mgr.lastCleanupCompleted)
+	}
+
+	if err := mgr.maybeRunCleanup(now.Add(time.Minute)); err == nil {
+		t.Fatal("maybeRunCleanup suppressed retry after failed cleanup")
+	}
+}
+
 func newJobsV2ManagerWithoutLoops(t *testing.T) *jobsV2Manager {
 	t.Helper()
 	db, err := sql.Open("sqlite", ":memory:")

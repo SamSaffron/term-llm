@@ -573,8 +573,8 @@ func ensureSessionID(w http.ResponseWriter) string {
 }
 
 func setSessionNumberHeader(w http.ResponseWriter, rt *serveRuntime) {
-	if rt != nil && rt.sessionMeta != nil && rt.sessionMeta.Number > 0 {
-		w.Header().Set("x-session-number", strconv.FormatInt(rt.sessionMeta.Number, 10))
+	if number := rt.SessionNumber(); number > 0 {
+		w.Header().Set("x-session-number", strconv.FormatInt(number, 10))
 	}
 }
 

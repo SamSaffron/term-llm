@@ -492,6 +492,7 @@ type jobsV2Manager struct {
 	retentionMaxRunsJob  int
 	cleanupInterval      time.Duration
 	lastCleanupCompleted time.Time
+	cleanupRunning       bool
 
 	enqueueMu     sync.Mutex
 	mu            sync.Mutex
@@ -853,16 +854,29 @@ func (m *jobsV2Manager) maybeRunCleanup(now time.Time) error {
 	if m.cleanupInterval <= 0 {
 		return nil
 	}
+	cleanupStartedAt := now.UTC()
 	m.mu.Lock()
-	if !m.lastCleanupCompleted.IsZero() && now.Sub(m.lastCleanupCompleted) < m.cleanupInterval {
+	if !m.lastCleanupCompleted.IsZero() && cleanupStartedAt.Sub(m.lastCleanupCompleted) < m.cleanupInterval {
 		m.mu.Unlock()
 		return nil
 	}
-	// Optimistically set before running to avoid stampeding.
-	m.lastCleanupCompleted = now
+	if m.cleanupRunning {
+		m.mu.Unlock()
+		return nil
+	}
+	m.cleanupRunning = true
 	m.mu.Unlock()
 
-	return m.pruneOldData(now.UTC())
+	err := m.pruneOldData(cleanupStartedAt)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cleanupRunning = false
+	if err != nil {
+		return err
+	}
+	m.lastCleanupCompleted = cleanupStartedAt
+	return nil
 }
 
 func (m *jobsV2Manager) pruneOldData(now time.Time) error {
