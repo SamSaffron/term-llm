@@ -575,6 +575,7 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 		toolState := newCompatToolState()
 		var lastUsage *Usage
 		var reasoningBuilder strings.Builder
+		sawVisibleText := false
 		sawDone := false
 		sawToolCallsFinish := false
 
@@ -630,8 +631,19 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 				}
 				if choice.Delta != nil {
 					if content, ok := choice.Delta.Content.(string); ok && content != "" {
-						if err := send.Send(Event{Type: EventTextDelta, Text: content}); err != nil {
-							return err
+						// Some OpenAI-compatible reasoning models emit a pure-whitespace
+						// assistant content prefix (commonly "\n\n") before tool calls while
+						// putting the real content in reasoning/reasoning_content. Forwarding
+						// that prefix creates visible blank gaps before tool status rows. Keep
+						// whitespace once visible text has started, but suppress leading
+						// whitespace-only chunks.
+						if sawVisibleText || strings.TrimSpace(content) != "" {
+							if strings.TrimSpace(content) != "" {
+								sawVisibleText = true
+							}
+							if err := send.Send(Event{Type: EventTextDelta, Text: content}); err != nil {
+								return err
+							}
 						}
 					}
 					// Capture reasoning from thinking models. Different OpenAI-compatible
