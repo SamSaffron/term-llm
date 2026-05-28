@@ -976,6 +976,25 @@ func (m *Model) preserveStreamingContentOnError() {
 	m.viewCache.completedStream = ui.RenderSegmentsWithImageRenderer(completed, m.width, -1, m.renderMd, true, m.toolsExpanded, m.imageArtifactRenderer())
 }
 
+func (m *Model) renderStreamingContentOnErrorForScrollback() string {
+	if m.altScreen || m.tracker == nil {
+		return ""
+	}
+	m.tracker.CompleteTextSegments(func(text string) string {
+		return m.renderMarkdown(text)
+	})
+	m.tracker.ForceFailPendingTools()
+	return m.tracker.FlushAllRemaining(m.width, 0, m.renderMd).ToPrint
+}
+
+func (m *Model) flushStreamingContentOnErrorToScrollback() []tea.Cmd {
+	output := m.renderStreamingContentOnErrorForScrollback()
+	if output == "" {
+		return nil
+	}
+	return ui.ScrollbackPrintlnCommands(output, true)
+}
+
 // SetAgentResolver configures the function used to resolve agent names
 // during /handover. The function should match cmd.LoadAgent's signature.
 func (m *Model) SetAgentResolver(resolver func(name string, cfg *config.Config) (*agents.Agent, error)) {
@@ -1503,6 +1522,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// An already in-flight render tick may still arrive and no-op.
 				m.streamRenderTickPending = false
 				m.preserveStreamingContentOnError()
+				errorOutputCmds := m.flushStreamingContentOnErrorToScrollback()
 				m.resetCurrentReasoning()
 				m.streaming = false
 				m.err = nil
@@ -1549,7 +1569,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.altScreen {
 					return m, tea.Batch(tea.ClearScreen, footerCmd)
 				}
-				return m, footerCmd
+				if footerCmd != nil {
+					errorOutputCmds = append(errorOutputCmds, footerCmd)
+				}
+				return m, tea.Sequence(errorOutputCmds...)
 			}
 
 		case ui.StreamEventToolStart:

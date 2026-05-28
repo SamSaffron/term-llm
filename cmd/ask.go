@@ -1173,7 +1173,7 @@ func isOutputToolFinalizationMiss(err error) bool {
 		return false
 	}
 	msg := err.Error()
-	return strings.Contains(msg, "agentic loop ended unexpectedly") || strings.Contains(msg, "agentic loop exceeded max turns") || strings.Contains(msg, "no more turns configured") || strings.Contains(msg, "output tool") && strings.Contains(msg, "was not called")
+	return strings.Contains(msg, "agentic loop ended unexpectedly") || llm.IsMaxTurnsExceeded(err) || strings.Contains(msg, "no more turns configured") || strings.Contains(msg, "output tool") && strings.Contains(msg, "was not called")
 }
 
 func ensureOutputToolSpec(specs []llm.ToolSpec, outputSpec llm.ToolSpec) []llm.ToolSpec {

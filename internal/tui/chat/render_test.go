@@ -335,6 +335,74 @@ func TestUpdate_StreamError_MarksPendingToolsFailed(t *testing.T) {
 	}
 }
 
+func TestUpdate_StreamError_ShowsOutOfTurnsWarning(t *testing.T) {
+	warning := llm.MaxTurnsExceededWarning(3)
+	streamErr := &llm.MaxTurnsExceededError{MaxTurns: 3}
+
+	for _, tt := range []struct {
+		name      string
+		altScreen bool
+	}{
+		{name: "alt-screen", altScreen: true},
+		{name: "inline", altScreen: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestChatModel(tt.altScreen)
+			m.width = 80
+			m.height = 20
+			if tt.altScreen {
+				m.syncAltScreenViewportHeight(m.buildFooterLayout().height)
+			}
+			m.streaming = true
+
+			_, _ = m.Update(streamEventMsg{event: ui.ToolStartEvent("call-1", "read_file", "test.go", nil)})
+			_, _ = m.Update(streamEventMsg{event: ui.PhaseEvent(warning)})
+			_, cmd := m.Update(streamEventMsg{event: ui.ErrorEvent(streamErr)})
+
+			if len(m.tracker.Segments) != 2 {
+				t.Fatalf("segments = %d, want tool + warning text", len(m.tracker.Segments))
+			}
+			if m.tracker.Segments[0].ToolStatus != ui.ToolError {
+				t.Fatalf("pending tool status = %v, want ToolError", m.tracker.Segments[0].ToolStatus)
+			}
+			if got := m.tracker.Segments[1].GetText(); !strings.Contains(got, "agent is out of turns") {
+				t.Fatalf("warning segment = %q, want out-of-turns text", got)
+			}
+
+			if tt.altScreen {
+				view := ui.StripANSI(m.View().Content)
+				if !strings.Contains(view, "read_file") || !strings.Contains(view, "agent is out of turns") || !strings.Contains(view, "Stream failed: agentic loop exceeded max turns (3)") {
+					t.Fatalf("rendered view should contain failed tool, out-of-turns warning, and footer error, got %q", view)
+				}
+				return
+			}
+
+			if cmd == nil {
+				t.Fatal("inline stream error should return a command to flush scrollback/footer")
+			}
+			if !strings.Contains(m.footerMessage, "agentic loop exceeded max turns (3)") {
+				t.Fatalf("footer message = %q, want max-turn error", m.footerMessage)
+			}
+		})
+	}
+}
+
+func TestRenderStreamingContentOnErrorForScrollback_ShowsOutOfTurnsWarning(t *testing.T) {
+	m := newTestChatModel(false)
+	m.width = 80
+
+	m.tracker.HandleToolStart("call-1", "read_file", "test.go", nil)
+	m.tracker.AddTextSegment(llm.MaxTurnsExceededWarning(3)+"\n", m.width)
+
+	printed := ui.StripANSI(m.renderStreamingContentOnErrorForScrollback())
+	if !strings.Contains(printed, "read_file") || !strings.Contains(printed, "agent is out of turns") {
+		t.Fatalf("inline error scrollback output should contain failed tool and out-of-turns warning, got %q", printed)
+	}
+	if len(m.tracker.Segments) != 2 || m.tracker.Segments[0].ToolStatus != ui.ToolError {
+		t.Fatalf("pending tool should be marked failed after scrollback render, segments=%+v", m.tracker.Segments)
+	}
+}
+
 func TestUpdate_StreamErrorBeforeAssistantOutputKeepsUserVisible(t *testing.T) {
 	m := newTestChatModel(true)
 	m.width = 80

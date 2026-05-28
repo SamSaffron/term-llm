@@ -461,7 +461,7 @@ func classifyRunError(err error, result jobsV2RunResult) (exitReason string, tru
 		if errors.Is(err, context.Canceled) {
 			return exitReasonCancelled, truncated
 		}
-		if strings.Contains(err.Error(), "max turns") {
+		if llm.IsMaxTurnsExceeded(err) || strings.Contains(err.Error(), "max turns") {
 			return exitReasonMaxTurns, true
 		}
 		return exitReasonException, truncated

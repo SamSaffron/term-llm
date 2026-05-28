@@ -2101,7 +2101,10 @@ turnLoop:
 		}
 
 		if attempt == maxTurns-1 {
-			return fmt.Errorf("agentic loop exceeded max turns (%d)", maxTurns)
+			if err := send.Send(Event{Type: EventPhase, Text: MaxTurnsExceededWarning(maxTurns)}); err != nil {
+				return err
+			}
+			return &MaxTurnsExceededError{MaxTurns: maxTurns}
 		}
 
 		// Build assistant message with text + tool calls + reasoning

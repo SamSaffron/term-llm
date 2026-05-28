@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -28,6 +29,14 @@ func (m *mockTool) Execute(ctx context.Context, args json.RawMessage) (ToolOutpu
 
 func (m *mockTool) Preview(args json.RawMessage) string {
 	return ""
+}
+
+func eventTypes(events []Event) []EventType {
+	types := make([]EventType, 0, len(events))
+	for _, event := range events {
+		types = append(types, event.Type)
+	}
+	return types
 }
 
 func TestEngineOrchestration_BasicToolLoop(t *testing.T) {
@@ -186,18 +195,46 @@ func TestEngineOrchestration_MaxTurns(t *testing.T) {
 	defer stream.Close()
 
 	var gotErr error
+	warningIndex := -1
+	errorIndex := -1
+	var events []Event
 	for {
 		event, err := stream.Recv()
 		if err != nil {
 			break
 		}
+		events = append(events, event)
+		idx := len(events) - 1
+		if event.Type == EventPhase && strings.Contains(event.Text, "agent is out of turns") {
+			warningIndex = idx
+			if !strings.HasPrefix(event.Text, WarningPhasePrefix) {
+				t.Fatalf("out-of-turns phase should use warning prefix, got %q", event.Text)
+			}
+		}
 		if event.Type == EventError {
 			gotErr = event.Err
+			errorIndex = idx
 		}
 	}
 
 	if gotErr == nil || !strings.Contains(gotErr.Error(), "exceeded max turns") {
 		t.Errorf("Expected max turns error, got %v", gotErr)
+	}
+	if !IsMaxTurnsExceeded(gotErr) {
+		t.Errorf("Expected IsMaxTurnsExceeded to match %T %v", gotErr, gotErr)
+	}
+	var typedErr *MaxTurnsExceededError
+	if !errors.As(gotErr, &typedErr) || typedErr.MaxTurns != 3 {
+		t.Errorf("Expected typed max turns error with MaxTurns=3, got %T %v", gotErr, gotErr)
+	}
+	if warningIndex < 0 {
+		t.Fatalf("Expected out-of-turns warning phase before error; events=%v", eventTypes(events))
+	}
+	if errorIndex < 0 {
+		t.Fatalf("Expected error event; events=%v", eventTypes(events))
+	}
+	if warningIndex >= errorIndex {
+		t.Fatalf("Expected out-of-turns warning before error, warningIndex=%d errorIndex=%d events=%v", warningIndex, errorIndex, eventTypes(events))
 	}
 
 	if len(provider.Requests) != 3 {

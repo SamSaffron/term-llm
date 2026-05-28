@@ -114,7 +114,7 @@ func TestBuiltinAgentConfigs(t *testing.T) {
 		{"codebase", true, 200, true, true, true, false},
 		{"commit-message", true, 200, true, true, true, false},
 		{"contain", true, 100, true, true, false, true},
-		{"developer", true, 300, true, false, false, true},
+		{"developer", true, 600, true, false, false, true},
 		{"editor", true, 200, false, false, false, true},
 		{"file-organizer", true, 200, true, true, false, false},
 		{"planner", true, 50, true, false, false, true},

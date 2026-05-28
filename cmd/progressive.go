@@ -599,7 +599,7 @@ func progressiveExitReason(err error) string {
 		return exitReasonTimeout
 	case errors.Is(err, context.Canceled):
 		return exitReasonCancelled
-	case strings.Contains(err.Error(), "agentic loop exceeded max turns"):
+	case llm.IsMaxTurnsExceeded(err):
 		return exitReasonMaxTurns
 	default:
 		return exitReasonException

@@ -310,7 +310,7 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 	duration := time.Since(start).Milliseconds()
 
 	if err != nil {
-		if strings.Contains(err.Error(), "agentic loop exceeded max turns") {
+		if llm.IsMaxTurnsExceeded(err) {
 			return llm.TextOutput(t.formatErrorWithDuration(ErrExecutionFailed, fmt.Sprintf("agent '%s' stopped after reaching max turns: %v", a.AgentName, err), duration)), nil
 		}
 		// Check for specific error types - check the error itself first, then context state
