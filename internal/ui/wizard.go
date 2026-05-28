@@ -26,7 +26,7 @@ func detectAvailableProviders() []providerOption {
 			name:      "ChatGPT (Codex) - ChatGPT OAuth",
 			value:     "chatgpt",
 			available: credentials.ChatGPTCredentialsExist(),
-			hint:      "run 'term-llm ask --provider chatgpt \"test\"' to login",
+			hint:      "run 'term-llm auth login chatgpt' to sign in",
 		},
 		{
 			name:      "Anthropic - API key",

@@ -62,7 +62,7 @@ func NewChatGPTProviderWithOptions(model string, opts ChatGPTProviderOptions) (*
 	creds, err := credentials.GetChatGPTCredentials()
 	if err != nil {
 		// No credentials - prompt user to authenticate
-		creds, err = promptForChatGPTAuth()
+		creds, err = PromptForChatGPTAuth()
 		if err != nil {
 			return nil, err
 		}
@@ -73,7 +73,7 @@ func NewChatGPTProviderWithOptions(model string, opts ChatGPTProviderOptions) (*
 		if err := credentials.RefreshChatGPTCredentials(creds); err != nil {
 			// Refresh failed - need to re-authenticate
 			fmt.Println("Token refresh failed. Re-authentication required.")
-			creds, err = promptForChatGPTAuth()
+			creds, err = PromptForChatGPTAuth()
 			if err != nil {
 				return nil, err
 			}
@@ -111,15 +111,16 @@ func NewChatGPTProviderWithCredsAndOptions(creds *credentials.ChatGPTCredentials
 	}
 }
 
-// promptForChatGPTAuth prompts the user to authenticate with ChatGPT.
+// PromptForChatGPTAuth prompts the user to authenticate with ChatGPT.
 // Prefers the device-code flow so auth works on headless/remote/containerized
 // boxes; falls back to the localhost browser flow if the backend doesn't
-// advertise device-code support.
-func promptForChatGPTAuth() (*credentials.ChatGPTCredentials, error) {
+// advertise device-code support. Exported so `term-llm auth login chatgpt`
+// can drive the same flow used by lazy auth.
+func PromptForChatGPTAuth() (*credentials.ChatGPTCredentials, error) {
 	// Check if stdin is a terminal - if not, we can't do interactive auth
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		return nil, fmt.Errorf("ChatGPT authentication required but running in non-interactive mode.\n" +
-			"Run 'term-llm ask --provider chatgpt \"test\"' interactively first to authenticate")
+			"Run 'term-llm auth login chatgpt' interactively first to authenticate")
 	}
 
 	fmt.Println("ChatGPT provider requires authentication.")

@@ -85,7 +85,7 @@ func NewCopilotProvider(model string) (*CopilotProvider, error) {
 	creds, err := credentials.GetCopilotCredentials()
 	if err != nil {
 		// No credentials - prompt user to authenticate
-		creds, err = promptForCopilotAuth()
+		creds, err = PromptForCopilotAuth()
 		if err != nil {
 			return nil, err
 		}
@@ -94,7 +94,7 @@ func NewCopilotProvider(model string) (*CopilotProvider, error) {
 	// Check if token is expired (rare for GitHub tokens, but check anyway)
 	if creds.IsExpired() {
 		fmt.Println("Copilot token expired. Re-authentication required.")
-		creds, err = promptForCopilotAuth()
+		creds, err = PromptForCopilotAuth()
 		if err != nil {
 			return nil, err
 		}
@@ -121,13 +121,15 @@ func NewCopilotProviderWithCreds(creds *credentials.CopilotCredentials, model st
 	}
 }
 
-// promptForCopilotAuth prompts the user to authenticate with GitHub Copilot.
+// PromptForCopilotAuth prompts the user to authenticate with GitHub Copilot.
 // Returns an error if running in a non-interactive context (e.g., scripts, CI).
-func promptForCopilotAuth() (*credentials.CopilotCredentials, error) {
+// Exported so `term-llm auth login copilot` can drive the same flow used by
+// lazy auth.
+func PromptForCopilotAuth() (*credentials.CopilotCredentials, error) {
 	// Check if stdin is a terminal - if not, we can't do interactive auth
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		return nil, fmt.Errorf("Copilot authentication required but running in non-interactive mode.\n" +
-			"Run 'term-llm ask --provider copilot \"test\"' interactively first to authenticate")
+			"Run 'term-llm auth login copilot' interactively first to authenticate")
 	}
 
 	fmt.Println("GitHub Copilot provider requires authentication.")
