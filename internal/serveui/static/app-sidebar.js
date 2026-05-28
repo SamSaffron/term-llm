@@ -178,6 +178,21 @@ if (elements.widgetsModal) {
     }
   });
 }
+
+const isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform);
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'k' && event.key !== 'K') return;
+  const primary = isMac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+  if (!primary) return;
+  if (event.altKey || event.shiftKey) return;
+  if (elements.widgetsOpenBtn?.classList.contains('hidden')) return;
+  event.preventDefault();
+  if (elements.widgetsModal?.classList.contains('hidden')) {
+    openWidgetsModal();
+  } else {
+    closeWidgetsModal();
+  }
+});
 if (elements.sidebarSearchInput) elements.sidebarSearchInput.addEventListener('input', scheduleSidebarSearch);
 
 Object.assign(app, {
