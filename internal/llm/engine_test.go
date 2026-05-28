@@ -1473,6 +1473,56 @@ func TestBuildAssistantMessage_ReasoningOnlyCreatesTextPart(t *testing.T) {
 	}
 }
 
+func TestBuildAssistantMessage_NoReasoningLeavesKindEmpty(t *testing.T) {
+	msg := buildAssistantMessageWithReasoningMetadata("answer", nil, "", nil, "", "", ReasoningKindUnknown)
+	if len(msg.Parts) != 1 {
+		t.Fatalf("expected one text part, got %d", len(msg.Parts))
+	}
+	if msg.Parts[0].ReasoningKind != "" {
+		t.Fatalf("plain text assistant message should not carry reasoning kind, got %q", msg.Parts[0].ReasoningKind)
+	}
+}
+
+func TestMergeReasoningKindEmptyIncomingIsNoSignal(t *testing.T) {
+	kind := MergeReasoningKind("", "")
+	kind = MergeReasoningKind(kind, ReasoningKindSummary)
+	if kind != ReasoningKindSummary {
+		t.Fatalf("empty incoming should not pin unknown before summary, got %q", kind)
+	}
+
+	kind = MergeReasoningKind(ReasoningKindSummary, "")
+	if kind != ReasoningKindSummary {
+		t.Fatalf("empty incoming should not demote summary, got %q", kind)
+	}
+}
+
+func TestMergeReasoningKindUnknownDoesNotDemoteKnownKind(t *testing.T) {
+	if got := MergeReasoningKind("", ReasoningKindUnknown); got != "" {
+		t.Fatalf("unknown-only incoming should not create display kind, got %q", got)
+	}
+	if got := MergeReasoningKind(ReasoningKindSummary, ReasoningKindUnknown); got != ReasoningKindSummary {
+		t.Fatalf("incoming unknown should not demote summary, got %q", got)
+	}
+	if got := MergeReasoningKind(ReasoningKindRaw, ReasoningKindUnknown); got != ReasoningKindRaw {
+		t.Fatalf("incoming unknown should not demote raw, got %q", got)
+	}
+	if got := MergeReasoningKind(ReasoningKindUnknown, ReasoningKindSummary); got != ReasoningKindSummary {
+		t.Fatalf("later summary classification should recover from unknown, got %q", got)
+	}
+}
+
+func TestMergeReasoningKindPreservesEncryptedHandling(t *testing.T) {
+	if got := MergeReasoningKind("", ReasoningKindEncrypted); got != ReasoningKindEncrypted {
+		t.Fatalf("encrypted-only incoming should create encrypted replay kind, got %q", got)
+	}
+	if got := MergeReasoningKind(ReasoningKindRaw, ReasoningKindEncrypted); got != ReasoningKindRaw {
+		t.Fatalf("encrypted incoming should not demote raw, got %q", got)
+	}
+	if got := MergeReasoningKind(ReasoningKindEncrypted, ReasoningKindRaw); got != ReasoningKindRaw {
+		t.Fatalf("visible raw incoming should replace encrypted-only state, got %q", got)
+	}
+}
+
 func TestEnginePersistsToolInfoInAssistantMessage(t *testing.T) {
 	tool := &imageTool{}
 	registry := NewToolRegistry()

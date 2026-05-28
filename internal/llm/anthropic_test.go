@@ -664,8 +664,37 @@ func TestEmitReasoningDelta_ProducesReasoningEvent(t *testing.T) {
 		if ev.Text != "thinking chunk" {
 			t.Fatalf("expected reasoning text chunk, got %q", ev.Text)
 		}
+		if ev.ReasoningKind != ReasoningKindRaw {
+			t.Fatalf("expected reasoning kind raw, got %q", ev.ReasoningKind)
+		}
 		if ev.ReasoningEncryptedContent != "sig-123" {
 			t.Fatalf("expected reasoning signature sig-123, got %q", ev.ReasoningEncryptedContent)
+		}
+	default:
+		t.Fatal("expected reasoning event")
+	}
+}
+
+func TestEmitReasoningDelta_SignatureOnlyIsEncrypted(t *testing.T) {
+	events := make(chan Event, 1)
+
+	if err := emitReasoningDelta(eventSender{ctx: context.Background(), ch: events}, "", "sig-only"); err != nil {
+		t.Fatalf("emitReasoningDelta error: %v", err)
+	}
+
+	select {
+	case ev := <-events:
+		if ev.Type != EventReasoningDelta {
+			t.Fatalf("expected EventReasoningDelta, got %v", ev.Type)
+		}
+		if ev.Text != "" {
+			t.Fatalf("expected no reasoning text, got %q", ev.Text)
+		}
+		if ev.ReasoningKind != ReasoningKindEncrypted {
+			t.Fatalf("expected encrypted reasoning kind, got %q", ev.ReasoningKind)
+		}
+		if ev.ReasoningEncryptedContent != "sig-only" {
+			t.Fatalf("expected encrypted signature sig-only, got %q", ev.ReasoningEncryptedContent)
 		}
 	default:
 		t.Fatal("expected reasoning event")

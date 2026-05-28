@@ -23,6 +23,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/prompt"
+	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -553,7 +554,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		if teaProgram != nil {
 			return runAskStreamProgram(ctx, teaProgram)
 		}
-		return streamWithRenderer(ctx, events, store, sess)
+		return streamWithRenderer(ctx, cfg, events, store, sess)
 	}
 
 	// Save user message BEFORE streaming (incremental save)
@@ -563,6 +564,10 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	var persistTurnCompleted llm.TurnCompletedCallback
 	var persistSyntheticUserMessage func(context.Context, llm.Message) error
 	if store != nil && sess != nil {
+		reasoningPersistenceCfg := config.DefaultReasoningConfig()
+		if cfg != nil {
+			reasoningPersistenceCfg = cfg.ResolveReasoning("ask")
+		}
 		// Save system message first if this is a new session with instructions
 		if instructions != "" && !historyHasSystem {
 			sysMsg := &session.Message{
@@ -600,7 +605,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			// Calculate duration from stream start
 			durationMs := time.Since(turnStartTime).Milliseconds()
 
-			sessionMsg := session.NewMessage(sess.ID, assistantMsg, -1)
+			sessionMsg := session.NewMessageWithReasoningPolicy(sess.ID, assistantMsg, -1, reasoningPersistenceCfg)
 			sessionMsg.DurationMs = durationMs
 			_ = store.AddMessage(ctx, sess.ID, sessionMsg)
 			return nil
@@ -610,7 +615,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		persistTurnCompleted = func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
 			// Save messages (tool results, or assistant message when no tools were executed)
 			for _, msg := range turnMessages {
-				sessionMsg := session.NewMessage(sess.ID, msg, -1)
+				sessionMsg := session.NewMessageWithReasoningPolicy(sess.ID, msg, -1, reasoningPersistenceCfg)
 				// Set duration for assistant messages (when responseCallback didn't run)
 				if msg.Role == llm.RoleAssistant {
 					sessionMsg.DurationMs = time.Since(turnStartTime).Milliseconds()
@@ -1414,6 +1419,13 @@ type askStreamModel struct {
 	totalTokens int       // Total tokens (input + output) used
 	phase       string    // Current engine phase (Thinking, Searching, etc.)
 
+	// Reasoning status title state. Ask keeps summaries out of stdout/plain text
+	// by default, but can use safe summary titles for the live TUI status.
+	reasoningConfig       config.ReasoningConfig
+	currentReasoning      *strings.Builder
+	currentReasoningTitle string
+	reasoningPhaseActive  bool
+
 	// External UI state
 	pausedForExternalUI bool // True when paused for ask_user or approval prompts
 
@@ -1482,6 +1494,7 @@ type askRetryMsg struct {
 	MaxAttempts int
 	WaitSecs    float64
 }
+type askReasoningMsg ui.StreamEvent
 type askPhaseMsg string
 type askImageMsg string // Image path to display
 type askDiffMsg struct {
@@ -1538,6 +1551,7 @@ func newAskStreamModel() askStreamModel {
 		smoothBuffer:           ui.NewSmoothBuffer(),
 		subagentTracker:        ui.NewSubagentTracker(),
 		startTime:              time.Now(),
+		reasoningConfig:        config.DefaultReasoningConfig(),
 		adaptiveFlushThreshold: ui.ParseBoolDefault(os.Getenv(askAdaptiveFlushThresholdEnv), true),
 	}
 }
@@ -1547,6 +1561,9 @@ func newAskRendererProgram(cfg *config.Config, toolMgr *tools.ToolManager, store
 	model.store = store
 	model.sess = sess
 	model.streamChan = events
+	if cfg != nil {
+		model.reasoningConfig = cfg.ResolveReasoning("ask")
+	}
 
 	mainModelName := ""
 	if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
@@ -1616,6 +1633,28 @@ func (m *askStreamModel) streamingFlushThreshold() int {
 	default:
 		return 0
 	}
+}
+
+func (m *askStreamModel) currentReasoningString() string {
+	if m.currentReasoning == nil {
+		return ""
+	}
+	return m.currentReasoning.String()
+}
+
+func (m *askStreamModel) reasoningBuilder() *strings.Builder {
+	if m.currentReasoning == nil {
+		m.currentReasoning = &strings.Builder{}
+	}
+	return m.currentReasoning
+}
+
+func (m *askStreamModel) resetCurrentReasoning() {
+	if m.currentReasoning != nil {
+		m.currentReasoning.Reset()
+	}
+	m.currentReasoningTitle = ""
+	m.reasoningPhaseActive = false
 }
 
 func (m askStreamModel) Init() tea.Cmd {
@@ -1820,6 +1859,8 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			innerMsg = askToolStartMsg{CallID: ev.ToolCallID, Name: ev.ToolName, Info: ev.ToolInfo, ToolArgs: ev.ToolArgs}
 		case ui.StreamEventText:
 			innerMsg = askContentMsg(ev.Text)
+		case ui.StreamEventReasoning:
+			innerMsg = askReasoningMsg(ev)
 		case ui.StreamEventAttemptDiscard:
 			innerMsg = askAttemptDiscardMsg{}
 		case ui.StreamEventImage:
@@ -1871,13 +1912,45 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.smoothTickPending = false
 		m.deferredStreamRead = false
+		m.resetCurrentReasoning()
+		m.phase = "Thinking"
 		m.tracker.DiscardAttempt()
 		m.contentDirty = true
 		m.retryStatus = "Discarded interrupted partial response; retrying..."
 		return m, nil
 
+	case askReasoningMsg:
+		ev := ui.StreamEvent(msg)
+		cfg := m.reasoningConfig
+		kind := llm.NormalizeReasoningKind(ev.ReasoningKind)
+		if internalreasoning.IsDisplayable(string(kind), cfg) && internalreasoning.StatusEnabled(cfg) {
+			if ev.ReasoningText != "" {
+				m.reasoningBuilder().WriteString(ev.ReasoningText)
+			}
+			title := strings.TrimSpace(ev.ReasoningTitle)
+			if title == "" && kind == llm.ReasoningKindSummary {
+				reasoningText := m.currentReasoningString()
+				reasoningText = internalreasoning.LimitReasoningText(string(kind), reasoningText, cfg)
+				title = internalreasoning.SummaryTitle(reasoningText, cfg)
+			}
+			if title != "" {
+				m.currentReasoningTitle = title
+			}
+			if m.retryStatus == "" && !m.tracker.HasPending() && m.currentReasoningTitle != "" {
+				phase := strings.TrimSpace(m.phase)
+				if phase == "" || phase == "Thinking" || strings.HasPrefix(phase, "Thinking:") || m.reasoningPhaseActive {
+					// Reasoning-derived status titles are already scoped by the spinner/status UI.
+					// Keep the line compact by showing the action directly instead of "Thinking: …".
+					m.phase = m.currentReasoningTitle
+					m.reasoningPhaseActive = true
+				}
+			}
+		}
+		return m, nil
+
 	case askDoneMsg:
 		m.done = true // Prevent spinner from showing in final View()
+		m.resetCurrentReasoning()
 		m.smoothTickPending = false
 		m.deferredStreamRead = false
 		// Ensure we have a valid width
@@ -1906,6 +1979,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case askCancelledMsg:
 		m.done = true
+		m.resetCurrentReasoning()
 		m.smoothTickPending = false
 		m.deferredStreamRead = false
 		// Ensure we have a valid width
@@ -2319,11 +2393,14 @@ func (m askStreamModel) View() tea.View {
 
 // streamWithRenderer renders markdown progressively as content streams in.
 // It creates an ask stream program wired to read from events itself.
-func streamWithRenderer(ctx context.Context, events <-chan ui.StreamEvent, store session.Store, sess *session.Session) error {
+func streamWithRenderer(ctx context.Context, cfg *config.Config, events <-chan ui.StreamEvent, store session.Store, sess *session.Session) error {
 	model := newAskStreamModel()
 	model.store = store
 	model.sess = sess
 	model.streamChan = events
+	if cfg != nil {
+		model.reasoningConfig = cfg.ResolveReasoning("ask")
+	}
 	return runAskStreamProgram(ctx, tea.NewProgram(model, tea.WithoutSignalHandler()))
 }
 

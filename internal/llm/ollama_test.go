@@ -153,6 +153,7 @@ func TestOllamaProviderStreamThink(t *testing.T) {
 	defer stream.Close()
 
 	var texts, reasonings []string
+	var reasoningKinds []ReasoningKind
 	for {
 		event, err := stream.Recv()
 		if err != nil {
@@ -163,6 +164,7 @@ func TestOllamaProviderStreamThink(t *testing.T) {
 			texts = append(texts, event.Text)
 		case EventReasoningDelta:
 			reasonings = append(reasonings, event.Text)
+			reasoningKinds = append(reasoningKinds, event.ReasoningKind)
 		}
 	}
 
@@ -171,6 +173,11 @@ func TestOllamaProviderStreamThink(t *testing.T) {
 	}
 	if got := strings.Join(reasonings, ""); got != "Let me think..." {
 		t.Errorf("unexpected reasoning: %q", got)
+	}
+	for _, kind := range reasoningKinds {
+		if kind != ReasoningKindRaw {
+			t.Fatalf("thinking kind = %q, want raw", kind)
+		}
 	}
 }
 

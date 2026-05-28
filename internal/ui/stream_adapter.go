@@ -9,6 +9,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/diff"
 	"github.com/samsaffron/term-llm/internal/llm"
+	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 )
 
 // DefaultStreamBufferSize is the default buffer size for the event channel.
@@ -134,6 +135,25 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 				if !emit(TextEvent(event.Text)) {
 					return
 				}
+			}
+
+		case llm.EventReasoningDelta:
+			a.attemptUsageCommitted = false
+			kind := llm.NormalizeReasoningKind(event.ReasoningKind)
+			if llm.IsEncryptedReasoningDelta(event) {
+				// Encrypted replay metadata never enters UI stream events.
+				continue
+			}
+			if event.Text == "" && event.ReasoningItemID == "" && !event.ReasoningFinal {
+				continue
+			}
+			title := ""
+			displayable := kind == llm.ReasoningKindSummary
+			if kind == llm.ReasoningKindSummary && event.Text != "" {
+				title = internalreasoning.ParseReasoningSummary(event.Text).Title
+			}
+			if !emit(ReasoningEvent(kind, event.Text, title, event.ReasoningItemID, event.ReasoningFinal, displayable)) {
+				return
 			}
 
 		case llm.EventToolCall:

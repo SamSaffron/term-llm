@@ -336,3 +336,87 @@ func TestStreamAdapterDiscardKeepsCommittedToolUsage(t *testing.T) {
 		t.Fatalf("stats after committed usage + discard = %+v, want only committed usage", stats)
 	}
 }
+
+func TestStreamAdapterForwardsClassifiedReasoningSummary(t *testing.T) {
+	stream := &testStream{events: []llm.Event{{
+		Type:            llm.EventReasoningDelta,
+		Text:            "**Inspecting repo**\n\nChecking files.",
+		ReasoningKind:   llm.ReasoningKindSummary,
+		ReasoningItemID: "rs_1",
+	}}}
+
+	adapter := NewStreamAdapter(10)
+	go adapter.ProcessStream(context.Background(), stream)
+
+	var got *StreamEvent
+	for ev := range adapter.Events() {
+		if ev.Type == StreamEventReasoning {
+			copy := ev
+			got = &copy
+		}
+	}
+	if got == nil {
+		t.Fatal("expected reasoning event")
+	}
+	if got.ReasoningKind != llm.ReasoningKindSummary {
+		t.Fatalf("kind = %q, want summary", got.ReasoningKind)
+	}
+	if got.ReasoningText != "**Inspecting repo**\n\nChecking files." {
+		t.Fatalf("text = %q", got.ReasoningText)
+	}
+	if got.ReasoningTitle != "Inspecting repo" {
+		t.Fatalf("title = %q, want Inspecting repo", got.ReasoningTitle)
+	}
+	if got.ReasoningItemID != "rs_1" {
+		t.Fatalf("item id = %q", got.ReasoningItemID)
+	}
+	if !got.ReasoningDisplayable {
+		t.Fatal("summary should be marked displayable")
+	}
+}
+
+func TestStreamAdapterNeverForwardsEncryptedReasoningPayload(t *testing.T) {
+	stream := &testStream{events: []llm.Event{{
+		Type:                      llm.EventReasoningDelta,
+		ReasoningKind:             llm.ReasoningKindEncrypted,
+		ReasoningEncryptedContent: "secret-encrypted-payload",
+		ReasoningItemID:           "rs_1",
+	}}}
+
+	adapter := NewStreamAdapter(10)
+	go adapter.ProcessStream(context.Background(), stream)
+
+	for ev := range adapter.Events() {
+		if ev.Type == StreamEventReasoning {
+			t.Fatalf("encrypted reasoning should not be forwarded: %#v", ev)
+		}
+	}
+}
+
+func TestStreamAdapterForwardsRawReasoningClassifiedButNotDisplayable(t *testing.T) {
+	stream := &testStream{events: []llm.Event{{
+		Type:          llm.EventReasoningDelta,
+		Text:          "raw thinking",
+		ReasoningKind: llm.ReasoningKindRaw,
+	}}}
+
+	adapter := NewStreamAdapter(10)
+	go adapter.ProcessStream(context.Background(), stream)
+
+	var got *StreamEvent
+	for ev := range adapter.Events() {
+		if ev.Type == StreamEventReasoning {
+			copy := ev
+			got = &copy
+		}
+	}
+	if got == nil {
+		t.Fatal("expected reasoning event")
+	}
+	if got.ReasoningKind != llm.ReasoningKindRaw {
+		t.Fatalf("kind = %q, want raw", got.ReasoningKind)
+	}
+	if got.ReasoningDisplayable {
+		t.Fatal("raw should not be marked displayable by default")
+	}
+}

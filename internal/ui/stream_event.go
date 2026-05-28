@@ -22,6 +22,7 @@ const (
 	StreamEventDiff         // Diff from edit tool
 	StreamEventInterjection // User interjected a message mid-stream
 	StreamEventAttemptDiscard
+	StreamEventReasoning // Classified, non-encrypted reasoning text/metadata
 )
 
 // StreamEvent represents a unified event from the LLM stream.
@@ -72,6 +73,14 @@ type StreamEvent struct {
 	DiffLine      int    // 1-indexed starting line number (0 = unknown)
 	DiffOperation string // Optional operation hint, e.g. "create" for new files
 
+	// Reasoning (for StreamEventReasoning). Encrypted replay payloads are never
+	// included here; surfaces decide display policy from the classified text.
+	ReasoningKind        llm.ReasoningKind
+	ReasoningText        string
+	ReasoningTitle       string
+	ReasoningItemID      string
+	ReasoningFinal       bool
+	ReasoningDisplayable bool
 }
 
 // TextEvent creates a text delta event
@@ -84,6 +93,19 @@ func TextEvent(text string) StreamEvent {
 
 func AttemptDiscardEvent() StreamEvent {
 	return StreamEvent{Type: StreamEventAttemptDiscard}
+}
+
+// ReasoningEvent creates a classified, non-encrypted reasoning stream event.
+func ReasoningEvent(kind llm.ReasoningKind, text, title, itemID string, final bool, displayable bool) StreamEvent {
+	return StreamEvent{
+		Type:                 StreamEventReasoning,
+		ReasoningKind:        llm.NormalizeReasoningKind(kind),
+		ReasoningText:        text,
+		ReasoningTitle:       title,
+		ReasoningItemID:      itemID,
+		ReasoningFinal:       final,
+		ReasoningDisplayable: displayable,
+	}
 }
 
 // ToolStartEvent creates a tool execution start event

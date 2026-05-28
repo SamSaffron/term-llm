@@ -18,6 +18,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
+	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/tui/inspector"
@@ -98,6 +99,12 @@ func AllCommands() []Command {
 			Name:        "export",
 			Description: "Export conversation as markdown",
 			Usage:       "/export [path]",
+		},
+		{
+			Name:        "thinking",
+			Aliases:     []string{"reasoning"},
+			Description: "Toggle reasoning summary display for this session",
+			Usage:       "/thinking [off|status|collapsed|expanded|raw]",
 		},
 		{
 			Name:        "system",
@@ -277,6 +284,30 @@ func isSlashCommandLike(input string) bool {
 	return false
 }
 
+func isStreamingLocalSlashCommand(input string) bool {
+	parts := strings.Fields(input)
+	if len(parts) == 0 || !strings.HasPrefix(parts[0], "/") {
+		return false
+	}
+	name := strings.ToLower(strings.TrimPrefix(parts[0], "/"))
+	if name == "" {
+		return false
+	}
+	// During a live turn only handle UI-local commands here. Commands with
+	// session/model/search/export side effects should flow through the normal
+	// interjection path rather than mutating turn state mid-stream.
+	localCommands := map[string]bool{
+		"thinking":  true,
+		"reasoning": true,
+		"help":      true,
+		"h":         true,
+		"?":         true,
+		"stats":     true,
+		"st":        true,
+	}
+	return localCommands[name]
+}
+
 // ExecuteCommand handles slash command execution
 func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 	parts := strings.Fields(input)
@@ -357,6 +388,8 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 		return m.cmdSave(args)
 	case "export":
 		return m.cmdExport(args)
+	case "thinking":
+		return m.cmdThinking(args)
 	case "system":
 		return m.cmdSystem(args)
 	case "file":
@@ -1119,6 +1152,61 @@ func resumeShortenModel(model string) string {
 	return s
 }
 
+func (m *Model) cmdThinking(args []string) (tea.Model, tea.Cmd) {
+	valid := map[string]bool{
+		config.ReasoningDisplayOff:       true,
+		config.ReasoningDisplayStatus:    true,
+		config.ReasoningDisplayCollapsed: true,
+		config.ReasoningDisplayExpanded:  true,
+		config.ReasoningDisplayRaw:       true,
+	}
+
+	mode := ""
+	if len(args) > 0 {
+		mode = strings.ToLower(strings.TrimSpace(args[0]))
+		if mode == config.ReasoningDisplayAuto {
+			mode = config.ReasoningDisplayCollapsed
+		}
+		if !valid[mode] {
+			return m.showFooterWarning("Usage: /thinking [off|status|collapsed|expanded|raw]")
+		}
+	} else {
+		current := m.reasoningModeOverride
+		if current == "" {
+			current = internalreasoning.EffectiveDisplay(m.effectiveReasoningConfig())
+		}
+		switch current {
+		case config.ReasoningDisplayExpanded:
+			mode = config.ReasoningDisplayOff
+		case config.ReasoningDisplayOff:
+			mode = config.ReasoningDisplayCollapsed
+		default:
+			mode = config.ReasoningDisplayExpanded
+		}
+	}
+
+	cfg := m.effectiveReasoningConfig()
+	cfg.Display = mode
+	if mode == config.ReasoningDisplayRaw && !cfg.Raw {
+		return m.showFooterWarning("Raw reasoning is disabled. Set reasoning.raw=true or TERM_LLM_SHOW_RAW_REASONING=1 to allow it.")
+	}
+	m.reasoningModeOverride = mode
+	m.reasoningConfig.Display = mode
+	if m.chatRenderer != nil {
+		m.chatRenderer.SetReasoningConfig(m.effectiveReasoningConfig())
+	}
+	m.clearReasoningSegmentExpansionOverrides()
+	m.forceHistoryRerender()
+	m.applyReasoningPhase()
+	m.setTextareaValue("")
+
+	label := mode
+	if mode == config.ReasoningDisplayRaw {
+		label = "raw visible"
+	}
+	return m.showFooterSuccess(fmt.Sprintf("Reasoning display: %s", label))
+}
+
 func (m *Model) cmdExport(args []string) (tea.Model, tea.Cmd) {
 	if len(m.messages) == 0 {
 		return m.showSystemMessage("No messages to export.")
@@ -1147,6 +1235,10 @@ func (m *Model) cmdExport(args []string) (tea.Model, tea.Cmd) {
 	b.WriteString("\n---\n\n")
 
 	// Messages
+	exportReasoningCfg := m.effectiveReasoningConfig()
+	includeReasoningSummaries := internalreasoning.ExportSummaries(exportReasoningCfg)
+	includeRawReasoning := internalreasoning.ExportRaw(exportReasoningCfg)
+	rawReasoningOmitted := strings.EqualFold(strings.TrimSpace(exportReasoningCfg.Export), config.ReasoningExportRaw) && !exportReasoningCfg.Raw
 	for _, msg := range m.messages {
 		// Role header
 		if msg.Role == llm.RoleUser {
@@ -1159,13 +1251,35 @@ func (m *Model) cmdExport(args []string) (tea.Model, tea.Cmd) {
 			b.WriteString("\n\n")
 		}
 
-		// Content - for user messages, extract just the text (not file contents)
-		content := msg.TextContent
+		// Content - for user messages, extract just the text (not file contents).
 		if msg.Role == llm.RoleUser {
-			content = llm.StripEmbeddedFileText(content)
+			content := llm.StripEmbeddedFileText(msg.TextContent)
+			b.WriteString(content)
+			b.WriteString("\n---\n\n")
+			continue
 		}
-		b.WriteString(content)
-		b.WriteString("\n---\n\n")
+		if msg.Role == llm.RoleAssistant {
+			for _, part := range msg.Parts {
+				if part.Type != llm.PartText {
+					continue
+				}
+				if rendered := session.RenderExportReasoning(part, session.ExportOptions{
+					IncludeReasoningSummaries: includeReasoningSummaries,
+					IncludeRawReasoning:       includeRawReasoning,
+				}); rendered != "" {
+					b.WriteString(rendered)
+				}
+				if part.Text != "" {
+					b.WriteString(part.Text)
+					b.WriteString("\n\n")
+				}
+			}
+			if len(msg.Parts) == 0 && msg.TextContent != "" {
+				b.WriteString(msg.TextContent)
+				b.WriteString("\n\n")
+			}
+		}
+		b.WriteString("---\n\n")
 	}
 
 	// Write to file
@@ -1174,7 +1288,11 @@ func (m *Model) cmdExport(args []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.setTextareaValue("")
-	return m.showFooterSuccess(fmt.Sprintf("Exported %d messages to %s.", len(m.messages), outputPath))
+	message := fmt.Sprintf("Exported %d messages to %s.", len(m.messages), outputPath)
+	if rawReasoningOmitted {
+		return m.showFooterWarning(message + " Raw reasoning omitted; set reasoning.raw=true or TERM_LLM_SHOW_RAW_REASONING=1 to allow it.")
+	}
+	return m.showFooterSuccess(message)
 }
 
 func (m *Model) cmdSystem(args []string) (tea.Model, tea.Cmd) {
@@ -1689,7 +1807,9 @@ func (m *Model) cmdInspect() (tea.Model, tea.Cmd) {
 	}
 
 	m.inspectorMode = true
-	m.inspectorModel = inspector.NewWithStore(m.messages, m.width, m.height, m.styles, m.store)
+	m.inspectorModel = inspector.NewWithConfig(m.messages, m.width, m.height, m.styles, m.store, &inspector.Config{
+		ReasoningConfig: m.effectiveReasoningConfig(),
+	})
 	return m, nil
 }
 

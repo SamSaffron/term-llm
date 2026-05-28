@@ -160,6 +160,63 @@ Models may request many independent tool calls in a single turn, such as several
 
 This is a built-in safety limit rather than a config option today. It preserves useful batching while preventing a single response from spawning an unbounded number of shells, greps, reads, or subagents at once.
 
+## Reasoning and thinking display
+
+Reasoning display controls how provider-marked thinking/summary content is shown in term-llm. It is separate from provider reasoning effort suffixes such as `openai:gpt-5.2-high`, `anthropic:...-thinking`, or `vllm` provider `-high`.
+
+By default, term-llm shows display-safe provider summaries and non-encrypted provider thinking as collapsed thought blocks in interactive chat:
+
+- Generic provider thinking renders as `▸ Thinking...`.
+- Provider/summary titles render as `▸ Thought: <title>`.
+- Expanding a block shows the body; encrypted reasoning/signatures are never displayed.
+- In chat, `Ctrl+E` toggles thought detail globally and clicking a thought header toggles that block.
+- Ctrl+O inspector shows non-encrypted reasoning details for saved messages.
+
+Default policy:
+
+```yaml
+reasoning:
+  display: auto                  # auto => collapsed
+  source: summary_or_provider_safe
+  status: title
+  history: collapsed
+  export: ask
+  raw: false
+  max_summary_chars: 12000
+  max_raw_chars: 20000
+  extract_titles: true
+  hidden_label: Thinking...
+  persist_summaries: true
+```
+
+Important options:
+
+| Field | Values | Meaning |
+|---|---|---|
+| `display` | `auto`, `off`, `status`, `collapsed`, `expanded`, `raw` | Interactive display mode. `raw` still requires `raw: true`; otherwise it falls back to collapsed. |
+| `source` | `summary_only`, `summary_or_provider_safe`, `all` | Which provider reasoning sources interactive UI may show. Raw export/replay requires `all`. |
+| `status` | `none`, `generic`, `title`, `summary` | How reasoning affects the live status/spinner text. |
+| `history` | `none`, `collapsed`, `expanded`, `transcript_only` | Whether saved/streamed thought blocks are visible in chat history. |
+| `export` | `never`, `ask`, `summaries`, `raw` | What session export may include. Raw export also requires `raw: true` and `source: all`. |
+| `raw` | boolean | Explicit safety gate for raw reasoning display/export. |
+| `hidden_label` | string | Label for untitled collapsed blocks, default `Thinking...`. |
+
+Per-surface overrides inherit the top-level reasoning policy:
+
+```yaml
+reasoning:
+  display: collapsed
+  chat:
+    display: expanded
+  ask:
+    status: title
+    history: none
+  serve:
+    display: off
+```
+
+For local debugging only, `TERM_LLM_SHOW_RAW_REASONING=1` forces `display: raw`, `source: all`, and `raw: true` for the resolved surface.
+
 ## Sessions config
 
 ```yaml

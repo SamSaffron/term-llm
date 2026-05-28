@@ -32,39 +32,50 @@ type Theme struct {
 
 	// Message backgrounds
 	UserMsgBg color.Color // background for user messages in chat
+
+	// Reasoning display colors
+	ReasoningSummary color.Color // displayable reasoning summary body
+	ReasoningHeader  color.Color // reasoning summary/raw header
+	ReasoningRaw     color.Color // raw reasoning body
 }
 
 // DefaultTheme returns the default color theme (gruvbox)
 func DefaultTheme() *Theme {
 	return &Theme{
-		Primary:       lipgloss.Color("#b8bb26"), // gruvbox green
-		Secondary:     lipgloss.Color("#83a598"), // gruvbox aqua
-		Success:       lipgloss.Color("#b8bb26"), // gruvbox green
-		Error:         lipgloss.Color("#fb4934"), // gruvbox red
-		Warning:       lipgloss.Color("#fabd2f"), // gruvbox yellow
-		Muted:         lipgloss.Color("#928374"), // gruvbox gray
-		Text:          lipgloss.Color("#ebdbb2"), // gruvbox foreground
-		Spinner:       lipgloss.Color("#d3869b"), // gruvbox purple
-		Border:        lipgloss.Color("#83a598"), // gruvbox aqua (matches secondary)
-		Background:    lipgloss.Color(""),        // default/transparent
-		DiffAddBg:     lipgloss.Color("#1d2021"), // gruvbox dark bg with green tint
-		DiffRemoveBg:  lipgloss.Color("#1d2021"), // gruvbox dark bg with red tint
-		DiffContextBg: lipgloss.Color("#1d2021"), // gruvbox dark bg
-		UserMsgBg:     lipgloss.Color("#3c3836"), // gruvbox dark gray (subtle bg)
+		Primary:          lipgloss.Color("#b8bb26"), // gruvbox green
+		Secondary:        lipgloss.Color("#83a598"), // gruvbox aqua
+		Success:          lipgloss.Color("#b8bb26"), // gruvbox green
+		Error:            lipgloss.Color("#fb4934"), // gruvbox red
+		Warning:          lipgloss.Color("#fabd2f"), // gruvbox yellow
+		Muted:            lipgloss.Color("#928374"), // gruvbox gray
+		Text:             lipgloss.Color("#ebdbb2"), // gruvbox foreground
+		Spinner:          lipgloss.Color("#d3869b"), // gruvbox purple
+		Border:           lipgloss.Color("#83a598"), // gruvbox aqua (matches secondary)
+		Background:       lipgloss.Color(""),        // default/transparent
+		DiffAddBg:        lipgloss.Color("#1d2021"), // gruvbox dark bg with green tint
+		DiffRemoveBg:     lipgloss.Color("#1d2021"), // gruvbox dark bg with red tint
+		DiffContextBg:    lipgloss.Color("#1d2021"), // gruvbox dark bg
+		UserMsgBg:        lipgloss.Color("#3c3836"), // gruvbox dark gray (subtle bg)
+		ReasoningSummary: lipgloss.Color("#928374"), // gruvbox gray
+		ReasoningHeader:  lipgloss.Color("#928374"), // gruvbox gray (muted; less distracting than warning yellow)
+		ReasoningRaw:     lipgloss.Color("#d3869b"), // gruvbox purple/warning-ish
 	}
 }
 
 // ThemeConfig mirrors the config.ThemeConfig for applying overrides
 type ThemeConfig struct {
-	Primary   string
-	Secondary string
-	Success   string
-	Error     string
-	Warning   string
-	Muted     string
-	Text      string
-	Spinner   string
-	UserMsgBg string
+	Primary          string
+	Secondary        string
+	Success          string
+	Error            string
+	Warning          string
+	Muted            string
+	Text             string
+	Spinner          string
+	UserMsgBg        string
+	ReasoningSummary string
+	ReasoningHeader  string
+	ReasoningRaw     string
 }
 
 // ThemeFromConfig creates a theme with config overrides applied
@@ -99,6 +110,15 @@ func ThemeFromConfig(cfg ThemeConfig) *Theme {
 	}
 	if cfg.UserMsgBg != "" {
 		theme.UserMsgBg = lipgloss.Color(cfg.UserMsgBg)
+	}
+	if cfg.ReasoningSummary != "" {
+		theme.ReasoningSummary = lipgloss.Color(cfg.ReasoningSummary)
+	}
+	if cfg.ReasoningHeader != "" {
+		theme.ReasoningHeader = lipgloss.Color(cfg.ReasoningHeader)
+	}
+	if cfg.ReasoningRaw != "" {
+		theme.ReasoningRaw = lipgloss.Color(cfg.ReasoningRaw)
 	}
 
 	return theme
@@ -158,6 +178,11 @@ type Styles struct {
 	DiffRemove  lipgloss.Style // Removed lines (-)
 	DiffContext lipgloss.Style // Context lines (unchanged)
 	DiffHeader  lipgloss.Style // Diff header (@@ ... @@)
+
+	// Reasoning display styles
+	ReasoningSummary lipgloss.Style
+	ReasoningHeader  lipgloss.Style
+	ReasoningRaw     lipgloss.Style
 }
 
 // NewStyles creates a new Styles instance for the given output
@@ -230,6 +255,17 @@ func NewStyledWithTheme(output *os.File, theme *Theme) *Styles {
 		DiffHeader: lipgloss.NewStyle().
 			Foreground(theme.Secondary).
 			Bold(true),
+
+		ReasoningSummary: lipgloss.NewStyle().
+			Foreground(theme.ReasoningSummary).
+			Italic(true),
+
+		ReasoningHeader: lipgloss.NewStyle().
+			Foreground(theme.ReasoningHeader),
+
+		ReasoningRaw: lipgloss.NewStyle().
+			Foreground(theme.ReasoningRaw).
+			Italic(true),
 	}
 }
 

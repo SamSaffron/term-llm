@@ -422,6 +422,150 @@ func TestGetDefaultsEnablesAutoCompact(t *testing.T) {
 	}
 }
 
+func TestReasoningDefaultsAndKnownKeys(t *testing.T) {
+	defaults := GetDefaults()
+	checks := map[string]any{
+		"reasoning.display":           ReasoningDisplayAuto,
+		"reasoning.source":            ReasoningSourceSummaryOrProviderSafe,
+		"reasoning.status":            ReasoningStatusTitle,
+		"reasoning.history":           ReasoningHistoryCollapsed,
+		"reasoning.export":            ReasoningExportAsk,
+		"reasoning.raw":               false,
+		"reasoning.max_summary_chars": 12000,
+		"reasoning.max_raw_chars":     20000,
+		"reasoning.extract_titles":    true,
+		"reasoning.hidden_label":      "Thinking...",
+		"reasoning.persist_summaries": true,
+		"reasoning.chat.display":      ReasoningInherit,
+		"reasoning.ask.display":       ReasoningInherit,
+		"reasoning.serve.display":     ReasoningInherit,
+		"reasoning.jobs.display":      ReasoningInherit,
+	}
+	for key, want := range checks {
+		if got := defaults[key]; got != want {
+			t.Fatalf("default %s = %#v, want %#v", key, got, want)
+		}
+		if !KnownKeys[key] {
+			t.Fatalf("KnownKeys missing %s", key)
+		}
+	}
+}
+
+func TestResolveReasoningPartialConfigPreservesSafeDefaults(t *testing.T) {
+	cfg := &Config{Reasoning: ReasoningConfig{Display: ReasoningDisplayOff}}
+	resolved := cfg.ResolveReasoning("chat")
+	if resolved.Display != ReasoningDisplayOff {
+		t.Fatalf("display = %q, want off", resolved.Display)
+	}
+	if !resolved.ExtractTitles {
+		t.Fatal("partial config should preserve extract_titles default")
+	}
+	if !resolved.PersistSummaries {
+		t.Fatal("partial config should preserve persist_summaries default")
+	}
+
+	cfg = &Config{Reasoning: ReasoningConfig{MaxSummaryChars: 500, MaxRawChars: 1000, HiddenLabel: "Pondering..."}}
+	resolved = cfg.ResolveReasoning("chat")
+	if !resolved.ExtractTitles {
+		t.Fatal("style-only partial config should preserve extract_titles default")
+	}
+	if !resolved.PersistSummaries {
+		t.Fatal("style-only partial config should preserve persist_summaries default")
+	}
+}
+
+func TestResolveReasoningExplicitFalsePresenceOverridesDefaults(t *testing.T) {
+	cfg := &Config{Reasoning: ReasoningConfig{
+		ExtractTitlesSet:    true,
+		PersistSummariesSet: true,
+	}}
+	resolved := cfg.ResolveReasoning("chat")
+	if resolved.ExtractTitles {
+		t.Fatal("explicit extract_titles=false should override default true")
+	}
+	if resolved.PersistSummaries {
+		t.Fatal("explicit persist_summaries=false should override default true")
+	}
+
+	base := DefaultReasoningConfig()
+	base.Raw = true
+	merged := mergeReasoningConfig(base, ReasoningConfig{RawSet: true})
+	if merged.Raw {
+		t.Fatal("explicit raw=false should override raw=true base")
+	}
+}
+
+func TestLoadReasoningExplicitFalseOverridesDefaults(t *testing.T) {
+	viper.Reset()
+	defer viper.Reset()
+
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	configDir := filepath.Join(configHome, "term-llm")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	configYAML := `default_provider: openai
+providers:
+  openai:
+    model: gpt-5.2
+reasoning:
+  extract_titles: false
+  persist_summaries: false
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	resolved := cfg.ResolveReasoning("chat")
+	if resolved.ExtractTitles {
+		t.Fatal("loaded extract_titles=false should override default true")
+	}
+	if resolved.PersistSummaries {
+		t.Fatal("loaded persist_summaries=false should override default true")
+	}
+}
+
+func TestResolveReasoningSurfaceOverrides(t *testing.T) {
+	raw := true
+	cfg := &Config{Reasoning: ReasoningConfig{
+		Display: ReasoningDisplayAuto,
+		Status:  ReasoningStatusTitle,
+		History: ReasoningHistoryCollapsed,
+		Export:  ReasoningExportAsk,
+		Chat: ReasoningSurfaceConfig{
+			Display: ReasoningDisplayExpanded,
+			Status:  ReasoningStatusSummary,
+			History: ReasoningHistoryExpanded,
+			Export:  ReasoningExportSummaries,
+			Raw:     &raw,
+		},
+	}}
+
+	resolved := cfg.ResolveReasoning("chat")
+	if resolved.Display != ReasoningDisplayExpanded || resolved.Status != ReasoningStatusSummary || resolved.History != ReasoningHistoryExpanded || resolved.Export != ReasoningExportSummaries || !resolved.Raw {
+		t.Fatalf("unexpected chat reasoning override: %+v", resolved)
+	}
+
+	ask := cfg.ResolveReasoning("ask")
+	if ask.Display != ReasoningDisplayAuto || ask.Status != ReasoningStatusTitle || ask.History != ReasoningHistoryCollapsed || ask.Export != ReasoningExportAsk || ask.Raw {
+		t.Fatalf("ask should inherit top-level safe defaults, got %+v", ask)
+	}
+}
+
+func TestResolveReasoningRawEnvOverride(t *testing.T) {
+	t.Setenv("TERM_LLM_SHOW_RAW_REASONING", "1")
+	resolved := (&Config{}).ResolveReasoning("chat")
+	if resolved.Display != ReasoningDisplayRaw || resolved.Source != ReasoningSourceAll || !resolved.Raw {
+		t.Fatalf("raw env override resolved to display=%q source=%q raw=%t", resolved.Display, resolved.Source, resolved.Raw)
+	}
+}
+
 func TestGetDefaultsEnableWebSocketForChatGPTOnly(t *testing.T) {
 	defaults := GetDefaults()
 	openAI, ok := defaults["providers.openai.use_websocket"].(bool)

@@ -179,7 +179,7 @@ func (p *VeniceProvider) Stream(ctx context.Context, req Request) (Stream, error
 					}
 					if choice.Delta.Reasoning != "" {
 						reasoningBuilder.WriteString(choice.Delta.Reasoning)
-						if err := send.Send(Event{Type: EventReasoningDelta, Text: choice.Delta.Reasoning}); err != nil {
+						if err := send.Send(Event{Type: EventReasoningDelta, Text: choice.Delta.Reasoning, ReasoningKind: ReasoningKindRaw}); err != nil {
 							return err
 						}
 					}

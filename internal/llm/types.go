@@ -115,13 +115,95 @@ type Message struct {
 	CacheAnchor bool // provider should apply cache_control to this message (Anthropic-specific)
 }
 
+// ReasoningKind classifies provider reasoning/thinking payloads for safe display.
+type ReasoningKind string
+
+const (
+	ReasoningKindUnknown   ReasoningKind = "unknown"
+	ReasoningKindSummary   ReasoningKind = "summary"
+	ReasoningKindRaw       ReasoningKind = "raw"
+	ReasoningKindEncrypted ReasoningKind = "encrypted"
+)
+
+// NormalizeReasoningKind returns a conservative non-empty reasoning kind.
+func NormalizeReasoningKind(kind ReasoningKind) ReasoningKind {
+	switch ReasoningKind(strings.ToLower(strings.TrimSpace(string(kind)))) {
+	case ReasoningKindSummary:
+		return ReasoningKindSummary
+	case ReasoningKindRaw:
+		return ReasoningKindRaw
+	case ReasoningKindEncrypted:
+		return ReasoningKindEncrypted
+	default:
+		return ReasoningKindUnknown
+	}
+}
+
+// NormalizeStoredReasoningKind preserves the historical meaning of persisted
+// assistant parts from before ReasoningKind existed. Those parts stored only
+// display-safe summaries in ReasoningContent, so an empty kind with content is
+// treated as a summary when rendering/exporting stored sessions. Live provider
+// events should continue using NormalizeReasoningKind.
+func NormalizeStoredReasoningKind(kind ReasoningKind, hasReasoningContent bool) ReasoningKind {
+	if strings.TrimSpace(string(kind)) == "" && hasReasoningContent {
+		return ReasoningKindSummary
+	}
+	return NormalizeReasoningKind(kind)
+}
+
+// MergeReasoningKind combines accumulated and incoming reasoning classifications.
+// Empty incoming kinds mean "no provider signal". Unknown is not a positive
+// classification signal, encrypted is replay-only until displayable summary/raw
+// text arrives, and raw wins over summary when both appear in the same block.
+func MergeReasoningKind(current, incoming ReasoningKind) ReasoningKind {
+	if strings.TrimSpace(string(incoming)) == "" {
+		return current
+	}
+
+	incoming = NormalizeReasoningKind(incoming)
+	if incoming == ReasoningKindUnknown {
+		return current
+	}
+	if current == "" {
+		return incoming
+	}
+
+	current = NormalizeReasoningKind(current)
+	if current == ReasoningKindEncrypted {
+		return incoming
+	}
+	if incoming == ReasoningKindEncrypted {
+		return current
+	}
+	if current == incoming {
+		return current
+	}
+	if current == ReasoningKindUnknown {
+		return incoming
+	}
+	if current == ReasoningKindRaw || incoming == ReasoningKindRaw {
+		return ReasoningKindRaw
+	}
+	return ReasoningKindSummary
+}
+
+// IsEncryptedReasoningDelta reports whether a reasoning delta only carries
+// encrypted replay metadata and should be withheld from interactive UI streams.
+func IsEncryptedReasoningDelta(event Event) bool {
+	kind := NormalizeReasoningKind(event.ReasoningKind)
+	return kind == ReasoningKindEncrypted || (event.ReasoningEncryptedContent != "" && event.Text == "")
+}
+
 // Part represents a single content part.
 type Part struct {
 	Type                      PartType
 	Text                      string
-	ReasoningContent          string         // Reasoning summary text (or thinking content for OpenRouter)
+	ReasoningContent          string         // Reasoning summary text or provider thinking content (classified by ReasoningKind)
+	ReasoningSummaryParts     []string       // Display-safe Responses reasoning summary array elements, when provider supplies structure
 	ReasoningItemID           string         // Responses API reasoning item ID for replay
-	ReasoningEncryptedContent string         // Responses API encrypted reasoning content for replay
+	ReasoningEncryptedContent string         // Provider encrypted reasoning/signature content for replay; never displayed
+	ReasoningKind             ReasoningKind  // Classification for ReasoningContent/replay metadata
+	ReasoningSummaryTitle     string         // Optional parsed display title for summary reasoning
 	ImageData                 *ToolImageData // User-supplied image (base64-encoded)
 	ImagePath                 string         // Local filesystem path to the image (when available, e.g. Telegram uploads)
 	FileData                  *ToolFileData  // User-supplied file (base64-encoded)
@@ -282,9 +364,13 @@ type Event struct {
 	Text                      string
 	InterjectionID            string // For EventInterjection: stable ID for matching queued interjections in the UI
 	InterjectionStatus        InterjectionStatus
-	Message                   Message // For EventInterjection: structured user message including attachments
-	ReasoningItemID           string  // For EventReasoningDelta: reasoning item ID
-	ReasoningEncryptedContent string  // For EventReasoningDelta: encrypted reasoning content
+	Message                   Message       // For EventInterjection: structured user message including attachments
+	ReasoningItemID           string        // For EventReasoningDelta: reasoning item ID
+	ReasoningEncryptedContent string        // For EventReasoningDelta: encrypted reasoning content
+	ReasoningKind             ReasoningKind // For EventReasoningDelta: summary/raw/encrypted/unknown classification
+	ReasoningSummaryParts     []string      // For EventReasoningDelta: structured display-safe summary parts, when available
+	ReasoningIndex            int           // For EventReasoningDelta: provider reasoning block/index when available
+	ReasoningFinal            bool          // For EventReasoningDelta: true when provider marks the reasoning block complete
 	Tool                      *ToolCall
 	ToolCallID                string          // For EventToolExecStart/End: unique ID of this tool invocation
 	ToolName                  string          // For EventToolExecStart/End: name of tool being executed

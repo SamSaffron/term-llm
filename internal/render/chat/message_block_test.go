@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	xansi "github.com/charmbracelet/x/ansi"
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -175,5 +176,147 @@ func TestMessageBlockRenderer_FileOnlyUserMessage_ShowsPlaceholderAndAttachmentM
 	}
 	if strings.Contains(plain, "100") {
 		t.Fatalf("rendered file-only message should hide embedded file body, got %q", plain)
+	}
+}
+
+func TestMessageBlockRenderer_RenderReasoningSummaryCollapsedByDefault(t *testing.T) {
+	renderer := NewMessageBlockRenderer(80, nil, false)
+	msg := &session.Message{
+		Role: llm.RoleAssistant,
+		Parts: []llm.Part{{
+			Type:                  llm.PartText,
+			Text:                  "Final answer.",
+			ReasoningContent:      "**Inspecting repo**\n\nChecking files.",
+			ReasoningKind:         llm.ReasoningKindSummary,
+			ReasoningSummaryTitle: "Inspecting repo",
+		}},
+	}
+
+	rendered := ui.StripANSI(renderer.renderAssistantMessage(msg))
+	if !strings.Contains(rendered, "▸ Thought: Inspecting repo") {
+		t.Fatalf("expected collapsed reasoning header, got %q", rendered)
+	}
+	if strings.Contains(rendered, "Checking files.") {
+		t.Fatalf("collapsed reasoning should hide body, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Final answer.") {
+		t.Fatalf("expected assistant text, got %q", rendered)
+	}
+}
+
+func TestMessageBlockRenderer_LegacyEmptyKindReasoningRendersAsSummary(t *testing.T) {
+	renderer := NewMessageBlockRenderer(80, nil, false)
+	msg := &session.Message{
+		Role: llm.RoleAssistant,
+		Parts: []llm.Part{{
+			Type:             llm.PartText,
+			Text:             "Final answer.",
+			ReasoningContent: "**Legacy summary**\n\nOlder saved content.",
+		}},
+	}
+
+	rendered := ui.StripANSI(renderer.renderAssistantMessage(msg))
+	if !strings.Contains(rendered, "▸ Thought: Legacy summary") {
+		t.Fatalf("legacy empty-kind reasoning should render as a collapsed summary, got %q", rendered)
+	}
+	if strings.Contains(rendered, "Older saved content.") {
+		t.Fatalf("legacy summary should be collapsed by default, got %q", rendered)
+	}
+}
+
+func TestMessageBlockRenderer_RenderReasoningSummaryExpanded(t *testing.T) {
+	renderer := NewMessageBlockRenderer(80, nil, false)
+	cfg := config.DefaultReasoningConfig()
+	cfg.Display = config.ReasoningDisplayExpanded
+	renderer.SetReasoningConfig(cfg)
+	msg := &session.Message{
+		Role: llm.RoleAssistant,
+		Parts: []llm.Part{{
+			Type:             llm.PartText,
+			Text:             "Answer.",
+			ReasoningContent: "**Planning**\n\nI checked **tests**.",
+			ReasoningKind:    llm.ReasoningKindSummary,
+		}},
+	}
+
+	rendered := ui.StripANSI(renderer.renderAssistantMessage(msg))
+	if !strings.Contains(rendered, "▾ Thought: Planning") {
+		t.Fatalf("expected expanded reasoning header, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "I checked") || !strings.Contains(rendered, "tests") {
+		t.Fatalf("expected expanded reasoning body, got %q", rendered)
+	}
+}
+
+func TestMessageBlockRenderer_HidesReasoningWhenOffOrStatusOnly(t *testing.T) {
+	msg := &session.Message{
+		Role: llm.RoleAssistant,
+		Parts: []llm.Part{{
+			Type:             llm.PartText,
+			Text:             "Answer.",
+			ReasoningContent: "**Planning**\n\nHidden body.",
+			ReasoningKind:    llm.ReasoningKindSummary,
+		}},
+	}
+	for _, display := range []string{config.ReasoningDisplayOff, config.ReasoningDisplayStatus} {
+		renderer := NewMessageBlockRenderer(80, nil, false)
+		cfg := config.DefaultReasoningConfig()
+		cfg.Display = display
+		renderer.SetReasoningConfig(cfg)
+		rendered := ui.StripANSI(renderer.renderAssistantMessage(msg))
+		if strings.Contains(rendered, "Thought:") || strings.Contains(rendered, "Hidden body") {
+			t.Fatalf("display=%s should hide reasoning, got %q", display, rendered)
+		}
+		if !strings.Contains(rendered, "Answer.") {
+			t.Fatalf("display=%s should keep assistant text, got %q", display, rendered)
+		}
+	}
+}
+
+func TestMessageBlockRenderer_RawReasoningIsCollapsedByDefaultAndExpandedByDetails(t *testing.T) {
+	msg := &session.Message{
+		Role: llm.RoleAssistant,
+		Parts: []llm.Part{{
+			Type:             llm.PartText,
+			Text:             "Answer.",
+			ReasoningContent: "raw thinking chain",
+			ReasoningKind:    llm.ReasoningKindRaw,
+		}},
+	}
+
+	renderer := NewMessageBlockRenderer(80, nil, false)
+	rendered := ui.StripANSI(renderer.renderAssistantMessage(msg))
+	if !strings.Contains(rendered, "▸ Thinking...") {
+		t.Fatalf("raw reasoning should render as a collapsed generic thought by default, got %q", rendered)
+	}
+	if strings.Contains(rendered, "raw thinking chain") || strings.Contains(rendered, "Raw thinking") {
+		t.Fatalf("collapsed raw reasoning should hide the body and avoid raw-specific label, got %q", rendered)
+	}
+
+	cfg := config.DefaultReasoningConfig()
+	cfg.Display = config.ReasoningDisplayExpanded
+	renderer.SetReasoningConfig(cfg)
+	rendered = ui.StripANSI(renderer.renderAssistantMessage(msg))
+	if !strings.Contains(rendered, "▾ Thinking...") || !strings.Contains(rendered, "raw thinking chain") {
+		t.Fatalf("expanded details should show raw reasoning content, got %q", rendered)
+	}
+}
+
+func TestMessageBlockRenderer_NeverRendersUnknownOrEncryptedReasoning(t *testing.T) {
+	for _, kind := range []llm.ReasoningKind{llm.ReasoningKindUnknown, llm.ReasoningKindEncrypted} {
+		renderer := NewMessageBlockRenderer(80, nil, false)
+		msg := &session.Message{
+			Role: llm.RoleAssistant,
+			Parts: []llm.Part{{
+				Type:             llm.PartText,
+				Text:             "Answer.",
+				ReasoningContent: "do not show",
+				ReasoningKind:    kind,
+			}},
+		}
+		rendered := ui.StripANSI(renderer.renderAssistantMessage(msg))
+		if strings.Contains(rendered, "do not show") || strings.Contains(rendered, "Thought:") {
+			t.Fatalf("kind=%s should not render reasoning, got %q", kind, rendered)
+		}
 	}
 }

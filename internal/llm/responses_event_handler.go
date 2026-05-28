@@ -229,15 +229,20 @@ func (h *responsesStreamEventHandler) HandleJSONEvent(data []byte, eventType str
 		} else if doneEvent.Item.Type == "reasoning" {
 			h.outputItems = append(h.outputItems, responsesOutputItemToInputItem(doneEvent.Item)...)
 			h.reasoningState.Finish(doneEvent.OutputIndex, doneEvent.Item.ID, doneEvent.Item.EncryptedContent, doneEvent.Item.Summary)
-			if part := h.reasoningState.Part(doneEvent.OutputIndex); part != nil {
+			if part := h.reasoningState.Part(doneEvent.OutputIndex); part != nil && h.reasoningState.NeedsFinalEvent(doneEvent.OutputIndex) {
 				if err := sendEvent(Event{
 					Type:                      EventReasoningDelta,
-					Text:                      part.ReasoningContent,
+					Text:                      h.reasoningState.FinalEventText(doneEvent.OutputIndex),
+					ReasoningKind:             part.ReasoningKind,
+					ReasoningSummaryParts:     append([]string(nil), part.ReasoningSummaryParts...),
+					ReasoningIndex:            doneEvent.OutputIndex,
+					ReasoningFinal:            true,
 					ReasoningItemID:           part.ReasoningItemID,
 					ReasoningEncryptedContent: part.ReasoningEncryptedContent,
 				}); err != nil {
 					return false, err
 				}
+				h.reasoningState.MarkEmitted(doneEvent.OutputIndex)
 			}
 		} else if doneEvent.Item.Type == "message" {
 			h.outputItems = append(h.outputItems, responsesOutputItemToInputItem(doneEvent.Item)...)
@@ -271,7 +276,7 @@ func (h *responsesStreamEventHandler) HandleJSONEvent(data []byte, eventType str
 		if err := unmarshalEvent(&partEvent); err != nil {
 			return false, err
 		}
-		h.reasoningState.Ensure(partEvent.OutputIndex)
+		h.reasoningState.SummaryPartAdded(partEvent.OutputIndex)
 
 	case "response.reasoning_summary_text.delta":
 		var summaryDeltaEvent struct {
@@ -281,7 +286,19 @@ func (h *responsesStreamEventHandler) HandleJSONEvent(data []byte, eventType str
 		if err := unmarshalEvent(&summaryDeltaEvent); err != nil {
 			return false, err
 		}
-		h.reasoningState.AppendSummary(summaryDeltaEvent.OutputIndex, summaryDeltaEvent.Delta)
+		if part := h.reasoningState.AppendSummary(summaryDeltaEvent.OutputIndex, summaryDeltaEvent.Delta); part != nil {
+			if err := sendEvent(Event{
+				Type:                      EventReasoningDelta,
+				Text:                      part.ReasoningContent,
+				ReasoningKind:             ReasoningKindSummary,
+				ReasoningIndex:            summaryDeltaEvent.OutputIndex,
+				ReasoningItemID:           part.ReasoningItemID,
+				ReasoningEncryptedContent: part.ReasoningEncryptedContent,
+			}); err != nil {
+				return false, err
+			}
+			h.reasoningState.MarkEmitted(summaryDeltaEvent.OutputIndex)
+		}
 
 	case "response.completed":
 		var completedEvent struct {

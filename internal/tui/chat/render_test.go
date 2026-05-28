@@ -1429,3 +1429,220 @@ func TestRenderStatusLineShowsFastMode(t *testing.T) {
 		t.Fatalf("expected fast in status line, got %q", line)
 	}
 }
+
+func TestChatReasoningSummaryUpdatesThinkingStatus(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streaming = true
+	m.phase = "Thinking"
+
+	updated, _ := m.Update(streamEventMsg{event: ui.ReasoningEvent(
+		llm.ReasoningKindSummary,
+		"**Inspecting repo**\n\nChecking files.",
+		"",
+		"rs_1",
+		false,
+		true,
+	)})
+	m = updated.(*Model)
+
+	if m.phase != "Inspecting repo" {
+		t.Fatalf("phase = %q, want reasoning title", m.phase)
+	}
+}
+
+func TestChatReasoningRawAccumulatesWithoutStatusTitleByDefault(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streaming = true
+	m.phase = "Thinking"
+
+	updated, _ := m.Update(streamEventMsg{event: ui.ReasoningEvent(
+		llm.ReasoningKindRaw,
+		"raw thinking",
+		"",
+		"",
+		false,
+		false,
+	)})
+	m = updated.(*Model)
+
+	if m.phase != "Thinking" {
+		t.Fatalf("raw reasoning without a provider title should keep generic status by default, phase = %q", m.phase)
+	}
+	if got := m.currentReasoning.String(); got != "raw thinking" {
+		t.Fatalf("raw reasoning should be accumulated for collapsed thought history, got %q", got)
+	}
+}
+
+func TestChatReasoningOffSuppressesStatusTitle(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streaming = true
+	m.phase = "Thinking"
+	m.reasoningConfig = config.DefaultReasoningConfig()
+	m.reasoningConfig.Display = config.ReasoningDisplayOff
+
+	updated, _ := m.Update(streamEventMsg{event: ui.ReasoningEvent(
+		llm.ReasoningKindSummary,
+		"**Inspecting repo**\n\nChecking files.",
+		"Inspecting repo",
+		"",
+		false,
+		true,
+	)})
+	m = updated.(*Model)
+
+	if m.phase != "Thinking" {
+		t.Fatalf("reasoning display off should preserve generic phase, got %q", m.phase)
+	}
+}
+
+func TestChatCtrlETogglesCommittedReasoningGloballyDuringStream(t *testing.T) {
+	m := newTestChatModel(false)
+	m.width = 80
+	m.streaming = true
+	m.phase = "Thinking"
+
+	updated, _ := m.Update(streamEventMsg{event: ui.ReasoningEvent(
+		llm.ReasoningKindSummary,
+		"**Inspecting repo**\n\nChecking files.",
+		"",
+		"rs_1",
+		false,
+		true,
+	)})
+	m = updated.(*Model)
+	updated, _ = m.Update(streamEventMsg{event: ui.TextEvent("Answer starts.")})
+	m = updated.(*Model)
+
+	collapsed := ui.StripANSI(m.renderStreamingInline())
+	if !strings.Contains(collapsed, "▸ Thought: Inspecting repo") {
+		t.Fatalf("expected committed collapsed thought block, got %q", collapsed)
+	}
+	if strings.Contains(collapsed, "Checking files.") {
+		t.Fatalf("collapsed thought should not show body, got %q", collapsed)
+	}
+
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl})
+	m = updated.(*Model)
+	expanded := ui.StripANSI(m.renderStreamingInline())
+	if !strings.Contains(expanded, "▾ Thought: Inspecting repo") || !strings.Contains(expanded, "Checking files.") {
+		t.Fatalf("ctrl+e should expand committed thoughts during stream, got %q", expanded)
+	}
+
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl})
+	m = updated.(*Model)
+	recollapsed := ui.StripANSI(m.renderStreamingInline())
+	if !strings.Contains(recollapsed, "▸ Thought: Inspecting repo") || strings.Contains(recollapsed, "Checking files.") {
+		t.Fatalf("second ctrl+e should collapse committed thoughts globally, got %q", recollapsed)
+	}
+}
+
+func TestChatActiveReasoningAfterFlushedToolKeepsBlankLine(t *testing.T) {
+	m := newTestChatModel(false)
+	m.width = 80
+	m.streaming = true
+	m.phase = "Thinking"
+	m.tracker.HandleToolStart("call-1", "shell", "(status)", nil)
+	m.tracker.HandleToolEnd("call-1", true)
+
+	flushed := m.tracker.FlushCompletedNow(m.width, m.renderMd)
+	if flushed.ToPrint == "" {
+		t.Fatal("expected completed tool to flush")
+	}
+
+	updated, _ := m.Update(streamEventMsg{event: ui.ReasoningEvent(
+		llm.ReasoningKindRaw,
+		"checking status",
+		"Considering version control steps",
+		"",
+		false,
+		true,
+	)})
+	m = updated.(*Model)
+
+	combined := ui.StripANSI(flushed.ToPrint + "\n" + m.renderStreamingInline())
+	toolIdx := strings.Index(combined, "shell (status)")
+	thoughtIdx := strings.Index(combined, "▸ Thought: Considering version control steps")
+	if toolIdx < 0 || thoughtIdx < 0 || toolIdx >= thoughtIdx {
+		t.Fatalf("expected flushed tool before active thought, got %q", combined)
+	}
+	between := combined[toolIdx+len("shell (status)") : thoughtIdx]
+	if got := strings.Count(between, "\n"); got != 2 {
+		t.Fatalf("expected one blank line between flushed tool and active thought, got %d newlines; between=%q full=%q", got, between, combined)
+	}
+}
+
+func TestChatCtrlEExpandsCompletedStreamReasoningAfterStream(t *testing.T) {
+	m := newTestChatModel(true)
+	m.width = 80
+	m.streaming = false
+	m.setTextareaValue("")
+	m.tracker = ui.NewToolTracker()
+	m.tracker.TextMode = m.textMode
+
+	part := llm.Part{
+		Type:             llm.PartText,
+		ReasoningContent: "raw qwen thinking body",
+		ReasoningKind:    llm.ReasoningKindRaw,
+	}
+	rendered := ui.NormalizeReasoningSegmentRendered(m.renderReasoningPartBlock(part))
+	m.tracker.AddReasoningSegment(rendered, reasoningSegmentFromPart(part))
+	m.viewCache.completedStream = ui.RenderSegmentsWithImageRenderer(m.tracker.CompletedSegments(), m.width, -1, m.renderMd, true, m.toolsExpanded, m.imageArtifactRenderer())
+
+	collapsed := ui.StripANSI(m.viewCache.completedStream)
+	if !strings.Contains(collapsed, "▸ Thinking...") || strings.Contains(collapsed, "raw qwen thinking body") {
+		t.Fatalf("precondition expected collapsed completed stream thought, got %q", collapsed)
+	}
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl})
+	m = updated.(*Model)
+	expanded := ui.StripANSI(m.viewCache.completedStream)
+	if !strings.Contains(expanded, "▾ Thinking...") || !strings.Contains(expanded, "raw qwen thinking body") {
+		t.Fatalf("ctrl+e should expand completed stream reasoning after stream, got %q", expanded)
+	}
+}
+
+func TestChatCtrlEStillTogglesToolsWhenReasoningOff(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streaming = true
+	m.reasoningConfig = config.DefaultReasoningConfig()
+	m.reasoningConfig.Display = config.ReasoningDisplayOff
+	m.setTextareaValue("")
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl})
+	m = updated.(*Model)
+	if !m.toolsExpanded {
+		t.Fatal("ctrl+e should still expand tool details when reasoning display is off")
+	}
+	if m.reasoningModeOverride != "" {
+		t.Fatalf("reasoning off should not be changed by detail toggle, override=%q", m.reasoningModeOverride)
+	}
+
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl})
+	m = updated.(*Model)
+	if m.toolsExpanded {
+		t.Fatal("second ctrl+e should collapse tool details when reasoning display is off")
+	}
+}
+
+func TestChatReasoningAttemptDiscardClearsProvisionalTitle(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streaming = true
+	m.phase = "Thinking"
+	_, _ = m.Update(streamEventMsg{event: ui.ReasoningEvent(
+		llm.ReasoningKindSummary,
+		"**Old plan**\n\nDiscard me.",
+		"Old plan",
+		"",
+		false,
+		true,
+	)})
+	if m.currentReasoningTitle != "Old plan" {
+		t.Fatalf("precondition current reasoning title = %q", m.currentReasoningTitle)
+	}
+
+	updated, _ := m.Update(streamEventMsg{event: ui.AttemptDiscardEvent()})
+	m = updated.(*Model)
+	if m.currentReasoningTitle != "" || m.currentReasoning.Len() != 0 {
+		t.Fatalf("discard should clear reasoning buffer/title, title=%q buffer=%q", m.currentReasoningTitle, m.currentReasoning.String())
+	}
+}

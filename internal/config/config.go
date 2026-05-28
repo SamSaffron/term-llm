@@ -141,6 +141,244 @@ type ProviderConfig struct {
 	needsLazyResolution bool `mapstructure:"-"`
 }
 
+// Reasoning display policy values.
+const (
+	ReasoningDisplayAuto      = "auto"
+	ReasoningDisplayOff       = "off"
+	ReasoningDisplayStatus    = "status"
+	ReasoningDisplayCollapsed = "collapsed"
+	ReasoningDisplayExpanded  = "expanded"
+	ReasoningDisplayRaw       = "raw"
+
+	ReasoningSourceSummaryOnly           = "summary_only"
+	ReasoningSourceSummaryOrProviderSafe = "summary_or_provider_safe"
+	ReasoningSourceAll                   = "all"
+
+	ReasoningStatusNone    = "none"
+	ReasoningStatusGeneric = "generic"
+	ReasoningStatusTitle   = "title"
+	ReasoningStatusSummary = "summary"
+
+	ReasoningHistoryNone           = "none"
+	ReasoningHistoryCollapsed      = "collapsed"
+	ReasoningHistoryExpanded       = "expanded"
+	ReasoningHistoryTranscriptOnly = "transcript_only"
+
+	ReasoningExportNever     = "never"
+	ReasoningExportAsk       = "ask"
+	ReasoningExportSummaries = "summaries"
+	ReasoningExportRaw       = "raw"
+
+	ReasoningInherit = "inherit"
+)
+
+// ReasoningSurfaceConfig holds optional per-surface overrides for reasoning UI.
+type ReasoningSurfaceConfig struct {
+	Display string `mapstructure:"display" yaml:"display,omitempty"`
+	Status  string `mapstructure:"status" yaml:"status,omitempty"`
+	History string `mapstructure:"history" yaml:"history,omitempty"`
+	Export  string `mapstructure:"export" yaml:"export,omitempty"`
+	Raw     *bool  `mapstructure:"raw" yaml:"raw,omitempty"`
+}
+
+// ReasoningConfig controls display/export of provider reasoning summaries and
+// raw thinking. It is intentionally separate from provider reasoning effort.
+type ReasoningConfig struct {
+	Display          string                 `mapstructure:"display" yaml:"display,omitempty"`
+	Source           string                 `mapstructure:"source" yaml:"source,omitempty"`
+	Status           string                 `mapstructure:"status" yaml:"status,omitempty"`
+	History          string                 `mapstructure:"history" yaml:"history,omitempty"`
+	Export           string                 `mapstructure:"export" yaml:"export,omitempty"`
+	Raw              bool                   `mapstructure:"raw" yaml:"raw,omitempty"`
+	MaxSummaryChars  int                    `mapstructure:"max_summary_chars" yaml:"max_summary_chars,omitempty"`
+	MaxRawChars      int                    `mapstructure:"max_raw_chars" yaml:"max_raw_chars,omitempty"`
+	ExtractTitles    bool                   `mapstructure:"extract_titles" yaml:"extract_titles,omitempty"`
+	HiddenLabel      string                 `mapstructure:"hidden_label" yaml:"hidden_label,omitempty"`
+	PersistSummaries bool                   `mapstructure:"persist_summaries" yaml:"persist_summaries,omitempty"`
+	Chat             ReasoningSurfaceConfig `mapstructure:"chat" yaml:"chat,omitempty"`
+	Ask              ReasoningSurfaceConfig `mapstructure:"ask" yaml:"ask,omitempty"`
+	Serve            ReasoningSurfaceConfig `mapstructure:"serve" yaml:"serve,omitempty"`
+	Jobs             ReasoningSurfaceConfig `mapstructure:"jobs" yaml:"jobs,omitempty"`
+
+	// Presence markers let programmatic configs explicitly set false for boolean
+	// options while still allowing partial configs to inherit defaults. Viper
+	// populates these from InConfig; direct callers can set them when they need a
+	// false override.
+	RawSet              bool `mapstructure:"-" yaml:"-"`
+	ExtractTitlesSet    bool `mapstructure:"-" yaml:"-"`
+	PersistSummariesSet bool `mapstructure:"-" yaml:"-"`
+}
+
+// DefaultReasoningConfig returns the safe, useful default reasoning display policy.
+func DefaultReasoningConfig() ReasoningConfig {
+	return ReasoningConfig{
+		Display:          ReasoningDisplayAuto,
+		Source:           ReasoningSourceSummaryOrProviderSafe,
+		Status:           ReasoningStatusTitle,
+		History:          ReasoningHistoryCollapsed,
+		Export:           ReasoningExportAsk,
+		Raw:              false,
+		MaxSummaryChars:  12000,
+		MaxRawChars:      20000,
+		ExtractTitles:    true,
+		HiddenLabel:      "Thinking...",
+		PersistSummaries: true,
+	}
+}
+
+// ResolveReasoning returns a fully-populated reasoning display policy for a
+// surface ("chat", "ask", "serve", or "jobs"), applying optional per-surface
+// overrides and the TERM_LLM_SHOW_RAW_REASONING debug override.
+func (c *Config) ResolveReasoning(surface string) ReasoningConfig {
+	resolved := DefaultReasoningConfig()
+	if c != nil {
+		resolved = mergeReasoningConfig(resolved, c.Reasoning)
+		switch strings.ToLower(strings.TrimSpace(surface)) {
+		case "chat":
+			resolved = applyReasoningSurface(resolved, c.Reasoning.Chat)
+		case "ask":
+			resolved = applyReasoningSurface(resolved, c.Reasoning.Ask)
+		case "serve":
+			resolved = applyReasoningSurface(resolved, c.Reasoning.Serve)
+		case "jobs":
+			resolved = applyReasoningSurface(resolved, c.Reasoning.Jobs)
+		}
+	}
+	resolved.normalize()
+	if parseEnvBool(os.Getenv("TERM_LLM_SHOW_RAW_REASONING")) {
+		resolved.Display = ReasoningDisplayRaw
+		resolved.Source = ReasoningSourceAll
+		resolved.Raw = true
+	}
+	return resolved
+}
+
+func mergeReasoningConfig(base, override ReasoningConfig) ReasoningConfig {
+	if isZeroReasoningConfig(override) {
+		return base
+	}
+	if override.Display != "" {
+		base.Display = override.Display
+	}
+	if override.Source != "" {
+		base.Source = override.Source
+	}
+	if override.Status != "" {
+		base.Status = override.Status
+	}
+	if override.History != "" {
+		base.History = override.History
+	}
+	if override.Export != "" {
+		base.Export = override.Export
+	}
+	if override.RawSet || override.Raw {
+		base.Raw = override.Raw
+	}
+	if override.MaxSummaryChars != 0 {
+		base.MaxSummaryChars = override.MaxSummaryChars
+	}
+	if override.MaxRawChars != 0 {
+		base.MaxRawChars = override.MaxRawChars
+	}
+	if override.ExtractTitlesSet || override.ExtractTitles {
+		base.ExtractTitles = override.ExtractTitles
+	}
+	if override.PersistSummariesSet || override.PersistSummaries {
+		base.PersistSummaries = override.PersistSummaries
+	}
+	if override.HiddenLabel != "" {
+		base.HiddenLabel = override.HiddenLabel
+	}
+	base.Chat = override.Chat
+	base.Ask = override.Ask
+	base.Serve = override.Serve
+	base.Jobs = override.Jobs
+	return base
+}
+
+func isZeroReasoningConfig(r ReasoningConfig) bool {
+	return r.Display == "" &&
+		r.Source == "" &&
+		r.Status == "" &&
+		r.History == "" &&
+		r.Export == "" &&
+		!r.Raw &&
+		r.MaxSummaryChars == 0 &&
+		r.MaxRawChars == 0 &&
+		!r.ExtractTitles &&
+		r.HiddenLabel == "" &&
+		!r.PersistSummaries &&
+		!r.RawSet &&
+		!r.ExtractTitlesSet &&
+		!r.PersistSummariesSet &&
+		r.Chat == (ReasoningSurfaceConfig{}) &&
+		r.Ask == (ReasoningSurfaceConfig{}) &&
+		r.Serve == (ReasoningSurfaceConfig{}) &&
+		r.Jobs == (ReasoningSurfaceConfig{})
+}
+
+func applyReasoningSurface(base ReasoningConfig, surface ReasoningSurfaceConfig) ReasoningConfig {
+	if v := strings.TrimSpace(surface.Display); v != "" && !strings.EqualFold(v, ReasoningInherit) {
+		base.Display = v
+	}
+	if v := strings.TrimSpace(surface.Status); v != "" && !strings.EqualFold(v, ReasoningInherit) {
+		base.Status = v
+	}
+	if v := strings.TrimSpace(surface.History); v != "" && !strings.EqualFold(v, ReasoningInherit) {
+		base.History = v
+	}
+	if v := strings.TrimSpace(surface.Export); v != "" && !strings.EqualFold(v, ReasoningInherit) {
+		base.Export = v
+	}
+	if surface.Raw != nil {
+		base.Raw = *surface.Raw
+	}
+	return base
+}
+
+func (r *ReasoningConfig) normalize() {
+	if r == nil {
+		return
+	}
+	r.Display = normalizeOneOf(r.Display, ReasoningDisplayAuto, ReasoningDisplayAuto, ReasoningDisplayOff, ReasoningDisplayStatus, ReasoningDisplayCollapsed, ReasoningDisplayExpanded, ReasoningDisplayRaw)
+	r.Source = normalizeOneOf(r.Source, ReasoningSourceSummaryOrProviderSafe, ReasoningSourceSummaryOnly, ReasoningSourceSummaryOrProviderSafe, ReasoningSourceAll)
+	r.Status = normalizeOneOf(r.Status, ReasoningStatusTitle, ReasoningStatusNone, ReasoningStatusGeneric, ReasoningStatusTitle, ReasoningStatusSummary)
+	r.History = normalizeOneOf(r.History, ReasoningHistoryCollapsed, ReasoningHistoryNone, ReasoningHistoryCollapsed, ReasoningHistoryExpanded, ReasoningHistoryTranscriptOnly)
+	r.Export = normalizeOneOf(r.Export, ReasoningExportAsk, ReasoningExportNever, ReasoningExportAsk, ReasoningExportSummaries, ReasoningExportRaw)
+	if r.MaxSummaryChars <= 0 {
+		r.MaxSummaryChars = 12000
+	}
+	if r.MaxRawChars <= 0 {
+		r.MaxRawChars = 20000
+	}
+	if strings.TrimSpace(r.HiddenLabel) == "" {
+		r.HiddenLabel = "Thinking..."
+	}
+}
+
+func normalizeOneOf(value, fallback string, allowed ...string) string {
+	v := strings.ToLower(strings.TrimSpace(value))
+	if v == "" || v == ReasoningInherit {
+		return fallback
+	}
+	for _, allow := range allowed {
+		if v == allow {
+			return v
+		}
+	}
+	return fallback
+}
+
+func parseEnvBool(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 type Config struct {
 	DefaultProvider string                    `mapstructure:"default_provider"`
 	Providers       map[string]ProviderConfig `mapstructure:"providers"`
@@ -157,6 +395,7 @@ type Config struct {
 	Transcription   TranscriptionConfig       `mapstructure:"transcription"`
 	Embed           EmbedConfig               `mapstructure:"embed"`
 	Search          SearchConfig              `mapstructure:"search"`
+	Reasoning       ReasoningConfig           `mapstructure:"reasoning"`
 	Theme           ThemeConfig               `mapstructure:"theme"`
 	Tools           ToolsConfig               `mapstructure:"tools"`
 	Agents          AgentsConfig              `mapstructure:"agents"`
@@ -281,14 +520,17 @@ type SessionsConfig struct {
 // ThemeConfig allows customization of UI colors
 // Colors can be ANSI color numbers (0-255) or hex codes (#RRGGBB)
 type ThemeConfig struct {
-	Primary   string `mapstructure:"primary"`   // main accent (commands, highlights)
-	Secondary string `mapstructure:"secondary"` // secondary accent (headers, borders)
-	Success   string `mapstructure:"success"`   // success states
-	Error     string `mapstructure:"error"`     // error states
-	Warning   string `mapstructure:"warning"`   // warnings
-	Muted     string `mapstructure:"muted"`     // dimmed text
-	Text      string `mapstructure:"text"`      // primary text
-	Spinner   string `mapstructure:"spinner"`   // loading spinner
+	Primary          string `mapstructure:"primary"`           // main accent (commands, highlights)
+	Secondary        string `mapstructure:"secondary"`         // secondary accent (headers, borders)
+	Success          string `mapstructure:"success"`           // success states
+	Error            string `mapstructure:"error"`             // error states
+	Warning          string `mapstructure:"warning"`           // warnings
+	Muted            string `mapstructure:"muted"`             // dimmed text
+	Text             string `mapstructure:"text"`              // primary text
+	Spinner          string `mapstructure:"spinner"`           // loading spinner
+	ReasoningSummary string `mapstructure:"reasoning_summary"` // reasoning summary body
+	ReasoningHeader  string `mapstructure:"reasoning_header"`  // reasoning header lines
+	ReasoningRaw     string `mapstructure:"reasoning_raw"`     // raw reasoning body
 }
 
 type ExecConfig struct {
@@ -577,6 +819,7 @@ func Load() (*Config, error) {
 	if err := viper.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
+	markReasoningConfigPresence(&cfg.Reasoning, viper.GetViper())
 
 	if err := overlayProviderEnvFromRawConfig(&cfg); err != nil {
 		return nil, fmt.Errorf("failed to load raw provider env config: %w", err)
@@ -599,6 +842,15 @@ func Load() (*Config, error) {
 	resolveSearchCredentials(&cfg.Search)
 
 	return &cfg, nil
+}
+
+func markReasoningConfigPresence(reasoning *ReasoningConfig, v *viper.Viper) {
+	if reasoning == nil || v == nil {
+		return
+	}
+	reasoning.RawSet = v.InConfig("reasoning.raw")
+	reasoning.ExtractTitlesSet = v.InConfig("reasoning.extract_titles")
+	reasoning.PersistSummariesSet = v.InConfig("reasoning.persist_summaries")
 }
 
 // writeConfigPreservingEnvCase calls v.WriteConfig() but preserves the case
@@ -1396,6 +1648,7 @@ var KnownKeys = map[string]bool{
 	"audio":            true,
 	"transcription":    true,
 	"search":           true,
+	"reasoning":        true,
 	"theme":            true,
 	"tools":            true,
 	"agents":           true,
@@ -1529,15 +1782,55 @@ var KnownKeys = map[string]bool{
 	"search.google.api_key":     true,
 	"search.google.cx":          true,
 
+	// Reasoning display policy
+	"reasoning.display":           true,
+	"reasoning.source":            true,
+	"reasoning.status":            true,
+	"reasoning.history":           true,
+	"reasoning.export":            true,
+	"reasoning.raw":               true,
+	"reasoning.max_summary_chars": true,
+	"reasoning.max_raw_chars":     true,
+	"reasoning.extract_titles":    true,
+	"reasoning.hidden_label":      true,
+	"reasoning.persist_summaries": true,
+	"reasoning.chat":              true,
+	"reasoning.chat.display":      true,
+	"reasoning.chat.status":       true,
+	"reasoning.chat.history":      true,
+	"reasoning.chat.export":       true,
+	"reasoning.chat.raw":          true,
+	"reasoning.ask":               true,
+	"reasoning.ask.display":       true,
+	"reasoning.ask.status":        true,
+	"reasoning.ask.history":       true,
+	"reasoning.ask.export":        true,
+	"reasoning.ask.raw":           true,
+	"reasoning.serve":             true,
+	"reasoning.serve.display":     true,
+	"reasoning.serve.status":      true,
+	"reasoning.serve.history":     true,
+	"reasoning.serve.export":      true,
+	"reasoning.serve.raw":         true,
+	"reasoning.jobs":              true,
+	"reasoning.jobs.display":      true,
+	"reasoning.jobs.status":       true,
+	"reasoning.jobs.history":      true,
+	"reasoning.jobs.export":       true,
+	"reasoning.jobs.raw":          true,
+
 	// Theme
-	"theme.primary":   true,
-	"theme.secondary": true,
-	"theme.success":   true,
-	"theme.error":     true,
-	"theme.warning":   true,
-	"theme.muted":     true,
-	"theme.text":      true,
-	"theme.spinner":   true,
+	"theme.primary":           true,
+	"theme.secondary":         true,
+	"theme.success":           true,
+	"theme.error":             true,
+	"theme.warning":           true,
+	"theme.muted":             true,
+	"theme.text":              true,
+	"theme.spinner":           true,
+	"theme.reasoning_summary": true,
+	"theme.reasoning_header":  true,
+	"theme.reasoning_raw":     true,
 
 	// Tools
 	"tools.enabled":               true,
@@ -1686,6 +1979,21 @@ func GetDefaults() map[string]any {
 		"search.fetch_provider":           "jina",
 		"search.force_external":           false,
 		"search.exa_mcp.url":              "https://mcp.exa.ai/mcp",
+		"reasoning.display":               ReasoningDisplayAuto,
+		"reasoning.source":                ReasoningSourceSummaryOrProviderSafe,
+		"reasoning.status":                ReasoningStatusTitle,
+		"reasoning.history":               ReasoningHistoryCollapsed,
+		"reasoning.export":                ReasoningExportAsk,
+		"reasoning.raw":                   false,
+		"reasoning.max_summary_chars":     12000,
+		"reasoning.max_raw_chars":         20000,
+		"reasoning.extract_titles":        true,
+		"reasoning.hidden_label":          "Thinking...",
+		"reasoning.persist_summaries":     true,
+		"reasoning.chat.display":          ReasoningInherit,
+		"reasoning.ask.display":           ReasoningInherit,
+		"reasoning.serve.display":         ReasoningInherit,
+		"reasoning.jobs.display":          ReasoningInherit,
 		"tools.enabled":                   []string{},
 		"tools.read_dirs":                 []string{},
 		"tools.write_dirs":                []string{},

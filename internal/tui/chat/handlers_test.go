@@ -8,7 +8,8 @@ import (
 	"testing"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
+	"charm.land/bubbletea/v2"
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -739,6 +740,88 @@ func TestPasteCollapse_StreamingInterruptClassificationUsesExpandedPlaceholder(t
 	}
 	if msg.Content != pasteText {
 		t.Fatalf("classification content = %q, want expanded paste %q", msg.Content, pasteText)
+	}
+}
+
+func TestStreamingSlashThinkingExecutesLocally(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streaming = true
+	m.phase = "Thinking"
+	m.reasoningConfig = config.DefaultReasoningConfig()
+	m.setTextareaValue("/thinking expanded")
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(*Model)
+	if cmd == nil {
+		// Footer timer may be nil in some test paths; command execution itself is what matters.
+	}
+	if m.reasoningModeOverride != config.ReasoningDisplayExpanded {
+		t.Fatalf("reasoningModeOverride = %q, want expanded", m.reasoningModeOverride)
+	}
+	if got := m.textarea.Value(); got != "" {
+		t.Fatalf("expected command to clear composer, got %q", got)
+	}
+	if len(m.pendingInterjections) != 0 || m.pendingInterjection != "" {
+		t.Fatalf("/thinking should not queue interjection, pending=%q stack=%d", m.pendingInterjection, len(m.pendingInterjections))
+	}
+}
+
+func TestStreamingSlashCommandPrefixQueuesInterjection(t *testing.T) {
+	for _, input := range []string{"/s", "/se", "/system-prompt-question", "/i", "/t"} {
+		t.Run(input, func(t *testing.T) {
+			m := newTestChatModel(false)
+			m.streaming = true
+			m.phase = "Thinking"
+			m.fastProvider = nil
+			m.setTextareaValue(input)
+
+			updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+			m = updated.(*Model)
+			if len(m.pendingInterjections) != 1 {
+				t.Fatalf("expected slash prefix to queue as interjection, pending stack=%d", len(m.pendingInterjections))
+			}
+			if got := m.pendingInterjections[0].Text; got != input {
+				t.Fatalf("pending interjection = %q, want %q", got, input)
+			}
+		})
+	}
+}
+
+func TestStreamingSideEffectSlashCommandsQueueInterjection(t *testing.T) {
+	for _, input := range []string{"/search", "/fast", "/export", "/system new prompt", "/inspect"} {
+		t.Run(input, func(t *testing.T) {
+			m := newTestChatModel(false)
+			m.streaming = true
+			m.phase = "Thinking"
+			m.fastProvider = nil
+			m.setTextareaValue(input)
+
+			updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+			m = updated.(*Model)
+			if len(m.pendingInterjections) != 1 {
+				t.Fatalf("expected side-effect command to queue as interjection, pending stack=%d", len(m.pendingInterjections))
+			}
+			if got := m.pendingInterjections[0].Text; got != input {
+				t.Fatalf("pending interjection = %q, want %q", got, input)
+			}
+		})
+	}
+}
+
+func TestStreamingUnknownSlashStillQueuesInterjection(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streaming = true
+	m.phase = "Thinking"
+	m.fastProvider = nil
+	m.setTextareaValue("/tmp/foo")
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(*Model)
+	if len(m.pendingInterjections) != 1 {
+		t.Fatalf("expected slash path to queue as interjection, pending stack=%d", len(m.pendingInterjections))
+	}
+	if got := m.pendingInterjections[0].Text; got != "/tmp/foo" {
+		t.Fatalf("pending interjection = %q, want /tmp/foo", got)
 	}
 }
 

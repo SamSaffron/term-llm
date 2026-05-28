@@ -242,6 +242,8 @@ This is different from `fast_model` / optional `fast_provider`, which choose a l
 
 ## Reasoning and model suffixes
 
+Model/provider suffixes control how much reasoning a provider is asked to do. Display of the resulting reasoning is controlled separately by the top-level [`reasoning`](/reference/configuration/#reasoning-and-thinking-display) config. Non-encrypted provider-marked thinking is shown as collapsed `Thinking...` / `Thought: <title>` blocks by default; encrypted reasoning/signature payloads are replay-only and are never displayed.
+
 ### OpenAI reasoning effort
 
 For OpenAI models, append `-low`, `-medium`, `-high`, or `-xhigh` to control reasoning effort.

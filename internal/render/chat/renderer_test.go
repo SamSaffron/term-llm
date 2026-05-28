@@ -154,6 +154,69 @@ func TestRenderer_CacheHit(t *testing.T) {
 	}
 }
 
+func TestRenderer_ReasoningOverrideReusesUnaffectedCachedBlocks(t *testing.T) {
+	renderer := NewRenderer(80, 24)
+	markdownCalls := 0
+	renderer.SetMarkdownRenderer(func(content string, width int) string {
+		markdownCalls++
+		return content
+	})
+
+	messages := []session.Message{
+		{
+			ID:          1,
+			Role:        llm.RoleAssistant,
+			TextContent: "answer 1",
+			Parts: []llm.Part{{
+				Type:             llm.PartText,
+				Text:             "answer 1",
+				ReasoningContent: "first thought body",
+				ReasoningKind:    llm.ReasoningKindRaw,
+			}},
+			Sequence: 0,
+		},
+		{
+			ID:          2,
+			Role:        llm.RoleAssistant,
+			TextContent: "answer 2",
+			Parts:       []llm.Part{{Type: llm.PartText, Text: "answer 2"}},
+			Sequence:    1,
+		},
+		{
+			ID:          3,
+			Role:        llm.RoleAssistant,
+			TextContent: "answer 3",
+			Parts: []llm.Part{{
+				Type:             llm.PartText,
+				Text:             "answer 3",
+				ReasoningContent: "second thought body",
+				ReasoningKind:    llm.ReasoningKindRaw,
+			}},
+			Sequence: 2,
+		},
+	}
+	state := RenderState{
+		Messages: messages,
+		Viewport: ViewportState{Height: 24},
+		Mode:     RenderModeAltScreen,
+		Width:    80,
+		Height:   24,
+	}
+
+	renderer.Render(state)
+	firstCalls := markdownCalls
+	if firstCalls != 3 {
+		t.Fatalf("initial markdown calls = %d, want 3", firstCalls)
+	}
+
+	state.ReasoningExpansionOverrides = map[int]bool{0: true}
+	renderer.Render(state)
+	additional := markdownCalls - firstCalls
+	if additional != 2 {
+		t.Fatalf("reasoning override markdown calls = %d, want 2 for only the affected block", additional)
+	}
+}
+
 func TestRenderer_AltScreenLargeHistoryCacheDoesNotThrash(t *testing.T) {
 	renderer := NewRenderer(80, 24)
 	markdownCalls := 0
@@ -247,6 +310,101 @@ func TestRenderer_RenderAltScreen_IncludesFullHistory(t *testing.T) {
 	if !strings.Contains(output, "assistant message 119") {
 		t.Fatalf("expected alt-screen render to include latest history message")
 	}
+}
+
+func TestRenderer_ReloadedHistorySeparatesToolOnlyMessagesFromFollowingContent(t *testing.T) {
+	renderer := NewRenderer(80, 24)
+	renderer.SetMarkdownRenderer(simpleMarkdownRenderer)
+
+	messages := []session.Message{
+		{
+			ID:   1,
+			Role: llm.RoleAssistant,
+			Parts: []llm.Part{{
+				Type: llm.PartToolCall,
+				ToolCall: &llm.ToolCall{
+					ID:       "call-1",
+					Name:     "shell",
+					ToolInfo: "(review latest diff)",
+				},
+			}},
+			Sequence: 0,
+		},
+		{
+			ID:       2,
+			Role:     llm.RoleTool,
+			Sequence: 1,
+		},
+		{
+			ID:   3,
+			Role: llm.RoleAssistant,
+			Parts: []llm.Part{{
+				Type:                  llm.PartText,
+				ReasoningContent:      "checking status",
+				ReasoningKind:         llm.ReasoningKindRaw,
+				ReasoningSummaryTitle: "Summarizing git status",
+			}},
+			Sequence: 2,
+		},
+		{
+			ID:   4,
+			Role: llm.RoleAssistant,
+			Parts: []llm.Part{{
+				Type: llm.PartToolCall,
+				ToolCall: &llm.ToolCall{
+					ID:       "call-2",
+					Name:     "grep",
+					ToolInfo: "(/currentReasoning/)",
+				},
+			}},
+			Sequence: 3,
+		},
+		{
+			ID:       5,
+			Role:     llm.RoleTool,
+			Sequence: 4,
+		},
+		{
+			ID:   6,
+			Role: llm.RoleAssistant,
+			Parts: []llm.Part{{
+				Type: llm.PartText,
+				Text: "Implemented the fix.",
+			}},
+			Sequence: 5,
+		},
+	}
+
+	output := ui.StripANSI(renderer.Render(RenderState{
+		Messages: messages,
+		Viewport: ViewportState{
+			Height:   24,
+			AtBottom: true,
+		},
+		Mode:   RenderModeAltScreen,
+		Width:  80,
+		Height: 24,
+	}))
+
+	assertNewlineBoundary := func(before, after string, wantNewlines int) {
+		t.Helper()
+		beforeIdx := strings.Index(output, before)
+		if beforeIdx < 0 {
+			t.Fatalf("missing before marker %q in %q", before, output)
+		}
+		afterIdx := strings.Index(output[beforeIdx+len(before):], after)
+		if afterIdx < 0 {
+			t.Fatalf("missing after marker %q after %q in %q", after, before, output)
+		}
+		afterIdx += beforeIdx + len(before)
+		between := output[beforeIdx+len(before) : afterIdx]
+		if got := strings.Count(between, "\n"); got != wantNewlines {
+			t.Fatalf("boundary %q -> %q has %d newlines, want %d; between=%q output=%q", before, after, got, wantNewlines, between, output)
+		}
+	}
+
+	assertNewlineBoundary("shell (review latest diff)", "▸ Thought: Summarizing git status", 2)
+	assertNewlineBoundary("grep (/currentReasoning/)", "Implemented the fix.", 2)
 }
 
 func TestRenderer_RenderInline_UsesScrollOffsetVirtualization(t *testing.T) {
@@ -872,5 +1030,55 @@ func BenchmarkRender500MessagesScrolling(b *testing.B) {
 			Height: 24,
 		}
 		renderer.Render(state)
+	}
+}
+
+func TestRendererReasoningOverrideIgnoresHiddenUnknownReasoningForOrdinal(t *testing.T) {
+	renderer := NewRenderer(80, 24)
+	messages := []session.Message{
+		{
+			ID:   1,
+			Role: llm.RoleAssistant,
+			Parts: []llm.Part{{
+				Type:             llm.PartText,
+				Text:             "hidden unknown answer",
+				ReasoningContent: "hidden unknown body",
+				ReasoningKind:    llm.ReasoningKindUnknown,
+			}},
+			TextContent: "hidden unknown answer",
+			Sequence:    0,
+		},
+		{
+			ID:   2,
+			Role: llm.RoleAssistant,
+			Parts: []llm.Part{{
+				Type:                  llm.PartText,
+				Text:                  "visible answer",
+				ReasoningContent:      "visible raw body",
+				ReasoningKind:         llm.ReasoningKindRaw,
+				ReasoningSummaryTitle: "Visible plan",
+			}},
+			TextContent: "visible answer",
+			Sequence:    1,
+		},
+	}
+
+	collapsed := ui.StripANSI(renderer.Render(RenderState{Messages: messages, Mode: RenderModeAltScreen, Width: 80, Height: 24}))
+	if !strings.Contains(collapsed, "▸ Thought: Visible plan") || strings.Contains(collapsed, "visible raw body") {
+		t.Fatalf("precondition: expected visible raw reasoning collapsed, got %q", collapsed)
+	}
+
+	expanded := ui.StripANSI(renderer.Render(RenderState{
+		Messages:                    messages,
+		Mode:                        RenderModeAltScreen,
+		Width:                       80,
+		Height:                      24,
+		ReasoningExpansionOverrides: map[int]bool{0: true},
+	}))
+	if !strings.Contains(expanded, "▾ Thought: Visible plan") || !strings.Contains(expanded, "visible raw body") {
+		t.Fatalf("override ordinal 0 should expand first rendered reasoning block, got %q", expanded)
+	}
+	if strings.Contains(expanded, "hidden unknown body") {
+		t.Fatalf("unknown reasoning should remain hidden, got %q", expanded)
 	}
 }

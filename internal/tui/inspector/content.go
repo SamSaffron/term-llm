@@ -7,7 +7,9 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	appconfig "github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -27,28 +29,30 @@ type ContentItem struct {
 
 // ContentRenderer handles rendering of conversation messages
 type ContentRenderer struct {
-	width        int
-	styles       *ui.Styles
-	expandedIDs  map[string]bool // IDs of items that should be expanded (not truncated)
-	store        session.Store   // Session store for fetching subagent messages
-	providerName string
-	modelName    string
-	toolSpecs    []llm.ToolSpec
+	width           int
+	styles          *ui.Styles
+	expandedIDs     map[string]bool // IDs of items that should be expanded (not truncated)
+	store           session.Store   // Session store for fetching subagent messages
+	providerName    string
+	modelName       string
+	toolSpecs       []llm.ToolSpec
+	reasoningConfig appconfig.ReasoningConfig
 }
 
 // NewContentRenderer creates a new content renderer
-func NewContentRenderer(width int, styles *ui.Styles, expandedIDs map[string]bool, store session.Store, providerName, modelName string, toolSpecs []llm.ToolSpec) *ContentRenderer {
+func NewContentRenderer(width int, styles *ui.Styles, expandedIDs map[string]bool, store session.Store, providerName, modelName string, toolSpecs []llm.ToolSpec, reasoningCfg appconfig.ReasoningConfig) *ContentRenderer {
 	if expandedIDs == nil {
 		expandedIDs = make(map[string]bool)
 	}
 	return &ContentRenderer{
-		width:        width,
-		styles:       styles,
-		expandedIDs:  expandedIDs,
-		store:        store,
-		providerName: providerName,
-		modelName:    modelName,
-		toolSpecs:    toolSpecs,
+		width:           width,
+		styles:          styles,
+		expandedIDs:     expandedIDs,
+		store:           store,
+		providerName:    providerName,
+		modelName:       modelName,
+		toolSpecs:       toolSpecs,
+		reasoningConfig: reasoningCfg,
 	}
 }
 
@@ -509,6 +513,15 @@ func (r *ContentRenderer) renderAssistantContentWithItems(msg session.Message, m
 	for i, part := range msg.Parts {
 		switch part.Type {
 		case llm.PartText:
+			if reasoning := r.renderReasoningForPart(part); reasoning != "" {
+				if b.Len() > 0 {
+					b.WriteString("\n\n")
+					currentLine += 2
+				}
+				b.WriteString(reasoning)
+				currentLine += strings.Count(reasoning, "\n")
+				hasText = true
+			}
 			if part.Text != "" {
 				if hasText {
 					b.WriteString("\n")
@@ -550,6 +563,106 @@ func (r *ContentRenderer) renderAssistantContentWithItems(msg session.Message, m
 		return "(empty)", items
 	}
 	return b.String(), items
+}
+
+func reasoningSummaryDisplayContent(part llm.Part) string {
+	if len(part.ReasoningSummaryParts) == 0 {
+		return part.ReasoningContent
+	}
+	var parts []string
+	for _, text := range part.ReasoningSummaryParts {
+		if trimmed := strings.TrimSpace(text); trimmed != "" {
+			parts = append(parts, trimmed)
+		}
+	}
+	if len(parts) == 0 {
+		return part.ReasoningContent
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func (r *ContentRenderer) renderReasoningForPart(part llm.Part) string {
+	hasReasoningContent := part.ReasoningContent != "" || len(part.ReasoningSummaryParts) > 0
+	kind := llm.NormalizeStoredReasoningKind(part.ReasoningKind, hasReasoningContent)
+	switch kind {
+	case llm.ReasoningKindSummary:
+		return r.renderReasoningSummary(part)
+	case llm.ReasoningKindRaw, llm.ReasoningKindUnknown:
+		return r.renderProviderReasoning(part)
+	default:
+		return ""
+	}
+}
+
+func (r *ContentRenderer) renderProviderReasoning(part llm.Part) string {
+	content := strings.TrimSpace(part.ReasoningContent)
+	if content == "" {
+		return ""
+	}
+	title := strings.TrimSpace(part.ReasoningSummaryTitle)
+	if title == "" {
+		title = "Thinking..."
+	}
+	header := title
+	if title != "Thinking..." {
+		header = "Thought: " + title
+	}
+	return r.renderReasoningBlock(header, content, true)
+}
+
+func (r *ContentRenderer) renderReasoningSummary(part llm.Part) string {
+	hasReasoningContent := part.ReasoningContent != "" || len(part.ReasoningSummaryParts) > 0
+	if llm.NormalizeStoredReasoningKind(part.ReasoningKind, hasReasoningContent) != llm.ReasoningKindSummary {
+		return ""
+	}
+	content := strings.TrimSpace(reasoningSummaryDisplayContent(part))
+	if content == "" {
+		return ""
+	}
+	parsed := internalreasoning.ParseReasoningSummary(content)
+	title := strings.TrimSpace(part.ReasoningSummaryTitle)
+	if title == "" {
+		title = parsed.Title
+	}
+	body := strings.TrimSpace(parsed.Body)
+	if body == "" {
+		body = content
+	}
+	if title == "" {
+		title = "Thinking..."
+	}
+	header := title
+	if title != "Thinking..." {
+		header = "Thought: " + title
+	}
+	return r.renderReasoningBlock(header, body, false)
+}
+
+func (r *ContentRenderer) renderReasoningBlock(header, body string, raw bool) string {
+	innerWidth := max(r.width-4, 20)
+	theme := r.styles.Theme()
+	headerStyle := lipgloss.NewStyle().Foreground(theme.ReasoningHeader).Italic(true)
+	bodyColor := theme.ReasoningSummary
+	if raw {
+		bodyColor = theme.ReasoningRaw
+	}
+	bodyStyle := lipgloss.NewStyle().Foreground(bodyColor).Italic(true)
+	var b strings.Builder
+	for i, line := range wrapLine(header, innerWidth) {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(headerStyle.Render(line))
+	}
+	if strings.TrimSpace(body) != "" {
+		for _, line := range strings.Split(body, "\n") {
+			for _, wrapped := range wrapLine(line, innerWidth) {
+				b.WriteString("\n")
+				b.WriteString(bodyStyle.Render(wrapped))
+			}
+		}
+	}
+	return b.String()
 }
 
 // renderToolCall renders a tool call with its arguments

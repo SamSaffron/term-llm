@@ -143,6 +143,7 @@ func TestOpenAICompatStream_EmitsReasoningContentDeltas(t *testing.T) {
 	defer stream.Close()
 
 	var gotReasoning string
+	var gotKind ReasoningKind
 	var sawDone bool
 	for {
 		event, err := stream.Recv()
@@ -155,6 +156,7 @@ func TestOpenAICompatStream_EmitsReasoningContentDeltas(t *testing.T) {
 		switch event.Type {
 		case EventReasoningDelta:
 			gotReasoning += event.Text
+			gotKind = event.ReasoningKind
 		case EventDone:
 			sawDone = true
 		case EventError:
@@ -164,6 +166,9 @@ func TestOpenAICompatStream_EmitsReasoningContentDeltas(t *testing.T) {
 
 	if gotReasoning != "think 1 think 2" {
 		t.Fatalf("expected reasoning_content deltas to be emitted, got %q", gotReasoning)
+	}
+	if gotKind != ReasoningKindRaw {
+		t.Fatalf("expected reasoning_content kind raw, got %q", gotKind)
 	}
 	if !sawDone {
 		t.Fatal("expected EventDone")

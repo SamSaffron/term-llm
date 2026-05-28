@@ -21,6 +21,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 
 	"github.com/samsaffron/term-llm/internal/mcp"
+	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	render "github.com/samsaffron/term-llm/internal/render/chat"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/termimage"
@@ -57,6 +58,17 @@ type Model struct {
 	messagesMu    sync.Mutex        // Protects messages from concurrent compaction callback
 	streaming     bool
 	phase         string // "Thinking", "Searching", "Reading", "Responding"
+
+	// Reasoning display/status state. Provider replay metadata is persisted in
+	// assistant parts by the LLM engine; these fields only affect live UI policy.
+	reasoningConfig       config.ReasoningConfig
+	reasoningModeOverride string
+	currentReasoning      strings.Builder
+	currentReasoningKind  llm.ReasoningKind
+	currentReasoningTitle string
+	committedReasoning    []llm.Part
+	reasoningPhaseActive  bool
+	reasoningRawWarned    bool
 
 	// Streaming state
 	currentResponse  strings.Builder
@@ -268,6 +280,9 @@ type Model struct {
 	toolsExpanded bool
 	// Whether the Ctrl+E discovery hint has been shown in this chat session.
 	toolExpandHintShown bool
+
+	// Per-history reasoning block click overrides, keyed by rendered reasoning ordinal.
+	reasoningExpansionOverrides map[int]bool
 
 	// Mouse layout tracking for textarea click-to-cursor support
 	textareaBoundsValid    bool
@@ -581,6 +596,11 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 
 	// Create chat renderer for virtualized history rendering
 	chatRenderer := render.NewRenderer(width, vpHeight)
+	reasoningCfg := config.DefaultReasoningConfig()
+	if cfg != nil {
+		reasoningCfg = cfg.ResolveReasoning("chat")
+	}
+	chatRenderer.SetReasoningConfig(reasoningCfg)
 
 	// Create tracker with text mode setting
 	tracker := ui.NewToolTracker()
@@ -644,6 +664,7 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 		currentOrigin:              session.OriginTUI,
 		yolo:                       yolo,
 		phase:                      "Thinking",
+		reasoningConfig:            reasoningCfg,
 		viewportRows:               ui.RemainingLines(height, 8), // Reserve space for input and status
 		tracker:                    tracker,
 		subagentTracker:            subagentTracker,
@@ -688,6 +709,10 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 		viewportImageArtifacts:     make(map[string]viewportImageArtifact),
 		selectedImage:              -1,
 		selectedInterjection:       -1,
+	}
+	if internalreasoning.RawDisplayBlocked(reasoningCfg) {
+		model.SetFooterWarning("Raw reasoning display is disabled. Set reasoning.raw=true or TERM_LLM_SHOW_RAW_REASONING=1 to allow it.")
+		model.reasoningRawWarned = true
 	}
 	model.configureImageRenderer()
 	model.configureContextManagementForSession()
@@ -1176,6 +1201,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+		// Single-clicking a reasoning header toggles just that block. This runs
+		// before drag-selection, and only consumes clicks on recognized headers.
+		if m.handleReasoningMouseClick(msg) {
+			m.selection = Selection{}
+			return m, nil
+		}
 		// Text selection in alt-screen viewport (before textarea handling)
 		if m.altScreen && m.handleSelectionMouse(msg) {
 			return m, nil
@@ -1472,6 +1503,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// An already in-flight render tick may still arrive and no-op.
 				m.streamRenderTickPending = false
 				m.preserveStreamingContentOnError()
+				m.resetCurrentReasoning()
 				m.streaming = false
 				m.err = nil
 				var footerCmd tea.Cmd
@@ -1521,6 +1553,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case ui.StreamEventToolStart:
+			m.commitCurrentReasoningToStream()
 			m.setRetryStatus("")
 			m.markAttemptCommitted()
 			m.stats.ToolStart()
@@ -1618,6 +1651,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case ui.StreamEventText:
+			m.commitCurrentReasoningToStream()
 			m.attemptUsageCommitted = false
 			text := ev.Text
 			if m.newlineCompactor == nil {
@@ -1656,12 +1690,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.phase = "Responding"
 			m.setRetryStatus("")
 
+		case ui.StreamEventReasoning:
+			m.handleReasoningStreamEvent(ev)
+
 		case ui.StreamEventAttemptDiscard:
 			if m.stats != nil && m.attemptUsageCalls > 0 {
 				m.stats.DiscardUsage(m.attemptInput, m.attemptOutput, m.attemptCached, m.attemptCacheWrite, m.attemptUsageCalls)
 			}
 			m.resetAttemptUsage()
 			m.currentResponse.Reset()
+			m.resetCurrentReasoning()
 			if m.smoothBuffer != nil {
 				m.smoothBuffer.Reset()
 			}
@@ -1829,6 +1867,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.clearStreamCallbacks()
 
 			// Mark all text segments as complete and render
+			m.commitCurrentReasoningToStream()
 			if m.tracker != nil {
 				m.tracker.CompleteTextSegments(func(text string) string {
 					return m.renderMarkdown(text)
@@ -1874,10 +1913,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// No store - append locally for in-memory only sessions
 				responseContent := m.currentResponse.String()
 				if responseContent != "" {
+					part := llm.Part{Type: llm.PartText, Text: responseContent}
+					if reasoningContent, reasoningKind, reasoningTitle := m.currentReasoningPartMetadata(); reasoningContent != "" {
+						part.ReasoningContent = reasoningContent
+						part.ReasoningKind = reasoningKind
+						part.ReasoningSummaryTitle = reasoningTitle
+					}
 					assistantMsg := session.Message{
 						SessionID:   m.sess.ID,
 						Role:        llm.RoleAssistant,
-						Parts:       []llm.Part{{Type: llm.PartText, Text: responseContent}},
+						Parts:       []llm.Part{part},
 						TextContent: responseContent,
 						CreatedAt:   time.Now(),
 						Sequence:    len(m.messages),
@@ -1889,6 +1934,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			// Reset streaming state
 			m.currentResponse.Reset()
+			m.resetCurrentReasoning()
 			m.currentTokens = 0
 			m.webSearchUsed = false
 			m.setRetryStatus("")

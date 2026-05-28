@@ -85,6 +85,8 @@ type debugPart struct {
 	Type                          string           `json:"type"`
 	Text                          string           `json:"text,omitempty"`
 	ReasoningContent              string           `json:"reasoning_content,omitempty"`
+	ReasoningKind                 ReasoningKind    `json:"reasoning_kind,omitempty"`
+	ReasoningSummaryTitle         string           `json:"reasoning_summary_title,omitempty"`
 	ReasoningItemID               string           `json:"reasoning_item_id,omitempty"`
 	ReasoningEncryptedContentLen  int              `json:"reasoning_encrypted_content_len,omitempty"`
 	ReasoningEncryptedContentHash string           `json:"reasoning_encrypted_content_hash,omitempty"`
@@ -320,6 +322,13 @@ func (l *DebugLogger) LogEvent(event Event) {
 		entry.Data = map[string]string{"text": event.Text}
 	case EventReasoningDelta:
 		data := map[string]any{}
+		data["reasoning_kind"] = NormalizeReasoningKind(event.ReasoningKind)
+		if event.ReasoningIndex != 0 {
+			data["reasoning_index"] = event.ReasoningIndex
+		}
+		if event.ReasoningFinal {
+			data["reasoning_final"] = true
+		}
 		if event.Text != "" {
 			text := event.Text
 			if len(text) > 500 {
@@ -519,6 +528,8 @@ func convertParts(parts []Part) any {
 		case PartText:
 			dp.Text = part.Text
 			dp.ReasoningContent = part.ReasoningContent
+			dp.ReasoningKind = NormalizeReasoningKind(part.ReasoningKind)
+			dp.ReasoningSummaryTitle = part.ReasoningSummaryTitle
 			dp.ReasoningItemID = part.ReasoningItemID
 			if part.ReasoningEncryptedContent != "" {
 				dp.ReasoningEncryptedContentLen = len(part.ReasoningEncryptedContent)
@@ -574,7 +585,7 @@ func convertTools(tools []ToolSpec) []debugTool {
 }
 
 func hasReasoningMetadata(part Part) bool {
-	return part.ReasoningContent != "" || part.ReasoningItemID != "" || part.ReasoningEncryptedContent != ""
+	return part.ReasoningContent != "" || part.ReasoningKind != "" || part.ReasoningSummaryTitle != "" || part.ReasoningItemID != "" || part.ReasoningEncryptedContent != ""
 }
 
 func countReasoningReplayParts(messages []Message) (replayParts int, encryptedParts int) {

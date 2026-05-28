@@ -115,6 +115,7 @@ func (m *Model) setupStreamPersistenceCallbacks(streamStart time.Time) {
 	if streamSess != nil {
 		streamSessionID = streamSess.ID
 	}
+	reasoningCfg := m.effectiveReasoningConfig()
 	staleStreamSession := func() bool {
 		return streamSessionID != "" && (m.sess == nil || m.sess.ID != streamSessionID)
 	}
@@ -122,7 +123,7 @@ func (m *Model) setupStreamPersistenceCallbacks(streamStart time.Time) {
 		if m.store == nil || streamSess == nil || staleStreamSession() {
 			return
 		}
-		sessionMsg := session.NewMessage(streamSess.ID, assistantMsg, -1)
+		sessionMsg := session.NewMessageWithReasoningPolicy(streamSess.ID, assistantMsg, -1, reasoningCfg)
 		sessionMsg.DurationMs = time.Since(streamStart).Milliseconds()
 		m.pendingMu.Lock()
 		defer m.pendingMu.Unlock()
@@ -136,7 +137,7 @@ func (m *Model) setupStreamPersistenceCallbacks(streamStart time.Time) {
 				return
 			}
 			m.pendingAssistantMsgID = 0
-			sessionMsg = session.NewMessage(streamSess.ID, assistantMsg, -1)
+			sessionMsg = session.NewMessageWithReasoningPolicy(streamSess.ID, assistantMsg, -1, reasoningCfg)
 			sessionMsg.DurationMs = time.Since(streamStart).Milliseconds()
 		}
 		if err := m.store.AddMessage(ctx, streamSess.ID, sessionMsg); err != nil {
@@ -181,7 +182,7 @@ func (m *Model) setupStreamPersistenceCallbacks(streamStart time.Time) {
 				if msg.Role == llm.RoleUser {
 					continue
 				}
-				sessionMsg := session.NewMessage(streamSess.ID, msg, -1)
+				sessionMsg := session.NewMessageWithReasoningPolicy(streamSess.ID, msg, -1, reasoningCfg)
 				_ = m.store.AddMessage(ctx, streamSess.ID, sessionMsg)
 			}
 		}
@@ -395,6 +396,7 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 		m.streamPerf.StartTurn(m.sess.ID, m.streamStartTime)
 	}
 	m.currentResponse.Reset()
+	m.resetCurrentReasoning()
 	m.resetAttemptUsage()
 	m.err = nil // Clear any previous error
 	m.webSearchUsed = false

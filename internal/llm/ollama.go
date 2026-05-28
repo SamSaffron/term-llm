@@ -365,7 +365,7 @@ func (p *OllamaProvider) Stream(ctx context.Context, req Request) (Stream, error
 			}
 
 			if chunk.Message.Thinking != "" {
-				if err := send.Send(Event{Type: EventReasoningDelta, Text: chunk.Message.Thinking}); err != nil {
+				if err := send.Send(Event{Type: EventReasoningDelta, Text: chunk.Message.Thinking, ReasoningKind: ReasoningKindRaw}); err != nil {
 					return err
 				}
 			}

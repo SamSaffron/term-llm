@@ -120,7 +120,7 @@ func DefaultKeyMap() KeyMap {
 		),
 		ExpandTools: key.NewBinding(
 			key.WithKeys("ctrl+e"),
-			key.WithHelp("ctrl+e", "expand tools"),
+			key.WithHelp("ctrl+e", "expand details"),
 		),
 		Copy: key.NewBinding(
 			key.WithKeys("ctrl+y"),

@@ -247,6 +247,9 @@ func TestChatGPTStream_ReasoningSummaryByOutputIndex(t *testing.T) {
 	if reasoningEvent.Text != "summary via output index" {
 		t.Fatalf("expected reasoning summary from output_index delta, got %q", reasoningEvent.Text)
 	}
+	if reasoningEvent.ReasoningKind != ReasoningKindSummary {
+		t.Fatalf("expected reasoning kind summary, got %q", reasoningEvent.ReasoningKind)
+	}
 	if reasoningEvent.ReasoningItemID != "rs_chatgpt_idx" {
 		t.Fatalf("expected reasoning item id rs_chatgpt_idx, got %q", reasoningEvent.ReasoningItemID)
 	}

@@ -345,6 +345,38 @@ func TestBuildResponsesInput_AssistantReasoningReplay(t *testing.T) {
 	}
 }
 
+func TestBuildResponsesInput_AssistantReasoningReplayStructuredSummaryParts(t *testing.T) {
+	messages := []Message{{
+		Role: RoleAssistant,
+		Parts: []Part{{
+			Type:                  PartText,
+			Text:                  "Final answer",
+			ReasoningContent:      "First summary block.\n\nSecond summary block.",
+			ReasoningSummaryParts: []string{"First summary block.", "Second summary block."},
+			ReasoningKind:         ReasoningKindSummary,
+			ReasoningItemID:       "rs_parts",
+		}},
+	}}
+
+	input := BuildResponsesInput(messages)
+	var reasoningItem *ResponsesInputItem
+	for i := range input {
+		if input[i].Type == "reasoning" {
+			reasoningItem = &input[i]
+			break
+		}
+	}
+	if reasoningItem == nil || reasoningItem.Summary == nil {
+		t.Fatalf("expected reasoning summary item, got %#v", input)
+	}
+	if len(*reasoningItem.Summary) != 2 {
+		t.Fatalf("summary part count = %d, want 2", len(*reasoningItem.Summary))
+	}
+	if (*reasoningItem.Summary)[0].Text != "First summary block." || (*reasoningItem.Summary)[1].Text != "Second summary block." {
+		t.Fatalf("unexpected structured summary replay: %#v", *reasoningItem.Summary)
+	}
+}
+
 func TestBuildResponsesInput_AssistantReasoningReplayEmptySummary(t *testing.T) {
 	messages := []Message{
 		{
@@ -380,6 +412,107 @@ func TestBuildResponsesInput_AssistantReasoningReplayEmptySummary(t *testing.T) 
 	}
 	if len(*reasoningItem.Summary) != 0 {
 		t.Fatalf("expected empty summary, got %d parts", len(*reasoningItem.Summary))
+	}
+}
+
+func TestBuildResponsesInput_RawReasoningReplayDoesNotBecomeSummary(t *testing.T) {
+	messages := []Message{{
+		Role: RoleAssistant,
+		Parts: []Part{{
+			Type:                      PartText,
+			Text:                      "Answer text",
+			ReasoningContent:          "raw hidden thinking",
+			ReasoningKind:             ReasoningKindRaw,
+			ReasoningItemID:           "rs_raw",
+			ReasoningEncryptedContent: "enc_raw",
+		}},
+	}}
+
+	input := BuildResponsesInput(messages)
+	var reasoningItem *ResponsesInputItem
+	for i := range input {
+		if input[i].Type == "reasoning" {
+			reasoningItem = &input[i]
+			break
+		}
+	}
+	if reasoningItem == nil {
+		t.Fatal("expected reasoning item")
+	}
+	if reasoningItem.Summary == nil {
+		t.Fatal("expected empty summary field")
+	}
+	if len(*reasoningItem.Summary) != 0 {
+		t.Fatalf("raw reasoning content must not be sent as Responses summary, got %#v", *reasoningItem.Summary)
+	}
+}
+
+func TestResponsesReasoningSummaryPartsAreSeparated(t *testing.T) {
+	summary := []responsesReasoningSummaryPart{
+		{Type: "summary_text", Text: "First summary block."},
+		{Type: "summary_text", Text: "Second summary block."},
+	}
+	if got, want := extractReasoningSummaryText(summary), "First summary block.\n\nSecond summary block."; got != want {
+		t.Fatalf("extractReasoningSummaryText() = %q, want %q", got, want)
+	}
+
+	state := newResponsesReasoningState()
+	state.SummaryPartAdded(0)
+	if part := state.AppendSummary(0, "First summary block."); part == nil || part.ReasoningContent != "First summary block." {
+		t.Fatalf("first summary delta = %#v", part)
+	}
+	state.SummaryPartAdded(0)
+	if part := state.AppendSummary(0, "Second summary block."); part == nil || part.ReasoningContent != "\n\nSecond summary block." {
+		t.Fatalf("second summary delta = %#v, want separator-prefixed delta", part)
+	}
+	part := state.Part(0)
+	if part == nil {
+		t.Fatal("expected accumulated reasoning part")
+	}
+	if got, want := part.ReasoningContent, "First summary block.\n\nSecond summary block."; got != want {
+		t.Fatalf("accumulated reasoning = %q, want %q", got, want)
+	}
+	if got, want := strings.Join(part.ReasoningSummaryParts, "|"), "First summary block.|Second summary block."; got != want {
+		t.Fatalf("structured summary parts = %q, want %q", got, want)
+	}
+}
+
+func TestResponsesReasoningStateEncryptedOnlyKind(t *testing.T) {
+	state := newResponsesReasoningState()
+	state.Start(0, "rs_enc", "enc_payload", nil)
+	part := state.Part(0)
+	if part == nil {
+		t.Fatal("expected encrypted-only reasoning part")
+	}
+	if part.ReasoningKind != ReasoningKindEncrypted {
+		t.Fatalf("encrypted-only reasoning kind = %q, want encrypted", part.ReasoningKind)
+	}
+	if part.ReasoningContent != "" || len(part.ReasoningSummaryParts) != 0 {
+		t.Fatalf("encrypted-only reasoning should not synthesize summary content, got %#v", part)
+	}
+	if !state.NeedsFinalEvent(0) {
+		t.Fatal("encrypted-only reasoning should emit a final metadata event")
+	}
+	if text := state.FinalEventText(0); text != "" {
+		t.Fatalf("encrypted-only final text = %q, want empty", text)
+	}
+}
+
+func TestResponsesReasoningStateFinishDoesNotOverwriteStreamedSummary(t *testing.T) {
+	state := newResponsesReasoningState()
+	state.SummaryPartAdded(0)
+	state.AppendSummary(0, "Streamed summary.")
+	state.Finish(0, "rs_final", "", []responsesReasoningSummaryPart{{Type: "summary_text", Text: "Different final summary."}})
+
+	part := state.Part(0)
+	if part == nil {
+		t.Fatal("expected reasoning part")
+	}
+	if got, want := part.ReasoningContent, "Streamed summary."; got != want {
+		t.Fatalf("Finish overwrote streamed summary: got %q, want %q", got, want)
+	}
+	if got, want := strings.Join(part.ReasoningSummaryParts, "|"), "Streamed summary."; got != want {
+		t.Fatalf("structured parts after Finish = %q, want %q", got, want)
 	}
 }
 

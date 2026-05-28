@@ -10,7 +10,9 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/reflow/wordwrap"
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -30,17 +32,41 @@ type MessageBlock struct {
 	// Width is the terminal width when this block was rendered
 	// (used for cache invalidation on resize)
 	Width int
+
+	// FirstSegmentType/LastSegmentType describe the first and last rendered
+	// stream-equivalent segment in this block. History rendering uses them to
+	// preserve the same text/tool/thought spacing after sessions are reloaded.
+	FirstSegmentType ui.SegmentType
+	LastSegmentType  ui.SegmentType
+	HasSegmentTypes  bool
+
+	// ReasoningCount is the number of reasoning/thought headers actually rendered
+	// in this block. It is used to keep per-block click expansion ordinals aligned
+	// with visible history, rather than provider/session metadata that may be hidden.
+	ReasoningCount int
+
+	// ReasoningLineOffsets are zero-based line offsets, relative to Rendered, for
+	// each actual reasoning/thought header rendered in this block.
+	ReasoningLineOffsets []int
 }
 
 // MessageBlockRenderer renders session messages to MessageBlocks.
 type MessageBlockRenderer struct {
-	width            int
-	markdownRenderer MarkdownRenderer
-	theme            *ui.Theme
-	messages         []session.Message // Full message list for tool result lookup
-	currentIndex     int               // Current message index in the list
-	toolsExpanded    bool
-	imageRenderer    ui.ImageArtifactRenderer
+	width                  int
+	markdownRenderer       MarkdownRenderer
+	theme                  *ui.Theme
+	messages               []session.Message // Full message list for tool result lookup
+	currentIndex           int               // Current message index in the list
+	toolsExpanded          bool
+	imageRenderer          ui.ImageArtifactRenderer
+	reasoningConfig        config.ReasoningConfig
+	reasoningOrdinalBase   int
+	reasoningExpandByIndex map[int]bool
+	reasoningRenderedCount int
+	reasoningLineOffsets   []int
+	firstSegmentType       ui.SegmentType
+	lastSegmentType        ui.SegmentType
+	hasSegmentTypes        bool
 }
 
 // Shared theme instance to avoid allocations
@@ -53,6 +79,7 @@ func NewMessageBlockRenderer(width int, mdRenderer MarkdownRenderer, toolsExpand
 		markdownRenderer: mdRenderer,
 		theme:            sharedTheme,
 		toolsExpanded:    toolsExpanded,
+		reasoningConfig:  config.DefaultReasoningConfig(),
 	}
 }
 
@@ -67,6 +94,7 @@ func NewMessageBlockRendererWithContext(width int, mdRenderer MarkdownRenderer, 
 		messages:         messages,
 		currentIndex:     index,
 		toolsExpanded:    toolsExpanded,
+		reasoningConfig:  config.DefaultReasoningConfig(),
 	}
 }
 
@@ -75,17 +103,40 @@ func (r *MessageBlockRenderer) SetImageRenderer(renderer ui.ImageArtifactRendere
 	r.imageRenderer = renderer
 }
 
+// SetReasoningConfig configures reasoning summary/raw history rendering.
+func (r *MessageBlockRenderer) SetReasoningConfig(cfg config.ReasoningConfig) {
+	r.reasoningConfig = cfg
+}
+
+// SetReasoningExpansionOverrides configures optional per-reasoning-block expansion overrides.
+// Keys are zero-based reasoning block ordinals in the full rendered history.
+func (r *MessageBlockRenderer) SetReasoningExpansionOverrides(base int, overrides map[int]bool) {
+	r.reasoningOrdinalBase = base
+	r.reasoningExpandByIndex = overrides
+}
+
 // Render converts a session.Message to a MessageBlock.
 func (r *MessageBlockRenderer) Render(msg *session.Message) *MessageBlock {
+	r.reasoningRenderedCount = 0
+	r.reasoningLineOffsets = nil
+	r.firstSegmentType = ui.SegmentText
+	r.lastSegmentType = ui.SegmentText
+	r.hasSegmentTypes = false
 	var content string
 
 	switch msg.Role {
 	case llm.RoleUser:
 		content = r.renderUserMessage(msg)
+		if strings.TrimSpace(content) != "" {
+			r.noteRenderedSegment(ui.SegmentText)
+		}
 	case llm.RoleAssistant:
 		content = r.renderAssistantMessage(msg)
 	case llm.RoleEvent:
 		content = r.renderEventMessage(msg)
+		if strings.TrimSpace(content) != "" {
+			r.noteRenderedSegment(ui.SegmentText)
+		}
 	case llm.RoleSystem:
 		// Skip system messages - users can view them via Ctrl+O inspector
 		content = ""
@@ -95,11 +146,24 @@ func (r *MessageBlockRenderer) Render(msg *session.Message) *MessageBlock {
 	}
 
 	return &MessageBlock{
-		MessageID: msg.ID,
-		Rendered:  content,
-		Height:    countLines(content),
-		Width:     r.width,
+		MessageID:            msg.ID,
+		Rendered:             content,
+		Height:               countLines(content),
+		Width:                r.width,
+		FirstSegmentType:     r.firstSegmentType,
+		LastSegmentType:      r.lastSegmentType,
+		HasSegmentTypes:      r.hasSegmentTypes,
+		ReasoningCount:       r.reasoningRenderedCount,
+		ReasoningLineOffsets: append([]int(nil), r.reasoningLineOffsets...),
 	}
+}
+
+func (r *MessageBlockRenderer) noteRenderedSegment(segmentType ui.SegmentType) {
+	if !r.hasSegmentTypes {
+		r.firstSegmentType = segmentType
+		r.hasSegmentTypes = true
+	}
+	r.lastSegmentType = segmentType
 }
 
 // renderUserMessage renders a user message with prompt styling.
@@ -294,24 +358,36 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 	for _, part := range msg.Parts {
 		switch part.Type {
 		case llm.PartText:
+			globalOrdinal := r.reasoningOrdinalBase + r.reasoningRenderedCount
+			if reasoningRendered := r.renderReasoningForPart(part, globalOrdinal); reasoningRendered != "" {
+				r.reasoningLineOffsets = append(r.reasoningLineOffsets, reasoningAppendHeaderLineOffset(b.String()))
+				writeWithBlankLineBefore(&b, reasoningRendered)
+				r.noteRenderedSegment(ui.SegmentReasoning)
+				hasContent = true
+				r.reasoningRenderedCount++
+			}
 			if part.Text != "" {
 				rendered := r.renderMarkdown(part.Text)
 				b.WriteString(rendered)
 				b.WriteString("\n\n")
+				r.noteRenderedSegment(ui.SegmentText)
 				hasContent = true
 			}
 		case llm.PartImage:
 			b.WriteString("[Image]\n\n")
+			r.noteRenderedSegment(ui.SegmentImage)
 			hasContent = true
 		case llm.PartToolCall:
 			if part.ToolCall != nil {
 				b.WriteString(ui.RenderToolCallFromPart(part.ToolCall, r.width, r.toolsExpanded))
 				b.WriteString("\n")
+				r.noteRenderedSegment(ui.SegmentTool)
 				hasContent = true
 
 				result := r.findToolResult(part.ToolCall.ID)
 				if result != nil && len(result.Images) > 0 {
 					b.WriteString(r.renderToolImages(result.Images))
+					r.noteRenderedSegment(ui.SegmentImage)
 				}
 
 				// Render diffs for supported tool calls by looking up the tool result
@@ -344,6 +420,7 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 							if rendered != "" {
 								b.WriteString(rendered)
 								b.WriteString("\n")
+								r.noteRenderedSegment(ui.SegmentDiff)
 							}
 						}
 					}
@@ -358,12 +435,48 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 		rendered := r.renderMarkdown(msg.TextContent)
 		b.WriteString(rendered)
 		b.WriteString("\n\n")
+		r.noteRenderedSegment(ui.SegmentText)
 	}
 
 	// Keep tool-only assistant blocks compact: they already include line breaks.
 	// Text parts append paragraph spacing above.
 
 	return b.String()
+}
+
+// reasoningAppendHeaderLineOffset returns the pre-wrap newline offset for a
+// reasoning header about to be appended to current. ANSI escape sequences do
+// not contain newlines, so byte-level newline counting is intentional here.
+func reasoningAppendHeaderLineOffset(current string) int {
+	if strings.TrimSpace(current) == "" {
+		return countLines(current)
+	}
+	switch {
+	case strings.HasSuffix(current, "\n\n"):
+		return countLines(current)
+	case strings.HasSuffix(current, "\n"):
+		return countLines(current) + 1
+	default:
+		return countLines(current) + 2
+	}
+}
+
+func writeWithBlankLineBefore(b *strings.Builder, content string) {
+	if strings.TrimSpace(content) == "" {
+		return
+	}
+	if b.Len() > 0 {
+		current := b.String()
+		switch {
+		case strings.HasSuffix(current, "\n\n"):
+			// already separated
+		case strings.HasSuffix(current, "\n"):
+			b.WriteString("\n")
+		default:
+			b.WriteString("\n\n")
+		}
+	}
+	b.WriteString(strings.TrimLeft(content, "\n"))
 }
 
 func (r *MessageBlockRenderer) renderToolImages(images []string) string {
@@ -377,6 +490,95 @@ func (r *MessageBlockRenderer) renderToolImages(images []string) string {
 			b.WriteString("\n")
 		}
 	}
+	return b.String()
+}
+
+func reasoningDisplayContent(part llm.Part) string {
+	if len(part.ReasoningSummaryParts) == 0 {
+		return part.ReasoningContent
+	}
+	var parts []string
+	for _, text := range part.ReasoningSummaryParts {
+		if trimmed := strings.TrimSpace(text); trimmed != "" {
+			parts = append(parts, trimmed)
+		}
+	}
+	if len(parts) == 0 {
+		return part.ReasoningContent
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func (r *MessageBlockRenderer) renderReasoningForPart(part llm.Part, ordinal int) string {
+	hasReasoningContent := part.ReasoningContent != "" || len(part.ReasoningSummaryParts) > 0
+	kind := llm.NormalizeStoredReasoningKind(part.ReasoningKind, hasReasoningContent)
+	if !hasReasoningContent || kind == llm.ReasoningKindEncrypted || kind == llm.ReasoningKindUnknown {
+		return ""
+	}
+	cfg := r.reasoningConfig
+	if override, ok := r.reasoningExpandByIndex[ordinal]; ok {
+		if override {
+			cfg.Display = config.ReasoningDisplayExpanded
+		} else {
+			cfg.Display = config.ReasoningDisplayCollapsed
+		}
+	}
+	if !internalreasoning.HistoryVisible(string(kind), cfg) {
+		return ""
+	}
+	content := reasoningDisplayContent(part)
+	content = internalreasoning.LimitReasoningText(string(kind), content, cfg)
+	if strings.TrimSpace(content) == "" {
+		return ""
+	}
+	expanded := internalreasoning.HistoryExpanded(string(kind), cfg)
+	title := strings.TrimSpace(part.ReasoningSummaryTitle)
+	if title == "" && kind == llm.ReasoningKindSummary {
+		title = internalreasoning.SummaryTitle(content, cfg)
+	}
+	label := strings.TrimSpace(cfg.HiddenLabel)
+	if label == "" {
+		label = config.DefaultReasoningConfig().HiddenLabel
+	}
+	if title == "" {
+		title = label
+	}
+
+	headerStyle := lipgloss.NewStyle().Foreground(r.theme.ReasoningHeader).Italic(true)
+	bodyStyle := lipgloss.NewStyle().Foreground(r.theme.ReasoningSummary).Italic(true)
+	if kind == llm.ReasoningKindRaw {
+		bodyStyle = lipgloss.NewStyle().Foreground(r.theme.ReasoningRaw).Italic(true)
+	}
+	arrow := "▸"
+	if expanded {
+		arrow = "▾"
+	}
+	headerText := fmt.Sprintf("%s %s", arrow, title)
+	if title != label {
+		headerText = fmt.Sprintf("%s Thought: %s", arrow, title)
+	}
+
+	var b strings.Builder
+	b.WriteString(headerStyle.Render(headerText))
+	b.WriteString("\n")
+	if expanded {
+		body := content
+		if kind == llm.ReasoningKindSummary {
+			body = internalreasoning.SummaryBody(content, cfg)
+		}
+		body = strings.TrimRight(body, "\n")
+		if strings.TrimSpace(body) != "" {
+			// Separate the affordance/header from the expanded body. Without this,
+			// multiple Responses API reasoning summary blocks visually run together.
+			b.WriteString("\n")
+			rendered := ui.StripANSI(r.renderMarkdown(body))
+			for _, line := range strings.Split(strings.TrimRight(rendered, "\n"), "\n") {
+				b.WriteString(bodyStyle.Render(line))
+				b.WriteString("\n")
+			}
+		}
+	}
+	b.WriteString("\n")
 	return b.String()
 }
 

@@ -503,6 +503,31 @@ func (t *ToolTracker) AddPreRenderedTextSegment(rendered string) {
 	t.Version++
 }
 
+// AddReasoningSegment adds a pre-rendered reasoning summary block. The display
+// metadata is retained so Ctrl+E can rerender all thought blocks collapsed/expanded
+// while the stream is still active.
+func (t *ToolTracker) AddReasoningSegment(rendered string, reasoning ReasoningSegment) {
+	t.RecordActivity()
+	reasoningCopy := reasoning
+	seg := Segment{
+		Type:      SegmentReasoning,
+		Text:      rendered,
+		Rendered:  NormalizeReasoningSegmentRendered(rendered),
+		Reasoning: &reasoningCopy,
+		Complete:  true,
+	}
+	t.Segments = append(t.Segments, seg)
+	t.Version++
+}
+
+func NormalizeReasoningSegmentRendered(rendered string) string {
+	rendered = strings.Trim(rendered, "\n")
+	if strings.TrimSpace(rendered) == "" {
+		return ""
+	}
+	return rendered + "\n"
+}
+
 // AddExternalUIResult adds a result from external UI (like ask_user) as a completed segment.
 // The summary is plain text - styling is applied at render time to avoid ANSI corruption
 // when passing through different tea.Program instances.

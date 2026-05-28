@@ -4,6 +4,7 @@ import (
 	"sync"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -69,6 +70,21 @@ func (b *askProgressiveBridge) HandleEvent(event llm.Event) error {
 		if event.Text != "" {
 			b.events <- ui.TextEvent(event.Text)
 		}
+	case llm.EventReasoningDelta:
+		b.attemptUsageCommitted = false
+		kind := llm.NormalizeReasoningKind(event.ReasoningKind)
+		if llm.IsEncryptedReasoningDelta(event) {
+			break
+		}
+		if event.Text == "" && event.ReasoningItemID == "" && !event.ReasoningFinal {
+			break
+		}
+		title := ""
+		displayable := kind == llm.ReasoningKindSummary
+		if kind == llm.ReasoningKindSummary && event.Text != "" {
+			title = internalreasoning.ParseReasoningSummary(event.Text).Title
+		}
+		b.events <- ui.ReasoningEvent(kind, event.Text, title, event.ReasoningItemID, event.ReasoningFinal, displayable)
 	case llm.EventToolCall:
 		b.markAttemptCommitted()
 		if event.Tool == nil {

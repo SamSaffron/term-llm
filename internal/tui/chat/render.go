@@ -715,6 +715,19 @@ func (m *Model) renderStreamingInline() string {
 		b.WriteString(content)
 	}
 
+	if activeReasoning := m.renderCurrentReasoningBlock(); activeReasoning != "" {
+		if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n\n") {
+			if strings.HasSuffix(b.String(), "\n") {
+				b.WriteString("\n")
+			} else {
+				b.WriteString("\n\n")
+			}
+		} else if b.Len() == 0 && m.tracker != nil && m.tracker.HasFlushed {
+			b.WriteString(m.tracker.FlushLeadingSeparator(ui.SegmentReasoning))
+		}
+		b.WriteString(strings.TrimLeft(activeReasoning, "\n"))
+	}
+
 	// Show the indicator with current phase, unless paused for external UI
 	if !m.pausedForExternalUI {
 		wavePos := 0
@@ -1487,9 +1500,10 @@ func (m *Model) renderHistory() string {
 			ScrollOffset: scrollOffset,
 			AtBottom:     scrollOffset == 0,
 		},
-		Mode:   mode,
-		Width:  m.width,
-		Height: m.height,
+		Mode:                        mode,
+		Width:                       m.width,
+		Height:                      m.height,
+		ReasoningExpansionOverrides: m.reasoningExpansionOverrides,
 	}
 
 	var b strings.Builder

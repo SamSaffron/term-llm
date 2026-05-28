@@ -298,6 +298,24 @@ func TestRenderImagesAndDiffsImageFallback(t *testing.T) {
 	}
 }
 
+func TestRenderSegmentsReasoningSpacingDoesNotCompound(t *testing.T) {
+	tracker := NewToolTracker()
+	tracker.AddTextSegment("intro", 80)
+	tracker.CompleteTextSegments(func(text string) string { return text })
+	tracker.AddReasoningSegment("▸ Thought: Inspecting\n\n", ReasoningSegment{Content: "Inspecting", Kind: "summary", Title: "Inspecting"})
+	tracker.HandleToolStart("call-1", "read_file", "(a.go)", nil)
+	tracker.HandleToolEnd("call-1", true)
+
+	segments := tracker.CompletedSegments()
+	rendered := StripANSI(RenderSegments(segments, 80, -1, nil, false, false))
+	if strings.Contains(rendered, "Thought: Inspecting\n\n\nread_file") {
+		t.Fatalf("reasoning/tool spacing compounded into extra blank lines: %q", rendered)
+	}
+	if !strings.Contains(rendered, "intro\n\n▸ Thought: Inspecting\n\n● read_file") {
+		t.Fatalf("expected exactly one blank line around reasoning block, got %q", rendered)
+	}
+}
+
 func TestSegmentSeparator_BlankLinesAroundToolRows(t *testing.T) {
 	cases := []struct {
 		name string
@@ -307,6 +325,10 @@ func TestSegmentSeparator_BlankLinesAroundToolRows(t *testing.T) {
 	}{
 		{name: "text to text", prev: SegmentText, curr: SegmentText, want: ""},
 		{name: "text to tool", prev: SegmentText, curr: SegmentTool, want: "\n\n"},
+		{name: "text to reasoning", prev: SegmentText, curr: SegmentReasoning, want: "\n\n"},
+		{name: "reasoning to tool", prev: SegmentReasoning, curr: SegmentTool, want: "\n"},
+		{name: "reasoning to text", prev: SegmentReasoning, curr: SegmentText, want: "\n"},
+		{name: "tool to reasoning", prev: SegmentTool, curr: SegmentReasoning, want: "\n\n"},
 		{name: "text to ask_user", prev: SegmentText, curr: SegmentAskUserResult, want: "\n"},
 		{name: "text to image", prev: SegmentText, curr: SegmentImage, want: "\n"},
 		{name: "text to diff", prev: SegmentText, curr: SegmentDiff, want: "\n"},

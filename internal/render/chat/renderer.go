@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -55,15 +56,16 @@ type StreamingState struct {
 
 // RenderState holds all state needed for rendering
 type RenderState struct {
-	Messages  []session.Message
-	Streaming *StreamingState // nil if not streaming
-	Viewport  ViewportState
-	Input     InputState
-	Mode      RenderMode
-	Width     int
-	Height    int
-	ShowStats bool
-	Error     error // Display error if set
+	Messages                    []session.Message
+	Streaming                   *StreamingState // nil if not streaming
+	Viewport                    ViewportState
+	Input                       InputState
+	Mode                        RenderMode
+	Width                       int
+	Height                      int
+	ShowStats                   bool
+	Error                       error // Display error if set
+	ReasoningExpansionOverrides map[int]bool
 }
 
 // FlushResult contains the result of flushing content to scrollback
@@ -134,10 +136,14 @@ type Renderer struct {
 	// Streaming state
 	streaming *StreamingBlock
 
+	lastReasoningLineOrdinals map[int]int
+	lastReasoningHeaderCount  int
+
 	// Configuration
 	markdownRenderer MarkdownRenderer
 	toolsExpanded    bool
 	imageRenderer    ui.ImageArtifactRenderer
+	reasoningConfig  config.ReasoningConfig
 }
 
 // NewRenderer creates a new chat renderer with the given dimensions.
@@ -151,10 +157,11 @@ func NewRenderer(width, height int) *Renderer {
 		cacheSize = maxBlockCacheSize
 	}
 	r := &Renderer{
-		width:      width,
-		height:     height,
-		blockCache: NewBlockCache(cacheSize),
-		sigCache:   make(map[int64]sigCacheEntry),
+		width:           width,
+		height:          height,
+		blockCache:      NewBlockCache(cacheSize),
+		sigCache:        make(map[int64]sigCacheEntry),
+		reasoningConfig: config.DefaultReasoningConfig(),
 	}
 	return r
 }
@@ -195,6 +202,16 @@ func (r *Renderer) SetImageRenderer(renderer ui.ImageArtifactRenderer) {
 	if r.streaming != nil {
 		r.streaming.SetImageRenderer(renderer)
 	}
+}
+
+// SetReasoningConfig configures historical reasoning summary/raw rendering.
+func (r *Renderer) SetReasoningConfig(cfg config.ReasoningConfig) {
+	if r.reasoningConfig == cfg {
+		return
+	}
+	r.reasoningConfig = cfg
+	r.blockCache.InvalidateAll()
+	clear(r.sigCache)
 }
 
 // InvalidateCache forces re-rendering of all cached content.
@@ -370,24 +387,68 @@ func (r *Renderer) renderHistory(state RenderState) string {
 
 	// Render only visible messages using cache
 	// Skip system and tool messages (they render as empty anyway)
+	r.lastReasoningLineOrdinals = make(map[int]int)
+	r.lastReasoningHeaderCount = 0
 	b := historyBuilderPool.Get().(*strings.Builder)
 	b.Reset()
 	defer historyBuilderPool.Put(b)
+	reasoningOrdinal := 0
+	lineCursor := 0
+	trailingNewlines := 0
+	var previousLastType ui.SegmentType
+	hasPreviousRenderedSegment := false
 	for i := start; i < end; i++ {
 		msg := &state.Messages[i]
 		// Skip non-renderable roles
 		if msg.Role != "user" && msg.Role != "assistant" && msg.Role != "event" {
 			continue
 		}
-		block := r.getOrRenderBlock(msg, i, state.Messages)
+		block := r.getOrRenderBlock(msg, i, state.Messages, reasoningOrdinal, state.ReasoningExpansionOverrides)
 		if block.Rendered != "" {
+			if hasPreviousRenderedSegment && block.HasSegmentTypes {
+				padding := ui.NewlinePadding(trailingNewlines, ui.SegmentBoundaryTrailingNewlines(previousLastType, block.FirstSegmentType))
+				b.WriteString(padding)
+				lineCursor += len(padding)
+				trailingNewlines += len(padding)
+			}
+			blockStartLine := lineCursor
+			for offsetIdx, offset := range block.ReasoningLineOffsets {
+				r.lastReasoningLineOrdinals[blockStartLine+offset] = reasoningOrdinal + offsetIdx
+			}
 			b.WriteString(block.Rendered)
+			lineCursor += block.Height
+			trailingNewlines = ui.CountTrailingNewlines(block.Rendered)
+			if block.HasSegmentTypes {
+				previousLastType = block.LastSegmentType
+				hasPreviousRenderedSegment = true
+			}
 		}
+		reasoningOrdinal += block.ReasoningCount
+		r.lastReasoningHeaderCount = reasoningOrdinal
 	}
 
 	// Clone so the returned string doesn't share the builder's backing
 	// array, which will be overwritten when the pool reuses this builder.
 	return strings.Clone(b.String())
+}
+
+// ReasoningOrdinalAtLine returns the rendered reasoning block ordinal for a
+// history content line from the most recent Render call.
+func (r *Renderer) ReasoningOrdinalAtLine(line int) (int, bool) {
+	if r == nil || r.lastReasoningLineOrdinals == nil {
+		return 0, false
+	}
+	ordinal, ok := r.lastReasoningLineOrdinals[line]
+	return ordinal, ok
+}
+
+// ReasoningHeaderCount returns the number of history reasoning headers rendered
+// during the most recent Render call.
+func (r *Renderer) ReasoningHeaderCount() int {
+	if r == nil {
+		return 0
+	}
+	return r.lastReasoningHeaderCount
 }
 
 // MessageHistorySignature fingerprints rendered message history so cache validity
@@ -406,20 +467,30 @@ func MessageHistorySignature(messages []session.Message) uint64 {
 }
 
 // getOrRenderBlock gets a rendered block from cache or renders it.
-func (r *Renderer) getOrRenderBlock(msg *session.Message, index int, messages []session.Message) *MessageBlock {
-	// Check cache first
+func (r *Renderer) getOrRenderBlock(msg *session.Message, index int, messages []session.Message, reasoningOrdinalBase int, reasoningOverrides map[int]bool) *MessageBlock {
 	cacheKey := r.blockCacheKey(msg, index)
-	if block := r.blockCache.Get(cacheKey); block != nil {
+	block := r.blockCache.Get(cacheKey)
+	if block == nil {
+		block = r.renderMessageBlock(msg, index, messages)
+		r.blockCache.Put(cacheKey, block)
+	}
+	if !reasoningOverridesAffectBlock(reasoningOrdinalBase, block.ReasoningCount, reasoningOverrides) {
 		return block
 	}
+	return r.renderMessageBlockWithReasoningOverrides(msg, index, messages, reasoningOrdinalBase, reasoningOverrides)
+}
 
-	// Render the message
-	block := r.renderMessageBlock(msg, index, messages)
-
-	// Cache it
-	r.blockCache.Put(cacheKey, block)
-
-	return block
+func reasoningOverridesAffectBlock(baseOrdinal, reasoningCount int, overrides map[int]bool) bool {
+	if reasoningCount <= 0 || len(overrides) == 0 {
+		return false
+	}
+	end := baseOrdinal + reasoningCount
+	for ordinal := range overrides {
+		if ordinal >= baseOrdinal && ordinal < end {
+			return true
+		}
+	}
+	return false
 }
 
 // blockCacheKey generates a cache key for a message.
@@ -490,6 +561,11 @@ func messagePartsSignature(msg *session.Message) uint64 {
 		h = writeStringHash(h, string(part.Type))
 		h = writeStringHash(h, part.Text)
 		h = writeStringHash(h, part.ReasoningContent)
+		for _, summaryPart := range part.ReasoningSummaryParts {
+			h = writeStringHash(h, summaryPart)
+		}
+		h = writeStringHash(h, string(part.ReasoningKind))
+		h = writeStringHash(h, part.ReasoningSummaryTitle)
 		h = writeStringHash(h, part.ReasoningItemID)
 		h = writeStringHash(h, part.ReasoningEncryptedContent)
 		h = writeStringHash(h, part.ImagePath)
@@ -579,8 +655,14 @@ func writeUint64Hash(h uint64, v uint64) uint64 {
 
 // renderMessageBlock renders a single message to a block.
 func (r *Renderer) renderMessageBlock(msg *session.Message, index int, messages []session.Message) *MessageBlock {
+	return r.renderMessageBlockWithReasoningOverrides(msg, index, messages, 0, nil)
+}
+
+func (r *Renderer) renderMessageBlockWithReasoningOverrides(msg *session.Message, index int, messages []session.Message, reasoningOrdinalBase int, reasoningOverrides map[int]bool) *MessageBlock {
 	rb := NewMessageBlockRendererWithContext(r.width, r.markdownRenderer, messages, index, r.toolsExpanded)
 	rb.SetImageRenderer(r.imageRenderer)
+	rb.SetReasoningConfig(r.reasoningConfig)
+	rb.SetReasoningExpansionOverrides(reasoningOrdinalBase, reasoningOverrides)
 	return rb.Render(msg)
 }
 

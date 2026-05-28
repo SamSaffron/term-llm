@@ -7,6 +7,7 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	appconfig "github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -17,9 +18,10 @@ type CloseMsg struct{}
 
 // Config holds optional configuration for the inspector
 type Config struct {
-	ProviderName string
-	ModelName    string
-	ToolSpecs    []llm.ToolSpec
+	ProviderName    string
+	ModelName       string
+	ToolSpecs       []llm.ToolSpec
+	ReasoningConfig appconfig.ReasoningConfig
 }
 
 // Model is the conversation inspector model
@@ -49,9 +51,10 @@ type Model struct {
 	store session.Store
 
 	// Optional configuration
-	providerName string
-	modelName    string
-	toolSpecs    []llm.ToolSpec
+	providerName    string
+	modelName       string
+	toolSpecs       []llm.ToolSpec
+	reasoningConfig appconfig.ReasoningConfig
 }
 
 // New creates a new inspector model
@@ -85,6 +88,10 @@ func NewWithConfig(messages []session.Message, width, height int, styles *ui.Sty
 		m.providerName = cfg.ProviderName
 		m.modelName = cfg.ModelName
 		m.toolSpecs = cfg.ToolSpecs
+		m.reasoningConfig = cfg.ReasoningConfig
+	}
+	if m.reasoningConfig == (appconfig.ReasoningConfig{}) {
+		m.reasoningConfig = appconfig.DefaultReasoningConfig()
 	}
 
 	m.renderContent()
@@ -93,7 +100,7 @@ func NewWithConfig(messages []session.Message, width, height int, styles *ui.Sty
 
 // renderContent renders all messages and splits into lines
 func (m *Model) renderContent() {
-	renderer := NewContentRenderer(m.width-2, m.styles, m.expandedItems, m.store, m.providerName, m.modelName, m.toolSpecs) // -2 for padding
+	renderer := NewContentRenderer(m.width-2, m.styles, m.expandedItems, m.store, m.providerName, m.modelName, m.toolSpecs, m.reasoningConfig) // -2 for padding
 	content, items := renderer.RenderMessages(m.messages)
 	m.contentLines = strings.Split(content, "\n")
 	m.totalLines = len(m.contentLines)

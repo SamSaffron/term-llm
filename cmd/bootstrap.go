@@ -138,14 +138,17 @@ func applyProviderOverridesWithAgent(cfg *config.Config, cmdProvider, cmdModel, 
 
 func initThemeFromConfig(cfg *config.Config) {
 	ui.InitTheme(ui.ThemeConfig{
-		Primary:   cfg.Theme.Primary,
-		Secondary: cfg.Theme.Secondary,
-		Success:   cfg.Theme.Success,
-		Error:     cfg.Theme.Error,
-		Warning:   cfg.Theme.Warning,
-		Muted:     cfg.Theme.Muted,
-		Text:      cfg.Theme.Text,
-		Spinner:   cfg.Theme.Spinner,
+		Primary:          cfg.Theme.Primary,
+		Secondary:        cfg.Theme.Secondary,
+		Success:          cfg.Theme.Success,
+		Error:            cfg.Theme.Error,
+		Warning:          cfg.Theme.Warning,
+		Muted:            cfg.Theme.Muted,
+		Text:             cfg.Theme.Text,
+		Spinner:          cfg.Theme.Spinner,
+		ReasoningSummary: cfg.Theme.ReasoningSummary,
+		ReasoningHeader:  cfg.Theme.ReasoningHeader,
+		ReasoningRaw:     cfg.Theme.ReasoningRaw,
 	})
 }
 

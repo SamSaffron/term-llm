@@ -554,14 +554,32 @@ func buildResponsesReasoningItem(part Part) ResponsesInputItem {
 		EncryptedContent: strings.TrimSpace(part.ReasoningEncryptedContent),
 		Summary:          &summary,
 	}
-	if strings.TrimSpace(part.ReasoningContent) != "" {
-		summary = append(summary, responsesReasoningSummaryPart{
-			Type: "summary_text",
-			Text: strings.TrimSpace(part.ReasoningContent),
-		})
+	if part.ReasoningKind != ReasoningKindRaw {
+		for _, text := range reasoningSummaryTexts(part) {
+			summary = append(summary, responsesReasoningSummaryPart{
+				Type: "summary_text",
+				Text: text,
+			})
+		}
 		item.Summary = &summary
 	}
 	return item
+}
+
+func reasoningSummaryTexts(part Part) []string {
+	var out []string
+	for _, text := range part.ReasoningSummaryParts {
+		if trimmed := strings.TrimSpace(text); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	if len(out) > 0 {
+		return out
+	}
+	if text := strings.TrimSpace(part.ReasoningContent); text != "" {
+		return []string{text}
+	}
+	return nil
 }
 
 // BuildResponsesTools converts []ToolSpec to Open Responses format with schema normalization
@@ -1361,7 +1379,12 @@ type responsesReasoningState struct {
 }
 
 type responsesReasoningItemState struct {
-	part Part
+	part                    Part
+	summaryParts            []string
+	currentSummaryPart      int
+	emittedTextLen          int
+	emittedEncrypted        string
+	pendingSummarySeparator bool
 }
 
 func newResponsesReasoningState() *responsesReasoningState {
@@ -1375,7 +1398,7 @@ func (s *responsesReasoningState) Ensure(outputIndex int) {
 		return
 	}
 	s.items[outputIndex] = &responsesReasoningItemState{
-		part: Part{Type: PartText},
+		part: Part{Type: PartText, ReasoningKind: ReasoningKindUnknown},
 	}
 }
 
@@ -1387,25 +1410,102 @@ func (s *responsesReasoningState) Start(outputIndex int, itemID, encrypted strin
 	}
 	if encrypted != "" {
 		state.part.ReasoningEncryptedContent = encrypted
+		if strings.TrimSpace(state.part.ReasoningContent) == "" && len(state.part.ReasoningSummaryParts) == 0 {
+			state.part.ReasoningKind = ReasoningKindEncrypted
+		}
 	}
 	if text := extractReasoningSummaryText(summary); text != "" {
-		state.part.ReasoningContent = text
+		// Start is called for both output_item.added and output_item.done. If
+		// summary_text deltas already populated the state, keep the streamed
+		// aggregate instead of replacing it with the final item snapshot.
+		if strings.TrimSpace(state.part.ReasoningContent) == "" && len(state.summaryParts) == 0 {
+			state.summaryParts = extractReasoningSummaryTexts(summary)
+			state.part.ReasoningSummaryParts = append([]string(nil), state.summaryParts...)
+			state.part.ReasoningContent = text
+		}
+		state.part.ReasoningKind = ReasoningKindSummary
 	}
 }
 
-func (s *responsesReasoningState) AppendSummary(outputIndex int, delta string) {
-	if delta == "" {
+func (s *responsesReasoningState) SummaryPartAdded(outputIndex int) {
+	s.Ensure(outputIndex)
+	state := s.items[outputIndex]
+	if strings.TrimSpace(state.part.ReasoningContent) != "" && !strings.HasSuffix(state.part.ReasoningContent, "\n\n") {
+		state.pendingSummarySeparator = true
+	}
+	if len(state.summaryParts) == 0 && strings.TrimSpace(state.part.ReasoningContent) == "" {
+		state.currentSummaryPart = 0
 		return
+	}
+	state.currentSummaryPart = len(state.summaryParts)
+}
+
+// AppendSummary appends a streaming summary_text delta to the accumulated state
+// and returns an event-shaped Part for that delta only. The returned Part's
+// ReasoningContent is intentionally just the delta text (with a separator prefix
+// when a new summary part starts), and ReasoningSummaryParts is nil; callers can
+// use Part() when they need a snapshot of the accumulated content/parts.
+func (s *responsesReasoningState) AppendSummary(outputIndex int, delta string) *Part {
+	if delta == "" {
+		return nil
 	}
 	s.Ensure(outputIndex)
 	state := s.items[outputIndex]
+	for len(state.summaryParts) <= state.currentSummaryPart {
+		state.summaryParts = append(state.summaryParts, "")
+	}
+	state.summaryParts[state.currentSummaryPart] += delta
+	state.part.ReasoningSummaryParts = append([]string(nil), state.summaryParts...)
+	if state.pendingSummarySeparator {
+		delta = "\n\n" + strings.TrimLeft(delta, "\r\n")
+		state.pendingSummarySeparator = false
+	}
 	state.part.ReasoningContent += delta
+	state.part.ReasoningKind = ReasoningKindSummary
+	part := state.part
+	part.ReasoningContent = delta
+	part.ReasoningSummaryParts = nil
+	return &part
+}
+
+func (s *responsesReasoningState) MarkEmitted(outputIndex int) {
+	state, ok := s.items[outputIndex]
+	if !ok {
+		return
+	}
+	state.emittedTextLen = len(state.part.ReasoningContent)
+	state.emittedEncrypted = state.part.ReasoningEncryptedContent
+}
+
+func (s *responsesReasoningState) NeedsFinalEvent(outputIndex int) bool {
+	state, ok := s.items[outputIndex]
+	if !ok {
+		return false
+	}
+	if state.part.ReasoningContent != "" && state.emittedTextLen == 0 {
+		return true
+	}
+	if len(state.part.ReasoningSummaryParts) > 1 {
+		return true
+	}
+	return state.part.ReasoningEncryptedContent != "" && state.part.ReasoningEncryptedContent != state.emittedEncrypted
+}
+
+func (s *responsesReasoningState) FinalEventText(outputIndex int) string {
+	state, ok := s.items[outputIndex]
+	if !ok || state.emittedTextLen > 0 {
+		return ""
+	}
+	return state.part.ReasoningContent
 }
 
 func (s *responsesReasoningState) Finish(outputIndex int, itemID, encrypted string, summary []responsesReasoningSummaryPart) {
 	s.Start(outputIndex, itemID, encrypted, summary)
 }
 
+// Part returns a snapshot of the accumulated reasoning item. The returned Part
+// will not be updated by later Start/AppendSummary calls; callers that need the
+// latest state should ask again after mutating the state machine.
 func (s *responsesReasoningState) Part(outputIndex int) *Part {
 	state, ok := s.items[outputIndex]
 	if !ok {
@@ -1419,15 +1519,19 @@ func (s *responsesReasoningState) Part(outputIndex int) *Part {
 }
 
 func extractReasoningSummaryText(summary []responsesReasoningSummaryPart) string {
+	return strings.Join(extractReasoningSummaryTexts(summary), "\n\n")
+}
+
+func extractReasoningSummaryTexts(summary []responsesReasoningSummaryPart) []string {
 	if len(summary) == 0 {
-		return ""
+		return nil
 	}
-	var text strings.Builder
+	var texts []string
 	for _, part := range summary {
 		if part.Type != "summary_text" || strings.TrimSpace(part.Text) == "" {
 			continue
 		}
-		text.WriteString(part.Text)
+		texts = append(texts, strings.TrimSpace(part.Text))
 	}
-	return text.String()
+	return texts
 }

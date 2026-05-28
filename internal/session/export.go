@@ -6,11 +6,14 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 )
 
 // ExportOptions configures session export.
 type ExportOptions struct {
-	IncludeSystem bool // Include system prompt in export
+	IncludeSystem             bool // Include system prompt in export
+	IncludeReasoningSummaries bool // Include provider-sanctioned reasoning summaries
+	IncludeRawReasoning       bool // Include raw reasoning; caller must enforce safety gate
 }
 
 // escapeTableCell escapes special characters for markdown table cells.
@@ -154,9 +157,14 @@ func ExportToMarkdown(sess *Session, messages []Message, opts ExportOptions) str
 			b.WriteString("### Assistant\n\n")
 
 			for _, part := range msg.Parts {
-				if part.Type == llm.PartText && part.Text != "" {
-					pendingText.WriteString(part.Text)
-					pendingText.WriteString("\n\n")
+				if part.Type == llm.PartText {
+					if rendered := RenderExportReasoning(part, opts); rendered != "" {
+						pendingText.WriteString(rendered)
+					}
+					if part.Text != "" {
+						pendingText.WriteString(part.Text)
+						pendingText.WriteString("\n\n")
+					}
 				}
 				if part.Type == llm.PartToolCall && part.ToolCall != nil {
 					pendingToolCalls = append(pendingToolCalls, part.ToolCall)
@@ -199,6 +207,42 @@ func ExportToMarkdown(sess *Session, messages []Message, opts ExportOptions) str
 	flushAssistant()
 
 	return b.String()
+}
+
+// RenderExportReasoning renders non-encrypted reasoning metadata according to
+// explicit export options. Raw reasoning is never included unless requested.
+func RenderExportReasoning(part llm.Part, opts ExportOptions) string {
+	hasReasoningContent := part.ReasoningContent != "" || len(part.ReasoningSummaryParts) > 0
+	kind := llm.NormalizeStoredReasoningKind(part.ReasoningKind, hasReasoningContent)
+	if part.ReasoningContent == "" {
+		return ""
+	}
+	switch kind {
+	case llm.ReasoningKindSummary:
+		if !opts.IncludeReasoningSummaries {
+			return ""
+		}
+		parsed := internalreasoning.ParseReasoningSummary(part.ReasoningContent)
+		title := strings.TrimSpace(part.ReasoningSummaryTitle)
+		if title == "" {
+			title = parsed.Title
+		}
+		body := parsed.Body
+		if strings.TrimSpace(body) == "" {
+			body = strings.TrimSpace(part.ReasoningContent)
+		}
+		if title != "" {
+			return fmt.Sprintf("_Reasoning summary: %s_\n\n%s\n\n", title, strings.TrimSpace(body))
+		}
+		return fmt.Sprintf("_Reasoning summary:_\n\n%s\n\n", strings.TrimSpace(body))
+	case llm.ReasoningKindRaw:
+		if !opts.IncludeRawReasoning {
+			return ""
+		}
+		return fmt.Sprintf("_Raw reasoning (explicitly included):_\n\n%s\n\n", strings.TrimSpace(part.ReasoningContent))
+	default:
+		return ""
+	}
 }
 
 // writeToolCall writes a tool call with optional result in a collapsible block.

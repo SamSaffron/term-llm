@@ -5,17 +5,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/agents/gist"
+	"github.com/samsaffron/term-llm/internal/config"
+	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tui/sessions"
 	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
+	"gopkg.in/yaml.v3"
 )
 
 var sessionsCmd = &cobra.Command{
@@ -151,14 +155,19 @@ Examples:
 
 // Flags
 var (
-	sessionsProvider          string
-	sessionsLimit             int
-	sessionsJSON              bool
-	sessionsStatus            string
-	sessionsMode              string
-	sessionsTag               string
-	sessionsGistPublic        bool
-	sessionsGistIncludeSystem bool
+	sessionsProvider                  string
+	sessionsLimit                     int
+	sessionsJSON                      bool
+	sessionsStatus                    string
+	sessionsMode                      string
+	sessionsTag                       string
+	sessionsExportIncludeSystem       bool
+	sessionsExportIncludeReasoning    bool
+	sessionsExportIncludeRawReasoning bool
+	sessionsGistPublic                bool
+	sessionsGistIncludeSystem         bool
+	sessionsGistIncludeReasoning      bool
+	sessionsGistIncludeRawReasoning   bool
 )
 
 func init() {
@@ -172,9 +181,16 @@ func init() {
 	// Show flags
 	sessionsShowCmd.Flags().BoolVar(&sessionsJSON, "json", false, "Output as JSON")
 
+	// Markdown export flags
+	sessionsExportCmd.Flags().BoolVar(&sessionsExportIncludeSystem, "include-system", false, "Include system prompt in export")
+	sessionsExportCmd.Flags().BoolVar(&sessionsExportIncludeReasoning, "include-reasoning", false, "Include provider reasoning summaries in export")
+	sessionsExportCmd.Flags().BoolVar(&sessionsExportIncludeRawReasoning, "include-raw-reasoning", false, "Include raw reasoning when reasoning.raw is enabled")
+
 	// Gist export flags
 	sessionsExportGistCmd.Flags().BoolVar(&sessionsGistPublic, "public", false, "Create a public gist (default: private)")
 	sessionsExportGistCmd.Flags().BoolVar(&sessionsGistIncludeSystem, "include-system", false, "Include system prompt in export")
+	sessionsExportGistCmd.Flags().BoolVar(&sessionsGistIncludeReasoning, "include-reasoning", false, "Include provider reasoning summaries in export")
+	sessionsExportGistCmd.Flags().BoolVar(&sessionsGistIncludeRawReasoning, "include-raw-reasoning", false, "Include raw reasoning when reasoning.raw is enabled")
 
 	// Add subcommands
 	sessionsCmd.AddCommand(sessionsListCmd)
@@ -495,35 +511,90 @@ func runSessionsExport(cmd *cobra.Command, args []string) error {
 		outputPath = fmt.Sprintf("%s.md", name)
 	}
 
-	// Build markdown
-	var b strings.Builder
-	b.WriteString("# Chat Export\n\n")
-	b.WriteString(fmt.Sprintf("**Session:** %s\n", sess.ID))
-	b.WriteString(fmt.Sprintf("**Title:** %s\n", fallbackString(sess.PreferredShortTitle(), "(untitled)")))
-	if sess.Name != "" {
-		b.WriteString(fmt.Sprintf("**Name:** %s\n", sess.Name))
-	}
-	b.WriteString(fmt.Sprintf("**Provider:** %s\n", sess.Provider))
-	b.WriteString(fmt.Sprintf("**Model:** %s\n", sess.Model))
-	b.WriteString(fmt.Sprintf("**Created:** %s\n", sess.CreatedAt.Format(time.RFC3339)))
-	b.WriteString("\n---\n\n")
+	// Generate markdown with reasoning export policy applied from config and flags.
+	markdown := session.ExportToMarkdown(sess, messages, buildSessionExportOptions(
+		sess,
+		sessionsExportIncludeSystem,
+		sessionsExportIncludeReasoning,
+		sessionsExportIncludeRawReasoning,
+	))
 
-	for _, msg := range messages {
-		if msg.Role == "user" {
-			b.WriteString("## ❯\n\n")
-		} else {
-			b.WriteString("## 🤖 Assistant\n\n")
-		}
-		b.WriteString(msg.TextContent)
-		b.WriteString("\n\n---\n\n")
-	}
-
-	if err := os.WriteFile(outputPath, []byte(b.String()), 0644); err != nil {
+	if err := os.WriteFile(outputPath, []byte(markdown), 0644); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 
 	fmt.Printf("Exported %d messages to %s\n", len(messages), outputPath)
 	return nil
+}
+
+func sessionExportReasoningSurface(sess *session.Session) string {
+	if sess == nil {
+		return "chat"
+	}
+	if sess.Origin == session.OriginWeb || sess.Origin == session.OriginTelegram {
+		return "serve"
+	}
+	switch sess.Mode {
+	case session.ModeAsk:
+		return "ask"
+	default:
+		return "chat"
+	}
+}
+
+func loadSessionReasoningConfig(surface string) config.ReasoningConfig {
+	if cfg, err := config.Load(); err == nil && cfg != nil {
+		return cfg.ResolveReasoning(surface)
+	}
+
+	for _, path := range candidateConfigFiles() {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var raw struct {
+			Reasoning config.ReasoningConfig `yaml:"reasoning"`
+		}
+		if err := yaml.Unmarshal(data, &raw); err != nil {
+			continue
+		}
+		return (&config.Config{Reasoning: raw.Reasoning}).ResolveReasoning(surface)
+	}
+	return (&config.Config{}).ResolveReasoning(surface)
+}
+
+func candidateConfigFiles() []string {
+	var paths []string
+	if dir, err := config.GetConfigDir(); err == nil && dir != "" {
+		paths = append(paths, filepath.Join(dir, "config.yaml"))
+	}
+	paths = append(paths, "config.yaml")
+	return paths
+}
+
+func buildSessionExportOptions(sess *session.Session, includeSystem, includeReasoningSummaries, includeRawReasoning bool) session.ExportOptions {
+	reasoningCfg := loadSessionReasoningConfig(sessionExportReasoningSurface(sess))
+
+	rawRequested := includeRawReasoning || strings.EqualFold(strings.TrimSpace(reasoningCfg.Export), config.ReasoningExportRaw)
+	includeSummaries := includeReasoningSummaries || includeRawReasoning || internalreasoning.ExportSummaries(reasoningCfg)
+	includeRaw := false
+	if rawRequested {
+		switch {
+		case !reasoningCfg.Raw:
+			fmt.Fprintln(os.Stderr, "Raw reasoning export is disabled. Set reasoning.raw=true or TERM_LLM_SHOW_RAW_REASONING=1 to allow it.")
+		case !internalreasoning.SourceAllowsRaw(reasoningCfg):
+			fmt.Fprintln(os.Stderr, "Raw reasoning export is disabled by reasoning.source. Set reasoning.source=all to allow it.")
+		default:
+			includeRaw = true
+			includeSummaries = true
+		}
+	}
+
+	return session.ExportOptions{
+		IncludeSystem:             includeSystem,
+		IncludeReasoningSummaries: includeSummaries,
+		IncludeRawReasoning:       includeRaw,
+	}
 }
 
 // formatRelativeTime returns a human-readable relative time string
@@ -817,10 +888,13 @@ func runSessionsExportGist(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get messages: %w", err)
 	}
 
-	// Generate markdown
-	markdown := session.ExportToMarkdown(sess, messages, session.ExportOptions{
-		IncludeSystem: sessionsGistIncludeSystem,
-	})
+	// Generate markdown with reasoning export policy applied from config and flags.
+	markdown := session.ExportToMarkdown(sess, messages, buildSessionExportOptions(
+		sess,
+		sessionsGistIncludeSystem,
+		sessionsGistIncludeReasoning,
+		sessionsGistIncludeRawReasoning,
+	))
 
 	// Initialize gist client
 	client, err := gist.NewClient()

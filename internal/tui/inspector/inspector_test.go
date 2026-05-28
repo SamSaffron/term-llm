@@ -1,10 +1,12 @@
 package inspector
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -379,6 +381,174 @@ func TestViewWithToolDefinitions(t *testing.T) {
 
 	if !contains(view, "write_file") {
 		t.Error("View() should contain tool name 'write_file'")
+	}
+}
+
+func TestViewWithReasoningSummary(t *testing.T) {
+	messages := []session.Message{{
+		ID:        1,
+		SessionID: "test-session",
+		Role:      llm.RoleAssistant,
+		Parts: []llm.Part{{
+			Type:                  llm.PartText,
+			Text:                  "Final answer.",
+			ReasoningContent:      "**Inspecting files**\n\nI checked the renderer.",
+			ReasoningKind:         llm.ReasoningKindSummary,
+			ReasoningSummaryTitle: "Inspecting files",
+		}},
+		TextContent: "Final answer.",
+		CreatedAt:   time.Now(),
+		Sequence:    0,
+	}}
+
+	m := New(messages, 100, 24, ui.DefaultStyles())
+	view := ui.StripANSI(m.View().Content)
+	if !contains(view, "Thought: Inspecting files") {
+		t.Fatalf("inspector should include reasoning summary header, got:\n%s", view)
+	}
+	if !contains(view, "I checked the renderer.") {
+		t.Fatalf("inspector should include reasoning summary body, got:\n%s", view)
+	}
+	if !contains(view, "Final answer.") {
+		t.Fatalf("inspector should still include assistant answer, got:\n%s", view)
+	}
+}
+
+func TestViewWithReasoningRawVisibleByDefault(t *testing.T) {
+	messages := []session.Message{{
+		ID:        1,
+		SessionID: "test-session",
+		Role:      llm.RoleAssistant,
+		Parts: []llm.Part{{
+			Type:             llm.PartText,
+			Text:             "Final answer.",
+			ReasoningContent: "raw qwen thinking chain",
+			ReasoningKind:    llm.ReasoningKindRaw,
+		}},
+		TextContent: "Final answer.",
+		CreatedAt:   time.Now(),
+		Sequence:    0,
+	}}
+
+	m := New(messages, 100, 24, ui.DefaultStyles())
+	view := ui.StripANSI(m.View().Content)
+	if !contains(view, "Thinking...") {
+		t.Fatalf("inspector should include raw reasoning header by default, got:\n%s", view)
+	}
+	if !contains(view, "raw qwen thinking chain") {
+		t.Fatalf("inspector should include raw reasoning body by default, got:\n%s", view)
+	}
+	if contains(view, "Raw thinking") {
+		t.Fatalf("inspector should render raw reasoning as a normal thought, got:\n%s", view)
+	}
+	if !contains(view, "Final answer.") {
+		t.Fatalf("inspector should still include assistant answer, got:\n%s", view)
+	}
+}
+
+func TestViewWithReasoningUnknownVisibleInInspector(t *testing.T) {
+	messages := []session.Message{{
+		ID:        1,
+		SessionID: "test-session",
+		Role:      llm.RoleAssistant,
+		Parts: []llm.Part{{
+			Type:             llm.PartText,
+			Text:             "Final answer.",
+			ReasoningContent: "provider thought without classification",
+			ReasoningKind:    llm.ReasoningKindUnknown,
+		}},
+		TextContent: "Final answer.",
+		CreatedAt:   time.Now(),
+		Sequence:    0,
+	}}
+
+	m := New(messages, 100, 24, ui.DefaultStyles())
+	view := ui.StripANSI(m.View().Content)
+	if !contains(view, "Thinking...") || !contains(view, "provider thought without classification") {
+		t.Fatalf("inspector should include non-encrypted reasoning even when kind is unknown, got:\n%s", view)
+	}
+}
+
+func TestViewWithReasoningEncryptedHidden(t *testing.T) {
+	messages := []session.Message{{
+		ID:        1,
+		SessionID: "test-session",
+		Role:      llm.RoleAssistant,
+		Parts: []llm.Part{{
+			Type:             llm.PartText,
+			Text:             "Final answer.",
+			ReasoningContent: "encrypted thought plaintext should not appear",
+			ReasoningKind:    llm.ReasoningKindEncrypted,
+		}},
+		TextContent: "Final answer.",
+		CreatedAt:   time.Now(),
+		Sequence:    0,
+	}}
+
+	m := New(messages, 100, 24, ui.DefaultStyles())
+	view := ui.StripANSI(m.View().Content)
+	if contains(view, "encrypted thought plaintext should not appear") || contains(view, "Thinking...") {
+		t.Fatalf("inspector should hide encrypted reasoning, got:\n%s", view)
+	}
+	if !contains(view, "Final answer.") {
+		t.Fatalf("inspector should still include assistant answer, got:\n%s", view)
+	}
+}
+
+func TestViewWithReasoningRawUsesProviderTitle(t *testing.T) {
+	messages := []session.Message{{
+		ID:        1,
+		SessionID: "test-session",
+		Role:      llm.RoleAssistant,
+		Parts: []llm.Part{{
+			Type:                  llm.PartText,
+			Text:                  "Final answer.",
+			ReasoningContent:      "raw visible chain",
+			ReasoningKind:         llm.ReasoningKindRaw,
+			ReasoningSummaryTitle: "Exploring options",
+		}},
+		TextContent: "Final answer.",
+		CreatedAt:   time.Now(),
+		Sequence:    0,
+	}}
+
+	m := New(messages, 100, 24, ui.DefaultStyles())
+	view := ui.StripANSI(m.View().Content)
+	if !contains(view, "Thought: Exploring options") {
+		t.Fatalf("inspector should include provider raw reasoning title, got:\n%s", view)
+	}
+	if !contains(view, "raw visible chain") {
+		t.Fatalf("inspector should include raw reasoning body, got:\n%s", view)
+	}
+}
+
+func TestViewWithReasoningSummaryWrapsLongThoughtText(t *testing.T) {
+	longBody := "This reasoning summary is intentionally long so it must wrap inside the inspector box instead of being clipped at the right edge of the terminal viewport."
+	messages := []session.Message{{
+		ID:        1,
+		SessionID: "test-session",
+		Role:      llm.RoleAssistant,
+		Parts: []llm.Part{{
+			Type:                  llm.PartText,
+			Text:                  "Final answer.",
+			ReasoningContent:      "**Analyzing wrapping**\n\n" + longBody,
+			ReasoningKind:         llm.ReasoningKindSummary,
+			ReasoningSummaryTitle: "Analyzing wrapping",
+		}},
+		TextContent: "Final answer.",
+		CreatedAt:   time.Now(),
+		Sequence:    0,
+	}}
+
+	m := New(messages, 62, 24, ui.DefaultStyles())
+	view := ui.StripANSI(m.View().Content)
+	if !contains(view, "right edge") || !contains(view, "terminal viewport") {
+		t.Fatalf("expected wrapped reasoning body to remain visible, got:\n%s", view)
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "This reasoning summary") && lipgloss.Width(line) > 62 {
+			t.Fatalf("reasoning line was not wrapped to inspector width: %q", line)
+		}
 	}
 }
 

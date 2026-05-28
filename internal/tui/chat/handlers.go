@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -495,6 +496,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			m.streamCancelFunc()
 			m.streaming = false
+			m.resetCurrentReasoning()
 
 			// Clear callbacks and update status
 			m.clearStreamCallbacks()
@@ -537,6 +539,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			m.streamCancelFunc()
 			m.streaming = false
+			m.resetCurrentReasoning()
 
 			// Clear callbacks and update status
 			m.clearStreamCallbacks()
@@ -590,9 +593,10 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 
 			cfg := &inspector.Config{
-				ProviderName: m.providerName,
-				ModelName:    m.modelName,
-				ToolSpecs:    toolSpecs,
+				ProviderName:    m.providerName,
+				ModelName:       m.modelName,
+				ToolSpecs:       toolSpecs,
+				ReasoningConfig: m.effectiveReasoningConfig(),
 			}
 			m.inspectorMode = true
 			m.inspectorModel = inspector.NewWithConfig(m.messages, m.width, m.height, m.styles, m.store, cfg)
@@ -608,13 +612,33 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.expandPastePlaceholderAtCursor() {
 			return m, nil
 		}
+		wasAtBottom := m.altScreen && m.viewport.AtBottom()
+		oldYOffset := 0
+		if m.altScreen {
+			oldYOffset = m.viewport.YOffset()
+		}
 		m.toolsExpanded = !m.toolsExpanded
-		m.invalidateViewCache()
+		m.setReasoningDetailsExpanded(m.toolsExpanded)
 		if m.chatRenderer != nil {
 			m.chatRenderer.SetToolsExpanded(m.toolsExpanded)
 		}
 		if m.tracker != nil {
 			m.tracker.SetExpanded(m.toolsExpanded)
+			m.rerenderCommittedReasoningSegments()
+			m.rerenderCompletedStreamFromTracker()
+		}
+		m.viewCache.cachedCompletedContent = ""
+		m.viewCache.cachedTrackerVersion = 0
+		m.viewCache.lastTrackerVersion = 0
+		m.viewCache.lastSetContentAt = time.Time{}
+		m.resetAltScreenStreamingAppendCache()
+		m.bumpContentVersion()
+		if m.altScreen {
+			if wasAtBottom {
+				m.scrollToBottom = true
+			} else {
+				m.viewport.SetYOffset(oldYOffset)
+			}
 		}
 		return m, nil
 	}
@@ -660,10 +684,21 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// During streaming: allow typing, image attachments, and interjection (send queues message for next turn)
+	// During streaming: allow local slash commands, typing, image attachments,
+	// and interjection (send queues message for next turn). Commands like
+	// /thinking should update the UI immediately rather than being shipped as an
+	// interrupt/interjection to the model.
 	if m.streaming {
 		if key.Matches(msg, m.keyMap.Send) {
-			content := m.expandPastePlaceholders(strings.TrimSpace(m.textarea.Value()))
+			raw := strings.TrimSpace(m.textarea.Value())
+			if strings.HasSuffix(raw, "\\") {
+				m.setTextareaValue(strings.TrimSuffix(raw, "\\") + "\n")
+				return m, nil
+			}
+			if strings.HasPrefix(raw, "/") && isStreamingLocalSlashCommand(raw) {
+				return m.handleSlashCommand(raw)
+			}
+			content := m.expandPastePlaceholders(raw)
 			parts := m.imagePartList()
 			if content == "" && len(parts) == 0 {
 				m.phase = "Type to interject, attach an image, or press Esc to cancel"

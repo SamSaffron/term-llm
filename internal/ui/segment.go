@@ -24,6 +24,7 @@ type SegmentType int
 const (
 	SegmentText SegmentType = iota
 	SegmentTool
+	SegmentReasoning     // For committed reasoning/thought summary blocks
 	SegmentAskUserResult // For ask_user answers (plain text, styled at render time)
 	SegmentImage         // For inline image display
 	SegmentDiff          // For inline diff display from edit tool
@@ -38,27 +39,39 @@ const (
 	ToolError
 )
 
+// ReasoningSegment is the renderer-owned display metadata for a committed
+// reasoning/thought block in the streaming segment list. It deliberately avoids
+// storing provider replay fields or llm.Part to keep ui segments decoupled from
+// provider/session data structures.
+type ReasoningSegment struct {
+	Content  string
+	Kind     string
+	Title    string
+	Expanded *bool // Optional per-segment override; nil follows global reasoning display mode.
+}
+
 // Segment represents a discrete unit in the response stream (text or tool)
 type Segment struct {
 	Type           SegmentType
-	Text           string          // For text segments: markdown content (finalized on completion)
-	Rendered       string          // For text segments: cached rendered markdown
-	ToolCallID     string          // For tool segments: unique ID for this invocation
-	ToolName       string          // For tool segments
-	ToolInfo       string          // For tool segments: additional context
-	ToolArgs       json.RawMessage // Raw args JSON, stored for expanded rendering
-	ToolStatus     ToolStatus      // For tool segments
-	ToolExpandHint bool            // Show one-time "CTRL+e to expand" discovery hint
-	Complete       bool            // For text segments: whether streaming is complete
-	ImagePath      string          // For image segments: path to image file
-	DiffPath       string          // For diff segments: file path
-	DiffOld        string          // For diff segments: old content
-	DiffNew        string          // For diff segments: new content
-	DiffLine       int             // For diff segments: 1-indexed starting line (0 = unknown)
-	DiffOperation  string          // For diff segments: optional operation hint, e.g. "create"
-	DiffRendered   string          // For diff segments: cached rendered output
-	DiffWidth      int             // For diff segments: width when rendered (for cache invalidation)
-	Flushed        bool            // True if this segment has been printed to scrollback
+	Text           string            // For text segments: markdown content (finalized on completion)
+	Rendered       string            // For text segments: cached rendered markdown
+	ToolCallID     string            // For tool segments: unique ID for this invocation
+	ToolName       string            // For tool segments
+	ToolInfo       string            // For tool segments: additional context
+	ToolArgs       json.RawMessage   // Raw args JSON, stored for expanded rendering
+	ToolStatus     ToolStatus        // For tool segments
+	ToolExpandHint bool              // Show one-time "CTRL+e to expand" discovery hint
+	Reasoning      *ReasoningSegment // For pre-rendered reasoning summary segments; rerendered when display mode changes
+	Complete       bool              // For text segments: whether streaming is complete
+	ImagePath      string            // For image segments: path to image file
+	DiffPath       string            // For diff segments: file path
+	DiffOld        string            // For diff segments: old content
+	DiffNew        string            // For diff segments: new content
+	DiffLine       int               // For diff segments: 1-indexed starting line (0 = unknown)
+	DiffOperation  string            // For diff segments: optional operation hint, e.g. "create"
+	DiffRendered   string            // For diff segments: cached rendered output
+	DiffWidth      int               // For diff segments: width when rendered (for cache invalidation)
+	Flushed        bool              // True if this segment has been printed to scrollback
 
 	// Streaming text accumulation (O(1) append instead of O(n) string concat)
 	TextBuilder *strings.Builder // Used during streaming; nil when Complete
@@ -718,6 +731,8 @@ func RenderSegmentsWithLeadingAndImageRenderer(leading *Segment, segments []*Seg
 	for _, seg := range segments {
 		var rendered string
 		switch seg.Type {
+		case SegmentReasoning:
+			rendered = seg.Rendered
 		case SegmentText:
 			if seg.Complete && seg.Rendered != "" {
 				rendered = seg.Rendered

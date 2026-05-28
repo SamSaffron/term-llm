@@ -275,3 +275,77 @@ func TestEscapeTableCell(t *testing.T) {
 		}
 	}
 }
+
+func TestExportToMarkdownReasoningOptions(t *testing.T) {
+	sess := &Session{ID: "sess-reasoning", Provider: "mock", Model: "model", CreatedAt: time.Now()}
+	messages := []Message{{
+		Role: llm.RoleAssistant,
+		Parts: []llm.Part{{
+			Type:                      llm.PartText,
+			Text:                      "Final answer.",
+			ReasoningContent:          "**Inspecting repo**\n\nChecking files.",
+			ReasoningKind:             llm.ReasoningKindSummary,
+			ReasoningSummaryTitle:     "Inspecting repo",
+			ReasoningEncryptedContent: "encrypted-secret",
+		}},
+		TextContent: "Final answer.",
+	}}
+
+	withoutReasoning := ExportToMarkdown(sess, messages, ExportOptions{})
+	if strings.Contains(withoutReasoning, "Reasoning summary") || strings.Contains(withoutReasoning, "Checking files") {
+		t.Fatalf("reasoning summary should be excluded by default, got %q", withoutReasoning)
+	}
+	if strings.Contains(withoutReasoning, "encrypted-secret") {
+		t.Fatalf("encrypted reasoning must never export, got %q", withoutReasoning)
+	}
+
+	withSummary := ExportToMarkdown(sess, messages, ExportOptions{IncludeReasoningSummaries: true})
+	if !strings.Contains(withSummary, "_Reasoning summary: Inspecting repo_") || !strings.Contains(withSummary, "Checking files.") {
+		t.Fatalf("expected reasoning summary in export, got %q", withSummary)
+	}
+	if strings.Contains(withSummary, "encrypted-secret") {
+		t.Fatalf("encrypted reasoning must never export, got %q", withSummary)
+	}
+}
+
+func TestExportToMarkdownLegacyEmptyKindReasoningExportsAsSummary(t *testing.T) {
+	sess := &Session{ID: "sess-legacy-reasoning", Provider: "mock", Model: "model", CreatedAt: time.Now()}
+	messages := []Message{{
+		Role: llm.RoleAssistant,
+		Parts: []llm.Part{{
+			Type:             llm.PartText,
+			Text:             "Final answer.",
+			ReasoningContent: "**Legacy plan**\n\nOlder saved summary.",
+		}},
+		TextContent: "Final answer.",
+	}}
+
+	withSummary := ExportToMarkdown(sess, messages, ExportOptions{IncludeReasoningSummaries: true})
+	if !strings.Contains(withSummary, "_Reasoning summary: Legacy plan_") || !strings.Contains(withSummary, "Older saved summary.") {
+		t.Fatalf("expected legacy empty-kind reasoning to export as summary, got %q", withSummary)
+	}
+}
+
+func TestExportToMarkdownRawReasoningRequiresExplicitOption(t *testing.T) {
+	sess := &Session{ID: "sess-raw", Provider: "mock", Model: "model", CreatedAt: time.Now()}
+	messages := []Message{{
+		Role: llm.RoleAssistant,
+		Parts: []llm.Part{{
+			Type:             llm.PartText,
+			Text:             "Final answer.",
+			ReasoningContent: "raw chain",
+			ReasoningKind:    llm.ReasoningKindRaw,
+		}},
+		TextContent: "Final answer.",
+	}}
+
+	withoutRaw := ExportToMarkdown(sess, messages, ExportOptions{IncludeReasoningSummaries: true})
+	if strings.Contains(withoutRaw, "raw chain") || strings.Contains(withoutRaw, "Raw reasoning") {
+		t.Fatalf("raw reasoning should be excluded without explicit raw option, got %q", withoutRaw)
+	}
+
+	withRaw := ExportToMarkdown(sess, messages, ExportOptions{IncludeRawReasoning: true})
+	if !strings.Contains(withRaw, "_Raw reasoning (explicitly included):_") || !strings.Contains(withRaw, "raw chain") {
+		t.Fatalf("expected raw reasoning with explicit option, got %q", withRaw)
+	}
+}

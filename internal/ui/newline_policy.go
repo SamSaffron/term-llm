@@ -21,6 +21,15 @@ const (
 // a boundary between two rendered segment types.
 func SegmentBoundaryTrailingNewlines(prevType, currType SegmentType) int {
 	switch {
+	case prevType == SegmentReasoning:
+		// Reasoning blocks render with exactly one trailing newline of their own;
+		// one separator newline after them creates a single blank line below
+		// without compounding into large gaps during streaming.
+		return SectionBreakTrailingNewlines
+	case currType == SegmentReasoning:
+		// Previous non-reasoning segments usually do not include a trailing newline,
+		// so use the normal section break to leave one blank line above thoughts.
+		return FinalSpacerTrailingNewlines
 	case prevType == SegmentText && currType == SegmentText:
 		return 0
 	case (prevType == SegmentText && currType == SegmentTool) ||

@@ -643,7 +643,7 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 					}
 					if reasoningDelta != "" {
 						reasoningBuilder.WriteString(reasoningDelta)
-						if err := send.Send(Event{Type: EventReasoningDelta, Text: reasoningDelta}); err != nil {
+						if err := send.Send(Event{Type: EventReasoningDelta, Text: reasoningDelta, ReasoningKind: ReasoningKindRaw}); err != nil {
 							return err
 						}
 					}

@@ -93,6 +93,22 @@ func DebugRawRequest(enabled bool, providerName, credential string, req Request,
 					b.WriteString("text:\n")
 					b.WriteString(part.Text)
 					b.WriteString("\n")
+					if hasReasoningMetadata(part) {
+						fmt.Fprintf(&b, "reasoning_kind: %s\n", NormalizeReasoningKind(part.ReasoningKind))
+						if part.ReasoningSummaryTitle != "" {
+							fmt.Fprintf(&b, "reasoning_summary_title: %s\n", part.ReasoningSummaryTitle)
+						}
+						if part.ReasoningContent != "" {
+							fmt.Fprintf(&b, "reasoning_content_len: %d\n", len(part.ReasoningContent))
+						}
+						if part.ReasoningItemID != "" {
+							fmt.Fprintf(&b, "reasoning_item_id: %s\n", part.ReasoningItemID)
+						}
+						if part.ReasoningEncryptedContent != "" {
+							fmt.Fprintf(&b, "reasoning_encrypted_content_len: %d\n", len(part.ReasoningEncryptedContent))
+							fmt.Fprintf(&b, "reasoning_encrypted_content_hash: %s\n", shortDebugHash(part.ReasoningEncryptedContent))
+						}
+					}
 				case PartToolCall:
 					if part.ToolCall != nil {
 						fmt.Fprintf(&b, "tool_call name=%s id=%s\n", part.ToolCall.Name, part.ToolCall.ID)
@@ -191,6 +207,13 @@ func DebugRawEvent(enabled bool, event Event) {
 		}
 	case EventReasoningDelta:
 		var body strings.Builder
+		fmt.Fprintf(&body, "reasoning_kind: %s\n", NormalizeReasoningKind(event.ReasoningKind))
+		if event.ReasoningIndex != 0 {
+			fmt.Fprintf(&body, "reasoning_index: %d\n", event.ReasoningIndex)
+		}
+		if event.ReasoningFinal {
+			fmt.Fprintf(&body, "reasoning_final: %t\n", event.ReasoningFinal)
+		}
 		if event.ReasoningItemID != "" {
 			fmt.Fprintf(&body, "reasoning_item_id: %s\n", event.ReasoningItemID)
 		}

@@ -1024,9 +1024,14 @@ func emitReasoningDelta(send eventSender, text, encrypted string) error {
 	if text == "" && encrypted == "" {
 		return nil
 	}
+	kind := ReasoningKindRaw
+	if text == "" && encrypted != "" {
+		kind = ReasoningKindEncrypted
+	}
 	return send.Send(Event{
 		Type:                      EventReasoningDelta,
 		Text:                      text,
+		ReasoningKind:             kind,
 		ReasoningEncryptedContent: encrypted,
 	})
 }

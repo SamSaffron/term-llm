@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	"github.com/samsaffron/term-llm/internal/usage"
 )
 
@@ -794,21 +795,24 @@ func wrapCallbackStream(ctx context.Context, inner Stream, cb TurnCompletedCallb
 		callback:           cb,
 		reasoningItemID:    "",
 		reasoningEncrypted: "",
+		reasoningKind:      "",
 	}
 }
 
 // callbackStream wraps a stream to accumulate text/usage and call callback on EOF.
 type callbackStream struct {
-	inner              Stream
-	ctx                context.Context
-	mu                 sync.Mutex
-	text               *strings.Builder
-	reasoning          *strings.Builder
-	reasoningItemID    string
-	reasoningEncrypted string
-	metrics            TurnMetrics
-	callback           TurnCompletedCallback
-	done               bool
+	inner                 Stream
+	ctx                   context.Context
+	mu                    sync.Mutex
+	text                  *strings.Builder
+	reasoning             *strings.Builder
+	reasoningItemID       string
+	reasoningEncrypted    string
+	reasoningKind         ReasoningKind
+	reasoningSummaryParts []string
+	metrics               TurnMetrics
+	callback              TurnCompletedCallback
+	done                  bool
 }
 
 func (s *callbackStream) Recv() (Event, error) {
@@ -833,6 +837,8 @@ func (s *callbackStream) Recv() (Event, error) {
 		s.reasoning.Reset()
 		s.reasoningItemID = ""
 		s.reasoningEncrypted = ""
+		s.reasoningKind = ""
+		s.reasoningSummaryParts = nil
 		s.metrics = TurnMetrics{}
 		return event, nil
 	}
@@ -848,12 +854,19 @@ func (s *callbackStream) Recv() (Event, error) {
 	if event.Type == EventReasoningDelta {
 		if event.Text != "" {
 			s.reasoning.WriteString(event.Text)
+			s.reasoningKind = MergeReasoningKind(s.reasoningKind, event.ReasoningKind)
+		}
+		if len(event.ReasoningSummaryParts) > 0 {
+			// Last-write-wins: Responses emits the full summary parts array on each delta.
+			s.reasoningSummaryParts = append([]string(nil), event.ReasoningSummaryParts...)
+			s.reasoningKind = MergeReasoningKind(s.reasoningKind, ReasoningKindSummary)
 		}
 		if event.ReasoningItemID != "" {
 			s.reasoningItemID = event.ReasoningItemID
 		}
 		if event.ReasoningEncryptedContent != "" {
 			s.reasoningEncrypted = event.ReasoningEncryptedContent
+			s.reasoningKind = MergeReasoningKind(s.reasoningKind, event.ReasoningKind)
 		}
 	}
 
@@ -869,7 +882,19 @@ func (s *callbackStream) fireCallback() {
 	)
 
 	s.mu.Lock()
-	if s.callback != nil && !s.done && (s.text.Len() > 0 || s.reasoning.Len() > 0 || s.reasoningItemID != "" || s.reasoningEncrypted != "") {
+	if s.callback != nil && !s.done && (s.text.Len() > 0 || s.reasoning.Len() > 0 || len(s.reasoningSummaryParts) > 0 || s.reasoningItemID != "" || s.reasoningEncrypted != "") {
+		reasoningText := s.reasoning.String()
+		reasoningKind := ReasoningKind("")
+		if reasoningText != "" || len(s.reasoningSummaryParts) > 0 || s.reasoningItemID != "" || s.reasoningEncrypted != "" {
+			reasoningKind = NormalizeReasoningKind(s.reasoningKind)
+		}
+		if reasoningText == "" && len(s.reasoningSummaryParts) > 0 {
+			reasoningText = strings.Join(s.reasoningSummaryParts, "\n\n")
+		}
+		reasoningTitle := ""
+		if reasoningKind == ReasoningKindSummary {
+			reasoningTitle = internalreasoning.ParseReasoningSummary(reasoningText).Title
+		}
 		s.done = true
 		cb = s.callback
 		msg = Message{
@@ -877,9 +902,12 @@ func (s *callbackStream) fireCallback() {
 			Parts: []Part{{
 				Type:                      PartText,
 				Text:                      s.text.String(),
-				ReasoningContent:          s.reasoning.String(),
+				ReasoningContent:          reasoningText,
+				ReasoningSummaryParts:     append([]string(nil), s.reasoningSummaryParts...),
 				ReasoningItemID:           s.reasoningItemID,
 				ReasoningEncryptedContent: s.reasoningEncrypted,
+				ReasoningKind:             reasoningKind,
+				ReasoningSummaryTitle:     reasoningTitle,
 			}},
 		}
 		metrics = s.metrics
@@ -947,6 +975,8 @@ func (e *Engine) runSimpleScratchpad(ctx context.Context, req Request, send even
 		var reasoningBuilder strings.Builder
 		var reasoningItemID string
 		var reasoningEncryptedContent string
+		var reasoningSummaryParts []string
+		var reasoningKind ReasoningKind
 		var metrics TurnMetrics
 		var failed error
 
@@ -983,12 +1013,18 @@ func (e *Engine) runSimpleScratchpad(ctx context.Context, req Request, send even
 			case EventReasoningDelta:
 				if event.Text != "" {
 					reasoningBuilder.WriteString(event.Text)
+					reasoningKind = MergeReasoningKind(reasoningKind, event.ReasoningKind)
 				}
 				if event.ReasoningItemID != "" {
 					reasoningItemID = event.ReasoningItemID
 				}
+				if len(event.ReasoningSummaryParts) > 0 {
+					reasoningSummaryParts = append([]string(nil), event.ReasoningSummaryParts...)
+					reasoningKind = MergeReasoningKind(reasoningKind, ReasoningKindSummary)
+				}
 				if event.ReasoningEncryptedContent != "" {
 					reasoningEncryptedContent = event.ReasoningEncryptedContent
+					reasoningKind = MergeReasoningKind(reasoningKind, event.ReasoningKind)
 				}
 				scratchpad = append(scratchpad, event)
 				if err := send.Send(event); err != nil {
@@ -1045,16 +1081,30 @@ func (e *Engine) runSimpleScratchpad(ctx context.Context, req Request, send even
 			continue
 		}
 
-		if textBuilder.Len() == 0 && reasoningBuilder.Len() == 0 && reasoningItemID == "" && reasoningEncryptedContent == "" && priorErr != nil {
+		if textBuilder.Len() == 0 && reasoningBuilder.Len() == 0 && len(reasoningSummaryParts) == 0 && reasoningItemID == "" && reasoningEncryptedContent == "" && priorErr != nil {
 			return priorErr
 		}
-		if turnCallback != nil && (textBuilder.Len() > 0 || reasoningBuilder.Len() > 0 || reasoningItemID != "" || reasoningEncryptedContent != "") {
+		if turnCallback != nil && (textBuilder.Len() > 0 || reasoningBuilder.Len() > 0 || len(reasoningSummaryParts) > 0 || reasoningItemID != "" || reasoningEncryptedContent != "") {
+			reasoningText := reasoningBuilder.String()
+			if reasoningText == "" && len(reasoningSummaryParts) > 0 {
+				reasoningText = strings.Join(reasoningSummaryParts, "\n\n")
+			}
+			if reasoningText != "" || len(reasoningSummaryParts) > 0 || reasoningItemID != "" || reasoningEncryptedContent != "" {
+				reasoningKind = NormalizeReasoningKind(reasoningKind)
+			}
+			reasoningTitle := ""
+			if reasoningKind == ReasoningKindSummary {
+				reasoningTitle = internalreasoning.ParseReasoningSummary(reasoningText).Title
+			}
 			finalMsg := Message{Role: RoleAssistant, Parts: []Part{{
 				Type:                      PartText,
 				Text:                      textBuilder.String(),
-				ReasoningContent:          reasoningBuilder.String(),
+				ReasoningContent:          reasoningText,
+				ReasoningSummaryParts:     append([]string(nil), reasoningSummaryParts...),
 				ReasoningItemID:           reasoningItemID,
 				ReasoningEncryptedContent: reasoningEncryptedContent,
+				ReasoningKind:             reasoningKind,
+				ReasoningSummaryTitle:     reasoningTitle,
 			}}}
 			cbCtx, cancel := callbackContext(ctx)
 			_ = turnCallback(cbCtx, 0, []Message{finalMsg}, metrics)
@@ -1309,6 +1359,8 @@ turnLoop:
 		var reasoningBuilder strings.Builder // For reasoning summary/thinking content
 		var reasoningItemID string
 		var reasoningEncryptedContent string
+		var reasoningSummaryParts []string
+		var reasoningKind ReasoningKind
 		var turnMetrics TurnMetrics
 		var syncToolsExecuted bool     // Track if tools were executed via sync path (MCP)
 		var finishingToolExecuted bool // Track if a finishing tool was executed (agent done)
@@ -1341,8 +1393,10 @@ turnLoop:
 				textBuilder.String(),
 				e.withToolPreview(partial),
 				reasoningBuilder.String(),
+				reasoningSummaryParts,
 				reasoningItemID,
 				reasoningEncryptedContent,
+				reasoningKind,
 			)
 			if len(msg.Parts) == 0 {
 				return
@@ -1396,8 +1450,10 @@ turnLoop:
 					textBuilder.String(),
 					e.withToolPreview(syncToolCalls),
 					reasoningBuilder.String(),
+					reasoningSummaryParts,
 					reasoningItemID,
 					reasoningEncryptedContent,
+					reasoningKind,
 				)
 				maybeCompactAfterLLMCall(append([]Message{assistantMsg}, syncToolResults...))
 				req.Messages = append(req.Messages, assistantMsg)
@@ -1447,8 +1503,10 @@ turnLoop:
 					textBuilder.String(),
 					unregisteredWithInfo,
 					reasoningBuilder.String(),
+					reasoningSummaryParts,
 					reasoningItemID,
 					reasoningEncryptedContent,
+					reasoningKind,
 				)
 				if len(assistantMsg.Parts) > 0 {
 					maybeCompactAfterLLMCall([]Message{assistantMsg})
@@ -1467,8 +1525,10 @@ turnLoop:
 				textBuilder.String(),
 				e.withToolPreview(registered),
 				reasoningBuilder.String(),
+				reasoningSummaryParts,
 				reasoningItemID,
 				reasoningEncryptedContent,
+				reasoningKind,
 			)
 			maybeCompactAfterLLMCall([]Message{assistantMsg})
 			if responseCallback != nil {
@@ -1703,8 +1763,10 @@ turnLoop:
 							textBuilder.String(),
 							e.withToolPreview(ensureToolCallIDs(dedupeToolCalls(assistantCalls))),
 							reasoningBuilder.String(),
+							reasoningSummaryParts,
 							reasoningItemID,
 							reasoningEncryptedContent,
+							reasoningKind,
 						)
 						if len(assistantMsg.Parts) > 0 {
 							checkpointMessages = append(checkpointMessages, assistantMsg)
@@ -1735,13 +1797,19 @@ turnLoop:
 			// Accumulate reasoning for thinking models (OpenRouter)
 			if event.Type == EventReasoningDelta && event.Text != "" {
 				reasoningBuilder.WriteString(event.Text)
+				reasoningKind = MergeReasoningKind(reasoningKind, event.ReasoningKind)
 			}
 			if event.Type == EventReasoningDelta {
+				if len(event.ReasoningSummaryParts) > 0 {
+					reasoningSummaryParts = append([]string(nil), event.ReasoningSummaryParts...)
+					reasoningKind = MergeReasoningKind(reasoningKind, ReasoningKindSummary)
+				}
 				if event.ReasoningItemID != "" {
 					reasoningItemID = event.ReasoningItemID
 				}
 				if event.ReasoningEncryptedContent != "" {
 					reasoningEncryptedContent = event.ReasoningEncryptedContent
+					reasoningKind = MergeReasoningKind(reasoningKind, event.ReasoningKind)
 				}
 				if err := stageOrSendModelEvent(event); err != nil {
 					return err
@@ -1871,17 +1939,16 @@ turnLoop:
 			// Call turnCallback with final text-only response (no tools)
 			// Note: responseCallback is NOT called here because no tool execution follows.
 			// responseCallback is only for persisting assistant messages before tool execution.
-			if textBuilder.Len() > 0 || reasoningBuilder.Len() > 0 || reasoningItemID != "" || reasoningEncryptedContent != "" {
-				finalMsg := Message{
-					Role: RoleAssistant,
-					Parts: []Part{{
-						Type:                      PartText,
-						Text:                      textBuilder.String(),
-						ReasoningContent:          reasoningBuilder.String(),
-						ReasoningItemID:           reasoningItemID,
-						ReasoningEncryptedContent: reasoningEncryptedContent,
-					}},
-				}
+			if textBuilder.Len() > 0 || reasoningBuilder.Len() > 0 || len(reasoningSummaryParts) > 0 || reasoningItemID != "" || reasoningEncryptedContent != "" {
+				finalMsg := buildAssistantMessageWithReasoningMetadata(
+					textBuilder.String(),
+					nil,
+					reasoningBuilder.String(),
+					reasoningSummaryParts,
+					reasoningItemID,
+					reasoningEncryptedContent,
+					reasoningKind,
+				)
 				if softCheckpointInProgress {
 					softCheckpointInProgress = false
 					if err := send.Send(Event{Type: EventPhase, Text: "Compacting context..."}); err != nil {
@@ -1919,8 +1986,10 @@ turnLoop:
 				textBuilder.String(),
 				e.withToolPreview(syncToolCalls),
 				reasoningBuilder.String(),
+				reasoningSummaryParts,
 				reasoningItemID,
 				reasoningEncryptedContent,
+				reasoningKind,
 			)
 			maybeCompactAfterLLMCall(append([]Message{assistantMsg}, syncToolResults...))
 			req.Messages = append(req.Messages, assistantMsg)
@@ -2008,22 +2077,16 @@ turnLoop:
 			// Note: responseCallback is NOT called here because no tool execution follows.
 			// responseCallback is only for persisting assistant messages before tool execution.
 			unregisteredWithInfo := e.withToolPreview(unregistered)
-			var parts []Part
-			if textBuilder.Len() > 0 || reasoningBuilder.Len() > 0 || reasoningItemID != "" || reasoningEncryptedContent != "" {
-				parts = append(parts, Part{
-					Type:                      PartText,
-					Text:                      textBuilder.String(),
-					ReasoningContent:          reasoningBuilder.String(),
-					ReasoningItemID:           reasoningItemID,
-					ReasoningEncryptedContent: reasoningEncryptedContent,
-				})
-			}
-			for i := range unregisteredWithInfo {
-				call := unregisteredWithInfo[i]
-				parts = append(parts, Part{Type: PartToolCall, ToolCall: &call})
-			}
-			if len(parts) > 0 {
-				finalMsg := Message{Role: RoleAssistant, Parts: parts}
+			finalMsg := buildAssistantMessageWithReasoningMetadata(
+				textBuilder.String(),
+				unregisteredWithInfo,
+				reasoningBuilder.String(),
+				reasoningSummaryParts,
+				reasoningItemID,
+				reasoningEncryptedContent,
+				reasoningKind,
+			)
+			if len(finalMsg.Parts) > 0 {
 				maybeCompactAfterLLMCall([]Message{finalMsg})
 				if turnCallback != nil {
 					cbCtx, cancel := callbackContext(ctx)
@@ -2047,8 +2110,10 @@ turnLoop:
 			textBuilder.String(),
 			e.withToolPreview(registered),
 			reasoningBuilder.String(),
+			reasoningSummaryParts,
 			reasoningItemID,
 			reasoningEncryptedContent,
+			reasoningKind,
 		)
 
 		maybeCompactAfterLLMCall([]Message{assistantMsg})
@@ -2179,18 +2244,34 @@ turnLoop:
 // buildAssistantMessage creates an assistant message with text, tool calls, and optional reasoning.
 // The reasoning parameter is for thinking models (OpenRouter reasoning_content).
 func buildAssistantMessage(text string, toolCalls []ToolCall, reasoning string) Message {
-	return buildAssistantMessageWithReasoningMetadata(text, toolCalls, reasoning, "", "")
+	return buildAssistantMessageWithReasoningMetadata(text, toolCalls, reasoning, nil, "", "", ReasoningKindUnknown)
 }
 
-func buildAssistantMessageWithReasoningMetadata(text string, toolCalls []ToolCall, reasoning, reasoningItemID, reasoningEncryptedContent string) Message {
+func buildAssistantMessageWithReasoningMetadata(text string, toolCalls []ToolCall, reasoning string, reasoningSummaryParts []string, reasoningItemID, reasoningEncryptedContent string, reasoningKind ReasoningKind) Message {
 	var parts []Part
-	if text != "" || reasoning != "" || reasoningItemID != "" || reasoningEncryptedContent != "" {
+	if text != "" || reasoning != "" || len(reasoningSummaryParts) > 0 || reasoningItemID != "" || reasoningEncryptedContent != "" {
+		if reasoning == "" && len(reasoningSummaryParts) > 0 {
+			reasoning = strings.Join(reasoningSummaryParts, "\n\n")
+		}
+		hasReasoningMetadata := reasoning != "" || len(reasoningSummaryParts) > 0 || reasoningItemID != "" || reasoningEncryptedContent != ""
+		if hasReasoningMetadata {
+			reasoningKind = NormalizeReasoningKind(reasoningKind)
+		} else {
+			reasoningKind = ""
+		}
+		reasoningTitle := ""
+		if reasoningKind == ReasoningKindSummary {
+			reasoningTitle = internalreasoning.ParseReasoningSummary(reasoning).Title
+		}
 		parts = append(parts, Part{
 			Type:                      PartText,
 			Text:                      text,
 			ReasoningContent:          reasoning,
+			ReasoningSummaryParts:     append([]string(nil), reasoningSummaryParts...),
 			ReasoningItemID:           reasoningItemID,
 			ReasoningEncryptedContent: reasoningEncryptedContent,
+			ReasoningKind:             reasoningKind,
+			ReasoningSummaryTitle:     reasoningTitle,
 		})
 	}
 	for i := range toolCalls {

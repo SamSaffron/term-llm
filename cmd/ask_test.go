@@ -142,6 +142,35 @@ func TestIncrementalRendering(t *testing.T) {
 	}
 }
 
+//go:noinline
+func updateAskModelForReasoningCopyTest(m askStreamModel, event ui.StreamEvent) askStreamModel {
+	updated, _ := m.Update(askStreamEventMsg{event: event})
+	return updated.(askStreamModel)
+}
+
+func TestAskReasoningDoesNotPanicAfterModelCopy(t *testing.T) {
+	model := newAskStreamModel()
+	model.width = 80
+
+	model = updateAskModelForReasoningCopyTest(model, ui.ReasoningEvent(llm.ReasoningKindSummary, "first", "Reading context", "", false, true))
+
+	if got := model.currentReasoningString(); got != "first" {
+		t.Fatalf("expected first reasoning chunk to be accumulated, got %q", got)
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("second reasoning update panicked after model copy: %v", r)
+		}
+	}()
+
+	model = updateAskModelForReasoningCopyTest(model, ui.ReasoningEvent(llm.ReasoningKindSummary, " second", "Reading context", "", false, true))
+
+	if got := model.phase; got != "Reading context" {
+		t.Fatalf("expected reasoning to keep/update status phase, got %q", got)
+	}
+}
+
 func TestAskDoneRendersMarkdown(t *testing.T) {
 	model := newAskStreamModel()
 	model.width = 80
