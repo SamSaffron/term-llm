@@ -286,7 +286,8 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 	searchFromTools, requestedTools, passthroughTools := parseRequestedTools(req.Tools)
 	search := runtime.search || searchFromTools
 	toolChoice := parseToolChoice(req.ToolChoice)
-	serverTools := responseServerTools(runtime, requestedTools, req.IncludeServerTools)
+	includeServerTools := req.IncludeServerTools || isFirstPartyUIResponseRequest(r)
+	serverTools := responseServerTools(runtime, requestedTools, includeServerTools)
 	tools := appendResponsePassthroughTools(serverTools, passthroughTools, runtime.toolMap)
 	if len(tools) == 0 {
 		toolChoice = llm.ToolChoice{}
@@ -451,6 +452,13 @@ func (s *serveServer) populateResponsesToolResultNames(ctx context.Context, sess
 			}
 		}
 	}
+}
+
+func isFirstPartyUIResponseRequest(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	return strings.TrimSpace(r.Header.Get("X-Term-LLM-UI-Version")) != ""
 }
 
 func responseServerTools(runtime *serveRuntime, requested map[string]bool, includeServerTools bool) []llm.ToolSpec {
