@@ -506,6 +506,24 @@ func TestContainNewAgentPrintsNextStepsLastWithWebUI(t *testing.T) {
 	}
 }
 
+func TestContainNewChatGPTWithoutHostAuthAdvertisesReauth(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	containNewTemplate = "agent"
+	if err := containNewCmd.Flags().Set("template", "agent"); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, err := executeRootForContainTest(t, "contain", "new", "noauthbox", "--no-input", "--set", "provider=chatgpt", "--set", "web_port=8484")
+	if err != nil {
+		t.Fatalf("contain new error = %v stderr=%s", err, stderr)
+	}
+	if !strings.Contains(stdout, "ChatGPT auth not seeded") {
+		t.Fatalf("stdout missing reauth hint: %q", stdout)
+	}
+	if !strings.Contains(stdout, "term-llm contain reauth noauthbox") {
+		t.Fatalf("stdout missing reauth command with substituted workspace name: %q", stdout)
+	}
+}
+
 func TestContainImageSyncCommand(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	containImageSyncForce = false

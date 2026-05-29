@@ -1,6 +1,7 @@
 package contain
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/clipboard"
+	"github.com/samsaffron/term-llm/internal/config"
 )
 
 type Runner interface {
@@ -170,6 +172,64 @@ func Rebuild(ctx context.Context, runner Runner, name string, stdout, stderr io.
 	}
 	upArgs := append(append([]string{}, args...), "up", "-d", "--force-recreate")
 	return runner.Run(ctx, "docker", upArgs, RunOptions{Stdout: stdout, Stderr: stderr, Dir: dir})
+}
+
+// Reauth copies the host's chatgpt_oauth.json into a running contain workspace
+// at <workspace>/.config/term-llm/chatgpt_oauth.json so the container's term-llm
+// picks up an already-valid host login without rebuilding the workspace volume.
+func Reauth(ctx context.Context, runner Runner, name string, stdout, stderr io.Writer) error {
+	configDir, err := config.GetConfigDir()
+	if err != nil {
+		return fmt.Errorf("locate host config dir: %w", err)
+	}
+	src := filepath.Join(configDir, "chatgpt_oauth.json")
+	data, err := os.ReadFile(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("no host chatgpt_oauth.json at %s; run 'term-llm auth login chatgpt' on the host first", src)
+		}
+		return fmt.Errorf("read host chatgpt_oauth.json: %w", err)
+	}
+
+	info, dir, err := composeInfoForCommand(name)
+	if err != nil {
+		return err
+	}
+	workspace := strings.TrimSpace(info.Hints.Workspace)
+	if workspace == "" {
+		workspace = "/home/agent"
+	}
+	targetDir := workspace + "/.config/term-llm"
+	target := targetDir + "/chatgpt_oauth.json"
+
+	args, _, err := ComposeBaseArgs(name)
+	if err != nil {
+		return err
+	}
+	service := info.DefaultService()
+	args = append(args, "exec", "-T")
+	if user := info.DefaultUser(service); user != "" {
+		args = append(args, "--user", user)
+	}
+	script := fmt.Sprintf(`set -e
+mkdir -p %q
+umask 077
+cat > %q
+chmod 600 %q
+`, targetDir, target, target)
+	args = append(args, service, "sh", "-c", script)
+
+	fmt.Fprintf(stderr, "Writing host chatgpt_oauth.json into %s:%s\n", name, target)
+	if err := runner.Run(ctx, "docker", args, RunOptions{
+		Stdin:  bytes.NewReader(data),
+		Stdout: stdout,
+		Stderr: stderr,
+		Dir:    dir,
+	}); err != nil {
+		return fmt.Errorf("write chatgpt_oauth.json into container: %w (is the workspace running? try 'term-llm contain start %s')", err, name)
+	}
+	fmt.Fprintln(stderr, "Done. Restart the workspace if a long-running term-llm process (e.g. serve/jobs) cached the previous auth state: term-llm contain restart "+name)
+	return nil
 }
 
 type ShellOptions struct {

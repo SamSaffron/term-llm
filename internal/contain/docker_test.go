@@ -18,6 +18,7 @@ type fakeRunner struct {
 	outputsRun [][]string
 	output     []byte
 	outputs    [][]byte
+	stdin      []byte
 }
 
 func (f *fakeRunner) Run(ctx context.Context, name string, args []string, opts RunOptions) error {
@@ -25,6 +26,13 @@ func (f *fakeRunner) Run(ctx context.Context, name string, args []string, opts R
 	f.args = append([]string(nil), args...)
 	f.runs = append(f.runs, append([]string{name}, args...))
 	f.dir = opts.Dir
+	if opts.Stdin != nil {
+		data, err := io.ReadAll(opts.Stdin)
+		if err != nil {
+			return err
+		}
+		f.stdin = data
+	}
 	return nil
 }
 
@@ -382,5 +390,103 @@ func TestRebuildCommand(t *testing.T) {
 	}
 	if !reflect.DeepEqual(r.runs, want) {
 		t.Fatalf("runs = %#v\nwant %#v", r.runs, want)
+	}
+}
+
+func TestReauthWritesHostOAuthIntoContainer(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tempHome)
+	clearConsoleEnvForContainTest(t)
+
+	configDir := filepath.Join(tempHome, "term-llm")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oauthPayload := []byte(`{"access_token":"abc","refresh_token":"xyz"}`)
+	if err := os.WriteFile(filepath.Join(configDir, "chatgpt_oauth.json"), oauthPayload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := writeComposeForDockerTest(t, "stan", `x-term-llm:
+  default_service: app
+  workspace: /home/agent
+services:
+  app:
+    image: alpine
+    labels:
+      org.term-llm.contain.user: agent
+`)
+	compose := filepath.Join(dir, "compose.yaml")
+	base := []string{"compose", "-f", compose, "--project-directory", dir, "-p", "term-llm-contain-stan"}
+
+	r := &fakeRunner{}
+	if err := Reauth(context.Background(), r, "stan", io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	if r.name != "docker" {
+		t.Fatalf("name = %q", r.name)
+	}
+	if len(r.args) < len(base)+5 {
+		t.Fatalf("args too short: %#v", r.args)
+	}
+	for i, want := range base {
+		if r.args[i] != want {
+			t.Fatalf("args[%d] = %q, want %q (full: %#v)", i, r.args[i], want, r.args)
+		}
+	}
+	tail := r.args[len(base):]
+	wantHead := []string{"exec", "-T", "--user", "agent", "app", "sh", "-c"}
+	for i, want := range wantHead {
+		if tail[i] != want {
+			t.Fatalf("tail[%d] = %q, want %q (full tail: %#v)", i, tail[i], want, tail)
+		}
+	}
+	if len(tail) != len(wantHead)+1 {
+		t.Fatalf("expected exactly one script arg after %v, got tail: %#v", wantHead, tail)
+	}
+	script := tail[len(wantHead)]
+	for _, needle := range []string{
+		"/home/agent/.config/term-llm",
+		"/home/agent/.config/term-llm/chatgpt_oauth.json",
+		"mkdir -p",
+		"umask 077",
+		"chmod 600",
+	} {
+		if !strings.Contains(script, needle) {
+			t.Fatalf("script missing %q:\n%s", needle, script)
+		}
+	}
+	if string(r.stdin) != string(oauthPayload) {
+		t.Fatalf("stdin = %q, want %q", r.stdin, oauthPayload)
+	}
+	if r.dir != dir {
+		t.Fatalf("dir = %q, want %q", r.dir, dir)
+	}
+}
+
+func TestReauthFailsWithoutHostOAuthFile(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	clearConsoleEnvForContainTest(t)
+	writeComposeForDockerTest(t, "stan", `x-term-llm:
+  default_service: app
+  workspace: /home/agent
+services:
+  app:
+    image: alpine
+    labels:
+      org.term-llm.contain.user: agent
+`)
+
+	r := &fakeRunner{}
+	err := Reauth(context.Background(), r, "stan", io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("expected error when host chatgpt_oauth.json is missing")
+	}
+	if !strings.Contains(err.Error(), "chatgpt_oauth.json") {
+		t.Fatalf("error should mention chatgpt_oauth.json, got: %v", err)
+	}
+	if len(r.runs) != 0 {
+		t.Fatalf("expected no docker invocation when host token missing, got: %#v", r.runs)
 	}
 }

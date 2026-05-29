@@ -128,6 +128,26 @@ This is destructive and cannot be undone. You must type YES to continue.`,
 	},
 }
 
+var containReauthCmd = &cobra.Command{
+	Use:   "reauth <name>",
+	Short: "Copy the host's ChatGPT OAuth credentials into a running contain workspace",
+	Long: `Copy the host's chatgpt_oauth.json into a running contain workspace.
+
+This reads ~/.config/term-llm/chatgpt_oauth.json on the host and writes it to
+<workspace>/.config/term-llm/chatgpt_oauth.json inside the container via
+docker compose exec. Useful when 'term-llm contain new' ran before the host
+was signed in, or when you want to share a fresh host login with an existing
+workspace without rebuilding the volume.
+
+The workspace must be running. Long-running processes inside the container
+(serve, jobs) may need a restart to pick up the new credentials.`,
+	Args:              requireContainNameArg,
+	ValidArgsFunction: containWorkspaceNameCompletion,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return contain.Reauth(cmd.Context(), containRunner, args[0], cmd.OutOrStdout(), cmd.ErrOrStderr())
+	},
+}
+
 var containRebuildCmd = &cobra.Command{
 	Use:   "rebuild <name>",
 	Short: "Rebuild workspace images and recreate containers without deleting volumes",
@@ -401,6 +421,25 @@ func printContainNextSteps(cmd *cobra.Command, name string, started bool) {
 	fmt.Fprintf(cmd.OutOrStdout(), "  Run command/recipe: term-llm contain exec %s <cmd-or-recipe> [args...]\n", name)
 	fmt.Fprintf(cmd.OutOrStdout(), "  Force raw command if a recipe collides: term-llm contain exec %s -- <cmd...>\n", name)
 	printContainWebUIInfo(cmd, name)
+	printContainChatGPTReauthHint(cmd, name)
+}
+
+func printContainChatGPTReauthHint(cmd *cobra.Command, name string) {
+	dir, err := contain.ContainerDir(name)
+	if err != nil {
+		return
+	}
+	values, err := readContainEnvFile(filepath.Join(dir, ".env"))
+	if err != nil {
+		return
+	}
+	if strings.TrimSpace(values["TERM_LLM_PROVIDER"]) != "chatgpt" {
+		return
+	}
+	if strings.TrimSpace(values["TERM_LLM_CHATGPT_OAUTH_JSON_B64"]) != "" {
+		return
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "  ChatGPT auth not seeded; after `term-llm auth login chatgpt` on the host run: term-llm contain reauth %s\n", name)
 }
 
 func hasContainExecRecipe(name, recipeName string) bool {
@@ -477,6 +516,7 @@ func init() {
 	containCmd.AddCommand(containRestartCmd)
 	containCmd.AddCommand(containStopCmd)
 	containCmd.AddCommand(containRmCmd)
+	containCmd.AddCommand(containReauthCmd)
 	containCmd.AddCommand(containRebuildCmd)
 	containCmd.AddCommand(containLsCmd)
 	containCmd.AddCommand(containExecCmd)
