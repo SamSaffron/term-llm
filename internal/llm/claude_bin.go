@@ -38,6 +38,24 @@ const claudeDiagnosticLineMaxBytes = 4 * 1024
 // in a failure event. The full length and SHA-256 are always logged.
 const claudeDiagnosticStdinMaxBytes = 128 * 1024
 
+// forcedClaudeCodeIsolationEnv disables Claude Code surfaces that can inject
+// first-party prompt/tool behavior into claude-bin runs. term-llm owns tools,
+// memory, background jobs, and project instructions for this provider; Claude
+// Code is only the authenticated model transport plus MCP client.
+var forcedClaudeCodeIsolationEnv = map[string]string{
+	"CLAUDE_CODE_DISABLE_WORKFLOWS":            "1",
+	"DISABLE_GROWTHBOOK":                       "1",
+	"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+	"CLAUDE_CODE_DISABLE_AGENT_VIEW":           "1",
+	"CLAUDE_CODE_DISABLE_CRON":                 "1",
+	"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS":     "1",
+	"CLAUDE_CODE_DISABLE_AUTO_MEMORY":          "1",
+	"CLAUDE_CODE_DISABLE_CLAUDE_MDS":           "1",
+	"CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS":     "1",
+	"CLAUDE_CODE_DISABLE_ADVISOR_TOOL":         "1",
+	"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS":   "1",
+}
+
 // mcpCallCounter generates unique IDs for MCP tool calls
 var mcpCallCounter atomic.Int64
 
@@ -466,9 +484,9 @@ func (p *ClaudeBinProvider) buildCommandEnv(effort string) []string {
 		if runningAsRoot && key == "IS_SANDBOX" {
 			continue
 		}
-		// Claude Code workflows injected from the user's environment contaminate
-		// term-llm's prompt, so drop any inherited value and force-disable below.
-		if key == "CLAUDE_CODE_DISABLE_WORKFLOWS" {
+		// Claude Code environment flags can enable hidden first-party prompt/tool
+		// surfaces. Drop inherited values and force our isolation defaults below.
+		if _, ok := forcedClaudeCodeIsolationEnv[key]; ok {
 			continue
 		}
 		if len(p.extraEnv) > 0 {
@@ -491,7 +509,7 @@ func (p *ClaudeBinProvider) buildCommandEnv(effort string) []string {
 		if runningAsRoot && k == "IS_SANDBOX" {
 			continue
 		}
-		if k == "CLAUDE_CODE_DISABLE_WORKFLOWS" {
+		if _, ok := forcedClaudeCodeIsolationEnv[k]; ok {
 			continue
 		}
 		filtered = append(filtered, k+"="+v)
@@ -499,9 +517,12 @@ func (p *ClaudeBinProvider) buildCommandEnv(effort string) []string {
 	if runningAsRoot && !envHasTruthy(filtered, "CLAUDE_CODE_BUBBLEWRAP") {
 		filtered = append(filtered, "IS_SANDBOX=1")
 	}
-	// Always disable Claude Code workflows so they cannot bleed into the prompt
-	// term-llm sends; this must win over any inherited or configured value.
-	filtered = append(filtered, "CLAUDE_CODE_DISABLE_WORKFLOWS=1")
+	// Always disable Claude Code features that can bleed first-party prompt/tool
+	// behavior into term-llm runs; these must win over inherited or configured
+	// values.
+	for k, v := range forcedClaudeCodeIsolationEnv {
+		filtered = append(filtered, k+"="+v)
+	}
 	return filtered
 }
 
@@ -614,7 +635,9 @@ func (p *ClaudeBinProvider) commandEnvDebugFields(effort string) (map[string]str
 	if effort != "" {
 		env["CLAUDE_CODE_EFFORT_LEVEL"] = effort
 	}
-	env["CLAUDE_CODE_DISABLE_WORKFLOWS"] = "1"
+	for k, v := range forcedClaudeCodeIsolationEnv {
+		env[k] = v
+	}
 	for k, v := range p.extraEnv {
 		if p.preferOAuth && k == "ANTHROPIC_API_KEY" {
 			continue
@@ -622,7 +645,7 @@ func (p *ClaudeBinProvider) commandEnvDebugFields(effort string) (map[string]str
 		if effort != "" && k == "CLAUDE_CODE_EFFORT_LEVEL" {
 			continue
 		}
-		if k == "CLAUDE_CODE_DISABLE_WORKFLOWS" {
+		if _, ok := forcedClaudeCodeIsolationEnv[k]; ok {
 			continue
 		}
 		env[k] = redactEnvValue(k, v)
