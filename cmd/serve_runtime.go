@@ -59,6 +59,7 @@ type serveRuntime struct {
 	platform             string
 	platformMessages     agents.PlatformMessagesConfig
 	lastInjectedPlatform string
+	jobHandoff           tools.JobHandoffFunc
 }
 
 type runtimeInterruptState struct {
@@ -620,6 +621,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
 	runCtx = tools.ContextWithAskUserUIFunc(runCtx, rt.awaitAskUser)
+	runCtx = tools.ContextWithJobHandoffFunc(runCtx, rt.jobHandoff)
 
 	intState := &runtimeInterruptState{
 		cancel:      runCancel,

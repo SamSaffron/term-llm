@@ -1905,6 +1905,7 @@ func (s *serveServer) runtimeForRequest(ctx context.Context, sessionID string) (
 		if err != nil {
 			return nil, false, err
 		}
+		s.attachJobHandoff(rt, sessionID)
 		return rt, false, nil
 	}
 	// Stateful sessions should persist beyond a single HTTP request, but
@@ -1913,6 +1914,7 @@ func (s *serveServer) runtimeForRequest(ctx context.Context, sessionID string) (
 	if err != nil {
 		return nil, false, err
 	}
+	s.attachJobHandoff(rt, sessionID)
 	return rt, true, nil
 }
 
@@ -1943,6 +1945,7 @@ func (s *serveServer) runtimeForProviderModelRequest(ctx context.Context, sessio
 		if err != nil {
 			return nil, false, err
 		}
+		s.attachJobHandoff(rt, sessionID)
 		return rt, false, nil
 	}
 	// Check persisted session provider before creating/reusing a runtime.
@@ -1972,6 +1975,7 @@ func (s *serveServer) runtimeForProviderModelRequest(ctx context.Context, sessio
 	if existingProvider != "" && providerName != "" && existingProvider != providerName {
 		return nil, false, fmt.Errorf("session %q already uses provider %q (requested %q)", sessionID, existingProvider, providerName)
 	}
+	s.attachJobHandoff(rt, sessionID)
 	return rt, true, nil
 }
 

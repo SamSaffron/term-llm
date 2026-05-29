@@ -21,6 +21,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/procutil"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/tools"
 	_ "modernc.org/sqlite"
 )
 
@@ -312,13 +313,14 @@ type jobsV2LLMRunner struct {
 }
 
 type jobsV2LLMConfig struct {
-	AgentName      string `json:"agent_name"`
-	Instructions   string `json:"instructions"`
-	Progressive    bool   `json:"progressive,omitempty"`
-	StopWhen       string `json:"stop_when,omitempty"`
-	ContinueWith   string `json:"continue_with,omitempty"`
-	PersistSession *bool  `json:"persist_session,omitempty"`
-	SessionID      string `json:"session_id,omitempty"`
+	AgentName        string `json:"agent_name"`
+	Instructions     string `json:"instructions"`
+	Progressive      bool   `json:"progressive,omitempty"`
+	StopWhen         string `json:"stop_when,omitempty"`
+	ContinueWith     string `json:"continue_with,omitempty"`
+	PersistSession   *bool  `json:"persist_session,omitempty"`
+	SessionID        string `json:"session_id,omitempty"`
+	ReplyToSessionID string `json:"reply_to_session_id,omitempty"`
 }
 
 func (c jobsV2LLMConfig) sessionPersistenceEnabled() bool {
@@ -487,6 +489,7 @@ type jobsV2Manager struct {
 	workers  int
 	workerID string
 	runners  map[jobsV2RunnerType]jobsV2Runner
+	onFinish func(run jobsV2Run, job jobsV2Job)
 	// Idle timers are only fallbacks; job/run mutations wake the loops immediately.
 	schedulerIdleDelay time.Duration
 	workerIdleDelay    time.Duration
@@ -1314,6 +1317,14 @@ func (m *jobsV2Manager) finishRun(runID string, status jobsV2RunStatus, result j
 		"input_tokens":  result.InputTokens,
 		"output_tokens": result.OutputTokens,
 	})
+
+	if m.onFinish != nil {
+		if run, runErr := m.GetRun(runID); runErr == nil {
+			if job, jobErr := m.GetJob(run.JobID); jobErr == nil {
+				m.onFinish(run, job)
+			}
+		}
+	}
 
 	if status == jobsV2RunFailed || status == jobsV2RunTimedOut {
 		run, err := m.GetRun(runID)
@@ -2589,9 +2600,150 @@ func (s *serveServer) handleRunV2ByID(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, run)
 }
 
-func newServeJobsV2Manager(cfg *config.Config, workers int) (*jobsV2Manager, error) {
-	_ = cfg
-	return newJobsV2Manager("", workers, newServeJobsExecutor(cfg))
+func newServeJobsV2Manager(cfg *config.Config, workers int, store session.Store) (*jobsV2Manager, error) {
+	mgr, err := newJobsV2Manager("", workers, newServeJobsExecutor(cfg))
+	if err != nil {
+		return nil, err
+	}
+	mgr.onFinish = makeJobReplyHandler(store)
+	return mgr, nil
+}
+
+func (s *serveServer) attachJobHandoff(rt *serveRuntime, sessionID string) {
+	if rt == nil {
+		return
+	}
+	rt.jobHandoff = s.jobHandoffFunc(sessionID, rt.agentName)
+}
+
+func (s *serveServer) jobHandoffFunc(parentSessionID, defaultAgent string) tools.JobHandoffFunc {
+	if s == nil || s.jobsV2 == nil {
+		return nil
+	}
+	return func(ctx context.Context, req tools.JobHandoffRequest) (tools.JobHandoffResult, error) {
+		agentName := strings.TrimSpace(req.AgentName)
+		if agentName == "" {
+			agentName = strings.TrimSpace(defaultAgent)
+		}
+		if agentName == "" && s.cfg.agentName != "" {
+			agentName = s.cfg.agentName
+		}
+		if agentName == "" {
+			return tools.JobHandoffResult{}, fmt.Errorf("agent_name is required")
+		}
+		if s.cfgRef != nil {
+			if _, err := LoadAgent(agentName, s.cfgRef); err != nil {
+				return tools.JobHandoffResult{}, err
+			}
+		}
+
+		timeout := req.TimeoutSeconds
+		if timeout <= 0 {
+			timeout = 2 * 60 * 60
+		}
+		if timeout > 6*60*60 {
+			timeout = 6 * 60 * 60
+		}
+		if timeout < 60 {
+			timeout = 60
+		}
+
+		childSessionID := session.NewID()
+		runnerConfig, _ := json.Marshal(jobsV2LLMConfig{
+			AgentName:        agentName,
+			Instructions:     req.Instructions,
+			SessionID:        childSessionID,
+			ReplyToSessionID: strings.TrimSpace(parentSessionID),
+		})
+		labels, _ := json.Marshal(map[string]string{
+			"kind":                "chat_handoff",
+			"reply_to_session_id": strings.TrimSpace(parentSessionID),
+		})
+		name := strings.TrimSpace(req.Name)
+		if name == "" {
+			name = defaultHandoffJobName(req.Instructions)
+		}
+		job, err := s.jobsV2.CreateJob(jobsV2Job{
+			Name:           name,
+			Enabled:        true,
+			RunnerType:     jobsV2RunnerLLM,
+			RunnerConfig:   runnerConfig,
+			TriggerType:    jobsV2TriggerManual,
+			TriggerConfig:  json.RawMessage(`{}`),
+			TimeoutSeconds: timeout,
+			Labels:         labels,
+		})
+		if err != nil {
+			return tools.JobHandoffResult{}, err
+		}
+		run, err := s.jobsV2.TriggerJob(job.ID)
+		if err != nil {
+			return tools.JobHandoffResult{}, err
+		}
+		return tools.JobHandoffResult{
+			Status:    "started",
+			JobID:     job.ID,
+			RunID:     run.ID,
+			SessionID: childSessionID,
+		}, nil
+	}
+}
+
+func defaultHandoffJobName(instructions string) string {
+	line := strings.TrimSpace(strings.Split(strings.TrimSpace(instructions), "\n")[0])
+	if line == "" {
+		return "chat handoff"
+	}
+	if len(line) > 64 {
+		line = line[:64]
+	}
+	return "handoff: " + line
+}
+
+func makeJobReplyHandler(store session.Store) func(run jobsV2Run, job jobsV2Job) {
+	if store == nil {
+		return nil
+	}
+	return func(run jobsV2Run, job jobsV2Job) {
+		if job.RunnerType != jobsV2RunnerLLM {
+			return
+		}
+		var cfg jobsV2LLMConfig
+		if err := json.Unmarshal(job.RunnerConfig, &cfg); err != nil {
+			return
+		}
+		target := strings.TrimSpace(cfg.ReplyToSessionID)
+		if target == "" {
+			return
+		}
+		body := jobReplyMessage(run, job)
+		if strings.TrimSpace(body) == "" {
+			return
+		}
+		msg := session.NewMessage(target, llm.AssistantText(body), -1)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = store.AddMessage(ctx, target, msg)
+	}
+}
+
+func jobReplyMessage(run jobsV2Run, job jobsV2Job) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Background job `%s` finished with status `%s`.", run.ID, run.Status)
+	if strings.TrimSpace(run.SessionID) != "" {
+		fmt.Fprintf(&b, " Session: `%s`.", run.SessionID)
+	}
+	b.WriteString("\n\n")
+	if strings.TrimSpace(run.Error) != "" {
+		b.WriteString(run.Error)
+		return b.String()
+	}
+	if strings.TrimSpace(run.Response) != "" {
+		b.WriteString(strings.TrimSpace(run.Response))
+		return b.String()
+	}
+	fmt.Fprintf(&b, "Job `%s` completed without a text response.", job.Name)
+	return b.String()
 }
 
 func queryBool(r *http.Request, key string) bool {

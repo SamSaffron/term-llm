@@ -118,6 +118,8 @@ func (r *LocalToolRegistry) registerTool(specName string) error {
 		tool = NewRunAgentScriptTool(r.config, r.limits)
 	case InitiateHandoverToolName:
 		tool = NewInitiateHandoverTool()
+	case JobHandoffToolName:
+		tool = NewJobHandoffTool()
 	default:
 		return NewToolErrorf(ErrInvalidParams, "unimplemented tool: %s", specName)
 	}

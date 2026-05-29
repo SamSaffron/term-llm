@@ -127,6 +127,7 @@ const (
 	SpawnAgentToolName       = "spawn_agent"
 	RunAgentScriptToolName   = "run_agent_script"
 	InitiateHandoverToolName = "initiate_handover"
+	JobHandoffToolName       = "handoff_to_job"
 )
 
 // AllToolNames returns all standard tool spec names that can be registered directly.
@@ -147,6 +148,7 @@ func AllToolNames() []string {
 		SpawnAgentToolName,
 		RunAgentScriptToolName,
 		InitiateHandoverToolName,
+		JobHandoffToolName,
 	}
 }
 

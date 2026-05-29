@@ -122,6 +122,16 @@ term-llm serve web --auth none --host 127.0.0.1
 
 `--allow-no-auth` and `--auth none` are only valid for loopback use. Exposing an unauthenticated server beyond localhost would be idiotic.
 
+## Chat handoff to jobs
+
+When the web server is started with the `jobs` platform, agents can use the `handoff_to_job` tool to move long-running work out of the foreground chat response and into a durable manual LLM job:
+
+```bash
+term-llm serve web jobs
+```
+
+The tool creates and triggers a background job, returns the job/run/session IDs to the chat, and appends the job's final result back to the originating chat session when it finishes. This is intended for long tool-heavy loops where the user should not have to keep a live response open.
+
 ## Useful flags
 
 ```bash

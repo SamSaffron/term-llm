@@ -518,7 +518,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if hasHTTP {
 		var jobsV2 *jobsV2Manager
 		if hasJobs {
-			jobsV2, err = newServeJobsV2Manager(cfg, serveJobsWorkers)
+			jobsV2, err = newServeJobsV2Manager(cfg, serveJobsWorkers, store)
 			if err != nil {
 				return fmt.Errorf("initialize jobs v2 manager: %w", err)
 			}
