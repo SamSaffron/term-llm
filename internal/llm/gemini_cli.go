@@ -62,13 +62,14 @@ type geminiOAuthClientCreds struct {
 }
 
 type geminiCLITextPart struct {
-	Text string `json:"text"`
+	Text    string `json:"text"`
+	Thought bool   `json:"thought,omitempty"`
 }
 
 func collectGeminiCLITextParts(parts []geminiCLITextPart) string {
 	var b strings.Builder
 	for _, part := range parts {
-		if part.Text != "" {
+		if part.Text != "" && !part.Thought {
 			b.WriteString(part.Text)
 		}
 	}

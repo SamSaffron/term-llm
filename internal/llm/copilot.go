@@ -349,6 +349,7 @@ func (p *CopilotProvider) streamChatCompletions(ctx context.Context, req Request
 		toolState := newCompatToolState()
 		var lastUsage *Usage
 		var lastEventType string
+		sawVisibleText := false
 		unmarshalErrors := 0
 
 		for scanner.Scan() {
@@ -404,8 +405,22 @@ func (p *CopilotProvider) streamChatCompletions(ctx context.Context, req Request
 			}
 			for _, choice := range chatResp.Choices {
 				if choice.Delta != nil {
+					reasoningDelta := choice.Delta.Reasoning
+					if reasoningDelta == "" {
+						reasoningDelta = choice.Delta.ReasoningContent
+					}
 					if content, ok := choice.Delta.Content.(string); ok && content != "" {
-						if err := send.Send(Event{Type: EventTextDelta, Text: content}); err != nil {
+						if !isLeadingReasoningWhitespaceArtifact(content, reasoningDelta, sawVisibleText) {
+							if hasVisibleTextDelta(content) {
+								sawVisibleText = true
+							}
+							if err := send.Send(Event{Type: EventTextDelta, Text: content}); err != nil {
+								return err
+							}
+						}
+					}
+					if reasoningDelta != "" {
+						if err := send.Send(Event{Type: EventReasoningDelta, Text: reasoningDelta, ReasoningKind: ReasoningKindRaw}); err != nil {
 							return err
 						}
 					}

@@ -348,6 +348,7 @@ func (p *OllamaProvider) Stream(ctx context.Context, req Request) (Stream, error
 
 		var pendingToolCalls []ollamaToolCall
 		var lastUsage *Usage
+		sawVisibleText := false
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -371,8 +372,13 @@ func (p *OllamaProvider) Stream(ctx context.Context, req Request) (Stream, error
 			}
 
 			if chunk.Message.Content != "" {
-				if err := send.Send(Event{Type: EventTextDelta, Text: chunk.Message.Content}); err != nil {
-					return err
+				if !isLeadingReasoningWhitespaceArtifact(chunk.Message.Content, chunk.Message.Thinking, sawVisibleText) {
+					if hasVisibleTextDelta(chunk.Message.Content) {
+						sawVisibleText = true
+					}
+					if err := send.Send(Event{Type: EventTextDelta, Text: chunk.Message.Content}); err != nil {
+						return err
+					}
 				}
 			}
 

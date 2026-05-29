@@ -128,6 +128,7 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 		tagStripper := newXAITagStripper()
 		var lastUsage *Usage
 		var lastEventType string
+		sawVisibleText := false
 
 		for {
 			line, eof, err := readSSELine(reader)
@@ -183,14 +184,36 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 					ReasoningTokens:        chatResp.Usage.CompletionTokensDetails.ReasoningTokens,
 				}
 			}
+			emitStrippedText := func(content string) error {
+				stripped := tagStripper.Add(content)
+				if stripped == "" {
+					return nil
+				}
+				if hasVisibleTextDelta(stripped) {
+					sawVisibleText = true
+				}
+				return send.Send(Event{Type: EventTextDelta, Text: stripped})
+			}
+
 			for _, choice := range chatResp.Choices {
 				if choice.Delta != nil {
+					reasoningDelta := choice.Delta.Reasoning
+					if reasoningDelta == "" {
+						reasoningDelta = choice.Delta.ReasoningContent
+					}
 					if content, ok := choice.Delta.Content.(string); ok && content != "" {
-						// Use buffered tag stripper to handle tags split across chunks
-						if stripped := tagStripper.Add(content); stripped != "" {
-							if err := send.Send(Event{Type: EventTextDelta, Text: stripped}); err != nil {
+						if !isLeadingReasoningWhitespaceArtifact(content, reasoningDelta, sawVisibleText) {
+							// Use buffered tag stripper to handle tags split across chunks.
+							// Track sawVisibleText from what is actually emitted, not raw
+							// provider content that might be stripped or held back.
+							if err := emitStrippedText(content); err != nil {
 								return err
 							}
+						}
+					}
+					if reasoningDelta != "" {
+						if err := send.Send(Event{Type: EventReasoningDelta, Text: reasoningDelta, ReasoningKind: ReasoningKindRaw}); err != nil {
+							return err
 						}
 					}
 					if len(choice.Delta.ToolCalls) > 0 {
@@ -198,11 +221,20 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 					}
 				}
 				if choice.Message != nil {
+					reasoning := choice.Message.Reasoning
+					if reasoning == "" {
+						reasoning = choice.Message.ReasoningContent
+					}
 					if content, ok := choice.Message.Content.(string); ok && content != "" {
-						if stripped := tagStripper.Add(content); stripped != "" {
-							if err := send.Send(Event{Type: EventTextDelta, Text: stripped}); err != nil {
+						if !isLeadingReasoningWhitespaceArtifact(content, reasoning, sawVisibleText) {
+							if err := emitStrippedText(content); err != nil {
 								return err
 							}
+						}
+					}
+					if reasoning != "" {
+						if err := send.Send(Event{Type: EventReasoningDelta, Text: reasoning, ReasoningKind: ReasoningKindRaw}); err != nil {
+							return err
 						}
 					}
 				}

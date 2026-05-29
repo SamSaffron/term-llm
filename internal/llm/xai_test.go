@@ -99,6 +99,75 @@ func TestXAIStreamStandard_AllowsLargeSSEDataLines(t *testing.T) {
 	}
 }
 
+func TestXAIStreamStandard_SuppressesReasoningWhitespaceAfterBufferedTag(t *testing.T) {
+	origClient := defaultHTTPClient
+	defer func() {
+		defaultHTTPClient = origClient
+	}()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w,
+			"data: {\"choices\":[{\"delta\":{\"content\":\"<has_function_call>\"}}]}\n\n"+
+				"data: {\"choices\":[{\"delta\":{\"content\":\"\\n\\n\",\"reasoning_content\":\"thinking\"}}]}\n\n"+
+				"data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n"+
+				"data: [DONE]\n\n",
+		)
+	}))
+	defer server.Close()
+
+	serverURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	defaultHTTPClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			cloned := req.Clone(req.Context())
+			urlCopy := *req.URL
+			cloned.URL = &urlCopy
+			cloned.URL.Scheme = serverURL.Scheme
+			cloned.URL.Host = serverURL.Host
+			return server.Client().Transport.RoundTrip(cloned)
+		}),
+	}
+
+	provider := NewXAIProvider("test-key", "test-model")
+	stream, err := provider.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	var gotText, gotReasoning strings.Builder
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv: %v", err)
+		}
+		switch event.Type {
+		case EventTextDelta:
+			gotText.WriteString(event.Text)
+		case EventReasoningDelta:
+			gotReasoning.WriteString(event.Text)
+		case EventError:
+			t.Fatalf("unexpected stream error: %v", event.Err)
+		}
+	}
+
+	if gotText.String() != "hello" {
+		t.Fatalf("text = %q, want tag stripped and reasoning whitespace artifact suppressed", gotText.String())
+	}
+	if gotReasoning.String() != "thinking" {
+		t.Fatalf("reasoning = %q, want preserved reasoning", gotReasoning.String())
+	}
+}
+
 func TestXAIStreamWithSearch_AllowsLargeSSEDataLines(t *testing.T) {
 	origClient := defaultHTTPClient
 	defer func() {

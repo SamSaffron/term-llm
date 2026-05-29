@@ -230,6 +230,48 @@ func TestOpenAICompatStream_SuppressesLeadingWhitespaceOnlyContentDeltas(t *test
 	}
 }
 
+func TestOpenAICompatStream_PreservesLeadingWhitespaceOnlyContentWithoutReasoning(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w,
+			"data: {\"choices\":[{\"delta\":{\"content\":\"  \"}}]}\n\n"+
+				"data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n"+
+				"data: [DONE]\n\n",
+		)
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatProvider(server.URL, "", "test-model", "Test")
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "hello"}}}},
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	var gotText string
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv: %v", err)
+		}
+		switch event.Type {
+		case EventTextDelta:
+			gotText += event.Text
+		case EventError:
+			t.Fatalf("unexpected stream error: %v", event.Err)
+		}
+	}
+
+	if gotText != "  hello" {
+		t.Fatalf("expected leading whitespace without reasoning to be preserved, got %q", gotText)
+	}
+}
+
 func TestOpenAICompatStream_HandlesMultiLineSSEPayload(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

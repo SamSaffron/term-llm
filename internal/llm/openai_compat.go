@@ -630,28 +630,29 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 					sawToolCallsFinish = true
 				}
 				if choice.Delta != nil {
-					if content, ok := choice.Delta.Content.(string); ok && content != "" {
-						// Some OpenAI-compatible reasoning models emit a pure-whitespace
-						// assistant content prefix (commonly "\n\n") before tool calls while
-						// putting the real content in reasoning/reasoning_content. Forwarding
-						// that prefix creates visible blank gaps before tool status rows. Keep
-						// whitespace once visible text has started, but suppress leading
-						// whitespace-only chunks.
-						if sawVisibleText || strings.TrimSpace(content) != "" {
-							if strings.TrimSpace(content) != "" {
-								sawVisibleText = true
-							}
-							if err := send.Send(Event{Type: EventTextDelta, Text: content}); err != nil {
-								return err
-							}
-						}
-					}
 					// Capture reasoning from thinking models. Different OpenAI-compatible
 					// backends use either "reasoning" (OpenRouter) or
 					// "reasoning_content" (DeepSeek) in streaming deltas.
 					reasoningDelta := choice.Delta.Reasoning
 					if reasoningDelta == "" {
 						reasoningDelta = choice.Delta.ReasoningContent
+					}
+					if content, ok := choice.Delta.Content.(string); ok && content != "" {
+						// Some OpenAI-compatible reasoning models emit a pure-whitespace
+						// assistant content prefix (commonly "\n\n") in the same delta as
+						// reasoning_content. That prefix is an artifact of the hidden-thinking
+						// channel and creates visible blank gaps before tool status rows. Do not
+						// globally trim leading whitespace: only suppress this known reasoning
+						// artifact, and preserve whitespace once visible text has started.
+						isReasoningWhitespaceArtifact := isLeadingReasoningWhitespaceArtifact(content, reasoningDelta, sawVisibleText)
+						if !isReasoningWhitespaceArtifact {
+							if hasVisibleTextDelta(content) {
+								sawVisibleText = true
+							}
+							if err := send.Send(Event{Type: EventTextDelta, Text: content}); err != nil {
+								return err
+							}
+						}
 					}
 					if reasoningDelta != "" {
 						reasoningBuilder.WriteString(reasoningDelta)

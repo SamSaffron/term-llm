@@ -181,6 +181,51 @@ func TestOllamaProviderStreamThink(t *testing.T) {
 	}
 }
 
+func TestOllamaProviderStreamSuppressesLeadingReasoningWhitespaceArtifact(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		for _, chunk := range []string{
+			`{"model":"qwen3:14b","message":{"role":"assistant","content":"\n\n","thinking":"thinking"},"done":false}`,
+			`{"model":"qwen3:14b","message":{"role":"assistant","content":"hello"},"done":false}`,
+			`{"model":"qwen3:14b","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop"}`,
+		} {
+			fmt.Fprintln(w, chunk)
+		}
+	}))
+	defer srv.Close()
+
+	think := true
+	p := NewOllamaChatProvider(srv.URL, "qwen3:14b", OllamaOptions{Think: &think})
+	stream, err := p.Stream(context.Background(), Request{Messages: []Message{UserText("hello")}})
+	if err != nil {
+		t.Fatalf("Stream error: %v", err)
+	}
+	defer stream.Close()
+
+	var gotText, gotReasoning string
+	for {
+		event, err := stream.Recv()
+		if err != nil {
+			break
+		}
+		switch event.Type {
+		case EventTextDelta:
+			gotText += event.Text
+		case EventReasoningDelta:
+			gotReasoning += event.Text
+		case EventError:
+			t.Fatalf("unexpected error event: %v", event.Err)
+		}
+	}
+
+	if gotText != "hello" {
+		t.Fatalf("text = %q, want reasoning whitespace artifact suppressed", gotText)
+	}
+	if gotReasoning != "thinking" {
+		t.Fatalf("reasoning = %q, want preserved reasoning", gotReasoning)
+	}
+}
+
 func TestOllamaProviderStreamThinkSuffix(t *testing.T) {
 	var capturedModel string
 	var capturedThink *bool

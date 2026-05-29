@@ -129,6 +129,7 @@ func (p *VeniceProvider) Stream(ctx context.Context, req Request) (Stream, error
 		var lastUsage *Usage
 		var lastEventType string
 		var reasoningBuilder strings.Builder
+		sawVisibleText := false
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -172,14 +173,23 @@ func (p *VeniceProvider) Stream(ctx context.Context, req Request) (Stream, error
 			}
 			for _, choice := range chatResp.Choices {
 				if choice.Delta != nil {
+					reasoningDelta := choice.Delta.Reasoning
+					if reasoningDelta == "" {
+						reasoningDelta = choice.Delta.ReasoningContent
+					}
 					if content, ok := choice.Delta.Content.(string); ok && content != "" {
-						if err := send.Send(Event{Type: EventTextDelta, Text: content}); err != nil {
-							return err
+						if !isLeadingReasoningWhitespaceArtifact(content, reasoningDelta, sawVisibleText) {
+							if hasVisibleTextDelta(content) {
+								sawVisibleText = true
+							}
+							if err := send.Send(Event{Type: EventTextDelta, Text: content}); err != nil {
+								return err
+							}
 						}
 					}
-					if choice.Delta.Reasoning != "" {
-						reasoningBuilder.WriteString(choice.Delta.Reasoning)
-						if err := send.Send(Event{Type: EventReasoningDelta, Text: choice.Delta.Reasoning, ReasoningKind: ReasoningKindRaw}); err != nil {
+					if reasoningDelta != "" {
+						reasoningBuilder.WriteString(reasoningDelta)
+						if err := send.Send(Event{Type: EventReasoningDelta, Text: reasoningDelta, ReasoningKind: ReasoningKindRaw}); err != nil {
 							return err
 						}
 					}

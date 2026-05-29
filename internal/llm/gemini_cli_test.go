@@ -51,9 +51,10 @@ func TestBuildGeminiCLIContents_DropsDanglingToolCalls(t *testing.T) {
 	}
 }
 
-func TestCollectGeminiCLITextParts_ConcatenatesAllTextParts(t *testing.T) {
+func TestCollectGeminiCLITextParts_ConcatenatesNonThoughtTextParts(t *testing.T) {
 	got := collectGeminiCLITextParts([]geminiCLITextPart{
 		{Text: "first"},
+		{Text: " hidden", Thought: true},
 		{Text: " second"},
 		{Text: ""},
 		{Text: " third"},
