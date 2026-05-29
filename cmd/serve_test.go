@@ -2276,6 +2276,18 @@ func (e *secondEchoTool) Execute(_ context.Context, _ json.RawMessage) (llm.Tool
 
 func (e *secondEchoTool) Preview(_ json.RawMessage) string { return "" }
 
+func TestResponseServerTools_FirstPartyUIHeaderIncludesServerTools(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/chat/v1/responses", nil)
+	if isFirstPartyUIResponseRequest(req) {
+		t.Fatal("request without UI version header was treated as first-party UI")
+	}
+
+	req.Header.Set("X-Term-LLM-UI-Version", "a154f9083d98")
+	if !isFirstPartyUIResponseRequest(req) {
+		t.Fatal("request with UI version header was not treated as first-party UI")
+	}
+}
+
 func TestResponseServerTools_IncludeServerToolsKeepsAllRegisteredTools(t *testing.T) {
 	registry := llm.NewToolRegistry()
 	registry.Register(&echoTool{})
