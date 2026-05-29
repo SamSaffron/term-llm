@@ -3600,6 +3600,7 @@ const sendMessage = async (options = {}) => {
 
     const body = {
       stream: true,
+      include_server_tools: true,
       input: [{ type: 'message', role: 'user', content: inputContent }]
     };
 

@@ -895,6 +895,40 @@ async function testSendMessageUsesLocalContinuationIdWithoutPreflightSync() {
     fail(name, `previous_response_id = ${JSON.stringify(body.previous_response_id)}, want ${JSON.stringify(lastResponseId)}`, postCall.body);
     return;
   }
+  if (body.include_server_tools !== true) {
+    fail(name, `include_server_tools = ${JSON.stringify(body.include_server_tools)}, want true`, postCall.body);
+    return;
+  }
+
+  pass(name);
+}
+
+async function testSendMessageIncludesServerToolsForFirstPartyUI() {
+  const name = 'sendMessage includes server tools for first-party UI responses';
+  const harness = createHarness();
+  const { app, elements, fetchCalls, cleanup } = harness;
+  elements.promptInput.value = 'use a tool';
+
+  let sendErr = null;
+  await app.sendMessage().catch((err) => {
+    sendErr = err;
+  });
+  await cleanup();
+
+  if (sendErr) {
+    fail(name, 'sendMessage rejected unexpectedly', String(sendErr));
+    return;
+  }
+  const postCall = fetchCalls.find((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  if (!postCall || !postCall.body) {
+    fail(name, 'missing POST /ui/v1/responses body', JSON.stringify(fetchCalls));
+    return;
+  }
+  const body = JSON.parse(postCall.body);
+  if (body.include_server_tools !== true) {
+    fail(name, `include_server_tools = ${JSON.stringify(body.include_server_tools)}, want true`, postCall.body);
+    return;
+  }
 
   pass(name);
 }
@@ -3288,6 +3322,7 @@ function testRestoreLatestDraftMessageDoesNotCrossSessionBoundary() {
   await testConsumeResponseStreamReportsStaleWithoutApplyingEvents();
   await testSendMessageDoesNotResumeAfterStalePostStream();
   await testSendMessageUsesLocalContinuationIdWithoutPreflightSync();
+  await testSendMessageIncludesServerToolsForFirstPartyUI();
   await testSendMessageRecoversStaleContinuationAfterConflict();
   await testSendMessageConsumesPostStreamWhenAvailable();
   await testSendMessageRefreshesHeaderAfterCompletionUnlocksModelPicker();
