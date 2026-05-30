@@ -1,0 +1,31 @@
+# Local runit package built from the Void Linux source tree.
+#
+# Arch ships no runit in the official repos, and the stock AUR PKGBUILD fetches
+# the upstream tarball from smarden.org, which is frequently unreachable. The
+# Void fork carries modern compiler fixes while preserving runit's semantics, so
+# we build from it here and let pacman own the resulting binaries rather than
+# scattering them under /usr/local/bin.
+pkgname=runit
+pkgver=2.1.2
+pkgrel=1
+pkgdesc='UNIX init scheme with service supervision (Void Linux source)'
+arch=('x86_64' 'aarch64')
+url='https://github.com/void-linux/runit'
+license=('BSD')
+makedepends=('git')
+provides=('runit')
+source=('runit::git+https://github.com/void-linux/runit.git')
+sha256sums=('SKIP')
+
+build() {
+	cd "$srcdir/runit/src"
+	printf '%s\n' 'gcc -std=gnu17 -O2 -Wall -Wno-error=incompatible-pointer-types -Wno-error=implicit-function-declaration' > conf-cc
+	sed -i '1i#include <grp.h>' chkshsgr.c
+	make
+}
+
+package() {
+	cd "$srcdir/runit/src"
+	install -d "$pkgdir/usr/bin"
+	install -m0755 chpst runit runit-init runsv runsvchdir runsvdir sv svlogd utmpset "$pkgdir/usr/bin/"
+}

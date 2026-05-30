@@ -47,7 +47,7 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 			t.Fatalf("Dockerfile.fedora missing %q", want)
 		}
 	}
-	for _, rel := range []string{"entrypoint.sh", "bootstrap/bootstrap.yaml", "bootstrap/system.md", "bootstrap/soul.md", "bootstrap/services/webui/run", "bootstrap/services/jobs/run", "bootstrap/services/bootstrap-jobs/run", "bootstrap/skills/memory/SKILL.md", "bootstrap/skills/jobs/SKILL.md", "bootstrap/skills/self/SKILL.md", "bootstrap/skills/widgets/SKILL.md", "bootstrap/memory/recent.md", "bootstrap/scripts/update.sh", "bootstrap/scripts/patch-system.sh", "bootstrap/scripts/patch-soul.sh", "bootstrap/scripts/patch-agent.sh"} {
+	for _, rel := range []string{"entrypoint.sh", "packaging/runit/PKGBUILD", "bootstrap/bootstrap.yaml", "bootstrap/system.md", "bootstrap/soul.md", "bootstrap/services/webui/run", "bootstrap/services/jobs/run", "bootstrap/services/bootstrap-jobs/run", "bootstrap/skills/memory/SKILL.md", "bootstrap/skills/jobs/SKILL.md", "bootstrap/skills/self/SKILL.md", "bootstrap/skills/widgets/SKILL.md", "bootstrap/memory/recent.md", "bootstrap/scripts/update.sh", "bootstrap/scripts/patch-system.sh", "bootstrap/scripts/patch-soul.sh", "bootstrap/scripts/patch-agent.sh"} {
 		data, err := os.ReadFile(filepath.Join(result.Dir, rel))
 		if err != nil {
 			t.Fatalf("missing synced asset %s: %v", rel, err)

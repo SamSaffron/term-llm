@@ -92,7 +92,7 @@ RUN useradd -m -s /bin/zsh -G wheel agent && \
     chown agent:agent /home/agent/.zshrc && \
     sudo -Hu agent playwright install chromium
 
-# Unprivileged user for AUR builds (makepkg refuses root)
+# Unprivileged user for AUR builds (makepkg refuses to run as root).
 RUN useradd -m -G wheel aur && \
     echo "aur ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/aur && \
     chmod 0440 /etc/sudoers.d/aur
@@ -104,8 +104,15 @@ RUN sudo -u aur bash -c " \
       makepkg -si --noconfirm && \
       rm -rf /tmp/yay"
 
-# runit is AUR-only on Arch
-RUN sudo -u aur yay -S --noconfirm runit
+# runit, packaged from Void Linux's maintained tree so pacman owns every binary.
+# The stock AUR runit PKGBUILD pulls its source tarball from smarden.org, which
+# is frequently unreachable; this local PKGBUILD points at the Void fork (modern
+# compiler fixes, same runit semantics) and installs via makepkg, so no stray
+# binaries land under /usr/local/bin.
+COPY packaging/runit/PKGBUILD /tmp/runit-pkg/PKGBUILD
+RUN chown -R aur:aur /tmp/runit-pkg && \
+    sudo -u aur bash -c "cd /tmp/runit-pkg && makepkg -si --noconfirm" && \
+    rm -rf /tmp/runit-pkg
 
 # mise (polyglot version manager — node, python, ruby, etc.)
 RUN curl https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh
