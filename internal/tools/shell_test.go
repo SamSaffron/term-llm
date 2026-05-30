@@ -235,6 +235,44 @@ func TestShellTool_WorkingDir(t *testing.T) {
 	}
 }
 
+// TestShellTool_DefaultWorkingDirFromConfig verifies that ShellWorkingDir roots
+// the shell tool's command execution (exec.Cmd.Dir) when the call omits
+// working_dir — the per-run rooting used by the jobs server to honor a job's
+// cwd without a process-wide os.Chdir. An explicit working_dir still wins.
+func TestShellTool_DefaultWorkingDirFromConfig(t *testing.T) {
+	rootDir := t.TempDir()
+
+	t.Run("config default used when call omits working_dir", func(t *testing.T) {
+		tool := NewShellTool(nil, &ToolConfig{ShellWorkingDir: rootDir}, DefaultOutputLimits())
+		args := mustMarshalShellArgs(ShellArgs{Command: "pwd"})
+
+		output, err := tool.Execute(context.Background(), args)
+		if err != nil {
+			t.Fatalf("Execute returned error: %v", err)
+		}
+		if !strings.Contains(output.Content, rootDir) {
+			t.Errorf("expected shell rooted at config dir %q, got: %s", rootDir, output.Content)
+		}
+		if !strings.Contains(output.Content, "exit_code: 0") {
+			t.Errorf("expected exit_code: 0 in output, got: %s", output.Content)
+		}
+	})
+
+	t.Run("explicit working_dir overrides config default", func(t *testing.T) {
+		callDir := t.TempDir()
+		tool := NewShellTool(nil, &ToolConfig{ShellWorkingDir: rootDir}, DefaultOutputLimits())
+		args := mustMarshalShellArgs(ShellArgs{Command: "pwd", WorkingDir: callDir})
+
+		output, err := tool.Execute(context.Background(), args)
+		if err != nil {
+			t.Fatalf("Execute returned error: %v", err)
+		}
+		if !strings.Contains(output.Content, callDir) {
+			t.Errorf("expected explicit working_dir %q to win over config dir, got: %s", callDir, output.Content)
+		}
+	})
+}
+
 func TestShellTool_WorkingDirIsFile(t *testing.T) {
 	tool := NewShellTool(nil, nil, DefaultOutputLimits())
 

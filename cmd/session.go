@@ -50,6 +50,11 @@ type SessionSettings struct {
 	// Agent directory (for run_agent_script and custom tools)
 	AgentDir string
 
+	// ShellWorkingDir roots the shell tool's command execution (exec.Cmd.Dir) at
+	// a per-run directory without a process-wide os.Chdir. Empty preserves the
+	// default (the process working directory).
+	ShellWorkingDir string
+
 	// CustomTools holds script-backed custom tool definitions from agent.yaml
 	CustomTools []agents.CustomToolDef
 
@@ -427,6 +432,9 @@ func (s *SessionSettings) SetupToolManager(cfg *config.Config, engine *llm.Engin
 	applySpawnConfig(&toolConfig, s.Spawn)
 	if len(s.Scripts) > 0 {
 		toolConfig.ScriptCommands = append(toolConfig.ScriptCommands, s.Scripts...)
+	}
+	if s.ShellWorkingDir != "" {
+		toolConfig.ShellWorkingDir = s.ShellWorkingDir
 	}
 
 	if errs := toolConfig.Validate(); len(errs) > 0 {
