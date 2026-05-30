@@ -176,6 +176,67 @@ func (l ripgrepCaptureLimits) normalize() ripgrepCaptureLimits {
 	return l
 }
 
+func captureRipgrepOutput(stdout io.Reader, kill func() error, limits ripgrepCaptureLimits) ([]byte, bool, error) {
+	limits = limits.normalize()
+
+	var out bytes.Buffer
+	var lineBuf bytes.Buffer
+	reader := bufio.NewReader(stdout)
+	lineCount := 0
+	truncated := false
+
+	flushLine := func() {
+		lineCount++
+		if lineCount > limits.maxOutputLines || out.Len()+lineBuf.Len() > limits.maxBufferedBytes {
+			truncated = true
+			if kill != nil {
+				_ = kill()
+			}
+			lineBuf.Reset()
+			return
+		}
+		_, _ = out.Write(lineBuf.Bytes())
+		lineBuf.Reset()
+	}
+
+	for {
+		fragment, readErr := reader.ReadSlice('\n')
+		if len(fragment) > 0 {
+			if out.Len()+lineBuf.Len()+len(fragment) > limits.maxBufferedBytes {
+				truncated = true
+				if kill != nil {
+					_ = kill()
+				}
+				break
+			}
+			_, _ = lineBuf.Write(fragment)
+		}
+
+		if readErr != nil {
+			if errors.Is(readErr, bufio.ErrBufferFull) {
+				continue
+			}
+			if errors.Is(readErr, io.EOF) {
+				if lineBuf.Len() > 0 {
+					flushLine()
+				}
+				break
+			}
+			if kill != nil {
+				_ = kill()
+			}
+			return nil, false, readErr
+		}
+
+		flushLine()
+		if truncated {
+			break
+		}
+	}
+
+	return out.Bytes(), truncated, nil
+}
+
 func runRipgrep(ctx context.Context, args []string, limits ripgrepCaptureLimits) ([]byte, bool, error) {
 	limits = limits.normalize()
 	cmd := exec.CommandContext(ctx, "rg", args...)
@@ -198,32 +259,11 @@ func runRipgrep(ctx context.Context, args []string, limits ripgrepCaptureLimits)
 		stderrCh <- data
 	}()
 
-	var out bytes.Buffer
-	reader := bufio.NewReader(stdout)
-	lineCount := 0
-	truncated := false
-
-	for {
-		line, readErr := reader.ReadBytes('\n')
-		if len(line) > 0 {
-			lineCount++
-			if lineCount > limits.maxOutputLines || out.Len()+len(line) > limits.maxBufferedBytes {
-				truncated = true
-				_ = cmd.Process.Kill()
-				break
-			}
-			out.Write(line)
-		}
-
-		if readErr != nil {
-			if errors.Is(readErr, io.EOF) {
-				break
-			}
-			_ = cmd.Process.Kill()
-			<-stderrCh
-			_ = cmd.Wait()
-			return nil, false, readErr
-		}
+	out, truncated, err := captureRipgrepOutput(stdout, cmd.Process.Kill, limits)
+	if err != nil {
+		<-stderrCh
+		_ = cmd.Wait()
+		return nil, false, err
 	}
 
 	waitErr := cmd.Wait()
@@ -231,7 +271,7 @@ func runRipgrep(ctx context.Context, args []string, limits ripgrepCaptureLimits)
 
 	if waitErr != nil {
 		if truncated {
-			return out.Bytes(), true, nil
+			return out, true, nil
 		}
 		if ctx.Err() != nil {
 			return nil, false, ctx.Err()
@@ -246,7 +286,7 @@ func runRipgrep(ctx context.Context, args []string, limits ripgrepCaptureLimits)
 		return nil, false, waitErr
 	}
 
-	return out.Bytes(), truncated, nil
+	return out, truncated, nil
 }
 
 // executeRipgrep runs ripgrep and returns matches.

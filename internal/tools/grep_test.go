@@ -4,12 +4,24 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+type countingReader struct {
+	reader    io.Reader
+	bytesRead int
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	r.bytesRead += n
+	return n, err
+}
 
 func TestGrepTool_UsesFilePath(t *testing.T) {
 	dir := t.TempDir()
@@ -142,6 +154,52 @@ func TestBuildRipgrepArgs_FilesWithMatchesOmitsJSONFlags(t *testing.T) {
 		if strings.Contains(joined, unwanted) {
 			t.Fatalf("did not expect %q in args: %s", unwanted, joined)
 		}
+	}
+}
+
+func TestCaptureRipgrepOutput_StopsReadingOversizedLineAtByteCap(t *testing.T) {
+	const (
+		maxBufferedBytes = 1024
+		oversizedLine    = 256 * 1024
+	)
+
+	reader := &countingReader{reader: strings.NewReader(strings.Repeat("x", oversizedLine) + "\n")}
+	killed := false
+
+	output, truncated, err := captureRipgrepOutput(reader, func() error {
+		killed = true
+		return nil
+	}, ripgrepCaptureLimits{maxOutputLines: 100, maxBufferedBytes: maxBufferedBytes})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !truncated {
+		t.Fatal("expected capture to truncate oversized line")
+	}
+	if !killed {
+		t.Fatal("expected capture to request process kill on truncation")
+	}
+	if len(output) != 0 {
+		t.Fatalf("expected oversized partial line to be discarded, got %d buffered bytes", len(output))
+	}
+	if reader.bytesRead > maxBufferedBytes+4096 {
+		t.Fatalf("expected bounded reading near the cap, read %d bytes", reader.bytesRead)
+	}
+}
+
+func TestCaptureRipgrepOutput_PreservesCompletedLinesBeforeOversizedLine(t *testing.T) {
+	const maxBufferedBytes = 1024
+
+	input := "{\"type\":\"begin\"}\n" + strings.Repeat("x", 8*1024) + "\n"
+	output, truncated, err := captureRipgrepOutput(strings.NewReader(input), nil, ripgrepCaptureLimits{maxOutputLines: 100, maxBufferedBytes: maxBufferedBytes})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !truncated {
+		t.Fatal("expected capture to truncate oversized second line")
+	}
+	if got := string(output); got != "{\"type\":\"begin\"}\n" {
+		t.Fatalf("expected only complete lines before truncation, got %q", got)
 	}
 }
 
