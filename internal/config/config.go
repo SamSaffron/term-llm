@@ -943,6 +943,11 @@ func rewriteProviderEnvSections(path string, snapshot map[string]map[string]stri
 	return writeFileAtomically(path, buf.Bytes(), 0o600)
 }
 
+// WriteFileAtomically replaces path with data via a temp file, fsync, and rename.
+func WriteFileAtomically(path string, data []byte, perm os.FileMode) error {
+	return writeFileAtomically(path, data, perm)
+}
+
 func writeFileAtomically(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	base := filepath.Base(path)

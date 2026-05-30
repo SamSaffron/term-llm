@@ -1019,6 +1019,13 @@ func configSet(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get config path: %w", err)
 	}
 
+	writePerm := os.FileMode(0o644)
+	if info, err := os.Stat(configPath); err == nil {
+		writePerm = info.Mode().Perm()
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("failed to stat config: %w", err)
+	}
+
 	// Ensure config directory exists
 	configDir := filepath.Dir(configPath)
 	if err := os.MkdirAll(configDir, 0755); err != nil {
@@ -1061,7 +1068,7 @@ func configSet(cmd *cobra.Command, args []string) error {
 	}
 	encoder.Close()
 
-	if err := os.WriteFile(configPath, buf.Bytes(), 0644); err != nil {
+	if err := config.WriteFileAtomically(configPath, buf.Bytes(), writePerm); err != nil {
 		return fmt.Errorf("failed to write config: %w", err)
 	}
 
