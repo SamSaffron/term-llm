@@ -267,11 +267,14 @@ services:
 	}
 }
 
-func TestStartUsesComposeStartWhenContainersExist(t *testing.T) {
+func TestStartReconcilesExistingContainers(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	dir := writeComposeForDockerTest(t, "box", "")
 	compose := filepath.Join(dir, "compose.yaml")
 	base := []string{"docker", "compose", "-f", compose, "--project-directory", dir, "-p", "term-llm-contain-box"}
+	// A non-empty `ps --all -q` output means a container already exists; Start
+	// must still reconcile config drift (e.g. a changed WEB_PORT in .env) via
+	// `up -d` rather than booting the stale container as-is with `compose start`.
 	r := &fakeRunner{output: []byte("abc123\n")}
 	if err := Start(context.Background(), r, "box", io.Discard, io.Discard); err != nil {
 		t.Fatal(err)
@@ -280,7 +283,7 @@ func TestStartUsesComposeStartWhenContainersExist(t *testing.T) {
 	if !reflect.DeepEqual(r.outputsRun, wantOutputs) {
 		t.Fatalf("outputs = %#v\nwant %#v", r.outputsRun, wantOutputs)
 	}
-	wantRuns := [][]string{append(append([]string{}, base...), "start")}
+	wantRuns := [][]string{append(append([]string{}, base...), "up", "-d")}
 	if !reflect.DeepEqual(r.runs, wantRuns) {
 		t.Fatalf("runs = %#v\nwant %#v", r.runs, wantRuns)
 	}
