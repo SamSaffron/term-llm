@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -352,6 +353,53 @@ func TestResolveJobLLMSettingsThreadsAskOptions(t *testing.T) {
 				t.Fatalf("resolveJobLLMSettings: %v", err)
 			}
 			tc.verify(t, settings, userPrompt)
+		})
+	}
+}
+
+// TestJobsV2LLMSkillsFlagThreaded verifies the job's `skills` field is honored as
+// the skills selector with precedence over the agent's skills — the contract the
+// serve-jobs executor relies on when it passes cfg.Skills to SetupSkills (instead
+// of the hard-coded "" used before this change). The disable path is fully
+// deterministic, so a nil result proves the job value flowed through: were
+// cfg.Skills ignored, the agent's "all" would have enabled skills.
+func TestJobsV2LLMSkillsFlagThreaded(t *testing.T) {
+	cases := []struct {
+		name        string
+		jobSkills   string
+		agentSkills string
+		cfg         config.SkillsConfig
+		wantNil     bool
+	}{
+		{
+			name:        "job none overrides agent all",
+			jobSkills:   "none",
+			agentSkills: "all",
+			cfg:         config.SkillsConfig{Enabled: true},
+			wantNil:     true,
+		},
+		{
+			name:        "empty job falls back to agent none",
+			jobSkills:   "",
+			agentSkills: "none",
+			cfg:         config.SkillsConfig{Enabled: true},
+			wantNil:     true,
+		},
+		{
+			name:      "empty job and agent uses config default (disabled)",
+			jobSkills: "",
+			cfg:       config.SkillsConfig{Enabled: false},
+			wantNil:   true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := tc.cfg
+			setup := SetupSkills(&cfg, tc.jobSkills, tc.agentSkills, io.Discard)
+			if tc.wantNil && setup != nil {
+				t.Fatalf("expected nil skills setup (job=%q agent=%q), got non-nil", tc.jobSkills, tc.agentSkills)
+			}
 		})
 	}
 }

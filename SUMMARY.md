@@ -111,6 +111,8 @@ Table-driven, matching `cmd/serve_jobs_v2_test.go` patterns
 - **ask options reach the exec opts** — `max_turns`, `max_output_tokens`, `tools`,
   `read_dir`/`write_dir`, `search`, `system_message`, `files`, plus backward-compat
   fallbacks to serve-level defaults.
+- **skills threading** — the job's `skills` value drives skill setup and takes
+  precedence over the agent's (and falls back to the agent when empty).
 - **focused integration test** — a program-equivalent task expressed as an `llm`
   job with `cwd` set (driven through the **real** serve-jobs executor with the
   hermetic `debug` provider and a temp agent enabling `shell`) creates its output
