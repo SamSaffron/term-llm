@@ -190,6 +190,8 @@ const switchToDraftSession = async (options = {}) => {
     elements.promptInput.value = '';
     discardPendingAttachments();
     autoGrowPrompt();
+  } else if (previousComposerSessionId) {
+    discardPendingAttachments();
   }
 
   refreshPendingInterjectionBanner();
@@ -280,6 +282,10 @@ const switchToSession = async (sessionId, options = {}) => {
   }
   if (previousActiveSessionId && previousActiveSessionId !== nextId && state.currentStreamSessionId !== nextId) {
     setStreaming(false);
+  }
+
+  if (previousActiveSessionId !== nextId || state.draftSessionActive) {
+    discardPendingAttachments();
   }
 
   state.activeSessionId = nextId;
@@ -745,12 +751,19 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
   const pendingInterjection = runtimeState.pending_interjection || null;
   const pendingInterjectionText = pendingInterjection ? String(pendingInterjection.text || '').trim() : '';
   if (pendingInterjectionText) {
+    // Prefer the stable server-issued interjection id so the committed
+    // response.interjection event (which carries the same id) can clear the
+    // pending banner by id. Only fall back to a synthetic id when the server
+    // omits one.
+    const serverInterjectionId = pendingInterjection ? String(pendingInterjection.id || '').trim() : '';
+    const pendingInterjectionId = serverInterjectionId
+      || `msg_pending_${session.id}_${pendingInterjectionText.length}`;
     const exists = state.pendingInterjections.some(entry =>
-      entry.sessionId === session.id && entry.prompt === pendingInterjectionText);
+      entry.sessionId === session.id
+      && (entry.messageId === pendingInterjectionId || entry.prompt === pendingInterjectionText));
     if (!exists) {
-      const syntheticId = `msg_pending_${session.id}_${pendingInterjectionText.length}`;
-      trackPendingInterjection(session.id, pendingInterjectionText, syntheticId, 'interject');
-      trackPendingInterruptCommit(session.id, pendingInterjectionText, syntheticId);
+      trackPendingInterjection(session.id, pendingInterjectionText, pendingInterjectionId, 'interject');
+      trackPendingInterruptCommit(session.id, pendingInterjectionText, pendingInterjectionId);
     }
   } else {
     for (const entry of [...state.pendingInterjections]) {
@@ -869,6 +882,15 @@ const reconcileServerSessionIdentity = (session, serverSession) => {
   if (state.currentStreamSessionId === previousId) state.currentStreamSessionId = nextId;
   if (state.askUser?.sessionId === previousId) state.askUser.sessionId = nextId;
   if (state.approval?.sessionId === previousId) state.approval.sessionId = nextId;
+  for (const entry of state.queuedInterrupts) {
+    if (entry.sessionId === previousId) entry.sessionId = nextId;
+  }
+  for (const entry of state.pendingInterruptCommits) {
+    if (entry.sessionId === previousId) entry.sessionId = nextId;
+  }
+  for (const entry of state.pendingInterjections) {
+    if (entry.sessionId === previousId) entry.sessionId = nextId;
+  }
   moveSessionProgressState(previousId, nextId);
   return session;
 };

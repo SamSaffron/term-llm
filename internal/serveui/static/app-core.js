@@ -312,10 +312,32 @@ const generateId = (prefix) => `${prefix}_${generateUUID()}`;
 
 const INTERRUPT_BADGE_META = {
   evaluating: { className: 'pending', label: 'evaluating…' },
+  pending_interject: { className: 'pending', icon: '⏳', label: 'will incorporate' },
   interject: { className: 'interject', icon: '✓', label: 'injected' },
   cancel: { className: 'cancel', icon: '⏹', label: 'cancelled + queued' },
   queue: { className: 'queue', icon: '⏳', label: 'queued' },
   error: { className: 'error', icon: '⚠', label: 'failed' }
+};
+
+// Single source of truth for the interjection lifecycle. Each phase maps to the
+// inline message badge state (a key of INTERRUPT_BADGE_META) and the pending
+// banner action (a key of PENDING_INTERJECTION_LABELS, or null when the
+// interjection is no longer pending/cancellable). Callers transition by phase
+// via setInterjectionPhase() so the badge and banner can never disagree — the
+// "injected badge + still-cancellable banner" heisenstate is unrepresentable.
+//   evaluating → classifying the interrupt (optimistic, pre-server)
+//   queued     → server accepted as interject; queued but still cancellable
+//   willQueue  → will be sent as a normal follow-up (not an interject)
+//   willCancel → cancels the active run, then re-sent as a follow-up
+//   committed  → engine drained it into the request; final, one-shot
+//   failed     → interrupt request errored
+const INTERJECTION_PHASE = {
+  evaluating: { badge: 'evaluating', banner: 'deciding' },
+  queued: { badge: 'pending_interject', banner: 'interject' },
+  willQueue: { badge: 'queue', banner: null },
+  willCancel: { badge: 'cancel', banner: null },
+  committed: { badge: 'interject', banner: null },
+  failed: { badge: 'error', banner: null }
 };
 
 const sanitizeInterruptState = (value) => {
@@ -1408,6 +1430,7 @@ Object.assign(app, {
   generateUUID,
   generateId,
   INTERRUPT_BADGE_META,
+  INTERJECTION_PHASE,
   sanitizeInterruptState,
   syncTokenCookie,
   truncate,

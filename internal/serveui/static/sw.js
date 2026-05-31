@@ -10,6 +10,7 @@ const SHELL_ASSETS = [
   './decoration.js',
   './app-core.js',
   './app-render.js',
+  './app-attachments.js',
   './app-stream.js',
   './app-sidebar.js',
   './app-sessions.js',

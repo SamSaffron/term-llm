@@ -3,12 +3,13 @@
 
 const app = window.TermLLMApp;
 const {
-  UI_PREFIX, STORAGE_KEYS, state, elements, generateId, sanitizeInterruptState, sanitizeMessage, syncTokenCookie, truncate, saveSessions,
+  UI_PREFIX, STORAGE_KEYS, state, elements, generateId, sanitizeInterruptState, INTERJECTION_PHASE, sanitizeMessage, syncTokenCookie, truncate, saveSessions,
   getActiveSession, createSession, scrollToBottom, setConnectionState, sessionSlug, updateURL,
   persistAndRefreshShell, updateSessionUsageDisplay, refreshRelativeTimes, requestHeaders: _unusedRequestHeaders, updateAssistantNode, updateUserNode,
   updateToolNode, updateToolGroupNode, createMessageNode, createToolGroupNode, updateModelSwapNode, renderSidebar, renderMessages, maybeNotifyResponseComplete,
   enqueueAssistantStreamUpdate, finalizeAssistantStreamRender, syncTurnActionPanels,
-  subscribeToPush, shouldAutoSubscribeToPush, applyTextDirection, shouldSuppressPromptAutoFocus, setSessionOptimisticBusy, setSessionServerActiveRun
+  subscribeToPush, shouldAutoSubscribeToPush, applyTextDirection, shouldSuppressPromptAutoFocus, setSessionOptimisticBusy, setSessionServerActiveRun,
+  renderAttachments, buildAttachmentInputParts, cloneAttachmentForMessage
 } = app;
 
 // ===== Network helpers =====
@@ -775,10 +776,18 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
         finalizeVisibleAssistantStreamRender(session, streamState.currentAssistantMessage);
         streamState.currentAssistantMessage = null;
       }
-      const pending = payload.interjection_id
-        ? removePendingInterjectionById(String(payload.interjection_id))
-        : consumePendingInterjectionByText(session.id, interjectionText);
       const payloadInterjectionId = String(payload.interjection_id || '').trim();
+      // Resolve the optimistic pending entry by id first, but fall back to a
+      // text match. The pending entry may have been tracked under a synthetic
+      // or optimistic id (e.g. from session sync) that differs from the
+      // server-issued interjection_id, so an id-only lookup would otherwise
+      // leave the "will incorporate" banner stranded after commit.
+      let pending = payloadInterjectionId
+        ? removePendingInterjectionById(payloadInterjectionId)
+        : null;
+      if (!pending) {
+        pending = consumePendingInterjectionByText(session.id, interjectionText);
+      }
       let messageId = pending?.messageId || payloadInterjectionId;
       if (isSessionVisible(session)) {
         const emptyState = elements.messages.querySelector('.empty-state');
@@ -787,10 +796,12 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
       let existingMessage = messageId
         ? session.messages.find(m => m.id === messageId && m.role === 'user')
         : null;
-      if (!existingMessage && !messageId) {
+      if (!existingMessage) {
         existingMessage = session.messages.find(m => (
           m.role === 'user'
-          && sanitizeInterruptState(m.interruptState) === 'interject'
+          && (sanitizeInterruptState(m.interruptState) === 'evaluating'
+            || sanitizeInterruptState(m.interruptState) === 'pending_interject'
+            || sanitizeInterruptState(m.interruptState) === 'interject')
           && String(m.content || '').trim() === interjectionText
         )) || null;
         if (existingMessage?.id) messageId = existingMessage.id;
@@ -988,6 +999,39 @@ const recoverResponseStateFromSnapshot = async (session, responseId) => {
   return snapshot;
 };
 
+const clearCommittedInterjectionPendingState = (sessionId, messageId, content) => {
+  const normalizedId = String(messageId || '').trim();
+  const normalizedContent = String(content || '').trim();
+  let pending = normalizedId ? removePendingInterjectionById(normalizedId) : null;
+  if (!pending && normalizedContent) {
+    pending = consumePendingInterjectionByText(sessionId, normalizedContent);
+  }
+
+  let committed = normalizedId ? resolvePendingInterruptCommitById(normalizedId) : null;
+  if (!committed && pending?.messageId) {
+    committed = resolvePendingInterruptCommitById(pending.messageId);
+  }
+  if (!committed && normalizedContent) {
+    committed = resolvePendingInterruptCommit(sessionId, normalizedContent);
+  }
+  return { pending, committed };
+};
+
+const shouldDropPreservedOptimisticInterjection = (message, recoveredInterjections) => {
+  if (message?.role !== 'user') return false;
+  const interruptState = sanitizeInterruptState(message.interruptState);
+  if (interruptState !== 'evaluating' && interruptState !== 'pending_interject' && interruptState !== 'interject') {
+    return false;
+  }
+  const messageId = String(message.id || '').trim();
+  const content = String(message.content || '').trim();
+  return recoveredInterjections.some((recovered) => {
+    const recoveredId = String(recovered?.id || '').trim();
+    if (messageId && recoveredId && messageId === recoveredId) return true;
+    return content && String(recovered?.content || '').trim() === content;
+  });
+};
+
 const applyResponseRecoverySnapshot = (session, payload) => {
   if (!session || !payload || typeof payload !== 'object') return false;
 
@@ -1000,16 +1044,11 @@ const applyResponseRecoverySnapshot = (session, payload) => {
       .map((message) => sanitizeMessage(message))
       .filter(Boolean);
 
-    for (const message of recoveredMessages) {
-      if (message?.role !== 'user' || message?.interruptState !== 'interject') continue;
-      if (message.id) {
-        removePendingInterjectionById(message.id);
-        resolvePendingInterruptCommitById(message.id);
-      } else if (message.content) {
-        const pending = consumePendingInterjectionByText(session.id, message.content);
-        if (pending?.messageId) discardPendingInterruptCommit(pending.messageId);
-        resolvePendingInterruptCommit(session.id, message.content);
-      }
+    const recoveredInterjections = recoveredMessages.filter((message) => (
+      message?.role === 'user' && message?.interruptState === 'interject'
+    ));
+    for (const message of recoveredInterjections) {
+      clearCommittedInterjectionPendingState(session.id, message.id, message.content);
     }
 
     let anchorIndex = -1;
@@ -1021,7 +1060,7 @@ const applyResponseRecoverySnapshot = (session, payload) => {
     }
 
     const preserved = anchorIndex >= 0
-      ? session.messages.slice(0, anchorIndex + 1)
+      ? session.messages.slice(0, anchorIndex + 1).filter((message) => !shouldDropPreservedOptimisticInterjection(message, recoveredInterjections))
       : [];
     session.messages = preserved.concat(recoveredMessages);
   }
@@ -2798,213 +2837,8 @@ const autoGrowPrompt = () => {
 };
 
 // ===== File attachment =====
-const getAttachmentPreviewURL = (att) => String(att?.previewURL || att?.dataURL || '');
-
-const createAttachmentPreviewURL = (file) => {
-  const urlAPI = window.URL || globalThis.URL;
-  if (!urlAPI || typeof urlAPI.createObjectURL !== 'function') return '';
-  try {
-    return urlAPI.createObjectURL(file);
-  } catch {
-    return '';
-  }
-};
-
-const revokeObjectURLString = (previewURL) => {
-  const url = String(previewURL || '');
-  if (!url) return;
-  const urlAPI = window.URL || globalThis.URL;
-  if (!urlAPI || typeof urlAPI.revokeObjectURL !== 'function') return;
-  try {
-    urlAPI.revokeObjectURL(url);
-  } catch {
-    // Ignore preview cleanup failures.
-  }
-};
-
-const revokeAttachmentPreviewURL = (att) => {
-  const previewURL = String(att?.previewURL || '');
-  if (!previewURL || previewURL === att?.dataURL) return;
-  revokeObjectURLString(previewURL);
-};
-
-const discardPendingAttachments = () => {
-  state.attachments.forEach(revokeAttachmentPreviewURL);
-  state.attachments = [];
-  renderAttachments();
-};
-
-const readFileAsDataURL = (file, signal) => new Promise((resolve, reject) => {
-  if (!file) {
-    resolve('');
-    return;
-  }
-  if (signal?.aborted) {
-    reject(new DOMException('The operation was aborted.', 'AbortError'));
-    return;
-  }
-  if (typeof FileReader !== 'function') {
-    reject(new Error('File uploads are not supported in this browser.'));
-    return;
-  }
-
-  const reader = new FileReader();
-  if (typeof reader.readAsDataURL !== 'function') {
-    reject(new Error('File uploads are not supported in this browser.'));
-    return;
-  }
-  let settled = false;
-
-  const cleanupAbort = () => {
-    if (signal) signal.removeEventListener('abort', handleAbort);
-  };
-
-  const fail = (err) => {
-    if (settled) return;
-    settled = true;
-    cleanupAbort();
-    reject(err);
-  };
-
-  const succeed = (value) => {
-    if (settled) return;
-    settled = true;
-    cleanupAbort();
-    resolve(value);
-  };
-
-  const handleAbort = () => {
-    try {
-      reader.abort();
-    } catch {
-      fail(new DOMException('The operation was aborted.', 'AbortError'));
-    }
-  };
-
-  if (signal) signal.addEventListener('abort', handleAbort, { once: true });
-
-  reader.onload = () => succeed(typeof reader.result === 'string' ? reader.result : '');
-  reader.onerror = () => fail(reader.error || new Error(`Failed to read ${file.name || 'attachment'}.`));
-  reader.onabort = () => fail(new DOMException('The operation was aborted.', 'AbortError'));
-  reader.readAsDataURL(file);
-});
-
-const materializeAttachmentDataURL = async (att, signal, options = {}) => {
-  const name = String(att?.name || 'attachment');
-  const type = String(att?.type || '');
-  if (att?.dataURL) return { name, type, dataURL: att.dataURL };
-  if (!att?.file) {
-    if (options.skipUnavailable) return null;
-    throw new Error(`Failed to read ${name}.`);
-  }
-  const dataURL = await readFileAsDataURL(att.file, signal);
-  if (!dataURL) {
-    throw new Error(`Failed to read ${name}.`);
-  }
-  return { name, type, dataURL };
-};
-
-const buildAttachmentInputParts = async (attachments, signal, options = {}) => {
-  const materialized = await Promise.all((attachments || []).map(att => materializeAttachmentDataURL(att, signal, options)));
-  return materialized.filter(Boolean).map(att => (
-    att.type.startsWith('image/')
-      ? { type: 'input_image', image_url: att.dataURL, filename: att.name }
-      : { type: 'input_file', file_data: att.dataURL, filename: att.name }
-  ));
-};
-
-const cloneAttachmentForMessage = (att) => {
-  const cloned = {
-    id: String(att?.id || generateId('att')),
-    name: String(att?.name || 'file'),
-    type: String(att?.type || 'application/octet-stream')
-  };
-  if (Number.isFinite(Number(att?.size))) {
-    cloned.size = Number(att.size);
-  }
-  const previewURL = String(att?.previewURL || '');
-  if (previewURL) {
-    cloned.previewURL = previewURL;
-  }
-  if (att?.file) {
-    cloned.file = att.file;
-  }
-  if (att?.dataURL) {
-    cloned.dataURL = att.dataURL;
-  }
-  return cloned;
-};
-
-const renderAttachments = () => {
-  const strip = elements.attachmentsStrip;
-  strip.innerHTML = '';
-  if (state.attachments.length === 0) {
-    strip.style.display = 'none';
-    updateSendButtonState();
-    return;
-  }
-  strip.style.display = 'flex';
-  state.attachments.forEach((att) => {
-    const chip = document.createElement('div');
-    chip.className = 'attachment-chip';
-
-    if (att.type.startsWith('image/')) {
-      const previewURL = getAttachmentPreviewURL(att);
-      if (previewURL) {
-        const img = document.createElement('img');
-        img.src = previewURL;
-        img.alt = att.name;
-        chip.appendChild(img);
-      }
-    }
-
-    const name = document.createElement('span');
-    name.className = 'att-name';
-    name.textContent = att.name;
-    name.title = `${att.name} (${(att.size / 1024).toFixed(1)} KB)`;
-    chip.appendChild(name);
-
-    const remove = document.createElement('button');
-    remove.className = 'att-remove';
-    remove.textContent = '\u00d7';
-    remove.title = 'Remove';
-    remove.addEventListener('click', () => {
-      revokeAttachmentPreviewURL(att);
-      state.attachments = state.attachments.filter(a => a.id !== att.id);
-      renderAttachments();
-    });
-    chip.appendChild(remove);
-
-    strip.appendChild(chip);
-  });
-  updateSendButtonState();
-};
-
-const MAX_ATTACHMENTS = 10;
-const MAX_FILE_BYTES = 20 * 1024 * 1024; // 20 MB
-
-const handleFiles = (fileList) => {
-  const files = Array.from(fileList);
-  for (const file of files) {
-    if (state.attachments.length >= MAX_ATTACHMENTS) {
-      alert(`Maximum ${MAX_ATTACHMENTS} attachments allowed.`);
-      return;
-    }
-    if (file.size > MAX_FILE_BYTES) {
-      alert(`${file.name} exceeds the 20 MB file size limit.`);
-      continue;
-    }
-    state.attachments.push({
-      id: generateId('att'),
-      name: file.name,
-      type: file.type || 'application/octet-stream',
-      size: file.size,
-      file,
-      previewURL: (file.type || '').startsWith('image/') ? createAttachmentPreviewURL(file) : ''
-    });
-    renderAttachments();
-  }
-};
+// Attachment helpers live in app-attachments.js (a dependency leaf). They are
+// pulled off the app bag via the destructure at the top of this file.
 
 const setStreaming = (streaming) => {
   const wasStreaming = state.streaming;
@@ -3030,12 +2864,16 @@ const setStreaming = (streaming) => {
   }
 };
 
-const queueInterruptFollowUp = (prompt, messageId, attachments = []) => {
+const queueInterruptFollowUp = (sessionId, prompt, messageId, attachments = []) => {
+  const normalizedSessionId = String(sessionId || '').trim();
+  if (!normalizedSessionId) return;
   const normalizedMessageId = String(messageId || '').trim();
-  if (normalizedMessageId && state.queuedInterrupts.some(entry => entry.messageId === normalizedMessageId)) {
+  if (normalizedMessageId && state.queuedInterrupts.some(entry => (
+    entry.sessionId === normalizedSessionId && entry.messageId === normalizedMessageId
+  ))) {
     return;
   }
-  state.queuedInterrupts.push({ prompt, messageId, attachments: Array.isArray(attachments) ? attachments : [] });
+  state.queuedInterrupts.push({ sessionId: normalizedSessionId, prompt, messageId, attachments: Array.isArray(attachments) ? attachments : [] });
 };
 
 const trackPendingInterruptCommit = (sessionId, prompt, messageId, attachments = []) => {
@@ -3071,7 +2909,7 @@ const requeueUncommittedInterrupts = (session) => {
       remaining.push(entry);
       continue;
     }
-    queueInterruptFollowUp(entry.prompt, entry.messageId, entry.attachments);
+    queueInterruptFollowUp(session.id, entry.prompt, entry.messageId, entry.attachments);
   }
   state.pendingInterruptCommits = remaining;
 };
@@ -3081,8 +2919,9 @@ const drainInterruptQueueIfIdle = (session) => {
   if (state.streaming || state.abortController) return;
   requeueUncommittedInterrupts(session);
   requeuePendingInterjections(session);
-  if (state.queuedInterrupts.length > 0) {
-    const queued = state.queuedInterrupts.shift();
+  const queuedIndex = state.queuedInterrupts.findIndex(entry => entry.sessionId === session.id);
+  if (queuedIndex >= 0) {
+    const [queued] = state.queuedInterrupts.splice(queuedIndex, 1);
     elements.promptInput.value = queued.prompt;
     autoGrowPrompt();
     void sendMessage({ prompt: queued.prompt, attachments: queued.attachments || [], reuseMessageId: queued.messageId, _skipContinuationRefresh: true });
@@ -3097,6 +2936,21 @@ const setInterruptMessageState = (session, messageId, interruptState) => {
   if (!message) return;
   message.interruptState = normalized;
   updateUserNode(message);
+};
+
+// Transition an interjection to a lifecycle phase, updating both the inline
+// badge and the pending banner from the single INTERJECTION_PHASE spec so the
+// two views cannot drift out of sync. A null banner clears the pending entry
+// (no longer cancellable); otherwise the banner action is updated in place.
+const setInterjectionPhase = (session, messageId, phase) => {
+  const spec = INTERJECTION_PHASE[phase];
+  if (!spec) return;
+  setInterruptMessageState(session, messageId, spec.badge);
+  if (spec.banner === null) {
+    removePendingInterjectionById(messageId);
+  } else {
+    updatePendingInterjectionAction(messageId, spec.banner);
+  }
 };
 
 const addInlineInterruptMessage = (session, prompt, messageId, interruptState, attachments = []) => {
@@ -3264,7 +3118,7 @@ const requeuePendingInterjections = (session) => {
       remaining.push(entry);
       continue;
     }
-    queueInterruptFollowUp(entry.prompt, entry.messageId, entry.attachments);
+    queueInterruptFollowUp(session.id, entry.prompt, entry.messageId, entry.attachments);
   }
   state.pendingInterjections = remaining;
   refreshPendingInterjectionBanner();
@@ -3290,15 +3144,17 @@ const interruptActiveRun = async (session, prompt, messageId, contentParts = nul
     : 'queue';
 
   if (action === 'interject') {
-    updatePendingInterjectionAction(messageId, 'interject');
-    setInterruptMessageState(session, messageId, 'interject');
+    // The engine has only *queued* the interjection at this point; it remains
+    // cancellable (banner "will incorporate") until drainInterjections() commits
+    // it and emits response.interjection, which advances it to the committed
+    // phase ("✓ injected"). See INTERJECTION_PHASE in app-core.
+    setInterjectionPhase(session, messageId, 'queued');
   } else {
-    removePendingInterjectionById(messageId);
-    setInterruptMessageState(session, messageId, action);
+    setInterjectionPhase(session, messageId, action === 'cancel' ? 'willCancel' : 'willQueue');
   }
 
   if (action === 'cancel' || action === 'queue') {
-    queueInterruptFollowUp(prompt, messageId, attachments);
+    queueInterruptFollowUp(session.id, prompt, messageId, attachments);
   }
   if (action === 'cancel') {
     state.expectCanceledRun = true;
@@ -3355,7 +3211,7 @@ const recoverInterruptFailure = async (session, prompt, messageId, attachments =
     } else {
       addInlineInterruptMessage(session, prompt, messageId, 'queue', attachments);
     }
-    queueInterruptFollowUp(prompt, messageId, attachments);
+    queueInterruptFollowUp(session.id, prompt, messageId, attachments);
     persistAndRefreshShell();
     scrollToBottom(true);
     clearDraftMessageForSession(session.id);
@@ -3462,8 +3318,7 @@ const sendMessage = async (options = {}) => {
       }
 
       discardPendingInterruptCommit(pendingMessageId);
-      removePendingInterjectionById(pendingMessageId);
-      setInterruptMessageState(session, pendingMessageId, 'error');
+      setInterjectionPhase(session, pendingMessageId, 'failed');
       const message = err?.message || 'Failed to interrupt active run.';
       addErrorMessage(message, session);
       if (err?.status === 401) {
@@ -3881,11 +3736,6 @@ Object.assign(app, {
   startVoiceRecording,
   stopVoiceRecording,
   toggleVoiceRecording,
-  renderAttachments,
-  discardPendingAttachments,
-  MAX_ATTACHMENTS,
-  MAX_FILE_BYTES,
-  handleFiles,
   setStreaming,
   queueInterruptFollowUp,
   trackPendingInterruptCommit,

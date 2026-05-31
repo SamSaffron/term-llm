@@ -9,6 +9,7 @@ const { webcrypto } = require('crypto');
 
 const dir = __dirname;
 const coreSource = fs.readFileSync(path.join(dir, 'app-core.js'), 'utf8');
+const attachmentsSource = fs.readFileSync(path.join(dir, 'app-attachments.js'), 'utf8');
 const streamSource = fs.readFileSync(path.join(dir, 'app-stream.js'), 'utf8');
 
 let failures = 0;
@@ -228,6 +229,7 @@ function loadCore(options = {}) {
 function loadCoreAndStream(options = {}) {
   const { ctx, elementMap, windowObj } = makeContext(options);
   vm.runInNewContext(coreSource, ctx, { filename: 'app-core.js' });
+  vm.runInNewContext(attachmentsSource, ctx, { filename: 'app-attachments.js' });
   vm.runInNewContext(streamSource, ctx, { filename: 'app-stream.js' });
   const app = ctx.window.TermLLMApp;
   return { ctx, app, elementMap, windowObj };

@@ -136,6 +136,7 @@ function defaultAppStubs(app, overrides = {}) {
     requestNotificationPermission: async () => 'default',
     shouldAutoSubscribeToPush() { return false; },
     detachResponseStream() {},
+    discardPendingAttachments() {},
     requeueUncommittedInterrupts() {},
     drainInterruptQueueIfIdle() {},
     requeuePendingInterjections() {},
@@ -342,6 +343,45 @@ async function testSwitchingSessionsClearsEmptyComposerDraft() {
   pass(name);
 }
 
+async function testSwitchingSessionsDiscardsPendingAttachments() {
+  const name = 'switching sessions discards pending attachments so they do not leak between chats';
+  let discardCalls = 0;
+  let appRef = null;
+  const { app } = await createSessionsHarness({
+    fetchImpl: async () => new Response(JSON.stringify({ sessions: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    }),
+    appOverrides: {
+      discardPendingAttachments() {
+        discardCalls += 1;
+        appRef.state.attachments = [];
+      },
+    }
+  });
+  appRef = app;
+
+  const sessionA = { id: 'sess_a', title: 'A', messages: [], created: 1 };
+  const sessionB = { id: 'sess_b', title: 'B', messages: [], created: 2 };
+  app.state.sessions = [sessionA, sessionB];
+  app.state.activeSessionId = sessionA.id;
+  app.state.draftSessionActive = false;
+  app.state.attachments = [{ id: 'att_a', name: 'a.png', type: 'image/png' }];
+
+  await app.switchToSession(sessionB.id, { sync: false });
+
+  if (discardCalls !== 1) {
+    fail(name, `expected discardPendingAttachments to be called once, got ${discardCalls}`);
+    return;
+  }
+  if (app.state.attachments.length !== 0) {
+    fail(name, 'expected pending attachments to be cleared after switching sessions', JSON.stringify(app.state.attachments));
+    return;
+  }
+
+  pass(name);
+}
+
 async function testSwitchToSessionSyncsSelectedRuntime() {
   const name = 'switching sessions syncs selected runtime to active session';
   const { app, storage } = await createSessionsHarness({
@@ -460,6 +500,60 @@ async function testNumericDeepLinkResolvesRealSessionId() {
     fail(name, 'should not use pending_ prefix in session id', JSON.stringify(fetchCalls));
     return;
   }
+  pass(name);
+}
+
+async function testMergeServerSessionsMigratesInterruptBuffersToRealSessionId() {
+  const name = 'session id reconciliation migrates interrupt buffers to real session id';
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({
+          sessions: [{
+            id: 'sess_real',
+            number: 1291,
+            short_title: 'Real session',
+            long_title: 'Real session',
+            mode: 'chat',
+            origin: 'tui',
+            archived: false,
+            pinned: false,
+            created_at: 1710000000000,
+            message_count: 1,
+          }]
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+
+  app.state.sessions = [{ id: '1291', number: 1291, title: 'Local numeric', messages: [] }];
+  app.state.activeSessionId = '1291';
+  app.state.currentStreamSessionId = '1291';
+  app.state.queuedInterrupts = [{ sessionId: '1291', prompt: 'queued', messageId: 'msg_q' }];
+  app.state.pendingInterruptCommits = [{ sessionId: '1291', prompt: 'pending commit', messageId: 'msg_c' }];
+  app.state.pendingInterjections = [{ sessionId: '1291', prompt: 'pending interject', messageId: 'msg_i' }];
+
+  await app.mergeServerSessions();
+
+  const allIds = [
+    app.state.activeSessionId,
+    app.state.currentStreamSessionId,
+    ...app.state.queuedInterrupts.map(entry => entry.sessionId),
+    ...app.state.pendingInterruptCommits.map(entry => entry.sessionId),
+    ...app.state.pendingInterjections.map(entry => entry.sessionId),
+  ];
+  if (allIds.some(id => id !== 'sess_real')) {
+    fail(name, 'expected all session-bound interrupt state to migrate to real session id', JSON.stringify({
+      activeSessionId: app.state.activeSessionId,
+      currentStreamSessionId: app.state.currentStreamSessionId,
+      queuedInterrupts: app.state.queuedInterrupts,
+      pendingInterruptCommits: app.state.pendingInterruptCommits,
+      pendingInterjections: app.state.pendingInterjections,
+    }));
+    return;
+  }
+
   pass(name);
 }
 
@@ -1273,6 +1367,7 @@ async function testIdleSessionSyncRescuesPendingInterruptCommit() {
         if (!entry) return;
         appRef.state.pendingInterruptCommits = [];
         appRef.state.queuedInterrupts.push({
+          sessionId: session.id,
           prompt: entry.prompt,
           messageId: entry.messageId
         });
@@ -1285,8 +1380,9 @@ async function testIdleSessionSyncRescuesPendingInterruptCommit() {
         if (!session || session.id !== appRef.state.activeSessionId) return;
         if (appRef.state.streaming || appRef.state.abortController) return;
         appRef.requeueUncommittedInterrupts(session);
-        if (appRef.state.queuedInterrupts.length > 0) {
-          const queued = appRef.state.queuedInterrupts.shift();
+        const queuedIndex = appRef.state.queuedInterrupts.findIndex(entry => entry.sessionId === session.id);
+        if (queuedIndex >= 0) {
+          const [queued] = appRef.state.queuedInterrupts.splice(queuedIndex, 1);
           appRef.elements.promptInput.value = queued.prompt;
           void appRef.sendMessage({ prompt: queued.prompt, attachments: [], reuseMessageId: queued.messageId });
         }
@@ -1439,8 +1535,9 @@ async function testResumeAndDrainFiringViaSync() {
         if (!session || session.id !== appRef.state.activeSessionId) return;
         if (appRef.state.streaming || appRef.state.abortController) return;
         appRef.requeueUncommittedInterrupts(session);
-        if (appRef.state.queuedInterrupts.length > 0) {
-          const queued = appRef.state.queuedInterrupts.shift();
+        const queuedIndex = appRef.state.queuedInterrupts.findIndex(entry => entry.sessionId === session.id);
+        if (queuedIndex >= 0) {
+          const [queued] = appRef.state.queuedInterrupts.splice(queuedIndex, 1);
           appRef.elements.promptInput.value = queued.prompt;
           void appRef.sendMessage({ prompt: queued.prompt, attachments: [], reuseMessageId: queued.messageId });
         }
@@ -1467,7 +1564,7 @@ async function testResumeAndDrainFiringViaSync() {
   app.state.draftSessionActive = false;
 
   // Queue an interrupt before the sync triggers resume.
-  app.state.queuedInterrupts = [{ prompt: 'queued after resume', messageId: 'msg_drain_1' }];
+  app.state.queuedInterrupts = [{ sessionId: session.id, prompt: 'queued after resume', messageId: 'msg_drain_1' }];
 
   // syncActiveSessionFromServer will see active_response_id → call resumeAndDrain.
   // resumeAndDrain fires void resumeActiveResponse(...).finally(drainInterruptQueueIfIdle).
@@ -1549,7 +1646,7 @@ async function testTerminalSyncRequeuesPendingInterjectionAsFollowUp() {
         const remaining = [];
         for (const entry of appRef.state.pendingInterjections) {
           if (entry.sessionId === session.id) {
-            appRef.state.queuedInterrupts.push({ prompt: entry.prompt, messageId: entry.messageId });
+            appRef.state.queuedInterrupts.push({ sessionId: session.id, prompt: entry.prompt, messageId: entry.messageId });
           } else {
             remaining.push(entry);
           }
@@ -1560,8 +1657,9 @@ async function testTerminalSyncRequeuesPendingInterjectionAsFollowUp() {
       drainInterruptQueueIfIdle(session) {
         if (!session || session.id !== appRef.state.activeSessionId) return;
         if (appRef.state.streaming || appRef.state.abortController) return;
-        if (appRef.state.queuedInterrupts.length > 0) {
-          const queued = appRef.state.queuedInterrupts.shift();
+        const queuedIndex = appRef.state.queuedInterrupts.findIndex(entry => entry.sessionId === session.id);
+        if (queuedIndex >= 0) {
+          const [queued] = appRef.state.queuedInterrupts.splice(queuedIndex, 1);
           void appRef.sendMessage({ prompt: queued.prompt, attachments: [], reuseMessageId: queued.messageId });
         }
       },
@@ -1609,6 +1707,79 @@ async function testTerminalSyncRequeuesPendingInterjectionAsFollowUp() {
   }
   if (sendCalls[0].prompt !== 'rescued prompt') {
     fail(name, `follow-up prompt = ${sendCalls[0].prompt}, want "rescued prompt"`);
+    return;
+  }
+
+  pass(name);
+}
+
+async function testSyncUsesServerProvidedPendingInterjectionId() {
+  const name = 'idle sync tracks pending_interjection under server-provided id, not a synthetic id';
+  const trackInterjectionCalls = [];
+  const trackCommitCalls = [];
+  let appRef = null;
+
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions/sess_reload/state') {
+        return new Response(JSON.stringify({
+          active_run: true,
+          pending_interjection: { id: 'real-id', text: 'rescued prompt' }
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/sess_reload/messages') {
+        return new Response(JSON.stringify({ messages: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    },
+    appOverrides: {
+      trackPendingInterjection(sessionId, prompt, messageId, action) {
+        trackInterjectionCalls.push({ sessionId, prompt, messageId, action });
+        appRef.state.pendingInterjections.push({ sessionId, prompt, messageId, action });
+      },
+      trackPendingInterruptCommit(sessionId, prompt, messageId) {
+        trackCommitCalls.push({ sessionId, prompt, messageId });
+      },
+      removePendingInterjectionById() {},
+      refreshPendingInterjectionBanner() {},
+      requeuePendingInterjections() {},
+      requeueUncommittedInterrupts() {},
+      drainInterruptQueueIfIdle() {},
+    }
+  });
+  appRef = app;
+
+  const session = {
+    id: 'sess_reload',
+    title: 'Reload test',
+    origin: 'web',
+    created: 1710000000000,
+    messages: [],
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  await app.syncActiveSessionFromServer(session, false);
+
+  if (trackInterjectionCalls.length !== 1) {
+    fail(name, `expected 1 trackPendingInterjection call, got ${trackInterjectionCalls.length}`, JSON.stringify(trackInterjectionCalls));
+    return;
+  }
+  if (trackInterjectionCalls[0].messageId !== 'real-id') {
+    fail(name, `trackPendingInterjection messageId = ${trackInterjectionCalls[0].messageId}, want "real-id"`);
+    return;
+  }
+  if (trackCommitCalls.length !== 1 || trackCommitCalls[0].messageId !== 'real-id') {
+    fail(name, `trackPendingInterruptCommit messageId = ${trackCommitCalls[0]?.messageId}, want "real-id"`, JSON.stringify(trackCommitCalls));
     return;
   }
 
@@ -1815,8 +1986,10 @@ async function testSwitchToSearchOnlySessionHydratesResult() {
 (async () => {
   await testSwitchingSessionsStagesCurrentComposerBeforeRestore();
   await testSwitchingSessionsClearsEmptyComposerDraft();
+  await testSwitchingSessionsDiscardsPendingAttachments();
   await testSwitchToSessionSyncsSelectedRuntime();
   await testNumericDeepLinkResolvesRealSessionId();
+  await testMergeServerSessionsMigratesInterruptBuffersToRealSessionId();
   await testDeveloperMessagesAreHidden();
   await testConvertServerMessagesAttachesToolResultImages();
   await testSessionHistoryPaginationLoadsAdditionalPages();
@@ -1831,6 +2004,7 @@ async function testSwitchToSearchOnlySessionHydratesResult() {
   await testSessionProgressStatePrefersLocalAndServerSignals();
   await testResumeAndDrainFiringViaSync();
   await testTerminalSyncRequeuesPendingInterjectionAsFollowUp();
+  await testSyncUsesServerProvidedPendingInterjectionId();
   await testApplyServerSessionSummaryMapsLastMessageAt();
   await testMergeServerMessagesBumpsLastMessageAt();
   await testSanitizeSessionPreservesLastMessageAt();

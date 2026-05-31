@@ -251,6 +251,60 @@ const app = loadAppCore();
   pass(name);
 })();
 
+(function testPendingInterjectBadgeStateIsDistinctFromInjected() {
+  const name = 'pending_interject is a valid interrupt state labelled distinctly from injected';
+
+  if (app.sanitizeInterruptState('pending_interject') !== 'pending_interject') {
+    fail(name, 'expected sanitizeInterruptState to preserve "pending_interject"');
+    return;
+  }
+
+  const meta = app.INTERRUPT_BADGE_META && app.INTERRUPT_BADGE_META.pending_interject;
+  if (!meta) {
+    fail(name, 'expected INTERRUPT_BADGE_META to define pending_interject');
+    return;
+  }
+  if (meta.label === 'injected' || meta.label === app.INTERRUPT_BADGE_META.interject.label) {
+    fail(name, `pending_interject label should differ from injected, got "${meta.label}"`);
+    return;
+  }
+  pass(name);
+})();
+
+(function testInterjectionPhaseMapsToValidBadgeAndBannerInvariant() {
+  const name = 'INTERJECTION_PHASE maps every phase to a valid badge with terminal phases non-cancellable';
+  const phases = app.INTERJECTION_PHASE;
+  if (!phases) {
+    fail(name, 'expected INTERJECTION_PHASE to be exported from app-core');
+    return;
+  }
+  // Snapshot of the single source of truth. The whole point of the table is that
+  // the inline badge and the pending banner cannot disagree, so we pin both
+  // columns per phase. Terminal phases (committed/failed/willQueue/willCancel)
+  // MUST carry banner === null so an injected/finished interjection can never
+  // linger in the cancellable "will incorporate" bar — the original heisenstate.
+  const expected = {
+    evaluating: { badge: 'evaluating', banner: 'deciding' },
+    queued: { badge: 'pending_interject', banner: 'interject' },
+    willQueue: { badge: 'queue', banner: null },
+    willCancel: { badge: 'cancel', banner: null },
+    committed: { badge: 'interject', banner: null },
+    failed: { badge: 'error', banner: null }
+  };
+  for (const [phase, spec] of Object.entries(expected)) {
+    const got = phases[phase];
+    if (!got) { fail(name, `missing phase ${phase}`); return; }
+    if (got.badge !== spec.badge) { fail(name, `phase ${phase} badge=${got.badge}, want ${spec.badge}`); return; }
+    if (got.banner !== spec.banner) { fail(name, `phase ${phase} banner=${JSON.stringify(got.banner)}, want ${JSON.stringify(spec.banner)}`); return; }
+    // Every badge must be a real INTERRUPT_BADGE_META state.
+    if (!app.sanitizeInterruptState(got.badge)) {
+      fail(name, `phase ${phase} badge "${got.badge}" is not a valid INTERRUPT_BADGE_META state`);
+      return;
+    }
+  }
+  pass(name);
+})();
+
 (function testLeavesDistinctModelUntouched() {
   const name = 'splitHeaderModelEffort keeps distinct model';
   const result = app.splitHeaderModelEffort('gpt-5.4', 'medium');

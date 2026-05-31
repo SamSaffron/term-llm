@@ -9,6 +9,7 @@ const { ReadableStream } = require('stream/web');
 const { webcrypto } = require('crypto');
 
 const dir = __dirname;
+const attachmentsSource = fs.readFileSync(path.join(dir, 'app-attachments.js'), 'utf8');
 const source = fs.readFileSync(path.join(dir, 'app-stream.js'), 'utf8');
 
 let failures = 0;
@@ -329,6 +330,14 @@ function createHarness(options = {}) {
       return `${prefix}_${idCounter}`;
     },
     sanitizeInterruptState(value) { return value; },
+    INTERJECTION_PHASE: {
+      evaluating: { badge: 'evaluating', banner: 'deciding' },
+      queued: { badge: 'pending_interject', banner: 'interject' },
+      willQueue: { badge: 'queue', banner: null },
+      willCancel: { badge: 'cancel', banner: null },
+      committed: { badge: 'interject', banner: null },
+      failed: { badge: 'error', banner: null }
+    },
     sanitizeMessage(value) { return value; },
     syncTokenCookie() {},
     truncate(value, len) { return String(value || '').slice(0, len); },
@@ -579,6 +588,9 @@ function createHarness(options = {}) {
   };
   context.fetch = windowObj.fetch;
 
+  // app-attachments.js is a dependency leaf that app-stream.js destructures from
+  // the shared app bag at load time, so it must run first (mirrors index.html).
+  vm.runInNewContext(attachmentsSource, context, { filename: 'app-attachments.js' });
   vm.runInNewContext(source, context, { filename: 'app-stream.js' });
 
   return {
@@ -1330,7 +1342,7 @@ async function testDrainInterruptQueueAfterResumeCompletes() {
   state.activeSessionId = session.id;
 
   // Queue an interrupt that should be drained after the resume completes.
-  state.queuedInterrupts.push({ prompt: 'follow-up question', messageId: 'msg_queued' });
+  state.queuedInterrupts.push({ sessionId: session.id, prompt: 'follow-up question', messageId: 'msg_queued' });
 
   // Run resumeActiveResponse — the events stream will complete immediately.
   await app.resumeActiveResponse(session, { responseId });
@@ -1368,6 +1380,51 @@ async function testDrainInterruptQueueAfterResumeCompletes() {
   // Clean up the second sendMessage's stream.
   app.detachResponseStream();
   await new Promise((resolve) => setTimeout(resolve, 0));
+  await cleanup();
+  pass(name);
+}
+
+async function testDrainInterruptQueueIgnoresOtherSessionEntries() {
+  const name = 'drainInterruptQueueIfIdle only drains entries for the active session';
+  const harness = createHarness();
+  const { app, state, fetchCalls, cleanup } = harness;
+
+  const activeSession = {
+    id: 'session_active_drain',
+    title: 'Active drain test',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  const otherSession = {
+    id: 'session_other_drain',
+    title: 'Other drain test',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+    number: 2,
+  };
+  state.sessions.push(activeSession, otherSession);
+  state.activeSessionId = activeSession.id;
+  state.queuedInterrupts.push({ sessionId: otherSession.id, prompt: 'other session thought', messageId: 'msg_other' });
+
+  app.drainInterruptQueueIfIdle(activeSession);
+
+  if (state.queuedInterrupts.length !== 1 || state.queuedInterrupts[0].sessionId !== otherSession.id) {
+    fail(name, 'queued interrupt for another session should remain queued', JSON.stringify(state.queuedInterrupts));
+    await cleanup();
+    return;
+  }
+  const postCalls = fetchCalls.filter(c => c.url === '/ui/v1/responses' && c.method === 'POST');
+  if (postCalls.length !== 0) {
+    fail(name, 'should not send another session queued interrupt while active session is drained', JSON.stringify(fetchCalls));
+    await cleanup();
+    return;
+  }
+
   await cleanup();
   pass(name);
 }
@@ -1465,6 +1522,126 @@ async function testResumeActiveResponseRecoversFromSnapshotBeforeReplaying() {
   }
   if (toolGroups[0].tools.length !== 3) {
     fail(name, `expected recovered tool group to contain 3 tools, got ${toolGroups[0].tools.length}`, JSON.stringify(toolGroups[0]));
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
+async function testRecoverySnapshotClearsSyntheticPendingInterjectionByText() {
+  const name = 'recovery snapshot clears pending interjection tracked under synthetic id';
+  const responseId = 'resp_snapshot_interjection_cleanup';
+  const harness = createHarness({
+    responseId,
+    snapshotPayload: {
+      id: responseId,
+      status: 'completed',
+      last_sequence_number: 9,
+      recovery: {
+        sequence_number: 9,
+        messages: [
+          { id: 'real-id', role: 'user', content: 'please also check X', interruptState: 'interject', created: 1002 },
+          { id: 'assistant-after', role: 'assistant', content: 'checked', created: 1003 },
+        ],
+      },
+    },
+  });
+  const { app, state, cleanup } = harness;
+  const session = {
+    id: 'session_snapshot_interjection_cleanup',
+    title: 'Snapshot interjection cleanup',
+    messages: [
+      { id: 'msg_user_local', role: 'user', content: 'find files', created: 1000 },
+      { id: 'synthetic-id', role: 'user', content: 'please also check X', created: 1001, interruptState: 'pending_interject' },
+    ],
+    lastResponseId: null,
+    activeResponseId: responseId,
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.pendingInterjections = [
+    { sessionId: session.id, prompt: 'please also check X', messageId: 'synthetic-id', action: 'interject' },
+  ];
+  state.pendingInterruptCommits = [
+    { sessionId: session.id, prompt: 'please also check X', messageId: 'synthetic-id' },
+  ];
+
+  await app.resumeActiveResponse(session, { responseId, recoverFromSnapshot: true });
+
+  if (state.pendingInterjections.length !== 0) {
+    fail(name, 'pendingInterjections should be cleared by recovered committed interjection', JSON.stringify(state.pendingInterjections));
+    await cleanup();
+    return;
+  }
+  if (state.pendingInterruptCommits.length !== 0) {
+    fail(name, 'pendingInterruptCommits should be cleared by recovered committed interjection', JSON.stringify(state.pendingInterruptCommits));
+    await cleanup();
+    return;
+  }
+  if (state.queuedInterrupts.length !== 0) {
+    fail(name, 'committed interjection should not be requeued after terminal snapshot', JSON.stringify(state.queuedInterrupts));
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
+async function testRecoverySnapshotDoesNotDuplicateOptimisticInterjection() {
+  const name = 'recovery snapshot does not duplicate optimistic interjection message';
+  const responseId = 'resp_snapshot_interjection_dedupe';
+  const harness = createHarness({
+    responseId,
+    snapshotPayload: {
+      id: responseId,
+      status: 'completed',
+      last_sequence_number: 4,
+      recovery: {
+        sequence_number: 4,
+        messages: [
+          { id: 'real-id', role: 'user', content: 'please also check X', interruptState: 'interject', created: 1002 },
+          { id: 'assistant-after', role: 'assistant', content: 'checked', created: 1003 },
+        ],
+      },
+    },
+  });
+  const { app, state, cleanup } = harness;
+  const session = {
+    id: 'session_snapshot_interjection_dedupe',
+    title: 'Snapshot interjection dedupe',
+    messages: [
+      { id: 'msg_user_local', role: 'user', content: 'find files', created: 1000 },
+      { id: 'synthetic-id', role: 'user', content: 'please also check X', created: 1001, interruptState: 'pending_interject' },
+    ],
+    lastResponseId: null,
+    activeResponseId: responseId,
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.pendingInterjections = [
+    { sessionId: session.id, prompt: 'please also check X', messageId: 'synthetic-id', action: 'interject' },
+  ];
+  state.pendingInterruptCommits = [
+    { sessionId: session.id, prompt: 'please also check X', messageId: 'synthetic-id' },
+  ];
+
+  await app.resumeActiveResponse(session, { responseId, recoverFromSnapshot: true });
+
+  const matchingUsers = session.messages.filter((message) => message.role === 'user' && message.content === 'please also check X');
+  if (matchingUsers.length !== 1) {
+    fail(name, `expected one interjection user message after recovery, got ${matchingUsers.length}`, JSON.stringify(session.messages));
+    await cleanup();
+    return;
+  }
+  if (matchingUsers[0].interruptState !== 'interject') {
+    fail(name, `recovered interjection interruptState = ${matchingUsers[0].interruptState}, want interject`, JSON.stringify(matchingUsers[0]));
     await cleanup();
     return;
   }
@@ -2051,6 +2228,220 @@ async function testReplayedInterjectionWithoutIdDoesNotDuplicateExistingInjected
   pass(name);
 }
 
+async function testCommittedInterjectionWithRealIdClearsStaleSyntheticPending() {
+  const name = 'committed response.interjection with server id clears pending tracked under a different id';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+
+  const session = {
+    id: 'session_interject_stale',
+    title: 'Interject stale id test',
+    messages: [
+      {
+        id: 'synthetic-id',
+        role: 'user',
+        content: 'foo',
+        created: 1000,
+        interruptState: 'pending_interject',
+      },
+    ],
+    lastResponseId: null,
+    activeResponseId: 'resp_int_stale',
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+
+  // The optimistic pending entries are tracked under a synthetic id, but the
+  // committed event arrives with the real server-issued interjection_id. The
+  // id-only lookup misses, so the cleanup must fall back to a text match.
+  state.pendingInterjections = [
+    { sessionId: session.id, prompt: 'foo', messageId: 'synthetic-id', action: 'interject' },
+  ];
+  state.pendingInterruptCommits = [
+    { sessionId: session.id, prompt: 'foo', messageId: 'synthetic-id' },
+  ];
+
+  const streamState = app.createResponseStreamState(session);
+
+  app.applyResponseStreamEvent(session, streamState, 'response.interjection', {
+    text: 'foo',
+    interjection_id: 'real-id',
+  });
+
+  if (state.pendingInterjections.length !== 0) {
+    fail(name, 'pendingInterjections should be cleared after commit', JSON.stringify(state.pendingInterjections));
+    await cleanup();
+    return;
+  }
+  if (state.pendingInterruptCommits.length !== 0) {
+    fail(name, 'pendingInterruptCommits should be cleared after commit', JSON.stringify(state.pendingInterruptCommits));
+    await cleanup();
+    return;
+  }
+
+  const userMessages = session.messages.filter((m) => m.role === 'user' && m.content === 'foo');
+  if (userMessages.length !== 1) {
+    fail(name, `expected 1 user message after commit, got ${userMessages.length}`, JSON.stringify(session.messages));
+    await cleanup();
+    return;
+  }
+  if (userMessages[0].id !== 'synthetic-id') {
+    fail(name, `expected existing optimistic message to be reused, got id ${userMessages[0].id}`);
+    await cleanup();
+    return;
+  }
+  if (userMessages[0].interruptState !== 'interject') {
+    fail(name, `interruptState = ${userMessages[0].interruptState}, want "interject"`);
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
+async function testCommittedInterjectionReusesOptimisticMessageEvenWhenPendingTrackedUnderServerId() {
+  const name = 'committed response.interjection reuses optimistic message when pending entry has server id';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+
+  const session = {
+    id: 'session_interject_server_id_pending',
+    title: 'Interject server id pending test',
+    messages: [
+      {
+        id: 'optimistic-id',
+        role: 'user',
+        content: 'foo',
+        created: 1000,
+        interruptState: 'pending_interject',
+      },
+    ],
+    lastResponseId: null,
+    activeResponseId: 'resp_int_server_id_pending',
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+
+  state.pendingInterjections = [
+    { sessionId: session.id, prompt: 'foo', messageId: 'real-id', action: 'interject' },
+  ];
+  state.pendingInterruptCommits = [
+    { sessionId: session.id, prompt: 'foo', messageId: 'real-id' },
+  ];
+
+  const streamState = app.createResponseStreamState(session);
+  app.applyResponseStreamEvent(session, streamState, 'response.interjection', {
+    text: 'foo',
+    interjection_id: 'real-id',
+  });
+
+  const userMessages = session.messages.filter((m) => m.role === 'user' && m.content === 'foo');
+  if (userMessages.length !== 1) {
+    fail(name, `expected 1 user message after commit, got ${userMessages.length}`, JSON.stringify(session.messages));
+    await cleanup();
+    return;
+  }
+  if (userMessages[0].id !== 'optimistic-id') {
+    fail(name, `expected optimistic message to be reused, got id ${userMessages[0].id}`);
+    await cleanup();
+    return;
+  }
+  if (userMessages[0].interruptState !== 'interject') {
+    fail(name, `interruptState = ${userMessages[0].interruptState}, want "interject"`);
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
+async function testInterjectQueuedShowsPendingBadgeThenInjectedOnCommit() {
+  const name = 'queued interjection shows "will incorporate" badge until committed event marks it injected';
+  const harness = createHarness({ interruptPayload: { action: 'interject' } });
+  const { app, state, cleanup } = harness;
+
+  const session = {
+    id: 'session_interject_lifecycle',
+    title: 'Interject lifecycle test',
+    messages: [
+      {
+        id: 'msg_x',
+        role: 'user',
+        content: 'foo',
+        created: 1000,
+        interruptState: 'evaluating',
+      },
+    ],
+    lastResponseId: null,
+    activeResponseId: 'resp_int_lifecycle',
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+
+  state.pendingInterjections = [
+    { sessionId: session.id, prompt: 'foo', messageId: 'msg_x', action: 'deciding' },
+  ];
+  state.pendingInterruptCommits = [
+    { sessionId: session.id, prompt: 'foo', messageId: 'msg_x' },
+  ];
+
+  // Phase 1: /interrupt classifies as interject (queued, not yet committed).
+  const action = await app.interruptActiveRun(session, 'foo', 'msg_x', null, []);
+  if (action !== 'interject') {
+    fail(name, `expected interrupt action "interject", got ${action}`);
+    await cleanup();
+    return;
+  }
+
+  const queuedMessage = session.messages.find((m) => m.id === 'msg_x');
+  if (!queuedMessage || queuedMessage.interruptState !== 'pending_interject') {
+    fail(name, `expected interruptState "pending_interject" while queued, got ${queuedMessage?.interruptState}`);
+    await cleanup();
+    return;
+  }
+  const stillPending = state.pendingInterjections.find((e) => e.messageId === 'msg_x');
+  if (!stillPending || stillPending.action !== 'interject') {
+    fail(name, 'pending interjection should remain cancellable with action "interject" while queued', JSON.stringify(state.pendingInterjections));
+    await cleanup();
+    return;
+  }
+
+  // Phase 2: engine drains and emits the committed response.interjection.
+  const streamState = app.createResponseStreamState(session);
+  app.applyResponseStreamEvent(session, streamState, 'response.interjection', {
+    text: 'foo',
+    interjection_id: 'msg_x',
+  });
+
+  const committedMessage = session.messages.find((m) => m.id === 'msg_x');
+  if (!committedMessage || committedMessage.interruptState !== 'interject') {
+    fail(name, `expected interruptState "interject" after commit, got ${committedMessage?.interruptState}`);
+    await cleanup();
+    return;
+  }
+  if (state.pendingInterjections.length !== 0) {
+    fail(name, 'pendingInterjections should be cleared after commit', JSON.stringify(state.pendingInterjections));
+    await cleanup();
+    return;
+  }
+  if (state.pendingInterruptCommits.length !== 0) {
+    fail(name, 'pendingInterruptCommits should be cleared after commit', JSON.stringify(state.pendingInterruptCommits));
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
 async function testRecoverInterruptConflictQueuesWhenRunStillActive() {
   const name = 'recoverInterruptConflict queues follow-up when server still reports active run';
   const harness = createHarness();
@@ -2096,7 +2487,7 @@ async function testRecoverInterruptConflictQueuesWhenRunStillActive() {
     return;
   }
 
-  if (state.queuedInterrupts.length !== 1 || state.queuedInterrupts[0].prompt !== 'late thought') {
+  if (state.queuedInterrupts.length !== 1 || state.queuedInterrupts[0].sessionId !== session.id || state.queuedInterrupts[0].prompt !== 'late thought') {
     fail(name, 'expected follow-up queued for later delivery', JSON.stringify(state.queuedInterrupts));
     await cleanup();
     return;
@@ -2236,7 +2627,7 @@ async function testRunCompletesWithoutInterjectionQueuesOrphan() {
     await cleanup();
     return;
   }
-  if (state.queuedInterrupts[0].prompt !== 'dropped thought') {
+  if (state.queuedInterrupts[0].sessionId !== session.id || state.queuedInterrupts[0].prompt !== 'dropped thought') {
     fail(name, `queuedInterrupts[0].prompt = ${state.queuedInterrupts[0].prompt}, want "dropped thought"`);
     await cleanup();
     return;
@@ -3345,7 +3736,10 @@ function testRestoreLatestDraftMessageDoesNotCrossSessionBoundary() {
   await testNewChatDuringStreamingClearsStreamingState();
   await testSendMessageMarksSessionBusyImmediately();
   await testDrainInterruptQueueAfterResumeCompletes();
+  await testDrainInterruptQueueIgnoresOtherSessionEntries();
   await testResumeActiveResponseRecoversFromSnapshotBeforeReplaying();
+  await testRecoverySnapshotClearsSyntheticPendingInterjectionByText();
+  await testRecoverySnapshotDoesNotDuplicateOptimisticInterjection();
   await testFunctionCallArgumentDeltasFillToolPrompt();
   await testArgumentDeltaWithoutOutputIndexUsesLastRunningTool();
   await testArgumentDeltasContinueUntilOutputItemDone();
@@ -3362,6 +3756,9 @@ function testRestoreLatestDraftMessageDoesNotCrossSessionBoundary() {
   await testCancelActiveResponseTearsDownLocallyBeforeServerPost();
   await testInterjectionClosesToolGroupAndInsertsUserMessageAtTail();
   await testReplayedInterjectionWithoutIdDoesNotDuplicateExistingInjectedMessage();
+  await testCommittedInterjectionWithRealIdClearsStaleSyntheticPending();
+  await testCommittedInterjectionReusesOptimisticMessageEvenWhenPendingTrackedUnderServerId();
+  await testInterjectQueuedShowsPendingBadgeThenInjectedOnCommit();
   await testRunCompletesWithoutInterjectionQueuesOrphan();
   await testRecoverInterruptConflictQueuesWhenRunStillActive();
   await testRecoverInterruptConflictClearsPendingWhenRunFinished();

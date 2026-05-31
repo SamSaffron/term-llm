@@ -16,7 +16,7 @@ import (
 //go:embed static/index.html static/manifest.webmanifest static/icon-512.png static/sw.js
 //go:embed static/app.css
 //go:embed static/app-core.js static/app-render.js static/app-sessions.js static/app-sidebar.js
-//go:embed static/app-stream.js static/app-webrtc.js
+//go:embed static/app-attachments.js static/app-stream.js static/app-webrtc.js
 //go:embed static/decoration.js static/markdown-setup.js static/markdown-streaming.js
 //go:embed static/vendor
 var staticFiles embed.FS
@@ -92,6 +92,7 @@ func RenderIndexHTML(basePath, headSnippet string, opts RenderOptions) []byte {
 		{`href="app.css"`, `href="` + versioned("app.css") + `"`},
 		{`href="app-core.js"`, `href="` + versioned("app-core.js") + `"`},
 		{`href="app-render.js"`, `href="` + versioned("app-render.js") + `"`},
+		{`href="app-attachments.js"`, `href="` + versioned("app-attachments.js") + `"`},
 		{`href="app-stream.js"`, `href="` + versioned("app-stream.js") + `"`},
 		{`href="app-sidebar.js"`, `href="` + versioned("app-sidebar.js") + `"`},
 		{`href="app-sessions.js"`, `href="` + versioned("app-sessions.js") + `"`},
@@ -100,6 +101,7 @@ func RenderIndexHTML(basePath, headSnippet string, opts RenderOptions) []byte {
 		{`src="decoration.js"`, `src="` + versioned("decoration.js") + `"`},
 		{`src="app-core.js"`, `src="` + versioned("app-core.js") + `"`},
 		{`src="app-render.js"`, `src="` + versioned("app-render.js") + `"`},
+		{`src="app-attachments.js"`, `src="` + versioned("app-attachments.js") + `"`},
 		{`src="app-stream.js"`, `src="` + versioned("app-stream.js") + `"`},
 		{`src="app-sidebar.js"`, `src="` + versioned("app-sidebar.js") + `"`},
 		{`src="app-sessions.js"`, `src="` + versioned("app-sessions.js") + `"`},
@@ -164,6 +166,7 @@ func renderServiceWorkerBytes(opts RenderOptions) []byte {
 		{"'./decoration.js'", "'./" + versioned("decoration.js") + "'"},
 		{"'./app-core.js'", "'./" + versioned("app-core.js") + "'"},
 		{"'./app-render.js'", "'./" + versioned("app-render.js") + "'"},
+		{"'./app-attachments.js'", "'./" + versioned("app-attachments.js") + "'"},
 		{"'./app-stream.js'", "'./" + versioned("app-stream.js") + "'"},
 		{"'./app-sidebar.js'", "'./" + versioned("app-sidebar.js") + "'"},
 		{"'./app-sessions.js'", "'./" + versioned("app-sessions.js") + "'"},
