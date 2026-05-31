@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/worktree"
 )
@@ -88,15 +89,6 @@ func TestPathsEqual(t *testing.T) {
 	}
 	if !pathsEqual("", "") {
 		t.Error("empty vs empty should be equal")
-	}
-}
-
-func TestCurrentTag(t *testing.T) {
-	if currentTag(true) == "" {
-		t.Error("currentTag(true) should be non-empty")
-	}
-	if currentTag(false) != "" {
-		t.Error("currentTag(false) should be empty")
 	}
 }
 
@@ -263,6 +255,96 @@ func TestWorktreeSwitchToRootClearsBinding(t *testing.T) {
 		cmd.Dir = repo
 		_ = cmd.Run()
 	})
+}
+
+// TestWorktreeSwitcherEnterBindsHighlighted drives the modal switcher against a
+// real repo: open it (verifying the root/worktree/new rows), highlight the
+// worktree row, press enter, and confirm the session binds via the chdir model.
+func TestWorktreeSwitcherEnterBindsHighlighted(t *testing.T) {
+	repo := initChatRepo(t)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg"))
+	origWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() {
+		cmd := exec.Command("git", "worktree", "prune")
+		cmd.Dir = repo
+		_ = cmd.Run()
+	})
+
+	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "switcher", Base: "HEAD"})
+	if err != nil {
+		t.Fatalf("worktree.Create: %v", err)
+	}
+
+	store := &mockStore{sessions: map[string]*session.Session{}}
+	m := newCmdTestModel(store)
+	m.sess = &session.Session{ID: "s1"}
+
+	if _, cmd := m.showWorktreeSwitcher(); cmd != nil {
+		t.Fatal("showWorktreeSwitcher should open a dialog, not return a command")
+	}
+	if m.dialog.Type() != DialogWorktreePicker {
+		t.Fatalf("dialog type = %v, want worktree picker", m.dialog.Type())
+	}
+	// Rows are: root (synthetic), the worktree, then the "+ new worktree…" row.
+	if first := m.dialog.ItemAt(0); first == nil || first.ID != "__root__" {
+		t.Fatalf("first row = %+v, want __root__", first)
+	}
+	wtIdx := -1
+	for i := 0; ; i++ {
+		it := m.dialog.ItemAt(i)
+		if it == nil {
+			if wtIdx < 0 {
+				t.Fatal("worktree row not present in picker")
+			}
+			if last := m.dialog.ItemAt(i - 1); last == nil || last.ID != "__new__" {
+				t.Fatalf("last row = %+v, want __new__", last)
+			}
+			break
+		}
+		if it.ID == wt.Dir {
+			wtIdx = i
+		}
+	}
+	m.dialog.SetCursor(wtIdx)
+
+	res, _ := m.handleKeyMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
+	rm := res.(*Model)
+	if rm.dialog.IsOpen() {
+		t.Fatal("dialog should close after switch")
+	}
+	if !pathsEqual(rm.sess.WorktreeDir, wt.Dir) {
+		t.Errorf("bound to %q, want %q", rm.sess.WorktreeDir, wt.Dir)
+	}
+	if cwd, _ := os.Getwd(); !pathsEqual(cwd, wt.Dir) {
+		t.Errorf("cwd %q not the worktree %q", cwd, wt.Dir)
+	}
+}
+
+// TestWorktreeSwitcherDeleteRequiresTwoPresses verifies the in-place delete
+// confirm: a first "d" arms the highlighted row and warns without deleting.
+func TestWorktreeSwitcherDeleteRequiresTwoPresses(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+	m.sess = &session.Session{ID: "s1"}
+	m.dialog.ShowWorktreePicker([]DialogItem{{ID: "/tmp/wt-x", Label: "neon-canyon"}}, "/tmp/wt-x")
+
+	res, _ := m.handleKeyMsg(tea.KeyPressMsg{Code: 'd'})
+	rm := res.(*Model)
+	if !rm.dialog.IsOpen() {
+		t.Fatal("first delete press should keep the dialog open")
+	}
+	if rm.worktreeDeleteTarget != "/tmp/wt-x" {
+		t.Fatalf("delete target = %q, want armed to /tmp/wt-x", rm.worktreeDeleteTarget)
+	}
+	if !strings.Contains(rm.footerMessage, "Press d again") {
+		t.Fatalf("footer = %q, want two-press prompt", rm.footerMessage)
+	}
+	if rm.worktreeBusy {
+		t.Fatal("first delete press must not start a removal")
+	}
 }
 
 // TestWorktreeShellCommandConstruction checks the shell-drop command: an

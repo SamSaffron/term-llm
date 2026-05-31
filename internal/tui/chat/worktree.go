@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -43,7 +44,7 @@ func (m *Model) boundWorktreeDir() string {
 // cmdWorktree dispatches the /worktree (alias /wt) command.
 func (m *Model) cmdWorktree(args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
-		return m.cmdWorktreeList()
+		return m.showWorktreeSwitcher()
 	}
 
 	sub := strings.ToLower(args[0])
@@ -51,7 +52,7 @@ func (m *Model) cmdWorktree(args []string) (tea.Model, tea.Cmd) {
 
 	switch sub {
 	case "list", "ls":
-		return m.cmdWorktreeList()
+		return m.showWorktreeSwitcher()
 	case "new", "add":
 		return m.createWorktree(strings.Join(rest, " "))
 	case "pwd":
@@ -72,59 +73,54 @@ func (m *Model) cmdWorktree(args []string) (tea.Model, tea.Cmd) {
 	}
 }
 
-// cmdWorktreeList prints the repo's worktrees, marking the current binding.
-func (m *Model) cmdWorktreeList() (tea.Model, tea.Cmd) {
+// showWorktreeSwitcher opens the modal switcher: a synthetic "root" row, one row
+// per worktree, and a "+ new worktree…" row. Selection is routed through the
+// chdir bind funcs (bindRoot / bindWorktree) by the picker key handler.
+func (m *Model) showWorktreeSwitcher() (tea.Model, tea.Cmd) {
 	base := m.worktreeBaseDir()
 	if !worktree.IsGitRepo(base) {
 		return m.showFooterWarning("Not in a git repository; /worktree is unavailable here.")
 	}
+	rootDir := base
+	if r, err := worktree.MainRepoRoot(base); err == nil {
+		rootDir = r
+	}
+	bound := m.boundWorktreeDir()
+
+	items := []DialogItem{{
+		ID:          "__root__",
+		Label:       "root",
+		Description: "checkout " + elidePath(rootDir, 36),
+		Selected:    bound == "",
+		Category:    "ready",
+	}}
 	wts, err := worktree.List(base)
 	if err != nil {
 		return m.showFooterWarning(fmt.Sprintf("worktree list failed: %v", err))
 	}
-
-	bound := m.boundWorktreeDir()
-	root := base
-	if r, err := worktree.MainRepoRoot(base); err == nil {
-		root = r
-	}
-
-	var b strings.Builder
-	b.WriteString("## Worktrees\n\n")
-	rootMark := "○"
-	if bound == "" {
-		rootMark = "●"
-	}
-	b.WriteString(fmt.Sprintf("%s **root** — checkout — `%s`%s\n", rootMark, root, currentTag(bound == "")))
 	for _, wt := range wts {
-		mark := "○"
-		if pathsEqual(bound, wt.Dir) {
-			mark = "●"
-		}
 		meta := "worktree"
-		if wt.Branch != "" {
-			meta += " ⎇ " + wt.Branch
-		} else if wt.HeadSHA != "" {
-			meta += " ⎇ detached@" + wt.HeadSHA
-		}
 		if wt.DirtyFiles > 0 {
 			meta += fmt.Sprintf(" ±%d", wt.DirtyFiles)
 		}
-		b.WriteString(fmt.Sprintf("%s **%s** — %s — `%s`%s\n", mark, wt.Name, meta, wt.Dir, currentTag(pathsEqual(bound, wt.Dir))))
+		meta += " " + elidePath(wt.Dir, 36)
+		items = append(items, DialogItem{
+			ID:          wt.Dir,
+			Label:       wt.Name,
+			Description: meta,
+			Selected:    pathsEqual(bound, wt.Dir),
+			Category:    string(wt.Status),
+		})
 	}
-	if len(wts) == 0 {
-		b.WriteString("\n_No worktrees yet. Create one with_ `/worktree new [name]`.\n")
-	}
-	b.WriteString("\n**Commands:** `/worktree new [name]` · `/worktree <name>` (switch) · `/worktree root` · `/worktree pwd` · `/worktree diff` · `/worktree promote <branch>` · `/worktree rm [force]` · `/worktree shell [--tmux]`")
-	m.setTextareaValue("")
-	return m.showSystemMessage(b.String())
-}
+	items = append(items, DialogItem{ID: "__new__", Label: "+ new worktree…", Category: "new"})
 
-func currentTag(isCurrent bool) string {
-	if isCurrent {
-		return "  ← current"
+	currentID := "__root__"
+	if bound != "" {
+		currentID = bound
 	}
-	return ""
+	m.setTextareaValue("")
+	m.dialog.ShowWorktreePicker(items, currentID)
+	return m, nil
 }
 
 // createWorktree creates a worktree off HEAD asynchronously, streaming progress
@@ -261,6 +257,28 @@ func (m *Model) cmdWorktreeRemove(args []string) (tea.Model, tea.Cmd) {
 	return m.showFooterSuccess("Removed worktree; back on the root checkout.")
 }
 
+// removeWorktreeDir removes an arbitrary worktree (the switcher's delete action)
+// asynchronously, spinning while git runs. The main checkout is resolved before
+// removal so the done handler can rebind to root if the removed tree was bound.
+func (m *Model) removeWorktreeDir(dir string, force bool) (tea.Model, tea.Cmd) {
+	if m.worktreeBusy {
+		return m.showFooterWarning("A worktree operation is already running.")
+	}
+	mainRoot, _ := worktree.MainRepoRoot(dir)
+	m.worktreeBusy = true
+	m.worktreeOpSeq++
+	op := m.worktreeOpSeq
+	m.worktreeProgress = "Removing worktree…"
+	remove := func() tea.Msg {
+		err := worktree.Remove(dir, force)
+		if errors.Is(err, worktree.ErrDirty) {
+			err = fmt.Errorf("dirty worktree; commit changes or use /worktree rm force")
+		}
+		return worktreeRemoveDoneMsg{op: op, dir: dir, root: mainRoot, err: err}
+	}
+	return m, tea.Batch(remove, m.spinner.Tick)
+}
+
 // cmdWorktreeShell drops into a shell in the bound worktree. Without --tmux it
 // suspends the TUI and runs $SHELL (cwd = worktree); with --tmux it opens a tmux
 // split/new-window. Both paths use tea.ExecProcess so the terminal is released
@@ -309,6 +327,19 @@ func worktreeShellCommand(dir string, useTmux bool) *exec.Cmd {
 	cmd := exec.Command(shell)
 	cmd.Dir = dir
 	return cmd
+}
+
+// shellFromPicker opens a shell for a switcher row: the main checkout for the
+// "root" row, otherwise the worktree's own directory.
+func (m *Model) shellFromPicker(id string) (tea.Model, tea.Cmd) {
+	dir := id
+	if id == "__root__" {
+		dir = m.worktreeBaseDir()
+		if root, err := worktree.MainRepoRoot(dir); err == nil {
+			dir = root
+		}
+	}
+	return m.openWorktreeShell(dir, false)
 }
 
 // cmdWorktreeSwitch binds the session to an existing worktree by name, or to the
@@ -489,4 +520,17 @@ func pathsEqual(a, b string) bool {
 		cb = r
 	}
 	return filepath.Clean(ca) == filepath.Clean(cb)
+}
+
+// elidePath shortens path to at most maxLen runes, keeping the tail (the part
+// that distinguishes worktrees) and prefixing an ellipsis when truncated.
+func elidePath(path string, maxLen int) string {
+	path = strings.TrimSpace(path)
+	if len(path) <= maxLen {
+		return path
+	}
+	if maxLen <= 1 {
+		return "…"
+	}
+	return "…" + path[len(path)-maxLen+1:]
 }

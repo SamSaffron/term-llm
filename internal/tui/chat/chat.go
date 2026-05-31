@@ -346,6 +346,9 @@ type Model struct {
 	worktreeBusy     bool
 	worktreeProgress string
 	worktreeOpSeq    uint64
+	// worktreeDeleteTarget arms the switcher's two-press delete: it holds the ID
+	// of the row a first "d" selected; a second "d" on the same row confirms.
+	worktreeDeleteTarget string
 
 	attemptInput          int
 	attemptOutput         int
@@ -406,6 +409,12 @@ type (
 		op  uint64
 		wt  *worktree.Worktree
 		err error
+	}
+	worktreeRemoveDoneMsg struct {
+		op   uint64
+		dir  string // worktree that was removed
+		root string // main checkout, resolved before removal, for rebinding
+		err  error
 	}
 	worktreeShellDoneMsg struct{ err error }
 )
@@ -1361,6 +1370,32 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.showFooterError(fmt.Sprintf("Created %s but failed to switch: %v", msg.wt.Name, err))
 		}
 		return m.showFooterSuccess(fmt.Sprintf("Created and switched to worktree %s.", msg.wt.Name))
+
+	case worktreeRemoveDoneMsg:
+		if msg.op != m.worktreeOpSeq {
+			return m, nil
+		}
+		m.worktreeBusy = false
+		m.worktreeProgress = ""
+		if msg.err != nil {
+			return m.showFooterError(fmt.Sprintf("Worktree remove failed: %v", msg.err))
+		}
+		// If the removed worktree was the bound one, rebind to the root checkout
+		// (the chdir model: msg.root was resolved before removal).
+		if m.sess != nil && pathsEqual(m.sess.WorktreeDir, msg.dir) {
+			if msg.root != "" {
+				_ = m.bindRoot(msg.root)
+			} else {
+				m.sess.WorktreeDir = ""
+				if m.store != nil {
+					_ = m.store.Update(context.Background(), m.sess)
+				}
+				m.invalidateWorktreeSegment()
+			}
+			return m.showFooterSuccess("Removed worktree; back on the root checkout.")
+		}
+		m.invalidateWorktreeSegment()
+		return m.showFooterSuccess("Worktree removed.")
 
 	case worktreeShellDoneMsg:
 		// The shell may have changed files; refresh the footer segment.

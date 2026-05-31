@@ -24,6 +24,7 @@ const (
 	DialogDirApproval
 	DialogMCPPicker
 	DialogContent
+	DialogWorktreePicker
 )
 
 // DialogModel handles modal dialogs
@@ -41,6 +42,9 @@ type DialogModel struct {
 	// Directory approval specific
 	dirApprovalPath    string
 	dirApprovalOptions []string
+
+	// Worktree picker specific
+	worktreeFooter string
 
 	// Static content modal specific
 	contentLines  []string
@@ -94,6 +98,7 @@ func (d *DialogModel) Close() {
 	d.contentLines = nil
 	d.contentScroll = 0
 	d.contentFooter = ""
+	d.worktreeFooter = ""
 }
 
 // ShowModelPicker opens the model picker dialog.
@@ -228,6 +233,27 @@ func (d *DialogModel) ShowMCPPicker(mcpManager *mcp.Manager) {
 			Description: status,
 			Selected:    isRunning,
 		})
+	}
+	d.filtered = d.items
+}
+
+// ShowWorktreePicker opens the worktree switcher dialog. items is the synthetic
+// root row, one row per worktree, and a trailing "+ new worktree…" row; currentID
+// marks the bound row (its ID, or "__root__" on the root checkout).
+func (d *DialogModel) ShowWorktreePicker(items []DialogItem, currentID string) {
+	d.dialogType = DialogWorktreePicker
+	d.title = "Worktrees"
+	d.cursor = 0
+	d.query = ""
+	d.items = nil
+	d.filtered = nil
+	d.worktreeFooter = "enter switch · n new · d delete (×2) · s shell · q close"
+	for _, item := range items {
+		item.Selected = item.ID == currentID
+		d.items = append(d.items, item)
+		if item.Selected {
+			d.cursor = len(d.items) - 1
+		}
 	}
 	d.filtered = d.items
 }
@@ -409,6 +435,10 @@ func (d *DialogModel) View() string {
 	// Use content renderer for static modals.
 	if d.dialogType == DialogContent {
 		return d.viewContentDialog()
+	}
+
+	if d.dialogType == DialogWorktreePicker {
+		return d.viewWorktreePicker()
 	}
 
 	// Original style for other dialogs (dir approval, session list)
@@ -617,6 +647,76 @@ func (d *DialogModel) viewStandardDialog() string {
 	b.WriteString("\n\n")
 	b.WriteString(mutedStyle.Render("j/k navigate · enter select · esc cancel"))
 
+	return borderStyle.Render(b.String())
+}
+
+// viewWorktreePicker renders the worktree switcher: a status dot (colored by
+// lifecycle), a filled/hollow marker for the bound row, the name, and a meta
+// column. The footer lists the available keys.
+func (d *DialogModel) viewWorktreePicker() string {
+	theme := d.styles.Theme()
+	width := d.width - 4
+	if width <= 0 || width > 86 {
+		width = 86
+	}
+	if width < 48 {
+		width = 48
+	}
+	borderStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(theme.Border).
+		Padding(1, 2).
+		Width(width)
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(theme.Primary).MarginBottom(1)
+	selectedStyle := lipgloss.NewStyle().Background(theme.Primary).Foreground(lipgloss.Color("0"))
+	mutedStyle := lipgloss.NewStyle().Foreground(theme.Muted)
+	successStyle := lipgloss.NewStyle().Foreground(theme.Success)
+	warningStyle := lipgloss.NewStyle().Foreground(theme.Warning)
+	errorStyle := lipgloss.NewStyle().Foreground(theme.Error)
+
+	var b strings.Builder
+	b.WriteString(titleStyle.Render(d.title))
+	b.WriteString("\n")
+	items := d.filtered
+	if len(items) == 0 {
+		b.WriteString(mutedStyle.Render("No worktrees found."))
+		b.WriteString("\n\n")
+		b.WriteString(mutedStyle.Render(d.worktreeFooter))
+		return borderStyle.Render(b.String())
+	}
+	maxItems := 12
+	startIdx, endIdx := ui.VisibleRange(len(items), d.cursor, maxItems)
+	for i, item := range items[startIdx:endIdx] {
+		actualIdx := startIdx + i
+		cursor := "  "
+		if actualIdx == d.cursor {
+			cursor = "❯ "
+		}
+		statusIcon := successStyle.Render("●")
+		switch item.Category {
+		case "creating":
+			statusIcon = warningStyle.Render("◐")
+		case "failed":
+			statusIcon = errorStyle.Render("○")
+		case "new":
+			statusIcon = mutedStyle.Render("+")
+		}
+		filled := "○"
+		if item.Selected {
+			filled = "●"
+		}
+		line := fmt.Sprintf("%s%s %s %-18s %s", cursor, statusIcon, filled, item.Label, item.Description)
+		if actualIdx == d.cursor {
+			b.WriteString(selectedStyle.Render(line))
+		} else {
+			b.WriteString(line)
+		}
+		if i < endIdx-startIdx-1 {
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString("\n\n")
+	b.WriteString(mutedStyle.Render(d.worktreeFooter))
 	return borderStyle.Render(b.String())
 }
 
