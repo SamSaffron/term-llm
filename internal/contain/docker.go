@@ -85,14 +85,18 @@ func Start(ctx context.Context, runner Runner, name string, stdout, stderr io.Wr
 	if err := ensureComposeDefinition(name); err != nil {
 		return err
 	}
-	if hasContainers, err := composeHasContainers(ctx, runner, args, dir); err != nil {
+	hasContainers, err := composeHasContainers(ctx, runner, args, dir)
+	if err != nil {
 		return err
-	} else if hasContainers {
-		startArgs := append(append([]string{}, args...), "start")
-		return runner.Run(ctx, "docker", startArgs, RunOptions{Stdout: stdout, Stderr: stderr, Dir: dir})
 	}
-	if err := syncManagedImagesForWorkspace(name); err != nil {
-		return err
+	// Only build/sync managed images when creating containers from scratch; an
+	// existing workspace already has its image. `up -d` is used in both cases so
+	// that config drift (e.g. a changed WEB_PORT in .env) is reconciled — plain
+	// `compose start` would boot the existing container with its stale settings.
+	if !hasContainers {
+		if err := syncManagedImagesForWorkspace(name); err != nil {
+			return err
+		}
 	}
 	upArgs := append(append([]string{}, args...), "up", "-d")
 	return runner.Run(ctx, "docker", upArgs, RunOptions{Stdout: stdout, Stderr: stderr, Dir: dir})

@@ -5,7 +5,8 @@ prompts:
   - id: web_port
     label: "Web UI port"
     type: string
-    default: "8081"
+    default:
+      generate: web_port
   - id: web_token
     label: "Web UI bearer token"
     type: secret

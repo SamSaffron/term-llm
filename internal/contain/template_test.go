@@ -168,6 +168,12 @@ func TestCreateWorkspaceBuiltinAgentDefaultDistro(t *testing.T) {
 	if !strings.Contains(envText, "AGENT_DISTRO="+wantDistro) {
 		t.Fatalf("default env missing AGENT_DISTRO=%s:\n%s", wantDistro, envText)
 	}
+	// web_port has no provided value, so it must resolve to a real auto-selected
+	// port (>= webPortBase) rather than an unrendered placeholder.
+	port := envWebPortValue(t, envText)
+	if port < webPortBase || port >= webPortBase+webPortScanLimit {
+		t.Fatalf("auto WEB_PORT = %d, want in [%d, %d):\n%s", port, webPortBase, webPortBase+webPortScanLimit, envText)
+	}
 	if wantDistro == "fedora" && (!strings.Contains(envText, "AGENT_PLATFORM="+nativeLinuxPlatform()) || !strings.Contains(envText, "AGENT_BASE_IMAGE=fedora:43")) {
 		t.Fatalf("fedora default env not rendered correctly:\n%s", envText)
 	}
