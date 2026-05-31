@@ -407,6 +407,7 @@ type (
 		wt  *worktree.Worktree
 		err error
 	}
+	worktreeShellDoneMsg struct{ err error }
 )
 
 const (
@@ -1360,6 +1361,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.showFooterError(fmt.Sprintf("Created %s but failed to switch: %v", msg.wt.Name, err))
 		}
 		return m.showFooterSuccess(fmt.Sprintf("Created and switched to worktree %s.", msg.wt.Name))
+
+	case worktreeShellDoneMsg:
+		// The shell may have changed files; refresh the footer segment.
+		m.invalidateWorktreeSegment()
+		if msg.err != nil {
+			return m.showFooterError(fmt.Sprintf("Worktree shell failed: %v", msg.err))
+		}
+		return m.showFooterMuted("Returned from worktree shell.")
 
 	case interruptClassifiedMsg:
 		return m.handleInterruptClassified(msg)

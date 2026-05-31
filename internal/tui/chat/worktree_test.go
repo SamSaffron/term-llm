@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -262,6 +263,74 @@ func TestWorktreeSwitchToRootClearsBinding(t *testing.T) {
 		cmd.Dir = repo
 		_ = cmd.Run()
 	})
+}
+
+// TestWorktreeShellCommandConstruction checks the shell-drop command: an
+// interactive $SHELL rooted in the worktree by default, and a tmux split with a
+// new-window fallback (carrying the quoted dir) under --tmux.
+func TestWorktreeShellCommandConstruction(t *testing.T) {
+	t.Setenv("SHELL", "/bin/zsh")
+	cmd := worktreeShellCommand("/tmp/wt-abc", false)
+	if filepath.Base(cmd.Path) != "zsh" {
+		t.Errorf("shell path = %q, want zsh", cmd.Path)
+	}
+	if cmd.Dir != "/tmp/wt-abc" {
+		t.Errorf("shell cwd = %q, want /tmp/wt-abc", cmd.Dir)
+	}
+
+	t.Setenv("SHELL", "")
+	if def := worktreeShellCommand("/tmp/wt-abc", false); def.Path != "/bin/sh" {
+		t.Errorf("default shell path = %q, want /bin/sh", def.Path)
+	}
+
+	tmux := worktreeShellCommand("/tmp/wt abc", true)
+	if filepath.Base(tmux.Path) != "sh" {
+		t.Errorf("tmux command path = %q, want sh", tmux.Path)
+	}
+	joined := strings.Join(tmux.Args, " ")
+	if !strings.Contains(joined, "tmux split-window -c") || !strings.Contains(joined, "tmux new-window -c") {
+		t.Errorf("tmux args = %q, want split-window + new-window fallback", joined)
+	}
+	if !strings.Contains(joined, strconv.Quote("/tmp/wt abc")) {
+		t.Errorf("tmux args = %q, want quoted worktree dir", joined)
+	}
+	if tmux.Dir != "" {
+		t.Errorf("tmux command cwd = %q, want empty (tmux -c carries it)", tmux.Dir)
+	}
+}
+
+// TestOpenWorktreeShellGuards covers the no-dir and --tmux-without-tmux guards.
+func TestOpenWorktreeShellGuards(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+	m.sess = &session.Session{ID: "s1"}
+
+	m.openWorktreeShell("", false)
+	if !strings.Contains(m.footerMessage, "No worktree directory selected") {
+		t.Errorf("empty-dir footer = %q", m.footerMessage)
+	}
+
+	t.Setenv("TMUX", "")
+	m.openWorktreeShell("/tmp/wt", true)
+	if !strings.Contains(m.footerMessage, "requires an existing tmux session") {
+		t.Errorf("tmux-guard footer = %q", m.footerMessage)
+	}
+}
+
+// TestWorktreeShellDoneMsgClearsState verifies the shell-return handler reports
+// success and refreshes the worktree footer segment.
+func TestWorktreeShellDoneMsgClearsState(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+	m.sess = &session.Session{ID: "s1"}
+	m.worktreeSegCache = "stale"
+
+	res, _ := m.Update(worktreeShellDoneMsg{})
+	rm := res.(*Model)
+	if rm.worktreeSegCache != "" {
+		t.Errorf("worktree segment cache = %q, want invalidated", rm.worktreeSegCache)
+	}
+	if !strings.Contains(rm.footerMessage, "Returned from worktree shell") {
+		t.Errorf("footer = %q, want shell-return notice", rm.footerMessage)
+	}
 }
 
 // TestWorktreeProgressMsgUpdatesAndClears drives the async create message flow:

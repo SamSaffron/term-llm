@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -260,37 +261,54 @@ func (m *Model) cmdWorktreeRemove(args []string) (tea.Model, tea.Cmd) {
 	return m.showFooterSuccess("Removed worktree; back on the root checkout.")
 }
 
-// cmdWorktreeShell opens a shell in the worktree (tmux split when available).
+// cmdWorktreeShell drops into a shell in the bound worktree. Without --tmux it
+// suspends the TUI and runs $SHELL (cwd = worktree); with --tmux it opens a tmux
+// split/new-window. Both paths use tea.ExecProcess so the terminal is released
+// and restored cleanly.
 func (m *Model) cmdWorktreeShell(args []string) (tea.Model, tea.Cmd) {
 	dir := m.boundWorktreeDir()
 	if dir == "" {
 		return m.showFooterWarning("Not bound to a worktree. Use /worktree new or switch first.")
 	}
-	useTmux := os.Getenv("TMUX") != ""
+	useTmux := false
 	for _, a := range args {
 		if a == "--tmux" || a == "tmux" {
 			useTmux = true
 		}
 	}
-	if useTmux {
-		if os.Getenv("TMUX") == "" {
-			return m.showFooterWarning("Not inside tmux; cannot open a tmux pane.")
-		}
-		cmd := exec.Command("tmux", "split-window", "-c", dir)
-		if err := cmd.Run(); err != nil {
-			alt := exec.Command("tmux", "new-window", "-c", dir)
-			if err2 := alt.Run(); err2 != nil {
-				return m.showFooterWarning(fmt.Sprintf("tmux failed: %v", err))
-			}
-		}
-		m.setTextareaValue("")
-		return m.showFooterSuccess("Opened a tmux pane in the worktree.")
+	return m.openWorktreeShell(dir, useTmux)
+}
+
+// openWorktreeShell suspends the TUI and runs an interactive shell with cwd set
+// to dir, or — when useTmux is set — opens a tmux split for the worktree. It is
+// the shared entry point for /worktree shell and the switcher's "s" key.
+func (m *Model) openWorktreeShell(dir string, useTmux bool) (tea.Model, tea.Cmd) {
+	if strings.TrimSpace(dir) == "" {
+		return m.showFooterWarning("No worktree directory selected.")
 	}
-	// Outside tmux: act as a locator (term-llm cannot change the parent shell cwd).
-	_ = clipboard.CopyText(dir)
-	_ = clipboard.CopyTextOSC52(dir)
+	if useTmux && strings.TrimSpace(os.Getenv("TMUX")) == "" {
+		return m.showFooterWarning("/worktree shell --tmux requires an existing tmux session.")
+	}
 	m.setTextareaValue("")
-	return m.showSystemMessage(fmt.Sprintf("Worktree path (copied to clipboard):\n\n`%s`\n\nTip: run `/worktree shell --tmux` inside tmux to open a pane here.", dir))
+	cmd := worktreeShellCommand(dir, useTmux)
+	return m, tea.ExecProcess(cmd, func(err error) tea.Msg { return worktreeShellDoneMsg{err: err} })
+}
+
+// worktreeShellCommand builds the command that opens a command line in dir: a
+// tmux split (falling back to a new window) when useTmux is set, otherwise an
+// interactive $SHELL with its working directory set to the worktree.
+func worktreeShellCommand(dir string, useTmux bool) *exec.Cmd {
+	if useTmux {
+		quoted := strconv.Quote(dir)
+		return exec.Command("sh", "-c", "tmux split-window -c "+quoted+" || tmux new-window -c "+quoted)
+	}
+	shell := strings.TrimSpace(os.Getenv("SHELL"))
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	cmd := exec.Command(shell)
+	cmd.Dir = dir
+	return cmd
 }
 
 // cmdWorktreeSwitch binds the session to an existing worktree by name, or to the
