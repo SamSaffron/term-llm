@@ -116,6 +116,32 @@ func TestAllCommandsRemovesLoadAndKeepsResume(t *testing.T) {
 	}
 }
 
+func TestAllCommandsIncludesEffort(t *testing.T) {
+	for _, cmd := range AllCommands() {
+		if cmd.Name == "effort" {
+			if cmd.Usage != "/effort [minimal|low|medium|high|xhigh|max|default]" {
+				t.Fatalf("effort usage = %q", cmd.Usage)
+			}
+			return
+		}
+	}
+	t.Fatal("AllCommands() should include 'effort' command")
+}
+
+func TestFilterCommandsMatchesEffort(t *testing.T) {
+	for _, query := range []string{"effort", "eff"} {
+		t.Run(query, func(t *testing.T) {
+			results := FilterCommands(query)
+			for _, cmd := range results {
+				if cmd.Name == "effort" {
+					return
+				}
+			}
+			t.Fatalf("FilterCommands(%q) did not include effort", query)
+		})
+	}
+}
+
 // mockStore implements session.Store for testing resume behavior.
 type mockStore struct {
 	session.NoopStore
@@ -408,6 +434,216 @@ func newCmdTestModel(store session.Store) *Model {
 		dialog:   NewDialogModel(styles),
 		store:    store,
 	}
+}
+
+func newEffortCmdTestModel(provider, model string) (*Model, *mockStore) {
+	store := &mockStore{}
+	m := newCmdTestModel(store)
+	m.config = &config.Config{Providers: map[string]config.ProviderConfig{}}
+	if provider == "openai" {
+		m.config.Providers["openai"] = config.ProviderConfig{Type: config.ProviderTypeOpenAI, Model: model}
+	}
+	m.sess = &session.Session{ID: "sess-effort", Provider: provider, ProviderKey: provider, Model: model}
+	m.providerName = provider
+	m.providerKey = provider
+	m.modelName = model
+	m.engine = llm.NewEngine(llm.NewMockProvider("old"), nil)
+	return m, store
+}
+
+func TestCmdEffortSwitchesOpenAIEffort(t *testing.T) {
+	m, store := newEffortCmdTestModel("openai", "gpt-5.4-high")
+
+	result, cmd := m.cmdEffort([]string{"medium"})
+	rm := result.(*Model)
+	if cmd == nil {
+		t.Fatal("expected footer command")
+	}
+	if rm.modelName != "gpt-5.4-medium" {
+		t.Fatalf("modelName = %q, want gpt-5.4-medium", rm.modelName)
+	}
+	if rm.sess.Model != "gpt-5.4-medium" || store.updated == nil {
+		t.Fatalf("session/store not updated: sess=%#v updated=%#v", rm.sess, store.updated)
+	}
+}
+
+func TestCmdEffortRejectsUnsupportedOpenAIMax(t *testing.T) {
+	m, store := newEffortCmdTestModel("openai", "gpt-5.4-high")
+
+	result, _ := m.cmdEffort([]string{"max"})
+	rm := result.(*Model)
+	if rm.modelName != "gpt-5.4-high" {
+		t.Fatalf("modelName changed to %q", rm.modelName)
+	}
+	if store.updated != nil {
+		t.Fatalf("store updated on invalid effort: %#v", store.updated)
+	}
+	if !strings.Contains(rm.footerMessage, "Unsupported effort") || !strings.Contains(rm.footerMessage, "minimal, low, medium, high, xhigh, default") {
+		t.Fatalf("unexpected footer: %q", rm.footerMessage)
+	}
+}
+
+func TestCmdEffortDefaultStripsSuffix(t *testing.T) {
+	m, _ := newEffortCmdTestModel("openai", "gpt-5.4-medium")
+
+	result, _ := m.cmdEffort([]string{"default"})
+	rm := result.(*Model)
+	if rm.modelName != "gpt-5.4" {
+		t.Fatalf("modelName = %q, want gpt-5.4", rm.modelName)
+	}
+	if rm.sess.Model != "gpt-5.4" {
+		t.Fatalf("session model = %q, want gpt-5.4", rm.sess.Model)
+	}
+}
+
+func TestCmdEffortSwitchesClaudeBinOpusMaxAndXHigh(t *testing.T) {
+	for _, effort := range []string{"max", "xhigh"} {
+		t.Run(effort, func(t *testing.T) {
+			m, _ := newEffortCmdTestModel("claude-bin", "opus-high")
+			result, _ := m.cmdEffort([]string{effort})
+			rm := result.(*Model)
+			want := "opus-" + effort
+			if rm.modelName != want {
+				t.Fatalf("modelName = %q, want %q; footer=%q", rm.modelName, want, rm.footerMessage)
+			}
+		})
+	}
+}
+
+func TestCmdEffortRejectsUnsupportedClaudeBinEfforts(t *testing.T) {
+	tests := []struct {
+		name     string
+		model    string
+		effort   string
+		wantStay string
+	}{
+		{"sonnet max", "sonnet-high", "max", "sonnet-high"},
+		{"haiku medium", "haiku", "medium", "haiku"},
+		{"invalid", "opus-high", "turbo", "opus-high"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, store := newEffortCmdTestModel("claude-bin", tt.model)
+			result, _ := m.cmdEffort([]string{tt.effort})
+			rm := result.(*Model)
+			if rm.modelName != tt.wantStay {
+				t.Fatalf("modelName changed to %q, want %q", rm.modelName, tt.wantStay)
+			}
+			if store.updated != nil {
+				t.Fatalf("store updated on invalid effort: %#v", store.updated)
+			}
+			if !strings.Contains(rm.footerMessage, "Unsupported effort") {
+				t.Fatalf("expected unsupported footer, got %q", rm.footerMessage)
+			}
+		})
+	}
+}
+
+func TestCmdEffortSwitchesConfigEnabledVLLM(t *testing.T) {
+	llm.RegisterConfigReasoningEfforts([]llm.ConfigModelReasoningEfforts{{
+		Provider: "cdck_qwen",
+		Model:    "Qwen/Qwen3.5-122B-A10B",
+		Efforts:  llm.DefaultReasoningEffortsForProviderType("vllm"),
+	}})
+	defer llm.RegisterConfigReasoningEfforts(nil)
+
+	store := &mockStore{}
+	m := newCmdTestModel(store)
+	m.config = &config.Config{Providers: map[string]config.ProviderConfig{
+		"cdck_qwen": {Type: config.ProviderTypeVLLM, BaseURL: "http://example.invalid/v1", Model: "Qwen/Qwen3.5-122B-A10B"},
+	}}
+	m.sess = &session.Session{ID: "sess-effort-vllm", Provider: "cdck_qwen", ProviderKey: "cdck_qwen", Model: "Qwen/Qwen3.5-122B-A10B"}
+	m.providerName = "cdck_qwen"
+	m.providerKey = "cdck_qwen"
+	m.modelName = "Qwen/Qwen3.5-122B-A10B"
+	m.engine = llm.NewEngine(llm.NewMockProvider("old"), nil)
+
+	result, _ := m.cmdEffort([]string{"max"})
+	rm := result.(*Model)
+	if rm.modelName != "Qwen/Qwen3.5-122B-A10B-max" {
+		t.Fatalf("modelName = %q, want Qwen/Qwen3.5-122B-A10B-max; footer=%q", rm.modelName, rm.footerMessage)
+	}
+}
+
+func TestCmdEffortNoArgsShowsCurrentAndAvailable(t *testing.T) {
+	m, _ := newEffortCmdTestModel("claude-bin", "opus-high")
+	result, _ := m.cmdEffort(nil)
+	rm := result.(*Model)
+	for _, want := range []string{"Current effort: high", "low, medium, high, xhigh, max, default"} {
+		if !strings.Contains(rm.footerMessage, want) {
+			t.Fatalf("footer missing %q: %q", want, rm.footerMessage)
+		}
+	}
+}
+
+func TestEffortCompletionsAreModelSpecific(t *testing.T) {
+	tests := []struct {
+		name        string
+		provider    string
+		model       string
+		input       string
+		wantNames   []string
+		rejectNames []string
+	}{
+		{
+			name:        "openai medium no max",
+			provider:    "openai",
+			model:       "gpt-5.4-high",
+			input:       "/effort m",
+			wantNames:   []string{"effort medium"},
+			rejectNames: []string{"effort max"},
+		},
+		{
+			name:        "sonnet excludes opus-only",
+			provider:    "claude-bin",
+			model:       "sonnet-high",
+			input:       "/effort ",
+			wantNames:   []string{"effort low", "effort medium", "effort high", "effort default", "effort auto"},
+			rejectNames: []string{"effort max", "effort xhigh"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestChatModel(false)
+			m.providerKey = tt.provider
+			m.providerName = tt.provider
+			m.modelName = tt.model
+			m.sess = &session.Session{ID: "sess-complete", ProviderKey: tt.provider, Model: tt.model}
+			m.completions.Show()
+			m.setTextareaValue(tt.input)
+			m.updateCompletions()
+
+			got := completionNames(m.completions.filtered)
+			for _, want := range tt.wantNames {
+				if !containsString(got, want) {
+					t.Fatalf("completions missing %q: %v", want, got)
+				}
+			}
+			for _, reject := range tt.rejectNames {
+				if containsString(got, reject) {
+					t.Fatalf("completions included %q: %v", reject, got)
+				}
+			}
+		})
+	}
+}
+
+func completionNames(items []Command) []string {
+	names := make([]string, len(items))
+	for i, item := range items {
+		names[i] = item.Name
+	}
+	return names
+}
+
+func containsString(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCmdResume_DirectResumeRequestsRelaunch(t *testing.T) {

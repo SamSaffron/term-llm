@@ -12,9 +12,10 @@ import (
 // and output clamping. A value of 0 means "unknown — fall back to prefix
 // tables in context_window.go".
 type ModelEntry struct {
-	ID          string
-	InputLimit  int // effective input budget (context - output reserve)
-	OutputLimit int // max output tokens
+	ID               string
+	InputLimit       int      // effective input budget (context - output reserve)
+	OutputLimit      int      // max output tokens
+	ReasoningEfforts []string // supported suffix-based reasoning-effort aliases (e.g. low, medium, high)
 }
 
 // ProviderModels contains the curated list of common models per LLM provider type.
@@ -22,22 +23,24 @@ type ModelEntry struct {
 // When adding a model, always include InputLimit/OutputLimit if known.
 var ProviderModels = map[string][]ModelEntry{
 	"anthropic": {
-		// Claude 4.7 Opus (-thinking uses adaptive thinking)
-		{ID: "claude-opus-4-7", InputLimit: 180_000, OutputLimit: 64_000},
-		{ID: "claude-opus-4-7-thinking", InputLimit: 180_000, OutputLimit: 64_000},
+		// Claude 4.x. Reasoning-effort metadata is provider-level below:
+		// Opus supports low/medium/high/xhigh/max; Sonnet supports low/medium/high.
+		// 1M-capable current models use 980K effective input (1M minus reserve).
+		{ID: "claude-opus-4-8", InputLimit: 980_000, OutputLimit: 128_000},
+		{ID: "claude-opus-4-7", InputLimit: 980_000, OutputLimit: 64_000},
 		{ID: "claude-opus-4-7-1m", InputLimit: 980_000, OutputLimit: 64_000},
-		{ID: "claude-opus-4-7-1m-thinking", InputLimit: 980_000, OutputLimit: 64_000},
-		// Claude 4.6 (-thinking uses adaptive thinking for 4.6 models)
-		{ID: "claude-sonnet-4-6", InputLimit: 180_000, OutputLimit: 64_000},
-		{ID: "claude-sonnet-4-6-thinking", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-sonnet-4-6", InputLimit: 980_000, OutputLimit: 64_000},
 		{ID: "claude-sonnet-4-6-1m", InputLimit: 980_000, OutputLimit: 64_000},
-		{ID: "claude-sonnet-4-6-1m-thinking", InputLimit: 980_000, OutputLimit: 64_000},
-		{ID: "claude-opus-4-6", InputLimit: 180_000, OutputLimit: 64_000},
-		{ID: "claude-opus-4-6-thinking", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-opus-4-6", InputLimit: 980_000, OutputLimit: 64_000},
 		{ID: "claude-opus-4-6-1m", InputLimit: 980_000, OutputLimit: 64_000},
-		{ID: "claude-opus-4-6-1m-thinking", InputLimit: 980_000, OutputLimit: 64_000},
+		{ID: "claude-sonnet-4-5", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-sonnet-4-5-1m", InputLimit: 980_000, OutputLimit: 64_000},
+		{ID: "claude-opus-4-5", InputLimit: 180_000, OutputLimit: 64_000},
 		{ID: "claude-haiku-4-5", InputLimit: 180_000, OutputLimit: 64_000},
-		{ID: "claude-haiku-4-5-thinking", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-sonnet-4", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-sonnet-4-1m", InputLimit: 980_000, OutputLimit: 64_000},
+		{ID: "claude-opus-4", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-haiku-4", InputLimit: 180_000, OutputLimit: 64_000},
 	},
 	"openai": {
 		{ID: "gpt-5.5", InputLimit: 922_000, OutputLimit: 128_000},
@@ -132,13 +135,13 @@ var ProviderModels = map[string][]ModelEntry{
 	},
 	"claude-bin": {
 		// Aliases resolved internally by claude-bin provider
-		{ID: "opus"},
+		{ID: "opus", ReasoningEfforts: claudeBinOpusEffortVariants},
 		{ID: "opus-low"},
 		{ID: "opus-medium"},
 		{ID: "opus-high"},
 		{ID: "opus-xhigh"},
 		{ID: "opus-max"},
-		{ID: "sonnet"},
+		{ID: "sonnet", ReasoningEfforts: claudeBinSonnetEffortVariants},
 		{ID: "sonnet-low"},
 		{ID: "sonnet-medium"},
 		{ID: "sonnet-high"},
@@ -185,20 +188,22 @@ var ProviderModels = map[string][]ModelEntry{
 	},
 	"bedrock": {
 		// AWS Bedrock: same friendly names as anthropic (translated to Bedrock IDs internally)
-		{ID: "claude-opus-4-7", InputLimit: 180_000, OutputLimit: 64_000},
-		{ID: "claude-opus-4-7-thinking", InputLimit: 180_000, OutputLimit: 64_000},
+		// and the same reasoning-effort defaults as anthropic/claude-bin.
+		{ID: "claude-opus-4-8", InputLimit: 980_000, OutputLimit: 128_000},
+		{ID: "claude-opus-4-7", InputLimit: 980_000, OutputLimit: 64_000},
 		{ID: "claude-opus-4-7-1m", InputLimit: 980_000, OutputLimit: 64_000},
-		{ID: "claude-opus-4-7-1m-thinking", InputLimit: 980_000, OutputLimit: 64_000},
-		{ID: "claude-sonnet-4-6", InputLimit: 180_000, OutputLimit: 64_000},
-		{ID: "claude-sonnet-4-6-thinking", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-sonnet-4-6", InputLimit: 980_000, OutputLimit: 64_000},
 		{ID: "claude-sonnet-4-6-1m", InputLimit: 980_000, OutputLimit: 64_000},
-		{ID: "claude-sonnet-4-6-1m-thinking", InputLimit: 980_000, OutputLimit: 64_000},
-		{ID: "claude-opus-4-6", InputLimit: 180_000, OutputLimit: 64_000},
-		{ID: "claude-opus-4-6-thinking", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-opus-4-6", InputLimit: 980_000, OutputLimit: 64_000},
 		{ID: "claude-opus-4-6-1m", InputLimit: 980_000, OutputLimit: 64_000},
-		{ID: "claude-opus-4-6-1m-thinking", InputLimit: 980_000, OutputLimit: 64_000},
+		{ID: "claude-sonnet-4-5", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-sonnet-4-5-1m", InputLimit: 980_000, OutputLimit: 64_000},
+		{ID: "claude-opus-4-5", InputLimit: 180_000, OutputLimit: 64_000},
 		{ID: "claude-haiku-4-5", InputLimit: 180_000, OutputLimit: 64_000},
-		{ID: "claude-haiku-4-5-thinking", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-sonnet-4", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-sonnet-4-1m", InputLimit: 980_000, OutputLimit: 64_000},
+		{ID: "claude-opus-4", InputLimit: 180_000, OutputLimit: 64_000},
+		{ID: "claude-haiku-4", InputLimit: 180_000, OutputLimit: 64_000},
 	},
 	"venice": {
 		// Limits synced from Venice /models API on 2026-04-18.
@@ -406,26 +411,225 @@ var ImageProviderModels = map[string][]string{
 	"openrouter": {"google/gemini-2.5-flash-image", "google/gemini-3-pro-image-preview", "openai/gpt-5-image", "openai/gpt-5-image-mini", "bytedance-seed/seedream-4.5", "black-forest-labs/flux.2-pro"},
 }
 
-// defaultEffortVariants are the standard effort levels for reasoning-capable models.
+// defaultEffortVariants are the standard effort levels for GPT-5-family
+// suffix aliases. This is deliberately not the union of all known suffixes:
+// GPT-5 models do not support "max".
 var defaultEffortVariants = []string{"minimal", "low", "medium", "high", "xhigh"}
 
-// EffortVariantsFor returns the effort suffixes for a model, or nil if none.
-// All GPT-5 family models are reasoning-capable and support effort levels.
-// Handles both direct model names ("gpt-5.4") and vendor-prefixed names ("openai/gpt-5.4").
+var claudeBinOpusEffortVariants = []string{"low", "medium", "high", "xhigh", "max"}
+var claudeBinSonnetEffortVariants = []string{"low", "medium", "high"}
+
+func DefaultReasoningEffortsForProviderType(providerType string) []string {
+	switch strings.ToLower(strings.TrimSpace(providerType)) {
+	case "vllm":
+		return []string{"minimal", "low", "medium", "high", "xhigh", "max"}
+	default:
+		return nil
+	}
+}
+
+// EffortVariantsFor returns the legacy provider-agnostic effort suffixes for a
+// model, or nil if none. Prefer ReasoningEffortsForProviderModel when provider
+// context is available, because effort support is model- and provider-specific.
+//
+// This compatibility helper intentionally preserves the historical GPT-5
+// heuristic used by older tests and callers that have only a bare model name.
 func EffortVariantsFor(model string) []string {
 	name := model
 	if i := strings.LastIndex(model, "/"); i >= 0 {
 		name = model[i+1:]
 	}
 	if strings.HasPrefix(name, "gpt-5") {
-		return defaultEffortVariants
+		return cloneEfforts(defaultEffortVariants)
 	}
 	return nil
 }
 
-// ExpandWithEffortVariants expands a model list by appending effort variants
-// after each base model. Used for tab-completion where all variants are needed.
-// Models that already end with a known effort suffix are not expanded again.
+func resolveProviderModelEntries(provider string) []ModelEntry {
+	if entries := ProviderModels[provider]; len(entries) > 0 {
+		return entries
+	}
+	resolved := resolveProviderType(provider)
+	if resolved != provider {
+		return ProviderModels[resolved]
+	}
+	return nil
+}
+
+func reasoningEffortsForProviderBaseModel(provider, baseModel string) []string {
+	for _, entry := range resolveProviderModelEntries(provider) {
+		if entry.ID != baseModel {
+			continue
+		}
+		if len(entry.ReasoningEfforts) > 0 {
+			return cloneEfforts(entry.ReasoningEfforts)
+		}
+		return defaultReasoningEffortsForProviderModel(provider, baseModel)
+	}
+	return defaultReasoningEffortsForProviderModel(provider, baseModel)
+}
+
+func defaultReasoningEffortsForProviderModel(provider, model string) []string {
+	providerType := resolveProviderType(strings.ToLower(strings.TrimSpace(provider)))
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return nil
+	}
+	name := model
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		name = name[i+1:]
+	}
+	nameLower := strings.ToLower(name)
+
+	switch providerType {
+	case "openai", "chatgpt", "copilot":
+		if strings.HasPrefix(nameLower, "gpt-5") && !strings.HasSuffix(nameLower, "-codex-max") {
+			return cloneEfforts(defaultEffortVariants)
+		}
+	case "anthropic", "bedrock":
+		if isClaudeOpusModelName(nameLower) {
+			return cloneEfforts(claudeBinOpusEffortVariants)
+		}
+		if isClaudeSonnetModelName(nameLower) {
+			return cloneEfforts(claudeBinSonnetEffortVariants)
+		}
+	case "claude-bin":
+		if nameLower == "opus" {
+			return cloneEfforts(claudeBinOpusEffortVariants)
+		}
+		if nameLower == "sonnet" {
+			return cloneEfforts(claudeBinSonnetEffortVariants)
+		}
+	}
+	return nil
+}
+
+func isClaudeOpusModelName(name string) bool {
+	return strings.HasPrefix(name, "claude-opus-4")
+}
+
+func isClaudeSonnetModelName(name string) bool {
+	return strings.HasPrefix(name, "claude-sonnet-4")
+}
+
+func cloneEfforts(efforts []string) []string {
+	if len(efforts) == 0 {
+		return nil
+	}
+	return append([]string(nil), efforts...)
+}
+
+// BaseModelAndEffortForProvider returns the switchable base model and current
+// reasoning effort for provider/model when the suffix is explicitly supported
+// by that provider's model metadata. Unknown suffix-like endings are preserved
+// as part of the base model name (for example, gpt-5.1-codex-max is not parsed
+// as effort=max for GPT-5 providers because GPT-5 does not support max).
+func BaseModelAndEffortForProvider(provider, model string) (base string, effort string) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "", ""
+	}
+
+	if cfgBase, cfgEffort, _ := configBaseModelAndEffortForProvider(provider, model); cfgBase != "" {
+		return cfgBase, cfgEffort
+	}
+
+	entries := resolveProviderModelEntries(provider)
+	for _, entry := range entries {
+		if entry.ID == model && len(reasoningEffortsForEntry(provider, entry)) > 0 {
+			return model, ""
+		}
+	}
+	for _, entry := range entries {
+		efforts := reasoningEffortsForEntry(provider, entry)
+		if len(efforts) == 0 {
+			continue
+		}
+		for _, effort := range efforts {
+			if model == entry.ID+"-"+effort {
+				return entry.ID, effort
+			}
+		}
+	}
+	if base, effort, ok := defaultBaseModelAndEffortForProvider(provider, model); ok {
+		return base, effort
+	}
+	return model, ""
+}
+
+func reasoningEffortsForEntry(provider string, entry ModelEntry) []string {
+	if len(entry.ReasoningEfforts) > 0 {
+		return cloneEfforts(entry.ReasoningEfforts)
+	}
+	return defaultReasoningEffortsForProviderModel(provider, entry.ID)
+}
+
+func defaultBaseModelAndEffortForProvider(provider, model string) (base string, effort string, ok bool) {
+	for _, suffix := range knownEffortSuffixes {
+		if !strings.HasSuffix(model, "-"+suffix) {
+			continue
+		}
+		candidate := strings.TrimSuffix(model, "-"+suffix)
+		for _, allowed := range defaultReasoningEffortsForProviderModel(provider, candidate) {
+			if suffix == allowed {
+				return candidate, suffix, true
+			}
+		}
+	}
+	if len(defaultReasoningEffortsForProviderModel(provider, model)) > 0 {
+		return model, "", true
+	}
+	return "", "", false
+}
+
+// ReasoningEffortsForProviderModel returns the valid suffix-based reasoning
+// efforts for the provider/model pair. If model is already suffixed with a
+// supported effort, the efforts for its base model are returned.
+func ReasoningEffortsForProviderModel(provider, model string) []string {
+	if _, _, efforts := configBaseModelAndEffortForProvider(provider, model); len(efforts) > 0 {
+		return efforts
+	}
+	base, _ := BaseModelAndEffortForProvider(provider, model)
+	if base == "" {
+		return nil
+	}
+	if efforts := configReasoningEffortsForProviderModel(provider, base); len(efforts) > 0 {
+		return efforts
+	}
+	return reasoningEffortsForProviderBaseModel(provider, base)
+}
+
+// ExpandWithEffortVariantsForProvider expands a model list by appending valid
+// effort variants after each switchable base model for the given provider.
+// Existing effort-suffixed entries are kept but not expanded again. Output is
+// de-duplicated while preserving first-seen order.
+func ExpandWithEffortVariantsForProvider(provider string, models []string) []string {
+	var expanded []string
+	seen := make(map[string]bool, len(models))
+	appendModel := func(model string) {
+		if model == "" || seen[model] {
+			return
+		}
+		seen[model] = true
+		expanded = append(expanded, model)
+	}
+
+	for _, m := range models {
+		appendModel(m)
+		base, effort := BaseModelAndEffortForProvider(provider, m)
+		if effort != "" || base != m {
+			continue
+		}
+		for _, v := range ReasoningEffortsForProviderModel(provider, base) {
+			appendModel(base + "-" + v)
+		}
+	}
+	return expanded
+}
+
+// ExpandWithEffortVariants expands a model list by appending legacy
+// provider-agnostic GPT-5 effort variants. Prefer
+// ExpandWithEffortVariantsForProvider when provider context is available.
 func ExpandWithEffortVariants(models []string) []string {
 	var expanded []string
 	for _, m := range models {
@@ -458,10 +662,10 @@ func trimKnownEffortSuffix(model string) (string, bool) {
 	return model, false
 }
 
-// knownEffortSuffixes is the union of reasoning-effort suffixes recognised
-// across providers (gpt-5, claude-bin opus/sonnet). Used to detect
-// "<base>-<effort>" aliases that duplicate a base model when effort is
-// picked separately.
+// knownEffortSuffixes is the union of reasoning-effort suffixes recognized
+// across providers. It is a parser/legacy-dedup helper, not a capability list
+// for every model. Provider-aware callers should use
+// BaseModelAndEffortForProvider / ReasoningEffortsForProviderModel instead.
 var knownEffortSuffixes = []string{"minimal", "low", "medium", "high", "xhigh", "max"}
 
 // DedupeEffortVariants removes effort-suffixed aliases (e.g. "opus-high",
@@ -486,6 +690,27 @@ func DedupeEffortVariants(ids []string) []string {
 		if !drop {
 			out = append(out, id)
 		}
+	}
+	return out
+}
+
+// DedupeEffortVariantsForProvider removes effort-suffixed aliases only when
+// the suffix is an explicitly supported reasoning effort for the provider/model
+// and the corresponding base model is present. Natural model names such as
+// gpt-5.1-codex-max are preserved when "max" is not a supported effort for
+// that base model.
+func DedupeEffortVariantsForProvider(provider string, ids []string) []string {
+	have := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		have[id] = true
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		base, effort := BaseModelAndEffortForProvider(provider, id)
+		if effort != "" && have[base] {
+			continue
+		}
+		out = append(out, id)
 	}
 	return out
 }
@@ -658,9 +883,9 @@ func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config)
 			}
 		}
 
-		// Expand effort variants for tab-completion
+		// Expand provider-specific effort variants for tab-completion.
 		if !isImage {
-			models = ExpandWithEffortVariants(models)
+			models = ExpandWithEffortVariantsForProvider(provider, models)
 		}
 
 		// Filter by prefix and return as provider:model

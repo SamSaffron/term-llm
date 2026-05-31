@@ -363,6 +363,119 @@ func TestEffortVariantLimitsMatchBase(t *testing.T) {
 	}
 }
 
+func TestReasoningEffortsForProviderModel(t *testing.T) {
+	tests := []struct {
+		provider string
+		model    string
+		want     []string
+	}{
+		{"claude-bin", "opus", []string{"low", "medium", "high", "xhigh", "max"}},
+		{"claude-bin", "opus-high", []string{"low", "medium", "high", "xhigh", "max"}},
+		{"claude-bin", "sonnet", []string{"low", "medium", "high"}},
+		{"claude-bin", "sonnet-high", []string{"low", "medium", "high"}},
+		{"claude-bin", "haiku", nil},
+		{"openai", "gpt-5.4", []string{"minimal", "low", "medium", "high", "xhigh"}},
+		{"openai", "gpt-5.4-high", []string{"minimal", "low", "medium", "high", "xhigh"}},
+		{"openai", "gpt-5.6", []string{"minimal", "low", "medium", "high", "xhigh"}},
+		{"anthropic", "claude-opus-4-8", []string{"low", "medium", "high", "xhigh", "max"}},
+		{"anthropic", "claude-opus-4-8-max", []string{"low", "medium", "high", "xhigh", "max"}},
+		{"anthropic", "claude-sonnet-4-6", []string{"low", "medium", "high"}},
+		{"anthropic", "claude-sonnet-4-6-high", []string{"low", "medium", "high"}},
+		{"anthropic", "claude-haiku-4-5", nil},
+		{"anthropic", "claude-sonnet-4-5-1m", []string{"low", "medium", "high"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.provider+":"+tt.model, func(t *testing.T) {
+			got := ReasoningEffortsForProviderModel(tt.provider, tt.model)
+			if !equalSlice(got, tt.want) {
+				t.Fatalf("ReasoningEffortsForProviderModel(%q, %q) = %v, want %v", tt.provider, tt.model, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReasoningEffortsAreProviderSpecific(t *testing.T) {
+	if got := ReasoningEffortsForProviderModel("openai", "gpt-5.4"); containsModelID(got, "max") {
+		t.Fatalf("openai:gpt-5.4 efforts unexpectedly include max: %v", got)
+	}
+	if got := ReasoningEffortsForProviderModel("claude-bin", "sonnet"); containsModelID(got, "max") || containsModelID(got, "xhigh") {
+		t.Fatalf("claude-bin:sonnet efforts unexpectedly include opus-only levels: %v", got)
+	}
+}
+
+func TestBaseModelAndEffortForProviderAvoidsFalseMaxParsing(t *testing.T) {
+	tests := []struct {
+		provider   string
+		model      string
+		wantBase   string
+		wantEffort string
+	}{
+		{"openai", "gpt-5.4-high", "gpt-5.4", "high"},
+		{"openai", "gpt-5.4-max", "gpt-5.4-max", ""},
+		{"chatgpt", "gpt-5.1-codex-max", "gpt-5.1-codex-max", ""},
+		{"chatgpt", "gpt-5.1-codex-high", "gpt-5.1-codex", "high"},
+		{"claude-bin", "opus-max", "opus", "max"},
+		{"claude-bin", "sonnet-max", "sonnet-max", ""},
+		{"anthropic", "claude-opus-4-8-max", "claude-opus-4-8", "max"},
+		{"anthropic", "claude-sonnet-4-6-high", "claude-sonnet-4-6", "high"},
+		{"anthropic", "claude-sonnet-4-6-max", "claude-sonnet-4-6-max", ""},
+		{"anthropic", "claude-haiku-4-5-high", "claude-haiku-4-5-high", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.provider+":"+tt.model, func(t *testing.T) {
+			gotBase, gotEffort := BaseModelAndEffortForProvider(tt.provider, tt.model)
+			if gotBase != tt.wantBase || gotEffort != tt.wantEffort {
+				t.Fatalf("BaseModelAndEffortForProvider(%q, %q) = (%q, %q), want (%q, %q)", tt.provider, tt.model, gotBase, gotEffort, tt.wantBase, tt.wantEffort)
+			}
+		})
+	}
+}
+
+func TestExpandWithEffortVariantsForProvider(t *testing.T) {
+	got := ExpandWithEffortVariantsForProvider("claude-bin", []string{"opus", "sonnet", "haiku"})
+	for _, want := range []string{"opus-low", "opus-medium", "opus-high", "opus-xhigh", "opus-max", "sonnet-low", "sonnet-medium", "sonnet-high"} {
+		if !containsModelID(got, want) {
+			t.Fatalf("expanded claude-bin models missing %q: %v", want, got)
+		}
+	}
+	if containsModelID(got, "sonnet-max") || containsModelID(got, "sonnet-xhigh") || containsModelID(got, "haiku-medium") {
+		t.Fatalf("expanded claude-bin models included invalid variants: %v", got)
+	}
+
+	got = ExpandWithEffortVariantsForProvider("openai", []string{"gpt-5.4", "gpt-5.4-high", "gpt-5.1-codex-max"})
+	for _, want := range []string{"gpt-5.4-minimal", "gpt-5.4-low", "gpt-5.4-medium", "gpt-5.4-high", "gpt-5.4-xhigh"} {
+		if !containsModelID(got, want) {
+			t.Fatalf("expanded openai models missing %q: %v", want, got)
+		}
+	}
+	if containsModelID(got, "gpt-5.4-max") || containsModelID(got, "gpt-5.1-codex-max-high") {
+		t.Fatalf("expanded openai models included invalid max-derived variants: %v", got)
+	}
+
+	got = ExpandWithEffortVariantsForProvider("anthropic", []string{"claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"})
+	for _, want := range []string{"claude-opus-4-8-low", "claude-opus-4-8-max", "claude-sonnet-4-6-low", "claude-sonnet-4-6-high"} {
+		if !containsModelID(got, want) {
+			t.Fatalf("expanded anthropic models missing %q: %v", want, got)
+		}
+	}
+	if containsModelID(got, "claude-sonnet-4-6-max") || containsModelID(got, "claude-haiku-4-5-low") {
+		t.Fatalf("expanded anthropic models included invalid variants: %v", got)
+	}
+}
+
+func TestProviderAliasResolvesReasoningEfforts(t *testing.T) {
+	RegisterProviderAliases(map[string]string{"my-openai": "openai"})
+	defer RegisterProviderAliases(nil)
+
+	got := ReasoningEffortsForProviderModel("my-openai", "gpt-5.4-high")
+	want := []string{"minimal", "low", "medium", "high", "xhigh"}
+	if !equalSlice(got, want) {
+		t.Fatalf("alias efforts = %v, want %v", got, want)
+	}
+}
+
 func TestDedupeEffortVariants(t *testing.T) {
 	// claude-bin curated list has base + effort-suffixed aliases; the
 	// suffixed ones should be dropped when the base is present.
@@ -395,6 +508,69 @@ func TestDedupeEffortVariants(t *testing.T) {
 	got3 := DedupeEffortVariants(in3)
 	if len(got3) != 2 {
 		t.Errorf("expected both entries preserved, got %v", got3)
+	}
+}
+
+func TestAnthropicProviderModelsIncludeLatestOpus(t *testing.T) {
+	entry, ok := findProviderModelEntry("anthropic", "claude-opus-4-8")
+	if !ok {
+		t.Fatal("ProviderModels[anthropic] missing claude-opus-4-8")
+	}
+	if entry.InputLimit != 980_000 || entry.OutputLimit != 128_000 {
+		t.Fatalf("claude-opus-4-8 limits = input %d output %d, want 980000/128000", entry.InputLimit, entry.OutputLimit)
+	}
+	if got := ReasoningEffortsForProviderModel("anthropic", "claude-opus-4-8"); !equalSlice(got, claudeBinOpusEffortVariants) {
+		t.Fatalf("claude-opus-4-8 reasoning efforts = %v, want %v", got, claudeBinOpusEffortVariants)
+	}
+}
+
+func TestConfigReasoningEffortsForVLLMCustomProvider(t *testing.T) {
+	RegisterConfigReasoningEfforts([]ConfigModelReasoningEfforts{{
+		Provider: "cdck_qwen",
+		Model:    "Qwen/Qwen3.5-122B-A10B",
+		Efforts:  DefaultReasoningEffortsForProviderType("vllm"),
+	}})
+	defer RegisterConfigReasoningEfforts(nil)
+
+	want := []string{"minimal", "low", "medium", "high", "xhigh", "max"}
+	got := ReasoningEffortsForProviderModel("cdck_qwen", "Qwen/Qwen3.5-122B-A10B")
+	if !equalSlice(got, want) {
+		t.Fatalf("ReasoningEffortsForProviderModel custom vllm = %v, want %v", got, want)
+	}
+
+	base, effort := BaseModelAndEffortForProvider("cdck_qwen", "Qwen/Qwen3.5-122B-A10B-medium")
+	if base != "Qwen/Qwen3.5-122B-A10B" || effort != "medium" {
+		t.Fatalf("BaseModelAndEffortForProvider custom vllm = (%q, %q), want base + medium", base, effort)
+	}
+
+	expanded := ExpandWithEffortVariantsForProvider("cdck_qwen", []string{"Qwen/Qwen3.5-122B-A10B"})
+	for _, wantModel := range []string{"Qwen/Qwen3.5-122B-A10B-minimal", "Qwen/Qwen3.5-122B-A10B-medium", "Qwen/Qwen3.5-122B-A10B-max"} {
+		if !containsModelID(expanded, wantModel) {
+			t.Fatalf("expanded custom vllm models missing %q: %v", wantModel, expanded)
+		}
+	}
+}
+
+func TestConfigReasoningEffortsClearedOnReload(t *testing.T) {
+	RegisterConfigReasoningEfforts([]ConfigModelReasoningEfforts{{Provider: "cdck_qwen", Model: "qwen", Efforts: []string{"low"}}})
+	RegisterConfigReasoningEfforts(nil)
+
+	if got := ReasoningEffortsForProviderModel("cdck_qwen", "qwen"); len(got) != 0 {
+		t.Fatalf("expected cleared config reasoning efforts, got %v", got)
+	}
+}
+
+func TestDedupeEffortVariantsForProviderAvoidsFalseMaxDrops(t *testing.T) {
+	got := DedupeEffortVariantsForProvider("chatgpt", []string{"gpt-5.1-codex", "gpt-5.1-codex-max", "gpt-5.1-codex-high"})
+	want := []string{"gpt-5.1-codex", "gpt-5.1-codex-max"}
+	if !equalSlice(got, want) {
+		t.Fatalf("DedupeEffortVariantsForProvider(chatgpt) = %v, want %v", got, want)
+	}
+
+	got = DedupeEffortVariantsForProvider("claude-bin", []string{"opus", "opus-max", "sonnet", "sonnet-high", "haiku"})
+	want = []string{"opus", "sonnet", "haiku"}
+	if !equalSlice(got, want) {
+		t.Fatalf("DedupeEffortVariantsForProvider(claude-bin) = %v, want %v", got, want)
 	}
 }
 

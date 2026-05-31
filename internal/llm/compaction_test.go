@@ -340,9 +340,11 @@ func TestInputLimitForModel(t *testing.T) {
 		model    string
 		expected int
 	}{
-		// Claude 4.x: 200K - 20K practical output reserve = 180K
-		{"claude-sonnet-4-6", 180_000},
-		{"claude-opus-4-6", 180_000},
+		// Claude 1M models: 1M - 20K practical output reserve = 980K
+		{"claude-opus-4-8", 980_000},
+		{"claude-sonnet-4-6", 980_000},
+		{"claude-opus-4-6", 980_000},
+		// Claude 200K models: 200K - 20K practical output reserve = 180K
 		{"claude-sonnet-4-5-20250929", 180_000},
 		{"claude-sonnet-4-20250514", 180_000},
 		{"claude-opus-4-20250514", 180_000},
@@ -1330,8 +1332,8 @@ func TestConfigFallbackInputLimit(t *testing.T) {
 	}
 
 	// Hardcoded model should still use hardcoded table (not config)
-	if got := InputLimitForModel("claude-sonnet-4-6"); got != 180_000 {
-		t.Errorf("InputLimitForModel(claude) = %d, want 180000", got)
+	if got := InputLimitForModel("claude-sonnet-4-6"); got != 980_000 {
+		t.Errorf("InputLimitForModel(claude) = %d, want 980000", got)
 	}
 
 	// Unknown model with no config should return 0

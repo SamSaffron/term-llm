@@ -16,6 +16,14 @@ type ConfigModelLimit struct {
 	OutputLimit int
 }
 
+// ConfigModelReasoningEfforts holds per-provider/model reasoning-effort
+// capabilities from user config.
+type ConfigModelReasoningEfforts struct {
+	Provider string // provider config key (e.g., "cdck_qwen")
+	Model    string
+	Efforts  []string
+}
+
 var (
 	configMu sync.RWMutex
 	// Provider-scoped: "provider\x00model" -> limit (always authoritative)
@@ -31,6 +39,10 @@ var (
 	// Model-only: populated only when all providers agree on limits
 	explicitModelInput  map[string]int
 	explicitModelOutput map[string]int
+
+	// Provider-scoped reasoning-effort capabilities registered from user config.
+	// Key is "provider\x00model" with model lower-cased.
+	configProviderReasoningEfforts map[string][]string
 
 	// providerAliases maps custom provider names to built-in type names
 	// so that provider-scoped limits resolve correctly for aliases like
@@ -158,11 +170,90 @@ func RegisterConfigLimits(limits []ConfigModelLimit) {
 	}
 }
 
+// RegisterConfigReasoningEfforts registers per-provider/model reasoning-effort
+// capabilities from user configuration. Always call it on config load (even
+// with nil) so reloads clear stale capabilities.
+func RegisterConfigReasoningEfforts(entries []ConfigModelReasoningEfforts) {
+	configMu.Lock()
+	defer configMu.Unlock()
+
+	configProviderReasoningEfforts = make(map[string][]string, len(entries))
+	for _, entry := range entries {
+		provider := strings.ToLower(strings.TrimSpace(entry.Provider))
+		model := strings.ToLower(strings.TrimSpace(entry.Model))
+		if provider == "" || model == "" || len(entry.Efforts) == 0 {
+			continue
+		}
+		configProviderReasoningEfforts[configKey(provider, model)] = normalizeReasoningEfforts(entry.Efforts)
+	}
+}
+
+func normalizeReasoningEfforts(efforts []string) []string {
+	seen := make(map[string]bool, len(efforts))
+	out := make([]string, 0, len(efforts))
+	for _, effort := range efforts {
+		effort = strings.ToLower(strings.TrimSpace(effort))
+		if effort == "" || seen[effort] {
+			continue
+		}
+		seen[effort] = true
+		out = append(out, effort)
+	}
+	return out
+}
+
+func configReasoningEffortsForProviderModel(provider, model string) []string {
+	configMu.RLock()
+	defer configMu.RUnlock()
+	if len(configProviderReasoningEfforts) == 0 {
+		return nil
+	}
+	if efforts := configProviderReasoningEfforts[configKey(strings.ToLower(strings.TrimSpace(provider)), strings.ToLower(strings.TrimSpace(model)))]; len(efforts) > 0 {
+		return cloneEfforts(efforts)
+	}
+	return nil
+}
+
+func configBaseModelAndEffortForProvider(provider, model string) (string, string, []string) {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	trimmedModel := strings.TrimSpace(model)
+	modelLower := strings.ToLower(trimmedModel)
+
+	configMu.RLock()
+	defer configMu.RUnlock()
+	if len(configProviderReasoningEfforts) == 0 || provider == "" || modelLower == "" {
+		return "", "", nil
+	}
+	if efforts := configProviderReasoningEfforts[configKey(provider, modelLower)]; len(efforts) > 0 {
+		return trimmedModel, "", cloneEfforts(efforts)
+	}
+	prefix := provider + "\x00"
+	for key, efforts := range configProviderReasoningEfforts {
+		if !strings.HasPrefix(key, prefix) || len(efforts) == 0 {
+			continue
+		}
+		baseLower := strings.TrimPrefix(key, prefix)
+		for _, effort := range efforts {
+			suffix := "-" + effort
+			if strings.HasSuffix(modelLower, suffix) && strings.TrimSuffix(modelLower, suffix) == baseLower {
+				return strings.TrimSuffix(trimmedModel, suffix), effort, cloneEfforts(efforts)
+			}
+		}
+	}
+	return "", "", nil
+}
+
 func configInputLimitForProvider(provider, model string) int {
 	configMu.RLock()
 	defer configMu.RUnlock()
-	if v, ok := configProviderInputLimits[configKey(strings.ToLower(provider), model)]; ok {
+	provider = strings.ToLower(provider)
+	if v, ok := configProviderInputLimits[configKey(provider, model)]; ok {
 		return v
+	}
+	if base, ok := trimKnownEffortSuffix(model); ok {
+		if v, ok := configProviderInputLimits[configKey(provider, base)]; ok {
+			return v
+		}
 	}
 	return configInputLimits[model]
 }
@@ -308,8 +399,14 @@ func lookupPrefix(model string, table []limitEntry) int {
 // Entries are matched by longest prefix. Unknown models return 0 (compaction disabled).
 var inputLimitTable = []limitEntry{
 	// Anthropic Claude 1M context: 1M ctx - 20K practical output reserve = 980K
-	// Enabled via -1m suffix (sends context-1m-2025-08-07 beta header).
+	// Opus 4.8, Opus 4.7, Opus 4.6, and Sonnet 4.6 have 1M context.
+	// The -1m aliases remain for backwards compatibility with existing configs.
+	// Older 1M beta-only entries are enabled via -1m suffix (sends context-1m-2025-08-07 beta header).
 	// Requires Anthropic usage tier 4 or custom rate limits.
+	{"claude-opus-4-8", 980_000},
+	{"claude-opus-4-7", 980_000},
+	{"claude-opus-4-6", 980_000},
+	{"claude-sonnet-4-6", 980_000},
 	{"claude-sonnet-4-6-1m", 980_000},
 	{"claude-sonnet-4-5-1m", 980_000},
 	{"claude-sonnet-4-1m", 980_000},
@@ -317,9 +414,6 @@ var inputLimitTable = []limitEntry{
 	{"claude-opus-4-6-1m", 980_000},
 
 	// Anthropic Claude 4.x: 200K ctx - 20K practical output reserve = 180K
-	{"claude-opus-4-7", 180_000},
-	{"claude-sonnet-4-6", 180_000},
-	{"claude-opus-4-6", 180_000},
 	{"claude-sonnet-4-5", 180_000},
 	{"claude-opus-4-5", 180_000},
 	{"claude-haiku-4-5", 180_000},
@@ -337,30 +431,34 @@ var inputLimitTable = []limitEntry{
 	// geographic prefixes (us./eu./ap.) followed by anthropic.<model>.
 	// Prefix matching covers all regions and ARN passthrough users can
 	// set context_window in config.
-	{"us.anthropic.claude-opus-4-7", 180_000},
-	{"us.anthropic.claude-sonnet-4-6", 180_000},
-	{"us.anthropic.claude-opus-4-6", 180_000},
+	{"us.anthropic.claude-opus-4-8", 980_000},
+	{"us.anthropic.claude-opus-4-7", 980_000},
+	{"us.anthropic.claude-sonnet-4-6", 980_000},
+	{"us.anthropic.claude-opus-4-6", 980_000},
 	{"us.anthropic.claude-haiku-4-5", 180_000},
 	{"us.anthropic.claude-sonnet-4-5", 180_000},
 	{"us.anthropic.claude-opus-4-5", 180_000},
 	{"us.anthropic.claude-sonnet-4", 180_000},
-	{"eu.anthropic.claude-opus-4-7", 180_000},
-	{"eu.anthropic.claude-sonnet-4-6", 180_000},
-	{"eu.anthropic.claude-opus-4-6", 180_000},
+	{"eu.anthropic.claude-opus-4-8", 980_000},
+	{"eu.anthropic.claude-opus-4-7", 980_000},
+	{"eu.anthropic.claude-sonnet-4-6", 980_000},
+	{"eu.anthropic.claude-opus-4-6", 980_000},
 	{"eu.anthropic.claude-haiku-4-5", 180_000},
 	{"eu.anthropic.claude-sonnet-4-5", 180_000},
 	{"eu.anthropic.claude-opus-4-5", 180_000},
 	{"eu.anthropic.claude-sonnet-4", 180_000},
-	{"ap.anthropic.claude-opus-4-7", 180_000},
-	{"ap.anthropic.claude-sonnet-4-6", 180_000},
-	{"ap.anthropic.claude-opus-4-6", 180_000},
+	{"ap.anthropic.claude-opus-4-8", 980_000},
+	{"ap.anthropic.claude-opus-4-7", 980_000},
+	{"ap.anthropic.claude-sonnet-4-6", 980_000},
+	{"ap.anthropic.claude-opus-4-6", 980_000},
 	{"ap.anthropic.claude-haiku-4-5", 180_000},
 	{"ap.anthropic.claude-sonnet-4-5", 180_000},
 	{"ap.anthropic.claude-opus-4-5", 180_000},
 	{"ap.anthropic.claude-sonnet-4", 180_000},
-	{"anthropic.claude-opus-4-7", 180_000},
-	{"anthropic.claude-sonnet-4-6", 180_000},
-	{"anthropic.claude-opus-4-6", 180_000},
+	{"anthropic.claude-opus-4-8", 980_000},
+	{"anthropic.claude-opus-4-7", 980_000},
+	{"anthropic.claude-sonnet-4-6", 980_000},
+	{"anthropic.claude-opus-4-6", 980_000},
 	{"anthropic.claude-haiku-4-5", 180_000},
 	{"anthropic.claude-sonnet-4-5", 180_000},
 	{"anthropic.claude-opus-4-5", 180_000},
@@ -491,12 +589,13 @@ func ClampOutputTokens(requested int, model string) int {
 var outputLimitTable = []limitEntry{
 	// Anthropic Claude 4.x: theoretical max is 64K-128K but practical is 16K-20K.
 	// Use the actual API max to avoid rejections.
+	{"claude-opus-4-8", 128_000},
 	{"claude-sonnet-4-6-1m", 64_000},
 	{"claude-sonnet-4-5-1m", 64_000},
 	{"claude-sonnet-4-1m", 64_000},
+	{"claude-opus-4-7", 64_000},
 	{"claude-opus-4-7-1m", 64_000},
 	{"claude-opus-4-6-1m", 64_000},
-	{"claude-opus-4-7", 64_000},
 	{"claude-sonnet-4-6", 64_000},
 	{"claude-opus-4-6", 64_000},
 	{"claude-sonnet-4-5", 64_000},
@@ -513,6 +612,7 @@ var outputLimitTable = []limitEntry{
 	{"claude-3-haiku", 4_096},
 
 	// AWS Bedrock (same as direct Anthropic, all geo prefixes)
+	{"us.anthropic.claude-opus-4-8", 128_000},
 	{"us.anthropic.claude-opus-4-7", 64_000},
 	{"us.anthropic.claude-sonnet-4-6", 64_000},
 	{"us.anthropic.claude-opus-4-6", 64_000},
@@ -520,6 +620,7 @@ var outputLimitTable = []limitEntry{
 	{"us.anthropic.claude-sonnet-4-5", 64_000},
 	{"us.anthropic.claude-opus-4-5", 64_000},
 	{"us.anthropic.claude-sonnet-4", 64_000},
+	{"eu.anthropic.claude-opus-4-8", 128_000},
 	{"eu.anthropic.claude-opus-4-7", 64_000},
 	{"eu.anthropic.claude-sonnet-4-6", 64_000},
 	{"eu.anthropic.claude-opus-4-6", 64_000},
@@ -527,6 +628,7 @@ var outputLimitTable = []limitEntry{
 	{"eu.anthropic.claude-sonnet-4-5", 64_000},
 	{"eu.anthropic.claude-opus-4-5", 64_000},
 	{"eu.anthropic.claude-sonnet-4", 64_000},
+	{"ap.anthropic.claude-opus-4-8", 128_000},
 	{"ap.anthropic.claude-opus-4-7", 64_000},
 	{"ap.anthropic.claude-sonnet-4-6", 64_000},
 	{"ap.anthropic.claude-opus-4-6", 64_000},
@@ -534,6 +636,7 @@ var outputLimitTable = []limitEntry{
 	{"ap.anthropic.claude-sonnet-4-5", 64_000},
 	{"ap.anthropic.claude-opus-4-5", 64_000},
 	{"ap.anthropic.claude-sonnet-4", 64_000},
+	{"anthropic.claude-opus-4-8", 128_000},
 	{"anthropic.claude-opus-4-7", 64_000},
 	{"anthropic.claude-sonnet-4-6", 64_000},
 	{"anthropic.claude-opus-4-6", 64_000},

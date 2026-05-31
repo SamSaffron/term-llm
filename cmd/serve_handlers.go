@@ -1686,7 +1686,7 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 	}
 	// The web UI has a dedicated reasoning-effort selector, so drop
 	// "<base>-<effort>" aliases when the base model is also present.
-	ids = llm.DedupeEffortVariants(ids)
+	ids = llm.DedupeEffortVariantsForProvider(effectiveName, ids)
 
 	// Order: configured default first, then curated models in their authored
 	// (popular-first) order, then anything else alpha-sorted. Pure alpha sort

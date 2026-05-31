@@ -74,6 +74,11 @@ func AllCommands() []Command {
 			Usage:       "/model [name]",
 		},
 		{
+			Name:        "effort",
+			Description: "Switch reasoning effort for current model",
+			Usage:       "/effort [minimal|low|medium|high|xhigh|max|default]",
+		},
+		{
 			Name:        "search",
 			Aliases:     []string{"web", "s"},
 			Description: "Toggle web search on/off",
@@ -378,6 +383,8 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 		return m.cmdQuit()
 	case "model":
 		return m.cmdModel(args)
+	case "effort":
+		return m.cmdEffort(args)
 	case "search":
 		return m.cmdSearch()
 	case "fast":
@@ -677,6 +684,80 @@ func (m *Model) cmdModel(args []string) (tea.Model, tea.Cmd) {
 	return m.switchModel(resolved)
 }
 
+func (m *Model) cmdEffort(args []string) (tea.Model, tea.Cmd) {
+	provider := strings.TrimSpace(m.providerKey)
+	if provider == "" && m.sess != nil {
+		provider = strings.TrimSpace(m.sess.ProviderKey)
+	}
+	if provider == "" {
+		provider = strings.TrimSpace(m.providerName)
+	}
+
+	model := strings.TrimSpace(m.modelName)
+	if model == "" && m.sess != nil {
+		model = strings.TrimSpace(m.sess.Model)
+	}
+
+	m.setTextareaValue("")
+	if provider == "" || model == "" {
+		return m.showFooterWarning("Cannot switch effort: no current provider/model is active.")
+	}
+
+	base, currentEffort := llm.BaseModelAndEffortForProvider(provider, model)
+	efforts := llm.ReasoningEffortsForProviderModel(provider, model)
+	if len(args) == 0 {
+		if len(efforts) == 0 {
+			return m.showFooterWarning(fmt.Sprintf("Model %s:%s does not expose switchable reasoning efforts.", provider, model))
+		}
+		current := currentEffort
+		if current == "" {
+			current = "default"
+		}
+		available := append(cloneStrings(efforts), "default")
+		return m.showFooterMuted(fmt.Sprintf("Current effort: %s. Available: %s. Usage: /effort <value>", current, strings.Join(available, ", ")))
+	}
+
+	requested := strings.ToLower(strings.TrimSpace(args[0]))
+	if requested == "" {
+		return m.showFooterWarning("Usage: /effort <value>")
+	}
+
+	var targetModel string
+	switch requested {
+	case "default", "auto", "none", "off":
+		targetModel = base
+	default:
+		if len(efforts) == 0 || !slices.Contains(efforts, requested) {
+			allowed := append(cloneStrings(efforts), "default")
+			allowedText := strings.Join(allowed, ", ")
+			if allowedText == "" {
+				allowedText = "none"
+			}
+			return m.showFooterWarning(fmt.Sprintf("Unsupported effort %q for %s:%s. Available: %s.", requested, provider, base, allowedText))
+		}
+		targetModel = base + "-" + requested
+	}
+
+	if targetModel == model {
+		label := requested
+		if requested == "auto" || requested == "none" || requested == "off" {
+			label = "default"
+		}
+		return m.showFooterMuted(fmt.Sprintf("Effort already %s for %s:%s.", label, provider, model))
+	}
+	if m.config == nil {
+		m.config = &config.Config{}
+	}
+	return m.switchModel(provider + ":" + targetModel)
+}
+
+func cloneStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	return append([]string(nil), values...)
+}
+
 // providerModelEntry captures a concrete provider:model combination.
 type providerModelEntry struct {
 	provider string
@@ -863,6 +944,48 @@ func providerModelCompletionItems(commandPrefix, arg string, cfg *config.Config)
 			Description: entry.provider,
 		})
 	}
+	return items
+}
+
+func (m *Model) effortCompletionItems(commandPrefix, partial string) []Command {
+	provider := strings.TrimSpace(m.providerKey)
+	if provider == "" && m.sess != nil {
+		provider = strings.TrimSpace(m.sess.ProviderKey)
+	}
+	if provider == "" {
+		provider = strings.TrimSpace(m.providerName)
+	}
+	model := strings.TrimSpace(m.modelName)
+	if model == "" && m.sess != nil {
+		model = strings.TrimSpace(m.sess.Model)
+	}
+	if provider == "" || model == "" {
+		return nil
+	}
+
+	base, _ := llm.BaseModelAndEffortForProvider(provider, model)
+	efforts := llm.ReasoningEffortsForProviderModel(provider, model)
+	if len(efforts) == 0 {
+		return nil
+	}
+
+	partial = strings.ToLower(strings.TrimSpace(partial))
+	items := make([]Command, 0, len(efforts)+2)
+	appendOption := func(option, target string) {
+		if partial != "" && !strings.HasPrefix(option, partial) {
+			return
+		}
+		desc := "switch to " + target
+		if target == model {
+			desc = "current"
+		}
+		items = append(items, Command{Name: commandPrefix + option, Description: desc})
+	}
+	for _, effort := range efforts {
+		appendOption(effort, base+"-"+effort)
+	}
+	appendOption("default", base)
+	appendOption("auto", base)
 	return items
 }
 

@@ -23,6 +23,7 @@ func TestParseModelThinking(t *testing.T) {
 		wantAdaptive bool
 	}{
 		// 4.6+ models: -thinking triggers adaptive (no budget)
+		{"claude-opus-4-8-thinking", "claude-opus-4-8", 0, true},
 		{"claude-sonnet-4-6-thinking", "claude-sonnet-4-6", 0, true},
 		{"claude-opus-4-6-thinking", "claude-opus-4-6", 0, true},
 		{"claude-opus-4-7-thinking", "claude-opus-4-7", 0, true},
@@ -116,6 +117,61 @@ func TestParseModelCombined1mThinking(t *testing.T) {
 			}
 			if use1m != tt.want1m {
 				t.Errorf("use1m = %v, want %v", use1m, tt.want1m)
+			}
+		})
+	}
+}
+
+func TestAnthropicRequestModelAndEffort(t *testing.T) {
+	provider := &AnthropicProvider{model: "claude-sonnet-4-6"}
+	tests := []struct {
+		name       string
+		provider   *AnthropicProvider
+		req        Request
+		wantModel  string
+		wantEffort string
+	}{
+		{
+			name:       "request opus max suffix",
+			req:        Request{Model: "claude-opus-4-8-max"},
+			wantModel:  "claude-opus-4-8",
+			wantEffort: "max",
+		},
+		{
+			name:       "request sonnet high suffix",
+			req:        Request{Model: "claude-sonnet-4-6-high"},
+			wantModel:  "claude-sonnet-4-6",
+			wantEffort: "high",
+		},
+		{
+			name:       "invalid sonnet max suffix is preserved",
+			req:        Request{Model: "claude-sonnet-4-6-max"},
+			wantModel:  "claude-sonnet-4-6-max",
+			wantEffort: "",
+		},
+		{
+			name:       "explicit request effort overrides model suffix",
+			req:        Request{Model: "claude-opus-4-8-max", ReasoningEffort: "low"},
+			wantModel:  "claude-opus-4-8",
+			wantEffort: "low",
+		},
+		{
+			name:       "configured suffix is default effort",
+			provider:   &AnthropicProvider{model: "claude-opus-4-8", reasoningEffort: "high"},
+			req:        Request{},
+			wantModel:  "claude-opus-4-8",
+			wantEffort: "high",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := provider
+			if tt.provider != nil {
+				p = tt.provider
+			}
+			gotModel, gotEffort := p.requestModelAndEffort(tt.req)
+			if gotModel != tt.wantModel || gotEffort != tt.wantEffort {
+				t.Fatalf("requestModelAndEffort = (%q, %q), want (%q, %q)", gotModel, gotEffort, tt.wantModel, tt.wantEffort)
 			}
 		})
 	}

@@ -1323,6 +1323,7 @@ func configKeyCompletions(toComplete string) []string {
 		keySet["providers."+name+".fast_model"] = true
 		keySet["providers."+name+".fast_provider"] = true
 		keySet["providers."+name+".service_tier"] = true
+		keySet["providers."+name+".reasoning"] = true
 		keySet["providers."+name+".credentials"] = true
 		keySet["providers."+name+".api_key"] = true
 	}
@@ -1452,6 +1453,11 @@ func configValueCompletions(key, toComplete string) []string {
 			}
 		}
 		return completions
+	}
+
+	// Check for provider reasoning keys
+	if strings.HasPrefix(key, "providers.") && strings.HasSuffix(key, ".reasoning") {
+		return filterPrefix([]string{"auto", "enabled", "disabled"}, toComplete)
 	}
 
 	// Check for provider credentials keys

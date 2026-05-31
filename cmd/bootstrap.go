@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
@@ -22,11 +23,11 @@ func loadConfig() (*config.Config, error) {
 	return cfg, nil
 }
 
-// registerModelLimits registers per-model token limits from provider configs
-// so that InputLimitForModel/OutputLimitForModel work for custom models.
+// registerModelLimits registers per-model token limits and reasoning metadata
+// from provider configs so custom models behave like curated models.
 func registerModelLimits(cfg *config.Config) {
-	// Register provider name → type aliases so provider-scoped limits
-	// resolve correctly for custom names (e.g., "acme" → "venice").
+	// Register provider name → type aliases so provider-scoped metadata
+	// resolves correctly for custom names (e.g., "acme" → "venice").
 	aliases := make(map[string]string)
 	for name, pc := range cfg.Providers {
 		if pc.Type != "" {
@@ -36,40 +37,80 @@ func registerModelLimits(cfg *config.Config) {
 	llm.RegisterProviderAliases(aliases)
 
 	var limits []llm.ConfigModelLimit
+	var reasoning []llm.ConfigModelReasoningEfforts
 	for name, pc := range cfg.Providers {
-		if pc.Model == "" {
-			continue
-		}
-		if pc.ContextWindow <= 0 && pc.MaxOutputTokens <= 0 {
-			continue
-		}
+		providerModels := configuredProviderModels(pc)
 
-		var inputLimit, outputLimit int
-		switch {
-		case pc.ContextWindow > 0 && pc.MaxOutputTokens > 0:
-			inputLimit = pc.ContextWindow - pc.MaxOutputTokens
-			outputLimit = pc.MaxOutputTokens
-			if inputLimit <= 0 {
-				continue // nonsensical config, skip
+		if pc.ContextWindow > 0 || pc.MaxOutputTokens > 0 {
+			var inputLimit, outputLimit int
+			validLimits := true
+			switch {
+			case pc.ContextWindow > 0 && pc.MaxOutputTokens > 0:
+				inputLimit = pc.ContextWindow - pc.MaxOutputTokens
+				outputLimit = pc.MaxOutputTokens
+				if inputLimit <= 0 {
+					validLimits = false // nonsensical config, skip limits for this provider
+				}
+			case pc.ContextWindow > 0:
+				// Only context_window set: use full window as input limit.
+				// Output clamping won't apply — compaction fires but output
+				// tokens are uncapped. Set max_output_tokens for tighter control.
+				inputLimit = pc.ContextWindow
+			case pc.MaxOutputTokens > 0:
+				outputLimit = pc.MaxOutputTokens
 			}
-		case pc.ContextWindow > 0:
-			// Only context_window set: use full window as input limit.
-			// Output clamping won't apply — compaction fires but output
-			// tokens are uncapped. Set max_output_tokens for tighter control.
-			inputLimit = pc.ContextWindow
-		case pc.MaxOutputTokens > 0:
-			outputLimit = pc.MaxOutputTokens
+			if validLimits && (inputLimit > 0 || outputLimit > 0) {
+				for _, model := range providerModels {
+					limits = append(limits, llm.ConfigModelLimit{
+						Provider:    name,
+						Model:       model,
+						InputLimit:  inputLimit,
+						OutputLimit: outputLimit,
+					})
+				}
+			}
 		}
 
-		limits = append(limits, llm.ConfigModelLimit{
-			Provider:    name,
-			Model:       pc.Model,
-			InputLimit:  inputLimit,
-			OutputLimit: outputLimit,
-		})
+		switch strings.ToLower(strings.TrimSpace(pc.Reasoning)) {
+		case "enabled", "enable", "on", "true", "yes":
+			providerType := string(config.InferProviderType(name, pc.Type))
+			efforts := llm.DefaultReasoningEffortsForProviderType(providerType)
+			if len(efforts) == 0 {
+				continue
+			}
+			for _, model := range providerModels {
+				reasoning = append(reasoning, llm.ConfigModelReasoningEfforts{
+					Provider: name,
+					Model:    model,
+					Efforts:  efforts,
+				})
+			}
+		case "disabled", "disable", "off", "false", "no":
+			// Explicitly no config-provided reasoning aliases. Curated built-in
+			// metadata still applies to built-in providers/models.
+		}
 	}
-	// Always register (even if empty) so a config reload clears stale limits.
+	// Always register (even if empty) so a config reload clears stale metadata.
 	llm.RegisterConfigLimits(limits)
+	llm.RegisterConfigReasoningEfforts(reasoning)
+}
+
+func configuredProviderModels(pc config.ProviderConfig) []string {
+	seen := make(map[string]bool, len(pc.Models)+1)
+	var models []string
+	appendModel := func(model string) {
+		model = strings.TrimSpace(model)
+		if model == "" || seen[model] {
+			return
+		}
+		seen[model] = true
+		models = append(models, model)
+	}
+	appendModel(pc.Model)
+	for _, model := range pc.Models {
+		appendModel(model)
+	}
+	return models
 }
 
 func loadConfigWithSetup() (*config.Config, error) {

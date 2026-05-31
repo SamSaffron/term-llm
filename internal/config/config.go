@@ -91,6 +91,7 @@ type ProviderConfig struct {
 	FastProvider string            `mapstructure:"fast_provider"` // Optional provider key override for FastModel
 	ServiceTier  string            `mapstructure:"service_tier"`  // Optional model service tier (e.g. "fast"/"priority" for ChatGPT)
 	Models       []string          `mapstructure:"models"`        // Available models for autocomplete
+	Reasoning    string            `mapstructure:"reasoning"`     // "auto"/empty, "enabled", or "disabled" for suffix-based reasoning efforts
 	Credentials  string            `mapstructure:"credentials"`   // "api_key", "codex", "gemini-cli"
 	Env          map[string]string `mapstructure:"env"`           // Extra subprocess env vars for providers that shell out (e.g. claude-bin)
 	EnableHooks  bool              `mapstructure:"enable_hooks"`  // Opt in to Claude Code hooks for claude-bin (disabled by default)

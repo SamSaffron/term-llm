@@ -43,24 +43,27 @@ const (
 
 // AnthropicProvider implements Provider using the Anthropic API.
 type AnthropicProvider struct {
-	client         *anthropic.Client
-	model          string
-	thinkingBudget int64  // 0 = disabled, >0 = enabled with budget
-	useAdaptive    bool   // true = adaptive thinking (-thinking on 4.6 models)
-	use1m          bool   // true = 1M token context window (-1m suffix)
-	credential     string // "api_key" or "env"
+	client          *anthropic.Client
+	model           string
+	thinkingBudget  int64  // 0 = disabled, >0 = enabled with budget
+	useAdaptive     bool   // true = adaptive thinking (-thinking on adaptive-capable models)
+	use1m           bool   // true = 1M token context window (-1m suffix)
+	reasoningEffort string // default output_config.effort from model suffix, if any
+	credential      string // "api_key" or "env"
 }
 
-// isAdaptiveModel returns true for Claude 4.6+ models that support adaptive thinking.
+// isAdaptiveModel returns true for Claude models that support adaptive thinking.
 func isAdaptiveModel(model string) bool {
-	return strings.HasPrefix(model, "claude-sonnet-4-6") ||
+	return strings.HasPrefix(model, "claude-opus-4-8") ||
+		strings.HasPrefix(model, "claude-sonnet-4-6") ||
 		strings.HasPrefix(model, "claude-opus-4-6") ||
 		strings.HasPrefix(model, "claude-opus-4-7")
 }
 
 // parseModelThinking extracts -thinking suffix from model name.
-// For 4.6 models, -thinking uses adaptive thinking (budget_tokens is deprecated).
-// For older models, -thinking uses budget_tokens as before.
+// For adaptive-capable models, -thinking uses adaptive thinking
+// (budget_tokens is deprecated). For older models, -thinking uses
+// budget_tokens as before.
 //
 // "claude-sonnet-4-6-thinking" -> ("claude-sonnet-4-6", 0, true)
 // "claude-haiku-4-5-thinking"  -> ("claude-haiku-4-5", 10000, false)
@@ -100,11 +103,16 @@ func parseModel1m(model string) (string, bool) {
 //   - "api_key":    use only the explicit apiKey parameter
 //   - "env":        use only the ANTHROPIC_API_KEY environment variable
 func NewAnthropicProvider(apiKey, model, credentialMode string) (*AnthropicProvider, error) {
-	// Strip -thinking first (may leave -1m), then strip -1m.
+	// Strip provider-aware reasoning effort first, then -thinking (may leave -1m), then -1m.
 	// This means claude-sonnet-4-6-1m-thinking works correctly:
-	//   step 1: strip -thinking -> "claude-sonnet-4-6-1m", adaptive=true
-	//   step 2: strip -1m       -> "claude-sonnet-4-6",    use1m=true
-	afterThinking, thinkingBudget, adaptive := parseModelThinking(model)
+	//   step 1: strip effort   -> "claude-sonnet-4-6-1m-thinking"
+	//   step 2: strip thinking -> "claude-sonnet-4-6-1m", adaptive=true
+	//   step 3: strip -1m      -> "claude-sonnet-4-6",    use1m=true
+	baseModel, reasoningEffort := BaseModelAndEffortForProvider("anthropic", model)
+	if baseModel == "" {
+		baseModel = model
+	}
+	afterThinking, thinkingBudget, adaptive := parseModelThinking(baseModel)
 	actualModel, use1m := parseModel1m(afterThinking)
 
 	// Normalize empty credential mode to "auto"
@@ -114,12 +122,13 @@ func NewAnthropicProvider(apiKey, model, credentialMode string) (*AnthropicProvi
 
 	mkProvider := func(client anthropic.Client, cred string) *AnthropicProvider {
 		return &AnthropicProvider{
-			client:         &client,
-			model:          actualModel,
-			thinkingBudget: thinkingBudget,
-			useAdaptive:    adaptive,
-			use1m:          use1m,
-			credential:     cred,
+			client:          &client,
+			model:           actualModel,
+			thinkingBudget:  thinkingBudget,
+			useAdaptive:     adaptive,
+			use1m:           use1m,
+			reasoningEffort: reasoningEffort,
+			credential:      cred,
 		}
 	}
 
@@ -191,11 +200,27 @@ func (p *AnthropicProvider) Capabilities() Capabilities {
 }
 
 func (p *AnthropicProvider) Stream(ctx context.Context, req Request) (Stream, error) {
-	req.MaxOutputTokens = ClampOutputTokens(req.MaxOutputTokens, chooseModel(req.Model, p.model))
+	model, _ := p.requestModelAndEffort(req)
+	req.MaxOutputTokens = ClampOutputTokens(req.MaxOutputTokens, model)
 	if req.Search {
 		return p.streamWithSearch(ctx, req)
 	}
 	return p.streamStandard(ctx, req)
+}
+
+func (p *AnthropicProvider) requestModelAndEffort(req Request) (model string, effort string) {
+	model = chooseModel(req.Model, p.model)
+	effort = strings.TrimSpace(p.reasoningEffort)
+	if base, suffix := BaseModelAndEffortForProvider("anthropic", model); base != "" {
+		model = base
+		if suffix != "" {
+			effort = suffix
+		}
+	}
+	if reqEffort := strings.TrimSpace(req.ReasoningEffort); reqEffort != "" {
+		effort = reqEffort
+	}
+	return model, effort
 }
 
 func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (Stream, error) {
@@ -204,8 +229,9 @@ func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (St
 		applyLastMessageCacheControl(messages)
 		accumulator := newToolCallAccumulator()
 
+		model, reasoningEffort := p.requestModelAndEffort(req)
 		params := anthropic.MessageNewParams{
-			Model:     anthropic.Model(chooseModel(req.Model, p.model)),
+			Model:     anthropic.Model(model),
 			MaxTokens: maxTokens(req.MaxOutputTokens, 4096),
 			Messages:  messages,
 		}
@@ -238,7 +264,7 @@ func (p *AnthropicProvider) streamStandard(ctx context.Context, req Request) (St
 				Effort: anthropic.OutputConfigEffortMax,
 			}
 		}
-		if eff := strings.TrimSpace(req.ReasoningEffort); eff != "" {
+		if eff := strings.TrimSpace(reasoningEffort); eff != "" {
 			params.OutputConfig = anthropic.OutputConfigParam{
 				Effort: anthropic.OutputConfigEffort(strings.ToLower(eff)),
 			}
@@ -355,8 +381,9 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 		if p.use1m {
 			betas = append(betas, the1mBetaHeader)
 		}
+		model, reasoningEffort := p.requestModelAndEffort(req)
 		params := anthropic.BetaMessageNewParams{
-			Model:     anthropic.Model(chooseModel(req.Model, p.model)),
+			Model:     anthropic.Model(model),
 			MaxTokens: maxTokens(req.MaxOutputTokens, 4096),
 			Betas:     betas,
 			Messages:  messages,
@@ -394,7 +421,7 @@ func (p *AnthropicProvider) streamWithSearch(ctx context.Context, req Request) (
 				Effort: anthropic.BetaOutputConfigEffortMax,
 			}
 		}
-		if eff := strings.TrimSpace(req.ReasoningEffort); eff != "" {
+		if eff := strings.TrimSpace(reasoningEffort); eff != "" {
 			params.OutputConfig = anthropic.BetaOutputConfigParam{
 				Effort: anthropic.BetaOutputConfigEffort(strings.ToLower(eff)),
 			}

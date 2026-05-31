@@ -770,7 +770,7 @@ func GetAvailableProviders(cfg *config.Config) []ProviderInfo {
 		ordered := llm.SortModelIDsByPopularity(name, defaultModel, curated)
 		providers = append(providers, ProviderInfo{
 			Name:   name,
-			Models: llm.ExpandWithEffortVariants(ordered),
+			Models: llm.ExpandWithEffortVariantsForProvider(name, ordered),
 		})
 		seen[name] = true
 	}
@@ -791,7 +791,7 @@ func GetAvailableProviders(cfg *config.Config) []ProviderInfo {
 			}
 			providers = append(providers, ProviderInfo{
 				Name:   name,
-				Models: llm.ExpandWithEffortVariants(ordered),
+				Models: llm.ExpandWithEffortVariantsForProvider(name, ordered),
 			})
 		}
 	}

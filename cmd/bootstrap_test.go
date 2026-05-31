@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm"
 )
 
 func TestApplyProviderOverridesWithAgentResolvesFastModelAlias(t *testing.T) {
@@ -92,4 +93,50 @@ func TestResolveAgentModelOverrideUsesExplicitProviderTypeFallback(t *testing.T)
 	if provider != "custom-llm" || model != "claude-haiku-4-5" {
 		t.Fatalf("provider/model = %q/%q, want custom-llm/claude-haiku-4-5", provider, model)
 	}
+}
+
+func TestRegisterModelLimitsRegistersVLLMReasoningEnabled(t *testing.T) {
+	defer llm.RegisterConfigReasoningEfforts(nil)
+	defer llm.RegisterConfigLimits(nil)
+	defer llm.RegisterProviderAliases(nil)
+
+	cfg := &config.Config{Providers: map[string]config.ProviderConfig{
+		"cdck_qwen": {
+			Type:            config.ProviderTypeVLLM,
+			Model:           "Qwen/Qwen3.5-122B-A10B",
+			Models:          []string{"Qwen/Qwen3.5-122B-A10B-Instruct"},
+			Reasoning:       "enabled",
+			ContextWindow:   200000,
+			MaxOutputTokens: 50000,
+		},
+	}}
+
+	registerModelLimits(cfg)
+
+	want := []string{"minimal", "low", "medium", "high", "xhigh", "max"}
+	for _, model := range []string{"Qwen/Qwen3.5-122B-A10B", "Qwen/Qwen3.5-122B-A10B-Instruct"} {
+		got := llm.ReasoningEffortsForProviderModel("cdck_qwen", model)
+		if !equalStringSlices(got, want) {
+			t.Fatalf("reasoning efforts for %s = %v, want %v", model, got, want)
+		}
+	}
+	base, effort := llm.BaseModelAndEffortForProvider("cdck_qwen", "Qwen/Qwen3.5-122B-A10B-max")
+	if base != "Qwen/Qwen3.5-122B-A10B" || effort != "max" {
+		t.Fatalf("BaseModelAndEffortForProvider = (%q, %q), want qwen/max", base, effort)
+	}
+	if got := llm.InputLimitForProviderModel("cdck_qwen", "Qwen/Qwen3.5-122B-A10B-medium"); got != 150000 {
+		t.Fatalf("InputLimitForProviderModel suffixed = %d, want 150000", got)
+	}
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

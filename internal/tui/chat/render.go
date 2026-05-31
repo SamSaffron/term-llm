@@ -1383,6 +1383,17 @@ func (m *Model) updateCompletions() {
 		return
 	}
 
+	// Check for "/effort " - show reasoning effort completions for current model.
+	if strings.HasPrefix(lowerQuery, "effort ") {
+		parts := strings.SplitN(query, " ", 2)
+		partial := ""
+		if len(parts) == 2 {
+			partial = parts[1]
+		}
+		m.completions.SetItems(m.effortCompletionItems(parts[0]+" ", partial))
+		return
+	}
+
 	// Check for "/handover " or "/ho " - show available agents, then provider:model overrides
 	if strings.HasPrefix(lowerQuery, "handover ") || strings.HasPrefix(lowerQuery, "ho ") {
 		parts := strings.SplitN(query, " ", 3)
