@@ -1,6 +1,8 @@
 package chat
 
 import (
+	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -8,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/worktree"
 )
 
 // --- pure / guard-path tests (no git, no cwd dependence) ------------------
@@ -153,14 +156,18 @@ func TestWorktreeNewBindDiffRemoveFlow(t *testing.T) {
 	m := newCmdTestModel(store)
 	m.sess = &session.Session{ID: "s1"}
 
-	// Create and bind. The cmd* methods return (tea.Model, tea.Cmd) and report
-	// outcomes via the footer / session state, not an error return.
-	m.cmdWorktreeNew("flowtest")
-	if !strings.Contains(m.footerMessage, "Created and switched") {
-		t.Fatalf("create footer = %q", m.footerMessage)
+	// Create via the core and bind through the chdir model (bindWorktree). The
+	// async /worktree-new UI path is covered by TestWorktreeProgressMsgUpdatesAndClears
+	// and TestWorktreeCreateDoneBindsSession; this test exercises bind/diff/remove.
+	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "flowtest", Base: "HEAD"})
+	if err != nil {
+		t.Fatalf("worktree.Create: %v", err)
+	}
+	if err := m.bindWorktree(wt.Dir); err != nil {
+		t.Fatalf("bindWorktree: %v", err)
 	}
 	if m.sess.WorktreeDir == "" {
-		t.Fatal("session not bound after new")
+		t.Fatal("session not bound after create")
 	}
 	if store.updated == nil || store.updated.WorktreeDir == "" {
 		t.Fatal("binding not persisted via store.Update")
@@ -232,9 +239,15 @@ func TestWorktreeSwitchToRootClearsBinding(t *testing.T) {
 	m := newCmdTestModel(store)
 	m.sess = &session.Session{ID: "s1"}
 
-	m.cmdWorktreeNew("rootswitch")
+	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "rootswitch", Base: "HEAD"})
+	if err != nil {
+		t.Fatalf("worktree.Create: %v", err)
+	}
+	if err := m.bindWorktree(wt.Dir); err != nil {
+		t.Fatalf("bindWorktree: %v", err)
+	}
 	if m.sess.WorktreeDir == "" {
-		t.Fatalf("expected binding after new; footer = %q", m.footerMessage)
+		t.Fatalf("expected binding after create")
 	}
 	m.cmdWorktreeSwitch("root")
 	if m.sess.WorktreeDir != "" {
@@ -249,4 +262,78 @@ func TestWorktreeSwitchToRootClearsBinding(t *testing.T) {
 		cmd.Dir = repo
 		_ = cmd.Run()
 	})
+}
+
+// TestWorktreeProgressMsgUpdatesAndClears drives the async create message flow:
+// a progress event updates the live status text and reschedules the listener,
+// then a create-done (error) clears the busy state and surfaces the failure.
+func TestWorktreeProgressMsgUpdatesAndClears(t *testing.T) {
+	m := newCmdTestModel(&mockStore{})
+	m.sess = &session.Session{ID: "s1"}
+	m.worktreeBusy = true
+	m.worktreeOpSeq = 7
+	progress := make(chan worktree.Progress)
+
+	result, cmd := m.Update(worktreeProgressMsg{op: 7, progress: progress, message: "running setup script"})
+	rm := result.(*Model)
+	if rm.worktreeProgress != "Creating worktree: running setup script" {
+		t.Fatalf("worktree progress = %q", rm.worktreeProgress)
+	}
+	if cmd == nil {
+		t.Fatal("expected progress listener to be rescheduled")
+	}
+
+	result, _ = rm.Update(worktreeCreateDoneMsg{op: 7, err: errors.New("boom")})
+	rm = result.(*Model)
+	if rm.worktreeBusy {
+		t.Fatal("worktreeBusy should clear on create completion")
+	}
+	if rm.worktreeProgress != "" {
+		t.Fatalf("worktree progress after completion = %q, want empty", rm.worktreeProgress)
+	}
+	if !strings.Contains(rm.footerMessage, "Worktree create failed") {
+		t.Fatalf("footer = %q, want create failure", rm.footerMessage)
+	}
+}
+
+// TestWorktreeCreateDoneBindsSession verifies the create-done handler binds the
+// session to the new worktree via the chdir model on success.
+func TestWorktreeCreateDoneBindsSession(t *testing.T) {
+	repo := initChatRepo(t)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg"))
+	origWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	store := &mockStore{sessions: map[string]*session.Session{}}
+	m := newCmdTestModel(store)
+	m.sess = &session.Session{ID: "s1"}
+	m.worktreeBusy = true
+	m.worktreeOpSeq = 3
+
+	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "donebind", Base: "HEAD"})
+	if err != nil {
+		t.Fatalf("worktree.Create: %v", err)
+	}
+	t.Cleanup(func() {
+		cmd := exec.Command("git", "worktree", "prune")
+		cmd.Dir = repo
+		_ = cmd.Run()
+	})
+
+	res, _ := m.Update(worktreeCreateDoneMsg{op: 3, wt: wt})
+	rm := res.(*Model)
+	if rm.worktreeBusy {
+		t.Fatal("worktreeBusy should clear after create-done")
+	}
+	if !pathsEqual(rm.sess.WorktreeDir, wt.Dir) {
+		t.Errorf("session bound to %q, want %q", rm.sess.WorktreeDir, wt.Dir)
+	}
+	if cwd, _ := os.Getwd(); !pathsEqual(cwd, wt.Dir) {
+		t.Errorf("cwd %q not the worktree %q", cwd, wt.Dir)
+	}
+	if !strings.Contains(rm.footerMessage, "Created and switched") {
+		t.Errorf("footer = %q, want success", rm.footerMessage)
+	}
 }

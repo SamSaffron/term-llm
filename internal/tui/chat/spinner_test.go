@@ -46,6 +46,22 @@ func TestChatSpinnerTickIgnoredWhilePausedForExternalUI(t *testing.T) {
 	}
 }
 
+func TestChatSpinnerTickContinuesWhileWorktreeBusy(t *testing.T) {
+	m := newTestChatModel(false)
+	m.worktreeBusy = true
+
+	before := m.spinner.View()
+	_, cmd := m.Update(spinner.TickMsg{ID: m.spinner.ID()})
+	after := m.spinner.View()
+
+	if cmd == nil {
+		t.Fatal("expected spinner tick to be re-scheduled while a worktree op is busy")
+	}
+	if after == before {
+		t.Fatalf("expected spinner frame to advance while worktree busy, still %q", after)
+	}
+}
+
 func TestChatSpinnerTickContinuesWhileInspectorModeActive(t *testing.T) {
 	m := newTestChatModel(true)
 	m.streaming = true

@@ -887,6 +887,13 @@ func (m *Model) renderStatusLine() string {
 	errorStyle := lipgloss.NewStyle().Foreground(theme.Error)
 	warningStyle := lipgloss.NewStyle().Foreground(theme.Warning)
 
+	// A running worktree operation takes precedence: show the spinner + live
+	// progress instead of the (possibly stale) footer message.
+	if m.worktreeBusy && strings.TrimSpace(m.worktreeProgress) != "" {
+		text := strings.TrimSpace(strings.TrimSpace(m.spinner.View()) + " " + strings.TrimSpace(m.worktreeProgress))
+		return m.wrapFooterLine(mutedStyle.Render(text))
+	}
+
 	if m.footerMessage != "" {
 		style := mutedStyle
 		switch m.footerMessageTone {

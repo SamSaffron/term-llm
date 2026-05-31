@@ -29,6 +29,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/tui/inspector"
 	sessionsui "github.com/samsaffron/term-llm/internal/tui/sessions"
 	"github.com/samsaffron/term-llm/internal/ui"
+	"github.com/samsaffron/term-llm/internal/worktree"
 	"golang.org/x/term"
 )
 
@@ -338,6 +339,14 @@ type Model struct {
 	worktreeSegCache   string
 	worktreeSegFetched time.Time
 
+	// Worktree create/remove operation state. worktreeBusy gates concurrent ops
+	// and keeps the spinner ticking; worktreeOpSeq tags the in-flight operation
+	// so stale progress/done messages are ignored; worktreeProgress is the live
+	// status text shown in the footer while busy.
+	worktreeBusy     bool
+	worktreeProgress string
+	worktreeOpSeq    uint64
+
 	attemptInput          int
 	attemptOutput         int
 	attemptCached         int
@@ -387,6 +396,17 @@ type (
 	handoverCancelMsg     struct{}
 	handoverRenameDoneMsg struct{ err error }
 	mcpStatusUpdateMsg    struct{ update mcp.StatusUpdate }
+	worktreeProgressMsg   struct {
+		op       uint64
+		progress <-chan worktree.Progress
+		message  string
+		done     bool
+	}
+	worktreeCreateDoneMsg struct {
+		op  uint64
+		wt  *worktree.Worktree
+		err error
+	}
 )
 
 const (
@@ -1269,7 +1289,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
-		if m.streaming && !m.pausedForExternalUI {
+		if (m.streaming || m.worktreeBusy) && !m.pausedForExternalUI {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			cmds = append(cmds, cmd)
@@ -1308,6 +1328,38 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case mcpStatusUpdateMsg:
 		m.refreshMCPPickerIfOpen()
 		cmds = append(cmds, m.listenForMCPStatusUpdates())
+
+	case worktreeProgressMsg:
+		// Ignore progress from a superseded operation.
+		if !m.worktreeBusy || msg.op != m.worktreeOpSeq {
+			return m, nil
+		}
+		if !msg.done {
+			message := strings.TrimSpace(msg.message)
+			if message == "" {
+				message = "working"
+			}
+			m.worktreeProgress = "Creating worktree: " + message
+			cmds = append(cmds, waitForWorktreeProgress(msg.op, msg.progress))
+		}
+
+	case worktreeCreateDoneMsg:
+		if msg.op != m.worktreeOpSeq {
+			return m, nil
+		}
+		m.worktreeBusy = false
+		m.worktreeProgress = ""
+		if msg.err != nil {
+			return m.showFooterError(fmt.Sprintf("Worktree create failed: %v", msg.err))
+		}
+		if msg.wt == nil {
+			return m.showFooterError("Worktree create failed: no worktree returned")
+		}
+		// Bind via the chdir model (single-session TUI); see bindWorktree.
+		if err := m.bindWorktree(msg.wt.Dir); err != nil {
+			return m.showFooterError(fmt.Sprintf("Created %s but failed to switch: %v", msg.wt.Name, err))
+		}
+		return m.showFooterSuccess(fmt.Sprintf("Created and switched to worktree %s.", msg.wt.Name))
 
 	case interruptClassifiedMsg:
 		return m.handleInterruptClassified(msg)

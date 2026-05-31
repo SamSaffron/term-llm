@@ -52,7 +52,7 @@ func (m *Model) cmdWorktree(args []string) (tea.Model, tea.Cmd) {
 	case "list", "ls":
 		return m.cmdWorktreeList()
 	case "new", "add":
-		return m.cmdWorktreeNew(strings.Join(rest, " "))
+		return m.createWorktree(strings.Join(rest, " "))
 	case "pwd":
 		return m.cmdWorktreePwd()
 	case "diff":
@@ -126,8 +126,10 @@ func currentTag(isCurrent bool) string {
 	return ""
 }
 
-// cmdWorktreeNew creates a worktree off HEAD and binds the session to it.
-func (m *Model) cmdWorktreeNew(name string) (tea.Model, tea.Cmd) {
+// createWorktree creates a worktree off HEAD asynchronously, streaming progress
+// to the footer spinner. On completion (worktreeCreateDoneMsg) the session is
+// bound to it via bindWorktree. Guarded against concurrent ops and streaming.
+func (m *Model) createWorktree(name string) (tea.Model, tea.Cmd) {
 	base := m.worktreeBaseDir()
 	if !worktree.IsGitRepo(base) {
 		return m.showFooterWarning("Not in a git repository; cannot create a worktree.")
@@ -135,20 +137,44 @@ func (m *Model) cmdWorktreeNew(name string) (tea.Model, tea.Cmd) {
 	if m.streaming {
 		return m.showFooterWarning("Cannot create a worktree while streaming. Cancel first (Esc).")
 	}
+	if m.worktreeBusy {
+		return m.showFooterWarning("A worktree operation is already running.")
+	}
 
 	// Setup-script source for v1: the TERM_LLM_WORKTREE_SETUP env var (run in the
 	// new worktree after creation — e.g. "npm install", copying gitignored .env).
 	// Config-file precedence (repo-local → user) is a follow-up.
-	opts := worktree.CreateOptions{Name: name, Base: "HEAD", SetupScript: os.Getenv("TERM_LLM_WORKTREE_SETUP")}
-	wt, err := worktree.Create(context.Background(), base, opts)
-	if err != nil {
-		return m.showFooterWarning(fmt.Sprintf("worktree create failed: %v", err))
-	}
-	if err := m.bindWorktree(wt.Dir); err != nil {
-		return m.showFooterWarning(fmt.Sprintf("created %s but failed to switch: %v", wt.Name, err))
+	setupScript := os.Getenv("TERM_LLM_WORKTREE_SETUP")
+
+	m.worktreeBusy = true
+	m.worktreeOpSeq++
+	op := m.worktreeOpSeq
+	m.worktreeProgress = "Creating worktree…"
+	progress := make(chan worktree.Progress, 8)
+	create := func() tea.Msg {
+		opts := worktree.CreateOptions{Name: name, Base: "HEAD", SetupScript: setupScript, Progress: progress}
+		wt, err := worktree.Create(context.Background(), base, opts)
+		close(progress)
+		return worktreeCreateDoneMsg{op: op, wt: wt, err: err}
 	}
 	m.setTextareaValue("")
-	return m.showFooterSuccess(fmt.Sprintf("Created and switched to worktree %s (%s).", wt.Name, wt.Dir))
+	return m, tea.Batch(create, waitForWorktreeProgress(op, progress), m.spinner.Tick)
+}
+
+// waitForWorktreeProgress blocks on the next progress event from Create and
+// turns it into a worktreeProgressMsg, rescheduling itself until the channel is
+// closed (signalled as done).
+func waitForWorktreeProgress(op uint64, progress <-chan worktree.Progress) tea.Cmd {
+	if progress == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		p, ok := <-progress
+		if !ok {
+			return worktreeProgressMsg{op: op, progress: progress, done: true}
+		}
+		return worktreeProgressMsg{op: op, progress: progress, message: p.Message}
+	}
 }
 
 // cmdWorktreePwd prints and copies the bound worktree path.

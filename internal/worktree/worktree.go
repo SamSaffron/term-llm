@@ -59,6 +59,13 @@ type CreateOptions struct {
 	Base        string               // base commit/branch; defaults to "HEAD"
 	SetupScript string               // optional script run in the new worktree after creation
 	ProgressFn  func(message string) // optional progress callback for a spinner
+	Progress    chan<- Progress      // optional channel for progress events (TUI spinner)
+}
+
+// Progress is emitted by Create as it advances through the slow parts (worktree
+// add, setup script) so a caller can drive a live spinner.
+type Progress struct {
+	Message string
 }
 
 // metadata is persisted alongside the managed root (outside the worktree dir so
@@ -79,8 +86,24 @@ var ErrDirty = errors.New("worktree has uncommitted changes")
 var ErrExists = errors.New("worktree already exists")
 
 func (o *CreateOptions) progress(msg string) {
-	if o != nil && o.ProgressFn != nil {
+	if o == nil {
+		return
+	}
+	if o.ProgressFn != nil {
 		o.ProgressFn(msg)
+	}
+	emit(o.Progress, msg)
+}
+
+// emit sends a progress event without blocking; events are dropped if no
+// receiver is ready so Create never stalls on a slow/absent consumer.
+func emit(ch chan<- Progress, msg string) {
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- Progress{Message: msg}:
+	default:
 	}
 }
 

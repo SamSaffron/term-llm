@@ -1714,3 +1714,21 @@ func TestChatReasoningAttemptDiscardClearsProvisionalTitle(t *testing.T) {
 		t.Fatalf("discard should clear reasoning buffer/title, title=%q buffer=%q", m.currentReasoningTitle, m.currentReasoning.String())
 	}
 }
+
+// TestRenderStatusLineShowsWorktreeProgress verifies a running worktree op shows
+// its live progress in the status line, taking precedence over any footer text.
+func TestRenderStatusLineShowsWorktreeProgress(t *testing.T) {
+	m := newTestChatModel(false)
+	m.width = 80
+	m.worktreeBusy = true
+	m.worktreeProgress = "Creating worktree: running setup script"
+	m.footerMessage = "older footer"
+
+	line := ui.StripANSI(m.renderStatusLine())
+	if !strings.Contains(line, "Creating worktree: running setup script") {
+		t.Fatalf("status line = %q, want worktree progress", line)
+	}
+	if strings.Contains(line, "older footer") {
+		t.Fatalf("status line = %q, should not show stale footer while busy", line)
+	}
+}
