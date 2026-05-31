@@ -117,6 +117,7 @@ func TestDebugProviderStream(t *testing.T) {
 func TestDebugProviderStreamCancellation(t *testing.T) {
 	p := NewDebugProvider("slow") // Use slow to ensure we can cancel mid-stream
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	stream, err := p.Stream(ctx, Request{})
 	if err != nil {

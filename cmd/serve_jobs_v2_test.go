@@ -948,6 +948,7 @@ func TestJobsV2LLMProgressiveRunStoresEnvelopeAndProgressEvents(t *testing.T) {
 		RunnerConfig: json.RawMessage(`{
 			"agent_name":"planner",
 			"instructions":"Plan carefully",
+			"cwd":".",
 			"progressive":true
 		}`),
 		TriggerType:    jobsV2TriggerManual,
@@ -1034,6 +1035,7 @@ func TestJobsV2_ProgressiveLLM_FinalResponseProse(t *testing.T) {
 		RunnerConfig: json.RawMessage(`{
 			"agent_name":"planner",
 			"instructions":"Find audiobooks",
+			"cwd":".",
 			"progressive":true
 		}`),
 		TriggerType:    jobsV2TriggerManual,
@@ -1521,7 +1523,7 @@ func TestJobsV2LLMRunnerAccumulatesStreamingDeltas(t *testing.T) {
 		onEvent(llm.Event{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 3, OutputTokens: 5}})
 		return serveJobsExecResult{}, nil
 	}}
-	job := jobsV2Job{RunnerConfig: json.RawMessage(`{"agent_name":"test","instructions":"say hello"}`)}
+	job := jobsV2Job{RunnerConfig: json.RawMessage(`{"agent_name":"test","instructions":"say hello","cwd":"."}`)}
 
 	var flushes []string
 	res, err := runner.Run(context.Background(), job, func(eventType, message string, data any) {
@@ -1546,6 +1548,71 @@ func TestJobsV2LLMRunnerAccumulatesStreamingDeltas(t *testing.T) {
 	}
 }
 
+func TestJobsV2LLMRunnerConfigValidationRequiresCwdOnCreateAndUpdate(t *testing.T) {
+	mgr := newJobsV2ManagerWithoutLoops(t)
+
+	_, err := mgr.CreateJob(jobsV2Job{
+		Name:          "missing-cwd",
+		Enabled:       true,
+		RunnerType:    jobsV2RunnerLLM,
+		RunnerConfig:  json.RawMessage(`{"agent_name":"planner","instructions":"plan"}`),
+		TriggerType:   jobsV2TriggerManual,
+		TriggerConfig: json.RawMessage(`{}`),
+	})
+	if err == nil || !strings.Contains(err.Error(), "runner_config.cwd is required") {
+		t.Fatalf("CreateJob err = %v, want runner_config.cwd is required", err)
+	}
+
+	created, err := mgr.CreateJob(jobsV2Job{
+		Name:          "has-cwd",
+		Enabled:       true,
+		RunnerType:    jobsV2RunnerLLM,
+		RunnerConfig:  json.RawMessage(`{"agent_name":"planner","instructions":"plan","cwd":"."}`),
+		TriggerType:   jobsV2TriggerManual,
+		TriggerConfig: json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateJob with cwd failed: %v", err)
+	}
+
+	_, err = mgr.UpdateJobPatch(created.ID, jobsV2JobRequest{
+		RunnerConfig: json.RawMessage(`{"agent_name":"planner","instructions":"plan again"}`),
+	})
+	if err == nil || !strings.Contains(err.Error(), "runner_config.cwd is required") {
+		t.Fatalf("UpdateJobPatch err = %v, want runner_config.cwd is required", err)
+	}
+}
+
+// TestJobsV2LLMRunnerRequiresCwd asserts an llm job is rejected before execution
+// when cwd is missing, so a run never silently inherits the jobs server's working
+// directory. The executor must not be invoked.
+func TestJobsV2LLMRunnerRequiresCwd(t *testing.T) {
+	cases := []struct {
+		name   string
+		config string
+	}{
+		{name: "cwd omitted", config: `{"agent_name":"test","instructions":"hi"}`},
+		{name: "cwd blank", config: `{"agent_name":"test","instructions":"hi","cwd":"   "}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			runner := &jobsV2LLMRunner{exec: func(context.Context, jobsV2LLMConfig, func(llm.Event)) (serveJobsExecResult, error) {
+				called = true
+				return serveJobsExecResult{}, nil
+			}}
+			job := jobsV2Job{RunnerConfig: json.RawMessage(tc.config)}
+			_, err := runner.Run(context.Background(), job, nil)
+			if err == nil || !strings.Contains(err.Error(), "cwd is required") {
+				t.Fatalf("Run err = %v, want it to mention cwd is required", err)
+			}
+			if called {
+				t.Fatal("executor was invoked despite missing cwd")
+			}
+		})
+	}
+}
+
 func BenchmarkJobsV2LLMRunnerTextDeltaAccumulation(b *testing.B) {
 	const deltas = 4096
 	const delta = "0123456789abcdef"
@@ -1557,7 +1624,7 @@ func BenchmarkJobsV2LLMRunnerTextDeltaAccumulation(b *testing.B) {
 		}
 		return serveJobsExecResult{}, nil
 	}}
-	job := jobsV2Job{RunnerConfig: json.RawMessage(`{"agent_name":"bench","instructions":"bench"}`)}
+	job := jobsV2Job{RunnerConfig: json.RawMessage(`{"agent_name":"bench","instructions":"bench","cwd":"."}`)}
 
 	b.ReportAllocs()
 	b.ResetTimer()

@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/procutil"
@@ -319,6 +320,27 @@ type jobsV2LLMConfig struct {
 	ContinueWith   string `json:"continue_with,omitempty"`
 	PersistSession *bool  `json:"persist_session,omitempty"`
 	SessionID      string `json:"session_id,omitempty"`
+
+	// cwd is REQUIRED: it roots this run's file/shell tools at a directory so a
+	// job never silently inherits the jobs server's process working directory.
+	// It is NOT an os.Chdir (see resolveJobLLMSettings) — the server runs many
+	// runs concurrently in one process.
+	Cwd string `json:"cwd"`
+
+	// Parity with the `ask` CLI. All optional; omitting a field preserves the
+	// previous behavior (it falls back to the serve-level flag / agent / config).
+	// These map onto the same execution path `ask` uses — this is plumbing, not
+	// new concepts.
+	Provider        string   `json:"provider,omitempty"`          // e.g. "chatgpt" or "chatgpt:gpt-5.5-xhigh"
+	Model           string   `json:"model,omitempty"`             // model override (alt to provider:model)
+	ReadDir         []string `json:"read_dir,omitempty"`          // additional read roots
+	WriteDir        []string `json:"write_dir,omitempty"`         // additional write roots
+	Tools           string   `json:"tools,omitempty"`             // tool set override ("all" or csv)
+	MaxTurns        int      `json:"max_turns,omitempty"`         // agentic turn cap
+	MaxOutputTokens int      `json:"max_output_tokens,omitempty"` // 0 = provider default
+	Search          bool     `json:"search,omitempty"`
+	SystemMessage   string   `json:"system_message,omitempty"`
+	Skills          string   `json:"skills,omitempty"`
 }
 
 func (c jobsV2LLMConfig) sessionPersistenceEnabled() bool {
@@ -335,6 +357,33 @@ func (c jobsV2LLMConfig) effectiveSessionID() string {
 	return session.NewID()
 }
 
+func validateJobsV2RunnerConfig(runnerType jobsV2RunnerType, raw json.RawMessage) error {
+	switch runnerType {
+	case jobsV2RunnerLLM:
+		var cfg jobsV2LLMConfig
+		if err := json.Unmarshal([]byte(stringOrEmptyRaw(raw, "{}")), &cfg); err != nil {
+			return fmt.Errorf("invalid llm runner config: %w", err)
+		}
+		if strings.TrimSpace(cfg.AgentName) == "" {
+			return fmt.Errorf("llm runner_config.agent_name is required")
+		}
+		if strings.TrimSpace(cfg.Instructions) == "" {
+			return fmt.Errorf("llm runner_config.instructions is required")
+		}
+		if strings.TrimSpace(cfg.Cwd) == "" {
+			return fmt.Errorf("llm runner_config.cwd is required")
+		}
+	case jobsV2RunnerProgram:
+		// Program runner config is intentionally still validated at execution time:
+		// its optional cwd remains an explicit escape hatch, unlike llm cwd.
+	case "":
+		return fmt.Errorf("runner_type is required")
+	default:
+		return fmt.Errorf("runner_type must be one of: llm, program")
+	}
+	return nil
+}
+
 func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWriter) (jobsV2RunResult, error) {
 	if r.exec == nil {
 		return jobsV2RunResult{}, fmt.Errorf("llm runner is not configured")
@@ -348,6 +397,11 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 	}
 	if strings.TrimSpace(cfg.Instructions) == "" {
 		return jobsV2RunResult{}, fmt.Errorf("llm runner instructions is required")
+	}
+	// cwd is mandatory: an llm job must declare where its file/shell tools are
+	// rooted rather than silently inheriting the jobs server's working directory.
+	if strings.TrimSpace(cfg.Cwd) == "" {
+		return jobsV2RunResult{}, fmt.Errorf("llm runner cwd is required")
 	}
 	cfg.SessionID = cfg.effectiveSessionID()
 	progressiveOpts := askProgressiveOptions{
@@ -1479,6 +1533,9 @@ func (m *jobsV2Manager) CreateJob(req jobsV2Job) (jobsV2Job, error) {
 	if req.RunnerType != jobsV2RunnerLLM && req.RunnerType != jobsV2RunnerProgram {
 		return jobsV2Job{}, fmt.Errorf("runner_type must be one of: llm, program")
 	}
+	if err := validateJobsV2RunnerConfig(req.RunnerType, req.RunnerConfig); err != nil {
+		return jobsV2Job{}, err
+	}
 	if req.TriggerType != jobsV2TriggerManual && req.TriggerType != jobsV2TriggerOnce && req.TriggerType != jobsV2TriggerCron {
 		return jobsV2Job{}, fmt.Errorf("trigger_type must be one of: manual, once, cron")
 	}
@@ -1681,6 +1738,9 @@ func (m *jobsV2Manager) UpdateJobPatch(id string, req jobsV2JobRequest) (jobsV2J
 
 	cfg, err := parseTriggerConfig(current.TriggerType, current.TriggerConfig, current.ScheduleTimezone)
 	if err != nil {
+		return jobsV2Job{}, err
+	}
+	if err := validateJobsV2RunnerConfig(current.RunnerType, current.RunnerConfig); err != nil {
 		return jobsV2Job{}, err
 	}
 	next := initialNextRun(current.TriggerType, cfg, current.ScheduleTimezone)
@@ -2618,8 +2678,23 @@ func cloneConfigForServeJob(src *config.Config) *config.Config {
 	clone := *src
 	if src.Providers != nil {
 		clone.Providers = make(map[string]config.ProviderConfig, len(src.Providers))
-		for name, cfg := range src.Providers {
-			clone.Providers[name] = cfg
+		for name, pc := range src.Providers {
+			// Deep copy the slice/pointer fields so per-run provider/model
+			// overrides never mutate the shared base config (mirrors the
+			// deep-copy discipline in spawn_runner.go). A shallow copy would
+			// alias Models, UseNativeSearch and OAuthCreds across runs.
+			if pc.Models != nil {
+				pc.Models = append([]string(nil), pc.Models...)
+			}
+			if pc.UseNativeSearch != nil {
+				v := *pc.UseNativeSearch
+				pc.UseNativeSearch = &v
+			}
+			if pc.OAuthCreds != nil {
+				creds := *pc.OAuthCreds
+				pc.OAuthCreds = &creds
+			}
+			clone.Providers[name] = pc
 		}
 	}
 	if src.Agents.Preferences != nil {
@@ -2629,6 +2704,108 @@ func cloneConfigForServeJob(src *config.Config) *config.Config {
 		}
 	}
 	return &clone
+}
+
+// jobLLMServeDefaults captures serve-command-level flag values that act as
+// fallbacks for a job's own (more specific) runner config. A job that omits a
+// parity field inherits the serve-level default, preserving prior behavior.
+type jobLLMServeDefaults struct {
+	Provider      string
+	Tools         string
+	ReadDirs      []string
+	WriteDirs     []string
+	ShellAllow    []string
+	MCP           string
+	SystemMessage string
+	MaxTurns      int
+	Search        bool
+}
+
+// applyJobLLMProviderModel applies the job's provider/model selection onto jobCfg,
+// reusing the same override machinery as `ask` and spawn_runner.go.
+//
+// The job's provider behaves like `ask`'s --provider: it may carry a
+// provider:model form and takes precedence over the serve-level --provider
+// (serveProviderFlag) when set. The job's model is an additional override applied
+// last, so it wins as the most specific selector for the active provider.
+func applyJobLLMProviderModel(jobCfg *config.Config, cfg jobsV2LLMConfig, serveProviderFlag, agentProvider, agentModel string) error {
+	providerFlag := strings.TrimSpace(cfg.Provider)
+	if providerFlag == "" {
+		providerFlag = serveProviderFlag
+	}
+	if err := applyProviderOverridesWithAgent(jobCfg, jobCfg.Ask.Provider, jobCfg.Ask.Model, providerFlag, agentProvider, agentModel); err != nil {
+		return err
+	}
+	if model := strings.TrimSpace(cfg.Model); model != "" {
+		if err := applyAgentModelOverride(jobCfg, model); err != nil {
+			return fmt.Errorf("apply model override %q: %w", model, err)
+		}
+	}
+	return nil
+}
+
+// resolveJobLLMSettings merges a job's runner config with the serve-level defaults
+// into the final SessionSettings and user prompt. Every parity field on
+// jobsV2LLMConfig is optional; an omitted field falls back to the serve default so
+// existing jobs resolve to exactly the same settings as before.
+//
+// cwd is rooted WITHOUT os.Chdir: the jobs server runs many runs concurrently in
+// one process, so a global chdir would race every other run. Instead, cwd is
+// appended to the read/write tool roots and set as the shell tool's working
+// directory (exec.Cmd.Dir).
+func resolveJobLLMSettings(jobCfg *config.Config, agent *agents.Agent, cfg jobsV2LLMConfig, def jobLLMServeDefaults) (SessionSettings, string, error) {
+	toolsFlag := def.Tools
+	if strings.TrimSpace(cfg.Tools) != "" {
+		toolsFlag = cfg.Tools
+	}
+	systemMessage := def.SystemMessage
+	if strings.TrimSpace(cfg.SystemMessage) != "" {
+		systemMessage = cfg.SystemMessage
+	}
+	providerFlag := strings.TrimSpace(cfg.Provider)
+	if providerFlag == "" {
+		providerFlag = def.Provider
+	}
+	maxTurns := def.MaxTurns
+	maxTurnsSet := false
+	if cfg.MaxTurns > 0 {
+		maxTurns = cfg.MaxTurns
+		maxTurnsSet = true
+	}
+	// CLI flags replace (not extend) agent dirs, so combine the serve-level dirs
+	// with the job's extra dirs before handing them to ResolveSettings.
+	readDirs := append(append([]string{}, def.ReadDirs...), cfg.ReadDir...)
+	writeDirs := append(append([]string{}, def.WriteDirs...), cfg.WriteDir...)
+
+	settings, err := ResolveSettings(jobCfg, agent, CLIFlags{
+		Provider:        providerFlag,
+		Tools:           toolsFlag,
+		ReadDirs:        readDirs,
+		WriteDirs:       writeDirs,
+		ShellAllow:      def.ShellAllow,
+		MCP:             def.MCP,
+		SystemMessage:   systemMessage,
+		MaxTurns:        maxTurns,
+		MaxTurnsSet:     maxTurnsSet,
+		MaxOutputTokens: cfg.MaxOutputTokens,
+		Search:          def.Search || cfg.Search,
+		Platform:        "jobs",
+	}, jobCfg.Ask.Provider, jobCfg.Ask.Model, jobCfg.Ask.Instructions, jobCfg.Ask.MaxTurns, 50)
+	if err != nil {
+		return SessionSettings{}, "", err
+	}
+
+	// cwd (required, enforced in jobsV2LLMRunner.Run) roots this run's file/shell
+	// tools at a directory WITHOUT a process-wide os.Chdir: it authorizes
+	// read/write within cwd and sets the shell tool's exec working directory. The
+	// guard keeps this resolver defensive if a caller passes an empty cwd.
+	if runCwd := strings.TrimSpace(cfg.Cwd); runCwd != "" {
+		settings.ReadDirs = append(settings.ReadDirs, runCwd)
+		settings.WriteDirs = append(settings.WriteDirs, runCwd)
+		settings.ShellWorkingDir = runCwd
+	}
+
+	return settings, cfg.Instructions, nil
 }
 
 func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
@@ -2643,11 +2820,17 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 			return serveJobsExecResult{}, fmt.Errorf("agent %q not found", cfg.AgentName)
 		}
 
-		if err := applyProviderOverridesWithAgent(jobCfg, jobCfg.Ask.Provider, jobCfg.Ask.Model, serveProvider, agent.Provider, agent.Model); err != nil {
+		// Provider/model: the job config takes precedence over the serve-level
+		// --provider, then agent, then config — reusing the same override path as
+		// `ask`. Mutations land on the deep-copied jobCfg, never the base config.
+		if err := applyJobLLMProviderModel(jobCfg, cfg, serveProvider, agent.Provider, agent.Model); err != nil {
 			return serveJobsExecResult{}, err
 		}
 
-		settings, err := ResolveSettings(jobCfg, agent, CLIFlags{
+		// Merge the job's runner config with the serve-level defaults into the
+		// final settings + user prompt. Omitted parity fields fall back to the
+		// serve flag, so existing jobs resolve to identical settings.
+		settings, userPrompt, err := resolveJobLLMSettings(jobCfg, agent, cfg, jobLLMServeDefaults{
 			Provider:      serveProvider,
 			Tools:         serveTools,
 			ReadDirs:      serveReadDirs,
@@ -2657,16 +2840,16 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 			SystemMessage: serveSystemMessage,
 			MaxTurns:      serveMaxTurns,
 			Search:        serveSearch,
-			Platform:      "jobs",
-		}, jobCfg.Ask.Provider, jobCfg.Ask.Model, jobCfg.Ask.Instructions, jobCfg.Ask.MaxTurns, 50)
+		})
 		if err != nil {
 			return serveJobsExecResult{}, err
 		}
 
 		// Setup skills and inject metadata into settings.SystemPrompt before
 		// constructing serveRuntime; skills.Setup is then passed to the engine
-		// factory for per-session activate_skill tool registration.
-		jobSkillsSetup := SetupSkills(&jobCfg.Skills, "", agent.Skills, io.Discard)
+		// factory for per-session activate_skill tool registration. The job's
+		// skills override falls back to the agent's when empty.
+		jobSkillsSetup := SetupSkills(&jobCfg.Skills, cfg.Skills, agent.Skills, io.Discard)
 		settings.SystemPrompt = InjectSkillsMetadata(settings.SystemPrompt, jobSkillsSetup)
 
 		modelName := activeModel(jobCfg)
@@ -2773,12 +2956,13 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 			Search:              settings.Search,
 			ForceExternalSearch: forceExternalSearch,
 			MaxTurns:            settings.MaxTurns,
+			MaxOutputTokens:     settings.MaxOutputTokens,
 			Debug:               serveDebug,
 			DebugRaw:            debugRaw,
 		}
 
 		if cfg.Progressive {
-			messages := []llm.Message{llm.UserText(cfg.Instructions)}
+			messages := []llm.Message{llm.UserText(userPrompt)}
 			if runtime.systemPrompt != "" {
 				messages = append([]llm.Message{llm.SystemText(runtime.systemPrompt)}, messages...)
 			}
@@ -2787,7 +2971,7 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 				if runtime.systemPrompt != "" {
 					_ = store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, llm.SystemText(runtime.systemPrompt), -1))
 				}
-				_ = store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, llm.UserText(cfg.Instructions), -1))
+				_ = store.AddMessage(ctx, sess.ID, session.NewMessage(sess.ID, llm.UserText(userPrompt), -1))
 			}
 
 			progressiveResult, err := runProgressiveSession(ctx, engine, llmReq, progressiveRunOptions{
@@ -2820,7 +3004,7 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 			return serveJobsExecResult{Progressive: &progressiveResult}, err
 		}
 
-		_, err = runtime.RunWithEvents(ctx, false, false, []llm.Message{llm.UserText(cfg.Instructions)}, llmReq, func(ev llm.Event) error {
+		_, err = runtime.RunWithEvents(ctx, false, false, []llm.Message{llm.UserText(userPrompt)}, llmReq, func(ev llm.Event) error {
 			if onEvent != nil {
 				onEvent(ev)
 			}

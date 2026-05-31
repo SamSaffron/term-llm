@@ -70,6 +70,11 @@ term-llm jobs run cancel run_abc123
 
 LLM jobs now persist a session trail to the normal sessions SQLite store **by default**.
 
+LLM jobs must also declare `runner_config.cwd`. The jobs server may run many jobs
+concurrently in one process, so LLM jobs never inherit the server process working
+directory and never use a process-wide `chdir`. Instead, `cwd` roots that run's
+file/shell tool access and is used as the shell tool's default `exec.Cmd.Dir`.
+
 That means each LLM run gets a stable `session_id`, and long-running progressive jobs no longer keep their best-so-far state only in memory.
 
 Practical effects:
@@ -86,6 +91,7 @@ Default behavior is persistence **on**. If you explicitly do not want that, set:
   "runner_config": {
     "agent_name": "developer",
     "instructions": "Do the thing",
+    "cwd": "/srv/app",
     "persist_session": false
   }
 }
@@ -99,6 +105,7 @@ You can also provide your own `session_id` when an integration wants a stable ex
   "runner_config": {
     "agent_name": "developer",
     "instructions": "Investigate the failing deploy and summarize it.",
+    "cwd": "/srv/app",
     "session_id": "deploy-investigation-2026-03-14"
   }
 }
@@ -130,7 +137,8 @@ Jobs v2 automatically prunes historical data to avoid unbounded disk growth:
   "runner_type": "llm",
   "runner_config": {
     "agent_name": "developer",
-    "instructions": "Summarize today's changes and write a short report."
+    "instructions": "Summarize today's changes and write a short report.",
+    "cwd": "/srv/app"
   },
   "trigger_type": "cron",
   "trigger_config": {

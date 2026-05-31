@@ -97,11 +97,15 @@ func TestToolRegistryConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			<-start
 			for i := 0; i < iterations; i++ {
+				// Use Errorf+return, not Fatalf: this runs on a non-test
+				// goroutine where Fatalf's runtime.Goexit is incorrect.
 				if _, ok := registry.Get("base"); !ok {
-					t.Fatalf("Get(base) = missing")
+					t.Errorf("Get(base) = missing")
+					return
 				}
 				if !registry.IsFinishingTool("base") {
-					t.Fatalf("IsFinishingTool(base) = false, want true")
+					t.Errorf("IsFinishingTool(base) = false, want true")
+					return
 				}
 				_ = registry.AllSpecs()
 			}

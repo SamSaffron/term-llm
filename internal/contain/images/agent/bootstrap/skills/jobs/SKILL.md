@@ -67,7 +67,7 @@ term-llm jobs create --data '{
 
 ## Creating an LLM job
 
-LLM jobs run agent instructions in the background. Always set `runner_config.agent_name` explicitly.
+LLM jobs run agent instructions in the background. Always set `runner_config.agent_name` explicitly. LLM jobs also require `runner_config.cwd`; it roots the run's file/shell tools without changing the jobs server process directory.
 
 ```bash
 term-llm jobs create --data '{
@@ -76,7 +76,8 @@ term-llm jobs create --data '{
   "runner_type": "llm",
   "runner_config": {
     "agent_name": "'$AGENT_NAME'",
-    "instructions": "Review recent memory and produce a short status note."
+    "instructions": "Review recent memory and produce a short status note.",
+    "cwd": "'$PWD'"
   },
   "trigger_type": "cron",
   "trigger_config": {"expression": "0 9 * * *", "timezone": "UTC"},

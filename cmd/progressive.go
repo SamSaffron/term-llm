@@ -239,7 +239,8 @@ func runProgressiveSession(ctx context.Context, engine *llm.Engine, req llm.Requ
 	tracker := newProgressTrackerFromMessages(history)
 	lastText := ""
 
-	mainCtx, reserve, hasTimeoutBudget := progressiveWorkContext(ctx)
+	mainCtx, cancelMainCtx, reserve, hasTimeoutBudget := progressiveWorkContext(ctx)
+	defer cancelMainCtx()
 
 	for {
 		passReq := req
@@ -415,10 +416,11 @@ func runProgressivePass(ctx context.Context, engine *llm.Engine, req llm.Request
 }
 
 func attemptProgressiveFinalization(parentCtx context.Context, engine *llm.Engine, finalizeTool llm.Tool, baseReq llm.Request, history []llm.Message, opts progressiveRunOptions, tracker *progressTracker, reserve time.Duration, exitReason string) (bool, string) {
-	finalizeCtx := progressiveFinalizationContext(parentCtx, reserve, exitReason)
+	finalizeCtx, finalizeCancel := progressiveFinalizationContext(parentCtx, reserve, exitReason)
 	if finalizeCtx == nil {
 		return false, ""
 	}
+	defer finalizeCancel()
 
 	finalPrompt := buildProgressiveFinalizePrompt(tracker.latest)
 	finalizeMsg := llm.UserText(finalPrompt)
@@ -484,18 +486,23 @@ func buildProgressiveRunResult(sessionID, exitReason string, finalized bool, com
 	return result
 }
 
-func progressiveWorkContext(parent context.Context) (context.Context, time.Duration, bool) {
+// progressiveWorkContext derives the working context that reserves a slice of the
+// parent deadline for finalization. It returns a CancelFunc that the caller must
+// invoke (typically via defer) to release the derived context's resources; the
+// no-derivation branches return a no-op CancelFunc so the caller can always defer
+// unconditionally.
+func progressiveWorkContext(parent context.Context) (context.Context, context.CancelFunc, time.Duration, bool) {
 	deadline, ok := parent.Deadline()
 	if !ok {
-		return parent, 0, false
+		return parent, func() {}, 0, false
 	}
 	total := time.Until(deadline)
 	reserve := progressiveFinalizeReserve(total)
 	if reserve <= 0 || total <= reserve {
-		return parent, reserve, true
+		return parent, func() {}, reserve, true
 	}
-	ctx, _ := context.WithDeadline(parent, deadline.Add(-reserve))
-	return ctx, reserve, true
+	ctx, cancel := context.WithDeadline(parent, deadline.Add(-reserve))
+	return ctx, cancel, reserve, true
 }
 
 func progressiveHasRemainingBudget(parent context.Context, reserve time.Duration) bool {
@@ -520,7 +527,10 @@ func progressiveFinalizeReserve(total time.Duration) time.Duration {
 	return reserve
 }
 
-func progressiveFinalizationContext(parent context.Context, reserve time.Duration, exitReason string) context.Context {
+// progressiveFinalizationContext returns a detached, time-boxed context for the
+// finalization pass plus its CancelFunc, which the caller must invoke (via defer)
+// to release resources. It returns (nil, nil) when there is no grace budget.
+func progressiveFinalizationContext(parent context.Context, reserve time.Duration, exitReason string) (context.Context, context.CancelFunc) {
 	grace := reserve
 	if grace < progressiveDefaultFinalizeGrace {
 		grace = progressiveDefaultFinalizeGrace
@@ -531,10 +541,9 @@ func progressiveFinalizationContext(parent context.Context, reserve time.Duratio
 		}
 	}
 	if grace <= 0 {
-		return nil
+		return nil, nil
 	}
-	ctx, _ := context.WithTimeout(context.WithoutCancel(parent), grace)
-	return ctx
+	return context.WithTimeout(context.WithoutCancel(parent), grace)
 }
 
 func buildProgressiveFinalizePrompt(latest *progressCommit) string {

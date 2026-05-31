@@ -22,6 +22,11 @@ type ToolConfig struct {
 	ImageProvider   string      `mapstructure:"image_provider"`     // Override for image provider
 	Spawn           SpawnConfig `mapstructure:"spawn"`              // Spawn agent configuration
 	AgentDir        string      `mapstructure:"-"`                  // Agent source directory (set at runtime)
+	// ShellWorkingDir, when set, is the default working directory for the shell
+	// tool when a call does not specify working_dir. It roots shell execution at
+	// a per-run directory via exec.Cmd.Dir, never a process-wide os.Chdir — that
+	// would race other runs that share the process (e.g. the jobs server).
+	ShellWorkingDir string `mapstructure:"-"`
 }
 
 // DefaultToolConfig returns sensible defaults for tool configuration.
@@ -74,6 +79,9 @@ func (c ToolConfig) Merge(other ToolConfig) ToolConfig {
 
 	if other.AgentDir != "" {
 		result.AgentDir = other.AgentDir
+	}
+	if other.ShellWorkingDir != "" {
+		result.ShellWorkingDir = other.ShellWorkingDir
 	}
 
 	// Merge spawn config

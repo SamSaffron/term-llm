@@ -3315,6 +3315,7 @@ func TestEngineTurnCallbackContextSurvivesCancellation(t *testing.T) {
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	req := Request{
 		Messages:   []Message{UserText("run tool")},
 		Tools:      []ToolSpec{tool.Spec()},

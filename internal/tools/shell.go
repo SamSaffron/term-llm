@@ -184,13 +184,20 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 		timeout = 300
 	}
 
-	// Set working directory
+	// Set working directory. Precedence: the call's explicit working_dir, then a
+	// per-run default rooted by config (ShellWorkingDir), then the process cwd.
+	// ShellWorkingDir lets callers (e.g. the jobs server) root a run's shell at a
+	// directory via exec.Cmd.Dir without a process-wide os.Chdir.
 	workDir := a.WorkingDir
 	if workDir == "" {
-		var err error
-		workDir, err = os.Getwd()
-		if err != nil {
-			return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err))), nil
+		if t.config != nil && strings.TrimSpace(t.config.ShellWorkingDir) != "" {
+			workDir = t.config.ShellWorkingDir
+		} else {
+			var err error
+			workDir, err = os.Getwd()
+			if err != nil {
+				return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err))), nil
+			}
 		}
 	}
 
