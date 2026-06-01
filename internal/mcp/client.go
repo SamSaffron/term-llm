@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -32,6 +33,7 @@ type Client struct {
 	session         *mcp.ClientSession
 	tools           []ToolSpec
 	samplingHandler *SamplingHandler
+	processCancel   context.CancelFunc
 	mu              sync.RWMutex
 	running         bool
 }
@@ -96,12 +98,14 @@ func (c *Client) start(ctx, processCtx context.Context) error {
 
 	session, err := c.client.Connect(ctx, transport, nil)
 	if err != nil {
+		c.cancelStdioProcessLocked()
 		return fmt.Errorf("connect to MCP server %s: %w", c.name, err)
 	}
 	c.session = session
 
 	// Fetch available tools
 	if err := c.refreshTools(ctx); err != nil {
+		c.cancelStdioProcessLocked()
 		c.session.Close()
 		c.session = nil
 		return fmt.Errorf("list tools from %s: %w", c.name, err)
@@ -113,7 +117,10 @@ func (c *Client) start(ctx, processCtx context.Context) error {
 
 // createStdioTransport creates a stdio transport for command-based servers.
 func (c *Client) createStdioTransport(ctx context.Context) mcp.Transport {
-	cmd := exec.CommandContext(ctx, c.config.Command, c.config.Args...)
+	processCtx, processCancel := context.WithCancel(ctx)
+	c.processCancel = processCancel
+
+	cmd := exec.CommandContext(processCtx, c.config.Command, c.config.Args...)
 	cmd.WaitDelay = mcpCommandWaitDelay
 	procutil.ConfigureCommandProcessGroup(cmd)
 	if len(c.config.Env) > 0 {
@@ -164,20 +171,49 @@ func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 // Stop closes the MCP server connection.
 func (c *Client) Stop() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	if !c.running {
+		c.mu.Unlock()
 		return nil
 	}
 
-	var err error
-	if c.session != nil {
-		err = c.session.Close()
-		c.session = nil
-	}
+	session := c.session
+	processCancel := c.processCancel
+	c.session = nil
+	c.processCancel = nil
 	c.running = false
 	c.tools = nil
+	c.mu.Unlock()
+
+	if processCancel != nil {
+		processCancel()
+	}
+
+	var err error
+	if session != nil {
+		err = session.Close()
+	}
+	if processCancel != nil && isExpectedStdioStopError(err) {
+		return nil
+	}
 	return err
+}
+
+func (c *Client) cancelStdioProcessLocked() {
+	if c.processCancel != nil {
+		c.processCancel()
+		c.processCancel = nil
+	}
+}
+
+func isExpectedStdioStopError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr)
 }
 
 // IsRunning returns whether the client is connected.

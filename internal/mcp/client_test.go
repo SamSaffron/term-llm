@@ -2,8 +2,13 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"os"
+	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -148,4 +153,117 @@ func TestCreateStdioTransport_ConfiguresProcessGroupCancellation(t *testing.T) {
 	if ct.Command.WaitDelay != time.Second {
 		t.Fatalf("WaitDelay = %v, want %v", ct.Command.WaitDelay, time.Second)
 	}
+	if client.processCancel == nil {
+		t.Fatalf("expected client to retain a stdio process cancel func")
+	}
+}
+
+func TestClientStop_CancelsStdioProcessGroup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires sh")
+	}
+
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	client := NewClient("greeter", ServerConfig{
+		Command: "sh",
+		Args: []string{
+			"-c",
+			"sleep 30 >/dev/null 2>&1 & echo $! > \"$1\"; exec \"$2\"",
+			"sh",
+			pidFile,
+			os.Args[0],
+		},
+		Env: map[string]string{
+			runMCPManagerTestServerEnv: "1",
+		},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := client.Start(ctx); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	pid := waitForRecordedPID(t, pidFile)
+	defer killProcessIfRunning(pid)
+
+	if err := client.Stop(); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+
+	waitForMCPProcessExit(t, pid)
+}
+
+func waitForRecordedPID(t *testing.T, path string) int {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			pidText := strings.TrimSpace(string(data))
+			if pidText != "" {
+				pid, convErr := strconv.Atoi(pidText)
+				if convErr != nil {
+					t.Fatalf("parse pid %q: %v", pidText, convErr)
+				}
+				return pid
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for pid file %s", path)
+	return 0
+}
+
+func waitForMCPProcessExit(t *testing.T, pid int) {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if mcpProcessHasExited(pid) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for process %d to exit", pid)
+}
+
+func killProcessIfRunning(pid int) {
+	if pid <= 0 || mcpProcessHasExited(pid) {
+		return
+	}
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+}
+
+func mcpProcessHasExited(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	if err != nil {
+		return errors.Is(err, syscall.ESRCH)
+	}
+	if runtime.GOOS == "linux" {
+		state, ok := linuxMCPProcState(pid)
+		return ok && state == 'Z'
+	}
+	return false
+}
+
+func linuxMCPProcState(pid int) (byte, bool) {
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return 0, false
+	}
+	return mcpProcStatState(data)
+}
+
+func mcpProcStatState(data []byte) (byte, bool) {
+	stat := string(data)
+	end := strings.LastIndex(stat, ")")
+	if end == -1 || end+2 >= len(stat) {
+		return 0, false
+	}
+	return stat[end+2], true
 }

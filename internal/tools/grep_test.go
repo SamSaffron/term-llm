@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -40,6 +41,65 @@ func TestCaptureRipgrepOutputPreservesCompleteLinesBeforeOversizedPartial(t *tes
 	}
 	if string(out) != "one\ntwo\n" {
 		t.Fatalf("expected only prior complete lines, got %q", string(out))
+	}
+}
+
+func TestCaptureRipgrepOutputWithConsumerStopsAtGlobalMaxResults(t *testing.T) {
+	input := buildSyntheticRipgrepJSON(5000)
+	limits := ripgrepCaptureLimits{maxOutputLines: 20000, maxBufferedBytes: len(input) + 1024}
+	limiter := newRipgrepResultLimiter(100)
+
+	out, truncated, err := captureRipgrepOutputWithConsumer(bytes.NewReader(input), limits, limiter.consumeJSONLine)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !truncated {
+		t.Fatal("expected capture to stop once the global result cap is satisfied and another result is seen")
+	}
+	if !strings.Contains(string(out), "f00099.go") {
+		t.Fatalf("expected useful prefix to include the 100th result, got:\n%s", string(out))
+	}
+	if strings.Contains(string(out), "f00100.go") {
+		t.Fatalf("expected capture to stop before buffering later results, got:\n%s", string(out))
+	}
+
+	matches, err := parseRipgrepOutput(out, 100, 0)
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+	if len(matches) != 100 {
+		t.Fatalf("expected 100 matches from the buffered prefix, got %d", len(matches))
+	}
+}
+
+func TestCaptureRipgrepOutputWithConsumerDoesNotTruncateAtExactJSONLimit(t *testing.T) {
+	input := buildSyntheticRipgrepJSON(100)
+	limits := ripgrepCaptureLimits{maxOutputLines: 1000, maxBufferedBytes: len(input) + 1024}
+	limiter := newRipgrepResultLimiter(100)
+
+	_, truncated, err := captureRipgrepOutputWithConsumer(bytes.NewReader(input), limits, limiter.consumeJSONLine)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if truncated {
+		t.Fatal("did not expect capture to be marked truncated when output has exactly the global cap")
+	}
+}
+
+func TestCaptureRipgrepOutputWithConsumerLimitsFilesWithMatches(t *testing.T) {
+	input := strings.NewReader("a.go\nb.go\nc.go\n")
+	limits := ripgrepCaptureLimits{maxOutputLines: 100, maxBufferedBytes: 1024}
+	limiter := newRipgrepResultLimiter(2)
+
+	out, truncated, err := captureRipgrepOutputWithConsumer(input, limits, limiter.consumePathLine)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !truncated {
+		t.Fatal("expected capture to stop at the global file cap")
+	}
+	if got, want := string(out), "a.go\nb.go\n"; got != want {
+		t.Fatalf("captured output = %q, want %q", got, want)
 	}
 }
 
