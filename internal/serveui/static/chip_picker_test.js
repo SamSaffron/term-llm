@@ -357,6 +357,169 @@ function testChipLockAllowsIdleSessionAndLocksBusyState() {
   pass(name);
 }
 
+function testUpdateSessionUsageDisplayUsesSelectedRuntimeForIdleSession() {
+  const name = 'updateSessionUsageDisplay shows selected runtime for idle session swaps';
+  const { app, elementMap } = loadCore();
+  app.state.providers = [
+    { name: 'chatgpt', is_default: true, default_model: 'gpt-5', models: ['gpt-5'] },
+    { name: 'anthropic', is_default: false, default_model: 'claude-sonnet', models: ['claude-sonnet'] },
+  ];
+  app.state.selectedProvider = 'anthropic';
+  app.state.selectedModel = '';
+  app.state.selectedEffort = '';
+
+  app.updateSessionUsageDisplay({
+    id: 'sess-1',
+    provider: 'chatgpt',
+    activeModel: 'gpt-5',
+    activeEffort: 'medium',
+  });
+
+  if (elementMap.chipProviderLabel.textContent !== 'anthropic') {
+    fail(name, `expected provider label "anthropic" got "${elementMap.chipProviderLabel.textContent}"`);
+    return;
+  }
+  if (elementMap.chipModelLabel.textContent !== 'claude-sonnet') {
+    fail(name, `expected selected provider default model "claude-sonnet" got "${elementMap.chipModelLabel.textContent}"`);
+    return;
+  }
+
+  app.updateSessionUsageDisplay({
+    id: 'sess-1',
+    provider: 'chatgpt',
+    activeModel: 'gpt-5',
+    activeEffort: 'medium',
+    activeResponseId: 'resp-1',
+  });
+
+  if (elementMap.chipProviderLabel.textContent !== 'chatgpt') {
+    fail(name, `expected locked provider label "chatgpt" got "${elementMap.chipProviderLabel.textContent}"`);
+    return;
+  }
+  if (elementMap.chipModelLabel.textContent !== 'gpt-5') {
+    fail(name, `expected locked model label "gpt-5" got "${elementMap.chipModelLabel.textContent}"`);
+    return;
+  }
+  pass(name);
+}
+
+function testProviderChipChangeUpdatesHeaderBeforeModelsFetchCompletes() {
+  const name = 'provider chip change updates header before models fetch completes';
+  const { app, elementMap } = loadCoreAndStream({
+    window: {
+      fetch: () => new Promise(() => {}),
+    },
+  });
+  app.state.providers = [
+    { name: 'chatgpt', is_default: true, default_model: 'gpt-5', models: ['gpt-5'] },
+    { name: 'anthropic', is_default: false, default_model: 'claude-sonnet', models: ['claude-sonnet'] },
+  ];
+  app.state.selectedProvider = 'chatgpt';
+  app.state.selectedModel = 'gpt-5';
+  app.state.models = ['gpt-5'];
+  app.renderModelOptions();
+  app.updateHeader = () => app.updateSessionUsageDisplay({
+    id: 'sess-1',
+    provider: 'chatgpt',
+    activeModel: 'gpt-5',
+  });
+
+  elementMap.chipProviderSelect.value = 'anthropic';
+  const listeners = elementMap.chipProviderSelect.listeners?.change || [];
+  if (listeners.length === 0) {
+    fail(name, 'chipProviderSelect has no change listener wired');
+    return;
+  }
+  listeners[0]({ type: 'change' });
+
+  if (app.state.selectedProvider !== 'anthropic') {
+    fail(name, `selectedProvider = ${JSON.stringify(app.state.selectedProvider)}, want anthropic`);
+    return;
+  }
+  if (elementMap.chipProviderLabel.textContent !== 'anthropic') {
+    fail(name, `expected header provider to update immediately, got "${elementMap.chipProviderLabel.textContent}"`);
+    return;
+  }
+  if (elementMap.chipModelLabel.textContent !== 'claude-sonnet') {
+    fail(name, `expected header model fallback for new provider, got "${elementMap.chipModelLabel.textContent}"`);
+    return;
+  }
+  const modelValues = elementMap.chipModelSelect.children.map((child) => child.value);
+  if (modelValues.includes('gpt-5') || !modelValues.includes('claude-sonnet')) {
+    fail(name, `expected pending model options to use new provider fallback, got ${JSON.stringify(modelValues)}`);
+    return;
+  }
+  pass(name);
+}
+
+async function testStaleProviderModelFetchDoesNotOverwriteNewerSelection() {
+  const name = 'stale provider model fetch does not overwrite newer selection';
+  const pending = [];
+  const { app, elementMap } = loadCoreAndStream({
+    window: {
+      fetch: (url) => new Promise((resolve) => {
+        pending.push({
+          url: String(url),
+          resolveModels(models) {
+            resolve({
+              ok: true,
+              status: 200,
+              headers: { get: () => null },
+              json: async () => ({ data: models.map((id) => ({ id })) }),
+              text: async () => '',
+            });
+          },
+        });
+      }),
+    },
+  });
+  app.state.providers = [
+    { name: 'anthropic', is_default: false, default_model: '', models: ['claude-fallback'] },
+    { name: 'gemini', is_default: false, default_model: '', models: ['gemini-fallback'] },
+  ];
+  app.updateHeader = () => {};
+
+  const listeners = elementMap.chipProviderSelect.listeners?.change || [];
+  if (listeners.length === 0) {
+    fail(name, 'chipProviderSelect has no change listener wired');
+    return;
+  }
+
+  elementMap.chipProviderSelect.value = 'anthropic';
+  listeners[0]({ type: 'change' });
+  elementMap.chipProviderSelect.value = 'gemini';
+  listeners[0]({ type: 'change' });
+
+  if (pending.length !== 2) {
+    fail(name, `expected 2 pending model fetches, got ${pending.length}`);
+    return;
+  }
+
+  pending[0].resolveModels(['claude-late']);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  if (app.state.selectedProvider !== 'gemini') {
+    fail(name, `selectedProvider = ${JSON.stringify(app.state.selectedProvider)}, want gemini`);
+    return;
+  }
+  if (app.state.models.includes('claude-late')) {
+    fail(name, `stale anthropic models overwrote newer selection: ${JSON.stringify(app.state.models)}`);
+    return;
+  }
+  if (!app.state.models.includes('gemini-fallback')) {
+    fail(name, `expected gemini fallback models while latest fetch is pending, got ${JSON.stringify(app.state.models)}`);
+    return;
+  }
+
+  pending[1].resolveModels(['gemini-fresh']);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  if (JSON.stringify(app.state.models) !== JSON.stringify(['gemini-fresh'])) {
+    fail(name, `expected fresh gemini models, got ${JSON.stringify(app.state.models)}`);
+    return;
+  }
+  pass(name);
+}
 function testPopoverItemSelectionDispatchesChangeAndCloses() {
   const name = 'popover item click sets select value, dispatches change, and closes the popover';
   const { app, elementMap } = loadCoreAndStream();
@@ -568,21 +731,29 @@ function testMobilePopoverUsesVisualViewportSafeBounds() {
   }
   pass(name);
 }
+async function main() {
+  testSplitHeaderModelEffortDetectsKnownEffortSuffix();
+  testUpdateSessionUsageDisplayUsesProviderDefaultModel();
+  testUpdateSessionUsageDisplayFallsBackToFirstModelWithoutDefault();
+  testChipLockAllowsIdleSessionAndLocksBusyState();
+  testUpdateSessionUsageDisplayUsesSelectedRuntimeForIdleSession();
+  testProviderChipChangeUpdatesHeaderBeforeModelsFetchCompletes();
+  await testStaleProviderModelFetchDoesNotOverwriteNewerSelection();
+  testPopoverItemSelectionDispatchesChangeAndCloses();
+  testPopoverHidesFilterInputBelowThreshold();
+  testPopoverShowsFilterInputAboveThreshold();
+  testFilterInputHidesNonMatchingItems();
+  testMobilePopoverUsesVisualViewportSafeBounds();
 
-
-testSplitHeaderModelEffortDetectsKnownEffortSuffix();
-testUpdateSessionUsageDisplayUsesProviderDefaultModel();
-testUpdateSessionUsageDisplayFallsBackToFirstModelWithoutDefault();
-testChipLockAllowsIdleSessionAndLocksBusyState();
-testPopoverItemSelectionDispatchesChangeAndCloses();
-testPopoverHidesFilterInputBelowThreshold();
-testPopoverShowsFilterInputAboveThreshold();
-testFilterInputHidesNonMatchingItems();
-testMobilePopoverUsesVisualViewportSafeBounds();
-
-if (failures > 0) {
-  console.error(`\n${failures} test(s) failed`);
-  process.exit(1);
+  if (failures > 0) {
+    console.error(`\n${failures} test(s) failed`);
+    process.exit(1);
+  }
+  console.log('\nAll tests passed');
+  process.exit(0);
 }
-console.log('\nAll tests passed');
-process.exit(0);
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

@@ -2087,7 +2087,10 @@ const renderProviderOptions = () => {
   populateProviderSelectOptions(elements.chipProviderSelect, state.providers, previous);
 };
 
+let providerChangeSequence = 0;
+
 const applyProviderChange = async (provider) => {
+  const changeSequence = ++providerChangeSequence;
   state.selectedProvider = provider;
   if (provider) {
     localStorage.setItem(STORAGE_KEYS.selectedProvider, provider);
@@ -2096,12 +2099,29 @@ const applyProviderChange = async (provider) => {
   }
   state.selectedModel = '';
   localStorage.removeItem(STORAGE_KEYS.selectedModel);
+
+  const providerInfo = state.providers.find((p) => p.name === provider);
+  state.models = providerInfo?.models?.length ? providerInfo.models : [];
+  renderModelOptions();
+
+  // Reflect the clicked provider immediately. Fetching the model list can be
+  // slow, and the header chip should not keep showing the previous provider
+  // while that async refresh is in flight. Rendering the provider's configured
+  // model fallback (or an empty list) also avoids briefly exposing stale models
+  // from the previously selected provider.
+  syncSettingsSelectValues();
+  app.updateHeader();
+
+  let models;
   try {
-    state.models = await fetchModels('', provider);
+    models = await fetchModels('', provider);
   } catch {
-    const providerInfo = state.providers.find((p) => p.name === provider);
-    state.models = providerInfo?.models?.length ? providerInfo.models : [];
+    models = providerInfo?.models?.length ? providerInfo.models : [];
   }
+  if (changeSequence !== providerChangeSequence || state.selectedProvider !== provider) {
+    return;
+  }
+  state.models = models;
   renderModelOptions();
   syncSettingsSelectValues();
   app.updateHeader();

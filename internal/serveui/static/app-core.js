@@ -587,9 +587,24 @@ const updateSessionUsageDisplay = (session) => {
   const el = elements?.headerStats;
   if (!el) return;
   const lu = session?.lastUsage;
-  const model = session?.activeModel || state.selectedModel || '';
-  const provider = session?.provider || state.selectedProvider || '';
-  const effort = session?.activeEffort || state.selectedEffort || '';
+
+  // Lock the chips only while a response or modal interaction is active. Idle
+  // sessions may request an explicit mid-conversation model swap.
+  const locked = Boolean(
+    state.streaming
+    || session?.activeResponseId
+    || state.askUser
+    || state.approval
+    || sessionHasInProgressState(session)
+  );
+
+  // While idle, the chips are an editable target runtime for the next turn, so
+  // display the user's current selection immediately even if the active session
+  // was last answered by another provider/model. During an in-flight response we
+  // show the server-confirmed runtime and lock the controls.
+  const model = locked ? (session?.activeModel || state.selectedModel || '') : (state.selectedModel || '');
+  const provider = locked ? (session?.provider || state.selectedProvider || '') : (state.selectedProvider || '');
+  const effort = locked ? (session?.activeEffort || state.selectedEffort || '') : (state.selectedEffort || '');
   const headerModelEffort = splitHeaderModelEffort(model, effort);
 
   const defaultProvider = getDefaultProviderName();
@@ -627,15 +642,6 @@ const updateSessionUsageDisplay = (session) => {
   setChipSelectValue(elements.chipModelSelect, state.selectedModel || '');
   setChipSelectValue(elements.chipEffortSelect, state.selectedEffort || '');
 
-  // Lock the chips only while a response or modal interaction is active. Idle
-  // sessions may request an explicit mid-conversation model swap.
-  const locked = Boolean(
-    state.streaming
-    || session?.activeResponseId
-    || state.askUser
-    || state.approval
-    || sessionHasInProgressState(session)
-  );
   const lockTitle = locked ? 'Cannot switch while a response is running' : '';
   [
     elements.chipProviderTrigger,
