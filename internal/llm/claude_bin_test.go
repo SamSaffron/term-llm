@@ -131,6 +131,27 @@ func TestClaudeBinProvider_CleanupTurn_DoesNotStopMCPServer(t *testing.T) {
 	}
 }
 
+func TestClaudeBinProvider_prepareClaudeCommand_ConfiguresProcessGroupAndWaitDelay(t *testing.T) {
+	provider := NewClaudeBinProvider("sonnet", nil)
+
+	cmd, stdin, cleanup, err := provider.prepareClaudeCommand(context.Background(), []string{"--version"}, "")
+	if err != nil {
+		t.Fatalf("prepareClaudeCommand failed: %v", err)
+	}
+	defer cleanup()
+	defer stdin.Close()
+
+	if cmd.WaitDelay != claudeCommandWaitDelay {
+		t.Fatalf("WaitDelay = %v, want %v", cmd.WaitDelay, claudeCommandWaitDelay)
+	}
+	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setpgid {
+		t.Fatal("expected claude subprocess to run in its own process group")
+	}
+	if cmd.Cancel == nil {
+		t.Fatal("expected claude subprocess to install process-group cancellation")
+	}
+}
+
 func TestSafeSendEvent_ClosedChannel(t *testing.T) {
 	// Test that safeSendEvent doesn't panic on closed channel
 	ch := make(chan Event)
