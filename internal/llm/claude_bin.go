@@ -776,6 +776,12 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		toolReqCh: make(chan claudeToolRequest, 64),
 		done:      make(chan struct{}),
 	}
+	var bridgeDoneOnce sync.Once
+	stopScanner := func() {
+		bridgeDoneOnce.Do(func() {
+			close(bridge.done)
+		})
+	}
 	p.eventsMu.Lock()
 	p.currentBridge = bridge
 	p.currentEvents = send.ch
@@ -787,7 +793,7 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 			p.currentEvents = nil
 		}
 		p.eventsMu.Unlock()
-		close(bridge.done)
+		stopScanner()
 	}()
 
 	// Capture stderr in a bounded ring buffer so we can include a tail
@@ -850,6 +856,10 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 
 	lastUsage, toolsExecuted, handledTerminalResult, err := p.dispatchClaudeEvents(ctx, lineCh, bridge.toolReqCh, debug, send)
 	if err != nil {
+		// Unblock the stdout scanner before waiting on scanErrCh. If the
+		// downstream event consumer stopped reading, the scanner may be stuck
+		// trying to send into a full lineCh after dispatch returns early.
+		stopScanner()
 		// Kill the process if dispatch failed (e.g., context cancelled)
 		// to avoid orphan processes.
 		cmd.Process.Kill()
