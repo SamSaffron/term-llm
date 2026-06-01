@@ -230,6 +230,7 @@ func seedRuntimeHistory(rt *serveRuntime, history []llm.Message) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	rt.history = copyLLMMessageSlice(history)
+	rt.historyPersisted = false
 	rt.cumulativeUsage = llm.Usage{}
 	rt.lastInjectedPlatform = ""
 	if rt.engine != nil {
@@ -385,6 +386,7 @@ func appendRuntimeHistoryEvent(rt *serveRuntime, msg llm.Message) {
 	}
 	rt.mu.Lock()
 	rt.history = append(rt.history, msg)
+	rt.historyPersisted = false
 	rt.mu.Unlock()
 }
 
@@ -394,6 +396,7 @@ func setRuntimeHistoryPreserveEngine(rt *serveRuntime, history []llm.Message) {
 	}
 	rt.mu.Lock()
 	rt.history = copyLLMMessageSlice(history)
+	rt.historyPersisted = false
 	rt.mu.Unlock()
 }
 

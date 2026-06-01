@@ -91,7 +91,7 @@ func (p *serveRuntimeTestProvider) Capabilities() llm.Capabilities {
 
 func (p *serveRuntimeTestProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	var events []llm.Event
-	switch p.calls {
+	switch p.calls % 2 {
 	case 0:
 		events = []llm.Event{
 			{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "call-1", Name: "serve_runtime_test_tool", Arguments: json.RawMessage(`{}`)}},
@@ -102,8 +102,6 @@ func (p *serveRuntimeTestProvider) Stream(ctx context.Context, req llm.Request) 
 			{Type: llm.EventTextDelta, Text: "done"},
 			{Type: llm.EventDone},
 		}
-	default:
-		return nil, errors.New("unexpected provider call")
 	}
 	p.calls++
 	return &serveRuntimeTestStream{events: events}, nil
@@ -743,6 +741,143 @@ func TestServeRuntimeSuccessfulRunSkipsFinalSnapshotRewrite(t *testing.T) {
 	}
 	if len(msgs) != 6 {
 		t.Fatalf("stored message count = %d, want 6", len(msgs))
+	}
+	if msgs[5].Role != llm.RoleAssistant || msgs[5].TextContent != "done" {
+		t.Fatalf("message[5] = %+v, want final assistant message", msgs[5])
+	}
+}
+
+func TestServeRuntimeLaterTurnsStayAppendOnlyOnceHistoryPersisted(t *testing.T) {
+	store := newServeRuntimeTestStore()
+	provider := &serveRuntimeTestProvider{}
+	tool := &serveRuntimeTestTool{}
+	registry := llm.NewToolRegistry()
+	registry.Register(tool)
+	engine := llm.NewEngine(provider, registry)
+
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  provider.Name(),
+		engine:       engine,
+		store:        store,
+		defaultModel: "test-model",
+		history: []llm.Message{
+			serveRuntimeTextMessage(llm.RoleUser, "previous user"),
+			serveRuntimeTextMessage(llm.RoleAssistant, "previous assistant"),
+		},
+	}
+
+	for i, userText := range []string{"current user", "second user"} {
+		result, err := rt.Run(context.Background(), true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, userText)}, llm.Request{
+			SessionID:   "sess-append-next-turn",
+			Tools:       []llm.ToolSpec{tool.Spec()},
+			ToolChoice:  llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+			MaxTurns:    4,
+			Search:      false,
+			Debug:       false,
+			DebugRaw:    false,
+			Temperature: 0,
+		})
+		if err != nil {
+			t.Fatalf("Run(%d) error = %v", i+1, err)
+		}
+		if got := result.Text.String(); got != "done" {
+			t.Fatalf("Run(%d) result text = %q, want %q", i+1, got, "done")
+		}
+	}
+
+	if store.replaceCalls != 1 {
+		t.Fatalf("ReplaceMessages call count = %d, want 1 across both turns", store.replaceCalls)
+	}
+	if !rt.historyPersisted {
+		t.Fatal("runtime history should remain marked as fully persisted after second turn")
+	}
+
+	msgs, err := store.GetMessages(context.Background(), "sess-append-next-turn", 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages() error = %v", err)
+	}
+	if len(msgs) != 10 {
+		t.Fatalf("stored message count = %d, want 10", len(msgs))
+	}
+	if msgs[6].Role != llm.RoleUser || msgs[6].TextContent != "second user" {
+		t.Fatalf("message[6] = %+v, want second user message", msgs[6])
+	}
+	if msgs[9].Role != llm.RoleAssistant || msgs[9].TextContent != "done" {
+		t.Fatalf("message[9] = %+v, want final assistant message", msgs[9])
+	}
+}
+
+func TestServeRuntimeAppendOnlyTurnFallsBackToSnapshotAfterAssistantUpdateFailure(t *testing.T) {
+	store := newServeRuntimeTestStore()
+	sess := &session.Session{ID: "sess-append-reconcile", Status: session.StatusActive}
+	if err := store.Create(context.Background(), sess); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	seeded := []llm.Message{
+		serveRuntimeTextMessage(llm.RoleUser, "previous user"),
+		serveRuntimeTextMessage(llm.RoleAssistant, "previous assistant"),
+	}
+	seededMessages := make([]session.Message, 0, len(seeded))
+	for _, msg := range seeded {
+		seededMessages = append(seededMessages, *session.NewMessage(sess.ID, msg, -1))
+	}
+	if err := store.ReplaceMessages(context.Background(), sess.ID, seededMessages); err != nil {
+		t.Fatalf("ReplaceMessages() error = %v", err)
+	}
+	store.replaceCalls = 0
+	store.updateFailures[1] = errors.New("transient update failure")
+
+	provider := &serveRuntimeTestProvider{}
+	tool := &serveRuntimeTestTool{}
+	registry := llm.NewToolRegistry()
+	registry.Register(tool)
+	engine := llm.NewEngine(provider, registry)
+
+	rt := &serveRuntime{
+		provider:         provider,
+		providerKey:      provider.Name(),
+		engine:           engine,
+		store:            store,
+		sessionMeta:      sess,
+		defaultModel:     "test-model",
+		history:          seeded,
+		historyPersisted: true,
+	}
+
+	result, err := rt.Run(context.Background(), true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "current user")}, llm.Request{
+		SessionID:   sess.ID,
+		Tools:       []llm.ToolSpec{tool.Spec()},
+		ToolChoice:  llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+		MaxTurns:    4,
+		Search:      false,
+		Debug:       false,
+		DebugRaw:    false,
+		Temperature: 0,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if got := result.Text.String(); got != "done" {
+		t.Fatalf("result text = %q, want %q", got, "done")
+	}
+
+	if store.replaceCalls != 1 {
+		t.Fatalf("ReplaceMessages call count = %d, want 1 reconciliation snapshot only", store.replaceCalls)
+	}
+	if !rt.historyPersisted {
+		t.Fatal("runtime history should be marked fully persisted after reconciliation snapshot")
+	}
+
+	msgs, err := store.GetMessages(context.Background(), sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages() error = %v", err)
+	}
+	if len(msgs) != 6 {
+		t.Fatalf("stored message count = %d, want 6", len(msgs))
+	}
+	if msgs[3].Role != llm.RoleAssistant || len(msgs[3].Parts) == 0 || msgs[3].Parts[0].ToolCall == nil {
+		t.Fatalf("message[3] = %+v, want assistant tool-call message", msgs[3])
 	}
 	if msgs[5].Role != llm.RoleAssistant || msgs[5].TextContent != "done" {
 		t.Fatalf("message[5] = %+v, want final assistant message", msgs[5])

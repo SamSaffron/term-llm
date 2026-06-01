@@ -34,6 +34,7 @@ type serveRuntime struct {
 	store                session.Store
 	systemPrompt         string
 	history              []llm.Message
+	historyPersisted     bool // history matches the persisted active transcript and can safely append next turn
 	search               bool
 	toolsSetting         string
 	mcpSetting           string
@@ -289,12 +290,13 @@ func (rt *serveRuntime) ensurePersistedSession(ctx context.Context, sessionID st
 	if existing, err := rt.store.Get(ctx, sessionID); err == nil && existing != nil {
 		rt.sessionMeta = existing
 		if len(rt.history) == 0 {
-			if msgs, loadErr := session.LoadActiveMessages(ctx, rt.store, existing); loadErr == nil && len(msgs) > 0 {
+			if msgs, loadErr := session.LoadActiveMessages(ctx, rt.store, existing); loadErr == nil {
 				llmMsgs := make([]llm.Message, 0, len(msgs))
 				for _, m := range msgs {
 					llmMsgs = append(llmMsgs, m.ToLLMMessage())
 				}
 				rt.history = llmMsgs
+				rt.historyPersisted = true
 			}
 		}
 		return true
@@ -347,13 +349,13 @@ func (rt *serveRuntime) ensurePersistedSession(ctx context.Context, sessionID st
 		}
 		rt.sessionMeta = existing
 		if len(rt.history) == 0 {
-			msgs, loadErr := session.LoadActiveMessages(ctx, rt.store, existing)
-			if loadErr == nil && len(msgs) > 0 {
+			if msgs, loadErr := session.LoadActiveMessages(ctx, rt.store, existing); loadErr == nil {
 				llmMsgs := make([]llm.Message, 0, len(msgs))
 				for _, m := range msgs {
 					llmMsgs = append(llmMsgs, m.ToLLMMessage())
 				}
 				rt.history = llmMsgs
+				rt.historyPersisted = true
 			}
 		}
 		if setErr := rt.store.SetCurrent(ctx, sessionID); setErr != nil {
@@ -594,6 +596,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	if !stateful {
 		rt.engine.ResetConversation()
 		rt.history = nil
+		rt.historyPersisted = false
 	}
 
 	baseHistory := make([]llm.Message, len(rt.history))
@@ -601,12 +604,14 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	replaceHistoryBackup := baseHistory
 	replaceUsageBackup := rt.cumulativeUsage
 	replacePlatformBackup := rt.lastInjectedPlatform
+	replacePersistedBackup := rt.historyPersisted
 	if replaceHistory {
 		baseHistory = nil
 		rt.history = nil
 		rt.engine.ResetConversation()
 		rt.cumulativeUsage = llm.Usage{}
 		rt.lastInjectedPlatform = ""
+		rt.historyPersisted = false
 	}
 	turnIndex := countUserMessages(baseHistory)
 
@@ -683,14 +688,15 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		snapshot := buildSnapshotLocked()
 		if stateful {
 			rt.history = snapshot
+			rt.historyPersisted = false
 		}
 		if persisted {
-			rt.persistSnapshot(persistCtx, req.SessionID, snapshot)
+			rt.historyPersisted = rt.persistSnapshot(persistCtx, req.SessionID, snapshot)
 		}
 		persistPlatformInjectionLocked()
 	}
 
-	appendOnlyPersisted := persisted && !replaceHistory && rt.sessionMeta != nil && session.HasCompactionBoundary(rt.sessionMeta)
+	appendOnlyPersisted := persisted && !replaceHistory && rt.historyPersisted
 	initialPersisted := false
 	initialMessages := make([]llm.Message, 0, len(inputMessages)+1)
 	if systemPromptInjected {
@@ -698,6 +704,14 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	}
 	initialMessages = append(initialMessages, inputMessages...)
 	initialAppendedIdx := 0
+	appendOnlyCaughtUpLocked := func() bool {
+		return appendOnlyPersisted &&
+			initialPersisted &&
+			initialAppendedIdx >= len(initialMessages) &&
+			lastAppendedIdx >= len(produced) &&
+			!assistantSnapshotDirty &&
+			!assistantSnapshotNeedsReconcile
+	}
 	appendInitialInputLocked := func(persistCtx context.Context) bool {
 		if !appendOnlyPersisted || initialAppendedIdx >= len(initialMessages) {
 			initialPersisted = true
@@ -706,6 +720,8 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		written := rt.appendMessages(persistCtx, req.SessionID, initialMessages[initialAppendedIdx:], turnIndex)
 		initialAppendedIdx += written
 		if initialAppendedIdx < len(initialMessages) {
+			appendOnlyPersisted = false
+			rt.historyPersisted = false
 			return false
 		}
 		initialPersisted = true
@@ -720,6 +736,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	updateStateAndAppendLocked := func(persistCtx context.Context) {
 		if stateful {
 			rt.history = buildSnapshotLocked()
+			rt.historyPersisted = false
 		}
 		if persisted {
 			if appendOnlyPersisted {
@@ -730,6 +747,10 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 				if lastAppendedIdx < len(produced) {
 					written := rt.appendMessages(persistCtx, req.SessionID, produced[lastAppendedIdx:], turnIndex)
 					lastAppendedIdx += written
+					if lastAppendedIdx < len(produced) {
+						appendOnlyPersisted = false
+						rt.historyPersisted = false
+					}
 				}
 				persistPlatformInjectionLocked()
 				return
@@ -800,6 +821,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		assistantSnapshotNeedsReconcile = false
 		if stateful {
 			rt.history = append([]llm.Message(nil), compacted...)
+			rt.historyPersisted = persisted
 		}
 		rt.engine.SetContextEstimateBaseline(0, 0)
 		persistPlatformInjectionLocked()
@@ -821,6 +843,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		assistantSnapshotDirty = true
 		if stateful {
 			rt.history = buildSnapshotLocked()
+			rt.historyPersisted = false
 		}
 		if !persisted {
 			persistPlatformInjectionLocked()
@@ -858,6 +881,8 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 			}
 			if !errors.Is(err, session.ErrNotFound) {
 				assistantSnapshotNeedsReconcile = true
+				appendOnlyPersisted = false
+				rt.historyPersisted = false
 				log.Printf("[serve] session UpdateMessage failed for %s: %v", req.SessionID, err)
 				persistPlatformInjectionLocked()
 				return
@@ -869,6 +894,8 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		}
 		if err := rt.store.AddMessage(dbCtx, req.SessionID, sessionMsg); err != nil {
 			assistantSnapshotNeedsReconcile = true
+			appendOnlyPersisted = false
+			rt.historyPersisted = false
 			log.Printf("[serve] session AddMessage failed for %s: %v", req.SessionID, err)
 			persistPlatformInjectionLocked()
 			return
@@ -938,6 +965,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 				rt.history = replaceHistoryBackup
 				rt.cumulativeUsage = replaceUsageBackup
 				rt.lastInjectedPlatform = replacePlatformBackup
+				rt.historyPersisted = replacePersistedBackup
 			}
 			return
 		}
@@ -952,6 +980,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 				rt.history = replaceHistoryBackup
 				rt.cumulativeUsage = replaceUsageBackup
 				rt.lastInjectedPlatform = replacePlatformBackup
+				rt.historyPersisted = replacePersistedBackup
 			}
 			return
 		}
@@ -960,8 +989,12 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		if appendOnlyPersisted {
 			producedMu.Lock()
 			updateStateAndAppendLocked(deferCtx)
+			caughtUp := appendOnlyCaughtUpLocked()
 			producedMu.Unlock()
-			return
+			if caughtUp {
+				rt.historyPersisted = true
+				return
+			}
 		}
 		persistProducedSnapshot(deferCtx)
 	}()
@@ -1051,6 +1084,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	}
 	if stateful {
 		rt.history = newHistory
+		rt.historyPersisted = false
 	}
 	needFinalSnapshot = false
 	if persisted {
@@ -1059,6 +1093,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 				upsertPendingAssistantLocked(ctx, produced[pendingAssistantIdx])
 			}
 			updateStateAndAppendLocked(ctx)
+			needFinalSnapshot = !appendOnlyCaughtUpLocked()
 		} else {
 			needFinalSnapshot = !initialPersisted || lastAppendedIdx < len(produced) || assistantSnapshotDirty || assistantSnapshotNeedsReconcile || synthesizedAssistant
 		}
@@ -1066,7 +1101,9 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	persistPlatformInjectionLocked()
 	producedMu.Unlock()
 	if needFinalSnapshot {
-		rt.persistSnapshot(ctx, req.SessionID, newHistory)
+		rt.historyPersisted = rt.persistSnapshot(ctx, req.SessionID, newHistory)
+	} else if persisted {
+		rt.historyPersisted = true
 	}
 
 	return result, nil
