@@ -66,6 +66,7 @@ type Session struct {
 	Origin          SessionOrigin `json:"origin,omitempty"`           // Session surface/origin (tui, web, telegram)
 	Agent           string        `json:"agent,omitempty"`            // Agent name used for this session
 	CWD             string        `json:"cwd,omitempty"`              // Working directory at session start
+	WorktreeDir     string        `json:"worktree_dir,omitempty"`     // Bound git worktree dir (absolute); empty = root checkout
 	CreatedAt       time.Time     `json:"created_at"`
 	UpdatedAt       time.Time     `json:"updated_at"`
 	Archived        bool          `json:"archived,omitempty"`

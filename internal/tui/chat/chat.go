@@ -29,6 +29,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/tui/inspector"
 	sessionsui "github.com/samsaffron/term-llm/internal/tui/sessions"
 	"github.com/samsaffron/term-llm/internal/ui"
+	"github.com/samsaffron/term-llm/internal/worktree"
 	"golang.org/x/term"
 )
 
@@ -335,6 +336,24 @@ type Model struct {
 	footerMessageTone string   // "", "muted", "success", "warning", or "error"
 	footerMessageSeq  uint64   // monotonically increasing footer message timer token
 
+	// Worktree footer indicator cache. worktreeFooterSegment() shells out to git,
+	// so the status line (rendered every frame) reads this cached string and the
+	// cache is recomputed at most once per worktreeSegmentTTL. Empty when the
+	// session is on the root checkout (the common case → zero git calls).
+	worktreeSegCache   string
+	worktreeSegFetched time.Time
+
+	// Worktree create/remove operation state. worktreeBusy gates concurrent ops
+	// and keeps the spinner ticking; worktreeOpSeq tags the in-flight operation
+	// so stale progress/done messages are ignored; worktreeProgress is the live
+	// status text shown in the footer while busy.
+	worktreeBusy     bool
+	worktreeProgress string
+	worktreeOpSeq    uint64
+	// worktreeDeleteTarget arms the switcher's two-press delete: it holds the ID
+	// of the row a first "d" selected; a second "d" on the same row confirms.
+	worktreeDeleteTarget string
+
 	attemptInput          int
 	attemptOutput         int
 	attemptCached         int
@@ -384,6 +403,24 @@ type (
 	handoverCancelMsg     struct{}
 	handoverRenameDoneMsg struct{ err error }
 	mcpStatusUpdateMsg    struct{ update mcp.StatusUpdate }
+	worktreeProgressMsg   struct {
+		op       uint64
+		progress <-chan worktree.Progress
+		message  string
+		done     bool
+	}
+	worktreeCreateDoneMsg struct {
+		op  uint64
+		wt  *worktree.Worktree
+		err error
+	}
+	worktreeRemoveDoneMsg struct {
+		op   uint64
+		dir  string // worktree that was removed
+		root string // main checkout, resolved before removal, for rebinding
+		err  error
+	}
+	worktreeShellDoneMsg struct{ err error }
 )
 
 const (
@@ -1052,6 +1089,10 @@ func (m *Model) rootContext() context.Context {
 
 // Init initializes the model
 func (m *Model) Init() tea.Cmd {
+	// Re-enter the bound git worktree for a resumed session (no-op on root or
+	// when the bound dir is gone, in which case the session falls back to root).
+	m.RestoreWorktreeBinding()
+
 	// Update textarea height for any initial text
 	m.updateTextareaHeight()
 
@@ -1262,7 +1303,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
-		if m.streaming && !m.pausedForExternalUI {
+		if (m.streaming || m.worktreeBusy) && !m.pausedForExternalUI {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			cmds = append(cmds, cmd)
@@ -1301,6 +1342,72 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case mcpStatusUpdateMsg:
 		m.refreshMCPPickerIfOpen()
 		cmds = append(cmds, m.listenForMCPStatusUpdates())
+
+	case worktreeProgressMsg:
+		// Ignore progress from a superseded operation.
+		if !m.worktreeBusy || msg.op != m.worktreeOpSeq {
+			return m, nil
+		}
+		if !msg.done {
+			message := strings.TrimSpace(msg.message)
+			if message == "" {
+				message = "working"
+			}
+			m.worktreeProgress = "Creating worktree: " + message
+			cmds = append(cmds, waitForWorktreeProgress(msg.op, msg.progress))
+		}
+
+	case worktreeCreateDoneMsg:
+		if msg.op != m.worktreeOpSeq {
+			return m, nil
+		}
+		m.worktreeBusy = false
+		m.worktreeProgress = ""
+		if msg.err != nil {
+			return m.showFooterError(fmt.Sprintf("Worktree create failed: %v", msg.err))
+		}
+		if msg.wt == nil {
+			return m.showFooterError("Worktree create failed: no worktree returned")
+		}
+		// Bind via the chdir model (single-session TUI); see bindWorktree.
+		if err := m.bindWorktree(msg.wt.Dir); err != nil {
+			return m.showFooterError(fmt.Sprintf("Created %s but failed to switch: %v", msg.wt.Name, err))
+		}
+		return m.showFooterSuccess(fmt.Sprintf("Created and switched to worktree %s.", msg.wt.Name))
+
+	case worktreeRemoveDoneMsg:
+		if msg.op != m.worktreeOpSeq {
+			return m, nil
+		}
+		m.worktreeBusy = false
+		m.worktreeProgress = ""
+		if msg.err != nil {
+			return m.showFooterError(fmt.Sprintf("Worktree remove failed: %v", msg.err))
+		}
+		// If the removed worktree was the bound one, rebind to the root checkout
+		// (the chdir model: msg.root was resolved before removal).
+		if m.sess != nil && pathsEqual(m.sess.WorktreeDir, msg.dir) {
+			if msg.root != "" {
+				_ = m.bindRoot(msg.root)
+			} else {
+				m.sess.WorktreeDir = ""
+				if m.store != nil {
+					_ = m.store.Update(context.Background(), m.sess)
+				}
+				m.invalidateWorktreeSegment()
+			}
+			return m.showFooterSuccess("Removed worktree; back on the root checkout.")
+		}
+		m.invalidateWorktreeSegment()
+		return m.showFooterSuccess("Worktree removed.")
+
+	case worktreeShellDoneMsg:
+		// The shell may have changed files; refresh the footer segment.
+		m.invalidateWorktreeSegment()
+		if msg.err != nil {
+			return m.showFooterError(fmt.Sprintf("Worktree shell failed: %v", msg.err))
+		}
+		return m.showFooterMuted("Returned from worktree shell.")
 
 	case interruptClassifiedMsg:
 		return m.handleInterruptClassified(msg)

@@ -33,6 +33,7 @@ type SQLiteStore struct {
 	hasLastMessageCount  bool // true if sessions table has last_message_count column
 	hasMessageCount      bool // true if sessions table has message_count column
 	hasReasoningEffort   bool // true if sessions table has reasoning_effort column
+	hasWorktreeDir       bool // true if sessions table has worktree_dir column
 }
 
 // Schema for the sessions database.
@@ -56,6 +57,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     origin TEXT DEFAULT 'tui',
     agent TEXT,
     cwd TEXT,
+    worktree_dir TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_message_at TIMESTAMP,
@@ -218,7 +220,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 25
+const schemaVersion = 26
 
 // migration represents a schema migration.
 type migration struct {
@@ -766,6 +768,18 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		// Migration 26: bind a session to a git worktree directory
+		version:     26,
+		description: "add worktree_dir column",
+		up: func(db *sql.DB) error {
+			_, err := db.Exec("ALTER TABLE sessions ADD COLUMN worktree_dir TEXT")
+			if err != nil && !isDuplicateColumnError(err) {
+				return fmt.Errorf("add worktree_dir column: %w", err)
+			}
+			return nil
+		},
+	},
 }
 
 func createMessageCountTriggers(db *sql.DB) error {
@@ -1021,6 +1035,14 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 			reasoningEffortPlaceholder = ", ?"
 			reasoningEffortArgs = []any{nullString(sess.ReasoningEffort)}
 		}
+		worktreeDirCol := ""
+		worktreeDirPlaceholder := ""
+		var worktreeDirArgs []any
+		if s.hasWorktreeDir {
+			worktreeDirCol = ", worktree_dir"
+			worktreeDirPlaceholder = ", ?"
+			worktreeDirArgs = []any{nullString(sess.WorktreeDir)}
+		}
 		insertArgs := []any{
 			sess.ID, sess.Name, sess.Summary, nullString(sess.GeneratedShortTitle), nullString(sess.GeneratedLongTitle), nullString(string(sess.TitleSource)), nullTime(sess.TitleGeneratedAt), sess.TitleBasisMsgSeq, nullTime(sess.TitleSkippedAt),
 			sess.Provider, nullString(sess.ProviderKey), sess.Model, string(sess.Mode), nullString(string(sess.Origin)), nullString(sess.Agent), sess.CWD,
@@ -1030,12 +1052,13 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 			sess.LastTotalTokens, sess.LastMessageCount, string(sess.Status), nullString(sess.Tags),
 		}
 		insertArgs = append(insertArgs, reasoningEffortArgs...)
+		insertArgs = append(insertArgs, worktreeDirArgs...)
 		result, err := s.db.ExecContext(ctx, `
 			INSERT INTO sessions (id, number, name, summary, generated_short_title, generated_long_title, title_source, title_generated_at, title_basis_msg_seq, title_skipped_at,
 			                      provider, provider_key, model, mode, origin, agent, cwd, created_at, updated_at, archived, pinned, parent_id, search, tools, mcp,
 			                      user_turns, llm_turns, tool_calls, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens,
-			                      last_total_tokens, last_message_count, status, tags`+reasoningEffortCol+`)
-			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+reasoningEffortPlaceholder+`)`,
+			                      last_total_tokens, last_message_count, status, tags`+reasoningEffortCol+worktreeDirCol+`)
+			VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM sessions), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`+reasoningEffortPlaceholder+worktreeDirPlaceholder+`)`,
 			insertArgs...)
 		if err != nil {
 			return fmt.Errorf("insert session: %w", err)
@@ -1064,14 +1087,14 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 func (s *SQLiteStore) Get(ctx context.Context, id string) (*Session, error) {
 	row := s.db.QueryRowContext(ctx,
 		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE id = ?", id)
-	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasCompactionCount, s.hasTitleSkippedAt, s.hasLastTotalTokens, s.hasLastMessageCount)
+	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasCompactionCount, s.hasTitleSkippedAt, s.hasLastTotalTokens, s.hasLastMessageCount, s.hasWorktreeDir)
 }
 
 // GetByNumber retrieves a session by its sequential number.
 func (s *SQLiteStore) GetByNumber(ctx context.Context, number int64) (*Session, error) {
 	row := s.db.QueryRowContext(ctx,
 		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE number = ?", number)
-	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasCompactionCount, s.hasTitleSkippedAt, s.hasLastTotalTokens, s.hasLastMessageCount)
+	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasCompactionCount, s.hasTitleSkippedAt, s.hasLastTotalTokens, s.hasLastMessageCount, s.hasWorktreeDir)
 }
 
 // GetByPrefix retrieves a session by number (with # prefix), exact ID, or by short ID prefix match.
@@ -1118,7 +1141,7 @@ func (s *SQLiteStore) GetByPrefix(ctx context.Context, prefix string) (*Session,
 	pattern := ExpandShortID(prefix)
 	row := s.db.QueryRowContext(ctx,
 		"SELECT "+s.sessionSelectCols()+" FROM sessions WHERE id LIKE ? ORDER BY created_at DESC LIMIT 1", pattern)
-	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasCompactionCount, s.hasTitleSkippedAt, s.hasLastTotalTokens, s.hasLastMessageCount)
+	return scanSessionRow(row, s.hasGeneratedTitles, s.hasCacheWriteTokens, s.hasCompactionSeq, s.hasCompactionCount, s.hasTitleSkippedAt, s.hasLastTotalTokens, s.hasLastMessageCount, s.hasWorktreeDir)
 }
 
 // Update modifies an existing session's metadata fields.
@@ -1140,10 +1163,14 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	if s.hasReasoningEffort {
 		reasoningEffortClause = ", reasoning_effort = ?"
 	}
+	worktreeDirClause := ""
+	if s.hasWorktreeDir {
+		worktreeDirClause = ", worktree_dir = ?"
+	}
 	query := `
 		UPDATE sessions SET name = ?, summary = ?, generated_short_title = ?, generated_long_title = ?, title_source = ?, title_generated_at = ?, title_basis_msg_seq = ?` +
 		titleSkippedAtClause + `,
-		       provider = ?, provider_key = ?, model = ?` + reasoningEffortClause + `, mode = ?, origin = ?, agent = ?, cwd = ?,
+		       provider = ?, provider_key = ?, model = ?` + reasoningEffortClause + `, mode = ?, origin = ?, agent = ?, cwd = ?` + worktreeDirClause + `,
 		       updated_at = ?, archived = ?, pinned = ?, parent_id = ?, search = ?, tools = ?, mcp = ?,
 		       user_turns = ?, status = ?, tags = ?
 		WHERE id = ?`
@@ -1162,6 +1189,11 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	}
 	args = append(args,
 		string(sess.Mode), nullString(string(sess.Origin)), nullString(sess.Agent), sess.CWD,
+	)
+	if s.hasWorktreeDir {
+		args = append(args, nullString(sess.WorktreeDir))
+	}
+	args = append(args,
 		sess.UpdatedAt, sess.Archived, sess.Pinned, nullString(sess.ParentID),
 		sess.Search, nullString(sess.Tools), nullString(sess.MCP),
 		sess.UserTurns, string(sess.Status), nullString(sess.Tags), sess.ID,
@@ -2164,6 +2196,7 @@ func (s *SQLiteStore) setCurrentSessionColumns() {
 	s.hasLastMessageCount = true
 	s.hasMessageCount = true
 	s.hasReasoningEffort = true
+	s.hasWorktreeDir = true
 }
 
 // probeSessionColumns checks optional session columns in a single PRAGMA scan.
@@ -2213,6 +2246,8 @@ func (s *SQLiteStore) probeSessionColumns() {
 			s.hasMessageCount = true
 		case "reasoning_effort":
 			s.hasReasoningEffort = true
+		case "worktree_dir":
+			s.hasWorktreeDir = true
 		}
 	}
 }
@@ -2266,15 +2301,18 @@ func (s *SQLiteStore) sessionSelectCols() string {
 	if s.hasCompactionCount {
 		base += ", compaction_count"
 	}
+	if s.hasWorktreeDir {
+		base += ", worktree_dir"
+	}
 	return base
 }
 
 // scanSessionRow scans a session row into a Session struct. The flags
 // determine which optional columns are present in the result set.
-func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCompactionSeq, hasCompactionCount, hasTitleSkippedAt, hasLastTotalTokens, hasLastMessageCount bool) (*Session, error) {
+func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCompactionSeq, hasCompactionCount, hasTitleSkippedAt, hasLastTotalTokens, hasLastMessageCount, hasWorktreeDir bool) (*Session, error) {
 	var sess Session
 	var number sql.NullInt64
-	var name, summary, cwd sql.NullString
+	var name, summary, cwd, worktreeDir sql.NullString
 	var generatedShortTitle, generatedLongTitle, titleSource sql.NullString
 	var titleGeneratedAt, titleSkippedAt sql.NullTime
 	var mode, origin, agent, parentID, tools, mcp, status, tags, providerKey, reasoningEffort sql.NullString
@@ -2309,6 +2347,9 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 	}
 	if hasCompactionCount {
 		scanArgs = append(scanArgs, &sess.CompactionCount)
+	}
+	if hasWorktreeDir {
+		scanArgs = append(scanArgs, &worktreeDir)
 	}
 
 	err := row.Scan(scanArgs...)
@@ -2351,6 +2392,9 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 	}
 	if cwd.Valid {
 		sess.CWD = cwd.String
+	}
+	if worktreeDir.Valid {
+		sess.WorktreeDir = worktreeDir.String
 	}
 	if mode.Valid {
 		sess.Mode = SessionMode(mode.String)

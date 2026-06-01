@@ -403,6 +403,70 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Worktree switcher: enter switches (routing through the chdir bind
+		// funcs), n creates, d deletes with a two-press confirm, s drops into a
+		// shell. Arrow keys disarm any pending delete.
+		if m.dialog.Type() == DialogWorktreePicker {
+			switch {
+			case key.Matches(msg, key.NewBinding(key.WithKeys("enter", "tab"))):
+				selected := m.dialog.Selected()
+				if selected == nil {
+					return m, nil
+				}
+				m.worktreeDeleteTarget = ""
+				m.dialog.Close()
+				switch selected.ID {
+				case "__new__":
+					return m.createWorktree("")
+				case "__root__":
+					return m.cmdWorktreeSwitch("root")
+				default:
+					// selected.ID is the worktree directory; cmdWorktreeSwitch
+					// matches by path and binds via the chdir model.
+					return m.cmdWorktreeSwitch(selected.ID)
+				}
+			case key.Matches(msg, key.NewBinding(key.WithKeys("n"))):
+				m.worktreeDeleteTarget = ""
+				m.dialog.Close()
+				return m.createWorktree("")
+			case key.Matches(msg, key.NewBinding(key.WithKeys("d"))):
+				selected := m.dialog.Selected()
+				if selected == nil || selected.ID == "" || selected.ID == "__root__" || selected.ID == "__new__" {
+					return m.showFooterWarning("Select a worktree to delete.")
+				}
+				if m.worktreeDeleteTarget != selected.ID {
+					m.worktreeDeleteTarget = selected.ID
+					return m.showFooterWarning("Delete " + selected.Label + "? Press d again.")
+				}
+				m.worktreeDeleteTarget = ""
+				m.dialog.Close()
+				return m.removeWorktreeDir(selected.ID, false)
+			case key.Matches(msg, key.NewBinding(key.WithKeys("s"))):
+				selected := m.dialog.Selected()
+				if selected == nil || selected.ID == "__new__" {
+					return m, nil
+				}
+				m.worktreeDeleteTarget = ""
+				m.dialog.Close()
+				return m.shellFromPicker(selected.ID)
+			case key.Matches(msg, key.NewBinding(key.WithKeys("esc", "q", "ctrl+c"))):
+				m.worktreeDeleteTarget = ""
+				m.dialog.Close()
+				return m, nil
+			case key.Matches(msg, key.NewBinding(key.WithKeys("up", "k", "ctrl+p"))):
+				m.worktreeDeleteTarget = ""
+				m.dialog.Update(msg)
+				return m, nil
+			case key.Matches(msg, key.NewBinding(key.WithKeys("down", "j", "ctrl+n"))):
+				m.worktreeDeleteTarget = ""
+				m.dialog.Update(msg)
+				return m, nil
+			default:
+				m.dialog.Update(msg)
+				return m, nil
+			}
+		}
+
 		// Other dialogs (SessionList, DirApproval) use standard handling
 		switch {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("enter", "tab"))):

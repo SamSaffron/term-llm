@@ -173,6 +173,21 @@ func AllCommands() []Command {
 			Description: "Hand conversation to another agent",
 			Usage:       "/handover @agent [provider:model]",
 		},
+		{
+			Name:        "worktree",
+			Aliases:     []string{"wt"},
+			Description: "Run this session in a git worktree (isolated checkout)",
+			Usage:       "/worktree [new|list|pwd|diff|promote|rm|shell|<name>]",
+			Subcommands: []Subcommand{
+				{Name: "new", Description: "Create a worktree and switch to it"},
+				{Name: "list", Description: "List worktrees in this repo"},
+				{Name: "pwd", Description: "Show + copy the bound worktree path"},
+				{Name: "diff", Description: "Show the worktree diff vs base"},
+				{Name: "promote", Description: "Promote detached HEAD to a branch"},
+				{Name: "rm", Description: "Remove the bound worktree"},
+				{Name: "shell", Description: "Open a shell/tmux pane in the worktree"},
+			},
+		},
 	}
 }
 
@@ -417,6 +432,8 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 		return m.cmdReload()
 	case "handover":
 		return m.cmdHandover(args)
+	case "worktree":
+		return m.cmdWorktree(args)
 	default:
 		return m.showSystemMessage(fmt.Sprintf("Command /%s is not yet implemented.", cmd.Name))
 	}

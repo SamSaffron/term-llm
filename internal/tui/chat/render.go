@@ -887,6 +887,13 @@ func (m *Model) renderStatusLine() string {
 	errorStyle := lipgloss.NewStyle().Foreground(theme.Error)
 	warningStyle := lipgloss.NewStyle().Foreground(theme.Warning)
 
+	// A running worktree operation takes precedence: show the spinner + live
+	// progress instead of the (possibly stale) footer message.
+	if m.worktreeBusy && strings.TrimSpace(m.worktreeProgress) != "" {
+		text := strings.TrimSpace(strings.TrimSpace(m.spinner.View()) + " " + strings.TrimSpace(m.worktreeProgress))
+		return m.wrapFooterLine(mutedStyle.Render(text))
+	}
+
 	if m.footerMessage != "" {
 		style := mutedStyle
 		switch m.footerMessageTone {
@@ -942,6 +949,9 @@ func (m *Model) renderStatusLine() string {
 	}
 	if m.fastMode {
 		baseSegments = append(baseSegments, statusSegment{text: successStyle.Render("fast"), priority: 30})
+	}
+	if wtSeg := m.cachedWorktreeSegment(); wtSeg != "" {
+		baseSegments = append(baseSegments, statusSegment{text: successStyle.Render(wtSeg), priority: 45, essential: true})
 	}
 	if len(m.files) > 0 {
 		baseSegments = append(baseSegments, statusSegment{text: mutedStyle.Render(fmt.Sprintf("%d file(s)", len(m.files))), priority: 55})
