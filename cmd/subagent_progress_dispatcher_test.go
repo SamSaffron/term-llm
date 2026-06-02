@@ -9,7 +9,7 @@ import (
 )
 
 func TestSubagentProgressDispatcherDoesNotBlockWhenSendStalls(t *testing.T) {
-	enteredSend := make(chan struct{})
+	enteredSend := make(chan struct{}, 1)
 	releaseSend := make(chan struct{})
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(releaseSend) }) }
