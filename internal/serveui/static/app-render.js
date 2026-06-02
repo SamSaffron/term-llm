@@ -2039,13 +2039,16 @@ const renderMessages = (forceScroll = false) => {
 
   const sessionId = session ? session.id : null;
   const messages = session ? session.messages : [];
+  const sessionHistoryLoading = Boolean(session?._serverOnly);
 
   if (!session || !messages.length) {
     elements.messages.innerHTML = '';
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
-    empty.textContent = 'How can I help you today?';
-    elements.messages.appendChild(empty);
+    if (!sessionHistoryLoading) {
+      const empty = document.createElement('div');
+      empty.className = 'empty-state';
+      empty.textContent = 'How can I help you today?';
+      elements.messages.appendChild(empty);
+    }
     _lastRenderedSessionId = sessionId;
     _lastRenderedMessageIds = [];
     _lastRenderedMessageKeys = new Map();

@@ -1187,6 +1187,28 @@ async function run(name, fn) {
     assertEqual(row.querySelector('.session-title').textContent, 'Z', 'known session row unchanged');
   });
 
+  await run('renderMessages: leaves server-only sessions blank while messages load', () => {
+    const { app, session, messages } = createHarness();
+    session.messages = [];
+    session._serverOnly = true;
+
+    app.renderMessages();
+
+    assertEqual(messages.children.length, 0, 'server-only loading session should not show the new-chat empty state');
+    assertEqual(messages.textContent, '', 'server-only loading session should be visually blank');
+  });
+
+  await run('renderMessages: empty local session shows new-chat prompt', () => {
+    const { app, session, messages } = createHarness();
+    session.messages = [];
+
+    app.renderMessages();
+
+    assertEqual(messages.children.length, 1, 'empty local session should show one empty-state node');
+    assertEqual(messages.children[0].className, 'empty-state', 'empty local session uses empty-state class');
+    assertEqual(messages.children[0].textContent, 'How can I help you today?', 'empty local session keeps the new-chat prompt');
+  });
+
   await run('renderMessages: incremental append reuses existing nodes', () => {
     const { app, session, messages } = createHarness();
     session.messages = [
