@@ -625,6 +625,48 @@ func TestServeRuntimeCloseCancelsActiveRun(t *testing.T) {
 	}
 }
 
+type serveRuntimeInspectStoreProvider struct {
+	store     *serveRuntimeTestStore
+	sessionID string
+	t         *testing.T
+}
+
+func (p *serveRuntimeInspectStoreProvider) Name() string                   { return "serve-runtime-inspect" }
+func (p *serveRuntimeInspectStoreProvider) Credential() string             { return "test" }
+func (p *serveRuntimeInspectStoreProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
+func (p *serveRuntimeInspectStoreProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	msgs, err := p.store.GetMessages(ctx, p.sessionID, 0, 0)
+	if err != nil {
+		p.t.Fatalf("GetMessages() error = %v", err)
+	}
+	if len(msgs) != 1 || msgs[0].Role != llm.RoleUser || msgs[0].TextContent != "slow prompt" {
+		p.t.Fatalf("messages before provider stream = %+v, want durable user prompt", msgs)
+	}
+	return &serveRuntimeTestStream{events: []llm.Event{{Type: llm.EventTextDelta, Text: "ok"}, {Type: llm.EventDone}}}, nil
+}
+
+func TestServeRuntimePersistsInputBeforeFirstProviderEvent(t *testing.T) {
+	store := newServeRuntimeTestStore()
+	provider := &serveRuntimeInspectStoreProvider{store: store, sessionID: "sess-slow", t: t}
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  provider.Name(),
+		engine:       llm.NewEngine(provider, nil),
+		store:        store,
+		defaultModel: "test-model",
+	}
+
+	result, err := rt.RunWithEvents(context.Background(), true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "slow prompt")}, llm.Request{
+		SessionID: "sess-slow",
+	}, func(ev llm.Event) error { return nil })
+	if err != nil {
+		t.Fatalf("RunWithEvents() error = %v", err)
+	}
+	if got := result.Text.String(); got != "ok" {
+		t.Fatalf("result text = %q, want ok", got)
+	}
+}
+
 func TestServeRuntimeRetriesInitialSnapshotBeforeAppending(t *testing.T) {
 	store := newServeRuntimeTestStore()
 	store.replaceFailures[1] = errors.New("initial snapshot failed")

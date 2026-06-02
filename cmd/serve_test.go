@@ -2722,13 +2722,14 @@ func TestServeRuntimeRun_ImmediateErrorDoesNotDesyncState(t *testing.T) {
 		t.Fatalf("history len after immediate error = %d, want 0", len(rt.history))
 	}
 
-	// DB should have no messages for this session (no eager persist without callback).
+	// DB should have the submitted user message immediately. This keeps the web
+	// session view stable while the provider is slow or fails before emitting.
 	msgs, err := store.GetMessages(context.Background(), sid, 0, 0)
 	if err != nil {
 		t.Fatalf("GetMessages failed: %v", err)
 	}
-	if len(msgs) != 0 {
-		t.Fatalf("persisted message count after immediate error = %d, want 0", len(msgs))
+	if len(msgs) != 1 || msgs[0].Role != llm.RoleUser || msgs[0].TextContent != "hello" {
+		t.Fatalf("persisted messages after immediate error = %+v, want durable user prompt", msgs)
 	}
 
 	// Second run: succeeds — must not be confused by stale DB state.

@@ -598,6 +598,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 
 	baseHistory := make([]llm.Message, len(rt.history))
 	copy(baseHistory, rt.history)
+	replacingExistingHistory := replaceHistory && len(baseHistory) > 0
 	replaceHistoryBackup := baseHistory
 	replaceUsageBackup := rt.cumulativeUsage
 	replacePlatformBackup := rt.lastInjectedPlatform
@@ -710,6 +711,26 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		}
 		initialPersisted = true
 		return true
+	}
+
+	// Make the submitted user turn durable before waiting for the provider's
+	// first streaming callback. The web UI can navigate away and reload the
+	// session while the model is still thinking; if we only persist on the first
+	// assistant/tool event, the just-submitted prompt temporarily disappears.
+	// For replace-history runs with existing history, keep the old transcript
+	// until the run produces an event so an early provider failure cannot wipe it.
+	if persisted && (!replaceHistory || !replacingExistingHistory) {
+		if appendOnlyPersisted {
+			appendInitialInputLocked(ctx)
+		} else {
+			initialSnapshot := make([]llm.Message, 0, len(baseHistory)+len(inputMessages)+1)
+			if systemPromptInjected {
+				initialSnapshot = append(initialSnapshot, llm.SystemText(rt.systemPrompt))
+			}
+			initialSnapshot = append(initialSnapshot, baseHistory...)
+			initialSnapshot = append(initialSnapshot, inputMessages...)
+			initialPersisted = rt.persistSnapshot(ctx, req.SessionID, initialSnapshot)
+		}
 	}
 
 	// updateStateAndAppend updates in-memory history and incrementally appends
