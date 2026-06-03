@@ -142,6 +142,29 @@ const sidebarRowCache = new Map();
 const sidebarGroupCache = new Map();
 let sidebarRenderKey = '';
 
+const sidebarScrollContainer = () => elements.sidebarContent || elements.sessionGroups?.parentElement || null;
+
+const restoreSidebarScroll = (scroller, scrollTop) => {
+  if (!scroller || !Number.isFinite(scrollTop)) return;
+  if (scroller.scrollTop !== scrollTop) scroller.scrollTop = scrollTop;
+};
+
+const preserveSidebarScroll = (callback) => {
+  const scroller = sidebarScrollContainer();
+  const scrollTop = scroller && Number.isFinite(scroller.scrollTop) ? scroller.scrollTop : null;
+  const result = callback();
+  if (scrollTop !== null) {
+    restoreSidebarScroll(scroller, scrollTop);
+    // Browsers may apply focus/scroll anchoring adjustments after DOM mutation.
+    // Put the sidebar back once more on the next frame so session switches do
+    // not unexpectedly jump the list.
+    if (typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(() => restoreSidebarScroll(scroller, scrollTop));
+    }
+  }
+  return result;
+};
+
 const computeSidebarKey = (sorted) =>
   sorted.map((s) =>
     [
@@ -200,6 +223,9 @@ const buildCachedSessionRow = (session) => {
 
   btn.appendChild(titleEl);
   btn.appendChild(metaEl);
+  btn.addEventListener('mousedown', (event) => {
+    if (event.button === 0) event.preventDefault();
+  });
   btn.addEventListener('click', async () => {
     await app.switchToSession(sessionId);
   });
@@ -356,33 +382,35 @@ const renderSidebar = () => {
   const newGroupSections = [];
   const visibleIds = new Set();
 
-  Object.entries(grouped).forEach(([label, sessions]) => {
-    if (!sessions.length) return;
+  preserveSidebarScroll(() => {
+    Object.entries(grouped).forEach(([label, sessions]) => {
+      if (!sessions.length) return;
 
-    const groupEl = getOrCreateGroupSection(label);
-    // Detach all session rows from this group section, keeping only the h3 heading.
-    groupEl.replaceChildren(groupEl.firstElementChild);
+      const groupEl = getOrCreateGroupSection(label);
+      // Detach all session rows from this group section, keeping only the h3 heading.
+      groupEl.replaceChildren(groupEl.firstElementChild);
 
-    sessions.forEach((session) => {
-      visibleIds.add(session.id);
-      const cached = sidebarRowCache.get(session.id);
-      if (cached) {
-        updateCachedSessionRow(session, cached);
-        groupEl.appendChild(cached.row);
-      } else {
-        groupEl.appendChild(buildCachedSessionRow(session));
-      }
+      sessions.forEach((session) => {
+        visibleIds.add(session.id);
+        const cached = sidebarRowCache.get(session.id);
+        if (cached) {
+          updateCachedSessionRow(session, cached);
+          groupEl.appendChild(cached.row);
+        } else {
+          groupEl.appendChild(buildCachedSessionRow(session));
+        }
+      });
+
+      newGroupSections.push(groupEl);
     });
 
-    newGroupSections.push(groupEl);
+    elements.sessionGroups.replaceChildren(...newGroupSections);
+
+    // Prune cache entries for sessions no longer visible.
+    for (const id of sidebarRowCache.keys()) {
+      if (!visibleIds.has(id)) sidebarRowCache.delete(id);
+    }
   });
-
-  elements.sessionGroups.replaceChildren(...newGroupSections);
-
-  // Prune cache entries for sessions no longer visible.
-  for (const id of sidebarRowCache.keys()) {
-    if (!visibleIds.has(id)) sidebarRowCache.delete(id);
-  }
 };
 
 // ===== Message rendering =====
