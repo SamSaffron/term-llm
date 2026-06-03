@@ -1159,9 +1159,9 @@ func (s *SQLiteStore) GetByPrefix(ctx context.Context, prefix string) (*Session,
 
 // Update modifies an existing session's metadata fields.
 // Token metrics (input_tokens, cached_input_tokens, cache_write_tokens, output_tokens)
-// and turn counters (llm_turns, tool_calls) are intentionally excluded — they are
-// managed exclusively by UpdateMetrics (which uses atomic increments) to prevent
-// stale in-memory values from clobbering accumulated totals.
+// and turn counters (user_turns, llm_turns, tool_calls) are intentionally excluded — they are
+// managed exclusively by atomic update paths to prevent stale in-memory values from clobbering
+// accumulated totals.
 func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	sess.UpdatedAt = time.Now()
 	if sess.Origin == "" {
@@ -1179,9 +1179,9 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	query := `
 		UPDATE sessions SET name = ?, summary = ?, generated_short_title = ?, generated_long_title = ?, title_source = ?, title_generated_at = ?, title_basis_msg_seq = ?` +
 		titleSkippedAtClause + `,
-		       provider = ?, provider_key = ?, model = ?` + reasoningEffortClause + `, mode = ?, origin = ?, agent = ?, cwd = ?,
-		       updated_at = ?, archived = ?, pinned = ?, parent_id = ?, search = ?, tools = ?, mcp = ?,
-		       user_turns = ?, status = ?, tags = ?
+			       provider = ?, provider_key = ?, model = ?` + reasoningEffortClause + `, mode = ?, origin = ?, agent = ?, cwd = ?,
+			       updated_at = ?, archived = ?, pinned = ?, parent_id = ?, search = ?, tools = ?, mcp = ?,
+			       status = ?, tags = ?
 		WHERE id = ?`
 
 	args := []any{
@@ -1200,7 +1200,7 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 		string(sess.Mode), nullString(string(sess.Origin)), nullString(sess.Agent), sess.CWD,
 		sess.UpdatedAt, sess.Archived, sess.Pinned, nullString(sess.ParentID),
 		sess.Search, nullString(sess.Tools), nullString(sess.MCP),
-		sess.UserTurns, string(sess.Status), nullString(sess.Tags), sess.ID,
+		string(sess.Status), nullString(sess.Tags), sess.ID,
 	)
 
 	result, err := s.db.ExecContext(ctx, query, args...)

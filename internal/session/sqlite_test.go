@@ -1240,6 +1240,48 @@ func TestUpdateDoesNotClobberTokenMetrics(t *testing.T) {
 	}
 }
 
+func TestUpdateDoesNotClobberUserTurns(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("failed to create sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{
+		ID:       NewID(),
+		Provider: "test",
+		Model:    "test-model",
+		Mode:     ModeChat,
+	}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if err := store.IncrementUserTurns(ctx, sess.ID); err != nil {
+		t.Fatalf("IncrementUserTurns: %v", err)
+	}
+
+	// The in-memory sess still has zero user turns — Update must not write that stale value back.
+	sess.Summary = "updated summary"
+	if err := store.Update(ctx, sess); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	reloaded, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if reloaded.Summary != "updated summary" {
+		t.Errorf("expected summary=%q, got %q", "updated summary", reloaded.Summary)
+	}
+	if reloaded.UserTurns != 1 {
+		t.Errorf("Update clobbered user_turns: expected 1, got %d", reloaded.UserTurns)
+	}
+}
+
 func TestSQLiteStoreCreatesMessagesSessionRoleIndex(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
