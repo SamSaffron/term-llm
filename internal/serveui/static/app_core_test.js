@@ -673,6 +673,55 @@ const app = loadAppCore();
   pass(name);
 })();
 
+(function testMessageEvictionKeepsActiveOlderSession() {
+  const name = 'message eviction keeps active older session loaded';
+  const testApp = loadAppCore();
+  testApp.state.sessions = Array.from({ length: 11 }, (_, index) => ({
+    id: `s${index + 1}`,
+    title: `Session ${index + 1}`,
+    created: 1000 + index,
+    lastMessageAt: 1000 + index,
+    messages: [{ id: `m${index + 1}`, role: 'user', content: 'hi', created: 1000 + index }],
+  }));
+  testApp.state.activeSessionId = 's1';
+
+  testApp.saveSessions();
+
+  const active = testApp.state.sessions.find((session) => session.id === 's1');
+  if (!active || active._serverOnly || active.messages.length !== 1) {
+    fail(name, 'active older session was evicted and would render blank');
+    return;
+  }
+  const loaded = testApp.state.sessions.filter((session) => session.messages.length > 0 && !session._serverOnly);
+  if (loaded.length !== 10) {
+    fail(name, `expected exactly 10 loaded sessions, got ${loaded.length}`);
+    return;
+  }
+  pass(name);
+})();
+
+(function testMessageEvictionUsesRecentActivity() {
+  const name = 'message eviction prefers recent activity over creation time';
+  const testApp = loadAppCore();
+  testApp.state.sessions = Array.from({ length: 11 }, (_, index) => ({
+    id: `s${index + 1}`,
+    title: `Session ${index + 1}`,
+    created: 1000 + index,
+    lastMessageAt: 1000 + index,
+    messages: [{ id: `m${index + 1}`, role: 'user', content: 'hi', created: 1000 + index }],
+  }));
+  testApp.state.sessions[0].lastMessageAt = 10_000;
+
+  testApp.saveSessions();
+
+  const recentlyActive = testApp.state.sessions[0];
+  if (recentlyActive._serverOnly || recentlyActive.messages.length !== 1) {
+    fail(name, 'recently active older-created session was evicted');
+    return;
+  }
+  pass(name);
+})();
+
 if (failures > 0) {
   process.exit(1);
 }

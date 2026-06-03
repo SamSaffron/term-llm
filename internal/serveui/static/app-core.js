@@ -1172,15 +1172,31 @@ const loadSessions = () => {
   return [];
 };
 
-// Evict messages from in-memory sessions beyond the 10 most-recently-created
-// to cap RAM usage.  Evicted sessions become lazy-load stubs.
+// Evict messages from in-memory sessions beyond the 10 most-recently-used
+// message-bearing sessions to cap RAM usage. Always keep the active session's
+// messages so a lazy-loaded older sidebar entry does not go blank immediately
+// after switchToSession() saves state.
 const MAX_CACHED_MESSAGE_SESSIONS = 10;
 
 const evictStaleSessionMessages = () => {
   const withMessages = state.sessions.filter(s => s.messages && s.messages.length > 0 && !s._serverOnly);
   if (withMessages.length <= MAX_CACHED_MESSAGE_SESSIONS) return;
-  withMessages.sort((a, b) => b.created - a.created);
-  const keep = new Set(withMessages.slice(0, MAX_CACHED_MESSAGE_SESSIONS).map(s => s.id));
+
+  const keep = new Set();
+  const activeSessionId = String(state.activeSessionId || '').trim();
+  if (activeSessionId && withMessages.some(s => s.id === activeSessionId)) {
+    keep.add(activeSessionId);
+  }
+
+  withMessages.sort((a, b) => {
+    const bAt = Number(b.lastMessageAt || b.created || 0);
+    const aAt = Number(a.lastMessageAt || a.created || 0);
+    return bAt - aAt;
+  });
+  for (const session of withMessages) {
+    if (keep.size >= MAX_CACHED_MESSAGE_SESSIONS) break;
+    keep.add(session.id);
+  }
 
   for (const s of state.sessions) {
     if (!keep.has(s.id) && s.messages && s.messages.length > 0) {
