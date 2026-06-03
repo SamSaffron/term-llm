@@ -164,6 +164,7 @@ installUIVersionFetchGuard();
 const elements = {
   appShell: document.getElementById('appShell'),
   sidebar: document.getElementById('sidebar'),
+  sidebarContent: document.getElementById('sidebarContent'),
   sidebarBackdrop: document.getElementById('sidebarBackdrop'),
   sidebarToggleBtn: document.getElementById('sidebarToggleBtn'),
   sidebarPanelToggleBtn: document.getElementById('sidebarPanelToggleBtn'),

@@ -282,6 +282,10 @@ function createHarness(appOverrides = {}) {
   const document = createDocument();
   const messages = new Element('div');
   document.body.appendChild(messages);
+  const sidebarContent = new Element('div');
+  sidebarContent.scrollTop = 0;
+  const sessionGroups = new Element('div');
+  sidebarContent.appendChild(sessionGroups);
   const session = { id: 's1', title: 'Chat', created: Date.now(), messages: [] };
   const state = { activeSessionId: 's1', sessions: [session], sidebarCollapsed: false };
   const timers = [];
@@ -306,7 +310,8 @@ function createHarness(appOverrides = {}) {
       widgetsModalList: new Element('div'),
       widgetsModalCloseBtn: new Element('button'),
       sidebarSearchInput: new Element('input'),
-      sessionGroups: new Element('div'),
+      sidebarContent,
+      sessionGroups,
     },
     INTERRUPT_BADGE_META: {},
     sanitizeInterruptState(value) { return value || ''; },
@@ -1059,6 +1064,42 @@ async function run(name, fn) {
 
     assert(!rows[0].querySelector('.session-btn').classList.contains('active'), 'session A btn no longer active');
     assert(rows[1].querySelector('.session-btn').classList.contains('active'), 'session B btn now active');
+  });
+
+  await run('renderSidebar preserves sidebar scroll through rerenders', () => {
+    const sessions = [
+      { id: 'a', title: 'A', created: 2000, messages: [], pinned: false, archived: false, messageCount: 0, lastMessageAt: 2000 },
+      { id: 'b', title: 'B', created: 1000, messages: [], pinned: false, archived: false, messageCount: 0, lastMessageAt: 1000 },
+    ];
+    const { app, timers } = createHarness({ visibleSessions: () => sessions });
+    app.elements.sidebarContent.scrollTop = 420;
+
+    app.renderSidebar();
+    sessions[1].title = 'B changed';
+    app.renderSidebar();
+
+    assertEqual(app.elements.sidebarContent.scrollTop, 420, 'scrollTop restored immediately');
+    app.elements.sidebarContent.scrollTop = 99;
+    runAllPendingTimers(timers);
+    assertEqual(app.elements.sidebarContent.scrollTop, 420, 'scrollTop restored again on animation frame');
+  });
+
+  await run('session row mouse activation does not focus-scroll the sidebar button', async () => {
+    const session = { id: 'a', title: 'A', created: 1000, messages: [], pinned: false, archived: false, messageCount: 0, lastMessageAt: 1000 };
+    let switchedTo = '';
+    const { app } = createHarness({
+      visibleSessions: () => [session],
+      async switchToSession(id) { switchedTo = id; },
+    });
+
+    app.renderSidebar();
+    const btn = app.elements.sessionGroups.querySelector('.session-btn');
+    let prevented = false;
+    await btn.dispatchEvent({ type: 'mousedown', button: 0, preventDefault() { prevented = true; } });
+    await btn.dispatchEvent({ type: 'click' });
+
+    assert(prevented, 'primary mouse down prevents browser focus scrolling');
+    assertEqual(switchedTo, 'a', 'click still switches sessions');
   });
 
   await run('renderSidebar marks in-progress session row with is-active', () => {
