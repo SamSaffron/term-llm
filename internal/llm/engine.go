@@ -56,8 +56,12 @@ type TurnMetrics struct {
 }
 
 // TurnCompletedCallback is called after each turn completes with the messages
-// generated during that turn and metrics about the turn.
-// turnIndex is 0-based, messages contains assistant message(s) and tool result(s).
+// generated during that turn and metrics about the turn. turnIndex is 0-based.
+// If ResponseCompletedCallback successfully handled the assistant message for
+// this turn, messages contains only the later turn messages (usually tool
+// results). Otherwise, messages contains the complete generated turn, including
+// assistant message(s) and tool result(s). Recovery paths that bypass
+// ResponseCompletedCallback also deliver the assistant message here.
 type TurnCompletedCallback func(ctx context.Context, turnIndex int, messages []Message, metrics TurnMetrics) error
 
 // ResponseCompletedCallback is called immediately after LLM streaming completes,
@@ -380,6 +384,32 @@ func callbackContext(ctx context.Context) (context.Context, context.CancelFunc) 
 		ctx = context.Background()
 	}
 	return context.WithTimeout(context.WithoutCancel(ctx), callbackTimeout)
+}
+
+func callResponseCompletedCallback(ctx context.Context, cb ResponseCompletedCallback, turnIndex int, assistantMsg Message, metrics TurnMetrics) bool {
+	if cb == nil {
+		return false
+	}
+	cbCtx, cancel := callbackContext(ctx)
+	err := cb(cbCtx, turnIndex, assistantMsg, metrics)
+	cancel()
+	return err == nil
+}
+
+// turnMessagesAfterResponseCallback returns the messages that still need to be
+// delivered to TurnCompletedCallback. When ResponseCompletedCallback has
+// successfully handled the assistant message, TurnCompletedCallback emits only
+// the subsequent messages for that turn (typically tool results). If the
+// response callback was absent or failed, the assistant remains in the turn
+// callback so callers still have a complete durable turn to persist.
+func turnMessagesAfterResponseCallback(responseHandled bool, assistantMsg Message, rest []Message) []Message {
+	if responseHandled {
+		return rest
+	}
+	messages := make([]Message, 0, 1+len(rest))
+	messages = append(messages, assistantMsg)
+	messages = append(messages, rest...)
+	return messages
 }
 
 // SetCompaction enables context compaction with the given input token limit
@@ -1641,11 +1671,7 @@ turnLoop:
 				reasoningKind,
 			)
 			maybeCompactAfterLLMCall([]Message{assistantMsg})
-			if responseCallback != nil {
-				cbCtx, cancel := callbackContext(ctx)
-				_ = responseCallback(cbCtx, attempt, assistantMsg, turnMetrics)
-				cancel()
-			}
+			responseHandled := callResponseCompletedCallback(ctx, responseCallback, attempt, assistantMsg, turnMetrics)
 
 			var origNameByID map[string]string
 			if req.ToolMap != nil {
@@ -1703,10 +1729,7 @@ turnLoop:
 			recoveredAtMessageCount = len(req.Messages)
 			if turnCallback != nil {
 				turnMetrics.ToolCalls = len(registered)
-				turnMessages := toolResults
-				if responseCallback == nil {
-					turnMessages = append([]Message{assistantMsg}, toolResults...)
-				}
+				turnMessages := turnMessagesAfterResponseCallback(responseHandled, assistantMsg, toolResults)
 				cbCtx, cancel := callbackContext(ctx)
 				_ = turnCallback(cbCtx, attempt, turnMessages, turnMetrics)
 				cancel()
@@ -2316,11 +2339,7 @@ turnLoop:
 
 		// Call responseCallback BEFORE tool execution to persist assistant message
 		// This ensures the message is saved even if tool execution fails/crashes
-		if responseCallback != nil {
-			cbCtx, cancel := callbackContext(ctx)
-			_ = responseCallback(cbCtx, attempt, assistantMsg, turnMetrics)
-			cancel()
-		}
+		responseHandled := callResponseCompletedCallback(ctx, responseCallback, attempt, assistantMsg, turnMetrics)
 
 		// ToolMap: swap client tool names to mapped server names for execution.
 		// We save original names keyed by call ID so we can restore them on
@@ -2386,8 +2405,9 @@ turnLoop:
 		// Call turn completed callback with tool results for incremental persistence
 		if turnCallback != nil {
 			turnMetrics.ToolCalls = len(registered)
+			turnMessages := turnMessagesAfterResponseCallback(responseHandled, assistantMsg, toolResults)
 			cbCtx, cancel := callbackContext(ctx)
-			_ = turnCallback(cbCtx, attempt, toolResults, turnMetrics)
+			_ = turnCallback(cbCtx, attempt, turnMessages, turnMetrics)
 			cancel()
 		}
 

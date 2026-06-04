@@ -335,11 +335,14 @@ func runProgressivePass(ctx context.Context, engine *llm.Engine, req llm.Request
 	startSeq := tracker.latestSequence()
 
 	engine.SetResponseCompletedCallback(func(cbCtx context.Context, turnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
-		produced = append(produced, assistantMsg)
+		var err error
 		if opts.OnResponseCompleted != nil {
-			return opts.OnResponseCompleted(cbCtx, turnIndex, assistantMsg, metrics)
+			err = opts.OnResponseCompleted(cbCtx, turnIndex, assistantMsg, metrics)
 		}
-		return nil
+		if err == nil {
+			produced = append(produced, assistantMsg)
+		}
+		return err
 	})
 	defer engine.SetResponseCompletedCallback(nil)
 

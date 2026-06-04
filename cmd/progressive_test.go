@@ -9,6 +9,20 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 )
 
+type progressiveTestTool struct{}
+
+func (t *progressiveTestTool) Spec() llm.ToolSpec {
+	return llm.ToolSpec{Name: "progressive_test_tool", Description: "test tool", Schema: map[string]any{"type": "object"}}
+}
+
+func (t *progressiveTestTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+	return llm.TextOutput("tool ok"), nil
+}
+
+func (t *progressiveTestTool) Preview(args json.RawMessage) string { return "" }
+
+func (t *progressiveTestTool) IsFinishingTool() bool { return true }
+
 func TestValidateAskProgressiveOptions(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -134,6 +148,39 @@ func TestRunProgressiveSessionFinalizesOnNaturalCompletion(t *testing.T) {
 	}
 	if len(provider.Requests) != 3 {
 		t.Fatalf("provider saw %d requests, want %d", len(provider.Requests), 3)
+	}
+}
+
+func TestRunProgressivePassDoesNotDuplicateProducedAssistantWhenResponseCallbackFails(t *testing.T) {
+	provider := llm.NewMockProvider("mock").WithCapabilities(llm.Capabilities{ToolCalls: true})
+	provider.AddToolCall("call-1", "progressive_test_tool", map[string]any{})
+	provider.AddTextResponse("done")
+
+	tool := &progressiveTestTool{}
+	registry := llm.NewToolRegistry()
+	registry.Register(tool)
+	engine := llm.NewEngine(provider, registry)
+
+	result, err := runProgressivePass(context.Background(), engine, llm.Request{
+		Messages: []llm.Message{llm.UserText("test")},
+		Tools:    []llm.ToolSpec{tool.Spec()},
+	}, progressiveRunOptions{
+		OnResponseCompleted: func(context.Context, int, llm.Message, llm.TurnMetrics) error {
+			return context.DeadlineExceeded
+		},
+	}, newProgressTracker())
+	if err != nil {
+		t.Fatalf("runProgressivePass error = %v", err)
+	}
+
+	if len(result.produced) != 2 {
+		t.Fatalf("produced messages = %d, want assistant + tool result exactly once", len(result.produced))
+	}
+	if result.produced[0].Role != llm.RoleAssistant {
+		t.Fatalf("produced[0].Role = %s, want assistant", result.produced[0].Role)
+	}
+	if result.produced[1].Role != llm.RoleTool {
+		t.Fatalf("produced[1].Role = %s, want tool", result.produced[1].Role)
 	}
 }
 

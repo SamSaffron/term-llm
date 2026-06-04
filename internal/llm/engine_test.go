@@ -1762,6 +1762,140 @@ func TestRunLoopPersistsPartialAssistantMessageOnEventErrorAfterToolCall(t *test
 	}
 }
 
+func TestEngineTurnCallbackExcludesAssistantAfterResponseCallbackSucceeds(t *testing.T) {
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				return []Event{
+					{Type: EventTextDelta, Text: "I'll count."},
+					{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "count_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventDone},
+				}
+			default:
+				return []Event{
+					{Type: EventTextDelta, Text: "done"},
+					{Type: EventDone},
+				}
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	var response Message
+	engine.SetResponseCompletedCallback(func(ctx context.Context, turnIndex int, assistantMsg Message, metrics TurnMetrics) error {
+		response = assistantMsg
+		return nil
+	})
+
+	var turnMessages []Message
+	engine.SetTurnCompletedCallback(func(ctx context.Context, turnIndex int, messages []Message, metrics TurnMetrics) error {
+		if turnIndex == 0 {
+			turnMessages = append([]Message(nil), messages...)
+		}
+		return nil
+	})
+
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{UserText("test")},
+		Tools:    []ToolSpec{tool.Spec()},
+	})
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+	}
+
+	if response.Role != RoleAssistant {
+		t.Fatalf("response callback role = %s, want assistant", response.Role)
+	}
+	if len(turnMessages) != 1 {
+		t.Fatalf("turn callback messages = %d, want only tool result after successful response callback", len(turnMessages))
+	}
+	if turnMessages[0].Role != RoleTool {
+		t.Fatalf("turn callback role = %s, want tool", turnMessages[0].Role)
+	}
+}
+
+func TestEngineTurnCallbackIncludesAssistantWhenResponseCallbackFails(t *testing.T) {
+	tool := &countingTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				return []Event{
+					{Type: EventTextDelta, Text: "I'll count."},
+					{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "count_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventDone},
+				}
+			default:
+				return []Event{
+					{Type: EventTextDelta, Text: "done"},
+					{Type: EventDone},
+				}
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	engine.SetResponseCompletedCallback(func(ctx context.Context, turnIndex int, assistantMsg Message, metrics TurnMetrics) error {
+		return errors.New("persist response failed")
+	})
+
+	var turnMessages []Message
+	engine.SetTurnCompletedCallback(func(ctx context.Context, turnIndex int, messages []Message, metrics TurnMetrics) error {
+		if turnIndex == 0 {
+			turnMessages = append([]Message(nil), messages...)
+		}
+		return nil
+	})
+
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages: []Message{UserText("test")},
+		Tools:    []ToolSpec{tool.Spec()},
+	})
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+	}
+
+	if len(turnMessages) != 2 {
+		t.Fatalf("turn callback messages = %d, want assistant + tool result after response callback failure", len(turnMessages))
+	}
+	if turnMessages[0].Role != RoleAssistant {
+		t.Fatalf("turn callback first role = %s, want assistant", turnMessages[0].Role)
+	}
+	if turnMessages[1].Role != RoleTool {
+		t.Fatalf("turn callback second role = %s, want tool", turnMessages[1].Role)
+	}
+}
+
 func TestEngineEmitsToolCallAndExecStartForEachTool(t *testing.T) {
 	// This test verifies that the engine emits both EventToolCall (during streaming)
 	// and EventToolExecStart (at execution time) for each tool, with matching IDs.
