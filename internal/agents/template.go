@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"os/user"
@@ -282,10 +283,13 @@ func ExpandTemplate(text string, ctx TemplateContext) string {
 	})
 }
 
+// gitProbeTimeout bounds git subprocesses used during template expansion so prompt construction
+// fails open instead of hanging session startup on unhealthy repositories or filesystems.
+var gitProbeTimeout = 2 * time.Second
+
 // getGitInfo returns the current git branch and repository name, or empty strings if not in a git repo.
 func getGitInfo() (string, string) {
-	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD", "--show-toplevel")
-	output, err := cmd.Output()
+	output, err := runGitOutput("", "rev-parse", "--abbrev-ref", "HEAD", "--show-toplevel")
 	if err != nil {
 		return "", ""
 	}
@@ -304,12 +308,10 @@ func getGitInfo() (string, string) {
 // Combines both staged and unstaged changes.
 func getGitDiffStat() string {
 	// Get unstaged changes (--no-color prevents ANSI codes from leaking into prompts)
-	cmd := exec.Command("git", "diff", "--stat", "--stat-width=80", "--no-color")
-	unstaged, _ := cmd.Output()
+	unstaged, _ := runGitOutput("", "diff", "--stat", "--stat-width=80", "--no-color")
 
 	// Get staged changes
-	cmd = exec.Command("git", "diff", "--cached", "--stat", "--stat-width=80", "--no-color")
-	staged, _ := cmd.Output()
+	staged, _ := runGitOutput("", "diff", "--cached", "--stat", "--stat-width=80", "--no-color")
 
 	var result strings.Builder
 	if len(staged) > 0 {
@@ -323,6 +325,15 @@ func getGitDiffStat() string {
 		result.Write(unstaged)
 	}
 	return strings.TrimSpace(result.String())
+}
+
+func runGitOutput(dir string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), gitProbeTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	return cmd.Output()
 }
 
 // itoa is a simple int to string conversion.
@@ -460,9 +471,7 @@ func findFallbackInstructions(cwd, repoRoot string) string {
 
 // findGitRoot returns the git repository root for the given path, or empty string if not in a repo.
 func findGitRoot(path string) string {
-	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
-	cmd.Dir = path
-	output, err := cmd.Output()
+	output, err := runGitOutput(path, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return ""
 	}

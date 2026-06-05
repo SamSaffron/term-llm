@@ -194,6 +194,78 @@ func TestNewTemplateContextForTemplate_CoalescesGitLookups(t *testing.T) {
 	}
 }
 
+func TestNewTemplateContextForTemplate_GitInfoTimeoutFailsOpen(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("git PATH shim test requires a POSIX shell")
+	}
+
+	shimDir := t.TempDir()
+	logPath := filepath.Join(shimDir, "git.log")
+	gitPath := filepath.Join(shimDir, "git")
+	script := "#!/bin/sh\necho invoked >> \"" + logPath + "\"\nwhile :; do :; done\n"
+	if err := os.WriteFile(gitPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write git shim: %v", err)
+	}
+
+	origPath := os.Getenv("PATH")
+	if err := os.Setenv("PATH", shimDir+string(os.PathListSeparator)+origPath); err != nil {
+		t.Fatalf("set PATH: %v", err)
+	}
+	defer os.Setenv("PATH", origPath)
+
+	origTimeout := gitProbeTimeout
+	gitProbeTimeout = 20 * time.Millisecond
+	defer func() { gitProbeTimeout = origTimeout }()
+
+	start := time.Now()
+	ctx := NewTemplateContextForTemplate("{{git_branch}} {{git_repo}}")
+	elapsed := time.Since(start)
+
+	if ctx.GitBranch != "" {
+		t.Fatalf("GitBranch = %q, want empty", ctx.GitBranch)
+	}
+	if ctx.GitRepo != "" {
+		t.Fatalf("GitRepo = %q, want empty", ctx.GitRepo)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("NewTemplateContextForTemplate took %v, want timeout fail-open well under 1s", elapsed)
+	}
+}
+
+func TestNewTemplateContextForTemplate_GitDiffStatTimeoutFailsOpen(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("git PATH shim test requires a POSIX shell")
+	}
+
+	shimDir := t.TempDir()
+	gitPath := filepath.Join(shimDir, "git")
+	script := "#!/bin/sh\nwhile :; do :; done\n"
+	if err := os.WriteFile(gitPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write git shim: %v", err)
+	}
+
+	origPath := os.Getenv("PATH")
+	if err := os.Setenv("PATH", shimDir+string(os.PathListSeparator)+origPath); err != nil {
+		t.Fatalf("set PATH: %v", err)
+	}
+	defer os.Setenv("PATH", origPath)
+
+	origTimeout := gitProbeTimeout
+	gitProbeTimeout = 20 * time.Millisecond
+	defer func() { gitProbeTimeout = origTimeout }()
+
+	start := time.Now()
+	ctx := NewTemplateContextForTemplate("{{git_diff_stat}}")
+	elapsed := time.Since(start)
+
+	if ctx.GitDiffStat != "" {
+		t.Fatalf("GitDiffStat = %q, want empty", ctx.GitDiffStat)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("NewTemplateContextForTemplate took %v, want timeout fail-open well under 1s", elapsed)
+	}
+}
+
 func TestTemplateVariablesAllowsWhitespace(t *testing.T) {
 	vars := templateVariables("{{ git_repo }}/{{git_branch}} {{ git_diff_stat }} {{ agents }} {{ handover_dir }} {{ handover_path }}")
 	for _, name := range []string{"git_repo", "git_branch", "git_diff_stat", "agents", "handover_dir", "handover_path"} {
