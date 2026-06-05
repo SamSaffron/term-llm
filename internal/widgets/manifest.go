@@ -13,6 +13,14 @@ import (
 
 var mountRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
+// ValidMount reports whether s is a valid widget mount identifier: 1-64 chars,
+// starting with a lowercase letter or digit, containing only lowercase letters,
+// digits, and hyphens. It is the single source of truth for the mount charset,
+// shared by manifest validation and any proxy that routes by mount.
+func ValidMount(s string) bool {
+	return mountRe.MatchString(s)
+}
+
 // Manifest is the parsed contents of a widget.yaml file.
 type Manifest struct {
 	Title       string   `yaml:"title"`
@@ -132,7 +140,7 @@ func validateManifest(m *Manifest) error {
 	if strings.Contains(m.Mount, "/") {
 		return fmt.Errorf("mount %q must not contain a slash", m.Mount)
 	}
-	if !mountRe.MatchString(m.Mount) {
+	if !ValidMount(m.Mount) {
 		return fmt.Errorf("mount %q does not match required pattern ^[a-z0-9][a-z0-9-]{0,63}$", m.Mount)
 	}
 	if _, err := m.PlaceholderMode(); err != nil {

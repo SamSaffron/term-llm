@@ -3,3 +3,4 @@ term-llm
 .cache/*
 .gocache/*
 *.lock
+.DS_Store

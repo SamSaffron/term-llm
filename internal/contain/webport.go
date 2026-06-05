@@ -1,13 +1,10 @@
 package contain
 
 import (
-	"bufio"
 	"fmt"
 	"net"
-	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 )
 
 // webPortBase is the first port term-llm tries to assign to a workspace Web UI.
@@ -59,35 +56,17 @@ func usedWorkspaceWebPorts() (map[int]bool, error) {
 	}
 	used := map[int]bool{}
 	for _, envPath := range matches {
-		if port, ok := readEnvWebPort(envPath); ok {
+		// Reuse the single .env parser (ReadEnvFile) rather than a second
+		// hand-rolled scanner, so quote/comment handling stays consistent.
+		values, err := ReadEnvFile(envPath)
+		if err != nil {
+			continue
+		}
+		if port, err := strconv.Atoi(values["WEB_PORT"]); err == nil {
 			used[port] = true
 		}
 	}
 	return used, nil
-}
-
-// readEnvWebPort extracts the WEB_PORT value from a workspace .env file.
-func readEnvWebPort(path string) (int, bool) {
-	f, err := os.Open(path)
-	if err != nil {
-		return 0, false
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if !strings.HasPrefix(line, "WEB_PORT=") {
-			continue
-		}
-		value := strings.TrimSpace(strings.TrimPrefix(line, "WEB_PORT="))
-		port, err := strconv.Atoi(value)
-		if err != nil {
-			return 0, false
-		}
-		return port, true
-	}
-	return 0, false
 }
 
 // hostPortAvailable reports whether the given TCP port can currently be bound on

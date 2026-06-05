@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>term-llm gateway</title>
+<style>{{.CSS}}</style>
+</head>
+<body>
+<header>
+  <h1>term-llm multi-agent gateway</h1>
+  <p class="sub">Fronts each agent's web UI and injects its token server-side &mdash; the per-agent token never reaches the browser.</p>
+</header>
+
+<div class="banner">
+  <strong>Experimental &mdash; loopback only.</strong> There is no gateway-level authentication yet. Do not expose this beyond a loopback interface.
+</div>
+
+<h2>Agents</h2>
+{{if .Agents}}
+<ul class="agents">
+{{range .Agents}}
+  <li>
+    {{if .Reachable}}<a class="name" href="{{.ProxyPath}}">{{.Name}}</a><span class="badge ok">reachable</span>{{else}}<span class="name">{{.Name}}</span><span class="badge off">no token</span>{{end}}
+    <span class="endpoint">:{{.Port}}{{.BasePath}}</span>
+  </li>
+{{end}}
+</ul>
+<p class="note">Click an agent to open its web UI through the proxy.</p>
+{{else}}
+<div class="panel note">No agents discovered. Create one with <code>term-llm contain new &lt;name&gt; --template agent</code>.</div>
+{{end}}
+
+{{if .WidgetHost}}
+<h2>Widgets</h2>
+{{if .AnyWidgets}}
+<div class="wgroups">
+{{range .Agents}}{{if .Widgets}}
+  <div class="wgroup">
+    <div class="wgroup-head"><span class="name">{{.Name}}</span><span class="endpoint">{{len .Widgets}} widget{{if ne (len .Widgets) 1}}s{{end}}</span></div>
+    <div class="wpills">
+    {{range .Widgets}}<a class="wpill" href="{{.URL}}"><span class="dot{{if eq .State "running"}} on{{end}}"></span>{{.Title}}<span class="state">{{.State}}</span></a>{{end}}
+    </div>
+  </div>
+{{end}}{{end}}
+</div>
+{{else}}
+<div class="panel note">No widgets loaded yet. Add a widget to an agent (see the widgets skill) and it will appear here.</div>
+{{end}}
+<p class="hint">Widgets open on the isolated <code>{{.WidgetHost}}</code> origin &mdash; add <code>{{.WidgetHost}}</code> to your hosts file or DNS so it resolves to this gateway. Pattern: <code>http://{{.WidgetHost}}:&lt;port&gt;/w/&lt;agent&gt;/&lt;mount&gt;/</code></p>
+{{end}}
+
+<footer>
+  <p class="note">JSON: <a href="/agents">/agents</a></p>
+</footer>
+</body>
+</html>
