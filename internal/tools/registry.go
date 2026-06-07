@@ -114,6 +114,10 @@ func (r *LocalToolRegistry) registerTool(specName string) error {
 	case SpawnAgentToolName:
 		// SpawnAgentTool requires a runner to be set later via SetRunner
 		tool = NewSpawnAgentTool(r.config.Spawn, 0)
+	case QueueAgentToolName:
+		tool = NewQueueAgentTool()
+	case WaitForAgentToolName:
+		tool = NewWaitForAgentTool()
 	case RunAgentScriptToolName:
 		tool = NewRunAgentScriptTool(r.config, r.limits)
 	case InitiateHandoverToolName:

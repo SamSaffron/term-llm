@@ -322,6 +322,35 @@ func TestRegisterCustomTools_BuiltinCollision(t *testing.T) {
 	}
 }
 
+func TestRegisterCustomTools_LegacyQueuedAgentNameAllowedWhenBuiltinDisabled(t *testing.T) {
+	r := &LocalToolRegistry{
+		tools: make(map[string]llm.Tool),
+	}
+
+	err := r.RegisterCustomTools([]agents.CustomToolDef{
+		{Name: QueueAgentToolName, Description: "legacy", Script: "queue-agent.sh"},
+		{Name: WaitForAgentToolName, Description: "legacy", Script: "wait-for-agent.sh"},
+	}, "/agent")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRegisterCustomTools_QueuedAgentNameCollidesWhenBuiltinEnabled(t *testing.T) {
+	r := &LocalToolRegistry{
+		tools: map[string]llm.Tool{
+			QueueAgentToolName: NewQueueAgentTool(),
+		},
+	}
+
+	err := r.RegisterCustomTools([]agents.CustomToolDef{
+		{Name: QueueAgentToolName, Description: "legacy", Script: "queue-agent.sh"},
+	}, "/agent")
+	if err == nil {
+		t.Fatal("expected error for enabled queue_agent collision")
+	}
+}
+
 func TestRegisterCustomTools_InvalidName(t *testing.T) {
 	r := &LocalToolRegistry{
 		tools: make(map[string]llm.Tool),

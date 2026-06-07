@@ -301,8 +301,14 @@ func (r *LocalToolRegistry) RegisterCustomTools(defs []agents.CustomToolDef, age
 			return fmt.Errorf("custom tool %q: name must match ^[a-z][a-z0-9_]*$", def.Name)
 		}
 
-		// Check for collision with built-in tool names
-		if ValidToolName(def.Name) {
+		// Check for collision with already-registered tools. Legacy Jarvis installs
+		// shipped queue_agent/wait_for_agent as custom script tools before they became
+		// built-ins, so those names may be overridden when the built-in tool was not
+		// explicitly enabled.
+		if _, exists := r.tools[def.Name]; exists {
+			return fmt.Errorf("custom tool %q collides with a built-in tool name", def.Name)
+		}
+		if ValidToolName(def.Name) && def.Name != QueueAgentToolName && def.Name != WaitForAgentToolName {
 			return fmt.Errorf("custom tool %q collides with a built-in tool name", def.Name)
 		}
 
