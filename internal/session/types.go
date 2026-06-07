@@ -143,17 +143,19 @@ type SessionSummary struct {
 
 // ListOptions configures session listing.
 type ListOptions struct {
-	Name           string        // Filter by name
-	Provider       string        // Filter by provider
-	Model          string        // Filter by model
-	Mode           SessionMode   // Filter by mode (chat, ask, plan, exec)
-	Status         SessionStatus // Filter by status
-	Tag            string        // Filter by tag (substring match)
-	Categories     []string      // Sidebar/web categories (all, chat, web, ask, plan, exec)
-	Limit          int           // Max results (0 = use default)
-	Offset         int           // Pagination offset
-	Archived       bool          // Include archived sessions
-	SortByActivity bool          // Sort by last_message_at (web sidebar); defaults to last_user_message_at
+	Name             string        // Filter by name
+	Provider         string        // Filter by provider
+	Model            string        // Filter by model
+	Mode             SessionMode   // Filter by mode (chat, ask, plan, exec)
+	Status           SessionStatus // Filter by status
+	Tag              string        // Filter by tag (substring match)
+	Categories       []string      // Sidebar/web categories (all, chat, web, ask, plan, exec)
+	Limit            int           // Max results (0 = use default)
+	Offset           int           // Pagination offset
+	BeforeNumber     int64         // Keyset cursor: only sessions with number < this value
+	SortByNumberDesc bool          // Order by session number descending instead of activity sort
+	Archived         bool          // Include archived sessions
+	SortByActivity   bool          // Sort by last_message_at (web sidebar); defaults to last_user_message_at
 }
 
 // SearchResult represents a search match.

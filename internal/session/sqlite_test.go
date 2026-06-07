@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,6 +40,117 @@ func TestNewSQLiteStoreMemoryDBUsesSingleConnection(t *testing.T) {
 	if got := store.db.Stats().MaxOpenConnections; got != 1 {
 		t.Fatalf("MaxOpenConnections = %d, want 1 for :memory: databases", got)
 	}
+}
+
+func TestSQLiteStoreListByNumberCursorReturnsCompleteSessions(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	seed := []struct {
+		status   SessionStatus
+		archived bool
+	}{
+		{status: StatusComplete},
+		{status: StatusComplete},
+		{status: StatusActive},
+		{status: StatusComplete},
+		{status: StatusComplete},
+		{status: StatusComplete, archived: true},
+	}
+	for i, tc := range seed {
+		sess := &Session{
+			ID:       NewID(),
+			Provider: "test",
+			Model:    "test-model",
+			Mode:     ModeChat,
+			Status:   tc.status,
+			Archived: tc.archived,
+			Name:     fmt.Sprintf("session-%d", i+1),
+		}
+		if err := store.Create(ctx, sess); err != nil {
+			t.Fatalf("Create(%d): %v", i, err)
+		}
+	}
+
+	page1, err := store.List(ctx, ListOptions{Status: StatusComplete, Limit: 2, SortByNumberDesc: true})
+	if err != nil {
+		t.Fatalf("List page1: %v", err)
+	}
+	if len(page1) != 2 {
+		t.Fatalf("len(page1) = %d, want 2", len(page1))
+	}
+	if page1[0].Number != 5 || page1[1].Number != 4 {
+		t.Fatalf("page1 numbers = [%d %d], want [5 4]", page1[0].Number, page1[1].Number)
+	}
+
+	page2, err := store.List(ctx, ListOptions{Status: StatusComplete, Limit: 2, BeforeNumber: page1[len(page1)-1].Number, SortByNumberDesc: true})
+	if err != nil {
+		t.Fatalf("List page2: %v", err)
+	}
+	if len(page2) != 2 {
+		t.Fatalf("len(page2) = %d, want 2", len(page2))
+	}
+	if page2[0].Number != 2 || page2[1].Number != 1 {
+		t.Fatalf("page2 numbers = [%d %d], want [2 1]", page2[0].Number, page2[1].Number)
+	}
+
+	page3, err := store.List(ctx, ListOptions{Status: StatusComplete, Limit: 2, BeforeNumber: page2[len(page2)-1].Number, SortByNumberDesc: true})
+	if err != nil {
+		t.Fatalf("List page3: %v", err)
+	}
+	if len(page3) != 0 {
+		t.Fatalf("len(page3) = %d, want 0", len(page3))
+	}
+}
+
+func TestSQLiteStoreListByNumberCursorUsesSessionNumberIndex(t *testing.T) {
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: ":memory:"})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	plan := sqliteExplainPlan(t, store.db, `EXPLAIN QUERY PLAN
+		SELECT s.id, s.number
+		FROM sessions s INDEXED BY idx_sessions_number
+		WHERE s.status = ? AND s.archived = FALSE AND s.number < ?
+		ORDER BY s.number DESC
+		LIMIT ?`, string(StatusComplete), 1000, 200)
+	if !strings.Contains(plan, "idx_sessions_number") {
+		t.Fatalf("query plan = %q, want session number index", plan)
+	}
+	if strings.Contains(plan, "USE TEMP B-TREE") {
+		t.Fatalf("query plan = %q, want no temp sort", plan)
+	}
+}
+
+func sqliteExplainPlan(t *testing.T, db *sql.DB, query string, args ...any) string {
+	t.Helper()
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		t.Fatalf("explain query: %v", err)
+	}
+	defer rows.Close()
+
+	var details []string
+	for rows.Next() {
+		var id, parent, notused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+			t.Fatalf("scan explain row: %v", err)
+		}
+		details = append(details, detail)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("explain rows: %v", err)
+	}
+	return strings.Join(details, "\n")
 }
 
 func TestSQLiteStoreGetMessagesFromHonorsLimit(t *testing.T) {

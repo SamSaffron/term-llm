@@ -1349,12 +1349,19 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		}
 		messageCountCol = "(SELECT COUNT(*) FROM messages WHERE session_id = s.id AND role IN ('user', 'assistant')" + compactionTailClause + ")"
 	}
+	fromClause := "FROM sessions s"
+	if opts.SortByNumberDesc {
+		// Completed-session walks page by descending session number. Force the
+		// number index so SQLite can continue scanning from the last seen number
+		// instead of picking a filter-only index and re-sorting each page.
+		fromClause = "FROM sessions s INDEXED BY idx_sessions_number"
+	}
 	query := `
 		SELECT s.id, s.number, s.name, s.summary, ` + generatedShortCol + `, ` + generatedLongCol + `, ` + titleSourceCol + `,
 		       s.provider, COALESCE(s.provider_key, ''), s.model, s.mode, ` + originCol + `, s.archived, ` + pinnedCol + `, s.created_at, s.updated_at, ` + lastMessageAtCol + `,
 		       ` + messageCountCol + ` as message_count,
 		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.cached_input_tokens, ` + cacheWriteCol + `, s.output_tokens, s.status, s.tags
-		FROM sessions s
+		` + fromClause + `
 		WHERE 1=1`
 	args := []any{}
 
@@ -1418,26 +1425,34 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 			query += " AND 1 = 0"
 		}
 	}
+	if opts.BeforeNumber > 0 {
+		query += " AND s.number < ?"
+		args = append(args, opts.BeforeNumber)
+	}
 	if !opts.Archived {
 		query += " AND s.archived = FALSE"
 	}
 
-	// Sort by last user message time (when the user last interacted), falling back
-	// to created_at for sessions with no user messages yet. This prevents background
-	// activity (autotitle, mining, status changes) from reordering the sidebar.
-	// Web sidebar callers set SortByActivity to use last_message_at instead so
-	// assistant-only turns also surface (keeps the top-N window aligned with the
-	// client-side "any-message" ordering).
-	sortCol := "s.updated_at"
-	if opts.SortByActivity && s.hasLastMessageAt {
-		sortCol = "COALESCE(s.last_message_at, s.last_user_message_at, s.created_at)"
-	} else if s.hasLastUserMessageAt {
-		sortCol = "COALESCE(s.last_user_message_at, s.created_at)"
-	}
-	if s.hasPinned {
-		query += " ORDER BY COALESCE(s.pinned, FALSE) DESC, " + sortCol + " DESC"
+	if opts.SortByNumberDesc {
+		query += " ORDER BY s.number DESC"
 	} else {
-		query += " ORDER BY " + sortCol + " DESC"
+		// Sort by last user message time (when the user last interacted), falling back
+		// to created_at for sessions with no user messages yet. This prevents background
+		// activity (autotitle, mining, status changes) from reordering the sidebar.
+		// Web sidebar callers set SortByActivity to use last_message_at instead so
+		// assistant-only turns also surface (keeps the top-N window aligned with the
+		// client-side "any-message" ordering).
+		sortCol := "s.updated_at"
+		if opts.SortByActivity && s.hasLastMessageAt {
+			sortCol = "COALESCE(s.last_message_at, s.last_user_message_at, s.created_at)"
+		} else if s.hasLastUserMessageAt {
+			sortCol = "COALESCE(s.last_user_message_at, s.created_at)"
+		}
+		if s.hasPinned {
+			query += " ORDER BY COALESCE(s.pinned, FALSE) DESC, " + sortCol + " DESC"
+		} else {
+			query += " ORDER BY " + sortCol + " DESC"
+		}
 	}
 
 	limit := opts.Limit

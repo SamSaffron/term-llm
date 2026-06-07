@@ -21,14 +21,15 @@ func openReadOnlySessionStore(cfg *config.Config) (session.Store, error) {
 
 func listCompleteSessions(ctx context.Context, store session.Store) ([]session.SessionSummary, error) {
 	const pageSize = 200
-	offset := 0
+	var beforeNumber int64
 	all := make([]session.SessionSummary, 0, pageSize)
 
 	for {
 		page, err := store.List(ctx, session.ListOptions{
-			Status: session.StatusComplete,
-			Limit:  pageSize,
-			Offset: offset,
+			Status:           session.StatusComplete,
+			Limit:            pageSize,
+			BeforeNumber:     beforeNumber,
+			SortByNumberDesc: true,
 		})
 		if err != nil {
 			return nil, err
@@ -40,7 +41,11 @@ func listCompleteSessions(ctx context.Context, store session.Store) ([]session.S
 		if len(page) < pageSize {
 			break
 		}
-		offset += len(page)
+		lastNumber := page[len(page)-1].Number
+		if lastNumber <= 0 {
+			return nil, fmt.Errorf("complete session %s is missing a session number", page[len(page)-1].ID)
+		}
+		beforeNumber = lastNumber
 	}
 
 	return all, nil
