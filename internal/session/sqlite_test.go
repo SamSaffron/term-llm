@@ -41,6 +41,92 @@ func TestNewSQLiteStoreMemoryDBUsesSingleConnection(t *testing.T) {
 	}
 }
 
+func TestInitSchemaFreshDBDoesNotRunHistoricalMigrations(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	defer db.Close()
+
+	originalMigrations := migrations
+	migrations = []migration{{
+		version:     1,
+		description: "sentinel migration",
+		up: func(db *sql.DB) error {
+			_, err := db.Exec(`CREATE TABLE migration_sentinel (id INTEGER PRIMARY KEY)`)
+			return err
+		},
+	}}
+	defer func() {
+		migrations = originalMigrations
+	}()
+
+	if err := initSchema(db); err != nil {
+		t.Fatalf("initSchema: %v", err)
+	}
+
+	var version int
+	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
+		t.Fatalf("read schema version: %v", err)
+	}
+	if version != schemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersion)
+	}
+
+	var sentinelCount int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type='table' AND name='migration_sentinel'
+	`).Scan(&sentinelCount); err != nil {
+		t.Fatalf("check sentinel table: %v", err)
+	}
+	if sentinelCount != 0 {
+		t.Fatal("fresh DB should not replay historical migrations")
+	}
+}
+
+func TestInitSchemaExistingDBWithoutSchemaVersionRunsMigrations(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	defer db.Close()
+
+	if _, err := db.Exec(schema); err != nil {
+		t.Fatalf("seed schema without version table: %v", err)
+	}
+
+	originalMigrations := migrations
+	migrations = []migration{{
+		version:     1,
+		description: "sentinel migration",
+		up: func(db *sql.DB) error {
+			_, err := db.Exec(`CREATE TABLE migration_sentinel (id INTEGER PRIMARY KEY)`)
+			return err
+		},
+	}}
+	defer func() {
+		migrations = originalMigrations
+	}()
+
+	if err := initSchema(db); err != nil {
+		t.Fatalf("initSchema: %v", err)
+	}
+
+	var sentinelCount int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type='table' AND name='migration_sentinel'
+	`).Scan(&sentinelCount); err != nil {
+		t.Fatalf("check sentinel table: %v", err)
+	}
+	if sentinelCount != 1 {
+		t.Fatal("existing DB without schema_version should still run migrations")
+	}
+}
+
 func TestSQLiteStoreGetMessagesFromHonorsLimit(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
@@ -135,7 +221,6 @@ func TestSQLiteStoreGetMessagesPageDescendingHonorsBeforeSeqAndLimit(t *testing.
 		t.Fatalf("before seq sequences = [%d %d], want [1 0]", got[0].Sequence, got[1].Sequence)
 	}
 }
-
 func TestSQLiteStoreGetLatestVisibleMessageIDSkipsInvisibleTail(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 

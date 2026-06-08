@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     cwd TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_user_message_at TIMESTAMP,
     last_message_at TIMESTAMP,
     archived BOOLEAN DEFAULT FALSE,
     pinned BOOLEAN DEFAULT FALSE,
@@ -907,6 +908,20 @@ func initSchema(db *sql.DB) error {
 // initSchemaFull handles schema creation and migrations.
 // Only called when schema needs initialization or migration.
 func initSchemaFull(db *sql.DB, versionErr error, currentVersion int) error {
+	needsBootstrapVersion := versionErr != nil && (versionErr == sql.ErrNoRows || strings.Contains(versionErr.Error(), "no such table"))
+	preExistingSessionsTable := false
+	if needsBootstrapVersion {
+		var tableCount int
+		err := db.QueryRow(`
+			SELECT COUNT(*) FROM sqlite_master
+			WHERE type='table' AND name='sessions'
+		`).Scan(&tableCount)
+		if err != nil {
+			return fmt.Errorf("check sessions table before schema init: %w", err)
+		}
+		preExistingSessionsTable = tableCount > 0
+	}
+
 	// Create base schema (uses IF NOT EXISTS, safe to run multiple times)
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("create base schema: %w", err)
@@ -922,20 +937,12 @@ func initSchemaFull(db *sql.DB, versionErr error, currentVersion int) error {
 		return fmt.Errorf("create schema_version table: %w", err)
 	}
 
-	// Determine current version if we didn't get it earlier
-	// versionErr is non-nil if schema_version table doesn't exist or has no rows
-	if versionErr != nil && (versionErr == sql.ErrNoRows || strings.Contains(versionErr.Error(), "no such table")) {
-		// No version record - check if this is fresh DB or pre-migration DB
-		var tableCount int
-		err = db.QueryRow(`
-			SELECT COUNT(*) FROM sqlite_master
-			WHERE type='table' AND name='sessions'
-		`).Scan(&tableCount)
-		if err != nil {
-			return fmt.Errorf("check sessions table: %w", err)
-		}
-
-		if tableCount > 0 {
+	// Determine current version if we didn't get it earlier.
+	// versionErr is non-nil if schema_version table doesn't exist or has no rows.
+	// For fresh DBs we must use the pre-schema check above; after db.Exec(schema)
+	// the sessions table always exists and cannot distinguish fresh installs.
+	if needsBootstrapVersion {
+		if preExistingSessionsTable {
 			// Pre-migration DB - start at version 0, will run all migrations
 			currentVersion = 0
 		} else {
@@ -966,6 +973,14 @@ func initSchemaFull(db *sql.DB, versionErr error, currentVersion int) error {
 	}
 
 	// Ensure indexes exist (handles fresh DBs where migrations don't run)
+	_, err = db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_session_sequence ON messages(session_id, sequence)")
+	if err != nil {
+		return fmt.Errorf("ensure message sequence index: %w", err)
+	}
+	_, err = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)")
+	if err != nil {
+		return fmt.Errorf("ensure status index: %w", err)
+	}
 	_, err = db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_number ON sessions(number)")
 	if err != nil {
 		return fmt.Errorf("ensure number index: %w", err)
@@ -977,6 +992,18 @@ func initSchemaFull(db *sql.DB, versionErr error, currentVersion int) error {
 	_, err = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_pinned ON sessions(pinned)")
 	if err != nil {
 		return fmt.Errorf("ensure pinned index: %w", err)
+	}
+	_, err = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_title_skipped ON sessions(archived, title_skipped_at, updated_at DESC)")
+	if err != nil {
+		return fmt.Errorf("ensure title_skipped index: %w", err)
+	}
+	_, err = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_last_user_msg ON sessions(last_user_message_at DESC)")
+	if err != nil {
+		return fmt.Errorf("ensure last_user_message_at index: %w", err)
+	}
+	_, err = db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_last_message ON sessions(last_message_at DESC)")
+	if err != nil {
+		return fmt.Errorf("ensure last_message_at index: %w", err)
 	}
 
 	return nil
