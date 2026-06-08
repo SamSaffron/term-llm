@@ -144,6 +144,19 @@ let sidebarRenderKey = '';
 
 const sidebarScrollContainer = () => elements.sidebarContent || elements.sessionGroups?.parentElement || null;
 
+const conversationMessageCount = (session) => {
+  if (typeof session?.messageCount === 'number' && Number.isFinite(session.messageCount)) {
+    return Math.max(session.messageCount, 0);
+  }
+  const messages = Array.isArray(session?.messages) ? session.messages : [];
+  return messages.filter((message) => message?.role === 'user' || message?.role === 'assistant').length;
+};
+
+const formatSessionMessageCount = (session) => {
+  const count = conversationMessageCount(session);
+  return `${count} message${count === 1 ? '' : 's'}`;
+};
+
 const restoreSidebarScroll = (scroller, scrollTop) => {
   if (!scroller || !Number.isFinite(scrollTop)) return;
   if (scroller.scrollTop !== scrollTop) scroller.scrollTop = scrollTop;
@@ -170,7 +183,7 @@ const computeSidebarKey = (sorted) =>
     [
       s.id, s.title, s.longTitle || '', s.searchSnippet || '',
       s.pinned ? 1 : 0, s.archived ? 1 : 0,
-      s.messageCount || s.messages.length || 0,
+      conversationMessageCount(s),
       s.lastMessageAt || s.created,
       sessionHasInProgressState(s) ? 1 : 0,
       s.id === state.activeSessionId ? 1 : 0
@@ -212,8 +225,7 @@ const buildCachedSessionRow = (session) => {
     metaEl.textContent = session.searchSnippet;
     metaEl.title = session.searchSnippet;
   } else {
-    const msgCount = session.messageCount || session.messages.filter(m => m.role !== 'tool-group').length || 0;
-    const metaParts = [`${msgCount} message${msgCount === 1 ? '' : 's'}`];
+    const metaParts = [formatSessionMessageCount(session)];
     if (session.archived) metaParts.push('hidden');
     const activityAt = session.lastMessageAt || session.created;
     metaParts.push(relativeTime(activityAt));
@@ -323,8 +335,7 @@ const updateCachedSessionRow = (session, cached) => {
     newMeta = session.searchSnippet;
     newMetaTitle = session.searchSnippet;
   } else {
-    const msgCount = session.messageCount || session.messages.filter(m => m.role !== 'tool-group').length || 0;
-    const metaParts = [`${msgCount} message${msgCount === 1 ? '' : 's'}`];
+    const metaParts = [formatSessionMessageCount(session)];
     if (session.archived) metaParts.push('hidden');
     const activityAt = session.lastMessageAt || session.created;
     metaParts.push(relativeTime(activityAt));

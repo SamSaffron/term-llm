@@ -1017,6 +1017,74 @@ async function run(name, fn) {
     assertEqual(rows[1].querySelector('.session-title').textContent, 'Beta', 'second row title');
   });
 
+  await run('renderSidebar trusts server conversation message count over loaded client rows', () => {
+    const sessions = [
+      { id: 'a', title: 'Alpha', created: 2000, pinned: false, archived: false, lastMessageAt: 2000, messageCount: 2, messages: [
+        { id: 'u1', role: 'user', content: 'run tools' },
+        { id: 't1', role: 'tool', name: 'grep' },
+        { id: 't2', role: 'tool', name: 'read_file' },
+        { id: 't3', role: 'tool', name: 'shell' },
+        { id: 't4', role: 'tool', name: 'edit_file' },
+        { id: 'a1', role: 'assistant', content: 'done' },
+      ] },
+    ];
+    const { app } = createHarness({ visibleSessions: () => sessions });
+
+    app.renderSidebar();
+
+    const metaEl = app.elements.sessionGroups.querySelector('.session-meta');
+    assert(metaEl.textContent.startsWith('2 messages'), 'meta uses server conversation count');
+  });
+
+  await run('renderSidebar counts only user and assistant messages for unsynced local sessions', () => {
+    const sessions = [
+      { id: 'a', title: 'Alpha', created: 2000, pinned: false, archived: false, lastMessageAt: 2000, messages: [
+        { id: 'u1', role: 'user', content: 'run tools' },
+        { id: 't1', role: 'tool', name: 'grep' },
+        { id: 'tg1', role: 'tool-group', tools: [{ id: 't2' }, { id: 't3' }, { id: 't4' }] },
+        { id: 'a1', role: 'assistant', content: 'done' },
+      ] },
+    ];
+    const { app } = createHarness({ visibleSessions: () => sessions });
+
+    app.renderSidebar();
+
+    const metaEl = app.elements.sessionGroups.querySelector('.session-meta');
+    assert(metaEl.textContent.startsWith('2 messages'), 'meta counts user/assistant only');
+    assert(!metaEl.textContent.includes('/'), 'meta does not show raw/tool count');
+  });
+
+  await run('renderSidebar trusts explicit zero server conversation message count', () => {
+    const sessions = [
+      { id: 'a', title: 'Alpha', created: 2000, pinned: false, archived: false, lastMessageAt: 2000, messageCount: 0, messages: [
+        { id: 'u1', role: 'user', content: 'locally loaded but server says zero' },
+        { id: 'a1', role: 'assistant', content: 'locally loaded but server says zero' },
+      ] },
+    ];
+    const { app } = createHarness({ visibleSessions: () => sessions });
+
+    app.renderSidebar();
+
+    const metaEl = app.elements.sessionGroups.querySelector('.session-meta');
+    assert(metaEl.textContent.startsWith('0 messages'), 'explicit server zero is authoritative');
+  });
+
+  await run('renderSidebar falls back to local count when server count is absent', () => {
+    const sessions = [
+      { id: 'a', title: 'Alpha', created: 2000, pinned: false, archived: false, lastMessageAt: 2000, messageCount: null, messages: [
+        { id: 'u1', role: 'user', content: 'run tools' },
+        { id: 'tg1', role: 'tool-group', tools: [{ id: 't1' }, { id: 't2' }, { id: 't3' }, { id: 't4' }] },
+        { id: 'a1', role: 'assistant', content: 'done' },
+      ] },
+    ];
+    const { app } = createHarness({ visibleSessions: () => sessions });
+
+    app.renderSidebar();
+
+    const metaEl = app.elements.sessionGroups.querySelector('.session-meta');
+    assert(metaEl.textContent.startsWith('2 messages'), 'null server count falls back to local conversation count');
+  });
+
   await run('renderSidebar skips re-render when nothing changed', () => {
     const session = { id: 'a', title: 'Alpha', created: 1000, messages: [], pinned: false, archived: false, messageCount: 2, lastMessageAt: 1000 };
     const { app } = createHarness({ visibleSessions: () => [session] });
