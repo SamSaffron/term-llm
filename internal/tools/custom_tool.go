@@ -301,7 +301,7 @@ func (r *LocalToolRegistry) RegisterCustomTools(defs []agents.CustomToolDef, age
 			return fmt.Errorf("custom tool %q: name must match ^[a-z][a-z0-9_]*$", def.Name)
 		}
 
-		// Check for collision with built-in tool names
+		// Check for collision with built-in tool names.
 		if ValidToolName(def.Name) {
 			return fmt.Errorf("custom tool %q collides with a built-in tool name", def.Name)
 		}

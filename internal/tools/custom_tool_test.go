@@ -322,6 +322,29 @@ func TestRegisterCustomTools_BuiltinCollision(t *testing.T) {
 	}
 }
 
+func TestRegisterCustomTools_DuplicateCustomNameOverwrites(t *testing.T) {
+	r := &LocalToolRegistry{
+		tools: make(map[string]llm.Tool),
+	}
+
+	first := []agents.CustomToolDef{{Name: "job_run", Description: "first", Script: "first.sh"}}
+	second := []agents.CustomToolDef{{Name: "job_run", Description: "second", Script: "second.sh"}}
+	if err := r.RegisterCustomTools(first, "/agent"); err != nil {
+		t.Fatalf("first RegisterCustomTools() error = %v", err)
+	}
+	if err := r.RegisterCustomTools(second, "/agent"); err != nil {
+		t.Fatalf("second RegisterCustomTools() error = %v", err)
+	}
+
+	tool, ok := r.tools["job_run"].(*CustomScriptTool)
+	if !ok {
+		t.Fatalf("registered tool = %T, want *CustomScriptTool", r.tools["job_run"])
+	}
+	if tool.def.Description != "second" || tool.def.Script != "second.sh" {
+		t.Fatalf("tool was not overwritten: %+v", tool.def)
+	}
+}
+
 func TestRegisterCustomTools_InvalidName(t *testing.T) {
 	r := &LocalToolRegistry{
 		tools: make(map[string]llm.Tool),

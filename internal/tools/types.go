@@ -125,6 +125,8 @@ const (
 	ImageGenerateToolName    = "image_generate"
 	AskUserToolName          = "ask_user"
 	SpawnAgentToolName       = "spawn_agent"
+	QueueAgentToolName       = "queue_agent"
+	WaitForJobsToolName      = "wait_for_jobs"
 	RunAgentScriptToolName   = "run_agent_script"
 	InitiateHandoverToolName = "initiate_handover"
 )
@@ -145,6 +147,8 @@ func AllToolNames() []string {
 		ImageGenerateToolName,
 		AskUserToolName,
 		SpawnAgentToolName,
+		QueueAgentToolName,
+		WaitForJobsToolName,
 		RunAgentScriptToolName,
 		InitiateHandoverToolName,
 	}
@@ -165,6 +169,8 @@ var validToolNames = map[string]bool{
 	ImageGenerateToolName:    true,
 	AskUserToolName:          true,
 	SpawnAgentToolName:       true,
+	QueueAgentToolName:       true,
+	WaitForJobsToolName:      true,
 	RunAgentScriptToolName:   true,
 	InitiateHandoverToolName: true,
 }
@@ -189,7 +195,7 @@ func GetToolKind(specName string) ToolKind {
 		return KindImage
 	case AskUserToolName:
 		return KindInteractive
-	case SpawnAgentToolName, InitiateHandoverToolName:
+	case SpawnAgentToolName, QueueAgentToolName, WaitForJobsToolName, InitiateHandoverToolName:
 		return KindAgent
 	case RunAgentScriptToolName:
 		return KindExecute
