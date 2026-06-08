@@ -151,6 +151,92 @@ func TestRunProgressiveSessionFinalizesOnNaturalCompletion(t *testing.T) {
 	}
 }
 
+func TestRunProgressiveSessionTimeoutDoesNotStartDetachedFinalizationAfterDeadline(t *testing.T) {
+	provider := llm.NewMockProvider("mock")
+	provider.AddTurn(llm.MockTurn{Delay: 50 * time.Millisecond, Text: "too slow"})
+	provider.AddTextResponse("finalization should not run")
+
+	engine := llm.NewEngine(provider, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	result, err := runProgressiveSession(ctx, engine, llm.Request{
+		Messages: []llm.Message{llm.UserText("Investigate X")},
+		MaxTurns: 2,
+	}, progressiveRunOptions{StopWhen: progressiveStopWhenTimeout})
+	if err != nil {
+		t.Fatalf("runProgressiveSession error = %v", err)
+	}
+	if result.ExitReason != exitReasonTimeout {
+		t.Fatalf("exit reason = %q, want %q", result.ExitReason, exitReasonTimeout)
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("provider saw %d requests, want timeout to skip detached finalization pass", len(provider.Requests))
+	}
+}
+
+func TestProgressiveFinalizationContextNaturalCompletionDetachesFromParent(t *testing.T) {
+	parent, cancelParent := context.WithCancel(context.Background())
+	finalizeCtx, finalizeCancel := progressiveFinalizationContext(parent, time.Second, exitReasonNatural)
+	if finalizeCtx == nil {
+		t.Fatal("expected finalization context")
+	}
+	defer finalizeCancel()
+
+	deadline, ok := finalizeCtx.Deadline()
+	if !ok {
+		t.Fatal("expected deadline on finalization context")
+	}
+	if remaining := time.Until(deadline); remaining < progressiveDefaultFinalizeGrace-time.Second {
+		t.Fatalf("natural finalization remaining = %v, want about %v", remaining, progressiveDefaultFinalizeGrace)
+	}
+
+	cancelParent()
+	select {
+	case <-finalizeCtx.Done():
+		t.Fatal("natural finalization context should not be canceled with parent")
+	default:
+	}
+}
+
+func TestProgressiveFinalizationContextTimeoutUsesReserveAndParentCancellation(t *testing.T) {
+	parent, cancelParent := context.WithCancel(context.Background())
+	defer cancelParent()
+
+	reserve := 50 * time.Millisecond
+	finalizeCtx, finalizeCancel := progressiveFinalizationContext(parent, reserve, exitReasonTimeout)
+	if finalizeCtx == nil {
+		t.Fatal("expected finalization context")
+	}
+	defer finalizeCancel()
+
+	deadline, ok := finalizeCtx.Deadline()
+	if !ok {
+		t.Fatal("expected deadline on finalization context")
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 || remaining > time.Second {
+		t.Fatalf("timeout finalization remaining = %v, want reserve-sized budget without 5m grace", remaining)
+	}
+
+	cancelParent()
+	select {
+	case <-finalizeCtx.Done():
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timeout finalization context did not stop when parent was canceled")
+	}
+}
+
+func TestProgressiveFinalizationContextCancelledExitSkipsWhenParentAlreadyCancelled(t *testing.T) {
+	parent, cancelParent := context.WithCancel(context.Background())
+	cancelParent()
+
+	finalizeCtx, finalizeCancel := progressiveFinalizationContext(parent, time.Second, exitReasonCancelled)
+	if finalizeCtx != nil || finalizeCancel != nil {
+		t.Fatal("expected cancelled exit to skip finalization when parent is already canceled")
+	}
+}
+
 func TestRunProgressivePassDoesNotDuplicateProducedAssistantWhenResponseCallbackFails(t *testing.T) {
 	provider := llm.NewMockProvider("mock").WithCapabilities(llm.Capabilities{ToolCalls: true})
 	provider.AddToolCall("call-1", "progressive_test_tool", map[string]any{})
