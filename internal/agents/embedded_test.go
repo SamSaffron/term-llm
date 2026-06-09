@@ -117,7 +117,7 @@ func TestBuiltinAgentConfigs(t *testing.T) {
 		{"developer", true, 600, true, false, false, true},
 		{"editor", true, 200, false, false, false, true},
 		{"file-organizer", true, 200, true, true, false, false},
-		{"planner", true, 50, true, false, false, true},
+		{"planner", true, 300, true, false, false, true},
 		{"web-researcher", true, 200, false, false, false, true},
 		{"reviewer", true, 200, true, true, true, false},
 		{"shell", true, 200, false, false, false, true},

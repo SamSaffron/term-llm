@@ -32,6 +32,14 @@ const requestHeaders = (sessionId, tokenOverride = '') => {
   return headers;
 };
 
+const forceSidebarStatusRefreshSoon = () => {
+  if (typeof window !== 'undefined' && typeof window.setTimeout === 'function') {
+    window.setTimeout(() => app.refreshSidebarStatusPoll?.(true), 0);
+    return;
+  }
+  app.refreshSidebarStatusPoll?.(true);
+};
+
 const normalizeError = async (response) => {
   let message = `Request failed (${response.status}).`;
   let parsed;
@@ -871,7 +879,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     flushStreamPersistence();
     saveSessions();
     renderSidebar();
-    app.refreshSidebarStatusPoll?.();
+    forceSidebarStatusRefreshSoon();
     void maybeNotifyResponseComplete(session, lastAssistant, responseId);
     scrollVisibleStreamToBottom(session);
     return { terminal: true };
@@ -908,7 +916,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     flushStreamPersistence();
     saveSessions();
     renderSidebar();
-    app.refreshSidebarStatusPoll?.();
+    forceSidebarStatusRefreshSoon();
     scrollVisibleStreamToBottom(session, true);
     return {
       terminal: true,
@@ -1097,7 +1105,7 @@ const applyResponseRecoverySnapshot = (session, payload) => {
 
   saveSessions();
   renderSidebar();
-  app.refreshSidebarStatusPoll?.();
+  forceSidebarStatusRefreshSoon();
   if (session.id === state.activeSessionId) {
     renderMessages(true);
   } else {
@@ -1346,6 +1354,7 @@ const cancelActiveResponse = async (session) => {
   console.log('[cancel] server accepted cancel for response', responseId);
   if (session?.id) {
     app.scheduleSessionStatePoll(session.id, 250);
+    app.refreshSidebarStatusPoll?.(true);
   }
 };
 

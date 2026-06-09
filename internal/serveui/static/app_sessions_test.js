@@ -1926,6 +1926,7 @@ async function testSessionState404ClearsStaleActiveResponse() {
   app.state.currentStreamSessionId = session.id;
   app.state.currentStreamResponseId = session.activeResponseId;
   app.state.streaming = true;
+  app.state.draftSessionActive = false;
 
   const runtimeState = await app.syncActiveSessionFromServer(session, false);
 
@@ -2412,6 +2413,39 @@ async function testSyncUsesServerProvidedPendingInterjectionId() {
   pass(name);
 }
 
+async function testApplyServerSessionSummaryMapsTranscriptUpdatedAt() {
+  const name = 'applyServerSessionSummary maps transcript_updated_at into transcriptUpdatedAt';
+  const { app } = await createSessionsHarness();
+
+  const target = {
+    id: 'sess_transcript_summary',
+    title: 'existing',
+    created: 1000,
+    messages: [],
+  };
+  app.applyServerSessionSummary(target, {
+    id: 'sess_transcript_summary',
+    short_title: 'Updated',
+    created_at: 1000,
+    transcript_updated_at: 987654321,
+    message_count: 2,
+  });
+
+  if (target.transcriptUpdatedAt !== 987654321) {
+    fail(name, `expected transcriptUpdatedAt=987654321, got ${target.transcriptUpdatedAt}`);
+    return;
+  }
+
+  const omitted = { id: 'sess_omitted', created: 1000, transcriptUpdatedAt: 123, messages: [] };
+  app.applyServerSessionSummary(omitted, { id: 'sess_omitted', created_at: 1000 });
+  if (omitted.transcriptUpdatedAt !== 123) {
+    fail(name, `existing transcriptUpdatedAt should be preserved when server omits field, got ${omitted.transcriptUpdatedAt}`);
+    return;
+  }
+
+  pass(name);
+}
+
 async function testApplyServerSessionSummaryMapsLastMessageAt() {
   const name = 'applyServerSessionSummary maps last_message_at into lastMessageAt';
   const { app } = await createSessionsHarness();
@@ -2531,6 +2565,423 @@ async function testSanitizeSessionPreservesLastMessageAt() {
   pass(name);
 }
 
+async function testSanitizeSessionPreservesTranscriptUpdatedAt() {
+  const name = 'sanitizeSession preserves transcriptUpdatedAt from stored and server-shaped payloads';
+  const { app } = await createSessionsHarness();
+
+  const stored = app.sanitizeSession({
+    id: 'sess_transcript_stored',
+    title: 'Stored',
+    created: 1000,
+    transcriptUpdatedAt: 3210,
+    messages: [],
+  });
+  if (stored.transcriptUpdatedAt !== 3210) {
+    fail(name, `expected transcriptUpdatedAt=3210 from camelCase, got ${stored.transcriptUpdatedAt}`);
+    return;
+  }
+
+  const serverShaped = app.sanitizeSession({
+    id: 'sess_transcript_server',
+    title: 'Server',
+    created: 1000,
+    transcript_updated_at: 6540,
+    messages: [],
+  });
+  if (serverShaped.transcriptUpdatedAt !== 6540) {
+    fail(name, `expected transcriptUpdatedAt=6540 from snake_case, got ${serverShaped.transcriptUpdatedAt}`);
+    return;
+  }
+
+  const absent = app.sanitizeSession({
+    id: 'sess_transcript_absent',
+    title: 'Absent',
+    created: 1000,
+    messages: [],
+  });
+  if (Object.prototype.hasOwnProperty.call(absent, 'transcriptUpdatedAt')) {
+    fail(name, 'transcriptUpdatedAt should remain absent when no version was provided', JSON.stringify(absent));
+    return;
+  }
+
+  pass(name);
+}
+
+async function testStatusPollAdvancementRefreshesActiveMessagesOnce() {
+  const name = 'status poll transcript advancement refreshes active messages exactly once';
+  const fetchCalls = [];
+  let statusSessions = [];
+  let messageCalls = 0;
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      fetchCalls.push(String(url));
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/status') {
+        return new Response(JSON.stringify({ sessions: statusSessions }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isTailMessagesURL(url, 'sess_status_active')) {
+        messageCalls += 1;
+        return new Response(JSON.stringify({
+          messages: [{
+            id: `msg_${messageCalls}`,
+            sequence: messageCalls,
+            role: 'assistant',
+            created_at: 1710000000000 + messageCalls,
+            parts: [{ type: 'text', text: `server transcript ${messageCalls}` }],
+          }]
+        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: `"tail-${messageCalls}"` } });
+      }
+      return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+  app.stopSidebarStatusPoll();
+
+  const session = {
+    id: 'sess_status_active',
+    title: 'Status active',
+    origin: 'web',
+    created: 1710000000000,
+    transcriptUpdatedAt: 1000,
+    messages: [],
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  statusSessions = [{
+    id: session.id,
+    short_title: 'Status active',
+    long_title: 'Status active',
+    active_run: false,
+    message_count: 1,
+    last_message_at: 1710000000001,
+    transcript_updated_at: 2000,
+  }];
+  fetchCalls.length = 0;
+
+  await app.startSidebarStatusPoll();
+  app.stopSidebarStatusPoll();
+
+  if (messageCalls !== 1) {
+    fail(name, `expected one messages refresh after transcript advancement, got ${messageCalls}`, JSON.stringify(fetchCalls));
+    return;
+  }
+  if (session.messages.length !== 1 || session.messages[0].content !== 'server transcript 1') {
+    fail(name, 'expected active session messages to be replaced by server tail', JSON.stringify(session.messages));
+    return;
+  }
+  if (session.transcriptUpdatedAt !== 2000 || session._history?.tailTranscriptUpdatedAt !== 2000) {
+    fail(name, 'expected transcript version to be marked synced after refresh', JSON.stringify({ transcriptUpdatedAt: session.transcriptUpdatedAt, history: session._history }));
+    return;
+  }
+
+  await app.startSidebarStatusPoll();
+  app.stopSidebarStatusPoll();
+  if (messageCalls !== 1) {
+    fail(name, `unchanged transcript version should not fetch messages again, got ${messageCalls}`, JSON.stringify(fetchCalls));
+    return;
+  }
+
+  pass(name);
+}
+
+async function testStatusPollUnchangedTranscriptDoesNotFetchMessages() {
+  const name = 'status poll with unchanged active transcript version does not fetch messages';
+  let messageCalls = 0;
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/status') {
+        return new Response(JSON.stringify({
+          sessions: [{
+            id: 'sess_status_unchanged',
+            short_title: 'Unchanged',
+            active_run: false,
+            message_count: 1,
+            last_message_at: 1710000001000,
+            transcript_updated_at: 5000,
+          }]
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isTailMessagesURL(url, 'sess_status_unchanged')) {
+        messageCalls += 1;
+        return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+  app.stopSidebarStatusPoll();
+
+  const session = {
+    id: 'sess_status_unchanged',
+    title: 'Unchanged',
+    origin: 'web',
+    created: 1710000000000,
+    transcriptUpdatedAt: 5000,
+    messages: [{ id: 'local_msg', role: 'assistant', content: 'already synced', created: 1710000000000 }],
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  await app.startSidebarStatusPoll();
+  app.stopSidebarStatusPoll();
+
+  if (messageCalls !== 0) {
+    fail(name, `expected zero message fetches for unchanged transcript version, got ${messageCalls}`);
+    return;
+  }
+  if (session.messages.length !== 1 || session.messages[0].content !== 'already synced') {
+    fail(name, 'unchanged status should not alter active messages', JSON.stringify(session.messages));
+    return;
+  }
+
+  pass(name);
+}
+
+async function testActiveTranscriptRefreshSkipsBusyStates() {
+  const name = 'active transcript refresh skips while active session is busy';
+  let messageCalls = 0;
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isTailMessagesURL(url, 'sess_busy_refresh')) {
+        messageCalls += 1;
+        return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+  app.stopSidebarStatusPoll();
+
+  const session = {
+    id: 'sess_busy_refresh',
+    title: 'Busy refresh',
+    origin: 'web',
+    created: 1710000000000,
+    transcriptUpdatedAt: 1000,
+    messages: [],
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  app.state.streaming = true;
+  await app.refreshActiveSessionMessagesFromServer(session, { transcriptUpdatedAt: 2000 });
+  app.state.streaming = false;
+
+  app.state.abortController = new AbortController();
+  await app.refreshActiveSessionMessagesFromServer(session, { transcriptUpdatedAt: 2000 });
+  app.state.abortController = null;
+
+  session.activeResponseId = 'resp_busy';
+  await app.refreshActiveSessionMessagesFromServer(session, { transcriptUpdatedAt: 2000 });
+  session.activeResponseId = null;
+
+  app.setSessionServerActiveRun(session, true);
+  await app.refreshActiveSessionMessagesFromServer(session, { transcriptUpdatedAt: 2000 });
+  app.setSessionServerActiveRun(session, false);
+
+  if (messageCalls !== 0) {
+    fail(name, `expected no message fetches while busy, got ${messageCalls}`);
+    return;
+  }
+  if (session.transcriptUpdatedAt !== 1000) {
+    fail(name, `skipped refresh should leave transcriptUpdatedAt pending at 1000, got ${session.transcriptUpdatedAt}`);
+    return;
+  }
+
+  pass(name);
+}
+
+async function testLateActiveMessagesResponseIgnoredAfterSessionSwitch() {
+  const name = 'late active messages response is ignored after switching sessions';
+  let resolveMessages;
+  let messageCalls = 0;
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isTailMessagesURL(url, 'sess_late_a')) {
+        messageCalls += 1;
+        return new Promise((resolve) => {
+          resolveMessages = () => resolve(new Response(JSON.stringify({
+            messages: [{
+              id: 'late_msg',
+              sequence: 1,
+              role: 'assistant',
+              created_at: 1710000000001,
+              parts: [{ type: 'text', text: 'late server message' }],
+            }]
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+  app.stopSidebarStatusPoll();
+
+  const sessionA = { id: 'sess_late_a', title: 'A', origin: 'web', created: 1, transcriptUpdatedAt: 1000, messages: [] };
+  const sessionB = { id: 'sess_late_b', title: 'B', origin: 'web', created: 2, messages: [] };
+  app.state.sessions = [sessionA, sessionB];
+  app.state.activeSessionId = sessionA.id;
+  app.state.draftSessionActive = false;
+
+  const refreshPromise = app.refreshActiveSessionMessagesFromServer(sessionA, { transcriptUpdatedAt: 2000 });
+  if (messageCalls !== 1 || typeof resolveMessages !== 'function') {
+    fail(name, 'expected refresh to start one tail request before switching', `calls=${messageCalls}`);
+    return;
+  }
+
+  app.state.activeSessionId = sessionB.id;
+  resolveMessages();
+  const applied = await refreshPromise;
+
+  if (applied) {
+    fail(name, 'refresh should report false when active session changed before response applied');
+    return;
+  }
+  if (sessionA.messages.length !== 0) {
+    fail(name, 'late response should not mutate inactive session messages through active refresh', JSON.stringify(sessionA.messages));
+    return;
+  }
+  if (sessionA.transcriptUpdatedAt !== 1000) {
+    fail(name, `late response should not mark transcript synced, got ${sessionA.transcriptUpdatedAt}`);
+    return;
+  }
+
+  pass(name);
+}
+
+async function testOlderPendingTranscriptVersionIsIgnoredOnStatus304() {
+  const name = 'older pending transcript version is ignored on status 304';
+  let messageCalls = 0;
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/status') {
+        return new Response(null, { status: 304, headers: { ETag: '"unchanged"' } });
+      }
+      if (isTailMessagesURL(url, 'sess_pending_old')) {
+        messageCalls += 1;
+        return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+  app.stopSidebarStatusPoll();
+
+  const session = {
+    id: 'sess_pending_old',
+    title: 'Pending old',
+    origin: 'web',
+    created: 1710000000000,
+    transcriptUpdatedAt: 3000,
+    _pendingTranscriptUpdatedAt: 2000,
+    _history: {
+      rawMessages: [],
+      oldestSeq: 0,
+      hasMoreOlder: false,
+      loadingOlder: false,
+      loadedTail: true,
+      lastResponseId: '',
+      compactionSeq: -1,
+      compactionCount: 0,
+      tailEtag: '"tail-current"',
+      tailTranscriptUpdatedAt: 3000,
+      refreshingTail: false,
+    },
+    messages: [],
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  await app.startSidebarStatusPoll();
+  app.stopSidebarStatusPoll();
+
+  if (messageCalls !== 0) {
+    fail(name, `expected no tail refresh for stale pending version, got ${messageCalls}`);
+    return;
+  }
+  if (session.transcriptUpdatedAt !== 3000 || session._history.tailTranscriptUpdatedAt !== 3000) {
+    fail(name, 'stale pending version should not regress transcript markers', JSON.stringify({ transcriptUpdatedAt: session.transcriptUpdatedAt, history: session._history }));
+    return;
+  }
+  if (Object.prototype.hasOwnProperty.call(session, '_pendingTranscriptUpdatedAt')) {
+    fail(name, 'stale pending marker should be cleared', JSON.stringify(session));
+    return;
+  }
+
+  pass(name);
+}
+
+async function testSyncActiveSessionIdleUsesTranscriptRefreshHelper() {
+  const name = 'syncActiveSessionFromServer idle branch refreshes through active transcript helper';
+  let messageCalls = 0;
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/sess_sync_helper/state') {
+        return new Response(JSON.stringify({ active_run: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isTailMessagesURL(url, 'sess_sync_helper')) {
+        messageCalls += 1;
+        return new Response(JSON.stringify({
+          messages: [{
+            id: 'sync_msg',
+            sequence: 1,
+            role: 'assistant',
+            created_at: 1710000000001,
+            parts: [{ type: 'text', text: 'synced through helper' }],
+          }]
+        }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"sync-helper"' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+  app.stopSidebarStatusPoll();
+
+  const session = {
+    id: 'sess_sync_helper',
+    title: 'Sync helper',
+    origin: 'web',
+    created: 1710000000000,
+    transcriptUpdatedAt: 7000,
+    messages: [],
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  await app.syncActiveSessionFromServer(session, false);
+
+  if (messageCalls !== 1) {
+    fail(name, `expected idle sync to fetch active messages once, got ${messageCalls}`);
+    return;
+  }
+  if (session.messages.length !== 1 || session.messages[0].content !== 'synced through helper') {
+    fail(name, 'expected idle sync to apply refreshed server transcript', JSON.stringify(session.messages));
+    return;
+  }
+  if (session._history?.tailTranscriptUpdatedAt !== 7000 || session._history?.tailEtag !== '"sync-helper"') {
+    fail(name, 'expected helper to mark transcript version and tail ETag after idle sync', JSON.stringify(session._history));
+    return;
+  }
+
+  pass(name);
+}
+
 async function testSwitchToSearchOnlySessionHydratesResult() {
   const name = 'switching to a search-only session adds it to local state before hydration';
   const fetchCalls = [];
@@ -2641,9 +3092,17 @@ async function testSwitchToSearchOnlySessionHydratesResult() {
   await testResumeAndDrainFiringViaSync();
   await testTerminalSyncRequeuesPendingInterjectionAsFollowUp();
   await testSyncUsesServerProvidedPendingInterjectionId();
+  await testApplyServerSessionSummaryMapsTranscriptUpdatedAt();
   await testApplyServerSessionSummaryMapsLastMessageAt();
   await testMergeServerMessagesBumpsLastMessageAt();
   await testSanitizeSessionPreservesLastMessageAt();
+  await testSanitizeSessionPreservesTranscriptUpdatedAt();
+  await testStatusPollAdvancementRefreshesActiveMessagesOnce();
+  await testStatusPollUnchangedTranscriptDoesNotFetchMessages();
+  await testActiveTranscriptRefreshSkipsBusyStates();
+  await testLateActiveMessagesResponseIgnoredAfterSessionSwitch();
+  await testOlderPendingTranscriptVersionIsIgnoredOnStatus304();
+  await testSyncActiveSessionIdleUsesTranscriptRefreshHelper();
 
   if (failures > 0) process.exit(1);
   process.exit(0);

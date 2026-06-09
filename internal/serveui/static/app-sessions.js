@@ -57,6 +57,7 @@ const shouldRecoverActiveResponseFromSnapshot = (session, responseId, responseCh
 
 // ===== Sidebar status polling =====
 const SIDEBAR_POLL_ACTIVE = 2000;
+const SIDEBAR_POLL_VISIBLE_ACTIVE = 5000;
 const SIDEBAR_POLL_IDLE = 30000;
 let sidebarStatusTimer = null;
 let sidebarStatusEtag = null;
@@ -96,6 +97,15 @@ const scheduleSidebarStatusPoll = (delay) => {
   sidebarStatusTimer = setTimeout(pollSidebarStatus, delay);
 };
 
+const sidebarStatusPollDelay = () => {
+  sidebarHasActive = hasAnySessionInProgressState();
+  if (sidebarHasActive) return SIDEBAR_POLL_ACTIVE;
+  if (document.visibilityState === 'visible' && !state.draftSessionActive && getActiveSession()) {
+    return SIDEBAR_POLL_VISIBLE_ACTIVE;
+  }
+  return SIDEBAR_POLL_IDLE;
+};
+
 const pollSidebarStatus = async () => {
   stopSidebarStatusPoll();
   if (document.visibilityState === 'hidden') return;
@@ -115,13 +125,19 @@ const pollSidebarStatus = async () => {
     const resp = await fetch(`${UI_PREFIX}/v1/sessions/status${query ? `?${query}` : ''}`, { headers });
 
     if (resp.status === 304) {
-      // No change — keep current active state, schedule next poll
+      // No metadata change. If a prior status response revealed an active
+      // transcript update but the detail fetch was deferred or failed, retry the
+      // pending active-session reconciliation without issuing another status
+      // request.
+      await reconcilePendingActiveTranscriptRefresh();
     } else if (resp.ok) {
       const etag = resp.headers.get('ETag');
       if (etag) sidebarStatusEtag = etag;
       const data = await resp.json();
       if (Array.isArray(data.sessions)) {
         updateSidebarStatus(data.sessions);
+        await reconcileActiveTranscriptFromStatus(data.sessions);
+        recordTranscriptVersionsFromStatus(data.sessions);
         // Discover sessions created in other tabs/devices
         const localIds = new Set(state.sessions.map((s) => s.id));
         const hasUnknown = data.sessions.some((entry) => !localIds.has(entry.id));
@@ -132,26 +148,22 @@ const pollSidebarStatus = async () => {
     // Network error — just retry on next interval
   }
 
-  sidebarHasActive = hasAnySessionInProgressState();
-  const delay = sidebarHasActive ? SIDEBAR_POLL_ACTIVE : SIDEBAR_POLL_IDLE;
-  scheduleSidebarStatusPoll(delay);
+  scheduleSidebarStatusPoll(sidebarStatusPollDelay());
 };
 
 const startSidebarStatusPoll = () => {
   stopSidebarStatusPoll();
   sidebarStatusEtag = null;
-  pollSidebarStatus();
+  return pollSidebarStatus();
 };
 
 const refreshSidebarStatusPoll = (forceNow = false) => {
-  if (document.visibilityState === 'hidden') return;
+  if (document.visibilityState === 'hidden') return Promise.resolve(false);
   if (forceNow) {
-    startSidebarStatusPoll();
-    return;
+    return startSidebarStatusPoll();
   }
-  sidebarHasActive = hasAnySessionInProgressState();
-  const delay = sidebarHasActive ? SIDEBAR_POLL_ACTIVE : SIDEBAR_POLL_IDLE;
-  scheduleSidebarStatusPoll(delay);
+  scheduleSidebarStatusPoll(sidebarStatusPollDelay());
+  return Promise.resolve(false);
 };
 
 const createAndSwitchToFreshSession = async () => {
@@ -713,7 +725,10 @@ const ensureSessionHistory = (session) => {
       loadedTail: false,
       lastResponseId: '',
       compactionSeq: -1,
-      compactionCount: 0
+      compactionCount: 0,
+      tailEtag: '',
+      tailTranscriptUpdatedAt: 0,
+      refreshingTail: false
     };
   }
   const history = session._history;
@@ -725,6 +740,9 @@ const ensureSessionHistory = (session) => {
   history.loadingOlder = history.loadingOlder === true;
   history.loadedTail = history.loadedTail === true;
   history.lastResponseId = String(history.lastResponseId || '').trim();
+  history.tailEtag = String(history.tailEtag || '').trim();
+  history.tailTranscriptUpdatedAt = Number.isFinite(Number(history.tailTranscriptUpdatedAt)) ? Number(history.tailTranscriptUpdatedAt) : 0;
+  history.refreshingTail = history.refreshingTail === true;
   return history;
 };
 
@@ -893,15 +911,29 @@ const fetchServerSessionMessagesPage = async (sessionId, { limit = 0, offset = 0
   };
 };
 
-const loadServerSessionMessages = async (sessionId) => {
+const loadServerSessionMessages = async (sessionId, options = {}) => {
   try {
+    const session = findSessionById(sessionId);
+    const history = session ? ensureSessionHistory(session) : null;
+    const explicitEtag = String(options.etag || '').trim();
+    const etag = explicitEtag || (options.useEtag && history ? history.tailEtag : '');
     const page = await fetchServerSessionMessagesPage(sessionId, {
       tail: true,
-      limit: SESSION_MESSAGES_PAGE_SIZE
+      limit: SESSION_MESSAGES_PAGE_SIZE,
+      etag
     });
     if (page === false) return false;
     if (!page) return null;
-    return applyTailMessagesToSessionHistory(sessionId, page.data);
+    if (history && page.etag) history.tailEtag = page.etag;
+    const converted = applyTailMessagesToSessionHistory(sessionId, page.data);
+    const transcriptUpdatedAt = numericTranscriptUpdatedAt(options.transcriptUpdatedAt);
+    if (history && transcriptUpdatedAt > 0) {
+      history.tailTranscriptUpdatedAt = Math.max(history.tailTranscriptUpdatedAt || 0, transcriptUpdatedAt);
+      if (transcriptUpdatedAt > numericTranscriptUpdatedAt(session.transcriptUpdatedAt)) {
+        session.transcriptUpdatedAt = transcriptUpdatedAt;
+      }
+    }
+    return converted;
   } catch {
     return null;
   }
@@ -1080,6 +1112,170 @@ const mergeServerMessagesWithLocalState = (session, serverMessages) => {
   }
 };
 
+const numericTranscriptUpdatedAt = (value) => {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+};
+
+const recordTranscriptVersionsFromStatus = (statusSessions) => {
+  if (!Array.isArray(statusSessions)) return;
+  const localById = new Map(state.sessions.map((session) => [session.id, session]));
+  const activeId = String(state.activeSessionId || '').trim();
+  for (const entry of statusSessions) {
+    const local = localById.get(entry?.id) || null;
+    if (!local || local.id === activeId) continue;
+    const transcriptUpdatedAt = numericTranscriptUpdatedAt(entry.transcript_updated_at);
+    if (transcriptUpdatedAt > 0) {
+      local.transcriptUpdatedAt = transcriptUpdatedAt;
+    }
+  }
+};
+
+const canRefreshActiveSessionMessages = (session) => {
+  if (!session || session.id !== state.activeSessionId) return false;
+  if (document.visibilityState === 'hidden') return false;
+  if (state.draftSessionActive) return false;
+  if (state.abortController || state.streaming) return false;
+  if (session.activeResponseId) return false;
+  if (state.currentStreamSessionId === session.id && state.currentStreamResponseId) return false;
+  if (sessionHasInProgressState(session)) return false;
+  const history = ensureSessionHistory(session);
+  if (!history || history.loadingOlder) return false;
+  return true;
+};
+
+let activeMessagesRefreshPromise = null;
+let activeMessagesRefreshSessionId = '';
+
+const refreshActiveSessionMessagesFromServer = async (session, options = {}) => {
+  if (!session || session.id !== state.activeSessionId) return false;
+
+  if (activeMessagesRefreshPromise && activeMessagesRefreshSessionId === session.id) {
+    return activeMessagesRefreshPromise;
+  }
+
+  const history = ensureSessionHistory(session);
+  if (!history) return false;
+
+  const targetTranscriptUpdatedAt = numericTranscriptUpdatedAt(options.transcriptUpdatedAt || session.transcriptUpdatedAt);
+  if (options.force !== true && targetTranscriptUpdatedAt > 0 && history.tailTranscriptUpdatedAt >= targetTranscriptUpdatedAt) {
+    if (targetTranscriptUpdatedAt > numericTranscriptUpdatedAt(session.transcriptUpdatedAt)) {
+      session.transcriptUpdatedAt = targetTranscriptUpdatedAt;
+    }
+    return false;
+  }
+
+  if (!canRefreshActiveSessionMessages(session)) return false;
+
+  const refreshSessionId = session.id;
+  const refreshPromise = (async () => {
+    history.refreshingTail = true;
+    try {
+      const page = await fetchServerSessionMessagesPage(refreshSessionId, {
+        tail: true,
+        limit: SESSION_MESSAGES_PAGE_SIZE,
+        etag: options.useEtag === false ? '' : history.tailEtag
+      });
+
+      if (page === false) {
+        if (session.id === state.activeSessionId && targetTranscriptUpdatedAt > 0) {
+          history.tailTranscriptUpdatedAt = Math.max(history.tailTranscriptUpdatedAt || 0, targetTranscriptUpdatedAt);
+          if (targetTranscriptUpdatedAt > numericTranscriptUpdatedAt(session.transcriptUpdatedAt)) {
+            session.transcriptUpdatedAt = targetTranscriptUpdatedAt;
+          }
+        }
+        return true;
+      }
+      if (!page) return false;
+
+      if (!canRefreshActiveSessionMessages(session) || session.id !== state.activeSessionId) {
+        return false;
+      }
+
+      const serverMessages = applyTailMessagesToSessionHistory(refreshSessionId, page.data);
+      if (!Array.isArray(serverMessages)) return false;
+
+      mergeServerMessagesWithLocalState(session, serverMessages);
+      if (page.etag) history.tailEtag = page.etag;
+      if (targetTranscriptUpdatedAt > 0) {
+        history.tailTranscriptUpdatedAt = Math.max(history.tailTranscriptUpdatedAt || 0, targetTranscriptUpdatedAt);
+        if (targetTranscriptUpdatedAt > numericTranscriptUpdatedAt(session.transcriptUpdatedAt)) {
+          session.transcriptUpdatedAt = targetTranscriptUpdatedAt;
+        }
+      }
+      persistAndRefreshShell();
+      if (options.render !== false && session.id === state.activeSessionId) {
+        renderMessages(options.forceScroll === true);
+      }
+      return true;
+    } catch {
+      return false;
+    } finally {
+      history.refreshingTail = false;
+      if (activeMessagesRefreshPromise === refreshPromise) {
+        activeMessagesRefreshPromise = null;
+        activeMessagesRefreshSessionId = '';
+      }
+    }
+  })();
+
+  activeMessagesRefreshPromise = refreshPromise;
+  activeMessagesRefreshSessionId = refreshSessionId;
+  return refreshPromise;
+};
+
+const reconcilePendingActiveTranscriptRefresh = async () => {
+  const active = getActiveSession();
+  if (!active) return false;
+  const pendingTranscriptUpdatedAt = numericTranscriptUpdatedAt(active._pendingTranscriptUpdatedAt);
+  if (pendingTranscriptUpdatedAt <= 0) return false;
+  const currentTranscriptUpdatedAt = numericTranscriptUpdatedAt(active.transcriptUpdatedAt);
+  if (pendingTranscriptUpdatedAt <= currentTranscriptUpdatedAt) {
+    delete active._pendingTranscriptUpdatedAt;
+    return false;
+  }
+
+  const refreshed = await refreshActiveSessionMessagesFromServer(active, {
+    transcriptUpdatedAt: pendingTranscriptUpdatedAt,
+    forceScroll: false
+  });
+  if (numericTranscriptUpdatedAt(active.transcriptUpdatedAt) === pendingTranscriptUpdatedAt) {
+    delete active._pendingTranscriptUpdatedAt;
+  }
+  return refreshed;
+};
+
+const reconcileActiveTranscriptFromStatus = async (statusSessions) => {
+  if (!Array.isArray(statusSessions)) return false;
+  const active = getActiveSession();
+  if (!active) return false;
+  const entry = statusSessions.find((item) => item?.id === active.id) || null;
+  if (!entry) return false;
+
+  const incomingTranscriptUpdatedAt = numericTranscriptUpdatedAt(entry.transcript_updated_at);
+  if (incomingTranscriptUpdatedAt <= 0) return false;
+
+  const currentTranscriptUpdatedAt = numericTranscriptUpdatedAt(active.transcriptUpdatedAt);
+  if (incomingTranscriptUpdatedAt <= currentTranscriptUpdatedAt) {
+    delete active._pendingTranscriptUpdatedAt;
+    return false;
+  }
+
+  active._pendingTranscriptUpdatedAt = incomingTranscriptUpdatedAt;
+  if (entry.active_run) {
+    return false;
+  }
+
+  const refreshed = await refreshActiveSessionMessagesFromServer(active, {
+    transcriptUpdatedAt: incomingTranscriptUpdatedAt,
+    forceScroll: false
+  });
+  if (numericTranscriptUpdatedAt(active.transcriptUpdatedAt) === incomingTranscriptUpdatedAt) {
+    delete active._pendingTranscriptUpdatedAt;
+  }
+  return refreshed;
+};
+
 const stopSessionStatePoll = () => {
   if (sessionStatePollTimer !== null) {
     clearTimeout(sessionStatePollTimer);
@@ -1234,15 +1430,12 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
     setSessionOptimisticBusy(session, false);
     setSessionServerActiveRun(session, false);
     updateBusySidebar();
+    setStreaming(false);
     if (!skipMessagesFetch) {
-      const serverMessages = await loadServerSessionMessages(session.id);
-      if (Array.isArray(serverMessages)) {
-        mergeServerMessagesWithLocalState(session, serverMessages);
-        persistAndRefreshShell();
-        if (session.id === state.activeSessionId) {
-          renderMessages(true);
-        }
-      }
+      await refreshActiveSessionMessagesFromServer(session, {
+        transcriptUpdatedAt: session.transcriptUpdatedAt,
+        forceScroll: true
+      });
     }
     if (runtimeState.last_error) {
       addErrorMessage(String(runtimeState.last_error), session);
@@ -1277,6 +1470,10 @@ const applyServerSessionSummary = (target, serverSession) => {
     target.lastMessageAt = target.created;
   }
   target.messageCount = Number(serverSession.message_count || target.messageCount || 0);
+  const transcriptUpdatedAt = numericTranscriptUpdatedAt(serverSession.transcript_updated_at);
+  if (transcriptUpdatedAt > 0) {
+    target.transcriptUpdatedAt = transcriptUpdatedAt;
+  }
   target.number = Number(serverSession.number || target.number || 0);
   if (serverSession.provider) {
     target.provider = serverSession.provider;
@@ -2018,6 +2215,7 @@ initialize();
 Object.assign(app, {
   convertServerMessages,
   loadServerSessionMessages,
+  refreshActiveSessionMessagesFromServer,
   loadOlderSessionMessages,
   maybeLoadOlderSessionMessages,
   loadServerSessionState,

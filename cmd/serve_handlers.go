@@ -1240,19 +1240,13 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 	return result
 }
 
-func (s *serveServer) writeSessionMessagesResponse(w http.ResponseWriter, r *http.Request, sessionID string, resp sessionMessagesResponse) {
+func (s *serveServer) writeSessionMessagesResponse(w http.ResponseWriter, r *http.Request, resp sessionMessagesResponse) {
 	body, err := json.Marshal(resp)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	etagHash := sha256.New()
-	if meta, metaErr := s.store.Get(r.Context(), sessionID); metaErr == nil && meta != nil {
-		_, _ = io.WriteString(etagHash, strconv.FormatInt(meta.UpdatedAt.UnixMilli(), 10))
-		_, _ = io.WriteString(etagHash, "\n")
-	}
-	_, _ = etagHash.Write(body)
-	etag := `"` + hex.EncodeToString(etagHash.Sum(nil)) + `"`
+	etag := jsonPayloadETag(body)
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("ETag", etag)
 	if uiETagMatches(r.Header.Get("If-None-Match"), etag) {
@@ -1442,7 +1436,7 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 			resp.NextOffset = nextOffset
 		}
 	}
-	s.writeSessionMessagesResponse(w, r, sessionID, resp)
+	s.writeSessionMessagesResponse(w, r, resp)
 }
 
 func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Request, sessionID string) {

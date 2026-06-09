@@ -645,6 +645,106 @@ async function waitFor(predicate, timeoutMs) {
   return false;
 }
 
+async function testResponseCompletedForcesSidebarStatusRefresh() {
+  const name = 'response.completed forces a sidebar status refresh';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+  const refreshCalls = [];
+  app.refreshSidebarStatusPoll = (forceNow) => {
+    refreshCalls.push(forceNow);
+  };
+
+  const session = {
+    id: 'session_status_refresh',
+    title: 'Status refresh',
+    messages: [{ id: 'assistant_1', role: 'assistant', content: 'done', created: 1000 }],
+    lastResponseId: null,
+    activeResponseId: 'resp_status_refresh',
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.currentStreamSessionId = session.id;
+  state.currentStreamResponseId = 'resp_status_refresh';
+
+  const streamState = app.createResponseStreamState(session);
+  app.applyResponseStreamEvent(session, streamState, 'response.completed', {
+    response: { id: 'resp_status_refresh', model: 'test-model', status: 'completed' },
+    sequence_number: 3,
+  });
+
+  const refreshed = await waitFor(() => refreshCalls.length === 1, 75);
+  if (!refreshed || refreshCalls[0] !== true) {
+    fail(name, 'expected one forced status refresh after completion', JSON.stringify(refreshCalls));
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
+async function testStaleTerminalStreamDoesNotRefreshStatus() {
+  const name = 'stale terminal stream events do not request active transcript refresh';
+  const harness = createHarness();
+  const { app, state, cleanup } = harness;
+  const refreshCalls = [];
+  app.refreshSidebarStatusPoll = (forceNow) => {
+    refreshCalls.push(forceNow);
+  };
+
+  const session = {
+    id: 'session_stale_terminal',
+    title: 'Stale terminal',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: 'resp_stale_terminal',
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.currentStreamSessionId = 'other_session';
+  state.currentStreamResponseId = 'resp_stale_terminal';
+
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode([
+        'event: response.completed\n',
+        'data: {"response":{"id":"resp_stale_terminal","model":"test-model","status":"completed"},"sequence_number":9}\n\n',
+        'data: [DONE]\n\n',
+      ].join('')));
+      controller.close();
+    },
+  });
+
+  const result = await app.consumeResponseStream(stream, session, app.createResponseStreamState(session), {
+    generation: state.streamGeneration,
+    responseId: 'resp_stale_terminal',
+  });
+
+  if (!result || result.stale !== true || result.terminal !== false) {
+    fail(name, 'expected stale terminal stream to be ignored before applying terminal event', JSON.stringify(result));
+    await cleanup();
+    return;
+  }
+  const unexpectedRefresh = await waitFor(() => refreshCalls.length > 0, 30);
+  if (unexpectedRefresh) {
+    fail(name, 'stale terminal stream should not force status refresh', JSON.stringify(refreshCalls));
+    await cleanup();
+    return;
+  }
+  if (session.lastResponseId) {
+    fail(name, 'stale terminal stream should not update session response tracking', JSON.stringify(session));
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
 async function testInactiveSessionStreamEventsDoNotAppendToVisibleDOM() {
   const name = 'stream events for inactive session update data without appending to visible DOM';
   const harness = createHarness();
@@ -3707,6 +3807,8 @@ function testRestoreLatestDraftMessageDoesNotCrossSessionBoundary() {
 }
 
 (async () => {
+  await testResponseCompletedForcesSidebarStatusRefresh();
+  await testStaleTerminalStreamDoesNotRefreshStatus();
   await testInactiveSessionStreamEventsDoNotAppendToVisibleDOM();
   await testInactiveSessionPromptEventsRemainActionable();
   await testInactiveSessionFailureDoesNotAppendToVisibleDOM();

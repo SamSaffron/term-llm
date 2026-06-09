@@ -1164,6 +1164,10 @@ const sanitizeSession = (session) => {
   if (session._serverOnly) result._serverOnly = true;
   if (typeof session.number === 'number' && session.number > 0) result.number = session.number;
   if (typeof session.messageCount === 'number') result.messageCount = session.messageCount;
+  const transcriptUpdatedAt = Number(session.transcriptUpdatedAt ?? session.transcript_updated_at);
+  if (Number.isFinite(transcriptUpdatedAt) && transcriptUpdatedAt > 0) {
+    result.transcriptUpdatedAt = transcriptUpdatedAt;
+  }
   return result;
 };
 

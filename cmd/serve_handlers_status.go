@@ -43,13 +43,18 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 	// Collect active session IDs from in-memory state without touching runtimes.
 	activeIDs := s.activeSessionIDs()
 
+	// transcript_updated_at is the transcript-change marker consumed by the web
+	// UI. It is currently backed by SessionSummary.UpdatedAt because all message
+	// insert/update paths bump updated_at even when message_count or
+	// last_message_at do not change.
 	type statusEntry struct {
-		ID            string `json:"id"`
-		ShortTitle    string `json:"short_title"`
-		LongTitle     string `json:"long_title"`
-		ActiveRun     bool   `json:"active_run,omitempty"`
-		MsgCount      int    `json:"message_count"`
-		LastMessageAt int64  `json:"last_message_at"`
+		ID                  string `json:"id"`
+		ShortTitle          string `json:"short_title"`
+		LongTitle           string `json:"long_title"`
+		ActiveRun           bool   `json:"active_run,omitempty"`
+		MsgCount            int    `json:"message_count"`
+		LastMessageAt       int64  `json:"last_message_at"`
+		TranscriptUpdatedAt int64  `json:"transcript_updated_at"`
 	}
 
 	result := make([]statusEntry, 0, len(sessions))
@@ -58,13 +63,18 @@ func (s *serveServer) handleSessionsStatus(w http.ResponseWriter, r *http.Reques
 		if lastMessageAt.IsZero() {
 			lastMessageAt = sess.CreatedAt
 		}
+		transcriptUpdatedAt := sess.UpdatedAt
+		if transcriptUpdatedAt.IsZero() {
+			transcriptUpdatedAt = sess.CreatedAt
+		}
 		result = append(result, statusEntry{
-			ID:            sess.ID,
-			ShortTitle:    sess.PreferredShortTitle(),
-			LongTitle:     sess.PreferredLongTitle(),
-			ActiveRun:     activeIDs[sess.ID],
-			MsgCount:      sess.MessageCount,
-			LastMessageAt: lastMessageAt.UnixMilli(),
+			ID:                  sess.ID,
+			ShortTitle:          sess.PreferredShortTitle(),
+			LongTitle:           sess.PreferredLongTitle(),
+			ActiveRun:           activeIDs[sess.ID],
+			MsgCount:            sess.MessageCount,
+			LastMessageAt:       lastMessageAt.UnixMilli(),
+			TranscriptUpdatedAt: transcriptUpdatedAt.UnixMilli(),
 		})
 	}
 
