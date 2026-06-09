@@ -2859,6 +2859,49 @@ async function testLateActiveMessagesResponseIgnoredAfterSessionSwitch() {
   pass(name);
 }
 
+async function testLateActiveRunSyncDoesNotMarkDraftStreaming() {
+  const name = 'late active-run sync does not mark New Chat draft as streaming';
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === '/ui/v1/sessions/sess_late_busy/state') {
+        return new Response(JSON.stringify({ active_run: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+  app.stopSidebarStatusPoll();
+
+  const session = {
+    id: 'sess_late_busy',
+    title: 'Late busy',
+    origin: 'web',
+    created: 1,
+    messages: [],
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = '';
+  app.state.draftSessionActive = true;
+  app.state.streaming = false;
+
+  await app.syncActiveSessionFromServer(session, false);
+
+  if (app.state.streaming) {
+    fail(name, 'draft New Chat should stay idle even if an inactive session sync reports active_run=true');
+    return;
+  }
+  if (!app.sessionHasInProgressState(session)) {
+    fail(name, 'inactive session should still retain its sidebar busy state');
+    return;
+  }
+
+  pass(name);
+}
+
 async function testOlderPendingTranscriptVersionIsIgnoredOnStatus304() {
   const name = 'older pending transcript version is ignored on status 304';
   let messageCalls = 0;
@@ -3101,6 +3144,7 @@ async function testSwitchToSearchOnlySessionHydratesResult() {
   await testStatusPollUnchangedTranscriptDoesNotFetchMessages();
   await testActiveTranscriptRefreshSkipsBusyStates();
   await testLateActiveMessagesResponseIgnoredAfterSessionSwitch();
+  await testLateActiveRunSyncDoesNotMarkDraftStreaming();
   await testOlderPendingTranscriptVersionIsIgnoredOnStatus304();
   await testSyncActiveSessionIdleUsesTranscriptRefreshHelper();
 

@@ -3301,8 +3301,18 @@ const sendMessage = async (options = {}) => {
   }
 
   let session = getActiveSession();
-  const sessionBusy = state.streaming || (session && session.activeResponseId);
-  if (sessionBusy) {
+  const progressEntry = session ? state.sessionProgressById?.[session.id] : null;
+  const ownsLiveStream = Boolean(
+    session
+    && state.currentStreamSessionId === session.id
+    && (state.abortController || state.currentStreamResponseId || state.streaming)
+  );
+  const activeSessionBusy = Boolean(
+    session
+    && !state.draftSessionActive
+    && (session.activeResponseId || progressEntry?.serverActiveRun || ownsLiveStream)
+  );
+  if (activeSessionBusy) {
     const pendingMessageId = generateId('msg');
     let requestAttachmentParts = [];
     if (pendingAttachments.length > 0) {

@@ -1374,6 +1374,63 @@ async function testNewChatDuringStreamingClearsStreamingState() {
   pass(name);
 }
 
+async function testDraftSendIgnoresStaleGlobalStreamingFlag() {
+  const name = 'New Chat draft send ignores stale global streaming flag from previous session';
+  const harness = createHarness();
+  const { app, elements, state, fetchCalls, cleanup } = harness;
+
+  const oldSession = {
+    id: 'session_old_busy',
+    title: 'Old busy',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(oldSession);
+  state.activeSessionId = '';
+  state.draftSessionActive = true;
+  state.streaming = true;
+  state.currentStreamSessionId = '';
+  state.currentStreamResponseId = '';
+  elements.promptInput.value = 'fresh draft message';
+
+  const sendPromise = app.sendMessage().catch(() => {});
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const interruptCalls = fetchCalls.filter((call) => String(call.url).endsWith('/interrupt'));
+  if (interruptCalls.length !== 0) {
+    fail(name, 'draft send should not post an interjection to an old session', JSON.stringify(fetchCalls));
+    app.detachResponseStream();
+    await sendPromise;
+    await cleanup();
+    return;
+  }
+
+  if (state.sessions.length < 2 || state.sessions[0].id === oldSession.id) {
+    fail(name, 'draft send should create a fresh session', JSON.stringify(state.sessions.map((session) => session.id)));
+    app.detachResponseStream();
+    await sendPromise;
+    await cleanup();
+    return;
+  }
+
+  const postCalls = fetchCalls.filter((call) => call.url === '/ui/v1/responses' && call.method === 'POST');
+  if (postCalls.length !== 1) {
+    fail(name, 'draft send should post a normal response request once', JSON.stringify(fetchCalls));
+    app.detachResponseStream();
+    await sendPromise;
+    await cleanup();
+    return;
+  }
+
+  app.detachResponseStream();
+  await sendPromise;
+  await cleanup();
+  pass(name);
+}
+
 async function testSendMessageMarksSessionBusyImmediately() {
   const name = 'sendMessage marks the session busy before polling catches up';
   const harness = createHarness();
@@ -3836,6 +3893,7 @@ function testRestoreLatestDraftMessageDoesNotCrossSessionBoundary() {
   await testNonImageAttachmentsDoNotCreatePreviewObjectURLs();
   await testSendMessageResumesFromEventsAfterPostStreamDrops();
   await testNewChatDuringStreamingClearsStreamingState();
+  await testDraftSendIgnoresStaleGlobalStreamingFlag();
   await testSendMessageMarksSessionBusyImmediately();
   await testDrainInterruptQueueAfterResumeCompletes();
   await testDrainInterruptQueueIgnoresOtherSessionEntries();

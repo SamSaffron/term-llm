@@ -1414,7 +1414,9 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
 
   if (activeRun && !state.abortController) {
     updateBusySidebar();
-    setStreaming(true);
+    if (session.id === state.activeSessionId && !state.draftSessionActive) {
+      setStreaming(true);
+    }
     if (pollOnActive) {
       scheduleSessionStatePoll(session.id);
     }
