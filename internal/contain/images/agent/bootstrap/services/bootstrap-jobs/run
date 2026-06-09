@@ -65,22 +65,6 @@ term-llm jobs create --data "{
   \"misfire_policy\": \"skip\"
 }"
 
-# memory-gc — garbage-collect stale or duplicate memory fragments
-term-llm jobs create --data "{
-  \"name\": \"memory-gc\",
-  \"enabled\": true,
-  \"runner_type\": \"program\",
-  \"runner_config\": {
-    \"command\": \"/usr/local/bin/term-llm\",
-    \"args\": [\"memory\", \"fragments\", \"gc\", \"--agent\", \"$AGENT\"]
-  },
-  \"trigger_type\": \"cron\",
-  \"trigger_config\": { \"expression\": \"0 4 * * *\", \"timezone\": \"UTC\" },
-  \"concurrency_policy\": \"forbid\",
-  \"timeout_seconds\": 300,
-  \"misfire_policy\": \"skip\"
-}"
-
 SYSTEM_UPGRADE_ARGS='["pacman", "-Syu", "--noconfirm"]'
 case "${AGENT_DISTRO:-arch}" in
   arch)
@@ -111,5 +95,5 @@ term-llm jobs create --data "{
 }"
 
 touch "$SENTINEL"
-echo "bootstrap-jobs: done — 4 jobs created. Edit them with: term-llm jobs list / term-llm jobs update"
+echo "bootstrap-jobs: done — 3 jobs created. Edit them with: term-llm jobs list / term-llm jobs update"
 cleanup_and_exit

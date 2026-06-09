@@ -16,14 +16,16 @@ import (
 )
 
 var (
-	memoryFragmentsSince       time.Duration
-	memoryFragmentsLimit       int
-	memoryFragmentsHalfLife    float64
-	memoryFragmentsSyncDir     string
-	memoryFragmentsShowJSON    bool
-	memoryFragmentsShowNoPath  bool
-	memoryFragmentsSourcesJSON bool
-	memoryFragmentsFilterPath  string
+	memoryFragmentsSince        time.Duration
+	memoryFragmentsLimit        int
+	memoryFragmentsHalfLife     float64
+	memoryFragmentsPreviewDecay bool
+	memoryFragmentsDelete       bool
+	memoryFragmentsSyncDir      string
+	memoryFragmentsShowJSON     bool
+	memoryFragmentsShowNoPath   bool
+	memoryFragmentsSourcesJSON  bool
+	memoryFragmentsFilterPath   string
 )
 
 var memoryFragmentsCmd = &cobra.Command{
@@ -55,8 +57,13 @@ var memoryFragmentsSourcesCmd = &cobra.Command{
 
 var memoryFragmentsGCCmd = &cobra.Command{
 	Use:   "gc",
-	Short: "Garbage collect decayed memory fragments",
-	RunE:  runMemoryFragmentsGC,
+	Short: "Garbage collect fragments already below the decay threshold",
+	Long: `Review or explicitly delete non-pinned fragments whose stored decay_score is
+below the GC threshold. By default this command is non-destructive and reports
+what would be removed. Pass --delete to actually delete stored-score candidates.
+This command no longer recalculates decay scores before deleting; use
+--preview-decay for a non-destructive age-based decay preview.`,
+	RunE: runMemoryFragmentsGC,
 }
 
 var memoryFragmentsSyncCmd = &cobra.Command{
@@ -89,7 +96,9 @@ func init() {
 	memoryFragmentsListCmd.Flags().DurationVar(&memoryFragmentsSince, "since", 0, "Only show fragments updated within this duration (e.g. 24h)")
 	memoryFragmentsListCmd.Flags().IntVar(&memoryFragmentsLimit, "limit", 0, "Maximum number of fragments to return (0 = all)")
 	memoryFragmentsListCmd.Flags().StringVar(&memoryFragmentsFilterPath, "filter-path", "", "Filter fragments whose path contains this substring")
-	memoryFragmentsGCCmd.Flags().Float64Var(&memoryFragmentsHalfLife, "half-life", 30.0, "Decay half-life in days for GC recalculation")
+	memoryFragmentsGCCmd.Flags().Float64Var(&memoryFragmentsHalfLife, "half-life", memorydb.DefaultDecayHalfLifeDays, "Decay half-life in days for --preview-decay")
+	memoryFragmentsGCCmd.Flags().BoolVar(&memoryFragmentsPreviewDecay, "preview-decay", false, "Compute non-destructive age-based decay candidates")
+	memoryFragmentsGCCmd.Flags().BoolVar(&memoryFragmentsDelete, "delete", false, "Actually delete fragments already below the stored decay threshold")
 	memoryFragmentsSyncCmd.Flags().StringVar(&memoryFragmentsSyncDir, "dir", "", "Root directory containing .md fragment files (required)")
 	memoryFragmentsShowCmd.Flags().BoolVar(&memoryFragmentsShowJSON, "json", false, "Output fragment as JSON with all metadata")
 	memoryFragmentsShowCmd.Flags().BoolVar(&memoryFragmentsShowNoPath, "no-path", false, "Suppress path header, print content only")
@@ -339,24 +348,32 @@ func runMemoryFragmentsGC(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 	agent := strings.TrimSpace(memoryAgent)
 
-	if memoryDryRun {
-		count, err := store.CountGCCandidates(ctx, agent)
+	if memoryFragmentsPreviewDecay {
+		if memoryFragmentsHalfLife <= 0 {
+			return fmt.Errorf("--half-life must be > 0")
+		}
+		count, err := store.CountDecayCandidates(ctx, agent, memoryFragmentsHalfLife, memorydb.DefaultDecayGCThreshold)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("gc: would remove %d fragments (based on current decay scores, no recalc in dry-run)\n", count)
+		fmt.Printf("gc: age-based decay preview would mark %d fragments below %.2f (non-destructive; no scores changed)\n", count, memorydb.DefaultDecayGCThreshold)
 		return nil
 	}
 
-	if _, err := store.RecalcDecayScores(ctx, agent, memoryFragmentsHalfLife); err != nil {
-		return fmt.Errorf("recalculate decay scores: %w", err)
+	count, err := store.CountGCCandidates(ctx, agent)
+	if err != nil {
+		return err
+	}
+	if memoryDryRun || !memoryFragmentsDelete {
+		fmt.Printf("gc: would remove %d fragments (based on stored decay scores; no recalculation). Pass --delete to delete.\n", count)
+		return nil
 	}
 
 	removed, err := store.GCFragments(ctx, agent)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("gc: removed %d fragments\n", removed)
+	fmt.Printf("gc: removed %d fragments (no decay recalculation)\n", removed)
 	return nil
 }
 

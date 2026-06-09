@@ -27,6 +27,7 @@ var memoryCmd = &cobra.Command{
 Examples:
   term-llm memory mine
   term-llm memory search "retry policy"
+  term-llm memory consolidate --dry-run
   term-llm memory status
   term-llm memory fragments list`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -50,6 +51,7 @@ func init() {
 	memoryCmd.AddCommand(memoryUpdateRecentCmd)
 	memoryCmd.AddCommand(memorySearchCmd)
 	memoryCmd.AddCommand(memoryPromoteCmd)
+	memoryCmd.AddCommand(memoryConsolidateCmd)
 	memoryCmd.AddCommand(memoryStatusCmd)
 	memoryCmd.AddCommand(memoryFragmentsCmd)
 	memoryCmd.AddCommand(memoryImagesCmd)

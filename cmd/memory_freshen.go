@@ -354,11 +354,11 @@ The file is a compact current-state working memory, not a changelog.
 
 Rules:
 - Target total output: ~%d tokens (~%d characters). Treat this as a soft ceiling on the whole document.
-- Use this structure when relevant: ## Current state, then compact ### sections such as Deployed / configured, Active work, Open issues / quirks, Recent completed work, Temporary notes.
+- Use this structure when relevant: ## Current state, then compact ### memory-palace rooms such as User / preferences, Projects, Infrastructure / tools, Active work, Open issues / quirks, Recent completed work, Temporary notes.
 - Prefer latest truth over historical sequence.
 - Replace superseded facts instead of keeping old and new versions.
 - Drop resolved or stale items unless they still affect current behaviour over the next few days.
-- Keep durable long-term facts out unless they are actively relevant right now.
+- Keep durable long-term facts out unless they are actively relevant right now or needed to orient the palace.
 - Be extremely terse: facts only, no prose, no filler.
 - Output only the content, no code fences, no commentary.`, targetTokens, targetChars)
 }
@@ -372,6 +372,7 @@ Rules:
 - Target total output: ~%d tokens (~%d characters). Treat this as a hard target.
 - Preserve the newest and most actionable facts.
 - Prefer latest truth over history; replace superseded facts.
+- Keep stable palace rooms only when they help retrieval; merge tiny or empty rooms.
 - Drop resolved, duplicated, stale, or low-value detail aggressively.
 - Keep the file as compact current-state memory, not a dated log or archive.
 - Use short headings and bullets only when they earn their keep.

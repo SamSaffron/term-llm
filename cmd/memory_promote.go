@@ -30,9 +30,11 @@ Rules:
 - Target **%d words maximum** — treat this as a hard limit, not a guideline.
 - Compress aggressively: merge related facts, drop low-value or stale details, prefer dense bullet points over prose.
 - Prioritise: active projects, recent events, infrastructure facts, preferences, API/config details that would be painful to re-derive.
+- Keep memory-palace shape: group facts into stable rooms such as User / Preferences, Projects, Infrastructure / tools, Open loops, and Recent work when those rooms are useful.
 - Drop: transient observations, resolved issues, one-off tasks, anything already obvious from context.
 - Incorporate new/changed fragments; if they conflict with existing content, prefer the newer version.
-- Preserve structure (dates, headers) but trim ruthlessly within each section.
+- Preserve useful structure (dates, headers, palace rooms) but trim ruthlessly within each section.
+- Replace superseded facts instead of preserving history.
 - Output ONLY the raw markdown — no commentary, no code fences.`
 )
 

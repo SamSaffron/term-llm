@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/embedding"
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
@@ -23,11 +25,15 @@ const (
 )
 
 var (
-	memorySearchLimit         int
-	memorySearchJSON          bool
-	memorySearchEmbedProvider string
-	memorySearchNoDecay       bool
-	memorySearchBM25Only      bool
+	memorySearchLimit             int
+	memorySearchJSON              bool
+	memorySearchEmbedProvider     string
+	memorySearchNoDecay           bool
+	memorySearchApplyDecay        bool
+	memorySearchFreshness         bool
+	memorySearchFreshnessHalfLife float64
+	memorySearchBM25Only          bool
+	memorySearchTouch             bool
 )
 
 type hybridSearchCandidate struct {
@@ -48,8 +54,14 @@ func init() {
 	memorySearchCmd.Flags().IntVar(&memorySearchLimit, "limit", 6, "Maximum number of results")
 	memorySearchCmd.Flags().BoolVar(&memorySearchJSON, "json", false, "Output as JSON")
 	memorySearchCmd.Flags().StringVar(&memorySearchEmbedProvider, "embed-provider", "", "Override embedding provider for query embedding (optionally provider:model)")
-	memorySearchCmd.Flags().BoolVar(&memorySearchNoDecay, "no-decay", false, "Ignore decay score multiplier")
+	memorySearchCmd.Flags().BoolVar(&memorySearchApplyDecay, "decay", false, "Apply stored decay score multiplier (opt-in)")
+	memorySearchCmd.Flags().BoolVar(&memorySearchFreshness, "freshness", false, "Apply non-persistent timestamp freshness multiplier (opt-in)")
+	memorySearchCmd.Flags().BoolVar(&memorySearchFreshness, "recency", false, "Alias for --freshness")
+	memorySearchCmd.Flags().Float64Var(&memorySearchFreshnessHalfLife, "freshness-half-life", memorydb.DefaultDecayHalfLifeDays, "Freshness half-life in days for --freshness/--recency")
+	memorySearchCmd.Flags().BoolVar(&memorySearchNoDecay, "no-decay", false, "Deprecated no-op; decay is no longer applied by default")
+	_ = memorySearchCmd.Flags().MarkDeprecated("no-decay", "decay is no longer applied by default; use --decay to opt in")
 	memorySearchCmd.Flags().BoolVar(&memorySearchBM25Only, "bm25-only", false, "Force BM25-only retrieval")
+	memorySearchCmd.Flags().BoolVar(&memorySearchTouch, "touch", false, "Record access metadata for returned fragments")
 	memorySearchCmd.RegisterFlagCompletionFunc("embed-provider", EmbedProviderFlagCompletion)
 }
 
@@ -68,6 +80,9 @@ func runMemorySearch(cmd *cobra.Command, args []string) error {
 	if memorySearchLimit <= 0 {
 		memorySearchLimit = 6
 	}
+	if memorySearchFreshnessHalfLife <= 0 {
+		return fmt.Errorf("--freshness-half-life must be > 0")
+	}
 
 	ctx := context.Background()
 	results, err := searchMemory(ctx, store, query)
@@ -75,7 +90,7 @@ func runMemorySearch(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if len(results) > 0 {
+	if memorySearchTouch && len(results) > 0 {
 		for _, r := range results {
 			if r.ID == "" {
 				continue
@@ -120,7 +135,15 @@ func searchMemory(ctx context.Context, store *memorydb.Store, query string) ([]m
 	agent := strings.TrimSpace(memoryAgent)
 
 	if memorySearchBM25Only {
-		return store.SearchBM25(ctx, query, memorySearchLimit, agent)
+		bm25Limit := memorySearchLimit
+		if memorySearchUsesScoreModifiers() && bm25Limit < memorySearchCandidateLimit {
+			bm25Limit = memorySearchCandidateLimit
+		}
+		candidates, err := store.SearchBM25(ctx, query, bm25Limit, agent)
+		if err != nil {
+			return nil, err
+		}
+		return limitScoredFragments(applySearchScoreOptions(candidates), memorySearchLimit), nil
 	}
 
 	bm25Candidates, err := store.SearchBM25(ctx, query, memorySearchCandidateLimit, agent)
@@ -136,7 +159,7 @@ func searchMemory(ctx context.Context, store *memorydb.Store, query string) ([]m
 	providerName, modelName, providerSpec := resolveMemoryEmbeddingProvider(cfg, memorySearchEmbedProvider)
 	if providerName == "" || providerSpec == "" {
 		fmt.Fprintln(os.Stderr, "warning: embedding provider unavailable, falling back to BM25-only search")
-		return limitScoredFragments(bm25Candidates, memorySearchLimit), nil
+		return limitScoredFragments(applySearchScoreOptions(bm25Candidates), memorySearchLimit), nil
 	}
 
 	embedder, err := embedding.NewEmbeddingProvider(cfg, providerSpec)
@@ -145,7 +168,7 @@ func searchMemory(ctx context.Context, store *memorydb.Store, query string) ([]m
 			return nil, err
 		}
 		fmt.Fprintf(os.Stderr, "warning: embedding provider initialization failed (%v), falling back to BM25-only search\n", err)
-		return limitScoredFragments(bm25Candidates, memorySearchLimit), nil
+		return limitScoredFragments(applySearchScoreOptions(bm25Candidates), memorySearchLimit), nil
 	}
 
 	embRes, err := embedder.Embed(embedding.EmbedRequest{
@@ -158,11 +181,11 @@ func searchMemory(ctx context.Context, store *memorydb.Store, query string) ([]m
 			return nil, err
 		}
 		fmt.Fprintf(os.Stderr, "warning: query embedding failed (%v), falling back to BM25-only search\n", err)
-		return limitScoredFragments(bm25Candidates, memorySearchLimit), nil
+		return limitScoredFragments(applySearchScoreOptions(bm25Candidates), memorySearchLimit), nil
 	}
 	if len(embRes.Embeddings) == 0 || len(embRes.Embeddings[0].Vector) == 0 {
 		fmt.Fprintln(os.Stderr, "warning: empty query embedding result, falling back to BM25-only search")
-		return limitScoredFragments(bm25Candidates, memorySearchLimit), nil
+		return limitScoredFragments(applySearchScoreOptions(bm25Candidates), memorySearchLimit), nil
 	}
 
 	queryVec := embRes.Embeddings[0].Vector
@@ -247,6 +270,7 @@ func mergeSearchCandidates(ctx context.Context, store *memorydb.Store, provider,
 		}
 	}
 
+	now := time.Now()
 	out := make([]*hybridSearchCandidate, 0, len(merged))
 	for _, candidate := range merged {
 		var score float64
@@ -259,9 +283,7 @@ func mergeSearchCandidates(ctx context.Context, store *memorydb.Store, provider,
 			// BM25-only ones, but BM25-only fragments are no longer buried below minScore.
 			score = candidate.bm25Score
 		}
-		if !memorySearchNoDecay {
-			score *= candidate.fragment.DecayScore
-		}
+		score = applySearchScoreModifiers(score, candidate.fragment, now)
 		candidate.mergedScore = score
 		candidate.fragment.Score = score
 		if candidate.fragment.Snippet == "" {
@@ -363,6 +385,47 @@ func normalizeCosineScore(raw float64) float64 {
 		return 1
 	}
 	return raw
+}
+
+func memorySearchUsesScoreModifiers() bool {
+	return memorySearchApplyDecay || memorySearchFreshness
+}
+
+func applySearchScoreOptions(in []memorydb.ScoredFragment) []memorydb.ScoredFragment {
+	if !memorySearchUsesScoreModifiers() || len(in) == 0 {
+		return in
+	}
+
+	now := time.Now()
+	out := append([]memorydb.ScoredFragment(nil), in...)
+	for i := range out {
+		out[i].Score = applySearchScoreModifiers(out[i].Score, out[i], now)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if math.Abs(out[i].Score-out[j].Score) < 1e-12 {
+			return out[i].UpdatedAt.After(out[j].UpdatedAt)
+		}
+		return out[i].Score > out[j].Score
+	})
+	return out
+}
+
+func applySearchScoreModifiers(score float64, fragment memorydb.ScoredFragment, now time.Time) float64 {
+	if memorySearchApplyDecay {
+		decay := fragment.DecayScore
+		if decay <= 0 {
+			decay = 1.0
+		}
+		score *= decay
+	}
+	if memorySearchFreshness {
+		score *= memorySearchFreshnessMultiplier(fragment, memorySearchFreshnessHalfLife, now)
+	}
+	return score
+}
+
+func memorySearchFreshnessMultiplier(fragment memorydb.ScoredFragment, halfLifeDays float64, now time.Time) float64 {
+	return memorydb.ComputeDecayScore(fragment.UpdatedAt, fragment.AccessedAt, halfLifeDays, now)
 }
 
 func limitScoredFragments(in []memorydb.ScoredFragment, limit int) []memorydb.ScoredFragment {

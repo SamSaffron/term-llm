@@ -22,6 +22,7 @@ The distinction matters. Most session content is ephemeral. Memory is meant for 
 ```bash
 term-llm memory status
 term-llm memory search "retry policy"
+term-llm memory consolidate --agent assistant
 term-llm memory fragments list
 term-llm memory insights list --agent assistant
 ```
@@ -76,15 +77,31 @@ Search uses hybrid retrieval when embeddings are available:
 
 - BM25 keyword search
 - vector similarity search
-- reranking and decay-aware scoring
+- MMR reranking
+
+Search is read-only by default. It does not apply decay/freshness scoring unless you opt in, and it does not bump access metadata unless you pass `--touch`.
 
 Useful flags:
 
 ```bash
 term-llm memory search "provider routing" --limit 10
 term-llm memory search "deploy key" --bm25-only
-term-llm memory search "session persistence" --no-decay
+term-llm memory search "session persistence" --freshness
+term-llm memory search "recent deploy issue" --recency --touch
 term-llm memory search "embedding provider" --embed-provider gemini
+```
+
+### Freshness and decay
+
+Freshness is now an explicit retrieval choice, not a default. `--freshness`/`--recency` apply a non-persistent timestamp multiplier at query time. `--decay` applies the stored decay score for compatibility with older databases. Neither option rewrites memory.
+
+Garbage collection is manual and destructive. If you use it, preview first:
+
+```bash
+term-llm memory fragments gc --agent assistant
+term-llm memory fragments gc --agent assistant --preview-decay
+# Destructive cleanup is explicit:
+term-llm memory fragments gc --agent assistant --delete
 ```
 
 ## Inspect fragments directly
@@ -132,6 +149,58 @@ term-llm memory promote --agent assistant --since 6h
 term-llm memory promote --agent assistant --recent-max-bytes 20000
 term-llm memory promote --agent assistant --dry-run
 ```
+
+## Consolidate safely
+
+```bash
+term-llm memory consolidate --agent assistant
+term-llm memory consolidate --agent assistant --apply
+```
+
+`consolidate` is the safer current-state workflow. It defaults to a dry run, prints the proposed `recent.md` rewrite, and shows a non-destructive decay preview. `--apply` writes `recent.md`; it does not delete fragments, move fragments, perform full palace cleanup, or rewrite stored decay scores.
+
+Use it when you want to compact recent working memory without treating age as permission to forget.
+
+### Cadence
+
+A practical schedule is:
+
+- run `memory mine` frequently, such as every 30 minutes, to extract durable candidates from completed sessions
+- run `memory consolidate --apply` daily to keep `recent.md` tidy
+- run deep palace cleanup manually, or as a weekly dry-run/report, because it involves moving/deleting source fragments
+
+Deep palace cleanup means clustering old fragments, backing up source rows, writing a canonical replacement fragment, and explicitly deleting superseded sources after review. It is intentionally not automatic.
+
+## Memory palace template
+
+Fresh agent containers seed `memory/palace.md` alongside `memory/recent.md`. The palace is a tiny, durable map of high-value context that should be visible every session. Keep detailed facts in fragments. Keep `recent.md` for current-state working memory. Keep the palace short enough that every line earns prompt budget.
+
+Recommended room taxonomy:
+
+```text
+fragments/index/        maps and palace navigation
+fragments/preferences/  stable user and agent behavior preferences
+fragments/people/       user/family/profile facts
+fragments/homelab/      infrastructure, services, network, runbooks
+fragments/projects/     long-lived project context, decisions, scars
+fragments/skills/       skill-specific operating notes
+fragments/tools/        external tools, APIs, tool behavior
+fragments/snippets/     reusable commands/workflows
+fragments/notes/        unclassified knowledge; promote periodically
+fragments/bugs/         open bugs or memorable scars
+fragments/feedback/     user corrections; fold into preferences over time
+fragments/credentials/  credential locations and handling rules only
+```
+
+Credential rule: active memory should store **where** to find secrets and how to handle them, not raw secret values.
+
+Backup-before-delete convention for deep cleanup:
+
+```text
+/home/agent/artifacts/memory-consolidation/YYYY-MM-DD/<cluster>.json
+```
+
+Write source rows there before deleting a group of superseded fragments.
 
 ## Behavioral insights
 

@@ -166,7 +166,8 @@ func init() {
 	memoryMineCmd.Flags().StringVar(&memoryMineEmbedProvider, "embed-provider", "", "Override embedding provider used in EMBED phase (optionally provider:model)")
 	memoryMineCmd.Flags().StringVar(&memoryMinePromote, "promote", "never", "Promotion mode: auto|always|never")
 	memoryMineCmd.Flags().DurationVar(&memoryMinePromoteEvery, "promote-every", 6*time.Hour, "Minimum interval between auto-promote runs")
-	memoryMineCmd.Flags().Float64Var(&memoryMineHalfLifeDays, "half-life", 30.0, "Decay half-life in days for post-mine recalculation")
+	memoryMineCmd.Flags().Float64Var(&memoryMineHalfLifeDays, "half-life", 30.0, "Deprecated no-op; decay is no longer applied during memory mine")
+	_ = memoryMineCmd.Flags().MarkDeprecated("half-life", "decay is no longer applied during memory mine; use explicit maintenance commands if needed")
 	memoryMineCmd.Flags().BoolVar(&memoryMineInsights, "insights", false, "Also run insight extraction pass after fragment mining")
 	memoryMineCmd.Flags().IntVar(&memoryMinePromptMaxTokens, "prompt-max-tokens", defaultMemoryMinePromptMaxTokens, "Approximate maximum prompt budget per extraction request")
 	memoryMineCmd.Flags().IntVar(&memoryMineTaxonomyMaxTokens, "taxonomy-max-tokens", defaultMemoryMineTaxonomyMaxTokens, "Approximate maximum tokens for the compact fragment taxonomy map")
@@ -377,16 +378,6 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if !memoryDryRun {
-		decayAgent := strings.TrimSpace(memoryAgent)
-		updated, err := memStore.RecalcDecayScores(ctx, decayAgent, memoryMineHalfLifeDays)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: decay recalc failed: %v\n", err)
-		} else if updated > 0 {
-			fmt.Printf("decay recalculated for %d fragments\n", updated)
-		}
-	}
-
 	if promoteMode != "never" {
 		if memoryDryRun {
 			fmt.Println("Dry run mode: skipping PROMOTE phase.")
@@ -440,14 +431,6 @@ func runMemoryMine(cmd *cobra.Command, args []string) error {
 					insightStats.print()
 				}
 			}
-		}
-		// After extraction, apply decay and prune stale insights.
-		decayAgent := strings.TrimSpace(memoryAgent)
-		if n, decayErr := memStore.DecayInsights(ctx, decayAgent, memoryMineHalfLifeDays); decayErr == nil && n > 0 {
-			fmt.Printf("insights: decayed %d entries (half-life=%.1f days)\n", n, memoryMineHalfLifeDays)
-		}
-		if n, gcErr := memStore.GCInsights(ctx, decayAgent, 0.1); gcErr == nil && n > 0 {
-			fmt.Printf("insights: gc deleted %d below 0.10 confidence\n", n)
 		}
 	}
 

@@ -1703,8 +1703,9 @@ func (s *Store) getFragmentsByIDBatch(ctx context.Context, ids []string, out map
 	return nil
 }
 
-// BumpAccess marks a fragment as recently accessed, increments access_count,
-// and gives decay_score a small recency boost.
+// BumpAccess marks a fragment as recently accessed and increments access_count.
+// It intentionally does not modify decay_score; recency/freshness is applied as
+// an explicit, non-persistent search-time option.
 func (s *Store) BumpAccess(ctx context.Context, fragmentID string) error {
 	fragmentID = strings.TrimSpace(fragmentID)
 	if fragmentID == "" {
@@ -1714,8 +1715,7 @@ func (s *Store) BumpAccess(ctx context.Context, fragmentID string) error {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE memory_fragments
 		SET accessed_at = ?,
-		    access_count = access_count + 1,
-		    decay_score = CASE WHEN decay_score + 0.1 > 1.0 THEN 1.0 ELSE decay_score + 0.1 END
+		    access_count = access_count + 1
 		WHERE id = ?`, time.Now(), fragmentID)
 	if err != nil {
 		return fmt.Errorf("bump fragment access: %w", err)
@@ -1726,12 +1726,126 @@ func (s *Store) BumpAccess(ctx context.Context, fragmentID string) error {
 	return nil
 }
 
+const (
+	DefaultDecayHalfLifeDays = 30.0
+	MinDecayScore            = 0.04
+	DefaultDecayGCThreshold  = 0.05
+)
+
+// DecayPreview is a non-persistent age-based decay calculation for a fragment.
+type DecayPreview struct {
+	ID           string
+	Agent        string
+	Path         string
+	UpdatedAt    time.Time
+	AccessedAt   *time.Time
+	CurrentScore float64
+	PreviewScore float64
+}
+
+// ComputeDecayScore returns the age-based decay score that would apply for the
+// supplied timestamps. It is pure: callers decide whether to use it for ranking,
+// reporting, or persistence.
+func ComputeDecayScore(updatedAt time.Time, accessedAt *time.Time, halfLifeDays float64, now time.Time) float64 {
+	if halfLifeDays <= 0 {
+		halfLifeDays = DefaultDecayHalfLifeDays
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+
+	lastActive := updatedAt
+	if accessedAt != nil && accessedAt.After(lastActive) {
+		lastActive = *accessedAt
+	}
+	if lastActive.IsZero() || lastActive.After(now) {
+		return 1.0
+	}
+
+	ageDays := now.Sub(lastActive).Hours() / 24.0
+	if ageDays < 0 {
+		ageDays = 0
+	}
+	decay := math.Pow(0.5, ageDays/halfLifeDays)
+	return math.Max(decay, MinDecayScore)
+}
+
+// PreviewDecayScores calculates age-based decay scores without writing them to
+// the database. Results are sorted from lowest preview score to highest.
+func (s *Store) PreviewDecayScores(ctx context.Context, agent string, halfLifeDays float64, limit int) ([]DecayPreview, error) {
+	agent = strings.TrimSpace(agent)
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, agent, path, updated_at, accessed_at, decay_score
+		FROM memory_fragments
+		WHERE pinned = 0
+		  AND (? = '' OR agent = ?)`, agent, agent)
+	if err != nil {
+		return nil, fmt.Errorf("query fragments for decay preview: %w", err)
+	}
+	defer rows.Close()
+
+	now := time.Now()
+	out := []DecayPreview{}
+	for rows.Next() {
+		var p DecayPreview
+		var accessedAt sql.NullTime
+		if err := rows.Scan(&p.ID, &p.Agent, &p.Path, &p.UpdatedAt, &accessedAt, &p.CurrentScore); err != nil {
+			return nil, fmt.Errorf("scan fragment for decay preview: %w", err)
+		}
+		if accessedAt.Valid {
+			at := accessedAt.Time
+			p.AccessedAt = &at
+		}
+		p.PreviewScore = ComputeDecayScore(p.UpdatedAt, p.AccessedAt, halfLifeDays, now)
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate fragments for decay preview: %w", err)
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		if math.Abs(out[i].PreviewScore-out[j].PreviewScore) < 1e-12 {
+			if out[i].Agent == out[j].Agent {
+				return out[i].Path < out[j].Path
+			}
+			return out[i].Agent < out[j].Agent
+		}
+		return out[i].PreviewScore < out[j].PreviewScore
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// CountDecayCandidates counts fragments that would fall below threshold if
+// age-based decay were applied, without mutating decay_score.
+func (s *Store) CountDecayCandidates(ctx context.Context, agent string, halfLifeDays, threshold float64) (int, error) {
+	if threshold <= 0 {
+		threshold = DefaultDecayGCThreshold
+	}
+	previews, err := s.PreviewDecayScores(ctx, agent, halfLifeDays, 0)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, preview := range previews {
+		if preview.PreviewScore < threshold {
+			count++
+		}
+	}
+	return count, nil
+}
+
 // RecalcDecayScores recalculates decay_score for non-pinned fragments.
 // halfLifeDays defaults to 30 when <= 0.
+// Deprecated: prefer PreviewDecayScores or ComputeDecayScore; routine memory
+// maintenance should not rewrite decay scores.
 func (s *Store) RecalcDecayScores(ctx context.Context, agent string, halfLifeDays float64) (int, error) {
 	agent = strings.TrimSpace(agent)
 	if halfLifeDays <= 0 {
-		halfLifeDays = 30.0
+		halfLifeDays = DefaultDecayHalfLifeDays
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -1765,17 +1879,12 @@ func (s *Store) RecalcDecayScores(ctx context.Context, agent string, halfLifeDay
 			return 0, fmt.Errorf("scan fragment for decay recalculation: %w", err)
 		}
 
-		lastActive := updatedAt
-		if accessedAt.Valid && accessedAt.Time.After(lastActive) {
-			lastActive = accessedAt.Time
+		var accessedAtPtr *time.Time
+		if accessedAt.Valid {
+			at := accessedAt.Time
+			accessedAtPtr = &at
 		}
-
-		ageDays := now.Sub(lastActive).Hours() / 24.0
-		if ageDays < 0 {
-			ageDays = 0
-		}
-		decay := math.Pow(0.5, ageDays/halfLifeDays)
-		finalDecay := math.Max(decay, 0.04)
+		finalDecay := ComputeDecayScore(updatedAt, accessedAtPtr, halfLifeDays, now)
 		updates = append(updates, decayUpdate{id: id, score: finalDecay})
 	}
 	if err := rows.Err(); err != nil {

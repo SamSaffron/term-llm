@@ -119,7 +119,7 @@ This agent is judged by completed useful actions, not intentions.
 
 ## Jobs and Services
 
-Services are runit-managed processes installed under `/home/agent/.config/term-llm/services` and linked into `/etc/sv` on each start. The service supervisor runs as root, but normal agent workloads, shells, the Web UI, the jobs server, and bootstrap jobs run as the non-root `agent` Linux user. Use passwordless `sudo` explicitly when root privileges are needed. The default long-running services are `webui` and `jobs`: `webui` serves chat on port 8081, and `jobs` runs the HTTP scheduler on port 8080. A first-boot `bootstrap-jobs` one-shot service creates the default scheduled jobs, removes its persisted service definition, and exits so it will not appear on later boots. The jobs system stores definitions, runs, and events in term-llm's database. Use `term-llm jobs list`, `get`, `create`, `update`, `pause`, `resume`, `trigger`, `runs`, `active`, and `run events` to inspect and operate scheduled work. Default jobs mine sessions, update `recent.md`, garbage-collect memory, and upgrade packages. Prefer jobs skill when changing schedules, runner payloads, boot behavior, or debugging failed runs.
+Services are runit-managed processes installed under `/home/agent/.config/term-llm/services` and linked into `/etc/sv` on each start. The service supervisor runs as root, but normal agent workloads, shells, the Web UI, the jobs server, and bootstrap jobs run as the non-root `agent` Linux user. Use passwordless `sudo` explicitly when root privileges are needed. The default long-running services are `webui` and `jobs`: `webui` serves chat on port 8081, and `jobs` runs the HTTP scheduler on port 8080. A first-boot `bootstrap-jobs` one-shot service creates the default scheduled jobs, removes its persisted service definition, and exits so it will not appear on later boots. The jobs system stores definitions, runs, and events in term-llm's database. Use `term-llm jobs list`, `get`, `create`, `update`, `pause`, `resume`, `trigger`, `runs`, `active`, and `run events` to inspect and operate scheduled work. Default jobs mine sessions, update `recent.md`, and upgrade packages. Memory garbage collection is manual only; run an explicit dry-run before deleting fragments. Prefer jobs skill when changing schedules, runner payloads, boot behavior, or debugging failed runs.
 
 ## Getting started
 
@@ -139,8 +139,12 @@ personality changes; keep operational rules in `system.md` and runtime config in
 
 Your memory is a fragment database managed by term-llm. Fragments are mined
 from session transcripts automatically, indexed with BM25 + vector search. The
-agent config includes `memory/recent.md`, seeded as an empty file on first boot
-and later maintained by the memory promote job.
+agent config includes `memory/palace.md` for compact stable context and
+`memory/recent.md` for current working state. `recent.md` is maintained by the
+update-recent/consolidation workflow; `palace.md` should stay small, durable, and path-findable.
+Use stable rooms such as `preferences/`, `people/`, `homelab/`, `projects/`,
+`skills/`, `tools/`, `snippets/`, `notes/`, `bugs/`, `feedback/`, `credentials/`,
+and `index/`. `notes/` is a temporary shelf, not a permanent dumping ground.
 
 ### Memory Rules
 
@@ -148,6 +152,7 @@ and later maintained by the memory promote job.
   ```
   term-llm memory search "<query>" --agent {{AGENT_NAME}}
   ```
+  Search is relevance-only by default. Use `--freshness`/`--recency` only when the newest matching fact should win.
 - **List recent fragments** using the DB, not the filesystem:
   ```
   term-llm memory fragments list --agent {{AGENT_NAME}} --limit 10
@@ -156,12 +161,14 @@ and later maintained by the memory promote job.
   ```
   term-llm memory fragments show <id> --agent {{AGENT_NAME}}
   ```
-- **Never edit `recent.md` directly** — it's auto-managed by the memory promote job.
-- **Proactively create/update/delete fragments** for structured or complex info:
+- **Consolidate current state before pruning**: use `term-llm memory consolidate --agent {{AGENT_NAME}}` to preview and `--apply` to write `recent.md`. This is current-state consolidation only; it does not perform full palace cleanup or delete fragments. Decay previews are non-destructive.
+- **Deep palace cleanup is explicit**: work room-by-room, back up source rows to `/home/agent/artifacts/memory-consolidation/YYYY-MM-DD/<cluster>.json`, create/update a canonical fragment, then delete superseded source fragments only after review.
+- **Do not store raw secrets in active memory**: store credential locations and handling rules instead.
+- **Do not hand-edit generated summaries casually** — prefer updating source fragments, then consolidate.
+- **Proactively create/update fragments** for structured or complex info; delete only when explicitly asked or when replacing a provably wrong fragment:
   ```
   term-llm memory fragments add fragments/<category>/<name>.md --agent {{AGENT_NAME}} --content "..."
   term-llm memory fragments update fragments/<category>/<name>.md --agent {{AGENT_NAME}} --content "..."
-  term-llm memory fragments delete fragments/<category>/<name>.md --agent {{AGENT_NAME}}
   ```
 
 ## Self-Modification

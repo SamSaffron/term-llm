@@ -47,7 +47,7 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 			t.Fatalf("Dockerfile.fedora missing %q", want)
 		}
 	}
-	for _, rel := range []string{"entrypoint.sh", "packaging/runit/PKGBUILD", "bootstrap/bootstrap.yaml", "bootstrap/system.md", "bootstrap/soul.md", "bootstrap/services/webui/run", "bootstrap/services/jobs/run", "bootstrap/services/bootstrap-jobs/run", "bootstrap/skills/memory/SKILL.md", "bootstrap/skills/jobs/SKILL.md", "bootstrap/skills/self/SKILL.md", "bootstrap/skills/widgets/SKILL.md", "bootstrap/memory/recent.md", "bootstrap/scripts/update.sh", "bootstrap/scripts/patch-system.sh", "bootstrap/scripts/patch-soul.sh", "bootstrap/scripts/patch-agent.sh"} {
+	for _, rel := range []string{"entrypoint.sh", "packaging/runit/PKGBUILD", "bootstrap/bootstrap.yaml", "bootstrap/system.md", "bootstrap/soul.md", "bootstrap/services/webui/run", "bootstrap/services/jobs/run", "bootstrap/services/bootstrap-jobs/run", "bootstrap/skills/memory/SKILL.md", "bootstrap/skills/jobs/SKILL.md", "bootstrap/skills/self/SKILL.md", "bootstrap/skills/widgets/SKILL.md", "bootstrap/memory/recent.md", "bootstrap/memory/palace.md", "bootstrap/scripts/update.sh", "bootstrap/scripts/patch-system.sh", "bootstrap/scripts/patch-soul.sh", "bootstrap/scripts/patch-agent.sh"} {
 		data, err := os.ReadFile(filepath.Join(result.Dir, rel))
 		if err != nil {
 			t.Fatalf("missing synced asset %s: %v", rel, err)
@@ -100,6 +100,9 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 		if rel == "bootstrap/bootstrap.yaml" && (!strings.Contains(string(data), "image_generate") || !strings.Contains(string(data), "show_image") || !strings.Contains(string(data), "view_image")) {
 			t.Fatalf("agent bootstrap missing image generation/viewing tools")
 		}
+		if rel == "bootstrap/bootstrap.yaml" && !strings.Contains(string(data), "memory/palace.md") {
+			t.Fatalf("agent bootstrap should include memory palace template")
+		}
 		if (rel == "bootstrap/services/webui/run" || rel == "bootstrap/services/jobs/run") && !strings.Contains(string(data), "TERM_LLM_PROVIDER") {
 			t.Fatalf("service %s missing TERM_LLM_PROVIDER forwarding", rel)
 		}
@@ -119,10 +122,13 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 			t.Fatalf("bootstrap jobs should run as agent and use sudo for package upgrades")
 		}
 		if rel == "bootstrap/services/bootstrap-jobs/run" {
-			for _, want := range []string{"cleanup_and_exit", "rm -rf \"$PERSISTED_SERVICE_DIR\"", "rm -f \"$RUNSVDIR_LINK\"", "rm -rf \"$SV_SERVICE_DIR\""} {
+			for _, want := range []string{"cleanup_and_exit", "rm -rf \"$PERSISTED_SERVICE_DIR\"", "rm -f \"$RUNSVDIR_LINK\"", "rm -rf \"$SV_SERVICE_DIR\"", "3 jobs created"} {
 				if !strings.Contains(string(data), want) {
 					t.Fatalf("bootstrap jobs should self-remove after bootstrapping; missing %q", want)
 				}
+			}
+			if strings.Contains(string(data), "memory-gc") {
+				t.Fatalf("bootstrap jobs should not create the deprecated memory-gc job")
 			}
 			if strings.Contains(string(data), "sleep infinity") {
 				t.Fatalf("bootstrap jobs should exit after self-removal, not sleep forever")
@@ -175,6 +181,19 @@ func TestSyncImageWritesAgentAsset(t *testing.T) {
 				if !strings.Contains(string(data), want) {
 					t.Fatalf("jobs skill missing %q", want)
 				}
+			}
+			if strings.Contains(string(data), "memory-gc") {
+				t.Fatalf("jobs skill should not document the removed memory-gc default job")
+			}
+		}
+		if rel == "bootstrap/skills/memory/SKILL.md" {
+			for _, want := range []string{"Memory palace", "memory consolidate", "Garbage collection is manual only"} {
+				if !strings.Contains(string(data), want) {
+					t.Fatalf("memory skill missing %q", want)
+				}
+			}
+			if strings.Contains(string(data), "memory-gc") {
+				t.Fatalf("memory skill should not document the removed memory-gc default job")
 			}
 		}
 		if rel == "bootstrap/skills/widgets/SKILL.md" {

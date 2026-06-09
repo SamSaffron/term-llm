@@ -147,7 +147,6 @@ On first boot, `bootstrap-jobs` waits for the jobs API, creates the defaults, an
 |---|---|---|
 | `mine-sessions` | Every 30 min | Mines session transcripts into memory fragments. |
 | `update-recent` | Every 10 min | Promotes recent fragments into `memory/recent.md`. |
-| `memory-gc` | Daily at 04:00 UTC | Garbage-collects stale or duplicate memory fragments. |
 | `system-upgrade` | Daily at 05:00 UTC | Upgrades distro packages (`pacman` on Arch, `dnf` on Fedora). |
 
 Inspect and operate them inside the workspace:
@@ -171,7 +170,7 @@ Fresh agent containers include a small default skill set:
 
 Skills are copied to `/home/agent/.config/term-llm/skills/` and the first-boot `config.yaml` enables the skills system with auto-invocation.
 
-Memory fragments live in term-llm's database on the persistent volume. `memory/recent.md` is seeded empty and then maintained by the default jobs; do not edit it directly.
+Memory fragments live in term-llm's database on the persistent volume. `memory/recent.md` is seeded empty and maintained by the default jobs. `memory/palace.md` is a small stable-context template for durable, high-value facts. Prefer memory commands over hand-editing generated summaries.
 
 ## Widgets
 

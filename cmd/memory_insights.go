@@ -3,8 +3,10 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
+	"time"
 
 	memorydb "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/spf13/cobra"
@@ -347,6 +349,15 @@ func runMemoryInsightsDecay(cmd *cobra.Command, args []string) error {
 	defer store.Close()
 
 	halfLife, _ := cmd.Flags().GetFloat64("half-life")
+	if memoryDryRun {
+		n, err := countInsightDecayPreview(context.Background(), store, agent, halfLife)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("decay: would update %d insights (half-life=%.1f days; dry-run, no changes)\n", n, halfLife)
+		return nil
+	}
+
 	n, err := store.DecayInsights(context.Background(), agent, halfLife)
 	if err != nil {
 		return err
@@ -365,10 +376,62 @@ func runMemoryInsightsGC(cmd *cobra.Command, args []string) error {
 	defer store.Close()
 
 	minConf, _ := cmd.Flags().GetFloat64("min-confidence")
+	if memoryDryRun {
+		n, err := countInsightGCCandidates(context.Background(), store, agent, minConf)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("gc: would delete %d insights below confidence %.2f (dry-run, no changes)\n", n, minConf)
+		return nil
+	}
+
 	n, err := store.GCInsights(context.Background(), agent, minConf)
 	if err != nil {
 		return err
 	}
 	fmt.Printf("gc: deleted %d insights below confidence %.2f\n", n, minConf)
 	return nil
+}
+
+func countInsightDecayPreview(ctx context.Context, store *memorydb.Store, agent string, halfLifeDays float64) (int, error) {
+	if halfLifeDays <= 0 {
+		halfLifeDays = memorydb.DefaultDecayHalfLifeDays
+	}
+	insights, err := store.ListInsights(ctx, agent, 0)
+	if err != nil {
+		return 0, err
+	}
+	now := time.Now()
+	count := 0
+	for _, ins := range insights {
+		if ins == nil || ins.LastReinforced.IsZero() {
+			continue
+		}
+		daysSince := now.Sub(ins.LastReinforced).Hours() / 24
+		if daysSince < 1 {
+			continue
+		}
+		decayed := ins.Confidence * math.Pow(2, -daysSince/halfLifeDays)
+		if math.Abs(decayed-ins.Confidence) >= 0.001 {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func countInsightGCCandidates(ctx context.Context, store *memorydb.Store, agent string, minConfidence float64) (int, error) {
+	if minConfidence <= 0 {
+		minConfidence = 0.1
+	}
+	insights, err := store.ListInsights(ctx, agent, 0)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, ins := range insights {
+		if ins != nil && ins.Confidence < minConfidence {
+			count++
+		}
+	}
+	return count, nil
 }

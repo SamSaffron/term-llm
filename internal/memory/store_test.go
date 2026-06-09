@@ -605,8 +605,8 @@ func TestStoreVectorSearchAndBumpAccess(t *testing.T) {
 	if got.AccessedAt == nil {
 		t.Fatal("accessed_at was not updated")
 	}
-	if math.Abs(got.DecayScore-0.8) > 1e-9 {
-		t.Fatalf("decay_score after bumps = %f, want %f", got.DecayScore, 0.8)
+	if math.Abs(got.DecayScore-0.6) > 1e-9 {
+		t.Fatalf("decay_score after access bumps = %f, want unchanged %f", got.DecayScore, 0.6)
 	}
 
 	if err := store.BumpAccess(ctx, "missing-id"); err == nil {
@@ -1090,6 +1090,69 @@ func TestStoreRecalcDecayScores(t *testing.T) {
 	}
 	if otherGot.DecayScore < 0.04 || otherGot.DecayScore > 1.0 {
 		t.Fatalf("other-agent decay_score after global recalc = %f, want within [0.04,1.0]", otherGot.DecayScore)
+	}
+}
+
+func TestStorePreviewDecayScoresDoesNotMutate(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer store.Close()
+
+	now := time.Now().UTC()
+	frag := &Fragment{
+		Agent:      "jarvis",
+		Path:       "decay/preview-only",
+		Content:    "preview only",
+		CreatedAt:  now.Add(-240 * 24 * time.Hour),
+		UpdatedAt:  now.Add(-240 * 24 * time.Hour),
+		DecayScore: 0.9,
+	}
+	pinned := &Fragment{
+		Agent:      "jarvis",
+		Path:       "decay/pinned-preview",
+		Content:    "pinned preview",
+		CreatedAt:  now.Add(-120 * 24 * time.Hour),
+		UpdatedAt:  now.Add(-120 * 24 * time.Hour),
+		Pinned:     true,
+		DecayScore: 0.8,
+	}
+	for _, f := range []*Fragment{frag, pinned} {
+		if err := store.CreateFragment(ctx, f); err != nil {
+			t.Fatalf("CreateFragment(%s) error = %v", f.Path, err)
+		}
+	}
+
+	previews, err := store.PreviewDecayScores(ctx, "jarvis", 30.0, 10)
+	if err != nil {
+		t.Fatalf("PreviewDecayScores() error = %v", err)
+	}
+	if len(previews) != 1 {
+		t.Fatalf("PreviewDecayScores() len = %d, want 1 non-pinned fragment", len(previews))
+	}
+	if previews[0].ID != frag.ID {
+		t.Fatalf("PreviewDecayScores()[0].ID = %s, want %s", previews[0].ID, frag.ID)
+	}
+	if previews[0].PreviewScore >= previews[0].CurrentScore {
+		t.Fatalf("preview score = %f, current = %f; want lower age-based score", previews[0].PreviewScore, previews[0].CurrentScore)
+	}
+
+	got, err := store.GetFragment(ctx, "jarvis", "decay/preview-only")
+	if err != nil {
+		t.Fatalf("GetFragment(preview-only) error = %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetFragment(preview-only) returned nil")
+	}
+	if math.Abs(got.DecayScore-0.9) > 1e-9 {
+		t.Fatalf("PreviewDecayScores mutated decay_score = %f, want 0.9", got.DecayScore)
+	}
+
+	count, err := store.CountDecayCandidates(ctx, "jarvis", 30.0, DefaultDecayGCThreshold)
+	if err != nil {
+		t.Fatalf("CountDecayCandidates() error = %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("CountDecayCandidates() = %d, want 1", count)
 	}
 }
 
