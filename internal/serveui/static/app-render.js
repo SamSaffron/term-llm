@@ -1578,6 +1578,8 @@ const isBlankToolArgValue = (value) => {
   return false;
 };
 
+const TOOL_SUMMARY_ARG_LIMIT = 10;
+
 const formatToolArgs = (tool) => {
   if (!tool.arguments) return null;
   let args;
@@ -1598,7 +1600,7 @@ const formatToolArgs = (tool) => {
 
   if (name === 'ask_user') {
     const questions = Array.isArray(args.questions) ? args.questions : [];
-    return questions.slice(0, 4).map((question, index) => [
+    return questions.slice(0, TOOL_SUMMARY_ARG_LIMIT).map((question, index) => [
       question.header || `question_${index + 1}`,
       question.question || ''
     ]);
@@ -1619,7 +1621,7 @@ const formatToolArgs = (tool) => {
     if (inputCount > 0) {
       entries.push(['input', `${inputCount} attached image${inputCount === 1 ? '' : 's'}`]);
     }
-    return entries.slice(0, 4);
+    return entries.slice(0, TOOL_SUMMARY_ARG_LIMIT);
   }
 
   // Pick the most relevant key(s) per tool type
@@ -1648,7 +1650,7 @@ const formatToolArgs = (tool) => {
     entries = allEntries;
   }
 
-  return entries.slice(0, 4); // Cap at 4 args to keep it compact
+  return entries.slice(0, TOOL_SUMMARY_ARG_LIMIT); // Keep tool summaries bounded without hiding useful context
 };
 
 const buildArgsNode = (tool) => {

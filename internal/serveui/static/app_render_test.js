@@ -484,6 +484,22 @@ async function run(name, fn) {
     assert(!lines[1].includes('extra:'), 'detail should not include excess keys');
   });
 
+  await run('tool summaries are capped at ten visible arguments', () => {
+    const { app } = createHarness();
+    const entries = app.formatToolArgs({
+      name: 'misc_tool',
+      status: 'done',
+      arguments: JSON.stringify({
+        a1: 'v1', a2: 'v2', a3: 'v3', a4: 'v4', a5: 'v5',
+        a6: 'v6', a7: 'v7', a8: 'v8', a9: 'v9', a10: 'v10', a11: 'v11',
+      }),
+    });
+
+    assertEqual(entries.length, 10, 'tool summaries should show up to ten args');
+    assertEqual(entries[9][0], 'a10', 'tenth arg should still be visible');
+    assert(!entries.some(([key]) => key === 'a11'), 'eleventh arg should be capped');
+  });
+
   await run('image generation tool summaries prioritize prompt and hide blanks', () => {
     const { app } = createHarness();
     const entries = app.formatToolArgs({
