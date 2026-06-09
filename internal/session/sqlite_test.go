@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,6 +27,15 @@ func TestSessionPreferredTitlePrecedence(t *testing.T) {
 	}
 	if got := sess.PreferredLongTitle(); got != "Custom name" {
 		t.Fatalf("PreferredLongTitle() with name = %q", got)
+	}
+}
+
+func TestInternalCompactionSummarySQLPrefixMatchesLLM(t *testing.T) {
+	if !llm.IsInternalCompactionSummaryText(internalCompactionSummarySQLPrefix + "\nsummary") {
+		t.Fatalf("internalCompactionSummarySQLPrefix %q no longer matches llm compaction summaries", internalCompactionSummarySQLPrefix)
+	}
+	if strings.Contains(internalCompactionSummarySQLPrefix, "'") {
+		t.Fatalf("internalCompactionSummarySQLPrefix %q must remain safe for SQL literal interpolation", internalCompactionSummarySQLPrefix)
 	}
 }
 
@@ -239,6 +249,211 @@ func TestSQLiteStorePersistsCompactionTailFlag(t *testing.T) {
 	}
 	if len(results) != 0 {
 		t.Fatalf("hidden compaction tail should not appear in search results: %#v", results)
+	}
+}
+
+func TestSQLiteStoreMessageCountExcludesNonChatBubbleRowsOnAdd(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	messages := []*Message{
+		NewMessage(sess.ID, llm.UserText("\n\t[Context Compaction]\nInternal context only; not a user command."), -1),
+		NewMessage(sess.ID, llm.UserText("please inspect the repo"), -1),
+		NewMessage(sess.ID, llm.AssistantText("   \n\t"), -1),
+		assistantToolCallOnlyMessage(sess.ID, -1),
+		toolResultMessage(sess.ID, -1),
+		NewMessage(sess.ID, llm.AssistantText("I found the answer."), -1),
+	}
+	for _, msg := range messages {
+		if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
+			t.Fatalf("AddMessage(%s/%q): %v", msg.Role, msg.TextContent, err)
+		}
+	}
+
+	assertListedMessageCount(t, store, 2)
+}
+
+func TestSQLiteStoreMessageCountExcludesNonChatBubbleRowsOnReplaceMessages(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	messages := []Message{
+		*NewMessage(sess.ID, llm.UserText("\n\t[Context Compaction]\nInternal context only; not a user command."), 0),
+		*NewMessage(sess.ID, llm.UserText("please inspect the repo"), 1),
+		*NewMessage(sess.ID, llm.AssistantText("   \n\t"), 2),
+		*assistantToolCallOnlyMessage(sess.ID, 3),
+		*toolResultMessage(sess.ID, 4),
+		*NewMessage(sess.ID, llm.AssistantText("I found the answer."), 5),
+	}
+	if err := store.ReplaceMessages(ctx, sess.ID, messages); err != nil {
+		t.Fatalf("ReplaceMessages: %v", err)
+	}
+
+	assertListedMessageCount(t, store, 2)
+}
+
+func TestSQLiteStoreMigration27BackfillsChatBubbleMessageCount(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open seed database: %v", err)
+	}
+	if _, err := db.Exec(schema); err != nil {
+		t.Fatalf("create seed schema: %v", err)
+	}
+	if _, err := db.Exec("ALTER TABLE sessions ADD COLUMN last_user_message_at TIMESTAMP"); err != nil {
+		t.Fatalf("add seed last_user_message_at column: %v", err)
+	}
+	_, err = db.Exec(`
+		CREATE TABLE schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version(version) VALUES (26);
+		INSERT INTO sessions (id, name, summary, provider, model, message_count, created_at, updated_at)
+			VALUES ('sess1', '', '', 'test', 'test-model', 6, '2024-01-01 00:00:00', '2024-01-01 00:00:00');
+	`)
+	if err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	seedMessages := []*Message{
+		NewMessage("sess1", llm.UserText("\n\t[Context Compaction]\nInternal context only; not a user command."), 0),
+		NewMessage("sess1", llm.UserText("please inspect the repo"), 1),
+		NewMessage("sess1", llm.AssistantText("   \n\t"), 2),
+		assistantToolCallOnlyMessage("sess1", 3),
+		toolResultMessage("sess1", 4),
+		NewMessage("sess1", llm.AssistantText("I found the answer."), 5),
+	}
+	for _, msg := range seedMessages {
+		partsJSON, err := msg.PartsJSON()
+		if err != nil {
+			t.Fatalf("PartsJSON: %v", err)
+		}
+		if _, err := db.Exec(`
+			INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence, compaction_tail)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			msg.SessionID, string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.TurnIndex, time.Now().UTC(), msg.Sequence, msg.CompactionTail); err != nil {
+			t.Fatalf("insert seed message: %v", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed database: %v", err)
+	}
+
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("open migrated store: %v", err)
+	}
+	defer store.Close()
+
+	assertListedMessageCount(t, store, 2)
+}
+
+func TestSQLiteStoreMessageCountTriggersHandleDeleteAndCompactionTailUpdates(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	user := NewMessage(sess.ID, llm.UserText("visible user"), -1)
+	if err := store.AddMessage(ctx, sess.ID, user); err != nil {
+		t.Fatalf("AddMessage(user): %v", err)
+	}
+	toolOnly := assistantToolCallOnlyMessage(sess.ID, -1)
+	if err := store.AddMessage(ctx, sess.ID, toolOnly); err != nil {
+		t.Fatalf("AddMessage(tool-only assistant): %v", err)
+	}
+	assistant := NewMessage(sess.ID, llm.AssistantText("visible assistant"), -1)
+	if err := store.AddMessage(ctx, sess.ID, assistant); err != nil {
+		t.Fatalf("AddMessage(assistant): %v", err)
+	}
+	assertListedMessageCount(t, store, 2)
+
+	if _, err := store.db.ExecContext(ctx, "DELETE FROM messages WHERE id = ?", toolOnly.ID); err != nil {
+		t.Fatalf("delete non-countable assistant: %v", err)
+	}
+	assertListedMessageCount(t, store, 2)
+
+	if _, err := store.db.ExecContext(ctx, "DELETE FROM messages WHERE id = ?", assistant.ID); err != nil {
+		t.Fatalf("delete countable assistant: %v", err)
+	}
+	assertListedMessageCount(t, store, 1)
+
+	if err := store.PersistCompactionTailHints(ctx, sess.ID, []int64{user.ID}); err != nil {
+		t.Fatalf("PersistCompactionTailHints(user): %v", err)
+	}
+	assertListedMessageCount(t, store, 0)
+}
+
+func assistantToolCallOnlyMessage(sessionID string, sequence int) *Message {
+	return NewMessage(sessionID, llm.Message{
+		Role: llm.RoleAssistant,
+		Parts: []llm.Part{{
+			Type: llm.PartToolCall,
+			ToolCall: &llm.ToolCall{
+				ID:        "call-1",
+				Name:      "read_file",
+				Arguments: []byte(`{"path":"README.md"}`),
+			},
+		}},
+	}, sequence)
+}
+
+func toolResultMessage(sessionID string, sequence int) *Message {
+	return NewMessage(sessionID, llm.Message{
+		Role: llm.RoleTool,
+		Parts: []llm.Part{{
+			Type: llm.PartToolResult,
+			ToolResult: &llm.ToolResult{
+				ID:      "call-1",
+				Name:    "read_file",
+				Content: "README contents",
+			},
+		}},
+	}, sequence)
+}
+
+func assertListedMessageCount(t *testing.T, store *SQLiteStore, want int) {
+	t.Helper()
+
+	summaries, err := store.List(context.Background(), ListOptions{Limit: 5})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("List len = %d, want 1", len(summaries))
+	}
+	if summaries[0].MessageCount != want {
+		t.Fatalf("MessageCount = %d, want %d", summaries[0].MessageCount, want)
 	}
 }
 
@@ -678,8 +893,8 @@ func TestSQLiteStoreAddMessageBumpsLastMessageAt(t *testing.T) {
 		t.Fatalf("MessageCount after assistant msg = %d, want 2", summaries[0].MessageCount)
 	}
 
-	// Tool/developer/system messages must not bump last_message_at so it
-	// stays aligned with message_count (which filters to user/assistant).
+	// Tool/developer/system messages must not bump last_message_at; user and
+	// assistant role rows retain the historical activity-sort behavior.
 	nonVisibleTime := assistantTime.Add(1 * time.Hour)
 	toolMsg := NewMessage(sess.ID, llm.Message{Role: llm.RoleTool, Parts: []llm.Part{{Type: llm.PartText, Text: "ignored"}}}, -1)
 	toolMsg.CreatedAt = nonVisibleTime

@@ -897,6 +897,45 @@ async function testConvertServerMessagesAttachesToolResultImages() {
   pass(name);
 }
 
+async function testConvertServerMessagesSuppressesNonBubbleAssistantRows() {
+  const name = 'server message conversion suppresses assistant rows without display text';
+  const { app } = await createSessionsHarness();
+
+  const converted = app.convertServerMessages([
+    { sequence: 1, role: 'user', created_at: 1000, parts: [{ type: 'text', text: 'run a tool' }] },
+    { sequence: 2, role: 'assistant', created_at: 2000, parts: [{ type: 'text', text: '  \n\t' }] },
+    { sequence: 3, role: 'assistant', created_at: 3000, parts: [] },
+    {
+      sequence: 4,
+      role: 'assistant',
+      created_at: 4000,
+      parts: [{ type: 'tool_call', tool_name: 'read_file', tool_call_id: 'call_1', tool_arguments: '{"path":"README.md"}' }],
+    },
+    {
+      sequence: 5,
+      role: 'tool',
+      created_at: 5000,
+      parts: [{ type: 'tool_result', tool_name: 'read_file', tool_call_id: 'call_1' }],
+    },
+    { sequence: 6, role: 'assistant', created_at: 6000, parts: [{ type: 'text', text: 'Done.' }] },
+  ]);
+
+  const rolesAndContent = converted.map((message) => `${message.role}:${message.content || ''}`);
+  const want = ['user:run a tool', 'tool-group:', 'assistant:Done.'];
+  if (JSON.stringify(rolesAndContent) !== JSON.stringify(want)) {
+    fail(name, 'unexpected converted display messages', JSON.stringify(converted));
+    return;
+  }
+
+  const blankAssistant = converted.find((message) => message.role === 'assistant' && String(message.content || '').trim() === '');
+  if (blankAssistant) {
+    fail(name, 'blank assistant bubble should be suppressed', JSON.stringify(blankAssistant));
+    return;
+  }
+
+  pass(name);
+}
+
 async function testSessionHistoryInitialLoadRequestsTailOnly() {
   const name = 'initial session history load requests tail only';
   const fetchCalls = [];
@@ -2584,6 +2623,7 @@ async function testSwitchToSearchOnlySessionHydratesResult() {
   await testConvertServerMessagesHandlesMixedLegacyAndAuthoritativeCompactionTails();
   await testConvertServerMessagesInsertsBoundaryWhenSummaryNotLoaded();
   await testConvertServerMessagesAttachesToolResultImages();
+  await testConvertServerMessagesSuppressesNonBubbleAssistantRows();
   await testSessionHistoryInitialLoadRequestsTailOnly();
   await testScrollNearTopLoadsOlderPageAndPreservesViewport();
   await testTailRefreshPreservesOlderHistoryCursor();

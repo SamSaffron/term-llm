@@ -222,7 +222,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 26
+const schemaVersion = 27
 
 // migration represents a schema migration.
 type migration struct {
@@ -658,12 +658,10 @@ var migrations = []migration{
 		},
 	},
 	{
-		// Migration 20: Add last_message_at for sorting the web sidebar by visible
-		// conversation activity (user or assistant messages only). Distinct from
-		// last_user_message_at (migration 16) which ignores assistant output, and
-		// from updated_at which bumps on background work like autotitle. Tool,
-		// developer, and system rows are excluded so the column stays aligned
-		// with message_count (see List() which filters to user/assistant).
+		// Migration 20: Add last_message_at for sorting the web sidebar by
+		// conversation activity. This remains role-based (user or assistant rows)
+		// and is distinct from updated_at, which bumps on background work like
+		// autotitle. Tool, developer, and system rows are excluded.
 		version:     20,
 		description: "add last_message_at column for visible-message activity sort",
 		up: func(db *sql.DB) error {
@@ -744,7 +742,7 @@ var migrations = []migration{
 		},
 	},
 	{
-		// Migration 25: Persist visible user/assistant message counts on the
+		// Migration 25: Persist conversation message counts on the
 		// sessions row so sidebar/session listings can read them directly instead
 		// of running a COUNT(*) subquery per returned session.
 		version:     25,
@@ -754,13 +752,13 @@ var migrations = []migration{
 			if err != nil && !isDuplicateColumnError(err) {
 				return err
 			}
-			_, err = db.Exec(`
+			_, err = db.Exec(fmt.Sprintf(`
 				UPDATE sessions
 				SET message_count = COALESCE((
 					SELECT COUNT(*) FROM messages m
 					WHERE m.session_id = sessions.id
-					  AND m.role IN ('user', 'assistant')
-				), 0)`)
+					  AND %s
+				), 0)`, countableConversationMessageSQL("m", false)))
 			if err != nil {
 				return fmt.Errorf("backfill message_count: %w", err)
 			}
@@ -782,61 +780,114 @@ var migrations = []migration{
 			if err := createMessageCountTriggers(db); err != nil {
 				return fmt.Errorf("recreate message_count triggers: %w", err)
 			}
-			_, err = db.Exec(`
+			_, err = db.Exec(fmt.Sprintf(`
 				UPDATE sessions
 				SET message_count = COALESCE((
 					SELECT COUNT(*) FROM messages m
 					WHERE m.session_id = sessions.id
-					  AND m.role IN ('user', 'assistant')
-					  AND COALESCE(m.compaction_tail, FALSE) = FALSE
-				), 0)`)
+					  AND %s
+				), 0)`, countableConversationMessageSQL("m", true)))
 			if err != nil {
 				return fmt.Errorf("backfill visible message_count: %w", err)
 			}
 			return nil
 		},
 	},
+	{
+		// Migration 27: Align sidebar/message_count semantics with rendered chat
+		// bubbles. Tool-only assistant rows are stored with role='assistant' but
+		// render as tool groups, not assistant chat bubbles, so exclude assistant
+		// rows without display text. Also exclude internal compaction summary user
+		// rows hidden from normal chat.
+		version:     27,
+		description: "exclude non-chat-bubble rows from message_count",
+		up: func(db *sql.DB) error {
+			if err := createMessageCountTriggers(db); err != nil {
+				return fmt.Errorf("recreate message_count triggers: %w", err)
+			}
+			_, err := db.Exec(fmt.Sprintf(`
+				UPDATE sessions
+				SET message_count = COALESCE((
+					SELECT COUNT(*) FROM messages m
+					WHERE m.session_id = sessions.id
+					  AND %s
+				), 0)`, countableConversationMessageSQL("m", true)))
+			if err != nil {
+				return fmt.Errorf("backfill chat-bubble message_count: %w", err)
+			}
+			return nil
+		},
+	},
+}
+
+// Keep in sync with llm.IsInternalCompactionSummaryText. SQLite migrations and
+// triggers need a SQL form of the same prefix check.
+const internalCompactionSummarySQLPrefix = "[Context Compaction]"
+
+func countableConversationMessageSQL(alias string, includeCompactionTail bool) string {
+	roleCol := qualifiedMessageColumn(alias, "role")
+	// SQLite's one-argument TRIM only removes spaces. Include common ASCII
+	// whitespace; persisted model/tool text that is only whitespace is expected to
+	// use these characters.
+	textCol := qualifiedMessageColumn(alias, "text_content")
+	trimChars := "char(9) || char(10) || char(11) || char(12) || char(13) || char(32)"
+	textExpr := "TRIM(COALESCE(" + textCol + ", ''), " + trimChars + ")"
+
+	userPredicate := fmt.Sprintf("(%s = 'user' AND substr(%s, 1, %d) <> '%s')",
+		roleCol, textExpr, len(internalCompactionSummarySQLPrefix), internalCompactionSummarySQLPrefix)
+	assistantPredicate := fmt.Sprintf("(%s = 'assistant' AND %s <> '')", roleCol, textExpr)
+	predicate := "(" + userPredicate + " OR " + assistantPredicate + ")"
+	if includeCompactionTail {
+		predicate = "(COALESCE(" + qualifiedMessageColumn(alias, "compaction_tail") + ", FALSE) = FALSE AND " + predicate + ")"
+	}
+	return predicate
+}
+
+func qualifiedMessageColumn(alias, column string) string {
+	if alias == "" {
+		return column
+	}
+	return alias + "." + column
 }
 
 func createMessageCountTriggers(db *sql.DB) error {
+	oldCountable := countableConversationMessageSQL("old", true)
+	newCountable := countableConversationMessageSQL("new", true)
 	stmts := []string{
 		`DROP TRIGGER IF EXISTS messages_count_ai`,
 		`DROP TRIGGER IF EXISTS messages_count_ad`,
 		`DROP TRIGGER IF EXISTS messages_count_au`,
-		`CREATE TRIGGER messages_count_ai AFTER INSERT ON messages
-		WHEN new.role IN ('user', 'assistant')
-		  AND COALESCE(new.compaction_tail, FALSE) = FALSE
+		fmt.Sprintf(`CREATE TRIGGER messages_count_ai AFTER INSERT ON messages
+		WHEN %s
 		BEGIN
 		    UPDATE sessions
 		    SET message_count = COALESCE(message_count, 0) + 1
 		    WHERE id = new.session_id;
-		END;`,
-		`CREATE TRIGGER messages_count_ad AFTER DELETE ON messages
-		WHEN old.role IN ('user', 'assistant')
-		  AND COALESCE(old.compaction_tail, FALSE) = FALSE
+		END;`, newCountable),
+		fmt.Sprintf(`CREATE TRIGGER messages_count_ad AFTER DELETE ON messages
+		WHEN %s
 		BEGIN
 		    UPDATE sessions
 		    SET message_count = COALESCE(message_count, 0) - 1
 		    WHERE id = old.session_id;
-		END;`,
-		`CREATE TRIGGER messages_count_au AFTER UPDATE ON messages
+		END;`, oldCountable),
+		fmt.Sprintf(`CREATE TRIGGER messages_count_au AFTER UPDATE ON messages
 		WHEN old.session_id <> new.session_id
-		  OR ((old.role IN ('user', 'assistant') AND COALESCE(old.compaction_tail, FALSE) = FALSE)
-		      <> (new.role IN ('user', 'assistant') AND COALESCE(new.compaction_tail, FALSE) = FALSE))
+		  OR (%s <> %s)
 		BEGIN
 		    UPDATE sessions
 		    SET message_count = COALESCE(message_count, 0) - CASE
-		        WHEN old.role IN ('user', 'assistant') AND COALESCE(old.compaction_tail, FALSE) = FALSE THEN 1
+		        WHEN %s THEN 1
 		        ELSE 0
 		    END
 		    WHERE id = old.session_id;
 		    UPDATE sessions
 		    SET message_count = COALESCE(message_count, 0) + CASE
-		        WHEN new.role IN ('user', 'assistant') AND COALESCE(new.compaction_tail, FALSE) = FALSE THEN 1
+		        WHEN %s THEN 1
 		        ELSE 0
 		    END
 		    WHERE id = new.session_id;
-		END;`,
+		END;`, oldCountable, newCountable, oldCountable, newCountable),
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -1343,11 +1394,7 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	}
 	messageCountCol := "COALESCE(s.message_count, 0)"
 	if !s.hasMessageCount {
-		compactionTailClause := ""
-		if s.hasMessageCompactionTail {
-			compactionTailClause = " AND COALESCE(compaction_tail, FALSE) = FALSE"
-		}
-		messageCountCol = "(SELECT COUNT(*) FROM messages WHERE session_id = s.id AND role IN ('user', 'assistant')" + compactionTailClause + ")"
+		messageCountCol = "(SELECT COUNT(*) FROM messages WHERE session_id = s.id AND " + countableConversationMessageSQL("", s.hasMessageCompactionTail) + ")"
 	}
 	query := `
 		SELECT s.id, s.number, s.name, s.summary, ` + generatedShortCol + `, ` + generatedLongCol + `, ` + titleSourceCol + `,
@@ -1521,11 +1568,7 @@ func (s *SQLiteStore) Search(ctx context.Context, query string, limit int) ([]Se
 		compactionTailClause = " AND COALESCE(m.compaction_tail, FALSE) = FALSE"
 	}
 	if !s.hasMessageCount {
-		countCompactionTailClause := ""
-		if s.hasMessageCompactionTail {
-			countCompactionTailClause = " AND COALESCE(compaction_tail, FALSE) = FALSE"
-		}
-		messageCountCol = "(SELECT COUNT(*) FROM messages WHERE session_id = s.id AND role IN ('user', 'assistant')" + countCompactionTailClause + ")"
+		messageCountCol = "(SELECT COUNT(*) FROM messages WHERE session_id = s.id AND " + countableConversationMessageSQL("", s.hasMessageCompactionTail) + ")"
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
@@ -1619,10 +1662,11 @@ func (s *SQLiteStore) AddMessage(ctx context.Context, sessionID string, msg *Mes
 		id, _ := result.LastInsertId()
 		msg.ID = id
 
-		// Update session's updated_at. Also bump last_message_at for visible
-		// conversation messages (user/assistant) so the web sidebar sort stays
-		// aligned with message_count. Tool/developer/system/event rows are excluded
-		// so they don't jostle order without a visible user/assistant change.
+		// Update session's updated_at. Preserve the existing sidebar activity
+		// semantics here: user/assistant role rows bump last_message_at, while
+		// tool/developer/system/event rows do not. message_count is maintained by
+		// triggers with the stricter chat-bubble predicate above, so tool-call-only
+		// assistant rows may affect activity ordering without increasing the count.
 		bumpLastMessageAt := s.hasLastMessageAt && !msg.CompactionTail && (msg.Role == "user" || msg.Role == "assistant")
 		if bumpLastMessageAt {
 			_, err = tx.ExecContext(ctx,

@@ -658,7 +658,7 @@ const convertServerMessages = (serverMessages, options = {}) => {
     // Walk through assistant parts in order to preserve interleaving with tool calls.
     for (let partIndex = 0; partIndex < parts.length; partIndex += 1) {
       const part = parts[partIndex];
-      if (part.type === 'text' && part.text) {
+      if (part.type === 'text' && part.text && String(part.text).trim() !== '') {
         flushGroup();
         result.push({
           id: `${baseId}_text_${partIndex}`,
@@ -691,17 +691,6 @@ const convertServerMessages = (serverMessages, options = {}) => {
       }
     }
 
-    // If message had no recognized parts, emit empty assistant content if appropriate.
-    if (parts.length === 0 && msg.role === 'assistant') {
-      flushGroup();
-      result.push({
-        id: `${baseId}_empty`,
-        role: 'assistant',
-        content: '',
-        created,
-        ...(seq !== null ? { serverSeq: seq } : {})
-      });
-    }
   }
 
   flushGroup();

@@ -125,6 +125,42 @@ func TestSQLiteStoreUpdateMessageAdjustsVisibleMessageCountOnRoleChange(t *testi
 	}
 }
 
+func TestSQLiteStoreUpdateMessageAdjustsVisibleMessageCountOnAssistantTextChange(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	msg := assistantToolCallOnlyMessage(sess.ID, -1)
+	if err := store.AddMessage(ctx, sess.ID, msg); err != nil {
+		t.Fatalf("AddMessage tool-call-only assistant: %v", err)
+	}
+	assertListedMessageCount(t, store, 0)
+
+	msg.Parts = []llm.Part{{Type: llm.PartText, Text: "final answer"}}
+	msg.TextContent = "final answer"
+	if err := store.UpdateMessage(ctx, sess.ID, msg); err != nil {
+		t.Fatalf("UpdateMessage to assistant text: %v", err)
+	}
+	assertListedMessageCount(t, store, 1)
+
+	msg.Parts = []llm.Part{{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call-2", Name: "shell", Arguments: []byte(`{"command":"pwd"}`)}}}
+	msg.TextContent = ""
+	if err := store.UpdateMessage(ctx, sess.ID, msg); err != nil {
+		t.Fatalf("UpdateMessage back to tool-call-only assistant: %v", err)
+	}
+	assertListedMessageCount(t, store, 0)
+}
+
 // TestSQLiteStoreUpdateMessageReturnsErrNotFound verifies that UpdateMessage
 // targeting a missing row returns ErrNotFound (used for the
 // compaction-race fallback path in the upsert callback).
