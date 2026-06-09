@@ -626,6 +626,12 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
 	runCtx = tools.ContextWithAskUserUIFunc(runCtx, rt.awaitAskUser)
+	if rt.platform == "web" && strings.TrimSpace(req.SessionID) != "" {
+		runCtx = tools.ContextWithQueueAgentOrigin(runCtx, tools.QueueAgentOriginContext{
+			Origin:    tools.QueueAgentOriginWeb,
+			SessionID: req.SessionID,
+		})
+	}
 
 	intState := &runtimeInterruptState{
 		cancel:      runCancel,

@@ -26,6 +26,7 @@ func sliceHasString(items []string, want string) bool {
 // survives a JSON marshal/unmarshal round-trip under the documented key names.
 func TestJobsV2LLMConfigParityRoundTrip(t *testing.T) {
 	persist := false
+	notifyOrigin := &jobsV2NotifyOrigin{Origin: "web", SessionID: "sess-parent"}
 	full := jobsV2LLMConfig{
 		AgentName:       "developer",
 		Instructions:    "implement the spec",
@@ -34,6 +35,8 @@ func TestJobsV2LLMConfigParityRoundTrip(t *testing.T) {
 		ContinueWith:    "keep going",
 		PersistSession:  &persist,
 		SessionID:       "sess-1",
+		NotifyWhenDone:  true,
+		NotifyOrigin:    notifyOrigin,
 		Provider:        "claude-bin:opus-max",
 		Model:           "opus-max",
 		Cwd:             "/work/tree",
@@ -61,7 +64,7 @@ func TestJobsV2LLMConfigParityRoundTrip(t *testing.T) {
 	}
 
 	for _, key := range []string{
-		"provider", "model", "cwd", "read_dir", "write_dir", "tools",
+		"provider", "model", "cwd", "notify_when_done", "notify_origin", "read_dir", "write_dir", "tools",
 		"max_turns", "max_output_tokens", "search", "system_message", "skills",
 	} {
 		if !strings.Contains(string(data), `"`+key+`"`) {
@@ -85,8 +88,8 @@ func TestJobsV2LLMConfigBackwardCompatDefaults(t *testing.T) {
 		t.Fatalf("legacy fields not preserved: %+v", cfg)
 	}
 	if cfg.Provider != "" || cfg.Model != "" || cfg.Cwd != "" || cfg.Tools != "" ||
-		cfg.MaxTurns != 0 || cfg.MaxOutputTokens != 0 || cfg.Search ||
-		cfg.SystemMessage != "" || cfg.Skills != "" ||
+		cfg.MaxTurns != 0 || cfg.MaxOutputTokens != 0 || cfg.Search || cfg.NotifyWhenDone ||
+		cfg.SystemMessage != "" || cfg.Skills != "" || cfg.NotifyOrigin != nil ||
 		cfg.ReadDir != nil || cfg.WriteDir != nil {
 		t.Fatalf("new parity fields should default to zero, got: %+v", cfg)
 	}
@@ -101,7 +104,7 @@ func TestJobsV2LLMConfigBackwardCompatDefaults(t *testing.T) {
 	}
 	for _, key := range []string{
 		"provider", "model", "read_dir", "write_dir", "tools",
-		"max_turns", "max_output_tokens", "system_message", "skills",
+		"max_turns", "max_output_tokens", "system_message", "skills", "notify_when_done", "notify_origin",
 	} {
 		if strings.Contains(string(out), `"`+key+`"`) {
 			t.Errorf("omitempty broken: re-serialized legacy config unexpectedly contains %q: %s", key, out)

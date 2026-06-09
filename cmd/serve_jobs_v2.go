@@ -217,6 +217,8 @@ type jobsV2Runner interface {
 	Run(ctx context.Context, job jobsV2Job, pw progressWriter) (jobsV2RunResult, error)
 }
 
+type jobsV2RunDoneNotifier func(ctx context.Context, run jobsV2Run, job jobsV2Job, status jobsV2RunStatus, result jobsV2RunResult, exitReason string, truncated bool, errText string) error
+
 type jobsV2ProgramRunner struct{}
 
 var (
@@ -312,14 +314,22 @@ type jobsV2LLMRunner struct {
 	exec serveJobsExecutor
 }
 
-type jobsV2LLMConfig struct {
-	AgentName      string `json:"agent_name"`
-	Instructions   string `json:"instructions"`
-	Progressive    bool   `json:"progressive,omitempty"`
-	StopWhen       string `json:"stop_when,omitempty"`
-	ContinueWith   string `json:"continue_with,omitempty"`
-	PersistSession *bool  `json:"persist_session,omitempty"`
+type jobsV2NotifyOrigin struct {
+	Origin         string `json:"origin,omitempty"`
 	SessionID      string `json:"session_id,omitempty"`
+	TelegramChatID int64  `json:"telegram_chat_id,omitempty"`
+}
+
+type jobsV2LLMConfig struct {
+	AgentName      string              `json:"agent_name"`
+	Instructions   string              `json:"instructions"`
+	Progressive    bool                `json:"progressive,omitempty"`
+	StopWhen       string              `json:"stop_when,omitempty"`
+	ContinueWith   string              `json:"continue_with,omitempty"`
+	PersistSession *bool               `json:"persist_session,omitempty"`
+	SessionID      string              `json:"session_id,omitempty"`
+	NotifyWhenDone bool                `json:"notify_when_done,omitempty"`
+	NotifyOrigin   *jobsV2NotifyOrigin `json:"notify_origin,omitempty"`
 
 	// cwd is REQUIRED: it roots this run's file/shell tools at a directory so a
 	// job never silently inherits the jobs server's process working directory.
@@ -537,10 +547,11 @@ func classifyRunError(err error, result jobsV2RunResult) (exitReason string, tru
 }
 
 type jobsV2Manager struct {
-	db       *sql.DB
-	workers  int
-	workerID string
-	runners  map[jobsV2RunnerType]jobsV2Runner
+	db         *sql.DB
+	workers    int
+	workerID   string
+	runners    map[jobsV2RunnerType]jobsV2Runner
+	notifyDone jobsV2RunDoneNotifier
 	// Idle timers are only fallbacks; job/run mutations wake the loops immediately.
 	schedulerIdleDelay time.Duration
 	workerIdleDelay    time.Duration
@@ -626,6 +637,10 @@ DROP INDEX IF EXISTS idx_job_run_events_v2_run_id;
 `
 
 func newJobsV2Manager(dbPath string, workers int, llmExec serveJobsExecutor) (*jobsV2Manager, error) {
+	return newJobsV2ManagerWithNotifier(dbPath, workers, llmExec, nil)
+}
+
+func newJobsV2ManagerWithNotifier(dbPath string, workers int, llmExec serveJobsExecutor, notifyDone jobsV2RunDoneNotifier) (*jobsV2Manager, error) {
 	if workers < 0 {
 		workers = 1
 	}
@@ -697,6 +712,7 @@ func newJobsV2Manager(dbPath string, workers int, llmExec serveJobsExecutor) (*j
 		db:                 db,
 		workers:            workers,
 		workerID:           "worker_" + randomSuffix(),
+		notifyDone:         notifyDone,
 		schedulerIdleDelay: jobsV2SchedulerIdleDelay,
 		workerIdleDelay:    jobsV2WorkerIdleDelay,
 		// Conservative defaults: enough history for debugging without unbounded growth.
@@ -1368,6 +1384,7 @@ func (m *jobsV2Manager) finishRun(runID string, status jobsV2RunStatus, result j
 		"input_tokens":  result.InputTokens,
 		"output_tokens": result.OutputTokens,
 	})
+	m.notifyRunDone(runID, status, result, exitReason, truncated, errText)
 
 	if status == jobsV2RunFailed || status == jobsV2RunTimedOut {
 		run, err := m.GetRun(runID)
@@ -1397,6 +1414,34 @@ func (m *jobsV2Manager) finishRun(runID string, status jobsV2RunStatus, result j
 	}
 
 	return nil
+}
+
+func jobsV2NotifyTerminalStatus(status jobsV2RunStatus) bool {
+	switch status {
+	case jobsV2RunSucceeded, jobsV2RunFailed, jobsV2RunCancelled, jobsV2RunTimedOut:
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *jobsV2Manager) notifyRunDone(runID string, status jobsV2RunStatus, result jobsV2RunResult, exitReason string, truncated bool, errText string) {
+	if m == nil || m.notifyDone == nil || !jobsV2NotifyTerminalStatus(status) {
+		return
+	}
+	run, err := m.GetRun(runID)
+	if err != nil {
+		return
+	}
+	job, err := m.GetJob(run.JobID)
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := m.notifyDone(ctx, run, job, status, result, exitReason, truncated, errText); err != nil {
+		_ = m.addRunEvent(runID, "notify_failed", "completion notification failed", map[string]any{"error": err.Error()})
+	}
 }
 
 func (m *jobsV2Manager) addRunEvent(runID, eventType, message string, payload any) error {
@@ -2478,6 +2523,9 @@ func (s *serveServer) handleCreateJobV2(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	jobReq := req.toJob(true)
+	if jobReq.RunnerType == jobsV2RunnerLLM {
+		jobReq.RunnerConfig = sanitizeJobsV2LLMNotifyOriginForRequest(r, jobReq.RunnerConfig)
+	}
 	if s.cfgRef != nil && jobReq.RunnerType == jobsV2RunnerLLM {
 		var llmCfg jobsV2LLMConfig
 		_ = json.Unmarshal(jobReq.RunnerConfig, &llmCfg)
@@ -2649,9 +2697,9 @@ func (s *serveServer) handleRunV2ByID(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, run)
 }
 
-func newServeJobsV2Manager(cfg *config.Config, workers int) (*jobsV2Manager, error) {
+func newServeJobsV2Manager(cfg *config.Config, workers int, notifyDone jobsV2RunDoneNotifier) (*jobsV2Manager, error) {
 	_ = cfg
-	return newJobsV2Manager("", workers, newServeJobsExecutor(cfg))
+	return newJobsV2ManagerWithNotifier("", workers, newServeJobsExecutor(cfg), notifyDone)
 }
 
 func queryBool(r *http.Request, key string) bool {

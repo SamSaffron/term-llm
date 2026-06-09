@@ -193,6 +193,7 @@ func logTelegramNotifySession(ctx context.Context, cfg *config.Config, chatID in
 			Provider: "telegram-notify",
 			Model:    "push",
 			Mode:     session.ModeChat,
+			Origin:   session.OriginTelegram,
 			Status:   session.StatusActive,
 		}
 		if err := store.Create(ctx, sess); err != nil {

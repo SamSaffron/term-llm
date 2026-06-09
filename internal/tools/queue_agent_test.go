@@ -75,6 +75,51 @@ func TestQueueAgentCreatesAndTriggersJobsBackedLLMJob(t *testing.T) {
 	}
 }
 
+func TestQueueAgentNotifyWhenDonePersistsTrustedOrigin(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v2/jobs":
+			var payload jobsV2AgentJobPayload
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode create payload: %v", err)
+			}
+			if payload.RunnerConfig["notify_when_done"] != true {
+				t.Fatalf("notify_when_done = %#v, want true", payload.RunnerConfig["notify_when_done"])
+			}
+			if _, exists := payload.RunnerConfig["notify_origin"]; exists {
+				t.Fatalf("notify_origin should not be caller-controlled in runner_config: %#v", payload.RunnerConfig["notify_origin"])
+			}
+			if r.Header.Get(QueueAgentNotifyOriginHeader) != QueueAgentOriginWeb || r.Header.Get(QueueAgentNotifySessionIDHeader) != "sess-web-1" {
+				t.Fatalf("notify origin headers = origin:%q session:%q, want web sess-web-1", r.Header.Get(QueueAgentNotifyOriginHeader), r.Header.Get(QueueAgentNotifySessionIDHeader))
+			}
+			if got := r.Header.Get(QueueAgentNotifyTelegramChatIDHeader); got != "" {
+				t.Fatalf("telegram header = %q, want empty", got)
+			}
+			writeJSON(t, w, jobsV2AgentJobResponse{ID: "job_notify"})
+		case r.Method == http.MethodPost && r.URL.Path == "/v2/jobs/job_notify/trigger":
+			writeJSON(t, w, jobsV2AgentRunResponse{ID: "run_notify", JobID: "job_notify", Status: "queued"})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := &jobsBackedAgentClient{baseURL: server.URL, httpClient: server.Client()}
+	tool := NewQueueAgentToolWithClient(client)
+	ctx := ContextWithQueueAgentOrigin(context.Background(), QueueAgentOriginContext{Origin: QueueAgentOriginWeb, SessionID: "sess-web-1"})
+	out, err := tool.Execute(ctx, json.RawMessage(`{"agent_name":"developer","prompt":"do it","cwd":"/tmp/work","notify_when_done":true}`))
+	if err != nil {
+		t.Fatalf("queue Execute() error = %v", err)
+	}
+	var result QueueAgentResult
+	if err := json.Unmarshal([]byte(out.Content), &result); err != nil {
+		t.Fatalf("queue output is not JSON: %v; %s", err, out.Content)
+	}
+	if result.JobID != "job_notify" {
+		t.Fatalf("job_id = %q, want job_notify", result.JobID)
+	}
+}
+
 func TestWaitForJobsPollsUntilTerminal(t *testing.T) {
 	var polls int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

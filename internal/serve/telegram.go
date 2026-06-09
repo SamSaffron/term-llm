@@ -23,6 +23,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	memorystore "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 const telegramMaxMessageLen = 4000 // Telegram limit is 4096; leave margin
@@ -1214,6 +1215,13 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 	sessionID := ""
 	if sess.meta != nil {
 		sessionID = sess.meta.ID
+	}
+	if sessionID != "" {
+		streamCtx = tools.ContextWithQueueAgentOrigin(streamCtx, tools.QueueAgentOriginContext{
+			Origin:         tools.QueueAgentOriginTelegram,
+			SessionID:      sessionID,
+			TelegramChatID: chatID,
+		})
 	}
 
 	// Persist incoming messages before streaming.

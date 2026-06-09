@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,11 +23,12 @@ const (
 )
 
 type QueueAgentArgs struct {
-	AgentName string `json:"agent_name"`
-	Prompt    string `json:"prompt"`
-	Timeout   int    `json:"timeout,omitempty"`
-	Model     string `json:"model,omitempty"`
-	Cwd       string `json:"cwd,omitempty"`
+	AgentName      string `json:"agent_name"`
+	Prompt         string `json:"prompt"`
+	Timeout        int    `json:"timeout,omitempty"`
+	Model          string `json:"model,omitempty"`
+	Cwd            string `json:"cwd,omitempty"`
+	NotifyWhenDone bool   `json:"notify_when_done,omitempty"`
 }
 
 type QueueAgentResult struct {
@@ -147,6 +149,10 @@ func (t *QueueAgentTool) Spec() llm.ToolSpec {
 					"type":        "string",
 					"description": "Optional working directory/root for the jobs-v2 LLM job. Defaults to TERM_LLM_QUEUE_AGENT_CWD or the current process directory.",
 				},
+				"notify_when_done": map[string]any{
+					"type":        "boolean",
+					"description": "When true, notify this request's originating session or chat when the queued job finishes. Defaults to false.",
+				},
 			},
 			"required":             []string{"agent_name", "prompt"},
 			"additionalProperties": false,
@@ -181,7 +187,8 @@ func (t *QueueAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 		return llm.TextOutput(formatQueuedAgentError(ErrInvalidParams, err.Error())), nil
 	}
 
-	job, err := t.client.createAgentJob(ctx, agentName, a.Prompt, strings.TrimSpace(a.Model), cwd, timeout)
+	origin, _ := QueueAgentOriginFromContext(ctx)
+	job, err := t.client.createAgentJob(ctx, agentName, a.Prompt, strings.TrimSpace(a.Model), cwd, timeout, a.NotifyWhenDone, origin)
 	if err != nil {
 		return llm.TextOutput(formatQueuedAgentError(ErrExecutionFailed, err.Error())), nil
 	}
@@ -290,7 +297,7 @@ func newJobsBackedAgentClientFromEnv() *jobsBackedAgentClient {
 	}
 }
 
-func (c *jobsBackedAgentClient) createAgentJob(ctx context.Context, agentName, prompt, model, cwd string, timeout int) (jobsV2AgentJobResponse, error) {
+func (c *jobsBackedAgentClient) createAgentJob(ctx context.Context, agentName, prompt, model, cwd string, timeout int, notifyWhenDone bool, origin QueueAgentOriginContext) (jobsV2AgentJobResponse, error) {
 	instructions := prompt + `
 
 ---
@@ -311,6 +318,11 @@ Choose COMPLETE only if you fully accomplished the task. Do not omit this line.`
 	if model != "" {
 		runnerConfig["model"] = model
 	}
+	requestHeaders := map[string]string(nil)
+	if notifyWhenDone {
+		runnerConfig["notify_when_done"] = true
+		requestHeaders = queueAgentNotifyOriginHeaders(origin)
+	}
 
 	payload := jobsV2AgentJobPayload{
 		Name:              fmt.Sprintf("agent-%s-%d", sanitizeJobNamePart(agentName), time.Now().UnixNano()),
@@ -324,13 +336,31 @@ Choose COMPLETE only if you fully accomplished the task. Do not omit this line.`
 	}
 
 	var job jobsV2AgentJobResponse
-	if err := c.doJSON(ctx, http.MethodPost, "/v2/jobs", payload, &job); err != nil {
+	if err := c.doJSONWithHeaders(ctx, http.MethodPost, "/v2/jobs", payload, &job, requestHeaders); err != nil {
 		return jobsV2AgentJobResponse{}, err
 	}
 	if job.ID == "" {
 		return jobsV2AgentJobResponse{}, fmt.Errorf("jobs server returned job without id")
 	}
 	return job, nil
+}
+
+func queueAgentNotifyOriginHeaders(origin QueueAgentOriginContext) map[string]string {
+	origin.Origin = strings.TrimSpace(origin.Origin)
+	origin.SessionID = strings.TrimSpace(origin.SessionID)
+	if origin.Origin == "" {
+		return nil
+	}
+	headers := map[string]string{
+		QueueAgentNotifyOriginHeader: origin.Origin,
+	}
+	if origin.SessionID != "" {
+		headers[QueueAgentNotifySessionIDHeader] = origin.SessionID
+	}
+	if origin.TelegramChatID != 0 {
+		headers[QueueAgentNotifyTelegramChatIDHeader] = strconv.FormatInt(origin.TelegramChatID, 10)
+	}
+	return headers
 }
 
 func (c *jobsBackedAgentClient) triggerJob(ctx context.Context, jobID string) (jobsV2AgentRunResponse, error) {
@@ -386,6 +416,10 @@ func (c *jobsBackedAgentClient) latestRunForJob(ctx context.Context, jobID strin
 }
 
 func (c *jobsBackedAgentClient) doJSON(ctx context.Context, method, path string, payload any, out any) error {
+	return c.doJSONWithHeaders(ctx, method, path, payload, out, nil)
+}
+
+func (c *jobsBackedAgentClient) doJSONWithHeaders(ctx context.Context, method, path string, payload any, out any, headers map[string]string) error {
 	var body io.Reader
 	if payload != nil {
 		data, err := json.Marshal(payload)
@@ -403,6 +437,12 @@ func (c *jobsBackedAgentClient) doJSON(ctx context.Context, method, path string,
 	}
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	for name, value := range headers {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			req.Header.Set(name, value)
+		}
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

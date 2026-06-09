@@ -517,12 +517,6 @@ func runServe(cmd *cobra.Command, args []string) error {
 	var s *serveServer
 	if hasHTTP {
 		var jobsV2 *jobsV2Manager
-		if hasJobs {
-			jobsV2, err = newServeJobsV2Manager(cfg, serveJobsWorkers)
-			if err != nil {
-				return fmt.Errorf("initialize jobs v2 manager: %w", err)
-			}
-		}
 		serveUI := hasWeb
 
 		var widgetsMgr *widgets.Manager
@@ -561,6 +555,13 @@ func runServe(cmd *cobra.Command, args []string) error {
 			store:          store,
 			runtimeFactory: runtimeFactory,
 			widgetsMgr:     widgetsMgr,
+		}
+		if hasJobs {
+			jobsV2, err = newServeJobsV2Manager(cfg, serveJobsWorkers, s.notifyJobsV2RunDone)
+			if err != nil {
+				return fmt.Errorf("initialize jobs v2 manager: %w", err)
+			}
+			s.jobsV2 = jobsV2
 		}
 		sessionMgr.onEvict = func(rt *serveRuntime) {
 			for _, rid := range rt.getResponseIDs() {
