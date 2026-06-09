@@ -3,10 +3,12 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	toolpkg "github.com/samsaffron/term-llm/internal/tools"
 )
 
 type progressiveTestTool struct{}
@@ -172,6 +174,87 @@ func TestRunProgressiveSessionTimeoutDoesNotStartDetachedFinalizationAfterDeadli
 	}
 	if len(provider.Requests) != 1 {
 		t.Fatalf("provider saw %d requests, want timeout to skip detached finalization pass", len(provider.Requests))
+	}
+}
+
+func TestRunProgressiveSessionSyntheticContinuationPersistenceHonorsContext(t *testing.T) {
+	provider := llm.NewMockProvider("mock").WithCapabilities(llm.Capabilities{
+		ToolCalls:          true,
+		SupportsToolChoice: true,
+	})
+	provider.AddToolCall("progress-1", "update_progress", map[string]any{
+		"state": map[string]any{
+			"step": "draft",
+		},
+		"reason":  "milestone",
+		"message": "draft saved",
+	})
+	provider.AddTextResponse("draft answer")
+
+	engine := llm.NewEngine(provider, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 5050*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := runProgressiveSession(ctx, engine, llm.Request{
+			Messages: []llm.Message{llm.UserText("Investigate X")},
+			MaxTurns: 8,
+			ToolChoice: llm.ToolChoice{
+				Mode: llm.ToolChoiceAuto,
+			},
+		}, progressiveRunOptions{
+			StopWhen: progressiveStopWhenTimeout,
+			OnSyntheticUserMessage: func(ctx context.Context, msg llm.Message) error {
+				<-ctx.Done()
+				return ctx.Err()
+			},
+		})
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("runProgressiveSession error = %v, want deadline exceeded", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("synthetic continuation persistence did not stop when its context expired")
+	}
+}
+
+func TestAttemptProgressiveFinalizationSyntheticPersistenceHonorsContext(t *testing.T) {
+	provider := llm.NewMockProvider("mock")
+	engine := llm.NewEngine(provider, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		finalized, text := attemptProgressiveFinalization(ctx, engine, toolpkg.NewFinalizeProgressTool(), llm.Request{
+			Messages: []llm.Message{llm.UserText("Investigate X")},
+		}, nil, progressiveRunOptions{
+			OnSyntheticUserMessage: func(ctx context.Context, msg llm.Message) error {
+				<-ctx.Done()
+				return ctx.Err()
+			},
+		}, newProgressTracker(), 20*time.Millisecond, exitReasonTimeout)
+		if finalized {
+			t.Errorf("finalized = true, want false")
+		}
+		if text != "" {
+			t.Errorf("text = %q, want empty", text)
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		if len(provider.Requests) != 0 {
+			t.Fatalf("provider saw %d requests, want synthetic persistence failure to stop finalization before the model call", len(provider.Requests))
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("synthetic finalization persistence did not stop when its context expired")
 	}
 }
 

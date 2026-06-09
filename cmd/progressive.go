@@ -19,9 +19,10 @@ const (
 	progressiveStopWhenDone    progressiveStopWhen = "done"
 	progressiveStopWhenTimeout progressiveStopWhen = "timeout"
 
-	progressiveDefaultFinalizeGrace = 5 * time.Minute
-	progressiveMaxFinalizeBudget    = 5 * time.Minute
-	progressiveMinFinalizeBudget    = 5 * time.Second
+	progressiveDefaultFinalizeGrace    = 5 * time.Minute
+	progressiveMaxFinalizeBudget       = 5 * time.Minute
+	progressiveMinFinalizeBudget       = 5 * time.Second
+	progressiveSyntheticMessageTimeout = 5 * time.Second
 )
 
 type askProgressiveOptions struct {
@@ -296,7 +297,10 @@ func runProgressiveSession(ctx context.Context, engine *llm.Engine, req llm.Requ
 		continueMsg := llm.UserText(expandProgressiveTemplate(opts.ContinueWith, mainCtx))
 		history = append(history, continueMsg)
 		if opts.OnSyntheticUserMessage != nil {
-			if err := opts.OnSyntheticUserMessage(context.Background(), continueMsg); err != nil {
+			msgCtx, cancel := progressiveSyntheticUserMessageContext(mainCtx)
+			err := opts.OnSyntheticUserMessage(msgCtx, continueMsg)
+			cancel()
+			if err != nil {
 				return buildProgressiveRunResult(opts.SessionID, exitReasonNatural, false, tracker.latest, lastText), err
 			}
 		}
@@ -425,7 +429,10 @@ func attemptProgressiveFinalization(parentCtx context.Context, engine *llm.Engin
 	finalPrompt := buildProgressiveFinalizePrompt(tracker.latest)
 	finalizeMsg := llm.UserText(finalPrompt)
 	if opts.OnSyntheticUserMessage != nil {
-		if err := opts.OnSyntheticUserMessage(context.Background(), finalizeMsg); err != nil {
+		msgCtx, cancel := progressiveSyntheticUserMessageContext(finalizeCtx)
+		err := opts.OnSyntheticUserMessage(msgCtx, finalizeMsg)
+		cancel()
+		if err != nil {
 			return false, ""
 		}
 	}
@@ -511,6 +518,15 @@ func progressiveHasRemainingBudget(parent context.Context, reserve time.Duration
 		return false
 	}
 	return time.Until(deadline) > reserve
+}
+
+// progressiveSyntheticUserMessageContext caps synthetic user-message persistence
+// to a short window while still honoring the caller's cancellation/deadline.
+func progressiveSyntheticUserMessageContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(parent, progressiveSyntheticMessageTimeout)
 }
 
 func progressiveFinalizeReserve(total time.Duration) time.Duration {
