@@ -204,9 +204,11 @@ func TestParseUserMessageContent_LargeImageSavesOriginalButSendsResizedInline(t 
 func makeLargeJPEG(t *testing.T) []byte {
 	t.Helper()
 
-	img := image.NewRGBA(image.Rect(0, 0, 1800, 1800))
-	for y := 0; y < 1800; y++ {
-		for x := 0; x < 1800; x++ {
+	// Noisy pattern compresses poorly, so 1200x1200 at Q95 stays comfortably
+	// over maxLLMImageBytes (the caller asserts this).
+	img := image.NewRGBA(image.Rect(0, 0, 1200, 1200))
+	for y := 0; y < 1200; y++ {
+		for x := 0; x < 1200; x++ {
 			img.SetRGBA(x, y, color.RGBA{
 				R: uint8((x*17 + y*31) & 0xff),
 				G: uint8((x*47 + y*13) & 0xff),

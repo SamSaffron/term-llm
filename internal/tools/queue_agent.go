@@ -212,6 +212,9 @@ func (t *QueueAgentTool) Preview(args json.RawMessage) string {
 
 type WaitForJobsTool struct {
 	client *jobsBackedAgentClient
+	// pollIntervalOverride lets tests poll sub-second; poll_interval_seconds
+	// has a 1s floor.
+	pollIntervalOverride time.Duration
 }
 
 func NewWaitForJobsTool() *WaitForJobsTool {
@@ -255,9 +258,12 @@ func (t *WaitForJobsTool) Execute(ctx context.Context, args json.RawMessage) (ll
 	if len(a.JobIDs) == 0 {
 		return llm.TextOutput(formatQueuedAgentError(ErrInvalidParams, "job_ids is required")), nil
 	}
-	pollInterval := a.PollIntervalSeconds
+	pollInterval := time.Duration(a.PollIntervalSeconds) * time.Second
 	if pollInterval <= 0 {
-		pollInterval = defaultQueuedAgentPollInterval
+		pollInterval = defaultQueuedAgentPollInterval * time.Second
+	}
+	if t.pollIntervalOverride > 0 {
+		pollInterval = t.pollIntervalOverride
 	}
 
 	results := make([]QueuedJobResult, 0, len(a.JobIDs))
@@ -267,7 +273,7 @@ func (t *WaitForJobsTool) Execute(ctx context.Context, args json.RawMessage) (ll
 			results = append(results, QueuedJobResult{Status: "not_found", Error: "blank job_id"})
 			continue
 		}
-		run, err := t.client.waitForJob(ctx, jobID, time.Duration(pollInterval)*time.Second)
+		run, err := t.client.waitForJob(ctx, jobID, pollInterval)
 		if err != nil {
 			results = append(results, QueuedJobResult{JobID: jobID, Status: "failed", Error: err.Error()})
 			continue

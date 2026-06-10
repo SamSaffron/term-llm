@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestShellTool_Spec(t *testing.T) {
@@ -348,9 +349,14 @@ func TestShellTool_Timeout(t *testing.T) {
 		tool := NewShellTool(nil, nil, DefaultOutputLimits())
 		args := mustMarshalShellArgs(ShellArgs{
 			Command:        "sleep 10",
-			TimeoutSeconds: 1,
+			TimeoutSeconds: 5,
 		})
-		output, err := tool.Execute(context.Background(), args)
+		// timeout_seconds only has 1s granularity; the exec context is derived
+		// from the caller's context, so a short parent deadline exercises the
+		// same timeout path without the 1s floor.
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		output, err := tool.Execute(ctx, args)
 		if err != nil {
 			t.Fatalf("Execute returned error: %v", err)
 		}
@@ -435,9 +441,13 @@ func TestShellTool_TimeoutKillsGrandchildren(t *testing.T) {
 	// because the grandchild holds the pipe write-ends open after the shell is killed.
 	args := mustMarshalShellArgs(ShellArgs{
 		Command:        "sleep 60 & wait",
-		TimeoutSeconds: 1,
+		TimeoutSeconds: 5,
 	})
-	output, err := tool.Execute(context.Background(), args)
+	// Short parent deadline instead of the 1s timeout_seconds floor; same
+	// timeout/kill path, much faster.
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	output, err := tool.Execute(ctx, args)
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}

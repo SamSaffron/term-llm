@@ -159,6 +159,7 @@ func TestWaitForJobsPollsUntilTerminal(t *testing.T) {
 
 	client := &jobsBackedAgentClient{baseURL: server.URL, httpClient: server.Client()}
 	tool := NewWaitForJobsToolWithClient(client)
+	tool.pollIntervalOverride = 10 * time.Millisecond
 	out, err := tool.Execute(context.Background(), json.RawMessage(`{"job_ids":["job_123"],"poll_interval_seconds":1}`))
 	if err != nil {
 		t.Fatalf("wait Execute() error = %v", err)

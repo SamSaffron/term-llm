@@ -53,7 +53,8 @@ func TestDebugProviderCapabilities(t *testing.T) {
 }
 
 func TestDebugProviderStream(t *testing.T) {
-	p := NewDebugProvider("fast") // Use fast for quicker tests
+	p := NewDebugProvider("fast")
+	p.preset.Delay = 0 // chunking behavior is unchanged; no need to pace tests
 	ctx := context.Background()
 
 	stream, err := p.Stream(ctx, Request{})
@@ -480,6 +481,7 @@ func TestDebugProviderMixedStreamToolArguments(t *testing.T) {
 
 func TestDebugProviderDSLEdgeCases(t *testing.T) {
 	p := NewDebugProvider("fast")
+	p.preset.Delay = 0 // chunking behavior is unchanged; no need to pace tests
 	ctx := context.Background()
 
 	tests := []struct {

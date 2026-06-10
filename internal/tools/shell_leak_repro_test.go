@@ -22,8 +22,10 @@ func TestShellTool_BackgroundedChildKilled(t *testing.T) {
 	defer os.Remove(logPath)
 
 	tool := NewShellTool(nil, nil, DefaultOutputLimits())
+	// The trailing sleep keeps the foreground shell alive well past the
+	// cancellation point so the cancel always lands mid-flight.
 	cmd := fmt.Sprintf(
-		"nohup bash -c 'sleep 120; :%s' >%s 2>&1 & echo pid=$! && sleep 0.1",
+		"nohup bash -c 'sleep 120; :%s' >%s 2>&1 & echo pid=$! && sleep 5",
 		sentinel, logPath,
 	)
 	runAndAssertReaped(t, tool, cmd, sentinel, true /* cancelMidway */)
@@ -82,7 +84,7 @@ func runAndAssertReaped(t *testing.T, tool *ShellTool, command, sentinel string,
 	}()
 
 	if cancelMidway {
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 		cancel()
 	}
 
@@ -93,11 +95,17 @@ func runAndAssertReaped(t *testing.T, tool *ShellTool, command, sentinel string,
 		t.Fatal("shell Execute did not return within 10s")
 	}
 
-	// Give cleanup a moment to complete.
-	time.Sleep(250 * time.Millisecond)
-
-	found, _ := exec.Command("pgrep", "-f", sentinel).Output()
-	stray := strings.TrimSpace(string(found))
+	// Poll until cleanup reaps the descendant; bail out fast on success.
+	deadline := time.Now().Add(2 * time.Second)
+	var stray string
+	for {
+		found, _ := exec.Command("pgrep", "-f", sentinel).Output()
+		stray = strings.TrimSpace(string(found))
+		if stray == "" || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	if stray != "" {
 		_ = exec.Command("pkill", "-f", sentinel).Run()
 		t.Fatalf("descendant sentinel process still alive after shell returned:\n  pgrep -f %s -> %q\n  tool output: %s",

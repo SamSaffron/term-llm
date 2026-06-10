@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRunAgentScriptTool(t *testing.T) {
@@ -235,10 +236,14 @@ func TestRunAgentScriptTool_TimeoutKillsGrandchildren(t *testing.T) {
 	tool := NewRunAgentScriptTool(cfg, DefaultOutputLimits())
 	args, _ := json.Marshal(RunAgentScriptArgs{
 		Script:         "hang.sh",
-		TimeoutSeconds: 1,
+		TimeoutSeconds: 5,
 	})
 
-	output, err := tool.Execute(context.Background(), args)
+	// Short parent deadline instead of the 1s timeout_seconds floor; same
+	// timeout/kill path, much faster.
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	output, err := tool.Execute(ctx, args)
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}

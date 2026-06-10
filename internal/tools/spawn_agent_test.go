@@ -731,7 +731,7 @@ func TestSpawnAgentTool_SemaphoreLimiting(t *testing.T) {
 	tool := NewSpawnAgentTool(config, 0)
 
 	// Runner with some delay to allow concurrency to build up
-	runner := newMockRunner().SetDelay(100 * time.Millisecond)
+	runner := newMockRunner().SetDelay(25 * time.Millisecond)
 	tool.SetRunner(runner)
 
 	ctx := context.Background()

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -299,8 +300,12 @@ func TestCustomScriptTool_TimeoutKillsGrandchildren(t *testing.T) {
 		Script:      "hang.sh",
 	})
 
-	tool.def.TimeoutSeconds = 1
-	out, err := tool.Execute(context.Background(), json.RawMessage("{}"))
+	tool.def.TimeoutSeconds = 5
+	// Short parent deadline instead of the 1s TimeoutSeconds floor; same
+	// timeout/kill path, much faster.
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	out, err := tool.Execute(ctx, json.RawMessage("{}"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

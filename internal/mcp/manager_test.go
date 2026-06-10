@@ -73,7 +73,7 @@ func TestManagerEnable_TimesOutStartupWithBackgroundContext(t *testing.T) {
 
 func TestManagerEnable_ReadyStdioServerSurvivesStartupTimeoutContext(t *testing.T) {
 	oldTimeout := mcpStartupTimeout
-	mcpStartupTimeout = 500 * time.Millisecond
+	mcpStartupTimeout = 250 * time.Millisecond
 	defer func() { mcpStartupTimeout = oldTimeout }()
 
 	manager := NewManager()
@@ -101,7 +101,7 @@ func TestManagerEnable_ReadyStdioServerSurvivesStartupTimeoutContext(t *testing.
 
 	// Wait long enough that the short startup context has been canceled. The MCP
 	// subprocess should continue to live on the manager-owned lifecycle context.
-	time.Sleep(mcpStartupTimeout + 200*time.Millisecond)
+	time.Sleep(mcpStartupTimeout + 100*time.Millisecond)
 
 	args, err := json.Marshal(map[string]string{"name": "Ada"})
 	if err != nil {
