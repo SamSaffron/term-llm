@@ -341,7 +341,7 @@ providers:
     model: deepseek-coder-v2
 ```
 
-For vLLM servers hosting Qwen reasoning models, use `type: vllm` to enable Qwen thinking controls:
+For vLLM servers hosting Qwen or DeepSeek reasoning models, use `type: vllm` to enable vLLM chat-template thinking controls:
 
 ```yaml
 providers:
@@ -353,15 +353,32 @@ providers:
     max_output_tokens: 50000
 ```
 
-Then choose thinking effort with the provider suffix:
+Then choose thinking effort with the provider suffix. Qwen uses `enable_thinking` plus token budgets for budgeted efforts:
 
 ```bash
-term-llm ask -p my-qwen "hello"       # default: no thinking
-term-llm ask -p my-qwen-low "hard"    # thinking budget 1024
-term-llm ask -p my-qwen-high "harder" # thinking budget 10000
+term-llm ask -p my-qwen "hello"       # default: no thinking, no thinking_token_budget
+term-llm ask -p my-qwen-low "hard"    # Qwen budget 1024
+term-llm ask -p my-qwen-high "harder" # Qwen budget 10000
 ```
 
-For other OpenAI-compatible servers (text-generation-inference, generic vLLM models without Qwen thinking controls, etc.):
+DeepSeek-on-vLLM uses the official DeepSeek shape instead: `chat_template_kwargs.thinking`, plus nested `reasoning_effort: high` or `max` for thinking modes. If your served model name contains `deepseek`, term-llm auto-detects this; if the deployment is aliased, force it:
+
+```yaml
+providers:
+  my-deepseek:
+    type: vllm
+    base_url: http://gpu-server:8000/v1
+    model: ds31
+    vllm_thinking_param: thinking
+```
+
+```bash
+term-llm ask -p my-deepseek "hello"       # thinking=false
+term-llm ask -p my-deepseek-low "hard"    # thinking=true, reasoning_effort=high
+term-llm ask -p my-deepseek-max "hardest" # thinking=true, reasoning_effort=max
+```
+
+For other OpenAI-compatible servers (text-generation-inference, generic vLLM models without these chat-template thinking controls, etc.):
 
 ```yaml
 providers:

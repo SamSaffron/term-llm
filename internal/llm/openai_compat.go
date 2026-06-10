@@ -40,15 +40,16 @@ var defaultHTTPClient = &http.Client{
 // OpenAICompatProvider implements Provider for OpenAI-compatible APIs
 // Used by Ollama, LM Studio, and other compatible servers.
 type OpenAICompatProvider struct {
-	baseURL         string // Base URL - /chat/completions is appended
-	chatURL         string // Full chat URL - used as-is (optional, overrides baseURL)
-	apiKey          string // Optional, most servers ignore it
-	model           string
-	effort          string // reasoning effort: "low", "medium", "high", "xhigh", or ""
-	name            string // Display name: "Ollama", "LM Studio", etc.
-	headers         map[string]string
-	noStreamOptions bool // If true, don't send stream_options (for servers that reject it)
-	vllmThinking    bool // If true, send vLLM/Qwen thinking controls instead of reasoning_effort
+	baseURL           string // Base URL - /chat/completions is appended
+	chatURL           string // Full chat URL - used as-is (optional, overrides baseURL)
+	apiKey            string // Optional, most servers ignore it
+	model             string
+	effort            string // reasoning effort: "low", "medium", "high", "xhigh", or ""
+	name              string // Display name: "Ollama", "LM Studio", etc.
+	headers           map[string]string
+	noStreamOptions   bool   // If true, don't send stream_options (for servers that reject it)
+	vllmThinking      bool   // If true, send vLLM thinking controls instead of reasoning_effort
+	vllmThinkingParam string // Optional chat_template_kwargs key override ("thinking" for DeepSeek, "enable_thinking" for Qwen)
 }
 
 func NewOpenAICompatProvider(baseURL, apiKey, model, name string) *OpenAICompatProvider {
@@ -515,9 +516,9 @@ func (p *OpenAICompatProvider) Stream(ctx context.Context, req Request) (Stream,
 		ReasoningEffort: effort,
 	}
 	if p.vllmThinking {
-		enableThinking, budget := vLLMThinkingSettings(effort)
+		kwargs, budget := vLLMThinkingSettings(model, effort, p.vllmThinkingParam)
 		chatReq.ReasoningEffort = ""
-		chatReq.ChatTemplateKwargs = map[string]interface{}{"enable_thinking": enableThinking}
+		chatReq.ChatTemplateKwargs = kwargs
 		if budget > 0 {
 			chatReq.ThinkingTokenBudget = &budget
 		}

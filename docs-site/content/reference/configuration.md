@@ -407,7 +407,7 @@ OpenAI-compatible providers (`type: openai_compatible`, including local/self-hos
 
 ## vLLM providers
 
-Use `type: vllm` for vLLM servers that should receive Qwen thinking controls. It uses the same `base_url`, `url`, `api_key`, `context_window`, and `max_output_tokens` fields as `openai_compatible`, but maps term-llm reasoning effort suffixes into vLLM request fields:
+Use `type: vllm` for vLLM servers that should receive reasoning-model chat-template controls. It uses the same `base_url`, `url`, `api_key`, `context_window`, and `max_output_tokens` fields as `openai_compatible`, but maps term-llm reasoning effort suffixes into vLLM request fields for supported model families:
 
 ```yaml
 providers:
@@ -426,7 +426,20 @@ term-llm ask -p cdck_qwen-low   "think a bit"  # budget 1024
 term-llm ask -p cdck_qwen-high  "think hard"   # budget 10000
 ```
 
-The suffix is stripped before the model name is sent upstream. For example `cdck_qwen-high` still sends `Qwen/Qwen3.5-122B-A10B` as the model and adds `chat_template_kwargs.enable_thinking=true` plus `thinking_token_budget=10000`.
+The suffix is stripped before the model name is sent upstream. For example `cdck_qwen-high` still sends `Qwen/Qwen3.5-122B-A10B` as the model and adds `chat_template_kwargs.enable_thinking=true` plus `thinking_token_budget=10000`. Plain/default Qwen requests send `enable_thinking=false` and omit `thinking_token_budget`; budgeted Qwen efforts require a vLLM server configured to accept `thinking_token_budget` (recent vLLM requires `--reasoning-config`).
+
+DeepSeek served through vLLM uses a different official shape. If the model name contains `deepseek`, term-llm auto-selects DeepSeek controls; for aliased or mistitled deployments, set `vllm_thinking_param: thinking`:
+
+```yaml
+providers:
+  cdck_deepseek:
+    type: vllm
+    base_url: https://gpu-server.example.com:8000/v1
+    model: ds31
+    vllm_thinking_param: thinking
+```
+
+DeepSeek efforts map to `chat_template_kwargs.thinking` and nested `chat_template_kwargs.reasoning_effort`: default/off sends `thinking=false`, `low`/`medium`/`high` send `thinking=true, reasoning_effort=high`, and `xhigh`/`max` send `thinking=true, reasoning_effort=max`. DeepSeek requests do not send `thinking_token_budget`.
 
 term-llm persists streamed reasoning and replays it as assistant `reasoning` on future vLLM turns so vLLM's chat template and prefix cache can see the same prior reasoning. vLLM may still report `reasoning_tokens: 0` in usage metadata even when reasoning text is present; that is a vLLM accounting limitation.
 

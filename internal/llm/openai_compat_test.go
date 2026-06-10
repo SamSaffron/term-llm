@@ -1880,15 +1880,21 @@ func TestVLLMProviderStreamSendsQwenThinkingControls(t *testing.T) {
 		providerModel string
 		model         string
 		effort        string
+		paramOverride string
 		wantModel     string
-		wantEnable    bool
-		wantBudget    int
+		wantKwargs    map[string]interface{}
+		wantBudget    *int
 	}{
-		{name: "default disables thinking", model: "Qwen/Qwen3.5-122B-A10B", wantModel: "Qwen/Qwen3.5-122B-A10B", wantEnable: false, wantBudget: 256},
-		{name: "provider model suffix", providerModel: "Qwen/Qwen3.5-122B-A10B-high", wantModel: "Qwen/Qwen3.5-122B-A10B", wantEnable: true, wantBudget: 10000},
-		{name: "low budget", model: "Qwen/Qwen3.5-122B-A10B-low", wantModel: "Qwen/Qwen3.5-122B-A10B", wantEnable: true, wantBudget: 1024},
-		{name: "medium budget", effort: "medium", wantModel: "Qwen/Qwen3.5-122B-A10B", wantEnable: true, wantBudget: 4096},
-		{name: "high budget", effort: "high", wantModel: "Qwen/Qwen3.5-122B-A10B", wantEnable: true, wantBudget: 10000},
+		{name: "default disables thinking", model: "Qwen/Qwen3.5-122B-A10B", wantModel: "Qwen/Qwen3.5-122B-A10B", wantKwargs: map[string]interface{}{"enable_thinking": false}},
+		{name: "provider model suffix", providerModel: "Qwen/Qwen3.5-122B-A10B-high", wantModel: "Qwen/Qwen3.5-122B-A10B", wantKwargs: map[string]interface{}{"enable_thinking": true}, wantBudget: intPtr(10000)},
+		{name: "low budget", model: "Qwen/Qwen3.5-122B-A10B-low", wantModel: "Qwen/Qwen3.5-122B-A10B", wantKwargs: map[string]interface{}{"enable_thinking": true}, wantBudget: intPtr(1024)},
+		{name: "medium budget", effort: "medium", wantModel: "Qwen/Qwen3.5-122B-A10B", wantKwargs: map[string]interface{}{"enable_thinking": true}, wantBudget: intPtr(4096)},
+		{name: "high budget", effort: "high", wantModel: "Qwen/Qwen3.5-122B-A10B", wantKwargs: map[string]interface{}{"enable_thinking": true}, wantBudget: intPtr(10000)},
+		{name: "deepseek default uses thinking kwarg", providerModel: "deepseek-ai/DeepSeek-V3.1", wantModel: "deepseek-ai/DeepSeek-V3.1", wantKwargs: map[string]interface{}{"thinking": false}},
+		{name: "deepseek low maps to high without budget", providerModel: "deepseek-ai/DeepSeek-V3.2-low", wantModel: "deepseek-ai/DeepSeek-V3.2", wantKwargs: map[string]interface{}{"thinking": true, "reasoning_effort": "high"}},
+		{name: "deepseek effort uses high without budget", providerModel: "deepseek-ai/DeepSeek-V3.2-high", wantModel: "deepseek-ai/DeepSeek-V3.2", wantKwargs: map[string]interface{}{"thinking": true, "reasoning_effort": "high"}},
+		{name: "deepseek max uses max without budget", providerModel: "deepseek-ai/DeepSeek-V3.2-max", wantModel: "deepseek-ai/DeepSeek-V3.2", wantKwargs: map[string]interface{}{"thinking": true, "reasoning_effort": "max"}},
+		{name: "override supports mistitled deepseek", providerModel: "cdck_qwen-high", paramOverride: "thinking", wantModel: "cdck_qwen", wantKwargs: map[string]interface{}{"thinking": true, "reasoning_effort": "high"}},
 	}
 
 	for _, tt := range tests {
@@ -1908,6 +1914,7 @@ func TestVLLMProviderStreamSendsQwenThinkingControls(t *testing.T) {
 				providerModel = "Qwen/Qwen3.5-122B-A10B"
 			}
 			provider := NewVLLMProvider(ts.URL, "test-key", providerModel, "Test vLLM")
+			provider.vllmThinkingParam = tt.paramOverride
 			stream, err := provider.Stream(context.Background(), Request{
 				Model:           tt.model,
 				Messages:        []Message{UserText("hello")},
@@ -1938,11 +1945,26 @@ func TestVLLMProviderStreamSendsQwenThinkingControls(t *testing.T) {
 			if !ok {
 				t.Fatalf("chat_template_kwargs missing or wrong type: %#v", raw["chat_template_kwargs"])
 			}
-			if got := kwargs["enable_thinking"]; got != tt.wantEnable {
-				t.Fatalf("enable_thinking = %#v, want %#v", got, tt.wantEnable)
+			if len(kwargs) != len(tt.wantKwargs) {
+				t.Fatalf("chat_template_kwargs = %#v, want %#v", kwargs, tt.wantKwargs)
 			}
-			if got := int(raw["thinking_token_budget"].(float64)); got != tt.wantBudget {
-				t.Fatalf("thinking_token_budget = %d, want %d", got, tt.wantBudget)
+			for key, want := range tt.wantKwargs {
+				if got := kwargs[key]; got != want {
+					t.Fatalf("chat_template_kwargs[%q] = %#v, want %#v (all kwargs: %#v)", key, got, want, kwargs)
+				}
+			}
+			if tt.wantBudget == nil {
+				if got, ok := raw["thinking_token_budget"]; ok {
+					t.Fatalf("thinking_token_budget should be omitted, got %#v", got)
+				}
+			} else {
+				gotBudget, ok := raw["thinking_token_budget"].(float64)
+				if !ok {
+					t.Fatalf("thinking_token_budget missing or wrong type: %#v", raw["thinking_token_budget"])
+				}
+				if got := int(gotBudget); got != *tt.wantBudget {
+					t.Fatalf("thinking_token_budget = %d, want %d", got, *tt.wantBudget)
+				}
 			}
 		})
 	}
