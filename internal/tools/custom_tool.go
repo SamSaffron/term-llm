@@ -103,13 +103,6 @@ func (t *CustomScriptTool) Execute(ctx context.Context, args json.RawMessage) (l
 	execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	// Build the command according to the calling convention.
-	cmd, err := t.buildCommand(execCtx, scriptPath, args)
-	if err != nil {
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "build command: %v", err))), nil
-	}
-	cmd.Dir = workDir
-
 	// Build environment: inherit + agent-specific vars + per-tool env
 	env := os.Environ()
 	env = append(env, fmt.Sprintf("TERM_LLM_AGENT_DIR=%s", t.agentDir))
@@ -117,20 +110,33 @@ func (t *CustomScriptTool) Execute(ctx context.Context, args json.RawMessage) (l
 	for k, v := range t.def.Env {
 		env = append(env, fmt.Sprintf("%s=%s", k, v))
 	}
-	cmd.Env = env
-
-	cleanup, prepErr := prepareToolCommand(cmd)
-	if prepErr != nil {
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "script setup error: %v", prepErr))), nil
-	}
-	defer cleanup()
 
 	stdout := newLimitedBuffer(t.limits.MaxBytes)
 	stderr := newLimitedBuffer(t.limits.MaxBytes)
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
 
-	execErr := cmd.Run()
+	var execErr error
+	for attempt := 0; ; attempt++ {
+		// Build the command according to the calling convention.
+		cmd, err := t.buildCommand(execCtx, scriptPath, args)
+		if err != nil {
+			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "build command: %v", err))), nil
+		}
+		cmd.Dir = workDir
+		cmd.Env = append([]string(nil), env...)
+		cmd.Stdout = stdout
+		cmd.Stderr = stderr
+
+		cleanup, prepErr := prepareToolCommand(cmd)
+		if prepErr != nil {
+			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "script setup error: %v", prepErr))), nil
+		}
+
+		execErr = cmd.Run()
+		cleanup()
+		if !retryScriptBusy(execCtx, execErr, attempt) {
+			break
+		}
+	}
 
 	result := ShellResult{
 		Stdout:          stdout.String(),

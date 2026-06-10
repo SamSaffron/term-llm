@@ -243,7 +243,7 @@ func TestRunAgentScriptTool_TimeoutKillsGrandchildren(t *testing.T) {
 		t.Fatalf("Execute returned error: %v", err)
 	}
 	if !output.TimedOut {
-		t.Fatal("expected timeout for grandchild-holding script")
+		t.Fatalf("expected timeout for grandchild-holding script, got: %s", output.Content)
 	}
 }
 

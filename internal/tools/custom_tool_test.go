@@ -305,7 +305,7 @@ func TestCustomScriptTool_TimeoutKillsGrandchildren(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !out.TimedOut {
-		t.Fatal("expected timeout for grandchild-holding script")
+		t.Fatalf("expected timeout for grandchild-holding script, got: %s", out.Content)
 	}
 }
 

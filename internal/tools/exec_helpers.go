@@ -2,8 +2,10 @@ package tools
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -91,6 +93,21 @@ func prepareToolCommand(cmd *exec.Cmd) (func(), error) {
 		}
 	}
 	return cleanup, nil
+}
+
+const scriptBusyMaxRetries = 4
+
+// retryScriptBusy reports whether a failed script exec should be retried,
+// sleeping briefly before returning true. ETXTBSY is transient: a fork from a
+// concurrent goroutine can inherit the just-written script's writable file
+// descriptor and hold it across our exec, e.g. when a script is written and
+// immediately executed while other commands are being spawned.
+func retryScriptBusy(ctx context.Context, err error, attempt int) bool {
+	if attempt >= scriptBusyMaxRetries || ctx.Err() != nil || !errors.Is(err, syscall.ETXTBSY) {
+		return false
+	}
+	time.Sleep(10 * time.Millisecond)
+	return true
 }
 
 // tagCommandWithNonce adds a unique TERMLLM_SHELL_NONCE=<hex> entry to cmd.Env

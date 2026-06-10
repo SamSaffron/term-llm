@@ -2582,8 +2582,11 @@ func buildAssistantMessageWithReasoningMetadata(text string, toolCalls []ToolCal
 // may arrive in non-deterministic order. Consumers should use ToolCallID to correlate
 // start/end events rather than relying on ordering.
 func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, parallel bool, send eventSender, debug bool, debugRaw bool) ([]Message, error) {
+	// Cancellation must still yield a result message for every announced call:
+	// the caller persists the assistant message with its tool calls, and a turn
+	// with dangling tool calls breaks conversation resume on strict providers.
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return cancelledToolCallMessages(calls, err), nil
 	}
 
 	// Fast path: single call, no concurrency overhead
@@ -2593,9 +2596,9 @@ func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, paralle
 
 	if !parallel {
 		results := make([]Message, 0, len(calls))
-		for _, call := range calls {
+		for i, call := range calls {
 			if err := ctx.Err(); err != nil {
-				return nil, err
+				return append(results, cancelledToolCallMessages(calls[i:], err)...), nil
 			}
 			msgs, err := e.executeSingleToolCallSafe(ctx, call, send, debug, debugRaw)
 			if err != nil {
@@ -2659,11 +2662,41 @@ func (e *Engine) executeToolCalls(ctx context.Context, calls []ToolCall, paralle
 		case r := <-resultChan:
 			results[r.index] = r.message
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			// Keep any results that finished before cancellation, then
+			// synthesize cancelled results for the rest so every announced
+			// call stays paired with a result in the persisted turn.
+			for drained := false; !drained; {
+				select {
+				case r := <-resultChan:
+					results[r.index] = r.message
+				default:
+					drained = true
+				}
+			}
+			for i := range results {
+				if results[i].Role == "" {
+					results[i] = cancelledToolCallMessage(calls[i], ctx.Err())
+				}
+			}
+			return results, nil
 		}
 	}
 
 	return results, nil
+}
+
+// cancelledToolCallMessage synthesizes the error result for a tool call that
+// was skipped or abandoned because the context was cancelled.
+func cancelledToolCallMessage(call ToolCall, err error) Message {
+	return ToolErrorMessage(call.ID, call.Name, fmt.Sprintf("Error: %v", err), call.ThoughtSig)
+}
+
+func cancelledToolCallMessages(calls []ToolCall, err error) []Message {
+	msgs := make([]Message, 0, len(calls))
+	for _, call := range calls {
+		msgs = append(msgs, cancelledToolCallMessage(call, err))
+	}
+	return msgs
 }
 
 // executeSingleToolCallSafe wraps executeSingleToolCall with panic recovery.

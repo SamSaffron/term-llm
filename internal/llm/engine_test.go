@@ -1270,15 +1270,30 @@ func TestExecuteToolCallsParallelReturnsOnContextCancel(t *testing.T) {
 	}
 
 	start := time.Now()
-	_, err := engine.executeToolCalls(ctx, calls, true, eventSender{}, false, false)
+	results, err := engine.executeToolCalls(ctx, calls, true, eventSender{}, false, false)
 	elapsed := time.Since(start)
 	t.Logf("parallel tool execution returned after cancellation in %v", elapsed)
 
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("executeToolCalls error = %v, want context.Canceled", err)
+	if err != nil {
+		t.Fatalf("executeToolCalls error = %v, want synthesized results on cancellation", err)
 	}
 	if elapsed >= 200*time.Millisecond {
 		t.Fatalf("executeToolCalls returned after %v; want prompt return on cancellation", elapsed)
+	}
+	if len(results) != len(calls) {
+		t.Fatalf("results = %d, want one per announced call (%d)", len(results), len(calls))
+	}
+	for i, msg := range results {
+		if len(msg.Parts) == 0 || msg.Parts[0].ToolResult == nil {
+			t.Fatalf("result %d has no tool result part: %#v", i, msg)
+		}
+		tr := msg.Parts[0].ToolResult
+		if tr.ID != calls[i].ID {
+			t.Fatalf("result %d ID = %q, want %q", i, tr.ID, calls[i].ID)
+		}
+		if !tr.IsError || !strings.Contains(tr.Content, context.Canceled.Error()) {
+			t.Fatalf("result %d = %+v, want cancellation error result", i, tr)
+		}
 	}
 }
 
