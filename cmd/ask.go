@@ -777,6 +777,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			default:
 				err = streamPlainText(displayCtx, events, false)
 			}
+			if err != nil && bridge != nil {
+				bridge.Stop()
+			}
 			progressiveRun = <-runCh
 		}
 		tools.ClearAskUserHooks() // Safe to call even if hooks weren't set
