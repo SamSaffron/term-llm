@@ -320,3 +320,49 @@ type panicCloseStream struct{}
 func (s panicCloseStream) Recv() (llm.Event, error) { return llm.Event{}, io.EOF }
 
 func (s panicCloseStream) Close() error { panic("close exploded") }
+
+func TestStreamEventCoalescerMergesTextAndPreservesOrder(t *testing.T) {
+	ch := make(chan ui.StreamEvent, 8)
+	ch <- ui.TextEvent("a")
+	ch <- ui.TextEvent("b")
+	ch <- ui.TextEvent("c")
+	ch <- ui.ToolStartEvent("id1", "shell", "", nil)
+	ch <- ui.TextEvent("d")
+	co := &streamEventCoalescer{ch: ch}
+
+	ev, ok := co.next()
+	if !ok || ev.Type != ui.StreamEventText || ev.Text != "abc" {
+		t.Fatalf("expected merged text event %q, got ok=%v type=%v text=%q", "abc", ok, ev.Type, ev.Text)
+	}
+
+	ev, ok = co.next()
+	if !ok || ev.Type != ui.StreamEventToolStart || ev.ToolCallID != "id1" {
+		t.Fatalf("expected pending tool start event, got ok=%v type=%v", ok, ev.Type)
+	}
+
+	ev, ok = co.next()
+	if !ok || ev.Type != ui.StreamEventText || ev.Text != "d" {
+		t.Fatalf("expected trailing text event %q, got ok=%v type=%v text=%q", "d", ok, ev.Type, ev.Text)
+	}
+
+	close(ch)
+	if _, ok = co.next(); ok {
+		t.Fatal("expected closed channel to report ok=false")
+	}
+}
+
+func TestStreamEventCoalescerDeliversMergedTextOnClose(t *testing.T) {
+	ch := make(chan ui.StreamEvent, 4)
+	ch <- ui.TextEvent("x")
+	ch <- ui.TextEvent("y")
+	close(ch)
+	co := &streamEventCoalescer{ch: ch}
+
+	ev, ok := co.next()
+	if !ok || ev.Text != "xy" {
+		t.Fatalf("expected merged %q before closure, got ok=%v text=%q", "xy", ok, ev.Text)
+	}
+	if _, ok = co.next(); ok {
+		t.Fatal("expected closure on subsequent read")
+	}
+}

@@ -122,6 +122,10 @@ type Model struct {
 
 	// Streaming channels
 	streamChan <-chan ui.StreamEvent
+	// Per-stream text-delta coalescer wrapping streamChan. Created alongside
+	// streamChan at stream start so a stale listener from a cancelled stream
+	// can never deliver its pending event into a newer stream.
+	streamCoalescer *streamEventCoalescer
 
 	// Smooth text buffer for 60fps rendering
 	smoothBuffer            *ui.SmoothBuffer

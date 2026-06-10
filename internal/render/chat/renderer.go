@@ -470,6 +470,27 @@ func MessageHistorySignature(messages []session.Message) uint64 {
 	return h
 }
 
+// CachedHistorySignature fingerprints message history like MessageHistorySignature
+// but memoizes per-message content hashes via the renderer's sigCache, so unchanged
+// messages cost O(1) instead of O(content bytes). Like the block cache, it relies on
+// quickTextHash validators to detect same-ID content changes, so its values are not
+// comparable with MessageHistorySignature output.
+func (r *Renderer) CachedHistorySignature(messages []session.Message) uint64 {
+	if r == nil {
+		return MessageHistorySignature(messages)
+	}
+	h := uint64(fnv64Offset)
+	for i := range messages {
+		msg := &messages[i]
+		h = writeInt64Hash(h, msg.ID)
+		h = writeIntHash(h, msg.Sequence)
+		h = writeStringHash(h, string(msg.Role))
+		h = writeBoolHash(h, msg.CompactionTail)
+		h = writeUint64Hash(h, r.cachedPartsSignature(msg))
+	}
+	return h
+}
+
 // getOrRenderBlock gets a rendered block from cache or renders it.
 func (r *Renderer) getOrRenderBlock(msg *session.Message, index int, messages []session.Message, reasoningOrdinalBase int, reasoningOverrides map[int]bool) *MessageBlock {
 	cacheKey := r.blockCacheKey(msg, index)

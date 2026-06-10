@@ -456,6 +456,7 @@ func (m *Model) startStream(content string) tea.Cmd {
 		// Create stream adapter for unified event handling with proper buffering
 		adapter := ui.NewStreamAdapter(ui.DefaultStreamBufferSize)
 		m.streamChan = adapter.Events()
+		m.streamCoalescer = &streamEventCoalescer{ch: m.streamChan}
 
 		// Build messages from conversation history
 		messages := m.buildMessagesForStream()
@@ -594,8 +595,71 @@ func (m *Model) listenForStreamEvents() tea.Cmd {
 	}
 }
 
+// streamEventCoalescer reads stream events for a single stream, merging bursts
+// of consecutive text deltas already buffered in the channel into one event so
+// fast token streams don't pay a full Update/View cycle per delta. A non-text
+// event pulled while merging is parked in pending and delivered on the next
+// read, preserving event order. Reads are serialized by the bubbletea command
+// loop: only one listener is outstanding per stream at a time.
+type streamEventCoalescer struct {
+	ch      <-chan ui.StreamEvent
+	pending *ui.StreamEvent
+}
+
+// maxCoalescedTextEvents bounds a single merge so a producer that outpaces the
+// UI can't starve rendering of the already-merged text.
+const maxCoalescedTextEvents = 32
+
+func (c *streamEventCoalescer) next() (ui.StreamEvent, bool) {
+	if ev := c.pending; ev != nil {
+		c.pending = nil
+		return *ev, true
+	}
+	event, ok := <-c.ch
+	if !ok {
+		return ui.StreamEvent{}, false
+	}
+	if event.Type != ui.StreamEventText {
+		return event, true
+	}
+	var merged strings.Builder
+	merged.WriteString(event.Text)
+	for i := 0; i < maxCoalescedTextEvents; i++ {
+		var nextEv ui.StreamEvent
+		var more bool
+		select {
+		case nextEv, more = <-c.ch:
+		default:
+			event.Text = merged.String()
+			return event, true
+		}
+		if !more {
+			// Channel closed; deliver merged text now, the next read
+			// observes the closure and synthesizes Done upstream.
+			event.Text = merged.String()
+			return event, true
+		}
+		if nextEv.Type != ui.StreamEventText {
+			c.pending = &nextEv
+			event.Text = merged.String()
+			return event, true
+		}
+		merged.WriteString(nextEv.Text)
+	}
+	event.Text = merged.String()
+	return event, true
+}
+
 // listenForStreamEventsSync synchronously waits for the next stream event
 func (m *Model) listenForStreamEventsSync() tea.Msg {
+	if co := m.streamCoalescer; co != nil {
+		event, ok := co.next()
+		if !ok {
+			return streamEventMsg{event: ui.DoneEvent(0)}
+		}
+		return streamEventMsg{event: event}
+	}
+
 	if m.streamChan == nil {
 		return streamEventMsg{event: ui.DoneEvent(0)}
 	}

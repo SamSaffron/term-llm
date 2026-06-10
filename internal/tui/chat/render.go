@@ -191,7 +191,7 @@ func (m *Model) viewAltScreen() string {
 		m.viewCache.historyWidth == m.width &&
 		m.viewCache.historyScrollOffset == m.scrollOffset
 	if !historyValid {
-		historySig := render.MessageHistorySignature(m.messages)
+		historySig := m.chatRenderer.CachedHistorySignature(m.messages)
 		if m.viewCache.historyValid && m.viewCache.historySignature == historySig && m.viewCache.historyWidth == m.width {
 			// Content unchanged despite invalidation (e.g. scroll offset change) — restore validity.
 			m.viewCache.historyScrollOffset = m.scrollOffset
@@ -409,6 +409,12 @@ func (m *Model) viewAltScreen() string {
 	b.WriteString(footer.view)
 
 	frame := m.overlayAltScreenPanels(b.String(), footer)
+	if footerDebugEnabled() {
+		if frameH := lipgloss.Height(frame); frameH != m.height {
+			footerDebugf("frame_height_mismatch frame=%d term=%d vp=%d footer=%d wave_only=%v streaming=%v images=%d",
+				frameH, m.height, m.viewport.Height(), footer.height, waveOnlyChanged, m.streaming, len(m.viewportImageBlocks))
+		}
+	}
 	return frame
 }
 
@@ -639,7 +645,12 @@ func (m *Model) buildFooterLayout() footerLayout {
 	textareaView := m.textarea.View()
 	rows = append(rows, textareaView)
 	rows = append(rows, separator)
-	rows = append(rows, m.renderStatusLine())
+	statusLine := m.renderStatusLine()
+	if footerDebugEnabled() && lipgloss.Width(statusLine) == 0 {
+		footerDebugf("status_line_blank footer_message=%q width=%d streaming=%v phase=%q",
+			m.footerMessage, m.width, m.streaming, m.phase)
+	}
+	rows = append(rows, statusLine)
 
 	view := strings.Join(rows, "\n")
 	return footerLayout{
@@ -877,6 +888,8 @@ type statusSegment struct {
 	text      string
 	priority  int
 	essential bool
+	isUsage   bool // marks the context-usage segment so candidates can swap variants
+	width     int  // cached display width of text; 0 means not yet measured
 }
 
 // renderStatusLine renders a tiny status line showing model and options
@@ -920,37 +933,43 @@ func (m *Model) renderStatusLine() string {
 
 	const sepText = " · "
 	sep := mutedStyle.Render(sepText)
+	sepWidth := lipgloss.Width(sep)
+	seg := func(text string, priority int, essential bool) statusSegment {
+		return statusSegment{text: text, width: lipgloss.Width(text), priority: priority, essential: essential}
+	}
 
 	usageLong, usageShort := m.statusLineUsageParts()
 
 	baseSegments := make([]statusSegment, 0, 10)
 	if m.agentName != "" {
-		baseSegments = append(baseSegments, statusSegment{text: mutedStyle.Render(m.agentName), essential: true})
+		baseSegments = append(baseSegments, seg(mutedStyle.Render(m.agentName), 0, true))
 	}
 	model := shortenModelName(m.modelName)
 	if model == "" && m.providerName != "" {
 		model = m.providerName
 	}
 	if model != "" {
-		baseSegments = append(baseSegments, statusSegment{text: mutedStyle.Render(model), essential: true})
+		baseSegments = append(baseSegments, seg(mutedStyle.Render(model), 0, true))
 	}
 	if m.yolo {
-		baseSegments = append(baseSegments, statusSegment{text: mutedStyle.Render("yolo"), priority: 40})
+		baseSegments = append(baseSegments, seg(mutedStyle.Render("yolo"), 40, false))
 	}
 	if m.searchEnabled {
-		baseSegments = append(baseSegments, statusSegment{text: successStyle.Render("web"), priority: 30})
+		baseSegments = append(baseSegments, seg(successStyle.Render("web"), 30, false))
 	}
 	if m.fastMode {
-		baseSegments = append(baseSegments, statusSegment{text: successStyle.Render("fast"), priority: 30})
+		baseSegments = append(baseSegments, seg(successStyle.Render("fast"), 30, false))
 	}
 	if len(m.files) > 0 {
-		baseSegments = append(baseSegments, statusSegment{text: mutedStyle.Render(fmt.Sprintf("%d file(s)", len(m.files))), priority: 55})
+		baseSegments = append(baseSegments, seg(mutedStyle.Render(fmt.Sprintf("%d file(s)", len(m.files))), 55, false))
 	}
 	if len(m.images) > 0 {
-		baseSegments = append(baseSegments, statusSegment{text: mutedStyle.Render(fmt.Sprintf("%d image(s)", len(m.images))), priority: 55})
+		baseSegments = append(baseSegments, seg(mutedStyle.Render(fmt.Sprintf("%d image(s)", len(m.images))), 55, false))
 	}
 	if usageLong != "" {
-		baseSegments = append(baseSegments, statusSegment{text: mutedStyle.Render(usageLong), priority: 50, essential: true})
+		usageSeg := seg(mutedStyle.Render(usageLong), 50, true)
+		usageSeg.isUsage = true
+		baseSegments = append(baseSegments, usageSeg)
 	}
 	baseVariants := statusSegmentVariants(baseSegments)
 
@@ -963,26 +982,28 @@ func (m *Model) renderStatusLine() string {
 	}
 
 	var candidates [][]statusSegment
+	// Per-option rendered text/width/priority, computed once instead of per candidate.
+	renderedUsage := map[string]statusSegment{}
+	optionWidths := map[string]int{}
+	mcpPriorities := map[string]int{}
 	addCandidate := func(base []statusSegment, usage string, includeTools bool, toolsText string, includeMCP bool, mcpText string) {
 		segments := make([]statusSegment, 0, len(base)+2)
 		for _, segment := range base {
-			if usageLong != "" && ui.StripANSI(segment.text) == usageLong {
+			if segment.isUsage {
 				if usage == "" {
 					continue
 				}
-				segment.text = mutedStyle.Render(usage)
+				rendered := renderedUsage[usage]
+				segment.text = rendered.text
+				segment.width = rendered.width
 			}
 			segments = append(segments, segment)
 		}
 		if includeTools && toolsText != "" {
-			segments = append(segments, statusSegment{text: toolsText, priority: 20})
+			segments = append(segments, statusSegment{text: toolsText, width: optionWidths[toolsText], priority: 20})
 		}
 		if includeMCP && mcpText != "" {
-			priority := 10
-			if strings.Contains(ui.StripANSI(mcpText), "mcp:off") {
-				priority = 5
-			}
-			segments = append(segments, statusSegment{text: mcpText, priority: priority})
+			segments = append(segments, statusSegment{text: mcpText, width: optionWidths[mcpText], priority: mcpPriorities[mcpText]})
 		}
 		candidates = append(candidates, segments)
 	}
@@ -1015,6 +1036,30 @@ func (m *Model) renderStatusLine() string {
 		if usage == "" {
 			continue
 		}
+		rendered := mutedStyle.Render(usage)
+		renderedUsage[usage] = statusSegment{text: rendered, width: lipgloss.Width(rendered)}
+	}
+	for _, text := range toolOptions {
+		if text != "" {
+			optionWidths[text] = lipgloss.Width(text)
+		}
+	}
+	for _, text := range mcpOptions {
+		if text == "" {
+			continue
+		}
+		optionWidths[text] = lipgloss.Width(text)
+		priority := 10
+		if strings.Contains(ui.StripANSI(text), "mcp:off") {
+			priority = 5
+		}
+		mcpPriorities[text] = priority
+	}
+
+	for _, usage := range usageOptions {
+		if usage == "" {
+			continue
+		}
 		for _, base := range baseVariants {
 			for _, toolsText := range toolOptions {
 				for _, mcpText := range mcpOptions {
@@ -1024,10 +1069,10 @@ func (m *Model) renderStatusLine() string {
 		}
 	}
 	if usageLong != "" {
-		candidates = append(candidates, []statusSegment{{text: mutedStyle.Render(usageLong), priority: 50}})
+		candidates = append(candidates, []statusSegment{seg(mutedStyle.Render(usageLong), 50, false)})
 	}
 	if usageShort != "" && usageShort != usageLong {
-		candidates = append(candidates, []statusSegment{{text: mutedStyle.Render(usageShort), priority: 50}})
+		candidates = append(candidates, []statusSegment{seg(mutedStyle.Render(usageShort), 50, false)})
 	}
 	if usageLong != "" {
 		for _, base := range baseVariants {
@@ -1055,22 +1100,26 @@ func (m *Model) renderStatusLine() string {
 			lines = 0
 		}
 		if lines > 0 {
-			hint := mutedStyle.Render(fmt.Sprintf("%d lines · ctrl+c:copy", lines))
+			hintSeg := seg(mutedStyle.Render(fmt.Sprintf("%d lines · ctrl+c:copy", lines)), 60, false)
 			for i := range candidates {
-				candidates[i] = append(candidates[i], statusSegment{text: hint, priority: 60})
+				candidates[i] = append(candidates[i], hintSeg)
 			}
 		}
 	}
 	if m.copyStatus != "" {
-		copyStatus := mutedStyle.Render(m.copyStatus)
+		copySeg := seg(mutedStyle.Render(m.copyStatus), 60, false)
 		for i := range candidates {
-			candidates[i] = append(candidates[i], statusSegment{text: copyStatus, priority: 60})
+			candidates[i] = append(candidates[i], copySeg)
 		}
 	}
 
-	for _, right := range rightVariants {
+	rightWidths := make([]int, len(rightVariants))
+	for i, right := range rightVariants {
+		rightWidths[i] = lipgloss.Width(right)
+	}
+	for ri, right := range rightVariants {
 		for _, candidate := range candidates {
-			line, ok := composeStatusLine(candidate, sep, right, width)
+			line, ok := composeStatusLine(candidate, sep, sepWidth, right, rightWidths[ri], width)
 			if ok {
 				return line
 			}
@@ -1078,10 +1127,11 @@ func (m *Model) renderStatusLine() string {
 	}
 
 	right := rightVariants[len(rightVariants)-1]
-	if lipgloss.Width(right) >= width {
+	rightWidth := rightWidths[len(rightWidths)-1]
+	if rightWidth >= width {
 		return ansi.Cut(right, 0, width)
 	}
-	left := joinStatusSegments(dropStatusSegments(candidates[len(candidates)-1], width-lipgloss.Width(right)-1, sep), sep)
+	left := joinStatusSegments(dropStatusSegments(candidates[len(candidates)-1], width-rightWidth-1, sep, sepWidth), sep)
 	line, ok := composeStatusLineText(left, right, width)
 	if ok {
 		return line
@@ -1214,9 +1264,46 @@ func joinStatusSegments(segments []statusSegment, sep string) string {
 	return strings.Join(parts, sep)
 }
 
-func composeStatusLine(segments []statusSegment, sep, right string, width int) (string, bool) {
-	left := joinStatusSegments(segments, sep)
-	return composeStatusLineText(left, right, width)
+// statusSegmentsWidth returns the joined display width of segments using
+// per-segment cached widths, measuring (and memoizing) any not yet measured.
+// This keeps the candidate fitting search in renderStatusLine arithmetic
+// instead of re-joining and ANSI-parsing strings for every combination.
+func statusSegmentsWidth(segments []statusSegment, sepWidth int) (total, count int) {
+	for i := range segments {
+		if segments[i].text == "" {
+			continue
+		}
+		if segments[i].width == 0 {
+			segments[i].width = lipgloss.Width(segments[i].text)
+		}
+		total += segments[i].width
+		count++
+	}
+	if count > 1 {
+		total += sepWidth * (count - 1)
+	}
+	return total, count
+}
+
+func composeStatusLine(segments []statusSegment, sep string, sepWidth int, right string, rightWidth, width int) (string, bool) {
+	leftWidth, count := statusSegmentsWidth(segments, sepWidth)
+	if right == "" {
+		if leftWidth <= width {
+			return joinStatusSegments(segments, sep), true
+		}
+		return "", false
+	}
+	if rightWidth > width {
+		return "", false
+	}
+	if count == 0 {
+		return strings.Repeat(" ", width-rightWidth) + right, true
+	}
+	spaces := width - leftWidth - rightWidth
+	if spaces < 1 {
+		return "", false
+	}
+	return joinStatusSegments(segments, sep) + strings.Repeat(" ", spaces) + right, true
 }
 
 func composeStatusLineText(left, right string, width int) (string, bool) {
@@ -1241,12 +1328,16 @@ func composeStatusLineText(left, right string, width int) (string, bool) {
 	return left + strings.Repeat(" ", spaces) + right, true
 }
 
-func dropStatusSegments(segments []statusSegment, maxWidth int, sep string) []statusSegment {
+func dropStatusSegments(segments []statusSegment, maxWidth int, sep string, sepWidth int) []statusSegment {
 	if maxWidth <= 0 {
 		return nil
 	}
 	kept := append([]statusSegment(nil), segments...)
-	for lipgloss.Width(joinStatusSegments(kept, sep)) > maxWidth {
+	for {
+		total, _ := statusSegmentsWidth(kept, sepWidth)
+		if total <= maxWidth {
+			break
+		}
 		dropIdx := -1
 		lowestPriority := int(^uint(0) >> 1)
 		for i, segment := range kept {
@@ -1263,7 +1354,7 @@ func dropStatusSegments(segments []statusSegment, maxWidth int, sep string) []st
 		}
 		kept = append(kept[:dropIdx], kept[dropIdx+1:]...)
 	}
-	if lipgloss.Width(joinStatusSegments(kept, sep)) > maxWidth {
+	if total, _ := statusSegmentsWidth(kept, sepWidth); total > maxWidth {
 		left := joinStatusSegments(kept, sep)
 		return []statusSegment{{text: ansi.Cut(left, 0, maxWidth), essential: true}}
 	}
@@ -1654,6 +1745,18 @@ func (m *Model) renderAltScreenViewportLines(lines []string) string {
 	if xOffset := m.viewport.XOffset(); xOffset > 0 && contentWidth > 0 {
 		for i := range visible {
 			visible[i] = ansi.Cut(visible[i], xOffset, xOffset+contentWidth)
+		}
+	}
+
+	// Over-wide lines must be truncated, never wrapped: lipgloss Width() wraps,
+	// which inflates the frame beyond the viewport height and pushes the footer's
+	// status line past the terminal bottom where Bubble Tea clips it.
+	// viewport.View() truncates, so this path must match.
+	if contentWidth > 0 {
+		for i := range visible {
+			if lipgloss.Width(visible[i]) > contentWidth {
+				visible[i] = ansi.Cut(visible[i], 0, contentWidth)
+			}
 		}
 	}
 
