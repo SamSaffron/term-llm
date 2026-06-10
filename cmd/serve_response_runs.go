@@ -127,6 +127,19 @@ func (r *responseRun) appendEvent(event string, payload map[string]any) error {
 func (r *responseRun) complete(payload map[string]any, usage llm.Usage, sessionUsage llm.Usage) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.cancelRequested {
+		r.status = "cancelled"
+		r.errorType = ""
+		r.errorMessage = ""
+		r.cancel = nil
+		r.cancelRequested = false
+		if response := mapValue(payload["response"]); len(response) > 0 {
+			response["status"] = "cancelled"
+			delete(response, "usage")
+			delete(response, "session_usage")
+		}
+		return r.appendEventLocked("response.cancelled", payload, true)
+	}
 	r.status = "completed"
 	r.errorType = ""
 	r.errorMessage = ""

@@ -129,6 +129,62 @@ func TestResponseRunSubscriberDroppedWhenBufferFull(t *testing.T) {
 	}
 }
 
+func TestResponseRunCompleteHonorsPendingCancellation(t *testing.T) {
+	run := newResponseRun("resp_cancelled", "sess_test", "", "mock", time.Now().Unix(), func() {})
+
+	if !run.cancelRun() {
+		t.Fatal("expected cancelRun to succeed")
+	}
+
+	if err := run.complete(map[string]any{
+		"response": map[string]any{
+			"id":            run.id,
+			"object":        "response",
+			"created":       run.created,
+			"model":         run.model,
+			"status":        "completed",
+			"usage":         usagePayload(llm.Usage{InputTokens: 3, OutputTokens: 4}),
+			"session_usage": usagePayload(llm.Usage{InputTokens: 5, OutputTokens: 6}),
+		},
+	}, llm.Usage{InputTokens: 3, OutputTokens: 4}, llm.Usage{InputTokens: 5, OutputTokens: 6}); err != nil {
+		t.Fatalf("complete failed: %v", err)
+	}
+
+	run.mu.Lock()
+	defer run.mu.Unlock()
+
+	if run.status != "cancelled" {
+		t.Fatalf("run status = %q, want cancelled", run.status)
+	}
+	if run.cancelRequested {
+		t.Fatal("cancelRequested should be cleared after terminal transition")
+	}
+	if len(run.events) != 1 {
+		t.Fatalf("events = %d, want 1", len(run.events))
+	}
+	if run.events[0].Event != "response.cancelled" {
+		t.Fatalf("event = %q, want response.cancelled", run.events[0].Event)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(run.events[0].Data, &payload); err != nil {
+		t.Fatalf("unmarshal terminal payload: %v", err)
+	}
+	response, ok := payload["response"].(map[string]any)
+	if !ok {
+		t.Fatalf("response payload type = %T", payload["response"])
+	}
+	if response["status"] != "cancelled" {
+		t.Fatalf("response status = %v, want cancelled", response["status"])
+	}
+	if _, ok := response["usage"]; ok {
+		t.Fatalf("cancelled payload unexpectedly retained usage: %#v", response["usage"])
+	}
+	if _, ok := response["session_usage"]; ok {
+		t.Fatalf("cancelled payload unexpectedly retained session_usage: %#v", response["session_usage"])
+	}
+}
+
 func TestResponseRunCompactionKeepsReplayWindowInOrder(t *testing.T) {
 	run := newResponseRun("resp_compact", "sess_test", "", "mock", time.Now().Unix(), func() {})
 	run.maxRetainedEvents = 3

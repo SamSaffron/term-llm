@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -300,6 +301,81 @@ func TestJobsV2ManualTriggerAndCancel(t *testing.T) {
 			t.Fatalf("run did not cancel in time, last status=%s", current.Status)
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestJobsV2FinishRunDoesNotOverrideCancelRequested(t *testing.T) {
+	mgr, err := newJobsV2Manager(":memory:", 0, nil)
+	if err != nil {
+		t.Fatalf("newJobsV2Manager failed: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+
+	job, err := mgr.CreateJob(jobsV2Job{
+		Name:          "cancel-authoritative",
+		Enabled:       true,
+		RunnerType:    jobsV2RunnerProgram,
+		RunnerConfig:  json.RawMessage(`{"command":"echo","args":["x"]}`),
+		TriggerType:   jobsV2TriggerManual,
+		TriggerConfig: json.RawMessage(`{}`),
+		RetryPolicy:   json.RawMessage(`{"max_attempts":2}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+	if job.ID == "" {
+		t.Fatal("expected created job to have an id")
+	}
+
+	run, err := mgr.TriggerJob(job.ID)
+	if err != nil {
+		t.Fatalf("TriggerJob failed: %v", err)
+	}
+
+	started := time.Now().UTC()
+	if _, err := mgr.db.Exec(`UPDATE job_runs_v2 SET status = ?, started_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, jobsV2RunRunning, started, run.ID); err != nil {
+		t.Fatalf("mark run running: %v", err)
+	}
+
+	cancelled, err := mgr.CancelRun(run.ID)
+	if err != nil {
+		t.Fatalf("CancelRun failed: %v", err)
+	}
+	if cancelled.Status != jobsV2RunCancelRequested {
+		t.Fatalf("cancelled status = %s, want %s", cancelled.Status, jobsV2RunCancelRequested)
+	}
+
+	result := jobsV2RunResult{Response: "partial output", ExitCode: 17}
+	if err := mgr.finishRun(run.ID, jobsV2RunFailed, result, errors.New("runner failed after cancel request"), run.Attempt); err != nil {
+		t.Fatalf("finishRun failed: %v", err)
+	}
+
+	current, err := mgr.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("GetRun failed: %v", err)
+	}
+	if current.Status != jobsV2RunCancelled {
+		t.Fatalf("run status = %s, want %s", current.Status, jobsV2RunCancelled)
+	}
+	if current.ExitReason != exitReasonCancelled {
+		t.Fatalf("exit reason = %q, want %q", current.ExitReason, exitReasonCancelled)
+	}
+	if current.Error != context.Canceled.Error() {
+		t.Fatalf("error = %q, want %q", current.Error, context.Canceled.Error())
+	}
+	if current.Response != result.Response {
+		t.Fatalf("response = %q, want %q", current.Response, result.Response)
+	}
+	if current.FinishedAt == nil {
+		t.Fatal("expected cancelled run to have finished_at set")
+	}
+
+	var retryRuns int
+	if err := mgr.db.QueryRow(`SELECT COUNT(*) FROM job_runs_v2 WHERE job_id = ? AND id != ?`, job.ID, run.ID).Scan(&retryRuns); err != nil {
+		t.Fatalf("count retry runs: %v", err)
+	}
+	if retryRuns != 0 {
+		t.Fatalf("retry runs = %d, want 0", retryRuns)
 	}
 }
 

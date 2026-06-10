@@ -1365,13 +1365,32 @@ func (m *jobsV2Manager) finishRun(runID string, status jobsV2RunStatus, result j
 	if runErr != nil {
 		errText = runErr.Error()
 	}
-	_, err := m.db.Exec(`UPDATE job_runs_v2 SET status = ?, finished_at = ?, exit_code = ?, error = ?, stdout = ?, stderr = ?, thinking = ?, response = ?, session_id = ?, exit_reason = ?, truncated = ?, turn_count = ?, input_tokens = ?, output_tokens = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-		status, now, result.ExitCode, errText, result.Stdout, result.Stderr, result.Thinking, result.Response, result.SessionID,
-		exitReason, boolToInt(truncated), result.TurnCount, result.InputTokens, result.OutputTokens,
-		runID)
+	cancelledErrText := context.Canceled.Error()
+	res, err := m.db.Exec(`UPDATE job_runs_v2 SET status = CASE WHEN status = ? THEN ? ELSE ? END, finished_at = ?, exit_code = ?, error = CASE WHEN status = ? THEN ? ELSE ? END, stdout = ?, stderr = ?, thinking = ?, response = ?, session_id = ?, exit_reason = CASE WHEN status = ? THEN ? ELSE ? END, truncated = ?, turn_count = ?, input_tokens = ?, output_tokens = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN (?, ?, ?, ?)`,
+		jobsV2RunCancelRequested, jobsV2RunCancelled, status,
+		now, result.ExitCode,
+		jobsV2RunCancelRequested, cancelledErrText, errText,
+		result.Stdout, result.Stderr, result.Thinking, result.Response, result.SessionID,
+		jobsV2RunCancelRequested, exitReasonCancelled, exitReason,
+		boolToInt(truncated), result.TurnCount, result.InputTokens, result.OutputTokens,
+		runID, jobsV2RunQueued, jobsV2RunClaimed, jobsV2RunRunning, jobsV2RunCancelRequested)
 	if err != nil {
 		return err
 	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return nil
+	}
+
+	run, err := m.GetRun(runID)
+	if err != nil {
+		return err
+	}
+	status = run.Status
+	exitReason = run.ExitReason
+	truncated = run.Truncated
+	errText = run.Error
+
 	_ = m.addRunEvent(runID, string(status), "run finished", map[string]any{
 		"status":        status,
 		"attempt":       attempt,
@@ -1387,10 +1406,6 @@ func (m *jobsV2Manager) finishRun(runID string, status jobsV2RunStatus, result j
 	m.notifyRunDone(runID, status, result, exitReason, truncated, errText)
 
 	if status == jobsV2RunFailed || status == jobsV2RunTimedOut {
-		run, err := m.GetRun(runID)
-		if err != nil {
-			return nil
-		}
 		job, err := m.GetJob(run.JobID)
 		if err != nil {
 			return nil
