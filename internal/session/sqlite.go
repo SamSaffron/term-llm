@@ -1787,6 +1787,62 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 	return results, rows.Err()
 }
 
+// addMessageQueryer is the subset of *sql.Tx/*sql.Conn used by AddMessage.
+type addMessageQueryer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func (s *SQLiteStore) addMessageInTx(ctx context.Context, q addMessageQueryer, sessionID string, msg *Message, partsJSON string, autoSequence bool) error {
+	// Auto-allocate sequence if not specified (Sequence < 0)
+	if autoSequence {
+		var maxSeq sql.NullInt64
+		err := q.QueryRowContext(ctx,
+			`SELECT MAX(sequence) FROM messages WHERE session_id = ?`,
+			sessionID).Scan(&maxSeq)
+		if err != nil {
+			return fmt.Errorf("get max sequence: %w", err)
+		}
+		if maxSeq.Valid {
+			msg.Sequence = int(maxSeq.Int64) + 1
+		} else {
+			msg.Sequence = 0
+		}
+	}
+
+	result, err := q.ExecContext(ctx, `
+		INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence, compaction_tail)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sessionID, string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.TurnIndex, msg.CreatedAt, msg.Sequence, msg.CompactionTail)
+	if err != nil {
+		return fmt.Errorf("insert message: %w", err)
+	}
+
+	// Get the inserted ID
+	id, _ := result.LastInsertId()
+	msg.ID = id
+
+	// Update session's updated_at. Preserve the existing sidebar activity
+	// semantics here: user/assistant role rows bump last_message_at, while
+	// tool/developer/system/event rows do not. message_count is maintained by
+	// triggers with the stricter chat-bubble predicate above, so tool-call-only
+	// assistant rows may affect activity ordering without increasing the count.
+	bumpLastMessageAt := s.hasLastMessageAt && !msg.CompactionTail && (msg.Role == "user" || msg.Role == "assistant")
+	if bumpLastMessageAt {
+		_, err = q.ExecContext(ctx,
+			"UPDATE sessions SET updated_at = ?, last_message_at = ? WHERE id = ?",
+			time.Now(), msg.CreatedAt, sessionID)
+	} else {
+		_, err = q.ExecContext(ctx, "UPDATE sessions SET updated_at = ? WHERE id = ?",
+			time.Now(), sessionID)
+	}
+	if err != nil {
+		return fmt.Errorf("update session timestamp: %w", err)
+	}
+
+	return nil
+}
+
 // AddMessage adds a message to a session.
 // If msg.Sequence < 0, the sequence number is auto-allocated atomically.
 func (s *SQLiteStore) AddMessage(ctx context.Context, sessionID string, msg *Message) error {
@@ -1803,59 +1859,47 @@ func (s *SQLiteStore) AddMessage(ctx context.Context, sessionID string, msg *Mes
 	// Track whether we need to auto-allocate sequence
 	autoSequence := msg.Sequence < 0
 
-	// Retry the entire transaction on SQLITE_BUSY
+	// Retry the entire transaction on SQLITE_BUSY. Auto-sequenced inserts use
+	// BEGIN IMMEDIATE so only one writer can allocate the next sequence at a
+	// time, avoiding read→write upgrade conflicts under concurrent appends.
 	return retryOnBusy(ctx, 5, func() error {
-		// Use transaction for atomic sequence allocation
+		if autoSequence {
+			conn, err := s.db.Conn(ctx)
+			if err != nil {
+				return fmt.Errorf("acquire transaction connection: %w", err)
+			}
+			defer conn.Close()
+
+			if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+				return fmt.Errorf("begin immediate transaction: %w", err)
+			}
+			committed := false
+			defer func() {
+				if !committed {
+					_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+				}
+			}()
+
+			if err := s.addMessageInTx(ctx, conn, sessionID, msg, partsJSON, autoSequence); err != nil {
+				return err
+			}
+
+			if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+				return fmt.Errorf("commit transaction: %w", err)
+			}
+			committed = true
+			return nil
+		}
+
+		// Use transaction for explicit sequence inserts.
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("begin transaction: %w", err)
 		}
 		defer tx.Rollback()
 
-		// Auto-allocate sequence if not specified (Sequence < 0)
-		if autoSequence {
-			var maxSeq sql.NullInt64
-			err = tx.QueryRowContext(ctx,
-				`SELECT MAX(sequence) FROM messages WHERE session_id = ?`,
-				sessionID).Scan(&maxSeq)
-			if err != nil {
-				return fmt.Errorf("get max sequence: %w", err)
-			}
-			if maxSeq.Valid {
-				msg.Sequence = int(maxSeq.Int64) + 1
-			} else {
-				msg.Sequence = 0
-			}
-		}
-
-		result, err := tx.ExecContext(ctx, `
-			INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence, compaction_tail)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			sessionID, string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.TurnIndex, msg.CreatedAt, msg.Sequence, msg.CompactionTail)
-		if err != nil {
-			return fmt.Errorf("insert message: %w", err)
-		}
-
-		// Get the inserted ID
-		id, _ := result.LastInsertId()
-		msg.ID = id
-
-		// Update session's updated_at. Preserve the existing sidebar activity
-		// semantics here: user/assistant role rows bump last_message_at, while
-		// tool/developer/system/event rows do not. message_count is maintained by
-		// triggers with the stricter chat-bubble predicate above, so tool-call-only
-		// assistant rows may affect activity ordering without increasing the count.
-		bumpLastMessageAt := s.hasLastMessageAt && !msg.CompactionTail && (msg.Role == "user" || msg.Role == "assistant")
-		if bumpLastMessageAt {
-			_, err = tx.ExecContext(ctx,
-				"UPDATE sessions SET updated_at = ?, last_message_at = ? WHERE id = ?",
-				time.Now(), msg.CreatedAt, sessionID)
-		} else {
-			_, err = tx.ExecContext(ctx, "UPDATE sessions SET updated_at = ? WHERE id = ?",
-				time.Now(), sessionID)
-		}
-		if err != nil {
-			return fmt.Errorf("update session timestamp: %w", err)
+		if err := s.addMessageInTx(ctx, tx, sessionID, msg, partsJSON, autoSequence); err != nil {
+			return err
 		}
 
 		if err := tx.Commit(); err != nil {

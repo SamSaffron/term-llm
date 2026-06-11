@@ -270,3 +270,61 @@ func TestSQLiteStoreUpdateMessageConcurrent(t *testing.T) {
 		t.Errorf("final text = %q, want %q", msgs[0].Parts[0].Text, "concurrent")
 	}
 }
+
+// TestSQLiteStoreAddMessageConcurrentAutoSequence verifies that concurrent
+// auto-sequenced appends to the same session do not lose messages or leak
+// SQLITE_BUSY errors under contention.
+func TestSQLiteStoreAddMessageConcurrentAutoSequence(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	const workers = 24
+	const rounds = 25
+
+	for round := 0; round < rounds; round++ {
+		start := make(chan struct{})
+		errs := make(chan error, workers)
+		var wg sync.WaitGroup
+		for i := 0; i < workers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				msg := NewMessage(sess.ID, llm.UserText("concurrent"), -1)
+				errs <- store.AddMessage(ctx, sess.ID, msg)
+			}()
+		}
+		close(start)
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Fatalf("round %d AddMessage error: %v", round, err)
+			}
+		}
+	}
+
+	msgs, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if got, want := len(msgs), workers*rounds; got != want {
+		t.Fatalf("message count = %d, want %d", got, want)
+	}
+	for i, msg := range msgs {
+		if msg.Sequence != i {
+			t.Fatalf("message[%d] sequence = %d, want %d", i, msg.Sequence, i)
+		}
+	}
+}
