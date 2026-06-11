@@ -734,6 +734,7 @@ type responseRunManager struct {
 	activeBySession   map[string]string
 	cleanupTimers     map[string]*time.Timer
 	terminalRetention time.Duration
+	runWG             sync.WaitGroup
 	closed            bool
 }
 
@@ -794,10 +795,32 @@ func (m *responseRunManager) create(run *responseRun) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.closed {
+		return fmt.Errorf("server is shutting down")
+	}
 	if _, exists := m.runs[run.id]; exists {
 		return fmt.Errorf("response run %q already exists", run.id)
 	}
 	m.runs[run.id] = run
+	return nil
+}
+
+func (m *responseRunManager) start(fn func()) error {
+	if fn == nil {
+		return fmt.Errorf("response run function is required")
+	}
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return fmt.Errorf("server is shutting down")
+	}
+	m.runWG.Add(1)
+	m.mu.Unlock()
+
+	go func() {
+		defer m.runWG.Done()
+		fn()
+	}()
 	return nil
 }
 
@@ -915,6 +938,7 @@ func (m *responseRunManager) Close() {
 	for _, run := range runs {
 		_ = run.cancelRun()
 	}
+	m.runWG.Wait()
 }
 
 func usagePayload(usage llm.Usage) map[string]any {
@@ -1566,7 +1590,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		return nil, err
 	}
 
-	go func() {
+	if err := mgr.start(func() {
 		defer func() {
 			mgr.clearActiveRun(sessionID, respID)
 			mgr.scheduleCleanup(respID)
@@ -1685,7 +1709,12 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		}, result.Usage, result.SessionUsage); err != nil {
 			log.Printf("response run %s failed to append completion event: %v", respID, err)
 		}
-	}()
+	}); err != nil {
+		cancel()
+		mgr.clearActiveRun(sessionID, respID)
+		mgr.delete(respID)
+		return nil, err
+	}
 
 	return run, nil
 }

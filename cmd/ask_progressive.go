@@ -1,12 +1,15 @@
 package cmd
 
 import (
+	"errors"
 	"sync"
 
 	"github.com/samsaffron/term-llm/internal/llm"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
+
+var errAskProgressiveBridgeStopped = errors.New("progressive stream consumer stopped")
 
 type askProgressiveRunResult struct {
 	Result progressiveRunResult
@@ -16,9 +19,11 @@ type askProgressiveRunResult struct {
 type askProgressiveBridge struct {
 	events chan ui.StreamEvent
 	stats  *ui.SessionStats
+	done   chan struct{}
 
 	seenToolStarts map[string]struct{}
 	seenToolEnds   map[string]struct{}
+	stopOnce       sync.Once
 	closeOnce      sync.Once
 
 	attemptInput          int
@@ -36,6 +41,7 @@ func newAskProgressiveBridge(bufSize int) *askProgressiveBridge {
 	return &askProgressiveBridge{
 		events:         make(chan ui.StreamEvent, bufSize),
 		stats:          ui.NewSessionStats(),
+		done:           make(chan struct{}),
 		seenToolStarts: make(map[string]struct{}),
 		seenToolEnds:   make(map[string]struct{}),
 	}
@@ -59,16 +65,33 @@ func (b *askProgressiveBridge) Stats() *ui.SessionStats {
 	return b.stats
 }
 
+// Stop signals that the event consumer has exited so producers stop
+// blocking on sends into the bridge buffer.
+func (b *askProgressiveBridge) Stop() {
+	b.stopOnce.Do(func() {
+		close(b.done)
+	})
+}
+
+func (b *askProgressiveBridge) send(event ui.StreamEvent) error {
+	select {
+	case <-b.done:
+		return errAskProgressiveBridgeStopped
+	case b.events <- event:
+		return nil
+	}
+}
+
 func (b *askProgressiveBridge) HandleEvent(event llm.Event) error {
 	switch event.Type {
 	case llm.EventError:
 		if event.Err != nil {
-			b.events <- ui.ErrorEvent(event.Err)
+			return b.send(ui.ErrorEvent(event.Err))
 		}
 	case llm.EventTextDelta:
 		b.attemptUsageCommitted = false
 		if event.Text != "" {
-			b.events <- ui.TextEvent(event.Text)
+			return b.send(ui.TextEvent(event.Text))
 		}
 	case llm.EventReasoningDelta:
 		b.attemptUsageCommitted = false
@@ -84,7 +107,7 @@ func (b *askProgressiveBridge) HandleEvent(event llm.Event) error {
 		if kind == llm.ReasoningKindSummary && event.Text != "" {
 			title = internalreasoning.ParseReasoningSummary(event.Text).Title
 		}
-		b.events <- ui.ReasoningEvent(kind, event.Text, title, event.ReasoningItemID, event.ReasoningFinal, displayable)
+		return b.send(ui.ReasoningEvent(kind, event.Text, title, event.ReasoningItemID, event.ReasoningFinal, displayable))
 	case llm.EventToolCall:
 		b.markAttemptCommitted()
 		if event.Tool == nil {
@@ -112,7 +135,7 @@ func (b *askProgressiveBridge) HandleEvent(event llm.Event) error {
 			toolArgs = event.Tool.Arguments
 		}
 		b.stats.ToolStart()
-		b.events <- ui.ToolStartEvent(toolCallID, event.Tool.Name, toolInfo, toolArgs)
+		return b.send(ui.ToolStartEvent(toolCallID, event.Tool.Name, toolInfo, toolArgs))
 	case llm.EventToolExecStart:
 		b.markAttemptCommitted()
 		if isProgressToolName(event.ToolName) {
@@ -125,7 +148,7 @@ func (b *askProgressiveBridge) HandleEvent(event llm.Event) error {
 			b.seenToolStarts[event.ToolCallID] = struct{}{}
 		}
 		b.stats.ToolStart()
-		b.events <- ui.ToolStartEvent(event.ToolCallID, event.ToolName, event.ToolInfo, event.ToolArgs)
+		return b.send(ui.ToolStartEvent(event.ToolCallID, event.ToolName, event.ToolInfo, event.ToolArgs))
 	case llm.EventToolExecEnd:
 		if isProgressToolName(event.ToolName) {
 			break
@@ -138,12 +161,18 @@ func (b *askProgressiveBridge) HandleEvent(event llm.Event) error {
 		}
 		b.stats.ToolEnd()
 		b.resetAttemptUsage()
-		b.events <- ui.ToolEndEvent(event.ToolCallID, event.ToolName, event.ToolInfo, event.ToolSuccess)
+		if err := b.send(ui.ToolEndEvent(event.ToolCallID, event.ToolName, event.ToolInfo, event.ToolSuccess)); err != nil {
+			return err
+		}
 		for _, imagePath := range event.ToolImages {
-			b.events <- ui.ImageEvent(imagePath)
+			if err := b.send(ui.ImageEvent(imagePath)); err != nil {
+				return err
+			}
 		}
 		for _, d := range event.ToolDiffs {
-			b.events <- ui.DiffEventWithOperation(d.File, d.Old, d.New, d.Line, d.Operation)
+			if err := b.send(ui.DiffEventWithOperation(d.File, d.Old, d.New, d.Line, d.Operation)); err != nil {
+				return err
+			}
 		}
 	case llm.EventUsage:
 		if event.Use != nil {
@@ -155,23 +184,23 @@ func (b *askProgressiveBridge) HandleEvent(event llm.Event) error {
 				b.attemptCacheWrite += event.Use.CacheWriteTokens
 				b.attemptUsageCalls++
 			}
-			b.events <- ui.UsageEvent(event.Use.InputTokens, event.Use.OutputTokens, event.Use.CachedInputTokens, event.Use.CacheWriteTokens)
+			return b.send(ui.UsageEvent(event.Use.InputTokens, event.Use.OutputTokens, event.Use.CachedInputTokens, event.Use.CacheWriteTokens))
 		}
 	case llm.EventPhase:
 		if event.Text != "" {
-			b.events <- ui.PhaseEvent(event.Text)
+			return b.send(ui.PhaseEvent(event.Text))
 		}
 	case llm.EventRetry:
-		b.events <- ui.RetryEvent(event.RetryAttempt, event.RetryMaxAttempts, event.RetryWaitSecs)
+		return b.send(ui.RetryEvent(event.RetryAttempt, event.RetryMaxAttempts, event.RetryWaitSecs))
 	case llm.EventAttemptDiscard:
 		if b.attemptUsageCalls > 0 {
 			b.stats.DiscardUsage(b.attemptInput, b.attemptOutput, b.attemptCached, b.attemptCacheWrite, b.attemptUsageCalls)
 		}
 		b.resetAttemptUsage()
-		b.events <- ui.AttemptDiscardEvent()
+		return b.send(ui.AttemptDiscardEvent())
 	case llm.EventInterjection:
 		if event.Text != "" {
-			b.events <- ui.InterjectionEvent(event.Text, event.InterjectionID)
+			return b.send(ui.InterjectionEvent(event.Text, event.InterjectionID))
 		}
 	}
 	return nil
@@ -179,7 +208,8 @@ func (b *askProgressiveBridge) HandleEvent(event llm.Event) error {
 
 func (b *askProgressiveBridge) CloseSuccess() {
 	b.closeOnce.Do(func() {
-		b.events <- ui.DoneEvent(b.stats.OutputTokens)
+		_ = b.send(ui.DoneEvent(b.stats.OutputTokens))
+		b.Stop()
 		close(b.events)
 	})
 }
@@ -187,8 +217,9 @@ func (b *askProgressiveBridge) CloseSuccess() {
 func (b *askProgressiveBridge) CloseError(err error) {
 	b.closeOnce.Do(func() {
 		if err != nil {
-			b.events <- ui.ErrorEvent(err)
+			_ = b.send(ui.ErrorEvent(err))
 		}
+		b.Stop()
 		close(b.events)
 	})
 }

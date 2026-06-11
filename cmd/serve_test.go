@@ -80,6 +80,63 @@ type stagedProvider struct {
 	closeFirst    sync.Once
 }
 
+type shutdownBlockingStream struct {
+	ctx           context.Context
+	release       <-chan struct{}
+	cancelled     chan struct{}
+	cancelledOnce sync.Once
+}
+
+func (s *shutdownBlockingStream) Recv() (llm.Event, error) {
+	<-s.ctx.Done()
+	s.cancelledOnce.Do(func() { close(s.cancelled) })
+	<-s.release
+	return llm.Event{}, s.ctx.Err()
+}
+
+func (s *shutdownBlockingStream) Close() error {
+	return nil
+}
+
+type shutdownBlockingProvider struct {
+	started     chan struct{}
+	cancelled   chan struct{}
+	release     chan struct{}
+	cleanupDone chan struct{}
+	startOnce   sync.Once
+	cleanupOnce sync.Once
+}
+
+func newShutdownBlockingProvider() *shutdownBlockingProvider {
+	return &shutdownBlockingProvider{
+		started:     make(chan struct{}),
+		cancelled:   make(chan struct{}),
+		release:     make(chan struct{}),
+		cleanupDone: make(chan struct{}),
+	}
+}
+
+func (p *shutdownBlockingProvider) Name() string {
+	return "shutdown-blocking"
+}
+
+func (p *shutdownBlockingProvider) Credential() string {
+	return "test"
+}
+
+func (p *shutdownBlockingProvider) Capabilities() llm.Capabilities {
+	return llm.Capabilities{}
+}
+
+func (p *shutdownBlockingProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	p.startOnce.Do(func() { close(p.started) })
+	return &shutdownBlockingStream{ctx: ctx, release: p.release, cancelled: p.cancelled}, nil
+}
+
+func (p *shutdownBlockingProvider) CleanupMCP() {
+	p.cleanupOnce.Do(func() { close(p.cleanupDone) })
+}
+
 type countingListModelsProvider struct {
 	name   string
 	models []llm.ModelInfo
@@ -8981,6 +9038,68 @@ func TestRegisterResponseID_CapsAtMax(t *testing.T) {
 	expected := fmt.Sprintf("resp_%d", maxResponseIDs+4)
 	if got := rt.getLastResponseID(); got != expected {
 		t.Fatalf("lastResponseID = %q, want %q", got, expected)
+	}
+}
+
+func TestResponseRunManagerCloseWaitsForDetachedRunShutdown(t *testing.T) {
+	provider := newShutdownBlockingProvider()
+	rt := &serveRuntime{
+		provider:     provider,
+		engine:       llm.NewEngine(provider, nil),
+		defaultModel: "mock-model",
+	}
+	rt.Touch()
+
+	srv := &serveServer{responseRuns: newServeResponseRunManager()}
+
+	if _, err := srv.startResponseRun(rt, false, true, []llm.Message{
+		llm.UserText("hi"),
+	}, llm.Request{Model: "mock-model"}, "", startResponseRunOptions{}); err != nil {
+		t.Fatalf("startResponseRun: %v", err)
+	}
+
+	select {
+	case <-provider.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for response run to start streaming")
+	}
+
+	closeDone := make(chan struct{})
+	go func() {
+		srv.responseRuns.Close()
+		close(closeDone)
+	}()
+
+	select {
+	case <-provider.cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for response run cancellation")
+	}
+
+	select {
+	case <-closeDone:
+		t.Fatal("Close returned before detached response run finished unwinding")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	select {
+	case <-provider.cleanupDone:
+		t.Fatal("stateless runtime cleanup completed before blocked run was released")
+	default:
+	}
+
+	close(provider.release)
+
+	select {
+	case <-closeDone:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not wait for detached response run goroutine to finish")
+	}
+
+	select {
+	case <-provider.cleanupDone:
+	default:
+		t.Fatal("stateless runtime cleanup was not finished when Close returned")
 	}
 }
 

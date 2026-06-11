@@ -777,6 +777,11 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			default:
 				err = streamPlainText(displayCtx, events, false)
 			}
+			if err != nil && bridge != nil {
+				// The consumer died; unblock the producer so <-runCh
+				// cannot deadlock behind a full bridge buffer.
+				bridge.Stop()
+			}
 			progressiveRun = <-runCh
 		}
 		tools.ClearAskUserHooks() // Safe to call even if hooks weren't set
