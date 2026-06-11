@@ -108,6 +108,31 @@ func (f *fakeBotSender) allTexts() []string {
 	return out
 }
 
+type blockingAssistantStore struct {
+	*session.NoopStore
+	startOnce sync.Once
+	started   chan struct{}
+	release   chan struct{}
+}
+
+func newBlockingAssistantStore() *blockingAssistantStore {
+	return &blockingAssistantStore{
+		NoopStore: &session.NoopStore{},
+		started:   make(chan struct{}),
+		release:   make(chan struct{}),
+	}
+}
+
+func (s *blockingAssistantStore) AddMessage(ctx context.Context, sessionID string, msg *session.Message) error {
+	if msg != nil && msg.Role == llm.RoleAssistant {
+		s.startOnce.Do(func() {
+			close(s.started)
+		})
+		<-s.release
+	}
+	return nil
+}
+
 type blockingTextProvider struct {
 	text           string
 	firstChunkSent chan struct{}
@@ -1927,6 +1952,66 @@ func TestStreamReply_WatchdogTimeoutIsNotTreatedAsUserInterrupt(t *testing.T) {
 	sess.mu.Unlock()
 	if historyLen != 2 {
 		t.Fatalf("watchdog timeout should not persist partial history; got %d messages", historyLen)
+	}
+}
+
+func TestStreamReply_CallbackPersistenceDoesNotBlockToolProgress(t *testing.T) {
+	h := testutil.NewEngineHarness()
+	slowTool := testutil.NewMockToolWithSchema(
+		"slow_tool",
+		"mock slow tool",
+		map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		},
+		func(ctx context.Context, args json.RawMessage) (llm.ToolOutput, error) {
+			select {
+			case <-ctx.Done():
+				return llm.ToolOutput{}, ctx.Err()
+			case <-time.After(30 * time.Millisecond):
+				return llm.TextOutput("tool output"), nil
+			}
+		},
+	)
+	h.AddTool(slowTool)
+	h.Provider.AddToolCall("call-1", "slow_tool", map[string]any{})
+	h.Provider.AddTextResponse("done")
+
+	mgr, sess := newTestMgrAndSession(h)
+	mgr.streamEventTimeout = 100 * time.Millisecond
+	store := newBlockingAssistantStore()
+	mgr.store = store
+	bot := &fakeBotSender{}
+	sess.meta = &session.Session{ID: "sess-1"}
+
+	resultCh := make(chan error, 1)
+	go func() {
+		resultCh <- mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("run tool"))
+	}()
+
+	select {
+	case <-store.started:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for assistant persistence to block")
+	}
+
+	select {
+	case err := <-resultCh:
+		if err != nil {
+			t.Fatalf("streamReply returned error while assistant persistence was blocked: %v", err)
+		}
+	case <-time.After(400 * time.Millisecond):
+		t.Fatal("streamReply did not complete while assistant persistence was blocked")
+	}
+
+	close(store.release)
+	if slowTool.InvocationCount() != 1 {
+		t.Fatalf("expected tool to run once, got %d", slowTool.InvocationCount())
+	}
+	for _, text := range bot.allTexts() {
+		if strings.Contains(text, "Response timed out") {
+			t.Fatalf("unexpected timeout message with blocked callback persistence: %v", bot.allTexts())
+		}
 	}
 }
 

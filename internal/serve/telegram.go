@@ -31,6 +31,8 @@ const minEditInterval = 3 * time.Second
 
 // defaultStreamEventTimeout is used when telegramSessionMgr.streamEventTimeout is zero.
 const defaultStreamEventTimeout = 10 * time.Minute
+const telegramCallbackStoreQueueSize = 16
+const telegramCallbackStoreDrainTimeout = 250 * time.Millisecond
 
 const telegramMaxConcurrentHandlers = 8
 const telegramMaxPhotoDownloadBytes int64 = 25 << 20
@@ -852,6 +854,67 @@ func closeTelegramSession(sess *telegramSession) {
 	}
 }
 
+type telegramAsyncStoreQueue struct {
+	ops       chan func()
+	pending   sync.WaitGroup
+	closeOnce sync.Once
+}
+
+func newTelegramAsyncStoreQueue() *telegramAsyncStoreQueue {
+	q := &telegramAsyncStoreQueue{
+		ops: make(chan func(), telegramCallbackStoreQueueSize),
+	}
+	go func() {
+		for fn := range q.ops {
+			if fn != nil {
+				fn()
+			}
+		}
+	}()
+	return q
+}
+
+func (q *telegramAsyncStoreQueue) Enqueue(fn func()) {
+	if q == nil || fn == nil {
+		return
+	}
+	q.pending.Add(1)
+	q.ops <- func() {
+		defer q.pending.Done()
+		fn()
+	}
+}
+
+func (q *telegramAsyncStoreQueue) Wait(timeout time.Duration) bool {
+	if q == nil {
+		return true
+	}
+	done := make(chan struct{})
+	go func() {
+		q.pending.Wait()
+		close(done)
+	}()
+	if timeout <= 0 {
+		<-done
+		return true
+	}
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
+func (q *telegramAsyncStoreQueue) Close() {
+	if q == nil {
+		return
+	}
+	q.closeOnce.Do(func() {
+		close(q.ops)
+	})
+}
+
 func (m *telegramSessionMgr) runStoreOp(ctx context.Context, sessionID, op string, fn func(context.Context) error) {
 	if m.store == nil || fn == nil {
 		return
@@ -1268,6 +1331,12 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		})
 	}
 
+	var callbackStoreQueue *telegramAsyncStoreQueue
+	if m.store != nil && sess.meta != nil {
+		callbackStoreQueue = newTelegramAsyncStoreQueue()
+		defer callbackStoreQueue.Close()
+	}
+
 	// Collect assistant and tool-result messages via callbacks.
 	// ResponseCompletedCallback captures assistant messages (with tool call parts)
 	// before tool execution. TurnCompletedCallback captures tool results after
@@ -1282,10 +1351,12 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		produced = append(produced, assistantMsg)
 		assistantCapturedForTurnCB = true
 		producedMu.Unlock()
-		if m.store != nil && sess.meta != nil {
+		if callbackStoreQueue != nil {
 			sessionMsg := session.NewMessage(sess.meta.ID, assistantMsg, -1)
-			m.runStoreOp(cbCtx, sess.meta.ID, "AddMessage(response)", func(storeCtx context.Context) error {
-				return m.store.AddMessage(storeCtx, sess.meta.ID, sessionMsg)
+			callbackStoreQueue.Enqueue(func() {
+				m.runStoreOpWithoutCancel(cbCtx, sess.meta.ID, "AddMessage(response)", func(storeCtx context.Context) error {
+					return m.store.AddMessage(storeCtx, sess.meta.ID, sessionMsg)
+				})
 			})
 		}
 		return nil
@@ -1302,23 +1373,29 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		}
 		assistantCapturedForTurnCB = false
 		producedMu.Unlock()
-		if m.store != nil && sess.meta != nil {
-			for _, msg := range msgs[appendStart:] {
-				sessionMsg := session.NewMessage(sess.meta.ID, msg, -1)
-				m.runStoreOp(cbCtx, sess.meta.ID, "AddMessage(turn)", func(storeCtx context.Context) error {
-					return m.store.AddMessage(storeCtx, sess.meta.ID, sessionMsg)
-				})
-			}
-			m.runStoreOp(cbCtx, sess.meta.ID, "UpdateMetrics", func(storeCtx context.Context) error {
-				return m.store.UpdateMetrics(storeCtx, sess.meta.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens)
-			})
-			if total, count := sess.runtime.Engine.ContextEstimateBaseline(); total > 0 && count > 0 {
+		if callbackStoreQueue != nil {
+			persistMsgs := append([]llm.Message(nil), msgs[appendStart:]...)
+			total, count := sess.runtime.Engine.ContextEstimateBaseline()
+			if total > 0 && count > 0 {
 				sess.meta.LastTotalTokens = total
 				sess.meta.LastMessageCount = count
-				m.runStoreOp(cbCtx, sess.meta.ID, "UpdateContextEstimate", func(storeCtx context.Context) error {
-					return m.store.UpdateContextEstimate(storeCtx, sess.meta.ID, total, count)
-				})
 			}
+			callbackStoreQueue.Enqueue(func() {
+				for _, msg := range persistMsgs {
+					sessionMsg := session.NewMessage(sess.meta.ID, msg, -1)
+					m.runStoreOpWithoutCancel(cbCtx, sess.meta.ID, "AddMessage(turn)", func(storeCtx context.Context) error {
+						return m.store.AddMessage(storeCtx, sess.meta.ID, sessionMsg)
+					})
+				}
+				m.runStoreOpWithoutCancel(cbCtx, sess.meta.ID, "UpdateMetrics", func(storeCtx context.Context) error {
+					return m.store.UpdateMetrics(storeCtx, sess.meta.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens)
+				})
+				if total > 0 && count > 0 {
+					m.runStoreOpWithoutCancel(cbCtx, sess.meta.ID, "UpdateContextEstimate", func(storeCtx context.Context) error {
+						return m.store.UpdateContextEstimate(storeCtx, sess.meta.ID, total, count)
+					})
+				}
+			})
 		}
 		return nil
 	})
@@ -1698,6 +1775,9 @@ loop:
 		if !streamDoneDrained {
 			<-streamDone
 		}
+		if callbackStoreQueue != nil && !callbackStoreQueue.Wait(telegramCallbackStoreDrainTimeout) {
+			log.Printf("[telegram] callback persistence still busy for %s after interrupt; continuing with fallback", sessionID)
+		}
 
 		textMu.Lock()
 		partial := textBuf.String()
@@ -1733,6 +1813,9 @@ loop:
 	}
 
 	if streamErr != nil {
+		if callbackStoreQueue != nil && !callbackStoreQueue.Wait(telegramCallbackStoreDrainTimeout) {
+			log.Printf("[telegram] callback persistence still busy for %s after stream error; continuing with fallback", sessionID)
+		}
 		salvagePartialHistory(streamCtx, "AddMessage(assistant_error_fallback)")
 		if strings.Contains(streamErr.Error(), "stream timed out") {
 			_, _ = bot.Send(tgbotapi.NewMessage(chatID, "⌛ Response timed out — please try again."))
