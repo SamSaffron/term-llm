@@ -475,9 +475,33 @@
 
     .diff-toggle {
       position: relative;
-      margin-left: 0.4rem;
+      margin-left: 0.45rem;
       width: auto;
-      padding: 0 0.5rem;
+      min-width: 42px;
+      height: 32px;
+      padding: 0 0.42rem;
+      gap: 0.28rem;
+      border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+      background: linear-gradient(135deg,
+        color-mix(in srgb, var(--accent) 16%, var(--surface-2)),
+        color-mix(in srgb, var(--accent-strong) 10%, var(--surface)));
+      color: var(--text);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 1px 2px rgba(0, 0, 0, 0.12);
+    }
+
+    .diff-toggle:hover,
+    .diff-toggle.active {
+      border-color: color-mix(in srgb, var(--accent) 70%, var(--border-strong));
+      background: linear-gradient(135deg,
+        color-mix(in srgb, var(--accent) 24%, var(--surface-3)),
+        color-mix(in srgb, var(--accent-strong) 16%, var(--surface-2)));
+      color: var(--text);
+    }
+
+    .diff-toggle svg {
+      width: 15px;
+      height: 15px;
+      stroke-width: 2.2;
     }
 
     /* .icon-btn sets display:inline-flex, which defeats the UA stylesheet's
@@ -487,10 +511,19 @@
     }
 
     .diff-toggle-badge {
+      min-width: 1.18rem;
+      height: 1.18rem;
+      padding: 0 0.32rem;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       font-size: 0.68rem;
-      font-weight: 700;
-      color: var(--text-muted);
-      margin-left: 0.2rem;
+      font-weight: 800;
+      line-height: 1;
+      color: var(--btn-accent-text);
+      background: var(--gradient-accent-strong);
+      margin-left: 0;
       font-variant-numeric: tabular-nums;
     }
 
@@ -510,13 +543,43 @@
       .diff-sidebar {
         position: fixed;
         top: var(--app-offset-top);
-        bottom: 0;
+        bottom: auto;
         right: 0;
-        width: min(var(--diff-sidebar-user-width, 440px), 92vw);
+        height: var(--app-height);
+        width: min(440px, calc(100vw - var(--safe-left)), 90vw);
         z-index: 60;
         transform: translateX(100%);
         transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
         box-shadow: none;
+        padding: var(--safe-top) var(--safe-right) var(--safe-bottom) 0;
+        touch-action: pan-y;
+      }
+
+      .diff-sidebar.open::before {
+        content: '›';
+        position: absolute;
+        left: -11px;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 22px;
+        height: 54px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--surface-elevated, var(--surface)) 90%, transparent);
+        color: var(--text-muted);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.25rem;
+        font-weight: 700;
+        line-height: 1;
+        box-shadow: var(--shadow-strong);
+        pointer-events: none;
+        opacity: 0.9;
+      }
+
+      .diff-resize-handle {
+        display: none;
       }
 
       .diff-sidebar.open {

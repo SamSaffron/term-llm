@@ -55,6 +55,8 @@ const isDiffDrawerViewport = () => {
   }
 };
 
+const currentDiffState = () => (state.activeSessionId ? diffStateBySession.get(state.activeSessionId) || null : null);
+
 // ===== Pure model building (node-tested) =====
 
 // buildDiffRowModel flattens server hunks into renderable rows with old/new
@@ -190,7 +192,7 @@ const fetchSessionFileChanges = async (sessionId) => {
         adds: Number(entry.adds) || 0,
         dels: Number(entry.dels) || 0,
         truncated: Boolean(entry.truncated),
-        lastSeq: prev?.lastSeq || 0
+        lastSeq: Number(entry.seq) || prev?.lastSeq || 0
       });
     });
     ds.files.forEach((entry, path) => {
@@ -281,8 +283,8 @@ const applyDiffSidebarVisibility = (ds) => {
     } else {
       elements.diffSidebar.setAttribute?.('hidden', '');
       elements.diffSidebar.hidden = true;
-      elements.diffSidebar.classList.remove('open');
     }
+    if (!drawer || !hasChanges) elements.diffSidebar.classList.remove('open');
   }
   elements.appShell?.classList.toggle('diff-open', visible);
 
@@ -290,6 +292,7 @@ const applyDiffSidebarVisibility = (ds) => {
     elements.diffToggleBtn.hidden = !hasChanges;
     if (hasChanges) elements.diffToggleBtn.removeAttribute?.('hidden');
     else elements.diffToggleBtn.setAttribute?.('hidden', '');
+    elements.diffToggleBtn.classList.toggle('active', visible || (drawer && elements.diffSidebar?.classList.contains('open')));
   }
 };
 
@@ -647,8 +650,49 @@ const initDiffResize = () => {
   handle.addEventListener('pointercancel', finishDrag);
 };
 
+const isInsideDiffResizeHandle = (target) => {
+  let node = target;
+  while (node) {
+    if (node === elements.diffResizeHandle || node.classList?.contains?.('diff-resize-handle')) return true;
+    node = node.parentNode;
+  }
+  return false;
+};
+
+const initDiffCloseGesture = () => {
+  const panel = elements.diffSidebar;
+  if (!panel?.addEventListener) return;
+  let startX = 0;
+  let startY = 0;
+  let tracking = false;
+
+  panel.addEventListener('pointerdown', (event) => {
+    if (!isDiffDrawerViewport()) return;
+    if (!panel.classList.contains('open')) return;
+    if (isInsideDiffResizeHandle(event.target)) return;
+    startX = Number(event.clientX) || 0;
+    startY = Number(event.clientY) || 0;
+    tracking = true;
+  });
+
+  panel.addEventListener('pointerup', (event) => {
+    if (!tracking) return;
+    tracking = false;
+    const dx = (Number(event.clientX) || 0) - startX;
+    const dy = Math.abs((Number(event.clientY) || 0) - startY);
+    // Right-side drawer: a decisive rightward swipe closes it. Keep the
+    // threshold high enough that ordinary vertical diff scrolling is ignored.
+    if (dx > 70 && dx > dy * 1.4) closeDiffDrawer();
+  });
+
+  panel.addEventListener('pointercancel', () => {
+    tracking = false;
+  });
+};
+
 restoreDiffSidebarWidth();
 initDiffResize();
+initDiffCloseGesture();
 
 // Fresh page load: session switches activate the sidebar, but the boot path
 // never goes through switchToSession. This script loads last, after app-core
@@ -659,6 +703,41 @@ if (state.activeSessionId && !state.draftSessionActive) {
 }
 
 // ===== Wiring =====
+
+const handleDiffViewportChange = () => {
+  const ds = currentDiffState();
+  if (!ds) {
+    elements.appShell?.classList.remove('diff-open');
+    elements.diffSidebar?.classList.remove('open');
+    return;
+  }
+
+  // Drawer mode (narrow) and grid-column mode (wide) use different visibility
+  // mechanics. Re-apply immediately when crossing the breakpoint so a drawer
+  // opened on mobile becomes a real column on desktop, and a desktop column
+  // becomes a closed drawer instead of lingering in an in-between state.
+  if (!isDiffDrawerViewport()) {
+    elements.diffSidebar?.classList.remove('open');
+  }
+  renderDiffSidebar(state.activeSessionId);
+  if (!ds.hidden) scheduleDiffRefresh(state.activeSessionId);
+};
+
+const diffViewportMedia = (() => {
+  try {
+    return typeof window.matchMedia === 'function' ? window.matchMedia('(max-width: 1099px)') : null;
+  } catch {
+    return null;
+  }
+})();
+if (diffViewportMedia) {
+  if (typeof diffViewportMedia.addEventListener === 'function') {
+    diffViewportMedia.addEventListener('change', handleDiffViewportChange);
+  } else if (typeof diffViewportMedia.addListener === 'function') {
+    diffViewportMedia.addListener(handleDiffViewportChange);
+  }
+}
+window.addEventListener?.('resize', handleDiffViewportChange);
 
 elements.diffToggleBtn?.addEventListener?.('click', toggleDiffSidebar);
 elements.diffSidebarCloseBtn?.addEventListener?.('click', () => {

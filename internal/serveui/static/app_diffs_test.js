@@ -139,6 +139,28 @@ function createHarness(options = {}) {
       : { file_changes: [] })
   }));
 
+  let drawerMatches = Boolean(options.drawer);
+  const mediaListeners = [];
+  const media = {
+    get matches() { return drawerMatches; },
+    addEventListener(type, listener) { if (type === 'change') mediaListeners.push(listener); },
+    removeEventListener(type, listener) {
+      if (type !== 'change') return;
+      const idx = mediaListeners.indexOf(listener);
+      if (idx !== -1) mediaListeners.splice(idx, 1);
+    },
+    addListener(listener) { mediaListeners.push(listener); },
+    removeListener(listener) {
+      const idx = mediaListeners.indexOf(listener);
+      if (idx !== -1) mediaListeners.splice(idx, 1);
+    }
+  };
+  const windowListeners = new Map();
+  const setDrawer = (value) => {
+    drawerMatches = Boolean(value);
+    mediaListeners.slice().forEach((listener) => listener({ matches: drawerMatches }));
+  };
+
   const app = {
     UI_PREFIX: '/chat',
     STORAGE_KEYS: { diffSidebarWidth: 'term_llm_diff_sidebar_width' },
@@ -153,7 +175,22 @@ function createHarness(options = {}) {
     window: {
       TermLLMApp: app,
       innerWidth: options.innerWidth || 1280,
-      matchMedia: () => ({ matches: Boolean(options.drawer) }),
+      matchMedia: () => media,
+      addEventListener(type, listener) {
+        const listeners = windowListeners.get(type) || [];
+        listeners.push(listener);
+        windowListeners.set(type, listeners);
+      },
+      removeEventListener(type, listener) {
+        const listeners = windowListeners.get(type) || [];
+        const idx = listeners.indexOf(listener);
+        if (idx !== -1) listeners.splice(idx, 1);
+        windowListeners.set(type, listeners);
+      },
+      dispatchEvent(event) {
+        const listeners = windowListeners.get(event?.type || '') || [];
+        listeners.slice().forEach((listener) => listener(event));
+      },
       ...(options.hljs ? { hljs: options.hljs } : {})
     },
     document,
@@ -186,7 +223,7 @@ function createHarness(options = {}) {
     await new Promise((resolve) => setImmediate(resolve));
   };
 
-  return { app, elements, state, localStorage, storage, timers, fetchCalls, flushTimers };
+  return { app, elements, state, localStorage, storage, timers, fetchCalls, flushTimers, setDrawer, media, windowObj: context.window };
 }
 
 async function run(name, fn) {
@@ -438,6 +475,55 @@ async function run(name, fn) {
 
     app.toggleDiffSidebar();
     assert(!elements.diffSidebar.classList.contains('open'), 'second toggle closes the drawer');
+  });
+
+  await run('drawer to wide viewport reopens diff as a grid column', async () => {
+    const { app, elements, setDrawer, flushTimers } = createHarness({ drawer: true });
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/work/a.go', kind: 'create', adds: 3, dels: 0, seq: 1 });
+    await flushTimers();
+
+    assert(elements.diffSidebar.hidden, 'narrow drawer stays closed after live change');
+    assert(!elements.appShell.classList.contains('diff-open'), 'narrow mode does not add a grid column');
+
+    setDrawer(false);
+    assert(!elements.diffSidebar.hidden, 'wide mode reveals the panel');
+    assert(!elements.diffSidebar.classList.contains('open'), 'drawer-open class is cleared in wide mode');
+    assert(elements.appShell.classList.contains('diff-open'), 'wide mode adds the grid diff column');
+  });
+
+  await run('wide to drawer viewport closes column but keeps toggle available', () => {
+    const { app, elements, setDrawer } = createHarness();
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/work/a.go', kind: 'create', adds: 3, dels: 0, seq: 1 });
+    assert(!elements.diffSidebar.hidden, 'wide panel starts visible');
+    assert(elements.appShell.classList.contains('diff-open'), 'wide mode has a diff column');
+
+    setDrawer(true);
+    assert(elements.diffSidebar.hidden, 'narrow drawer is closed after crossing breakpoint');
+    assert(!elements.appShell.classList.contains('diff-open'), 'narrow mode removes the grid diff column');
+    assert(!elements.diffToggleBtn.hidden, 'toggle remains available in drawer mode');
+  });
+
+  await run('drawer swipe right closes the diff drawer', async () => {
+    const { app, elements, flushTimers } = createHarness({ drawer: true });
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/work/a.go', kind: 'create', adds: 3, dels: 0, seq: 1 });
+    await flushTimers();
+    app.toggleDiffSidebar();
+    assert(elements.diffSidebar.classList.contains('open'), 'drawer starts open');
+
+    await elements.diffSidebar.dispatchEvent({ type: 'pointerdown', target: elements.diffSidebar, clientX: 120, clientY: 40 });
+    await elements.diffSidebar.dispatchEvent({ type: 'pointerup', target: elements.diffSidebar, clientX: 215, clientY: 48 });
+    assert(!elements.diffSidebar.classList.contains('open'), 'rightward swipe closes drawer');
+  });
+
+  await run('drawer vertical scroll gesture does not close the diff drawer', async () => {
+    const { app, elements, flushTimers } = createHarness({ drawer: true });
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/work/a.go', kind: 'create', adds: 3, dels: 0, seq: 1 });
+    await flushTimers();
+    app.toggleDiffSidebar();
+
+    await elements.diffSidebar.dispatchEvent({ type: 'pointerdown', target: elements.diffSidebar, clientX: 120, clientY: 40 });
+    await elements.diffSidebar.dispatchEvent({ type: 'pointerup', target: elements.diffSidebar, clientX: 150, clientY: 150 });
+    assert(elements.diffSidebar.classList.contains('open'), 'mostly vertical gesture keeps drawer open');
   });
 
   await run('clampDiffWidth bounds the panel width', () => {

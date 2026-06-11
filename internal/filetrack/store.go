@@ -83,6 +83,7 @@ type CumulativeChange struct {
 	Adds      int    `json:"adds"`
 	Dels      int    `json:"dels"`
 	Truncated bool   `json:"truncated"`
+	Seq       int64  `json:"seq"` // latest change sequence for this path in the session
 }
 
 // FileDiffContent holds the baseline and current contents for one file.
@@ -493,11 +494,12 @@ type pathSpan struct {
 	firstBeforeHash string
 	lastKind        string
 	lastAfterHash   string
+	lastSeq         int64
 }
 
 func (s *Store) sessionSpans(ctx context.Context, sessionID string) ([]*pathSpan, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT path, kind, COALESCE(before_hash, ''), COALESCE(after_hash, '')
+		SELECT seq, path, kind, COALESCE(before_hash, ''), COALESCE(after_hash, '')
 		FROM file_changes WHERE session_id = ? ORDER BY seq`, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("query session changes: %w", err)
@@ -507,8 +509,9 @@ func (s *Store) sessionSpans(ctx context.Context, sessionID string) ([]*pathSpan
 	spans := make(map[string]*pathSpan)
 	var order []string
 	for rows.Next() {
+		var seq int64
 		var path, kind, beforeHash, afterHash string
-		if err := rows.Scan(&path, &kind, &beforeHash, &afterHash); err != nil {
+		if err := rows.Scan(&seq, &path, &kind, &beforeHash, &afterHash); err != nil {
 			return nil, err
 		}
 		path = normalizePath(path)
@@ -523,6 +526,7 @@ func (s *Store) sessionSpans(ctx context.Context, sessionID string) ([]*pathSpan
 		}
 		span.lastKind = kind
 		span.lastAfterHash = afterHash
+		span.lastSeq = seq
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -583,7 +587,7 @@ func (s *Store) ListSessionChanges(ctx context.Context, sessionID string) ([]Cum
 			continue
 		}
 
-		change := CumulativeChange{Path: sp.path, Kind: kind}
+		change := CumulativeChange{Path: sp.path, Kind: kind, Seq: sp.lastSeq}
 		needBefore, needAfter := blobsNeeded(kind)
 
 		var before, after []byte

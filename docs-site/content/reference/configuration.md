@@ -242,6 +242,14 @@ file_tracking:
 
 Opt-in. When enabled, term-llm records the before/after contents of files that agent tools create, modify, or delete, so the web UI can show a live per-session diff sidebar.
 
+Enable it with:
+
+```bash
+term-llm config set file_tracking.enabled true
+```
+
+or by adding the YAML above to your config file.
+
 **Privacy note:** this persists actual file contents (not just paths) to a local SQLite database at `~/.local/share/term-llm/file_history.db`, separate from `sessions.db`. Contents are gzip-compressed and content-addressed. Files larger than `max_file_bytes`, binary files, and changes beyond the per-session budget are recorded as metadata only ("content not retained"). History for deleted sessions is swept on startup, following `sessions.max_age_days`; if the database still exceeds `max_total_bytes`, the least recently changed sessions' history is pruned until it fits.
 
 Shell-made changes are tracked best-effort: commands that declare an `affected_paths` hint are snapshotted precisely; otherwise term-llm relies on `git status` (when inside a repository) and re-checking files the session already touched. Broad scripts writing to non-git directories without a hint may not appear in the diff sidebar.
