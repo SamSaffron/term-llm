@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"os/user"
@@ -21,10 +22,17 @@ var templateVarPattern = regexp.MustCompile(`\{\{\s*(\w+)\s*\}\}`)
 // TemplateContext holds values for template variable expansion.
 type TemplateContext struct {
 	// Time-related
-	Date     string // YYYY-MM-DD
-	DateTime string // YYYY-MM-DD HH:MM:SS
-	Time     string // HH:MM
-	Year     string // YYYY
+	Date            string // YYYY-MM-DD (local time)
+	DateTime        string // YYYY-MM-DD HH:MM:SS (local time)
+	DateTimeRFC3339 string // RFC3339 timestamp with numeric offset
+	Time            string // HH:MM (local time)
+	Year            string // YYYY (local time)
+	Weekday         string // Monday, Tuesday, ... (local time)
+	Timezone        string // IANA timezone when available, otherwise local timezone name
+	TimezoneAbbr    string // Timezone abbreviation (e.g. UTC, AEST, PDT)
+	TimezoneOffset  string // Numeric timezone offset (e.g. +00:00, +10:00, -07:00)
+	UTCDate         string // YYYY-MM-DD in UTC
+	UTCDateTime     string // RFC3339 timestamp in UTC
 
 	// Directory info
 	Cwd     string // Full working directory
@@ -94,13 +102,22 @@ func templateVariables(template string) map[string]bool {
 // newTemplateContext creates a context with optional expensive computations.
 func newTemplateContext(computeGitInfo, computeGitDiffStat, computeAgents, computeHandoverDir bool) TemplateContext {
 	now := time.Now()
+	utcNow := now.UTC()
+	zoneAbbr, zoneOffsetSeconds := now.Zone()
 
 	ctx := TemplateContext{
-		Date:     now.Format("2006-01-02"),
-		DateTime: now.Format("2006-01-02 15:04:05"),
-		Time:     now.Format("15:04"),
-		Year:     now.Format("2006"),
-		OS:       runtime.GOOS,
+		Date:            now.Format("2006-01-02"),
+		DateTime:        now.Format("2006-01-02 15:04:05"),
+		DateTimeRFC3339: now.Format(time.RFC3339),
+		Time:            now.Format("15:04"),
+		Year:            now.Format("2006"),
+		Weekday:         now.Weekday().String(),
+		Timezone:        localTimezoneName(now),
+		TimezoneAbbr:    zoneAbbr,
+		TimezoneOffset:  formatTimezoneOffset(zoneOffsetSeconds),
+		UTCDate:         utcNow.Format("2006-01-02"),
+		UTCDateTime:     utcNow.Format(time.RFC3339),
+		OS:              runtime.GOOS,
 	}
 
 	// Working directory
@@ -220,10 +237,24 @@ func ExpandTemplate(text string, ctx TemplateContext) string {
 			return ctx.Date
 		case "datetime":
 			return ctx.DateTime
+		case "datetime_rfc3339":
+			return ctx.DateTimeRFC3339
 		case "time":
 			return ctx.Time
 		case "year":
 			return ctx.Year
+		case "weekday":
+			return ctx.Weekday
+		case "timezone":
+			return ctx.Timezone
+		case "timezone_abbr":
+			return ctx.TimezoneAbbr
+		case "timezone_offset":
+			return ctx.TimezoneOffset
+		case "utc_date":
+			return ctx.UTCDate
+		case "utc_datetime":
+			return ctx.UTCDateTime
 		case "cwd":
 			return ctx.Cwd
 		case "cwd_name":
@@ -330,10 +361,39 @@ func getGitDiffStat() string {
 func runGitOutput(dir string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), gitProbeTimeout)
 	defer cancel()
-
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	return cmd.Output()
+}
+
+func localTimezoneName(now time.Time) string {
+	if tz := strings.TrimSpace(os.Getenv("TZ")); tz != "" {
+		return tz
+	}
+	if loc := now.Location(); loc != nil {
+		if name := loc.String(); name != "" && name != "Local" {
+			return name
+		}
+	}
+	if target, err := os.Readlink("/etc/localtime"); err == nil {
+		const zoneInfoPrefix = "/usr/share/zoneinfo/"
+		if strings.HasPrefix(target, zoneInfoPrefix) {
+			return strings.TrimPrefix(target, zoneInfoPrefix)
+		}
+	}
+	abbr, _ := now.Zone()
+	return abbr
+}
+
+func formatTimezoneOffset(seconds int) string {
+	sign := "+"
+	if seconds < 0 {
+		sign = "-"
+		seconds = -seconds
+	}
+	hours := seconds / 3600
+	minutes := (seconds % 3600) / 60
+	return fmt.Sprintf("%s%02d:%02d", sign, hours, minutes)
 }
 
 // itoa is a simple int to string conversion.

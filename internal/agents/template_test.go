@@ -12,26 +12,33 @@ import (
 
 func TestExpandTemplate(t *testing.T) {
 	ctx := TemplateContext{
-		Date:          "2026-01-16",
-		DateTime:      "2026-01-16 14:30:00",
-		Time:          "14:30",
-		Year:          "2026",
-		Cwd:           "/home/user/project",
-		CwdName:       "project",
-		Home:          "/home/user",
-		User:          "testuser",
-		GitBranch:     "main",
-		GitRepo:       "term-llm",
-		Files:         "main.go, utils.go",
-		FileCount:     "2",
-		OS:            "linux",
-		Platform:      "chat",
-		Provider:      "chatgpt",
-		Model:         "gpt-5.4-medium",
-		ProviderModel: "chatgpt:gpt-5.4-medium",
-		ResourceDir:   "/home/user/.cache/term-llm/agents/artist",
-		HandoverDir:   "/home/user/.local/share/term-llm/handover/project-abc123",
-		HandoverPath:  "/home/user/.local/share/term-llm/handover/project-abc123/2026-01-16-amber-creek-bloom.md",
+		Date:            "2026-01-16",
+		DateTime:        "2026-01-16 14:30:00",
+		DateTimeRFC3339: "2026-01-16T14:30:00+11:00",
+		Time:            "14:30",
+		Year:            "2026",
+		Weekday:         "Friday",
+		Timezone:        "Australia/Sydney",
+		TimezoneAbbr:    "AEDT",
+		TimezoneOffset:  "+11:00",
+		UTCDate:         "2026-01-16",
+		UTCDateTime:     "2026-01-16T03:30:00Z",
+		Cwd:             "/home/user/project",
+		CwdName:         "project",
+		Home:            "/home/user",
+		User:            "testuser",
+		GitBranch:       "main",
+		GitRepo:         "term-llm",
+		Files:           "main.go, utils.go",
+		FileCount:       "2",
+		OS:              "linux",
+		Platform:        "chat",
+		Provider:        "chatgpt",
+		Model:           "gpt-5.4-medium",
+		ProviderModel:   "chatgpt:gpt-5.4-medium",
+		ResourceDir:     "/home/user/.cache/term-llm/agents/artist",
+		HandoverDir:     "/home/user/.local/share/term-llm/handover/project-abc123",
+		HandoverPath:    "/home/user/.local/share/term-llm/handover/project-abc123/2026-01-16-amber-creek-bloom.md",
 	}
 
 	tests := []struct {
@@ -80,9 +87,14 @@ func TestExpandTemplate(t *testing.T) {
 			expected: "Hello {{unknown}}",
 		},
 		{
+			name:     "timezone-aware time variables",
+			template: "{{weekday}} {{datetime_rfc3339}} {{timezone}} {{timezone_abbr}} {{timezone_offset}} UTC={{utc_datetime}}",
+			expected: "Friday 2026-01-16T14:30:00+11:00 Australia/Sydney AEDT +11:00 UTC=2026-01-16T03:30:00Z",
+		},
+		{
 			name:     "all variables",
-			template: "{{date}} {{datetime}} {{time}} {{year}} {{cwd}} {{cwd_name}} {{home}} {{user}} {{git_branch}} {{git_repo}} {{files}} {{file_count}} {{os}} {{platform}} {{provider}} {{model}} {{provider_model}} {{resource_dir}} {{handover_dir}} {{handover_path}}",
-			expected: "2026-01-16 2026-01-16 14:30:00 14:30 2026 /home/user/project project /home/user testuser main term-llm main.go, utils.go 2 linux chat chatgpt gpt-5.4-medium chatgpt:gpt-5.4-medium /home/user/.cache/term-llm/agents/artist /home/user/.local/share/term-llm/handover/project-abc123 /home/user/.local/share/term-llm/handover/project-abc123/2026-01-16-amber-creek-bloom.md",
+			template: "{{date}} {{datetime}} {{datetime_rfc3339}} {{time}} {{year}} {{weekday}} {{timezone}} {{timezone_abbr}} {{timezone_offset}} {{utc_date}} {{utc_datetime}} {{cwd}} {{cwd_name}} {{home}} {{user}} {{git_branch}} {{git_repo}} {{files}} {{file_count}} {{os}} {{platform}} {{provider}} {{model}} {{provider_model}} {{resource_dir}} {{handover_dir}} {{handover_path}}",
+			expected: "2026-01-16 2026-01-16 14:30:00 2026-01-16T14:30:00+11:00 14:30 2026 Friday Australia/Sydney AEDT +11:00 2026-01-16 2026-01-16T03:30:00Z /home/user/project project /home/user testuser main term-llm main.go, utils.go 2 linux chat chatgpt gpt-5.4-medium chatgpt:gpt-5.4-medium /home/user/.cache/term-llm/agents/artist /home/user/.local/share/term-llm/handover/project-abc123 /home/user/.local/share/term-llm/handover/project-abc123/2026-01-16-amber-creek-bloom.md",
 		},
 		{
 			name:     "handover_dir variable",
@@ -291,11 +303,41 @@ func TestNewTemplateContext(t *testing.T) {
 	if ctx.Year == "" {
 		t.Error("Year should not be empty")
 	}
+	if ctx.Weekday == "" {
+		t.Error("Weekday should not be empty")
+	}
+	if ctx.Timezone == "" {
+		t.Error("Timezone should not be empty")
+	}
+	if ctx.TimezoneAbbr == "" {
+		t.Error("TimezoneAbbr should not be empty")
+	}
+	if ctx.TimezoneOffset == "" {
+		t.Error("TimezoneOffset should not be empty")
+	}
+	if ctx.DateTimeRFC3339 == "" {
+		t.Error("DateTimeRFC3339 should not be empty")
+	}
+	if ctx.UTCDate == "" {
+		t.Error("UTCDate should not be empty")
+	}
+	if ctx.UTCDateTime == "" {
+		t.Error("UTCDateTime should not be empty")
+	}
 
-	// Verify date format
+	// Verify date/time formats
 	_, err := time.Parse("2006-01-02", ctx.Date)
 	if err != nil {
 		t.Errorf("Date format invalid: %v", err)
+	}
+	if _, err := time.Parse(time.RFC3339, ctx.DateTimeRFC3339); err != nil {
+		t.Errorf("DateTimeRFC3339 format invalid: %v", err)
+	}
+	if _, err := time.Parse("2006-01-02", ctx.UTCDate); err != nil {
+		t.Errorf("UTCDate format invalid: %v", err)
+	}
+	if _, err := time.Parse(time.RFC3339, ctx.UTCDateTime); err != nil {
+		t.Errorf("UTCDateTime format invalid: %v", err)
 	}
 
 	// Check OS
@@ -306,6 +348,32 @@ func TestNewTemplateContext(t *testing.T) {
 	// Check that cwd is populated (should be valid in test)
 	if ctx.Cwd == "" {
 		t.Error("Cwd should not be empty")
+	}
+}
+
+func TestFormatTimezoneOffset(t *testing.T) {
+	tests := []struct {
+		seconds int
+		want    string
+	}{
+		{0, "+00:00"},
+		{10 * 3600, "+10:00"},
+		{11*3600 + 30*60, "+11:30"},
+		{-7 * 3600, "-07:00"},
+		{-(3*3600 + 30*60), "-03:30"},
+	}
+	for _, tt := range tests {
+		if got := formatTimezoneOffset(tt.seconds); got != tt.want {
+			t.Fatalf("formatTimezoneOffset(%d) = %q, want %q", tt.seconds, got, tt.want)
+		}
+	}
+}
+
+func TestLocalTimezoneNamePrefersTZEnv(t *testing.T) {
+	t.Setenv("TZ", "Australia/Sydney")
+	now := time.Date(2026, 6, 11, 14, 30, 0, 0, time.Local)
+	if got := localTimezoneName(now); got != "Australia/Sydney" {
+		t.Fatalf("localTimezoneName() = %q, want Australia/Sydney", got)
 	}
 }
 

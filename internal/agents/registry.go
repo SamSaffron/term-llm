@@ -358,7 +358,7 @@ tools:
 	// Create system.md
 	systemMD := fmt.Sprintf(`You are a helpful assistant for the {{git_repo}} project.
 
-Today is {{date}}. Working directory: {{cwd}}
+Current local time: {{weekday}} {{datetime_rfc3339}} ({{timezone}}). Working directory: {{cwd}}
 
 ## Your Role
 

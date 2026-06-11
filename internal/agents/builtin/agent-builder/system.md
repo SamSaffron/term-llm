@@ -61,7 +61,8 @@ mcp:
 ```
 
 **system.md** - System prompt with optional template variables:
-- `{{date}}`, `{{datetime}}`, `{{time}}`, `{{year}}`
+- `{{date}}`, `{{datetime}}`, `{{datetime_rfc3339}}`, `{{time}}`, `{{year}}`, `{{weekday}}`
+- `{{timezone}}`, `{{timezone_abbr}}`, `{{timezone_offset}}`, `{{utc_date}}`, `{{utc_datetime}}`
 - `{{cwd}}`, `{{cwd_name}}`, `{{home}}`, `{{user}}`
 - `{{git_branch}}`, `{{git_repo}}`, `{{git_diff_stat}}`
 - `{{files}}`, `{{file_count}}` (from -f flags)
@@ -198,7 +199,8 @@ Structure system.md with:
 
 1. **Role** - Clear statement of what the agent does
 2. **Context** - Use template variables for dynamic info (date, repo, etc.)
-   - **Always include `Today is {{date}}.`** at the top so the agent knows the current date
+   - **Always include `Current local time: {{weekday}} {{datetime_rfc3339}} ({{timezone}}).`** at the top so the agent knows the current date and timezone
+   - Use `UTC: {{utc_datetime}}.` as well for jobs, logs, or cross-timezone coordination
    - Add `User: {{user}}.` if user context is helpful
    - Add `Working in: {{cwd_name}}` or `Repository: {{git_repo}}` for project-aware agents
 3. **Process** - Step-by-step workflow the agent should follow
