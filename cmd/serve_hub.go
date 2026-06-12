@@ -44,15 +44,28 @@ type hubServer struct {
 	// store backs the dashboard's Add Node form; nil disables mutation.
 	store  *hub.Store
 	prober *hub.Prober
-	proxy  *httputil.ReverseProxy
+	// reverse tracks private nodes that dial out to the hub and receive node
+	// requests over a websocket instead of direct hub -> node HTTP.
+	reverse *hubReverseManager
+	proxy   *httputil.ReverseProxy
+	// delegations is the cross-node delegation ledger; nil disables the
+	// /api/delegations endpoints.
+	delegations *hub.DelegationStore
+	// nodeAPIClient performs hub -> node jobs API calls for delegations. It
+	// shares the proxy's direct-dial transport (no env proxy: requests carry
+	// node tokens) but, unlike streaming proxy traffic, gets a whole-request
+	// timeout.
+	nodeAPIClient *http.Client
 }
 
 func newHubServer(registry *hub.Registry, store *hub.Store) *hubServer {
 	transport := newHubTransport()
 	s := &hubServer{
-		registry: registry,
-		store:    store,
-		prober:   hub.NewProber(transport),
+		registry:      registry,
+		store:         store,
+		prober:        hub.NewProber(transport),
+		reverse:       newHubReverseManager(),
+		nodeAPIClient: &http.Client{Transport: transport, Timeout: 30 * time.Second},
 	}
 	s.proxy = &httputil.ReverseProxy{
 		Rewrite:        hubRewriteProxyRequest,
@@ -116,12 +129,13 @@ func hubProxyTargetFrom(ctx context.Context) *hubProxyTarget {
 // bearer token: tokens are injected server-side and must never be sent to a
 // hub client.
 type hubNodeView struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Source    string `json:"source"`
-	URL       string `json:"url"`
-	BasePath  string `json:"base_path"`
-	ProxyPath string `json:"proxy_path"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Source     string `json:"source"`
+	Connection string `json:"connection"`
+	URL        string `json:"url"`
+	BasePath   string `json:"base_path"`
+	ProxyPath  string `json:"proxy_path"`
 	// HasToken reports whether the hub holds a bearer token for this node
 	// (without it, a token-guarded node will answer 401 through the proxy).
 	HasToken bool       `json:"has_token"`
@@ -134,6 +148,9 @@ func (s *hubServer) handler() http.Handler {
 	mux.HandleFunc("/api/nodes/test", s.handleTestNode)
 	mux.HandleFunc("/api/nodes/", s.handleNodeItem)
 	mux.HandleFunc("/api/nodes", s.handleNodes)
+	mux.HandleFunc("/api/delegations/", s.handleDelegationItem)
+	mux.HandleFunc("/api/delegations", s.handleDelegations)
+	mux.HandleFunc("/api/connect", s.handleReverseConnect)
 	mux.HandleFunc("/node/", s.handleNodeProxy)
 	mux.HandleFunc("/", s.handleIndex)
 	return mux
@@ -179,16 +196,30 @@ func (s *hubServer) collectNodes(ctx context.Context) ([]hubNodeView, error) {
 	statuses := s.prober.ProbeAll(probeCtx, nodes)
 	views := make([]hubNodeView, 0, len(nodes))
 	for _, n := range nodes {
-		views = append(views, hubNodeView{
-			ID:        n.ID,
-			Name:      n.Name,
-			Source:    n.Source,
-			URL:       n.URL,
-			BasePath:  n.BasePath,
-			ProxyPath: "/node/" + n.ID + "/",
-			HasToken:  n.Token != "",
-			Status:    statuses[n.ID],
-		})
+		view := hubNodeView{
+			ID:         n.ID,
+			Name:       n.Name,
+			Source:     n.Source,
+			Connection: n.Connection,
+			URL:        n.URL,
+			BasePath:   n.BasePath,
+			ProxyPath:  "/node/" + n.ID + "/",
+			HasToken:   n.Token != "",
+			Status:     statuses[n.ID],
+		}
+		if n.UsesReverseConnection() {
+			connected, connectedAt, lastSeen := s.reverse.status(n.ID)
+			if connected {
+				view.Status = hub.Status{Reachable: true, State: "connected", LatencyMS: 0, Details: map[string]string{
+					"connection":   "reverse",
+					"connected_at": connectedAt.Format(time.RFC3339),
+					"last_seen":    lastSeen.Format(time.RFC3339),
+				}}
+			} else {
+				view.Status = hub.Status{State: "disconnected", Error: "waiting for reverse connection", Details: map[string]string{"connection": "reverse"}}
+			}
+		}
+		views = append(views, view)
 	}
 	return views, err
 }
@@ -375,6 +406,10 @@ func (s *hubServer) handleNodeProxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("unknown node %q", id), http.StatusNotFound)
 		return
 	}
+	if node.UsesReverseConnection() {
+		s.handleReverseNodeProxy(w, r, node, rest)
+		return
+	}
 	// Bare /node/<id> -> /node/<id>/ so the node UI's relative URLs resolve
 	// under the mount. Preserve the query string.
 	if rest == "" {
@@ -401,6 +436,70 @@ func (s *hubServer) handleNodeProxy(w http.ResponseWriter, r *http.Request) {
 		mount:    "/node/" + node.ID,
 	}
 	s.proxy.ServeHTTP(w, r.WithContext(withHubProxyTarget(r.Context(), t)))
+}
+
+func (s *hubServer) handleReverseNodeProxy(w http.ResponseWriter, r *http.Request, node hub.Node, rest string) {
+	if !s.reverse.isConnected(node.ID) {
+		http.Error(w, fmt.Sprintf("node %q reverse connection is not connected", node.ID), http.StatusBadGateway)
+		return
+	}
+	if rest == "" {
+		target := "/node/" + node.ID + "/"
+		if r.URL.RawQuery != "" {
+			target += "?" + r.URL.RawQuery
+		}
+		http.Redirect(w, r, target, http.StatusTemporaryRedirect)
+		return
+	}
+	t := &hubProxyTarget{
+		nodeID:   node.ID,
+		nodeName: node.Name,
+		path:     hubJoinBasePath(node.BasePath, rest),
+		token:    node.Token,
+		basePath: strings.TrimRight(node.BasePath, "/"),
+		mount:    "/node/" + node.ID,
+	}
+	body := r.Body
+	if body == nil {
+		body = http.NoBody
+	}
+	req, err := http.NewRequestWithContext(withHubProxyTarget(r.Context(), t), r.Method, "http://reverse.local"+t.path, body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	req.URL.RawQuery = r.URL.RawQuery
+	req.Header = r.Header.Clone()
+	if node.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+node.Token)
+	} else {
+		req.Header.Del("Authorization")
+	}
+	req.Header.Del("Cookie")
+	req.Header.Del("X-Api-Key")
+	req.Header.Del("Accept-Encoding")
+	req.Header.Del("X-Forwarded-For")
+	req.Header.Del("X-Forwarded-Host")
+	req.Header.Del("X-Forwarded-Proto")
+	req.Header.Del("X-Forwarded-Prefix")
+	req.Header.Del("Forwarded")
+	resp, err := s.reverse.do(r.Context(), node, req)
+	if err != nil {
+		hubProxyErrorHandler(w, r.WithContext(withHubProxyTarget(r.Context(), t)), err)
+		return
+	}
+	defer resp.Body.Close()
+	if err := hubRebaseProxyResponse(resp); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	for k, vals := range resp.Header {
+		for _, v := range vals {
+			w.Header().Add(k, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
 }
 
 // parseHubNodePath splits "/node/<id>/<rest>" into id and the remainder
@@ -640,7 +739,12 @@ Routes:
   POST /api/nodes         add a node to the local store
   DELETE /api/nodes/<id>  remove a local-store node
   POST /api/nodes/test    probe a node spec without persisting it
+  GET  /api/connect      reverse-node websocket endpoint (node auth)
   ANY  /node/<id>/...     reverse proxy to that node's serve
+  POST /api/delegations   create a cross-node delegation (node auth)
+  GET  /api/delegations   list delegations
+  GET  /api/delegations/<id>         delegation status
+  POST /api/delegations/<id>/cancel  cancel (originating node only)
 
 Config file (--config), YAML or JSON:
   nodes:
@@ -702,6 +806,8 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 	}
 
 	s := newHubServer(hub.NewRegistry(resolvers...), store)
+	// The delegation ledger lives beside the node store (same private dir).
+	s.delegations = hub.NewDelegationStore(filepath.Join(filepath.Dir(nodesFile), "delegations.json"))
 	addr := net.JoinHostPort(serveHubHost, strconv.Itoa(serveHubPort))
 	srv := &http.Server{Addr: addr, Handler: s.handler()}
 

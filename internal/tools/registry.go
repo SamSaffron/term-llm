@@ -157,6 +157,10 @@ func (r *LocalToolRegistry) registerTool(specName string) error {
 		tool = NewQueueAgentTool()
 	case WaitForJobsToolName:
 		tool = NewWaitForJobsTool()
+	case HubDelegateToolName:
+		tool = NewHubDelegateTool()
+	case HubCheckDelegationToolName:
+		tool = NewHubCheckDelegationTool()
 	case RunAgentScriptToolName:
 		tool = NewRunAgentScriptTool(r.config, r.limits)
 	case InitiateHandoverToolName:

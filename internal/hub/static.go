@@ -16,6 +16,10 @@ import (
 //	    url: http://127.0.0.1:8081/chat
 //	    base_path: /chat      # optional, may also be embedded in url
 //	    token: secret         # optional web bearer token, injected server-side
+//	  - id: private
+//	    connection: reverse  # node dials /api/connect; no Hub-reachable url required
+//	    base_path: /chat
+//	    token: secret
 type configFile struct {
 	Nodes []Node `yaml:"nodes"`
 }

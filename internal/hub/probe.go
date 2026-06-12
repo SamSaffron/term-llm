@@ -25,6 +25,9 @@ type Status struct {
 	Version      string   `json:"version,omitempty"`
 	Agent        string   `json:"agent,omitempty"`
 	Capabilities []string `json:"capabilities,omitempty"`
+	// Details carries small transport-specific facts such as reverse connection
+	// timestamps. It is diagnostic only and never carries credentials.
+	Details map[string]string `json:"details,omitempty"`
 	// Error holds the failure detail for unreachable nodes.
 	Error string `json:"error,omitempty"`
 }

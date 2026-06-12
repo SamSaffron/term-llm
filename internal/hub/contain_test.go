@@ -49,6 +49,46 @@ func TestContainResolverDiscoversWorkspaces(t *testing.T) {
 	}
 }
 
+func TestContainResolverDelegationWorkdir(t *testing.T) {
+	r := &ContainResolver{
+		Host: "127.0.0.1",
+		List: func() ([]contain.ListEntry, error) {
+			return []contain.ListEntry{{Name: "jarvis"}, {Name: "nohint"}}, nil
+		},
+		Read: func(name string) (contain.WebConfig, error) {
+			return contain.WebConfig{Port: "8222", Token: "tkn-1", BasePath: "/chat"}, nil
+		},
+		Workspace: func(name string) string {
+			if name == "jarvis" {
+				return "/workspace"
+			}
+			return ""
+		},
+	}
+	nodes, err := r.Nodes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 2 {
+		t.Fatalf("len(nodes) = %d, want 2", len(nodes))
+	}
+	byID := map[string]Node{}
+	for _, n := range nodes {
+		byID[n.ID] = n
+	}
+	withHint := byID["jarvis"]
+	if withHint.Delegation == nil || withHint.Delegation.Workdir != "/workspace" {
+		t.Errorf("workspace hint should set the delegation workdir: %+v", withHint.Delegation)
+	}
+	if err := withHint.AcceptsDelegationFrom("anyone"); err != nil {
+		t.Errorf("contain node with workdir should accept delegations: %v", err)
+	}
+	noHint := byID["nohint"]
+	if noHint.Delegation != nil {
+		t.Errorf("workspace without a hint must stay non-accepting: %+v", noHint.Delegation)
+	}
+}
+
 func TestContainResolverListError(t *testing.T) {
 	r := &ContainResolver{
 		Host: "127.0.0.1",

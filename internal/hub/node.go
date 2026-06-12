@@ -33,6 +33,10 @@ type Node struct {
 	Name string `json:"name" yaml:"name"`
 	// Source is the resolver that produced this node (config/contain/local).
 	Source string `json:"source" yaml:"-"`
+	// Connection is how the Hub reaches this node. Empty/"direct" means the Hub
+	// dials URL. "reverse" means the node must dial the Hub and keep a websocket
+	// open; useful for private nodes behind NAT/firewalls.
+	Connection string `json:"connection,omitempty" yaml:"connection"`
 	// URL is the backend origin, e.g. "http://127.0.0.1:8081". Never sent to
 	// hub clients together with Token.
 	URL string `json:"url" yaml:"url"`
@@ -44,12 +48,20 @@ type Node struct {
 	// hub proxy and MUST never be marshalled into any client-facing response;
 	// API handlers convert Node to a public view first.
 	Token string `json:"token,omitempty" yaml:"token"`
+	// Delegation is the node's cross-node delegation policy. Nil or disabled
+	// means the node cannot originate or accept delegations.
+	Delegation *DelegationPolicy `json:"delegation,omitempty" yaml:"delegation"`
 }
 
 // BaseURL returns the node's backend origin joined with its base path,
-// without a trailing slash (e.g. "http://127.0.0.1:8081/chat").
+// without a trailing slash (e.g. "http://127.0.0.1:8081/chat"). Reverse nodes
+// may not have a URL; callers that dial directly must check UsesReverseConnection first.
 func (n Node) BaseURL() string {
 	return strings.TrimRight(n.URL, "/") + n.BasePath
+}
+
+func (n Node) UsesReverseConnection() bool {
+	return strings.EqualFold(strings.TrimSpace(n.Connection), "reverse")
 }
 
 var nodeIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
@@ -119,11 +131,24 @@ func ParseNodeURL(raw string) (origin, basePath string, err error) {
 // URL), the ID falls back to a slug of the name, and the name falls back to
 // the ID.
 func (n *Node) Normalize() error {
-	origin, urlBase, err := ParseNodeURL(n.URL)
-	if err != nil {
-		return err
+	n.Connection = strings.ToLower(strings.TrimSpace(n.Connection))
+	if n.Connection == "" {
+		n.Connection = "direct"
 	}
-	n.URL = origin
+	if n.Connection != "direct" && n.Connection != "reverse" {
+		return fmt.Errorf("invalid node connection %q: use direct or reverse", n.Connection)
+	}
+	var urlBase string
+	if n.URL != "" {
+		origin, parsedBase, err := ParseNodeURL(n.URL)
+		if err != nil {
+			return err
+		}
+		n.URL = origin
+		urlBase = parsedBase
+	} else if !n.UsesReverseConnection() {
+		return fmt.Errorf("node url must not be empty")
+	}
 	if n.BasePath == "" {
 		n.BasePath = urlBase
 	}

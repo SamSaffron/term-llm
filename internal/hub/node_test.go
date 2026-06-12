@@ -5,7 +5,34 @@ import (
 	"testing"
 )
 
-func TestParseNodeURL(t *testing.T) {
+func TestNodeNormalizeReverseConnection(t *testing.T) {
+	n := Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat"}
+	if err := n.Normalize(); err != nil {
+		t.Fatalf("Normalize reverse: %v", err)
+	}
+	if !n.UsesReverseConnection() {
+		t.Fatalf("UsesReverseConnection = false")
+	}
+	if n.URL != "" || n.BasePath != "/chat" || n.Connection != "reverse" {
+		t.Fatalf("normalized node = %+v", n)
+	}
+}
+
+func TestNodeNormalizeReverseRequiresBasePath(t *testing.T) {
+	n := Node{ID: "artist", Connection: "reverse"}
+	if err := n.Normalize(); err == nil {
+		t.Fatalf("reverse node without base path should fail")
+	}
+}
+
+func TestNodeNormalizeInvalidConnection(t *testing.T) {
+	n := Node{ID: "artist", Connection: "sideways", URL: "http://127.0.0.1:8080/chat"}
+	if err := n.Normalize(); err == nil {
+		t.Fatalf("invalid connection should fail")
+	}
+}
+
+func TestNodeBaseURL(t *testing.T) {
 	cases := []struct {
 		raw      string
 		origin   string
