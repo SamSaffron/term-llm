@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 	"syscall"
+
+	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 // execReload replaces the current process with a fresh instance of the same
@@ -45,5 +47,9 @@ func execReload(sessionID string) error {
 		newArgs = append(newArgs, "--resume="+sessionID)
 	}
 
-	return syscall.Exec(exe, newArgs, os.Environ())
+	// Re-exec'ing the SAME binary: hand back any env-provided hub delegation
+	// token that startup scrubbed from the environment, or the next
+	// generation would silently lose hub access. This env goes only to
+	// ourselves, never to tool subprocesses.
+	return syscall.Exec(exe, newArgs, append(os.Environ(), tools.HubDelegationEnviron()...))
 }

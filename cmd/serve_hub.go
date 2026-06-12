@@ -45,14 +45,23 @@ type hubServer struct {
 	store  *hub.Store
 	prober *hub.Prober
 	proxy  *httputil.ReverseProxy
+	// delegations is the cross-node delegation ledger; nil disables the
+	// /api/delegations endpoints.
+	delegations *hub.DelegationStore
+	// nodeAPIClient performs hub -> node jobs API calls for delegations. It
+	// shares the proxy's direct-dial transport (no env proxy: requests carry
+	// node tokens) but, unlike streaming proxy traffic, gets a whole-request
+	// timeout.
+	nodeAPIClient *http.Client
 }
 
 func newHubServer(registry *hub.Registry, store *hub.Store) *hubServer {
 	transport := newHubTransport()
 	s := &hubServer{
-		registry: registry,
-		store:    store,
-		prober:   hub.NewProber(transport),
+		registry:      registry,
+		store:         store,
+		prober:        hub.NewProber(transport),
+		nodeAPIClient: &http.Client{Transport: transport, Timeout: 30 * time.Second},
 	}
 	s.proxy = &httputil.ReverseProxy{
 		Rewrite:        hubRewriteProxyRequest,
@@ -134,6 +143,8 @@ func (s *hubServer) handler() http.Handler {
 	mux.HandleFunc("/api/nodes/test", s.handleTestNode)
 	mux.HandleFunc("/api/nodes/", s.handleNodeItem)
 	mux.HandleFunc("/api/nodes", s.handleNodes)
+	mux.HandleFunc("/api/delegations/", s.handleDelegationItem)
+	mux.HandleFunc("/api/delegations", s.handleDelegations)
 	mux.HandleFunc("/node/", s.handleNodeProxy)
 	mux.HandleFunc("/", s.handleIndex)
 	return mux
@@ -641,6 +652,10 @@ Routes:
   DELETE /api/nodes/<id>  remove a local-store node
   POST /api/nodes/test    probe a node spec without persisting it
   ANY  /node/<id>/...     reverse proxy to that node's serve
+  POST /api/delegations   create a cross-node delegation (node auth)
+  GET  /api/delegations   list delegations
+  GET  /api/delegations/<id>         delegation status
+  POST /api/delegations/<id>/cancel  cancel (originating node only)
 
 Config file (--config), YAML or JSON:
   nodes:
@@ -702,6 +717,8 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 	}
 
 	s := newHubServer(hub.NewRegistry(resolvers...), store)
+	// The delegation ledger lives beside the node store (same private dir).
+	s.delegations = hub.NewDelegationStore(filepath.Join(filepath.Dir(nodesFile), "delegations.json"))
 	addr := net.JoinHostPort(serveHubHost, strconv.Itoa(serveHubPort))
 	srv := &http.Server{Addr: addr, Handler: s.handler()}
 

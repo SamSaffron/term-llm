@@ -231,6 +231,17 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Hub-joined nodes: hand the hub context to in-process tools and jobs-v2
+	// runs so hub_delegate/hub_check_delegation work without extra setup. The
+	// node authenticates to the hub with its own serve token. Explicit
+	// TERM_LLM_HUB_* env (captured and scrubbed at startup) wins — only gaps
+	// are filled — and the token stays in process memory, never in the
+	// process environment, browser-facing config, or injected HTML, so tool
+	// subprocesses (shell/custom/widget/MCP) cannot inherit it.
+	if hubURL, hubNodeID := strings.TrimSpace(serveHubURL), strings.TrimSpace(serveHubNodeID); hubURL != "" && hubNodeID != "" && token != "" {
+		tools.ConfigureHubDelegation(hubURL, hubNodeID, token)
+	}
+
 	ctx, stop := signal.NotifyContext()
 	defer stop()
 

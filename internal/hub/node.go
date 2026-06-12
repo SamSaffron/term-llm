@@ -44,6 +44,9 @@ type Node struct {
 	// hub proxy and MUST never be marshalled into any client-facing response;
 	// API handlers convert Node to a public view first.
 	Token string `json:"token,omitempty" yaml:"token"`
+	// Delegation is the node's cross-node delegation policy. Nil or disabled
+	// means the node cannot originate or accept delegations.
+	Delegation *DelegationPolicy `json:"delegation,omitempty" yaml:"delegation"`
 }
 
 // BaseURL returns the node's backend origin joined with its base path,

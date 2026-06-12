@@ -61,6 +61,11 @@ DELETE /api/nodes/<id>   remove a local-store node
 POST   /api/nodes/test   probe a node spec without persisting it
 ANY    /node/<id>/...    reverse proxy to the node's serve
 GET    /healthz          hub health
+
+POST   /api/delegations              create a cross-node delegation (node auth)
+GET    /api/delegations              list delegations (node auth or same-origin)
+GET    /api/delegations/<id>         delegation status, refreshed from the target
+POST   /api/delegations/<id>/cancel  cancel a delegation (originating node only)
 ```
 
 Probes hit each node's `{base}/healthz` with the node token. Serves report their agent name, version, and capabilities (`web`, `api`, `jobs`, `widgets`, `voice`) on `healthz` only to callers presenting the valid bearer token (or when the serve runs with auth disabled).
@@ -71,4 +76,78 @@ The hub is **experimental and loopback-only**: it has no authentication of its o
 
 Routing is path-based (`/node/<id>/...`) in v1; the proxy target is resolved per request, so host-based routing can be layered on later without changing the proxy plumbing. Because path routing puts hub UI and proxied node UI on the same browser origin, Hub v1 treats registered nodes/widgets as trusted. The node web UI namespaces localStorage by hub node id to avoid ordinary state bleed, but untrusted remote nodes/widgets still need the future host-based/widget-grant isolation work before they should be opened through a shared hub origin.
 
-Future cross-node communication will be mediated by Hub-authenticated delegation APIs (reserved under `/api/delegations`) rather than by nodes calling each other directly. That follow-up should use distinct node→Hub credentials, default-deny delegation policy, and the existing jobs-v2 execution path on target nodes. Node self-registration, scheduling, hub-level user auth, cross-node delegation tools, and mTLS between hub and nodes are deliberately out of scope for v1.
+Node self-registration, scheduling, hub-level user auth, and mTLS between hub and nodes are deliberately out of scope for v1.
+
+## Cross-node delegation
+
+An agent on one node can delegate work to another node **through the hub** — nodes never talk to each other directly and never see each other's tokens. The flow:
+
+1. The agent on node A calls the `hub_delegate` tool (`target_node`, `prompt`, optional `agent_name`/`model`/`cwd`/`timeout_seconds`).
+2. The tool calls `POST /api/delegations` on the hub, authenticating **as node A** with A's own serve token plus an `X-Term-LLM-Node-ID` header. The hub verifies the token against the node's stored token (constant-time); nodes the hub holds no token for can never authenticate.
+3. The hub checks policy, then uses **node B's token** (which only the hub holds) to create and trigger a manual jobs-v2 LLM job on B. The job's instructions carry a provenance preamble (delegation id, origin, depth, chain) and the job is labelled `hub_delegation` for traceability.
+4. `hub_delegate` returns a `delegation_id` immediately (or blocks with `wait: true`). `hub_check_delegation` polls the hub, which polls the target run and returns the final response.
+5. The Hub dashboard also polls active delegation runs from the list view. If the target returns Markdown links or image links (for example `![result](/chat/files/result.svg)`), the dashboard surfaces the artifact inline while preserving the raw response text.
+
+### Delegation policy
+
+Policy lives on the node entry in the hub config. **Default off**: a node with no `delegation.enabled: true` can neither originate nor accept delegated work. Once enabled, `to` and `accept_from` can narrow which nodes may talk; accepting still requires a `workdir`.
+
+```yaml
+nodes:
+  - name: jarvis
+    url: http://127.0.0.1:8081/chat
+    token: <web bearer token>
+    delegation:
+      enabled: true       # REQUIRED: delegation is otherwise completely off
+      to: ["*"]           # node ids this node may delegate to (default: all once enabled)
+      accept_from: ["*"]  # node ids accepted from (default: all once enabled + workdir set)
+      workdir: /work      # REQUIRED to accept; delegated jobs start here
+      max_in_flight: 4    # concurrent delegations targeting this node (default 4)
+      allowed_agents: []  # agents origins may request (default: developer only)
+      allowed_models: []  # model overrides origins may request (default: none)
+```
+
+`allowed_agents` defaults to the default delegation agent only (`developer`); `"*"` allows any plain agent name, but path-like names (containing `/`, `\`, `..`, or leading `.`/`~`) must be listed exactly — agent names can resolve to files on the target node. `allowed_models` defaults to refusing every model override (the target's own default model is used); list models or `"*"` to open it up.
+
+Contain workspaces opt in automatically when their compose file declares an `x-term-llm.workspace` path — the sandbox accepts delegations with that path as the workdir (default agent only, no model overrides). Static/manual nodes must set `delegation.enabled: true` explicitly. An explicit `cwd` on a delegation must resolve inside the target's workdir.
+
+Loop and load protection: chains are capped at depth 3, a target already in the chain is refused, and in-flight caps apply hub-wide, per origin, and per target. Chaining is anchored in hub-written provenance: a delegated job carries a `hub_delegation` label, the jobs-v2 runner exposes it to the tools, and `hub_delegate` attaches `parent_delegation_id` from it automatically — the model cannot reset the depth count by omitting the parent. A manually supplied `parent_delegation_id` is still verified against the ledger (the parent must target the delegating node). The remaining gap: an agent running *outside* a delegated jobs-v2 run (e.g. an interactive session) starts a fresh chain at depth 1, which is the intended meaning of a new root delegation.
+
+### What the workdir does — and does not — protect
+
+The delegation workdir scopes where the delegated job **starts** (its `cwd`) and where its file tools are rooted. It is **not an OS sandbox**: a delegated agent whose target-node agent definition enables `shell` (the default `developer` agent does) executes commands with the target serve process's normal privileges and can touch anything that user can. Treat `accept_from` + `allowed_agents` as the real policy boundary, and use [contain workspaces]({{< relref "agent-containers" >}}) when you want delegated work inside an actual container sandbox.
+
+### Artifact-returning delegations
+
+A useful pattern is an origin agent delegating a concrete artifact to a specialist node, then showing the returned link to the user:
+
+```text
+User asks Jarvis: "ask Artist to draw a hub-and-spoke robot"
+Jarvis calls hub_delegate(target_node="artist", prompt="create /home/agent/Files/hub-artist-demo.svg and return ![Hub artist demo](/chat/files/hub-artist-demo.svg)")
+Hub runs a jobs-v2 job on Artist
+Artist writes the file and returns the Markdown image link
+Jarvis calls hub_check_delegation and displays the returned image/link
+Hub dashboard shows the delegation status plus the inline artifact preview
+```
+
+The link is the target deployment's normal served file URL. Hub does not copy artifacts between nodes in v1. For user-facing replies, have the origin agent display the returned Markdown link directly when that path is reachable from the user's web surface, or have the target return an absolute `https://...` URL.
+
+### Node-side setup
+
+A node started with `serve web jobs --hub-url ... --hub-node-id ...` configures the delegation tools in-process from its own serve token. The target node must run with `jobs` enabled so the hub can create and trigger the delegated jobs-v2 run. Standalone processes can export `TERM_LLM_HUB_URL`, `TERM_LLM_HUB_NODE_ID`, and `TERM_LLM_HUB_TOKEN` instead; the token is captured at startup and **scrubbed from the process environment**, so subprocesses spawned by tools (shell commands, custom tools, widgets, MCP servers) never inherit it. It is also never injected into browser-facing HTML or config.
+
+`hub_delegate` and `hub_check_delegation` are not enabled in any builtin agent. Enable them explicitly on the agents that should delegate:
+
+```yaml
+tools:
+  enabled: [read_file, shell, hub_delegate, hub_check_delegation]
+```
+
+### Delegation security posture
+
+- **No token movement**: node A authenticates with its own credential; the hub alone holds B's token; delegation records and API responses never contain tokens, and target-node error bodies are redacted before they travel back.
+- **Default off**: nodes cannot originate or accept delegations unless `delegation.enabled: true` is set; accepting also requires a workdir. `to`, `accept_from`, `allowed_agents`, and `allowed_models` narrow the enabled surface.
+- **Bounded execution**: delegated work runs through the standard jobs-v2 path on the target with a clamped timeout, starting inside the target's declared workdir (a cwd/file-tool scope, not an OS sandbox — see above).
+- **Scoped visibility**: a node may read only delegations it originates or targets; the full list is reserved for the hub operator's same-origin dashboard.
+- The delegation ledger (`<data-dir>/hub/delegations.json`, mode 0600) holds prompts/response excerpts for audit; terminal records are pruned after 7 days.
+- All hub→node and node→hub clients dial directly (no `HTTP_PROXY`), since those requests carry bearer tokens.

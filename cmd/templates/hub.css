@@ -202,3 +202,76 @@ body {
 
 .modal-status { min-height: 1.2rem; font-size: 0.85rem; color: var(--muted); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
+
+.delegations-panel {
+  margin-top: 1.25rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 1rem 1.1rem;
+}
+
+.delegations-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.85rem;
+}
+.delegations-head h2 { margin: 0; font-size: 1.02rem; }
+.delegations-head p { margin: 0.15rem 0 0; color: var(--muted); font-size: 0.86rem; }
+.delegations-count { color: var(--muted); font-size: 0.84rem; white-space: nowrap; }
+
+.delegations-list { display: grid; gap: 0.65rem; }
+.delegation-row {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  padding: 0.75rem 0.85rem;
+  display: grid;
+  gap: 0.45rem;
+}
+.delegation-route { display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap; }
+.route-arrow { color: var(--muted); }
+.delegation-status {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.08rem 0.5rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.status-succeeded { color: var(--ok); border-color: var(--ok); }
+.status-failed, .status-error, .status-timed_out, .status-cancelled { color: var(--down); border-color: var(--down); }
+.status-running, .status-queued { color: var(--warn); border-color: var(--warn); }
+.delegation-meta { color: var(--muted); font-size: 0.78rem; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.delegation-prompt {
+  color: var(--muted);
+  font-size: 0.84rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.delegation-response {
+  display: grid;
+  gap: 0.45rem;
+  font-size: 0.86rem;
+}
+.delegation-response-text {
+  margin: 0;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: inherit;
+}
+.delegation-artifact-img {
+  max-width: min(100%, 420px);
+  max-height: 240px;
+  object-fit: contain;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #fff;
+}
+.delegation-artifact-link { color: var(--accent); font-weight: 700; }
+.delegations-empty { color: var(--muted); font-size: 0.88rem; }
