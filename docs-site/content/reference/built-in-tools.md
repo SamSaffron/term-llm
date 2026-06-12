@@ -22,7 +22,7 @@ term-llm exec --tools read_file,write_file,edit_file,shell,grep,glob,view_image
 | `read_file` | Read file contents (with line ranges) |
 | `write_file` | Create/overwrite files |
 | `edit_file` | Edit existing files |
-| `shell` | Execute shell commands |
+| `shell` | Execute shell commands; accepts optional `affected_paths` hints so file-change tracking can snapshot generated/modified files reliably |
 | `grep` | Search file contents (uses ripgrep) |
 | `glob` | Find files by glob pattern |
 | `view_image` | Display images in terminal (icat) |
@@ -32,6 +32,20 @@ term-llm exec --tools read_file,write_file,edit_file,shell,grep,glob,view_image
 | `spawn_agent` | Spawn child agents for parallel tasks |
 | `run_agent_script` | Run a script bundled in the agent directory |
 | `activate_skill` | Activate a skill by name |
+
+### File-change tracking hints
+
+When [file change tracking](/reference/sessions/#file-change-history/) is enabled, direct write tools (`write_file`, `edit_file`, `unified_diff`) are recorded automatically. The `shell` tool can also record files it creates, modifies, or deletes. For shell commands that generate files, pass `affected_paths` so term-llm can snapshot exactly what matters before and after the command:
+
+```json
+{
+  "command": "npm run build",
+  "working_dir": "/path/to/project",
+  "affected_paths": ["dist/**", "package-lock.json"]
+}
+```
+
+Hints may be files or glob patterns, relative to `working_dir` or absolute. Without hints, shell tracking falls back to `git status` in repositories and files already touched by the session, which is useful but intentionally best-effort.
 
 ### Custom Tools
 

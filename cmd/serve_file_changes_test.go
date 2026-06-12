@@ -71,6 +71,9 @@ func TestSessionFileChangesEndpoints(t *testing.T) {
 		if entry["adds"].(float64) != 3 {
 			t.Fatalf("adds = %v, want 3 (cumulative baseline → current)", entry["adds"])
 		}
+		if entry["seq"].(float64) != 2 {
+			t.Fatalf("seq = %v, want latest path sequence 2", entry["seq"])
+		}
 	})
 
 	t.Run("diff", func(t *testing.T) {

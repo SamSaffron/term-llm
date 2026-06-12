@@ -54,6 +54,35 @@ term-llm chat --no-session
 term-llm ask --session-db /tmp/term-llm.db ...
 ```
 
+## File change history
+
+When `file_tracking.enabled` is true, term-llm records file changes made by agent tools and exposes them in the web UI as a per-session **Changes** panel. The panel opens automatically on wide screens when the active session changes files; on narrower screens it stays behind the file-changes button so it does not crush the chat column.
+
+```yaml
+file_tracking:
+  enabled: true
+```
+
+Tracked changes include:
+
+- `write_file`, `edit_file`, and `unified_diff` writes
+- files created, modified, or deleted by `shell` commands when they are detectable
+- cumulative before/after diffs for the session, not just the last tool call
+
+Shell tracking is best with explicit `affected_paths` hints:
+
+```json
+{
+  "command": "go generate ./...",
+  "working_dir": "/path/to/repo",
+  "affected_paths": ["**/*.go", "go.mod", "go.sum"]
+}
+```
+
+Without hints, term-llm falls back to `git status` in repositories and to paths already touched in the session. That catches common repo work, but broad scripts writing outside git need hints if you want reliable history.
+
+The file-change store keeps actual file contents, subject to the configured byte caps. Large files, binary files, and over-budget sessions are still listed as metadata-only changes, but their full diffs are not retained. See [Configuration](/reference/configuration/#file-change-tracking-config/) for retention and privacy details.
+
 ## Context compaction
 
 Long sessions do not keep sending the entire transcript forever. When `auto_compact` is enabled (the default) and term-llm knows the model's input limit, the engine tracks an estimated prompt size and compacts before the active context would grow too large.
