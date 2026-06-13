@@ -743,13 +743,56 @@ const app = loadAppCore();
   pass(name);
 })();
 
-function makeSwipePanel(width = 320) {
+function dispatchSwipeListeners(listeners, target, event) {
+  const evt = {
+    target,
+    button: 0,
+    isPrimary: true,
+    preventDefault() { this.defaultPrevented = true; },
+    stopPropagation() { this.propagationStopped = true; },
+    stopImmediatePropagation() {
+      this.immediatePropagationStopped = true;
+      this.propagationStopped = true;
+    },
+    ...event,
+  };
+  const list = (listeners.get(evt.type) || []).slice().sort((a, b) => Number(b.capture) - Number(a.capture));
+  for (const entry of list) {
+    entry.listener(evt);
+    if (evt.immediatePropagationStopped) break;
+  }
+  return evt;
+}
+
+function makeSwipeEventTarget(defaultTarget = null) {
+  const listeners = new Map();
+  const target = {
+    addEventListener(type, listener, options) {
+      const list = listeners.get(type) || [];
+      list.push({ listener, capture: options === true || Boolean(options?.capture) });
+      listeners.set(type, list);
+    },
+    removeEventListener(type, listener) {
+      const list = listeners.get(type) || [];
+      const idx = list.findIndex((entry) => entry.listener === listener);
+      if (idx !== -1) list.splice(idx, 1);
+      listeners.set(type, list);
+    },
+    dispatchEvent(event) {
+      return dispatchSwipeListeners(listeners, defaultTarget || target, event);
+    },
+  };
+  return target;
+}
+
+function makeSwipePanel(width = 320, { ownerDocument = null } = {}) {
   const listeners = new Map();
   const styleValues = new Map();
   const classes = new Set();
   const syncClassName = (panel) => { panel.className = Array.from(classes).join(' '); };
   const panel = {
     className: '',
+    ownerDocument,
     offsetWidth: width,
     style: {
       setProperty(name, value) { styleValues.set(String(name), String(value)); },
@@ -767,21 +810,19 @@ function makeSwipePanel(width = 320) {
         return enabled;
       },
     },
-    addEventListener(type, listener) {
+    addEventListener(type, listener, options) {
       const list = listeners.get(type) || [];
-      list.push(listener);
+      list.push({ listener, capture: options === true || Boolean(options?.capture) });
       listeners.set(type, list);
     },
     removeEventListener(type, listener) {
       const list = listeners.get(type) || [];
-      const idx = list.indexOf(listener);
+      const idx = list.findIndex((entry) => entry.listener === listener);
       if (idx !== -1) list.splice(idx, 1);
       listeners.set(type, list);
     },
     dispatchEvent(event) {
-      const evt = { target: panel, button: 0, isPrimary: true, preventDefault() { this.defaultPrevented = true; }, ...event };
-      (listeners.get(evt.type) || []).slice().forEach((listener) => listener(evt));
-      return evt;
+      return dispatchSwipeListeners(listeners, panel, event);
     },
     getBoundingClientRect() { return { width, height: 600, top: 0, left: 0, right: width, bottom: 600 }; },
     setPointerCapture() {},
@@ -855,6 +896,67 @@ function makeSwipePanel(width = 320) {
   }
   if (panel.classList.contains('panel-swipe-dragging')) {
     fail(name, 'vertical scroll should not enter drag mode');
+    return;
+  }
+  pass(name);
+})();
+
+(function testPanelSwipeTracksDocumentMovesAfterPointerDown() {
+  const name = 'initPanelSwipeToClose tracks document moves for right drawer drags';
+  const testApp = loadAppCore();
+  const ownerDocument = makeSwipeEventTarget();
+  const panel = makeSwipePanel(320, { ownerDocument });
+  let closed = 0;
+  testApp.initPanelSwipeToClose({
+    panel,
+    side: 'right',
+    isEnabled: () => true,
+    isOpen: () => true,
+    onClose: () => { closed += 1; },
+  });
+
+  panel.dispatchEvent({ type: 'pointerdown', pointerId: 7, clientX: 100, clientY: 20 });
+  const move = ownerDocument.dispatchEvent({ type: 'pointermove', pointerId: 7, clientX: 195, clientY: 24 });
+  if (!move.defaultPrevented || !move.immediatePropagationStopped) {
+    fail(name, 'document-level drag move should win the event before child click handlers');
+    return;
+  }
+  if (panel.style.getPropertyValue('--panel-swipe-offset-x') !== '95px') {
+    fail(name, `expected right drawer to track document move at 95px, got ${panel.style.getPropertyValue('--panel-swipe-offset-x')}`);
+    return;
+  }
+  ownerDocument.dispatchEvent({ type: 'pointerup', pointerId: 7, clientX: 205, clientY: 24 });
+  if (closed !== 1) {
+    fail(name, `expected document-tracked right drawer drag to close once, got ${closed}`);
+    return;
+  }
+  pass(name);
+})();
+
+(function testPanelSwipeSuppressesSyntheticClickAfterDrag() {
+  const name = 'initPanelSwipeToClose suppresses the click generated after a drag';
+  const testApp = loadAppCore();
+  const panel = makeSwipePanel(320);
+  let clicked = false;
+  testApp.initPanelSwipeToClose({
+    panel,
+    side: 'right',
+    isEnabled: () => true,
+    isOpen: () => true,
+  });
+  panel.addEventListener('click', () => { clicked = true; });
+
+  panel.dispatchEvent({ type: 'pointerdown', pointerId: 1, clientX: 100, clientY: 20 });
+  panel.dispatchEvent({ type: 'pointermove', pointerId: 1, clientX: 160, clientY: 22 });
+  panel.dispatchEvent({ type: 'pointerup', pointerId: 1, clientX: 160, clientY: 22 });
+  const click = panel.dispatchEvent({ type: 'click', pointerId: 1 });
+
+  if (!click.defaultPrevented || !click.immediatePropagationStopped) {
+    fail(name, 'post-drag click should be captured and prevented');
+    return;
+  }
+  if (clicked) {
+    fail(name, 'post-drag click should not reach row/button handlers');
     return;
   }
   pass(name);
