@@ -193,12 +193,17 @@
 
     <main class="main">
       <header class="main-header">
-        <div class="header-left">
-          <button class="icon-btn mobile-menu" id="mobileMenuBtn" aria-label="Open sidebar" title="Open sidebar">☰</button>
-          <h1 class="header-title" id="activeSessionTitle">Chat</h1>
-          <span class="connection-state bad" id="connectionState" hidden aria-live="polite"></span>
+        <div class="header-title-row">
+          <div class="header-left">
+            <button class="icon-btn mobile-menu" id="mobileMenuBtn" aria-label="Open sidebar" title="Open sidebar">☰</button>
+            <h1 class="header-title" id="activeSessionTitle">Chat</h1>
+            <span class="connection-state bad" id="connectionState" hidden aria-live="polite"></span>
+          </div>
+          <button class="icon-btn diff-toggle" id="diffToggleBtn" type="button" hidden aria-label="Toggle file changes" title="File changes">
+            <span class="diff-toggle-badge" id="diffToggleBadge"></span>
+          </button>
         </div>
-        <div class="header-right">
+        <div class="header-controls-row">
           <div class="header-stats" id="headerStats">
             <div class="model-picker" id="modelPicker">
               <div class="model-chip" data-chip="provider" id="chipProvider">
@@ -237,9 +242,6 @@
             <span class="chip-sep header-tokens-sep" id="headerTokensSep" hidden>·</span>
             <span class="header-tokens" id="headerTokens"></span>
           </div>
-          <button class="icon-btn diff-toggle" id="diffToggleBtn" type="button" hidden aria-label="Toggle file changes" title="File changes">
-            <span class="diff-toggle-badge" id="diffToggleBadge"></span>
-          </button>
         </div>
       </header>
 
