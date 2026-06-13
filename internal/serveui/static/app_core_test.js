@@ -251,6 +251,26 @@ const app = loadAppCore();
   pass(name);
 })();
 
+(function testStripsConflictingEffortSuffixWhenBaseModelExists() {
+  const name = 'splitHeaderModelEffort strips stale suffix when separate effort wins';
+  const result = app.splitHeaderModelEffort('gpt-5.5-medium', 'xhigh', ['gpt-5.5']);
+  if (result.model !== 'gpt-5.5' || result.effort !== 'xhigh') {
+    fail(name, `got ${JSON.stringify(result)}`, 'want {"model":"gpt-5.5","effort":"xhigh"}');
+    return;
+  }
+  pass(name);
+})();
+
+(function testKeepsKnownModelWhoseNameEndsWithEffortWord() {
+  const name = 'splitHeaderModelEffort keeps known natural suffix model';
+  const result = app.splitHeaderModelEffort('gpt-5.1-codex-max', 'xhigh', ['gpt-5.1-codex-max']);
+  if (result.model !== 'gpt-5.1-codex-max' || result.effort !== 'xhigh') {
+    fail(name, `got ${JSON.stringify(result)}`, 'want natural model untouched');
+    return;
+  }
+  pass(name);
+})();
+
 (function testCompactHeaderModelLabelRemovesProviderNoise() {
   const name = 'compactHeaderModelLabel removes provider noise';
   const cases = [

@@ -1036,26 +1036,53 @@ const escapeHTML = (str) => {
 
 const KNOWN_EFFORT_SUFFIXES = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
-const splitHeaderModelEffort = (model, effort) => {
+const modelEffortSuffix = (model) => {
+  const rawModel = String(model || '').trim();
+  if (!rawModel) return null;
+  const lower = rawModel.toLowerCase();
+  for (const candidate of KNOWN_EFFORT_SUFFIXES) {
+    for (const sep of ['-', '_', ' ']) {
+      const suffix = `${sep}${candidate}`;
+      if (lower.endsWith(suffix)) {
+        return {
+          model: rawModel.slice(0, rawModel.length - suffix.length),
+          effort: candidate,
+        };
+      }
+    }
+  }
+  return null;
+};
+
+const splitHeaderModelEffort = (model, effort, models = []) => {
   const rawModel = String(model || '').trim();
   const rawEffort = String(effort || '').trim();
   if (!rawModel) {
     return { model: rawModel, effort: rawEffort };
   }
 
+  const suffix = modelEffortSuffix(rawModel);
+  if (!suffix) {
+    return { model: rawModel, effort: rawEffort };
+  }
+
+  const knownModels = Array.isArray(models)
+    ? new Set(models.map((m) => String(m || '').trim()).filter(Boolean))
+    : new Set();
+  const hasModelList = knownModels.size > 0;
+  const modelKnown = knownModels.has(rawModel);
+  const baseKnown = knownModels.has(suffix.model);
+  const effortMatches = rawEffort && suffix.effort.toLowerCase() === rawEffort.toLowerCase();
+
   if (rawEffort) {
-    const suffix = new RegExp(`[-_ ]${rawEffort.toLowerCase()}$`, 'i');
-    if (suffix.test(rawModel)) {
-      return { model: rawModel.replace(suffix, ''), effort: rawEffort };
+    if (baseKnown || (effortMatches && (!hasModelList || !modelKnown))) {
+      return { model: suffix.model, effort: rawEffort };
     }
     return { model: rawModel, effort: rawEffort };
   }
 
-  for (const candidate of KNOWN_EFFORT_SUFFIXES) {
-    const suffix = new RegExp(`[-_ ]${candidate}$`, 'i');
-    if (suffix.test(rawModel)) {
-      return { model: rawModel.replace(suffix, ''), effort: candidate };
-    }
+  if (!hasModelList || baseKnown || !modelKnown) {
+    return { model: suffix.model, effort: suffix.effort };
   }
 
   return { model: rawModel, effort: rawEffort };
@@ -1146,14 +1173,15 @@ const updateSessionUsageDisplay = (session) => {
   const model = locked ? (session?.activeModel || state.selectedModel || '') : (state.selectedModel || '');
   const provider = locked ? (session?.provider || state.selectedProvider || '') : (state.selectedProvider || '');
   const effort = locked ? (session?.activeEffort || state.selectedEffort || '') : (state.selectedEffort || '');
-  const headerModelEffort = splitHeaderModelEffort(model, effort);
+  const headerModelEffort = splitHeaderModelEffort(model, effort, state.models);
 
   const defaultProvider = getDefaultProviderName();
   const resolvedProvider = provider || defaultProvider;
   const providerIsDefault = !provider && Boolean(defaultProvider);
   const defaultModel = getDefaultModelForProvider(resolvedProvider);
-  const resolvedModel = headerModelEffort.model || defaultModel;
-  const modelIsDefault = !headerModelEffort.model && Boolean(defaultModel);
+  const defaultModelEffort = splitHeaderModelEffort(defaultModel, headerModelEffort.effort, state.models);
+  const resolvedModel = headerModelEffort.model || defaultModelEffort.model;
+  const modelIsDefault = !headerModelEffort.model && Boolean(defaultModelEffort.model);
 
   setChipLabel(
     elements.chipProviderLabel,
@@ -1170,13 +1198,15 @@ const updateSessionUsageDisplay = (session) => {
     { muted: modelIsDefault || !resolvedModel, hidden: false, title: resolvedModel || '' }
   );
 
-  // Effort has no server-side default, so when unset we show a muted "auto"
-  // placeholder. Keeping the chip visible ensures users can always tap to pick.
-  const effortHasValue = Boolean(headerModelEffort.effort);
+  // Effort is normally independent of the model. If a legacy/configured default
+  // model still carries a suffix, surface that as the effective effort;
+  // otherwise show muted "auto" so users can always tap to pick.
+  const resolvedEffort = headerModelEffort.effort || (!headerModelEffort.model ? defaultModelEffort.effort : '');
+  const effortHasValue = Boolean(resolvedEffort);
   setChipLabel(
     elements.chipEffortLabel,
     elements.chipSepModelEffort,
-    effortHasValue ? headerModelEffort.effort : 'auto',
+    effortHasValue ? resolvedEffort : 'auto',
     { muted: !effortHasValue, hidden: false }
   );
 

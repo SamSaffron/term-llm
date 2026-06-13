@@ -45,10 +45,11 @@ func responseRequestedRuntime(req responsesCreateRequest, defaultProvider string
 	if provider == "" {
 		provider = strings.TrimSpace(defaultProvider)
 	}
+	model, effort := normalizeProviderModelEffort(provider, req.Model, req.ReasoningEffort)
 	return responseRuntimeSettings{
 		provider: provider,
-		model:    strings.TrimSpace(req.Model),
-		effort:   normalizeReasoningEffort(req.ReasoningEffort),
+		model:    model,
+		effort:   effort,
 	}
 }
 
@@ -69,8 +70,7 @@ func (s *serveServer) persistedRuntimeSettings(ctx context.Context, sessionID st
 		provider = strings.TrimSpace(defaultProvider)
 	}
 	settings.provider = provider
-	settings.model = strings.TrimSpace(sess.Model)
-	settings.effort = normalizeReasoningEffort(sess.ReasoningEffort)
+	settings.model, settings.effort = normalizeProviderModelEffort(provider, sess.Model, sess.ReasoningEffort)
 	return settings
 }
 

@@ -106,6 +106,7 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 	if persistedModel == "" {
 		persistedModel = runtimeDefaultModel
 	}
+	persistedModel, persistedEffort = normalizeProviderModelEffort(persistedProvider, persistedModel, persistedEffort)
 
 	if persistedProvider != "" {
 		resp["provider"] = persistedProvider

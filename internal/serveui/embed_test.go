@@ -577,8 +577,8 @@ func TestStaticAssetsSupportEffortDropdown(t *testing.T) {
 	streamSrc := string(streamJS)
 	for _, want := range []string{
 		"elements.effortSelect.value = state.selectedEffort",
-		"localStorage.setItem(STORAGE_KEYS.selectedEffort, newEffort)",
-		"localStorage.removeItem(STORAGE_KEYS.selectedEffort)",
+		"const newEffort = elements.effortSelect ? elements.effortSelect.value : ''",
+		"persist(STORAGE_KEYS.selectedEffort, state.selectedEffort || '')",
 		"const currentEffort = session.activeEffort || ''",
 		"body.reasoning_effort = activeEffort",
 		"body.model_swap = { mode: 'auto', fallback: 'handover' }",

@@ -5,7 +5,7 @@ const app = window.TermLLMApp;
 const {
   UI_PREFIX, STORAGE_KEYS, state, elements, generateId, sanitizeInterruptState, INTERJECTION_PHASE, sanitizeMessage, syncTokenCookie, truncate, saveSessions,
   getActiveSession, createSession, scrollToBottom, setConnectionState, sessionSlug, updateURL,
-  persistAndRefreshShell, updateSessionUsageDisplay, compactHeaderModelLabel, refreshRelativeTimes, requestHeaders: _unusedRequestHeaders, updateAssistantNode, updateUserNode,
+  persistAndRefreshShell, updateSessionUsageDisplay, splitHeaderModelEffort, compactHeaderModelLabel, refreshRelativeTimes, requestHeaders: _unusedRequestHeaders, updateAssistantNode, updateUserNode,
   updateToolNode, updateToolGroupNode, createMessageNode, createToolGroupNode, updateModelSwapNode, renderSidebar, renderMessages, maybeNotifyResponseComplete,
   enqueueAssistantStreamUpdate, finalizeAssistantStreamRender, syncTurnActionPanels,
   subscribeToPush, shouldAutoSubscribeToPush, applyTextDirection, shouldSuppressPromptAutoFocus, setSessionOptimisticBusy, setSessionServerActiveRun,
@@ -1958,24 +1958,13 @@ const connectToken = async () => {
   // selects are temporarily stale (for example while startup/model refresh work
   // is still settling). Persist the current state instead.
   const persistedProvider = state.selectedProvider;
-  if (persistedProvider) {
-    localStorage.setItem(STORAGE_KEYS.selectedProvider, persistedProvider);
-  } else {
-    localStorage.removeItem(STORAGE_KEYS.selectedProvider);
-  }
   const persistedModel = state.selectedModel;
-  if (persistedModel) {
-    localStorage.setItem(STORAGE_KEYS.selectedModel, persistedModel);
-  } else {
-    localStorage.removeItem(STORAGE_KEYS.selectedModel);
-  }
   const newEffort = elements.effortSelect ? elements.effortSelect.value : '';
+  state.selectedProvider = persistedProvider;
+  state.selectedModel = persistedModel;
   state.selectedEffort = newEffort;
-  if (newEffort) {
-    localStorage.setItem(STORAGE_KEYS.selectedEffort, newEffort);
-  } else {
-    localStorage.removeItem(STORAGE_KEYS.selectedEffort);
-  }
+  canonicalizeSelectedModelEffort();
+  persistRuntimeSelection();
   const showHiddenChanged = nextShowHiddenSessions !== state.showHiddenSessions;
   state.showHiddenSessions = nextShowHiddenSessions;
   localStorage.setItem(STORAGE_KEYS.showHiddenSessions, state.showHiddenSessions ? '1' : '0');
@@ -2143,24 +2132,42 @@ const applyProviderChange = async (provider) => {
   app.updateHeader();
 };
 
+const persistRuntimeSelection = () => {
+  const persist = (key, value) => {
+    if (value) {
+      localStorage.setItem(key, value);
+    } else {
+      localStorage.removeItem(key);
+    }
+  };
+  persist(STORAGE_KEYS.selectedProvider, state.selectedProvider || '');
+  persist(STORAGE_KEYS.selectedModel, state.selectedModel || '');
+  persist(STORAGE_KEYS.selectedEffort, state.selectedEffort || '');
+};
+
+const canonicalizeSelectedModelEffort = () => {
+  const split = splitHeaderModelEffort(state.selectedModel, state.selectedEffort, state.models);
+  if (split.model === (state.selectedModel || '') && split.effort === (state.selectedEffort || '')) {
+    return false;
+  }
+  state.selectedModel = split.model;
+  state.selectedEffort = split.effort;
+  persistRuntimeSelection();
+  return true;
+};
+
 const applyModelChange = (model) => {
   state.selectedModel = model;
-  if (model) {
-    localStorage.setItem(STORAGE_KEYS.selectedModel, model);
-  } else {
-    localStorage.removeItem(STORAGE_KEYS.selectedModel);
-  }
+  canonicalizeSelectedModelEffort();
+  persistRuntimeSelection();
   syncSettingsSelectValues();
   app.updateHeader();
 };
 
 const applyEffortChange = (effort) => {
   state.selectedEffort = effort;
-  if (effort) {
-    localStorage.setItem(STORAGE_KEYS.selectedEffort, effort);
-  } else {
-    localStorage.removeItem(STORAGE_KEYS.selectedEffort);
-  }
+  canonicalizeSelectedModelEffort();
+  persistRuntimeSelection();
   syncSettingsSelectValues();
   app.updateHeader();
 };
@@ -2669,6 +2676,7 @@ const populateModelSelectOptions = (sel, models, previous) => {
 };
 
 const renderModelOptions = () => {
+  canonicalizeSelectedModelEffort();
   const previous = state.selectedModel;
   populateModelSelectOptions(elements.modelSelect, state.models, previous);
   populateModelSelectOptions(elements.chipModelSelect, state.models, previous);
@@ -3635,6 +3643,7 @@ const sendMessage = async (options = {}) => {
       const normalized = String(value || '').trim();
       return normalized.toLowerCase() === 'default' ? '' : normalized;
     };
+    canonicalizeSelectedModelEffort();
     const currentProvider = session.provider || '';
     const currentModel = session.activeModel || '';
     const currentEffort = session.activeEffort || '';
@@ -3895,6 +3904,7 @@ Object.assign(app, {
   handleAuthFailure,
   connectToken,
   normalizeSelectedProvider,
+  canonicalizeSelectedModelEffort,
   renderProviderOptions,
   renderModelOptions,
   autoGrowPrompt,

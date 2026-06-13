@@ -1958,7 +1958,7 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 	// buries the most-used models behind less-used variants.
 	defaultModel := ""
 	if pc, ok := s.cfgRef.Providers[effectiveName]; ok {
-		defaultModel = pc.Model
+		defaultModel, _ = normalizeProviderModelEffort(effectiveName, pc.Model, "")
 	}
 	ids = llm.SortModelIDsByPopularity(effectiveName, defaultModel, ids)
 
@@ -2314,6 +2314,7 @@ func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID
 		modelName = strings.TrimSpace(rt.defaultModel)
 	}
 	effort := strings.TrimSpace(reasoningEffort)
+	modelName, effort = normalizeProviderModelEffort(providerKey, modelName, effort)
 
 	sess, err := s.store.Get(ctx, sessionID)
 	if err != nil {

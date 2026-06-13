@@ -5,6 +5,7 @@ const app = window.TermLLMApp;
 const {
   UI_PREFIX, STORAGE_KEYS, state, elements, generateId, truncate, asTimestamp, loadSessions, saveSessions, getActiveSession, createSession, ensureActiveSession,
   sessionIdFromURL, sessionSlug, findSessionBySlug, updateURL, scrollToBottom, setConnectionState, setStartupStatus, hideStartupSplash, persistAndRefreshShell, refreshRelativeTimes,
+  splitHeaderModelEffort,
   openAuthModal, closeAuthModal, handleAuthFailure, closeAskUserModal, openAskUserModal, setActiveResponseTracking,
   clearActiveResponseTracking, setStreaming, resumeActiveResponse, renderSidebar, renderMessages, renderProviderOptions, renderModelOptions, normalizeSelectedProvider,
   autoGrowPrompt, updateVoiceUI, toggleVoiceRecording, fetchProviders, fetchModels, addErrorMessage, sendMessage, openSidebar, closeSidebar, closeSidebarIfMobile,
@@ -224,8 +225,11 @@ const switchToDraftSession = async (options = {}) => {
 const syncSelectedRuntimeFromSession = (session) => {
   if (!session) return false;
   const provider = String(session.provider || '').trim();
-  const model = String(session.activeModel || '').trim();
-  const effort = String(session.activeEffort || '').trim();
+  let model = String(session.activeModel || '').trim();
+  let effort = String(session.activeEffort || '').trim();
+  const split = splitHeaderModelEffort(model, effort, state.models);
+  model = split.model;
+  effort = split.effort;
   if (!provider && !model && !Object.prototype.hasOwnProperty.call(session, 'activeEffort')) {
     return false;
   }
@@ -1310,12 +1314,13 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
     session.provider = runtimeState.provider;
     sessionChanged = true;
   }
-  if (runtimeState.model && runtimeState.model !== session.activeModel) {
-    session.activeModel = runtimeState.model;
+  const runtimeSplit = splitHeaderModelEffort(runtimeState.model, runtimeState.reasoning_effort, state.models);
+  if (runtimeSplit.model && runtimeSplit.model !== session.activeModel) {
+    session.activeModel = runtimeSplit.model;
     sessionChanged = true;
   }
-  if (runtimeState.reasoning_effort !== undefined) {
-    const effort = String(runtimeState.reasoning_effort || '');
+  if (runtimeState.reasoning_effort !== undefined || runtimeSplit.effort) {
+    const effort = String(runtimeSplit.effort || '');
     if (effort !== (session.activeEffort || '')) {
       session.activeEffort = effort;
       sessionChanged = true;

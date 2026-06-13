@@ -258,6 +258,26 @@ function testSplitHeaderModelEffortDetectsKnownEffortSuffix() {
   pass(name);
 }
 
+function testRenderModelOptionsCanonicalizesStaleEffortSuffix() {
+  const name = 'renderModelOptions canonicalizes stale suffixed selected model';
+  const { app, elementMap } = loadCoreAndStream();
+  app.state.models = ['gpt-5.5', 'gpt-5.4'];
+  app.state.selectedModel = 'gpt-5.5-medium';
+  app.state.selectedEffort = 'xhigh';
+  app.renderModelOptions();
+
+  if (app.state.selectedModel !== 'gpt-5.5' || app.state.selectedEffort !== 'xhigh') {
+    fail(name, `state = ${JSON.stringify({ model: app.state.selectedModel, effort: app.state.selectedEffort })}`);
+    return;
+  }
+  const values = elementMap.chipModelSelect.children.map((child) => child.value);
+  if (values.includes('gpt-5.5-medium') || !values.includes('gpt-5.5')) {
+    fail(name, `unexpected model options ${JSON.stringify(values)}`);
+    return;
+  }
+  pass(name);
+}
+
 function testUpdateSessionUsageDisplayUsesProviderDefaultModel() {
   const name = 'updateSessionUsageDisplay shows provider default_model muted when no model selected';
   const { app, elementMap } = loadCore();
@@ -287,6 +307,30 @@ function testUpdateSessionUsageDisplayUsesProviderDefaultModel() {
   }
   if (!modelLabel.classList.contains('stats-muted')) {
     fail(name, 'model label should be muted when showing default');
+    return;
+  }
+  pass(name);
+}
+
+function testUpdateSessionUsageDisplaySplitsSuffixedProviderDefaultModel() {
+  const name = 'updateSessionUsageDisplay splits suffixed provider default_model';
+  const { app, elementMap } = loadCore();
+  app.state.providers = [
+    { name: 'chatgpt', is_default: true, default_model: 'gpt-5.5-medium', models: ['gpt-5.5'] },
+  ];
+  app.state.models = ['gpt-5.5'];
+  app.state.selectedProvider = '';
+  app.state.selectedModel = '';
+  app.state.selectedEffort = 'xhigh';
+
+  app.updateSessionUsageDisplay(null);
+
+  if (elementMap.chipModelLabel.textContent !== 'gpt-5.5') {
+    fail(name, `expected model label gpt-5.5 got ${JSON.stringify(elementMap.chipModelLabel.textContent)}`);
+    return;
+  }
+  if (elementMap.chipEffortLabel.textContent !== 'xhigh') {
+    fail(name, `expected effort xhigh got ${JSON.stringify(elementMap.chipEffortLabel.textContent)}`);
     return;
   }
   pass(name);
@@ -802,7 +846,9 @@ function testMobilePopoverUsesVisualViewportSafeBounds() {
 }
 async function main() {
   testSplitHeaderModelEffortDetectsKnownEffortSuffix();
+  testRenderModelOptionsCanonicalizesStaleEffortSuffix();
   testUpdateSessionUsageDisplayUsesProviderDefaultModel();
+  testUpdateSessionUsageDisplaySplitsSuffixedProviderDefaultModel();
   testUpdateSessionUsageDisplayFallsBackToFirstModelWithoutDefault();
   testChipLockAllowsIdleSessionAndLocksBusyState();
   testUpdateSessionUsageDisplayUsesSelectedRuntimeForIdleSession();

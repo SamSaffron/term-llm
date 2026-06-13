@@ -19,6 +19,27 @@ import (
 
 const onePixelPNGDataURL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4//8/AwAI/AL+KDvV3wAAAABJRU5ErkJggg=="
 
+func TestNormalizeProviderModelEffort_ExplicitEffortWinsOverSuffix(t *testing.T) {
+	model, effort := normalizeProviderModelEffort("chatgpt", "gpt-5.5-medium", "xhigh")
+	if model != "gpt-5.5" || effort != "xhigh" {
+		t.Fatalf("normalizeProviderModelEffort = (%q, %q), want gpt-5.5/xhigh", model, effort)
+	}
+}
+
+func TestNormalizeProviderModelEffort_PromotesSuffixWhenEffortUnset(t *testing.T) {
+	model, effort := normalizeProviderModelEffort("chatgpt", "gpt-5.5-medium", "")
+	if model != "gpt-5.5" || effort != "medium" {
+		t.Fatalf("normalizeProviderModelEffort = (%q, %q), want gpt-5.5/medium", model, effort)
+	}
+}
+
+func TestNormalizeProviderModelEffort_PreservesNaturalMaxModelName(t *testing.T) {
+	model, effort := normalizeProviderModelEffort("chatgpt", "gpt-5.1-codex-max", "xhigh")
+	if model != "gpt-5.1-codex-max" || effort != "xhigh" {
+		t.Fatalf("normalizeProviderModelEffort = (%q, %q), want gpt-5.1-codex-max/xhigh", model, effort)
+	}
+}
+
 func TestSetSessionNumberHeader(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	setSessionNumberHeader(recorder, &serveRuntime{sessionMeta: &session.Session{Number: 42}})

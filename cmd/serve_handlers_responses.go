@@ -135,6 +135,8 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		defaultProvider = strings.TrimSpace(s.cfgRef.DefaultProvider)
 	}
 	requestedRuntime := responseRequestedRuntime(req, defaultProvider)
+	req.Model = requestedRuntime.model
+	req.ReasoningEffort = requestedRuntime.effort
 	persistedRuntime := requestedRuntime
 	if !freshConversation {
 		persistedRuntime = s.persistedRuntimeSettings(ctx, sessionID, defaultProvider)
@@ -242,7 +244,12 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 			return
 		}
 		if freshConversation {
-			s.syncPersistedSessionRuntime(ctx, sessionID, runtime, strings.TrimSpace(req.Model), normalizeReasoningEffort(req.ReasoningEffort))
+			providerForNormalization := reqProvider
+			if providerForNormalization == "" {
+				providerForNormalization = runtimeProviderKey(runtime)
+			}
+			req.Model, req.ReasoningEffort = normalizeProviderModelEffort(providerForNormalization, req.Model, req.ReasoningEffort)
+			s.syncPersistedSessionRuntime(ctx, sessionID, runtime, req.Model, req.ReasoningEffort)
 		}
 
 		// Enforce chaining from the latest in-memory response only for ephemeral

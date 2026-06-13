@@ -368,6 +368,7 @@ function createHarness(options = {}) {
         options.onUpdateSessionUsageDisplay(session, state.streaming);
       }
     },
+    splitHeaderModelEffort(model, effort) { return { model: String(model || '').trim(), effort: String(effort || '').trim() }; },
     refreshRelativeTimes() {},
     updateAssistantNode() {},
     updateUserNode(message) { if (typeof options.onUpdateUserNode === 'function') options.onUpdateUserNode(message); },

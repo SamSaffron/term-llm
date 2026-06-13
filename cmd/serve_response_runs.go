@@ -1615,11 +1615,11 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		"model":   model,
 		"status":  "in_progress",
 	}
+	if effort := strings.TrimSpace(llmReq.ReasoningEffort); effort != "" {
+		createdResponse["reasoning_effort"] = effort
+	}
 	if options.modelSwap != nil && options.modelSwap.plan.enabled {
 		createdResponse["provider"] = options.modelSwap.plan.requestedProvider
-		if effort := strings.TrimSpace(options.modelSwap.plan.requestedEffort); effort != "" {
-			createdResponse["reasoning_effort"] = effort
-		}
 	}
 	if err := run.appendEvent("response.created", map[string]any{
 		"response": createdResponse,
@@ -1736,16 +1736,20 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			s.registerResponseID(runtime, respID, sessionID)
 		}
 		s.registerResponseID(runtime, completedID, sessionID)
+		completeResponse := map[string]any{
+			"id":            completedID,
+			"object":        "response",
+			"created":       created,
+			"model":         model,
+			"status":        "completed",
+			"usage":         usagePayload(result.Usage),
+			"session_usage": usagePayload(result.SessionUsage),
+		}
+		if effort := strings.TrimSpace(llmReq.ReasoningEffort); effort != "" {
+			completeResponse["reasoning_effort"] = effort
+		}
 		if err := run.complete(map[string]any{
-			"response": map[string]any{
-				"id":            completedID,
-				"object":        "response",
-				"created":       created,
-				"model":         model,
-				"status":        "completed",
-				"usage":         usagePayload(result.Usage),
-				"session_usage": usagePayload(result.SessionUsage),
-			},
+			"response": completeResponse,
 		}, result.Usage, result.SessionUsage); err != nil {
 			log.Printf("response run %s failed to append completion event: %v", respID, err)
 		}

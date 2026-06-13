@@ -123,6 +123,37 @@ func normalizeReasoningEffort(value string) string {
 	return v
 }
 
+// normalizeProviderModelEffort canonicalizes the web/API split between model
+// identity and reasoning effort. Older URLs, localStorage values, and CLI-style
+// model names may encode effort as a model suffix (for example
+// "gpt-5.5-medium"). The web UI has a separate effort selector, so the server
+// must not echo a suffixed model and a separate reasoning_effort at the same
+// time. Provider-aware parsing avoids false positives such as
+// "gpt-5.1-codex-max", where "max" is part of the model name for GPT-5
+// providers rather than a supported effort level.
+//
+// Precedence: an explicit reasoning_effort wins over a suffix. If no explicit
+// effort is present, a supported suffix is promoted into reasoning_effort.
+func normalizeProviderModelEffort(provider, model, effort string) (string, string) {
+	model = strings.TrimSpace(model)
+	effort = normalizeReasoningEffort(effort)
+	if model == "" {
+		return "", effort
+	}
+
+	base, suffixEffort := llm.BaseModelAndEffortForProvider(provider, model)
+	if base == "" {
+		return model, effort
+	}
+	if suffixEffort == "" {
+		return base, effort
+	}
+	if effort == "" {
+		effort = suffixEffort
+	}
+	return base, effort
+}
+
 func parseRequestedTools(raw []json.RawMessage) (bool, map[string]bool, []llm.ToolSpec) {
 	search := false
 	toolNames := map[string]bool{}

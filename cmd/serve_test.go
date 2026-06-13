@@ -5879,6 +5879,50 @@ func TestHandleSessionState_FallsBackToDBWhenRuntimeNotLoaded(t *testing.T) {
 	}
 }
 
+func TestHandleSessionState_NormalizesSuffixedModelWithExplicitEffort(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer store.Close()
+
+	sess := &session.Session{
+		ID:              "sess-normalize-effort",
+		ProviderKey:     "chatgpt",
+		Model:           "gpt-5.5-medium",
+		ReasoningEffort: "xhigh",
+		Mode:            session.ModeChat,
+		Origin:          session.OriginWeb,
+	}
+	if err := store.Create(context.Background(), sess); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	mgr := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
+		return &serveRuntime{}, nil
+	})
+	defer mgr.Close()
+
+	srv := &serveServer{sessionMgr: mgr, store: store}
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/sess-normalize-effort/state", nil)
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `"model":"gpt-5.5"`) {
+		t.Errorf("expected canonical model in state, got %s", body)
+	}
+	if !strings.Contains(body, `"reasoning_effort":"xhigh"`) {
+		t.Errorf("expected explicit reasoning_effort to win, got %s", body)
+	}
+	if strings.Contains(body, "gpt-5.5-medium") {
+		t.Errorf("state leaked suffixed model despite separate effort: %s", body)
+	}
+}
+
 func TestHandleSessionState_DoesNotBlockWhileRunHoldsRuntimeMutex(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
@@ -8709,6 +8753,51 @@ func TestResponsesHandler_ReasoningEffortFlowsToProvider(t *testing.T) {
 	}
 	if got := capturedProvider.Requests[0].ReasoningEffort; got != "high" {
 		t.Fatalf("ReasoningEffort = %q, want %q", got, "high")
+	}
+}
+
+func TestResponsesHandler_NormalizesSuffixedModelAndExplicitEffort(t *testing.T) {
+	var capturedProvider *llm.MockProvider
+	factory := func(ctx context.Context) (*serveRuntime, error) {
+		provider := llm.NewMockProvider("mock").AddTextResponse("ok")
+		capturedProvider = provider
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			providerKey:  "chatgpt",
+			engine:       engine,
+			defaultModel: "gpt-5.5",
+		}
+		rt.Touch()
+		return rt, nil
+	}
+	mgr := newServeSessionManager(time.Minute, 100, factory)
+	defer mgr.Close()
+	srv := &serveServer{
+		sessionMgr: mgr,
+		cfgRef: &config.Config{
+			DefaultProvider: "chatgpt",
+		},
+	}
+
+	body := `{"provider":"chatgpt","model":"gpt-5.5-medium","reasoning_effort":"xhigh","input":"hello"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleResponses(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if capturedProvider == nil || len(capturedProvider.Requests) != 1 {
+		t.Fatalf("expected one provider request, got provider=%v", capturedProvider)
+	}
+	captured := capturedProvider.Requests[0]
+	if captured.Model != "gpt-5.5" || captured.ReasoningEffort != "xhigh" {
+		t.Fatalf("captured runtime = model %q effort %q, want gpt-5.5/xhigh", captured.Model, captured.ReasoningEffort)
+	}
+	if strings.Contains(rr.Body.String(), "gpt-5.5-medium") {
+		t.Fatalf("response leaked suffixed model: %s", rr.Body.String())
 	}
 }
 
