@@ -271,19 +271,24 @@ async function run(name, fn) {
     assertEqual(rows[6].newNo, 21, 'second hunk new start');
   });
 
-  await run('handleFileChangeEvent reveals sidebar and tracks files', () => {
+  await run('handleFileChangeEvent keeps sidebar closed and tracks files until explicit toggle', () => {
     const { app, elements } = createHarness();
     app.handleFileChangeEvent({ id: 's1' }, { path: '/work/a.go', kind: 'create', adds: 3, dels: 0, seq: 1 });
 
-    assert(!elements.diffSidebar.hidden, 'sidebar revealed on first change');
-    assert(elements.appShell.classList.contains('diff-open'), 'grid opens third column');
+    assert(elements.diffSidebar.hidden, 'sidebar stays closed on first change');
+    assert(!elements.appShell.classList.contains('diff-open'), 'grid does not open third column');
     assert(!elements.diffToggleBtn.hidden, 'toggle button visible');
-    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-row').length, 1, 'one file row rendered');
     assertEqual(elementText(elements.diffToggleBadge), '+3', 'badge shows diff stat');
+
+    app.toggleDiffSidebar();
+    assert(!elements.diffSidebar.hidden, 'explicit toggle reveals sidebar');
+    assert(elements.appShell.classList.contains('diff-open'), 'explicit toggle opens third column');
+    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-row').length, 1, 'one file row rendered after toggle');
   });
 
   await run('stale seq replays are idempotent', () => {
     const { app, elements } = createHarness();
+    app.toggleDiffSidebar();
     app.handleFileChangeEvent({ id: 's1' }, { path: '/a', kind: 'modify', adds: 5, dels: 2, seq: 7 });
     app.handleFileChangeEvent({ id: 's1' }, { path: '/a', kind: 'modify', adds: 1, dels: 1, seq: 3 });
 
@@ -301,6 +306,7 @@ async function run(name, fn) {
 
   await run('burst of events coalesces fetches', async () => {
     const { app, fetchCalls, flushTimers } = createHarness();
+    app.toggleDiffSidebar();
     for (let i = 1; i <= 10; i += 1) {
       app.handleFileChangeEvent({ id: 's1' }, { path: '/hot.go', kind: 'modify', adds: i, dels: 0, seq: i });
     }
@@ -316,8 +322,9 @@ async function run(name, fn) {
     assertEqual(fetchCalls.filter((u) => u.includes('/diff?')).length, 2, 'refresh converges once up to date');
   });
 
-  await run('live changes auto-expand files inline (accordion)', async () => {
+  await run('live changes auto-expand files inline (accordion) after explicit open', async () => {
     const { app, elements, flushTimers } = createHarness();
+    app.toggleDiffSidebar();
     app.handleFileChangeEvent({ id: 's1' }, { path: '/a', kind: 'modify', adds: 1, dels: 0, seq: 1 });
     app.handleFileChangeEvent({ id: 's1' }, { path: '/b', kind: 'create', adds: 1, dels: 0, seq: 2 });
     await flushTimers();
@@ -330,6 +337,7 @@ async function run(name, fn) {
 
   await run('explicit collapse sticks while the agent keeps editing', async () => {
     const { app, elements, flushTimers } = createHarness();
+    app.toggleDiffSidebar();
     app.handleFileChangeEvent({ id: 's1' }, { path: '/a', kind: 'modify', adds: 1, dels: 0, seq: 1 });
     await flushTimers();
 
@@ -355,6 +363,7 @@ async function run(name, fn) {
           : { file_changes: [] })
       })
     });
+    app.toggleDiffSidebar();
     app.handleFileChangeEvent({ id: 's1' }, { path: '/big.txt', kind: 'create', adds: 450, dels: 0, seq: 1 });
     await flushTimers();
     await flushTimers();
@@ -371,6 +380,7 @@ async function run(name, fn) {
 
   await run('event bursts coalesce accordion re-renders', async () => {
     const { app, elements, flushTimers } = createHarness();
+    app.toggleDiffSidebar();
     let renders = 0;
     const original = elements.diffFileList.replaceChildren.bind(elements.diffFileList);
     elements.diffFileList.replaceChildren = (...nodes) => {
@@ -402,6 +412,7 @@ async function run(name, fn) {
           : { file_changes: [] })
       })
     });
+    app.toggleDiffSidebar();
     app.handleFileChangeEvent({ id: 's1' }, { path: '/a.go', kind: 'modify', adds: 1, dels: 0, seq: 1 });
     await flushTimers();
     await flushTimers();
@@ -421,10 +432,12 @@ async function run(name, fn) {
     await flushTimers();
     assertEqual(fetchCalls.filter((u) => u.includes('/diff?')).length, 0, 'no diff fetches while hidden');
 
-    // Another session is unaffected by s1's dismissal.
+    // Another session starts closed too; changes only make its toggle available.
     state.activeSessionId = 's2';
     app.handleFileChangeEvent({ id: 's2' }, { path: '/b', kind: 'create', adds: 1, dels: 0, seq: 1 });
-    assert(!elements.diffSidebar.hidden, 'other session still shows its sidebar');
+    assert(elements.diffSidebar.hidden, 'other session also stays closed until explicitly opened');
+    app.toggleDiffSidebar();
+    assert(!elements.diffSidebar.hidden, 'other session opens after its own explicit toggle');
 
     // Switching back to the dismissed session keeps it dismissed.
     state.activeSessionId = 's1';
@@ -483,7 +496,7 @@ async function run(name, fn) {
     assert(!elements.diffSidebar.classList.contains('open'), 'second toggle closes the drawer');
   });
 
-  await run('drawer to wide viewport reopens diff as a grid column', async () => {
+  await run('drawer to wide viewport keeps diff closed without explicit open', async () => {
     const { app, elements, setDrawer, flushTimers } = createHarness({ drawer: true });
     app.handleFileChangeEvent({ id: 's1' }, { path: '/work/a.go', kind: 'create', adds: 3, dels: 0, seq: 1 });
     await flushTimers();
@@ -492,13 +505,15 @@ async function run(name, fn) {
     assert(!elements.appShell.classList.contains('diff-open'), 'narrow mode does not add a grid column');
 
     setDrawer(false);
-    assert(!elements.diffSidebar.hidden, 'wide mode reveals the panel');
+    assert(elements.diffSidebar.hidden, 'wide mode stays closed without an explicit open');
     assert(!elements.diffSidebar.classList.contains('open'), 'drawer-open class is cleared in wide mode');
-    assert(elements.appShell.classList.contains('diff-open'), 'wide mode adds the grid diff column');
+    assert(!elements.appShell.classList.contains('diff-open'), 'wide mode does not add the grid diff column');
+    assert(!elements.diffToggleBtn.hidden, 'toggle remains available');
   });
 
   await run('wide to drawer viewport closes column but keeps toggle available', () => {
     const { app, elements, setDrawer } = createHarness();
+    app.toggleDiffSidebar();
     app.handleFileChangeEvent({ id: 's1' }, { path: '/work/a.go', kind: 'create', adds: 3, dels: 0, seq: 1 });
     assert(!elements.diffSidebar.hidden, 'wide panel starts visible');
     assert(elements.appShell.classList.contains('diff-open'), 'wide mode has a diff column');
@@ -561,6 +576,7 @@ async function run(name, fn) {
       })
     });
 
+    app.toggleDiffSidebar();
     app.handleFileChangeEvent({ id: 's1' }, { path: 'hello_world.txt', kind: 'delete', adds: 0, dels: 3, seq: 1 });
     assertEqual(elements.diffFileList.querySelectorAll('.diff-file-row').length, 1, 'one live row rendered');
 
@@ -569,8 +585,8 @@ async function run(name, fn) {
     assertEqual(elementText(elements.diffToggleBadge), '−3', 'badge shows cumulative diff stat');
   });
 
-  await run('fresh page load activates the sidebar for the restored session', async () => {
-    const { elements, flushTimers } = createHarness({
+  await run('fresh page load keeps restored session diff sidebar closed', async () => {
+    const { app, elements, flushTimers } = createHarness({
       fetch: async (url) => ({
         ok: true,
         json: async () => (String(url).includes('/diff?')
@@ -578,12 +594,16 @@ async function run(name, fn) {
           : { file_changes: [{ path: '/work/a.go', kind: 'create', adds: 3, dels: 0, truncated: false }] })
       })
     });
-    // No switchToSession call — the script itself must activate for the
-    // session restored at load (state.activeSessionId = 's1' in the harness).
+    // No switchToSession call — the script itself activates for the restored
+    // session, but page load must not open the diff panel without a click.
     await flushTimers();
-    assert(!elements.diffSidebar.hidden, 'sidebar visible on fresh load when session has changes');
+    assert(elements.diffSidebar.hidden, 'sidebar remains closed on fresh load when session has changes');
     assert(!elements.diffToggleBtn.hidden, 'toggle visible on fresh load');
-    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-row').length, 1, 'file list populated from server');
+    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-row').length, 0, 'file list not populated while hidden');
+
+    app.toggleDiffSidebar();
+    assert(!elements.diffSidebar.hidden, 'explicit toggle opens restored session sidebar');
+    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-row').length, 1, 'file list populated after user opens');
   });
 
   if (failures > 0) {

@@ -38,7 +38,7 @@ const sessionDiffState = (sessionId) => {
       lastActivityAt: 0,
       pendingScrollPath: '',
       listLoaded: false,
-      hidden: false              // user dismissed the sidebar for THIS session
+      hidden: true               // panel starts closed; only an explicit user toggle reveals it
     };
     diffStateBySession.set(sessionId, ds);
   }
@@ -544,7 +544,9 @@ const setDiffSidebarHidden = (hidden) => {
 const toggleDiffSidebar = () => {
   if (isDiffDrawerViewport()) {
     const open = !elements.diffSidebar?.classList.contains('open');
+    const ds = state.activeSessionId ? sessionDiffState(state.activeSessionId) : null;
     if (open) {
+      if (ds) ds.hidden = false;
       elements.diffSidebar?.removeAttribute?.('hidden');
       if (elements.diffSidebar) elements.diffSidebar.hidden = false;
       elements.diffSidebar?.classList.add('open');
@@ -563,7 +565,10 @@ const toggleDiffSidebar = () => {
 const closeDiffDrawer = () => {
   elements.diffSidebar?.classList.remove('open');
   const ds = diffStateBySession.get(state.activeSessionId);
-  if (ds) applyDiffSidebarVisibility(ds);
+  if (ds) {
+    ds.hidden = true;
+    applyDiffSidebarVisibility(ds);
+  }
 };
 
 // ===== Session lifecycle =====
