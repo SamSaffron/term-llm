@@ -329,6 +329,117 @@ const generateUUID = () => {
 };
 const generateId = (prefix) => `${prefix}_${generateUUID()}`;
 
+const PANEL_ANIMATION_FALLBACK_MS = 280;
+
+const setElementHidden = (element, hidden) => {
+  if (!element) return;
+  element.hidden = Boolean(hidden);
+  if (hidden) element.setAttribute?.('hidden', '');
+  else element.removeAttribute?.('hidden');
+};
+
+const nextFrame = (callback) => {
+  const raf = window.requestAnimationFrame || globalThis.requestAnimationFrame;
+  if (typeof raf === 'function') return raf.call(window, callback);
+  callback();
+  return 0;
+};
+
+const clearNextFrame = (id) => {
+  const cancel = window.cancelAnimationFrame || globalThis.cancelAnimationFrame;
+  if (id && typeof cancel === 'function') cancel.call(window, id);
+};
+
+const normalizePanelClassTargets = (panel, targets, fallbackClass) => {
+  const input = Array.isArray(targets) && targets.length > 0
+    ? targets
+    : [{ element: panel, className: fallbackClass }];
+  return input
+    .map((target) => ({
+      element: target?.element || target?.target || target,
+      className: target?.className || fallbackClass
+    }))
+    .filter((target) => target.element && target.className);
+};
+
+// Shared drawer/panel transition helper. Elements that start as `hidden` need a
+// paint at their closed transform/column before the open class is applied;
+// otherwise the browser sees only the final state and the slide-in animation is
+// skipped. Closing waits for the transition before restoring `hidden`.
+const setAnimatedPanelOpen = ({
+  panel,
+  open,
+  openClass = 'open',
+  hiddenWhenClosed = false,
+  classTargets = null,
+  transitionElement = null,
+  onOpened = null,
+  onClosed = null
+} = {}) => {
+  if (!panel) return;
+  const targets = normalizePanelClassTargets(panel, classTargets, openClass);
+  const token = Symbol('panel-animation');
+  panel._termLLMPanelAnimationToken = token;
+  if (panel._termLLMPanelAnimationFrame) {
+    clearNextFrame(panel._termLLMPanelAnimationFrame);
+    panel._termLLMPanelAnimationFrame = 0;
+  }
+  if (panel._termLLMPanelAnimationTimer) {
+    clearTimeout(panel._termLLMPanelAnimationTimer);
+    panel._termLLMPanelAnimationTimer = 0;
+  }
+
+  const toggleClasses = (enabled) => {
+    targets.forEach((target) => target.element.classList?.toggle?.(target.className, enabled));
+  };
+
+  if (open) {
+    if (hiddenWhenClosed) setElementHidden(panel, false);
+    // Force a style read after un-hiding so the closed state becomes the
+    // animation starting point before the next frame applies the open class.
+    try { void panel.offsetWidth; } catch (_) { /* non-browser test doubles */ }
+    const applyOpen = () => {
+      panel._termLLMPanelAnimationFrame = 0;
+      if (panel._termLLMPanelAnimationToken !== token) return;
+      toggleClasses(true);
+      if (typeof onOpened === 'function') onOpened();
+    };
+    panel._termLLMPanelAnimationFrame = nextFrame(applyOpen);
+    return;
+  }
+
+  toggleClasses(false);
+  if (!hiddenWhenClosed) {
+    if (typeof onClosed === 'function') onClosed();
+    return;
+  }
+
+  const finish = () => {
+    if (panel._termLLMPanelAnimationToken !== token) return;
+    panel._termLLMPanelAnimationTimer = 0;
+    setElementHidden(panel, true);
+    if (typeof onClosed === 'function') onClosed();
+  };
+  const node = transitionElement || targets[0]?.element || panel;
+  let done = false;
+  const finishOnce = () => {
+    if (done) return;
+    done = true;
+    node?.removeEventListener?.('transitionend', onTransitionEnd);
+    if (panel._termLLMPanelAnimationTimer) {
+      clearTimeout(panel._termLLMPanelAnimationTimer);
+      panel._termLLMPanelAnimationTimer = 0;
+    }
+    finish();
+  };
+  function onTransitionEnd(event) {
+    if (event?.target && event.target !== node) return;
+    finishOnce();
+  }
+  node?.addEventListener?.('transitionend', onTransitionEnd);
+  panel._termLLMPanelAnimationTimer = setTimeout(finishOnce, PANEL_ANIMATION_FALLBACK_MS);
+};
+
 const INTERRUPT_BADGE_META = {
   evaluating: { className: 'pending', label: 'evaluating…' },
   pending_interject: { className: 'pending', icon: '⏳', label: 'will incorporate' },
@@ -1525,6 +1636,8 @@ Object.assign(app, {
   INTERJECTION_PHASE,
   sanitizeInterruptState,
   syncTokenCookie,
+  setAnimatedPanelOpen,
+  setElementHidden,
   truncate,
   asTimestamp,
   fullDate,
