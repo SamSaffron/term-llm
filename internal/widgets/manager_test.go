@@ -1,6 +1,8 @@
 package widgets
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -10,6 +12,60 @@ import (
 	"testing"
 	"time"
 )
+
+func TestManagerCloseContextPreventsStartAfterShutdownBegins(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process groups are Unix-specific")
+	}
+
+	t.Setenv("TERM_LLM_WIDGET_TEST_CHILD", "1")
+
+	dir := t.TempDir()
+	e := &widgetEntry{
+		manifest: &Manifest{
+			ID:      "test-widget",
+			Title:   "Test Widget",
+			Mount:   "test-widget",
+			Dir:     dir,
+			Command: []string{os.Args[0], "-test.run=TestWidgetChildHTTPServer", "--", "$PORT"},
+		},
+		state: stateStopped,
+	}
+	shutdownCtx, shutdown := context.WithCancel(context.Background())
+	m := &Manager{
+		basePath:    "/chat",
+		entries:     map[string]*widgetEntry{"test-widget": e},
+		shutdownCtx: shutdownCtx,
+		shutdown:    shutdown,
+		stopCh:      make(chan struct{}),
+	}
+
+	e.startMu.Lock()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- m.ensureRunning(e)
+	}()
+
+	m.CloseContext(context.Background())
+	e.startMu.Unlock()
+
+	err := <-errCh
+	if !errors.Is(err, errManagerClosed) {
+		t.Fatalf("expected shutdown error, got %v", err)
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.state != stateStopped {
+		t.Fatalf("expected stopped state, got %v", e.state)
+	}
+	if e.proc != nil {
+		t.Fatal("widget process started after shutdown began")
+	}
+	if e.proxy != nil {
+		t.Fatal("widget proxy initialized after shutdown began")
+	}
+}
 
 func TestWidgetStopProcessReapsChildProcessGroup(t *testing.T) {
 	if runtime.GOOS == "windows" {

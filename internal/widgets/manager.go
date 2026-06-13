@@ -2,6 +2,7 @@ package widgets
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -23,6 +24,8 @@ const (
 	startupTimeout   = 10 * time.Second
 	socketRuntimeDir = "/tmp/term-llm-widgets"
 )
+
+var errManagerClosed = errors.New("widget manager is shutting down")
 
 type processState int
 
@@ -60,9 +63,12 @@ type Manager struct {
 	widgetsDir string
 	basePath   string
 
-	mu       sync.RWMutex
-	entries  map[string]*widgetEntry // mount → entry
-	loadErrs []error
+	mu          sync.RWMutex
+	entries     map[string]*widgetEntry // mount → entry
+	loadErrs    []error
+	closed      bool
+	shutdownCtx context.Context
+	shutdown    context.CancelFunc
 
 	stopOnce sync.Once
 	stopCh   chan struct{}
@@ -70,11 +76,14 @@ type Manager struct {
 
 // NewManager creates a manager, scans widgetsDir, and starts the idle reaper.
 func NewManager(widgetsDir, basePath string) *Manager {
+	shutdownCtx, shutdown := context.WithCancel(context.Background())
 	m := &Manager{
-		widgetsDir: widgetsDir,
-		basePath:   basePath,
-		entries:    make(map[string]*widgetEntry),
-		stopCh:     make(chan struct{}),
+		widgetsDir:  widgetsDir,
+		basePath:    basePath,
+		entries:     make(map[string]*widgetEntry),
+		shutdownCtx: shutdownCtx,
+		shutdown:    shutdown,
+		stopCh:      make(chan struct{}),
 	}
 	m.scan()
 	go m.idleLoop()
@@ -232,9 +241,32 @@ func (m *Manager) Proxy(mount string, w http.ResponseWriter, r *http.Request) {
 	proxy.ServeHTTP(w, r2)
 }
 
+func (m *Manager) isClosed() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.closed
+}
+
+func (m *Manager) shutdownContext() context.Context {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.shutdownCtx == nil {
+		return context.Background()
+	}
+	return m.shutdownCtx
+}
+
 func (m *Manager) ensureRunning(e *widgetEntry) error {
+	if m.isClosed() {
+		return errManagerClosed
+	}
+
 	e.startMu.Lock()
 	defer e.startMu.Unlock()
+
+	if m.isClosed() {
+		return errManagerClosed
+	}
 
 	e.mu.Lock()
 	state := e.state
@@ -247,10 +279,36 @@ func (m *Manager) ensureRunning(e *widgetEntry) error {
 	case stateError:
 		return fmt.Errorf("in error state: %s (use reload to reset)", errMsg)
 	}
-	return e.startProcess(m.basePath)
+	return e.startProcessContext(m.basePath, m.shutdownContext(), m.isClosed)
+}
+
+func shutdownInProgress(ctx context.Context, isClosed func() bool) bool {
+	if ctx != nil && ctx.Err() != nil {
+		return true
+	}
+	return isClosed != nil && isClosed()
+}
+
+func (e *widgetEntry) resetStopped() {
+	e.mu.Lock()
+	e.state = stateStopped
+	e.errMsg = ""
+	e.proc = nil
+	e.procDone = nil
+	e.proxy = nil
+	e.port = 0
+	e.mu.Unlock()
 }
 
 func (e *widgetEntry) startProcess(basePath string) error {
+	return e.startProcessContext(basePath, context.Background(), nil)
+}
+
+func (e *widgetEntry) startProcessContext(basePath string, shutdownCtx context.Context, isClosed func() bool) error {
+	if shutdownInProgress(shutdownCtx, isClosed) {
+		return errManagerClosed
+	}
+
 	mf := e.manifest
 	mode, _ := mf.PlaceholderMode()
 
@@ -312,7 +370,12 @@ func (e *widgetEntry) startProcess(basePath string) error {
 		e.mu.Unlock()
 	}
 
-	cmd := exec.CommandContext(context.Background(), argv[0], argv[1:]...)
+	if shutdownInProgress(shutdownCtx, isClosed) {
+		e.resetStopped()
+		return errManagerClosed
+	}
+
+	cmd := exec.CommandContext(shutdownCtx, argv[0], argv[1:]...)
 	cmd.Dir = mf.Dir
 	cmd.Env = env
 	cmd.Stdout = os.Stderr
@@ -320,6 +383,10 @@ func (e *widgetEntry) startProcess(basePath string) error {
 	procutil.ConfigureCommandProcessGroup(cmd)
 
 	if err := cmd.Start(); err != nil {
+		if shutdownInProgress(shutdownCtx, isClosed) {
+			e.resetStopped()
+			return errManagerClosed
+		}
 		return e.setError(fmt.Errorf("start process: %w", err))
 	}
 
@@ -343,15 +410,27 @@ func (e *widgetEntry) startProcess(basePath string) error {
 		log.Printf("[widget] %s process exited", mf.Mount)
 	}()
 
+	if shutdownInProgress(shutdownCtx, isClosed) {
+		e.stopProcess()
+		return errManagerClosed
+	}
+
 	// Poll / until the widget responds or the timeout expires.
 	client := &http.Client{Transport: transport, Timeout: 500 * time.Millisecond}
 	deadline := time.Now().Add(startupTimeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
+		if shutdownInProgress(shutdownCtx, isClosed) {
+			e.stopProcess()
+			return errManagerClosed
+		}
 		e.mu.Lock()
 		alive := e.proc != nil
 		e.mu.Unlock()
 		if !alive {
+			if shutdownInProgress(shutdownCtx, isClosed) {
+				return errManagerClosed
+			}
 			return e.setError(fmt.Errorf("process exited during startup"))
 		}
 		resp, err := client.Get(targetBase + "/")
@@ -370,12 +449,21 @@ func (e *widgetEntry) startProcess(basePath string) error {
 		if p != nil {
 			killProcessGroup(p, syscall.SIGKILL)
 		}
+		if shutdownInProgress(shutdownCtx, isClosed) {
+			e.resetStopped()
+			return errManagerClosed
+		}
 		return e.setError(fmt.Errorf("did not respond within %s: %v", startupTimeout, lastErr))
 	}
 
 	targetURL, _ := url.Parse(targetBase)
 	proxy := httputil.NewSingleHostReverseProxy(targetURL)
 	proxy.Transport = transport
+
+	if shutdownInProgress(shutdownCtx, isClosed) {
+		e.stopProcess()
+		return errManagerClosed
+	}
 
 	e.mu.Lock()
 	e.state = stateRunning
@@ -468,13 +556,19 @@ func (m *Manager) Close() {
 // parallel so one slow stop does not consume the whole serve shutdown budget.
 func (m *Manager) CloseContext(ctx context.Context) {
 	m.stopOnce.Do(func() {
-		close(m.stopCh)
-		m.mu.RLock()
+		m.mu.Lock()
+		m.closed = true
+		shutdown := m.shutdown
 		entries := make([]*widgetEntry, 0, len(m.entries))
 		for _, e := range m.entries {
 			entries = append(entries, e)
 		}
-		m.mu.RUnlock()
+		m.mu.Unlock()
+
+		if shutdown != nil {
+			shutdown()
+		}
+		close(m.stopCh)
 
 		var wg sync.WaitGroup
 		for _, e := range entries {
