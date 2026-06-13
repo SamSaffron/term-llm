@@ -1445,6 +1445,68 @@
       flex: none;
     }
 
+    .chip-popover-runtime {
+      min-width: 280px;
+      padding: 0.75rem;
+    }
+
+    .runtime-popover-header {
+      margin-bottom: 0.7rem;
+    }
+
+    .runtime-popover-title {
+      font-weight: 750;
+      font-size: 0.95rem;
+      color: var(--text);
+      margin-bottom: 0.15rem;
+    }
+
+    .runtime-popover-hint {
+      color: var(--text-muted);
+      font-size: 0.78rem;
+      line-height: 1.35;
+    }
+
+    .runtime-popover-fields {
+      display: grid;
+      gap: 0.6rem;
+    }
+
+    .runtime-popover-field {
+      display: grid;
+      gap: 0.25rem;
+    }
+
+    .runtime-popover-label {
+      color: var(--text-muted);
+      font-size: 0.72rem;
+      font-weight: 750;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .runtime-popover-select {
+      width: 100%;
+      min-width: 0;
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      background: var(--surface-1, var(--surface));
+      color: var(--text);
+      padding: 0.55rem 0.65rem;
+      font: inherit;
+      font-size: 0.88rem;
+      outline: none;
+    }
+
+    .runtime-popover-select:focus {
+      border-color: var(--border-strong);
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--border-strong) 32%, transparent);
+    }
+
+    .runtime-popover-select:disabled {
+      opacity: 0.65;
+    }
+
     @media (max-width: 540px) {
       .chip-popover-backdrop {
         background: rgba(0, 0, 0, 0.4);
@@ -1458,6 +1520,13 @@
         max-width: none;
         max-height: 60vh;
         font-size: 0.95rem;
+      }
+      .chip-popover-runtime {
+        padding: 0.9rem;
+      }
+      .runtime-popover-select {
+        font-size: 16px;
+        padding: 0.65rem 0.7rem;
       }
       .chip-popover-item {
         padding: 0.7rem 0.75rem;

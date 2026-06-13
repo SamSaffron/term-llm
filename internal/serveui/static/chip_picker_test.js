@@ -681,6 +681,70 @@ function testFilterInputHidesNonMatchingItems() {
   pass(name);
 }
 
+function collectNodes(root, predicate, out = []) {
+  if (!root) return out;
+  if (predicate(root)) out.push(root);
+  for (const child of root.children || []) collectNodes(child, predicate, out);
+  return out;
+}
+
+function testCompressedModelChipOpensRuntimeControls() {
+  const name = 'compressed model chip opens provider/model/effort controls';
+  const { app, elementMap, windowObj } = loadCoreAndStream();
+  app.updateHeader = () => app.updateSessionUsageDisplay(null);
+  app.state.selectedProvider = 'anthropic';
+  app.state.selectedModel = 'claude-sonnet-4.5';
+  app.state.selectedEffort = 'medium';
+
+  elementMap.chipProviderTrigger.closest = () => ({ nodeType: 1 });
+  windowObj.getComputedStyle = () => ({ display: 'none' });
+  elementMap.chipProviderSelect.options = [
+    makeOption('', 'Auto (server default)'),
+    makeOption('chatgpt', 'chatgpt (default)'),
+    makeOption('anthropic', 'anthropic'),
+  ];
+  elementMap.chipModelSelect.options = [
+    makeOption('', 'Auto (server default)'),
+    makeOption('claude-sonnet-4.5', 'claude-sonnet-4.5'),
+    makeOption('claude-opus-4.8', 'claude-opus-4.8'),
+  ];
+  elementMap.chipEffortSelect.options = [
+    makeOption('', 'Auto (server default)'),
+    makeOption('medium', 'medium'),
+    makeOption('high', 'high'),
+  ];
+
+  const triggerListeners = elementMap.chipModelTrigger.listeners?.click || [];
+  if (triggerListeners.length === 0) return fail(name, 'no click listener on model trigger');
+  triggerListeners[0]({ stopPropagation() {}, preventDefault() {} });
+
+  const popover = elementMap.chipPopover;
+  if (popover.hidden || !popover.classList.contains('chip-popover-runtime')) {
+    fail(name, 'expected runtime popover to open from compressed model chip');
+    return;
+  }
+
+  const selects = collectNodes(popover, (node) => node.tagName === 'SELECT');
+  if (selects.length !== 3) {
+    fail(name, `expected 3 runtime selects, got ${selects.length}`);
+    return;
+  }
+  if (selects[1].children[1]?.textContent !== 'sonnet 4.5') {
+    fail(name, `expected compact model option label, got ${JSON.stringify(selects[1].children[1]?.textContent)}`);
+    return;
+  }
+
+  selects[2].value = 'high';
+  const listeners = selects[2].listeners?.change || [];
+  if (listeners.length === 0) return fail(name, 'effort select missing change listener');
+  listeners[0]();
+  if (app.state.selectedEffort !== 'high') {
+    fail(name, `expected effort to update to high, got ${JSON.stringify(app.state.selectedEffort)}`);
+    return;
+  }
+  pass(name);
+}
+
 function testMobilePopoverUsesVisualViewportSafeBounds() {
   const name = 'mobile popover tracks the visual viewport so it stays above the iPhone keyboard';
   const vvListeners = { resize: [], scroll: [] };
@@ -743,6 +807,7 @@ async function main() {
   testPopoverHidesFilterInputBelowThreshold();
   testPopoverShowsFilterInputAboveThreshold();
   testFilterInputHidesNonMatchingItems();
+  testCompressedModelChipOpensRuntimeControls();
   testMobilePopoverUsesVisualViewportSafeBounds();
 
   if (failures > 0) {

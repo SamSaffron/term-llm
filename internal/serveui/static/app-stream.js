@@ -5,7 +5,7 @@ const app = window.TermLLMApp;
 const {
   UI_PREFIX, STORAGE_KEYS, state, elements, generateId, sanitizeInterruptState, INTERJECTION_PHASE, sanitizeMessage, syncTokenCookie, truncate, saveSessions,
   getActiveSession, createSession, scrollToBottom, setConnectionState, sessionSlug, updateURL,
-  persistAndRefreshShell, updateSessionUsageDisplay, refreshRelativeTimes, requestHeaders: _unusedRequestHeaders, updateAssistantNode, updateUserNode,
+  persistAndRefreshShell, updateSessionUsageDisplay, compactHeaderModelLabel, refreshRelativeTimes, requestHeaders: _unusedRequestHeaders, updateAssistantNode, updateUserNode,
   updateToolNode, updateToolGroupNode, createMessageNode, createToolGroupNode, updateModelSwapNode, renderSidebar, renderMessages, maybeNotifyResponseComplete,
   enqueueAssistantStreamUpdate, finalizeAssistantStreamRender, syncTurnActionPanels,
   subscribeToPush, shouldAutoSubscribeToPush, applyTextDirection, shouldSuppressPromptAutoFocus, setSessionOptimisticBusy, setSessionServerActiveRun,
@@ -2204,7 +2204,7 @@ elements.chipEffortSelect?.addEventListener('change', () => {
 // Replaces the native <select> dropdown UI: native pickers are inconsistent
 // across OSes, ugly, and can render off-screen. The underlying <select> is kept
 // for state/sync — popover items dispatch a 'change' event on it on selection.
-const chipPopoverState = { selectEl: null, triggerEl: null, filterInput: null };
+const chipPopoverState = { selectEl: null, triggerEl: null, filterInput: null, mode: '' };
 
 const buildChipOptionLabel = (opt) => {
   const text = opt.textContent || opt.value || '';
@@ -2273,6 +2273,7 @@ const closeChipPopover = () => {
   if (!pop || pop.hidden) return;
   pop.hidden = true;
   pop.innerHTML = '';
+  pop.classList?.remove('chip-popover-runtime');
   if (elements.chipPopoverBackdrop) elements.chipPopoverBackdrop.hidden = true;
   if (chipPopoverState.triggerEl) {
     chipPopoverState.triggerEl.setAttribute('aria-expanded', 'false');
@@ -2280,6 +2281,7 @@ const closeChipPopover = () => {
   chipPopoverState.selectEl = null;
   chipPopoverState.triggerEl = null;
   chipPopoverState.filterInput = null;
+  chipPopoverState.mode = '';
 };
 
 const focusChipPopoverItem = (item) => {
@@ -2360,6 +2362,8 @@ const openChipPopover = (selectEl, triggerEl) => {
     return;
   }
   closeChipPopover();
+  pop.classList?.remove('chip-popover-runtime');
+  chipPopoverState.mode = 'select';
   chipPopoverState.selectEl = selectEl;
   chipPopoverState.triggerEl = triggerEl;
   pop.innerHTML = '';
@@ -2439,6 +2443,110 @@ const openChipPopover = (selectEl, triggerEl) => {
   if (filterInput) filterInput.focus?.();
 };
 
+const isRuntimePickerCompressed = () => {
+  const providerChip = elements.chipProviderTrigger?.closest?.('.model-chip');
+  if (!providerChip || !window.getComputedStyle) return false;
+  return window.getComputedStyle(providerChip).display === 'none';
+};
+
+const copySelectOptions = (from, to, formatOption = null) => {
+  to.innerHTML = '';
+  Array.from(from?.options || []).forEach((opt) => {
+    const clone = document.createElement('option');
+    clone.value = opt.value;
+    clone.textContent = formatOption ? formatOption(opt) : opt.textContent;
+    clone.disabled = opt.disabled;
+    to.appendChild(clone);
+  });
+};
+
+const runtimeField = ({ label, value, sourceSelect, onChange, formatOption = null }) => {
+  const field = document.createElement('label');
+  field.className = 'runtime-popover-field';
+
+  const labelEl = document.createElement('span');
+  labelEl.className = 'runtime-popover-label';
+  labelEl.textContent = label;
+  field.appendChild(labelEl);
+
+  const select = document.createElement('select');
+  select.className = 'runtime-popover-select';
+  copySelectOptions(sourceSelect, select, formatOption);
+  select.value = value || '';
+  select.addEventListener('change', async () => {
+    select.disabled = true;
+    try {
+      await onChange(select.value);
+    } finally {
+      if (chipPopoverState.mode === 'runtime') renderRuntimePopoverContent();
+    }
+  });
+  field.appendChild(select);
+  return field;
+};
+
+const renderRuntimePopoverContent = () => {
+  const pop = elements.chipPopover;
+  if (!pop) return;
+  pop.innerHTML = '';
+
+  const header = document.createElement('div');
+  header.className = 'runtime-popover-header';
+  const title = document.createElement('div');
+  title.className = 'runtime-popover-title';
+  title.textContent = 'Runtime';
+  const hint = document.createElement('div');
+  hint.className = 'runtime-popover-hint';
+  hint.textContent = 'Provider, model, and effort for the next reply';
+  header.appendChild(title);
+  header.appendChild(hint);
+  pop.appendChild(header);
+
+  const fields = document.createElement('div');
+  fields.className = 'runtime-popover-fields';
+  fields.appendChild(runtimeField({
+    label: 'Provider',
+    value: state.selectedProvider || '',
+    sourceSelect: elements.chipProviderSelect,
+    onChange: (value) => applyProviderChange(value),
+  }));
+  fields.appendChild(runtimeField({
+    label: 'Model',
+    value: state.selectedModel || '',
+    sourceSelect: elements.chipModelSelect,
+    onChange: (value) => applyModelChange(value),
+    formatOption: (opt) => opt.value ? compactHeaderModelLabel(opt.value) : opt.textContent,
+  }));
+  fields.appendChild(runtimeField({
+    label: 'Effort',
+    value: state.selectedEffort || '',
+    sourceSelect: elements.chipEffortSelect,
+    onChange: (value) => applyEffortChange(value),
+  }));
+  pop.appendChild(fields);
+};
+
+const openRuntimePopover = (triggerEl) => {
+  const pop = elements.chipPopover;
+  if (!pop || !triggerEl) return;
+  if (chipPopoverState.mode === 'runtime' && chipPopoverState.triggerEl === triggerEl) {
+    closeChipPopover();
+    return;
+  }
+  closeChipPopover();
+  chipPopoverState.mode = 'runtime';
+  chipPopoverState.selectEl = null;
+  chipPopoverState.triggerEl = triggerEl;
+  chipPopoverState.filterInput = null;
+  pop.classList?.add('chip-popover-runtime');
+  renderRuntimePopoverContent();
+  triggerEl.setAttribute('aria-expanded', 'true');
+  if (elements.chipPopoverBackdrop) elements.chipPopoverBackdrop.hidden = false;
+  pop.hidden = false;
+  positionChipPopover(triggerEl);
+  pop.querySelector?.('.runtime-popover-select')?.focus?.({ preventScroll: true });
+};
+
 elements.chipPopoverBackdrop?.addEventListener('click', () => {
   closeChipPopover();
 });
@@ -2447,6 +2555,10 @@ const wireChipTrigger = (triggerEl, selectEl) => {
   if (!triggerEl || !selectEl) return;
   triggerEl.addEventListener('click', (e) => {
     e.stopPropagation();
+    if (triggerEl === elements.chipModelTrigger && isRuntimePickerCompressed()) {
+      openRuntimePopover(triggerEl);
+      return;
+    }
     openChipPopover(selectEl, triggerEl);
   });
 };
@@ -2466,6 +2578,14 @@ document.addEventListener('click', (e) => {
 document.addEventListener('keydown', (e) => {
   const pop = elements.chipPopover;
   if (!pop || pop.hidden) return;
+  if (chipPopoverState.mode === 'runtime') {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeChipPopover();
+      chipPopoverState.triggerEl?.focus?.();
+    }
+    return;
+  }
   // The filter input owns its own keydown handler for navigation/commit. Don't
   // run the document-level handler when it's focused — otherwise Space would be
   // preventDefault'd and the user couldn't type spaces.
