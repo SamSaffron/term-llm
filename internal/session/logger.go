@@ -206,6 +206,39 @@ func (s *LoggingStore) NextUserPromptOutsideSession(ctx context.Context, exclude
 	return entry, err
 }
 
+// SaveProviderState delegates optional provider resume state persistence.
+func (s *LoggingStore) SaveProviderState(ctx context.Context, sessionID, providerKey string, state []byte) error {
+	store, ok := s.Store.(ProviderStateStore)
+	if !ok {
+		return nil
+	}
+	err := store.SaveProviderState(ctx, sessionID, providerKey, state)
+	s.logOnce("SaveProviderState", err)
+	return err
+}
+
+// LoadProviderState delegates optional provider resume state loading.
+func (s *LoggingStore) LoadProviderState(ctx context.Context, sessionID, providerKey string) ([]byte, error) {
+	store, ok := s.Store.(ProviderStateStore)
+	if !ok {
+		return nil, nil
+	}
+	state, err := store.LoadProviderState(ctx, sessionID, providerKey)
+	s.logOnce("LoadProviderState", err)
+	return state, err
+}
+
+// DeleteProviderState delegates optional provider resume state deletion.
+func (s *LoggingStore) DeleteProviderState(ctx context.Context, sessionID, providerKey string) error {
+	store, ok := s.Store.(ProviderStateStore)
+	if !ok {
+		return nil
+	}
+	err := store.DeleteProviderState(ctx, sessionID, providerKey)
+	s.logOnce("DeleteProviderState", err)
+	return err
+}
+
 // UpdateMetrics wraps Store.UpdateMetrics with error logging.
 func (s *LoggingStore) UpdateMetrics(ctx context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int) error {
 	err := s.Store.UpdateMetrics(ctx, id, llmTurns, toolCalls, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens)

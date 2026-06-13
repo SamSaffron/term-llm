@@ -416,6 +416,7 @@ func TestInitSchemaFreshDBDoesNotRunHistoricalMigrations(t *testing.T) {
 		name       string
 	}{
 		{objectType: "table", name: "push_subscriptions"},
+		{objectType: "table", name: "session_provider_state"},
 		{objectType: "index", name: "idx_messages_session_sequence"},
 		{objectType: "index", name: "idx_sessions_status"},
 		{objectType: "index", name: "idx_sessions_title_skipped"},
@@ -2079,6 +2080,63 @@ func TestSQLiteStoreCustomPath(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreProviderStateRoundTrip(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "Claude CLI", ProviderKey: "claude-bin", Model: "sonnet", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	initial := []byte(`{"session_id":"claude-1","messages_sent":3}`)
+	if err := store.SaveProviderState(ctx, sess.ID, "claude-bin", initial); err != nil {
+		t.Fatalf("SaveProviderState initial: %v", err)
+	}
+	loaded, err := store.LoadProviderState(ctx, sess.ID, "claude-bin")
+	if err != nil {
+		t.Fatalf("LoadProviderState initial: %v", err)
+	}
+	if string(loaded) != string(initial) {
+		t.Fatalf("provider state = %s, want %s", loaded, initial)
+	}
+
+	updated := []byte(`{"session_id":"claude-2","messages_sent":8}`)
+	if err := store.SaveProviderState(ctx, sess.ID, "claude-bin", updated); err != nil {
+		t.Fatalf("SaveProviderState update: %v", err)
+	}
+	loaded, err = store.LoadProviderState(ctx, sess.ID, "claude-bin")
+	if err != nil {
+		t.Fatalf("LoadProviderState update: %v", err)
+	}
+	if string(loaded) != string(updated) {
+		t.Fatalf("updated provider state = %s, want %s", loaded, updated)
+	}
+
+	if other, err := store.LoadProviderState(ctx, sess.ID, "openai"); err != nil {
+		t.Fatalf("LoadProviderState other provider: %v", err)
+	} else if len(other) != 0 {
+		t.Fatalf("other provider state = %s, want empty", other)
+	}
+
+	if err := store.DeleteProviderState(ctx, sess.ID, "claude-bin"); err != nil {
+		t.Fatalf("DeleteProviderState: %v", err)
+	}
+	loaded, err = store.LoadProviderState(ctx, sess.ID, "claude-bin")
+	if err != nil {
+		t.Fatalf("LoadProviderState after delete: %v", err)
+	}
+	if len(loaded) != 0 {
+		t.Fatalf("provider state after delete = %s, want empty", loaded)
+	}
+}
+
 func TestSQLiteStoreProviderKeyRoundTrip(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
@@ -2208,6 +2266,17 @@ INSERT INTO schema_version(version) VALUES (7);
 	}
 	if !hasProviderKey {
 		t.Fatal("expected provider_key column after migration")
+	}
+
+	var providerStateTables int
+	if err := store.db.QueryRow(`
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type = 'table' AND name = 'session_provider_state'
+	`).Scan(&providerStateTables); err != nil {
+		t.Fatalf("failed to inspect session_provider_state table: %v", err)
+	}
+	if providerStateTables != 1 {
+		t.Fatalf("session_provider_state table count = %d, want 1", providerStateTables)
 	}
 }
 
