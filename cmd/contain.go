@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -153,6 +152,41 @@ var containLsCmd = &cobra.Command{
 			return err
 		}
 		return contain.PrintList(entries, cmd.OutOrStdout())
+	},
+}
+
+var containPortCmd = &cobra.Command{
+	Use:               "port <name>",
+	Short:             "Print the web UI port for a contain workspace",
+	Long:              "Print the web UI host port for a contain workspace, read from its .env (WEB_PORT). Defaults to 8081 when unset. Intended for tooling such as a multi-agent gateway that discovers an agent's serve without parsing the 0600 .env directly.",
+	Args:              requireContainNameArg,
+	ValidArgsFunction: containWorkspaceNameCompletion,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		web, err := contain.ReadWebConfig(args[0])
+		if err != nil {
+			return fmt.Errorf("read web config for %q: %w", args[0], err)
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), web.Port)
+		return nil
+	},
+}
+
+var containTokenCmd = &cobra.Command{
+	Use:               "token <name>",
+	Short:             "Print the web UI bearer token for a contain workspace",
+	Long:              "Print the web UI bearer token for a contain workspace, read from its .env (WEB_TOKEN). Errors when no token is provisioned. Intended for tooling such as a multi-agent gateway that injects the per-agent token server-side.",
+	Args:              requireContainNameArg,
+	ValidArgsFunction: containWorkspaceNameCompletion,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		web, err := contain.ReadWebConfig(args[0])
+		if err != nil {
+			return fmt.Errorf("read web config for %q: %w", args[0], err)
+		}
+		if web.Token == "" {
+			return fmt.Errorf("no web token configured for %q (set WEB_TOKEN in its .env)", args[0])
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), web.Token)
+		return nil
 	},
 }
 
@@ -359,32 +393,15 @@ func parseContainSetFlags(values []string) (map[string]string, error) {
 }
 
 func printContainWebUIInfo(cmd *cobra.Command, name string) {
-	dir, err := contain.ContainerDir(name)
+	web, err := contain.ReadWebConfig(name)
 	if err != nil {
 		return
 	}
-	envPath := filepath.Join(dir, ".env")
-	values, err := readContainEnvFile(envPath)
-	if err != nil {
+	if web.Token == "" {
 		return
 	}
-	token := strings.TrimSpace(values["WEB_TOKEN"])
-	if token == "" || strings.Contains(token, "{{") {
-		return
-	}
-	port := strings.TrimSpace(values["WEB_PORT"])
-	if port == "" || strings.Contains(port, "{{") {
-		port = "8081"
-	}
-	basePath := strings.TrimSpace(values["WEB_BASE_PATH"])
-	if basePath == "" || strings.Contains(basePath, "{{") {
-		basePath = "/chat"
-	}
-	if !strings.HasPrefix(basePath, "/") {
-		basePath = "/" + basePath
-	}
-	fmt.Fprintf(cmd.OutOrStdout(), "  Web UI: http://localhost:%s%s\n", port, basePath)
-	fmt.Fprintf(cmd.OutOrStdout(), "  Web UI bearer token: %s\n", token)
+	fmt.Fprintf(cmd.OutOrStdout(), "  Web UI: http://localhost:%s%s\n", web.Port, web.BasePath)
+	fmt.Fprintf(cmd.OutOrStdout(), "  Web UI bearer token: %s\n", web.Token)
 }
 
 func printContainNextSteps(cmd *cobra.Command, name string, started bool) {
@@ -405,11 +422,11 @@ func printContainNextSteps(cmd *cobra.Command, name string, started bool) {
 }
 
 func printContainAuthSeedHints(cmd *cobra.Command, name string) {
-	dir, err := contain.ContainerDir(name)
+	envPath, err := contain.EnvPath(name)
 	if err != nil {
 		return
 	}
-	values, err := readContainEnvFile(filepath.Join(dir, ".env"))
+	values, err := contain.ReadEnvFile(envPath)
 	if err != nil {
 		return
 	}
@@ -464,31 +481,6 @@ func containCommandInputIsTerminal(cmd *cobra.Command) bool {
 	return containInputIsTerminal(cmd.InOrStdin())
 }
 
-func readContainEnvFile(path string) (map[string]string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	values := map[string]string{}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		key, value, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		key = strings.TrimSpace(key)
-		value = strings.TrimSpace(value)
-		value = strings.Trim(value, `"'`)
-		if key != "" {
-			values[key] = value
-		}
-	}
-	return values, nil
-}
-
 func init() {
 	containNewCmd.Flags().StringVar(&containNewTemplate, "template", "agent", "Built-in template name or path to file/directory template")
 	if err := containNewCmd.RegisterFlagCompletionFunc("template", containTemplateFlagCompletion); err != nil {
@@ -506,6 +498,8 @@ func init() {
 	containCmd.AddCommand(containRmCmd)
 	containCmd.AddCommand(containRebuildCmd)
 	containCmd.AddCommand(containLsCmd)
+	containCmd.AddCommand(containPortCmd)
+	containCmd.AddCommand(containTokenCmd)
 	containCmd.AddCommand(containExecCmd)
 	containCmd.AddCommand(containShellCmd)
 	containCmd.AddCommand(containTemplatesCmd)

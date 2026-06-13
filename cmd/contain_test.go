@@ -690,3 +690,60 @@ func TestContainDockerCommandsUseFakeRunner(t *testing.T) {
 		t.Fatalf("fake runner calls = %#v", r.calls)
 	}
 }
+
+func writeContainTestEnv(t *testing.T, name, contents string) {
+	t.Helper()
+	dir, err := contain.ContainerDir(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestContainPortPrintsWebPort(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	writeContainTestEnv(t, "gw", "WEB_PORT=8222\nWEB_TOKEN=secret-token\nWEB_BASE_PATH=/chat\n")
+
+	stdout, stderr, err := executeRootForContainTest(t, "contain", "port", "gw")
+	if err != nil {
+		t.Fatalf("contain port error = %v stderr=%s", err, stderr)
+	}
+	if strings.TrimSpace(stdout) != "8222" {
+		t.Fatalf("contain port stdout = %q want 8222", stdout)
+	}
+}
+
+func TestContainTokenPrintsWebToken(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	writeContainTestEnv(t, "gw", "WEB_PORT=8222\nWEB_TOKEN=secret-token\n")
+
+	stdout, stderr, err := executeRootForContainTest(t, "contain", "token", "gw")
+	if err != nil {
+		t.Fatalf("contain token error = %v stderr=%s", err, stderr)
+	}
+	if strings.TrimSpace(stdout) != "secret-token" {
+		t.Fatalf("contain token stdout = %q want secret-token", stdout)
+	}
+}
+
+func TestContainTokenMissingTokenErrors(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	// A freshly templated workspace has no rendered token yet.
+	writeContainTestEnv(t, "gw", "WEB_PORT=8222\nWEB_TOKEN={{web_token}}\n")
+
+	if _, _, err := executeRootForContainTest(t, "contain", "token", "gw"); err == nil {
+		t.Fatal("contain token with no provisioned token succeeded, want error")
+	}
+}
+
+func TestContainPortMissingWorkspaceErrors(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if _, _, err := executeRootForContainTest(t, "contain", "port", "nope"); err == nil {
+		t.Fatal("contain port for missing workspace succeeded, want error")
+	}
+}

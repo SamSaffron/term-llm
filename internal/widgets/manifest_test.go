@@ -3,8 +3,34 @@ package widgets
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestValidMount(t *testing.T) {
+	cases := []struct {
+		mount string
+		want  bool
+	}{
+		{"job-usage", true},
+		{"a", true},
+		{"0widget", true},
+		{"", false},
+		{"-leading-hyphen", false},
+		{"Upper", false},
+		{"under_score", false},
+		{"has/slash", false},
+		{"has.dot", false},
+		{"..", false},
+		{strings.Repeat("a", 64), true},
+		{strings.Repeat("a", 65), false},
+	}
+	for _, tc := range cases {
+		if got := ValidMount(tc.mount); got != tc.want {
+			t.Errorf("ValidMount(%q) = %v, want %v", tc.mount, got, tc.want)
+		}
+	}
+}
 
 func TestPlaceholderMode(t *testing.T) {
 	cases := []struct {
