@@ -58,6 +58,20 @@ type Provider interface {
 	Stream(ctx context.Context, req Request) (Stream, error)
 }
 
+// ProviderStateExporter is implemented by stateful providers that can persist
+// opaque conversation transport state outside the user-visible transcript.
+// The returned bytes must be safe to store in the session database.
+type ProviderStateExporter interface {
+	ExportProviderState() ([]byte, bool)
+}
+
+// ProviderStateImporter restores state previously returned by
+// ProviderStateExporter. Providers should validate and ignore unusable state by
+// returning an error rather than partially applying it.
+type ProviderStateImporter interface {
+	ImportProviderState([]byte) error
+}
+
 // Capabilities describe optional provider features.
 type Capabilities struct {
 	NativeWebSearch    bool // Provider has native web search capability

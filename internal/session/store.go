@@ -69,6 +69,16 @@ type Store interface {
 	Close() error
 }
 
+// ProviderStateStore is an optional Store capability for provider-specific
+// resume state. It stores opaque JSON/blob payloads keyed by term-llm session
+// and provider key, allowing providers such as claude-bin to survive runtime
+// eviction without leaking that state into the user-visible transcript.
+type ProviderStateStore interface {
+	SaveProviderState(ctx context.Context, sessionID, providerKey string, state []byte) error
+	LoadProviderState(ctx context.Context, sessionID, providerKey string) ([]byte, error)
+	DeleteProviderState(ctx context.Context, sessionID, providerKey string) error
+}
+
 // MessagesDescendingPager is an optional Store capability for efficient reverse
 // pagination over session messages. Implementations return messages ordered by
 // descending sequence and, when beforeSeq > 0, only rows with sequence < beforeSeq.

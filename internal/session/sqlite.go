@@ -103,6 +103,14 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_role ON messages(session_id, rol
 CREATE INDEX IF NOT EXISTS idx_messages_role_id ON messages(role, id);
 CREATE INDEX IF NOT EXISTS idx_messages_role_created_id ON messages(role, created_at, id);
 
+CREATE TABLE IF NOT EXISTS session_provider_state (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    provider_key TEXT NOT NULL,
+    state BLOB NOT NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (session_id, provider_key)
+);
+
 -- Metadata table for current session tracking
 CREATE TABLE IF NOT EXISTS metadata (
     key TEXT PRIMARY KEY,
@@ -234,7 +242,7 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 // - Fresh databases get the full schema from `schema` const and start at this version
 // - Existing databases run migrations to reach this version
 // Increment when adding new migrations.
-const schemaVersion = 30
+const schemaVersion = 31
 
 // migration represents a schema migration.
 type migration struct {
@@ -864,6 +872,21 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		// Migration 31: Persist provider-owned resume state outside the transcript.
+		version:     31,
+		description: "create session provider state table",
+		up: func(db *sql.DB) error {
+			_, err := db.Exec(`CREATE TABLE IF NOT EXISTS session_provider_state (
+				session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+				provider_key TEXT NOT NULL,
+				state BLOB NOT NULL,
+				updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				PRIMARY KEY (session_id, provider_key)
+			)`)
+			return err
+		},
+	},
 }
 
 // Keep in sync with llm.IsInternalCompactionSummaryText. SQLite migrations and
@@ -1357,6 +1380,68 @@ func (s *SQLiteStore) MarkTitleSkipped(ctx context.Context, id string, t time.Ti
 		return fmt.Errorf("mark title skipped: %w", err)
 	}
 	return nil
+}
+
+// SaveProviderState stores opaque provider-owned resume state for a session.
+func (s *SQLiteStore) SaveProviderState(ctx context.Context, sessionID, providerKey string, state []byte) error {
+	sessionID = strings.TrimSpace(sessionID)
+	providerKey = strings.TrimSpace(providerKey)
+	if sessionID == "" || providerKey == "" {
+		return nil
+	}
+	return retryOnBusy(ctx, 5, func() error {
+		_, err := s.db.ExecContext(ctx, `
+			INSERT INTO session_provider_state (session_id, provider_key, state, updated_at)
+			VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+			ON CONFLICT(session_id, provider_key) DO UPDATE SET
+			    state = excluded.state,
+			    updated_at = CURRENT_TIMESTAMP
+		`, sessionID, providerKey, state)
+		if err != nil {
+			return fmt.Errorf("save provider state: %w", err)
+		}
+		return nil
+	})
+}
+
+// LoadProviderState returns opaque provider-owned resume state for a session.
+func (s *SQLiteStore) LoadProviderState(ctx context.Context, sessionID, providerKey string) ([]byte, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	providerKey = strings.TrimSpace(providerKey)
+	if sessionID == "" || providerKey == "" {
+		return nil, nil
+	}
+	var state []byte
+	err := s.db.QueryRowContext(ctx, `
+		SELECT state FROM session_provider_state
+		WHERE session_id = ? AND provider_key = ?
+	`, sessionID, providerKey).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load provider state: %w", err)
+	}
+	return append([]byte(nil), state...), nil
+}
+
+// DeleteProviderState removes provider-owned resume state for a session.
+func (s *SQLiteStore) DeleteProviderState(ctx context.Context, sessionID, providerKey string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	providerKey = strings.TrimSpace(providerKey)
+	if sessionID == "" || providerKey == "" {
+		return nil
+	}
+	return retryOnBusy(ctx, 5, func() error {
+		_, err := s.db.ExecContext(ctx, `
+			DELETE FROM session_provider_state
+			WHERE session_id = ? AND provider_key = ?
+		`, sessionID, providerKey)
+		if err != nil {
+			return fmt.Errorf("delete provider state: %w", err)
+		}
+		return nil
+	})
 }
 
 // UpdateMetrics atomically increments the metrics fields for a session.

@@ -83,6 +83,84 @@ func (rt *serveRuntime) LastUsed() time.Time {
 	return time.Unix(0, unixNano)
 }
 
+func (rt *serveRuntime) providerStateKey() string {
+	if rt == nil {
+		return ""
+	}
+	if key := strings.TrimSpace(rt.providerKey); key != "" {
+		return key
+	}
+	if rt.provider == nil {
+		return ""
+	}
+	if cred := strings.TrimSpace(rt.provider.Credential()); cred != "" {
+		return cred
+	}
+	return strings.TrimSpace(rt.provider.Name())
+}
+
+func (rt *serveRuntime) restoreProviderState(ctx context.Context, sessionID string) {
+	if rt == nil || rt.store == nil || rt.provider == nil || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	importer, ok := rt.provider.(llm.ProviderStateImporter)
+	if !ok {
+		return
+	}
+	stateStore, ok := rt.store.(session.ProviderStateStore)
+	if !ok {
+		return
+	}
+	providerKey := rt.providerStateKey()
+	if providerKey == "" {
+		return
+	}
+	state, err := stateStore.LoadProviderState(ctx, sessionID, providerKey)
+	if err != nil {
+		log.Printf("[serve] load provider state failed for %s/%s: %v", sessionID, providerKey, err)
+		return
+	}
+	if len(state) == 0 {
+		return
+	}
+	if err := importer.ImportProviderState(state); err != nil {
+		log.Printf("[serve] import provider state failed for %s/%s: %v", sessionID, providerKey, err)
+	}
+}
+
+func (rt *serveRuntime) persistProviderState(ctx context.Context, sessionID string) {
+	if rt == nil || rt.store == nil || rt.provider == nil || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	stateStore, ok := rt.store.(session.ProviderStateStore)
+	if !ok {
+		return
+	}
+	providerKey := rt.providerStateKey()
+	if providerKey == "" {
+		return
+	}
+	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	exporter, ok := rt.provider.(llm.ProviderStateExporter)
+	if !ok {
+		if err := stateStore.DeleteProviderState(dbCtx, sessionID, providerKey); err != nil {
+			log.Printf("[serve] delete provider state failed for %s/%s: %v", sessionID, providerKey, err)
+		}
+		return
+	}
+	state, ok := exporter.ExportProviderState()
+	if !ok || len(state) == 0 {
+		if err := stateStore.DeleteProviderState(dbCtx, sessionID, providerKey); err != nil {
+			log.Printf("[serve] delete provider state failed for %s/%s: %v", sessionID, providerKey, err)
+		}
+		return
+	}
+	if err := stateStore.SaveProviderState(dbCtx, sessionID, providerKey, state); err != nil {
+		log.Printf("[serve] save provider state failed for %s/%s: %v", sessionID, providerKey, err)
+	}
+}
+
 func (rt *serveRuntime) SessionNumber() int64 {
 	if rt == nil {
 		return 0
@@ -614,6 +692,9 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		rt.lastInjectedPlatform = ""
 		rt.historyPersisted = false
 	}
+	if persisted && stateful && !replaceHistory {
+		rt.restoreProviderState(ctx, req.SessionID)
+	}
 	turnIndex := countUserMessages(baseHistory)
 
 	var injectedPlatform string
@@ -1136,6 +1217,10 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		rt.historyPersisted = rt.persistSnapshot(ctx, req.SessionID, newHistory)
 	} else if persisted {
 		rt.historyPersisted = true
+	}
+
+	if persisted && stateful {
+		rt.persistProviderState(ctx, req.SessionID)
 	}
 
 	return result, nil

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -415,6 +416,121 @@ func serveRuntimeTextMessage(role llm.Role, text string) llm.Message {
 			Type: llm.PartText,
 			Text: text,
 		}},
+	}
+}
+
+type serveRuntimePersistentProviderState struct {
+	SessionID    string `json:"session_id"`
+	MessagesSent int    `json:"messages_sent"`
+}
+
+type serveRuntimePersistentProvider struct {
+	sessionID    string
+	messagesSent int
+	importCalls  int
+	received     [][]llm.Message
+}
+
+func (p *serveRuntimePersistentProvider) Name() string { return "persistent-provider" }
+
+func (p *serveRuntimePersistentProvider) Credential() string { return "claude-bin" }
+
+func (p *serveRuntimePersistentProvider) Capabilities() llm.Capabilities {
+	return llm.Capabilities{ManagesOwnContext: true}
+}
+
+func (p *serveRuntimePersistentProvider) ExportProviderState() ([]byte, bool) {
+	if p.sessionID == "" {
+		return nil, false
+	}
+	data, err := json.Marshal(serveRuntimePersistentProviderState{
+		SessionID:    p.sessionID,
+		MessagesSent: p.messagesSent,
+	})
+	if err != nil {
+		return nil, false
+	}
+	return data, true
+}
+
+func (p *serveRuntimePersistentProvider) ImportProviderState(data []byte) error {
+	var state serveRuntimePersistentProviderState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return err
+	}
+	p.sessionID = state.SessionID
+	p.messagesSent = state.MessagesSent
+	p.importCalls++
+	return nil
+}
+
+func (p *serveRuntimePersistentProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	delivered := req.Messages
+	if p.sessionID != "" && p.messagesSent > 0 && p.messagesSent < len(req.Messages) {
+		delivered = req.Messages[p.messagesSent:]
+	}
+	p.received = append(p.received, append([]llm.Message(nil), delivered...))
+	if p.sessionID == "" {
+		p.sessionID = "claude-session-from-first-runtime"
+	}
+	p.messagesSent = len(req.Messages)
+	return &serveRuntimeTestStream{events: []llm.Event{
+		{Type: llm.EventTextDelta, Text: "provider answer"},
+		{Type: llm.EventDone},
+	}}, nil
+}
+
+func TestServeRuntimeRestoresProviderStateFromSessionStore(t *testing.T) {
+	ctx := context.Background()
+	sqlStore, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer sqlStore.Close()
+	store := session.NewLoggingStore(sqlStore, t.Logf)
+
+	newRuntime := func(provider *serveRuntimePersistentProvider) *serveRuntime {
+		return &serveRuntime{
+			provider:     provider,
+			providerKey:  "claude-bin",
+			engine:       llm.NewEngine(provider, nil),
+			store:        store,
+			defaultModel: "sonnet",
+		}
+	}
+
+	firstProvider := &serveRuntimePersistentProvider{}
+	if _, err := newRuntime(firstProvider).Run(ctx, true, false,
+		[]llm.Message{serveRuntimeTextMessage(llm.RoleUser, "first question")},
+		llm.Request{SessionID: "sess-persistent-provider", Model: "sonnet"}); err != nil {
+		t.Fatalf("first Run: %v", err)
+	}
+	if len(firstProvider.received) != 1 || len(firstProvider.received[0]) != 1 {
+		t.Fatalf("first provider received = %#v, want the initial user message only", firstProvider.received)
+	}
+
+	secondProvider := &serveRuntimePersistentProvider{}
+	if _, err := newRuntime(secondProvider).Run(ctx, true, false,
+		[]llm.Message{serveRuntimeTextMessage(llm.RoleUser, "second question")},
+		llm.Request{SessionID: "sess-persistent-provider", Model: "sonnet"}); err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+	if secondProvider.importCalls != 1 {
+		t.Fatalf("provider state import calls = %d, want 1", secondProvider.importCalls)
+	}
+	if len(secondProvider.received) != 1 {
+		t.Fatalf("second provider calls = %d, want 1", len(secondProvider.received))
+	}
+	var gotText strings.Builder
+	for _, msg := range secondProvider.received[0] {
+		gotText.WriteString(llm.MessageText(msg))
+		gotText.WriteString("\n")
+	}
+	if strings.Contains(gotText.String(), "first question") {
+		t.Fatalf("resumed provider was given already-sent first user turn: %q", gotText.String())
+	}
+	if !strings.Contains(gotText.String(), "second question") {
+		t.Fatalf("resumed provider did not receive the new user turn: %q", gotText.String())
 	}
 }
 

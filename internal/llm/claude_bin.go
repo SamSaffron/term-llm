@@ -365,6 +365,48 @@ func (p *ClaudeBinProvider) ResetConversation() {
 	p.messagesSent = 0
 }
 
+type claudeBinProviderState struct {
+	SessionID    string `json:"session_id"`
+	MessagesSent int    `json:"messages_sent"`
+}
+
+// ExportProviderState persists Claude Code's session id plus the term-llm
+// transcript boundary already submitted to that session. On runtime rehydrate,
+// ImportProviderState lets claude-bin continue with --resume instead of
+// replaying the whole stored transcript as fresh stdin.
+func (p *ClaudeBinProvider) ExportProviderState() ([]byte, bool) {
+	if p.sessionID == "" {
+		return nil, false
+	}
+	data, err := json.Marshal(claudeBinProviderState{
+		SessionID:    p.sessionID,
+		MessagesSent: p.messagesSent,
+	})
+	if err != nil {
+		return nil, false
+	}
+	return data, true
+}
+
+// ImportProviderState restores Claude Code resume state previously returned by
+// ExportProviderState.
+func (p *ClaudeBinProvider) ImportProviderState(data []byte) error {
+	var state claudeBinProviderState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return fmt.Errorf("decode claude-bin provider state: %w", err)
+	}
+	state.SessionID = strings.TrimSpace(state.SessionID)
+	if state.SessionID == "" {
+		return fmt.Errorf("decode claude-bin provider state: missing session_id")
+	}
+	if state.MessagesSent < 0 {
+		return fmt.Errorf("decode claude-bin provider state: negative messages_sent")
+	}
+	p.sessionID = state.SessionID
+	p.messagesSent = state.MessagesSent
+	return nil
+}
+
 func (p *ClaudeBinProvider) Name() string {
 	model := p.model
 	if model == "" {

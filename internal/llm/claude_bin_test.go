@@ -876,6 +876,50 @@ func TestClaudeBinProvider_ResetConversationClearsResumeState(t *testing.T) {
 	}
 }
 
+func TestClaudeBinProviderProviderStateRoundTrip(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+	p.sessionID = "resume-xyz"
+	p.messagesSent = 7
+
+	data, ok := p.ExportProviderState()
+	if !ok {
+		t.Fatal("ExportProviderState returned ok=false")
+	}
+
+	restored := NewClaudeBinProvider("sonnet", nil)
+	if err := restored.ImportProviderState(data); err != nil {
+		t.Fatalf("ImportProviderState: %v", err)
+	}
+	if restored.sessionID != "resume-xyz" {
+		t.Fatalf("restored sessionID = %q, want resume-xyz", restored.sessionID)
+	}
+	if restored.messagesSent != 7 {
+		t.Fatalf("restored messagesSent = %d, want 7", restored.messagesSent)
+	}
+
+	args, _ := restored.buildArgs(context.Background(), Request{}, eventSender{})
+	if joined := strings.Join(args, " "); !strings.Contains(joined, "--resume resume-xyz") {
+		t.Fatalf("buildArgs() = %q, want --resume resume-xyz", joined)
+	}
+}
+
+func TestClaudeBinProviderProviderStateRejectsInvalidData(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+	if err := p.ImportProviderState([]byte(`{"messages_sent":1}`)); err == nil {
+		t.Fatal("expected missing session_id to fail")
+	}
+	if err := p.ImportProviderState([]byte(`{"session_id":"resume","messages_sent":-1}`)); err == nil {
+		t.Fatal("expected negative messages_sent to fail")
+	}
+}
+
+func TestClaudeBinProviderProviderStateEmptyWithoutSession(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+	if data, ok := p.ExportProviderState(); ok || len(data) != 0 {
+		t.Fatalf("ExportProviderState() = (%q, %v), want empty false", data, ok)
+	}
+}
+
 func TestClaudeBinProvider_BuildCommandEnv(t *testing.T) {
 	origGetEuid := getEuid
 	defer func() { getEuid = origGetEuid }()
