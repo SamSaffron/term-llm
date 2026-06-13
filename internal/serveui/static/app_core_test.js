@@ -251,6 +251,27 @@ const app = loadAppCore();
   pass(name);
 })();
 
+(function testCompactHeaderModelLabelRemovesProviderNoise() {
+  const name = 'compactHeaderModelLabel removes provider noise';
+  const cases = [
+    ['claude-sonnet-4.5-thinking-super-long-preview-build-20260613', 'sonnet 4.5'],
+    ['claude-3-7-sonnet-latest', 'sonnet 3.7'],
+    ['claude-opus-4.8', 'opus 4.8'],
+    ['anthropic/claude-3-5-haiku-20241022', 'haiku 3.5'],
+    ['chatgpt-gpt-5.5', 'gpt-5.5'],
+    ['openai/gpt-5.5', 'gpt-5.5'],
+    ['gpt-5.5', 'gpt-5.5'],
+  ];
+  for (const [input, expected] of cases) {
+    const got = app.compactHeaderModelLabel(input);
+    if (got !== expected) {
+      fail(name, `for ${JSON.stringify(input)} got ${JSON.stringify(got)}, want ${JSON.stringify(expected)}`);
+      return;
+    }
+  }
+  pass(name);
+})();
+
 (function testPendingInterjectBadgeStateIsDistinctFromInjected() {
   const name = 'pending_interject is a valid interrupt state labelled distinctly from injected';
 

@@ -379,8 +379,8 @@ function testUpdateSessionUsageDisplayUsesSelectedRuntimeForIdleSession() {
     fail(name, `expected provider label "anthropic" got "${elementMap.chipProviderLabel.textContent}"`);
     return;
   }
-  if (elementMap.chipModelLabel.textContent !== 'claude-sonnet') {
-    fail(name, `expected selected provider default model "claude-sonnet" got "${elementMap.chipModelLabel.textContent}"`);
+  if (elementMap.chipModelLabel.textContent !== 'sonnet') {
+    fail(name, `expected selected provider default model label "sonnet" got "${elementMap.chipModelLabel.textContent}"`);
     return;
   }
 
@@ -440,8 +440,8 @@ function testProviderChipChangeUpdatesHeaderBeforeModelsFetchCompletes() {
     fail(name, `expected header provider to update immediately, got "${elementMap.chipProviderLabel.textContent}"`);
     return;
   }
-  if (elementMap.chipModelLabel.textContent !== 'claude-sonnet') {
-    fail(name, `expected header model fallback for new provider, got "${elementMap.chipModelLabel.textContent}"`);
+  if (elementMap.chipModelLabel.textContent !== 'sonnet') {
+    fail(name, `expected header model fallback label "sonnet", got "${elementMap.chipModelLabel.textContent}"`);
     return;
   }
   const modelValues = elementMap.chipModelSelect.children.map((child) => child.value);

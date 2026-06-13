@@ -571,6 +571,36 @@ const splitHeaderModelEffort = (model, effort) => {
   return { model: rawModel, effort: rawEffort };
 };
 
+const compactHeaderModelLabel = (model) => {
+  const raw = String(model || '').trim();
+  if (!raw) return raw;
+
+  let id = raw.split('/').filter(Boolean).pop() || raw;
+  id = id.replace(/^(?:chatgpt|openai|anthropic|claude):/i, '');
+  const tokens = id.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  const familyIndex = tokens.findIndex((token) => token === 'opus' || token === 'sonnet' || token === 'haiku');
+  if (familyIndex >= 0 && tokens.includes('claude')) {
+    const collectVersion = (start, step) => {
+      const parts = [];
+      for (let i = start; i >= 0 && i < tokens.length && parts.length < 2; i += step) {
+        const token = tokens[i];
+        if (!/^\d+$/.test(token) || token.length > 2) break;
+        if (step < 0) parts.unshift(token);
+        else parts.push(token);
+      }
+      return parts;
+    };
+    const after = collectVersion(familyIndex + 1, 1);
+    const before = collectVersion(familyIndex - 1, -1);
+    const version = (after.length ? after : before).join('.');
+    return [tokens[familyIndex], version].filter(Boolean).join(' ');
+  }
+
+  return id
+    .replace(/_/g, '-')
+    .replace(/^(?:chatgpt|openai|anthropic|claude)[-_: ]+/i, '');
+};
+
 const setChipSelectValue = (sel, value) => {
   if (!sel) return;
   if (sel.value === value) return;
@@ -592,13 +622,15 @@ const getDefaultModelForProvider = (providerName) => {
   return '';
 };
 
-const setChipLabel = (labelEl, sepEl, text, { muted = false, hidden = false } = {}) => {
+const setChipLabel = (labelEl, sepEl, text, { muted = false, hidden = false, title = '' } = {}) => {
   if (sepEl) sepEl.hidden = hidden;
   if (!labelEl) return;
   const chip = labelEl.closest('.model-chip');
   if (chip) chip.hidden = hidden;
   if (hidden) return;
   labelEl.textContent = text;
+  if (title && title !== text) labelEl.setAttribute?.('title', title);
+  else labelEl.removeAttribute?.('title');
   labelEl.classList.toggle('stats-muted', muted);
 };
 
@@ -640,11 +672,12 @@ const updateSessionUsageDisplay = (session) => {
     { muted: providerIsDefault || !resolvedProvider, hidden: false }
   );
 
+  const modelLabel = resolvedModel ? compactHeaderModelLabel(resolvedModel) : '—';
   setChipLabel(
     elements.chipModelLabel,
     elements.chipSepProviderModel,
-    resolvedModel || '—',
-    { muted: modelIsDefault || !resolvedModel, hidden: false }
+    modelLabel,
+    { muted: modelIsDefault || !resolvedModel, hidden: false, title: resolvedModel || '' }
   );
 
   // Effort has no server-side default, so when unset we show a muted "auto"
@@ -1508,6 +1541,7 @@ Object.assign(app, {
   formatUsage,
   renderMath,
   splitHeaderModelEffort,
+  compactHeaderModelLabel,
   updateSessionUsageDisplay,
   isNearBottom,
   noteUserScrollIntent,
