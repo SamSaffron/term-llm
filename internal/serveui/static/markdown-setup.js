@@ -22,14 +22,44 @@
     gfm: true
   });
 
-  // KaTeX auto-render runs after markdown has produced sanitized HTML. Marked
-  // treats backslashes before punctuation as markdown escapes, which would turn
-  // explicit math delimiters like \(...\) and \[...\] into plain parentheses
-  // or brackets before KaTeX ever sees them. Preserve those spans as text here;
-  // KaTeX will render them in the later decoration pass. Single-dollar inline
-  // math intentionally remains disabled to avoid mangling currency in LLM prose.
+  // KaTeX auto-render runs after markdown has produced sanitized HTML.
+  //
+  // Marked's `breaks: true` is useful for chat prose, but it turns display math
+  // written in the common LLM shape
+  //
+  //   $$
+  //   \frac{1}{2}
+  //   $$
+  //
+  // into `$$<br>...<br>$$`. KaTeX auto-render scans text nodes, so those `<br>`
+  // elements split the delimiters and the user sees raw `\frac` soup. Preserve
+  // the whole display-math block as escaped text so KaTeX gets intact delimiters.
+  //
+  // Marked also treats backslashes before punctuation as markdown escapes, which
+  // would turn explicit math delimiters like \(...\) and \[...\] into plain
+  // parentheses or brackets before KaTeX ever sees them. Preserve those spans as
+  // text too. Single-dollar inline math intentionally remains disabled to avoid
+  // mangling currency in LLM prose.
   marked.use({
     extensions: [{
+      name: 'math-display-block',
+      level: 'block',
+      start(src) {
+        return src.indexOf('$$');
+      },
+      tokenizer(src) {
+        const match = /^\$\$[ \t]*\n[\s\S]*?\n[ \t]*\$\$(?=\n|$)/.exec(src);
+        if (!match) return false;
+        return {
+          type: 'math-display-block',
+          raw: match[0],
+          text: match[0]
+        };
+      },
+      renderer(token) {
+        return `<p>${escapeHtml(token.raw)}</p>\n`;
+      }
+    }, {
       name: 'math-delimiter-span',
       level: 'inline',
       start(src) {

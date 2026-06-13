@@ -103,6 +103,12 @@ const cases = [
     contains: ['Cost is $100 and formula is $x + 1$.'],
     absent: ['katex'],
   },
+  {
+    name: 'display dollar math block survives markdown breaks',
+    input: '$$\n\\int e^{2x} \\, dx = \\frac{1}{2}e^{2x} + C\n$$',
+    contains: ['$$\n\\int e^{2x} \\, dx = \\frac{1}{2}e^{2x} + C\n$$'],
+    absent: ['<br>'],
+  },
 ];
 
 for (const tc of cases) {
