@@ -89,11 +89,42 @@ const toggleSidebarCollapsed = () => {
   setSidebarCollapsed(!state.sidebarCollapsed);
 };
 
+const adaptHeaderLayout = () => {
+  const header = elements.mainHeader;
+  const title = elements.activeSessionTitle;
+  if (!header || !title || !elements.headerControlsRow || !elements.diffToggleBtn) return;
+  if (typeof title.scrollWidth !== 'number' || typeof title.clientWidth !== 'number') return;
+
+  header.classList.remove('header-controls-wrapped');
+
+  // Mobile is governed by CSS. On larger layouts, start as a single row and
+  // only wrap controls if the title is being crushed below a useful width.
+  if (window.innerWidth <= 767) return;
+
+  const titleWidth = title.clientWidth || 0;
+  const titleScrollWidth = title.scrollWidth || 0;
+  const usefulTitleWidth = Math.min(titleScrollWidth, 320);
+  const titleCrushed = titleScrollWidth > titleWidth + 1 && titleWidth < usefulTitleWidth;
+  if (titleCrushed) header.classList.add('header-controls-wrapped');
+};
+
+let headerLayoutFrame = 0;
+const scheduleHeaderLayout = () => {
+  if (headerLayoutFrame) window.cancelAnimationFrame?.(headerLayoutFrame);
+  const run = () => {
+    headerLayoutFrame = 0;
+    adaptHeaderLayout();
+  };
+  if (window.requestAnimationFrame) headerLayoutFrame = window.requestAnimationFrame(run);
+  else run();
+};
+
 const updateHeader = () => {
   const session = ensureActiveSession();
   elements.activeSessionTitle.textContent = session?.title || 'Chat';
   updateDocumentTitle();
   updateSessionUsageDisplay(session);
+  scheduleHeaderLayout();
   applyDesktopSidebarState();
 };
 
@@ -2376,6 +2407,8 @@ const updateSidebarStatus = (statusSessions) => {
   }
   return changed;
 };
+
+window.addEventListener?.('resize', scheduleHeaderLayout);
 
 Object.assign(app, {
   openSidebar,

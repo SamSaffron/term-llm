@@ -475,7 +475,7 @@
 
     .diff-toggle {
       position: relative;
-      margin-left: 0;
+      margin-left: auto;
       width: auto;
       min-width: 92px;
       height: 30px;
@@ -1173,35 +1173,40 @@
       flex: 0 0 auto;
     }
 
+    @media (min-width: 768px) {
+      .header-controls-row > .diff-toggle {
+        margin-left: 0.85rem;
+      }
+    }
+
     .header-left {
       display: inline-flex;
       align-items: center;
       gap: 0.6rem;
-      flex: 1 1 auto;
+      flex: 0 1 auto;
       min-width: 0;
     }
 
-    @media (max-width: 1200px) {
-      .header-title-row {
-        flex-wrap: wrap;
-        row-gap: 0.25rem;
-      }
+    .main-header.header-controls-wrapped .header-title-row {
+      flex-wrap: wrap;
+      row-gap: 0.25rem;
+    }
 
-      .header-left {
-        order: 1;
-        flex-basis: calc(100% - 5rem);
-        min-width: 0;
-      }
+    .main-header.header-controls-wrapped .header-left {
+      order: 1;
+      flex-basis: calc(100% - 5rem);
+      min-width: 0;
+    }
 
-      .header-controls-row {
-        order: 3;
-        flex-basis: 100%;
-      }
+    .main-header.header-controls-wrapped .header-controls-row {
+      order: 3;
+      flex-basis: 100%;
+      margin-right: 0;
+    }
 
-      .diff-toggle {
-        order: 2;
-        margin-left: auto;
-      }
+    .main-header.header-controls-wrapped .diff-toggle {
+      order: 2;
+      margin-left: auto;
     }
 
     .mobile-menu {
@@ -3321,11 +3326,21 @@
         align-items: center;
         column-gap: 9px;
         row-gap: 0;
+        flex-wrap: wrap;
+      }
+
+      .header-left {
+        order: 1;
+        flex-basis: calc(100% - 5rem);
+        min-width: 0;
       }
 
       .header-controls-row {
+        order: 3;
+        flex-basis: 100%;
         padding-left: 43px;
         margin-top: 0;
+        margin-right: 0;
       }
 
       .header-controls-row .chip-trigger {
@@ -3344,6 +3359,8 @@
       }
 
       .diff-toggle {
+        order: 2;
+        margin-left: auto;
         height: 33px;
         margin-bottom: 2px;
       }
