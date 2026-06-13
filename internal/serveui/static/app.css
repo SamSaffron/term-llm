@@ -3286,17 +3286,22 @@
       }
 
       .main-header {
-        padding: calc(0.7rem + var(--safe-top)) calc(0.8rem + var(--safe-right)) 0.68rem calc(0.8rem + var(--safe-left));
-        gap: 0.32rem;
+        padding: calc(0.5rem + var(--safe-top)) calc(0.75rem + var(--safe-right)) 0.5625rem calc(0.75rem + var(--safe-left));
+        gap: 0;
       }
 
       .header-title-row {
         align-items: center;
-        gap: 0.55rem;
+        gap: 9px;
       }
 
       .header-controls-row {
-        padding-left: calc(38px + 0.55rem);
+        padding-left: 43px;
+        margin-top: 0;
+      }
+
+      .header-controls-row .chip-trigger {
+        line-height: 1.1;
       }
 
       .header-title {
@@ -3306,6 +3311,12 @@
 
       .mobile-menu {
         display: inline-flex;
+        width: 33px;
+        height: 33px;
+      }
+
+      .diff-toggle {
+        height: 33px;
       }
 
 
@@ -3318,6 +3329,18 @@
         font-size: 0.78rem;
         min-width: 0;
         flex-shrink: 1;
+      }
+
+      .header-controls-row .chip-trigger {
+        padding-left: 0;
+        padding-right: 0;
+        border-radius: 0;
+      }
+
+      .header-controls-row .chip-trigger:hover,
+      .header-controls-row .chip-trigger:focus-visible,
+      .header-controls-row .chip-trigger[aria-expanded="true"] {
+        background: transparent;
       }
 
       .header-tokens,
