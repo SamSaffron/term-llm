@@ -367,11 +367,23 @@
   <div class="modal-overlay hidden" id="renameSessionModal" role="dialog" aria-modal="true" aria-labelledby="renameSessionTitle">
     <div class="modal rename-session-modal">
       <h2 id="renameSessionTitle">Rename session</h2>
-      <p>Choose the label shown in the sidebar. Leave it blank to fall back to the generated chat title.</p>
-      <div class="settings-field">
+      <p id="renameSessionIntro">Choose the label shown in the sidebar, or let AI suggest a better title from this session.</p>
+      <div class="settings-field" id="renameSessionNameField">
         <label class="settings-label" for="renameSessionInput">Session name</label>
         <input id="renameSessionInput" type="text" placeholder="Project kickoff notes" autocomplete="off" tabindex="-1">
       </div>
+      <div class="rename-generated-fields hidden" id="renameGeneratedFields">
+        <div class="settings-field">
+          <label class="settings-label" for="renameGeneratedTitleInput">Title</label>
+          <input id="renameGeneratedTitleInput" type="text" placeholder="vLLM provider docs review" autocomplete="off" tabindex="-1">
+        </div>
+        <div class="settings-field">
+          <label class="settings-label" for="renameGeneratedDetailInput">Detail</label>
+          <textarea id="renameGeneratedDetailInput" rows="3" placeholder="Review PR 100: vLLM provider docs, DeepSeek template caveats, and smoke test examples" tabindex="-1"></textarea>
+        </div>
+        <p class="rename-generated-note">Saving will use this generated title in the sidebar.</p>
+      </div>
+      <button class="btn rename-improve-btn" id="renameImproveTitleBtn" type="button">Improve title with AI</button>
       <div class="modal-error" id="renameSessionError"></div>
       <div class="modal-actions">
         <button class="btn" id="renameSessionCancelBtn" type="button">Cancel</button>

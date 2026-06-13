@@ -1460,6 +1460,8 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
 const applyServerSessionSummary = (target, serverSession) => {
   if (!target || !serverSession) return target;
   target.name = String(serverSession.name || '');
+  target.generatedShortTitle = String(serverSession.generated_short_title || target.generatedShortTitle || '');
+  target.generatedLongTitle = String(serverSession.generated_long_title || target.generatedLongTitle || '');
   target.title = serverSession.short_title || target.title || 'New chat';
   target.longTitle = serverSession.long_title || '';
   target.mode = String(serverSession.mode || target.mode || 'chat');
@@ -1590,12 +1592,57 @@ const updateSessionMetadata = async (session, patch) => {
   return resp.json().catch(() => ({}));
 };
 
+const refineSessionTitle = async (session, options = {}) => {
+  if (!session?.id || session._refiningTitle) return null;
+  session._refiningTitle = true;
+  renderSidebar();
+  try {
+    const resp = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/title/refine`, {
+      method: 'POST',
+      headers: requestHeaders(session.id),
+      body: JSON.stringify({ preview: Boolean(options.preview) })
+    });
+    if (!resp.ok) {
+      throw await normalizeError(resp);
+    }
+    const payload = await resp.json().catch(() => ({}));
+    if (!options.preview) {
+      reconcileServerSessionIdentity(session, payload);
+      applyServerSessionSummary(session, payload);
+      session.name = String(payload.name || '').trim();
+      persistAndRefreshShell();
+    }
+    return payload;
+  } finally {
+    session._refiningTitle = false;
+    renderSidebar();
+  }
+};
+
+const setRenameGeneratedMode = (enabled) => {
+  state.renameGeneratedMode = Boolean(enabled);
+  elements.renameSessionNameField.classList.toggle('hidden', state.renameGeneratedMode);
+  elements.renameGeneratedFields.classList.toggle('hidden', !state.renameGeneratedMode);
+  elements.renameImproveTitleBtn.textContent = state.renameGeneratedMode ? 'Try again with AI' : 'Improve title with AI';
+  elements.renameSessionIntro.textContent = state.renameGeneratedMode
+    ? 'Review the AI suggestion before saving it as this session title.'
+    : 'Choose the label shown in the sidebar, or let AI suggest a better title from this session.';
+  elements.renameSessionInput.tabIndex = state.renameGeneratedMode ? -1 : 0;
+  elements.renameGeneratedTitleInput.tabIndex = state.renameGeneratedMode ? 0 : -1;
+  elements.renameGeneratedDetailInput.tabIndex = state.renameGeneratedMode ? 0 : -1;
+};
+
 const openRenameSessionModal = (session) => {
   if (!session?.id) return false;
   state.renameSessionId = session.id;
+  setRenameGeneratedMode(false);
   elements.renameSessionInput.value = String(session.name || '').trim();
   elements.renameSessionInput.placeholder = String(session.title || 'Project kickoff notes').trim() || 'Project kickoff notes';
+  elements.renameGeneratedTitleInput.value = String(session.generatedShortTitle || session.title || '').trim();
+  elements.renameGeneratedDetailInput.value = String(session.generatedLongTitle || session.longTitle || '').trim();
   elements.renameSessionError.textContent = '';
+  elements.renameImproveTitleBtn.disabled = false;
+  elements.renameImproveTitleBtn.classList.remove('is-loading');
   elements.renameSessionSaveBtn.disabled = false;
   elements.renameSessionCancelBtn.disabled = false;
   elements.renameSessionSaveBtn.textContent = 'Save';
@@ -1610,14 +1657,62 @@ const openRenameSessionModal = (session) => {
 
 const closeRenameSessionModal = () => {
   state.renameSessionId = '';
+  state.renameGeneratedMode = false;
   elements.renameSessionModal.classList.add('hidden');
   elements.renameSessionError.textContent = '';
   elements.renameSessionInput.value = '';
+  elements.renameGeneratedTitleInput.value = '';
+  elements.renameGeneratedDetailInput.value = '';
   elements.renameSessionInput.placeholder = 'Project kickoff notes';
   elements.renameSessionInput.setAttribute('tabindex', '-1');
+  elements.renameGeneratedTitleInput.setAttribute('tabindex', '-1');
+  elements.renameGeneratedDetailInput.setAttribute('tabindex', '-1');
+  elements.renameImproveTitleBtn.disabled = false;
+  elements.renameImproveTitleBtn.classList.remove('is-loading');
+  elements.renameImproveTitleBtn.textContent = 'Improve title with AI';
   elements.renameSessionSaveBtn.disabled = false;
   elements.renameSessionCancelBtn.disabled = false;
   elements.renameSessionSaveBtn.textContent = 'Save';
+};
+
+const improveRenameTitleSuggestion = async () => {
+  const sessionId = String(state.renameSessionId || '').trim();
+  if (!sessionId || elements.renameImproveTitleBtn.disabled) return false;
+  const session = state.sessions.find((item) => item.id === sessionId);
+  if (!session) return false;
+  elements.renameSessionError.textContent = '';
+  if (!state.renameGeneratedMode) {
+    elements.renameGeneratedTitleInput.value = String(session.generatedShortTitle || session.title || '').trim();
+    elements.renameGeneratedDetailInput.value = String(session.generatedLongTitle || session.longTitle || '').trim();
+    setRenameGeneratedMode(true);
+  }
+  elements.renameImproveTitleBtn.disabled = true;
+  elements.renameImproveTitleBtn.classList.add('is-loading');
+  elements.renameImproveTitleBtn.textContent = 'Improving title…';
+  try {
+    const payload = await refineSessionTitle(session, { preview: true });
+    if (!payload) return false;
+    elements.renameGeneratedTitleInput.value = String(payload.generated_short_title || payload.short_title || session.title || '').trim();
+    elements.renameGeneratedDetailInput.value = String(payload.generated_long_title || payload.long_title || session.longTitle || '').trim();
+    setRenameGeneratedMode(true);
+    window.setTimeout(() => {
+      elements.renameGeneratedTitleInput.focus();
+      elements.renameGeneratedTitleInput.select();
+    }, 0);
+    return true;
+  } catch (err) {
+    if (err?.status === 401) {
+      closeRenameSessionModal();
+      handleAuthFailure();
+      return false;
+    }
+    elements.renameSessionError.textContent = err?.message || 'Failed to improve title.';
+    return false;
+  } finally {
+    elements.renameImproveTitleBtn.disabled = false;
+    elements.renameImproveTitleBtn.classList.remove('is-loading');
+    elements.renameImproveTitleBtn.textContent = state.renameGeneratedMode ? 'Try again with AI' : 'Improve title with AI';
+  }
 };
 
 const submitRenameSessionModal = async () => {
@@ -1635,13 +1730,19 @@ const submitRenameSessionModal = async () => {
     return false;
   }
 
-  const nextName = elements.renameSessionInput.value.trim();
+  const patch = state.renameGeneratedMode
+    ? {
+      name: '',
+      generated_short_title: elements.renameGeneratedTitleInput.value.trim(),
+      generated_long_title: elements.renameGeneratedDetailInput.value.trim()
+    }
+    : { name: elements.renameSessionInput.value.trim() };
   elements.renameSessionError.textContent = '';
   elements.renameSessionSaveBtn.disabled = true;
   elements.renameSessionCancelBtn.disabled = true;
   elements.renameSessionSaveBtn.textContent = 'Saving…';
   try {
-    const payload = await updateSessionMetadata(session, { name: nextName });
+    const payload = await updateSessionMetadata(session, patch);
     reconcileServerSessionIdentity(session, payload);
     applyServerSessionSummary(session, payload);
     session.name = String(payload.name || '').trim();
@@ -2048,6 +2149,9 @@ if (elements.notificationBtn) {
 }
 elements.authCancelBtn.addEventListener('click', closeAuthModal);
 elements.renameSessionCancelBtn.addEventListener('click', closeRenameSessionModal);
+elements.renameImproveTitleBtn.addEventListener('click', () => {
+  void improveRenameTitleSuggestion();
+});
 elements.renameSessionSaveBtn.addEventListener('click', () => {
   void submitRenameSessionModal();
 });
@@ -2237,6 +2341,7 @@ Object.assign(app, {
   stopSidebarStatusPoll,
   refreshSidebarStatusPoll,
   promptRenameSession,
+  refineSessionTitle,
   setSessionArchived,
   setSessionPinned,
   switchToDraftSession,

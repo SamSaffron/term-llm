@@ -29,6 +29,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/serveui"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/sessiontitle"
 )
 
 func (s *serveServer) verboseLog(format string, args ...any) {
@@ -1344,6 +1345,16 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if suffix == "title/refine" {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+			return
+		}
+		s.handleSessionTitleRefine(w, r, sessionID)
+		return
+	}
+
 	if suffix == "state" {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", "GET")
@@ -1534,6 +1545,126 @@ func (s *serveServer) handleSessionInterjectionCancel(w http.ResponseWriter, r *
 	writeJSON(w, http.StatusOK, map[string]any{"cancelled": true, "interjection_id": interjectionID})
 }
 
+func (s *serveServer) newTitleProvider() (llm.Provider, error) {
+	if s.titleProviderFactory != nil {
+		return s.titleProviderFactory(s.cfgRef)
+	}
+	if s.cfgRef == nil {
+		return nil, fmt.Errorf("config is unavailable")
+	}
+	provider, err := llm.NewFastProvider(s.cfgRef, s.cfgRef.DefaultProvider)
+	if err != nil {
+		return nil, err
+	}
+	if provider == nil {
+		return nil, fmt.Errorf("no fast provider configured for %q", s.cfgRef.DefaultProvider)
+	}
+	return provider, nil
+}
+
+func (s *serveServer) handleSessionTitleRefine(w http.ResponseWriter, r *http.Request, sessionID string) {
+	var req struct {
+		Preview bool `json:"preview"`
+	}
+	if r.Body != nil {
+		decoder := json.NewDecoder(r.Body)
+		if err := decoder.Decode(&req); err != nil && err != io.EOF {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
+			return
+		}
+	}
+	if s.store == nil {
+		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session history is unavailable")
+		return
+	}
+
+	sess, err := s.store.Get(r.Context(), sessionID)
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to load session")
+		return
+	}
+	if sess == nil {
+		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
+		return
+	}
+
+	messages, err := s.store.GetMessages(r.Context(), sess.ID, 80, 0)
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to load session messages")
+		return
+	}
+	if len(messages) == 0 {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "session has no messages to title")
+		return
+	}
+
+	provider, err := s.newTitleProvider()
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to create fast title provider: "+err.Error())
+		return
+	}
+	cand, err := sessiontitle.Generate(r.Context(), provider, sess, messages)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, "server_error", "failed to refine title: "+err.Error())
+		return
+	}
+
+	if !req.Preview {
+		sess.Name = ""
+		sess.GeneratedShortTitle = cand.ShortTitle
+		sess.GeneratedLongTitle = cand.LongTitle
+		sess.TitleSource = session.TitleSourceGenerated
+		sess.TitleGeneratedAt = time.Now().UTC()
+		if len(messages) > 0 {
+			sess.TitleBasisMsgSeq = messages[len(messages)-1].Sequence
+		}
+		if err := s.store.Update(r.Context(), sess); err != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to save refined title")
+			return
+		}
+
+		if s.sessionMgr != nil {
+			if rt, ok := s.sessionMgr.Get(sessionID); ok {
+				rt.mu.Lock()
+				if rt.sessionMeta != nil {
+					rt.sessionMeta.Name = sess.Name
+					rt.sessionMeta.GeneratedShortTitle = sess.GeneratedShortTitle
+					rt.sessionMeta.GeneratedLongTitle = sess.GeneratedLongTitle
+					rt.sessionMeta.TitleSource = sess.TitleSource
+					rt.sessionMeta.TitleGeneratedAt = sess.TitleGeneratedAt
+					rt.sessionMeta.TitleBasisMsgSeq = sess.TitleBasisMsgSeq
+				}
+				rt.mu.Unlock()
+			}
+		}
+	}
+
+	generatedShort := sess.GeneratedShortTitle
+	generatedLong := sess.GeneratedLongTitle
+	preferredShort := sess.PreferredShortTitle()
+	preferredLong := sess.PreferredLongTitle()
+	if req.Preview {
+		generatedShort = cand.ShortTitle
+		generatedLong = cand.LongTitle
+		preferredShort = cand.ShortTitle
+		preferredLong = cand.LongTitle
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":                    sess.ID,
+		"name":                  sess.Name,
+		"short_title":           preferredShort,
+		"long_title":            preferredLong,
+		"generated_short_title": generatedShort,
+		"generated_long_title":  generatedLong,
+		"mode":                  sess.Mode,
+		"origin":                sess.Origin,
+		"archived":              sess.Archived,
+		"pinned":                sess.Pinned,
+		"created_at":            sess.CreatedAt.UnixMilli(),
+	})
+}
+
 func (s *serveServer) handleSessionMetadataPatch(w http.ResponseWriter, r *http.Request, sessionID string) {
 	if s.store == nil {
 		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session history is unavailable")
@@ -1541,9 +1672,11 @@ func (s *serveServer) handleSessionMetadataPatch(w http.ResponseWriter, r *http.
 	}
 
 	var req struct {
-		Name     *string `json:"name"`
-		Archived *bool   `json:"archived"`
-		Pinned   *bool   `json:"pinned"`
+		Name                *string `json:"name"`
+		GeneratedShortTitle *string `json:"generated_short_title"`
+		GeneratedLongTitle  *string `json:"generated_long_title"`
+		Archived            *bool   `json:"archived"`
+		Pinned              *bool   `json:"pinned"`
 	}
 	if err := decodeJSONBody(r, &req); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
@@ -1563,6 +1696,18 @@ func (s *serveServer) handleSessionMetadataPatch(w http.ResponseWriter, r *http.
 	if req.Name != nil {
 		sess.Name = strings.TrimSpace(*req.Name)
 	}
+	if req.GeneratedShortTitle != nil {
+		sess.GeneratedShortTitle = strings.TrimSpace(*req.GeneratedShortTitle)
+		sess.TitleSource = session.TitleSourceGenerated
+		sess.TitleGeneratedAt = time.Now().UTC()
+	}
+	if req.GeneratedLongTitle != nil {
+		sess.GeneratedLongTitle = strings.TrimSpace(*req.GeneratedLongTitle)
+		sess.TitleSource = session.TitleSourceGenerated
+		if sess.TitleGeneratedAt.IsZero() {
+			sess.TitleGeneratedAt = time.Now().UTC()
+		}
+	}
 	if req.Archived != nil {
 		sess.Archived = *req.Archived
 	}
@@ -1579,6 +1724,10 @@ func (s *serveServer) handleSessionMetadataPatch(w http.ResponseWriter, r *http.
 			rt.mu.Lock()
 			if rt.sessionMeta != nil {
 				rt.sessionMeta.Name = sess.Name
+				rt.sessionMeta.GeneratedShortTitle = sess.GeneratedShortTitle
+				rt.sessionMeta.GeneratedLongTitle = sess.GeneratedLongTitle
+				rt.sessionMeta.TitleSource = sess.TitleSource
+				rt.sessionMeta.TitleGeneratedAt = sess.TitleGeneratedAt
 				rt.sessionMeta.Archived = sess.Archived
 				rt.sessionMeta.Pinned = sess.Pinned
 				rt.sessionMeta.Origin = sess.Origin
@@ -1588,15 +1737,17 @@ func (s *serveServer) handleSessionMetadataPatch(w http.ResponseWriter, r *http.
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id":          sess.ID,
-		"name":        sess.Name,
-		"short_title": sess.PreferredShortTitle(),
-		"long_title":  sess.PreferredLongTitle(),
-		"mode":        sess.Mode,
-		"origin":      sess.Origin,
-		"archived":    sess.Archived,
-		"pinned":      sess.Pinned,
-		"created_at":  sess.CreatedAt.UnixMilli(),
+		"id":                    sess.ID,
+		"name":                  sess.Name,
+		"short_title":           sess.PreferredShortTitle(),
+		"long_title":            sess.PreferredLongTitle(),
+		"generated_short_title": sess.GeneratedShortTitle,
+		"generated_long_title":  sess.GeneratedLongTitle,
+		"mode":                  sess.Mode,
+		"origin":                sess.Origin,
+		"archived":              sess.Archived,
+		"pinned":                sess.Pinned,
+		"created_at":            sess.CreatedAt.UnixMilli(),
 	})
 }
 

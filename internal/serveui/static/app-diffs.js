@@ -373,9 +373,14 @@ const renderDiffTotals = (ds) => {
   if (elements.diffSidebarTotals) elements.diffSidebarTotals.textContent = summary.join(' ');
   if (elements.diffToggleBadge) {
     const parts = [];
+    const fileCount = ds.files.size || 0;
+    const fileCountEl = createEl('span', 'diff-toggle-file-count');
+    fileCountEl.innerHTML = '<svg class="diff-toggle-file-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 1.75h4.25L12.5 5.5v8.75h-8z"/><path d="M8.75 1.75V5.5h3.75"/><path d="M6.25 8.5h4"/><path d="M6.25 11h3"/></svg>';
+    fileCountEl.dataset.fileCount = String(fileCount);
+    parts.push(fileCountEl);
     if (adds > 0) parts.push(createEl('span', 'diff-toggle-stat-add', `+${adds}`));
     if (dels > 0) parts.push(createEl('span', 'diff-toggle-stat-del', `−${dels}`));
-    if (parts.length === 0) parts.push(createEl('span', 'diff-toggle-stat-neutral', String(ds.files.size || '')));
+    if (parts.length === 1 && fileCount === 0) parts.push(createEl('span', 'diff-toggle-stat-neutral', '0'));
     elements.diffToggleBadge.replaceChildren(...parts);
   }
   if (elements.diffToggleBtn) {

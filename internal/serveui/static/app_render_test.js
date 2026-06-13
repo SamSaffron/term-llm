@@ -1114,6 +1114,23 @@ async function run(name, fn) {
     assert(rowBefore === rowAfter, 'identical fingerprint: no DOM change, same row node');
   });
 
+  await run('renderSidebar exposes strategic full titles as row tooltips', () => {
+    const sessions = [
+      { id: 'a', title: 'Short custom name', longTitle: 'Generated long title with the useful strategic detail', created: 1000, messages: [], pinned: false, archived: false, messageCount: 0, lastMessageAt: 1000 },
+    ];
+    const { app } = createHarness({ visibleSessions: () => sessions });
+
+    app.renderSidebar();
+
+    const row = app.elements.sessionGroups.children[0].querySelectorAll('.session-row')[0];
+    const btn = row.querySelector('.session-btn');
+    const titleEl = row.querySelector('.session-title');
+    const expected = 'Short custom name\nGenerated long title with the useful strategic detail';
+    assertEqual(titleEl.title, expected, 'title element tooltip combines visible and long titles');
+    assertEqual(btn.title, expected, 'whole row button exposes the same tooltip');
+    assertEqual(btn.getAttribute('aria-label'), 'Open session: Short custom name', 'button has a descriptive label');
+  });
+
   await run('renderSidebar updates title in-place, reusing the row DOM node', () => {
     const session = { id: 'a', title: 'Before', created: 1000, messages: [], pinned: false, archived: false, messageCount: 0, lastMessageAt: 1000 };
     const { app } = createHarness({ visibleSessions: () => [session] });

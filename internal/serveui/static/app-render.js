@@ -106,6 +106,7 @@ const closeAllSessionMenus = () => {
 const SESSION_MENU_ICONS = {
   pin: '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4.146.146A.5.5 0 0 1 4.5 0h7a.5.5 0 0 1 .5.5c0 .68-.342 1.174-.646 1.479-.126.125-.25.224-.354.298v4.431l.078.048c.203.127.476.314.751.555C12.36 7.775 13 8.527 13 9.5a.5.5 0 0 1-.5.5h-4v4.5c0 .276-.224 1.5-.5 1.5s-.5-1.224-.5-1.5V10h-4a.5.5 0 0 1-.5-.5c0-.973.64-1.725 1.17-2.189A6 6 0 0 1 5 6.708V2.277a3 3 0 0 1-.354-.298C4.342 1.674 4 1.179 4 .5a.5.5 0 0 1 .146-.354"/></svg>',
   unpin: '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><g transform="rotate(38 8 8)"><path d="M4.146.146A.5.5 0 0 1 4.5 0h7a.5.5 0 0 1 .5.5c0 .68-.342 1.174-.646 1.479-.126.125-.25.224-.354.298v4.431l.078.048c.203.127.476.314.751.555C12.36 7.775 13 8.527 13 9.5a.5.5 0 0 1-.5.5h-4v4.5c0 .276-.224 1.5-.5 1.5s-.5-1.224-.5-1.5V10h-4a.5.5 0 0 1-.5-.5c0-.973.64-1.725 1.17-2.189A6 6 0 0 1 5 6.708V2.277a3 3 0 0 1-.354-.298C4.342 1.674 4 1.179 4 .5a.5.5 0 0 1 .146-.354"/></g></svg>',
+  refine: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.7 4.8L18.5 9.5l-4.8 1.7L12 16l-1.7-4.8-4.8-1.7 4.8-1.7L12 3Z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15Z"/></svg>',
   rename: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5Z"/></svg>',
   hide: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20C7 20 2.73 16.89 1 12c.92-2.6 2.63-4.77 4.83-6.2"/><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A11.02 11.02 0 0 1 12 5c5 0 9.27 3.11 11 7a11.05 11.05 0 0 1-2.16 3.19"/><path d="M1 1l22 22"/></svg>',
   unhide: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12Z"/><circle cx="12" cy="12" r="3"/></svg>'
@@ -182,6 +183,7 @@ const computeSidebarKey = (sorted) =>
   sorted.map((s) =>
     [
       s.id, s.title, s.longTitle || '', s.searchSnippet || '',
+      s._refiningTitle ? 1 : 0,
       s.pinned ? 1 : 0, s.archived ? 1 : 0,
       conversationMessageCount(s),
       s.lastMessageAt || s.created,
@@ -201,6 +203,16 @@ const getOrCreateGroupSection = (label) => {
   return section;
 };
 
+const sidebarSessionDisplayTitle = (session) => String(session?.title || 'New chat').trim() || 'New chat';
+
+const sidebarSessionTooltip = (session) => {
+  const title = sidebarSessionDisplayTitle(session);
+  const longTitle = String(session?.longTitle || '').trim();
+  if (!longTitle) return title;
+  if (longTitle === title) return title;
+  return `${title}\n${longTitle}`;
+};
+
 const resolveSidebarSession = (sessionId) => state.sessions.find((s) => s.id === sessionId) || null;
 
 const buildCachedSessionRow = (session) => {
@@ -209,21 +221,28 @@ const buildCachedSessionRow = (session) => {
   row.className = 'session-row';
   row.dataset.sessionId = session.id;
   row.classList.toggle('is-active', sessionHasInProgressState(session));
+  row.classList.toggle('is-refining-title', Boolean(session._refiningTitle));
 
   const btn = document.createElement('button');
   btn.className = 'session-btn';
+  const tooltip = sidebarSessionTooltip(session);
+  btn.title = tooltip;
+  btn.setAttribute('aria-label', `Open session: ${sidebarSessionDisplayTitle(session)}`);
   if (session.id === state.activeSessionId) btn.classList.add('active');
 
   const titleEl = document.createElement('div');
   titleEl.className = 'session-title';
-  titleEl.textContent = session.title || 'New chat';
-  if (session.longTitle) titleEl.title = session.longTitle;
+  titleEl.textContent = sidebarSessionDisplayTitle(session);
+  titleEl.title = tooltip;
 
   const metaEl = document.createElement('div');
   metaEl.className = 'session-meta';
   if (session.searchSnippet) {
     metaEl.textContent = session.searchSnippet;
     metaEl.title = session.searchSnippet;
+  } else if (session._refiningTitle) {
+    metaEl.textContent = 'Refining title…';
+    metaEl.title = 'Using the fast model to generate a better session title';
   } else {
     const metaParts = [formatSessionMessageCount(session)];
     if (session.archived) metaParts.push('hidden');
@@ -322,18 +341,25 @@ const updateCachedSessionRow = (session, cached) => {
   const { row, btn, titleEl, metaEl, pinIconEl, pinLabelEl, archiveIconEl, archiveLabelEl } = cached;
 
   row.classList.toggle('is-active', sessionHasInProgressState(session));
+  row.classList.toggle('is-refining-title', Boolean(session._refiningTitle));
   btn.classList.toggle('active', session.id === state.activeSessionId);
 
-  const newTitle = session.title || 'New chat';
+  const newTitle = sidebarSessionDisplayTitle(session);
   if (titleEl.textContent !== newTitle) titleEl.textContent = newTitle;
-  const newLongTitle = session.longTitle || '';
-  if (titleEl.title !== newLongTitle) titleEl.title = newLongTitle;
+  const newTooltip = sidebarSessionTooltip(session);
+  if (titleEl.title !== newTooltip) titleEl.title = newTooltip;
+  if (btn.title !== newTooltip) btn.title = newTooltip;
+  const newAriaLabel = `Open session: ${newTitle}`;
+  if (btn.getAttribute('aria-label') !== newAriaLabel) btn.setAttribute('aria-label', newAriaLabel);
 
   let newMeta;
   let newMetaTitle;
   if (session.searchSnippet) {
     newMeta = session.searchSnippet;
     newMetaTitle = session.searchSnippet;
+  } else if (session._refiningTitle) {
+    newMeta = 'Refining title…';
+    newMetaTitle = 'Using the fast model to generate a better session title';
   } else {
     const metaParts = [formatSessionMessageCount(session)];
     if (session.archived) metaParts.push('hidden');

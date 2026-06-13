@@ -970,28 +970,29 @@ func normalizeBasePath(raw string) (string, error) {
 }
 
 type serveServer struct {
-	cfg               serveServerConfig
-	sessionMgr        *serveSessionManager
-	jobsV2            *jobsV2Manager
-	cfgRef            *config.Config
-	store             session.Store
-	server            *http.Server
-	shutdownCh        chan struct{}
-	shutdownOnce      sync.Once
-	modelsMu          sync.Mutex
-	modelsProviders   map[string]llm.Provider // keyed by provider name
-	modelsCache       map[string]serveModelsCacheEntry
-	responseToSession sync.Map // response_id (string) → session_id (string)
-	sessionToResponse sync.Map // session_id (string) → latest response_id (string)
-	responseRunsOnce  sync.Once
-	responseRuns      *responseRunManager
-	webrtcEnabled     bool
-	webrtcHeadSnippet string // injected into index.html <head>; empty when WebRTC disabled
-	runtimeFactory    func(ctx context.Context, providerName string, model string) (*serveRuntime, error)
-	widgetsMgr        *widgets.Manager
-	indexHTMLOnce     sync.Once
-	cachedIndexHTML   []byte
-	fileTrackStoreFn  func() *filetrack.Store // test seam; nil → process-wide store from config
+	cfg                  serveServerConfig
+	sessionMgr           *serveSessionManager
+	jobsV2               *jobsV2Manager
+	cfgRef               *config.Config
+	store                session.Store
+	server               *http.Server
+	shutdownCh           chan struct{}
+	shutdownOnce         sync.Once
+	modelsMu             sync.Mutex
+	modelsProviders      map[string]llm.Provider // keyed by provider name
+	modelsCache          map[string]serveModelsCacheEntry
+	responseToSession    sync.Map // response_id (string) → session_id (string)
+	sessionToResponse    sync.Map // session_id (string) → latest response_id (string)
+	responseRunsOnce     sync.Once
+	responseRuns         *responseRunManager
+	webrtcEnabled        bool
+	webrtcHeadSnippet    string // injected into index.html <head>; empty when WebRTC disabled
+	runtimeFactory       func(ctx context.Context, providerName string, model string) (*serveRuntime, error)
+	titleProviderFactory func(*config.Config) (llm.Provider, error)
+	widgetsMgr           *widgets.Manager
+	indexHTMLOnce        sync.Once
+	cachedIndexHTML      []byte
+	fileTrackStoreFn     func() *filetrack.Store // test seam; nil → process-wide store from config
 }
 
 // fileTrackStore returns the file-change history store, or nil when file

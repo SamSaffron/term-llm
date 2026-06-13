@@ -77,8 +77,19 @@ func BuildConversationSlice(messages []session.Message) string {
 	var lines []string
 	userWords := 0
 	assistantWords := 0
+	seen := make(map[string]bool)
 
 	appendMsg := func(m session.Message) bool {
+		seenKey := fmt.Sprintf("%d:%s:%s", m.ID, m.Role, m.TextContent)
+		if seenKey == "0::" {
+			seenKey = ""
+		}
+		if seenKey != "" {
+			if seen[seenKey] {
+				return false
+			}
+			seen[seenKey] = true
+		}
 		text := cleanMessageText(m.TextContent)
 		if text == "" {
 			return false
@@ -86,22 +97,22 @@ func BuildConversationSlice(messages []session.Message) string {
 		words := len(strings.Fields(text))
 		switch m.Role {
 		case llm.RoleUser:
-			if userWords >= 500 {
+			if userWords >= 650 {
 				return false
 			}
-			if userWords+words > 500 {
-				text = truncateWords(text, 500-userWords)
+			if userWords+words > 650 {
+				text = truncateWords(text, 650-userWords)
 				words = len(strings.Fields(text))
 			}
 			userWords += words
 			lines = append(lines, "User: "+text)
 			return true
 		case llm.RoleAssistant:
-			if assistantWords >= 200 {
+			if assistantWords >= 300 {
 				return false
 			}
-			if assistantWords+words > 200 {
-				text = truncateWords(text, 200-assistantWords)
+			if assistantWords+words > 300 {
+				text = truncateWords(text, 300-assistantWords)
 				words = len(strings.Fields(text))
 			}
 			assistantWords += words
@@ -112,25 +123,53 @@ func BuildConversationSlice(messages []session.Message) string {
 		}
 	}
 
-	selected := 0
-	userCount := 0
-	assistantCount := 0
+	// Smart budget: titles need the original ask and the latest direction.
+	// Use the opening turns to capture intent, then recent turns to catch pivots
+	// and refinements without sending the whole transcript to the fast model.
+	openingUser := 0
+	openingAssistant := 0
 	for _, m := range messages {
-		if m.Role == llm.RoleUser && userCount < 3 {
+		if m.Role == llm.RoleUser && openingUser < 3 {
 			if appendMsg(m) {
-				selected++
-				userCount++
+				openingUser++
 			}
 			continue
 		}
-		if m.Role == llm.RoleAssistant && assistantCount < 2 && selected > 0 {
+		if m.Role == llm.RoleAssistant && openingAssistant < 1 && openingUser > 0 {
 			if appendMsg(m) {
-				assistantCount++
+				openingAssistant++
 			}
 		}
-		if userCount >= 3 && assistantCount >= 2 {
+		if openingUser >= 3 && openingAssistant >= 1 {
 			break
 		}
+	}
+
+	var tail []session.Message
+	recentUser := 0
+	recentAssistant := 0
+	for i := len(messages) - 1; i >= 0; i-- {
+		m := messages[i]
+		switch m.Role {
+		case llm.RoleUser:
+			if recentUser >= 3 {
+				continue
+			}
+			recentUser++
+			tail = append(tail, m)
+		case llm.RoleAssistant:
+			if recentAssistant >= 2 {
+				continue
+			}
+			recentAssistant++
+			tail = append(tail, m)
+		}
+		if recentUser >= 3 && recentAssistant >= 2 {
+			break
+		}
+	}
+	for i := len(tail) - 1; i >= 0; i-- {
+		appendMsg(tail[i])
 	}
 
 	return strings.Join(lines, "\n")
