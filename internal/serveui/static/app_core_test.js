@@ -860,6 +860,99 @@ function makeSwipePanel(width = 320) {
   pass(name);
 })();
 
+(function testPanelSwipeReleaseDecisionUsesInertiaProjection() {
+  const name = 'panel swipe release decision closes when inertia crosses threshold';
+  const testApp = loadAppCore();
+  const panel = makeSwipePanel(320);
+  const decision = testApp.panelSwipeReleaseDecision({
+    panel,
+    closeDelta: 45,
+    velocity: 0.72,
+  });
+
+  if (decision.distance >= decision.threshold) {
+    fail(name, 'test setup should be below the direct distance threshold');
+    return;
+  }
+  if (!decision.shouldClose) {
+    fail(name, `expected inertia projection ${decision.projectedDistance} to cross threshold ${decision.threshold}`);
+    return;
+  }
+  pass(name);
+})();
+
+(function testPanelSwipeSmoothedVelocityIgnoresNoisyLastSample() {
+  const name = 'panel swipe smoothed velocity ignores a noisy final sample';
+  const testApp = loadAppCore();
+  const velocity = testApp.panelSwipeSmoothedVelocity([
+    { at: 0, closeDelta: 0 },
+    { at: 50, closeDelta: 52 },
+    { at: 100, closeDelta: 86 },
+    { at: 104, closeDelta: 80 },
+  ]);
+
+  if (velocity <= 0.6) {
+    fail(name, `expected smoothed velocity to preserve the flick, got ${velocity}`);
+    return;
+  }
+  pass(name);
+})();
+
+(function testPanelSwipeToCloseCommitsNoisyFlickViaInertia() {
+  const name = 'initPanelSwipeToClose commits a noisy flick via inertia projection';
+  let now = 0;
+  const testApp = loadAppCoreWith({ now: () => now });
+  const panel = makeSwipePanel(320);
+  let closed = 0;
+  let closeDecision = null;
+  testApp.initPanelSwipeToClose({
+    panel,
+    side: 'left',
+    isEnabled: () => true,
+    isOpen: () => true,
+    onClose: (_event, decision) => { closed += 1; closeDecision = decision; },
+  });
+
+  panel.dispatchEvent({ type: 'pointerdown', pointerId: 1, clientX: 220, clientY: 20 });
+  now = 50;
+  panel.dispatchEvent({ type: 'pointermove', pointerId: 1, clientX: 168, clientY: 22 });
+  now = 100;
+  panel.dispatchEvent({ type: 'pointermove', pointerId: 1, clientX: 134, clientY: 24 });
+  now = 104;
+  panel.dispatchEvent({ type: 'pointerup', pointerId: 1, clientX: 140, clientY: 24 });
+
+  if (closed !== 1) {
+    fail(name, `expected noisy flick to close once, got ${closed}`);
+    return;
+  }
+  if (!closeDecision || closeDecision.distance >= closeDecision.threshold || closeDecision.projectedDistance < closeDecision.threshold) {
+    fail(name, `expected inertia, not direct distance, to commit: ${JSON.stringify(closeDecision)}`);
+    return;
+  }
+  pass(name);
+})();
+
+(function testPanelSwipeCloseDurationUsesInertialEdgeTime() {
+  const name = 'panel swipe close duration uses time to the closing edge';
+  const testApp = loadAppCore();
+  const duration = testApp.panelSwipeCloseDuration({
+    width: 320,
+    distance: 180,
+    distanceToEdge: 140,
+    velocity: 1.4,
+  });
+
+  if (duration < 90 || duration > 260) {
+    fail(name, `duration should be clamped to sane release timing, got ${duration}`);
+    return;
+  }
+  if (duration >= 260) {
+    fail(name, `expected inertial edge time, got fallback-like duration ${duration}`);
+    return;
+  }
+  pass(name);
+})();
+
 if (failures > 0) {
   process.exit(1);
 }

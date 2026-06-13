@@ -445,7 +445,14 @@ const PANEL_SWIPE_VERTICAL_CANCEL_RATIO = 1.15;
 const PANEL_SWIPE_CLOSE_RATIO = 0.28;
 const PANEL_SWIPE_CLOSE_MIN_PX = 70;
 const PANEL_SWIPE_CLOSE_MAX_PX = 140;
-const PANEL_SWIPE_FLING_PX_PER_MS = 0.65;
+const PANEL_SWIPE_VELOCITY_WINDOW_MS = 120;
+const PANEL_SWIPE_INERTIA_DECELERATION_PX_PER_MS2 = 0.004;
+const PANEL_SWIPE_CLOSE_TRANSITION_MIN_MS = 90;
+const PANEL_SWIPE_CLOSE_TRANSITION_MAX_MS = 260;
+const PANEL_SWIPE_SNAP_TRANSITION_MIN_MS = 120;
+const PANEL_SWIPE_SNAP_TRANSITION_MAX_MS = 220;
+const PANEL_SWIPE_TRANSITION_RESET_BUFFER_MS = 80;
+const PANEL_TRANSITION_DURATION_VAR = '--panel-transition-duration';
 const PANEL_SWIPE_RESISTANCE = 0.25;
 const PANEL_SWIPE_MAX_OVERSHOOT_PX = 32;
 const PANEL_SWIPE_OFFSET_VAR = '--panel-swipe-offset-x';
@@ -467,11 +474,122 @@ const panelSwipeThreshold = (panel, minPx, maxPx, ratio) => {
   return Math.min(maxPx, Math.max(minPx, width * ratio));
 };
 
+const clampPanelSwipeNumber = (value, min, max) => Math.min(max, Math.max(min, Number(value) || 0));
+
+// Least-squares velocity over the recent gesture window. A single noisy final
+// pointer event should not flip a flick from "close" to "snap back".
+const panelSwipeSmoothedVelocity = (samples) => {
+  const points = Array.isArray(samples) ? samples : [];
+  if (points.length < 2) return 0;
+  const meanAt = points.reduce((sum, sample) => sum + sample.at, 0) / points.length;
+  const meanDelta = points.reduce((sum, sample) => sum + sample.closeDelta, 0) / points.length;
+  let numerator = 0;
+  let denominator = 0;
+  points.forEach((sample) => {
+    const dt = sample.at - meanAt;
+    numerator += dt * (sample.closeDelta - meanDelta);
+    denominator += dt * dt;
+  });
+  return denominator > 0 ? numerator / denominator : 0;
+};
+
+const panelSwipeProjectedDistance = (closeDelta, velocity, deceleration = PANEL_SWIPE_INERTIA_DECELERATION_PX_PER_MS2) => {
+  const distance = Math.max(0, Number(closeDelta) || 0);
+  const v = Math.max(0, Number(velocity) || 0);
+  const a = Math.max(0.0001, Number(deceleration) || PANEL_SWIPE_INERTIA_DECELERATION_PX_PER_MS2);
+  // Constant deceleration: stopping distance = v² / 2a.
+  return distance + (v * v) / (2 * a);
+};
+
+const panelSwipeTimeToDistance = (distance, velocity, deceleration) => {
+  const d = Math.max(0, Number(distance) || 0);
+  if (d <= 0) return 0;
+  const v = Math.max(0, Number(velocity) || 0);
+  const a = Math.max(0.0001, Number(deceleration) || PANEL_SWIPE_INERTIA_DECELERATION_PX_PER_MS2);
+  if (v <= 0) return Infinity;
+  const discriminant = (v * v) - (2 * a * d);
+  if (discriminant < 0) return Infinity;
+  // d = vt - ½at². Use the smaller root: time before the flick stops.
+  return (v - Math.sqrt(discriminant)) / a;
+};
+
+const panelSwipeReleaseDecision = ({
+  panel,
+  closeDelta,
+  velocity,
+  closeRatio = PANEL_SWIPE_CLOSE_RATIO,
+  closeMinPx = PANEL_SWIPE_CLOSE_MIN_PX,
+  closeMaxPx = PANEL_SWIPE_CLOSE_MAX_PX,
+  deceleration = PANEL_SWIPE_INERTIA_DECELERATION_PX_PER_MS2
+} = {}) => {
+  const width = panelSwipeWidth(panel);
+  const distance = clampPanelSwipeNumber(closeDelta, 0, width);
+  const threshold = panelSwipeThreshold(panel, closeMinPx, closeMaxPx, closeRatio);
+  const projectedDistance = Math.min(width, panelSwipeProjectedDistance(distance, velocity, deceleration));
+  return {
+    width,
+    distance,
+    threshold,
+    projectedDistance,
+    distanceToEdge: Math.max(0, width - distance),
+    shouldClose: distance >= threshold || projectedDistance >= threshold
+  };
+};
+
+const panelSwipeCloseDuration = ({
+  width,
+  distance,
+  distanceToEdge,
+  velocity,
+  deceleration = PANEL_SWIPE_INERTIA_DECELERATION_PX_PER_MS2,
+  minMs = PANEL_SWIPE_CLOSE_TRANSITION_MIN_MS,
+  maxMs = PANEL_SWIPE_CLOSE_TRANSITION_MAX_MS
+} = {}) => {
+  const edgeDistance = Math.max(0, Number(distanceToEdge) || 0);
+  const v = Math.max(0, Number(velocity) || 0);
+  const inertialEdgeTime = panelSwipeTimeToDistance(edgeDistance, v, deceleration);
+  const fallback = PANEL_ANIMATION_FALLBACK_MS * (edgeDistance / Math.max(1, Number(width) || Number(distance) || 1));
+  const duration = Number.isFinite(inertialEdgeTime) ? inertialEdgeTime : fallback;
+  return clampPanelSwipeNumber(duration, minMs, maxMs);
+};
+
+const panelSwipeSnapDuration = ({
+  width,
+  distance,
+  minMs = PANEL_SWIPE_SNAP_TRANSITION_MIN_MS,
+  maxMs = PANEL_SWIPE_SNAP_TRANSITION_MAX_MS
+} = {}) => {
+  const ratio = clampPanelSwipeNumber(distance, 0, Math.max(1, Number(width) || 1)) / Math.max(1, Number(width) || 1);
+  return clampPanelSwipeNumber(minMs + (maxMs - minMs) * ratio, minMs, maxMs);
+};
+
+const setPanelSwipeReleaseTransition = (panel, durationMs, transitionDurationVar = PANEL_TRANSITION_DURATION_VAR) => {
+  if (!panel?.style) return;
+  if (panel._termLLMPanelSwipeTransitionTimer) clearTimeout(panel._termLLMPanelSwipeTransitionTimer);
+  const duration = Math.round(clampPanelSwipeNumber(durationMs, 0, PANEL_SWIPE_CLOSE_TRANSITION_MAX_MS));
+  panel.style.setProperty?.(transitionDurationVar, `${duration}ms`);
+  panel._termLLMPanelSwipeTransitionTimer = setTimeout(() => {
+    panel._termLLMPanelSwipeTransitionTimer = 0;
+    panel.style?.removeProperty?.(transitionDurationVar);
+  }, duration + PANEL_SWIPE_TRANSITION_RESET_BUFFER_MS);
+};
+
+const pushPanelSwipeSample = (gesture, closeDelta, now, velocityWindowMs) => {
+  const sample = { at: now, closeDelta };
+  gesture.samples.push(sample);
+  const cutoff = now - velocityWindowMs;
+  while (gesture.samples.length > 1 && gesture.samples[0].at < cutoff) gesture.samples.shift();
+  gesture.velocity = panelSwipeSmoothedVelocity(gesture.samples);
+  gesture.lastCloseDelta = closeDelta;
+  gesture.lastAt = now;
+  return closeDelta;
+};
+
 // Installs a drag-to-dismiss gesture for side panels. The panel tracks the
 // finger while the gesture is active, locks only after horizontal intent wins,
-// and commits on either distance or fling velocity. Vertical scrolling inside
-// the panel is left alone so the surface feels attached to the finger without
-// stealing ordinary scrolling.
+// and commits when either the current drag or the inertial projection crosses
+// the close threshold. Vertical scrolling inside the panel is left alone so the
+// surface feels attached to the finger without stealing ordinary scrolling.
 const initPanelSwipeToClose = ({
   panel,
   side = 'left',
@@ -486,7 +604,9 @@ const initPanelSwipeToClose = ({
   closeRatio = PANEL_SWIPE_CLOSE_RATIO,
   closeMinPx = PANEL_SWIPE_CLOSE_MIN_PX,
   closeMaxPx = PANEL_SWIPE_CLOSE_MAX_PX,
-  flingPxPerMs = PANEL_SWIPE_FLING_PX_PER_MS,
+  velocityWindowMs = PANEL_SWIPE_VELOCITY_WINDOW_MS,
+  decelerationPxPerMs2 = PANEL_SWIPE_INERTIA_DECELERATION_PX_PER_MS2,
+  transitionDurationVar = PANEL_TRANSITION_DURATION_VAR,
   resistance = PANEL_SWIPE_RESISTANCE,
   maxOvershootPx = PANEL_SWIPE_MAX_OVERSHOOT_PX
 } = {}) => {
@@ -515,14 +635,9 @@ const initPanelSwipeToClose = ({
     panel.style?.setProperty?.(offsetVar, `${direction * distance}px`);
   };
 
-  const updateVelocity = (event) => {
+  const updateGestureSample = (event) => {
     const now = Date.now();
-    const closeDelta = closeDeltaFor(event);
-    const elapsed = Math.max(1, now - gesture.lastAt);
-    gesture.velocity = (closeDelta - gesture.lastCloseDelta) / elapsed;
-    gesture.lastCloseDelta = closeDelta;
-    gesture.lastAt = now;
-    return closeDelta;
+    return pushPanelSwipeSample(gesture, closeDeltaFor(event), now, velocityWindowMs);
   };
 
   const onPointerDown = (event) => {
@@ -532,15 +647,19 @@ const initPanelSwipeToClose = ({
     if (typeof isOpen === 'function' && !isOpen()) return;
     if (typeof shouldIgnoreTarget === 'function' && shouldIgnoreTarget(event.target)) return;
     const point = panelSwipePoint(event);
+    const now = Date.now();
     gesture = {
       pointerId: event.pointerId,
       startX: point.x,
       startY: point.y,
+      samples: [{ at: now, closeDelta: 0 }],
       lastCloseDelta: 0,
-      lastAt: Date.now(),
+      lastAt: now,
       velocity: 0,
       dragging: false
     };
+    if (panel._termLLMPanelSwipeTransitionTimer) clearTimeout(panel._termLLMPanelSwipeTransitionTimer);
+    panel.style?.removeProperty?.(transitionDurationVar);
   };
 
   const onPointerMove = (event) => {
@@ -564,7 +683,7 @@ const initPanelSwipeToClose = ({
     }
 
     event.preventDefault?.();
-    setDragOffset(updateVelocity(event));
+    setDragOffset(updateGestureSample(event));
   };
 
   const onPointerEnd = (event) => {
@@ -574,13 +693,30 @@ const initPanelSwipeToClose = ({
       return;
     }
     event.preventDefault?.();
-    const closeDelta = updateVelocity(event);
-    const shouldClose = Math.max(closeDelta, 0) >= panelSwipeThreshold(panel, closeMinPx, closeMaxPx, closeRatio)
-      || gesture.velocity >= flingPxPerMs;
+    const closeDelta = updateGestureSample(event);
+    const decision = panelSwipeReleaseDecision({
+      panel,
+      closeDelta,
+      velocity: gesture.velocity,
+      closeRatio,
+      closeMinPx,
+      closeMaxPx,
+      deceleration: decelerationPxPerMs2
+    });
+    const duration = decision.shouldClose
+      ? panelSwipeCloseDuration({
+        width: decision.width,
+        distance: decision.distance,
+        distanceToEdge: decision.distanceToEdge,
+        velocity: gesture.velocity,
+        deceleration: decelerationPxPerMs2
+      })
+      : panelSwipeSnapDuration({ width: decision.width, distance: decision.distance });
 
     panel.classList?.remove?.(dragClass);
+    setPanelSwipeReleaseTransition(panel, duration, transitionDurationVar);
     try { void panel.offsetWidth; } catch (_) { /* non-browser test doubles */ }
-    if (shouldClose && typeof onClose === 'function') onClose(event);
+    if (decision.shouldClose && typeof onClose === 'function') onClose(event, decision);
     panel.style?.removeProperty?.(offsetVar);
     resetGesture(event);
   };
@@ -1802,6 +1938,10 @@ Object.assign(app, {
   syncTokenCookie,
   setAnimatedPanelOpen,
   setElementHidden,
+  panelSwipeSmoothedVelocity,
+  panelSwipeProjectedDistance,
+  panelSwipeReleaseDecision,
+  panelSwipeCloseDuration,
   initPanelSwipeToClose,
   truncate,
   asTimestamp,
