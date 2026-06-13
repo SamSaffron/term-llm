@@ -35,6 +35,10 @@
       --sidebar-width: 280px;
       --sidebar-rail-width: 56px;
       --diff-sidebar-width: clamp(300px, 28vw, 460px);
+      --layout-transition-duration: 0.2s;
+      --panel-transition-duration: 0.22s;
+      --panel-transition-easing: cubic-bezier(0.4, 0, 0.2, 1);
+      --panel-fade-duration: 0.18s;
       --diff-add-bg: rgba(46, 160, 67, 0.18);
       --diff-add-ln-bg: rgba(46, 160, 67, 0.30);
       --diff-del-bg: rgba(248, 81, 73, 0.16);
@@ -203,7 +207,7 @@
 
     .app {
       display: grid;
-      grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+      grid-template-columns: var(--sidebar-width) minmax(0, 1fr) 0px;
       min-height: var(--app-height);
       height: var(--app-height);
       width: 100%;
@@ -214,11 +218,11 @@
       right: 0;
       z-index: 1;
       overflow: hidden;
-      transition: grid-template-columns 0.2s ease;
+      transition: grid-template-columns var(--layout-transition-duration) ease;
     }
 
     .app.sidebar-collapsed {
-      grid-template-columns: var(--sidebar-rail-width) minmax(0, 1fr);
+      grid-template-columns: var(--sidebar-rail-width) minmax(0, 1fr) 0px;
     }
 
     .app.diff-open {
@@ -247,6 +251,15 @@
       min-width: 0;
       overflow: hidden;
       padding-right: var(--safe-right);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity var(--panel-fade-duration) ease;
+    }
+
+    .app.diff-open .diff-sidebar,
+    .diff-sidebar.open {
+      opacity: 1;
+      pointer-events: auto;
     }
 
     .diff-resize-handle {
@@ -564,11 +577,11 @@
     @media (max-width: 1099px) {
       .app.diff-open,
       .app.sidebar-collapsed.diff-open {
-        grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+        grid-template-columns: var(--sidebar-width) minmax(0, 1fr) 0px;
       }
 
       .app.sidebar-collapsed.diff-open {
-        grid-template-columns: var(--sidebar-rail-width) minmax(0, 1fr);
+        grid-template-columns: var(--sidebar-rail-width) minmax(0, 1fr) 0px;
       }
 
       .diff-sidebar {
@@ -580,7 +593,8 @@
         width: min(440px, calc(100vw - var(--safe-left)), 90vw);
         z-index: 60;
         transform: translateX(100%);
-        transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+        transition: transform var(--panel-transition-duration) var(--panel-transition-easing),
+                    opacity var(--panel-fade-duration) ease;
         box-shadow: none;
         padding: var(--safe-top) var(--safe-right) var(--safe-bottom) 0;
         touch-action: pan-y;
@@ -646,7 +660,7 @@
       z-index: 1;
       opacity: 0;
       pointer-events: none;
-      transition: opacity 0.15s ease;
+      transition: opacity var(--panel-fade-duration) ease;
     }
 
     .sidebar-rail-btn {
@@ -660,7 +674,7 @@
       display: flex;
       flex-direction: column;
       flex: 1;
-      transition: opacity 0.15s ease;
+      transition: opacity var(--panel-fade-duration) ease;
     }
 
     .app.sidebar-collapsed .sidebar-rail {
@@ -2684,7 +2698,7 @@
       background: var(--backdrop);
       opacity: 0;
       pointer-events: none;
-      transition: opacity 0.18s ease;
+      transition: opacity var(--panel-fade-duration) ease;
       z-index: 15;
     }
 
@@ -3334,7 +3348,7 @@
         display: flex;
         flex-direction: column;
         transform: translateX(-100%);
-        transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1), visibility 0s linear 0.22s;
+        transition: transform var(--panel-transition-duration) var(--panel-transition-easing), visibility 0s linear var(--panel-transition-duration);
         box-shadow: none;
         padding-bottom: var(--safe-bottom);
         visibility: hidden;
@@ -3362,7 +3376,7 @@
         box-shadow: 4px 0 20px rgba(0, 0, 0, 0.28);
         visibility: visible;
         pointer-events: auto;
-        transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1), visibility 0s linear 0s;
+        transition: transform var(--panel-transition-duration) var(--panel-transition-easing), visibility 0s linear 0s;
       }
 
       .sidebar-close {

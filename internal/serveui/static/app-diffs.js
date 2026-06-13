@@ -7,7 +7,14 @@
 // Files render as an accordion: each one expands inline where it sits in the
 // list and can be collapsed individually.
 const app = window.TermLLMApp || (window.TermLLMApp = {});
-const { state, elements, STORAGE_KEYS, UI_PREFIX } = app;
+const {
+  state,
+  elements,
+  STORAGE_KEYS,
+  UI_PREFIX,
+  setAnimatedPanelOpen: setPanelOpen,
+  setElementHidden: setPanelHidden
+} = app;
 
 const DIFF_REFRESH_DEBOUNCE_MS = 350;
 const DIFF_RENDER_DEBOUNCE_MS = 80;
@@ -275,24 +282,36 @@ const applyDiffSidebarVisibility = (ds) => {
   const hasChanges = ds && ds.files.size > 0;
   const drawer = isDiffDrawerViewport();
   const visible = hasChanges && !ds.hidden && !drawer;
+  const drawerOpen = Boolean(hasChanges && drawer && elements.diffSidebar?.classList.contains('open'));
 
   if (elements.diffSidebar) {
-    if (visible || (drawer && elements.diffSidebar.classList.contains('open') && hasChanges)) {
-      elements.diffSidebar.removeAttribute?.('hidden');
-      elements.diffSidebar.hidden = false;
+    if (!hasChanges) {
+      elements.diffSidebar.classList.remove('open');
+      elements.appShell?.classList.remove('diff-open');
+      setPanelHidden(elements.diffSidebar, true);
+    } else if (drawer) {
+      elements.appShell?.classList.remove('diff-open');
+      if (drawerOpen) setPanelHidden(elements.diffSidebar, false);
+      else setPanelHidden(elements.diffSidebar, true);
     } else {
-      elements.diffSidebar.setAttribute?.('hidden', '');
-      elements.diffSidebar.hidden = true;
+      elements.diffSidebar.classList.remove('open');
+      setPanelOpen({
+        panel: elements.diffSidebar,
+        open: visible,
+        hiddenWhenClosed: true,
+        classTargets: [{ element: elements.appShell, className: 'diff-open' }],
+        transitionElement: elements.appShell
+      });
     }
-    if (!drawer || !hasChanges) elements.diffSidebar.classList.remove('open');
+  } else {
+    elements.appShell?.classList.toggle('diff-open', visible);
   }
-  elements.appShell?.classList.toggle('diff-open', visible);
 
   if (elements.diffToggleBtn) {
     elements.diffToggleBtn.hidden = !hasChanges;
     if (hasChanges) elements.diffToggleBtn.removeAttribute?.('hidden');
     else elements.diffToggleBtn.setAttribute?.('hidden', '');
-    elements.diffToggleBtn.classList.toggle('active', visible || (drawer && elements.diffSidebar?.classList.contains('open')));
+    elements.diffToggleBtn.classList.toggle('active', visible || drawerOpen);
   }
 };
 
@@ -496,6 +515,15 @@ const scrollFileIntoView = (path) => {
   }
 };
 
+const renderDiffSidebarContent = (sessionId, ds) => {
+  renderDiffTotals(ds);
+  renderDiffAccordion(sessionId, ds);
+  if (ds.pendingScrollPath) {
+    scrollFileIntoView(ds.pendingScrollPath);
+    ds.pendingScrollPath = '';
+  }
+};
+
 const renderDiffSidebar = (sessionId) => {
   if (sessionId !== state.activeSessionId) return;
   const ds = sessionDiffState(sessionId);
@@ -542,33 +570,45 @@ const setDiffSidebarHidden = (hidden) => {
 };
 
 const toggleDiffSidebar = () => {
+  const sessionId = state.activeSessionId;
+  const ds = sessionId ? sessionDiffState(sessionId) : null;
+  if (!sessionId || !ds) return;
+
   if (isDiffDrawerViewport()) {
     const open = !elements.diffSidebar?.classList.contains('open');
-    const ds = state.activeSessionId ? sessionDiffState(state.activeSessionId) : null;
     if (open) {
-      if (ds) ds.hidden = false;
-      elements.diffSidebar?.removeAttribute?.('hidden');
-      if (elements.diffSidebar) elements.diffSidebar.hidden = false;
-      elements.diffSidebar?.classList.add('open');
-      // The closed drawer skips panel rendering; populate it now.
-      renderDiffSidebar(state.activeSessionId);
-      scheduleDiffRefresh(state.activeSessionId);
+      ds.hidden = false;
+      setPanelOpen({
+        panel: elements.diffSidebar,
+        open: true,
+        hiddenWhenClosed: true,
+        classTargets: [{ element: elements.diffSidebar, className: 'open' }],
+        transitionElement: elements.diffSidebar
+      });
+      elements.appShell?.classList.remove('diff-open');
+      elements.diffToggleBtn?.classList.toggle('active', true);
+      renderDiffSidebarContent(sessionId, ds);
+      scheduleDiffRefresh(sessionId);
     } else {
       closeDiffDrawer();
     }
     return;
   }
-  const ds = state.activeSessionId ? sessionDiffState(state.activeSessionId) : null;
-  setDiffSidebarHidden(!ds?.hidden);
+  setDiffSidebarHidden(!ds.hidden);
 };
 
 const closeDiffDrawer = () => {
-  elements.diffSidebar?.classList.remove('open');
+  setPanelOpen({
+    panel: elements.diffSidebar,
+    open: false,
+    hiddenWhenClosed: true,
+    classTargets: [{ element: elements.diffSidebar, className: 'open' }],
+    transitionElement: elements.diffSidebar
+  });
+  elements.diffToggleBtn?.classList.toggle('active', false);
+  elements.appShell?.classList.remove('diff-open');
   const ds = diffStateBySession.get(state.activeSessionId);
-  if (ds) {
-    ds.hidden = true;
-    applyDiffSidebarVisibility(ds);
-  }
+  if (ds) ds.hidden = true;
 };
 
 // ===== Session lifecycle =====

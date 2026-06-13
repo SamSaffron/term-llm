@@ -165,7 +165,22 @@ function createHarness(options = {}) {
     UI_PREFIX: '/chat',
     STORAGE_KEYS: { diffSidebarWidth: 'term_llm_diff_sidebar_width' },
     state,
-    elements
+    elements,
+    setElementHidden(element, hidden) {
+      if (!element) return;
+      element.hidden = Boolean(hidden);
+      if (hidden) element.setAttribute?.('hidden', '');
+      else element.removeAttribute?.('hidden');
+    },
+    setAnimatedPanelOpen({ panel, open, openClass = 'open', hiddenWhenClosed = false, classTargets = null } = {}) {
+      if (!panel) return;
+      const targets = Array.isArray(classTargets) && classTargets.length > 0
+        ? classTargets
+        : [{ element: panel, className: openClass }];
+      if (open && hiddenWhenClosed) app.setElementHidden(panel, false);
+      targets.forEach((target) => target.element?.classList?.toggle?.(target.className || openClass, Boolean(open)));
+      if (!open && hiddenWhenClosed) app.setElementHidden(panel, true);
+    }
   };
 
   const document = new Element('document');
