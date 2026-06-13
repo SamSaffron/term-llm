@@ -452,11 +452,20 @@ const PANEL_SWIPE_CLOSE_TRANSITION_MAX_MS = 260;
 const PANEL_SWIPE_SNAP_TRANSITION_MIN_MS = 120;
 const PANEL_SWIPE_SNAP_TRANSITION_MAX_MS = 220;
 const PANEL_SWIPE_TRANSITION_RESET_BUFFER_MS = 80;
+const PANEL_SWIPE_CLICK_SUPPRESS_MS = 350;
 const PANEL_TRANSITION_DURATION_VAR = '--panel-transition-duration';
 const PANEL_SWIPE_RESISTANCE = 0.25;
 const PANEL_SWIPE_MAX_OVERSHOOT_PX = 32;
 const PANEL_SWIPE_OFFSET_VAR = '--panel-swipe-offset-x';
 const PANEL_SWIPE_DRAG_CLASS = 'panel-swipe-dragging';
+const PANEL_SWIPE_CAPTURE_OPTIONS = { capture: true, passive: false };
+const PANEL_SWIPE_CLICK_CAPTURE_OPTIONS = { capture: true };
+
+const stopPanelSwipeEvent = (event) => {
+  event?.preventDefault?.();
+  event?.stopImmediatePropagation?.();
+  event?.stopPropagation?.();
+};
 
 const panelSwipePoint = (event) => ({
   x: Number(event?.clientX) || 0,
@@ -613,15 +622,73 @@ const initPanelSwipeToClose = ({
   if (!panel?.addEventListener) return () => {};
   const direction = side === 'right' ? 1 : -1;
   let gesture = null;
+  let suppressClickUntil = 0;
+  let clickSuppressDocument = null;
 
+  const ownerDocumentForPanel = () => panel.ownerDocument || (typeof document !== 'undefined' ? document : null);
   const matchesPointer = (event) => !gesture || event?.pointerId === undefined || gesture.pointerId === undefined || event.pointerId === gesture.pointerId;
   const closeDeltaFor = (event) => (panelSwipePoint(event).x - gesture.startX) * direction;
 
+  // Track active drags from document capture as well as the panel. The diff
+  // drawer is full of buttons/accordion rows; if one of those wins bubbling or
+  // the pointer leaves the translated panel, the drawer should still stay glued
+  // to the pointer.
+  const addDocumentTracking = () => {
+    if (!gesture || gesture.trackingDocument) return;
+    const doc = ownerDocumentForPanel();
+    gesture.trackingDocument = doc || null;
+    if (!doc || doc === panel) return;
+    doc.addEventListener?.('pointermove', onPointerMove, PANEL_SWIPE_CAPTURE_OPTIONS);
+    doc.addEventListener?.('pointerup', onPointerEnd, PANEL_SWIPE_CAPTURE_OPTIONS);
+    doc.addEventListener?.('pointercancel', onPointerCancel, PANEL_SWIPE_CAPTURE_OPTIONS);
+  };
+
+  const removeDocumentTracking = (activeGesture) => {
+    const doc = activeGesture?.trackingDocument;
+    if (!doc || doc === panel) return;
+    doc.removeEventListener?.('pointermove', onPointerMove, PANEL_SWIPE_CAPTURE_OPTIONS);
+    doc.removeEventListener?.('pointerup', onPointerEnd, PANEL_SWIPE_CAPTURE_OPTIONS);
+    doc.removeEventListener?.('pointercancel', onPointerCancel, PANEL_SWIPE_CAPTURE_OPTIONS);
+    activeGesture.trackingDocument = null;
+  };
+
+  const clearDocumentClickSuppressor = () => {
+    if (!clickSuppressDocument) return;
+    clickSuppressDocument.removeEventListener?.('click', onClickSuppress, PANEL_SWIPE_CLICK_CAPTURE_OPTIONS);
+    clickSuppressDocument = null;
+  };
+
+  // A completed drag must not also click the row/button it started on. Native
+  // controls happily synthesize that click after pointerup unless we eat it.
+  const armClickSuppression = () => {
+    suppressClickUntil = Date.now() + PANEL_SWIPE_CLICK_SUPPRESS_MS;
+    const doc = ownerDocumentForPanel();
+    if (doc?.addEventListener && doc !== clickSuppressDocument) {
+      clearDocumentClickSuppressor();
+      doc.addEventListener('click', onClickSuppress, PANEL_SWIPE_CLICK_CAPTURE_OPTIONS);
+      clickSuppressDocument = doc;
+    }
+  };
+
+  const onClickSuppress = (event) => {
+    if (!suppressClickUntil) return;
+    if (Date.now() > suppressClickUntil) {
+      suppressClickUntil = 0;
+      clearDocumentClickSuppressor();
+      return;
+    }
+    stopPanelSwipeEvent(event);
+    suppressClickUntil = 0;
+    clearDocumentClickSuppressor();
+  };
+
   const resetGesture = (event) => {
-    if (gesture?.dragging) panel.classList?.remove?.(dragClass);
+    const activeGesture = gesture;
+    if (activeGesture?.dragging) panel.classList?.remove?.(dragClass);
+    removeDocumentTracking(activeGesture);
     try {
-      if (gesture?.pointerId !== undefined) panel.releasePointerCapture?.(gesture.pointerId);
-      if (event?.pointerId !== undefined && event.pointerId !== gesture?.pointerId) panel.releasePointerCapture?.(event.pointerId);
+      if (activeGesture?.pointerId !== undefined) panel.releasePointerCapture?.(activeGesture.pointerId);
+      if (event?.pointerId !== undefined && event.pointerId !== activeGesture?.pointerId) panel.releasePointerCapture?.(event.pointerId);
     } catch (_) {
       // Pointer capture may already be gone after browser cancellation.
     }
@@ -646,6 +713,7 @@ const initPanelSwipeToClose = ({
     if (typeof isEnabled === 'function' && !isEnabled()) return;
     if (typeof isOpen === 'function' && !isOpen()) return;
     if (typeof shouldIgnoreTarget === 'function' && shouldIgnoreTarget(event.target)) return;
+    if (gesture) resetGesture(event);
     const point = panelSwipePoint(event);
     const now = Date.now();
     gesture = {
@@ -656,8 +724,10 @@ const initPanelSwipeToClose = ({
       lastCloseDelta: 0,
       lastAt: now,
       velocity: 0,
-      dragging: false
+      dragging: false,
+      trackingDocument: null
     };
+    addDocumentTracking();
     if (panel._termLLMPanelSwipeTransitionTimer) clearTimeout(panel._termLLMPanelSwipeTransitionTimer);
     panel.style?.removeProperty?.(transitionDurationVar);
   };
@@ -682,7 +752,7 @@ const initPanelSwipeToClose = ({
       try { panel.setPointerCapture?.(event.pointerId); } catch (_) { /* pointer may be synthetic in tests */ }
     }
 
-    event.preventDefault?.();
+    stopPanelSwipeEvent(event);
     setDragOffset(updateGestureSample(event));
   };
 
@@ -692,7 +762,7 @@ const initPanelSwipeToClose = ({
       resetGesture(event);
       return;
     }
-    event.preventDefault?.();
+    stopPanelSwipeEvent(event);
     const closeDelta = updateGestureSample(event);
     const decision = panelSwipeReleaseDecision({
       panel,
@@ -715,6 +785,7 @@ const initPanelSwipeToClose = ({
 
     panel.classList?.remove?.(dragClass);
     setPanelSwipeReleaseTransition(panel, duration, transitionDurationVar);
+    armClickSuppression();
     try { void panel.offsetWidth; } catch (_) { /* non-browser test doubles */ }
     if (decision.shouldClose && typeof onClose === 'function') onClose(event, decision);
     panel.style?.removeProperty?.(offsetVar);
@@ -723,20 +794,28 @@ const initPanelSwipeToClose = ({
 
   const onPointerCancel = (event) => {
     if (!gesture || !matchesPointer(event)) return;
+    if (gesture.dragging) {
+      stopPanelSwipeEvent(event);
+      armClickSuppression();
+    }
     panel.style?.removeProperty?.(offsetVar);
     resetGesture(event);
   };
 
-  panel.addEventListener('pointerdown', onPointerDown);
-  panel.addEventListener('pointermove', onPointerMove);
-  panel.addEventListener('pointerup', onPointerEnd);
-  panel.addEventListener('pointercancel', onPointerCancel);
+  panel.addEventListener('pointerdown', onPointerDown, PANEL_SWIPE_CAPTURE_OPTIONS);
+  panel.addEventListener('pointermove', onPointerMove, PANEL_SWIPE_CAPTURE_OPTIONS);
+  panel.addEventListener('pointerup', onPointerEnd, PANEL_SWIPE_CAPTURE_OPTIONS);
+  panel.addEventListener('pointercancel', onPointerCancel, PANEL_SWIPE_CAPTURE_OPTIONS);
+  panel.addEventListener('click', onClickSuppress, PANEL_SWIPE_CLICK_CAPTURE_OPTIONS);
 
   return () => {
-    panel.removeEventListener?.('pointerdown', onPointerDown);
-    panel.removeEventListener?.('pointermove', onPointerMove);
-    panel.removeEventListener?.('pointerup', onPointerEnd);
-    panel.removeEventListener?.('pointercancel', onPointerCancel);
+    resetGesture();
+    clearDocumentClickSuppressor();
+    panel.removeEventListener?.('pointerdown', onPointerDown, PANEL_SWIPE_CAPTURE_OPTIONS);
+    panel.removeEventListener?.('pointermove', onPointerMove, PANEL_SWIPE_CAPTURE_OPTIONS);
+    panel.removeEventListener?.('pointerup', onPointerEnd, PANEL_SWIPE_CAPTURE_OPTIONS);
+    panel.removeEventListener?.('pointercancel', onPointerCancel, PANEL_SWIPE_CAPTURE_OPTIONS);
+    panel.removeEventListener?.('click', onClickSuppress, PANEL_SWIPE_CLICK_CAPTURE_OPTIONS);
   };
 };
 
