@@ -1413,6 +1413,103 @@ func TestBuildStreamJsonInput_SessionID(t *testing.T) {
 	}
 }
 
+func TestBuildStreamJsonInput_FramesPriorHistoryAndKeepsFinalImage(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+	msgs := []Message{
+		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "FIRST_QUESTION"}}},
+		{Role: RoleAssistant, Parts: []Part{{Type: PartText, Text: "FIRST_ANSWER"}}},
+		{Role: RoleUser, Parts: []Part{
+			{Type: PartText, Text: "LATEST_QUESTION"},
+			{Type: PartImage, ImageData: &ToolImageData{MediaType: "image/jpeg", Base64: "dGVzdA=="}},
+		}},
+	}
+
+	msgsOut := parseSDKUserMessages(t, p.buildStreamJsonInput(msgs, "sess-frame"))
+	if len(msgsOut) != 1 {
+		t.Fatalf("expected the prior history to collapse into a single live user turn, got %d messages", len(msgsOut))
+	}
+
+	blocks := msgsOut[0].Message.Content
+	if len(blocks) < 2 {
+		t.Fatalf("expected a leading framing text block plus the final turn content, got %d blocks", len(blocks))
+	}
+
+	framing := blocks[0]
+	if framing.Type != "text" {
+		t.Fatalf("expected first block to be the framing text, got type %q", framing.Type)
+	}
+	for _, want := range []string{"<conversation_history>", "FIRST_QUESTION", "FIRST_ANSWER", "</conversation_history>", claudeBinResumeReplayInstruction} {
+		if !strings.Contains(framing.Text, want) {
+			t.Errorf("framing block missing %q\ngot: %q", want, framing.Text)
+		}
+	}
+	// The assistant reply must survive: stream-json normally drops it, which is
+	// what made Claude re-answer the whole thread from the start on resume.
+	if !strings.Contains(framing.Text, "Assistant: FIRST_ANSWER") {
+		t.Errorf("expected the prior assistant turn to be preserved in the framing block, got: %q", framing.Text)
+	}
+
+	var sawLatestText, sawImage bool
+	for _, b := range blocks {
+		if b.Type == "text" && strings.Contains(b.Text, "LATEST_QUESTION") && !strings.Contains(b.Text, "<conversation_history>") {
+			sawLatestText = true
+		}
+		if b.Type == "image" && b.Source != nil && b.Source.Data == "dGVzdA==" {
+			sawImage = true
+		}
+	}
+	if !sawLatestText {
+		t.Error("expected the latest user question to be sent as live content")
+	}
+	if !sawImage {
+		t.Error("expected the final turn image to survive as a real vision block")
+	}
+}
+
+func TestBuildStreamJsonInput_NoFramingWithoutPriorTurn(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+	// A single user turn with an image (fresh first message): no prior assistant
+	// turn, so no framing should be added and behavior is unchanged.
+	msgs := []Message{
+		{Role: RoleUser, Parts: []Part{
+			{Type: PartText, Text: "hello"},
+			{Type: PartImage, ImageData: &ToolImageData{MediaType: "image/jpeg", Base64: "dGVzdA=="}},
+		}},
+	}
+	out := p.buildStreamJsonInput(msgs, "sess-fresh")
+	if strings.Contains(out, "conversation_history") || strings.Contains(out, claudeBinResumeReplayInstruction) {
+		t.Fatalf("did not expect resume framing for a fresh single-turn input, got: %q", out)
+	}
+}
+
+// TestBuildStreamJsonInput_FramesHistoryEvenWhenFinalUserEmpty locks the concern
+// behind the trailing defensive guard via the path that is actually reachable: a
+// prior answered history followed by a latest user turn whose own content is empty.
+// The loop injects the framing onto that content-less turn, so the replayed history
+// must still reach the model rather than being silently dropped.
+func TestBuildStreamJsonInput_FramesHistoryEvenWhenFinalUserEmpty(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+	msgs := []Message{
+		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "FIRST_QUESTION"}}},
+		{Role: RoleAssistant, Parts: []Part{{Type: PartText, Text: "FIRST_ANSWER"}}},
+		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: ""}}},
+	}
+
+	msgsOut := parseSDKUserMessages(t, p.buildStreamJsonInput(msgs, "sess-empty-final"))
+	if len(msgsOut) != 1 {
+		t.Fatalf("expected exactly one emitted user message carrying the framing, got %d", len(msgsOut))
+	}
+	blocks := msgsOut[0].Message.Content
+	if len(blocks) != 1 || blocks[0].Type != "text" {
+		t.Fatalf("expected a single framing text block, got %+v", blocks)
+	}
+	for _, want := range []string{"<conversation_history>", "FIRST_QUESTION", "Assistant: FIRST_ANSWER", "</conversation_history>", claudeBinResumeReplayInstruction} {
+		if !strings.Contains(blocks[0].Text, want) {
+			t.Errorf("framing block missing %q\ngot: %q", want, blocks[0].Text)
+		}
+	}
+}
+
 func TestFormatToolOutputForClaude_UsesStructuredImageParts(t *testing.T) {
 	p := NewClaudeBinProvider("sonnet", nil)
 
@@ -1516,6 +1613,59 @@ func TestBuildConversationPrompt_DeveloperRoleWithoutFollowingUser(t *testing.T)
 	// (same as anthropic.go behavior — pendingDev is lost at end of loop).
 	if strings.Contains(out, "trailing dev message") {
 		t.Errorf("trailing developer message without following user turn should be dropped, got: %q", out)
+	}
+}
+
+// TestBuildConversationPrompt_WrapsReplayedHistory covers the resume-after-eviction
+// case: a fresh provider instance is handed the full transcript. Earlier turns
+// must be wrapped as <conversation_history> context so Claude Code answers only
+// the latest user message instead of re-running the whole thread from the top.
+func TestBuildConversationPrompt_WrapsReplayedHistory(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+	msgs := []Message{
+		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "first question"}}},
+		{Role: RoleAssistant, Parts: []Part{{Type: PartText, Text: "first answer"}}},
+		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "latest question"}}},
+	}
+	out := p.buildConversationPrompt(msgs)
+
+	closeIdx := strings.Index(out, "</conversation_history>")
+	if !strings.Contains(out, "<conversation_history>") || closeIdx < 0 {
+		t.Fatalf("expected replayed history to be wrapped, got: %q", out)
+	}
+	history := out[:closeIdx]
+	if !strings.Contains(history, "first question") || !strings.Contains(history, "first answer") {
+		t.Fatalf("prior turn must live inside the history block, got: %q", out)
+	}
+	// The latest user message is the only turn to answer: it must sit AFTER the
+	// history block, not inside it.
+	if strings.Contains(history, "latest question") {
+		t.Fatalf("latest question leaked into history block: %q", out)
+	}
+	tail := out[closeIdx:]
+	if !strings.Contains(tail, "User: latest question") {
+		t.Fatalf("latest question missing from final turn: %q", out)
+	}
+	if !strings.Contains(tail, "responding only to the user's most recent message") {
+		t.Fatalf("replay instruction missing: %q", out)
+	}
+}
+
+// TestBuildConversationPrompt_SingleTurnNoFraming guards the common paths (a
+// brand-new conversation and the mid-session --resume case that sends only new
+// messages): with no prior assistant/tool turn there must be no history framing.
+func TestBuildConversationPrompt_SingleTurnNoFraming(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+	msgs := []Message{
+		{Role: RoleDeveloper, Parts: []Part{{Type: PartText, Text: "platform note"}}},
+		{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "just one question"}}},
+	}
+	out := p.buildConversationPrompt(msgs)
+	if strings.Contains(out, "<conversation_history>") {
+		t.Fatalf("a single new turn must not be wrapped as history: %q", out)
+	}
+	if !strings.Contains(out, "just one question") {
+		t.Fatalf("user message missing: %q", out)
 	}
 }
 
