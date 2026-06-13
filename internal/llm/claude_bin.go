@@ -1506,7 +1506,86 @@ func (p *ClaudeBinProvider) systemPromptForTurn(messages []Message) string {
 
 // buildConversationPrompt constructs the conversation prompt from messages.
 // This can be called with a subset of messages when resuming a session.
+//
+// When the slice carries a multi-turn history (earlier assistant/tool turns
+// precede the latest user message), the earlier turns are wrapped in a
+// <conversation_history> block with an explicit instruction so Claude Code
+// treats them as already-handled context and replies only to the latest user
+// message. Without this, a fresh CLI session — e.g. after a runtime eviction or
+// server restart, when --resume state is gone — receives the whole transcript
+// as a single pasted user turn and re-answers it from the very beginning.
 func (p *ClaudeBinProvider) buildConversationPrompt(messages []Message) string {
+	finalTurnStart := conversationFinalTurnStart(messages)
+	if finalTurnStart <= 0 || !messagesContainPriorAssistantTurn(messages[:finalTurnStart]) {
+		return strings.TrimSpace(strings.Join(p.renderConversationParts(messages), "\n\n"))
+	}
+
+	historyText := strings.TrimSpace(strings.Join(p.renderConversationParts(messages[:finalTurnStart]), "\n\n"))
+	finalText := strings.TrimSpace(strings.Join(p.renderConversationParts(messages[finalTurnStart:]), "\n\n"))
+	switch {
+	case historyText == "":
+		return finalText
+	case finalText == "":
+		return historyText
+	}
+
+	var b strings.Builder
+	b.WriteString("<conversation_history>\n")
+	b.WriteString(historyText)
+	b.WriteString("\n</conversation_history>\n\n")
+	b.WriteString(claudeBinResumeReplayInstruction)
+	b.WriteString("\n\n")
+	b.WriteString(finalText)
+	return b.String()
+}
+
+// claudeBinResumeReplayInstruction is injected between the replayed history and
+// the latest user turn so Claude Code does not re-answer already-handled turns.
+const claudeBinResumeReplayInstruction = "The block above is the earlier part of this same conversation, included only so you have the full context. You have already written those assistant replies and already performed any actions shown there — do not repeat them and do not re-answer earlier user messages. Continue the conversation naturally, responding only to the user's most recent message below."
+
+// conversationFinalTurnStart returns the index in messages where the latest user
+// turn begins (including an immediately preceding developer message, which is
+// buffered into that user turn). It returns 0 when there is no user message or
+// the latest user turn is already at the start, signalling that no history/final
+// split is needed.
+func conversationFinalTurnStart(messages []Message) int {
+	lastUser := -1
+	for i, msg := range messages {
+		if msg.Role == RoleUser {
+			lastUser = i
+		}
+	}
+	if lastUser <= 0 {
+		return 0
+	}
+	if messages[lastUser-1].Role == RoleDeveloper {
+		return lastUser - 1
+	}
+	return lastUser
+}
+
+// messagesContainPriorAssistantTurn reports whether the slice holds a completed
+// prior assistant reply, i.e. genuine already-answered conversation history that
+// should be framed as replayed context. A lone tool result (with no preceding
+// assistant turn) is deliberately excluded: that is fresh tool output feeding the
+// current question — notably the synthetic tool-result image replay — and must
+// still be emitted as a live stream-json vision turn, not flattened to text.
+// Tools are always invoked by the assistant, so any real multi-turn history
+// carries an assistant turn; this predicate never misses a genuine transcript.
+func messagesContainPriorAssistantTurn(messages []Message) bool {
+	for _, msg := range messages {
+		if msg.Role == RoleAssistant {
+			return true
+		}
+	}
+	return false
+}
+
+// renderConversationParts converts messages into Claude CLI stdin transcript
+// lines ("User: ...", "Assistant: ...", "Tool result (...): ..."). System
+// messages are dropped (passed via --system-prompt); developer messages are
+// buffered into the following user turn wrapped in <developer> tags.
+func (p *ClaudeBinProvider) renderConversationParts(messages []Message) []string {
 	var conversationParts []string
 	var pendingDev string
 
@@ -1572,7 +1651,7 @@ func (p *ClaudeBinProvider) buildConversationPrompt(messages []Message) string {
 		}
 	}
 
-	return strings.TrimSpace(strings.Join(conversationParts, "\n\n"))
+	return conversationParts
 }
 
 // mapModelToClaudeArg converts a model name to claude CLI argument.
@@ -1798,7 +1877,26 @@ type sdkImageSource struct {
 // message order. User messages are emitted as normal. Tool result images are
 // replayed as synthetic follow-up user messages tied to the originating tool
 // call via parent_tool_use_id so Claude can vision-analyze them on resume.
+//
+// stream-json only carries user-role turns, so a fresh CLI session (no --resume
+// state, e.g. after a runtime eviction or server restart) that replays a full
+// transcript would otherwise present a pile of unanswered user questions — with
+// every assistant reply dropped — and Claude re-answers from the very start.
+// When a multi-turn history precedes the latest user message we therefore flatten
+// the earlier turns (assistant replies included) into a leading <conversation_history>
+// text block carrying claudeBinResumeReplayInstruction, and emit only the latest
+// turn as live stream-json so its own images still reach the model as real blocks.
 func (p *ClaudeBinProvider) buildStreamJsonInput(messages []Message, sessionID string) string {
+	historyPrefix := ""
+	emitMessages := messages
+	if finalTurnStart := conversationFinalTurnStart(messages); finalTurnStart > 0 && messagesContainPriorAssistantTurn(messages[:finalTurnStart]) {
+		historyText := strings.TrimSpace(strings.Join(p.renderConversationParts(messages[:finalTurnStart]), "\n\n"))
+		if historyText != "" {
+			historyPrefix = "<conversation_history>\n" + historyText + "\n</conversation_history>\n\n" + claudeBinResumeReplayInstruction + "\n\n"
+			emitMessages = messages[finalTurnStart:]
+		}
+	}
+
 	var lines []string
 	appendUserMessage := func(content []sdkContentBlock, parentToolUseID *string) {
 		if len(content) == 0 {
@@ -1821,7 +1919,8 @@ func (p *ClaudeBinProvider) buildStreamJsonInput(messages []Message, sessionID s
 	}
 
 	var pendingDev string
-	for _, msg := range messages {
+	prefixInjected := false
+	for _, msg := range emitMessages {
 		switch msg.Role {
 		case RoleDeveloper:
 			pendingDev = collectTextParts(msg.Parts)
@@ -1834,6 +1933,10 @@ func (p *ClaudeBinProvider) buildStreamJsonInput(messages []Message, sessionID s
 				}
 				blocks = append([]sdkContentBlock{devBlock}, blocks...)
 				pendingDev = ""
+			}
+			if historyPrefix != "" && !prefixInjected {
+				blocks = append([]sdkContentBlock{{Type: "text", Text: historyPrefix}}, blocks...)
+				prefixInjected = true
 			}
 			appendUserMessage(blocks, nil)
 		case RoleTool:
@@ -1852,6 +1955,15 @@ func (p *ClaudeBinProvider) buildStreamJsonInput(messages []Message, sessionID s
 				appendUserMessage(blocks, parentToolUseID)
 			}
 		}
+	}
+
+	// Defensive: the framing is normally injected onto the latest user turn in
+	// the loop above, and emitMessages always contains that turn (conversationFinalTurnStart
+	// returns the latest user index, or the developer line right before it) — so this
+	// fallback is unreachable today. It only fires if a future change to the slice
+	// derivation drops the user turn, ensuring the replayed history is never lost.
+	if historyPrefix != "" && !prefixInjected {
+		appendUserMessage([]sdkContentBlock{{Type: "text", Text: strings.TrimRight(historyPrefix, "\n")}}, nil)
 	}
 
 	return strings.Join(lines, "\n")
