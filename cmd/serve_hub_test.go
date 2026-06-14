@@ -195,6 +195,69 @@ func TestHubNodesAPIDoesNotLeakTokens(t *testing.T) {
 	}
 }
 
+func TestHubNodesAPIDiagnostics(t *testing.T) {
+	webOnly := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"status":"ok","capabilities":["web"]}`)
+	}))
+	defer webOnly.Close()
+	jobs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"status":"ok","capabilities":["web","jobs"]}`)
+	}))
+	defer jobs.Close()
+
+	nodes := []hub.Node{
+		{ID: "origin", Name: "Origin", Source: hub.SourceConfig, URL: jobs.URL, BasePath: "/chat", Token: "origin-token", Delegation: &hub.DelegationPolicy{Enabled: true, To: []string{"target"}, Workdir: "/work"}},
+		{ID: "target", Name: "Target", Source: hub.SourceConfig, URL: webOnly.URL, BasePath: "/chat", Token: "target-token", Delegation: &hub.DelegationPolicy{Enabled: true, AcceptFrom: []string{"other"}, Workdir: "/work"}},
+		{ID: "nowork", Name: "NoWork", Source: hub.SourceConfig, Connection: "reverse", BasePath: "/chat", Token: "nowork-token", Delegation: &hub.DelegationPolicy{Enabled: true}},
+		{ID: "notoken", Name: "NoToken", Source: hub.SourceConfig, URL: jobs.URL, BasePath: "/chat"},
+	}
+	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: nodes}), nil)
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/nodes", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Nodes []hubNodeView `json:"nodes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]hubNodeView{}
+	for _, n := range resp.Nodes {
+		byID[n.ID] = n
+	}
+	assertDiagnosticCode(t, byID["nowork"], "reverse_disconnected")
+	assertDiagnosticCode(t, byID["nowork"], "delegation_missing_workdir")
+	assertDiagnosticCode(t, byID["notoken"], "missing_token")
+	assertDiagnosticCode(t, byID["target"], "delegation_jobs_missing")
+	assertDiagnosticCode(t, byID["origin"], "delegation_policy_mismatch")
+}
+
+func assertDiagnosticCode(t *testing.T, n hubNodeView, code string) {
+	t.Helper()
+	for _, d := range n.Diagnostics {
+		if d.Code == code {
+			return
+		}
+	}
+	t.Fatalf("node %q diagnostics missing %q: %+v", n.ID, code, n.Diagnostics)
+}
+
+func TestHubIndexIncludesDiagnosticsUI(t *testing.T) {
+	s := newHubServer(hub.NewRegistry(), nil)
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := rec.Body.String()
+	for _, want := range []string{"node-diagnostics", "diagnostic-label", "n.diagnostics"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("dashboard missing %q", want)
+		}
+	}
+}
+
 func TestHubAddTestRemoveNodeFlow(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

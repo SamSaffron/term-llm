@@ -178,8 +178,15 @@
       if (!n.status.reachable && n.status.error) {
         card.appendChild(el('div', 'node-error', n.status.error));
       }
-      if (!n.has_token) {
-        card.appendChild(el('div', 'node-warn', 'No bearer token configured — the open action may be rejected by the node.'));
+      if (Array.isArray(n.diagnostics) && n.diagnostics.length) {
+        const diagList = el('div', 'node-diagnostics');
+        n.diagnostics.forEach((d) => {
+          const item = el('div', `node-diagnostic diagnostic-${d.severity || 'warning'}`);
+          item.appendChild(el('span', 'diagnostic-label', (d.severity || 'warning').toUpperCase()));
+          item.appendChild(el('span', 'diagnostic-message', d.message || d.code || 'Node diagnostic'));
+          diagList.appendChild(item);
+        });
+        card.appendChild(diagList);
       }
 
       const actions = el('div', 'node-actions');

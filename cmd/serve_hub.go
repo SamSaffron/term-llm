@@ -125,6 +125,12 @@ func hubProxyTargetFrom(ctx context.Context) *hubProxyTarget {
 	return t
 }
 
+type hubNodeDiagnostic struct {
+	Severity string `json:"severity"`
+	Code     string `json:"code"`
+	Message  string `json:"message"`
+}
+
 // hubNodeView is the public record for one node. It deliberately omits the
 // bearer token: tokens are injected server-side and must never be sent to a
 // hub client.
@@ -138,8 +144,9 @@ type hubNodeView struct {
 	ProxyPath  string `json:"proxy_path"`
 	// HasToken reports whether the hub holds a bearer token for this node
 	// (without it, a token-guarded node will answer 401 through the proxy).
-	HasToken bool       `json:"has_token"`
-	Status   hub.Status `json:"status"`
+	HasToken    bool                `json:"has_token"`
+	Status      hub.Status          `json:"status"`
+	Diagnostics []hubNodeDiagnostic `json:"diagnostics,omitempty"`
 }
 
 func (s *hubServer) handler() http.Handler {
@@ -221,7 +228,98 @@ func (s *hubServer) collectNodes(ctx context.Context) ([]hubNodeView, error) {
 		}
 		views = append(views, view)
 	}
+	for i := range views {
+		views[i].Diagnostics = hubNodeDiagnostics(nodes[i], views[i], nodes)
+	}
 	return views, err
+}
+
+func hubNodeDiagnostics(n hub.Node, view hubNodeView, all []hub.Node) []hubNodeDiagnostic {
+	diagnostics := []hubNodeDiagnostic{}
+	add := func(severity, code, message string) {
+		diagnostics = append(diagnostics, hubNodeDiagnostic{Severity: severity, Code: code, Message: message})
+	}
+	if n.UsesReverseConnection() && !view.Status.Reachable {
+		add("error", "reverse_disconnected", "Reverse node is waiting for its outbound websocket connection.")
+	}
+	if n.Token == "" {
+		add("warning", "missing_token", "No bearer token is configured; authenticated health, proxy, and delegation calls may fail.")
+	}
+	if n.Delegation != nil && n.Delegation.Enabled {
+		if strings.TrimSpace(n.Delegation.Workdir) == "" {
+			add("warning", "delegation_missing_workdir", "Delegation is enabled, but no workdir is configured; this node cannot accept delegated jobs.")
+		} else if !hubStatusHasCapability(view.Status, "jobs") {
+			if view.Status.Reachable && len(view.Status.Capabilities) > 0 {
+				add("warning", "delegation_jobs_missing", "This node accepts delegation, but its health capabilities do not include jobs; start it with jobs enabled.")
+			} else {
+				add("warning", "delegation_jobs_unknown", "This node accepts delegation, but the Hub cannot verify the jobs capability; check the token and node version.")
+			}
+		}
+	}
+	for _, msg := range hubPolicyMismatchDiagnostics(n, all) {
+		add("warning", "delegation_policy_mismatch", msg)
+		if len(diagnostics) >= 8 {
+			break
+		}
+	}
+	return diagnostics
+}
+
+func hubStatusHasCapability(st hub.Status, capability string) bool {
+	for _, c := range st.Capabilities {
+		if strings.EqualFold(strings.TrimSpace(c), capability) {
+			return true
+		}
+	}
+	return false
+}
+
+func hubPolicyMismatchDiagnostics(n hub.Node, all []hub.Node) []string {
+	if n.Delegation == nil || !n.Delegation.Enabled {
+		return nil
+	}
+	messages := []string{}
+	for _, target := range all {
+		if target.ID == n.ID || !n.CanDelegateTo(target.ID) {
+			continue
+		}
+		if target.Delegation == nil || !target.Delegation.Enabled {
+			messages = append(messages, fmt.Sprintf("Can delegate to %q, but that node has delegation disabled.", target.ID))
+			continue
+		}
+		if strings.TrimSpace(target.Delegation.Workdir) == "" {
+			messages = append(messages, fmt.Sprintf("Can delegate to %q, but that node has no delegation workdir.", target.ID))
+			continue
+		}
+		acceptFrom := target.Delegation.AcceptFrom
+		if len(acceptFrom) == 0 {
+			acceptFrom = []string{"*"}
+		}
+		if !hubNodeListMatches(acceptFrom, n.ID) {
+			messages = append(messages, fmt.Sprintf("Can delegate to %q, but that node does not accept from %q.", target.ID, n.ID))
+		}
+	}
+	if len(n.Delegation.AcceptFrom) > 0 && !hubNodeListMatches(n.Delegation.AcceptFrom, "*") && strings.TrimSpace(n.Delegation.Workdir) != "" {
+		for _, origin := range all {
+			if origin.ID == n.ID || !hubNodeListMatches(n.Delegation.AcceptFrom, origin.ID) {
+				continue
+			}
+			if !origin.CanDelegateTo(n.ID) {
+				messages = append(messages, fmt.Sprintf("Accepts from %q, but that node is not configured to delegate here.", origin.ID))
+			}
+		}
+	}
+	return messages
+}
+
+func hubNodeListMatches(patterns []string, id string) bool {
+	for _, p := range patterns {
+		p = strings.TrimSpace(p)
+		if p == "*" || p == id {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *hubServer) handleNodes(w http.ResponseWriter, r *http.Request) {

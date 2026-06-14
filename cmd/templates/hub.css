@@ -158,6 +158,21 @@ body {
 
 .node-error { color: var(--down); font-size: 0.82rem; word-break: break-word; }
 .node-warn { color: var(--warn); font-size: 0.82rem; }
+.node-diagnostics { display: grid; gap: 0.35rem; }
+.node-diagnostic {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.45rem;
+  align-items: start;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 0.42rem 0.55rem;
+  background: var(--surface-2);
+  font-size: 0.82rem;
+}
+.diagnostic-label { font-size: 0.68rem; font-weight: 800; letter-spacing: 0.04em; color: var(--warn); }
+.diagnostic-error .diagnostic-label { color: var(--down); }
+.diagnostic-message { word-break: break-word; }
 
 .node-actions { display: flex; gap: 0.5rem; margin-top: auto; padding-top: 0.3rem; }
 

@@ -108,6 +108,16 @@ POST   /api/delegations/<id>/cancel  cancel a delegation (originating node only)
 
 Probes hit each node's `{base}/healthz` with the node token. Serves report their agent name, version, and capabilities (`web`, `api`, `jobs`, `widgets`, `voice`) on `healthz` only to callers presenting the valid bearer token (or when the serve runs with auth disabled).
 
+The dashboard also shows lightweight diagnostics on each node card when the Hub can spot a likely configuration problem:
+
+- reverse nodes that have not connected their outbound websocket
+- nodes without a configured bearer token
+- `delegation.enabled: true` without a delegation `workdir`
+- nodes that accept delegation but do not report the `jobs` capability (or whose jobs capability cannot be verified)
+- obvious origin/target policy mismatches, such as an origin whose `to` allows a target that does not `accept_from` that origin
+
+These diagnostics are advisory and token-safe; `/api/nodes` still never returns node tokens or full secret-bearing config.
+
 ## Security posture
 
 The hub is **experimental and loopback-only by default**: it has no authentication of its own yet, so the built-in server refuses to bind to a non-loopback host. Anyone who can reach the hub can reach every node it fronts. To expose it publicly, put an authenticating reverse proxy in front and keep the hub itself on loopback. Reverse nodes authenticate their websocket with the node id plus the node's bearer token; the hub accepts that connection only for nodes configured with `connection: reverse`, and the node-side connector forwards only requests under its configured base path.
