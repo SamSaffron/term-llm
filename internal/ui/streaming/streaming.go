@@ -116,6 +116,11 @@ type StreamRenderer struct {
 	// Resume state when a nested block (like fenced code) ends.
 	// Used to keep list context stable across nested blocks.
 	resumeState state
+
+	// Incremental rendering is a conservative fast path for complete blocks whose
+	// rendered form is independent of future markdown. The full-document render
+	// remains the correctness fallback for globally-sensitive constructs.
+	incrementalUnsafe bool
 }
 
 // NewRenderer creates a new streaming markdown renderer.
@@ -296,11 +301,118 @@ func (sr *StreamRenderer) commitPendingLines() error {
 	if len(sr.pendingLines) == 0 {
 		return nil
 	}
+	var markdown bytes.Buffer
 	for _, l := range sr.pendingLines {
+		markdown.WriteString(l)
 		sr.allMarkdown.WriteString(l)
 	}
 	sr.pendingLines = nil
+	return sr.emitCommittedBlock(markdown.Bytes())
+}
+
+// emitCommittedBlock renders a newly committed top-level block. It first tries
+// a conservative append-only render of just that block; globally-sensitive
+// markdown falls back to the legacy full-document render so correctness remains
+// anchored to the complete parser output.
+func (sr *StreamRenderer) emitCommittedBlock(markdown []byte) error {
+	if sr.canAppendRenderedBlock(markdown) {
+		if err := sr.emitRenderedBlock(markdown); err == nil {
+			return nil
+		}
+	}
 	return sr.emitRendered()
+}
+
+func (sr *StreamRenderer) commitRawBlock(markdown string) error {
+	sr.allMarkdown.WriteString(markdown)
+	return sr.emitCommittedBlock([]byte(markdown))
+}
+
+func (sr *StreamRenderer) commitPendingLinesWith(rawLine string) error {
+	var markdown bytes.Buffer
+	for _, l := range sr.pendingLines {
+		markdown.WriteString(l)
+		sr.allMarkdown.WriteString(l)
+	}
+	sr.pendingLines = nil
+	if rawLine != "" {
+		markdown.WriteString(rawLine)
+		sr.allMarkdown.WriteString(rawLine)
+	}
+	return sr.emitCommittedBlock(markdown.Bytes())
+}
+
+func (sr *StreamRenderer) canAppendRenderedBlock(markdown []byte) bool {
+	if sr.incrementalUnsafe {
+		return false
+	}
+	if markdownHasGlobalMarkdownSemantics(markdown) {
+		sr.incrementalUnsafe = true
+		return false
+	}
+	return true
+}
+
+func markdownHasGlobalMarkdownSemantics(markdown []byte) bool {
+	lines := bytes.Split(markdown, []byte("\n"))
+	for _, line := range lines {
+		trimmed := bytes.TrimLeft(line, " \t")
+		if len(trimmed) == 0 {
+			continue
+		}
+		// Link reference definitions can affect links anywhere earlier in the
+		// document, so once one appears the safe append-only model is invalid.
+		if len(trimmed) > 1 && trimmed[0] == '[' && bytes.Contains(trimmed, []byte("]:")) {
+			return true
+		}
+		// Reference-style links ([label][id]) may be resolved by future reference
+		// definitions. Inline links ([label](url)) are local and safe.
+		if bytes.Contains(trimmed, []byte("][")) {
+			return true
+		}
+		// Raw HTML block boundaries and inline/raw rendering can be affected by
+		// neighbouring lines. Keep the fast path boring rather than clever.
+		if trimmed[0] == '<' {
+			return true
+		}
+	}
+	return false
+}
+
+func trimRenderedBlock(rendered []byte) []byte {
+	return bytes.Trim(rendered, "\n")
+}
+
+func (sr *StreamRenderer) emitRenderedBlock(markdown []byte) error {
+	if sr.partialEnabled {
+		if err := sr.clearPartialState(); err != nil {
+			return err
+		}
+	}
+
+	blockMarkdown := markdown
+	if sr.hasTabs {
+		blockMarkdown = bytes.ReplaceAll(markdown, []byte("\t"), []byte("  "))
+	}
+
+	rendered, err := sr.renderer.Render(blockMarkdown)
+	if err != nil {
+		return err
+	}
+	rendered = normalizeNewlines(rendered)
+	rendered = trimRenderedBlock(rendered)
+	if len(rendered) == 0 {
+		return nil
+	}
+
+	snapshot := make([]byte, 0, len(sr.lastCommittedRendered)+2+len(rendered))
+	if len(sr.lastCommittedRendered) > 0 {
+		snapshot = append(snapshot, sr.lastCommittedRendered...)
+		snapshot = append(snapshot, '\n', '\n')
+	}
+	snapshot = append(snapshot, rendered...)
+	sr.lastCommittedRendered = append(sr.lastCommittedRendered[:0], snapshot...)
+	return sr.applyRenderedSnapshot(snapshot, false)
 }
 
 // applyRenderedSnapshot writes the next rendered snapshot using one of:
@@ -391,13 +503,11 @@ func (sr *StreamRenderer) handleReady(content, rawLine string) error {
 
 	case blockHeading:
 		// Headings are complete immediately (single line)
-		sr.allMarkdown.WriteString(rawLine)
-		return sr.emitRendered()
+		return sr.commitRawBlock(rawLine)
 
 	case blockThematicBreak:
 		// Thematic breaks are complete immediately
-		sr.allMarkdown.WriteString(rawLine)
-		return sr.emitRendered()
+		return sr.commitRawBlock(rawLine)
 
 	case blockTable:
 		sr.state = stateInTable
@@ -427,27 +537,17 @@ func (sr *StreamRenderer) handleReady(content, rawLine string) error {
 func (sr *StreamRenderer) handleParagraph(content, rawLine string) error {
 	// Blank line ends paragraph
 	if isBlankLine(content) {
-		// Commit pending lines to markdown
-		for _, l := range sr.pendingLines {
-			sr.allMarkdown.WriteString(l)
-		}
-		sr.pendingLines = nil
-		sr.allMarkdown.WriteString(rawLine)
+		// Commit pending paragraph plus the terminating blank line.
 		sr.state = stateReady
-		return sr.emitRendered()
+		return sr.commitPendingLinesWith(rawLine)
 	}
 
 	// IMPORTANT: Check for setext heading underline FIRST (=== or ---)
 	// This must be checked before thematic break because --- is ambiguous
 	if isSetextUnderline(content) && len(sr.pendingLines) > 0 {
 		// This converts the paragraph to a heading
-		for _, l := range sr.pendingLines {
-			sr.allMarkdown.WriteString(l)
-		}
-		sr.pendingLines = nil
-		sr.allMarkdown.WriteString(rawLine)
 		sr.state = stateReady
-		return sr.emitRendered()
+		return sr.commitPendingLinesWith(rawLine)
 	}
 
 	// Check if this line starts a new block type
@@ -456,12 +556,8 @@ func (sr *StreamRenderer) handleParagraph(content, rawLine string) error {
 	switch blockType {
 	case blockFencedCode, blockHeading, blockThematicBreak, blockTable, blockList, blockBlockquote:
 		// Commit current paragraph first
-		for _, l := range sr.pendingLines {
-			sr.allMarkdown.WriteString(l)
-		}
-		sr.pendingLines = nil
 		sr.state = stateReady
-		if err := sr.emitRendered(); err != nil {
+		if err := sr.commitPendingLines(); err != nil {
 			return err
 		}
 		// Then process this line as a new block
@@ -489,15 +585,11 @@ func (sr *StreamRenderer) handleFencedCode(content, rawLine string) error {
 			return nil
 		}
 		// Commit all pending lines
-		for _, l := range sr.pendingLines {
-			sr.allMarkdown.WriteString(l)
-		}
-		sr.pendingLines = nil
 		sr.state = stateReady
 		sr.fenceChar = 0
 		sr.fenceLen = 0
 		sr.fenceIndent = 0
-		return sr.emitRendered()
+		return sr.commitPendingLines()
 	}
 
 	return nil
@@ -517,12 +609,8 @@ func (sr *StreamRenderer) handleTable(content, rawLine string) error {
 		sr.resumeState = stateReady
 		return sr.handleList(content, rawLine)
 	}
-	for _, l := range sr.pendingLines {
-		sr.allMarkdown.WriteString(l)
-	}
-	sr.pendingLines = nil
 	sr.state = stateReady
-	if err := sr.emitRendered(); err != nil {
+	if err := sr.commitPendingLines(); err != nil {
 		return err
 	}
 
@@ -639,12 +727,8 @@ func (sr *StreamRenderer) handleBlockquote(content, rawLine string) error {
 		sr.resumeState = stateReady
 		return sr.handleList(content, rawLine)
 	}
-	for _, l := range sr.pendingLines {
-		sr.allMarkdown.WriteString(l)
-	}
-	sr.pendingLines = nil
 	sr.state = stateReady
-	if err := sr.emitRendered(); err != nil {
+	if err := sr.commitPendingLines(); err != nil {
 		return err
 	}
 	return sr.handleReady(content, rawLine)
