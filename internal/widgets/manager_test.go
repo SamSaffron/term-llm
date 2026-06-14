@@ -1,6 +1,8 @@
 package widgets
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -36,7 +38,7 @@ func TestWidgetStopProcessReapsChildProcessGroup(t *testing.T) {
 		state: stateStopped,
 	}
 
-	if err := e.startProcess("/chat"); err != nil {
+	if err := e.startProcess(context.Background(), "/chat"); err != nil {
 		t.Fatalf("startProcess: %v", err)
 	}
 
@@ -62,6 +64,71 @@ func TestWidgetStopProcessReapsChildProcessGroup(t *testing.T) {
 	}
 
 	t.Fatalf("widget child process still serving after stop on %s", url)
+}
+
+func TestManagerCloseContextPreventsStartAfterShutdownBegins(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process groups are Unix-specific")
+	}
+
+	t.Setenv("TERM_LLM_WIDGET_TEST_CHILD", "1")
+
+	dir := t.TempDir()
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
+	m := &Manager{
+		basePath:       "/chat",
+		entries:        make(map[string]*widgetEntry),
+		stopCh:         make(chan struct{}),
+		shutdownCtx:    shutdownCtx,
+		shutdownCancel: shutdownCancel,
+	}
+	e := &widgetEntry{
+		manifest: &Manifest{
+			ID:      "queued-widget",
+			Title:   "Queued Widget",
+			Mount:   "queued-widget",
+			Dir:     dir,
+			Command: []string{os.Args[0], "-test.run=TestWidgetChildHTTPServer", "--", "$PORT"},
+		},
+		state:   stateStopped,
+		lastReq: time.Now(),
+	}
+	m.entries[e.manifest.Mount] = e
+
+	// Simulate a request queued behind another start attempt. CloseContext takes
+	// its one-time snapshot while this goroutine is still waiting on startMu.
+	e.startMu.Lock()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- m.ensureRunning(e)
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	m.CloseContext(context.Background())
+	e.startMu.Unlock()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, errWidgetManagerShuttingDown) {
+			e.stopProcess()
+			t.Fatalf("ensureRunning error = %v, want %v", err, errWidgetManagerShuttingDown)
+		}
+	case <-time.After(2 * time.Second):
+		e.stopProcess()
+		t.Fatal("ensureRunning did not return after shutdown began")
+	}
+
+	e.mu.Lock()
+	proc := e.proc
+	state := e.state
+	e.mu.Unlock()
+	if proc != nil {
+		e.stopProcess()
+		t.Fatal("widget process started after shutdown began")
+	}
+	if state != stateStopped {
+		t.Fatalf("widget state = %v, want stopped", state)
+	}
 }
 
 func TestWidgetChildHTTPServer(t *testing.T) {

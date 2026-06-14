@@ -2,6 +2,7 @@ package widgets
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -23,6 +24,8 @@ const (
 	startupTimeout   = 10 * time.Second
 	socketRuntimeDir = "/tmp/term-llm-widgets"
 )
+
+var errWidgetManagerShuttingDown = errors.New("widget manager is shutting down")
 
 type processState int
 
@@ -66,15 +69,22 @@ type Manager struct {
 
 	stopOnce sync.Once
 	stopCh   chan struct{}
+
+	shuttingDown   bool
+	shutdownCtx    context.Context
+	shutdownCancel context.CancelFunc
 }
 
 // NewManager creates a manager, scans widgetsDir, and starts the idle reaper.
 func NewManager(widgetsDir, basePath string) *Manager {
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	m := &Manager{
-		widgetsDir: widgetsDir,
-		basePath:   basePath,
-		entries:    make(map[string]*widgetEntry),
-		stopCh:     make(chan struct{}),
+		widgetsDir:     widgetsDir,
+		basePath:       basePath,
+		entries:        make(map[string]*widgetEntry),
+		stopCh:         make(chan struct{}),
+		shutdownCtx:    shutdownCtx,
+		shutdownCancel: shutdownCancel,
 	}
 	m.scan()
 	go m.idleLoop()
@@ -232,9 +242,42 @@ func (m *Manager) Proxy(mount string, w http.ResponseWriter, r *http.Request) {
 	proxy.ServeHTTP(w, r2)
 }
 
+func (m *Manager) startContext() (context.Context, error) {
+	m.mu.RLock()
+	shuttingDown := m.shuttingDown
+	ctx := m.shutdownCtx
+	m.mu.RUnlock()
+
+	if shuttingDown {
+		return nil, errWidgetManagerShuttingDown
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return nil, errWidgetManagerShuttingDown
+	}
+	return ctx, nil
+}
+
+func (m *Manager) isShuttingDown() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.shuttingDown
+}
+
 func (m *Manager) ensureRunning(e *widgetEntry) error {
+	if _, err := m.startContext(); err != nil {
+		return err
+	}
+
 	e.startMu.Lock()
 	defer e.startMu.Unlock()
+
+	ctx, err := m.startContext()
+	if err != nil {
+		return err
+	}
 
 	e.mu.Lock()
 	state := e.state
@@ -247,10 +290,24 @@ func (m *Manager) ensureRunning(e *widgetEntry) error {
 	case stateError:
 		return fmt.Errorf("in error state: %s (use reload to reset)", errMsg)
 	}
-	return e.startProcess(m.basePath)
+	if err := e.startProcess(ctx, m.basePath); err != nil {
+		return err
+	}
+	if m.isShuttingDown() {
+		e.stopProcess()
+		return errWidgetManagerShuttingDown
+	}
+	return nil
 }
 
-func (e *widgetEntry) startProcess(basePath string) error {
+func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return errWidgetManagerShuttingDown
+	}
+
 	mf := e.manifest
 	mode, _ := mf.PlaceholderMode()
 
@@ -312,7 +369,15 @@ func (e *widgetEntry) startProcess(basePath string) error {
 		e.mu.Unlock()
 	}
 
-	cmd := exec.CommandContext(context.Background(), argv[0], argv[1:]...)
+	if ctx.Err() != nil {
+		e.mu.Lock()
+		e.state = stateStopped
+		e.port = 0
+		e.mu.Unlock()
+		return errWidgetManagerShuttingDown
+	}
+
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = mf.Dir
 	cmd.Env = env
 	cmd.Stdout = os.Stderr
@@ -320,6 +385,16 @@ func (e *widgetEntry) startProcess(basePath string) error {
 	procutil.ConfigureCommandProcessGroup(cmd)
 
 	if err := cmd.Start(); err != nil {
+		if ctx.Err() != nil {
+			e.mu.Lock()
+			e.state = stateStopped
+			e.proc = nil
+			e.procDone = nil
+			e.proxy = nil
+			e.port = 0
+			e.mu.Unlock()
+			return errWidgetManagerShuttingDown
+		}
 		return e.setError(fmt.Errorf("start process: %w", err))
 	}
 
@@ -343,25 +418,64 @@ func (e *widgetEntry) startProcess(basePath string) error {
 		log.Printf("[widget] %s process exited", mf.Mount)
 	}()
 
+	if ctx.Err() != nil {
+		e.stopProcess()
+		return errWidgetManagerShuttingDown
+	}
+
 	// Poll / until the widget responds or the timeout expires.
 	client := &http.Client{Transport: transport, Timeout: 500 * time.Millisecond}
 	deadline := time.Now().Add(startupTimeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
+		if ctx.Err() != nil {
+			e.stopProcess()
+			return errWidgetManagerShuttingDown
+		}
+
 		e.mu.Lock()
 		alive := e.proc != nil
 		e.mu.Unlock()
 		if !alive {
+			if ctx.Err() != nil {
+				return errWidgetManagerShuttingDown
+			}
 			return e.setError(fmt.Errorf("process exited during startup"))
 		}
-		resp, err := client.Get(targetBase + "/")
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetBase+"/", nil)
+		if err != nil {
+			return e.setError(fmt.Errorf("build startup probe: %w", err))
+		}
+		resp, err := client.Do(req)
 		if err == nil {
 			resp.Body.Close()
 			lastErr = nil
 			break
 		}
+		if ctx.Err() != nil {
+			e.stopProcess()
+			return errWidgetManagerShuttingDown
+		}
 		lastErr = err
-		time.Sleep(100 * time.Millisecond)
+
+		t := time.NewTimer(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !t.Stop() {
+				select {
+				case <-t.C:
+				default:
+				}
+			}
+			e.stopProcess()
+			return errWidgetManagerShuttingDown
+		case <-t.C:
+		}
+	}
+	if ctx.Err() != nil {
+		e.stopProcess()
+		return errWidgetManagerShuttingDown
 	}
 	if lastErr != nil {
 		e.mu.Lock()
@@ -377,11 +491,21 @@ func (e *widgetEntry) startProcess(basePath string) error {
 	proxy := httputil.NewSingleHostReverseProxy(targetURL)
 	proxy.Transport = transport
 
+	if ctx.Err() != nil {
+		e.stopProcess()
+		return errWidgetManagerShuttingDown
+	}
+
 	e.mu.Lock()
 	e.state = stateRunning
 	e.proxy = proxy
 	e.lastReq = time.Now()
 	e.mu.Unlock()
+
+	if ctx.Err() != nil {
+		e.stopProcess()
+		return errWidgetManagerShuttingDown
+	}
 
 	log.Printf("[widget] %s started (mode=%s)", mf.Mount, mode)
 	return nil
@@ -468,13 +592,21 @@ func (m *Manager) Close() {
 // parallel so one slow stop does not consume the whole serve shutdown budget.
 func (m *Manager) CloseContext(ctx context.Context) {
 	m.stopOnce.Do(func() {
-		close(m.stopCh)
-		m.mu.RLock()
+		m.mu.Lock()
+		m.shuttingDown = true
+		shutdownCancel := m.shutdownCancel
 		entries := make([]*widgetEntry, 0, len(m.entries))
 		for _, e := range m.entries {
 			entries = append(entries, e)
 		}
-		m.mu.RUnlock()
+		m.mu.Unlock()
+
+		if shutdownCancel != nil {
+			shutdownCancel()
+		}
+		if m.stopCh != nil {
+			close(m.stopCh)
+		}
 
 		var wg sync.WaitGroup
 		for _, e := range entries {

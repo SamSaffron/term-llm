@@ -1332,6 +1332,76 @@ func TestTelegramSessionMgrResetSessionIfCurrent_CancelsActiveStream(t *testing.
 	}
 }
 
+func TestTelegramSessionMgrResetSessionIfCurrent_TimesOutStuckStreamShutdown(t *testing.T) {
+	var cancelCalls atomic.Int32
+	var cleanupCalls atomic.Int32
+
+	mgr := &telegramSessionMgr{
+		sessions:         make(map[int64]*telegramSession),
+		interruptTimeout: 25 * time.Millisecond,
+		settings: Settings{
+			NewSession: func(ctx context.Context) (*SessionRuntime, error) {
+				return &SessionRuntime{
+					ProviderName: "mock",
+					ModelName:    "replacement",
+				}, nil
+			},
+		},
+	}
+	original := &telegramSession{
+		runtime: &SessionRuntime{
+			ProviderName: "mock",
+			ModelName:    "test",
+			Cleanup: func() {
+				cleanupCalls.Add(1)
+			},
+		},
+	}
+	original.cancelMu.Lock()
+	original.streamCancel = func() {
+		cancelCalls.Add(1)
+	}
+	original.replyDone = make(chan struct{})
+	original.cancelMu.Unlock()
+	mgr.sessions[42] = original
+
+	resetDone := make(chan struct{})
+	var (
+		replacement *telegramSession
+		replaced    bool
+		resetErr    error
+	)
+	go func() {
+		replacement, replaced, resetErr = mgr.resetSessionIfCurrent(context.Background(), 42, original)
+		close(resetDone)
+	}()
+
+	select {
+	case <-resetDone:
+	case <-time.After(time.Second):
+		t.Fatal("resetSessionIfCurrent blocked on stuck replyDone")
+	}
+
+	if resetErr != nil {
+		t.Fatalf("resetSessionIfCurrent failed: %v", resetErr)
+	}
+	if !replaced {
+		t.Fatal("expected reset to replace the active session")
+	}
+	if replacement == nil || replacement == original {
+		t.Fatal("expected a new replacement session")
+	}
+	if cancelCalls.Load() != 1 {
+		t.Fatalf("cancel calls = %d, want 1", cancelCalls.Load())
+	}
+	if cleanupCalls.Load() != 1 {
+		t.Fatalf("cleanup calls = %d, want 1", cleanupCalls.Load())
+	}
+	if got := mgr.sessions[42]; got != replacement {
+		t.Fatal("expected replacement session to be current")
+	}
+}
+
 func TestTelegramSessionMgrResetSessionIfCurrent_RestoresHistoryFromDB(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})

@@ -36,6 +36,7 @@ const telegramMaxConcurrentHandlers = 8
 const telegramMaxPhotoDownloadBytes int64 = 25 << 20
 const telegramMaxVoiceDownloadBytes int64 = 25 << 20
 const telegramDownloadTimeout = 5 * time.Minute
+const telegramSessionShutdownFallbackTimeout = 5 * time.Second
 
 var telegramDownloadHTTPClient = &http.Client{Timeout: telegramDownloadTimeout}
 
@@ -515,7 +516,7 @@ func (m *telegramSessionMgr) getOrCreate(ctx context.Context, chatID int64) (*te
 	m.mu.Lock()
 	if existing, ok := m.sessions[chatID]; ok {
 		m.mu.Unlock()
-		closeTelegramSession(created)
+		m.closeTelegramSession(created)
 		return existing, nil
 	}
 	m.sessions[chatID] = created
@@ -539,7 +540,7 @@ func (m *telegramSessionMgr) resetSessionIfCurrent(ctx context.Context, chatID i
 	current := m.sessions[chatID]
 	if expected != nil && current != nil && current != expected {
 		m.mu.Unlock()
-		closeTelegramSession(created)
+		m.closeTelegramSession(created)
 		return current, false, nil
 	}
 	m.sessions[chatID] = created
@@ -547,7 +548,7 @@ func (m *telegramSessionMgr) resetSessionIfCurrent(ctx context.Context, chatID i
 	m.mu.Unlock()
 
 	if current != nil {
-		closeTelegramSession(current)
+		m.closeTelegramSession(current)
 	}
 	return created, true, nil
 }
@@ -826,13 +827,31 @@ func (m *telegramSessionMgr) closeAllSessions() {
 	m.mu.Unlock()
 
 	for _, sess := range sessions {
-		closeTelegramSession(sess)
+		m.closeTelegramSession(sess)
 	}
 }
 
 func closeTelegramSession(sess *telegramSession) {
+	closeTelegramSessionWithTimeout(sess, telegramSessionShutdownFallbackTimeout)
+}
+
+func (m *telegramSessionMgr) closeTelegramSession(sess *telegramSession) {
+	closeTelegramSessionWithTimeout(sess, m.sessionShutdownTimeout())
+}
+
+func (m *telegramSessionMgr) sessionShutdownTimeout() time.Duration {
+	if m != nil && m.interruptTimeout > 0 {
+		return m.interruptTimeout
+	}
+	return telegramSessionShutdownFallbackTimeout
+}
+
+func closeTelegramSessionWithTimeout(sess *telegramSession, wait time.Duration) {
 	if sess == nil {
 		return
+	}
+	if wait <= 0 {
+		wait = telegramSessionShutdownFallbackTimeout
 	}
 
 	sess.cancelMu.Lock()
@@ -843,7 +862,11 @@ func closeTelegramSession(sess *telegramSession) {
 	if cancelFn != nil {
 		cancelFn()
 		if doneCh != nil {
-			<-doneCh
+			select {
+			case <-doneCh:
+			case <-time.After(wait):
+				log.Printf("[telegram] stream did not stop within %s during session shutdown; continuing cleanup", wait)
+			}
 		}
 	}
 
