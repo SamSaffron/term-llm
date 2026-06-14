@@ -1047,6 +1047,67 @@ func (m *Model) flushStreamingContentOnErrorToScrollback() []tea.Cmd {
 	return ui.ScrollbackPrintlnCommands(output, true)
 }
 
+func (m *Model) interruptedAssistantFallbackMessage() (llm.Message, bool) {
+	responseContent := m.currentResponse.String()
+	reasoningContent, reasoningKind, reasoningTitle := m.currentReasoningPartMetadata()
+	if responseContent == "" && reasoningContent == "" {
+		return llm.Message{}, false
+	}
+
+	part := llm.Part{Type: llm.PartText, Text: responseContent}
+	if reasoningContent != "" {
+		part.ReasoningContent = reasoningContent
+		part.ReasoningKind = reasoningKind
+		part.ReasoningSummaryTitle = reasoningTitle
+	}
+
+	return llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{part}}, true
+}
+
+func (m *Model) salvageInterruptedAssistantMessage() {
+	if m.sess == nil {
+		return
+	}
+	assistantMsg, ok := m.interruptedAssistantFallbackMessage()
+	if !ok {
+		return
+	}
+
+	sessionMsg := session.NewMessageWithReasoningPolicy(m.sess.ID, assistantMsg, -1, m.effectiveReasoningConfig())
+	sessionMsg.DurationMs = time.Since(m.streamStartTime).Milliseconds()
+
+	m.messagesMu.Lock()
+	localMsg := *sessionMsg
+	localMsg.Sequence = len(m.messages)
+	m.messages = append(m.messages, localMsg)
+	m.messagesMu.Unlock()
+	m.invalidateHistoryCache()
+
+	if m.store == nil {
+		return
+	}
+
+	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 5*time.Second)
+	defer cancel()
+
+	m.pendingMu.Lock()
+	pendingAssistantMsgID := m.pendingAssistantMsgID
+	m.pendingMu.Unlock()
+	if pendingAssistantMsgID != 0 {
+		sessionMsg.ID = pendingAssistantMsgID
+		err := m.store.UpdateMessage(dbCtx, m.sess.ID, sessionMsg)
+		if err == nil {
+			return
+		}
+		if !errors.Is(err, session.ErrNotFound) {
+			return
+		}
+		sessionMsg.ID = 0
+	}
+
+	_ = m.store.AddMessage(dbCtx, m.sess.ID, sessionMsg)
+}
+
 // SetAgentResolver configures the function used to resolve agent names
 // during /handover. The function should match cmd.LoadAgent's signature.
 func (m *Model) SetAgentResolver(resolver func(name string, cfg *config.Config) (*agents.Agent, error)) {
@@ -1578,6 +1639,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.streamRenderTickPending = false
 				m.preserveStreamingContentOnError()
 				errorOutputCmds := m.flushStreamingContentOnErrorToScrollback()
+				m.salvageInterruptedAssistantMessage()
 				m.resetCurrentReasoning()
 				m.streaming = false
 				m.err = nil
