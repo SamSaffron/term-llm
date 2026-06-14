@@ -20,27 +20,37 @@ import (
 // Reverse node connections let a private node dial out to a public Hub. The
 // Hub still exposes the same node abstraction: callers ask the Hub to request a
 // node path, and the transport is either direct HTTP or this websocket tunnel.
-// The tunnel is deliberately small: one request frame, one buffered response
-// frame. That is enough for Hub UI proxying and jobs-v2 delegation without
-// adding offline queues, arbitrary forwarding, or a second delegation API.
+// The tunnel uses a small JSON frame protocol: the Hub sends request frames; the
+// node replies with response_start, response_body, and response_end frames. A
+// legacy single buffered response frame is still accepted so older tests and
+// doNodeJSON-style callers keep working as ordinary http.Response readers.
 
 const (
 	hubReversePingInterval = 20 * time.Second
 	hubReversePongWait     = 60 * time.Second
 	hubReverseWriteWait    = 10 * time.Second
+	hubReverseChunkSize    = 32 * 1024
+
+	hubReverseFrameRequest       = "request"
+	hubReverseFrameCancel        = "cancel"
+	hubReverseFrameResponseStart = "response_start"
+	hubReverseFrameResponseBody  = "response_body"
+	hubReverseFrameResponseEnd   = "response_end"
 )
 
 type hubReverseRequest struct {
+	Type   string      `json:"type,omitempty"`
 	ID     string      `json:"id"`
-	Method string      `json:"method"`
-	Path   string      `json:"path"`
+	Method string      `json:"method,omitempty"`
+	Path   string      `json:"path,omitempty"`
 	Header http.Header `json:"header,omitempty"`
 	Body   []byte      `json:"body,omitempty"`
 }
 
 type hubReverseResponse struct {
+	Type   string      `json:"type,omitempty"`
 	ID     string      `json:"id"`
-	Status int         `json:"status"`
+	Status int         `json:"status,omitempty"`
 	Header http.Header `json:"header,omitempty"`
 	Body   []byte      `json:"body,omitempty"`
 	Error  string      `json:"error,omitempty"`
@@ -182,13 +192,24 @@ func (c *hubReverseConnection) readLoop(done func()) {
 		c.touch()
 		c.pendingMu.Lock()
 		ch := c.pending[resp.ID]
-		delete(c.pending, resp.ID)
+		if hubReverseResponseFrameTerminal(resp) {
+			delete(c.pending, resp.ID)
+		}
 		c.pendingMu.Unlock()
 		if ch != nil {
 			ch <- resp
-			close(ch)
+			if hubReverseResponseFrameTerminal(resp) {
+				close(ch)
+			}
 		}
 	}
+}
+
+func hubReverseResponseFrameTerminal(resp hubReverseResponse) bool {
+	if resp.Type == "" {
+		return true
+	}
+	return resp.Type == hubReverseFrameResponseEnd || resp.Error != ""
 }
 
 func (c *hubReverseConnection) failPending(msg string) {
@@ -197,9 +218,21 @@ func (c *hubReverseConnection) failPending(msg string) {
 	c.pending = map[string]chan hubReverseResponse{}
 	c.pendingMu.Unlock()
 	for id, ch := range pending {
-		ch <- hubReverseResponse{ID: id, Status: http.StatusBadGateway, Error: msg}
+		select {
+		case ch <- hubReverseResponse{ID: id, Status: http.StatusBadGateway, Error: msg}:
+		default:
+		}
 		close(ch)
 	}
+}
+
+func (c *hubReverseConnection) writeRequest(frame hubReverseRequest) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	_ = c.conn.SetWriteDeadline(time.Now().Add(hubReverseWriteWait))
+	err := c.conn.WriteJSON(frame)
+	_ = c.conn.SetWriteDeadline(time.Time{})
+	return err
 }
 
 func (m *hubReverseManager) do(ctx context.Context, node hub.Node, req *http.Request) (*http.Response, error) {
@@ -222,13 +255,8 @@ func (m *hubReverseManager) do(ctx context.Context, node hub.Node, req *http.Req
 	c.pending[id] = ch
 	c.pendingMu.Unlock()
 
-	frame := hubReverseRequest{ID: id, Method: req.Method, Path: req.URL.RequestURI(), Header: req.Header.Clone(), Body: body}
-	c.writeMu.Lock()
-	_ = c.conn.SetWriteDeadline(time.Now().Add(hubReverseWriteWait))
-	err = c.conn.WriteJSON(frame)
-	_ = c.conn.SetWriteDeadline(time.Time{})
-	c.writeMu.Unlock()
-	if err != nil {
+	frame := hubReverseRequest{Type: hubReverseFrameRequest, ID: id, Method: req.Method, Path: req.URL.RequestURI(), Header: req.Header.Clone(), Body: body}
+	if err := c.writeRequest(frame); err != nil {
 		c.pendingMu.Lock()
 		delete(c.pending, id)
 		c.pendingMu.Unlock()
@@ -237,9 +265,18 @@ func (m *hubReverseManager) do(ctx context.Context, node hub.Node, req *http.Req
 
 	select {
 	case resp := <-ch:
-		if resp.Error != "" {
-			return nil, errors.New(resp.Error)
-		}
+		return c.buildHTTPResponseFromReverseFrame(ctx, req, id, ch, resp)
+	case <-ctx.Done():
+		c.cancelPending(id)
+		return nil, ctx.Err()
+	}
+}
+
+func (c *hubReverseConnection) buildHTTPResponseFromReverseFrame(ctx context.Context, req *http.Request, id string, ch <-chan hubReverseResponse, resp hubReverseResponse) (*http.Response, error) {
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+	if resp.Type == "" {
 		return &http.Response{
 			StatusCode:    resp.Status,
 			Status:        fmt.Sprintf("%d %s", resp.Status, http.StatusText(resp.Status)),
@@ -248,12 +285,60 @@ func (m *hubReverseManager) do(ctx context.Context, node hub.Node, req *http.Req
 			ContentLength: int64(len(resp.Body)),
 			Request:       req,
 		}, nil
-	case <-ctx.Done():
-		c.pendingMu.Lock()
-		delete(c.pending, id)
-		c.pendingMu.Unlock()
-		return nil, ctx.Err()
 	}
+	if resp.Type != hubReverseFrameResponseStart {
+		return nil, fmt.Errorf("unexpected reverse response frame %q", resp.Type)
+	}
+	pr, pw := io.Pipe()
+	go c.copyReverseResponseBody(ctx, id, ch, pw)
+	return &http.Response{
+		StatusCode: resp.Status,
+		Status:     fmt.Sprintf("%d %s", resp.Status, http.StatusText(resp.Status)),
+		Header:     resp.Header,
+		Body:       pr,
+		Request:    req,
+	}, nil
+}
+
+func (c *hubReverseConnection) copyReverseResponseBody(ctx context.Context, id string, ch <-chan hubReverseResponse, pw *io.PipeWriter) {
+	defer pw.Close()
+	for {
+		select {
+		case resp, ok := <-ch:
+			if !ok {
+				return
+			}
+			if resp.Error != "" {
+				_ = pw.CloseWithError(errors.New(resp.Error))
+				return
+			}
+			switch resp.Type {
+			case hubReverseFrameResponseBody:
+				if len(resp.Body) > 0 {
+					if _, err := pw.Write(resp.Body); err != nil {
+						c.cancelPending(id)
+						return
+					}
+				}
+			case hubReverseFrameResponseEnd:
+				return
+			default:
+				_ = pw.CloseWithError(fmt.Errorf("unexpected reverse response frame %q", resp.Type))
+				return
+			}
+		case <-ctx.Done():
+			_ = pw.CloseWithError(ctx.Err())
+			c.cancelPending(id)
+			return
+		}
+	}
+}
+
+func (c *hubReverseConnection) cancelPending(id string) {
+	c.pendingMu.Lock()
+	delete(c.pending, id)
+	c.pendingMu.Unlock()
+	_ = c.writeRequest(hubReverseRequest{Type: hubReverseFrameCancel, ID: id})
 }
 
 func (s *hubServer) handleReverseConnect(w http.ResponseWriter, r *http.Request) {
@@ -343,29 +428,64 @@ func hubReverseConnectOnce(ctx context.Context, hubURL, nodeID, token, localBase
 	}
 	go hubReversePingLoop(conn, &writeMu, donePing)
 	log.Printf("hub reverse connect: node %q connected to %s", nodeID, hubURL)
+	activeMu := sync.Mutex{}
+	active := map[string]context.CancelFunc{}
+	defer func() {
+		activeMu.Lock()
+		defer activeMu.Unlock()
+		for _, cancel := range active {
+			cancel()
+		}
+	}()
 	for {
 		var req hubReverseRequest
 		if err := conn.ReadJSON(&req); err != nil {
 			return err
 		}
-		resp := handleHubReverseRequest(ctx, req, token, localBase, allowedBasePath, client)
-		writeMu.Lock()
-		_ = conn.SetWriteDeadline(time.Now().Add(hubReverseWriteWait))
-		err := conn.WriteJSON(resp)
-		_ = conn.SetWriteDeadline(time.Time{})
-		writeMu.Unlock()
-		if err != nil {
-			return err
+		if req.Type == hubReverseFrameCancel {
+			activeMu.Lock()
+			cancel := active[req.ID]
+			delete(active, req.ID)
+			activeMu.Unlock()
+			if cancel != nil {
+				cancel()
+			}
+			continue
 		}
+		reqCtx, cancel := context.WithCancel(ctx)
+		activeMu.Lock()
+		active[req.ID] = cancel
+		activeMu.Unlock()
+		go func(req hubReverseRequest, reqCtx context.Context, cancel context.CancelFunc) {
+			defer func() {
+				activeMu.Lock()
+				delete(active, req.ID)
+				activeMu.Unlock()
+				cancel()
+			}()
+			handleHubReverseRequest(reqCtx, req, token, localBase, allowedBasePath, client, func(resp hubReverseResponse) error {
+				writeMu.Lock()
+				defer writeMu.Unlock()
+				_ = conn.SetWriteDeadline(time.Now().Add(hubReverseWriteWait))
+				err := conn.WriteJSON(resp)
+				_ = conn.SetWriteDeadline(time.Time{})
+				return err
+			})
+		}(req, reqCtx, cancel)
 	}
 }
 
-func handleHubReverseRequest(ctx context.Context, frame hubReverseRequest, token, localBase, allowedBasePath string, client *http.Client) hubReverseResponse {
+func handleHubReverseRequest(ctx context.Context, frame hubReverseRequest, token, localBase, allowedBasePath string, client *http.Client, writeFrame func(hubReverseResponse) error) {
+	sendError := func(status int, msg string) {
+		_ = writeFrame(hubReverseResponse{Type: hubReverseFrameResponseStart, ID: frame.ID, Status: status, Error: msg})
+	}
 	if frame.ID == "" {
-		return hubReverseResponse{Status: http.StatusBadRequest, Error: "missing request id"}
+		_ = writeFrame(hubReverseResponse{Type: hubReverseFrameResponseStart, Status: http.StatusBadRequest, Error: "missing request id"})
+		return
 	}
 	if !strings.HasPrefix(frame.Path, "/") || hubContainsEncodedSeparator(frame.Path) || hubHasDotDotSegment(frame.Path) {
-		return hubReverseResponse{ID: frame.ID, Status: http.StatusBadRequest, Error: "invalid reverse request path"}
+		sendError(http.StatusBadRequest, "invalid reverse request path")
+		return
 	}
 	pathOnly := frame.Path
 	if i := strings.IndexByte(pathOnly, '?'); i >= 0 {
@@ -373,25 +493,53 @@ func handleHubReverseRequest(ctx context.Context, frame hubReverseRequest, token
 	}
 	allowedBasePath = strings.TrimRight(allowedBasePath, "/")
 	if allowedBasePath != "" && pathOnly != allowedBasePath && !strings.HasPrefix(pathOnly, allowedBasePath+"/") {
-		return hubReverseResponse{ID: frame.ID, Status: http.StatusForbidden, Error: "reverse request outside node base path"}
+		sendError(http.StatusForbidden, "reverse request outside node base path")
+		return
 	}
 	localURL := strings.TrimRight(localBase, "/") + frame.Path
 	req, err := http.NewRequestWithContext(ctx, frame.Method, localURL, bytes.NewReader(frame.Body))
 	if err != nil {
-		return hubReverseResponse{ID: frame.ID, Status: http.StatusBadRequest, Error: err.Error()}
+		sendError(http.StatusBadRequest, err.Error())
+		return
 	}
 	req.Header = frame.Header.Clone()
+	if req.Header == nil {
+		req.Header = http.Header{}
+	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return hubReverseResponse{ID: frame.ID, Status: http.StatusBadGateway, Error: err.Error()}
+		if ctx.Err() != nil {
+			return
+		}
+		sendError(http.StatusBadGateway, err.Error())
+		return
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
-	if err != nil {
-		return hubReverseResponse{ID: frame.ID, Status: http.StatusBadGateway, Error: err.Error()}
+	if err := writeFrame(hubReverseResponse{Type: hubReverseFrameResponseStart, ID: frame.ID, Status: resp.StatusCode, Header: resp.Header.Clone()}); err != nil {
+		return
 	}
-	return hubReverseResponse{ID: frame.ID, Status: resp.StatusCode, Header: resp.Header.Clone(), Body: body}
+	buf := make([]byte, hubReverseChunkSize)
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			chunk := make([]byte, n)
+			copy(chunk, buf[:n])
+			if err := writeFrame(hubReverseResponse{Type: hubReverseFrameResponseBody, ID: frame.ID, Body: chunk}); err != nil {
+				return
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				_ = writeFrame(hubReverseResponse{Type: hubReverseFrameResponseEnd, ID: frame.ID})
+				return
+			}
+			if ctx.Err() == nil {
+				_ = writeFrame(hubReverseResponse{Type: hubReverseFrameResponseEnd, ID: frame.ID, Error: readErr.Error()})
+			}
+			return
+		}
+	}
 }
