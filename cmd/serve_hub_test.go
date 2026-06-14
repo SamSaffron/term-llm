@@ -34,6 +34,63 @@ type fakeHubResolver struct{ nodes []hub.Node }
 func (f fakeHubResolver) Source() string             { return hub.SourceConfig }
 func (f fakeHubResolver) Nodes() ([]hub.Node, error) { return f.nodes, nil }
 
+func TestHubAuthProtectsDashboardAPIAndProxy(t *testing.T) {
+	var gotAuth string
+	s := hubWithBackend(t, "/chat", func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		io.WriteString(w, "ok")
+	})
+	s.requireAuth = true
+	s.token = "hub-secret"
+	h := s.handler()
+
+	for _, path := range []string{"/", "/api/nodes", "/node/alpha/"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s without auth status = %d, want 401", path, rec.Code)
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/node/alpha/v1/models", nil)
+	req.Header.Set("Authorization", "bearer hub-secret")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("authorized proxy status = %d body=%q", rec.Code, rec.Body.String())
+	}
+	if gotAuth != "Bearer tkn-123" {
+		t.Fatalf("backend Authorization = %q, want node token injection", gotAuth)
+	}
+}
+
+func TestHubAuthSkipsReverseConnectNodeAuth(t *testing.T) {
+	s := hubWithBackend(t, "/chat", func(w http.ResponseWriter, r *http.Request) {})
+	s.requireAuth = true
+	s.token = "hub-secret"
+
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/connect", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want node-auth 401", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "hub authentication") {
+		t.Fatalf("/api/connect should be gated by node auth, got body %q", rec.Body.String())
+	}
+}
+
+func TestValidateHubBindAllowsPublicOnlyWithAuth(t *testing.T) {
+	if err := validateHubBind("0.0.0.0", 8090, true); err != nil {
+		t.Fatalf("public bind with auth: %v", err)
+	}
+	if err := validateHubBind("0.0.0.0", 8090, false); err == nil {
+		t.Fatal("expected public bind without auth to fail")
+	}
+	if err := validateHubBind("127.0.0.1", 8090, false); err != nil {
+		t.Fatalf("loopback bind without auth: %v", err)
+	}
+}
+
 func TestHubProxyInjectsTokenAndStripsCredentials(t *testing.T) {
 	var gotAuth, gotCookie, gotAPIKey, gotPath, gotQuery, gotFwd string
 	s := hubWithBackend(t, "/chat", func(w http.ResponseWriter, r *http.Request) {
@@ -356,21 +413,23 @@ func TestHubTransportNoEnvProxy(t *testing.T) {
 
 func TestValidateHubBind(t *testing.T) {
 	cases := []struct {
-		host    string
-		port    int
-		wantErr bool
+		host        string
+		port        int
+		requireAuth bool
+		wantErr     bool
 	}{
-		{"127.0.0.1", 8090, false},
-		{"localhost", 8090, false},
-		{"::1", 8090, false},
-		{"0.0.0.0", 8090, true},
-		{"192.168.1.20", 8090, true},
-		{"127.0.0.1", 0, true},
-		{"127.0.0.1", 70000, true},
+		{"127.0.0.1", 8090, false, false},
+		{"localhost", 8090, false, false},
+		{"::1", 8090, false, false},
+		{"0.0.0.0", 8090, false, true},
+		{"192.168.1.20", 8090, false, true},
+		{"0.0.0.0", 8090, true, false},
+		{"127.0.0.1", 0, true, true},
+		{"127.0.0.1", 70000, true, true},
 	}
 	for _, tc := range cases {
-		if err := validateHubBind(tc.host, tc.port); (err != nil) != tc.wantErr {
-			t.Errorf("validateHubBind(%q,%d) err=%v wantErr=%v", tc.host, tc.port, err, tc.wantErr)
+		if err := validateHubBind(tc.host, tc.port, tc.requireAuth); (err != nil) != tc.wantErr {
+			t.Errorf("validateHubBind(%q,%d,%v) err=%v wantErr=%v", tc.host, tc.port, tc.requireAuth, err, tc.wantErr)
 		}
 	}
 }

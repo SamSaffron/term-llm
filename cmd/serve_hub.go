@@ -3,6 +3,8 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -14,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -36,9 +39,11 @@ import (
 // per request from the node ID prefix, so a host-based router can later map
 // Host -> node and reuse the same proxy plumbing unchanged.
 //
-// Hub-level authentication is intentionally not implemented yet: the hub
-// refuses to bind beyond loopback. TODO(hub): hub auth (member token ->
-// allowed nodes), node self-registration, and mTLS to nodes.
+// Hub-level authentication is intentionally small: one optional bearer token
+// gates the operator dashboard, registry API, and node proxy. Reverse node
+// websocket connections and delegation calls from nodes continue to use node
+// auth (node id + that node's serve token), so Hub auth does not require user
+// accounts or per-member ACLs.
 type hubServer struct {
 	registry *hub.Registry
 	// store backs the dashboard's Add Node form; nil disables mutation.
@@ -56,6 +61,9 @@ type hubServer struct {
 	// node tokens) but, unlike streaming proxy traffic, gets a whole-request
 	// timeout.
 	nodeAPIClient *http.Client
+
+	requireAuth bool
+	token       string
 }
 
 func newHubServer(registry *hub.Registry, store *hub.Store) *hubServer {
@@ -160,14 +168,53 @@ func (s *hubServer) handler() http.Handler {
 	mux.HandleFunc("/api/connect", s.handleReverseConnect)
 	mux.HandleFunc("/node/", s.handleNodeProxy)
 	mux.HandleFunc("/", s.handleIndex)
-	return mux
+	return s.auth(mux)
+}
+
+func (s *hubServer) auth(next http.Handler) http.Handler {
+	if !s.requireAuth {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodOptions || hubNodeAuthRoute(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !hubBearerTokenMatches(r, s.token) {
+			writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "invalid hub authentication credentials")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func hubNodeAuthRoute(r *http.Request) bool {
+	if r.URL.Path == "/api/connect" {
+		return true
+	}
+	return (r.URL.Path == "/api/delegations" || strings.HasPrefix(r.URL.Path, "/api/delegations/")) && strings.TrimSpace(r.Header.Get(hubNodeIDHeader)) != ""
+}
+
+func hubBearerTokenMatches(r *http.Request, want string) bool {
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	scheme, rest, ok := strings.Cut(auth, " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") {
+		return false
+	}
+	got := strings.TrimSpace(rest)
+	if got == "" || strings.TrimSpace(want) == "" {
+		return false
+	}
+	wantHash := sha256.Sum256([]byte(strings.TrimSpace(want)))
+	gotHash := sha256.Sum256([]byte(got))
+	return subtle.ConstantTimeCompare(wantHash[:], gotHash[:]) == 1
 }
 
 // hubBrowserRequestAllowed rejects cross-site browser requests before the hub
 // exercises any token-injecting authority or mutates its node registry. This is
-// not a replacement for real hub auth, but it closes the obvious loopback CSRF
-// path while v1 is loopback-only. Same-origin proxied node content is still
-// trusted in v1; long-term host-based node isolation should remove that caveat.
+// defense-in-depth for --auth none and for bearer-authenticated browser use.
+// Same-origin proxied node content is still trusted in v1; long-term host-based
+// node isolation should remove that caveat.
 func hubBrowserRequestAllowed(r *http.Request, requireJSON bool) bool {
 	if requireJSON {
 		ct := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
@@ -816,6 +863,8 @@ var (
 	serveHubConfig    string
 	serveHubContain   bool
 	serveHubNodesFile string
+	serveHubAuthMode  string
+	serveHubToken     string
 )
 
 var serveHubCmd = &cobra.Command{
@@ -850,22 +899,23 @@ Config file (--config), YAML or JSON:
       url: http://127.0.0.1:8081/chat
       token: <web bearer token>
 
-EXPERIMENTAL: the hub has no authentication of its own yet; it refuses to
-bind beyond loopback. To expose it, front it with an authenticating reverse
-proxy and keep the hub itself on loopback.`,
+EXPERIMENTAL: Hub auth is intentionally simple: --auth bearer (the default)
+protects the dashboard, registry API, and node proxy with one Hub bearer token.
+/api/connect and node-originated delegation calls use node auth instead. Use
+--auth none only for loopback-only local development.`,
 	Args: cobra.NoArgs,
 	RunE: runServeHub,
 }
 
-// validateHubBind rejects a bind that would expose the hub unsafely. The hub
-// has no authentication of its own yet (node tokens are injected server-side,
-// but nothing gates who may reach the hub), so it must stay on loopback.
-func validateHubBind(host string, port int) error {
+// validateHubBind rejects unauthenticated public binds. A Hub with bearer auth
+// may bind publicly for use behind a reverse proxy, but --auth none stays
+// loopback-only because the Hub injects node tokens server-side.
+func validateHubBind(host string, port int, requireAuth bool) error {
 	if port <= 0 || port > 65535 {
 		return fmt.Errorf("invalid --port %d (must be 1-65535)", port)
 	}
-	if !isLoopbackHost(host) {
-		return fmt.Errorf("serve hub has no authentication yet, so --host must be a loopback address (127.0.0.1, localhost, or ::1); got %q. To expose it, put an authenticating proxy in front and keep the hub on loopback", host)
+	if !requireAuth && !isLoopbackHost(host) {
+		return fmt.Errorf("--auth none is only allowed on loopback hosts (got %q)", host)
 	}
 	return nil
 }
@@ -881,7 +931,16 @@ func defaultHubNodesFile() (string, error) {
 }
 
 func runServeHub(cmd *cobra.Command, args []string) error {
-	if err := validateHubBind(serveHubHost, serveHubPort); err != nil {
+	authMode, err := resolveServeAuthMode(cmd.Flags().Changed("auth"), serveHubAuthMode, false, false)
+	if err != nil {
+		return err
+	}
+	requireAuth := authMode != "none"
+	if err := validateHubBind(serveHubHost, serveHubPort, requireAuth); err != nil {
+		return err
+	}
+	token, tokenSource, err := resolveServeToken(serveHubToken, os.Getenv("TERM_LLM_HUB_TOKEN"), requireAuth, generateServeToken)
+	if err != nil {
 		return err
 	}
 
@@ -904,6 +963,8 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 	}
 
 	s := newHubServer(hub.NewRegistry(resolvers...), store)
+	s.requireAuth = requireAuth
+	s.token = token
 	// The delegation ledger lives beside the node store (same private dir).
 	s.delegations = hub.NewDelegationStore(filepath.Join(filepath.Dir(nodesFile), "delegations.json"))
 	addr := net.JoinHostPort(serveHubHost, strconv.Itoa(serveHubPort))
@@ -914,15 +975,29 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(out, "  GET http://%s/api/nodes\n", addr)
 	fmt.Fprintf(out, "  ANY http://%s/node/<id>/...\n", addr)
 	fmt.Fprintf(out, "  node store: %s\n", nodesFile)
-	fmt.Fprintln(out, "WARNING: experimental, no hub auth yet; bind to loopback only.")
+	fmt.Fprintf(out, "  auth: %s\n", authSummary(requireAuth))
+	if requireAuth {
+		switch tokenSource {
+		case tokenSourceGenerated:
+			fmt.Fprintf(out, "  generated Hub bearer token: %s\n", token)
+		case tokenSourceEnv:
+			fmt.Fprintln(out, "  Hub bearer token: from TERM_LLM_HUB_TOKEN")
+		case tokenSourceFlag:
+			fmt.Fprintln(out, "  Hub bearer token: from --token")
+		}
+	} else {
+		fmt.Fprintln(out, "WARNING: hub auth disabled; bind to loopback only.")
+	}
 	return srv.ListenAndServe()
 }
 
 func init() {
 	serveCmd.AddCommand(serveHubCmd)
-	serveHubCmd.Flags().StringVar(&serveHubHost, "host", "127.0.0.1", "Host to bind (loopback only until hub auth exists)")
+	serveHubCmd.Flags().StringVar(&serveHubHost, "host", "127.0.0.1", "Host to bind")
 	serveHubCmd.Flags().IntVar(&serveHubPort, "port", 8090, "Port to bind")
 	serveHubCmd.Flags().StringVar(&serveHubConfig, "config", "", "Path to a static nodes config file (YAML or JSON)")
 	serveHubCmd.Flags().BoolVar(&serveHubContain, "contain", true, "Discover nodes from local contain workspaces")
 	serveHubCmd.Flags().StringVar(&serveHubNodesFile, "nodes-file", "", "Path to the JSON store for dashboard-added nodes (default: <data-dir>/hub/nodes.json)")
+	serveHubCmd.Flags().StringVar(&serveHubAuthMode, "auth", "bearer", "Hub auth mode: bearer or none (none is loopback-only)")
+	serveHubCmd.Flags().StringVar(&serveHubToken, "token", "", "Hub bearer token (defaults to $TERM_LLM_HUB_TOKEN, else auto-generated)")
 }

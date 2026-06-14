@@ -10,7 +10,14 @@ kicker: "Deploy agents"
 ```bash
 term-llm serve hub
 # term-llm Hub listening on http://127.0.0.1:8090
+#   auth: bearer required
+#   generated Hub bearer token: ...
 ```
+
+Hub auth is deliberately simple: by default the dashboard, `/api/nodes`,
+`/healthz`, and `/node/<id>/...` require one Hub bearer token. Provide a stable
+one with `--token` or `TERM_LLM_HUB_TOKEN` when running behind a public reverse
+proxy. Use `--auth none` only for loopback-only local development.
 
 ## Nodes
 
@@ -106,7 +113,7 @@ GET    /api/delegations/<id>         delegation status, refreshed from the targe
 POST   /api/delegations/<id>/cancel  cancel a delegation (originating node only)
 ```
 
-Probes hit each node's `{base}/healthz` with the node token. Serves report their agent name, version, and capabilities (`web`, `api`, `jobs`, `widgets`, `voice`) on `healthz` only to callers presenting the valid bearer token (or when the serve runs with auth disabled).
+Probes hit each node's `{base}/healthz` with the node token. Serves report their agent name, version, and capabilities (`web`, `api`, `jobs`, `widgets`, `voice`) on `healthz` only to callers presenting the valid bearer token (or when the serve runs with auth disabled). Hub dashboard/API/proxy routes require the Hub bearer token when `--auth bearer` is active; `/api/connect` and node-originated delegation calls use node auth instead so reverse nodes and `hub_delegate` do not need a separate Hub user account.
 
 The dashboard also shows lightweight diagnostics on each node card when the Hub can spot a likely configuration problem:
 
@@ -120,9 +127,9 @@ These diagnostics are advisory and token-safe; `/api/nodes` still never returns 
 
 ## Security posture
 
-The hub is **experimental and loopback-only by default**: it has no authentication of its own yet, so the built-in server refuses to bind to a non-loopback host. Anyone who can reach the hub can reach every node it fronts. To expose it publicly, put an authenticating reverse proxy in front and keep the hub itself on loopback. Reverse nodes authenticate their websocket with the node id plus the node's bearer token; the hub accepts that connection only for nodes configured with `connection: reverse`, and the node-side connector forwards only requests under its configured base path.
+The hub is **experimental but no longer unauthenticated by default**: `--auth bearer` protects the dashboard, Hub APIs, health endpoint, and node proxy with a single Hub token. Set it explicitly with `--token` or `TERM_LLM_HUB_TOKEN` for stable deployments; otherwise the hub prints a generated token at startup. `--auth none` is still available for local development, but it is loopback-only because anyone who can reach an unauthenticated hub can reach every node it fronts. Reverse nodes authenticate their websocket with the node id plus the node's bearer token; the hub accepts that connection only for nodes configured with `connection: reverse`, and the node-side connector forwards only requests under its configured base path.
 
-The backend transport never uses an environment proxy (`HTTP_PROXY` would see injected tokens). The hub rejects obvious cross-site browser requests and requires JSON content types for mutating node-registry APIs, but that is not a replacement for real hub auth.
+The backend transport never uses an environment proxy (`HTTP_PROXY` would see injected tokens). The hub still rejects obvious cross-site browser requests and requires JSON content types for mutating node-registry APIs as defense-in-depth around the simple bearer gate.
 
 Routing is path-based (`/node/<id>/...`) in v1; the proxy target is resolved per request, so host-based routing can be layered on later without changing the proxy plumbing. Because path routing puts hub UI and proxied node UI on the same browser origin, Hub v1 treats registered nodes/widgets as trusted. The node web UI namespaces localStorage by hub node id to avoid ordinary state bleed, but untrusted remote nodes/widgets still need the future host-based/widget-grant isolation work before they should be opened through a shared hub origin.
 
