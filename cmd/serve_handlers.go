@@ -44,7 +44,56 @@ func (s *serveServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+	resp := map[string]any{"status": "ok"}
+	// Identity fields (agent, version, capabilities) are only reported to
+	// trusted callers — a valid bearer token, or any caller when auth is
+	// disabled — so the unauthenticated health probe stays anonymous. The hub
+	// prober sends the node token and uses these for its dashboard.
+	if s.healthIdentityTrusted(r) {
+		resp["agent"] = s.cfg.agentName
+		resp["version"] = Version
+		resp["capabilities"] = s.capabilityList()
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// healthIdentityTrusted reports whether the health request may receive node
+// identity fields: either auth is disabled (loopback-only serves), or the
+// request carries the serve's bearer token.
+func (s *serveServer) healthIdentityTrusted(r *http.Request) bool {
+	if !s.cfg.requireAuth {
+		return true
+	}
+	if s.cfg.token == "" {
+		return false
+	}
+	auth := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	if !strings.HasPrefix(auth, prefix) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(auth, prefix)), []byte(s.cfg.token)) == 1
+}
+
+// capabilityList describes what this serve exposes, for hub discovery.
+func (s *serveServer) capabilityList() []string {
+	caps := []string{}
+	if s.cfg.ui {
+		caps = append(caps, "web")
+	}
+	if s.cfg.api {
+		caps = append(caps, "api")
+	}
+	if s.jobsV2 != nil {
+		caps = append(caps, "jobs")
+	}
+	if s.widgetsMgr != nil {
+		caps = append(caps, "widgets")
+	}
+	if s.webrtcEnabled {
+		caps = append(caps, "voice")
+	}
+	return caps
 }
 
 // uiAssetCacheEntry holds the precomputed ETag and gzip-compressed form of an
@@ -263,6 +312,14 @@ func (s *serveServer) buildIndexHTML() []byte {
 	headSnippet += `<script>window.TERM_LLM_SIDEBAR_SESSIONS=` + string(sidebarEscaped) + `;</script>`
 	agentEscaped, _ := json.Marshal(s.cfg.agentName)
 	headSnippet += `<script>window.TERM_LLM_AGENT_NAME=` + string(agentEscaped) + `;</script>`
+	if s.cfg.hubURL != "" {
+		hubEscaped, _ := json.Marshal(map[string]string{
+			"url":      s.cfg.hubURL,
+			"nodeId":   s.cfg.hubNodeID,
+			"nodeName": s.cfg.hubNodeName,
+		})
+		headSnippet += `<script>window.TERM_LLM_HUB=` + string(hubEscaped) + `;</script>`
+	}
 	if s.cfgRef != nil {
 		if vapidKey := s.cfgRef.Serve.WebPush.VAPIDPublicKey; vapidKey != "" {
 			vapidEscaped, _ := json.Marshal(vapidKey)

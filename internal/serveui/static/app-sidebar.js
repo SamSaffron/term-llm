@@ -165,6 +165,23 @@ const closeWidgetsModal = () => {
   elements.widgetsModal?.classList.add('hidden');
 };
 
+// When this serve was opened through a term-llm Hub (the hub proxy injects
+// window.TERM_LLM_HUB, or the serve was started with --hub-url), reveal the
+// "Back to Hub" link below the Widgets entry so the hub stays one click away.
+const applyBackToHubLink = () => {
+  const link = elements.backToHubLink;
+  if (!link) return;
+  const hub = window.TERM_LLM_HUB;
+  const url = hub && typeof hub.url === 'string' ? hub.url : '';
+  if (!url) {
+    link.classList.add('hidden');
+    return;
+  }
+  link.href = url;
+  link.title = hub.nodeName ? `Back to Hub (this node: ${hub.nodeName})` : 'Back to Hub';
+  link.classList.remove('hidden');
+};
+
 if (elements.widgetsOpenBtn) elements.widgetsOpenBtn.addEventListener('click', openWidgetsModal);
 if (elements.widgetsModalCloseBtn) elements.widgetsModalCloseBtn.addEventListener('click', closeWidgetsModal);
 if (elements.widgetsModal) {
@@ -195,8 +212,11 @@ document.addEventListener('keydown', (event) => {
 });
 if (elements.sidebarSearchInput) elements.sidebarSearchInput.addEventListener('input', scheduleSidebarSearch);
 
+applyBackToHubLink();
+
 Object.assign(app, {
   renderWidgetSidebar,
+  applyBackToHubLink,
   scheduleSidebarSearch
 });
 })();

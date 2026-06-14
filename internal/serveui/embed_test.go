@@ -561,7 +561,7 @@ func TestStaticAssetsSupportEffortDropdown(t *testing.T) {
 	}
 	coreSrc := string(coreJS)
 	for _, want := range []string{
-		"selectedEffort: 'term_llm_selected_effort'",
+		"selectedEffort: scopedStorageKey('term_llm_selected_effort')",
 		"selectedEffort: localStorage.getItem(STORAGE_KEYS.selectedEffort) || ''",
 		"effortSelect: document.getElementById('effortSelect')",
 	} {
@@ -658,7 +658,7 @@ func TestStaticAssetsSupportIncrementalMarkdownStreaming(t *testing.T) {
 	coreSrc := string(coreJS)
 	for _, want := range []string{
 		"sidebarCollapsed: localStorage.getItem(STORAGE_KEYS.sidebarCollapsed) === '1'",
-		"sidebarCollapsed: 'term_llm_sidebar_collapsed'",
+		"sidebarCollapsed: scopedStorageKey('term_llm_sidebar_collapsed')",
 		"sidebarRailNewChatBtn: document.getElementById('sidebarRailNewChatBtn')",
 	} {
 		if !strings.Contains(coreSrc, want) {

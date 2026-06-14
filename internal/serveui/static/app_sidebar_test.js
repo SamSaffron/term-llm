@@ -110,7 +110,9 @@ function createHarness(options = {}) {
     widgetsModalList: new Element('div'),
     widgetsModalCloseBtn: new Element('button'),
     sidebarSearchInput: new Element('input'),
+    backToHubLink: new Element('a'),
   };
+  elements.backToHubLink.classList.add('back-to-hub-link', 'hidden');
   const state = {
     widgets: [],
     widgetsLoaded: false,
@@ -133,7 +135,7 @@ function createHarness(options = {}) {
   document.createElement = (tag) => new Element(tag);
   const navigator = { platform: options.platform || 'Linux x86_64' };
   const context = {
-    window: { TermLLMApp: app },
+    window: { TermLLMApp: app, TERM_LLM_HUB: options.hub },
     document,
     navigator,
     URLSearchParams,
@@ -205,6 +207,23 @@ async function run(name, fn) {
 
     assert(elements.widgetsOpenBtn.classList.contains('hidden'), 'widgets button is hidden');
     assertEqual(elements.widgetsModalList.children.length, 0, 'modal list is cleared');
+  });
+
+  await run('back to hub link stays hidden without hub context', () => {
+    const { elements } = createHarness();
+    assert(elements.backToHubLink.classList.contains('hidden'), 'link is hidden without TERM_LLM_HUB');
+  });
+
+  await run('back to hub link renders from hub context', () => {
+    const { elements } = createHarness({ hub: { url: '/', nodeId: 'jarvis', nodeName: 'Jarvis' } });
+    assert(!elements.backToHubLink.classList.contains('hidden'), 'link is visible with TERM_LLM_HUB');
+    assertEqual(elements.backToHubLink.href, '/', 'link points at the hub url');
+    assertEqual(elements.backToHubLink.title, 'Back to Hub (this node: Jarvis)', 'title names the node');
+  });
+
+  await run('back to hub link ignores hub context without a url', () => {
+    const { elements } = createHarness({ hub: { nodeId: 'jarvis' } });
+    assert(elements.backToHubLink.classList.contains('hidden'), 'link stays hidden when hub context has no url');
   });
 
   await run('sidebar search fetches server results', async () => {

@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>term-llm Hub</title>
+  <style>{{.CSS}}</style>
+</head>
+<body>
+  <header class="hub-header">
+    <div class="hub-brand">
+      <svg class="hub-logo" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="3"></circle>
+        <circle cx="4.5" cy="5" r="2"></circle>
+        <circle cx="19.5" cy="5" r="2"></circle>
+        <circle cx="4.5" cy="19" r="2"></circle>
+        <circle cx="19.5" cy="19" r="2"></circle>
+        <line x1="6.2" y1="6.4" x2="9.8" y2="10"></line>
+        <line x1="17.8" y1="6.4" x2="14.2" y2="10"></line>
+        <line x1="6.2" y1="17.6" x2="9.8" y2="14"></line>
+        <line x1="17.8" y1="17.6" x2="14.2" y2="14"></line>
+      </svg>
+      <h1>term-llm <span class="hub-brand-accent">Hub</span></h1>
+    </div>
+    <div class="hub-header-actions">
+      <span class="hub-summary" id="hubSummary" aria-live="polite"></span>
+      <button class="hub-btn ghost" id="refreshBtn" type="button" title="Refresh nodes">↻ Refresh</button>
+      {{if .CanAddNodes}}<button class="hub-btn primary" id="addNodeBtn" type="button">＋ Add node</button>{{end}}
+    </div>
+  </header>
+
+  <main class="hub-main">
+    <div class="hub-error hidden" id="hubError" role="alert"></div>
+    <section class="node-grid" id="nodeGrid" aria-label="Nodes"></section>
+    <section class="delegations-panel" id="delegationsPanel" aria-label="Delegations">
+      <div class="delegations-head">
+        <div>
+          <h2>Delegations</h2>
+          <p>Cross-node work routed through the Hub.</p>
+        </div>
+        <span class="delegations-count" id="delegationsCount"></span>
+      </div>
+      <div class="delegations-list" id="delegationsList"></div>
+      <div class="delegations-empty hidden" id="delegationsEmpty">No delegated work yet.</div>
+    </section>
+    <div class="hub-empty hidden" id="hubEmpty">
+      <p>No nodes yet.</p>
+      <p class="hub-empty-hint">Point the hub at nodes with <code>--config</code>, create contain workspaces, or add one with <em>Add node</em>.</p>
+    </div>
+  </main>
+
+  {{if .CanAddNodes}}
+  <div class="modal-overlay hidden" id="addNodeModal" role="dialog" aria-modal="true" aria-labelledby="addNodeTitle">
+    <div class="modal">
+      <div class="modal-header">
+        <h2 id="addNodeTitle">Add node</h2>
+        <button class="hub-btn ghost" id="addNodeCloseBtn" type="button" aria-label="Close">✕</button>
+      </div>
+      <form id="addNodeForm">
+        <label>Name
+          <input id="nodeNameInput" type="text" placeholder="jarvis" autocomplete="off" required>
+        </label>
+        <label>URL
+          <input id="nodeUrlInput" type="url" placeholder="http://127.0.0.1:8081/chat" autocomplete="off" required>
+        </label>
+        <label>Bearer token <span class="optional">(optional, kept server-side)</span>
+          <input id="nodeTokenInput" type="password" autocomplete="off">
+        </label>
+        <div class="modal-status" id="addNodeStatus" aria-live="polite"></div>
+        <div class="modal-actions">
+          <button class="hub-btn ghost" id="testNodeBtn" type="button">Test connection</button>
+          <button class="hub-btn primary" type="submit">Add node</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  {{end}}
+
+  <script>
+  (() => {
+    'use strict';
+    const grid = document.getElementById('nodeGrid');
+    const delegationsList = document.getElementById('delegationsList');
+    const delegationsCount = document.getElementById('delegationsCount');
+    const delegationsEmpty = document.getElementById('delegationsEmpty');
+    const summary = document.getElementById('hubSummary');
+    const errorBox = document.getElementById('hubError');
+    const emptyBox = document.getElementById('hubEmpty');
+
+    const nodeBasePaths = new Map();
+    const el = (tag, className, text) => {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    };
+    const safeURL = (raw, delegation) => {
+      if (!raw) return '';
+      try {
+        const u = new URL(raw, window.location.href);
+        if (u.protocol === 'http:' || u.protocol === 'https:') return u.href;
+      } catch (_) {}
+      if (raw.startsWith('/node/')) return raw;
+      if (raw.startsWith('/') && delegation && delegation.target_node) {
+        const base = nodeBasePaths.get(delegation.target_node) || '';
+        let p = raw;
+        if (base && p === base) p = '/';
+        if (base && p.startsWith(base + '/')) p = p.slice(base.length);
+        return `/node/${encodeURIComponent(delegation.target_node)}${p}`;
+      }
+      if (raw.startsWith('/')) return raw;
+      return '';
+    };
+
+    const appendResponse = (parent, text, delegation) => {
+      const box = el('div', 'delegation-response');
+      const imgMatch = text.match(/!\[([^\]]*)\]\(([^)]+)\)/);
+      if (imgMatch) {
+        const src = safeURL(imgMatch[2].trim(), delegation);
+        if (src) {
+          const link = el('a', 'delegation-artifact-link', imgMatch[1] || 'Open artifact');
+          link.href = src;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          const img = document.createElement('img');
+          img.className = 'delegation-artifact-img';
+          img.src = src;
+          img.alt = imgMatch[1] || 'Delegated artifact';
+          box.appendChild(img);
+          box.appendChild(link);
+        }
+      }
+      const linkMatch = text.match(/(?<!!)\[([^\]]+)\]\(([^)]+)\)/);
+      if (!box.childNodes.length && linkMatch) {
+        const href = safeURL(linkMatch[2].trim(), delegation);
+        if (href) {
+          const link = el('a', 'delegation-artifact-link', linkMatch[1]);
+          link.href = href;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          box.appendChild(link);
+        }
+      }
+      box.appendChild(el('pre', 'delegation-response-text', text.replace(/!\[[^\]]*\]\([^)]+\)/g, '').trim()));
+      parent.appendChild(box);
+    };
+
+    const renderNode = (n) => {
+      const card = el('article', 'node-card');
+      const head = el('div', 'node-card-head');
+      const dotClass = n.status.reachable ? 'ok' : 'down';
+      const dot = el('span', `status-dot ${dotClass}`);
+      dot.title = n.status.reachable ? 'Reachable' : (n.status.error || 'Unreachable');
+      head.appendChild(dot);
+      head.appendChild(el('h2', 'node-name', n.name));
+      head.appendChild(el('span', `source-badge source-${n.source}`, n.source));
+      card.appendChild(head);
+
+      const meta = el('dl', 'node-meta');
+      const row = (label, value) => {
+        if (!value) return;
+        meta.appendChild(el('dt', '', label));
+        meta.appendChild(el('dd', '', value));
+      };
+      row('ID', n.id);
+      row('URL', n.url + (n.base_path || ''));
+      row('Status', n.status.state + (n.status.reachable ? ` · ${n.status.latency_ms} ms` : ''));
+      row('Agent', n.status.agent);
+      row('Version', n.status.version);
+      card.appendChild(meta);
+
+      if (Array.isArray(n.status.capabilities) && n.status.capabilities.length) {
+        const caps = el('div', 'node-caps');
+        n.status.capabilities.forEach((c) => caps.appendChild(el('span', 'cap-chip', c)));
+        card.appendChild(caps);
+      }
+      if (!n.status.reachable && n.status.error) {
+        card.appendChild(el('div', 'node-error', n.status.error));
+      }
+      if (!n.has_token) {
+        card.appendChild(el('div', 'node-warn', 'No bearer token configured — the open action may be rejected by the node.'));
+      }
+
+      const actions = el('div', 'node-actions');
+      const open = el('a', 'hub-btn primary', 'Open');
+      open.href = n.proxy_path;
+      actions.appendChild(open);
+      if (n.source === 'local') {
+        const del = el('button', 'hub-btn danger', 'Remove');
+        del.type = 'button';
+        del.addEventListener('click', async () => {
+          if (!confirm(`Remove node "${n.name}"?`)) return;
+          await fetch(`api/nodes/${encodeURIComponent(n.id)}`, { method: 'DELETE' });
+          refresh();
+        });
+        actions.appendChild(del);
+      }
+      card.appendChild(actions);
+      return card;
+    };
+
+    const renderDelegation = (d) => {
+      const row = el('article', 'delegation-row');
+      const status = el('span', `delegation-status status-${d.status || 'unknown'}`, d.status || 'unknown');
+      const route = el('div', 'delegation-route');
+      route.appendChild(el('strong', '', d.origin_node || 'unknown'));
+      route.appendChild(el('span', 'route-arrow', '→'));
+      route.appendChild(el('strong', '', d.target_node || 'unknown'));
+      route.appendChild(status);
+      row.appendChild(route);
+      const meta = el('div', 'delegation-meta', `${d.agent_name || 'agent'} · depth ${d.depth || 1}${d.job_id ? ` · ${d.job_id}` : ''}`);
+      row.appendChild(meta);
+      if (d.prompt) {
+        row.appendChild(el('div', 'delegation-prompt', d.prompt));
+      }
+      if (d.response) {
+        appendResponse(row, d.response, d);
+      }
+      if (d.error) {
+        row.appendChild(el('div', 'node-error', d.error));
+      }
+      return row;
+    };
+
+    const refreshDelegations = async () => {
+      try {
+        const resp = await fetch('api/delegations');
+        if (!resp.ok) throw new Error(`api/delegations returned ${resp.status}`);
+        const data = await resp.json();
+        const delegations = Array.isArray(data.delegations) ? data.delegations : [];
+        delegationsList.replaceChildren(...delegations.slice(0, 8).map(renderDelegation));
+        delegationsEmpty.classList.toggle('hidden', delegations.length > 0);
+        const active = delegations.filter((d) => !['succeeded', 'failed', 'cancelled', 'timed_out', 'error'].includes(d.status)).length;
+        delegationsCount.textContent = delegations.length ? `${active} active · ${delegations.length} total` : '';
+      } catch (_) {
+        delegationsList.replaceChildren();
+        delegationsEmpty.classList.remove('hidden');
+        delegationsCount.textContent = '';
+      }
+    };
+
+    const refresh = async () => {
+      try {
+        const resp = await fetch('api/nodes');
+        if (!resp.ok) throw new Error(`api/nodes returned ${resp.status}`);
+        const data = await resp.json();
+        const nodes = Array.isArray(data.nodes) ? data.nodes : [];
+        nodeBasePaths.clear();
+        nodes.forEach((n) => nodeBasePaths.set(n.id, n.base_path || ''));
+        grid.replaceChildren(...nodes.map(renderNode));
+        emptyBox.classList.toggle('hidden', nodes.length > 0);
+        const up = nodes.filter((n) => n.status.reachable).length;
+        summary.textContent = nodes.length ? `${up}/${nodes.length} nodes reachable` : '';
+        if (data.resolver_error) {
+          errorBox.textContent = `Some sources failed to resolve: ${data.resolver_error}`;
+          errorBox.classList.remove('hidden');
+        } else {
+          errorBox.classList.add('hidden');
+        }
+        refreshDelegations();
+      } catch (err) {
+        errorBox.textContent = `Failed to load nodes: ${err.message}`;
+        errorBox.classList.remove('hidden');
+      }
+    };
+
+    document.getElementById('refreshBtn').addEventListener('click', () => { refresh(); refreshDelegations(); });
+    refresh();
+    setInterval(() => { refresh(); refreshDelegations(); }, 15000);
+
+    const modal = document.getElementById('addNodeModal');
+    if (!modal) return;
+    const status = document.getElementById('addNodeStatus');
+    const nameInput = document.getElementById('nodeNameInput');
+    const urlInput = document.getElementById('nodeUrlInput');
+    const tokenInput = document.getElementById('nodeTokenInput');
+    const showModal = (show) => {
+      modal.classList.toggle('hidden', !show);
+      status.textContent = '';
+      if (show) nameInput.focus();
+    };
+    document.getElementById('addNodeBtn').addEventListener('click', () => showModal(true));
+    document.getElementById('addNodeCloseBtn').addEventListener('click', () => showModal(false));
+    modal.addEventListener('click', (e) => { if (e.target === modal) showModal(false); });
+
+    const payload = () => ({
+      name: nameInput.value.trim(),
+      url: urlInput.value.trim(),
+      token: tokenInput.value.trim(),
+    });
+
+    document.getElementById('testNodeBtn').addEventListener('click', async () => {
+      status.textContent = 'Testing…';
+      try {
+        const resp = await fetch('api/nodes/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload()),
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+        const data = await resp.json();
+        const st = data.status || {};
+        status.textContent = st.reachable
+          ? `✓ Reachable in ${st.latency_ms} ms${st.agent ? ` · agent: ${st.agent}` : ''}${st.version ? ` · ${st.version}` : ''}`
+          : `✗ Not reachable: ${st.error || st.state}`;
+      } catch (err) {
+        status.textContent = `✗ ${err.message}`;
+      }
+    });
+
+    document.getElementById('addNodeForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      status.textContent = 'Adding…';
+      try {
+        const resp = await fetch('api/nodes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload()),
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+        const data = await resp.json();
+        status.textContent = data.warning ? `Added with warning: ${data.warning}` : '';
+        if (!data.warning) {
+          showModal(false);
+          nameInput.value = urlInput.value = tokenInput.value = '';
+        }
+        refresh();
+      } catch (err) {
+        status.textContent = `✗ ${err.message}`;
+      }
+    });
+  })();
+  </script>
+</body>
+</html>

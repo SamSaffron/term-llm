@@ -769,7 +769,8 @@
     }
 
     .new-chat-btn,
-    .widgets-sidebar-btn {
+    .widgets-sidebar-btn,
+    .back-to-hub-link {
       width: 100%;
       border-radius: 10px;
       border: 1px solid transparent;
@@ -796,12 +797,21 @@
     }
 
     .new-chat-btn:hover,
-    .widgets-sidebar-btn:hover {
+    .widgets-sidebar-btn:hover,
+    .back-to-hub-link:hover {
       background: var(--surface-2);
       border-color: var(--border);
     }
 
     .widgets-sidebar-btn.hidden {
+      display: none;
+    }
+
+    .back-to-hub-link {
+      text-decoration: none;
+    }
+
+    .back-to-hub-link.hidden {
       display: none;
     }
 
