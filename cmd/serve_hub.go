@@ -184,6 +184,12 @@ func (s *hubServer) auth(next http.Handler) http.Handler {
 			writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "invalid hub authentication credentials")
 			return
 		}
+		if hubDelegationOperatorRoute(r) {
+			clone := r.Clone(r.Context())
+			clone.Header = r.Header.Clone()
+			clone.Header.Del("Authorization")
+			r = clone
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -193,6 +199,10 @@ func hubNodeAuthRoute(r *http.Request) bool {
 		return true
 	}
 	return (r.URL.Path == "/api/delegations" || strings.HasPrefix(r.URL.Path, "/api/delegations/")) && strings.TrimSpace(r.Header.Get(hubNodeIDHeader)) != ""
+}
+
+func hubDelegationOperatorRoute(r *http.Request) bool {
+	return (r.URL.Path == "/api/delegations" || strings.HasPrefix(r.URL.Path, "/api/delegations/")) && strings.TrimSpace(r.Header.Get(hubNodeIDHeader)) == ""
 }
 
 func hubBearerTokenMatches(r *http.Request, want string) bool {

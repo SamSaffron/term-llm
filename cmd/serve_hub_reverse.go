@@ -245,9 +245,13 @@ func (m *hubReverseManager) do(ctx context.Context, node hub.Node, req *http.Req
 	if c == nil {
 		return nil, fmt.Errorf("node %q is not connected", node.ID)
 	}
-	body, err := io.ReadAll(io.LimitReader(req.Body, 32<<20))
-	if err != nil {
-		return nil, err
+	var body []byte
+	if req.Body != nil {
+		var readErr error
+		body, readErr = io.ReadAll(io.LimitReader(req.Body, 32<<20))
+		if readErr != nil {
+			return nil, readErr
+		}
 	}
 	id := fmt.Sprintf("req_%d", time.Now().UnixNano())
 	ch := make(chan hubReverseResponse, 1)
