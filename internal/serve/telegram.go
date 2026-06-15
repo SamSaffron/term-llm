@@ -949,12 +949,7 @@ func (q *telegramStoreOpQueue) enqueue(ctx context.Context, op string, fn func(c
 		return
 	}
 	storeOp := telegramStoreOp{ctx: ctx, op: op, fn: fn}
-	select {
-	case q.ops <- storeOp:
-	default:
-		log.Printf("[telegram] callback persistence queue full for %s; running %s asynchronously", q.sessionID, op)
-		go q.mgr.runStoreOpWithoutCancel(ctx, q.sessionID, op, fn)
-	}
+	q.ops <- storeOp
 }
 
 func (q *telegramStoreOpQueue) closeAndWait(ctx context.Context) {
