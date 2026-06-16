@@ -64,11 +64,8 @@ func TestQueueAgentCreatesAndTriggersJobsBackedLLMJob(t *testing.T) {
 	if err := json.Unmarshal([]byte(out.Content), &result); err != nil {
 		t.Fatalf("queue output is not JSON: %v; %s", err, out.Content)
 	}
-	if result.JobID != "job_123" || result.AgentName != "developer" {
+	if result.JobID != "job_123" || result.RunID != "run_123" || result.AgentName != "developer" {
 		t.Fatalf("unexpected result: %+v", result)
-	}
-	if strings.Contains(out.Content, "run_id") {
-		t.Fatalf("queue output should not expose run_id: %s", out.Content)
 	}
 	if !sawCreate || !sawTrigger {
 		t.Fatalf("sawCreate=%v sawTrigger=%v", sawCreate, sawTrigger)
@@ -115,8 +112,8 @@ func TestQueueAgentNotifyWhenDonePersistsTrustedOrigin(t *testing.T) {
 	if err := json.Unmarshal([]byte(out.Content), &result); err != nil {
 		t.Fatalf("queue output is not JSON: %v; %s", err, out.Content)
 	}
-	if result.JobID != "job_notify" {
-		t.Fatalf("job_id = %q, want job_notify", result.JobID)
+	if result.JobID != "job_notify" || result.RunID != "run_notify" {
+		t.Fatalf("unexpected result: %+v", result)
 	}
 }
 
@@ -180,6 +177,57 @@ func TestWaitForJobsPollsUntilTerminal(t *testing.T) {
 	}
 	if result.DurationSeconds == nil || *result.DurationSeconds < 57.9 || *result.DurationSeconds > 58.0 {
 		t.Fatalf("duration = %#v, want about 57.9", result.DurationSeconds)
+	}
+	if polls != 2 {
+		t.Fatalf("polls = %d, want 2", polls)
+	}
+}
+
+func TestWaitForJobsPollsSpecificRunUntilTerminal(t *testing.T) {
+	var polls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v2/runs/run_123":
+			count := atomic.AddInt32(&polls, 1)
+			if count == 1 {
+				writeJSON(t, w, jobsV2AgentRunResponse{ID: "run_123", JobID: "job_123", Status: "running"})
+				return
+			}
+			exitCode := 0
+			writeJSON(t, w, jobsV2AgentRunResponse{
+				ID:         "run_123",
+				JobID:      "job_123",
+				Status:     "succeeded",
+				Response:   "STATUS: COMPLETE\nOK",
+				ExitCode:   &exitCode,
+				StartedAt:  "2026-06-07T07:15:51.314202856Z",
+				FinishedAt: "2026-06-07T07:16:49.259958355Z",
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v2/runs":
+			t.Fatalf("wait_for_jobs should poll the specific run, got list query %q", r.URL.RawQuery)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := &jobsBackedAgentClient{baseURL: server.URL, httpClient: server.Client()}
+	tool := NewWaitForJobsToolWithClient(client)
+	tool.pollIntervalOverride = 10 * time.Millisecond
+	out, err := tool.Execute(context.Background(), json.RawMessage(`{"run_ids":["run_123"],"poll_interval_seconds":1}`))
+	if err != nil {
+		t.Fatalf("wait Execute() error = %v", err)
+	}
+	var results []QueuedJobResult
+	if err := json.Unmarshal([]byte(out.Content), &results); err != nil {
+		t.Fatalf("wait output is not JSON: %v; %s", err, out.Content)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	result := results[0]
+	if result.JobID != "job_123" || result.Status != "succeeded" || result.Response != "STATUS: COMPLETE\nOK" {
+		t.Fatalf("unexpected result: %+v", result)
 	}
 	if polls != 2 {
 		t.Fatalf("polls = %d, want 2", polls)

@@ -33,12 +33,14 @@ type QueueAgentArgs struct {
 
 type QueueAgentResult struct {
 	JobID     string `json:"job_id"`
+	RunID     string `json:"run_id"`
 	AgentName string `json:"agent_name"`
 }
 
 type WaitForJobsArgs struct {
 	PollIntervalSeconds int      `json:"poll_interval_seconds,omitempty"`
-	JobIDs              []string `json:"job_ids"`
+	JobIDs              []string `json:"job_ids,omitempty"`
+	RunIDs              []string `json:"run_ids,omitempty"`
 }
 
 type QueuedJobResult struct {
@@ -123,7 +125,7 @@ func NewQueueAgentToolWithClient(client *jobsBackedAgentClient) *QueueAgentTool 
 func (t *QueueAgentTool) Spec() llm.ToolSpec {
 	return llm.ToolSpec{
 		Name:        QueueAgentToolName,
-		Description: `Spawn a sub-agent as a background jobs-v2 LLM job and return immediately. Use wait_for_jobs with the returned job_id to retrieve the result later.`,
+		Description: `Spawn a sub-agent as a background jobs-v2 LLM job and return immediately. Use wait_for_jobs with the returned run_id (preferred) or job_id to retrieve the result later.`,
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -192,11 +194,12 @@ func (t *QueueAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 	if err != nil {
 		return llm.TextOutput(formatQueuedAgentError(ErrExecutionFailed, err.Error())), nil
 	}
-	if _, err := t.client.triggerJob(ctx, job.ID); err != nil {
+	run, err := t.client.triggerJob(ctx, job.ID)
+	if err != nil {
 		return llm.TextOutput(formatQueuedAgentError(ErrExecutionFailed, err.Error())), nil
 	}
 
-	data, _ := json.Marshal(QueueAgentResult{JobID: job.ID, AgentName: agentName})
+	data, _ := json.Marshal(QueueAgentResult{JobID: job.ID, RunID: run.ID, AgentName: agentName})
 	return llm.TextOutput(string(data)), nil
 }
 
@@ -228,7 +231,7 @@ func NewWaitForJobsToolWithClient(client *jobsBackedAgentClient) *WaitForJobsToo
 func (t *WaitForJobsTool) Spec() llm.ToolSpec {
 	return llm.ToolSpec{
 		Name:        WaitForJobsToolName,
-		Description: `Wait for one or more queued jobs-v2 agent jobs to finish and return their results. Use the job_id values returned by queue_agent.`,
+		Description: `Wait for one or more queued jobs-v2 agent jobs to finish and return their results. Prefer the run_id values returned by queue_agent to avoid ambiguity if a job is triggered again while waiting. job_ids remain supported for backwards compatibility.`,
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -239,12 +242,17 @@ func (t *WaitForJobsTool) Spec() llm.ToolSpec {
 				},
 				"job_ids": map[string]any{
 					"type":        "array",
-					"description": "Job IDs returned by queue_agent",
+					"description": "Legacy job IDs returned by queue_agent. Prefer run_ids when available.",
+					"items":       map[string]any{"type": "string"},
+					"minItems":    1,
+				},
+				"run_ids": map[string]any{
+					"type":        "array",
+					"description": "Run IDs returned by queue_agent. These identify the exact triggered run to wait for.",
 					"items":       map[string]any{"type": "string"},
 					"minItems":    1,
 				},
 			},
-			"required":             []string{"job_ids"},
 			"additionalProperties": false,
 		},
 	}
@@ -255,8 +263,8 @@ func (t *WaitForJobsTool) Execute(ctx context.Context, args json.RawMessage) (ll
 	if err := json.Unmarshal(args, &a); err != nil {
 		return llm.TextOutput(formatQueuedAgentError(ErrInvalidParams, fmt.Sprintf("failed to parse arguments: %v", err))), nil
 	}
-	if len(a.JobIDs) == 0 {
-		return llm.TextOutput(formatQueuedAgentError(ErrInvalidParams, "job_ids is required")), nil
+	if len(a.JobIDs) == 0 && len(a.RunIDs) == 0 {
+		return llm.TextOutput(formatQueuedAgentError(ErrInvalidParams, "job_ids or run_ids is required")), nil
 	}
 	pollInterval := time.Duration(a.PollIntervalSeconds) * time.Second
 	if pollInterval <= 0 {
@@ -266,7 +274,20 @@ func (t *WaitForJobsTool) Execute(ctx context.Context, args json.RawMessage) (ll
 		pollInterval = t.pollIntervalOverride
 	}
 
-	results := make([]QueuedJobResult, 0, len(a.JobIDs))
+	results := make([]QueuedJobResult, 0, len(a.JobIDs)+len(a.RunIDs))
+	for _, runID := range a.RunIDs {
+		runID = strings.TrimSpace(runID)
+		if runID == "" {
+			results = append(results, QueuedJobResult{Status: "not_found", Error: "blank run_id"})
+			continue
+		}
+		run, err := t.client.waitForRun(ctx, runID, pollInterval)
+		if err != nil {
+			results = append(results, QueuedJobResult{Status: "failed", Error: err.Error()})
+			continue
+		}
+		results = append(results, queuedJobResultFromJobsRun("", run))
+	}
 	for _, jobID := range a.JobIDs {
 		jobID = strings.TrimSpace(jobID)
 		if jobID == "" {
@@ -287,7 +308,7 @@ func (t *WaitForJobsTool) Execute(ctx context.Context, args json.RawMessage) (ll
 func (t *WaitForJobsTool) Preview(args json.RawMessage) string {
 	var a WaitForJobsArgs
 	_ = json.Unmarshal(args, &a)
-	return fmt.Sprintf("wait for %d job(s)", len(a.JobIDs))
+	return fmt.Sprintf("wait for %d job(s)", len(a.JobIDs)+len(a.RunIDs))
 }
 
 func newJobsBackedAgentClientFromEnv() *jobsBackedAgentClient {
@@ -376,6 +397,39 @@ func (c *jobsBackedAgentClient) triggerJob(ctx context.Context, jobID string) (j
 	}
 	if run.ID == "" {
 		return jobsV2AgentRunResponse{}, fmt.Errorf("jobs server returned run without id")
+	}
+	return run, nil
+}
+
+func (c *jobsBackedAgentClient) waitForRun(ctx context.Context, runID string, pollInterval time.Duration) (jobsV2AgentRunResponse, error) {
+	if pollInterval <= 0 {
+		pollInterval = defaultQueuedAgentPollInterval * time.Second
+	}
+	for {
+		run, err := c.getRun(ctx, runID)
+		if err != nil {
+			return jobsV2AgentRunResponse{}, err
+		}
+		if isQueuedAgentTerminalStatus(run.Status) {
+			return run, nil
+		}
+		timer := time.NewTimer(pollInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return run, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (c *jobsBackedAgentClient) getRun(ctx context.Context, runID string) (jobsV2AgentRunResponse, error) {
+	var run jobsV2AgentRunResponse
+	if err := c.doJSON(ctx, http.MethodGet, "/v2/runs/"+url.PathEscape(runID), nil, &run); err != nil {
+		return jobsV2AgentRunResponse{}, err
+	}
+	if run.ID == "" {
+		run.ID = runID
 	}
 	return run, nil
 }
