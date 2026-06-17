@@ -123,19 +123,22 @@ func (t *serveRuntimeTestTool) Preview(args json.RawMessage) string {
 }
 
 type serveRuntimeTestStore struct {
-	mu                 sync.Mutex
-	sessions           map[string]*session.Session
-	messages           map[string][]session.Message
-	current            string
-	replaceCalls       int
-	replaceFailures    map[int]error
-	addMessageCalls    int
-	updateMessageCalls int
-	updateFailures     map[int]error
-	getMessagesCalls   int
-	updateStatusCalls  int
-	incrementCalls     int
-	nextID             int64
+	mu                  sync.Mutex
+	sessions            map[string]*session.Session
+	messages            map[string][]session.Message
+	current             string
+	replaceCalls        int
+	replaceFailures     map[int]error
+	replaceMessagesHook func(context.Context, string, []session.Message) error
+	addMessageCalls     int
+	addMessageHook      func(context.Context, string, *session.Message) error
+	updateMessageCalls  int
+	updateMessageHook   func(context.Context, string, *session.Message) error
+	updateFailures      map[int]error
+	getMessagesCalls    int
+	updateStatusCalls   int
+	incrementCalls      int
+	nextID              int64
 }
 
 var _ session.Store = (*serveRuntimeTestStore)(nil)
@@ -211,6 +214,11 @@ func (s *serveRuntimeTestStore) Search(ctx context.Context, opts session.SearchO
 }
 
 func (s *serveRuntimeTestStore) AddMessage(ctx context.Context, sessionID string, msg *session.Message) error {
+	if s.addMessageHook != nil {
+		if err := s.addMessageHook(ctx, sessionID, msg); err != nil {
+			return err
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nextID++
@@ -225,6 +233,11 @@ func (s *serveRuntimeTestStore) AddMessage(ctx context.Context, sessionID string
 }
 
 func (s *serveRuntimeTestStore) UpdateMessage(ctx context.Context, sessionID string, msg *session.Message) error {
+	if s.updateMessageHook != nil {
+		if err := s.updateMessageHook(ctx, sessionID, msg); err != nil {
+			return err
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.updateMessageCalls++
@@ -294,6 +307,11 @@ func (s *serveRuntimeTestStore) GetMessageByID(ctx context.Context, msgID int64)
 }
 
 func (s *serveRuntimeTestStore) ReplaceMessages(ctx context.Context, sessionID string, messages []session.Message) error {
+	if s.replaceMessagesHook != nil {
+		if err := s.replaceMessagesHook(ctx, sessionID, messages); err != nil {
+			return err
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.replaceCalls++
@@ -594,6 +612,61 @@ func TestServeRuntimeAppendMessagesIncrementsUserTurns(t *testing.T) {
 	}
 	if rt.sessionMeta.UserTurns != 2 {
 		t.Fatalf("runtime UserTurns = %d, want 2", rt.sessionMeta.UserTurns)
+	}
+}
+
+func TestServeRuntimePersistSnapshotPreservesParentDeadline(t *testing.T) {
+	store := newServeRuntimeTestStore()
+	sess := &session.Session{ID: "sess-snapshot-deadline", Status: session.StatusActive}
+	if err := store.Create(context.Background(), sess); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	var remaining time.Duration
+	store.replaceMessagesHook = func(ctx context.Context, sessionID string, messages []session.Message) error {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("ReplaceMessages ctx missing deadline")
+		}
+		remaining = time.Until(deadline)
+		return nil
+	}
+	parentCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	rt := &serveRuntime{store: store, sessionMeta: sess}
+
+	if !rt.persistSnapshot(parentCtx, sess.ID, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "hello")}) {
+		t.Fatal("persistSnapshot returned false")
+	}
+	if remaining <= 0 || remaining > 250*time.Millisecond {
+		t.Fatalf("ReplaceMessages ctx remaining = %v, want parent-scale deadline", remaining)
+	}
+}
+
+func TestServeRuntimeAppendMessagesPreservesParentDeadline(t *testing.T) {
+	store := newServeRuntimeTestStore()
+	sess := &session.Session{ID: "sess-append-deadline", Status: session.StatusActive}
+	if err := store.Create(context.Background(), sess); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	var remaining time.Duration
+	store.addMessageHook = func(ctx context.Context, sessionID string, msg *session.Message) error {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("AddMessage ctx missing deadline")
+		}
+		remaining = time.Until(deadline)
+		return nil
+	}
+	parentCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	rt := &serveRuntime{store: store, sessionMeta: sess}
+
+	written := rt.appendMessages(parentCtx, sess.ID, []llm.Message{serveRuntimeTextMessage(llm.RoleAssistant, "hello")}, 1)
+	if written != 1 {
+		t.Fatalf("written = %d, want 1", written)
+	}
+	if remaining <= 0 || remaining > 250*time.Millisecond {
+		t.Fatalf("AddMessage ctx remaining = %v, want parent-scale deadline", remaining)
 	}
 }
 
@@ -1391,6 +1464,47 @@ func TestServeRuntimeSnapshotPersistsAssistantOnMidTurnError(t *testing.T) {
 	}
 	if gotToolCallID != "call-mid-err" {
 		t.Fatalf("assistant tool call ID = %q, want %q", gotToolCallID, "call-mid-err")
+	}
+}
+
+func TestServeRuntimeSnapshotCallbackPreservesEngineDeadline(t *testing.T) {
+	store := newServeRuntimeTestStore()
+	sess := &session.Session{ID: "sess-mid-err-deadline", Status: session.StatusActive}
+	if err := store.Create(context.Background(), sess); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	var remaining time.Duration
+	store.addMessageHook = func(ctx context.Context, sessionID string, msg *session.Message) error {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("AddMessage ctx missing deadline")
+		}
+		remaining = time.Until(deadline)
+		return nil
+	}
+
+	provider := &serveRuntimeSnapshotErrProvider{err: errors.New("mid-turn stream failure")}
+	tool := &serveRuntimeTestTool{}
+	registry := llm.NewToolRegistry()
+	registry.Register(tool)
+	engine := llm.NewEngine(provider, registry)
+
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  provider.Name(),
+		engine:       engine,
+		store:        store,
+		defaultModel: "test-model",
+	}
+
+	_, _ = rt.Run(context.Background(), true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "hello")}, llm.Request{
+		SessionID:  sess.ID,
+		Tools:      []llm.ToolSpec{tool.Spec()},
+		ToolChoice: llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+		MaxTurns:   4,
+	})
+	if remaining <= 0 || remaining > 6*time.Second {
+		t.Fatalf("snapshot AddMessage ctx remaining = %v, want engine callback-scale deadline", remaining)
 	}
 }
 

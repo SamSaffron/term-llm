@@ -449,14 +449,18 @@ func (rt *serveRuntime) ensurePersistedSession(ctx context.Context, sessionID st
 	return true
 }
 
+func inlinePersistContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
 func (rt *serveRuntime) persistSnapshot(ctx context.Context, sessionID string, snapshot []llm.Message) bool {
 	if rt.store == nil || sessionID == "" {
 		return false
 	}
-	// Use a cancel-proof context so snapshot persistence succeeds even when the
-	// run context is cancelled (e.g. ^C or client disconnect), while preserving
-	// any context values (tracing, logging) from the original context.
-	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	dbCtx, cancel := inlinePersistContext(ctx, 10*time.Second)
 	defer cancel()
 
 	messages := make([]session.Message, 0, len(snapshot))
@@ -517,7 +521,7 @@ func (rt *serveRuntime) appendMessages(ctx context.Context, sessionID string, me
 	if rt.store == nil || sessionID == "" || len(messages) == 0 {
 		return 0
 	}
-	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	dbCtx, cancel := inlinePersistContext(ctx, 10*time.Second)
 	defer cancel()
 	written := 0
 	for _, msg := range messages {
@@ -983,7 +987,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 				return
 			}
 		}
-		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(persistCtx), 10*time.Second)
+		dbCtx, cancel := inlinePersistContext(persistCtx, 10*time.Second)
 		defer cancel()
 		sessionMsg := session.NewMessage(req.SessionID, assistantMsg, -1)
 		sessionMsg.TurnIndex = turnIndex
