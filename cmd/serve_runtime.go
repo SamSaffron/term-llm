@@ -63,12 +63,14 @@ type serveRuntime struct {
 }
 
 type runtimeInterruptState struct {
-	cancel      context.CancelFunc
-	done        chan struct{}
-	currentTask string
-	toolsRun    []string
-	proseLen    int
-	activeTool  string
+	cancel          context.CancelFunc
+	done            chan struct{}
+	currentTask     string
+	toolsRun        []string
+	proseLen        int
+	activeTool      string
+	model           string
+	reasoningEffort string
 }
 
 func (rt *serveRuntime) Touch() {
@@ -244,11 +246,47 @@ func (rt *serveRuntime) updateInterruptFromEvent(ev llm.Event) {
 		}
 	case llm.EventToolExecEnd:
 		rt.activeInterrupt.activeTool = ""
+	case llm.EventModelSwitch:
+		model := strings.TrimSpace(ev.Model)
+		if model == "" {
+			model = strings.TrimSpace(ev.Text)
+		}
+		effort := strings.TrimSpace(ev.ReasoningEffort)
+		model, effort = normalizeProviderModelEffort(runtimeProviderKey(rt), model, effort)
+		if model != "" {
+			rt.activeInterrupt.model = model
+		}
+		rt.activeInterrupt.reasoningEffort = effort
 	}
 }
 
 func (rt *serveRuntime) Interrupt(ctx context.Context, msg string, fastProvider llm.Provider) (llm.InterruptAction, error) {
 	return rt.InterruptMessage(ctx, llm.UserText(msg), msg, "", fastProvider, false)
+}
+
+func (rt *serveRuntime) QueueActiveRunRuntimeSwitch(model, reasoningEffort string) error {
+	if rt == nil || rt.engine == nil {
+		return fmt.Errorf("session has no active stream")
+	}
+	model = strings.TrimSpace(model)
+	reasoningEffort = strings.TrimSpace(reasoningEffort)
+	rt.interruptMu.Lock()
+	defer rt.interruptMu.Unlock()
+	if rt.activeInterrupt == nil {
+		return fmt.Errorf("session has no active stream")
+	}
+	activeModel := strings.TrimSpace(rt.activeInterrupt.model)
+	if activeModel == "" {
+		activeModel = strings.TrimSpace(rt.defaultModel)
+	}
+	if model == "" {
+		model = activeModel
+	}
+	if activeModel != "" && model != activeModel {
+		return fmt.Errorf("runtime effort switch can only target active model %q", activeModel)
+	}
+	rt.engine.QueueRequestRuntimeSwitch(model, reasoningEffort)
+	return nil
 }
 
 func (rt *serveRuntime) InterruptMessage(ctx context.Context, msg llm.Message, displayText string, interjectionID string, fastProvider llm.Provider, autoContinue bool) (llm.InterruptAction, error) {
@@ -718,15 +756,26 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		})
 	}
 
+	activeModel := strings.TrimSpace(req.Model)
+	activeEffort := strings.TrimSpace(req.ReasoningEffort)
+	if activeModel == "" {
+		activeModel = strings.TrimSpace(rt.defaultModel)
+	}
+	activeModel, activeEffort = normalizeProviderModelEffort(runtimeProviderKey(rt), activeModel, activeEffort)
 	intState := &runtimeInterruptState{
-		cancel:      runCancel,
-		done:        make(chan struct{}),
-		currentTask: lastUserText(inputMessages),
+		cancel:          runCancel,
+		done:            make(chan struct{}),
+		currentTask:     lastUserText(inputMessages),
+		model:           activeModel,
+		reasoningEffort: activeEffort,
 	}
 	rt.setActiveInterrupt(intState)
 	defer func() {
 		close(intState.done)
 		rt.clearActiveInterrupt(intState)
+		if rt.engine != nil {
+			rt.engine.ClearPendingRequestModelSwitch()
+		}
 	}()
 
 	messages := make([]llm.Message, 0, len(baseHistory)+len(inputMessages)+1)

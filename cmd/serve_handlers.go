@@ -1305,6 +1305,20 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if suffix == "runtime/effort" {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+			return
+		}
+		if err := requireJSONContentType(r); err != nil {
+			writeOpenAIError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
+			return
+		}
+		s.handleSessionRuntimeEffort(w, r, sessionID)
+		return
+	}
+
 	if strings.HasPrefix(suffix, "interjections/") {
 		id := strings.TrimPrefix(suffix, "interjections/")
 		id = strings.TrimSuffix(id, "/cancel")
@@ -1520,6 +1534,63 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"action": actionName,
+	})
+}
+
+func (s *serveServer) handleSessionRuntimeEffort(w http.ResponseWriter, r *http.Request, sessionID string) {
+	var req sessionRuntimeEffortRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	if s.sessionMgr == nil {
+		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
+		return
+	}
+	rt, ok := s.sessionMgr.Get(sessionID)
+	if !ok || rt == nil || rt.engine == nil {
+		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
+		return
+	}
+
+	provider := strings.TrimSpace(rt.providerKey)
+	if provider == "" && rt.provider != nil {
+		provider = strings.TrimSpace(rt.provider.Name())
+	}
+	model := strings.TrimSpace(req.Model)
+	if model == "" {
+		model = strings.TrimSpace(rt.defaultModel)
+	}
+	effort := normalizeReasoningEffort(req.ReasoningEffort)
+	model, effort = normalizeProviderModelEffort(provider, model, effort)
+	if model == "" {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "model is required")
+		return
+	}
+	if effort != "" {
+		efforts := llm.ReasoningEffortsForProviderModel(provider, model)
+		if len(efforts) > 0 {
+			valid := false
+			for _, allowed := range efforts {
+				if strings.EqualFold(strings.TrimSpace(allowed), effort) {
+					valid = true
+					break
+				}
+			}
+			if !valid {
+				writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", fmt.Sprintf("reasoning effort %q is not supported for %s:%s", effort, provider, model))
+				return
+			}
+		}
+	}
+	if err := rt.QueueActiveRunRuntimeSwitch(model, effort); err != nil {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":           "queued",
+		"model":            model,
+		"reasoning_effort": effort,
 	})
 }
 

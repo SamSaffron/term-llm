@@ -391,6 +391,7 @@ const (
 	EventRetry          EventType = "retry"           // Emitted when retrying after rate limit or transport recovery
 	EventAttemptDiscard EventType = "attempt_discard" // Discard provisional assistant output from the current streamed attempt
 	EventInterjection   EventType = "interjection"    // User interjected a message mid-stream
+	EventModelSwitch    EventType = "model_switch"    // Request model changed at a provider-turn boundary
 	EventImageGenerated EventType = "image_generated" // Emitted when a built-in image_generation tool returns an image
 )
 
@@ -410,6 +411,8 @@ type ToolExecutionResponse struct {
 type Event struct {
 	Type                      EventType
 	Text                      string
+	Model                     string // For EventModelSwitch: request model applied at provider-turn boundary
+	ReasoningEffort           string // For EventModelSwitch: request reasoning effort applied at provider-turn boundary
 	InterjectionID            string // For EventInterjection: stable ID for matching queued interjections in the UI
 	InterjectionStatus        InterjectionStatus
 	Message                   Message       // For EventInterjection: structured user message including attachments

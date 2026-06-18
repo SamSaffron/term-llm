@@ -686,7 +686,7 @@ func TestStreamingCmdEffortQueuesWithoutSwitchingActiveEngine(t *testing.T) {
 	if got := rm.textarea.Value(); got != "" {
 		t.Fatalf("textarea = %q, want cleared command", got)
 	}
-	if !strings.Contains(rm.footerMessage, "Effort medium queued") || !strings.Contains(rm.footerMessage, "current response") {
+	if !strings.Contains(rm.footerMessage, "Effort medium queued") || !strings.Contains(rm.footerMessage, "next model turn") {
 		t.Fatalf("unexpected queued footer: %q", rm.footerMessage)
 	}
 }
@@ -707,6 +707,37 @@ func TestStreamingCmdEffortCurrentEffortClearsQueuedSwitch(t *testing.T) {
 	}
 	if !strings.Contains(rm.footerMessage, "cleared queued effort") {
 		t.Fatalf("unexpected footer: %q", rm.footerMessage)
+	}
+}
+
+func TestStreamingCmdEffortNoArgsShowsQueuedEffort(t *testing.T) {
+	m, _ := newEffortCmdTestModel("openai", "gpt-5.4-medium")
+	m.streaming = true
+	m.queuePendingStreamModelSwitch("openai", "gpt-5.4-xhigh")
+
+	result, _ := m.cmdEffort(nil)
+	rm := result.(*Model)
+	if !strings.Contains(rm.footerMessage, "Current effort: medium") || !strings.Contains(rm.footerMessage, "Queued: xhigh") {
+		t.Fatalf("footer missing current/queued effort: %q", rm.footerMessage)
+	}
+	if !strings.Contains(rm.footerMessage, "next model turn") {
+		t.Fatalf("footer missing timing hint: %q", rm.footerMessage)
+	}
+}
+
+func TestStreamingCmdEffortNoArgsShowsAppliedEffortAsCurrent(t *testing.T) {
+	m, _ := newEffortCmdTestModel("openai", "gpt-5.4-medium")
+	m.streaming = true
+	m.queuePendingStreamModelSwitch("openai", "gpt-5.4-xhigh")
+	m.markPendingStreamModelSwitchApplied("gpt-5.4-xhigh")
+
+	result, _ := m.cmdEffort(nil)
+	rm := result.(*Model)
+	if !strings.Contains(rm.footerMessage, "Current effort: xhigh") || !strings.Contains(rm.footerMessage, "Active for current run: xhigh") {
+		t.Fatalf("footer missing applied current effort: %q", rm.footerMessage)
+	}
+	if strings.Contains(rm.footerMessage, "Current effort: medium") {
+		t.Fatalf("footer shows stale current effort: %q", rm.footerMessage)
 	}
 }
 
@@ -733,6 +764,65 @@ func TestCycleEffortWhileStreamingQueuesNextEffortAndPreservesDraft(t *testing.T
 	}
 	if !strings.Contains(rm.footerMessage, "Effort medium queued") {
 		t.Fatalf("unexpected footer: %q", rm.footerMessage)
+	}
+}
+
+func TestCycleEffortWhileStreamingAdvancesFromQueuedEffort(t *testing.T) {
+	m, store := newEffortCmdTestModel("openai", "gpt-5.4-medium")
+	prepareEffortShortcutTestModel(m)
+	m.streaming = true
+	m.setTextareaValue("draft interjection")
+	activeEngine := m.engine
+
+	result, _ := m.handleKeyMsg(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
+	rm := result.(*Model)
+	if rm.pendingStreamModelSwitch == nil || rm.pendingStreamModelSwitch.model != "gpt-5.4-high" {
+		t.Fatalf("first queued switch = %#v, want high", rm.pendingStreamModelSwitch)
+	}
+
+	result, _ = rm.handleKeyMsg(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
+	rm = result.(*Model)
+	if rm.engine != activeEngine || rm.modelName != "gpt-5.4-medium" || rm.sess.Model != "gpt-5.4-medium" {
+		t.Fatalf("second streaming Ctrl+R mutated active model: engineChanged=%v model=%q sess=%q", rm.engine != activeEngine, rm.modelName, rm.sess.Model)
+	}
+	if store.updated != nil {
+		t.Fatalf("store updated before stream completed: %#v", store.updated)
+	}
+	if rm.pendingStreamModelSwitch == nil || rm.pendingStreamModelSwitch.model != "gpt-5.4-xhigh" {
+		t.Fatalf("second queued switch = %#v, want xhigh", rm.pendingStreamModelSwitch)
+	}
+	if got := rm.textarea.Value(); got != "draft interjection" {
+		t.Fatalf("draft = %q, want preserved", got)
+	}
+	if !strings.Contains(rm.footerMessage, "Effort xhigh queued") {
+		t.Fatalf("unexpected footer: %q", rm.footerMessage)
+	}
+}
+
+func TestPendingStreamingEffortPreservesQueuedInterjectionsOnStreamDone(t *testing.T) {
+	m, _ := newEffortCmdTestModel("openai", "gpt-5.4-medium")
+	prepareEffortShortcutTestModel(m)
+	m.streaming = true
+	firstID := m.nextPendingInterjectionID()
+	secondID := m.nextPendingInterjectionID()
+	m.applyInterruptAction(firstID, "first note", llm.InterruptInterject)
+	m.applyInterruptAction(secondID, "second note", llm.InterruptInterject)
+	m.pendingStreamModelSwitch = &pendingStreamModelSwitch{provider: "openai", model: "gpt-5.4-high"}
+	oldEngine := m.engine
+
+	result, _ := m.Update(streamEventMsg{event: ui.DoneEvent(0)})
+	rm := result.(*Model)
+	if rm.streaming {
+		t.Fatal("stream should be marked complete")
+	}
+	if rm.engine == oldEngine || rm.modelName != "gpt-5.4-high" {
+		t.Fatalf("queued switch did not apply: engineChanged=%v model=%q", rm.engine != oldEngine, rm.modelName)
+	}
+	if got := rm.textarea.Value(); got != "first note\nsecond note" {
+		t.Fatalf("restored draft = %q, want both queued interjections", got)
+	}
+	if len(rm.pendingInterjections) != 0 || rm.pendingInterjection != "" {
+		t.Fatalf("pending UI state not cleared: latest=%q stack=%#v", rm.pendingInterjection, rm.pendingInterjections)
 	}
 }
 

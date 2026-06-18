@@ -21,6 +21,7 @@ const (
 	StreamEventImage        // Image produced by tool
 	StreamEventDiff         // Diff from edit tool
 	StreamEventInterjection // User interjected a message mid-stream
+	StreamEventModelSwitch  // Request model changed at a provider-turn boundary
 	StreamEventAttemptDiscard
 	StreamEventReasoning  // Classified, non-encrypted reasoning text/metadata
 	StreamEventFileChange // Recorded file change metadata (file tracking)
@@ -33,6 +34,9 @@ type StreamEvent struct {
 
 	// Text content (for StreamEventText)
 	Text string
+
+	// Model switch metadata (for StreamEventModelSwitch)
+	ReasoningEffort string
 
 	// Interjection metadata (for StreamEventInterjection)
 	InterjectionID string
@@ -211,6 +215,15 @@ func FileChangeEvent(fc llm.FileChange) StreamEvent {
 	return StreamEvent{
 		Type:       StreamEventFileChange,
 		FileChange: fc,
+	}
+}
+
+// ModelSwitchEvent creates an event for an in-run request model change.
+func ModelSwitchEvent(model, reasoningEffort string) StreamEvent {
+	return StreamEvent{
+		Type:            StreamEventModelSwitch,
+		Text:            model,
+		ReasoningEffort: reasoningEffort,
 	}
 }
 

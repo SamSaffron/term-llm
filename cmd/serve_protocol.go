@@ -29,6 +29,11 @@ type sessionInterruptRequest struct {
 	InterjectionID string          `json:"interjection_id"`
 }
 
+type sessionRuntimeEffortRequest struct {
+	Model           string `json:"model"`
+	ReasoningEffort string `json:"reasoning_effort"`
+}
+
 func writeChatStreamChunk(w io.Writer, payload any) error {
 	b, err := json.Marshal(payload)
 	if err != nil {

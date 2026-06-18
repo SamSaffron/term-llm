@@ -43,6 +43,7 @@ type pendingInterjectionUI struct {
 type pendingStreamModelSwitch struct {
 	provider string
 	model    string
+	applied  bool
 }
 
 type promptHistoryState struct {
@@ -253,8 +254,9 @@ type Model struct {
 	pendingModelSwitch *llm.ModelSwapMarker
 
 	// Deferred model/effort switch requested while a provider stream is active.
-	// The active llm.Engine must not be replaced mid-turn, so this is applied
-	// after the stream ends (or just before the next send if the turn is aborted).
+	// The active llm.Engine must not be replaced mid-turn, so this is applied at
+	// the earliest safe point: when the stream stops, or just before the next send
+	// if the turn was aborted before a terminal stream event arrived.
 	pendingStreamModelSwitch *pendingStreamModelSwitch
 
 	// Stats tracking
@@ -1933,6 +1935,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Display WARNING phases as visible text in the conversation
 			if strings.HasPrefix(ev.Phase, llm.WarningPhasePrefix) && m.tracker != nil {
 				m.tracker.AddTextSegment(ev.Phase+"\n", m.width)
+			}
+
+		case ui.StreamEventModelSwitch:
+			if m.markPendingStreamModelSwitchApplied(ev.Text) {
+				m.bumpContentVersion()
 			}
 
 		case ui.StreamEventRetry:

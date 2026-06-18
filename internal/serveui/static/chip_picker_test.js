@@ -378,9 +378,9 @@ function testChipLockAllowsIdleSessionAndLocksBusyState() {
     }
   }
 
-  // Busy active session — chips locked.
+  // Busy active session — provider/model locked, effort can queue for the next model turn.
   app.updateSessionUsageDisplay({ id: 'sess-1', activeModel: 'gpt-5', activeResponseId: 'resp_1' });
-  for (const id of ['chipProviderTrigger', 'chipModelTrigger', 'chipEffortTrigger']) {
+  for (const id of ['chipProviderTrigger', 'chipModelTrigger']) {
     if (!elementMap[id].hasAttribute('disabled')) {
       fail(name, `${id} should be disabled when a response is active`);
       return;
@@ -389,6 +389,14 @@ function testChipLockAllowsIdleSessionAndLocksBusyState() {
       fail(name, `${id} should have aria-disabled=true when locked`);
       return;
     }
+  }
+  if (elementMap.chipEffortTrigger.hasAttribute('disabled')) {
+    fail(name, 'chipEffortTrigger should remain enabled to queue effort while active');
+    return;
+  }
+  if (elementMap.chipEffortTrigger.getAttribute('title') !== 'Queue reasoning effort for the next model turn') {
+    fail(name, 'chipEffortTrigger should explain queued effort while active', elementMap.chipEffortTrigger.getAttribute('title'));
+    return;
   }
 
   // Back to draft — chips unlocked again.

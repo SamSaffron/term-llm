@@ -1319,6 +1319,54 @@ func TestRenderInputInline_ShowsInterruptNotice(t *testing.T) {
 	}
 }
 
+func TestRenderInputInline_ShowsQueuedReasoningEffort(t *testing.T) {
+	m := newTestChatModel(false)
+	m.pendingStreamModelSwitch = &pendingStreamModelSwitch{provider: "openai", model: "gpt-5.4-xhigh"}
+	m.width = 80
+
+	output := m.renderInputInline()
+	stripped := ui.StripANSI(output)
+
+	if !strings.Contains(stripped, "reasoning effort xhigh queued") {
+		t.Fatalf("expected queued effort in output, got %q", stripped)
+	}
+	if !strings.Contains(stripped, "next model turn") {
+		t.Fatalf("expected timing hint in output, got %q", stripped)
+	}
+}
+
+func TestRenderInputInline_HidesAppliedQueuedReasoningEffort(t *testing.T) {
+	m := newTestChatModel(false)
+	m.pendingStreamModelSwitch = &pendingStreamModelSwitch{provider: "openai", model: "gpt-5.4-xhigh"}
+	m.markPendingStreamModelSwitchApplied("gpt-5.4-xhigh")
+	m.width = 80
+
+	output := m.renderInputInline()
+	stripped := ui.StripANSI(output)
+
+	if strings.Contains(stripped, "reasoning effort xhigh active for current run") || strings.Contains(stripped, "persists after response") {
+		t.Fatalf("did not expect persistent applied effort row, got %q", stripped)
+	}
+}
+
+func TestRenderStatusLineShowsAppliedStreamingEffortModel(t *testing.T) {
+	m := newTestChatModel(false)
+	m.providerKey = "openai"
+	m.providerName = "openai"
+	m.modelName = "gpt-5.4-medium"
+	m.streaming = true
+	m.pendingStreamModelSwitch = &pendingStreamModelSwitch{provider: "openai", model: "gpt-5.4-xhigh", applied: true}
+	m.width = 120
+
+	stripped := ui.StripANSI(m.renderStatusLine())
+	if !strings.Contains(stripped, "gpt-5.4-xhigh") {
+		t.Fatalf("expected applied model in status line, got %q", stripped)
+	}
+	if strings.Contains(stripped, "gpt-5.4-medium") {
+		t.Fatalf("did not expect stale model in status line, got %q", stripped)
+	}
+}
+
 func TestRenderInputInline_HidesPendingWhenEmpty(t *testing.T) {
 	m := newTestChatModel(false)
 	m.pendingInterjection = ""

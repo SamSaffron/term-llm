@@ -65,6 +65,8 @@ type responseRun struct {
 	sessionID          string
 	previousResponseID string
 	model              string
+	reasoningEffort    string
+	reasoningEffortSet bool
 	created            int64
 	status             string
 	errorType          string
@@ -176,12 +178,35 @@ func (r *responseRun) fail(payload map[string]any, errType, errMessage string) (
 	return hadSubscribers, r.appendEventLocked("response.failed", payload, true)
 }
 
+func (r *responseRun) applyRuntimeMetadataLocked(event string, payload map[string]any) {
+	var source map[string]any
+	switch event {
+	case "response.created", "response.completed", "response.cancelled":
+		source = mapValue(payload["response"])
+	case "response.model_switch":
+		source = payload
+	default:
+		return
+	}
+	if len(source) == 0 {
+		return
+	}
+	if model := stringValue(source["model"]); model != "" {
+		r.model = model
+	}
+	if _, ok := source["reasoning_effort"]; ok {
+		r.reasoningEffort = stringValue(source["reasoning_effort"])
+		r.reasoningEffortSet = true
+	}
+}
+
 func (r *responseRun) appendEventLocked(event string, payload map[string]any, terminal bool) error {
 	if payload == nil {
 		payload = map[string]any{}
 	}
 	r.lastSequenceNumber++
 	payload["sequence_number"] = r.lastSequenceNumber
+	r.applyRuntimeMetadataLocked(event, payload)
 
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -582,6 +607,9 @@ func (r *responseRun) snapshot() map[string]any {
 		"session_id":           r.sessionID,
 		"previous_response_id": r.previousResponseID,
 		"last_sequence_number": r.lastSequenceNumber,
+	}
+	if r.reasoningEffortSet {
+		payload["reasoning_effort"] = r.reasoningEffort
 	}
 	if r.status == "completed" {
 		payload["usage"] = usagePayload(r.usage)
@@ -1087,8 +1115,35 @@ func writeStoredResponseEvent(w io.Writer, ev responseRunEvent) error {
 }
 
 type responseRunStreamState struct {
-	outputIndex int
-	toolsSeen   bool
+	outputIndex        int
+	toolsSeen          bool
+	model              string
+	reasoningEffort    string
+	reasoningEffortSet bool
+}
+
+func newResponseRunStreamState(model, reasoningEffort string) *responseRunStreamState {
+	effort := strings.TrimSpace(reasoningEffort)
+	return &responseRunStreamState{
+		model:              strings.TrimSpace(model),
+		reasoningEffort:    effort,
+		reasoningEffortSet: effort != "",
+	}
+}
+
+func (s *responseRunStreamState) appliedModel(fallback string) string {
+	if s != nil && strings.TrimSpace(s.model) != "" {
+		return strings.TrimSpace(s.model)
+	}
+	return strings.TrimSpace(fallback)
+}
+
+func (s *responseRunStreamState) appliedReasoningEffort(fallback string) (string, bool) {
+	if s != nil && s.reasoningEffortSet {
+		return strings.TrimSpace(s.reasoningEffort), true
+	}
+	fallback = strings.TrimSpace(fallback)
+	return fallback, fallback != ""
 }
 
 func (s *serveServer) toolImageURLs(imagePaths []string) []string {
@@ -1250,6 +1305,24 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 			payload["attachments"] = atts
 		}
 		return run.appendEvent("response.interjection", payload)
+	case llm.EventModelSwitch:
+		model := strings.TrimSpace(ev.Model)
+		if model == "" {
+			model = strings.TrimSpace(ev.Text)
+		}
+		if model == "" {
+			return nil
+		}
+		effort := strings.TrimSpace(ev.ReasoningEffort)
+		if state != nil {
+			state.model = model
+			state.reasoningEffort = effort
+			state.reasoningEffortSet = true
+		}
+		return run.appendEvent("response.model_switch", map[string]any{
+			"model":            model,
+			"reasoning_effort": effort,
+		})
 	default:
 		return nil
 	}
@@ -1661,7 +1734,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			return
 		}
 
-		streamState := &responseRunStreamState{}
+		streamState := newResponseRunStreamState(model, llmReq.ReasoningEffort)
 		result, err := runtime.RunWithEventsAndStart(runCtx, stateful, replaceHistory, inputMessages, llmReq, func() {
 			mgr.setActiveRun(sessionID, respID)
 		}, func(ev llm.Event) error {
@@ -1736,17 +1809,22 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 			s.registerResponseID(runtime, respID, sessionID)
 		}
 		s.registerResponseID(runtime, completedID, sessionID)
+		finalModel := streamState.appliedModel(model)
+		finalEffort, finalEffortSet := streamState.appliedReasoningEffort(llmReq.ReasoningEffort)
+		if options.uiSession && (finalModel != model || finalEffort != strings.TrimSpace(llmReq.ReasoningEffort) || finalEffortSet != (strings.TrimSpace(llmReq.ReasoningEffort) != "")) {
+			s.syncPersistedSessionRuntime(runCtx, sessionID, runtime, finalModel, finalEffort)
+		}
 		completeResponse := map[string]any{
 			"id":            completedID,
 			"object":        "response",
 			"created":       created,
-			"model":         model,
+			"model":         finalModel,
 			"status":        "completed",
 			"usage":         usagePayload(result.Usage),
 			"session_usage": usagePayload(result.SessionUsage),
 		}
-		if effort := strings.TrimSpace(llmReq.ReasoningEffort); effort != "" {
-			completeResponse["reasoning_effort"] = effort
+		if finalEffortSet {
+			completeResponse["reasoning_effort"] = finalEffort
 		}
 		if err := run.complete(map[string]any{
 			"response": completeResponse,

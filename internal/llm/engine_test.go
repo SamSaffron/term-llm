@@ -3119,6 +3119,159 @@ func TestLastTotalTokensNoDoubleCounting(t *testing.T) {
 	}
 }
 
+func TestEngineRequestRuntimeSwitchAppliesReasoningEffortBeforeNextToolTurn(t *testing.T) {
+	tool := &delayingTool{delay: 50 * time.Millisecond}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				if req.Model != "gpt-5.4" || req.ReasoningEffort != "medium" {
+					t.Fatalf("first call runtime = %q/%q, want gpt-5.4/medium", req.Model, req.ReasoningEffort)
+				}
+				return []Event{
+					{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "delay_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventDone},
+				}
+			case 1:
+				if req.Model != "gpt-5.4" || req.ReasoningEffort != "high" {
+					t.Fatalf("second call runtime = %q/%q, want queued gpt-5.4/high", req.Model, req.ReasoningEffort)
+				}
+				return []Event{{Type: EventTextDelta, Text: "done"}, {Type: EventDone}}
+			default:
+				t.Fatalf("unexpected provider call %d", call)
+				return nil
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	stream, err := engine.Stream(context.Background(), Request{
+		Model:           "gpt-5.4",
+		ReasoningEffort: "medium",
+		Messages:        []Message{UserText("run tool")},
+		Tools:           []ToolSpec{tool.Spec()},
+		MaxTurns:        3,
+	})
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	var switches []Event
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+		switch event.Type {
+		case EventToolExecStart:
+			engine.QueueRequestRuntimeSwitch("gpt-5.4", "high")
+		case EventModelSwitch:
+			switches = append(switches, event)
+		case EventError:
+			if event.Err != nil {
+				t.Fatalf("event error: %v", event.Err)
+			}
+		}
+	}
+
+	if len(switches) != 1 {
+		t.Fatalf("model switch events = %d, want 1", len(switches))
+	}
+	if switches[0].Model != "gpt-5.4" || switches[0].ReasoningEffort != "high" {
+		t.Fatalf("switch event runtime = %q/%q, want gpt-5.4/high", switches[0].Model, switches[0].ReasoningEffort)
+	}
+}
+
+func TestEngineRequestModelSwitchAppliesBeforeNextToolTurn(t *testing.T) {
+	tool := &delayingTool{delay: 50 * time.Millisecond}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				if req.Model != "gpt-5.4-medium" {
+					t.Fatalf("first call model = %q, want gpt-5.4-medium", req.Model)
+				}
+				return []Event{
+					{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "delay_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventDone},
+				}
+			case 1:
+				if req.Model != "gpt-5.4-xhigh" {
+					t.Fatalf("second call model = %q, want queued gpt-5.4-xhigh", req.Model)
+				}
+				return []Event{{Type: EventTextDelta, Text: "done"}, {Type: EventDone}}
+			default:
+				t.Fatalf("unexpected provider call %d", call)
+				return nil
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	stream, err := engine.Stream(context.Background(), Request{
+		Model:    "gpt-5.4-medium",
+		Messages: []Message{UserText("run tool")},
+		Tools:    []ToolSpec{tool.Spec()},
+		MaxTurns: 3,
+	})
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	var text strings.Builder
+	var order []EventType
+	queued := false
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+		switch event.Type {
+		case EventToolExecStart:
+			order = append(order, event.Type)
+			engine.QueueRequestModelSwitch("gpt-5.4-xhigh")
+			queued = true
+		case EventToolExecEnd, EventModelSwitch:
+			order = append(order, event.Type)
+		case EventTextDelta:
+			order = append(order, event.Type)
+			text.WriteString(event.Text)
+		case EventError:
+			if event.Err != nil {
+				t.Fatalf("event error: %v", event.Err)
+			}
+		}
+	}
+
+	if !queued {
+		t.Fatal("expected to queue model switch during tool execution")
+	}
+	if got := text.String(); got != "done" {
+		t.Fatalf("text = %q, want done", got)
+	}
+	if len(provider.calls) != 2 {
+		t.Fatalf("provider calls = %d, want 2", len(provider.calls))
+	}
+	wantOrder := []EventType{EventToolExecStart, EventToolExecEnd, EventModelSwitch, EventTextDelta}
+	if !reflect.DeepEqual(order, wantOrder) {
+		t.Fatalf("event order = %v, want %v", order, wantOrder)
+	}
+}
+
 // --- Interjection tests ---
 
 // TestEngineInterjection_Basic verifies that a user interjection queued during

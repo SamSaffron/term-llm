@@ -570,6 +570,11 @@ func (m *Model) buildFooterLayout() footerLayout {
 		appendMetaRow(noticeStyle.Render("  " + m.interruptNotice))
 	}
 
+	if queuedEffort, applied, ok := m.pendingStreamEffortStatus(); ok && !applied {
+		pendingStyle := lipgloss.NewStyle().Foreground(theme.Muted).Italic(true)
+		appendMetaRow(pendingStyle.Render("  ↻ reasoning effort " + queuedEffort + " queued (applies at next model turn)"))
+	}
+
 	if len(m.pendingInterjections) > 0 {
 		pendingStyle := lipgloss.NewStyle().Foreground(theme.Muted).Italic(true)
 		selectedStyle := lipgloss.NewStyle().Foreground(theme.Primary).Bold(true)
@@ -669,7 +674,7 @@ func (m *Model) viewAutoSend() string {
 		// Minimal status line during streaming
 		elapsed := time.Since(m.streamStartTime)
 		return fmt.Sprintf("%s%s:%s · mcp:off · %s  Responding %s",
-			m.agentPrefix(), m.providerName, m.modelName, m.spinner.View(), formatChatElapsed(elapsed))
+			m.agentPrefix(), m.providerName, m.displayModelName(), m.spinner.View(), formatChatElapsed(elapsed))
 	}
 	return ""
 }
@@ -680,6 +685,18 @@ func (m *Model) agentPrefix() string {
 		return m.agentName + " · "
 	}
 	return ""
+}
+
+func (m *Model) displayModelName() string {
+	if m != nil && m.streaming && m.pendingStreamModelSwitch != nil && m.pendingStreamModelSwitch.applied {
+		provider := strings.TrimSpace(m.pendingStreamModelSwitch.provider)
+		if provider == "" || provider == strings.TrimSpace(m.providerKey) || provider == strings.TrimSpace(m.providerName) {
+			if model := strings.TrimSpace(m.pendingStreamModelSwitch.model); model != "" {
+				return model
+			}
+		}
+	}
+	return m.modelName
 }
 
 func (m *Model) renderMd(text string, width int) string {
@@ -944,7 +961,7 @@ func (m *Model) renderStatusLine() string {
 	if m.agentName != "" {
 		baseSegments = append(baseSegments, seg(mutedStyle.Render(m.agentName), 0, true))
 	}
-	model := shortenModelName(m.modelName)
+	model := shortenModelName(m.displayModelName())
 	if model == "" && m.providerName != "" {
 		model = m.providerName
 	}

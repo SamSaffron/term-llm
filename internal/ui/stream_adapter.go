@@ -277,6 +277,17 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream llm.Stream) {
 				}
 			}
 
+		case llm.EventModelSwitch:
+			model := event.Model
+			if model == "" {
+				model = event.Text
+			}
+			if model != "" {
+				if !emit(ModelSwitchEvent(model, event.ReasoningEffort)) {
+					return
+				}
+			}
+
 		case llm.EventInterjection:
 			if event.Text != "" {
 				if !emit(InterjectionEventWithMessage(event.Text, event.InterjectionID, event.Message)) {

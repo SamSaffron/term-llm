@@ -1172,6 +1172,8 @@ const updateSessionUsageDisplay = (session) => {
   // show the server-confirmed runtime and lock the controls.
   const model = locked ? (session?.activeModel || state.selectedModel || '') : (state.selectedModel || '');
   const provider = locked ? (session?.provider || state.selectedProvider || '') : (state.selectedProvider || '');
+  const pendingEffortQueued = Boolean(locked && session?.pendingEffortQueued);
+  const pendingEffort = pendingEffortQueued ? String(session?.pendingEffort || '').trim() : '';
   const effort = locked ? (session?.activeEffort || state.selectedEffort || '') : (state.selectedEffort || '');
   const headerModelEffort = splitHeaderModelEffort(model, effort, state.models);
 
@@ -1202,35 +1204,45 @@ const updateSessionUsageDisplay = (session) => {
   // model still carries a suffix, surface that as the effective effort;
   // otherwise show muted "auto" so users can always tap to pick.
   const resolvedEffort = headerModelEffort.effort || (!headerModelEffort.model ? defaultModelEffort.effort : '');
-  const effortHasValue = Boolean(resolvedEffort);
+  const effortLabel = pendingEffortQueued ? `${pendingEffort || 'auto'} queued` : (resolvedEffort || 'auto');
+  const effortHasValue = Boolean(resolvedEffort) || pendingEffortQueued;
   setChipLabel(
     elements.chipEffortLabel,
     elements.chipSepModelEffort,
-    effortHasValue ? resolvedEffort : 'auto',
-    { muted: !effortHasValue, hidden: false }
+    effortLabel,
+    { muted: !effortHasValue, hidden: false, title: pendingEffortQueued ? 'Queued for the next model turn' : '' }
   );
 
   setChipSelectValue(elements.chipProviderSelect, state.selectedProvider || '');
   setChipSelectValue(elements.chipModelSelect, state.selectedModel || '');
-  setChipSelectValue(elements.chipEffortSelect, state.selectedEffort || '');
+  setChipSelectValue(elements.chipEffortSelect, pendingEffortQueued ? pendingEffort : (state.selectedEffort || ''));
 
-  const lockTitle = locked ? 'Cannot switch while a response is running' : '';
-  [
-    elements.chipProviderTrigger,
-    elements.chipModelTrigger,
-    elements.chipEffortTrigger,
-  ].forEach((trigger) => {
+  const setTriggerLocked = (trigger, isLocked, title) => {
     if (!trigger) return;
-    if (locked) {
+    if (isLocked) {
       trigger.setAttribute('disabled', 'disabled');
       trigger.setAttribute('aria-disabled', 'true');
-      trigger.setAttribute('title', lockTitle);
+      trigger.setAttribute('title', title || lockTitle);
     } else {
       trigger.removeAttribute('disabled');
       trigger.removeAttribute('aria-disabled');
-      trigger.removeAttribute('title');
+      if (title) trigger.setAttribute('title', title);
+      else trigger.removeAttribute('title');
     }
-  });
+  };
+  const lockTitle = locked ? 'Cannot switch while a response is running' : '';
+  const effortQueueable = Boolean(locked && session && !state.askUser && !state.approval && (
+    state.streaming
+    || session.activeResponseId
+    || sessionHasInProgressState(session)
+  ));
+  setTriggerLocked(elements.chipProviderTrigger, locked, lockTitle);
+  setTriggerLocked(elements.chipModelTrigger, locked, lockTitle);
+  setTriggerLocked(
+    elements.chipEffortTrigger,
+    locked && !effortQueueable,
+    effortQueueable ? 'Queue reasoning effort for the next model turn' : lockTitle
+  );
   elements.modelPicker?.classList.toggle('locked', locked);
 
   const tokensEl = elements.headerTokens;

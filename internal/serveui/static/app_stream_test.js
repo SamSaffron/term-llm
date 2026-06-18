@@ -495,6 +495,17 @@ function createHarness(options = {}) {
         responseId,
       });
     }
+    if (url.includes('/ui/v1/sessions/') && url.endsWith('/runtime/effort')) {
+      const parsedBody = requestOptions.body ? JSON.parse(String(requestOptions.body)) : {};
+      return new Response(JSON.stringify({
+        status: 'queued',
+        model: parsedBody.model || 'test-model',
+        reasoning_effort: Object.prototype.hasOwnProperty.call(parsedBody, 'reasoning_effort') ? parsedBody.reasoning_effort : '',
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
     if (url.includes('/ui/v1/sessions/') && url.endsWith('/interrupt')) {
       if (interruptStatus !== 200) {
         return new Response(JSON.stringify(interruptErrorPayload), {
@@ -3864,6 +3875,126 @@ function testRestoreLatestDraftMessageDoesNotCrossSessionBoundary() {
   pass(name);
 }
 
+async function testQueueEffortWhileStreamingPostsRuntimeEffortAndShowsPending() {
+  const name = 'queueing effort while streaming posts runtime effort and marks pending only while queued';
+  const harness = createHarness();
+  const { app, state, fetchCalls, cleanup } = harness;
+  const session = {
+    id: 'sess_effort_queue',
+    title: 'Effort queue',
+    messages: [{ id: 'u1', role: 'user', content: 'run', created: 1 }],
+    activeResponseId: 'resp_effort_queue',
+    activeModel: 'gpt-5.4',
+    activeEffort: 'medium',
+    provider: 'chatgpt',
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  state.currentStreamSessionId = session.id;
+  state.streaming = true;
+
+  await app.applyEffortChange('high');
+
+  const effortCall = fetchCalls.find(call => call.url === '/ui/v1/sessions/sess_effort_queue/runtime/effort');
+  if (!effortCall) {
+    fail(name, 'expected runtime effort POST', JSON.stringify(fetchCalls));
+    await cleanup();
+    return;
+  }
+  const body = JSON.parse(effortCall.body || '{}');
+  if (body.model !== 'gpt-5.4' || body.reasoning_effort !== 'high') {
+    fail(name, 'unexpected runtime effort body', effortCall.body);
+    await cleanup();
+    return;
+  }
+  if (!session.pendingEffortQueued || session.pendingEffort !== 'high') {
+    fail(name, 'expected pending effort marker', JSON.stringify({ pendingEffort: session.pendingEffort, pendingEffortQueued: session.pendingEffortQueued }));
+    await cleanup();
+    return;
+  }
+  if (state.selectedEffort !== 'high') {
+    fail(name, `selectedEffort = ${JSON.stringify(state.selectedEffort)}, want high`);
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
+function testResponseModelSwitchStabilizesEffortAndClearsPending() {
+  const name = 'response.model_switch updates effort and clears queued marker';
+  const harness = createHarness();
+  const { app, state } = harness;
+  const session = {
+    id: 'sess_effort_applied',
+    title: 'Effort applied',
+    messages: [],
+    activeResponseId: 'resp_effort_applied',
+    activeModel: 'gpt-5.4',
+    activeEffort: 'medium',
+    pendingEffort: 'high',
+    pendingEffortQueued: true,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+
+  const streamState = app.createResponseStreamState(session);
+  app.applyResponseStreamEvent(session, streamState, 'response.model_switch', {
+    model: 'gpt-5.4',
+    reasoning_effort: 'high',
+    sequence_number: 7,
+  });
+
+  if (session.activeModel !== 'gpt-5.4' || session.activeEffort !== 'high') {
+    fail(name, 'expected active runtime to update', JSON.stringify({ model: session.activeModel, effort: session.activeEffort }));
+    return;
+  }
+  if (session.pendingEffortQueued || Object.prototype.hasOwnProperty.call(session, 'pendingEffort')) {
+    fail(name, 'expected queued marker to be cleared after apply', JSON.stringify({ pendingEffort: session.pendingEffort, pendingEffortQueued: session.pendingEffortQueued }));
+    return;
+  }
+  if (state.selectedEffort !== 'high') {
+    fail(name, `selectedEffort = ${JSON.stringify(state.selectedEffort)}, want high`);
+    return;
+  }
+  pass(name);
+}
+
+function testCompletedResponseClearsUnappliedQueuedEffort() {
+  const name = 'response.completed clears queued effort without persistent applied banner state';
+  const harness = createHarness();
+  const { app, state } = harness;
+  const session = {
+    id: 'sess_effort_done',
+    title: 'Effort done',
+    messages: [],
+    activeResponseId: 'resp_effort_done',
+    activeModel: 'gpt-5.4',
+    activeEffort: 'medium',
+    pendingEffort: 'high',
+    pendingEffortQueued: true,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+
+  const streamState = app.createResponseStreamState(session);
+  app.applyResponseStreamEvent(session, streamState, 'response.completed', {
+    response: { id: 'resp_effort_done', model: 'gpt-5.4', status: 'completed', reasoning_effort: 'medium' },
+    sequence_number: 8,
+  });
+
+  if (session.pendingEffortQueued || Object.prototype.hasOwnProperty.call(session, 'pendingEffort')) {
+    fail(name, 'expected queued marker to be cleared at terminal event', JSON.stringify({ pendingEffort: session.pendingEffort, pendingEffortQueued: session.pendingEffortQueued }));
+    return;
+  }
+  if (session.activeEffort !== 'medium') {
+    fail(name, `activeEffort = ${JSON.stringify(session.activeEffort)}, want medium`);
+    return;
+  }
+  pass(name);
+}
+
 (async () => {
   await testResponseCompletedForcesSidebarStatusRefresh();
   await testStaleTerminalStreamDoesNotRefreshStatus();
@@ -3910,6 +4041,9 @@ function testRestoreLatestDraftMessageDoesNotCrossSessionBoundary() {
   await testResumeActiveResponseClearsTerminalTrackingWhen409SnapshotHasNoRecovery();
   await testSendMessageIncludesModelSwapForChangedTarget();
   await testSendMessageOmitsModelSwapWhenTargetUnchanged();
+  await testQueueEffortWhileStreamingPostsRuntimeEffortAndShowsPending();
+  testResponseModelSwitchStabilizesEffortAndClearsPending();
+  testCompletedResponseClearsUnappliedQueuedEffort();
   testModelSwapProgressEventUpdatesTransientMarker();
   testResponsePhaseEventUpdatesTransientMarker();
   testResponsePhaseSeparatesAssistantSegments();

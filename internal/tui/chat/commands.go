@@ -619,7 +619,7 @@ func (m *Model) showHelpModal() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
-	m.pendingStreamModelSwitch = nil
+	m.clearPendingStreamModelSwitch()
 	// Mark the old session as complete before creating a new one
 	if m.store != nil && m.sess != nil {
 		_ = m.store.UpdateStatus(context.Background(), m.sess.ID, session.StatusComplete)
@@ -765,6 +765,62 @@ func (m *Model) currentProviderAndModel() (provider, model string) {
 	return provider, model
 }
 
+func (m *Model) currentProviderAndModelForEffortCycle() (provider, model string) {
+	provider, model = m.currentProviderAndModel()
+	if !m.streaming || m.pendingStreamModelSwitch == nil {
+		return provider, model
+	}
+	if pendingProvider := strings.TrimSpace(m.pendingStreamModelSwitch.provider); pendingProvider != "" {
+		provider = pendingProvider
+	}
+	if pendingModel := strings.TrimSpace(m.pendingStreamModelSwitch.model); pendingModel != "" {
+		model = pendingModel
+	}
+	return provider, model
+}
+
+func (m *Model) pendingStreamEffortStatus() (label string, applied bool, ok bool) {
+	if m == nil || m.pendingStreamModelSwitch == nil {
+		return "", false, false
+	}
+	provider := strings.TrimSpace(m.pendingStreamModelSwitch.provider)
+	model := strings.TrimSpace(m.pendingStreamModelSwitch.model)
+	if provider == "" || model == "" {
+		return "", false, false
+	}
+	_, effort := llm.BaseModelAndEffortForProvider(provider, model)
+	if effort == "" {
+		effort = "default"
+	}
+	return effort, m.pendingStreamModelSwitch.applied, true
+}
+
+func (m *Model) markPendingStreamModelSwitchApplied(model string) bool {
+	if m == nil || m.pendingStreamModelSwitch == nil {
+		return false
+	}
+	if strings.TrimSpace(m.pendingStreamModelSwitch.model) != strings.TrimSpace(model) {
+		return false
+	}
+	m.pendingStreamModelSwitch.applied = true
+	return true
+}
+
+func (m *Model) clearPendingStreamModelSwitch() {
+	m.pendingStreamModelSwitch = nil
+	if m.engine != nil {
+		m.engine.ClearPendingRequestModelSwitch()
+	}
+}
+
+func (m *Model) queuePendingStreamModelSwitch(provider, model string) {
+	m.pendingStreamModelSwitch = &pendingStreamModelSwitch{provider: provider, model: model}
+	currentProvider, _ := m.currentProviderAndModel()
+	if m.engine != nil && provider == currentProvider {
+		m.engine.QueueRequestModelSwitch(model)
+	}
+}
+
 func (m *Model) cmdEffort(args []string) (tea.Model, tea.Cmd) {
 	provider, model := m.currentProviderAndModel()
 
@@ -772,11 +828,29 @@ func (m *Model) cmdEffort(args []string) (tea.Model, tea.Cmd) {
 	if provider == "" || model == "" {
 		return m.showFooterWarning("Cannot switch effort: no current provider/model is active.")
 	}
+	if m.streaming && len(args) == 0 {
+		if queued, applied, ok := m.pendingStreamEffortStatus(); ok {
+			_, currentEffort := llm.BaseModelAndEffortForProvider(provider, model)
+			if applied {
+				currentEffort = queued
+			}
+			if currentEffort == "" {
+				currentEffort = "default"
+			}
+			efforts := llm.ReasoningEffortsForProviderModel(provider, model)
+			available := append(cloneStrings(efforts), "default")
+			queuedText := fmt.Sprintf("Queued: %s (applies at next model turn)", queued)
+			if applied {
+				queuedText = fmt.Sprintf("Active for current run: %s (persists after response)", queued)
+			}
+			return m.showFooterMuted(fmt.Sprintf("Current effort: %s. %s. Available: %s. Usage: /effort <value>", currentEffort, queuedText, strings.Join(available, ", ")))
+		}
+	}
 
 	resolved := resolveEffortSwitch(provider, model, args)
 	if m.streaming && resolved.already {
 		if m.pendingStreamModelSwitch != nil {
-			m.pendingStreamModelSwitch = nil
+			m.clearPendingStreamModelSwitch()
 			return m.showFooterMuted(fmt.Sprintf("Effort %s already active; cleared queued effort change.", resolved.label))
 		}
 		return m.showEffortResolutionMessage(resolved)
@@ -786,18 +860,15 @@ func (m *Model) cmdEffort(args []string) (tea.Model, tea.Cmd) {
 	}
 
 	if m.streaming {
-		m.pendingStreamModelSwitch = &pendingStreamModelSwitch{
-			provider: provider,
-			model:    resolved.targetModel,
-		}
-		return m.showFooterMuted(fmt.Sprintf("Effort %s queued; will apply after the current response.", resolved.label))
+		m.queuePendingStreamModelSwitch(provider, resolved.targetModel)
+		return m.showFooterMuted(fmt.Sprintf("Effort %s queued; will apply at the next model turn.", resolved.label))
 	}
 
 	return m.switchEffortResolved(resolved, false)
 }
 
 func (m *Model) cycleEffort() (tea.Model, tea.Cmd) {
-	provider, model := m.currentProviderAndModel()
+	provider, model := m.currentProviderAndModelForEffortCycle()
 	if provider == "" || model == "" {
 		return m.showFooterWarning("Cannot switch effort: no current provider/model is active.")
 	}
@@ -825,8 +896,8 @@ func (m *Model) cycleEffort() (tea.Model, tea.Cmd) {
 		if !resolved.ok {
 			return m.showEffortResolutionMessage(resolved)
 		}
-		m.pendingStreamModelSwitch = &pendingStreamModelSwitch{provider: provider, model: resolved.targetModel}
-		_, cmd := m.showFooterMuted(fmt.Sprintf("Effort %s queued; will apply after the current response.", resolved.label))
+		m.queuePendingStreamModelSwitch(provider, resolved.targetModel)
+		_, cmd := m.showFooterMuted(fmt.Sprintf("Effort %s queued; will apply at the next model turn.", resolved.label))
 		m.setTextareaValue(draft)
 		return m, cmd
 	}
@@ -1242,7 +1313,7 @@ func (m *Model) cmdFast() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
-	m.pendingStreamModelSwitch = nil
+	m.clearPendingStreamModelSwitch()
 	// Mark the old session as complete before creating a new one
 	if m.store != nil && m.sess != nil {
 		_ = m.store.UpdateStatus(context.Background(), m.sess.ID, session.StatusComplete)
@@ -2275,7 +2346,7 @@ func (m *Model) switchModelWithOptions(providerModel string, opts switchModelOpt
 	if err != nil {
 		return m.showSystemMessage(fmt.Sprintf("Failed to switch model: %v", err))
 	}
-	m.pendingStreamModelSwitch = nil
+	m.clearPendingStreamModelSwitch()
 	if !opts.deferMarker {
 		m.pendingModelSwitch = nil
 	}
@@ -2343,13 +2414,22 @@ func (m *Model) applyPendingStreamModelSwitch() tea.Cmd {
 		return nil
 	}
 	pending := *m.pendingStreamModelSwitch
-	m.pendingStreamModelSwitch = nil
+	m.clearPendingStreamModelSwitch()
 	if strings.TrimSpace(pending.provider) == "" || strings.TrimSpace(pending.model) == "" {
 		return nil
 	}
 	provider, model := m.currentProviderAndModel()
 	if provider == pending.provider && model == pending.model {
 		return nil
+	}
+
+	// Preserve any still-queued interjections across the engine replacement. A
+	// text-only stream can finish with queued interjections that were never
+	// committed; applying a deferred effort switch must not strand them on the old
+	// engine before restorePendingInterjectionDraft has a chance to recover them.
+	var queuedInterjections []llm.QueuedInterjection
+	if m.engine != nil {
+		queuedInterjections = m.engine.ListPendingInterjections()
 	}
 
 	// switchModelWithOptions clears the composer because most model switches are
@@ -2361,6 +2441,11 @@ func (m *Model) applyPendingStreamModelSwitch() tea.Cmd {
 		m.config = &config.Config{}
 	}
 	_, cmd := m.switchModelWithOptions(pending.provider+":"+pending.model, switchModelOptions{deferMarker: true})
+	if m.engine != nil && m.providerKey == pending.provider && m.modelName == pending.model {
+		for _, entry := range queuedInterjections {
+			m.engine.QueueInterjection(entry)
+		}
+	}
 	m.setTextareaValue(draft)
 	return cmd
 }

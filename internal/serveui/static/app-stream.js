@@ -68,6 +68,41 @@ const hasSessionContinuationContext = (session) => Boolean(
   )
 );
 
+const normalizeEffortForCompare = (value) => {
+  const normalized = String(value || '').trim();
+  return normalized.toLowerCase() === 'default' ? '' : normalized;
+};
+
+const sessionHasQueueableActiveRun = (session) => Boolean(
+  session
+  && !state.draftSessionActive
+  && !state.askUser
+  && !state.approval
+  && (
+    (state.streaming && (!state.currentStreamSessionId || state.currentStreamSessionId === session.id))
+    || session.activeResponseId
+    || app.sessionHasInProgressState?.(session)
+  )
+);
+
+const setSessionPendingEffort = (session, effort) => {
+  if (!session) return;
+  session.pendingEffort = String(effort || '').trim();
+  session.pendingEffortQueued = true;
+};
+
+const clearSessionPendingEffort = (session) => {
+  if (!session) return;
+  delete session.pendingEffort;
+  delete session.pendingEffortQueued;
+};
+
+const clearTerminalPendingEffort = (session) => {
+  if (session?.pendingEffortQueued) {
+    clearSessionPendingEffort(session);
+  }
+};
+
 const classifyRecoverableContinuationFailure = (error, previousResponseId = '') => {
   const status = Number(error?.status || 0);
   const message = String(error?.message || '').trim();
@@ -562,6 +597,33 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     return { terminal: false };
   }
 
+  if (event === 'response.model_switch') {
+    const model = String(payload?.model || '').trim();
+    if (model) session.activeModel = model;
+    let appliedEffort = session.activeEffort || '';
+    if (Object.prototype.hasOwnProperty.call(payload || {}, 'reasoning_effort')) {
+      appliedEffort = payload.reasoning_effort || '';
+      session.activeEffort = appliedEffort;
+    }
+    const pendingStillTargetsLater = Boolean(
+      session.pendingEffortQueued
+      && normalizeEffortForCompare(session.pendingEffort || '') !== normalizeEffortForCompare(appliedEffort)
+    );
+    const isActiveSession = session.id && session.id === state.activeSessionId;
+    if (!pendingStillTargetsLater) {
+      clearSessionPendingEffort(session);
+      if (isActiveSession) state.selectedEffort = session.activeEffort || '';
+    } else if (isActiveSession) {
+      state.selectedEffort = session.pendingEffort || '';
+    }
+    if (isActiveSession) {
+      persistRuntimeSelection();
+      syncSettingsSelectValues();
+      updateSessionUsageDisplay(session);
+    }
+    return { terminal: false };
+  }
+
   if (event === 'response.model_swap.progress') {
     const stage = String(payload?.stage || '').trim();
     const message = String(payload?.message || '').trim();
@@ -873,6 +935,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     if (Object.prototype.hasOwnProperty.call(payload?.response || {}, 'reasoning_effort')) {
       session.activeEffort = payload.response.reasoning_effort || '';
     }
+    clearTerminalPendingEffort(session);
     updateSessionUsageDisplay(session);
 
     const lastAssistant = session.messages.findLast((message) => message.role === 'assistant');
@@ -888,6 +951,25 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     void maybeNotifyResponseComplete(session, lastAssistant, responseId);
     app.refreshFileChangesAfterRun?.(session);
     scrollVisibleStreamToBottom(session);
+    return { terminal: true };
+  }
+
+  if (event === 'response.cancelled') {
+    streamState.closeToolGroup();
+    markToolGroupsDone(session);
+    requeuePendingInterjections(session);
+    clearTerminalPendingEffort(session);
+    clearActiveResponseTracking(session, session.activeResponseId || state.currentStreamResponseId);
+    setSessionOptimisticBusy(session, false);
+    setSessionServerActiveRun(session, false);
+    const lastAssistant = session.messages.findLast((message) => message.role === 'assistant');
+    if (lastAssistant) finalizeVisibleAssistantStreamRender(session, lastAssistant);
+    flushStreamPersistence();
+    saveSessions();
+    renderSidebar();
+    forceSidebarStatusRefreshSoon();
+    app.refreshFileChangesAfterRun?.(session);
+    scrollVisibleStreamToBottom(session, true);
     return { terminal: true };
   }
 
@@ -913,6 +995,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     streamState.closeToolGroup();
     markToolGroupsDone(session);
     requeuePendingInterjections(session);
+    clearTerminalPendingEffort(session);
     clearActiveResponseTracking(session, session.activeResponseId || state.currentStreamResponseId);
     setSessionOptimisticBusy(session, false);
     setSessionServerActiveRun(session, false);
@@ -1086,6 +1169,11 @@ const applyResponseRecoverySnapshot = (session, payload) => {
   }
 
   const responseId = String(payload.id || session.activeResponseId || state.currentStreamResponseId || '').trim();
+  const snapshotModel = String(payload.model || '').trim();
+  if (snapshotModel) session.activeModel = snapshotModel;
+  if (Object.prototype.hasOwnProperty.call(payload || {}, 'reasoning_effort')) {
+    session.activeEffort = payload.reasoning_effort || '';
+  }
   const sessionUsage = payload.session_usage;
   if (sessionUsage) {
     session.sessionUsage = sessionUsage;
@@ -1093,6 +1181,7 @@ const applyResponseRecoverySnapshot = (session, payload) => {
   updateSessionUsageDisplay(session);
 
   if (payload.status === 'completed') {
+    clearTerminalPendingEffort(session);
     if (responseId) {
       session.lastResponseId = responseId;
     }
@@ -1101,6 +1190,7 @@ const applyResponseRecoverySnapshot = (session, payload) => {
     setSessionServerActiveRun(session, false);
     requeuePendingInterjections(session);
   } else if (payload.status === 'failed' || payload.status === 'cancelled') {
+    clearTerminalPendingEffort(session);
     clearActiveResponseTracking(session, responseId);
     setSessionOptimisticBusy(session, false);
     setSessionServerActiveRun(session, false);
@@ -2164,7 +2254,56 @@ const applyModelChange = (model) => {
   app.updateHeader();
 };
 
-const applyEffortChange = (effort) => {
+const queueActiveRunEffortChange = async (session, effort) => {
+  const targetEffort = String(effort || '').trim();
+  const model = String(session?.activeModel || state.selectedModel || '').trim();
+  if (!session || !session.id || !model) return false;
+
+  const response = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/runtime/effort`, {
+    method: 'POST',
+    headers: requestHeaders(session.id),
+    body: JSON.stringify({
+      model,
+      reasoning_effort: targetEffort,
+    }),
+  });
+  if (!response.ok) {
+    throw await normalizeError(response);
+  }
+  const payload = await response.json().catch(() => ({}));
+  const queuedEffort = Object.prototype.hasOwnProperty.call(payload || {}, 'reasoning_effort')
+    ? String(payload.reasoning_effort || '').trim()
+    : targetEffort;
+
+  state.selectedEffort = queuedEffort;
+  canonicalizeSelectedModelEffort();
+  persistRuntimeSelection();
+  syncSettingsSelectValues();
+
+  if (normalizeEffortForCompare(queuedEffort) === normalizeEffortForCompare(session.activeEffort || '')) {
+    clearSessionPendingEffort(session);
+  } else {
+    setSessionPendingEffort(session, queuedEffort);
+  }
+  updateSessionUsageDisplay(session);
+  app.updateHeader();
+  return true;
+};
+
+const applyEffortChange = async (effort) => {
+  const session = getActiveSession();
+  if (sessionHasQueueableActiveRun(session)) {
+    try {
+      const queued = await queueActiveRunEffortChange(session, effort);
+      if (queued) return;
+    } catch (err) {
+      const message = err?.message || 'Failed to queue reasoning effort.';
+      if (session) addErrorMessage(message, session);
+      syncSettingsSelectValues();
+      app.updateHeader();
+      return;
+    }
+  }
   state.selectedEffort = effort;
   canonicalizeSelectedModelEffort();
   persistRuntimeSelection();
@@ -2204,7 +2343,7 @@ elements.chipModelSelect?.addEventListener('change', () => {
 });
 
 elements.chipEffortSelect?.addEventListener('change', () => {
-  applyEffortChange(elements.chipEffortSelect.value);
+  void applyEffortChange(elements.chipEffortSelect.value);
 });
 
 // ===== Custom chip popover =====
@@ -3639,10 +3778,6 @@ const sendMessage = async (options = {}) => {
       body.previous_response_id = previousResponseId;
     }
 
-    const normalizeEffortForCompare = (value) => {
-      const normalized = String(value || '').trim();
-      return normalized.toLowerCase() === 'default' ? '' : normalized;
-    };
     canonicalizeSelectedModelEffort();
     const currentProvider = session.provider || '';
     const currentModel = session.activeModel || '';
@@ -3905,6 +4040,8 @@ Object.assign(app, {
   connectToken,
   normalizeSelectedProvider,
   canonicalizeSelectedModelEffort,
+  applyEffortChange,
+  queueActiveRunEffortChange,
   renderProviderOptions,
   renderModelOptions,
   autoGrowPrompt,

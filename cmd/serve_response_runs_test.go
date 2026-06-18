@@ -59,6 +59,45 @@ func TestAppendResponseRunEventEmitsPhase(t *testing.T) {
 	}
 }
 
+func TestAppendResponseRunEventEmitsModelSwitchAndUpdatesSnapshot(t *testing.T) {
+	run := newResponseRun("resp_model_switch", "sess_test", "", "gpt-5.4", time.Now().Unix(), func() {})
+	server := &serveServer{}
+	state := newResponseRunStreamState("gpt-5.4", "medium")
+
+	if err := server.appendResponseRunEvent(nil, run, state, llm.Event{
+		Type:            llm.EventModelSwitch,
+		Model:           "gpt-5.4",
+		ReasoningEffort: "high",
+	}); err != nil {
+		t.Fatalf("appendResponseRunEvent() error = %v", err)
+	}
+
+	run.mu.Lock()
+	if len(run.events) != 1 {
+		run.mu.Unlock()
+		t.Fatalf("events = %d, want 1", len(run.events))
+	}
+	ev := run.events[0]
+	run.mu.Unlock()
+	if ev.Event != "response.model_switch" {
+		t.Fatalf("event name = %q, want response.model_switch", ev.Event)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(ev.Data, &payload); err != nil {
+		t.Fatalf("payload unmarshal: %v", err)
+	}
+	if payload["model"] != "gpt-5.4" || payload["reasoning_effort"] != "high" {
+		t.Fatalf("payload runtime = %#v/%#v, want gpt-5.4/high", payload["model"], payload["reasoning_effort"])
+	}
+	if state.model != "gpt-5.4" || state.reasoningEffort != "high" || !state.reasoningEffortSet {
+		t.Fatalf("stream state = %#v, want gpt-5.4/high set", state)
+	}
+	snapshot := run.snapshot()
+	if snapshot["model"] != "gpt-5.4" || snapshot["reasoning_effort"] != "high" {
+		t.Fatalf("snapshot runtime = %#v/%#v, want gpt-5.4/high", snapshot["model"], snapshot["reasoning_effort"])
+	}
+}
+
 func TestAppendResponseRunEventSuppressesServerToolMetadata(t *testing.T) {
 	registry := llm.NewToolRegistry()
 	registry.Register(&echoTool{})

@@ -2600,6 +2600,145 @@ func TestHandleSessionInterrupt_MergesMessageWithImageOnlyContent(t *testing.T) 
 	}
 }
 
+func TestHandleSessionRuntimeEffortQueuesEngineSwitch(t *testing.T) {
+	mgr := newServeSessionManager(time.Minute, 10, nil)
+	defer mgr.Close()
+	provider := newStagedProvider("ok", "")
+	close(provider.releaseSecond)
+	engine := llm.NewEngine(provider, nil)
+	rt := &serveRuntime{engine: engine, provider: provider, providerKey: "staged", defaultModel: "gpt-5.4"}
+	state := &runtimeInterruptState{cancel: func() {}, done: make(chan struct{}), model: "gpt-5.4", reasoningEffort: "medium"}
+	rt.setActiveInterrupt(state)
+	defer rt.clearActiveInterrupt(state)
+	putTestSession(mgr, "sess-effort", rt)
+
+	srv := &serveServer{sessionMgr: mgr}
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess-effort/runtime/effort", strings.NewReader(`{"model":"gpt-5.4","reasoning_effort":"high"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"reasoning_effort":"high"`) {
+		t.Fatalf("response body = %s, want queued high", rr.Body.String())
+	}
+
+	stream, err := engine.Stream(context.Background(), llm.Request{
+		Model:           "gpt-5.4",
+		ReasoningEffort: "medium",
+		Messages:        []llm.Message{llm.UserText("hello")},
+		Tools:           []llm.ToolSpec{{Name: "noop", Description: "unused", Schema: map[string]interface{}{"type": "object"}}},
+		MaxTurns:        1,
+	})
+	if err != nil {
+		t.Fatalf("engine stream: %v", err)
+	}
+	for {
+		_, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv: %v", err)
+		}
+	}
+	_ = stream.Close()
+
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if len(provider.requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(provider.requests))
+	}
+	if got := provider.requests[0].ReasoningEffort; got != "high" {
+		t.Fatalf("provider reasoning effort = %q, want high", got)
+	}
+}
+
+func TestHandleSessionRuntimeEffortRejectsModelMismatch(t *testing.T) {
+	mgr := newServeSessionManager(time.Minute, 10, nil)
+	defer mgr.Close()
+	engine := llm.NewEngine(llm.NewMockProvider("mock"), nil)
+	rt := &serveRuntime{engine: engine, providerKey: "mock", defaultModel: "gpt-5.4"}
+	state := &runtimeInterruptState{cancel: func() {}, done: make(chan struct{}), model: "gpt-5.4", reasoningEffort: "medium"}
+	rt.setActiveInterrupt(state)
+	defer rt.clearActiveInterrupt(state)
+	putTestSession(mgr, "sess-effort-mismatch", rt)
+
+	srv := &serveServer{sessionMgr: mgr}
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/sess-effort-mismatch/runtime/effort", strings.NewReader(`{"model":"foreign-model","reasoning_effort":"high"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.handleSessionByID(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "active model") {
+		t.Fatalf("response body = %s, want active model error", rr.Body.String())
+	}
+}
+
+func TestServeRuntimeRunClearsUnappliedRuntimeSwitch(t *testing.T) {
+	provider := newStagedProvider("hello ", "done")
+	engine := llm.NewEngine(provider, nil)
+	rt := &serveRuntime{engine: engine, provider: provider, providerKey: "staged", defaultModel: "gpt-5.4"}
+
+	runDone := make(chan error, 1)
+	go func() {
+		_, err := rt.Run(context.Background(), true, false, []llm.Message{llm.UserText("hello")}, llm.Request{
+			Model:           "gpt-5.4",
+			ReasoningEffort: "medium",
+		})
+		runDone <- err
+	}()
+
+	select {
+	case <-provider.firstSent:
+	case <-time.After(time.Second):
+		t.Fatal("provider did not start")
+	}
+	if err := rt.QueueActiveRunRuntimeSwitch("gpt-5.4", "high"); err != nil {
+		t.Fatalf("queue runtime switch: %v", err)
+	}
+	close(provider.releaseSecond)
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("run returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("run did not finish")
+	}
+
+	stream, err := engine.Stream(context.Background(), llm.Request{
+		Model:           "gpt-5.4",
+		ReasoningEffort: "low",
+		Messages:        []llm.Message{llm.UserText("next")},
+	})
+	if err != nil {
+		t.Fatalf("engine stream: %v", err)
+	}
+	for {
+		_, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv: %v", err)
+		}
+	}
+	_ = stream.Close()
+
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if len(provider.requests) != 2 {
+		t.Fatalf("provider requests = %d, want 2", len(provider.requests))
+	}
+	if got := provider.requests[1].ReasoningEffort; got != "low" {
+		t.Fatalf("next request reasoning effort = %q, want low (stale queued switch cleared)", got)
+	}
+}
+
 func TestServeRuntimeRun_LeavesPendingInterjectionAtEndOfSimpleStream(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})

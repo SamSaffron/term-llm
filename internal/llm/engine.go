@@ -88,6 +88,11 @@ type AssistantSnapshotCallback func(ctx context.Context, turnIndex int, assistan
 type CompactionCallback func(ctx context.Context, result *CompactionResult) error
 
 // Engine orchestrates provider calls and external tool execution.
+type pendingRequestRuntimeSwitch struct {
+	model           string
+	reasoningEffort string
+}
+
 type Engine struct {
 	provider    Provider
 	tools       *ToolRegistry
@@ -130,6 +135,12 @@ type Engine struct {
 	// the next LLM turn. While entries remain in this queue they are cancellable;
 	// draining atomically commits them for the next provider request.
 	pendingInterjections []queuedInterjection
+
+	// pendingRequestRuntime is a same-provider model/effort override requested
+	// while an agentic loop is active. It is drained at the next provider-turn
+	// boundary so UI effort changes can affect the next LLM call after tool
+	// results without replacing the in-flight Engine.
+	pendingRequestRuntime pendingRequestRuntimeSwitch
 
 	// chaosFailNext is armed by TERM_LLM_CHAOS_MONKEY UI shortcuts to inject a
 	// replayable stream failure at the next provider receive boundary.
@@ -579,6 +590,41 @@ func (e *Engine) SetMaxToolOutputChars(n int) {
 	e.callbackMu.Lock()
 	e.maxToolOutputChars = n
 	e.callbackMu.Unlock()
+}
+
+// QueueRequestModelSwitch requests a same-provider model change for the next
+// provider turn in an active agentic loop. This is intended for reasoning-effort
+// suffix changes while tools are running: the Engine cannot be replaced safely
+// mid-stream, but req.Model can be updated before the next provider.Stream call.
+func (e *Engine) QueueRequestModelSwitch(model string) {
+	e.QueueRequestRuntimeSwitch(model, "")
+}
+
+// QueueRequestRuntimeSwitch requests a same-provider model/effort change for
+// the next provider turn in an active agentic loop.
+func (e *Engine) QueueRequestRuntimeSwitch(model, reasoningEffort string) {
+	e.callbackMu.Lock()
+	defer e.callbackMu.Unlock()
+	e.pendingRequestRuntime = pendingRequestRuntimeSwitch{
+		model:           strings.TrimSpace(model),
+		reasoningEffort: strings.TrimSpace(reasoningEffort),
+	}
+}
+
+// ClearPendingRequestModelSwitch cancels any queued same-provider model change.
+func (e *Engine) ClearPendingRequestModelSwitch() {
+	e.QueueRequestRuntimeSwitch("", "")
+}
+
+func (e *Engine) drainPendingRequestRuntimeSwitch() pendingRequestRuntimeSwitch {
+	e.callbackMu.Lock()
+	defer e.callbackMu.Unlock()
+	pending := pendingRequestRuntimeSwitch{
+		model:           strings.TrimSpace(e.pendingRequestRuntime.model),
+		reasoningEffort: strings.TrimSpace(e.pendingRequestRuntime.reasoningEffort),
+	}
+	e.pendingRequestRuntime = pendingRequestRuntimeSwitch{}
+	return pending
 }
 
 // Interject queues a text user message to be inserted after the current turn's tool results,
@@ -1444,6 +1490,29 @@ func (e *Engine) runLoop(ctx context.Context, req Request, send eventSender) err
 		}
 		return applyCompaction(result)
 	}
+	applyPendingRequestModelSwitch := func(attempt int) error {
+		pending := e.drainPendingRequestRuntimeSwitch()
+		if pending.model == "" && pending.reasoningEffort == "" {
+			return nil
+		}
+		targetModel := pending.model
+		if targetModel == "" {
+			targetModel = req.Model
+		}
+		targetEffort := pending.reasoningEffort
+		if targetModel == req.Model && targetEffort == strings.TrimSpace(req.ReasoningEffort) {
+			return nil
+		}
+		req.Model = targetModel
+		req.ReasoningEffort = targetEffort
+		if err := send.Send(Event{Type: EventModelSwitch, Text: targetModel, Model: targetModel, ReasoningEffort: targetEffort}); err != nil {
+			return err
+		}
+		if req.DebugRaw {
+			DebugRawRequest(req.DebugRaw, e.provider.Name(), e.provider.Credential(), req, fmt.Sprintf("Request model switched before turn %d", attempt))
+		}
+		return nil
+	}
 turnLoop:
 	for attempt := 0; attempt < maxTurns; attempt++ {
 		// Inject any tool specs registered mid-loop (e.g. via skill activation)
@@ -1522,6 +1591,10 @@ turnLoop:
 			if err := send.Send(Event{Type: EventPhase, Text: PhaseCompactingResumeTask}); err != nil {
 				return err
 			}
+		}
+
+		if err := applyPendingRequestModelSwitch(attempt); err != nil {
+			return err
 		}
 
 		stream, err := e.provider.Stream(ctx, req)
@@ -1663,6 +1736,9 @@ turnLoop:
 				maybeCompactAfterLLMCall(append([]Message{assistantMsg}, syncToolResults...))
 				req.Messages = append(req.Messages, assistantMsg)
 				req.Messages = append(req.Messages, syncToolResults...)
+				if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
+					return false, err
+				}
 				recoveredAtMessageCount = len(req.Messages)
 				if turnCallback != nil {
 					turnMetrics.ToolCalls = len(syncToolCalls)
@@ -1791,6 +1867,9 @@ turnLoop:
 
 			req.Messages = append(req.Messages, assistantMsg)
 			req.Messages = append(req.Messages, toolResults...)
+			if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
+				return false, err
+			}
 			recoveredAtMessageCount = len(req.Messages)
 			if turnCallback != nil {
 				turnMetrics.ToolCalls = len(registered)
@@ -2264,6 +2343,9 @@ turnLoop:
 					return err
 				}
 				if continued {
+					if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
+						return err
+					}
 					continue
 				}
 			}
@@ -2289,6 +2371,9 @@ turnLoop:
 			maybeCompactAfterLLMCall(append([]Message{assistantMsg}, syncToolResults...))
 			req.Messages = append(req.Messages, assistantMsg)
 			req.Messages = append(req.Messages, syncToolResults...)
+			if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
+				return err
+			}
 
 			// For MCP path, tools already executed synchronously during streaming,
 			// so we call turnCallback with the complete turn (assistant + tool results).
@@ -2324,6 +2409,9 @@ turnLoop:
 					if err := send.Send(Event{Type: EventInterjection, Text: text, InterjectionID: interjection.ID, Message: interjection.Message, InterjectionStatus: InterjectionCommitted}); err != nil {
 						return err
 					}
+				}
+				if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
+					return err
 				}
 			}
 
@@ -2484,6 +2572,9 @@ turnLoop:
 
 		req.Messages = append(req.Messages, assistantMsg)
 		req.Messages = append(req.Messages, toolResults...)
+		if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
+			return err
+		}
 
 		// Call turn completed callback with tool results for incremental persistence
 		if turnCallback != nil {
@@ -2533,6 +2624,9 @@ turnLoop:
 				if err := send.Send(Event{Type: EventInterjection, Text: text, InterjectionID: interjection.ID, Message: interjection.Message, InterjectionStatus: InterjectionCommitted}); err != nil {
 					return err
 				}
+			}
+			if err := applyPendingRequestModelSwitch(attempt + 1); err != nil {
+				return err
 			}
 		}
 	}

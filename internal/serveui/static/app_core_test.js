@@ -40,7 +40,7 @@ function makeNode() {
     textContent: '',
     innerHTML: '',
     checked: false,
-    disabled: false,
+    options: [],
     scrollTop: 0,
     scrollHeight: 0,
     clientHeight: 0,
@@ -288,6 +288,55 @@ const app = loadAppCore();
       fail(name, `for ${JSON.stringify(input)} got ${JSON.stringify(got)}, want ${JSON.stringify(expected)}`);
       return;
     }
+  }
+  pass(name);
+})();
+
+(function testHeaderEffortShowsQueuedOnlyUntilApplied() {
+  const name = 'header effort shows queued only until applied';
+  const chipEffortLabel = makeNode();
+  const testApp = loadAppCoreWith({
+    nodeOverrides: {
+      headerStats: makeNode(),
+      chipEffortLabel,
+      chipSepModelEffort: makeNode(),
+      chipProviderLabel: makeNode(),
+      chipModelLabel: makeNode(),
+      chipSepProviderModel: makeNode(),
+      chipProviderSelect: makeNode(),
+      chipModelSelect: makeNode(),
+      chipEffortSelect: makeNode(),
+      chipProviderTrigger: makeNode(),
+      chipModelTrigger: makeNode(),
+      chipEffortTrigger: makeNode(),
+      modelPicker: makeNode(),
+      headerTokens: makeNode(),
+      headerTokensSep: makeNode(),
+    },
+  });
+  const session = {
+    id: 'sess_effort_header',
+    provider: 'chatgpt',
+    activeModel: 'gpt-5.4',
+    activeEffort: 'medium',
+    pendingEffort: 'high',
+    pendingEffortQueued: true,
+  };
+  testApp.state.streaming = true;
+  testApp.state.activeSessionId = session.id;
+  testApp.updateSessionUsageDisplay(session);
+  if (chipEffortLabel.textContent !== 'high queued') {
+    fail(name, `queued label = ${JSON.stringify(chipEffortLabel.textContent)}, want high queued`);
+    return;
+  }
+
+  delete session.pendingEffort;
+  delete session.pendingEffortQueued;
+  session.activeEffort = 'high';
+  testApp.updateSessionUsageDisplay(session);
+  if (chipEffortLabel.textContent !== 'high') {
+    fail(name, `applied label = ${JSON.stringify(chipEffortLabel.textContent)}, want high`);
+    return;
   }
   pass(name);
 })();
