@@ -436,7 +436,29 @@ func (s *serveServer) populateResponsesToolResultNames(ctx context.Context, sess
 		collect(runtime.snapshotHistory())
 	}
 	if len(names) < len(missing) && s.store != nil && sessionID != "" {
-		if stored, err := s.store.GetMessages(ctx, sessionID, 0, 0); err == nil {
+		if pager, ok := s.store.(session.MessagesDescendingPager); ok {
+			const pageSize = 128
+			beforeSeq := 0
+			for len(names) < len(missing) {
+				stored, err := pager.GetMessagesPageDescending(ctx, sessionID, beforeSeq, pageSize)
+				if err != nil || len(stored) == 0 {
+					break
+				}
+				for _, msg := range stored {
+					collectParts(msg.Parts)
+					if len(names) == len(missing) {
+						break
+					}
+				}
+				if len(names) == len(missing) || len(stored) < pageSize {
+					break
+				}
+				beforeSeq = stored[len(stored)-1].Sequence
+				if beforeSeq <= 0 {
+					break
+				}
+			}
+		} else if stored, err := s.store.GetMessages(ctx, sessionID, 0, 0); err == nil {
 			for i := len(stored) - 1; i >= 0; i-- {
 				collectParts(stored[i].Parts)
 				if len(names) == len(missing) {

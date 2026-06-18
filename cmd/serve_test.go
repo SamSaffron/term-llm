@@ -44,6 +44,46 @@ type stagedStream struct {
 	events <-chan llm.Event
 }
 
+type responsesToolNamePagerStore struct {
+	*serveRuntimeTestStore
+	getMessagesPageDescendingCalls int
+	descendingCalls                []struct {
+		beforeSeq int
+		limit     int
+	}
+}
+
+var _ session.MessagesDescendingPager = (*responsesToolNamePagerStore)(nil)
+
+func (s *responsesToolNamePagerStore) GetMessagesPageDescending(ctx context.Context, sessionID string, beforeSeq, limit int) ([]session.Message, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.getMessagesPageDescendingCalls++
+	s.descendingCalls = append(s.descendingCalls, struct {
+		beforeSeq int
+		limit     int
+	}{beforeSeq: beforeSeq, limit: limit})
+
+	msgs := s.messages[sessionID]
+	capHint := len(msgs)
+	if limit > 0 && limit < capHint {
+		capHint = limit
+	}
+	page := make([]session.Message, 0, capHint)
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if beforeSeq > 0 && msgs[i].Sequence >= beforeSeq {
+			continue
+		}
+		page = append(page, msgs[i])
+		if limit > 0 && len(page) >= limit {
+			break
+		}
+	}
+	out := make([]session.Message, len(page))
+	copy(out, page)
+	return out, nil
+}
+
 func (s *stagedStream) Recv() (llm.Event, error) {
 	select {
 	case event, ok := <-s.events:
@@ -1564,6 +1604,52 @@ func TestPopulateResponsesToolResultNames_FallsBackToStoreForUnresolvedNames(t *
 	}
 	if store.getMessagesCalls != 1 {
 		t.Fatalf("GetMessages calls = %d, want 1 when runtime cannot resolve names", store.getMessagesCalls)
+	}
+}
+
+func TestPopulateResponsesToolResultNames_UsesReversePagedStoreLookup(t *testing.T) {
+	messages := []llm.Message{{
+		Role: llm.RoleTool,
+		Parts: []llm.Part{{
+			Type: llm.PartToolResult,
+			ToolResult: &llm.ToolResult{
+				ID: "call_old",
+			},
+		}},
+	}}
+	baseStore := newServeRuntimeTestStore()
+	store := &responsesToolNamePagerStore{serveRuntimeTestStore: baseStore}
+	for seq := 1; seq <= 130; seq++ {
+		msg := llm.AssistantText(fmt.Sprintf("assistant %d", seq))
+		if seq == 1 {
+			msg = llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{{
+				Type:     llm.PartToolCall,
+				ToolCall: &llm.ToolCall{ID: "call_old", Name: "bash"},
+			}}}
+		}
+		baseStore.messages["sess-paged"] = append(baseStore.messages["sess-paged"], *session.NewMessage("sess-paged", msg, seq))
+	}
+	srv := &serveServer{store: store}
+
+	srv.populateResponsesToolResultNames(context.Background(), "sess-paged", nil, messages)
+
+	if got := messages[0].Parts[0].ToolResult.Name; got != "bash" {
+		t.Fatalf("tool result name = %q, want %q", got, "bash")
+	}
+	if baseStore.getMessagesCalls != 0 {
+		t.Fatalf("GetMessages calls = %d, want 0 when reverse paging is available", baseStore.getMessagesCalls)
+	}
+	if store.getMessagesPageDescendingCalls != 2 {
+		t.Fatalf("GetMessagesPageDescending calls = %d, want 2 pages", store.getMessagesPageDescendingCalls)
+	}
+	if len(store.descendingCalls) != 2 {
+		t.Fatalf("descending call count = %d, want 2", len(store.descendingCalls))
+	}
+	if store.descendingCalls[0].beforeSeq != 0 || store.descendingCalls[0].limit != 128 {
+		t.Fatalf("first descending call = %+v, want beforeSeq=0 limit=128", store.descendingCalls[0])
+	}
+	if store.descendingCalls[1].beforeSeq != 3 || store.descendingCalls[1].limit != 128 {
+		t.Fatalf("second descending call = %+v, want beforeSeq=3 limit=128", store.descendingCalls[1])
 	}
 }
 
