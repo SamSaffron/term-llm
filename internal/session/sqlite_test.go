@@ -879,6 +879,67 @@ func assertListedMessageCount(t *testing.T, store *SQLiteStore, want int) {
 	}
 }
 
+func TestSQLiteStoreReplaceMessagesRecomputesActivityMetadata(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	store, err := NewSQLiteStore(DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	sess := &Session{ID: NewID(), Provider: "test", Model: "test-model", Mode: ModeChat}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	base := time.Date(2024, time.January, 2, 3, 4, 5, 0, time.UTC)
+	messages := []Message{
+		*NewMessage(sess.ID, llm.UserText("hello"), 0),
+		*NewMessage(sess.ID, llm.AssistantText("hi"), 1),
+	}
+	messages[0].CreatedAt = base
+	messages[1].CreatedAt = base.Add(time.Minute)
+	if err := store.ReplaceMessages(ctx, sess.ID, messages); err != nil {
+		t.Fatalf("initial ReplaceMessages: %v", err)
+	}
+
+	assertSessionActivity := func(wantTurns int, wantLastUser, wantLastMessage time.Time) {
+		t.Helper()
+		var gotTurns int
+		var gotLastUser, gotLastMessage sql.NullTime
+		if err := store.db.QueryRowContext(ctx,
+			`SELECT user_turns, last_user_message_at, last_message_at FROM sessions WHERE id = ?`,
+			sess.ID,
+		).Scan(&gotTurns, &gotLastUser, &gotLastMessage); err != nil {
+			t.Fatalf("scan session metadata: %v", err)
+		}
+		if gotTurns != wantTurns {
+			t.Fatalf("user_turns = %d, want %d", gotTurns, wantTurns)
+		}
+		if !gotLastUser.Valid || !gotLastUser.Time.Equal(wantLastUser) {
+			t.Fatalf("last_user_message_at = %v (valid=%v), want %v", gotLastUser.Time, gotLastUser.Valid, wantLastUser)
+		}
+		if !gotLastMessage.Valid || !gotLastMessage.Time.Equal(wantLastMessage) {
+			t.Fatalf("last_message_at = %v (valid=%v), want %v", gotLastMessage.Time, gotLastMessage.Valid, wantLastMessage)
+		}
+	}
+	assertSessionActivity(1, base, base.Add(time.Minute))
+
+	replacement := []Message{
+		*NewMessage(sess.ID, llm.UserText("hello"), 0),
+		*NewMessage(sess.ID, llm.AssistantText("hi"), 1),
+	}
+	replacement[0].CreatedAt = base.Add(24 * time.Hour)
+	replacement[1].CreatedAt = base.Add(25 * time.Hour)
+	if err := store.ReplaceMessages(ctx, sess.ID, replacement); err != nil {
+		t.Fatalf("replacement ReplaceMessages: %v", err)
+	}
+
+	assertSessionActivity(1, base, base.Add(time.Minute))
+}
+
 func TestSQLiteStoreReplaceMessagesPreservesUnchangedPrefix(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
