@@ -108,6 +108,42 @@ func (p *serveRuntimeTestProvider) Stream(ctx context.Context, req llm.Request) 
 	return &serveRuntimeTestStream{events: events}, nil
 }
 
+type serveRuntimeMetricsProvider struct {
+	calls int
+}
+
+func (p *serveRuntimeMetricsProvider) Name() string {
+	return "serve-runtime-metrics"
+}
+
+func (p *serveRuntimeMetricsProvider) Credential() string {
+	return "test"
+}
+
+func (p *serveRuntimeMetricsProvider) Capabilities() llm.Capabilities {
+	return llm.Capabilities{ToolCalls: true}
+}
+
+func (p *serveRuntimeMetricsProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	var events []llm.Event
+	switch p.calls {
+	case 0:
+		events = []llm.Event{
+			{Type: llm.EventToolCall, Tool: &llm.ToolCall{ID: "call-metrics-1", Name: "serve_runtime_test_tool", Arguments: json.RawMessage(`{}`)}},
+			{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 21, OutputTokens: 5, CachedInputTokens: 2, CacheWriteTokens: 1}},
+			{Type: llm.EventDone},
+		}
+	default:
+		events = []llm.Event{
+			{Type: llm.EventTextDelta, Text: "done"},
+			{Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 8, OutputTokens: 3}},
+			{Type: llm.EventDone},
+		}
+	}
+	p.calls++
+	return &serveRuntimeTestStream{events: events}, nil
+}
+
 type serveRuntimeTestTool struct{}
 
 func (t *serveRuntimeTestTool) Spec() llm.ToolSpec {
@@ -123,22 +159,24 @@ func (t *serveRuntimeTestTool) Preview(args json.RawMessage) string {
 }
 
 type serveRuntimeTestStore struct {
-	mu                  sync.Mutex
-	sessions            map[string]*session.Session
-	messages            map[string][]session.Message
-	current             string
-	replaceCalls        int
-	replaceFailures     map[int]error
-	replaceMessagesHook func(context.Context, string, []session.Message) error
-	addMessageCalls     int
-	addMessageHook      func(context.Context, string, *session.Message) error
-	updateMessageCalls  int
-	updateMessageHook   func(context.Context, string, *session.Message) error
-	updateFailures      map[int]error
-	getMessagesCalls    int
-	updateStatusCalls   int
-	incrementCalls      int
-	nextID              int64
+	mu                         sync.Mutex
+	sessions                   map[string]*session.Session
+	messages                   map[string][]session.Message
+	current                    string
+	replaceCalls               int
+	replaceFailures            map[int]error
+	replaceMessagesHook        func(context.Context, string, []session.Message) error
+	addMessageCalls            int
+	addMessageHook             func(context.Context, string, *session.Message) error
+	updateMessageCalls         int
+	updateMessageHook          func(context.Context, string, *session.Message) error
+	updateFailures             map[int]error
+	getMessagesCalls           int
+	updateMetricsCalls         int
+	updateContextEstimateCalls int
+	updateStatusCalls          int
+	incrementCalls             int
+	nextID                     int64
 }
 
 var _ session.Store = (*serveRuntimeTestStore)(nil)
@@ -356,10 +394,28 @@ func (s *serveRuntimeTestStore) CompactMessages(ctx context.Context, sessionID s
 }
 
 func (s *serveRuntimeTestStore) UpdateMetrics(ctx context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sess, ok := s.sessions[id]; ok {
+		sess.LLMTurns += llmTurns
+		sess.ToolCalls += toolCalls
+		sess.InputTokens += inputTokens
+		sess.OutputTokens += outputTokens
+		sess.CachedInputTokens += cachedInputTokens
+		sess.CacheWriteTokens += cacheWriteTokens
+	}
+	s.updateMetricsCalls++
 	return nil
 }
 
 func (s *serveRuntimeTestStore) UpdateContextEstimate(ctx context.Context, id string, lastTotalTokens, lastMessageCount int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sess, ok := s.sessions[id]; ok {
+		sess.LastTotalTokens = lastTotalTokens
+		sess.LastMessageCount = lastMessageCount
+	}
+	s.updateContextEstimateCalls++
 	return nil
 }
 
@@ -612,6 +668,86 @@ func TestServeRuntimeAppendMessagesIncrementsUserTurns(t *testing.T) {
 	}
 	if rt.sessionMeta.UserTurns != 2 {
 		t.Fatalf("runtime UserTurns = %d, want 2", rt.sessionMeta.UserTurns)
+	}
+}
+
+func TestServeRuntimeRunPersistsTurnMetricsAndContextEstimate(t *testing.T) {
+	llm.RegisterConfigLimits([]llm.ConfigModelLimit{{Provider: "serve-runtime-metrics", Model: "metrics-model", InputLimit: 1000}})
+	defer llm.RegisterConfigLimits(nil)
+
+	store := newServeRuntimeTestStore()
+	sess := &session.Session{ID: "sess-turn-metrics", Status: session.StatusActive}
+	if err := store.Create(context.Background(), sess); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	provider := &serveRuntimeMetricsProvider{}
+	tool := &serveRuntimeTestTool{}
+	registry := llm.NewToolRegistry()
+	registry.Register(tool)
+	engine := llm.NewEngine(provider, registry)
+
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  provider.Name(),
+		engine:       engine,
+		store:        store,
+		sessionMeta:  sess,
+		defaultModel: "metrics-model",
+	}
+
+	if _, err := rt.Run(context.Background(), true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "current user")}, llm.Request{
+		SessionID:  sess.ID,
+		Model:      "metrics-model",
+		Tools:      []llm.ToolSpec{tool.Spec()},
+		ToolChoice: llm.ToolChoice{Mode: llm.ToolChoiceAuto},
+		MaxTurns:   4,
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if store.updateMetricsCalls != 2 {
+		t.Fatalf("UpdateMetrics calls = %d, want 2", store.updateMetricsCalls)
+	}
+	if store.updateContextEstimateCalls != 2 {
+		t.Fatalf("UpdateContextEstimate calls = %d, want 2", store.updateContextEstimateCalls)
+	}
+
+	stored, err := store.Get(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if stored.LLMTurns != 2 {
+		t.Fatalf("stored LLMTurns = %d, want 2", stored.LLMTurns)
+	}
+	if stored.ToolCalls != 1 {
+		t.Fatalf("stored ToolCalls = %d, want 1", stored.ToolCalls)
+	}
+	if stored.InputTokens != 29 {
+		t.Fatalf("stored InputTokens = %d, want 29", stored.InputTokens)
+	}
+	if stored.OutputTokens != 8 {
+		t.Fatalf("stored OutputTokens = %d, want 8", stored.OutputTokens)
+	}
+	if stored.CachedInputTokens != 2 {
+		t.Fatalf("stored CachedInputTokens = %d, want 2", stored.CachedInputTokens)
+	}
+	if stored.CacheWriteTokens != 1 {
+		t.Fatalf("stored CacheWriteTokens = %d, want 1", stored.CacheWriteTokens)
+	}
+	if rt.sessionMeta.LLMTurns != stored.LLMTurns || rt.sessionMeta.ToolCalls != stored.ToolCalls {
+		t.Fatalf("runtime metrics = %+v, want store metrics %+v", rt.sessionMeta, stored)
+	}
+
+	total, count := engine.ContextEstimateBaseline()
+	if total <= 0 || count <= 0 {
+		t.Fatalf("ContextEstimateBaseline() = (%d, %d), want positive values", total, count)
+	}
+	if stored.LastTotalTokens != total || stored.LastMessageCount != count {
+		t.Fatalf("stored context estimate = (%d, %d), want (%d, %d)", stored.LastTotalTokens, stored.LastMessageCount, total, count)
+	}
+	if rt.sessionMeta.LastTotalTokens != total || rt.sessionMeta.LastMessageCount != count {
+		t.Fatalf("runtime context estimate = (%d, %d), want (%d, %d)", rt.sessionMeta.LastTotalTokens, rt.sessionMeta.LastMessageCount, total, count)
 	}
 }
 

@@ -1105,9 +1105,8 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	// Turn callback: upsert the assistant row if present as first element, then
 	// plain-append the rest (tool results or interjections). Reset pending at
 	// end of turn.
-	rt.engine.SetTurnCompletedCallback(func(cbCtx context.Context, _ int, msgs []llm.Message, _ llm.TurnMetrics) error {
+	rt.engine.SetTurnCompletedCallback(func(cbCtx context.Context, _ int, msgs []llm.Message, metrics llm.TurnMetrics) error {
 		producedMu.Lock()
-		defer producedMu.Unlock()
 		appendStart := 0
 		if len(msgs) > 0 && msgs[0].Role == llm.RoleAssistant {
 			upsertPendingAssistantLocked(cbCtx, msgs[0], !pendingAssistantTextPersisted)
@@ -1120,6 +1119,28 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		pendingAssistantIdx = -1
 		pendingAssistantMsgID = 0
 		pendingAssistantTextPersisted = false
+		producedMu.Unlock()
+
+		if persisted && rt.store != nil && rt.sessionMeta != nil {
+			if err := rt.store.UpdateMetrics(cbCtx, rt.sessionMeta.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens); err != nil {
+				log.Printf("[serve] session UpdateMetrics failed for %s: %v", req.SessionID, err)
+			} else {
+				rt.sessionMeta.LLMTurns++
+				rt.sessionMeta.ToolCalls += metrics.ToolCalls
+				rt.sessionMeta.InputTokens += metrics.InputTokens
+				rt.sessionMeta.OutputTokens += metrics.OutputTokens
+				rt.sessionMeta.CachedInputTokens += metrics.CachedInputTokens
+				rt.sessionMeta.CacheWriteTokens += metrics.CacheWriteTokens
+			}
+			if total, count := rt.engine.ContextEstimateBaseline(); total > 0 && count > 0 {
+				if err := rt.store.UpdateContextEstimate(cbCtx, rt.sessionMeta.ID, total, count); err != nil {
+					log.Printf("[serve] session UpdateContextEstimate failed for %s: %v", req.SessionID, err)
+				} else {
+					rt.sessionMeta.LastTotalTokens = total
+					rt.sessionMeta.LastMessageCount = count
+				}
+			}
+		}
 		return nil
 	})
 	defer rt.engine.SetTurnCompletedCallback(nil)
