@@ -25,6 +25,7 @@ import (
 var (
 	chatDebug          bool
 	chatSearch         bool
+	chatNoSearch       bool
 	chatProvider       string
 	chatMCP            string
 	chatMaxTurns       int
@@ -124,6 +125,7 @@ func init() {
 			Provider:        &chatProvider,
 			Debug:           &chatDebug,
 			Search:          &chatSearch,
+			NoSearch:        &chatNoSearch,
 			NativeSearch:    &chatNativeSearch,
 			NoNativeSearch:  &chatNoNativeSearch,
 			NoWebFetch:      &chatNoWebFetch,
@@ -184,6 +186,16 @@ func runChat(cmd *cobra.Command, args []string) error {
 		initialText = ""
 		handoverAutoSend = nextAutoSend
 	}
+}
+
+func applyChatSearchDefault(settings *SessionSettings, noSearch bool, sess *session.Session, agentActive bool) {
+	if settings == nil || noSearch || sess != nil || agentActive {
+		return
+	}
+	// Bare interactive chat historically exposed web_search/read_url by default.
+	// Keep that default visible in the footer and reversible with /search; agents
+	// keep their explicit search setting, and --no-search is the explicit opt-out.
+	settings.Search = true
 }
 
 type chatProgramInput struct {
@@ -359,11 +371,13 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		MaxTurns:      chatMaxTurns,
 		MaxTurnsSet:   cmd.Flags().Changed("max-turns"),
 		Search:        chatSearch,
+		NoSearch:      chatNoSearch,
 		Platform:      "chat",
 	}, cfg.Chat.Provider, cfg.Chat.Model, cfg.Chat.Instructions, cfg.Chat.MaxTurns, 200)
 	if err != nil {
 		return "", "", err
 	}
+	applyChatSearchDefault(&settings, chatNoSearch, sess, agent != nil)
 
 	// Saved session settings win on resume.
 	if sess != nil {

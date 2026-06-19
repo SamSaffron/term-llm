@@ -22,6 +22,7 @@ import (
 var (
 	loopDebug           bool
 	loopSearch          bool
+	loopNoSearch        bool
 	loopProvider        string
 	loopMCP             string
 	loopMaxTurns        int
@@ -93,6 +94,7 @@ func init() {
 			Provider:        &loopProvider,
 			Debug:           &loopDebug,
 			Search:          &loopSearch,
+			NoSearch:        &loopNoSearch,
 			NativeSearch:    &loopNativeSearch,
 			NoNativeSearch:  &loopNoNativeSearch,
 			NoWebFetch:      &loopNoWebFetch,
@@ -256,6 +258,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		MaxTurnsSet:     cmd.Flags().Changed("max-turns"),
 		MaxOutputTokens: loopMaxOutputTokens,
 		Search:          loopSearch,
+		NoSearch:        loopNoSearch,
 		Platform:        "console",
 	}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 100)
 	if err != nil {

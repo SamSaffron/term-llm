@@ -537,6 +537,11 @@ func (m *Model) startStream(content string) tea.Cmd {
 			}
 		}
 
+		// Keep web search/fetch unavailable when search is off. Some registry-wide
+		// tools (notably web_search/read_url) are registered so they can be injected
+		// when search is enabled, but they should not leak into ordinary chats.
+		reqTools = filterSearchToolSpecs(reqTools, m.searchEnabled)
+
 		serviceTier, serviceTierSet := m.currentServiceTier()
 		req := llm.Request{
 			SessionID:               m.sess.ID,

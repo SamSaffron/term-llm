@@ -2826,6 +2826,7 @@ type jobLLMServeDefaults struct {
 	SystemMessage string
 	MaxTurns      int
 	Search        bool
+	NoSearch      bool
 }
 
 // applyJobLLMProviderModel applies the job's provider/model selection onto jobCfg,
@@ -2896,6 +2897,7 @@ func resolveJobLLMSettings(jobCfg *config.Config, agent *agents.Agent, cfg jobsV
 		MaxTurnsSet:     maxTurnsSet,
 		MaxOutputTokens: cfg.MaxOutputTokens,
 		Search:          def.Search || cfg.Search,
+		NoSearch:        def.NoSearch && !cfg.Search,
 		Platform:        "jobs",
 	}, jobCfg.Ask.Provider, jobCfg.Ask.Model, jobCfg.Ask.Instructions, jobCfg.Ask.MaxTurns, 50)
 	if err != nil {
@@ -2947,6 +2949,7 @@ func newServeJobsExecutor(baseCfg *config.Config) serveJobsExecutor {
 			SystemMessage: serveSystemMessage,
 			MaxTurns:      serveMaxTurns,
 			Search:        serveSearch,
+			NoSearch:      serveNoSearch,
 		})
 		if err != nil {
 			return serveJobsExecResult{}, err

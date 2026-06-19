@@ -36,6 +36,7 @@ import (
 var (
 	askDebug           bool
 	askSearch          bool
+	askNoSearch        bool
 	askText            bool
 	askPorcelain       bool
 	askJSON            bool
@@ -110,6 +111,7 @@ func init() {
 			Provider:         &askProvider,
 			Debug:            &askDebug,
 			Search:           &askSearch,
+			NoSearch:         &askNoSearch,
 			NativeSearch:     &askNativeSearch,
 			NoNativeSearch:   &askNoNativeSearch,
 			NoWebFetch:       &askNoWebFetch,
@@ -255,6 +257,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		MaxTurnsSet:     cmd.Flags().Changed("max-turns"),
 		MaxOutputTokens: askMaxOutputTokens,
 		Search:          askSearch,
+		NoSearch:        askNoSearch,
 		Files:           askFiles,
 		Platform:        "console",
 	}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 50)

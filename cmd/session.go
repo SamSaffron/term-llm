@@ -87,6 +87,7 @@ type CLIFlags struct {
 	MaxTurnsSet     bool // true if --max-turns was explicitly set
 	MaxOutputTokens int  // 0 = use provider default
 	Search          bool
+	NoSearch        bool
 	Files           []string // files passed via -f flag, used for agent template expansion (e.g., {{.Files}})
 	Platform        string   // runtime surface for template expansion (e.g., chat, console, web, telegram, jobs)
 }
@@ -293,8 +294,12 @@ func ResolveSettings(cfg *config.Config, agent *agents.Agent, cli CLIFlags, conf
 	// MaxOutputTokens: CLI only (no agent/config fallback — provider defaults are fine)
 	s.MaxOutputTokens = cli.MaxOutputTokens
 
-	// Search: CLI or agent enables it
-	s.Search = cli.Search || (agent != nil && agent.Search)
+	// Search: --no-search disables agent defaults; otherwise CLI or agent enables it.
+	if cli.NoSearch {
+		s.Search = false
+	} else {
+		s.Search = cli.Search || (agent != nil && agent.Search)
+	}
 
 	// Memory / insights — only configurable via agent.yaml (no CLI override)
 	if agent != nil {

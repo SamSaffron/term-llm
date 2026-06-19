@@ -21,6 +21,7 @@ import (
 var (
 	execPrintOnly      bool
 	execSearch         bool
+	execNoSearch       bool
 	execDebug          bool
 	execAutoPick       bool
 	execMaxOpts        int
@@ -79,6 +80,7 @@ func init() {
 			Provider:         &execProvider,
 			Debug:            &execDebug,
 			Search:           &execSearch,
+			NoSearch:         &execNoSearch,
 			NativeSearch:     &execNativeSearch,
 			NoNativeSearch:   &execNoNativeSearch,
 			NoWebFetch:       &execNoWebFetch,
@@ -112,6 +114,10 @@ func runExec(cmd *cobra.Command, args []string) error {
 	cfg, err := loadConfigWithSetup()
 	if err != nil {
 		return err
+	}
+
+	if execNoSearch {
+		execSearch = false
 	}
 
 	if err := applyProviderOverrides(cfg, cfg.Exec.Provider, cfg.Exec.Model, execProvider); err != nil {

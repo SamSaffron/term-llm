@@ -47,6 +47,7 @@ type CommonFlagBindings struct {
 	Provider         *string
 	Debug            *bool
 	Search           *bool
+	NoSearch         *bool
 	NativeSearch     *bool
 	NoNativeSearch   *bool
 	NoWebFetch       *bool
@@ -84,6 +85,7 @@ var commonFlagMetas = []commonFlagMeta{
 	{Name: "provider", Shorthand: "p", Kind: flagKindString, PreCommand: true, Bit: CommonProvider},
 	{Name: "debug", Shorthand: "d", Kind: flagKindBool, PreCommand: true, Bit: CommonDebug},
 	{Name: "search", Shorthand: "s", Kind: flagKindBool, PreCommand: true, Bit: CommonSearch},
+	{Name: "no-search", Kind: flagKindBool, PreCommand: true, Bit: CommonSearch},
 	{Name: "native-search", Kind: flagKindBool, PreCommand: true, Bit: CommonNativeSearch},
 	{Name: "no-native-search", Kind: flagKindBool, PreCommand: true, Bit: CommonNativeSearch},
 	{Name: "no-web-fetch", Kind: flagKindBool, PreCommand: true, Bit: CommonNoWebFetch},
@@ -122,7 +124,8 @@ func AddCommonFlags(cmd *cobra.Command, set CommonFlagSet, b CommonFlagBindings)
 	}
 	if set.has(CommonSearch) {
 		requireBoolFlagBinding("search", b.Search)
-		AddSearchFlag(cmd, b.Search)
+		requireBoolFlagBinding("no-search", b.NoSearch)
+		AddSearchFlags(cmd, b.Search, b.NoSearch)
 	}
 	if set.has(CommonNativeSearch) {
 		requireBoolFlagBinding("native-search", b.NativeSearch)
@@ -211,9 +214,10 @@ func AddDebugFlag(cmd *cobra.Command, dest *bool) {
 	cmd.Flags().BoolVarP(dest, "debug", "d", false, "Show debug information")
 }
 
-// AddSearchFlag adds the --search/-s flag
-func AddSearchFlag(cmd *cobra.Command, dest *bool) {
-	cmd.Flags().BoolVarP(dest, "search", "s", false, "Enable web search for current information")
+// AddSearchFlags adds the --search/-s and --no-search flags.
+func AddSearchFlags(cmd *cobra.Command, search, noSearch *bool) {
+	cmd.Flags().BoolVarP(search, "search", "s", false, "Enable web search for current information")
+	cmd.Flags().BoolVar(noSearch, "no-search", false, "Disable web search and web fetch tools (overrides agent defaults)")
 }
 
 // AddNativeSearchFlags adds --native-search and --no-native-search flags

@@ -41,6 +41,7 @@ var (
 	serveSessionMax             int
 	serveDebug                  bool
 	serveSearch                 bool
+	serveNoSearch               bool
 	serveProvider               string
 	serveMCP                    string
 	serveNativeSearch           bool
@@ -149,6 +150,7 @@ func init() {
 			Provider:        &serveProvider,
 			Debug:           &serveDebug,
 			Search:          &serveSearch,
+			NoSearch:        &serveNoSearch,
 			NativeSearch:    &serveNativeSearch,
 			NoNativeSearch:  &serveNoNativeSearch,
 			MCP:             &serveMCP,
@@ -303,6 +305,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		MaxTurns:      serveMaxTurns,
 		MaxTurnsSet:   cmd.Flags().Changed("max-turns"),
 		Search:        serveSearch,
+		NoSearch:      serveNoSearch,
 		Platform:      singleServeTemplatePlatform(platformNames),
 	}, cfg.Ask.Provider, cfg.Ask.Model, cfg.Ask.Instructions, cfg.Ask.MaxTurns, 50)
 	if err != nil {
