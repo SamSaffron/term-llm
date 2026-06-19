@@ -1606,11 +1606,25 @@ func TestJobsV2MaybeRunCleanupRetriesAfterFailure(t *testing.T) {
 
 func newJobsV2ManagerWithoutLoops(t *testing.T) *jobsV2Manager {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
+	return newJobsV2ManagerWithoutLoopsAtPath(t, ":memory:")
+}
+
+func newJobsV2ManagerWithoutLoopsAtPath(t *testing.T, dbPath string) *jobsV2Manager {
+	t.Helper()
+	dsn := dbPath
+	if strings.Contains(dsn, "?") {
+		dsn += "&"
+	} else {
+		dsn += "?"
+	}
+	dsn += "_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open failed: %v", err)
 	}
-	db.SetMaxOpenConns(1)
+	if dbPath == ":memory:" {
+		db.SetMaxOpenConns(1)
+	}
 	if err := execJobsV2Schema(db); err != nil {
 		_ = db.Close()
 		t.Fatalf("execJobsV2Schema failed: %v", err)
@@ -1623,6 +1637,7 @@ func newJobsV2ManagerWithoutLoops(t *testing.T) *jobsV2Manager {
 		workerIdleDelay:    jobsV2WorkerIdleDelay,
 		cleanupInterval:    0,
 		cancels:            make(map[string]context.CancelFunc),
+		runners:            make(map[jobsV2RunnerType]jobsV2Runner),
 	}
 }
 
@@ -1633,6 +1648,23 @@ type testJobsV2Runner struct {
 func (r *testJobsV2Runner) Run(ctx context.Context, job jobsV2Job, pw progressWriter) (jobsV2RunResult, error) {
 	r.called = true
 	return jobsV2RunResult{}, nil
+}
+
+type blockingJobsV2Runner struct {
+	started chan struct{}
+	release chan struct{}
+	result  jobsV2RunResult
+	err     error
+}
+
+func (r *blockingJobsV2Runner) Run(ctx context.Context, job jobsV2Job, pw progressWriter) (jobsV2RunResult, error) {
+	close(r.started)
+	select {
+	case <-ctx.Done():
+		return jobsV2RunResult{}, ctx.Err()
+	case <-r.release:
+		return r.result, r.err
+	}
 }
 
 func TestJobsV2ExecuteRunDoesNotStartWhenManagerClosed(t *testing.T) {
@@ -1701,6 +1733,110 @@ func TestJobsV2ExecuteRunDoesNotStartWhenManagerClosed(t *testing.T) {
 	}
 	if updated.StartedAt != nil {
 		t.Fatal("started_at was set even though closed manager should not start the run")
+	}
+}
+
+func TestJobsV2ExecuteRunRetriesFinishRunAfterTransientDBLock(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "jobs_v2.db")
+	mgr := newJobsV2ManagerWithoutLoopsAtPath(t, dbPath)
+
+	runner := &blockingJobsV2Runner{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		result:  jobsV2RunResult{Response: "ok"},
+	}
+	mgr.runners[jobsV2RunnerProgram] = runner
+
+	job, err := mgr.CreateJob(jobsV2Job{
+		Name:           "finish-run-retry",
+		Enabled:        true,
+		RunnerType:     jobsV2RunnerProgram,
+		RunnerConfig:   json.RawMessage(`{"command":"echo","args":["x"]}`),
+		TriggerType:    jobsV2TriggerManual,
+		TriggerConfig:  json.RawMessage(`{}`),
+		TimeoutSeconds: 30,
+	})
+	if err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+
+	run, err := mgr.TriggerJob(job.ID)
+	if err != nil {
+		t.Fatalf("TriggerJob failed: %v", err)
+	}
+	run, ok, err := mgr.claimNextRun()
+	if err != nil {
+		t.Fatalf("claimNextRun failed: %v", err)
+	}
+	if !ok {
+		t.Fatal("claimNextRun did not return a run")
+	}
+
+	execDone := make(chan struct{})
+	go func() {
+		mgr.executeRun(run)
+		close(execDone)
+	}()
+
+	select {
+	case <-runner.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runner did not start in time")
+	}
+
+	current, err := mgr.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("GetRun while running failed: %v", err)
+	}
+	if current.Status != jobsV2RunRunning {
+		t.Fatalf("status while running = %s, want %s", current.Status, jobsV2RunRunning)
+	}
+
+	lockDB, err := sql.Open("sqlite", dbPath+"?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)")
+	if err != nil {
+		t.Fatalf("open lock db failed: %v", err)
+	}
+	defer func() { _ = lockDB.Close() }()
+	lockDB.SetMaxOpenConns(1)
+	if _, err := lockDB.Exec(`BEGIN IMMEDIATE`); err != nil {
+		t.Fatalf("BEGIN IMMEDIATE failed: %v", err)
+	}
+	defer func() {
+		_, _ = lockDB.Exec(`ROLLBACK`)
+	}()
+	if _, err := lockDB.Exec(`UPDATE job_runs_v2 SET updated_at = CURRENT_TIMESTAMP WHERE id = ?`, run.ID); err != nil {
+		t.Fatalf("lock update failed: %v", err)
+	}
+
+	go func() {
+		time.Sleep(5200 * time.Millisecond)
+		_, _ = lockDB.Exec(`ROLLBACK`)
+	}()
+	close(runner.release)
+
+	select {
+	case <-execDone:
+	case <-time.After(12 * time.Second):
+		t.Fatal("executeRun did not return in time")
+	}
+
+	finished, err := mgr.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("GetRun after executeRun failed: %v", err)
+	}
+	if finished.Status != jobsV2RunSucceeded {
+		t.Fatalf("final status = %s, want %s", finished.Status, jobsV2RunSucceeded)
+	}
+	if finished.Response != "ok" {
+		t.Fatalf("response = %q, want %q", finished.Response, "ok")
+	}
+
+	active, err := mgr.countActiveRuns(job.ID)
+	if err != nil {
+		t.Fatalf("countActiveRuns failed: %v", err)
+	}
+	if active != 0 {
+		t.Fatalf("active runs = %d, want 0", active)
 	}
 }
 

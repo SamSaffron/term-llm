@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -228,12 +229,14 @@ var (
 )
 
 const (
-	jobsV2SchedulerMinDelay   = 100 * time.Millisecond
-	jobsV2SchedulerIdleDelay  = time.Minute
-	jobsV2SchedulerErrorDelay = 200 * time.Millisecond
-	jobsV2WorkerMinDelay      = 100 * time.Millisecond
-	jobsV2WorkerIdleDelay     = time.Minute
-	jobsV2WorkerErrorDelay    = 200 * time.Millisecond
+	jobsV2SchedulerMinDelay    = 100 * time.Millisecond
+	jobsV2SchedulerIdleDelay   = time.Minute
+	jobsV2SchedulerErrorDelay  = 200 * time.Millisecond
+	jobsV2WorkerMinDelay       = 100 * time.Millisecond
+	jobsV2WorkerIdleDelay      = time.Minute
+	jobsV2WorkerErrorDelay     = 200 * time.Millisecond
+	jobsV2FinishRunRetryDelay  = 500 * time.Millisecond
+	jobsV2FinishRunMaxAttempts = 3
 )
 
 type jobsV2ProgramConfig struct {
@@ -1318,15 +1321,21 @@ func (m *jobsV2Manager) claimNextRun() (jobsV2Run, bool, error) {
 }
 
 func (m *jobsV2Manager) executeRun(run jobsV2Run) {
+	finish := func(status jobsV2RunStatus, result jobsV2RunResult, runErr error) {
+		if err := m.finishRunWithRetry(run.ID, status, result, runErr, run.Attempt); err != nil {
+			log.Printf("[jobs-v2] failed to finalize run %s as %s: %v", run.ID, status, err)
+		}
+	}
+
 	job, err := m.GetJob(run.JobID)
 	if err != nil {
-		_ = m.finishRun(run.ID, jobsV2RunFailed, jobsV2RunResult{}, fmt.Errorf("load job: %w", err), run.Attempt)
+		finish(jobsV2RunFailed, jobsV2RunResult{}, fmt.Errorf("load job: %w", err))
 		return
 	}
 
 	runner, ok := m.runners[job.RunnerType]
 	if !ok {
-		_ = m.finishRun(run.ID, jobsV2RunFailed, jobsV2RunResult{}, fmt.Errorf("unknown runner type: %s", job.RunnerType), run.Attempt)
+		finish(jobsV2RunFailed, jobsV2RunResult{}, fmt.Errorf("unknown runner type: %s", job.RunnerType))
 		return
 	}
 
@@ -1352,7 +1361,7 @@ func (m *jobsV2Manager) executeRun(run jobsV2Run) {
 	started := time.Now().UTC()
 	res, err := m.db.Exec(`UPDATE job_runs_v2 SET status = ?, started_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?`, jobsV2RunRunning, started, run.ID, jobsV2RunClaimed)
 	if err != nil {
-		_ = m.finishRun(run.ID, jobsV2RunFailed, jobsV2RunResult{}, fmt.Errorf("mark run running: %w", err), run.Attempt)
+		finish(jobsV2RunFailed, jobsV2RunResult{}, fmt.Errorf("mark run running: %w", err))
 		return
 	}
 	affected, _ := res.RowsAffected()
@@ -1380,26 +1389,43 @@ func (m *jobsV2Manager) executeRun(run jobsV2Run) {
 	}
 	result, runErr := runner.Run(ctx, job, pw)
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		_ = m.finishRun(run.ID, jobsV2RunTimedOut, result, context.DeadlineExceeded, run.Attempt)
+		finish(jobsV2RunTimedOut, result, context.DeadlineExceeded)
 		return
 	}
 	if errors.Is(ctx.Err(), context.Canceled) {
-		_ = m.finishRun(run.ID, jobsV2RunCancelled, result, context.Canceled, run.Attempt)
+		finish(jobsV2RunCancelled, result, context.Canceled)
 		return
 	}
 	if result.ExitReason == exitReasonTimeout {
-		_ = m.finishRun(run.ID, jobsV2RunTimedOut, result, context.DeadlineExceeded, run.Attempt)
+		finish(jobsV2RunTimedOut, result, context.DeadlineExceeded)
 		return
 	}
 	if result.ExitReason == exitReasonCancelled {
-		_ = m.finishRun(run.ID, jobsV2RunCancelled, result, context.Canceled, run.Attempt)
+		finish(jobsV2RunCancelled, result, context.Canceled)
 		return
 	}
 	if runErr != nil {
-		_ = m.finishRun(run.ID, jobsV2RunFailed, result, runErr, run.Attempt)
+		finish(jobsV2RunFailed, result, runErr)
 		return
 	}
-	_ = m.finishRun(run.ID, jobsV2RunSucceeded, result, nil, run.Attempt)
+	finish(jobsV2RunSucceeded, result, nil)
+}
+
+func (m *jobsV2Manager) finishRunWithRetry(runID string, status jobsV2RunStatus, result jobsV2RunResult, runErr error, attempt int) error {
+	var lastErr error
+	for finishAttempt := 1; finishAttempt <= jobsV2FinishRunMaxAttempts; finishAttempt++ {
+		if err := m.finishRun(runID, status, result, runErr, attempt); err != nil {
+			lastErr = err
+			if finishAttempt == jobsV2FinishRunMaxAttempts {
+				return fmt.Errorf("persist terminal run state after %d attempts: %w", finishAttempt, err)
+			}
+			log.Printf("[jobs-v2] failed to persist terminal status for run %s as %s (attempt %d/%d): %v", runID, status, finishAttempt, jobsV2FinishRunMaxAttempts, err)
+			time.Sleep(jobsV2FinishRunRetryDelay)
+			continue
+		}
+		return nil
+	}
+	return lastErr
 }
 
 func (m *jobsV2Manager) finishRun(runID string, status jobsV2RunStatus, result jobsV2RunResult, runErr error, attempt int) error {
