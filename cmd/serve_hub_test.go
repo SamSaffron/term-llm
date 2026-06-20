@@ -72,6 +72,36 @@ func TestHubAuthProtectsDashboardAPIAndProxy(t *testing.T) {
 	}
 }
 
+func TestHubAuthQueryTokenSetsCookie(t *testing.T) {
+	s := hubWithBackend(t, "/chat", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "ok")
+	})
+	s.requireAuth = true
+	s.token = "hub-secret"
+	h := s.handler()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/?token=hub-secret", nil))
+	if rec.Code != http.StatusFound {
+		t.Fatalf("query token status = %d, want 302", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/" {
+		t.Fatalf("redirect location = %q, want /", loc)
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != hubAuthCookieName || cookies[0].Value != "hub-secret" || !cookies[0].HttpOnly {
+		t.Fatalf("auth cookie = %#v", cookies)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/node/alpha/v1/models", nil)
+	req.AddCookie(cookies[0])
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cookie-auth proxy status = %d body=%q", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHubAuthSkipsReverseConnectNodeAuth(t *testing.T) {
 	s := hubWithBackend(t, "/chat", func(w http.ResponseWriter, r *http.Request) {})
 	s.requireAuth = true

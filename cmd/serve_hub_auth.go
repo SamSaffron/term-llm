@@ -6,7 +6,10 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
+
+const hubAuthCookieName = "term_llm_hub_token"
 
 func (s *hubServer) handler() http.Handler {
 	mux := http.NewServeMux()
@@ -30,6 +33,20 @@ func (s *hubServer) auth(next http.Handler) http.Handler {
 		if r.Method == http.MethodOptions || r.URL.Path == "/healthz" || hubNodeAuthRoute(r) {
 			next.ServeHTTP(w, r)
 			return
+		}
+		if hubQueryTokenMatches(r, s.token) {
+			setHubAuthCookie(w, r.URL.Query().Get("token"))
+			if r.Method == http.MethodGet || r.Method == http.MethodHead {
+				clean := *r.URL
+				q := clean.Query()
+				q.Del("token")
+				clean.RawQuery = q.Encode()
+				if clean.RawQuery == "" {
+					clean.ForceQuery = false
+				}
+				http.Redirect(w, r, clean.String(), http.StatusFound)
+				return
+			}
 		}
 		if !hubBearerTokenMatches(r, s.token) {
 			writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "invalid hub authentication credentials")
@@ -57,18 +74,48 @@ func hubDelegationOperatorRoute(r *http.Request) bool {
 }
 
 func hubBearerTokenMatches(r *http.Request, want string) bool {
+	if hubTokenMatches(strings.TrimSpace(want), bearerTokenFromHeader(r)) {
+		return true
+	}
+	if c, err := r.Cookie(hubAuthCookieName); err == nil && hubTokenMatches(strings.TrimSpace(want), c.Value) {
+		return true
+	}
+	return false
+}
+
+func hubQueryTokenMatches(r *http.Request, want string) bool {
+	return hubTokenMatches(strings.TrimSpace(want), r.URL.Query().Get("token"))
+}
+
+func bearerTokenFromHeader(r *http.Request) string {
 	auth := strings.TrimSpace(r.Header.Get("Authorization"))
 	scheme, rest, ok := strings.Cut(auth, " ")
 	if !ok || !strings.EqualFold(scheme, "Bearer") {
+		return ""
+	}
+	return strings.TrimSpace(rest)
+}
+
+func hubTokenMatches(want, got string) bool {
+	got = strings.TrimSpace(got)
+	if got == "" || want == "" {
 		return false
 	}
-	got := strings.TrimSpace(rest)
-	if got == "" || strings.TrimSpace(want) == "" {
-		return false
-	}
-	wantHash := sha256.Sum256([]byte(strings.TrimSpace(want)))
+	wantHash := sha256.Sum256([]byte(want))
 	gotHash := sha256.Sum256([]byte(got))
 	return subtle.ConstantTimeCompare(wantHash[:], gotHash[:]) == 1
+}
+
+func setHubAuthCookie(w http.ResponseWriter, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     hubAuthCookieName,
+		Value:    strings.TrimSpace(token),
+		Path:     "/",
+		Expires:  time.Now().Add(365 * 24 * time.Hour),
+		MaxAge:   365 * 24 * 60 * 60,
+		SameSite: http.SameSiteStrictMode,
+		HttpOnly: true,
+	})
 }
 
 // hubBrowserRequestAllowed rejects cross-site browser requests before the hub
