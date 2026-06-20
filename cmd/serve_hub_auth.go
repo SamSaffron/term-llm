@@ -183,12 +183,12 @@ var hubLoginTemplate = template.Must(template.New("hub-login").Parse(`<!doctype 
 <body>
   <main>
     <h1>term-llm Hub</h1>
-    <p>Enter your hub magic key to continue. I’ll store it in an HTTP-only cookie on this host.</p>
-    {{if .Invalid}}<div class="error">That magic key was not accepted.</div>{{end}}
+    <p>Enter your hub access token to continue. I’ll store it in an HTTP-only cookie on this host.</p>
+    {{if .Invalid}}<div class="error">That hub token was not accepted.</div>{{end}}
     <form method="get" action="{{.Action}}">
-      <label for="token">Magic key</label>
+      <label for="token">Hub token</label>
       <input id="token" name="token" type="password" autocomplete="current-password" autofocus required>
-      <button type="submit">Unlock Hub</button>
+      <button type="submit">Connect to Hub</button>
     </form>
   </main>
 </body>
