@@ -105,6 +105,36 @@ func (s *Store) Add(n Node) (Node, error) {
 	return n, nil
 }
 
+// Upsert normalizes and creates or replaces a stored node by ID. It only
+// affects the local store; callers that combine the store with higher-priority
+// resolvers should reject shadowed IDs before calling Upsert when that matters.
+func (s *Store) Upsert(n Node) (Node, bool, error) {
+	n.Source = SourceLocal
+	if err := n.Normalize(); err != nil {
+		return Node{}, false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	nodes, err := s.readLocked()
+	if err != nil {
+		return Node{}, false, err
+	}
+	for i, existing := range nodes {
+		if existing.ID == n.ID {
+			nodes[i] = n
+			if err := s.writeLocked(nodes); err != nil {
+				return Node{}, false, err
+			}
+			return n, false, nil
+		}
+	}
+	nodes = append(nodes, n)
+	if err := s.writeLocked(nodes); err != nil {
+		return Node{}, false, err
+	}
+	return n, true, nil
+}
+
 // Remove deletes a stored node by ID. Removing an unknown ID is an error so
 // the UI can surface a stale dashboard.
 func (s *Store) Remove(id string) error {

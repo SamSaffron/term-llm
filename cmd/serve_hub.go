@@ -44,8 +44,9 @@ type hubServer struct {
 	// timeout.
 	nodeAPIClient *http.Client
 
-	requireAuth bool
-	token       string
+	requireAuth       bool
+	token             string
+	registrationToken string
 }
 
 func newHubServer(registry *hub.Registry, store *hub.Store) *hubServer {

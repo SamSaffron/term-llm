@@ -15,13 +15,14 @@ import (
 )
 
 var (
-	serveHubHost      string
-	serveHubPort      int
-	serveHubConfig    string
-	serveHubContain   bool
-	serveHubNodesFile string
-	serveHubAuthMode  string
-	serveHubToken     string
+	serveHubHost                  string
+	serveHubPort                  int
+	serveHubConfig                string
+	serveHubContain               bool
+	serveHubNodesFile             string
+	serveHubAuthMode              string
+	serveHubToken                 string
+	serveHubRegistrationTokenFlag string
 )
 
 var serveHubCmd = &cobra.Command{
@@ -43,6 +44,7 @@ Routes:
   POST /api/nodes         add a node to the local store
   DELETE /api/nodes/<id>  remove a local-store node
   POST /api/nodes/test    probe a node spec without persisting it
+  POST /api/register-node register/update a reverse node (registration token)
   GET  /api/connect      reverse-node websocket endpoint (node auth)
   ANY  /node/<id>/...     reverse proxy to that node's serve
   POST /api/delegations   create a cross-node delegation (node auth)
@@ -122,6 +124,10 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 	s := newHubServer(hub.NewRegistry(resolvers...), store)
 	s.requireAuth = requireAuth
 	s.token = token
+	s.registrationToken = strings.TrimSpace(serveHubRegistrationTokenFlag)
+	if s.registrationToken == "" {
+		s.registrationToken = strings.TrimSpace(os.Getenv(hubRegistrationTokenEnv))
+	}
 	// The delegation ledger lives beside the node store (same private dir).
 	s.delegations = hub.NewDelegationStore(filepath.Join(filepath.Dir(nodesFile), "delegations.json"))
 	addr := net.JoinHostPort(serveHubHost, strconv.Itoa(serveHubPort))
@@ -145,6 +151,9 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 	} else {
 		fmt.Fprintln(out, "WARNING: hub auth disabled; bind to loopback only.")
 	}
+	if s.registrationToken != "" {
+		fmt.Fprintln(out, "  registration: enabled")
+	}
 	return srv.ListenAndServe()
 }
 
@@ -157,4 +166,5 @@ func init() {
 	serveHubCmd.Flags().StringVar(&serveHubNodesFile, "nodes-file", "", "Path to the JSON store for dashboard-added nodes (default: <data-dir>/hub/nodes.json)")
 	serveHubCmd.Flags().StringVar(&serveHubAuthMode, "auth", "bearer", "Hub auth mode: bearer or none (none is loopback-only)")
 	serveHubCmd.Flags().StringVar(&serveHubToken, "token", "", "Hub bearer token (defaults to $TERM_LLM_HUB_TOKEN, else auto-generated)")
+	serveHubCmd.Flags().StringVar(&serveHubRegistrationTokenFlag, "registration-token", "", "Token that allows reverse nodes to self-register (defaults to $TERM_LLM_HUB_REGISTRATION_TOKEN; empty disables registration)")
 }

@@ -16,6 +16,7 @@ func (s *hubServer) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHubHealth)
 	mux.HandleFunc("/api/nodes/test", s.handleTestNode)
+	mux.HandleFunc("/api/register-node", s.handleRegisterNode)
 	mux.HandleFunc("/api/nodes/", s.handleNodeItem)
 	mux.HandleFunc("/api/nodes", s.handleNodes)
 	mux.HandleFunc("/api/delegations/", s.handleDelegationItem)
@@ -31,7 +32,7 @@ func (s *hubServer) auth(next http.Handler) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodOptions || r.URL.Path == "/healthz" || hubNodeAuthRoute(r) {
+		if r.Method == http.MethodOptions || r.URL.Path == "/healthz" || hubNodeAuthRoute(r) || hubRegistrationRoute(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
