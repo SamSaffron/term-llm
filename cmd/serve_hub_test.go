@@ -118,7 +118,7 @@ func TestHubAuthBrowserNavigationShowsLoginPage(t *testing.T) {
 		t.Fatalf("browser login status = %d, want 401", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"term-llm Hub", "Hub token", `name="token"`} {
+	for _, want := range []string{"Hub - term-llm", `rel="icon"`, "data:image/svg+xml", "term-llm Hub", "Hub token", `name="token"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("login page missing %q: %s", want, body)
 		}
@@ -574,6 +574,11 @@ func TestHubIndexBranding(t *testing.T) {
 		t.Fatalf("status = %d", rec.Code)
 	}
 	body := rec.Body.String()
+	for _, want := range []string{"Hub - term-llm", `rel="icon"`, "data:image/svg+xml"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard missing %q", want)
+		}
+	}
 	if !strings.Contains(body, "term-llm Hub") && !strings.Contains(body, `term-llm <span class="hub-brand-accent">Hub</span>`) {
 		t.Error("dashboard missing term-llm Hub branding")
 	}
