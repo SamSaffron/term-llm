@@ -256,6 +256,20 @@ func TestNewSQLiteStoreMemoryDBUsesSingleConnection(t *testing.T) {
 	}
 }
 
+func TestNewSQLiteStoreFileDBUsesSingleConnection(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+
+	store, err := NewSQLiteStore(Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	if got := store.db.Stats().MaxOpenConnections; got != 1 {
+		t.Fatalf("MaxOpenConnections = %d, want 1 for file-backed databases", got)
+	}
+}
+
 func TestSQLiteStoreListByNumberCursorReturnsCompleteSessions(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 

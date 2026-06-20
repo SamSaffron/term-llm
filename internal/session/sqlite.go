@@ -195,11 +195,13 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
-	if dbPath == ":memory:" {
-		// Required for raw :memory: databases: keep a single connection so
-		// schema and session data stay visible to every operation.
-		db.SetMaxOpenConns(1)
-	}
+	// Keep SQLite access on a single pooled connection. For :memory: databases
+	// this is required so schema/data stay visible everywhere; for file-backed
+	// databases it avoids the default unbounded pool opening multiple concurrent
+	// writers against one WAL file, which otherwise increases SQLITE_BUSY retries
+	// on hot persistence paths.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 
 	// Initialize schema and run migrations.
 	// Read-only mode skips initialization because it cannot write schema changes.
