@@ -6,8 +6,9 @@
 // contain workspaces, the local UI-added store) feed a Registry, which is the
 // single lookup surface the hub server routes and proxies from.
 //
-// TODO(hub): node self-registration, scheduling, and mTLS between hub and
-// nodes are deliberately out of scope for v1; see docs-site guide "Hub".
+// Reverse nodes may self-register with the hub when the hub operator enables a
+// registration token; scheduling and mTLS between hub and nodes remain out of
+// scope for v1. See docs-site guide "Hub".
 package hub
 
 import (

@@ -69,6 +69,8 @@ var (
 	serveHubNodeID              string
 	serveHubNodeName            string
 	serveHubConnect             string
+	serveHubRegister            bool
+	serveHubRegistrationToken   string
 )
 
 var serveCmd = &cobra.Command{
@@ -151,6 +153,8 @@ func init() {
 	serveCmd.Flags().StringVar(&serveHubNodeID, "hub-node-id", "", "This node's id on the hub (used with --hub-url)")
 	serveCmd.Flags().StringVar(&serveHubNodeName, "hub-node-name", "", "This node's display name on the hub (used with --hub-url)")
 	serveCmd.Flags().StringVar(&serveHubConnect, "hub-connect", "direct", "Hub connection mode for this node: direct or reverse")
+	serveCmd.Flags().BoolVar(&serveHubRegister, "hub-register", false, "Register this reverse node with the Hub before connecting")
+	serveCmd.Flags().StringVar(&serveHubRegistrationToken, "hub-registration-token", "", "Hub registration token for --hub-register (defaults to $TERM_LLM_HUB_REGISTRATION_TOKEN)")
 
 	AddCommonFlags(serveCmd,
 		CommonCoreFlags|CommonSearch|CommonNativeSearch|CommonMaxTurns|CommonAgent,
@@ -241,6 +245,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 	if serveHubConnect != "direct" && serveHubConnect != "reverse" {
 		return fmt.Errorf("invalid --hub-connect %q (use direct or reverse)", serveHubConnect)
+	}
+	hubRegistrationToken := ""
+	if serveHubRegister {
+		hubRegistrationToken = resolveServeHubRegistrationToken(serveHubRegistrationToken)
 	}
 
 	// Hub-joined nodes: hand the hub context to in-process tools and jobs-v2
@@ -609,19 +617,44 @@ func runServe(cmd *cobra.Command, args []string) error {
 			runWebRTCPeer(ctx, s)
 		}
 
+		reverseHubURL := strings.TrimSpace(serveHubURL)
+		reverseHubNodeID := strings.TrimSpace(serveHubNodeID)
+		if serveHubRegister {
+			if serveHubConnect != "reverse" {
+				return fmt.Errorf("--hub-register requires --hub-connect reverse")
+			}
+			if reverseHubURL == "" || reverseHubNodeID == "" || token == "" || hubRegistrationToken == "" {
+				return fmt.Errorf("--hub-register requires --hub-url, --hub-node-id, --hub-registration-token, and a bearer --token")
+			}
+		}
+		if serveHubConnect == "reverse" && (reverseHubURL == "" || reverseHubNodeID == "" || token == "") {
+			return fmt.Errorf("--hub-connect reverse requires --hub-url, --hub-node-id, and a bearer --token")
+		}
+
 		if err := s.Start(); err != nil {
 			return err
 		}
 
-		if serveHubConnect == "reverse" {
-			hubURL := strings.TrimSpace(serveHubURL)
-			hubNodeID := strings.TrimSpace(serveHubNodeID)
-			if hubURL == "" || hubNodeID == "" || token == "" {
-				return fmt.Errorf("--hub-connect reverse requires --hub-url, --hub-node-id, and a bearer --token")
+		if serveHubRegister {
+			if err := registerServeHubNode(ctx, nil, reverseHubURL, hubRegistrationToken, hubRegisterNodeRequest{
+				ID:         reverseHubNodeID,
+				Name:       strings.TrimSpace(serveHubNodeName),
+				Connection: "reverse",
+				BasePath:   serveBasePath,
+				Token:      token,
+			}); err != nil {
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				_ = s.Stop(shutdownCtx)
+				cancel()
+				return err
 			}
+			fmt.Fprintf(cmd.ErrOrStderr(), "hub registration: registered %s with %s\n", reverseHubNodeID, reverseHubURL)
+		}
+
+		if serveHubConnect == "reverse" {
 			localBase := localHubConnectBase(serveHost, servePort)
-			go runHubReverseConnector(ctx, hubURL, hubNodeID, token, localBase, serveBasePath, newHubReverseLocalClient())
-			fmt.Fprintf(cmd.ErrOrStderr(), "hub reverse: connecting %s to %s\n", hubNodeID, hubURL)
+			go runHubReverseConnector(ctx, reverseHubURL, reverseHubNodeID, token, localBase, serveBasePath, newHubReverseLocalClient())
+			fmt.Fprintf(cmd.ErrOrStderr(), "hub reverse: connecting %s to %s\n", reverseHubNodeID, reverseHubURL)
 		}
 
 		fmt.Fprintf(cmd.ErrOrStderr(), "term-llm serve listening on http://%s:%d\n", serveHost, servePort)

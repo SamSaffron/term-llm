@@ -78,6 +78,35 @@ func TestStoreAddListRemove(t *testing.T) {
 	}
 }
 
+func TestStoreUpsertCreatesAndReplaces(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hub", "nodes.json")
+	s := NewStore(path)
+
+	created, isNew, err := s.Upsert(Node{ID: "docker-a", Name: "Docker A", Connection: "reverse", BasePath: "/chat", Token: "one"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isNew || created.ID != "docker-a" || created.Source != SourceLocal {
+		t.Fatalf("created = %+v isNew=%v", created, isNew)
+	}
+
+	updated, isNew, err := s.Upsert(Node{ID: "docker-a", Name: "Docker A2", Connection: "reverse", BasePath: "/chat", Token: "two"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if isNew || updated.Name != "Docker A2" || updated.Token != "two" {
+		t.Fatalf("updated = %+v isNew=%v", updated, isNew)
+	}
+
+	nodes, err := NewStore(path).Nodes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 1 || nodes[0].ID != "docker-a" || nodes[0].Token != "two" {
+		t.Fatalf("persisted nodes = %+v", nodes)
+	}
+}
+
 func TestStoreRejectsInvalidNode(t *testing.T) {
 	s := NewStore(filepath.Join(t.TempDir(), "nodes.json"))
 	if _, err := s.Add(Node{Name: "x", URL: "not-a-url"}); err == nil {

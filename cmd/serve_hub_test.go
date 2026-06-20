@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -167,6 +168,146 @@ func TestHubAuthAPIStillReturnsJSONError(t *testing.T) {
 	}
 	if body := rec.Body.String(); !strings.Contains(body, "invalid_api_key") || strings.Contains(body, "Hub token") {
 		t.Fatalf("API body = %q", body)
+	}
+}
+
+func TestHubRegisterNodeCreatesUpdatesAndAuthenticatesReverseNode(t *testing.T) {
+	store := hub.NewStore(filepath.Join(t.TempDir(), "nodes.json"))
+	s := newHubServer(hub.NewRegistry(store), store)
+	s.registrationToken = "reg-secret"
+	h := s.handler()
+
+	payload := `{"id":"docker-a","name":"Docker A","connection":"reverse","base_path":"/chat","token":"node-token-1"}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/register-node", strings.NewReader(payload))
+	req.Header.Set("Authorization", "Bearer reg-secret")
+	req.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("register status = %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "node-token-1") || !strings.Contains(body, `"created":true`) || !strings.Contains(body, `"has_token":true`) {
+		t.Fatalf("register response leaked/missed fields: %s", body)
+	}
+
+	authReq := httptest.NewRequest(http.MethodGet, "/api/connect?node_id=docker-a", nil)
+	authReq.Header.Set(hubNodeIDHeader, "docker-a")
+	authReq.Header.Set("Authorization", "Bearer node-token-1")
+	if node, err := s.authenticateNode(authReq); err != nil || node.ID != "docker-a" {
+		t.Fatalf("registered node did not authenticate: node=%+v err=%v", node, err)
+	}
+
+	payload = `{"id":"docker-a","name":"Docker A2","connection":"reverse","base_path":"/chat","token":"node-token-2"}`
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/register-node", strings.NewReader(payload))
+	req.Header.Set("Authorization", "Bearer reg-secret")
+	req.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update status = %d body=%q", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "node-token-2") || !strings.Contains(rec.Body.String(), `"created":false`) {
+		t.Fatalf("update response = %s", rec.Body.String())
+	}
+
+	authReq = httptest.NewRequest(http.MethodGet, "/api/connect?node_id=docker-a", nil)
+	authReq.Header.Set(hubNodeIDHeader, "docker-a")
+	authReq.Header.Set("Authorization", "Bearer node-token-2")
+	if node, err := s.authenticateNode(authReq); err != nil || node.Name != "Docker A2" {
+		t.Fatalf("updated node did not authenticate: node=%+v err=%v", node, err)
+	}
+}
+
+func TestHubRegisterNodeAuthDisabledAndConflict(t *testing.T) {
+	store := hub.NewStore(filepath.Join(t.TempDir(), "nodes.json"))
+	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{{
+		ID:         "static-a",
+		Name:       "Static A",
+		Connection: "reverse",
+		BasePath:   "/chat",
+		Token:      "static-token",
+		Source:     hub.SourceConfig,
+	}}}, store), store)
+	h := s.handler()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/register-node", strings.NewReader(`{"id":"docker-a","base_path":"/chat","token":"node-token"}`))
+	req.Header.Set("Authorization", "Bearer reg-secret")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("disabled registration status = %d, want 404", rec.Code)
+	}
+
+	s.registrationToken = "reg-secret"
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/register-node", strings.NewReader(`{"id":"docker-a","base_path":"/chat","token":"node-token"}`))
+	req.Header.Set("Authorization", "Bearer wrong")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong token status = %d, want 401", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/register-node", strings.NewReader(`{"id":"static-a","base_path":"/chat","token":"node-token"}`))
+	req.Header.Set("Authorization", "Bearer reg-secret")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("static conflict status = %d body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHubRegisterServeNodeClient(t *testing.T) {
+	var gotAuth string
+	var got hubRegisterNodeRequest
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/register-node" || r.Method != http.MethodPost {
+			t.Fatalf("unexpected registration request %s %s", r.Method, r.URL.Path)
+		}
+		gotAuth = r.Header.Get("Authorization")
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"node": map[string]any{"id": got.ID, "has_token": true}, "created": true})
+	}))
+	defer ts.Close()
+
+	err := registerServeHubNode(t.Context(), ts.Client(), ts.URL, "reg-secret", hubRegisterNodeRequest{
+		ID:         "docker-a",
+		Name:       "Docker A",
+		Connection: "reverse",
+		BasePath:   "/chat",
+		Token:      "node-token",
+	})
+	if err != nil {
+		t.Fatalf("registerServeHubNode: %v", err)
+	}
+	if gotAuth != "Bearer reg-secret" || got.ID != "docker-a" || got.Token != "node-token" || got.Connection != "reverse" {
+		t.Fatalf("request auth=%q body=%+v", gotAuth, got)
+	}
+}
+
+func TestResolveServeHubRegistrationTokenScrubsEnv(t *testing.T) {
+	defer resetHubRegistrationForTest()()
+	captureHubRegistrationEnv()
+
+	t.Setenv(hubRegistrationTokenEnv, "env-reg")
+	if got := resolveServeHubRegistrationToken(""); got != "env-reg" {
+		t.Fatalf("env token = %q, want env-reg", got)
+	}
+	if got := os.Getenv(hubRegistrationTokenEnv); got != "" {
+		t.Fatalf("registration token env leaked: %q", got)
+	}
+	if env := hubRegistrationEnviron(); len(env) != 1 || env[0] != hubRegistrationTokenEnv+"=env-reg" {
+		t.Fatalf("reload env = %#v, want captured registration token", env)
+	}
+
+	t.Setenv(hubRegistrationTokenEnv, "env-reg")
+	if got := resolveServeHubRegistrationToken("flag-reg"); got != "flag-reg" {
+		t.Fatalf("flag token = %q, want flag-reg", got)
+	}
+	if got := os.Getenv(hubRegistrationTokenEnv); got != "" {
+		t.Fatalf("registration token env leaked after flag override: %q", got)
 	}
 }
 
