@@ -288,12 +288,18 @@ func TestHubRegisterServeNodeClient(t *testing.T) {
 }
 
 func TestResolveServeHubRegistrationTokenScrubsEnv(t *testing.T) {
+	defer resetHubRegistrationForTest()()
+	captureHubRegistrationEnv()
+
 	t.Setenv(hubRegistrationTokenEnv, "env-reg")
 	if got := resolveServeHubRegistrationToken(""); got != "env-reg" {
 		t.Fatalf("env token = %q, want env-reg", got)
 	}
 	if got := os.Getenv(hubRegistrationTokenEnv); got != "" {
 		t.Fatalf("registration token env leaked: %q", got)
+	}
+	if env := hubRegistrationEnviron(); len(env) != 1 || env[0] != hubRegistrationTokenEnv+"=env-reg" {
+		t.Fatalf("reload env = %#v, want captured registration token", env)
 	}
 
 	t.Setenv(hubRegistrationTokenEnv, "env-reg")

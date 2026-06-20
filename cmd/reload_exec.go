@@ -48,8 +48,10 @@ func execReload(sessionID string) error {
 	}
 
 	// Re-exec'ing the SAME binary: hand back any env-provided hub delegation
-	// token that startup scrubbed from the environment, or the next
-	// generation would silently lose hub access. This env goes only to
+	// and registration tokens that startup scrubbed from the environment, or the
+	// next generation would silently lose hub access. This env goes only to
 	// ourselves, never to tool subprocesses.
-	return syscall.Exec(exe, newArgs, append(os.Environ(), tools.HubDelegationEnviron()...))
+	reloadEnv := append(os.Environ(), tools.HubDelegationEnviron()...)
+	reloadEnv = append(reloadEnv, hubRegistrationEnviron()...)
+	return syscall.Exec(exe, newArgs, reloadEnv)
 }

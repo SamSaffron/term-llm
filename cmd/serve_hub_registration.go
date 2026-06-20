@@ -11,12 +11,35 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/hub"
 )
 
 const hubRegistrationTokenEnv = "TERM_LLM_HUB_REGISTRATION_TOKEN"
+
+var hubRegistrationCfg struct {
+	sync.Mutex
+	token        string
+	tokenFromEnv bool
+}
+
+func init() { captureHubRegistrationEnv() }
+
+func captureHubRegistrationEnv() {
+	v := strings.TrimSpace(os.Getenv(hubRegistrationTokenEnv))
+	if v == "" {
+		return
+	}
+	hubRegistrationCfg.Lock()
+	if hubRegistrationCfg.token == "" {
+		hubRegistrationCfg.token = v
+		hubRegistrationCfg.tokenFromEnv = true
+	}
+	hubRegistrationCfg.Unlock()
+	_ = os.Unsetenv(hubRegistrationTokenEnv)
+}
 
 type hubRegisterNodeRequest struct {
 	ID         string `json:"id"`
@@ -112,14 +135,34 @@ func (s *hubServer) handleRegisterNode(w http.ResponseWriter, r *http.Request) {
 }
 
 func resolveServeHubRegistrationToken(flagValue string) string {
-	envValue := strings.TrimSpace(os.Getenv(hubRegistrationTokenEnv))
-	if envValue != "" {
-		_ = os.Unsetenv(hubRegistrationTokenEnv)
-	}
+	captureHubRegistrationEnv()
 	if v := strings.TrimSpace(flagValue); v != "" {
 		return v
 	}
-	return envValue
+	hubRegistrationCfg.Lock()
+	defer hubRegistrationCfg.Unlock()
+	return hubRegistrationCfg.token
+}
+
+func hubRegistrationEnviron() []string {
+	hubRegistrationCfg.Lock()
+	defer hubRegistrationCfg.Unlock()
+	if !hubRegistrationCfg.tokenFromEnv || hubRegistrationCfg.token == "" {
+		return nil
+	}
+	return []string{hubRegistrationTokenEnv + "=" + hubRegistrationCfg.token}
+}
+
+func resetHubRegistrationForTest() func() {
+	hubRegistrationCfg.Lock()
+	prevToken, prevFromEnv := hubRegistrationCfg.token, hubRegistrationCfg.tokenFromEnv
+	hubRegistrationCfg.token, hubRegistrationCfg.tokenFromEnv = "", false
+	hubRegistrationCfg.Unlock()
+	return func() {
+		hubRegistrationCfg.Lock()
+		hubRegistrationCfg.token, hubRegistrationCfg.tokenFromEnv = prevToken, prevFromEnv
+		hubRegistrationCfg.Unlock()
+	}
 }
 
 func registerServeHubNode(ctx context.Context, client *http.Client, hubURL, registrationToken string, req hubRegisterNodeRequest) error {

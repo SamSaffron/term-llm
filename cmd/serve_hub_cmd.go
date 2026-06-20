@@ -124,10 +124,7 @@ func runServeHub(cmd *cobra.Command, args []string) error {
 	s := newHubServer(hub.NewRegistry(resolvers...), store)
 	s.requireAuth = requireAuth
 	s.token = token
-	s.registrationToken = strings.TrimSpace(serveHubRegistrationTokenFlag)
-	if s.registrationToken == "" {
-		s.registrationToken = strings.TrimSpace(os.Getenv(hubRegistrationTokenEnv))
-	}
+	s.registrationToken = resolveServeHubRegistrationToken(serveHubRegistrationTokenFlag)
 	// The delegation ledger lives beside the node store (same private dir).
 	s.delegations = hub.NewDelegationStore(filepath.Join(filepath.Dir(nodesFile), "delegations.json"))
 	addr := net.JoinHostPort(serveHubHost, strconv.Itoa(serveHubPort))
