@@ -16,6 +16,7 @@ func (s *hubServer) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHubHealth)
 	mux.HandleFunc("/api/nodes/test", s.handleTestNode)
+	mux.HandleFunc("/api/registration-info", s.handleRegistrationInfo)
 	mux.HandleFunc("/api/register-node", s.handleRegisterNode)
 	mux.HandleFunc("/api/nodes/", s.handleNodeItem)
 	mux.HandleFunc("/api/nodes", s.handleNodes)

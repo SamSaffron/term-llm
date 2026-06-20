@@ -80,6 +80,7 @@ body {
 .hub-btn.ghost { background: transparent; }
 .hub-btn.danger { color: var(--down); }
 .hub-btn.danger:hover { border-color: var(--down); }
+.hub-btn.small { padding: 0.24rem 0.55rem; font-size: 0.78rem; border-radius: 7px; }
 
 .hub-main { padding: 1.4rem; max-width: 1180px; margin: 0 auto; }
 
@@ -194,12 +195,72 @@ body {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 14px;
-  width: min(440px, 100%);
+  width: min(720px, 100%);
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
   padding: 1.1rem 1.25rem 1.25rem;
 }
 
-.modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.8rem; }
+.modal-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 0.8rem; }
+.modal-title { display: flex; align-items: center; gap: 0.65rem; flex-wrap: wrap; }
 .modal-header h2 { margin: 0; font-size: 1.05rem; }
+.help-toggle { color: var(--accent); }
+
+.registration-help {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-2);
+  padding: 0.85rem;
+  margin-bottom: 0.95rem;
+  display: grid;
+  gap: 0.75rem;
+}
+.registration-help h3 { margin: 0; font-size: 0.98rem; }
+.registration-help h4 { margin: 0; font-size: 0.9rem; }
+.registration-help p { margin: 0; color: var(--muted); font-size: 0.86rem; }
+.registration-help code, .command-box { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.registration-help-head { display: flex; justify-content: space-between; gap: 1rem; }
+.registration-loading { color: var(--muted); font-size: 0.85rem; }
+.registration-enabled, .registration-disabled { display: grid; gap: 0.8rem; }
+.help-field { display: grid; gap: 0.35rem; }
+.help-label { color: var(--text); font-size: 0.82rem; font-weight: 700; }
+.copy-row { display: flex; align-items: center; gap: 0.45rem; min-width: 0; }
+.copy-row code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  padding: 0.42rem 0.55rem;
+  font-size: 0.82rem;
+}
+.help-warning { color: var(--warn) !important; }
+.help-note { border-left: 3px solid var(--accent); padding-left: 0.7rem; }
+.help-actions { display: flex; justify-content: flex-end; }
+.command-box {
+  margin: 0;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+  padding: 0.75rem;
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+.token-glossary {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.32rem 0.75rem;
+  margin: 0;
+  font-size: 0.82rem;
+}
+.token-glossary dt { color: var(--text); font-weight: 700; }
+.token-glossary dd { margin: 0; color: var(--muted); }
 
 .modal form { display: flex; flex-direction: column; gap: 0.75rem; }
 .modal label { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.88rem; font-weight: 600; }

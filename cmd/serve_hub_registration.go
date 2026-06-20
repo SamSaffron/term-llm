@@ -49,8 +49,38 @@ type hubRegisterNodeRequest struct {
 	Token      string `json:"token"`
 }
 
+type hubRegistrationInfo struct {
+	Enabled           bool   `json:"enabled"`
+	TokenConfigured   bool   `json:"token_configured"`
+	CanPersistNodes   bool   `json:"can_persist_nodes"`
+	RegistrationToken string `json:"registration_token,omitempty"`
+}
+
 func hubRegistrationRoute(r *http.Request) bool {
 	return r.URL.Path == "/api/register-node"
+}
+
+func (s *hubServer) handleRegistrationInfo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !hubBrowserRequestAllowed(r, false) {
+		http.Error(w, "forbidden cross-site hub request", http.StatusForbidden)
+		return
+	}
+	token := strings.TrimSpace(s.registrationToken)
+	info := hubRegistrationInfo{
+		Enabled:         token != "" && s.store != nil,
+		TokenConfigured: token != "",
+		CanPersistNodes: s.store != nil,
+	}
+	if info.Enabled {
+		info.RegistrationToken = token
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, info)
 }
 
 func hubRegistrationBearerTokenMatches(r *http.Request, want string) bool {

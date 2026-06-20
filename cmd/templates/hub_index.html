@@ -55,9 +55,61 @@
   <div class="modal-overlay hidden" id="addNodeModal" role="dialog" aria-modal="true" aria-labelledby="addNodeTitle">
     <div class="modal">
       <div class="modal-header">
-        <h2 id="addNodeTitle">Add node</h2>
+        <div class="modal-title">
+          <h2 id="addNodeTitle">Add node</h2>
+          <button class="hub-btn ghost help-toggle" id="registrationHelpBtn" type="button" aria-expanded="false" aria-controls="registrationHelp">? Private node</button>
+        </div>
         <button class="hub-btn ghost" id="addNodeCloseBtn" type="button" aria-label="Close">✕</button>
       </div>
+      <section class="registration-help hidden" id="registrationHelp" aria-label="Reverse registration help">
+        <div class="registration-help-head">
+          <div>
+            <h3>Register a private / Docker node</h3>
+            <p>Use this when the Hub cannot directly reach the node — for example, a Docker container, laptop, NAT’d machine, or private network service.</p>
+          </div>
+        </div>
+        <p>The node registers itself with this Hub, opens an outbound reverse connection, and appears in the node list automatically. You do not need to enter a URL here.</p>
+        <div class="registration-loading" id="registrationHelpLoading">Loading registration settings…</div>
+        <div class="registration-enabled hidden" id="registrationEnabledHelp">
+          <div class="help-field">
+            <span class="help-label">Hub URL</span>
+            <div class="copy-row">
+              <code id="registrationHubUrl"></code>
+              <button class="hub-btn ghost small" id="copyHubUrlBtn" type="button">Copy</button>
+            </div>
+          </div>
+          <div class="help-field">
+            <span class="help-label">Registration token</span>
+            <div class="copy-row">
+              <code id="registrationTokenValue">••••••••••••••••••••••••••••••••</code>
+              <button class="hub-btn ghost small" id="copyRegistrationTokenBtn" type="button">Copy token</button>
+              <button class="hub-btn ghost small" id="revealRegistrationTokenBtn" type="button">Reveal</button>
+            </div>
+            <p class="help-warning">Treat this like a deployment secret. It cannot administer the Hub, but it can add or update reverse nodes.</p>
+          </div>
+          <div class="help-field">
+            <span class="help-label">Start a reverse node</span>
+            <pre class="command-box"><code id="registrationCommand"></code></pre>
+            <div class="help-actions"><button class="hub-btn ghost small" id="copyRegistrationCommandBtn" type="button">Copy command</button></div>
+          </div>
+          <p class="help-note">For a stable container, use a stable <code>NODE_ID</code> and <code>NODE_TOKEN</code> from Docker secrets or env instead of generating them on every boot. If the same <code>NODE_ID</code> registers again, Hub updates that registered node.</p>
+          <dl class="token-glossary">
+            <dt>Hub token</dt><dd>Unlocks/administers this Hub UI.</dd>
+            <dt>Registration token</dt><dd>Allows scripts or containers to register reverse nodes.</dd>
+            <dt>Node token</dt><dd>Per-node bearer token used after registration.</dd>
+          </dl>
+        </div>
+        <div class="registration-disabled hidden" id="registrationDisabledHelp">
+          <p><strong>Reverse registration is disabled for this Hub.</strong></p>
+          <p>Start Hub with a registration token:</p>
+          <pre class="command-box"><code>term-llm serve hub \
+  --registration-token "$HUB_REGISTRATION_TOKEN"</code></pre>
+          <p>or set the environment variable:</p>
+          <pre class="command-box"><code>TERM_LLM_HUB_REGISTRATION_TOKEN="$HUB_REGISTRATION_TOKEN" \
+term-llm serve hub</code></pre>
+        </div>
+        <div class="modal-status" id="registrationHelpStatus" aria-live="polite"></div>
+      </section>
       <form id="addNodeForm">
         <label>Name
           <input id="nodeNameInput" type="text" placeholder="jarvis" autocomplete="off" required>
@@ -283,6 +335,87 @@
     const nameInput = document.getElementById('nodeNameInput');
     const urlInput = document.getElementById('nodeUrlInput');
     const tokenInput = document.getElementById('nodeTokenInput');
+    const registrationHelp = document.getElementById('registrationHelp');
+    const registrationHelpBtn = document.getElementById('registrationHelpBtn');
+    const registrationHelpLoading = document.getElementById('registrationHelpLoading');
+    const registrationEnabledHelp = document.getElementById('registrationEnabledHelp');
+    const registrationDisabledHelp = document.getElementById('registrationDisabledHelp');
+    const registrationHelpStatus = document.getElementById('registrationHelpStatus');
+    const registrationHubUrl = document.getElementById('registrationHubUrl');
+    const registrationTokenValue = document.getElementById('registrationTokenValue');
+    const revealRegistrationTokenBtn = document.getElementById('revealRegistrationTokenBtn');
+    const registrationCommand = document.getElementById('registrationCommand');
+    let registrationToken = '';
+    let registrationTokenRevealed = false;
+    let registrationInfoLoaded = false;
+
+    const shellQuote = (value) => {
+      const s = String(value).replace(/'/g, "'\\''");
+      return `'${s}'`;
+    };
+    const copyText = async (text, label) => {
+      await navigator.clipboard.writeText(text);
+      registrationHelpStatus.textContent = `Copied ${label}.`;
+    };
+    const currentHubURL = () => new URL('/', window.location.href).href;
+    const buildRegistrationCommand = (hubURL) => `export HUB_URL=${shellQuote(hubURL)}
+export HUB_REGISTRATION_TOKEN="<copy registration token from above>"
+export NODE_TOKEN="$(openssl rand -hex 32)"
+export NODE_ID="docker-$(hostname)"
+
+# Add --agent, --port, or --base-path if this node needs them.
+term-llm serve web \\
+  --token "$NODE_TOKEN" \\
+  --hub-url "$HUB_URL" \\
+  --hub-node-id "$NODE_ID" \\
+  --hub-node-name "Docker $(hostname)" \\
+  --hub-connect reverse \\
+  --hub-register \\
+  --hub-registration-token "$HUB_REGISTRATION_TOKEN"`;
+    const updateRegistrationTokenDisplay = () => {
+      if (!registrationToken) {
+        registrationTokenValue.textContent = 'Unavailable';
+        revealRegistrationTokenBtn.disabled = true;
+        return;
+      }
+      registrationTokenValue.textContent = registrationTokenRevealed ? registrationToken : '••••••••••••••••••••••••••••••••';
+      revealRegistrationTokenBtn.textContent = registrationTokenRevealed ? 'Hide' : 'Reveal';
+      revealRegistrationTokenBtn.disabled = false;
+    };
+    const loadRegistrationInfo = async () => {
+      if (registrationInfoLoaded) return;
+      registrationHelpLoading.classList.remove('hidden');
+      registrationEnabledHelp.classList.add('hidden');
+      registrationDisabledHelp.classList.add('hidden');
+      registrationHelpStatus.textContent = '';
+      const hubURL = currentHubURL();
+      registrationHubUrl.textContent = hubURL;
+      registrationCommand.textContent = buildRegistrationCommand(hubURL);
+      try {
+        const resp = await fetch('api/registration-info', { headers: { 'Accept': 'application/json' } });
+        if (!resp.ok) throw new Error(await resp.text());
+        const data = await resp.json();
+        registrationInfoLoaded = true;
+        registrationHelpLoading.classList.add('hidden');
+        if (data.enabled && data.registration_token) {
+          registrationToken = data.registration_token;
+          registrationTokenRevealed = false;
+          updateRegistrationTokenDisplay();
+          registrationEnabledHelp.classList.remove('hidden');
+        } else {
+          registrationDisabledHelp.classList.remove('hidden');
+        }
+      } catch (err) {
+        registrationHelpLoading.classList.add('hidden');
+        registrationHelpStatus.textContent = `Could not load registration settings: ${err.message}`;
+      }
+    };
+    const toggleRegistrationHelp = async () => {
+      const show = registrationHelp.classList.contains('hidden');
+      registrationHelp.classList.toggle('hidden', !show);
+      registrationHelpBtn.setAttribute('aria-expanded', show ? 'true' : 'false');
+      if (show) await loadRegistrationInfo();
+    };
     const showModal = (show) => {
       modal.classList.toggle('hidden', !show);
       status.textContent = '';
@@ -291,6 +424,20 @@
     document.getElementById('addNodeBtn').addEventListener('click', () => showModal(true));
     document.getElementById('addNodeCloseBtn').addEventListener('click', () => showModal(false));
     modal.addEventListener('click', (e) => { if (e.target === modal) showModal(false); });
+    registrationHelpBtn.addEventListener('click', () => { toggleRegistrationHelp(); });
+    revealRegistrationTokenBtn.addEventListener('click', () => {
+      registrationTokenRevealed = !registrationTokenRevealed;
+      updateRegistrationTokenDisplay();
+    });
+    document.getElementById('copyHubUrlBtn').addEventListener('click', async () => {
+      try { await copyText(registrationHubUrl.textContent, 'Hub URL'); } catch (err) { registrationHelpStatus.textContent = `Copy failed: ${err.message}`; }
+    });
+    document.getElementById('copyRegistrationTokenBtn').addEventListener('click', async () => {
+      try { await copyText(registrationToken, 'registration token'); } catch (err) { registrationHelpStatus.textContent = `Copy failed: ${err.message}`; }
+    });
+    document.getElementById('copyRegistrationCommandBtn').addEventListener('click', async () => {
+      try { await copyText(registrationCommand.textContent, 'reverse node command'); } catch (err) { registrationHelpStatus.textContent = `Copy failed: ${err.message}`; }
+    });
 
     const payload = () => ({
       name: nameInput.value.trim(),

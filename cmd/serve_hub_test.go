@@ -171,6 +171,93 @@ func TestHubAuthAPIStillReturnsJSONError(t *testing.T) {
 	}
 }
 
+func TestHubRegistrationInfoRequiresHubAuthAndNoStores(t *testing.T) {
+	store := hub.NewStore(filepath.Join(t.TempDir(), "nodes.json"))
+	s := newHubServer(hub.NewRegistry(store), store)
+	s.requireAuth = true
+	s.token = "hub-secret"
+	s.registrationToken = "reg-secret"
+	h := s.handler()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/registration-info", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status = %d, want 401", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "reg-secret") {
+		t.Fatalf("unauthenticated response leaked registration token: %s", rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/registration-info", nil)
+	req.Header.Set("Authorization", "Bearer hub-secret")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("authenticated status = %d body=%q", rec.Code, rec.Body.String())
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", cc)
+	}
+	var info hubRegistrationInfo
+	if err := json.Unmarshal(rec.Body.Bytes(), &info); err != nil {
+		t.Fatalf("decode registration info: %v", err)
+	}
+	if !info.Enabled || !info.TokenConfigured || !info.CanPersistNodes || info.RegistrationToken != "reg-secret" {
+		t.Fatalf("registration info = %+v", info)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/registration-info", nil)
+	req.Header.Set("Authorization", "Bearer hub-secret")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("cross-site status = %d, want 403", rec.Code)
+	}
+}
+
+func TestHubIndexShowsRegistrationHelpWithoutEmbeddingToken(t *testing.T) {
+	store := hub.NewStore(filepath.Join(t.TempDir(), "nodes.json"))
+	s := newHubServer(hub.NewRegistry(store), store)
+	s.registrationToken = "reg-secret"
+
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("index status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"? Private node", "Register a private / Docker node", "api/registration-info", "Registration token", "Copy token", "Reveal"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("index missing %q", want)
+		}
+	}
+	if strings.Contains(body, "reg-secret") {
+		t.Fatalf("index embedded registration token: %s", body)
+	}
+}
+
+func TestHubRegistrationInfoDisabledOmitsToken(t *testing.T) {
+	store := hub.NewStore(filepath.Join(t.TempDir(), "nodes.json"))
+	s := newHubServer(hub.NewRegistry(store), store)
+
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/registration-info", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%q", rec.Code, rec.Body.String())
+	}
+	var info hubRegistrationInfo
+	if err := json.Unmarshal(rec.Body.Bytes(), &info); err != nil {
+		t.Fatalf("decode registration info: %v", err)
+	}
+	if info.Enabled || info.TokenConfigured || !info.CanPersistNodes || info.RegistrationToken != "" {
+		t.Fatalf("disabled registration info = %+v", info)
+	}
+	if strings.Contains(rec.Body.String(), "registration_token") {
+		t.Fatalf("disabled response should omit registration_token: %s", rec.Body.String())
+	}
+}
+
 func TestHubRegisterNodeCreatesUpdatesAndAuthenticatesReverseNode(t *testing.T) {
 	store := hub.NewStore(filepath.Join(t.TempDir(), "nodes.json"))
 	s := newHubServer(hub.NewRegistry(store), store)
