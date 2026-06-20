@@ -102,6 +102,74 @@ func TestHubAuthQueryTokenSetsCookie(t *testing.T) {
 	}
 }
 
+func TestHubAuthBrowserNavigationShowsLoginPage(t *testing.T) {
+	s := hubWithBackend(t, "/chat", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "ok")
+	})
+	s.requireAuth = true
+	s.token = "hub-secret"
+	h := s.handler()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept", "text/html")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("browser login status = %d, want 401", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"term-llm Hub", "Magic key", `name="token"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("login page missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, "invalid hub authentication credentials") || strings.Contains(body, "invalid_api_key") {
+		t.Fatalf("login page should not show API JSON error: %s", body)
+	}
+}
+
+func TestHubAuthInvalidBrowserTokenShowsLoginError(t *testing.T) {
+	s := hubWithBackend(t, "/chat", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "ok")
+	})
+	s.requireAuth = true
+	s.token = "hub-secret"
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/?token=wrong", nil)
+	req.Header.Set("Sec-Fetch-Mode", "navigate")
+	s.handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid browser token status = %d, want 401", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "not accepted") || !strings.Contains(body, "Magic key") {
+		t.Fatalf("invalid token login body = %q", body)
+	}
+}
+
+func TestHubAuthAPIStillReturnsJSONError(t *testing.T) {
+	s := hubWithBackend(t, "/chat", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "ok")
+	})
+	s.requireAuth = true
+	s.token = "hub-secret"
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/nodes", nil)
+	req.Header.Set("Accept", "text/html")
+	s.handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("API status = %d, want 401", rec.Code)
+	}
+	ct := rec.Header().Get("Content-Type")
+	if !strings.Contains(ct, "application/json") {
+		t.Fatalf("API content-type = %q, want JSON", ct)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "invalid_api_key") || strings.Contains(body, "Magic key") {
+		t.Fatalf("API body = %q", body)
+	}
+}
+
 func TestHubAuthSkipsReverseConnectNodeAuth(t *testing.T) {
 	s := hubWithBackend(t, "/chat", func(w http.ResponseWriter, r *http.Request) {})
 	s.requireAuth = true
