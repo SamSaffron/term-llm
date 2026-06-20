@@ -116,7 +116,8 @@ var hubLoginTemplate = template.Must(template.New("hub-login").Parse(`<!doctype 
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>term-llm Hub</title>
+  <title>Hub - term-llm</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230d1117'/%3E%3Cg fill='none' stroke='%23e6edf3' stroke-width='5' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='32' cy='32' r='8'/%3E%3Ccircle cx='14' cy='16' r='5'/%3E%3Ccircle cx='50' cy='16' r='5'/%3E%3Ccircle cx='14' cy='48' r='5'/%3E%3Ccircle cx='50' cy='48' r='5'/%3E%3Cpath d='M18 20 27 29M46 20 37 29M18 44 27 35M46 44 37 35'/%3E%3C/g%3E%3C/svg%3E">
   <style>
     :root { color-scheme: dark light; }
     body {
