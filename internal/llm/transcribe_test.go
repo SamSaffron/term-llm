@@ -111,6 +111,62 @@ func TestTranscribeWithConfig_UsesResolvedURLForBuiltins(t *testing.T) {
 	}
 }
 
+func TestTranscribeWithConfig_ElevenLabsPassesTimestampOptions(t *testing.T) {
+	origClient := defaultHTTPClient
+	origProbe := probeAudioDuration
+	defer func() {
+		defaultHTTPClient = origClient
+		probeAudioDuration = origProbe
+	}()
+	probeAudioDuration = func(context.Context, string) (time.Duration, error) {
+		return time.Minute, nil
+	}
+
+	audioFile, err := os.CreateTemp(t.TempDir(), "audio-*.mp3")
+	if err != nil {
+		t.Fatalf("CreateTemp failed: %v", err)
+	}
+	if _, err := audioFile.WriteString("not really audio"); err != nil {
+		t.Fatalf("write temp audio: %v", err)
+	}
+	if err := audioFile.Close(); err != nil {
+		t.Fatalf("close temp audio: %v", err)
+	}
+
+	var requestBody string
+	defaultHTTPClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			body, _ := io.ReadAll(req.Body)
+			requestBody = string(body)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"text":"hello","words":[{"text":"hello","start":0,"end":0.5,"type":"word","logprob":-0.1}]}`)),
+			}, nil
+		}),
+	}
+
+	result, err := TranscribeWithConfig(context.Background(), &config.Config{
+		Transcription: config.TranscriptionConfig{
+			Timestamps: true,
+		},
+		Providers: map[string]config.ProviderConfig{
+			"elevenlabs": {ResolvedAPIKey: "test-key"},
+		},
+	}, audioFile.Name(), "", "elevenlabs")
+	if err != nil {
+		t.Fatalf("TranscribeWithConfig failed: %v", err)
+	}
+	for _, want := range []string{"timestamps_granularity", "word", "no_verbatim", "true", "tag_audio_events", "false"} {
+		if !strings.Contains(requestBody, want) {
+			t.Fatalf("request body missing %q: %s", want, requestBody)
+		}
+	}
+	if !strings.Contains(result, `"words": [`) {
+		t.Fatalf("result = %q, want timestamp JSON", result)
+	}
+}
+
 func TestTranscribeWithConfig_TruncatesImplausiblyLongTranscript(t *testing.T) {
 	origClient := defaultHTTPClient
 	origProbe := probeAudioDuration

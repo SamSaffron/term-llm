@@ -174,6 +174,66 @@ func TestTranscribeFile_ElevenLabsDialect(t *testing.T) {
 	}
 }
 
+func TestTranscribeFile_ElevenLabsWordTimestamps(t *testing.T) {
+	origClient := defaultHTTPClient
+	defer func() {
+		defaultHTTPClient = origClient
+	}()
+
+	audioFile, err := os.CreateTemp(t.TempDir(), "audio-*.mp3")
+	if err != nil {
+		t.Fatalf("CreateTemp failed: %v", err)
+	}
+	if _, err := audioFile.WriteString("audio-bytes"); err != nil {
+		t.Fatalf("write temp audio: %v", err)
+	}
+	if err := audioFile.Close(); err != nil {
+		t.Fatalf("close temp audio: %v", err)
+	}
+
+	var contentType string
+	var bodyBytes []byte
+	defaultHTTPClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			contentType = req.Header.Get("Content-Type")
+			bodyBytes, _ = io.ReadAll(req.Body)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"text":"hello world","words":[{"text":"hello","start":0,"end":0.4,"type":"word","logprob":-0.1}]}`)),
+			}, nil
+		}),
+	}
+
+	result, err := TranscribeFile(context.Background(), audioFile.Name(), TranscribeOptions{
+		APIKey:     "test-key",
+		Endpoint:   "https://api.elevenlabs.io/v1/speech-to-text",
+		Model:      "scribe_v2",
+		Provider:   "elevenlabs",
+		Timestamps: true,
+	})
+	if err != nil {
+		t.Fatalf("TranscribeFile failed: %v", err)
+	}
+	if !strings.Contains(result, `"words": [`) || !strings.Contains(result, `"start": 0`) {
+		t.Fatalf("timestamp JSON = %q, want pretty JSON with words", result)
+	}
+
+	fields := readMultipartFields(t, contentType, bodyBytes)
+	if fields["model_id"] != "scribe_v2" {
+		t.Fatalf("model_id = %q, want scribe_v2", fields["model_id"])
+	}
+	if fields["timestamps_granularity"] != "word" {
+		t.Fatalf("timestamps_granularity = %q, want word", fields["timestamps_granularity"])
+	}
+	if fields["no_verbatim"] != "true" {
+		t.Fatalf("no_verbatim = %q, want true", fields["no_verbatim"])
+	}
+	if fields["tag_audio_events"] != "false" {
+		t.Fatalf("tag_audio_events = %q, want false", fields["tag_audio_events"])
+	}
+}
+
 func TestTranscribeFile_VeniceDialect(t *testing.T) {
 	origClient := defaultHTTPClient
 	defer func() {

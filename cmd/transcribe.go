@@ -117,7 +117,7 @@ func transcribeWhisperCLI(ctx context.Context, cfg *config.Config, filePath, lan
 func init() {
 	transcribeCmd.Flags().StringVar(&transcribeLanguage, "language", "", "Language hint for transcription (e.g. \"en\", \"ja\")")
 	transcribeCmd.Flags().StringVar(&transcribeModel, "model", "", "Transcription model override")
-	transcribeCmd.Flags().BoolVar(&transcribeTimestamps, "timestamps", false, "Venice: request timestamp metadata before extracting transcript text")
+	transcribeCmd.Flags().BoolVar(&transcribeTimestamps, "timestamps", false, "Request timestamp metadata where supported (ElevenLabs emits JSON with word timestamps)")
 	transcribeCmd.Flags().BoolVar(&transcribePorcelain, "porcelain", false, "Output only the transcript text")
 	transcribeCmd.Flags().StringVar(&transcribeProvider, "provider", "", `Transcription provider override: "openai", "mistral" (Voxtral), "venice", "elevenlabs", "local" (whisper.cpp server), "whisper-cli". Defaults to transcription.provider in config, or "openai".`)
 	_ = transcribeCmd.RegisterFlagCompletionFunc("provider", staticCompletion("openai", "mistral", "venice", "elevenlabs", "local", "whisper-cli"))

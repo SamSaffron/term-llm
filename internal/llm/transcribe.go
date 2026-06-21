@@ -23,6 +23,9 @@ func transcribeAndTruncate(ctx context.Context, filePath string, opts Transcribe
 	if err != nil {
 		return "", err
 	}
+	if opts.Provider == "elevenlabs" && opts.Timestamps {
+		return transcript, nil
+	}
 	return TruncateTranscriptIfImplausible(ctx, filePath, transcript), nil
 }
 
@@ -182,11 +185,12 @@ func TranscribeWithConfig(ctx context.Context, cfg *config.Config, filePath, lan
 		}
 		model := firstNonEmptyString(modelOverride, cfg.Transcription.ElevenLabs.Model, "scribe_v2")
 		return transcribeAndTruncate(ctx, filePath, TranscribeOptions{
-			APIKey:   apiKey,
-			Endpoint: endpoint,
-			Model:    model,
-			Language: language,
-			Provider: "elevenlabs",
+			APIKey:     apiKey,
+			Endpoint:   endpoint,
+			Model:      model,
+			Language:   language,
+			Provider:   "elevenlabs",
+			Timestamps: cfg.Transcription.Timestamps,
 		})
 
 	case "openai":

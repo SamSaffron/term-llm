@@ -728,7 +728,7 @@ type TranscriptionConfig struct {
 	Provider   string                        `mapstructure:"provider"`   // named provider from providers map; default "openai"
 	Model      string                        `mapstructure:"model"`      // optional model override
 	SaveDir    string                        `mapstructure:"save_dir"`   // if set, persist each uploaded audio file here
-	Timestamps bool                          `mapstructure:"timestamps"` // Venice: request timestamp metadata
+	Timestamps bool                          `mapstructure:"timestamps"` // Request timestamp metadata where supported
 	Venice     TranscriptionVeniceConfig     `mapstructure:"venice"`
 	ElevenLabs TranscriptionElevenLabsConfig `mapstructure:"elevenlabs"`
 }

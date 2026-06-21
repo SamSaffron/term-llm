@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -17,7 +18,7 @@ type TranscribeOptions struct {
 	Model      string // optional, overrides default model name sent to API
 	Language   string // optional, e.g. "en"
 	Provider   string // optional request dialect: "openai" (default), "venice", or "elevenlabs"
-	Timestamps bool   // Venice: request timestamp metadata in JSON responses
+	Timestamps bool   // Request timestamp metadata in JSON responses where supported
 }
 
 type whisperResponse struct {
@@ -77,6 +78,18 @@ func TranscribeFile(ctx context.Context, filePath string, opts TranscribeOptions
 		return "", fmt.Errorf("whisper API error %d: %s", resp.StatusCode, readLimitedBody(resp.Body, whisperErrorBodyLimit))
 	}
 
+	if opts.Provider == "elevenlabs" && opts.Timestamps {
+		var raw json.RawMessage
+		if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+			return "", fmt.Errorf("decode whisper response: %w", err)
+		}
+		var pretty bytes.Buffer
+		if err := json.Indent(&pretty, raw, "", "  "); err != nil {
+			return "", fmt.Errorf("format whisper response: %w", err)
+		}
+		return pretty.String(), nil
+	}
+
 	var result whisperResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", fmt.Errorf("decode whisper response: %w", err)
@@ -129,6 +142,17 @@ func writeTranscriptionBody(mw *multipart.Writer, filePath string, file io.Reade
 	if provider == "venice" && timestamps {
 		if err := mw.WriteField("timestamps", "true"); err != nil {
 			return fmt.Errorf("write timestamps field: %w", err)
+		}
+	}
+	if provider == "elevenlabs" && timestamps {
+		if err := mw.WriteField("timestamps_granularity", "word"); err != nil {
+			return fmt.Errorf("write timestamps granularity field: %w", err)
+		}
+		if err := mw.WriteField("no_verbatim", "true"); err != nil {
+			return fmt.Errorf("write no verbatim field: %w", err)
+		}
+		if err := mw.WriteField("tag_audio_events", "false"); err != nil {
+			return fmt.Errorf("write tag audio events field: %w", err)
 		}
 	}
 	if language != "" {
