@@ -707,6 +707,16 @@ func TestStaticAssetsSupportIncrementalMarkdownStreaming(t *testing.T) {
 	}
 }
 
+func TestRenderIndexHTMLManifestUsesCredentials(t *testing.T) {
+	html := string(RenderIndexHTML("/ui", "", RenderOptions{}))
+	if !strings.Contains(html, `rel="manifest" href="manifest.webmanifest?v=`) {
+		t.Fatal("RenderIndexHTML should version the web manifest link")
+	}
+	if !strings.Contains(html, `rel="manifest" href="manifest.webmanifest?v=`+AssetVersion()+`" crossorigin="use-credentials"`) {
+		t.Fatal("manifest link should request credentials so authenticated hub/node mounts can fetch it")
+	}
+}
+
 func TestRenderIndexHTMLWebRTCOption(t *testing.T) {
 	disabled := string(RenderIndexHTML("/ui", "", RenderOptions{}))
 	if strings.Contains(disabled, "app-webrtc.js") {

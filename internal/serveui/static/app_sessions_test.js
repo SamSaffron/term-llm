@@ -328,6 +328,7 @@ async function createSessionsHarness(options = {}) {
     clearInterval() {},
     URL,
     URLSearchParams,
+    CSS: { escape(value) { return String(value).replace(/"/g, '\\"'); } },
     fetch: options.fetchImpl || (async () => new Response(JSON.stringify({ sessions: [] }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' }
@@ -355,7 +356,7 @@ async function createSessionsHarness(options = {}) {
 
 async function testSwitchingSessionsStagesCurrentComposerBeforeRestore() {
   const name = 'switching sessions stages current composer before restoring target draft';
-  const drafts = new Map();
+  const drafts = new Map([['', 'existing blank draft']]);
   const { app } = await createSessionsHarness({
     fetchImpl: async () => new Response(JSON.stringify({ sessions: [] }), {
       status: 200,
@@ -441,6 +442,171 @@ async function testSwitchingSessionsClearsEmptyComposerDraft() {
   await app.switchToSession(sessionA.id, { sync: false });
   if (app.elements.promptInput.value !== '') {
     fail(name, 'cleared draft should not restore when switching back', app.elements.promptInput.value);
+    return;
+  }
+  pass(name);
+}
+
+async function testNewChatClearsExistingDraftComposer() {
+  const name = 'new chat clears existing draft instead of restoring it';
+  const drafts = new Map([['', 'old new-chat draft']]);
+  const { app } = await createSessionsHarness({
+    fetchImpl: async () => new Response(JSON.stringify({ sessions: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    }),
+    appOverrides: {
+      stageDraftMessage(prompt, sessionId) {
+        drafts.set(String(sessionId || ''), String(prompt || '').trim());
+      },
+      clearDraftMessageForSession(sessionId) {
+        drafts.delete(String(sessionId || ''));
+      },
+      restoreDraftMessageForSession(sessionId, options = {}) {
+        const key = String(sessionId || '');
+        if (!drafts.has(key)) {
+          if (options.replace) app.elements.promptInput.value = '';
+          return false;
+        }
+        app.elements.promptInput.value = drafts.get(key);
+        return true;
+      }
+    }
+  });
+
+  app.state.activeSessionId = '';
+  app.state.draftSessionActive = true;
+  app.elements.promptInput.value = 'old new-chat draft';
+
+  await app.switchToDraftSession({ clearComposer: true, focusPrompt: true });
+  if (drafts.has('')) {
+    fail(name, 'expected the new-chat draft bucket to be removed', JSON.stringify(Array.from(drafts.entries())));
+    return;
+  }
+  if (app.elements.promptInput.value !== '') {
+    fail(name, 'expected composer to stay empty after creating a fresh chat', app.elements.promptInput.value);
+    return;
+  }
+  pass(name);
+}
+
+async function testNewChatFromSessionPreservesSessionDraft() {
+  const name = 'new chat from a session preserves that session draft';
+  const drafts = new Map([['', 'existing blank draft']]);
+  const { app } = await createSessionsHarness({
+    fetchImpl: async () => new Response(JSON.stringify({ sessions: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    }),
+    appOverrides: {
+      stageDraftMessage(prompt, sessionId) {
+        drafts.set(String(sessionId || ''), String(prompt || '').trim());
+      },
+      clearDraftMessageForSession(sessionId) {
+        drafts.delete(String(sessionId || ''));
+      },
+      restoreDraftMessageForSession(sessionId, options = {}) {
+        const key = String(sessionId || '');
+        if (!drafts.has(key)) {
+          if (options.replace) app.elements.promptInput.value = '';
+          return false;
+        }
+        app.elements.promptInput.value = drafts.get(key);
+        return true;
+      }
+    }
+  });
+
+  const session = { id: 'sess_a', title: 'A', messages: [], lastResponseId: null, activeResponseId: null, lastSequenceNumber: 0 };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  app.elements.promptInput.value = 'unsent in A';
+
+  await app.switchToDraftSession({ clearComposer: true, focusPrompt: true });
+  if (drafts.get(session.id) !== 'unsent in A') {
+    fail(name, 'expected active session composer to be staged before New Chat clears composer', JSON.stringify(Array.from(drafts.entries())));
+    return;
+  }
+  if (app.elements.promptInput.value !== '') {
+    fail(name, 'expected New Chat composer to be empty', app.elements.promptInput.value);
+    return;
+  }
+  if (drafts.get('') !== 'existing blank draft') {
+    fail(name, 'expected unrelated blank draft bucket to survive New Chat from a session', JSON.stringify(Array.from(drafts.entries())));
+    return;
+  }
+  pass(name);
+}
+
+async function testArchivingActiveSessionClearsItsComposerDraft() {
+  const name = 'archiving active hidden session clears its composer draft';
+  const drafts = new Map([['', 'blank draft']]);
+  const { app, windowObj } = await createSessionsHarness({
+    fetchImpl: async (url, options = {}) => {
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({ sessions: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (url === '/ui/v1/sessions/sess_archive' && options.method === 'PATCH') {
+        return new Response(JSON.stringify({
+          id: 'sess_archive',
+          short_title: 'Archive me',
+          long_title: 'Archive me',
+          archived: true,
+          created_at: 1710000000000,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    },
+    appOverrides: {
+      stageDraftMessage(prompt, sessionId) {
+        drafts.set(String(sessionId || ''), String(prompt || '').trim());
+      },
+      clearDraftMessageForSession(sessionId) {
+        drafts.delete(String(sessionId || ''));
+      },
+      restoreDraftMessageForSession(sessionId, options = {}) {
+        const key = String(sessionId || '');
+        if (!drafts.has(key)) {
+          if (options.replace) app.elements.promptInput.value = '';
+          return false;
+        }
+        app.elements.promptInput.value = drafts.get(key);
+        return true;
+      }
+    }
+  });
+
+  const session = { id: 'sess_archive', title: 'Archive me', messages: [], archived: false, created: 1710000000000 };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  app.state.showHiddenSessions = false;
+  app.elements.promptInput.value = 'discard me with archived session';
+  let alertMessage = '';
+  windowObj.alert = (message) => { alertMessage = String(message || ''); };
+
+  const archived = await app.setSessionArchived(session, true);
+  if (!archived) {
+    fail(name, `setSessionArchived returned false: ${alertMessage}`);
+    return;
+  }
+  if (drafts.has(session.id)) {
+    fail(name, 'archived active session should not leave an orphan draft', JSON.stringify(Array.from(drafts.entries())));
+    return;
+  }
+  if (drafts.get('') !== 'blank draft') {
+    fail(name, 'blank draft bucket should remain available after archiving active session', JSON.stringify(Array.from(drafts.entries())));
+    return;
+  }
+  if (app.elements.promptInput.value !== 'blank draft') {
+    fail(name, 'expected blank draft to be restored after archiving active session', app.elements.promptInput.value);
     return;
   }
   pass(name);
@@ -3418,6 +3584,9 @@ async function testMCPPatchConflictDoesNotOptimisticallyEnable() {
 (async () => {
   await testSwitchingSessionsStagesCurrentComposerBeforeRestore();
   await testSwitchingSessionsClearsEmptyComposerDraft();
+  await testNewChatClearsExistingDraftComposer();
+  await testNewChatFromSessionPreservesSessionDraft();
+  await testArchivingActiveSessionClearsItsComposerDraft();
   await testSwitchingSessionsDiscardsPendingAttachments();
   await testSwitchToSessionSyncsSelectedRuntime();
   await testNumericDeepLinkResolvesRealSessionId();

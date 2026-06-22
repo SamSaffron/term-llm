@@ -373,6 +373,47 @@ func waitForReverseRequest(t *testing.T, ch <-chan hubReverseRequest, wantPath s
 	}
 }
 
+func TestHubReverseRequestAllowsEncodedSlashInQuery(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/v1/sessions/s1/file-changes/diff" {
+			t.Fatalf("backend path = %q", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("path"); got != "var/www/discourse/Gemfile.lock" {
+			t.Fatalf("query path = %q", got)
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer backend.Close()
+
+	var frames []hubReverseResponse
+	handleHubReverseRequest(
+		context.Background(),
+		hubReverseRequest{
+			ID:     "req_1",
+			Method: http.MethodGet,
+			Path:   "/chat/v1/sessions/s1/file-changes/diff?path=var%2Fwww%2Fdiscourse%2FGemfile.lock",
+		},
+		"node-token",
+		backend.URL,
+		"/chat",
+		backend.Client(),
+		func(resp hubReverseResponse) error {
+			frames = append(frames, resp)
+			return nil
+		},
+	)
+
+	if len(frames) == 0 {
+		t.Fatal("no reverse response frames written")
+	}
+	if frames[0].Error != "" {
+		t.Fatalf("unexpected reverse error: %s", frames[0].Error)
+	}
+	if frames[0].Status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", frames[0].Status)
+	}
+}
+
 func TestHubReverseConnectorReconnectsAfterDroppedWebsocket(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/chat/healthz" {

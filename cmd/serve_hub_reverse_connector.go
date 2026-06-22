@@ -156,13 +156,16 @@ func handleHubReverseRequest(ctx context.Context, frame hubReverseRequest, token
 		_ = writeFrame(hubReverseResponse{Type: hubReverseFrameResponseStart, Status: http.StatusBadRequest, Error: "missing request id"})
 		return
 	}
-	if !strings.HasPrefix(frame.Path, "/") || hubContainsEncodedSeparator(frame.Path) || hubHasDotDotSegment(frame.Path) {
-		sendError(http.StatusBadRequest, "invalid reverse request path")
-		return
-	}
 	pathOnly := frame.Path
 	if i := strings.IndexByte(pathOnly, '?'); i >= 0 {
 		pathOnly = pathOnly[:i]
+	}
+	// Validate only the URI path. Query parameters may legitimately contain
+	// encoded slashes (for example file-change diff paths like path=a%2Fb) and
+	// are interpreted by node handlers as parameter values, not route segments.
+	if !strings.HasPrefix(pathOnly, "/") || hubContainsEncodedSeparator(pathOnly) || hubHasDotDotSegment(pathOnly) {
+		sendError(http.StatusBadRequest, "invalid reverse request path")
+		return
 	}
 	allowedBasePath = strings.TrimRight(allowedBasePath, "/")
 	if allowedBasePath != "" && pathOnly != allowedBasePath && !strings.HasPrefix(pathOnly, allowedBasePath+"/") {

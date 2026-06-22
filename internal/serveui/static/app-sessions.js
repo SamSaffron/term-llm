@@ -183,7 +183,13 @@ const stageCurrentComposerForSession = (sessionId) => {
 const switchToDraftSession = async (options = {}) => {
   const previousActiveSessionId = String(state.activeSessionId || '').trim();
   const previousComposerSessionId = state.draftSessionActive ? '' : previousActiveSessionId;
-  stageCurrentComposerForSession(previousComposerSessionId);
+  if (options.clearComposer && previousComposerSessionId === '') {
+    clearDraftMessageForSession('');
+  } else if (options.clearPreviousComposerDraft) {
+    clearDraftMessageForSession(previousComposerSessionId);
+  } else {
+    stageCurrentComposerForSession(previousComposerSessionId);
+  }
 
   stopSessionStatePoll();
   closeRenameSessionModal();
@@ -211,7 +217,9 @@ const switchToDraftSession = async (options = {}) => {
   refreshPendingInterjectionBanner();
   persistAndRefreshShell();
   renderMessages(true);
-  restoreDraftMessageForSession('', { replace: true });
+  if (!options.clearComposer) {
+    restoreDraftMessageForSession('', { replace: true });
+  }
   app.activateDiffSidebar?.('');
 
   if (options.focusPrompt) {
@@ -1877,7 +1885,7 @@ const setSessionArchived = async (session, archived) => {
       await animateSessionHide(previousId);
       if (session.id !== previousId) await animateSessionHide(session.id);
       if (wasActive || session.id === state.activeSessionId) {
-        await switchToDraftSession({ closeSidebar: false });
+        await switchToDraftSession({ closeSidebar: false, clearPreviousComposerDraft: true });
       }
     }
     persistAndRefreshShell();
