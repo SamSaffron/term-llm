@@ -61,13 +61,21 @@ func (f *fakeFileRecorder) recorded() []filetrack.ChangeRecord {
 
 func (f *fakeFileRecorder) findRecord(t *testing.T, path string) filetrack.ChangeRecord {
 	t.Helper()
+	wantPath := canonicalTestPath(path)
 	for _, rec := range f.recorded() {
-		if rec.Path == path {
+		if canonicalTestPath(rec.Path) == wantPath {
 			return rec
 		}
 	}
 	t.Fatalf("no record for %s in %+v", path, f.recorded())
 	return filetrack.ChangeRecord{}
+}
+
+func canonicalTestPath(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return filepath.Clean(path)
 }
 
 func trackingContext() context.Context {

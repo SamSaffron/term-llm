@@ -160,7 +160,7 @@ func TestHubReverseResponseCancellation(t *testing.T) {
 	}
 }
 
-func TestHubReverseReadLoopCancelsSlowConsumerWithoutBlockingOthers(t *testing.T) {
+func TestHubReverseReadLoopBackpressuresSlowConsumerInsteadOfCanceling(t *testing.T) {
 	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
 	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
 	hubTS := httptest.NewServer(s.handler())
@@ -206,36 +206,37 @@ func TestHubReverseReadLoopCancelsSlowConsumerWithoutBlockingOthers(t *testing.T
 	}
 	defer first.resp.Body.Close()
 
-	// Do not read first.resp.Body. Enough body frames should fill that request's
-	// queue; the hub must cancel only that slow request and keep reading frames
-	// for other requests on the websocket.
-	for i := 0; i < hubReversePendingBuffer+4; i++ {
-		if err := conn.WriteJSON(hubReverseResponse{Type: hubReverseFrameResponseBody, ID: firstReq.ID, Body: []byte("chunk")}); err != nil {
-			t.Fatalf("write slow body frame %d: %v", i, err)
-		}
-	}
-
-	secondResult := make(chan reverseDoResult, 1)
+	const chunk = "chunk"
+	const chunkCount = hubReversePendingBuffer + 4
+	writerDone := make(chan error, 1)
 	go func() {
-		req := httptest.NewRequest(http.MethodGet, "http://reverse.local/chat/healthz", nil)
-		resp, err := s.reverse.do(context.Background(), node, req)
-		secondResult <- reverseDoResult{resp: resp, err: err}
+		for i := 0; i < chunkCount; i++ {
+			if err := conn.WriteJSON(hubReverseResponse{Type: hubReverseFrameResponseBody, ID: firstReq.ID, Body: []byte(chunk)}); err != nil {
+				writerDone <- err
+				return
+			}
+		}
+		writerDone <- conn.WriteJSON(hubReverseResponse{Type: hubReverseFrameResponseEnd, ID: firstReq.ID})
 	}()
-	secondReq := waitForReverseRequest(t, requests, "/chat/healthz")
-	if err := conn.WriteJSON(hubReverseResponse{ID: secondReq.ID, Status: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/plain"}}, Body: []byte("ok")}); err != nil {
-		t.Fatalf("write second response: %v", err)
-	}
-	second := waitForReverseDoResult(t, secondResult)
-	if second.err != nil {
-		t.Fatalf("second reverse do after slow consumer: %v", second.err)
-	}
-	defer second.resp.Body.Close()
-	body, err := io.ReadAll(second.resp.Body)
+
+	// Leave the response body unread long enough for the per-request queue to fill.
+	// The stream must apply backpressure instead of being canceled as "slow".
+	time.Sleep(100 * time.Millisecond)
+
+	body, err := io.ReadAll(first.resp.Body)
 	if err != nil {
-		t.Fatalf("read second body: %v", err)
+		t.Fatalf("read slow body: %v", err)
 	}
-	if string(body) != "ok" {
-		t.Fatalf("second body = %q", body)
+	if string(body) != strings.Repeat(chunk, chunkCount) {
+		t.Fatalf("slow body len=%d, want len=%d", len(body), len(strings.Repeat(chunk, chunkCount)))
+	}
+	select {
+	case err := <-writerDone:
+		if err != nil {
+			t.Fatalf("write slow response: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for reverse writer")
 	}
 }
 
@@ -288,17 +289,31 @@ func TestHubReverseReadLoopSurvivesCanceledUndrainedStream(t *testing.T) {
 	}
 	defer first.resp.Body.Close()
 
-	// Fill the first request's per-request response channel while its pipe writer
-	// is blocked on an undrained body. The read loop must unblock when the request
-	// is canceled so later multiplexed requests on the same websocket still work.
-	for _, chunk := range []string{"one", "two", "three"} {
-		if err := conn.WriteJSON(hubReverseResponse{Type: hubReverseFrameResponseBody, ID: firstReq.ID, Body: []byte(chunk)}); err != nil {
-			t.Fatalf("write first body %q: %v", chunk, err)
+	// Fill the first request's response queue until the websocket reader is
+	// backpressured behind an undrained body. Canceling the request must unblock
+	// that path so later multiplexed requests on the same websocket still work.
+	writerDone := make(chan error, 1)
+	go func() {
+		for i := 0; i < hubReversePendingBuffer+4; i++ {
+			if err := conn.WriteJSON(hubReverseResponse{Type: hubReverseFrameResponseBody, ID: firstReq.ID, Body: []byte("chunk")}); err != nil {
+				writerDone <- err
+				return
+			}
 		}
-	}
+		writerDone <- nil
+	}()
+
 	time.Sleep(100 * time.Millisecond)
 	cancelFirst()
 	_ = first.resp.Body.Close()
+	select {
+	case err := <-writerDone:
+		if err != nil {
+			t.Fatalf("write blocked body frames: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for blocked reverse writer to unblock after cancel")
+	}
 
 	secondCtx, cancelSecond := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancelSecond()

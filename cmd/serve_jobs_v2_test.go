@@ -1938,7 +1938,7 @@ func TestJobsV2ListJobsIncludesLastRunSummary(t *testing.T) {
 	}
 	defer func() { _ = mgr.Close() }()
 
-	now := time.Date(2026, 5, 22, 13, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Second)
 	_, err = mgr.db.Exec(`INSERT INTO jobs_v2 (id, name, enabled, runner_type, runner_config, trigger_type, trigger_config, concurrency_policy, max_concurrent_runs, timeout_seconds, misfire_policy, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'forbid', 1, 60, 'skip', ?, ?)`,
 		"job_last_run", "last-run", jobsV2RunnerProgram, `{"command":"true"}`, jobsV2TriggerManual, `{}`, now.Add(-time.Hour), now.Add(-time.Hour))
 	if err != nil {

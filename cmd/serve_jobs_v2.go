@@ -1761,16 +1761,20 @@ func (m *jobsV2Manager) ListJobs(limit, offset int) ([]jobsV2Job, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
 	jobs := make([]jobsV2Job, 0)
 	for rows.Next() {
 		job, err := scanJobV2(rows)
 		if err != nil {
+			_ = rows.Close()
 			return nil, 0, err
 		}
 		jobs = append(jobs, job)
 	}
 	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, 0, err
+	}
+	if err := rows.Close(); err != nil {
 		return nil, 0, err
 	}
 	jobPtrs := make([]*jobsV2Job, 0, len(jobs))

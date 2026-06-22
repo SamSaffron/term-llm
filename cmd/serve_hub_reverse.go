@@ -141,17 +141,15 @@ func (p *hubReversePending) enqueue(resp hubReverseResponse) bool {
 	if p == nil {
 		return false
 	}
-	select {
-	case <-p.done:
-		return false
-	default:
-	}
+	// Apply per-request backpressure instead of dropping body frames for a
+	// slower downstream consumer. Because one websocket reader multiplexes all
+	// requests for a node, a full per-request queue can temporarily stall sibling
+	// requests on the same reverse connection until this request drains or is
+	// canceled.
 	select {
 	case p.ch <- resp:
 		return true
 	case <-p.done:
-		return false
-	default:
 		return false
 	}
 }
@@ -289,9 +287,6 @@ func (c *hubReverseConnection) readLoop(done func()) {
 		c.pendingMu.Unlock()
 		if pending != nil {
 			if !pending.enqueue(resp) {
-				if !pending.doneClosed() {
-					c.abortPending(resp.ID, pending, fmt.Errorf("reverse response queue for request %q is full; canceling slow consumer", resp.ID), true)
-				}
 				continue
 			}
 			if terminal {

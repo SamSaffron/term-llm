@@ -91,12 +91,14 @@ func readEnvWebPort(path string) (int, bool) {
 }
 
 // hostPortAvailable reports whether the given TCP port can currently be bound on
-// all interfaces, mirroring how Docker publishes the Web UI port.
+// loopback and all interfaces, mirroring how Docker publishes the Web UI port.
 func hostPortAvailable(port int) bool {
-	ln, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", port))
-	if err != nil {
-		return false
+	for _, host := range []string{"127.0.0.1", "0.0.0.0"} {
+		ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", host, port))
+		if err != nil {
+			return false
+		}
+		_ = ln.Close()
 	}
-	_ = ln.Close()
 	return true
 }

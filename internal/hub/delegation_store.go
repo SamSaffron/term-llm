@@ -8,6 +8,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/config"
 )
 
 const (
@@ -71,15 +73,12 @@ func (s *DelegationStore) writeLocked(records []Delegation) error {
 		return fmt.Errorf("create hub delegation ledger dir: %w", err)
 	}
 	// 0600: prompts/responses are private content. Chmod first so an existing
-	// overly-permissive file is corrected as well as newly created files.
+	// overly-permissive file is corrected even if the atomic rewrite fails.
 	if err := os.Chmod(s.path, 0o600); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("secure hub delegation ledger permissions: %w", err)
 	}
-	if err := os.WriteFile(s.path, append(data, '\n'), 0o600); err != nil {
+	if err := config.WriteFileAtomically(s.path, append(data, '\n'), 0o600); err != nil {
 		return fmt.Errorf("write hub delegation ledger: %w", err)
-	}
-	if err := os.Chmod(s.path, 0o600); err != nil {
-		return fmt.Errorf("secure hub delegation ledger permissions: %w", err)
 	}
 	return nil
 }

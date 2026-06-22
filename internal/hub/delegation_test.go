@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -144,6 +145,69 @@ func TestDelegationStoreCRUD(t *testing.T) {
 		if perm := info.Mode().Perm(); perm != 0o600 {
 			t.Fatalf("ledger permissions = %o, want 600", perm)
 		}
+	}
+}
+
+func TestDelegationStoreAtomicWriteFailureLeavesExistingLedgerUntouched(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory permissions are not reliable on windows")
+	}
+
+	dir := filepath.Join(t.TempDir(), "ledger")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir ledger dir: %v", err)
+	}
+	s := NewDelegationStore(filepath.Join(dir, "delegations.json"))
+	now := time.Now().UTC()
+	if err := s.Add(newTestDelegation("dlg_1", "a", "b", DelegationStatusRunning, now)); err != nil {
+		t.Fatalf("seed ledger: %v", err)
+	}
+	original, err := os.ReadFile(s.Path())
+	if err != nil {
+		t.Fatalf("read seeded ledger: %v", err)
+	}
+
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("chmod ledger dir: %v", err)
+	}
+	defer os.Chmod(dir, 0o700)
+
+	_, err = s.Update("dlg_1", func(rec *Delegation) {
+		rec.Status = DelegationStatusSucceeded
+		rec.Response = "done"
+	})
+	if err == nil {
+		t.Skip("ledger directory remained writable; cannot exercise atomic temp-file creation failure")
+	}
+	if !strings.Contains(err.Error(), "create temp file") && !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("expected atomic temp-file creation failure, got: %v", err)
+	}
+
+	current, readErr := os.ReadFile(s.Path())
+	if readErr != nil {
+		t.Fatalf("read ledger after failed update: %v", readErr)
+	}
+	if string(current) != string(original) {
+		t.Fatalf("ledger was modified after failed atomic write:\n got: %q\nwant: %q", string(current), string(original))
+	}
+
+	got, ok, err := s.Get("dlg_1")
+	if err != nil {
+		t.Fatalf("Get after failed update: %v", err)
+	}
+	if !ok {
+		t.Fatalf("delegation missing after failed update")
+	}
+	if got.Status != DelegationStatusRunning || got.Response != "" {
+		t.Fatalf("delegation changed after failed update: %+v", got)
+	}
+
+	leftovers, err := filepath.Glob(filepath.Join(dir, ".delegations.json.*.tmp"))
+	if err != nil {
+		t.Fatalf("glob temp files: %v", err)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("unexpected temp files left behind: %v", leftovers)
 	}
 }
 

@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/samsaffron/term-llm/internal/config"
 )
 
 // Store persists UI-added nodes in a local JSON file (0600 — it holds node
@@ -67,15 +69,13 @@ func (s *Store) writeLocked(nodes []Node) error {
 		return fmt.Errorf("create hub node store dir: %w", err)
 	}
 	// 0600: the store holds node bearer tokens. Chmod first so an existing
-	// overly-permissive file is corrected as well as newly created files.
+	// overly-permissive file is corrected before the atomic rewrite preserves its
+	// mode, and new files still land at 0600.
 	if err := os.Chmod(s.path, 0o600); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("secure hub node store permissions: %w", err)
 	}
-	if err := os.WriteFile(s.path, append(data, '\n'), 0o600); err != nil {
+	if err := config.WriteFileAtomically(s.path, append(data, '\n'), 0o600); err != nil {
 		return fmt.Errorf("write hub node store: %w", err)
-	}
-	if err := os.Chmod(s.path, 0o600); err != nil {
-		return fmt.Errorf("secure hub node store permissions: %w", err)
 	}
 	return nil
 }
