@@ -25,11 +25,12 @@ import (
 // accepted and exposed as an ordinary http.Response reader.
 
 const (
-	hubReversePingInterval  = 20 * time.Second
-	hubReversePongWait      = 60 * time.Second
-	hubReverseWriteWait     = 10 * time.Second
-	hubReverseChunkSize     = 32 * 1024
-	hubReversePendingBuffer = 16
+	hubReversePingInterval        = 20 * time.Second
+	hubReversePongWait            = 60 * time.Second
+	hubReverseWriteWait           = 10 * time.Second
+	hubReverseChunkSize           = 32 * 1024
+	hubReversePendingBuffer       = 16
+	hubReverseMaxRequestBodyBytes = 32 << 20
 
 	hubReverseFrameRequest       = "request"
 	hubReverseFrameCancel        = "cancel"
@@ -352,9 +353,12 @@ func (m *hubReverseManager) do(ctx context.Context, node hub.Node, req *http.Req
 	var body []byte
 	if req.Body != nil {
 		var readErr error
-		body, readErr = io.ReadAll(io.LimitReader(req.Body, 32<<20))
+		body, readErr = io.ReadAll(io.LimitReader(req.Body, hubReverseMaxRequestBodyBytes+1))
 		if readErr != nil {
 			return nil, readErr
+		}
+		if len(body) > hubReverseMaxRequestBodyBytes {
+			return nil, fmt.Errorf("reverse request body exceeds %d bytes: %w", hubReverseMaxRequestBodyBytes, &http.MaxBytesError{Limit: hubReverseMaxRequestBodyBytes})
 		}
 	}
 	id := c.nextRequestID()

@@ -112,6 +112,44 @@ func TestHubReverseNodeProxyStreamsChunkedResponse(t *testing.T) {
 	}
 }
 
+func TestHubReverseNodeProxyRejectsOversizedRequestBody(t *testing.T) {
+	backendCalled := make(chan struct{}, 1)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case backendCalled <- struct{}{}:
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
+	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	hubTS := httptest.NewServer(s.handler())
+	defer hubTS.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go runHubReverseConnector(ctx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client())
+	waitForReverseNode(t, s, "artist")
+
+	payload := strings.Repeat("a", hubReverseMaxRequestBodyBytes+1)
+	req := httptest.NewRequest(http.MethodPost, "/node/artist/upload", strings.NewReader(payload))
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d body=%q", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "reverse request body exceeds") {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+	select {
+	case <-backendCalled:
+		t.Fatal("backend received oversized reverse request body")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
 func TestHubReverseResponseCancellation(t *testing.T) {
 	backendCanceled := make(chan struct{})
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
