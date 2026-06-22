@@ -16,12 +16,21 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
-// templateVarPattern matches {{variable}} tokens, allowing optional whitespace inside delimiters.
+// templateVarPattern matches simple {{variable}} tokens, allowing optional whitespace inside delimiters.
+// It is used to discover which expensive context fields need computing.
 var templateVarPattern = regexp.MustCompile(`\{\{\s*(\w+)\s*\}\}`)
 
-// escapedTemplateVarPattern matches {{!variable}} tokens. Escaped variables render as
-// literal {{variable}} text so prompts can document template syntax without expanding it.
-var escapedTemplateVarPattern = regexp.MustCompile(`\{\{\s*!\s*(\w+)\s*\}\}`)
+// templateExpansionPattern matches tokens ExpandTemplate can evaluate in a single pass:
+// simple {{variable}} placeholders and {{env:NAME}} environment lookups.
+var templateExpansionPattern = regexp.MustCompile(`\{\{\s*(env\s*:\s*[^}]+?|\w+)\s*\}\}`)
+
+// envTemplateExprPattern parses the expression captured from {{env:NAME}}.
+var envTemplateExprPattern = regexp.MustCompile(`^env\s*:\s*(.+)$`)
+
+// escapedTemplateVarPattern matches {{!variable}} and {{!env:NAME}} tokens. Escaped
+// variables render as literal {{variable}} text so prompts can document template syntax
+// without expanding it.
+var escapedTemplateVarPattern = regexp.MustCompile(`\{\{\s*!\s*([^}]+?)\s*\}\}`)
 
 // TemplateContext holds values for template variable expansion.
 type TemplateContext struct {
@@ -227,17 +236,21 @@ func (c TemplateContext) WithLLM(provider, model string) TemplateContext {
 }
 
 // ExpandTemplate replaces {{variable}} placeholders with values from context.
-// Use {{!variable}} to render a literal {{variable}} without expanding it.
+// Use {{env:NAME}} to read an environment variable from the term-llm process.
+// Use {{!variable}} or {{!env:NAME}} to render a literal token without expanding it.
 func ExpandTemplate(text string, ctx TemplateContext) string {
-	expanded := templateVarPattern.ReplaceAllStringFunc(text, func(match string) string {
-		// Extract variable name.
-		matches := templateVarPattern.FindStringSubmatch(match)
+	expanded := templateExpansionPattern.ReplaceAllStringFunc(text, func(match string) string {
+		// Extract expression.
+		matches := templateExpansionPattern.FindStringSubmatch(match)
 		if len(matches) != 2 {
 			return match
 		}
-		varName := matches[1]
+		expr := strings.TrimSpace(matches[1])
+		if envName, ok := envTemplateName(expr); ok {
+			return os.Getenv(envName)
+		}
 
-		switch varName {
+		switch expr {
 		case "date":
 			return ctx.Date
 		case "datetime":
@@ -317,7 +330,25 @@ func ExpandTemplate(text string, ctx TemplateContext) string {
 			return match
 		}
 	})
-	return escapedTemplateVarPattern.ReplaceAllString(expanded, "{{$1}}")
+	return escapedTemplateVarPattern.ReplaceAllStringFunc(expanded, func(match string) string {
+		matches := escapedTemplateVarPattern.FindStringSubmatch(match)
+		if len(matches) != 2 {
+			return match
+		}
+		return "{{" + strings.TrimSpace(matches[1]) + "}}"
+	})
+}
+
+func envTemplateName(expr string) (string, bool) {
+	matches := envTemplateExprPattern.FindStringSubmatch(expr)
+	if len(matches) != 2 {
+		return "", false
+	}
+	name := strings.TrimSpace(matches[1])
+	if name == "" {
+		return "", false
+	}
+	return name, true
 }
 
 // gitProbeTimeout bounds git subprocesses used during template expansion so prompt construction

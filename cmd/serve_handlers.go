@@ -1436,6 +1436,22 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if suffix == "mcp" {
+		if r.Method != http.MethodGet && r.Method != http.MethodPatch {
+			w.Header().Set("Allow", "GET, PATCH")
+			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+			return
+		}
+		if r.Method == http.MethodPatch {
+			if err := requireJSONContentType(r); err != nil {
+				writeOpenAIError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
+				return
+			}
+		}
+		s.handleSessionMCP(w, r, sessionID)
+		return
+	}
+
 	if suffix == "file-changes" || suffix == "file-changes/diff" {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", "GET")
@@ -2309,6 +2325,9 @@ func (s *serveServer) runtimeForRequest(ctx context.Context, sessionID string) (
 	if err != nil {
 		return nil, false, err
 	}
+	if err := s.ensureRuntimeMCPForSession(ctx, sessionID, rt); err != nil {
+		return nil, false, err
+	}
 	return rt, true, nil
 }
 
@@ -2362,6 +2381,9 @@ func (s *serveServer) runtimeForProviderModelRequest(ctx context.Context, sessio
 	if err != nil {
 		return nil, false, err
 	}
+	if err := s.ensureRuntimeMCPForSession(ctx, sessionID, rt); err != nil {
+		return nil, false, err
+	}
 	// Belt-and-suspenders: also check the live runtime in case the store
 	// missed (new session not yet persisted, store error, etc.).
 	existingProvider := runtimeProviderKey(rt)
@@ -2406,6 +2428,9 @@ func (s *serveServer) runtimeForFreshProviderRequest(ctx context.Context, sessio
 		create,
 	)
 	if err != nil {
+		return nil, false, err
+	}
+	if err := s.ensureRuntimeMCPForSession(ctx, sessionID, rt); err != nil {
 		return nil, false, err
 	}
 	existingProvider := runtimeProviderKey(rt)

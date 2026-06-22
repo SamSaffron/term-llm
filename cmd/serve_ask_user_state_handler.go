@@ -71,6 +71,9 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 					persistedModel = strings.TrimSpace(rt.sessionMeta.Model)
 					persistedEffort = strings.TrimSpace(rt.sessionMeta.ReasoningEffort)
 				}
+				mcpState := rt.mcpStateLocked()
+				resp["mcp_servers"] = mcpState.Servers
+				resp["mcp_enabled"] = mcpState.Enabled
 				rt.mu.Unlock()
 				runtimeMetaRead = true
 			}
@@ -84,9 +87,14 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 
 	// Fall back to the DB when the runtime was not loaded (e.g. after a
 	// page reload) or we could not read sessionMeta because a run held
-	// rt.mu. The DB has the last persisted model/effort for the session.
+	// rt.mu. The DB has the last persisted model/effort/MCP selection for the session.
 	if s.store != nil && (!runtimeMetaRead || persistedProvider == "" || persistedModel == "") {
 		if sess, err := s.store.Get(r.Context(), sessionID); err == nil && sess != nil {
+			if enabled, ok := resp["mcp_enabled"].([]string); !ok || len(enabled) == 0 {
+				if persistedMCP := parseServerList(sess.MCP); len(persistedMCP) > 0 {
+					resp["mcp_enabled"] = persistedMCP
+				}
+			}
 			if persistedProvider == "" {
 				pk := strings.TrimSpace(sess.ProviderKey)
 				if pk == "" {

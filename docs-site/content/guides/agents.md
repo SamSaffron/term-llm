@@ -206,4 +206,12 @@ Behavior:
   - Config/CLI system prompts resolve relative to the current working directory
 - Expansion order is include first, then template variables (for example `{{year}}`)
 
+System prompt templates can also read environment variables from the `term-llm` process:
+
+```md
+Running in container: {{env:DV_CONTAINER_NAME}}
+```
+
+Whitespace around the directive is allowed, for example `{{ env : DV_CONTAINER_NAME }}`. Unset environment variables expand to an empty string. Use `{{!env:DV_CONTAINER_NAME}}` to render the placeholder literally. Because values are inserted into the model-visible system prompt, avoid referencing secret env vars unless you intentionally want to send them to the model.
+
 **Agent search order:** project-local agents (`./term-llm-agents`) → user agents (`~/.config/term-llm/agents`) → configured `agents.search_paths` → built-in agents

@@ -467,6 +467,19 @@ func TestResolveSettings_MissingIncludeIsLeftUnchanged(t *testing.T) {
 	}
 }
 
+func TestResolveSettings_ExpandsEnvToken(t *testing.T) {
+	t.Setenv("TERM_LLM_SYSTEM_PROMPT_TEST", "container-name")
+
+	cfg := &config.Config{}
+	settings, err := ResolveSettings(cfg, nil, CLIFlags{}, "", "", "node={{env:TERM_LLM_SYSTEM_PROMPT_TEST}}", 0, 20)
+	if err != nil {
+		t.Fatalf("ResolveSettings() error = %v", err)
+	}
+	if settings.SystemPrompt != "node=container-name" {
+		t.Fatalf("SystemPrompt = %q, want %q", settings.SystemPrompt, "node=container-name")
+	}
+}
+
 func TestResolveSettings_ExpandsPlatformTokenWhenProvided(t *testing.T) {
 	cfg := &config.Config{}
 	settings, err := ResolveSettings(cfg, nil, CLIFlags{Platform: "chat"}, "", "", "surface={{platform}}", 0, 20)

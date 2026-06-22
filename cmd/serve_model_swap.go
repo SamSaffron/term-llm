@@ -204,6 +204,12 @@ func (s *serveServer) beginResponseModelSwap(ctx context.Context, sessionID stri
 	if err != nil {
 		return nil, err
 	}
+	if err := s.ensureRuntimeMCPForSession(ctx, sessionID, candidate); err != nil {
+		if rollback != nil {
+			rollback()
+		}
+		return nil, err
+	}
 	if retainedPrevious != nil && retainedPrevious != previous {
 		retainedPrevious.ensurePersistedSession(ctx, sessionID, inputMessages)
 		if hist := retainedPrevious.snapshotHistory(); hist != nil {

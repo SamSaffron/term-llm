@@ -461,6 +461,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 			debugRaw:            debugRaw,
 			autoCompact:         cfg.AutoCompact,
 			defaultModel:        rtModelName,
+			yoloMode:            serveYolo,
 			store:               store,
 			toolsSetting:        settings.Tools,
 			mcpSetting:          settings.MCP,

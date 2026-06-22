@@ -68,6 +68,7 @@ mcp:
 - `{{!files}}`, `{{!file_count}}` (from -f flags)
 - `{{!os}}`, `{{!platform}}`, `{{!resource_dir}}`
 - `{{!provider}}`, `{{!model}}`, `{{!provider_model}}`
+- `{{!env:NAME}}` - Reads environment variable `NAME` from the term-llm process
 - `{{!agents}}` - Loads project instructions (hierarchical AGENTS.md + fallbacks)
 
 **The `{{!agents}}` variable** loads project instructions using:

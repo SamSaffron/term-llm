@@ -38,31 +38,91 @@ function makeClassList() {
   };
 }
 
-function makeNode() {
-  return {
+function makeNode(tagName = 'div') {
+  const children = [];
+  const attributes = new Map();
+  const node = {
+    tagName: String(tagName || 'div').toUpperCase(),
     classList: makeClassList(),
     style: {},
     dataset: {},
     hidden: false,
     disabled: false,
+    checked: false,
     value: '',
+    type: '',
     textContent: '',
     innerHTML: '',
+    className: '',
     scrollHeight: 0,
     scrollTop: 0,
     clientHeight: 0,
-    appendChild(node) { return node; },
-    removeChild() {},
+    listeners: {},
+    children,
+    appendChild(child) {
+      if (child) {
+        child.parentNode = this;
+        children.push(child);
+      }
+      return child;
+    },
+    removeChild(child) {
+      const idx = children.indexOf(child);
+      if (idx >= 0) children.splice(idx, 1);
+      if (child) child.parentNode = null;
+      return child;
+    },
+    replaceChildren(...nodes) {
+      children.splice(0, children.length);
+      nodes.forEach((child) => this.appendChild(child));
+    },
+    contains(target) {
+      if (target === this) return true;
+      return children.some((child) => child && typeof child.contains === 'function' && child.contains(target));
+    },
     querySelector() { return null; },
-    querySelectorAll() { return []; },
-    setAttribute(name, value) { this[name] = value; },
-    removeAttribute(name) { delete this[name]; },
-    addEventListener() {},
+    querySelectorAll(selector) {
+      const results = [];
+      const visit = (child) => {
+        if (!child) return;
+        if (selector === 'input[data-mcp-server]' && child.tagName === 'INPUT' && child.dataset && child.dataset.mcpServer) {
+          results.push(child);
+        }
+        (child.children || []).forEach(visit);
+      };
+      children.forEach(visit);
+      return results;
+    },
+    setAttribute(name, value) {
+      attributes.set(name, String(value));
+      this[name] = String(value);
+      if (name === 'hidden') this.hidden = true;
+      if (name === 'class') this.className = String(value);
+    },
+    removeAttribute(name) {
+      attributes.delete(name);
+      delete this[name];
+      if (name === 'hidden') this.hidden = false;
+    },
+    hasAttribute(name) { return attributes.has(name); },
+    addEventListener(type, handler) {
+      if (!this.listeners[type]) this.listeners[type] = [];
+      this.listeners[type].push(handler);
+    },
+    dispatchEvent(event) {
+      const evt = event || { type: '' };
+      if (!evt.target) evt.target = this;
+      if (!evt.preventDefault) evt.preventDefault = () => { evt.defaultPrevented = true; };
+      const handlers = this.listeners[evt.type] || [];
+      handlers.forEach((handler) => handler(evt));
+      return !evt.defaultPrevented;
+    },
     focus() {},
     select() {},
     remove() {},
-    click() {},
+    click() { this.dispatchEvent({ type: 'click', target: this }); },
   };
+  return node;
 }
 
 function parsedTestURL(url) {
@@ -197,16 +257,26 @@ function defaultAppStubs(app, overrides = {}) {
 async function createSessionsHarness(options = {}) {
   const storage = new Map(Object.entries(options.initialStorage || {}));
 
+  const elementMap = new Map();
+  const getElement = (id) => {
+    if (!elementMap.has(id)) elementMap.set(id, makeNode());
+    return elementMap.get(id);
+  };
+
   const document = {
     cookie: '',
     visibilityState: 'visible',
     body: { classList: makeClassList() },
     documentElement: { style: { setProperty() {} } },
-    getElementById() { return makeNode(); },
-    createElement() { return makeNode(); },
+    getElementById(id) { return getElement(id); },
+    createElement(tagName) { return makeNode(tagName); },
     querySelector() { return makeNode(); },
     querySelectorAll() { return []; },
-    addEventListener() {},
+    listeners: {},
+    addEventListener(type, handler) {
+      if (!this.listeners[type]) this.listeners[type] = [];
+      this.listeners[type].push(handler);
+    },
   };
 
   const localStorage = {
@@ -280,7 +350,7 @@ async function createSessionsHarness(options = {}) {
   vm.runInContext(sessionsSource, context, { filename: 'app-sessions.js' });
   await windowObj.__termllmInitializePromise;
 
-  return { app, storage, windowObj };
+  return { app, storage, windowObj, elementMap };
 }
 
 async function testSwitchingSessionsStagesCurrentComposerBeforeRestore() {
@@ -3103,6 +3173,248 @@ async function testSwitchToSearchOnlySessionHydratesResult() {
   pass(name);
 }
 
+async function testAddMenuAttachOptionTriggersFileInput() {
+  const name = 'plus menu attach option triggers file input';
+  const { app } = await createSessionsHarness({
+    fetchImpl: async () => new Response(JSON.stringify({ sessions: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    })
+  });
+
+  let clicks = 0;
+  app.elements.fileInput.click = () => { clicks += 1; };
+  app.elements.attachBtn.click();
+  app.elements.addAttachOption.click();
+
+  if (clicks !== 1) {
+    fail(name, `file input clicks = ${clicks}, want 1`);
+    return;
+  }
+  pass(name);
+}
+
+async function testOpenMCPFromDraftCreatesSessionBeforeFetch() {
+  const name = 'opening MCP from draft creates local session before fetch';
+  const fetchCalls = [];
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      const parsed = parsedTestURL(url);
+      fetchCalls.push(parsed ? parsed.pathname : String(url));
+      if (parsed && parsed.pathname.endsWith('/mcp')) {
+        return new Response(JSON.stringify({
+          servers: [{ name: 'filesystem', configured: true, enabled: false, status: 'stopped', error: '', tools: 0 }],
+          enabled: []
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (parsed && (parsed.pathname === '/ui/v1/providers' || parsed.pathname === '/ui/v1/models')) {
+        return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+
+  app.state.sessions = [];
+  app.state.activeSessionId = '';
+  app.state.draftSessionActive = true;
+
+  await app.openSessionMCPModal();
+
+  if (app.state.draftSessionActive || !app.state.activeSessionId || app.state.sessions.length !== 1) {
+    fail(name, 'expected a local active session to be created', JSON.stringify({ active: app.state.activeSessionId, draft: app.state.draftSessionActive, sessions: app.state.sessions.length }));
+    return;
+  }
+  const sessionId = app.state.activeSessionId;
+  if (!fetchCalls.some((pathname) => pathname === `/ui/v1/sessions/${sessionId}/mcp`)) {
+    fail(name, 'expected MCP endpoint to be fetched for the new session', JSON.stringify(fetchCalls));
+    return;
+  }
+  pass(name);
+}
+
+async function testMCPStateResponseUpdatesHeaderPill() {
+  const name = 'MCP state response updates header pill';
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      const parsed = parsedTestURL(url);
+      if (parsed && parsed.pathname.endsWith('/state')) {
+        return new Response(JSON.stringify({
+          active_run: false,
+          mcp_enabled: ['filesystem'],
+          mcp_servers: [{ name: 'filesystem', configured: true, enabled: true, status: 'ready', error: '', tools: 3 }]
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (parsed && parsed.pathname.endsWith('/messages')) {
+        return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (parsed && (parsed.pathname === '/ui/v1/providers' || parsed.pathname === '/ui/v1/models')) {
+        return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+
+  const session = app.createSession();
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  await app.syncActiveSessionFromServer(session, false, { skipMessagesFetch: true });
+
+  if (app.elements.mcpStatus.hidden || app.elements.mcpStatus.textContent !== 'MCP: 1') {
+    fail(name, `mcpStatus=${JSON.stringify({ hidden: app.elements.mcpStatus.hidden, text: app.elements.mcpStatus.textContent })}`);
+    return;
+  }
+  if (!String(app.elements.mcpStatus.title || '').includes('filesystem')) {
+    fail(name, 'expected compact pill title to list enabled MCP', app.elements.mcpStatus.title);
+    return;
+  }
+  pass(name);
+}
+
+async function testMCPHeaderPillOpensServersModal() {
+  const name = 'MCP header pill opens servers modal';
+  const mcpFetches = [];
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      const parsed = parsedTestURL(url);
+      if (parsed && parsed.pathname.endsWith('/state')) {
+        return new Response(JSON.stringify({
+          active_run: false,
+          mcp_enabled: ['filesystem'],
+          mcp_servers: [{ name: 'filesystem', configured: true, enabled: true, status: 'ready', error: '', tools: 3 }]
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (parsed && parsed.pathname.endsWith('/mcp')) {
+        mcpFetches.push(parsed.pathname);
+        return new Response(JSON.stringify({
+          servers: [{ name: 'filesystem', configured: true, enabled: true, status: 'ready', error: '', tools: 3 }],
+          enabled: ['filesystem']
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (parsed && parsed.pathname.endsWith('/messages')) {
+        return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (parsed && (parsed.pathname === '/ui/v1/providers' || parsed.pathname === '/ui/v1/models')) {
+        return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+
+  const session = app.createSession();
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  await app.syncActiveSessionFromServer(session, false, { skipMessagesFetch: true });
+
+  app.elements.mcpStatus.click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  if (!mcpFetches.some((pathname) => pathname === `/ui/v1/sessions/${session.id}/mcp`)) {
+    fail(name, 'expected compact MCP pill to fetch the MCP modal state', JSON.stringify(mcpFetches));
+    return;
+  }
+  pass(name);
+}
+
+async function testMCPControlChangePatchesImmediately() {
+  const name = 'MCP switch change patches immediately';
+  const patchBodies = [];
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url, options = {}) => {
+      const parsed = parsedTestURL(url);
+      if (parsed && parsed.pathname.endsWith('/mcp') && options.method === 'PATCH') {
+        patchBodies.push(JSON.parse(String(options.body || '{}')));
+        return new Response(JSON.stringify({
+          servers: [{ name: 'filesystem', configured: true, enabled: true, status: 'ready', error: '', tools: 2 }],
+          enabled: ['filesystem']
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (parsed && parsed.pathname.endsWith('/mcp')) {
+        return new Response(JSON.stringify({
+          servers: [{ name: 'filesystem', configured: true, enabled: false, status: 'stopped', error: '', tools: 0 }],
+          enabled: []
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (parsed && (parsed.pathname === '/ui/v1/providers' || parsed.pathname === '/ui/v1/models')) {
+        return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+
+  const session = app.createSession();
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  await app.openSessionMCPModal();
+
+  const inputs = app.elements.mcpModalBody.querySelectorAll('input[data-mcp-server]');
+  if (inputs.length !== 1) {
+    fail(name, 'expected one MCP switch', String(inputs.length));
+    return;
+  }
+  inputs[0].checked = true;
+  app.elements.mcpModalBody.dispatchEvent({ type: 'change', target: inputs[0] });
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  if (patchBodies.length !== 1 || JSON.stringify(patchBodies[0]) !== JSON.stringify({ enabled: ['filesystem'] })) {
+    fail(name, 'expected one immediate PATCH with selected server', JSON.stringify(patchBodies));
+    return;
+  }
+  if (JSON.stringify(session.mcpEnabled || []) !== JSON.stringify(['filesystem'])) {
+    fail(name, 'expected session MCP state to update from PATCH response', JSON.stringify(session.mcpEnabled));
+    return;
+  }
+  pass(name);
+}
+
+async function testMCPPatchConflictDoesNotOptimisticallyEnable() {
+  const name = 'MCP PATCH 409 surfaces error without optimistic enable';
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url, options = {}) => {
+      const parsed = parsedTestURL(url);
+      if (parsed && parsed.pathname.endsWith('/mcp') && options.method === 'PATCH') {
+        return new Response(JSON.stringify({ error: { message: 'cannot change MCP servers while a response is running' } }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (parsed && parsed.pathname.endsWith('/mcp')) {
+        return new Response(JSON.stringify({
+          servers: [{ name: 'filesystem', configured: true, enabled: false, status: 'stopped', error: '', tools: 0 }],
+          enabled: []
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (parsed && (parsed.pathname === '/ui/v1/providers' || parsed.pathname === '/ui/v1/models')) {
+        return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  });
+
+  const session = app.createSession();
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+  await app.fetchSessionMCP(session.id);
+  const result = await app.applySessionMCP(session.id, ['filesystem']);
+
+  if (result !== null) {
+    fail(name, 'expected null result for conflict');
+    return;
+  }
+  if ((session.mcpEnabled || []).length !== 0) {
+    fail(name, 'expected session MCP enabled list to remain empty', JSON.stringify(session.mcpEnabled));
+    return;
+  }
+  if (!String(app.elements.mcpError.textContent || '').includes('Cannot change MCPs')) {
+    fail(name, 'expected modal error to mention running response', app.elements.mcpError.textContent);
+    return;
+  }
+  pass(name);
+}
+
 (async () => {
   await testSwitchingSessionsStagesCurrentComposerBeforeRestore();
   await testSwitchingSessionsClearsEmptyComposerDraft();
@@ -3147,6 +3459,12 @@ async function testSwitchToSearchOnlySessionHydratesResult() {
   await testLateActiveRunSyncDoesNotMarkDraftStreaming();
   await testOlderPendingTranscriptVersionIsIgnoredOnStatus304();
   await testSyncActiveSessionIdleUsesTranscriptRefreshHelper();
+  await testAddMenuAttachOptionTriggersFileInput();
+  await testOpenMCPFromDraftCreatesSessionBeforeFetch();
+  await testMCPStateResponseUpdatesHeaderPill();
+  await testMCPHeaderPillOpensServersModal();
+  await testMCPControlChangePatchesImmediately();
+  await testMCPPatchConflictDoesNotOptimisticallyEnable();
 
   if (failures > 0) process.exit(1);
   process.exit(0);

@@ -47,6 +47,7 @@ type serveRuntime struct {
 	debugRaw             bool
 	autoCompact          bool
 	defaultModel         string
+	yoloMode             bool
 	lastUsedUnixNano     atomic.Int64
 	activeInterrupt      *runtimeInterruptState
 	lastResponseID       string

@@ -244,6 +244,9 @@ const elements = {
   askUserCancelBtn: document.getElementById('askUserCancelBtn'),
   askUserSubmitBtn: document.getElementById('askUserSubmitBtn'),
   attachBtn: document.getElementById('attachBtn'),
+  addMenu: document.getElementById('addMenu'),
+  addAttachOption: document.getElementById('addAttachOption'),
+  addMCPOption: document.getElementById('addMCPOption'),
   fileInput: document.getElementById('fileInput'),
   attachmentsStrip: document.getElementById('attachmentsStrip'),
   voiceStatus: document.getElementById('voiceStatus'),
@@ -252,6 +255,7 @@ const elements = {
   dropOverlay: document.getElementById('dropOverlay'),
   headerStats: document.getElementById('headerStats'),
   modelPicker: document.getElementById('modelPicker'),
+  mcpStatus: document.getElementById('mcpStatus'),
   headerTokens: document.getElementById('headerTokens'),
   headerTokensSep: document.getElementById('headerTokensSep'),
   chipProviderLabel: document.getElementById('chipProviderLabel'),
@@ -277,6 +281,10 @@ const elements = {
   approvalError: document.getElementById('approvalError'),
   approvalDenyBtn: document.getElementById('approvalDenyBtn'),
   approvalApproveBtn: document.getElementById('approvalApproveBtn'),
+  mcpModal: document.getElementById('mcpModal'),
+  mcpModalBody: document.getElementById('mcpModalBody'),
+  mcpError: document.getElementById('mcpError'),
+  mcpModalCloseBtn: document.getElementById('mcpModalCloseBtn'),
   lightbox: document.getElementById('lightbox'),
   lightboxImg: document.getElementById('lightboxImg'),
   lightboxVideo: document.getElementById('lightboxVideo'),
@@ -1173,9 +1181,50 @@ const setChipLabel = (labelEl, sepEl, text, { muted = false, hidden = false, tit
   labelEl.classList.toggle('stats-muted', muted);
 };
 
+const sessionMCPEnabledNames = (session) => {
+  const names = [];
+  const seen = new Set();
+  const add = (value) => {
+    const name = String(value || '').trim();
+    if (!name || seen.has(name)) return;
+    seen.add(name);
+    names.push(name);
+  };
+  if (Array.isArray(session?.mcpEnabled)) {
+    session.mcpEnabled.forEach(add);
+  }
+  if (Array.isArray(session?.mcpServers)) {
+    session.mcpServers.forEach((server) => {
+      if (server?.enabled) add(server.name);
+    });
+  }
+  return names;
+};
+
+const updateMCPStatusDisplay = (session) => {
+  const el = elements?.mcpStatus;
+  if (!el) return;
+  const names = sessionMCPEnabledNames(session);
+  if (names.length === 0) {
+    el.textContent = '';
+    el.title = '';
+    el.setAttribute('aria-label', 'Manage MCP servers');
+    setElementHidden(el, true);
+    return;
+  }
+  const countLabel = `MCP: ${names.length}`;
+  const namesLabel = names.join(', ');
+  const title = `Enabled MCP server${names.length === 1 ? '' : 's'}: ${namesLabel}. Click to manage.`;
+  el.textContent = countLabel;
+  el.title = title;
+  el.setAttribute('aria-label', title);
+  setElementHidden(el, false);
+};
+
 const updateSessionUsageDisplay = (session) => {
   const el = elements?.headerStats;
   if (!el) return;
+  updateMCPStatusDisplay(session);
   const lu = session?.lastUsage;
 
   // Lock the chips only while a response or modal interaction is active. Idle
@@ -1764,7 +1813,9 @@ const sanitizeSession = (session) => {
     sessionUsage: session.sessionUsage && typeof session.sessionUsage === 'object' ? session.sessionUsage : null,
     lastUsage: session.lastUsage && typeof session.lastUsage === 'object' ? session.lastUsage : null,
     activeModel: typeof session.activeModel === 'string' ? session.activeModel : '',
-    activeEffort: typeof session.activeEffort === 'string' ? session.activeEffort : ''
+    activeEffort: typeof session.activeEffort === 'string' ? session.activeEffort : '',
+    mcpServers: Array.isArray(session.mcpServers) ? session.mcpServers.slice() : [],
+    mcpEnabled: Array.isArray(session.mcpEnabled) ? session.mcpEnabled.map((name) => String(name || '').trim()).filter(Boolean) : []
   };
   if (session._serverOnly) result._serverOnly = true;
   if (typeof session.number === 'number' && session.number > 0) result.number = session.number;
@@ -1916,7 +1967,9 @@ const createSession = () => ({
   sessionUsage: null,
   lastUsage: null,
   activeModel: '',
-  provider: ''
+  provider: '',
+  mcpServers: [],
+  mcpEnabled: []
 });
 
 const sessionSlug = (session) => {
@@ -2103,6 +2156,8 @@ Object.assign(app, {
   renderMath,
   splitHeaderModelEffort,
   compactHeaderModelLabel,
+  sessionMCPEnabledNames,
+  updateMCPStatusDisplay,
   updateSessionUsageDisplay,
   isNearBottom,
   noteUserScrollIntent,

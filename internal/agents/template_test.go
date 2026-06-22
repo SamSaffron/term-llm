@@ -40,6 +40,20 @@ func TestExpandTemplate(t *testing.T) {
 		HandoverDir:     "/home/user/.local/share/term-llm/handover/project-abc123",
 		HandoverPath:    "/home/user/.local/share/term-llm/handover/project-abc123/2026-01-16-amber-creek-bloom.md",
 	}
+	t.Setenv("TERM_LLM_TEMPLATE_TEST", "from-env")
+	t.Setenv("TERM_LLM_TEMPLATE_TEST_EMPTY", "")
+	t.Setenv("TERM_LLM_TEMPLATE_TEST.DOTTED", "dotted-env")
+	missingEnvOld, missingEnvHad := os.LookupEnv("TERM_LLM_TEMPLATE_TEST_MISSING")
+	if err := os.Unsetenv("TERM_LLM_TEMPLATE_TEST_MISSING"); err != nil {
+		t.Fatalf("unset TERM_LLM_TEMPLATE_TEST_MISSING: %v", err)
+	}
+	t.Cleanup(func() {
+		if missingEnvHad {
+			_ = os.Setenv("TERM_LLM_TEMPLATE_TEST_MISSING", missingEnvOld)
+		} else {
+			_ = os.Unsetenv("TERM_LLM_TEMPLATE_TEST_MISSING")
+		}
+	})
 
 	tests := []struct {
 		name     string
@@ -85,6 +99,36 @@ func TestExpandTemplate(t *testing.T) {
 			name:     "unknown variable",
 			template: "Hello {{unknown}}",
 			expected: "Hello {{unknown}}",
+		},
+		{
+			name:     "environment variable",
+			template: "Env={{env:TERM_LLM_TEMPLATE_TEST}}",
+			expected: "Env=from-env",
+		},
+		{
+			name:     "environment variable with whitespace",
+			template: "Env={{ env : TERM_LLM_TEMPLATE_TEST }}",
+			expected: "Env=from-env",
+		},
+		{
+			name:     "environment variable with non word name",
+			template: "Env={{env:TERM_LLM_TEMPLATE_TEST.DOTTED}}",
+			expected: "Env=dotted-env",
+		},
+		{
+			name:     "empty environment variable expands empty",
+			template: "Env={{env:TERM_LLM_TEMPLATE_TEST_EMPTY}}",
+			expected: "Env=",
+		},
+		{
+			name:     "unset environment variable expands empty",
+			template: "Env={{env:TERM_LLM_TEMPLATE_TEST_MISSING}}",
+			expected: "Env=",
+		},
+		{
+			name:     "escaped environment variable renders literally",
+			template: "Document {{!env:TERM_LLM_TEMPLATE_TEST}}; expand {{env:TERM_LLM_TEMPLATE_TEST}}",
+			expected: "Document {{env:TERM_LLM_TEMPLATE_TEST}}; expand from-env",
 		},
 		{
 			name:     "timezone-aware time variables",
