@@ -207,37 +207,116 @@ term-llm serve hub</code></pre>
       parent.appendChild(box);
     };
 
+    const relativeSessionTime = (ms) => {
+      const t = Number(ms);
+      if (!Number.isFinite(t) || t <= 0) return '';
+      const diff = Math.max(0, Date.now() - t);
+      const minute = 60 * 1000;
+      const hour = 60 * minute;
+      const day = 24 * hour;
+      if (diff < minute) return 'just now';
+      if (diff < hour) return `${Math.floor(diff / minute)}m ago`;
+      if (diff < day) return `${Math.floor(diff / hour)}h ago`;
+      if (diff < 7 * day) return `${Math.floor(diff / day)}d ago`;
+      return new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    };
+
+    const sessionMessageCountLabel = (count) => {
+      const n = Number(count);
+      if (!Number.isFinite(n) || n <= 0) return '';
+      return `${n} ${n === 1 ? 'message' : 'messages'}`;
+    };
+
+    const sessionMetaText = (session, { active = false } = {}) => {
+      const parts = [];
+      if (active || session.active_run) parts.push('active now');
+      const rel = relativeSessionTime(session.last_message_at);
+      if (rel) parts.push(rel);
+      const count = sessionMessageCountLabel(session.message_count);
+      if (count) parts.push(count);
+      return parts.join(' · ');
+    };
+
+    const nodeResumePath = (n) => {
+      const sessions = n.sessions || {};
+      return sessions.resume_path
+        || (Array.isArray(sessions.active) && sessions.active[0] && sessions.active[0].resume_path)
+        || (Array.isArray(sessions.recent) && sessions.recent[0] && sessions.recent[0].resume_path)
+        || '';
+    };
+
+    const appendNodeSessionGroup = (parent, label, sessions, opts = {}) => {
+      if (!Array.isArray(sessions) || !sessions.length) return;
+      const group = el('div', 'node-session-group');
+      group.appendChild(el('div', 'node-session-label', label));
+      sessions.forEach((session) => {
+        const row = el('a', `node-session-row${opts.active ? ' is-active' : ''}`);
+        row.href = session.resume_path || '#';
+        row.title = session.long_title || session.short_title || session.id || 'Session';
+        const title = el('span', 'node-session-title', session.short_title || session.long_title || session.id || 'Untitled session');
+        const meta = el('span', 'node-session-meta', sessionMetaText(session, { active: opts.active }));
+        row.appendChild(title);
+        row.appendChild(meta);
+        group.appendChild(row);
+      });
+      parent.appendChild(group);
+    };
+
+    const appendNodeSessions = (card, n) => {
+      const box = el('div', 'node-sessions');
+      const sessions = n.sessions;
+      if (!sessions) {
+        const reachable = Boolean((n.status || {}).reachable);
+        box.appendChild(el('div', 'node-session-empty', reachable ? 'Sessions unavailable' : 'Sessions unavailable while offline'));
+        card.appendChild(box);
+        return;
+      }
+
+      const active = Array.isArray(sessions.active) ? sessions.active : [];
+      const recent = Array.isArray(sessions.recent) ? sessions.recent : [];
+      appendNodeSessionGroup(box, 'Active', active, { active: true });
+      if (active.length) {
+        appendNodeSessionGroup(box, 'Recent', recent);
+      } else if (recent.length) {
+        appendNodeSessionGroup(box, 'Last session', recent.slice(0, 1));
+        appendNodeSessionGroup(box, 'Recent', recent.slice(1));
+      }
+      if (!active.length && !recent.length) {
+        box.appendChild(el('div', 'node-session-empty', 'No sessions yet'));
+      }
+      card.appendChild(box);
+    };
+
     const renderNode = (n) => {
+      const status = n.status || {};
       const card = el('article', 'node-card');
       const head = el('div', 'node-card-head');
-      const dotClass = n.status.reachable ? 'ok' : 'down';
+      const dotClass = status.reachable ? 'ok' : 'down';
       const dot = el('span', `status-dot ${dotClass}`);
-      dot.title = n.status.reachable ? 'Reachable' : (n.status.error || 'Unreachable');
+      dot.title = status.reachable ? 'Reachable' : (status.error || 'Unreachable');
       head.appendChild(dot);
       head.appendChild(el('h2', 'node-name', n.name));
+      if (n.sessions && n.sessions.count_label) {
+        head.appendChild(el('span', 'session-count-badge', n.sessions.count_label));
+      }
       head.appendChild(el('span', `source-badge source-${n.source}`, n.source));
       card.appendChild(head);
 
-      const meta = el('dl', 'node-meta');
-      const row = (label, value) => {
-        if (!value) return;
-        meta.appendChild(el('dt', '', label));
-        meta.appendChild(el('dd', '', value));
-      };
-      row('ID', n.id);
-      row('URL', n.url + (n.base_path || ''));
-      row('Status', n.status.state + (n.status.reachable ? ` · ${n.status.latency_ms} ms` : ''));
-      row('Agent', n.status.agent);
-      row('Version', n.status.version);
-      card.appendChild(meta);
-
-      if (Array.isArray(n.status.capabilities) && n.status.capabilities.length) {
+      const capabilities = Array.isArray(status.capabilities) ? status.capabilities : [];
+      const summaryParts = [status.agent || n.id, status.version, status.state && !status.reachable ? status.state : ''].filter(Boolean);
+      if (summaryParts.length) {
+        card.appendChild(el('div', 'node-summary-line', summaryParts.join(' · ')));
+      }
+      if (capabilities.length) {
         const caps = el('div', 'node-caps');
-        n.status.capabilities.forEach((c) => caps.appendChild(el('span', 'cap-chip', c)));
+        capabilities.forEach((c) => caps.appendChild(el('span', 'cap-chip', c)));
         card.appendChild(caps);
       }
-      if (!n.status.reachable && n.status.error) {
-        card.appendChild(el('div', 'node-error', n.status.error));
+
+      appendNodeSessions(card, n);
+
+      if (!status.reachable && status.error) {
+        card.appendChild(el('div', 'node-error', status.error));
       }
       if (Array.isArray(n.diagnostics) && n.diagnostics.length) {
         const diagList = el('div', 'node-diagnostics');
@@ -251,9 +330,20 @@ term-llm serve hub</code></pre>
       }
 
       const actions = el('div', 'node-actions');
-      const open = el('a', 'hub-btn primary', 'Open');
-      open.href = n.proxy_path;
-      actions.appendChild(open);
+      const resume = el('a', 'hub-btn primary', 'Resume');
+      const resumePath = nodeResumePath(n);
+      if (resumePath) {
+        resume.href = resumePath;
+      } else {
+        resume.href = '#';
+        resume.classList.add('disabled');
+        resume.setAttribute('aria-disabled', 'true');
+        resume.tabIndex = -1;
+      }
+      actions.appendChild(resume);
+      const fresh = el('a', 'hub-btn ghost', 'New');
+      fresh.href = n.new_session_path || `${n.proxy_path}?new=1`;
+      actions.appendChild(fresh);
       if (n.source === 'local') {
         const del = el('button', 'hub-btn danger', 'Remove');
         del.type = 'button';
@@ -319,7 +409,15 @@ term-llm serve hub</code></pre>
         grid.replaceChildren(...nodes.map(renderNode));
         emptyBox.classList.toggle('hidden', nodes.length > 0);
         const up = nodes.filter((n) => n.status.reachable).length;
-        summary.textContent = nodes.length ? `${up}/${nodes.length} nodes reachable` : '';
+        const activeSessions = nodes.reduce((total, n) => {
+          if (!n.sessions) return total;
+          const explicit = Number(n.sessions.active_count);
+          if (Number.isFinite(explicit) && explicit > 0) return total + explicit;
+          return total + (Array.isArray(n.sessions.active) ? n.sessions.active.length : 0);
+        }, 0);
+        summary.textContent = nodes.length
+          ? `${up}/${nodes.length} nodes reachable${activeSessions ? ` · ${activeSessions} active ${activeSessions === 1 ? 'session' : 'sessions'}` : ''}`
+          : '';
         if (data.resolver_error) {
           errorBox.textContent = `Some sources failed to resolve: ${data.resolver_error}`;
           errorBox.classList.remove('hidden');

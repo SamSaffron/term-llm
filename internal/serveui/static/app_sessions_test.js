@@ -289,7 +289,7 @@ async function createSessionsHarness(options = {}) {
     TERM_LLM_UI_PREFIX: options.uiPrefix || '/ui',
     TERM_LLM_SIDEBAR_SESSIONS: 'all',
     TERM_LLM_HUB: options.hub || null,
-    location: { pathname: options.pathname || `${options.uiPrefix || '/ui'}/`, search: '', origin: 'https://example.test', protocol: 'https:', host: 'example.test' },
+    location: { pathname: options.pathname || `${options.uiPrefix || '/ui'}/`, search: options.search || '', origin: 'https://example.test', protocol: 'https:', host: 'example.test' },
     history: { pushState(_state, _title, url) { windowObj.location.pathname = url; } },
     matchMedia() {
       return {
@@ -770,6 +770,46 @@ async function testNumericDeepLinkResolvesRealSessionId() {
     fail(name, 'should not use pending_ prefix in session id', JSON.stringify(fetchCalls));
     return;
   }
+  pass(name);
+}
+
+
+async function testNewQueryStartsDraftInsteadOfLastSession() {
+  const name = 'new query starts draft instead of resuming last session';
+  const { app } = await createSessionsHarness({
+    search: '?new=1',
+    initialStorage: {
+      term_llm_active_session: 'sess_old',
+      term_llm_draft_session_active: '0',
+    },
+    fetchImpl: async (url) => {
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({
+          sessions: [{
+            id: 'sess_old',
+            short_title: 'Old session',
+            long_title: 'Old session',
+            mode: 'chat',
+            origin: 'web',
+            archived: false,
+            pinned: false,
+            created_at: 1710000000000,
+            message_count: 1,
+          }]
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+
+  if (!app.state.draftSessionActive || app.state.activeSessionId !== '') {
+    fail(name, 'expected fresh draft to stay active', JSON.stringify({
+      draftSessionActive: app.state.draftSessionActive,
+      activeSessionId: app.state.activeSessionId,
+    }));
+    return;
+  }
+
   pass(name);
 }
 
@@ -3637,6 +3677,7 @@ async function testMCPPatchConflictDoesNotOptimisticallyEnable() {
   await testSwitchingSessionsDiscardsPendingAttachments();
   await testSwitchToSessionSyncsSelectedRuntime();
   await testNumericDeepLinkResolvesRealSessionId();
+  await testNewQueryStartsDraftInsteadOfLastSession();
   await testMergeServerSessionsMigratesInterruptBuffersToRealSessionId();
   await testDeveloperMessagesAreHidden();
   await testConvertServerMessagesCompactionSummariesBecomeMarkers();

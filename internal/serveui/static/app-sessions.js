@@ -177,6 +177,15 @@ const createAndSwitchToFreshSession = async () => {
   await switchToDraftSession({ clearComposer: true, focusPrompt: true });
 };
 
+const forceNewSessionFromURL = () => {
+  try {
+    const params = new URLSearchParams(window.location.search || '');
+    return params.has('new') || params.has('fresh');
+  } catch {
+    return false;
+  }
+};
+
 const stageCurrentComposerForSession = (sessionId) => {
   const prompt = String(elements.promptInput.value || '').trim();
   if (prompt) {
@@ -1960,8 +1969,13 @@ const initialize = async () => {
   state.sessions = loadSessions();
 
   // Check URL for a specific session (number or ID)
-  const urlSlug = sessionIdFromURL();
-  if (urlSlug) {
+  const forceNewSession = forceNewSessionFromURL();
+  const urlSlug = forceNewSession ? '' : sessionIdFromURL();
+  if (forceNewSession) {
+    state.activeSessionId = '';
+    state.draftSessionActive = true;
+    updateURL('');
+  } else if (urlSlug) {
     const found = findSessionBySlug(urlSlug);
     if (found) {
       state.activeSessionId = found.id;
