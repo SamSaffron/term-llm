@@ -5,7 +5,7 @@ const app = window.TermLLMApp;
 const {
   UI_PREFIX, STORAGE_KEYS, state, elements, generateId, sanitizeInterruptState, INTERJECTION_PHASE, sanitizeMessage, syncTokenCookie, truncate, saveSessions,
   getActiveSession, createSession, scrollToBottom, setConnectionState, sessionSlug, updateURL,
-  persistAndRefreshShell, updateSessionUsageDisplay, splitHeaderModelEffort, compactHeaderModelLabel, refreshRelativeTimes, requestHeaders: _unusedRequestHeaders, updateAssistantNode, updateUserNode,
+  persistAndRefreshShell, updateSessionUsageDisplay, splitHeaderModelEffort, compactHeaderModelLabel, getDefaultProviderName, getDefaultModelForProvider, refreshRelativeTimes, requestHeaders: _unusedRequestHeaders, updateAssistantNode, updateUserNode,
   updateToolNode, updateToolGroupNode, createMessageNode, createToolGroupNode, updateModelSwapNode, renderSidebar, renderMessages, maybeNotifyResponseComplete,
   enqueueAssistantStreamUpdate, finalizeAssistantStreamRender, syncTurnActionPanels,
   subscribeToPush, shouldAutoSubscribeToPush, applyTextDirection, shouldSuppressPromptAutoFocus, setSessionOptimisticBusy, setSessionServerActiveRun,
@@ -137,6 +137,21 @@ const fetchProviders = async (tokenOverride = '') => {
   return Array.isArray(data.data) ? data.data : [];
 };
 
+const normalizeModelMetadata = (items) => {
+  const ids = [];
+  const byID = {};
+  (Array.isArray(items) ? items : []).forEach((m) => {
+    const id = String(m?.id || '').trim();
+    if (!id) return;
+    ids.push(id);
+    const efforts = Array.isArray(m?.reasoning_efforts)
+      ? m.reasoning_efforts.map((v) => String(v || '').trim()).filter(Boolean)
+      : [];
+    byID[id] = { id, reasoning_efforts: efforts };
+  });
+  return { ids, byID };
+};
+
 const fetchModels = async (tokenOverride = '', provider = '') => {
   const headers = {};
   const token = tokenOverride || state.token;
@@ -151,9 +166,12 @@ const fetchModels = async (tokenOverride = '', provider = '') => {
   }
 
   const data = await response.json().catch(() => ({ data: [] }));
-  return Array.isArray(data.data)
-    ? data.data.map((m) => m?.id).filter(Boolean)
-    : [];
+  const { ids, byID } = normalizeModelMetadata(data.data);
+  const requestedProvider = String(provider || state.selectedProvider || '').trim();
+  if (!requestedProvider || requestedProvider === String(state.selectedProvider || '').trim()) {
+    state.modelInfoByID = byID;
+  }
+  return ids;
 };
 
 const parseSSEStream = async (stream, onEvent) => {
@@ -2077,6 +2095,7 @@ const connectToken = async () => {
 
   const tokenChanged = token !== state.token;
   if (!tokenChanged) {
+    renderEffortOptions();
     if (showHiddenChanged && state.connected) {
       void app.mergeServerSessions({ includeArchived: state.showHiddenSessions }).then(() => {
         renderSidebar();
@@ -2203,6 +2222,7 @@ const applyProviderChange = async (provider) => {
 
   const providerInfo = state.providers.find((p) => p.name === provider);
   state.models = providerInfo?.models?.length ? providerInfo.models : [];
+  state.modelInfoByID = {};
   renderModelOptions();
 
   // Reflect the clicked provider immediately. Fetching the model list can be
@@ -2228,6 +2248,65 @@ const applyProviderChange = async (provider) => {
   app.updateHeader();
 };
 
+const resolveEffectiveModelForEffort = (model, effort) => {
+  const split = splitHeaderModelEffort(model || '', effort || '', state.models);
+  if (split.model) return split.model;
+  const provider = state.selectedProvider || getDefaultProviderName?.() || '';
+  return getDefaultModelForProvider?.(provider) || '';
+};
+
+const effectiveModelForEffort = () => resolveEffectiveModelForEffort(state.selectedModel, state.selectedEffort);
+
+const modelMetadataFor = (model) => {
+  const id = String(model || '').trim();
+  if (!id || !state.modelInfoByID) return null;
+  return Object.prototype.hasOwnProperty.call(state.modelInfoByID, id) ? state.modelInfoByID[id] : null;
+};
+
+const reasoningEffortsForModel = (model) => {
+  const info = modelMetadataFor(model);
+  return Array.isArray(info?.reasoning_efforts)
+    ? info.reasoning_efforts.map((v) => String(v || '').trim()).filter(Boolean)
+    : [];
+};
+
+const LEGACY_REASONING_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+
+const allowedReasoningEffortsForSelection = () => {
+  const model = effectiveModelForEffort();
+  const info = modelMetadataFor(model);
+  const efforts = reasoningEffortsForModel(model);
+  if (!info || efforts.length === 0) return LEGACY_REASONING_EFFORTS;
+  return efforts;
+};
+
+const populateEffortSelectOptions = (sel, efforts, previous) => {
+  if (!sel) return;
+  sel.innerHTML = '';
+
+  const autoOption = document.createElement('option');
+  autoOption.value = '';
+  autoOption.textContent = 'Auto (server default)';
+  sel.appendChild(autoOption);
+
+  efforts.forEach((effort) => {
+    const option = document.createElement('option');
+    option.value = effort;
+    option.textContent = effort;
+    sel.appendChild(option);
+  });
+
+  sel.disabled = efforts.length === 0;
+  sel.value = efforts.includes(previous) ? previous : '';
+};
+
+const renderEffortOptions = () => {
+  const efforts = allowedReasoningEffortsForSelection();
+  const previous = state.selectedEffort || '';
+  populateEffortSelectOptions(elements.effortSelect, efforts, previous);
+  populateEffortSelectOptions(elements.chipEffortSelect, efforts, previous);
+};
+
 const persistRuntimeSelection = () => {
   const persist = (key, value) => {
     if (value) {
@@ -2243,11 +2322,19 @@ const persistRuntimeSelection = () => {
 
 const canonicalizeSelectedModelEffort = () => {
   const split = splitHeaderModelEffort(state.selectedModel, state.selectedEffort, state.models);
-  if (split.model === (state.selectedModel || '') && split.effort === (state.selectedEffort || '')) {
+  let nextModel = split.model;
+  let nextEffort = split.effort;
+  const effectiveModel = resolveEffectiveModelForEffort(nextModel, nextEffort);
+  const info = modelMetadataFor(effectiveModel);
+  const allowed = info ? reasoningEffortsForModel(effectiveModel) : [];
+  if (nextEffort && info && allowed.length > 0 && !allowed.includes(nextEffort)) {
+    nextEffort = '';
+  }
+  if (nextModel === (state.selectedModel || '') && nextEffort === (state.selectedEffort || '')) {
     return false;
   }
-  state.selectedModel = split.model;
-  state.selectedEffort = split.effort;
+  state.selectedModel = nextModel;
+  state.selectedEffort = nextEffort;
   persistRuntimeSelection();
   return true;
 };
@@ -2255,6 +2342,7 @@ const canonicalizeSelectedModelEffort = () => {
 const applyModelChange = (model) => {
   state.selectedModel = model;
   canonicalizeSelectedModelEffort();
+  renderEffortOptions();
   persistRuntimeSelection();
   syncSettingsSelectValues();
   app.updateHeader();
@@ -2825,6 +2913,7 @@ const renderModelOptions = () => {
   const previous = state.selectedModel;
   populateModelSelectOptions(elements.modelSelect, state.models, previous);
   populateModelSelectOptions(elements.chipModelSelect, state.models, previous);
+  renderEffortOptions();
 };
 
 // ===== Composer logic =====
@@ -4046,6 +4135,7 @@ Object.assign(app, {
   connectToken,
   normalizeSelectedProvider,
   canonicalizeSelectedModelEffort,
+  applyModelChange,
   applyEffortChange,
   queueActiveRunEffortChange,
   renderProviderOptions,

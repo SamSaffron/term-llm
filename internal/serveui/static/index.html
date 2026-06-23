@@ -219,8 +219,14 @@
               </div>
               <span class="chip-sep" id="chipSepProviderModel" data-sep="provider-model">·</span>
               <div class="model-chip model-chip-primary" data-chip="model" id="chipModel">
-                <button type="button" class="chip-trigger" id="chipModelTrigger" aria-haspopup="listbox" aria-expanded="false" aria-label="Model">
+                <button type="button" class="chip-trigger narrow-header-action" id="chipModelTrigger" aria-haspopup="listbox" aria-expanded="false" aria-label="Model">
                   <span class="chip-label" id="chipModelLabel">—</span>
+                  <svg class="effort-meter" viewBox="0 0 8 12" aria-hidden="true" focusable="false">
+                    <rect class="effort-meter-bar effort-meter-bar-1" x="0" y="7" width="1.4" height="5" rx="0.7"></rect>
+                    <rect class="effort-meter-bar effort-meter-bar-2" x="2.2" y="5" width="1.4" height="7" rx="0.7"></rect>
+                    <rect class="effort-meter-bar effort-meter-bar-3" x="4.4" y="3" width="1.4" height="9" rx="0.7"></rect>
+                    <rect class="effort-meter-bar effort-meter-bar-4" x="6.6" y="1" width="1.4" height="11" rx="0.7"></rect>
+                  </svg>
                 </button>
                 <select class="chip-select-hidden" id="chipModelSelect" aria-hidden="true" tabindex="-1">
                   <option value="">Auto (server default)</option>
@@ -242,12 +248,12 @@
                 </select>
               </div>
             </div>
-            <button type="button" class="mcp-status" id="mcpStatus" hidden aria-label="Manage MCP servers"></button>
+            <button type="button" class="mcp-status header-action" id="mcpStatus" hidden aria-label="Manage MCP servers"></button>
             <span class="chip-sep header-tokens-sep" id="headerTokensSep" hidden>·</span>
             <span class="header-tokens" id="headerTokens"></span>
           </div>
           </div>
-          <button class="icon-btn diff-toggle" id="diffToggleBtn" type="button" hidden aria-label="Toggle file changes" title="File changes">
+          <button class="icon-btn diff-toggle header-action" id="diffToggleBtn" type="button" hidden aria-label="Toggle file changes" title="File changes">
             <span class="diff-toggle-badge" id="diffToggleBadge"></span>
           </button>
         </div>

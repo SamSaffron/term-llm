@@ -10134,24 +10134,84 @@ func TestHandleModels_DropsEffortSuffixDuplicates(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
 		t.Fatalf("json decode: %v", err)
 	}
-	got := make(map[string]bool, len(result.Data))
+	got := make(map[string]map[string]any, len(result.Data))
 	for _, m := range result.Data {
 		id, _ := m["id"].(string)
-		got[id] = true
+		got[id] = m
 	}
 	// Base models must remain.
 	for _, want := range []string{"opus", "sonnet", "haiku"} {
-		if !got[want] {
+		if _, ok := got[want]; !ok {
 			t.Errorf("expected %q in models response, got %v", want, got)
 		}
 	}
 	// Effort-suffixed aliases must be filtered out — the web UI has a
 	// dedicated reasoning-effort selector for these.
 	for _, banned := range []string{"opus-low", "opus-medium", "opus-high", "opus-xhigh", "opus-max", "sonnet-low", "sonnet-medium", "sonnet-high"} {
-		if got[banned] {
+		if _, ok := got[banned]; ok {
 			t.Errorf("unexpected %q in models response (should be deduped by effort selector)", banned)
 		}
 	}
+	opusEfforts, _ := got["opus"]["reasoning_efforts"].([]any)
+	if !stringAnySliceContains(opusEfforts, "max") {
+		t.Fatalf("opus reasoning_efforts = %#v, want max", got["opus"]["reasoning_efforts"])
+	}
+	sonnetEfforts, _ := got["sonnet"]["reasoning_efforts"].([]any)
+	if stringAnySliceContains(sonnetEfforts, "max") {
+		t.Fatalf("sonnet reasoning_efforts = %#v, want no max", got["sonnet"]["reasoning_efforts"])
+	}
+}
+
+func TestHandleModels_ReportsGPT5EffortsWithoutMax(t *testing.T) {
+	cfg := &config.Config{
+		DefaultProvider: "chatgpt",
+		Providers:       map[string]config.ProviderConfig{"chatgpt": {Model: "gpt-5.5"}},
+	}
+	mock := llm.NewMockProvider("chatgpt")
+	srv := &serveServer{
+		cfgRef:          cfg,
+		modelsProviders: map[string]llm.Provider{"chatgpt": mock},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models?provider=chatgpt", nil)
+	rr := httptest.NewRecorder()
+	srv.handleModels(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+	var result struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
+		t.Fatalf("json decode: %v", err)
+	}
+	var efforts []any
+	for _, m := range result.Data {
+		if m["id"] == "gpt-5.5" {
+			efforts, _ = m["reasoning_efforts"].([]any)
+			break
+		}
+	}
+	if len(efforts) == 0 {
+		t.Fatalf("gpt-5.5 reasoning_efforts missing in %s", rr.Body.String())
+	}
+	for _, want := range []string{"minimal", "low", "medium", "high", "xhigh"} {
+		if !stringAnySliceContains(efforts, want) {
+			t.Fatalf("gpt-5.5 reasoning_efforts = %#v, missing %q", efforts, want)
+		}
+	}
+	if stringAnySliceContains(efforts, "max") {
+		t.Fatalf("gpt-5.5 reasoning_efforts = %#v, want no max", efforts)
+	}
+}
+
+func stringAnySliceContains(values []any, want string) bool {
+	for _, v := range values {
+		if s, ok := v.(string); ok && s == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestHandleResponses_WithProviderField(t *testing.T) {

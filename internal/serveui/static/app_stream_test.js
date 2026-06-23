@@ -42,9 +42,14 @@ function makeClassList() {
 }
 
 function makeNode() {
-  return {
+  const node = {
     classList: makeClassList(),
-    appendChild() {},
+    children: [],
+    appendChild(child) {
+      this.children.push(child);
+      if (child && Object.prototype.hasOwnProperty.call(child, 'value')) this.options.push(child);
+      return child;
+    },
     querySelector() { return null; },
     querySelectorAll() { return []; },
     setAttribute() {},
@@ -54,10 +59,20 @@ function makeNode() {
     focus() {},
     value: '',
     textContent: '',
-    innerHTML: '',
     disabled: false,
     dataset: {},
+    options: [],
   };
+  let inner = '';
+  Object.defineProperty(node, 'innerHTML', {
+    get() { return inner; },
+    set(value) {
+      inner = String(value || '');
+      this.children = [];
+      this.options = [];
+    },
+  });
+  return node;
 }
 
 function makeMessageContainer() {
@@ -178,44 +193,12 @@ function createHarness(options = {}) {
       style: {},
       appendChild() {},
     },
-    providerSelect: {
-      value: '',
-      innerHTML: '',
-      appendChild() {},
-      addEventListener() {},
-      removeAttribute() {},
-      setAttribute() {},
-    },
-    modelSelect: {
-      value: '',
-      innerHTML: '',
-      appendChild() {},
-      addEventListener() {},
-      removeAttribute() {},
-      setAttribute() {},
-    },
-    effortSelect: {
-      value: '',
-      addEventListener() {},
-      removeAttribute() {},
-      setAttribute() {},
-    },
-    chipProviderSelect: {
-      value: '',
-      innerHTML: '',
-      appendChild() {},
-      addEventListener() {},
-    },
-    chipModelSelect: {
-      value: '',
-      innerHTML: '',
-      appendChild() {},
-      addEventListener() {},
-    },
-    chipEffortSelect: {
-      value: '',
-      addEventListener() {},
-    },
+    providerSelect: makeNode(),
+    modelSelect: makeNode(),
+    effortSelect: makeNode(),
+    chipProviderSelect: makeNode(),
+    chipModelSelect: makeNode(),
+    chipEffortSelect: makeNode(),
     chipProviderTrigger: {
       addEventListener() {},
       setAttribute() {},
@@ -655,6 +638,68 @@ async function waitFor(predicate, timeoutMs) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   return false;
+}
+
+async function testModelEffortOptionsFollowMetadata() {
+  const name = 'model effort options follow /v1/models metadata';
+  const harness = createHarness({
+    fetchImpl: async (url, _requestOptions, { Response }) => {
+      if (url === '/ui/v1/models?provider=chatgpt') {
+        return new Response(JSON.stringify({
+          data: [
+            { id: 'gpt-5.5', reasoning_efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'] },
+            { id: 'listed-no-metadata' },
+            { id: 'opus', reasoning_efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+          ],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    },
+  });
+  const { app, state, elements, cleanup } = harness;
+  state.selectedProvider = 'chatgpt';
+  state.selectedModel = 'gpt-5.5';
+  state.selectedEffort = 'max';
+  state.models = await app.fetchModels('', 'chatgpt');
+  app.renderModelOptions();
+
+  if (state.selectedEffort !== '') {
+    fail(name, `invalid max effort was not cleared: ${JSON.stringify(state.selectedEffort)}`);
+    await cleanup();
+    return;
+  }
+  const effortValues = elements.chipEffortSelect.options.map((opt) => opt.value);
+  if (effortValues.includes('max')) {
+    fail(name, `gpt-5.5 effort options include max: ${JSON.stringify(effortValues)}`);
+    await cleanup();
+    return;
+  }
+  for (const want of ['', 'minimal', 'low', 'medium', 'high', 'xhigh']) {
+    if (!effortValues.includes(want)) {
+      fail(name, `gpt-5.5 effort options missing ${JSON.stringify(want)}: ${JSON.stringify(effortValues)}`);
+      await cleanup();
+      return;
+    }
+  }
+
+  state.selectedEffort = 'max';
+  app.applyModelChange('listed-no-metadata');
+  const fallbackValues = elements.chipEffortSelect.options.map((opt) => opt.value);
+  if (state.selectedEffort !== 'max' || !fallbackValues.includes('max')) {
+    fail(name, `listed model without efforts should use legacy fallback: state=${JSON.stringify(state.selectedEffort)} options=${JSON.stringify(fallbackValues)}`);
+    await cleanup();
+    return;
+  }
+
+  app.applyModelChange('opus');
+  const opusValues = elements.chipEffortSelect.options.map((opt) => opt.value);
+  if (!opusValues.includes('max')) {
+    fail(name, `opus effort options missing max: ${JSON.stringify(opusValues)}`);
+    await cleanup();
+    return;
+  }
+  await cleanup();
+  pass(name);
 }
 
 async function testResponseCompletedForcesSidebarStatusRefresh() {
@@ -4037,6 +4082,7 @@ function testCompletedResponseClearsUnappliedQueuedEffort() {
 }
 
 (async () => {
+  await testModelEffortOptionsFollowMetadata();
   await testResponseCompletedForcesSidebarStatusRefresh();
   await testStaleTerminalStreamDoesNotRefreshStatus();
   await testInactiveSessionStreamEventsDoNotAppendToVisibleDOM();

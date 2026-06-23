@@ -2132,6 +2132,9 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 			item["input_price"] = m.InputPrice
 			item["output_price"] = m.OutputPrice
 		}
+		if efforts := llm.ReasoningEffortsForProviderModel(effectiveName, id); len(efforts) > 0 {
+			item["reasoning_efforts"] = efforts
+		}
 		items = append(items, item)
 	}
 

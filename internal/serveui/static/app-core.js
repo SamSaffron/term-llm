@@ -76,6 +76,7 @@ const state = {
   providers: [],
   selectedProvider: localStorage.getItem(STORAGE_KEYS.selectedProvider) || '',
   models: [],
+  modelInfoByID: {},
   selectedModel: localStorage.getItem(STORAGE_KEYS.selectedModel) || '',
   selectedEffort: localStorage.getItem(STORAGE_KEYS.selectedEffort) || '',
   sidebarCollapsed: localStorage.getItem(STORAGE_KEYS.sidebarCollapsed) === '1',
@@ -1131,6 +1132,12 @@ const escapeHTML = (str) => {
 };
 
 const KNOWN_EFFORT_SUFFIXES = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+const HEADER_EFFORT_LEVELS = new Set([...KNOWN_EFFORT_SUFFIXES, 'auto']);
+
+const normalizeHeaderEffortLevel = (effort) => {
+  const raw = String(effort || '').trim().toLowerCase();
+  return HEADER_EFFORT_LEVELS.has(raw) ? raw : 'auto';
+};
 
 const modelEffortSuffix = (model) => {
   const rawModel = String(model || '').trim();
@@ -1349,6 +1356,13 @@ const updateSessionUsageDisplay = (session) => {
     effortLabel,
     { muted: !effortHasValue, hidden: false, title: pendingEffortQueued ? 'Queued for the next model turn' : '' }
   );
+
+  const effortMeterLevel = normalizeHeaderEffortLevel(pendingEffortQueued ? pendingEffort : resolvedEffort);
+  if (elements.chipModelTrigger) {
+    elements.chipModelTrigger.dataset.effortLevel = effortMeterLevel;
+    elements.chipModelTrigger.dataset.effortLabel = effortLabel;
+    elements.chipModelTrigger.setAttribute('aria-label', `Model: ${modelLabel}. Reasoning effort: ${effortLabel}`);
+  }
 
   setChipSelectValue(elements.chipProviderSelect, state.selectedProvider || '');
   setChipSelectValue(elements.chipModelSelect, state.selectedModel || '');
@@ -2224,6 +2238,8 @@ Object.assign(app, {
   renderMath,
   splitHeaderModelEffort,
   compactHeaderModelLabel,
+  getDefaultProviderName,
+  getDefaultModelForProvider,
   sessionMCPEnabledNames,
   updateMCPStatusDisplay,
   updateSessionUsageDisplay,

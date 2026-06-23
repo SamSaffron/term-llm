@@ -492,6 +492,14 @@ const app = loadAppCore();
     fail(name, `applied label = ${JSON.stringify(chipEffortLabel.textContent)}, want high`);
     return;
   }
+  if (testApp.elements.chipModelTrigger.dataset.effortLevel !== 'high') {
+    fail(name, `model effort meter = ${JSON.stringify(testApp.elements.chipModelTrigger.dataset.effortLevel)}, want high`);
+    return;
+  }
+  if (testApp.elements.chipModelTrigger.dataset.effortLabel !== 'high') {
+    fail(name, `model effort meter label = ${JSON.stringify(testApp.elements.chipModelTrigger.dataset.effortLabel)}, want high`);
+    return;
+  }
   pass(name);
 })();
 

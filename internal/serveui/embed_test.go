@@ -67,6 +67,74 @@ func TestStaticAssetsUseStrictMathDelimiters(t *testing.T) {
 	}
 }
 
+func TestHeaderControlsUseSharedActionPill(t *testing.T) {
+	indexHTML, err := StaticAsset("index.html")
+	if err != nil {
+		t.Fatalf("StaticAsset(index.html): %v", err)
+	}
+	htmlSrc := string(indexHTML)
+	for _, want := range []string{
+		`class="chip-trigger narrow-header-action" id="chipModelTrigger"`,
+		`class="mcp-status header-action" id="mcpStatus"`,
+		`class="icon-btn diff-toggle header-action" id="diffToggleBtn"`,
+	} {
+		if !strings.Contains(htmlSrc, want) {
+			t.Fatalf("index.html missing shared/responsive header action class: %s", want)
+		}
+	}
+	if !strings.Contains(htmlSrc, `class="effort-meter"`) {
+		t.Fatal("model picker should include the narrow effort meter icon")
+	}
+	if strings.Contains(htmlSrc, `class="chip-trigger header-action" id="chipModelTrigger"`) {
+		t.Fatal("model picker should only use the shared pill styling at narrow widths")
+	}
+
+	css, err := StaticAsset("app.css")
+	if err != nil {
+		t.Fatalf("StaticAsset(app.css): %v", err)
+	}
+	cssSrc := string(css)
+	for _, want := range []string{
+		"--header-action-height:",
+		"--header-action-radius:",
+		".header-action {",
+		"height: var(--header-action-height);",
+		"border-radius: var(--header-action-radius);",
+		".header-controls-row .narrow-header-action {",
+		".effort-meter {",
+		".chip-trigger:not(.header-action) {",
+	} {
+		if !strings.Contains(cssSrc, want) {
+			t.Fatalf("app.css missing shared header action styling: %s", want)
+		}
+	}
+	for _, selector := range []string{".diff-toggle", ".mcp-status"} {
+		block := cssRuleBlock(cssSrc, selector)
+		if block == "" {
+			t.Fatalf("app.css missing %s rule", selector)
+		}
+		for _, forbidden := range []string{"height:", "border-radius:", "background:", "box-shadow:"} {
+			if strings.Contains(block, forbidden) {
+				t.Fatalf("%s should not override shared header action %s declaration: %s", selector, forbidden, block)
+			}
+		}
+	}
+}
+
+func cssRuleBlock(cssSrc, selector string) string {
+	needle := selector + " {"
+	start := strings.Index(cssSrc, needle)
+	if start < 0 {
+		return ""
+	}
+	bodyStart := start + len(needle)
+	end := strings.Index(cssSrc[bodyStart:], "}")
+	if end < 0 {
+		return ""
+	}
+	return cssSrc[bodyStart : bodyStart+end]
+}
+
 func TestStaticAssetsEmbedProductionFilesOnly(t *testing.T) {
 	embedded := make(map[string]bool)
 	var testFixtures []string
