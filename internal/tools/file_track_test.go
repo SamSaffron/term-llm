@@ -351,6 +351,134 @@ func TestShellToolGitFallback(t *testing.T) {
 	}
 }
 
+func TestShellToolSkipsGitIgnoredAffectedPathMatches(t *testing.T) {
+	dir := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git unavailable, skipping: %v (%s)", err, out)
+		}
+	}
+	runGit("init")
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("frontend/dist/assets/js/\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "plugin.rb"), []byte("before\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", ".gitignore", "plugin.rb")
+	runGit("commit", "-m", "init")
+
+	recorder := &fakeFileRecorder{}
+	tool := NewShellTool(nil, nil, DefaultOutputLimits())
+	tool.recorder = recorder
+
+	args, _ := json.Marshal(ShellArgs{
+		Command:       "mkdir -p frontend/dist/assets/js && echo artifact > frontend/dist/assets/js/bundle.digest.js && echo after > plugin.rb",
+		WorkingDir:    dir,
+		AffectedPaths: []string{"frontend/dist/assets/js/*", "plugin.rb"},
+	})
+	output, err := tool.Execute(trackingContext(), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(output.FileChanges) != 1 {
+		t.Fatalf("file changes = %+v, want only plugin.rb", output.FileChanges)
+	}
+
+	plugin := recorder.findRecord(t, filepath.Join(dir, "plugin.rb"))
+	if string(plugin.Before) != "before\n" || string(plugin.After) != "after\n" {
+		t.Fatalf("plugin record = %q → %q", plugin.Before, plugin.After)
+	}
+	for _, rec := range recorder.recorded() {
+		if strings.Contains(rec.Path, "bundle.digest.js") || strings.Contains(rec.Path, "frontend/dist/assets/js") {
+			t.Fatalf("recorded ignored artifact: %+v", rec)
+		}
+	}
+}
+
+func TestShellToolSkipsGitIgnoredLiteralAffectedPath(t *testing.T) {
+	dir := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git unavailable, skipping: %v (%s)", err, out)
+		}
+	}
+	runGit("init")
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("local.env\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", ".gitignore")
+	runGit("commit", "-m", "init")
+
+	recorder := &fakeFileRecorder{}
+	tool := NewShellTool(nil, nil, DefaultOutputLimits())
+	tool.recorder = recorder
+
+	args, _ := json.Marshal(ShellArgs{
+		Command:       "echo secret > local.env",
+		WorkingDir:    dir,
+		AffectedPaths: []string{"local.env"},
+	})
+	output, err := tool.Execute(trackingContext(), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(output.FileChanges) != 0 || len(recorder.recorded()) != 0 {
+		t.Fatalf("ignored literal affected path should not be recorded, output=%+v records=%+v", output.FileChanges, recorder.recorded())
+	}
+}
+
+func TestShellToolRecordsSessionTrackedGitIgnoredPath(t *testing.T) {
+	dir := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git unavailable, skipping: %v (%s)", err, out)
+		}
+	}
+	runGit("init")
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("local.env\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ignored := filepath.Join(dir, "local.env")
+	if err := os.WriteFile(ignored, []byte("before\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", ".gitignore")
+	runGit("commit", "-m", "init")
+
+	recorder := &fakeFileRecorder{sessionPaths: []string{ignored}}
+	tool := NewShellTool(nil, nil, DefaultOutputLimits())
+	tool.recorder = recorder
+
+	args, _ := json.Marshal(ShellArgs{
+		Command:    "echo after > local.env",
+		WorkingDir: dir,
+	})
+	output, err := tool.Execute(trackingContext(), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(output.FileChanges) != 1 {
+		t.Fatalf("file changes = %+v, want session-tracked ignored path", output.FileChanges)
+	}
+	rec := recorder.findRecord(t, ignored)
+	if string(rec.Before) != "before\n" || string(rec.After) != "after\n" {
+		t.Fatalf("session-tracked ignored record = %q → %q", rec.Before, rec.After)
+	}
+}
+
 func TestShellSnapshotBudgets(t *testing.T) {
 	snap := &shellSnapshot{maxFileBytes: 1024}
 

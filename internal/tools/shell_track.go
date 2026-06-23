@@ -91,6 +91,16 @@ func preShellSnapshot(ctx context.Context, recorder FileChangeRecorder, workDir 
 	}
 
 	candidates := expandShellPatterns(workDir, patterns)
+	if snap.gitRoot != "" {
+		// Affected-path entries can be intentionally broad (for example "**/*"),
+		// and literal entries can still name generated files. In a git repository,
+		// keep these hints aligned with Git's notion of source files: ignored
+		// build/cache artifacts should not enter the tracked file-change set just
+		// because an affected_paths entry happened to match them. Session-tracked
+		// paths are appended below and intentionally bypass this filter, preserving
+		// an explicit per-session escape hatch.
+		candidates = filterGitIgnoredCandidates(ctx, snap.gitRoot, candidates)
+	}
 	if snap.gitStatus != nil {
 		// Snapshot paths that were already dirty before the command. Otherwise a
 		// command that edits a dirty tracked file, or an existing untracked file,
@@ -134,7 +144,11 @@ func postShellChanges(ctx context.Context, recorder FileChangeRecorder, snap *sh
 	}
 	// Re-expanding the same patterns catches files created by the command.
 	// A path matched now but not pre-exec did not exist then.
-	for _, path := range expandShellPatterns(snap.workDir, snap.patterns) {
+	reexpanded := expandShellPatterns(snap.workDir, snap.patterns)
+	if snap.gitRoot != "" {
+		reexpanded = filterGitIgnoredCandidates(ctx, snap.gitRoot, reexpanded)
+	}
+	for _, path := range reexpanded {
 		if _, seen := candidates[path]; !seen {
 			candidates[path] = candidate{fromReexpand: true}
 		}
@@ -308,6 +322,73 @@ func expandShellPatterns(workDir string, patterns []string) []string {
 		}, doublestar.WithNoFollow())
 	}
 	return paths
+}
+
+// gitIgnoredCandidates returns the subset of paths ignored by Git. It uses
+// git-check-ignore rather than parsing .gitignore files so repo-level excludes,
+// nested .gitignore files, and global excludes all behave exactly as Git does.
+// Paths outside the repo are treated as not ignored.
+func gitIgnoredCandidates(ctx context.Context, root string, paths []string) map[string]bool {
+	ignored := make(map[string]bool)
+	if root == "" || len(paths) == 0 {
+		return ignored
+	}
+
+	relToAbs := make(map[string]string, len(paths))
+	var input strings.Builder
+	for _, path := range paths {
+		rel := GetRelativePath(path, root)
+		if rel == path || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+			continue
+		}
+		rel = filepath.ToSlash(rel)
+		if _, seen := relToAbs[rel]; seen {
+			continue
+		}
+		relToAbs[rel] = filepath.Clean(path)
+		input.WriteString(rel)
+		input.WriteByte('\x00')
+	}
+	if input.Len() == 0 {
+		return ignored
+	}
+
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gitCommandTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "-C", root, "check-ignore", "-z", "--stdin")
+	cmd.Stdin = strings.NewReader(input.String())
+	out, err := cmd.Output()
+	if err != nil {
+		// Exit status 1 means no paths matched. Other failures (for example a
+		// transient git error) also degrade to an empty ignore set; file tracking is
+		// best-effort and should never fail the shell tool.
+		return ignored
+	}
+	for _, rel := range strings.Split(string(out), "\x00") {
+		if rel == "" {
+			continue
+		}
+		if abs, ok := relToAbs[filepath.ToSlash(rel)]; ok {
+			ignored[abs] = true
+		}
+	}
+	return ignored
+}
+
+func filterGitIgnoredCandidates(ctx context.Context, root string, paths []string) []string {
+	ignored := gitIgnoredCandidates(ctx, root, paths)
+	if len(ignored) == 0 {
+		return paths
+	}
+	filtered := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if ignored[filepath.Clean(path)] {
+			continue
+		}
+		filtered = append(filtered, path)
+	}
+	return filtered
 }
 
 // gitStatusPorcelain returns the repo's dirty paths (absolute) mapped to their
