@@ -1016,6 +1016,97 @@ func TestHubBareNodePathRedirects(t *testing.T) {
 	}
 }
 
+func TestHubNodesAPIIncludesBoundedSessionSummary(t *testing.T) {
+	var sessionsAuth string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/chat/healthz":
+			io.WriteString(w, `{"status":"ok","agent":"alpha-agent","version":"v1","capabilities":["web"]}`)
+		case "/chat/v1/sessions/status":
+			sessionsAuth = r.Header.Get("Authorization")
+			type sess struct {
+				ID            string `json:"id"`
+				ShortTitle    string `json:"short_title"`
+				LongTitle     string `json:"long_title"`
+				ActiveRun     bool   `json:"active_run,omitempty"`
+				LastMessageAt int64  `json:"last_message_at"`
+				MessageCount  int    `json:"message_count"`
+			}
+			sessions := make([]sess, 0, 100)
+			for i := 0; i < 100; i++ {
+				sessions = append(sessions, sess{
+					ID:            fmt.Sprintf("sess_%03d", i),
+					ShortTitle:    fmt.Sprintf("Session %03d", i),
+					LastMessageAt: int64(1_800_000_000_000 - i),
+					MessageCount:  i + 1,
+				})
+			}
+			sessions[5].ID = "sess_busy"
+			sessions[5].ShortTitle = "Busy session"
+			sessions[5].ActiveRun = true
+			_ = json.NewEncoder(w).Encode(map[string]any{"sessions": sessions})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer backend.Close()
+
+	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{{
+		ID:       "alpha",
+		Name:     "Alpha",
+		Source:   hub.SourceConfig,
+		URL:      backend.URL,
+		BasePath: "/chat",
+		Token:    "node-token",
+	}}}), nil)
+	s.basePath = "/hub"
+
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/hub/api/nodes", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "node-token") {
+		t.Fatal("node token leaked into /api/nodes response")
+	}
+	if sessionsAuth != "Bearer node-token" {
+		t.Fatalf("sessions Authorization = %q, want node token injection", sessionsAuth)
+	}
+
+	var resp struct {
+		Nodes []hubNodeView `json:"nodes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Nodes) != 1 {
+		t.Fatalf("nodes = %+v", resp.Nodes)
+	}
+	n := resp.Nodes[0]
+	if n.NewSessionPath != "/hub/node/alpha/?new=1" {
+		t.Fatalf("new session path = %q", n.NewSessionPath)
+	}
+	if n.Sessions == nil {
+		t.Fatalf("sessions summary missing: %+v", n)
+	}
+	if n.Sessions.CountLabel != "100+ sessions" || !n.Sessions.HasMore {
+		t.Fatalf("session count = %q has_more=%v", n.Sessions.CountLabel, n.Sessions.HasMore)
+	}
+	if len(n.Sessions.Active) != 1 || n.Sessions.Active[0].ID != "sess_busy" || n.Sessions.ActiveCount != 1 {
+		t.Fatalf("active sessions = %+v active_count=%d", n.Sessions.Active, n.Sessions.ActiveCount)
+	}
+	if n.Sessions.ResumePath != "/hub/node/alpha/sess_busy" {
+		t.Fatalf("resume path = %q", n.Sessions.ResumePath)
+	}
+	if len(n.Sessions.Recent) != 3 || n.Sessions.Recent[0].ID != "sess_000" {
+		t.Fatalf("recent sessions = %+v", n.Sessions.Recent)
+	}
+	if n.Sessions.Recent[0].ResumePath != "/hub/node/alpha/sess_000" {
+		t.Fatalf("recent resume path = %q", n.Sessions.Recent[0].ResumePath)
+	}
+}
+
 func TestHubNodesAPIDoesNotLeakTokens(t *testing.T) {
 	s := hubWithBackend(t, "/chat", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

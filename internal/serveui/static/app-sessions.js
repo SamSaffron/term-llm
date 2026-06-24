@@ -4,7 +4,7 @@
 const app = window.TermLLMApp;
 const {
   UI_PREFIX, STORAGE_KEYS, state, elements, generateId, truncate, asTimestamp, loadSessions, saveSessions, getActiveSession, createSession, ensureActiveSession,
-  sessionIdFromURL, sessionSlug, findSessionBySlug, updateURL, scrollToBottom, setConnectionState, setStartupStatus, hideStartupSplash, persistAndRefreshShell, refreshRelativeTimes,
+  sessionIdFromURL, sessionSlug, findSessionBySlug, updateURL, updateDocumentTitle, scrollToBottom, setConnectionState, setStartupStatus, hideStartupSplash, persistAndRefreshShell, refreshRelativeTimes,
   splitHeaderModelEffort, updateMCPStatusDisplay, setElementHidden,
   openAuthModal, closeAuthModal, handleAuthFailure, closeAskUserModal, openAskUserModal, setActiveResponseTracking,
   clearActiveResponseTracking, setStreaming, resumeActiveResponse, renderSidebar, renderMessages, renderProviderOptions, renderModelOptions, normalizeSelectedProvider,
@@ -175,6 +175,25 @@ const refreshSidebarStatusPoll = (forceNow = false) => {
 
 const createAndSwitchToFreshSession = async () => {
   await switchToDraftSession({ clearComposer: true, focusPrompt: true });
+};
+
+const forceNewSessionFromURL = () => {
+  try {
+    const params = new URLSearchParams(window.location.search || '');
+    return params.has('new') || params.has('fresh');
+  } catch {
+    return false;
+  }
+};
+
+const clearFreshSessionURL = () => {
+  const target = `${UI_PREFIX}/`;
+  if (typeof history !== 'undefined' && typeof history.replaceState === 'function') {
+    history.replaceState(null, '', target);
+    updateDocumentTitle();
+    return;
+  }
+  updateURL('');
 };
 
 const stageCurrentComposerForSession = (sessionId) => {
@@ -1960,8 +1979,13 @@ const initialize = async () => {
   state.sessions = loadSessions();
 
   // Check URL for a specific session (number or ID)
-  const urlSlug = sessionIdFromURL();
-  if (urlSlug) {
+  const forceNewSession = forceNewSessionFromURL();
+  const urlSlug = forceNewSession ? '' : sessionIdFromURL();
+  if (forceNewSession) {
+    state.activeSessionId = '';
+    state.draftSessionActive = true;
+    clearFreshSessionURL();
+  } else if (urlSlug) {
     const found = findSessionBySlug(urlSlug);
     if (found) {
       state.activeSessionId = found.id;

@@ -82,6 +82,7 @@ body {
 .hub-btn.danger { color: var(--down); }
 .hub-btn.danger:hover { border-color: var(--down); }
 .hub-btn.small { padding: 0.24rem 0.55rem; font-size: 0.78rem; border-radius: 7px; }
+.hub-btn.disabled, .hub-btn[aria-disabled="true"] { opacity: 0.55; pointer-events: none; cursor: not-allowed; }
 
 .hub-main { padding: 1.4rem; max-width: 1180px; margin: 0 auto; }
 
@@ -113,6 +114,17 @@ body {
 
 .node-card-head { display: flex; align-items: center; gap: 0.55rem; }
 .node-name { margin: 0; font-size: 1.02rem; font-weight: 700; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node-summary-line { color: var(--muted); font-size: 0.82rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-count-badge {
+  font-size: 0.72rem;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 0.12rem 0.55rem;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+  color: var(--accent);
+  flex-shrink: 0;
+}
 
 .status-dot {
   width: 10px;
@@ -157,6 +169,56 @@ body {
   border: 1px solid var(--border);
   color: var(--muted);
 }
+
+.node-sessions {
+  display: grid;
+  gap: 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-2) 68%, transparent);
+  padding: 0.7rem;
+}
+.node-session-group { display: grid; gap: 0.3rem; }
+.node-session-label {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.node-session-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.55rem;
+  align-items: baseline;
+  color: var(--text);
+  text-decoration: none;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  padding: 0.36rem 0.45rem;
+  margin: 0 -0.1rem;
+}
+.node-session-row:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.node-session-row.is-active {
+  border-color: color-mix(in srgb, var(--ok) 55%, var(--border));
+  background: color-mix(in srgb, var(--ok) 9%, transparent);
+}
+.node-session-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 650;
+}
+.node-session-meta {
+  color: var(--muted);
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+.node-session-empty { color: var(--muted); font-size: 0.84rem; }
 
 .node-error { color: var(--down); font-size: 0.82rem; word-break: break-word; }
 .node-warn { color: var(--warn); font-size: 0.82rem; }

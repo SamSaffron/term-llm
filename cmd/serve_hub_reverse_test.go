@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -77,6 +78,62 @@ func TestHubReverseNodeProxy(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"agent":"artist"`) {
 		t.Fatalf("body = %q", rec.Body.String())
+	}
+}
+
+func TestHubReverseNodeSessionsSummary(t *testing.T) {
+	var sessionsAuth string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/chat/healthz":
+			_, _ = w.Write([]byte(`{"status":"ok","agent":"artist","capabilities":["web"]}`))
+		case "/chat/v1/sessions/status":
+			sessionsAuth = r.Header.Get("Authorization")
+			_ = json.NewEncoder(w).Encode(map[string]any{"sessions": []map[string]any{{
+				"id":              "sess_reverse",
+				"short_title":     "Reverse session",
+				"active_run":      true,
+				"last_message_at": 1_800_000_000_000,
+				"message_count":   4,
+			}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer backend.Close()
+
+	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
+	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	hubTS := httptest.NewServer(s.handler())
+	defer hubTS.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go runHubReverseConnector(ctx, hubTS.URL, "artist", "node-token", backend.URL, "/chat", backend.Client())
+	waitForReverseNode(t, s, "artist")
+
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/nodes", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%q", rec.Code, rec.Body.String())
+	}
+	if sessionsAuth != "Bearer node-token" {
+		t.Fatalf("sessions Authorization = %q, want node token injection", sessionsAuth)
+	}
+
+	var resp struct {
+		Nodes []hubNodeView `json:"nodes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Nodes) != 1 || resp.Nodes[0].Sessions == nil {
+		t.Fatalf("nodes response = %+v", resp.Nodes)
+	}
+	sessions := resp.Nodes[0].Sessions
+	if sessions.CountLabel != "1 session" || sessions.ActiveCount != 1 || sessions.ResumePath != "/node/artist/sess_reverse" {
+		t.Fatalf("sessions summary = %+v", sessions)
 	}
 }
 

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/hub"
@@ -18,22 +20,43 @@ type hubNodeDiagnostic struct {
 	Message  string `json:"message"`
 }
 
+type hubNodeSessionView struct {
+	ID            string `json:"id"`
+	ShortTitle    string `json:"short_title"`
+	LongTitle     string `json:"long_title,omitempty"`
+	ActiveRun     bool   `json:"active_run,omitempty"`
+	LastMessageAt int64  `json:"last_message_at,omitempty"`
+	MessageCount  int    `json:"message_count,omitempty"`
+	ResumePath    string `json:"resume_path"`
+}
+
+type hubNodeSessionsView struct {
+	CountLabel  string               `json:"count_label"`
+	HasMore     bool                 `json:"has_more,omitempty"`
+	ActiveCount int                  `json:"active_count,omitempty"`
+	Active      []hubNodeSessionView `json:"active,omitempty"`
+	Recent      []hubNodeSessionView `json:"recent,omitempty"`
+	ResumePath  string               `json:"resume_path,omitempty"`
+}
+
 // hubNodeView is the public record for one node. It deliberately omits the
 // bearer token: tokens are injected server-side and must never be sent to a
 // hub client.
 type hubNodeView struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Source     string `json:"source"`
-	Connection string `json:"connection"`
-	URL        string `json:"url"`
-	BasePath   string `json:"base_path"`
-	ProxyPath  string `json:"proxy_path"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Source         string `json:"source"`
+	Connection     string `json:"connection"`
+	URL            string `json:"url"`
+	BasePath       string `json:"base_path"`
+	ProxyPath      string `json:"proxy_path"`
+	NewSessionPath string `json:"new_session_path"`
 	// HasToken reports whether the hub holds a bearer token for this node
 	// (without it, a token-guarded node will answer 401 through the proxy).
-	HasToken    bool                `json:"has_token"`
-	Status      hub.Status          `json:"status"`
-	Diagnostics []hubNodeDiagnostic `json:"diagnostics,omitempty"`
+	HasToken    bool                 `json:"has_token"`
+	Status      hub.Status           `json:"status"`
+	Sessions    *hubNodeSessionsView `json:"sessions,omitempty"`
+	Diagnostics []hubNodeDiagnostic  `json:"diagnostics,omitempty"`
 }
 
 func (s *hubServer) handleHubHealth(w http.ResponseWriter, r *http.Request) {
@@ -50,16 +73,18 @@ func (s *hubServer) collectNodes(ctx context.Context) ([]hubNodeView, error) {
 	statuses := s.prober.ProbeAll(probeCtx, nodes)
 	views := make([]hubNodeView, 0, len(nodes))
 	for _, n := range nodes {
+		proxyPath := s.hubPath("/node/" + n.ID + "/")
 		view := hubNodeView{
-			ID:         n.ID,
-			Name:       n.Name,
-			Source:     n.Source,
-			Connection: n.Connection,
-			URL:        n.URL,
-			BasePath:   n.BasePath,
-			ProxyPath:  s.hubPath("/node/" + n.ID + "/"),
-			HasToken:   n.Token != "",
-			Status:     statuses[n.ID],
+			ID:             n.ID,
+			Name:           n.Name,
+			Source:         n.Source,
+			Connection:     n.Connection,
+			URL:            n.URL,
+			BasePath:       n.BasePath,
+			ProxyPath:      proxyPath,
+			NewSessionPath: proxyPath + "?new=1",
+			HasToken:       n.Token != "",
+			Status:         statuses[n.ID],
 		}
 		if n.UsesReverseConnection() {
 			connected, connectedAt, lastSeen := s.reverse.status(n.ID)
@@ -71,10 +96,181 @@ func (s *hubServer) collectNodes(ctx context.Context) ([]hubNodeView, error) {
 		}
 		views = append(views, view)
 	}
+	s.collectNodeSessionViews(probeCtx, nodes, views)
 	for i := range views {
 		views[i].Diagnostics = hubNodeDiagnostics(nodes[i], views[i], nodes)
 	}
 	return views, err
+}
+
+const (
+	hubNodeSessionActiveLimit = 2
+	hubNodeSessionRecentLimit = 3
+	hubNodeSessionCountCap    = 100
+	hubNodeSessionsMaxBytes   = 1 << 20
+)
+
+type hubNodeSessionStatus struct {
+	ID            string `json:"id"`
+	ShortTitle    string `json:"short_title"`
+	LongTitle     string `json:"long_title"`
+	ActiveRun     bool   `json:"active_run"`
+	LastMessageAt int64  `json:"last_message_at"`
+	MessageCount  int    `json:"message_count"`
+}
+
+// collectNodeSessionViews enriches reachable nodes with a bounded session
+// summary. The node endpoint already caps itself at 100 rows, so the Hub can
+// show "100+ sessions" without issuing exact count queries on every refresh.
+func (s *hubServer) collectNodeSessionViews(ctx context.Context, nodes []hub.Node, views []hubNodeView) {
+	if len(nodes) == 0 || len(nodes) != len(views) {
+		return
+	}
+	sessionCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	type result struct {
+		index    int
+		sessions *hubNodeSessionsView
+	}
+	results := make(chan result, len(nodes))
+	var wg sync.WaitGroup
+	for i, n := range nodes {
+		if !views[i].Status.Reachable {
+			continue
+		}
+		wg.Add(1)
+		go func(i int, n hub.Node) {
+			defer wg.Done()
+			sessions, err := s.fetchHubNodeSessions(sessionCtx, n)
+			if err != nil || sessions == nil {
+				return
+			}
+			results <- result{index: i, sessions: sessions}
+		}(i, n)
+	}
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+	for res := range results {
+		views[res.index].Sessions = res.sessions
+	}
+}
+
+func (s *hubServer) fetchHubNodeSessions(ctx context.Context, n hub.Node) (*hubNodeSessionsView, error) {
+	req, err := s.newHubNodeSessionsRequest(ctx, n)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.doHubNodeRequest(ctx, n, req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusServiceUnavailable {
+		return nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("sessions status returned %s", resp.Status)
+	}
+	var body struct {
+		Sessions []hubNodeSessionStatus `json:"sessions"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, hubNodeSessionsMaxBytes)).Decode(&body); err != nil {
+		return nil, err
+	}
+	if body.Sessions == nil {
+		return nil, nil
+	}
+	return s.buildHubNodeSessionsView(n, body.Sessions), nil
+}
+
+func (s *hubServer) newHubNodeSessionsRequest(ctx context.Context, n hub.Node) (*http.Request, error) {
+	if n.UsesReverseConnection() {
+		u := &url.URL{
+			Scheme: "http",
+			Host:   "reverse.local",
+			Path:   hubJoinBasePath(n.BasePath, "/v1/sessions/status"),
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+		if err != nil {
+			return nil, err
+		}
+		if n.Token != "" {
+			req.Header.Set("Authorization", "Bearer "+n.Token)
+		}
+		return req, nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, n.BaseURL()+"/v1/sessions/status", nil)
+	if err != nil {
+		return nil, err
+	}
+	if n.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+n.Token)
+	}
+	return req, nil
+}
+
+func (s *hubServer) doHubNodeRequest(ctx context.Context, n hub.Node, req *http.Request) (*http.Response, error) {
+	if n.UsesReverseConnection() {
+		return s.reverse.do(ctx, n, req)
+	}
+	return s.prober.Client.Do(req)
+}
+
+func (s *hubServer) buildHubNodeSessionsView(n hub.Node, entries []hubNodeSessionStatus) *hubNodeSessionsView {
+	out := &hubNodeSessionsView{
+		CountLabel: hubNodeSessionCountLabel(len(entries)),
+		HasMore:    len(entries) >= hubNodeSessionCountCap,
+	}
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.ID) == "" {
+			continue
+		}
+		sess := hubNodeSessionView{
+			ID:            entry.ID,
+			ShortTitle:    hubNodeSessionTitle(entry),
+			LongTitle:     strings.TrimSpace(entry.LongTitle),
+			ActiveRun:     entry.ActiveRun,
+			LastMessageAt: entry.LastMessageAt,
+			MessageCount:  entry.MessageCount,
+			ResumePath:    s.hubPath("/node/" + n.ID + "/" + url.PathEscape(entry.ID)),
+		}
+		if sess.ActiveRun {
+			out.ActiveCount++
+			if len(out.Active) < hubNodeSessionActiveLimit {
+				out.Active = append(out.Active, sess)
+			}
+		} else if len(out.Recent) < hubNodeSessionRecentLimit {
+			out.Recent = append(out.Recent, sess)
+		}
+	}
+	if len(out.Active) > 0 {
+		out.ResumePath = out.Active[0].ResumePath
+	} else if len(out.Recent) > 0 {
+		out.ResumePath = out.Recent[0].ResumePath
+	}
+	return out
+}
+
+func hubNodeSessionTitle(entry hubNodeSessionStatus) string {
+	for _, candidate := range []string{entry.ShortTitle, entry.LongTitle, entry.ID} {
+		if title := strings.TrimSpace(candidate); title != "" {
+			return title
+		}
+	}
+	return "Untitled session"
+}
+
+func hubNodeSessionCountLabel(n int) string {
+	if n >= hubNodeSessionCountCap {
+		return "100+ sessions"
+	}
+	if n == 1 {
+		return "1 session"
+	}
+	return fmt.Sprintf("%d sessions", n)
 }
 
 func (s *hubServer) probeReverseNode(ctx context.Context, n hub.Node, connectedAt, lastSeen time.Time) hub.Status {
