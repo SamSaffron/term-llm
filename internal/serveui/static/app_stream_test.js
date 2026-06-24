@@ -1340,6 +1340,71 @@ async function testSendMessageResumesFromEventsAfterPostStreamDrops() {
   pass(name);
 }
 
+async function testSendMessageRecoversAfterStreamBufferOverflowDone() {
+  const name = 'sendMessage treats stream_buffer_overflow [DONE] as resumable';
+  const harness = createHarness({
+    postBody: [
+      'id: 1\n',
+      'event: response.created\n',
+      'data: {"response":{"id":"resp_test","model":"test-model","status":"in_progress"},"sequence_number":1}\n\n',
+      'id: 2\n',
+      'event: response.output_text.delta\n',
+      'data: {"delta":"hello","sequence_number":2}\n\n',
+      'id: 2\n',
+      'event: response.stream_error\n',
+      'data: {"error":{"type":"stream_buffer_overflow"},"sequence_number":2,"min_replay_after":0,"recovery":{"sequence_number":2,"messages":[{"id":"a1","role":"assistant","content":"hello","created":1}]}}\n\n',
+      'data: [DONE]\n\n',
+    ].join(''),
+    eventsBody: [
+      'id: 3\n',
+      'event: response.output_text.delta\n',
+      'data: {"delta":" world","sequence_number":3}\n\n',
+      'id: 4\n',
+      'event: response.completed\n',
+      'data: {"response":{"id":"resp_test","model":"test-model","status":"completed"},"sequence_number":4}\n\n',
+      'data: [DONE]\n\n',
+    ].join(''),
+  });
+  const { app, elements, cleanup, fetchCalls, getEventsStarted } = harness;
+  elements.promptInput.value = 'hello';
+
+  let sendErr = null;
+  const sendPromise = app.sendMessage().catch((err) => {
+    sendErr = err;
+  });
+
+  const handedOff = await waitFor(() => getEventsStarted(), 75);
+  if (!handedOff) {
+    fail(name, 'client did not reopen /events after recoverable stream overflow', JSON.stringify(fetchCalls));
+    await cleanup();
+    await sendPromise;
+    return;
+  }
+
+  await sendPromise;
+  await cleanup();
+
+  if (sendErr) {
+    fail(name, 'sendMessage rejected unexpectedly', String(sendErr));
+    return;
+  }
+
+  const resumeCall = fetchCalls.find((call) => call.url === '/ui/v1/responses/resp_test/events?after=2');
+  if (!resumeCall) {
+    fail(name, 'expected reconnect after overflow to resume from recovered sequence 2', JSON.stringify(fetchCalls));
+    return;
+  }
+
+  const session = harness.state.sessions[0];
+  const assistant = session && session.messages.find((message) => message.role === 'assistant');
+  if (!assistant || assistant.content !== 'hello world') {
+    fail(name, 'assistant content did not recover after overflow', assistant ? assistant.content : 'missing');
+    return;
+  }
+
+  pass(name);
+}
+
 async function testNewChatDuringStreamingClearsStreamingState() {
   const name = 'New Chat during streaming clears streaming state and allows new session';
 
@@ -4111,6 +4176,7 @@ function testCompletedResponseClearsUnappliedQueuedEffort() {
   await testAutoGrowPromptFallbackCoalescesLayoutWork();
   await testNonImageAttachmentsDoNotCreatePreviewObjectURLs();
   await testSendMessageResumesFromEventsAfterPostStreamDrops();
+  await testSendMessageRecoversAfterStreamBufferOverflowDone();
   await testNewChatDuringStreamingClearsStreamingState();
   await testDraftSendIgnoresStaleGlobalStreamingFlag();
   await testSendMessageMarksSessionBusyImmediately();

@@ -351,6 +351,112 @@ func TestShellToolGitFallback(t *testing.T) {
 	}
 }
 
+func TestShellToolAffectedPathsSkipGitStatusFallback(t *testing.T) {
+	dir := t.TempDir()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skipf("git unavailable, skipping: %v", err)
+	}
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command(realGit, append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git unavailable, skipping: %v (%s)", err, out)
+		}
+	}
+	runGit("init")
+	tracked := filepath.Join(dir, "tracked.txt")
+	if err := os.WriteFile(tracked, []byte("before\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", ".")
+	runGit("commit", "-m", "init")
+
+	wrapperDir := t.TempDir()
+	logPath := filepath.Join(wrapperDir, "git-status.log")
+	wrapperPath := filepath.Join(wrapperDir, "git")
+	wrapper := fmt.Sprintf(`#!/bin/sh
+cmd="$1"
+if [ "$1" = "-C" ]; then
+	cmd="$3"
+fi
+if [ "$cmd" = "status" ]; then
+	printf 'status\n' >> %q
+fi
+exec %q "$@"
+`, logPath, realGit)
+	if err := os.WriteFile(wrapperPath, []byte(wrapper), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	recorder := &fakeFileRecorder{}
+	tool := NewShellTool(nil, nil, DefaultOutputLimits())
+	tool.recorder = recorder
+
+	args, _ := json.Marshal(ShellArgs{
+		Command:       "echo after > tracked.txt",
+		WorkingDir:    dir,
+		AffectedPaths: []string{"tracked.txt"},
+	})
+	if _, err := tool.Execute(trackingContext(), args); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := recorder.findRecord(t, tracked)
+	if string(rec.Before) != "before\n" || string(rec.After) != "after\n" {
+		t.Fatalf("affected-path record = %q → %q", rec.Before, rec.After)
+	}
+	if _, err := os.Stat(logPath); err == nil {
+		logData, _ := os.ReadFile(logPath)
+		t.Fatalf("bounded affected_paths should not invoke git status, log=%q", logData)
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+}
+
+func TestShellToolGitFallbackOversizedCleanTrackedFile(t *testing.T) {
+	dir := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git unavailable, skipping: %v (%s)", err, out)
+		}
+	}
+	runGit("init")
+	big := filepath.Join(dir, "big.txt")
+	if err := os.WriteFile(big, []byte(strings.Repeat("x", 200)+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", ".")
+	runGit("commit", "-m", "init")
+
+	recorder := &fakeFileRecorder{maxFileBytes: 64}
+	tool := NewShellTool(nil, nil, DefaultOutputLimits())
+	tool.recorder = recorder
+
+	args, _ := json.Marshal(ShellArgs{
+		Command:    "echo more >> big.txt",
+		WorkingDir: dir,
+	})
+	if _, err := tool.Execute(trackingContext(), args); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := recorder.findRecord(t, big)
+	if !rec.BeforeUnknown || !rec.AfterUnknown {
+		t.Fatalf("oversized git fallback should record unknown content on both sides, got %+v", rec)
+	}
+	if rec.Before != nil || rec.After != nil {
+		t.Fatal("oversized git fallback content must not be captured")
+	}
+}
+
 func TestShellToolSkipsGitIgnoredAffectedPathMatches(t *testing.T) {
 	dir := t.TempDir()
 	runGit := func(args ...string) {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -87,7 +88,15 @@ func preShellSnapshot(ctx context.Context, recorder FileChangeRecorder, workDir 
 
 	if repo := DetectGitRepo(workDir); repo.IsRepo {
 		snap.gitRoot = repo.Root
-		snap.gitStatus = gitStatusPorcelain(ctx, repo.Root)
+	}
+
+	sessionPaths := recorder.SessionPaths(ctx, sessionID)
+	// When the caller supplied bounded hints, trust that scope and avoid the
+	// repo-wide git status fallback. Commands that omit hints still get the
+	// broader best-effort dirty/untracked detection below.
+	hasBoundedHints := len(patterns) > 0 || len(sessionPaths) > 0
+	if snap.gitRoot != "" && !hasBoundedHints {
+		snap.gitStatus = gitStatusPorcelain(ctx, snap.gitRoot)
 	}
 
 	candidates := expandShellPatterns(workDir, patterns)
@@ -110,7 +119,7 @@ func preShellSnapshot(ctx context.Context, recorder FileChangeRecorder, workDir 
 			candidates = append(candidates, path)
 		}
 	}
-	candidates = append(candidates, recorder.SessionPaths(ctx, sessionID)...)
+	candidates = append(candidates, sessionPaths...)
 	for _, path := range candidates {
 		if _, seen := snap.files[path]; seen {
 			continue
@@ -154,8 +163,10 @@ func postShellChanges(ctx context.Context, recorder FileChangeRecorder, snap *sh
 		}
 	}
 
+	// Only diff post-status against Git when a pre-status snapshot was captured;
+	// otherwise every dirty path would look newly changed.
 	var postStatus map[string]string
-	if snap.gitRoot != "" {
+	if snap.gitRoot != "" && snap.gitStatus != nil {
 		postStatus = gitStatusPorcelain(ctx, snap.gitRoot)
 		for path := range gitChangedPaths(snap.gitStatus, postStatus) {
 			if _, seen := candidates[path]; !seen {
@@ -443,6 +454,9 @@ func gitChangedPaths(pre, post map[string]string) map[string]struct{} {
 // recover the before-content of files that were clean when the shell command
 // started. Returns ok=false when the file is untracked, too large, or git fails.
 func gitShowIndex(ctx context.Context, root, absPath string, maxBytes int) ([]byte, bool) {
+	if maxBytes < 0 {
+		return nil, false
+	}
 	rel := GetRelativePath(absPath, root)
 	if rel == absPath || strings.HasPrefix(rel, "..") {
 		return nil, false
@@ -452,8 +466,26 @@ func gitShowIndex(ctx context.Context, root, absPath string, maxBytes int) ([]by
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "git", "-C", root, "show", ":"+filepath.ToSlash(rel))
-	out, err := cmd.Output()
-	if err != nil || len(out) > maxBytes {
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, false
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, false
+	}
+
+	out, readErr := io.ReadAll(io.LimitReader(stdout, int64(maxBytes)+1))
+	if readErr != nil {
+		cancel()
+		_ = cmd.Wait()
+		return nil, false
+	}
+	if len(out) > maxBytes {
+		cancel()
+		_ = cmd.Wait()
+		return nil, false
+	}
+	if err := cmd.Wait(); err != nil {
 		return nil, false
 	}
 	return out, true

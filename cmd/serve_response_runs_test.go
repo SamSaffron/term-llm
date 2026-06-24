@@ -652,7 +652,7 @@ func waitForResponseRunCondition(t *testing.T, timeout time.Duration, fn func() 
 	t.Fatal(message)
 }
 
-func TestStreamResponseRunEventsDoesNotWriteDoneWhenSubscriberOverflows(t *testing.T) {
+func TestStreamResponseRunEventsWritesTerminalErrorWhenSubscriberOverflows(t *testing.T) {
 	srv := &serveServer{shutdownCh: make(chan struct{})}
 	run := newResponseRun("resp_overflow", "sess_test", "", "mock", time.Now().Unix(), func() {})
 	gate := make(chan struct{})
@@ -702,7 +702,21 @@ func TestStreamResponseRunEventsDoesNotWriteDoneWhenSubscriberOverflows(t *testi
 	if !strings.Contains(body, "event: response.output_text.delta\n") {
 		t.Fatalf("stream body missing replayed delta events: %q", body)
 	}
-	if strings.Contains(body, "data: [DONE]\n\n") {
-		t.Fatalf("overflowed stream should not emit [DONE], got: %q", body)
+	streamErrorIndex := strings.Index(body, "event: response.stream_error\n")
+	if streamErrorIndex < 0 {
+		t.Fatalf("overflowed stream missing terminal stream_error event: %q", body)
+	}
+	if !strings.Contains(body, `"type":"stream_buffer_overflow"`) {
+		t.Fatalf("overflowed stream missing structured overflow error: %q", body)
+	}
+	if !strings.Contains(body, `"min_replay_after"`) || !strings.Contains(body, `"recovery"`) {
+		t.Fatalf("overflowed stream missing recovery fields: %q", body)
+	}
+	doneIndex := strings.Index(body, "data: [DONE]\n\n")
+	if doneIndex < 0 {
+		t.Fatalf("overflowed stream should emit [DONE], got: %q", body)
+	}
+	if streamErrorIndex > doneIndex {
+		t.Fatalf("stream_error should be emitted before [DONE], got: %q", body)
 	}
 }

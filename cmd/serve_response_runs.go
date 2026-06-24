@@ -579,6 +579,30 @@ func (r *responseRun) subscriberWasDropped(id int) bool {
 	return true
 }
 
+func (r *responseRun) droppedSubscriberTerminalEvent() (responseRunEvent, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	payload := map[string]any{
+		"error": map[string]any{
+			"type":    "stream_buffer_overflow",
+			"message": "response event stream subscriber fell behind; reconnect using the recovery payload to resume",
+		},
+		"sequence_number":  r.lastSequenceNumber,
+		"min_replay_after": r.minReplayAfter,
+		"recovery":         r.recoveryPayloadLocked(),
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return responseRunEvent{}, err
+	}
+	return responseRunEvent{
+		Sequence: r.lastSequenceNumber,
+		Event:    "response.stream_error",
+		Data:     data,
+	}, nil
+}
+
 func (r *responseRun) unsubscribe(ch <-chan responseRunEvent) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1583,6 +1607,21 @@ func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.Respon
 		flusher.Flush()
 	}
 
+	writeDroppedStreamError := func() {
+		ev, err := run.droppedSubscriberTerminalEvent()
+		if err != nil {
+			return
+		}
+		pingMu.Lock()
+		writeErr := writeStoredResponseEvent(w, ev)
+		flusher.Flush()
+		pingMu.Unlock()
+		if writeErr != nil {
+			return
+		}
+		writeDone()
+	}
+
 	if len(replay) > 0 {
 		pingMu.Lock()
 		var replayErr error
@@ -1612,6 +1651,7 @@ func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.Respon
 		case ev, ok := <-ch:
 			if !ok {
 				if run.subscriberWasDropped(subscriberID) {
+					writeDroppedStreamError()
 					return
 				}
 				writeDone()
@@ -1643,6 +1683,7 @@ func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.Respon
 			}
 			if closed {
 				if run.subscriberWasDropped(subscriberID) {
+					writeDroppedStreamError()
 					return
 				}
 				writeDone()

@@ -597,6 +597,29 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     return { terminal: false };
   }
 
+  if (event === 'response.stream_error') {
+    const errorType = String(payload?.error?.type || '').trim();
+    if (errorType === 'stream_buffer_overflow') {
+      applyResponseRecoverySnapshot(session, {
+        id: session.activeResponseId || state.currentStreamResponseId || '',
+        status: 'in_progress',
+        last_sequence_number: payload.sequence_number,
+        recovery: payload.recovery || null
+      });
+      streamState.currentToolGroup = session.messages.findLast((message) => (
+        message.role === 'tool-group' && message.status === 'running'
+      )) || null;
+      streamState.currentAssistantMessage = streamState.currentToolGroup
+        ? null
+        : (session.messages[session.messages.length - 1]?.role === 'assistant'
+          ? session.messages[session.messages.length - 1]
+          : null);
+      streamState.currentPhaseMessage = null;
+      return { terminal: false, recoverableStreamError: true };
+    }
+    return { terminal: false };
+  }
+
   if (event === 'response.created') {
     const responseId = String(payload?.response?.id || '').trim();
     setSessionOptimisticBusy(session, true);
@@ -1046,6 +1069,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
 const consumeResponseStream = async (stream, session, streamState, options = {}) => {
   let sawTerminal = false;
   let sawDone = false;
+  let sawRecoverableStreamError = false;
   let stale = false;
   let terminalError = null;
   const generation = Number.isFinite(Number(options.generation)) ? Number(options.generation) : state.streamGeneration;
@@ -1068,9 +1092,11 @@ const consumeResponseStream = async (stream, session, streamState, options = {})
     }
 
     if (data === '[DONE]') {
-      sawDone = true;
-      streamState.closeToolGroup();
-      markToolGroupsDone(session);
+      if (!sawRecoverableStreamError) {
+        sawDone = true;
+        streamState.closeToolGroup();
+        markToolGroupsDone(session);
+      }
       persistAndRefreshShell();
       return false;
     }
@@ -1091,6 +1117,9 @@ const consumeResponseStream = async (stream, session, streamState, options = {})
     const result = applyResponseStreamEvent(session, streamState, event, payload);
     if (result?.terminal) {
       sawTerminal = true;
+    }
+    if (result?.recoverableStreamError) {
+      sawRecoverableStreamError = true;
     }
     if (result?.error) {
       terminalError = result.error;
