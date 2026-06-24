@@ -63,6 +63,56 @@ const migrateHubScopedStorage = () => {
 
 migrateHubScopedStorage();
 
+const writeTextWithExecCommand = (text) => new Promise((resolve, reject) => {
+  if (typeof document === 'undefined' || !document.body || typeof document.createElement !== 'function') {
+    reject(new Error('clipboard unavailable'));
+    return;
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = String(text ?? '');
+  textarea.setAttribute('readonly', '');
+  textarea.setAttribute('aria-hidden', 'true');
+  textarea.style.position = 'fixed';
+  textarea.style.top = '-9999px';
+  textarea.style.left = '-9999px';
+  textarea.style.width = '1px';
+  textarea.style.height = '1px';
+  textarea.style.opacity = '0';
+
+  const activeElement = document.activeElement;
+  document.body.appendChild(textarea);
+  try {
+    textarea.focus();
+    textarea.select();
+    if (typeof textarea.setSelectionRange === 'function') {
+      textarea.setSelectionRange(0, textarea.value.length);
+    }
+    if (typeof document.execCommand !== 'function' || !document.execCommand('copy')) {
+      reject(new Error('clipboard unavailable'));
+      return;
+    }
+    resolve();
+  } catch (err) {
+    reject(err);
+  } finally {
+    if (typeof textarea.remove === 'function') textarea.remove();
+    else if (textarea.parentNode && typeof textarea.parentNode.removeChild === 'function') textarea.parentNode.removeChild(textarea);
+    if (activeElement && typeof activeElement.focus === 'function') {
+      try { activeElement.focus({ preventScroll: true }); } catch (_err) {}
+    }
+  }
+});
+
+const getClipboardWriter = () => {
+  const clipboard = typeof navigator === 'undefined' ? null : navigator.clipboard;
+  if (clipboard && typeof clipboard.writeText === 'function') return clipboard;
+  if (typeof document !== 'undefined' && typeof document.execCommand === 'function') {
+    return { writeText: writeTextWithExecCommand };
+  }
+  return null;
+};
+
 const initialStoredActiveSessionId = localStorage.getItem(STORAGE_KEYS.activeSession) || '';
 const initialDraftSessionActive = initialStoredActiveSessionId === LEGACY_DRAFT_SESSION_ID
   || localStorage.getItem(STORAGE_KEYS.draftSessionActive) === '1';
@@ -2180,8 +2230,9 @@ elements.lightboxBackdrop.addEventListener('click', closeLightbox);
 elements.lightboxClose.addEventListener('click', closeLightbox);
 
 elements.lightboxCopy.addEventListener('click', () => {
-  if (!navigator.clipboard || !navigator.clipboard.writeText) return;
-  navigator.clipboard.writeText(lightboxSrc).then(() => {
+  const clipboard = getClipboardWriter();
+  if (!clipboard) return;
+  clipboard.writeText(lightboxSrc).then(() => {
     elements.lightboxCopy.classList.add('copied');
     elements.lightboxCopy.innerHTML = CHECK_ICON;
     setTimeout(resetCopyButton, 1500);
@@ -2206,6 +2257,7 @@ Object.assign(app, {
   state,
   elements,
   markdownStreaming: app.markdownStreaming,
+  getClipboardWriter,
   displayAgentName,
   applySidebarBrand,
   generateUUID,

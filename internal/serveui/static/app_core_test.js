@@ -9,6 +9,7 @@ const dir = __dirname;
 const source = fs.readFileSync(path.join(dir, 'app-core.js'), 'utf8');
 
 let failures = 0;
+const pendingAsyncTests = [];
 
 function fail(name, message, details) {
   console.error('FAIL:', name, '-', message);
@@ -46,6 +47,7 @@ function makeNode() {
     clientHeight: 0,
     appendChild(node) { return node; },
     removeChild() {},
+    remove() {},
     querySelector() { return null; },
     querySelectorAll() { return []; },
     setAttribute() {},
@@ -53,6 +55,8 @@ function makeNode() {
     addEventListener() {},
     removeEventListener() {},
     focus() {},
+    select() {},
+    setSelectionRange() {},
     closest() { return null; },
     getBoundingClientRect() {
       return { top: 0, left: 0, width: 0, height: 0, bottom: 0, right: 0 };
@@ -63,7 +67,7 @@ function makeNode() {
   };
 }
 
-function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], navigatorOverrides = {}, initialStorage = {}, agentName = '', uiTitle = '', hub = null, now = () => Date.now(), timerOverrides = {} } = {}) {
+function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], documentOverrides = {}, navigatorOverrides = {}, initialStorage = {}, agentName = '', uiTitle = '', hub = null, now = () => Date.now(), timerOverrides = {} } = {}) {
   const nodes = new Map(Object.entries(nodeOverrides));
   const cookieWrites = [];
   const document = {
@@ -82,6 +86,8 @@ function loadAppCoreWith({ nodeOverrides = {}, docQSTracker = () => [], navigato
     addEventListener() {},
     removeEventListener() {},
   };
+
+  Object.assign(document, documentOverrides);
 
   const storage = new Map(Object.entries(initialStorage).map(([key, value]) => [String(key), String(value)]));
   const localStorage = {
@@ -168,6 +174,46 @@ function loadAppCore() {
 }
 
 const app = loadAppCore();
+
+pendingAsyncTests.push((async function testClipboardWriterFallsBackToExecCommand() {
+  const name = 'clipboard writer falls back to execCommand on insecure origins';
+  let execCommandValue = '';
+  let restoredFocus = false;
+  const activeElement = Object.assign(makeNode(), { focus() { restoredFocus = true; } });
+  const testApp = loadAppCoreWith({
+    navigatorOverrides: { clipboard: undefined },
+    documentOverrides: {
+      activeElement,
+      createElement(tagName) {
+        const node = makeNode();
+        node.tagName = String(tagName || '').toUpperCase();
+        node.select = function select() { execCommandValue = this.value; };
+        return node;
+      },
+      execCommand(command) {
+        return command === 'copy' && execCommandValue === 'fallback text';
+      },
+    },
+  });
+
+  const writer = testApp.getClipboardWriter();
+  if (!writer || typeof writer.writeText !== 'function') {
+    fail(name, 'expected fallback clipboard writer');
+    return;
+  }
+  await writer.writeText('fallback text').catch((err) => {
+    fail(name, err && err.message ? err.message : String(err));
+  });
+  if (execCommandValue !== 'fallback text') {
+    fail(name, `copied ${JSON.stringify(execCommandValue)}`);
+    return;
+  }
+  if (!restoredFocus) {
+    fail(name, 'expected focus to be restored after fallback copy');
+    return;
+  }
+  pass(name);
+})());
 
 (function testTokenCookieScopedToBasePathForWidgetsAndImages() {
   const name = 'syncTokenCookie scopes auth cookie to UI base path';
@@ -1286,6 +1332,11 @@ function makeSwipePanel(width = 320, { ownerDocument = null } = {}) {
   pass(name);
 })();
 
-if (failures > 0) {
+Promise.all(pendingAsyncTests).then(() => {
+  if (failures > 0) {
+    process.exit(1);
+  }
+}).catch((err) => {
+  fail('async test runner', err && err.stack ? err.stack : String(err));
   process.exit(1);
-}
+});

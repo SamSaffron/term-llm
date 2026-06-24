@@ -498,7 +498,7 @@ func TestStaticAssetsSupportCodeBlockUX(t *testing.T) {
 	for _, want := range []string{
 		`/\blanguage-\w+/.test(code.className)`,
 		`btn.className = 'code-copy-btn'`,
-		`navigator.clipboard.writeText(text)`,
+		`const clipboard = getClipboardWriter()`,
 		`btn.classList.add('copied')`,
 	} {
 		if !strings.Contains(renderSrc, want) {

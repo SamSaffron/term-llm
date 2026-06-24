@@ -8,6 +8,9 @@ const {
   updateSessionUsageDisplay, renderMath, visibleSessions, sessionHasInProgressState, setSessionServerActiveRun,
   setAnimatedPanelOpen, initPanelSwipeToClose
 } = app;
+const coreClipboardWriter = typeof app.getClipboardWriter === 'function'
+  ? app.getClipboardWriter.bind(app)
+  : null;
 
 const isMobileViewport = () => window.matchMedia('(max-width: 767px)').matches;
 
@@ -790,18 +793,35 @@ const decorateAssistantFragment = (target, options = {}) => {
     btn.title = 'Copy';
     btn.setAttribute('aria-label', 'Copy code');
     btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
       const code = pre.querySelector('code');
       const text = code ? code.textContent : pre.textContent;
-      navigator.clipboard.writeText(text).then(() => {
+      const clipboard = getClipboardWriter();
+      if (!clipboard) return;
+      btn.disabled = true;
+      try {
+        await clipboard.writeText(text);
+        window.clearTimeout(btn._codeCopyResetTimer);
         btn.classList.add('copied');
         btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
-        setTimeout(() => {
+        btn._codeCopyResetTimer = window.setTimeout(() => {
           btn.classList.remove('copied');
           btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+          btn.disabled = !getClipboardWriter();
         }, 1500);
-      });
+      } catch (_err) {
+        window.clearTimeout(btn._codeCopyResetTimer);
+        btn.title = 'Copy failed';
+        btn._codeCopyResetTimer = window.setTimeout(() => {
+          btn.title = 'Copy';
+          btn.disabled = !getClipboardWriter();
+        }, 1500);
+      } finally {
+        if (!btn.classList.contains('copied')) btn.disabled = !getClipboardWriter();
+        else btn.disabled = false;
+      }
     });
+    if (!getClipboardWriter()) btn.disabled = true;
     pre.style.position = 'relative';
     pre.appendChild(btn);
   });
@@ -1906,6 +1926,7 @@ const buildTurnClipboardText = (turn) => {
 };
 
 const getClipboardWriter = () => {
+  if (coreClipboardWriter) return coreClipboardWriter();
   const clipboard = typeof navigator === 'undefined' ? null : navigator.clipboard;
   return clipboard && typeof clipboard.writeText === 'function' ? clipboard : null;
 };
@@ -2448,6 +2469,7 @@ Object.assign(app, {
   createToolArtifactsNode,
   formatToolArgs,
   getAssistantTurns,
+  getClipboardWriter,
   formatToolClipboardLines,
   buildTurnClipboardText,
   createTurnActionPanel,

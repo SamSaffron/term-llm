@@ -800,6 +800,62 @@ async function run(name, fn) {
     assert(!button.classList.contains('copied'), 'copied class resets');
   });
 
+  await run('turn copy uses app clipboard fallback writer when navigator clipboard is unavailable', async () => {
+    const fallbackWrites = [];
+    const { app, session, messages } = createHarness({
+      getClipboardWriter() {
+        return { async writeText(text) { fallbackWrites.push(text); } };
+      },
+    });
+    session.messages = [
+      { id: 'u1', role: 'user', content: 'question' },
+      { id: 'a1', role: 'assistant', content: 'Fallback copy answer' },
+    ];
+    messages.appendChild(messageNode('a1', 'assistant'));
+
+    app.syncTurnActionPanels();
+    const button = messages.children[0].querySelector('.turn-copy-btn');
+    assert(button && !button.disabled, 'fallback writer keeps copy button enabled');
+    await button.dispatchEvent({ type: 'click', preventDefault() {} });
+
+    assertEqual(fallbackWrites.length, 1, 'fallback writer copies turn');
+    assertEqual(fallbackWrites[0], 'Fallback copy answer', 'fallback writer receives turn text');
+  });
+
+  await run('turn copy button disables when no clipboard writer exists', () => {
+    const { app, session, messages } = createHarness({ getClipboardWriter: () => null });
+    session.messages = [
+      { id: 'u1', role: 'user', content: 'question' },
+      { id: 'a1', role: 'assistant', content: 'No writer answer' },
+    ];
+    messages.appendChild(messageNode('a1', 'assistant'));
+
+    app.syncTurnActionPanels();
+    const button = messages.children[0].querySelector('.turn-copy-btn');
+    assert(button && button.disabled, 'copy button disables without clipboard writer');
+    assertEqual(button.title, 'Clipboard unavailable', 'disabled button explains unavailable clipboard');
+  });
+
+  await run('code copy clears stale reset timers on rapid clicks', async () => {
+    const { app, document, copied, timers } = createHarness();
+    const target = new Element('div');
+    document.body.appendChild(target);
+
+    app.renderAssistantMarkdown(target, '```js\nconsole.log(1);\n```');
+    const button = target.querySelector('.code-copy-btn');
+    assert(button && !button.disabled, 'code copy button is enabled');
+
+    await button.dispatchEvent({ type: 'click' });
+    const firstReset = timers.find((timer) => timer.ms === 1500 && !timer.cleared);
+    assert(firstReset, 'first reset timer scheduled');
+    await button.dispatchEvent({ type: 'click' });
+
+    assertEqual(copied.length, 2, 'both rapid clicks copy');
+    assert(firstReset.cleared, 'first reset timer cleared by second click');
+    const activeResets = timers.filter((timer) => timer.ms === 1500 && !timer.cleared);
+    assertEqual(activeResets.length, 1, 'only latest reset timer remains active');
+  });
+
   await run('math copy controls copy rendered TeX source as text', async () => {
     const { app, document, copied, timers } = createHarness();
     const root = document.createElement('div');
