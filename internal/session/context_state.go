@@ -93,6 +93,36 @@ func LoadScrollbackWithBoundary(ctx context.Context, store Store, sess *Session)
 	return messages, 0, nil
 }
 
+// LoadInitialScrollbackWithBoundary loads the minimum scrollback needed for the
+// first resumed paint, plus the index where active LLM context begins. For
+// compacted sessions it starts at the persisted compaction boundary and reports
+// the older prefix as deferred so callers can lazy-load that historical
+// scrollback on demand instead of blocking startup on a full transcript read.
+func LoadInitialScrollbackWithBoundary(ctx context.Context, store Store, sess *Session) ([]Message, int, int, error) {
+	if store == nil || sess == nil {
+		return nil, 0, 0, nil
+	}
+	if !HasCompactionBoundary(sess) {
+		messages, idx, err := LoadScrollbackWithBoundary(ctx, store, sess)
+		return messages, idx, 0, err
+	}
+
+	messages, err := store.GetMessagesFrom(ctx, sess.ID, sess.CompactionSeq, 0)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	if len(messages) == 0 {
+		clearCompactionBoundary(ctx, store, sess)
+		messages, idx, err := LoadScrollbackWithBoundary(ctx, store, sess)
+		return messages, idx, 0, err
+	}
+
+	var persistedTailIDs []int64
+	messages, persistedTailIDs = markCompactionDisplayTailsForPersistence(messages)
+	persistCompactionTailHints(ctx, store, sess, persistedTailIDs)
+	return messages, 0, sess.CompactionSeq, nil
+}
+
 // ApplyCompaction persists a compaction result, appends the compacted rows to
 // the caller's scrollback snapshot, returns the new active start index, refreshes
 // session metadata when possible, and best-effort clears any persisted context

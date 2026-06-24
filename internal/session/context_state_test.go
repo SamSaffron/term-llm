@@ -143,6 +143,43 @@ func TestLoadScrollbackWithBoundary(t *testing.T) {
 	}
 }
 
+func TestLoadInitialScrollbackWithBoundaryStartsAtCompactionSeq(t *testing.T) {
+	ctx := context.Background()
+	base := newContextStateTestStore(t)
+	sess := seedContextStateSession(t, ctx, base)
+	if err := base.CompactMessages(ctx, sess.ID, []Message{
+		*NewMessage(sess.ID, llm.UserText("summary"), -1),
+		*NewMessage(sess.ID, llm.AssistantText("ack"), -1),
+	}); err != nil {
+		t.Fatalf("CompactMessages: %v", err)
+	}
+	refreshed, err := base.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	store := &trackingInitialScrollbackStore{Store: base}
+
+	initial, idx, beforeSeq, err := LoadInitialScrollbackWithBoundary(ctx, store, refreshed)
+	if err != nil {
+		t.Fatalf("LoadInitialScrollbackWithBoundary: %v", err)
+	}
+	if len(initial) != 2 || initial[0].TextContent != "summary" || initial[1].TextContent != "ack" {
+		t.Fatalf("initial scrollback = %#v, want summary/ack tail only", initial)
+	}
+	if idx != 0 {
+		t.Fatalf("idx = %d, want 0 for active-only initial tail", idx)
+	}
+	if beforeSeq != refreshed.CompactionSeq {
+		t.Fatalf("beforeSeq = %d, want compaction seq %d", beforeSeq, refreshed.CompactionSeq)
+	}
+	if store.getMessagesCalls != 0 {
+		t.Fatalf("GetMessages calls = %d, want 0", store.getMessagesCalls)
+	}
+	if len(store.getMessagesFromCalls) != 1 || store.getMessagesFromCalls[0] != refreshed.CompactionSeq {
+		t.Fatalf("GetMessagesFrom calls = %#v, want [%d]", store.getMessagesFromCalls, refreshed.CompactionSeq)
+	}
+}
+
 func TestApplyCompactionPersistsAppendsRefreshesAndClearsEstimate(t *testing.T) {
 	ctx := context.Background()
 	store := newContextStateTestStore(t)
@@ -341,6 +378,22 @@ func messageTexts(messages []Message) []string {
 		out[i] = msg.TextContent
 	}
 	return out
+}
+
+type trackingInitialScrollbackStore struct {
+	Store
+	getMessagesCalls     int
+	getMessagesFromCalls []int
+}
+
+func (s *trackingInitialScrollbackStore) GetMessages(ctx context.Context, sessionID string, limit, offset int) ([]Message, error) {
+	s.getMessagesCalls++
+	return s.Store.GetMessages(ctx, sessionID, limit, offset)
+}
+
+func (s *trackingInitialScrollbackStore) GetMessagesFrom(ctx context.Context, sessionID string, fromSeq, limit int) ([]Message, error) {
+	s.getMessagesFromCalls = append(s.getMessagesFromCalls, fromSeq)
+	return s.Store.GetMessagesFrom(ctx, sessionID, fromSeq, limit)
 }
 
 type failingAfterCompactStore struct {

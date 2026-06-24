@@ -654,6 +654,7 @@ func (m *Model) cmdClear() (tea.Model, tea.Cmd) {
 	// Clear conversation messages and input
 	m.messages = nil
 	m.compactionIdx = 0
+	m.discardDeferredScrollback()
 	m.scrollOffset = 0
 	m.setTextareaValue("")
 	m.clearFiles()
@@ -1474,6 +1475,7 @@ func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
 	// Clear conversation messages and input
 	m.messages = nil
 	m.compactionIdx = 0
+	m.discardDeferredScrollback()
 	m.scrollOffset = 0
 	m.setTextareaValue("")
 	m.clearFiles()

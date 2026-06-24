@@ -317,6 +317,7 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 
 	// Build the full message content including file attachments
 	fullContent := content
+	m.discardDeferredScrollback()
 	var fileNames []string
 
 	if len(m.files) > 0 {

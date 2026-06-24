@@ -73,13 +73,15 @@ type Model struct {
 	keyMap   KeyMap
 
 	// Session state
-	store         session.Store     // Session storage backend
-	sess          *session.Session  // Current session
-	messages      []session.Message // In-memory messages for current session
-	compactionIdx int               // Prefix length to skip for LLM context; 0 means no prefix is skipped.
-	messagesMu    sync.Mutex        // Protects messages from concurrent compaction callback
-	streaming     bool
-	phase         string // "Thinking", "Searching", "Reading", "Responding"
+	store                     session.Store     // Session storage backend
+	sess                      *session.Session  // Current session
+	messages                  []session.Message // In-memory messages for current session
+	compactionIdx             int               // Prefix length to skip for LLM context; 0 means no prefix is skipped.
+	deferredScrollbackBefore  int               // Oldest not-yet-loaded pre-compaction sequence boundary for lazy resume scrollback.
+	deferredScrollbackLoading bool              // A lazy older-scrollback load is in flight.
+	messagesMu                sync.Mutex        // Protects messages from concurrent compaction callback
+	streaming                 bool
+	phase                     string // "Thinking", "Searching", "Reading", "Responding"
 
 	// Reasoning display/status state. Provider replay metadata is persisted in
 	// assistant parts by the LLM engine; these fields only affect live UI policy.
@@ -482,6 +484,13 @@ type chatGPTModelsLoadedMsg struct {
 	err    error
 }
 
+type olderScrollbackLoadedMsg struct {
+	sessionID     string
+	messages      []session.Message
+	nextBeforeSeq int
+	err           error
+}
+
 // ApprovalRequestMsg triggers an inline approval prompt.
 type ApprovalRequestMsg struct {
 	Path    string
@@ -503,12 +512,95 @@ type HandoverRequestMsg struct {
 	DoneCh chan<- bool
 }
 
+const deferredScrollbackPageSize = 128
+
 func loadSessionMessagesForContext(ctx context.Context, store session.Store, sess *session.Session) ([]session.Message, error) {
 	return session.LoadActiveMessages(ctx, store, sess)
 }
 
 func loadSessionMessagesForScrollback(ctx context.Context, store session.Store, sess *session.Session) ([]session.Message, int, error) {
 	return session.LoadScrollbackWithBoundary(ctx, store, sess)
+}
+
+func reverseSessionMessages(messages []session.Message) []session.Message {
+	if len(messages) == 0 {
+		return nil
+	}
+	reversed := make([]session.Message, len(messages))
+	for i := range messages {
+		reversed[len(messages)-1-i] = messages[i]
+	}
+	return reversed
+}
+
+func loadOlderScrollbackPage(ctx context.Context, store session.Store, sessionID string, beforeSeq, limit int) ([]session.Message, int, error) {
+	if store == nil || sessionID == "" || beforeSeq <= 0 {
+		return nil, 0, nil
+	}
+	if pager, ok := store.(session.MessagesDescendingPager); ok {
+		page, err := pager.GetMessagesPageDescending(ctx, sessionID, beforeSeq, limit)
+		if err != nil {
+			return nil, 0, err
+		}
+		ascending := reverseSessionMessages(page)
+		nextBeforeSeq := 0
+		if len(ascending) > 0 {
+			nextBeforeSeq = ascending[0].Sequence
+		}
+		return ascending, nextBeforeSeq, nil
+	}
+	messages, err := store.GetMessages(ctx, sessionID, beforeSeq, 0)
+	if err != nil {
+		return nil, 0, err
+	}
+	return messages, 0, nil
+}
+
+func (m *Model) requestOlderScrollback() tea.Cmd {
+	if m == nil || m.store == nil || m.sess == nil || m.deferredScrollbackLoading || m.deferredScrollbackBefore <= 0 {
+		return nil
+	}
+	sessionID := m.sess.ID
+	beforeSeq := m.deferredScrollbackBefore
+	m.deferredScrollbackLoading = true
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		messages, nextBeforeSeq, err := loadOlderScrollbackPage(ctx, m.store, sessionID, beforeSeq, deferredScrollbackPageSize)
+		return olderScrollbackLoadedMsg{sessionID: sessionID, messages: messages, nextBeforeSeq: nextBeforeSeq, err: err}
+	}
+}
+
+func (m *Model) applyOlderScrollbackLoaded(msg olderScrollbackLoadedMsg) (tea.Model, tea.Cmd) {
+	m.deferredScrollbackLoading = false
+	if m.sess == nil || msg.sessionID != m.sess.ID {
+		return m, nil
+	}
+	if msg.err != nil {
+		return m.showFooterError(fmt.Sprintf("Failed to load older scrollback: %v", msg.err))
+	}
+	m.deferredScrollbackBefore = msg.nextBeforeSeq
+	if len(msg.messages) == 0 {
+		return m, nil
+	}
+	m.messagesMu.Lock()
+	m.messages = append(append([]session.Message(nil), msg.messages...), m.messages...)
+	m.compactionIdx += len(msg.messages)
+	m.messagesMu.Unlock()
+	m.invalidateHistoryCache()
+	return m, nil
+}
+
+func (m *Model) canLoadOlderScrollback() bool {
+	return m != nil && m.deferredScrollbackBefore > 0 && !m.deferredScrollbackLoading
+}
+
+func (m *Model) discardDeferredScrollback() {
+	if m == nil {
+		return
+	}
+	m.deferredScrollbackBefore = 0
+	m.deferredScrollbackLoading = false
 }
 
 func (m *Model) refreshSessionFromStore(ctx context.Context) error {
@@ -618,13 +710,16 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 	// Load existing messages if resuming.
 	// Keep full persisted scrollback available for the human UI, but remember the
 	// compaction boundary so buildMessages only sends the active post-compaction
-	// window to the LLM.
+	// window to the LLM. For compacted sessions, load the active tail first so a
+	// large pre-compaction transcript does not block the first paint.
 	var messages []session.Message
 	var compactionIdx int
+	var deferredScrollbackBefore int
 	if store != nil && sess.ID != "" {
-		if loadedMsgs, idx, err := loadSessionMessagesForScrollback(context.Background(), store, sess); err == nil {
+		if loadedMsgs, idx, beforeSeq, err := session.LoadInitialScrollbackWithBoundary(context.Background(), store, sess); err == nil {
 			messages = loadedMsgs
 			compactionIdx = idx
+			deferredScrollbackBefore = beforeSeq
 		}
 	}
 
@@ -713,6 +808,7 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 		sess:                       sess,
 		messages:                   messages,
 		compactionIdx:              compactionIdx,
+		deferredScrollbackBefore:   deferredScrollbackBefore,
 		rootCtx:                    context.Background(),
 		provider:                   provider,
 		fastProvider:               fastProvider,
@@ -1424,6 +1520,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.resetViewportHorizontalOffset()
 				return m, nil
 			}
+			if wheel, ok := msg.(tea.MouseWheelMsg); ok && wheel.Button == tea.MouseWheelUp && m.viewport.YOffset() == 0 {
+				if cmd := m.requestOlderScrollback(); cmd != nil {
+					return m, cmd
+				}
+			}
 			var cmd tea.Cmd
 			m.viewport, cmd = m.viewport.Update(msg)
 			m.resetViewportHorizontalOffset()
@@ -1467,6 +1568,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case chatGPTModelsLoadedMsg:
 		return m.applyChatGPTModelsLoaded(msg)
+
+	case olderScrollbackLoadedMsg:
+		return m.applyOlderScrollbackLoaded(msg)
 
 	case promptHistoryLookupMsg:
 		return m.handlePromptHistoryLookupMsg(msg)
@@ -1513,6 +1617,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sess = refreshed
 		}
 		m.recordCompactionUsage(context.Background(), sessionIDOf(m.sess), msg.result.Usage)
+		m.discardDeferredScrollback()
 		m.messagesMu.Lock()
 		m.messages = updated
 		m.compactionIdx = activeStart
@@ -2124,6 +2229,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					_, cmd := m.showFooterError(fmt.Sprintf("Session message reload failed after compaction: %v", err))
 					cmds = append(cmds, cmd)
 				} else {
+					m.discardDeferredScrollback()
 					m.messagesMu.Lock()
 					m.messages = loadedMsgs
 					m.compactionIdx = compactionIdx

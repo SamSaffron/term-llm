@@ -154,26 +154,33 @@ func TestStreamingLocalSlashCommandIncludesEffort(t *testing.T) {
 // mockStore implements session.Store for testing resume behavior.
 type mockStore struct {
 	session.NoopStore
-	sessions        map[string]*session.Session
-	getErr          error
-	messages        map[string][]session.Message
-	summaries       []session.SessionSummary
-	msgErr          error
-	updated         *session.Session
-	updateErr       error
-	created         []*session.Session
-	createErr       error
-	added           []session.Message
-	addErr          error
-	currentID       string
-	setCurrentErr   error
-	deleted         []string
-	deleteErr       error
-	statusUpdates   []statusUpdate
-	updateStatusErr error
-	compacted       []session.Message
-	compactSession  string
-	compactErr      error
+	sessions             map[string]*session.Session
+	getErr               error
+	messages             map[string][]session.Message
+	summaries            []session.SessionSummary
+	msgErr               error
+	getMessagesCalls     int
+	getMessagesFromCalls []getMessagesFromCall
+	updated              *session.Session
+	updateErr            error
+	created              []*session.Session
+	createErr            error
+	added                []session.Message
+	addErr               error
+	currentID            string
+	setCurrentErr        error
+	deleted              []string
+	deleteErr            error
+	statusUpdates        []statusUpdate
+	updateStatusErr      error
+	compacted            []session.Message
+	compactSession       string
+	compactErr           error
+}
+
+type getMessagesFromCall struct {
+	fromSeq int
+	limit   int
 }
 
 type statusUpdate struct {
@@ -202,6 +209,7 @@ func (s *mockStore) GetMessages(_ context.Context, sessionID string, _, _ int) (
 	if s.msgErr != nil {
 		return nil, s.msgErr
 	}
+	s.getMessagesCalls++
 	return s.messages[sessionID], nil
 }
 
@@ -209,6 +217,7 @@ func (s *mockStore) GetMessagesFrom(_ context.Context, sessionID string, fromSeq
 	if s.msgErr != nil {
 		return nil, s.msgErr
 	}
+	s.getMessagesFromCalls = append(s.getMessagesFromCalls, getMessagesFromCall{fromSeq: fromSeq, limit: limit})
 	var filtered []session.Message
 	for _, msg := range s.messages[sessionID] {
 		if msg.Sequence >= fromSeq {
@@ -316,6 +325,30 @@ func (s *mockStore) CompactMessages(_ context.Context, sessionID string, message
 	s.compacted = append([]session.Message(nil), messages...)
 	s.messages[sessionID] = append(s.messages[sessionID], messages...)
 	return nil
+}
+
+type pagedResumeScrollbackStore struct {
+	*mockStore
+	pageCalls int
+}
+
+func (s *pagedResumeScrollbackStore) GetMessagesPageDescending(_ context.Context, sessionID string, beforeSeq, limit int) ([]session.Message, error) {
+	if s.msgErr != nil {
+		return nil, s.msgErr
+	}
+	s.pageCalls++
+	msgs := s.messages[sessionID]
+	page := make([]session.Message, 0, limit)
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if beforeSeq > 0 && msgs[i].Sequence >= beforeSeq {
+			continue
+		}
+		page = append(page, msgs[i])
+		if limit > 0 && len(page) >= limit {
+			break
+		}
+	}
+	return page, nil
 }
 
 func TestCmdHelpOpensModal(t *testing.T) {
@@ -2660,6 +2693,98 @@ func TestProcStatState(t *testing.T) {
 				t.Fatalf("procStatState(%q) = %q, %v; want %q, %v", tt.stat, got, ok, tt.want, tt.ok)
 			}
 		})
+	}
+}
+
+func TestNewLoadsCompactedScrollbackTailAndLazyLoadsOlderPrefix(t *testing.T) {
+	sessionID := "sess-lazy-resume"
+	base := &mockStore{
+		sessions: map[string]*session.Session{
+			sessionID: {ID: sessionID, CompactionSeq: 2, CompactionCount: 1},
+		},
+		messages: map[string][]session.Message{
+			sessionID: {
+				*session.NewMessage(sessionID, llm.UserText("old user"), 0),
+				*session.NewMessage(sessionID, llm.AssistantText("old assistant"), 1),
+				*session.NewMessage(sessionID, llm.UserText("summary"), 2),
+				*session.NewMessage(sessionID, llm.AssistantText("ack"), 3),
+			},
+		},
+	}
+	store := &pagedResumeScrollbackStore{mockStore: base}
+
+	provider := llm.NewMockProvider("mock")
+	engine := llm.NewEngine(provider, nil)
+	m := New(
+		&config.Config{DefaultProvider: "mock"},
+		provider,
+		engine,
+		"mock",
+		"mock-model",
+		nil,
+		20,
+		false,
+		false,
+		false,
+		nil,
+		"",
+		"",
+		false,
+		"",
+		store,
+		base.sessions[sessionID],
+		true,
+		nil,
+		false,
+		false,
+		"",
+		"",
+		false,
+	)
+
+	if len(m.messages) != 2 {
+		t.Fatalf("initial len(messages) = %d, want 2 active tail rows", len(m.messages))
+	}
+	if m.messages[0].Sequence != 2 || m.messages[1].Sequence != 3 {
+		t.Fatalf("initial sequences = [%d %d], want [2 3]", m.messages[0].Sequence, m.messages[1].Sequence)
+	}
+	if m.compactionIdx != 0 {
+		t.Fatalf("initial compactionIdx = %d, want 0 for active-only tail", m.compactionIdx)
+	}
+	if m.deferredScrollbackBefore != 2 {
+		t.Fatalf("deferredScrollbackBefore = %d, want 2", m.deferredScrollbackBefore)
+	}
+	if base.getMessagesCalls != 0 {
+		t.Fatalf("GetMessages calls = %d, want 0 on initial compacted resume", base.getMessagesCalls)
+	}
+	if len(base.getMessagesFromCalls) != 1 || base.getMessagesFromCalls[0].fromSeq != 2 {
+		t.Fatalf("GetMessagesFrom calls = %#v, want first call fromSeq=2", base.getMessagesFromCalls)
+	}
+	if store.pageCalls != 0 {
+		t.Fatalf("GetMessagesPageDescending calls = %d, want 0 before user requests older scrollback", store.pageCalls)
+	}
+
+	cmd := m.requestOlderScrollback()
+	if cmd == nil {
+		t.Fatal("expected lazy older scrollback load command")
+	}
+	result, _ := m.Update(cmd().(olderScrollbackLoadedMsg))
+	rm := result.(*Model)
+
+	if len(rm.messages) != 4 {
+		t.Fatalf("len(messages) after lazy load = %d, want 4", len(rm.messages))
+	}
+	if rm.messages[0].Sequence != 0 || rm.messages[3].Sequence != 3 {
+		t.Fatalf("lazy-loaded sequences = first %d last %d, want 0 and 3", rm.messages[0].Sequence, rm.messages[3].Sequence)
+	}
+	if rm.compactionIdx != 2 {
+		t.Fatalf("compactionIdx after lazy load = %d, want 2", rm.compactionIdx)
+	}
+	if rm.deferredScrollbackBefore != 0 {
+		t.Fatalf("deferredScrollbackBefore after lazy load = %d, want 0", rm.deferredScrollbackBefore)
+	}
+	if store.pageCalls != 1 {
+		t.Fatalf("GetMessagesPageDescending calls = %d, want 1", store.pageCalls)
 	}
 }
 

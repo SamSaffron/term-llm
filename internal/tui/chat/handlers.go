@@ -647,6 +647,11 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Allow viewport scrolling even while streaming (in alt screen mode)
 	if m.altScreen {
 		if key.Matches(msg, m.keyMap.PageUp) {
+			if m.viewport.YOffset() == 0 {
+				if cmd := m.requestOlderScrollback(); cmd != nil {
+					return m, cmd
+				}
+			}
 			var cmd tea.Cmd
 			m.viewport, cmd = m.viewport.Update(msg)
 			return m, cmd
@@ -666,6 +671,11 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				scrollAmount = 5
 			}
 			if key.Matches(msg, m.keyMap.HistoryUp) {
+				if m.viewport.YOffset() == 0 {
+					if cmd := m.requestOlderScrollback(); cmd != nil {
+						return m, cmd
+					}
+				}
 				m.viewport.ScrollUp(scrollAmount)
 				return m, nil
 			}
@@ -910,6 +920,11 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			maxScroll := totalMessages - 1
 			if maxScroll < 0 {
 				maxScroll = 0
+			}
+			if m.scrollOffset >= maxScroll {
+				if cmd := m.requestOlderScrollback(); cmd != nil {
+					return m, cmd
+				}
 			}
 			m.scrollOffset += 5
 			if m.scrollOffset > maxScroll {
