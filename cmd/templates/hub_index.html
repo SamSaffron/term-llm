@@ -26,8 +26,8 @@
     </div>
     <div class="hub-header-actions">
       <span class="hub-summary" id="hubSummary" aria-live="polite"></span>
-      <button class="hub-btn ghost" id="refreshBtn" type="button" title="Refresh nodes">↻ Refresh</button>
-      {{if .CanAddNodes}}<button class="hub-btn primary" id="addNodeBtn" type="button">＋ Add node</button>{{end}}
+      <button class="hub-btn ghost" id="refreshBtn" type="button" title="Refresh nodes">Refresh</button>
+      {{if .CanAddNodes}}<button class="hub-btn primary" id="addNodeBtn" type="button">Add node</button>{{end}}
     </div>
   </header>
 
@@ -299,7 +299,6 @@ term-llm serve hub</code></pre>
       if (n.sessions && n.sessions.count_label) {
         head.appendChild(el('span', 'session-count-badge', n.sessions.count_label));
       }
-      head.appendChild(el('span', `source-badge source-${n.source}`, n.source));
       card.appendChild(head);
 
       const capabilities = Array.isArray(status.capabilities) ? status.capabilities : [];
@@ -345,14 +344,22 @@ term-llm serve hub</code></pre>
       fresh.href = n.new_session_path || `${n.proxy_path}?new=1`;
       actions.appendChild(fresh);
       if (n.source === 'local') {
-        const del = el('button', 'hub-btn danger', 'Remove');
+        const menu = el('details', 'node-menu');
+        const toggle = el('summary', 'node-menu-toggle', '⋯');
+        toggle.setAttribute('aria-label', `More actions for ${n.name}`);
+        menu.appendChild(toggle);
+        const list = el('div', 'node-menu-list');
+        const del = el('button', 'node-menu-item danger', 'Remove node');
         del.type = 'button';
         del.addEventListener('click', async () => {
+          menu.open = false;
           if (!confirm(`Remove node "${n.name}"?`)) return;
           await fetch(`api/nodes/${encodeURIComponent(n.id)}`, { method: 'DELETE' });
           refresh();
         });
-        actions.appendChild(del);
+        list.appendChild(del);
+        menu.appendChild(list);
+        actions.appendChild(menu);
       }
       card.appendChild(actions);
       return card;
