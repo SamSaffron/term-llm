@@ -757,6 +757,7 @@ const convertServerMessages = (serverMessages, options = {}) => {
 
 const SESSION_MESSAGES_PAGE_SIZE = 200;
 const SESSION_OLDER_LOAD_TOP_THRESHOLD_PX = 600;
+const SESSION_OLDER_LOAD_CHAIN_LIMIT = 25;
 
 const findSessionById = (sessionId) => state.sessions.find((item) => item?.id === sessionId) || null;
 
@@ -1054,9 +1055,8 @@ const loadOlderSessionMessages = async (session) => {
   }
 };
 
-const maybeLoadOlderSessionMessages = async () => {
-  const session = getActiveSession();
-  if (!session) return false;
+const shouldLoadOlderForSession = (session) => {
+  if (!session || session.id !== state.activeSessionId) return false;
   const history = ensureSessionHistory(session);
   if (!history.loadedTail || !history.hasMoreOlder || history.loadingOlder) return false;
   if (state.abortController || sessionHasInProgressState(session)) return false;
@@ -1065,9 +1065,26 @@ const maybeLoadOlderSessionMessages = async () => {
   const scrollTop = Number(chatScroll?.scrollTop) || 0;
   const clientHeight = Number(chatScroll?.clientHeight) || 0;
   const threshold = Math.max(SESSION_OLDER_LOAD_TOP_THRESHOLD_PX, clientHeight * 2);
-  if (scrollTop > threshold) return false;
+  return scrollTop <= threshold;
+};
 
-  return loadOlderSessionMessages(session);
+const maybeLoadOlderSessionMessages = async () => {
+  const session = getActiveSession();
+  if (!shouldLoadOlderForSession(session)) return false;
+
+  let loadedAny = false;
+  for (let attempts = 0; attempts < SESSION_OLDER_LOAD_CHAIN_LIMIT; attempts += 1) {
+    const loaded = await loadOlderSessionMessages(session);
+    if (!loaded) return loadedAny;
+    loadedAny = true;
+
+    // A page containing only tool calls can merge into the existing collapsed
+    // tool group at the top of the viewport, so the rendered height barely
+    // changes and no follow-up scroll event fires. Keep draining while we are
+    // still near the top so scrollback can cross tool-only page boundaries.
+    if (!shouldLoadOlderForSession(session)) break;
+  }
+  return loadedAny;
 };
 
 const normalizeMCPServerView = (server) => {

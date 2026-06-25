@@ -1443,6 +1443,107 @@ async function testScrollNearTopLoadsOlderPageAndPreservesViewport() {
   pass(name);
 }
 
+async function testScrollNearTopDrainsToolOnlyPagesUntilVisibleHistory() {
+  const name = 'scroll near top drains tool-only older pages until visible history appears';
+  const fetchCalls = [];
+  let appRef = null;
+  const { app } = await createSessionsHarness({
+    fetchImpl: async (url) => {
+      fetchCalls.push(url);
+      if (url === '/ui/v1/sessions') {
+        return new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isTailMessagesURL(url, 'sess_tool_boundary')) {
+        return new Response(JSON.stringify({
+          messages: [{
+            id: 300,
+            sequence: 300,
+            role: 'assistant',
+            created_at: 1710000003000,
+            parts: [{ type: 'tool_call', tool_name: 'shell', tool_call_id: 'tool-300', tool_arguments: '{"command":"tail"}' }],
+          }],
+          has_more: true,
+          next_before_seq: 300,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isOlderMessagesURL(url, 'sess_tool_boundary', 300)) {
+        return new Response(JSON.stringify({
+          messages: [{
+            id: 250,
+            sequence: 250,
+            role: 'assistant',
+            created_at: 1710000002500,
+            parts: [{ type: 'tool_call', tool_name: 'read_file', tool_call_id: 'tool-250', tool_arguments: '{"path":"a"}' }],
+          }],
+          has_more: true,
+          next_before_seq: 200,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (isOlderMessagesURL(url, 'sess_tool_boundary', 200)) {
+        return new Response(JSON.stringify({
+          messages: [{
+            id: 150,
+            sequence: 150,
+            role: 'user',
+            created_at: 1710000001500,
+            parts: [{ type: 'text', text: 'visible prompt before the tool storm' }],
+          }],
+          has_more: false,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ messages: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+    appOverrides: {
+      renderMessages() {
+        if (!appRef) return;
+        const active = appRef.state.sessions.find((session) => session.id === appRef.state.activeSessionId);
+        const visibleMessages = active ? active.messages.length : 0;
+        appRef.elements.chatScroll.scrollHeight = visibleMessages > 1 ? 1600 : 1000;
+      }
+    }
+  });
+  appRef = app;
+
+  const session = {
+    id: 'sess_tool_boundary',
+    title: 'Tool boundary session',
+    origin: 'web',
+    created: 1710000000000,
+    messages: [],
+  };
+  app.state.sessions = [session];
+  app.state.activeSessionId = session.id;
+  app.state.draftSessionActive = false;
+
+  const tail = await app.loadServerSessionMessages(session.id);
+  app.mergeServerMessagesWithLocalState(session, tail);
+  app.elements.chatScroll.scrollHeight = 1000;
+  app.elements.chatScroll.scrollTop = 0;
+  app.elements.chatScroll.clientHeight = 400;
+  fetchCalls.length = 0;
+
+  const loaded = await app.maybeLoadOlderSessionMessages();
+  if (!loaded) {
+    fail(name, 'expected near-top scroll to load through tool-only pages');
+    return;
+  }
+  if (!fetchCalls.some((url) => isOlderMessagesURL(url, 'sess_tool_boundary', 300))
+      || !fetchCalls.some((url) => isOlderMessagesURL(url, 'sess_tool_boundary', 200))) {
+    fail(name, 'expected chained older-page requests across tool-only boundary', JSON.stringify(fetchCalls));
+    return;
+  }
+  if (session.messages.length !== 2 || session.messages[0].role !== 'user' || session.messages[0].content !== 'visible prompt before the tool storm' || session.messages[1].role !== 'tool-group') {
+    fail(name, 'expected visible prompt to be prepended before collapsed tool group', JSON.stringify(session.messages));
+    return;
+  }
+  if (session._history.hasMoreOlder) {
+    fail(name, 'expected chained drain to stop after final page', JSON.stringify(session._history));
+    return;
+  }
+
+  pass(name);
+}
+
 async function testTailRefreshPreservesOlderHistoryCursor() {
   const name = 'tail refresh preserves older history cursor after older pages load';
   const fetchCalls = [];
@@ -1517,7 +1618,7 @@ async function testTailRefreshPreservesOlderHistoryCursor() {
     return;
   }
 
-  const olderLoaded = await app.maybeLoadOlderSessionMessages();
+  const olderLoaded = await app.loadOlderSessionMessages(session);
   if (!olderLoaded || session._history.oldestSeq !== 50) {
     fail(name, 'expected older page to set cursor from server response', JSON.stringify(session._history));
     return;
@@ -3828,6 +3929,7 @@ async function testMCPPatchConflictDoesNotOptimisticallyEnable() {
   await testConvertServerMessagesSuppressesNonBubbleAssistantRows();
   await testSessionHistoryInitialLoadRequestsTailOnly();
   await testScrollNearTopLoadsOlderPageAndPreservesViewport();
+  await testScrollNearTopDrainsToolOnlyPagesUntilVisibleHistory();
   await testTailRefreshPreservesOlderHistoryCursor();
   await testCompactedTailRefreshPreservesPreCompactionScrollback();
   await testCompactedTailRefreshPreservesLocalScrollbackWithoutRawHistory();
