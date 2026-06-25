@@ -346,6 +346,62 @@ func TestRenderer_RenderAltScreen_IncludesFullHistory(t *testing.T) {
 	}
 }
 
+func TestRenderer_HistoricalToolCallUsesErrorCircleForFailedResult(t *testing.T) {
+	renderer := NewRenderer(80, 24)
+	renderer.SetMarkdownRenderer(simpleMarkdownRenderer)
+
+	messages := []session.Message{
+		{
+			ID:   1,
+			Role: llm.RoleAssistant,
+			Parts: []llm.Part{{
+				Type: llm.PartToolCall,
+				ToolCall: &llm.ToolCall{
+					ID:       "call-1",
+					Name:     "shell",
+					ToolInfo: "(sleep 5)",
+				},
+			}},
+			Sequence: 0,
+		},
+		{
+			ID:   2,
+			Role: llm.RoleTool,
+			Parts: []llm.Part{{
+				Type: llm.PartToolResult,
+				ToolResult: &llm.ToolResult{
+					ID:      "call-1",
+					Name:    "shell",
+					Content: "Error: context canceled",
+					IsError: true,
+				},
+			}},
+			Sequence: 1,
+		},
+	}
+
+	output := renderer.Render(RenderState{
+		Messages: messages,
+		Viewport: ViewportState{
+			Height:   24,
+			AtBottom: true,
+		},
+		Mode:   RenderModeAltScreen,
+		Width:  80,
+		Height: 24,
+	})
+
+	if !strings.Contains(ui.StripANSI(output), "shell (sleep 5)") {
+		t.Fatalf("rendered output missing shell call: %q", output)
+	}
+	if !strings.Contains(output, ui.ErrorCircle()) {
+		t.Fatalf("failed tool result should render with error circle, got %q", output)
+	}
+	if strings.Contains(output, ui.SuccessCircle()) {
+		t.Fatalf("failed tool result should not render with success circle, got %q", output)
+	}
+}
+
 func TestRenderer_ReloadedHistorySeparatesToolOnlyMessagesFromFollowingContent(t *testing.T) {
 	renderer := NewRenderer(80, 24)
 	renderer.SetMarkdownRenderer(simpleMarkdownRenderer)

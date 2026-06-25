@@ -153,14 +153,19 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 	textOutput := func(message string) llm.ToolOutput {
 		return llm.TextOutput(warning + message)
 	}
+	errorOutput := func(message string) llm.ToolOutput {
+		output := textOutput(message)
+		output.IsError = true
+		return output
+	}
 
 	var a ShellArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return textOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
+		return errorOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
 	}
 
 	if a.Command == "" {
-		return textOutput(formatToolError(NewToolError(ErrInvalidParams, "command is required"))), nil
+		return errorOutput(formatToolError(NewToolError(ErrInvalidParams, "command is required"))), nil
 	}
 
 	// Strip leading "cd <dir> && " and fold into WorkingDir so that
@@ -173,12 +178,12 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 		outcome, err := t.approval.CheckShellApproval(a.Command, a.WorkingDir)
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {
-				return textOutput(formatToolError(toolErr)), nil
+				return errorOutput(formatToolError(toolErr)), nil
 			}
-			return textOutput(formatToolError(NewToolError(ErrPermissionDenied, err.Error()))), nil
+			return errorOutput(formatToolError(NewToolError(ErrPermissionDenied, err.Error()))), nil
 		}
 		if outcome == Cancel {
-			return textOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "command not allowed: %s", truncateCommand(a.Command)))), nil
+			return errorOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "command not allowed: %s", truncateCommand(a.Command)))), nil
 		}
 	}
 
@@ -203,7 +208,7 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 			var err error
 			workDir, err = os.Getwd()
 			if err != nil {
-				return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err))), nil
+				return errorOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err))), nil
 			}
 		}
 	}
@@ -211,13 +216,13 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 	// Validate working directory exists and is a directory
 	if info, err := os.Stat(workDir); err != nil {
 		if os.IsNotExist(err) {
-			return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed,
+			return errorOutput(formatToolError(NewToolErrorf(ErrExecutionFailed,
 				"working directory %q does not exist", workDir))), nil
 		}
-		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed,
+		return errorOutput(formatToolError(NewToolErrorf(ErrExecutionFailed,
 			"working directory %q is not accessible: %v", workDir, err))), nil
 	} else if !info.IsDir() {
-		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed,
+		return errorOutput(formatToolError(NewToolErrorf(ErrExecutionFailed,
 			"working directory %q is not a directory", workDir))), nil
 	}
 
@@ -246,7 +251,7 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 
 	cleanup, prepErr := prepareToolCommand(cmd)
 	if prepErr != nil {
-		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "command setup error: %v", prepErr))), nil
+		return errorOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "command setup error: %v", prepErr))), nil
 	}
 	defer cleanup()
 
@@ -276,7 +281,7 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 	// Check for timeout
 	if execCtx.Err() != nil {
 		result.TimedOut = true
-		return llm.ToolOutput{Content: warning + formatShellResult(result, t.limits), TimedOut: true, FileChanges: fileChanges}, nil
+		return llm.ToolOutput{Content: warning + formatShellResult(result, t.limits), TimedOut: true, IsError: true, FileChanges: fileChanges}, nil
 	}
 
 	// Get exit code
@@ -285,12 +290,14 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 			result.ExitCode = exitErr.ExitCode()
 		} else {
 			output := textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "command error: %v", err)))
+			output.IsError = true
 			output.FileChanges = fileChanges
 			return output, nil
 		}
 	}
 
 	output := textOutput(formatShellResult(result, t.limits))
+	output.IsError = result.ExitCode != 0
 	output.FileChanges = fileChanges
 	return output, nil
 }

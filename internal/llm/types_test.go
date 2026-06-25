@@ -33,6 +33,21 @@ func TestToolResultMessageFromOutput_WithDiffs(t *testing.T) {
 	}
 }
 
+func TestToolResultMessageFromOutput_PreservesErrorStatus(t *testing.T) {
+	msg := ToolResultMessageFromOutput("call-1", "shell", ToolOutput{
+		Content: "exit_code: 7",
+		IsError: true,
+	}, nil)
+
+	result := msg.Parts[0].ToolResult
+	if result == nil {
+		t.Fatal("expected ToolResult to be non-nil")
+	}
+	if !result.IsError {
+		t.Fatal("expected ToolResult.IsError=true")
+	}
+}
+
 func TestToolResultMessage_PlainText(t *testing.T) {
 	raw := "Created new file: /tmp/test.go (10 lines)."
 	msg := ToolResultMessage("call-1", "write_file", raw, nil)
@@ -98,7 +113,7 @@ func TestToolResult_SessionRoundTrip(t *testing.T) {
 		Diffs: []DiffData{
 			{File: "test.go", Old: "old", New: "new", Line: 1},
 		},
-		IsError: false,
+		IsError: true,
 	}
 
 	data, err := json.Marshal(original)
@@ -122,6 +137,9 @@ func TestToolResult_SessionRoundTrip(t *testing.T) {
 	}
 	if restored.ID != original.ID {
 		t.Errorf("ID = %q, want %q", restored.ID, original.ID)
+	}
+	if restored.IsError != original.IsError {
+		t.Errorf("IsError = %v, want %v", restored.IsError, original.IsError)
 	}
 }
 

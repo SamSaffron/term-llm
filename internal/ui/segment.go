@@ -358,11 +358,23 @@ func RenderToolSegment(seg *Segment, wavePos int, width int, expanded bool) stri
 }
 
 // RenderToolCallFromPart renders a historical tool call from an llm.ToolCall.
-// Uses success styling since historical calls have completed.
+// Uses success styling since historical calls without matching results are assumed completed.
 // width is the terminal width used to truncate long lines (0 = no truncation).
 func RenderToolCallFromPart(tc *llm.ToolCall, width int, expanded bool) string {
+	return RenderToolCallFromPartWithStatus(tc, width, expanded, ToolSuccess)
+}
+
+// RenderToolCallFromPartWithStatus renders a historical tool call from an llm.ToolCall
+// using the supplied execution status.
+// width is the terminal width used to truncate long lines (0 = no truncation).
+func RenderToolCallFromPartWithStatus(tc *llm.ToolCall, width int, expanded bool, status ToolStatus) string {
 	if tc == nil {
 		return ""
+	}
+
+	circle := SuccessCircle()
+	if status == ToolError {
+		circle = ErrorCircle()
 	}
 
 	if expanded && tc.Name == "shell" && len(tc.Arguments) > 0 {
@@ -370,7 +382,7 @@ func RenderToolCallFromPart(tc *llm.ToolCall, width int, expanded bool) string {
 		if err := json.Unmarshal(tc.Arguments, &args); err == nil {
 			info := buildExpandedShellInfo(args)
 			if info != "" {
-				return SuccessCircle() + " " + tc.Name + " " + paramStyle.Render(info)
+				return circle + " " + tc.Name + " " + paramStyle.Render(info)
 			}
 		}
 	}
@@ -381,9 +393,9 @@ func RenderToolCallFromPart(tc *llm.ToolCall, width int, expanded bool) string {
 	}
 	info = truncateToolInfo(tc.Name, info, width)
 	if info != "" {
-		return SuccessCircle() + " " + tc.Name + " " + paramStyle.Render(info)
+		return circle + " " + tc.Name + " " + paramStyle.Render(info)
 	}
-	return SuccessCircle() + " " + tc.Name
+	return circle + " " + tc.Name
 }
 
 // renderSpawnAgentStats renders the stats line for a spawn_agent tool.

@@ -422,12 +422,16 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 			hasContent = true
 		case llm.PartToolCall:
 			if part.ToolCall != nil {
-				b.WriteString(ui.RenderToolCallFromPart(part.ToolCall, r.width, r.toolsExpanded))
+				result := r.findToolResult(part.ToolCall.ID)
+				status := ui.ToolSuccess
+				if result != nil && result.IsError {
+					status = ui.ToolError
+				}
+				b.WriteString(ui.RenderToolCallFromPartWithStatus(part.ToolCall, r.width, r.toolsExpanded, status))
 				b.WriteString("\n")
 				r.noteRenderedSegment(ui.SegmentTool)
 				hasContent = true
 
-				result := r.findToolResult(part.ToolCall.ID)
 				if result != nil && len(result.Images) > 0 {
 					b.WriteString(r.renderToolImages(result.Images))
 					r.noteRenderedSegment(ui.SegmentImage)

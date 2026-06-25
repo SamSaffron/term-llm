@@ -354,6 +354,7 @@ type ToolOutput struct {
 	Images       []string          // Image paths (for UI rendering)
 	FileChanges  []FileChange      `json:"file_changes,omitempty"` // Recorded file changes (when file tracking is enabled)
 	TimedOut     bool              // Set by tools that support timeouts (e.g. shell); drives ToolSuccess=false without content sniffing
+	IsError      bool              // Set when a tool returned an unsuccessful result (e.g. shell exit code != 0); copied to ToolResult.IsError for UI/history and provider error metadata
 }
 
 // TextOutput creates a ToolOutput with only text content.
@@ -626,6 +627,7 @@ func ToolResultMessageFromOutput(id, name string, output ToolOutput, thoughtSig 
 				ContentParts: output.ContentParts,
 				Diffs:        output.Diffs,
 				Images:       output.Images,
+				IsError:      output.IsError || output.TimedOut,
 				ThoughtSig:   thoughtSig,
 			},
 		}},

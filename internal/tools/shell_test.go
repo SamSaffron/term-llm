@@ -366,9 +366,43 @@ func TestShellTool_Timeout(t *testing.T) {
 		if !output.TimedOut {
 			t.Error("expected output.TimedOut=true for timed-out command")
 		}
+		if !output.IsError {
+			t.Error("expected output.IsError=true for timed-out command")
+		}
 	})
 
-	t.Run("successful command does not set TimedOut", func(t *testing.T) {
+	t.Run("non-zero exit marks output error", func(t *testing.T) {
+		tool := NewShellTool(nil, nil, DefaultOutputLimits())
+		args := mustMarshalShellArgs(ShellArgs{Command: "printf fail >&2; exit 7"})
+		output, err := tool.Execute(context.Background(), args)
+		if err != nil {
+			t.Fatalf("Execute returned error: %v", err)
+		}
+		if !strings.Contains(output.Content, "exit_code: 7") {
+			t.Fatalf("expected exit code in output, got: %s", output.Content)
+		}
+		if !output.IsError {
+			t.Error("expected output.IsError=true for non-zero exit")
+		}
+		if output.TimedOut {
+			t.Error("expected output.TimedOut=false for non-zero exit without timeout")
+		}
+	})
+
+	t.Run("invalid working directory marks output error", func(t *testing.T) {
+		tool := NewShellTool(nil, nil, DefaultOutputLimits())
+		missingDir := filepath.Join(t.TempDir(), "missing")
+		args := mustMarshalShellArgs(ShellArgs{Command: "echo nope", WorkingDir: missingDir})
+		output, err := tool.Execute(context.Background(), args)
+		if err != nil {
+			t.Fatalf("Execute returned error: %v", err)
+		}
+		if !output.IsError {
+			t.Error("expected output.IsError=true for invalid working directory")
+		}
+	})
+
+	t.Run("successful command does not set error flags", func(t *testing.T) {
 		tool := NewShellTool(nil, nil, DefaultOutputLimits())
 		args := mustMarshalShellArgs(ShellArgs{Command: "echo ok"})
 		output, err := tool.Execute(context.Background(), args)
@@ -377,6 +411,9 @@ func TestShellTool_Timeout(t *testing.T) {
 		}
 		if output.TimedOut {
 			t.Error("expected output.TimedOut=false for successful command")
+		}
+		if output.IsError {
+			t.Error("expected output.IsError=false for successful command")
 		}
 	})
 }

@@ -612,6 +612,71 @@ func (t *contentWithTimeoutStringTool) Execute(_ context.Context, _ json.RawMess
 }
 func (t *contentWithTimeoutStringTool) Preview(_ json.RawMessage) string { return "" }
 
+// failingStatusTool returns a completed tool output that should still be
+// treated as unsuccessful for UI status (for example, shell exit code != 0).
+type failingStatusTool struct{}
+
+func (t *failingStatusTool) Spec() ToolSpec {
+	return ToolSpec{Name: "failing_status_tool", Schema: map[string]any{"type": "object"}}
+}
+func (t *failingStatusTool) Execute(_ context.Context, _ json.RawMessage) (ToolOutput, error) {
+	return ToolOutput{Content: "exit_code: 7", IsError: true}, nil
+}
+func (t *failingStatusTool) Preview(_ json.RawMessage) string { return "" }
+
+func TestEngineToolOutputIsErrorMarksToolExecEndFailed(t *testing.T) {
+	tool := &failingStatusTool{}
+	registry := NewToolRegistry()
+	registry.Register(tool)
+
+	provider := &fakeProvider{
+		script: func(call int, req Request) []Event {
+			switch call {
+			case 0:
+				return []Event{
+					{Type: EventToolCall, Tool: &ToolCall{ID: "call-1", Name: "failing_status_tool", Arguments: json.RawMessage(`{}`)}},
+					{Type: EventDone},
+				}
+			default:
+				return []Event{{Type: EventTextDelta, Text: "done"}, {Type: EventDone}}
+			}
+		},
+	}
+
+	engine := NewEngine(provider, registry)
+	stream, err := engine.Stream(context.Background(), Request{
+		Messages:   []Message{UserText("run failing status tool")},
+		Tools:      []ToolSpec{tool.Spec()},
+		ToolChoice: ToolChoice{Mode: ToolChoiceAuto},
+	})
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	defer stream.Close()
+
+	var gotToolEnd bool
+	var toolSuccess bool
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv error: %v", err)
+		}
+		if event.Type == EventToolExecEnd && event.ToolCallID == "call-1" {
+			gotToolEnd = true
+			toolSuccess = event.ToolSuccess
+		}
+	}
+	if !gotToolEnd {
+		t.Fatal("expected tool end event")
+	}
+	if toolSuccess {
+		t.Fatal("expected ToolSuccess=false for IsError output")
+	}
+}
+
 func TestEngineToolWithTimeoutStringInContentIsNotMarkedFailed(t *testing.T) {
 	tool := &contentWithTimeoutStringTool{}
 	registry := NewToolRegistry()
