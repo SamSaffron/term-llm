@@ -94,6 +94,11 @@ Agent examples (use @agent shortcut or --agent flag):
   term-llm ask @editor "Add error handling" -f utils.go
   term-llm ask --agent web-researcher "Find info about Go 1.22"
 
+Non-interactive use (jobs/CI/no TTY):
+  Tool approval prompts require an interactive terminal or web approval UI.
+  For programmatic runs, pre-authorize tools with --yolo or explicit allowlists
+  such as --read-dir, --write-dir, and --shell-allow.
+
 Line range syntax for files:
   main.go       - Include entire file
   main.go:11-22 - Include only lines 11-22
@@ -146,6 +151,22 @@ func init() {
 	askCmd.Flags().Lookup("resume").NoOptDefVal = " " // space means "flag was passed without value"
 
 	rootCmd.AddCommand(askCmd)
+}
+
+func configureAskNonTUIApprovalPrompt(toolMgr *tools.ToolManager, useRichRenderer bool, approvalTTYAvailable bool) {
+	if useRichRenderer || toolMgr == nil || !approvalTTYAvailable {
+		return
+	}
+	// Non-TUI mode with a controlling terminal: set up approval UI directly
+	// (no tea.Program to pause). In headless jobs/CI this must remain unset so
+	// the approval manager returns an actionable non-interactive permission error
+	// instead of trying to open /dev/tty for every prompt.
+	toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {
+		if isShell {
+			return tools.RunShellApprovalUI(path, workDir)
+		}
+		return tools.RunFileApprovalUI(path, isWrite)
+	}
 }
 
 func runAsk(cmd *cobra.Command, args []string) error {
@@ -543,15 +564,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	streamEvents := adapter.Events()
 
 	var teaProgram *tea.Program
-	if !useRichRenderer && toolMgr != nil {
-		// Non-TUI mode: set up approval UI directly (no tea.Program to pause)
-		toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {
-			if isShell {
-				return tools.RunShellApprovalUI(path, workDir)
-			}
-			return tools.RunFileApprovalUI(path, isWrite)
-		}
-	}
+	configureAskNonTUIApprovalPrompt(toolMgr, useRichRenderer, tools.ApprovalTTYAvailable())
 
 	runRenderer := func(ctx context.Context, events <-chan ui.StreamEvent) error {
 		if teaProgram != nil {

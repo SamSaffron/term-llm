@@ -19,7 +19,25 @@ var (
 	approvalMu      sync.Mutex
 	OnApprovalStart func() // Called before showing prompt (pause TUI)
 	OnApprovalEnd   func() // Called after prompt answered (resume TUI)
+
+	approvalTTYAvailable = defaultApprovalTTYAvailable
 )
+
+// ApprovalTTYAvailable reports whether approval prompts can use a controlling
+// terminal. It intentionally checks /dev/tty rather than stdin/stdout so CLI
+// commands that pipe model output can still prompt when launched from a terminal.
+func ApprovalTTYAvailable() bool {
+	return approvalTTYAvailable()
+}
+
+func defaultApprovalTTYAvailable() bool {
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		return false
+	}
+	_ = tty.Close()
+	return true
+}
 
 // AskUserUIHooks allows the TUI to coordinate with ask_user tool prompts.
 var (

@@ -164,7 +164,9 @@ func runExec(cmd *cobra.Command, args []string) error {
 		if execYolo {
 			toolMgr.ApprovalMgr.SetYoloMode(true)
 		}
-		toolMgr.ApprovalMgr.PromptFunc = tools.HuhApprovalPrompt
+		if tools.ApprovalTTYAvailable() {
+			toolMgr.ApprovalMgr.PromptFunc = tools.HuhApprovalPrompt
+		}
 		toolMgr.SetupEngine(engine)
 		localToolSpecs = toolMgr.GetSpecs()
 

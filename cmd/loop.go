@@ -302,8 +302,10 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		// In loop mode, we use yolo (auto-approve) by default for headless operation
 		if loopYolo {
 			toolMgr.ApprovalMgr.SetYoloMode(true)
-		} else {
-			// Non-yolo mode: use huh approval prompts
+		} else if tools.ApprovalTTYAvailable() {
+			// Non-yolo mode with an interactive terminal: use huh approval prompts.
+			// Headless loop runs leave prompting unset so approval failures are
+			// deterministic and actionable instead of terminal errors.
 			toolMgr.ApprovalMgr.PromptFunc = tools.HuhApprovalPrompt
 		}
 

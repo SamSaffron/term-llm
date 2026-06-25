@@ -736,7 +736,7 @@ func getAskUserTTY() (*os.File, error) {
 func RunAskUser(questions []AskUserQuestion) ([]AskUserAnswer, error) {
 	tty, err := getAskUserTTY()
 	if err != nil {
-		return nil, fmt.Errorf("no TTY available: %w", err)
+		return nil, fmt.Errorf("ask_user requires an interactive terminal or web approval UI; no TTY is available for this non-interactive run (avoid ask_user in jobs/CI, or run from an interactive terminal/web session): %w", err)
 	}
 	defer tty.Close()
 

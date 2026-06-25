@@ -540,7 +540,7 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 		promptFunc = m.parent.PromptFunc
 	}
 	if promptFunc == nil {
-		return Cancel, NewToolError(ErrPermissionDenied, "path not in allowlist and no TTY for approval")
+		return Cancel, NewToolError(ErrPermissionDenied, nonInteractivePathApprovalMessage(isWrite))
 	}
 
 	dir := getDirectoryForApproval(absPath)
@@ -638,6 +638,17 @@ func (m *ApprovalManager) handleFileApprovalResult(result ApprovalResult, path s
 }
 
 // getDirectoryForApproval determines which directory to ask approval for.
+func nonInteractivePathApprovalMessage(isWrite bool) string {
+	if isWrite {
+		return "path requires approval, but no interactive approval UI/TTY is available; run with --yolo to auto-approve tools, or pre-authorize this path with --write-dir (read operations use --read-dir; jobs/agents can use write_dir/read_dir)"
+	}
+	return "path requires approval, but no interactive approval UI/TTY is available; run with --yolo to auto-approve tools, or pre-authorize this path with --read-dir (write operations use --write-dir; jobs/agents can use read_dir/write_dir)"
+}
+
+func nonInteractiveShellApprovalMessage() string {
+	return "shell command requires approval, but no interactive approval UI/TTY is available; run with --yolo to auto-approve tools, or pre-authorize the command with --shell-allow (or a job/agent shell_allow)"
+}
+
 func getDirectoryForApproval(path string) string {
 	// If it's a directory, use it directly
 	info, err := os.Stat(path)
@@ -720,7 +731,7 @@ func (m *ApprovalManager) CheckShellApproval(command, workDir string) (ConfirmOu
 		promptFunc = m.parent.PromptFunc
 	}
 	if promptFunc == nil {
-		return Cancel, NewToolError(ErrPermissionDenied, "command not in allowlist and no TTY for approval")
+		return Cancel, NewToolError(ErrPermissionDenied, nonInteractiveShellApprovalMessage())
 	}
 
 	req := &ApprovalRequest{
