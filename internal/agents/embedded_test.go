@@ -160,6 +160,49 @@ func TestBuiltinAgentConfigs(t *testing.T) {
 	}
 }
 
+func TestReviewerBuiltinUsesGitHubPRDiffForPRReviews(t *testing.T) {
+	agent, err := getBuiltinAgent("reviewer")
+	if err != nil {
+		t.Fatalf("getBuiltinAgent(reviewer): %v", err)
+	}
+
+	promptChecks := []string{
+		"GitHub pull request review",
+		"When the user writes `#353`, pass `353` to `gh`",
+		"gh pr view <number-or-url>",
+		"gh pr diff <number-or-url> --patch --color=never",
+		"Do **not** use plain `git diff`",
+		"stale local checkout",
+		"unrelated branch changes",
+		"git merge-base HEAD origin/<base>",
+		"git diff <merge-base>...HEAD",
+	}
+	for _, want := range promptChecks {
+		if !strings.Contains(agent.SystemPrompt, want) {
+			t.Errorf("reviewer prompt missing %q", want)
+		}
+	}
+
+	allowChecks := []string{
+		"gh pr view *",
+		"gh pr diff *",
+		"git fetch *",
+		"git merge-base *",
+	}
+	for _, want := range allowChecks {
+		if !stringSliceContains(agent.Shell.Allow, want) {
+			t.Errorf("reviewer shell.allow = %#v, missing %q", agent.Shell.Allow, want)
+		}
+	}
+
+	branchScript := agent.Shell.Scripts["review-branch-main"]
+	for _, want := range []string{"git fetch origin main --prune", "git merge-base HEAD origin/main", "git diff --no-color ${base}...HEAD"} {
+		if !strings.Contains(branchScript, want) {
+			t.Errorf("review-branch-main script = %q, missing %q", branchScript, want)
+		}
+	}
+}
+
 func TestDeveloperBuiltinCanSpawnDocumentedSubagents(t *testing.T) {
 	agent, err := getBuiltinAgent("developer")
 	if err != nil {

@@ -46,12 +46,25 @@ Turn 1: [parallel] git diff, git log, read file1.go, read file2.go, grep for fun
 
 #### Turn 1: Get the Diff and Read Changed Files
 
-You already know WHICH files changed (see above). Now get the actual changes:
+First decide what kind of review the user requested:
+
+- **GitHub pull request review** (the prompt contains a PR number like `PR #353`, `#353`, a `github.com/.../pull/353` URL, or explicitly says GitHub PR): use GitHub's PR metadata and diff as the source of truth. When the user writes `#353`, pass `353` to `gh` because an unquoted `#353` may be parsed as a shell comment. In the first parallel batch, run:
+  - `gh pr view <number-or-url> --json number,title,url,baseRefName,baseRefOid,headRefName,headRefOid,headRepositoryOwner,headRepository`
+  - `gh pr diff <number-or-url> --patch --color=never`
+  - read the changed files indicated by that PR diff as needed
+
+  Do **not** use plain `git diff`, the current local branch's upstream, or a stale local checkout for a GitHub PR review. GitHub's PR diff is deterministic for the PR base/head and avoids unrelated branch changes leaking into the review.
+
+- **Committed local branch review** (the user asks to review a branch against a base branch): fetch the requested base branch and diff against the merge-base, for example `git fetch origin <base> --prune`, `git merge-base HEAD origin/<base>`, then `git diff <merge-base>...HEAD`. Do not diff against the current branch's upstream unless the user explicitly asks for that upstream.
+
+- **Uncommitted local changes review** (the default prompt or explicit uncommitted/staged changes request): use the working tree/index diff commands below.
+
+For uncommitted local changes, you already know WHICH files changed (see above). Now get the actual changes:
 
 Make ALL these calls in parallel:
 ```
 [parallel]
-- shell: git diff && git diff --cached    # Full diff content
+- shell: git diff && git diff --cached    # Full uncommitted/staged diff content only
 - shell: git log --oneline -5             # Recent commit context
 - read: [all changed files in parallel]   # Full file context
 ```

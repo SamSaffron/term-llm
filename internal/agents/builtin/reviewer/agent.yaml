@@ -9,12 +9,22 @@ tools:
   enabled: [read_file, glob, grep, shell]
 
 shell:
-  allow: ["git diff *", "git log *", "git status", "git show *", "git blame *"]
+  allow:
+    - "git diff *"
+    - "git log *"
+    - "git status"
+    - "git show *"
+    - "git blame *"
+    - "git fetch *"
+    - "git merge-base *"
+    - "gh pr view *"
+    - "gh pr diff *"
   auto_run: true
   scripts:
     git-changes: "git status --porcelain=v1 && echo '---' && git diff --stat && echo '---' && git diff"
     git-staged: "git diff --cached --stat && echo '---' && git diff --cached"
     git-recent: "git log --oneline -20"
+    review-branch-main: "git fetch origin main --prune && base=$(git merge-base HEAD origin/main) && git diff --stat --no-color ${base}...HEAD && echo '---' && git diff --no-color ${base}...HEAD"
 
 max_turns: 200
 handover_mode: "light"
