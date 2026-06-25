@@ -3938,13 +3938,15 @@ const sendMessage = async (options = {}) => {
       }
     }
 
+    const headers = requestHeaders(session.id);
+    headers['Idempotency-Key'] = userMessage.id;
+    headers['X-Term-LLM-Request-ID'] = userMessage.id;
     let response = await fetch(`${UI_PREFIX}/v1/responses`, {
       method: 'POST',
-      headers: requestHeaders(session.id),
+      headers,
       body: JSON.stringify(body),
       signal: controller.signal
     });
-
     const headerResponseId = String(response.headers.get('x-response-id') || '').trim();
     const headerSessionNumber = Number(response.headers.get('x-session-number') || 0);
     if (headerSessionNumber > 0 && session.number !== headerSessionNumber) {

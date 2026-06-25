@@ -2167,6 +2167,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Add or dedupe pending tool segment for this call.
 		m.tracker.HandleToolStart(msg.CallID, msg.Name, msg.Info, msg.ToolArgs)
+		ui.AttachSubagentProgressToSegment(m.tracker, m.subagentTracker, msg.CallID)
 
 		// Defer pending tool rendering until boundary flush is visibly committed.
 		m.pendingBoundaryFlushes++

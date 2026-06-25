@@ -525,6 +525,33 @@ func (m *Model) refreshSessionFromStore(ctx context.Context) error {
 	return nil
 }
 
+func (m *Model) reloadMessagesFromStore(ctx context.Context) error {
+	if m.store == nil || m.sess == nil {
+		return nil
+	}
+	if err := m.refreshSessionFromStore(ctx); err != nil {
+		return err
+	}
+	loadedMsgs, compactionIdx, err := loadSessionMessagesForScrollback(ctx, m.store, m.sess)
+	if err != nil {
+		return err
+	}
+	if len(loadedMsgs) == 0 {
+		m.messagesMu.Lock()
+		hasExisting := len(m.messages) > 0
+		m.messagesMu.Unlock()
+		if hasExisting {
+			return nil
+		}
+	}
+	m.messagesMu.Lock()
+	m.messages = loadedMsgs
+	m.compactionIdx = compactionIdx
+	m.messagesMu.Unlock()
+	m.invalidateHistoryCache()
+	return nil
+}
+
 // New creates a new chat model.
 // fast-provider aware callers should use NewWithFastProvider.
 func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, providerKey string, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, disableExternalWebFetch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, autoSendExitOnDone bool, textMode bool, agentName string, platformDeveloperMessage string, yolo bool) *Model {
@@ -1107,13 +1134,20 @@ func (m *Model) interruptedAssistantFallbackMessage() (llm.Message, bool) {
 	return llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{part}}, true
 }
 
-func (m *Model) salvageInterruptedAssistantMessage() {
+type interruptedAssistantSalvageResult struct {
+	message          session.Message
+	ok               bool
+	persisted        bool
+	replaceMessageID int64
+}
+
+func (m *Model) salvageInterruptedAssistantMessage() interruptedAssistantSalvageResult {
 	if m.sess == nil {
-		return
+		return interruptedAssistantSalvageResult{}
 	}
 	assistantMsg, ok := m.interruptedAssistantFallbackMessage()
 	if !ok {
-		return
+		return interruptedAssistantSalvageResult{}
 	}
 
 	sessionMsg := session.NewMessageWithReasoningPolicy(m.sess.ID, assistantMsg, -1, m.effectiveReasoningConfig())
@@ -1127,8 +1161,11 @@ func (m *Model) salvageInterruptedAssistantMessage() {
 	m.messagesMu.Unlock()
 	m.invalidateHistoryCache()
 
+	result := interruptedAssistantSalvageResult{message: localMsg, ok: true}
+
 	if m.store == nil {
-		return
+		result.persisted = true
+		return result
 	}
 
 	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 5*time.Second)
@@ -1138,28 +1175,72 @@ func (m *Model) salvageInterruptedAssistantMessage() {
 	pendingAssistantMsgID := m.pendingAssistantMsgID
 	m.pendingMu.Unlock()
 	if pendingAssistantMsgID != 0 {
+		result.replaceMessageID = pendingAssistantMsgID
 		sessionMsg.ID = pendingAssistantMsgID
 		err := m.store.UpdateMessage(dbCtx, m.sess.ID, sessionMsg)
 		if err == nil {
+			result.persisted = true
+			result.message.ID = sessionMsg.ID
 			m.messagesMu.Lock()
 			if appendedIdx >= 0 && appendedIdx < len(m.messages) {
 				m.messages[appendedIdx].ID = sessionMsg.ID
 			}
 			m.messagesMu.Unlock()
-			return
+			return result
 		}
 		if !errors.Is(err, session.ErrNotFound) {
-			return
+			return result
 		}
+		result.replaceMessageID = 0
 		sessionMsg.ID = 0
 	}
 
 	if err := m.store.AddMessage(dbCtx, m.sess.ID, sessionMsg); err == nil {
+		result.persisted = true
+		result.message.ID = sessionMsg.ID
 		m.messagesMu.Lock()
 		if appendedIdx >= 0 && appendedIdx < len(m.messages) {
 			m.messages[appendedIdx].ID = sessionMsg.ID
 		}
 		m.messagesMu.Unlock()
+	}
+	return result
+}
+
+func (m *Model) mergeUnpersistedInterruptedAssistant(result interruptedAssistantSalvageResult) {
+	if !result.ok || result.persisted {
+		return
+	}
+
+	m.messagesMu.Lock()
+	changed := false
+	msg := result.message
+	if result.replaceMessageID != 0 {
+		for i := range m.messages {
+			if m.messages[i].ID == result.replaceMessageID {
+				msg.ID = result.replaceMessageID
+				msg.Sequence = m.messages[i].Sequence
+				m.messages[i] = msg
+				changed = true
+				break
+			}
+		}
+	}
+	if !changed {
+		for _, existing := range m.messages {
+			if msg.ID != 0 && existing.ID == msg.ID {
+				m.messagesMu.Unlock()
+				return
+			}
+		}
+		msg.Sequence = len(m.messages)
+		m.messages = append(m.messages, msg)
+		changed = true
+	}
+	m.messagesMu.Unlock()
+
+	if changed {
+		m.invalidateHistoryCache()
 	}
 }
 
@@ -1700,7 +1781,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.streamRenderTickPending = false
 				m.preserveStreamingContentOnError()
 				errorOutputCmds := m.flushStreamingContentOnErrorToScrollback()
-				m.salvageInterruptedAssistantMessage()
+				salvageResult := m.salvageInterruptedAssistantMessage()
 				m.resetCurrentReasoning()
 				m.streaming = false
 				m.setStreamCancelRequested(false)
@@ -1723,13 +1804,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 				// Clear callbacks and update status
 				m.clearStreamCallbacks()
-				if m.store != nil {
+				if m.store != nil && m.sess != nil {
 					// Use interrupted for cancellation, error for other failures
 					status := session.StatusError
 					if errors.Is(ev.Err, context.Canceled) {
 						status = session.StatusInterrupted
 					}
-					_ = m.store.UpdateStatus(context.Background(), m.sess.ID, status)
+					ctx := context.Background()
+					_ = m.store.UpdateStatus(ctx, m.sess.ID, status)
+					if err := m.reloadMessagesFromStore(ctx); err != nil {
+						if footerCmd == nil {
+							_, footerCmd = m.showFooterMessageWithTone(fmt.Sprintf("Session message reload failed after interruption: %v", err), "error")
+						}
+					} else {
+						m.mergeUnpersistedInterruptedAssistant(salvageResult)
+					}
 				}
 
 				if cmd := m.applyPendingStreamModelSwitch(); cmd != nil {
@@ -1796,6 +1885,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						cmds = append(cmds, m.tracker.StartWave())
 					}
 				}
+				ui.AttachSubagentProgressToSegment(m.tracker, m.subagentTracker, ev.ToolCallID)
 			}
 
 			// Check for web search

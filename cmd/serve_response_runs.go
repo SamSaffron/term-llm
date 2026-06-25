@@ -99,6 +99,7 @@ type startResponseRunOptions struct {
 	uiSession                 bool
 	resetResponseIDsOnSuccess bool
 	modelSwap                 *responseModelSwapExecution
+	idempotencyKey            string
 }
 
 func newResponseRun(respID, sessionID, previousResponseID, model string, created int64, cancel context.CancelFunc) *responseRun {
@@ -784,6 +785,7 @@ type responseRunManager struct {
 	mu                sync.Mutex
 	runs              map[string]*responseRun
 	activeBySession   map[string]string
+	idempotencyByKey  map[string]string
 	cleanupTimers     map[string]*time.Timer
 	terminalRetention time.Duration
 	runWG             sync.WaitGroup
@@ -827,6 +829,7 @@ func newServeResponseRunManagerWithRetention(retention time.Duration) *responseR
 	return &responseRunManager{
 		runs:              make(map[string]*responseRun),
 		activeBySession:   make(map[string]string),
+		idempotencyByKey:  make(map[string]string),
 		cleanupTimers:     make(map[string]*time.Timer),
 		terminalRetention: retention,
 	}
@@ -841,20 +844,71 @@ func (s *serveServer) ensureResponseRuns() *responseRunManager {
 	return s.responseRuns
 }
 
-func (m *responseRunManager) create(run *responseRun) error {
-	if run == nil || strings.TrimSpace(run.id) == "" {
-		return fmt.Errorf("response run id is required")
+func responseRunIdempotencyScope(sessionID, key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ""
 	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return key
+	}
+	return sessionID + "\x00" + key
+}
+
+func (m *responseRunManager) create(run *responseRun) error {
+	_, duplicate, err := m.createOrGetByIdempotency(run, "")
+	if duplicate {
+		return fmt.Errorf("response run %q already exists", run.id)
+	}
+	return err
+}
+
+func (m *responseRunManager) createOrGetByIdempotency(run *responseRun, idempotencyKey string) (*responseRun, bool, error) {
+	if run == nil || strings.TrimSpace(run.id) == "" {
+		return nil, false, fmt.Errorf("response run id is required")
+	}
+	key := responseRunIdempotencyScope(run.sessionID, idempotencyKey)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
-		return fmt.Errorf("server is shutting down")
+		return nil, false, fmt.Errorf("server is shutting down")
+	}
+	if key != "" {
+		if existingID := strings.TrimSpace(m.idempotencyByKey[key]); existingID != "" {
+			if existing, ok := m.runs[existingID]; ok && existing != nil {
+				return existing, true, nil
+			}
+			delete(m.idempotencyByKey, key)
+		}
 	}
 	if _, exists := m.runs[run.id]; exists {
-		return fmt.Errorf("response run %q already exists", run.id)
+		return nil, false, fmt.Errorf("response run %q already exists", run.id)
 	}
 	m.runs[run.id] = run
-	return nil
+	if key != "" {
+		m.idempotencyByKey[key] = run.id
+	}
+	return run, false, nil
+}
+
+func (m *responseRunManager) getByIdempotencyKey(sessionID, idempotencyKey string) (*responseRun, bool) {
+	key := responseRunIdempotencyScope(sessionID, idempotencyKey)
+	if key == "" {
+		return nil, false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	runID := strings.TrimSpace(m.idempotencyByKey[key])
+	if runID == "" {
+		return nil, false
+	}
+	run, ok := m.runs[runID]
+	if !ok || run == nil {
+		delete(m.idempotencyByKey, key)
+		return nil, false
+	}
+	return run, true
 }
 
 func (m *responseRunManager) start(fn func()) error {
@@ -884,6 +938,11 @@ func (m *responseRunManager) delete(id string) {
 		delete(m.cleanupTimers, id)
 	}
 	delete(m.runs, id)
+	for key, runID := range m.idempotencyByKey {
+		if runID == id {
+			delete(m.idempotencyByKey, key)
+		}
+	}
 	for sessionID, activeID := range m.activeBySession {
 		if activeID == id {
 			delete(m.activeBySession, sessionID)
@@ -909,6 +968,11 @@ func (m *responseRunManager) scheduleCleanup(id string) {
 
 	if m.closed || m.terminalRetention <= 0 {
 		delete(m.runs, id)
+		for key, runID := range m.idempotencyByKey {
+			if runID == id {
+				delete(m.idempotencyByKey, key)
+			}
+		}
 		for sessionID, activeID := range m.activeBySession {
 			if activeID == id {
 				delete(m.activeBySession, sessionID)
@@ -1713,9 +1777,14 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	//  - serve.response_timeout bounds orphan-run lifetime.
 	runCtx, cancel := context.WithTimeout(context.Background(), s.responseTimeout())
 	run := newResponseRun(respID, sessionID, options.previousResponseID, model, created, cancel)
-	if err := mgr.create(run); err != nil {
+	createdRun, duplicate, err := mgr.createOrGetByIdempotency(run, options.idempotencyKey)
+	if err != nil {
 		cancel()
 		return nil, err
+	}
+	if duplicate {
+		cancel()
+		return createdRun, nil
 	}
 
 	if options.uiSession {

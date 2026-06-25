@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -1682,5 +1683,241 @@ func TestServeRuntimePersistsPartialAssistantTextOnErrorBeforeCallbacks(t *testi
 	}
 	if rt.history[1].Role != llm.RoleAssistant || len(rt.history[1].Parts) != 1 || rt.history[1].Parts[0].Type != llm.PartText || rt.history[1].Parts[0].Text != "partial text" {
 		t.Fatalf("runtime history[1] = %+v, want partial assistant text", rt.history[1])
+	}
+}
+
+// TestServeRuntimeRun_DoesNotReinjectPlatformMessageWhenHistoryRestoredFromStore
+// verifies that a runtime restored from a persisted web session recognizes the
+// already-injected platform developer message and does not prepend it again.
+func TestServeRuntimeRun_DoesNotReinjectPlatformMessageWhenHistoryRestoredFromStore(t *testing.T) {
+	const (
+		devText   = "web developer instructions"
+		sessionID = "sess-devmsg-reinjection"
+	)
+
+	store := newServeRuntimeTestStore()
+
+	// First runtime: establishes session with developer message baked into history.
+	provider1 := llm.NewMockProvider("mock1").AddTextResponse("first response")
+	rt1 := &serveRuntime{
+		provider:         provider1,
+		providerKey:      provider1.Name(),
+		engine:           llm.NewEngine(provider1, nil),
+		store:            store,
+		platform:         "web",
+		platformMessages: agents.PlatformMessagesConfig{Web: devText},
+		defaultModel:     "test-model",
+	}
+	rt1.Touch()
+
+	_, err := rt1.Run(context.Background(), true, false,
+		[]llm.Message{serveRuntimeTextMessage(llm.RoleUser, "hello")},
+		llm.Request{SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("rt1.Run() error = %v", err)
+	}
+	if rt1.lastInjectedPlatform != "web" {
+		t.Fatalf("rt1.lastInjectedPlatform = %q, want web", rt1.lastInjectedPlatform)
+	}
+
+	// Confirm the store has the developer message as the first persisted message.
+	storedMsgs, _ := store.GetMessages(context.Background(), sessionID, 0, 0)
+	if len(storedMsgs) == 0 || storedMsgs[0].Role != llm.RoleDeveloper {
+		t.Fatalf("expected developer message first in store, got %d messages: %+v", len(storedMsgs), storedMsgs)
+	}
+
+	// Second runtime: fresh instance for the same session (simulates runtime eviction/restart).
+	// lastInjectedPlatform is intentionally zero — this is the state after eviction.
+	provider2 := llm.NewMockProvider("mock2").AddTextResponse("second response")
+	rt2 := &serveRuntime{
+		provider:         provider2,
+		providerKey:      provider2.Name(),
+		engine:           llm.NewEngine(provider2, nil),
+		store:            store,
+		platform:         "web",
+		platformMessages: agents.PlatformMessagesConfig{Web: devText},
+		defaultModel:     "test-model",
+	}
+	rt2.Touch()
+
+	_, err = rt2.Run(context.Background(), true, false,
+		[]llm.Message{serveRuntimeTextMessage(llm.RoleUser, "follow-up")},
+		llm.Request{SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("rt2.Run() error = %v", err)
+	}
+
+	if len(provider2.Requests) != 1 {
+		t.Fatalf("provider2 request count = %d, want 1", len(provider2.Requests))
+	}
+
+	// Count developer-role messages sent to the provider: exactly one is expected.
+	devCount := 0
+	for _, msg := range provider2.Requests[0].Messages {
+		if msg.Role == llm.RoleDeveloper {
+			devCount++
+		}
+	}
+	if devCount != 1 {
+		t.Fatalf("developer message count in second request = %d, want 1", devCount)
+	}
+}
+
+// TestServeRuntimeRun_InterruptedRunLeavesOrphanedUserMessageInStore verifies
+// that a persisted session ending with an unanswered user message is recovered
+// before appending the next user turn, avoiding invalid consecutive user messages.
+func TestServeRuntimeRun_InterruptedRunLeavesOrphanedUserMessageInStore(t *testing.T) {
+	const sessionID = "sess-interrupted-orphan"
+
+	store := newServeRuntimeTestStore()
+
+	// Seed the store to simulate a session interrupted mid-run.
+	// Completed turn: user1 → asst1. Orphaned turn: user2 (no assistant reply).
+	sess := &session.Session{ID: sessionID, Status: session.StatusInterrupted}
+	if err := store.Create(context.Background(), sess); err != nil {
+		t.Fatalf("Create session: %v", err)
+	}
+	seeded := []llm.Message{
+		{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "first message"}}},
+		{Role: llm.RoleAssistant, Parts: []llm.Part{{Type: llm.PartText, Text: "first reply"}}},
+		{Role: llm.RoleUser, Parts: []llm.Part{{Type: llm.PartText, Text: "interrupted message"}}},
+	}
+	for i, msg := range seeded {
+		sm := session.NewMessage(sessionID, msg, i)
+		if err := store.AddMessage(context.Background(), sessionID, sm); err != nil {
+			t.Fatalf("AddMessage[%d]: %v", i, err)
+		}
+	}
+
+	provider := llm.NewMockProvider("mock").AddTextResponse("recovery response")
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  provider.Name(),
+		engine:       llm.NewEngine(provider, nil),
+		store:        store,
+		defaultModel: "test-model",
+	}
+	rt.Touch()
+
+	_, err := rt.Run(context.Background(), true, false,
+		[]llm.Message{serveRuntimeTextMessage(llm.RoleUser, "new message after interrupt")},
+		llm.Request{SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if len(provider.Requests) != 1 {
+		t.Fatalf("provider request count = %d, want 1", len(provider.Requests))
+	}
+
+	msgs := provider.Requests[0].Messages
+	// A valid conversation must not have consecutive user messages.
+	for i := 1; i < len(msgs); i++ {
+		if msgs[i].Role == llm.RoleUser && msgs[i-1].Role == llm.RoleUser {
+			t.Fatalf("consecutive user messages at positions %d and %d after recovery: %+v", i-1, i, msgs)
+		}
+	}
+
+	storedMsgs, err := store.GetMessages(context.Background(), sessionID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages() error = %v", err)
+	}
+	wantStored := []struct {
+		role llm.Role
+		text string
+	}{
+		{llm.RoleUser, "first message"},
+		{llm.RoleAssistant, "first reply"},
+		{llm.RoleUser, "new message after interrupt"},
+		{llm.RoleAssistant, "recovery response"},
+	}
+	if len(storedMsgs) != len(wantStored) {
+		t.Fatalf("stored message count = %d, want %d: %+v", len(storedMsgs), len(wantStored), storedMsgs)
+	}
+	for i, want := range wantStored {
+		if storedMsgs[i].Role != want.role || storedMsgs[i].TextContent != want.text {
+			t.Fatalf("stored message[%d] = (%s, %q), want (%s, %q)", i, storedMsgs[i].Role, storedMsgs[i].TextContent, want.role, want.text)
+		}
+	}
+}
+
+// TestServeRuntimeRun_AllowsRepeatedIdenticalUserMessageWithoutIdempotency documents
+// that the runtime must not dedupe turns by text alone: sending the same prompt twice
+// can be intentional. Replay protection belongs at the HTTP/WebRTC boundary where an
+// explicit idempotency key can identify duplicate deliveries of the same request.
+func TestServeRuntimeRun_AllowsRepeatedIdenticalUserMessageWithoutIdempotency(t *testing.T) {
+	const (
+		sessionID = "sess-repeat-identical"
+		userMsg   = "grab tuner"
+	)
+
+	store := newServeRuntimeTestStore()
+
+	provider := llm.NewMockProvider("mock").
+		AddTextResponse("response 1").
+		AddTextResponse("response 2")
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  provider.Name(),
+		engine:       llm.NewEngine(provider, nil),
+		store:        store,
+		defaultModel: "test-model",
+	}
+	rt.Touch()
+
+	input := []llm.Message{serveRuntimeTextMessage(llm.RoleUser, userMsg)}
+
+	if _, err := rt.Run(context.Background(), true, false, input, llm.Request{SessionID: sessionID}); err != nil {
+		t.Fatalf("first Run() error = %v", err)
+	}
+	if _, err := rt.Run(context.Background(), true, false, input, llm.Request{SessionID: sessionID}); err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+
+	if len(provider.Requests) != 2 {
+		t.Fatalf("provider request count = %d, want 2 for intentional repeated text", len(provider.Requests))
+	}
+}
+
+func TestServeResponseRun_IdempotencyKeyReusesExistingRun(t *testing.T) {
+	const (
+		sessionID      = "sess-double-submit-idempotent"
+		idempotencyKey = "req-grab-tuner"
+	)
+
+	provider := llm.NewMockProvider("mock").AddTextResponse("response 1")
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  provider.Name(),
+		engine:       llm.NewEngine(provider, nil),
+		defaultModel: "test-model",
+	}
+	rt.Touch()
+
+	srv := &serveServer{responseRuns: newServeResponseRunManager()}
+	defer srv.responseRuns.Close()
+
+	input := []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "grab tuner")}
+	llmReq := llm.Request{SessionID: sessionID, Model: "test-model"}
+	options := startResponseRunOptions{idempotencyKey: idempotencyKey}
+
+	run1, err := srv.startResponseRun(rt, true, false, input, llmReq, sessionID, options)
+	if err != nil {
+		t.Fatalf("first startResponseRun() error = %v", err)
+	}
+	run2, err := srv.startResponseRun(rt, true, false, input, llmReq, sessionID, options)
+	if err != nil {
+		t.Fatalf("second startResponseRun() error = %v", err)
+	}
+	if run1 != run2 {
+		t.Fatalf("duplicate idempotency key returned run %p (%s), want original %p (%s)", run2, run2.id, run1, run1.id)
+	}
+
+	waitForServeCondition(t, time.Second, func() bool {
+		return run1.snapshot()["status"] == "completed"
+	}, "idempotent response run to complete once")
+
+	if len(provider.Requests) != 1 {
+		t.Fatalf("provider request count = %d, want 1 with idempotency key", len(provider.Requests))
 	}
 }

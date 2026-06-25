@@ -17,6 +17,23 @@ import (
 
 type interjectionTestTool struct{}
 
+type updateMessageFailStore struct {
+	*mockStore
+	err error
+}
+
+func (s *updateMessageFailStore) UpdateMessage(context.Context, string, *session.Message) error {
+	return s.err
+}
+
+func (s *updateMessageFailStore) GetMessages(ctx context.Context, sessionID string, limit, offset int) ([]session.Message, error) {
+	msgs, err := s.mockStore.GetMessages(ctx, sessionID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	return append([]session.Message(nil), msgs...), nil
+}
+
 func TestStatusLineContextEstimateUsesInProgressStreamingSnapshot(t *testing.T) {
 	m := newTestChatModel(false)
 	m.width = 120
@@ -525,6 +542,131 @@ func TestUpdate_StreamErrorUsesCurrentTurnSnapshotAfterToolTurn(t *testing.T) {
 	}
 	if m.messages[2].ID != persisted[2].ID {
 		t.Fatalf("in-memory assistant ID = %d, want pending row ID %d", m.messages[2].ID, persisted[2].ID)
+	}
+}
+
+func TestUpdate_StreamErrorReloadsPersistedToolTurnBeforeNextPrompt(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	sess := &session.Session{ID: "stream-error-reload-tool-turn", CreatedAt: time.Now()}
+	if err := store.Create(context.Background(), sess); err != nil {
+		t.Fatalf("Create session: %v", err)
+	}
+	userMsg := session.NewMessage(sess.ID, llm.UserText("hello"), -1)
+	if err := store.AddMessage(context.Background(), sess.ID, userMsg); err != nil {
+		t.Fatalf("AddMessage(user): %v", err)
+	}
+	completedAssistant := session.NewMessage(sess.ID, llm.Message{Role: llm.RoleAssistant, Parts: []llm.Part{
+		{Type: llm.PartText, Text: "first turn before tool"},
+		{Type: llm.PartToolCall, ToolCall: &llm.ToolCall{ID: "call-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"main.go"}`)}},
+	}}, -1)
+	if err := store.AddMessage(context.Background(), sess.ID, completedAssistant); err != nil {
+		t.Fatalf("AddMessage(completed assistant): %v", err)
+	}
+	toolResult := session.NewMessage(sess.ID, llm.ToolResultMessage("call-1", "read_file", "tool output", nil), -1)
+	if err := store.AddMessage(context.Background(), sess.ID, toolResult); err != nil {
+		t.Fatalf("AddMessage(tool result): %v", err)
+	}
+	pendingMsg := session.NewMessage(sess.ID, llm.AssistantText("stale second"), -1)
+	if err := store.AddMessage(context.Background(), sess.ID, pendingMsg); err != nil {
+		t.Fatalf("AddMessage(pending): %v", err)
+	}
+
+	persisted, err := store.GetMessages(context.Background(), sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages(before): %v", err)
+	}
+	if len(persisted) != 4 {
+		t.Fatalf("precondition persisted message count = %d, want 4", len(persisted))
+	}
+
+	m := newTestChatModel(false)
+	m.store = store
+	m.sess = sess
+	// During a live stream the callbacks persist turn rows, but m.messages is not
+	// normally reloaded until terminal stream handling. Simulate Ctrl-C before Done.
+	m.messages = []session.Message{persisted[0]}
+	m.pendingAssistantMsgID = persisted[3].ID
+	m.pendingAssistantSnapshot = llm.AssistantText("second turn partial")
+	m.pendingAssistantSnapshotSet = true
+	m.completedAssistantTurns = 1
+	m.streaming = true
+	m.streamStartTime = time.Now().Add(-2 * time.Second)
+	m.width = 80
+
+	_, _ = m.Update(streamEventMsg{event: ui.ErrorEvent(context.Canceled)})
+
+	if len(m.messages) != 4 {
+		t.Fatalf("in-memory message count after interrupt = %d, want all 4 persisted rows; messages=%#v", len(m.messages), m.messages)
+	}
+	if got := m.messages[1].TextContent; got != "first turn before tool" {
+		t.Fatalf("message[1] text = %q, want completed assistant", got)
+	}
+	if m.messages[2].Role != llm.RoleTool {
+		t.Fatalf("message[2] role = %s, want tool result", m.messages[2].Role)
+	}
+	if got := m.messages[3].TextContent; got != "second turn partial" {
+		t.Fatalf("message[3] text = %q, want interrupted pending assistant", got)
+	}
+
+	llmMessages := m.buildMessagesForStream()
+	if len(llmMessages) != 4 {
+		t.Fatalf("next stream context message count = %d, want 4", len(llmMessages))
+	}
+	if llmMessages[2].Role != llm.RoleTool {
+		t.Fatalf("next stream context message[2] role = %s, want tool result", llmMessages[2].Role)
+	}
+}
+
+func TestUpdate_StreamErrorPreservesUnpersistedSalvageWhenStoreUpdateFails(t *testing.T) {
+	sess := &session.Session{ID: "stream-error-preserve-unpersisted", CreatedAt: time.Now()}
+	userMsg := session.NewMessage(sess.ID, llm.UserText("hello"), 0)
+	userMsg.ID = 1
+	completedAssistant := session.NewMessage(sess.ID, llm.AssistantText("first turn"), 1)
+	completedAssistant.ID = 2
+	toolResult := session.NewMessage(sess.ID, llm.ToolResultMessage("call-1", "read_file", "tool output", nil), 2)
+	toolResult.ID = 3
+	stalePending := session.NewMessage(sess.ID, llm.AssistantText("stale second"), 3)
+	stalePending.ID = 4
+
+	baseStore := &mockStore{
+		sessions: map[string]*session.Session{sess.ID: sess},
+		messages: map[string][]session.Message{
+			sess.ID: {*userMsg, *completedAssistant, *toolResult, *stalePending},
+		},
+	}
+	store := &updateMessageFailStore{mockStore: baseStore, err: errors.New("database busy")}
+
+	m := newTestChatModel(false)
+	m.store = store
+	m.sess = sess
+	m.messages = []session.Message{*userMsg}
+	m.pendingAssistantMsgID = stalePending.ID
+	m.pendingAssistantSnapshot = llm.AssistantText("second turn partial")
+	m.pendingAssistantSnapshotSet = true
+	m.completedAssistantTurns = 1
+	m.streaming = true
+	m.streamStartTime = time.Now().Add(-2 * time.Second)
+	m.width = 80
+
+	_, _ = m.Update(streamEventMsg{event: ui.ErrorEvent(context.Canceled)})
+
+	if len(m.messages) != 4 {
+		t.Fatalf("in-memory message count after interrupt = %d, want 4; messages=%#v", len(m.messages), m.messages)
+	}
+	if got := m.messages[3].TextContent; got != "second turn partial" {
+		t.Fatalf("interrupted assistant text = %q, want salvaged partial despite store update failure", got)
+	}
+	if got := m.messages[3].ID; got != stalePending.ID {
+		t.Fatalf("interrupted assistant ID = %d, want stale pending row ID %d replaced in memory", got, stalePending.ID)
+	}
+	if got := store.messages[sess.ID][3].TextContent; got != "stale second" {
+		t.Fatalf("store text = %q, want failed update to leave stale persisted row", got)
 	}
 }
 

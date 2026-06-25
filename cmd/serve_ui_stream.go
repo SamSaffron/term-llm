@@ -8,7 +8,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 )
 
-func (s *serveServer) streamUIResponses(w http.ResponseWriter, r *http.Request, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool, modelSwap *responseModelSwapExecution) {
+func (s *serveServer) streamUIResponses(w http.ResponseWriter, r *http.Request, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool, modelSwap *responseModelSwapExecution, idempotencyKey string) {
 	// Persist session in the store so the client gets the session number in
 	// headers before the streaming body begins. This is a store-only operation
 	// that does NOT mutate runtime state (safe without rt.mu).
@@ -21,6 +21,7 @@ func (s *serveServer) streamUIResponses(w http.ResponseWriter, r *http.Request, 
 		uiSession:                 true,
 		resetResponseIDsOnSuccess: resetResponseIDsOnSuccess,
 		modelSwap:                 modelSwap,
+		idempotencyKey:            idempotencyKey,
 	})
 }
 

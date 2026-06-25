@@ -400,6 +400,7 @@ func (rt *serveRuntime) ensurePersistedSession(ctx context.Context, sessionID st
 		return false
 	}
 	if rt.sessionMeta != nil && rt.sessionMeta.ID == sessionID {
+		rt.restorePlatformInjectionStateFromHistory()
 		return true
 	}
 
@@ -414,6 +415,7 @@ func (rt *serveRuntime) ensurePersistedSession(ctx context.Context, sessionID st
 				}
 				rt.history = llmMsgs
 				rt.historyPersisted = true
+				rt.restorePlatformInjectionStateFromHistory()
 			}
 		}
 		return true
@@ -473,6 +475,7 @@ func (rt *serveRuntime) ensurePersistedSession(ctx context.Context, sessionID st
 				}
 				rt.history = llmMsgs
 				rt.historyPersisted = true
+				rt.restorePlatformInjectionStateFromHistory()
 			}
 		}
 		if setErr := rt.store.SetCurrent(ctx, sessionID); setErr != nil {
@@ -763,6 +766,14 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		rt.engine.ResetConversation()
 		rt.history = nil
 		rt.historyPersisted = false
+	}
+	if stateful && !replaceHistory && hasUserMessage(inputMessages) {
+		// A cancelled/interrupted run can leave the persisted transcript ending in
+		// a user message with no assistant reply. Drop that orphan before appending
+		// the next submitted user turn; the snapshot persistence path below rewrites
+		// the store so providers never see consecutive user turns. If the UI retries
+		// the same prompt, this also avoids answering it twice.
+		rt.dropTrailingUserHistory()
 	}
 
 	baseHistory := make([]llm.Message, len(rt.history))
@@ -1336,6 +1347,55 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 	}
 
 	return result, nil
+}
+
+func (rt *serveRuntime) restorePlatformInjectionStateFromHistory() {
+	if rt == nil || rt.lastInjectedPlatform != "" {
+		return
+	}
+	platform := strings.TrimSpace(rt.platform)
+	if platform == "" {
+		return
+	}
+	devText := strings.TrimSpace(rt.platformMessages.For(platform))
+	if devText == "" {
+		return
+	}
+	for _, msg := range rt.history {
+		if msg.Role == llm.RoleDeveloper && strings.TrimSpace(llm.MessageText(msg)) == devText {
+			rt.lastInjectedPlatform = platform
+			return
+		}
+	}
+}
+
+func (rt *serveRuntime) dropTrailingUserHistory() {
+	if rt == nil || len(rt.history) == 0 {
+		return
+	}
+	trimmedLen := len(rt.history)
+	for trimmedLen > 0 && rt.history[trimmedLen-1].Role == llm.RoleUser {
+		trimmedLen--
+	}
+	if trimmedLen == len(rt.history) {
+		return
+	}
+	trimmed := make([]llm.Message, trimmedLen)
+	copy(trimmed, rt.history[:trimmedLen])
+	rt.history = trimmed
+	// The persisted transcript still contains the unanswered user turn(s). Force
+	// the next persistence step down the snapshot path so the store is reconciled
+	// before the provider response streams.
+	rt.historyPersisted = false
+}
+
+func hasUserMessage(messages []llm.Message) bool {
+	for _, msg := range messages {
+		if msg.Role == llm.RoleUser {
+			return true
+		}
+	}
+	return false
 }
 
 func statusForRunError(err error) session.SessionStatus {

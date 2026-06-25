@@ -22,6 +22,7 @@ type resolvedResponsesRequest struct {
 	previousDurable    bool
 	freshConversation  bool
 	uiStream           bool
+	idempotencyKey     string
 }
 
 func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
@@ -113,6 +114,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		previousResponseID: req.PreviousResponseID,
 		previousDurable:    previousDurable,
 		freshConversation:  req.PreviousResponseID == "",
+		idempotencyKey:     responseIdempotencyKeyFromRequest(r),
 	})
 }
 
@@ -124,6 +126,19 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 	previousResponseID := rr.previousResponseID
 	previousDurable := rr.previousDurable
 	freshConversation := rr.freshConversation
+	idempotencyKey := strings.TrimSpace(rr.idempotencyKey)
+	if req.Stream && idempotencyKey != "" {
+		// Streaming response runs retain their event log for the response-run
+		// retention window, so an idempotency replay can attach directly without
+		// rebuilding runtime/provider state. Replay is unconditional for a matching
+		// session/key; first-party UI keys are unique per logical user message.
+		if run, ok := s.ensureResponseRuns().getByIdempotencyKey(sessionID, idempotencyKey); ok {
+			w.Header().Set("x-response-id", run.id)
+			s.setReplaySessionNumberHeader(ctx, w, sessionID)
+			s.streamResponseRunEvents(ctx, w, run, 0)
+			return
+		}
+	}
 	// Chained requests are locked to the persisted provider/model/
 	// reasoning_effort unless the client explicitly asks for a mid-conversation
 	// model swap. External bare session_id requests start a fresh conversation,
@@ -290,6 +305,13 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 		}()
 	}
 
+	// Idempotency is currently backed by response-run event replay, so only
+	// streaming stateful requests register keys. Non-streaming responses are not
+	// cached/replayed here.
+	runIdempotencyKey := idempotencyKey
+	if !stateful {
+		runIdempotencyKey = ""
+	}
 	searchFromTools, requestedTools, passthroughTools := parseRequestedTools(req.Tools)
 	search := runtime.search || searchFromTools
 	toolChoice := parseToolChoice(req.ToolChoice)
@@ -339,9 +361,9 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 	}
 	if req.Stream {
 		if rr.uiStream && stateful {
-			s.streamUIResponses(w, r, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, resetResponseIDsOnSuccess, modelSwapExec)
+			s.streamUIResponses(w, r, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, resetResponseIDsOnSuccess, modelSwapExec, runIdempotencyKey)
 		} else {
-			started := s.streamResponses(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, resetResponseIDsOnSuccess, modelSwapExec)
+			started := s.streamResponses(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, previousResponseID, resetResponseIDsOnSuccess, modelSwapExec, runIdempotencyKey)
 			if !stateful && started {
 				cleanupRuntime = false
 			}
@@ -505,6 +527,32 @@ func applyResponsesToolResultNames(messages []llm.Message, names map[string]stri
 	}
 }
 
+func (s *serveServer) setReplaySessionNumberHeader(ctx context.Context, w http.ResponseWriter, sessionID string) {
+	if s == nil || s.store == nil || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	sess, err := s.store.Get(ctx, sessionID)
+	if err != nil || sess == nil || sess.Number <= 0 {
+		return
+	}
+	w.Header().Set("x-session-number", strconv.FormatInt(sess.Number, 10))
+}
+
+func responseIdempotencyKeyFromRequest(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	// Prefer the standard header. X-Term-LLM-Request-ID is accepted for the
+	// first-party UI/WebRTC fallback path and is only registered for streaming
+	// stateful response runs (see runIdempotencyKey above).
+	for _, name := range []string{"Idempotency-Key", "X-Idempotency-Key", "X-Term-LLM-Request-ID"} {
+		if value := strings.TrimSpace(r.Header.Get(name)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func isFirstPartyUIResponseRequest(r *http.Request) bool {
 	if r == nil {
 		return false
@@ -543,10 +591,11 @@ func appendResponsePassthroughTools(serverTools []llm.ToolSpec, passthroughTools
 	return serverTools
 }
 
-func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool, modelSwap *responseModelSwapExecution) bool {
+func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool, modelSwap *responseModelSwapExecution, idempotencyKey string) bool {
 	return s.streamResponseRun(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, startResponseRunOptions{
 		previousResponseID:        previousResponseID,
 		resetResponseIDsOnSuccess: resetResponseIDsOnSuccess,
 		modelSwap:                 modelSwap,
+		idempotencyKey:            idempotencyKey,
 	})
 }

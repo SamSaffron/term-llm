@@ -133,6 +133,34 @@ func UpdateSegmentFromSubagentProgress(tracker *ToolTracker, callID string, p *S
 	}
 }
 
+// AttachSubagentProgressToSegment copies already-received subagent progress onto
+// a newly visible spawn_agent tool segment. Progress can arrive through a TUI
+// Program.Send before the stream ToolStart event has been processed, because the
+// parent stream and subagent callback use independent channels.
+func AttachSubagentProgressToSegment(tracker *ToolTracker, subagentTracker *SubagentTracker, callID string) {
+	if tracker == nil || subagentTracker == nil || callID == "" {
+		return
+	}
+	p := subagentTracker.Get(callID)
+	if p == nil {
+		return
+	}
+	if seg := FindSegmentByCallID(tracker, callID); seg != nil {
+		agentName, prompt := extractSpawnAgentArgs(seg)
+		if p.AgentName == "" {
+			if seg.ToolInfo != "" {
+				p.AgentName = seg.ToolInfo
+			} else {
+				p.AgentName = agentName
+			}
+		}
+		if p.Prompt == "" && prompt != "" {
+			p.Prompt = prompt
+		}
+	}
+	UpdateSegmentFromSubagentProgress(tracker, callID, p)
+}
+
 // BuildSubagentPreview builds preview lines for a subagent in chronological order.
 // Shows completed tools first (oldest first), then active tools (most recent).
 // maxLines is the total number of lines to show.

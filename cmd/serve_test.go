@@ -3177,6 +3177,198 @@ func TestHandleResponses_GeneratesSessionIDHeaderWhenMissing(t *testing.T) {
 	}
 }
 
+func TestHandleResponses_StreamIdempotencyKeyReplaysExistingRun(t *testing.T) {
+	const (
+		sessionID      = "sess_stream_idempotent"
+		idempotencyKey = "req-grab-tuner"
+	)
+
+	provider := llm.NewMockProvider("mock").AddTextResponse("first response")
+	manager := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			providerKey:  provider.Name(),
+			engine:       engine,
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		return rt, nil
+	})
+	defer manager.Close()
+
+	srv := &serveServer{
+		sessionMgr:   manager,
+		responseRuns: newServeResponseRunManager(),
+	}
+	defer srv.responseRuns.Close()
+
+	newRequest := func() *http.Request {
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"stream":true,"input":"grab tuner"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("session_id", sessionID)
+		req.Header.Set("Idempotency-Key", idempotencyKey)
+		return req
+	}
+
+	first := httptest.NewRecorder()
+	srv.handleResponses(first, newRequest())
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status = %d, want 200; body: %s", first.Code, first.Body.String())
+	}
+	respID := strings.TrimSpace(first.Header().Get("x-response-id"))
+	if respID == "" {
+		t.Fatalf("first response missing x-response-id")
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("provider request count after first response = %d, want 1", len(provider.Requests))
+	}
+
+	second := httptest.NewRecorder()
+	srv.handleResponses(second, newRequest())
+	if second.Code != http.StatusOK {
+		t.Fatalf("second status = %d, want 200; body: %s", second.Code, second.Body.String())
+	}
+	if got := strings.TrimSpace(second.Header().Get("x-response-id")); got != respID {
+		t.Fatalf("second x-response-id = %q, want original %q", got, respID)
+	}
+	if len(provider.Requests) != 1 {
+		t.Fatalf("provider request count after replay = %d, want 1", len(provider.Requests))
+	}
+}
+
+func TestHandleResponses_StreamIdempotencyKeyReattachesInProgressRun(t *testing.T) {
+	const (
+		sessionID      = "sess_stream_idempotent_live"
+		idempotencyKey = "req-live-grab-tuner"
+	)
+
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	provider := newStagedProvider("first ", "second")
+	releaseSecond := sync.OnceFunc(func() { close(provider.releaseSecond) })
+	defer releaseSecond()
+
+	manager := newServeSessionManager(time.Minute, 10, func(ctx context.Context) (*serveRuntime, error) {
+		engine := llm.NewEngine(provider, nil)
+		rt := &serveRuntime{
+			provider:     provider,
+			providerKey:  provider.Name(),
+			engine:       engine,
+			store:        store,
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		return rt, nil
+	})
+	defer manager.Close()
+
+	srv := &serveServer{
+		sessionMgr:   manager,
+		store:        store,
+		responseRuns: newServeResponseRunManager(),
+	}
+	defer srv.responseRuns.Close()
+	ts := newServeHTTPTestServer(srv)
+	defer ts.Close()
+
+	newRequest := func() *http.Request {
+		req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/responses", strings.NewReader(`{"stream":true,"input":"grab tuner"}`))
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("session_id", sessionID)
+		req.Header.Set("Idempotency-Key", idempotencyKey)
+		return req
+	}
+
+	client := ts.Client()
+	first, err := client.Do(newRequest())
+	if err != nil {
+		t.Fatalf("first Do: %v", err)
+	}
+	defer first.Body.Close()
+	if first.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(first.Body)
+		t.Fatalf("first status = %d, want 200; body: %s", first.StatusCode, string(body))
+	}
+	respID := strings.TrimSpace(first.Header.Get("x-response-id"))
+	if respID == "" {
+		t.Fatalf("first response missing x-response-id")
+	}
+	sessionNumber := strings.TrimSpace(first.Header.Get("x-session-number"))
+	if sessionNumber == "" {
+		t.Fatalf("first response missing x-session-number")
+	}
+
+	select {
+	case <-provider.firstSent:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for in-progress run to stream first chunk")
+	}
+
+	second, err := client.Do(newRequest())
+	if err != nil {
+		t.Fatalf("second Do: %v", err)
+	}
+	defer second.Body.Close()
+	if second.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(second.Body)
+		t.Fatalf("second status = %d, want 200; body: %s", second.StatusCode, string(body))
+	}
+	if got := strings.TrimSpace(second.Header.Get("x-response-id")); got != respID {
+		t.Fatalf("second x-response-id = %q, want original %q", got, respID)
+	}
+	if got := strings.TrimSpace(second.Header.Get("x-session-number")); got != sessionNumber {
+		t.Fatalf("second x-session-number = %q, want original %q", got, sessionNumber)
+	}
+
+	provider.mu.Lock()
+	requestCount := len(provider.requests)
+	provider.mu.Unlock()
+	if requestCount != 1 {
+		t.Fatalf("provider request count while duplicate is attached = %d, want 1", requestCount)
+	}
+
+	releaseSecond()
+	body1 := readResponseBodyWithTimeout(t, first.Body, 2*time.Second, "first idempotent stream")
+	body2 := readResponseBodyWithTimeout(t, second.Body, 2*time.Second, "second idempotent stream")
+	for name, body := range map[string][]byte{"first": body1, "second": body2} {
+		if !bytes.Contains(body, []byte("first")) || !bytes.Contains(body, []byte("second")) {
+			t.Fatalf("%s stream body missing expected replayed deltas: %s", name, string(body))
+		}
+	}
+}
+
+func readResponseBodyWithTimeout(t *testing.T, body io.Reader, timeout time.Duration, label string) []byte {
+	t.Helper()
+	type result struct {
+		data []byte
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		data, err := io.ReadAll(body)
+		ch <- result{data: data, err: err}
+	}()
+	select {
+	case res := <-ch:
+		if res.err != nil {
+			t.Fatalf("ReadAll %s: %v", label, res.err)
+		}
+		return res.data
+	case <-time.After(timeout):
+		t.Fatalf("timed out reading %s", label)
+		return nil
+	}
+}
+
 func TestStreamUIResponses_SetsSessionNumberHeader(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})

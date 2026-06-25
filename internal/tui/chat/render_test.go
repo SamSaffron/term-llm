@@ -241,6 +241,69 @@ func TestViewAltScreen_SubagentProgressRebuildsViewportContent(t *testing.T) {
 	}
 }
 
+func TestUpdate_SubagentProgressBeforeToolStartIsBackfilled(t *testing.T) {
+	m := newTestChatModel(false)
+	m.width = 80
+	m.streaming = true
+
+	_, _ = m.Update(SubagentProgressMsg{
+		CallID: "call-early",
+		Event:  tools.SubagentEvent{Type: tools.SubagentEventText, Text: "early subagent output"},
+	})
+
+	args, err := json.Marshal(tools.SpawnAgentArgs{AgentName: "reviewer", Prompt: "review the code"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = m.Update(streamEventMsg{event: ui.ToolStartEvent("call-early", "spawn_agent", "reviewer", args)})
+
+	seg := ui.FindSegmentByCallID(m.tracker, "call-early")
+	if seg == nil {
+		t.Fatal("expected spawn_agent segment to exist")
+	}
+	if !seg.SubagentHasProgress {
+		t.Fatalf("expected early subagent progress to be backfilled onto segment: %#v", seg)
+	}
+	if !slices.Contains(seg.SubagentPreview, "early subagent output") {
+		t.Fatalf("subagent preview = %#v, want early output", seg.SubagentPreview)
+	}
+	if seg.SubagentPrompt != "review the code" {
+		t.Fatalf("subagent prompt = %q, want %q", seg.SubagentPrompt, "review the code")
+	}
+}
+
+func TestUpdate_MultipleSubagentsWithOutOfOrderProgressAllRender(t *testing.T) {
+	m := newTestChatModel(false)
+	m.width = 80
+	m.streaming = true
+
+	argsOne, err := json.Marshal(tools.SpawnAgentArgs{AgentName: "codebase", Prompt: "inspect one"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	argsTwo, err := json.Marshal(tools.SpawnAgentArgs{AgentName: "reviewer", Prompt: "inspect two"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _ = m.Update(streamEventMsg{event: ui.ToolStartEvent("call-1", "spawn_agent", "codebase", argsOne)})
+	_, _ = m.Update(SubagentProgressMsg{CallID: "call-1", Event: tools.SubagentEvent{Type: tools.SubagentEventText, Text: "output from first agent"}})
+
+	// The second subagent can emit progress through Program.Send before the queued
+	// stream ToolStartEvent has been processed by the TUI. That progress must not
+	// be stranded permanently, or only one of several concurrent subagents appears.
+	_, _ = m.Update(SubagentProgressMsg{CallID: "call-2", Event: tools.SubagentEvent{Type: tools.SubagentEventText, Text: "output from second agent"}})
+	_, _ = m.Update(streamEventMsg{event: ui.ToolStartEvent("call-2", "spawn_agent", "reviewer", argsTwo)})
+
+	plain := ui.StripANSI(m.renderStreamingInline())
+	if !strings.Contains(plain, "output from first agent") {
+		t.Fatalf("expected first subagent output in render, got %q", plain)
+	}
+	if !strings.Contains(plain, "output from second agent") {
+		t.Fatalf("expected second subagent output in render, got %q", plain)
+	}
+}
+
 func TestUpdate_StreamError_BumpsContentVersion(t *testing.T) {
 	provider := llm.NewMockProvider("mock")
 	engine := llm.NewEngine(provider, nil)
