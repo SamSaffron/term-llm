@@ -2,7 +2,6 @@ package serve
 
 import (
 	"context"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -75,12 +74,14 @@ func TestTelegramStoreOpQueueFullStillSerializesOps(t *testing.T) {
 	}
 }
 
-func TestTelegramStoreOpQueueCloseUnblocksFullQueueEnqueue(t *testing.T) {
+func TestTelegramStoreOpQueueCloseKeepsBlockedEnqueueSerialized(t *testing.T) {
 	mgr := &telegramSessionMgr{store: &session.NoopStore{}}
 	q := newTelegramStoreOpQueue(mgr, "session-1")
 
 	firstStarted := make(chan struct{})
 	releaseFirst := make(chan struct{})
+	finalRan := make(chan struct{})
+	finalReturned := make(chan struct{})
 	q.enqueue(context.Background(), "first", func(context.Context) error {
 		close(firstStarted)
 		<-releaseFirst
@@ -97,11 +98,9 @@ func TestTelegramStoreOpQueueCloseUnblocksFullQueueEnqueue(t *testing.T) {
 		q.enqueue(context.Background(), "buffered", func(context.Context) error { return nil })
 	}
 
-	var finalRan atomic.Bool
-	finalReturned := make(chan struct{})
 	go func() {
 		q.enqueue(context.Background(), "final", func(context.Context) error {
-			finalRan.Store(true)
+			close(finalRan)
 			return nil
 		})
 		close(finalReturned)
@@ -113,21 +112,41 @@ func TestTelegramStoreOpQueueCloseUnblocksFullQueueEnqueue(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 
-	closeCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	closeCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	q.closeAndWait(closeCtx)
+	if q.closeAndWait(closeCtx) {
+		t.Fatal("closeAndWait unexpectedly drained a blocked queue")
+	}
+
+	select {
+	case <-finalReturned:
+		t.Fatal("blocked enqueue returned during close before queue space freed")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	select {
+	case <-finalRan:
+		t.Fatal("blocked enqueue ran inline during close")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(releaseFirst)
 
 	select {
 	case <-finalReturned:
 	case <-time.After(5 * time.Second):
-		t.Fatal("blocked enqueue did not return after closeAndWait")
-	}
-	if !finalRan.Load() {
-		t.Fatal("blocked enqueue fallback op did not run")
+		t.Fatal("blocked enqueue did not complete after queued work drained")
 	}
 
-	close(releaseFirst)
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer drainCancel()
-	q.closeAndWait(drainCtx)
+	if !q.closeAndWait(drainCtx) {
+		t.Fatal("closeAndWait did not drain after queue space freed")
+	}
+
+	select {
+	case <-finalRan:
+	default:
+		t.Fatal("blocked enqueue did not run after queued work drained")
+	}
 }

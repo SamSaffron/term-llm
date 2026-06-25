@@ -924,7 +924,6 @@ type telegramStoreOpQueue struct {
 	sessionID string
 	ops       chan telegramStoreOp
 	done      chan struct{}
-	closedCh  chan struct{}
 	once      sync.Once
 
 	mu        sync.Mutex
@@ -938,7 +937,6 @@ func newTelegramStoreOpQueue(mgr *telegramSessionMgr, sessionID string) *telegra
 		sessionID: sessionID,
 		ops:       make(chan telegramStoreOp, 128),
 		done:      make(chan struct{}),
-		closedCh:  make(chan struct{}),
 	}
 	go q.run()
 	return q
@@ -960,28 +958,22 @@ func (q *telegramStoreOpQueue) enqueue(ctx context.Context, op string, fn func(c
 	q.mu.Lock()
 	if q.closed {
 		q.mu.Unlock()
-		q.mgr.runStoreOpWithoutCancel(ctx, q.sessionID, op, fn)
 		return
 	}
 	q.enqueueWG.Add(1)
 	q.mu.Unlock()
 	defer q.enqueueWG.Done()
 
-	select {
-	case q.ops <- storeOp:
-	case <-q.closedCh:
-		q.mgr.runStoreOpWithoutCancel(ctx, q.sessionID, op, fn)
-	}
+	q.ops <- storeOp
 }
 
-func (q *telegramStoreOpQueue) closeAndWait(ctx context.Context) {
+func (q *telegramStoreOpQueue) closeAndWait(ctx context.Context) bool {
 	if q == nil {
-		return
+		return true
 	}
 	q.once.Do(func() {
 		q.mu.Lock()
 		q.closed = true
-		close(q.closedCh)
 		q.mu.Unlock()
 		go func() {
 			q.enqueueWG.Wait()
@@ -990,7 +982,9 @@ func (q *telegramStoreOpQueue) closeAndWait(ctx context.Context) {
 	})
 	select {
 	case <-q.done:
+		return true
 	case <-ctx.Done():
+		return false
 	}
 }
 
@@ -1683,17 +1677,31 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		newHistory = append(newHistory, normalizeUserMessageForHistory(userMsg))
 		newHistory = append(newHistory, producedSnapshot...)
 		if partial != "" {
+			drained := true
 			if callbackStoreQueue != nil {
 				drainCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-				callbackStoreQueue.closeAndWait(drainCtx)
+				drained = callbackStoreQueue.closeAndWait(drainCtx)
 				cancel()
 			}
 			assistantMsg := llm.AssistantText(partial)
-			if m.store != nil && sess.meta != nil && !m.persistedAssistantTextMatches(persistCtx, sess.meta.ID, partial) {
-				storeMsg := session.NewMessage(sess.meta.ID, assistantMsg, -1)
-				m.runStoreOpWithoutCancel(persistCtx, sess.meta.ID, fallbackOp, func(storeCtx context.Context) error {
-					return m.store.AddMessage(storeCtx, sess.meta.ID, storeMsg)
-				})
+			if m.store != nil && sess.meta != nil {
+				persistAssistantFallback := func(storeCtx context.Context) {
+					if m.persistedAssistantTextMatches(storeCtx, sess.meta.ID, partial) {
+						return
+					}
+					storeMsg := session.NewMessage(sess.meta.ID, assistantMsg, -1)
+					m.runStoreOpWithoutCancel(storeCtx, sess.meta.ID, fallbackOp, func(opCtx context.Context) error {
+						return m.store.AddMessage(opCtx, sess.meta.ID, storeMsg)
+					})
+				}
+				if drained || callbackStoreQueue == nil {
+					persistAssistantFallback(persistCtx)
+				} else {
+					go func() {
+						<-callbackStoreQueue.done
+						persistAssistantFallback(context.Background())
+					}()
+				}
 			}
 			if !assistantTextCaptured {
 				newHistory = append(newHistory, assistantMsg)
