@@ -1672,12 +1672,22 @@ const formatToolArgs = (tool) => {
 
   const name = (tool.name || '').toLowerCase();
 
-  // spawn_agent: show "@agent_name: truncated prompt"
+  // spawn_agent: make routing-critical parameters visible instead of hiding
+  // everything behind the prompt. The model override is especially important
+  // when reviewing what LLM a delegated task used.
   if (name === 'spawn_agent') {
+    const entries = [];
     const agentName = args.agent_name || 'agent';
+    entries.push(['agent', agentName]);
+    if (!isBlankToolArgValue(args.model)) entries.push(['model', args.model]);
+    const timeoutSeconds = Number(args.timeout);
+    if (!isBlankToolArgValue(args.timeout) && Number.isFinite(timeoutSeconds) && timeoutSeconds > 0) {
+      entries.push(['timeout', `${args.timeout}s`]);
+    }
     let prompt = args.prompt || '';
     if (prompt.length > 120) prompt = prompt.slice(0, 117) + '…';
-    return [['task', '@' + agentName + ': ' + prompt]];
+    if (!isBlankToolArgValue(prompt)) entries.push(['task', prompt]);
+    return entries.slice(0, TOOL_SUMMARY_ARG_LIMIT);
   }
 
   if (name === 'ask_user') {

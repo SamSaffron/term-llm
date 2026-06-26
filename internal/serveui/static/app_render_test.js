@@ -648,6 +648,44 @@ async function run(name, fn) {
     assert(!entries.some(([key]) => key === 'a11'), 'eleventh arg should be capped');
   });
 
+  await run('spawn agent tool summaries include model and timeout parameters', () => {
+    const { app } = createHarness();
+    const entries = app.formatToolArgs({
+      name: 'spawn_agent',
+      status: 'running',
+      arguments: JSON.stringify({
+        agent_name: 'codebase',
+        prompt: 'Inspect the current uncommitted changes and report risks.',
+        model: 'claude-bin:opus-max',
+        timeout: 900,
+      }),
+    });
+
+    assert(entries.some(([key, value]) => key === 'agent' && value === 'codebase'), 'agent should be shown separately');
+    assert(entries.some(([key, value]) => key === 'model' && value === 'claude-bin:opus-max'), 'model override should be visible');
+    assert(entries.some(([key, value]) => key === 'timeout' && value === '900s'), 'timeout should be visible');
+    assert(entries.some(([key, value]) => key === 'task' && String(value).includes('Inspect the current')), 'task should remain visible');
+  });
+
+  await run('spawn agent tool summaries hide blank optional parameters', () => {
+    const { app } = createHarness();
+    const entries = app.formatToolArgs({
+      name: 'spawn_agent',
+      status: 'running',
+      arguments: JSON.stringify({
+        agent_name: 'codebase',
+        prompt: 'Inspect the code.',
+        model: '',
+        timeout: 0,
+      }),
+    });
+
+    assert(entries.some(([key, value]) => key === 'agent' && value === 'codebase'), 'agent should remain visible');
+    assert(entries.some(([key, value]) => key === 'task' && value === 'Inspect the code.'), 'task should remain visible');
+    assert(!entries.some(([key]) => key === 'model'), 'blank model should be hidden');
+    assert(!entries.some(([key]) => key === 'timeout'), 'non-positive timeout should be hidden');
+  });
+
   await run('image generation tool summaries prioritize prompt and hide blanks', () => {
     const { app } = createHarness();
     const entries = app.formatToolArgs({
