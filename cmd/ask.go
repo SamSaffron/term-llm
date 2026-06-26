@@ -1718,8 +1718,10 @@ func (m *askStreamModel) maybeFlushToScrollback() tea.Cmd {
 	return nil
 }
 
-// flushCompletedBoundaryNow flushes all completed segments immediately.
-// Use this at tool boundaries to preserve strict text/tool interleaving order.
+// flushCompletedBoundaryNow flushes completed segments up to the first pending
+// tool barrier. Use this at tool boundaries to preserve strict text/tool
+// interleaving order without flushing completed concurrent tools ahead of an
+// earlier still-pending tool.
 func (m *askStreamModel) flushCompletedBoundaryNow() tea.Cmd {
 	result := m.tracker.FlushCompletedNow(m.width, renderMd)
 	if result.ToPrint != "" {

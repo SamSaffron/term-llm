@@ -291,6 +291,67 @@ func TestDiscardAttemptKeepsCommittedToolWork(t *testing.T) {
 	}
 }
 
+func TestActiveSegmentsIncludesCompletedToolsBlockedByPendingBarrier(t *testing.T) {
+	tracker := NewToolTracker()
+	tracker.HandleToolStart("call-long", "shell", "(sleep 3)", nil)
+	tracker.HandleToolStart("call-short", "shell", "(sleep 1)", nil)
+	tracker.HandleToolEnd("call-short", true)
+
+	// CompletedSegments preserves chronological flushing: nothing after the pending
+	// long-running tool is eligible for completed-content rendering yet.
+	if completed := tracker.CompletedSegments(); len(completed) != 0 {
+		t.Fatalf("expected completed-content bucket to stop at pending barrier, got %d segments", len(completed))
+	}
+
+	active := tracker.ActiveSegments()
+	if len(active) != 2 {
+		t.Fatalf("expected live tool bucket to include pending and completed sibling tools, got %d", len(active))
+	}
+	if active[0].ToolCallID != "call-long" || active[0].ToolStatus != ToolPending {
+		t.Fatalf("first live segment = (%q, %v), want pending call-long", active[0].ToolCallID, active[0].ToolStatus)
+	}
+	if active[1].ToolCallID != "call-short" || active[1].ToolStatus != ToolSuccess {
+		t.Fatalf("second live segment = (%q, %v), want successful call-short", active[1].ToolCallID, active[1].ToolStatus)
+	}
+
+	plain := StripANSI(RenderSegments(active, 80, -1, nil, false, false))
+	if !strings.Contains(plain, "sleep 3") || !strings.Contains(plain, "sleep 1") {
+		t.Fatalf("expected live render to keep both concurrent tools visible, got %q", plain)
+	}
+}
+
+func TestActiveSegmentsWithholdsNonToolContentAfterPendingBarrier(t *testing.T) {
+	tracker := NewToolTracker()
+	tracker.HandleToolStart("call-before", "shell", "(echo before)", nil)
+	tracker.HandleToolEnd("call-before", true)
+	tracker.HandleToolStart("call-long", "shell", "(sleep 5)", nil)
+	tracker.HandleToolStart("call-short", "shell", "(sleep 2)", nil)
+	tracker.HandleToolEnd("call-short", true)
+	tracker.AddTextSegment("tail text after short tool", 80)
+	tracker.MarkCurrentTextComplete(func(text string) string { return text })
+	tracker.HandleToolStart("call-third", "shell", "(sleep 1)", nil)
+
+	active := tracker.ActiveSegments()
+	if len(active) != 3 {
+		t.Fatalf("expected live bucket to include only tools at/after pending barrier, got %d", len(active))
+	}
+	for _, seg := range active {
+		if seg.ToolCallID == "call-before" {
+			t.Fatal("completed tool before pending barrier should render with completed content, not live tools")
+		}
+	}
+
+	plain := StripANSI(RenderSegments(active, 80, -1, nil, false, false))
+	if strings.Contains(plain, "tail text after short tool") {
+		t.Fatalf("non-tool content after pending barrier should stay withheld from live render, got %q", plain)
+	}
+	for _, want := range []string{"sleep 5", "sleep 2", "sleep 1"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("expected live render to include %q, got %q", want, plain)
+		}
+	}
+}
+
 // TestAllCompletedSegments_IncludesFlushed verifies that AllCompletedSegments
 // returns both flushed and unflushed segments, unlike CompletedSegments.
 // This is critical for the final View() render to include all content.
@@ -458,7 +519,105 @@ func TestFlushToScrollback_CompleteTextCanBeFlushed(t *testing.T) {
 	}
 }
 
-func TestFlushCompletedNow_FlushesAllCompletedSegments(t *testing.T) {
+func TestFlushToScrollbackStopsAtPendingBarrier(t *testing.T) {
+	tracker := NewToolTracker()
+	tracker.HandleToolStart("call-long", "shell", "(sleep 5)", nil)
+
+	postBarrierText := []string{
+		"after barrier 1\n\n",
+		"after barrier 2\n\n",
+		"after barrier 3\n\n",
+		"after barrier 4\n\n",
+		"after barrier 5\n\n",
+		"after barrier 6\n\n",
+		"after barrier 7\n\n",
+		"after barrier 8\n\n",
+		"after barrier 9\n\n",
+		"after barrier 10\n\n",
+	}
+	for _, text := range postBarrierText {
+		tracker.AddTextSegment(text, 80)
+		tracker.MarkCurrentTextComplete(func(text string) string { return text })
+	}
+
+	result := tracker.FlushToScrollback(80, 0, 8, func(s string, w int) string { return s })
+	if result.ToPrint != "" {
+		t.Fatalf("expected no scrollback flush past pending barrier, got %q", StripANSI(result.ToPrint))
+	}
+	for i := 1; i < len(tracker.Segments); i++ {
+		if tracker.Segments[i].Flushed {
+			t.Fatalf("segment %d after pending barrier should remain unflushed: %#v", i, tracker.Segments[i])
+		}
+	}
+}
+
+func TestFlushToScrollbackDoesNotFlushSpecialSegmentsPastPendingBarrier(t *testing.T) {
+	tracker := NewToolTracker()
+	tracker.HandleToolStart("call-long", "shell", "(sleep 5)", nil)
+	tracker.AddImageSegment("/tmp/generated-after-barrier.png")
+
+	result := tracker.FlushToScrollback(80, 0, 8, func(s string, w int) string { return s })
+	if result.ToPrint != "" {
+		t.Fatalf("expected no special-segment flush past pending barrier, got %q", StripANSI(result.ToPrint))
+	}
+	if tracker.Segments[1].Flushed {
+		t.Fatal("image after pending barrier should remain unflushed")
+	}
+}
+
+func TestFlushBeforeExternalUIStopsAtPendingBarrier(t *testing.T) {
+	tracker := NewToolTracker()
+	tracker.HandleToolStart("call-long", "shell", "(sleep 5)", nil)
+	tracker.AddTextSegment("external ui after barrier 1\n\n", 80)
+	tracker.MarkCurrentTextComplete(func(text string) string { return text })
+	tracker.AddTextSegment("external ui after barrier 2\n\n", 80)
+	tracker.MarkCurrentTextComplete(func(text string) string { return text })
+
+	result := tracker.FlushBeforeExternalUI(80, 0, 1, func(s string, w int) string { return s })
+	if result.ToPrint != "" {
+		t.Fatalf("expected no external-ui flush past pending barrier, got %q", StripANSI(result.ToPrint))
+	}
+	for i := 1; i < len(tracker.Segments); i++ {
+		if tracker.Segments[i].Flushed {
+			t.Fatalf("segment %d after pending barrier should remain unflushed: %#v", i, tracker.Segments[i])
+		}
+	}
+}
+
+func TestFlushStreamingTextStopsAtPendingBarrier(t *testing.T) {
+	tracker := NewToolTracker()
+	tracker.TextMode = true
+	tracker.HandleToolStart("call-long", "shell", "(sleep 5)", nil)
+	tracker.HandleToolStart("call-short", "shell", "(sleep 2)", nil)
+	tracker.HandleToolEnd("call-short", true)
+	tracker.AddTextSegment("post-barrier text should wait.\n\n", 80)
+
+	render := func(s string, w int) string { return s }
+	result := tracker.FlushStreamingText(1, 80, render)
+	if result.ToPrint != "" {
+		t.Fatalf("expected no streaming-text flush past pending barrier, got %q", StripANSI(result.ToPrint))
+	}
+	if tracker.Segments[1].Flushed {
+		t.Fatal("completed tool behind pending barrier should remain unflushed")
+	}
+	if tracker.Segments[2].FlushedPos != 0 {
+		t.Fatalf("post-barrier text flushed position = %d, want 0", tracker.Segments[2].FlushedPos)
+	}
+
+	tracker.HandleToolEnd("call-long", true)
+	toolFlush := tracker.FlushCompletedNow(80, render)
+	plainTools := StripANSI(toolFlush.ToPrint)
+	if !strings.Contains(plainTools, "sleep 5") || !strings.Contains(plainTools, "sleep 2") {
+		t.Fatalf("expected tools to flush in order after barrier clears, got %q", plainTools)
+	}
+
+	textFlush := tracker.FlushStreamingText(1, 80, render)
+	if !strings.Contains(StripANSI(textFlush.ToPrint), "post-barrier text should wait") {
+		t.Fatalf("expected post-barrier text to flush after barrier clears, got %q", StripANSI(textFlush.ToPrint))
+	}
+}
+
+func TestFlushCompletedNowFlushesCompletedSegmentsWhenNoBarrier(t *testing.T) {
 	tracker := NewToolTracker()
 	renderFn := func(s string) string { return s }
 
@@ -484,6 +643,31 @@ func TestFlushCompletedNow_FlushesAllCompletedSegments(t *testing.T) {
 	}
 	if !tracker.Segments[2].Flushed {
 		t.Fatal("expected completed tool segment to be flushed")
+	}
+}
+
+func TestFlushCompletedNowStopsAtPendingBarrier(t *testing.T) {
+	tracker := NewToolTracker()
+	tracker.HandleToolStart("call-long", "shell", "(sleep 5)", nil)
+	tracker.HandleToolStart("call-short", "shell", "(sleep 2)", nil)
+	tracker.HandleToolEnd("call-short", true)
+
+	result := tracker.FlushCompletedNow(80, func(s string, w int) string { return s })
+	if result.ToPrint != "" {
+		t.Fatalf("expected no flush while completed tool is blocked by pending barrier, got %q", result.ToPrint)
+	}
+	if tracker.Segments[1].Flushed {
+		t.Fatal("completed tool behind pending barrier should remain unflushed")
+	}
+
+	tracker.HandleToolEnd("call-long", true)
+	result = tracker.FlushCompletedNow(80, func(s string, w int) string { return s })
+	plain := StripANSI(result.ToPrint)
+	if !strings.Contains(plain, "sleep 5") || !strings.Contains(plain, "sleep 2") {
+		t.Fatalf("expected both tools to flush after barrier clears, got %q", plain)
+	}
+	if !tracker.Segments[0].Flushed || !tracker.Segments[1].Flushed {
+		t.Fatalf("expected both tools flushed after barrier clears: %#v", tracker.Segments)
 	}
 }
 

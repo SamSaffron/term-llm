@@ -304,6 +304,24 @@ func TestUpdate_MultipleSubagentsWithOutOfOrderProgressAllRender(t *testing.T) {
 	}
 }
 
+func TestRenderStreamingInlineKeepsCompletedConcurrentToolVisible(t *testing.T) {
+	m := newTestChatModel(false)
+	m.width = 80
+	m.streaming = true
+
+	_, _ = m.Update(streamEventMsg{event: ui.ToolStartEvent("call-long", "shell", "(sleep 3)", nil)})
+	_, _ = m.Update(streamEventMsg{event: ui.ToolStartEvent("call-short", "shell", "(sleep 1)", nil)})
+	_, _ = m.Update(streamEventMsg{event: ui.ToolEndEvent("call-short", "shell", "(sleep 1)", true)})
+
+	plain := ui.StripANSI(m.renderStreamingInline())
+	if !strings.Contains(plain, "sleep 3") {
+		t.Fatalf("expected pending long-running tool to be visible, got %q", plain)
+	}
+	if !strings.Contains(plain, "sleep 1") {
+		t.Fatalf("expected completed short-running concurrent tool to remain visible, got %q", plain)
+	}
+}
+
 func TestUpdate_StreamError_BumpsContentVersion(t *testing.T) {
 	provider := llm.NewMockProvider("mock")
 	engine := llm.NewEngine(provider, nil)

@@ -270,16 +270,38 @@ func (t *ToolTracker) waveTickCmd() tea.Cmd {
 	})
 }
 
-// ActiveSegments returns only the pending tool segments (for rendering).
-// Returns pointers so mutations (like SafeRendered caching) persist.
+// ActiveSegments returns the live tool segments used by the streaming indicator.
 func (t *ToolTracker) ActiveSegments() []*Segment {
-	var active []*Segment
+	return t.liveToolSegments()
+}
+
+// liveToolSegments returns the unflushed tool segments that belong in the live
+// indicator while a pending-tool barrier exists. CompletedSegments deliberately
+// stops at the first pending tool to preserve chronological rendering/flushing;
+// the live indicator is allowed to show tool siblings behind that barrier so a
+// shorter concurrent call remains visible after it completes while another call
+// is still pending. Non-tool content after the barrier remains withheld.
+// Returns pointers so mutations (like SafeRendered caching) persist.
+func (t *ToolTracker) liveToolSegments() []*Segment {
+	var live []*Segment
+	pastPendingBarrier := false
 	for i := range t.Segments {
-		if t.Segments[i].Type == SegmentTool && t.Segments[i].ToolStatus == ToolPending {
-			active = append(active, &t.Segments[i])
+		seg := &t.Segments[i]
+		if seg.Flushed {
+			continue
+		}
+		if !pastPendingBarrier {
+			if seg.Type == SegmentTool && seg.ToolStatus == ToolPending {
+				pastPendingBarrier = true
+				live = append(live, seg)
+			}
+			continue
+		}
+		if seg.Type == SegmentTool {
+			live = append(live, seg)
 		}
 	}
-	return active
+	return live
 }
 
 // CompletedSegments returns non-pending, non-flushed segments up to (but not past) the first pending tool.
@@ -619,15 +641,20 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 		return FlushStreamingTextResult{}
 	}
 
-	// First: flush any completed tool segments before the text segment.
-	// Tool calls are always processed before text continues, so any tool segments
-	// that appear before the current text segment are already complete.
+	// First: flush any completed tool segments before the text segment, but only
+	// up to the first pending tool barrier. Text after a pending tool is
+	// chronologically blocked until that tool completes.
 	hadPriorFlush := t.HasFlushed
 	var contentBuilder strings.Builder
 	var toolsToFlush []*Segment
+	blockedByPendingBarrier := false
 	for i := 0; i < segIdx; i++ {
 		s := &t.Segments[i]
-		if s.Type == SegmentTool && !s.Flushed && s.ToolStatus != ToolPending {
+		if s.Type == SegmentTool && s.ToolStatus == ToolPending {
+			blockedByPendingBarrier = true
+			break
+		}
+		if s.Type == SegmentTool && !s.Flushed {
 			toolsToFlush = append(toolsToFlush, s)
 			s.Flushed = true
 		}
@@ -645,6 +672,14 @@ func (t *ToolTracker) FlushStreamingText(threshold int, width int, renderMd func
 		contentBuilder.WriteString(toolContent)
 		t.HasFlushed = true
 		t.LastFlushedType = toolsToFlush[len(toolsToFlush)-1].Type
+	}
+
+	if blockedByPendingBarrier {
+		debugFlushf("stream skip seg=%d reason=pending-barrier", segIdx)
+		if contentBuilder.Len() > 0 {
+			return FlushStreamingTextResult{ToPrint: contentBuilder.String()}
+		}
+		return FlushStreamingTextResult{}
 	}
 
 	// Get current text length
@@ -888,23 +923,31 @@ func (t *ToolTracker) FlushToScrollback(
 		return true
 	}
 
-	// Count unflushed flushable segments
+	// Count unflushed flushable segments up to the first pending tool barrier.
 	var unflushedCount int
 	for i := range t.Segments {
-		if isFlushable(&t.Segments[i]) {
+		seg := &t.Segments[i]
+		if seg.Type == SegmentTool && seg.ToolStatus == ToolPending {
+			break
+		}
+		if isFlushable(seg) {
 			unflushedCount++
 		}
 	}
 
 	// Keep at least some segments unflushed for View()
-	// But always flush images and diffs immediately since they need to go to scrollback
+	// But always flush images and diffs immediately when they are before the
+	// pending-tool barrier since they need to go to scrollback.
 	minKeep := maxViewLines
 	debugFlushf("scrollback enter unflushedCount=%d minKeep=%d hasFlushed=%v lastFlushed=%d", unflushedCount, minKeep, t.HasFlushed, t.LastFlushedType)
 	if unflushedCount <= minKeep {
-		// Check if there's an image or diff that needs flushing
+		// Check if there's a pre-barrier image or diff that needs flushing.
 		hasUnflushedSpecial := false
 		for i := range t.Segments {
 			seg := &t.Segments[i]
+			if seg.Type == SegmentTool && seg.ToolStatus == ToolPending {
+				break
+			}
 			if (seg.Type == SegmentImage || seg.Type == SegmentDiff) && !seg.Flushed {
 				hasUnflushedSpecial = true
 				break
@@ -916,11 +959,14 @@ func (t *ToolTracker) FlushToScrollback(
 		}
 	}
 
-	// Collect segments to flush (all flushable segments except the last few)
+	// Collect segments to flush (pre-barrier flushable segments except the last few)
 	var toFlush []*Segment
 	unflushedSeen := 0
 	for i := range t.Segments {
 		seg := &t.Segments[i]
+		if seg.Type == SegmentTool && seg.ToolStatus == ToolPending {
+			break
+		}
 		if !isFlushable(seg) {
 			continue
 		}
@@ -1076,9 +1122,10 @@ func (t *ToolTracker) FlushAllRemaining(
 	}
 }
 
-// FlushCompletedNow flushes all completed, unflushed segments immediately.
-// Unlike FlushToScrollback, this does not keep any segments for View().
-// Pending tools and incomplete text segments are never flushed.
+// FlushCompletedNow flushes completed, unflushed segments immediately up to
+// (but not past) the first pending tool barrier. Unlike FlushToScrollback, this
+// does not keep any eligible segments for View(). Pending tools, segments after
+// a pending tool, and incomplete text segments are never flushed.
 func (t *ToolTracker) FlushCompletedNow(
 	width int,
 	renderMd func(string, int) string,
@@ -1090,7 +1137,7 @@ func (t *ToolTracker) FlushCompletedNow(
 			continue
 		}
 		if seg.Type == SegmentTool && seg.ToolStatus == ToolPending {
-			continue
+			break
 		}
 		if seg.Type == SegmentText && !seg.Complete {
 			continue
@@ -1154,23 +1201,25 @@ func (t *ToolTracker) FlushBeforeExternalUI(
 	var toFlush []*Segment
 	unflushedCompleted := 0
 
-	// First count unflushed completed segments
+	// First count unflushed completed segments up to the first pending tool barrier.
 	for i := range t.Segments {
 		seg := &t.Segments[i]
-		if !seg.Flushed && !(seg.Type == SegmentTool && seg.ToolStatus == ToolPending) {
+		if seg.Type == SegmentTool && seg.ToolStatus == ToolPending {
+			break
+		}
+		if !seg.Flushed {
 			unflushedCompleted++
 		}
 	}
 
-	// Flush all but the last one
+	// Flush all but the last pre-barrier segment.
 	seen := 0
 	for i := range t.Segments {
 		seg := &t.Segments[i]
-		if seg.Flushed {
-			continue
+		if seg.Type == SegmentTool && seg.ToolStatus == ToolPending {
+			break
 		}
-		isPending := seg.Type == SegmentTool && seg.ToolStatus == ToolPending
-		if isPending {
+		if seg.Flushed {
 			continue
 		}
 		seen++

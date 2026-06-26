@@ -312,6 +312,39 @@ func TestAskToolEndFlushesCompletedToolBoundary(t *testing.T) {
 	}
 }
 
+func TestAskCompletedConcurrentToolWaitsBehindPendingBarrier(t *testing.T) {
+	model := newAskStreamModel()
+	model.width = 80
+
+	updated, _ := model.Update(askToolStartMsg{CallID: "call-long", Name: "shell", Info: "(sleep 5)"})
+	model = updated.(askStreamModel)
+	updated, _ = model.Update(askBoundaryFlushedMsg{CallID: "call-long", Name: "shell"})
+	model = updated.(askStreamModel)
+
+	updated, _ = model.Update(askToolStartMsg{CallID: "call-short", Name: "shell", Info: "(sleep 2)"})
+	model = updated.(askStreamModel)
+	updated, _ = model.Update(askBoundaryFlushedMsg{CallID: "call-short", Name: "shell"})
+	model = updated.(askStreamModel)
+
+	updated, _ = model.Update(askToolEndMsg{CallID: "call-short", Success: true})
+	model = updated.(askStreamModel)
+
+	if len(model.tracker.Segments) != 2 {
+		t.Fatalf("expected 2 tool segments, got %d", len(model.tracker.Segments))
+	}
+	if model.tracker.Segments[1].Flushed {
+		t.Fatal("completed short tool should not flush ahead of the earlier pending long tool")
+	}
+
+	plain := stripAnsi(model.View().Content)
+	if !strings.Contains(plain, "sleep 5") {
+		t.Fatalf("expected pending long-running tool to be visible, got %q", plain)
+	}
+	if !strings.Contains(plain, "sleep 2") {
+		t.Fatalf("expected completed short-running concurrent tool to remain visible, got %q", plain)
+	}
+}
+
 // TestAskDoneNoDoubleRendering verifies that content appears exactly once
 // in the final flush, preventing double rendering issues.
 func TestAskDoneNoDoubleRendering(t *testing.T) {

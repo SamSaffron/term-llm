@@ -234,8 +234,10 @@ func (s *StreamingBlock) Render(wavePos int, pausedForUI bool, includeImages boo
 			if b.Len() > 0 {
 				// We have unflushed completed segments, find the last one's type
 				unflushed := s.tracker.CompletedSegments()
-				lastType := unflushed[len(unflushed)-1].Type
-				b.WriteString(ui.SegmentSeparator(lastType, ui.SegmentTool))
+				if len(unflushed) > 0 {
+					lastType := unflushed[len(unflushed)-1].Type
+					b.WriteString(ui.SegmentSeparator(lastType, ui.SegmentTool))
+				}
 			} else if s.tracker.HasFlushed {
 				// Everything completed was flushed, use flush state for separator
 				b.WriteString(s.tracker.FlushLeadingSeparator(ui.SegmentTool))

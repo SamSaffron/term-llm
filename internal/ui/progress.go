@@ -51,7 +51,7 @@ type StreamingIndicator struct {
 	Status         string                   // optional status (e.g., "editing main.go")
 	ShowCancel     bool                     // show "(esc to cancel)"
 	HideProgress   bool                     // hide spinner/phase/tokens/time (shown in status line instead)
-	Segments       []*Segment               // active tool segments for wave animation
+	Segments       []*Segment               // live tool segments for wave/status rendering
 	WavePos        int                      // current wave position
 	Width          int                      // terminal width for markdown rendering
 	RenderMarkdown func(string, int) string // markdown renderer for text segments
