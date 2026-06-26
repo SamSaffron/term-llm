@@ -9,20 +9,21 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
-func TestTelegramStoreOpQueueFullStillSerializesOps(t *testing.T) {
+func TestTelegramStoreOpQueueFullDropsNewOpWithoutBlockingEnginePath(t *testing.T) {
 	mgr := &telegramSessionMgr{store: &session.NoopStore{}}
 	q := newTelegramStoreOpQueue(mgr, "session-1")
 
 	firstStarted := make(chan struct{})
 	releaseFirst := make(chan struct{})
 	finalRan := make(chan struct{})
-	finalEnqueued := make(chan struct{})
 
-	q.enqueue(context.Background(), "first", func(context.Context) error {
+	if !q.enqueue(context.Background(), "first", func(context.Context) error {
 		close(firstStarted)
 		<-releaseFirst
 		return nil
-	})
+	}) {
+		t.Fatal("first enqueue unexpectedly failed")
+	}
 
 	select {
 	case <-firstStarted:
@@ -31,61 +32,52 @@ func TestTelegramStoreOpQueueFullStillSerializesOps(t *testing.T) {
 	}
 
 	for i := 0; i < 128; i++ {
-		q.enqueue(context.Background(), "buffered", func(context.Context) error {
-			return nil
-		})
+		if !q.enqueue(context.Background(), "buffered", func(context.Context) error { return nil }) {
+			t.Fatalf("buffered enqueue %d unexpectedly failed", i)
+		}
 	}
 
-	go func() {
-		q.enqueue(context.Background(), "final", func(context.Context) error {
-			close(finalRan)
-			return nil
-		})
-		close(finalEnqueued)
-	}()
-
-	select {
-	case <-finalEnqueued:
-		t.Fatal("final enqueue returned while queue was full")
-	case <-time.After(100 * time.Millisecond):
+	start := time.Now()
+	if q.enqueue(context.Background(), "final", func(context.Context) error {
+		close(finalRan)
+		return nil
+	}) {
+		t.Fatal("final enqueue succeeded despite full queue")
 	}
-
-	select {
-	case <-finalRan:
-		t.Fatal("final op ran before queued ops drained")
-	case <-time.After(100 * time.Millisecond):
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("full queue enqueue blocked for %s", elapsed)
+	}
+	if !q.shouldReconcile() {
+		t.Fatal("full queue should mark persistence for reconciliation")
 	}
 
 	close(releaseFirst)
-
-	select {
-	case <-finalEnqueued:
-	case <-time.After(5 * time.Second):
-		t.Fatal("final enqueue did not complete after queue space freed")
-	}
-
 	drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	q.closeAndWait(drainCtx)
+	if !q.closeAndWait(drainCtx) {
+		t.Fatal("queue did not drain after releasing first op")
+	}
 
 	select {
 	case <-finalRan:
+		t.Fatal("dropped op ran despite degraded queue")
 	default:
-		t.Fatal("final op did not finish before closeAndWait returned")
 	}
 }
 
-func TestTelegramStoreOpQueueCloseDoesNotRunBlockedEnqueueInline(t *testing.T) {
+func TestTelegramStoreOpQueueCanceledContextReturnsImmediately(t *testing.T) {
 	mgr := &telegramSessionMgr{store: &session.NoopStore{}}
 	q := newTelegramStoreOpQueue(mgr, "session-1")
 
 	firstStarted := make(chan struct{})
 	releaseFirst := make(chan struct{})
-	q.enqueue(context.Background(), "first", func(context.Context) error {
+	if !q.enqueue(context.Background(), "first", func(context.Context) error {
 		close(firstStarted)
 		<-releaseFirst
 		return nil
-	})
+	}) {
+		t.Fatal("first enqueue unexpectedly failed")
+	}
 
 	select {
 	case <-firstStarted:
@@ -94,23 +86,47 @@ func TestTelegramStoreOpQueueCloseDoesNotRunBlockedEnqueueInline(t *testing.T) {
 	}
 
 	for i := 0; i < 128; i++ {
-		q.enqueue(context.Background(), "buffered", func(context.Context) error { return nil })
+		if !q.enqueue(context.Background(), "buffered", func(context.Context) error { return nil }) {
+			t.Fatalf("buffered enqueue %d unexpectedly failed", i)
+		}
 	}
 
-	var finalRan atomic.Bool
-	finalReturned := make(chan struct{})
-	go func() {
-		q.enqueue(context.Background(), "final", func(context.Context) error {
-			finalRan.Store(true)
-			return nil
-		})
-		close(finalReturned)
-	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	if q.enqueue(ctx, "canceled", func(context.Context) error { return nil }) {
+		t.Fatal("enqueue succeeded despite canceled context and full queue")
+	}
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("canceled enqueue blocked for %s", elapsed)
+	}
+
+	close(releaseFirst)
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer drainCancel()
+	if !q.closeAndWait(drainCtx) {
+		t.Fatal("queue did not drain after releasing first op")
+	}
+}
+
+func TestTelegramStoreOpQueueCloseRejectsNewOps(t *testing.T) {
+	mgr := &telegramSessionMgr{store: &session.NoopStore{}}
+	q := newTelegramStoreOpQueue(mgr, "session-1")
+
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	if !q.enqueue(context.Background(), "first", func(context.Context) error {
+		close(firstStarted)
+		<-releaseFirst
+		return nil
+	}) {
+		t.Fatal("first enqueue unexpectedly failed")
+	}
 
 	select {
-	case <-finalReturned:
-		t.Fatal("final enqueue returned while queue was full")
-	case <-time.After(100 * time.Millisecond):
+	case <-firstStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first op did not start")
 	}
 
 	closeCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -119,19 +135,13 @@ func TestTelegramStoreOpQueueCloseDoesNotRunBlockedEnqueueInline(t *testing.T) {
 		t.Fatal("closeAndWait reported a full drain while first op was blocked")
 	}
 
-	select {
-	case <-finalReturned:
-		t.Fatal("blocked enqueue returned before queue space was available")
-	default:
-	}
-	if finalRan.Load() {
-		t.Fatal("blocked enqueue op ran inline during close")
-	}
-
-	q.enqueue(context.Background(), "after-close", func(context.Context) error {
-		t.Fatal("enqueue after close should not run")
+	var ran atomic.Bool
+	if q.enqueue(context.Background(), "after-close", func(context.Context) error {
+		ran.Store(true)
 		return nil
-	})
+	}) {
+		t.Fatal("enqueue after close unexpectedly succeeded")
+	}
 
 	close(releaseFirst)
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -139,13 +149,7 @@ func TestTelegramStoreOpQueueCloseDoesNotRunBlockedEnqueueInline(t *testing.T) {
 	if !q.closeAndWait(drainCtx) {
 		t.Fatal("queue did not drain after releasing first op")
 	}
-
-	select {
-	case <-finalReturned:
-	case <-time.After(5 * time.Second):
-		t.Fatal("blocked enqueue did not return after queue space freed")
-	}
-	if !finalRan.Load() {
-		t.Fatal("blocked enqueue op did not run through queue")
+	if ran.Load() {
+		t.Fatal("enqueue after close should never run")
 	}
 }
