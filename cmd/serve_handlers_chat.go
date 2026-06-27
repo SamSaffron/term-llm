@@ -159,6 +159,7 @@ func (s *serveServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *serveServer) streamChatCompletions(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []llm.Message, llmReq llm.Request, streamOpts *chatStreamOptions, sessionID string) {
+	w = newStreamingResponseWriter(w, serveStreamWriteTimeout)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "streaming not supported")

@@ -442,6 +442,7 @@ type telegramSession struct {
 	systemPromptPersisted bool
 	carryoverContext      string // one-time context carried from the previous replaced session
 	carryoverContextLabel string
+	carryoverMessageCount int // number of restored prior-session messages at the start of history; not persisted to this session
 	meta                  *session.Session
 	lastActivity          time.Time
 
@@ -592,6 +593,7 @@ func (m *telegramSessionMgr) restoreHistoryFromDB(ctx context.Context, chatID in
 		history = sanitizeCarryoverMessages(history)
 		if len(history) > 0 {
 			sess.history = history
+			sess.carryoverMessageCount = len(history)
 			log.Printf("[telegram] restored %d messages (loaded %d rows) from session %s for chat %d",
 				len(history), loadedRows, s.ID, chatID)
 		}
@@ -924,10 +926,12 @@ type telegramStoreOpQueue struct {
 	sessionID string
 	ops       chan telegramStoreOp
 	done      chan struct{}
+	closedCh  chan struct{}
 	once      sync.Once
 
 	mu        sync.Mutex
 	closed    bool
+	degraded  bool
 	enqueueWG sync.WaitGroup
 }
 
@@ -937,6 +941,7 @@ func newTelegramStoreOpQueue(mgr *telegramSessionMgr, sessionID string) *telegra
 		sessionID: sessionID,
 		ops:       make(chan telegramStoreOp, 128),
 		done:      make(chan struct{}),
+		closedCh:  make(chan struct{}),
 	}
 	go q.run()
 	return q
@@ -945,26 +950,73 @@ func newTelegramStoreOpQueue(mgr *telegramSessionMgr, sessionID string) *telegra
 func (q *telegramStoreOpQueue) run() {
 	defer close(q.done)
 	for op := range q.ops {
+		if q.isDegraded() {
+			continue
+		}
 		q.mgr.runStoreOpWithoutCancel(op.ctx, q.sessionID, op.op, op.fn)
 	}
 }
 
-func (q *telegramStoreOpQueue) enqueue(ctx context.Context, op string, fn func(context.Context) error) {
-	if q == nil || fn == nil {
+func (q *telegramStoreOpQueue) isDegraded() bool {
+	if q == nil {
+		return false
+	}
+	q.mu.Lock()
+	degraded := q.degraded
+	q.mu.Unlock()
+	return degraded
+}
+
+func (q *telegramStoreOpQueue) markDegraded(reason string) {
+	if q == nil {
 		return
+	}
+	q.mu.Lock()
+	already := q.degraded
+	q.degraded = true
+	q.mu.Unlock()
+	if !already {
+		log.Printf("[telegram] callback persistence queue degraded for %s: %s; final transcript will be reconciled", q.sessionID, reason)
+	}
+}
+
+func (q *telegramStoreOpQueue) enqueue(ctx context.Context, op string, fn func(context.Context) error) bool {
+	if q == nil || fn == nil {
+		return false
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	storeOp := telegramStoreOp{ctx: ctx, op: op, fn: fn}
 
 	q.mu.Lock()
-	if q.closed {
+	if q.closed || q.degraded {
 		q.mu.Unlock()
-		return
+		return false
 	}
 	q.enqueueWG.Add(1)
 	q.mu.Unlock()
 	defer q.enqueueWG.Done()
 
-	q.ops <- storeOp
+	select {
+	case <-ctx.Done():
+		q.markDegraded("enqueue context cancelled")
+		return false
+	default:
+	}
+
+	select {
+	case q.ops <- storeOp:
+		return true
+	case <-q.closedCh:
+		return false
+	case <-ctx.Done():
+		q.markDegraded("enqueue context cancelled")
+		return false
+	default:
+		q.markDegraded("queue full")
+		return false
+	}
 }
 
 func (q *telegramStoreOpQueue) closeAndWait(ctx context.Context) bool {
@@ -974,6 +1026,7 @@ func (q *telegramStoreOpQueue) closeAndWait(ctx context.Context) bool {
 	q.once.Do(func() {
 		q.mu.Lock()
 		q.closed = true
+		close(q.closedCh)
 		q.mu.Unlock()
 		go func() {
 			q.enqueueWG.Wait()
@@ -1375,6 +1428,8 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		producedMu                 sync.Mutex
 		produced                   []llm.Message
 		assistantCapturedForTurnCB bool
+		turnMetrics                llm.TurnMetrics
+		turnCount                  int
 	)
 	var callbackStoreQueue *telegramStoreOpQueue
 	if m.store != nil && sess.meta != nil {
@@ -1408,6 +1463,12 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		if appendStart < len(msgs) {
 			produced = append(produced, msgs[appendStart:]...)
 		}
+		turnMetrics.ToolCalls += metrics.ToolCalls
+		turnMetrics.InputTokens += metrics.InputTokens
+		turnMetrics.OutputTokens += metrics.OutputTokens
+		turnMetrics.CachedInputTokens += metrics.CachedInputTokens
+		turnMetrics.CacheWriteTokens += metrics.CacheWriteTokens
+		turnCount++
 		assistantCapturedForTurnCB = false
 		producedMu.Unlock()
 		if callbackStoreQueue != nil {
@@ -1415,16 +1476,6 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 				sessionMsg := session.NewMessage(sess.meta.ID, msg, -1)
 				callbackStoreQueue.enqueue(cbCtx, "AddMessage(turn)", func(storeCtx context.Context) error {
 					return m.store.AddMessage(storeCtx, sess.meta.ID, sessionMsg)
-				})
-			}
-			callbackStoreQueue.enqueue(cbCtx, "UpdateMetrics", func(storeCtx context.Context) error {
-				return m.store.UpdateMetrics(storeCtx, sess.meta.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens)
-			})
-			if total, count := sess.runtime.Engine.ContextEstimateBaseline(); total > 0 && count > 0 {
-				sess.meta.LastTotalTokens = total
-				sess.meta.LastMessageCount = count
-				callbackStoreQueue.enqueue(cbCtx, "UpdateContextEstimate", func(storeCtx context.Context) error {
-					return m.store.UpdateContextEstimate(storeCtx, sess.meta.ID, total, count)
 				})
 			}
 		}
@@ -1970,6 +2021,47 @@ loop:
 	}
 	sess.history = newHistory
 	sess.lastActivity = time.Now()
+	if callbackStoreQueue != nil {
+		drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		callbackStoreQueue.closeAndWait(drainCtx)
+		cancel()
+		if callbackStoreQueue.isDegraded() && m.store != nil && sess.meta != nil {
+			replacementHistory := make([]llm.Message, 0, len(newHistory)+1)
+			if m.settings.SystemPrompt != "" && sess.systemPromptPersisted && !containsSystemMsg(newHistory) {
+				replacementHistory = append(replacementHistory, llm.SystemText(m.settings.SystemPrompt))
+			}
+			start := sess.carryoverMessageCount
+			if start < 0 || start > len(newHistory) {
+				start = 0
+			}
+			replacementHistory = append(replacementHistory, newHistory[start:]...)
+			snapshot := make([]session.Message, 0, len(replacementHistory))
+			for i, msg := range replacementHistory {
+				snapshot = append(snapshot, *session.NewMessage(sess.meta.ID, msg, i))
+			}
+			m.runStoreOpWithoutCancel(ctx, sess.meta.ID, "ReplaceMessages(callback_reconcile)", func(storeCtx context.Context) error {
+				return m.store.ReplaceMessages(storeCtx, sess.meta.ID, snapshot)
+			})
+		}
+	}
+	if m.store != nil && sess.meta != nil {
+		producedMu.Lock()
+		metricsSnapshot := turnMetrics
+		turnsSnapshot := turnCount
+		producedMu.Unlock()
+		if turnsSnapshot > 0 || metricsSnapshot.ToolCalls != 0 || metricsSnapshot.InputTokens != 0 || metricsSnapshot.OutputTokens != 0 || metricsSnapshot.CachedInputTokens != 0 || metricsSnapshot.CacheWriteTokens != 0 {
+			m.runStoreOpWithoutCancel(ctx, sess.meta.ID, "UpdateMetrics", func(storeCtx context.Context) error {
+				return m.store.UpdateMetrics(storeCtx, sess.meta.ID, turnsSnapshot, metricsSnapshot.ToolCalls, metricsSnapshot.InputTokens, metricsSnapshot.OutputTokens, metricsSnapshot.CachedInputTokens, metricsSnapshot.CacheWriteTokens)
+			})
+		}
+		if total, count := sess.runtime.Engine.ContextEstimateBaseline(); total > 0 && count > 0 {
+			sess.meta.LastTotalTokens = total
+			sess.meta.LastMessageCount = count
+			m.runStoreOpWithoutCancel(ctx, sess.meta.ID, "UpdateContextEstimate", func(storeCtx context.Context) error {
+				return m.store.UpdateContextEstimate(storeCtx, sess.meta.ID, total, count)
+			})
+		}
+	}
 	if m.store != nil && sess.meta != nil {
 		m.runStoreOp(ctx, sess.meta.ID, "UpdateStatus(active_end)", func(storeCtx context.Context) error {
 			return m.store.UpdateStatus(storeCtx, sess.meta.ID, session.StatusActive)

@@ -1493,7 +1493,7 @@ func (s *serveServer) storeCompletedResponseRun(runtime *serveRuntime, sessionID
 			return "", err
 		}
 	}
-	durableID := s.latestDurableResponseIDForSession(context.Background(), sessionID)
+	durableID := s.latestDurableResponseIDForSessionBestEffort(context.Background(), sessionID)
 	completedID := respID
 	if durableID != "" {
 		completedID = durableID
@@ -1630,6 +1630,7 @@ func (s *serveServer) handleResponseByID(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.ResponseWriter, run *responseRun, after int64) {
+	w = newStreamingResponseWriter(w, serveStreamWriteTimeout)
 	subscription := run.subscribe(after)
 	if subscription.snapshotRequired {
 		writeJSON(w, http.StatusConflict, map[string]any{
@@ -1910,7 +1911,7 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 		if options.resetResponseIDsOnSuccess {
 			s.unregisterSessionResponseIDs(sessionID)
 		}
-		durableID := s.latestDurableResponseIDForSession(context.Background(), sessionID)
+		durableID := s.latestDurableResponseIDForSessionBestEffort(runCtx, sessionID)
 		completedID := respID
 		if durableID != "" {
 			completedID = durableID

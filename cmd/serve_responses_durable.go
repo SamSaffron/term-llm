@@ -147,3 +147,12 @@ func (s *serveServer) latestDurableResponseIDForSession(ctx context.Context, ses
 	}
 	return durableResponseIDForMessageID(msgID)
 }
+
+func (s *serveServer) latestDurableResponseIDForSessionBestEffort(ctx context.Context, sessionID string) string {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), durableResponseLookupLimit)
+	defer cancel()
+	return s.latestDurableResponseIDForSession(lookupCtx, sessionID)
+}

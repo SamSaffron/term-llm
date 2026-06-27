@@ -229,14 +229,15 @@ var (
 )
 
 const (
-	jobsV2SchedulerMinDelay   = 100 * time.Millisecond
-	jobsV2SchedulerIdleDelay  = time.Minute
-	jobsV2SchedulerErrorDelay = 200 * time.Millisecond
-	jobsV2WorkerMinDelay      = 100 * time.Millisecond
-	jobsV2WorkerIdleDelay     = time.Minute
-	jobsV2WorkerErrorDelay    = 200 * time.Millisecond
-	jobsV2FinishRunAttempts   = 3
-	jobsV2FinishRunRetryDelay = 50 * time.Millisecond
+	jobsV2SchedulerMinDelay    = 100 * time.Millisecond
+	jobsV2SchedulerIdleDelay   = time.Minute
+	jobsV2SchedulerErrorDelay  = 200 * time.Millisecond
+	jobsV2WorkerMinDelay       = 100 * time.Millisecond
+	jobsV2WorkerIdleDelay      = time.Minute
+	jobsV2WorkerErrorDelay     = 200 * time.Millisecond
+	jobsV2FinishRunRetryWindow = 30 * time.Second
+	jobsV2FinishRunRetryDelay  = 50 * time.Millisecond
+	jobsV2FinishRunMaxDelay    = time.Second
 )
 
 type jobsV2ProgramConfig struct {
@@ -1417,19 +1418,44 @@ func (m *jobsV2Manager) executeRun(run jobsV2Run) {
 }
 
 func (m *jobsV2Manager) finishRunWithRetry(runID string, status jobsV2RunStatus, result jobsV2RunResult, runErr error, policyAttempt int) {
+	deadline := time.Now().Add(jobsV2FinishRunRetryWindow)
+	delay := jobsV2FinishRunRetryDelay
+	attempts := 0
 	var lastErr error
-	for attempt := 1; attempt <= jobsV2FinishRunAttempts; attempt++ {
+	for {
+		attempts++
 		if err := m.finishRun(runID, status, result, runErr, policyAttempt); err != nil {
 			lastErr = err
-			if attempt < jobsV2FinishRunAttempts {
-				time.Sleep(jobsV2FinishRunRetryDelay)
-				continue
-			}
 		} else {
 			return
 		}
+
+		if m.isClosed() {
+			log.Printf("jobs v2: failed to finish run %q as %s after %d attempts during shutdown; restart recovery may be needed: %v", runID, status, attempts, lastErr)
+			return
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		wait := delay
+		if wait > remaining {
+			wait = remaining
+		}
+		select {
+		case <-time.After(wait):
+		case <-m.done:
+			log.Printf("jobs v2: failed to finish run %q as %s after %d attempts during shutdown; restart recovery may be needed: %v", runID, status, attempts, lastErr)
+			return
+		}
+		if delay < jobsV2FinishRunMaxDelay {
+			delay *= 2
+			if delay > jobsV2FinishRunMaxDelay {
+				delay = jobsV2FinishRunMaxDelay
+			}
+		}
 	}
-	log.Printf("jobs v2: failed to finish run %q as %s after %d attempts; run may remain active: %v", runID, status, jobsV2FinishRunAttempts, lastErr)
+	log.Printf("jobs v2: failed to finish run %q as %s for %s after %d attempts; run may remain active until restart recovery: %v", runID, status, jobsV2FinishRunRetryWindow, attempts, lastErr)
 }
 
 func (m *jobsV2Manager) finishRun(runID string, status jobsV2RunStatus, result jobsV2RunResult, runErr error, attempt int) error {

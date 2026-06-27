@@ -9,20 +9,22 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
-func TestTelegramStoreOpQueueFullStillSerializesOps(t *testing.T) {
+func TestTelegramStoreOpQueueFullDegradesWithoutBlocking(t *testing.T) {
 	mgr := &telegramSessionMgr{store: &session.NoopStore{}}
 	q := newTelegramStoreOpQueue(mgr, "session-1")
 
 	firstStarted := make(chan struct{})
 	releaseFirst := make(chan struct{})
-	finalRan := make(chan struct{})
-	finalEnqueued := make(chan struct{})
+	var ran atomic.Int32
 
-	q.enqueue(context.Background(), "first", func(context.Context) error {
+	if !q.enqueue(context.Background(), "first", func(context.Context) error {
 		close(firstStarted)
 		<-releaseFirst
+		ran.Add(1)
 		return nil
-	})
+	}) {
+		t.Fatal("first enqueue failed")
+	}
 
 	select {
 	case <-firstStarted:
@@ -31,121 +33,96 @@ func TestTelegramStoreOpQueueFullStillSerializesOps(t *testing.T) {
 	}
 
 	for i := 0; i < 128; i++ {
-		q.enqueue(context.Background(), "buffered", func(context.Context) error {
+		if !q.enqueue(context.Background(), "buffered", func(context.Context) error {
+			ran.Add(1)
 			return nil
-		})
+		}) {
+			t.Fatalf("buffered enqueue %d failed before queue was full", i)
+		}
 	}
 
+	finalRan := atomic.Bool{}
+	done := make(chan bool, 1)
 	go func() {
-		q.enqueue(context.Background(), "final", func(context.Context) error {
-			close(finalRan)
-			return nil
-		})
-		close(finalEnqueued)
-	}()
-
-	select {
-	case <-finalEnqueued:
-		t.Fatal("final enqueue returned while queue was full")
-	case <-time.After(100 * time.Millisecond):
-	}
-
-	select {
-	case <-finalRan:
-		t.Fatal("final op ran before queued ops drained")
-	case <-time.After(100 * time.Millisecond):
-	}
-
-	close(releaseFirst)
-
-	select {
-	case <-finalEnqueued:
-	case <-time.After(5 * time.Second):
-		t.Fatal("final enqueue did not complete after queue space freed")
-	}
-
-	drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	q.closeAndWait(drainCtx)
-
-	select {
-	case <-finalRan:
-	default:
-		t.Fatal("final op did not finish before closeAndWait returned")
-	}
-}
-
-func TestTelegramStoreOpQueueCloseDoesNotRunBlockedEnqueueInline(t *testing.T) {
-	mgr := &telegramSessionMgr{store: &session.NoopStore{}}
-	q := newTelegramStoreOpQueue(mgr, "session-1")
-
-	firstStarted := make(chan struct{})
-	releaseFirst := make(chan struct{})
-	q.enqueue(context.Background(), "first", func(context.Context) error {
-		close(firstStarted)
-		<-releaseFirst
-		return nil
-	})
-
-	select {
-	case <-firstStarted:
-	case <-time.After(5 * time.Second):
-		t.Fatal("first op did not start")
-	}
-
-	for i := 0; i < 128; i++ {
-		q.enqueue(context.Background(), "buffered", func(context.Context) error { return nil })
-	}
-
-	var finalRan atomic.Bool
-	finalReturned := make(chan struct{})
-	go func() {
-		q.enqueue(context.Background(), "final", func(context.Context) error {
+		done <- q.enqueue(context.Background(), "final", func(context.Context) error {
 			finalRan.Store(true)
 			return nil
 		})
-		close(finalReturned)
 	}()
 
 	select {
-	case <-finalReturned:
-		t.Fatal("final enqueue returned while queue was full")
+	case ok := <-done:
+		if ok {
+			t.Fatal("full queue enqueue unexpectedly succeeded")
+		}
 	case <-time.After(100 * time.Millisecond):
+		t.Fatal("full queue enqueue blocked")
 	}
-
-	closeCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	if q.closeAndWait(closeCtx) {
-		t.Fatal("closeAndWait reported a full drain while first op was blocked")
-	}
-
-	select {
-	case <-finalReturned:
-		t.Fatal("blocked enqueue returned before queue space was available")
-	default:
+	if !q.isDegraded() {
+		t.Fatal("queue was not marked degraded after saturation")
 	}
 	if finalRan.Load() {
-		t.Fatal("blocked enqueue op ran inline during close")
+		t.Fatal("degraded enqueue ran callback")
 	}
 
-	q.enqueue(context.Background(), "after-close", func(context.Context) error {
-		t.Fatal("enqueue after close should not run")
+	close(releaseFirst)
+	drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if !q.closeAndWait(drainCtx) {
+		t.Fatal("queue did not drain")
+	}
+	if ran.Load() != 1 {
+		t.Fatalf("degraded queue drained buffered callbacks; ran=%d want only first callback", ran.Load())
+	}
+}
+
+func TestTelegramStoreOpQueueCanceledContextDegradesWithoutBlocking(t *testing.T) {
+	mgr := &telegramSessionMgr{store: &session.NoopStore{}}
+	q := newTelegramStoreOpQueue(mgr, "session-1")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	ok := q.enqueue(ctx, "canceled", func(context.Context) error {
+		t.Fatal("canceled enqueue callback ran")
 		return nil
 	})
+	if ok {
+		t.Fatal("canceled enqueue succeeded")
+	}
+	if !q.isDegraded() {
+		t.Fatal("queue was not marked degraded after canceled enqueue")
+	}
 
-	close(releaseFirst)
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer drainCancel()
 	if !q.closeAndWait(drainCtx) {
-		t.Fatal("queue did not drain after releasing first op")
+		t.Fatal("queue did not drain")
 	}
+}
 
-	select {
-	case <-finalReturned:
-	case <-time.After(5 * time.Second):
-		t.Fatal("blocked enqueue did not return after queue space freed")
+func TestTelegramStoreOpQueueCloseSemantics(t *testing.T) {
+	mgr := &telegramSessionMgr{store: &session.NoopStore{}}
+	q := newTelegramStoreOpQueue(mgr, "session-1")
+
+	var ran atomic.Bool
+	if !q.enqueue(context.Background(), "op", func(context.Context) error {
+		ran.Store(true)
+		return nil
+	}) {
+		t.Fatal("enqueue failed")
 	}
-	if !finalRan.Load() {
-		t.Fatal("blocked enqueue op did not run through queue")
+	drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if !q.closeAndWait(drainCtx) {
+		t.Fatal("queue did not drain")
+	}
+	if !ran.Load() {
+		t.Fatal("queued op did not run before close")
+	}
+	if q.enqueue(context.Background(), "after-close", func(context.Context) error {
+		t.Fatal("closed queue callback ran")
+		return nil
+	}) {
+		t.Fatal("enqueue after close succeeded")
 	}
 }

@@ -1118,8 +1118,12 @@ func (s *serveServer) Start() error {
 	s.shutdownCh = make(chan struct{})
 	s.shutdownOnce = sync.Once{}
 	s.server = &http.Server{
-		Addr:    fmt.Sprintf("%s:%d", s.cfg.host, s.cfg.port),
-		Handler: s.httpHandler(),
+		Addr:              fmt.Sprintf("%s:%d", s.cfg.host, s.cfg.port),
+		Handler:           s.httpHandler(),
+		ReadHeaderTimeout: serveReadHeaderTimeout,
+		IdleTimeout:       serveIdleTimeout,
+		// Do not set server-wide WriteTimeout: long-lived SSE streams are valid.
+		// Streaming handlers apply per-write deadlines instead.
 	}
 
 	if s.cfg.ui {
