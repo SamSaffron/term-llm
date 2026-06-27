@@ -1748,7 +1748,7 @@ func TestJobsV2ExecuteRunRetriesFinishRunAfterTransientDBLock(t *testing.T) {
 					return jobsV2RunResult{}, err
 				}
 				go func() {
-					time.Sleep(70 * time.Millisecond)
+					time.Sleep(250 * time.Millisecond)
 					_ = tx.Rollback()
 					_ = lockDB.Close()
 					close(lockReleased)
