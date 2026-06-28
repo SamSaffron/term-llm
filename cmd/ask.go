@@ -148,6 +148,15 @@ func init() {
 	rootCmd.AddCommand(askCmd)
 }
 
+func persistAskAssistantResponse(ctx context.Context, store session.Store, sess *session.Session, assistantMsg llm.Message, durationMs int64, reasoningCfg config.ReasoningConfig) error {
+	sessionMsg := session.NewMessageWithReasoningPolicy(sess.ID, assistantMsg, -1, reasoningCfg)
+	sessionMsg.DurationMs = durationMs
+	if err := store.AddMessage(ctx, sess.ID, sessionMsg); err != nil {
+		return fmt.Errorf("persist assistant response: %w", err)
+	}
+	return nil
+}
+
 func runAsk(cmd *cobra.Command, args []string) error {
 	// Extract @agent from args if present
 	atAgent, filteredArgs := ExtractAgentFromArgs(args)
@@ -605,13 +614,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		// Set up response callback to save assistant message immediately (before tool execution)
 		// This ensures the message is persisted even if tool execution fails/crashes
 		persistResponseCompleted = func(ctx context.Context, turnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
-			// Calculate duration from stream start
-			durationMs := time.Since(turnStartTime).Milliseconds()
-
-			sessionMsg := session.NewMessageWithReasoningPolicy(sess.ID, assistantMsg, -1, reasoningPersistenceCfg)
-			sessionMsg.DurationMs = durationMs
-			_ = store.AddMessage(ctx, sess.ID, sessionMsg)
-			return nil
+			return persistAskAssistantResponse(ctx, store, sess, assistantMsg, time.Since(turnStartTime).Milliseconds(), reasoningPersistenceCfg)
 		}
 
 		// Set up turn callback for tool result messages and metrics
