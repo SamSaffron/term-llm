@@ -211,6 +211,8 @@ func (r *responseRun) appendEventLocked(event string, payload map[string]any, te
 
 	data, err := json.Marshal(payload)
 	if err != nil {
+		r.lastSequenceNumber--
+		delete(payload, "sequence_number")
 		return err
 	}
 
@@ -290,6 +292,7 @@ func (r *responseRun) appendTextDeltaEvent(outputIndex int, delta string) error 
 
 	data, err := encodeTextDeltaPayload(outputIndex, delta, r.lastSequenceNumber)
 	if err != nil {
+		r.lastSequenceNumber--
 		return err
 	}
 

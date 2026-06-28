@@ -2249,6 +2249,81 @@ async function testResumeActiveResponseRecoversFromSnapshotBeforeReplaying() {
   pass(name);
 }
 
+async function testResumeActiveResponseRepairsSequenceGapWithSnapshot() {
+  const name = 'resumeActiveResponse repairs replay sequence gaps with snapshot';
+  const responseId = 'resp_gap_repair';
+  const harness = createHarness({
+    responseId,
+    snapshotPayload: {
+      id: responseId,
+      status: 'completed',
+      last_sequence_number: 9,
+      recovery: {
+        sequence_number: 9,
+        messages: [
+          { id: 'assistant-recovered', role: 'assistant', content: 'complete recovered answer', created: 1001 },
+        ],
+      },
+    },
+    eventsBody: [
+      'id: 7\n',
+      'event: response.output_text.delta\n',
+      'data: {"delta":"tail only","sequence_number":7}\n\n',
+      'id: 8\n',
+      'event: response.output_text.delta\n',
+      'data: {"delta":" should not apply","sequence_number":8}\n\n',
+      'id: 9\n',
+      'event: response.completed\n',
+      `data: {"response":{"id":"${responseId}","model":"test-model","status":"completed"},"sequence_number":9}\n\n`,
+      'data: [DONE]\n\n',
+    ].join(''),
+  });
+
+  const { app, state, fetchCalls, cleanup } = harness;
+  const session = {
+    id: 'session_gap_repair',
+    title: 'Gap repair',
+    messages: [
+      { id: 'msg_user_local', role: 'user', content: 'go', created: 1000 },
+    ],
+    activeResponseId: responseId,
+    lastSequenceNumber: 4,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+
+  await app.resumeActiveResponse(session, { responseId });
+
+  const eventsCall = fetchCalls.find((call) => call.url.startsWith(`/ui/v1/responses/${responseId}/events?after=`));
+  if (!eventsCall || !eventsCall.url.endsWith('after=4')) {
+    fail(name, 'expected replay request from local sequence 4', eventsCall ? eventsCall.url : JSON.stringify(fetchCalls));
+    await cleanup();
+    return;
+  }
+  const snapshotCall = fetchCalls.find((call) => call.url === `/ui/v1/responses/${responseId}`);
+  if (!snapshotCall) {
+    fail(name, 'expected snapshot fetch after detecting sequence gap', JSON.stringify(fetchCalls));
+    await cleanup();
+    return;
+  }
+  const assistantMessages = session.messages.filter((message) => message.role === 'assistant');
+  if (assistantMessages.length !== 1 || assistantMessages[0].content !== 'complete recovered answer') {
+    fail(name, 'expected gapped replay tail to be discarded in favor of snapshot', JSON.stringify(session.messages));
+    await cleanup();
+    return;
+  }
+  if (session.lastSequenceNumber !== 0) {
+    // completed snapshot clears active tracking, which resets the replay cursor.
+    fail(name, `lastSequenceNumber = ${session.lastSequenceNumber}, want 0 after completed snapshot`);
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
 async function testRecoverySnapshotClearsSyntheticPendingInterjectionByText() {
   const name = 'recovery snapshot clears pending interjection tracked under synthetic id';
   const responseId = 'resp_snapshot_interjection_cleanup';
@@ -4739,6 +4814,7 @@ function testCompletedResponseClearsUnappliedQueuedEffort() {
   await testDrainInterruptQueueAfterResumeCompletes();
   await testDrainInterruptQueueIgnoresOtherSessionEntries();
   await testResumeActiveResponseRecoversFromSnapshotBeforeReplaying();
+  await testResumeActiveResponseRepairsSequenceGapWithSnapshot();
   await testRecoverySnapshotClearsSyntheticPendingInterjectionByText();
   await testRecoverySnapshotDoesNotDuplicateOptimisticInterjection();
   await testFunctionCallArgumentDeltasFillToolPrompt();

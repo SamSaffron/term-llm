@@ -1125,6 +1125,11 @@ const consumeResponseStream = async (stream, session, streamState, options = {})
   const sessionId = String(session?.id || '').trim();
   const expectedResponseId = String(options.responseId || '').trim();
 
+  const eventSequenceNumber = (payload) => {
+    const seq = Number(payload?.sequence_number);
+    return Number.isFinite(seq) && seq > 0 ? seq : 0;
+  };
+
   const streamIsCurrent = () => {
     if (generation !== state.streamGeneration) return false;
     const currentSessionId = state.currentStreamSessionId;
@@ -1163,7 +1168,27 @@ const consumeResponseStream = async (stream, session, streamState, options = {})
       stale = true;
       return false;
     }
-    const result = applyResponseStreamEvent(session, streamState, event, payload);
+    const seq = eventSequenceNumber(payload);
+    const currentSeq = Number(session.lastSequenceNumber || 0);
+    if (seq > currentSeq + 1) {
+      terminalError = {
+        message: `response event stream gap: expected sequence ${currentSeq + 1}, received ${seq}`,
+        recoverableStreamGap: true,
+      };
+      return false;
+    }
+
+    let result;
+    try {
+      result = applyResponseStreamEvent(session, streamState, event, payload);
+    } catch (err) {
+      session.lastSequenceNumber = currentSeq;
+      terminalError = {
+        message: err?.message || 'response event projection failed',
+        recoverableStreamApplyFailure: true,
+      };
+      return false;
+    }
     if (result?.terminal) {
       sawTerminal = true;
     }
@@ -1442,6 +1467,25 @@ const resumeActiveResponseInner = async (session, responseId, options) => {
       if (result.stale) {
         setStreaming(Boolean(state.currentStreamResponseId));
         return false;
+      }
+      if (result.error?.recoverableStreamGap || result.error?.recoverableStreamApplyFailure) {
+        const sequenceBeforeRecovery = Number(session.lastSequenceNumber || 0);
+        try {
+          const snapshot = await recoverResponseStateFromSnapshot(session, responseId);
+          streamState = createResponseStreamState(session);
+          if (snapshot?.status !== 'in_progress') {
+            setStreaming(Boolean(state.currentStreamResponseId));
+            return true;
+          }
+          if (Number(session.lastSequenceNumber || 0) > sequenceBeforeRecovery) {
+            continue;
+          }
+        } catch (snapshotErr) {
+          if (snapshotErr?.status === 401) {
+            handleAuthFailure();
+            return false;
+          }
+        }
       }
       if (session.activeResponseId !== responseId) {
         setStreaming(Boolean(state.currentStreamResponseId));

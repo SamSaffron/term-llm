@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
@@ -29,6 +30,42 @@ func TestEncodeTextDeltaPayloadMatchesJSONMarshalForInvalidUTF8(t *testing.T) {
 	}
 	if got["output_index"] != float64(2) || got["sequence_number"] != float64(7) {
 		t.Fatalf("payload = %#v, want output_index=2 sequence_number=7", got)
+	}
+}
+
+func TestResponseRunAppendEventMarshalErrorDoesNotBurnSequence(t *testing.T) {
+	run := newResponseRun("resp_marshal_gap", "sess_test", "", "mock", time.Now().Unix(), func() {})
+
+	if err := run.appendEvent("response.created", map[string]any{"ok": true}); err != nil {
+		t.Fatalf("append initial event: %v", err)
+	}
+	if err := run.appendEvent("response.bad", map[string]any{"bad": math.Inf(1)}); err == nil {
+		t.Fatal("appendEvent with non-marshalable payload succeeded, want error")
+	}
+	if err := run.appendEvent("response.phase", map[string]any{"text": "after"}); err != nil {
+		t.Fatalf("append event after marshal error: %v", err)
+	}
+
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	if run.lastSequenceNumber != 2 {
+		t.Fatalf("lastSequenceNumber = %d, want 2", run.lastSequenceNumber)
+	}
+	if len(run.events) != 2 {
+		t.Fatalf("events = %d, want 2", len(run.events))
+	}
+	for i, ev := range run.events {
+		want := int64(i + 1)
+		if ev.Sequence != want {
+			t.Fatalf("event[%d].Sequence = %d, want %d", i, ev.Sequence, want)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(ev.Data, &payload); err != nil {
+			t.Fatalf("event[%d] payload unmarshal: %v", i, err)
+		}
+		if payload["sequence_number"] != float64(want) {
+			t.Fatalf("event[%d] payload sequence_number = %#v, want %d", i, payload["sequence_number"], want)
+		}
 	}
 }
 
