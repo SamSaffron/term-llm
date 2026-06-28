@@ -6,12 +6,15 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
 
+const approvalRepoIDPrefixLen = 16
+
 // ProjectApprovals stores per-project approval decisions.
-// Approvals are persisted to ~/.config/term-llm/projects/<repo-hash>.yaml
+// Approvals are persisted to ~/.config/term-llm/projects/<repo-slug>/<context-slug>-<short-hash>.yaml
 type ProjectApprovals struct {
 	RepoRoot      string    `yaml:"repo_root"`
 	RepoName      string    `yaml:"repo_name"`
@@ -39,6 +42,56 @@ func getProjectsDir() (string, error) {
 	return filepath.Join(configDir, "term-llm", "projects"), nil
 }
 
+func projectApprovalsFilePath(repoRoot string) (string, error) {
+	projectsDir, err := getProjectsDir()
+	if err != nil {
+		return "", err
+	}
+
+	absRoot, err := filepath.Abs(repoRoot)
+	if err != nil {
+		absRoot = repoRoot
+	}
+	absRoot = filepath.Clean(absRoot)
+
+	repoSlug := slugifyApprovalPathPart(filepath.Base(absRoot))
+	if repoSlug == "" {
+		repoSlug = "repo"
+	}
+
+	contextSlug := slugifyApprovalPathPart(filepath.Base(filepath.Dir(absRoot)))
+	if contextSlug == "" {
+		contextSlug = "root"
+	}
+
+	repoID := GetGitRepoID(absRoot)
+	shortID := repoID
+	if len(shortID) > approvalRepoIDPrefixLen {
+		shortID = shortID[:approvalRepoIDPrefixLen]
+	}
+
+	return filepath.Join(projectsDir, repoSlug, contextSlug+"-"+shortID+".yaml"), nil
+}
+
+func slugifyApprovalPathPart(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	lastDash := false
+	for _, r := range value {
+		switch {
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			b.WriteRune(r)
+			lastDash = false
+		case r == '-' || r == '_' || r == '.' || unicode.IsSpace(r):
+			if b.Len() > 0 && !lastDash {
+				b.WriteByte('-')
+				lastDash = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
 // LoadProjectApprovals loads or creates approval data for a git repository.
 // Returns nil if the repo root is empty or invalid.
 func LoadProjectApprovals(repoRoot string) (*ProjectApprovals, error) {
@@ -46,13 +99,10 @@ func LoadProjectApprovals(repoRoot string) (*ProjectApprovals, error) {
 		return nil, nil
 	}
 
-	repoID := GetGitRepoID(repoRoot)
-	projectsDir, err := getProjectsDir()
+	filePath, err := projectApprovalsFilePath(repoRoot)
 	if err != nil {
 		return nil, err
 	}
-
-	filePath := filepath.Join(projectsDir, repoID+".yaml")
 
 	pa := &ProjectApprovals{
 		RepoRoot:      repoRoot,

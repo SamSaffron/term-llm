@@ -506,19 +506,147 @@ func TestProjectApprovals_StorageLocation(t *testing.T) {
 		t.Fatalf("ApproveRead failed: %v", err)
 	}
 
-	// Check that file was created in expected location
-	projectsDir := filepath.Join(configDir, "term-llm", "projects")
-	entries, err := os.ReadDir(projectsDir)
+	repoSlug := slugifyApprovalPathPart(filepath.Base(tempDir))
+	contextSlug := slugifyApprovalPathPart(filepath.Base(filepath.Dir(tempDir)))
+	wantPath := filepath.Join(
+		configDir,
+		"term-llm",
+		"projects",
+		repoSlug,
+		contextSlug+"-"+GetGitRepoID(tempDir)[:approvalRepoIDPrefixLen]+".yaml",
+	)
+	if pa.filePath != wantPath {
+		t.Fatalf("approval file path = %q, want %q", pa.filePath, wantPath)
+	}
+
+	if _, err := os.Stat(wantPath); err != nil {
+		t.Fatalf("expected approval file at %s: %v", wantPath, err)
+	}
+}
+
+func TestProjectApprovals_StorageLocationHumanReadable(t *testing.T) {
+	configDir := t.TempDir()
+
+	oldXDG := os.Getenv("XDG_CONFIG_HOME")
+	os.Setenv("XDG_CONFIG_HOME", configDir)
+	defer os.Setenv("XDG_CONFIG_HOME", oldXDG)
+
+	repoRoot := filepath.Join(string(filepath.Separator), "home", "dev", "Source", "term-llm")
+	got, err := projectApprovalsFilePath(repoRoot)
 	if err != nil {
-		t.Fatalf("failed to read projects dir: %v", err)
+		t.Fatalf("projectApprovalsFilePath failed: %v", err)
 	}
 
-	if len(entries) != 1 {
-		t.Errorf("expected 1 file in projects dir, got %d", len(entries))
+	want := filepath.Join(
+		configDir,
+		"term-llm",
+		"projects",
+		"term-llm",
+		"source-"+GetGitRepoID(repoRoot)[:approvalRepoIDPrefixLen]+".yaml",
+	)
+	if got != want {
+		t.Fatalf("projectApprovalsFilePath = %q, want %q", got, want)
+	}
+}
+
+func TestSlugifyApprovalPathPart(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "empty", value: "", want: ""},
+		{name: "all punctuation", value: "!!!", want: ""},
+		{name: "trim and collapse separators", value: "  Foo__Bar...Baz  ", want: "foo-bar-baz"},
+		{name: "leading trailing separators", value: "---foo---", want: "foo"},
+		{name: "spaces", value: "My Project Name", want: "my-project-name"},
+		{name: "unicode letters", value: "Café Déjà Vu", want: "café-déjà-vu"},
+		{name: "unsupported punctuation removed", value: "foo+bar/baz", want: "foobarbaz"},
 	}
 
-	// File should have .yaml extension
-	if len(entries) > 0 && filepath.Ext(entries[0].Name()) != ".yaml" {
-		t.Errorf("expected .yaml file, got %s", entries[0].Name())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := slugifyApprovalPathPart(tt.value); got != tt.want {
+				t.Fatalf("slugifyApprovalPathPart(%q) = %q, want %q", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProjectApprovals_StorageLocationRootFallback(t *testing.T) {
+	configDir := t.TempDir()
+
+	oldXDG := os.Getenv("XDG_CONFIG_HOME")
+	os.Setenv("XDG_CONFIG_HOME", configDir)
+	defer os.Setenv("XDG_CONFIG_HOME", oldXDG)
+
+	repoRoot := filepath.Clean(string(filepath.Separator))
+	absRoot, err := filepath.Abs(repoRoot)
+	if err != nil {
+		t.Fatalf("filepath.Abs failed: %v", err)
+	}
+	absRoot = filepath.Clean(absRoot)
+
+	got, err := projectApprovalsFilePath(repoRoot)
+	if err != nil {
+		t.Fatalf("projectApprovalsFilePath failed: %v", err)
+	}
+
+	want := filepath.Join(
+		configDir,
+		"term-llm",
+		"projects",
+		"repo",
+		"root-"+GetGitRepoID(absRoot)[:approvalRepoIDPrefixLen]+".yaml",
+	)
+	if got != want {
+		t.Fatalf("projectApprovalsFilePath = %q, want %q", got, want)
+	}
+}
+
+func TestProjectApprovals_StorageLocationIdenticalSlugsDistinctFiles(t *testing.T) {
+	configDir := t.TempDir()
+
+	oldXDG := os.Getenv("XDG_CONFIG_HOME")
+	os.Setenv("XDG_CONFIG_HOME", configDir)
+	defer os.Setenv("XDG_CONFIG_HOME", oldXDG)
+
+	root := t.TempDir()
+	repoRoot1 := filepath.Join(root, "one", "Source", "term-llm")
+	repoRoot2 := filepath.Join(root, "two", "Source", "term-llm")
+
+	got1, err := projectApprovalsFilePath(repoRoot1)
+	if err != nil {
+		t.Fatalf("projectApprovalsFilePath(%q) failed: %v", repoRoot1, err)
+	}
+	got2, err := projectApprovalsFilePath(repoRoot2)
+	if err != nil {
+		t.Fatalf("projectApprovalsFilePath(%q) failed: %v", repoRoot2, err)
+	}
+
+	if got1 == got2 {
+		t.Fatalf("projectApprovalsFilePath produced same path for distinct repos with identical slugs: %q", got1)
+	}
+
+	want1 := filepath.Join(
+		configDir,
+		"term-llm",
+		"projects",
+		"term-llm",
+		"source-"+GetGitRepoID(repoRoot1)[:approvalRepoIDPrefixLen]+".yaml",
+	)
+	if got1 != want1 {
+		t.Fatalf("projectApprovalsFilePath(%q) = %q, want %q", repoRoot1, got1, want1)
+	}
+
+	want2 := filepath.Join(
+		configDir,
+		"term-llm",
+		"projects",
+		"term-llm",
+		"source-"+GetGitRepoID(repoRoot2)[:approvalRepoIDPrefixLen]+".yaml",
+	)
+	if got2 != want2 {
+		t.Fatalf("projectApprovalsFilePath(%q) = %q, want %q", repoRoot2, got2, want2)
 	}
 }

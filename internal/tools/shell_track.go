@@ -345,18 +345,24 @@ func gitIgnoredCandidates(ctx context.Context, root string, paths []string) map[
 		return ignored
 	}
 
+	canonicalRoot := canonicalPathForGitRel(root)
 	relToAbs := make(map[string]string, len(paths))
 	var input strings.Builder
 	for _, path := range paths {
-		rel := GetRelativePath(path, root)
-		if rel == path || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
-			continue
+		cleanPath := filepath.Clean(path)
+		rel := GetRelativePath(cleanPath, root)
+		if rel == cleanPath || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+			canonicalPath := canonicalPathForGitRel(cleanPath)
+			rel = GetRelativePath(canonicalPath, canonicalRoot)
+			if rel == canonicalPath || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+				continue
+			}
 		}
 		rel = filepath.ToSlash(rel)
 		if _, seen := relToAbs[rel]; seen {
 			continue
 		}
-		relToAbs[rel] = filepath.Clean(path)
+		relToAbs[rel] = cleanPath
 		input.WriteString(rel)
 		input.WriteByte('\x00')
 	}
@@ -385,6 +391,35 @@ func gitIgnoredCandidates(ctx context.Context, root string, paths []string) map[
 		}
 	}
 	return ignored
+}
+
+func canonicalPathForGitRel(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	abs = filepath.Clean(abs)
+
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return filepath.Clean(resolved)
+	}
+
+	var missing []string
+	probe := abs
+	for {
+		parent := filepath.Dir(probe)
+		if parent == probe {
+			return abs
+		}
+		missing = append(missing, filepath.Base(probe))
+		probe = parent
+		if resolved, err := filepath.EvalSymlinks(probe); err == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missing[i])
+			}
+			return filepath.Clean(resolved)
+		}
+	}
 }
 
 func filterGitIgnoredCandidates(ctx context.Context, root string, paths []string) []string {

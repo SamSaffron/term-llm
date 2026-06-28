@@ -457,6 +457,60 @@ func TestShellToolGitFallbackOversizedCleanTrackedFile(t *testing.T) {
 	}
 }
 
+func TestCanonicalPathForGitRelResolvesExistingAncestor(t *testing.T) {
+	dir := t.TempDir()
+	realParent := filepath.Join(dir, "real")
+	if err := os.MkdirAll(realParent, 0755); err != nil {
+		t.Fatal(err)
+	}
+	linkParent := filepath.Join(dir, "link")
+	if err := os.Symlink(realParent, linkParent); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	resolvedParent, err := filepath.EvalSymlinks(realParent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := canonicalPathForGitRel(filepath.Join(linkParent, "missing", "file.txt"))
+	want := filepath.Join(resolvedParent, "missing", "file.txt")
+	if got != want {
+		t.Fatalf("canonicalPathForGitRel through symlink with missing leaf = %q, want %q", got, want)
+	}
+}
+
+func TestGitIgnoredCandidatesCanonicalizesSymlinkedRoot(t *testing.T) {
+	dir := t.TempDir()
+	realRepo := filepath.Join(dir, "real-repo")
+	if err := os.MkdirAll(realRepo, 0755); err != nil {
+		t.Fatal(err)
+	}
+	linkRepo := filepath.Join(dir, "link-repo")
+	if err := os.Symlink(realRepo, linkRepo); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", linkRepo}, args...)...)
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git unavailable, skipping: %v (%s)", err, out)
+		}
+	}
+	runGit("init")
+	if err := os.WriteFile(filepath.Join(realRepo, ".gitignore"), []byte("ignored.log\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ignoredPath := filepath.Join(realRepo, "ignored.log")
+	ignored := gitIgnoredCandidates(context.Background(), linkRepo, []string{ignoredPath})
+	if !ignored[filepath.Clean(ignoredPath)] {
+		t.Fatalf("gitIgnoredCandidates did not mark canonicalized ignored path; got %#v", ignored)
+	}
+}
+
 func TestShellToolSkipsGitIgnoredAffectedPathMatches(t *testing.T) {
 	dir := t.TempDir()
 	runGit := func(args ...string) {
