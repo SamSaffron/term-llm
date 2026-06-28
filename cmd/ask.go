@@ -608,10 +608,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			// Calculate duration from stream start
 			durationMs := time.Since(turnStartTime).Milliseconds()
 
-			sessionMsg := session.NewMessageWithReasoningPolicy(sess.ID, assistantMsg, -1, reasoningPersistenceCfg)
-			sessionMsg.DurationMs = durationMs
-			_ = store.AddMessage(ctx, sess.ID, sessionMsg)
-			return nil
+			return persistAskAssistantResponse(ctx, store, sess, assistantMsg, durationMs, reasoningPersistenceCfg)
 		}
 
 		// Set up turn callback for tool result messages and metrics
@@ -644,12 +641,14 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	turnCompletedCallback := persistTurnCompleted
 	if outputTool != nil {
 		responseCompletedCallback = func(ctx context.Context, turnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
+			if persistResponseCompleted != nil {
+				if err := persistResponseCompleted(ctx, turnIndex, assistantMsg, metrics); err != nil {
+					return err
+				}
+			}
 			outputToolMessagesMu.Lock()
 			outputToolMessages = append(outputToolMessages, assistantMsg)
 			outputToolMessagesMu.Unlock()
-			if persistResponseCompleted != nil {
-				return persistResponseCompleted(ctx, turnIndex, assistantMsg, metrics)
-			}
 			return nil
 		}
 		turnCompletedCallback = func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
@@ -1047,6 +1046,12 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+func persistAskAssistantResponse(ctx context.Context, store session.Store, sess *session.Session, assistantMsg llm.Message, durationMs int64, reasoningPersistenceCfg config.ReasoningConfig) error {
+	sessionMsg := session.NewMessageWithReasoningPolicy(sess.ID, assistantMsg, -1, reasoningPersistenceCfg)
+	sessionMsg.DurationMs = durationMs
+	return store.AddMessage(ctx, sess.ID, sessionMsg)
 }
 
 func ensureOutputToolCaptured(ctx context.Context, provider llm.Provider, registry *llm.ToolRegistry, baseReq llm.Request, outputTool *tools.SetOutputTool, assistantText string) error {

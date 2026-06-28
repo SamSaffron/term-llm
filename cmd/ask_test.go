@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +13,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
 
@@ -212,6 +215,114 @@ func TestAskReasoningDoesNotPanicAfterModelCopy(t *testing.T) {
 
 	if got := model.phase; got != "Reading context" {
 		t.Fatalf("expected reasoning to keep/update status phase, got %q", got)
+	}
+}
+
+type askFailOnceMessageStore struct {
+	session.NoopStore
+
+	failErr                    error
+	assistantFailuresRemaining int
+	assistantAttempts          int
+	messages                   []session.Message
+}
+
+func (s *askFailOnceMessageStore) AddMessage(ctx context.Context, sessionID string, msg *session.Message) error {
+	if msg.Role == llm.RoleAssistant {
+		s.assistantAttempts++
+		if s.assistantFailuresRemaining > 0 {
+			s.assistantFailuresRemaining--
+			return s.failErr
+		}
+	}
+
+	copied := *msg
+	copied.Parts = append([]llm.Part(nil), msg.Parts...)
+	s.messages = append(s.messages, copied)
+	return nil
+}
+
+func TestAskResponsePersistenceErrorRedeliversAssistantToTurnCallback(t *testing.T) {
+	storeErr := errors.New("sqlite busy")
+	store := &askFailOnceMessageStore{
+		failErr:                    storeErr,
+		assistantFailuresRemaining: 1,
+	}
+	sess := &session.Session{ID: "ask-persistence-test"}
+	reasoningPersistenceCfg := config.DefaultReasoningConfig()
+	turnStartTime := time.Now()
+
+	tool := &progressiveTestTool{}
+	toolSpec := tool.Spec()
+	registry := llm.NewToolRegistry()
+	registry.Register(tool)
+
+	provider := llm.NewMockProvider("mock")
+	provider.AddTurn(llm.MockTurn{
+		Text: "I'll count.",
+		ToolCalls: []llm.ToolCall{{
+			ID:        "call-1",
+			Name:      toolSpec.Name,
+			Arguments: json.RawMessage(`{}`),
+		}},
+	})
+
+	engine := llm.NewEngine(provider, registry)
+	engine.SetResponseCompletedCallback(func(ctx context.Context, turnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
+		durationMs := time.Since(turnStartTime).Milliseconds()
+		return persistAskAssistantResponse(ctx, store, sess, assistantMsg, durationMs, reasoningPersistenceCfg)
+	})
+	engine.SetTurnCompletedCallback(func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
+		for _, msg := range turnMessages {
+			sessionMsg := session.NewMessageWithReasoningPolicy(sess.ID, msg, -1, reasoningPersistenceCfg)
+			if msg.Role == llm.RoleAssistant {
+				sessionMsg.DurationMs = time.Since(turnStartTime).Milliseconds()
+			}
+			_ = store.AddMessage(ctx, sess.ID, sessionMsg)
+		}
+		return nil
+	})
+
+	stream, err := engine.Stream(context.Background(), llm.Request{
+		Messages: []llm.Message{llm.UserText("test")},
+		Tools:    []llm.ToolSpec{toolSpec},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+
+	for {
+		_, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			t.Fatalf("Recv() error = %v", recvErr)
+		}
+	}
+
+	if store.assistantAttempts != 2 {
+		t.Fatalf("assistant AddMessage attempts = %d, want response failure plus turn retry", store.assistantAttempts)
+	}
+
+	var gotAssistant bool
+	var gotToolResult bool
+	for _, msg := range store.messages {
+		switch msg.Role {
+		case llm.RoleAssistant:
+			if msg.TextContent == "I'll count." {
+				gotAssistant = true
+			}
+		case llm.RoleTool:
+			gotToolResult = true
+		}
+	}
+	if !gotAssistant {
+		t.Fatalf("assistant response was not retried through TurnCompletedCallback; persisted messages: %+v", store.messages)
+	}
+	if !gotToolResult {
+		t.Fatalf("tool result was not persisted; persisted messages: %+v", store.messages)
 	}
 }
 
