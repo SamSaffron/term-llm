@@ -2230,7 +2230,7 @@ func (s *SQLiteStore) ReplaceMessages(ctx context.Context, sessionID string, mes
 		// activity from the persisted rows after the rewrite so unchanged prefixes keep
 		// their original created_at values instead of freshly rebuilt snapshot times.
 		now := time.Now()
-		if err := s.updateReplaceMessagesSessionMetadata(ctx, tx, sessionID, now); err != nil {
+		if err := s.updateReplaceMessagesSessionMetadata(ctx, tx, sessionID, now, true); err != nil {
 			return err
 		}
 
@@ -2238,12 +2238,170 @@ func (s *SQLiteStore) ReplaceMessages(ctx context.Context, sessionID string, mes
 	})
 }
 
-func (s *SQLiteStore) updateReplaceMessagesSessionMetadata(ctx context.Context, tx *sql.Tx, sessionID string, now time.Time) error {
+// ReplaceCompactedMessages reconciles the active post-compaction history for a
+// session while preserving pre-compaction scrollback and the compaction boundary.
+// It must only be used with snapshots that start at the current compaction_seq.
+func (s *SQLiteStore) ReplaceCompactedMessages(ctx context.Context, sessionID string, messages []Message) error {
+	partsJSON, err := prepareReplacementMessageParts(messages, s.cfg.StripImageBase64)
+	if err != nil {
+		return err
+	}
+
+	return retryOnBusy(ctx, 5, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin transaction: %w", err)
+		}
+		defer tx.Rollback()
+
+		startSeq, err := s.compactionStartSeq(ctx, tx, sessionID)
+		if err != nil {
+			return err
+		}
+
+		commonPrefix, fullActiveDelete, err := compactedReplacementCommonPrefix(ctx, tx, sessionID, startSeq, messages, partsJSON)
+		if err != nil {
+			return err
+		}
+
+		deleteFrom := startSeq + commonPrefix
+		if fullActiveDelete {
+			commonPrefix = 0
+			deleteFrom = startSeq
+		}
+		if _, err := tx.ExecContext(ctx, "DELETE FROM messages WHERE session_id = ? AND sequence >= ?", sessionID, deleteFrom); err != nil {
+			return fmt.Errorf("delete compacted messages: %w", err)
+		}
+
+		if commonPrefix < len(messages) {
+			insertStmt, err := tx.PrepareContext(ctx, `
+				INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence, compaction_tail)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			if err != nil {
+				return fmt.Errorf("prepare compacted message insert: %w", err)
+			}
+			defer insertStmt.Close()
+
+			for i := commonPrefix; i < len(messages); i++ {
+				msg := messages[i]
+				createdAt := msg.CreatedAt
+				if createdAt.IsZero() {
+					createdAt = time.Now()
+				}
+				_, err = insertStmt.ExecContext(ctx,
+					sessionID, string(msg.Role), partsJSON[i], msg.TextContent, msg.DurationMs, msg.TurnIndex, createdAt, startSeq+i, msg.CompactionTail)
+				if err != nil {
+					return fmt.Errorf("insert compacted message %d: %w", i, err)
+				}
+			}
+		}
+
+		now := time.Now()
+		if err := s.updateReplaceMessagesSessionMetadata(ctx, tx, sessionID, now, false); err != nil {
+			return err
+		}
+
+		return tx.Commit()
+	})
+}
+
+func (s *SQLiteStore) compactionStartSeq(ctx context.Context, tx *sql.Tx, sessionID string) (int, error) {
+	if !s.hasCompactionSeq {
+		return 0, fmt.Errorf("replace compacted messages: compaction boundary unsupported")
+	}
+
+	var startSeq int
+	if s.hasCompactionCount {
+		var compactionCount int
+		err := tx.QueryRowContext(ctx, "SELECT compaction_seq, COALESCE(compaction_count, 0) FROM sessions WHERE id = ?", sessionID).Scan(&startSeq, &compactionCount)
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, ErrNotFound
+		}
+		if err != nil {
+			return 0, fmt.Errorf("load compaction boundary: %w", err)
+		}
+		if startSeq < 0 || (startSeq == 0 && compactionCount <= 0) {
+			return 0, fmt.Errorf("replace compacted messages: session %s has no compaction boundary", sessionID)
+		}
+		return startSeq, nil
+	}
+
+	err := tx.QueryRowContext(ctx, "SELECT compaction_seq FROM sessions WHERE id = ?", sessionID).Scan(&startSeq)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("load compaction boundary: %w", err)
+	}
+	if startSeq < 0 {
+		return 0, fmt.Errorf("replace compacted messages: session %s has no compaction boundary", sessionID)
+	}
+	return startSeq, nil
+}
+
+func compactedReplacementCommonPrefix(ctx context.Context, tx *sql.Tx, sessionID string, startSeq int, desired []Message, desiredPartsJSON []string) (prefix int, fullActiveDelete bool, err error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT sequence, role, parts, text_content, duration_ms, turn_index
+		FROM messages
+		WHERE session_id = ? AND sequence >= ?
+		ORDER BY sequence ASC, id ASC`, sessionID, startSeq)
+	if err != nil {
+		return 0, false, fmt.Errorf("query compacted messages: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var sequence int
+		var role, partsJSON string
+		var textContent sql.NullString
+		var durationMs sql.NullInt64
+		var turnIndex sql.NullInt64
+		if err := rows.Scan(&sequence, &role, &partsJSON, &textContent, &durationMs, &turnIndex); err != nil {
+			return 0, false, fmt.Errorf("scan compacted message: %w", err)
+		}
+		if sequence < startSeq {
+			return 0, true, nil
+		}
+
+		expectedSeq := startSeq + prefix
+		if prefix >= len(desired) {
+			if sequence < expectedSeq {
+				return 0, true, nil
+			}
+			break
+		}
+		if sequence != expectedSeq {
+			if sequence < expectedSeq {
+				return 0, true, nil
+			}
+			break
+		}
+
+		want := desired[prefix]
+		if role != string(want.Role) ||
+			partsJSON != desiredPartsJSON[prefix] ||
+			nullStringValue(textContent) != want.TextContent ||
+			nullInt64Value(durationMs) != want.DurationMs ||
+			int(nullInt64Value(turnIndex)) != want.TurnIndex {
+			break
+		}
+		prefix++
+	}
+	if err := rows.Err(); err != nil {
+		return 0, false, err
+	}
+	return prefix, false, nil
+}
+
+func (s *SQLiteStore) updateReplaceMessagesSessionMetadata(ctx context.Context, tx *sql.Tx, sessionID string, now time.Time, clearCompactionBoundary bool) error {
 	setClauses := []string{
 		"updated_at = ?",
-		"user_turns = (SELECT COUNT(*) FROM messages WHERE session_id = ? AND role = 'user')",
 	}
-	args := []any{now, sessionID}
+	args := []any{now}
+	if clearCompactionBoundary {
+		setClauses = append(setClauses, "user_turns = (SELECT COUNT(*) FROM messages WHERE session_id = ? AND role = 'user')")
+		args = append(args, sessionID)
+	}
 
 	if s.hasLastUserMessageAt {
 		// Preserve existing user-activity semantics: every persisted user row counts,
@@ -2263,11 +2421,13 @@ func (s *SQLiteStore) updateReplaceMessagesSessionMetadata(ctx context.Context, 
 		setClauses = append(setClauses, "last_message_at = (SELECT MAX(created_at) FROM messages WHERE session_id = ? AND role IN ('user', 'assistant')"+visibleTailClause+")")
 		args = append(args, sessionID)
 	}
-	if s.hasCompactionSeq {
-		setClauses = append(setClauses, "compaction_seq = -1")
-	}
-	if s.hasCompactionCount {
-		setClauses = append(setClauses, "compaction_count = 0")
+	if clearCompactionBoundary {
+		if s.hasCompactionSeq {
+			setClauses = append(setClauses, "compaction_seq = -1")
+		}
+		if s.hasCompactionCount {
+			setClauses = append(setClauses, "compaction_count = 0")
+		}
 	}
 
 	args = append(args, sessionID)
