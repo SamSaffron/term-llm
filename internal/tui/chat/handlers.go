@@ -22,6 +22,24 @@ import (
 // before it collapses into a placeholder instead of inline text.
 const pasteCollapseThreshold = 100
 
+func (m *Model) streamCancelTimeoutCmd() tea.Cmd {
+	done := m.streamDone
+	generation := m.streamGeneration
+	return func() tea.Msg {
+		if done == nil {
+			return nil
+		}
+		timer := time.NewTimer(streamCancelMaxWait)
+		defer timer.Stop()
+		select {
+		case <-done:
+			return nil
+		case <-timer.C:
+			return streamCancelTimeoutMsg{done: done, generation: generation}
+		}
+	}
+}
+
 // updateResumeBrowserMode handles updates while the embedded resume browser is active.
 func (m *Model) updateResumeBrowserMode(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -548,7 +566,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			_ = m.engine.DrainInterjection()
 			m.clearPendingInterjectionState()
 
-			return m, m.applyPendingStreamModelSwitch()
+			return m, tea.Batch(m.applyPendingStreamModelSwitch(), m.streamCancelTimeoutCmd())
 		}
 		m.quitting = true
 		// Print stats if enabled
@@ -583,7 +601,7 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.clearPendingInterjectionState()
 
 			m.textarea.Focus()
-			return m, m.applyPendingStreamModelSwitch()
+			return m, tea.Batch(m.applyPendingStreamModelSwitch(), m.streamCancelTimeoutCmd())
 		}
 		// Clear selection if active (before clearing textarea)
 		if m.selection.Active {

@@ -106,6 +106,7 @@ type Model struct {
 	retryStatus           string
 	streamCancelFunc      context.CancelFunc
 	streamDone            chan struct{}       // closed when the engine goroutine exits
+	streamGeneration      uint64              // increments for each stream; used to ignore stale listener messages
 	streamCancelRequested *atomic.Bool        // user requested stream cancellation; wait for stream exit before final cleanup
 	tracker               *ui.ToolTracker     // Tool and segment tracking (shared component)
 	subagentTracker       *ui.SubagentTracker // Subagent progress tracking
@@ -404,13 +405,17 @@ func (m *Model) isStreamCancelRequested() bool {
 	return m.streamCancelRequested.Load()
 }
 
-// streamEventMsg wraps ui.StreamEvent for bubbletea
-type streamEventMsg struct {
-	event ui.StreamEvent
-}
-
 // Messages for tea.Program
 type (
+	// streamEventMsg wraps ui.StreamEvent for bubbletea
+	streamEventMsg struct {
+		event      ui.StreamEvent
+		generation uint64
+	}
+	streamCancelTimeoutMsg struct {
+		done       <-chan struct{}
+		generation uint64
+	}
 	sessionSavedMsg  struct{}
 	sessionLoadedMsg struct {
 		sess     *session.Session
@@ -451,6 +456,7 @@ const (
 	chatRenderThrottleEnv  = "TERM_LLM_CHAT_RENDER_THROTTLE_MS"
 	chatSpinnerIntervalEnv = "TERM_LLM_CHAT_SPINNER_MS"
 	chatDisableMouseEnv    = "TERM_LLM_DISABLE_MOUSE"
+	streamCancelMaxWait    = 3 * time.Second
 )
 
 var readPrimarySelection = clipboard.ReadPrimarySelection
@@ -1408,10 +1414,16 @@ func (m *Model) YoloModeActive() bool {
 }
 
 // WaitStreamDone blocks until the engine streaming goroutine has exited.
-// It is safe to call when no stream was started (no-op).
+// It is safe to call when no stream was started (no-op). Shutdown must not
+// hang forever if a provider/tool ignores cancellation, so the wait is bounded
+// by the same hard stop budget used by the interactive cancel watchdog.
 func (m *Model) WaitStreamDone() {
-	if m.streamDone != nil {
-		<-m.streamDone
+	if m.streamDone == nil {
+		return
+	}
+	select {
+	case <-m.streamDone:
+	case <-time.After(streamCancelMaxWait):
 	}
 }
 
@@ -1450,6 +1462,28 @@ func chatSpinnerFPSFromEnv() time.Duration {
 	return time.Duration(millis) * time.Millisecond
 }
 
+func (m *Model) handleStreamCancelTimeout(msg streamCancelTimeoutMsg) (tea.Model, tea.Cmd) {
+	if msg.done != m.streamDone || msg.generation != m.streamGeneration {
+		return m, nil
+	}
+	if !m.streaming || !m.isStreamCancelRequested() {
+		return m, nil
+	}
+	return m.Update(streamEventMsg{event: ui.ErrorEvent(context.Canceled), generation: msg.generation})
+}
+
+func (m *Model) shouldIgnoreStreamEvent(msg streamEventMsg) bool {
+	if msg.generation != 0 && msg.generation != m.streamGeneration {
+		return true
+	}
+	switch msg.event.Type {
+	case ui.StreamEventDone, ui.StreamEventError:
+		return !m.streaming
+	default:
+		return false
+	}
+}
+
 // Update handles messages
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
@@ -1459,6 +1493,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// inspecting, or browsing embedded views.
 	if keyMsg, ok := msg.(tea.KeyPressMsg); ok && m.isYoloToggleKey(keyMsg) {
 		return m.toggleYoloMode()
+	}
+	if timeoutMsg, ok := msg.(streamCancelTimeoutMsg); ok {
+		return m.handleStreamCancelTimeout(timeoutMsg)
 	}
 
 	// Chat-owned self-scheduling ticks must keep running even while an embedded
@@ -1791,6 +1828,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case streamEventMsg:
 		streamEventStart := time.Now()
 		ev := msg.event
+		if m.shouldIgnoreStreamEvent(msg) {
+			return m, nil
+		}
 		if m.streamPerf != nil {
 			m.streamPerf.tracef("stream_event type=%v", ev.Type)
 		}

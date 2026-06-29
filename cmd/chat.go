@@ -328,9 +328,10 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		if spawnRunner != nil {
 			spawnRunner.Wait()
 		}
-		// Wait for engine stream goroutine to finish before closing store.
-		// Same pattern as spawnRunner — engine callbacks use WithoutCancel
-		// and will fire after stream cancellation.
+		// Wait briefly for the engine stream goroutine before closing the store.
+		// Engine callbacks use WithoutCancel and may fire after stream cancellation,
+		// but the wait is bounded so a provider/tool that ignores cancellation cannot
+		// hang shutdown indefinitely.
 		if m, ok := finalModel.(*chat.Model); ok {
 			m.WaitStreamDone()
 		}

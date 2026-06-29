@@ -478,6 +478,8 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 
 func (m *Model) startStream(content string) tea.Cmd {
 	ctx, cancel := context.WithCancel(m.rootContext())
+	m.streamGeneration++
+	streamGeneration := m.streamGeneration
 	m.streamCancelFunc = cancel
 	m.setStreamCancelRequested(false)
 
@@ -628,14 +630,15 @@ func (m *Model) startStream(content string) tea.Cmd {
 		}()
 
 		// Return initial listen command
-		return m.listenForStreamEventsSync()
+		return m.listenForStreamEventsSync(streamGeneration)
 	}
 }
 
 // listenForStreamEvents returns a command that listens for the next stream event
 func (m *Model) listenForStreamEvents() tea.Cmd {
+	streamGeneration := m.streamGeneration
 	return func() tea.Msg {
-		return m.listenForStreamEventsSync()
+		return m.listenForStreamEventsSync(streamGeneration)
 	}
 }
 
@@ -695,39 +698,42 @@ func (c *streamEventCoalescer) next() (ui.StreamEvent, bool) {
 }
 
 // listenForStreamEventsSync synchronously waits for the next stream event
-func (m *Model) listenForStreamEventsSync() tea.Msg {
+func (m *Model) listenForStreamEventsSync(generation uint64) tea.Msg {
+	mkMsg := func(event ui.StreamEvent) streamEventMsg {
+		return streamEventMsg{event: event, generation: generation}
+	}
 	if co := m.streamCoalescer; co != nil {
 		event, ok := co.next()
 		if !ok {
 			if m.isStreamCancelRequested() {
-				return streamEventMsg{event: ui.ErrorEvent(context.Canceled)}
+				return mkMsg(ui.ErrorEvent(context.Canceled))
 			}
-			return streamEventMsg{event: ui.DoneEvent(0)}
+			return mkMsg(ui.DoneEvent(0))
 		}
 		if m.isStreamCancelRequested() && event.Type == ui.StreamEventDone {
-			return streamEventMsg{event: ui.ErrorEvent(context.Canceled)}
+			return mkMsg(ui.ErrorEvent(context.Canceled))
 		}
-		return streamEventMsg{event: event}
+		return mkMsg(event)
 	}
 
 	if m.streamChan == nil {
 		if m.isStreamCancelRequested() {
-			return streamEventMsg{event: ui.ErrorEvent(context.Canceled)}
+			return mkMsg(ui.ErrorEvent(context.Canceled))
 		}
-		return streamEventMsg{event: ui.DoneEvent(0)}
+		return mkMsg(ui.DoneEvent(0))
 	}
 
 	event, ok := <-m.streamChan
 	if !ok {
 		if m.isStreamCancelRequested() {
-			return streamEventMsg{event: ui.ErrorEvent(context.Canceled)}
+			return mkMsg(ui.ErrorEvent(context.Canceled))
 		}
-		return streamEventMsg{event: ui.DoneEvent(0)}
+		return mkMsg(ui.DoneEvent(0))
 	}
 	if m.isStreamCancelRequested() && event.Type == ui.StreamEventDone {
-		return streamEventMsg{event: ui.ErrorEvent(context.Canceled)}
+		return mkMsg(ui.ErrorEvent(context.Canceled))
 	}
-	return streamEventMsg{event: event}
+	return mkMsg(event)
 }
 
 func (m *Model) buildMessages() []llm.Message {

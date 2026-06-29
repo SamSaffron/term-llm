@@ -869,6 +869,94 @@ func TestHandleKeyMsg_StreamingEscCancelsActiveStream(t *testing.T) {
 	}
 }
 
+func TestUpdate_StreamCancelTimeoutForcesCancelledState(t *testing.T) {
+	m := newTestChatModel(false)
+	done := make(chan struct{})
+	m.streamGeneration = 1
+	m.streaming = true
+	m.streamDone = done
+	m.setStreamCancelRequested(true)
+	m.phase = "Stopping..."
+	m.currentResponse.WriteString("partial answer")
+
+	updated, _ := m.Update(streamCancelTimeoutMsg{done: done, generation: 1})
+	m = updated.(*Model)
+
+	if m.streaming {
+		t.Fatal("expected timeout to clear streaming state")
+	}
+	if m.isStreamCancelRequested() {
+		t.Fatal("expected timeout to clear cancellation request")
+	}
+}
+
+func TestUpdate_StreamCancelTimeoutIgnoresStaleStream(t *testing.T) {
+	m := newTestChatModel(false)
+	oldDone := make(chan struct{})
+	newDone := make(chan struct{})
+	m.streamGeneration = 2
+	m.streaming = true
+	m.streamDone = newDone
+	m.setStreamCancelRequested(true)
+	m.phase = "Stopping..."
+
+	updated, _ := m.Update(streamCancelTimeoutMsg{done: oldDone, generation: 1})
+	m = updated.(*Model)
+
+	if !m.streaming {
+		t.Fatal("expected stale timeout to leave current stream active")
+	}
+	if !m.isStreamCancelRequested() {
+		t.Fatal("expected stale timeout to preserve current cancellation request")
+	}
+}
+
+func TestUpdate_StreamCancelTimeoutIgnoresLateDone(t *testing.T) {
+	m := newTestChatModel(false)
+	done := make(chan struct{})
+	m.streamGeneration = 1
+	m.streaming = true
+	m.streamDone = done
+	m.setStreamCancelRequested(true)
+	m.autoSendQueue = []string{"next"}
+
+	updated, _ := m.Update(streamCancelTimeoutMsg{done: done, generation: 1})
+	m = updated.(*Model)
+
+	updated, cmd := m.Update(streamEventMsg{event: ui.DoneEvent(0), generation: 1})
+	m = updated.(*Model)
+
+	if cmd != nil {
+		t.Fatal("expected late done after forced cancel to be ignored without scheduling commands")
+	}
+	if m.streaming {
+		t.Fatal("expected model to remain non-streaming after ignored late done")
+	}
+	if len(m.autoSendQueue) != 1 || m.autoSendQueue[0] != "next" {
+		t.Fatalf("late done mutated auto-send queue: %#v", m.autoSendQueue)
+	}
+}
+
+func TestUpdate_StreamEventIgnoresStaleGeneration(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streaming = true
+	m.streamGeneration = 2
+	m.autoSendQueue = []string{"next"}
+
+	updated, cmd := m.Update(streamEventMsg{event: ui.DoneEvent(0), generation: 1})
+	m = updated.(*Model)
+
+	if cmd != nil {
+		t.Fatal("expected stale stream event to be ignored without scheduling commands")
+	}
+	if !m.streaming {
+		t.Fatal("expected stale done to leave current stream active")
+	}
+	if len(m.autoSendQueue) != 1 || m.autoSendQueue[0] != "next" {
+		t.Fatalf("stale done mutated auto-send queue: %#v", m.autoSendQueue)
+	}
+}
+
 func stubClipboard(t *testing.T) {
 	orig := readClipboardImage
 	readClipboardImage = func() ([]byte, error) { return nil, nil }

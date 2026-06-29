@@ -327,7 +327,8 @@ func TestListenForStreamEventsSync_CancelledClosedStreamUsesInterruptedCleanup(t
 	close(closed)
 	m.streamCoalescer = &streamEventCoalescer{ch: closed}
 
-	msg := m.listenForStreamEventsSync()
+	m.streamGeneration = 1
+	msg := m.listenForStreamEventsSync(m.streamGeneration)
 	ev, ok := msg.(streamEventMsg)
 	if !ok {
 		t.Fatalf("listenForStreamEventsSync returned %T, want streamEventMsg", msg)
