@@ -76,7 +76,7 @@ The core object is a **node**: a reachable term-llm serve (web/API endpoint) wit
 
     Nodes do **not** need to be local. A direct node can be another process on the same machine, a Docker/contain workspace, a VM, a cloud runner, or a remote server reachable over a private network/tunnel. If the Hub cannot reach the node, use `connection: reverse` and let the node maintain the outbound connection instead.
 
-2. **Contain workspaces** (on by default, disable with `--contain=false`) — every local `term-llm contain` workspace with a provisioned `WEB_TOKEN` in its `.env` shows up automatically, using its `WEB_PORT`/`WEB_BASE_PATH`.
+2. **Contain workspaces** (on by default, disable with `--contain=false`) — every local `term-llm contain` workspace with a provisioned `WEB_TOKEN` in its `.env` shows up automatically, using its `WEB_PORT`/`WEB_BASE_PATH`. To wire up [dv (Discourse Vibe)]({{< relref "dv-hub" >}}) containers as reverse nodes, see the step-by-step [Discourse Vibe + Hub]({{< relref "dv-hub" >}}) guide.
 
 3. **Dashboard-added nodes** — the **Add node** form (with a **Test connection** button) persists nodes to a local JSON store (`--nodes-file`, default `<data-dir>/hub/nodes.json`, mode 0600 since it holds tokens).
 
