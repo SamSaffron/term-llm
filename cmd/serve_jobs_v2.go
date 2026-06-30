@@ -265,7 +265,6 @@ func (r *jobsV2ProgramRunner) Run(ctx context.Context, job jobsV2Job, pw progres
 	} else {
 		cmd = exec.CommandContext(ctx, cfg.Command, cfg.Args...)
 	}
-	cmd.WaitDelay = jobsV2ProgramWaitDelay
 	if strings.TrimSpace(cfg.Cwd) != "" {
 		cmd.Dir = cfg.Cwd
 	}
@@ -273,10 +272,13 @@ func (r *jobsV2ProgramRunner) Run(ctx context.Context, job jobsV2Job, pw progres
 		cmd.Env = append(os.Environ(), cfg.Env...)
 	}
 
-	cleanup, prepErr := procutil.PrepareCommand(cmd)
+	cleanup, prepErr := tools.PrepareCommand(cmd)
 	if prepErr != nil {
 		return jobsV2RunResult{}, fmt.Errorf("program setup failed: %w", prepErr)
 	}
+	// tools.PrepareCommand installs shell-tool defaults while adding robust
+	// descendant cleanup; keep the program runner's existing wait-delay behavior.
+	cmd.WaitDelay = jobsV2ProgramWaitDelay
 	defer cleanup()
 
 	stdout := procutil.NewLimitedBuffer(jobsV2ProgramOutputLimit)

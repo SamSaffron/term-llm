@@ -812,6 +812,32 @@ func (p *serveRuntimeCompactionProvider) Stream(ctx context.Context, req llm.Req
 	return &serveRuntimeTestStream{events: []llm.Event{{Type: llm.EventTextDelta, Text: "final after compaction"}, {Type: llm.EventUsage, Use: &llm.Usage{InputTokens: 7, OutputTokens: 2}}}}, nil
 }
 
+type serveRuntimeCompactionErrorProvider struct {
+	calls    []llm.Request
+	finalErr error
+}
+
+func (p *serveRuntimeCompactionErrorProvider) Name() string       { return "serve-runtime-compact-error" }
+func (p *serveRuntimeCompactionErrorProvider) Credential() string { return "test" }
+func (p *serveRuntimeCompactionErrorProvider) Capabilities() llm.Capabilities {
+	return llm.Capabilities{ToolCalls: true}
+}
+func (p *serveRuntimeCompactionErrorProvider) ResetConversation() {}
+
+func (p *serveRuntimeCompactionErrorProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	p.calls = append(p.calls, req)
+	last := ""
+	if len(req.Messages) > 0 {
+		for _, part := range req.Messages[len(req.Messages)-1].Parts {
+			last += part.Text
+		}
+	}
+	if strings.Contains(last, "compact continuation brief") {
+		return &serveRuntimeTestStream{events: []llm.Event{{Type: llm.EventTextDelta, Text: "summary before stream failure"}}}, nil
+	}
+	return &serveRuntimeTestStream{events: []llm.Event{{Type: llm.EventTextDelta, Text: "partial after compaction"}, {Type: llm.EventError, Err: p.finalErr}}}, nil
+}
+
 type serveRuntimeBlockingStream struct {
 	ctx context.Context
 }
@@ -1384,6 +1410,98 @@ func TestServeRuntimeCompactionCallbackUpdatesActiveContext(t *testing.T) {
 		if msg.TextContent == strings.Repeat("stale pre-compaction history ", 60) {
 			t.Fatalf("active context resurrected raw pre-compaction message: %#v", msg)
 		}
+	}
+}
+
+func TestServeRuntimeCompactionErrorFallbackPreservesPreCompactionScrollback(t *testing.T) {
+	llm.RegisterConfigLimits([]llm.ConfigModelLimit{{Provider: "serve-runtime-compact-error", Model: "compact-runtime-error", InputLimit: 1000}})
+	defer llm.RegisterConfigLimits(nil)
+
+	ctx := context.Background()
+	rawStore, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer rawStore.Close()
+	store := session.NewLoggingStore(rawStore, func(string, ...any) {})
+
+	sess := &session.Session{ID: "sess-runtime-compact-error", Status: session.StatusActive, CompactionSeq: -1, Model: "compact-runtime-error"}
+	if err := store.Create(ctx, sess); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	streamErr := errors.New("stream failed after compaction")
+	provider := &serveRuntimeCompactionErrorProvider{finalErr: streamErr}
+	engine := llm.NewEngine(provider, nil)
+	staleText := strings.Repeat("stale pre-compaction history ", 60)
+	rt := &serveRuntime{
+		provider:     provider,
+		providerKey:  provider.Name(),
+		engine:       engine,
+		store:        store,
+		sessionMeta:  sess,
+		autoCompact:  true,
+		defaultModel: "compact-runtime-error",
+		history: []llm.Message{
+			serveRuntimeTextMessage(llm.RoleUser, staleText),
+			serveRuntimeTextMessage(llm.RoleAssistant, "old answer"),
+		},
+	}
+	rt.configureContextManagementForRequest(llm.Request{Model: "compact-runtime-error"})
+	engine.SetContextEstimateBaseline(910, 4)
+
+	_, err = rt.Run(ctx, true, false, []llm.Message{serveRuntimeTextMessage(llm.RoleUser, "continue task")}, llm.Request{
+		SessionID: sess.ID,
+		Model:     "compact-runtime-error",
+		Tools:     []llm.ToolSpec{{Name: "dummy", Schema: map[string]any{"type": "object"}}},
+	})
+	if !errors.Is(err, streamErr) {
+		t.Fatalf("Run() error = %v, want %v", err, streamErr)
+	}
+	if len(provider.calls) < 2 {
+		t.Fatalf("provider calls = %d, want brief + failing continuation", len(provider.calls))
+	}
+
+	msgs, err := store.GetMessages(ctx, sess.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessages() error = %v", err)
+	}
+	var foundStale, foundPartial bool
+	for _, msg := range msgs {
+		if msg.TextContent == staleText {
+			foundStale = true
+		}
+		if msg.TextContent == "partial after compaction" {
+			foundPartial = true
+		}
+	}
+	if !foundStale {
+		t.Fatalf("pre-compaction scrollback was not preserved: %#v", msgs)
+	}
+	if !foundPartial {
+		t.Fatalf("fallback did not persist partial assistant after compaction: %#v", msgs)
+	}
+
+	refreshed, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !session.HasCompactionBoundary(refreshed) {
+		t.Fatalf("compaction boundary was cleared: %+v", refreshed)
+	}
+	active, err := session.LoadActiveMessages(ctx, store, refreshed)
+	if err != nil {
+		t.Fatalf("LoadActiveMessages() error = %v", err)
+	}
+	activeText := ""
+	for _, msg := range active {
+		activeText += msg.TextContent + "\n"
+	}
+	if !strings.Contains(activeText, "summary before stream failure") || !strings.Contains(activeText, "partial after compaction") {
+		t.Fatalf("active context after fallback = %q, want compacted summary and partial assistant", activeText)
+	}
+	if strings.Contains(activeText, staleText) {
+		t.Fatalf("active context resurrected pre-compaction scrollback: %q", activeText)
 	}
 }
 

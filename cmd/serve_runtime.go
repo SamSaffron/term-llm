@@ -554,6 +554,48 @@ func (rt *serveRuntime) persistSnapshot(ctx context.Context, sessionID string, s
 	return true
 }
 
+type compactedMessageReplacer interface {
+	ReplaceCompactedMessages(ctx context.Context, sessionID string, messages []session.Message) error
+}
+
+func (rt *serveRuntime) persistCompactedSnapshot(ctx context.Context, sessionID string, snapshot []llm.Message) bool {
+	if rt.store == nil || sessionID == "" {
+		return false
+	}
+	replacer, ok := rt.store.(compactedMessageReplacer)
+	if !ok {
+		log.Printf("[serve] session ReplaceCompactedMessages unsupported for %s", sessionID)
+		return false
+	}
+	dbCtx, cancel := inlinePersistContext(ctx, 10*time.Second)
+	defer cancel()
+
+	messages := make([]session.Message, 0, len(snapshot))
+	for _, msg := range snapshot {
+		if msg.Role == "" {
+			continue
+		}
+		sessionMsg := session.NewMessage(sessionID, msg, -1)
+		messages = append(messages, *sessionMsg)
+	}
+	if err := replacer.ReplaceCompactedMessages(dbCtx, sessionID, messages); err != nil {
+		log.Printf("[serve] session ReplaceCompactedMessages failed for %s: %v", sessionID, err)
+		return false
+	}
+	if rt.sessionMeta != nil {
+		if refreshed, err := rt.store.Get(dbCtx, sessionID); err == nil && refreshed != nil {
+			rt.sessionMeta = refreshed
+		}
+	}
+	if setErr := rt.store.SetCurrent(dbCtx, sessionID); setErr != nil {
+		log.Printf("[serve] session SetCurrent failed for %s: %v", sessionID, setErr)
+	}
+	if statusErr := rt.store.UpdateStatus(dbCtx, sessionID, session.StatusActive); statusErr != nil {
+		log.Printf("[serve] session UpdateStatus(active) failed for %s: %v", sessionID, statusErr)
+	}
+	return true
+}
+
 // appendMessages incrementally adds new messages to the DB using AddMessage.
 // Unlike persistSnapshot (which does a full DELETE+INSERT replace), this only
 // appends new messages, making each callback commit a small atomic write that
@@ -880,17 +922,23 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		return snapshot
 	}
 
+	compactedActiveHistory := false
 	persistProducedSnapshot := func(persistCtx context.Context) {
 		producedMu.Lock()
 		defer producedMu.Unlock()
 
 		snapshot := buildSnapshotLocked()
+		useCompactedSnapshot := compactedActiveHistory
 		if stateful {
 			rt.history = snapshot
 			rt.historyPersisted = false
 		}
 		if persisted {
-			rt.historyPersisted = rt.persistSnapshot(persistCtx, req.SessionID, snapshot)
+			if useCompactedSnapshot {
+				rt.historyPersisted = rt.persistCompactedSnapshot(persistCtx, req.SessionID, snapshot)
+			} else {
+				rt.historyPersisted = rt.persistSnapshot(persistCtx, req.SessionID, snapshot)
+			}
 		}
 		persistPlatformInjectionLocked()
 	}
@@ -1033,6 +1081,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 			compacted = append(compacted, result.NewMessages...)
 		}
 		baseHistory = compacted
+		compactedActiveHistory = true
 		inputMessages = nil
 		produced = nil
 		lastAppendedIdx = 0
@@ -1308,6 +1357,7 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 
 	var newHistory []llm.Message
 	var needFinalSnapshot bool
+	var needCompactedSnapshot bool
 	producedMu.Lock()
 	newHistory = buildSnapshotLocked()
 	synthesizedAssistant := len(produced) == 0 && result.Text.Len() > 0
@@ -1333,11 +1383,16 @@ func (rt *serveRuntime) run(ctx context.Context, stateful bool, replaceHistory b
 		} else {
 			needFinalSnapshot = !initialPersisted || lastAppendedIdx < len(produced) || assistantSnapshotDirty || assistantSnapshotNeedsReconcile || synthesizedAssistant
 		}
+		needCompactedSnapshot = compactedActiveHistory
 	}
 	persistPlatformInjectionLocked()
 	producedMu.Unlock()
 	if needFinalSnapshot {
-		rt.historyPersisted = rt.persistSnapshot(ctx, req.SessionID, newHistory)
+		if needCompactedSnapshot {
+			rt.historyPersisted = rt.persistCompactedSnapshot(ctx, req.SessionID, newHistory)
+		} else {
+			rt.historyPersisted = rt.persistSnapshot(ctx, req.SessionID, newHistory)
+		}
 	} else if persisted {
 		rt.historyPersisted = true
 	}

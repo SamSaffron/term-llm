@@ -253,6 +253,19 @@ func (s *LoggingStore) DeleteProviderState(ctx context.Context, sessionID, provi
 	return err
 }
 
+// ReplaceCompactedMessages wraps optional Store.ReplaceCompactedMessages with error logging.
+func (s *LoggingStore) ReplaceCompactedMessages(ctx context.Context, sessionID string, messages []Message) error {
+	replacer, ok := s.Store.(interface {
+		ReplaceCompactedMessages(context.Context, string, []Message) error
+	})
+	if !ok {
+		return nil
+	}
+	err := replacer.ReplaceCompactedMessages(ctx, sessionID, messages)
+	s.logOnce("ReplaceCompactedMessages", err)
+	return err
+}
+
 // UpdateMetrics wraps Store.UpdateMetrics with error logging.
 func (s *LoggingStore) UpdateMetrics(ctx context.Context, id string, llmTurns, toolCalls, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int) error {
 	err := s.Store.UpdateMetrics(ctx, id, llmTurns, toolCalls, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens)
