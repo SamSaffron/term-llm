@@ -310,7 +310,12 @@
       <div class="diff-sidebar-header">
         <span class="diff-sidebar-title">Changes</span>
         <span class="diff-sidebar-totals" id="diffSidebarTotals"></span>
+        <button class="icon-btn" id="diffExpandAllBtn" type="button" aria-label="Expand all files" title="Expand all">⌄</button>
+        <button class="icon-btn" id="diffCollapseAllBtn" type="button" aria-label="Collapse all files" title="Collapse all">⌃</button>
         <button class="icon-btn" id="diffSidebarCloseBtn" type="button" aria-label="Hide changes" title="Hide changes">✕</button>
+      </div>
+      <div class="diff-filter-row" id="diffFilterRow" hidden>
+        <input class="diff-filter-input" id="diffFilterInput" type="search" placeholder="Filter files…" aria-label="Filter changed files" autocomplete="off" spellcheck="false">
       </div>
       <div class="diff-file-list" id="diffFileList" aria-label="Changed files"></div>
     </aside>

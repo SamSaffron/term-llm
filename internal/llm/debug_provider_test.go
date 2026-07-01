@@ -465,8 +465,8 @@ func TestDebugProviderMixedStreamToolArguments(t *testing.T) {
 	if err := json.Unmarshal(toolCalls[0].Arguments, &readArgs); err != nil {
 		t.Fatalf("failed to unmarshal read_file args: %v", err)
 	}
-	if readArgs["file_path"] != "README.md" {
-		t.Errorf("read_file file_path = %q, want README.md", readArgs["file_path"])
+	if readArgs["path"] != "README.md" {
+		t.Errorf("read_file path = %q, want README.md", readArgs["path"])
 	}
 
 	// Check shell args
@@ -609,8 +609,8 @@ func TestDebugProviderEditCommand(t *testing.T) {
 			continue
 		}
 
-		if args["file_path"] != testFile {
-			t.Errorf("tool call %d: got file_path %q, want %q", i, args["file_path"], testFile)
+		if args["path"] != testFile {
+			t.Errorf("tool call %d: got path %q, want %q", i, args["path"], testFile)
 		}
 		if args["old_text"] == "" {
 			t.Errorf("tool call %d: old_text is empty", i)
@@ -780,8 +780,8 @@ func TestParseCommandWriteLines(t *testing.T) {
 					t.Fatalf("failed to unmarshal args: %v", err)
 				}
 
-				if args["file_path"] != tt.wantPath {
-					t.Errorf("got file_path %q, want %q", args["file_path"], tt.wantPath)
+				if args["path"] != tt.wantPath {
+					t.Errorf("got path %q, want %q", args["path"], tt.wantPath)
 				}
 
 				if tt.wantLines > 0 {

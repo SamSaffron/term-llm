@@ -411,7 +411,11 @@ const elements = {
   diffResizeHandle: document.getElementById('diffResizeHandle'),
   diffFileList: document.getElementById('diffFileList'),
   diffToggleBtn: document.getElementById('diffToggleBtn'),
-  diffToggleBadge: document.getElementById('diffToggleBadge')
+  diffToggleBadge: document.getElementById('diffToggleBadge'),
+  diffExpandAllBtn: document.getElementById('diffExpandAllBtn'),
+  diffCollapseAllBtn: document.getElementById('diffCollapseAllBtn'),
+  diffFilterRow: document.getElementById('diffFilterRow'),
+  diffFilterInput: document.getElementById('diffFilterInput')
 };
 
 const displayAgentName = (name) => {

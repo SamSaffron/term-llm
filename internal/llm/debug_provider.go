@@ -214,8 +214,11 @@ func (d *DebugProvider) Capabilities() Capabilities {
 // Otherwise, streams the debug markdown content.
 func (d *DebugProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
-		// If tool results are present, stream completion text
-		if hasToolResults(req.Messages) {
+		// If the request is completing a tool round (the conversation ends
+		// with tool results), stream completion text. Earlier turns' tool
+		// results must not short-circuit new user commands in multi-turn
+		// sessions.
+		if lastMessageHasToolResults(req.Messages) {
 			return d.streamCompletionText(ctx, send)
 		}
 
@@ -470,16 +473,19 @@ func nextDebugCallID() string {
 	return fmt.Sprintf("debug-call-%d", debugCallID.Add(1))
 }
 
-// hasToolResults checks if any message contains tool results.
-func hasToolResults(msgs []Message) bool {
-	for _, msg := range msgs {
-		if msg.Role == RoleTool {
+// lastMessageHasToolResults reports whether the conversation ends with tool
+// results, i.e. this request is the follow-up round of the current turn.
+func lastMessageHasToolResults(msgs []Message) bool {
+	if len(msgs) == 0 {
+		return false
+	}
+	last := msgs[len(msgs)-1]
+	if last.Role == RoleTool {
+		return true
+	}
+	for _, part := range last.Parts {
+		if part.Type == PartToolResult {
 			return true
-		}
-		for _, part := range msg.Parts {
-			if part.Type == PartToolResult {
-				return true
-			}
 		}
 	}
 	return false
@@ -639,13 +645,13 @@ func parseCommand(prompt string, tools []ToolSpec) []*ToolCall {
 					continue
 				}
 				for j := 0; j < multiplier; j++ {
-					calls = append(calls, makeCall("read_file", map[string]string{"file_path": file}))
+					calls = append(calls, makeCall("read_file", map[string]string{"path": file}))
 				}
 			}
 			return calls
 		}
 		toolName = "read_file"
-		argsMap = map[string]string{"file_path": args[0]}
+		argsMap = map[string]string{"path": args[0]}
 
 	case "write":
 		if !toolSet["write_file"] {
@@ -658,8 +664,8 @@ func parseCommand(prompt string, tools []ToolSpec) []*ToolCall {
 			}
 			toolName = "write_file"
 			argsMap = map[string]string{
-				"file_path": filePath,
-				"content":   generateWriteContent(writeLines),
+				"path":    filePath,
+				"content": generateWriteContent(writeLines),
 			}
 		} else {
 			if len(args) < 2 {
@@ -667,8 +673,8 @@ func parseCommand(prompt string, tools []ToolSpec) []*ToolCall {
 			}
 			toolName = "write_file"
 			argsMap = map[string]string{
-				"file_path": args[0],
-				"content":   strings.Join(args[1:], " "),
+				"path":    args[0],
+				"content": strings.Join(args[1:], " "),
 			}
 		}
 
@@ -715,9 +721,9 @@ func parseCommand(prompt string, tools []ToolSpec) []*ToolCall {
 		calls := make([]*ToolCall, len(edits))
 		for i, e := range edits {
 			argsJSON, _ := json.Marshal(map[string]string{
-				"file_path": filePath,
-				"old_text":  e[0],
-				"new_text":  e[1],
+				"path":     filePath,
+				"old_text": e[0],
+				"new_text": e[1],
 			})
 			calls[i] = &ToolCall{
 				ID:        nextDebugCallID(),

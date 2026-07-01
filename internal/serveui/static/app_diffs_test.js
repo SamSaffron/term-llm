@@ -123,10 +123,15 @@ function createHarness(options = {}) {
     diffResizeHandle: new Element('div'),
     diffFileList: new Element('div'),
     diffToggleBtn: new Element('button'),
-    diffToggleBadge: new Element('span')
+    diffToggleBadge: new Element('span'),
+    diffExpandAllBtn: new Element('button'),
+    diffCollapseAllBtn: new Element('button'),
+    diffFilterRow: new Element('div'),
+    diffFilterInput: new Element('input')
   };
   elements.diffSidebar.hidden = true;
   elements.diffToggleBtn.hidden = true;
+  elements.diffFilterRow.hidden = true;
 
   const state = {
     token: '',
@@ -386,7 +391,7 @@ async function run(name, fn) {
     assertEqual(fetchCalls.filter((u) => u.includes('/diff?')).length, 2, 'refresh converges once up to date');
   });
 
-  await run('live changes auto-expand files inline (accordion) after explicit open', async () => {
+  await run('live changes follow the most recently edited file only', async () => {
     const { app, elements, flushTimers } = createHarness();
     app.toggleDiffSidebar();
     app.handleFileChangeEvent({ id: 's1' }, { path: '/a', kind: 'modify', adds: 1, dels: 0, seq: 1 });
@@ -395,8 +400,25 @@ async function run(name, fn) {
 
     const rows = elements.diffFileList.querySelectorAll('.diff-file-row');
     assertEqual(rows.length, 2, 'both files listed');
-    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-body').length, 2, 'both changed files auto-expand');
-    assert(rows[0].classList.contains('expanded'), 'header carries expanded state');
+    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-body').length, 1, 'only the file being edited stays expanded');
+    assertEqual(rows[0].dataset.path, '/b', 'most recent file sorts to the top');
+    assert(rows[0].classList.contains('expanded'), 'followed file header carries expanded state');
+    assert(!rows[1].classList.contains('expanded'), 'previously followed file auto-collapsed');
+  });
+
+  await run('user-expanded files survive live-follow auto-collapse', async () => {
+    const { app, elements, flushTimers } = createHarness();
+    app.toggleDiffSidebar();
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/a', kind: 'modify', adds: 1, dels: 0, seq: 1 });
+    await flushTimers();
+
+    // /a is auto-expanded; the user pins it open by toggling it closed and open.
+    app.toggleDiffFile('s1', '/a');
+    app.toggleDiffFile('s1', '/a');
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/b', kind: 'create', adds: 1, dels: 0, seq: 2 });
+    await flushTimers();
+
+    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-body').length, 2, 'pinned file stays open while live-follow moves on');
   });
 
   await run('explicit collapse sticks while the agent keeps editing', async () => {
@@ -671,6 +693,240 @@ async function run(name, fn) {
     app.toggleDiffSidebar();
     assert(!elements.diffSidebar.hidden, 'explicit toggle opens restored session sidebar');
     assertEqual(elements.diffFileList.querySelectorAll('.diff-file-row').length, 1, 'file list populated after user opens');
+  });
+
+  await run('sortDiffPaths orders by recency then path', () => {
+    const { app } = createHarness();
+    const order = app.sortDiffPaths([
+      { path: '/b', lastSeq: 1 },
+      { path: '/c', lastSeq: 3 },
+      { path: '/a', lastSeq: 1 },
+      { path: '/d', lastSeq: 2 }
+    ]);
+    assertEqual(order.join(','), '/c,/d,/a,/b', 'recent first, ties by path');
+  });
+
+  await run('computeInlineEmphasis marks the changed span of paired lines', () => {
+    const { app } = createHarness();
+    const rows = app.computeInlineEmphasis([
+      { type: 'ctx', text: 'unchanged' },
+      { type: 'del', text: 'const a = 1;' },
+      { type: 'del', text: 'foo' },
+      { type: 'add', text: 'const a = 2;' },
+      { type: 'add', text: 'totally different xyz' }
+    ]);
+    assertEqual(rows[1].emph.join(','), '10,11', 'del emphasis covers the changed literal');
+    assertEqual(rows[3].emph.join(','), '10,11', 'add emphasis covers the changed literal');
+    assert(!rows[2].emph, 'unrelated del line gets no emphasis');
+    assert(!rows[4].emph, 'unrelated add line gets no emphasis');
+    assert(!rows[0].emph, 'context lines get no emphasis');
+  });
+
+  await run('emphasized rows render a diff-word mark span', async () => {
+    const { app, elements, flushTimers } = createHarness({
+      fetch: async (url) => ({
+        ok: true,
+        json: async () => (String(url).includes('/diff?')
+          ? { path: '/a.go', kind: 'modify', lang: '', truncated: false, hunks: [{ old_start: 1, new_start: 1, lines: [
+              { t: 'del', s: 'count = 1' },
+              { t: 'add', s: 'count = 2' }
+            ] }] }
+          : { file_changes: [] })
+      })
+    });
+    app.toggleDiffSidebar();
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/a.go', kind: 'modify', adds: 1, dels: 1, seq: 1 });
+    await flushTimers();
+    await flushTimers();
+
+    const marks = elements.diffFileList.querySelectorAll('.diff-word');
+    assertEqual(marks.length, 2, 'both paired rows carry a word mark');
+    assertEqual(marks[0].textContent, '1', 'del mark wraps the removed literal');
+    assertEqual(marks[1].textContent, '2', 'add mark wraps the inserted literal');
+  });
+
+  await run('failed diff fetches surface an error with retry', async () => {
+    let failFetches = true;
+    const { app, elements, flushTimers } = createHarness({
+      fetch: async (url) => {
+        if (String(url).includes('/diff?') && failFetches) return { ok: false, json: async () => ({}) };
+        return {
+          ok: true,
+          json: async () => (String(url).includes('/diff?')
+            ? { path: '/a', kind: 'modify', lang: '', truncated: false, hunks: [{ old_start: 1, new_start: 1, lines: [{ t: 'add', s: 'hello' }] }] }
+            : { file_changes: [] })
+        };
+      }
+    });
+    app.toggleDiffSidebar();
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/a', kind: 'modify', adds: 1, dels: 0, seq: 1 });
+    await flushTimers();
+    await flushTimers();
+
+    const error = elements.diffFileList.querySelector('.diff-error');
+    assert(error, 'error note rendered after failed fetch');
+    const retry = elements.diffFileList.querySelector('.diff-retry');
+    assert(retry, 'retry control rendered');
+
+    failFetches = false;
+    await retry.dispatchEvent({ type: 'click' });
+    await flushTimers();
+    await flushTimers();
+
+    assert(!elements.diffFileList.querySelector('.diff-error'), 'error cleared after successful retry');
+    assertEqual(elements.diffFileList.querySelectorAll('.diff-row').length, 1, 'diff rows render after retry');
+  });
+
+  await run('very large diffs reveal in chunks with a show-all escape hatch', async () => {
+    const manyLines = Array.from({ length: 900 }, (_, i) => ({ t: 'add', s: `line ${i}` }));
+    const { app, elements, flushTimers } = createHarness({
+      fetch: async (url) => ({
+        ok: true,
+        json: async () => (String(url).includes('/diff?')
+          ? { path: '/big.txt', kind: 'create', lang: '', truncated: false, hunks: [{ old_start: 1, new_start: 1, lines: manyLines }] }
+          : { file_changes: [] })
+      })
+    });
+    app.toggleDiffSidebar();
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/big.txt', kind: 'create', adds: 900, dels: 0, seq: 1 });
+    await flushTimers();
+    await flushTimers();
+
+    assertEqual(elements.diffFileList.querySelectorAll('.diff-row').length, 400, 'first chunk capped at the render limit');
+    const more = elements.diffFileList.querySelector('.diff-show-more');
+    assertEqual(more.textContent, 'Show 400 more lines', 'chunk control offers the next chunk');
+    const all = elements.diffFileList.querySelector('.diff-show-all');
+    assertEqual(all.textContent, 'Show all 500 hidden lines', 'show-all control reports the full remainder');
+
+    await more.dispatchEvent({ type: 'click' });
+    assertEqual(elements.diffFileList.querySelectorAll('.diff-row').length, 800, 'second chunk revealed');
+    assert(!elements.diffFileList.querySelector('.diff-show-all'), 'show-all gone once remainder fits one chunk');
+
+    await elements.diffFileList.querySelector('.diff-show-more').dispatchEvent({ type: 'click' });
+    assertEqual(elements.diffFileList.querySelectorAll('.diff-row').length, 900, 'all rows rendered');
+    assert(!elements.diffFileList.querySelector('.diff-show-more'), 'controls gone once fully revealed');
+  });
+
+  await run('filter input appears for long lists and narrows rows', async () => {
+    const { app, elements, flushTimers } = createHarness();
+    app.toggleDiffSidebar();
+    for (let i = 1; i <= 7; i += 1) {
+      app.handleFileChangeEvent({ id: 's1' }, { path: `/src/f${i}.txt`, kind: 'create', adds: 1, dels: 0, seq: i });
+    }
+    await flushTimers();
+    assert(elements.diffFilterRow.hidden, 'filter hidden below the file threshold');
+
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/src/g8.txt', kind: 'create', adds: 1, dels: 0, seq: 8 });
+    await flushTimers();
+    assert(!elements.diffFilterRow.hidden, 'filter appears once the list is long');
+
+    elements.diffFilterInput.value = 'g8';
+    await elements.diffFilterInput.dispatchEvent({ type: 'input', target: elements.diffFilterInput });
+    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-row').length, 1, 'filter narrows to matching paths');
+
+    elements.diffFilterInput.value = 'no-such-file';
+    await elements.diffFilterInput.dispatchEvent({ type: 'input', target: elements.diffFilterInput });
+    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-row').length, 0, 'no rows for a non-matching filter');
+    assert(elements.diffFileList.querySelector('.diff-note'), 'empty state note shown');
+
+    elements.diffFilterInput.value = '';
+    await elements.diffFilterInput.dispatchEvent({ type: 'input', target: elements.diffFilterInput });
+    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-row').length, 8, 'clearing the filter restores all rows');
+  });
+
+  await run('expand-all and collapse-all act on every file and stick', async () => {
+    const { app, elements, flushTimers } = createHarness();
+    app.toggleDiffSidebar();
+    for (let i = 1; i <= 3; i += 1) {
+      app.handleFileChangeEvent({ id: 's1' }, { path: `/f${i}`, kind: 'modify', adds: 1, dels: 0, seq: i });
+    }
+    await flushTimers();
+
+    await elements.diffCollapseAllBtn.dispatchEvent({ type: 'click' });
+    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-body').length, 0, 'collapse-all closes every body');
+
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/f1', kind: 'modify', adds: 2, dels: 0, seq: 4 });
+    await flushTimers();
+    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-body').length, 0, 'live changes do not undo collapse-all');
+
+    await elements.diffExpandAllBtn.dispatchEvent({ type: 'click' });
+    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-body').length, 3, 'expand-all opens every body');
+  });
+
+  await run('escape closes the diff drawer but leaves inputs alone', async () => {
+    const { app, elements, windowObj, flushTimers } = createHarness({ drawer: true });
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/a', kind: 'modify', adds: 1, dels: 0, seq: 1 });
+    await flushTimers();
+    app.toggleDiffSidebar();
+    assert(elements.diffSidebar.classList.contains('open'), 'drawer starts open');
+
+    windowObj.dispatchEvent({ type: 'keydown', key: 'Escape', target: new Element('textarea') });
+    assert(elements.diffSidebar.classList.contains('open'), 'escape while typing does not close the drawer');
+
+    windowObj.dispatchEvent({ type: 'keydown', key: 'Escape', target: elements.diffSidebar });
+    assert(!elements.diffSidebar.classList.contains('open'), 'escape closes the drawer');
+  });
+
+  await run('double-clicking the resize handle resets the stored width', async () => {
+    const { app, elements, localStorage } = createHarness();
+    localStorage.setItem('term_llm_diff_sidebar_width', '555');
+    elements.appShell.style.setProperty('--diff-sidebar-user-width', '555px');
+
+    await elements.diffResizeHandle.dispatchEvent({ type: 'dblclick' });
+    assertEqual(localStorage.getItem('term_llm_diff_sidebar_width'), null, 'stored width cleared');
+    assertEqual(elements.appShell.style.getPropertyValue('--diff-sidebar-user-width'), '', 'width override removed');
+  });
+
+  await run('live count updates patch the existing header instead of rebuilding', async () => {
+    const { app, elements, flushTimers } = createHarness();
+    app.toggleDiffSidebar();
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/a', kind: 'modify', adds: 1, dels: 0, seq: 1 });
+    await flushTimers();
+
+    const before = elements.diffFileList.querySelectorAll('.diff-file-row')[0];
+    let listRebuilds = 0;
+    const original = elements.diffFileList.replaceChildren.bind(elements.diffFileList);
+    elements.diffFileList.replaceChildren = (...nodes) => {
+      listRebuilds += 1;
+      return original(...nodes);
+    };
+
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/a', kind: 'modify', adds: 7, dels: 2, seq: 2 });
+    await flushTimers();
+
+    const after = elements.diffFileList.querySelectorAll('.diff-file-row')[0];
+    assert(before === after, 'header node identity preserved across live updates');
+    assertEqual(listRebuilds, 0, 'list container not rebuilt for an in-place update');
+    assertEqual(elements.diffFileList.querySelector('.diff-count-add').textContent, '+7', 'counts updated in place');
+  });
+
+  await run('buildUnifiedDiff reconstructs a patch from cached hunks', () => {
+    const { app } = createHarness();
+    const patch = app.buildUnifiedDiff('src/main.go', {
+      hunks: [{ old_start: 3, new_start: 3, lines: [
+        { t: 'ctx', s: 'a' },
+        { t: 'del', s: 'old' },
+        { t: 'add', s: 'new' }
+      ] }]
+    });
+    const lines = patch.split('\n');
+    assertEqual(lines[0], '--- a/src/main.go', 'old file header');
+    assertEqual(lines[1], '+++ b/src/main.go', 'new file header');
+    assertEqual(lines[2], '@@ -3,2 +3,2 @@', 'hunk header with computed lengths');
+    assertEqual(lines[3], ' a', 'context line prefixed with space');
+    assertEqual(lines[4], '-old', 'deletion prefixed with minus');
+    assertEqual(lines[5], '+new', 'addition prefixed with plus');
+  });
+
+  await run('file headers expose copy actions', async () => {
+    const { app, elements, flushTimers } = createHarness();
+    app.toggleDiffSidebar();
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/work/a.go', kind: 'modify', adds: 1, dels: 0, seq: 1 });
+    await flushTimers();
+
+    const actions = elements.diffFileList.querySelector('.diff-file-actions');
+    assert(actions, 'actions container rendered in the header');
+    assertEqual(actions.querySelectorAll('.diff-action-btn').length, 2, 'copy path and copy diff buttons present');
   });
 
   if (failures > 0) {

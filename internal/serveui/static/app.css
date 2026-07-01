@@ -340,6 +340,16 @@
       text-align: left;
       font-size: 0.82rem;
       color: var(--text);
+      user-select: none;
+    }
+
+    .diff-file-row.updated {
+      animation: diff-row-updated 0.6s ease;
+    }
+
+    @keyframes diff-row-updated {
+      0% { background: var(--surface-3); }
+      100% { background: var(--surface); }
     }
 
     .diff-file-row:hover {
@@ -536,6 +546,117 @@
       margin-left: 0;
       font-variant-numeric: tabular-nums;
       white-space: nowrap;
+    }
+
+    .diff-toggle-badge.pulse {
+      animation: diff-badge-pulse 0.6s ease;
+    }
+
+    @keyframes diff-badge-pulse {
+      0% { transform: scale(1); }
+      35% { transform: scale(1.18); }
+      100% { transform: scale(1); }
+    }
+
+    .diff-filter-row {
+      padding: 0.45rem 0.75rem;
+      border-bottom: 1px solid var(--border);
+      flex: none;
+    }
+
+    .diff-filter-row[hidden] {
+      display: none;
+    }
+
+    .diff-filter-input {
+      width: 100%;
+      padding: 0.3rem 0.5rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--text);
+      font-size: 0.8rem;
+    }
+
+    .diff-filter-input:focus {
+      outline: none;
+      border-color: var(--border-strong);
+    }
+
+    .diff-file-actions {
+      flex: none;
+      display: none;
+      gap: 0.2rem;
+    }
+
+    /* Actions swap in for the counts on hover/focus so the header row keeps
+       a stable width. focus-within keeps them reachable by keyboard/tap. */
+    .diff-file-row:hover .diff-file-actions,
+    .diff-file-row:focus-within .diff-file-actions {
+      display: inline-flex;
+    }
+
+    .diff-file-row:hover .diff-file-counts,
+    .diff-file-row:focus-within .diff-file-counts {
+      display: none;
+    }
+
+    .diff-action-btn {
+      border: 0;
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 0.1rem 0.3rem;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      line-height: 1;
+    }
+
+    .diff-action-btn:hover {
+      background: var(--surface-3);
+      color: var(--text);
+    }
+
+    .diff-action-btn.copied {
+      color: var(--accent-green);
+    }
+
+    .diff-row.add .diff-word {
+      background: var(--diff-add-ln-bg);
+      border-radius: 3px;
+    }
+
+    .diff-row.del .diff-word {
+      background: var(--diff-del-ln-bg);
+      border-radius: 3px;
+    }
+
+    .diff-error {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      color: var(--danger);
+    }
+
+    .diff-retry {
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 0.15rem 0.6rem;
+      cursor: pointer;
+      font-size: 0.75rem;
+    }
+
+    .diff-retry:hover {
+      background: var(--surface-3);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .diff-file-row.updated,
+      .diff-toggle-badge.pulse {
+        animation: none;
+      }
     }
 
     .diff-toggle-file-count {
