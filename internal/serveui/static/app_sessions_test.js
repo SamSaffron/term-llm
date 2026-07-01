@@ -1397,6 +1397,145 @@ async function testMergeServerMessagesPrefersLongerLocalStoppedAssistantOverStal
   pass(name);
 }
 
+async function testMergeServerMessagesDropsLocalToolGroupRecordedInServerTurn() {
+  const name = 'mergeServerMessagesWithLocalState drops local tool-group already recorded in server turn';
+  const { app } = await createSessionsHarness();
+  const session = {
+    id: 'sess_tool_dup',
+    title: 'Tool dup',
+    messages: [
+      { id: 'u_local', role: 'user', content: 'do things', created: 1000 },
+      {
+        id: 'msg_local_group',
+        role: 'tool-group',
+        status: 'done',
+        expanded: false,
+        created: 1100,
+        tools: [
+          { id: 'call_7', name: 'glob', arguments: '{"pattern":"**/*.go"}', status: 'done' },
+          { id: 'call_8', name: 'grep', arguments: '{"pattern":"tool"}', status: 'done' },
+          { id: 'call_9', name: 'read_file', arguments: '{"path":"main.go"}', status: 'done' },
+        ],
+      },
+      { id: 'a_local', role: 'assistant', content: 'final reply', created: 1200 },
+    ],
+  };
+
+  // Server transcript of the same turn: identical call ids, but arguments and
+  // images as recorded by the server drift from the locally streamed copies.
+  app.mergeServerMessagesWithLocalState(session, [
+    { id: 'u_server', role: 'user', content: 'do things', created: 1000 },
+    {
+      id: 'srv_group',
+      role: 'tool-group',
+      status: 'done',
+      expanded: false,
+      created: 1100,
+      tools: [
+        { id: 'call_7', name: 'glob', arguments: '{"pattern":"**/*.go"}', status: 'done', images: ['/ui/assets/shot.png'] },
+        { id: 'call_8', name: 'grep', arguments: '{ "pattern": "tool" }', status: 'done' },
+        { id: 'call_9', name: 'read_file', arguments: '', status: 'done' },
+      ],
+    },
+    { id: 'a_server', role: 'assistant', content: 'final reply', created: 1200 },
+  ]);
+
+  const shape = session.messages.map((message) => message.role);
+  if (JSON.stringify(shape) !== JSON.stringify(['user', 'tool-group', 'assistant'])) {
+    fail(name, 'tool calls must not repeat after the reply', JSON.stringify(shape));
+    return;
+  }
+  if (session.messages[1].id !== 'srv_group') {
+    fail(name, 'server copy of the tool-group should win', JSON.stringify(session.messages[1]));
+    return;
+  }
+
+  pass(name);
+}
+
+async function testMergeServerMessagesMatchesToolGroupByNameWhenCallIdsAreSynthetic() {
+  const name = 'mergeServerMessagesWithLocalState matches tool-group by name when call ids are synthetic';
+  const { app } = await createSessionsHarness();
+  const session = {
+    id: 'sess_tool_synth',
+    title: 'Tool synth ids',
+    messages: [
+      { id: 'u_local', role: 'user', content: 'run it', created: 1000 },
+      {
+        id: 'msg_local_group',
+        role: 'tool-group',
+        status: 'done',
+        expanded: false,
+        created: 1100,
+        tools: [
+          { id: 'tool_1f2e3d4c', name: 'shell', arguments: '{"command":"ls"}', status: 'done' },
+        ],
+      },
+      { id: 'a_local', role: 'assistant', content: 'done', created: 1200 },
+    ],
+  };
+
+  app.mergeServerMessagesWithLocalState(session, [
+    { id: 'u_server', role: 'user', content: 'run it', created: 1000 },
+    {
+      id: 'srv_group',
+      role: 'tool-group',
+      status: 'done',
+      expanded: false,
+      created: 1100,
+      tools: [
+        { id: 'srv_msg_9_tool_0', name: 'shell', arguments: '{"command":"ls -la"}', status: 'done' },
+      ],
+    },
+    { id: 'a_server', role: 'assistant', content: 'done', created: 1200 },
+  ]);
+
+  const groups = session.messages.filter((message) => message.role === 'tool-group');
+  if (groups.length !== 1 || groups[0].id !== 'srv_group') {
+    fail(name, 'expected single server tool-group when ids are synthetic on both sides', JSON.stringify(session.messages));
+    return;
+  }
+
+  pass(name);
+}
+
+async function testMergeServerMessagesPreservesLocalToolGroupWhenServerHasNoToolRecord() {
+  const name = 'mergeServerMessagesWithLocalState preserves local tool-group when server tail lacks tool record';
+  const { app } = await createSessionsHarness();
+  const session = {
+    id: 'sess_tool_stop_lag',
+    title: 'Tool stop lag',
+    messages: [
+      { id: 'u_local', role: 'user', content: 'question', created: 1000 },
+      {
+        id: 'msg_local_group',
+        role: 'tool-group',
+        status: 'done',
+        expanded: false,
+        created: 1100,
+        tools: [
+          { id: 'call_7', name: 'spawn_agent', arguments: '{"prompt":"go"}', status: 'done' },
+        ],
+      },
+      { id: 'a_local', role: 'assistant', content: 'partial streamed answer', created: 1200 },
+    ],
+  };
+
+  // Server tail has no trace of the turn's tools (stopped before the
+  // transcript flushed): the locally streamed group must survive.
+  app.mergeServerMessagesWithLocalState(session, [
+    { id: 'u_server', role: 'user', content: 'question', created: 1000 },
+  ]);
+
+  const shape = session.messages.map((message) => message.role);
+  if (JSON.stringify(shape) !== JSON.stringify(['user', 'tool-group', 'assistant'])) {
+    fail(name, 'expected local tool-group and assistant tail to survive stale server refresh', JSON.stringify(shape));
+    return;
+  }
+
+  pass(name);
+}
+
 async function testSessionHistoryInitialLoadRequestsTailOnly() {
   const name = 'initial session history load requests tail only';
   const fetchCalls = [];
@@ -4049,6 +4188,9 @@ async function testMCPPatchConflictDoesNotOptimisticallyEnable() {
   await testConvertServerMessagesSuppressesNonBubbleAssistantRows();
   await testMergeServerMessagesPreservesLocalStoppedAssistantTailWhenServerLags();
   await testMergeServerMessagesPrefersLongerLocalStoppedAssistantOverStaleServerAssistant();
+  await testMergeServerMessagesDropsLocalToolGroupRecordedInServerTurn();
+  await testMergeServerMessagesMatchesToolGroupByNameWhenCallIdsAreSynthetic();
+  await testMergeServerMessagesPreservesLocalToolGroupWhenServerHasNoToolRecord();
   await testSessionHistoryInitialLoadRequestsTailOnly();
   await testScrollNearTopLoadsOlderPageAndPreservesViewport();
   await testScrollNearTopDrainsToolOnlyPagesUntilVisibleHistory();

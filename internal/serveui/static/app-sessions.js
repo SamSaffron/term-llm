@@ -1207,6 +1207,45 @@ const isPreservableLocalTailMessage = (message) => {
   return false;
 };
 
+// Identity keys for reconciling a locally streamed tool call with the server
+// transcript's copy of the same call. The rendered content of the two copies
+// (arguments accumulated from deltas vs stored arguments, stream-rebased vs
+// history-rebased image URLs) rarely matches byte-for-byte, so content-based
+// messageDedupeKey comparison cannot pair them up. Provider call ids are
+// shared by both sides when available; the tool name covers entries where
+// either side only has a synthetic id (generateId('tool') locally,
+// "<msgid>_tool_<n>" from the history converter). Name matches are only
+// meaningful because coverage checks are scoped to a single turn.
+const toolCallIdentityKeys = (tool) => {
+  const keys = [];
+  const id = String(tool?.id || '').trim();
+  if (id) keys.push(`id:${id}`);
+  const name = String(tool?.name || '').trim();
+  if (name) keys.push(`name:${name}`);
+  return keys;
+};
+
+// True when the server's copy of the current turn already records any of the
+// local tool-group's calls. The server transcript is authoritative once it
+// contains the calls, so the local group must be dropped rather than
+// re-appended after the reply. A group the server has no trace of (a stop
+// before the transcript flushed) is still preserved by the caller.
+const localToolGroupCoveredByServerTurn = (merged, turnStart, turnEnd, localGroup) => {
+  const serverToolKeys = new Set();
+  for (let i = turnStart; i < turnEnd; i += 1) {
+    const message = merged[i];
+    if (message?.role !== 'tool-group' || !Array.isArray(message.tools)) continue;
+    for (const tool of message.tools) {
+      toolCallIdentityKeys(tool).forEach((key) => serverToolKeys.add(key));
+    }
+  }
+  if (serverToolKeys.size === 0) return false;
+  const localTools = Array.isArray(localGroup?.tools) ? localGroup.tools : [];
+  return localTools.some((tool) => (
+    toolCallIdentityKeys(tool).some((key) => serverToolKeys.has(key))
+  ));
+};
+
 const assistantContentExtensionState = (serverMessage, localMessage) => {
   if (serverMessage?.role !== 'assistant' || localMessage?.role !== 'assistant') return '';
   const serverContent = String(serverMessage.content || '');
@@ -1279,6 +1318,11 @@ const preserveLocalTailAfterStoppedRefresh = (merged, session) => {
       }
     }
     if (handledByServerMessage) continue;
+
+    if (localMessage.role === 'tool-group'
+      && localToolGroupCoveredByServerTurn(merged, mergedUserIndex + 1, turnEnd, localMessage)) {
+      continue;
+    }
 
     // If assistant text diverged rather than extending a stale server prefix,
     // keep the local bubble as a separate tail entry. Stop must never delete
