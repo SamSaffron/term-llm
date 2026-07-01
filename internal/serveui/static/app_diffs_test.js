@@ -181,6 +181,11 @@ function createHarness(options = {}) {
     STORAGE_KEYS: { diffSidebarWidth: 'term_llm_diff_sidebar_width' },
     state,
     elements,
+    clipboardWrites: [],
+    getClipboardWriter() {
+      const writes = this.clipboardWrites;
+      return { writeText: (text) => { writes.push(String(text)); return Promise.resolve(); } };
+    },
     setElementHidden(element, hidden) {
       if (!element) return;
       element.hidden = Boolean(hidden);
@@ -927,6 +932,91 @@ async function run(name, fn) {
     const actions = elements.diffFileList.querySelector('.diff-file-actions');
     assert(actions, 'actions container rendered in the header');
     assertEqual(actions.querySelectorAll('.diff-action-btn').length, 2, 'copy path and copy diff buttons present');
+  });
+
+  await run('canonical server paths inherit live-follow expansion state', async () => {
+    const { app, elements } = createHarness({
+      fetch: async (url) => ({
+        ok: true,
+        json: async () => (String(url).includes('/diff?')
+          ? { path: '/w/hello.txt', kind: 'modify', lang: '', truncated: false, hunks: [] }
+          : { file_changes: [{ path: '/w/hello.txt', kind: 'modify', adds: 1, dels: 0, truncated: false, seq: 5 }] })
+      })
+    });
+    app.toggleDiffSidebar();
+    app.handleFileChangeEvent({ id: 's1' }, { path: 'hello.txt', kind: 'modify', adds: 1, dels: 0, seq: 5 });
+    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-body').length, 1, 'live row auto-expanded');
+
+    await app.fetchSessionFileChanges('s1');
+    const rows = elements.diffFileList.querySelectorAll('.diff-file-row');
+    assertEqual(rows.length, 1, 'canonical row replaced the live duplicate');
+    assertEqual(rows[0].dataset.path, '/w/hello.txt', 'row carries the canonical path');
+    assert(rows[0].classList.contains('expanded'), 'canonical row inherits live-follow expansion');
+    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-body').length, 1, 'body stays open across canonicalization');
+  });
+
+  await run('a refetch with unchanged seq still refreshes the rendered body', async () => {
+    let version = 1;
+    const { app, elements, flushTimers } = createHarness({
+      fetch: async (url) => ({
+        ok: true,
+        json: async () => (String(url).includes('/diff?')
+          ? { path: '/a', kind: 'modify', lang: '', truncated: false, hunks: [{ old_start: 1, new_start: 1, lines: [{ t: 'add', s: `content v${version}` }] }] }
+          : { file_changes: [{ path: '/a', kind: 'modify', adds: 1, dels: 0, truncated: false }] })
+      })
+    });
+    app.toggleDiffSidebar();
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/a', kind: 'modify', adds: 1, dels: 0, seq: 1 });
+    await flushTimers();
+    await flushTimers();
+    assert(elementText(elements.diffFileList.querySelector('.diff-code')).includes('content v1'), 'initial body rendered');
+
+    // Newer server content under the same local seq (events missed while
+    // detached) must still replace the rendered rows.
+    version = 2;
+    app.refreshFileChangesAfterRun({ id: 's1' });
+    await flushTimers();
+    await flushTimers();
+    assert(elementText(elements.diffFileList.querySelector('.diff-code')).includes('content v2'), 'refetched body replaces stale rows');
+  });
+
+  await run('enter on nested action buttons does not toggle the header', async () => {
+    const { app, elements, flushTimers } = createHarness();
+    app.toggleDiffSidebar();
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/a', kind: 'modify', adds: 1, dels: 0, seq: 1 });
+    await flushTimers();
+
+    const header = elements.diffFileList.querySelector('.diff-file-row');
+    const action = header.querySelector('.diff-action-btn');
+    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-body').length, 1, 'starts expanded');
+
+    await header.dispatchEvent({ type: 'keydown', key: 'Enter', target: action });
+    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-body').length, 1, 'enter on action button leaves the accordion alone');
+
+    await header.dispatchEvent({ type: 'keydown', key: 'Enter', target: header });
+    assertEqual(elements.diffFileList.querySelectorAll('.diff-file-body').length, 0, 'enter on the header itself toggles');
+  });
+
+  await run('emphasis never splits surrogate pairs', () => {
+    const { app } = createHarness();
+    const rows = app.computeInlineEmphasis([
+      { type: 'del', text: '😀x' },
+      { type: 'add', text: '😃x' }
+    ]);
+    assertEqual(rows[0].emph.join(','), '0,2', 'del mark spans the whole emoji (both UTF-16 units)');
+    assertEqual(rows[1].emph.join(','), '0,2', 'add mark spans the whole emoji (both UTF-16 units)');
+  });
+
+  await run('copy path action writes through the app clipboard writer', async () => {
+    const { app, elements, flushTimers } = createHarness();
+    app.toggleDiffSidebar();
+    app.handleFileChangeEvent({ id: 's1' }, { path: '/w/a.go', kind: 'modify', adds: 1, dels: 0, seq: 1 });
+    await flushTimers();
+
+    const action = elements.diffFileList.querySelector('.diff-action-btn');
+    await action.dispatchEvent({ type: 'click' });
+    await flushTimers();
+    assertEqual(app.clipboardWrites[0], '/w/a.go', 'copy path uses getClipboardWriter');
   });
 
   if (failures > 0) {

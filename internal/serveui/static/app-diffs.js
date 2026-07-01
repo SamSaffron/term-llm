@@ -48,7 +48,8 @@ const sessionDiffState = (sessionId) => {
       userExpanded: new Set(),   // paths the user explicitly expanded (blocks auto-collapse)
       autoExpandedPath: '',      // the file currently held open by live-follow
       rowLimits: new Map(),      // path -> rendered row cap raised by "show more"
-      diffCache: new Map(),      // path -> { seq, data }
+      diffCache: new Map(),      // path -> { seq, rev, data }
+      cacheRev: 0,               // bumped on every cache write; keys body rebuilds
       dirtyPaths: new Set(),     // cached diff is stale (newer change seen)
       fetchErrors: new Set(),    // paths whose last diff fetch failed (shows retry)
       inflight: new Map(),       // path -> Promise (request dedup)
@@ -131,17 +132,26 @@ const emphasizeRowPair = (del, add) => {
   const a = del.text;
   const b = add.text;
   if (a === b) return;
-  const maxP = Math.min(a.length, b.length);
+  // Compare code points, not UTF-16 units, so the mark never splits a
+  // surrogate pair (two different emoji share a high surrogate).
+  const aCP = Array.from(a);
+  const bCP = Array.from(b);
+  const maxP = Math.min(aCP.length, bCP.length);
   let p = 0;
-  while (p < maxP && a[p] === b[p]) p += 1;
+  while (p < maxP && aCP[p] === bCP[p]) p += 1;
   let s = 0;
-  while (s < maxP - p && a[a.length - 1 - s] === b[b.length - 1 - s]) s += 1;
+  while (s < maxP - p && aCP[aCP.length - 1 - s] === bCP[bCP.length - 1 - s]) s += 1;
   if (p + s === 0) return;
   // Skip when the lines barely relate: emphasis should mark a small edit,
   // not repaint an entire replaced line.
-  if (p + s < Math.max(a.length, b.length) * 0.2) return;
-  del.emph = [p, a.length - s];
-  add.emph = [p, b.length - s];
+  if (p + s < Math.max(aCP.length, bCP.length) * 0.2) return;
+  const unitLen = (cps, count) => (count > 0 ? cps.slice(0, count).join('').length : 0);
+  const prefixA = unitLen(aCP, p);
+  const prefixB = unitLen(bCP, p);
+  const suffixA = unitLen(aCP.slice(aCP.length - s), s);
+  const suffixB = unitLen(bCP.slice(bCP.length - s), s);
+  del.emph = [prefixA, a.length - suffixA];
+  add.emph = [prefixB, b.length - suffixB];
 };
 
 // computeInlineEmphasis pairs consecutive del/add runs index-wise (GitHub
@@ -266,6 +276,45 @@ const scheduleDiffRefresh = (sessionId) => {
 
 // ===== Fetching =====
 
+// reconcileDiffPathState prunes path-keyed state after the authoritative
+// server list replaced ds.files: live rows can carry non-canonical paths
+// (e.g. relative) that the replace renames, and without pruning their
+// expansion/cache/limit state both leaks and detaches live-follow.
+const reconcileDiffPathState = (ds) => {
+  const prune = (collection) => {
+    collection.forEach((_, key) => {
+      // Sets iterate as (value, value); Maps as (value, key) — key works for both.
+      if (!ds.files.has(key)) collection.delete(key);
+    });
+  };
+  const wasFollowing = Boolean(ds.autoExpandedPath);
+  prune(ds.expanded);
+  prune(ds.userCollapsed);
+  prune(ds.userExpanded);
+  prune(ds.rowLimits);
+  prune(ds.diffCache);
+  prune(ds.dirtyPaths);
+  prune(ds.fetchErrors);
+  prune(ds.blocks);
+  if (ds.pendingScrollPath && !ds.files.has(ds.pendingScrollPath)) ds.pendingScrollPath = '';
+  if (ds.autoExpandedPath && !ds.files.has(ds.autoExpandedPath)) {
+    // The followed path was canonicalized away; keep following the change
+    // stream by moving to the most recent entry the user hasn't collapsed.
+    ds.autoExpandedPath = '';
+    if (wasFollowing) {
+      let candidate = null;
+      ds.files.forEach((entry) => {
+        if (ds.userCollapsed.has(entry.path)) return;
+        if (!candidate || (entry.lastSeq || 0) > (candidate.lastSeq || 0)) candidate = entry;
+      });
+      if (candidate) {
+        ds.autoExpandedPath = candidate.path;
+        ds.expanded.add(candidate.path);
+      }
+    }
+  }
+};
+
 const fetchSessionFileChanges = async (sessionId) => {
   const ds = sessionDiffState(sessionId);
   // Snapshot per-path seqs so live rows whose change events land while this
@@ -304,6 +353,13 @@ const fetchSessionFileChanges = async (sessionId) => {
     });
     ds.files = next;
     ds.listLoaded = true;
+    reconcileDiffPathState(ds);
+    // Cached diffs predating the authoritative seq are stale even though no
+    // live event bumped them (the tab may have missed events while detached).
+    ds.files.forEach((entry, path) => {
+      const cached = ds.diffCache.get(path);
+      if (cached && (entry.lastSeq || 0) > (cached.seq || 0)) ds.dirtyPaths.add(path);
+    });
     if (sessionId === state.activeSessionId) renderDiffSidebar(sessionId);
   } catch {
     // Network failures leave existing state untouched.
@@ -333,7 +389,10 @@ const fetchFileDiff = (sessionId, path) => {
         return null;
       }
       const data = await resp.json();
-      ds.diffCache.set(path, { seq: seqAtRequest, data });
+      // rev, not seq, keys body rebuilds: a refetch can return newer server
+      // content under an unchanged local seq (events missed while detached).
+      ds.cacheRev += 1;
+      ds.diffCache.set(path, { seq: seqAtRequest, rev: ds.cacheRev, data });
       ds.fetchErrors.delete(path);
 
       // A newer change may have landed mid-fetch; leave it dirty and schedule
@@ -525,8 +584,7 @@ const renderDiffTotals = (ds) => {
     // Pulse on change so new activity is discoverable while the panel is
     // closed, without stealing attention when nothing moved.
     if (badge._lastSummary !== undefined && badge._lastSummary !== summaryText && summaryText) {
-      badge.classList?.add?.('pulse');
-      setTimeout(() => badge.classList?.remove?.('pulse'), DIFF_FEEDBACK_MS);
+      applyTransientClass(badge, 'pulse');
     }
     badge._lastSummary = summaryText;
   }
@@ -538,14 +596,27 @@ const renderDiffTotals = (ds) => {
   }
 };
 
+// applyTransientClass flashes a feedback class, clearing any pending removal
+// first so rapid re-triggers extend the feedback instead of cutting it short.
+const applyTransientClass = (el, className) => {
+  if (!el?.classList) return;
+  const timers = el._diffFeedbackTimers || (el._diffFeedbackTimers = {});
+  if (timers[className]) clearTimeout(timers[className]);
+  el.classList.add(className);
+  timers[className] = setTimeout(() => {
+    el.classList.remove(className);
+    delete timers[className];
+  }, DIFF_FEEDBACK_MS);
+};
+
 // copyDiffText writes text to the clipboard and flashes the button as
-// feedback. Clipboard access is unavailable in some contexts (plain http);
-// the button then simply does nothing rather than throwing.
+// feedback. Uses the app-wide writer, which falls back to execCommand in
+// contexts without the async clipboard API (e.g. plain http).
 const copyDiffText = (button, text) => {
-  if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText) return;
-  navigator.clipboard.writeText(text).then(() => {
-    button.classList?.add?.('copied');
-    setTimeout(() => button.classList?.remove?.('copied'), DIFF_FEEDBACK_MS);
+  const writer = app.getClipboardWriter?.();
+  if (!writer) return;
+  Promise.resolve(writer.writeText(text)).then(() => {
+    applyTransientClass(button, 'copied');
   }).catch(() => {});
 };
 
@@ -646,6 +717,9 @@ const syncDiffFileBlock = (sessionId, ds, path) => {
     if (header.dataset) header.dataset.path = path;
     header.addEventListener('click', () => toggleDiffFile(sessionId, path));
     header.addEventListener('keydown', (event) => {
+      // Keys pressed on the nested action buttons must activate those
+      // buttons, not toggle the accordion.
+      if (event.target && event.target !== header) return;
       if (event.key === 'Enter' || event.key === ' ') {
         event.preventDefault?.();
         toggleDiffFile(sessionId, path);
@@ -723,8 +797,7 @@ const syncDiffFileBlock = (sessionId, ds, path) => {
     // Pulse rows that changed after their first paint so live updates are
     // visible without re-reading the numbers.
     if (block.renderedAdds !== null) {
-      block.header.classList.add('updated');
-      setTimeout(() => block.header.classList?.remove?.('updated'), DIFF_FEEDBACK_MS);
+      applyTransientClass(block.header, 'updated');
     }
     block.renderedAdds = entry.adds;
     block.renderedDels = entry.dels;
@@ -742,7 +815,7 @@ const syncDiffFileBlock = (sessionId, ds, path) => {
 
   const cached = ds.diffCache.get(path);
   const bodyKey = [
-    cached ? cached.seq : 'none',
+    cached ? cached.rev : 'none',
     ds.rowLimits.get(path) || 0,
     ds.fetchErrors.has(path) ? 1 : 0,
     typeof window.hljs !== 'undefined' ? 1 : 0

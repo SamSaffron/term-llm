@@ -836,3 +836,103 @@ func TestParseSequenceDSLWithWrite(t *testing.T) {
 		t.Errorf("action 2: got text length %d, want 100", len(actions[2].Text))
 	}
 }
+
+// drainDebugStream collects tool calls and concatenated text from one stream.
+func drainDebugStream(t *testing.T, p *DebugProvider, req Request) ([]*ToolCall, string) {
+	t.Helper()
+	stream, err := p.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+
+	var calls []*ToolCall
+	var text strings.Builder
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("stream error: %v", err)
+		}
+		switch event.Type {
+		case EventToolCall:
+			calls = append(calls, event.Tool)
+		case EventTextDelta:
+			text.WriteString(event.Text)
+		}
+	}
+	return calls, text.String()
+}
+
+// Earlier turns' tool results must not short-circuit new user commands:
+// only a conversation ENDING in tool results is the follow-up round of the
+// current turn.
+func TestDebugProviderCommandsWorkAfterEarlierToolResults(t *testing.T) {
+	p := NewDebugProvider("fast")
+	tools := []ToolSpec{{Name: "read_file"}}
+
+	calls, _ := drainDebugStream(t, p, Request{
+		Tools: tools,
+		Messages: []Message{
+			{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "read a.txt"}}},
+			{Role: RoleTool, Parts: []Part{{Type: PartToolResult, Text: "contents of a"}}},
+			{Role: RoleAssistant, Parts: []Part{{Type: PartText, Text: "Debug: Tool execution completed successfully."}}},
+			{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "read b.txt"}}},
+		},
+	})
+
+	if len(calls) != 1 {
+		t.Fatalf("got %d tool calls, want 1 (later-turn command must still parse)", len(calls))
+	}
+	var args map[string]string
+	if err := json.Unmarshal(calls[0].Arguments, &args); err != nil {
+		t.Fatalf("failed to unmarshal args: %v", err)
+	}
+	if args["path"] != "b.txt" {
+		t.Errorf("read_file path = %q, want b.txt", args["path"])
+	}
+}
+
+func TestDebugProviderCompletionWhenConversationEndsWithToolResults(t *testing.T) {
+	p := NewDebugProvider("fast")
+	tools := []ToolSpec{{Name: "read_file"}}
+
+	calls, text := drainDebugStream(t, p, Request{
+		Tools: tools,
+		Messages: []Message{
+			{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "read a.txt"}}},
+			{Role: RoleTool, Parts: []Part{{Type: PartToolResult, Text: "contents of a"}}},
+		},
+	})
+
+	if len(calls) != 0 {
+		t.Fatalf("got %d tool calls, want 0 (trailing tool results complete the turn)", len(calls))
+	}
+	if !strings.Contains(text, "Tool execution completed") {
+		t.Errorf("completion text = %q, want it to contain 'Tool execution completed'", text)
+	}
+}
+
+func TestDebugProviderDSLSequenceAfterEarlierToolResults(t *testing.T) {
+	p := NewDebugProvider("fast")
+	tools := []ToolSpec{{Name: "read_file"}, {Name: "write_file"}}
+
+	calls, _ := drainDebugStream(t, p, Request{
+		Tools: tools,
+		Messages: []Message{
+			{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "read a.txt"}}},
+			{Role: RoleTool, Parts: []Part{{Type: PartToolResult, Text: "contents of a"}}},
+			{Role: RoleAssistant, Parts: []Part{{Type: PartText, Text: "done"}}},
+			{Role: RoleUser, Parts: []Part{{Type: PartText, Text: "read c.txt, write*3 d.txt"}}},
+		},
+	})
+
+	if len(calls) != 2 {
+		t.Fatalf("got %d tool calls, want 2 (DSL sequence on a later turn)", len(calls))
+	}
+	if calls[0].Name != "read_file" || calls[1].Name != "write_file" {
+		t.Errorf("tool names = %q,%q, want read_file,write_file", calls[0].Name, calls[1].Name)
+	}
+}
