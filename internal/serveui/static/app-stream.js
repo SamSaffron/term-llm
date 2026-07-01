@@ -5,9 +5,11 @@ const app = window.TermLLMApp;
 const {
   UI_PREFIX, STORAGE_KEYS, state, elements, generateId, sanitizeInterruptState, INTERJECTION_PHASE, sanitizeMessage, syncTokenCookie, truncate, saveSessions,
   getActiveSession, createSession, scrollToBottom, setConnectionState, sessionSlug, updateURL,
-  persistAndRefreshShell, updateSessionUsageDisplay, splitHeaderModelEffort, compactHeaderModelLabel, getDefaultProviderName, getDefaultModelForProvider, refreshRelativeTimes, requestHeaders: _unusedRequestHeaders, updateAssistantNode, updateUserNode,
+  persistAndRefreshShell, updateSessionUsageDisplay, splitHeaderModelEffort, compactHeaderModelLabel, getDefaultProviderName, getDefaultModelForProvider, refreshRelativeTimes, requestHeaders: _unusedRequestHeaders, updateUserNode,
   updateToolNode, updateToolGroupNode, createMessageNode, createToolGroupNode, updateModelSwapNode, renderSidebar, renderMessages, maybeNotifyResponseComplete,
   enqueueAssistantStreamUpdate, finalizeAssistantStreamRender, syncTurnActionPanels,
+  updateMountedToolGroupNode, updateMountedModelSwapNode, updateMountedUserNode, enqueueMountedAssistantStreamUpdate, finalizeMountedAssistantStreamRender,
+  conversationDOMFor, isConversationMounted,
   subscribeToPush, shouldAutoSubscribeToPush, applyTextDirection, shouldSuppressPromptAutoFocus, setSessionOptimisticBusy, setSessionServerActiveRun,
   renderAttachments, buildAttachmentInputParts, cloneAttachmentForMessage
 } = app;
@@ -526,29 +528,64 @@ const updateResponseSequence = (session, payload) => {
 // Visible-session render guards: stream events may arrive after the user has
 // switched discussions, so session data can update while DOM work is limited to
 // the conversation currently mounted in elements.messages.
-const isSessionVisible = (session) => !state.draftSessionActive && state.activeSessionId === session.id;
+const isSessionVisible = (session) => {
+  if (!session) return false;
+  if (typeof isConversationMounted === 'function') return isConversationMounted(session);
+  return !state.draftSessionActive && state.activeSessionId === session.id;
+};
+
+const visibleConversationDOM = (session) => {
+  if (typeof conversationDOMFor === 'function') return conversationDOMFor(session);
+  return isSessionVisible(session) ? elements.messages : null;
+};
 
 const appendStreamMessageNode = (session, message, createNode = createMessageNode) => {
-  if (!isSessionVisible(session)) return null;
+  const root = visibleConversationDOM(session);
+  if (!root) return null;
   const node = createNode(message);
-  elements.messages.appendChild(node);
+  if (node?.dataset) node.dataset.sessionId = String(session?.id || '');
+  root.appendChild(node);
   return node;
 };
 
 const updateVisibleToolGroupNode = (session, message) => {
-  if (isSessionVisible(session)) updateToolGroupNode(message);
+  if (typeof updateMountedToolGroupNode === 'function') {
+    updateMountedToolGroupNode(session, message);
+  } else if (isSessionVisible(session)) {
+    updateToolGroupNode(message);
+  }
 };
 
 const updateVisibleModelSwapNode = (session, message) => {
-  if (isSessionVisible(session)) updateModelSwapNode(message);
+  if (typeof updateMountedModelSwapNode === 'function') {
+    updateMountedModelSwapNode(session, message);
+  } else if (isSessionVisible(session)) {
+    updateModelSwapNode(message);
+  }
+};
+
+const updateVisibleUserNode = (session, message) => {
+  if (typeof updateMountedUserNode === 'function') {
+    updateMountedUserNode(session, message);
+  } else if (isSessionVisible(session)) {
+    updateUserNode(message);
+  }
 };
 
 const enqueueVisibleAssistantStreamUpdate = (session, message) => {
-  if (isSessionVisible(session)) enqueueAssistantStreamUpdate(message);
+  if (typeof enqueueMountedAssistantStreamUpdate === 'function') {
+    enqueueMountedAssistantStreamUpdate(session, message);
+  } else if (isSessionVisible(session)) {
+    enqueueAssistantStreamUpdate(message);
+  }
 };
 
 const finalizeVisibleAssistantStreamRender = (session, message) => {
-  if (isSessionVisible(session)) finalizeAssistantStreamRender(message);
+  if (typeof finalizeMountedAssistantStreamRender === 'function') {
+    finalizeMountedAssistantStreamRender(session, message);
+  } else if (isSessionVisible(session)) {
+    finalizeAssistantStreamRender(message);
+  }
 };
 
 const scrollVisibleStreamToBottom = (session, force = false) => {
@@ -784,7 +821,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
         appendStreamMessageNode(session, marker);
       } else {
         marker.content = text;
-        if (isSessionVisible(session)) updateUserNode(marker);
+        if (isSessionVisible(session)) updateVisibleUserNode(session, marker);
       }
       scheduleStreamPersistence();
       scrollVisibleStreamToBottom(session);
@@ -994,7 +1031,7 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
         session.messages.push(message);
         appendStreamMessageNode(session, message);
       } else {
-        updateUserNode(message);
+        updateVisibleUserNode(session, message);
       }
       if (isSessionVisible(session)) syncTurnActionPanels();
       const committed = payload.interjection_id
@@ -2002,13 +2039,13 @@ const submitAskUserModal = async (cancelled = false) => {
             askUser: true
           };
           session.messages.push(message);
-          if (session.id === state.activeSessionId) {
+          if (isSessionVisible(session)) {
             const empty = elements.messages.querySelector('.empty-state');
             if (empty) empty.remove();
-            elements.messages.appendChild(createMessageNode(message));
           }
+          appendStreamMessageNode(session, message);
           saveSessions();
-          scrollToBottom(true);
+          scrollVisibleStreamToBottom(session, true);
         }
       }
     }
@@ -3488,7 +3525,7 @@ const setInterruptMessageState = (session, messageId, interruptState) => {
   const message = session.messages.find(m => m.id === messageId && m.role === 'user');
   if (!message) return;
   message.interruptState = normalized;
-  updateUserNode(message);
+  updateVisibleUserNode(session, message);
 };
 
 // Transition an interjection to a lifecycle phase, updating both the inline
@@ -3520,10 +3557,12 @@ const addInlineInterruptMessage = (session, prompt, messageId, interruptState, a
   }
   session.messages.push(message);
 
-  const emptyState = elements.messages.querySelector('.empty-state');
-  if (emptyState) emptyState.remove();
-  elements.messages.appendChild(createMessageNode(message));
-  syncTurnActionPanels();
+  if (isSessionVisible(session)) {
+    const emptyState = elements.messages.querySelector('.empty-state');
+    if (emptyState) emptyState.remove();
+  }
+  appendStreamMessageNode(session, message);
+  if (isSessionVisible(session)) syncTurnActionPanels();
   return message;
 };
 
@@ -3721,7 +3760,7 @@ const interruptActiveRun = async (session, prompt, messageId, contentParts = nul
   }
 
   saveSessions();
-  scrollToBottom(true);
+  scrollVisibleStreamToBottom(session, true);
   return action;
 };
 
@@ -3766,14 +3805,14 @@ const recoverInterruptFailure = async (session, prompt, messageId, attachments =
       setInterruptMessageState(session, messageId, 'queue');
       if (Array.isArray(attachments) && attachments.length > 0 && !existing.attachments) {
         existing.attachments = attachments.map(cloneAttachmentForMessage);
-        updateUserNode(existing);
+        updateVisibleUserNode(session, existing);
       }
     } else {
       addInlineInterruptMessage(session, prompt, messageId, 'queue', attachments);
     }
     queueInterruptFollowUp(session.id, prompt, messageId, attachments);
     persistAndRefreshShell();
-    scrollToBottom(true);
+    scrollVisibleStreamToBottom(session, true);
     clearDraftMessageForSession(session.id);
     return true;
   }
@@ -3864,7 +3903,7 @@ const sendMessage = async (options = {}) => {
     trackPendingInterjection(session.id, prompt || pendingAttachments[0]?.name || 'Attachment', pendingMessageId, 'deciding', pendingAttachments);
     addInlineInterruptMessage(session, prompt, pendingMessageId, 'evaluating', pendingAttachments);
     persistAndRefreshShell();
-    scrollToBottom(true);
+    scrollVisibleStreamToBottom(session, true);
 
     elements.promptInput.value = '';
     state.attachments = [];
@@ -3901,7 +3940,7 @@ const sendMessage = async (options = {}) => {
       renderAttachments();
       autoGrowPrompt();
       persistAndRefreshShell();
-      scrollToBottom(true);
+      scrollVisibleStreamToBottom(session, true);
     }
     return;
   }
@@ -3932,6 +3971,10 @@ const sendMessage = async (options = {}) => {
     state.activeSessionId = session.id;
     state.draftSessionActive = false;
     updateURL(sessionSlug(session));
+  }
+
+  if (wasDraftSessionSend && session?.id && state.activeSessionId === session.id && elements.messages?.dataset) {
+    elements.messages.dataset.sessionId = session.id;
   }
 
   const shouldRefreshMissingContinuation = !options._skipContinuationRefresh && Boolean(
@@ -3984,15 +4027,17 @@ const sendMessage = async (options = {}) => {
     session.title = truncate(prompt || pendingAttachments[0]?.name || 'Image', 60);
   }
 
-  const hadEmptyState = elements.messages.querySelector('.empty-state');
-  if (hadEmptyState) hadEmptyState.remove();
+  if (isSessionVisible(session)) {
+    const hadEmptyState = elements.messages.querySelector('.empty-state');
+    if (hadEmptyState) hadEmptyState.remove();
+  }
 
   if (isNewUserMessage) {
-    elements.messages.appendChild(createMessageNode(userMessage));
+    appendStreamMessageNode(session, userMessage);
   } else {
-    updateUserNode(userMessage);
+    updateVisibleUserNode(session, userMessage);
   }
-  syncTurnActionPanels();
+  if (isSessionVisible(session)) syncTurnActionPanels();
 
   setSessionOptimisticBusy(session, true);
   persistAndRefreshShell();
@@ -4003,7 +4048,7 @@ const sendMessage = async (options = {}) => {
     renderAttachments();
   }
   autoGrowPrompt();
-  scrollToBottom(true);
+  scrollVisibleStreamToBottom(session, true);
 
   state.expectCanceledRun = false;
   const sendGeneration = state.streamGeneration;
@@ -4124,9 +4169,9 @@ const sendMessage = async (options = {}) => {
 
     if (sendGeneration === state.streamGeneration) {
       const lastAssistant = session.messages.findLast(m => m.role === 'assistant');
-      if (lastAssistant) updateAssistantNode(lastAssistant);
+      if (lastAssistant) finalizeVisibleAssistantStreamRender(session, lastAssistant);
       persistAndRefreshShell();
-      scrollToBottom();
+      scrollVisibleStreamToBottom(session);
     }
   } catch (err) {
     streamState.closeToolGroup();
@@ -4180,7 +4225,7 @@ const sendMessage = async (options = {}) => {
     }
 
     const lastAssistant = session.messages.findLast(m => m.role === 'assistant');
-    if (lastAssistant) updateAssistantNode(lastAssistant);
+    if (lastAssistant) finalizeVisibleAssistantStreamRender(session, lastAssistant);
 
     if (session.activeResponseId) {
       await resumeActiveResponse(session, { streamState });
@@ -4261,7 +4306,7 @@ const sendMessage = async (options = {}) => {
     }
 
     persistAndRefreshShell();
-    scrollToBottom(true);
+    scrollVisibleStreamToBottom(session, true);
   } finally {
     if (state.abortController === controller) {
       state.abortController = null;

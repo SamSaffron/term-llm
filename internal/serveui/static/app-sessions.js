@@ -219,6 +219,8 @@ const switchToDraftSession = async (options = {}) => {
     stageCurrentComposerForSession(previousComposerSessionId);
   }
 
+  state.sessionSwitchGeneration = Number(state.sessionSwitchGeneration || 0) + 1;
+
   stopSessionStatePoll();
   closeRenameSessionModal();
   closeAskUserModal();
@@ -323,6 +325,12 @@ const switchToSession = async (sessionId, options = {}) => {
   }
   if (!session) return null;
 
+  const switchGeneration = (Number(state.sessionSwitchGeneration || 0) + 1);
+  state.sessionSwitchGeneration = switchGeneration;
+  const isCurrentSwitch = () => state.sessionSwitchGeneration === switchGeneration
+    && String(state.activeSessionId || '').trim() === nextId
+    && !state.draftSessionActive;
+
   stopSessionStatePoll();
   closeRenameSessionModal();
   if (state.askUser?.sessionId && state.askUser.sessionId !== nextId) {
@@ -363,10 +371,11 @@ const switchToSession = async (sessionId, options = {}) => {
   let didPreloadServerMessages = false;
   if (preloadServerMessagesPromise) {
     const msgs = await preloadServerMessagesPromise;
+    if (!isCurrentSwitch()) return null;
     if (Array.isArray(msgs)) {
       mergeServerMessagesWithLocalState(session, msgs);
       persistAndRefreshShell();
-      if (session.id === state.activeSessionId) {
+      if (isCurrentSwitch()) {
         renderMessages(true);
       }
       didPreloadServerMessages = true;
@@ -374,8 +383,13 @@ const switchToSession = async (sessionId, options = {}) => {
   }
 
   if (options.sync !== false) {
-    await syncActiveSessionFromServer(session, true, { skipMessagesFetch: didPreloadServerMessages });
+    await syncActiveSessionFromServer(session, true, {
+      skipMessagesFetch: didPreloadServerMessages,
+      expectedSwitchGeneration: switchGeneration
+    });
+    if (!isCurrentSwitch()) return null;
   }
+  if (!isCurrentSwitch()) return null;
   if (syncSelectedRuntimeFromSession(session)) {
     app.updateHeader();
   }
@@ -1515,13 +1529,19 @@ const scheduleSessionStatePoll = (sessionId, delay = 1200) => {
   }, delay);
 };
 
-const syncActiveSessionFromServer = async (session, pollOnActive = false, { skipMessagesFetch = false } = {}) => {
+const syncActiveSessionFromServer = async (session, pollOnActive = false, { skipMessagesFetch = false, expectedSwitchGeneration = null } = {}) => {
   if (!session) return null;
 
   const busyBefore = sessionHasInProgressState(session);
 
   const runtimeState = await loadServerSessionState(session.id);
   if (!runtimeState) return null;
+
+  const expectedGeneration = Number(expectedSwitchGeneration);
+  const hasExpectedGeneration = Number.isFinite(expectedGeneration) && expectedGeneration > 0;
+  const isStillActive = () => session.id === state.activeSessionId
+    && !state.draftSessionActive
+    && (!hasExpectedGeneration || state.sessionSwitchGeneration === expectedGeneration);
 
   let sessionChanged = false;
   if (applyMCPStateToSession(session, runtimeState)) {
@@ -1625,12 +1645,12 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
     saveSessions();
 
     updateBusySidebar();
-    if (session.id === state.activeSessionId && !state.abortController) {
+    if (isStillActive() && !state.abortController) {
       setStreaming(true);
       resumeAndDrain(session, { responseId: activeResponseId, recoverFromSnapshot });
       return runtimeState;
     }
-    if (pollOnActive) {
+    if (pollOnActive && isStillActive()) {
       scheduleSessionStatePoll(session.id);
     }
     return runtimeState;
@@ -1638,26 +1658,26 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
 
   if (activeRun && !state.abortController) {
     updateBusySidebar();
-    if (session.id === state.activeSessionId && !state.draftSessionActive) {
+    if (isStillActive()) {
       setStreaming(true);
     }
-    if (pollOnActive) {
+    if (pollOnActive && isStillActive()) {
       scheduleSessionStatePoll(session.id);
     }
     return runtimeState;
   }
 
   if (!activeRun && !state.abortController) {
-    stopSessionStatePoll();
-    if (session.activeResponseId || state.currentStreamResponseId) {
+    if (isStillActive()) stopSessionStatePoll();
+    if (session.activeResponseId || (isStillActive() && state.currentStreamResponseId)) {
       clearActiveResponseTracking(session, session.activeResponseId || state.currentStreamResponseId);
       saveSessions();
     }
     setSessionOptimisticBusy(session, false);
     setSessionServerActiveRun(session, false);
     updateBusySidebar();
-    setStreaming(false);
-    if (!skipMessagesFetch) {
+    if (isStillActive()) setStreaming(false);
+    if (isStillActive() && !skipMessagesFetch) {
       await refreshActiveSessionMessagesFromServer(session, {
         transcriptUpdatedAt: session.transcriptUpdatedAt,
         forceScroll: true
@@ -1666,12 +1686,14 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
     if (runtimeState.last_error) {
       addErrorMessage(String(runtimeState.last_error), session);
       persistAndRefreshShell();
-      if (session.id === state.activeSessionId) {
+      if (isStillActive()) {
         scrollToBottom(true);
       }
     }
-    setConnectionState('', '');
-    setStreaming(false);
+    if (isStillActive()) {
+      setConnectionState('', '');
+      setStreaming(false);
+    }
     requeuePendingInterjections(session);
     drainInterruptQueueIfIdle(session);
   }

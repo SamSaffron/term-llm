@@ -137,6 +137,7 @@ const state = {
   lastNotifiedResponseId: localStorage.getItem(STORAGE_KEYS.lastNotifiedResponseId) || '',
   streaming: false,
   streamGeneration: 0,
+  sessionSwitchGeneration: 0,
   currentStreamResponseId: '',
   currentStreamSessionId: '',
   renameSessionId: '',
@@ -2151,7 +2152,35 @@ const ensureActiveSession = () => {
   return active;
 };
 
-const findMessageElement = (id) => elements.messages.querySelector(`[data-message-id="${id}"]`);
+const mountedConversationSessionId = () => String(elements.messages?.dataset?.sessionId || '').trim();
+
+const isConversationMounted = (sessionOrId) => {
+  const sessionId = String(typeof sessionOrId === 'object' ? sessionOrId?.id : sessionOrId || '').trim();
+  return Boolean(
+    sessionId
+    && !state.draftSessionActive
+    && String(state.activeSessionId || '').trim() === sessionId
+    && mountedConversationSessionId() === sessionId
+  );
+};
+
+const conversationDOMFor = (sessionOrId) => (isConversationMounted(sessionOrId) ? elements.messages : null);
+
+const findMessageElement = (id, sessionOrId = null) => {
+  if (sessionOrId !== null && !isConversationMounted(sessionOrId)) return null;
+  const messageId = String(id || '').trim();
+  if (!messageId) return null;
+  const escapedId = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+    ? CSS.escape(messageId)
+    : messageId.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const node = elements.messages.querySelector(`[data-message-id="${escapedId}"]`);
+  if (!node) return null;
+  const nodeSessionId = String(node.dataset?.sessionId || '').trim();
+  const mountedSessionId = mountedConversationSessionId();
+  if (nodeSessionId && mountedSessionId && nodeSessionId !== mountedSessionId) return null;
+  if (sessionOrId === null) return node;
+  return !nodeSessionId || nodeSessionId === mountedSessionId ? node : null;
+};
 
 const refreshRelativeTimes = () => {
   elements.messages.querySelectorAll('[data-created]').forEach((node) => {
@@ -2334,6 +2363,9 @@ Object.assign(app, {
   visibleSessions,
   createSession,
   ensureActiveSession,
+  mountedConversationSessionId,
+  isConversationMounted,
+  conversationDOMFor,
   findMessageElement,
   refreshRelativeTimes,
   persistAndRefreshShell,

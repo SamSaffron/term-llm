@@ -4,7 +4,8 @@
 const app = window.TermLLMApp;
 const {
   STORAGE_KEYS, state, elements, INTERRUPT_BADGE_META, sanitizeInterruptState, relativeTime, fullDate, sessionBucket, toolIcon, formatUsage,
-  saveSessions, findMessageElement, scrollToBottom, refreshRelativeTimes, ensureActiveSession, updateDocumentTitle,
+  saveSessions, findMessageElement, mountedConversationSessionId, isConversationMounted, conversationDOMFor,
+  scrollToBottom, refreshRelativeTimes, ensureActiveSession, updateDocumentTitle,
   updateSessionUsageDisplay, renderMath, visibleSessions, sessionHasInProgressState, setSessionServerActiveRun,
   setAnimatedPanelOpen, initPanelSwipeToClose
 } = app;
@@ -593,6 +594,17 @@ const deferEmbeddedVideos = (target) => {
     video.setAttribute('preload', 'none');
     video.replaceWith(buildDeferredVideoNode(video));
   });
+};
+
+const currentMountedConversationSessionId = () => (
+  typeof mountedConversationSessionId === 'function'
+    ? mountedConversationSessionId()
+    : String(elements.messages?.dataset?.sessionId || state.activeSessionId || '').trim()
+);
+
+const stampMessageNodeSession = (node, sessionId = currentMountedConversationSessionId()) => {
+  if (node?.dataset) node.dataset.sessionId = String(sessionId || '');
+  return node;
 };
 
 const assistantStreamStates = new Map();
@@ -1209,7 +1221,7 @@ const enqueueAssistantStreamUpdate = (message) => {
 
   let node = findMessageElement(message.id);
   if (!node) {
-    node = createMessageNode({ ...message, content: '' });
+    node = stampMessageNodeSession(createMessageNode({ ...message, content: '' }));
     elements.messages.appendChild(node);
   }
 
@@ -1229,7 +1241,7 @@ const enqueueAssistantStreamUpdate = (message) => {
 const finalizeAssistantStreamRender = (message) => {
   let node = findMessageElement(message.id);
   if (!node) {
-    node = createMessageNode(message);
+    node = stampMessageNodeSession(createMessageNode(message));
     elements.messages.appendChild(node);
     syncTurnActionPanelForAssistant(message.id);
     return;
@@ -1313,7 +1325,7 @@ const createModelSwapNode = (message) => {
 const updateModelSwapNode = (message) => {
   let node = findMessageElement(message.id);
   if (!node) {
-    node = createModelSwapNode(message);
+    node = stampMessageNodeSession(createModelSwapNode(message));
     elements.messages.appendChild(node);
     return;
   }
@@ -1323,7 +1335,7 @@ const updateModelSwapNode = (message) => {
 
 const updateCompactionNode = (message) => {
   const node = findMessageElement(message.id);
-  const replacement = createCompactionNode(message);
+  const replacement = stampMessageNodeSession(createCompactionNode(message));
   if (node) {
     node.replaceWith(replacement);
   } else {
@@ -1468,7 +1480,7 @@ const createMessageNode = (message) => {
 const updateAssistantNode = (message) => {
   let node = findMessageElement(message.id);
   if (!node) {
-    node = createMessageNode(message);
+    node = stampMessageNodeSession(createMessageNode(message));
     elements.messages.appendChild(node);
     syncTurnActionPanelForAssistant(message.id);
     return;
@@ -1478,7 +1490,7 @@ const updateAssistantNode = (message) => {
 };
 
 const updateUserNode = (message) => {
-  const replacement = createMessageNode(message);
+  const replacement = stampMessageNodeSession(createMessageNode(message));
   const existing = findMessageElement(message.id);
   if (existing) {
     existing.replaceWith(replacement);
@@ -1490,7 +1502,7 @@ const updateUserNode = (message) => {
 const updateToolNode = (message) => {
   let node = findMessageElement(message.id);
   if (!node) {
-    node = createToolCard(message);
+    node = stampMessageNodeSession(createToolCard(message));
     elements.messages.appendChild(node);
     return;
   }
@@ -2096,7 +2108,7 @@ const syncTurnActionPanels = () => {
 const updateToolGroupNode = (message) => {
   let node = findMessageElement(message.id);
   if (!node) {
-    node = createToolGroupNode(message);
+    node = stampMessageNodeSession(createToolGroupNode(message));
     elements.messages.appendChild(node);
     return;
   }
@@ -2150,9 +2162,51 @@ const updateToolGroupNode = (message) => {
   }
 };
 
+const mountedConversationDOMFor = (sessionOrId) => {
+  if (typeof conversationDOMFor === 'function') return conversationDOMFor(sessionOrId);
+  const sessionId = String(typeof sessionOrId === 'object' ? sessionOrId?.id : sessionOrId || '').trim();
+  return sessionId && !state.draftSessionActive && state.activeSessionId === sessionId ? elements.messages : null;
+};
+
+const updateMountedToolGroupNode = (sessionOrId, message) => {
+  if (!mountedConversationDOMFor(sessionOrId)) return false;
+  updateToolGroupNode(message);
+  return true;
+};
+
+const updateMountedModelSwapNode = (sessionOrId, message) => {
+  if (!mountedConversationDOMFor(sessionOrId)) return false;
+  updateModelSwapNode(message);
+  return true;
+};
+
+const updateMountedUserNode = (sessionOrId, message) => {
+  if (!mountedConversationDOMFor(sessionOrId)) return false;
+  updateUserNode(message);
+  return true;
+};
+
+const enqueueMountedAssistantStreamUpdate = (sessionOrId, message) => {
+  if (!mountedConversationDOMFor(sessionOrId)) return false;
+  enqueueAssistantStreamUpdate(message);
+  return true;
+};
+
+const finalizeMountedAssistantStreamRender = (sessionOrId, message) => {
+  if (!mountedConversationDOMFor(sessionOrId)) return false;
+  finalizeAssistantStreamRender(message);
+  return true;
+};
+
 let _lastRenderedSessionId = null;
 let _lastRenderedMessageIds = [];
 let _lastRenderedMessageKeys = new Map();
+
+const appendConversationMessageNode = (message, sessionId) => {
+  const node = stampMessageNodeSession(createMessageNode(message), sessionId);
+  elements.messages.appendChild(node);
+  return node;
+};
 
 const currentRenderedMessageIds = () => Array.from(elements.messages.querySelectorAll('.message'))
   .map((node) => node.dataset?.messageId || '')
@@ -2271,9 +2325,10 @@ const renderMessages = (forceScroll = false) => {
   const session = ensureActiveSession();
   resetAssistantStreamRenders();
 
-  const sessionId = session ? session.id : null;
+  const sessionId = session ? session.id : '';
   const messages = session ? session.messages : [];
   const sessionHistoryLoading = Boolean(session?._serverOnly);
+  if (elements.messages?.dataset) elements.messages.dataset.sessionId = sessionId || '';
 
   if (!session || !messages.length) {
     elements.messages.innerHTML = '';
@@ -2306,7 +2361,7 @@ const renderMessages = (forceScroll = false) => {
       const emptyState = elements.messages.querySelector('.empty-state');
       if (emptyState) emptyState.remove();
       for (let i = _lastRenderedMessageIds.length; i < messages.length; i++) {
-        elements.messages.appendChild(createMessageNode(messages[i]));
+        appendConversationMessageNode(messages[i], sessionId);
         _lastRenderedMessageIds.push(messages[i].id);
         _lastRenderedMessageKeys.set(messages[i].id, messageRenderKey(messages[i]));
       }
@@ -2336,10 +2391,11 @@ const renderMessages = (forceScroll = false) => {
       nextMessageKeys.set(message.id, renderKey);
 
       let node = existingNodes.get(message.id) || null;
+      if (node) stampMessageNodeSession(node, sessionId);
       if (!node) {
-        node = createMessageNode(message);
+        node = stampMessageNodeSession(createMessageNode(message), sessionId);
       } else if (!messageNodeMatchesRole(node, message)) {
-        const replacement = createMessageNode(message);
+        const replacement = stampMessageNodeSession(createMessageNode(message), sessionId);
         node.replaceWith(replacement);
         node = replacement;
       } else if (_lastRenderedMessageKeys.get(message.id) !== renderKey) {
@@ -2370,7 +2426,7 @@ const renderMessages = (forceScroll = false) => {
   // Full rebuild
   elements.messages.innerHTML = '';
   messages.forEach((message) => {
-    elements.messages.appendChild(createMessageNode(message));
+    appendConversationMessageNode(message, sessionId);
   });
   _lastRenderedSessionId = sessionId;
   _lastRenderedMessageIds = messages.map((m) => m.id);
@@ -2487,6 +2543,11 @@ Object.assign(app, {
   buildArgsNode,
   createToolEntryNode,
   updateToolGroupNode,
+  updateMountedToolGroupNode,
+  updateMountedModelSwapNode,
+  updateMountedUserNode,
+  enqueueMountedAssistantStreamUpdate,
+  finalizeMountedAssistantStreamRender,
   resetAssistantStreamRenders,
   renderMessages
 });

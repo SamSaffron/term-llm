@@ -86,6 +86,7 @@ function makeMessageContainer() {
     querySelector() { return null; },
     querySelectorAll() { return []; },
     remove() {},
+    dataset: {},
   };
 }
 
@@ -291,6 +292,17 @@ function createHarness(options = {}) {
     lastEventTime: 0,
     expectCanceledRun: false,
   };
+  let activeSessionIdValue = String(state.activeSessionId || '');
+  Object.defineProperty(state, 'activeSessionId', {
+    get() { return activeSessionIdValue; },
+    set(value) {
+      activeSessionIdValue = String(value || '');
+      elements.messages.dataset.sessionId = activeSessionIdValue;
+    },
+    configurable: true,
+    enumerable: true,
+  });
+  state.activeSessionId = activeSessionIdValue;
 
   const connectionStates = [];
   let modelSwapUpdateCount = 0;
@@ -340,6 +352,13 @@ function createHarness(options = {}) {
       };
     },
     findMessageElement() { return null; },
+    isConversationMounted(sessionOrId) {
+      const id = typeof sessionOrId === 'object' ? sessionOrId?.id : sessionOrId;
+      return Boolean(id && !state.draftSessionActive && state.activeSessionId === id && elements.messages.dataset.sessionId === id);
+    },
+    conversationDOMFor(sessionOrId) {
+      return app.isConversationMounted(sessionOrId) ? elements.messages : null;
+    },
     scrollToBottom() {},
     setConnectionState: (text) => { connectionStates.push(String(text || '')); },
     sessionSlug(s) { return s ? s.id : ''; },
@@ -360,6 +379,31 @@ function createHarness(options = {}) {
     createMessageNode(message) { if (typeof options.onCreateMessageNode === 'function') options.onCreateMessageNode(message); return makeNode(); },
     createToolGroupNode() { return makeNode(); },
     updateModelSwapNode() { modelSwapUpdateCount += 1; },
+    updateMountedToolGroupNode(sessionOrId, message) {
+      if (!app.isConversationMounted(sessionOrId)) return false;
+      app.updateToolGroupNode(message);
+      return true;
+    },
+    updateMountedModelSwapNode(sessionOrId, message) {
+      if (!app.isConversationMounted(sessionOrId)) return false;
+      app.updateModelSwapNode(message);
+      return true;
+    },
+    updateMountedUserNode(sessionOrId, message) {
+      if (!app.isConversationMounted(sessionOrId)) return false;
+      app.updateUserNode(message);
+      return true;
+    },
+    enqueueMountedAssistantStreamUpdate(sessionOrId, message) {
+      if (!app.isConversationMounted(sessionOrId)) return false;
+      app.enqueueAssistantStreamUpdate(message);
+      return true;
+    },
+    finalizeMountedAssistantStreamRender(sessionOrId, message) {
+      if (!app.isConversationMounted(sessionOrId)) return false;
+      app.finalizeAssistantStreamRender(message);
+      return true;
+    },
     renderSidebar() {},
     renderWidgetSidebar() {},
     renderMessages() {},
@@ -849,6 +893,108 @@ async function testInactiveSessionStreamEventsDoNotAppendToVisibleDOM() {
   }
   if (!toolGroup || toolGroup.tools.length !== 1) {
     fail(name, 'inactive session tool data was not preserved', JSON.stringify(sessionA.messages));
+    await cleanup();
+    return;
+  }
+  if (elements.messages.children.length !== 0) {
+    fail(name, `expected visible DOM to stay empty, got ${elements.messages.children.length} appended nodes`);
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
+async function testInactiveExistingMessageUpdatesDoNotTouchVisibleDOM() {
+  const name = 'inactive existing message stream updates do not touch visible DOM';
+  let updatedUser = null;
+  const harness = createHarness({
+    onUpdateUserNode(message) {
+      updatedUser = message;
+    }
+  });
+  const { app, state, elements, cleanup } = harness;
+
+  const sessionA = {
+    id: 'session_existing_a',
+    title: 'A',
+    messages: [{ id: 'msg_pending', role: 'user', content: 'interrupt me', created: 1000, interruptState: 'evaluating' }],
+    activeResponseId: 'resp_existing',
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  const sessionB = {
+    id: 'session_existing_b',
+    title: 'B',
+    messages: [],
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+    number: 2,
+  };
+  state.sessions.push(sessionA, sessionB);
+  state.activeSessionId = sessionB.id;
+  elements.messages.dataset.sessionId = sessionB.id;
+
+  const streamState = app.createResponseStreamState(sessionA);
+  app.applyResponseStreamEvent(sessionA, streamState, 'response.interjection', {
+    text: 'interrupt me',
+    interjection_id: 'msg_pending',
+    sequence_number: 1,
+  });
+
+  if (updatedUser) {
+    fail(name, 'inactive session existing message update reached visible DOM updater', JSON.stringify(updatedUser));
+    await cleanup();
+    return;
+  }
+  if (sessionA.messages[0].interruptState !== 'interject') {
+    fail(name, 'inactive session data was not updated', JSON.stringify(sessionA.messages[0]));
+    await cleanup();
+    return;
+  }
+  if (elements.messages.children.length !== 0) {
+    fail(name, `expected visible DOM to stay empty, got ${elements.messages.children.length} appended nodes`);
+    await cleanup();
+    return;
+  }
+
+  await cleanup();
+  pass(name);
+}
+
+async function testInactiveInterruptHelpersDoNotTouchVisibleDOM() {
+  const name = 'inactive interrupt helpers update data without touching visible DOM';
+  let updatedUser = null;
+  const harness = createHarness({
+    onUpdateUserNode(message) {
+      updatedUser = message;
+    }
+  });
+  const { app, state, elements, cleanup } = harness;
+
+  const sessionA = {
+    id: 'session_interrupt_a',
+    title: 'A',
+    messages: [{ id: 'msg_interrupt', role: 'user', content: 'wait', created: 1000, interruptState: 'evaluating' }],
+    activeResponseId: 'resp_interrupt',
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  const sessionB = { id: 'session_interrupt_b', title: 'B', messages: [], activeResponseId: null, lastSequenceNumber: 0, number: 2 };
+  state.sessions.push(sessionA, sessionB);
+  state.activeSessionId = sessionB.id;
+
+  app.setInterruptMessageState(sessionA, 'msg_interrupt', 'queue');
+  app.addInlineInterruptMessage(sessionA, 'background follow-up', 'msg_background', 'evaluating');
+
+  if (updatedUser) {
+    fail(name, 'inactive interrupt update reached visible DOM updater', JSON.stringify(updatedUser));
+    await cleanup();
+    return;
+  }
+  if (sessionA.messages[0].interruptState !== 'queue' || sessionA.messages.length !== 2) {
+    fail(name, 'inactive session interrupt data was not updated', JSON.stringify(sessionA.messages));
     await cleanup();
     return;
   }
@@ -4831,6 +4977,8 @@ function testCompletedResponseClearsUnappliedQueuedEffort() {
   await testResponseCompletedForcesSidebarStatusRefresh();
   await testStaleTerminalStreamDoesNotRefreshStatus();
   await testInactiveSessionStreamEventsDoNotAppendToVisibleDOM();
+  await testInactiveExistingMessageUpdatesDoNotTouchVisibleDOM();
+  await testInactiveInterruptHelpersDoNotTouchVisibleDOM();
   await testInactiveSessionPromptEventsRemainActionable();
   await testInactiveSessionFailureDoesNotAppendToVisibleDOM();
   await testConsumeResponseStreamReportsStaleWithoutApplyingEvents();

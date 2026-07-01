@@ -175,6 +175,58 @@ function loadAppCore() {
 
 const app = loadAppCore();
 
+(function testConversationMountGuardsAndScopedMessageLookup() {
+  const name = 'conversation DOM helpers require mounted session ownership';
+  const messages = makeNode();
+  messages.dataset = { sessionId: 'session_a' };
+  const nodes = [
+    { dataset: { messageId: 'msg_a', sessionId: 'session_a' } },
+    { dataset: { messageId: 'msg_b', sessionId: 'session_b' } },
+  ];
+  messages.querySelector = (selector) => {
+    const match = String(selector || '').match(/\[data-message-id="([^"]+)"\]/);
+    const id = match ? match[1] : '';
+    return nodes.find((node) => node.dataset.messageId === id) || null;
+  };
+
+  const testApp = loadAppCoreWith({ nodeOverrides: { messages } });
+  testApp.state.activeSessionId = 'session_a';
+  testApp.state.draftSessionActive = false;
+
+  if (testApp.mountedConversationSessionId() !== 'session_a') {
+    fail(name, `mounted id = ${JSON.stringify(testApp.mountedConversationSessionId())}`);
+    return;
+  }
+  if (!testApp.isConversationMounted('session_a') || testApp.conversationDOMFor('session_a') !== messages) {
+    fail(name, 'expected session_a to own mounted conversation');
+    return;
+  }
+  if (testApp.isConversationMounted('session_b') || testApp.conversationDOMFor('session_b') !== null) {
+    fail(name, 'session_b must not own mounted conversation');
+    return;
+  }
+  if (testApp.findMessageElement('msg_a') !== nodes[0]) {
+    fail(name, 'expected same-session message lookup');
+    return;
+  }
+  if (testApp.findMessageElement('msg_b') !== null) {
+    fail(name, 'foreign stamped message should be rejected');
+    return;
+  }
+  if (testApp.findMessageElement('msg_a', 'session_b') !== null) {
+    fail(name, 'session-scoped lookup should reject unmounted owner');
+    return;
+  }
+
+  messages.dataset.sessionId = 'session_b';
+  if (testApp.isConversationMounted('session_a') || testApp.findMessageElement('msg_a') !== null) {
+    fail(name, 'stale container session id should reject active-session DOM work');
+    return;
+  }
+
+  pass(name);
+})();
+
 pendingAsyncTests.push((async function testClipboardWriterFallsBackToExecCommand() {
   const name = 'clipboard writer falls back to execCommand on insecure origins';
   let execCommandValue = '';
