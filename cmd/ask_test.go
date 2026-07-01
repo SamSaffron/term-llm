@@ -242,6 +242,114 @@ func (s *askFailOnceMessageStore) AddMessage(ctx context.Context, sessionID stri
 	return nil
 }
 
+type askMemoryMessageStore struct {
+	session.NoopStore
+
+	nextID   int64
+	messages []session.Message
+	status   session.SessionStatus
+	current  string
+}
+
+func (s *askMemoryMessageStore) AddMessage(ctx context.Context, sessionID string, msg *session.Message) error {
+	s.nextID++
+	msg.ID = s.nextID
+	copied := *msg
+	copied.Parts = append([]llm.Part(nil), msg.Parts...)
+	s.messages = append(s.messages, copied)
+	return nil
+}
+
+func (s *askMemoryMessageStore) UpdateMessage(ctx context.Context, sessionID string, msg *session.Message) error {
+	for i := range s.messages {
+		if s.messages[i].ID == msg.ID {
+			copied := *msg
+			copied.Parts = append([]llm.Part(nil), msg.Parts...)
+			s.messages[i] = copied
+			return nil
+		}
+	}
+	return session.ErrNotFound
+}
+
+func (s *askMemoryMessageStore) UpdateStatus(ctx context.Context, id string, status session.SessionStatus) error {
+	s.status = status
+	return nil
+}
+
+func (s *askMemoryMessageStore) SetCurrent(ctx context.Context, sessionID string) error {
+	s.current = sessionID
+	return nil
+}
+
+func TestAskAssistantPersistenceUpsertsSnapshotsAndFinalText(t *testing.T) {
+	store := &askMemoryMessageStore{}
+	sess := &session.Session{ID: "ask-upsert-test"}
+	p := &askAssistantPersistence{store: store, sess: sess, reasoningCfg: config.DefaultReasoningConfig()}
+
+	if err := p.persist(context.Background(), llm.AssistantText("partial"), 10, false); err != nil {
+		t.Fatalf("persist snapshot: %v", err)
+	}
+	if err := p.persist(context.Background(), llm.AssistantText("partial plus more"), 20, true); err != nil {
+		t.Fatalf("persist final: %v", err)
+	}
+
+	if len(store.messages) != 1 {
+		t.Fatalf("messages len = %d, want 1: %+v", len(store.messages), store.messages)
+	}
+	if got := store.messages[0].TextContent; got != "partial plus more" {
+		t.Fatalf("persisted assistant text = %q, want final text", got)
+	}
+	if got := store.messages[0].DurationMs; got != 20 {
+		t.Fatalf("duration = %d, want 20", got)
+	}
+}
+
+func TestAskAssistantPersistenceInterruptedPrefersPendingSnapshotOverCumulativeCollector(t *testing.T) {
+	store := &askMemoryMessageStore{}
+	sess := &session.Session{ID: "ask-interrupted-tool-test"}
+	p := &askAssistantPersistence{store: store, sess: sess, reasoningCfg: config.DefaultReasoningConfig()}
+
+	if err := p.persist(context.Background(), llm.AssistantText("second turn partial"), 10, false); err != nil {
+		t.Fatalf("persist snapshot: %v", err)
+	}
+	if err := p.persistInterrupted(context.Background(), "first turn already persisted\nsecond turn partial", 20); err != nil {
+		t.Fatalf("persist interrupted: %v", err)
+	}
+
+	if len(store.messages) != 1 {
+		t.Fatalf("messages len = %d, want 1: %+v", len(store.messages), store.messages)
+	}
+	if got := store.messages[0].TextContent; got != "second turn partial" {
+		t.Fatalf("interrupted text = %q, want pending snapshot only", got)
+	}
+}
+
+func TestAskStreamCancelMarksProgramCanceledAndFlushesPartialText(t *testing.T) {
+	model := newAskStreamModel()
+	model.width = 80
+	updated, _ := model.Update(askContentMsg("partial answer"))
+	model = updated.(askStreamModel)
+
+	updated, cmd := model.Update(askCancelledMsg{})
+	model = updated.(askStreamModel)
+	if !errors.Is(model.streamErr, context.Canceled) {
+		t.Fatalf("streamErr = %v, want context.Canceled", model.streamErr)
+	}
+	if cmd == nil {
+		t.Fatal("expected cancel command to flush partial text and quit")
+	}
+}
+
+func TestStreamPlainTextReturnsContextErrorOnCancel(t *testing.T) {
+	ch := make(chan ui.StreamEvent)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := streamPlainText(ctx, ch, true); !errors.Is(err, context.Canceled) {
+		t.Fatalf("streamPlainText err = %v, want context.Canceled", err)
+	}
+}
+
 func TestAskResponsePersistenceErrorRedeliversAssistantToTurnCallback(t *testing.T) {
 	storeErr := errors.New("sqlite busy")
 	store := &askFailOnceMessageStore{

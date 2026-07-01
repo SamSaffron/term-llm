@@ -107,6 +107,9 @@ func streamJSON(ctx context.Context, events <-chan ui.StreamEvent, e *jsonEmitte
 		return err
 	}
 	if streamErr != nil {
+		if errors.Is(streamErr, context.Canceled) || errors.Is(streamErr, context.DeadlineExceeded) {
+			return nil
+		}
 		return &terminalFlushedError{err: streamErr}
 	}
 	return nil
@@ -135,7 +138,7 @@ func streamJSONEvents(ctx context.Context, events <-chan ui.StreamEvent, e *json
 	for {
 		select {
 		case <-ctx.Done():
-			return totalTokens, streamErr, nil
+			return totalTokens, ctx.Err(), nil
 		case ev, ok := <-events:
 			if !ok {
 				return totalTokens, streamErr, nil

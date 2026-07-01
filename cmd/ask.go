@@ -567,11 +567,18 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	var persistResponseCompleted llm.ResponseCompletedCallback
 	var persistTurnCompleted llm.TurnCompletedCallback
 	var persistSyntheticUserMessage func(context.Context, llm.Message) error
+	var askPersistence *askAssistantPersistence
 	if store != nil && sess != nil {
 		reasoningPersistenceCfg := config.DefaultReasoningConfig()
 		if cfg != nil {
 			reasoningPersistenceCfg = cfg.ResolveReasoning("ask")
 		}
+		askPersistence = &askAssistantPersistence{
+			store:        store,
+			sess:         sess,
+			reasoningCfg: reasoningPersistenceCfg,
+		}
+
 		// Save system message first if this is a new session with instructions
 		if instructions != "" && !historyHasSystem {
 			sysMsg := &session.Message{
@@ -604,18 +611,35 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 
 		// Set up response callback to save assistant message immediately (before tool execution)
-		// This ensures the message is persisted even if tool execution fails/crashes
+		// This ensures the message is persisted even if tool execution fails/crashes.
+		// Snapshot callbacks below upsert the same row so cancellation after already
+		// printed assistant output does not lose the partial transcript on --resume.
 		persistResponseCompleted = func(ctx context.Context, turnIndex int, assistantMsg llm.Message, metrics llm.TurnMetrics) error {
 			// Calculate duration from stream start
 			durationMs := time.Since(turnStartTime).Milliseconds()
 
-			return persistAskAssistantResponse(ctx, store, sess, assistantMsg, durationMs, reasoningPersistenceCfg)
+			return askPersistence.persist(ctx, assistantMsg, durationMs, true)
 		}
 
 		// Set up turn callback for tool result messages and metrics
 		persistTurnCompleted = func(ctx context.Context, turnIndex int, turnMessages []llm.Message, metrics llm.TurnMetrics) error {
 			// Save messages (tool results, or assistant message when no tools were executed)
-			for _, msg := range turnMessages {
+			appendStart := 0
+			if len(turnMessages) > 0 && turnMessages[0].Role == llm.RoleAssistant {
+				finalizeText := true
+				askPersistence.mu.Lock()
+				if askPersistence.pendingTextSet {
+					finalizeText = false
+				}
+				askPersistence.mu.Unlock()
+				if finalizeText {
+					if err := askPersistence.persist(ctx, turnMessages[0], time.Since(turnStartTime).Milliseconds(), true); err != nil {
+						return err
+					}
+				}
+				appendStart = 1
+			}
+			for _, msg := range turnMessages[appendStart:] {
 				sessionMsg := session.NewMessageWithReasoningPolicy(sess.ID, msg, -1, reasoningPersistenceCfg)
 				// Set duration for assistant messages (when responseCallback didn't run)
 				if msg.Role == llm.RoleAssistant {
@@ -623,6 +647,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 				}
 				_ = store.AddMessage(ctx, sess.ID, sessionMsg)
 			}
+			askPersistence.reset()
 			// Update metrics
 			_ = store.UpdateMetrics(ctx, sess.ID, 1, metrics.ToolCalls, metrics.InputTokens, metrics.OutputTokens, metrics.CachedInputTokens, metrics.CacheWriteTokens)
 			if total, count := engine.ContextEstimateBaseline(); total > 0 && count > 0 {
@@ -846,6 +871,11 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 	} else {
 		streamEvents = wrapStreamEvents(streamEvents)
+		if askPersistence != nil {
+			engine.SetAssistantSnapshotCallback(func(ctx context.Context, turnIndex int, assistantMsg llm.Message) error {
+				return askPersistence.persist(ctx, assistantMsg, time.Since(turnStartTime).Milliseconds(), false)
+			})
+		}
 		if responseCompletedCallback != nil {
 			engine.SetResponseCompletedCallback(responseCompletedCallback)
 		}
@@ -895,9 +925,41 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 		tools.ClearAskUserHooks() // Safe to call even if hooks weren't set
 
+		finishInterrupted := func() error {
+			if askPersistence != nil && collector != nil {
+				dbCtx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 5*time.Second)
+				_ = askPersistence.persistInterrupted(dbCtx, collector.Text(), time.Since(turnStartTime).Milliseconds())
+				cancel()
+			}
+			if store != nil && sess != nil {
+				_ = store.UpdateStatus(context.Background(), sess.ID, session.StatusInterrupted)
+				_ = store.SetCurrent(context.Background(), sess.ID)
+			}
+			if askJSON && jsonFinalPending {
+				if err := emitFinal(jsonEmit, stats, jsonTotalTokens); err != nil {
+					return fmt.Errorf("emit final: %w", err)
+				}
+				jsonFinalPending = false
+			}
+			return nil
+		}
+
+		isInterruptedErr := func(e error) bool {
+			return errors.Is(e, context.Canceled) || errors.Is(e, context.DeadlineExceeded)
+		}
+
+		var streamErr error
+		streamDone := false
 		if err != nil {
 			cancelStream()
-			<-errChan
+			streamErr = <-errChan
+			streamDone = true
+			if isInterruptedErr(err) || isInterruptedErr(streamErr) {
+				engine.SetAssistantSnapshotCallback(nil)
+				engine.SetResponseCompletedCallback(nil)
+				engine.SetTurnCompletedCallback(nil)
+				return finishInterrupted()
+			}
 			if askJSON && !isTerminalFlushed(err) {
 				_ = emitFatalError(jsonEmit, stats, err)
 				jsonFinalPending = false
@@ -905,6 +967,12 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		if askJSON && jsonStreamErr != nil {
+			if isInterruptedErr(jsonStreamErr) {
+				engine.SetAssistantSnapshotCallback(nil)
+				engine.SetResponseCompletedCallback(nil)
+				engine.SetTurnCompletedCallback(nil)
+				return finishInterrupted()
+			}
 			if emitErr := emitFinal(jsonEmit, stats, jsonTotalTokens); emitErr != nil {
 				return fmt.Errorf("emit final: %w", emitErr)
 			}
@@ -913,27 +981,24 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 
 		// Clear callbacks and update status
+		engine.SetAssistantSnapshotCallback(nil)
 		engine.SetResponseCompletedCallback(nil)
 		engine.SetTurnCompletedCallback(nil)
 
-		streamErr := <-errChan
+		if !streamDone {
+			streamErr = <-errChan
+		}
 		if streamErr != nil {
 			// Update session status based on error type
 			if store != nil && sess != nil {
-				if errors.Is(streamErr, context.Canceled) {
-					_ = store.UpdateStatus(ctx, sess.ID, session.StatusInterrupted)
+				if isInterruptedErr(streamErr) {
+					_ = store.UpdateStatus(context.Background(), sess.ID, session.StatusInterrupted)
 				} else {
-					_ = store.UpdateStatus(ctx, sess.ID, session.StatusError)
+					_ = store.UpdateStatus(context.Background(), sess.ID, session.StatusError)
 				}
 			}
-			if errors.Is(streamErr, context.Canceled) {
-				if askJSON && jsonFinalPending {
-					if err := emitFinal(jsonEmit, stats, jsonTotalTokens); err != nil {
-						return fmt.Errorf("emit final: %w", err)
-					}
-					jsonFinalPending = false
-				}
-				return nil
+			if isInterruptedErr(streamErr) {
+				return finishInterrupted()
 			}
 			err := fmt.Errorf("streaming failed: %w", streamErr)
 			if askJSON {
@@ -1047,6 +1112,87 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+type askAssistantPersistence struct {
+	store        session.Store
+	sess         *session.Session
+	reasoningCfg config.ReasoningConfig
+
+	mu                 sync.Mutex
+	pendingAssistantID int64
+	pendingTextSet     bool
+	lastAssistant      llm.Message
+	lastAssistantSet   bool
+}
+
+func (p *askAssistantPersistence) persist(ctx context.Context, assistantMsg llm.Message, durationMs int64, finalizeText bool) error {
+	if p == nil || p.store == nil || p.sess == nil {
+		return nil
+	}
+	sessionMsg := session.NewMessageWithReasoningPolicy(p.sess.ID, assistantMsg, -1, p.reasoningCfg)
+	sessionMsg.DurationMs = durationMs
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.lastAssistant = assistantMsg
+	p.lastAssistantSet = true
+	if p.pendingAssistantID != 0 {
+		sessionMsg.ID = p.pendingAssistantID
+		err := session.UpdateStreamingMessage(ctx, p.store, p.sess.ID, sessionMsg, finalizeText)
+		if err == nil {
+			if finalizeText {
+				p.pendingTextSet = true
+			}
+			return nil
+		}
+		if !errors.Is(err, session.ErrNotFound) {
+			return err
+		}
+		p.pendingAssistantID = 0
+		p.pendingTextSet = false
+		sessionMsg.ID = 0
+	}
+
+	if err := p.store.AddMessage(ctx, p.sess.ID, sessionMsg); err != nil {
+		return err
+	}
+	p.pendingAssistantID = sessionMsg.ID
+	p.pendingTextSet = finalizeText
+	return nil
+}
+
+func (p *askAssistantPersistence) persistCollectedText(ctx context.Context, text string, durationMs int64) error {
+	if p == nil || text == "" {
+		return nil
+	}
+	return p.persist(ctx, llm.AssistantText(text), durationMs, true)
+}
+
+func (p *askAssistantPersistence) persistInterrupted(ctx context.Context, collectedText string, durationMs int64) error {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	hasPendingSnapshot := p.pendingAssistantID != 0 && p.lastAssistantSet
+	assistantMsg := p.lastAssistant
+	p.mu.Unlock()
+	if hasPendingSnapshot {
+		return p.persist(ctx, assistantMsg, durationMs, true)
+	}
+	return p.persistCollectedText(ctx, collectedText, durationMs)
+}
+
+func (p *askAssistantPersistence) reset() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.pendingAssistantID = 0
+	p.pendingTextSet = false
+	p.lastAssistant = llm.Message{}
+	p.lastAssistantSet = false
+	p.mu.Unlock()
 }
 
 func persistAskAssistantResponse(ctx context.Context, store session.Store, sess *session.Session, assistantMsg llm.Message, durationMs int64, reasoningPersistenceCfg config.ReasoningConfig) error {
@@ -1288,7 +1434,7 @@ func streamPlainText(ctx context.Context, events <-chan ui.StreamEvent, suppress
 	for {
 		select {
 		case <-ctx.Done():
-			return nil
+			return ctx.Err()
 		case ev, ok := <-events:
 			if !ok {
 				if showToolStatus && len(pendingTools) > 0 {
@@ -2002,6 +2148,9 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case askCancelledMsg:
+		if m.streamErr == nil {
+			m.streamErr = context.Canceled
+		}
 		m.done = true
 		m.resetCurrentReasoning()
 		m.smoothTickPending = false

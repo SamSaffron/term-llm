@@ -1318,6 +1318,58 @@ async function testConvertServerMessagesSuppressesNonBubbleAssistantRows() {
   pass(name);
 }
 
+async function testMergeServerMessagesPreservesLocalStoppedAssistantTailWhenServerLags() {
+  const name = 'mergeServerMessagesWithLocalState preserves local stopped assistant tail when server tail lags';
+  const { app } = await createSessionsHarness();
+  const session = {
+    id: 'sess_stop_lag',
+    title: 'Stopped lag',
+    messages: [
+      { id: 'u_local', role: 'user', content: 'question', created: 1000 },
+      { id: 'a_local', role: 'assistant', content: 'partial streamed answer', created: 1100 },
+    ],
+  };
+
+  app.mergeServerMessagesWithLocalState(session, [
+    { id: 'u_server', role: 'user', content: 'question', created: 1000 },
+  ]);
+
+  const contents = session.messages.map((message) => `${message.role}:${message.content || ''}`);
+  const want = ['user:question', 'assistant:partial streamed answer'];
+  if (JSON.stringify(contents) !== JSON.stringify(want)) {
+    fail(name, 'expected local streamed assistant text to survive stale server refresh', JSON.stringify(session.messages));
+    return;
+  }
+
+  pass(name);
+}
+
+async function testMergeServerMessagesPrefersLongerLocalStoppedAssistantOverStaleServerAssistant() {
+  const name = 'mergeServerMessagesWithLocalState prefers longer local stopped assistant over stale server assistant';
+  const { app } = await createSessionsHarness();
+  const session = {
+    id: 'sess_stop_lag_longer',
+    title: 'Stopped lag longer',
+    messages: [
+      { id: 'u_local', role: 'user', content: 'question', created: 1000 },
+      { id: 'a_local', role: 'assistant', content: 'partial plus more', created: 1100 },
+    ],
+  };
+
+  app.mergeServerMessagesWithLocalState(session, [
+    { id: 'u_server', role: 'user', content: 'question', created: 1000 },
+    { id: 'a_server', role: 'assistant', content: 'partial', created: 1100 },
+  ]);
+
+  const assistants = session.messages.filter((message) => message.role === 'assistant');
+  if (assistants.length !== 1 || assistants[0].content !== 'partial plus more') {
+    fail(name, 'expected stale shorter server assistant to be replaced, not duplicated', JSON.stringify(session.messages));
+    return;
+  }
+
+  pass(name);
+}
+
 async function testSessionHistoryInitialLoadRequestsTailOnly() {
   const name = 'initial session history load requests tail only';
   const fetchCalls = [];
@@ -3967,6 +4019,8 @@ async function testMCPPatchConflictDoesNotOptimisticallyEnable() {
   await testConvertServerMessagesAttachesToolResultImages();
   await testConvertServerMessagesRebasesHubImageURLs();
   await testConvertServerMessagesSuppressesNonBubbleAssistantRows();
+  await testMergeServerMessagesPreservesLocalStoppedAssistantTailWhenServerLags();
+  await testMergeServerMessagesPrefersLongerLocalStoppedAssistantOverStaleServerAssistant();
   await testSessionHistoryInitialLoadRequestsTailOnly();
   await testScrollNearTopLoadsOlderPageAndPreservesViewport();
   await testScrollNearTopDrainsToolOnlyPagesUntilVisibleHistory();

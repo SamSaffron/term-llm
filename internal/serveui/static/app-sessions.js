@@ -1167,6 +1167,106 @@ const localCompactionScrollbackPrefix = (session, serverMessages) => {
   return prefix;
 };
 
+const isPreservableLocalTailMessage = (message) => {
+  if (!message || message.transient) return false;
+  if (message.role === 'assistant') {
+    return String(message.content || '').length > 0
+      || (Array.isArray(message.attachments) && message.attachments.length > 0);
+  }
+  if (message.role === 'tool-group') {
+    return Array.isArray(message.tools) && message.tools.length > 0;
+  }
+  if (message.role === 'model-swap') {
+    return String(message.content || '').trim().length > 0;
+  }
+  return false;
+};
+
+const assistantContentExtensionState = (serverMessage, localMessage) => {
+  if (serverMessage?.role !== 'assistant' || localMessage?.role !== 'assistant') return '';
+  const serverContent = String(serverMessage.content || '');
+  const localContent = String(localMessage.content || '');
+  if (!serverContent || !localContent || serverContent === localContent) return '';
+  if (localContent.startsWith(serverContent)) return 'local-longer';
+  if (serverContent.startsWith(localContent)) return 'server-longer';
+  return '';
+};
+
+const preserveLocalTailAfterStoppedRefresh = (merged, session) => {
+  if (!session || !Array.isArray(session.messages) || session.messages.length === 0 || !Array.isArray(merged)) return;
+
+  let localUserIndex = -1;
+  for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+    const message = session.messages[i];
+    if (message?.role === 'user' && !message.askUser) {
+      localUserIndex = i;
+      break;
+    }
+  }
+  if (localUserIndex < 0 || localUserIndex >= session.messages.length - 1) return;
+
+  const localUserKey = messageDedupeKey(session.messages[localUserIndex]);
+  if (!localUserKey) return;
+
+  let mergedUserIndex = -1;
+  for (let i = merged.length - 1; i >= 0; i -= 1) {
+    const message = merged[i];
+    if (message?.role === 'user' && !message.askUser && messageDedupeKey(message) === localUserKey) {
+      mergedUserIndex = i;
+      break;
+    }
+  }
+  if (mergedUserIndex < 0) return;
+
+  let turnEnd = merged.length;
+  for (let i = mergedUserIndex + 1; i < merged.length; i += 1) {
+    const message = merged[i];
+    if (message?.role === 'user' && !message.askUser) {
+      turnEnd = i;
+      break;
+    }
+  }
+
+  const existingKeys = new Set(merged.map(messageDedupeKey).filter(Boolean));
+  const additions = [];
+  for (const localMessage of session.messages.slice(localUserIndex + 1)) {
+    if (!isPreservableLocalTailMessage(localMessage)) continue;
+    const localKey = messageDedupeKey(localMessage);
+    if (!localKey || existingKeys.has(localKey)) continue;
+
+    let handledByServerMessage = false;
+    for (let i = mergedUserIndex + 1; i < turnEnd; i += 1) {
+      const state = assistantContentExtensionState(merged[i], localMessage);
+      if (state === 'server-longer') {
+        handledByServerMessage = true;
+        break;
+      }
+      if (state === 'local-longer') {
+        const serverIdentity = {
+          id: merged[i].id,
+          created: merged[i].created,
+          serverSeq: merged[i].serverSeq,
+        };
+        merged[i] = { ...merged[i], ...localMessage, ...serverIdentity };
+        existingKeys.add(localKey);
+        handledByServerMessage = true;
+        break;
+      }
+    }
+    if (handledByServerMessage) continue;
+
+    // If assistant text diverged rather than extending a stale server prefix,
+    // keep the local bubble as a separate tail entry. Stop must never delete
+    // text the user already saw, even when reconciliation is ambiguous.
+    additions.push({ ...localMessage });
+    existingKeys.add(localKey);
+  }
+
+  if (additions.length > 0) {
+    merged.splice(turnEnd, 0, ...additions);
+  }
+};
+
 const mergeServerMessagesWithLocalState = (session, serverMessages) => {
   if (!session || !Array.isArray(serverMessages)) return;
 
@@ -1179,6 +1279,7 @@ const mergeServerMessagesWithLocalState = (session, serverMessages) => {
     ...preservedCompactionScrollback,
     ...serverMessages.map((message) => ({ ...message }))
   ];
+  preserveLocalTailAfterStoppedRefresh(merged, session);
   if (syntheticAskUserMessages.length > 0) {
     const insertAfter = (() => {
       for (let i = merged.length - 1; i >= 0; i -= 1) {
