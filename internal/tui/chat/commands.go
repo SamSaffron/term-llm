@@ -2727,11 +2727,18 @@ func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
 		}
 		if handoverDir != "" {
 			// Prefer the exact file this session's agent was told about via
-			// {{handover_path}}, so documents written by concurrent sessions
-			// or stray .md files can't shadow the plan. Fall back to scanning
-			// for the latest .md when the prompt names no handover file.
-			latestFile, latestInfo := m.sessionHandoverFile(handoverDir)
-			if latestFile == "" || latestInfo.Size() == 0 {
+			// {{handover_path}}. When the prompt names a path, never fall back
+			// to scanning — a newer .md from a concurrent session must not
+			// shadow this session's plan, even while ours is empty or unwritten.
+			// Scanning for the latest .md remains only for legacy prompts that
+			// name no handover file.
+			var latestFile string
+			var latestInfo os.FileInfo
+			if pinned := session.ExtractHandoverPath(m.currentSystemPromptText(), handoverDir); pinned != "" {
+				if info, err := os.Stat(pinned); err == nil {
+					latestFile, latestInfo = pinned, info
+				}
+			} else {
 				latestFile, latestInfo = findLatestHandoverFile(handoverDir)
 			}
 			if latestFile != "" && latestInfo.Size() > 0 {
@@ -2909,23 +2916,6 @@ func (m *Model) currentSystemPromptText() string {
 		}
 	}
 	return ""
-}
-
-// sessionHandoverFile returns the handover file this session's agent was told
-// about via {{handover_path}} — recovered from the persisted system prompt —
-// if a file exists there (following the rename symlink). Returns ("", nil)
-// otherwise. Each session names its own file, so concurrent sessions in the
-// same project cannot shadow each other's plans.
-func (m *Model) sessionHandoverFile(dir string) (string, os.FileInfo) {
-	path := session.ExtractHandoverPath(m.currentSystemPromptText(), dir)
-	if path == "" {
-		return "", nil
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return "", nil
-	}
-	return path, info
 }
 
 // findLatestHandoverFile scans dir for .md files and returns the path and

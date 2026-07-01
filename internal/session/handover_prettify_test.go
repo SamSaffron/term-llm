@@ -11,7 +11,18 @@ func staticSlugGen(slug string) HandoverSlugGenerator {
 	return func(context.Context, string) (string, error) { return slug, nil }
 }
 
+// requireSymlinks skips the test when the platform (or privilege level, e.g.
+// Windows without Developer Mode) does not support creating symlinks.
+func requireSymlinks(t *testing.T) {
+	t.Helper()
+	probe := filepath.Join(t.TempDir(), "probe")
+	if err := os.Symlink("target", probe); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+}
+
 func TestPrettifyHandoverNameBeforeFileExists(t *testing.T) {
+	requireSymlinks(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "2026-07-02-amber-anchor-apple.md")
 
@@ -50,6 +61,7 @@ func TestPrettifyHandoverNameBeforeFileExists(t *testing.T) {
 }
 
 func TestPrettifyHandoverNameExistingFileCarriesContent(t *testing.T) {
+	requireSymlinks(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "2026-07-02-amber-anchor-apple.md")
 	if err := os.WriteFile(path, []byte("already written"), 0o644); err != nil {
@@ -72,6 +84,7 @@ func TestPrettifyHandoverNameExistingFileCarriesContent(t *testing.T) {
 }
 
 func TestPrettifyHandoverNameCollisionKeepsRandomWord(t *testing.T) {
+	requireSymlinks(t)
 	dir := t.TempDir()
 	occupied := filepath.Join(dir, "2026-07-02-auth-refactor.md")
 	if err := os.WriteFile(occupied, []byte("another session"), 0o644); err != nil {
@@ -98,6 +111,7 @@ func TestPrettifyHandoverNameCollisionKeepsRandomWord(t *testing.T) {
 }
 
 func TestPrettifyHandoverNameCapsSlugAtTwoWords(t *testing.T) {
+	requireSymlinks(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "2026-07-02-amber-anchor-apple.md")
 

@@ -199,8 +199,13 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 
 // resolveWriteTarget follows symlinks at absPath so atomic temp+rename
 // writes land in the link's target instead of replacing the link with a
-// regular file. Dangling links resolve too — the rename then creates the
-// target. Non-symlinks are returned unchanged.
+// regular file. Only links whose target is a plain sibling name in the same
+// directory are followed — the handover rename case. Absolute targets or
+// targets in other directories are left alone: permission approval happens
+// before this resolution, so following them could redirect an approved write
+// outside the approved directory (e.g. a dangling link planted in the
+// auto-approved handover dir). Dangling same-directory links resolve too —
+// the rename then creates the target.
 func resolveWriteTarget(absPath string) string {
 	for i := 0; i < 8; i++ {
 		fi, err := os.Lstat(absPath)
@@ -211,10 +216,10 @@ func resolveWriteTarget(absPath string) string {
 		if err != nil {
 			return absPath
 		}
-		if !filepath.IsAbs(target) {
-			target = filepath.Join(filepath.Dir(absPath), target)
+		if filepath.IsAbs(target) || filepath.Dir(target) != "." {
+			return absPath
 		}
-		absPath = target
+		absPath = filepath.Join(filepath.Dir(absPath), target)
 	}
 	return absPath
 }
