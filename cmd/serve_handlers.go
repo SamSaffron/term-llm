@@ -1232,6 +1232,8 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 		if msg.Role == llm.RoleEvent {
 			if marker, ok := llm.ParseModelSwapMarker(msg.ToLLMMessage()); ok {
 				entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "model_swap", Text: marker.DisplayText})
+			} else if marker, ok := llm.ParseRunErrorMarker(msg.ToLLMMessage()); ok {
+				entry.Parts = append(entry.Parts, sessionMessagePartEntry{Type: "error", Text: marker.Message})
 			} else {
 				for _, p := range msg.Parts {
 					if p.Type == llm.PartText && p.Text != "" {

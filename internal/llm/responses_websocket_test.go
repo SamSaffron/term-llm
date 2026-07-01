@@ -508,8 +508,8 @@ func TestResponsesClientWebSocketConnectFailureFallsBackToHTTP(t *testing.T) {
 			if text != "fallback" {
 				t.Fatalf("text = %q, want fallback", text)
 			}
-			if wsAttempts.Load() != 3 {
-				t.Fatalf("websocket attempts = %d, want 3", wsAttempts.Load())
+			if wsAttempts.Load() != int32(responsesWebSocketMaxAttempts) {
+				t.Fatalf("websocket attempts = %d, want %d", wsAttempts.Load(), responsesWebSocketMaxAttempts)
 			}
 			if httpAttempts.Load() != 1 {
 				t.Fatalf("http attempts = %d, want 1", httpAttempts.Load())
@@ -600,11 +600,11 @@ func TestResponsesClientWebSocketReadFailureBeforeEventsRetriesWebSocketThenFall
 			if text != "fallback after read" {
 				t.Fatalf("text = %q, want fallback after read", text)
 			}
-			if wsAttempts.Load() != 3 || httpAttempts.Load() != 1 {
-				t.Fatalf("attempts ws=%d http=%d, want 3/1", wsAttempts.Load(), httpAttempts.Load())
+			if wsAttempts.Load() != int32(responsesWebSocketMaxAttempts) || httpAttempts.Load() != 1 {
+				t.Fatalf("attempts ws=%d http=%d, want %d/1", wsAttempts.Load(), httpAttempts.Load(), responsesWebSocketMaxAttempts)
 			}
-			if retries != responsesWebSocketMaxAttempts-1 {
-				t.Fatalf("retry events = %d, want %d", retries, responsesWebSocketMaxAttempts-1)
+			if retries != responsesWebSocketMaxRetries {
+				t.Fatalf("retry events = %d, want %d", retries, responsesWebSocketMaxRetries)
 			}
 			return
 		case EventError:

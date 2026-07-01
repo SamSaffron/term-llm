@@ -2854,6 +2854,59 @@ function testResponsePhaseEventUpdatesTransientMarker() {
   pass(name);
 }
 
+function testResponseRetryEventUpdatesTransientMarker() {
+  const name = 'response retry event updates transient marker without assistant text';
+  const harness = createHarness();
+  const { app, state } = harness;
+  const session = {
+    id: 'session_retry',
+    title: 'Retry test',
+    messages: [],
+    lastResponseId: null,
+    activeResponseId: null,
+    lastSequenceNumber: 0,
+    number: 1,
+  };
+  state.sessions.push(session);
+  state.activeSessionId = session.id;
+  const streamState = app.createResponseStreamState(session);
+
+  app.applyResponseStreamEvent(session, streamState, 'response.retry', {
+    message: 'Model stream interrupted; reconnecting (2/6)…',
+    attempt: 2,
+    max_attempts: 6,
+    wait_seconds: 0.5,
+    sequence_number: 1,
+  });
+  app.applyResponseStreamEvent(session, streamState, 'response.retry', {
+    message: 'Model stream interrupted; reconnecting (3/6)…',
+    attempt: 3,
+    max_attempts: 6,
+    wait_seconds: 1,
+    sequence_number: 2,
+  });
+
+  const markers = session.messages.filter((message) => message.role === 'phase');
+  const assistants = session.messages.filter((message) => message.role === 'assistant');
+  if (markers.length !== 1) {
+    fail(name, `expected one retry marker, got ${markers.length}`, JSON.stringify(session.messages));
+    return;
+  }
+  if (!markers[0].transient || markers[0].content !== 'Model stream interrupted; reconnecting (3/6)…') {
+    fail(name, 'retry marker was not updated in place', JSON.stringify(markers[0]));
+    return;
+  }
+  if (assistants.length !== 0) {
+    fail(name, 'retry event should not create assistant messages', JSON.stringify(assistants));
+    return;
+  }
+  if (session.lastSequenceNumber !== 2) {
+    fail(name, `lastSequenceNumber = ${session.lastSequenceNumber}, want 2`);
+    return;
+  }
+  pass(name);
+}
+
 function testResponsePhaseSeparatesAssistantSegments() {
   const name = 'response phase separates assistant segments in order';
   const harness = createHarness();
@@ -4888,6 +4941,7 @@ function testCompletedResponseClearsUnappliedQueuedEffort() {
   testCompletedResponseClearsUnappliedQueuedEffort();
   testModelSwapProgressEventUpdatesTransientMarker();
   testResponsePhaseEventUpdatesTransientMarker();
+  testResponseRetryEventUpdatesTransientMarker();
   testResponsePhaseSeparatesAssistantSegments();
   await testConnectTokenPreservesSelectedModelAndProviderFromState();
   await testCancelActiveResponseTearsDownLocallyBeforeServerPost();

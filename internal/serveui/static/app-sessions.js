@@ -659,6 +659,17 @@ const convertServerMessages = (serverMessages, options = {}) => {
 
     if (msg.role === 'event') {
       flushGroup();
+      const errorMarker = parts.find((part) => part.type === 'error');
+      if (errorMarker) {
+        result.push({
+          id: baseId,
+          role: 'error',
+          content: errorMarker.text || 'The response failed.',
+          created,
+          ...(seq !== null ? { serverSeq: seq } : {})
+        });
+        continue;
+      }
       const marker = parts.find((part) => part.type === 'model_swap') || parts.find((part) => part.type === 'text');
       result.push({
         id: baseId,

@@ -1001,6 +1001,33 @@ async function testDeveloperMessagesAreHidden() {
   pass(name);
 }
 
+async function testRunErrorEventsConvertToErrorMessages() {
+  const name = 'run error events convert to durable error messages';
+  const { app } = await createSessionsHarness();
+
+  const converted = app.convertServerMessages([
+    {
+      id: 1,
+      sequence: 1,
+      role: 'event',
+      created_at: 1000,
+      parts: [{ type: 'error', text: 'OpenAI Responses WebSocket retries exhausted' }],
+    },
+  ]);
+
+  if (converted.length !== 1) {
+    fail(name, `expected 1 converted message, got ${converted.length}`, JSON.stringify(converted));
+    return;
+  }
+  const msg = converted[0];
+  if (msg.role !== 'error' || msg.content !== 'OpenAI Responses WebSocket retries exhausted' || msg.serverSeq !== 1) {
+    fail(name, 'converted run error missing expected fields', JSON.stringify(msg));
+    return;
+  }
+
+  pass(name);
+}
+
 async function testConvertServerMessagesCompactionSummariesBecomeMarkers() {
   const name = 'server compaction summary converts to compact marker with active boundary';
   const { app } = await createSessionsHarness();
@@ -4011,6 +4038,7 @@ async function testMCPPatchConflictDoesNotOptimisticallyEnable() {
   await testNewQueryRefreshesHeaderAfterRuntimeMetadataLoads();
   await testMergeServerSessionsMigratesInterruptBuffersToRealSessionId();
   await testDeveloperMessagesAreHidden();
+  await testRunErrorEventsConvertToErrorMessages();
   await testConvertServerMessagesCompactionSummariesBecomeMarkers();
   await testConvertServerMessagesSuppressesCompactionRetainedRawTail();
   await testConvertServerMessagesSuppressesAuthoritativeCompactionTailFlag();

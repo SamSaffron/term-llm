@@ -792,6 +792,34 @@ const applyResponseStreamEvent = (session, streamState, event, payload) => {
     return { terminal: false };
   }
 
+  if (event === 'response.retry') {
+    const message = String(payload?.message || '').trim() || 'Model stream interrupted; reconnecting…';
+    if (streamState.currentAssistantMessage?.content) {
+      finalizeVisibleAssistantStreamRender(session, streamState.currentAssistantMessage);
+    }
+    streamState.currentAssistantMessage = null;
+    let marker = streamState.currentPhaseMessage || null;
+    if (!marker) {
+      marker = {
+        id: generateId('phase'),
+        role: 'phase',
+        content: message,
+        created: Date.now(),
+        transient: true
+      };
+      streamState.currentPhaseMessage = marker;
+      session.messages.push(marker);
+      appendStreamMessageNode(session, marker);
+    } else {
+      marker.content = message;
+      if (isSessionVisible(session)) updateUserNode(marker);
+    }
+    setConnectionState(message);
+    scheduleStreamPersistence();
+    scrollVisibleStreamToBottom(session);
+    return { terminal: false };
+  }
+
   if (event === 'response.output_text.new_segment') {
     streamState.closeToolGroup();
     if (streamState.currentAssistantMessage?.content) {

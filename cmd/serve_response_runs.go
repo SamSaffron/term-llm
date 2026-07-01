@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -1260,6 +1261,22 @@ func (s *serveServer) suppressResponseRunServerToolEvent(runtime *serveRuntime, 
 	return s != nil && s.cfg.suppressServerTools && runtime != nil && runtime.isServerExecutedTool(toolName)
 }
 
+func (s *serveServer) persistResponseRunErrorEvent(runtime *serveRuntime, sessionID, respID, errType, errMessage string) {
+	if runtime == nil || runtime.store == nil || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(errMessage) == "" {
+		return
+	}
+	dbCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	msg := llm.RunErrorEventMessage(llm.RunErrorMarker{
+		ResponseID: respID,
+		ErrorType:  errType,
+		Message:    errMessage,
+	})
+	if err := runtime.store.AddMessage(dbCtx, sessionID, session.NewMessage(sessionID, msg, -1)); err != nil {
+		log.Printf("[serve] persist response run error event failed for %s: %v", sessionID, err)
+	}
+}
+
 func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev llm.Event) error {
 	switch ev.Type {
 	case llm.EventTextDelta:
@@ -1382,6 +1399,21 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 		return run.appendEvent("response.phase", map[string]any{
 			"text": ev.Text,
 		})
+	case llm.EventRetry:
+		payload := map[string]any{
+			"attempt":      ev.RetryAttempt,
+			"max_attempts": ev.RetryMaxAttempts,
+			"wait_seconds": ev.RetryWaitSecs,
+		}
+		if ev.Err != nil {
+			payload["error"] = ev.Err.Error()
+		}
+		if ev.RetryMaxAttempts > 0 {
+			payload["message"] = fmt.Sprintf("Model stream interrupted; reconnecting (%d/%d)…", ev.RetryAttempt, ev.RetryMaxAttempts)
+		} else {
+			payload["message"] = "Model stream interrupted; reconnecting…"
+		}
+		return run.appendEvent("response.retry", payload)
 	case llm.EventInterjection:
 		payload := map[string]any{
 			"text": ev.Text,
@@ -1914,6 +1946,9 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 				default:
 					runtime.setLastUIRunError(errMessage)
 				}
+			}
+			if !errors.Is(err, context.Canceled) {
+				s.persistResponseRunErrorEvent(runtime, sessionID, respID, errType, errMessage)
 			}
 			if failErr != nil {
 				log.Printf("response run %s failed to append terminal event: %v", respID, failErr)

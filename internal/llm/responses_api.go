@@ -21,7 +21,11 @@ const maxResponsesAPIErrorBodyBytes = 64 * 1024
 var truncatedResponsesAPIErrorBodySuffix = []byte("\n... response body truncated")
 
 const (
-	responsesWebSocketMaxAttempts = 3
+	// Match Codex's default stream retry budget: five reconnect attempts after
+	// the initial WebSocket stream attempt. Keep the derived attempts constant so
+	// existing EventRetry attempt/max fields continue to describe attempt numbers.
+	responsesWebSocketMaxRetries  = 5
+	responsesWebSocketMaxAttempts = responsesWebSocketMaxRetries + 1
 	responsesWebSocketMaxBackoff  = 2 * time.Second
 )
 

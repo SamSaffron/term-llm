@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/session"
 )
 
 func TestEncodeTextDeltaPayloadMatchesJSONMarshalForInvalidUTF8(t *testing.T) {
@@ -93,6 +94,71 @@ func TestAppendResponseRunEventEmitsPhase(t *testing.T) {
 	}
 	if payload["text"] != "Compacting context..." {
 		t.Fatalf("payload text = %#v", payload["text"])
+	}
+}
+
+func TestAppendResponseRunEventEmitsRetry(t *testing.T) {
+	run := newResponseRun("resp_retry", "sess_test", "", "mock", time.Now().Unix(), func() {})
+	server := &serveServer{}
+	state := &responseRunStreamState{}
+
+	if err := server.appendResponseRunEvent(nil, run, state, llm.Event{
+		Type:             llm.EventRetry,
+		RetryAttempt:     2,
+		RetryMaxAttempts: 6,
+		RetryWaitSecs:    0.5,
+	}); err != nil {
+		t.Fatalf("appendResponseRunEvent() error = %v", err)
+	}
+
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	if len(run.events) != 1 {
+		t.Fatalf("events = %d, want 1", len(run.events))
+	}
+	ev := run.events[0]
+	if ev.Event != "response.retry" {
+		t.Fatalf("event name = %q, want response.retry", ev.Event)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(ev.Data, &payload); err != nil {
+		t.Fatalf("payload unmarshal: %v", err)
+	}
+	if payload["attempt"] != float64(2) || payload["max_attempts"] != float64(6) || payload["wait_seconds"] != 0.5 {
+		t.Fatalf("payload retry fields = %#v", payload)
+	}
+	if !strings.Contains(payload["message"].(string), "reconnecting (2/6)") {
+		t.Fatalf("payload message = %#v", payload["message"])
+	}
+}
+
+func TestPersistResponseRunErrorEventStoresDurableNonLLMMarker(t *testing.T) {
+	store := newServeRuntimeTestStore()
+	runtime := &serveRuntime{store: store}
+	server := &serveServer{}
+
+	server.persistResponseRunErrorEvent(runtime, "sess_error", "resp_error", "timeout_error", "Responses WebSocket retries exhausted")
+
+	store.mu.Lock()
+	messages := append([]session.Message(nil), store.messages["sess_error"]...)
+	store.mu.Unlock()
+	if len(messages) != 1 {
+		t.Fatalf("messages = %d, want 1", len(messages))
+	}
+	msg := messages[0]
+	if msg.Role != llm.RoleEvent {
+		t.Fatalf("role = %q, want event", msg.Role)
+	}
+	marker, ok := llm.ParseRunErrorMarker(msg.ToLLMMessage())
+	if !ok {
+		t.Fatalf("missing run error marker in %#v", msg.Parts)
+	}
+	if marker.ResponseID != "resp_error" || marker.ErrorType != "timeout_error" || marker.Message != "Responses WebSocket retries exhausted" {
+		t.Fatalf("marker = %#v", marker)
+	}
+	filtered := llm.FilterConversationMessages([]llm.Message{msg.ToLLMMessage(), llm.UserText("continue")})
+	if len(filtered) != 1 || filtered[0].Role != llm.RoleUser {
+		t.Fatalf("filtered messages = %#v, want only user message", filtered)
 	}
 }
 

@@ -218,6 +218,8 @@ func (r *MessageBlockRenderer) renderEventMessage(msg *session.Message) string {
 	text := strings.TrimSpace(msg.TextContent)
 	if marker, ok := llm.ParseModelSwapMarker(msg.ToLLMMessage()); ok {
 		text = marker.DisplayText
+	} else if marker, ok := llm.ParseRunErrorMarker(msg.ToLLMMessage()); ok {
+		text = marker.Message
 	}
 	if text == "" {
 		text = "↔ Session event"
