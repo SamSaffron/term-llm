@@ -198,9 +198,11 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (l
 	// Apply the replacement
 	newContent := edit.ApplyMatch(content, result, a.NewText)
 
-	// Write back atomically using a unique temp file
-	dir := filepath.Dir(absPath)
-	base := filepath.Base(absPath)
+	// Write back atomically using a unique temp file. Follow symlinks so the
+	// rename writes through the link instead of replacing it.
+	writePath := resolveWriteTarget(absPath)
+	dir := filepath.Dir(writePath)
+	base := filepath.Base(writePath)
 	tempFile, err := os.CreateTemp(dir, "."+base+".*.tmp")
 	if err != nil {
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create temp file: %v", err))), nil
@@ -228,7 +230,7 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (l
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to set file permissions: %v", err))), nil
 	}
 
-	if err := os.Rename(tempPath, absPath); err != nil {
+	if err := os.Rename(tempPath, writePath); err != nil {
 		os.Remove(tempPath)
 		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to rename temp file: %v", err))), nil
 	}
@@ -396,8 +398,11 @@ func (t *UnifiedDiffTool) applyFileDiff(ctx context.Context, absPath string, fd 
 		return fmt.Sprintf("No changes for %s.\n", fd.Path), warnings, nil, nil
 	}
 
-	dir := filepath.Dir(absPath)
-	base := filepath.Base(absPath)
+	// Follow symlinks so the atomic rename writes through the link instead
+	// of replacing it.
+	writePath := resolveWriteTarget(absPath)
+	dir := filepath.Dir(writePath)
+	base := filepath.Base(writePath)
 	tempFile, err := os.CreateTemp(dir, "."+base+".*.tmp")
 	if err != nil {
 		return "", append(warnings, fmt.Sprintf("%s: failed to create temp file: %v", fd.Path, err)), nil, nil
@@ -421,7 +426,7 @@ func (t *UnifiedDiffTool) applyFileDiff(ctx context.Context, absPath string, fd 
 		return "", append(warnings, fmt.Sprintf("%s: failed to set permissions: %v", fd.Path, err)), nil, nil
 	}
 
-	if err := os.Rename(tempPath, absPath); err != nil {
+	if err := os.Rename(tempPath, writePath); err != nil {
 		os.Remove(tempPath)
 		return "", append(warnings, fmt.Sprintf("%s: failed to rename: %v", fd.Path, err)), nil, nil
 	}

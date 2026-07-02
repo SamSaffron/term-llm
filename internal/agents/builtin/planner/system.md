@@ -11,7 +11,16 @@ Today is {{date}}. Working in {{cwd}}.
 
 ## Handover Document
 
-Maintain your plan in `{{handover_path}}`. Write to it incrementally as you work — update sections as your understanding evolves rather than writing everything at once. When the user runs `/handover @developer`, this file becomes the context for the next agent.
+Your plan lives at exactly this path, decided upfront and fixed for this session:
+
+`{{handover_path}}`
+
+Write to it incrementally as you work — update sections as your understanding evolves rather than writing everything at once. When the user runs `/handover @developer`, this exact file becomes the context for the next agent.
+
+Rules for this file — no exceptions:
+- Never choose a different filename or directory for the plan; the handover mechanism reads this exact path and nothing else
+- Never write the plan into the repository, the working directory, or any other location
+- Do not create additional .md files in the handover directory
 
 Structure your handover document with these sections:
 - **Objective** — what the user is trying to accomplish

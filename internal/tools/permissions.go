@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/gobwas/glob"
+
+	"github.com/samsaffron/term-llm/internal/appdata"
 )
 
 // ToolPermissions manages allowlists for tool access.
@@ -112,6 +114,9 @@ func (p *ToolPermissions) IsPathAllowedForRead(path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	if isHandoverPath(resolved) {
+		return true, nil
+	}
 	return p.isPathInDirs(resolved, p.ReadDirs), nil
 }
 
@@ -121,7 +126,27 @@ func (p *ToolPermissions) IsPathAllowedForWrite(path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	if isHandoverPath(resolved) {
+		return true, nil
+	}
 	return p.isPathInDirs(resolved, p.WriteDirs), nil
+}
+
+// isHandoverPath reports whether resolvedPath is inside term-llm's own
+// handover data directory. Handover plan documents are app-managed state
+// (see session.GetHandoverDir); agents read and update their session's plan
+// there constantly, so these paths are always allowed without explicit
+// read/write dir grants or approval prompts.
+func isHandoverPath(resolvedPath string) bool {
+	dataDir, err := appdata.GetDataDir()
+	if err != nil {
+		return false
+	}
+	root := filepath.Join(dataDir, "handover")
+	if resolved, err := filepath.EvalSymlinks(root); err == nil && resolved != "" {
+		root = resolved
+	}
+	return strings.HasPrefix(resolvedPath, root+string(filepath.Separator))
 }
 
 // IsShellCommandAllowed checks if a shell command matches any allowlist pattern or script.

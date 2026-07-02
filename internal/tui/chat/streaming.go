@@ -375,6 +375,14 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Name the handover file from the first user message so it carries a
+	// descriptive filename from the start.
+	if m.userMessageCount() == 1 {
+		if cmd := m.maybeNameHandoverCmd(content); cmd != nil {
+			preSendCmds = append(preSendCmds, cmd)
+		}
+	}
+
 	// Print user message permanently to scrollback (inline mode)
 	theme := m.styles.Theme()
 	promptStyle := lipgloss.NewStyle().Foreground(theme.Primary).Bold(true)
@@ -824,10 +832,93 @@ func (m *Model) saveSessionCmd() tea.Cmd {
 	}
 }
 
+// userMessageCount returns the number of user messages in this session.
+func (m *Model) userMessageCount() int {
+	m.messagesMu.Lock()
+	defer m.messagesMu.Unlock()
+	n := 0
+	for _, msg := range m.messages {
+		if msg.Role == llm.RoleUser {
+			n++
+		}
+	}
+	return n
+}
+
+// fastSlugGen returns a HandoverSlugGenerator that formats content into
+// promptFmt (which must contain a single %s), runs it through the fast
+// provider, and returns the trimmed response. Content is truncated to keep
+// the request small.
+func fastSlugGen(provider llm.Provider, promptFmt string) session.HandoverSlugGenerator {
+	return func(ctx context.Context, content string) (string, error) {
+		if len(content) > 2000 {
+			content = content[:2000]
+		}
+		prompt := fmt.Sprintf(promptFmt, content)
+		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		stream, err := provider.Stream(ctx, llm.Request{
+			Messages: []llm.Message{
+				llm.UserText(prompt),
+			},
+			MaxTurns: 1,
+		})
+		if err != nil {
+			return "", err
+		}
+		defer stream.Close()
+		var b strings.Builder
+		for {
+			ev, err := stream.Recv()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return "", err
+			}
+			if ev.Type == llm.EventTextDelta {
+				b.WriteString(ev.Text)
+			}
+		}
+		return strings.TrimSpace(b.String()), nil
+	}
+}
+
+// maybeNameHandoverCmd names this session's handover file from the first user
+// message: the fast provider produces two descriptive words which replace the
+// random slug upfront, and a symlink from the original path (baked into the
+// system prompt) keeps the agent's writes landing in the renamed file.
+func (m *Model) maybeNameHandoverCmd(firstMessage string) tea.Cmd {
+	if m.currentAgent == nil || !m.currentAgent.EnableHandover {
+		return nil
+	}
+	provider := m.fastProvider
+	if provider == nil {
+		return nil
+	}
+	promptText := m.currentSystemPromptText()
+	rootCtx := m.rootContext()
+	return func() tea.Msg {
+		dir, err := session.GetHandoverDir(".")
+		if err != nil {
+			return handoverRenameDoneMsg{err: err}
+		}
+		path := session.ExtractHandoverPath(promptText, dir)
+		if path == "" {
+			return handoverRenameDoneMsg{}
+		}
+		slugGen := fastSlugGen(provider, "Generate exactly two lowercase dash-separated words that describe this task, e.g. auth-refactor. Reply with ONLY the two words, nothing else.\n\n%s")
+		err = session.PrettifyHandoverName(rootCtx, path, firstMessage, slugGen)
+		return handoverRenameDoneMsg{err: err}
+	}
+}
+
 // maybeRenameHandoverCmd returns a tea.Cmd that checks the handover directory
 // for a random-named file large enough to rename. If found, it uses the fast
 // provider to generate a descriptive slug, renames the file, and creates a
-// symlink from the old name so the system prompt path remains valid.
+// symlink from the old name so the system prompt path remains valid. This is
+// the fallback for sessions where first-message naming did not run (e.g. no
+// fast provider at the time); it skips files that are already symlinks.
 func (m *Model) maybeRenameHandoverCmd() tea.Cmd {
 	if m.currentAgent == nil || !m.currentAgent.EnableHandover {
 		return nil
@@ -836,49 +927,25 @@ func (m *Model) maybeRenameHandoverCmd() tea.Cmd {
 	if provider == nil {
 		return nil
 	}
+	// Snapshot the prompt before the async command to avoid racing on m.messages.
+	promptText := m.currentSystemPromptText()
+	rootCtx := m.rootContext()
 	return func() tea.Msg {
 		dir, err := session.GetHandoverDir(".")
 		if err != nil {
 			return handoverRenameDoneMsg{err: err}
 		}
-		path, _ := findLatestHandoverFile(dir)
+		// Rename the file this session's agent writes to; only fall back to
+		// the latest-.md scan when the prompt names no handover file.
+		path := session.ExtractHandoverPath(promptText, dir)
+		if path == "" {
+			path, _ = findLatestHandoverFile(dir)
+		}
 		if path == "" {
 			return handoverRenameDoneMsg{}
 		}
-		slugGen := func(ctx context.Context, content string) (string, error) {
-			// Truncate content to first 2000 chars to keep the request small
-			if len(content) > 2000 {
-				content = content[:2000]
-			}
-			prompt := fmt.Sprintf("Generate a short filesystem-safe slug (2-5 words, lowercase, dash-separated) that describes this document. Reply with ONLY the slug, nothing else.\n\n%s", content)
-			ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-			defer cancel()
-			stream, err := provider.Stream(ctx, llm.Request{
-				Messages: []llm.Message{
-					llm.UserText(prompt),
-				},
-				MaxTurns: 1,
-			})
-			if err != nil {
-				return "", err
-			}
-			defer stream.Close()
-			var b strings.Builder
-			for {
-				ev, err := stream.Recv()
-				if err == io.EOF {
-					break
-				}
-				if err != nil {
-					return "", err
-				}
-				if ev.Type == llm.EventTextDelta {
-					b.WriteString(ev.Text)
-				}
-			}
-			return strings.TrimSpace(b.String()), nil
-		}
-		err = session.MaybeRenameHandover(m.rootContext(), path, slugGen)
+		slugGen := fastSlugGen(provider, "Generate a short filesystem-safe slug (2-5 words, lowercase, dash-separated) that describes this document. Reply with ONLY the slug, nothing else.\n\n%s")
+		err = session.MaybeRenameHandover(rootCtx, path, slugGen)
 		return handoverRenameDoneMsg{err: err}
 	}
 }

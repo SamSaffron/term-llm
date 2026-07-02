@@ -114,15 +114,20 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 		}
 	}
 
+	// Follow symlinks (including dangling ones) so the atomic rename below
+	// writes through the link — e.g. renamed handover plan files — instead
+	// of replacing the link with a regular file.
+	writePath := resolveWriteTarget(absPath)
+
 	// Create parent directories
-	dir := filepath.Dir(absPath)
+	dir := filepath.Dir(writePath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create directory: %v", err))), nil
 	}
 
 	// Atomic write: write to a uniquely-named temp file, then rename.
 	// Using os.CreateTemp avoids a name collision when concurrent calls target the same destination.
-	base := filepath.Base(absPath)
+	base := filepath.Base(writePath)
 	tf, err := os.CreateTemp(dir, "."+base+".*.tmp")
 	if err != nil {
 		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create temp file: %v", err))), nil
@@ -155,7 +160,7 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to set file permissions: %v", err))), nil
 	}
 
-	if err := os.Rename(tempPath, absPath); err != nil {
+	if err := os.Rename(tempPath, writePath); err != nil {
 		os.Remove(tempPath)
 		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to rename temp file: %v", err))), nil
 	}
@@ -190,6 +195,33 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 	output.Content = warning + output.Content
 
 	return output, nil
+}
+
+// resolveWriteTarget follows symlinks at absPath so atomic temp+rename
+// writes land in the link's target instead of replacing the link with a
+// regular file. Only links whose target is a plain sibling name in the same
+// directory are followed — the handover rename case. Absolute targets or
+// targets in other directories are left alone: permission approval happens
+// before this resolution, so following them could redirect an approved write
+// outside the approved directory (e.g. a dangling link planted in the
+// auto-approved handover dir). Dangling same-directory links resolve too —
+// the rename then creates the target.
+func resolveWriteTarget(absPath string) string {
+	for i := 0; i < 8; i++ {
+		fi, err := os.Lstat(absPath)
+		if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+			return absPath
+		}
+		target, err := os.Readlink(absPath)
+		if err != nil {
+			return absPath
+		}
+		if filepath.IsAbs(target) || filepath.Dir(target) != "." {
+			return absPath
+		}
+		absPath = filepath.Join(filepath.Dir(absPath), target)
+	}
+	return absPath
 }
 
 // countLines counts the number of lines in a string.

@@ -2726,7 +2726,21 @@ func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
 			}
 		}
 		if handoverDir != "" {
-			latestFile, latestInfo := findLatestHandoverFile(handoverDir)
+			// Prefer the exact file this session's agent was told about via
+			// {{handover_path}}. When the prompt names a path, never fall back
+			// to scanning — a newer .md from a concurrent session must not
+			// shadow this session's plan, even while ours is empty or unwritten.
+			// Scanning for the latest .md remains only for legacy prompts that
+			// name no handover file.
+			var latestFile string
+			var latestInfo os.FileInfo
+			if pinned := session.ExtractHandoverPath(m.currentSystemPromptText(), handoverDir); pinned != "" {
+				if info, err := os.Stat(pinned); err == nil {
+					latestFile, latestInfo = pinned, info
+				}
+			} else {
+				latestFile, latestInfo = findLatestHandoverFile(handoverDir)
+			}
 			if latestFile != "" && latestInfo.Size() > 0 {
 				// Check freshness: file must have been modified after the session started
 				sessionStart := time.Time{}
@@ -2884,6 +2898,24 @@ func pendingTargetScriptPreview(agent *agents.Agent) string {
 		b.WriteString("\n```\n")
 	}
 	return b.String()
+}
+
+// currentSystemPromptText returns the text of this session's persisted system
+// message, or "" if none exists.
+func (m *Model) currentSystemPromptText() string {
+	m.messagesMu.Lock()
+	defer m.messagesMu.Unlock()
+	for _, msg := range m.messages {
+		if msg.Role != llm.RoleSystem {
+			continue
+		}
+		for _, p := range msg.Parts {
+			if p.Text != "" {
+				return p.Text
+			}
+		}
+	}
+	return ""
 }
 
 // findLatestHandoverFile scans dir for .md files and returns the path and

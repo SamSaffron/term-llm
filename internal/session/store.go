@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -187,9 +188,11 @@ func GetHandoverDir(cwd string) (string, error) {
 	return filepath.Join(dataDir, "handover", projectID), nil
 }
 
-// GetHandoverPath returns a full handover file path with a deterministic
-// random name like "2026-04-03-amber-creek-bloom.md". The random slug is
-// generated once per call; callers should cache the result for the session.
+// GetHandoverPath returns a full handover file path with a random name like
+// "2026-04-03-amber-creek-bloom.md". A fresh slug is generated per call so
+// concurrent sessions in the same project get distinct plan files. The
+// expanded system prompt is the durable per-session record of the path; use
+// ExtractHandoverPath to recover it.
 func GetHandoverPath(cwd, date string) (string, error) {
 	dir, err := GetHandoverDir(cwd)
 	if err != nil {
@@ -197,6 +200,17 @@ func GetHandoverPath(cwd, date string) (string, error) {
 	}
 	slug := RandomHandoverSlug()
 	return filepath.Join(dir, date+"-"+slug+".md"), nil
+}
+
+// ExtractHandoverPath recovers the handover file path embedded in a system
+// prompt via {{handover_path}}. It matches the first path under dir with the
+// "<date>-<slug>.md" shape. Returns "" when the prompt names no such file.
+func ExtractHandoverPath(prompt, dir string) string {
+	if prompt == "" || dir == "" {
+		return ""
+	}
+	re := regexp.MustCompile(regexp.QuoteMeta(dir) + `[\\/]\d{4}-\d{2}-\d{2}-[a-zA-Z0-9-]+\.md`)
+	return re.FindString(prompt)
 }
 
 // ResolveDBPath resolves an optional DB path override.

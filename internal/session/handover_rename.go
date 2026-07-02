@@ -114,6 +114,85 @@ func MaybeRenameHandover(ctx context.Context, path string, slugGen HandoverSlugG
 	return nil
 }
 
+// PrettifyHandoverName renames a random-named handover file to a short
+// descriptive name derived from the session's first user message, so the file
+// has a nice name from the start. The original random path — baked into the
+// session's system prompt — keeps working via a symlink; when the agent has
+// not written the file yet, the symlink dangles until the first write lands
+// in the descriptive file (write tools follow symlinks).
+//
+// slugGen receives the description and should return roughly two words; the
+// result is sanitized and capped at two dash-separated words. Errors from
+// slugGen are silently skipped — the file simply keeps its random name.
+func PrettifyHandoverName(ctx context.Context, path, description string, slugGen HandoverSlugGenerator) error {
+	base := filepath.Base(path)
+	if !IsRandomHandoverName(base) {
+		return nil // already renamed or not a random name
+	}
+	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return nil // already prettified
+	}
+	if slugGen == nil || strings.TrimSpace(description) == "" {
+		return nil
+	}
+
+	slug, err := slugGen(ctx, description)
+	if err != nil || strings.TrimSpace(slug) == "" {
+		return nil // silently skip on error
+	}
+	slug = limitSlugWords(sanitizeSlug(slug), 2)
+	if slug == "" {
+		return nil
+	}
+
+	datePrefix := base[:10] // "2026-04-03"
+	dir := filepath.Dir(path)
+	newName := datePrefix + "-" + slug + ".md"
+	newPath := filepath.Join(dir, newName)
+	if _, err := os.Lstat(newPath); err == nil {
+		// A concurrent session got the same description: keep one random word
+		// from the original name for uniqueness.
+		words := handoverRandomPattern.FindStringSubmatch(base)
+		if words == nil {
+			return nil
+		}
+		newName = datePrefix + "-" + slug + "-" + words[1] + ".md"
+		newPath = filepath.Join(dir, newName)
+		if _, err := os.Lstat(newPath); err == nil {
+			return nil
+		}
+	}
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("handover prettify mkdir: %w", err)
+	}
+	// If the agent already wrote the file, carry the content over; otherwise
+	// the symlink dangles until the first write creates the target.
+	renamed := false
+	if _, err := os.Stat(path); err == nil {
+		if err := os.Rename(path, newPath); err != nil {
+			return fmt.Errorf("handover prettify rename: %w", err)
+		}
+		renamed = true
+	}
+	if err := os.Symlink(newName, path); err != nil {
+		if renamed {
+			_ = os.Rename(newPath, path)
+		}
+		return fmt.Errorf("handover prettify symlink: %w", err)
+	}
+	return nil
+}
+
+// limitSlugWords truncates a dash-separated slug to at most n words.
+func limitSlugWords(slug string, n int) string {
+	parts := strings.Split(slug, "-")
+	if len(parts) > n {
+		parts = parts[:n]
+	}
+	return strings.Join(parts, "-")
+}
+
 func sanitizeSlug(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	// Replace any non-alphanumeric chars with dashes
