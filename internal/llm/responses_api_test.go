@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -141,6 +143,47 @@ func TestBuildResponsesInput_FilePolicyAllowsNativePDF(t *testing.T) {
 		t.Fatalf("file_data = %q", parts[0].FileData)
 	}
 	if strings.Contains(fmt.Sprint(input[0].Content), "/tmp/term-llm") {
+		t.Fatalf("native file content leaked local path: %#v", input[0].Content)
+	}
+}
+
+func TestBuildResponsesInput_FilePolicyHydratesPathOnlyNativePDF(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	uploadsDir := filepath.Join(dataHome, "term-llm", "uploads")
+	if err := os.MkdirAll(uploadsDir, 0o700); err != nil {
+		t.Fatalf("mkdir uploads: %v", err)
+	}
+	filePath := filepath.Join(uploadsDir, "doc.pdf")
+	if err := os.WriteFile(filePath, []byte("file-bytes"), 0o600); err != nil {
+		t.Fatalf("write upload: %v", err)
+	}
+	messages := []Message{{Role: RoleUser, Parts: []Part{{
+		Type: PartFile,
+		Text: "[User uploaded file: doc.pdf — saved locally]",
+		FileData: &ToolFileData{
+			MediaType: "application/pdf",
+			Filename:  "doc.pdf",
+			SizeBytes: int64(len("file-bytes")),
+		},
+		FilePath: filePath,
+	}}}}
+
+	input := BuildResponsesInput(messages)
+	if len(input) != 1 {
+		t.Fatalf("len(input) = %d, want 1", len(input))
+	}
+	parts, ok := input[0].Content.([]ResponsesContentPart)
+	if !ok || len(parts) != 1 {
+		t.Fatalf("content = %#v, want one content part", input[0].Content)
+	}
+	if parts[0].Type != "input_file" || parts[0].Filename != "doc.pdf" {
+		t.Fatalf("file part = %#v", parts[0])
+	}
+	if parts[0].FileData != "data:application/pdf;base64,ZmlsZS1ieXRlcw==" {
+		t.Fatalf("file_data = %q", parts[0].FileData)
+	}
+	if strings.Contains(fmt.Sprint(input[0].Content), filePath) {
 		t.Fatalf("native file content leaked local path: %#v", input[0].Content)
 	}
 }

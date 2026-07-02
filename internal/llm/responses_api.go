@@ -4,11 +4,15 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -407,20 +411,20 @@ func buildResponsesMessageItems(role string, parts []Part, policy *FileUploadPol
 				})
 			}
 		case PartFile:
-			if part.FileData != nil && part.FileData.Base64 != "" && responseNativeFileAllowed(part.FileData, policy) {
+			if fileData, ok := responseNativeFileData(part, policy); ok {
 				flushText()
-				filename := strings.TrimSpace(part.FileData.Filename)
+				filename := strings.TrimSpace(fileData.Filename)
 				if filename == "" {
 					filename = "upload"
 				}
-				mediaType := NormalizeMediaType(part.FileData.MediaType)
+				mediaType := NormalizeMediaType(fileData.MediaType)
 				if mediaType == "" {
 					mediaType = "application/octet-stream"
 				}
 				fileParts := []ResponsesContentPart{{
 					Type:     "input_file",
 					Filename: filename,
-					FileData: fmt.Sprintf("data:%s;base64,%s", mediaType, part.FileData.Base64),
+					FileData: fmt.Sprintf("data:%s;base64,%s", mediaType, fileData.Base64),
 				}}
 				items = append(items, ResponsesInputItem{
 					Type:    "message",
@@ -461,6 +465,55 @@ func effectiveResponsesFilePolicy(policy *FileUploadPolicy) FileUploadPolicy {
 		return DefaultOpenAIResponsesFileUploadPolicy()
 	}
 	return *policy
+}
+
+func responseNativeFileData(part Part, policy *FileUploadPolicy) (*ToolFileData, bool) {
+	if part.FileData == nil {
+		return nil, false
+	}
+	fileData := *part.FileData
+	if strings.TrimSpace(fileData.Base64) == "" {
+		var ok bool
+		fileData, ok = hydrateResponseFileDataFromPath(part, fileData, policy)
+		if !ok {
+			return nil, false
+		}
+	}
+	if !responseNativeFileAllowed(&fileData, policy) {
+		return nil, false
+	}
+	return &fileData, true
+}
+
+func hydrateResponseFileDataFromPath(part Part, fileData ToolFileData, policy *FileUploadPolicy) (ToolFileData, bool) {
+	path := strings.TrimSpace(part.FilePath)
+	if path == "" || !isTermLLMUploadPath(path) {
+		return fileData, false
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() || info.Size() <= 0 || info.Size() > defaultFileUploadMaxBytes {
+		return fileData, false
+	}
+	fileData.SizeBytes = info.Size()
+	if strings.TrimSpace(fileData.MediaType) == "" {
+		fileData.MediaType = strings.TrimSpace(mime.TypeByExtension(strings.ToLower(filepath.Ext(path))))
+	}
+	if strings.TrimSpace(fileData.MediaType) == "" {
+		fileData.MediaType = "application/octet-stream"
+	}
+	if strings.TrimSpace(fileData.Filename) == "" {
+		fileData.Filename = filepath.Base(path)
+	}
+	active := effectiveResponsesFilePolicy(policy)
+	if !active.AllowsNative(fileData.MediaType, fileData.SizeBytes) {
+		return fileData, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 || int64(len(data)) > defaultFileUploadMaxBytes {
+		return fileData, false
+	}
+	fileData.Base64 = base64.StdEncoding.EncodeToString(data)
+	return fileData, true
 }
 
 func responseNativeFileAllowed(file *ToolFileData, policy *FileUploadPolicy) bool {

@@ -116,6 +116,59 @@ func TestMessageStripsImageBase64WhenStorageOptionEnabled(t *testing.T) {
 	}
 }
 
+func TestMessageStripsUploadedFileBase64WhenStorageOptionEnabled(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	uploadPath := filepath.Join(dataHome, "term-llm", "uploads", "doc.pdf")
+	if err := os.MkdirAll(filepath.Dir(uploadPath), 0o700); err != nil {
+		t.Fatalf("mkdir uploads: %v", err)
+	}
+	if err := os.WriteFile(uploadPath, []byte("file-bytes"), 0o600); err != nil {
+		t.Fatalf("write upload: %v", err)
+	}
+	const b64 = "ZmlsZS1ieXRlcw=="
+	msg := NewMessage("sess_test", llm.Message{Role: llm.RoleUser, Parts: []llm.Part{{
+		Type: llm.PartFile,
+		Text: "[User uploaded file: doc.pdf — saved locally]\n\n",
+		FileData: &llm.ToolFileData{
+			MediaType: "application/pdf",
+			Base64:    b64,
+			Filename:  "doc.pdf",
+			SizeBytes: int64(len("file-bytes")),
+		},
+		FilePath: uploadPath,
+	}}}, 0)
+
+	if msg.Parts[0].FileData == nil || msg.Parts[0].FileData.Base64 != b64 {
+		t.Fatal("in-memory message should preserve file base64 for the active request")
+	}
+	partsJSON, err := msg.PartsJSONForStorage(true)
+	if err != nil {
+		t.Fatalf("PartsJSONForStorage: %v", err)
+	}
+	if strings.Contains(partsJSON, b64) {
+		t.Fatalf("storage parts json retained file base64 despite strip option: %s", partsJSON)
+	}
+
+	var roundTrip Message
+	if err := roundTrip.SetPartsFromJSON(partsJSON); err != nil {
+		t.Fatalf("SetPartsFromJSON: %v", err)
+	}
+	part := roundTrip.Parts[0]
+	if part.FilePath != uploadPath {
+		t.Fatalf("FilePath = %q, want preserved path", part.FilePath)
+	}
+	if part.FileData == nil {
+		t.Fatal("FileData is nil, want file metadata preserved")
+	}
+	if part.FileData.Base64 != "" {
+		t.Fatalf("FileData.Base64 = %q, want stripped", part.FileData.Base64)
+	}
+	if part.FileData.MediaType != "application/pdf" || part.FileData.Filename != "doc.pdf" || part.FileData.SizeBytes != int64(len("file-bytes")) {
+		t.Fatalf("FileData metadata = %+v, want media type/filename/size preserved", part.FileData)
+	}
+}
+
 func TestSQLiteStoreStripImageBase64Config(t *testing.T) {
 	ctx := context.Background()
 	dataHome := t.TempDir()

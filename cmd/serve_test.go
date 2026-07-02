@@ -1246,6 +1246,18 @@ func TestParseResponsesInput_FileUploadSavesToDisk(t *testing.T) {
 	if strings.Contains(msg.Parts[0].Text, dataHome) || strings.Contains(msg.Parts[0].Text, entries[0].Name()) {
 		t.Fatalf("parts[0].text leaks upload path: %q", msg.Parts[0].Text)
 	}
+
+	stored := session.NewMessage("sess_upload", msg, 0)
+	partsJSON, err := stored.PartsJSONForStorage(true)
+	if err != nil {
+		t.Fatalf("PartsJSONForStorage: %v", err)
+	}
+	if strings.Contains(partsJSON, b64) {
+		t.Fatalf("storage parts json retained file base64 despite strip option: %s", partsJSON)
+	}
+	if !strings.Contains(partsJSON, msg.Parts[0].FilePath) || !strings.Contains(partsJSON, "doc.pdf") || !strings.Contains(partsJSON, "application/pdf") {
+		t.Fatalf("storage parts json lost file path or metadata: %s", partsJSON)
+	}
 }
 
 func TestParseResponsesInput_TextFileUploadEmbedsFallback(t *testing.T) {

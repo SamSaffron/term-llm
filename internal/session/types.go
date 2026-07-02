@@ -285,6 +285,17 @@ func partsForStorage(parts []llm.Part) []llm.Part {
 			out = append(out, copyPart)
 			continue
 		}
+		if part.Type == llm.PartFile && isSessionUploadPath(part.FilePath) && part.FileData != nil && strings.TrimSpace(part.FileData.Base64) != "" {
+			if out == nil {
+				out = append([]llm.Part(nil), parts[:i]...)
+			}
+			copyPart := part
+			fileData := *part.FileData
+			fileData.Base64 = ""
+			copyPart.FileData = &fileData
+			out = append(out, copyPart)
+			continue
+		}
 		if out != nil {
 			out = append(out, part)
 		}
