@@ -1711,6 +1711,39 @@ func (m *telegramSessionMgr) streamReply(ctx context.Context, bot botSender, ses
 		return true
 	}
 
+	ensureCurrentMessage := func() bool {
+		if !needNewMsg {
+			return true
+		}
+		newMsg, sendErr := bot.Send(tgbotapi.NewMessage(chatID, "⏳"))
+		if sendErr != nil {
+			log.Printf("[telegram] failed to send continuation placeholder (chat %d): %v", chatID, sendErr)
+			return false
+		}
+		currentMsgID = newMsg.MessageID
+		lastSentContent = ""
+		lastEditTime = time.Time{}
+		lastVisibleChange = time.Now()
+		needNewMsg = false
+		return true
+	}
+
+	sendProseChunks := func(prose string, force bool) (string, bool) {
+		for utf8.RuneCountInString(prose) > telegramMaxMessageLen {
+			if !ensureCurrentMessage() {
+				return prose, false
+			}
+			chunk, splitAtBytes := prefixRunes(prose, telegramMaxMessageLen)
+			if !sendEdit(currentMsgID, chunk, force) {
+				return prose, false
+			}
+			msgStart += splitAtBytes
+			prose = prose[splitAtBytes:]
+			needNewMsg = true
+		}
+		return prose, true
+	}
+
 	salvagePartialHistory := func(persistCtx context.Context, fallbackOp string) {
 		textMu.Lock()
 		partial := textBuf.String()
@@ -1801,6 +1834,11 @@ loop:
 				continue
 			}
 
+			prose, ok := sendProseChunks(prose, false)
+			if !ok {
+				continue
+			}
+
 			rendered := buildSegment(prose, toolDisplay, phase, true)
 			if forceProgress {
 				elapsed := time.Since(streamStart)
@@ -1809,30 +1847,8 @@ loop:
 				rendered = buildHeartbeatSegment(prose, toolDisplay, phase, spin, elapsed)
 			}
 
-			if utf8.RuneCountInString(prose) > telegramMaxMessageLen {
-				// Keep chunk splitting based on prose, not status line rendering.
-				splitAtRunes := telegramMaxMessageLen
-				proseRunes := utf8.RuneCountInString(prose)
-				if splitAtRunes > proseRunes {
-					splitAtRunes = proseRunes
-				}
-				chunk, splitAtBytes := prefixRunes(prose, splitAtRunes)
-				sendEdit(currentMsgID, chunk, false)
-				msgStart += splitAtBytes
-				needNewMsg = true
+			if !ensureCurrentMessage() {
 				continue
-			}
-
-			if needNewMsg {
-				// Lazily create the next placeholder now that we have content for it.
-				newMsg, sendErr := bot.Send(tgbotapi.NewMessage(chatID, "⏳"))
-				if sendErr == nil {
-					currentMsgID = newMsg.MessageID
-					lastSentContent = ""
-					lastEditTime = time.Time{}
-					lastVisibleChange = time.Now()
-				}
-				needNewMsg = false
 			}
 			sendEdit(currentMsgID, rendered, forceProgress)
 		case <-streamCtx.Done():
@@ -1950,12 +1966,12 @@ loop:
 	switch {
 	case prose != "":
 		// There is new content to show in the current window.
-		// If a lazy placeholder was pending, create it first.
-		if needNewMsg {
-			newMsg, sendErr := bot.Send(tgbotapi.NewMessage(chatID, "⏳"))
-			if sendErr == nil {
-				currentMsgID = newMsg.MessageID
-			}
+		prose, ok := sendProseChunks(prose, true)
+		if !ok {
+			break
+		}
+		if !ensureCurrentMessage() {
+			break
 		}
 		sendEdit(currentMsgID, prose, true)
 	case full == "":

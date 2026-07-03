@@ -61,10 +61,13 @@ func (s *carryoverPagingStore) GetMessagesPageDescending(ctx context.Context, se
 
 // fakeBotSender is a botSender that records all Send calls for test assertions.
 type fakeBotSender struct {
-	mu      sync.Mutex
-	sent    []string // text of each Send call, in order
-	nextID  int      // auto-incrementing MessageID
-	sendErr error    // if non-nil, returned on the very first Send call
+	mu             sync.Mutex
+	sent           []string // text of each successful Send call, in order
+	edits          []string // text of each successful EditMessageText call, in order
+	overLimitEdits []string // rejected edit texts that exceeded maxEditRunes
+	nextID         int      // auto-incrementing MessageID
+	sendErr        error    // if non-nil, returned on the very first Send call
+	maxEditRunes   int      // if positive, reject EditMessageText calls over this many runes
 }
 
 func (f *fakeBotSender) Send(c tgbotapi.Chattable) (tgbotapi.Message, error) {
@@ -83,6 +86,11 @@ func (f *fakeBotSender) Send(c tgbotapi.Chattable) (tgbotapi.Message, error) {
 		text = v.Text
 	case tgbotapi.EditMessageTextConfig:
 		text = v.Text
+		if f.maxEditRunes > 0 && utf8.RuneCountInString(text) > f.maxEditRunes {
+			f.overLimitEdits = append(f.overLimitEdits, text)
+			return tgbotapi.Message{}, fmt.Errorf("telegram: message is too long")
+		}
+		f.edits = append(f.edits, text)
 	}
 	f.sent = append(f.sent, text)
 
@@ -105,6 +113,22 @@ func (f *fakeBotSender) allTexts() []string {
 	defer f.mu.Unlock()
 	out := make([]string, len(f.sent))
 	copy(out, f.sent)
+	return out
+}
+
+func (f *fakeBotSender) allEditTexts() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.edits))
+	copy(out, f.edits)
+	return out
+}
+
+func (f *fakeBotSender) overLimitEditTexts() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.overLimitEdits))
+	copy(out, f.overLimitEdits)
 	return out
 }
 
@@ -727,6 +751,37 @@ func TestStreamReply_UnicodeChunkBoundaryPreservesUTF8(t *testing.T) {
 	}
 	if !foundContent {
 		t.Fatalf("expected full unicode response in sent texts; got %d messages", len(texts))
+	}
+}
+
+func TestStreamReply_FinalEditChunksFastLongResponse(t *testing.T) {
+	h := testutil.NewEngineHarness()
+	response := strings.Repeat("x", telegramMaxMessageLen*2+123)
+	h.Provider.AddTextResponse(response)
+
+	mgr, sess := newTestMgrAndSession(h)
+	mgr.tickerInterval = time.Hour
+	bot := &fakeBotSender{maxEditRunes: telegramMaxMessageLen}
+
+	if err := mgr.streamReply(context.Background(), bot, sess, 42, llm.UserText("hi")); err != nil {
+		t.Fatalf("streamReply returned error: %v", err)
+	}
+
+	if rejected := bot.overLimitEditTexts(); len(rejected) != 0 {
+		t.Fatalf("attempted %d over-limit edits; first had %d runes", len(rejected), utf8.RuneCountInString(rejected[0]))
+	}
+
+	edits := bot.allEditTexts()
+	if len(edits) != 3 {
+		t.Fatalf("successful edit count = %d; want 3 chunks", len(edits))
+	}
+	for i, text := range edits {
+		if got := utf8.RuneCountInString(text); got > telegramMaxMessageLen {
+			t.Fatalf("edit %d has %d runes; want <= %d", i, got, telegramMaxMessageLen)
+		}
+	}
+	if got := strings.Join(edits, ""); got != response {
+		t.Fatalf("joined edit chunks length = %d; want %d", len(got), len(response))
 	}
 }
 
