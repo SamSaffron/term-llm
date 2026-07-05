@@ -207,12 +207,13 @@ type Model struct {
 	pendingInterjection     string   // Interrupt text waiting to be injected or cancelled (latest, for compatibility)
 	pendingInterjectionID   string   // Stable ID for the latest displayed pending interjection
 	pendingInterjections    []pendingInterjectionUI
-	selectedInterjection    int    // Selected pending interjection; -1 means none
-	interjectionSeq         uint64 // Monotonic sequence for locally generated interjection IDs
-	interruptRequestSeq     uint64 // Monotonic sequence for async interrupt classification
-	activeInterruptSeq      uint64 // Currently active async interrupt classification request
-	pendingInterruptUI      string // UI state of latest pending interjection: "", "deciding", "interject"
-	interruptNotice         string // One-line UI notice for recent interrupt actions
+	selectedInterjection    int       // Selected pending interjection; -1 means none
+	interjectionSeq         uint64    // Monotonic sequence for locally generated interjection IDs
+	interruptRequestSeq     uint64    // Monotonic sequence for async interrupt classification
+	activeInterruptSeq      uint64    // Currently active async interrupt classification request
+	pendingInterruptUI      string    // UI state of latest pending interjection: "", "deciding", "interject"
+	interruptNotice         string    // One-line UI notice for recent interrupt actions
+	ctrlCExitArmedUntil     time.Time // Second Ctrl+C before this time exits the TUI
 	promptHistory           promptHistoryState
 	promptHistoryLookupSeq  uint64
 	// MCP (Model Context Protocol)

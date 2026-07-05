@@ -498,6 +498,10 @@ func (m *Model) showFooterError(content string) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) showFooterMessageWithTone(content string, tone string) (tea.Model, tea.Cmd) {
+	return m.showFooterMessageWithToneFor(content, tone, transientFooterMessageDuration)
+}
+
+func (m *Model) showFooterMessageWithToneFor(content string, tone string, duration time.Duration) (tea.Model, tea.Cmd) {
 	m.footerMessage = sanitizeFooterMessage(content)
 	m.footerMessageTone = tone
 	if m.footerMessage == "" {
@@ -506,7 +510,7 @@ func (m *Model) showFooterMessageWithTone(content string, tone string) (tea.Mode
 	}
 	m.footerMessageSeq++
 	seq := m.footerMessageSeq
-	return m, tea.Tick(transientFooterMessageDuration, func(time.Time) tea.Msg {
+	return m, tea.Tick(duration, func(time.Time) tea.Msg {
 		return footerMessageClearMsg{Seq: seq}
 	})
 }
@@ -560,7 +564,7 @@ func (m *Model) showHelpModal() (tea.Model, tea.Cmd) {
 			title: "Global",
 			rows: [][2]string{
 				{"Ctrl+/ or Ctrl+H", "Show help"},
-				{"Ctrl+C", "Quit; while streaming, cancel; with selected text, copy"},
+				{"Ctrl+C", "Copy selection; cancel active response/tool; press twice when idle to quit"},
 				{"Esc", "Cancel streaming / close modal / clear selection or input"},
 				{"Ctrl+P", "Command palette"},
 				{"Ctrl+K", "Clear conversation"},

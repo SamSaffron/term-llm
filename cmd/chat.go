@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/exitcode"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -78,7 +80,7 @@ Keyboard shortcuts:
   Enter        - Send message
   Shift+Enter  - Insert newline
   Ctrl+/ Ctrl+H - Show help
-  Ctrl+C       - Quit/cancel streaming/copy selection
+  Ctrl+C       - Copy selection; cancel active response/tool; press twice when idle to quit
   Ctrl+K       - Clear conversation
   Ctrl+N       - New session
   Ctrl+L       - Switch model
@@ -613,6 +615,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	defer programInput.cleanup()
 
 	var opts []tea.ProgramOption
+	opts = append(opts, tea.WithoutSignalHandler())
 	if programInput.disableInput {
 		opts = append(opts, tea.WithInput(nil))
 	} else if programInput.reader != nil {
@@ -739,11 +742,22 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	})
 	defer tools.ClearHandoverUIFunc()
 
-	// Wire signal handling to quit the Bubble Tea program gracefully.
-	// This ensures SIGTERM/SIGINT properly exit alt-screen mode.
+	// Wire OS signal handling to kill the Bubble Tea program and restore the
+	// terminal. Ctrl+C in raw TUI mode is handled as a keypress by the model;
+	// this path covers real SIGINT/SIGTERM (for example from another terminal).
 	go func() {
 		<-ctx.Done()
-		p.Quit()
+		killed := make(chan struct{})
+		go func() {
+			p.Kill()
+			close(killed)
+		}()
+		select {
+		case <-killed:
+		case <-time.After(2 * time.Second):
+			fmt.Fprintln(os.Stderr, "term-llm: forced exit after interrupt")
+			os.Exit(130)
+		}
 	}()
 
 	finalModel, err = p.Run()
@@ -757,6 +771,9 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	}
 
 	if err != nil {
+		if ctx.Err() != nil && errors.Is(err, tea.ErrProgramKilled) {
+			return "", "", exitcode.Cancel()
+		}
 		return "", "", fmt.Errorf("failed to run chat: %w", err)
 	}
 

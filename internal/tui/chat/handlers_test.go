@@ -38,6 +38,212 @@ func pressPromptHistoryKey(t *testing.T, m *Model, msg tea.KeyPressMsg) *Model {
 	return rm
 }
 
+func assertQuitCommand(t *testing.T, cmd tea.Cmd) {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("expected quit command, got nil")
+	}
+	msg := cmd()
+	if _, ok := msg.(tea.QuitMsg); !ok {
+		t.Fatalf("expected tea.QuitMsg, got %T", msg)
+	}
+}
+
+func TestCtrlCCopiesActiveSelection(t *testing.T) {
+	m := newTestChatModel(true)
+	m.contentLines = []string{"hello world"}
+	m.selection = Selection{
+		Active: true,
+		Anchor: ContentPos{Line: 0, Col: 0},
+		Cursor: ContentPos{Line: 0, Col: 5},
+	}
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	rm := updated.(*Model)
+	if cmd != nil {
+		t.Fatalf("copy selection should not return quit command, got %T", cmd())
+	}
+	if rm.quitting {
+		t.Fatal("Ctrl+C with active selection should copy, not quit")
+	}
+	if !rm.ctrlCExitArmedUntil.IsZero() {
+		t.Fatal("Ctrl+C with active selection should not arm exit confirmation")
+	}
+	if rm.selection.Active {
+		t.Fatal("expected selection to be cleared after copy")
+	}
+	if rm.copyStatus == "" {
+		t.Fatal("expected copy status after Ctrl+C selection copy")
+	}
+}
+
+func TestCtrlCRequiresConfirmationToQuitWhenIdle(t *testing.T) {
+	m := newTestChatModel(true)
+
+	updated, cmd := m.handleKeyMsg(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	rm := updated.(*Model)
+	if cmd == nil {
+		t.Fatal("expected footer confirmation command")
+	}
+	if rm.quitting {
+		t.Fatal("first Ctrl+C should not quit")
+	}
+	if !strings.Contains(rm.footerMessage, "Press Ctrl-C again to exit") {
+		t.Fatalf("footerMessage = %q, want confirmation", rm.footerMessage)
+	}
+
+	updated, cmd = rm.handleKeyMsg(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	rm = updated.(*Model)
+	if !rm.quitting {
+		t.Fatal("second Ctrl+C inside confirmation window should quit")
+	}
+	assertQuitCommand(t, cmd)
+}
+
+func TestCtrlCFirstCancelsEmbeddedApprovalThenRequiresConfirmation(t *testing.T) {
+	m := newTestChatModel(true)
+	m.approvalModel = tools.NewEmbeddedApprovalModel(t.TempDir()+"/file.go", false, 80)
+	doneCh := make(chan tools.ApprovalResult, 1)
+	m.approvalDoneCh = doneCh
+	m.pausedForExternalUI = true
+
+	updated, _ := m.handleKeyMsg(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	rm := updated.(*Model)
+	if rm.quitting {
+		t.Fatal("first Ctrl+C during approval should cancel, not quit")
+	}
+	if rm.approvalModel != nil || rm.approvalDoneCh != nil || rm.pausedForExternalUI {
+		t.Fatal("expected embedded approval to be cleared on Ctrl+C")
+	}
+	select {
+	case result := <-doneCh:
+		if !result.Cancelled || result.Choice != tools.ApprovalChoiceCancelled {
+			t.Fatalf("approval result = %#v, want cancelled", result)
+		}
+	default:
+		t.Fatal("expected Ctrl+C to unblock approval waiter")
+	}
+
+	updated, _ = rm.handleKeyMsg(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	rm = updated.(*Model)
+	if rm.quitting {
+		t.Fatal("first idle Ctrl+C after cancellation should only arm exit")
+	}
+	updated, cmd := rm.handleKeyMsg(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	rm = updated.(*Model)
+	if !rm.quitting {
+		t.Fatal("second idle Ctrl+C should quit")
+	}
+	assertQuitCommand(t, cmd)
+}
+
+func TestCtrlCFirstArmsExitFromDialog(t *testing.T) {
+	m := newTestChatModel(true)
+	m.dialog.ShowContent("Help", "body")
+
+	updated, _ := m.handleKeyMsg(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	rm := updated.(*Model)
+	if rm.quitting {
+		t.Fatal("first Ctrl+C should not quit from dialog")
+	}
+	if rm.dialog.IsOpen() {
+		t.Fatal("expected dialog to be closed when arming Ctrl+C exit")
+	}
+	if !strings.Contains(rm.footerMessage, "Press Ctrl-C again to exit") {
+		t.Fatalf("footerMessage = %q, want confirmation", rm.footerMessage)
+	}
+}
+
+func TestCtrlCFirstCancelsStreamingThenRequiresConfirmation(t *testing.T) {
+	m := newTestChatModel(true)
+	cancelled := false
+	m.streaming = true
+	m.streamCancelFunc = func() { cancelled = true }
+
+	updated, _ := m.handleKeyMsg(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	rm := updated.(*Model)
+	if rm.quitting {
+		t.Fatal("first Ctrl+C while streaming should cancel, not quit")
+	}
+	if !cancelled {
+		t.Fatal("expected Ctrl+C to cancel active stream")
+	}
+	if rm.streamCancelFunc != nil {
+		t.Fatal("expected streamCancelFunc to be cleared")
+	}
+	if !rm.ctrlCExitArmedUntil.IsZero() {
+		t.Fatal("stream cancellation should not arm immediate exit")
+	}
+
+	updated, _ = rm.handleKeyMsg(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	rm = updated.(*Model)
+	if rm.quitting {
+		t.Fatal("first idle Ctrl+C after stream cancellation should only arm exit")
+	}
+	updated, cmd := rm.handleKeyMsg(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	rm = updated.(*Model)
+	if !rm.quitting {
+		t.Fatal("second idle Ctrl+C should quit")
+	}
+	assertQuitCommand(t, cmd)
+}
+
+func TestCtrlCConfirmationExpires(t *testing.T) {
+	m := newTestChatModel(true)
+	m.ctrlCExitArmedUntil = time.Now().Add(-time.Second)
+
+	updated, _ := m.handleKeyMsg(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	rm := updated.(*Model)
+	if rm.quitting {
+		t.Fatal("expired Ctrl+C confirmation should re-arm, not quit")
+	}
+	if !rm.ctrlCExitArmedUntil.After(time.Now()) {
+		t.Fatal("expected Ctrl+C confirmation window to be re-armed")
+	}
+}
+
+func TestNonCtrlCDisarmsExitConfirmation(t *testing.T) {
+	m := newTestChatModel(true)
+	m.ctrlCExitArmedUntil = time.Now().Add(time.Second)
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	rm := updated.(*Model)
+	if !rm.ctrlCExitArmedUntil.IsZero() {
+		t.Fatal("expected non-Ctrl+C keypress to disarm exit confirmation")
+	}
+}
+
+func TestCtrlCCancelsStreamingApprovalWithoutQuitting(t *testing.T) {
+	m := newTestChatModel(true)
+	cancelled := false
+	m.streaming = true
+	m.streamCancelFunc = func() { cancelled = true }
+	m.approvalModel = tools.NewEmbeddedApprovalModel(t.TempDir()+"/file.go", false, 80)
+	doneCh := make(chan tools.ApprovalResult, 1)
+	m.approvalDoneCh = doneCh
+	m.pausedForExternalUI = true
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	rm := updated.(*Model)
+	if rm.quitting {
+		t.Fatal("first Ctrl+C during streaming approval should cancel, not quit")
+	}
+	if !cancelled {
+		t.Fatal("expected stream cancel func to be called")
+	}
+	if rm.approvalModel != nil || rm.approvalDoneCh != nil || rm.pausedForExternalUI {
+		t.Fatal("expected embedded approval to be cleared")
+	}
+	select {
+	case result := <-doneCh:
+		if !result.Cancelled || result.Choice != tools.ApprovalChoiceCancelled {
+			t.Fatalf("approval result = %#v, want cancelled", result)
+		}
+	default:
+		t.Fatal("expected Ctrl+C to unblock approval waiter")
+	}
+}
+
 func TestPromptHistoryRecallsCurrentSessionThenCrossSessionByDate(t *testing.T) {
 	store, err := session.NewStore(session.Config{Enabled: true, Path: t.TempDir() + "/sessions.db"})
 	if err != nil {

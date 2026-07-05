@@ -259,6 +259,115 @@ func (m *Model) toggleYoloMode() (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
+const ctrlCExitConfirmWindow = 2 * time.Second
+
+func (m *Model) cancelActiveForInterrupt() (bool, tea.Cmd) {
+	cancelled := false
+	var cmds []tea.Cmd
+
+	if m.approvalDoneCh != nil || m.approvalModel != nil {
+		if m.approvalDoneCh != nil {
+			select {
+			case m.approvalDoneCh <- tools.ApprovalResult{Choice: tools.ApprovalChoiceCancelled, Cancelled: true}:
+			default:
+			}
+		}
+		m.approvalDoneCh = nil
+		m.approvalModel = nil
+		m.pausedForExternalUI = false
+		cancelled = true
+	}
+
+	if m.askUserDoneCh != nil || m.askUserModel != nil {
+		if m.askUserDoneCh != nil {
+			select {
+			case m.askUserDoneCh <- nil:
+			default:
+			}
+		}
+		m.askUserDoneCh = nil
+		m.askUserModel = nil
+		m.pausedForExternalUI = false
+		cancelled = true
+	}
+
+	if m.handoverPreview != nil || m.pendingHandover != nil || m.handoverToolDoneCh != nil {
+		m.cancelHandoverTool()
+		m.pendingHandover = nil
+		m.handoverPreview = nil
+		cancelled = true
+	}
+
+	if (m.streaming || m.streamCancelFunc != nil) && !m.isStreamCancelRequested() {
+		m.phase = "Stopping..."
+		if m.streamCancelFunc != nil {
+			m.setStreamCancelRequested(true)
+			m.streamCancelFunc()
+			m.streamCancelFunc = nil
+		}
+		if m.engine != nil {
+			_ = m.engine.DrainInterjection()
+		}
+		m.clearPendingInterjectionState()
+		cmds = append(cmds, m.streamCancelTimeoutCmd())
+		cancelled = true
+	}
+
+	return cancelled, tea.Batch(cmds...)
+}
+
+func (m *Model) quitFromInterrupt() (tea.Model, tea.Cmd) {
+	m.quitting = true
+	m.phase = "Stopping..."
+	m.selection = Selection{}
+	m.ctrlCExitArmedUntil = time.Time{}
+	if m.completions != nil {
+		m.completions.Hide()
+	}
+	if m.dialog.IsOpen() {
+		m.dialog.Close()
+	}
+
+	_, _ = m.cancelActiveForInterrupt()
+	m.pausedForExternalUI = false
+	if m.program != nil {
+		p := m.program
+		go func() {
+			time.Sleep(2 * time.Second)
+			p.Kill()
+		}()
+	}
+
+	if m.showStats && m.stats.LLMCallCount > 0 {
+		m.stats.Finalize()
+		return m, m.quitCmd(tea.Println(m.stats.Render()))
+	}
+	return m, m.quitCmd()
+}
+
+func (m *Model) handleCtrlC() (tea.Model, tea.Cmd) {
+	if cancelled, cancelCmd := m.cancelActiveForInterrupt(); cancelled {
+		m.ctrlCExitArmedUntil = time.Time{}
+		_, footerCmd := m.showFooterWarning("Interrupted current response/tool.")
+		return m, tea.Batch(cancelCmd, footerCmd)
+	}
+
+	now := time.Now()
+	if !m.ctrlCExitArmedUntil.IsZero() && now.Before(m.ctrlCExitArmedUntil) {
+		return m.quitFromInterrupt()
+	}
+
+	m.ctrlCExitArmedUntil = now.Add(ctrlCExitConfirmWindow)
+	if m.completions != nil {
+		m.completions.Hide()
+	}
+	if m.dialog.IsOpen() {
+		m.dialog.Close()
+	}
+	_, footerCmd := m.showFooterMessageWithToneFor("Press Ctrl-C again to exit.", "warning", ctrlCExitConfirmWindow)
+	return m, footerCmd
+}
+
 func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if isChaosMonkeyKey(msg) {
 		if m.streaming && m.engine != nil {
@@ -267,6 +376,22 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m.showFooterMessageWithTone("Chaos monkey is enabled; start streaming, then press ctrl+m/ctrl+g to fail the stream.", "muted")
 	}
+
+	// Ctrl+C copies an active text selection, matching the status-line hint and
+	// preserving the long-standing selection workflow.
+	if m.selection.Active {
+		cmd := m.copySelectionToClipboard()
+		m.selection = Selection{}
+		return m, cmd
+	}
+
+	// Ctrl+C always does something safe: first it interrupts active work; once
+	// idle, it requires a second Ctrl+C within a short confirmation window to
+	// exit the TUI.
+	if key.Matches(msg, m.keyMap.Quit) {
+		return m.handleCtrlC()
+	}
+	m.ctrlCExitArmedUntil = time.Time{}
 
 	// Shift+Tab toggles yolo mode globally, including while a reply is streaming
 	// or an inline approval prompt is visible.
@@ -597,33 +722,6 @@ func (m *Model) handleKeyMsg(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// the same history behavior as the normal composer.
 	if handled, cmd := m.handlePromptHistoryKey(msg); handled {
 		return m, cmd
-	}
-
-	// Handle quit (Ctrl+C copies when text is selected)
-	if key.Matches(msg, m.keyMap.Quit) {
-		if m.selection.Active {
-			cmd := m.copySelectionToClipboard()
-			m.selection = Selection{}
-			return m, cmd
-		}
-		if m.streaming && m.streamCancelFunc != nil {
-			m.setStreamCancelRequested(true)
-			m.phase = "Stopping..."
-			m.streamCancelFunc()
-
-			// Drain any pending interjection (discard since we're quitting)
-			_ = m.engine.DrainInterjection()
-			m.clearPendingInterjectionState()
-
-			return m, tea.Batch(m.applyPendingStreamModelSwitch(), m.streamCancelTimeoutCmd())
-		}
-		m.quitting = true
-		// Print stats if enabled
-		if m.showStats && m.stats.LLMCallCount > 0 {
-			m.stats.Finalize()
-			return m, m.quitCmd(tea.Println(m.stats.Render()))
-		}
-		return m, m.quitCmd()
 	}
 
 	// Clear stale copy status on any keypress

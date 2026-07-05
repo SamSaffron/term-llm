@@ -1149,7 +1149,7 @@ func (m *Model) renderStatusLine() string {
 			lines = 0
 		}
 		if lines > 0 {
-			hintSeg := seg(mutedStyle.Render(fmt.Sprintf("%d lines · ctrl+c:copy", lines)), 60, false)
+			hintSeg := seg(mutedStyle.Render(fmt.Sprintf("%d lines · ctrl+y:copy", lines)), 60, false)
 			for i := range candidates {
 				candidates[i] = append(candidates[i], hintSeg)
 			}
