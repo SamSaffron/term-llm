@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/guardian"
@@ -45,6 +46,9 @@ func installGuardianReviewerCallbacks(cfg *config.Config, approvalMgr *tools.App
 		return fmt.Errorf("load guardian policy: %w", err)
 	}
 	reviewer := guardian.Reviewer{Provider: reviewProvider, Model: model, Policy: policy}
+	if cfg.Guardian.TimeoutSeconds > 0 {
+		reviewer.Timeout = time.Duration(cfg.Guardian.TimeoutSeconds) * time.Second
+	}
 	approvalMgr.PolicyReviewFunc = func(ctx context.Context, req tools.PolicyReviewRequest) (tools.PolicyDecision, error) {
 		transcript := make([]guardian.TranscriptEntry, 0, len(req.Transcript))
 		for _, e := range req.Transcript {

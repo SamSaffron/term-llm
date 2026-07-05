@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	DefaultTimeout = 30 * time.Second
+	DefaultTimeout = 90 * time.Second
 )
 
 type TranscriptEntry struct {

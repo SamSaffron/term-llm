@@ -10,9 +10,15 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 )
 
+func newApprovalAutoTestManager(perms *ToolPermissions) *ApprovalManager {
+	mgr := NewApprovalManager(perms)
+	mgr.IgnoreProjectApprovals = true
+	return mgr
+}
+
 func TestApprovalManagerApprovalModeParentInheritance(t *testing.T) {
-	parent := NewApprovalManager(NewToolPermissions())
-	child := NewApprovalManager(NewToolPermissions())
+	parent := newApprovalAutoTestManager(NewToolPermissions())
+	child := newApprovalAutoTestManager(NewToolPermissions())
 	if err := child.SetParent(parent); err != nil {
 		t.Fatalf("SetParent: %v", err)
 	}
@@ -35,7 +41,7 @@ func TestApprovalManagerAutoReviewerOnlyAfterDeterministicMiss(t *testing.T) {
 	if err := perms.CompileShellPatterns(); err != nil {
 		t.Fatal(err)
 	}
-	mgr := NewApprovalManager(perms)
+	mgr := newApprovalAutoTestManager(perms)
 	mgr.SetApprovalMode(ModeAuto)
 	calls := 0
 	mgr.PolicyReviewFunc = func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
@@ -73,7 +79,7 @@ func TestApprovalManagerAutoReviewerOnlyAfterDeterministicMiss(t *testing.T) {
 }
 
 func TestApprovalManagerGuardianExactCacheDoesNotTreatStarAsPattern(t *testing.T) {
-	mgr := NewApprovalManager(NewToolPermissions())
+	mgr := newApprovalAutoTestManager(NewToolPermissions())
 	mgr.SetApprovalMode(ModeAuto)
 	calls := 0
 	mgr.PolicyReviewFunc = func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
@@ -92,13 +98,13 @@ func TestApprovalManagerGuardianExactCacheDoesNotTreatStarAsPattern(t *testing.T
 }
 
 func TestApprovalManagerGuardianCircuitBreakerTripsParentFromChild(t *testing.T) {
-	parent := NewApprovalManager(NewToolPermissions())
+	parent := newApprovalAutoTestManager(NewToolPermissions())
 	parent.SetApprovalMode(ModeAuto)
 	parent.SetAutoHeadless(true)
 	parent.PolicyReviewFunc = func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
 		return PolicyDecision{Allowed: false, Rationale: "blocked"}, nil
 	}
-	child := NewApprovalManager(NewToolPermissions())
+	child := newApprovalAutoTestManager(NewToolPermissions())
 	if err := child.SetParent(parent); err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +130,7 @@ func TestApprovalManagerAutoReviewerFailureFallback(t *testing.T) {
 		{name: "headless denies", headless: true, wantErr: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			mgr := NewApprovalManager(NewToolPermissions())
+			mgr := newApprovalAutoTestManager(NewToolPermissions())
 			mgr.SetApprovalMode(ModeAuto)
 			mgr.SetAutoHeadless(tt.headless)
 			mgr.PolicyReviewFunc = func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
@@ -148,7 +154,7 @@ func TestApprovalManagerAutoReviewerFailureFallback(t *testing.T) {
 }
 
 func TestApprovalManagerAutoDenialPromptsHumanInInteractiveMode(t *testing.T) {
-	mgr := NewApprovalManager(NewToolPermissions())
+	mgr := newApprovalAutoTestManager(NewToolPermissions())
 	mgr.SetApprovalMode(ModeAuto)
 	calls := 0
 	mgr.PolicyReviewFunc = func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
@@ -173,7 +179,7 @@ func TestApprovalManagerAutoDenialPromptsHumanInInteractiveMode(t *testing.T) {
 }
 
 func TestApprovalManagerAutoDenialIncludesNoWorkaroundsInHeadlessMode(t *testing.T) {
-	mgr := NewApprovalManager(NewToolPermissions())
+	mgr := newApprovalAutoTestManager(NewToolPermissions())
 	mgr.SetApprovalMode(ModeAuto)
 	mgr.SetAutoHeadless(true)
 	mgr.PolicyReviewFunc = func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
@@ -189,7 +195,7 @@ func TestApprovalManagerAutoDenialIncludesNoWorkaroundsInHeadlessMode(t *testing
 }
 
 func TestApprovalManagerGuardianExactCacheIsScopedToWorkdir(t *testing.T) {
-	mgr := NewApprovalManager(NewToolPermissions())
+	mgr := newApprovalAutoTestManager(NewToolPermissions())
 	mgr.SetApprovalMode(ModeAuto)
 	calls := 0
 	mgr.PolicyReviewFunc = func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
@@ -208,7 +214,7 @@ func TestApprovalManagerGuardianExactCacheIsScopedToWorkdir(t *testing.T) {
 }
 
 func TestApprovalManagerGuardianExactCacheClearedWhenLeavingAuto(t *testing.T) {
-	mgr := NewApprovalManager(NewToolPermissions())
+	mgr := newApprovalAutoTestManager(NewToolPermissions())
 	mgr.SetApprovalMode(ModeAuto)
 	calls := 0
 	mgr.PolicyReviewFunc = func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
@@ -237,18 +243,18 @@ func TestApprovalManagerGuardianExactCacheClearedWhenLeavingAuto(t *testing.T) {
 }
 
 func TestApprovalManagerNestedChildFindsRootGuardianCallbacks(t *testing.T) {
-	root := NewApprovalManager(NewToolPermissions())
+	root := newApprovalAutoTestManager(NewToolPermissions())
 	root.SetApprovalMode(ModeAuto)
 	calls := 0
 	root.PolicyReviewFunc = func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
 		calls++
 		return PolicyDecision{Allowed: true, Rationale: "ok"}, nil
 	}
-	child := NewApprovalManager(NewToolPermissions())
+	child := newApprovalAutoTestManager(NewToolPermissions())
 	if err := child.SetParent(root); err != nil {
 		t.Fatal(err)
 	}
-	grandchild := NewApprovalManager(NewToolPermissions())
+	grandchild := newApprovalAutoTestManager(NewToolPermissions())
 	if err := grandchild.SetParent(child); err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +300,7 @@ func TestApprovalManagerGuardianContradictoryAllowEscalatesOrDenies(t *testing.T
 		{name: "headless denies", headless: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			mgr := NewApprovalManager(NewToolPermissions())
+			mgr := newApprovalAutoTestManager(NewToolPermissions())
 			mgr.SetApprovalMode(ModeAuto)
 			mgr.SetAutoHeadless(tt.headless)
 			mgr.PolicyReviewFunc = func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {
@@ -325,7 +331,7 @@ func TestApprovalManagerGuardianReceivesApprovalContext(t *testing.T) {
 	if err := perms.AddWriteDir(writeDir); err != nil {
 		t.Fatal(err)
 	}
-	mgr := NewApprovalManager(perms)
+	mgr := newApprovalAutoTestManager(perms)
 	mgr.SetApprovalMode(ModeAuto)
 	var got PolicyReviewRequest
 	mgr.PolicyReviewFunc = func(ctx context.Context, req PolicyReviewRequest) (PolicyDecision, error) {

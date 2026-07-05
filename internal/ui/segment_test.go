@@ -213,6 +213,59 @@ func TestRenderToolCallFromPart_FallsBackToExtractedArgsWhenToolInfoMissing(t *t
 	}
 }
 
+func TestRenderSegmentsWrapsAskUserResultLongExternalText(t *testing.T) {
+	const width = 80
+	rationale := "Guardian review before approval: denied because the requested shell command attempts to read private credentials from the user's ssh directory, which is sensitive and unrelated to the stated task. Please ask for explicit user confirmation before proceeding."
+	seg := &Segment{Type: SegmentAskUserResult, Text: rationale}
+
+	rendered := RenderSegments([]*Segment{seg}, width, -1, nil, false, false)
+	for i, line := range strings.Split(strings.TrimSuffix(rendered, "\n"), "\n") {
+		if got := xansi.StringWidth(line); got > width {
+			t.Fatalf("line %d exceeds width %d (got %d): %q\nfull render:\n%s", i, width, got, StripANSI(line), StripANSI(rendered))
+		}
+		if strings.HasSuffix(StripANSI(line), " ") {
+			t.Fatalf("line %d has trailing spaces: %q\nfull render:\n%s", i, StripANSI(line), StripANSI(rendered))
+		}
+	}
+	if !strings.Contains(squashWhitespace(stripAskUserResultGutters(rendered)), squashWhitespace("✓ "+rationale)) {
+		t.Fatalf("rendered result lost rationale:\n%s", StripANSI(rendered))
+	}
+}
+
+func TestRenderAskUserResultWidthZeroKeepsSingleLineBehavior(t *testing.T) {
+	rendered := renderAskUserResult("Header: Value", 0)
+	stripped := StripANSI(rendered)
+	if strings.Count(stripped, "\n") != 1 || !strings.HasSuffix(stripped, "\n") {
+		t.Fatalf("rendered width-zero result should be a single newline-terminated line, got %q", stripped)
+	}
+	if !strings.HasPrefix(stripped, "│ ✓ ") || !strings.Contains(stripped, "Header: Value") {
+		t.Fatalf("rendered width-zero result did not preserve old format, got %q", stripped)
+	}
+}
+
+func TestRenderSegmentsPrefixesEveryAskUserResultLine(t *testing.T) {
+	seg := &Segment{Type: SegmentAskUserResult, Text: "Guardian review before approval:\nDenied because this command is unsafe and needs explicit approval."}
+
+	rendered := RenderSegments([]*Segment{seg}, 40, -1, nil, false, false)
+	for i, line := range strings.Split(strings.TrimSuffix(rendered, "\n"), "\n") {
+		if !strings.HasPrefix(StripANSI(line), "│ ") {
+			t.Fatalf("line %d missing gutter prefix: %q\nfull render:\n%s", i, StripANSI(line), StripANSI(rendered))
+		}
+	}
+}
+
+func stripAskUserResultGutters(s string) string {
+	var lines []string
+	for _, line := range strings.Split(strings.TrimSuffix(StripANSI(s), "\n"), "\n") {
+		lines = append(lines, strings.TrimPrefix(line, "│ "))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func squashWhitespace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
 func TestRenderSegmentsWrapsLongSubagentPreviewLines(t *testing.T) {
 	const width = 30
 	seg := &Segment{

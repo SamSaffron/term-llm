@@ -96,6 +96,8 @@ guardian:
   # provider: anthropic
   # model: claude-sonnet-4-6
   # policy_path: ~/.config/term-llm/guardian-policy.md
+  # Review timeout in seconds. Defaults to 90.
+  # timeout_seconds: 90
 
 edit:
   model: gpt-5.2-codex
@@ -147,6 +149,7 @@ guardian:
   provider: anthropic       # optional override
   model: claude-sonnet-4-6  # optional override
   policy_path: ~/.config/term-llm/guardian-policy.md # optional custom policy
+  timeout_seconds: 90        # optional; default 90
 ```
 
 If `guardian.provider` is set and `guardian.model` is omitted, term-llm uses that provider's configured model/fast model instead of accidentally mixing it with the chat provider's model.

@@ -553,30 +553,49 @@ func formatTokensCompact(n int) string {
 
 // renderAskUserResult renders an ask_user result with styling applied at render time.
 // Input format: "Header: Value" or "Header: Value | Header2: Value2"
-func renderAskUserResult(text string) string {
+func renderAskUserResult(text string, width int) string {
 	checkStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 	borderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 	valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true)
 
-	var b strings.Builder
-	b.WriteString(borderStyle.Render("│") + " ")
-	b.WriteString(checkStyle.Render("✓") + " ")
+	gutter := borderStyle.Render("│") + " "
+
+	var content strings.Builder
+	content.WriteString(checkStyle.Render("✓") + " ")
 
 	// Parse "Header: Value | Header2: Value2"
 	parts := strings.Split(text, " | ")
 	for i, part := range parts {
 		if i > 0 {
-			b.WriteString(" ")
+			content.WriteString(" ")
 		}
 		if idx := strings.Index(part, ": "); idx != -1 {
-			b.WriteString(labelStyle.Render(part[:idx+2]))
-			b.WriteString(valueStyle.Render(part[idx+2:]))
+			content.WriteString(labelStyle.Render(part[:idx+2]))
+			content.WriteString(valueStyle.Render(part[idx+2:]))
 		} else {
-			b.WriteString(part)
+			content.WriteString(part)
 		}
 	}
-	return b.String() + "\n"
+
+	renderedContent := content.String()
+	if width <= 0 {
+		return gutter + renderedContent + "\n"
+	}
+
+	wrapWidth := width - runewidth.StringWidth("│ ")
+	if wrapWidth < 1 {
+		wrapWidth = 1
+	}
+	wrapped := lipgloss.NewStyle().Width(wrapWidth).Render(renderedContent)
+	lines := strings.Split(wrapped, "\n")
+	var b strings.Builder
+	for _, line := range lines {
+		b.WriteString(gutter)
+		b.WriteString(strings.TrimRight(line, " "))
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 // SegmentSeparator returns the vertical spacing (newlines) required between two segments.
@@ -807,7 +826,7 @@ func RenderSegmentsWithLeadingAndImageRenderer(leading *Segment, segments []*Seg
 				rendered = sb.String()
 			}
 		case SegmentAskUserResult:
-			rendered = renderAskUserResult(seg.Text)
+			rendered = renderAskUserResult(seg.Text, width)
 		case SegmentImage:
 			if includeImages {
 				if r := RenderImageArtifactWithRenderer(seg.ImagePath, renderer); r != "" {

@@ -184,6 +184,7 @@ guardian:
   provider: anthropic
   model: claude-sonnet-4-6
   policy_path: ~/.config/term-llm/guardian-policy.md
+  timeout_seconds: 90 # optional; default 90 seconds
 ```
 
 Privacy note: guardian review receives approval evidence, including recent transcript snippets, tool call arguments/results, and deterministic approval context. If `guardian.provider` points at a different provider than your chat session, that evidence is sent to the guardian provider too. Leave `guardian.provider` unset to avoid routing approval evidence to an additional provider.
