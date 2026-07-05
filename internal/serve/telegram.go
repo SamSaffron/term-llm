@@ -53,6 +53,11 @@ type botFileGetter interface {
 	GetFileDirectURL(fileID string) (string, error)
 }
 
+type telegramBot interface {
+	botSender
+	botFileGetter
+}
+
 // downloadTelegramPhoto downloads the largest photo from a Telegram photo array.
 // It returns the media type, base64-encoded data, and a local temp file path.
 // The caller is responsible for removing the temp file when it is no longer needed.
@@ -1094,7 +1099,7 @@ func (m *telegramSessionMgr) persistedAssistantTextMatches(ctx context.Context, 
 	return false
 }
 
-func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
+func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot telegramBot, msg *tgbotapi.Message) {
 	if msg.From == nil {
 		log.Printf("[telegram] ignoring message with no sender")
 		return
@@ -1200,22 +1205,9 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 		return
 	}
 
-	// Check idle timeout and replace the whole session if expired.
-	sess.mu.Lock()
-	expired := time.Since(sess.lastActivity) > m.idleTimeout
-	if !expired {
-		sess.lastActivity = time.Now()
-	}
-	sess.mu.Unlock()
-	if expired {
-		sess, _, err = m.resetSessionIfCurrent(ctx, chatID, sess)
-		if err != nil {
-			_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Error resetting session: "+err.Error()))
-			return
-		}
-	}
-
-	// If a stream is active, decide whether to cancel, interject, or queue.
+	// If a stream is active, decide whether to cancel, interject, or queue before
+	// touching sess.mu. streamReply holds sess.mu for the life of the stream, but
+	// cancelMu remains available specifically so new messages can interrupt it.
 	sess.cancelMu.Lock()
 	doneCh := sess.replyDone
 	cancelFn := sess.streamCancel
@@ -1272,6 +1264,21 @@ func (m *telegramSessionMgr) handleMessage(ctx context.Context, bot *tgbotapi.Bo
 				return
 			}
 		case <-ctx.Done():
+			return
+		}
+	}
+
+	// Check idle timeout and replace the whole session if expired.
+	sess.mu.Lock()
+	expired := time.Since(sess.lastActivity) > m.idleTimeout
+	if !expired {
+		sess.lastActivity = time.Now()
+	}
+	sess.mu.Unlock()
+	if expired {
+		sess, _, err = m.resetSessionIfCurrent(ctx, chatID, sess)
+		if err != nil {
+			_, _ = bot.Send(tgbotapi.NewMessage(chatID, "Error resetting session: "+err.Error()))
 			return
 		}
 	}

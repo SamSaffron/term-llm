@@ -108,6 +108,14 @@ func (f *fakeBotSender) allTexts() []string {
 	return out
 }
 
+func (f *fakeBotSender) GetFile(config tgbotapi.FileConfig) (tgbotapi.File, error) {
+	return tgbotapi.File{}, errors.New("fake bot does not support GetFile")
+}
+
+func (f *fakeBotSender) GetFileDirectURL(fileID string) (string, error) {
+	return "", errors.New("fake bot does not support GetFileDirectURL")
+}
+
 type blockingTextProvider struct {
 	text           string
 	firstChunkSent chan struct{}
@@ -169,6 +177,85 @@ func (s *blockingTextStream) Close() error {
 	})
 	return nil
 }
+
+type interruptSequenceProvider struct {
+	firstChunkSent        chan struct{}
+	firstContextCancelled chan struct{}
+	streamCount           atomic.Int32
+}
+
+func newInterruptSequenceProvider() *interruptSequenceProvider {
+	return &interruptSequenceProvider{
+		firstChunkSent:        make(chan struct{}),
+		firstContextCancelled: make(chan struct{}),
+	}
+}
+
+func (p *interruptSequenceProvider) Name() string { return "interrupt-sequence" }
+
+func (p *interruptSequenceProvider) Credential() string { return "mock" }
+
+func (p *interruptSequenceProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
+
+func (p *interruptSequenceProvider) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	if p.streamCount.Add(1) == 1 {
+		return &cancelAwareBlockingStream{
+			ctx:                   ctx,
+			text:                  "partial answer",
+			firstChunkSent:        p.firstChunkSent,
+			firstContextCancelled: p.firstContextCancelled,
+			closed:                make(chan struct{}),
+		}, nil
+	}
+	return &oneShotTextStream{text: "new answer"}, nil
+}
+
+type cancelAwareBlockingStream struct {
+	ctx                   context.Context
+	text                  string
+	firstChunkSent        chan struct{}
+	firstContextCancelled chan struct{}
+	closed                chan struct{}
+	closeOnce             sync.Once
+	firstOnce             sync.Once
+	cancelOnce            sync.Once
+	chunkSent             bool
+}
+
+func (s *cancelAwareBlockingStream) Recv() (llm.Event, error) {
+	if !s.chunkSent {
+		s.chunkSent = true
+		s.firstOnce.Do(func() { close(s.firstChunkSent) })
+		return llm.Event{Type: llm.EventTextDelta, Text: s.text}, nil
+	}
+	select {
+	case <-s.ctx.Done():
+		s.cancelOnce.Do(func() { close(s.firstContextCancelled) })
+		return llm.Event{}, s.ctx.Err()
+	case <-s.closed:
+		return llm.Event{}, io.EOF
+	}
+}
+
+func (s *cancelAwareBlockingStream) Close() error {
+	s.closeOnce.Do(func() { close(s.closed) })
+	return nil
+}
+
+type oneShotTextStream struct {
+	text string
+	sent bool
+}
+
+func (s *oneShotTextStream) Recv() (llm.Event, error) {
+	if s.sent {
+		return llm.Event{}, io.EOF
+	}
+	s.sent = true
+	return llm.Event{Type: llm.EventTextDelta, Text: s.text}, nil
+}
+
+func (s *oneShotTextStream) Close() error { return nil }
 
 type errorAfterTextProvider struct {
 	text           string
@@ -312,6 +399,85 @@ func TestHandleMessage_IgnoresMessagesWithNilFrom(t *testing.T) {
 	}()
 
 	mgr.handleMessage(context.Background(), nil, &tgbotapi.Message{Text: "hi"})
+}
+
+func TestHandleMessage_CancelInterruptReachesActiveStreamBeforeSessionMutex(t *testing.T) {
+	provider := newInterruptSequenceProvider()
+	mgr := &telegramSessionMgr{
+		sessions:         make(map[int64]*telegramSession),
+		allowedUserIDs:   map[int64]struct{}{7: {}},
+		idleTimeout:      time.Hour,
+		interruptTimeout: time.Second,
+		tickerInterval:   5 * time.Millisecond,
+		settings: Settings{
+			MaxTurns: 5,
+			NewSession: func(ctx context.Context) (*SessionRuntime, error) {
+				return &SessionRuntime{
+					Engine:       llm.NewEngine(provider, llm.NewToolRegistry()),
+					ProviderName: "mock",
+					ModelName:    "test",
+				}, nil
+			},
+		},
+	}
+	bot := &fakeBotSender{}
+
+	firstDone := make(chan struct{})
+	go func() {
+		mgr.handleMessage(context.Background(), bot, telegramTestMessage(42, 7, "write a long reply"))
+		close(firstDone)
+	}()
+
+	select {
+	case <-provider.firstChunkSent:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first stream never emitted initial chunk")
+	}
+
+	secondDone := make(chan struct{})
+	go func() {
+		mgr.handleMessage(context.Background(), bot, telegramTestMessage(42, 7, "stop and switch to this"))
+		close(secondDone)
+	}()
+
+	select {
+	case <-provider.firstContextCancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second handleMessage did not cancel the active stream while streamReply held sess.mu")
+	}
+
+	select {
+	case <-firstDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first handleMessage did not finish after interrupt")
+	}
+	select {
+	case <-secondDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second handleMessage did not continue to its replacement request after interrupt")
+	}
+
+	if provider.streamCount.Load() < 2 {
+		t.Fatalf("provider stream count = %d, want replacement request to run", provider.streamCount.Load())
+	}
+	var sawSwitching bool
+	for _, text := range bot.allTexts() {
+		if strings.Contains(text, "switching to your new request") {
+			sawSwitching = true
+			break
+		}
+	}
+	if !sawSwitching {
+		t.Fatalf("telegram sends = %#v, want switching interrupt notice", bot.allTexts())
+	}
+}
+
+func telegramTestMessage(chatID, userID int64, text string) *tgbotapi.Message {
+	return &tgbotapi.Message{
+		From: &tgbotapi.User{ID: userID, UserName: "sam"},
+		Chat: &tgbotapi.Chat{ID: chatID},
+		Text: text,
+	}
 }
 
 func TestTelegramSessionMgrAcquireMessageSlot_BlocksUntilReleased(t *testing.T) {
