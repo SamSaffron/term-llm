@@ -21,6 +21,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/serve"
+	servehttp "github.com/samsaffron/term-llm/internal/serve/http"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/samsaffron/term-llm/internal/skills"
@@ -207,6 +208,23 @@ func servePlatformCompletion(cmd *cobra.Command, args []string, toComplete strin
 }
 
 func runServe(cmd *cobra.Command, args []string) error {
+	svc, err := serve.NewService(serve.Options{
+		Host:      serveHost,
+		Port:      servePort,
+		BasePath:  serveBasePath,
+		Title:     serveTitle,
+		Platforms: append([]string(nil), args...),
+		Runner: func(ctx context.Context) error {
+			return runServeLegacy(ctx, cmd, args)
+		},
+	})
+	if err != nil {
+		return err
+	}
+	return svc.Run(cmd.Context())
+}
+
+func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string) error {
 	if servePort <= 0 || servePort > 65535 {
 		return fmt.Errorf("invalid --port %d (must be 1-65535)", servePort)
 	}
@@ -267,7 +285,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		tools.ConfigureHubDelegation(hubURL, hubNodeID, token)
 	}
 
-	ctx, stop := signal.NotifyContext()
+	ctx, stop := signal.NotifyContextWithParent(parentCtx)
 	defer stop()
 
 	cfg, err := loadConfigWithSetup()
@@ -772,50 +790,15 @@ func newServeEngineWithTools(cfg *config.Config, settings SessionSettings, provi
 	return engine, toolMgr, nil
 }
 
-var knownPlatforms = map[string]bool{"web": true, "api": true, "jobs": true, "telegram": true}
-
 // resolvePlatforms returns the list of platforms to serve. Positional args
 // take precedence; if none are given, configPlatforms (from config.yaml
 // serve.platforms) is used as fallback.
 func resolvePlatforms(args []string, configPlatforms []string) ([]string, error) {
-	var raw []string
-	if len(args) > 0 {
-		raw = args
-	} else if len(configPlatforms) > 0 {
-		raw = configPlatforms
-	}
-	if len(raw) == 0 {
-		return nil, fmt.Errorf("no platforms specified\n\nUsage: term-llm serve <platform> [platform...]\n\nExamples:\n  term-llm serve web\n  term-llm serve telegram web\n\nOr set serve.platforms in config.yaml")
-	}
-
-	seen := make(map[string]bool)
-	var out []string
-	for _, a := range raw {
-		p := strings.TrimSpace(strings.ToLower(a))
-		if p == "" {
-			continue
-		}
-		if !knownPlatforms[p] {
-			return nil, fmt.Errorf("unknown platform %q (valid: web, api, jobs, telegram)", p)
-		}
-		if !seen[p] {
-			seen[p] = true
-			out = append(out, p)
-		}
-	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("no platforms specified\n\nUsage: term-llm serve <platform> [platform...]\n\nExamples:\n  term-llm serve web\n  term-llm serve telegram web\n\nOr set serve.platforms in config.yaml")
-	}
-	return out, nil
+	return serve.ResolvePlatforms(args, configPlatforms)
 }
 
 func platformContains(platforms []string, name string) bool {
-	for _, p := range platforms {
-		if p == name {
-			return true
-		}
-	}
-	return false
+	return serve.PlatformContains(platforms, name)
 }
 
 // singleServeTemplatePlatform returns a stable platform token for serve prompts.
@@ -1076,18 +1059,7 @@ func resolveServeWriteDirs(cliWriteDirs []string, cfg *config.Config) []string {
 // It ensures a leading slash, strips trailing slashes, and rejects
 // empty or root-only paths (use the default "/ui" instead of "/").
 func normalizeBasePath(raw string) (string, error) {
-	p := strings.TrimSpace(raw)
-	if p == "" {
-		return "", fmt.Errorf("--base-path must not be empty")
-	}
-	if !strings.HasPrefix(p, "/") {
-		p = "/" + p
-	}
-	p = strings.TrimRight(p, "/")
-	if p == "" {
-		return "", fmt.Errorf("--base-path must not be \"/\" (use the default /ui or a sub-path like /chat)")
-	}
-	return p, nil
+	return servehttp.NormalizeBasePath(raw)
 }
 
 type serveServer struct {

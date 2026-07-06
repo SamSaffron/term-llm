@@ -10,7 +10,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -20,8 +19,8 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/jobs"
 	"github.com/samsaffron/term-llm/internal/llm"
-	"github.com/samsaffron/term-llm/internal/procutil"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	_ "modernc.org/sqlite"
@@ -40,32 +39,32 @@ type serveJobsExecResult struct {
 type serveJobsExecutor func(ctx context.Context, cfg jobsV2LLMConfig, onEvent func(llm.Event)) (serveJobsExecResult, error)
 
 const (
-	jobsV2RunnerLLM     jobsV2RunnerType = "llm"
-	jobsV2RunnerProgram jobsV2RunnerType = "program"
+	jobsV2RunnerLLM     jobsV2RunnerType = jobsV2RunnerType(jobs.RunnerLLM)
+	jobsV2RunnerProgram jobsV2RunnerType = jobsV2RunnerType(jobs.RunnerProgram)
 
-	jobsV2TriggerManual jobsV2TriggerType = "manual"
-	jobsV2TriggerOnce   jobsV2TriggerType = "once"
-	jobsV2TriggerCron   jobsV2TriggerType = "cron"
+	jobsV2TriggerManual jobsV2TriggerType = jobsV2TriggerType(jobs.TriggerManual)
+	jobsV2TriggerOnce   jobsV2TriggerType = jobsV2TriggerType(jobs.TriggerOnce)
+	jobsV2TriggerCron   jobsV2TriggerType = jobsV2TriggerType(jobs.TriggerCron)
 
-	jobsV2RunQueued          jobsV2RunStatus = "queued"
-	jobsV2RunClaimed         jobsV2RunStatus = "claimed"
-	jobsV2RunRunning         jobsV2RunStatus = "running"
-	jobsV2RunSucceeded       jobsV2RunStatus = "succeeded"
-	jobsV2RunFailed          jobsV2RunStatus = "failed"
-	jobsV2RunCancelled       jobsV2RunStatus = "cancelled"
-	jobsV2RunCancelRequested jobsV2RunStatus = "cancel_requested"
-	jobsV2RunTimedOut        jobsV2RunStatus = "timed_out"
-	jobsV2RunSkipped         jobsV2RunStatus = "skipped"
+	jobsV2RunQueued          jobsV2RunStatus = jobsV2RunStatus(jobs.RunQueued)
+	jobsV2RunClaimed         jobsV2RunStatus = jobsV2RunStatus(jobs.RunClaimed)
+	jobsV2RunRunning         jobsV2RunStatus = jobsV2RunStatus(jobs.RunRunning)
+	jobsV2RunSucceeded       jobsV2RunStatus = jobsV2RunStatus(jobs.RunSucceeded)
+	jobsV2RunFailed          jobsV2RunStatus = jobsV2RunStatus(jobs.RunFailed)
+	jobsV2RunCancelled       jobsV2RunStatus = jobsV2RunStatus(jobs.RunCancelled)
+	jobsV2RunCancelRequested jobsV2RunStatus = jobsV2RunStatus(jobs.RunCancelRequested)
+	jobsV2RunTimedOut        jobsV2RunStatus = jobsV2RunStatus(jobs.RunTimedOut)
+	jobsV2RunSkipped         jobsV2RunStatus = jobsV2RunStatus(jobs.RunSkipped)
 )
 
 const (
-	exitReasonNatural    = "natural_completion" // agent finished normally
-	exitReasonMaxTurns   = "max_turns_exceeded" // hit the agentic loop turn limit
-	exitReasonTimeout    = "timeout"            // context deadline exceeded
-	exitReasonCancelled  = "cancelled"          // context cancelled
-	exitReasonException  = "exception"          // unhandled error
-	exitReasonEmpty      = "empty_response"     // succeeded but produced no output
-	exitReasonWorkerLost = "worker_lost"        // process stopped before a claimed/running job finished
+	exitReasonNatural    = jobs.ExitReasonNatural
+	exitReasonMaxTurns   = jobs.ExitReasonMaxTurns
+	exitReasonTimeout    = jobs.ExitReasonTimeout
+	exitReasonCancelled  = jobs.ExitReasonCancelled
+	exitReasonException  = jobs.ExitReasonException
+	exitReasonEmpty      = jobs.ExitReasonEmpty
+	exitReasonWorkerLost = jobs.ExitReasonWorkerLost
 )
 
 type jobsV2RetryPolicy struct {
@@ -224,8 +223,8 @@ type jobsV2RunDoneNotifier func(ctx context.Context, run jobsV2Run, job jobsV2Jo
 type jobsV2ProgramRunner struct{}
 
 var (
-	jobsV2ProgramOutputLimit int64         = 64 << 10
-	jobsV2ProgramWaitDelay   time.Duration = time.Second
+	jobsV2ProgramOutputLimit int64         = jobs.ProgramOutputLimit
+	jobsV2ProgramWaitDelay   time.Duration = jobs.ProgramWaitDelay
 )
 
 const (
@@ -240,81 +239,44 @@ const (
 	jobsV2FinishRunMaxDelay    = time.Second
 )
 
-type jobsV2ProgramConfig struct {
-	Command string   `json:"command"`
-	Args    []string `json:"args,omitempty"`
-	Cwd     string   `json:"cwd,omitempty"`
-	Env     []string `json:"env,omitempty"`
-	Shell   bool     `json:"shell,omitempty"`
-}
+type jobsV2ProgramConfig = jobs.ProgramConfig
 
 func (r *jobsV2ProgramRunner) Run(ctx context.Context, job jobsV2Job, pw progressWriter) (jobsV2RunResult, error) {
-	_ = pw
-	var cfg jobsV2ProgramConfig
-	if err := json.Unmarshal(job.RunnerConfig, &cfg); err != nil {
-		return jobsV2RunResult{}, fmt.Errorf("invalid program runner config: %w", err)
-	}
-	if strings.TrimSpace(cfg.Command) == "" {
-		return jobsV2RunResult{}, fmt.Errorf("program command is required")
-	}
-
-	var cmd *exec.Cmd
-	if cfg.Shell {
-		args := append([]string{"-c", cfg.Command, "--"}, cfg.Args...)
-		cmd = exec.CommandContext(ctx, detectShell(), args...)
-	} else {
-		cmd = exec.CommandContext(ctx, cfg.Command, cfg.Args...)
-	}
-	if strings.TrimSpace(cfg.Cwd) != "" {
-		cmd.Dir = cfg.Cwd
-	}
-	if len(cfg.Env) > 0 {
-		cmd.Env = append(os.Environ(), cfg.Env...)
-	}
-
-	cleanup, prepErr := tools.PrepareCommand(cmd)
-	if prepErr != nil {
-		return jobsV2RunResult{}, fmt.Errorf("program setup failed: %w", prepErr)
-	}
-	// tools.PrepareCommand installs shell-tool defaults while adding robust
-	// descendant cleanup; keep the program runner's existing wait-delay behavior.
-	cmd.WaitDelay = jobsV2ProgramWaitDelay
-	defer cleanup()
-
-	stdout := procutil.NewLimitedBuffer(jobsV2ProgramOutputLimit)
-	stderr := procutil.NewLimitedBuffer(jobsV2ProgramOutputLimit)
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-
-	err := cmd.Run()
-	exitCode := 0
-	result := jobsV2RunResult{
-		Stdout:    stdout.String(),
-		Stderr:    stderr.String(),
-		Truncated: stdout.Truncated() || stderr.Truncated(),
-	}
-
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return result, context.DeadlineExceeded
-	}
-	if errors.Is(ctx.Err(), context.Canceled) {
-		return result, context.Canceled
-	}
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-			result.ExitCode = exitCode
-		} else {
-			return result, fmt.Errorf("program run failed: %w", err)
-		}
-	}
-
-	result.ExitCode = exitCode
-	if exitCode != 0 {
-		return result, fmt.Errorf("program exited with code %d", exitCode)
-	}
-	return result, nil
+	result, err := (&jobs.ProgramRunner{
+		OutputLimit: jobsV2ProgramOutputLimit,
+		WaitDelay:   jobsV2ProgramWaitDelay,
+	}).Run(ctx, jobs.Job{
+		ID:                job.ID,
+		Name:              job.Name,
+		Enabled:           job.Enabled,
+		RunnerType:        jobs.RunnerType(job.RunnerType),
+		RunnerConfig:      job.RunnerConfig,
+		TriggerType:       jobs.TriggerType(job.TriggerType),
+		TriggerConfig:     job.TriggerConfig,
+		ScheduleTimezone:  job.ScheduleTimezone,
+		ConcurrencyPolicy: job.ConcurrencyPolicy,
+		MaxConcurrentRuns: job.MaxConcurrentRuns,
+		RetryPolicy:       job.RetryPolicy,
+		TimeoutSeconds:    job.TimeoutSeconds,
+		MisfirePolicy:     job.MisfirePolicy,
+		Labels:            job.Labels,
+		NextRunAt:         job.NextRunAt,
+		CreatedAt:         job.CreatedAt,
+		UpdatedAt:         job.UpdatedAt,
+	}, jobs.ProgressWriter(pw))
+	return jobsV2RunResult{
+		ExitCode:     result.ExitCode,
+		Stdout:       result.Stdout,
+		Stderr:       result.Stderr,
+		Thinking:     result.Thinking,
+		Response:     result.Response,
+		SessionID:    result.SessionID,
+		TurnCount:    result.TurnCount,
+		InputTokens:  result.InputTokens,
+		OutputTokens: result.OutputTokens,
+		ExitReason:   result.ExitReason,
+		Truncated:    result.Truncated,
+	}, err
 }
 
 type jobsV2LLMRunner struct {
@@ -535,32 +497,19 @@ func (r *jobsV2LLMRunner) Run(ctx context.Context, job jobsV2Job, pw progressWri
 }
 
 func classifyRunError(err error, result jobsV2RunResult) (exitReason string, truncated bool) {
-	truncated = result.Truncated
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return exitReasonTimeout, truncated
-		}
-		if errors.Is(err, context.Canceled) {
-			return exitReasonCancelled, truncated
-		}
-		if llm.IsMaxTurnsExceeded(err) || strings.Contains(err.Error(), "max turns") {
-			return exitReasonMaxTurns, true
-		}
-		if result.ExitReason == exitReasonWorkerLost {
-			return result.ExitReason, truncated
-		}
-		return exitReasonException, truncated
-	}
-	if strings.TrimSpace(result.ExitReason) != "" {
-		return result.ExitReason, truncated || result.ExitReason == exitReasonMaxTurns
-	}
-	if strings.TrimSpace(result.Response) == "" &&
-		strings.TrimSpace(result.Stdout) == "" &&
-		strings.TrimSpace(result.Stderr) == "" &&
-		strings.TrimSpace(result.Thinking) == "" {
-		return exitReasonEmpty, truncated
-	}
-	return exitReasonNatural, truncated
+	return jobs.ClassifyRunError(err, jobs.RunResult{
+		ExitCode:     result.ExitCode,
+		Stdout:       result.Stdout,
+		Stderr:       result.Stderr,
+		Thinking:     result.Thinking,
+		Response:     result.Response,
+		SessionID:    result.SessionID,
+		TurnCount:    result.TurnCount,
+		InputTokens:  result.InputTokens,
+		OutputTokens: result.OutputTokens,
+		ExitReason:   result.ExitReason,
+		Truncated:    result.Truncated,
+	})
 }
 
 type jobsV2Manager struct {
