@@ -809,9 +809,12 @@ func TestClaudeBinProvider_SystemPromptForTurn(t *testing.T) {
 		t.Fatalf("initial turn systemPromptForTurn = %q, want %q", got, "You are helpful.")
 	}
 
+	// The system prompt must be re-sent on resumed turns too: Claude Code
+	// rebuilds the request from the current invocation's flags, so a resume
+	// without --system-prompt reverts to Claude Code's default prompt.
 	p.sessionID = "resume-abc"
-	if got := p.systemPromptForTurn(msgs); got != "" {
-		t.Fatalf("resume turn systemPromptForTurn = %q, want empty (Claude CLI already has the system prompt via --resume)", got)
+	if got := p.systemPromptForTurn(msgs); got != "You are helpful." {
+		t.Fatalf("resume turn systemPromptForTurn = %q, want %q (must re-send on --resume)", got, "You are helpful.")
 	}
 }
 

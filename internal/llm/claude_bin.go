@@ -1534,15 +1534,17 @@ func (p *ClaudeBinProvider) extractSystemPrompt(messages []Message) string {
 	return strings.TrimSpace(strings.Join(systemParts, "\n\n"))
 }
 
-// systemPromptForTurn returns the system prompt to pass to Claude CLI for this
-// turn. On resume (sessionID set) it returns "" because Claude CLI already
-// holds the original system prompt in the session; re-sending it would
-// duplicate it in text mode and override Claude's own system (defeating
-// template expansion) in stream-json mode.
+// systemPromptForTurn returns the system prompt to pass to Claude CLI for
+// this turn. It is sent on every turn, including --resume: Claude Code
+// rebuilds the API request from the current process flags rather than the
+// resumed session's original system prompt, so omitting --system-prompt on
+// resume silently reverts the session to Claude Code's default prompt
+// (verified live against claude 2.1.201 — the model then disavows term-llm's
+// instructions as injected content). There is no duplication risk: the
+// system prompt travels on argv in both text and stream-json modes, never
+// in the stdin transcript. Re-sending an unchanged prompt is also prompt-
+// cache friendly; only an actual mid-session change breaks the cache once.
 func (p *ClaudeBinProvider) systemPromptForTurn(messages []Message) string {
-	if p.sessionID != "" {
-		return ""
-	}
 	return p.extractSystemPrompt(messages)
 }
 
