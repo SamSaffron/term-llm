@@ -180,15 +180,7 @@ func runServeMCP(cmd *cobra.Command, args []string) error {
 	if serveMCPYolo {
 		approvalMgr.SetYoloMode(true)
 	} else if serveMCPAuto {
-		var provider llm.Provider
-		if strings.TrimSpace(cfg.Guardian.Provider) == "" {
-			var providerErr error
-			provider, providerErr = llm.NewProvider(cfg)
-			if providerErr != nil {
-				return fmt.Errorf("auto approval requires guardian reviewer provider: %w", providerErr)
-			}
-		}
-		if err := installGuardianReviewer(cfg, approvalMgr, provider, nil, getModelName(cfg), true); err != nil {
+		if err := installGuardianReviewer(cfg, approvalMgr, cfg.DefaultProvider, getModelName(cfg), true); err != nil {
 			return fmt.Errorf("auto approval unavailable: %w", err)
 		}
 	}

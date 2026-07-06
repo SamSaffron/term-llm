@@ -465,7 +465,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	if toolMgr != nil {
 		approvalMgr = toolMgr.ApprovalMgr
 		guardianAvailable := true
-		if err := installGuardianReviewerCallbacks(cfg, approvalMgr, provider, fastProvider, getModelName(cfg), false); err != nil {
+		if err := installGuardianReviewerCallbacks(cfg, approvalMgr, cfg.DefaultProvider, getModelName(cfg), false); err != nil {
 			guardianAvailable = false
 			fmt.Fprintf(cmd.ErrOrStderr(), "warning: guardian auto-approval unavailable; using prompt mode: %v\n", err)
 		}
@@ -500,7 +500,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		}
 	} else {
 		guardianAvailable := true
-		if err := installGuardianReviewerCallbacks(cfg, approvalMgr, provider, fastProvider, getModelName(cfg), false); err != nil {
+		if err := installGuardianReviewerCallbacks(cfg, approvalMgr, cfg.DefaultProvider, getModelName(cfg), false); err != nil {
 			guardianAvailable = false
 			fmt.Fprintf(cmd.ErrOrStderr(), "warning: guardian auto-approval unavailable; using prompt mode: %v\n", err)
 		}

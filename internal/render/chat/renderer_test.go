@@ -188,6 +188,101 @@ func TestRenderer_CacheHit(t *testing.T) {
 	}
 }
 
+func TestRenderer_ReasoningLineOrdinalMapMatchesRenderedHeaders(t *testing.T) {
+	renderer := NewRenderer(80, 24)
+	renderer.SetMarkdownRenderer(simpleMarkdownRenderer)
+	messages := []session.Message{
+		{
+			ID:   1,
+			Role: llm.RoleAssistant,
+			Parts: []llm.Part{{
+				Type:                  llm.PartText,
+				Text:                  "answer one",
+				ReasoningContent:      "first body",
+				ReasoningKind:         llm.ReasoningKindRaw,
+				ReasoningSummaryTitle: "First plan",
+			}},
+			TextContent: "answer one",
+			Sequence:    0,
+		},
+		{
+			ID:   2,
+			Role: llm.RoleAssistant,
+			Parts: []llm.Part{{
+				Type: llm.PartText,
+				Text: "```text\n▸ Thought: decoy inside code\n```",
+			}},
+			TextContent: "▸ Thought: decoy inside code",
+			Sequence:    1,
+		},
+		{
+			ID:   3,
+			Role: llm.RoleAssistant,
+			Parts: []llm.Part{{
+				Type:                  llm.PartText,
+				Text:                  "answer two",
+				ReasoningContent:      "second body",
+				ReasoningKind:         llm.ReasoningKindRaw,
+				ReasoningSummaryTitle: "Second plan",
+			}},
+			TextContent: "answer two",
+			Sequence:    2,
+		},
+	}
+
+	output := renderer.Render(RenderState{
+		Messages: messages,
+		Viewport: ViewportState{Height: 24, AtBottom: true},
+		Mode:     RenderModeAltScreen,
+		Width:    80,
+		Height:   24,
+	})
+
+	want := make(map[int]int)
+	for i, line := range strings.Split(output, "\n") {
+		plain := strings.TrimSpace(ui.StripANSI(line))
+		if strings.Contains(plain, "First plan") || strings.Contains(plain, "Second plan") {
+			want[i] = len(want)
+		}
+	}
+	got := renderer.ReasoningLineOrdinalsSnapshot()
+	if len(got) != len(want) {
+		t.Fatalf("reasoning map len = %d, want %d\noutput:\n%s\ngot=%v want=%v", len(got), len(want), ui.StripANSI(output), got, want)
+	}
+	for line, ordinal := range want {
+		if got[line] != ordinal {
+			t.Fatalf("line %d ordinal = %d, want %d\noutput:\n%s\ngot=%v want=%v", line, got[line], ordinal, ui.StripANSI(output), got, want)
+		}
+	}
+	for line, ordinal := range got {
+		if want[line] != ordinal {
+			t.Fatalf("unexpected map entry line %d ordinal %d\noutput:\n%s\ngot=%v want=%v", line, ordinal, ui.StripANSI(output), got, want)
+		}
+	}
+}
+
+func TestReasoningAppendHeaderLineOffsetUsesNewlineDelta(t *testing.T) {
+	tests := []struct {
+		name    string
+		current string
+		want    int
+	}{
+		{name: "empty", current: "", want: 0},
+		{name: "blank unterminated", current: "   ", want: 2},
+		{name: "already blank separated", current: "text\n\n", want: 2},
+		{name: "single trailing newline", current: "text\n", want: 2},
+		{name: "unterminated shares current line", current: "text", want: 2},
+		{name: "multi unterminated", current: "a\nb", want: 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := reasoningAppendHeaderLineOffset(tt.current); got != tt.want {
+				t.Fatalf("offset = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRenderer_ReasoningOverrideReusesUnaffectedCachedBlocks(t *testing.T) {
 	renderer := NewRenderer(80, 24)
 	markdownCalls := 0

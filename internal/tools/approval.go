@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/samsaffron/term-llm/internal/llm"
 )
 
 // ApprovalCache provides session-scoped caching for tool+path decisions.
@@ -224,6 +226,7 @@ type PolicyReviewRequest struct {
 	WorkDir         string
 	Transcript      []TranscriptEntry
 	ApprovalContext string
+	ScopeID         string
 }
 
 // PolicyDecision is the guardian's allow/deny verdict.
@@ -1138,7 +1141,7 @@ func (m *ApprovalManager) checkShellGuardianApproval(ctx context.Context, comman
 		return Cancel, false, nil
 	}
 	approvalContext := m.guardianApprovalContext(command, workDir)
-	decision, err := reviewFunc(ctx, PolicyReviewRequest{Command: command, WorkDir: normalizeGuardianWorkDir(workDir), Transcript: transcript, ApprovalContext: approvalContext})
+	decision, err := reviewFunc(ctx, PolicyReviewRequest{Command: command, WorkDir: normalizeGuardianWorkDir(workDir), Transcript: transcript, ApprovalContext: approvalContext, ScopeID: llm.SessionIDFromContext(ctx)})
 	if err != nil {
 		m.emitGuardianEvent(fmt.Sprintf("guardian: review failed (%v)", err))
 		if m.AutoHeadless() {

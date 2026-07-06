@@ -497,17 +497,18 @@ func (r *MessageBlockRenderer) renderAssistantMessage(msg *session.Message) stri
 // reasoning header about to be appended to current. ANSI escape sequences do
 // not contain newlines, so byte-level newline counting is intentional here.
 func reasoningAppendHeaderLineOffset(current string) int {
-	if strings.TrimSpace(current) == "" {
-		return countLines(current)
+	separatorNewlines := 0
+	if len(current) > 0 {
+		switch {
+		case strings.HasSuffix(current, "\n\n"):
+			separatorNewlines = 0
+		case strings.HasSuffix(current, "\n"):
+			separatorNewlines = 1
+		default:
+			separatorNewlines = 2
+		}
 	}
-	switch {
-	case strings.HasSuffix(current, "\n\n"):
-		return countLines(current)
-	case strings.HasSuffix(current, "\n"):
-		return countLines(current) + 1
-	default:
-		return countLines(current) + 2
-	}
+	return strings.Count(current, "\n") + separatorNewlines
 }
 
 func writeWithBlankLineBefore(b *strings.Builder, content string) {

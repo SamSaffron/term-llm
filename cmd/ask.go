@@ -353,7 +353,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 			if providerCfg != nil {
 				model = providerCfg.Model
 			}
-			if err := installGuardianReviewer(cfg, toolMgr.ApprovalMgr, provider, nil, model, false); err != nil {
+			if err := installGuardianReviewer(cfg, toolMgr.ApprovalMgr, cfg.DefaultProvider, model, false); err != nil {
 				return err
 			}
 		}

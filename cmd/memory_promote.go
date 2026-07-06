@@ -315,7 +315,8 @@ func buildPromotePrompt(changed []memorydb.Fragment, existingRecent string) stri
 func runMemoryPromoteRequest(ctx context.Context, engine *llm.Engine, model, prompt string, maxWords int) (string, error) {
 	sysInstruction := fmt.Sprintf(memoryPromoteSystemInstructionTemplate, maxWords)
 	req := llm.Request{
-		Model: strings.TrimSpace(model),
+		Model:     strings.TrimSpace(model),
+		Ephemeral: true,
 		Messages: []llm.Message{
 			llm.SystemText(sysInstruction),
 			llm.UserText(prompt),

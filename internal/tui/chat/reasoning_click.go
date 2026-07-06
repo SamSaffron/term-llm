@@ -5,12 +5,32 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/ansi"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
+
+type reasoningClickTargetKind int
+
+const (
+	reasoningClickTargetHistory reasoningClickTargetKind = iota
+	reasoningClickTargetTracker
+	reasoningClickTargetCurrent
+)
+
+type reasoningClickTarget struct {
+	kind                reasoningClickTargetKind
+	historyOrdinal      int
+	trackerSegmentIndex int
+}
+
+type reasoningClickSnapshot struct {
+	historyLineOrdinals       map[int]int
+	trackerSegmentIndexByLine map[int]int
+	currentReasoningLine      int
+	hasCurrentReasoningLine   bool
+}
 
 func (m *Model) handleReasoningMouseClick(msg tea.MouseMsg) bool {
 	click, ok := msg.(tea.MouseClickMsg)
@@ -30,94 +50,35 @@ func (m *Model) handleReasoningMouseClick(msg tea.MouseMsg) bool {
 	return m.toggleReasoningSegmentAtContentLine(contentLine)
 }
 
-func (m *Model) contentLineText(line int) string {
-	if m.contentLines == nil && m.viewCache.lastContentStr != "" {
-		m.contentLines = strings.Split(m.viewCache.lastContentStr, "\n")
+func (m *Model) reasoningClickTargetAtLine(line int) (reasoningClickTarget, bool) {
+	snapshot := m.viewCache.reasoningClickSnapshot
+	if ordinal, ok := snapshot.historyLineOrdinals[line]; ok {
+		return reasoningClickTarget{kind: reasoningClickTargetHistory, historyOrdinal: ordinal}, true
 	}
-	if line < 0 || line >= len(m.contentLines) {
-		return ""
+	if segmentIndex, ok := snapshot.trackerSegmentIndexByLine[line]; ok {
+		return reasoningClickTarget{kind: reasoningClickTargetTracker, trackerSegmentIndex: segmentIndex}, true
 	}
-	return m.contentLines[line]
-}
-
-func isReasoningHeaderLine(line string, cfg config.ReasoningConfig) bool {
-	plain := strings.TrimSpace(ansi.Strip(line))
-	if strings.HasPrefix(plain, "▸ ") {
-		plain = strings.TrimPrefix(plain, "▸ ")
-	} else if strings.HasPrefix(plain, "▾ ") {
-		plain = strings.TrimPrefix(plain, "▾ ")
-	} else {
-		return false
+	if snapshot.hasCurrentReasoningLine && snapshot.currentReasoningLine == line {
+		return reasoningClickTarget{kind: reasoningClickTargetCurrent}, true
 	}
-	if strings.HasPrefix(plain, "Thought: ") {
-		return true
-	}
-	label := strings.TrimSpace(cfg.HiddenLabel)
-	if label == "" {
-		label = config.DefaultReasoningConfig().HiddenLabel
-	}
-	return plain == label
-}
-
-func (m *Model) reasoningHeaderOrdinalAtLine(line int) (int, bool) {
-	historyLines := 0
-	historyReasoningCount := 0
-	if m.chatRenderer != nil {
-		if ordinal, ok := m.chatRenderer.ReasoningOrdinalAtLine(line); ok {
-			return ordinal, true
-		}
-		historyLines = renderedHistoryLineCount(m.viewCache.historyContent)
-		historyReasoningCount = m.chatRenderer.ReasoningHeaderCount()
-		if line < historyLines {
-			return 0, false
-		}
-	}
-
-	cfg := m.effectiveReasoningConfig()
-	lineText := m.contentLineText(line)
-	if !isReasoningHeaderLine(lineText, cfg) {
-		return 0, false
-	}
-	ordinal := historyReasoningCount
-	for i := historyLines; i < line; i++ {
-		if isReasoningHeaderLine(m.contentLineText(i), cfg) {
-			ordinal++
-		}
-	}
-	return ordinal, true
+	return reasoningClickTarget{}, false
 }
 
 func (m *Model) toggleReasoningSegmentAtContentLine(line int) bool {
-	ordinal, ok := m.reasoningHeaderOrdinalAtLine(line)
+	target, ok := m.reasoningClickTargetAtLine(line)
 	if !ok {
 		return false
 	}
-	historyCount := m.renderedHistoryReasoningCount()
-	if ordinal < historyCount {
-		return m.toggleHistoryReasoningOrdinal(ordinal)
-	}
-	if m.toggleTrackerReasoningOrdinal(ordinal - historyCount) {
-		return true
-	}
-	// The live (uncommitted) reasoning block renders one past the tracker's
-	// committed reasoning segments.
-	if ordinal-historyCount == m.trackerReasoningSegmentCount() {
+	switch target.kind {
+	case reasoningClickTargetHistory:
+		return m.toggleHistoryReasoningOrdinal(target.historyOrdinal)
+	case reasoningClickTargetTracker:
+		return m.toggleTrackerReasoningSegment(target.trackerSegmentIndex)
+	case reasoningClickTargetCurrent:
 		return m.toggleCurrentReasoningBlock()
+	default:
+		return false
 	}
-	return false
-}
-
-func (m *Model) trackerReasoningSegmentCount() int {
-	if m.tracker == nil {
-		return 0
-	}
-	count := 0
-	for i := range m.tracker.Segments {
-		if m.tracker.Segments[i].Reasoning != nil {
-			count++
-		}
-	}
-	return count
 }
 
 func (m *Model) toggleCurrentReasoningBlock() bool {
@@ -143,40 +104,32 @@ func (m *Model) toggleCurrentReasoningBlock() bool {
 	return true
 }
 
-func (m *Model) toggleTrackerReasoningOrdinal(ordinal int) bool {
-	if m.tracker == nil {
+func (m *Model) toggleTrackerReasoningSegment(segmentIndex int) bool {
+	if m.tracker == nil || segmentIndex < 0 || segmentIndex >= len(m.tracker.Segments) {
 		return false
 	}
-	seen := 0
-	for i := range m.tracker.Segments {
-		seg := &m.tracker.Segments[i]
-		if seg.Reasoning == nil {
-			continue
-		}
-		if seen != ordinal {
-			seen++
-			continue
-		}
-		currentlyExpanded := m.reasoningSegmentExpanded(*seg.Reasoning)
-		next := !currentlyExpanded
-		seg.Reasoning.Expanded = &next
-		rendered := ui.NormalizeReasoningSegmentRendered(m.renderReasoningSegmentBlock(*seg.Reasoning))
-		if rendered == "" {
-			return false
-		}
-		seg.Text = rendered
-		seg.Rendered = rendered
-		m.tracker.Version++
-		m.viewCache.cachedCompletedContent = ""
-		m.viewCache.cachedTrackerVersion = 0
-		m.viewCache.lastTrackerVersion = 0
-		m.viewCache.lastSetContentAt = time.Time{}
-		m.resetAltScreenStreamingAppendCache()
-		m.rerenderCompletedStreamFromTracker()
-		m.bumpContentVersion()
-		return true
+	seg := &m.tracker.Segments[segmentIndex]
+	if seg.Reasoning == nil {
+		return false
 	}
-	return false
+	currentlyExpanded := m.reasoningSegmentExpanded(*seg.Reasoning)
+	next := !currentlyExpanded
+	seg.Reasoning.Expanded = &next
+	rendered := ui.NormalizeReasoningSegmentRendered(m.renderReasoningSegmentBlock(*seg.Reasoning))
+	if rendered == "" {
+		return false
+	}
+	seg.Text = rendered
+	seg.Rendered = rendered
+	m.tracker.Version++
+	m.viewCache.cachedCompletedContent = ""
+	m.viewCache.cachedTrackerVersion = 0
+	m.viewCache.lastTrackerVersion = 0
+	m.viewCache.lastSetContentAt = time.Time{}
+	m.resetAltScreenStreamingAppendCache()
+	m.rerenderCompletedStreamFromTracker()
+	m.bumpContentVersion()
+	return true
 }
 
 func renderedHistoryLineCount(content string) int {
@@ -186,21 +139,93 @@ func renderedHistoryLineCount(content string) int {
 	return strings.Count(content, "\n")
 }
 
-func (m *Model) renderedHistoryReasoningCount() int {
+func (m *Model) captureReasoningClickSnapshot() {
+	snapshot := reasoningClickSnapshot{}
 	if m.chatRenderer != nil {
-		return m.chatRenderer.ReasoningHeaderCount()
+		snapshot.historyLineOrdinals = m.chatRenderer.ReasoningLineOrdinalsSnapshot()
 	}
-	if m.viewCache.historyContent != "" {
-		cfg := m.effectiveReasoningConfig()
-		count := 0
-		for _, line := range strings.Split(m.viewCache.historyContent, "\n") {
-			if isReasoningHeaderLine(line, cfg) {
-				count++
+	historyLines := renderedHistoryLineCount(m.viewCache.historyContent)
+	snapshot.trackerSegmentIndexByLine = m.trackerReasoningLineSnapshot(historyLines)
+	if line, ok := m.currentReasoningLineSnapshot(historyLines); ok {
+		snapshot.currentReasoningLine = line
+		snapshot.hasCurrentReasoningLine = true
+	}
+	m.viewCache.reasoningClickSnapshot = snapshot
+}
+
+func (m *Model) trackerReasoningLineSnapshot(historyLines int) map[int]int {
+	if m.tracker == nil {
+		return nil
+	}
+	lineBySegment := make(map[int]int)
+	runningLines := 0
+	lastType := ui.SegmentText
+	hasPrev := false
+	leadingInitialized := false
+	trackerExpanded := m.tracker.Expanded()
+	for i := range m.tracker.Segments {
+		seg := &m.tracker.Segments[i]
+		if seg.Flushed {
+			continue
+		}
+		if seg.Type == ui.SegmentTool && seg.ToolStatus == ui.ToolPending {
+			break
+		}
+		if !leadingInitialized {
+			if m.tracker.HasFlushed && seg.FlushedPos == 0 {
+				lastType = m.tracker.LastFlushedType
+				hasPrev = true
+			}
+			leadingInitialized = true
+		}
+		rendered := ui.RenderSegmentsWithImageRenderer([]*ui.Segment{seg}, m.width, -1, m.renderMd, m.altScreen, trackerExpanded, m.imageArtifactRenderer())
+		if rendered == "" {
+			continue
+		}
+		if hasPrev {
+			runningLines += strings.Count(ui.SegmentSeparator(lastType, seg.Type), "\n")
+		}
+		if seg.Reasoning != nil && seg.Rendered != "" {
+			lineBySegment[historyLines+runningLines] = i
+		}
+		runningLines += strings.Count(rendered, "\n")
+		lastType = seg.Type
+		hasPrev = true
+	}
+	if len(lineBySegment) == 0 {
+		return nil
+	}
+	return lineBySegment
+}
+
+func (m *Model) currentReasoningLineSnapshot(historyLines int) (int, bool) {
+	if !m.streaming {
+		return 0, false
+	}
+	activeReasoning := m.renderCurrentReasoningBlock()
+	if activeReasoning == "" {
+		return 0, false
+	}
+	completedContent := ""
+	if m.tracker != nil {
+		completedContent = m.viewCache.cachedCompletedContent
+		if m.viewCache.cachedTrackerVersion != m.tracker.Version {
+			completedContent = m.tracker.RenderUnflushedWithImageRenderer(m.width, m.renderMd, m.altScreen, m.imageArtifactRenderer())
+		}
+	}
+	runningLines := strings.Count(completedContent, "\n")
+	if completedContent != "" {
+		if !strings.HasSuffix(completedContent, "\n\n") {
+			if strings.HasSuffix(completedContent, "\n") {
+				runningLines++
+			} else {
+				runningLines += 2
 			}
 		}
-		return count
+	} else if m.tracker != nil && m.tracker.HasFlushed {
+		runningLines += strings.Count(m.tracker.FlushLeadingSeparator(ui.SegmentReasoning), "\n")
 	}
-	return 0
+	return historyLines + runningLines, true
 }
 
 func (m *Model) forceHistoryRerender() {

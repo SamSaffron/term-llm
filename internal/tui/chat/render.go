@@ -309,6 +309,7 @@ func (m *Model) viewAltScreen() string {
 			m.streamPerf.RecordDuration(durationMetricSetContent, setContentEnd.Sub(setContentStart))
 		}
 		m.viewCache.lastSetContentAt = setContentEnd
+		m.captureReasoningClickSnapshot()
 		m.viewCache.lastRenderedVersion = m.viewCache.contentVersion
 		// On first render (including resumed sessions), anchor at latest content.
 		// On subsequent renders while streaming, preserve user scroll position

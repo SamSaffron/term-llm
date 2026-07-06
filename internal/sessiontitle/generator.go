@@ -232,6 +232,7 @@ func completeText(ctx context.Context, provider llm.Provider, prompt string, tim
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	stream, err := provider.Stream(ctx, llm.Request{
+		Ephemeral: true,
 		Messages: []llm.Message{
 			llm.SystemText("You generate concise, specific titles and reply exactly as requested."),
 			llm.UserText(prompt),

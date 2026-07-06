@@ -265,6 +265,115 @@ func TestMouseClickThinkingHeaderTogglesOnlyThatBlock(t *testing.T) {
 	}
 }
 
+func TestMouseClickThinkingHeaderUsesSetContentSnapshotWhenHistoryRenderThrottled(t *testing.T) {
+	m := newTestChatModel(true)
+	m.width = 80
+	m.height = 24
+	m.streaming = true
+	m.streamRenderMinInterval = time.Hour
+	m.tracker = ui.NewToolTracker()
+	m.setTextareaValue("")
+	m.messages = []session.Message{{
+		ID:        301,
+		SessionID: "test-session",
+		Role:      llm.RoleAssistant,
+		Parts: []llm.Part{
+			{
+				Type:                  llm.PartText,
+				Text:                  "first answer",
+				ReasoningContent:      "first hidden body\nwith enough lines\nto shift later headers",
+				ReasoningKind:         llm.ReasoningKindRaw,
+				ReasoningSummaryTitle: "First throttled plan",
+			},
+			{
+				Type:                  llm.PartText,
+				Text:                  "second answer",
+				ReasoningContent:      "second hidden body",
+				ReasoningKind:         llm.ReasoningKindRaw,
+				ReasoningSummaryTitle: "Second throttled plan",
+			},
+		},
+		TextContent: "first answer\nsecond answer",
+		CreatedAt:   time.Now(),
+		Sequence:    0,
+	}}
+	m.invalidateHistoryCache()
+	_ = m.View()
+	if m.viewCache.lastContentStr != "" {
+		m.contentLines = strings.Split(m.viewCache.lastContentStr, "\n")
+	}
+	secondLine := -1
+	for i, line := range m.contentLines {
+		if strings.Contains(ui.StripANSI(line), "▸ Thought: Second throttled plan") {
+			secondLine = i
+			break
+		}
+	}
+	if secondLine < 0 {
+		t.Fatalf("could not find second header in %#v", m.contentLines)
+	}
+
+	// Simulate a streaming frame in the throttle window: renderHistory rebuilds
+	// the live renderer map with the first block expanded, but SetContent is
+	// skipped so the viewport still shows the old collapsed content.
+	m.reasoningExpansionOverrides = map[int]bool{0: true}
+	m.viewCache.historyValid = false
+	m.bumpContentVersion()
+	_ = m.View()
+
+	updated, _ := m.Update(tea.MouseClickMsg{X: 0, Y: secondLine - m.viewport.YOffset(), Button: tea.MouseLeft})
+	m = updated.(*Model)
+	if !m.reasoningExpansionOverrides[0] {
+		t.Fatalf("preexisting first-block override was lost: %#v", m.reasoningExpansionOverrides)
+	}
+	if !m.reasoningExpansionOverrides[1] {
+		t.Fatalf("click should toggle the second block using the SetContent-time snapshot, got overrides %#v", m.reasoningExpansionOverrides)
+	}
+}
+
+func TestMouseClickThinkingHeaderUsesTrackerSegmentIndexSnapshot(t *testing.T) {
+	m := newTestChatModel(true)
+	m.width = 80
+	m.streaming = false
+	m.setTextareaValue("")
+	m.tracker = ui.NewToolTracker()
+
+	first := llm.Part{Type: llm.PartText, ReasoningContent: "first body", ReasoningKind: llm.ReasoningKindRaw, ReasoningSummaryTitle: "Visible first"}
+	second := llm.Part{Type: llm.PartText, ReasoningContent: "second body", ReasoningKind: llm.ReasoningKindRaw, ReasoningSummaryTitle: "Visible second"}
+	m.tracker.AddReasoningSegment(ui.NormalizeReasoningSegmentRendered(m.renderReasoningPartBlock(first)), reasoningSegmentFromPart(first))
+	empty := reasoningSegmentFromPart(llm.Part{Type: llm.PartText, ReasoningContent: "empty body", ReasoningKind: llm.ReasoningKindRaw, ReasoningSummaryTitle: "Empty skipped"})
+	m.tracker.Segments = append(m.tracker.Segments, ui.Segment{Type: ui.SegmentReasoning, Reasoning: &empty, Complete: true})
+	m.tracker.Version++
+	m.tracker.AddReasoningSegment(ui.NormalizeReasoningSegmentRendered(m.renderReasoningPartBlock(second)), reasoningSegmentFromPart(second))
+	m.viewCache.completedStream = ui.RenderSegmentsWithImageRenderer(m.tracker.CompletedSegments(), m.width, -1, m.renderMd, true, m.toolsExpanded, m.imageArtifactRenderer())
+	_ = m.View()
+	if m.viewCache.lastContentStr != "" {
+		m.contentLines = strings.Split(m.viewCache.lastContentStr, "\n")
+	}
+	secondLine := -1
+	for i, line := range m.contentLines {
+		if strings.Contains(ui.StripANSI(line), "▸ Thought: Visible second") {
+			secondLine = i
+			break
+		}
+	}
+	if secondLine < 0 {
+		t.Fatalf("could not find second visible header in %#v", m.contentLines)
+	}
+
+	updated, _ := m.Update(tea.MouseClickMsg{X: 0, Y: secondLine - m.viewport.YOffset(), Button: tea.MouseLeft})
+	m = updated.(*Model)
+	if m.tracker.Segments[1].Reasoning == nil {
+		t.Fatal("precondition: segment 1 should be the empty reasoning segment")
+	}
+	if m.tracker.Segments[1].Reasoning.Expanded != nil {
+		t.Fatalf("empty skipped reasoning segment was toggled: %#v", m.tracker.Segments[1].Reasoning.Expanded)
+	}
+	if m.tracker.Segments[2].Reasoning == nil || m.tracker.Segments[2].Reasoning.Expanded == nil || !*m.tracker.Segments[2].Reasoning.Expanded {
+		t.Fatalf("second visible reasoning segment was not toggled: %#v", m.tracker.Segments[2].Reasoning)
+	}
+}
+
 func TestMouseClickCustomHiddenLabelThinkingHeaderTogglesBlock(t *testing.T) {
 	m := newTestChatModel(true)
 	m.width = 80

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -220,7 +221,7 @@ func TestDispatchClaudeEvents_PrioritizesTextOverToolRequest(t *testing.T) {
 	toolReqs <- req
 	close(lines)
 
-	_, _, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
+	_, _, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events}, false)
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -262,7 +263,7 @@ func TestDispatchClaudeEvents_PrioritizesSlightlyDelayedTextOverToolRequest(t *t
 		close(lines)
 	}()
 
-	_, _, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
+	_, _, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events}, false)
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -292,7 +293,7 @@ func TestDispatchClaudeEvents_FallsBackToAssistantTextWhenNoDeltas(t *testing.T)
 	lines <- `{"type":"result","is_error":false,"result":"ok","usage":{"input_tokens":1,"output_tokens":2,"cache_read_input_tokens":0}}`
 	close(lines)
 
-	_, _, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
+	_, _, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events}, false)
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -319,7 +320,7 @@ func TestDispatchClaudeEvents_FallsBackToResultTextWhenNoAssistantOrDeltas(t *te
 	lines <- `{"type":"result","subtype":"success","is_error":false,"result":"result fallback text","usage":{"input_tokens":1,"output_tokens":3,"cache_read_input_tokens":0}}`
 	close(lines)
 
-	_, _, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
+	_, _, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events}, false)
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -346,7 +347,7 @@ func TestDispatchClaudeEvents_SurfacesPermissionDenialResult(t *testing.T) {
 	lines <- `{"type":"result","subtype":"success","is_error":true,"result":"Permission denied to use mcp__term_llm__shell","permission_denials":[{"tool_name":"mcp__term_llm__shell"}],"usage":{"input_tokens":1,"output_tokens":3,"cache_read_input_tokens":0}}`
 	close(lines)
 
-	_, _, handled, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
+	_, _, handled, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events}, false)
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -376,7 +377,7 @@ func TestDispatchClaudeEvents_LeavesAuthResultAsError(t *testing.T) {
 	lines <- `{"type":"result","subtype":"success","is_error":true,"result":"Not logged in · Please run /login","permission_denials":[],"usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0}}`
 	close(lines)
 
-	_, _, handled, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
+	_, _, handled, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events}, false)
 	if err == nil {
 		t.Fatal("expected auth result to remain an error")
 	}
@@ -395,7 +396,7 @@ func TestDispatchClaudeEvents_EmitsStreamlinedText(t *testing.T) {
 	lines <- `{"type":"result","subtype":"success","is_error":false,"result":"ignored final result","usage":{"input_tokens":1,"output_tokens":3,"cache_read_input_tokens":0}}`
 	close(lines)
 
-	_, _, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
+	_, _, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events}, false)
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -424,7 +425,7 @@ func TestDispatchClaudeEvents_DoesNotDuplicateAssistantFallbackWhenDeltasPresent
 	lines <- `{"type":"result","is_error":false,"result":"ok","usage":{"input_tokens":1,"output_tokens":2,"cache_read_input_tokens":0}}`
 	close(lines)
 
-	_, _, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
+	_, _, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events}, false)
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -456,7 +457,7 @@ func TestDispatchClaudeEvents_SeparatesCachedInputTokensInUsage(t *testing.T) {
 	lines <- `{"type":"result","is_error":false,"result":"ok","usage":{"input_tokens":11,"output_tokens":7,"cache_read_input_tokens":5}}`
 	close(lines)
 
-	usage, _, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events})
+	usage, _, _, err := provider.dispatchClaudeEvents(context.Background(), lines, toolReqs, false, eventSender{ctx: context.Background(), ch: events}, false)
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -512,6 +513,7 @@ func TestHandleClaudeLine_ContextCancelledDoesNotBlock(t *testing.T) {
 		&sawTextDelta,
 		&assistantFallbackText,
 		nil,
+		false,
 	)
 	if err == nil {
 		t.Fatal("expected cancellation error")
@@ -805,7 +807,7 @@ func TestClaudeBinProvider_SystemPromptForTurn(t *testing.T) {
 	}
 
 	p := NewClaudeBinProvider("sonnet", nil)
-	if got := p.systemPromptForTurn(msgs); got != "You are helpful." {
+	if got := p.systemPromptForTurn(msgs, false); got != "You are helpful." {
 		t.Fatalf("initial turn systemPromptForTurn = %q, want %q", got, "You are helpful.")
 	}
 
@@ -813,8 +815,192 @@ func TestClaudeBinProvider_SystemPromptForTurn(t *testing.T) {
 	// rebuilds the request from the current invocation's flags, so a resume
 	// without --system-prompt reverts to Claude Code's default prompt.
 	p.sessionID = "resume-abc"
-	if got := p.systemPromptForTurn(msgs); got != "You are helpful." {
+	if got := p.systemPromptForTurn(msgs, false); got != "You are helpful." {
 		t.Fatalf("resume turn systemPromptForTurn = %q, want %q (must re-send on --resume)", got, "You are helpful.")
+	}
+	if got := p.systemPromptForTurn(msgs, true); got != "You are helpful." {
+		t.Fatalf("ephemeral resume turn systemPromptForTurn = %q, want system prompt", got)
+	}
+}
+
+func TestClaudeBinProvider_EphemeralStreamDoesNotResumeOrMutateState(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := dir + "/args.txt"
+	stdinFile := dir + "/stdin.txt"
+	claudePath := dir + "/claude"
+	script := `#!/bin/sh
+printf '%s\n' "$@" > "$CLAUDE_ARGS_FILE"
+cat > "$CLAUDE_STDIN_FILE"
+printf '%s\n' '{"type":"system","session_id":"guardian-session","model":"sonnet","tools":[]}'
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}}'
+printf '%s\n' '{"type":"result","is_error":false,"result":"ok","usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0}}'
+`
+	if err := os.WriteFile(claudePath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CLAUDE_ARGS_FILE", argsFile)
+	t.Setenv("CLAUDE_STDIN_FILE", stdinFile)
+
+	p := NewClaudeBinProvider("sonnet", nil)
+	p.sessionID = "chat-session"
+	p.messagesSent = 7
+
+	stream, err := p.Stream(context.Background(), Request{
+		Ephemeral: true,
+		Messages: []Message{
+			SystemText("guardian policy"),
+			UserText("review this command"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+	}
+
+	if p.sessionID != "chat-session" {
+		t.Fatalf("sessionID = %q, want original chat-session", p.sessionID)
+	}
+	if p.messagesSent != 7 {
+		t.Fatalf("messagesSent = %d, want unchanged 7", p.messagesSent)
+	}
+	argsBytes, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	args := string(argsBytes)
+	if strings.Contains(args, "--resume") || strings.Contains(args, "chat-session") {
+		t.Fatalf("ephemeral args leaked resume state:\n%s", args)
+	}
+	if !strings.Contains(args, "--system-prompt") || !strings.Contains(args, "guardian policy") {
+		t.Fatalf("ephemeral args missing system prompt:\n%s", args)
+	}
+}
+
+func TestClaudeBinProvider_EphemeralToolStreamExposesBridgeWhenStandalone(t *testing.T) {
+	dir := t.TempDir()
+	readyFile := dir + "/ready"
+	releaseFile := dir + "/release"
+	claudePath := dir + "/claude"
+	script := `#!/bin/sh
+printf '%s\n' '{"type":"system","session_id":"guardian-session","model":"sonnet","tools":[]}'
+: > "$CLAUDE_READY_FILE"
+while [ ! -f "$CLAUDE_RELEASE_FILE" ]; do sleep 0.01; done
+printf '%s\n' '{"type":"result","is_error":false,"result":"ok","usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0}}'
+`
+	if err := os.WriteFile(claudePath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CLAUDE_READY_FILE", readyFile)
+	t.Setenv("CLAUDE_RELEASE_FILE", releaseFile)
+
+	p := NewClaudeBinProvider("sonnet", nil)
+	stream, err := p.Stream(context.Background(), Request{
+		Ephemeral: true,
+		Messages:  []Message{UserText("standalone tool request")},
+		Tools:     []ToolSpec{{Name: "diagnostic_ping", Description: "diagnostic"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	for i := 0; i < 200; i++ {
+		if _, err := os.Stat(readyFile); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := os.Stat(readyFile); err != nil {
+		t.Fatalf("fake claude did not become ready: %v", err)
+	}
+
+	var bridge *claudeTurnBridge
+	var events chan<- Event
+	for i := 0; i < 200; i++ {
+		p.eventsMu.Lock()
+		bridge = p.currentBridge
+		events = p.currentEvents
+		p.eventsMu.Unlock()
+		if bridge != nil && events != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if bridge == nil || events == nil {
+		t.Fatal("ephemeral standalone tool request did not expose active bridge")
+	}
+
+	if err := os.WriteFile(releaseFile, []byte("ok"), 0o644); err != nil {
+		t.Fatalf("release fake claude: %v", err)
+	}
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+	}
+	if p.activeStream.Load() {
+		t.Fatal("activeStream still set after ephemeral tool stream completed")
+	}
+}
+
+func TestClaudeBinProvider_EphemeralToolStreamRejectedWhileActive(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+	p.activeStream.Store(true)
+	stream, err := p.Stream(context.Background(), Request{
+		Ephemeral: true,
+		Messages:  []Message{UserText("standalone tool request")},
+		Tools:     []ToolSpec{{Name: "diagnostic_ping", Description: "diagnostic"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	ev, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv: %v", err)
+	}
+	if ev.Type != EventError || ev.Err == nil || !strings.Contains(ev.Err.Error(), "ephemeral tool request cannot run") {
+		t.Fatalf("Recv() = %#v, want ephemeral tool active-stream error", ev)
+	}
+}
+
+func TestClaudeBinProvider_EphemeralSystemLineDoesNotReplaceSession(t *testing.T) {
+	p := NewClaudeBinProvider("sonnet", nil)
+	p.sessionID = "chat-session"
+	var usage *Usage
+	sawTextDelta := false
+	assistantFallbackText := ""
+	if err := p.handleClaudeLine(
+		context.Background(),
+		`{"type":"system","session_id":"guardian-session","model":"sonnet","tools":[]}`,
+		false,
+		eventSender{ctx: context.Background(), ch: make(chan Event, 1)},
+		&usage,
+		&sawTextDelta,
+		&assistantFallbackText,
+		nil,
+		true,
+	); err != nil {
+		t.Fatalf("handleClaudeLine: %v", err)
+	}
+	if p.sessionID != "chat-session" {
+		t.Fatalf("sessionID = %q, want unchanged chat-session", p.sessionID)
 	}
 }
 

@@ -314,8 +314,9 @@ type Model struct {
 		cachedTrackerVersion   uint64 // Tracker version when cache was built
 		lastWavePos            int    // Last wave position for animation
 		// Selection cache for invalidation
-		lastSelection  Selection
-		lastContentStr string // stored for lazy contentLines split
+		lastSelection          Selection
+		lastContentStr         string // stored for lazy contentLines split
+		reasoningClickSnapshot reasoningClickSnapshot
 	}
 
 	// New chat renderer (virtualized rendering for large histories)

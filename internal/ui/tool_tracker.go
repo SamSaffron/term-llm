@@ -151,6 +151,10 @@ func (t *ToolTracker) SetExpanded(v bool) {
 	t.expanded = v
 }
 
+func (t *ToolTracker) Expanded() bool {
+	return t.expanded
+}
+
 // SetExpandHintShown controls whether the one-time Ctrl+E discovery hint has
 // already been consumed by this tracker. Chat TUI keeps this session-scoped and
 // reapplies it when a fresh per-turn tracker is created.

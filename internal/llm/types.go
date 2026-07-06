@@ -111,8 +111,13 @@ type Stream interface {
 
 // Request represents a single model turn.
 type Request struct {
-	Model                    string
-	SessionID                string // Optional session ID for provider-side continuity/caching hints
+	Model     string
+	SessionID string // Optional session ID for provider-side continuity/caching hints
+	// Ephemeral marks one-shot internal requests (title generation, summaries,
+	// vision helpers) that must not participate in provider-side conversation/session
+	// state. Stateful providers should avoid resuming an existing session and must
+	// not update their stored session boundary.
+	Ephemeral                bool
 	Messages                 []Message
 	ApprovalTranscriptPrefix []Message // Optional policy-review-only evidence prepended to tool approval transcripts; never sent to providers.
 	Tools                    []ToolSpec

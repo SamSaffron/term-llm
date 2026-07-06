@@ -366,6 +366,8 @@ func (r *Renderer) renderAltScreen(state RenderState) string {
 
 // renderHistory renders the message history with virtualization.
 func (r *Renderer) renderHistory(state RenderState) string {
+	r.lastReasoningLineOrdinals = make(map[int]int)
+	r.lastReasoningHeaderCount = 0
 	if len(state.Messages) == 0 {
 		return ""
 	}
@@ -387,8 +389,6 @@ func (r *Renderer) renderHistory(state RenderState) string {
 
 	// Render only visible messages using cache
 	// Skip system and tool messages (they render as empty anyway)
-	r.lastReasoningLineOrdinals = make(map[int]int)
-	r.lastReasoningHeaderCount = 0
 	b := historyBuilderPool.Get().(*strings.Builder)
 	b.Reset()
 	defer historyBuilderPool.Put(b)
@@ -419,7 +419,7 @@ func (r *Renderer) renderHistory(state RenderState) string {
 				r.lastReasoningLineOrdinals[blockStartLine+offset] = reasoningOrdinal + offsetIdx
 			}
 			b.WriteString(block.Rendered)
-			lineCursor += block.Height
+			lineCursor += strings.Count(block.Rendered, "\n")
 			trailingNewlines = ui.CountTrailingNewlines(block.Rendered)
 			if block.HasSegmentTypes {
 				previousLastType = block.LastSegmentType
@@ -452,6 +452,19 @@ func (r *Renderer) ReasoningHeaderCount() int {
 		return 0
 	}
 	return r.lastReasoningHeaderCount
+}
+
+// ReasoningLineOrdinalsSnapshot returns a copy of the history line-to-reasoning
+// ordinal map from the most recent Render call.
+func (r *Renderer) ReasoningLineOrdinalsSnapshot() map[int]int {
+	if r == nil || len(r.lastReasoningLineOrdinals) == 0 {
+		return nil
+	}
+	out := make(map[int]int, len(r.lastReasoningLineOrdinals))
+	for line, ordinal := range r.lastReasoningLineOrdinals {
+		out[line] = ordinal
+	}
+	return out
 }
 
 // MessageHistorySignature fingerprints rendered message history so cache validity

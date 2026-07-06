@@ -119,6 +119,7 @@ func (h *SamplingHandler) Handle(ctx context.Context, serverName string, req *mc
 	// Build the LLM request
 	llmReq := llm.Request{
 		Model:           model,
+		Ephemeral:       true,
 		Messages:        messages,
 		MaxOutputTokens: maxTokens,
 	}

@@ -13,30 +13,35 @@ import (
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
-func installGuardianReviewer(cfg *config.Config, approvalMgr *tools.ApprovalManager, provider llm.Provider, fastProvider llm.Provider, modelName string, headless bool) error {
-	if err := installGuardianReviewerCallbacks(cfg, approvalMgr, provider, fastProvider, modelName, headless); err != nil {
+var newGuardianProviderByName = llm.NewProviderByName
+
+func installGuardianReviewer(cfg *config.Config, approvalMgr *tools.ApprovalManager, providerName string, modelName string, headless bool) error {
+	if err := installGuardianReviewerCallbacks(cfg, approvalMgr, providerName, modelName, headless); err != nil {
 		return err
 	}
 	approvalMgr.SetApprovalMode(tools.ModeAuto)
 	return nil
 }
 
-func installGuardianReviewerCallbacks(cfg *config.Config, approvalMgr *tools.ApprovalManager, provider llm.Provider, fastProvider llm.Provider, modelName string, headless bool) error {
+func installGuardianReviewerCallbacks(cfg *config.Config, approvalMgr *tools.ApprovalManager, providerName string, modelName string, headless bool) error {
 	if approvalMgr == nil || cfg == nil {
 		return nil
 	}
 	approvalMgr.SetAutoHeadless(headless)
-	reviewProvider := provider
 	model := resolveGuardianModelName(cfg, modelName)
-	if strings.TrimSpace(cfg.Guardian.Provider) != "" {
-		guardianName := strings.TrimSpace(cfg.Guardian.Provider)
-		var err error
-		reviewProvider, err = llm.NewProviderByName(cfg, guardianName, model)
-		if err != nil {
-			return fmt.Errorf("guardian provider: %w", err)
-		}
-	} else if reviewProvider == nil {
-		reviewProvider = fastProvider
+	guardianName := strings.TrimSpace(cfg.Guardian.Provider)
+	if guardianName == "" {
+		guardianName = strings.TrimSpace(providerName)
+	}
+	if guardianName == "" {
+		guardianName = strings.TrimSpace(cfg.DefaultProvider)
+	}
+	if guardianName == "" {
+		return fmt.Errorf("auto approval requires an LLM provider")
+	}
+	reviewProvider, err := newGuardianProviderByName(cfg, guardianName, model)
+	if err != nil {
+		return fmt.Errorf("guardian provider: %w", err)
 	}
 	if reviewProvider == nil {
 		return fmt.Errorf("auto approval requires an LLM provider")
@@ -45,7 +50,7 @@ func installGuardianReviewerCallbacks(cfg *config.Config, approvalMgr *tools.App
 	if err != nil {
 		return fmt.Errorf("load guardian policy: %w", err)
 	}
-	reviewer := guardian.Reviewer{Provider: reviewProvider, Model: model, Policy: policy}
+	reviewer := &guardian.Reviewer{Provider: reviewProvider, Model: model, Policy: policy}
 	if cfg.Guardian.TimeoutSeconds > 0 {
 		reviewer.Timeout = time.Duration(cfg.Guardian.TimeoutSeconds) * time.Second
 	}
@@ -54,7 +59,7 @@ func installGuardianReviewerCallbacks(cfg *config.Config, approvalMgr *tools.App
 		for _, e := range req.Transcript {
 			transcript = append(transcript, guardian.TranscriptEntry{Role: e.Role, Text: e.Text})
 		}
-		decision, err := reviewer.Review(ctx, guardian.Request{Command: req.Command, WorkDir: req.WorkDir, Transcript: transcript, ApprovalContext: req.ApprovalContext})
+		decision, err := reviewer.Review(ctx, guardian.Request{Command: req.Command, WorkDir: req.WorkDir, Transcript: transcript, ApprovalContext: req.ApprovalContext, ScopeID: req.ScopeID})
 		if err != nil {
 			return tools.PolicyDecision{}, err
 		}

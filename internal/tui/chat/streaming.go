@@ -858,6 +858,7 @@ func fastSlugGen(provider llm.Provider, promptFmt string) session.HandoverSlugGe
 		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
 		stream, err := provider.Stream(ctx, llm.Request{
+			Ephemeral: true,
 			Messages: []llm.Message{
 				llm.UserText(prompt),
 			},

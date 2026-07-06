@@ -101,6 +101,9 @@ type ClaudeBinProvider struct {
 	// so they can be removed when the current turn finishes.
 	tempFiles   []string
 	tempFilesMu sync.Mutex
+
+	activeStream atomic.Bool
+	activeRuns   atomic.Int32
 }
 
 // ClaudeCommandError carries enough diagnostics for debug logs to reproduce or
@@ -434,27 +437,50 @@ func (p *ClaudeBinProvider) Capabilities() Capabilities {
 
 func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, error) {
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
-		defer p.cleanupTempFiles()
+		p.activeRuns.Add(1)
+		defer p.finishStreamCleanup()
+
+		if !req.Ephemeral || len(req.Tools) > 0 {
+			if !p.activeStream.CompareAndSwap(false, true) {
+				if req.Ephemeral {
+					return fmt.Errorf("claude-bin ephemeral tool request cannot run while another stream is active on the same provider")
+				}
+				return fmt.Errorf("claude-bin provider already has an active stream; create a dedicated provider instance per conversation")
+			}
+			defer p.activeStream.Store(false)
+		}
+
+		if !req.Ephemeral && p.sessionID != "" && p.messagesSent > len(req.Messages) {
+			slog.Warn("claude-bin resume message boundary exceeded request transcript; resetting conversation state",
+				"messages_sent", p.messagesSent, "request_messages", len(req.Messages))
+			p.ResetConversation()
+		}
 
 		// Build the command arguments, passing events channel for tool execution routing.
 		// MCP server is kept alive across turns - caller should call CleanupMCP() when done.
 		args, effort := p.buildArgs(ctx, req, send)
 
-		systemPrompt := p.systemPromptForTurn(req.Messages)
+		systemPrompt := p.systemPromptForTurn(req.Messages, req.Ephemeral)
 		if systemPrompt != "" {
 			args = append(args, "--system-prompt", systemPrompt)
 		}
 
-		// When resuming a session, only send new messages (claude CLI has the rest)
+		// When resuming a session, only send new messages (claude CLI has the rest).
+		// Ephemeral one-shot requests never resume and must always send their whole
+		// standalone prompt.
 		messagesToSend := req.Messages
-		if p.sessionID != "" && p.messagesSent > 0 && p.messagesSent < len(req.Messages) {
+		if !req.Ephemeral && p.sessionID != "" && p.messagesSent > 0 && p.messagesSent < len(req.Messages) {
 			messagesToSend = req.Messages[p.messagesSent:]
+		}
+		streamJSONSessionID := ""
+		if !req.Ephemeral {
+			streamJSONSessionID = p.sessionID
 		}
 
 		// Build the conversation prompt from messages to send.
 		// Use stream-json format when images are present so the model can vision-analyze them.
 		useStreamJson := hasImages(messagesToSend)
-		if useStreamJson && strings.TrimSpace(p.buildStreamJsonInput(messagesToSend, p.sessionID)) == "" {
+		if useStreamJson && strings.TrimSpace(p.buildStreamJsonInput(messagesToSend, streamJSONSessionID)) == "" {
 			slog.Warn("claude-bin stream-json input was empty despite image detection; falling back to text prompt")
 			useStreamJson = false
 		}
@@ -466,7 +492,7 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 		// For stream-json mode the system prompt also goes on argv.
 		buildPrompt := func(msgs []Message) string {
 			if useStreamJson {
-				return p.buildStreamJsonInput(msgs, p.sessionID)
+				return p.buildStreamJsonInput(msgs, streamJSONSessionID)
 			}
 			return p.buildConversationPrompt(msgs)
 		}
@@ -477,7 +503,11 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 
 		debug := req.Debug || req.DebugRaw
 
-		err := p.runClaudeCommand(ctx, args, effort, userPrompt, debug, send)
+		// Tool-capable turns need the shared MCP bridge. Ephemeral tool turns
+		// acquire activeStream above, so the bridge is never shared with a parent
+		// conversation while still allowing standalone one-shot tool requests.
+		exposeToolBridge := len(req.Tools) > 0
+		err := p.runClaudeCommand(ctx, args, effort, userPrompt, debug, send, req.Ephemeral, exposeToolBridge)
 		if err != nil && isPromptTooLong(err) {
 			// Retry with progressively more aggressive truncation
 			retryLimits := []int{maxToolResultCharsOnRetry, maxToolResultCharsOnAggressiveRetry}
@@ -493,7 +523,7 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 				slog.Info("prompt too long, retrying with truncated tool results",
 					"original_len", prevLen, "truncated_len", len(retryPrompt), "limit", limit)
 				prevLen = len(retryPrompt)
-				err = p.runClaudeCommand(ctx, args, effort, retryPrompt, debug, send)
+				err = p.runClaudeCommand(ctx, args, effort, retryPrompt, debug, send, req.Ephemeral, exposeToolBridge)
 				if err == nil || !isPromptTooLong(err) {
 					break
 				}
@@ -503,8 +533,11 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req Request) (Stream, er
 			return err
 		}
 
-		// Track messages sent so we don't re-send them on resume
-		p.messagesSent = len(req.Messages)
+		// Track messages sent so we don't re-send them on resume. Ephemeral
+		// requests are isolated and must not alter resume accounting.
+		if !req.Ephemeral {
+			p.messagesSent = len(req.Messages)
+		}
 
 		return send.Send(Event{Type: EventDone})
 	}), nil
@@ -799,6 +832,8 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 	userPrompt string,
 	debug bool,
 	send eventSender,
+	ephemeral bool,
+	exposeToolBridge bool,
 ) error {
 	// Note: We pass the prompt via stdin instead of command line args
 	// to avoid "argument list too long" errors with large tool results (e.g., base64 images)
@@ -845,17 +880,21 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 			close(bridge.done)
 		})
 	}
-	p.eventsMu.Lock()
-	p.currentBridge = bridge
-	p.currentEvents = send.ch
-	p.eventsMu.Unlock()
-	defer func() {
+	if exposeToolBridge {
 		p.eventsMu.Lock()
-		if p.currentBridge == bridge {
-			p.currentBridge = nil
-			p.currentEvents = nil
-		}
+		p.currentBridge = bridge
+		p.currentEvents = send.ch
 		p.eventsMu.Unlock()
+	}
+	defer func() {
+		if exposeToolBridge {
+			p.eventsMu.Lock()
+			if p.currentBridge == bridge {
+				p.currentBridge = nil
+				p.currentEvents = nil
+			}
+			p.eventsMu.Unlock()
+		}
 		stopScanner()
 	}()
 
@@ -917,7 +956,7 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		scanErrCh <- scanner.Err()
 	}()
 
-	lastUsage, toolsExecuted, handledTerminalResult, err := p.dispatchClaudeEvents(ctx, lineCh, bridge.toolReqCh, debug, send)
+	lastUsage, toolsExecuted, handledTerminalResult, err := p.dispatchClaudeEvents(ctx, lineCh, bridge.toolReqCh, debug, send, ephemeral)
 	if err != nil {
 		// Unblock the stdout scanner before waiting on scanErrCh. If the
 		// downstream event consumer stopped reading, the scanner may be stuck
@@ -995,6 +1034,7 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 	toolReqCh <-chan claudeToolRequest,
 	debug bool,
 	send eventSender,
+	ephemeral bool,
 ) (*Usage, bool, bool, error) {
 	var (
 		lastUsage             *Usage
@@ -1016,7 +1056,7 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 					break
 				}
 				hadLine = true
-				if err := p.handleClaudeLine(ctx, line, debug, send, &lastUsage, &sawTextDelta, &assistantFallbackText, &handledTerminalResult); err != nil {
+				if err := p.handleClaudeLine(ctx, line, debug, send, &lastUsage, &sawTextDelta, &assistantFallbackText, &handledTerminalResult, ephemeral); err != nil {
 					return nil, false, false, err
 				}
 			default:
@@ -1034,11 +1074,11 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 				linesOpen = false
 				continue
 			}
-			if err := p.handleClaudeLine(ctx, line, debug, send, &lastUsage, &sawTextDelta, &assistantFallbackText, &handledTerminalResult); err != nil {
+			if err := p.handleClaudeLine(ctx, line, debug, send, &lastUsage, &sawTextDelta, &assistantFallbackText, &handledTerminalResult, ephemeral); err != nil {
 				return nil, false, false, err
 			}
 		case req := <-toolReqCh:
-			if err := p.drainClaudeLinesWithGrace(ctx, lineCh, debug, send, &lastUsage, &sawTextDelta, &assistantFallbackText, &handledTerminalResult); err != nil {
+			if err := p.drainClaudeLinesWithGrace(ctx, lineCh, debug, send, &lastUsage, &sawTextDelta, &assistantFallbackText, &handledTerminalResult, ephemeral); err != nil {
 				return nil, false, false, err
 			}
 			toolsExecuted = true
@@ -1072,6 +1112,7 @@ func (p *ClaudeBinProvider) handleClaudeLine(
 	sawTextDelta *bool,
 	assistantFallbackText *string,
 	handledTerminalResult *bool,
+	ephemeral bool,
 ) error {
 	var baseMsg struct {
 		Type string `json:"type"`
@@ -1085,10 +1126,14 @@ func (p *ClaudeBinProvider) handleClaudeLine(
 
 	switch baseMsg.Type {
 	case "system":
-		// Extract session ID for potential resume
+		// Extract session ID for potential resume. Ephemeral one-shot requests
+		// deliberately ignore Claude CLI session ids so they cannot replace or
+		// corrupt the parent conversation's resume state.
 		var sysMsg claudeSystemMessage
 		if err := json.Unmarshal([]byte(line), &sysMsg); err == nil {
-			p.sessionID = sysMsg.SessionID
+			if !ephemeral {
+				p.sessionID = sysMsg.SessionID
+			}
 			if debug {
 				fmt.Fprintf(os.Stderr, "Session: %s, Model: %s, Tools: %v\n",
 					sysMsg.SessionID, sysMsg.Model, sysMsg.Tools)
@@ -1204,6 +1249,7 @@ func (p *ClaudeBinProvider) drainClaudeLinesWithGrace(
 	sawTextDelta *bool,
 	assistantFallbackText *string,
 	handledTerminalResult *bool,
+	ephemeral bool,
 ) error {
 	// First, drain any already-buffered lines.
 	for {
@@ -1212,7 +1258,7 @@ func (p *ClaudeBinProvider) drainClaudeLinesWithGrace(
 			if !ok {
 				return nil
 			}
-			if err := p.handleClaudeLine(ctx, line, debug, send, lastUsage, sawTextDelta, assistantFallbackText, handledTerminalResult); err != nil {
+			if err := p.handleClaudeLine(ctx, line, debug, send, lastUsage, sawTextDelta, assistantFallbackText, handledTerminalResult, ephemeral); err != nil {
 				return err
 			}
 		default:
@@ -1230,7 +1276,7 @@ wait:
 			if !ok {
 				return nil
 			}
-			if err := p.handleClaudeLine(ctx, line, debug, send, lastUsage, sawTextDelta, assistantFallbackText, handledTerminalResult); err != nil {
+			if err := p.handleClaudeLine(ctx, line, debug, send, lastUsage, sawTextDelta, assistantFallbackText, handledTerminalResult, ephemeral); err != nil {
 				return err
 			}
 			if !timer.Stop() {
@@ -1316,8 +1362,9 @@ func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req Request, send eve
 		}
 	}
 
-	// Session resume for multi-turn conversations
-	if p.sessionID != "" {
+	// Session resume for multi-turn conversations. Ephemeral one-shot requests
+	// must never append themselves to an existing Claude CLI session.
+	if !req.Ephemeral && p.sessionID != "" {
 		args = append(args, "--resume", p.sessionID)
 	}
 
@@ -1380,7 +1427,7 @@ func (p *ClaudeBinProvider) CleanupMCP() {
 // on stream termination; also runs via defer inside Stream() so it is
 // guaranteed even if the consumer drops the stream.
 func (p *ClaudeBinProvider) CleanupTurn() {
-	p.cleanupTempFiles()
+	p.cleanupTempFilesIfIdle()
 }
 
 // createHTTPMCPConfig starts an HTTP MCP server and creates a config file pointing to it.
@@ -1544,7 +1591,8 @@ func (p *ClaudeBinProvider) extractSystemPrompt(messages []Message) string {
 // system prompt travels on argv in both text and stream-json modes, never
 // in the stdin transcript. Re-sending an unchanged prompt is also prompt-
 // cache friendly; only an actual mid-session change breaks the cache once.
-func (p *ClaudeBinProvider) systemPromptForTurn(messages []Message) string {
+// Ephemeral one-shot requests also pass their own extracted system prompt.
+func (p *ClaudeBinProvider) systemPromptForTurn(messages []Message, ephemeral bool) string {
 	return p.extractSystemPrompt(messages)
 }
 
@@ -1787,6 +1835,18 @@ func (p *ClaudeBinProvider) trackTempFile(path string) string {
 	p.tempFiles = append(p.tempFiles, path)
 	p.tempFilesMu.Unlock()
 	return path
+}
+
+func (p *ClaudeBinProvider) finishStreamCleanup() {
+	if p.activeRuns.Add(-1) == 0 {
+		p.cleanupTempFiles()
+	}
+}
+
+func (p *ClaudeBinProvider) cleanupTempFilesIfIdle() {
+	if p.activeRuns.Load() == 0 {
+		p.cleanupTempFiles()
+	}
 }
 
 func (p *ClaudeBinProvider) cleanupTempFiles() {

@@ -719,6 +719,7 @@ func runExtractionRequest(ctx context.Context, engine *llm.Engine, store *memory
 func runExtractionRequestWithSystem(ctx context.Context, engine *llm.Engine, systemPrompt, prompt string, stats extractionRequestStats, tools ...llm.ToolSpec) (string, error) {
 	req := llm.Request{
 		Model:           strings.TrimSpace(memoryMineModel),
+		Ephemeral:       true,
 		Messages:        []llm.Message{llm.SystemText(systemPrompt), llm.UserText(prompt)},
 		MaxTurns:        1,
 		MaxOutputTokens: memoryMineMaxOutputTokens,

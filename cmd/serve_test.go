@@ -11761,7 +11761,7 @@ func TestResolveServeToken(t *testing.T) {
 }
 
 func TestNewServeEngineWithTools_AutoModeInstallsGuardian(t *testing.T) {
-	cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {Model: "mock-model"}}}
+	cfg := &config.Config{DefaultProvider: "mock", Guardian: config.GuardianConfig{Provider: "debug", Model: "mock-model"}, Providers: map[string]config.ProviderConfig{"mock": {Model: "mock-model"}}}
 	settings := SessionSettings{Tools: tools.ShellToolName}
 	provider := llm.NewMockProvider("mock")
 

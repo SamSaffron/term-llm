@@ -252,7 +252,8 @@ func newMemoryUpdateRecentProvider(cfg *config.Config, modelOverride string) (ll
 
 func runMemoryUpdateRecentRequest(ctx context.Context, engine *llm.Engine, model, sessionSnippets, existingRecent, fragmentsText string, targetTokens, targetChars int) (string, error) {
 	req := llm.Request{
-		Model: strings.TrimSpace(model),
+		Model:     strings.TrimSpace(model),
+		Ephemeral: true,
 		Messages: []llm.Message{
 			llm.SystemText(memoryUpdateRecentSystemPrompt(targetTokens, targetChars)),
 			llm.UserText(memoryUpdateRecentUserPrompt(sessionSnippets, existingRecent, fragmentsText)),
@@ -291,7 +292,8 @@ func runMemoryUpdateRecentRequest(ctx context.Context, engine *llm.Engine, model
 
 func runMemoryCompactRecentRequest(ctx context.Context, engine *llm.Engine, model, candidateRecent string, targetTokens, targetChars int) (string, error) {
 	req := llm.Request{
-		Model: strings.TrimSpace(model),
+		Model:     strings.TrimSpace(model),
+		Ephemeral: true,
 		Messages: []llm.Message{
 			llm.SystemText(memoryCompactRecentSystemPrompt(targetTokens, targetChars)),
 			llm.UserText(memoryCompactRecentUserPrompt(candidateRecent)),

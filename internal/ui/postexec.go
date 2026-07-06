@@ -101,6 +101,7 @@ func streamCommandHelp(ctx context.Context, engine *llm.Engine, req llm.Request,
 
 func buildCommandHelpRequest(command, shell string) llm.Request {
 	return llm.Request{
+		Ephemeral: true,
 		Messages: []llm.Message{
 			llm.SystemText(prompt.HelpSystemPrompt(shell)),
 			llm.UserText(prompt.HelpUserPrompt(command)),

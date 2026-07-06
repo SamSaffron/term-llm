@@ -18,6 +18,13 @@ type deadlineCapturingProvider struct {
 	ok       bool
 }
 
+func withGuardianProviderFactory(t *testing.T, fn func(*config.Config, string, string) (llm.Provider, error)) {
+	t.Helper()
+	orig := newGuardianProviderByName
+	newGuardianProviderByName = fn
+	t.Cleanup(func() { newGuardianProviderByName = orig })
+}
+
 func (p *deadlineCapturingProvider) Name() string { return "deadline-capturing" }
 func (p *deadlineCapturingProvider) Credential() string {
 	return "mock"
@@ -32,10 +39,11 @@ func (p *deadlineCapturingProvider) Stream(ctx context.Context, req llm.Request)
 
 func TestInstallGuardianReviewerCallbacksDoesNotActivateModeButSupportsLaterAutoToggle(t *testing.T) {
 	provider := llm.NewMockProvider("mock").AddTextResponse(`{"risk_level":"high","user_authorization":"low","outcome":"deny","rationale":"credential probing"}`)
+	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) { return provider, nil })
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
 	cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {Model: "mock-model"}}}
 
-	if err := installGuardianReviewerCallbacks(cfg, mgr, provider, nil, "mock-model", true); err != nil {
+	if err := installGuardianReviewerCallbacks(cfg, mgr, "mock", "mock-model", true); err != nil {
 		t.Fatalf("installGuardianReviewerCallbacks: %v", err)
 	}
 	if mgr.ApprovalMode() != tools.ModePrompt {
@@ -57,6 +65,7 @@ func TestInstallGuardianReviewerCallbacksDoesNotActivateModeButSupportsLaterAuto
 
 func TestInstallGuardianReviewerCallbacksAppliesConfiguredTimeout(t *testing.T) {
 	provider := &deadlineCapturingProvider{delegate: llm.NewMockProvider("mock").AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"safe"}`)}
+	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) { return provider, nil })
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
 	cfg := &config.Config{
 		DefaultProvider: "mock",
@@ -64,7 +73,7 @@ func TestInstallGuardianReviewerCallbacksAppliesConfiguredTimeout(t *testing.T) 
 		Providers:       map[string]config.ProviderConfig{"mock": {Model: "mock-model"}},
 	}
 
-	if err := installGuardianReviewerCallbacks(cfg, mgr, provider, nil, "mock-model", true); err != nil {
+	if err := installGuardianReviewerCallbacks(cfg, mgr, "mock", "mock-model", true); err != nil {
 		t.Fatalf("installGuardianReviewerCallbacks: %v", err)
 	}
 	if _, err := mgr.PolicyReviewFunc(context.Background(), tools.PolicyReviewRequest{Command: "echo ok"}); err != nil {
@@ -75,16 +84,74 @@ func TestInstallGuardianReviewerCallbacksAppliesConfiguredTimeout(t *testing.T) 
 
 func TestInstallGuardianReviewerCallbacksUsesDefaultTimeoutWhenUnset(t *testing.T) {
 	provider := &deadlineCapturingProvider{delegate: llm.NewMockProvider("mock").AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"safe"}`)}
+	withGuardianProviderFactory(t, func(*config.Config, string, string) (llm.Provider, error) { return provider, nil })
 	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
 	cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {Model: "mock-model"}}}
 
-	if err := installGuardianReviewerCallbacks(cfg, mgr, provider, nil, "mock-model", true); err != nil {
+	if err := installGuardianReviewerCallbacks(cfg, mgr, "mock", "mock-model", true); err != nil {
 		t.Fatalf("installGuardianReviewerCallbacks: %v", err)
 	}
 	if _, err := mgr.PolicyReviewFunc(context.Background(), tools.PolicyReviewRequest{Command: "echo ok"}); err != nil {
 		t.Fatalf("PolicyReviewFunc: %v", err)
 	}
 	assertDeadlineNear(t, provider.deadline, provider.ok, guardian.DefaultTimeout)
+}
+
+func TestInstallGuardianReviewerCallbacksUsesPassedProviderNameWhenGuardianUnset(t *testing.T) {
+	guardianProvider := llm.NewMockProvider("guardian").AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"safe"}`)
+	var gotName, gotModel string
+	withGuardianProviderFactory(t, func(_ *config.Config, name, model string) (llm.Provider, error) {
+		gotName = name
+		gotModel = model
+		return guardianProvider, nil
+	})
+	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
+	cfg := &config.Config{
+		DefaultProvider: "configured-default",
+		Providers: map[string]config.ProviderConfig{
+			"configured-default": {Model: "default-model"},
+			"active-provider":    {Model: "active-model"},
+		},
+	}
+
+	if err := installGuardianReviewerCallbacks(cfg, mgr, "active-provider", "active-model", true); err != nil {
+		t.Fatalf("installGuardianReviewerCallbacks: %v", err)
+	}
+	if gotName != "active-provider" || gotModel != "active-model" {
+		t.Fatalf("factory called with (%q, %q), want (active-provider, active-model)", gotName, gotModel)
+	}
+}
+
+func TestInstallGuardianReviewerCallbacksUsesDedicatedProviderInstance(t *testing.T) {
+	mainProvider := llm.NewMockProvider("main")
+	guardianProvider := llm.NewMockProvider("guardian").AddTextResponse(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"safe"}`)
+	var gotName, gotModel string
+	withGuardianProviderFactory(t, func(_ *config.Config, name, model string) (llm.Provider, error) {
+		gotName = name
+		gotModel = model
+		return guardianProvider, nil
+	})
+	mgr := tools.NewApprovalManager(tools.NewToolPermissions())
+	cfg := &config.Config{DefaultProvider: "claude-bin", Providers: map[string]config.ProviderConfig{"claude-bin": {Type: config.ProviderTypeClaudeBin, Model: "sonnet"}}}
+
+	if err := installGuardianReviewerCallbacks(cfg, mgr, "claude-bin", "sonnet", true); err != nil {
+		t.Fatalf("installGuardianReviewerCallbacks: %v", err)
+	}
+	if _, err := mgr.PolicyReviewFunc(context.Background(), tools.PolicyReviewRequest{Command: "echo ok"}); err != nil {
+		t.Fatalf("PolicyReviewFunc: %v", err)
+	}
+	if gotName != "claude-bin" || gotModel != "sonnet" {
+		t.Fatalf("factory called with (%q, %q), want (claude-bin, sonnet)", gotName, gotModel)
+	}
+	if len(mainProvider.Requests) != 0 {
+		t.Fatalf("main provider received guardian request: %#v", mainProvider.Requests)
+	}
+	if len(guardianProvider.Requests) != 1 {
+		t.Fatalf("guardian provider requests = %d, want 1", len(guardianProvider.Requests))
+	}
+	if guardianProvider.Requests[0].Ephemeral {
+		t.Fatalf("guardian request Ephemeral = true, want false for isolated process-local review session")
+	}
 }
 
 func assertDeadlineNear(t *testing.T, deadline time.Time, ok bool, want time.Duration) {

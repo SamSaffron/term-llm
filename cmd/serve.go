@@ -750,7 +750,7 @@ func newServeEngineWithTools(cfg *config.Config, settings SessionSettings, provi
 		if yoloMode {
 			toolMgr.ApprovalMgr.SetYoloMode(true)
 		} else if autoMode {
-			if err := installGuardianReviewer(cfg, toolMgr.ApprovalMgr, provider, nil, modelName, false); err != nil {
+			if err := installGuardianReviewer(cfg, toolMgr.ApprovalMgr, providerName, modelName, false); err != nil {
 				return nil, nil, err
 			}
 		}

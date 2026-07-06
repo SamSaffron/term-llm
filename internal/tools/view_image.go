@@ -275,7 +275,8 @@ Question/task from caller:
 %s`, metadata, question)
 
 	req := llm.Request{
-		Model: strings.TrimSpace(t.visionModel),
+		Model:     strings.TrimSpace(t.visionModel),
+		Ephemeral: true,
 		Messages: []llm.Message{{
 			Role: llm.RoleUser,
 			Parts: []llm.Part{
