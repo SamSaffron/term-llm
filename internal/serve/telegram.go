@@ -522,8 +522,9 @@ func (m *telegramSessionMgr) getOrCreate(ctx context.Context, chatID int64) (*te
 		return existing, nil
 	}
 	m.sessions[chatID] = created
-	m.persistSession(ctx, created)
 	m.mu.Unlock()
+
+	m.persistSession(ctx, created)
 	return created, nil
 }
 
@@ -546,9 +547,9 @@ func (m *telegramSessionMgr) resetSessionIfCurrent(ctx context.Context, chatID i
 		return current, false, nil
 	}
 	m.sessions[chatID] = created
-	m.persistSession(ctx, created)
 	m.mu.Unlock()
 
+	m.persistSession(ctx, created)
 	if current != nil {
 		m.closeTelegramSession(current)
 	}
@@ -805,17 +806,23 @@ func (m *telegramSessionMgr) newSession(ctx context.Context, chatID int64) (*tel
 	return sess, nil
 }
 
-// persistSession writes the already-published session metadata while the caller
-// still holds m.mu, so a replacement for the same chat cannot race in and
-// clobber current_session with a discarded runtime.
+// persistSession writes already-published session metadata. The caller must
+// decide under m.mu that sess is the winning runtime before calling this; the
+// store I/O runs without m.mu and with its own deadline so a slow store cannot
+// stall unrelated Telegram chats.
 func (m *telegramSessionMgr) persistSession(ctx context.Context, sess *telegramSession) {
 	if m.store == nil || sess == nil || sess.meta == nil {
 		return
 	}
-	m.runStoreOp(ctx, sess.meta.ID, "Create", func(storeCtx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	storeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	m.runStoreOp(storeCtx, sess.meta.ID, "Create", func(storeCtx context.Context) error {
 		return m.store.Create(storeCtx, sess.meta)
 	})
-	m.runStoreOp(ctx, sess.meta.ID, "SetCurrent", func(storeCtx context.Context) error {
+	m.runStoreOp(storeCtx, sess.meta.ID, "SetCurrent", func(storeCtx context.Context) error {
 		return m.store.SetCurrent(storeCtx, sess.meta.ID)
 	})
 }

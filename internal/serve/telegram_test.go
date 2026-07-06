@@ -59,6 +59,85 @@ func (s *carryoverPagingStore) GetMessagesPageDescending(ctx context.Context, se
 	return page, nil
 }
 
+type blockingFirstCreateStore struct {
+	*session.NoopStore
+
+	createStarted chan struct{}
+	releaseCreate chan struct{}
+	firstCreate   sync.Once
+	releaseOnce   sync.Once
+}
+
+func newBlockingFirstCreateStore() *blockingFirstCreateStore {
+	return &blockingFirstCreateStore{
+		NoopStore:     &session.NoopStore{},
+		createStarted: make(chan struct{}),
+		releaseCreate: make(chan struct{}),
+	}
+}
+
+func (s *blockingFirstCreateStore) Create(ctx context.Context, sess *session.Session) error {
+	block := false
+	s.firstCreate.Do(func() {
+		block = true
+		close(s.createStarted)
+	})
+	if block {
+		select {
+		case <-s.releaseCreate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return s.NoopStore.Create(ctx, sess)
+}
+
+func (s *blockingFirstCreateStore) release() {
+	s.releaseOnce.Do(func() {
+		close(s.releaseCreate)
+	})
+}
+
+type storeContextObservation struct {
+	hasDeadline bool
+	until       time.Duration
+	err         error
+}
+
+type deadlineRecordingStore struct {
+	*session.NoopStore
+
+	createCtx     chan storeContextObservation
+	setCurrentCtx chan storeContextObservation
+}
+
+func newDeadlineRecordingStore() *deadlineRecordingStore {
+	return &deadlineRecordingStore{
+		NoopStore:     &session.NoopStore{},
+		createCtx:     make(chan storeContextObservation, 1),
+		setCurrentCtx: make(chan storeContextObservation, 1),
+	}
+}
+
+func (s *deadlineRecordingStore) Create(ctx context.Context, sess *session.Session) error {
+	s.createCtx <- observeStoreContext(ctx)
+	return s.NoopStore.Create(ctx, sess)
+}
+
+func (s *deadlineRecordingStore) SetCurrent(ctx context.Context, sessionID string) error {
+	s.setCurrentCtx <- observeStoreContext(ctx)
+	return s.NoopStore.SetCurrent(ctx, sessionID)
+}
+
+func observeStoreContext(ctx context.Context) storeContextObservation {
+	deadline, ok := ctx.Deadline()
+	obs := storeContextObservation{hasDeadline: ok, err: ctx.Err()}
+	if ok {
+		obs.until = time.Until(deadline)
+	}
+	return obs
+}
+
 // fakeBotSender is a botSender that records all Send calls for test assertions.
 type fakeBotSender struct {
 	mu      sync.Mutex
@@ -1049,6 +1128,98 @@ func TestTelegramSessionMgrGetOrCreate_DoesNotBlockOtherChatsWhileCreating(t *te
 		if err := <-errCh; err != nil {
 			t.Fatalf("getOrCreate returned error: %v", err)
 		}
+	}
+}
+
+func TestTelegramSessionMgrGetOrCreate_DoesNotBlockOtherChatsWhilePersistingSession(t *testing.T) {
+	store := newBlockingFirstCreateStore()
+	t.Cleanup(store.release)
+
+	mgr := &telegramSessionMgr{
+		sessions: make(map[int64]*telegramSession),
+		store:    store,
+		settings: Settings{
+			Store: store,
+			NewSession: func(ctx context.Context) (*SessionRuntime, error) {
+				return &SessionRuntime{
+					ProviderName: "mock",
+					ModelName:    "model",
+				}, nil
+			},
+		},
+	}
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := mgr.getOrCreate(context.Background(), 1)
+		firstDone <- err
+	}()
+
+	select {
+	case <-store.createStarted:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("first session did not reach blocking Create")
+	}
+
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := mgr.getOrCreate(context.Background(), 2)
+		secondDone <- err
+	}()
+
+	select {
+	case err := <-secondDone:
+		if err != nil {
+			t.Fatalf("second getOrCreate returned error: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("second getOrCreate blocked behind first session persistence")
+	}
+
+	store.release()
+	select {
+	case err := <-firstDone:
+		if err != nil {
+			t.Fatalf("first getOrCreate returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first getOrCreate did not finish after releasing Create")
+	}
+}
+
+func TestTelegramSessionMgrPersistSession_UsesBoundedContextDetachedFromCallerCancel(t *testing.T) {
+	store := newDeadlineRecordingStore()
+	mgr := &telegramSessionMgr{store: store}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	mgr.persistSession(ctx, &telegramSession{meta: &session.Session{ID: "telegram-test"}})
+
+	assertBoundedStoreContext := func(op string, obs storeContextObservation) {
+		t.Helper()
+		if !obs.hasDeadline {
+			t.Fatalf("%s context has no deadline", op)
+		}
+		if obs.until <= 0 || obs.until > 5*time.Second {
+			t.Fatalf("%s deadline is %s away, want within 5s", op, obs.until)
+		}
+		if obs.err != nil {
+			t.Fatalf("%s context is already canceled: %v", op, obs.err)
+		}
+	}
+
+	select {
+	case obs := <-store.createCtx:
+		assertBoundedStoreContext("Create", obs)
+	default:
+		t.Fatal("Create was not called")
+	}
+	select {
+	case obs := <-store.setCurrentCtx:
+		assertBoundedStoreContext("SetCurrent", obs)
+	default:
+		t.Fatal("SetCurrent was not called")
 	}
 }
 
