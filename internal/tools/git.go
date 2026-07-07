@@ -25,15 +25,23 @@ func DetectGitRepo(path string) GitRepoInfo {
 		return GitRepoInfo{}
 	}
 
-	// Determine the directory to run git from
-	// If path is a file, use its parent directory
+	// Determine the directory to run git from. If the path doesn't exist yet,
+	// walk up to the nearest existing ancestor before invoking git.
 	workDir := absPath
-	if info, err := os.Stat(absPath); err == nil && !info.IsDir() {
-		workDir = filepath.Dir(absPath)
-	} else if os.IsNotExist(err) {
-		// Path doesn't exist yet (e.g., file to be created)
-		// Use parent directory
-		workDir = filepath.Dir(absPath)
+	for {
+		if info, err := os.Stat(workDir); err == nil {
+			if info.IsDir() {
+				break
+			}
+			workDir = filepath.Dir(workDir)
+			continue
+		}
+
+		parent := filepath.Dir(workDir)
+		if parent == workDir {
+			return GitRepoInfo{}
+		}
+		workDir = parent
 	}
 
 	// Run git rev-parse --show-toplevel to find repo root

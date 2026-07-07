@@ -7,6 +7,15 @@ import (
 	"testing"
 )
 
+func setGitCeiling(t *testing.T, ceiling string) {
+	t.Helper()
+
+	if existing := os.Getenv("GIT_CEILING_DIRECTORIES"); existing != "" {
+		ceiling += string(os.PathListSeparator) + existing
+	}
+	t.Setenv("GIT_CEILING_DIRECTORIES", ceiling)
+}
+
 func TestDetectGitRepo(t *testing.T) {
 	// Test with the actual term-llm repo (we know we're in one)
 	cwd, err := os.Getwd()
@@ -42,6 +51,14 @@ func TestDetectGitRepo_NotInRepo(t *testing.T) {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tempDir)
+
+	// Resolve symlinks (macOS /var -> /private/var) so the git ceiling matches
+	// the path git sees when walking parent directories.
+	tempDir, err = filepath.EvalSymlinks(tempDir)
+	if err != nil {
+		t.Fatalf("failed to resolve symlinks: %v", err)
+	}
+	setGitCeiling(t, filepath.Dir(tempDir))
 
 	info := DetectGitRepo(tempDir)
 
@@ -125,6 +142,67 @@ func TestDetectGitRepo_Subdirectory(t *testing.T) {
 
 	if info.Root != tempDir {
 		t.Errorf("expected Root=%s, got %s", tempDir, info.Root)
+	}
+}
+
+func TestDetectGitRepo_NonexistentPathInRepo(t *testing.T) {
+	// Create a new git repo in temp directory
+	tempDir, err := os.MkdirTemp("", "repo-missing-path-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Resolve symlinks (macOS /var -> /private/var)
+	tempDir, err = filepath.EvalSymlinks(tempDir)
+	if err != nil {
+		t.Fatalf("failed to resolve symlinks: %v", err)
+	}
+
+	// Initialize git repo
+	cmd := exec.Command("git", "init")
+	cmd.Dir = tempDir
+	if err := cmd.Run(); err != nil {
+		t.Skipf("git init failed, skipping: %v", err)
+	}
+
+	target := filepath.Join(tempDir, "new", "deep", "dir", "file.go")
+	info := DetectGitRepo(target)
+
+	if !info.IsRepo {
+		t.Error("expected IsRepo to be true for nonexistent path inside git repo")
+	}
+
+	if info.Root != tempDir {
+		t.Errorf("expected Root=%s, got %s", tempDir, info.Root)
+	}
+}
+
+func TestDetectGitRepo_NonexistentPathNotInRepo(t *testing.T) {
+	// Create a temp directory that's not a git repo
+	tempDir, err := os.MkdirTemp("", "not-a-repo-missing-path-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Resolve symlinks (macOS /var -> /private/var) so the git ceiling matches
+	// the path git sees when walking parent directories.
+	tempDir, err = filepath.EvalSymlinks(tempDir)
+	if err != nil {
+		t.Fatalf("failed to resolve symlinks: %v", err)
+	}
+	setGitCeiling(t, filepath.Dir(tempDir))
+
+	target := filepath.Join(tempDir, "missing", "deep", "file.go")
+	info := DetectGitRepo(target)
+
+	if info.IsRepo {
+		t.Error("expected IsRepo to be false for nonexistent path outside git repo")
+	}
+
+	if info.Root != "" {
+		t.Errorf("expected empty Root, got %s", info.Root)
 	}
 }
 
