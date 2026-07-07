@@ -276,6 +276,7 @@ type Model struct {
 	// Terminal/window title state
 	titleMode      TerminalTitleMode
 	titleFormat    string
+	titleProgress  bool
 	titleFormatter *terminalTitleFormatter
 	titleManager   *terminalTitleManager
 	// Live generated session-title state
@@ -858,8 +859,9 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 		streamPerf:                 newStreamPerfTelemetryFromEnv(),
 		titleMode:                  titleMode,
 		titleFormat:                cfg.Chat.TerminalTitleFormat,
+		titleProgress:              cfg.Chat.TerminalProgress,
 		titleFormatter:             newTerminalTitleFormatter(cfg.Chat.TerminalTitleFormat, TerminalTitleEnvironment{}),
-		titleManager:               newTerminalTitleManager(titleMode, TerminalTitleEnvironment{}),
+		titleManager:               newTerminalTitleManager(titleMode, TerminalTitleEnvironment{}, cfg.Chat.TerminalProgress),
 		streamCancelRequested:      &atomic.Bool{},
 		altScreen:                  altScreen,
 		mouseMode:                  chatMouseModeFromEnv(),

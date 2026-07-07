@@ -562,17 +562,18 @@ func TestReasoningDefaultsAndKnownKeys(t *testing.T) {
 
 func TestChatTerminalTitleDefaultAndKnownKey(t *testing.T) {
 	defaults := GetDefaults()
-	if got := defaults["chat.terminal_title"]; got != "smart" {
-		t.Fatalf("chat.terminal_title default = %#v, want smart", got)
+	checks := map[string]any{
+		"chat.terminal_title":        "smart",
+		"chat.terminal_title_format": "",
+		"chat.terminal_progress":     false,
 	}
-	if got := defaults["chat.terminal_title_format"]; got != "" {
-		t.Fatalf("chat.terminal_title_format default = %#v, want empty", got)
-	}
-	if !KnownKeys["chat.terminal_title"] {
-		t.Fatal("KnownKeys missing chat.terminal_title")
-	}
-	if !KnownKeys["chat.terminal_title_format"] {
-		t.Fatal("KnownKeys missing chat.terminal_title_format")
+	for key, want := range checks {
+		if got := defaults[key]; got != want {
+			t.Fatalf("%s default = %#v, want %#v", key, got, want)
+		}
+		if !KnownKeys[key] {
+			t.Fatalf("KnownKeys missing %s", key)
+		}
 	}
 }
 

@@ -915,7 +915,7 @@ printf '%s\n' '{"type":"result","is_error":false,"result":"ok","usage":{"input_t
 	}
 	defer stream.Close()
 
-	for i := 0; i < 200; i++ {
+	for i := 0; i < 1000; i++ {
 		if _, err := os.Stat(readyFile); err == nil {
 			break
 		}
@@ -927,7 +927,7 @@ printf '%s\n' '{"type":"result","is_error":false,"result":"ok","usage":{"input_t
 
 	var bridge *claudeTurnBridge
 	var events chan<- Event
-	for i := 0; i < 200; i++ {
+	for i := 0; i < 1000; i++ {
 		p.eventsMu.Lock()
 		bridge = p.currentBridge
 		events = p.currentEvents

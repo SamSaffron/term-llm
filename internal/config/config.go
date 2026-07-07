@@ -617,6 +617,7 @@ type ChatConfig struct {
 	MaxTurns            int    `mapstructure:"max_turns"`             // Max agentic turns (default 200)
 	TerminalTitle       string `mapstructure:"terminal_title"`        // smart, basic, or off (default smart)
 	TerminalTitleFormat string `mapstructure:"terminal_title_format"` // Optional custom terminal title template
+	TerminalProgress    bool   `mapstructure:"terminal_progress"`     // Enable terminal progress indicators (default false)
 }
 
 type EditConfig struct {

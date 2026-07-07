@@ -14,8 +14,8 @@ func init() {
 	registerTerminalTitleProviderFactory(newGhosttyProgressProviders)
 }
 
-func newGhosttyProgressProviders(mode TerminalTitleMode, env TerminalTitleEnvironment) []terminalTitleProvider {
-	if mode != TerminalTitleSmart || !isGhosttyTerminal(env) {
+func newGhosttyProgressProviders(mode TerminalTitleMode, env TerminalTitleEnvironment, progress bool) []terminalTitleProvider {
+	if !progress || mode != TerminalTitleSmart || !isGhosttyTerminal(env) {
 		return nil
 	}
 	return []terminalTitleProvider{newGhosttyProgressProvider(env)}

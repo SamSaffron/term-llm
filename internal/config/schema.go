@@ -166,6 +166,7 @@ var keySpecs = []KeySpec{
 	def("chat.max_turns", DefaultChatMaxTurns),
 	def("chat.terminal_title", DefaultChatTerminalTitle),
 	def("chat.terminal_title_format", ""),
+	def("chat.terminal_progress", false),
 
 	optional("edit.provider"),
 	optional("edit.model"),

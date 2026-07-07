@@ -345,7 +345,7 @@ type terminalTitleProvider interface {
 	Restore()
 }
 
-type terminalTitleProviderFactory func(mode TerminalTitleMode, env TerminalTitleEnvironment) []terminalTitleProvider
+type terminalTitleProviderFactory func(mode TerminalTitleMode, env TerminalTitleEnvironment, progress bool) []terminalTitleProvider
 
 var terminalTitleProviderFactories []terminalTitleProviderFactory
 
@@ -360,7 +360,7 @@ type terminalTitleManager struct {
 	providers []terminalTitleProvider
 }
 
-func newTerminalTitleManager(mode TerminalTitleMode, env TerminalTitleEnvironment) *terminalTitleManager {
+func newTerminalTitleManager(mode TerminalTitleMode, env TerminalTitleEnvironment, progress bool) *terminalTitleManager {
 	if mode == "" {
 		mode = TerminalTitleSmart
 	}
@@ -371,7 +371,7 @@ func newTerminalTitleManager(mode TerminalTitleMode, env TerminalTitleEnvironmen
 	providers := []terminalTitleProvider{&oscTitleProvider{}}
 	if mode == TerminalTitleSmart {
 		for _, factory := range terminalTitleProviderFactories {
-			providers = append(providers, factory(mode, env)...)
+			providers = append(providers, factory(mode, env, progress)...)
 		}
 	}
 	return &terminalTitleManager{providers: providers}
@@ -498,7 +498,7 @@ func (m *Model) ConfigureTerminalTitleEnvironment(env TerminalTitleEnvironment) 
 		return
 	}
 	m.titleFormatter = newTerminalTitleFormatter(m.titleFormat, env)
-	m.titleManager = newTerminalTitleManager(m.titleMode, env)
+	m.titleManager = newTerminalTitleManager(m.titleMode, env, m.titleProgress)
 }
 
 func (m *Model) RestoreTerminalTitle() {

@@ -143,11 +143,11 @@ func TestTerminalTitleCommandSequencesAndSanitization(t *testing.T) {
 
 	env := NewTerminalTitleEnvironment(map[string]string{"TMUX": "/tmp/tmux"})
 	snapshot := terminalTitleSnapshot{Title: title, StableTitle: title}
-	if cmd := newTerminalTitleManager(TerminalTitleOff, env).UpdateCmd(snapshot); cmd != nil {
+	if cmd := newTerminalTitleManager(TerminalTitleOff, env, false).UpdateCmd(snapshot); cmd != nil {
 		t.Fatalf("off mode title command = %T, want nil", cmd)
 	}
 
-	basicRaw := strings.Join(rawStringsFromCmd(newTerminalTitleManager(TerminalTitleBasic, env).UpdateCmd(snapshot)), "")
+	basicRaw := strings.Join(rawStringsFromCmd(newTerminalTitleManager(TerminalTitleBasic, env, false).UpdateCmd(snapshot)), "")
 	if !strings.Contains(basicRaw, "\x1b]2;Fix Ctrl-C\\Exit\x07") {
 		t.Fatalf("basic mode should emit raw OSC title, got %q", basicRaw)
 	}
@@ -155,7 +155,7 @@ func TestTerminalTitleCommandSequencesAndSanitization(t *testing.T) {
 		t.Fatalf("basic mode should not emit provider-specific window sequence: %q", basicRaw)
 	}
 
-	smartRaw := strings.Join(rawStringsFromCmd(newTerminalTitleManager(TerminalTitleSmart, env).UpdateCmd(snapshot)), "")
+	smartRaw := strings.Join(rawStringsFromCmd(newTerminalTitleManager(TerminalTitleSmart, env, false).UpdateCmd(snapshot)), "")
 	if !strings.Contains(smartRaw, "\x1b]2;Fix Ctrl-C\\Exit\x07") || !strings.Contains(smartRaw, "\x1bkFix Ctrl-C\\Exit\x1b\\") {
 		t.Fatalf("smart mode should emit raw OSC and provider-specific window sequences, got %q", smartRaw)
 	}
@@ -224,6 +224,32 @@ func TestGhosttyProgressProviderWrapsTmuxPassthrough(t *testing.T) {
 	want := "\x1bPtmux;\x1b\x1b]9;4;3\x07\x1b\\"
 	if !strings.Contains(raw, want) {
 		t.Fatalf("tmux progress raw = %q, want passthrough %q", raw, want)
+	}
+}
+
+func TestGhosttyProgressManagerDisabledByDefault(t *testing.T) {
+	env := NewTerminalTitleEnvironment(map[string]string{"TERM_PROGRAM": "ghostty"})
+	cmd := newTerminalTitleManager(TerminalTitleSmart, env, false).UpdateCmd(terminalTitleSnapshot{
+		Title:       "Working",
+		StableTitle: "Working",
+		InProgress:  true,
+	})
+	raw := strings.Join(rawStringsFromCmd(cmd), "")
+	if strings.Contains(raw, "\x1b]9;4;") {
+		t.Fatalf("manager with progress disabled emitted Ghostty progress sequence: %q", raw)
+	}
+}
+
+func TestGhosttyProgressManagerEnabled(t *testing.T) {
+	env := NewTerminalTitleEnvironment(map[string]string{"TERM_PROGRAM": "ghostty"})
+	cmd := newTerminalTitleManager(TerminalTitleSmart, env, true).UpdateCmd(terminalTitleSnapshot{
+		Title:       "Working",
+		StableTitle: "Working",
+		InProgress:  true,
+	})
+	raw := strings.Join(rawStringsFromCmd(cmd), "")
+	if !strings.Contains(raw, ghosttyProgressIndeterminateSequence()) {
+		t.Fatalf("manager with progress enabled raw = %q, want indeterminate sequence", raw)
 	}
 }
 
@@ -300,13 +326,16 @@ func withFakeTmuxCommandLog(t *testing.T) (string, func()) {
 }
 
 func TestGhosttyProgressProviderFactory(t *testing.T) {
-	if providers := newGhosttyProgressProviders(TerminalTitleSmart, NewTerminalTitleEnvironment(map[string]string{"TERM_PROGRAM": "ghostty"})); len(providers) != 1 {
+	if providers := newGhosttyProgressProviders(TerminalTitleSmart, NewTerminalTitleEnvironment(map[string]string{"TERM_PROGRAM": "ghostty"}), true); len(providers) != 1 {
 		t.Fatalf("ghostty TERM_PROGRAM providers = %d, want 1", len(providers))
 	}
-	if providers := newGhosttyProgressProviders(TerminalTitleBasic, NewTerminalTitleEnvironment(map[string]string{"TERM_PROGRAM": "ghostty"})); len(providers) != 0 {
+	if providers := newGhosttyProgressProviders(TerminalTitleSmart, NewTerminalTitleEnvironment(map[string]string{"TERM_PROGRAM": "ghostty"}), false); len(providers) != 0 {
+		t.Fatalf("progress disabled ghostty providers = %d, want 0", len(providers))
+	}
+	if providers := newGhosttyProgressProviders(TerminalTitleBasic, NewTerminalTitleEnvironment(map[string]string{"TERM_PROGRAM": "ghostty"}), true); len(providers) != 0 {
 		t.Fatalf("basic mode ghostty providers = %d, want 0", len(providers))
 	}
-	if providers := newGhosttyProgressProviders(TerminalTitleSmart, NewTerminalTitleEnvironment(nil)); len(providers) != 0 {
+	if providers := newGhosttyProgressProviders(TerminalTitleSmart, NewTerminalTitleEnvironment(nil), true); len(providers) != 0 {
 		t.Fatalf("non-ghostty providers = %d, want 0", len(providers))
 	}
 }
