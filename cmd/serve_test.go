@@ -1902,6 +1902,59 @@ func TestServeSessionManager_EvictExpiredSkipsActiveRun(t *testing.T) {
 	}
 }
 
+func TestServeSessionManager_CloseContextDoesNotBlockOnStuckRuntime(t *testing.T) {
+	manager := newServeSessionManager(time.Minute, 10, nil)
+	t.Cleanup(manager.Close)
+
+	runCtx, runCancel := context.WithCancel(context.Background())
+	rt := &serveRuntime{}
+	state := &runtimeInterruptState{cancel: runCancel, done: make(chan struct{})}
+	rt.setActiveInterrupt(state)
+	rt.mu.Lock()
+	t.Cleanup(func() {
+		rt.mu.Unlock()
+		rt.clearActiveInterrupt(state)
+		runCancel()
+	})
+	putTestSession(manager, "busy", rt)
+
+	closeCtx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+
+	done := make(chan struct{})
+	started := time.Now()
+	go func() {
+		manager.CloseContext(closeCtx)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+			t.Fatalf("CloseContext took %s with an expired close context", elapsed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("CloseContext blocked on a runtime that never released its mutex")
+	}
+
+	select {
+	case <-runCtx.Done():
+	default:
+		t.Fatal("CloseContext did not cancel the active runtime before waiting")
+	}
+
+	manager.mu.Lock()
+	closed := manager.closed
+	sessionCount := len(manager.sessions)
+	manager.mu.Unlock()
+	if !closed {
+		t.Fatal("expected manager to be marked closed")
+	}
+	if sessionCount != 0 {
+		t.Fatalf("sessions after CloseContext = %d, want 0", sessionCount)
+	}
+}
+
 func TestServeSessionManager_GetOrCreateSkipsEvictingActiveRunAtCapacity(t *testing.T) {
 	manager := newServeSessionManager(time.Minute, 2, func(ctx context.Context) (*serveRuntime, error) {
 		rt := &serveRuntime{}

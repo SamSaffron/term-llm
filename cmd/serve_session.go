@@ -546,6 +546,10 @@ func (m *serveSessionManager) ActiveSessionIDs() map[string]bool {
 }
 
 func (m *serveSessionManager) Close() {
+	m.CloseContext(context.Background())
+}
+
+func (m *serveSessionManager) CloseContext(ctx context.Context) {
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -560,10 +564,13 @@ func (m *serveSessionManager) Close() {
 	m.sessions = map[string]*serveRuntime{}
 	m.mu.Unlock()
 
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	for _, rt := range sessions {
 		if m.onEvict != nil {
 			m.onEvict(rt)
 		}
-		rt.Close()
+		rt.CloseContext(ctx)
 	}
 }

@@ -493,7 +493,11 @@ func runServeLegacy(parentCtx context.Context, cmd *cobra.Command, args []string
 		return runtimeFactory(ctx, "", "")
 	}
 	sessionMgr := newServeSessionManager(serveSessionTTL, serveSessionMax, factory)
-	defer sessionMgr.Close()
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		sessionMgr.CloseContext(shutdownCtx)
+	}()
 
 	if hasJobs && strings.TrimSpace(serveAgent) != "" {
 		fmt.Fprintln(cmd.ErrOrStderr(), "warning: --agent is ignored for --platform jobs; set llm runner_config.agent_name per job definition")
