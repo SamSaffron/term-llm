@@ -14,6 +14,8 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 	}
 
 	var persistedProvider, persistedModel, persistedEffort string
+	var persistedGoal *session.Goal
+	persistedGoalRead := false
 	var runtimeDefaultModel string
 	runtimeMetaRead := false
 
@@ -70,6 +72,8 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 				if rt.sessionMeta != nil {
 					persistedModel = strings.TrimSpace(rt.sessionMeta.Model)
 					persistedEffort = strings.TrimSpace(rt.sessionMeta.ReasoningEffort)
+					persistedGoal = rt.sessionMeta.Goal.Clone()
+					persistedGoalRead = true
 				}
 				mcpState := rt.mcpStateLocked()
 				resp["mcp_servers"] = mcpState.Servers
@@ -87,9 +91,13 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 
 	// Fall back to the DB when the runtime was not loaded (e.g. after a
 	// page reload) or we could not read sessionMeta because a run held
-	// rt.mu. The DB has the last persisted model/effort/MCP selection for the session.
-	if s.store != nil && (!runtimeMetaRead || persistedProvider == "" || persistedModel == "") {
+	// rt.mu. The DB has the last persisted model/effort/MCP/goal selection for the session.
+	if s.store != nil && (!runtimeMetaRead || persistedProvider == "" || persistedModel == "" || !persistedGoalRead) {
 		if sess, err := s.store.Get(r.Context(), sessionID); err == nil && sess != nil {
+			if !persistedGoalRead {
+				persistedGoal = sess.Goal.Clone()
+				persistedGoalRead = true
+			}
 			if enabled, ok := resp["mcp_enabled"].([]string); !ok || len(enabled) == 0 {
 				if persistedMCP := parseServerList(sess.MCP); len(persistedMCP) > 0 {
 					resp["mcp_enabled"] = persistedMCP
@@ -124,6 +132,11 @@ func (s *serveServer) handleSessionState(w http.ResponseWriter, r *http.Request,
 	}
 	if persistedEffort != "" {
 		resp["reasoning_effort"] = persistedEffort
+	}
+	if persistedGoal != nil && persistedGoal.Exists() {
+		resp["goal"] = persistedGoal
+	} else {
+		resp["goal"] = nil
 	}
 
 	if lastResponseID := s.latestDurableResponseIDForSession(r.Context(), sessionID); lastResponseID != "" {

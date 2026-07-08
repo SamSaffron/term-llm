@@ -361,6 +361,17 @@ const elements = {
   addMenu: document.getElementById('addMenu'),
   addAttachOption: document.getElementById('addAttachOption'),
   addMCPOption: document.getElementById('addMCPOption'),
+  addGoalOption: document.getElementById('addGoalOption'),
+  goalChip: document.getElementById('goalChip'),
+  goalModal: document.getElementById('goalModal'),
+  goalModalCloseBtn: document.getElementById('goalModalCloseBtn'),
+  goalObjectiveInput: document.getElementById('goalObjectiveInput'),
+  goalTokenBudgetInput: document.getElementById('goalTokenBudgetInput'),
+  goalError: document.getElementById('goalError'),
+  goalClearBtn: document.getElementById('goalClearBtn'),
+  goalPauseBtn: document.getElementById('goalPauseBtn'),
+  goalResumeBtn: document.getElementById('goalResumeBtn'),
+  goalSaveBtn: document.getElementById('goalSaveBtn'),
   fileInput: document.getElementById('fileInput'),
   attachmentsStrip: document.getElementById('attachmentsStrip'),
   voiceStatus: document.getElementById('voiceStatus'),
@@ -1958,6 +1969,7 @@ const sanitizeSession = (session) => {
     lastUsage: session.lastUsage && typeof session.lastUsage === 'object' ? session.lastUsage : null,
     activeModel: typeof session.activeModel === 'string' ? session.activeModel : '',
     activeEffort: typeof session.activeEffort === 'string' ? session.activeEffort : '',
+    goal: session.goal && typeof session.goal === 'object' ? { ...session.goal } : null,
     mcpServers: Array.isArray(session.mcpServers) ? session.mcpServers.slice() : [],
     mcpEnabled: Array.isArray(session.mcpEnabled) ? session.mcpEnabled.map((name) => String(name || '').trim()).filter(Boolean) : []
   };
@@ -2114,6 +2126,7 @@ const createSession = () => ({
   provider: '',
   worktreeDir: state.selectedWorktreeDir || '',
   worktreeName: state.selectedWorktreeName || '',
+  goal: null,
   mcpServers: [],
   mcpEnabled: []
 });

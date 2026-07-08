@@ -34,6 +34,12 @@ type sessionRuntimeEffortRequest struct {
 	ReasoningEffort string `json:"reasoning_effort"`
 }
 
+type sessionRuntimeGoalRequest struct {
+	Action      string `json:"action"`
+	Objective   string `json:"objective"`
+	TokenBudget *int   `json:"token_budget"`
+}
+
 func writeChatStreamChunk(w io.Writer, payload any) error {
 	b, err := json.Marshal(payload)
 	if err != nil {

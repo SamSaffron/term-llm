@@ -2773,6 +2773,61 @@
       height: 20px;
     }
 
+    .goal-chip {
+      align-self: flex-start;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--surface-2);
+      color: var(--text);
+      padding: 0.35rem 0.7rem;
+      font: inherit;
+      font-size: 0.82rem;
+      cursor: pointer;
+      max-width: min(620px, 100%);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .goal-chip.hidden {
+      display: none;
+    }
+
+    .goal-chip.goal-active {
+      border-color: rgba(34,197,94,0.35);
+      background: rgba(34,197,94,0.12);
+    }
+
+    .goal-chip.goal-paused,
+    .goal-chip.goal-blocked,
+    .goal-chip.goal-budget_limited {
+      border-color: rgba(245,158,11,0.38);
+      background: rgba(245,158,11,0.13);
+    }
+
+    .goal-objective-input {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--surface-2);
+      color: var(--text);
+      padding: 0.75rem;
+      font: inherit;
+      resize: vertical;
+      min-height: 120px;
+    }
+
+    .goal-modal-subtitle {
+      margin: 0 0 1rem;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+
+    .goal-actions {
+      flex-wrap: wrap;
+    }
+
     .composer-add-menu {
       position: absolute;
       left: 6px;

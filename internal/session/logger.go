@@ -60,6 +60,23 @@ func (s *LoggingStore) Update(ctx context.Context, sess *Session) error {
 	return err
 }
 
+// UpdateGoal wraps the optional goal-only update path with error logging.
+func (s *LoggingStore) UpdateGoal(ctx context.Context, id string, goal *Goal) error {
+	updater, ok := s.Store.(GoalUpdater)
+	if !ok {
+		err := UpdateGoal(ctx, s.Store, id, goal)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			s.logOnce("UpdateGoal", err)
+		}
+		return err
+	}
+	err := updater.UpdateGoal(ctx, id, goal)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		s.logOnce("UpdateGoal", err)
+	}
+	return err
+}
+
 // AddMessage wraps Store.AddMessage with error logging.
 func (s *LoggingStore) AddMessage(ctx context.Context, sessionID string, msg *Message) error {
 	err := s.Store.AddMessage(ctx, sessionID, msg)

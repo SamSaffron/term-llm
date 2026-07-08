@@ -1381,6 +1381,20 @@ func (s *serveServer) handleSessionByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if suffix == "runtime/goal" {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+			return
+		}
+		if err := requireJSONContentType(r); err != nil {
+			writeOpenAIError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
+			return
+		}
+		s.handleSessionRuntimeGoal(w, r, sessionID)
+		return
+	}
+
 	if strings.HasPrefix(suffix, "interjections/") {
 		id := strings.TrimPrefix(suffix, "interjections/")
 		id = strings.TrimSuffix(id, "/cancel")
@@ -1602,6 +1616,18 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 		writeOpenAIError(w, http.StatusConflict, "conflict_error", interruptErr.Error())
 		return
 	}
+	if action == llm.InterruptCancel && s.store != nil {
+		goalCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), goalPersistTimeout)
+		defer cancel()
+		if sess, err := s.store.Get(goalCtx, sessionID); err == nil && sess != nil && sess.Goal != nil && sess.Goal.IsActive() {
+			goal := sess.Goal.Clone()
+			goal.Status = session.GoalStatusPaused
+			goal.PausedAt = time.Now()
+			goal.UpdatedAt = goal.PausedAt
+			goal.LastReason = "paused because the active run was stopped"
+			_ = session.UpdateGoal(goalCtx, s.store, sessionID, goal)
+		}
+	}
 
 	actionName := "interject"
 	switch action {
@@ -1613,6 +1639,117 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, map[string]any{
 		"action": actionName,
 	})
+}
+
+func (s *serveServer) handleSessionRuntimeGoal(w http.ResponseWriter, r *http.Request, sessionID string) {
+	var req sessionRuntimeGoalRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	if s.store == nil {
+		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session history is unavailable")
+		return
+	}
+	sess, err := s.store.Get(r.Context(), sessionID)
+	if (err != nil || sess == nil) && s.sessionMgr != nil {
+		if rt, rtErr := s.sessionMgr.GetOrCreate(r.Context(), sessionID); rtErr == nil && rt != nil {
+			if !rt.mu.TryLock() {
+				writeOpenAIError(w, http.StatusConflict, "conflict_error", "session is busy; retry after the active response finishes")
+				return
+			}
+			if rt.ensurePersistedSession(r.Context(), sessionID, nil) && rt.sessionMeta != nil {
+				sess = rt.sessionMeta
+				err = nil
+			}
+			rt.mu.Unlock()
+		}
+	}
+	if err != nil || sess == nil {
+		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
+		return
+	}
+	now := time.Now()
+	action := strings.ToLower(strings.TrimSpace(req.Action))
+	if action == "" {
+		action = "set"
+	}
+	var goal *session.Goal
+	switch action {
+	case "set", "edit":
+		objective := strings.TrimSpace(req.Objective)
+		if objective == "" {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "objective is required")
+			return
+		}
+		budget := 0
+		if req.TokenBudget != nil {
+			if *req.TokenBudget < 0 {
+				writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "token_budget must be non-negative")
+				return
+			}
+			budget = *req.TokenBudget
+		}
+		if action == "edit" && sess.Goal != nil && sess.Goal.Exists() {
+			goal = sess.Goal.Clone()
+			goal.Objective = objective
+			if req.TokenBudget != nil {
+				goal.TokenBudget = budget
+			}
+			goal.Status = session.GoalStatusActive
+			goal.PausedAt = time.Time{}
+			goal.CompletedAt = time.Time{}
+			goal.BlockedAt = time.Time{}
+			goal.UpdatedNotice = true
+			goal.UpdatedAt = now
+		} else {
+			goal = session.NewGoal(objective, budget, now)
+		}
+	case "pause":
+		if sess.Goal == nil || !sess.Goal.Exists() {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "no goal is set")
+			return
+		}
+		goal = sess.Goal.Clone()
+		goal.Status = session.GoalStatusPaused
+		goal.PausedAt = now
+		goal.UpdatedAt = now
+	case "resume":
+		if sess.Goal == nil || !sess.Goal.Exists() {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "no goal is set")
+			return
+		}
+		if sess.Goal.Status == session.GoalStatusBudgetLimited && sess.Goal.BudgetExhausted() {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "token budget is exhausted; edit the goal with a higher token_budget before resuming")
+			return
+		}
+		goal = sess.Goal.Clone()
+		goal.Status = session.GoalStatusActive
+		goal.PausedAt = time.Time{}
+		goal.CompletedAt = time.Time{}
+		goal.BlockedAt = time.Time{}
+		goal.UpdatedAt = now
+	case "clear":
+		goal = nil
+	default:
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "action must be set, edit, pause, resume, or clear")
+		return
+	}
+	if err := session.UpdateGoal(r.Context(), s.store, sessionID, goal); err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to update goal")
+		return
+	}
+	if s.sessionMgr != nil {
+		if rt, ok := s.sessionMgr.Get(sessionID); ok && rt != nil {
+			if rt.mu.TryLock() {
+				if rt.sessionMeta != nil {
+					rt.sessionMeta.Goal = goal.Clone()
+				}
+				rt.mu.Unlock()
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"goal": goal})
 }
 
 func (s *serveServer) handleSessionRuntimeEffort(w http.ResponseWriter, r *http.Request, sessionID string) {

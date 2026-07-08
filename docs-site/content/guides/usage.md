@@ -93,9 +93,27 @@ Pasting an image from the clipboard attaches it as an image when the terminal/cl
 | `/search` | Toggle web search |
 | `/fast` | Toggle fast/priority service tier for supported OpenAI/ChatGPT models |
 | `/mcp` | Manage MCP servers |
+| `/goal` | Set, edit, pause, resume, clear, or show the persistent session goal |
 | `/quit` | Exit chat |
 
 When web search is enabled, the chat status line shows `web`; when fast service tier is enabled, it shows `fast`.
+
+### Persistent goals
+
+Use `/goal` in chat when you want the agent to keep pursuing a durable objective across automatic continuations:
+
+```text
+/goal set finish the migration and verify every test
+/goal set --budget 50000 finish the migration and verify every test
+/goal edit finish the migration, update docs, and verify every test
+/goal pause
+/goal resume
+/goal clear
+```
+
+An active goal is stored with the session, so it survives reloads and can continue from the TUI, web UI, or other runner-backed surfaces. While a goal is active, term-llm injects goal-steering prompts between turns and exposes `get_goal`/`update_goal` tools to the model. The model should call `update_goal` only when the objective is genuinely complete or strictly blocked; otherwise the runner continues until the goal is paused, completed, blocked, cancelled, or its optional token budget is exhausted. The status line shows a `goal` chip with token usage when a goal is present.
+
+Changing sessions, compacting, handing over, or switching models pauses the current goal so the next turn does not unexpectedly continue old work.
 
 ### Flags
 

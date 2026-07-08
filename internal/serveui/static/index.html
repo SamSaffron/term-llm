@@ -277,6 +277,7 @@
           <div id="voiceStatus" class="voice-status hidden" aria-live="polite"></div>
           <div id="pendingInterjectionBanner" class="pending-interjection hidden" aria-live="polite"></div>
           <div id="attachmentsStrip" class="attachments" style="display:none;"></div>
+          <button type="button" id="goalChip" class="goal-chip hidden" aria-label="Manage goal"></button>
           <div class="composer-box">
             <button class="composer-icon-btn attach-btn" id="attachBtn" type="button" title="Add" aria-label="Add" aria-haspopup="menu" aria-expanded="false" aria-controls="addMenu">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
@@ -293,6 +294,10 @@
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="6" height="6" rx="1.5"/><rect x="14" y="14" width="6" height="6" rx="1.5"/><path d="M10 7h4a3 3 0 0 1 3 3v4"/><path d="M14 17h-4a3 3 0 0 1-3-3v-4"/></svg>
                 </span>
                 <span>MCP servers</span>
+              </button>
+              <button type="button" id="addGoalOption" role="menuitem">
+                <span class="composer-add-menu-icon" aria-hidden="true">🎯</span>
+                <span>Set goal…</span>
               </button>
             </div>
             <input type="file" id="fileInput" multiple hidden>
@@ -469,6 +474,27 @@
       <p class="mcp-modal-subtitle">Turn on configured servers for this chat. Changes save immediately.</p>
       <div class="mcp-server-list" id="mcpModalBody" aria-live="polite"></div>
       <div class="modal-error" id="mcpError" aria-live="polite"></div>
+    </div>
+  </div>
+
+  <div class="modal-overlay hidden" id="goalModal" role="dialog" aria-modal="true" aria-labelledby="goalModalTitle">
+    <div class="modal goal-modal">
+      <div class="modal-title-row">
+        <h2 id="goalModalTitle">Session goal</h2>
+        <button class="icon-btn" id="goalModalCloseBtn" type="button" aria-label="Close goal dialog">✕</button>
+      </div>
+      <p class="goal-modal-subtitle">Set a persistent objective the agent can keep pursuing across automatic continuations.</p>
+      <label class="settings-label" for="goalObjectiveInput">Objective</label>
+      <textarea id="goalObjectiveInput" class="goal-objective-input" rows="5" placeholder="Describe the end state…"></textarea>
+      <label class="settings-label" for="goalTokenBudgetInput">Token budget (optional)</label>
+      <input id="goalTokenBudgetInput" class="settings-input" type="number" min="1" inputmode="numeric" placeholder="Unlimited">
+      <div class="modal-error" id="goalError" aria-live="polite"></div>
+      <div class="modal-actions goal-actions">
+        <button class="btn" id="goalClearBtn" type="button">Clear</button>
+        <button class="btn" id="goalPauseBtn" type="button">Pause</button>
+        <button class="btn" id="goalResumeBtn" type="button">Resume</button>
+        <button class="btn primary" id="goalSaveBtn" type="button">Set goal</button>
+      </div>
     </div>
   </div>
 

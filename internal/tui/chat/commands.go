@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -55,6 +56,20 @@ func AllCommands() []Command {
 			Aliases:     []string{"st"},
 			Description: "Show current chat usage, cost, and context breakdown",
 			Usage:       "/stats",
+		},
+		{
+			Name:        "goal",
+			Aliases:     []string{"g"},
+			Description: "Set or manage a persistent objective",
+			Usage:       "/goal [set] <objective> [--budget N] | status|pause|resume|clear|edit",
+			Subcommands: []Subcommand{
+				{Name: "set", Description: "Set a new goal"},
+				{Name: "status", Description: "Show current goal"},
+				{Name: "pause", Description: "Pause the active goal"},
+				{Name: "resume", Description: "Resume a paused or blocked goal"},
+				{Name: "clear", Description: "Clear the goal"},
+				{Name: "edit", Description: "Edit the goal objective"},
+			},
 		},
 		{
 			Name:        "clear",
@@ -434,6 +449,8 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 		return m.cmdHelp()
 	case "stats":
 		return m.cmdStats()
+	case "goal":
+		return m.cmdGoal(args, rawArgs)
 	case "clear":
 		return m.cmdClear()
 	case "quit":
@@ -602,6 +619,189 @@ func (m *Model) showHelpShortcut() (tea.Model, tea.Cmd) {
 		return rm, cmd
 	}
 	return result, cmd
+}
+
+func (m *Model) cmdGoal(args []string, rawArgs string) (tea.Model, tea.Cmd) {
+	m.setTextareaValue("")
+	if m.sess == nil {
+		return m.showFooterError("No active session for /goal.")
+	}
+	if len(args) == 0 {
+		return m.cmdGoalStatus()
+	}
+	action := strings.ToLower(strings.TrimSpace(args[0]))
+	switch action {
+	case "status":
+		return m.cmdGoalStatus()
+	case "pause":
+		return m.updateGoalStatus(session.GoalStatusPaused, "goal paused")
+	case "resume":
+		return m.updateGoalStatus(session.GoalStatusActive, "goal resumed")
+	case "clear":
+		if err := session.UpdateGoal(context.Background(), m.store, m.sess.ID, nil); err != nil {
+			return m.showFooterError(fmt.Sprintf("Goal clear failed: %v", err))
+		}
+		m.sess.Goal = nil
+		return m.showFooterSuccess("Goal cleared.")
+	case "set":
+		objective, budget, err := parseGoalObjectiveAndBudget(strings.TrimSpace(strings.TrimPrefix(rawArgs, args[0])))
+		if err != nil {
+			return m.showFooterError(err.Error())
+		}
+		if objective == "" {
+			return m.showFooterError("Usage: /goal set <objective> [--budget N]")
+		}
+		return m.setGoal(objective, budget, false)
+	case "edit":
+		objective, budget, err := parseGoalObjectiveAndBudget(strings.TrimSpace(strings.TrimPrefix(rawArgs, args[0])))
+		if err != nil {
+			return m.showFooterError(err.Error())
+		}
+		if objective == "" {
+			return m.showFooterError("Usage: /goal edit <objective> [--budget N]")
+		}
+		return m.setGoal(objective, budget, true)
+	default:
+		objective, budget, err := parseGoalObjectiveAndBudget(rawArgs)
+		if err != nil {
+			return m.showFooterError(err.Error())
+		}
+		if objective == "" {
+			return m.showFooterError("Usage: /goal <objective> [--budget N]")
+		}
+		return m.setGoal(objective, budget, false)
+	}
+}
+
+func (m *Model) cmdGoalStatus() (tea.Model, tea.Cmd) {
+	if m.store != nil && m.sess != nil {
+		if refreshed, err := m.store.Get(context.Background(), m.sess.ID); err == nil && refreshed != nil {
+			m.sess = refreshed
+		}
+	}
+	if m.sess == nil || m.sess.Goal == nil || !m.sess.Goal.Exists() {
+		return m.showFooterMuted("No goal set.")
+	}
+	return m.showSystemMessage(formatGoalStatus(m.sess.Goal))
+}
+
+func (m *Model) setGoal(objective string, tokenBudget int, edited bool) (tea.Model, tea.Cmd) {
+	if m.sess == nil {
+		return m.showFooterError("No active session for /goal.")
+	}
+	now := time.Now()
+	goal := m.sess.Goal.Clone()
+	if goal == nil || !edited {
+		goal = session.NewGoal(objective, tokenBudget, now)
+	} else {
+		goal.Objective = strings.TrimSpace(objective)
+		if tokenBudget >= 0 {
+			goal.TokenBudget = tokenBudget
+		}
+		goal.Status = session.GoalStatusActive
+		goal.UpdatedAt = now
+		goal.UpdatedNotice = true
+		goal.PausedAt = time.Time{}
+		goal.BlockedAt = time.Time{}
+		goal.CompletedAt = time.Time{}
+	}
+	if goal.TokenBudget < 0 {
+		goal.TokenBudget = 0
+	}
+	goal.Normalize(now)
+	if err := session.UpdateGoal(context.Background(), m.store, m.sess.ID, goal); err != nil {
+		return m.showFooterError(fmt.Sprintf("Goal save failed: %v", err))
+	}
+	m.sess.Goal = goal
+	if edited {
+		return m.showFooterSuccess("Goal updated.")
+	}
+	return m.showFooterSuccess("Goal set.")
+}
+
+func (m *Model) updateGoalStatus(status session.GoalStatus, message string) (tea.Model, tea.Cmd) {
+	if m.sess == nil || m.sess.Goal == nil || !m.sess.Goal.Exists() {
+		return m.showFooterMuted("No goal set.")
+	}
+	goal := m.sess.Goal.Clone()
+	oldStatus := goal.Status
+	if status == session.GoalStatusActive && oldStatus == session.GoalStatusBudgetLimited && goal.BudgetExhausted() {
+		return m.showFooterError("Goal budget is exhausted; edit the goal with a higher --budget before resuming.")
+	}
+	goal.Status = status
+	goal.UpdatedAt = time.Now()
+	switch status {
+	case session.GoalStatusPaused:
+		goal.PausedAt = goal.UpdatedAt
+	case session.GoalStatusActive:
+		goal.PausedAt = time.Time{}
+		goal.CompletedAt = time.Time{}
+		goal.BlockedAt = time.Time{}
+	}
+	if err := session.UpdateGoal(context.Background(), m.store, m.sess.ID, goal); err != nil {
+		return m.showFooterError(fmt.Sprintf("Goal update failed: %v", err))
+	}
+	m.sess.Goal = goal
+	return m.showFooterSuccess(message + ".")
+}
+
+func parseGoalObjectiveAndBudget(raw string) (string, int, error) {
+	fields := strings.Fields(raw)
+	if len(fields) == 0 {
+		return "", 0, nil
+	}
+	budget := -1
+	kept := make([]string, 0, len(fields))
+	for i := 0; i < len(fields); i++ {
+		field := fields[i]
+		if field == "--tokens" || field == "--token-budget" || field == "--budget" {
+			if i+1 >= len(fields) {
+				return "", 0, fmt.Errorf("%s requires a number", field)
+			}
+			value, err := strconv.Atoi(fields[i+1])
+			if err != nil || value <= 0 {
+				return "", 0, fmt.Errorf("%s requires a positive number", field)
+			}
+			budget = value
+			i++
+			continue
+		}
+		if strings.HasPrefix(field, "--tokens=") || strings.HasPrefix(field, "--budget=") || strings.HasPrefix(field, "--token-budget=") {
+			flagName, valueText, _ := strings.Cut(field, "=")
+			value, err := strconv.Atoi(valueText)
+			if err != nil || value <= 0 {
+				return "", 0, fmt.Errorf("%s requires a positive number", flagName)
+			}
+			budget = value
+			continue
+		}
+		kept = append(kept, field)
+	}
+	return strings.TrimSpace(strings.Join(kept, " ")), budget, nil
+}
+
+func formatGoalStatus(goal *session.Goal) string {
+	if goal == nil || !goal.Exists() {
+		return "No goal set."
+	}
+	budget := "unlimited"
+	if goal.TokenBudget > 0 {
+		budget = fmt.Sprintf("%d/%d tokens", goal.TokensUsed, goal.TokenBudget)
+	}
+	return fmt.Sprintf("Goal: %s\nStatus: %s\nBudget: %s", goal.Objective, goal.Status, budget)
+}
+
+func (m *Model) pauseGoalForLocalAction(reason string) {
+	if m == nil || m.sess == nil || m.sess.Goal == nil || !m.sess.Goal.IsActive() {
+		return
+	}
+	goal := m.sess.Goal.Clone()
+	goal.Status = session.GoalStatusPaused
+	goal.PausedAt = time.Now()
+	goal.UpdatedAt = goal.PausedAt
+	goal.LastReason = strings.TrimSpace(reason)
+	_ = session.UpdateGoal(context.Background(), m.store, m.sess.ID, goal)
+	m.sess.Goal = goal
 }
 
 func (m *Model) showHelpModal() (tea.Model, tea.Cmd) {
@@ -803,6 +1003,7 @@ func (m *Model) cmdModel(args []string) (tea.Model, tea.Cmd) {
 	}
 
 	// Switch to specified model (format: provider:model or just model/alias)
+	m.pauseGoalForLocalAction("paused for model switch")
 	modelArg := args[0]
 	fallbackProvider := strings.TrimSpace(m.providerKey)
 	if fallbackProvider == "" {
@@ -1506,6 +1707,7 @@ func (m *Model) cmdFast() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) cmdNew() (tea.Model, tea.Cmd) {
+	m.pauseGoalForLocalAction("paused because a new session was started")
 	m.clearPendingStreamModelSwitch()
 	// Mark the old session as complete before creating a new one
 	if m.store != nil && m.sess != nil {
@@ -2469,6 +2671,7 @@ func (m *Model) cmdInspect() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) cmdCompress(args ...string) (tea.Model, tea.Cmd) {
+	m.pauseGoalForLocalAction("paused for context compaction")
 	m.setTextareaValue("")
 
 	mode := "soft"
@@ -2755,6 +2958,7 @@ const transientHandoverSystemPrompt = ""
 
 // cmdHandover handles /handover @agent [provider:model]
 func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {
+	m.pauseGoalForLocalAction("paused for handover")
 	m.setTextareaValue("")
 
 	if m.streaming {

@@ -123,6 +123,7 @@ const toggleSidebarCollapsed = () => {
 const updateHeader = () => {
   const session = ensureActiveSession();
   elements.activeSessionTitle.textContent = session?.title || 'Chat';
+  if (typeof app.updateGoalChip === 'function') app.updateGoalChip(session);
   updateDocumentTitle();
   updateSessionUsageDisplay(session);
   applyDesktopSidebarState();

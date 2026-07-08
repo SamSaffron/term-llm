@@ -1126,6 +1126,44 @@ const normalizeMCPServerView = (server) => {
   };
 };
 
+const applyGoalStateToSession = (session, data) => {
+  if (!session || !data || typeof data !== 'object' || !Object.prototype.hasOwnProperty.call(data, 'goal')) return false;
+  const nextGoal = data.goal && typeof data.goal === 'object' ? { ...data.goal } : null;
+  const before = JSON.stringify(session.goal || null);
+  const after = JSON.stringify(nextGoal || null);
+  if (before === after) return false;
+  session.goal = nextGoal;
+  return true;
+};
+
+const formatGoalChipText = (goal) => {
+  if (!goal || typeof goal !== 'object') return '';
+  const status = String(goal.status || 'active').trim() || 'active';
+  let text = `🎯 ${status}`;
+  const used = Number(goal.tokens_used || 0);
+  const budget = Number(goal.token_budget || 0);
+  if (budget > 0) text += ` · ${Math.max(0, used)}/${budget} tok`;
+  const objective = String(goal.objective || '').trim();
+  if (objective) text += ` · ${objective}`;
+  return text;
+};
+
+const updateGoalChip = (session = ensureActiveSession?.()) => {
+  const chip = elements.goalChip;
+  if (!chip) return;
+  const goal = session?.goal || null;
+  const text = formatGoalChipText(goal);
+  if (!text) {
+    chip.className = 'goal-chip hidden';
+    chip.textContent = '';
+    return;
+  }
+  const status = String(goal.status || 'active').trim() || 'active';
+  chip.className = `goal-chip goal-${status}`;
+  chip.textContent = text;
+  chip.title = text;
+};
+
 const applyMCPStateToSession = (session, data) => {
   if (!session || !data || typeof data !== 'object') return false;
   const hasServerField = Array.isArray(data.servers) || Array.isArray(data.mcp_servers);
@@ -1602,6 +1640,10 @@ const syncActiveSessionFromServer = async (session, pollOnActive = false, { skip
   if (applyMCPStateToSession(session, runtimeState)) {
     sessionChanged = true;
   }
+  if (applyGoalStateToSession(session, runtimeState)) {
+    sessionChanged = true;
+    if (session.id === state.activeSessionId) updateGoalChip(session);
+  }
   if (runtimeState.provider && runtimeState.provider !== session.provider) {
     session.provider = runtimeState.provider;
     sessionChanged = true;
@@ -1786,6 +1828,9 @@ const applyServerSessionSummary = (target, serverSession) => {
   if (serverSession.worktree_dir !== undefined) {
     target.worktreeDir = String(serverSession.worktree_dir || '');
     target.worktreeName = target.worktreeDir ? target.worktreeDir.split(/[\\/]/).filter(Boolean).pop() || 'worktree' : '';
+  }
+  if (Object.prototype.hasOwnProperty.call(serverSession, 'goal')) {
+    target.goal = serverSession.goal && typeof serverSession.goal === 'object' ? { ...serverSession.goal } : null;
   }
   return target;
 };
@@ -2654,6 +2699,83 @@ elements.stopBtn.addEventListener('click', async () => {
   }
 });
 
+const openGoalModal = () => {
+  const session = ensureActiveSession?.();
+  if (!session || !elements.goalModal) return;
+  const goal = session.goal || null;
+  elements.goalObjectiveInput.value = goal?.objective || '';
+  elements.goalTokenBudgetInput.value = goal?.token_budget ? String(goal.token_budget) : '';
+  elements.goalError.textContent = '';
+  const exists = Boolean(goal && goal.objective);
+  const status = String(goal?.status || '').trim() || 'active';
+  elements.goalSaveBtn.textContent = exists ? 'Save goal' : 'Set goal';
+  elements.goalPauseBtn.hidden = !exists || status !== 'active';
+  elements.goalResumeBtn.hidden = !exists || status === 'active' || status === 'complete';
+  elements.goalClearBtn.hidden = !exists;
+  elements.goalModal.classList.remove('hidden');
+  elements.goalObjectiveInput.focus();
+};
+
+const closeGoalModal = () => {
+  if (elements.goalModal) elements.goalModal.classList.add('hidden');
+};
+
+const postSessionGoal = async (action, extra = {}) => {
+  const session = ensureActiveSession?.();
+  if (!session) return null;
+  const response = await fetch(`${UI_PREFIX}/v1/sessions/${encodeURIComponent(session.id)}/runtime/goal`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, ...extra })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = data?.error?.message || data?.error || `Goal update failed (${response.status})`;
+    throw new Error(message);
+  }
+  session.goal = data.goal || null;
+  saveSessions();
+  updateGoalChip(session);
+  renderSidebar();
+  return data.goal || null;
+};
+
+const saveGoalFromModal = async () => {
+  if (!elements.goalObjectiveInput) return;
+  const objective = String(elements.goalObjectiveInput.value || '').trim();
+  if (!objective) {
+    elements.goalError.textContent = 'Objective is required.';
+    return;
+  }
+  const rawBudget = String(elements.goalTokenBudgetInput.value || '').trim();
+  const payload = { objective };
+  if (rawBudget) {
+    const budget = Number(rawBudget);
+    if (!Number.isFinite(budget) || budget <= 0) {
+      elements.goalError.textContent = 'Token budget must be a positive number.';
+      return;
+    }
+    payload.token_budget = Math.floor(budget);
+  }
+  try {
+    const session = ensureActiveSession?.();
+    await postSessionGoal(session?.goal ? 'edit' : 'set', payload);
+    closeGoalModal();
+  } catch (err) {
+    elements.goalError.textContent = err?.message || String(err);
+  }
+};
+
+const mutateGoalFromModal = async (action) => {
+  try {
+    await postSessionGoal(action);
+    if (action === 'clear') closeGoalModal();
+    else openGoalModal();
+  } catch (err) {
+    if (elements.goalError) elements.goalError.textContent = err?.message || String(err);
+  }
+};
+
 // Composer add menu and file attachment handlers
 elements.attachBtn.addEventListener('click', (event) => {
   event.preventDefault();
@@ -2669,6 +2791,56 @@ if (elements.addMCPOption) {
   elements.addMCPOption.addEventListener('click', async () => {
     closeAddMenu();
     await openSessionMCPModal();
+  });
+}
+if (elements.addGoalOption) {
+  elements.addGoalOption.addEventListener('click', () => {
+    closeAddMenu();
+    openGoalModal();
+  });
+}
+if (elements.goalChip) {
+  elements.goalChip.addEventListener('click', () => {
+    openGoalModal();
+  });
+}
+if (elements.goalModalCloseBtn) {
+  elements.goalModalCloseBtn.addEventListener('click', closeGoalModal);
+}
+if (elements.goalSaveBtn) {
+  elements.goalSaveBtn.addEventListener('click', () => {
+    void saveGoalFromModal();
+  });
+}
+if (elements.goalPauseBtn) {
+  elements.goalPauseBtn.addEventListener('click', () => {
+    void mutateGoalFromModal('pause');
+  });
+}
+if (elements.goalResumeBtn) {
+  elements.goalResumeBtn.addEventListener('click', () => {
+    void mutateGoalFromModal('resume');
+  });
+}
+if (elements.goalClearBtn) {
+  elements.goalClearBtn.addEventListener('click', () => {
+    void mutateGoalFromModal('clear');
+  });
+}
+if (elements.goalModal) {
+  elements.goalModal.addEventListener('click', (event) => {
+    if (event.target === elements.goalModal) closeGoalModal();
+  });
+  elements.goalModal.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !event.defaultPrevented) {
+      event.preventDefault();
+      closeGoalModal();
+      return;
+    }
+    if ((event.key === 'Enter' || event.key === 'NumpadEnter') && (event.metaKey || event.ctrlKey) && !event.defaultPrevented) {
+      event.preventDefault();
+      void saveGoalFromModal();
+    }
   });
 }
 if (elements.mcpStatus) {
@@ -2932,6 +3104,17 @@ window.addEventListener('pageshow', (event) => {
 
 setInterval(refreshRelativeTimes, 60_000);
 
+Object.assign(app, {
+  applyGoalStateToSession,
+  formatGoalChipText,
+  updateGoalChip,
+  openGoalModal,
+  closeGoalModal,
+  postSessionGoal,
+  saveGoalFromModal,
+  mutateGoalFromModal
+});
+
 initialize();
 
 Object.assign(app, {
@@ -2941,6 +3124,14 @@ Object.assign(app, {
   loadOlderSessionMessages,
   maybeLoadOlderSessionMessages,
   loadServerSessionState,
+  applyGoalStateToSession,
+  formatGoalChipText,
+  updateGoalChip,
+  openGoalModal,
+  closeGoalModal,
+  postSessionGoal,
+  saveGoalFromModal,
+  mutateGoalFromModal,
   applyMCPStateToSession,
   fetchSessionMCP,
   applySessionMCP,

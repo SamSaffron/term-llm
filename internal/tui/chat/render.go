@@ -17,6 +17,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/mcp"
 	render "github.com/samsaffron/term-llm/internal/render/chat"
+	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -936,6 +937,18 @@ type statusSegment struct {
 	width     int  // cached display width of text; 0 means not yet measured
 }
 
+func (m *Model) statusLineGoalPart() (string, session.GoalStatus) {
+	if m == nil || m.sess == nil || m.sess.Goal == nil || !m.sess.Goal.Exists() {
+		return "", ""
+	}
+	goal := m.sess.Goal
+	text := "🎯 " + string(goal.Status)
+	if goal.TokenBudget > 0 {
+		text += fmt.Sprintf(" · %d/%d tok", goal.TokensUsed, goal.TokenBudget)
+	}
+	return text, goal.Status
+}
+
 // renderStatusLine renders a tiny status line showing model and options
 func (m *Model) renderStatusLine() string {
 	theme := m.styles.Theme()
@@ -1009,6 +1022,18 @@ func (m *Model) renderStatusLine() string {
 	}
 	if m.fastMode {
 		baseSegments = append(baseSegments, seg(successStyle.Render("fast"), 30, false))
+	}
+	if goalText, goalStatus := m.statusLineGoalPart(); goalText != "" {
+		style := mutedStyle
+		switch goalStatus {
+		case session.GoalStatusActive:
+			style = successStyle
+		case session.GoalStatusPaused, session.GoalStatusBudgetLimited, session.GoalStatusBlocked:
+			style = warningStyle
+		case session.GoalStatusComplete:
+			style = mutedStyle
+		}
+		baseSegments = append(baseSegments, seg(style.Render(goalText), 35, false))
 	}
 	if len(m.files) > 0 {
 		baseSegments = append(baseSegments, seg(mutedStyle.Render(fmt.Sprintf("%d file(s)", len(m.files))), 55, false))
