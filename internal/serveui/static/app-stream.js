@@ -4123,6 +4123,9 @@ const sendMessage = async (options = {}) => {
     };
 
     previousResponseId = String(session.lastResponseId || '').trim();
+    if (!previousResponseId && session.worktreeDir) {
+      body.worktree_dir = session.worktreeDir;
+    }
     if (previousResponseId) {
       body.previous_response_id = previousResponseId;
     }

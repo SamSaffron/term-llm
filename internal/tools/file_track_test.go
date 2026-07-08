@@ -288,6 +288,7 @@ func TestShellToolGitFallback(t *testing.T) {
 		t.Helper()
 		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
 		cmd.Env = append(os.Environ(),
+			"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
 			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Skipf("git unavailable, skipping: %v (%s)", err, out)
@@ -364,6 +365,7 @@ func TestShellToolAffectedPathsSkipGitStatusFallback(t *testing.T) {
 		t.Helper()
 		cmd := exec.Command(realGit, append([]string{"-C", dir}, args...)...)
 		cmd.Env = append(os.Environ(),
+			"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
 			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Skipf("git unavailable, skipping: %v (%s)", err, out)
@@ -426,6 +428,7 @@ func TestShellToolGitFallbackOversizedCleanTrackedFile(t *testing.T) {
 		t.Helper()
 		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
 		cmd.Env = append(os.Environ(),
+			"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
 			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Skipf("git unavailable, skipping: %v (%s)", err, out)
@@ -497,6 +500,7 @@ func TestGitIgnoredCandidatesCanonicalizesSymlinkedRoot(t *testing.T) {
 		t.Helper()
 		cmd := exec.Command("git", append([]string{"-C", linkRepo}, args...)...)
 		cmd.Env = append(os.Environ(),
+			"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
 			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Skipf("git unavailable, skipping: %v (%s)", err, out)
@@ -520,6 +524,7 @@ func TestShellToolSkipsGitIgnoredAffectedPathMatches(t *testing.T) {
 		t.Helper()
 		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
 		cmd.Env = append(os.Environ(),
+			"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
 			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Skipf("git unavailable, skipping: %v (%s)", err, out)
@@ -569,6 +574,7 @@ func TestShellToolSkipsGitIgnoredLiteralAffectedPath(t *testing.T) {
 		t.Helper()
 		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
 		cmd.Env = append(os.Environ(),
+			"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
 			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Skipf("git unavailable, skipping: %v (%s)", err, out)
@@ -605,6 +611,7 @@ func TestShellToolRecordsSessionTrackedGitIgnoredPath(t *testing.T) {
 		t.Helper()
 		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
 		cmd.Env = append(os.Environ(),
+			"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
 			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Skipf("git unavailable, skipping: %v (%s)", err, out)

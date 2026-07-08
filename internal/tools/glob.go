@@ -19,12 +19,14 @@ import (
 // GlobTool implements the glob tool.
 type GlobTool struct {
 	approval *ApprovalManager
+	config   *ToolConfig
 }
 
 // NewGlobTool creates a new GlobTool.
-func NewGlobTool(approval *ApprovalManager) *GlobTool {
+func NewGlobTool(approval *ApprovalManager, configs ...*ToolConfig) *GlobTool {
 	return &GlobTool{
 		approval: approval,
+		config:   optionalToolConfig(configs),
 	}
 }
 
@@ -100,16 +102,28 @@ func (t *GlobTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 	// Set defaults
 	basePath := a.Path
 	if basePath == "" {
-		var err error
-		basePath, err = os.Getwd()
-		if err != nil {
-			return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err))), nil
+		if t.config != nil {
+			basePath = t.config.WorkingDir()
+		} else {
+			var err error
+			basePath, err = os.Getwd()
+			if err != nil {
+				return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err))), nil
+			}
 		}
+	}
+
+	absBasePath, err := resolveToolPathWithConfig(basePath, false, t.config)
+	if err != nil {
+		if toolErr, ok := err.(*ToolError); ok {
+			return textOutput(formatToolError(toolErr)), nil
+		}
+		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot resolve path: %v", err))), nil
 	}
 
 	// Check permissions via approval manager
 	if t.approval != nil {
-		outcome, err := t.approval.CheckPathApproval(GlobToolName, basePath, a.Pattern, false)
+		outcome, err := t.approval.CheckPathApproval(GlobToolName, absBasePath, a.Pattern, false)
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {
 				return textOutput(formatToolError(toolErr)), nil
@@ -119,14 +133,6 @@ func (t *GlobTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 		if outcome == Cancel {
 			return textOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", basePath))), nil
 		}
-	}
-
-	absBasePath, err := resolveToolPath(basePath, false)
-	if err != nil {
-		if toolErr, ok := err.(*ToolError); ok {
-			return textOutput(formatToolError(toolErr)), nil
-		}
-		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot resolve path: %v", err))), nil
 	}
 
 	// Let doublestar drive the traversal from the pattern instead of walking the

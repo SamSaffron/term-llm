@@ -25,22 +25,25 @@ import (
 // ViewImageTool implements the view_image tool.
 type ViewImageTool struct {
 	approval       *ApprovalManager
+	config         *ToolConfig
 	visionProvider llm.Provider
 	visionModel    string
 }
 
 // NewViewImageTool creates a new ViewImageTool.
-func NewViewImageTool(approval *ApprovalManager) *ViewImageTool {
+func NewViewImageTool(approval *ApprovalManager, configs ...*ToolConfig) *ViewImageTool {
 	return &ViewImageTool{
 		approval: approval,
+		config:   optionalToolConfig(configs),
 	}
 }
 
 // NewViewImageToolWithVision creates a view_image tool that analyzes images by
 // calling a separate vision-capable LLM and returning text only.
-func NewViewImageToolWithVision(approval *ApprovalManager, provider llm.Provider, model string) *ViewImageTool {
+func NewViewImageToolWithVision(approval *ApprovalManager, provider llm.Provider, model string, configs ...*ToolConfig) *ViewImageTool {
 	return &ViewImageTool{
 		approval:       approval,
+		config:         optionalToolConfig(configs),
 		visionProvider: provider,
 		visionModel:    strings.TrimSpace(model),
 	}
@@ -140,9 +143,17 @@ func (t *ViewImageTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "file_path is required"))), nil
 	}
 
+	resolvedPath, err := resolveToolPathWithConfig(a.FilePath, false, t.config)
+	if err != nil {
+		if toolErr, ok := err.(*ToolError); ok {
+			return llm.TextOutput(formatToolError(toolErr)), nil
+		}
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
+	}
+
 	// Check permissions via approval manager
 	if t.approval != nil {
-		outcome, err := t.approval.CheckPathApproval(ViewImageToolName, a.FilePath, a.FilePath, false)
+		outcome, err := t.approval.CheckPathApproval(ViewImageToolName, resolvedPath, a.FilePath, false)
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {
 				return llm.TextOutput(formatToolError(toolErr)), nil
@@ -152,14 +163,6 @@ func (t *ViewImageTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 		if outcome == Cancel {
 			return llm.TextOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", a.FilePath))), nil
 		}
-	}
-
-	resolvedPath, err := resolveToolPath(a.FilePath, false)
-	if err != nil {
-		if toolErr, ok := err.(*ToolError); ok {
-			return llm.TextOutput(formatToolError(toolErr)), nil
-		}
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
 	}
 
 	// Check file exists

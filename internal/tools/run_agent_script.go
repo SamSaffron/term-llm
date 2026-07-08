@@ -149,10 +149,17 @@ func (t *RunAgentScriptTool) Execute(ctx context.Context, args json.RawMessage) 
 		timeout = 300
 	}
 
-	// Get working directory
-	workDir, err := os.Getwd()
-	if err != nil {
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err))), nil
+	// Get working directory from the session BaseDir, falling back to process cwd.
+	workDir := ""
+	if t.config != nil {
+		workDir = t.config.WorkingDir()
+	}
+	if workDir == "" {
+		var err error
+		workDir, err = os.Getwd()
+		if err != nil {
+			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err))), nil
+		}
 	}
 
 	var argv []string

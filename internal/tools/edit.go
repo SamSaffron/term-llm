@@ -37,12 +37,14 @@ func lockFilePath(absPath string) func() {
 type EditFileTool struct {
 	approval *ApprovalManager
 	recorder FileChangeRecorder
+	config   *ToolConfig
 }
 
 // NewEditFileTool creates a new EditFileTool.
-func NewEditFileTool(approval *ApprovalManager) *EditFileTool {
+func NewEditFileTool(approval *ApprovalManager, configs ...*ToolConfig) *EditFileTool {
 	return &EditFileTool{
 		approval: approval,
+		config:   optionalToolConfig(configs),
 	}
 }
 
@@ -112,9 +114,17 @@ func (t *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.T
 		return textOutput(formatToolError(NewToolError(ErrInvalidParams, "path is required"))), nil
 	}
 
+	absPath, err := resolveToolPathWithConfig(a.Path, true, t.config)
+	if err != nil {
+		if toolErr, ok := err.(*ToolError); ok {
+			return textOutput(formatToolError(toolErr)), nil
+		}
+		return textOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
+	}
+
 	// Check permissions via approval manager
 	if t.approval != nil {
-		outcome, err := t.approval.CheckPathApproval(EditFileToolName, a.Path, a.Path, true)
+		outcome, err := t.approval.CheckPathApproval(EditFileToolName, absPath, a.Path, true)
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {
 				return textOutput(formatToolError(toolErr)), nil
@@ -156,7 +166,7 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (l
 	// Resolve the execution path so concurrent edits of the same underlying
 	// file share one lock path and the final write does not follow a late
 	// symlink change.
-	absPath, err := resolveToolPath(a.Path, true)
+	absPath, err := resolveToolPathWithConfig(a.Path, true, t.config)
 	if err != nil {
 		if toolErr, ok := err.(*ToolError); ok {
 			return llm.TextOutput(formatToolError(toolErr)), nil
@@ -265,12 +275,14 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (l
 type UnifiedDiffTool struct {
 	approval *ApprovalManager
 	recorder FileChangeRecorder
+	config   *ToolConfig
 }
 
 // NewUnifiedDiffTool creates a new UnifiedDiffTool.
-func NewUnifiedDiffTool(approval *ApprovalManager) *UnifiedDiffTool {
+func NewUnifiedDiffTool(approval *ApprovalManager, configs ...*ToolConfig) *UnifiedDiffTool {
 	return &UnifiedDiffTool{
 		approval: approval,
+		config:   optionalToolConfig(configs),
 	}
 }
 
@@ -322,8 +334,15 @@ func (t *UnifiedDiffTool) Execute(ctx context.Context, args json.RawMessage) (ll
 
 	// Check permissions for all files first
 	for _, fd := range fileDiffs {
+		absPath, err := resolveToolPathWithConfig(fd.Path, true, t.config)
+		if err != nil {
+			if toolErr, ok := err.(*ToolError); ok {
+				return llm.TextOutput(formatToolError(toolErr)), nil
+			}
+			return llm.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
+		}
 		if t.approval != nil {
-			outcome, err := t.approval.CheckPathApproval(UnifiedDiffToolName, fd.Path, fd.Path, true)
+			outcome, err := t.approval.CheckPathApproval(UnifiedDiffToolName, absPath, fd.Path, true)
 			if err != nil {
 				if toolErr, ok := err.(*ToolError); ok {
 					return llm.TextOutput(formatToolError(toolErr)), nil
@@ -342,7 +361,7 @@ func (t *UnifiedDiffTool) Execute(ctx context.Context, args json.RawMessage) (ll
 	var fileChanges []llm.FileChange
 
 	for _, fd := range fileDiffs {
-		absPath, err := resolveToolPath(fd.Path, true)
+		absPath, err := resolveToolPathWithConfig(fd.Path, true, t.config)
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {
 				allWarnings = append(allWarnings, fmt.Sprintf("%s: %s", fd.Path, toolErr.Message))

@@ -19,13 +19,15 @@ import (
 type ReadFileTool struct {
 	approval *ApprovalManager
 	limits   OutputLimits
+	config   *ToolConfig
 }
 
 // NewReadFileTool creates a new ReadFileTool.
-func NewReadFileTool(approval *ApprovalManager, limits OutputLimits) *ReadFileTool {
+func NewReadFileTool(approval *ApprovalManager, limits OutputLimits, configs ...*ToolConfig) *ReadFileTool {
 	return &ReadFileTool{
 		approval: approval,
 		limits:   limits,
+		config:   optionalToolConfig(configs),
 	}
 }
 
@@ -92,9 +94,17 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.T
 		return textOutput(formatToolError(NewToolError(ErrInvalidParams, "path is required"))), nil
 	}
 
+	resolvedPath, err := resolveToolPathWithConfig(a.Path, false, t.config)
+	if err != nil {
+		if toolErr, ok := err.(*ToolError); ok {
+			return textOutput(formatToolError(toolErr)), nil
+		}
+		return textOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
+	}
+
 	// Check permissions via approval manager
 	if t.approval != nil {
-		outcome, err := t.approval.CheckPathApproval(ReadFileToolName, a.Path, a.Path, false)
+		outcome, err := t.approval.CheckPathApproval(ReadFileToolName, resolvedPath, a.Path, false)
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {
 				return textOutput(formatToolError(toolErr)), nil
@@ -104,14 +114,6 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.T
 		if outcome == Cancel {
 			return textOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", a.Path))), nil
 		}
-	}
-
-	resolvedPath, err := resolveToolPath(a.Path, false)
-	if err != nil {
-		if toolErr, ok := err.(*ToolError); ok {
-			return textOutput(formatToolError(toolErr)), nil
-		}
-		return textOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
 	}
 
 	output, err := readLineNumberedFile(ctx, resolvedPath, a.Path, a.StartLine, a.EndLine, t.limits)

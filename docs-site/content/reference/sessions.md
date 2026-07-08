@@ -57,6 +57,25 @@ term-llm chat --no-session
 term-llm ask --session-db /tmp/term-llm.db ...
 ```
 
+## Worktree-bound sessions
+
+Chat sessions can bind their tools to a git worktree without changing the term-llm process working directory. In the TUI, use `/worktree` (or `/wt`) while in `chat`:
+
+```text
+/worktree new [name] [--base REF] [-b branch]
+/worktree list
+/worktree switch <name-or-dir>
+/worktree diff
+/worktree merge [--commit] [-m message]
+/worktree promote <branch>
+/worktree root
+/worktree rm [name-or-dir] [--force]
+```
+
+A bound worktree becomes the session `BaseDir`: relative `read_file`, `write_file`, `edit_file`, `grep`, `glob`, shell working directories, image paths, and spawned agents resolve there. The binding is saved as `worktree_dir` in SQLite and is restored on resume. `/worktree merge` applies worktree changes back to the root checkout staged and uncommitted by default so you can review and commit them yourself.
+
+In the Web UI, the header worktree chip is available for draft sessions launched from a git checkout. Choose or create a worktree before the first send; the choice is locked to that session after the first message and sent as `worktree_dir` on the Responses API request.
+
 ## File change history
 
 When `file_tracking.enabled` is true, term-llm records file changes made by agent tools and exposes them in the web UI as a per-session **Changes** panel. The panel opens automatically on wide screens when the active session changes files; on narrower screens it stays behind the file-changes button so it does not crush the chat column.

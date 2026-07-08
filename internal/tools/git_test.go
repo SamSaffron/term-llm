@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -226,6 +227,43 @@ func TestGetGitRepoID(t *testing.T) {
 	if len(id1) != 32 { // 16 bytes = 32 hex chars
 		t.Errorf("expected ID length 32, got %d", len(id1))
 	}
+}
+
+func TestGetGitRepoIDCanonicalizesLinkedWorktree(t *testing.T) {
+	repo := t.TempDir()
+	runGitTestCommand(t, repo, "init")
+	runGitTestCommand(t, repo, "config", "user.email", "test@example.com")
+	runGitTestCommand(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	runGitTestCommand(t, repo, "add", "README.md")
+	runGitTestCommand(t, repo, "commit", "-m", "init")
+
+	worktreeDir := filepath.Join(t.TempDir(), "linked")
+	runGitTestCommand(t, repo, "worktree", "add", "--detach", worktreeDir, "HEAD")
+	t.Cleanup(func() { _, _ = runGitTestCommandAllowError(repo, "worktree", "remove", "--force", worktreeDir) })
+
+	rootID := GetGitRepoID(repo)
+	worktreeID := GetGitRepoID(worktreeDir)
+	if rootID != worktreeID {
+		t.Fatalf("worktree repo ID = %s, want root ID %s", worktreeID, rootID)
+	}
+}
+
+func runGitTestCommand(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	out, err := runGitTestCommandAllowError(dir, args...)
+	if err != nil {
+		t.Skipf("git %v failed: %v\n%s", args, err, strings.TrimSpace(string(out)))
+	}
+}
+
+func runGitTestCommandAllowError(dir string, args ...string) ([]byte, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+	return cmd.CombinedOutput()
 }
 
 func TestIsPathInRepo(t *testing.T) {

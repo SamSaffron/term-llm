@@ -330,9 +330,27 @@ func matchShellPattern(pattern, value string) bool {
 }
 
 func resolveToolPath(path string, isWrite bool) (string, error) {
+	return resolveToolPathInBase(path, isWrite, "")
+}
+
+func resolveToolPathWithConfig(path string, isWrite bool, config *ToolConfig) (string, error) {
+	baseDir := ""
+	if config != nil {
+		baseDir = config.WorkingDir()
+	}
+	return resolveToolPathInBase(path, isWrite, baseDir)
+}
+
+func resolveToolPathInBase(path string, isWrite bool, baseDir string) (string, error) {
 	expanded, err := pathutil.Expand(path)
 	if err != nil {
 		return "", NewToolErrorf(ErrInvalidParams, "%v", err)
+	}
+	if strings.TrimSpace(expanded) == "" {
+		return "", NewToolError(ErrInvalidParams, "path is required")
+	}
+	if !filepath.IsAbs(expanded) && strings.TrimSpace(baseDir) != "" {
+		expanded = filepath.Join(baseDir, expanded)
 	}
 	if isWrite {
 		return canonicalizePathForWrite(expanded)

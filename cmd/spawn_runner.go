@@ -26,6 +26,7 @@ type SpawnAgentRunner struct {
 	parentApprovalMgr *tools.ApprovalManager
 	store             session.Store // Session store for tracking subagent turns
 	parentSessionID   string        // Parent session ID for child session linking
+	parentBaseDir     string        // Per-session BaseDir inherited by child agents
 	warnFunc          func(format string, args ...any)
 	wg                *sync.WaitGroup // tracks in-flight agent runs so callers can drain before closing the store
 }
@@ -59,6 +60,13 @@ func NewSpawnAgentRunnerWithStore(cfg *config.Config, yoloMode bool, parentAppro
 		parentSessionID:   parentSessionID,
 		wg:                &sync.WaitGroup{},
 	}, nil
+}
+
+// SetBaseDir sets the per-session BaseDir inherited by spawned agents.
+func (r *SpawnAgentRunner) SetBaseDir(dir string) {
+	if r != nil {
+		r.parentBaseDir = strings.TrimSpace(dir)
+	}
 }
 
 // SetWarnFunc sets a function to be called when non-fatal warnings occur
@@ -287,6 +295,12 @@ func (r *SpawnAgentRunner) setupAgentTools(cfg *config.Config, engine *llm.Engin
 	settings.SessionID = childSessionID
 	settings.Provider = strings.TrimSpace(cfg.DefaultProvider)
 	settings.Model = strings.TrimSpace(activeModel(cfg))
+	if strings.TrimSpace(r.parentBaseDir) != "" {
+		settings.BaseDir = r.parentBaseDir
+		settings.ReadDirs = append(settings.ReadDirs, r.parentBaseDir)
+		settings.WriteDirs = append(settings.WriteDirs, r.parentBaseDir)
+		settings.ShellWorkingDir = r.parentBaseDir
+	}
 	toolMgr, err := settings.SetupToolManager(cfg, engine)
 	if err != nil || toolMgr == nil {
 		return toolMgr, err

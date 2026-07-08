@@ -1783,6 +1783,10 @@ const applyServerSessionSummary = (target, serverSession) => {
   if (serverSession.provider) {
     target.provider = serverSession.provider;
   }
+  if (serverSession.worktree_dir !== undefined) {
+    target.worktreeDir = String(serverSession.worktree_dir || '');
+    target.worktreeName = target.worktreeDir ? target.worktreeDir.split(/[\\/]/).filter(Boolean).pop() || 'worktree' : '';
+  }
   return target;
 };
 

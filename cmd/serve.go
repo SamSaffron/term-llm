@@ -1155,6 +1155,10 @@ func (s *serveServer) httpHandler() http.Handler {
 	}
 	inner.HandleFunc("/v1/sessions/status", s.auth(s.cors(s.handleSessionsStatus)))
 	inner.HandleFunc("/v1/sessions/search", s.auth(s.cors(s.handleSessionsSearch)))
+	inner.HandleFunc("/v1/worktrees/diff", s.auth(s.cors(s.handleWorktreeDiff)))
+	inner.HandleFunc("/v1/worktrees/merge", s.auth(s.cors(s.handleWorktreeMerge)))
+	inner.HandleFunc("/v1/worktrees/promote", s.auth(s.cors(s.handleWorktreePromote)))
+	inner.HandleFunc("/v1/worktrees", s.auth(s.cors(s.handleWorktrees)))
 	inner.HandleFunc("/v1/sessions/", s.auth(s.cors(s.handleSessionByID)))
 	inner.HandleFunc("/v1/push/subscribe", s.auth(s.cors(s.handlePushSubscribe)))
 

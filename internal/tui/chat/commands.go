@@ -134,9 +134,32 @@ func AllCommands() []Command {
 			Usage:       "/file <path>",
 		},
 		{
+			Name:        "shell",
+			Aliases:     []string{"sh"},
+			Description: "Open your shell in this session's working directory",
+			Usage:       "/shell [--no-rc]",
+		},
+		{
 			Name:        "dirs",
 			Description: "Manage approved directories",
 			Usage:       "/dirs [add|remove <path>]",
+		},
+		{
+			Name:        "worktree",
+			Aliases:     []string{"wt"},
+			Description: "Manage git worktrees for this chat session",
+			Usage:       "/worktree [new|list|switch|root|pwd|diff|merge|promote|rm]",
+			Subcommands: []Subcommand{
+				{Name: "new", Description: "Create and bind a new worktree"},
+				{Name: "list", Description: "List managed worktrees"},
+				{Name: "switch", Description: "Bind this session to a worktree"},
+				{Name: "root", Description: "Return to the root checkout"},
+				{Name: "pwd", Description: "Show current bound directory"},
+				{Name: "diff", Description: "Show worktree diff including untracked files"},
+				{Name: "merge", Description: "Stage worktree changes onto the root checkout"},
+				{Name: "promote", Description: "Create a branch for the worktree"},
+				{Name: "rm", Description: "Remove a worktree"},
+			},
 		},
 		{
 			Name:        "mcp",
@@ -439,8 +462,12 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 		return m.cmdSystem(args)
 	case "file":
 		return m.cmdFile(args)
+	case "shell":
+		return m.cmdShell(args)
 	case "dirs":
 		return m.cmdDirs(args)
+	case "worktree":
+		return m.cmdWorktree(args)
 	case "mcp":
 		return m.cmdMcp(args)
 	case "skills":
@@ -3433,6 +3460,23 @@ func (m *Model) buildHandoverSession(pending *handoverDoneMsg, targetAgent *agen
 		MCP:           mcpStr,
 		Status:        session.StatusActive,
 		CompactionSeq: -1,
+	}
+	if m.sess != nil {
+		if worktreeDir := strings.TrimSpace(m.sess.WorktreeDir); worktreeDir != "" {
+			newSess.WorktreeDir = worktreeDir
+			newSess.CWD = worktreeDir
+			return newSess
+		}
+		if cwd := strings.TrimSpace(m.sess.CWD); cwd != "" {
+			newSess.CWD = cwd
+			return newSess
+		}
+	}
+	if m.toolMgr != nil {
+		if baseDir := strings.TrimSpace(m.toolMgr.BaseDir()); baseDir != "" {
+			newSess.CWD = baseDir
+			return newSess
+		}
 	}
 	if cwd, err := os.Getwd(); err == nil {
 		newSess.CWD = cwd

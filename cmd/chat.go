@@ -110,7 +110,9 @@ Slash commands:
   /thinking    - Toggle reasoning display
   /system      - Set custom system prompt
   /file        - Attach file(s) to next message
+  /shell       - Open your shell in the session directory (--no-rc skips rc files)
   /dirs        - Manage approved directories
+  /worktree    - Manage git worktrees for this session
   /mcp         - Manage MCP servers
   /skills      - List available skills
   /inspect     - View conversation/tool details
@@ -391,6 +393,12 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 		settings.Tools = sess.Tools
 		settings.MCP = sess.MCP
 		settings.SessionID = sess.ID
+		if strings.TrimSpace(sess.WorktreeDir) != "" {
+			settings.BaseDir = sess.WorktreeDir
+			settings.ReadDirs = append(settings.ReadDirs, sess.WorktreeDir)
+			settings.WriteDirs = append(settings.WriteDirs, sess.WorktreeDir)
+			settings.ShellWorkingDir = sess.WorktreeDir
+		}
 	}
 
 	// Apply provider/model overrides.
@@ -464,6 +472,11 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 			debugLogger.Close()
 		}
 		return "", "", err
+	}
+	if sess != nil && toolMgr != nil {
+		if err := RestoreWorktreeBinding(context.Background(), store, sess, toolMgr); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to restore worktree binding: %v\n", err)
+		}
 	}
 	approvalMgr, err := buildChatHandoverApprovalManager(cfg, settings)
 	if err != nil {
@@ -594,7 +607,7 @@ func runChatOnce(ctx context.Context, cmd *cobra.Command, initialText, cliAgent 
 	if agent != nil {
 		chatPlatformMessage = agent.PlatformMessages.For("chat")
 	}
-	model := chat.NewWithFastProvider(cfg, provider, fastProvider, engine, providerKey, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, chatNoWebFetch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, false, initialText, store, sess, useAltScreen, chatAutoSend, autoSendMode, chatTextMode, agentName, chatPlatformMessage, chatYolo)
+	model := chat.NewWithFastProvider(cfg, provider, fastProvider, engine, providerKey, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, chatNoWebFetch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, false, initialText, store, sess, useAltScreen, chatAutoSend, autoSendMode, chatTextMode, agentName, chatPlatformMessage, chatYolo, toolMgr)
 	model.ConfigureTerminalTitleEnvironment(chat.TerminalTitleEnvironmentFromEnv())
 	terminalTitleRestored := false
 	restoreTerminalTitle := func() {

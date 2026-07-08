@@ -79,14 +79,16 @@ func autoEnrichContextLines(blockCount int) int {
 type GrepTool struct {
 	approval        *ApprovalManager
 	limits          OutputLimits
+	config          *ToolConfig
 	rgCaptureLimits ripgrepCaptureLimits
 }
 
 // NewGrepTool creates a new GrepTool.
-func NewGrepTool(approval *ApprovalManager, limits OutputLimits) *GrepTool {
+func NewGrepTool(approval *ApprovalManager, limits OutputLimits, configs ...*ToolConfig) *GrepTool {
 	return &GrepTool{
 		approval:        approval,
 		limits:          limits,
+		config:          optionalToolConfig(configs),
 		rgCaptureLimits: defaultRipgrepCaptureLimits(),
 	}
 }
@@ -991,10 +993,14 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 	// Set defaults
 	searchPath := a.Path
 	if searchPath == "" {
-		var err error
-		searchPath, err = os.Getwd()
-		if err != nil {
-			return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err))), nil
+		if t.config != nil {
+			searchPath = t.config.WorkingDir()
+		} else {
+			var err error
+			searchPath, err = os.Getwd()
+			if err != nil {
+				return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err))), nil
+			}
 		}
 	}
 
@@ -1008,9 +1014,17 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 		contextLines = 2
 	}
 
+	resolvedSearchPath, err := resolveToolPathWithConfig(searchPath, false, t.config)
+	if err != nil {
+		if toolErr, ok := err.(*ToolError); ok {
+			return textOutput(formatToolError(toolErr)), nil
+		}
+		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot resolve path: %v", err))), nil
+	}
+
 	// Check permissions via approval manager
 	if t.approval != nil {
-		outcome, err := t.approval.CheckPathApproval(GrepToolName, searchPath, a.Pattern, false)
+		outcome, err := t.approval.CheckPathApproval(GrepToolName, resolvedSearchPath, a.Pattern, false)
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {
 				return textOutput(formatToolError(toolErr)), nil
@@ -1020,14 +1034,6 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (llm.ToolO
 		if outcome == Cancel {
 			return textOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", searchPath))), nil
 		}
-	}
-
-	resolvedSearchPath, err := resolveToolPath(searchPath, false)
-	if err != nil {
-		if toolErr, ok := err.(*ToolError); ok {
-			return textOutput(formatToolError(toolErr)), nil
-		}
-		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot resolve path: %v", err))), nil
 	}
 
 	// Try ripgrep first (faster)

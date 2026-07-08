@@ -16,12 +16,14 @@ import (
 type WriteFileTool struct {
 	approval *ApprovalManager
 	recorder FileChangeRecorder
+	config   *ToolConfig
 }
 
 // NewWriteFileTool creates a new WriteFileTool.
-func NewWriteFileTool(approval *ApprovalManager) *WriteFileTool {
+func NewWriteFileTool(approval *ApprovalManager, configs ...*ToolConfig) *WriteFileTool {
 	return &WriteFileTool{
 		approval: approval,
+		config:   optionalToolConfig(configs),
 	}
 }
 
@@ -76,9 +78,17 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 		return textOutput(formatToolError(NewToolError(ErrInvalidParams, "path is required"))), nil
 	}
 
+	absPath, err := resolveToolPathWithConfig(a.Path, true, t.config)
+	if err != nil {
+		if toolErr, ok := err.(*ToolError); ok {
+			return textOutput(formatToolError(toolErr)), nil
+		}
+		return textOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
+	}
+
 	// Check permissions via approval manager
 	if t.approval != nil {
-		outcome, err := t.approval.CheckPathApproval(WriteFileToolName, a.Path, a.Path, true)
+		outcome, err := t.approval.CheckPathApproval(WriteFileToolName, absPath, a.Path, true)
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {
 				return textOutput(formatToolError(toolErr)), nil
@@ -88,14 +98,6 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 		if outcome == Cancel {
 			return textOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", a.Path))), nil
 		}
-	}
-
-	absPath, err := resolveToolPath(a.Path, true)
-	if err != nil {
-		if toolErr, ok := err.(*ToolError); ok {
-			return textOutput(formatToolError(toolErr)), nil
-		}
-		return textOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
 	}
 
 	// Serialize concurrent writes/edits to the same file path so the

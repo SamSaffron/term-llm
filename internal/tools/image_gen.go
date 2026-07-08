@@ -25,6 +25,7 @@ type ImageRecorder interface {
 type ImageGenerateTool struct {
 	approval          *ApprovalManager
 	config            *config.Config
+	toolConfig        *ToolConfig
 	providerName      string // Override provider name
 	imageRecorder     ImageRecorder
 	agent             string
@@ -34,10 +35,11 @@ type ImageGenerateTool struct {
 }
 
 // NewImageGenerateTool creates a new ImageGenerateTool.
-func NewImageGenerateTool(approval *ApprovalManager, cfg *config.Config, providerOverride string, recorder ImageRecorder, agent, sessionID string) *ImageGenerateTool {
+func NewImageGenerateTool(approval *ApprovalManager, cfg *config.Config, providerOverride string, recorder ImageRecorder, agent, sessionID string, toolConfigs ...*ToolConfig) *ImageGenerateTool {
 	return &ImageGenerateTool{
 		approval:      approval,
 		config:        cfg,
+		toolConfig:    optionalToolConfig(toolConfigs),
 		providerName:  providerOverride,
 		imageRecorder: recorder,
 		agent:         agent,
@@ -141,18 +143,28 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
 	}
 
-	// Check output path permissions if specified
-	if a.OutputPath != "" && t.approval != nil {
-		outcome, err := t.approval.CheckPathApproval(ImageGenerateToolName, a.OutputPath, a.OutputPath, true)
+	if a.OutputPath != "" {
+		resolvedOutputPath, err := resolveToolPathWithConfig(a.OutputPath, true, t.toolConfig)
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {
 				return llm.TextOutput(formatToolError(toolErr)), nil
 			}
-			return llm.TextOutput(formatToolError(NewToolError(ErrPermissionDenied, err.Error()))), nil
+			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to resolve output path: %v", err))), nil
 		}
-		if outcome == Cancel {
-			return llm.TextOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", a.OutputPath))), nil
+		if t.approval != nil {
+			outcome, err := t.approval.CheckPathApproval(ImageGenerateToolName, resolvedOutputPath, a.OutputPath, true)
+			if err != nil {
+				if toolErr, ok := err.(*ToolError); ok {
+					return llm.TextOutput(formatToolError(toolErr)), nil
+				}
+				return llm.TextOutput(formatToolError(NewToolError(ErrPermissionDenied, err.Error()))), nil
+			}
+			if outcome == Cancel {
+				return llm.TextOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", a.OutputPath))), nil
+			}
 		}
+		// Keep the resolved path for downstream comparisons/writes.
+		a.OutputPath = resolvedOutputPath
 	}
 
 	// Check if config is available
@@ -164,7 +176,7 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 	if outputDir == "" {
 		outputDir = "~/Pictures/term-llm"
 	}
-	resolvedOutputDir, err := resolveToolPath(outputDir, true)
+	resolvedOutputDir, err := resolveToolPathWithConfig(outputDir, true, t.toolConfig)
 	if err != nil {
 		if toolErr, ok := err.(*ToolError); ok {
 			return llm.TextOutput(formatToolError(toolErr)), nil
@@ -210,7 +222,7 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 		if t.approval != nil {
 			debug := t.approval.DebugApproval
 			for _, inputPath := range inputPaths {
-				resolvedInput, inputErr := resolveToolPath(inputPath, false)
+				resolvedInput, inputErr := resolveToolPathWithConfig(inputPath, false, t.toolConfig)
 				if inputErr == nil && strings.HasPrefix(resolvedInput, resolvedOutputDir+string(filepath.Separator)) {
 					if debug {
 						log.Printf("[image_generate] auto-approved input %q (inside output dir %q)", inputPath, resolvedOutputDir)
@@ -236,7 +248,7 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 					return llm.TextOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", inputPath))), nil
 				}
 
-				resolvedInput, err = resolveToolPath(inputPath, false)
+				resolvedInput, err = resolveToolPathWithConfig(inputPath, false, t.toolConfig)
 				if err != nil {
 					if toolErr, ok := err.(*ToolError); ok {
 						return llm.TextOutput(formatToolError(toolErr)), nil
@@ -247,7 +259,7 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 			}
 		} else {
 			for _, inputPath := range inputPaths {
-				resolvedInput, err := resolveToolPath(inputPath, false)
+				resolvedInput, err := resolveToolPathWithConfig(inputPath, false, t.toolConfig)
 				if err != nil {
 					if toolErr, ok := err.(*ToolError); ok {
 						return llm.TextOutput(formatToolError(toolErr)), nil
@@ -320,7 +332,7 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args json.RawMessage) (
 		}
 		servedPath = outputPath
 	} else {
-		outputPath, err = resolveToolPath(outputPath, true)
+		outputPath, err = resolveToolPathWithConfig(outputPath, true, t.toolConfig)
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {
 				return llm.TextOutput(formatToolError(toolErr)), nil

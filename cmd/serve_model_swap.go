@@ -442,7 +442,7 @@ func (s *serveServer) restoreModelSwapRollback(ctx context.Context, sessionID st
 		defer cancel()
 		_ = s.store.ReplaceMessages(dbCtx, sessionID, dbMessages)
 		if exec.previous != nil {
-			s.syncPersistedSessionRuntime(dbCtx, sessionID, exec.previous, exec.plan.previousModel, exec.plan.previousEffort)
+			s.syncPersistedSessionRuntime(dbCtx, sessionID, exec.previous, exec.plan.previousModel, exec.plan.previousEffort, "")
 		}
 	}
 }
@@ -501,7 +501,7 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 			s.unregisterSessionResponseIDs(sessionID)
 		}
 		exec.markCommitted()
-		s.syncPersistedSessionRuntime(runCtx, sessionID, runtime, effectiveTargetModel(exec.plan, runtime), exec.plan.requestedEffort)
+		s.syncPersistedSessionRuntime(runCtx, sessionID, runtime, effectiveTargetModel(exec.plan, runtime), exec.plan.requestedEffort, "")
 		s.persistModelSwapMarker(runCtx, sessionID, exec.plan, runtime, "succeeded", "naive")
 		s.registerResponseID(runtime, respID, sessionID)
 		appendProgress("complete", fmt.Sprintf("Continuing on %s.", exec.plan.targetLabel(runtime)))
@@ -588,7 +588,7 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 		s.unregisterSessionResponseIDs(sessionID)
 	}
 	exec.markCommitted()
-	s.syncPersistedSessionRuntime(runCtx, sessionID, runtime, effectiveTargetModel(exec.plan, runtime), exec.plan.requestedEffort)
+	s.syncPersistedSessionRuntime(runCtx, sessionID, runtime, effectiveTargetModel(exec.plan, runtime), exec.plan.requestedEffort, "")
 	s.persistModelSwapMarker(runCtx, sessionID, exec.plan, runtime, "succeeded", "handover")
 	s.registerResponseID(runtime, respID, sessionID)
 	appendProgress("complete", fmt.Sprintf("Continuing on %s.", exec.plan.targetLabel(runtime)))
@@ -622,7 +622,7 @@ func (s *serveServer) runResponseWithModelSwapFallback(ctx context.Context, runt
 	})
 	if err == nil {
 		exec.markCommitted()
-		s.syncPersistedSessionRuntime(ctx, sessionID, runtime, effectiveTargetModel(exec.plan, runtime), exec.plan.requestedEffort)
+		s.syncPersistedSessionRuntime(ctx, sessionID, runtime, effectiveTargetModel(exec.plan, runtime), exec.plan.requestedEffort, "")
 		s.persistModelSwapMarker(ctx, sessionID, exec.plan, runtime, "succeeded", "naive")
 		return result, "naive", nil
 	}
@@ -647,7 +647,7 @@ func (s *serveServer) runResponseWithModelSwapFallback(ctx context.Context, runt
 		return serveRunResult{}, "", modelSwapCombinedError(err, retryErr)
 	}
 	exec.markCommitted()
-	s.syncPersistedSessionRuntime(ctx, sessionID, runtime, effectiveTargetModel(exec.plan, runtime), exec.plan.requestedEffort)
+	s.syncPersistedSessionRuntime(ctx, sessionID, runtime, effectiveTargetModel(exec.plan, runtime), exec.plan.requestedEffort, "")
 	s.persistModelSwapMarker(ctx, sessionID, exec.plan, runtime, "succeeded", "handover")
 	return result, "handover", nil
 }

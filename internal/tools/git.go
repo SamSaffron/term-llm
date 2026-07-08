@@ -58,6 +58,9 @@ func DetectGitRepo(path string) GitRepoInfo {
 	if root == "" {
 		return GitRepoInfo{}
 	}
+	if canonical := canonicalGitCommonRoot(workDir); canonical != "" {
+		root = canonical
+	}
 
 	return GitRepoInfo{
 		IsRepo:   true,
@@ -66,12 +69,41 @@ func DetectGitRepo(path string) GitRepoInfo {
 	}
 }
 
+func canonicalGitCommonRoot(workDir string) string {
+	cmd := exec.Command("git", "rev-parse", "--git-common-dir")
+	cmd.Dir = workDir
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	common := strings.TrimSpace(string(out))
+	if common == "" {
+		return ""
+	}
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(workDir, common)
+	}
+	if resolved, err := filepath.EvalSymlinks(common); err == nil {
+		common = resolved
+	} else if abs, err := filepath.Abs(common); err == nil {
+		common = abs
+	}
+	common = filepath.Clean(common)
+	if filepath.Base(common) == ".git" {
+		return filepath.Dir(common)
+	}
+	return ""
+}
+
 // GetGitRepoID returns a unique identifier for a git repository.
 // The ID is a SHA256 hash of the absolute root path, suitable for use as a filename.
 func GetGitRepoID(root string) string {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		absRoot = root
+	}
+	if info := DetectGitRepo(absRoot); info.IsRepo && info.Root != "" {
+		absRoot = info.Root
 	}
 
 	h := sha256.New()

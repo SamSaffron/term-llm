@@ -76,6 +76,7 @@ type Session struct {
 	Origin          SessionOrigin       `json:"origin,omitempty"`           // Session surface/origin (tui, web, telegram)
 	Agent           string              `json:"agent,omitempty"`            // Agent name used for this session
 	CWD             string              `json:"cwd,omitempty"`              // Working directory at session start
+	WorktreeDir     string              `json:"worktree_dir,omitempty"`     // Bound git worktree directory, if any
 	CreatedAt       time.Time           `json:"created_at"`
 	UpdatedAt       time.Time           `json:"updated_at"`
 	Archived        bool                `json:"archived,omitempty"`
@@ -146,6 +147,7 @@ type SessionSummary struct {
 	OutputTokens        int                `json:"output_tokens,omitempty"`
 	Status              SessionStatus      `json:"status,omitempty"`
 	Tags                string             `json:"tags,omitempty"`
+	WorktreeDir         string             `json:"worktree_dir,omitempty"`
 	CreatedAt           time.Time          `json:"created_at"`
 	UpdatedAt           time.Time          `json:"updated_at"`
 	LastMessageAt       time.Time          `json:"last_message_at,omitempty"`

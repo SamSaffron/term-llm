@@ -363,6 +363,9 @@ func (m *Model) ensureContextMessages() {
 func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	m.selection = Selection{}
 	m.interruptNotice = ""
+	if m.worktreeOperationBusy() {
+		return m.showFooterWarning("Wait for the current worktree operation to finish before sending.")
+	}
 	m.clearFooterMessage()
 	var preSendCmds []tea.Cmd
 	if cmd := m.applyPendingStreamModelSwitch(); cmd != nil {

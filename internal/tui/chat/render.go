@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -994,6 +995,9 @@ func (m *Model) renderStatusLine() string {
 	if model != "" {
 		baseSegments = append(baseSegments, seg(mutedStyle.Render(model), 0, true))
 	}
+	if worktreeLabel := m.statusLineWorktreePart(); worktreeLabel != "" {
+		baseSegments = append(baseSegments, seg(successStyle.Render(worktreeLabel), 0, true))
+	}
 	switch m.currentApprovalMode() {
 	case tools.ModeAuto:
 		baseSegments = append(baseSegments, seg(successStyle.Render("auto"), 40, false))
@@ -1183,6 +1187,21 @@ func (m *Model) renderStatusLine() string {
 		return line
 	}
 	return ansi.Cut(line, 0, width)
+}
+
+func (m *Model) statusLineWorktreePart() string {
+	if m == nil || m.sess == nil {
+		return ""
+	}
+	dir := strings.TrimSpace(m.sess.WorktreeDir)
+	if dir == "" {
+		return ""
+	}
+	name := strings.TrimSpace(filepath.Base(filepath.Clean(dir)))
+	if name == "." || name == string(filepath.Separator) || name == "" {
+		name = "worktree"
+	}
+	return "wt:" + name
 }
 
 func (m *Model) statusLineUsageParts() (string, string) {
@@ -1451,6 +1470,16 @@ func (m *Model) updateCompletions() {
 	}
 	if m.streaming && strings.Contains(lowerQuery, " ") {
 		m.completions.Hide()
+		return
+	}
+
+	if items, ok := shellCompletionItems(query); ok {
+		m.completions.SetItems(items)
+		return
+	}
+
+	if items, ok := m.worktreeCompletionItems(query); ok {
+		m.completions.SetItems(items)
 		return
 	}
 

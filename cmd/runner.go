@@ -449,6 +449,7 @@ func (r *cmdRunner) resolveSettings(cfg *config.Config, agent *agents.Agent, req
 		return SessionSettings{}, err
 	}
 	if runCwd := strings.TrimSpace(req.Cwd); runCwd != "" {
+		settings.BaseDir = runCwd
 		settings.ReadDirs = append(settings.ReadDirs, runCwd)
 		settings.WriteDirs = append(settings.WriteDirs, runCwd)
 		settings.ShellWorkingDir = runCwd

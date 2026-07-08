@@ -153,6 +153,7 @@ type Model struct {
 	// External UI state
 	pausedForExternalUI bool // True when paused for ask_user or approval prompts
 	approvalMgr         *tools.ApprovalManager
+	toolMgr             *tools.ToolManager
 
 	// Embedded inline approval UI (alt screen mode only)
 	approvalModel  *tools.ApprovalModel
@@ -394,14 +395,14 @@ type Model struct {
 	postFrameTransmittedImages  map[uint32]struct{}
 
 	// Text selection state (alt-screen only)
-	selection         Selection
-	contentLines      []string // full viewport content split by \n
-	copyStatus        string   // transient status message after copy attempt
-	footerMessage     string   // transient footer message for short system notices
-	footerMessageTone string   // "", "muted", "success", "warning", or "error"
-	footerMessageSeq  uint64   // monotonically increasing footer message timer token
-
-	lastGuardianReviewForApproval string // latest non-success guardian review message to show durably above an approval prompt
+	selection                     Selection
+	contentLines                  []string // full viewport content split by \n
+	copyStatus                    string   // transient status message after copy attempt
+	footerMessage                 string   // transient footer message for short system notices
+	footerMessageTone             string   // "", "muted", "success", "warning", or "error"
+	footerMessageSeq              uint64   // monotonically increasing footer message timer token
+	worktreeOperation             string   // non-empty while an async /worktree operation is running
+	lastGuardianReviewForApproval string   // latest non-success guardian review message to show durably above an approval prompt
 
 	attemptInput          int
 	attemptOutput         int
@@ -477,7 +478,12 @@ type (
 	handoverConfirmMsg    struct{}
 	handoverCancelMsg     struct{}
 	handoverRenameDoneMsg struct{ err error }
-	titleGeneratedMsg     struct {
+	shellExitedMsg        struct {
+		dir      string
+		exitCode int
+		err      error
+	}
+	titleGeneratedMsg struct {
 		sessionID         string
 		candidate         sessiontitle.Candidate
 		generatedAt       time.Time
@@ -630,13 +636,13 @@ func (m *Model) loadOlderScrollbackPrefix(ctx context.Context) {
 
 // New creates a new chat model.
 // fast-provider aware callers should use NewWithFastProvider.
-func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, providerKey string, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, disableExternalWebFetch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, autoSendExitOnDone bool, textMode bool, agentName string, platformDeveloperMessage string, yolo bool) *Model {
-	return NewWithFastProvider(cfg, provider, nil, engine, providerKey, modelName, mcpManager, maxTurns, forceExternalSearch, disableExternalWebFetch, searchEnabled, localTools, toolsStr, mcpStr, showStats, initialText, store, sess, altScreen, autoSendQueue, autoSendExitOnDone, textMode, agentName, platformDeveloperMessage, yolo)
+func New(cfg *config.Config, provider llm.Provider, engine *llm.Engine, providerKey string, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, disableExternalWebFetch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, autoSendExitOnDone bool, textMode bool, agentName string, platformDeveloperMessage string, yolo bool, toolMgrs ...*tools.ToolManager) *Model {
+	return NewWithFastProvider(cfg, provider, nil, engine, providerKey, modelName, mcpManager, maxTurns, forceExternalSearch, disableExternalWebFetch, searchEnabled, localTools, toolsStr, mcpStr, showStats, initialText, store, sess, altScreen, autoSendQueue, autoSendExitOnDone, textMode, agentName, platformDeveloperMessage, yolo, toolMgrs...)
 }
 
 // NewWithFastProvider creates a new chat model with an optional fast provider
 // for control-plane classification tasks.
-func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider llm.Provider, engine *llm.Engine, providerKey string, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, disableExternalWebFetch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, autoSendExitOnDone bool, textMode bool, agentName string, platformDeveloperMessage string, yolo bool) *Model {
+func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider llm.Provider, engine *llm.Engine, providerKey string, modelName string, mcpManager *mcp.Manager, maxTurns int, forceExternalSearch bool, disableExternalWebFetch bool, searchEnabled bool, localTools []string, toolsStr string, mcpStr string, showStats bool, initialText string, store session.Store, sess *session.Session, altScreen bool, autoSendQueue []string, autoSendExitOnDone bool, textMode bool, agentName string, platformDeveloperMessage string, yolo bool, toolMgrs ...*tools.ToolManager) *Model {
 	// Get terminal size
 	width := 80
 	height := 24
@@ -806,6 +812,10 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 	}
 
 	titleMode, _ := ParseTerminalTitleMode(cfg.Chat.TerminalTitle)
+	var toolMgr *tools.ToolManager
+	if len(toolMgrs) > 0 {
+		toolMgr = toolMgrs[0]
+	}
 
 	model := &Model{
 		width:                      width,
@@ -835,6 +845,7 @@ func NewWithFastProvider(cfg *config.Config, provider llm.Provider, fastProvider
 		reasoningConfig:            reasoningCfg,
 		viewportRows:               ui.RemainingLines(height, 8), // Reserve space for input and status
 		tracker:                    tracker,
+		toolMgr:                    toolMgr,
 		subagentTracker:            subagentTracker,
 		smoothBuffer:               ui.NewSmoothBuffer(),
 		completions:                completions,
@@ -1704,6 +1715,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Seq == m.footerMessageSeq {
 			m.clearFooterMessage()
 		}
+
+	case shellExitedMsg:
+		m.pausedForExternalUI = false
+		if msg.err != nil {
+			return m.showFooterError(fmt.Sprintf("Shell failed: %v", msg.err))
+		}
+		if msg.exitCode != 0 {
+			return m.showFooterMuted(fmt.Sprintf("Shell exited with status %d.", msg.exitCode))
+		}
+		return m.showFooterMuted("Shell exited.")
+
+	case worktreeOperationDoneMsg:
+		return m.handleWorktreeOperationDone(msg)
 
 	case chatGPTModelsLoadedMsg:
 		return m.applyChatGPTModelsLoaded(msg)

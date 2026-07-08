@@ -27,6 +27,7 @@ type responsesCreateRequest struct {
 	Stream             bool                       `json:"stream,omitempty"`
 	PreviousResponseID string                     `json:"previous_response_id,omitempty"`
 	ReasoningEffort    string                     `json:"reasoning_effort,omitempty"`
+	WorktreeDir        string                     `json:"worktree_dir,omitempty"`
 	ModelSwap          *responsesModelSwapRequest `json:"model_swap,omitempty"`
 }
 

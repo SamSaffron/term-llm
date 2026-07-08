@@ -39,9 +39,15 @@ func NewLocalToolRegistry(toolConfig *ToolConfig, appConfig *config.Config, appr
 		return nil, err
 	}
 
-	// If no approval manager provided, create one (for backwards compatibility)
+	// If no approval manager provided, create one (for backwards compatibility).
+	// Otherwise keep the registry and approval manager on the same permissions
+	// instance so dynamic updates like SetBaseDir are visible to tool checks.
 	if approvalMgr == nil {
 		approvalMgr = NewApprovalManager(perms)
+	} else if approvalMgr.permissions != nil {
+		perms = approvalMgr.permissions
+	} else {
+		approvalMgr.permissions = perms
 	}
 
 	r := &LocalToolRegistry{
@@ -129,32 +135,32 @@ func (r *LocalToolRegistry) registerTool(specName string) error {
 
 	switch specName {
 	case ReadFileToolName:
-		tool = NewReadFileTool(r.approval, r.limits)
+		tool = NewReadFileTool(r.approval, r.limits, r.config)
 	case WriteFileToolName:
-		tool = NewWriteFileTool(r.approval)
+		tool = NewWriteFileTool(r.approval, r.config)
 	case EditFileToolName:
-		tool = NewEditFileTool(r.approval)
+		tool = NewEditFileTool(r.approval, r.config)
 	case UnifiedDiffToolName:
-		tool = NewUnifiedDiffTool(r.approval)
+		tool = NewUnifiedDiffTool(r.approval, r.config)
 	case ShellToolName:
 		tool = NewShellTool(r.approval, r.config, r.limits)
 	case GrepToolName:
-		tool = NewGrepTool(r.approval, r.limits)
+		tool = NewGrepTool(r.approval, r.limits, r.config)
 	case GlobToolName:
-		tool = NewGlobTool(r.approval)
+		tool = NewGlobTool(r.approval, r.config)
 	case ViewImageToolName:
-		tool = NewViewImageTool(r.approval)
+		tool = NewViewImageTool(r.approval, r.config)
 	case ShowImageToolName:
-		tool = NewShowImageTool(r.approval)
+		tool = NewShowImageTool(r.approval, r.config)
 	case ImageGenerateToolName:
-		tool = NewImageGenerateTool(r.approval, r.appConfig, r.config.ImageProvider, r.memoryStore, r.agent, r.sessionID)
+		tool = NewImageGenerateTool(r.approval, r.appConfig, r.config.ImageProvider, r.memoryStore, r.agent, r.sessionID, r.config)
 	case AskUserToolName:
 		tool = NewAskUserTool()
 	case SpawnAgentToolName:
 		// SpawnAgentTool requires a runner to be set later via SetRunner
 		tool = NewSpawnAgentTool(r.config.Spawn, 0)
 	case QueueAgentToolName:
-		tool = NewQueueAgentTool()
+		tool = NewQueueAgentTool(r.config)
 	case WaitForJobsToolName:
 		tool = NewWaitForJobsTool()
 	case HubDelegateToolName:
@@ -181,7 +187,7 @@ func (r *LocalToolRegistry) SetViewImageVisionProvider(provider llm.Provider, mo
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.tools[ViewImageToolName] = NewViewImageToolWithVision(r.approval, provider, model)
+	r.tools[ViewImageToolName] = NewViewImageToolWithVision(r.approval, provider, model, r.config)
 	if !stringSliceContains(r.config.Enabled, ViewImageToolName) {
 		r.config.Enabled = append(r.config.Enabled, ViewImageToolName)
 	}
@@ -247,11 +253,11 @@ func (r *LocalToolRegistry) SetLimits(limits OutputLimits) {
 	for _, specName := range r.config.Enabled {
 		switch specName {
 		case ReadFileToolName:
-			r.tools[specName] = NewReadFileTool(r.approval, r.limits)
+			r.tools[specName] = NewReadFileTool(r.approval, r.limits, r.config)
 		case ShellToolName:
 			r.tools[specName] = NewShellTool(r.approval, r.config, r.limits)
 		case GrepToolName:
-			r.tools[specName] = NewGrepTool(r.approval, r.limits)
+			r.tools[specName] = NewGrepTool(r.approval, r.limits, r.config)
 		case RunAgentScriptToolName:
 			r.tools[specName] = NewRunAgentScriptTool(r.config, r.limits)
 		}
@@ -273,6 +279,46 @@ func (r *LocalToolRegistry) AddWriteDir(dir string) error {
 // AddShellPattern adds a shell pattern to the allowlist at runtime.
 func (r *LocalToolRegistry) AddShellPattern(pattern string) error {
 	return r.permissions.AddShellPattern(pattern)
+}
+
+// SetBaseDir updates the registry's per-session working directory and grants
+// read/write access to that directory for this manager. Tools resolve relative
+// paths through the shared ToolConfig pointer, so no re-registration is needed.
+func (r *LocalToolRegistry) SetBaseDir(dir string) error {
+	if r == nil || r.config == nil {
+		return nil
+	}
+	abs := r.config.ResolveDir(dir)
+	if abs == "" {
+		return NewToolError(ErrInvalidParams, "base directory is empty")
+	}
+	if info, err := os.Stat(abs); err != nil {
+		return NewToolErrorf(ErrInvalidParams, "base directory %q is not accessible: %v", abs, err)
+	} else if !info.IsDir() {
+		return NewToolErrorf(ErrInvalidParams, "base directory %q is not a directory", abs)
+	}
+
+	r.mu.Lock()
+	r.config.UpdateBaseDir(abs)
+	r.mu.Unlock()
+
+	if err := r.permissions.AddReadDir(abs); err != nil {
+		return err
+	}
+	if err := r.permissions.AddWriteDir(abs); err != nil {
+		return err
+	}
+	return nil
+}
+
+// BaseDir returns the current per-session base directory, if any.
+func (r *LocalToolRegistry) BaseDir() string {
+	if r == nil || r.config == nil {
+		return ""
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.config.BaseDirValue()
 }
 
 // SetServeMode marks tools as running in serve (web/telegram) mode.
@@ -325,6 +371,22 @@ func NewToolManager(toolConfig *ToolConfig, appConfig *config.Config) (*ToolMana
 		Registry:    registry,
 		ApprovalMgr: approvalMgr,
 	}, nil
+}
+
+// SetBaseDir updates the per-manager base directory used by all local tools.
+func (m *ToolManager) SetBaseDir(dir string) error {
+	if m == nil || m.Registry == nil {
+		return nil
+	}
+	return m.Registry.SetBaseDir(dir)
+}
+
+// BaseDir returns the current per-session base directory, if any.
+func (m *ToolManager) BaseDir() string {
+	if m == nil || m.Registry == nil {
+		return ""
+	}
+	return m.Registry.BaseDir()
 }
 
 // SetupEngine registers tools with the engine.

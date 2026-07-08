@@ -47,6 +47,10 @@ type SessionSettings struct {
 	Scripts      []string
 	Spawn        tools.SpawnConfig
 
+	// BaseDir is the unified per-session working directory for all tools. It is
+	// threaded through ToolConfig and never applied with os.Chdir.
+	BaseDir string
+
 	// Agent directory (for run_agent_script and custom tools)
 	AgentDir string
 
@@ -455,6 +459,14 @@ func (s *SessionSettings) SetupToolManager(cfg *config.Config, engine *llm.Engin
 		toolConfig.Enabled = appendUniqueString(toolConfig.Enabled, tools.ViewImageToolName)
 	}
 	toolConfig.AgentDir = s.AgentDir
+	if strings.TrimSpace(s.BaseDir) != "" {
+		toolConfig.BaseDir = s.BaseDir
+		toolConfig.ReadDirs = append(toolConfig.ReadDirs, s.BaseDir)
+		toolConfig.WriteDirs = append(toolConfig.WriteDirs, s.BaseDir)
+		if s.ShellWorkingDir == "" {
+			s.ShellWorkingDir = s.BaseDir
+		}
+	}
 	if s.ShellAutoRun {
 		toolConfig.ShellAutoRun = true
 	}
@@ -612,6 +624,7 @@ func WireSpawnAgentRunnerWithStoreAndDepth(cfg *config.Config, toolMgr *tools.To
 	if err != nil {
 		return nil, fmt.Errorf("setup spawn_agent: %w", err)
 	}
+	runner.SetBaseDir(toolMgr.BaseDir())
 	spawnTool.SetDepth(depth)
 	spawnTool.SetRunner(runner)
 	return runner, nil

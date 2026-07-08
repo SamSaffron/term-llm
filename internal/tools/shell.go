@@ -265,14 +265,35 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 		return errorOutput(formatToolError(NewToolError(ErrInvalidParams, "command is required"))), nil
 	}
 
+	// Determine the default work dir before approval so prompts/project approvals
+	// are scoped to the same directory exec.Cmd.Dir will use. Precedence:
+	// explicit working_dir (resolved against BaseDir), then ShellWorkingDir, then
+	// BaseDir, then process cwd.
+	workDir := ""
+	if a.WorkingDir != "" {
+		if t.config != nil {
+			workDir = t.config.ResolveDir(a.WorkingDir)
+		} else {
+			workDir = resolvePathAgainstBase(a.WorkingDir, "")
+		}
+	} else if t.config != nil {
+		workDir = t.config.ShellDir()
+	} else {
+		var err error
+		workDir, err = os.Getwd()
+		if err != nil {
+			return errorOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err))), nil
+		}
+	}
+
 	// Strip leading "cd <dir> && " and fold into WorkingDir so that
 	// the approval prompt shows only the real command, not the cd prefix.
-	a.Command, a.WorkingDir = extractLeadingCd(a.Command, a.WorkingDir)
+	a.Command, workDir = extractLeadingCd(a.Command, workDir)
 
 	// Check permissions — pass both command and working directory so the
 	// approval UI can show the user where the command will run.
 	if t.approval != nil {
-		outcome, err := t.approval.CheckShellApprovalWithContext(ctx, a.Command, a.WorkingDir, shellApprovalTranscriptFromContext(ctx))
+		outcome, err := t.approval.CheckShellApprovalWithContext(ctx, a.Command, workDir, shellApprovalTranscriptFromContext(ctx))
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {
 				return errorOutput(formatToolError(toolErr)), nil
@@ -293,22 +314,7 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (llm.Tool
 		timeout = 300
 	}
 
-	// Set working directory. Precedence: the call's explicit working_dir, then a
-	// per-run default rooted by config (ShellWorkingDir), then the process cwd.
-	// ShellWorkingDir lets callers (e.g. the jobs server) root a run's shell at a
-	// directory via exec.Cmd.Dir without a process-wide os.Chdir.
-	workDir := a.WorkingDir
-	if workDir == "" {
-		if t.config != nil && strings.TrimSpace(t.config.ShellWorkingDir) != "" {
-			workDir = t.config.ShellWorkingDir
-		} else {
-			var err error
-			workDir, err = os.Getwd()
-			if err != nil {
-				return errorOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err))), nil
-			}
-		}
-	}
+	// workDir was resolved before approval and is the exact exec.Cmd.Dir below.
 
 	// Validate working directory exists and is a directory
 	if info, err := os.Stat(workDir); err != nil {

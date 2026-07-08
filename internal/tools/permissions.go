@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/gobwas/glob"
 
@@ -12,6 +13,8 @@ import (
 
 // ToolPermissions manages allowlists for tool access.
 type ToolPermissions struct {
+	mu sync.RWMutex
+
 	ReadDirs       []string // Directories for read/grep/glob/view
 	WriteDirs      []string // Directories for write/edit
 	ShellAllow     []string // Shell command patterns (glob syntax)
@@ -37,6 +40,8 @@ func (p *ToolPermissions) AddReadDir(dir string) error {
 	if err != nil {
 		return err
 	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	// Avoid duplicates
 	for _, existing := range p.ReadDirs {
 		if existing == abs {
@@ -53,6 +58,8 @@ func (p *ToolPermissions) AddWriteDir(dir string) error {
 	if err != nil {
 		return err
 	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	// Avoid duplicates
 	for _, existing := range p.WriteDirs {
 		if existing == abs {
@@ -69,6 +76,8 @@ func (p *ToolPermissions) AddShellPattern(pattern string) error {
 	if err != nil {
 		return NewToolErrorf(ErrInvalidParams, "invalid shell pattern %q: %v", pattern, err)
 	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	// Avoid duplicates
 	for _, existing := range p.ShellAllow {
 		if existing == pattern {
@@ -86,6 +95,8 @@ func (p *ToolPermissions) AddScriptCommand(command string) {
 	if cmd == "" {
 		return
 	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	// Avoid duplicates
 	for _, existing := range p.ScriptCommands {
 		if existing == cmd {
@@ -97,6 +108,12 @@ func (p *ToolPermissions) AddScriptCommand(command string) {
 
 // CompileShellPatterns pre-compiles all shell patterns.
 func (p *ToolPermissions) CompileShellPatterns() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.compileShellPatternsLocked()
+}
+
+func (p *ToolPermissions) compileShellPatternsLocked() error {
 	p.shellPatterns = make([]glob.Glob, 0, len(p.ShellAllow))
 	for _, pattern := range p.ShellAllow {
 		g, err := glob.Compile(pattern)
@@ -117,7 +134,10 @@ func (p *ToolPermissions) IsPathAllowedForRead(path string) (bool, error) {
 	if isHandoverPath(resolved) {
 		return true, nil
 	}
-	return p.isPathInDirs(resolved, p.ReadDirs), nil
+	p.mu.RLock()
+	dirs := append([]string(nil), p.ReadDirs...)
+	p.mu.RUnlock()
+	return p.isPathInDirs(resolved, dirs), nil
 }
 
 // IsPathAllowedForWrite checks if a path is allowed for write operations.
@@ -129,7 +149,10 @@ func (p *ToolPermissions) IsPathAllowedForWrite(path string) (bool, error) {
 	if isHandoverPath(resolved) {
 		return true, nil
 	}
-	return p.isPathInDirs(resolved, p.WriteDirs), nil
+	p.mu.RLock()
+	dirs := append([]string(nil), p.WriteDirs...)
+	p.mu.RUnlock()
+	return p.isPathInDirs(resolved, dirs), nil
 }
 
 // isHandoverPath reports whether resolvedPath is inside term-llm's own
@@ -151,25 +174,46 @@ func isHandoverPath(resolvedPath string) bool {
 
 // IsShellCommandAllowed checks if a shell command matches any allowlist pattern or script.
 func (p *ToolPermissions) IsShellCommandAllowed(command string) bool {
-	// Check exact script matches first
 	trimmedCmd := strings.TrimSpace(command)
-	for _, script := range p.ScriptCommands {
+	p.mu.RLock()
+	scripts := append([]string(nil), p.ScriptCommands...)
+	shellAllow := append([]string(nil), p.ShellAllow...)
+	patterns := append([]glob.Glob(nil), p.shellPatterns...)
+	needsCompile := len(patterns) == 0 && len(shellAllow) > 0
+	p.mu.RUnlock()
+
+	// Check exact script matches first
+	for _, script := range scripts {
 		if trimmedCmd == script {
 			return true
 		}
 	}
 
 	// Ensure patterns are compiled
-	if len(p.shellPatterns) == 0 && len(p.ShellAllow) > 0 {
-		_ = p.CompileShellPatterns()
+	if needsCompile {
+		p.mu.Lock()
+		if len(p.shellPatterns) == 0 && len(p.ShellAllow) > 0 {
+			_ = p.compileShellPatternsLocked()
+		}
+		patterns = append([]glob.Glob(nil), p.shellPatterns...)
+		p.mu.Unlock()
 	}
 
-	for _, pattern := range p.shellPatterns {
+	for _, pattern := range patterns {
 		if pattern.Match(command) {
 			return true
 		}
 	}
 	return false
+}
+
+func (p *ToolPermissions) Snapshot() (readDirs, writeDirs, shellAllow []string) {
+	if p == nil {
+		return nil, nil, nil
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return append([]string(nil), p.ReadDirs...), append([]string(nil), p.WriteDirs...), append([]string(nil), p.ShellAllow...)
 }
 
 // isPathInDirs checks if a resolved path is under any of the given directories.

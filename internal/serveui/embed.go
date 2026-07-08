@@ -16,7 +16,7 @@ import (
 //go:embed static/index.html static/manifest.webmanifest static/icon-512.png static/sw.js
 //go:embed static/app.css
 //go:embed static/app-core.js static/app-render.js static/app-sessions.js static/app-sidebar.js
-//go:embed static/app-attachments.js static/app-stream.js static/app-webrtc.js static/app-diffs.js
+//go:embed static/app-attachments.js static/app-stream.js static/app-webrtc.js static/app-diffs.js static/app-worktrees.js
 //go:embed static/decoration.js static/markdown-setup.js static/markdown-streaming.js
 //go:embed static/vendor
 var staticFiles embed.FS
@@ -97,6 +97,7 @@ func RenderIndexHTML(basePath, headSnippet string, opts RenderOptions) []byte {
 		{`href="app-sidebar.js"`, `href="` + versioned("app-sidebar.js") + `"`},
 		{`href="app-sessions.js"`, `href="` + versioned("app-sessions.js") + `"`},
 		{`href="app-diffs.js"`, `href="` + versioned("app-diffs.js") + `"`},
+		{`href="app-worktrees.js"`, `href="` + versioned("app-worktrees.js") + `"`},
 		{`src="markdown-setup.js"`, `src="` + versioned("markdown-setup.js") + `"`},
 		{`src="markdown-streaming.js"`, `src="` + versioned("markdown-streaming.js") + `"`},
 		{`src="decoration.js"`, `src="` + versioned("decoration.js") + `"`},
@@ -107,6 +108,7 @@ func RenderIndexHTML(basePath, headSnippet string, opts RenderOptions) []byte {
 		{`src="app-sidebar.js"`, `src="` + versioned("app-sidebar.js") + `"`},
 		{`src="app-sessions.js"`, `src="` + versioned("app-sessions.js") + `"`},
 		{`src="app-diffs.js"`, `src="` + versioned("app-diffs.js") + `"`},
+		{`src="app-worktrees.js"`, `src="` + versioned("app-worktrees.js") + `"`},
 	}
 	for _, replacement := range replacements {
 		html = bytes.ReplaceAll(html, []byte(replacement.old), []byte(replacement.new))
@@ -173,6 +175,7 @@ func renderServiceWorkerBytes(opts RenderOptions) []byte {
 		{"'./app-sidebar.js'", "'./" + versioned("app-sidebar.js") + "'"},
 		{"'./app-sessions.js'", "'./" + versioned("app-sessions.js") + "'"},
 		{"'./app-diffs.js'", "'./" + versioned("app-diffs.js") + "'"},
+		{"'./app-worktrees.js'", "'./" + versioned("app-worktrees.js") + "'"},
 	}
 	for _, replacement := range replacements {
 		data = bytes.ReplaceAll(data, []byte(replacement.old), []byte(replacement.new))

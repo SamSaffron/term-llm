@@ -264,7 +264,7 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 				providerForNormalization = runtimeProviderKey(runtime)
 			}
 			req.Model, req.ReasoningEffort = normalizeProviderModelEffort(providerForNormalization, req.Model, req.ReasoningEffort)
-			s.syncPersistedSessionRuntime(ctx, sessionID, runtime, req.Model, req.ReasoningEffort)
+			s.syncPersistedSessionRuntime(ctx, sessionID, runtime, req.Model, req.ReasoningEffort, req.WorktreeDir)
 		}
 
 		// Enforce chaining from the latest in-memory response only for ephemeral

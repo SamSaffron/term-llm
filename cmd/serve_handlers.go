@@ -30,6 +30,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/serveui"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/sessiontitle"
+	"github.com/samsaffron/term-llm/internal/worktree"
 )
 
 func (s *serveServer) verboseLog(format string, args ...any) {
@@ -2335,6 +2336,9 @@ func (s *serveServer) runtimeForRequest(ctx context.Context, sessionID string) (
 	if err != nil {
 		return nil, false, err
 	}
+	if err := s.ensureRuntimeBaseDirForSession(ctx, sessionID, rt); err != nil {
+		return nil, false, err
+	}
 	if err := s.ensureRuntimeMCPForSession(ctx, sessionID, rt); err != nil {
 		return nil, false, err
 	}
@@ -2350,6 +2354,23 @@ func runtimeProviderKey(rt *serveRuntime) string {
 		provider = strings.TrimSpace(rt.provider.Name())
 	}
 	return provider
+}
+
+func (s *serveServer) ensureRuntimeBaseDirForSession(ctx context.Context, sessionID string, rt *serveRuntime) error {
+	if s == nil || s.store == nil || sessionID == "" || rt == nil || rt.toolMgr == nil {
+		return nil
+	}
+	sess, err := s.store.Get(ctx, sessionID)
+	if err != nil || sess == nil {
+		return nil
+	}
+	if err := RestoreWorktreeBinding(ctx, s.store, sess, rt.toolMgr); err != nil {
+		return err
+	}
+	rt.mu.Lock()
+	rt.sessionMeta = sess
+	rt.mu.Unlock()
+	return nil
 }
 
 // runtimeForProviderRequest creates a runtime using a specific (non-default) provider.
@@ -2389,6 +2410,9 @@ func (s *serveServer) runtimeForProviderModelRequest(ctx context.Context, sessio
 		return s.runtimeFactory(ctx, providerName, modelName)
 	})
 	if err != nil {
+		return nil, false, err
+	}
+	if err := s.ensureRuntimeBaseDirForSession(ctx, sessionID, rt); err != nil {
 		return nil, false, err
 	}
 	if err := s.ensureRuntimeMCPForSession(ctx, sessionID, rt); err != nil {
@@ -2440,6 +2464,9 @@ func (s *serveServer) runtimeForFreshProviderRequest(ctx context.Context, sessio
 	if err != nil {
 		return nil, false, err
 	}
+	if err := s.ensureRuntimeBaseDirForSession(ctx, sessionID, rt); err != nil {
+		return nil, false, err
+	}
 	if err := s.ensureRuntimeMCPForSession(ctx, sessionID, rt); err != nil {
 		return nil, false, err
 	}
@@ -2458,7 +2485,7 @@ func (s *serveServer) runtimeForFreshProviderRequest(ctx context.Context, sessio
 // does not yet exist, it is created here so the client-supplied model and
 // effort are persisted (rather than the runtime defaults that rt would
 // otherwise use when Run creates the row).
-func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID string, rt *serveRuntime, clientModel, reasoningEffort string) {
+func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID string, rt *serveRuntime, clientModel, clientEffort, worktreeDir string) {
 	if s.store == nil || sessionID == "" || rt == nil {
 		return
 	}
@@ -2476,8 +2503,18 @@ func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID
 	if modelName == "" {
 		modelName = strings.TrimSpace(rt.defaultModel)
 	}
-	effort := strings.TrimSpace(reasoningEffort)
+	effort := strings.TrimSpace(clientEffort)
 	modelName, effort = normalizeProviderModelEffort(providerKey, modelName, effort)
+
+	requestedWorktree := strings.TrimSpace(worktreeDir)
+	if requestedWorktree != "" {
+		if wt, wtErr := worktree.Get(requestedWorktree); wtErr == nil {
+			requestedWorktree = wt.Dir
+		} else {
+			log.Printf("[serve] invalid worktree_dir %q for %s: %v", requestedWorktree, sessionID, wtErr)
+			requestedWorktree = ""
+		}
+	}
 
 	sess, err := s.store.Get(ctx, sessionID)
 	if err != nil {
@@ -2502,7 +2539,10 @@ func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID
 		if effort != "" {
 			sess.ReasoningEffort = effort
 		}
-		if cwd, cwdErr := os.Getwd(); cwdErr == nil {
+		if requestedWorktree != "" {
+			sess.WorktreeDir = requestedWorktree
+			sess.CWD = requestedWorktree
+		} else if cwd, cwdErr := os.Getwd(); cwdErr == nil {
 			sess.CWD = cwd
 		}
 		if createErr := s.store.Create(ctx, sess); createErr != nil {
@@ -2513,6 +2553,7 @@ func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID
 				return
 			}
 		} else {
+			applyRuntimeWorktreeBaseDir(sessionID, rt, sess.WorktreeDir)
 			rt.mu.Lock()
 			rt.sessionMeta = sess
 			rt.mu.Unlock()
@@ -2537,16 +2578,50 @@ func (s *serveServer) syncPersistedSessionRuntime(ctx context.Context, sessionID
 		sess.ReasoningEffort = effort
 		changed = true
 	}
-	if !changed {
-		return
+	acceptedWorktree := strings.TrimSpace(sess.WorktreeDir)
+	if requestedWorktree != "" {
+		switch {
+		case acceptedWorktree == "":
+			sess.WorktreeDir = requestedWorktree
+			sess.CWD = requestedWorktree
+			acceptedWorktree = requestedWorktree
+			changed = true
+		case sameServePath(acceptedWorktree, requestedWorktree):
+			acceptedWorktree = requestedWorktree
+			if filepath.Clean(sess.WorktreeDir) != filepath.Clean(requestedWorktree) {
+				sess.WorktreeDir = requestedWorktree
+				changed = true
+			}
+			if strings.TrimSpace(sess.CWD) == "" || (sameServePath(sess.CWD, acceptedWorktree) && filepath.Clean(sess.CWD) != filepath.Clean(requestedWorktree)) {
+				sess.CWD = requestedWorktree
+				changed = true
+			}
+		default:
+			log.Printf("[serve] ignoring conflicting worktree_dir %q for %s already bound to %q", requestedWorktree, sessionID, acceptedWorktree)
+		}
 	}
-	if err := s.store.Update(ctx, sess); err != nil {
-		log.Printf("[serve] session Update failed for %s: %v", sessionID, err)
-		return
+	if changed {
+		if err := s.store.Update(ctx, sess); err != nil {
+			log.Printf("[serve] session Update failed for %s: %v", sessionID, err)
+			return
+		}
 	}
+	applyRuntimeWorktreeBaseDir(sessionID, rt, acceptedWorktree)
 	rt.mu.Lock()
 	rt.sessionMeta = sess
 	rt.mu.Unlock()
+}
+
+func applyRuntimeWorktreeBaseDir(sessionID string, rt *serveRuntime, dir string) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" || rt == nil || rt.toolMgr == nil {
+		return
+	}
+	if err := rt.toolMgr.SetBaseDir(dir); err != nil {
+		log.Printf("[serve] set worktree BaseDir failed for %s: %v", sessionID, err)
+		return
+	}
+	_ = worktree.TouchLastBound(dir)
 }
 
 func (s *serveServer) handlePushSubscribe(w http.ResponseWriter, r *http.Request) {

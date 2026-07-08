@@ -6,6 +6,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -99,5 +100,16 @@ func TestRenderStatusLinePrefersConfiguredModelAliasForAppliedStreamingEffort(t 
 	}
 	if strings.Contains(line, "upstream/model-high") || strings.Contains(line, "friendly-medium") {
 		t.Fatalf("status line %q shows stale or upstream model", line)
+	}
+}
+
+func TestRenderStatusLineShowsBoundWorktree(t *testing.T) {
+	m := newTestChatModel(false)
+	m.width = 120
+	m.sess = &session.Session{WorktreeDir: "/tmp/term-llm-worktrees/feature-branch"}
+
+	line := ui.StripANSI(m.renderStatusLine())
+	if !strings.Contains(line, "wt:feature-branch") {
+		t.Fatalf("status line %q does not show bound worktree", line)
 	}
 }

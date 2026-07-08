@@ -15,13 +15,15 @@ import (
 // ShowImageTool implements the show_image tool for displaying images to users.
 type ShowImageTool struct {
 	approval  *ApprovalManager
+	config    *ToolConfig
 	serveMode bool // When true, strip clipboard param from spec
 }
 
 // NewShowImageTool creates a new ShowImageTool.
-func NewShowImageTool(approval *ApprovalManager) *ShowImageTool {
+func NewShowImageTool(approval *ApprovalManager, configs ...*ToolConfig) *ShowImageTool {
 	return &ShowImageTool{
 		approval: approval,
+		config:   optionalToolConfig(configs),
 	}
 }
 
@@ -92,9 +94,17 @@ func (t *ShowImageTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 		return llm.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "file_path is required"))), nil
 	}
 
+	resolvedPath, err := resolveToolPathWithConfig(a.FilePath, false, t.config)
+	if err != nil {
+		if toolErr, ok := err.(*ToolError); ok {
+			return llm.TextOutput(formatToolError(toolErr)), nil
+		}
+		return llm.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
+	}
+
 	// Check permissions via approval manager
 	if t.approval != nil {
-		outcome, err := t.approval.CheckPathApproval(ShowImageToolName, a.FilePath, a.FilePath, false)
+		outcome, err := t.approval.CheckPathApproval(ShowImageToolName, resolvedPath, a.FilePath, false)
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {
 				return llm.TextOutput(formatToolError(toolErr)), nil
@@ -104,14 +114,6 @@ func (t *ShowImageTool) Execute(ctx context.Context, args json.RawMessage) (llm.
 		if outcome == Cancel {
 			return llm.TextOutput(formatToolError(NewToolErrorf(ErrPermissionDenied, "access denied: %s", a.FilePath))), nil
 		}
-	}
-
-	resolvedPath, err := resolveToolPath(a.FilePath, false)
-	if err != nil {
-		if toolErr, ok := err.(*ToolError); ok {
-			return llm.TextOutput(formatToolError(toolErr)), nil
-		}
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
 	}
 
 	// Check file exists

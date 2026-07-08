@@ -1095,13 +1095,14 @@ func (m *ApprovalManager) appendApprovalContextFromChain(b *strings.Builder) {
 	seenShell := map[string]struct{}{}
 	for cur := m; cur != nil; cur = cur.parent {
 		if cur.permissions != nil {
-			for _, dir := range cur.permissions.ReadDirs {
+			readDirs, writeDirs, shellAllow := cur.permissions.Snapshot()
+			for _, dir := range readDirs {
 				addApprovalContextLine(b, seenRead, "configured_read_dir", dir)
 			}
-			for _, dir := range cur.permissions.WriteDirs {
+			for _, dir := range writeDirs {
 				addApprovalContextLine(b, seenWrite, "configured_write_dir", dir)
 			}
-			for _, pattern := range cur.permissions.ShellAllow {
+			for _, pattern := range shellAllow {
 				addApprovalContextLine(b, seenShell, "configured_shell_allow", pattern)
 			}
 		}

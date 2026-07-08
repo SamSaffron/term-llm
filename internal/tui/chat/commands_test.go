@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -21,6 +23,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
+	"github.com/samsaffron/term-llm/internal/worktree"
 )
 
 func TestAllCommandsIncludesCompact(t *testing.T) {
@@ -2123,12 +2126,15 @@ func TestExecuteHandover_CreatesNewIsolatedSessionAndRequestsResume(t *testing.T
 	store := &mockStore{}
 	m := newCmdTestModel(store)
 	m.config = &config.Config{}
+	worktreeDir := filepath.Join(t.TempDir(), "bound-worktree")
 	oldSess := &session.Session{
 		ID:          "old-session",
 		Provider:    "Old Provider",
 		ProviderKey: "old-provider",
 		Model:       "old-model",
 		Agent:       "source",
+		CWD:         worktreeDir,
+		WorktreeDir: worktreeDir,
 		Search:      false,
 		Tools:       "read_file",
 		MCP:         "old-mcp",
@@ -2207,6 +2213,9 @@ func TestExecuteHandover_CreatesNewIsolatedSessionAndRequestsResume(t *testing.T
 	if newSess.Provider == "Old Provider" || newSess.Provider == "" {
 		t.Fatalf("new provider label = %q, want target provider label", newSess.Provider)
 	}
+	if newSess.WorktreeDir != worktreeDir || newSess.CWD != worktreeDir {
+		t.Fatalf("handover worktree/cwd = %q/%q, want %q", newSess.WorktreeDir, newSess.CWD, worktreeDir)
+	}
 	if newSess.Status != session.StatusActive {
 		t.Fatalf("new session status = %q, want active", newSess.Status)
 	}
@@ -2241,7 +2250,7 @@ func TestExecuteHandover_CreatesNewIsolatedSessionAndRequestsResume(t *testing.T
 			t.Fatalf("old in-memory message %d changed: got %#v want %#v", i, rm.messages[i], oldMessages[i])
 		}
 	}
-	if oldSess.Agent != "source" || oldSess.ProviderKey != "old-provider" || oldSess.Model != "old-model" || oldSess.Tools != "read_file" || oldSess.MCP != "old-mcp" {
+	if oldSess.Agent != "source" || oldSess.ProviderKey != "old-provider" || oldSess.Model != "old-model" || oldSess.Tools != "read_file" || oldSess.MCP != "old-mcp" || oldSess.WorktreeDir != worktreeDir || oldSess.CWD != worktreeDir {
 		t.Fatalf("source session metadata was mutated: %#v", oldSess)
 	}
 	if rm.pendingHandover != nil {
@@ -3138,5 +3147,266 @@ func TestFastCommandTogglesOpenAIWithoutMetadata(t *testing.T) {
 	serviceTier, set := m.currentServiceTier()
 	if !set || serviceTier != llm.ServiceTierFast {
 		t.Fatalf("currentServiceTier() = (%q, %v), want fast override", serviceTier, set)
+	}
+}
+
+func TestUpdateCompletions_WorktreeTargetCommandsUseManagedNames(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	repo := newGitRepoForChatWorktreeTest(t)
+	wt, err := worktree.Create(context.Background(), repo, worktree.CreateOptions{Name: "alpha-feature"})
+	if err != nil {
+		t.Fatalf("Create worktree: %v", err)
+	}
+	t.Cleanup(func() { _ = worktree.Remove(context.Background(), wt.Dir, worktree.RemoveOptions{Force: true}) })
+
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{input: "/worktree rm ", want: "worktree rm alpha-feature"},
+		{input: "/worktree rm --force ", want: "worktree rm --force alpha-feature"},
+		{input: "/wt switch alp", want: "wt switch alpha-feature"},
+		{input: "/worktree diff ", want: "worktree diff alpha-feature"},
+		{input: "/worktree merge ", want: "worktree merge alpha-feature"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			m := newTestChatModel(false)
+			m.sess = &session.Session{ID: "sess-worktree-complete", CWD: repo}
+			m.completions.Show()
+			m.setTextareaValue(tt.input)
+			m.updateCompletions()
+
+			got := completionNames(m.completions.filtered)
+			if !containsString(got, tt.want) {
+				t.Fatalf("completions = %v, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUpdateCompletions_WorktreeOptionCommands(t *testing.T) {
+	m := newTestChatModel(false)
+	m.completions.Show()
+	m.setTextareaValue("/worktree new --b")
+	m.updateCompletions()
+	got := completionNames(m.completions.filtered)
+	if !containsString(got, "worktree new --base") || !containsString(got, "worktree new --branch") {
+		t.Fatalf("new option completions = %v, want --base and --branch", got)
+	}
+
+	m.completions.Show()
+	m.setTextareaValue("/worktree merge --c")
+	m.updateCompletions()
+	got = completionNames(m.completions.filtered)
+	if !containsString(got, "worktree merge --commit") {
+		t.Fatalf("merge option completions = %v, want --commit", got)
+	}
+}
+
+func TestResolveWorktreeTargetRejectsUnknownManagedName(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	repo := newGitRepoForChatWorktreeTest(t)
+	m := newTestChatModel(false)
+	m.sess = &session.Session{ID: "sess-worktree-target", CWD: repo}
+	if _, err := m.resolveWorktreeTarget("does-not-exist"); err == nil {
+		t.Fatal("resolveWorktreeTarget accepted unknown managed worktree name")
+	}
+	if got, err := m.resolveWorktreeTarget("./relative-dir"); err != nil || got != "./relative-dir" {
+		t.Fatalf("relative path target = %q, %v; want passthrough", got, err)
+	}
+}
+
+func newGitRepoForChatWorktreeTest(t *testing.T) string {
+	t.Helper()
+	repo := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatalf("MkdirAll repo: %v", err)
+	}
+	runGitForChatWorktreeTest(t, repo, "init")
+	runGitForChatWorktreeTest(t, repo, "config", "user.email", "test@example.com")
+	runGitForChatWorktreeTest(t, repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile README: %v", err)
+	}
+	runGitForChatWorktreeTest(t, repo, "add", "README.md")
+	runGitForChatWorktreeTest(t, repo, "commit", "-m", "init")
+	return repo
+}
+
+func runGitForChatWorktreeTest(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Skipf("git %v failed: %v\n%s", args, err, strings.TrimSpace(string(out)))
+	}
+}
+
+func TestAllCommandsIncludesShell(t *testing.T) {
+	commands := AllCommands()
+	for _, cmd := range commands {
+		if cmd.Name == "shell" {
+			if cmd.Usage != "/shell [--no-rc]" {
+				t.Fatalf("shell usage = %q, want /shell [--no-rc]", cmd.Usage)
+			}
+			if !slices.Contains(cmd.Aliases, "sh") {
+				t.Fatalf("shell aliases = %v, want sh", cmd.Aliases)
+			}
+			return
+		}
+	}
+	t.Fatal("AllCommands() missing /shell")
+}
+
+func TestInteractiveShellCommandUsesBoundWorktreeDir(t *testing.T) {
+	dir := t.TempDir()
+	otherDir := t.TempDir()
+	t.Setenv("SHELL", "custom-shell-for-test")
+
+	m := newTestChatModel(false)
+	m.sess = &session.Session{WorktreeDir: dir, CWD: otherDir}
+
+	cmd, gotDir, err := m.interactiveShellCommand(false)
+	if err != nil {
+		t.Fatalf("interactiveShellCommand: %v", err)
+	}
+	if gotDir != dir || cmd.Dir != dir {
+		t.Fatalf("shell dir = %q cmd.Dir = %q, want %q", gotDir, cmd.Dir, dir)
+	}
+	if cmd.Path != "custom-shell-for-test" {
+		t.Fatalf("shell path = %q, want custom shell", cmd.Path)
+	}
+	env := strings.Join(cmd.Env, "\n")
+	if !strings.Contains(env, "PWD="+dir) || !strings.Contains(env, "TERM_LLM_BASE_DIR="+dir) || !strings.Contains(env, "TERM_LLM_WORKTREE_DIR="+dir) {
+		t.Fatalf("shell env missing bound dir entries:\n%s", env)
+	}
+}
+
+func TestInteractiveShellEnvReplacesPWD(t *testing.T) {
+	env := interactiveShellEnv([]string{"PWD=/old", "TERM_LLM_BASE_DIR=/old", "KEEP=1"}, "/new", "", false)
+	joined := strings.Join(env, "\n")
+	if strings.Contains(joined, "PWD=/old") || strings.Contains(joined, "TERM_LLM_BASE_DIR=/old") {
+		t.Fatalf("old directory env leaked:\n%s", joined)
+	}
+	if !strings.Contains(joined, "KEEP=1") || !strings.Contains(joined, "PWD=/new") || !strings.Contains(joined, "TERM_LLM_BASE_DIR=/new") {
+		t.Fatalf("replacement env missing entries:\n%s", joined)
+	}
+	if strings.Contains(joined, "TERM_LLM_WORKTREE_DIR=") {
+		t.Fatalf("unexpected worktree env for root shell:\n%s", joined)
+	}
+}
+
+func TestInteractiveShellCommandNoRCUsesZshFastFlag(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("ZDOTDIR", "/custom-zdotdir")
+
+	m := newTestChatModel(false)
+	m.sess = &session.Session{CWD: dir}
+
+	cmd, gotDir, err := m.interactiveShellCommand(true)
+	if err != nil {
+		t.Fatalf("interactiveShellCommand(no-rc): %v", err)
+	}
+	if gotDir != dir || cmd.Dir != dir {
+		t.Fatalf("shell dir = %q cmd.Dir = %q, want %q", gotDir, cmd.Dir, dir)
+	}
+	if !slices.Equal(cmd.Args, []string{"/bin/zsh", "-f"}) {
+		t.Fatalf("zsh no-rc args = %v, want [/bin/zsh -f]", cmd.Args)
+	}
+	if env := strings.Join(cmd.Env, "\n"); strings.Contains(env, "ZDOTDIR=") {
+		t.Fatalf("ZDOTDIR should be removed with --no-rc:\n%s", env)
+	}
+}
+
+func TestInteractiveShellArgsNoRCCommonShells(t *testing.T) {
+	tests := []struct {
+		shell string
+		want  []string
+	}{
+		{shell: "/bin/zsh", want: []string{"-f"}},
+		{shell: "/opt/homebrew/bin/bash", want: []string{"--noprofile", "--norc"}},
+		{shell: "/usr/local/bin/fish", want: []string{"--no-config"}},
+		{shell: "/bin/tcsh", want: []string{"-f"}},
+		{shell: "/usr/local/bin/nu", want: []string{"--no-config-file"}},
+		{shell: "/bin/sh", want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.shell, func(t *testing.T) {
+			got, err := interactiveShellArgs(tt.shell, true)
+			if err != nil {
+				t.Fatalf("interactiveShellArgs(%q, true): %v", tt.shell, err)
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Fatalf("interactiveShellArgs(%q, true) = %v, want %v", tt.shell, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestInteractiveShellEnvNoRCRemovesStartupEnv(t *testing.T) {
+	env := interactiveShellEnv([]string{"ENV=/tmp/shrc", "BASH_ENV=/tmp/bashrc", "ZDOTDIR=/tmp/zsh", "KEEP=1"}, "/new", "", true)
+	joined := strings.Join(env, "\n")
+	for _, unwanted := range []string{"ENV=", "BASH_ENV=", "ZDOTDIR="} {
+		if strings.Contains(joined, unwanted) {
+			t.Fatalf("%s leaked with --no-rc:\n%s", unwanted, joined)
+		}
+	}
+	if !strings.Contains(joined, "KEEP=1") {
+		t.Fatalf("expected unrelated env to be kept:\n%s", joined)
+	}
+}
+
+func TestUpdateCompletions_ShellOptionCommands(t *testing.T) {
+	m := newTestChatModel(false)
+	m.completions.Show()
+	m.setTextareaValue("/shell --")
+	m.updateCompletions()
+	got := completionNames(m.completions.filtered)
+	if !containsString(got, "shell --no-rc") {
+		t.Fatalf("shell option completions = %v, want --no-rc", got)
+	}
+
+	m.completions.Show()
+	m.setTextareaValue("/sh ")
+	m.updateCompletions()
+	got = completionNames(m.completions.filtered)
+	if !containsString(got, "sh --no-rc") {
+		t.Fatalf("sh option completions = %v, want --no-rc", got)
+	}
+}
+
+func TestBindWorktreeDirRejectsNonGitDirectory(t *testing.T) {
+	m := newTestChatModel(false)
+	if err := m.bindWorktreeDir(t.TempDir()); err == nil {
+		t.Fatal("bindWorktreeDir accepted a non-git directory")
+	}
+}
+
+func TestCmdWorktreePromoteBlockedWhileStreaming(t *testing.T) {
+	m := newTestChatModel(false)
+	m.streaming = true
+	m.sess = &session.Session{WorktreeDir: t.TempDir()}
+	model, _ := m.cmdWorktreePromote([]string{"feature"})
+	got := model.(*Model)
+	if !strings.Contains(got.footerMessage, "streaming") {
+		t.Fatalf("footerMessage = %q, want streaming warning", got.footerMessage)
+	}
+}
+
+func TestWorktreeOperationBlocksSend(t *testing.T) {
+	m := newTestChatModel(false)
+	m.worktreeOperation = "merge"
+	model, _ := m.sendMessage("hello")
+	got := model.(*Model)
+	if got.streaming {
+		t.Fatal("sendMessage started streaming while worktree operation was active")
+	}
+	if !strings.Contains(got.footerMessage, "worktree operation") {
+		t.Fatalf("footerMessage = %q, want worktree operation warning", got.footerMessage)
 	}
 }

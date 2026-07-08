@@ -116,14 +116,15 @@ type jobsV2ErrorResponse struct {
 
 type QueueAgentTool struct {
 	client *jobsBackedAgentClient
+	config *ToolConfig
 }
 
-func NewQueueAgentTool() *QueueAgentTool {
-	return NewQueueAgentToolWithClient(newJobsBackedAgentClientFromEnv())
+func NewQueueAgentTool(configs ...*ToolConfig) *QueueAgentTool {
+	return NewQueueAgentToolWithClient(newJobsBackedAgentClientFromEnv(), configs...)
 }
 
-func NewQueueAgentToolWithClient(client *jobsBackedAgentClient) *QueueAgentTool {
-	return &QueueAgentTool{client: client}
+func NewQueueAgentToolWithClient(client *jobsBackedAgentClient, configs ...*ToolConfig) *QueueAgentTool {
+	return &QueueAgentTool{client: client, config: optionalToolConfig(configs)}
 }
 
 func (t *QueueAgentTool) Spec() llm.ToolSpec {
@@ -188,7 +189,7 @@ func (t *QueueAgentTool) Execute(ctx context.Context, args json.RawMessage) (llm
 	if timeout > defaultQueuedAgentTimeout {
 		timeout = defaultQueuedAgentTimeout
 	}
-	cwd, err := queueAgentCwd(a.Cwd)
+	cwd, err := queueAgentCwd(a.Cwd, t.config)
 	if err != nil {
 		return llm.TextOutput(formatQueuedAgentError(ErrInvalidParams, err.Error())), nil
 	}
@@ -545,10 +546,13 @@ func jobsErrorMessage(statusCode int, data []byte) string {
 	return fmt.Sprintf("HTTP %d: %s", statusCode, body)
 }
 
-func queueAgentCwd(explicit string) (string, error) {
+func queueAgentCwd(explicit string, config *ToolConfig) (string, error) {
 	cwd := strings.TrimSpace(explicit)
 	if cwd == "" {
 		cwd = strings.TrimSpace(os.Getenv("TERM_LLM_QUEUE_AGENT_CWD"))
+	}
+	if cwd == "" && config != nil {
+		cwd = config.WorkingDir()
 	}
 	if cwd == "" {
 		var err error
@@ -559,6 +563,9 @@ func queueAgentCwd(explicit string) (string, error) {
 	}
 	if cwd == "" {
 		return "", fmt.Errorf("cwd is required")
+	}
+	if config != nil && explicit != "" {
+		cwd = config.ResolveDir(cwd)
 	}
 	return cwd, nil
 }

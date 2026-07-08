@@ -131,6 +131,7 @@
   <link rel="preload" as="script" href="app-sidebar.js">
   <link rel="preload" as="script" href="app-sessions.js">
   <link rel="preload" as="script" href="app-diffs.js">
+  <link rel="preload" as="script" href="app-worktrees.js">
 </head>
 <body class="app-loading">
   <div class="startup-splash" id="startupSplash" role="status" aria-live="polite">
@@ -246,6 +247,12 @@
                   <option value="xhigh">xhigh</option>
                   <option value="max">max</option>
                 </select>
+              </div>
+              <span class="chip-sep" id="chipSepEffortWorktree" data-sep="effort-worktree" hidden>·</span>
+              <div class="model-chip" data-chip="worktree" id="chipWorktree" hidden>
+                <button type="button" class="chip-trigger" id="chipWorktreeTrigger" aria-haspopup="listbox" aria-expanded="false" aria-label="Worktree">
+                  <span class="chip-label" id="chipWorktreeLabel">root</span>
+                </button>
               </div>
             </div>
             <button type="button" class="mcp-status header-action" id="mcpStatus" hidden aria-label="Manage MCP servers"></button>
@@ -499,6 +506,7 @@
   <script src="app-sidebar.js"></script>
   <script src="app-sessions.js"></script>
   <script src="app-diffs.js"></script>
+  <script src="app-worktrees.js"></script>
   <!-- term-llm:webrtc-script -->
 </body>
 </html>

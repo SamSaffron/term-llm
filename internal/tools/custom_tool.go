@@ -23,17 +23,19 @@ var validCustomToolNameRE = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 // CustomScriptTool implements llm.Tool for a script-backed custom tool
 // declared in agent.yaml under tools.custom.
 type CustomScriptTool struct {
-	def      agents.CustomToolDef
-	agentDir string
-	limits   OutputLimits
+	def        agents.CustomToolDef
+	agentDir   string
+	limits     OutputLimits
+	toolConfig *ToolConfig
 }
 
 // newCustomScriptTool creates a CustomScriptTool from a definition and agent directory.
-func newCustomScriptTool(def agents.CustomToolDef, agentDir string, limits OutputLimits) *CustomScriptTool {
+func newCustomScriptTool(def agents.CustomToolDef, agentDir string, limits OutputLimits, toolConfigs ...*ToolConfig) *CustomScriptTool {
 	return &CustomScriptTool{
-		def:      def,
-		agentDir: agentDir,
-		limits:   limits,
+		def:        def,
+		agentDir:   agentDir,
+		limits:     limits,
+		toolConfig: optionalToolConfig(toolConfigs),
 	}
 }
 
@@ -89,10 +91,18 @@ func (t *CustomScriptTool) Execute(ctx context.Context, args json.RawMessage) (l
 		timeout = 3600
 	}
 
-	// Working directory: same as the term-llm process cwd
-	workDir, err := os.Getwd()
-	if err != nil {
-		return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err))), nil
+	// Working directory: same as the session BaseDir, falling back to process cwd
+	// for legacy callers that have not configured one.
+	workDir := ""
+	if t.toolConfig != nil {
+		workDir = t.toolConfig.WorkingDir()
+	}
+	if workDir == "" {
+		var err error
+		workDir, err = os.Getwd()
+		if err != nil {
+			return llm.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err))), nil
+		}
 	}
 
 	// Normalise args: nil → empty object
@@ -320,7 +330,7 @@ func (r *LocalToolRegistry) RegisterCustomTools(defs []agents.CustomToolDef, age
 			}
 		}
 
-		tool := newCustomScriptTool(def, agentDir, r.limits)
+		tool := newCustomScriptTool(def, agentDir, r.limits, r.config)
 		r.tools[def.Name] = tool
 	}
 	return nil
